@@ -1,18 +1,17 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { bdRate, type RdPoint } from '../bd-rate';
+import { type RdPoint, tryBdRate } from '../bd-rate';
 import { REPO_ROOT } from '../config';
 import { convertWithProject } from '../convert';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { MissingToolError, OutputIntegrityError, ToolRunError } from '../errors';
 import { decodeImageToPng, fileSize, pictureQuality, type ImageKind } from '../measure';
-import type { BenchRow } from '../report';
-import { capPsnr, measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, ssimDb, throughputRow } from '../rows';
-import { PublicClassRows } from '../public-classes';
-import { publicFile, publicSamples, type PublicSample } from '../public-samples';
-import { publicSpeedSample } from '../public-scope';
-import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
+import type { BenchRow, Family } from '../report';
+import { capPsnr, measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, ssimDb, throughputRow, undeterminedBdRows } from '../rows';
+import { ClassRows } from '../class-rows';
+import { remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import { runTool, type ToolPlanSkipped } from '../tools';
 
 /**
@@ -29,7 +28,7 @@ import { runTool, type ToolPlanSkipped } from '../tools';
  * reference decoder developed from the file (a 16-bit TIFF, taken to a 16-bit PNG), so SSIM and PSNR measure what the
  * encoder step adds on top of the same development. Size and speed are those of the whole pipeline from the RAW file.
  *
- * The public samples (bench/corpus/public-manifest.json) are CC0 files of the open camera sample archive from several makers
+ * The public samples (bench/corpus/remote-manifest.json) are CC0 files of the open camera sample archive from several makers
  * (Canon, Nikon, Sony, Olympus, Panasonic, Pentax, Fujifilm X-Trans and native or converted DNG), measured the same way. A
  * file the product refuses, or one the reference decoder cannot develop, is a `converts` row instead of a stopped run; the
  * per-class rows average a maker's samples.
@@ -97,7 +96,7 @@ interface Subject {
   name: string;
   format: string;
   filename: string;
-  sample: PublicSample | null;
+  sample: RemoteSample | null;
 }
 
 const fixtureSubject = (format: string): Subject => ({ name: format, format, filename: `${format}.${format}`, sample: null });
@@ -106,10 +105,38 @@ const targetsOf = (subject: Subject): readonly Target[] => {
   const listed = subject.sample?.meta.targets;
   return typeof listed === 'string' ? TARGETS.filter((target) => listed.split(',').includes(target)) : TARGETS;
 };
-const publicSubject = (sample: PublicSample): Subject => ({ name: sample.id, format: String(sample.meta.format), filename: sample.id, sample });
+const publicSubject = (sample: RemoteSample): Subject => ({ name: sample.id, format: String(sample.meta.format), filename: sample.id, sample });
 
 function missingSample(format: string): ToolPlanSkipped {
   return { ok: false, missing: [`RAW sample ${format}`], optional: false, reason: `RAW sample ${format} is not fetched (npm run fixtures:raw ${format})` };
+}
+
+/**
+ * The BD-rate rows of a case, from the reference's curve and ours for each metric. A curve of ours that falls or stays flat as the
+ * rate grows is a failing `rd_curve_*` row and not a number of the cubic fit; a curve of the reference that does so is not
+ * evaluated (bench/bd-rate.ts tryBdRate, as the image, audio and video families judge it). A sample with no BD-rate leaves the
+ * mean of its class (the class pool takes the measured rows of the sample afterwards), and its own rows say why.
+ */
+export function bdRateRows(
+  family: Family,
+  caseName: string,
+  referenceTool: string,
+  curves: ReadonlyArray<readonly [MetricSpec, readonly RdPoint[], readonly RdPoint[]]>,
+  classRows: ClassRows,
+  className: string | null
+): BenchRow[] {
+  const rows: BenchRow[] = [];
+  const suffix = caseName.slice(caseName.indexOf('->'));
+  for (const [spec, reference, ours] of curves) {
+    const bd = tryBdRate(reference, ours);
+    if ('value' in bd) {
+      rows.push(measuredRow(family, caseName, spec, bd.value, 0, referenceTool));
+    } else {
+      rows.push(...undeterminedBdRows(family, caseName, [spec], referenceTool, bd));
+      if (className !== null) classRows.exclude(className, suffix, spec.metric);
+    }
+  }
+  return rows;
 }
 
 const TOOLS = ['dcraw_emu', 'ffmpeg', 'magick', 'avifenc', 'avifdec'] as const;
@@ -117,11 +144,13 @@ const QUALITY_SPECS = (target: Target): readonly MetricSpec[] => specsOf(target)
 
 export const runRaw: FamilyRunner = async (ctx) => {
   const rows: BenchRow[] = [];
-  const classRows = new PublicClassRows();
-  const subjects = [...SAMPLES.map(fixtureSubject), ...publicSamples('raw').map(publicSubject)];
+  const classRows = new ClassRows();
+  const subjects = [...SAMPLES.map(fixtureSubject), ...remoteSamples('raw').map(publicSubject)];
   for (const subject of subjects) {
     const targets = targetsOf(subject).filter((target) => ctx.inScope('raw', `${subject.name}->${target}`));
     if (targets.length === 0) continue;
+    // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+    if (subject.sample && !ctx.quality && !speedSample('raw', subject.sample.id)) continue;
     const plan = ctx.plan([...TOOLS], `raw ${subject.name}`);
     let file: string | null = null;
     let unavailable: ToolPlanSkipped | null = null;
@@ -131,7 +160,7 @@ export const runRaw: FamilyRunner = async (ctx) => {
       file = sampleFile(subject.format);
       if (file === null) unavailable = missingSample(subject.format);
     } else {
-      file = await publicFile(ctx, subject.sample);
+      file = await ctx.remote(subject.sample);
       if (file === null) unavailable = { ok: false, missing: [`public sample ${subject.name}`], optional: false, reason: `public sample ${subject.name} is not available` };
     }
     if (plan.ok && file !== null) {
@@ -151,7 +180,7 @@ export const runRaw: FamilyRunner = async (ctx) => {
   return rows;
 };
 
-async function runSample(ctx: FamilyContext, subject: Subject, file: string, tools: Readonly<Record<string, string>>, classRows: PublicClassRows): Promise<BenchRow[]> {
+async function runSample(ctx: FamilyContext, subject: Subject, file: string, tools: Readonly<Record<string, string>>, classRows: ClassRows): Promise<BenchRow[]> {
   const { name, format, sample } = subject;
   const input = fs.readFileSync(file);
   const developed = (label: string): string => {
@@ -175,7 +204,7 @@ async function runSample(ctx: FamilyContext, subject: Subject, file: string, too
   const kindOf = (target: Target): ImageKind => (target === 'avif' ? 'avif' : 'png');
   const rows: BenchRow[] = [];
   const targets = targetsOf(subject).filter((target) => ctx.inScope('raw', `${name}->${target}`));
-  if (sample !== null && ctx.quality) for (const target of targets) classRows.expect(sample.class, `->${target}`, [...QUALITY_SPECS(target), CONVERTS_SPEC].map((spec) => spec.metric));
+  if (sample !== null && ctx.quality) for (const target of targets) classRows.expect(sample.class, `->${target}`, [...QUALITY_SPECS(target), SPEC.converts].map((spec) => spec.metric));
 
   // A public sample the reference decoder cannot develop is a reference that does not convert it; a fixture must develop.
   let developedOnce: string | null = null;
@@ -241,15 +270,24 @@ async function runSample(ctx: FamilyContext, subject: Subject, file: string, too
           const curve = (encoded: Map<number, Encoded>, quality: (e: Encoded) => number): RdPoint[] =>
             QUALITY_POINTS.map((q) => ({ rate: (encoded.get(q) as Encoded).bytes, quality: quality(encoded.get(q) as Encoded) }));
           targetRows.push(
-            measuredRow('raw', caseName, SPEC.bdRatePsnr, bdRate(curve(reference, (e) => e.psnr), curve(ours, (e) => e.psnr)), 0, REFERENCE),
-            measuredRow('raw', caseName, SPEC.bdRateSsim, bdRate(curve(reference, (e) => ssimDb(e.ssim)), curve(ours, (e) => ssimDb(e.ssim))), 0, REFERENCE)
+            ...bdRateRows(
+              'raw',
+              caseName,
+              REFERENCE,
+              [
+                [SPEC.bdRatePsnr, curve(reference, (e) => e.psnr), curve(ours, (e) => e.psnr)],
+                [SPEC.bdRateSsim, curve(reference, (e) => ssimDb(e.ssim)), curve(ours, (e) => ssimDb(e.ssim))],
+              ],
+              classRows,
+              sample?.class ?? null
+            )
           );
         }
       }
-      if (sample !== null) classRows.addRows(sample.class, `->${target}`, targetRows, [...QUALITY_SPECS(target), CONVERTS_SPEC]);
+      if (sample !== null) classRows.addCases(sample.class, sample.id, targetRows);
     }
     rows.push(...targetRows);
-    const timed = sample === null || (publicSpeedSample('raw', sample.id) && converted && developedOnce !== null);
+    const timed = sample === null || (speedSample('raw', sample.id) && converted && developedOnce !== null);
     if (ctx.speed && timed) {
       const timingOut = ctx.scratch(`${name}-timing.${target}`);
       const timing = await ctx.time(

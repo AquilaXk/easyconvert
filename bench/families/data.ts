@@ -4,13 +4,12 @@ import { CORPUS_DIR, IN_PROCESS_REPEATS } from '../config';
 import type { FamilyContext, FamilyRunner, RowWeight } from '../context';
 import { convertWithProject } from '../convert';
 import { OutputIntegrityError, ToolRunError } from '../errors';
-import { PublicClassRows } from '../public-classes';
-import { publicFile, publicSample, publicSamples, type PublicSample } from '../public-samples';
-import { publicSpeedSample } from '../public-scope';
-import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
+import { ClassRows } from '../class-rows';
+import { remoteSample, remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import { ReferenceServer } from '../reference-server';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { DUCKDB_PSEUDO_TOOL, OPENPYXL_PSEUDO_TOOL, PYARROW_PSEUDO_TOOL, runTool } from '../tools';
 
 /**
@@ -28,7 +27,7 @@ import { DUCKDB_PSEUDO_TOOL, OPENPYXL_PSEUDO_TOOL, PYARROW_PSEUDO_TOOL, runTool 
  * into a database timestamp has changed the cell, and the count says by how many. The sizes of the Parquet and XLSX outputs
  * are measured against the reference's.
  *
- * The public samples (bench/corpus/public-manifest.json) are open datasets in CSV, JSON, JSON lines and Parquet (tall, wide,
+ * The public samples (bench/corpus/remote-manifest.json) are open datasets in CSV, JSON, JSON lines and Parquet (tall, wide,
  * unicode, empty cells, digit strings with leading zeros, long text with line breaks) and the test files of the Parquet format's
  * own repository (page encodings, codecs). Their truth is the text of the file itself (CSV, JSON, JSON lines), the expected-values
  * CSV that ships with a Parquet test file, or, for a Parquet file with neither, DuckDB's reading of it, while pyarrow is the
@@ -52,7 +51,7 @@ interface DataCase {
   /** Whether the size of the output is a row (formats with their own compression). */
   size: boolean;
   /** The public sample the case reads; null for the generated table. */
-  sample?: PublicSample;
+  sample?: RemoteSample;
 }
 
 const TABLE = 'data/table';
@@ -74,7 +73,7 @@ const caseName = (item: DataCase): string => `${path.basename(item.source)}->${i
 const formatOf = (file: string): string => path.extname(file).slice(1);
 
 /** The conversions of a public sample, by the format of the file: the reference tool of each is the one the generated table uses for the same pair. */
-function publicCases(sample: PublicSample): DataCase[] {
+function publicCases(sample: RemoteSample): DataCase[] {
   const format = String(sample.meta.format);
   const base = { source: sample.id, sample, size: false } as const;
   const truth: Truth = { kind: format === 'jsonl' || format === 'json' ? format : 'csv', file: sample.id };
@@ -136,7 +135,7 @@ interface CaseFiles {
 
 const MEASURED_SPECS = (item: DataCase): MetricSpec[] => specsOf(item).filter((spec) => spec.kind !== 'throughput');
 
-async function runCase(ctx: FamilyContext, item: DataCase, files: CaseFiles, tools: { server: ReferenceServer; soffice: string; profile: string }, classRows: PublicClassRows): Promise<BenchRow[]> {
+async function runCase(ctx: FamilyContext, item: DataCase, files: CaseFiles, tools: { server: ReferenceServer; soffice: string; profile: string }, classRows: ClassRows): Promise<BenchRow[]> {
   const name = caseName(item);
   const referenceTool = REFERENCE_TOOL[item.producer];
   const sample = item.sample ?? null;
@@ -164,7 +163,7 @@ async function runCase(ctx: FamilyContext, item: DataCase, files: CaseFiles, too
   const classKey = `->${item.target}`;
   let converted = true;
   if (ctx.quality) {
-    if (sample) classRows.expect(sample.class, classKey, [...MEASURED_SPECS(item), CONVERTS_SPEC].map((spec) => spec.metric));
+    if (sample) classRows.expect(sample.class, classKey, [...MEASURED_SPECS(item), SPEC.converts].map((spec) => spec.metric));
     const attempt = await attemptOurs(convertOurs, sample !== null);
     let referenceConverted = true;
     try {
@@ -190,16 +189,16 @@ async function runCase(ctx: FamilyContext, item: DataCase, files: CaseFiles, too
         if (sample === null || !(error instanceof ToolRunError)) throw error;
         ctx.log(`data ${name}: the output is not readable (${error.message.slice(0, 160)})`);
         converted = false;
-        rows.splice(rows.findIndex((row) => row.metric === CONVERTS_SPEC.metric), 1, convertsRow('data', name, false, true, referenceTool));
+        rows.splice(rows.findIndex((row) => row.metric === SPEC.converts.metric), 1, convertsRow('data', name, false, true, referenceTool));
       }
       if (oursMismatches !== null) {
         rows.push(measuredRow('data', name, SPEC.cellMismatches, oursMismatches, await mismatchesOf(tools.server, item.target, referenceOut, item.truth.kind, files.truth), referenceTool));
         if (item.size) rows.push(measuredRow('data', name, SPEC.bytes, attempt.value.length, fs.statSync(referenceOut).size, referenceTool));
       }
     }
-    if (sample) classRows.addRows(sample.class, classKey, rows, [...MEASURED_SPECS(item), CONVERTS_SPEC]);
+    if (sample) classRows.addCases(sample.class, sample.id, rows);
   }
-  if (ctx.speed && converted && (sample === null || publicSpeedSample('data', sample.id))) {
+  if (ctx.speed && converted && (sample === null || speedSample('data', sample.id))) {
     const timing = await ctx.time(
       speedRowId('data', name),
       async () => {
@@ -216,16 +215,16 @@ async function runCase(ctx: FamilyContext, item: DataCase, files: CaseFiles, too
 
 /** The files of a public case, or null when the host did not deliver one of them. */
 async function publicFiles(ctx: FamilyContext, item: DataCase): Promise<CaseFiles | null> {
-  const sample = item.sample as PublicSample;
-  const cached = await publicFile(ctx, sample);
+  const sample = item.sample as RemoteSample;
+  const cached = await ctx.remote(sample);
   if (cached === null) return null;
   const staged = ctx.scratch(`source-${sample.id}`);
   fs.copyFileSync(cached, staged);
   let truth = staged;
   if (item.truth.file !== sample.id) {
-    const twin = publicSample(item.truth.file);
+    const twin = remoteSample(item.truth.file);
     if (twin === undefined) throw new OutputIntegrityError(`${sample.id}: the truth sample ${item.truth.file} is not in the public manifest`);
-    const twinFile = await publicFile(ctx, twin);
+    const twinFile = await ctx.remote(twin);
     if (twinFile === null) return null;
     truth = twinFile;
   }
@@ -234,7 +233,11 @@ async function publicFiles(ctx: FamilyContext, item: DataCase): Promise<CaseFile
 
 export const runData: FamilyRunner = async (ctx) => {
   const generated = CASES.filter((item) => ctx.inScope('data', caseName(item)));
-  const published = publicSamples('data').flatMap(publicCases).filter((item) => ctx.inScope('data', caseName(item)));
+  // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+  const published = remoteSamples('data')
+    .filter((sample) => ctx.quality || speedSample('data', sample.id))
+    .flatMap(publicCases)
+    .filter((item) => ctx.inScope('data', caseName(item)));
   if (generated.length + published.length === 0) return [];
   const plan = ctx.plan(['python3', PYARROW_PSEUDO_TOOL, DUCKDB_PSEUDO_TOOL, OPENPYXL_PSEUDO_TOOL, 'soffice'], 'data');
   if (!plan.ok) return [...generated, ...published].flatMap((item) => skippedGroup('data', caseName(item), specsOf(item), REFERENCE_TOOL[item.producer], plan));
@@ -243,12 +246,12 @@ export const runData: FamilyRunner = async (ctx) => {
     const profile = `file://${path.join(ctx.work, 'soffice-profile')}`;
     const tools = { server, soffice: plan.paths.soffice, profile };
     const rows: BenchRow[] = [];
-    const classRows = new PublicClassRows();
+    const classRows = new ClassRows();
     for (const item of generated) rows.push(...(await runCase(ctx, item, { source: ctx.corpusPath(item.source), truth: ctx.corpusPath(item.truth.file) }, tools, classRows)));
     for (const item of published) {
       const files = await publicFiles(ctx, item);
       if (files === null) {
-        rows.push(...unavailableRows('data', caseName(item), specsOf(item), REFERENCE_TOOL[item.producer], `public sample ${item.source} is not available`));
+        rows.push(...unavailableSampleRows('data', caseName(item), specsOf(item), REFERENCE_TOOL[item.producer], item.source));
         continue;
       }
       rows.push(...(await runCase(ctx, item, files, tools, classRows)));

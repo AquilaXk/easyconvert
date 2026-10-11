@@ -4,13 +4,12 @@ import { IN_PROCESS_REPEATS } from '../config';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { convertWithProject } from '../convert';
 import { ToolRunError } from '../errors';
-import { PublicClassRows } from '../public-classes';
-import { publicFile, publicSamples, type PublicSample } from '../public-samples';
-import { publicSpeedSample } from '../public-scope';
-import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
+import { ClassRows } from '../class-rows';
+import { remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import { ReferenceServer } from '../reference-server';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, speedRowId, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { FONTTOOLS_PSEUDO_TOOL, runTool } from '../tools';
 
 /**
@@ -30,7 +29,7 @@ import { FONTTOOLS_PSEUDO_TOOL, runTool } from '../tools';
  * curves (a converter that moves a curve by a thousandth of the em moves them by far less than the tolerance, a wrong
  * contour moves them by far more; converting cubic curves to quadratic ones, which approximates, stays well inside it). They have no speed row.
  *
- * The public samples (bench/corpus/public-manifest.json) are open-licence families that the committed pair does not cover:
+ * The public samples (bench/corpus/remote-manifest.json) are open-licence families that the committed pair does not cover:
  * hinted TrueType, a face with Arabic shaping tables, variable fonts, OpenType/CFF, CJK faces of 2 to 4.5 MB, and colour
  * fonts (COLR/CPAL and CBDT/CBLC). Each one goes through the wrapper cases; the outline conversion runs on the static Latin and
  * Arabic faces only, since the check reads every glyph and has no reference for variation or colour tables. A file the product
@@ -54,7 +53,7 @@ interface Face {
   sfnt: Sfnt;
   /** Path in the generated corpus, or the file name of a public sample. */
   file: string;
-  sample: PublicSample | null;
+  sample: RemoteSample | null;
   /** Whether the outline conversion is measured on it. */
   outlines: boolean;
 }
@@ -62,14 +61,14 @@ const FIXTURE_FACES: readonly Face[] = [
   { name: 'sans', sfnt: 'ttf', file: 'fonts/sans.ttf', sample: null, outlines: true },
   { name: 'sans-cff', sfnt: 'otf', file: 'fonts/sans-cff.otf', sample: null, outlines: true },
 ];
-const publicFace = (sample: PublicSample): Face => ({
+const publicFace = (sample: RemoteSample): Face => ({
   name: path.parse(sample.id).name,
   sfnt: sample.meta.sfnt === 'otf' ? 'otf' : 'ttf',
   file: sample.id,
   sample,
   outlines: sample.meta.outlines === true,
 });
-const faces = (): readonly Face[] => [...FIXTURE_FACES, ...publicSamples('font').map(publicFace)];
+const faces = (): readonly Face[] => [...FIXTURE_FACES, ...remoteSamples('font').map(publicFace)];
 
 /** The case names of a face. A public sample's start with its id, which is what puts them in the scope of the public sets. */
 const compressCase = (face: Face, wrapper: Wrapper): string => (face.sample ? `${face.sample.id}->${wrapper}` : `${face.name}.${face.sfnt}->${wrapper}`);
@@ -142,7 +141,7 @@ function referenceAttempt(face: Face, action: () => void): boolean {
 }
 
 /** The sfnt to a wrapper: ours against the reference encoder, size and tables. */
-async function runCompress(ctx: FamilyContext, tools: Tools, located: Located, wrapper: Wrapper, classRows: PublicClassRows): Promise<BenchRow[]> {
+async function runCompress(ctx: FamilyContext, tools: Tools, located: Located, wrapper: Wrapper, classRows: ClassRows): Promise<BenchRow[]> {
   const { face } = located;
   const caseName = compressCase(face, wrapper);
   if (!ctx.inScope('font', caseName)) return [];
@@ -157,7 +156,7 @@ async function runCompress(ctx: FamilyContext, tools: Tools, located: Located, w
   const rows: BenchRow[] = [];
   const classKey = `->${wrapper}`;
   if (ctx.quality) {
-    if (face.sample) classRows.expect(face.sample.class, classKey, [...COMPRESS_METRICS, CONVERTS_SPEC].map((spec) => spec.metric));
+    if (face.sample) classRows.expect(face.sample.class, classKey, [...COMPRESS_METRICS, SPEC.converts].map((spec) => spec.metric));
     const referenceConverted = referenceAttempt(face, encode);
     const attempt = await attemptOurs(() => convertOurs(source, face.sfnt, wrapper, filename), face.sample !== null);
     if (face.sample) {
@@ -182,9 +181,9 @@ async function runCompress(ctx: FamilyContext, tools: Tools, located: Located, w
         measuredRow('font', caseName, SPEC.tableMismatches, oursTables, referenceTables, REFERENCE[wrapper])
       );
     }
-    if (face.sample) classRows.addRows(face.sample.class, classKey, rows, [...COMPRESS_METRICS, CONVERTS_SPEC], (spec) => (spec.metric === SPEC.ratio.metric ? source.length : 1));
+    if (face.sample) classRows.addCases(face.sample.class, face.sample.id, rows, (row) => (row.metric === SPEC.ratio.metric ? source.length : 1));
   }
-  if (ctx.speed && (face.sample === null || publicSpeedSample('font', face.sample.id))) {
+  if (ctx.speed && (face.sample === null || speedSample('font', face.sample.id))) {
     const timing = await ctx.time(
       speedRowId('font', caseName),
       async () => {
@@ -200,7 +199,7 @@ async function runCompress(ctx: FamilyContext, tools: Tools, located: Located, w
 }
 
 /** A wrapper to its sfnt: ours against the reference decoder, tables. The wrapped file is the reference encoder's. */
-async function runDecompress(ctx: FamilyContext, tools: Tools, located: Located, wrapper: Wrapper, classRows: PublicClassRows): Promise<BenchRow[]> {
+async function runDecompress(ctx: FamilyContext, tools: Tools, located: Located, wrapper: Wrapper, classRows: ClassRows): Promise<BenchRow[]> {
   const { face } = located;
   const caseName = decompressCase(face, wrapper);
   if (!ctx.inScope('font', caseName)) return [];
@@ -222,7 +221,7 @@ async function runDecompress(ctx: FamilyContext, tools: Tools, located: Located,
   const rows: BenchRow[] = [];
   const classKey = `.${wrapper}->${face.sfnt}`;
   if (ctx.quality) {
-    if (face.sample) classRows.expect(face.sample.class, classKey, [...DECOMPRESS_METRICS, CONVERTS_SPEC].map((spec) => spec.metric));
+    if (face.sample) classRows.expect(face.sample.class, classKey, [...DECOMPRESS_METRICS, SPEC.converts].map((spec) => spec.metric));
     const referenceConverted = referenceAttempt(face, decode);
     const attempt = await attemptOurs(() => convertOurs(wrapped, wrapper, face.sfnt, filename), face.sample !== null);
     if (face.sample) {
@@ -235,9 +234,9 @@ async function runDecompress(ctx: FamilyContext, tools: Tools, located: Located,
       const expected = wrapper === 'woff2' ? decodedFile : source.file;
       rows.push(measuredRow('font', caseName, SPEC.tableMismatches, await differingTables(tools.server, oursFile, expected), await differingTables(tools.server, decodedFile, expected), REFERENCE[wrapper]));
     }
-    if (face.sample) classRows.addRows(face.sample.class, classKey, rows, [...DECOMPRESS_METRICS, CONVERTS_SPEC]);
+    if (face.sample) classRows.addCases(face.sample.class, face.sample.id, rows);
   }
-  if (ctx.speed && (face.sample === null || publicSpeedSample('font', face.sample.id))) {
+  if (ctx.speed && (face.sample === null || speedSample('font', face.sample.id))) {
     const timing = await ctx.time(
       speedRowId('font', caseName),
       async () => {
@@ -253,7 +252,7 @@ async function runDecompress(ctx: FamilyContext, tools: Tools, located: Located,
 }
 
 /** TrueType to CFF and back: spec conformance of the output, no reference converter. */
-async function runOutlines(ctx: FamilyContext, tools: Tools, located: Located, classRows: PublicClassRows): Promise<BenchRow[]> {
+async function runOutlines(ctx: FamilyContext, tools: Tools, located: Located, classRows: ClassRows): Promise<BenchRow[]> {
   const { face } = located;
   const to = OTHER_SFNT[face.sfnt];
   const caseName = outlineCase(face);
@@ -262,7 +261,7 @@ async function runOutlines(ctx: FamilyContext, tools: Tools, located: Located, c
   const rows: BenchRow[] = [];
   const classKey = `->${to}`;
   if (ctx.quality) {
-    if (face.sample) classRows.expect(face.sample.class, classKey, [SPEC.fontValidationFailures, SPEC.outlineMismatches, CONVERTS_SPEC].map((spec) => spec.metric));
+    if (face.sample) classRows.expect(face.sample.class, classKey, [SPEC.fontValidationFailures, SPEC.outlineMismatches, SPEC.converts].map((spec) => spec.metric));
     const attempt = await attemptOurs(() => convertOurs(faceBytes(located), face.sfnt, to, path.basename(face.file)), face.sample !== null);
     if (face.sample) {
       if (!attempt.ok) ctx.log(`font ${caseName}: the product does not convert it (${attempt.reason})`);
@@ -276,7 +275,7 @@ async function runOutlines(ctx: FamilyContext, tools: Tools, located: Located, c
         measuredRow('font', caseName, SPEC.outlineMismatches, result.mismatchedGlyphs, 0, REFERENCE_SPEC)
       );
     }
-    if (face.sample) classRows.addRows(face.sample.class, classKey, rows, [SPEC.fontValidationFailures, SPEC.outlineMismatches, CONVERTS_SPEC]);
+    if (face.sample) classRows.addCases(face.sample.class, face.sample.id, rows);
   }
   if (ctx.speed) rows.push(skippedRow('font', caseName, SPEC.throughput, REFERENCE_SPEC, 'unsupported', NO_REFERENCE_CONVERTER));
   return rows;
@@ -310,7 +309,7 @@ function referenceOfSuffix(suffix: string): string {
 /** The path of a face: the generated corpus, or the verified download of a public sample (null when the host did not deliver it). */
 async function locate(ctx: FamilyContext, face: Face): Promise<Located | null> {
   if (face.sample === null) return { face, path: ctx.corpusPath(face.file) };
-  const file = await publicFile(ctx, face.sample);
+  const file = await ctx.remote(face.sample);
   return file === null ? null : { face, path: file };
 }
 
@@ -324,13 +323,15 @@ export const runFont: FamilyRunner = async (ctx) => {
   try {
     const tools: Tools = { server, paths: plan.paths };
     const rows: BenchRow[] = [];
-    const classRows = new PublicClassRows();
+    const classRows = new ClassRows();
     for (const face of all) {
       const mine = summariesOf(face).filter((item) => ctx.inScope('font', item.name));
       if (mine.length === 0) continue;
+      // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+      if (face.sample && !ctx.quality && !speedSample('font', face.sample.id)) continue;
       const located = await locate(ctx, face);
       if (located === null) {
-        for (const item of mine) rows.push(...unavailableRows('font', item.name, item.metrics, item.reference, `public sample ${face.file} is not available`));
+        for (const item of mine) rows.push(...unavailableSampleRows('font', item.name, item.metrics, item.reference, face.file));
         continue;
       }
       for (const wrapper of ['woff2', 'woff'] as const) {

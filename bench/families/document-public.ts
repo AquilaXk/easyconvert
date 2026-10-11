@@ -5,18 +5,17 @@ import type { FamilyContext } from '../context';
 import { convertInProcess } from '../convert';
 import { OutputIntegrityError, ToolRunError } from '../errors';
 import { sourceText } from '../office-words';
-import { PublicClassRows } from '../public-classes';
-import { publicFile, publicSamples, type PublicSample } from '../public-samples';
-import { publicSpeedSample } from '../public-scope';
-import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
+import { ClassRows } from '../class-rows';
+import { remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import { ReferenceServer } from '../reference-server';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { OLEFILE_PSEUDO_TOOL, runTool, XLRD_PSEUDO_TOOL } from '../tools';
 import { pdfText, sofficePdf, structuralFaults, unembeddedFonts } from './document-office';
 
 /**
- * Public office documents (bench/corpus/public-manifest.json) converted to PDF by the project's in-process engine and by the
+ * Public office documents (bench/corpus/remote-manifest.json) converted to PDF by the project's in-process engine and by the
  * office suite's own export. The documents are chosen by feature (tables, pictures, charts, footnotes, tracked changes, fields,
  * right-to-left and CJK text, embedded fonts, macros) from the test files of an open-source office suite, an Apache-licensed
  * office-format library and an MIT-licensed Open XML test set, plus real-world files of the government corpus, in
@@ -38,7 +37,7 @@ const ALL_SPECS: readonly MetricSpec[] = [...SPECS, SPEC.throughput];
 const MIN_TRUTH_WORDS = 10;
 const TOKEN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]|[\p{L}\p{N}]+/gu;
 
-const caseOf = (sample: PublicSample): string => `${sample.id}->pdf`;
+const caseOf = (sample: RemoteSample): string => `${sample.id}->pdf`;
 const tokensOf = (text: string): string[] => normalizeOcrText(text).toLowerCase().match(TOKEN) ?? [];
 
 /** Share of the words of `truth` found in `text`, each occurrence counted once. */
@@ -65,7 +64,8 @@ interface Measured {
 }
 
 export async function runDocumentPublic(ctx: FamilyContext): Promise<BenchRow[]> {
-  const samples = publicSamples('document').filter((sample) => ctx.inScope(FAMILY, caseOf(sample)));
+  // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+  const samples = remoteSamples('document').filter((sample) => (ctx.quality || speedSample(FAMILY, sample.id)) && ctx.inScope(FAMILY, caseOf(sample)));
   if (samples.length === 0) return [];
   const binary = samples.some((sample) => ['doc', 'xls', 'ppt'].includes(String(sample.meta.format)));
   const plan = ctx.plan(['soffice', 'pdftotext', 'pdffonts', 'qpdf', ...(binary ? ['python3', OLEFILE_PSEUDO_TOOL, XLRD_PSEUDO_TOOL] : [])], 'document public');
@@ -80,13 +80,13 @@ export async function runDocumentPublic(ctx: FamilyContext): Promise<BenchRow[]>
   };
   const profile = `file://${path.join(ctx.work, 'soffice-profile-public')}`;
   const rows: BenchRow[] = [];
-  const classRows = new PublicClassRows();
+  const classRows = new ClassRows();
   try {
     for (const sample of samples) {
       const caseName = caseOf(sample);
-      const cached = await publicFile(ctx, sample);
+      const cached = await ctx.remote(sample);
       if (cached === null) {
-        rows.push(...unavailableRows(FAMILY, caseName, ALL_SPECS, REFERENCE, `public sample ${sample.id} is not available`));
+        rows.push(...unavailableSampleRows(FAMILY, caseName, ALL_SPECS, REFERENCE, sample.id));
         continue;
       }
       ctx.log(`document ${caseName}`);
@@ -109,7 +109,7 @@ export async function runDocumentPublic(ctx: FamilyContext): Promise<BenchRow[]>
 
       let converted = true;
       if (ctx.quality) {
-        classRows.expect(sample.class, '->pdf', [...SPECS, CONVERTS_SPEC].filter((spec) => recallMeasured || spec.metric !== SPEC.wordRecall.metric).map((spec) => spec.metric));
+        classRows.expect(sample.class, '->pdf', [...SPECS, SPEC.converts].filter((spec) => recallMeasured || spec.metric !== SPEC.wordRecall.metric).map((spec) => spec.metric));
         const attempt = await attemptOurs(ours);
         converted = attempt.ok;
         let referenceMeasured: Measured | null = null;
@@ -134,7 +134,7 @@ export async function runDocumentPublic(ctx: FamilyContext): Promise<BenchRow[]>
         classRows.addCases(sample.class, sample.id, sampleRows);
         rows.push(...sampleRows);
       }
-      if (ctx.speed && converted && publicSpeedSample(FAMILY, sample.id)) {
+      if (ctx.speed && converted && speedSample(FAMILY, sample.id)) {
         const timing = await ctx.time(
           speedRowId(FAMILY, caseName),
           async () => void (await ours()),

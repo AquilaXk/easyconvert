@@ -4,84 +4,45 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { PublicClassRows } from '../bench/public-classes';
-import {
-  CLASS_CASE_PREFIX,
-  ensurePublicSample,
-  isPublicCase,
-  PUBLIC_FAMILIES,
-  PublicDigestError,
-  PublicFetchError,
-  type PublicSample,
-  publicFile,
-  readPublicManifest,
-  resetVerifiedPublicSamples,
-  validatePublicManifest,
-} from '../bench/public-samples';
-import { PUBLIC_QUICK_CASES, PUBLIC_SPEED_SAMPLES, publicCaseScope } from '../bench/public-scope';
-import { caseInScope, corpusTier } from '../bench/scope';
-import { markdownText, htmlText, rtfText, sourceText } from '../bench/office-words';
-import { textOfFb2, picturesOfFb2 } from '../bench/families/ebook';
+import { companionOf, CorpusError, ensureSample, readRemoteManifest, type RemoteSample, resetVerifiedSamples, validateRemoteManifest } from '../bench/corpora';
+import { picturesOfFb2, textOfFb2 } from '../bench/families/ebook';
 import { truthWordsOf, wordRecallOf } from '../bench/families/document-public';
-import { measuredRow } from '../bench/rows';
-import { SPEC } from '../bench/rows';
+import { htmlText, markdownText, rtfText, sourceText } from '../bench/office-words';
 
 /**
- * The public sample sets of the document, PDF, ebook, font, CAD, RAW, vector and data families: the manifest that pins them,
- * the fetcher that fails closed on a digest, the scope rules that keep a pull request quick, the per-class aggregation and the
- * readers that give the office documents their truth. The files themselves are fetched by the benchmark and not here.
+ * What the further families add to the sample system of phase 1: a file that belongs to a sample (a companion), the manifest of
+ * the eight families, and the readers that give the office documents, books and drawings their truth. The files themselves are
+ * fetched by the benchmark and not here.
  */
 
-const MANIFEST = readPublicManifest();
-const PROVENANCE = fs.readFileSync(path.join(__dirname, '..', 'bench', 'corpus', 'PROVENANCE.md'), 'utf8');
-const MIN_SAMPLES_PER_FAMILY = 10;
+const MANIFEST = readRemoteManifest();
+const FAMILIES = ['document', 'pdf-ops', 'ebook', 'font', 'cad', 'raw', 'vector', 'data'];
 const MIN_CLASSES_PER_FAMILY = 4;
-/** The most public cases a family adds to the pull request run. */
-const MAX_QUICK_CASES_PER_FAMILY = 5;
-
-const sample = (overrides: Partial<PublicSample> = {}): PublicSample => ({
-  id: 'x.bin',
-  family: 'font',
-  class: 'truetype',
+const base = { schemaVersion: 1, sets: { s: { title: 'a set', terms: 'https://example.com/terms' } } };
+const sample = (overrides: Partial<RemoteSample> = {}): RemoteSample => ({
+  id: 'x.svg',
+  family: 'vector',
+  class: 'shapes',
   set: 's',
   description: 'a sample',
-  origin: { kind: 'file', url: 'https://example.com/x.bin' },
+  origin: { kind: 'file', url: 'https://example.com/x.svg' },
   bytes: 3,
   sha256: createHash('sha256').update('abc').digest('hex'),
   licence: 'MIT',
   meta: {},
+  companions: [{ role: 'truth', origin: { kind: 'file', url: 'https://example.com/x.png' }, bytes: 3, sha256: createHash('sha256').update('png').digest('hex') }],
   ...overrides,
 });
 
-describe('the manifest of the public samples', () => {
-  it('lists at least ten samples in every family, spanning at least four content classes', () => {
-    for (const family of PUBLIC_FAMILIES) {
-      const samples = MANIFEST.samples.filter((item) => item.family === family);
-      expect(samples.length, `${family} samples`).toBeGreaterThanOrEqual(MIN_SAMPLES_PER_FAMILY);
-      expect(new Set(samples.map((item) => item.class)).size, `${family} classes`).toBeGreaterThanOrEqual(MIN_CLASSES_PER_FAMILY);
+describe('the samples of the further families', () => {
+  it('span at least four content classes in every family', () => {
+    for (const family of FAMILIES) {
+      const classes = new Set(MANIFEST.samples.filter((item) => item.family === family).map((item) => item.class));
+      expect(classes.size, family).toBeGreaterThanOrEqual(MIN_CLASSES_PER_FAMILY);
     }
   });
 
-  it('records the licence of every sample on its row in bench/corpus/PROVENANCE.md', () => {
-    for (const item of MANIFEST.samples) {
-      const row = PROVENANCE.split('\n').find((line) => line.startsWith(`| \`${item.id}\` |`));
-      expect(row, `${item.id} has a row`).toBeDefined();
-      expect(row as string, `${item.id} names its licence`).toContain(item.licence);
-      expect(row as string, `${item.id} names its set`).toContain(`\`${item.set}\``);
-    }
-  });
-
-  it('pins every sample and companion to an https address, a size and a SHA-256, with a terms page for every set', () => {
-    for (const item of MANIFEST.samples) {
-      expect(item.sha256, item.id).toMatch(/^[0-9a-f]{64}$/);
-      expect(item.bytes, item.id).toBeGreaterThan(0);
-      for (const companion of item.companions ?? []) expect(companion.sha256, `${item.id} ${companion.role}`).toMatch(/^[0-9a-f]{64}$/);
-    }
-    for (const [name, set] of Object.entries(MANIFEST.sets)) expect(set.terms, name).toMatch(/^https:\/\//);
-    expect(new Set(MANIFEST.samples.map((item) => item.set))).toEqual(new Set(Object.keys(MANIFEST.sets)));
-  });
-
-  it('keeps the files of the real-world corpus under the digests that corpus pins', () => {
+  it('keep the files of the real-world corpus under the digests that corpus pins', () => {
     const realworld = new Map((JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'realworld', 'manifest.json'), 'utf8')) as { files: Array<{ origin: unknown; sha256: string; size: number }> }).files.map((file) => [JSON.stringify(file.origin), file] as const));
     const shared = MANIFEST.samples.filter((item) => realworld.has(JSON.stringify(item.origin)));
     expect(shared.length).toBeGreaterThan(30);
@@ -91,175 +52,40 @@ describe('the manifest of the public samples', () => {
       expect(item.bytes, item.id).toBe(file?.size);
     }
   });
-
-  it('refuses a manifest with a missing licence, a bad digest, a duplicate id or an unknown set', () => {
-    const base = { schemaVersion: 1, sets: { s: { title: 'a set', terms: 'https://example.com/terms' } } };
-    expect(() => validatePublicManifest({ ...base, samples: [sample()] })).not.toThrow();
-    expect(() => validatePublicManifest({ ...base, samples: [sample({ licence: '' })] })).toThrow(/licence is missing/);
-    expect(() => validatePublicManifest({ ...base, samples: [sample({ sha256: 'ABC' })] })).toThrow(/sha256/);
-    expect(() => validatePublicManifest({ ...base, samples: [sample(), sample()] })).toThrow(/duplicate/);
-    expect(() => validatePublicManifest({ ...base, samples: [sample({ set: 'other' })] })).toThrow(/unknown set/);
-    expect(() => validatePublicManifest({ ...base, samples: [sample({ id: 'a->b' })] })).toThrow(/safe file name/);
-    expect(() => validatePublicManifest({ ...base, samples: [sample({ origin: { kind: 'file', url: 'http://example.com/x' } })] })).toThrow(/https/);
-  });
 });
 
-describe('the fetcher', () => {
+describe('the companion of a sample', () => {
   let cache: string;
   beforeEach(() => {
-    cache = fs.mkdtempSync(path.join(os.tmpdir(), 'public-samples-'));
-    resetVerifiedPublicSamples();
+    cache = fs.mkdtempSync(path.join(os.tmpdir(), 'public-companion-'));
+    resetVerifiedSamples();
   });
   afterEach(() => {
     fs.rmSync(cache, { recursive: true, force: true });
   });
 
-  it('stores a file whose digest matches, once, and reads it from the cache after that', async () => {
-    let calls = 0;
-    const download = async (): Promise<Buffer> => {
-      calls++;
-      return Buffer.from('abc');
-    };
-    const first = await ensurePublicSample(sample(), { cacheDir: cache, download });
-    expect(fs.readFileSync(first, 'utf8')).toBe('abc');
-    expect(first).toBe(path.join(cache, 'font', sample().sha256));
-    resetVerifiedPublicSamples();
-    await ensurePublicSample(sample(), { cacheDir: cache, download });
-    expect(calls).toBe(1);
+  it('is validated like a sample: a unique role, a digest, a size and an https address', () => {
+    expect(() => validateRemoteManifest({ ...base, samples: [sample()] })).not.toThrow();
+    const companion = sample().companions?.[0] as NonNullable<RemoteSample['companions']>[number];
+    expect(() => validateRemoteManifest({ ...base, samples: [sample({ companions: [companion, companion] })] })).toThrow(/companion roles/);
+    expect(() => validateRemoteManifest({ ...base, samples: [sample({ companions: [{ ...companion, sha256: 'ABC' }] })] })).toThrow(CorpusError);
+    expect(() => validateRemoteManifest({ ...base, samples: [sample({ companions: [{ ...companion, origin: { kind: 'file', url: 'http://example.com/x.png' } }] })] })).toThrow(/https/);
   });
 
-  it('fails closed on other bytes and stores nothing', async () => {
-    await expect(ensurePublicSample(sample(), { cacheDir: cache, download: async () => Buffer.from('abd') })).rejects.toBeInstanceOf(PublicDigestError);
-    expect(fs.existsSync(path.join(cache, 'font'))).toBe(false);
+  it('is fetched into the cache of its family under its own digest, and fails closed on other bytes', async () => {
+    const file = companionOf(sample(), 'truth');
+    expect(file.id).toBe('x.svg.truth');
+    const stored = await ensureSample(file, { cacheDir: cache, download: async () => Buffer.from('png') });
+    expect(stored).toBe(path.join(cache, 'vector', file.sha256));
+    expect(fs.readFileSync(stored, 'utf8')).toBe('png');
+    resetVerifiedSamples();
+    fs.rmSync(path.join(cache, 'vector'), { recursive: true });
+    await expect(ensureSample(file, { cacheDir: cache, download: async () => Buffer.from('pnx') })).rejects.toThrow(/does not measure other bytes/);
+    expect(fs.existsSync(path.join(cache, 'vector'))).toBe(false);
   });
 
-  it('fetches again when the cached file no longer matches the digest', async () => {
-    const target = path.join(cache, 'font', sample().sha256);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, 'damaged');
-    const file = await ensurePublicSample(sample(), { cacheDir: cache, download: async () => Buffer.from('abc') });
-    expect(fs.readFileSync(file, 'utf8')).toBe('abc');
-  });
-
-  it('answers a host that does not deliver with no file when the run is not strict, and with the failure when it is', async () => {
-    const failing = async (): Promise<Buffer> => {
-      throw new PublicFetchError('no route to host');
-    };
-    const logs: string[] = [];
-    const lenient = { strict: false, log: (message: string) => void logs.push(message) };
-    expect(await publicFile(lenient, sample(), { cacheDir: cache, download: failing })).toBeNull();
-    expect(logs).toHaveLength(1);
-    expect(logs[0]).toContain('x.bin is not available');
-    resetVerifiedPublicSamples();
-    await expect(publicFile({ strict: true, log: () => undefined }, sample(), { cacheDir: cache, download: failing })).rejects.toBeInstanceOf(PublicFetchError);
-  });
-
-  it('never answers a digest mismatch with a skipped sample, strict or not', async () => {
-    const wrong = async (): Promise<Buffer> => Buffer.from('abd');
-    const failure = publicFile({ strict: false, log: () => undefined }, sample(), { cacheDir: cache, download: wrong });
-    await expect(failure).rejects.toBeInstanceOf(PublicDigestError);
-    await expect(failure).rejects.toThrow(`fetched 3 bytes with SHA-256 ${createHash('sha256').update('abd').digest('hex')}; the manifest pins 3 bytes with ${sample().sha256}`);
-    expect(fs.existsSync(path.join(cache, 'font'))).toBe(false);
-  });
-});
-
-describe('the scope of the public cases', () => {
-  const first = MANIFEST.samples[0];
-
-  it('recognises a public case by the id of its sample, and a class row by its prefix', () => {
-    expect(isPublicCase(`${first.id}->pdf`)).toBe(true);
-    expect(isPublicCase(`${first.id}.woff2->ttf`)).toBe(true);
-    expect(isPublicCase(`${CLASS_CASE_PREFIX}tagged->extract`)).toBe(true);
-    expect(isPublicCase('plate-basic.dxf->svg')).toBe(false);
-    expect(isPublicCase('shapes.svg->png')).toBe(false);
-  });
-
-  it('measures only the named cases under --quick, all of them in a full run and none in the pull request speed tier', () => {
-    const [family, [named]] = Object.entries(PUBLIC_QUICK_CASES)[0];
-    const other = MANIFEST.samples.find((item) => item.family === family && !named.startsWith(item.id));
-    expect(publicCaseScope(true, family, named, 'full')).toBe(true);
-    expect(publicCaseScope(true, family, `${(other as PublicSample).id}->x`, 'full')).toBe(false);
-    expect(publicCaseScope(true, family, `${CLASS_CASE_PREFIX}tagged->x`, 'full')).toBe(false);
-    expect(publicCaseScope(false, family, named, 'full')).toBe(true);
-    expect(publicCaseScope(false, family, named, 'pr')).toBe(false);
-    expect(publicCaseScope(true, 'image', 'photo-a.jpg->webp', 'full')).toBeNull();
-    expect(caseInScope(true, family, named)).toBe(true);
-    expect(caseInScope(false, family, `${(other as PublicSample).id}->x`)).toBe(true);
-    expect(corpusTier({})).toBe('full');
-    expect(corpusTier({ BENCH_CORPUS_TIER: 'pr' })).toBe('pr');
-    expect(() => corpusTier({ BENCH_CORPUS_TIER: 'half' })).toThrow(/must be "pr" or "full"/);
-  });
-
-  it('names for every family at least one quick case and at most five, each of a sample of that family', () => {
-    for (const family of PUBLIC_FAMILIES) {
-      const cases = PUBLIC_QUICK_CASES[family] ?? [];
-      expect(cases.length, `${family} quick cases`).toBeGreaterThanOrEqual(1);
-      expect(cases.length, `${family} quick cases`).toBeLessThanOrEqual(MAX_QUICK_CASES_PER_FAMILY);
-      for (const name of cases) {
-        const owner = MANIFEST.samples.find((item) => name.startsWith(`${item.id}->`) || name.startsWith(`${item.id}.`));
-        expect(owner?.family, name).toBe(family);
-      }
-    }
-  });
-
-  it('names only quick cases that the baseline records, and gives every public speed row of the timed samples a recorded ratio', () => {
-    const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, { ratio: number | null }> };
-    const ids = Object.keys(baseline.entries);
-    for (const [family, cases] of Object.entries(PUBLIC_QUICK_CASES)) {
-      for (const name of cases) expect(ids.some((id) => id.startsWith(`${family}/${name}/`)), `${family}/${name}`).toBe(true);
-    }
-    for (const [family, samples] of Object.entries(PUBLIC_SPEED_SAMPLES)) {
-      for (const id of samples) {
-        const recorded = ids.filter((entry) => entry.startsWith(`${family}/${id}-`) || entry.startsWith(`${family}/${id}.`)).filter((entry) => entry.endsWith('/throughput') && baseline.entries[entry].ratio !== null);
-        expect(recorded.length, `${family}/${id}`).toBeGreaterThan(0);
-      }
-    }
-  });
-
-  it('times only samples of the manifest', () => {
-    for (const [family, ids] of Object.entries(PUBLIC_SPEED_SAMPLES)) {
-      for (const id of ids) expect(MANIFEST.samples.find((item) => item.id === id)?.family, id).toBe(family);
-    }
-  });
-});
-
-describe('the per-class rows', () => {
-  const row = (ours: number, reference: number): ReturnType<typeof measuredRow> => measuredRow('data', 'x', SPEC.cellMismatches, ours, reference, 'ref');
-
-  it('are the unweighted mean over the samples of the class, and a weighted mean where a metric asks for it', () => {
-    const classes = new PublicClassRows();
-    classes.expect('wide', '->csv', ['cell_mismatches']);
-    classes.expect('wide', '->csv', ['cell_mismatches']);
-    classes.add('wide', '->csv', SPEC.cellMismatches, 4, 0);
-    classes.add('wide', '->csv', SPEC.cellMismatches, 0, 0);
-    classes.expect('wide', '->parquet', ['compression_ratio']);
-    classes.expect('wide', '->parquet', ['compression_ratio']);
-    classes.add('wide', '->parquet', SPEC.ratio, 0.5, 0.4, 100);
-    classes.add('wide', '->parquet', SPEC.ratio, 0.25, 0.2, 300);
-    const rows = classes.rows('data', () => 'ref');
-    const byId = Object.fromEntries(rows.map((item) => [item.id, item]));
-    expect(byId['data/class-wide->csv/cell_mismatches'].ours).toBe(2);
-    expect(byId['data/class-wide->parquet/compression_ratio'].ours).toBeCloseTo((0.5 * 100 + 0.25 * 300) / 400, 10);
-    expect(byId['data/class-wide->parquet/compression_ratio'].reference).toBeCloseTo((0.4 * 100 + 0.2 * 300) / 400, 10);
-  });
-
-  it('exist only when every planned sample of the class was measured', () => {
-    const classes = new PublicClassRows();
-    classes.expect('tall', '->json', ['cell_mismatches']);
-    classes.expect('tall', '->json', ['cell_mismatches']);
-    classes.add('tall', '->json', SPEC.cellMismatches, 1, 1);
-    expect(classes.rows('data', () => 'ref')).toEqual([]);
-  });
-
-  it('take a sample under the part of its case name after its id, so that sub-cases stay apart', () => {
-    const classes = new PublicClassRows();
-    classes.expectCases('rtl', [
-      { suffix: '->epub', metric: 'cell_mismatches' },
-      { suffix: '->epub:images', metric: 'cell_mismatches' },
-    ]);
-    classes.addCases('rtl', 'b.epub', [{ ...row(9, 9), case: 'b.epub->epub' }, { ...row(3, 3), case: 'b.epub->epub:images' }]);
-    const rows = classes.rows('data', () => 'ref');
-    expect(Object.fromEntries(rows.map((item) => [item.case, item.ours]))).toEqual({ 'class-rtl->epub': 9, 'class-rtl->epub:images': 3 });
+  it('is refused when the sample has none under that role', () => {
+    expect(() => companionOf(sample(), 'text')).toThrow(/has no text companion/);
   });
 });
 

@@ -170,15 +170,13 @@ The camera RAW rows use no committed file: they read the public-domain (CC0) sam
 
 ## Public samples of the document, PDF, ebook, font, CAD, RAW, vector and data families
 
-The sets above are generated. The families named here also measure public files that the benchmark does not commit: the
-manifest `public-manifest.json` lists, for every sample, the address it is fetched from (a revision-pinned address of the
-publisher, or a range of an archive the real-world corpus already uses), its size, SHA-256, content class, set and licence, and
-`bench/public-samples.ts` fetches it, checks the digest and keeps it in `.bench-corpora/<family>/<sha256>` (CI restores that
-folder with `actions/cache`, keyed by the hash of the manifest). A digest that differs from the manifest fails the run
-(the benchmark measures fixed bytes), and a sample the host cannot deliver fails it under `ORACLE_STRICT_MODE=1`. A file is fetched
-for testing only and is never redistributed from this repository, so a licence that forbids redistribution would still allow the
-use; the licences below are those the publisher states for the file or its repository. `tests/bench-public-samples.test.ts`
-checks that every sample of the manifest has a row here with the licence code of the manifest.
+The eight families named here (document, PDF, ebook, font, CAD, RAW, vector and data) use the same system as the media and compression
+sets above: `remote-manifest.json` pins every sample, `bench/corpora.ts` fetches and caches it, and the licence of each sample is on its
+row below. A sample that belongs with companion files (the reference picture of an SVG test, the EPUB whose text is the truth of a
+Kindle file) lists them in the manifest, and they are fetched and pinned in the same way. A file is fetched for testing only and is
+never redistributed from this repository, so a licence that forbids redistribution would still allow the use; the licences below are
+those the publisher states for the file or its repository. The real-world files (`govdocs1` and `poi-test-data`) are the ones the
+real-world corpus run already fetches, pinned by the same archive ranges and digests.
 
 How a sample is judged is described in `bench/README.md` (Public sample sets). Licence codes: SPDX identifiers, and
 `LicenseRef-Project-Gutenberg` (public domain in the United States, files carry the Project Gutenberg licence text),
@@ -189,94 +187,107 @@ by a third party).
 
 | Set | What it is | Terms |
 |---|---|---|
-| `pixls` | the open camera sample archive, every file CC0 | raw.pixls.us |
-| `ofl-fonts`, `noto-cjk`, `noto-emoji`, `adobe-fonts` | open fonts under the SIL Open Font License 1.1 | the licence file of each repository, linked in `public-manifest.json` |
-| `frictionless-datasets`, `vega-datasets`, `parquet-testing`, `openai-gsm8k` | open datasets and the Parquet format's own test files | the licence of the dataset (its `datapackage.json`), Apache-2.0, MIT |
-| `dxf-libraries`, `ezdxf-examples` | test drawings of two MIT-licensed DXF libraries | the `LICENSE` of each repository |
-| `resvg-tests` | SVG rendering tests, each with the reference picture of the suite | Apache-2.0 or MIT, the `LICENSE-*` files of the repository |
-| `gutenberg`, `idpf-epub3-samples`, `fb2-files` | public-domain books and EPUB 3 sample publications, FictionBook files of open repositories | the Project Gutenberg licence; CC BY-SA 3.0 unless the sample table of the project says otherwise; the licence of each repository |
-| `pdfjs-corpus`, `verapdf-corpus`, `govdocs1` | PDF files of the PDF.js regression suite, the PDF/UA conformance corpus and the government corpus | Apache-2.0; CC BY 4.0; the govdocs1 statement |
-| `poi-test-data`, `libreoffice-tests`, `openxml-sdk-tests` | office documents from the test data of three office-format projects | Apache-2.0; MPL-2.0; MIT |
+| `pixls` | the open camera sample archive, every file CC0 | https://raw.pixls.us/ |
+| `ofl-fonts` | open font families of the Google Fonts catalogue under the SIL Open Font License 1.1 | https://github.com/google/fonts/blob/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/lato/OFL.txt |
+| `noto-emoji` | Noto Color Emoji fonts, OFL-1.1 | https://github.com/googlefonts/noto-emoji/blob/e20cbc2bbec1926686be9f9bee7d1d2cfa1fea0e/LICENSE |
+| `noto-cjk` | Noto Sans CJK subset OpenType/CFF fonts, OFL-1.1 | https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/LICENSE |
+| `adobe-fonts` | Adobe Source family OpenType/CFF fonts, OFL-1.1 | https://github.com/adobe-fonts/source-serif/blob/80d3f8894c09c937bebfa9011247d2e1c79fd6f4/LICENSE.md |
+| `frictionless-datasets` | open data packages, each stating its licence in its `datapackage.json` | https://github.com/datasets |
+| `vega-datasets` | datasets of a visualization project, a licence per resource in `datapackage.json` | https://github.com/vega/vega-datasets/blob/0574bc0cdc128bfdd82f6edc841e6d4e69341eed/datapackage.json |
+| `parquet-testing` | the Parquet format's own test files, Apache-2.0 | https://github.com/apache/parquet-testing/blob/56653c437c8092f704a092d0d1d4e600124cd49f/LICENSE.txt |
+| `openai-gsm8k` | grade school math problems, MIT | https://github.com/openai/grade-school-math/blob/3101c7d5072418e28b9008a6636bde82a006892c/LICENSE |
+| `dxf-libraries` | test drawings of an MIT-licensed DXF library, written by AutoCAD, OpenSCAD and other programs | https://github.com/skymakerolof/dxf/blob/cb571d1d7631dd0daaf923a256d75ef0917ff806/LICENSE |
+| `ezdxf-examples` | example drawings of the ezdxf library, MIT | https://github.com/mozman/ezdxf/blob/7c64bce52c9d60b9db2dad4d2793c1168c8d3f64/LICENSE |
+| `resvg-tests` | SVG rendering tests with the reference picture of each, Apache-2.0 or MIT | https://github.com/linebender/resvg/blob/77b12f4951a7b75d759c42e8c9497cff7c839c3c/LICENSE-MIT |
+| `gutenberg` | public-domain books as EPUB and Kindle files | https://www.gutenberg.org/policy/permission.html |
+| `idpf-epub3-samples` | EPUB 3 sample publications, CC BY-SA 3.0 unless the sample table of the project says otherwise | https://github.com/IDPF/epub3-samples/blob/7651e2002b631e6577fadf7e9e0692fa6efb8746/README.md |
+| `fb2-files` | FictionBook 2 files of open repositories | https://github.com/phiresky/ripgrep-all/blob/fce1a28683142b3dbd6ea2f7b719d89c90aee227/LICENSE.md |
+| `govdocs1` | documents collected from public .gov web servers (the govdocs1 research corpus) | https://digitalcorpora.org/corpora/file-corpora/files/ |
+| `verapdf-corpus` | the PDF/A and PDF/UA conformance corpus, CC BY 4.0 | https://github.com/veraPDF/veraPDF-corpus/blob/bb75f4f0073d9350dfd058c0162a367e6fadf25e/README.md |
+| `pdfjs-corpus` | PDF files of the PDF.js regression suite, Apache-2.0 | https://github.com/mozilla/pdf.js/blob/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/LICENSE |
+| `poi-test-data` | office documents from the test data of an Apache-licensed office-format library | https://www.apache.org/licenses/LICENSE-2.0 |
+| `libreoffice-tests` | test documents of an office suite, MPL-2.0 | https://github.com/LibreOffice/core/blob/4f93a10d5279c2fd403ececfefe6b85349e3522d/COPYING.MPL |
+| `openxml-sdk-tests` | test data of an Open XML library, MIT | https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/LICENSE |
 
 ### RAW (`raw`)
 
 | Sample | Class | Source and licence |
 |---|---|---|
-| `raw-canon-eos450d.cr2` | canon | Canon EOS 450D, CR2; `pixls`; CC0-1.0 |
-| `raw-canon-g1.crw` | canon | Canon PowerShot G1, CRW; `pixls`; CC0-1.0 |
-| `raw-canon-r6.cr3` | canon | Canon EOS R6, CR3; `pixls`; CC0-1.0 |
-| `raw-canon-eos5d3-m24.dng` | dng | Canon EOS 5D Mark III, DNG from a converter; `pixls`; CC0-1.0 |
-| `raw-canon-eos5d3-compress.dng` | dng | Canon EOS 5D Mark III, DNG with lossless JPEG; `pixls`; CC0-1.0 |
-| `raw-pentax-k5.dng` | dng | Pentax K-5, native DNG; `pixls`; CC0-1.0 |
-| `raw-nikon-d90.nef` | nikon | Nikon D90, NEF; `pixls`; CC0-1.0 |
-| `raw-nikon-d70.nef` | nikon | Nikon D70, NEF; `pixls`; CC0-1.0 |
-| `raw-olympus-epl1.orf` | olympus | Olympus E-PL1, ORF; `pixls`; CC0-1.0 |
-| `raw-panasonic-g1.rw2` | panasonic | Panasonic DMC-G1, RW2; `pixls`; CC0-1.0 |
-| `raw-panasonic-lx7.rw2` | panasonic | Panasonic DMC-LX7, RW2; `pixls`; CC0-1.0 |
-| `raw-pentax-k5.pef` | pentax | Pentax K-5, PEF; `pixls`; CC0-1.0 |
-| `raw-sony-a7m2.arw` | sony | Sony ILCE-7M2, ARW; `pixls`; CC0-1.0 |
-| `raw-fujifilm-xe1.raf` | xtrans | Fujifilm X-E1, RAF with an X-Trans sensor; `pixls`; CC0-1.0 |
+| `raw-canon-eos450d.cr2` | canon | Canon EOS 450D, CR2; `pixls`; `CC0-1.0` |
+| `raw-canon-g1.crw` | canon | Canon PowerShot G1, CRW; `pixls`; `CC0-1.0` |
+| `raw-canon-r6.cr3` | canon | Canon EOS R6, CR3; `pixls`; `CC0-1.0` |
+| `raw-canon-eos5d3-m24.dng` | dng | Canon EOS 5D Mark III, DNG from a converter; `pixls`; `CC0-1.0` |
+| `raw-canon-eos5d3-compress.dng` | dng | Canon EOS 5D Mark III, DNG with lossless JPEG; `pixls`; `CC0-1.0` |
+| `raw-pentax-k5.dng` | dng | Pentax K-5, native DNG; `pixls`; `CC0-1.0` |
+| `raw-nikon-d90.nef` | nikon | Nikon D90, NEF; `pixls`; `CC0-1.0` |
+| `raw-nikon-d70.nef` | nikon | Nikon D70, NEF; `pixls`; `CC0-1.0` |
+| `raw-olympus-epl1.orf` | olympus | Olympus E-PL1, ORF; `pixls`; `CC0-1.0` |
+| `raw-panasonic-g1.rw2` | panasonic | Panasonic DMC-G1, RW2; `pixls`; `CC0-1.0` |
+| `raw-panasonic-lx7.rw2` | panasonic | Panasonic DMC-LX7, RW2; `pixls`; `CC0-1.0` |
+| `raw-pentax-k5.pef` | pentax | Pentax K-5, PEF; `pixls`; `CC0-1.0` |
+| `raw-sony-a7m2.arw` | sony | Sony ILCE-7M2, ARW; `pixls`; `CC0-1.0` |
+| `raw-fujifilm-xe1.raf` | xtrans | Fujifilm X-E1, RAF with an X-Trans sensor; `pixls`; `CC0-1.0` |
 
 ### Fonts (`font`)
 
 | Sample | Class | Source and licence |
 |---|---|---|
-| `font-lato-regular.ttf` | truetype | Lato Regular; `ofl-fonts`; OFL-1.1 |
-| `font-anonymouspro-regular.ttf` | truetype | Anonymous Pro Regular; `ofl-fonts`; OFL-1.1 |
-| `font-ibmplexmono-regular.ttf` | truetype | IBM Plex Mono Regular; `ofl-fonts`; OFL-1.1 |
-| `font-amiri-regular.ttf` | complex | Amiri Regular, Arabic shaping tables; `ofl-fonts`; OFL-1.1 |
-| `font-notosans-var.ttf` | variable | Noto Sans, width and weight axes; `ofl-fonts`; OFL-1.1 |
-| `font-jetbrainsmono-var.ttf` | variable | JetBrains Mono, weight axis; `ofl-fonts`; OFL-1.1 |
-| `font-sourceserif4-var.ttf` | variable | Source Serif 4, optical size and weight axes; `ofl-fonts`; OFL-1.1 |
-| `font-notoserifdevanagari-var.ttf` | variable | Noto Serif Devanagari, width and weight axes; `ofl-fonts`; OFL-1.1 |
-| `font-zenkakugothicnew-regular.ttf` | cjk | Zen Kaku Gothic New Regular; `ofl-fonts`; OFL-1.1 |
-| `font-mplus1p-regular.ttf` | cjk | M PLUS 1p Regular; `ofl-fonts`; OFL-1.1 |
-| `font-notosansjp-regular.otf` | cjk | Noto Sans CJK JP Regular, CFF outlines; `noto-cjk`; OFL-1.1 |
-| `font-sourceserif4-regular.otf` | cff | Source Serif 4 Regular; `adobe-fonts`; OFL-1.1 |
-| `font-sourcecodepro-regular.otf` | cff | Source Code Pro Regular; `adobe-fonts`; OFL-1.1 |
-| `font-sourcesans3-regular.otf` | cff | Source Sans 3 Regular; `adobe-fonts`; OFL-1.1 |
-| `font-notocoloremoji-colrv1.ttf` | colour | Noto Color Emoji, COLR v1 and CPAL; `noto-emoji`; OFL-1.1 |
-| `font-notocoloremoji-flags.ttf` | colour | Noto Color Emoji flags, CBDT and CBLC; `noto-emoji`; OFL-1.1 |
+| `font-lato-regular.ttf` | truetype | Lato Regular; `ofl-fonts`; `OFL-1.1` |
+| `font-anonymouspro-regular.ttf` | truetype | Anonymous Pro Regular; `ofl-fonts`; `OFL-1.1` |
+| `font-ibmplexmono-regular.ttf` | truetype | IBM Plex Mono Regular; `ofl-fonts`; `OFL-1.1` |
+| `font-amiri-regular.ttf` | complex | Amiri Regular, Arabic shaping tables; `ofl-fonts`; `OFL-1.1` |
+| `font-notosans-var.ttf` | variable | Noto Sans, width and weight axes; `ofl-fonts`; `OFL-1.1` |
+| `font-jetbrainsmono-var.ttf` | variable | JetBrains Mono, weight axis; `ofl-fonts`; `OFL-1.1` |
+| `font-sourceserif4-var.ttf` | variable | Source Serif 4, optical size and weight axes; `ofl-fonts`; `OFL-1.1` |
+| `font-notoserifdevanagari-var.ttf` | variable | Noto Serif Devanagari, width and weight axes; `ofl-fonts`; `OFL-1.1` |
+| `font-zenkakugothicnew-regular.ttf` | cjk | Zen Kaku Gothic New Regular; `ofl-fonts`; `OFL-1.1` |
+| `font-mplus1p-regular.ttf` | cjk | M PLUS 1p Regular; `ofl-fonts`; `OFL-1.1` |
+| `font-notosansjp-regular.otf` | cjk | Noto Sans CJK JP Regular, CFF outlines; `noto-cjk`; `OFL-1.1` |
+| `font-sourceserif4-regular.otf` | cff | Source Serif 4 Regular; `adobe-fonts`; `OFL-1.1` |
+| `font-sourcecodepro-regular.otf` | cff | Source Code Pro Regular; `adobe-fonts`; `OFL-1.1` |
+| `font-sourcesans3-regular.otf` | cff | Source Sans 3 Regular; `adobe-fonts`; `OFL-1.1` |
+| `font-notocoloremoji-colrv1.ttf` | colour | Noto Color Emoji, COLR v1 and CPAL; `noto-emoji`; `OFL-1.1` |
+| `font-notocoloremoji-flags.ttf` | colour | Noto Color Emoji flags, CBDT and CBLC; `noto-emoji`; `OFL-1.1` |
 
 ### Data (`data`)
 
 | Sample | Class | Source and licence |
 |---|---|---|
-| `data-airport-codes.csv` | tall | airport codes of the world; `frictionless-datasets`; ODC-PDDL-1.0 |
-| `data-sp500-constituents.csv` | mixed | S&P 500 constituents; `frictionless-datasets`; ODC-PDDL-1.0 |
-| `data-world-cities.csv` | unicode | world cities; `frictionless-datasets`; CC-BY-4.0 |
-| `data-gdp.csv` | numeric | gross domestic product by country; `frictionless-datasets`; CC-BY-4.0 |
-| `data-penguins.json` | nulls | Palmer penguins as a JSON array; `vega-datasets`; CC0-1.0 |
-| `data-gapminder.json` | numeric | Gapminder life expectancy as a JSON array; `vega-datasets`; CC-BY-4.0 |
-| `data-budget.json` | wide | US federal budget receipts as a JSON array; `vega-datasets`; LicenseRef-US-Government-public-domain |
-| `data-weather.csv` | mixed | NOAA daily weather; `vega-datasets`; LicenseRef-US-Government-public-domain |
-| `data-delta-binary-packed.csv` | wide | expected values of the delta binary packed Parquet test file; `parquet-testing`; Apache-2.0 |
-| `data-delta-byte-array.csv` | strings | expected values of the delta byte array Parquet test file; `parquet-testing`; Apache-2.0 |
-| `data-delta-binary-packed.parquet` | wide | Parquet test file, delta binary packed; `parquet-testing`; Apache-2.0 |
-| `data-delta-byte-array.parquet` | strings | Parquet test file, delta byte array; `parquet-testing`; Apache-2.0 |
-| `data-alltypes-tiny-pages.parquet` | types | Parquet test file, every flat type in tiny pages; `parquet-testing`; Apache-2.0 |
-| `data-lz4-raw-larger.parquet` | codecs | Parquet test file, LZ4_RAW pages; `parquet-testing`; Apache-2.0 |
-| `data-byte-stream-split.parquet` | codecs | Parquet test file, byte stream split and gzip; `parquet-testing`; Apache-2.0 |
-| `data-gsm8k-test.jsonl` | text | grade school math questions as JSON lines; `openai-gsm8k`; MIT |
+| `data-airport-codes.csv` | tall | airport codes of the world; `frictionless-datasets`; `ODC-PDDL-1.0` |
+| `data-sp500-constituents.csv` | mixed | S&P 500 constituents; `frictionless-datasets`; `ODC-PDDL-1.0` |
+| `data-world-cities.csv` | unicode | world cities; `frictionless-datasets`; `CC-BY-4.0` |
+| `data-gdp.csv` | numeric | gross domestic product by country; `frictionless-datasets`; `CC-BY-4.0` |
+| `data-penguins.json` | nulls | Palmer penguins as a JSON array; `vega-datasets`; `CC0-1.0` |
+| `data-gapminder.json` | numeric | Gapminder life expectancy as a JSON array; `vega-datasets`; `CC-BY-4.0` |
+| `data-budget.json` | wide | US federal budget receipts as a JSON array; `vega-datasets`; `LicenseRef-US-Government-public-domain` |
+| `data-weather.csv` | mixed | NOAA daily weather; `vega-datasets`; `LicenseRef-US-Government-public-domain` |
+| `data-delta-binary-packed.csv` | wide | expected values of the delta binary packed Parquet test file; `parquet-testing`; `Apache-2.0` |
+| `data-delta-byte-array.csv` | strings | expected values of the delta byte array Parquet test file; `parquet-testing`; `Apache-2.0` |
+| `data-delta-binary-packed.parquet` | wide | Parquet test file, delta binary packed; `parquet-testing`; `Apache-2.0` |
+| `data-delta-byte-array.parquet` | strings | Parquet test file, delta byte array; `parquet-testing`; `Apache-2.0` |
+| `data-alltypes-tiny-pages.parquet` | types | Parquet test file, every flat type in tiny pages; `parquet-testing`; `Apache-2.0` |
+| `data-lz4-raw-larger.parquet` | codecs | Parquet test file, LZ4_RAW pages; `parquet-testing`; `Apache-2.0` |
+| `data-byte-stream-split.parquet` | codecs | Parquet test file, byte stream split and gzip; `parquet-testing`; `Apache-2.0` |
+| `data-gsm8k-test.jsonl` | text | grade school math questions as JSON lines; `openai-gsm8k`; `MIT` |
 
 ### CAD (`cad`)
 
 | Sample | Class | Source and licence |
 |---|---|---|
-| `cad-openscad-export.dxf` | basic | OpenSCAD export, DXF R12; `dxf-libraries`; MIT |
-| `cad-lines.dxf` | basic | LINE entities, DXF 2007; `dxf-libraries`; MIT |
-| `cad-lwpolylines.dxf` | basic | lightweight polylines, DXF 2007; `dxf-libraries`; MIT |
-| `cad-polylines.dxf` | basic | heavy polylines, DXF 2004; `dxf-libraries`; MIT |
-| `cad-splines.dxf` | curves | splines, DXF 2007; `dxf-libraries`; MIT |
-| `cad-circles-ellipses-arcs.dxf` | curves | circles, arcs and ellipses, DXF 2007; `dxf-libraries`; MIT |
-| `cad-elliptical-arcs.dxf` | curves | partial ellipses, DXF 2007; `dxf-libraries`; MIT |
-| `cad-blocks.dxf` | blocks | block definitions and inserts, DXF 2007; `dxf-libraries`; MIT |
-| `cad-insert-bricscad.dxf` | blocks | nested inserts written by BricsCAD, DXF 2013; `ezdxf-examples`; MIT |
-| `cad-entities.dxf` | architecture | sheet of inserted title blocks, DXF 2010; `dxf-libraries`; MIT |
-| `cad-floorplan.dxf` | architecture | architectural floor plan, DXF 2004; `dxf-libraries`; MIT |
-| `cad-text-alignments.dxf` | text | TEXT in all alignments, DXF 2004; `ezdxf-examples`; MIT |
-| `cad-text-fonts.dxf` | text | 384 TEXT entities in many styles, DXF 2013; `ezdxf-examples`; MIT |
-| `cad-columns-r2007.dxf` | text | MTEXT with columns, DXF 2007; `ezdxf-examples`; MIT |
+| `cad-openscad-export.dxf` | basic | OpenSCAD export, DXF R12; `dxf-libraries`; `MIT` |
+| `cad-lines.dxf` | basic | LINE entities, DXF 2007; `dxf-libraries`; `MIT` |
+| `cad-lwpolylines.dxf` | basic | lightweight polylines, DXF 2007; `dxf-libraries`; `MIT` |
+| `cad-polylines.dxf` | basic | heavy polylines, DXF 2004; `dxf-libraries`; `MIT` |
+| `cad-splines.dxf` | curves | splines, DXF 2007; `dxf-libraries`; `MIT` |
+| `cad-circles-ellipses-arcs.dxf` | curves | circles, arcs and ellipses, DXF 2007; `dxf-libraries`; `MIT` |
+| `cad-elliptical-arcs.dxf` | curves | partial ellipses, DXF 2007; `dxf-libraries`; `MIT` |
+| `cad-blocks.dxf` | blocks | block definitions and inserts, DXF 2007; `dxf-libraries`; `MIT` |
+| `cad-insert-bricscad.dxf` | blocks | nested inserts written by BricsCAD, DXF 2013; `ezdxf-examples`; `MIT` |
+| `cad-entities.dxf` | architecture | sheet of inserted title blocks, DXF 2010; `dxf-libraries`; `MIT` |
+| `cad-floorplan.dxf` | architecture | architectural floor plan, DXF 2004; `dxf-libraries`; `MIT` |
+| `cad-text-alignments.dxf` | text | TEXT in all alignments, DXF 2004; `ezdxf-examples`; `MIT` |
+| `cad-text-fonts.dxf` | text | 384 TEXT entities in many styles, DXF 2013; `ezdxf-examples`; `MIT` |
+| `cad-columns-r2007.dxf` | text | MTEXT with columns, DXF 2007; `ezdxf-examples`; `MIT` |
 
 ### Vector (`vector`)
 
@@ -284,37 +295,37 @@ The reference picture of each test (`<test>.png` of the suite, the `truth` compa
 
 | Sample | Class | Source and licence |
 |---|---|---|
-| `vec-path-M-C-S.svg` | shapes | `shapes/path/M-C-S`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-path-M-A.svg` | shapes | `shapes/path/M-A`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-rect-mm-values.svg` | shapes | `shapes/rect/mm-values`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-rect-negative-rx-and-ry-attributes-resolving.svg` | shapes | `shapes/rect/negative-rx-and-ry-attributes-resolving`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-fill-rule-evenodd.svg` | shapes | `painting/fill-rule/evenodd`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-stroke-linejoin-miter.svg` | strokes | `painting/stroke-linejoin/miter`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-stroke-linejoin-round.svg` | strokes | `painting/stroke-linejoin/round`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-stroke-dasharray-odd-count.svg` | strokes | `painting/stroke-dasharray/odd-count`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-stroke-dasharray-on-a-circle.svg` | strokes | `painting/stroke-dasharray/on-a-circle`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-marker-nested.svg` | markers | `painting/marker/nested`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-marker-on-ArcTo.svg` | markers | `painting/marker/on-ArcTo`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-marker-inheritance-1.svg` | markers | `painting/marker/inheritance-1`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-linearGradient-gradientTransform.svg` | gradients | `paint-servers/linearGradient/gradientTransform`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-linearGradient-default-attributes.svg` | gradients | `paint-servers/linearGradient/default-attributes`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-radialGradient-fr-0.5.svg` | gradients | `paint-servers/radialGradient/fr=0.5`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-radialGradient-focal-point-correction.svg` | gradients | `paint-servers/radialGradient/focal-point-correction`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-pattern-overflow-visible.svg` | patterns | `paint-servers/pattern/overflow=visible`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-pattern-nested-objectBoundingBox.svg` | patterns | `paint-servers/pattern/nested-objectBoundingBox`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-clipPath-clip-path-on-children.svg` | masking | `masking/clipPath/clip-path-on-children`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-clipPath-clip-rule-evenodd.svg` | masking | `masking/clipPath/clip-rule=evenodd`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-mask-mask-on-self.svg` | masking | `masking/mask/mask-on-self`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-mask-mask-type-alpha.svg` | masking | `masking/mask/mask-type=alpha`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-feGaussianBlur-simple-case.svg` | filters | `filters/feGaussianBlur/simple-case`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-feDropShadow-with-offset.svg` | filters | `filters/feDropShadow/with-offset`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-filter-functions-blur-function.svg` | filters | `filters/filter-functions/blur-function`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-use-from-defs.svg` | structure | `structure/use/from-defs`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-symbol-simple-case.svg` | structure | `structure/symbol/simple-case`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-style-class-selector.svg` | structure | `structure/style/class-selector`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-image-embedded-png.svg` | images | `structure/image/embedded-png`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-image-embedded-svg.svg` | images | `structure/image/embedded-svg`; `resvg-tests`; Apache-2.0 OR MIT |
-| `vec-mix-blend-mode-multiply.svg` | blend | `painting/mix-blend-mode/multiply`; `resvg-tests`; Apache-2.0 OR MIT |
+| `vec-path-M-C-S.svg` | shapes | `shapes/path/M-C-S`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-path-M-A.svg` | shapes | `shapes/path/M-A`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-rect-mm-values.svg` | shapes | `shapes/rect/mm-values`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-rect-negative-rx-and-ry-attributes-resolving.svg` | shapes | `shapes/rect/negative-rx-and-ry-attributes-resolving`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-fill-rule-evenodd.svg` | shapes | `painting/fill-rule/evenodd`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-stroke-linejoin-miter.svg` | strokes | `painting/stroke-linejoin/miter`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-stroke-linejoin-round.svg` | strokes | `painting/stroke-linejoin/round`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-stroke-dasharray-odd-count.svg` | strokes | `painting/stroke-dasharray/odd-count`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-stroke-dasharray-on-a-circle.svg` | strokes | `painting/stroke-dasharray/on-a-circle`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-marker-nested.svg` | markers | `painting/marker/nested`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-marker-on-ArcTo.svg` | markers | `painting/marker/on-ArcTo`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-marker-inheritance-1.svg` | markers | `painting/marker/inheritance-1`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-linearGradient-gradientTransform.svg` | gradients | `paint-servers/linearGradient/gradientTransform`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-linearGradient-default-attributes.svg` | gradients | `paint-servers/linearGradient/default-attributes`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-radialGradient-fr-0.5.svg` | gradients | `paint-servers/radialGradient/fr=0.5`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-radialGradient-focal-point-correction.svg` | gradients | `paint-servers/radialGradient/focal-point-correction`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-pattern-overflow-visible.svg` | patterns | `paint-servers/pattern/overflow=visible`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-pattern-nested-objectBoundingBox.svg` | patterns | `paint-servers/pattern/nested-objectBoundingBox`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-clipPath-clip-path-on-children.svg` | masking | `masking/clipPath/clip-path-on-children`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-clipPath-clip-rule-evenodd.svg` | masking | `masking/clipPath/clip-rule=evenodd`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-mask-mask-on-self.svg` | masking | `masking/mask/mask-on-self`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-mask-mask-type-alpha.svg` | masking | `masking/mask/mask-type=alpha`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-feGaussianBlur-simple-case.svg` | filters | `filters/feGaussianBlur/simple-case`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-feDropShadow-with-offset.svg` | filters | `filters/feDropShadow/with-offset`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-filter-functions-blur-function.svg` | filters | `filters/filter-functions/blur-function`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-use-from-defs.svg` | structure | `structure/use/from-defs`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-symbol-simple-case.svg` | structure | `structure/symbol/simple-case`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-style-class-selector.svg` | structure | `structure/style/class-selector`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-image-embedded-png.svg` | images | `structure/image/embedded-png`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-image-embedded-svg.svg` | images | `structure/image/embedded-svg`; `resvg-tests`; `Apache-2.0 OR MIT` |
+| `vec-mix-blend-mode-multiply.svg` | blend | `painting/mix-blend-mode/multiply`; `resvg-tests`; `Apache-2.0 OR MIT` |
 
 ### Ebooks (`ebook`)
 
@@ -322,103 +333,99 @@ For a Kindle file the `text` companion of the manifest is the EPUB of the same b
 
 | Sample | Class | Source and licence |
 |---|---|---|
-| `book-pg11.epub` | illustrated | Alice's Adventures in Wonderland, EPUB with images; `gutenberg`; LicenseRef-Project-Gutenberg |
-| `book-pg1661.epub` | illustrated | The Adventures of Sherlock Holmes, EPUB with images; `gutenberg`; LicenseRef-Project-Gutenberg |
-| `book-pg84.epub` | novel | Frankenstein, EPUB with images; `gutenberg`; LicenseRef-Project-Gutenberg |
-| `book-pg2701.epub` | novel | Moby Dick, EPUB with images; `gutenberg`; LicenseRef-Project-Gutenberg |
-| `book-pg345.epub` | novel | Dracula, EPUB with images; `gutenberg`; LicenseRef-Project-Gutenberg |
-| `book-pg11.mobi` | illustrated | Alice's Adventures in Wonderland, Kindle file with images; `gutenberg`; LicenseRef-Project-Gutenberg |
-| `book-pg1661.mobi` | illustrated | The Adventures of Sherlock Holmes, Kindle file with images; `gutenberg`; LicenseRef-Project-Gutenberg |
-| `book-pg345.mobi` | novel | Dracula, Kindle file with images; `gutenberg`; LicenseRef-Project-Gutenberg |
-| `book-childrens-literature.epub` | illustrated | Children's Literature; `idpf-epub3-samples`; CC-BY-SA-3.0 |
-| `book-wasteland.epub` | poetry | The Waste Land; `idpf-epub3-samples`; CC-BY-SA-3.0 |
-| `book-trees.epub` | poetry | Trees; `idpf-epub3-samples`; CC-BY-SA-3.0 |
-| `book-regime-anticancer-arabic.epub` | rtl | anti-cancer diet in Arabic; `idpf-epub3-samples`; CC-BY-SA-3.0 |
-| `book-linear-algebra.epub` | technical | linear algebra textbook with MathML; `idpf-epub3-samples`; CC-BY-SA-3.0 |
-| `book-epub30-spec.epub` | technical | the EPUB 3.0 specification; `idpf-epub3-samples`; CC-BY-SA-3.0 |
-| `book-internallinks.epub` | technical | internal links, footnotes and an index; `idpf-epub3-samples`; CC-BY-SA-3.0 |
-| `book-wasteland.fb2` | poetry | The Waste Land, FictionBook 2; `fb2-files`; LicenseRef-Public-domain-text |
-| `book-help-ru.fb2` | technical | e-reader manual in Russian, FictionBook 2; `fb2-files`; GPL-2.0 |
-| `book-word-sample.fb2` | novel | FictionBook 2 test document of a word-processing library; `fb2-files`; MIT |
+| `book-pg11.epub` | illustrated | Alice's Adventures in Wonderland, EPUB with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |
+| `book-pg1661.epub` | illustrated | The Adventures of Sherlock Holmes, EPUB with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |
+| `book-pg84.epub` | novel | Frankenstein, EPUB with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |
+| `book-pg2701.epub` | novel | Moby Dick, EPUB with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |
+| `book-pg345.epub` | novel | Dracula, EPUB with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |
+| `book-pg11.mobi` | illustrated | Alice's Adventures in Wonderland, Kindle file with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |
+| `book-pg1661.mobi` | illustrated | The Adventures of Sherlock Holmes, Kindle file with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |
+| `book-pg345.mobi` | novel | Dracula, Kindle file with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |
+| `book-childrens-literature.epub` | illustrated | Children's Literature; `idpf-epub3-samples`; `CC-BY-SA-3.0` |
+| `book-wasteland.epub` | poetry | The Waste Land; `idpf-epub3-samples`; `CC-BY-SA-3.0` |
+| `book-trees.epub` | poetry | Trees; `idpf-epub3-samples`; `CC-BY-SA-3.0` |
+| `book-regime-anticancer-arabic.epub` | rtl | anti-cancer diet in Arabic; `idpf-epub3-samples`; `CC-BY-SA-3.0` |
+| `book-linear-algebra.epub` | technical | linear algebra textbook with MathML; `idpf-epub3-samples`; `CC-BY-SA-3.0` |
+| `book-epub30-spec.epub` | technical | the EPUB 3.0 specification; `idpf-epub3-samples`; `CC-BY-SA-3.0` |
+| `book-internallinks.epub` | technical | internal links, footnotes and an index; `idpf-epub3-samples`; `CC-BY-SA-3.0` |
+| `book-wasteland.fb2` | poetry | The Waste Land, FictionBook 2; `fb2-files`; `LicenseRef-Public-domain-text` |
+| `book-help-ru.fb2` | technical | e-reader manual in Russian, FictionBook 2; `fb2-files`; `GPL-2.0` |
+| `book-word-sample.fb2` | novel | FictionBook 2 test document of a word-processing library; `fb2-files`; `MIT` |
 
 ### PDF (`pdf-ops`)
 
-The real-world files (`govdocs1`) are the ones the real-world corpus run already fetches (`bench/realworld/manifest.json`), pinned by the same ranges and digests.
-
 | Sample | Class | Source and licence |
 |---|---|---|
-| `pdf-gov-000142.pdf` | tagged | tagged report, 5 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-gov-000147.pdf` | tagged | tagged brochure, 4 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-vera-ua1-annotations.pdf` | tagged | PDF/UA-1 conformance file, annotations; `verapdf-corpus`; CC-BY-4.0 |
-| `pdf-pdfjs-form-test.pdf` | forms | AcroForm with several field types, 5 pages; `pdfjs-corpus`; Apache-2.0 |
-| `pdf-gov-000280.pdf` | forms | form, 8 pages, repaired on reading; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-gov-000314.pdf` | forms | tagged form, 7 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-pdfjs-issue9972.pdf` | encrypted | tagged form encrypted with revision 4, empty user password; `pdfjs-corpus`; Apache-2.0 |
-| `pdf-gov-000341.pdf` | encrypted | RC4 40-bit, revision 2, 6 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-gov-000342.pdf` | encrypted | RC4 128-bit, revision 3, 4 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-pdfjs-aes256.pdf` | encrypted | AES-256, revision 6; `pdfjs-corpus`; Apache-2.0 |
-| `pdf-gov-004306.pdf` | scanned | scanned pages without text, 18 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-gov-001657.pdf` | scanned | scanned pages without text, 9 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-gov-004749.pdf` | scanned | scanned pages without text, 17 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-gov-000009.pdf` | broken | damaged cross-reference table, 4 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-gov-000012.pdf` | broken | repaired by qpdf on reading, 6 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-pdfjs-basicapi.pdf` | broken | wrong page count and damaged references; `pdfjs-corpus`; Apache-2.0 |
-| `pdf-gov-001071.pdf` | huge | report of 357 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-gov-003966.pdf` | huge | report of 304 pages; `govdocs1`; LicenseRef-govdocs1 |
-| `pdf-pdfjs-pdkids.pdf` | huge | illustrated report of 55 pages; `pdfjs-corpus`; Apache-2.0 |
-| `pdf-pdfjs-cjk-1.pdf` | cjk | one page in a CJK font; `pdfjs-corpus`; Apache-2.0 |
-| `pdf-pdfjs-cjk-2.pdf` | cjk | one page in a CJK font; `pdfjs-corpus`; Apache-2.0 |
-| `pdf-pdfjs-cjk-3.pdf` | cjk | one page in a CJK font; `pdfjs-corpus`; Apache-2.0 |
-| `pdf-pdfjs-tamreview.pdf` | long | magazine issue, 23 pages; `pdfjs-corpus`; Apache-2.0 |
+| `pdf-gov-000142.pdf` | tagged | tagged report, 5 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-gov-000147.pdf` | tagged | tagged brochure, 4 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-vera-ua1-annotations.pdf` | tagged | PDF/UA-1 conformance file, annotations; `verapdf-corpus`; `CC-BY-4.0` |
+| `pdf-pdfjs-form-test.pdf` | forms | AcroForm with several field types, 5 pages; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-gov-000280.pdf` | forms | form, 8 pages, repaired on reading; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-gov-000314.pdf` | forms | tagged form, 7 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-pdfjs-issue9972.pdf` | encrypted | tagged form encrypted with revision 4, empty user password; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-gov-000341.pdf` | encrypted | RC4 40-bit, revision 2, 6 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-gov-000342.pdf` | encrypted | RC4 128-bit, revision 3, 4 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-pdfjs-aes256.pdf` | encrypted | AES-256, revision 6; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-gov-004306.pdf` | scanned | scanned pages without text, 18 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-gov-001657.pdf` | scanned | scanned pages without text, 9 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-gov-004749.pdf` | scanned | scanned pages without text, 17 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-gov-000009.pdf` | broken | damaged cross-reference table, 4 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-gov-000012.pdf` | broken | repaired by qpdf on reading, 6 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-pdfjs-basicapi.pdf` | broken | wrong page count and damaged references; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-gov-001071.pdf` | huge | report of 357 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-gov-003966.pdf` | huge | report of 304 pages; `govdocs1`; `LicenseRef-govdocs1` |
+| `pdf-pdfjs-pdkids.pdf` | huge | illustrated report of 55 pages; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-cjk-1.pdf` | cjk | one page in a CJK font; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-cjk-2.pdf` | cjk | one page in a CJK font; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-cjk-3.pdf` | cjk | one page in a CJK font; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-tamreview.pdf` | long | magazine issue, 23 pages; `pdfjs-corpus`; `Apache-2.0` |
 
 ### Office documents (`document`)
 
-The files of `poi-test-data` are the ones the real-world corpus run already fetches, pinned by the same ranges and digests.
-
 | Sample | Class | Source and licence |
 |---|---|---|
-| `doc-poi-bug57031.docx` | tables | tables and pictures; `poi-test-data`; Apache-2.0 |
-| `doc-poi-60329.docx` | images | table and inline pictures; `poi-test-data`; Apache-2.0 |
-| `doc-poi-61787.docx` | rtl | right-to-left paragraphs; `poi-test-data`; Apache-2.0 |
-| `doc-poi-delins.docx` | tracked | inserted and deleted revisions; `poi-test-data`; Apache-2.0 |
-| `doc-poi-form-footnotes.docx` | footnotes | form with footnotes; `poi-test-data`; Apache-2.0 |
-| `doc-poi-bug59058.docx` | fields | long document with fields; `poi-test-data`; Apache-2.0 |
-| `doc-lo-redline.docx` | tracked | hidden tracked changes; `libreoffice-tests`; MPL-2.0 |
-| `doc-lo-footnote.docx` | footnotes | footnotes in columns; `libreoffice-tests`; MPL-2.0 |
-| `doc-lo-embedded-fonts.docx` | embedded-fonts | embedded fonts (fonts only, the text is two words); `libreoffice-tests`; MPL-2.0 |
-| `doc-ox-chart.docx` | charts | 2-D column chart, ISO strict OOXML; `openxml-sdk-tests`; MIT |
-| `doc-poi-45544.xlsx` | charts | chart on several sheets; `poi-test-data`; Apache-2.0 |
-| `doc-poi-datatablecities.xlsx` | charts | pivot table and chart; `poi-test-data`; Apache-2.0 |
-| `doc-poi-monthly-budget.xlsx` | charts | budget with a chart and a picture; `poi-test-data`; Apache-2.0 |
-| `doc-poi-56644.xlsx` | images | pictures in a drawing; `poi-test-data`; Apache-2.0 |
-| `doc-poi-kyc-structure.xlsx` | tables | wide workbook of field descriptions; `poi-test-data`; Apache-2.0 |
-| `doc-poi-formula-data.xlsx` | formulas | formula test data; `poi-test-data`; Apache-2.0 |
-| `doc-poi-57181.xlsm` | macros | macro-enabled workbook; `poi-test-data`; Apache-2.0 |
-| `doc-poi-aascu.pptx` | charts | chart, tables and pictures; `poi-test-data`; Apache-2.0 |
-| `doc-ox-chart.pptx` | charts | 2-D area chart, ISO strict OOXML; `openxml-sdk-tests`; MIT |
-| `doc-poi-ececapstone.pptx` | images | pictures on many slides; `poi-test-data`; Apache-2.0 |
-| `doc-poi-keyframes.pptx` | images | pictures and speaker notes; `poi-test-data`; Apache-2.0 |
-| `doc-poi-shapes.pptx` | tables | shapes and a table; `poi-test-data`; Apache-2.0 |
-| `doc-poi-table-test2.pptx` | tables | table in several fonts; `poi-test-data`; Apache-2.0 |
-| `doc-poi-japanese.pptx` | cjk | table of Japanese text; `poi-test-data`; Apache-2.0 |
-| `doc-lo-embedded-fonts.pptx` | embedded-fonts | embedded display font (fonts only); `libreoffice-tests`; MPL-2.0 |
-| `doc-lo-cjk.odt` | cjk | CJK text with ruby; `libreoffice-tests`; MPL-2.0 |
-| `doc-lo-columns.odt` | columns | 1,700 words in six columns; `libreoffice-tests`; MPL-2.0 |
-| `doc-lo-embedded-fonts.odt` | embedded-fonts | table and embedded fonts (fonts only); `libreoffice-tests`; MPL-2.0 |
-| `doc-poi-53446.doc` | long | Word 97-2003, 2,600 words; `poi-test-data`; Apache-2.0 |
-| `doc-poi-aioob-tap.doc` | tables | Word 97-2003 with tables; `poi-test-data`; Apache-2.0 |
-| `doc-poi-travel-form.doc` | forms | Word 97-2003 form; `poi-test-data`; Apache-2.0 |
-| `doc-lo-cjk.doc` | cjk | Word 97-2003 with CJK list numbering; `libreoffice-tests`; MPL-2.0 |
-| `doc-poi-12561-2.xls` | cjk | Excel 97-2003 with Japanese text; `poi-test-data`; Apache-2.0 |
-| `doc-poi-19599-1.xls` | tables | Excel 97-2003, 2,800 words of cells; `poi-test-data`; Apache-2.0 |
-| `doc-poi-29942.xls` | tables | Excel 97-2003, 2,100 words of cells; `poi-test-data`; Apache-2.0 |
-| `doc-poi-41246-2.ppt` | images | PowerPoint 97-2003 with pictures; `poi-test-data`; Apache-2.0 |
-| `doc-poi-tvcamboriu.ppt` | images | PowerPoint 97-2003 slide show; `poi-test-data`; Apache-2.0 |
-| `doc-poi-60345.ppt` | long | PowerPoint 97-2003, 700 words; `poi-test-data`; Apache-2.0 |
-| `doc-gov-001858.rtf` | real-world | RTF from a government server; `govdocs1`; LicenseRef-govdocs1 |
-| `doc-gov-001857.rtf` | real-world | RTF from a government server; `govdocs1`; LicenseRef-govdocs1 |
-| `doc-gov-001963.rtf` | real-world | RTF from a government server; `govdocs1`; LicenseRef-govdocs1 |
-| `doc-lo-footnotes.rtf` | footnotes | RTF with footnote frames; `libreoffice-tests`; MPL-2.0 |
-| `doc-gov-000429.html` | real-world | HTML page from a government server; `govdocs1`; LicenseRef-govdocs1 |
-| `doc-gov-000824.html` | real-world | HTML page from a government server; `govdocs1`; LicenseRef-govdocs1 |
-| `doc-gov-001709.html` | real-world | HTML page from a government server; `govdocs1`; LicenseRef-govdocs1 |
+| `doc-poi-bug57031.docx` | tables | tables and pictures; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-60329.docx` | images | table and inline pictures; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-61787.docx` | rtl | right-to-left paragraphs; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-delins.docx` | tracked | inserted and deleted revisions; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-form-footnotes.docx` | footnotes | form with footnotes; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-bug59058.docx` | fields | long document with fields; `poi-test-data`; `Apache-2.0` |
+| `doc-lo-redline.docx` | tracked | hidden tracked changes; `libreoffice-tests`; `MPL-2.0` |
+| `doc-lo-footnote.docx` | footnotes | footnotes in columns; `libreoffice-tests`; `MPL-2.0` |
+| `doc-lo-embedded-fonts.docx` | embedded-fonts | embedded fonts (fonts only, the text is two words); `libreoffice-tests`; `MPL-2.0` |
+| `doc-ox-chart.docx` | charts | 2-D column chart, ISO strict OOXML; `openxml-sdk-tests`; `MIT` |
+| `doc-poi-45544.xlsx` | charts | chart on several sheets; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-datatablecities.xlsx` | charts | pivot table and chart; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-monthly-budget.xlsx` | charts | budget with a chart and a picture; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-56644.xlsx` | images | pictures in a drawing; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-kyc-structure.xlsx` | tables | wide workbook of field descriptions; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-formula-data.xlsx` | formulas | formula test data; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-57181.xlsm` | macros | macro-enabled workbook; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-aascu.pptx` | charts | chart, tables and pictures; `poi-test-data`; `Apache-2.0` |
+| `doc-ox-chart.pptx` | charts | 2-D area chart, ISO strict OOXML; `openxml-sdk-tests`; `MIT` |
+| `doc-poi-ececapstone.pptx` | images | pictures on many slides; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-keyframes.pptx` | images | pictures and speaker notes; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-shapes.pptx` | tables | shapes and a table; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-table-test2.pptx` | tables | table in several fonts; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-japanese.pptx` | cjk | table of Japanese text; `poi-test-data`; `Apache-2.0` |
+| `doc-lo-embedded-fonts.pptx` | embedded-fonts | embedded display font (fonts only); `libreoffice-tests`; `MPL-2.0` |
+| `doc-lo-cjk.odt` | cjk | CJK text with ruby; `libreoffice-tests`; `MPL-2.0` |
+| `doc-lo-columns.odt` | columns | 1,700 words in six columns; `libreoffice-tests`; `MPL-2.0` |
+| `doc-lo-embedded-fonts.odt` | embedded-fonts | table and embedded fonts (fonts only); `libreoffice-tests`; `MPL-2.0` |
+| `doc-poi-53446.doc` | long | Word 97-2003, 2,600 words; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-aioob-tap.doc` | tables | Word 97-2003 with tables; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-travel-form.doc` | forms | Word 97-2003 form; `poi-test-data`; `Apache-2.0` |
+| `doc-lo-cjk.doc` | cjk | Word 97-2003 with CJK list numbering; `libreoffice-tests`; `MPL-2.0` |
+| `doc-poi-12561-2.xls` | cjk | Excel 97-2003 with Japanese text; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-19599-1.xls` | tables | Excel 97-2003, 2,800 words of cells; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-29942.xls` | tables | Excel 97-2003, 2,100 words of cells; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-41246-2.ppt` | images | PowerPoint 97-2003 with pictures; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-tvcamboriu.ppt` | images | PowerPoint 97-2003 slide show; `poi-test-data`; `Apache-2.0` |
+| `doc-poi-60345.ppt` | long | PowerPoint 97-2003, 700 words; `poi-test-data`; `Apache-2.0` |
+| `doc-gov-001858.rtf` | real-world | RTF from a government server; `govdocs1`; `LicenseRef-govdocs1` |
+| `doc-gov-001857.rtf` | real-world | RTF from a government server; `govdocs1`; `LicenseRef-govdocs1` |
+| `doc-gov-001963.rtf` | real-world | RTF from a government server; `govdocs1`; `LicenseRef-govdocs1` |
+| `doc-lo-footnotes.rtf` | footnotes | RTF with footnote frames; `libreoffice-tests`; `MPL-2.0` |
+| `doc-gov-000429.html` | real-world | HTML page from a government server; `govdocs1`; `LicenseRef-govdocs1` |
+| `doc-gov-000824.html` | real-world | HTML page from a government server; `govdocs1`; `LicenseRef-govdocs1` |
+| `doc-gov-001709.html` | real-world | HTML page from a government server; `govdocs1`; `LicenseRef-govdocs1` |

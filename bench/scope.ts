@@ -1,6 +1,5 @@
 import { CORPUS_TIER_ENV, QUICK_PUBLIC_SUBSET, QUICK_SUBSET } from './config';
 import { isRemoteCase } from './corpora';
-import { publicCaseScope } from './public-scope';
 import { BenchArgumentError } from './errors';
 
 /**
@@ -21,8 +20,6 @@ export function corpusTier(env: Readonly<Record<string, string | undefined>> = p
 }
 
 export function caseInScope(quick: boolean, family: string, caseName: string): boolean {
-  const publicScope = publicCaseScope(quick, family, caseName, corpusTier());
-  if (publicScope !== null) return publicScope;
   if (isRemoteCase(caseName)) {
     if (quick) return (QUICK_PUBLIC_SUBSET[family] ?? []).includes(caseName);
     return corpusTier() === 'full';

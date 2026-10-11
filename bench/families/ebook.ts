@@ -4,12 +4,11 @@ import JSZip from 'jszip';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { convertWithProject } from '../convert';
 import { OutputIntegrityError, ToolRunError } from '../errors';
-import { PublicClassRows } from '../public-classes';
-import { publicCompanionFile, publicFile, publicSamples, type PublicSample } from '../public-samples';
-import { publicSpeedSample } from '../public-scope';
-import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
+import { ClassRows } from '../class-rows';
+import { companionOf, remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import type { BenchRow, SkipKind } from '../report';
-import { measuredRow, type MetricSpec, skippedRow, SPEC, speedRowId, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedRow, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { structureOfEpub } from '../structure-extract';
 import { emptyStructure, scoreStructure, type DocumentStructure } from '../structure-metrics';
 import { wordF1 } from '../text-metrics';
@@ -29,7 +28,7 @@ import { runTool } from '../tools';
  * WHATWG HTML parser and scored for precision and recall against the headings of the source package; the pictures of a PDF
  * (`pdfimages`) and of an EPUB are counted against the one picture of the book.
  *
- * The public samples (bench/corpus/public-manifest.json) are public-domain books with images and linked tables of contents in
+ * The public samples (bench/corpus/remote-manifest.json) are public-domain books with images and linked tables of contents in
  * EPUB, Kindle and FictionBook form, and the EPUB 3 sample publications of an open standards group (right-to-left text,
  * MathML, specification text). The truth is read from the source by this file: the text of an EPUB's spine and its headings and
  * pictures; the text of the `body` elements of an FB2 file and its pictures; for a Kindle file, the text and pictures of the
@@ -68,7 +67,7 @@ interface Book {
   /** The name of the case: `book.<format>` or the sample id. */
   name: string;
   item: BookCase;
-  sample: PublicSample | null;
+  sample: RemoteSample | null;
 }
 
 const bookCaseName = (book: Book): string => (book.sample ? `${book.sample.id}->${book.item.target}` : caseName(book.item));
@@ -181,7 +180,7 @@ export function textOfFb2(xml: string): string {
 export const picturesOfFb2 = (xml: string): number => [...xml.matchAll(/<binary\b[^>]*content-type="image\/[^"]*"/gi)].length;
 
 /** The truth of a public book, read from the file or, for a Kindle file, from the EPUB of the same book. */
-async function publicTruth(ctx: FamilyContext, sample: PublicSample, file: string): Promise<Truth | null> {
+async function publicTruth(ctx: FamilyContext, sample: RemoteSample, file: string): Promise<Truth | null> {
   const format = String(sample.meta.format);
   if (format === 'epub') {
     const bytes = fs.readFileSync(file);
@@ -192,7 +191,7 @@ async function publicTruth(ctx: FamilyContext, sample: PublicSample, file: strin
     const xml = fs.readFileSync(file, 'utf8');
     return { text: textOfFb2(xml), structure: emptyStructure(), pictures: picturesOfFb2(xml) };
   }
-  const twin = await publicCompanionFile(ctx, sample, 'text');
+  const twin = await ctx.remote(companionOf(sample, 'text'));
   if (twin === null) return null;
   const bytes = fs.readFileSync(twin);
   const structure = await structureOfEpub(bytes);
@@ -231,7 +230,7 @@ interface BookFiles {
   truth: Truth;
 }
 
-async function runCase(ctx: FamilyContext, tools: Tools, files: BookFiles, book: Book, classRows: PublicClassRows): Promise<BenchRow[]> {
+async function runCase(ctx: FamilyContext, tools: Tools, files: BookFiles, book: Book, classRows: ClassRows): Promise<BenchRow[]> {
   const { item, sample } = book;
   const name = bookCaseName(book);
   ctx.log(`ebook ${name}`);
@@ -252,7 +251,7 @@ async function runCase(ctx: FamilyContext, tools: Tools, files: BookFiles, book:
   const rows: BenchRow[] = [];
   let converted = true;
   if (ctx.quality) {
-    if (sample) classRows.expectCases(sample.class, [...rowPlan(book).filter((entry) => entry.spec.kind !== 'throughput').map((entry) => ({ suffix: entry.caseId.slice(sample.id.length), metric: entry.spec.metric })), { suffix: `->${item.target}`, metric: CONVERTS_SPEC.metric }]);
+    if (sample) classRows.expectCases(sample.class, [...rowPlan(book).filter((entry) => entry.spec.kind !== 'throughput').map((entry) => ({ suffix: entry.caseId.slice(sample.id.length), metric: entry.spec.metric })), { suffix: `->${item.target}`, metric: SPEC.converts.metric }]);
     const attempt = await attemptOurs(convertOurs, sample !== null);
     converted = attempt.ok;
     const referenceFile = ctx.scratch(`reference.${item.target}`);
@@ -275,7 +274,7 @@ async function runCase(ctx: FamilyContext, tools: Tools, files: BookFiles, book:
     }
     if (sample) classRows.addCases(sample.class, sample.id, rows);
   }
-  if (ctx.speed && converted && (sample === null || publicSpeedSample('ebook', sample.id))) {
+  if (ctx.speed && converted && (sample === null || speedSample('ebook', sample.id))) {
     const timing = await ctx.time(
       speedRowId('ebook', name),
       async () => {
@@ -293,7 +292,8 @@ async function runCase(ctx: FamilyContext, tools: Tools, files: BookFiles, book:
 
 export const runEbook: FamilyRunner = async (ctx) => {
   const generated: Book[] = CASES.map((item) => ({ name: `book.${item.source}`, item, sample: null }));
-  const published: Book[] = publicSamples('ebook').flatMap((sample) => {
+  // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+  const published: Book[] = remoteSamples('ebook').filter((sample) => ctx.quality || speedSample('ebook', sample.id)).flatMap((sample) => {
     const source = String(sample.meta.format) as BookCase['source'];
     return PUBLIC_TARGETS[source].map((target) => ({ name: sample.id, item: { source, target }, sample }));
   });
@@ -307,7 +307,7 @@ export const runEbook: FamilyRunner = async (ctx) => {
   const tools: Tools = { ebookConvert: plan.paths['ebook-convert'], pdftotext: plan.paths.pdftotext, pdfimages: plan.paths.pdfimages, epubcheck: plan.paths.epubcheck };
   const generatedTruth: Truth = { text: fs.readFileSync(ctx.corpusPath('ebooks/book.gt.txt'), 'utf8'), structure: await structureOfEpub(ctx.corpusBuffer('ebooks/book.epub')), pictures: BOOK_PICTURES };
   const rows: BenchRow[] = [];
-  const classRows = new PublicClassRows();
+  const classRows = new ClassRows();
   const publicFiles = new Map<string, BookFiles | null>();
   for (const book of books) {
     const { sample } = book;
@@ -317,7 +317,7 @@ export const runEbook: FamilyRunner = async (ctx) => {
       continue;
     }
     if (!publicFiles.has(sample.id)) {
-      const cached = await publicFile(ctx, sample);
+      const cached = await ctx.remote(sample);
       const truth = cached === null ? null : await publicTruth(ctx, sample, cached);
       let staged: string | null = null;
       if (cached !== null) {
@@ -329,7 +329,7 @@ export const runEbook: FamilyRunner = async (ctx) => {
     }
     const files = publicFiles.get(sample.id) ?? null;
     if (files === null) {
-      rows.push(...rowPlan(book).flatMap((entry) => unavailableRows('ebook', entry.caseId, [entry.spec], REFERENCE, `public sample ${sample.id} is not available`)));
+      rows.push(...rowPlan(book).flatMap((entry) => unavailableSampleRows('ebook', entry.caseId, [entry.spec], REFERENCE, sample.id)));
       continue;
     }
     rows.push(...(await runCase(ctx, tools, files, book, classRows)));

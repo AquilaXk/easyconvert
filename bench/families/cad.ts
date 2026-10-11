@@ -5,14 +5,13 @@ import { IN_PROCESS_REPEATS } from '../config';
 import { convertWithProject } from '../convert';
 import type { FamilyContext, FamilyRunner } from '../context';
 import { ToolRunError } from '../errors';
-import { PublicClassRows } from '../public-classes';
-import { publicFile, publicSamples, type PublicSample } from '../public-samples';
-import { publicSpeedSample } from '../public-scope';
-import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
+import { ClassRows } from '../class-rows';
+import { remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import { numberRecord } from '../ref-cache';
 import { ReferenceServer } from '../reference-server';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, speedRowId, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { wordF1 } from '../text-metrics';
 import { EZDXF_PSEUDO_TOOL, runTool } from '../tools';
 import { readRaster, renderPdfPage, renderSvg } from '../vector-raster';
@@ -28,7 +27,7 @@ import { readRaster, renderPdfPage, renderSvg } from '../vector-raster';
  * - DWG is listed with its reason: the engine has no binary DWG reader, and no reference converter is packaged for the
  *   runner image, so there is neither an output nor a reference to measure.
  *
- * The public samples (bench/corpus/public-manifest.json) are drawings from several authoring programs and versions (AutoCAD
+ * The public samples (bench/corpus/remote-manifest.json) are drawings from several authoring programs and versions (AutoCAD
  * R12 to 2018, OpenSCAD, BricsCAD, LibreCAD, ezdxf) in the content classes basic geometry, curves, blocks, text and
  * architecture. Their truth is not written by this repository: ezdxf (an independent DXF library) reads each file and
  * `cad.truth` of bench/reference-server.py returns its strokes (blocks inserted, arrays and nested blocks expanded, hidden
@@ -50,11 +49,11 @@ const DWG_REASON =
 /** A drawing the family measures: a generated plate (the name is the file stem) or a public sample (the name is its id). */
 interface Subject {
   name: string;
-  sample: PublicSample | null;
+  sample: RemoteSample | null;
 }
 
 const fixtureSubject = (name: string): Subject => ({ name, sample: null });
-const publicSubject = (sample: PublicSample): Subject => ({ name: sample.id, sample });
+const publicSubject = (sample: RemoteSample): Subject => ({ name: sample.id, sample });
 const caseOf = (subject: Subject, target: Target): string => (subject.sample ? `${subject.sample.id}->${target}` : `${subject.name}.dxf->${target}`);
 
 interface Measured {
@@ -76,17 +75,17 @@ function sofficeConvert(soffice: string, profile: string, input: string, target:
 }
 
 interface Shared {
-  classRows: PublicClassRows;
+  classRows: ClassRows;
   /** The reference server that reads public drawings with ezdxf; started on the first public drawing. */
   server: () => ReferenceServer;
 }
 
 export const runCad: FamilyRunner = async (ctx) => {
   const rows: BenchRow[] = [];
-  const subjects = [...SAMPLES.map(fixtureSubject), ...publicSamples('cad').map(publicSubject)];
+  const subjects = [...SAMPLES.map(fixtureSubject), ...remoteSamples('cad').map(publicSubject)];
   let server: ReferenceServer | null = null;
   const shared: Shared = {
-    classRows: new PublicClassRows(),
+    classRows: new ClassRows(),
     server: () => {
       if (server === null) {
         const plan = ctx.plan(['python3', EZDXF_PSEUDO_TOOL], 'cad truth');
@@ -120,6 +119,8 @@ const textlessSpecs = (target: Target): MetricSpec[] => QUALITY_SPECS(target).fi
 
 async function runDrawing(ctx: FamilyContext, subject: Subject, target: Target, shared: Shared): Promise<BenchRow[]> {
   const { sample } = subject;
+  // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+  if (sample && !ctx.quality && !speedSample('cad', sample.id)) return [];
   const caseName = caseOf(subject, target);
   const tools = ['ffmpeg', 'rsvg-convert', 'pdftoppm', 'pdftotext', REFERENCE, ...(sample ? ['python3', EZDXF_PSEUDO_TOOL] : [])];
   const plan = ctx.plan(tools, caseName);
@@ -133,8 +134,8 @@ async function runDrawing(ctx: FamilyContext, subject: Subject, target: Target, 
     dxfFile = ctx.corpusPath(dxfName);
     truth = JSON.parse(fs.readFileSync(ctx.corpusPath(`cad/${subject.name}.truth.json`), 'utf8')) as CadTruth;
   } else {
-    const cached = await publicFile(ctx, sample);
-    if (cached === null) return unavailableRows('cad', caseName, specsOf(target), REFERENCE, `public sample ${sample.id} is not available`);
+    const cached = await ctx.remote(sample);
+    if (cached === null) return unavailableSampleRows('cad', caseName, specsOf(target), REFERENCE, sample.id);
     // The office suite takes the format from the extension, so it reads the drawing under its own name.
     dxfFile = ctx.scratch(sample.id);
     fs.copyFileSync(cached, dxfFile);
@@ -167,7 +168,7 @@ async function runDrawing(ctx: FamilyContext, subject: Subject, target: Target, 
   let converted = true;
   if (ctx.quality) {
     const classSpecs = hasText ? QUALITY_SPECS(target) : textlessSpecs(target);
-    if (sample) shared.classRows.expect(sample.class, `->${target}`, [...classSpecs, CONVERTS_SPEC].map((spec) => spec.metric));
+    if (sample) shared.classRows.expect(sample.class, `->${target}`, [...classSpecs, SPEC.converts].map((spec) => spec.metric));
     const attempt = await attemptOurs(ours, sample !== null);
     converted = attempt.ok;
     if (sample === null) {
@@ -197,11 +198,11 @@ async function runDrawing(ctx: FamilyContext, subject: Subject, target: Target, 
         fs.writeFileSync(oursFile, attempt.value);
         rows.push(...rowsOf(caseName, measure(oursFile), measuredReference));
       }
-      shared.classRows.addRows(sample.class, `->${target}`, rows, [...classSpecs, CONVERTS_SPEC]);
+      shared.classRows.addCases(sample.class, sample.id, rows);
     }
   }
 
-  if (ctx.speed && converted && (sample === null || publicSpeedSample('cad', sample.id))) {
+  if (ctx.speed && converted && (sample === null || speedSample('cad', sample.id))) {
     const timing = await ctx.time(
       speedRowId('cad', caseName),
       async () => {

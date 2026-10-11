@@ -565,12 +565,6 @@ jobs:
         with:
           families: ${{ env.BENCH_FAMILIES }}
 
-      # The public samples of the document, PDF, ebook, font, CAD, RAW, vector and data families (bench/corpus/public-manifest.json).
-      - name: Restore the public benchmark samples
-        uses: ./.github/actions/bench-public-samples
-        with:
-          families: ${{ env.BENCH_FAMILIES }}
-
       # The run exits 1 for a regression against our own baseline and 3 for a row below the reference; the verdict
       # file it leaves is what the policy step below reads, so this step never fails the job by itself.
       - name: Measure quality against the reference tools

@@ -126,16 +126,15 @@ Every sample has a `converts` row beside its quality rows (1 when the product co
 reference, not a stopped run. A sample the reference cannot convert states that in the same row. The per-class rows (`class-<class><target>`)
 are the mean over the samples of the class (a pooled ratio for sizes), and exist only when every sample of the class was measured.
 
-The manifest `bench/corpus/public-manifest.json` pins each file by address, size and SHA-256 and states its licence and content class;
-`bench/corpus/PROVENANCE.md` lists them. Nothing is committed: `bench/public-samples.ts` fetches a file from its publisher, checks the digest
-(a mismatch fails the run, since the benchmark measures fixed bytes) and keeps it in `.bench-corpora/<family>/<sha256>`, which CI caches by the
-hash of the manifest (`.github/actions/bench-public-samples`). `npx tsx bench/public-samples.ts verify [--family font,raw]` fetches and checks
-them; `pin <seeds.json>` resolves the digests of new ones. A sample the host does not deliver is a skipped row, and a failure under
-`ORACLE_STRICT_MODE=1`.
+These families use the sample system described above: the one manifest `bench/corpus/remote-manifest.json` (its samples carry the
+family they belong to, and a sample may list companion files such as the reference picture of an SVG test), the one fetcher
+`bench/corpora.ts` with its redirect and size guards, the one class-row pool `bench/class-rows.ts`, and the one quick list and speed list
+in `bench/config.ts` (`QUICK_PUBLIC_SUBSET`, `PUBLIC_SPEED_SAMPLES`). A sample the host does not deliver is skipped as a missing optional
+tool is, and fails the run under `ORACLE_STRICT_MODE=1`. The cases named in `QUICK_PUBLIC_SUBSET` run in the pull request quality job;
+the speed jobs of a pull request time the generated corpus only, so the public samples of these families have no known-gap entries
+(their speed gaps are tracked in the issues), and the nightly run measures the full sets and the throughput rows of the samples in
+`PUBLIC_SPEED_SAMPLES`.
 
-Pull requests run a quick subset (`PUBLIC_QUICK_CASES` in `bench/public-scope.ts`: a few cases per family) in the quality job and none of the
-public samples in the speed jobs (`BENCH_CORPUS_TIER=pr`). The nightly run measures the full sets, and their throughput rows for the samples of
-`PUBLIC_SPEED_SAMPLES` (speed depends on the code path and the size more than on the document, so a few samples of each class stand for the rest).
 The python libraries behind the oracles (ezdxf for the geometry of a drawing, olefile and xlrd for the text of the binary office formats) are
 pinned in `.github/actions/ci-setup/install-tools.sh`.
 

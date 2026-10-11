@@ -18,7 +18,7 @@ import { EOCD_SEARCH_BYTES, inflateEntry, localHeaderLength, locateCentralDirect
 
 export const REMOTE_MANIFEST_SCHEMA = 1;
 /** Families whose runners read remote samples. */
-export const REMOTE_FAMILIES = ['image', 'video', 'audio', 'compression'] as const;
+export const REMOTE_FAMILIES = ['image', 'video', 'audio', 'compression', 'document', 'pdf-ops', 'ebook', 'font', 'cad', 'raw', 'vector', 'data'] as const;
 export type RemoteFamily = (typeof REMOTE_FAMILIES)[number];
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
@@ -68,6 +68,15 @@ export type RemoteOrigin = FileOrigin | ZipOrigin | RangeOrigin;
 
 export type RemoteMeta = Readonly<Record<string, string | number | boolean>>;
 
+/** A file that belongs to a sample and is not a sample itself: the reference picture of an SVG test, the EPUB whose text is the truth of a Kindle file. Fetched, cached and pinned like a sample. */
+export interface RemoteCompanion {
+  /** What the file is to the sample (`truth`, `text`). */
+  role: string;
+  origin: RemoteOrigin;
+  bytes: number;
+  sha256: string;
+}
+
 export interface RemoteSample {
   /** The file name the sample is known by; case names start with it. */
   id: string;
@@ -84,6 +93,18 @@ export interface RemoteSample {
   licence: string;
   /** What the family runner needs to know about the file (bit depth, frames, channels), checked against the file when it is read. */
   meta: RemoteMeta;
+  /** Files that come with the sample (absent when there are none). */
+  companions?: RemoteCompanion[];
+}
+
+/** What the cache and the fetcher need of a file: a sample, or a companion of one (see `companionOf`). */
+export type PinnedFile = Pick<RemoteSample, 'id' | 'family' | 'set' | 'origin' | 'bytes' | 'sha256'>;
+
+/** The companion of a sample under its role, as a file the fetcher takes; throws when the sample has none. */
+export function companionOf(sample: RemoteSample, role: string): PinnedFile {
+  const companion = sample.companions?.find((candidate) => candidate.role === role);
+  if (companion === undefined) throw new CorpusError(`${sample.id} has no ${role} companion`);
+  return { id: `${sample.id}.${role}`, family: sample.family, set: sample.set, origin: companion.origin, bytes: companion.bytes, sha256: companion.sha256 };
 }
 
 export interface RemoteSet {
@@ -151,6 +172,14 @@ function checkSample(sample: RemoteSample, sets: Readonly<Record<string, RemoteS
   if (!Number.isSafeInteger(sample.bytes) || sample.bytes <= 0 || sample.bytes > MAX_REMOTE_SAMPLE_BYTES) throw new CorpusError(`${id}: bytes must be a positive integer of at most ${MAX_REMOTE_SAMPLE_BYTES}`);
   if (typeof sample.meta !== 'object' || sample.meta === null || Array.isArray(sample.meta)) throw new CorpusError(`${id}: meta must be an object`);
   checkOrigin(id, sample.origin);
+  const roles = new Set<string>();
+  for (const companion of sample.companions ?? []) {
+    if (typeof companion.role !== 'string' || !SAFE_CLASS.test(companion.role) || roles.has(companion.role)) throw new CorpusError(`${id}: companion roles must be unique lower-case words`);
+    roles.add(companion.role);
+    if (typeof companion.sha256 !== 'string' || !SHA256_HEX.test(companion.sha256)) throw new CorpusError(`${id}.${companion.role}: sha256 is not 64 lower-case hex digits`);
+    if (!Number.isSafeInteger(companion.bytes) || companion.bytes <= 0 || companion.bytes > MAX_REMOTE_SAMPLE_BYTES) throw new CorpusError(`${id}.${companion.role}: bytes must be a positive integer of at most ${MAX_REMOTE_SAMPLE_BYTES}`);
+    checkOrigin(`${id}.${companion.role}`, companion.origin);
+  }
 }
 
 /** Validates a parsed manifest; throws CorpusError naming the first problem. */
@@ -298,7 +327,7 @@ function redirectHostsOf(sample: Pick<RemoteSample, 'set'>): readonly string[] {
 }
 
 /** The sample's bytes from its origin, before any digest check. */
-export async function downloadSample(sample: RemoteSample): Promise<Buffer> {
+export async function downloadSample(sample: PinnedFile): Promise<Buffer> {
   const origin = sample.origin;
   const hosts = redirectHostsOf(sample);
   if (origin.kind === 'file') return httpBytes(origin.url, null, sample.bytes, hosts);
@@ -311,7 +340,7 @@ export async function downloadSample(sample: RemoteSample): Promise<Buffer> {
 
 export interface EnsureOptions {
   cacheDir?: string;
-  download?: (sample: RemoteSample) => Promise<Buffer>;
+  download?: (sample: PinnedFile) => Promise<Buffer>;
 }
 
 const verified = new Map<string, Promise<string>>();
@@ -321,7 +350,7 @@ const verified = new Map<string, Promise<string>>();
  * content-addressed (`<cacheDir>/<family>/<sha256>`), kept in one directory per family so that a workflow caches the families it runs, so a manifest that changes a digest reads a different file. Fails closed: bytes
  * with another digest are never stored or returned.
  */
-export function ensureSample(sample: RemoteSample, options: EnsureOptions = {}): Promise<string> {
+export function ensureSample(sample: PinnedFile, options: EnsureOptions = {}): Promise<string> {
   const cacheDir = options.cacheDir ?? REMOTE_CACHE_DIR;
   const key = `${cacheDir}\n${sample.family}\n${sample.sha256}`;
   const known = verified.get(key);
@@ -332,7 +361,7 @@ export function ensureSample(sample: RemoteSample, options: EnsureOptions = {}):
   return task;
 }
 
-async function fetchVerified(sample: RemoteSample, cacheDir: string, download: (sample: RemoteSample) => Promise<Buffer>): Promise<string> {
+async function fetchVerified(sample: PinnedFile, cacheDir: string, download: (sample: PinnedFile) => Promise<Buffer>): Promise<string> {
   const target = path.join(cacheDir, sample.family, sample.sha256);
   if (fs.existsSync(target) && fs.statSync(target).size === sample.bytes && sha256(fs.readFileSync(target)) === sample.sha256) return target;
   const bytes = await download(sample);
@@ -357,7 +386,7 @@ export function resetVerifiedSamples(): void {
 
 /** A sample before its digest is known: the origin names what to fetch and the pin step resolves the rest. */
 export type SeedOrigin = FileOrigin | { kind: 'zip'; archive: string; entry: string } | { kind: 'y4m'; url: string; frames: number };
-export type Seed = Omit<RemoteSample, 'origin' | 'bytes' | 'sha256'> & { origin: SeedOrigin };
+export type Seed = Omit<RemoteSample, 'origin' | 'bytes' | 'sha256' | 'companions'> & { origin: SeedOrigin; companions?: Array<{ role: string; origin: FileOrigin }> };
 
 const Y4M_FRAME_MARKER = 'FRAME\n';
 const Y4M_HEADER_PROBE_BYTES = 4096;
@@ -414,12 +443,18 @@ async function tailOf(url: string, hosts: readonly string[]): Promise<{ bytes: B
 export async function pinSeeds(seeds: readonly Seed[], log: (line: string) => void = () => undefined): Promise<RemoteSample[]> {
   const pinned: RemoteSample[] = [];
   for (const seed of seeds) {
+    const { companions: seededCompanions = [], ...seedFields } = seed;
     const { origin, meta } = await resolveOrigin(seed);
     const expectedBytes = origin.kind === 'zip' ? await zipEntrySize(origin, redirectHostsOf(seed)) : MAX_REMOTE_SAMPLE_BYTES;
-    const draft = { ...seed, origin, meta, bytes: expectedBytes, sha256: '0'.repeat(64) } as RemoteSample;
+    const draft = { ...seedFields, origin, meta, bytes: expectedBytes, sha256: '0'.repeat(64) } as RemoteSample;
     const bytes = await downloadSample(draft);
     log(`pinned ${seed.id}: ${bytes.length} bytes`);
-    pinned.push({ ...draft, bytes: bytes.length, sha256: sha256(bytes) });
+    const companions: RemoteCompanion[] = [];
+    for (const companion of seededCompanions) {
+      const companionBytes = await downloadSample({ id: `${seed.id}.${companion.role}`, family: seed.family, set: seed.set, origin: companion.origin, bytes: MAX_REMOTE_SAMPLE_BYTES, sha256: '0'.repeat(64) });
+      companions.push({ role: companion.role, origin: companion.origin, bytes: companionBytes.length, sha256: sha256(companionBytes) });
+    }
+    pinned.push({ ...draft, bytes: bytes.length, sha256: sha256(bytes), ...(companions.length > 0 ? { companions } : {}) });
   }
   return pinned;
 }
@@ -449,6 +484,11 @@ async function main(args: string[]): Promise<number> {
       await ensureSample(sample);
       count++;
       log(`ok ${sample.id}`);
+      for (const companion of sample.companions ?? []) {
+        await ensureSample(companionOf(sample, companion.role));
+        count++;
+        log(`ok ${sample.id}.${companion.role}`);
+      }
     }
     process.stdout.write(`${count} samples fetched and matching the manifest\n`);
     return 0;

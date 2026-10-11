@@ -3,12 +3,11 @@ import path from 'node:path';
 import type { FamilyContext } from '../context';
 import { ToolRunError } from '../errors';
 import { measureSsimPsnr } from '../measure';
-import { PublicClassRows } from '../public-classes';
-import { publicFile, publicSamples, type PublicSample } from '../public-samples';
-import { publicSpeedSample } from '../public-scope';
-import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
+import { ClassRows } from '../class-rows';
+import { remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { wordF1 } from '../text-metrics';
 import { runTool } from '../tools';
 import {
@@ -28,7 +27,7 @@ import {
 } from './pdf-ops';
 
 /**
- * PDF operations on public PDF files (bench/corpus/public-manifest.json): tagged, form, encrypted, scanned, damaged, very long
+ * PDF operations on public PDF files (bench/corpus/remote-manifest.json): tagged, form, encrypted, scanned, damaged, very long
  * and CJK documents from the PDF.js regression suite, the PDF/UA conformance corpus and the real-world government corpus. The
  * operations are those of the generated three-page source (extract, delete, reorder, rotate, split, compress, protect,
  * unlock), adapted to the page count of the file, each against qpdf (Ghostscript for compress) and checked by tools that share
@@ -48,7 +47,7 @@ const ROTATE_DEGREES = 90;
 
 type Operation = 'extract' | 'delete' | 'reorder' | 'rotate' | 'split' | 'compress' | 'protect' | 'unlock';
 const OPERATIONS: readonly Operation[] = ['extract', 'delete', 'reorder', 'rotate', 'split', 'compress', 'protect', 'unlock'];
-const caseOf = (sample: PublicSample, operation: Operation): string => `${sample.id}->${operation}`;
+const caseOf = (sample: RemoteSample, operation: Operation): string => `${sample.id}->${operation}`;
 
 const QUALITY_SPECS: readonly MetricSpec[] = [SPEC.pdfCheckFailures, SPEC.pageCountError, SPEC.wordF1, SPEC.bytes];
 const OPERATION_SPECS: Readonly<Record<Operation, readonly MetricSpec[]>> = {
@@ -77,7 +76,7 @@ function expectedPages(operation: Operation, pages: number): number[] | null {
 }
 
 /** Whether the operation applies to the sample at all: an encrypted file is only unlocked, a plain one is not unlocked, and a very long one is not split. */
-function applies(operation: Operation, sample: PublicSample, pages: number): boolean {
+function applies(operation: Operation, sample: RemoteSample, pages: number): boolean {
   const encrypted = sample.class === 'encrypted';
   if (operation === 'unlock') return encrypted;
   if (encrypted) return false;
@@ -86,7 +85,7 @@ function applies(operation: Operation, sample: PublicSample, pages: number): boo
 }
 
 interface Source {
-  sample: PublicSample;
+  sample: RemoteSample;
   file: string;
   bytes: Buffer;
   pages: number;
@@ -266,7 +265,7 @@ function runOf(ctx: FamilyContext, tools: PdfTools & { gs: string }, source: Sou
 }
 
 /** The split case: one file per page as a ZIP against `qpdf --split-pages=1`. */
-async function runSplit(ctx: FamilyContext, tools: PdfTools & { gs: string }, source: Source, classRows: PublicClassRows): Promise<BenchRow[]> {
+async function runSplit(ctx: FamilyContext, tools: PdfTools & { gs: string }, source: Source, classRows: ClassRows): Promise<BenchRow[]> {
   const caseName = caseOf(source.sample, 'split');
   const rows: BenchRow[] = [];
   const referenceDir = ctx.scratch('split-reference');
@@ -276,7 +275,7 @@ async function runSplit(ctx: FamilyContext, tools: PdfTools & { gs: string }, so
   };
   const ours = async (): Promise<Buffer> => (await pageOpsModule()).splitPdfPages(source.bytes, {}, {}, source.sample.id);
   if (ctx.quality) {
-    classRows.expect(source.sample.class, '->split', [...OPERATION_SPECS.split, CONVERTS_SPEC].map((spec) => spec.metric));
+    classRows.expect(source.sample.class, '->split', [...OPERATION_SPECS.split, SPEC.converts].map((spec) => spec.metric));
     const attemptSplit = await attemptOurs(ours);
     let referenceConverted = true;
     try {
@@ -324,7 +323,7 @@ async function runSplit(ctx: FamilyContext, tools: PdfTools & { gs: string }, so
     }
     classRows.addCases(source.sample.class, source.sample.id, rows);
   }
-  if (ctx.speed && publicSpeedSample(FAMILY, source.sample.id)) {
+  if (ctx.speed && speedSample(FAMILY, source.sample.id)) {
     const timing = await ctx.time(
       speedRowId(FAMILY, caseName),
       async () => {
@@ -347,7 +346,7 @@ function qualityRows(caseName: string, ours: Score, reference: Score, referenceT
   ];
 }
 
-async function runOperation(ctx: FamilyContext, tools: PdfTools & { gs: string }, source: Source, operation: Operation, classRows: PublicClassRows): Promise<BenchRow[]> {
+async function runOperation(ctx: FamilyContext, tools: PdfTools & { gs: string }, source: Source, operation: Operation, classRows: ClassRows): Promise<BenchRow[]> {
   if (operation === 'split') return runSplit(ctx, tools, source, classRows);
   const { sample } = source;
   const caseName = caseOf(sample, operation);
@@ -358,7 +357,7 @@ async function runOperation(ctx: FamilyContext, tools: PdfTools & { gs: string }
   const rows: BenchRow[] = [];
   let converted = true;
   if (ctx.quality) {
-    classRows.expect(sample.class, `->${operation}`, [...OPERATION_SPECS[operation], CONVERTS_SPEC].map((spec) => spec.metric));
+    classRows.expect(sample.class, `->${operation}`, [...OPERATION_SPECS[operation], SPEC.converts].map((spec) => spec.metric));
     const attemptOursRun = await attemptOurs(run.ours);
     converted = attemptOursRun.ok;
     const referenceFile = ctx.scratch(`${operation}-reference.pdf`);
@@ -380,7 +379,7 @@ async function runOperation(ctx: FamilyContext, tools: PdfTools & { gs: string }
     }
     classRows.addCases(sample.class, sample.id, rows);
   }
-  if (ctx.speed && converted && publicSpeedSample(FAMILY, sample.id)) {
+  if (ctx.speed && converted && speedSample(FAMILY, sample.id)) {
     const out = ctx.scratch(`${operation}-timing.pdf`);
     const timing = await ctx.time(
       speedRowId(FAMILY, caseName),
@@ -396,8 +395,8 @@ async function runOperation(ctx: FamilyContext, tools: PdfTools & { gs: string }
 }
 
 /** The pages of a sample are only known once it is fetched; the quality rows of its cases need them. */
-async function loadSource(ctx: FamilyContext, tools: PdfTools, sample: PublicSample): Promise<Source | null> {
-  const cached = await publicFile(ctx, sample);
+async function loadSource(ctx: FamilyContext, tools: PdfTools, sample: RemoteSample): Promise<Source | null> {
+  const cached = await ctx.remote(sample);
   if (cached === null) return null;
   const file = ctx.scratch(sample.id);
   fs.copyFileSync(cached, file);
@@ -408,20 +407,21 @@ async function loadSource(ctx: FamilyContext, tools: PdfTools, sample: PublicSam
 const COMMON_TOOLS = ['qpdf', 'pdftotext', 'pdftoppm', 'pdfinfo', 'ffmpeg'] as const;
 
 export async function runPdfOpsPublic(ctx: FamilyContext): Promise<BenchRow[]> {
-  const samples = publicSamples('pdf-ops');
+  // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+  const samples = remoteSamples('pdf-ops').filter((sample) => ctx.quality || speedSample(FAMILY, sample.id));
   const wanted = samples.flatMap((sample) => OPERATIONS.filter((operation) => ctx.inScope(FAMILY, caseOf(sample, operation))).map((operation) => ({ sample, operation })));
   if (wanted.length === 0) return [];
   const plan = ctx.plan([...COMMON_TOOLS, 'gs'], 'pdf-ops public');
   if (!plan.ok) return wanted.flatMap(({ sample, operation }) => skippedGroup(FAMILY, caseOf(sample, operation), [...OPERATION_SPECS[operation], SPEC.throughput], REFERENCE_OF(operation), plan));
   const tools = plan.paths as unknown as PdfTools & { gs: string };
   const rows: BenchRow[] = [];
-  const classRows = new PublicClassRows();
+  const classRows = new ClassRows();
   for (const sample of samples) {
     const mine = wanted.filter((item) => item.sample === sample);
     if (mine.length === 0) continue;
     const source = await loadSource(ctx, tools, sample);
     if (source === null) {
-      for (const { operation } of mine) rows.push(...unavailableRows(FAMILY, caseOf(sample, operation), OPERATION_SPECS[operation], REFERENCE_OF(operation), `public sample ${sample.id} is not available`));
+      for (const { operation } of mine) rows.push(...unavailableSampleRows(FAMILY, caseOf(sample, operation), OPERATION_SPECS[operation], REFERENCE_OF(operation), sample.id));
       continue;
     }
     for (const { operation } of mine) {

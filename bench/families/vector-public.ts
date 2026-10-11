@@ -4,17 +4,16 @@ import { convertWithProject } from '../convert';
 import type { FamilyContext } from '../context';
 import { OutputIntegrityError, ToolRunError } from '../errors';
 import { measureSsimPsnr } from '../measure';
-import { PublicClassRows } from '../public-classes';
-import { publicCompanionFile, publicFile, publicSamples, type PublicSample } from '../public-samples';
-import { publicSpeedSample } from '../public-scope';
-import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
+import { ClassRows } from '../class-rows';
+import { companionOf, remoteSamples, type RemoteSample } from '../corpora';
+import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import type { BenchRow } from '../report';
-import { capPsnr, measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow } from '../rows';
+import { capPsnr, measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { runTool } from '../tools';
 import { pngSize, renderPdfPage } from '../vector-raster';
 
 /**
- * Public SVG rendering tests (bench/corpus/public-manifest.json): the 200 by 200 cases of an open SVG rendering suite, each
+ * Public SVG rendering tests (bench/corpus/remote-manifest.json): the 200 by 200 cases of an open SVG rendering suite, each
  * with the reference picture that the suite keeps for it (checked against browsers by its maintainers), converted to PNG and to
  * PDF by the product and by librsvg. A PDF is drawn by Poppler. Every picture, the reference included, is composited on white at
  * the size of the reference and scored with SSIM and PSNR against it, so a renderer is judged by how close it gets to the suite's
@@ -28,7 +27,7 @@ type Target = (typeof TARGETS)[number];
 const SPECS: readonly MetricSpec[] = [SPEC.ssim, SPEC.psnr];
 const RENDER_DPI = 72;
 
-const caseOf = (sample: PublicSample, target: Target): string => `${sample.id}->${target}`;
+const caseOf = (sample: RemoteSample, target: Target): string => `${sample.id}->${target}`;
 const ALL_SPECS: readonly MetricSpec[] = [...SPECS, SPEC.throughput];
 
 /** The picture composited on white and scaled to the size of the reference, as an opaque 8-bit PNG. */
@@ -41,8 +40,10 @@ function flattened(ffmpeg: string, input: string, output: string, size: { width:
 
 export async function runVectorPublic(ctx: FamilyContext): Promise<BenchRow[]> {
   const rows: BenchRow[] = [];
-  const classRows = new PublicClassRows();
-  for (const sample of publicSamples('vector')) {
+  const classRows = new ClassRows();
+  for (const sample of remoteSamples('vector')) {
+    // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
+    if (!ctx.quality && !speedSample(FAMILY, sample.id)) continue;
     for (const target of TARGETS) {
       if (!ctx.inScope(FAMILY, caseOf(sample, target))) continue;
       rows.push(...(await runCase(ctx, sample, target, classRows)));
@@ -56,13 +57,13 @@ export async function runVectorPublic(ctx: FamilyContext): Promise<BenchRow[]> {
   return rows;
 }
 
-async function runCase(ctx: FamilyContext, sample: PublicSample, target: Target, classRows: PublicClassRows): Promise<BenchRow[]> {
+async function runCase(ctx: FamilyContext, sample: RemoteSample, target: Target, classRows: ClassRows): Promise<BenchRow[]> {
   const caseName = caseOf(sample, target);
   const plan = ctx.plan(['ffmpeg', RSVG, ...(target === 'pdf' ? ['pdftoppm'] : [])], caseName);
   if (!plan.ok) return skippedGroup(FAMILY, caseName, ALL_SPECS, RSVG, plan);
-  const cached = await publicFile(ctx, sample);
-  const truthFile = cached === null ? null : await publicCompanionFile(ctx, sample, 'truth');
-  if (cached === null || truthFile === null) return unavailableRows(FAMILY, caseName, ALL_SPECS, RSVG, `public sample ${sample.id} is not available`);
+  const cached = await ctx.remote(sample);
+  const truthFile = cached === null ? null : await ctx.remote(companionOf(sample, 'truth'));
+  if (cached === null || truthFile === null) return unavailableSampleRows(FAMILY, caseName, ALL_SPECS, RSVG, sample.id);
   ctx.log(`vector ${caseName}`);
   const { ffmpeg, pdftoppm } = plan.paths;
   const rsvg = plan.paths[RSVG];
@@ -87,7 +88,7 @@ async function runCase(ctx: FamilyContext, sample: PublicSample, target: Target,
 
   let converted = true;
   if (ctx.quality) {
-    classRows.expect(sample.class, `->${target}`, [...SPECS, CONVERTS_SPEC].map((spec) => spec.metric));
+    classRows.expect(sample.class, `->${target}`, [...SPECS, SPEC.converts].map((spec) => spec.metric));
     const attempt = await attemptOurs(ours);
     converted = attempt.ok;
     let referenceConverted = true;
@@ -108,9 +109,9 @@ async function runCase(ctx: FamilyContext, sample: PublicSample, target: Target,
       const r = score(referenceOut, 'reference');
       rows.push(measuredRow(FAMILY, caseName, SPEC.ssim, o.ssim, r.ssim, RSVG), measuredRow(FAMILY, caseName, SPEC.psnr, o.psnr, r.psnr, RSVG));
     }
-    classRows.addRows(sample.class, `->${target}`, rows, [...SPECS, CONVERTS_SPEC]);
+    classRows.addCases(sample.class, sample.id, rows);
   }
-  if (ctx.speed && converted && publicSpeedSample(FAMILY, sample.id)) {
+  if (ctx.speed && converted && speedSample(FAMILY, sample.id)) {
     const out = ctx.scratch(`timing.${target}`);
     const timing = await ctx.time(
       speedRowId(FAMILY, caseName),

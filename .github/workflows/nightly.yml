@@ -155,7 +155,7 @@ jobs:
       - name: Restore the public samples
         uses: ./.github/actions/bench-corpora
         with:
-          families: image,video,audio,compression
+          families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
 
       - name: Fingerprint the reference tools
         id: tools
@@ -170,11 +170,6 @@ jobs:
           key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
           restore-keys: |
             bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-
-
-      - name: Restore the public benchmark samples
-        uses: ./.github/actions/bench-public-samples
-        with:
-          families: document,pdf-ops,ebook,font,cad,raw,vector,data
 
       - name: Run the quality parity benchmark
         env:
@@ -235,12 +230,7 @@ jobs:
       - name: Restore the public samples
         uses: ./.github/actions/bench-corpora
         with:
-          families: image,video,audio,compression
-
-      - name: Restore the public benchmark samples
-        uses: ./.github/actions/bench-public-samples
-        with:
-          families: document,pdf-ops,ebook,font,cad,raw,vector,data
+          families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
 
       - name: Run the speed parity benchmark
         env:
