@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 112 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 113 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -268,6 +268,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `PS2PDF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `GS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `DCRAW_EMU_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `RSVG_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `TESSERACT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `TESSDATA_PREFIX` | file or directory path | none | no | web, worker |
 | `VERAPDF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -291,6 +292,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `PS2PDF_PATH`: Path of the Ghostscript `ps2pdf` executable.
 - `GS_PATH`: Path of the Ghostscript `gs` executable that the PDF optimize operation runs.
 - `DCRAW_EMU_PATH`: Path of the LibRaw `dcraw_emu` executable.
+- `RSVG_CONVERT_PATH`: Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.
 - `TESSERACT_PATH`: Path of the `tesseract` executable.
 - `TESSDATA_PREFIX`: Directory of the Tesseract language data.
 - `VERAPDF_PATH`: Path of the `verapdf` executable that validates PDF/A output.

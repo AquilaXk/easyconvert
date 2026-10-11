@@ -86,10 +86,11 @@ const UINT16_MAX = 0xffff;
 const UINT32_MAX = 0xffffffff;
 
 /** Rounds to an unsigned integer within `max`, throwing the typed error instead of a RangeError. */
-function toUnsigned(value: number, max: number, what: string): number {
+function toUnsigned(value: number, max: number, what: string, logicalPerPixel = 1): number {
   const v = Math.round(value);
   if (!Number.isFinite(v) || v < 0 || v > max) {
-    throw new CadGeometryUnavailableError(`${what} ${value} does not fit the metafile's ${max}-limited field.`);
+    // The message names the width of the drawing, in pixels, not the finer logical unit it is written in.
+    throw new CadGeometryUnavailableError(`${what} ${value / logicalPerPixel} does not fit the metafile's ${max}-limited field.`);
   }
   return v;
 }
@@ -319,22 +320,22 @@ function emfSelect(handle: number): Buffer {
 }
 
 /** Creates and selects a geometric pen, or selects the stock NULL_PEN; returns whether one was created. */
-function emitEmfPen(pen: PlanPen | null, out: Buffer[]): boolean {
+function emitEmfPen(pen: PlanPen | null, out: Buffer[], scale: number): boolean {
   if (!pen) {
     out.push(emfSelect(EMF_STOCK_NULL_PEN));
     return false;
   }
-  out.push(emfExtCreatePen(pen), emfSelect(EMF_PEN_HANDLE));
+  out.push(emfExtCreatePen(pen, scale), emfSelect(EMF_PEN_HANDLE));
   return true;
 }
 
 /** EMR_EXTCREATEPEN (MS-EMF 2.3.7.9) with a solid geometric LogPenEx and no DIB pattern. */
-function emfExtCreatePen(pen: PlanPen): Buffer {
+function emfExtCreatePen(pen: PlanPen, scale: number): Buffer {
   const rec = emfRecord(EMR_EXTCREATEPEN, EMF_EXTCREATEPEN_SIZE);
   rec.writeUInt32LE(EMF_PEN_HANDLE, 8);
   // offBmi, cbBmi, offBits, cbBits stay 0: no pattern bitmap
   rec.writeUInt32LE(EMF_PS_GEOMETRIC | EMF_PS_SOLID | penCapJoinBits(pen), 28);
-  rec.writeUInt32LE(toUnsigned(Math.max(1, pen.width), UINT32_MAX, 'EMF pen width'), 32);
+  rec.writeUInt32LE(toUnsigned(Math.max(1, pen.width), UINT32_MAX, 'EMF pen width', scale), 32);
   rec.writeUInt32LE(EMF_BS_SOLID, 36);
   rec.writeUInt32LE(emfColorRef(pen.color), 40);
   rec.writeUInt32LE(0, 44); // BrushHatch, ignored for BS_SOLID
@@ -413,7 +414,7 @@ function encodeEmfOp(op: DrawOp, state: EmfState, out: Buffer[]): void {
   // never written; corners must agree with GDI's default limit instead.
   assertMiterCorners(op, 'EMF', GDI_DEFAULT_MITER_LIMIT);
   if (op.kind === 'stroke') {
-    emitEmfPen(op.pen, out);
+    emitEmfPen(op.pen, out, state.scale);
     out.push(emfSelect(EMF_STOCK_NULL_BRUSH));
     for (const line of op.lines) out.push(emfPoly16(EMR_POLYLINE16, line, state.scale));
     out.push(deleteEmfObject(EMF_PEN_HANDLE));
@@ -424,7 +425,7 @@ function encodeEmfOp(op: DrawOp, state: EmfState, out: Buffer[]): void {
     out.push(emfPolyFillMode(mode));
     state.fillMode = mode;
   }
-  const createdPen = emitEmfPen(op.pen, out);
+  const createdPen = emitEmfPen(op.pen, out, state.scale);
   emitEmfBrush(op.fill, out);
   out.push(op.rings.length === 1 ? emfPoly16(EMR_POLYGON16, op.rings[0], state.scale) : emfPolyPolygon16(op.rings, state.scale));
   if (createdPen) out.push(deleteEmfObject(EMF_PEN_HANDLE));

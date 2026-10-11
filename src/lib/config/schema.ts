@@ -1319,6 +1319,7 @@ const SCHEMA_ENTRIES = [
   toolPath('PS2PDF_PATH', 'Path of the Ghostscript `ps2pdf` executable.', BOTH),
   toolPath('GS_PATH', 'Path of the Ghostscript `gs` executable that the PDF optimize operation runs.', BOTH),
   toolPath('DCRAW_EMU_PATH', 'Path of the LibRaw `dcraw_emu` executable.', BOTH),
+  toolPath('RSVG_CONVERT_PATH', 'Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),
   {
     name: 'TESSDATA_PREFIX',
