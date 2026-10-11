@@ -101,6 +101,18 @@ describe('runner against a toolchain with no reference tools', () => {
     expect(new Set(report.rows.map((row) => row.family))).toEqual(new Set(['data', 'ebook', 'font', 'compression']));
   }, CHILD_TIMEOUT_MS);
 
+  it('delivers every line of a long listing to a reader that is slow to take it: the exit waits for the pipe', () => {
+    const out = path.join(work, 'slow-reader');
+    // The listing of the skipped rows is about 64 KB, the size a pipe holds, and the reader starts after 4 s: the end of the listing must not be lost to the exit.
+    const command = `"$NODE" "$TSX" "$RUNNER" --family data,ebook,font,compression --no-gate --out "$OUT" | (sleep 4; cat)`;
+    const run = spawnSync('sh', ['-c', command], { cwd: ROOT, env: { ...childEnv(false), NODE: process.execPath, TSX: TSX_CLI, RUNNER, OUT: out }, encoding: 'utf8', timeout: CHILD_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 });
+    const lines = run.stdout.trimEnd().split('\n');
+    expect(lines[0]).toMatch(/^report: .* \(0 measured, \d+ skipped\)$/);
+    const skipped = Number(/(\d+) skipped\)/.exec(lines[0])?.[1]);
+    expect(lines.filter((line) => line.startsWith('skipped ')).length).toBe(skipped);
+    expect(lines.some((line) => line.startsWith('skipped data/table.csv->parquet/bytes: '))).toBe(true);
+  }, CHILD_TIMEOUT_MS);
+
   it('fails the run under ORACLE_STRICT_MODE=1 and names the missing tool', () => {
     const out = path.join(work, 'strict-out');
     const run = runRunner(['--family', 'image', '--no-gate', '--out', out], childEnv(true));

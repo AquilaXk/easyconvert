@@ -377,9 +377,14 @@ export async function main(args: string[], out: (line: string) => void = (line) 
   return result.regressions.length > 0 ? EXIT_REGRESSION : EXIT_PASS;
 }
 
+/** Exits once what was written to stdout has been taken: a pipe holds 64 KiB, and a run that lists hundreds of skipped rows must not lose the end of its output to an exit that does not wait. */
+function exitAfterFlush(code: number): void {
+  process.stdout.write('', () => process.exit(code));
+}
+
 if (require.main === module) {
   main(process.argv.slice(2)).then(
-    (code) => process.exit(code),
+    (code) => exitAfterFlush(code),
     (error: unknown) => {
       process.stderr.write(`bench:quality failed: ${error instanceof BenchError ? `${error.name}: ${error.message}` : String(error instanceof Error ? error.stack : error)}\n`);
       process.exit(EXIT_ERROR);
