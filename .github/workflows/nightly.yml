@@ -95,6 +95,12 @@ jobs:
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
 
+      # The public sample sets (bench/corpus/remote-manifest.json), fetched by digest and cached.
+      - name: Restore the public samples
+        uses: ./.github/actions/bench-corpora
+        with:
+          families: image,video,audio,compression
+
       - name: Run the quality benchmark
         shell: bash
         run: |
@@ -148,6 +154,12 @@ jobs:
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
 
+      # The public sample sets (bench/corpus/remote-manifest.json), fetched by digest and cached.
+      - name: Restore the public samples
+        uses: ./.github/actions/bench-corpora
+        with:
+          families: image,video,audio,compression
+
       - name: Fingerprint the reference tools
         id: tools
         run: echo "fingerprint=$(npx --no-install tsx bench/run.ts --print-tool-fingerprint)" >> "$GITHUB_OUTPUT"
@@ -158,7 +170,7 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .bench-cache
-          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json') }}
+          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
           restore-keys: |
             bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-
 
@@ -174,7 +186,7 @@ jobs:
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .bench-cache
-          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json') }}-${{ github.run_id }}
+          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
 
       - name: Upload the benchmark report
         if: always()
@@ -216,6 +228,12 @@ jobs:
 
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
+
+      # The public sample sets (bench/corpus/remote-manifest.json), fetched by digest and cached.
+      - name: Restore the public samples
+        uses: ./.github/actions/bench-corpora
+        with:
+          families: image,video,audio,compression
 
       - name: Run the speed parity benchmark
         env:
@@ -299,6 +317,8 @@ jobs:
           BENCH_BASE_ROOT: ab-base
           FAMILY: ${{ matrix.family }}
           AB_REPEATS: ${{ inputs.ab_repeats }}
+          # The comparison with a base stands in for the pull request speed job, which times the generated corpus only.
+          BENCH_CORPUS_TIER: pr
         run: |
           set +e
           for run in $(seq 1 "$AB_REPEATS"); do

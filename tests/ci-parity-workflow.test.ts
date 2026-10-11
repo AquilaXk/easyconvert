@@ -102,7 +102,7 @@ describe('parity-quality', () => {
     const key = String(restore?.with?.key);
     expect(restore?.with?.path).toBe('.bench-cache');
     expect(key).toContain('steps.tools.outputs.fingerprint');
-    expect(key).toContain("hashFiles('bench/corpus/manifest.json')");
+    expect(key).toContain("hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json')");
     expect(String(restore?.with?.['restore-keys'])).toContain('steps.tools.outputs.fingerprint');
   });
 
@@ -226,6 +226,42 @@ describe('what the parity jobs add to the actions in use', () => {
     for (const uses of added) {
       expect(uses, uses).toMatch(/^[\w./-]+@[0-9a-f]{40}$/);
       expect(text).toMatch(new RegExp(`uses: ${uses.replace(/[/.]/g, '\\$&')} # v\\d+(\\.\\d+)*`));
+    }
+  });
+});
+
+describe('the public benchmark samples in the workflows', () => {
+  const action = parse(read('.github', 'actions', 'bench-corpora', 'action.yml')) as { runs: { steps: Step[] } };
+  const nightlyQuality = nightly.jobs['bench-parity-quality'];
+  const nightlySpeed = nightly.jobs['bench-parity-speed'];
+
+  it('caches one directory per family, keyed by the hash of the manifest that pins the files, and only for the families a job names', () => {
+    expect(action.runs.steps.map((step) => step.with?.path)).toEqual(['.bench-corpora/image', '.bench-corpora/video', '.bench-corpora/audio', '.bench-corpora/compression']);
+    for (const step of action.runs.steps) {
+      expect(String(step.with?.key)).toContain("hashFiles('bench/corpus/remote-manifest.json')");
+      expect(step.uses).toMatch(/^actions\/cache@[0-9a-f]{40}$/);
+    }
+    expect(action.runs.steps.map((step) => step.if)).toEqual(['image', 'video', 'audio', 'compression'].map((family) => `contains(format(',{0},', inputs.families), ',${family},')`));
+  });
+
+  it('is restored before the quick quality run, for the families of the change', () => {
+    const restore = quality.steps.find((step) => step.uses === './.github/actions/bench-corpora');
+    expect(restore?.with?.families).toBe('${{ env.BENCH_FAMILIES }}');
+    expect(quality.steps.indexOf(restore as Step)).toBeLessThan(quality.steps.indexOf(stepNamed(quality, 'bench')));
+  });
+
+  it('is left out of the speed job of a pull request, which times the generated corpus only', () => {
+    expect(speed.env?.BENCH_CORPUS_TIER).toBe('pr');
+    expect(speed.steps.some((step) => step.uses === './.github/actions/bench-corpora')).toBe(false);
+    const ab = nightly.jobs['bench-ab-speed'];
+    expect(stepNamed(ab, 'Measure the speed rows against that commit').env?.BENCH_CORPUS_TIER).toBe('pr');
+  });
+
+  it('is restored by the nightly jobs that measure it, and the nightly run stays in the full tier', () => {
+    for (const job of [nightly.jobs.bench, nightlyQuality, nightlySpeed]) {
+      const restore = job.steps.find((step) => step.uses === './.github/actions/bench-corpora');
+      expect(restore?.with?.families).toBe('image,video,audio,compression');
+      expect(job.env?.BENCH_CORPUS_TIER).toBeUndefined();
     }
   });
 });
@@ -468,7 +504,7 @@ describe('the nightly run', () => {
     expect(save?.with?.path).toBe('.bench-cache');
     expect(save?.if).toBe('always()');
     expect(String(save?.with?.key)).toContain('github.run_id');
-    expect(String(save?.with?.key)).toContain("hashFiles('bench/corpus/manifest.json')");
+    expect(String(save?.with?.key)).toContain("hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json')");
     expect(JSON.stringify(speedJob)).not.toMatch(/actions\/cache|\.bench-cache/);
   });
 
