@@ -57,21 +57,28 @@ Quality evidence
 
 ## 1. AVIF chroma and bit depth
 
-- **Status**: Decided 2026-10-11, being implemented in #736. Supersedes the 2026-10-09 policy (graphics 4:4:4, at most 10 bits).
+- **Status**: Implemented (#749, issue #736), decided 2026-10-11. Supersedes the 2026-10-09 policy (graphics 4:4:4, at most 10 bits).
 - **Decision**:
   - **Lossy output** is 4:2:0 for all content, photographs and graphics alike.
   - **Lossless output** (quality 100), and pictures with an identity colour matrix, are 4:4:4.
-  - **Bit depth**: an 8-bit source is written at 8 bits. A 9- or 10-bit source is written at 10 bits. A source of 11 bits or more, 16-bit included, is written at 12 bits.
+  - **Bit depth**: an 8-bit source is written at 8 bits. A 9- or 10-bit source is written at 10 bits. A source of 11 bits or more, 16-bit included, is written at 12 bits. HDR renditions (PQ or HLG) keep their 10 bits.
+  - **Alpha**: the alpha plane is lossless, as the reference encoder writes it when only a colour quality is given.
+  - **Metadata**: EXIF and XMP are kept; an ICC profile is applied to the pixels and not written. A density alone, or a profile alone, adds no EXIF block to WebP and AVIF.
 - **Why**: users compare our files with the ones the leading converters give them. Those use 4:2:0 for lossy AVIF and keep high-bit-depth sources at a matching depth. Matching this keeps file sizes comparable for every content class, so a user switching to us does not get files that are suddenly larger. 4:2:0 is also the layout every AVIF decoder handles fastest. Keeping 12 bits for 16-bit sources preserves gradations and editing headroom that a 10-bit cap would throw away.
 - **Trade-offs**:
   - At the same quality setting, 4:2:0 softens coloured edges in screenshots, text and line art. 4:4:4 would keep them sharp, at a larger file.
   - 12-bit AVIF needs the AV1 Professional profile. Some hardware decoders, and decoders that implement only the AVIF Baseline profile (AV1 Main), cannot open it, so a 16-bit source can produce a file that does not open on every device.
+  - Lossless alpha makes the file larger than lossy alpha: a flat chart with transparency is 51.2 kB against 20.0 kB at quality 70, and exact (100 dB on the flattened picture, against 57 dB). A soft shadow over a textured picture costs about 10 % more.
+  - Measured against the reference encoder at the same constraints (BD-rate, 0 is parity, lower is better): the 11 photographs that were 1.6 to 4.9 % behind in SSIM are now between -3.1 and +0.9 %; the 16-bit class is 12 to 13 % ahead in WebP and AVIF PSNR. Photographs stay on the in-process encoder, whose speed is 1.2 to 1.4 times the reference's; the command-line encoder with edge-preserving chroma conversion took the same photographs to +1.3 to +1.7 % SSIM at 0.7 times the speed, which is why the 4:4:4 reference could not be met by encoder tuning alone.
+  - The 4:4:4 policy it replaces was the reason for the photo SSIM gap: against a 4:4:4 reference no encoder setting tried (perceptual tuning, edge-preserving conversion, quantiser modulation, a slower speed preset) met both metrics inside the speed gate.
 - **Alternatives rejected**:
   - **Graphics 4:4:4 with a 10-bit cap** (the previous policy). It gave sharper graphic edges and wider device support, but its file sizes and bit depths diverged from what users expect from converters.
+  - **Lossy alpha at the colour quality.** Smaller, but the transparent edges of flat graphics move (57 dB against an exact reference).
   - **Always 4:4:4.** Larger photographs for no visible gain.
 - **Verified by**:
   - `src/lib/conversions/image-encoder-defaults.ts` and its tests.
   - The image parity rows, where the reference encoder runs at the same chroma and bit depth and BD-rate decides.
+  - `tests/image-avif-alpha-quality.test.ts` (every alpha sample of a graphic is exact at three qualities) and `tests/image-metadata-overhead.test.ts`.
 - **Revisit when**:
   - Users report 12-bit files that do not open.
   - A caller-facing chroma or bit-depth option is added.
@@ -84,10 +91,11 @@ Quality evidence
   - **Chroma**: below quality 90, JPEG uses 4:2:0. At 90 and above it uses 4:4:4, for all content.
   - **Photographs**: baseline scan, no trellis quantisation.
   - **Graphics**: a quantisation table tuned for structural similarity.
+  - **Classification** (#749): a picture with more than 8 bits per sample that shows thousands of tones in its thumbnail is a photograph, whatever the flat share of its background says.
 - **Why**:
   - The quality-90 switch is the long-standing default of the common image toolkits, so outputs and sizes match user expectations. Above 90, users ask for fidelity and chroma resolution is visible.
   - Trellis quantisation saves about 8 % of bytes on photographs but adds a large share of the encode time. The reference encoders' defaults do not use it either, so speed parity wins.
-- **Trade-offs**: below 90, coloured text in a JPEG is slightly blurred. Photographs are a few per cent larger than the slowest encoder settings would make them.
+- **Trade-offs**: below 90, coloured text in a JPEG is slightly blurred. Photographs are a few per cent larger than the slowest encoder settings would make them. A radiograph (16-bit grey, 44 % flat black) was classified as a graphic and got the graphic table, which zeroes its fine detail: SSIM BD-rate +1.7 % against the reference, -0.7 % with the photograph table. The classifier reads a second, 16-bit thumbnail only for a 16-bit picture the 8-bit one calls graphic, so the encode time did not change (24 ms either way on the 16-bit space photograph).
 - **Alternatives rejected**:
   - **Always 4:4:4**: noticeably larger files at the same quality setting, with no visible gain on photographs.
   - **Trellis on**: too slow.
