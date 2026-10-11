@@ -35,7 +35,8 @@ export function decodeImageToPng(kind: ImageKind, input: string, output: string,
     runTool(tools.dwebp, ['-nodither', '-quiet', input, '-o', output]);
   } else if (kind === 'avif') {
     if (!tools.avifdec) throw new ToolRunError('avifdec is required to decode AVIF');
-    runTool(tools.avifdec, [input, output]);
+    // The picture is compared by its pixels. avifdec would also copy an embedded ICC profile into the PNG, and libpng refuses a grey profile on the RGB picture avifdec writes.
+    runTool(tools.avifdec, ['--ignore-icc', input, output]);
     dropExifChunk(output);
   } else {
     runTool(tools.ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-i', input, '-frames:v', '1', output]);

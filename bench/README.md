@@ -58,7 +58,7 @@ SHA-256, licence code); `bench/corpus/PROVENANCE.md` records the licence of each
 
 | Family | Samples | Classes |
 |---|---|---|
-| image | the Kodak lossless suite (24 pictures), ten pictures of the CLIC 2020 professional validation set (512x384 to 2048x1365), seven screenshots, four line-art pictures, two pictures with transparency, three 16-bit pictures (a grey radiograph, two RGB) | photo, screen, lineart, alpha, deep |
+| image | the Kodak lossless suite (24 pictures), ten pictures of the CLIC 2020 professional validation set (512x384 to 2048x1365), seven screenshots, four line-art pictures, two more diagrams with a transparent background (the line-art icon has one too), three 16-bit pictures (a grey radiograph, two RGB) | photo, screen, lineart, alpha, deep |
 | video | the first frames of 13 sequences of the AV1 common test conditions (270p to 1080p, 0.7 to 3 s): natural scenes, fast motion, screen content and game capture, computer animation, film grain | natural, highmotion, screen, animation, grain |
 | audio | 14 tracks of the EBU SQAM material (speech in three languages, solo instruments, voice, castanets, claves and a side drum, orchestra, pop), a 24-bit studio production, and five edge cases built from them (a quiet passage with one burst, 8 kHz telephone speech, a 5.1 mix, a clipped signal, 96 kHz 24-bit) | speech, instrument, vocal, transient, orchestra, pop, modern24, edge |
 | compression | the 12 files of the Silesia corpus (5 to 51 MB: text, markup, source, executables, databases, medical images, a PDF), a JPEG and a FLAC file as already compressed members | text, markup, source, binary, database, data, medical, compressed |
