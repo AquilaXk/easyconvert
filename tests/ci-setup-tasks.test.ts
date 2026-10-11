@@ -28,7 +28,7 @@ const NEEDS = 'bash 4 or newer, GNU timeout and sha256sum';
 const FAST_FAIL_BUDGET_MS = 15_000;
 const SLEEP_PAST_LIMIT_SECONDS = 31;
 const MAX_TASK_LIMIT_SECONDS = 600;
-const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'raw'];
+const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'raw'];
 
 const temps: string[] = [];
 afterAll(() => {
