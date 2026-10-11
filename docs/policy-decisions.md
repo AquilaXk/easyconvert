@@ -330,19 +330,37 @@ Quality evidence
 
 ## 18. Public sample sets as evidence
 
-- **Status**: Phase 1 implemented (#734); phase 2 in progress (#733).
+- **Status**: Phase 1 implemented (#734); phase 2 implemented (#733).
 - **Decision**:
   - The parity bench measures each family on public test corpora. These are the sets used by codec and converter evaluations:
     - standard photo sets;
     - video and audio test material;
     - mixed compression corpora;
-    - PDF and office regression sets.
+    - PDF and office regression sets, open camera files, SVG rendering tests, CAD drawings, fonts, ebooks and open datasets.
   - Each family has at least 10 samples across content classes.
   - Results are reported per sample and per class. A pull request runs a fixed quick subset; the nightly run covers everything.
-- **Why**: a verdict from one or two samples can flip on the next file. Results per sample and per class stop a good average from hiding a bad class.
+  - **All twelve families use one sample system:** one manifest of pinned files (address, size, SHA-256, licence, content class), one fetcher that follows only redirects the publisher's set allows and reads no more than the pinned size, one class-row pool, one quick list, one scope switch. A fix to a guard reaches every family. A sample the host does not deliver is skipped as a missing optional tool is in a lenient run and fails a strict one.
+  - **Speed gaps of nightly-only rows are tracked in issues, not in the gap file.** The speed job of a pull request times the generated corpus only, so a gap entry for a public sample could never be backed by it. The nightly run reports those rows, and the issue of their family tracks them.
+  - **A file the product refuses is a result, not a skipped row.** Every public sample has a `converts` row beside its quality rows. Refusing a valid file puts that sample below the reference, and the other samples are still measured. A file the reference tool cannot convert is stated in the same row.
+  - **The truth of a sample is read from the file's own format**, by a reader that is neither our converter nor the reference: the XML of an office package, the text of the binary office formats, the strokes of a drawing, the reference picture shipped with a rendering test, the text of the source book, the text of a dataset or its expected-values file. A converter is never scored against the output of another converter. A sample whose text is too short to tell a conversion from an empty page is kept for its fonts and structure only.
+  - **Class results are the mean over the samples of a class**, so one long file does not outweigh a short one. Size ratios are pooled instead. A class row exists only when every sample of the class was measured.
+  - **Words are counted the way the script is read.** A word is a run of letters or digits, and every CJK character counts as a word of its own, because those scripts have no spaces and a line break would otherwise split one reference word into two extracted ones.
+  - **Office documents are converted by our own readers and writers**, not by the office suite that the product uses when it is installed. Otherwise the suite would be compared with itself.
+  - **The quick subset names only cases that are at the reference today.** A case below the reference stays in the nightly run until a fix lands, so a pull request is not blocked by a gap it did not cause.
+  - **Very large camera files are measured on the fast targets.** Every RAW file is measured to JPEG and PNG; AVIF and GIF are measured on the four smallest files.
+- **Why**:
+  - A verdict from one or two samples can flip on the next file. Results per sample and per class stop a good average from hiding a bad class.
+  - Mature converters hand office documents to an office suite, ebooks to an ebook toolchain, vector files to a vector renderer and tabular files to a columnar engine. Those tools are the references, and a document that only one side can open is the clearest quality gap there is, so it must show as a row.
+  - Reading the truth from the format keeps the verdict independent of both sides.
 - **Trade-offs**:
-  - Longer nightly runs.
+  - Longer nightly runs: the quality half of the nightly parity run grew from about 5 to about 40 minutes.
   - Licences restrict some material to testing. That material is fetched at test time, never committed or published, and pinned by SHA-256.
-- **Alternatives rejected**: small generated samples only, which give too little evidence.
-- **Verified by**: `bench/corpora.ts`, `bench/corpus/PROVENANCE.md` and `tests/bench-corpora.test.ts`.
-- **Revisit when**: a class is missing from the sets, or a licence changes.
+  - A text read from a format cannot see a word that is drawn only (a scanned page, a vector outline) or a field result a reader would compute. Those samples are scored on structure and fonts.
+  - Mean over a class lets a perfect sample hide a failed one inside the class row; the sample rows keep it visible.
+  - Measuring only the fast targets of the largest camera files leaves their AVIF and GIF paths to the smaller files.
+- **Alternatives rejected**:
+  - Small generated samples only, which give too little evidence.
+  - Skipping a file the product refuses, which hides the very gap the sample set exists to find.
+  - Scoring against the reference tool's own output, which cannot show a case where the reference is wrong.
+- **Verified by**: `bench/corpora.ts`, `bench/class-rows.ts`, `bench/corpus/PROVENANCE.md`, `tests/bench-corpora.test.ts`, `tests/bench-public-samples.test.ts`, `tests/bench-public-unified.test.ts` and `tests/bench-public-oracles.test.ts`.
+- **Revisit when**: a class is missing from the sets, a licence changes, or the nightly run no longer fits its time budget.
