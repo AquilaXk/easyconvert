@@ -5,10 +5,14 @@ import { bdRate, type RdPoint } from '../bd-rate';
 import { REPO_ROOT } from '../config';
 import { convertWithProject } from '../convert';
 import type { FamilyContext, FamilyRunner } from '../context';
-import { MissingToolError, OutputIntegrityError } from '../errors';
+import { MissingToolError, OutputIntegrityError, ToolRunError } from '../errors';
 import { decodeImageToPng, fileSize, pictureQuality, type ImageKind } from '../measure';
 import type { BenchRow } from '../report';
 import { capPsnr, measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, ssimDb, throughputRow } from '../rows';
+import { PublicClassRows } from '../public-classes';
+import { publicFile, publicSamples, type PublicSample } from '../public-samples';
+import { publicSpeedSample } from '../public-scope';
+import { attemptOurs, CONVERTS_SPEC, convertsRow, unavailableRows } from '../public-support';
 import { runTool, type ToolPlanSkipped } from '../tools';
 
 /**
@@ -24,6 +28,11 @@ import { runTool, type ToolPlanSkipped } from '../tools';
  * and checked here against the SHA-256 of the manifest. The picture a conversion is scored against is what the
  * reference decoder developed from the file (a 16-bit TIFF, taken to a 16-bit PNG), so SSIM and PSNR measure what the
  * encoder step adds on top of the same development. Size and speed are those of the whole pipeline from the RAW file.
+ *
+ * The public samples (bench/corpus/public-manifest.json) are CC0 files of the open camera sample archive from several makers
+ * (Canon, Nikon, Sony, Olympus, Panasonic, Pentax, Fujifilm X-Trans and native or converted DNG), measured the same way. A
+ * file the product refuses, or one the reference decoder cannot develop, is a `converts` row instead of a stopped run; the
+ * per-class rows average a maker's samples.
  */
 
 const RAW_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'raw');
@@ -83,40 +92,77 @@ function sampleFile(format: string): string | null {
   return file;
 }
 
+/** A file the family measures: a fixture of tests/fixtures/raw (the name is its format) or a public sample (the name is its id). */
+interface Subject {
+  name: string;
+  format: string;
+  filename: string;
+  sample: PublicSample | null;
+}
+
+const fixtureSubject = (format: string): Subject => ({ name: format, format, filename: `${format}.${format}`, sample: null });
+/** The targets measured on a subject. A large public sample is measured on the targets whose encoders are quick (JPEG and PNG): the AVIF encode of a 24-megapixel picture at four quality points would hold the nightly run for an hour, and the small samples cover that path. */
+const targetsOf = (subject: Subject): readonly Target[] => {
+  const listed = subject.sample?.meta.targets;
+  return typeof listed === 'string' ? TARGETS.filter((target) => listed.split(',').includes(target)) : TARGETS;
+};
+const publicSubject = (sample: PublicSample): Subject => ({ name: sample.id, format: String(sample.meta.format), filename: sample.id, sample });
+
 function missingSample(format: string): ToolPlanSkipped {
   return { ok: false, missing: [`RAW sample ${format}`], optional: false, reason: `RAW sample ${format} is not fetched (npm run fixtures:raw ${format})` };
 }
 
+const TOOLS = ['dcraw_emu', 'ffmpeg', 'magick', 'avifenc', 'avifdec'] as const;
+const QUALITY_SPECS = (target: Target): readonly MetricSpec[] => specsOf(target).filter((spec) => spec.kind !== 'throughput');
+
 export const runRaw: FamilyRunner = async (ctx) => {
   const rows: BenchRow[] = [];
-  for (const format of SAMPLES) {
-    if (!TARGETS.some((target) => ctx.inScope('raw', `${format}->${target}`))) continue;
-    const plan = ctx.plan(['dcraw_emu', 'ffmpeg', 'magick', 'avifenc', 'avifdec'], `raw ${format}`);
-    const file = plan.ok ? sampleFile(format) : null;
+  const classRows = new PublicClassRows();
+  const subjects = [...SAMPLES.map(fixtureSubject), ...publicSamples('raw').map(publicSubject)];
+  for (const subject of subjects) {
+    const targets = targetsOf(subject).filter((target) => ctx.inScope('raw', `${subject.name}->${target}`));
+    if (targets.length === 0) continue;
+    const plan = ctx.plan([...TOOLS], `raw ${subject.name}`);
+    let file: string | null = null;
+    let unavailable: ToolPlanSkipped | null = null;
+    if (!plan.ok) {
+      unavailable = plan;
+    } else if (subject.sample === null) {
+      file = sampleFile(subject.format);
+      if (file === null) unavailable = missingSample(subject.format);
+    } else {
+      file = await publicFile(ctx, subject.sample);
+      if (file === null) unavailable = { ok: false, missing: [`public sample ${subject.name}`], optional: false, reason: `public sample ${subject.name} is not available` };
+    }
     if (plan.ok && file !== null) {
-      rows.push(...(await runSample(ctx, format, file, plan.paths)));
+      rows.push(...(await runSample(ctx, subject, file, plan.paths, classRows)));
       continue;
     }
-    const skipped = plan.ok ? missingSample(format) : plan;
-    if (plan.ok && ctx.strict) throw new MissingToolError(skipped.missing, `raw ${format}`);
-    for (const target of TARGETS) {
-      if (ctx.inScope('raw', `${format}->${target}`)) rows.push(...skippedGroup('raw', `${format}->${target}`, specsOf(target), REFERENCE, skipped));
+    if (plan.ok && ctx.strict && subject.sample === null) throw new MissingToolError(unavailable?.missing ?? [], `raw ${subject.name}`);
+    for (const target of targets) {
+      rows.push(...skippedGroup('raw', `${subject.name}->${target}`, specsOf(target), REFERENCE, unavailable as ToolPlanSkipped));
+    }
+  }
+  if (ctx.quality) {
+    for (const row of classRows.rows('raw', () => REFERENCE)) {
+      if (ctx.inScope('raw', row.case)) rows.push(row);
     }
   }
   return rows;
 };
 
-async function runSample(ctx: FamilyContext, format: string, file: string, tools: Readonly<Record<string, string>>): Promise<BenchRow[]> {
+async function runSample(ctx: FamilyContext, subject: Subject, file: string, tools: Readonly<Record<string, string>>, classRows: PublicClassRows): Promise<BenchRow[]> {
+  const { name, format, sample } = subject;
   const input = fs.readFileSync(file);
-  const developed = (name: string): string => {
-    const tiff = ctx.scratch(`${format}-${name}.tiff`);
+  const developed = (label: string): string => {
+    const tiff = ctx.scratch(`${name}-${label}.tiff`);
     runTool(tools.dcraw_emu, [...DEVELOP_FLAGS, '-Z', tiff, file]);
     return tiff;
   };
   /** The reference encode of a developed TIFF: take the pixels to sRGB, then encode with the standard encoder. */
-  const referenceEncode = (target: Target, tiff: string, output: string, quality: number, name: string): void => {
+  const referenceEncode = (target: Target, tiff: string, output: string, quality: number, label: string): void => {
     if (target === 'avif') {
-      const png = ctx.scratch(`${format}-${name}-intermediate.png`);
+      const png = ctx.scratch(`${name}-${label}-intermediate.png`);
       runTool(tools.magick, [tiff, ...TO_SRGB, png]);
       runTool(tools.avifenc, ['-d', AVIF_DEPTH, '-y', avifChroma(quality), '-q', String(quality), '-s', AVIF_SPEED, '-j', 'all', png, output]);
     } else if (target === 'jpg') {
@@ -128,61 +174,84 @@ async function runSample(ctx: FamilyContext, format: string, file: string, tools
   const decoders = { ffmpeg: tools.ffmpeg, dwebp: null, avifdec: tools.avifdec };
   const kindOf = (target: Target): ImageKind => (target === 'avif' ? 'avif' : 'png');
   const rows: BenchRow[] = [];
+  const targets = targetsOf(subject).filter((target) => ctx.inScope('raw', `${name}->${target}`));
+  if (sample !== null && ctx.quality) for (const target of targets) classRows.expect(sample.class, `->${target}`, [...QUALITY_SPECS(target), CONVERTS_SPEC].map((spec) => spec.metric));
 
-  const developedOnce = developed('quality');
+  // A public sample the reference decoder cannot develop is a reference that does not convert it; a fixture must develop.
+  let developedOnce: string | null = null;
+  try {
+    developedOnce = developed('quality');
+  } catch (error) {
+    if (sample === null || !(error instanceof ToolRunError)) throw error;
+    ctx.log(`raw ${name}: the reference decoder cannot develop the file (${error.message.slice(0, 160)})`);
+  }
   let sourcePng: string | null = null;
   const source = (): string => {
     if (sourcePng === null) {
-      sourcePng = ctx.scratch(`${format}-source.png`);
-      runTool(tools.magick, [developedOnce, ...TO_SRGB, sourcePng]);
+      sourcePng = ctx.scratch(`${name}-source.png`);
+      runTool(tools.magick, [developedOnce as string, ...TO_SRGB, sourcePng]);
     }
     return sourcePng;
   };
 
-  for (const target of TARGETS) {
-    const caseName = `${format}->${target}`;
-    if (!ctx.inScope('raw', caseName)) continue;
+  for (const target of targets) {
+    const caseName = `${name}->${target}`;
     ctx.log(`raw ${caseName}`);
-    const oursAt = async (quality: number): Promise<Buffer> => (await convertWithProject(input, format, target, { quality }, path.basename(file))).buffer;
+    const oursAt = async (quality: number): Promise<Buffer> => (await convertWithProject(input, format, target, { quality }, subject.filename)).buffer;
+    const targetRows: BenchRow[] = [];
+    let converted = true;
     if (ctx.quality) {
-      const measure = (picture: string): Encoded => {
-        const decoded = `${picture}.png`;
-        decodeImageToPng(kindOf(target), picture, decoded, decoders);
-        const score = pictureQuality(tools.ffmpeg, decoded, source());
-        return { ssim: score.ssim, psnr: capPsnr(score.psnr), bytes: fileSize(picture) - (target === 'avif' ? metadataBytes(picture) : 0) };
-      };
-      /** The camera's EXIF that the product keeps in an AVIF and the reference's stripped output does not carry (180 bytes: 6 percent of a small file), as the decoder reports it; the rows judge the encoder. */
-      const metadataBytes = (picture: string): number => {
-        const report = runTool(tools.avifdec, ['--info', picture]).stdout.toString('utf8');
-        return Number(/Exif Metadata\s*:\s*Present \((\d+) bytes\)/.exec(report)?.[1] ?? 0);
-      };
-      const points = LOSSY_TARGETS.has(target) ? QUALITY_POINTS : [QUALITY];
-      const ours = new Map<number, Encoded>();
-      const reference = new Map<number, Encoded>();
-      for (const quality of points) {
-        const oursFile = ctx.scratch(`${format}-ours-q${quality}.${target}`);
-        fs.writeFileSync(oursFile, await oursAt(quality));
-        ours.set(quality, measure(oursFile));
-        const referenceFile = ctx.scratch(`${format}-reference-q${quality}.${target}`);
-        referenceEncode(target, developedOnce, referenceFile, quality, `reference-q${quality}`);
-        reference.set(quality, measure(referenceFile));
+      if (sample !== null) {
+        const attempt = await attemptOurs(() => oursAt(QUALITY));
+        if (!attempt.ok) {
+          ctx.log(`raw ${caseName}: the product does not convert it (${attempt.reason})`);
+          converted = false;
+        }
+        targetRows.push(convertsRow('raw', caseName, attempt.ok, developedOnce !== null, REFERENCE));
       }
-      const o = ours.get(QUALITY) as Encoded;
-      const r = reference.get(QUALITY) as Encoded;
-      rows.push(measuredRow('raw', caseName, SPEC.ssim, o.ssim, r.ssim, REFERENCE));
-      if (target !== 'png') rows.push(measuredRow('raw', caseName, SPEC.psnr, o.psnr, r.psnr, REFERENCE));
-      rows.push(measuredRow('raw', caseName, SPEC.bytes, o.bytes, r.bytes, REFERENCE));
-      if (LOSSY_TARGETS.has(target)) {
-        const curve = (encoded: Map<number, Encoded>, quality: (e: Encoded) => number): RdPoint[] =>
-          QUALITY_POINTS.map((q) => ({ rate: (encoded.get(q) as Encoded).bytes, quality: quality((encoded.get(q) as Encoded)) }));
-        rows.push(
-          measuredRow('raw', caseName, SPEC.bdRatePsnr, bdRate(curve(reference, (e) => e.psnr), curve(ours, (e) => e.psnr)), 0, REFERENCE),
-          measuredRow('raw', caseName, SPEC.bdRateSsim, bdRate(curve(reference, (e) => ssimDb(e.ssim)), curve(ours, (e) => ssimDb(e.ssim))), 0, REFERENCE)
-        );
+      if (converted && developedOnce !== null) {
+        const measure = (picture: string): Encoded => {
+          const decoded = `${picture}.png`;
+          decodeImageToPng(kindOf(target), picture, decoded, decoders);
+          const score = pictureQuality(tools.ffmpeg, decoded, source());
+          return { ssim: score.ssim, psnr: capPsnr(score.psnr), bytes: fileSize(picture) - (target === 'avif' ? metadataBytes(picture) : 0) };
+        };
+        /** The camera's EXIF that the product keeps in an AVIF and the reference's stripped output does not carry (180 bytes: 6 percent of a small file), as the decoder reports it; the rows judge the encoder. */
+        const metadataBytes = (picture: string): number => {
+          const report = runTool(tools.avifdec, ['--info', picture]).stdout.toString('utf8');
+          return Number(/Exif Metadata\s*:\s*Present \((\d+) bytes\)/.exec(report)?.[1] ?? 0);
+        };
+        const points = LOSSY_TARGETS.has(target) ? QUALITY_POINTS : [QUALITY];
+        const ours = new Map<number, Encoded>();
+        const reference = new Map<number, Encoded>();
+        for (const quality of points) {
+          const oursFile = ctx.scratch(`${name}-ours-q${quality}.${target}`);
+          fs.writeFileSync(oursFile, await oursAt(quality));
+          ours.set(quality, measure(oursFile));
+          const referenceFile = ctx.scratch(`${name}-reference-q${quality}.${target}`);
+          referenceEncode(target, developedOnce, referenceFile, quality, `reference-q${quality}`);
+          reference.set(quality, measure(referenceFile));
+        }
+        const o = ours.get(QUALITY) as Encoded;
+        const r = reference.get(QUALITY) as Encoded;
+        targetRows.push(measuredRow('raw', caseName, SPEC.ssim, o.ssim, r.ssim, REFERENCE));
+        if (target !== 'png') targetRows.push(measuredRow('raw', caseName, SPEC.psnr, o.psnr, r.psnr, REFERENCE));
+        targetRows.push(measuredRow('raw', caseName, SPEC.bytes, o.bytes, r.bytes, REFERENCE));
+        if (LOSSY_TARGETS.has(target)) {
+          const curve = (encoded: Map<number, Encoded>, quality: (e: Encoded) => number): RdPoint[] =>
+            QUALITY_POINTS.map((q) => ({ rate: (encoded.get(q) as Encoded).bytes, quality: quality(encoded.get(q) as Encoded) }));
+          targetRows.push(
+            measuredRow('raw', caseName, SPEC.bdRatePsnr, bdRate(curve(reference, (e) => e.psnr), curve(ours, (e) => e.psnr)), 0, REFERENCE),
+            measuredRow('raw', caseName, SPEC.bdRateSsim, bdRate(curve(reference, (e) => ssimDb(e.ssim)), curve(ours, (e) => ssimDb(e.ssim))), 0, REFERENCE)
+          );
+        }
       }
+      if (sample !== null) classRows.addRows(sample.class, `->${target}`, targetRows, [...QUALITY_SPECS(target), CONVERTS_SPEC]);
     }
-    if (ctx.speed) {
-      const timingOut = ctx.scratch(`${format}-timing.${target}`);
+    rows.push(...targetRows);
+    const timed = sample === null || (publicSpeedSample('raw', sample.id) && converted && developedOnce !== null);
+    if (ctx.speed && timed) {
+      const timingOut = ctx.scratch(`${name}-timing.${target}`);
       const timing = await ctx.time(
         speedRowId('raw', caseName),
         async () => {
