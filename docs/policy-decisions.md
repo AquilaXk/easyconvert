@@ -24,6 +24,7 @@ Image output
 
 1. [AVIF chroma and bit depth](#1-avif-chroma-and-bit-depth)
 2. [JPEG chroma and encoder tools](#2-jpeg-chroma-and-encoder-tools)
+19. [Image metadata and alpha](#19-image-metadata-and-alpha)
 
 Media and documents
 
@@ -60,15 +61,18 @@ Quality evidence
 
 ## 1. AVIF chroma and bit depth
 
-- **Status**: Decided 2026-10-11, being implemented in #736. Supersedes the 2026-10-09 policy (graphics 4:4:4, at most 10 bits).
+- **Status**: Implemented (#749, issue #736), decided 2026-10-11. Supersedes the 2026-10-09 policy (graphics 4:4:4, at most 10 bits).
 - **Decision**:
   - **Lossy output** is 4:2:0 for all content, photographs and graphics alike.
   - **Lossless output** (quality 100), and pictures with an identity colour matrix, are 4:4:4.
-  - **Bit depth**: an 8-bit source is written at 8 bits. A 9- or 10-bit source is written at 10 bits. A source of 11 bits or more, 16-bit included, is written at 12 bits.
+  - **Bit depth**: an 8-bit source is written at 8 bits. A 9- or 10-bit source is written at 10 bits. A source of 11 bits or more, 16-bit included, is written at 12 bits. HDR renditions (PQ or HLG) keep their 10 bits.
+  - **Alpha and metadata**: see [19. Image metadata and alpha](#19-image-metadata-and-alpha).
 - **Why**: users compare our files with the ones the leading converters give them. Those use 4:2:0 for lossy AVIF and keep high-bit-depth sources at a matching depth. Matching this keeps file sizes comparable for every content class, so a user switching to us does not get files that are suddenly larger. 4:2:0 is also the layout every AVIF decoder handles fastest. Keeping 12 bits for 16-bit sources preserves gradations and editing headroom that a 10-bit cap would throw away.
 - **Trade-offs**:
   - At the same quality setting, 4:2:0 softens coloured edges in screenshots, text and line art. 4:4:4 would keep them sharp, at a larger file.
   - 12-bit AVIF needs the AV1 Professional profile. Some hardware decoders, and decoders that implement only the AVIF Baseline profile (AV1 Main), cannot open it, so a 16-bit source can produce a file that does not open on every device.
+  - Measured against the reference encoder at the same constraints (BD-rate, 0 is parity, lower is better): the 11 photographs that were 1.6 to 4.9 % behind in SSIM are now between -3.1 and +0.9 %; the 16-bit class is 12 to 13 % ahead in WebP and AVIF PSNR. Photographs stay on the in-process encoder, whose speed is 1.2 to 1.4 times the reference's; the command-line encoder with edge-preserving chroma conversion took the same photographs to +1.3 to +1.7 % SSIM at 0.7 times the speed, which is why the 4:4:4 reference could not be met by encoder tuning alone.
+  - The 4:4:4 policy it replaces was the reason for the photo SSIM gap: against a 4:4:4 reference no encoder setting tried (perceptual tuning, edge-preserving conversion, quantiser modulation, a slower speed preset) met both metrics inside the speed gate.
 - **Alternatives rejected**:
   - **Graphics 4:4:4 with a 10-bit cap** (the previous policy). It gave sharper graphic edges and wider device support, but its file sizes and bit depths diverged from what users expect from converters.
   - **Always 4:4:4.** Larger photographs for no visible gain.
@@ -85,12 +89,13 @@ Quality evidence
 - **Status**: Implemented (#716, #719, #722).
 - **Decision**:
   - **Chroma**: below quality 90, JPEG uses 4:2:0. At 90 and above it uses 4:4:4, for all content.
-  - **Photographs**: baseline scan, no trellis quantisation.
+  - **Photographs**: baseline scan for colour photographs, progressive scan (without a scan search) for grey photographs, no trellis quantisation.
   - **Graphics**: a quantisation table tuned for structural similarity.
+  - **Classification** (#749): a picture with more than 8 bits per sample that shows thousands of tones in its thumbnail is a photograph, whatever the flat share of its background says.
 - **Why**:
   - The quality-90 switch is the long-standing default of the common image toolkits, so outputs and sizes match user expectations. Above 90, users ask for fidelity and chroma resolution is visible.
   - Trellis quantisation saves about 8 % of bytes on photographs but adds a large share of the encode time. The reference encoders' defaults do not use it either, so speed parity wins.
-- **Trade-offs**: below 90, coloured text in a JPEG is slightly blurred. Photographs are a few per cent larger than the slowest encoder settings would make them.
+- **Trade-offs**: below 90, coloured text in a JPEG is slightly blurred. Photographs are a few per cent larger than the slowest encoder settings would make them. A radiograph (16-bit grey, 44 % flat black) was classified as a graphic and got the graphic table, which zeroes its fine detail: SSIM BD-rate +1.7 % against the reference, -0.7 % with the photograph table. The classifier reads a second, 16-bit thumbnail only for a 16-bit picture the 8-bit one calls graphic, so the encode time did not change (24 ms either way on the 16-bit space photograph).
 - **Alternatives rejected**:
   - **Always 4:4:4**: noticeably larger files at the same quality setting, with no visible gain on photographs.
   - **Trellis on**: too slow.
@@ -431,7 +436,41 @@ Quality evidence
 - **Verified by**: `tests/office-chart-text.test.ts`, `tests/biff-chart.test.ts`, `tests/xls-multi-sheet-pdf.test.ts`, `tests/pdf-table-word-breaks.test.ts`, `tests/docx-pdf-layout.test.ts`, and the public document rows of #742.
 - **Revisit when**: the chart drawing needs the look of the application's charts, or the text targets of workbooks are made sheet-aware.
 
-## 22. Embedded SVG images, physical units and child clip paths
+## 22. Image metadata and alpha
+
+- **Status**: Implemented (#749, issue #736), decided 2026-10-11.
+- **Decision**:
+  - **Metadata blocks**: a JPEG, WebP or AVIF carries the EXIF block, the XMP packet and the ICC profile of its source unchanged. The profile is attached and the pixels are not converted through it. No block is made up.
+  - **sRGB-gamut profiles**: a profile with sRGB primaries (whether IEC 61966-2-1 sRGB or a development curve over sRGB primaries such as a camera RAW decoder's gamma 2.222 curve) is not written. The pixels go through it into standard sRGB; wider-gamut and grey profiles stay attached.
+  - **Print density**: a JPEG keeps it (in its header, together with an EXIF block made from it when the source has none); WebP and AVIF do not.
+  - **Alpha**: the alpha plane of an AVIF is encoded at the colour quality. There is no separate alpha setting.
+  - **16 to 8 bits**: a 16-bit picture written as JPEG or WebP is reduced to the nearest 8-bit level, not to the high byte.
+  - PNG, TIFF and the other targets keep their earlier handling (the profile applied to the pixels).
+- **Why**: all four follow what the leading converter does by default, so a user who compares the files finds the same information and the same colours, at the same size. Checked in the converter's source and on its output, not assumed:
+  - Its AVIF writer sets one quality and hands the picture to the AV1 library with an alpha channel; the library encodes the alpha plane at that quality unless an alpha quality is set, and the writer sets none. Lossless alpha is what the standalone AV1 image encoder does when only a colour quality is given, which is why that tool is not the reference for alpha.
+  - Its writers attach the profile as it is, add the EXIF and XMP blocks it read, and write nothing else. Its PNG reader rejects the usual 3 kB sRGB profile as "known incorrect", so for the pictures of cameras and editors it writes no profile at all; any other profile (a grey gamma profile, Display P3) is kept.
+  - Its JPEG writer scales 16-bit samples with rounding.
+  - Keeping a wide-gamut profile attached is exact: converting it into the pixels at encode time loses gamut where the target is narrower and cannot be undone, and a viewer applies the profile anyway. Not making blocks up keeps small files small: the library's switch for "keep metadata" writes an EXIF block of about 190 bytes for a source that has none, 2 % of a small WebP or AVIF, and was the whole 2.4 to 4.2 % gap of a screenshot with a print density.
+- **Trade-offs**:
+  - A profile that is not sRGB makes a file larger by the profile (4.5 kB for the grey profile of the radiograph) where the earlier policy baked it in. That is the cost of exact colours, paid by the pictures that need it.
+  - Dropping an sRGB profile changes no colour a viewer shows, but a reader that treats an untagged file as another colour space will see it differently; the web formats and every browser assume sRGB.
+  - Alpha at the colour quality moves the edge pixels of flat graphics: at quality 70 a flat chart reads 57 dB on the flattened picture, where lossless alpha gives an exact picture at 2.5 times the bytes (51.2 kB against 20.0 kB). The service does the former, so the files stay comparable.
+  - Rounding adds one pass over the samples of a 16-bit picture (no measurable time: 24 ms either way on the 16-bit space photograph).
+  - A JPEG with a print density gets an EXIF block it did not have.
+- **Alternatives rejected**:
+  - **Lossless alpha** (the standalone encoder's default): exact, but 2.5 times the bytes on a flat chart and not what the service writes.
+  - **Converting every profile into the pixels and writing none** (the earlier policy): smaller, but irreversible for wide-gamut pictures, and the pictures differ from the service's.
+  - **Keeping every profile, the sRGB one included**: 3 kB more than the service on most photographs.
+  - **Dithering the 16 to 8 bit reduction**: adds noise the encoder must code, and loses PSNR and SSIM at the same size.
+- **Verified by**:
+  - `tests/image-metadata-overhead.test.ts` (no block made up; a wide-gamut profile kept byte for byte in JPEG, WebP and AVIF; an sRGB profile not written; XMP kept alone), `tests/icc-srgb.test.ts`, `tests/image-16bit-rounding.test.ts`, and the argument test of `tests/image-avif-library-encoder.test.ts` (alpha quality equals the colour quality).
+  - The image parity rows, where the reference receives the same blocks and the colour quality for alpha (`bench/png-metadata.ts`).
+- **Revisit when**:
+  - A target other than JPEG, WebP and AVIF should follow (PNG and TIFF still apply the profile to the pixels).
+  - The service's converter changes how it writes alpha or reads profiles.
+  - Users report colour differences in untagged files.
+
+## 23. Embedded SVG images, physical units and child clip paths
 
 - **Status**: Implemented (#746).
 - **Decision**:
@@ -450,4 +489,5 @@ Quality evidence
   - **Neutralizing all `data:image/svg+xml` URIs on `<image>`**: broke drawings that embed vector icons or sub-diagrams via `<image>`.
 - **Verified by**: `tests/svg-rendering-units-embed-clip.test.ts` and the public vector rows `vec-rect-mm-values.svg`, `vec-image-embedded-svg.svg`, and `vec-clipPath-clip-path-on-children.svg`.
 - **Revisit when**: the upstream native SVG renderer fixes union clipping of `<clipPath>` children carrying `clip-path` or decouples CSS physical unit conversion from output rasterization DPI.
+
 

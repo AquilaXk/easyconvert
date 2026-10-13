@@ -124,13 +124,13 @@ describe('SVG clipPath with clip-path on children (#746)', () => {
     expect(uncoveredHole[3]).toBe(0);
   });
 
-  it('escapes quotes in transform attributes and strips inline style fill/opacity overrides when lowering to <mask>', () => {
+  it('escapes quotes in transform attributes and strips inline style fill/opacity overrides when lowering to <mask>', async () => {
     const crafted = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
       <clipPath id="c2"><rect width="50" height="50"/></clipPath>
       <clipPath id="c1" clipPathUnits='userSpaceOnUse" onload="evil()' transform='translate(0,0)" onload="evil()'>
         <rect width="50" height="50" clip-path="url(#c2)" style="fill:#000000; opacity:0; clip-rule:evenodd; stroke-width:2"/>
       </clipPath>
-      <rect width="100" height="100" clip-path="url(#c1)"/>
+      <rect width="100" height="100" fill="#008000" clip-path="url(#c1)"/>
     </svg>`;
     const normalized = normalizeSvgForRendering(crafted);
     expect(normalized).toContain('maskContentUnits="userSpaceOnUse"');
@@ -138,5 +138,22 @@ describe('SVG clipPath with clip-path on children (#746)', () => {
     expect(normalized).not.toContain('style="fill:#000000');
     expect(normalized).toContain('style="stroke-width:2"');
     expect(normalized).toContain('fill="#ffffff" fill-opacity="1" opacity="1" stroke="none" fill-rule="evenodd"');
+
+    const validMaskSvg = `<svg viewBox="0 0 100 100" width="100" height="100" xmlns="http://www.w3.org/2000/svg">
+      <clipPath id="c2"><rect width="50" height="50"/></clipPath>
+      <clipPath id="c1" clipPathUnits="userSpaceOnUse">
+        <rect width="50" height="50" clip-path="url(#c2)" style="fill:#000000; opacity:0; clip-rule:evenodd; stroke-width:2"/>
+      </clipPath>
+      <rect width="100" height="100" fill="#008000" clip-path="url(#c1)"/>
+    </svg>`;
+    const res = await convertVectorCad(Buffer.from(validMaskSvg, 'utf-8'), 'svg', 'png', { dpi: 72 }, 'styled-clip.svg');
+    const inside = await pixelAt(res.buffer, 25, 25);
+    expect(inside[0]).toBe(0);
+    expect(inside[1]).toBe(128);
+    expect(inside[2]).toBe(0);
+    expect(inside[3]).toBe(255);
+    const outside = await pixelAt(res.buffer, 75, 75);
+    expect(outside[3]).toBe(0);
   });
 });
+

@@ -1,5 +1,6 @@
 import sharp, { type Metadata, type Sharp } from 'sharp';
 import type { Raster } from './image-content';
+import { roundedToEightBits } from './image-depth';
 import { maxInputPixels } from './image-input-limits';
 
 /**
@@ -78,8 +79,8 @@ function everySampleIs(samples: Uint8Array | Uint16Array, first: number, stride:
  * reaches the caller as the library's own error, as it would from the first read of the picture.
  *
  * An encoder that writes 8 bits per sample (`eightBit`) is given a 16-bit colour picture reduced to 8 bits by the decode
- * itself, the high byte of every sample, which is what the encoder would take from the 16-bit samples: the samples held are
- * half as many bytes, the alpha check reads bytes, and the encoder has no reduction left to do. A grey picture keeps its
+ * itself, to the nearest level of every sample (see image-depth.ts), which is what the encoder would take from the 16-bit
+ * samples: the samples held are half as many bytes, the alpha check reads bytes, and the encoder has no reduction left to do. A grey picture keeps its
  * 16 bits (the library's grey reduction is not the high byte, and drops a grey picture's alpha band).
  */
 export async function decodePlainPngOnce(pipeline: Sharp, maxBytes: number = DECODED_SOURCE_MAX_BYTES, eightBit = false): Promise<DecodedPng | null> {
@@ -88,8 +89,7 @@ export async function decodePlainPngOnce(pipeline: Sharp, maxBytes: number = DEC
   const deep = meta.depth === SIXTEEN_BIT_DEPTH;
   const narrow = deep && eightBit && meta.space === 'rgb16';
   // Written in the colourspace the PNG is in: left to itself the raw output turns a grey picture into three colour bands.
-  const { data, info } = await pipeline
-    .clone()
+  const { data, info } = await (narrow ? roundedToEightBits(pipeline.clone(), meta.channels) : pipeline.clone())
     .toColourspace(narrow ? 'srgb' : meta.space)
     .raw({ depth: deep && !narrow ? SIXTEEN_BIT_DEPTH : EIGHT_BIT_DEPTH })
     .toBuffer({ resolveWithObject: true });

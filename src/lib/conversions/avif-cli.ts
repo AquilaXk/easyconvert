@@ -52,7 +52,7 @@ export const AVIFENC_ADDRESS_SPACE_MB = 5120;
 export const AVIFENC_TIMEOUT_MS = 180_000;
 /** Diagnostics the encoder may print; more is runaway output. */
 const AVIFENC_MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
-/** The file written is at most this many bytes per pixel (four 10-bit planes, lossless, uncompressible) plus headers. */
+/** The file written is at most this many bytes per pixel (four 12-bit planes, lossless, uncompressible) plus headers. */
 const AVIFENC_MAX_OUTPUT_BYTES_PER_PIXEL = 8;
 const AVIFENC_OUTPUT_OVERHEAD_BYTES = 64 * 1024;
 /** Characters of the encoder's diagnostics written to the log on a failure. */
@@ -223,7 +223,8 @@ function encoderThreads(): number {
 }
 
 /**
- * Arguments of one encode. Quality applies to colour and alpha alike, as in the image library; a tuning metric
+ * Arguments of one encode. Quality applies to colour and alpha alike, as in the image library and as in the reference
+ * service's engine, whose AV1 encoder takes the alpha plane at the colour quality (it sets no alpha quality); a tuning metric
  * applies to the colour planes only (the alpha plane keeps the encoder's PSNR tuning). Reading the picture from a
  * path and writing to a path in the private directory keeps every file name fixed.
  */
