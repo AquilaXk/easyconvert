@@ -35,6 +35,9 @@ Media and documents
 8. [Empty documents and macros](#8-empty-documents-and-macros)
 9. [Conversion warnings](#9-conversion-warnings)
 10. [Archive bomb limits](#10-archive-bomb-limits)
+19. [HTML character encoding](#19-html-character-encoding)
+20. [Damaged office files](#20-damaged-office-files)
+21. [Charts, notes and sheets in PDF](#21-charts-notes-and-sheets-in-pdf)
 
 Engines
 
@@ -166,19 +169,25 @@ Quality evidence
 
 ## 7. Characters without a Unicode counterpart
 
-- **Status**: Implemented (#725). Legacy binary word-processing documents (`.doc`) are tracked in #726.
+- **Status**: Implemented (#725); extended to every in-process PDF writer (#742). Legacy binary word-processing documents (`.doc`) are tracked in #726.
 - **Decision**:
   - Symbol-font private-use characters are mapped to Unicode with the standard tables for the symbol fonts.
   - A character that no table maps becomes U+FFFD, and a warning names the font and the code.
+  - **The PDF writers apply the same rule to any code point no font can draw** (unassigned, private-use, noncharacter, lone surrogate). The code point becomes U+FFFD and the result carries one warning line for each distinct code point. They no longer refuse the document.
 - **Why**:
   - The whole document must still convert. Failing it for one glyph is worse than any substitute.
   - A replacement mark is honest.
   - Drawing the code with another font would show a different glyph with no sign of the error, because unknown symbol encodings differ font by font.
-- **Trade-offs**: the reader sees a replacement mark where the original showed a glyph.
+  - Word processors keep private-use characters in text on purpose (a bullet or a math symbol typed in a symbol font), so a whole document must not fail for one.
+- **Trade-offs**:
+  - The reader sees a replacement mark where the original showed a glyph.
+  - Plain text, Markdown and HTML to PDF follow the rule too. A file with a stray noncharacter converts, where it used to fail with HTTP 400.
+  - A character that is assigned but that no installed font covers still fails, because installing a font fixes it.
 - **Alternatives rejected**:
   - **Refusing the document.**
   - **Rendering with a bundled symbol font**: wrong glyphs, silently.
-- **Verified by**: the PPT symbol-font tests, and the corpus run reported in #725.
+  - **Dropping the character**: the loss would leave no trace in the output.
+- **Verified by**: the PPT symbol-font tests, `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` converts).
 - **Revisit when**: a reliable glyph source for the remaining math fonts appears.
 
 ## 8. Empty documents and macros
@@ -364,3 +373,60 @@ Quality evidence
   - Scoring against the reference tool's own output, which cannot show a case where the reference is wrong.
 - **Verified by**: `bench/corpora.ts`, `bench/class-rows.ts`, `bench/corpus/PROVENANCE.md`, `tests/bench-corpora.test.ts`, `tests/bench-public-samples.test.ts`, `tests/bench-public-unified.test.ts` and `tests/bench-public-oracles.test.ts`.
 - **Revisit when**: a class is missing from the sets, a licence changes, or the nightly run no longer fits its time budget.
+
+## 19. HTML character encoding
+
+- **Status**: Implemented (#742).
+- **Decision**: the encoding of an HTML file is found as the HTML standard's encoding sniffing does it:
+  1. a byte order mark (UTF-8 or UTF-16);
+  2. a `<meta charset>` or `<meta http-equiv="Content-Type">` declaration in the first 1024 bytes;
+  3. UTF-8, when the bytes are valid UTF-8 (a pattern legacy text hardly ever matches);
+  4. Windows-1252.
+
+  A declared label that names UTF-16 is read as UTF-8, and a label that is not an encoding, or names an escape-based encoding, is ignored, as the standard says. Bytes that the encoding cannot decode become U+FFFD. The file is never refused for its bytes.
+- **Why**: every browser and every office suite opens such a file. Government and archive pages written in the 1990s have no declaration and hold a single curly quote in Windows-1252; refusing them as "not valid UTF-8" was a defect, not a safeguard. Windows-1252 is the default of the standard for the Latin-script locales and decodes every byte.
+- **Trade-offs**:
+  - An undeclared page in another legacy encoding (Shift_JIS, GBK) is read as Windows-1252 and shows wrong characters, not an error. The page itself did not state its encoding, and a statistical detector would be a guess with its own failures.
+  - No warning marks the guess. The bytes are valid in the encoding chosen, so no character is replaced.
+  - Plain text and Markdown keep their strict rule (UTF-8, or UTF-16 with a byte order mark): they have no way to declare an encoding, so the user is told to save as UTF-8.
+- **Alternatives rejected**:
+  - **Refusing non-UTF-8 HTML** (the previous behaviour).
+  - **A statistical detector for every encoding**: a new dependency for a guess that the standard leaves to the implementation, and wrong on short pages.
+  - **Always Windows-1252**: breaks the UTF-8 pages that declare nothing.
+- **Verified by**: `tests/html-encoding-sniffing.test.ts` (the legacy bytes come from an independent encoder) and the public row `doc-gov-000824.html`.
+- **Revisit when**: users report undeclared East Asian pages, which would justify a detector for them.
+
+## 20. Damaged office files
+
+- **Status**: Implemented (#742).
+- **Decision**: a document that is damaged in a way mature readers read through is read through, and what was read is reported when it matters.
+  - **RTF control-word parameters** beyond the 32-bit range are clamped to its largest value. A writer in the wild emits a 19-digit character expansion. No parameter of that size has a meaning that a clamp changes (a clamped `\bin` length still fails when it runs past the end of the file).
+  - **RTF groups that close early**: when the document group closes before the end of the file and RTF content (a group or a control word) follows, the reader keeps reading and one warning says so. Other trailing data is still refused.
+- **Why**: users convert the files they have, and the reference office suite opens them. Refusing the document for one parameter loses all of it. For the early close, the suite stops at the stray brace and drops the rest of the text; keeping the rest loses nothing the file holds.
+- **Trade-offs**:
+  - A document with a structural error is read with the same trust as a clean one. The warning is the only mark.
+  - Reading past an early close can show content the suite hides. The file contains it, and the warning says where the structure broke.
+- **Alternatives rejected**:
+  - **Refusing the document**, which made the user's file unusable for one bad number.
+  - **Stopping at the early close** as the reference does: the output would lose half of the text without a trace.
+- **Verified by**: `tests/rtf-text-extraction.test.ts` (including the office suite as the oracle of what a clamped parameter reads as) and the public row `doc-lo-footnotes.rtf`.
+- **Revisit when**: a damaged file reads wrongly after a clamp, or QA decides that structural errors must fail.
+
+## 21. Charts, notes and sheets in PDF
+
+- **Status**: Implemented (#742).
+- **Decision**: the in-process PDF writers draw all the text a document shows.
+  - **Charts** (OOXML charts of documents, workbooks and slides; charts embedded in 97-2003 presentations, whether stored as an Excel chart or as an OpenDocument chart) are drawn with their title, axis titles, category names, series names and a labelled value axis. A pie lists the name of each slice beside its colour. A chart in a workbook is drawn below its sheet. A chart that cannot be read is reported as a warning and the rest of the slide is kept.
+  - **Notes**: a note mark is drawn smaller and raised, and the notes of a block are set as a list that hangs each mark beside its text.
+  - **Sheets**: every worksheet of a 97-2003 workbook is its own table with its name, a column is never narrower than its longest word (up to a page-wide column), and a table wider than a page continues in further column groups.
+  - **Prose after tables and drawings** starts at the margin.
+- **Why**: text a document shows but the PDF omits is lost content, and the users compare the PDF with the one the office suite makes. A word cut in two by a narrow column cannot be searched or copied. Worksheets laid over each other lost the text of all but the last.
+- **Trade-offs**:
+  - A column group repeats the header rows and makes a wide sheet longer than one squeezed onto a page. Squeezing cut words.
+  - The chart drawing is a plain vector rendering, not a copy of the application's look.
+  - The text targets of 97-2003 workbooks still lay the worksheets over each other (a sheet-aware text output needs a product decision on the sheet separators; the OOXML workbook already names its sheets).
+- **Alternatives rejected**:
+  - **A data table in place of the chart**: it shows numbers, not the chart the file holds.
+  - **Squeezing columns until the table fits a page**: the previous behaviour, which cut words.
+- **Verified by**: `tests/office-chart-text.test.ts`, `tests/biff-chart.test.ts`, `tests/xls-multi-sheet-pdf.test.ts`, `tests/pdf-table-word-breaks.test.ts`, `tests/docx-pdf-layout.test.ts`, and the public document rows of #742.
+- **Revisit when**: the chart drawing needs the look of the application's charts, or the text targets of workbooks are made sheet-aware.

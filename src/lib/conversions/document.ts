@@ -39,6 +39,7 @@ import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { characterWeightedConfidence } from './ocr-calibration';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
 import { parseHtmlToPdfBlocks } from './html-blocks';
+import { decodeHtmlInput } from './html-encoding';
 import { decodeTextInput } from './text-input';
 import { markdownToSafeHtml } from './markdown-pdf';
 import { renderMarkdownFragment } from './markdown';
@@ -580,6 +581,9 @@ export async function convertDocument(
     textContent = extractTextFromDoc(inputBuffer);
   } else if (src === 'tex') {
     textContent = extractTextFromTex(inputBuffer.toString('utf-8'));
+  } else if (HTML_SOURCE_FORMATS.has(src)) {
+    // HTML declares its own encoding (or none): the standard's sniffing reads it, and no byte refuses the document.
+    textContent = decodeHtmlInput(inputBuffer);
   } else if (STRICT_TEXT_PDF_SOURCES.has(src) && tgt === 'pdf') {
     // Rendered text must be exactly the input text: non-UTF-8 bytes fail instead of becoming mojibake.
     textContent = decodeTextInput(inputBuffer);
@@ -594,12 +598,12 @@ export async function convertDocument(
 
   // Convert to Plain Text
   if (tgt === 'txt') {
-    const cleanText =
-      src === 'html'
-        ? stripHtmlTags(textContent)
-        : src === 'md'
-        ? stripMarkdownSyntax(textContent)
-        : textContent;
+    let cleanText = textContent;
+    if (HTML_SOURCE_FORMATS.has(src)) {
+      cleanText = stripHtmlTags(textContent);
+    } else if (src === 'md') {
+      cleanText = stripMarkdownSyntax(textContent);
+    }
     const buffer = Buffer.from(cleanText, 'utf-8');
     return {
       buffer,
@@ -630,7 +634,7 @@ export async function convertDocument(
 
   // Convert to Markdown
   if (tgt === 'md') {
-    const md = src === 'html' ? htmlToMarkdown(textContent) : textContent;
+    const md = HTML_SOURCE_FORMATS.has(src) ? htmlToMarkdown(textContent) : textContent;
     const buffer = Buffer.from(md, 'utf-8');
     return {
       buffer,
@@ -741,8 +745,8 @@ function escapeHtml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-/** Text sources decoded strictly (UTF-8, or UTF-16 with a byte order mark) when rendered to PDF. */
-const STRICT_TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm']);
+/** Text sources decoded strictly (UTF-8, or UTF-16 with a byte order mark) when rendered to PDF. HTML is not one: it is decoded by encoding sniffing. */
+const STRICT_TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md']);
 /** Source formats parsed as HTML when rendered to PDF. */
 const HTML_SOURCE_FORMATS: ReadonlySet<string> = new Set(['html', 'htm']);
 const MARKDOWN_SOURCE_FORMAT = 'md';

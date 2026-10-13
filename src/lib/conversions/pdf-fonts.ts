@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
 import { ConversionFailedError, EngineUnavailableError, FontCoverageError } from '../types';
+import { reportConversionWarning } from './conversion-warnings';
 import { hasComplexTextScript } from './ctl';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 import { ShapingBudget } from './text-shaping/limits';
@@ -124,6 +125,8 @@ const MAX_COMBINING_MARKS = 32;
 const COMBINING_MARK = /\p{M}/u;
 /** Code points no font can render: unassigned (including noncharacters), private-use and lone surrogates. */
 const NON_FONTABLE_CODE_POINT = /[\p{Cn}\p{Co}\p{Cs}]/u;
+const NON_FONTABLE_CODE_POINTS = /[\p{Cn}\p{Co}\p{Cs}]/gu;
+const REPLACEMENT_CHARACTER = '\uFFFD';
 
 /** Minimal surface of the fontkit font objects that pdfkit itself uses. */
 interface FontkitFace {
@@ -171,13 +174,18 @@ export interface PdfFontRun {
   readonly text: string;
   readonly face: PdfFontFace;
   readonly link?: string;
+  readonly superscript?: boolean;
 }
 
-/** A piece of text, optionally a hyperlink. */
+/** A piece of text, optionally a hyperlink or a superscript (a note mark), which is drawn smaller than the text it follows. */
 export interface PdfTextSegment {
   readonly text: string;
   readonly link?: string;
+  readonly superscript?: boolean;
 }
+
+/** Size of a superscript run relative to the text around it. */
+const SUPERSCRIPT_SCALE = 0.7;
 
 /** An installed face from the fontconfig listing with its character set as sorted [first, last] pairs. */
 interface IndexedFontFace {
@@ -467,6 +475,17 @@ function assertFontable(codePoint: number): void {
   }
 }
 
+/**
+ * Replaces each code point no font can render with U+FFFD and reports it once to the running conversion (policy 7: the
+ * document still converts, and the mark is honest about the character that was lost).
+ */
+function replaceNonFontableCharacters(text: string): string {
+  return text.replace(NON_FONTABLE_CODE_POINTS, (ch) => {
+    reportConversionWarning(`Replaced ${formatCodePoint(ch.codePointAt(0) as number)} with U+FFFD: no font can draw this unassigned or private-use code point.`);
+    return REPLACEMENT_CHARACTER;
+  });
+}
+
 function uncoveredError(codePoint: number): EngineUnavailableError | FontCoverageError {
   // Text that needs shaping has no other engine to try, so a missing glyph is a request the fonts cannot serve (400).
   if (hasComplexTextScript(String.fromCodePoint(codePoint))) {
@@ -508,18 +527,19 @@ function glyphCodePoints(text: string): number[] {
 }
 
 /**
- * Throws ConversionFailedError for code points no font can render and EngineUnavailableError for
- * the first character no installed font covers.
+ * Throws EngineUnavailableError (or FontCoverageError for complex scripts) at the first character
+ * no installed font covers; non-fontable code points are checked as U+FFFD, which the writer draws
+ * in their place.
  */
 export function assertFontCoverage(text: string, customFontPath?: string): void {
-  for (const cp of glyphCodePoints(toDrawableText(text))) {
+  for (const cp of glyphCodePoints(toDrawableText(text).replace(NON_FONTABLE_CODE_POINTS, REPLACEMENT_CHARACTER))) {
     if (!faceFor(cp, customFontPath)) throw uncoveredError(cp);
   }
 }
 
 /** Code point of the first character no installed font covers, or null when all are covered. */
 export function findUncoveredCodePoint(text: string, customFontPath?: string): number | null {
-  for (const cp of glyphCodePoints(toDrawableText(text))) {
+  for (const cp of glyphCodePoints(toDrawableText(text).replace(NON_FONTABLE_CODE_POINTS, REPLACEMENT_CHARACTER))) {
     if (!faceFor(cp, customFontPath)) return cp;
   }
   return null;
@@ -552,25 +572,25 @@ function withSupportedSelectors(text: string, face: PdfFontFace): string {
   return out;
 }
 
-function pushRun(runs: PdfFontRun[], text: string, face: PdfFontFace, link: string | undefined): void {
+function pushRun(runs: PdfFontRun[], text: string, face: PdfFontFace, segment: PdfTextSegment): void {
   const kept = withSupportedSelectors(text, face);
-  if (kept) runs.push({ text: kept, face, link });
+  if (kept) runs.push({ text: kept, face, link: segment.link, ...(segment.superscript ? { superscript: true } : {}) });
 }
 
 /**
  * Splits drawable segments into runs, one font per run. A segment whose characters one face
  * covers is a single run; otherwise each character takes the current run's face when it covers
- * the character, else the first face that does. Throws ConversionFailedError for code points no
- * font can render and EngineUnavailableError at the first character no installed font covers.
+ * the character, else the first face that does. A code point no font can render becomes U+FFFD (and is reported
+ * as a warning); EngineUnavailableError is thrown at the first character no installed font covers.
  */
 export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFontPath?: PdfPreferredFont): PdfFontRun[] {
   const runs: PdfFontRun[] = [];
   for (const segment of segments) {
-    const text = toDrawableText(segment.text);
+    const text = replaceNonFontableCharacters(toDrawableText(segment.text));
     if (text.length === 0) continue;
     const single = singleCoveringFace(glyphCodePoints(text), customFontPath);
     if (single) {
-      pushRun(runs, text, single, segment.link);
+      pushRun(runs, text, single, segment);
       continue;
     }
     let current: PdfFontFace | null = null;
@@ -583,11 +603,11 @@ export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFon
       }
       const face = faceFor(cp, customFontPath);
       if (!face) throw uncoveredError(cp);
-      if (current && buffer) pushRun(runs, buffer, current, segment.link);
+      if (current && buffer) pushRun(runs, buffer, current, segment);
       buffer = current ? ch : buffer + ch;
       current = face;
     }
-    if (current && buffer) pushRun(runs, buffer, current, segment.link);
+    if (current && buffer) pushRun(runs, buffer, current, segment);
   }
   return runs;
 }
@@ -651,13 +671,14 @@ function needsGlyphToShape(codePoint: number): boolean {
 
 /**
  * Partitions shapable text (see toShapableText) into stretches that one face covers, so that every offset belongs to
- * exactly one range. Invisible characters never need a glyph and join their neighbour's range. Throws
- * ConversionFailedError for code points no font can render and FontCoverageError (400) at the first character no
- * installed font covers.
+ * exactly one range. Invisible characters never need a glyph and join their neighbour's range; code points no font can
+ * render are replaced with U+FFFD (and reported as a warning). Throws FontCoverageError (400) or EngineUnavailableError
+ * at the first character no installed font covers.
  */
 export function fontRangesForShaping(text: string, customFontPath?: PdfPreferredFont): PdfFontRange[] {
-  const needed = glyphCodePoints(text.replace(NON_RENDERING_CHARACTERS, ''));
-  const specific = customFontPath === undefined && hasComplexTextScript(text) ? scriptSpecificFace(needed) : null;
+  const clean = replaceNonFontableCharacters(text);
+  const needed = glyphCodePoints(clean.replace(NON_RENDERING_CHARACTERS, ''));
+  const specific = customFontPath === undefined && hasComplexTextScript(clean) ? scriptSpecificFace(needed) : null;
   const single = specific ?? singleCoveringFace(needed, customFontPath);
   if (single) return text.length > 0 ? [{ start: 0, end: text.length, face: single }] : [];
 
@@ -666,7 +687,7 @@ export function fontRangesForShaping(text: string, customFontPath?: PdfPreferred
   let rangeStart = 0;
   let index = 0;
   for (const ch of text) {
-    const cp = ch.codePointAt(0) as number;
+    const cp = (NON_FONTABLE_CODE_POINT.test(ch) ? REPLACEMENT_CHARACTER.codePointAt(0) : ch.codePointAt(0)) as number;
     if (needsGlyphToShape(cp) && !(current && current.font.hasGlyphForCodePoint(cp))) {
       const face = faceFor(cp, customFontPath);
       if (!face) throw uncoveredError(cp);
@@ -832,7 +853,7 @@ export class PdfUnicodeTextWriter {
     const primary = orderedFaces(this.customFontPath)[0];
     if (!primary) throw uncoveredError(SPACE);
     const segments = (typeof content === 'string' ? [{ text: content }] : content).map((segment) => ({
-      text: toShapableText(segment.text),
+      text: replaceNonFontableCharacters(toShapableText(segment.text)),
       link: segment.link,
     }));
     return layoutShapedText({
@@ -884,12 +905,16 @@ export class PdfUnicodeTextWriter {
       return;
     }
     const runs = this.layoutRuns(content, this.lineWidth(options, x));
+    const baseSize = this.currentFontSize();
     runs.forEach((run, index) => {
       this.useFace(run.face);
+      this.doc.fontSize(run.superscript ? baseSize * SUPERSCRIPT_SCALE : baseSize);
       const runOptions: PDFKit.Mixins.TextOptions = {
         ...(index === 0 ? options : {}),
         link: run.link ?? null,
         underline: Boolean(run.link) || Boolean(options.underline),
+        // The alphabetic baseline puts the baseline of the smaller run at the top of the line: raised, as a note mark is.
+        ...(run.superscript ? { baseline: 'alphabetic' as const } : {}),
         continued: index < runs.length - 1,
       };
       if (index === 0 && x !== undefined && y !== undefined) {
@@ -898,6 +923,7 @@ export class PdfUnicodeTextWriter {
         this.doc.text(run.text, runOptions);
       }
     });
+    this.doc.fontSize(baseSize);
   }
 
   /**

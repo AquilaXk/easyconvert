@@ -177,6 +177,7 @@ import {
   validateMultiVolumeSequence,
 } from './archive';
 
+import { withConversionWarnings } from './conversion-warnings';
 import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
 import {
   performOcr,
@@ -409,11 +410,21 @@ export {
   estimateCctFromWhiteBalance,
 } from './image';
 
-export async function convertFile(
+export function convertFile(
   inputBuffer: Buffer,
   sourceFormat: string,
   targetFormat: string,
   options: ConversionOptions = {},
+  originalFilename: string
+): Promise<ConversionResult> {
+  return withConversionWarnings(() => convertFileInScope(inputBuffer, sourceFormat, targetFormat, options, originalFilename));
+}
+
+async function convertFileInScope(
+  inputBuffer: Buffer,
+  sourceFormat: string,
+  targetFormat: string,
+  options: ConversionOptions,
   originalFilename: string
 ): Promise<ConversionResult> {
   const src = sourceFormat.toLowerCase().replace(/^\./, '').trim();
