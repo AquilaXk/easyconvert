@@ -42227,8 +42227,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 17.389246,
-      "delta": -6.246665499999999,
+      "ours": 23.632749,
+      "delta": 0,
       "ratio": null
     },
     "vector/class-images->pdf/ssim": {
@@ -42237,8 +42237,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.7724085,
-      "delta": -0.14489549999999995,
+      "ours": 0.917253,
+      "delta": 0,
       "ratio": null
     },
     "vector/class-images->png/converts": {
@@ -42257,8 +42257,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 14.543215499999999,
-      "delta": -5.211992000000002,
+      "ours": 19.7933915,
+      "delta": -0.000013000000002705292,
       "ratio": null
     },
     "vector/class-images->png/ssim": {
@@ -42267,8 +42267,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.7305725,
-      "delta": -0.15565850000000003,
+      "ours": 0.8859435,
+      "delta": 0.000004000000000004,
       "ratio": null
     },
     "vector/class-markers->pdf/converts": {
@@ -42347,8 +42347,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 26.8086845,
-      "delta": 0,
+      "ours": 29.833322,
+      "delta": 3.024248499999999,
       "ratio": null
     },
     "vector/class-masking->pdf/ssim": {
@@ -42357,8 +42357,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.9647140000000001,
-      "delta": 0,
+      "ours": 0.987625,
+      "delta": 0.02289074999999996,
       "ratio": null
     },
     "vector/class-masking->png/converts": {
@@ -42377,8 +42377,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 23.857180500000002,
-      "delta": -0.41829424999999887,
+      "ours": 26.75075125,
+      "delta": 2.4660699999999984,
       "ratio": null
     },
     "vector/class-masking->png/ssim": {
@@ -42387,8 +42387,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.95580225,
-      "delta": -0.003965250000000031,
+      "ours": 0.9859915,
+      "delta": 0.02624424999999997,
       "ratio": null
     },
     "vector/class-patterns->pdf/converts": {
@@ -42467,7 +42467,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 30.429125399999997,
+      "ours": 30.4291264,
       "delta": 0,
       "ratio": null
     },
@@ -42477,7 +42477,7 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.9972402,
+      "ours": 0.9972398,
       "delta": 0,
       "ratio": null
     },
@@ -42497,8 +42497,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 23.4287924,
-      "delta": -3.250519999999998,
+      "ours": 26.690101199999997,
+      "delta": 0.001196399999997766,
       "ratio": null
     },
     "vector/class-shapes->png/ssim": {
@@ -42507,8 +42507,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.939048,
-      "delta": -0.04830240000000008,
+      "ours": 0.9872506,
+      "delta": 0.000014000000000069512,
       "ratio": null
     },
     "vector/class-strokes->pdf/converts": {
@@ -42647,8 +42647,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 16.987143,
-      "delta": 0,
+      "ours": 29.0844,
+      "delta": 12.096993999999999,
       "ratio": null
     },
     "vector/vec-clipPath-clip-path-on-children.svg->pdf/ssim": {
@@ -42657,8 +42657,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.889516,
-      "delta": 0,
+      "ours": 0.981114,
+      "delta": 0.09156300000000006,
       "ratio": null
     },
     "vector/vec-clipPath-clip-path-on-children.svg->png/converts": {
@@ -42677,8 +42677,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 15.09195,
-      "delta": -1.6853179999999988,
+      "ours": 26.64267,
+      "delta": 9.864466999999998,
       "ratio": null
     },
     "vector/vec-clipPath-clip-path-on-children.svg->png/ssim": {
@@ -42687,8 +42687,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.865198,
-      "delta": -0.015907000000000004,
+      "ours": 0.986146,
+      "delta": 0.10506799999999994,
       "ratio": null
     },
     "vector/vec-clipPath-clip-rule-evenodd.svg->pdf/converts": {
@@ -43067,8 +43067,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 8.903656,
-      "delta": -12.493331,
+      "ours": 21.397787,
+      "delta": 0,
       "ratio": null
     },
     "vector/vec-image-embedded-svg.svg->pdf/ssim": {
@@ -43077,8 +43077,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.586175,
-      "delta": -0.289791,
+      "ours": 0.875952,
+      "delta": 0,
       "ratio": null
     },
     "vector/vec-image-embedded-svg.svg->png/converts": {
@@ -43097,8 +43097,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 8.668096,
-      "delta": -10.423968,
+      "ours": 19.083209,
+      "delta": -0.000005999999999062311,
       "ratio": null
     },
     "vector/vec-image-embedded-svg.svg->png/ssim": {
@@ -43107,8 +43107,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.537136,
-      "delta": -0.31132100000000007,
+      "ours": 0.847983,
+      "delta": 0.000006000000000061512,
       "ratio": null
     },
     "vector/vec-linearGradient-default-attributes.svg->pdf/converts": {
@@ -43987,7 +43987,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 30.285073,
+      "ours": 30.285038,
       "delta": 0,
       "ratio": null
     },
@@ -43997,7 +43997,7 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.996706,
+      "ours": 0.996699,
       "delta": 0,
       "ratio": null
     },
@@ -44017,8 +44017,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 10.466467,
-      "delta": -16.255516999999998,
+      "ours": 26.711569,
+      "delta": 0.002857999999999805,
       "ratio": null
     },
     "vector/vec-rect-mm-values.svg->png/ssim": {
@@ -44027,8 +44027,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.746058,
-      "delta": -0.241533,
+      "ours": 0.987545,
+      "delta": 0.00004199999999998649,
       "ratio": null
     },
     "vector/vec-rect-negative-rx-and-ry-attributes-resolving.svg->pdf/converts": {

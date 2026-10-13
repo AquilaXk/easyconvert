@@ -470,3 +470,24 @@ Quality evidence
   - The service's converter changes how it writes alpha or reads profiles.
   - Users report colour differences in untagged files.
 
+## 23. Embedded SVG images, physical units and child clip paths
+
+- **Status**: Implemented (#746).
+- **Decision**:
+  - **Embedded SVG images (`<image href="data:image/svg+xml,...">`)**: a `data:image/svg+xml` URI on an `<image>` element is decoded, verified to be an SVG document within the input character limit, recursively sanitized through the SVG sanitizer (with bounded nesting depth), and re-encoded as `data:image/svg+xml;base64,...`. On every other element (`<a>`, `<use>`, `<feImage>`, animation attributes), `data:image/svg+xml` remains neutralized to `href="#"`.
+  - **Physical CSS length units (`mm`, `cm`, `in`, `pt`, `pc`, `Q`)**: absolute CSS length units on SVG geometry and presentation attributes are converted to user units at the CSS Values and Units ratio of 96 user units per inch before raster or PDF rendering, independent of the rasterization density (such as 72 or 300 dpi).
+  - **Child `clip-path` inside `<clipPath>`**: a `<clipPath>` whose child shapes carry their own `clip-path="url(#...)"` attributes (and is not itself referenced inside another `<clipPath>`) is lowered into a white luminance `<mask>` before rendering so the rasterizer composites the union of the clipped children.
+- **Why**:
+  - Neutralizing `data:image/svg+xml` on `<image>` dropped embedded vector sub-drawings completely, whereas sanitizing the decoded inner SVG through the same sanitizer strips scripts, event handlers, and external references while preserving safe geometry.
+  - Setting the native SVG renderer's DPI to 72 or 300 caused it to scale `mm`/`cm`/`in`/`pt`/`pc` attributes inside `viewBox` user space at 72 or 300 user units per inch instead of the CSS standard 96 user units per inch.
+  - The native SVG renderer's clipping path builder cannot form the union of multiple child shapes inside `<clipPath>` when those children carry their own `clip-path`; lowering the outer `<clipPath>` to a luminance `<mask>` preserves the union.
+- **Trade-offs**:
+  - Recursive sanitization decodes and re-encodes embedded SVG `data:` URIs on `<image>` elements.
+  - Lowering a `<clipPath>` with clipped children into a luminance `<mask>` computes an alpha mask rather than a vector clip outline in PDF rasterization.
+- **Alternatives rejected**:
+  - **Allowing unsanitized `data:image/svg+xml` on `<image>`**: would allow script or external-reference payloads inside the embedded SVG.
+  - **Neutralizing all `data:image/svg+xml` URIs on `<image>`**: broke drawings that embed vector icons or sub-diagrams via `<image>`.
+- **Verified by**: `tests/svg-rendering-units-embed-clip.test.ts` and the public vector rows `vec-rect-mm-values.svg`, `vec-image-embedded-svg.svg`, and `vec-clipPath-clip-path-on-children.svg`.
+- **Revisit when**: the upstream native SVG renderer fixes union clipping of `<clipPath>` children carrying `clip-path` or decouples CSS physical unit conversion from output rasterization DPI.
+
+

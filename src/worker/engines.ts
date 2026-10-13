@@ -79,6 +79,7 @@ import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, toPoppler
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
+import { normalizeSvgForRendering } from '../lib/conversions/svg-geometry';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES,
   assertCompleteDecodedImage,
@@ -2121,7 +2122,7 @@ export async function convertWithNativeSvg(
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
   const timeout = Math.min(stageTimeoutMs(options, SVG_DEFAULT_TIMEOUT_MS), SVG_MAX_TIMEOUT_MS);
-  const svg = sanitizeSvgDocument(readRawInputBuffer(input).toString('utf-8'));
+  const svg = normalizeSvgForRendering(sanitizeSvgDocument(readRawInputBuffer(input).toString('utf-8')));
 
   return withSandboxDir('easyconvert-svg-', async (tempDir) => {
     const inputPath = path.join(tempDir, 'input.svg');
