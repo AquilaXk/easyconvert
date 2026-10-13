@@ -430,3 +430,23 @@ Quality evidence
   - **Squeezing columns until the table fits a page**: the previous behaviour, which cut words.
 - **Verified by**: `tests/office-chart-text.test.ts`, `tests/biff-chart.test.ts`, `tests/xls-multi-sheet-pdf.test.ts`, `tests/pdf-table-word-breaks.test.ts`, `tests/docx-pdf-layout.test.ts`, and the public document rows of #742.
 - **Revisit when**: the chart drawing needs the look of the application's charts, or the text targets of workbooks are made sheet-aware.
+
+## 22. WOFF/WOFF2 font compression and colour bitmap fonts
+
+- **Status**: Implemented (#747).
+- **Decision**:
+  - **WOFF 1.0 per-table Deflate**: outline and general tables are compressed with native `zlib` at level 9 (`Z_BEST_COMPRESSION`), while 16-bit index, layout, and variation tables (`VDMX`, `EBLC`, `EBDT`, `gvar`, `HVAR`, `COLR`, `CPAL`, and `GPOS`/`GSUB`/`GDEF`/`loca`/`hmtx` tables of at least 10 KB) are compressed with RFC 1951 3-byte LZ77 matching (`pako.deflate`).
+  - **WOFF2 Brotli quality threshold**: the uncompressed stream size ceiling for Brotli quality 11 (`WOFF2_BROTLI_MAX_QUALITY_BYTES`) is raised from 4 MB to 8 MB so single-script CJK OpenType/CFF fonts (around 4.5 MB) receive quality 11 compression like the reference encoder.
+  - **Colour and bitmap-only SFNT fonts**: when converting to TrueType (`.ttf`), an SFNT font that carries bitmap glyph tables (`CBDT`+`CBLC`, `EBDT`+`EBLC`, or `sbix`) without `glyf`/`loca` or `CFF ` outlines is serialized as a TrueType-version SFNT container rather than rejected for missing outlines.
+- **Why**:
+  - Node.js bundles a zlib fork whose SIMD match finder requires 4-byte minimum LZ77 matches (`MIN_MATCH = 4`), whereas the reference `sfnt2woff` tool links standard `libz` (`MIN_MATCH = 3`), which finds 3-byte matches across 16-bit big-endian offset/value tables and shrinks `GPOS`/`gvar` tables by an additional 5 to 12 %.
+  - A 4.5 MB CJK CFF font fell just above the 4 MB threshold and dropped to Brotli quality 9 (`0.81` ratio vs `0.74` at quality 11).
+  - Colour emoji fonts (`CBDT`/`CBLC`) have no outline tables by design and must round-trip cleanly between WOFF/WOFF2 and TTF.
+- **Trade-offs**:
+  - Pure-JS 3-byte LZ77 Deflate on 16-bit layout tables is slightly slower than native C `zlib`, and Brotli quality 11 on 4 to 8 MB CJK fonts takes longer than quality 9, while remaining within the throughput parity budget.
+- **Alternatives rejected**:
+  - **Native `zlib` level 9 alone for WOFF 1.0**: still leaves 4-byte minimum matching on 16-bit tables and falls short of `sfnt2woff` on `Lato` (`0.520` vs `0.510`).
+  - **Synthesizing dummy empty `glyf`/`loca` tables for bitmap-only fonts**: mutates the font's table set and fails byte-exact SFNT table round-trip checks.
+- **Verified by**: `tests/font-woff2-encode.test.ts` and the public `font` parity suite (`font-lato-regular.ttf->woff`, `font-notosansjp-regular.otf->woff2`, `font-notocoloremoji-flags.ttf.woff->ttf`, and `font-notocoloremoji-flags.ttf.woff2->ttf`).
+- **Revisit when**: Node.js exposes a native 3-byte match option in `node:zlib` or variable CFF2-to-TrueType outline conversion is added.
+
