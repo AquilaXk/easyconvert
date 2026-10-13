@@ -1702,11 +1702,33 @@ const ATTR_ID_PATTERN = /\bid\s*=\s*(?:"([^"]+)"|'([^']+)')/i;
 const ATTR_CLIP_UNITS_PATTERN = /\bclipPathUnits\s*=\s*(?:"([^"]+)"|'([^']+)')/i;
 const ATTR_TRANSFORM_PATTERN = /\btransform\s*=\s*(?:"([^"]+)"|'([^']+)')/i;
 const ATTR_CLIP_RULE_PATTERN = /\bclip-rule\s*=\s*(?:"([^"]+)"|'([^']+)')/i;
+const SAFE_XML_ID_PATTERN = /^[A-Za-z_][\w.:-]*$/;
+const MASK_OVERRIDE_STYLE_PROP_PATTERN = /^(?:fill|fill-opacity|opacity|stroke|fill-rule|clip-rule)\s*:/i;
+
+function escapeMaskAttr(val: string): string {
+  return val.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 function rewriteClipChildTagToWhiteMaskShape(tagText: string): string {
   const clipRuleMatch = ATTR_CLIP_RULE_PATTERN.exec(tagText);
-  const fillRule = clipRuleMatch && (clipRuleMatch[1] ?? clipRuleMatch[2])?.trim().toLowerCase() === 'evenodd' ? 'evenodd' : 'nonzero';
-  const stripped = tagText.replace(
+  let fillRule =
+    clipRuleMatch && (clipRuleMatch[1] ?? clipRuleMatch[2])?.trim().toLowerCase() === 'evenodd' ? 'evenodd' : 'nonzero';
+  const strippedStyle = tagText.replace(
+    /(\sstyle\s*=\s*)(?:"([^"]*)"|'([^']*)')/gi,
+    (_whole, prefix: string, dval?: string, sval?: string) => {
+      const raw = dval ?? sval ?? '';
+      const quote = dval !== undefined ? '"' : "'";
+      const kept: string[] = [];
+      for (const decl of raw.split(';')) {
+        const trimmed = decl.trim();
+        if (trimmed === '') continue;
+        if (/^clip-rule\s*:\s*evenodd\b/i.test(trimmed)) fillRule = 'evenodd';
+        if (!MASK_OVERRIDE_STYLE_PROP_PATTERN.test(trimmed)) kept.push(trimmed);
+      }
+      return kept.length === 0 ? '' : `${prefix}${quote}${kept.join(';')}${quote}`;
+    }
+  );
+  const stripped = strippedStyle.replace(
     /\s+(?:fill|fill-opacity|opacity|stroke|fill-rule|clip-rule)\s*=\s*(?:"[^"]*"|'[^']*')/gi,
     ''
   );
@@ -1755,7 +1777,7 @@ function lowerChildClipPathsToMasks(svg: string): string {
         referencedInsideClipPath.add(targetId);
       }
     }
-    if (id) {
+    if (id && SAFE_XML_ID_PATTERN.test(id)) {
       blocks.push({
         fullMatch: match[0],
         start: match.index ?? 0,
@@ -1777,10 +1799,11 @@ function lowerChildClipPathsToMasks(svg: string): string {
   for (const block of eligible) {
     parts.push(svg.slice(copied, block.start));
     const unitsMatch = ATTR_CLIP_UNITS_PATTERN.exec(block.openAttrs);
-    const clipUnits = (unitsMatch?.[1] ?? unitsMatch?.[2] ?? 'userSpaceOnUse').trim();
+    const rawUnits = (unitsMatch?.[1] ?? unitsMatch?.[2] ?? 'userSpaceOnUse').trim();
+    const clipUnits = rawUnits === 'objectBoundingBox' ? 'objectBoundingBox' : 'userSpaceOnUse';
     const transformMatch = ATTR_TRANSFORM_PATTERN.exec(block.openAttrs);
     const transformVal = transformMatch?.[1] ?? transformMatch?.[2];
-    const transformAttr = transformVal ? ` transform="${transformVal}"` : '';
+    const transformAttr = transformVal ? ` transform="${escapeMaskAttr(transformVal)}"` : '';
     const rewrittenInner = block.inner.replace(
       /<(path|rect|circle|ellipse|polygon|polyline|line|text|use)\b[^>]*>/gi,
       (childTag) => rewriteClipChildTagToWhiteMaskShape(childTag)

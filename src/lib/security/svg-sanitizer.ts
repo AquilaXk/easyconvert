@@ -961,8 +961,17 @@ function stripEventHandlerAttributes(src: string): string {
 const IMAGE_ELEMENT = 'image';
 const HREF_ATTRIBUTE = 'href';
 const DATA_SVG_MIME_PREFIX = 'data:image/svg+xml';
-const MAX_EMBEDDED_SVG_DEPTH = 4;
+const MAX_EMBEDDED_SVG_DEPTH = 2;
+const MAX_EMBEDDED_SVG_COUNT = 32;
+const MAX_TOTAL_EMBEDDED_SVG_CHARS = MAX_SVG_INPUT_CHARS;
 const BASE64_PAYLOAD_PATTERN = /^[A-Za-z0-9+/]+=*$/;
+
+interface EmbeddedSvgBudget {
+  count: number;
+  totalChars: number;
+  /** Canonical `data:image/svg+xml;base64,...` attribute values already sanitized in this run. */
+  sanitizedValues: Set<string>;
+}
 
 function attributeLocalName(attributeName: string): string {
   return localNameOf(attributeName.replace(/^["'=]+/, ''));
@@ -999,16 +1008,27 @@ function decodeEmbeddedSvgPayload(rawValue: string): string | null {
 }
 
 /** Sanitizes an embedded `data:image/svg+xml` URI on an `<image>` element, or neutralizes it to `href="#"`. */
-function sanitizeEmbeddedSvgHref(attribute: TagAttribute, depth: number): string {
-  if (depth >= MAX_EMBEDDED_SVG_DEPTH) return 'href="#"';
+function sanitizeEmbeddedSvgHref(attribute: TagAttribute, depth: number, budget: EmbeddedSvgBudget): string | null {
+  if (budget.sanitizedValues.has(attribute.value)) return null;
+  if (depth >= MAX_EMBEDDED_SVG_DEPTH || budget.count >= MAX_EMBEDDED_SVG_COUNT) return 'href="#"';
   const innerSvg = decodeEmbeddedSvgPayload(attribute.value);
-  if (innerSvg === null || innerSvg.length === 0 || innerSvg.length > MAX_SVG_INPUT_CHARS || !isSvg(innerSvg)) {
+  if (
+    innerSvg === null ||
+    innerSvg.length === 0 ||
+    innerSvg.length > MAX_SVG_INPUT_CHARS ||
+    budget.totalChars + innerSvg.length > MAX_TOTAL_EMBEDDED_SVG_CHARS ||
+    !isSvg(innerSvg)
+  ) {
     return 'href="#"';
   }
-  const cleanInner = sanitizeSvgStringAtDepth(innerSvg, depth + 1);
+  budget.count += 1;
+  budget.totalChars += innerSvg.length;
+  const cleanInner = sanitizeSvgStringAtDepth(innerSvg, depth + 1, budget);
   if (!isSvg(cleanInner)) return 'href="#"';
+  const encodedValue = `data:image/svg+xml;base64,${Buffer.from(cleanInner, 'utf-8').toString('base64')}`;
+  budget.sanitizedValues.add(encodedValue);
   const canonicalName = /^xlink:href$/i.test(attribute.name) ? attribute.name : HREF_ATTRIBUTE;
-  return `${canonicalName}="data:image/svg+xml;base64,${Buffer.from(cleanInner, 'utf-8').toString('base64')}"`;
+  return `${canonicalName}="${encodedValue}"`;
 }
 
 /** Replacement for an attribute whose value is a dangerous URI, or null when it is left alone. */
@@ -1016,7 +1036,8 @@ function neutralizedAttribute(
   attribute: TagAttribute,
   tagName: string,
   depth: number,
-  originalText: string
+  originalText: string,
+  budget: EmbeddedSvgBudget
 ): string | null {
   const local = attributeLocalName(attribute.name);
   if (LINK_ATTRIBUTES.has(local)) {
@@ -1026,8 +1047,8 @@ function neutralizedAttribute(
       localNameOf(tagName) === IMAGE_ELEMENT &&
       normalizedUri.startsWith(DATA_SVG_MIME_PREFIX)
     ) {
-      const rewritten = sanitizeEmbeddedSvgHref(attribute, depth);
-      return rewritten === originalText ? null : rewritten;
+      const rewritten = sanitizeEmbeddedSvgHref(attribute, depth, budget);
+      return rewritten === null || rewritten === originalText ? null : rewritten;
     }
     return isDangerousUri(normalizedUri) ? 'href="#"' : null;
   }
@@ -1050,7 +1071,7 @@ function neutralizedAttribute(
  * Rewrites href/src, animation value, presentation and style attributes, but only where the tokenizer finds a real attribute
  * inside a real tag; text, comments and attribute values that merely mention them are left untouched.
  */
-function rewriteAttributes(src: string, depth: number): string {
+function rewriteAttributes(src: string, depth: number, budget: EmbeddedSvgBudget): string {
   const parts: string[] = [];
   let copied = 0;
   let search = 0;
@@ -1069,7 +1090,7 @@ function rewriteAttributes(src: string, depth: number): string {
     }
     const tag = readTag(src, lt);
     for (const attribute of tag.attributes) {
-      const replacement = neutralizedAttribute(attribute, tag.name, depth, src.slice(attribute.start, attribute.end));
+      const replacement = neutralizedAttribute(attribute, tag.name, depth, src.slice(attribute.start, attribute.end), budget);
       if (replacement === null) continue;
       parts.push(src.slice(copied, attribute.start), replacement);
       copied = attribute.end;
@@ -1153,19 +1174,19 @@ export function isSvg(input: string | Buffer): boolean {
 /**
  * One full sanitation pass: dangerous markup removal followed by URI and style rewrites.
  */
-function sanitizePass(input: string, depth: number): string {
+function sanitizePass(input: string, depth: number, budget: EmbeddedSvgBudget): string {
   // 1-3. Strip DOCTYPE/ENTITY declarations, executable and embedding elements, and on* event handlers.
   let result = stripDangerousMarkupPass(input);
 
   // 4-6. Rewrite href-like, animation value and style attributes of real tags against dangerous URIs, SSRF and
   // data exfiltration, then clean <style> element bodies.
-  result = rewriteAttributes(result, depth);
+  result = rewriteAttributes(result, depth, budget);
   result = sanitizeStyleElements(result);
 
   return result;
 }
 
-function sanitizeSvgStringAtDepth(svg: string, depth: number): string {
+function sanitizeSvgStringAtDepth(svg: string, depth: number, budget: EmbeddedSvgBudget): string {
   if (!svg || typeof svg !== 'string') return '';
 
   // Every pass strips dangerous markup and then rewrites URIs and styles. A rewrite can join fragments into
@@ -1174,7 +1195,7 @@ function sanitizeSvgStringAtDepth(svg: string, depth: number): string {
   let result = svg;
   let stable = false;
   for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
-    const next = sanitizePass(result, depth);
+    const next = sanitizePass(result, depth, budget);
     if (next === result) {
       stable = true;
       break;
@@ -1191,7 +1212,8 @@ function sanitizeSvgStringAtDepth(svg: string, depth: number): string {
  * Sanitizes an SVG string by stripping dangerous tags, attributes, and script execution vectors.
  */
 export function sanitizeSvgString(svg: string): string {
-  return sanitizeSvgStringAtDepth(svg, 0);
+  const budget: EmbeddedSvgBudget = { count: 0, totalChars: 0, sanitizedValues: new Set() };
+  return sanitizeSvgStringAtDepth(svg, 0, budget);
 }
 
 /**

@@ -47,11 +47,25 @@ describe('SVG embedded <image> sanitization and rendering (#746)', () => {
     expect(corner[1]).toBeGreaterThan(100);
   });
 
-  it('keeps blocking data:image/svg+xml on non-<image> elements and rejects non-SVG payloads', () => {
-    const innerB64 = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>').toString('base64');
-    expect(sanitizeSvgString(`<svg><a href="data:image/svg+xml;base64,${innerB64}"/></svg>`)).toBe('<svg><a href="#"/></svg>');
-    expect(sanitizeSvgString(`<svg><use xlink:href="data:image/svg+xml;base64,${innerB64}"/></svg>`)).toBe('<svg><use href="#"/></svg>');
+  it('keeps blocking data:image/svg+xml on non-<image> elements, rejects non-SVG payloads, and enforces embedded SVG depth/count budgets', () => {
+    const leafSvg = '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>';
+    const leafB64 = Buffer.from(leafSvg).toString('base64');
+    expect(sanitizeSvgString(`<svg><a href="data:image/svg+xml;base64,${leafB64}"/></svg>`)).toBe('<svg><a href="#"/></svg>');
+    expect(sanitizeSvgString(`<svg><use xlink:href="data:image/svg+xml;base64,${leafB64}"/></svg>`)).toBe('<svg><use href="#"/></svg>');
     expect(sanitizeSvgString('<svg><image href="data:image/svg+xml;base64,bm90LWFuLXN2Zw=="/></svg>')).toBe('<svg><image href="#"/></svg>');
+
+    // Depth 2 nested inside depth 1 is neutralized to href="#"
+    const depth2Svg = `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml;base64,${leafB64}"/></svg>`;
+    const depth1Svg = `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml;base64,${Buffer.from(depth2Svg).toString('base64')}"/></svg>`;
+    const rootWithDepth3 = `<svg xmlns="http://www.w3.org/2000/svg"><image href="data:image/svg+xml;base64,${Buffer.from(depth1Svg).toString('base64')}"/></svg>`;
+    const sanitizedRoot = sanitizeSvgDocument(rootWithDepth3);
+    const outerMatch = /data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)/.exec(sanitizedRoot);
+    expect(outerMatch).not.toBeNull();
+    const decodedDepth1 = Buffer.from(outerMatch![1], 'base64').toString('utf-8');
+    const innerMatch = /data:image\/svg\+xml;base64,([A-Za-z0-9+/=]+)/.exec(decodedDepth1);
+    expect(innerMatch).not.toBeNull();
+    const decodedDepth2 = Buffer.from(innerMatch![1], 'base64').toString('utf-8');
+    expect(decodedDepth2).toContain('href="#"');
   });
 });
 
@@ -108,5 +122,21 @@ describe('SVG clipPath with clip-path on children (#746)', () => {
     // Upper-left of the star hole not covered by rect1 (82, 95): must remain unclipped/transparent
     const uncoveredHole = await pixelAt(res.buffer, 82, 95);
     expect(uncoveredHole[3]).toBe(0);
+  });
+
+  it('escapes quotes in transform attributes and strips inline style fill/opacity overrides when lowering to <mask>', () => {
+    const crafted = `<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <clipPath id="c2"><rect width="50" height="50"/></clipPath>
+      <clipPath id="c1" clipPathUnits='userSpaceOnUse" onload="evil()' transform='translate(0,0)" onload="evil()'>
+        <rect width="50" height="50" clip-path="url(#c2)" style="fill:#000000; opacity:0; clip-rule:evenodd; stroke-width:2"/>
+      </clipPath>
+      <rect width="100" height="100" clip-path="url(#c1)"/>
+    </svg>`;
+    const normalized = normalizeSvgForRendering(crafted);
+    expect(normalized).toContain('maskContentUnits="userSpaceOnUse"');
+    expect(normalized).toContain('transform="translate(0,0)&quot; onload=&quot;evil()"');
+    expect(normalized).not.toContain('style="fill:#000000');
+    expect(normalized).toContain('style="stroke-width:2"');
+    expect(normalized).toContain('fill="#ffffff" fill-opacity="1" opacity="1" stroke="none" fill-rule="evenodd"');
   });
 });
