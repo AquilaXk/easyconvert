@@ -1,3 +1,4 @@
+import { inflateSync } from 'node:zlib';
 import { CheckedReader, readCfbStreams, requireCfbStream } from './cfb-streams';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
@@ -8,7 +9,8 @@ import { readCharacterFontRuns, type CharacterFontRun } from './ppt-text-style';
  * Text reader for PowerPoint 97-2003 binary presentations, written from [MS-PPT]. It follows the
  * Current User stream to the newest UserEditAtom, merges the persist directories of every edit, finds
  * the slides through the SlideListWithText of the document, and reads the TextCharsAtom and
- * TextBytesAtom text of each slide in shape order. Master, notes and deleted slides are not read.
+ * TextBytesAtom text of each slide in shape order. Master, notes and deleted slides are not read. The objects a slide embeds
+ * (the compound file of an OLE object such as a chart) are returned as they are stored, for the caller to read.
  */
 
 const LABEL = 'PowerPoint presentation';
@@ -46,6 +48,20 @@ const RT_TEXT_CHARS_ATOM = 0x0fa0;
 const RT_TEXT_BYTES_ATOM = 0x0fa8;
 const RT_OUTLINE_TEXT_REF_ATOM = 0x0f9e;
 const RT_CLIENT_TEXTBOX = 0xf00d;
+const RT_EX_OBJ_LIST = 0x0409;
+const RT_EX_EMBED = 0x0fcc;
+const RT_EX_OLE_OBJ_ATOM = 0x0fc3;
+const RT_EX_OLE_OBJ_STG = 0x1011;
+const RT_EX_OBJ_REF_ATOM = 0x0bc1;
+/** ExOleObjAtom ([MS-PPT] 2.10.12): the object's id on the slides, and the persist id of its storage. */
+const EX_OLE_OBJ_ID_OFFSET = 8;
+const EX_OLE_OBJ_PERSIST_OFFSET = 16;
+const EX_OLE_OBJ_ATOM_MIN_BYTES = 20;
+/** ExOleObjStg: a compressed storage (recInstance 1) starts with its uncompressed size, then a zlib stream. */
+const EX_OLE_OBJ_STG_COMPRESSED = 1;
+const EX_OLE_OBJ_STG_SIZE_BYTES = 4;
+/** Largest embedded object that is inflated; the compound file of a chart is a few hundred kilobytes. */
+export const PPT_MAX_EMBEDDED_OBJECT_BYTES = 64 * 1024 * 1024;
 /** SlideNumber, DateTime, GenericDate, Header, Footer and RTFDateTime meta atoms mark one field character each. */
 const META_ATOM_TYPES: ReadonlySet<number> = new Set([0x0fd8, 0x0ff7, 0x0ff8, 0x0ff9, 0x0ffa, 0x1015]);
 /** SlideListWithTextContainer instance 0 lists the slides; 1 lists masters and 2 lists notes. */
@@ -107,6 +123,8 @@ export interface PptSlide {
   number: number;
   /** Paragraphs of every text shape of the slide, in shape order; empty paragraphs are dropped. */
   texts: string[];
+  /** The compound files of the objects the slide embeds (charts), in shape order. */
+  embedded: Buffer[];
 }
 
 class RecordBudget {
@@ -387,14 +405,19 @@ function readSlideTexts(
   entry: SlideEntry,
   context: TextContext,
   budget: RecordBudget
-): string[] {
+): { texts: string[]; objectIds: number[] } {
   const texts: string[] = [];
+  const objectIds: number[] = [];
   const referenced = new Set<number>();
   const visit = (container: RecordHeader, depth: number): void => {
     if (depth > PPT_MAX_RECORD_DEPTH) {
       throw new LegacyOfficeFormatError(`${LABEL}: records are nested deeper than ${PPT_MAX_RECORD_DEPTH} levels.`);
     }
     for (const child of readChildren(reader, container, budget)) {
+      if (child.recType === RT_EX_OBJ_REF_ATOM && child.recLen >= UINT32_BYTES) {
+        objectIds.push(reader.u32(child.offset + RECORD_HEADER_BYTES));
+        continue;
+      }
       if (child.recVer !== REC_VER_CONTAINER) continue;
       if (child.recType === RT_CLIENT_TEXTBOX) {
         const atoms = readChildren(reader, child, budget);
@@ -423,7 +446,39 @@ function readSlideTexts(
   entry.blocks.forEach((block, index) => {
     if (block && !referenced.has(index)) texts.push(...paragraphsOf(block, context));
   });
-  return texts;
+  return { texts, objectIds };
+}
+
+/** The persist id of the storage of each embedded object, by the id the slides use for it (the ExObjList of the document). */
+function readEmbeddedObjectPersistIds(reader: CheckedReader, document: RecordHeader, budget: RecordBudget): Map<number, number> {
+  const persistIds = new Map<number, number>();
+  for (const list of readChildren(reader, document, budget)) {
+    if (list.recType !== RT_EX_OBJ_LIST || list.recVer !== REC_VER_CONTAINER) continue;
+    for (const embed of readChildren(reader, list, budget)) {
+      if (embed.recType !== RT_EX_EMBED || embed.recVer !== REC_VER_CONTAINER) continue;
+      const atom = readChildren(reader, embed, budget).find((child) => child.recType === RT_EX_OLE_OBJ_ATOM);
+      if (atom && atom.recLen >= EX_OLE_OBJ_ATOM_MIN_BYTES) {
+        persistIds.set(reader.u32(atom.offset + RECORD_HEADER_BYTES + EX_OLE_OBJ_ID_OFFSET), reader.u32(atom.offset + RECORD_HEADER_BYTES + EX_OLE_OBJ_PERSIST_OFFSET));
+      }
+    }
+  }
+  return persistIds;
+}
+
+/** The compound file of an embedded object, or null (with a warning) when its storage is missing or cannot be inflated. */
+function readEmbeddedObject(reader: CheckedReader, chain: EditChain, persistId: number, slideNumber: number, warnings: string[]): Buffer | null {
+  const offset = chain.persist.get(persistId);
+  try {
+    if (offset === undefined) throw new LegacyOfficeFormatError(`${LABEL}: the persist directory has no entry ${persistId} for an embedded object.`);
+    const header = readHeader(reader, offset, reader.length);
+    if (header.recType !== RT_EX_OLE_OBJ_STG) throw new LegacyOfficeFormatError(`${LABEL}: persist entry ${persistId} is not an embedded object.`);
+    const body = Buffer.from(reader.slice(header.offset + RECORD_HEADER_BYTES, header.recLen));
+    if (header.recInstance !== EX_OLE_OBJ_STG_COMPRESSED) return body;
+    return inflateSync(body.subarray(EX_OLE_OBJ_STG_SIZE_BYTES), { maxOutputLength: PPT_MAX_EMBEDDED_OBJECT_BYTES });
+  } catch (error) {
+    warnings.push(`Slide ${slideNumber}: an embedded object could not be read (${error instanceof Error ? error.message : 'unreadable data'}).`);
+    return null;
+  }
 }
 
 /**
@@ -440,10 +495,17 @@ export function readPptSlides(buffer: Buffer, warnings: string[] = []): PptSlide
   const entries = readSlideEntries(documentStream, chain, budget);
   const fontNames = readFontNames(documentStream, persistedRecord(documentStream, chain, chain.docPersistId, RT_DOCUMENT, 'document'), budget);
   const context: TextContext = { fontNames, replaced: new Map(), replacedTotal: 0 };
-  const slides: PptSlide[] = entries.map((entry, i) => ({
-    number: i + 1,
-    texts: readSlideTexts(documentStream, persistedRecord(documentStream, chain, entry.persistId, RT_SLIDE, 'slide'), entry, context, budget),
-  }));
+  const documentRecord = persistedRecord(documentStream, chain, chain.docPersistId, RT_DOCUMENT, 'document');
+  const objectPersistIds = readEmbeddedObjectPersistIds(documentStream, documentRecord, budget);
+  const slides: PptSlide[] = entries.map((entry, i) => {
+    const { texts, objectIds } = readSlideTexts(documentStream, persistedRecord(documentStream, chain, entry.persistId, RT_SLIDE, 'slide'), entry, context, budget);
+    const embedded = objectIds.flatMap((objectId) => {
+      const persistId = objectPersistIds.get(objectId);
+      const object = persistId === undefined ? null : readEmbeddedObject(documentStream, chain, persistId, i + 1, warnings);
+      return object === null ? [] : [object];
+    });
+    return { number: i + 1, texts, embedded };
+  });
   if (slides.length === 0 || slides.every((slide) => slide.texts.length === 0)) {
     throw new LegacyOfficeFormatError(`${LABEL}: the presentation holds no slide text.`);
   }

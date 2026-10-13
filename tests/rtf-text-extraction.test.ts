@@ -5,7 +5,7 @@ import { extractTextFromRtf } from '../src/lib/conversions/office';
 import {
   RTF_MAX_CONTROL_WORD_LENGTH,
   RTF_MAX_GROUP_DEPTH,
-  RTF_MAX_PARAMETER_DIGITS,
+  RTF_MAX_PARAMETER_VALUE,
 } from '../src/lib/conversions/office/rtf-reader';
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
 import { oracleTest } from './helpers/oracle-test';
@@ -175,12 +175,43 @@ describe('RTF fail-closed behaviour', () => {
     expect(extractTextFromRtf(rtf(`{\\rtf1${'{'.repeat(depth)}x${'}'.repeat(depth)}}`))).toBe('x');
   });
 
-  it('rejects an overlong control word and an overlong parameter', () => {
+  it('rejects an overlong control word', () => {
     const longWord = 'a'.repeat(RTF_MAX_CONTROL_WORD_LENGTH + 1);
     expect(() => extractTextFromRtf(rtf(`{\\rtf1 \\${longWord} x}`))).toThrow(/control word is longer/);
-    const longParameter = '1'.repeat(RTF_MAX_PARAMETER_DIGITS + 1);
-    expect(() => extractTextFromRtf(rtf(`{\\rtf1 \\li${longParameter} x}`))).toThrow(/more than 10 digits/);
   });
+
+  it('clamps a parameter beyond the 32-bit range instead of refusing the document', () => {
+    const huge = '9'.repeat(400);
+    expect(extractTextFromRtf(rtf(`{\\rtf1 a\\expndtw-5420746430195647047 b\\li${huge} c\\expndtw-${huge} d}`))).toBe('abcd');
+    expect(RTF_MAX_PARAMETER_VALUE).toBe(2 ** 31 - 1);
+  });
+
+  it('still refuses a \\bin length that runs past the end of the document after clamping', () => {
+    expect(() => extractTextFromRtf(rtf(`{\\rtf1 \\bin${'9'.repeat(30)} x}`))).toThrow(/runs past the end/);
+  });
+
+  oracleTest('reads the same text as the office suite when control word parameters overflow', ['soffice'], () => {
+    const body = `{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times;}}\\f0 Alpha \\expndtw-5420746430195647047 beta \\expndtw${'9'.repeat(25)} gamma\\par}`;
+    const oracle = sofficeConvert(rtf(body), 'rtf', 'txt:Text', 'txt').toString('utf-8');
+    expect(normalizeWhitespace(extractTextFromRtf(rtf(body)))).toBe(normalizeWhitespace(oracle));
+    expect(normalizeWhitespace(oracle)).toBe('Alpha beta gamma');
+  }, 180_000);
+
+  it('keeps reading the groups that follow a stray closing brace that ended the document group early, and says so', async () => {
+    const early = rtf('{\\rtf1\\ansi {\\b one}\\par}}}\n{\\pard two\\par}}\n\\pard three\\par}\n');
+    expect(extractTextFromRtf(early)).toBe('one\ntwo\nthree');
+    const result = await convertFile(early, 'rtf', 'txt', {}, 'early.rtf');
+    expect(result.buffer.toString('utf-8')).toBe('one\ntwo\nthree');
+    expect(result.metadata?.warnings).toEqual(['The RTF document group closes before the end of the file; the groups after it were read as part of the document.']);
+    expect(() => extractTextFromRtf(rtf('{\\rtf1 a}\n{b}}'))).toThrow(/closing brace|unexpected data/);
+  });
+
+  oracleTest('keeps every word the office suite reads from a document whose group closes early, and the words after it', ['soffice'], () => {
+    const body = '{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times;}}\\f0 Alpha beta\\par}\n{\\f0 Gamma delta\\par}';
+    const oracle = normalizeWhitespace(sofficeConvert(rtf(body), 'rtf', 'txt:Text', 'txt').toString('utf-8'));
+    expect(oracle).toBe('Alpha beta');
+    expect(normalizeWhitespace(extractTextFromRtf(rtf(body)))).toBe('Alpha beta Gamma delta');
+  }, 180_000);
 
   it('fails a malformed .rtf conversion with a typed 400 error and never a placeholder', async () => {
     const run = convertFile(Buffer.from('not rtf at all', 'utf-8'), 'rtf', 'txt', {}, 'bad.rtf');
