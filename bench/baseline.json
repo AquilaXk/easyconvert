@@ -7597,8 +7597,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -12.448337753082155,
-      "delta": -12.448337753082155,
+      "ours": 0.2733895750859583,
+      "delta": 0.2733895750859583,
       "ratio": null
     },
     "image/class-deep->avif/bd_rate_ssim": {
@@ -7607,8 +7607,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.708045636962085,
-      "delta": -8.708045636962085,
+      "ours": 0.26724145626832635,
+      "delta": 0.26724145626832635,
       "ratio": null
     },
     "image/class-deep->jpg/bd_rate_psnr": {
@@ -7617,8 +7617,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.987031285685835,
-      "delta": -4.987031285685835,
+      "ours": -2.6444755929780204,
+      "delta": -2.6444755929780204,
       "ratio": null
     },
     "image/class-deep->jpg/bd_rate_ssim": {
@@ -7627,8 +7627,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.831235440845454,
-      "delta": -1.831235440845454,
+      "ours": -1.0373954709039717,
+      "delta": -1.0373954709039717,
       "ratio": null
     },
     "image/class-deep->webp/bd_rate_psnr": {
@@ -7637,8 +7637,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -12.683737479847027,
-      "delta": -12.683737479847027,
+      "ours": -1.2231776118445725,
+      "delta": -1.2231776118445725,
       "ratio": null
     },
     "image/class-deep->webp/bd_rate_ssim": {
@@ -7647,8 +7647,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -12.751019352295136,
-      "delta": -12.751019352295136,
+      "ours": -2.078764914001663,
+      "delta": -2.078764914001663,
       "ratio": null
     },
     "image/class-lineart->avif/bd_rate_psnr": {
@@ -7717,8 +7717,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.083968226252523,
-      "delta": -2.083968226252523,
+      "ours": -0.352844471118464,
+      "delta": -0.352844471118464,
       "ratio": null
     },
     "image/class-photo->avif/bd_rate_ssim": {
@@ -7727,8 +7727,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.7412045244848553,
-      "delta": -1.7412045244848553,
+      "ours": -0.04524760772557303,
+      "delta": -0.04524760772557303,
       "ratio": null
     },
     "image/class-photo->jpg/bd_rate_psnr": {
@@ -7757,8 +7757,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.5454756882590537,
-      "delta": -1.5454756882590537,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/class-photo->webp/bd_rate_ssim": {
@@ -7767,8 +7767,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.547219678484307,
-      "delta": -1.547219678484307,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/class-screen->avif/bd_rate_psnr": {
@@ -7837,8 +7837,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.5528362812610164,
-      "delta": -1.5528362812610164,
+      "ours": -0.6325966200160127,
+      "delta": -0.6325966200160127,
       "ratio": null
     },
     "image/clic-juskteez-vu-1041.png->avif/bd_rate_ssim": {
@@ -7847,8 +7847,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.303012613580956,
-      "delta": -1.303012613580956,
+      "ours": -0.34920729870534517,
+      "delta": -0.34920729870534517,
       "ratio": null
     },
     "image/clic-juskteez-vu-1041.png->avif/bytes": {
@@ -7858,7 +7858,7 @@
         "rel": 0.03
       },
       "ours": 484642,
-      "delta": -2743,
+      "delta": 414,
       "ratio": null
     },
     "image/clic-juskteez-vu-1041.png->avif/psnr": {
@@ -7937,8 +7937,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -0.9003092653638411,
-      "delta": -0.9003092653638411,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-juskteez-vu-1041.png->webp/bd_rate_ssim": {
@@ -7947,8 +7947,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -0.9099074831292464,
-      "delta": -0.9099074831292464,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-juskteez-vu-1041.png->webp/bytes": {
@@ -7958,7 +7958,7 @@
         "rel": 0.03
       },
       "ours": 350140,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-juskteez-vu-1041.png->webp/psnr": {
@@ -7987,8 +7987,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.0220699591447677,
-      "delta": -2.0220699591447677,
+      "ours": 0.1626493660782602,
+      "delta": 0.1626493660782602,
       "ratio": null
     },
     "image/clic-martin-wessely-211.png->avif/bd_rate_ssim": {
@@ -7997,8 +7997,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.1815248901462025,
-      "delta": -2.1815248901462025,
+      "ours": 0.03515181903801512,
+      "delta": 0.03515181903801512,
       "ratio": null
     },
     "image/clic-martin-wessely-211.png->avif/bytes": {
@@ -8087,8 +8087,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.1371958815744385,
-      "delta": -2.1371958815744385,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-martin-wessely-211.png->webp/bd_rate_ssim": {
@@ -8097,8 +8097,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.1428815857085337,
-      "delta": -2.1428815857085337,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-martin-wessely-211.png->webp/bytes": {
@@ -8108,7 +8108,7 @@
         "rel": 0.03
       },
       "ours": 142718,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-martin-wessely-211.png->webp/psnr": {
@@ -8137,8 +8137,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.217661008136996,
-      "delta": -3.217661008136996,
+      "ours": 0.5862744022657962,
+      "delta": 0.5862744022657962,
       "ratio": null
     },
     "image/clic-mullermarc-184.png->avif/bd_rate_ssim": {
@@ -8147,8 +8147,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.4507952909544337,
-      "delta": -3.4507952909544337,
+      "ours": 0.2762974286668163,
+      "delta": 0.2762974286668163,
       "ratio": null
     },
     "image/clic-mullermarc-184.png->avif/bytes": {
@@ -8237,8 +8237,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.518477505761508,
-      "delta": -3.518477505761508,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-mullermarc-184.png->webp/bd_rate_ssim": {
@@ -8247,8 +8247,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.570055605537392,
-      "delta": -3.570055605537392,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-mullermarc-184.png->webp/bytes": {
@@ -8258,7 +8258,7 @@
         "rel": 0.03
       },
       "ours": 81368,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-mullermarc-184.png->webp/psnr": {
@@ -8287,8 +8287,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.7992941782441827,
-      "delta": -2.7992941782441827,
+      "ours": 0.2706073692917643,
+      "delta": 0.2706073692917643,
       "ratio": null
     },
     "image/clic-paul-itkin-46101.png->avif/bd_rate_ssim": {
@@ -8297,8 +8297,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.0859239919566295,
-      "delta": -3.0859239919566295,
+      "ours": -0.07387536526288763,
+      "delta": -0.07387536526288763,
       "ratio": null
     },
     "image/clic-paul-itkin-46101.png->avif/bytes": {
@@ -8407,8 +8407,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.257394478410902,
-      "delta": -3.257394478410902,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-paul-itkin-46101.png->webp/bd_rate_ssim": {
@@ -8417,8 +8417,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.271977195161546,
-      "delta": -3.271977195161546,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-paul-itkin-46101.png->webp/bytes": {
@@ -8428,7 +8428,7 @@
         "rel": 0.03
       },
       "ours": 92178,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-paul-itkin-46101.png->webp/psnr": {
@@ -8467,8 +8467,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -25.657982160619074,
-      "delta": -25.657982160619074,
+      "ours": 0.22212034201960495,
+      "delta": 0.22212034201960495,
       "ratio": null
     },
     "image/clic-schicka-307.png->avif/bd_rate_ssim": {
@@ -8477,8 +8477,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -25.142338972532883,
-      "delta": -25.142338972532883,
+      "ours": 0.2771196752963556,
+      "delta": 0.2771196752963556,
       "ratio": null
     },
     "image/clic-schicka-307.png->avif/bytes": {
@@ -8488,7 +8488,7 @@
         "rel": 0.03
       },
       "ours": 12770,
-      "delta": -3027,
+      "delta": 130,
       "ratio": null
     },
     "image/clic-schicka-307.png->avif/psnr": {
@@ -8567,8 +8567,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -24.61916073617908,
-      "delta": -24.61916073617908,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-schicka-307.png->webp/bd_rate_ssim": {
@@ -8577,8 +8577,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -24.64152945836008,
-      "delta": -24.64152945836008,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-schicka-307.png->webp/bytes": {
@@ -8588,7 +8588,7 @@
         "rel": 0.03
       },
       "ours": 9336,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-schicka-307.png->webp/psnr": {
@@ -8617,8 +8617,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -9.620131960721611,
-      "delta": -9.620131960721611,
+      "ours": 0.780871004408179,
+      "delta": 0.780871004408179,
       "ratio": null
     },
     "image/clic-sergey-zolkin-21232.png->avif/bd_rate_ssim": {
@@ -8627,8 +8627,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.556813495482029,
-      "delta": -8.556813495482029,
+      "ours": 1.3675800859282772,
+      "delta": 1.3675800859282772,
       "ratio": null
     },
     "image/clic-sergey-zolkin-21232.png->avif/bytes": {
@@ -8638,7 +8638,7 @@
         "rel": 0.03
       },
       "ours": 42209,
-      "delta": -2610,
+      "delta": 547,
       "ratio": null
     },
     "image/clic-sergey-zolkin-21232.png->avif/psnr": {
@@ -8717,8 +8717,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -7.165439695035536,
-      "delta": -7.165439695035536,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-sergey-zolkin-21232.png->webp/bd_rate_ssim": {
@@ -8727,8 +8727,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -7.0827511089120225,
-      "delta": -7.0827511089120225,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-sergey-zolkin-21232.png->webp/bytes": {
@@ -8738,7 +8738,7 @@
         "rel": 0.03
       },
       "ours": 40868,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-sergey-zolkin-21232.png->webp/psnr": {
@@ -8767,8 +8767,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.6387562511259297,
-      "delta": -3.6387562511259297,
+      "ours": -1.3645391139503138,
+      "delta": -1.3645391139503138,
       "ratio": null
     },
     "image/clic-thong-vo-428.png->avif/bd_rate_ssim": {
@@ -8777,8 +8777,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.1167503834162114,
-      "delta": -3.1167503834162114,
+      "ours": -0.8488995146280653,
+      "delta": -0.8488995146280653,
       "ratio": null
     },
     "image/clic-thong-vo-428.png->avif/bytes": {
@@ -8788,7 +8788,7 @@
         "rel": 0.03
       },
       "ours": 189245,
-      "delta": -2621,
+      "delta": 536,
       "ratio": null
     },
     "image/clic-thong-vo-428.png->avif/psnr": {
@@ -8867,8 +8867,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.1054637771084295,
-      "delta": -2.1054637771084295,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-thong-vo-428.png->webp/bd_rate_ssim": {
@@ -8877,8 +8877,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.138156956567938,
-      "delta": -2.138156956567938,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-thong-vo-428.png->webp/bytes": {
@@ -8888,7 +8888,7 @@
         "rel": 0.03
       },
       "ours": 143450,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-thong-vo-428.png->webp/psnr": {
@@ -8917,8 +8917,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -6.227409430968733,
-      "delta": -6.227409430968733,
+      "ours": -0.30550925666187334,
+      "delta": -0.30550925666187334,
       "ratio": null
     },
     "image/clic-todd-quackenbush-222.png->avif/bd_rate_ssim": {
@@ -8927,8 +8927,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -6.14449330667759,
-      "delta": -6.14449330667759,
+      "ours": -0.21748218351350657,
+      "delta": -0.21748218351350657,
       "ratio": null
     },
     "image/clic-todd-quackenbush-222.png->avif/bytes": {
@@ -8938,7 +8938,7 @@
         "rel": 0.03
       },
       "ours": 72570,
-      "delta": -2928,
+      "delta": 229,
       "ratio": null
     },
     "image/clic-todd-quackenbush-222.png->avif/psnr": {
@@ -9017,8 +9017,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.505470602658447,
-      "delta": -5.505470602658447,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-todd-quackenbush-222.png->webp/bd_rate_ssim": {
@@ -9027,8 +9027,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.559241170137074,
-      "delta": -5.559241170137074,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-todd-quackenbush-222.png->webp/bytes": {
@@ -9038,7 +9038,7 @@
         "rel": 0.03
       },
       "ours": 51474,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-todd-quackenbush-222.png->webp/psnr": {
@@ -9167,8 +9167,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -0.9555938696855115,
-      "delta": -0.9555938696855115,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-veeterzy-82537.png->webp/bd_rate_ssim": {
@@ -9177,8 +9177,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -0.9503553386840613,
-      "delta": -0.9503553386840613,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-veeterzy-82537.png->webp/bytes": {
@@ -9188,7 +9188,7 @@
         "rel": 0.03
       },
       "ours": 315028,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-veeterzy-82537.png->webp/psnr": {
@@ -9217,8 +9217,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.702496636511434,
-      "delta": -5.702496636511434,
+      "ours": -2.3583857350271464,
+      "delta": -2.3583857350271464,
       "ratio": null
     },
     "image/clic-zugr-108.png->avif/bd_rate_ssim": {
@@ -9227,8 +9227,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.3348572448110847,
-      "delta": -3.3348572448110847,
+      "ours": -0.16236018251100104,
+      "delta": -0.16236018251100104,
       "ratio": null
     },
     "image/clic-zugr-108.png->avif/bytes": {
@@ -9238,7 +9238,7 @@
         "rel": 0.03
       },
       "ours": 118284,
-      "delta": -2242,
+      "delta": 915,
       "ratio": null
     },
     "image/clic-zugr-108.png->avif/psnr": {
@@ -9317,8 +9317,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.402264029586454,
-      "delta": -2.402264029586454,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-zugr-108.png->webp/bd_rate_ssim": {
@@ -9327,8 +9327,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.369046762471072,
-      "delta": -2.369046762471072,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-zugr-108.png->webp/bytes": {
@@ -9338,7 +9338,7 @@
         "rel": 0.03
       },
       "ours": 123560,
-      "delta": -3170,
+      "delta": 0,
       "ratio": null
     },
     "image/clic-zugr-108.png->webp/psnr": {
@@ -13057,8 +13057,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -17.81188774546243,
-      "delta": -17.81188774546243,
+      "ours": -14.076114563572506,
+      "delta": -14.076114563572506,
       "ratio": null
     },
     "image/lineart.png->jpg/bd_rate_ssim": {
@@ -13597,8 +13597,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.677011919675423,
-      "delta": -5.677011919675423,
+      "ours": -5.788043919095099,
+      "delta": -5.788043919095099,
       "ratio": null
     },
     "image/screenshot.png->jpg/bd_rate_ssim": {
@@ -13607,8 +13607,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -9.222374865206895,
-      "delta": -9.222374865206895,
+      "ours": -9.51015972069732,
+      "delta": -9.51015972069732,
       "ratio": null
     },
     "image/screenshot.png->jpg/bytes": {
@@ -13617,8 +13617,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 27913,
-      "delta": 545,
+      "ours": 27730,
+      "delta": 362,
       "ratio": null
     },
     "image/screenshot.png->jpg/psnr": {
@@ -13627,8 +13627,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.429878,
-      "delta": 1.084704000000002,
+      "ours": 44.372512,
+      "delta": 1.0273380000000003,
       "ratio": null
     },
     "image/screenshot.png->jpg/ssim": {
@@ -13637,8 +13637,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.99398,
-      "delta": 0.0011660000000000004,
+      "ours": 0.994033,
+      "delta": 0.0012190000000000811,
       "ratio": null
     },
     "image/screenshot.png->jpg/throughput": {
@@ -13657,8 +13657,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 0,
-      "delta": 0,
+      "ours": 0.30555144266051215,
+      "delta": 0.30555144266051215,
       "ratio": null
     },
     "image/screenshot.png->webp/bd_rate_ssim": {
@@ -13667,8 +13667,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 0,
-      "delta": 0,
+      "ours": -0.1242534703954079,
+      "delta": -0.1242534703954079,
       "ratio": null
     },
     "image/screenshot.png->webp/bytes": {
@@ -13677,8 +13677,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 11226,
-      "delta": 0,
+      "ours": 11200,
+      "delta": -26,
       "ratio": null
     },
     "image/screenshot.png->webp/psnr": {
@@ -13687,8 +13687,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 45.548114,
-      "delta": 0,
+      "ours": 45.551618,
+      "delta": 0.0035039999999995075,
       "ratio": null
     },
     "image/screenshot.png->webp/ssim": {
@@ -13697,8 +13697,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.995221,
-      "delta": 0,
+      "ours": 0.995253,
+      "delta": 0.000032000000000032,
       "ratio": null
     },
     "image/screenshot.png->webp/throughput": {
@@ -13747,7 +13747,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 55.364795,
+      "ours": 54.684464,
       "delta": 0,
       "ratio": null
     },
@@ -13827,7 +13827,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 83.839773,
+      "ours": 56.019962,
       "delta": 0,
       "ratio": null
     },
@@ -13877,8 +13877,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 51212,
-      "delta": -3157,
+      "ours": 19725,
+      "delta": 0,
       "ratio": null
     },
     "image/wm-alpha-graph.png->avif/psnr": {
@@ -13887,7 +13887,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 100,
+      "ours": 57.161703,
       "delta": 0,
       "ratio": null
     },
@@ -13918,7 +13918,7 @@
         "rel": 0.03
       },
       "ours": 24074,
-      "delta": -3152,
+      "delta": 0,
       "ratio": null
     },
     "image/wm-alpha-graph.png->webp/psnr": {
@@ -13957,8 +13957,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -19.813035222967134,
-      "delta": -19.813035222967134,
+      "ours": 1.104953272993714,
+      "delta": 1.104953272993714,
       "ratio": null
     },
     "image/wm-deep-dart.png->avif/bd_rate_ssim": {
@@ -13967,8 +13967,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -14.485716450521856,
-      "delta": -14.485716450521856,
+      "ours": 1.1234619377088473,
+      "delta": 1.1234619377088473,
       "ratio": null
     },
     "image/wm-deep-dart.png->avif/bytes": {
@@ -13978,7 +13978,7 @@
         "rel": 0.03
       },
       "ours": 12064,
-      "delta": -3250,
+      "delta": -93,
       "ratio": null
     },
     "image/wm-deep-dart.png->avif/psnr": {
@@ -14077,8 +14077,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -20.389046320422445,
-      "delta": -20.389046320422445,
+      "ours": -1.361603650328802,
+      "delta": -1.361603650328802,
       "ratio": null
     },
     "image/wm-deep-dart.png->webp/bd_rate_ssim": {
@@ -14087,8 +14087,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -21.71468206028766,
-      "delta": -21.71468206028766,
+      "ours": -1.01138621308835,
+      "delta": -1.01138621308835,
       "ratio": null
     },
     "image/wm-deep-dart.png->webp/bytes": {
@@ -14097,8 +14097,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 11438,
-      "delta": -3146,
+      "ours": 11422,
+      "delta": -10,
       "ratio": null
     },
     "image/wm-deep-dart.png->webp/psnr": {
@@ -14137,8 +14137,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -12.11305578039652,
-      "delta": -12.11305578039652,
+      "ours": -0.18272050089606084,
+      "delta": -0.18272050089606084,
       "ratio": null
     },
     "image/wm-deep-moon.png->avif/bd_rate_ssim": {
@@ -14147,8 +14147,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.569151283689383,
-      "delta": -11.569151283689383,
+      "ours": -0.05405202734992676,
+      "delta": -0.05405202734992676,
       "ratio": null
     },
     "image/wm-deep-moon.png->avif/bytes": {
@@ -14158,7 +14158,7 @@
         "rel": 0.03
       },
       "ours": 26341,
-      "delta": -3207,
+      "delta": -50,
       "ratio": null
     },
     "image/wm-deep-moon.png->avif/psnr": {
@@ -14237,8 +14237,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.550110675998226,
-      "delta": -11.550110675998226,
+      "ours": -0.44737893855052446,
+      "delta": -0.44737893855052446,
       "ratio": null
     },
     "image/wm-deep-moon.png->webp/bd_rate_ssim": {
@@ -14247,8 +14247,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -10.65062416133098,
-      "delta": -10.65062416133098,
+      "ours": 0.25484807331408454,
+      "delta": 0.25484807331408454,
       "ratio": null
     },
     "image/wm-deep-moon.png->webp/bytes": {
@@ -14257,8 +14257,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 29440,
-      "delta": -3188,
+      "ours": 29412,
+      "delta": -64,
       "ratio": null
     },
     "image/wm-deep-moon.png->webp/psnr": {
@@ -14287,8 +14287,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.708783942641582,
-      "delta": -5.708783942641582,
+      "ours": 0.04750373264155172,
+      "delta": 0.04750373264155172,
       "ratio": null
     },
     "image/wm-deep-xray.png->avif/bd_rate_ssim": {
@@ -14307,8 +14307,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 80414,
-      "delta": -4424,
+      "ours": 84874,
+      "delta": 36,
       "ratio": null
     },
     "image/wm-deep-xray.png->avif/psnr": {
@@ -14337,8 +14337,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.29427579162552,
-      "delta": -11.29427579162552,
+      "ours": -5.315684067996207,
+      "delta": -5.315684067996207,
       "ratio": null
     },
     "image/wm-deep-xray.png->jpg/bd_rate_ssim": {
@@ -14347,8 +14347,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -0.7680599955301348,
-      "delta": -0.7680599955301348,
+      "ours": 1.3256351395852795,
+      "delta": 1.3256351395852795,
       "ratio": null
     },
     "image/wm-deep-xray.png->jpg/bytes": {
@@ -14357,8 +14357,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 129503,
-      "delta": -19050,
+      "ours": 129491,
+      "delta": -19062,
       "ratio": null
     },
     "image/wm-deep-xray.png->jpg/psnr": {
@@ -14367,8 +14367,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 42.528656,
-      "delta": -0.10862500000000352,
+      "ours": 42.350787,
+      "delta": -0.328357000000004,
       "ratio": null
     },
     "image/wm-deep-xray.png->jpg/ssim": {
@@ -14377,8 +14377,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.972658,
-      "delta": -0.0015419999999999323,
+      "ours": 0.973019,
+      "delta": -0.001759000000000066,
       "ratio": null
     },
     "image/wm-deep-xray.png->webp/bd_rate_psnr": {
@@ -14387,8 +14387,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.914650362133667,
-      "delta": -5.914650362133667,
+      "ours": -1.648928193186605,
+      "delta": -1.648928193186605,
       "ratio": null
     },
     "image/wm-deep-xray.png->webp/bd_rate_ssim": {
@@ -14457,7 +14457,7 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 112011,
+      "ours": 48587,
       "delta": 0,
       "ratio": null
     },
@@ -14467,7 +14467,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 49.354387,
+      "ours": 49.023789,
       "delta": 0,
       "ratio": null
     },
@@ -14477,7 +14477,7 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.999268,
+      "ours": 0.999137,
       "delta": 0,
       "ratio": null
     },
@@ -14707,7 +14707,7 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 10229,
+      "ours": 10152,
       "delta": 0,
       "ratio": null
     },
@@ -14717,7 +14717,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 47.189858,
+      "ours": 47.189516,
       "delta": 0,
       "ratio": null
     },
@@ -14727,7 +14727,7 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.997948,
+      "ours": 0.997947,
       "delta": 0,
       "ratio": null
     },
@@ -44508,6 +44508,46 @@
         "rel": 0
       },
       "ours": 0.990462,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/wm-alpha-comingsoon.png->avif/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/wm-alpha-comingsoon.png->avif/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/wm-alpha-graph.png->avif/bd_rate_psnr": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "image/wm-alpha-graph.png->avif/bd_rate_ssim": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 1.5,
+        "rel": 0
+      },
+      "ours": 0,
       "delta": 0,
       "ratio": null
     }

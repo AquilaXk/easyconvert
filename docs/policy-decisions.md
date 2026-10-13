@@ -86,7 +86,7 @@ Quality evidence
 - **Status**: Implemented (#716, #719, #722).
 - **Decision**:
   - **Chroma**: below quality 90, JPEG uses 4:2:0. At 90 and above it uses 4:4:4, for all content.
-  - **Photographs**: baseline scan, no trellis quantisation.
+  - **Photographs**: baseline scan for colour photographs, progressive scan (without a scan search) for grey photographs, no trellis quantisation.
   - **Graphics**: a quantisation table tuned for structural similarity.
   - **Classification** (#749): a picture with more than 8 bits per sample that shows thousands of tones in its thumbnail is a photograph, whatever the flat share of its background says.
 - **Why**:
@@ -375,7 +375,7 @@ Quality evidence
 - **Status**: Implemented (#749, issue #736), decided 2026-10-11.
 - **Decision**:
   - **Metadata blocks**: a JPEG, WebP or AVIF carries the EXIF block, the XMP packet and the ICC profile of its source unchanged. The profile is attached and the pixels are not converted through it. No block is made up.
-  - **sRGB profiles**: a profile that describes sRGB (same primaries and tone curve to within about one level) is not written. The pixels go through it, which changes them by at most a rounding step.
+  - **sRGB-gamut profiles**: a profile with sRGB primaries (whether IEC 61966-2-1 sRGB or a development curve over sRGB primaries such as a camera RAW decoder's gamma 2.222 curve) is not written. The pixels go through it into standard sRGB; wider-gamut and grey profiles stay attached.
   - **Print density**: a JPEG keeps it (in its header, together with an EXIF block made from it when the source has none); WebP and AVIF do not.
   - **Alpha**: the alpha plane of an AVIF is encoded at the colour quality. There is no separate alpha setting.
   - **16 to 8 bits**: a 16-bit picture written as JPEG or WebP is reduced to the nearest 8-bit level, not to the high byte.

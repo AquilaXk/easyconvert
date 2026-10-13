@@ -24,13 +24,30 @@ function srgbToLinear(encoded: number): number {
   return encoded <= SRGB_TOE ? encoded / SRGB_TOE_SLOPE : ((encoded + SRGB_OFFSET) / (1 + SRGB_OFFSET)) ** SRGB_GAMMA;
 }
 
+function hasSrgbColorants(profile: IccMatrixTrcProfile): boolean {
+  return profile.rgbToXyzD50.every((value, index) => Math.abs(value - SRGB_RGB_TO_XYZ_D50[index]) <= COLORANT_TOLERANCE);
+}
+
 function describesSrgb(profile: IccMatrixTrcProfile): boolean {
-  if (profile.rgbToXyzD50.some((value, index) => Math.abs(value - SRGB_RGB_TO_XYZ_D50[index]) > COLORANT_TOLERANCE)) return false;
+  if (!hasSrgbColorants(profile)) return false;
   for (let probe = 0; probe <= CURVE_PROBES; probe += 1) {
     const encoded = probe / CURVE_PROBES;
     if (profile.curves.some((curve) => Math.abs(curve(encoded) - srgbToLinear(encoded)) > CURVE_TOLERANCE)) return false;
   }
   return true;
+}
+
+/**
+ * True when `icc` is a matrix/TRC profile with sRGB colorants (whether its tone curve is IEC 61966-2-1 sRGB or a development
+ * curve such as gamma 2.222 over sRGB primaries); false for wider-gamut or other profiles, and for bytes that are not a profile.
+ */
+export function hasSrgbPrimaries(icc: Buffer): boolean {
+  try {
+    const profile = readIccProfile(icc);
+    return profile.kind === 'matrix-trc' && hasSrgbColorants(profile);
+  } catch {
+    return false;
+  }
 }
 
 /** True when `icc` is a matrix/TRC profile of sRGB; false for any other profile, and for bytes that are not a profile. */

@@ -196,6 +196,12 @@ describe('encoder choices', () => {
     expect(avifChromaFor(100)).toBe('4:4:4');
   });
 
+  it('writes a grey photograph as a progressive JPEG (one component: the scans cost little) and a colour one as a baseline scan', () => {
+    expect(jpegOptionsFor(70, 'photo', true)).toMatchObject({ progressive: true, trellisQuantisation: false, quantisationTable: 3 });
+    expect(jpegOptionsFor(70, 'photo', true).optimiseScans).toBeUndefined();
+    expect(jpegOptionsFor(70, 'photo', false)).toMatchObject({ progressive: false });
+  });
+
   it('keeps trellis quantisation and the scan search out of the JPEG encode below the full-chroma quality, whatever the content', () => {
     for (const [content, grey] of [['photo', false], ['graphic', false], ['graphic', true]] as const) {
       const options = jpegOptionsFor(85, content, grey);

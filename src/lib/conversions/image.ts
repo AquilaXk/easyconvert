@@ -74,7 +74,7 @@ import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { decodePlainPngOnce } from './image-decoded-source';
-import { isSrgbProfile } from './icc-srgb';
+import { hasSrgbPrimaries, isSrgbProfile } from './icc-srgb';
 import { EIGHT_BIT_ONLY_TARGETS, roundedToEightBits } from './image-depth';
 import { pinBaseImageThreads, withImageThreads } from './image-threads';
 import { buildOdgPackage } from './odg';
@@ -1596,9 +1596,10 @@ function keepSourceBlocks(pipeline: Sharp, meta: Metadata, target: string): Shar
   const keepsDensity = (target === 'jpg' || target === 'jpeg') && meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
   if (meta.exif !== undefined || keepsDensity) kept = kept.keepExif();
   if (meta.xmp !== undefined) kept = kept.keepXmp();
-  // A profile that describes sRGB says nothing a viewer does not assume (and the reference service's engine does not carry the usual 3 kB
-  // one either: its PNG reader rejects it); the pixels go through it explicitly, as in the other targets, and none is written.
-  if (meta.hasProfile) kept = meta.icc !== undefined && !isSrgbProfile(meta.icc) ? kept.keepIccProfile() : kept.withIccProfile('srgb', { attach: false });
+  // A profile in the sRGB gamut (either IEC 61966-2-1 sRGB, which says nothing a viewer does not assume and the reference service's
+  // PNG reader drops, or a development curve over sRGB primaries such as a RAW decoder's gamma 2.222 curve) is applied to the pixels
+  // and not written; a wider-gamut or grey profile is kept attached.
+  if (meta.hasProfile) kept = meta.icc !== undefined && !hasSrgbPrimaries(meta.icc) ? kept.keepIccProfile() : kept.withIccProfile('srgb', { attach: false });
   return kept;
 }
 
@@ -2218,10 +2219,12 @@ export async function convertImage(
   // The pipeline below reduces a 16-bit picture to 8 bits, which would hide its tones from the classifier: it keeps the 16-bit one.
   let deepPipeline: Sharp | undefined;
   // A 16-bit picture on its way to an 8-bit target is reduced with rounding at the end of the pipeline (see image-depth.ts), so it is
-  // kept at 16 bits until then: a pipeline in sRGB would have floored it at the start. A picture with an alpha plane or a
-  // background to flatten onto needs the 8-bit pipeline and keeps the library's reduction.
+  // kept at 16 bits until then: a pipeline in sRGB would have floored it at the start. A picture with an alpha plane, a background
+  // to flatten onto, or a non-sRGB development curve that the ICC transform turns into 8-bit sRGB keeps the 8-bit sRGB pipeline.
   const reductionMeta = EIGHT_BIT_ONLY_TARGETS.has(fmt) ? await pipeline.metadata() : undefined;
-  const roundsToEightBits = reductionMeta?.depth === SHARP_SIXTEEN_BIT_DEPTH && (fmt === 'webp' || (reductionMeta.hasAlpha !== true && background === undefined));
+  const convertsToneCurve = reductionMeta?.icc !== undefined && hasSrgbPrimaries(reductionMeta.icc) && !isSrgbProfile(reductionMeta.icc);
+  const roundsToEightBits =
+    reductionMeta?.depth === SHARP_SIXTEEN_BIT_DEPTH && !convertsToneCurve && (fmt === 'webp' || (reductionMeta.hasAlpha !== true && background === undefined));
   if ((background !== undefined || isOpaqueTarget) && !dropsOpaqueAlpha) {
     if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !decodedRaster && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) deepPipeline = pipeline.clone();
     if (!roundsToEightBits) pipeline = pipeline.pipelineColourspace('srgb');
