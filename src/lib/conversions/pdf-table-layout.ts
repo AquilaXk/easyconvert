@@ -86,26 +86,24 @@ function countCells(sheets: readonly PdfTableSheet[]): number {
 const WHITESPACE_RUN = /\s+/;
 
 /**
- * Width of the longest word of a cell that a line must not break, 0 when it has none: a run of characters between spaces stays whole
- * (a sentence of a script written without spaces is one such run, which the column then fits up to MAX_COLUMN_WIDTH). The word longest
- * in characters stands for the widest; its width is measured once per distinct word.
+ * Width of the widest word of a cell that a line must not break, 0 when it has none: a run of characters between spaces stays whole
+ * (a sentence of a script written without spaces is one such run, which the column then fits up to MAX_COLUMN_WIDTH). Each distinct
+ * word is measured once in points (with its trailing space, which PDFKit's line breaker includes in the token width).
  */
 function longestWholeWordWidth(text: string, width: number, writer: PdfUnicodeTextWriter, cache: Map<string, number>): number {
-  let longest = '';
-  let words = 0;
-  for (const word of text.split(WHITESPACE_RUN)) {
-    if (word.length === 0) continue;
-    words++;
-    if (word.length > longest.length) longest = word;
+  const words = text.split(WHITESPACE_RUN).filter((word) => word.length > 0);
+  if (words.length === 0) return 0;
+  if (words.length === 1) return width;
+  let widest = 0;
+  for (const word of words) {
+    let measured = cache.get(word);
+    if (measured === undefined) {
+      measured = Math.ceil(writer.measure(`${word} `).width);
+      cache.set(word, measured);
+    }
+    if (measured > widest) widest = measured;
   }
-  if (words === 0) return 0;
-  if (words === 1) return width;
-  let measured = cache.get(longest);
-  if (measured === undefined) {
-    measured = writer.measure(longest).width;
-    cache.set(longest, measured);
-  }
-  return measured;
+  return widest;
 }
 
 /** Measures every cell once, in the font that will draw it. */
@@ -119,9 +117,10 @@ function measureSheet(sheet: PdfTableSheet, writer: PdfUnicodeTextWriter): Sheet
   sheet.rows.forEach((row, r) => {
     row.forEach((cell, c) => {
       if (cell.text.length === 0) return;
-      const { width, lineHeight } = writer.measure(cell.text);
+      const measured = writer.measure(cell.text);
+      const width = Math.ceil(measured.width);
       cellWidths[r * columnCount + c] = width;
-      lineHeights[r * columnCount + c] = lineHeight;
+      lineHeights[r * columnCount + c] = measured.lineHeight;
       natural[c] = Math.max(natural[c], Math.min(width + 2 * CELL_PADDING_X, MAX_COLUMN_WIDTH));
       if (width + 2 * CELL_PADDING_X > MIN_COLUMN_WIDTH) {
         wholeWord[c] = Math.max(wholeWord[c], Math.min(longestWholeWordWidth(cell.text, width, writer, wordWidths) + 2 * CELL_PADDING_X, MAX_COLUMN_WIDTH));

@@ -41,4 +41,10 @@ describe('table writer', () => {
     const pdf = await renderPdfTables([{ rows, headerRows: 1 }], { orientation: 'landscape' });
     expect(pdfWords(pdf)).toEqual(rows[0].flatMap((c) => c.text.match(WORD) ?? []).sort());
   });
+
+  oracleTest('measures every word by point width rather than character count when sizing columns', ['pdftotext'], async () => {
+    const rows = [Array.from({ length: 12 }, (_, c) => cell(`iiiiiiiiiiiiii mmmmmmmmmmmm ${c}`))];
+    const pdf = await renderPdfTables([{ rows, headerRows: 1 }], { orientation: 'landscape' });
+    expect(pdfWords(pdf)).toEqual(rows[0].flatMap((c) => c.text.match(WORD) ?? []).sort());
+  });
 });
