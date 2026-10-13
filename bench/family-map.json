@@ -38,7 +38,7 @@
     },
     {
       "families": ["image"],
-      "match": "^bench/families/image\\.ts$"
+      "match": "^bench/families/image\\.ts$|^bench/png-metadata\\.ts$"
     },
     {
       "families": ["video"],
@@ -146,7 +146,7 @@
     },
     {
       "families": ["image", "raw"],
-      "match": "^src/lib/conversions/(avif-cli|avif-colour|bitmap-pipeline|blue-noise-mask|bmp|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-reader|ico|image[^/]*|kd-tree|png-photo-bands|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
+      "match": "^src/lib/conversions/(avif-cli|avif-colour|bitmap-pipeline|blue-noise-mask|bmp|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-(reader|srgb)|ico|image[^/]*|kd-tree|png-photo-bands|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
     },
     {
       "families": ["hdr-image"],

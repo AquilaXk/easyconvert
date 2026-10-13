@@ -102,6 +102,24 @@ describe('content classification of decoded samples', () => {
   }
 
   const corpus = (name: string): Buffer => readFileSync(path.join(__dirname, '..', 'bench', 'corpus', name));
+
+  /**
+   * A 16-bit grey subject on a black background, as a radiograph or a night-sky frame is: 60% of the picture is flat, the rest
+   * is a ramp with a small texture. `eightBitSteps` quantises the subject to 256 levels and scales them to 16 bits (the
+   * low byte of every sample then repeats the high byte), the way a graphic stored in a 16-bit container is.
+   */
+  async function subjectOnBlack(eightBitSteps: boolean): Promise<Buffer> {
+    const side = 160;
+    const samples = new Uint16Array(side * side);
+    for (let y = 0; y < side; y += 1) {
+      for (let x = Math.floor(side * 0.6); x < side; x += 1) {
+        const value = 12000 + x * 37 + y * 11 + ((Math.imul(x * side + y, 2654435761) >>> 20) & 0x3ff);
+        samples[y * side + x] = eightBitSteps ? Math.round(value / 257) * 257 : value;
+      }
+    }
+    return sharp(samples, { raw: { width: side, height: side, channels: 1 } }).toColourspace('grey16').png().toBuffer();
+  }
+
   const pictures: Array<[string, () => Promise<Buffer>, 'graphic' | 'photo']> = [
     ['text', () => svgPng(textBody), 'graphic'],
     ['line art', () => svgPng(lineBody), 'graphic'],
@@ -114,6 +132,8 @@ describe('content classification of decoded samples', () => {
     ['benchmark screenshot (16-bit colour with alpha)', async () => corpus('screenshot.png'), 'graphic'],
     ['benchmark line art (16-bit grey with alpha)', async () => corpus('lineart.png'), 'graphic'],
     ['benchmark photograph', async () => corpus('photo-b.png'), 'photo'],
+    ['16-bit grey subject on a black background that uses its low bytes', () => subjectOnBlack(false), 'photo'],
+    ['the same subject stored as 8-bit levels in a 16-bit container', () => subjectOnBlack(true), 'graphic'],
   ];
 
   it.each(pictures)('%s: the class of the samples is the class of the pipeline', async (_name, make, expected) => {
@@ -127,10 +147,59 @@ describe('content classification of decoded samples', () => {
   });
 });
 
+describe('JPEG tables of a 16-bit picture with a flat background', () => {
+  /** The DQT segments of a JPEG, as one hex string: the quantisation tables the encoder wrote. */
+  function quantisationTables(jpeg: Buffer): string {
+    const tables: string[] = [];
+    for (let at = 2; at + 4 <= jpeg.length && jpeg[at] === 0xff && jpeg[at + 1] !== 0xda; ) {
+      const length = jpeg.readUInt16BE(at + 2);
+      if (jpeg[at + 1] === 0xdb) tables.push(jpeg.subarray(at + 4, at + 2 + length).toString('hex'));
+      at += 2 + length;
+    }
+    return tables.join('|');
+  }
+
+  /** The same radiograph-like subject as the classification fixtures: flat black on 60% of the picture, 16-bit tones elsewhere. */
+  async function subject(eightBitSteps: boolean): Promise<Buffer> {
+    const side = 160;
+    const samples = new Uint16Array(side * side);
+    for (let y = 0; y < side; y += 1) {
+      for (let x = Math.floor(side * 0.6); x < side; x += 1) {
+        const value = 12000 + x * 37 + y * 11 + ((Math.imul(x * side + y, 2654435761) >>> 20) & 0x3ff);
+        samples[y * side + x] = eightBitSteps ? Math.round(value / 257) * 257 : value;
+      }
+    }
+    return sharp(samples, { raw: { width: side, height: side, channels: 1 } }).toColourspace('grey16').withExif({ IFD0: { Copyright: 'tables test' } }).png().toBuffer();
+  }
+
+  const tablesOf = async (png: Buffer, table: number): Promise<string> =>
+    quantisationTables(await sharp(png).toColourspace('b-w').jpeg({ quality: 70, quantisationTable: table, chromaSubsampling: '4:2:0' }).toBuffer());
+
+  it('gets the photograph table (3) when it shows thousands of tones, as a radiograph does', async () => {
+    const png = await subject(false);
+    const out = quantisationTables((await convertImage(png, 'jpg', { quality: 70 }, 'xray.png', 'png')).buffer);
+    expect(out).toBe(await tablesOf(png, 3));
+    expect(out).not.toBe(await tablesOf(png, 2));
+  });
+
+  it('keeps the graphic table (2) for the same picture stored as 8-bit levels in a 16-bit container', async () => {
+    const png = await subject(true);
+    expect(quantisationTables((await convertImage(png, 'jpg', { quality: 70 }, 'graphic.png', 'png')).buffer)).toBe(await tablesOf(png, 2));
+  });
+});
+
 describe('encoder choices', () => {
-  it('uses full chroma from JPEG quality 90 and from AVIF quality 80, and for graphic AVIF at any quality', () => {
+  // QA decision 2026-10-11: match the reference service. Lossy AVIF is 4:2:0 for every content class; quality 100 (lossless) is 4:4:4.
+  it('uses full chroma from JPEG quality 90, and in AVIF only at the lossless quality 100: lossy AVIF is 4:2:0 for photographs and graphics alike', () => {
     expect([jpegChromaFor(89), jpegChromaFor(90)]).toEqual(['4:2:0', '4:4:4']);
-    expect([avifChromaFor(79, 'photo'), avifChromaFor(80, 'photo'), avifChromaFor(40, 'graphic')]).toEqual(['4:2:0', '4:4:4', '4:4:4']);
+    expect([avifChromaFor(40), avifChromaFor(79), avifChromaFor(80), avifChromaFor(99)]).toEqual(['4:2:0', '4:2:0', '4:2:0', '4:2:0']);
+    expect(avifChromaFor(100)).toBe('4:4:4');
+  });
+
+  it('writes a grey photograph as a progressive JPEG (one component: the scans cost little) and a colour one as a baseline scan', () => {
+    expect(jpegOptionsFor(70, 'photo', true)).toMatchObject({ progressive: true, trellisQuantisation: false, quantisationTable: 3 });
+    expect(jpegOptionsFor(70, 'photo', true).optimiseScans).toBeUndefined();
+    expect(jpegOptionsFor(70, 'photo', false)).toMatchObject({ progressive: false });
   });
 
   it('keeps trellis quantisation and the scan search out of the JPEG encode below the full-chroma quality, whatever the content', () => {
@@ -153,8 +222,8 @@ describe('encoder choices', () => {
   });
 
   it('writes a grey AVIF as monochrome at any quality and content, and a colour one by the chroma rule', () => {
-    expect([avifLayoutFor(true, 30, 'photo'), avifLayoutFor(true, 95, 'graphic')]).toEqual(['4:0:0', '4:0:0']);
-    expect([avifLayoutFor(false, 79, 'photo'), avifLayoutFor(false, 80, 'photo'), avifLayoutFor(false, 40, 'graphic')]).toEqual(['4:2:0', '4:4:4', '4:4:4']);
+    expect([avifLayoutFor(true, 30), avifLayoutFor(true, 100)]).toEqual(['4:0:0', '4:0:0']);
+    expect([avifLayoutFor(false, 40), avifLayoutFor(false, 80), avifLayoutFor(false, 99), avifLayoutFor(false, 100)]).toEqual(['4:2:0', '4:2:0', '4:2:0', '4:4:4']);
   });
 
   it('maps the library effort onto the encoder speed preset the other way round: effort 3 is speed 6', () => {
@@ -162,31 +231,31 @@ describe('encoder choices', () => {
   });
 
   it('gives both AVIF encoders one policy: the image library cannot write monochrome and keeps the colour chroma rule for a grey picture', () => {
-    const policy = avifPolicyFor(40, 'photo', 0.5 * MEGAPIXEL, true, true, 'image-library');
-    expect(policy).toEqual({ encoder: 'image-library', quality: 40, effort: 3, bitdepth: 10, chroma: '4:2:0', layout: '4:0:0', tune: 'ssim' });
-    expect(avifLibraryOptionsOf(policy)).toEqual({ quality: 40, effort: 3, tune: 'ssim', chromaSubsampling: '4:2:0', bitdepth: 10 });
-    expect(avifPolicyFor(undefined, 'graphic', 0.5 * MEGAPIXEL, false, false, 'image-library')).toEqual({
+    const policy = avifPolicyFor(40, 'photo', 0.5 * MEGAPIXEL, 16, true, 'image-library');
+    expect(policy).toEqual({ encoder: 'image-library', quality: 40, effort: 3, bitdepth: 12, chroma: '4:2:0', layout: '4:0:0', tune: 'ssim' });
+    expect(avifLibraryOptionsOf(policy)).toEqual({ quality: 40, effort: 3, tune: 'ssim', chromaSubsampling: '4:2:0', bitdepth: 12 });
+    expect(avifPolicyFor(undefined, 'graphic', 0.5 * MEGAPIXEL, 8, false, 'image-library')).toEqual({
       encoder: 'image-library',
       quality: 60,
       effort: 5,
       bitdepth: 8,
-      chroma: '4:4:4',
-      layout: '4:4:4',
+      chroma: '4:2:0',
+      layout: '4:2:0',
       tune: 'ssim',
     });
   });
 
   it("gives the library encoder's tool its own effort ladder and tuning: speed 6 for graphics, the encoder's own tuning for them, ssim for photographs", () => {
-    expect(avifPolicyFor(undefined, 'graphic', 0.5 * MEGAPIXEL, true, true, 'library-cli')).toEqual({
+    expect(avifPolicyFor(undefined, 'graphic', 0.5 * MEGAPIXEL, 16, true, 'library-cli')).toEqual({
       encoder: 'library-cli',
       quality: 60,
       effort: 3,
-      bitdepth: 10,
-      chroma: '4:4:4',
+      bitdepth: 12,
+      chroma: '4:2:0',
       layout: '4:0:0',
       tune: undefined,
     });
-    expect(avifPolicyFor(50, 'photo', 0.5 * MEGAPIXEL, false, false, 'library-cli')).toMatchObject({ effort: 3, layout: '4:2:0', tune: 'ssim' });
+    expect(avifPolicyFor(50, 'photo', 0.5 * MEGAPIXEL, 8, false, 'library-cli')).toMatchObject({ effort: 3, layout: '4:2:0', tune: 'ssim' });
     expect(avifEffortFor(30 * MEGAPIXEL, 'photo', 'library-cli')).toBe(avifEffortFor(30 * MEGAPIXEL, 'photo'));
   });
 
@@ -276,7 +345,7 @@ describe.skipIf(skipWithoutTools('exiftool'))('metadata on lossy outputs', () =>
 });
 
 describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
-  it('encodes a source with more than 8 bits per sample at 10 bits when it is grey and keeps more than 256 levels', async () => {
+  it('encodes a source with more than 8 bits per sample at 12 bits when it is grey and keeps more than 256 levels', async () => {
     // A 16-bit grey ramp: 1024 columns, 64 apart in 16-bit value, so 8 bits cannot hold it.
     const columns = 1024;
     const rows = 8;
@@ -286,19 +355,19 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
     expect(runIdentify(['-format', '%z', writeIn('ramp.png', ramp)]).trim()).toBe('16');
     const avif = (await convertImage(ramp, 'avif', { quality: 95 }, 'ramp.png', 'png')).buffer;
     const file = writeIn('ramp.avif', avif);
-    expect(avifInfo(file).depth).toBe(10);
+    expect(avifInfo(file).depth).toBe(12);
     const decoded = path.join(workDir, 'ramp-decoded.png');
     execFileSync(requireOracleTool('avifdec'), ['--depth', '16', file, decoded]);
     const levels = Number(runIdentify(['-format', '%k', decoded]).trim().split('\n')[0]);
     expect(levels).toBeGreaterThan(256);
   }, 60_000);
 
-  it('encodes a 16-bit RGB source at 10 bits, within the AV1 Main profile, and keeps HDR output at 10 bits', async () => {
-    expect([avifBitdepthFor(false), avifBitdepthFor(true)]).toEqual([8, 10]);
+  it('encodes a 16-bit RGB source at 12 bits (QA decision 2026-10-11: match the reference service), a 9 or 10-bit one at 10, an 8-bit one at 8', async () => {
+    expect([avifBitdepthFor(8), avifBitdepthFor(9), avifBitdepthFor(10), avifBitdepthFor(11), avifBitdepthFor(12), avifBitdepthFor(16)]).toEqual([8, 10, 10, 12, 12, 12]);
     const rgb16 = runConvert(['-size', '64x64', 'gradient:#102030-#f0e0d0', '-depth', '16', 'png:-']);
     expect(await sharp(rgb16).metadata()).toMatchObject({ depth: 'ushort', channels: 3 });
     const out = (await convertImage(rgb16, 'avif', { quality: 90 }, 'rgb16.png', 'png')).buffer;
-    expect(avifInfo(writeIn('rgb16.avif', out)).depth).toBe(10);
+    expect(avifInfo(writeIn('rgb16.avif', out)).depth).toBe(12);
   });
 
   it('keeps an 8-bit source at 8 bits', async () => {
@@ -316,7 +385,7 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
     expect(avifInfo(writeIn('translucent.avif', (await convertImage(translucent, 'avif', {}, 't.png', 'png')).buffer)).alpha).toMatch(/Present|premultiplied/i);
   });
 
-  // The AVIF holds 10 bits: one 10-bit step below full is 64 of the 16-bit values, which an 8-bit reduction (>> 8)
+  // The AVIF holds at least 10 bits: one 10-bit step below full is 64 of the 16-bit values, which an 8-bit reduction (>> 8)
   // still reads as 255, so only a check at the picture's own depth keeps this channel.
   const ALPHA_STEP_10_BIT = 64;
   it('keeps a 16-bit alpha channel whose only deviation is one 10-bit step below full', async () => {
@@ -331,14 +400,16 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
     expect(avifInfo(writeIn('opaque16.avif', (await convertImage(opaque16, 'avif', {}, 'o16.png', 'png')).buffer)).alpha).toMatch(/Absent/);
   });
 
-  it('picks chroma by content and quality: 4:2:0 for a photo below 80, 4:4:4 for graphics and at 80', async () => {
+  it('writes 4:2:0 at every lossy quality for photographs and graphics alike, and 4:4:4 at the lossless quality 100', async () => {
     const photo = await photoPng();
     const graphic = await svgPng(uiBody);
     const format = async (png: Buffer, quality: number): Promise<string> =>
       avifInfo(writeIn(`chroma-${quality}.avif`, (await convertImage(png, 'avif', { quality }, 'c.png', 'png')).buffer)).format;
     expect(await format(photo, 50)).toBe('YUV420');
-    expect(await format(photo, 80)).toBe('YUV444');
-    expect(await format(graphic, 50)).toBe('YUV444');
+    expect(await format(photo, 85)).toBe('YUV420');
+    expect(await format(graphic, 50)).toBe('YUV420');
+    expect(await format(graphic, 90)).toBe('YUV420');
+    expect(await format(graphic, 100)).toBe('YUV444');
   }, 60_000);
 });
 
@@ -392,7 +463,8 @@ describe.skipIf(skipWithoutTools('avifdec', 'dwebp', 'ffmpeg'))('equal-size qual
   const previous: Record<string, Encoder> = {
     jpg: (png, q) => sharp(png).jpeg({ quality: q, mozjpeg: true }).toBuffer(),
     webp: (png, q) => sharp(png).webp({ quality: q }).toBuffer(),
-    avif: (png, q) => sharp(png).avif({ quality: q, tune: 'psnr', effort: 3 }).toBuffer(),
+    // 4:2:0 like the policy (QA decision 2026-10-11: match the reference service): the comparison is about tuning, not about the chroma layout.
+    avif: (png, q) => sharp(png).avif({ quality: q, tune: 'psnr', effort: 3, chromaSubsampling: '4:2:0' }).toBuffer(),
   };
 
   async function previousAtSize(target: string, png: Buffer, bytes: number): Promise<Buffer> {
@@ -435,7 +507,7 @@ describe.skipIf(skipWithoutTools('avifdec', 'dwebp', 'ffmpeg'))('equal-size qual
 describe('avifEncoderFor', () => {
   it('sends an untagged photograph of more than 8 bits to the command-line encoder at the photograph layout, and an 8-bit one to the image library', () => {
     expect(avifEncoderFor('photo', false, 5 * MEGAPIXEL, true, true)).toBe('library-cli');
-    expect(avifPolicyFor(70, 'photo', 5 * MEGAPIXEL, true, false, 'library-cli')).toMatchObject({ encoder: 'library-cli', bitdepth: 10, chroma: '4:2:0', layout: '4:2:0', effort: 3 });
+    expect(avifPolicyFor(70, 'photo', 5 * MEGAPIXEL, 16, false, 'library-cli')).toMatchObject({ encoder: 'library-cli', bitdepth: 12, chroma: '4:2:0', layout: '4:2:0', effort: 3 });
     expect(avifEncoderFor('photo', false, 5 * MEGAPIXEL, true, false)).toBe('image-library');
     // Without the tool, or above the tool's size limit, the image library writes it.
     expect(avifEncoderFor('photo', false, 5 * MEGAPIXEL, false, true)).toBe('image-library');

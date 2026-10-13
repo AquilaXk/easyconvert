@@ -25,7 +25,7 @@ describe('the quick subsets', () => {
     }
   });
 
-  it('reach each AVIF chroma path of the image family: photographs (4:2:0), graphics (4:4:4) and grey line art (4:0:0)', () => {
+  it('reach each AVIF path of the image family: photographs and graphics (both 4:2:0, a different encoder each) and grey line art (4:0:0)', () => {
     const avif = (QUICK_SUBSET.image ?? []).filter((caseName) => targetOf(caseName) === 'avif');
     expect([...avif].sort()).toEqual(['lineart.png->avif', 'photo-b.png->avif', 'screenshot.png->avif']);
   });

@@ -96,7 +96,26 @@ export const QUICK_SUBSET: Readonly<Record<string, readonly string[] | null>> = 
  * fix brings them here); each is in the baseline, which tests/bench-corpora.test.ts checks.
  */
 export const QUICK_PUBLIC_SUBSET: Readonly<Record<string, readonly string[]>> = {
-  image: ['kodim23.png->avif', 'kodim03.png->webp', 'wm-screen-history.png->avif', 'wm-screen-history.png->webp', 'wm-lineart-family-tree.png->jpg', 'wm-alpha-graph.png->webp', 'wm-deep-xray.png->avif', 'clic-mullermarc-184.png->avif'],
+  image: [
+    'kodim23.png->avif',
+    'kodim03.png->webp',
+    'wm-screen-history.png->avif',
+    'wm-screen-history.png->webp',
+    'wm-lineart-family-tree.png->jpg',
+    'wm-alpha-graph.png->webp',
+    'wm-deep-xray.png->avif',
+    'clic-mullermarc-184.png->avif',
+    // The samples that were below the reference on the nightly run of the public picture sets (#736) and are at it now:
+    // photographs in AVIF, a screenshot, a photograph in WebP, pictures with transparency in AVIF and 16-bit pictures in every target.
+    ...['kodim01', 'kodim05', 'kodim07', 'kodim08', 'kodim13', 'kodim18', 'kodim20', 'kodim21', 'clic-martin-wessely-211', 'clic-paul-itkin-46101', 'clic-veeterzy-82537'].map((sample) => `${sample}.png->avif`),
+    'wm-screen-glazba.png->webp',
+    'wm-screen-glazba.png->avif',
+    'clic-schicka-307.png->webp',
+    ...['wm-alpha-graph', 'wm-alpha-comingsoon', 'wm-alpha-banner'].map((sample) => `${sample}.png->avif`),
+    ...['wm-deep-dart', 'wm-deep-moon'].flatMap((sample) => ['webp', 'avif', 'jpg'].map((target) => `${sample}.png->${target}`)),
+    'wm-deep-xray.png->webp',
+    'wm-deep-xray.png->jpg',
+  ],
   video: ['aom-fourpeople-270p.y4m->h264', 'aom-touchdown-360p.y4m->vp9', 'aom-debugging-1080p.y4m->h264'],
   audio: ['sqam-49-speech-en-f.flac->aac', 'sqam-27-castanets.flac->opus', 'sqam-65-orchestra-strauss.flac->flac', 'pteraxys-part1.flac->opus', 'edge-surround-5.1.wav->opus'],
   compression: [

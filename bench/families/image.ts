@@ -8,6 +8,7 @@ import { type FamilyRunner, INJECTED_WEBP_QUALITY_SHARE } from '../context';
 import { type RemoteSample, remoteSamples } from '../corpora';
 import { decodeImageToPng, fileSize, flattenOnGrey, measureSsimulacra2, pictureAlpha, pictureQuality, probeFile, type ImageKind } from '../measure';
 import { OutputIntegrityError } from '../errors';
+import { hasValidChunkChecksums, withMetadataOf } from '../png-metadata';
 import { numberRecord, type RefSpec } from '../ref-cache';
 import type { BenchRow } from '../report';
 import { capPsnr, measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, ssimDb, throughputRow, speedRowId, undeterminedBdRows } from '../rows';
@@ -59,11 +60,23 @@ const HEADLINE_QUALITY = 70;
 const CWEBP_METHOD = '4';
 const AVIFENC_SPEED = '6';
 /**
- * Product policy keeps AVIF output within AV1 Main profile bit depths (10 bits at most). Left alone, the reference AVIF encoder
- * writes sources deeper than 8 bits at 12 bits, which is a different output constraint than ours. Deep sources are therefore
- * encoded by the reference at 10 bits so both encoders are compared under the same output constraint.
+ * AVIF output policy (QA decision 2026-10-11: match the reference service): a source deeper than 8 bits is written at 12 bits
+ * when it holds 11 or more (every 16-bit sample picture of the benchmark), lossy AVIF is 4:2:0 for every content class and
+ * only the lossless quality 100 gives 4:4:4. The reference encoder's own defaults differ (it takes the depth of the source
+ * for 8-bit pictures and 4:4:4 for colour), so it is given the same constraints: `-d 12` for deep sources and `-y 420`,
+ * except for a grey picture, which both write as monochrome.
  */
-const AVIFENC_DEEP_DEPTH = '10';
+const AVIFENC_DEEP_DEPTH = '12';
+const AVIFENC_LOSSLESS_QUALITY = 100;
+
+/**
+ * The reference encoders get the decoded pixels with the EXIF, XMP and ICC blocks of the source (bench/png-metadata.ts): the tools keep
+ * all three by default, and so does the product (the profile attached, the pixels not converted). `avifenc` and ImageMagick keep the
+ * metadata of their input by default and `cwebp` does when asked (`-metadata all`). Without the blocks the reference files were
+ * smaller than any encoder that keeps the picture's metadata can write: the XMP block alone is 3.5 to 6.9 kB of an 8 to 25 kB file
+ * of the 16-bit samples.
+ */
+const REFERENCE_INPUT_SETTING = 'decoded-with-exif-xmp-icc';
 
 const REFERENCE_TOOL: Record<Target, string> = { webp: 'cwebp', avif: 'avifenc', jpg: 'magick' };
 const REFERENCE_NAME: Record<Target, string> = { webp: 'cwebp', avif: 'avifenc', jpg: 'ImageMagick' };
@@ -80,13 +93,15 @@ interface Encoded {
 const parseEncoded = numberRecord(['bytes', 'ssim', 'psnr']);
 const parseScore = numberRecord(['score']);
 
-function referenceEncode(target: Target, binary: string, sourcePng: string, quality: number, output: string, bitDepth: ImageCase['bitDepth']): void {
+function referenceEncode(target: Target, binary: string, sourcePng: string, quality: number, output: string, bitDepth: ImageCase['bitDepth'], grey: boolean): void {
   const q = String(quality);
   if (target === 'webp') {
-    runTool(binary, ['-quiet', '-q', q, '-m', CWEBP_METHOD, sourcePng, '-o', output]);
+    runTool(binary, ['-quiet', '-q', q, '-m', CWEBP_METHOD, '-metadata', 'all', sourcePng, '-o', output]);
   } else if (target === 'avif') {
     const depthArgs = bitDepth > 8 ? ['-d', AVIFENC_DEEP_DEPTH] : [];
-    runTool(binary, [...depthArgs, '-q', q, '-s', AVIFENC_SPEED, '-j', 'all', sourcePng, output]);
+    const chromaArgs = grey ? [] : ['-y', quality >= AVIFENC_LOSSLESS_QUALITY ? '444' : '420'];
+    // The alpha plane at the colour quality, as the service's engine encodes it (the encoder alone would write it losslessly).
+    runTool(binary, [...depthArgs, ...chromaArgs, '-q', q, '--qalpha', q, '-s', AVIFENC_SPEED, '-j', 'all', sourcePng, output]);
   } else {
     runTool(binary, [sourcePng, '-quality', q, output]);
   }
@@ -151,7 +166,10 @@ export const runImage: FamilyRunner = async (ctx) => {
         flattenOnGrey(plan.paths.ffmpeg, plan.paths.ffprobe, png, flat);
         return flat;
       };
+      const grey = isGreyPicture(decodedSource);
       const sourcePng = comparable(decodedSource);
+      /** What the reference encoders read: the decoded pixels, with the metadata blocks of a PNG source. */
+      const referenceInput = sample.format === 'png' ? referenceInputOf(sourcePath, decodedSource, ctx.scratch(`${sample.file}.reference.png`)) : decodedSource;
 
       const oursQuality = (quality: number): number =>
         ctx.injection === 'webp-quality' && target === 'webp' ? Math.round(quality * INJECTED_WEBP_QUALITY_SHARE) : quality;
@@ -177,7 +195,7 @@ export const runImage: FamilyRunner = async (ctx) => {
         kind,
         tools: ['ffmpeg', refTool, ...DECODER_TOOLS[target]],
         files: [sample.file],
-        settings: { case: caseName, quality, cwebpMethod: CWEBP_METHOD, avifencSpeed: AVIFENC_SPEED, avifencDepth: sample.bitDepth > 8 ? AVIFENC_DEEP_DEPTH : 'source' },
+        settings: { case: caseName, quality, referenceInput: REFERENCE_INPUT_SETTING, cwebpMethod: CWEBP_METHOD, avifencSpeed: AVIFENC_SPEED, avifencDepth: sample.bitDepth > 8 ? AVIFENC_DEEP_DEPTH : 'source', avifencChroma: grey ? 'monochrome' : '420', avifencLosslessQuality: AVIFENC_LOSSLESS_QUALITY, avifencAlpha: 'colour quality' },
       });
       const tool = REFERENCE_NAME[target];
 
@@ -192,7 +210,7 @@ export const runImage: FamilyRunner = async (ctx) => {
               quality,
               await ctx.refCache.value('image', referenceSpec('encode-measure', quality), parseEncoded, () => {
                 const refFile = ctx.scratch(`ref-q${quality}.${target}`);
-                referenceEncode(target, plan.paths[refTool], decodedSource, quality, refFile, sample.bitDepth);
+                referenceEncode(target, plan.paths[refTool], referenceInput, quality, refFile, sample.bitDepth, grey);
                 return measure(null, refFile);
               })
             );
@@ -228,7 +246,7 @@ export const runImage: FamilyRunner = async (ctx) => {
               parseScore,
               () => {
                 const refFile = ctx.scratch(`ref-ss2.${target}`);
-                referenceEncode(target, plan.paths[refTool], decodedSource, HEADLINE_QUALITY, refFile, sample.bitDepth);
+                referenceEncode(target, plan.paths[refTool], referenceInput, HEADLINE_QUALITY, refFile, sample.bitDepth, grey);
                 measure(null, refFile);
                 return { score: score(refFile) };
               }
@@ -250,7 +268,7 @@ export const runImage: FamilyRunner = async (ctx) => {
           async () => {
             await oursEncode(HEADLINE_QUALITY);
           },
-          () => referenceEncode(target, plan.paths[refTool], decodedSource, HEADLINE_QUALITY, timingOut, sample.bitDepth),
+          () => referenceEncode(target, plan.paths[refTool], referenceInput, HEADLINE_QUALITY, timingOut, sample.bitDepth, grey),
           'light'
         );
         rows.push(throughputRow('image', caseName, input.length, timing, tool));
@@ -260,6 +278,29 @@ export const runImage: FamilyRunner = async (ctx) => {
   rows.push(...classes.rows('image', (suffix) => REFERENCE_NAME[suffix.slice(2) as Target]).filter((row) => ctx.inScope('image', row.case)));
   return rows;
 };
+
+/** Writes the decoded pixels with the EXIF, XMP and ICC blocks of the original PNG to `output`. */
+function referenceInputOf(original: string, decoded: string, output: string): string {
+  const withMetadata = withMetadataOf(fs.readFileSync(decoded), fs.readFileSync(original));
+  if (!hasValidChunkChecksums(withMetadata)) throw new OutputIntegrityError(`the reference input made from ${path.basename(original)} has a damaged chunk`);
+  fs.writeFileSync(output, withMetadata);
+  return output;
+}
+
+const PNG_COLOUR_TYPE_OFFSET = 25;
+const PNG_COLOUR_TYPES_GREY: ReadonlySet<number> = new Set([0, 4]);
+
+/** Whether the decoded picture is a grey one (with or without alpha), by the colour type in its PNG header; the encoders then write a monochrome AVIF and the reference is not given a chroma layout. */
+function isGreyPicture(decoded: string): boolean {
+  const header = Buffer.alloc(PNG_COLOUR_TYPE_OFFSET + 1);
+  const file = fs.openSync(decoded, 'r');
+  try {
+    fs.readSync(file, header, 0, header.length, 0);
+  } finally {
+    fs.closeSync(file);
+  }
+  return PNG_COLOUR_TYPES_GREY.has(header[PNG_COLOUR_TYPE_OFFSET]);
+}
 
 /** A public sample's bit depth and transparency are part of the manifest; a file that differs is not the file that was pinned. */
 function checkDeclaredPicture(ffmpeg: string, ffprobe: string, decoded: string, sample: ImageCase): void {

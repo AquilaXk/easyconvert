@@ -47,10 +47,9 @@ const TO_SRGB = ['-profile', SRGB_PROFILE, '-strip'] as const;
 const QUALITY_POINTS = [40, 55, 70, 85] as const;
 const QUALITY = 70;
 const AVIF_SPEED = '6';
-const AVIF_DEPTH = '10';
-/** The product's chroma layout for a photograph (its AVIF policy): 4:2:0 below this quality, 4:4:4 from it, at the same bit depth as the reference. */
-const AVIF_FULL_CHROMA_QUALITY = 80;
-const avifChroma = (quality: number): string => (quality >= AVIF_FULL_CHROMA_QUALITY ? '444' : '420');
+/** The product's AVIF policy (QA decision 2026-10-11: match the reference service): the 16-bit development is written at 12 bits and every lossy quality is 4:2:0. The reference gets the same constraints. */
+const AVIF_DEPTH = '12';
+const AVIF_CHROMA = '420';
 const SAMPLES = ['dng', 'arw'] as const;
 const TARGETS = ['jpg', 'png', 'avif', 'gif'] as const;
 type Target = (typeof TARGETS)[number];
@@ -193,7 +192,7 @@ async function runSample(ctx: FamilyContext, subject: Subject, file: string, too
     if (target === 'avif') {
       const png = ctx.scratch(`${name}-${label}-intermediate.png`);
       runTool(tools.magick, [tiff, ...TO_SRGB, png]);
-      runTool(tools.avifenc, ['-d', AVIF_DEPTH, '-y', avifChroma(quality), '-q', String(quality), '-s', AVIF_SPEED, '-j', 'all', png, output]);
+      runTool(tools.avifenc, ['-d', AVIF_DEPTH, '-y', AVIF_CHROMA, '-q', String(quality), '-s', AVIF_SPEED, '-j', 'all', png, output]);
     } else if (target === 'jpg') {
       runTool(tools.magick, [tiff, ...TO_SRGB, '-quality', String(quality), output]);
     } else {

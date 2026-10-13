@@ -17,6 +17,24 @@ export const CLASSIFIER_SIDE = 128;
  */
 export const GRAPHIC_FLAT_PAIR_SHARE = 0.4;
 const RGB_CHANNELS = 3;
+const SIXTEEN_BIT_RANGE = 65536;
+
+/**
+ * Number of distinct tones in the thumbnail of a picture with more than 8 bits per sample above which it is continuous tone
+ * whatever its flat areas say. A graphic has a palette: even anti-aliased and converted to 16-bit grey it shows a few hundred
+ * tones (the benchmark's 16-bit line art 643, its screenshot 116), and an 8-bit picture stored in a 16-bit container at most
+ * 256. A radiograph, a night-sky frame or a developed camera file shows thousands (2438, 1490 and 6388 for the three 16-bit
+ * pictures of the benchmark). Such a picture can have a flat black background that reaches the flat share of a graphic (a
+ * radiograph scores 0.44 against 0.4), and the graphic JPEG tables zero the fine detail it is made of.
+ */
+export const DEEP_CONTINUOUS_TONE_COUNT = 1024;
+
+/** One number for the `bands` samples of the pixel at `at` (exact: three 16-bit samples are 48 bits). */
+function toneKey(samples: ArrayLike<number>, at: number, bands: number): number {
+  let key = samples[at];
+  for (let band = 1; band < bands; band += 1) key = key * SIXTEEN_BIT_RANGE + samples[at + band];
+  return key;
+}
 
 /** Share of adjacent same-colour pixel pairs in a packed RGB thumbnail; 0 for a thumbnail of one column. */
 export function flatPairShare(rgb: Uint8Array, width: number, height: number): number {
@@ -61,21 +79,30 @@ export function classifyRaster(raster: Raster): ContentClass {
   const level = (at: number): number => (wide ? Math.round((samples[at] * BYTE_MAX) / SIXTEEN_BIT_MAX) : samples[at]);
   const columns = Array.from({ length: thumbWidth }, (_, x) => Math.min(width - 1, Math.floor(((x + 0.5) * width) / thumbWidth)));
   let flat = 0;
+  const tones = new Set<number>();
   for (let y = 0; y < thumbHeight; y += 1) {
     const row = Math.min(height - 1, Math.floor(((y + 0.5) * height) / thumbHeight)) * width;
-    for (let x = 1; x < thumbWidth; x += 1) {
+    for (let x = 0; x < thumbWidth; x += 1) {
       const a = (row + columns[x]) * channels;
+      if (wide) tones.add(toneKey(samples, a, bands));
+      if (x === 0) continue;
       const b = (row + columns[x - 1]) * channels;
       let same = true;
       for (let band = 0; band < bands && same; band += 1) same = level(a + band) === level(b + band);
       if (same) flat += 1;
     }
   }
+  if (wide && tones.size >= DEEP_CONTINUOUS_TONE_COUNT) return 'photo';
   return flat / ((thumbWidth - 1) * thumbHeight) >= GRAPHIC_FLAT_PAIR_SHARE ? 'graphic' : 'photo';
 }
 
-/** Classifies the picture the pipeline will encode from a nearest-neighbour thumbnail of it. */
-export async function classifyContent(pipeline: Sharp): Promise<ContentClass> {
+/**
+ * Classifies the picture the pipeline will encode from a nearest-neighbour thumbnail of it. A picture with more than 8 bits per
+ * sample that the thumbnail calls graphic is read again at its own depth, where its tones are counted (`classifyRaster` does
+ * the same for decoded samples); a picture the thumbnail already calls a photograph costs no second read. A caller that has put
+ * `pipeline` in 8-bit sRGB passes the 16-bit pipeline it was before as `deepPipeline`.
+ */
+export async function classifyContent(pipeline: Sharp, deepPipeline?: Sharp): Promise<ContentClass> {
   const { data, info } = await pipeline
     .clone()
     .resize({ width: CLASSIFIER_SIDE, height: CLASSIFIER_SIDE, fit: 'inside', kernel: 'nearest', withoutEnlargement: true })
@@ -84,7 +111,27 @@ export async function classifyContent(pipeline: Sharp): Promise<ContentClass> {
     .raw({ depth: 'uchar' })
     .toBuffer({ resolveWithObject: true });
   if (info.channels !== RGB_CHANNELS) return 'photo';
-  return flatPairShare(data, info.width, info.height) >= GRAPHIC_FLAT_PAIR_SHARE ? 'graphic' : 'photo';
+  if (flatPairShare(data, info.width, info.height) < GRAPHIC_FLAT_PAIR_SHARE) return 'photo';
+  const wide = deepPipeline ?? pipeline;
+  return (await wide.metadata()).depth === SIXTEEN_BIT_DEPTH && (await showsContinuousTone(wide)) ? 'photo' : 'graphic';
+}
+
+/** Whether a nearest-neighbour thumbnail of a 16-bit picture (colour bands only) shows `DEEP_CONTINUOUS_TONE_COUNT` tones or more. */
+async function showsContinuousTone(pipeline: Sharp): Promise<boolean> {
+  const meta = await pipeline.metadata();
+  const grey = meta.space === 'b-w' || meta.space === 'grey16';
+  const { data, info } = await pipeline
+    .clone()
+    .resize({ width: CLASSIFIER_SIDE, height: CLASSIFIER_SIDE, fit: 'inside', kernel: 'nearest', withoutEnlargement: true })
+    .removeAlpha()
+    .toColourspace(grey ? 'grey16' : 'rgb16')
+    .raw({ depth: SIXTEEN_BIT_DEPTH })
+    .toBuffer({ resolveWithObject: true });
+  const aligned = data.byteOffset % 2 === 0 ? data : Buffer.from(data);
+  const samples = new Uint16Array(aligned.buffer, aligned.byteOffset, aligned.length / 2);
+  const tones = new Set<number>();
+  for (let at = 0; at + info.channels <= samples.length; at += info.channels) tones.add(toneKey(samples, at, info.channels));
+  return tones.size >= DEEP_CONTINUOUS_TONE_COUNT;
 }
 
 /**
