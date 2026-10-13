@@ -17,6 +17,28 @@ import { parseSvgPathData, SvgPathDataError, type SvgSubpath } from './font-svg-
 
 export { WOFF2_KNOWN_TAGS, decodeUIntBase128, encodeUIntBase128 };
 
+interface PakoModule {
+  deflate(data: Uint8Array, options?: { level?: number }): Uint8Array;
+}
+
+// pako ships without type declarations; it implements standard RFC 1951 3-byte LZ77 matching (unlike Node's 4-byte Chromium zlib fork) matching sfnt2woff on 16-bit OpenType tables.
+const pako: PakoModule = require('pako');
+const WOFF_ALWAYS_3BYTE_MATCH_TAGS: ReadonlySet<string> = new Set(['VDMX', 'EBLC', 'EBDT', 'gvar', 'HVAR', 'COLR', 'CPAL']);
+const WOFF_LAYOUT_3BYTE_MATCH_TAGS: ReadonlySet<string> = new Set(['GPOS', 'GSUB', 'GDEF', 'loca', 'hmtx']);
+const WOFF_LAYOUT_3BYTE_MIN_BYTES = 10 * 1024;
+const WOFF_3BYTE_FAST_THRESHOLD_BYTES = 128 * 1024;
+
+function deflateWoffTable(tag: string, data: Buffer): Buffer {
+  if (
+    WOFF_ALWAYS_3BYTE_MATCH_TAGS.has(tag) ||
+    (WOFF_LAYOUT_3BYTE_MATCH_TAGS.has(tag) && data.length >= WOFF_LAYOUT_3BYTE_MIN_BYTES)
+  ) {
+    const level = data.length > WOFF_3BYTE_FAST_THRESHOLD_BYTES ? zlib.constants.Z_DEFAULT_COMPRESSION : zlib.constants.Z_BEST_COMPRESSION;
+    return Buffer.from(pako.deflate(data, { level }));
+  }
+  return zlib.deflateSync(data, { level: zlib.constants.Z_BEST_COMPRESSION });
+}
+
 /** WOFF 1.0 header and table directory entry sizes in bytes (section 5). */
 const WOFF_HEADER_BYTES = 44;
 const WOFF_DIRECTORY_ENTRY_BYTES = 20;
@@ -401,7 +423,7 @@ export function encodeWoff(font: ParsedFont): Buffer {
     totalSfntSize += origLength + ((4 - (origLength % 4)) % 4);
 
     // Deflate compression
-    const deflated = zlib.deflateSync(tbl.data);
+    const deflated = deflateWoffTable(tbl.tag, tbl.data);
     const useCompressed = deflated.length < origLength;
     const compData = useCompressed ? deflated : tbl.data;
     const compLength = compData.length;
@@ -3318,10 +3340,19 @@ export function extractCffGlyphs(
     .map(({ unicode, d, advWidth }) => ({ unicode, d, advWidth }));
 }
 
+function hasBitmapGlyphTables(font: ParsedFont): boolean {
+  return Boolean(
+    (font.tables['CBDT'] && font.tables['CBLC']) ||
+      (font.tables['EBDT'] && font.tables['EBLC']) ||
+      font.tables['sbix']
+  );
+}
+
 /**
  * Transcodes an OpenType (CFF) font into standard TrueType (glyf/loca) format. A font that already
- * has glyf and loca is returned unchanged; a font with neither glyf nor a parsable CFF table is
- * rejected, since no outlines can be produced for it.
+ * has glyf and loca (or bitmap glyph tables such as CBDT/CBLC, EBDT/EBLC or sbix) is returned
+ * unchanged; a font with neither glyf, bitmap strikes nor a parsable CFF table is rejected, since
+ * no glyphs can be produced for it.
  */
 export function convertFontToTrueType(fontOrBuffer: ParsedFont | Buffer): any {
   const isBuf = Buffer.isBuffer(fontOrBuffer);
@@ -3338,6 +3369,9 @@ export function convertFontToTrueType(fontOrBuffer: ParsedFont | Buffer): any {
   }
   if (font.tables['glyf'] || font.tables['loca']) {
     throw new FontOutlinesMissingError("Invalid font: 'glyf' and 'loca' must both be present.");
+  }
+  if (hasBitmapGlyphTables(font)) {
+    return isBuf ? encodeSfnt(font, SFNT_VERSION_TRUETYPE) : font;
   }
   if (font.tables['CFF2']) {
     throw new ConversionFailedError('CFF2 (variable CFF) outlines cannot be converted to TrueType yet.');
