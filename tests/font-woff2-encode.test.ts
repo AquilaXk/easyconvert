@@ -638,6 +638,13 @@ describe('WOFF 1.0 best compression and bitmap-only colour fonts', () => {
     expectedHead.writeUInt16BE(expectedHead.readUInt16BE(HEAD_FLAGS_OFFSET) | HEAD_FLAGS_LOSSLESS_TRANSFORM, HEAD_FLAGS_OFFSET);
     expectedFromWoff2.set('head', expectedHead);
     expectSameTables(maskAdjustment(fromWoff2), expectedFromWoff2);
+
+    // A truncated or zero-strike CBDT/CBLC pair is rejected (fail closed).
+    const emptyStrikeTables = new Map(tables);
+    emptyStrikeTables.set('CBLC', Buffer.from('00030000' + '00000000', 'hex'));
+    const zeroStrikeTtf = sfntFromTables(0x00010000, emptyStrikeTables);
+    const zeroStrikeWoff = (await convertFont(zeroStrikeTtf, 'ttf', 'woff', {}, 'bad.ttf')).buffer;
+    await expect(convertFont(zeroStrikeWoff, 'woff', 'ttf', {}, 'bad.woff')).rejects.toThrow(/outlines/i);
   });
 });
 

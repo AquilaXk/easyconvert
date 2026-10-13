@@ -27,11 +27,13 @@ const WOFF_ALWAYS_3BYTE_MATCH_TAGS: ReadonlySet<string> = new Set(['VDMX', 'EBLC
 const WOFF_LAYOUT_3BYTE_MATCH_TAGS: ReadonlySet<string> = new Set(['GPOS', 'GSUB', 'GDEF', 'loca', 'hmtx']);
 const WOFF_LAYOUT_3BYTE_MIN_BYTES = 10 * 1024;
 const WOFF_3BYTE_FAST_THRESHOLD_BYTES = 128 * 1024;
+const WOFF_3BYTE_MAX_BYTES = 2 * 1024 * 1024;
 
 function deflateWoffTable(tag: string, data: Buffer): Buffer {
   if (
-    WOFF_ALWAYS_3BYTE_MATCH_TAGS.has(tag) ||
-    (WOFF_LAYOUT_3BYTE_MATCH_TAGS.has(tag) && data.length >= WOFF_LAYOUT_3BYTE_MIN_BYTES)
+    data.length <= WOFF_3BYTE_MAX_BYTES &&
+    (WOFF_ALWAYS_3BYTE_MATCH_TAGS.has(tag) ||
+      (WOFF_LAYOUT_3BYTE_MATCH_TAGS.has(tag) && data.length >= WOFF_LAYOUT_3BYTE_MIN_BYTES))
   ) {
     const level = data.length > WOFF_3BYTE_FAST_THRESHOLD_BYTES ? zlib.constants.Z_DEFAULT_COMPRESSION : zlib.constants.Z_BEST_COMPRESSION;
     return Buffer.from(pako.deflate(data, { level }));
@@ -3340,11 +3342,26 @@ export function extractCffGlyphs(
     .map(({ unicode, d, advWidth }) => ({ unicode, d, advWidth }));
 }
 
-function hasBitmapGlyphTables(font: ParsedFont): boolean {
+const BITMAP_DATA_HEADER_MIN_BYTES = 4;
+const BITMAP_LOCATOR_HEADER_MIN_BYTES = 8;
+const BITMAP_STRIKE_COUNT_OFFSET = 4;
+
+function hasValidBitmapPair(dataTable: SfntTable | undefined, locatorTable: SfntTable | undefined): boolean {
   return Boolean(
-    (font.tables['CBDT'] && font.tables['CBLC']) ||
-      (font.tables['EBDT'] && font.tables['EBLC']) ||
-      font.tables['sbix']
+    dataTable &&
+      locatorTable &&
+      dataTable.data.length >= BITMAP_DATA_HEADER_MIN_BYTES &&
+      locatorTable.data.length >= BITMAP_LOCATOR_HEADER_MIN_BYTES &&
+      locatorTable.data.readUInt32BE(BITMAP_STRIKE_COUNT_OFFSET) >= 1
+  );
+}
+
+function hasBitmapGlyphTables(font: ParsedFont): boolean {
+  const sbix = font.tables['sbix'];
+  return (
+    hasValidBitmapPair(font.tables['CBDT'], font.tables['CBLC']) ||
+    hasValidBitmapPair(font.tables['EBDT'], font.tables['EBLC']) ||
+    Boolean(sbix && sbix.data.length >= BITMAP_LOCATOR_HEADER_MIN_BYTES && sbix.data.readUInt32BE(BITMAP_STRIKE_COUNT_OFFSET) >= 1)
   );
 }
 
