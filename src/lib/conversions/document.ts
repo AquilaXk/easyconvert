@@ -598,12 +598,12 @@ export async function convertDocument(
 
   // Convert to Plain Text
   if (tgt === 'txt') {
-    const cleanText =
-      src === 'html'
-        ? stripHtmlTags(textContent)
-        : src === 'md'
-        ? stripMarkdownSyntax(textContent)
-        : textContent;
+    let cleanText = textContent;
+    if (HTML_SOURCE_FORMATS.has(src)) {
+      cleanText = stripHtmlTags(textContent);
+    } else if (src === 'md') {
+      cleanText = stripMarkdownSyntax(textContent);
+    }
     const buffer = Buffer.from(cleanText, 'utf-8');
     return {
       buffer,
@@ -634,7 +634,7 @@ export async function convertDocument(
 
   // Convert to Markdown
   if (tgt === 'md') {
-    const md = src === 'html' ? htmlToMarkdown(textContent) : textContent;
+    const md = HTML_SOURCE_FORMATS.has(src) ? htmlToMarkdown(textContent) : textContent;
     const buffer = Buffer.from(md, 'utf-8');
     return {
       buffer,

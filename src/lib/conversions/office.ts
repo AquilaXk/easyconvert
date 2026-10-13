@@ -40,6 +40,7 @@ import { readPmlText } from './office/pml-reader';
 import { extractPrintReplicaPdf } from './office/print-replica';
 import { extract7zArchive, extractRarArchive } from './archive';
 import { htmlToText } from './office/html-text';
+import { decodeHtmlInput } from './html-encoding';
 import { decodeWindows1252 } from './office/windows-1252';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './office/legacy-office-errors';
 import { renderPdfTables } from './pdf-table-layout';
@@ -460,6 +461,10 @@ export async function extractTextContentForOffice(
 
   if (src === 'hwp') {
     return documentToText(parseHwpDocument(inputBuffer).model);
+  }
+
+  if (src === 'html' || src === 'htm') {
+    return decodeHtmlInput(inputBuffer);
   }
 
   const UNSUPPORTED_BINARY_OFFICE_FORMATS = new Set([

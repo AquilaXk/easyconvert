@@ -485,6 +485,9 @@ describe('In-process text-to-PDF writers embed covering Unicode fonts and no bra
       expect({ label, text: normalizeText(pdfText(result.buffer)) }).toEqual({ label, text: 'Latin text then \ufffd\ufffd then more' });
       expect({ label, warnings: result.metadata?.warnings }).toEqual({ label, warnings: [`Replaced ${label} with U+FFFD: no font can draw this unassigned or private-use code point.`] });
     }
+    const shaped = await convertFile(Buffer.from(`${ARABIC_LINE} \ue000`, 'utf-8'), 'txt', 'pdf', {}, 'arabic-pua.txt');
+    expect(normalizeText(pdfText(shaped.buffer))).toBe(normalizeText(`${ARABIC_LINE} \ufffd`));
+    expect(shaped.metadata?.warnings).toEqual(['Replaced U+E000 with U+FFFD: no font can draw this unassigned or private-use code point.']);
   });
 
   oracleTest('fails with EngineUnavailableError when no installed font has a glyph for an assigned character', ['fc-list'], async () => {

@@ -527,18 +527,19 @@ function glyphCodePoints(text: string): number[] {
 }
 
 /**
- * Throws ConversionFailedError for code points no font can render and EngineUnavailableError for
- * the first character no installed font covers.
+ * Throws EngineUnavailableError (or FontCoverageError for complex scripts) at the first character
+ * no installed font covers; non-fontable code points are checked as U+FFFD, which the writer draws
+ * in their place.
  */
 export function assertFontCoverage(text: string, customFontPath?: string): void {
-  for (const cp of glyphCodePoints(toDrawableText(text))) {
+  for (const cp of glyphCodePoints(toDrawableText(text).replace(NON_FONTABLE_CODE_POINTS, REPLACEMENT_CHARACTER))) {
     if (!faceFor(cp, customFontPath)) throw uncoveredError(cp);
   }
 }
 
 /** Code point of the first character no installed font covers, or null when all are covered. */
 export function findUncoveredCodePoint(text: string, customFontPath?: string): number | null {
-  for (const cp of glyphCodePoints(toDrawableText(text))) {
+  for (const cp of glyphCodePoints(toDrawableText(text).replace(NON_FONTABLE_CODE_POINTS, REPLACEMENT_CHARACTER))) {
     if (!faceFor(cp, customFontPath)) return cp;
   }
   return null;
@@ -670,13 +671,14 @@ function needsGlyphToShape(codePoint: number): boolean {
 
 /**
  * Partitions shapable text (see toShapableText) into stretches that one face covers, so that every offset belongs to
- * exactly one range. Invisible characters never need a glyph and join their neighbour's range. Throws
- * ConversionFailedError for code points no font can render and FontCoverageError (400) at the first character no
- * installed font covers.
+ * exactly one range. Invisible characters never need a glyph and join their neighbour's range; code points no font can
+ * render are replaced with U+FFFD (and reported as a warning). Throws FontCoverageError (400) or EngineUnavailableError
+ * at the first character no installed font covers.
  */
 export function fontRangesForShaping(text: string, customFontPath?: PdfPreferredFont): PdfFontRange[] {
-  const needed = glyphCodePoints(text.replace(NON_RENDERING_CHARACTERS, ''));
-  const specific = customFontPath === undefined && hasComplexTextScript(text) ? scriptSpecificFace(needed) : null;
+  const clean = replaceNonFontableCharacters(text);
+  const needed = glyphCodePoints(clean.replace(NON_RENDERING_CHARACTERS, ''));
+  const specific = customFontPath === undefined && hasComplexTextScript(clean) ? scriptSpecificFace(needed) : null;
   const single = specific ?? singleCoveringFace(needed, customFontPath);
   if (single) return text.length > 0 ? [{ start: 0, end: text.length, face: single }] : [];
 
@@ -685,7 +687,7 @@ export function fontRangesForShaping(text: string, customFontPath?: PdfPreferred
   let rangeStart = 0;
   let index = 0;
   for (const ch of text) {
-    const cp = ch.codePointAt(0) as number;
+    const cp = (NON_FONTABLE_CODE_POINT.test(ch) ? REPLACEMENT_CHARACTER.codePointAt(0) : ch.codePointAt(0)) as number;
     if (needsGlyphToShape(cp) && !(current && current.font.hasGlyphForCodePoint(cp))) {
       const face = faceFor(cp, customFontPath);
       if (!face) throw uncoveredError(cp);
@@ -851,7 +853,7 @@ export class PdfUnicodeTextWriter {
     const primary = orderedFaces(this.customFontPath)[0];
     if (!primary) throw uncoveredError(SPACE);
     const segments = (typeof content === 'string' ? [{ text: content }] : content).map((segment) => ({
-      text: toShapableText(segment.text),
+      text: replaceNonFontableCharacters(toShapableText(segment.text)),
       link: segment.link,
     }));
     return layoutShapedText({

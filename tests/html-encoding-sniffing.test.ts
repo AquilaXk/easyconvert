@@ -96,5 +96,14 @@ describe('HTML without a declared charset converts', () => {
     expect(oracle.match(/\p{L}+/gu)).toEqual(body.match(/\p{L}+/gu));
     const txt = (await convertFile(bytes, 'html', 'txt', {}, 'news.html')).buffer.toString('utf-8');
     expect(normalizeWhitespace(txt)).toContain(body);
+    const htmTxt = (await convertFile(bytes, 'htm', 'txt', {}, 'news.htm')).buffer.toString('utf-8');
+    expect(normalizeWhitespace(htmTxt)).toContain(body);
+    expect(htmTxt).not.toContain('<p>');
+    const htmMd = (await convertFile(bytes, 'htm', 'md', {}, 'news.htm')).buffer.toString('utf-8');
+    expect(normalizeWhitespace(htmMd)).toContain(body);
+    expect(htmMd).not.toContain('<p>');
+    const docx = (await convertFile(bytes, 'html', 'docx', {}, 'news.html')).buffer;
+    const docxTxt = (await convertFile(docx, 'docx', 'txt', {}, 'news.docx')).buffer.toString('utf-8');
+    expect(normalizeWhitespace(docxTxt)).toContain(body);
   }, 180_000);
 });

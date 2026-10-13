@@ -57,4 +57,15 @@ describe('warnings raised inside a conversion', () => {
     expect(inner?.metadata).toBeUndefined();
     expect(outer.metadata?.warnings).toEqual(['from inside']);
   });
+
+  it('caps the combined warnings of the result and the scope at 200 distinct lines', async () => {
+    const existing = Array.from({ length: 120 }, (_, i) => `existing-${i}`);
+    const converted = await withConversionWarnings(async () => {
+      for (let i = 0; i < 150; i++) reportConversionWarning(`reported-${i}`);
+      return result(existing);
+    });
+    expect(converted.metadata?.warnings).toHaveLength(200);
+    expect(converted.metadata?.warnings?.slice(0, 120)).toEqual(existing);
+    expect(converted.metadata?.warnings?.slice(120)).toEqual(Array.from({ length: 80 }, (_, i) => `reported-${i}`));
+  });
 });
