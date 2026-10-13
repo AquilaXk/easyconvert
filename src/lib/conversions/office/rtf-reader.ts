@@ -1,3 +1,4 @@
+import { reportConversionWarning } from '../conversion-warnings';
 import { LEGACY_OFFICE_MAX_INPUT_BYTES } from './legacy-office-limits';
 import { LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
@@ -9,13 +10,18 @@ import { decodeWindows1252 } from './windows-1252';
  */
 
 const LABEL = 'RTF document';
+const EARLY_CLOSE_WARNING = 'The RTF document group closes before the end of the file; the groups after it were read as part of the document.';
 
 /** Deepest group nesting the reader follows. */
 export const RTF_MAX_GROUP_DEPTH = 256;
 /** Longest control word name; the specification allows 32 letters. */
 export const RTF_MAX_CONTROL_WORD_LENGTH = 32;
-/** Most digits of a control word parameter; the specification allows a signed 16-bit value. */
-export const RTF_MAX_PARAMETER_DIGITS = 10;
+/**
+ * Largest magnitude of a control word parameter. The specification allows a signed 16-bit value, but writers emit longer
+ * ones (a character expansion of 19 digits in the wild), and readers of the format take the digits as a 32-bit number
+ * that saturates, so a parameter beyond this magnitude is clamped to it and the document is still read.
+ */
+export const RTF_MAX_PARAMETER_VALUE = 2 ** 31 - 1;
 
 const BYTE_OPEN_BRACE = 0x7b;
 const BYTE_CLOSE_BRACE = 0x7d;
@@ -31,6 +37,8 @@ const BYTE_TAB = 0x09;
 const FIRST_PRINTABLE_BYTE = 0x20;
 const FIRST_NON_ASCII = 0x80;
 const HEX_RADIX = 16;
+const DECIMAL_RADIX = 10;
+const BYTE_DIGIT_ZERO = 0x30;
 const HEX_DIGITS_PER_BYTE = 2;
 const HEX_LETTER_OFFSET = 10;
 const SIGNED_16_BIT_OFFSET = 0x10000;
@@ -169,12 +177,28 @@ function hexValue(byte: number): number {
   return -1;
 }
 
+/** The value of the ASCII digits in `data[start, end)`, saturating at RTF_MAX_PARAMETER_VALUE. */
+function parameterMagnitude(data: Buffer, start: number, end: number): number {
+  let value = 0;
+  for (let at = start; at < end; at++) {
+    value = value * DECIMAL_RADIX + (data[at] - BYTE_DIGIT_ZERO);
+    if (value >= RTF_MAX_PARAMETER_VALUE) return RTF_MAX_PARAMETER_VALUE;
+  }
+  return value;
+}
+
+function isInertTrailingByte(byte: number): boolean {
+  return byte === BYTE_CR || byte === BYTE_LF || byte === BYTE_SPACE || byte === BYTE_NUL;
+}
+
 class RtfReader {
   private index = 0;
   private readonly output: string[] = [];
   private readonly stack: GroupState[] = [];
   private current: GroupState = { destination: 'text', unicodeSkip: DEFAULT_UNICODE_SKIP, font: 0, definingFont: -1 };
   private rootClosed = false;
+  /** The document group closed early and RTF content followed: closing braces with no group to close are then ignored. */
+  private resumedAfterClose = false;
   /** True until the first token of a group is read; that token may name the group's destination. */
   private groupJustOpened = false;
   /** A `\*` opened the group: its destination is optional and skipped unless the reader knows it. */
@@ -195,6 +219,16 @@ class RtfReader {
     const data = this.data;
     while (this.index < data.length) {
       if (this.rootClosed) {
+        // A writer's unbalanced braces can end the document group early. RTF content (groups and control words) that follows
+        // is still the document, and readers of the format carry on with it; any other trailing data is not RTF.
+        const resume = this.nextStructureAfterStrayBraces();
+        if (resume >= 0) {
+          reportConversionWarning(EARLY_CLOSE_WARNING);
+          this.index = resume;
+          this.rootClosed = false;
+          this.resumedAfterClose = true;
+          continue;
+        }
         this.assertTrailingBytesAreInert();
         break;
       }
@@ -212,7 +246,7 @@ class RtfReader {
         this.acceptTextByte(byte);
       }
     }
-    if (!this.rootClosed) {
+    if (!this.rootClosed && !(this.resumedAfterClose && this.stack.length === 0)) {
       throw new LegacyOfficeFormatError(`${LABEL}: the document ends inside an open group.`);
     }
     return this.finish();
@@ -224,10 +258,17 @@ class RtfReader {
     }
   }
 
+  /** Index of the `{` or `\` that follows inert bytes and closing braces, or -1 when something else (or nothing) follows. */
+  private nextStructureAfterStrayBraces(): number {
+    let at = this.index;
+    while (at < this.data.length && (isInertTrailingByte(this.data[at]) || this.data[at] === BYTE_CLOSE_BRACE)) at++;
+    return at < this.data.length && (this.data[at] === BYTE_OPEN_BRACE || this.data[at] === BYTE_BACKSLASH) ? at : -1;
+  }
+
   private assertTrailingBytesAreInert(): void {
     for (let i = this.index; i < this.data.length; i++) {
       const byte = this.data[i];
-      if (byte !== BYTE_CR && byte !== BYTE_LF && byte !== BYTE_SPACE && byte !== BYTE_NUL) {
+      if (!isInertTrailingByte(byte)) {
         throw new LegacyOfficeFormatError(`${LABEL}: unexpected data follows the end of the document.`);
       }
     }
@@ -267,6 +308,7 @@ class RtfReader {
     this.groupJustOpened = false;
     this.starPending = false;
     const parent = this.stack.pop();
+    if (parent === undefined && this.resumedAfterClose) return;
     if (parent === undefined) {
       throw new LegacyOfficeFormatError(`${LABEL}: a closing brace has no matching opening brace.`);
     }
@@ -359,14 +401,9 @@ class RtfReader {
     const negative = cursor < data.length && data[cursor] === BYTE_MINUS;
     const digitsStart = negative ? cursor + 1 : cursor;
     let digitsEnd = digitsStart;
-    while (digitsEnd < data.length && isDigit(data[digitsEnd])) {
-      digitsEnd++;
-      if (digitsEnd - digitsStart > RTF_MAX_PARAMETER_DIGITS) {
-        throw new LegacyOfficeFormatError(`${LABEL}: the parameter of \\${word} has more than ${RTF_MAX_PARAMETER_DIGITS} digits.`);
-      }
-    }
+    while (digitsEnd < data.length && isDigit(data[digitsEnd])) digitsEnd++;
     if (digitsEnd > digitsStart) {
-      const magnitude = Number.parseInt(data.toString('latin1', digitsStart, digitsEnd), 10);
+      const magnitude = parameterMagnitude(data, digitsStart, digitsEnd);
       parameter = negative ? -magnitude : magnitude;
       cursor = digitsEnd;
     }

@@ -36,6 +36,7 @@ import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
 import { encodeSvgPageToDxf } from '../lib/conversions/vector-dxf';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
+import { decodeHtmlInput } from '../lib/conversions/html-encoding';
 import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
 import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
 import { runWithImageFetchSession } from '../lib/conversions/html-image-fetch';
@@ -2387,8 +2388,8 @@ const HTML_TAG_PATTERN = /<[^>]*>/g;
 const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
 /** Text sources rendered to PDF; CJK or complex-script text and all HTML prefer LibreOffice. */
 const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
-/** Sources LibreOffice reads directly; their text is scanned in chunks, whatever the size. */
-const STREAMED_TEXT_SOURCES: ReadonlySet<string> = new Set(['txt', 'html', 'htm']);
+/** Sources LibreOffice reads directly; their text is scanned in chunks, whatever the size. HTML is decoded whole, by encoding sniffing. */
+const STREAMED_TEXT_SOURCES: ReadonlySet<string> = new Set(['txt']);
 /** HTML always prefers LibreOffice, which keeps its full structure. */
 const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
 const HTML_FORMAT = 'html';
@@ -2444,6 +2445,7 @@ function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): strin
     const hwp = parseHwpDocument(readRawInputBuffer(input));
     return [...hwp.paragraphs.map((p) => p.text), ...hwp.tables.flatMap((t) => t.rows.flat())].join('\n');
   }
+  if (HTML_SOURCES.has(src)) return decodeHtmlInput(readRawInputBuffer(input));
   const filePath = !Buffer.isBuffer(input) && !input.inputBuffer ? input.inputPath : undefined;
   if (STREAMED_TEXT_SOURCES.has(src) && filePath && fs.existsSync(filePath)) {
     return distinctCharactersOfFile(filePath);
@@ -2501,7 +2503,7 @@ async function stageTextPdfHtml(
   const raw = readRawInputBuffer(input);
   let html: string;
   if (HTML_SOURCES.has(src)) {
-    html = decodeTextInput(raw);
+    html = decodeHtmlInput(raw);
   } else if (src === PLAIN_TEXT_SOURCE) {
     html = plainTextToHtml(decodeTextInput(raw));
   } else if (src === MARKDOWN_SOURCE) {

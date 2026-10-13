@@ -584,18 +584,17 @@ describe('Phase 1.2: Office High-Fidelity Engine - DrawingML, Dynamic Charts & C
       expectEmbeddedFonts(pdf);
     });
 
-    it('fails closed with ConversionFailedError instead of drawing a box for an unassigned code point', () => {
-      // U+0378 is unassigned: no font can render it, so the input itself is rejected (HTTP 400).
+    it('draws U+FFFD instead of a box for an unassigned code point, and keeps the text around it', async () => {
+      // U+0378 is unassigned: no font can render it, so it is replaced and the document still converts.
       const doc = new PDFDocument();
-      let thrown: unknown = null;
-      try {
-        renderSafePdfText(doc, 'Order \u0378 100', true);
-      } catch (err) {
-        thrown = err;
-      }
-      expect(thrown).toBeInstanceOf(ConversionFailedError);
-      expect((thrown as Error).name).toBe('ConversionFailedError');
-      expect((thrown as Error).message).toContain('U+0378');
+      const endPromise = new Promise<Buffer>((resolve) => {
+        const chunks: Buffer[] = [];
+        doc.on('data', (c) => chunks.push(c));
+        doc.on('end', () => resolve(Buffer.concat(chunks)));
+      });
+      renderSafePdfText(doc, 'Order \u0378 100', true);
+      doc.end();
+      expect(popplerText(await endPromise)).toBe('Order \ufffd 100');
     });
 
 
