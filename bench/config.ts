@@ -142,7 +142,15 @@ export const QUICK_PUBLIC_SUBSET: Readonly<Record<string, readonly string[]>> = 
   ],
   cad: ['cad-openscad-export.dxf->svg', 'cad-circles-ellipses-arcs.dxf->pdf', 'cad-blocks.dxf->png'],
   raw: ['raw-canon-g1.crw->png'],
-  vector: ['vec-path-M-C-S.svg->png', 'vec-radialGradient-fr-0.5.svg->png', 'vec-clipPath-clip-path-on-children.svg->pdf'],
+  vector: [
+    'vec-path-M-C-S.svg->png',
+    'vec-radialGradient-fr-0.5.svg->png',
+    'vec-clipPath-clip-path-on-children.svg->pdf',
+    'vec-clipPath-clip-path-on-children.svg->png',
+    'vec-rect-mm-values.svg->png',
+    'vec-image-embedded-svg.svg->png',
+    'vec-image-embedded-svg.svg->pdf',
+  ],
   data: ['data-penguins.json->csv', 'data-delta-byte-array.csv->parquet', 'data-weather.csv->json'],
 };
 

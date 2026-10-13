@@ -583,6 +583,9 @@ describe('WOFF 1.0 best compression and bitmap-only colour fonts', () => {
   it('deflates WOFF 1.0 tables with level 9 and 3-byte LZ77 matching on 16-bit index/variation tables', () => {
     const sfnt = fixture('dejavu-sans-latin.ttf');
     const font = decodeSfnt(sfnt, 'dejavu');
+    const baseGpos = font.tables['GPOS'].data;
+    const largeGpos = Buffer.concat([baseGpos, baseGpos, baseGpos]);
+    font.tables['GPOS'] = { tag: 'GPOS', checkSum: 0, offset: 0, length: largeGpos.length, data: largeGpos };
     // Add a gvar table with 3-byte repeating 16-bit delta records separated by varying 4th bytes.
     const gvarData = Buffer.alloc(4096);
     for (let i = 0; i < gvarData.length; i += 4) {

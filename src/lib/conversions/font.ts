@@ -38,7 +38,7 @@ function deflateWoffTable(tag: string, data: Buffer): Buffer {
     const level = data.length > WOFF_3BYTE_FAST_THRESHOLD_BYTES ? zlib.constants.Z_DEFAULT_COMPRESSION : zlib.constants.Z_BEST_COMPRESSION;
     return Buffer.from(pako.deflate(data, { level }));
   }
-  return zlib.deflateSync(data, { level: zlib.constants.Z_BEST_COMPRESSION });
+  return zlib.deflateSync(data);
 }
 
 /** WOFF 1.0 header and table directory entry sizes in bytes (section 5). */

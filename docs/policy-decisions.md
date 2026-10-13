@@ -470,11 +470,31 @@ Quality evidence
   - The service's converter changes how it writes alpha or reads profiles.
   - Users report colour differences in untagged files.
 
-## 23. WOFF/WOFF2 font compression and colour bitmap fonts
+## 23. Embedded SVG images, physical units and child clip paths
+
+- **Status**: Implemented (#746).
+- **Decision**:
+  - **Embedded SVG images (`<image href="data:image/svg+xml,...">`)**: a `data:image/svg+xml` URI on an `<image>` element is decoded, verified to be an SVG document within the input character limit, recursively sanitized through the SVG sanitizer (with bounded nesting depth), and re-encoded as `data:image/svg+xml;base64,...`. On every other element (`<a>`, `<use>`, `<feImage>`, animation attributes), `data:image/svg+xml` remains neutralized to `href="#"`.
+  - **Physical CSS length units (`mm`, `cm`, `in`, `pt`, `pc`, `Q`)**: absolute CSS length units on SVG geometry and presentation attributes are converted to user units at the CSS Values and Units ratio of 96 user units per inch before raster or PDF rendering, independent of the rasterization density (such as 72 or 300 dpi).
+  - **Child `clip-path` inside `<clipPath>`**: a `<clipPath>` whose child shapes carry their own `clip-path="url(#...)"` attributes (and is not itself referenced inside another `<clipPath>`) is lowered into a white luminance `<mask>` before rendering so the rasterizer composites the union of the clipped children.
+- **Why**:
+  - Neutralizing `data:image/svg+xml` on `<image>` dropped embedded vector sub-drawings completely, whereas sanitizing the decoded inner SVG through the same sanitizer strips scripts, event handlers, and external references while preserving safe geometry.
+  - Setting the native SVG renderer's DPI to 72 or 300 caused it to scale `mm`/`cm`/`in`/`pt`/`pc` attributes inside `viewBox` user space at 72 or 300 user units per inch instead of the CSS standard 96 user units per inch.
+  - The native SVG renderer's clipping path builder cannot form the union of multiple child shapes inside `<clipPath>` when those children carry their own `clip-path`; lowering the outer `<clipPath>` to a luminance `<mask>` preserves the union.
+- **Trade-offs**:
+  - Recursive sanitization decodes and re-encodes embedded SVG `data:` URIs on `<image>` elements.
+  - Lowering a `<clipPath>` with clipped children into a luminance `<mask>` computes an alpha mask rather than a vector clip outline in PDF rasterization.
+- **Alternatives rejected**:
+  - **Allowing unsanitized `data:image/svg+xml` on `<image>`**: would allow script or external-reference payloads inside the embedded SVG.
+  - **Neutralizing all `data:image/svg+xml` URIs on `<image>`**: broke drawings that embed vector icons or sub-diagrams via `<image>`.
+- **Verified by**: `tests/svg-rendering-units-embed-clip.test.ts` and the public vector rows `vec-rect-mm-values.svg`, `vec-image-embedded-svg.svg`, and `vec-clipPath-clip-path-on-children.svg`.
+- **Revisit when**: the upstream native SVG renderer fixes union clipping of `<clipPath>` children carrying `clip-path` or decouples CSS physical unit conversion from output rasterization DPI.
+
+## 24. WOFF/WOFF2 font compression and colour bitmap fonts
 
 - **Status**: Implemented (#747).
 - **Decision**:
-  - **WOFF 1.0 per-table Deflate**: outline and general tables are compressed with native `zlib` at level 9 (`Z_BEST_COMPRESSION`), while 16-bit index, layout, and variation tables (`VDMX`, `EBLC`, `EBDT`, `gvar`, `HVAR`, `COLR`, `CPAL`, and `GPOS`/`GSUB`/`GDEF`/`loca`/`hmtx` tables of at least 10 KB) are compressed with RFC 1951 3-byte LZ77 matching (`pako.deflate`).
+  - **WOFF 1.0 per-table Deflate**: 16-bit index, layout, and variation tables (`VDMX`, `EBLC`, `EBDT`, `gvar`, `HVAR`, `COLR`, `CPAL`, and `GPOS`/`GSUB`/`GDEF`/`loca`/`hmtx` tables of at least 10 KB) are compressed with RFC 1951 3-byte LZ77 matching (`pako.deflate`), while outline and general tables keep native `zlib` default compression to preserve throughput on small fonts.
   - **WOFF2 Brotli quality threshold**: the uncompressed stream size ceiling for Brotli quality 11 (`WOFF2_BROTLI_MAX_QUALITY_BYTES`) is raised from 4 MB to 8 MB so single-script CJK OpenType/CFF fonts (around 4.5 MB) receive quality 11 compression like the reference encoder.
   - **Colour and bitmap-only SFNT fonts**: when converting to TrueType (`.ttf`), an SFNT font that carries bitmap glyph tables (`CBDT`+`CBLC`, `EBDT`+`EBLC`, or `sbix`) without `glyf`/`loca` or `CFF ` outlines is serialized as a TrueType-version SFNT container rather than rejected for missing outlines.
 - **Why**:
@@ -484,9 +504,10 @@ Quality evidence
 - **Trade-offs**:
   - Pure-JS 3-byte LZ77 Deflate on 16-bit layout tables is slightly slower than native C `zlib`, and Brotli quality 11 on 4 to 8 MB CJK fonts takes longer than quality 9, while remaining within the throughput parity budget.
 - **Alternatives rejected**:
-  - **Native `zlib` level 9 alone for WOFF 1.0**: still leaves 4-byte minimum matching on 16-bit tables and falls short of `sfnt2woff` on `Lato` (`0.520` vs `0.510`).
+  - **Native `zlib` level 9 alone for WOFF 1.0**: still leaves 4-byte minimum matching on 16-bit tables and falls short of `sfnt2woff` on `Lato` (`0.520` vs `0.510`), while slowing down outline compression on small fonts.
   - **Synthesizing dummy empty `glyf`/`loca` tables for bitmap-only fonts**: mutates the font's table set and fails byte-exact SFNT table round-trip checks.
 - **Verified by**: `tests/font-woff2-encode.test.ts` and the public `font` parity suite (`font-lato-regular.ttf->woff`, `font-notosansjp-regular.otf->woff2`, `font-notocoloremoji-flags.ttf.woff->ttf`, and `font-notocoloremoji-flags.ttf.woff2->ttf`).
 - **Revisit when**: Node.js exposes a native 3-byte match option in `node:zlib` or variable CFF2-to-TrueType outline conversion is added.
+
 
 

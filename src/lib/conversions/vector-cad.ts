@@ -19,7 +19,7 @@ import {
   verifyWatertightManifoldMesh,
 } from './cad-nurbs';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
-import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
+import { MAX_SVG_INPUT_CHARS, normalizeSvgBufferForRendering } from './svg-geometry';
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
 import { encodeSvgPageToDxf } from './vector-dxf';
 import { sanitizeSvgDocument } from '../security/svg-sanitizer';
@@ -399,13 +399,18 @@ async function convertSvgSource(
     };
   }
 
+  // Vector targets are written from the SVG geometry and never rasterize it.
+  const vectorOutput = svgToVectorTarget(inputBuffer, tgt, baseName);
+  if (vectorOutput) return vectorOutput;
+
   const density = options.dpi || DEFAULT_SVG_RENDER_DPI;
+  const renderBuffer = written ? inputBuffer : normalizeSvgBufferForRendering(inputBuffer);
 
   // SVG -> PDF
   if (tgt === 'pdf') {
     // The render size follows the requested dpi, so the declared canvas is checked at that density first.
-    const renderer = await openInputImage(inputBuffer, { density });
-    await assertSvgRenderSize(inputBuffer, density);
+    const renderer = await openInputImage(renderBuffer, { density });
+    await assertSvgRenderSize(renderBuffer, density);
     const pngBuffer = await renderer.png().toBuffer();
     const meta = await sharp(pngBuffer).metadata();
     const { width, height } = meta;
@@ -435,23 +440,19 @@ async function convertSvgSource(
     });
   }
 
-  // Vector targets are written from the SVG geometry and never rasterize it.
-  const vectorOutput = svgToVectorTarget(inputBuffer, tgt, baseName);
-  if (vectorOutput) return vectorOutput;
-
   // SVG -> Raster Images via Sharp
   const rendered = written ? { width: Math.round((written.width * density) / SVG_USER_UNIT_DPI), height: Math.round((written.height * density) / SVG_USER_UNIT_DPI) } : undefined;
   let pipeline: Sharp;
   if (rendered) {
     // The writer states the size it wrote: the limits are checked against it and the native decoder keeps its own pixel limit.
     assertInputPixels(rendered.width, rendered.height);
-    pipeline = openLimitedSharp(inputBuffer, { density });
+    pipeline = openLimitedSharp(renderBuffer, { density });
   } else {
-    pipeline = await openInputImage(inputBuffer, { density });
+    pipeline = await openInputImage(renderBuffer, { density });
   }
 
   if (!SVG_NON_RASTER_TARGETS.has(tgt)) {
-    const resize = await svgResizeOf(inputBuffer, density, options, rendered);
+    const resize = await svgResizeOf(renderBuffer, density, options, rendered);
     if (resize) pipeline = pipeline.resize(resize);
   }
 

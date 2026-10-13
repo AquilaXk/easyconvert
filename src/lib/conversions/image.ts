@@ -73,6 +73,7 @@ import {
 import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
+import { normalizeSvgBufferForRendering } from './svg-geometry';
 import { decodePlainPngOnce } from './image-decoded-source';
 import { hasSrgbPrimaries, isSrgbProfile } from './icc-srgb';
 import { EIGHT_BIT_ONLY_TARGETS, roundedToEightBits } from './image-depth';
@@ -1964,7 +1965,7 @@ export async function convertImage(
   // Sanitize SVG inputs against Stored XSS
   let activeBuffer = inputBuffer;
   if (src === 'svg' || isSvg(activeBuffer)) {
-    activeBuffer = sanitizeSvgBuffer(activeBuffer);
+    activeBuffer = normalizeSvgBufferForRendering(sanitizeSvgBuffer(activeBuffer));
   }
 
   // Handle RAW camera inputs by decoding true RAW sensor Bayer/LJ92 data first
@@ -2776,7 +2777,7 @@ async function convertImageToPdf(
 ): Promise<ConversionResult> {
   let activeBuffer = inputBuffer;
   if (sourceFormat === 'svg' || isSvg(activeBuffer)) {
-    activeBuffer = sanitizeSvgBuffer(activeBuffer);
+    activeBuffer = normalizeSvgBufferForRendering(sanitizeSvgBuffer(activeBuffer));
   }
 
   // A JPEG that a PDF can carry as it is goes in byte for byte (OCR needs pixels, so it takes the decoding path).
