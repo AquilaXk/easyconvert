@@ -60,15 +60,15 @@ describe.skipIf(skipWithoutTools('avifenc', 'avifdec', 'ffmpeg'))('AVIF of 16-bi
   }
 
   /** Encodes `png` at every quality with the reference and with the converter, and gates both BD-rates. */
-  async function expectParityWithReference(png: Buffer, name: string, encoder: 'library-cli' | 'image-library'): Promise<void> {
+  async function expectParityWithReference(png: Buffer, name: string, encoder: 'library-cli' | 'image-library', grey = false): Promise<void> {
     const source = writeIn(`${name}-source.png`, png);
     const reference = { psnr: [] as Point[], ssim: [] as Point[] };
     const ours = { psnr: [] as Point[], ssim: [] as Point[] };
     for (const quality of QUALITIES) {
       const file = path.join(workDir, `${name}-ref-${quality}.avif`);
-      // Product policy keeps AVIF output within AV1 Main profile bit depths (10 bits at most). Left alone, the reference AVIF encoder
-      // writes 16-bit sources at 12 bits, which is a different output constraint; compare both encoders at the same bit depth.
-      execFileSync(requireOracleTool('avifenc'), ['-d', '10', '-q', String(quality), '-s', AVIF_REFERENCE_SPEED, '-j', 'all', source, file], { stdio: 'ignore' });
+      // QA decision 2026-10-11: match the reference service. A 16-bit source is written at 12 bits and lossy AVIF is 4:2:0; the
+      // reference encoder is given the same constraints (it writes colour at 4:4:4 unless told otherwise; a grey picture is monochrome for both).
+      execFileSync(requireOracleTool('avifenc'), ['-d', '12', ...(grey ? [] : ['-y', '420']), '-q', String(quality), '-s', AVIF_REFERENCE_SPEED, '-j', 'all', source, file], { stdio: 'ignore' });
       const measuredReference = measure(avifdec(file, `${name}-ref-${quality}`), source);
       const referenceBytes = readFileSync(file).length;
       reference.psnr.push({ bytes: referenceBytes, value: measuredReference.psnr });
@@ -83,7 +83,7 @@ describe.skipIf(skipWithoutTools('avifenc', 'avifdec', 'ffmpeg'))('AVIF of 16-bi
     }
     const bdSsim = bdRatePercent(reference.ssim, ours.ssim);
     const bdPsnr = bdRatePercent(reference.psnr, ours.psnr);
-    console.info(`${name} AVIF BD-rate against the reference at 10 bits: SSIM ${bdSsim.toFixed(2)}%, PSNR ${bdPsnr.toFixed(2)}%`);
+    console.info(`${name} AVIF BD-rate against the reference at 12 bits: SSIM ${bdSsim.toFixed(2)}%, PSNR ${bdPsnr.toFixed(2)}%`);
     expect(bdSsim, `${name}: BD-rate in SSIM (dB) ${bdSsim.toFixed(2)}%`).toBeLessThanOrEqual(BD_RATE_ALLOWANCE_PERCENT);
     expect(bdPsnr, `${name}: BD-rate in PSNR ${bdPsnr.toFixed(2)}%`).toBeLessThanOrEqual(BD_RATE_ALLOWANCE_PERCENT);
   }
@@ -95,7 +95,7 @@ describe.skipIf(skipWithoutTools('avifenc', 'avifdec', 'ffmpeg'))('AVIF of 16-bi
   }, 480_000);
 
   it('policy parity with the reference command line: 16-bit grey line art needs no more bytes for the same SSIM and PSNR, by BD-rate over the quality curve', async () => {
-    await expectParityWithReference(await lineArt16(), 'line-art', 'library-cli');
+    await expectParityWithReference(await lineArt16(), 'line-art', 'library-cli', true);
   }, 480_000);
 
   // Without the executable the image library encodes; it must keep the parity it had before the tool was used.

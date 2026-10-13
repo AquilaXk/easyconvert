@@ -15,6 +15,7 @@ const HEIGHT = 48;
 const RGB_CHANNELS = 3;
 const BYTE_MAX = 255;
 const TEXTURE_STRIDE = 7;
+const TEXTURE_MASK = 63;
 const REFERENCE_QUALITY = 85;
 const REFERENCE_QUALITY_MIN_PSNR_DB = 42;
 const AVIF_DEFAULT_QUALITY = 60;
@@ -23,15 +24,20 @@ const HIGH_QUALITY_MIN_PSNR_DB = 47;
 const FTYP_BRAND_OFFSET = 4;
 const FTYP_BRAND = 'ftypavif';
 
-/** Deterministic gradient with a hash-like texture, so the image has detail an encoder can lose. */
+/**
+ * Deterministic gradient with a hash-like texture, so the image has detail an encoder can lose. The picture is neutral (the same
+ * value on all three channels): lossy AVIF is 4:2:0 at every quality (QA decision 2026-10-11: match the reference service),
+ * which halves the resolution of the chroma, so a picture whose detail is carried by colour could not reach the PSNR the
+ * assertions below state, whatever the tuning.
+ */
 function textureRgb(): Buffer {
   const rgb = Buffer.alloc(WIDTH * HEIGHT * RGB_CHANNELS);
   for (let y = 0; y < HEIGHT; y++) {
     for (let x = 0; x < WIDTH; x++) {
       const at = (y * WIDTH + x) * RGB_CHANNELS;
-      rgb[at] = Math.round((x * BYTE_MAX) / (WIDTH - 1));
-      rgb[at + 1] = Math.round((y * BYTE_MAX) / (HEIGHT - 1));
-      rgb[at + 2] = ((x ^ y) * TEXTURE_STRIDE) & BYTE_MAX;
+      const texture = (((x ^ y) * TEXTURE_STRIDE) & TEXTURE_MASK) - TEXTURE_MASK / 2;
+      const gradient = Math.round((x * BYTE_MAX) / (2 * (WIDTH - 1)) + (y * BYTE_MAX) / (2 * (HEIGHT - 1)));
+      for (let c = 0; c < RGB_CHANNELS; c++) rgb[at + c] = Math.max(0, Math.min(BYTE_MAX, gradient + texture));
     }
   }
   return rgb;

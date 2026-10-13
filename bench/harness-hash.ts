@@ -19,6 +19,7 @@ const SHARED_HARNESS_FILES = [
 
 /** Files a family's runner shares with its other runners or with a helper process, which a cached measurement also depends on. */
 const FAMILY_HARNESS_FILES: Readonly<Record<string, readonly string[]>> = {
+  image: ['bench/png-metadata.ts'],
   compression: ['bench/families/compression-fixture.ts'],
   data: ['bench/reference-server.ts', 'bench/reference-server.py'],
   font: ['bench/reference-server.ts', 'bench/reference-server.py'],

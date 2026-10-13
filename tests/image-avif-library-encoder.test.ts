@@ -176,11 +176,11 @@ function failingTool(name: string, body: string): { script: string; marker: stri
 
 describe('grey sources', () => {
   oracleTest(
-    'a 16-bit grey picture becomes a 10-bit monochrome (YUV400) AVIF written by the library encoder',
+    'a 16-bit grey picture becomes a 12-bit monochrome (YUV400) AVIF written by the library encoder',
     ['avifenc', 'avifdec'],
     async () => {
       const out = await convertImage(await lineArt16(), 'avif', { quality: 70 }, 'grey.png', 'png');
-      expect(avifInfo(writeIn('grey16.avif', out.buffer))).toMatchObject({ format: 'YUV400', depth: 10 });
+      expect(avifInfo(writeIn('grey16.avif', out.buffer))).toMatchObject({ format: 'YUV400', depth: 12 });
       expect(out.metadata).toMatchObject({ avifEncoder: 'library-cli' });
     },
     60_000
@@ -255,11 +255,11 @@ describe('grey sources', () => {
 
 describe('colour sources', () => {
   oracleTest(
-    'graphic content is written by the library encoder at full-resolution chroma (YUV444) and 10 bits',
+    'graphic content is written by the library encoder at 4:2:0 chroma, like a photograph (QA decision 2026-10-11: match the reference service), and at 12 bits for a 16-bit source',
     ['avifenc', 'avifdec'],
     async () => {
       const graphic = await convertImage(await interface16(), 'avif', { quality: 50 }, 'ui.png', 'png');
-      expect(avifInfo(writeIn('graphic.avif', graphic.buffer))).toMatchObject({ format: 'YUV444', depth: 10, primaries: 1, transfer: 13 });
+      expect(avifInfo(writeIn('graphic.avif', graphic.buffer))).toMatchObject({ format: 'YUV420', depth: 12, primaries: 1, transfer: 13 });
       expect(graphic.metadata).toMatchObject({ avifEncoder: 'library-cli' });
     },
     60_000
@@ -280,8 +280,8 @@ describe('colour sources', () => {
   );
 
   oracleTest(
-    'a Display P3 source keeps its colours: the pixels are the sRGB values littlecms (Pillow) computes from the embedded profile',
-    ['avifenc', 'avifdec', 'python3'],
+    'a Display P3 source keeps its colours as the reference service does: the profile is attached and the stored numbers are not converted',
+    ['avifenc', 'avifdec'],
     async () => {
       const patches = [[250, 20, 20], [20, 200, 40], [30, 60, 240], [128, 128, 128]];
       const raw = Buffer.alloc(patches.length * PATCH * PATCH * 3);
@@ -290,26 +290,21 @@ describe('colour sources', () => {
       }
       const rawOptions = { raw: { width: patches.length * PATCH, height: PATCH, channels: 3 } } as const;
       const p3 = await sharp(raw, rawOptions).withIccProfile('p3').png().toBuffer();
-      const profilePath = writeIn('p3.icc', (await sharp(p3).metadata()).icc as Buffer);
-      // The PNG holds the patches re-encoded in Display P3. Pillow reads those stored numbers as they are (the image library
-      // would already convert them to sRGB on load) and littlecms converts them with the embedded profile.
-      const python = requireOracleTool('python3');
-      const stored = execFileSync(python, ['-I', '-c', "import sys; from PIL import Image; sys.stdout.buffer.write(Image.open(sys.argv[1]).convert('RGB').tobytes())", writeIn('p3-in.png', p3)], { maxBuffer: raw.length * 2 });
-      const expected = execFileSync(python, ['-I', path.join(__dirname, 'helpers', 'icc_oracle.py'), profilePath], { input: stored, maxBuffer: stored.length * 2 });
+      const profile = (await sharp(p3).metadata()).icc as Buffer;
+      // The PNG holds the patches re-encoded in Display P3; the AVIF holds the same numbers and the same profile.
+      const stored = runConvert([writeIn('p3-in.png', p3), '-depth', '8', 'rgb:-']);
       const avif = writeIn('p3.avif', (await convertImage(p3, 'avif', { quality: 100 }, 'p3.png', 'png')).buffer);
-      expect(avifInfo(avif)).toMatchObject({ icc: 'Absent', primaries: 1 });
+      expect(avifInfo(avif)).toMatchObject({ icc: expect.stringMatching(/Present/) });
+      const iccDump = execFileSync(requireOracleTool('avifdec'), ['--info', avif], { encoding: 'utf-8' });
+      expect(iccDump).toContain(`${profile.length} bytes`);
       const decodedPath = path.join(workDir, 'p3-decoded.png');
       execFileSync(requireOracleTool('avifdec'), [avif, decodedPath]);
       const decoded = runConvert([decodedPath, '-depth', '8', 'rgb:-']);
       const width = patches.length * PATCH;
       for (let patch = 0; patch < patches.length; patch += 1) {
         const at = ((PATCH >> 1) * width + patch * PATCH + (PATCH >> 1)) * 3;
-        for (let c = 0; c < 3; c += 1) expect(Math.abs(decoded[at + c] - expected[at + c]), `patch ${patch} channel ${c}`).toBeLessThanOrEqual(COLOUR_TOLERANCE);
+        for (let c = 0; c < 3; c += 1) expect(Math.abs(decoded[at + c] - stored[at + c]), `patch ${patch} channel ${c}`).toBeLessThanOrEqual(COLOUR_TOLERANCE);
       }
-      // The profile mattered: some converted value differs from the stored number by more than the tolerance.
-      const centre = (patch: number): number => (((PATCH >> 1) * width) + patch * PATCH + (PATCH >> 1)) * 3;
-      const shifts = patches.flatMap((_, patch) => [0, 1, 2].map((c) => Math.abs(expected[centre(patch) + c] - stored[centre(patch) + c])));
-      expect(Math.max(...shifts)).toBeGreaterThan(COLOUR_TOLERANCE * 4);
     },
     60_000
   );
@@ -356,7 +351,7 @@ async function colourGraphic(): Promise<Buffer> {
 /** The sources the tool route takes (grey, and colour graphic content), each also as a JPEG for the EXIF cases. */
 const TOOL_ROUTE_SOURCES = [
   { name: 'grey', format: 'YUV400', space: 'b-w' as const, png: grey8Graphic },
-  { name: 'colour graphic', format: 'YUV444', space: 'srgb' as const, png: colourGraphic },
+  { name: 'colour graphic', format: 'YUV420', space: 'srgb' as const, png: colourGraphic },
 ];
 
 describe.each(TOOL_ROUTE_SOURCES)('$name source through the library encoder', ({ format, space, png }) => {
@@ -486,8 +481,8 @@ describe('encoder arguments', () => {
       expect(valueOf('-q')).toBe('55');
       expect(valueOf('--qalpha')).toBe('55');
       expect(valueOf('-s')).toBe(String(avifSpeedFor(avifEffortFor(width * height, 'graphic', 'library-cli'))));
-      expect(valueOf('-d')).toBe('10');
-      expect(valueOf('-y')).toBe('444');
+      expect(valueOf('-d')).toBe('12');
+      expect(valueOf('-y')).toBe('420');
       expect(Number(valueOf('-j'))).toBeGreaterThanOrEqual(1);
       expect(Number(valueOf('-j'))).toBeLessThanOrEqual(os.availableParallelism());
       expect(args).not.toContain('--stdin');
@@ -520,7 +515,7 @@ describe('without the library encoder', () => {
       process.env.AVIFENC_PATH = path.join(workDir, 'no-such-avifenc');
       const out = await convertImage(await grey8Graphic(), 'avif', { quality: 60 }, 'g.png', 'png');
       expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
-      expect(avifInfo(writeIn('fallback-grey.avif', out.buffer)).format).toBe('YUV444');
+      expect(avifInfo(writeIn('fallback-grey.avif', out.buffer)).format).toBe('YUV420');
     },
     60_000
   );
@@ -536,7 +531,7 @@ describe('sandbox and limits', () => {
       const huge = await sharp({ create: { width: OVERSIZED_SIDE, height: OVERSIZED_OTHER_SIDE, channels: 3, background: { r: 128, g: 128, b: 128 } } }).toColourspace('b-w').png().toBuffer();
       const out = await convertImage(huge, 'avif', {}, 'huge.png', 'png');
       expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
-      expect(avifInfo(writeIn('huge.avif', out.buffer)).format).toBe('YUV444');
+      expect(avifInfo(writeIn('huge.avif', out.buffer)).format).toBe('YUV420');
       expect(existsSync(tool.marker)).toBe(false);
     },
     240_000
@@ -890,7 +885,7 @@ describe('finding the encoder', () => {
         process.env.AVIFENC_PATH = versionTool('convert-v0-11-1', 'Version: 0.11.1 (aom)');
         const out = await convertImage(await interface16(), 'avif', { quality: 60 }, 'ui.png', 'png');
         expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
-        expect(avifInfo(writeIn('old-tool.avif', out.buffer))).toMatchObject({ format: 'YUV444', depth: 10 });
+        expect(avifInfo(writeIn('old-tool.avif', out.buffer))).toMatchObject({ format: 'YUV420', depth: 12 });
       } finally {
         warn.mockRestore();
       }
