@@ -23,6 +23,8 @@ const RLE_MAX_VARINT_BYTES = 5;
 const VARINT_DATA_BITS = 7;
 const VARINT_CONTINUATION = 0x80;
 const INITIAL_SINK_BYTES = 256;
+/** Slices up to this long are copied byte by byte. */
+const SHORT_SLICE_BYTES = 24;
 /** Buffers (and Parquet page sizes, an i32 on the wire) never grow past 2 GiB - 1. */
 const SINK_MAX_BYTES = 0x7fff_ffff;
 const UINT32_RANGE = 2 ** 32;
@@ -100,6 +102,19 @@ export class ByteSink {
       throw new ParquetFormatError('Parquet encoder produced an unexpected UTF-8 length');
     }
     this.length += byteLength;
+  }
+
+  /** Copies `length` bytes of `src` from `start`; short runs are copied inline, which beats a native call. */
+  writeSlice(src: Uint8Array, start: number, length: number): void {
+    this.ensure(length);
+    const bytes = this.bytes;
+    let to = this.length;
+    if (length <= SHORT_SLICE_BYTES) {
+      for (let i = start; i < start + length; i++) bytes[to++] = src[i];
+    } else {
+      bytes.set(src.subarray(start, start + length), to);
+    }
+    this.length += length;
   }
 
   writeBytes(src: Uint8Array): void {

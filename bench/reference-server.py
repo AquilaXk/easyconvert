@@ -97,6 +97,11 @@ def render(value):
         return stamp.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (stamp.microsecond // 1000)
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return bytes(value).decode("utf-8")
+        except UnicodeDecodeError:
+            return str(value)
     return str(value)
 
 
@@ -117,8 +122,13 @@ def read_truth(spec):
             header.extend(key for key in record if key not in header)
         return header, [[render(record.get(key)) for key in header] for record in records]
     if spec["kind"] == "parquet":
-        # A Parquet file that has no text twin: DuckDB reads it, and the outputs are read by pyarrow and DuckDB and by the text readers.
-        return read_parquet_duckdb(spec["file"])
+        # A Parquet file that has no text twin: DuckDB reads it (or pyarrow when the file uses an encoding DuckDB does not read), and the outputs are read by pyarrow and DuckDB and by the text readers.
+        import duckdb
+
+        try:
+            return read_parquet_duckdb(spec["file"])
+        except duckdb.Error:
+            return read_parquet_pyarrow(spec["file"])
     with open(spec["file"], encoding="utf-8") as handle:
         records = [json.loads(line) for line in handle if line.strip()]
     header = list(records[0])

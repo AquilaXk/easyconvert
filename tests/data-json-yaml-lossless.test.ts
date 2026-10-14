@@ -187,6 +187,16 @@ describe('JSON to CSV flattens nested values', () => {
     expect(err).toBeInstanceOf(DataRepresentationError);
     expect(err.message).toMatch(/"a\.b"/);
   });
+
+  oracleTest('preserves source key order when an object mixes string keys and integer-like year keys', ['python3'], async () => {
+    const json = '[{"code":"A","TQ":10,"1976":-566000,"1977":1200},{"code":"B","TQ":20,"1976":300,"1977":400}]';
+    const csv = await convertFile(Buffer.from(json, 'utf-8'), 'json', 'csv', {}, 'budget.json');
+    expect(pythonCsvRows(csv.buffer)).toEqual([
+      ['code', 'TQ', '1976', '1977'],
+      ['A', '10', '-566000', '1200'],
+      ['B', '20', '300', '400'],
+    ]);
+  });
 });
 
 describe('JSON and NDJSON input fail closed', () => {
@@ -383,3 +393,25 @@ describe('parquet to parquet', () => {
     expect(err.message).toMatch(/parquet/i);
   });
 });
+
+describe('source key order with integer-index keys', () => {
+  it('preserves key order when converting JSON with integer-index keys to YAML, TOML, XML, and back', async () => {
+    const json = '{"code":"A","TQ":10,"1976":-566000,"1975":1200}';
+    const yamlRes = await convertData(Buffer.from(json, 'utf-8'), 'json', 'yaml', {}, 'budget.json');
+    const yamlText = yamlRes.buffer.toString('utf-8');
+    expect(yamlText.indexOf('code:')).toBeLessThan(yamlText.indexOf("'1976':") >= 0 ? yamlText.indexOf("'1976':") : yamlText.indexOf('"1976":'));
+    const roundTripJson = await convertData(yamlRes.buffer, 'yaml', 'json', {}, 'budget.yaml');
+    expect(roundTripJson.buffer.toString('utf-8').replace(/\s+/g, '')).toBe(json);
+
+    const tomlRes = await convertData(Buffer.from(json, 'utf-8'), 'json', 'toml', {}, 'budget.json');
+    const tomlText = tomlRes.buffer.toString('utf-8');
+    expect(tomlText.indexOf('code')).toBeLessThan(tomlText.indexOf('1976'));
+    expect(tomlText.indexOf('1976')).toBeLessThan(tomlText.indexOf('1975'));
+
+    const xmlRes = await convertData(Buffer.from(json, 'utf-8'), 'json', 'xml', {}, 'budget.json');
+    const xmlText = xmlRes.buffer.toString('utf-8');
+    expect(xmlText.indexOf('<code>')).toBeLessThan(xmlText.indexOf('<_1976>'));
+    expect(xmlText.indexOf('<_1976>')).toBeLessThan(xmlText.indexOf('<_1975>'));
+  });
+});
+

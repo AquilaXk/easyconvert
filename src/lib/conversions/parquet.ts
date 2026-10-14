@@ -26,7 +26,7 @@ export {
 } from './parquet-format';
 export { CompactProtocolReader, CompactProtocolWriter } from './parquet-thrift';
 export { compressSnappy, decompressRawSnappyBlock, decompressSnappy } from './parquet-snappy';
-export { isZstdWriteAvailable } from './parquet-codec';
+export { decompressLz4Raw, isZstdWriteAvailable } from './parquet-codec';
 export type { ParquetWriteOptions } from './parquet-writer';
 export { encodeParquet, inferColumnSchemas } from './parquet-writer';
 export { decodeParquet } from './parquet-reader';
