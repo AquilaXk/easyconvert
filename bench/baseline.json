@@ -12968,7 +12968,7 @@
         "rel": 0
       },
       "ours": 0.9937652272334874,
-      "delta": 0.01975474743430239,
+      "delta": 0.01976354745949338,
       "ratio": null
     },
     "ebook/book-epub30-spec.epub->txt/converts": {
@@ -12997,8 +12997,28 @@
         "abs": 0,
         "rel": 0
       },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book-help-ru.fb2->epub/epubcheck_errors": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
       "ours": 0,
-      "delta": -1,
+      "delta": -2,
+      "ratio": null
+    },
+    "ebook/book-help-ru.fb2->epub/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.0083980351766757,
       "ratio": null
     },
     "ebook/book-help-ru.fb2->pdf/converts": {
@@ -13007,8 +13027,18 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book-help-ru.fb2->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.0083980351766757,
       "ratio": null
     },
     "ebook/book-help-ru.fb2->txt/converts": {
@@ -13027,8 +13057,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8282828282828283,
-      "delta": -0.16363348175045744,
+      "ours": 0.9995208433157642,
+      "delta": 0.007604533282478454,
       "ratio": null
     },
     "ebook/book-internallinks.epub->pdf:images/structure_recall": {
@@ -13058,7 +13088,7 @@
         "rel": 0
       },
       "ours": 0.9981000633312223,
-      "delta": 0.025615986898101295,
+      "delta": 0.02536120982803758,
       "ratio": null
     },
     "ebook/book-internallinks.epub->txt/converts": {
@@ -13097,8 +13127,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7715654808998493,
-      "delta": -0.15117732083258317,
+      "ours": 0.9962030711528391,
+      "delta": 0.07344603611510236,
       "ratio": null
     },
     "ebook/book-linear-algebra.epub->txt/converts": {
@@ -13997,8 +14027,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9985840151038389,
-      "delta": 0,
+      "ours": 1,
+      "delta": 0.0018870891649630517,
       "ratio": null
     },
     "ebook/book.epub->txt/throughput": {
@@ -14107,8 +14137,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9985840151038389,
-      "delta": 0.002656058956618912,
+      "ours": 1,
+      "delta": 0.0040720438527800384,
       "ratio": null
     },
     "ebook/book.fb2->txt/throughput": {
@@ -14217,8 +14247,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9985840151038389,
-      "delta": 0.0036752659850168845,
+      "ours": 1,
+      "delta": 0.005091250881178011,
       "ratio": null
     },
     "ebook/book.mobi->txt/throughput": {
@@ -14557,8 +14587,28 @@
         "abs": 0,
         "rel": 0
       },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/class-technical->epub/epubcheck_errors": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
       "ours": 0,
-      "delta": -1,
+      "delta": -2,
+      "ratio": null
+    },
+    "ebook/class-technical->epub/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0.0083980351766757,
       "ratio": null
     },
     "ebook/class-technical->pdf/converts": {
@@ -14567,8 +14617,18 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0.75,
-      "delta": -0.25,
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/class-technical->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9970170904293871,
+      "delta": 0.03174220714482712,
       "ratio": null
     },
     "ebook/class-technical->txt/converts": {
@@ -14587,8 +14647,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9518305827973177,
-      "delta": 0.01927303032988592,
+      "ours": 0.9946400865555516,
+      "delta": 0.06208253408811981,
       "ratio": null
     },
     "font/class-cff->ttf/converts": {
@@ -26007,8 +26067,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 24192.666666666668,
-      "delta": -1359.3333333333321,
+      "ours": 23071,
+      "delta": -2483.333333333332,
       "ratio": null
     },
     "pdf-ops/class-broken->compress/converts": {
@@ -26037,8 +26097,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0.3333333333333333,
-      "delta": 0.3333333333333333,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/class-broken->compress/ssim": {
@@ -26048,7 +26108,7 @@
         "rel": 0
       },
       "ours": 0.9999766666666666,
-      "delta": 0.018749111111111105,
+      "delta": 0.01761905555555554,
       "ratio": null
     },
     "pdf-ops/class-broken->compress/word_f1": {
@@ -26058,7 +26118,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0,
+      "delta": 0.0002000800320128837,
       "ratio": null
     },
     "pdf-ops/class-broken->delete/bytes": {
@@ -26427,8 +26487,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 33011.333333333336,
-      "delta": -738.3333333333285,
+      "ours": 33000,
+      "delta": -759.6666666666642,
       "ratio": null
     },
     "pdf-ops/class-cjk->compress/converts": {
@@ -26787,8 +26847,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 229687.66666666666,
-      "delta": 40.666666666656965,
+      "ours": 229670.66666666666,
+      "delta": 13.666666666656965,
       "ratio": null
     },
     "pdf-ops/class-forms->compress/converts": {
@@ -27207,8 +27267,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 478141.6666666667,
-      "delta": -131553.3333333333,
+      "ours": 412640.3333333333,
+      "delta": -197064.6666666667,
       "ratio": null
     },
     "pdf-ops/class-huge->compress/converts": {
@@ -27237,8 +27297,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0.6666666666666666,
-      "delta": 0.6666666666666666,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/class-huge->compress/ssim": {
@@ -27248,7 +27308,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0.013351611111111272,
+      "delta": 0.013268944444444486,
       "ratio": null
     },
     "pdf-ops/class-huge->compress/word_f1": {
@@ -27568,7 +27628,7 @@
         "rel": 0.03
       },
       "ours": 674629,
-      "delta": -52409,
+      "delta": -52419,
       "ratio": null
     },
     "pdf-ops/class-long->compress/converts": {
@@ -27608,7 +27668,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0.03299350000000023,
+      "delta": 0.03217308333333346,
       "ratio": null
     },
     "pdf-ops/class-long->compress/word_f1": {
@@ -27987,8 +28047,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 516866,
-      "delta": -6648.333333333314,
+      "ours": 516854.6666666667,
+      "delta": -6669.666666666628,
       "ratio": null
     },
     "pdf-ops/class-scanned->compress/converts": {
@@ -28331,14 +28391,64 @@
       "delta": 0,
       "ratio": null
     },
+    "pdf-ops/class-tagged->compress/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 279466,
+      "delta": 15.66666666668607,
+      "ratio": null
+    },
     "pdf-ops/class-tagged->compress/converts": {
       "direction": "higher",
       "tolerance": {
         "abs": 0,
         "rel": 0
       },
-      "ours": 0.6666666666666666,
-      "delta": -0.33333333333333337,
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/class-tagged->compress/page_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/class-tagged->compress/pdf_check_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/class-tagged->compress/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.9894740999999999,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/class-tagged->compress/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9894043033872092,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/class-tagged->delete/bytes": {
@@ -28701,6 +28811,56 @@
       "delta": 0,
       "ratio": null
     },
+    "pdf-ops/compress.pdf->pdf/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 34074,
+      "delta": 15,
+      "ratio": null
+    },
+    "pdf-ops/compress.pdf->pdf/page_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/compress.pdf->pdf/pdf_check_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/compress.pdf->pdf/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 0.9988226666666667,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/compress.pdf->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "pdf-ops/decrypt.pdf->pdf/bytes": {
       "direction": "lower",
       "tolerance": {
@@ -28761,6 +28921,46 @@
       "delta": 0,
       "ratio": null
     },
+    "pdf-ops/delete.pdf->pdf/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 17175,
+      "delta": -504,
+      "ratio": null
+    },
+    "pdf-ops/delete.pdf->pdf/page_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/delete.pdf->pdf/pdf_check_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/delete.pdf->pdf/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "pdf-ops/delete.pdf->pdf/throughput": {
       "direction": "higher",
       "tolerance": {
@@ -28770,6 +28970,56 @@
       "ours": null,
       "delta": null,
       "ratio": 0.7660331303220665
+    },
+    "pdf-ops/delete.pdf->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/extract.pdf->pdf/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 17680,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/extract.pdf->pdf/page_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/extract.pdf->pdf/pdf_check_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/extract.pdf->pdf/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
     },
     "pdf-ops/extract.pdf->pdf/throughput": {
       "direction": "higher",
@@ -28781,14 +29031,24 @@
       "delta": null,
       "ratio": 0.7628434923487097
     },
+    "pdf-ops/extract.pdf->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "pdf-ops/merge.pdf->pdf/bytes": {
       "direction": "lower",
       "tolerance": {
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 54061,
-      "delta": 284,
+      "ours": 54062,
+      "delta": 285,
       "ratio": null
     },
     "pdf-ops/merge.pdf->pdf/page_count_error": {
@@ -28847,8 +29107,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 33213,
-      "delta": 42,
+      "ours": 33196,
+      "delta": 15,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000009.pdf->compress/converts": {
@@ -29267,8 +29527,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 22857,
-      "delta": -4162,
+      "ours": 19526,
+      "delta": -7480,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000012.pdf->compress/converts": {
@@ -29297,8 +29557,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 1,
-      "delta": 1,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000012.pdf->compress/ssim": {
@@ -29308,7 +29568,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0.05624733333333343,
+      "delta": 0.05285716666666662,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000012.pdf->compress/word_f1": {
@@ -29318,7 +29578,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0,
+      "delta": 0.0006002400960384291,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000012.pdf->delete/bytes": {
@@ -29687,8 +29947,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 265094,
-      "delta": 44,
+      "ours": 265038,
+      "delta": 17,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000142.pdf->compress/converts": {
@@ -29727,7 +29987,7 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.9864560000000001,
+      "ours": 0.9864858,
       "delta": 0,
       "ratio": null
     },
@@ -30177,8 +30437,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 562219,
-      "delta": 42,
+      "ours": 562202,
+      "delta": 15,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000147.pdf->compress/converts": {
@@ -30597,8 +30857,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 520698,
-      "delta": 42,
+      "ours": 520681,
+      "delta": 15,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000280.pdf->compress/converts": {
@@ -31017,8 +31277,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 55566,
-      "delta": 38,
+      "ours": 55549,
+      "delta": 11,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000314.pdf->compress/converts": {
@@ -31557,8 +31817,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 499725,
-      "delta": -42352,
+      "ours": 387457,
+      "delta": -154630,
       "ratio": null
     },
     "pdf-ops/pdf-gov-001071.pdf->compress/converts": {
@@ -31587,8 +31847,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 1,
-      "delta": 1,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/pdf-gov-001071.pdf->compress/ssim": {
@@ -31598,7 +31858,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0.008292666666666726,
+      "delta": 0.000011333333333252149,
       "ratio": null
     },
     "pdf-ops/pdf-gov-001071.pdf->compress/word_f1": {
@@ -31918,7 +32178,7 @@
         "rel": 0.03
       },
       "ours": 590536,
-      "delta": -20029,
+      "delta": -20039,
       "ratio": null
     },
     "pdf-ops/pdf-gov-001657.pdf->compress/converts": {
@@ -32267,8 +32527,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 388556,
-      "delta": -261718,
+      "ours": 304320,
+      "delta": -345964,
       "ratio": null
     },
     "pdf-ops/pdf-gov-003966.pdf->compress/converts": {
@@ -32297,8 +32557,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 1,
-      "delta": 1,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/pdf-gov-003966.pdf->compress/ssim": {
@@ -32627,8 +32887,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 471640,
-      "delta": 42,
+      "ours": 471623,
+      "delta": 15,
       "ratio": null
     },
     "pdf-ops/pdf-gov-004306.pdf->compress/converts": {
@@ -32977,8 +33237,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 488422,
-      "delta": 42,
+      "ours": 488405,
+      "delta": 15,
       "ratio": null
     },
     "pdf-ops/pdf-gov-004749.pdf->compress/converts": {
@@ -33387,8 +33647,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 16508,
-      "delta": 42,
+      "ours": 16491,
+      "delta": 15,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-basicapi.pdf->compress/converts": {
@@ -33808,7 +34068,7 @@
         "rel": 0.03
       },
       "ours": 60516,
-      "delta": -2299,
+      "delta": -2309,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-cjk-1.pdf->compress/converts": {
@@ -34107,8 +34367,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 11813,
-      "delta": 42,
+      "ours": 11796,
+      "delta": 15,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-cjk-2.pdf->compress/converts": {
@@ -34407,8 +34667,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 26705,
-      "delta": 42,
+      "ours": 26688,
+      "delta": 15,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-cjk-3.pdf->compress/converts": {
@@ -34707,8 +34967,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 112799,
-      "delta": 42,
+      "ours": 112782,
+      "delta": 15,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-form-test.pdf->compress/converts": {
@@ -35248,7 +35508,7 @@
         "rel": 0.03
       },
       "ours": 546144,
-      "delta": -90590,
+      "delta": -90600,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-pdkids.pdf->compress/converts": {
@@ -35608,7 +35868,7 @@
         "rel": 0.03
       },
       "ours": 674629,
-      "delta": -52409,
+      "delta": -52419,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-tamreview.pdf->compress/converts": {
@@ -35648,7 +35908,7 @@
         "rel": 0
       },
       "ours": 1,
-      "delta": 0.03299350000000023,
+      "delta": 0.03217308333333346,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-tamreview.pdf->compress/word_f1": {
@@ -36021,14 +36281,64 @@
       "delta": 0,
       "ratio": null
     },
+    "pdf-ops/pdf-vera-ua1-annotations.pdf->compress/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 11158,
+      "delta": 15,
+      "ratio": null
+    },
     "pdf-ops/pdf-vera-ua1-annotations.pdf->compress/converts": {
       "direction": "higher",
       "tolerance": {
         "abs": 0,
         "rel": 0
       },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/pdf-vera-ua1-annotations.pdf->compress/page_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
       "ours": 0,
-      "delta": -1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/pdf-vera-ua1-annotations.pdf->compress/pdf_check_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/pdf-vera-ua1-annotations.pdf->compress/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/pdf-vera-ua1-annotations.pdf->compress/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/pdf-vera-ua1-annotations.pdf->extract/bytes": {
@@ -36331,6 +36641,46 @@
       "delta": 0,
       "ratio": null
     },
+    "pdf-ops/reorder.pdf->pdf/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 18041,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/reorder.pdf->pdf/page_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/reorder.pdf->pdf/pdf_check_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/reorder.pdf->pdf/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "pdf-ops/reorder.pdf->pdf/throughput": {
       "direction": "higher",
       "tolerance": {
@@ -36340,6 +36690,66 @@
       "ours": null,
       "delta": null,
       "ratio": 0.7634987879572142
+    },
+    "pdf-ops/reorder.pdf->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/rotate.pdf->pdf/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 18056,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/rotate.pdf->pdf/page_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/rotate.pdf->pdf/pdf_check_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/rotate.pdf->pdf/render_matches_reference": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/rotate.pdf->pdf/rotation_errors": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
     },
     "pdf-ops/rotate.pdf->pdf/throughput": {
       "direction": "higher",
@@ -36351,6 +36761,56 @@
       "delta": null,
       "ratio": 0.7556619435949562
     },
+    "pdf-ops/rotate.pdf->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/split.pdf->pdf/bytes": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0.03
+      },
+      "ours": 50492,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/split.pdf->pdf/page_count_error": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/split.pdf->pdf/pdf_check_failures": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "pdf-ops/split.pdf->pdf/ssim": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.003,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
     "pdf-ops/split.pdf->pdf/throughput": {
       "direction": "higher",
       "tolerance": {
@@ -36360,6 +36820,16 @@
       "ours": null,
       "delta": null,
       "ratio": 0.7672800885012911
+    },
+    "pdf-ops/split.pdf->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
     },
     "pdf-ops/unlock.pdf->pdf/bytes": {
       "direction": "lower",

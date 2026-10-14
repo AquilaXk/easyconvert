@@ -7530,9 +7530,9 @@ async function convertFb2Source(
     if (currentTbl.length > 0) tables.push(currentTbl);
   }
 
-  // Paragraphs, poem lines, subtitles and the authors of quotations, in document order.
+  // Paragraphs, poem lines, list items, subtitles and the authors of quotations, in document order.
   const paragraphs: string[] = [];
-  for (const pEl of safeExtractXmlElements(bodyXml, ['p', 'v', 'subtitle', 'text-author'], { maxElements: FB2_MAX_PARAGRAPHS })) {
+  for (const pEl of safeExtractXmlElements(bodyXml, ['p', 'v', 'subtitle', 'text-author', 'li'], { maxElements: FB2_MAX_PARAGRAPHS })) {
     const text = safeExtractAllText(pEl.content).trim();
     if (text) paragraphs.push(text);
   }

@@ -18,6 +18,27 @@ const PX_PER_POINT = 4 / 3;
 const TAB_AS_SPACES = '    ';
 const LINK_SCHEME = /^(?:https?|mailto):/i;
 const PAGE_BREAK_SECTIONS: ReadonlySet<string> = new Set(['nextPage', 'oddPage', 'evenPage']);
+const SINGLE_CHAR_HEAVY_RATIO = 0.65;
+const MIN_SINGLE_CHAR_TOKENS = 2;
+
+/**
+ * Whether a block's words are predominantly single-character tokens (such as tokenized MathML
+ * equations and matrices), where a single narrow space is treated as intra-word letter spacing
+ * by PDF text extractors unless widened.
+ */
+function needsWiderTokenSpaces(runs: readonly Inline[]): boolean {
+  let text = '';
+  for (const run of runs) {
+    if (!run.image && run.anchor === undefined && !run.note) text += run.text;
+  }
+  const tokens = text.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < MIN_SINGLE_CHAR_TOKENS) return false;
+  let singleCharCount = 0;
+  for (const token of tokens) {
+    if (Array.from(token).length === 1) singleCharCount++;
+  }
+  return singleCharCount / tokens.length >= SINGLE_CHAR_HEAVY_RATIO;
+}
 
 class PdfBlockBuilder {
   private readonly rasters = new Map<number, Promise<PdfRasterImage>>();
@@ -51,6 +72,7 @@ class PdfBlockBuilder {
 
   /** Text segments of runs that hold no picture. */
   private segments(runs: readonly Inline[]): PdfTextSegment[] {
+    const widenSpaces = needsWiderTokenSpaces(runs);
     const segments: PdfTextSegment[] = [];
     for (const run of runs) {
       if (run.image || run.anchor !== undefined) continue;
@@ -59,7 +81,8 @@ class PdfBlockBuilder {
         continue;
       }
       const link = run.href !== undefined && LINK_SCHEME.test(run.href) ? run.href : undefined;
-      segments.push({ text: run.text.replace(/\t/g, TAB_AS_SPACES), link });
+      const expanded = run.text.replace(/\t/g, TAB_AS_SPACES);
+      segments.push({ text: widenSpaces ? expanded.replace(/ /g, '  ') : expanded, link });
     }
     return segments;
   }

@@ -12,7 +12,7 @@ import { executeSandboxedBinary } from '../../../worker/sandbox';
 import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { getGhostscriptBinaryPath } from './gs-path';
-import { runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace } from './qpdf-run';
+import { QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace } from './qpdf-run';
 
 /**
  * PDF compression with named profiles. The result is never larger than the input: when a profile gains nothing the
@@ -44,8 +44,6 @@ const GHOSTSCRIPT_FIXED_ARGS: readonly string[] = [
   '-dNOPAUSE',
   '-dBATCH',
   '-dSAFER',
-  // An error in the document is a failure of this operation, not a result with a page missing.
-  '-dPDFSTOPONERROR',
   '-sDEVICE=pdfwrite',
   `-dCompatibilityLevel=${GHOSTSCRIPT_COMPATIBILITY_LEVEL}`,
 ];
@@ -136,6 +134,23 @@ async function rewriteLossless(pdf: Buffer): Promise<Buffer> {
   );
 }
 
+/** Whether `pdf` already passes `qpdf --check` without structural warnings or errors. */
+async function isCleanPdf(pdf: Buffer): Promise<boolean> {
+  return withQpdfInputFile(pdf, async (workspace) => {
+    try {
+      await executeSandboxedBinary(workspace.qpdf, ['--check', workspace.inputPath], {
+        cwd: workspace.dir,
+        timeoutMs: QPDF_RUN_TIMEOUT_MS,
+        maxBuffer: GHOSTSCRIPT_MAX_DIAGNOSTIC_BYTES,
+        networkIsolated: true,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 /**
  * Compresses `pdf` with the profile of `options.profile` (`web` when omitted).
  *
@@ -157,6 +172,16 @@ export async function compressPdf(
   const plain = await openPdfForEditing(pdf, 'compress', access);
   const preset = GHOSTSCRIPT_PRESETS[profile];
   const rewritten = preset === undefined ? await rewriteLossless(plain) : await rewriteWithGhostscript(plain, preset, run);
-  // The input as it came is the baseline and what is returned when nothing is gained.
-  return rewritten.length < pdf.length ? { buffer: rewritten, optimized: true } : { buffer: pdf, optimized: false };
+  if (rewritten.length < pdf.length) {
+    return { buffer: rewritten, optimized: true };
+  }
+  // When the profile gained nothing, return the input unchanged if it is already a clean PDF; if the input has
+  // damaged cross-references or streams that qpdf --check flags, fall back to the lossless qpdf rewrite so the
+  // returned PDF is valid (and smaller when object streams pack a text-only document better than pdfwrite).
+  if (await isCleanPdf(plain)) {
+    return { buffer: plain, optimized: false };
+  }
+  const repaired = preset === undefined ? rewritten : await rewriteLossless(plain);
+  const best = repaired.length <= rewritten.length ? repaired : rewritten;
+  return { buffer: best, optimized: best.length < pdf.length };
 }

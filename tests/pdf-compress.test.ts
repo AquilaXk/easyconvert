@@ -45,7 +45,7 @@ function bareOnePagePdf(): Buffer {
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
-    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Resources << >> >>',
   ];
   let body = '%PDF-1.4\n';
   const offsets: number[] = [];
@@ -195,6 +195,28 @@ describe.skipIf(toolsMissing)('PDF compression', () => {
     const text = await plainPdf(['Only text here']);
     const textResult = await compressPdf(text, { profile: 'web' });
     expect(textResult.buffer.length).toBeLessThanOrEqual(text.length);
+  });
+
+  it('repairs a damaged cross-reference table so the output passes qpdf --check even when no smaller', async () => {
+    const clean = bareOnePagePdf();
+    const damaged = Buffer.from(clean.toString('latin1').replace(/(\d{10}) 00000 n \ntrailer/, '0000000001 00000 n \ntrailer'), 'latin1');
+    expect(qpdfCheckPasses(damaged)).toBe(false);
+    const result = await compressPdf(damaged, { profile: 'web' });
+    expect(qpdfCheckPasses(result.buffer)).toBe(true);
+    expect(pdfinfoPages(result.buffer)).toBe(1);
+  });
+
+  it('compresses a PDF carrying an unknown annotation subtype without failing', async () => {
+    const raw = input.toString('latin1').replace(
+      '/Type /Page\n',
+      '/Type /Page\n/Annots [<< /Type /Annot /Subtype /UnknownCustomAnnot /Rect [0 0 10 10] >>]\n'
+    );
+    const withUnknownAnnot = Buffer.from(raw, 'latin1');
+    const result = await compressPdf(withUnknownAnnot, { profile: 'web' });
+    expect(result.optimized).toBe(true);
+    expect(result.buffer.length).toBeLessThan(withUnknownAnnot.length * 0.5);
+    expect(qpdfCheckPasses(result.buffer)).toBe(true);
+    expect(pageTexts(result.buffer)).toEqual(PAGE_TEXTS);
   });
 
   it('refuses a profile that does not exist and input that is no PDF', async () => {

@@ -31,14 +31,21 @@ const INLINE_TAGS: ReadonlyMap<string, string> = new Map([
   ['sup', 'sup'],
   ['code', 'code'],
   ['style', 'span'],
+  ['b', 'strong'],
+  ['i', 'em'],
+  ['u', 'u'],
+  ['s', 's'],
 ]);
 /** Elements whose character data is the book's text; whitespace between any other elements is layout of the file. */
-const TEXT_ELEMENTS: ReadonlySet<string> = new Set(['p', 'v', 'subtitle', 'text-author', 'date', 'td', 'th']);
+const TEXT_ELEMENTS: ReadonlySet<string> = new Set(['p', 'v', 'subtitle', 'text-author', 'date', 'td', 'th', 'li']);
+const LIST_ELEMENTS: ReadonlySet<string> = new Set(['ul', 'ol', 'li']);
 const QUOTE_ELEMENTS: ReadonlySet<string> = new Set(['epigraph', 'cite', 'annotation', 'poem']);
 const SKIPPED_ELEMENTS: ReadonlySet<string> = new Set(['description', 'stylesheet', 'binary']);
 const TABLE_ELEMENTS: ReadonlySet<string> = new Set(['table', 'tr', 'td', 'th']);
 const TABLE_SPAN_ATTRIBUTES = ['colspan', 'rowspan'] as const;
 const NAME_PARTS = ['first-name', 'middle-name', 'last-name'] as const;
+/** Bare `&` in URL query strings or text that is not an XML entity reference. */
+const BARE_AMPERSAND_PATTERN = /&(?!(?:[A-Za-z_:][\w:.-]*|#\d+|#x[0-9a-fA-F]+);)/g;
 
 const escapeText = (text: string): string => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const escapeAttribute = (text: string): string => escapeText(text).replace(/"/g, '&quot;');
@@ -107,7 +114,13 @@ class Fb2Translator {
     parser.on('closetag', (tag) => this.close(tag.local));
     parser.on('text', (text) => this.text(text));
     parser.on('cdata', (text) => this.text(text));
-    parser.write(this.xml).close();
+    parser.on('comment', () => {
+      const inText = this.stack.some((frame) => TEXT_ELEMENTS.has(frame.local) || frame.local === 'title');
+      if (this.bodyIndex >= 0 && inText && !this.stack.some((frame) => SKIPPED_ELEMENTS.has(frame.local))) {
+        this.html.push(' ');
+      }
+    });
+    parser.write(this.xml.replace(BARE_AMPERSAND_PATTERN, '&amp;')).close();
     if (this.bodyIndex < 0) throw new ConversionFailedError('The FB2 file is not a FictionBook document with a body.');
   }
 
@@ -184,7 +197,7 @@ class Fb2Translator {
       this.push('<section>', '</section>');
       return;
     }
-    const anchored = ['title', 'p', 'v', 'date', 'subtitle'].includes(local);
+    const anchored = ['title', 'p', 'v', 'date', 'subtitle', 'li'].includes(local);
     const id = attr('id') ?? (anchored ? this.pendingId : undefined);
     if (anchored && !(local === 'p' && parent === 'title')) this.pendingId = undefined;
     const idAttribute = id === undefined ? '' : ` id="${escapeAttribute(id)}"`;
@@ -206,6 +219,10 @@ class Fb2Translator {
       this.push(`<${inline}>`, `</${inline}>`);
       return;
     }
+    if (local === 'br') {
+      this.html.push('<br/>');
+      return;
+    }
     if (local === 'a') {
       const href = hrefOf(attributes);
       const target = fragmentId(href) !== undefined ? href : safeHref(href);
@@ -222,6 +239,10 @@ class Fb2Translator {
     }
     if (QUOTE_ELEMENTS.has(local)) {
       this.push('<blockquote>', '</blockquote>');
+      return;
+    }
+    if (LIST_ELEMENTS.has(local)) {
+      this.push(`<${local}${idAttribute}>`, `</${local}>`);
       return;
     }
     if (local === 'p' || local === 'v' || local === 'date') {

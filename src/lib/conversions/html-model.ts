@@ -27,7 +27,7 @@ const DEFAULT_LIST_START = 1;
 
 const HEADING_LEVELS: ReadonlyMap<string, number> = new Map([['h1', 1], ['h2', 2], ['h3', 3], ['h4', 4], ['h5', 5], ['h6', 6]]);
 const SKIPPED: ReadonlySet<string> = new Set(['head', 'script', 'style', 'template', 'noscript', 'title', 'meta', 'link', 'base']);
-const DROPPED_WITH_WARNING: ReadonlySet<string> = new Set(['svg', 'math', 'object', 'embed', 'iframe', 'video', 'audio', 'canvas']);
+const DROPPED_WITH_WARNING: ReadonlySet<string> = new Set(['svg', 'object', 'embed', 'iframe', 'video', 'audio', 'canvas']);
 const CONTAINERS: ReadonlySet<string> = new Set([
   'html', 'body', 'div', 'section', 'article', 'main', 'header', 'footer', 'aside', 'nav', 'figure', 'form', 'fieldset', 'center',
   'details', 'dl', 'dd', 'dt', 'hgroup',
@@ -382,7 +382,12 @@ class HtmlModelBuilder {
     const format = ORDERED_TYPES.get(element.attrs.get('type') ?? '1') ?? 'decimal';
     let number = start;
     for (const child of element.children) {
-      if (typeof child === 'string' || child.tag !== 'li') continue;
+      if (typeof child === 'string') continue;
+      if (LISTS.has(child.tag)) {
+        this.list(child, out, listDepth + 1, tableDepth);
+        continue;
+      }
+      if (child.tag !== 'li') continue;
       const content = out.nested();
       this.blocks(child.children, content, listDepth + 1, tableDepth);
       const first = content.blocks[0];
