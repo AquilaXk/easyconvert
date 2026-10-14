@@ -34,6 +34,12 @@ export interface ColumnReader {
   /** Fixed byte width for FIXED_LEN_BYTE_ARRAY or INT96 values; 0 means length-prefixed BYTE_ARRAY. */
   width: number;
   map: ((raw: number | bigint | Buffer) => ColumnValue) | null;
+  /** Optional fast path for INT64 values that fit in a safe JS integer. */
+  mapNumber?: (raw: number) => ColumnValue;
+  /** Direct range reader on a page buffer, avoiding per-value Buffer.subarray allocations. */
+  readSlice?: (page: Buffer, start: number, end: number) => ColumnValue;
+  /** True when every decoded string has UTF-8 byte length equal to its source slice length. */
+  sliceByteLengthExact?: boolean;
 }
 
 const SECONDS_PER_DAY = 86_400;
@@ -80,6 +86,25 @@ const UINT64_MODULUS_BITS = 64;
 const REPLACEMENT_CHARACTER = '\ufffd';
 
 const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true });
+const TWO_DIGITS: readonly string[] = Array.from({ length: 100 }, (_, i) => (i < 10 ? `0${i}` : `${i}`));
+const THREE_DIGITS: readonly string[] = Array.from({ length: 1000 }, (_, i) =>
+  i < 10 ? `00${i}` : i < 100 ? `0${i}` : `${i}`
+);
+const DOT_THREE_DIGITS: readonly string[] = Array.from({ length: 1000 }, (_, i) => (i === 0 ? '' : `.${THREE_DIGITS[i]}`));
+const DOT_THREE_DIGITS_Z: readonly string[] = Array.from({ length: 1000 }, (_, i) => (i === 0 ? 'Z' : `.${THREE_DIGITS[i]}Z`));
+const HOURS_PER_DAY = 24;
+const MIN_SEC_STRINGS: readonly string[] = Array.from({ length: SECONDS_PER_HOUR }, (_, i) => {
+  const m = (i / SECONDS_PER_MINUTE) | 0;
+  const s = i - m * SECONDS_PER_MINUTE;
+  const str = `${TWO_DIGITS[m]}:${TWO_DIGITS[s]}`;
+  str.charCodeAt(0);
+  return str;
+});
+let cachedDayCount = Number.NaN;
+let cachedDayText = '';
+let cachedDayPrefix = '';
+let cachedHourKey = Number.NaN;
+let cachedHourPrefix = '';
 
 /** An exact JSON-safe form of a 64-bit integer: a Number when safe, otherwise its decimal digits. */
 export function exactInteger(value: bigint): number | string {
@@ -91,6 +116,7 @@ function pad(value: number, width: number): string {
 }
 
 function formatYear(year: number): string {
+  if (year >= 1000 && year <= 9999) return `${year}`;
   if (year >= 0 && year <= 9999) return pad(year, NORMAL_YEAR_DIGITS);
   const sign = year < 0 ? '-' : '+';
   return sign + pad(Math.abs(year), EXPANDED_YEAR_DIGITS);
@@ -98,6 +124,7 @@ function formatYear(year: number): string {
 
 /** Proleptic Gregorian date for a day count since 1970-01-01, as YYYY-MM-DD. */
 export function formatDate(days: number): string {
+  if (days === cachedDayCount) return cachedDayText;
   const z = days + DAYS_TO_EPOCH_FROM_ERA_START;
   const era = Math.floor(z / DAYS_PER_ERA);
   const dayOfEra = z - era * DAYS_PER_ERA;
@@ -110,7 +137,29 @@ export function formatDate(days: number): string {
   const day = dayOfYear - Math.floor((153 * monthIndex + 2) / 5) + 1;
   const month = monthIndex < 10 ? monthIndex + 3 : monthIndex - 9;
   const year = yearOfEra + era * YEARS_PER_ERA + (month <= 2 ? 1 : 0);
-  return `${formatYear(year)}-${pad(month, 2)}-${pad(day, 2)}`;
+  const text = `${formatYear(year)}-${TWO_DIGITS[month]}-${TWO_DIGITS[day]}`;
+  cachedDayCount = days;
+  cachedDayText = text;
+  cachedDayPrefix = `${text}T`;
+  return text;
+}
+
+function formatDatePrefix(days: number): string {
+  if (days === cachedDayCount) return cachedDayPrefix;
+  formatDate(days);
+  return cachedDayPrefix;
+}
+
+function formatHourPrefix(hourKey: number): string {
+  if (hourKey === cachedHourKey) return cachedHourPrefix;
+  let hourOfDay = hourKey % HOURS_PER_DAY;
+  if (hourOfDay < 0) hourOfDay += HOURS_PER_DAY;
+  const days = (hourKey - hourOfDay) / HOURS_PER_DAY;
+  const prefix = `${formatDatePrefix(days)}${TWO_DIGITS[hourOfDay]}:`;
+  prefix.charCodeAt(0);
+  cachedHourKey = hourKey;
+  cachedHourPrefix = prefix;
+  return prefix;
 }
 
 function floorDivide(a: bigint, b: bigint): bigint {
@@ -120,23 +169,101 @@ function floorDivide(a: bigint, b: bigint): bigint {
 
 function formatFraction(fraction: bigint, unit: TimeUnit): string {
   if (fraction === 0n) return '';
+  if (unit === 'millis') return `.${THREE_DIGITS[Number(fraction)]}`;
   return `.${fraction.toString().padStart(FRACTION_DIGITS[unit], '0')}`;
 }
 
 function formatClock(secondOfDay: number): string {
-  const hours = Math.floor(secondOfDay / SECONDS_PER_HOUR);
-  const minutes = Math.floor((secondOfDay % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
-  return `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(secondOfDay % SECONDS_PER_MINUTE, 2)}`;
+  const hours = (secondOfDay / SECONDS_PER_HOUR) | 0;
+  const rem = secondOfDay - hours * SECONDS_PER_HOUR;
+  return `${TWO_DIGITS[hours]}:${MIN_SEC_STRINGS[rem]}`;
+}
+
+const MAX_INT32_SECONDS = 0x7fff_ffff;
+const MAX_FAST_EPOCH_MILLIS = 2_147_483_647_999;
+
+function formatTimestampMillisUtc(value: number): string {
+  let seconds: number;
+  let frac: number;
+  if (value >= 0 && value <= MAX_FAST_EPOCH_MILLIS) {
+    seconds = (value / MILLIS_PER_SECOND) | 0;
+    frac = value - seconds * MILLIS_PER_SECOND;
+  } else {
+    frac = value % MILLIS_PER_SECOND;
+    if (frac < 0) frac += MILLIS_PER_SECOND;
+    seconds = (value - frac) / MILLIS_PER_SECOND;
+  }
+  let hourKey: number;
+  let secOfHour: number;
+  if (seconds >= 0 && seconds <= MAX_INT32_SECONDS) {
+    hourKey = (seconds / SECONDS_PER_HOUR) | 0;
+    secOfHour = seconds - hourKey * SECONDS_PER_HOUR;
+  } else {
+    secOfHour = seconds % SECONDS_PER_HOUR;
+    if (secOfHour < 0) secOfHour += SECONDS_PER_HOUR;
+    hourKey = (seconds - secOfHour) / SECONDS_PER_HOUR;
+  }
+  const prefix = hourKey === cachedHourKey ? cachedHourPrefix : formatHourPrefix(hourKey);
+  return prefix + (MIN_SEC_STRINGS[secOfHour] + DOT_THREE_DIGITS_Z[frac]);
+}
+
+function formatTimestampMillisLocal(value: number): string {
+  let seconds: number;
+  let frac: number;
+  if (value >= 0 && value <= MAX_FAST_EPOCH_MILLIS) {
+    seconds = (value / MILLIS_PER_SECOND) | 0;
+    frac = value - seconds * MILLIS_PER_SECOND;
+  } else {
+    frac = value % MILLIS_PER_SECOND;
+    if (frac < 0) frac += MILLIS_PER_SECOND;
+    seconds = (value - frac) / MILLIS_PER_SECOND;
+  }
+  let hourKey: number;
+  let secOfHour: number;
+  if (seconds >= 0 && seconds <= MAX_INT32_SECONDS) {
+    hourKey = (seconds / SECONDS_PER_HOUR) | 0;
+    secOfHour = seconds - hourKey * SECONDS_PER_HOUR;
+  } else {
+    secOfHour = seconds % SECONDS_PER_HOUR;
+    if (secOfHour < 0) secOfHour += SECONDS_PER_HOUR;
+    hourKey = (seconds - secOfHour) / SECONDS_PER_HOUR;
+  }
+  const prefix = hourKey === cachedHourKey ? cachedHourPrefix : formatHourPrefix(hourKey);
+  return prefix + (MIN_SEC_STRINGS[secOfHour] + DOT_THREE_DIGITS[frac]);
+}
+
+/** Fast ISO-8601 timestamp formatter for safe-integer millis or micros counts since epoch. */
+export function formatTimestampNumber(value: number, unit: TimeUnit, adjustedToUtc: boolean): string {
+  if (unit === 'millis') {
+    return adjustedToUtc ? formatTimestampMillisUtc(value) : formatTimestampMillisLocal(value);
+  }
+  const zone = adjustedToUtc ? 'Z' : '';
+  if (unit === 'micros') {
+    let frac = value % MICROS_PER_SECOND;
+    if (frac < 0) frac += MICROS_PER_SECOND;
+    const seconds = (value - frac) / MICROS_PER_SECOND;
+    let secondOfDay = seconds % SECONDS_PER_DAY;
+    if (secondOfDay < 0) secondOfDay += SECONDS_PER_DAY;
+    const days = (seconds - secondOfDay) / SECONDS_PER_DAY;
+    if (frac === 0) return `${formatDatePrefix(days)}${formatClock(secondOfDay)}${zone}`;
+    const lo = frac % MILLIS_PER_SECOND;
+    const hi = (frac - lo) / MILLIS_PER_SECOND;
+    return `${formatDatePrefix(days)}${formatClock(secondOfDay)}.${THREE_DIGITS[hi]}${THREE_DIGITS[lo]}${zone}`;
+  }
+  return formatTimestamp(BigInt(value), unit, adjustedToUtc);
 }
 
 /** ISO-8601 timestamp from an exact integer count of `unit` since the epoch. */
 export function formatTimestamp(value: bigint, unit: TimeUnit, adjustedToUtc: boolean): string {
+  if (unit !== 'nanos' && value >= MIN_SAFE_BIGINT && value <= MAX_SAFE_BIGINT) {
+    return formatTimestampNumber(Number(value), unit, adjustedToUtc);
+  }
+  const zone = adjustedToUtc ? 'Z' : '';
   const perSecond = BigInt(UNITS_PER_SECOND[unit]);
   const seconds = floorDivide(value, perSecond);
   const fraction = value - seconds * perSecond;
   const days = floorDivide(seconds, BigInt(SECONDS_PER_DAY));
   const secondOfDay = Number(seconds - days * BigInt(SECONDS_PER_DAY));
-  const zone = adjustedToUtc ? 'Z' : '';
   return `${formatDate(Number(days))}T${formatClock(secondOfDay)}${formatFraction(fraction, unit)}${zone}`;
 }
 
@@ -284,14 +411,42 @@ function validateDecimal(column: string, annotation: { scale: number; precision:
   }
 }
 
-function bytesReader(width: number, map: (raw: number | bigint | Buffer) => ColumnValue): ColumnReader {
-  return { kind: 'bytes', width, map };
+function bytesReader(
+  width: number,
+  map: (raw: number | bigint | Buffer) => ColumnValue,
+  readSlice?: (page: Buffer, start: number, end: number) => ColumnValue,
+  sliceByteLengthExact = false
+): ColumnReader {
+  return { kind: 'bytes', width, map, readSlice, sliceByteLengthExact };
+}
+
+function textOrBinarySlice(page: Buffer, start: number, end: number): ColumnValue {
+  const text = page.toString('utf8', start, end);
+  if (!text.includes(REPLACEMENT_CHARACTER)) return text;
+  const slice = page.subarray(start, end);
+  try {
+    return UTF8_STRICT.decode(slice);
+  } catch {
+    return slice.toString('base64');
+  }
 }
 
 function textOrBinary(): (raw: number | bigint | Buffer) => ColumnValue {
   return (raw) => {
     const bytes = raw as Buffer;
     return decodeUtf8OrNull(bytes) ?? bytes.toString('base64');
+  };
+}
+
+function strictTextSlice(column: string): (page: Buffer, start: number, end: number) => ColumnValue {
+  return (page, start, end) => {
+    const text = page.toString('utf8', start, end);
+    if (!text.includes(REPLACEMENT_CHARACTER)) return text;
+    try {
+      return UTF8_STRICT.decode(page.subarray(start, end));
+    } catch {
+      throw new ParquetFormatError(`Corrupted Parquet file: invalid UTF-8 in text column '${column}'`);
+    }
   };
 }
 
@@ -310,11 +465,11 @@ function resolveByteArray(column: string, annotation: Annotation, width: number)
     case 'string':
     case 'enum':
     case 'json':
-      return bytesReader(width, strictText(column));
+      return bytesReader(width, strictText(column), strictTextSlice(column), true);
     case 'none':
-      return bytesReader(width, textOrBinary());
+      return bytesReader(width, textOrBinary(), textOrBinarySlice);
     case 'bson':
-      return bytesReader(width, (raw) => (raw as Buffer).toString('base64'));
+      return bytesReader(width, (raw) => (raw as Buffer).toString('base64'), (page, start, end) => page.toString('base64', start, end));
     case 'decimal':
       validateDecimal(column, annotation);
       return bytesReader(width, (raw) => formatDecimal(signedBigEndian(raw as Buffer, column), annotation.scale));
@@ -370,6 +525,14 @@ function resolveInt64(column: string, annotation: Annotation): ColumnReader {
         kind: 'i64',
         width: 0,
         map: (raw) => formatTimestamp(raw as bigint, annotation.unit, annotation.adjustedToUtc),
+        mapNumber:
+          annotation.unit === 'millis'
+            ? annotation.adjustedToUtc
+              ? formatTimestampMillisUtc
+              : formatTimestampMillisLocal
+            : annotation.unit !== 'nanos'
+              ? (raw) => formatTimestampNumber(raw, annotation.unit, annotation.adjustedToUtc)
+              : undefined,
       };
     case 'decimal':
       validateDecimal(column, annotation);

@@ -1,6 +1,6 @@
 import zlib from 'node:zlib';
 import { CompressionCodec, ParquetCodecUnavailableError, ParquetFormatError } from './parquet-format';
-import { compressSnappy, decompressSnappy } from './parquet-snappy';
+import { compressSnappy, decompressSnappy, decompressSnappySlice } from './parquet-snappy';
 import { decompressZstd } from './zstd';
 
 /**
@@ -211,4 +211,26 @@ export function decompressPage(codec: CompressionCodec, data: Buffer, expectedBy
     );
   }
   return out;
+}
+
+/**
+ * Decompresses one page body from `data[start..end]` without slicing `data` for raw Snappy pages.
+ */
+export function decompressPageSlice(
+  codec: CompressionCodec,
+  data: Buffer,
+  start: number,
+  end: number,
+  expectedBytes: number
+): Buffer {
+  if (codec === CompressionCodec.SNAPPY) {
+    const out = decompressSnappySlice(data, start, end, expectedBytes);
+    if (out.length !== expectedBytes) {
+      throw new ParquetFormatError(
+        `Corrupted Parquet page: SNAPPY page decoded to ${out.length} bytes, header declares ${expectedBytes}`
+      );
+    }
+    return out;
+  }
+  return decompressPage(codec, data.subarray(start, end), expectedBytes);
 }

@@ -29,4 +29,10 @@ export { compressSnappy, decompressRawSnappyBlock, decompressSnappy } from './pa
 export { decompressLz4Raw, isZstdWriteAvailable } from './parquet-codec';
 export type { ParquetWriteOptions } from './parquet-writer';
 export { encodeParquet, inferColumnSchemas } from './parquet-writer';
-export { decodeParquet } from './parquet-reader';
+export type {
+  ColumnCellFormatter,
+  ColumnFormatterFactory,
+  DecodedFormattedParquetColumns,
+  DecodedParquetColumns,
+} from './parquet-reader';
+export { decodeParquet, decodeParquetColumns, decodeParquetFormattedColumns } from './parquet-reader';

@@ -43,7 +43,7 @@ import {
 import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMlDocument } from './data-xml';
 import { assertToml10Syntax } from './data-toml';
 import { assertConversionOptionsObject } from './options-guard';
-import { delimitedToParquet } from './data-fast-paths';
+import { delimitedToParquet, jsonLinesToDelimited, parquetToDelimited, parquetToJson } from './data-fast-paths';
 import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
 import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter, parseDelimitedRecords } from './delimited-detect';
 
@@ -967,8 +967,27 @@ export async function convertData(
     }
   }
 
+  if ((src === 'jsonl' || src === 'ndjson') && (tgt === 'csv' || tgt === 'tsv')) {
+    const delimitedBuffer = jsonLinesToDelimited(inputBuffer, src, tgt, options);
+    if (delimitedBuffer !== null) {
+      return delimitedResult(delimitedBuffer, tgt, baseName);
+    }
+  }
+
   if (src === 'parquet') {
-    return guardParquetSource(() => convertStructured(inputBuffer, src, tgt, options, baseName));
+    return guardParquetSource(async () => {
+      if (tgt === 'csv' || tgt === 'tsv') {
+        const delimitedBuffer = parquetToDelimited(inputBuffer, tgt, options);
+        if (delimitedBuffer !== null) {
+          return delimitedResult(delimitedBuffer, tgt, baseName);
+        }
+      }
+      if (tgt === 'json') {
+        const jsonBuffer = parquetToJson(inputBuffer);
+        return { buffer: jsonBuffer, mimeType: 'application/json', filename: `${baseName}.json`, size: jsonBuffer.length };
+      }
+      return convertStructured(inputBuffer, src, tgt, options, baseName);
+    });
   }
   return convertStructured(inputBuffer, src, tgt, options, baseName);
 }

@@ -1,5 +1,5 @@
 import { setOwn } from './data-json';
-import { decompressPage } from './parquet-codec';
+import { decompressPage, decompressPageSlice } from './parquet-codec';
 import {
   decodeBitPackedLevels,
   decodeBooleanRle,
@@ -94,6 +94,7 @@ const DICTIONARY_DATA_ENCODINGS: ReadonlySet<number> = new Set([Encoding.PLAIN_D
 
 interface LeafColumn {
   name: string;
+  colIndex: number;
   type: ParquetType;
   repetition: FieldRepetitionType;
   typeLength: number;
@@ -300,7 +301,15 @@ function readSchemaElements(reader: CompactProtocolReader): LeafColumn[] {
     }
     const annotation = logical ?? annotationFromConverted(converted, scale, precision);
     // The reader is resolved lazily (INT96 and unknown annotations only matter when rows are decoded).
-    leaves.push({ name, type, repetition, typeLength, annotation, reader: { kind: 'bytes', width: 0, map: null } });
+    leaves.push({
+      name,
+      colIndex: leaves.length,
+      type,
+      repetition,
+      typeLength,
+      annotation,
+      reader: { kind: 'bytes', width: 0, map: null },
+    });
   }
   return leaves;
 }
@@ -553,6 +562,66 @@ interface Dictionary {
   values: ColumnValue[];
   /** UTF-8 bytes each entry costs per row that references it. */
   bytes: Uint32Array;
+  formatted?: string[];
+}
+
+export interface ColumnCellFormatter {
+  nullCell: string;
+  trueCell: string;
+  falseCell: string;
+  numberPrefix?: string;
+  numberSuffix?: string;
+  formatNumber: (val: number) => string;
+  formatString: (val: string) => string;
+  formatTextSlice?: (page: Buffer, start: number, end: number) => string | null;
+}
+
+export type ColumnFormatterFactory = (
+  names: string[],
+  colIndex: number,
+  safeAsciiString: boolean
+) => ColumnCellFormatter;
+
+export interface DecodedFormattedParquetColumns {
+  names: string[];
+  columns: string[][];
+  numRows: number;
+  totalStringBytes: number;
+}
+
+let scratchIndices = new Uint32Array(8192);
+const EIGHTH_SUFFIX: readonly string[] = ['', '.125', '.25', '.375', '.5', '.625', '.75', '.875'];
+
+function isAllOnesRleLevels(buf: Uint8Array, start: number, end: number, count: number): boolean {
+  const len = end - start;
+  if (len < 2 || len > 5 || buf[end - 1] !== 1) return false;
+  const b0 = buf[start];
+  if ((b0 & 1) !== 0) return false;
+  if (len === 2) return (b0 & 0x80) === 0 && b0 >>> 1 === count;
+  if (len === 3) {
+    const b1 = buf[start + 1];
+    return (b0 & 0x80) !== 0 && (b1 & 0x80) === 0 && (((b0 & 0x7f) | (b1 << 7)) >>> 1) === count;
+  }
+  if (len === 4) {
+    const b1 = buf[start + 1];
+    const b2 = buf[start + 2];
+    return (
+      (b0 & 0x80) !== 0 &&
+      (b1 & 0x80) !== 0 &&
+      (b2 & 0x80) === 0 &&
+      (((b0 & 0x7f) | ((b1 & 0x7f) << 7) | (b2 << 14)) >>> 1) === count
+    );
+  }
+  const b1 = buf[start + 1];
+  const b2 = buf[start + 2];
+  const b3 = buf[start + 3];
+  return (
+    (b0 & 0x80) !== 0 &&
+    (b1 & 0x80) !== 0 &&
+    (b2 & 0x80) !== 0 &&
+    (b3 & 0x80) === 0 &&
+    (((b0 & 0x7f) | ((b1 & 0x7f) << 7) | ((b2 & 0x7f) << 14) | (b3 << 21)) >>> 1) === count
+  );
 }
 
 function minPlainBytes(type: ParquetType, width: number, count: number): number {
@@ -565,17 +634,19 @@ function minPlainBytes(type: ParquetType, width: number, count: number): number 
 }
 
 function int64Value(page: Buffer, pos: number): number | string {
-  const high = page.readInt32LE(pos + NARROW_VALUE_BYTES);
-  const low = page.readUInt32LE(pos);
+  const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
+  const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
   const approx = high * UINT32_RANGE + low;
-  return Number.isSafeInteger(approx) ? approx : page.readBigInt64LE(pos).toString();
+  if ((high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)) return approx;
+  return page.readBigInt64LE(pos).toString();
 }
 
 function readPlainValues(
   page: Buffer,
   start: number,
   leaf: LeafColumn,
-  count: number
+  count: number,
+  byteLengths?: Uint32Array
 ): { values: ColumnValue[]; end: number; stringBytes: number } {
   const reader = leaf.reader;
   const type = leaf.type;
@@ -594,47 +665,246 @@ function readPlainValues(
     return { values, end: pos + Math.ceil(count / BITS_PER_BYTE), stringBytes };
   }
   if (reader.kind === 'bytes') {
+    const readSlice = reader.readSlice;
+    const exactBytes = Boolean(reader.sliceByteLengthExact);
     for (let i = 0; i < count; i++) {
       let len = fixedWidth;
       if (fixedWidth === 0) {
         if (pos + BYTE_ARRAY_LENGTH_PREFIX_BYTES > page.length) {
           throw new ParquetFormatError(`Corrupted Parquet file: truncated string length in column '${leaf.name}'`);
         }
-        len = page.readUInt32LE(pos);
+        len = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
         pos += BYTE_ARRAY_LENGTH_PREFIX_BYTES;
       }
-      if (pos + len > page.length) {
+      const end = pos + len;
+      if (end > page.length) {
         throw new ParquetFormatError(`Corrupted Parquet file: string length ${len} exceeds page bounds in column '${leaf.name}'`);
       }
-      const slice = page.subarray(pos, pos + len);
-      values[i] = (map as (raw: Buffer) => ColumnValue)(slice);
+      const val = readSlice
+        ? readSlice(page, pos, end)
+        : (map as (raw: Buffer) => ColumnValue)(page.subarray(pos, end));
+      values[i] = val;
+      if (byteLengths) {
+        if (exactBytes) {
+          byteLengths[i] = len;
+        } else if (typeof val === 'string') {
+          byteLengths[i] = val.length === len ? len : Buffer.byteLength(val, 'utf8');
+        }
+      }
       stringBytes += len;
-      pos += len;
+      pos = end;
     }
     return { values, end: pos, stringBytes };
   }
 
-  const width = reader.kind === 'i64' || reader.kind === 'u64' || reader.kind === 'f64' ? WIDE_VALUE_BYTES : NARROW_VALUE_BYTES;
-  for (let i = 0; i < count; i++) {
-    if (reader.kind === 'f64') {
-      values[i] = page.readDoubleLE(pos);
-    } else if (reader.kind === 'f32') {
-      values[i] = page.readFloatLE(pos);
-    } else if (reader.kind === 'i32') {
-      const raw = page.readInt32LE(pos);
-      values[i] = map ? (map(raw) as ColumnValue) : raw;
-    } else if (reader.kind === 'u32') {
-      values[i] = page.readUInt32LE(pos);
-    } else if (reader.kind === 'u64') {
-      values[i] = unsignedInteger(page.readBigInt64LE(pos));
-    } else if (map) {
-      values[i] = map(page.readBigInt64LE(pos));
+  if (reader.kind === 'f64') {
+    const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+      values[i] = view.getFloat64(pos, true);
+    }
+  } else if (reader.kind === 'f32') {
+    const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
+    for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+      values[i] = view.getFloat32(pos, true);
+    }
+  } else if (reader.kind === 'i32') {
+    if (map) {
+      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+        values[i] = map(page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24));
+      }
     } else {
+      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+        values[i] = page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24);
+      }
+    }
+  } else if (reader.kind === 'u32') {
+    for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+      values[i] = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
+    }
+  } else if (reader.kind === 'u64') {
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+      values[i] = unsignedInteger(page.readBigInt64LE(pos));
+    }
+  } else if (reader.mapNumber && map) {
+    const mapNumber = reader.mapNumber;
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+      const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
+      const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
+      const approx = high * UINT32_RANGE + low;
+      values[i] =
+        (high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)
+          ? mapNumber(approx)
+          : map(page.readBigInt64LE(pos));
+    }
+  } else if (map) {
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+      values[i] = map(page.readBigInt64LE(pos));
+    }
+  } else {
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
       values[i] = int64Value(page, pos);
     }
-    pos += width;
   }
   return { values, end: pos, stringBytes };
+}
+
+function readPlainValuesFormatted(
+  page: Buffer,
+  start: number,
+  leaf: LeafColumn,
+  count: number,
+  formatter: ColumnCellFormatter
+): string[] {
+  const reader = leaf.reader;
+  const type = leaf.type;
+  const fixedWidth = reader.width;
+  if (start + minPlainBytes(type, fixedWidth, count) > page.length) {
+    throw new ParquetFormatError(`Corrupted Parquet file: truncated ${ParquetType[type].toLowerCase()} data in column '${leaf.name}'`);
+  }
+  const formatted = new Array<string>(count);
+  let pos = start;
+  const map = reader.map;
+  const { trueCell, falseCell, numberPrefix, numberSuffix = '', formatNumber, formatString, formatTextSlice } = formatter;
+
+  if (reader.kind === 'bool') {
+    for (let i = 0; i < count; i++) {
+      formatted[i] = ((page[pos + (i >> 3)] >> (i & 7)) & 1) === 1 ? trueCell : falseCell;
+    }
+    return formatted;
+  }
+  if (reader.kind === 'bytes') {
+    const readSlice = reader.readSlice;
+    const isStrictText =
+      formatTextSlice !== undefined &&
+      (leaf.annotation.tag === 'string' || leaf.annotation.tag === 'enum' || leaf.annotation.tag === 'json');
+    for (let i = 0; i < count; i++) {
+      let len = fixedWidth;
+      if (fixedWidth === 0) {
+        if (pos + BYTE_ARRAY_LENGTH_PREFIX_BYTES > page.length) {
+          throw new ParquetFormatError(`Corrupted Parquet file: truncated string length in column '${leaf.name}'`);
+        }
+        len = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
+        pos += BYTE_ARRAY_LENGTH_PREFIX_BYTES;
+      }
+      const end = pos + len;
+      if (end > page.length) {
+        throw new ParquetFormatError(`Corrupted Parquet file: string length ${len} exceeds page bounds in column '${leaf.name}'`);
+      }
+      if (isStrictText) {
+        const fast = formatTextSlice(page, pos, end);
+        if (fast !== null) {
+          formatted[i] = fast;
+          pos = end;
+          continue;
+        }
+      }
+      const val = readSlice
+        ? readSlice(page, pos, end)
+        : (map as (raw: Buffer) => ColumnValue)(page.subarray(pos, end));
+      formatted[i] = typeof val === 'string' ? formatString(val) : formatNumber(val as number);
+      pos = end;
+    }
+    return formatted;
+  }
+
+  if (reader.kind === 'f64') {
+    const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
+    if (numberPrefix !== undefined) {
+      for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+        const v = view.getFloat64(pos, true);
+        const eights = v * 8;
+        const k = eights | 0;
+        if (k === eights && k > 0) {
+          const rem = k & 7;
+          const tail = rem === 0 ? `${k >> 3}${numberSuffix}` : `${k >> 3}${EIGHTH_SUFFIX[rem]}${numberSuffix}`;
+          formatted[i] = numberPrefix + tail;
+        } else {
+          formatted[i] = formatNumber(v);
+        }
+      }
+    } else {
+      for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+        formatted[i] = formatNumber(view.getFloat64(pos, true));
+      }
+    }
+  } else if (reader.kind === 'f32') {
+    const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
+    for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+      formatted[i] = formatNumber(view.getFloat32(pos, true));
+    }
+  } else if (reader.kind === 'i32') {
+    if (map) {
+      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+        const v = map(page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24));
+        formatted[i] = typeof v === 'string' ? formatString(v) : formatNumber(v as number);
+      }
+    } else if (numberPrefix !== undefined) {
+      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+        const v = page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24);
+        formatted[i] = numberSuffix === '' ? numberPrefix + v : numberPrefix + v + numberSuffix;
+      }
+    } else {
+      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+        formatted[i] = formatNumber(page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24));
+      }
+    }
+  } else if (reader.kind === 'u32') {
+    if (numberPrefix !== undefined) {
+      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+        const v = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
+        formatted[i] = numberSuffix === '' ? numberPrefix + v : numberPrefix + v + numberSuffix;
+      }
+    } else {
+      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
+        formatted[i] = formatNumber((page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0);
+      }
+    }
+  } else if (reader.kind === 'u64') {
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+      const v = unsignedInteger(page.readBigInt64LE(pos));
+      formatted[i] = typeof v === 'number' ? formatNumber(v) : formatString(v);
+    }
+  } else if (reader.mapNumber && map) {
+    const mapNumber = reader.mapNumber;
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+      const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
+      const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
+      const approx = high * UINT32_RANGE + low;
+      const v =
+        (high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)
+          ? mapNumber(approx)
+          : map(page.readBigInt64LE(pos));
+      formatted[i] = formatString(v as string);
+    }
+  } else if (map) {
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+      const v = map(page.readBigInt64LE(pos));
+      formatted[i] = typeof v === 'string' ? formatString(v) : formatNumber(v as number);
+    }
+  } else if (numberPrefix !== undefined) {
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+      const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
+      const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
+      const approx = high * UINT32_RANGE + low;
+      if ((high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)) {
+        formatted[i] = numberSuffix === '' ? numberPrefix + approx : numberPrefix + approx + numberSuffix;
+      } else {
+        formatted[i] = formatString(page.readBigInt64LE(pos).toString());
+      }
+    }
+  } else {
+    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
+      const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
+      const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
+      const approx = high * UINT32_RANGE + low;
+      if ((high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)) {
+        formatted[i] = formatNumber(approx);
+      } else {
+        formatted[i] = formatString(page.readBigInt64LE(pos).toString());
+      }
+    }
+  }
+  return formatted;
 }
 
 function chargeValueBytes(budget: DecodeBudget, bytes: number): void {
@@ -662,22 +932,27 @@ function decodeDictionaryIndices(
   if (bitWidth > MAX_DICTIONARY_INDEX_BIT_WIDTH) {
     throw new ParquetFormatError(`Corrupted Parquet file: dictionary index bit width ${bitWidth} in column '${leaf.name}'`);
   }
-  const indices = new Uint32Array(count);
-  decodeRleHybrid(page, pos, page.length, bitWidth, count, indices);
+  if (scratchIndices.length < count) {
+    scratchIndices = new Uint32Array(Math.max(count, scratchIndices.length * 2));
+  }
+  decodeRleHybrid(page, pos, page.length, bitWidth, count, scratchIndices);
+  const dictValues = dictionary.values;
+  const dictLen = dictValues.length;
+  const dictBytes = dictionary.bytes;
+  const present = new Array<ColumnValue>(count);
   let referencedBytes = 0;
   for (let i = 0; i < count; i++) {
-    const index = indices[i];
-    if (index >= dictionary.values.length) {
+    const index = scratchIndices[i];
+    if (index >= dictLen) {
       throw new ParquetFormatError(
-        `Corrupted Parquet file: dictionary index ${index} out of range (${dictionary.values.length} entries) in column '${leaf.name}'`
+        `Corrupted Parquet file: dictionary index ${index} out of range (${dictLen} entries) in column '${leaf.name}'`
       );
     }
-    referencedBytes += dictionary.bytes[index];
+    referencedBytes += dictBytes[index];
+    present[i] = dictValues[index];
   }
   // A dictionary string is materialized once per referencing row, so it is charged once per row.
   chargeValueBytes(budget, referencedBytes);
-  const present = new Array<ColumnValue>(count);
-  for (let i = 0; i < count; i++) present[i] = dictionary.values[indices[i]];
   return present;
 }
 
@@ -770,7 +1045,7 @@ function decodeEncodedValues(
 }
 
 function assembleNulls(levels: Uint8Array | null, present: ColumnValue[], count: number, column: string): ColumnValue[] {
-  if (!levels) return present;
+  if (!levels || present.length === count) return present;
   const out = new Array<ColumnValue>(count);
   let next = 0;
   for (let i = 0; i < count; i++) {
@@ -782,13 +1057,12 @@ function assembleNulls(levels: Uint8Array | null, present: ColumnValue[], count:
   return out;
 }
 
-function decodeDataPage(
+function decodeDataPageLevels(
   page: Buffer,
   header: PageHeader,
   leaf: LeafColumn,
-  dictionary: Dictionary | null,
   budget: DecodeBudget
-): ColumnValue[] {
+): { levels: Uint8Array | null; nonNull: number; pos: number } {
   const count = header.numValues;
   chargeValueBytes(budget, count * PARQUET_CELL_BYTES);
   const optional = leaf.repetition === FieldRepetitionType.OPTIONAL;
@@ -807,8 +1081,10 @@ function decodeDataPage(
       if (levelEnd > page.length) {
         throw new ParquetFormatError(`Corrupted Parquet file: definition levels exceed page bounds in column '${leaf.name}'`);
       }
-      levels = new Uint8Array(count);
-      decodeRleHybrid(page, BYTE_ARRAY_LENGTH_PREFIX_BYTES, levelEnd, MAX_DEFINITION_LEVEL, count, levels);
+      if (!isAllOnesRleLevels(page, BYTE_ARRAY_LENGTH_PREFIX_BYTES, levelEnd, count)) {
+        levels = new Uint8Array(count);
+        decodeRleHybrid(page, BYTE_ARRAY_LENGTH_PREFIX_BYTES, levelEnd, MAX_DEFINITION_LEVEL, count, levels);
+      }
       pos = levelEnd;
     } else if (header.definitionLevelEncoding === Encoding.BIT_PACKED) {
       levels = new Uint8Array(count);
@@ -830,19 +1106,28 @@ function decodeDataPage(
       nonNull += levels[i];
     }
   }
-
-  const present = decodeEncodedValues(page, pos, nonNull, header.encoding, leaf, dictionary, budget);
-  return assembleNulls(levels, present, count, leaf.name);
+  return { levels, nonNull, pos };
 }
 
-function decodeDataPageV2(
-  rawBody: Buffer,
-  codec: CompressionCodec,
+function decodeDataPage(
+  page: Buffer,
   header: PageHeader,
   leaf: LeafColumn,
   dictionary: Dictionary | null,
   budget: DecodeBudget
 ): ColumnValue[] {
+  const { levels, nonNull, pos } = decodeDataPageLevels(page, header, leaf, budget);
+  const present = decodeEncodedValues(page, pos, nonNull, header.encoding, leaf, dictionary, budget);
+  return assembleNulls(levels, present, header.numValues, leaf.name);
+}
+
+function decodeDataPageV2LevelsAndValues(
+  rawBody: Buffer,
+  codec: CompressionCodec,
+  header: PageHeader,
+  leaf: LeafColumn,
+  budget: DecodeBudget
+): { levels: Uint8Array | null; nonNull: number; valuesPage: Buffer } {
   const count = header.numValues;
   chargeValueBytes(budget, count * PARQUET_CELL_BYTES);
   const repBytes = header.repetitionLevelsByteLength;
@@ -853,8 +1138,10 @@ function decodeDataPageV2(
   let levels: Uint8Array | null = null;
   if (optional) {
     if (defBytes > 0) {
-      levels = new Uint8Array(count);
-      decodeRleHybrid(rawBody, repBytes, levelBytes, MAX_DEFINITION_LEVEL, count, levels);
+      if (header.numNulls !== 0 || !isAllOnesRleLevels(rawBody, repBytes, levelBytes, count)) {
+        levels = new Uint8Array(count);
+        decodeRleHybrid(rawBody, repBytes, levelBytes, MAX_DEFINITION_LEVEL, count, levels);
+      }
     } else if (header.numNulls === count) {
       levels = new Uint8Array(count);
     } else if (header.numNulls !== 0) {
@@ -895,53 +1182,289 @@ function decodeDataPageV2(
     valuesPage = compressedValues;
   }
 
-  const present = decodeEncodedValues(valuesPage, 0, nonNull, header.encoding, leaf, dictionary, budget);
-  return assembleNulls(levels, present, count, leaf.name);
+  return { levels, nonNull, valuesPage };
 }
 
-function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): ColumnValue[] {
+function decodeDataPageV2(
+  rawBody: Buffer,
+  codec: CompressionCodec,
+  header: PageHeader,
+  leaf: LeafColumn,
+  dictionary: Dictionary | null,
+  budget: DecodeBudget
+): ColumnValue[] {
+  const { levels, nonNull, valuesPage } = decodeDataPageV2LevelsAndValues(rawBody, codec, header, leaf, budget);
+  const present = decodeEncodedValues(valuesPage, 0, nonNull, header.encoding, leaf, dictionary, budget);
+  return assembleNulls(levels, present, header.numValues, leaf.name);
+}
+
+function writeFormattedPageValues(
+  page: Buffer,
+  pos: number,
+  count: number,
+  nonNull: number,
+  levels: Uint8Array | null,
+  encoding: number,
+  leaf: LeafColumn,
+  formattedDict: string[] | null,
+  budget: DecodeBudget,
+  formatter: ColumnCellFormatter,
+  colOut: string[],
+  writePos: number
+): number {
+  const allNonNull = !levels || nonNull === count;
+  if (DICTIONARY_DATA_ENCODINGS.has(encoding)) {
+    if (!formattedDict) {
+      throw new ParquetFormatError(`Corrupted Parquet file: dictionary-encoded page without a dictionary in column '${leaf.name}'`);
+    }
+    if (nonNull > 0) {
+      if (pos >= page.length) {
+        throw new ParquetFormatError(`Corrupted Parquet file: truncated dictionary indices in column '${leaf.name}'`);
+      }
+      const bitWidth = page[pos++];
+      if (bitWidth > MAX_DICTIONARY_INDEX_BIT_WIDTH) {
+        throw new ParquetFormatError(`Corrupted Parquet file: dictionary index bit width ${bitWidth} in column '${leaf.name}'`);
+      }
+      if (scratchIndices.length < nonNull) {
+        scratchIndices = new Uint32Array(Math.max(nonNull, scratchIndices.length * 2));
+      }
+      decodeRleHybrid(page, pos, page.length, bitWidth, nonNull, scratchIndices);
+    }
+    const dictLen = formattedDict.length;
+    let pageStringBytes = 0;
+    if (allNonNull) {
+      for (let i = 0; i < count; i++) {
+        const index = scratchIndices[i];
+        if (index >= dictLen) {
+          throw new ParquetFormatError(
+            `Corrupted Parquet file: dictionary index ${index} out of range (${dictLen} entries) in column '${leaf.name}'`
+          );
+        }
+        const s = formattedDict[index];
+        colOut[writePos + i] = s;
+        pageStringBytes += s.length;
+      }
+    } else {
+      const nullCell = formatter.nullCell;
+      const nullLen = nullCell.length;
+      let next = 0;
+      for (let i = 0; i < count; i++) {
+        if (levels[i] === 1) {
+          const index = scratchIndices[next++];
+          if (index >= dictLen) {
+            throw new ParquetFormatError(
+              `Corrupted Parquet file: dictionary index ${index} out of range (${dictLen} entries) in column '${leaf.name}'`
+            );
+          }
+          const s = formattedDict[index];
+          colOut[writePos + i] = s;
+          pageStringBytes += s.length;
+        } else {
+          colOut[writePos + i] = nullCell;
+          pageStringBytes += nullLen;
+        }
+      }
+    }
+    if (leaf.reader.kind === 'bytes' || leaf.reader.map !== null) {
+      const overhead = count * formatter.nullCell.length;
+      if (pageStringBytes > overhead) chargeValueBytes(budget, pageStringBytes - overhead);
+    }
+    return pageStringBytes;
+  }
+
+  if (encoding === Encoding.PLAIN) {
+    const formatted = readPlainValuesFormatted(page, pos, leaf, nonNull, formatter);
+    let pageStringBytes = 0;
+    if (allNonNull) {
+      for (let i = 0; i < count; i++) {
+        const s = formatted[i];
+        colOut[writePos + i] = s;
+        pageStringBytes += s.length;
+      }
+    } else {
+      const nullCell = formatter.nullCell;
+      const nullLen = nullCell.length;
+      let next = 0;
+      for (let i = 0; i < count; i++) {
+        if (levels[i] === 1) {
+          const s = formatted[next++];
+          colOut[writePos + i] = s;
+          pageStringBytes += s.length;
+        } else {
+          colOut[writePos + i] = nullCell;
+          pageStringBytes += nullLen;
+        }
+      }
+    }
+    if (leaf.reader.kind === 'bytes' || leaf.reader.map !== null) {
+      const overhead = count * formatter.nullCell.length;
+      if (pageStringBytes > overhead) chargeValueBytes(budget, pageStringBytes - overhead);
+    }
+    return pageStringBytes;
+  }
+
+  const present = decodeEncodedValues(page, pos, nonNull, encoding, leaf, null, budget);
+  const { nullCell, trueCell, falseCell, formatNumber, formatString } = formatter;
+  let pageStringBytes = 0;
+  if (allNonNull) {
+    for (let i = 0; i < count; i++) {
+      const v = present[i];
+      let s: string;
+      if (typeof v === 'string') s = formatString(v);
+      else if (typeof v === 'number') s = formatNumber(v);
+      else if (typeof v === 'boolean') s = v ? trueCell : falseCell;
+      else s = nullCell;
+      colOut[writePos + i] = s;
+      pageStringBytes += s.length;
+    }
+  } else {
+    const nullLen = nullCell.length;
+    let next = 0;
+    for (let i = 0; i < count; i++) {
+      if (levels[i] === 1) {
+        const v = present[next++];
+        let s: string;
+        if (typeof v === 'string') s = formatString(v);
+        else if (typeof v === 'number') s = formatNumber(v);
+        else if (typeof v === 'boolean') s = v ? trueCell : falseCell;
+        else s = nullCell;
+        colOut[writePos + i] = s;
+        pageStringBytes += s.length;
+      } else {
+        colOut[writePos + i] = nullCell;
+        pageStringBytes += nullLen;
+      }
+    }
+  }
+  return pageStringBytes;
+}
+
+function decodeChunkFormatted(
+  buffer: Buffer,
+  plan: ChunkPlan,
+  budget: DecodeBudget,
+  formatter: ColumnCellFormatter,
+  colOut: string[],
+  baseOffset: number
+): number {
   const { chunk, leaf, rows } = plan;
-  const values: ColumnValue[] = [];
-  let dictionary: Dictionary | null = null;
+  let writePos = baseOffset;
+  let chunkStringBytes = 0;
+  let formattedDict: string[] | null = null;
   for (const page of plan.pages) {
     const { header } = page;
     if (header.type === PageType.INDEX_PAGE) continue;
-    const rawSlice = buffer.subarray(page.bodyStart, page.bodyEnd);
 
     if (header.type === PageType.DICTIONARY_PAGE) {
-      const body = decompressPage(chunk.codec, rawSlice, header.uncompressedSize);
+      const body = decompressPageSlice(chunk.codec, buffer, page.bodyStart, page.bodyEnd, header.uncompressedSize);
       if (header.encoding !== Encoding.PLAIN && header.encoding !== Encoding.PLAIN_DICTIONARY) {
         throw new ParquetUnsupportedError(`Unsupported Parquet dictionary encoding ${header.encoding} in column '${leaf.name}'`);
       }
       if (header.numValues > PARQUET_MAX_ROWS) {
         throw new ParquetFormatError(`Corrupted Parquet file: dictionary of ${header.numValues} entries in column '${leaf.name}'`);
       }
-      const plain = readPlainValues(body, 0, leaf, header.numValues);
+      formattedDict = readPlainValuesFormatted(body, 0, leaf, header.numValues, formatter);
+      if (header.numValues * 4 <= rows) {
+        for (let i = 0; i < header.numValues; i++) formattedDict[i].charCodeAt(0);
+      }
+      continue;
+    }
+    if (header.type === PageType.DATA_PAGE) {
+      const body = decompressPageSlice(chunk.codec, buffer, page.bodyStart, page.bodyEnd, header.uncompressedSize);
+      const { levels, nonNull, pos } = decodeDataPageLevels(body, header, leaf, budget);
+      chunkStringBytes += writeFormattedPageValues(
+        body,
+        pos,
+        header.numValues,
+        nonNull,
+        levels,
+        header.encoding,
+        leaf,
+        formattedDict,
+        budget,
+        formatter,
+        colOut,
+        writePos
+      );
+      writePos += header.numValues;
+      continue;
+    }
+    if (header.type === PageType.DATA_PAGE_V2) {
+      const rawSlice = buffer.subarray(page.bodyStart, page.bodyEnd);
+      const { levels, nonNull, valuesPage } = decodeDataPageV2LevelsAndValues(rawSlice, chunk.codec, header, leaf, budget);
+      chunkStringBytes += writeFormattedPageValues(
+        valuesPage,
+        0,
+        header.numValues,
+        nonNull,
+        levels,
+        header.encoding,
+        leaf,
+        formattedDict,
+        budget,
+        formatter,
+        colOut,
+        writePos
+      );
+      writePos += header.numValues;
+      continue;
+    }
+    throw new ParquetUnsupportedError(`Unsupported Parquet page type ${header.type} in column '${leaf.name}'`);
+  }
+  if (writePos - baseOffset !== rows) {
+    throw new ParquetFormatError(`Corrupted Parquet file: column '${leaf.name}' ends before all rows are present`);
+  }
+  return chunkStringBytes;
+}
+
+function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): ColumnValue[] {
+  const { chunk, leaf, rows } = plan;
+  let values: ColumnValue[] | null = null;
+  let dictionary: Dictionary | null = null;
+  for (const page of plan.pages) {
+    const { header } = page;
+    if (header.type === PageType.INDEX_PAGE) continue;
+
+    if (header.type === PageType.DICTIONARY_PAGE) {
+      const body = decompressPageSlice(chunk.codec, buffer, page.bodyStart, page.bodyEnd, header.uncompressedSize);
+      if (header.encoding !== Encoding.PLAIN && header.encoding !== Encoding.PLAIN_DICTIONARY) {
+        throw new ParquetUnsupportedError(`Unsupported Parquet dictionary encoding ${header.encoding} in column '${leaf.name}'`);
+      }
+      if (header.numValues > PARQUET_MAX_ROWS) {
+        throw new ParquetFormatError(`Corrupted Parquet file: dictionary of ${header.numValues} entries in column '${leaf.name}'`);
+      }
       const bytes = new Uint32Array(header.numValues);
-      for (let i = 0; i < header.numValues; i++) {
-        const entry = plain.values[i];
-        bytes[i] = typeof entry === 'string' ? Buffer.byteLength(entry, 'utf8') : 0;
+      const plain = readPlainValues(body, 0, leaf, header.numValues, bytes);
+      if (leaf.reader.kind !== 'bytes' && (leaf.reader.map !== null || leaf.reader.kind === 'i64' || leaf.reader.kind === 'u64')) {
+        for (let i = 0; i < header.numValues; i++) {
+          const entry = plain.values[i];
+          bytes[i] = typeof entry === 'string' ? entry.length : 0;
+        }
       }
       dictionary = { values: plain.values, bytes };
       continue;
     }
     if (header.type === PageType.DATA_PAGE) {
-      const body = decompressPage(chunk.codec, rawSlice, header.uncompressedSize);
+      const body = decompressPageSlice(chunk.codec, buffer, page.bodyStart, page.bodyEnd, header.uncompressedSize);
       const pageValues = decodeDataPage(body, header, leaf, dictionary, budget);
-      for (let i = 0; i < pageValues.length; i++) values.push(pageValues[i]);
+      if (!values) values = pageValues;
+      else for (let i = 0; i < pageValues.length; i++) values.push(pageValues[i]);
       continue;
     }
     if (header.type === PageType.DATA_PAGE_V2) {
+      const rawSlice = buffer.subarray(page.bodyStart, page.bodyEnd);
       const pageValues = decodeDataPageV2(rawSlice, chunk.codec, header, leaf, dictionary, budget);
-      for (let i = 0; i < pageValues.length; i++) values.push(pageValues[i]);
+      if (!values) values = pageValues;
+      else for (let i = 0; i < pageValues.length; i++) values.push(pageValues[i]);
       continue;
     }
     throw new ParquetUnsupportedError(`Unsupported Parquet page type ${header.type} in column '${leaf.name}'`);
   }
-  if (values.length !== rows) {
+  const resolved = values ?? [];
+  if (resolved.length !== rows) {
     throw new ParquetFormatError(`Corrupted Parquet file: column '${leaf.name}' ends before all rows are present`);
   }
-  return values;
+  return resolved;
 }
 
 // ==========================================
@@ -1002,7 +1525,13 @@ function planChunks(meta: FileMeta, footerStart: number): ChunkPlan[] {
   return plans;
 }
 
-function decodeParquetUnguarded(buffer: Buffer): Record<string, unknown>[] {
+export interface DecodedParquetColumns {
+  names: string[];
+  columns: ColumnValue[][];
+  numRows: number;
+}
+
+function prepareParquetPlans(buffer: Buffer): { meta: FileMeta; plans: ChunkPlan[] } {
   if (buffer.length < MIN_FILE_BYTES) {
     throw new ParquetFormatError('Invalid Parquet file: buffer too small (minimum 12 bytes).');
   }
@@ -1030,7 +1559,9 @@ function decodeParquetUnguarded(buffer: Buffer): Record<string, unknown>[] {
   }
 
   const meta = readFooter(buffer.subarray(0, metaOffset + metaLength), metaOffset);
-  if (meta.numRows === 0) return [];
+  if (meta.numRows === 0) {
+    return { meta, plans: [] };
+  }
   if (meta.numRows > PARQUET_MAX_ROWS) {
     throw new ParquetFormatError(`Unsupported Parquet file: ${meta.numRows} rows exceed the limit of ${PARQUET_MAX_ROWS}.`);
   }
@@ -1051,37 +1582,105 @@ function decodeParquetUnguarded(buffer: Buffer): Record<string, unknown>[] {
   const plans = planChunks(meta, metaOffset);
   const decompressBudget = { remaining: PARQUET_MAX_TOTAL_DECOMPRESSED_BYTES };
   for (const plan of plans) scanChunkPages(buffer, plan, decompressBudget);
+  return { meta, plans };
+}
+
+function decodeParquetColumnsUnguarded(buffer: Buffer): DecodedParquetColumns {
+  const { meta, plans } = prepareParquetPlans(buffer);
+  if (meta.numRows === 0) {
+    return {
+      names: meta.leaves.map((leaf) => leaf.name),
+      columns: meta.leaves.map(() => []),
+      numRows: 0,
+    };
+  }
 
   const budget: DecodeBudget = { valueBytes: PARQUET_MAX_DECODED_VALUE_BYTES };
   const columns = new Map<string, ColumnValue[]>();
+  const writeOffsets = new Map<string, number>();
+  const singleRowGroup = plans.length === meta.leaves.length;
   for (const plan of plans) {
     const values = decodeChunk(buffer, plan, budget);
+    if (singleRowGroup) {
+      columns.set(plan.leaf.name, values);
+      continue;
+    }
     const existing = columns.get(plan.leaf.name);
     if (existing) {
-      for (let i = 0; i < values.length; i++) existing.push(values[i]);
+      const base = writeOffsets.get(plan.leaf.name) ?? 0;
+      for (let i = 0; i < values.length; i++) existing[base + i] = values[i];
+      writeOffsets.set(plan.leaf.name, base + values.length);
     } else {
-      columns.set(plan.leaf.name, values);
+      const col = new Array<ColumnValue>(meta.numRows);
+      for (let i = 0; i < values.length; i++) col[i] = values[i];
+      columns.set(plan.leaf.name, col);
+      writeOffsets.set(plan.leaf.name, values.length);
     }
   }
 
   const names = meta.leaves.map((leaf) => leaf.name).filter((name) => columns.has(name));
   const columnValues = names.map((name) => columns.get(name) as ColumnValue[]);
-  const needsSetOwn = names.some((n) => n === '__proto__' || (n.charCodeAt(0) >= 0x30 && n.charCodeAt(0) <= 0x39));
-  const records: Record<string, unknown>[] = new Array<Record<string, unknown>>(meta.numRows);
-  for (let r = 0; r < meta.numRows; r++) {
-    const row: Record<string, ColumnValue> = {};
-    if (needsSetOwn) {
-      for (let c = 0; c < names.length; c++) {
-        setOwn(row, names[c], columnValues[c][r] ?? null);
-      }
-    } else {
-      for (let c = 0; c < names.length; c++) {
-        row[names[c]] = columnValues[c][r] ?? null;
-      }
+  return { names, columns: columnValues, numRows: meta.numRows };
+}
+
+/**
+ * Deserializes a flat Parquet file into formatted string column vectors in schema leaf order,
+ * formatting dictionary entries at dictionary decode time instead of per row.
+ */
+export function decodeParquetFormattedColumns(
+  buffer: Buffer,
+  makeFormatter: ColumnFormatterFactory
+): DecodedFormattedParquetColumns {
+  try {
+    const { meta, plans } = prepareParquetPlans(buffer);
+    const names = meta.leaves.map((leaf) => leaf.name);
+    if (meta.numRows === 0) {
+      return { names, columns: meta.leaves.map(() => []), numRows: 0, totalStringBytes: 0 };
     }
-    records[r] = row;
+    const numCols = meta.leaves.length;
+    const formatters: ColumnCellFormatter[] = new Array<ColumnCellFormatter>(numCols);
+    const columns: string[][] = new Array<string[]>(numCols);
+    for (let c = 0; c < numCols; c++) {
+      const leaf = meta.leaves[c];
+      const safeAsciiString =
+        leaf.reader.kind !== 'bytes' ||
+        leaf.type === ParquetType.INT96 ||
+        leaf.annotation.tag === 'decimal' ||
+        leaf.annotation.tag === 'uuid' ||
+        leaf.annotation.tag === 'bson';
+      formatters[c] = makeFormatter(names, c, safeAsciiString);
+      columns[c] = new Array<string>(meta.numRows);
+    }
+    const budget: DecodeBudget = { valueBytes: PARQUET_MAX_DECODED_VALUE_BYTES };
+    const writeOffsets = new Int32Array(numCols);
+    let totalStringBytes = 0;
+    for (const plan of plans) {
+      const c = plan.leaf.colIndex;
+      const base = writeOffsets[c];
+      totalStringBytes += decodeChunkFormatted(buffer, plan, budget, formatters[c], columns[c], base);
+      writeOffsets[c] = base + plan.rows;
+    }
+    return { names, columns, numRows: meta.numRows, totalStringBytes };
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new ParquetFormatError(`Unsupported Parquet file: the decoded table exceeds engine limits (${error.message})`);
+    }
+    throw error;
   }
-  return records;
+}
+
+/**
+ * Deserializes a flat Parquet file into column vectors in schema leaf order.
+ */
+export function decodeParquetColumns(buffer: Buffer): DecodedParquetColumns {
+  try {
+    return decodeParquetColumnsUnguarded(buffer);
+  } catch (error) {
+    if (error instanceof RangeError) {
+      throw new ParquetFormatError(`Unsupported Parquet file: the decoded table exceeds engine limits (${error.message})`);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -1090,7 +1689,24 @@ function decodeParquetUnguarded(buffer: Buffer): Record<string, unknown>[] {
  */
 export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
   try {
-    return decodeParquetUnguarded(buffer);
+    const { names, columns: columnValues, numRows } = decodeParquetColumnsUnguarded(buffer);
+    if (numRows === 0) return [];
+    const needsSetOwn = names.some((n) => n === '__proto__' || (n.charCodeAt(0) >= 0x30 && n.charCodeAt(0) <= 0x39));
+    const records: Record<string, unknown>[] = new Array<Record<string, unknown>>(numRows);
+    for (let r = 0; r < numRows; r++) {
+      const row: Record<string, ColumnValue> = {};
+      if (needsSetOwn) {
+        for (let c = 0; c < names.length; c++) {
+          setOwn(row, names[c], columnValues[c][r] ?? null);
+        }
+      } else {
+        for (let c = 0; c < names.length; c++) {
+          row[names[c]] = columnValues[c][r] ?? null;
+        }
+      }
+      records[r] = row;
+    }
+    return records;
   } catch (error) {
     // Allocation limits of the JS engine (array or string length) mean the table is too large to hold.
     if (error instanceof RangeError) {
