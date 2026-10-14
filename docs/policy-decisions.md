@@ -267,15 +267,15 @@ Tabular data
 
 ## 13. CAD input
 
-- **Status**: Implemented for DXF (#727). DWG is decided (#728).
+- **Status**: Implemented for DXF (#727, #744). DWG is decided (#728).
 - **Decision**:
-  - DXF is read in-process. It covers lines, arcs, circles, ellipses, splines, polylines with bulges, blocks with nesting and arrays, dimensions, and text.
-  - Output is one vector page fitted to the drawing extents.
+  - DXF is read in-process. It covers lines, arcs, circles, ellipses, clamped and unclamped B-splines (sampled over their valid Cox-de Boor domain `[knots[degree], knots[control.length]]`), polylines with bulges, blocks with nesting, arrays and negative-Z OCS extrusion, dimensions, and single-line and multi-line text (including horizontal/vertical alignments, `Aligned`/`Fit` baseline orientation and width scaling, `STYLE` width factors, `%%` control codes, and linked multi-column `MTEXT` records wrapped to single-column width). Degenerate block insertions with a zero scale factor are skipped after accounting for their visit budget.
+  - Output is one vector page fitted to the drawing extents (both strokes and text boxes), with every text line placed at its true drawing coordinates.
   - Expansion is bounded by one budget for the whole drawing; a drawing over it fails with 422.
   - DWG is converted to DXF by an open-source reader run as a separate program.
 - **Why**:
-  - Fidelity: dropping entity types gives visibly wrong drawings.
-  - Fitting the page to the extents matches what CAD exporters produce.
+  - Fidelity: dropping entity types, misplacing aligned or multi-column text, ignoring negative-Z block extrusion, or extrapolating unclamped B-spline knot vectors outside their domain gives visibly wrong drawings.
+  - Fitting the page to the drawing extents matches what CAD exporters produce.
   - The budget stops a small file from expanding into millions of strokes.
 - **Trade-offs**: drawings beyond the budget are refused. The DWG reader does not handle every vendor version.
 - **Alternatives rejected**:

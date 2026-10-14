@@ -108,4 +108,19 @@ describe('scoreInk', () => {
   it('scores a blank page as nothing drawn', () => {
     expect(scoreInk({ width: 50, height: 50, rgb: Buffer.alloc(50 * 50 * 3, 255) }, TRUTH)).toEqual({ precision: 0, recall: 0, extentError: 1 });
   });
+
+  it('isolates the coloured stroke box when dark neutral text lies outside it, and retains precision when truth strokes overlap text boxes', () => {
+    const base = draw({ ...SAME, colour: [92, 107, 192] });
+    // Draw dark neutral text (#1F2340) outside the stroke box at (620..680, 20..50).
+    for (let y = 20; y <= 50; y++) {
+      for (let x = 620; x <= 680; x++) {
+        base.rgb.set([31, 35, 64], (y * base.width + x) * 3);
+      }
+    }
+    const overlappingTruth: CadTruth = { ...TRUTH, textBoxes: [[0, 0, 100, 60]] };
+    const score = scoreInk(base, overlappingTruth);
+    expect(score.recall).toBeGreaterThan(0.99);
+    expect(score.precision).toBeGreaterThan(0.99);
+    expect(score.extentError).toBeLessThan(0.02);
+  });
 });

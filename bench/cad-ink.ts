@@ -53,6 +53,19 @@ function inkMask(raster: Raster): Uint8Array {
   return mask;
 }
 
+/** Stroke-only ink mask for renderers that draw strokes in a distinct blue hue (#5C6BC0) and text in dark neutral (#1F2340). */
+function strokeMask(raster: Raster): Uint8Array {
+  const mask = new Uint8Array(raster.width * raster.height);
+  for (let i = 0; i < mask.length; i++) {
+    const r = raster.rgb[i * 3];
+    const g = raster.rgb[i * 3 + 1];
+    const b = raster.rgb[i * 3 + 2];
+    const darkest = Math.min(r, g, b);
+    mask[i] = BYTE_MAX - darkest > INK_THRESHOLD && b - r > 50 ? 1 : 0;
+  }
+  return mask;
+}
+
 function inkBox(mask: Uint8Array, width: number, height: number): Box | null {
   let box: Box | null = null;
   for (let y = 0; y < height; y++) {
@@ -93,7 +106,8 @@ function nearSet(mask: Uint8Array, width: number, height: number, x: number, y: 
 export function scoreInk(raster: Raster, truth: CadTruth): InkScore {
   const { width, height } = raster;
   const mask = inkMask(raster);
-  const drawn = inkBox(mask, width, height);
+  const colouredBox = truth.textBoxes.length > 0 ? inkBox(strokeMask(raster), width, height) : null;
+  const drawn = colouredBox ?? inkBox(mask, width, height);
   if (drawn === null) return NOTHING_DRAWN;
   const real = strokeBox(truth);
   const drawnWidth = Math.max(1, drawn.maxX - drawn.minX);
@@ -134,7 +148,9 @@ export function scoreInk(raster: Raster, truth: CadTruth): InkScore {
   const inText = (x: number, y: number): boolean => textBoxes.some((box) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom);
   const drawnPixels: Array<[number, number]> = [];
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) if (mask[y * width + x] !== 0 && !inText(x, y)) drawnPixels.push([x, y]);
+    for (let x = 0; x < width; x++) {
+      if (mask[y * width + x] !== 0 && (!inText(x, y) || truthMask[y * width + x] !== 0)) drawnPixels.push([x, y]);
+    }
   }
   const stride = Math.max(1, Math.ceil(drawnPixels.length / MAX_PRECISION_SAMPLES));
   let sampled = 0;
