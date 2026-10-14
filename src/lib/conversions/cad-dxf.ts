@@ -296,14 +296,9 @@ function sampleEllipse(centre: Point, major: Point, ratio: number, start: number
   return points;
 }
 
-/** Index of the knot span of `t`: the largest k in [degree, count - 1] (or [0, count - 1] for an unclamped knot vector) with knots[k] <= t. */
+/** Index of the knot span of `t`: the largest k in [degree, count - 1] with knots[k] <= t. */
 function knotSpan(knots: number[], degree: number, count: number, t: number): number {
   if (t >= knots[count]) return count - 1;
-  if (knots[degree] > knots[0]) {
-    let k = 0;
-    while (k < count && knots[k] <= t) k++;
-    return Math.max(0, k - 1);
-  }
   let k = degree;
   while (k < count - 1 && t >= knots[k + 1]) k++;
   return k;
@@ -315,7 +310,7 @@ function nurbsPoint(degree: number, knots: number[], control: Point[], weights: 
   // The three work arrays are reused between points: the recurrence writes every value it later reads.
   basis[0] = 1;
   for (let j = 1; j <= degree; j++) {
-    left[j] = t - knots[Math.max(0, span + 1 - j)];
+    left[j] = t - knots[span + 1 - j];
     right[j] = knots[span + j] - t;
     let saved = 0;
     for (let r = 0; r < j; r++) {
@@ -330,7 +325,7 @@ function nurbsPoint(degree: number, knots: number[], control: Point[], weights: 
   let y = 0;
   let w = 0;
   for (let j = 0; j <= degree; j++) {
-    const index = (span - degree + j + control.length) % control.length;
+    const index = span - degree + j;
     const weighted = basis[j] * weights[index];
     x += weighted * control[index][0];
     y += weighted * control[index][1];
@@ -360,8 +355,8 @@ function sampleSpline(record: GroupRecord): Point[] {
   const weights = control.map((_, i) => (stated.length === control.length && stated[i] > 0 ? stated[i] : 1));
   const spans = control.length - degree;
   const steps = Math.min(MAX_SAMPLED_POINTS_PER_CURVE, spans * SPLINE_SAMPLES_PER_SPAN);
-  const from = knots[0];
-  const to = knots[knots.length - 1];
+  const from = knots[degree];
+  const to = knots[control.length];
   const basis = new Float64Array(degree + 1);
   const left = new Float64Array(degree + 1);
   const right = new Float64Array(degree + 1);
@@ -397,6 +392,20 @@ function readLayers(sections: { section: string; records: GroupRecord[] }[]): La
   return { hidden };
 }
 
+function readStyles(sections: { section: string; records: GroupRecord[] }[]): ReadonlyMap<string, number> {
+  const styles = new Map<string, number>();
+  for (const section of sections) {
+    if (section.section !== 'TABLES') continue;
+    for (const record of section.records) {
+      if (record.values[0] !== 'STYLE') continue;
+      const name = first(record, 2);
+      const width = num(record, 41, 1);
+      if (name !== undefined && width > 0) styles.set(name.toUpperCase(), width);
+    }
+  }
+  return styles;
+}
+
 /** A POLYLINE record is followed by its VERTEX records and SEQEND; they are read as one entity. */
 function groupPolylines(records: GroupRecord[]): Array<{ record: GroupRecord; vertices: GroupRecord[] }> {
   const entities: Array<{ record: GroupRecord; vertices: GroupRecord[] }> = [];
@@ -419,10 +428,16 @@ function groupPolylines(records: GroupRecord[]): Array<{ record: GroupRecord; ve
 }
 
 function decodeSpecialChars(raw: string): string {
-  return raw
-    .replace(/%%[dD]/g, '°')
-    .replace(/%%[pP]/g, '±')
-    .replace(/%%[cC]/g, 'Ø');
+  return raw.replace(/%%(%|[dDpPcCuUoOkK]|\d{3})/g, (full, token: string) => {
+    const lower = token.toLowerCase();
+    if (lower === '%') return '%';
+    if (lower === 'd') return '°';
+    if (lower === 'p') return '±';
+    if (lower === 'c') return 'Ø';
+    if (lower === 'u' || lower === 'o' || lower === 'k') return '';
+    const code = Number.parseInt(token, 10);
+    return code >= 32 && code <= 255 ? String.fromCharCode(code) : full;
+  });
 }
 
 function stripMtext(raw: string): string[] {
@@ -438,9 +453,24 @@ function stripMtext(raw: string): string[] {
   return text.split('\n').map((line) => line.trimEnd());
 }
 
-function wrapMtextLines(lines: string[], height: number, boxWidth: number): string[] {
-  if (!(boxWidth > 0) || !(height > 0)) return lines;
-  const maxChars = Math.max(1, Math.floor(boxWidth / (height * TEXT_WIDTH_PER_CHARACTER)));
+function mtextColumnWidth(record: GroupRecord): number | undefined {
+  if (first(record, 48) !== undefined) {
+    const direct = num(record, 48, 0);
+    if (direct > 0) return direct;
+  }
+  for (let i = 0; i + 1 < record.codes.length; i++) {
+    if (record.codes[i] === 1070 && Math.trunc(finite(record.values[i], 1070)) === 48 && record.codes[i + 1] === 1040) {
+      const xdataWidth = finite(record.values[i + 1], 1040);
+      if (xdataWidth > 0) return xdataWidth;
+    }
+  }
+  return undefined;
+}
+
+function wrapMtextLines(lines: string[], height: number, boxWidth: number, widthFactor = 1): string[] {
+  const charWidth = height * TEXT_WIDTH_PER_CHARACTER * widthFactor;
+  if (!(boxWidth > 0) || !(charWidth > 0)) return lines;
+  const maxChars = Math.max(1, Math.floor(boxWidth / charWidth));
   const out: string[] = [];
   for (const line of lines) {
     if (line.length <= maxChars || !line.includes(' ')) {
@@ -462,6 +492,20 @@ function wrapMtextLines(lines: string[], height: number, boxWidth: number): stri
   return out;
 }
 
+function textBaselineOffset(vertical: number, horizontal: number, height: number): number {
+  if (vertical === 1) return height / 3;
+  if (vertical === 2) return -height / 2;
+  if (vertical === 3) return -height;
+  if (horizontal === 4) return -height / 3;
+  return 0;
+}
+
+function mtextVerticalLift(attachment: number, blockHeight: number): number {
+  if (attachment >= 7 && attachment <= 9) return blockHeight;
+  if (attachment >= 4 && attachment <= 6) return blockHeight / 2;
+  return 0;
+}
+
 const FLIP_X: Affine = { a: -1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 /** Share of the text width that lies left of the anchor point. */
 const ANCHOR_SHARE: Readonly<Record<DxfText['anchor'], number>> = { start: 0, middle: 0.5, end: 1 };
@@ -477,7 +521,8 @@ class Builder {
 
   constructor(
     private readonly blocks: ReadonlyMap<string, Block>,
-    private readonly layers: Layers
+    private readonly layers: Layers,
+    private readonly styles: ReadonlyMap<string, number>
   ) {}
 
   /** Entities visited and block copies made, across every nested INSERT. */
@@ -503,24 +548,25 @@ class Builder {
   }
 
   entities(records: GroupRecord[], t: Affine, depth: number): void {
-    const linkedHandles = new Set<string>();
+    const columnWidths = new Map<string, number>();
     for (const record of records) {
       if (record.values[0] !== 'MTEXT') continue;
+      const colWidth = mtextColumnWidth(record);
+      if (colWidth === undefined) continue;
+      const handle = first(record, 5);
+      if (handle !== undefined) columnWidths.set(handle, colWidth);
       for (let i = 0; i < record.codes.length; i++) {
-        if (record.codes[i] === 1005) linkedHandles.add(record.values[i]);
+        if (record.codes[i] === 1005) columnWidths.set(record.values[i], colWidth);
       }
     }
     for (const { record, vertices } of groupPolylines(records)) {
       this.charge(1);
-      if (record.values[0] === 'MTEXT' && linkedHandles.size > 0) {
-        const handle = first(record, 5);
-        if (handle !== undefined && linkedHandles.has(handle)) continue;
-      }
-      this.entity(record, vertices, t, depth);
+      const colWidth = record.values[0] === 'MTEXT' ? columnWidths.get(first(record, 5) ?? '') : undefined;
+      this.entity(record, vertices, t, depth, colWidth);
     }
   }
 
-  private entity(record: GroupRecord, vertices: GroupRecord[], t: Affine, depth: number): void {
+  private entity(record: GroupRecord, vertices: GroupRecord[], t: Affine, depth: number, columnWidth?: number): void {
     const type = record.values[0];
     if (this.layers.hidden.has(first(record, 8) ?? '0')) return;
     const at: Point = [num(record, 10, 0), num(record, 20, 0)];
@@ -591,7 +637,7 @@ class Builder {
         this.text(record, t);
         return;
       case 'MTEXT':
-        this.mtext(record, at, t);
+        this.mtext(record, at, t, columnWidth);
         return;
       default:
     }
@@ -634,26 +680,33 @@ class Builder {
     }
   }
 
+  private styleWidthFactor(record: GroupRecord): number {
+    const styleName = first(record, 7);
+    if (styleName === undefined) return 1;
+    return this.styles.get(styleName.toUpperCase()) ?? 1;
+  }
+
   private text(record: GroupRecord, t: Affine): void {
     const raw = first(record, 1);
     const height = num(record, 40, 0);
     if (raw === undefined || raw.trim() === '' || !(height > 0)) return;
     const value = decodeSpecialChars(raw);
+    if (value.trim() === '') return;
     const horizontal = Math.trunc(num(record, 72, 0));
     const vertical = horizontal > 2 ? 0 : Math.trunc(num(record, 73, 0));
     const p1: Point = [num(record, 10, 0), num(record, 20, 0)];
     const hasSecond = first(record, 11) !== undefined;
     const p2: Point = hasSecond ? [num(record, 11, p1[0]), num(record, 21, p1[1])] : p1;
-    const widthFactor = num(record, 41, 1);
+    const widthFactor = num(record, 41, this.styleWidthFactor(record));
     if ((horizontal === 3 || horizontal === 5) && hasSecond) {
       const dx = p2[0] - p1[0];
       const dy = p2[1] - p1[1];
       const spanLength = Math.hypot(dx, dy);
       const origin: Point = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
-      const rotation = turnDegrees(num(record, 50, 0)) * DEGREES;
+      const rotation = spanLength > 0 ? Math.atan2(dy, dx) : turnDegrees(num(record, 50, 0)) * DEGREES;
       const effectiveHeight =
-        spanLength > 0
-          ? Math.min(height, spanLength / Math.max(1, value.length * TEXT_WIDTH_PER_CHARACTER))
+        horizontal === 3 && spanLength > 0
+          ? Math.min(height, spanLength / Math.max(1, value.length * TEXT_WIDTH_PER_CHARACTER * widthFactor))
           : height;
       this.place(
         {
@@ -673,8 +726,7 @@ class Builder {
     const aligned = (horizontal !== 0 || vertical !== 0) && hasSecond;
     const alignPoint: Point = aligned ? p2 : p1;
     const rotation = turnDegrees(num(record, 50, 0)) * DEGREES;
-    const baselineOffset =
-      vertical === 1 ? height / 3 : vertical === 2 ? -height / 2 : vertical === 3 ? -height : horizontal === 4 ? -height / 3 : 0;
+    const baselineOffset = textBaselineOffset(vertical, horizontal, height);
     const origin: Point =
       baselineOffset === 0
         ? alignPoint
@@ -693,13 +745,32 @@ class Builder {
     );
   }
 
-  private mtext(record: GroupRecord, at: Point, t: Affine): void {
+  private mtext(record: GroupRecord, at: Point, t: Affine, columnWidth?: number): void {
     const height = num(record, 40, 0);
     const raw = `${record.values.filter((_, i) => record.codes[i] === 3).join('')}${first(record, 1) ?? ''}`;
     if (!(height > 0) || raw.trim() === '') return;
+    const stripped = stripMtext(raw);
+    if (stripped.every((line) => line.length === 0)) return;
     const direction = first(record, 11) === undefined ? turnDegrees(num(record, 50, 0)) * DEGREES : Math.atan2(num(record, 21, 0), num(record, 11, 1));
-    const lines = wrapMtextLines(stripMtext(raw), height, num(record, 41, 0));
-    this.place({ at, height, rotation: direction, lines, anchor: MTEXT_ANCHORS[Math.trunc(num(record, 71, 1))] ?? 'start', hangsFromTop: true }, t);
+    const widthFactor = this.styleWidthFactor(record);
+    const boxWidth = columnWidth ?? mtextColumnWidth(record) ?? num(record, 41, 0);
+    const lines = wrapMtextLines(stripped, height, boxWidth, widthFactor);
+    const attachment = Math.trunc(num(record, 71, 1));
+    const blockHeight = height * (1 + (lines.length - 1) * MTEXT_LINE_PITCH);
+    const lift = mtextVerticalLift(attachment, blockHeight);
+    const origin: Point = lift === 0 ? at : [at[0] - lift * Math.sin(direction), at[1] + lift * Math.cos(direction)];
+    this.place(
+      {
+        at: origin,
+        height,
+        rotation: direction,
+        lines,
+        anchor: MTEXT_ANCHORS[attachment] ?? 'start',
+        hangsFromTop: true,
+        ...(widthFactor !== 1 ? { widthFactor } : {}),
+      },
+      t
+    );
   }
 
   private place(text: DxfText, t: Affine): void {
@@ -780,11 +851,7 @@ function growByStroke(bounds: Bounds, stroke: DxfStroke): void {
 function extentsOf(strokes: DxfStroke[], texts: DxfText[]): DxfDrawing['extents'] {
   const bounds: Bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, finite: true };
   for (const stroke of strokes) growByStroke(bounds, stroke);
-  if (strokes.length === 0) {
-    for (const text of texts) for (const corner of textBox(text)) grow(bounds, corner[0], corner[1]);
-  } else {
-    for (const text of texts) for (const [x, y] of textBox(text)) if (!(Number.isFinite(x) && Number.isFinite(y))) bounds.finite = false;
-  }
+  for (const text of texts) for (const corner of textBox(text)) grow(bounds, corner[0], corner[1]);
   if (!bounds.finite) {
     throw new CadGeometryError('The DXF has coordinates that overflow once its blocks and scales are applied, so it has no drawable extent');
   }
@@ -814,7 +881,7 @@ export function parseDxfDrawing(dxf: string): DxfDrawing {
       }
     }
   }
-  const builder = new Builder(blocks, readLayers(sections));
+  const builder = new Builder(blocks, readLayers(sections), readStyles(sections));
   for (const section of sections) {
     if (section.section === 'ENTITIES') builder.entities(section.records, IDENTITY, 0);
   }
@@ -921,7 +988,7 @@ export function dxfSvgDeclaredSize(drawing: DxfDrawing): { width: number; height
   return { width: Number(exact(pixelWidth)), height: Number(exact(pixelHeight)) };
 }
 
-function textElements(texts: DxfText[], extents: DxfDrawing['extents'], clampToExtents: boolean, map: (p: Point) => Point, fmt: (value: number) => string): string[] {
+function textElements(texts: DxfText[], map: (p: Point) => Point, fmt: (value: number) => string): string[] {
   const elements: string[] = [];
   for (const text of texts) {
     const anchor = text.anchor === 'start' ? '' : ` text-anchor="${text.anchor}"`;
@@ -934,19 +1001,11 @@ function textElements(texts: DxfText[], extents: DxfDrawing['extents'], clampToE
         ? Math.min(text.height, text.fitLength / (longestLine * TEXT_WIDTH_PER_CHARACTER))
         : text.height;
     const size = exact(effectiveHeight);
-    const share = ANCHOR_SHARE[text.anchor];
     text.lines.forEach((line, index) => {
       const drop = (text.hangsFromTop ? 1 : 0) * effectiveHeight + index * effectiveHeight * MTEXT_LINE_PITCH;
       // The drop runs down the rotated text, which is (sin, cos) in y-up units and (sin, -cos) after the page's y flip.
-      const rawX = x + drop * sin;
-      const rawY = y + drop * cos;
-      const lineWidth = line.length * effectiveHeight * TEXT_WIDTH_PER_CHARACTER;
-      const minPx = extents.minX + share * lineWidth;
-      const maxPx = Math.max(minPx, extents.maxX - (1 - share) * lineWidth);
-      const minPy = -extents.maxY + effectiveHeight;
-      const maxPy = Math.max(minPy, -extents.minY);
-      const px = clampToExtents ? Math.min(maxPx, Math.max(minPx, rawX)) : rawX;
-      const py = clampToExtents ? Math.min(maxPy, Math.max(minPy, rawY)) : rawY;
+      const px = x + drop * sin;
+      const py = y + drop * cos;
       const rotate = text.rotation === 0 ? '' : ` transform="rotate(${exact(-text.rotation / DEGREES)} ${fmt(px)} ${fmt(py)})"`;
       elements.push(`<text x="${fmt(px)}" y="${fmt(py)}" fill="${TEXT_COLOUR}" font-family="${FONT_FAMILY}" font-size="${size}"${anchor}${rotate}>${escapeXml(line)}</text>`);
     });
@@ -994,7 +1053,7 @@ export function dxfDrawingToSvg(drawing: DxfDrawing, title: string): string {
     ${elements.join(ELEMENT_SEPARATOR)}
   </g>
   <g>
-    ${textElements(drawing.texts, extents, drawing.strokes.length > 0, flip, fmt).join(ELEMENT_SEPARATOR)}
+    ${textElements(drawing.texts, flip, fmt).join(ELEMENT_SEPARATOR)}
   </g>
 </svg>`;
 }
@@ -1007,7 +1066,6 @@ export async function renderDxfDrawingToPdf(drawing: DxfDrawing): Promise<Buffer
   const margin = PDF_LONG_SIDE_PT * MARGIN_SHARE;
   const page: [number, number] = [width * scale + 2 * margin, height * scale + 2 * margin];
   const map = (p: Point): Point => [margin + (p[0] - extents.minX) * scale, margin + (extents.maxY - p[1]) * scale];
-  const clampToExtents = drawing.strokes.length > 0;
   return new Promise<Buffer>((resolve, reject) => {
     const doc = new PDFDocument({ size: page, margin: 0 });
     const chunks: Buffer[] = [];
@@ -1049,22 +1107,17 @@ export async function renderDxfDrawingToPdf(drawing: DxfDrawing): Promise<Buffer
           ? Math.min(text.height, text.fitLength / (longestLine * TEXT_WIDTH_PER_CHARACTER))
           : text.height;
       const size = effectiveHeight * scale;
+      const pdfAngle = text.fitLength !== undefined ? 0 : -text.rotation / DEGREES;
       text.lines.forEach((line, index) => {
         const drop = ((text.hangsFromTop ? 1 : 0) * effectiveHeight + index * effectiveHeight * MTEXT_LINE_PITCH) * scale;
         doc.save();
         doc.fillColor(TEXT_COLOUR).fontSize(size);
         const rawWidth = line === '' ? 0 : doc.widthOfString(line);
         const shift = ANCHOR_SHARE[text.anchor] * rawWidth;
-        const rawX = x + drop * Math.sin(text.rotation);
-        const rawY = y + drop * Math.cos(text.rotation);
-        const minTx = margin + shift;
-        const maxTx = Math.max(minTx, page[0] - margin - (rawWidth - shift));
-        const minTy = margin + size;
-        const maxTy = Math.max(minTy, page[1] - margin);
-        const tx = clampToExtents ? Math.min(maxTx, Math.max(minTx, rawX)) : rawX;
-        const ty = clampToExtents ? Math.min(maxTy, Math.max(minTy, rawY)) : rawY;
+        const tx = x + drop * Math.sin(text.rotation);
+        const ty = y + drop * Math.cos(text.rotation);
         doc.translate(tx, ty);
-        doc.rotate(-text.rotation / DEGREES);
+        if (pdfAngle !== 0) doc.rotate(pdfAngle);
         renderSafePdfText(doc, line, fontFallback.hasUnicodeFont, { lineBreak: false, baseline: 'alphabetic' }, -shift, 0);
         doc.restore();
       });

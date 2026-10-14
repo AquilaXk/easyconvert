@@ -18,6 +18,7 @@ export type Annotation =
   | { tag: 'json' }
   | { tag: 'bson' }
   | { tag: 'uuid' }
+  | { tag: 'float16' }
   | { tag: 'decimal'; scale: number; precision: number }
   | { tag: 'date' }
   | { tag: 'time'; unit: TimeUnit }
@@ -30,7 +31,7 @@ export type ValueKind = 'bool' | 'i32' | 'u32' | 'i64' | 'u64' | 'f32' | 'f64' |
 
 export interface ColumnReader {
   kind: ValueKind;
-  /** Fixed byte width for FIXED_LEN_BYTE_ARRAY values; 0 means length-prefixed BYTE_ARRAY. */
+  /** Fixed byte width for FIXED_LEN_BYTE_ARRAY or INT96 values; 0 means length-prefixed BYTE_ARRAY. */
   width: number;
   map: ((raw: number | bigint | Buffer) => ColumnValue) | null;
 }
@@ -41,6 +42,20 @@ const SECONDS_PER_MINUTE = 60;
 const MILLIS_PER_SECOND = 1_000;
 const MICROS_PER_SECOND = 1_000_000;
 const NANOS_PER_SECOND = 1_000_000_000;
+const NANOS_PER_MILLI = 1_000_000n;
+const NANOS_PER_MICRO = 1_000n;
+const NANOS_PER_DAY = 86_400_000_000_000n;
+const JULIAN_EPOCH_DAY = 2_440_588n;
+const INT96_BYTES = 12;
+const INT96_JULIAN_DAY_OFFSET = 8;
+const FLOAT16_BYTES = 2;
+const FLOAT16_SIGN_MASK = 0x8000;
+const FLOAT16_EXP_SHIFT = 10;
+const FLOAT16_EXP_MASK = 0x1f;
+const FLOAT16_FRAC_MASK = 0x03ff;
+const FLOAT16_EXP_BIAS = 15;
+const FLOAT16_FRAC_SCALE = 1024;
+const FLOAT16_SUBNORMAL_SCALE = 2 ** -24;
 const FRACTION_DIGITS: Record<TimeUnit, number> = { millis: 3, micros: 6, nanos: 9 };
 const UNITS_PER_SECOND: Record<TimeUnit, number> = {
   millis: MILLIS_PER_SECOND,
@@ -62,7 +77,7 @@ const BYTE_SIGN_BIT = 0x80;
 const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
 const UINT64_MODULUS_BITS = 64;
-const REPLACEMENT_CHARACTER = '�';
+const REPLACEMENT_CHARACTER = '\ufffd';
 
 const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true });
 
@@ -123,6 +138,36 @@ export function formatTimestamp(value: bigint, unit: TimeUnit, adjustedToUtc: bo
   const secondOfDay = Number(seconds - days * BigInt(SECONDS_PER_DAY));
   const zone = adjustedToUtc ? 'Z' : '';
   return `${formatDate(Number(days))}T${formatClock(secondOfDay)}${formatFraction(fraction, unit)}${zone}`;
+}
+
+/** Legacy 12-byte INT96 timestamp: 8-byte little-endian nanoseconds-of-day followed by 4-byte Julian day. */
+export function formatInt96Timestamp(bytes: Buffer): string {
+  const nanosOfDay = bytes.readBigInt64LE(0);
+  const julianDay = BigInt(bytes.readInt32LE(INT96_JULIAN_DAY_OFFSET));
+  const totalNanos = (julianDay - JULIAN_EPOCH_DAY) * NANOS_PER_DAY + nanosOfDay;
+  if (totalNanos % NANOS_PER_MILLI === 0n) {
+    return formatTimestamp(totalNanos / NANOS_PER_MILLI, 'millis', true);
+  }
+  if (totalNanos % NANOS_PER_MICRO === 0n) {
+    return formatTimestamp(totalNanos / NANOS_PER_MICRO, 'micros', true);
+  }
+  return formatTimestamp(totalNanos, 'nanos', true);
+}
+
+/** IEEE 754 binary16 (little-endian 2-byte half-precision float) to IEEE 754 binary64 number. */
+export function decodeFloat16(bytes: Buffer): number {
+  const bits = bytes.readUInt16LE(0);
+  const sign = (bits & FLOAT16_SIGN_MASK) !== 0 ? -1 : 1;
+  const exp = (bits >> FLOAT16_EXP_SHIFT) & FLOAT16_EXP_MASK;
+  const frac = bits & FLOAT16_FRAC_MASK;
+  if (exp === 0) {
+    if (frac === 0) return sign < 0 ? -0 : 0;
+    return sign * (frac * FLOAT16_SUBNORMAL_SCALE);
+  }
+  if (exp === FLOAT16_EXP_MASK) {
+    return frac === 0 ? (sign < 0 ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY) : Number.NaN;
+  }
+  return sign * 2 ** (exp - FLOAT16_EXP_BIAS) * (1 + frac / FLOAT16_FRAC_SCALE);
 }
 
 /** Time of day from an exact integer count of `unit` since midnight. */
@@ -275,8 +320,10 @@ function resolveByteArray(column: string, annotation: Annotation, width: number)
       return bytesReader(width, (raw) => formatDecimal(signedBigEndian(raw as Buffer, column), annotation.scale));
     case 'uuid':
       return bytesReader(width, (raw) => uuidText(raw as Buffer));
+    case 'float16':
+      return bytesReader(width, (raw) => decodeFloat16(raw as Buffer));
     default:
-      return incompatibleOrUnsupported(column, ParquetType.BYTE_ARRAY, annotation);
+      return incompatibleOrUnsupported(column, width > 0 ? ParquetType.FIXED_LEN_BYTE_ARRAY : ParquetType.BYTE_ARRAY, annotation);
   }
 }
 
@@ -333,8 +380,8 @@ function resolveInt64(column: string, annotation: Annotation): ColumnReader {
 }
 
 /**
- * Chooses how a leaf's values are read. INT96 and annotations this engine cannot represent
- * throw ParquetUnsupportedError; an annotation that contradicts the physical type is malformed.
+ * Chooses how a leaf's values are read. Annotations this engine cannot represent throw
+ * ParquetUnsupportedError; an annotation that contradicts the physical type is malformed.
  */
 export function resolveColumnReader(
   column: string,
@@ -350,17 +397,22 @@ export function resolveColumnReader(
       return resolveInt32(column, annotation);
     case ParquetType.INT64:
       return resolveInt64(column, annotation);
+    case ParquetType.INT96:
+      if (annotation.tag !== 'none') return incompatibleOrUnsupported(column, type, annotation);
+      return bytesReader(INT96_BYTES, (raw) => formatInt96Timestamp(raw as Buffer));
     case ParquetType.FLOAT:
     case ParquetType.DOUBLE:
       if (annotation.tag !== 'none') return incompatibleOrUnsupported(column, type, annotation);
       return { kind: type === ParquetType.FLOAT ? 'f32' : 'f64', width: 0, map: null };
     case ParquetType.BYTE_ARRAY:
+      if (annotation.tag === 'float16') return incompatible(column, type, annotation);
       return resolveByteArray(column, annotation, 0);
     case ParquetType.FIXED_LEN_BYTE_ARRAY:
       if (typeLength < 1) {
         throw new ParquetFormatError(`Corrupted Parquet metadata: fixed-length column '${column}' has no type_length`);
       }
       if (annotation.tag === 'uuid' && typeLength !== UUID_BYTES) return incompatible(column, type, annotation);
+      if (annotation.tag === 'float16' && typeLength !== FLOAT16_BYTES) return incompatible(column, type, annotation);
       return resolveByteArray(column, annotation, typeLength);
     default:
       throw new ParquetUnsupportedError(`Unsupported Parquet physical type ${ParquetType[type] ?? type} in column '${column}'`);

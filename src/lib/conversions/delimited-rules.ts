@@ -4,10 +4,12 @@
  */
 
 /**
- * Cells a spreadsheet evaluates as a formula: a leading = + - @ TAB or CR. Plain numeric literals
- * (-5, +1.5e3) are values, not formulas, so they are left alone.
+ * Cells a spreadsheet evaluates as a formula: a leading = @ TAB or CR, or a single-line leading
+ * + or - expression that is neither a plain nor a thousands-grouped numeric literal (-5, +1.5e3,
+ * -566,000) and is not prose (-48 + 21 + ...).
  */
-export const FORMULA_TRIGGER = /^(?![+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$)[=+\-@\t\r]/;
+export const FORMULA_TRIGGER =
+  /^(?:[=@\t\r]|[+-](?!(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?(?:[eE][+-]?\d+)?$|\.\d+(?:[eE][+-]?\d+)?$)[^\s\r\n][^\r\n]*$)/;
 
 export const UTF8_BOM_CHAR = '﻿';
 

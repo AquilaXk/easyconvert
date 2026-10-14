@@ -97,6 +97,11 @@ def render(value):
         return stamp.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (stamp.microsecond // 1000)
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return bytes(value).decode("utf-8")
+        except UnicodeDecodeError:
+            return str(value)
     return str(value)
 
 
@@ -117,8 +122,13 @@ def read_truth(spec):
             header.extend(key for key in record if key not in header)
         return header, [[render(record.get(key)) for key in header] for record in records]
     if spec["kind"] == "parquet":
-        # A Parquet file that has no text twin: DuckDB reads it, and the outputs are read by pyarrow and DuckDB and by the text readers.
-        return read_parquet_duckdb(spec["file"])
+        # A Parquet file that has no text twin: DuckDB reads it (or pyarrow when the file uses an encoding DuckDB does not read), and the outputs are read by pyarrow and DuckDB and by the text readers.
+        import duckdb
+
+        try:
+            return read_parquet_duckdb(spec["file"])
+        except duckdb.Error:
+            return read_parquet_pyarrow(spec["file"])
     with open(spec["file"], encoding="utf-8") as handle:
         records = [json.loads(line) for line in handle if line.strip()]
     header = list(records[0])
@@ -338,6 +348,13 @@ def cad_entities(doc, space, depth=0):
             continue
         if kind in STROKE_TYPES or kind in TEXT_TYPES:
             yield entity
+            if kind == "MTEXT" and getattr(entity, "has_columns", False) and entity.columns and entity.columns.linked_columns:
+                col_width = getattr(entity.columns, "width", 0.0)
+                for col in entity.columns.linked_columns:
+                    if visible(doc, col):
+                        if col_width > 0:
+                            col.dxf.width = col_width
+                        yield col
         elif kind in ("INSERT", "DIMENSION") and depth < MAX_INSERT_DEPTH:
             try:
                 parts = list(entity.virtual_entities())
@@ -358,13 +375,31 @@ def cad_truth(args):
     doc, _auditor = recover.readfile(args["file"])
     entities = list(cad_entities(doc, doc.modelspace()))
     strokes_of = [entity for entity in entities if entity.dxftype() in STROKE_TYPES]
-    extent = bbox.extents(strokes_of, fast=True)
+    clamped_strokes, unclamped_polylines = [], []
+    for entity in strokes_of:
+        if entity.dxftype() == "SPLINE":
+            try:
+                bs = entity.construction_tool()
+                k = bs.knots()
+                if len(k) > bs.count and (k[bs.degree] > k[0] or k[bs.count] < k[-1]):
+                    steps = max(16, (bs.count - bs.degree) * 16)
+                    t0, t1 = k[bs.degree], k[bs.count]
+                    pts = [[round(p.x, 6), round(p.y, 6)] for p in (bs.point(t0 + (t1 - t0) * i / steps) for i in range(steps + 1))]
+                    if len(pts) >= 2:
+                        unclamped_polylines.append(pts)
+                    continue
+            except Exception:  # noqa: BLE001 - fall back to make_path if construction_tool fails
+                pass
+        clamped_strokes.append(entity)
+    extent = bbox.extents(clamped_strokes, fast=True)
+    for poly in unclamped_polylines:
+        extent.extend(poly)
     if not extent.has_data:
         raise ValueError("the drawing has no strokes")
     size = max(extent.size.x, extent.size.y)
     distance = max(size * FLATTEN_SHARE, 1e-9)
-    strokes, text_boxes, words = [], [], []
-    for entity in strokes_of:
+    strokes, text_boxes, words = list(unclamped_polylines), [], []
+    for entity in clamped_strokes:
         try:
             drawn = ezpath.make_path(entity)
         except Exception:  # noqa: BLE001 - an entity the library cannot turn into a path is not in the truth

@@ -1,4 +1,13 @@
+import { setOwn } from './data-json';
 import { decompressPage } from './parquet-codec';
+import {
+  decodeBitPackedLevels,
+  decodeBooleanRle,
+  decodeByteStreamSplit,
+  decodeDeltaBinaryPacked,
+  decodeDeltaByteArray,
+  decodeDeltaLengthByteArray,
+} from './parquet-encodings';
 import {
   CompressionCodec,
   Encoding,
@@ -23,6 +32,7 @@ import {
   annotationFromConverted,
   ColumnReader,
   ColumnValue,
+  exactInteger,
   resolveColumnReader,
   TimeUnit,
   unsignedInteger,
@@ -31,12 +41,14 @@ import { decodeRleHybrid } from './parquet-rle';
 import { CompactProtocolReader, ThriftType } from './parquet-thrift';
 
 /**
- * Parquet reader for flat (non-nested) tables: PLAIN and dictionary encodings, RLE/bit-packed
- * definition levels, v1 data pages, UNCOMPRESSED/SNAPPY/GZIP/ZSTD pages, any number of row groups.
+ * Parquet reader for flat (non-nested) tables: PLAIN, dictionary, DELTA_BINARY_PACKED,
+ * DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY, BYTE_STREAM_SPLIT, and RLE boolean encodings,
+ * RLE/bit-packed definition levels, v1 and v2 data pages, UNCOMPRESSED/SNAPPY/GZIP/ZSTD/LZ4_RAW
+ * pages, any number of row groups.
  *
  * Governing spec: Apache Parquet format (parquet.thrift, Encodings.md, LogicalTypes.md). Values keep
- * their exact meaning (see parquet-logical.ts); anything outside the supported scope (nested schemas,
- * v2 pages, INT96) throws a typed error rather than guessing.
+ * their exact meaning (see parquet-logical.ts); anything outside the supported scope (nested schemas)
+ * throws a typed error rather than guessing.
  *
  * Untrusted-input bounds: column chunks must lie inside the data section and not overlap, page
  * headers are scanned and charged against one decompression budget before any page is decompressed,
@@ -52,7 +64,6 @@ const WIDE_VALUE_BYTES = 8;
 const NARROW_VALUE_BYTES = 4;
 const MAX_DEFINITION_LEVEL = 1;
 const MAX_DICTIONARY_INDEX_BIT_WIDTH = 32;
-const PROTO_KEY = '__proto__';
 const UINT32_RANGE = 2 ** 32;
 
 /** SchemaElement / LogicalType / PageHeader field ids (parquet.thrift). */
@@ -75,7 +86,8 @@ const LOGICAL_INTEGER = 10;
 const LOGICAL_JSON = 12;
 const LOGICAL_BSON = 13;
 const LOGICAL_UUID = 14;
-const LOGICAL_NAMES: Record<number, string> = { 2: 'MAP', 3: 'LIST', 11: 'UNKNOWN', 15: 'FLOAT16' };
+const LOGICAL_FLOAT16 = 15;
+const LOGICAL_NAMES: Record<number, string> = { 2: 'MAP', 3: 'LIST', 11: 'UNKNOWN' };
 const TIME_UNIT_BY_FIELD: Record<number, TimeUnit> = { 1: 'millis', 2: 'micros', 3: 'nanos' };
 
 const DICTIONARY_DATA_ENCODINGS: ReadonlySet<number> = new Set([Encoding.PLAIN_DICTIONARY, Encoding.RLE_DICTIONARY]);
@@ -116,8 +128,13 @@ interface PageHeader {
   uncompressedSize: number;
   compressedSize: number;
   numValues: number;
+  numNulls: number;
+  numRows: number;
   encoding: number;
   definitionLevelEncoding: number;
+  definitionLevelsByteLength: number;
+  repetitionLevelsByteLength: number;
+  isCompressed: boolean;
   hasDataPageV2: boolean;
   headerEnd: number;
 }
@@ -177,6 +194,7 @@ function readLogicalType(reader: CompactProtocolReader): Annotation {
     else if (f.fieldId === LOGICAL_JSON) annotation = { tag: 'json' };
     else if (f.fieldId === LOGICAL_BSON) annotation = { tag: 'bson' };
     else if (f.fieldId === LOGICAL_UUID) annotation = { tag: 'uuid' };
+    else if (f.fieldId === LOGICAL_FLOAT16) annotation = { tag: 'float16' };
     else if (f.fieldId === LOGICAL_DATE) annotation = { tag: 'date' };
     else if (f.fieldId === LOGICAL_DECIMAL) annotation = readDecimalType(reader);
     else if (f.fieldId === LOGICAL_TIME || f.fieldId === LOGICAL_TIMESTAMP) {
@@ -399,9 +417,14 @@ function readPageHeader(buffer: Buffer, offset: number, column: string): PageHea
     uncompressedSize: 0,
     compressedSize: 0,
     numValues: 0,
+    numNulls: 0,
+    numRows: 0,
     encoding: Encoding.PLAIN,
     // A data page that does not declare levels with RLE stores none (see decodeDataPage).
     definitionLevelEncoding: Encoding.PLAIN,
+    definitionLevelsByteLength: 0,
+    repetitionLevelsByteLength: 0,
+    isCompressed: true,
     hasDataPageV2: false,
     headerEnd: 0,
   };
@@ -431,8 +454,24 @@ function readPageHeader(buffer: Buffer, offset: number, column: string): PageHea
         else reader.skip(sub.type);
       }
       reader.structEnd();
+    } else if (pf.fieldId === 8) {
+      header.hasDataPageV2 = true;
+      header.isCompressed = true;
+      reader.structBegin();
+      for (;;) {
+        const sub = reader.readFieldBegin();
+        if (sub.isStop) break;
+        if (sub.fieldId === 1) header.numValues = reader.readZigzag32();
+        else if (sub.fieldId === 2) header.numNulls = reader.readZigzag32();
+        else if (sub.fieldId === 3) header.numRows = reader.readZigzag32();
+        else if (sub.fieldId === 4) header.encoding = reader.readZigzag32();
+        else if (sub.fieldId === 5) header.definitionLevelsByteLength = reader.readZigzag32();
+        else if (sub.fieldId === 6) header.repetitionLevelsByteLength = reader.readZigzag32();
+        else if (sub.fieldId === 7) header.isCompressed = sub.type === ThriftType.BOOL_TRUE;
+        else reader.skip(sub.type);
+      }
+      reader.structEnd();
     } else {
-      if (pf.fieldId === 8) header.hasDataPageV2 = true;
       reader.skip(pf.type);
     }
   }
@@ -456,8 +495,8 @@ function scanChunkPages(buffer: Buffer, plan: ChunkPlan, decompressBudget: { rem
   let dataValues = 0;
   while (offset < end) {
     const header = readPageHeader(buffer, offset, leaf.name);
-    if (header.hasDataPageV2 || header.type === PageType.DATA_PAGE_V2) {
-      throw new ParquetUnsupportedError(`Unsupported Parquet data page version 2 in column '${leaf.name}'`);
+    if ((header.type === PageType.DATA_PAGE_V2) !== header.hasDataPageV2) {
+      throw new ParquetFormatError(`Corrupted Parquet file: mismatched data_page_header_v2 in column '${leaf.name}'`);
     }
     if (header.compressedSize < 0 || header.uncompressedSize < 0 || header.numValues < 0) {
       throw new ParquetFormatError(`Corrupted Parquet file: negative page size in column '${leaf.name}'`);
@@ -470,6 +509,20 @@ function scanChunkPages(buffer: Buffer, plan: ChunkPlan, decompressBudget: { rem
         `Corrupted Parquet file: page of ${header.uncompressedSize} bytes exceeds the ${PARQUET_MAX_PAGE_BYTES} byte page limit in column '${leaf.name}'`
       );
     }
+    if (header.type === PageType.DATA_PAGE_V2) {
+      const levelBytes = header.definitionLevelsByteLength + header.repetitionLevelsByteLength;
+      if (
+        header.numNulls < 0 ||
+        header.numNulls > header.numValues ||
+        header.numRows < 0 ||
+        header.definitionLevelsByteLength < 0 ||
+        header.repetitionLevelsByteLength < 0 ||
+        levelBytes > header.compressedSize ||
+        levelBytes > header.uncompressedSize
+      ) {
+        throw new ParquetFormatError(`Corrupted Parquet file: invalid v2 page header in column '${leaf.name}'`);
+      }
+    }
     const bodyEnd = header.headerEnd + header.compressedSize;
     if (bodyEnd > end) {
       throw new ParquetFormatError(`Corrupted Parquet file: page of column '${leaf.name}' extends past its column chunk`);
@@ -480,7 +533,7 @@ function scanChunkPages(buffer: Buffer, plan: ChunkPlan, decompressBudget: { rem
         `Corrupted Parquet file: pages would decompress to more than ${PARQUET_MAX_TOTAL_DECOMPRESSED_BYTES} bytes in total`
       );
     }
-    if (header.type === PageType.DATA_PAGE) {
+    if (header.type === PageType.DATA_PAGE || header.type === PageType.DATA_PAGE_V2) {
       if (header.numValues === 0) {
         throw new ParquetFormatError(`Corrupted Parquet file: data page with no values in column '${leaf.name}'`);
       }
@@ -504,7 +557,7 @@ interface Dictionary {
 
 function minPlainBytes(type: ParquetType, width: number, count: number): number {
   if (type === ParquetType.BOOLEAN) return Math.ceil(count / BITS_PER_BYTE);
-  if (type === ParquetType.FIXED_LEN_BYTE_ARRAY) return count * width;
+  if (type === ParquetType.FIXED_LEN_BYTE_ARRAY || type === ParquetType.INT96) return count * width;
   if (type === ParquetType.BYTE_ARRAY || type === ParquetType.INT32 || type === ParquetType.FLOAT) {
     return count * NARROW_VALUE_BYTES;
   }
@@ -526,7 +579,7 @@ function readPlainValues(
 ): { values: ColumnValue[]; end: number; stringBytes: number } {
   const reader = leaf.reader;
   const type = leaf.type;
-  const fixedWidth = type === ParquetType.FIXED_LEN_BYTE_ARRAY ? leaf.typeLength : 0;
+  const fixedWidth = reader.width;
   // Every value occupies at least this many bytes, so a hostile count cannot force a large allocation.
   if (start + minPlainBytes(type, fixedWidth, count) > page.length) {
     throw new ParquetFormatError(`Corrupted Parquet file: truncated ${ParquetType[type].toLowerCase()} data in column '${leaf.name}'`);
@@ -628,6 +681,107 @@ function decodeDictionaryIndices(
   return present;
 }
 
+function decodeEncodedValues(
+  page: Buffer,
+  pos: number,
+  nonNull: number,
+  encoding: number,
+  leaf: LeafColumn,
+  dictionary: Dictionary | null,
+  budget: DecodeBudget
+): ColumnValue[] {
+  if (DICTIONARY_DATA_ENCODINGS.has(encoding)) {
+    if (!dictionary) {
+      throw new ParquetFormatError(`Corrupted Parquet file: dictionary-encoded page without a dictionary in column '${leaf.name}'`);
+    }
+    return decodeDictionaryIndices(page, pos, nonNull, dictionary, leaf, budget);
+  }
+  if (encoding === Encoding.PLAIN) {
+    const plain = readPlainValues(page, pos, leaf, nonNull);
+    chargeValueBytes(budget, plain.stringBytes);
+    return plain.values;
+  }
+  if (encoding === Encoding.RLE) {
+    if (leaf.type !== ParquetType.BOOLEAN) {
+      throw new ParquetUnsupportedError(`Unsupported Parquet RLE value encoding on ${ParquetType[leaf.type]} column '${leaf.name}'`);
+    }
+    return decodeBooleanRle(page, pos, nonNull, leaf.name).values;
+  }
+  if (encoding === Encoding.DELTA_BINARY_PACKED) {
+    if (leaf.type !== ParquetType.INT32 && leaf.type !== ParquetType.INT64) {
+      throw new ParquetFormatError(`Corrupted Parquet file: DELTA_BINARY_PACKED on ${ParquetType[leaf.type]} column '${leaf.name}'`);
+    }
+    const bitWidthLimit = leaf.type === ParquetType.INT32 ? 32 : 64;
+    const decoded = decodeDeltaBinaryPacked(page, pos, nonNull, bitWidthLimit, leaf.name);
+    const present = new Array<ColumnValue>(nonNull);
+    const map = leaf.reader.map;
+    const kind = leaf.reader.kind;
+    for (let i = 0; i < nonNull; i++) {
+      const raw = decoded.values[i];
+      if (kind === 'i32') {
+        const n = Number(raw);
+        present[i] = map ? map(n) : n;
+      } else if (kind === 'u32') {
+        present[i] = Number(BigInt.asUintN(32, raw));
+      } else if (kind === 'u64') {
+        present[i] = unsignedInteger(raw);
+      } else {
+        present[i] = map ? map(raw) : exactInteger(raw);
+      }
+    }
+    return present;
+  }
+  if (encoding === Encoding.DELTA_LENGTH_BYTE_ARRAY) {
+    if (leaf.type !== ParquetType.BYTE_ARRAY) {
+      throw new ParquetFormatError(`Corrupted Parquet file: DELTA_LENGTH_BYTE_ARRAY on ${ParquetType[leaf.type]} column '${leaf.name}'`);
+    }
+    const decoded = decodeDeltaLengthByteArray(page, pos, nonNull, leaf.name, budget.valueBytes);
+    chargeValueBytes(budget, decoded.totalBytes);
+    const map = leaf.reader.map as (raw: Buffer) => ColumnValue;
+    const present = new Array<ColumnValue>(nonNull);
+    for (let i = 0; i < nonNull; i++) present[i] = map(decoded.slices[i]);
+    return present;
+  }
+  if (encoding === Encoding.DELTA_BYTE_ARRAY) {
+    if (leaf.type !== ParquetType.BYTE_ARRAY && leaf.type !== ParquetType.FIXED_LEN_BYTE_ARRAY) {
+      throw new ParquetFormatError(`Corrupted Parquet file: DELTA_BYTE_ARRAY on ${ParquetType[leaf.type]} column '${leaf.name}'`);
+    }
+    const decoded = decodeDeltaByteArray(page, pos, nonNull, leaf.name, budget.valueBytes, leaf.reader.width);
+    chargeValueBytes(budget, decoded.totalBytes);
+    const map = leaf.reader.map as (raw: Buffer) => ColumnValue;
+    const present = new Array<ColumnValue>(nonNull);
+    for (let i = 0; i < nonNull; i++) present[i] = map(decoded.slices[i]);
+    return present;
+  }
+  if (encoding === Encoding.BYTE_STREAM_SPLIT) {
+    let elemWidth = 0;
+    if (leaf.type === ParquetType.FLOAT || leaf.type === ParquetType.INT32) elemWidth = NARROW_VALUE_BYTES;
+    else if (leaf.type === ParquetType.DOUBLE || leaf.type === ParquetType.INT64) elemWidth = WIDE_VALUE_BYTES;
+    else if (leaf.type === ParquetType.FIXED_LEN_BYTE_ARRAY) elemWidth = leaf.typeLength;
+    else {
+      throw new ParquetFormatError(`Corrupted Parquet file: BYTE_STREAM_SPLIT on ${ParquetType[leaf.type]} column '${leaf.name}'`);
+    }
+    const transposed = decodeByteStreamSplit(page, pos, nonNull, elemWidth, leaf.name);
+    const plain = readPlainValues(transposed.buffer, 0, leaf, nonNull);
+    chargeValueBytes(budget, plain.stringBytes);
+    return plain.values;
+  }
+  throw new ParquetUnsupportedError(`Unsupported Parquet value encoding ${encoding} in column '${leaf.name}'`);
+}
+
+function assembleNulls(levels: Uint8Array | null, present: ColumnValue[], count: number, column: string): ColumnValue[] {
+  if (!levels) return present;
+  const out = new Array<ColumnValue>(count);
+  let next = 0;
+  for (let i = 0; i < count; i++) {
+    if (levels[i] > MAX_DEFINITION_LEVEL) {
+      throw new ParquetFormatError(`Corrupted Parquet file: definition level ${levels[i]} out of range in column '${column}'`);
+    }
+    out[i] = levels[i] === 1 ? present[next++] : null;
+  }
+  return out;
+}
+
 function decodeDataPage(
   page: Buffer,
   header: PageHeader,
@@ -644,22 +798,26 @@ function decodeDataPage(
   // wrote no level bytes, so every row holds a value.
   const legacyLayout = optional && header.definitionLevelEncoding === Encoding.PLAIN;
   if (optional && !legacyLayout) {
-    if (header.definitionLevelEncoding !== Encoding.RLE) {
+    if (header.definitionLevelEncoding === Encoding.RLE) {
+      if (page.length < BYTE_ARRAY_LENGTH_PREFIX_BYTES) {
+        throw new ParquetFormatError(`Corrupted Parquet file: truncated definition levels in column '${leaf.name}'`);
+      }
+      const levelBytes = page.readUInt32LE(0);
+      const levelEnd = BYTE_ARRAY_LENGTH_PREFIX_BYTES + levelBytes;
+      if (levelEnd > page.length) {
+        throw new ParquetFormatError(`Corrupted Parquet file: definition levels exceed page bounds in column '${leaf.name}'`);
+      }
+      levels = new Uint8Array(count);
+      decodeRleHybrid(page, BYTE_ARRAY_LENGTH_PREFIX_BYTES, levelEnd, MAX_DEFINITION_LEVEL, count, levels);
+      pos = levelEnd;
+    } else if (header.definitionLevelEncoding === Encoding.BIT_PACKED) {
+      levels = new Uint8Array(count);
+      pos = decodeBitPackedLevels(page, 0, MAX_DEFINITION_LEVEL, count, levels, leaf.name);
+    } else {
       throw new ParquetUnsupportedError(
         `Unsupported Parquet definition level encoding ${header.definitionLevelEncoding} in column '${leaf.name}'`
       );
     }
-    if (page.length < BYTE_ARRAY_LENGTH_PREFIX_BYTES) {
-      throw new ParquetFormatError(`Corrupted Parquet file: truncated definition levels in column '${leaf.name}'`);
-    }
-    const levelBytes = page.readUInt32LE(0);
-    const levelEnd = BYTE_ARRAY_LENGTH_PREFIX_BYTES + levelBytes;
-    if (levelEnd > page.length) {
-      throw new ParquetFormatError(`Corrupted Parquet file: definition levels exceed page bounds in column '${leaf.name}'`);
-    }
-    levels = new Uint8Array(count);
-    decodeRleHybrid(page, BYTE_ARRAY_LENGTH_PREFIX_BYTES, levelEnd, MAX_DEFINITION_LEVEL, count, levels);
-    pos = levelEnd;
   }
 
   let nonNull = count;
@@ -673,25 +831,72 @@ function decodeDataPage(
     }
   }
 
-  let present: ColumnValue[];
-  if (DICTIONARY_DATA_ENCODINGS.has(header.encoding)) {
-    if (!dictionary) {
-      throw new ParquetFormatError(`Corrupted Parquet file: dictionary-encoded page without a dictionary in column '${leaf.name}'`);
+  const present = decodeEncodedValues(page, pos, nonNull, header.encoding, leaf, dictionary, budget);
+  return assembleNulls(levels, present, count, leaf.name);
+}
+
+function decodeDataPageV2(
+  rawBody: Buffer,
+  codec: CompressionCodec,
+  header: PageHeader,
+  leaf: LeafColumn,
+  dictionary: Dictionary | null,
+  budget: DecodeBudget
+): ColumnValue[] {
+  const count = header.numValues;
+  chargeValueBytes(budget, count * PARQUET_CELL_BYTES);
+  const repBytes = header.repetitionLevelsByteLength;
+  const defBytes = header.definitionLevelsByteLength;
+  const levelBytes = repBytes + defBytes;
+  const optional = leaf.repetition === FieldRepetitionType.OPTIONAL;
+
+  let levels: Uint8Array | null = null;
+  if (optional) {
+    if (defBytes > 0) {
+      levels = new Uint8Array(count);
+      decodeRleHybrid(rawBody, repBytes, levelBytes, MAX_DEFINITION_LEVEL, count, levels);
+    } else if (header.numNulls === count) {
+      levels = new Uint8Array(count);
+    } else if (header.numNulls !== 0) {
+      throw new ParquetFormatError(`Corrupted Parquet file: missing v2 definition levels in column '${leaf.name}'`);
     }
-    present = decodeDictionaryIndices(page, pos, nonNull, dictionary, leaf, budget);
-  } else if (header.encoding === Encoding.PLAIN) {
-    const plain = readPlainValues(page, pos, leaf, nonNull);
-    chargeValueBytes(budget, plain.stringBytes);
-    present = plain.values;
-  } else {
-    throw new ParquetUnsupportedError(`Unsupported Parquet value encoding ${header.encoding} in column '${leaf.name}'`);
+  } else if (header.numNulls !== 0) {
+    throw new ParquetFormatError(`Corrupted Parquet file: required column '${leaf.name}' declares ${header.numNulls} nulls`);
   }
 
-  if (!levels) return present;
-  const out = new Array<ColumnValue>(count);
-  let next = 0;
-  for (let i = 0; i < count; i++) out[i] = levels[i] === 1 ? present[next++] : null;
-  return out;
+  let nonNull = count - header.numNulls;
+  if (levels) {
+    let countedPresent = 0;
+    for (let i = 0; i < count; i++) {
+      if (levels[i] > MAX_DEFINITION_LEVEL) {
+        throw new ParquetFormatError(`Corrupted Parquet file: definition level ${levels[i]} out of range in column '${leaf.name}'`);
+      }
+      countedPresent += levels[i];
+    }
+    if (countedPresent !== nonNull) {
+      throw new ParquetFormatError(
+        `Corrupted Parquet file: v2 page header declares ${header.numNulls} nulls but levels contain ${count - countedPresent} in column '${leaf.name}'`
+      );
+    }
+    nonNull = countedPresent;
+  }
+
+  const compressedValues = rawBody.subarray(levelBytes);
+  const uncompressedValuesBytes = header.uncompressedSize - levelBytes;
+  let valuesPage: Buffer;
+  if (header.isCompressed && codec !== CompressionCodec.UNCOMPRESSED && uncompressedValuesBytes > 0) {
+    valuesPage = decompressPage(codec, compressedValues, uncompressedValuesBytes);
+  } else {
+    if (compressedValues.length !== uncompressedValuesBytes) {
+      throw new ParquetFormatError(
+        `Corrupted Parquet file: uncompressed v2 page body of ${compressedValues.length} bytes does not match declared ${uncompressedValuesBytes} bytes in column '${leaf.name}'`
+      );
+    }
+    valuesPage = compressedValues;
+  }
+
+  const present = decodeEncodedValues(valuesPage, 0, nonNull, header.encoding, leaf, dictionary, budget);
+  return assembleNulls(levels, present, count, leaf.name);
 }
 
 function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): ColumnValue[] {
@@ -701,9 +906,10 @@ function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): Col
   for (const page of plan.pages) {
     const { header } = page;
     if (header.type === PageType.INDEX_PAGE) continue;
-    const body = decompressPage(chunk.codec, buffer.subarray(page.bodyStart, page.bodyEnd), header.uncompressedSize);
+    const rawSlice = buffer.subarray(page.bodyStart, page.bodyEnd);
 
     if (header.type === PageType.DICTIONARY_PAGE) {
+      const body = decompressPage(chunk.codec, rawSlice, header.uncompressedSize);
       if (header.encoding !== Encoding.PLAIN && header.encoding !== Encoding.PLAIN_DICTIONARY) {
         throw new ParquetUnsupportedError(`Unsupported Parquet dictionary encoding ${header.encoding} in column '${leaf.name}'`);
       }
@@ -719,11 +925,18 @@ function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): Col
       dictionary = { values: plain.values, bytes };
       continue;
     }
-    if (header.type !== PageType.DATA_PAGE) {
-      throw new ParquetUnsupportedError(`Unsupported Parquet page type ${header.type} in column '${leaf.name}'`);
+    if (header.type === PageType.DATA_PAGE) {
+      const body = decompressPage(chunk.codec, rawSlice, header.uncompressedSize);
+      const pageValues = decodeDataPage(body, header, leaf, dictionary, budget);
+      for (let i = 0; i < pageValues.length; i++) values.push(pageValues[i]);
+      continue;
     }
-    const pageValues = decodeDataPage(body, header, leaf, dictionary, budget);
-    for (let i = 0; i < pageValues.length; i++) values.push(pageValues[i]);
+    if (header.type === PageType.DATA_PAGE_V2) {
+      const pageValues = decodeDataPageV2(rawSlice, chunk.codec, header, leaf, dictionary, budget);
+      for (let i = 0; i < pageValues.length; i++) values.push(pageValues[i]);
+      continue;
+    }
+    throw new ParquetUnsupportedError(`Unsupported Parquet page type ${header.type} in column '${leaf.name}'`);
   }
   if (values.length !== rows) {
     throw new ParquetFormatError(`Corrupted Parquet file: column '${leaf.name}' ends before all rows are present`);
@@ -853,16 +1066,17 @@ function decodeParquetUnguarded(buffer: Buffer): Record<string, unknown>[] {
 
   const names = meta.leaves.map((leaf) => leaf.name).filter((name) => columns.has(name));
   const columnValues = names.map((name) => columns.get(name) as ColumnValue[]);
+  const needsSetOwn = names.some((n) => n === '__proto__' || (n.charCodeAt(0) >= 0x30 && n.charCodeAt(0) <= 0x39));
   const records: Record<string, unknown>[] = new Array<Record<string, unknown>>(meta.numRows);
   for (let r = 0; r < meta.numRows; r++) {
-    const row: Record<string, unknown> = {};
-    for (let c = 0; c < names.length; c++) {
-      const value = columnValues[c][r] ?? null;
-      if (names[c] === PROTO_KEY) {
-        // A column named __proto__ must stay a data property, never rewrite the row's prototype.
-        Object.defineProperty(row, PROTO_KEY, { value, enumerable: true, writable: true, configurable: true });
-      } else {
-        row[names[c]] = value;
+    const row: Record<string, ColumnValue> = {};
+    if (needsSetOwn) {
+      for (let c = 0; c < names.length; c++) {
+        setOwn(row, names[c], columnValues[c][r] ?? null);
+      }
+    } else {
+      for (let c = 0; c < names.length; c++) {
+        row[names[c]] = columnValues[c][r] ?? null;
       }
     }
     records[r] = row;

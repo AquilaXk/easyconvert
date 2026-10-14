@@ -140,7 +140,12 @@ export const QUICK_PUBLIC_SUBSET: Readonly<Record<string, readonly string[]>> = 
     'font-notocoloremoji-flags.ttf->woff',
     'font-notocoloremoji-flags.ttf->woff2',
   ],
-  cad: ['cad-openscad-export.dxf->svg', 'cad-circles-ellipses-arcs.dxf->pdf', 'cad-blocks.dxf->png'],
+  cad: [
+    'cad-openscad-export.dxf->svg',
+    'cad-circles-ellipses-arcs.dxf->pdf',
+    'cad-blocks.dxf->png',
+    ...['cad-entities.dxf', 'cad-floorplan.dxf', 'cad-text-alignments.dxf', 'cad-text-fonts.dxf', 'cad-columns-r2007.dxf'].flatMap((sample) => ['svg', 'pdf', 'png'].map((target) => `${sample}->${target}`)),
+  ],
   raw: ['raw-canon-g1.crw->png'],
   vector: [
     'vec-path-M-C-S.svg->png',

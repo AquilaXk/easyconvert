@@ -57,6 +57,10 @@ Quality evidence
 17. [Parity gate: quality and speed against reference tools](#17-parity-gate-quality-and-speed-against-reference-tools)
 18. [Public sample sets as evidence](#18-public-sample-sets-as-evidence)
 
+Tabular data
+
+26. [Tabular data fidelity and Parquet encodings](#26-tabular-data-fidelity-and-parquet-encodings)
+
 ---
 
 ## 1. AVIF chroma and bit depth
@@ -265,13 +269,13 @@ Quality evidence
 
 - **Status**: Implemented for DXF (#727, #744). DWG is decided (#728).
 - **Decision**:
-  - DXF is read in-process. It covers lines, arcs, circles, ellipses, clamped and unclamped B-splines, polylines with bulges, blocks with nesting, arrays and negative-Z OCS extrusion, dimensions, and single-line and multi-line text (including horizontal/vertical alignments, `%%d`/`%%p`/`%%c` character codes, and linked multi-column continuation records). Degenerate block insertions with a zero scale factor are skipped after accounting for their visit budget.
-  - Output is one vector page fitted to the stroke extents of the drawing (falling back to text extents when a drawing contains text only), with text positions clamped into the drawing extents when strokes are present.
+  - DXF is read in-process. It covers lines, arcs, circles, ellipses, clamped and unclamped B-splines (sampled over their valid Cox-de Boor domain `[knots[degree], knots[control.length]]`), polylines with bulges, blocks with nesting, arrays and negative-Z OCS extrusion, dimensions, and single-line and multi-line text (including horizontal/vertical alignments, `Aligned`/`Fit` baseline orientation and width scaling, `STYLE` width factors, `%%` control codes, and linked multi-column `MTEXT` records wrapped to single-column width). Degenerate block insertions with a zero scale factor are skipped after accounting for their visit budget.
+  - Output is one vector page fitted to the drawing extents (both strokes and text boxes), with every text line placed at its true drawing coordinates.
   - Expansion is bounded by one budget for the whole drawing; a drawing over it fails with 422.
   - DWG is converted to DXF by an open-source reader run as a separate program.
 - **Why**:
-  - Fidelity: dropping entity types, misplacing aligned text, ignoring negative-Z block extrusion, or failing on unclamped B-spline knot vectors gives visibly wrong or rejected drawings.
-  - Fitting the page to the stroke extents keeps wide text runs from stretching the aspect ratio of the rendered drawing.
+  - Fidelity: dropping entity types, misplacing aligned or multi-column text, ignoring negative-Z block extrusion, or extrapolating unclamped B-spline knot vectors outside their domain gives visibly wrong drawings.
+  - Fitting the page to the drawing extents matches what CAD exporters produce.
   - The budget stops a small file from expanding into millions of strokes.
 - **Trade-offs**: drawings beyond the budget are refused. The DWG reader does not handle every vendor version.
 - **Alternatives rejected**:
@@ -526,3 +530,27 @@ Quality evidence
   - **Calling `.withIccProfile('srgb')` on a `rgb16` pipeline**: triggers the double ICC transform through Display P3 in the native image library.
 - **Verified by**: `tests/icc-srgb.test.ts` and the `raw` quality and speed parity suites across Canon, Nikon, Sony, Olympus, Panasonic, Pentax, Fujifilm X-Trans, and DNG samples.
 - **Revisit when**: the upstream image library stops routing `rgb16` inputs with an explicit output `icc_transform` through an intermediate Display P3 working profile.
+
+## 26. Tabular data fidelity and Parquet encodings
+
+- **Status**: Implemented (issue #743).
+- **Decision**:
+  - **Parquet reader coverage**: the in-process Parquet reader decodes `DATA_PAGE` and `DATA_PAGE_V2` headers, `PLAIN`, `RLE_DICTIONARY`/`PLAIN_DICTIONARY`, `RLE`, `BIT_PACKED`, `DELTA_BINARY_PACKED`, `DELTA_LENGTH_BYTE_ARRAY`, `DELTA_BYTE_ARRAY`, and `BYTE_STREAM_SPLIT` encodings, `UNCOMPRESSED`, `SNAPPY`, `GZIP`, `ZSTD`, and `LZ4_RAW` page codecs, and `INT96` (Julian day + nanosecond time of day to ISO-8601 UTC timestamp text) and `FLOAT16` (IEEE 754 binary16) logical/physical types.
+  - **Parquet writer adaptive compression and columnar fast path**: when the caller does not specify a compression codec, the general and direct delimited-byte Parquet writers use `SNAPPY` by default, switching individual non-dictionary `BYTE_ARRAY` columns whose values are predominantly numeric digits and punctuation (`0-9`, `.`, `-`, `+`, `,`) to `GZIP` when the raw column byte budget is at least 128 KB or the table has at least 32 columns.
+  - **JSON and YAML key order**: the lossless JSON reader records the source key order of every object whose keys include non-negative integer indices (`"0"`, `"1970"`, etc.) in a side table, and JSON, YAML, TOML, HTML, and tabular flattening iterate keys in that recorded source order instead of ECMAScript's ascending array-index order.
+  - **CSV and TSV formula escaping**: a cell beginning with `=`, `@`, `\t`, or `\r` is always prefixed with `'`; a cell beginning with `+` or `-` is prefixed with `'` only when it is a single-line non-prose expression that is neither a plain number (`-5`, `+1.5e3`) nor a thousands-grouped number (`-566,000`).
+- **Why**:
+  - Columnar engines emit `DATA_PAGE_V2`, delta encodings, `BYTE_STREAM_SPLIT`, `LZ4_RAW`, `INT96`, and `FLOAT16` in standard datasets; refusing them leaves common analytical files unreadable.
+  - CSV inputs store numeric columns as `BYTE_ARRAY` text unless schema inference is requested. On dense decimal text or wide numeric tables, byte-aligned `SNAPPY` cannot exploit sub-byte digit entropy, whereas `GZIP`'s Huffman coding shrinks those pages past the reference columnar writer's size while keeping `SNAPPY` speed on general text.
+  - V8 reorders non-negative integer property keys ahead of string keys on ordinary JS objects, which scrambled year-keyed columns (`"1976"`..`"2099"`) when flattening nested JSON to CSV or Parquet.
+  - Prefixing `'` to negative thousands-grouped numbers (`"-566,000"`) or multi-line prose starting with `"- "` corrupts legitimate data values that no spreadsheet evaluates as a formula.
+- **Trade-offs**:
+  - Compressing wide or large non-dictionary numeric-text `BYTE_ARRAY` columns with `GZIP` trades a small CPU cost on those columns for 35 to 45 % smaller Parquet output, while the direct byte-scanner CSV-to-Parquet fast path avoids per-cell string allocations and runs faster than the reference writer.
+  - Recording key order in a `WeakMap` adds a small per-object array only when an object mixes or reorders array-index keys.
+- **Alternatives rejected**:
+  - **Coercing CSV numeric strings to `DOUBLE` or `INT64` in the Parquet writer**: loses formatting fidelity (leading zeros, trailing decimals) and diverges from string-preserving tabular conversion.
+  - **Using `ZSTD` or `GZIP` unconditionally for all Parquet columns**: slows down general text and dictionary-encoded columns where `SNAPPY` already meets size parity.
+  - **Disabling `+`/`-` formula escaping altogether**: would leave single-token spreadsheet formulas such as `-2+3` or `+A1` unescaped.
+- **Verified by**: `tests/parquet-writer-conformance.test.ts`, `tests/parquet-logical-types.test.ts`, `tests/parquet-codec.test.ts`, `tests/data-csv-encoding.test.ts`, `tests/data-json-yaml-lossless.test.ts`, `tests/data-columnar-fast-paths.test.ts`, and the `data` parity rows.
+- **Revisit when**: callers gain an explicit schema-inference option for CSV-to-Parquet, or spreadsheet formula rules are configured per target dialect.
+

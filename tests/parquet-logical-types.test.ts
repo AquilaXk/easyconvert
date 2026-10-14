@@ -156,20 +156,54 @@ describe('logical types hand-assembled over narrow physical types', () => {
     expect(() => decodeParquet(file)).toThrow(/invalid UTF-8/);
   });
 
-  it('keeps INT96 and unknown annotations as typed unsupported errors', () => {
-    const int96 = singleColumn(PHYSICAL_INT96, {}, Buffer.alloc(12), 1);
+  it('reads INT96 timestamps (nanosecond time of day + Julian day) as ISO-8601 UTC strings', () => {
+    const buf = Buffer.alloc(36);
+    buf.writeBigInt64LE(0n, 0);
+    buf.writeInt32LE(2_440_588, 8);
+    buf.writeBigInt64LE(45_296_123_456_789n, 12);
+    buf.writeInt32LE(2_460_437, 20);
+    buf.writeBigInt64LE(86_399_999_999_999n, 24);
+    buf.writeInt32LE(2_440_587, 32);
+    const int96 = singleColumn(PHYSICAL_INT96, {}, buf, 3);
+    expect(decodeParquet(int96).map((r) => r.v)).toEqual([
+      '1970-01-01T00:00:00Z',
+      '2024-05-06T12:34:56.123456789Z',
+      '1969-12-31T23:59:59.999999999Z',
+    ]);
+  });
+
+  it('reads FLOAT16 logical type on FIXED_LEN_BYTE_ARRAY(2) as IEEE-754 numbers', () => {
+    const values = Buffer.alloc(12);
+    // 0x0000 -> +0, 0x8000 -> -0, 0x3c00 -> 1.0, 0xc100 -> -2.5, 0x0001 -> 2^-24, 0x7c00 -> +Infinity
+    [0x0000, 0x8000, 0x3c00, 0xc100, 0x0001, 0x7c00].forEach((bits, i) => values.writeUInt16LE(bits, i * 2));
+    const base = singleColumn(PHYSICAL_FIXED, { typeLength: 2 }, values, 6);
+    // Replace the leaf SchemaElement end-of-struct after name "v" (0x18 0x01 0x76 0x00) with field 10 LogicalType.FLOAT16 (0x6c 0xfc 0x00 0x00 0x00)
+    const leafTail = Buffer.from([0x18, 0x01, 0x76, 0x00]);
+    const idx = base.lastIndexOf(leafTail);
+    expect(idx).toBeGreaterThan(0);
+    const withFloat16 = Buffer.concat([
+      base.subarray(0, idx),
+      Buffer.from([0x18, 0x01, 0x76, 0x6c, 0xfc, 0x00, 0x00, 0x00]),
+      base.subarray(idx + leafTail.length),
+    ]);
+    withFloat16.writeUInt32LE(base.readUInt32LE(base.length - 8) + 4, withFloat16.length - 8);
+    const decoded = decodeParquet(withFloat16).map((r) => r.v);
+    expect(Object.is(decoded[0], 0)).toBe(true);
+    expect(Object.is(decoded[1], -0)).toBe(true);
+    expect(decoded.slice(2)).toEqual([1, -2.5, 2 ** -24, Number.POSITIVE_INFINITY]);
+  });
+
+  it('keeps unknown annotations as typed unsupported errors', () => {
+    const interval = singleColumn(PHYSICAL_FIXED, { convertedType: CONVERTED_INTERVAL, typeLength: 12 }, Buffer.alloc(12), 1);
     let caught: unknown;
     try {
-      decodeParquet(int96);
+      decodeParquet(interval);
     } catch (error) {
       caught = error;
     }
     expect(caught).toBeInstanceOf(ParquetUnsupportedError);
     expect(caught).toBeInstanceOf(ConversionFailedError);
-    expect((caught as Error).message).toMatch(/INT96/);
-
-    const interval = singleColumn(PHYSICAL_FIXED, { convertedType: CONVERTED_INTERVAL, typeLength: 12 }, Buffer.alloc(12), 1);
-    expect(() => decodeParquet(interval)).toThrow(ParquetUnsupportedError);
+    expect((caught as Error).message).toMatch(/INTERVAL/);
   });
 
   it('rejects an annotation that contradicts the physical type as malformed', () => {

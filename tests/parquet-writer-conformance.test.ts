@@ -25,6 +25,14 @@ import {
   ParquetValueError,
 } from '../src/lib/conversions/parquet';
 import { convertData } from '../src/lib/conversions/data';
+import {
+  decodeBitPackedLevels,
+  decodeBooleanRle,
+  decodeByteStreamSplit,
+  decodeDeltaBinaryPacked,
+  decodeDeltaByteArray,
+  decodeDeltaLengthByteArray,
+} from '../src/lib/conversions/parquet-encodings';
 import { decodeRleHybrid, ByteSink, encodeRleHybrid } from '../src/lib/conversions/parquet-rle';
 import { decompressZstd } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
@@ -504,6 +512,7 @@ describe('Parquet writer conformance (issue 526)', () => {
       ['plain-gzip.parquet', 'PLAIN, GZIP, nulls'],
       ['plain-uncompressed.parquet', 'PLAIN, UNCOMPRESSED, nulls'],
       ['dictionary-zstd.parquet', 'dictionary pages, ZSTD, nulls'],
+      ['data-page-v2.parquet', 'DATA_PAGE_V2, dictionary pages, RLE booleans, SNAPPY, nulls'],
     ];
     for (const [file, label] of readable) {
       it(`${file} (${label}) decodes to the hand-authored rows`, () => {
@@ -525,12 +534,6 @@ describe('Parquet writer conformance (issue 526)', () => {
       expect(decompressZstd(frame).equals(payload)).toBe(true);
     });
 
-    it('rejects v2 data pages instead of misreading them', () => {
-      const file = fs.readFileSync(path.join(FIXTURE_DIR, 'data-page-v2.parquet'));
-      expect(() => decodeParquet(file)).toThrow(ParquetFormatError);
-      expect(() => decodeParquet(file)).toThrow(/data page version 2/);
-    });
-
     it('rejects nested schemas instead of misreading them', () => {
       const file = fs.readFileSync(path.join(FIXTURE_DIR, 'nested-struct.parquet'));
       expect(() => decodeParquet(file)).toThrow(/nested/);
@@ -547,7 +550,7 @@ describe('Parquet writer conformance (issue 526)', () => {
   });
 
   describe('decoding our own output', () => {
-    for (const spec of WRITE_CODECS.filter((c) => c.available)) {
+    for (const spec of [...WRITE_CODECS.filter((c) => c.available), { name: 'GZIP', codec: CompressionCodec.GZIP, reference: 'none' as const, available: true }]) {
       it(`round-trips edge rows with ${spec.name} (nulls preserved, no coercion)`, () => {
         const rows = decodeParquet(encodeParquet(EDGE_ROWS, { codec: spec.codec }));
         expect(rows.length).toBe(EDGE_ROWS.length);
@@ -559,6 +562,88 @@ describe('Parquet writer conformance (issue 526)', () => {
         }
       });
     }
+
+    oracleTest('pyarrow reads GZIP output and adaptive numeric-text GZIP columns', ['python3'], () => {
+      const gzipRead = pyarrowRead(encodeParquet(EDGE_ROWS, { codec: CompressionCodec.GZIP }));
+      expect(gzipRead.rowGroups[0].columns.every((c) => c.codec === 'GZIP')).toBe(true);
+      for (const name of ['id', 'dbl', 'txt', 'flag', 'only_null']) {
+        expectColumnEquals(gzipRead.columns[name], expectedColumn(EDGE_ROWS, name));
+      }
+
+      const rand = mulberry32(743);
+      const numericTextRows: Row[] = Array.from({ length: 8000 }, (_, i) => ({
+        tag: `g${i % 8}`,
+        val: `${(rand() * 1e7 - 5e6).toFixed(6)}`,
+      }));
+      const adaptiveRead = pyarrowRead(encodeParquet(numericTextRows));
+      const byPath = Object.fromEntries(adaptiveRead.rowGroups[0].columns.map((c) => [c.path, c]));
+      expect(byPath.tag.codec).toBe('SNAPPY');
+      expect(byPath.val.codec).toBe('GZIP');
+      expectColumnEquals(adaptiveRead.columns.val, expectedColumn(numericTextRows, 'val'));
+    });
+
+    it('decodes DELTA_BINARY_PACKED, DELTA_LENGTH_BYTE_ARRAY, DELTA_BYTE_ARRAY, BYTE_STREAM_SPLIT, RLE booleans, and BIT_PACKED levels', () => {
+      // DELTA_BINARY_PACKED: blockSize=128, miniblocks=4, totalCount=5, firstValue=10 (zigzag 20 = 0x14),
+      // minDelta=-2 (zigzag 3 = 0x03), bitWidths=[2, 0, 0, 0], packed relative deltas [0, 3, 1, 2] -> deltas [-2, 1, -1, 0]
+      // values: [10, 8, 9, 8, 8]
+      const deltaBlock = Buffer.concat([
+        Buffer.from([0x80, 0x01, 0x04, 0x05, 0x14, 0x03, 0x02, 0x00, 0x00, 0x00]),
+        // 32 values at bitWidth 2 = 8 bytes; first 4 values: 0, 3, 1, 2 -> 0 | (3<<2) | (1<<4) | (2<<6) = 0x9c
+        Buffer.from([0x9c, 0, 0, 0, 0, 0, 0, 0]),
+      ]);
+      const deltaRes = decodeDeltaBinaryPacked(deltaBlock, 0, 5, 32, 'col');
+      expect(Array.from(deltaRes.values, (v) => Number(v))).toEqual([10, 8, 9, 8, 8]);
+      expect(deltaRes.end).toBe(deltaBlock.length);
+
+      // DELTA_LENGTH_BYTE_ARRAY: 3 strings of lengths [3, 1, 2] -> blockSize=128, miniblocks=4, totalCount=3, first=3 (zigzag 6),
+      // minDelta=-2 (zigzag 3), bitWidths=[2,0,0,0], relative deltas [0, 3] -> deltas [-2, 1] -> lengths [3, 1, 2]
+      const dlba = Buffer.concat([
+        Buffer.from([0x80, 0x01, 0x04, 0x03, 0x06, 0x03, 0x02, 0x00, 0x00, 0x00]),
+        Buffer.from([0x0c, 0, 0, 0, 0, 0, 0, 0]),
+        Buffer.from('abcdef', 'utf-8'),
+      ]);
+      const dlbaRes = decodeDeltaLengthByteArray(dlba, 0, 3, 'col', 1024);
+      expect(dlbaRes.slices.map((b) => b.toString('utf-8'))).toEqual(['abc', 'd', 'ef']);
+
+      // DELTA_BYTE_ARRAY: prefix lengths [0, 2, 1] and suffix strings ["abc", "de", "fg"] -> ["abc", "abde", "afg"]
+      const prefixes = Buffer.concat([
+        Buffer.from([0x80, 0x01, 0x04, 0x03, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00]),
+        Buffer.from([0x03, 0, 0, 0, 0, 0, 0, 0]),
+      ]);
+      const suffixes = Buffer.concat([
+        Buffer.from([0x80, 0x01, 0x04, 0x03, 0x06, 0x01, 0x01, 0x00, 0x00, 0x00]),
+        Buffer.from([0x02, 0, 0, 0]),
+        Buffer.from('abcdefg', 'utf-8'),
+      ]);
+      const dba = Buffer.concat([prefixes, suffixes]);
+      const dbaRes = decodeDeltaByteArray(dba, 0, 3, 'col', 1024, 0);
+      expect(dbaRes.slices.map((b) => b.toString('utf-8'))).toEqual(['abc', 'abde', 'afg']);
+
+      // BYTE_STREAM_SPLIT: 2 INT32 values: 0x04030201 (67305985) and 0x08070605 (134678021)
+      const bss = Buffer.from([0x01, 0x05, 0x02, 0x06, 0x03, 0x07, 0x04, 0x08]);
+      const bssRes = decodeByteStreamSplit(bss, 0, 2, 4, 'col');
+      expect([bssRes.buffer.readInt32LE(0), bssRes.buffer.readInt32LE(4)]).toEqual([0x04030201, 0x08070605]);
+
+      // RLE booleans (4-byte length prefix + RLE hybrid stream)
+      const boolStream = Buffer.from([0x02, 0x00, 0x00, 0x00, 0x03, 0b00000101]);
+      expect(decodeBooleanRle(boolStream, 0, 4, 'col').values).toEqual([true, false, true, false]);
+
+      // BIT_PACKED levels (MSB-first): bitWidth 1, 4 values from 0b1010_0000 = 0xa0 -> [1, 0, 1, 0]
+      const bpLevels = new Uint8Array(4);
+      expect(decodeBitPackedLevels(Buffer.from([0xa0]), 0, 1, 4, bpLevels, 'col')).toBe(1);
+      expect(Array.from(bpLevels)).toEqual([1, 0, 1, 0]);
+
+      // Rejects a crafted delta header whose valuesPerMiniBlock * bw = 2^32 (blockSize=2^27, miniBlocks=1, bw=32)
+      const overflowHeader = Buffer.from([
+        0x80, 0x80, 0x80, 0x40, // blockSize = 134_217_728 (2^27)
+        0x01,                   // miniBlocks = 1
+        0x02,                   // totalCount = 2
+        0x00,                   // firstValue = 0
+        0x00,                   // minDelta = 0
+        0x20,                   // bitWidth = 32 -> miniBlockBytes = 536_870_912
+      ]);
+      expect(() => decodeDeltaBinaryPacked(overflowHeader, 0, 2, 32, 'col')).toThrow(ParquetFormatError);
+    });
 
     it('rejects a page whose compressed bytes are damaged', () => {
       const bytes = Buffer.from(encodeParquet(Array.from({ length: 50 }, (_, i) => ({ v: `value-${i}` }))));
