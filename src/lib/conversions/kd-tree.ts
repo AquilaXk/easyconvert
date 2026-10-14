@@ -168,31 +168,56 @@ export class KdTree3 {
       edge[d] = (hi - lo + 2 * margin) / cells;
       this.gridScale[d] = 1 / edge[d];
     }
+    const nearX2 = new Float64Array(cells * n);
+    const farX2 = new Float64Array(cells * n);
+    const nearY2 = new Float64Array(cells * n);
+    const farY2 = new Float64Array(cells * n);
+    const nearZ2 = new Float64Array(cells * n);
+    const farZ2 = new Float64Array(cells * n);
+    for (let cell = 0; cell < cells; cell += 1) {
+      const x0 = low[0] + cell * edge[0];
+      const y0 = low[1] + cell * edge[1];
+      const z0 = low[2] + cell * edge[2];
+      const x1 = x0 + edge[0];
+      const y1 = y0 + edge[1];
+      const z1 = z0 + edge[2];
+      const base = cell * n;
+      for (let i = 0; i < n; i += 1) {
+        const px = c[i * DIMENSIONS];
+        const py = c[i * DIMENSIONS + 1];
+        const pz = c[i * DIMENSIONS + 2];
+        const nx = intervalGap(px, x0, x1);
+        const ny = intervalGap(py, y0, y1);
+        const nz = intervalGap(pz, z0, z1);
+        nearX2[base + i] = nx * nx;
+        nearY2[base + i] = ny * ny;
+        nearZ2[base + i] = nz * nz;
+        const fx = Math.max(Math.abs(px - x0), Math.abs(px - x1));
+        const fy = Math.max(Math.abs(py - y0), Math.abs(py - y1));
+        const fz = Math.max(Math.abs(pz - z0), Math.abs(pz - z1));
+        farX2[base + i] = fx * fx;
+        farY2[base + i] = fy * fy;
+        farZ2[base + i] = fz * fz;
+      }
+    }
     const start = new Uint32Array(cells * cells * cells + 1);
     const lists: number[] = [];
     const nearest2 = new Float64Array(n);
     for (let cx = 0; cx < cells; cx += 1) {
+      const xBase = cx * n;
       for (let cy = 0; cy < cells; cy += 1) {
+        const yBase = cy * n;
         for (let cz = 0; cz < cells; cz += 1) {
-          const x0 = low[0] + cx * edge[0];
-          const y0 = low[1] + cy * edge[1];
-          const z0 = low[2] + cz * edge[2];
+          const zBase = cz * n;
           let limit = Infinity;
           for (let i = 0; i < n; i += 1) {
-            const px = c[i * DIMENSIONS];
-            const py = c[i * DIMENSIONS + 1];
-            const pz = c[i * DIMENSIONS + 2];
-            const nx = intervalGap(px, x0, x0 + edge[0]);
-            const ny = intervalGap(py, y0, y0 + edge[1]);
-            const nz = intervalGap(pz, z0, z0 + edge[2]);
-            nearest2[i] = nx * nx + ny * ny + nz * nz;
-            const fx = Math.max(Math.abs(px - x0), Math.abs(px - x0 - edge[0]));
-            const fy = Math.max(Math.abs(py - y0), Math.abs(py - y0 - edge[1]));
-            const fz = Math.max(Math.abs(pz - z0), Math.abs(pz - z0 - edge[2]));
-            const farthest = fx * fx + fy * fy + fz * fz;
-            if (farthest < limit) limit = farthest;
+            const near = nearX2[xBase + i] + nearY2[yBase + i] + nearZ2[zBase + i];
+            nearest2[i] = near;
+            const far = farX2[xBase + i] + farY2[yBase + i] + farZ2[zBase + i];
+            if (far < limit) limit = far;
           }
-          for (let i = 0; i < n; i += 1) if (nearest2[i] <= limit * (1 + GRID_BOUND_SLACK)) lists.push(i);
+          const bound = limit * (1 + GRID_BOUND_SLACK);
+          for (let i = 0; i < n; i += 1) if (nearest2[i] <= bound) lists.push(i);
           start[(cx * cells + cy) * cells + cz + 1] = lists.length;
         }
       }
@@ -248,6 +273,9 @@ export class KdTree3 {
     return bestIndex;
   }
 
+  /** Number of hinted queries seen so far; the O(N^2 log N) neighbour table is built once queries amortize it. */
+  private hintedQueries = 0;
+
   /**
    * Index of the point nearest to (x, y, z); ties go to the lower index. `hint` is a point to start from (any index,
    * for speed only), `otherHint` a second one. The squared distance is left in `lastDistance2`.
@@ -277,18 +305,21 @@ export class KdTree3 {
       }
     }
     if (hint >= 0 && hint < this.size && this.size <= NEIGHBOUR_TABLE_MAX_POINTS && this.size > 1) {
-      let start = hint;
-      if (otherHint >= 0 && otherHint < this.size && otherHint !== hint) {
-        // Of two guesses, start from the one nearer the query: the smaller its distance, the fewer neighbours to measure.
-        const ax = x - c[hint * DIMENSIONS];
-        const ay = y - c[hint * DIMENSIONS + 1];
-        const az = z - c[hint * DIMENSIONS + 2];
-        const bx = x - c[otherHint * DIMENSIONS];
-        const by = y - c[otherHint * DIMENSIONS + 1];
-        const bz = z - c[otherHint * DIMENSIONS + 2];
-        if (bx * bx + by * by + bz * bz < ax * ax + ay * ay + az * az) start = otherHint;
+      this.hintedQueries += 1;
+      if (this.neighbours !== null || otherHint >= 0 || this.hintedQueries >= this.size * 32) {
+        let start = hint;
+        if (otherHint >= 0 && otherHint < this.size && otherHint !== hint) {
+          // Of two guesses, start from the one nearer the query: the smaller its distance, the fewer neighbours to measure.
+          const ax = x - c[hint * DIMENSIONS];
+          const ay = y - c[hint * DIMENSIONS + 1];
+          const az = z - c[hint * DIMENSIONS + 2];
+          const bx = x - c[otherHint * DIMENSIONS];
+          const by = y - c[otherHint * DIMENSIONS + 1];
+          const bz = z - c[otherHint * DIMENSIONS + 2];
+          if (bx * bx + by * by + bz * bz < ax * ax + ay * ay + az * az) start = otherHint;
+        }
+        return this.nearestFromHint(x, y, z, start);
       }
-      return this.nearestFromHint(x, y, z, start);
     }
     const query = this.query;
     query[0] = x;

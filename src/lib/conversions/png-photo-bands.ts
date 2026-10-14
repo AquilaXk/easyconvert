@@ -101,8 +101,8 @@ export function combineAdler32(adler1: number, adler2: number, length2: number):
   return ((sum2 << 16) | sum1) >>> 0;
 }
 
-/** Rows of one picture filtered by the same filter type are cheapest for Sub, Up and Average; Paeth costs several times as much. */
-const PAETH_PENALTY = 1.015;
+/** Rows of one picture filtered by the same filter type are cheapest for Sub, Up and Average; Paeth is chosen when it saves at least 1%. */
+const PAETH_PENALTY = 1.01;
 
 /** |Paeth predictor error| inputs: the predictor of PNG (section 9.4) for left a, above b and above-left c. */
 function paethPredictor(a: number, b: number, c: number): number {
