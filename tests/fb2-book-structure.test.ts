@@ -152,6 +152,75 @@ describe('FB2 to PDF', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  oracleTest('converts FB2 books with bare ampersands in links and HTML-style lists and inline tags', ['pdftotext'], async () => {
+    const fb2 = Buffer.from(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description><title-info><book-title>Manual</book-title><lang>en</lang></title-info></description>
+  <body>
+    <section>
+      <title><p>Guide</p></title>
+      <p>See <a href="http://example.org/index.php?topic=10&st=20">forum thread</a> for details.<br/>Next line with <b>boldword</b> and <i>italicword</i> and <!--if-->longtap<!--else-->doubletap<!--endif-->.</p>
+      <ul>
+        <li>First bullet entry</li>
+        <ul>
+          <li>Nested subbullet entry</li>
+        </ul>
+        <li>Second bullet entry</li>
+      </ul>
+    </section>
+  </body>
+</FictionBook>`,
+      'utf-8'
+    );
+    const txt = (await convertFile(fb2, 'fb2', 'txt', {}, 'manual.fb2')).buffer.toString('utf-8');
+    expect(txt).toContain('forum thread');
+    expect(txt).toContain('boldword');
+    expect(txt).toContain('italicword');
+    expect(txt).toContain('First bullet entry');
+    expect(txt).toContain('Nested subbullet entry');
+    expect(txt).toContain('Second bullet entry');
+
+    const epub = await inspectEpub(await toEpub(fb2));
+    expect(epub.chapters.length).toBe(1);
+    const chapterHtml = epub.chapters.map((chapter) => chapter.html).join('\n');
+    expect(chapterHtml).toContain('First bullet entry');
+    expect(chapterHtml).toContain('Nested subbullet entry');
+    expect(chapterHtml).toContain('Second bullet entry');
+    expect(chapterHtml).toContain('longtap');
+    expect(chapterHtml).toContain('doubletap');
+    expect(chapterHtml).not.toContain('longtapdoubletap');
+
+    const pdf = (await convertFile(fb2, 'fb2', 'pdf', {}, 'manual.fb2')).buffer;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fb2-html-pdf-'));
+    try {
+      const file = path.join(dir, 'manual.pdf');
+      fs.writeFileSync(file, pdf);
+      const pdfText = execFileSync(requireOracleTool('pdftotext'), [file, '-'], { encoding: 'utf-8' });
+      expect(pdfText).toContain('First bullet entry');
+      expect(pdfText).toContain('Nested subbullet entry');
+      expect(pdfText).toContain('Second bullet entry');
+      expect(pdfText).toContain('boldword');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  oracleTest('preserves MathML equations and single-character token spacing in EPUB to PDF', ['pdftotext'], async () => {
+    const html = `<!DOCTYPE html><html><head><title>Algebra</title></head><body><h1>Linear Systems</h1><p><math xmlns="http://www.w3.org/1998/Math/MathML"><mtable><mtr><mtd><mn>2</mn>\n<mi>x</mi>\n<mo>+</mo>\n<mn>3</mn>\n<mi>y</mi>\n<mo>−</mo>\n<mn>4</mn>\n<mi>z</mi>\n<mo>=</mo>\n<mn>13</mn></mtd></mtr></mtable></math></p></body></html>`;
+    const epub = (await convertFile(Buffer.from(html, 'utf-8'), 'html', 'epub', {}, 'algebra.html')).buffer;
+    const pdf = (await convertFile(epub, 'epub', 'pdf', {}, 'algebra.epub')).buffer;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'epub-math-pdf-'));
+    try {
+      const file = path.join(dir, 'algebra.pdf');
+      fs.writeFileSync(file, pdf);
+      const tokens = execFileSync(requireOracleTool('pdftotext'), [file, '-'], { encoding: 'utf-8' }).trim().split(/\s+/);
+      expect(tokens).toEqual(expect.arrayContaining(['2', 'x', '+', '3', 'y', '4', 'z', '=', '13']));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe('FB2 input that is not a book', () => {
