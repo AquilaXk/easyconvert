@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib';
-import { convertFont, decodeSfnt, decodeWoff2, encodeWoff2, type ParsedFont } from '../src/lib/conversions/font';
+import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants, deflateSync, inflateSync } from 'node:zlib';
+import { convertFont, decodeSfnt, decodeWoff2, encodeWoff, encodeWoff2, type ParsedFont } from '../src/lib/conversions/font';
 import {
   WOFF2_BROTLI_MAX_QUALITY_BYTES,
   WOFF2_MAX_DECODED_BYTES,
@@ -578,3 +578,76 @@ describe('WOFF2 encoder: glyf edge cases', () => {
     }, Woff2LimitError);
   });
 });
+
+describe('WOFF 1.0 best compression and bitmap-only colour fonts', () => {
+  it('deflates WOFF 1.0 tables with level 9 and 3-byte LZ77 matching on 16-bit index/variation tables', () => {
+    const sfnt = fixture('dejavu-sans-latin.ttf');
+    const font = decodeSfnt(sfnt, 'dejavu');
+    const baseGpos = font.tables['GPOS'].data;
+    const largeGpos = Buffer.concat([baseGpos, baseGpos, baseGpos]);
+    font.tables['GPOS'] = { tag: 'GPOS', checkSum: 0, offset: 0, length: largeGpos.length, data: largeGpos };
+    // Add a gvar table with 3-byte repeating 16-bit delta records separated by varying 4th bytes.
+    const gvarData = Buffer.alloc(4096);
+    for (let i = 0; i < gvarData.length; i += 4) {
+      gvarData[i] = 0x12;
+      gvarData[i + 1] = 0x34;
+      gvarData[i + 2] = 0x56;
+      gvarData[i + 3] = (i >> 2) & 0xff;
+    }
+    font.tables['gvar'] = { tag: 'gvar', checkSum: 0, offset: 0, length: gvarData.length, data: gvarData };
+    const woff = encodeWoff(font);
+    const numTables = woff.readUInt16BE(12);
+    let gposChecked = false;
+    let gvarChecked = false;
+    for (let i = 0; i < numTables; i++) {
+      const entry = 44 + i * 20;
+      const tag = woff.toString('ascii', entry, entry + 4);
+      const offset = woff.readUInt32BE(entry + 4);
+      const compLength = woff.readUInt32BE(entry + 8);
+      const compSlice = woff.subarray(offset, offset + compLength);
+      if (tag === 'GPOS') {
+        const level6 = deflateSync(font.tables['GPOS'].data, { level: zlibConstants.Z_DEFAULT_COMPRESSION });
+        expect(compLength).toBeLessThan(level6.length);
+        expect(inflateSync(compSlice).equals(font.tables['GPOS'].data)).toBe(true);
+        gposChecked = true;
+      } else if (tag === 'gvar') {
+        expect(compLength).toBeLessThan(gvarData.length / 2);
+        expect(inflateSync(compSlice).equals(gvarData)).toBe(true);
+        gvarChecked = true;
+      }
+    }
+    expect(gposChecked).toBe(true);
+    expect(gvarChecked).toBe(true);
+  });
+
+  it('round-trips a CBDT/CBLC bitmap-only colour font from WOFF and WOFF2 to TTF with identical tables', async () => {
+    const tables = readSfntTables(fixture('dejavu-sans-latin.ttf'));
+    tables.delete('glyf');
+    tables.delete('loca');
+    const cbdt = Buffer.from('00030000' + '89504e470d0a1a0a0000000d49484452', 'hex');
+    const cblc = Buffer.from('00030000' + '000000010000003000000010', 'hex');
+    tables.set('CBDT', cbdt);
+    tables.set('CBLC', cblc);
+    const bitmapTtf = sfntFromTables(0x00010000, tables);
+
+    const woff = (await convertFont(bitmapTtf, 'ttf', 'woff', {}, 'emoji.ttf')).buffer;
+    const fromWoff = (await convertFont(woff, 'woff', 'ttf', {}, 'emoji.woff')).buffer;
+    expectSameTables(maskAdjustment(readSfntTables(fromWoff)), maskAdjustment(tables));
+
+    const woff2 = (await convertFont(bitmapTtf, 'ttf', 'woff2', {}, 'emoji.ttf')).buffer;
+    const fromWoff2 = readSfntTables((await convertFont(woff2, 'woff2', 'ttf', {}, 'emoji.woff2')).buffer);
+    const expectedFromWoff2 = maskAdjustment(tables);
+    const expectedHead = Buffer.from(expectedFromWoff2.get('head')!);
+    expectedHead.writeUInt16BE(expectedHead.readUInt16BE(HEAD_FLAGS_OFFSET) | HEAD_FLAGS_LOSSLESS_TRANSFORM, HEAD_FLAGS_OFFSET);
+    expectedFromWoff2.set('head', expectedHead);
+    expectSameTables(maskAdjustment(fromWoff2), expectedFromWoff2);
+
+    // A truncated or zero-strike CBDT/CBLC pair is rejected (fail closed).
+    const emptyStrikeTables = new Map(tables);
+    emptyStrikeTables.set('CBLC', Buffer.from('00030000' + '00000000', 'hex'));
+    const zeroStrikeTtf = sfntFromTables(0x00010000, emptyStrikeTables);
+    const zeroStrikeWoff = (await convertFont(zeroStrikeTtf, 'ttf', 'woff', {}, 'bad.ttf')).buffer;
+    await expect(convertFont(zeroStrikeWoff, 'woff', 'ttf', {}, 'bad.woff')).rejects.toThrow(/outlines/i);
+  });
+});
+

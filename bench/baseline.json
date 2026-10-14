@@ -7337,8 +7337,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.4470024208477714,
-      "delta": 0.0033701998386101994,
+      "ours": 0.4463853420040822,
+      "delta": 0.0027531209949209767,
       "ratio": null
     },
     "font/sans-cff.otf->woff/font_table_mismatches": {
@@ -7457,8 +7457,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5762012511646479,
-      "delta": 0.003549403256577488,
+      "ours": 0.5754913705133324,
+      "delta": 0.0028395226052619904,
       "ratio": null
     },
     "font/sans.ttf->woff/font_table_mismatches": {
@@ -26637,8 +26637,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.6005167900215423,
-      "delta": 0.008102408105800651,
+      "ours": 0.5979158774404758,
+      "delta": 0.005501495524734112,
       "ratio": null
     },
     "font/class-cff->woff/converts": {
@@ -26737,8 +26737,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.7351019953388618,
-      "delta": 0.003696270580876182,
+      "ours": 0.7342508591112954,
+      "delta": 0.0028451343533097972,
       "ratio": null
     },
     "font/class-cjk->woff/converts": {
@@ -26767,8 +26767,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.6259804132333422,
-      "delta": 0.03611526816339039,
+      "ours": 0.5890963022962186,
+      "delta": -0.000768842773733236,
       "ratio": null
     },
     "font/class-cjk->woff2/converts": {
@@ -26877,8 +26877,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.675127900388048,
-      "delta": 0.004235389899295727,
+      "ours": 0.6688561276610543,
+      "delta": -0.0020363828276980245,
       "ratio": null
     },
     "font/class-colour->woff/converts": {
@@ -26937,8 +26937,18 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0.5,
-      "delta": -0.5,
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/class-colour.woff->ttf/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "font/class-colour.woff2->ttf/converts": {
@@ -26947,8 +26957,18 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0.5,
-      "delta": -0.5,
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/class-colour.woff2->ttf/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "font/class-complex->otf/converts": {
@@ -26987,8 +27007,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.49147793169355813,
-      "delta": 0.009491644940108956,
+      "ours": 0.48285844181148463,
+      "delta": 0.0008721550580354509,
       "ratio": null
     },
     "font/class-complex->woff/converts": {
@@ -27117,8 +27137,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5050765694850187,
-      "delta": 0.0195990941312163,
+      "ours": 0.4866350678980645,
+      "delta": 0.0011575925442621204,
       "ratio": null
     },
     "font/class-truetype->woff/converts": {
@@ -27217,8 +27237,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5370643158660013,
-      "delta": 0.007922913835695211,
+      "ours": 0.5308656777773971,
+      "delta": 0.0017242757470909975,
       "ratio": null
     },
     "font/class-variable->woff/converts": {
@@ -27347,8 +27367,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.49147793169355813,
-      "delta": 0.009491644940108956,
+      "ours": 0.48285844181148463,
+      "delta": 0.0008721550580354509,
       "ratio": null
     },
     "font/font-amiri-regular.ttf->woff/converts": {
@@ -27477,8 +27497,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.4481973434535104,
-      "delta": 0.005692599620493344,
+      "ours": 0.4447058823529412,
+      "delta": 0.002201138519924095,
       "ratio": null
     },
     "font/font-anonymouspro-regular.ttf->woff/converts": {
@@ -27607,8 +27627,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.4197964301519398,
-      "delta": 0.004012391208142785,
+      "ours": 0.41908836111520875,
+      "delta": 0.0033043221714117443,
       "ratio": null
     },
     "font/font-ibmplexmono-regular.ttf->woff/converts": {
@@ -27707,8 +27727,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.48837656510405536,
-      "delta": 0.005213452416563347,
+      "ours": 0.48515020725610014,
+      "delta": 0.0019870945686081276,
       "ratio": null
     },
     "font/font-jetbrainsmono-var.ttf->woff/converts": {
@@ -27837,8 +27857,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5363831316786685,
-      "delta": 0.026166368144655228,
+      "ours": 0.5106797772660258,
+      "delta": 0.0004630137320125183,
       "ratio": null
     },
     "font/font-lato-regular.ttf->woff/converts": {
@@ -27977,8 +27997,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5819451773139978,
-      "delta": 0.00453747338925381,
+      "ours": 0.5799914481704543,
+      "delta": 0.0025837442457103954,
       "ratio": null
     },
     "font/font-mplus1p-regular.ttf->woff/converts": {
@@ -28077,8 +28097,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.6002193002662932,
-      "delta": 0.0049704550151443705,
+      "ours": 0.5922884232890038,
+      "delta": -0.0029604219621450767,
       "ratio": null
     },
     "font/font-notocoloremoji-colrv1.ttf->woff/converts": {
@@ -28177,8 +28197,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.9361403508771929,
-      "delta": 0.0016741199403738083,
+      "ours": 0.9356495814700149,
+      "delta": 0.0011833505331957372,
       "ratio": null
     },
     "font/font-notocoloremoji-flags.ttf->woff/converts": {
@@ -28237,8 +28257,18 @@
         "abs": 0,
         "rel": 0
       },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/font-notocoloremoji-flags.ttf.woff->ttf/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
       "ours": 0,
-      "delta": -1,
+      "delta": 0,
       "ratio": null
     },
     "font/font-notocoloremoji-flags.ttf.woff2->ttf/converts": {
@@ -28247,8 +28277,18 @@
         "abs": 0,
         "rel": 0
       },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "font/font-notocoloremoji-flags.ttf.woff2->ttf/font_table_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
       "ours": 0,
-      "delta": -1,
+      "delta": 0,
       "ratio": null
     },
     "font/font-notosans-var.ttf->woff/compression_ratio": {
@@ -28257,8 +28297,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5901665905355337,
-      "delta": 0.009446116726595455,
+      "ours": 0.5820205593100567,
+      "delta": 0.0013000855011184864,
       "ratio": null
     },
     "font/font-notosans-var.ttf->woff/converts": {
@@ -28357,8 +28397,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.8597776144334427,
-      "delta": 0.0033972876408440156,
+      "ours": 0.8594475922054751,
+      "delta": 0.0030672654128763854,
       "ratio": null
     },
     "font/font-notosansjp-regular.otf->woff/converts": {
@@ -28387,8 +28427,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.8097924830819487,
-      "delta": 0.0703988592172825,
+      "ours": 0.7393936238646662,
+      "delta": 0,
       "ratio": null
     },
     "font/font-notosansjp-regular.otf->woff2/converts": {
@@ -28457,8 +28497,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5275705695718049,
-      "delta": 0.0075122873146344915,
+      "ours": 0.5205914804432408,
+      "delta": 0.0005331981860703383,
       "ratio": null
     },
     "font/font-notoserifdevanagari-var.ttf->woff/converts": {
@@ -28757,8 +28797,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5918835317863157,
-      "delta": 0.009005028006353721,
+      "ours": 0.5882289713487239,
+      "delta": 0.005350467568761896,
       "ratio": null
     },
     "font/font-sourcesans3-regular.otf->woff/converts": {
@@ -28887,8 +28927,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5615761914230795,
-      "delta": 0.007589315304566857,
+      "ours": 0.5590243255783125,
+      "delta": 0.005037449459799892,
       "ratio": null
     },
     "font/font-sourceserif4-regular.otf->woff/converts": {
@@ -28987,8 +29027,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.4605839729873635,
-      "delta": 0.0060189763110289896,
+      "ours": 0.45771338428518044,
+      "delta": 0.0031483876088459484,
       "ratio": null
     },
     "font/font-sourceserif4-var.ttf->woff/converts": {
@@ -29087,8 +29127,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.609774905009982,
-      "delta": 0.003643684900908717,
+      "ours": 0.6087445048147483,
+      "delta": 0.002613284705675012,
       "ratio": null
     },
     "font/font-zenkakugothicnew-regular.ttf->woff/converts": {

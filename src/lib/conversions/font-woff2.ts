@@ -475,7 +475,7 @@ export const WOFF2_BROTLI_MAX_QUALITY = 11;
  * Above this many bytes of table data, quality 11 runs at under 1 MB/s and would hold the worker
  * for minutes on a large font; quality 9 is several times faster for a slightly larger file.
  */
-export const WOFF2_BROTLI_MAX_QUALITY_BYTES = 4 * 1024 * 1024;
+export const WOFF2_BROTLI_MAX_QUALITY_BYTES = 8 * 1024 * 1024;
 export const WOFF2_BROTLI_LARGE_FONT_QUALITY = 9;
 
 /** The Brotli quality used for a stream of the given size. */
