@@ -2607,8 +2607,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.29089044607759357,
-      "delta": 0.04688004382008237,
+      "ours": 1,
+      "delta": 0.7758678800134816,
       "ratio": null
     },
     "cad/cad-blocks.dxf->pdf/ink_recall": {
@@ -2627,8 +2627,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6666666666666666,
-      "delta": 0.6655982905982906,
+      "ours": 1,
+      "delta": 0.9989316239316239,
       "ratio": null
     },
     "cad/cad-blocks.dxf->png/converts": {
@@ -2657,8 +2657,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.49847436940602113,
-      "delta": 0.2755335035137297,
+      "ours": 1,
+      "delta": 0.7964531075251637,
       "ratio": null
     },
     "cad/cad-blocks.dxf->png/ink_recall": {
@@ -2817,8 +2817,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.07134594356374113,
-      "delta": 0.0699362461080435,
+      "ours": 0.0012526363400860996,
+      "delta": -0.00015706111561153424,
       "ratio": null
     },
     "cad/cad-columns-r2007.dxf->pdf/ink_precision": {
@@ -2827,8 +2827,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.17665027566681568,
-      "delta": 0.17665027566681568,
+      "ours": 0.9880298636391682,
+      "delta": -0.011970136360831773,
       "ratio": null
     },
     "cad/cad-columns-r2007.dxf->pdf/ink_recall": {
@@ -2837,8 +2837,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.48546119776622376,
-      "delta": -0.5019252805385189,
+      "ours": 1,
+      "delta": 0.012613521695257313,
       "ratio": null
     },
     "cad/cad-columns-r2007.dxf->pdf/word_f1": {
@@ -2847,8 +2847,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.805111821086262,
-      "delta": 0.805111821086262,
+      "ours": 1,
+      "delta": 1,
       "ratio": null
     },
     "cad/cad-columns-r2007.dxf->png/converts": {
@@ -2867,8 +2867,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.07538202598219246,
-      "delta": 0.07443538211268108,
+      "ours": 0.0026762897538413766,
+      "delta": 0.00172964588433,
       "ratio": null
     },
     "cad/cad-columns-r2007.dxf->png/ink_precision": {
@@ -2877,8 +2877,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.1620712844653665,
-      "delta": 0.1620712844653665,
+      "ours": 0.9934619677882316,
+      "delta": -0.0065380322117684075,
       "ratio": null
     },
     "cad/cad-columns-r2007.dxf->png/ink_recall": {
@@ -2887,8 +2887,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5604892761394102,
-      "delta": -0.43951072386058976,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/cad-columns-r2007.dxf->svg/converts": {
@@ -2907,8 +2907,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.0732421310744733,
-      "delta": 0.07024598347688116,
+      "ours": 0.0029471240805895027,
+      "delta": -0.00004902351700264429,
       "ratio": null
     },
     "cad/cad-columns-r2007.dxf->svg/ink_precision": {
@@ -2917,8 +2917,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.1595744680851064,
-      "delta": 0.1595744680851064,
+      "ours": 0.9850275807722616,
+      "delta": -0.014972419227738398,
       "ratio": null
     },
     "cad/cad-columns-r2007.dxf->svg/ink_recall": {
@@ -2927,8 +2927,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.557728059490993,
-      "delta": -0.442271940509007,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/cad-elliptical-arcs.dxf->pdf/converts": {
@@ -3037,8 +3037,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.188504737907218,
-      "delta": -0.4457545218150041,
+      "ours": 0.00003992334717350943,
+      "delta": -0.3749600766528265,
       "ratio": null
     },
     "cad/cad-entities.dxf->pdf/ink_precision": {
@@ -3047,8 +3047,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6868802838952093,
-      "delta": -0.3131197161047907,
+      "ours": 0.9984805616682385,
+      "delta": -0.0015194383317614912,
       "ratio": null
     },
     "cad/cad-entities.dxf->pdf/ink_recall": {
@@ -3057,8 +3057,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8311011181332036,
-      "delta": -0.16889888186679636,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/cad-entities.dxf->pdf/word_f1": {
@@ -3067,8 +3067,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8556430446194226,
-      "delta": 0.8556430446194226,
+      "ours": 0.9013333333333332,
+      "delta": 0.9013333333333332,
       "ratio": null
     },
     "cad/cad-entities.dxf->png/converts": {
@@ -3087,8 +3087,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.19241767253487918,
-      "delta": -0.4418415871873429,
+      "ours": 0.0032522624434387915,
+      "delta": -0.3717477375565612,
       "ratio": null
     },
     "cad/cad-entities.dxf->png/ink_precision": {
@@ -3097,8 +3097,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6928068410462777,
-      "delta": -0.30719315895372235,
+      "ours": 0.9988730662841921,
+      "delta": -0.001126933715807854,
       "ratio": null
     },
     "cad/cad-entities.dxf->png/ink_recall": {
@@ -3107,8 +3107,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8608256252141144,
-      "delta": -0.13917437478588557,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/cad-entities.dxf->svg/converts": {
@@ -3127,8 +3127,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.19124656825441,
-      "delta": -0.80875343174559,
+      "ours": 0.0017106938255888604,
+      "delta": -0.9982893061744111,
       "ratio": null
     },
     "cad/cad-entities.dxf->svg/ink_precision": {
@@ -3137,8 +3137,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7014638099579598,
-      "delta": 0.7014638099579598,
+      "ours": 0.9996448323101121,
+      "delta": 0.9996448323101121,
       "ratio": null
     },
     "cad/cad-entities.dxf->svg/ink_recall": {
@@ -3147,8 +3147,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8681393044444982,
-      "delta": 0.8681393044444982,
+      "ours": 1,
+      "delta": 1,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->pdf/converts": {
@@ -3167,8 +3167,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.012020833485139493,
-      "delta": -0.22843075740418117,
+      "ours": 0.00040316883008262305,
+      "delta": -0.24004842205923804,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->pdf/ink_precision": {
@@ -3177,8 +3177,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6498901435797865,
-      "delta": -0.07811876420440222,
+      "ours": 0.9988709263536053,
+      "delta": 0.26977462096009386,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->pdf/ink_recall": {
@@ -3187,8 +3187,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5968459815781336,
-      "delta": -0.05068408099249022,
+      "ours": 1,
+      "delta": 0.35246993742937616,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->pdf/word_f1": {
@@ -3197,8 +3197,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9966923925027563,
-      "delta": 0.42613093575010075,
+      "ours": 0.9513274336283186,
+      "delta": 0.38076597687566305,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->png/converts": {
@@ -3217,8 +3217,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.010126240422771327,
-      "delta": -0.2299503833405494,
+      "ours": 0.0008170828091923488,
+      "delta": -0.23925954095412838,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->png/ink_precision": {
@@ -3227,8 +3227,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.633100091268634,
-      "delta": -0.07360037957526311,
+      "ours": 0.9993918956271768,
+      "delta": 0.2825278234331553,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->png/ink_recall": {
@@ -3237,8 +3237,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6210779162287945,
-      "delta": -0.0006805357034775916,
+      "ours": 1,
+      "delta": 0.3782415480677279,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->svg/converts": {
@@ -3257,8 +3257,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.011537350352522902,
-      "delta": -0.22895135498448715,
+      "ours": 0.001481177375857956,
+      "delta": -0.2390075279611521,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->svg/ink_precision": {
@@ -3267,8 +3267,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6450815874813404,
-      "delta": -0.08965571406266093,
+      "ours": 0.9995498199279712,
+      "delta": 0.26436676295867223,
       "ratio": null
     },
     "cad/cad-floorplan.dxf->svg/ink_recall": {
@@ -3277,8 +3277,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6335012006091807,
-      "delta": -0.030400261639889625,
+      "ours": 1,
+      "delta": 0.3360985377509297,
       "ratio": null
     },
     "cad/cad-insert-bricscad.dxf->pdf/converts": {
@@ -3297,8 +3297,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.054906842337320905,
-      "delta": -0.0012892502365792202,
+      "ours": 0.0007576007923572048,
+      "delta": -0.05543849178154292,
       "ratio": null
     },
     "cad/cad-insert-bricscad.dxf->pdf/ink_precision": {
@@ -3307,8 +3307,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7344249425222902,
-      "delta": 0.015896269915481875,
+      "ours": 0.9935998138127654,
+      "delta": 0.2679354192351442,
       "ratio": null
     },
     "cad/cad-insert-bricscad.dxf->pdf/ink_recall": {
@@ -3317,8 +3317,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7633621401442175,
-      "delta": 0.034627740021715425,
+      "ours": 1,
+      "delta": 0.2712655998774979,
       "ratio": null
     },
     "cad/cad-insert-bricscad.dxf->pdf/word_f1": {
@@ -3347,8 +3347,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.053419060061989265,
-      "delta": -0.0029914521803908745,
+      "ours": 0.0030866900427118926,
+      "delta": -0.05332382219966825,
       "ratio": null
     },
     "cad/cad-insert-bricscad.dxf->png/ink_precision": {
@@ -3357,8 +3357,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.75,
-      "delta": 0.030823502197548036,
+      "ours": 0.9965228062998568,
+      "delta": 0.2728446453803166,
       "ratio": null
     },
     "cad/cad-insert-bricscad.dxf->png/ink_recall": {
@@ -3367,8 +3367,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7826683021863049,
-      "delta": 0.049036648865532384,
+      "ours": 1,
+      "delta": 0.2663683466792275,
       "ratio": null
     },
     "cad/cad-insert-bricscad.dxf->svg/converts": {
@@ -3387,8 +3387,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.05320014711173171,
-      "delta": -0.165930815648209,
+      "ours": 0.0024115457316323807,
+      "delta": -0.21671941702830833,
       "ratio": null
     },
     "cad/cad-insert-bricscad.dxf->svg/ink_precision": {
@@ -3397,8 +3397,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7452897082658023,
-      "delta": 0.3874869076306067,
+      "ours": 0.996917128226565,
+      "delta": 0.641133819295379,
       "ratio": null
     },
     "cad/cad-insert-bricscad.dxf->svg/ink_recall": {
@@ -3407,8 +3407,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7916678086885022,
-      "delta": 0.5441755514888535,
+      "ours": 1,
+      "delta": 0.7525077428003513,
       "ratio": null
     },
     "cad/cad-lines.dxf->pdf/converts": {
@@ -3967,8 +3967,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 1.705686228543148,
-      "delta": -1.8971591089341144,
+      "ours": 0.0000921319329278969,
+      "delta": -3.6027532055443343,
       "ratio": null
     },
     "cad/cad-text-alignments.dxf->pdf/ink_precision": {
@@ -3977,8 +3977,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.3955159172550477,
-      "delta": -0.11474695634956161,
+      "ours": 1,
+      "delta": 0.3965891472868217,
       "ratio": null
     },
     "cad/cad-text-alignments.dxf->pdf/ink_recall": {
@@ -3987,8 +3987,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.360711041909952,
-      "delta": -0.4871871881785436,
+      "ours": 1,
+      "delta": 0.15210176991150437,
       "ratio": null
     },
     "cad/cad-text-alignments.dxf->pdf/word_f1": {
@@ -4017,8 +4017,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 1.6871280139632256,
-      "delta": -2.035574264120042,
+      "ours": 0.003557085484796385,
+      "delta": -3.719145192598471,
       "ratio": null
     },
     "cad/cad-text-alignments.dxf->png/ink_precision": {
@@ -4027,8 +4027,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5014500395465331,
-      "delta": -0.20451586954437595,
+      "ours": 1,
+      "delta": 0.17455621301775148,
       "ratio": null
     },
     "cad/cad-text-alignments.dxf->png/ink_recall": {
@@ -4037,8 +4037,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.38908327501749473,
-      "delta": -0.5365924006581809,
+      "ours": 1,
+      "delta": 0.07432432432432434,
       "ratio": null
     },
     "cad/cad-text-alignments.dxf->svg/converts": {
@@ -4057,8 +4057,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 1.6920019568207199,
-      "delta": -15.823989514394631,
+      "ours": 0.004249381454266232,
+      "delta": -17.511742089761086,
       "ratio": null
     },
     "cad/cad-text-alignments.dxf->svg/ink_precision": {
@@ -4067,8 +4067,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.4888963099014861,
-      "delta": -0.511103690098514,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/cad-text-alignments.dxf->svg/ink_recall": {
@@ -4077,8 +4077,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.39655841635399147,
-      "delta": -0.6034415836460085,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->pdf/converts": {
@@ -4097,8 +4097,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.1056275060485452,
-      "delta": 0.07437630374622561,
+      "ours": 0.0006218575273654325,
+      "delta": -0.03062934477495416,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->pdf/ink_precision": {
@@ -4107,8 +4107,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5805210985320405,
-      "delta": -0.17673582259324871,
+      "ours": 1,
+      "delta": 0.2308017174632223,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->pdf/ink_recall": {
@@ -4117,8 +4117,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6654348077145167,
-      "delta": -0.22294917410882897,
+      "ours": 1,
+      "delta": 0.11161601817665434,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->pdf/word_f1": {
@@ -4127,8 +4127,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8138739618954568,
-      "delta": -0.07649489056355963,
+      "ours": 1,
+      "delta": 0.10963114754098358,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->png/converts": {
@@ -4147,8 +4147,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.10484470062553308,
-      "delta": 0.07173805265833166,
+      "ours": 0.0013531717099667384,
+      "delta": -0.03175347625723468,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->png/ink_precision": {
@@ -4157,8 +4157,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5799413871703029,
-      "delta": -0.17637594877484897,
+      "ours": 1,
+      "delta": 0.21725379952560842,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->png/ink_recall": {
@@ -4167,8 +4167,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6834191221172942,
-      "delta": -0.19607113552422395,
+      "ours": 1,
+      "delta": 0.12050974235848189,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->svg/converts": {
@@ -4187,8 +4187,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.10553195989130648,
-      "delta": 0.09072352376939108,
+      "ours": 0.0003572599230019513,
+      "delta": -0.014451176198913451,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->svg/ink_precision": {
@@ -4197,8 +4197,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5881314573490473,
-      "delta": 0.060068301731008966,
+      "ours": 1,
+      "delta": 0.45732604582720204,
       "ratio": null
     },
     "cad/cad-text-fonts.dxf->svg/ink_recall": {
@@ -4207,8 +4207,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6866529360084113,
-      "delta": 0.02793714708715911,
+      "ours": 1,
+      "delta": 0.34128421107874785,
       "ratio": null
     },
     "cad/class-architecture->pdf/converts": {
@@ -4227,8 +4227,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.10026278569617875,
-      "delta": -0.3370926396095926,
+      "ours": 0.00022154608862806624,
+      "delta": -0.30750424935603227,
       "ratio": null
     },
     "cad/class-architecture->pdf/ink_precision": {
@@ -4237,8 +4237,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6683852137374979,
-      "delta": -0.19561924015459642,
+      "ours": 0.998675744010922,
+      "delta": 0.13412759131416618,
       "ratio": null
     },
     "cad/class-architecture->pdf/ink_recall": {
@@ -4247,8 +4247,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7139735498556686,
-      "delta": -0.10979148142964335,
+      "ours": 1,
+      "delta": 0.17623496871468802,
       "ratio": null
     },
     "cad/class-architecture->pdf/word_f1": {
@@ -4257,8 +4257,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9261677185610895,
-      "delta": 0.6408869901847617,
+      "ours": 0.9263303834808259,
+      "delta": 0.6410496551044981,
       "ratio": null
     },
     "cad/class-architecture->png/converts": {
@@ -4277,8 +4277,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.10127195647882525,
-      "delta": -0.33589598526394615,
+      "ours": 0.00203467262631557,
+      "delta": -0.3055036392553448,
       "ratio": null
     },
     "cad/class-architecture->png/ink_precision": {
@@ -4287,8 +4287,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6629534661574559,
-      "delta": -0.19039676926449267,
+      "ours": 0.9991324809556845,
+      "delta": 0.14070044485867372,
       "ratio": null
     },
     "cad/class-architecture->png/ink_recall": {
@@ -4297,8 +4297,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7409517707214545,
-      "delta": -0.06992745524468158,
+      "ours": 1,
+      "delta": 0.18912077403386396,
       "ratio": null
     },
     "cad/class-architecture->svg/converts": {
@@ -4317,8 +4317,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.10139195930346645,
-      "delta": -0.5188523933650386,
+      "ours": 0.0015959356007234082,
+      "delta": -0.6186484170677817,
       "ratio": null
     },
     "cad/class-architecture->svg/ink_precision": {
@@ -4327,8 +4327,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.67327269871965,
-      "delta": 0.30590404794764936,
+      "ours": 0.9995973261190416,
+      "delta": 0.6320057976343921,
       "ratio": null
     },
     "cad/class-architecture->svg/ink_recall": {
@@ -4337,8 +4337,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.7508202525268395,
-      "delta": 0.4188695214023043,
+      "ours": 1,
+      "delta": 0.6680492688754649,
       "ratio": null
     },
     "cad/class-basic->pdf/converts": {
@@ -4447,8 +4447,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.027546809289691554,
-      "delta": -0.4431577962476299,
+      "ours": 0.000472188517209704,
+      "delta": -0.47023241702011176,
       "ratio": null
     },
     "cad/class-blocks->pdf/ink_precision": {
@@ -4457,8 +4457,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5126576942999419,
-      "delta": 0.03138815686778218,
+      "ours": 0.9967999069063826,
+      "delta": 0.5219016496243128,
       "ratio": null
     },
     "cad/class-blocks->pdf/ink_recall": {
@@ -4467,8 +4467,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8816810700721087,
-      "delta": 0.2577530692937976,
+      "ours": 1,
+      "delta": 0.3760719992216889,
       "ratio": null
     },
     "cad/class-blocks->pdf/word_f1": {
@@ -4477,8 +4477,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8333333333333333,
-      "delta": 0.3327991452991452,
+      "ours": 1,
+      "delta": 0.49946581196581197,
       "ratio": null
     },
     "cad/class-blocks->png/converts": {
@@ -4497,8 +4497,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.027085752754847148,
-      "delta": -0.44363333462498744,
+      "ours": 0.0019195677452084614,
+      "delta": -0.4687995196346261,
       "ratio": null
     },
     "cad/class-blocks->png/ink_precision": {
@@ -4507,8 +4507,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.6242371847030106,
-      "delta": 0.1531785028556389,
+      "ours": 0.9982614031499284,
+      "delta": 0.5346488764527402,
       "ratio": null
     },
     "cad/class-blocks->png/ink_recall": {
@@ -4517,8 +4517,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8913341510931525,
-      "delta": 0.27225792660274817,
+      "ours": 1,
+      "delta": 0.38092377550959566,
       "ratio": null
     },
     "cad/class-blocks->svg/converts": {
@@ -4637,8 +4637,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.6275532260518114,
-      "delta": -0.5842821863599484,
+      "ours": 0.0006555419334598097,
+      "delta": -1.2111798704783001,
       "ratio": null
     },
     "cad/class-text->pdf/ink_precision": {
@@ -4647,8 +4647,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.3842290971513013,
-      "delta": -0.03827750109199812,
+      "ours": 0.9960099545463894,
+      "delta": 0.20514024279640408,
       "ratio": null
     },
     "cad/class-text->pdf/ink_recall": {
@@ -4657,8 +4657,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5038690157968975,
-      "delta": -0.4040205476086305,
+      "ours": 1,
+      "delta": 0.09211043659447204,
       "ratio": null
     },
     "cad/class-text->pdf/word_f1": {
@@ -4667,8 +4667,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.8729952609939063,
-      "delta": 0.2828723101742342,
+      "ours": 1,
+      "delta": 0.40987704918032786,
       "ratio": null
     },
     "cad/class-text->png/converts": {
@@ -4687,8 +4687,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.6224515801903171,
-      "delta": -0.6298002764496763,
+      "ours": 0.002528848982868167,
+      "delta": -1.2497230076571253,
       "ratio": null
     },
     "cad/class-text->png/ink_precision": {
@@ -4697,8 +4697,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.41448757039406753,
-      "delta": -0.07294017795128616,
+      "ours": 0.9978206559294106,
+      "delta": 0.1284239934438638,
       "ratio": null
     },
     "cad/class-text->png/ink_recall": {
@@ -4707,8 +4707,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5443305577580664,
-      "delta": -0.3907247533476649,
+      "ours": 1,
+      "delta": 0.06494468889426874,
       "ratio": null
     },
     "cad/class-text->svg/converts": {
@@ -4727,8 +4727,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.6235920159288332,
-      "delta": -5.221006669049453,
+      "ours": 0.0025179218192858954,
+      "delta": -5.842080763159,
       "ratio": null
     },
     "cad/class-text->svg/ink_precision": {
@@ -4737,8 +4737,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.4122007451118799,
-      "delta": -0.09715364009413296,
+      "ours": 0.9950091935907538,
+      "delta": 0.14745120886648788,
       "ratio": null
     },
     "cad/class-text->svg/ink_recall": {
@@ -4747,8 +4747,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.5469798039511319,
-      "delta": -0.33925879235595224,
+      "ours": 1,
+      "delta": 0.11376140369291587,
       "ratio": null
     },
     "cad/plate-basic.dxf->pdf/extent_error": {
@@ -4757,8 +4757,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.0010086455331412836,
-      "delta": -0.00015923767853753823,
+      "ours": 0.00043290043290056257,
+      "delta": -0.0007349827787782592,
       "ratio": null
     },
     "cad/plate-basic.dxf->pdf/ink_precision": {
@@ -4807,8 +4807,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.0022955523672884004,
-      "delta": 0.0014144950985659488,
+      "ours": 0.00262664165103188,
+      "delta": 0.0017455843823094286,
       "ratio": null
     },
     "cad/plate-basic.dxf->png/ink_precision": {
@@ -4887,8 +4887,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.0010086455331412836,
-      "delta": -0.00015923767853753823,
+      "ours": 0.00043290043290056257,
+      "delta": -0.0007349827787782592,
       "ratio": null
     },
     "cad/plate-full.dxf->pdf/ink_precision": {
@@ -4897,8 +4897,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9821667409719126,
-      "delta": -0.01783325902808741,
+      "ours": 0.9865346093923881,
+      "delta": -0.013465390607611871,
       "ratio": null
     },
     "cad/plate-full.dxf->pdf/ink_recall": {
@@ -4937,8 +4937,8 @@
         "abs": 0.01,
         "rel": 0
       },
-      "ours": 0.0022955523672884004,
-      "delta": 0.0014144950985659488,
+      "ours": 0.00262664165103188,
+      "delta": 0.0017455843823094286,
       "ratio": null
     },
     "cad/plate-full.dxf->png/ink_precision": {
@@ -4947,8 +4947,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9932710960232783,
-      "delta": -0.006728903976721656,
+      "ours": 0.9938458382481153,
+      "delta": -0.006154161751884657,
       "ratio": null
     },
     "cad/plate-full.dxf->png/ink_recall": {
@@ -4987,8 +4987,8 @@
         "abs": 0.02,
         "rel": 0
       },
-      "ours": 0.9936409421580099,
-      "delta": 0.03620229185126145,
+      "ours": 0.9935506804793824,
+      "delta": 0.03611203017263398,
       "ratio": null
     },
     "cad/plate-full.dxf->svg/ink_recall": {

@@ -41,6 +41,8 @@ export interface DxfText {
   anchor: 'start' | 'middle' | 'end';
   /** MTEXT is attached by the top of its first line, TEXT by its baseline. */
   hangsFromTop: boolean;
+  widthFactor?: number;
+  fitLength?: number;
 }
 
 export interface DxfDrawing {
@@ -294,7 +296,7 @@ function sampleEllipse(centre: Point, major: Point, ratio: number, start: number
   return points;
 }
 
-/** Index of the knot span of `t`: the largest k in [degree, count - 1] with knots[k] <= t, taking the last span at the end. */
+/** Index of the knot span of `t`: the largest k in [degree, count - 1] with knots[k] <= t. */
 function knotSpan(knots: number[], degree: number, count: number, t: number): number {
   if (t >= knots[count]) return count - 1;
   let k = degree;
@@ -390,6 +392,20 @@ function readLayers(sections: { section: string; records: GroupRecord[] }[]): La
   return { hidden };
 }
 
+function readStyles(sections: { section: string; records: GroupRecord[] }[]): ReadonlyMap<string, number> {
+  const styles = new Map<string, number>();
+  for (const section of sections) {
+    if (section.section !== 'TABLES') continue;
+    for (const record of section.records) {
+      if (record.values[0] !== 'STYLE') continue;
+      const name = first(record, 2);
+      const width = num(record, 41, 1);
+      if (name !== undefined && width > 0) styles.set(name.toUpperCase(), width);
+    }
+  }
+  return styles;
+}
+
 /** A POLYLINE record is followed by its VERTEX records and SEQEND; they are read as one entity. */
 function groupPolylines(records: GroupRecord[]): Array<{ record: GroupRecord; vertices: GroupRecord[] }> {
   const entities: Array<{ record: GroupRecord; vertices: GroupRecord[] }> = [];
@@ -411,21 +427,89 @@ function groupPolylines(records: GroupRecord[]): Array<{ record: GroupRecord; ve
   return entities;
 }
 
+function decodeSpecialChars(raw: string): string {
+  return raw.replace(/%%(%|[dDpPcCuUoOkK]|\d{3})/g, (full, token: string) => {
+    const lower = token.toLowerCase();
+    if (lower === '%') return '%';
+    if (lower === 'd') return '°';
+    if (lower === 'p') return '±';
+    if (lower === 'c') return 'Ø';
+    if (lower === 'u' || lower === 'o' || lower === 'k') return '';
+    const code = Number.parseInt(token, 10);
+    return code >= 32 && code <= 255 ? String.fromCharCode(code) : full;
+  });
+}
+
 function stripMtext(raw: string): string[] {
-  const text = raw
+  const text = decodeSpecialChars(raw)
     .replace(/\\P/g, '\n')
+    .replace(/\\N/g, ' ')
     .replace(/\\~/g, ' ')
     .replace(/\\S([^;^/#]*)[\^/#]([^;]*);/g, '$1/$2')
-    .replace(/\\[ACFHQTWfcw][^;]*;/g, '')
+    .replace(/\\[ACFHQTWfcwp][^;]*;/g, '')
     .replace(/\\[LlOoKk]/g, '')
     .replace(/[{}]/g, '')
     .replace(/\\\\/g, '\\');
   return text.split('\n').map((line) => line.trimEnd());
 }
 
+function mtextColumnWidth(record: GroupRecord): number | undefined {
+  if (first(record, 48) !== undefined) {
+    const direct = num(record, 48, 0);
+    if (direct > 0) return direct;
+  }
+  for (let i = 0; i + 1 < record.codes.length; i++) {
+    if (record.codes[i] === 1070 && Math.trunc(finite(record.values[i], 1070)) === 48 && record.codes[i + 1] === 1040) {
+      const xdataWidth = finite(record.values[i + 1], 1040);
+      if (xdataWidth > 0) return xdataWidth;
+    }
+  }
+  return undefined;
+}
+
+function wrapMtextLines(lines: string[], height: number, boxWidth: number, widthFactor = 1): string[] {
+  const charWidth = height * TEXT_WIDTH_PER_CHARACTER * widthFactor;
+  if (!(boxWidth > 0) || !(charWidth > 0)) return lines;
+  const maxChars = Math.max(1, Math.floor(boxWidth / charWidth));
+  const out: string[] = [];
+  for (const line of lines) {
+    if (line.length <= maxChars || !line.includes(' ')) {
+      out.push(line);
+      continue;
+    }
+    const words = line.split(/\s+/);
+    let current = '';
+    for (const word of words) {
+      if (current === '') current = word;
+      else if (current.length + 1 + word.length <= maxChars) current += ` ${word}`;
+      else {
+        out.push(current);
+        current = word;
+      }
+    }
+    if (current !== '') out.push(current);
+  }
+  return out;
+}
+
+function textBaselineOffset(vertical: number, horizontal: number, height: number): number {
+  if (vertical === 1) return height / 3;
+  if (vertical === 2) return -height / 2;
+  if (vertical === 3) return -height;
+  if (horizontal === 4) return -height / 3;
+  return 0;
+}
+
+function mtextVerticalLift(attachment: number, blockHeight: number): number {
+  if (attachment >= 7 && attachment <= 9) return blockHeight;
+  if (attachment >= 4 && attachment <= 6) return blockHeight / 2;
+  return 0;
+}
+
+const FLIP_X: Affine = { a: -1, b: 0, c: 0, d: 1, e: 0, f: 0 };
 /** Share of the text width that lies left of the anchor point. */
 const ANCHOR_SHARE: Readonly<Record<DxfText['anchor'], number>> = { start: 0, middle: 0.5, end: 1 };
-const TEXT_ANCHORS: Readonly<Record<number, DxfText['anchor']>> = { 1: 'middle', 2: 'end', 4: 'middle' };
+const TEXT_ANCHORS: Readonly<Record<number, DxfText['anchor']>> = { 1: 'middle', 2: 'end', 3: 'middle', 4: 'middle', 5: 'middle' };
 const MTEXT_ANCHORS: Readonly<Record<number, DxfText['anchor']>> = { 1: 'start', 2: 'middle', 3: 'end', 4: 'start', 5: 'middle', 6: 'end', 7: 'start', 8: 'middle', 9: 'end' };
 
 class Builder {
@@ -437,7 +521,8 @@ class Builder {
 
   constructor(
     private readonly blocks: ReadonlyMap<string, Block>,
-    private readonly layers: Layers
+    private readonly layers: Layers,
+    private readonly styles: ReadonlyMap<string, number>
   ) {}
 
   /** Entities visited and block copies made, across every nested INSERT. */
@@ -463,13 +548,25 @@ class Builder {
   }
 
   entities(records: GroupRecord[], t: Affine, depth: number): void {
+    const columnWidths = new Map<string, number>();
+    for (const record of records) {
+      if (record.values[0] !== 'MTEXT') continue;
+      const colWidth = mtextColumnWidth(record);
+      if (colWidth === undefined) continue;
+      const handle = first(record, 5);
+      if (handle !== undefined) columnWidths.set(handle, colWidth);
+      for (let i = 0; i < record.codes.length; i++) {
+        if (record.codes[i] === 1005) columnWidths.set(record.values[i], colWidth);
+      }
+    }
     for (const { record, vertices } of groupPolylines(records)) {
       this.charge(1);
-      this.entity(record, vertices, t, depth);
+      const colWidth = record.values[0] === 'MTEXT' ? columnWidths.get(first(record, 5) ?? '') : undefined;
+      this.entity(record, vertices, t, depth, colWidth);
     }
   }
 
-  private entity(record: GroupRecord, vertices: GroupRecord[], t: Affine, depth: number): void {
+  private entity(record: GroupRecord, vertices: GroupRecord[], t: Affine, depth: number, columnWidth?: number): void {
     const type = record.values[0];
     if (this.layers.hidden.has(first(record, 8) ?? '0')) return;
     const at: Point = [num(record, 10, 0), num(record, 20, 0)];
@@ -540,7 +637,7 @@ class Builder {
         this.text(record, t);
         return;
       case 'MTEXT':
-        this.mtext(record, at, t);
+        this.mtext(record, at, t, columnWidth);
         return;
       default:
     }
@@ -553,6 +650,7 @@ class Builder {
     if (depth >= MAX_BLOCK_DEPTH) throw new CadExpansionLimitError(`The DXF nests blocks deeper than ${MAX_BLOCK_DEPTH} levels (block ${name})`);
     const scaleX = num(record, 41, 1);
     const scaleY = num(record, 42, 1);
+    const scaleZ = num(record, 43, 1);
     const rotation = turnDegrees(num(record, 50, 0)) * DEGREES;
     const columns = Math.max(1, Math.trunc(num(record, 70, 1)));
     const rows = Math.max(1, Math.trunc(num(record, 71, 1)));
@@ -560,6 +658,8 @@ class Builder {
     const rowSpacing = num(record, 45, 0);
     // Every copy is a visit, drawn or not: an array of an empty block costs what it walks.
     this.charge(columns * rows);
+    if (scaleX === 0 || scaleY === 0 || scaleZ === 0) return;
+    const ocs = num(record, 230, 1) < 0 ? compose(t, FLIP_X) : t;
     const cos = Math.cos(rotation);
     const sin = Math.sin(rotation);
     for (let row = 0; row < rows; row++) {
@@ -575,27 +675,102 @@ class Builder {
           e: at[0] + cos * offsetX - sin * offsetY - (cos * scaleX * block.base[0] - sin * scaleY * block.base[1]),
           f: at[1] + sin * offsetX + cos * offsetY - (sin * scaleX * block.base[0] + cos * scaleY * block.base[1]),
         };
-        this.entities(block.records, compose(t, place), depth + 1);
+        this.entities(block.records, compose(ocs, place), depth + 1);
       }
     }
   }
 
-  private text(record: GroupRecord, t: Affine): void {
-    const value = first(record, 1);
-    const height = num(record, 40, 0);
-    if (value === undefined || value.trim() === '' || !(height > 0)) return;
-    const horizontal = Math.trunc(num(record, 72, 0));
-    const aligned = (horizontal !== 0 || Math.trunc(num(record, 73, 0)) !== 0) && first(record, 11) !== undefined;
-    const origin: Point = aligned ? [num(record, 11, 0), num(record, 21, 0)] : [num(record, 10, 0), num(record, 20, 0)];
-    this.place({ at: origin, height, rotation: turnDegrees(num(record, 50, 0)) * DEGREES, lines: [value], anchor: TEXT_ANCHORS[horizontal] ?? 'start', hangsFromTop: false }, t);
+  private styleWidthFactor(record: GroupRecord): number {
+    const styleName = first(record, 7);
+    if (styleName === undefined) return 1;
+    return this.styles.get(styleName.toUpperCase()) ?? 1;
   }
 
-  private mtext(record: GroupRecord, at: Point, t: Affine): void {
+  private text(record: GroupRecord, t: Affine): void {
+    const raw = first(record, 1);
+    const height = num(record, 40, 0);
+    if (raw === undefined || raw.trim() === '' || !(height > 0)) return;
+    const value = decodeSpecialChars(raw);
+    if (value.trim() === '') return;
+    const horizontal = Math.trunc(num(record, 72, 0));
+    const vertical = horizontal > 2 ? 0 : Math.trunc(num(record, 73, 0));
+    const p1: Point = [num(record, 10, 0), num(record, 20, 0)];
+    const hasSecond = first(record, 11) !== undefined;
+    const p2: Point = hasSecond ? [num(record, 11, p1[0]), num(record, 21, p1[1])] : p1;
+    const widthFactor = num(record, 41, this.styleWidthFactor(record));
+    if ((horizontal === 3 || horizontal === 5) && hasSecond) {
+      const dx = p2[0] - p1[0];
+      const dy = p2[1] - p1[1];
+      const spanLength = Math.hypot(dx, dy);
+      const origin: Point = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+      const rotation = spanLength > 0 ? Math.atan2(dy, dx) : turnDegrees(num(record, 50, 0)) * DEGREES;
+      const effectiveHeight =
+        horizontal === 3 && spanLength > 0
+          ? Math.min(height, spanLength / Math.max(1, value.length * TEXT_WIDTH_PER_CHARACTER * widthFactor))
+          : height;
+      this.place(
+        {
+          at: origin,
+          height: effectiveHeight,
+          rotation,
+          lines: [value],
+          anchor: 'middle',
+          hangsFromTop: false,
+          ...(widthFactor !== 1 ? { widthFactor } : {}),
+          ...(spanLength > 0 ? { fitLength: spanLength } : {}),
+        },
+        t
+      );
+      return;
+    }
+    const aligned = (horizontal !== 0 || vertical !== 0) && hasSecond;
+    const alignPoint: Point = aligned ? p2 : p1;
+    const rotation = turnDegrees(num(record, 50, 0)) * DEGREES;
+    const baselineOffset = textBaselineOffset(vertical, horizontal, height);
+    const origin: Point =
+      baselineOffset === 0
+        ? alignPoint
+        : [alignPoint[0] - baselineOffset * Math.sin(rotation), alignPoint[1] + baselineOffset * Math.cos(rotation)];
+    this.place(
+      {
+        at: origin,
+        height,
+        rotation,
+        lines: [value],
+        anchor: TEXT_ANCHORS[horizontal] ?? 'start',
+        hangsFromTop: false,
+        ...(widthFactor !== 1 ? { widthFactor } : {}),
+      },
+      t
+    );
+  }
+
+  private mtext(record: GroupRecord, at: Point, t: Affine, columnWidth?: number): void {
     const height = num(record, 40, 0);
     const raw = `${record.values.filter((_, i) => record.codes[i] === 3).join('')}${first(record, 1) ?? ''}`;
     if (!(height > 0) || raw.trim() === '') return;
+    const stripped = stripMtext(raw);
+    if (stripped.every((line) => line.length === 0)) return;
     const direction = first(record, 11) === undefined ? turnDegrees(num(record, 50, 0)) * DEGREES : Math.atan2(num(record, 21, 0), num(record, 11, 1));
-    this.place({ at, height, rotation: direction, lines: stripMtext(raw), anchor: MTEXT_ANCHORS[Math.trunc(num(record, 71, 1))] ?? 'start', hangsFromTop: true }, t);
+    const widthFactor = this.styleWidthFactor(record);
+    const boxWidth = columnWidth ?? mtextColumnWidth(record) ?? num(record, 41, 0);
+    const lines = wrapMtextLines(stripped, height, boxWidth, widthFactor);
+    const attachment = Math.trunc(num(record, 71, 1));
+    const blockHeight = height * (1 + (lines.length - 1) * MTEXT_LINE_PITCH);
+    const lift = mtextVerticalLift(attachment, blockHeight);
+    const origin: Point = lift === 0 ? at : [at[0] - lift * Math.sin(direction), at[1] + lift * Math.cos(direction)];
+    this.place(
+      {
+        at: origin,
+        height,
+        rotation: direction,
+        lines,
+        anchor: MTEXT_ANCHORS[attachment] ?? 'start',
+        hangsFromTop: true,
+        ...(widthFactor !== 1 ? { widthFactor } : {}),
+      },
+      t
+    );
   }
 
   private place(text: DxfText, t: Affine): void {
@@ -605,7 +780,13 @@ class Builder {
     }
     const similar = similarity(t);
     const scale = similar ? similar.scale : Math.hypot(t.c, t.d);
-    this.texts.push({ ...text, at: apply(t, text.at), height: text.height * scale, rotation: text.rotation + (similar ? similar.rotation : Math.atan2(t.b, t.a)) });
+    this.texts.push({
+      ...text,
+      at: apply(t, text.at),
+      height: text.height * scale,
+      rotation: text.rotation + (similar ? similar.rotation : Math.atan2(t.b, t.a)),
+      ...(text.fitLength !== undefined ? { fitLength: text.fitLength * scale } : {}),
+    });
   }
 }
 
@@ -614,7 +795,7 @@ class Builder {
 
 function textBox(text: DxfText): Point[] {
   const longest = text.lines.reduce((most, line) => Math.max(most, line.length), 0);
-  const width = longest * text.height * TEXT_WIDTH_PER_CHARACTER;
+  const width = text.fitLength ?? longest * text.height * TEXT_WIDTH_PER_CHARACTER * (text.widthFactor ?? 1);
   const heightTotal = text.height * (1 + (text.lines.length - 1) * MTEXT_LINE_PITCH);
   const left = -width * ANCHOR_SHARE[text.anchor];
   const top = text.hangsFromTop ? 0 : text.height;
@@ -700,7 +881,7 @@ export function parseDxfDrawing(dxf: string): DxfDrawing {
       }
     }
   }
-  const builder = new Builder(blocks, readLayers(sections));
+  const builder = new Builder(blocks, readLayers(sections), readStyles(sections));
   for (const section of sections) {
     if (section.section === 'ENTITIES') builder.entities(section.records, IDENTITY, 0);
   }
@@ -814,9 +995,14 @@ function textElements(texts: DxfText[], map: (p: Point) => Point, fmt: (value: n
     const [x, y] = map(text.at);
     const cos = Math.cos(text.rotation);
     const sin = Math.sin(text.rotation);
-    const size = exact(text.height);
+    const longestLine = text.lines.reduce((most, line) => Math.max(most, line.length), 0);
+    const effectiveHeight =
+      text.fitLength !== undefined && longestLine > 0
+        ? Math.min(text.height, text.fitLength / (longestLine * TEXT_WIDTH_PER_CHARACTER))
+        : text.height;
+    const size = exact(effectiveHeight);
     text.lines.forEach((line, index) => {
-      const drop = (text.hangsFromTop ? 1 : 0) * text.height + index * text.height * MTEXT_LINE_PITCH;
+      const drop = (text.hangsFromTop ? 1 : 0) * effectiveHeight + index * effectiveHeight * MTEXT_LINE_PITCH;
       // The drop runs down the rotated text, which is (sin, cos) in y-up units and (sin, -cos) after the page's y flip.
       const px = x + drop * sin;
       const py = y + drop * cos;
@@ -915,14 +1101,23 @@ export async function renderDxfDrawingToPdf(drawing: DxfDrawing): Promise<Buffer
     }
     for (const text of drawing.texts) {
       const [x, y] = map(text.at);
-      const size = text.height * scale;
+      const longestLine = text.lines.reduce((most, line) => Math.max(most, line.length), 0);
+      const effectiveHeight =
+        text.fitLength !== undefined && longestLine > 0
+          ? Math.min(text.height, text.fitLength / (longestLine * TEXT_WIDTH_PER_CHARACTER))
+          : text.height;
+      const size = effectiveHeight * scale;
+      const pdfAngle = text.fitLength !== undefined ? 0 : -text.rotation / DEGREES;
       text.lines.forEach((line, index) => {
-        const drop = ((text.hangsFromTop ? 1 : 0) * text.height + index * text.height * MTEXT_LINE_PITCH) * scale;
+        const drop = ((text.hangsFromTop ? 1 : 0) * effectiveHeight + index * effectiveHeight * MTEXT_LINE_PITCH) * scale;
         doc.save();
-        doc.translate(x + drop * Math.sin(text.rotation), y + drop * Math.cos(text.rotation));
-        doc.rotate(-text.rotation / DEGREES);
         doc.fillColor(TEXT_COLOUR).fontSize(size);
-        const shift = line === '' ? 0 : ANCHOR_SHARE[text.anchor] * doc.widthOfString(line);
+        const rawWidth = line === '' ? 0 : doc.widthOfString(line);
+        const shift = ANCHOR_SHARE[text.anchor] * rawWidth;
+        const tx = x + drop * Math.sin(text.rotation);
+        const ty = y + drop * Math.cos(text.rotation);
+        doc.translate(tx, ty);
+        if (pdfAngle !== 0) doc.rotate(pdfAngle);
         renderSafePdfText(doc, line, fontFallback.hasUnicodeFont, { lineBreak: false, baseline: 'alphabetic' }, -shift, 0);
         doc.restore();
       });

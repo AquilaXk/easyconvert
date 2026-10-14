@@ -94,6 +94,28 @@ describe('parseDxfDrawing', () => {
     expect(expectedY).toBeGreaterThan(bezier(0.5)[1]);
   });
 
+  it('evaluates a periodic or unclamped cubic SPLINE over its valid Cox-de Boor domain inside the control-point convex hull', () => {
+    const control: Array<[number, number]> = [[0, 0], [1, 3], [4, 3], [5, 0]];
+    const uniformKnots = [0, 1, 2, 3, 4, 5, 6, 7].map((k): [number, number] => [40, k]);
+    const body =
+      pairs([0, 'SPLINE'], [70, 11], [71, 3], [72, 8], [73, 4], ...uniformKnots) +
+      control.map(([x, y]) => pairs([10, x], [20, y], [30, 0])).join('');
+    const [curve] = polylines(parseDxfDrawing(dxf(body)).strokes);
+    expect(curve.points.length).toBeGreaterThanOrEqual(16);
+    for (const [x, y] of curve.points) {
+      expect(Number.isFinite(x)).toBe(true);
+      expect(Number.isFinite(y)).toBe(true);
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(x).toBeLessThanOrEqual(5);
+      expect(y).toBeGreaterThanOrEqual(0);
+      expect(y).toBeLessThanOrEqual(3);
+    }
+    // At the midpoint t = 3.5 of the valid domain [3, 4] on uniform knots [0..7], the cubic B-spline weights are [1, 23, 23, 1] / 48 -> (2.5, 2.875).
+    const mid = curve.points[Math.floor((curve.points.length - 1) / 2)];
+    near(mid[0], 2.5, 6);
+    near(mid[1], 138 / 48, 6);
+  });
+
   describe('blocks', () => {
     const block = (name: string, body: string, base: [number, number] = [0, 0]): string =>
       pairs([0, 'BLOCK'], [2, name], [10, base[0]], [20, base[1]]) + body + pairs([0, 'ENDBLK']);
@@ -133,6 +155,21 @@ describe('parseDxfDrawing', () => {
       for (const [x, y] of shape.points) near((x / 3) ** 2 + y ** 2, 1, 9);
     });
 
+    it('flips the OCS x axis of an INSERT when its extrusion z (code 230) is negative, and skips a degenerate zero-scale INSERT', () => {
+      const blk = block('B', pairs([0, 'LINE'], [10, 1], [20, 2], [11, 3], [21, 4]));
+      const inserts =
+        pairs([0, 'INSERT'], [2, 'B'], [10, 10], [20, 20], [230, -1]) +
+        pairs([0, 'INSERT'], [2, 'B'], [10, 99], [20, 99], [41, 1], [42, 1], [43, 0]);
+      const drawing = parseDxfDrawing(dxf(inserts, blk));
+      expect(drawing.strokes).toHaveLength(1);
+      const [line] = drawing.strokes as Array<Extract<DxfStroke, { kind: 'line' }>>;
+      // Extrusion z = -1 flips the OCS x axis to -WCS x: OCS (10 + 1, 20 + 2) -> (-11, 22), OCS (10 + 3, 20 + 4) -> (-13, 24).
+      near(line.a[0], -11);
+      near(line.a[1], 22);
+      near(line.b[0], -13);
+      near(line.b[1], 24);
+    });
+
     it('draws the anonymous block a DIMENSION names, and nested blocks', () => {
       const inner = block('INNER', pairs([0, 'LINE'], [10, 0], [20, 0], [11, 1], [21, 1]));
       const outer = block('OUTER', pairs([0, 'INSERT'], [2, 'INNER'], [10, 5], [20, 0]));
@@ -159,6 +196,68 @@ describe('parseDxfDrawing', () => {
       near(texts[0].rotation, Math.PI / 2);
       expect(texts[1].lines).toEqual(['NOTES', 'ALL one/two IN MM']);
       expect(texts[1].hangsFromTop).toBe(true);
+    });
+
+    it('places aligned, middle and fit TEXT along their alignment points, decodes %% codes, and renders R2007 linked MTEXT columns with single-column width', () => {
+      const body =
+        pairs([0, 'TEXT'], [10, 0], [20, 0], [11, 20], [21, 10], [40, 4], [72, 1], [73, 2], [1, '%%u100%%% %%o45%%d %%p0.1 %%c10 %%065']) +
+        pairs([0, 'TEXT'], [10, 15], [20, 0], [11, 35], [21, 5], [40, 4], [72, 3], [73, 0], [1, 'ALIGNED_LONG_TEXT']) +
+        pairs([0, 'TEXT'], [10, 15], [20, 0], [11, 35], [21, 5], [40, 4], [72, 5], [73, 0], [1, 'FIT_LONG_TEXT']) +
+        pairs([0, 'MTEXT'], [5, '80'], [10, 0], [20, 30], [40, 2], [41, 60], [71, 1], [1000, 'ACAD_MTEXT_COLUMN_INFO_BEGIN'], [1070, 48], [1040, 12], [1000, 'ACAD_MTEXT_COLUMNS_BEGIN'], [1005, '81'], [1, 'ALPHA BETA GAMMA']) +
+        pairs([0, 'MTEXT'], [5, '81'], [10, 50], [20, 30], [40, 2], [41, 60], [71, 1], [1, 'DELTA EPSILON ZETA']);
+      const { texts } = parseDxfDrawing(dxf(body));
+      expect(texts).toHaveLength(5);
+      expect(texts[0]).toMatchObject({ anchor: 'middle', lines: ['100% 45° ±0.1 Ø10 A'] });
+      near(texts[0].at[0], 20);
+      near(texts[0].at[1], 10 - 0.5 * 4);
+
+      const expectedSpan = Math.hypot(20, 5);
+      const expectedAngle = Math.atan2(5, 20);
+      // Aligned (72=3) derives baseline rotation from p1->p2 and scales height to fit spanLength.
+      near(texts[1].at[0], 25);
+      near(texts[1].at[1], 2.5);
+      near(texts[1].rotation, expectedAngle);
+      expect(texts[1].height).toBeLessThan(4);
+      // Fit (72=5) derives baseline rotation from p1->p2 and keeps nominal group 40 height while storing fitLength.
+      near(texts[2].at[0], 25);
+      near(texts[2].at[1], 2.5);
+      near(texts[2].rotation, expectedAngle);
+      near(texts[2].height, 4);
+      near(texts[2].fitLength ?? 0, expectedSpan);
+
+      // Both parent (handle 80) and linked column (handle 81) MTEXT entities are rendered and wrapped at single-column width 12 (max 10 chars at height 2).
+      expect(texts[3]).toMatchObject({ at: [0, 30], lines: ['ALPHA BETA', 'GAMMA'] });
+      expect(texts[4]).toMatchObject({ at: [50, 30], lines: ['DELTA', 'EPSILON', 'ZETA'] });
+    });
+
+    it('offsets MTEXT vertical attachment (group 71 = 4..9) and inherits STYLE widthFactor (group 41)', () => {
+      const tables =
+        pairs([0, 'TABLE'], [2, 'STYLE']) +
+        pairs([0, 'STYLE'], [2, 'NARROW'], [41, 0.5]) +
+        pairs([0, 'ENDTAB']);
+      const body =
+        pairs([0, 'TEXT'], [7, 'NARROW'], [10, 0], [20, 0], [40, 4], [1, 'STYLIZED']) +
+        pairs([0, 'MTEXT'], [10, 10], [20, 20], [40, 3], [71, 5], [1, 'TOP\\PBOTTOM']) +
+        pairs([0, 'MTEXT'], [10, 10], [20, 20], [40, 3], [71, 8], [1, 'TOP\\PBOTTOM']);
+      const { texts } = parseDxfDrawing(dxf(body, '', tables));
+      expect(texts[0].widthFactor).toBeCloseTo(0.5, 6);
+      // Two lines of height 3 with pitch 5/3 have total blockHeight = 3 * (1 + 5/3) = 8.
+      // Middle attachment (71=5) shifts top origin up by blockHeight / 2 = 4; Bottom attachment (71=8) shifts up by blockHeight = 8.
+      near(texts[1].at[0], 10);
+      near(texts[1].at[1], 24);
+      near(texts[2].at[0], 10);
+      near(texts[2].at[1], 28);
+    });
+
+    it('grows drawing extents to include text outside the stroke box and renders text at its true coordinates without clamping', () => {
+      const body =
+        pairs([0, 'LINE'], [10, 0], [20, 0], [11, 10], [21, 10]) +
+        pairs([0, 'TEXT'], [10, 50], [20, 40], [40, 2], [1, 'OUTSIDE']);
+      const drawing = parseDxfDrawing(dxf(body));
+      expect(drawing.extents.maxX).toBeGreaterThan(50);
+      expect(drawing.extents.maxY).toBeGreaterThanOrEqual(40);
+      const svg = dxfDrawingToSvg(drawing, 'unclamped');
+      expect(svg).toContain('<text x="50" y="-40"');
     });
 
     it('does not draw entities of a layer that is off or frozen', () => {
