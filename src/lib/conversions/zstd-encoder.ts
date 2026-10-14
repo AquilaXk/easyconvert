@@ -442,8 +442,9 @@ class MatchFinder {
       }
     }
 
-    if (bestLen < maxLen && bestLen < this.params.niceLength) {
-      const found = this.searchChain(p, maxLen, bestLen > chainFloor ? bestLen : chainFloor);
+    const floor = bestLen > chainFloor ? bestLen : chainFloor;
+    if (floor < maxLen && floor < this.params.niceLength) {
+      const found = this.searchChain(p, maxLen, floor);
       if (found > 0) {
         const score =
           found * this.literalBits - MATCH_OVERHEAD_BITS - OFFSET_SYMBOL_BITS - highBit32(this.bestOffset + 1);
