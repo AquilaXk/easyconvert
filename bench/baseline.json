@@ -36457,8 +36457,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.9746589964276917,
-      "delta": -1.9746589964276917,
+      "ours": 0.01411129025266078,
+      "delta": 0.01411129025266078,
       "ratio": null
     },
     "raw/arw->jpg/bd_rate_ssim": {
@@ -36467,8 +36467,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -9.023181322898854,
-      "delta": -9.023181322898854,
+      "ours": -8.887784627650685,
+      "delta": -8.887784627650685,
       "ratio": null
     },
     "raw/arw->jpg/bytes": {
@@ -36477,8 +36477,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 425652,
-      "delta": -45092,
+      "ours": 425607,
+      "delta": -45081,
       "ratio": null
     },
     "raw/arw->jpg/psnr": {
@@ -36487,8 +36487,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 42.218484,
-      "delta": -0.4336280000000059,
+      "ours": 41.380671,
+      "delta": -0.43829600000000113,
       "ratio": null
     },
     "raw/arw->jpg/ssim": {
@@ -36497,8 +36497,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.976357,
-      "delta": -0.00016300000000002424,
+      "ours": 0.9763,
+      "delta": -0.000200000000000089,
       "ratio": null
     },
     "raw/arw->jpg/throughput": {
@@ -36647,8 +36647,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.996133534974551,
-      "delta": -2.996133534974551,
+      "ours": -3.3988294077449557,
+      "delta": -3.3988294077449557,
       "ratio": null
     },
     "raw/class-canon->jpg/bd_rate_ssim": {
@@ -36657,8 +36657,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.148512879376924,
-      "delta": -4.148512879376924,
+      "ours": -4.217468384090013,
+      "delta": -4.217468384090013,
       "ratio": null
     },
     "raw/class-canon->jpg/bytes": {
@@ -36667,8 +36667,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 548063,
-      "delta": -103554,
+      "ours": 548080.6666666666,
+      "delta": -103594.33333333337,
       "ratio": null
     },
     "raw/class-canon->jpg/converts": {
@@ -36687,8 +36687,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 43.06568166666667,
-      "delta": -0.4516183333333288,
+      "ours": 42.55739500000001,
+      "delta": -0.4089219999999969,
       "ratio": null
     },
     "raw/class-canon->jpg/ssim": {
@@ -36697,8 +36697,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.9614476666666666,
-      "delta": -0.0031413333333334403,
+      "ours": 0.9613353333333334,
+      "delta": -0.003138333333333243,
       "ratio": null
     },
     "raw/class-canon->png/bytes": {
@@ -36837,8 +36837,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.466469021914114,
-      "delta": -4.466469021914114,
+      "ours": 14.93836535207057,
+      "delta": 14.93836535207057,
       "ratio": null
     },
     "raw/class-dng->jpg/bd_rate_ssim": {
@@ -36847,8 +36847,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.684875003742631,
-      "delta": -8.684875003742631,
+      "ours": -7.7399645599671745,
+      "delta": -7.7399645599671745,
       "ratio": null
     },
     "raw/class-dng->jpg/bytes": {
@@ -36857,8 +36857,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 240409,
-      "delta": -30418,
+      "ours": 240407.33333333334,
+      "delta": -30432.99999999997,
       "ratio": null
     },
     "raw/class-dng->jpg/converts": {
@@ -36877,8 +36877,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.054169,
-      "delta": -0.18761133333333646,
+      "ours": 42.638496333333336,
+      "delta": -0.5533556666666684,
       "ratio": null
     },
     "raw/class-dng->jpg/ssim": {
@@ -36887,8 +36887,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.9729853333333334,
-      "delta": 0.00042933333333339263,
+      "ours": 0.9728106666666667,
+      "delta": 0.0003506666666667213,
       "ratio": null
     },
     "raw/class-dng->png/bytes": {
@@ -36927,8 +36927,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.002054265057021,
-      "delta": -5.002054265057021,
+      "ours": -3.128546973735069,
+      "delta": -3.128546973735069,
       "ratio": null
     },
     "raw/class-nikon->jpg/bd_rate_ssim": {
@@ -36937,8 +36937,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -10.877255652241637,
-      "delta": -10.877255652241637,
+      "ours": -10.95092583488088,
+      "delta": -10.95092583488088,
       "ratio": null
     },
     "raw/class-nikon->jpg/bytes": {
@@ -36947,8 +36947,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 787843.5,
-      "delta": -95532,
+      "ours": 787878.5,
+      "delta": -95413.5,
       "ratio": null
     },
     "raw/class-nikon->jpg/converts": {
@@ -36967,8 +36967,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 40.7941285,
-      "delta": -0.16218949999999666,
+      "ours": 41.4447335,
+      "delta": -0.2351979999999969,
       "ratio": null
     },
     "raw/class-nikon->jpg/ssim": {
@@ -36977,8 +36977,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.968547,
-      "delta": 0.0003570000000000517,
+      "ours": 0.9684305,
+      "delta": 0.0003769999999999607,
       "ratio": null
     },
     "raw/class-nikon->png/bytes": {
@@ -37017,8 +37017,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -7.65516845675468,
-      "delta": -7.65516845675468,
+      "ours": -4.7719596695015465,
+      "delta": -4.7719596695015465,
       "ratio": null
     },
     "raw/class-olympus->jpg/bd_rate_ssim": {
@@ -37027,8 +37027,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.140885037751481,
-      "delta": -11.140885037751481,
+      "ours": -11.046589720328848,
+      "delta": -11.046589720328848,
       "ratio": null
     },
     "raw/class-olympus->jpg/bytes": {
@@ -37037,8 +37037,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 1239167,
-      "delta": -156796,
+      "ours": 1239196,
+      "delta": -156596,
       "ratio": null
     },
     "raw/class-olympus->jpg/converts": {
@@ -37057,8 +37057,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 37.484191,
-      "delta": -0.08313799999999816,
+      "ours": 37.237919,
+      "delta": -0.14769300000000385,
       "ratio": null
     },
     "raw/class-olympus->jpg/ssim": {
@@ -37067,8 +37067,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.894986,
-      "delta": 0.0002369999999999317,
+      "ours": 0.894901,
+      "delta": 0.00019399999999991646,
       "ratio": null
     },
     "raw/class-olympus->png/bytes": {
@@ -37207,8 +37207,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.3597834081852085,
-      "delta": -5.3597834081852085,
+      "ours": -4.06655038434997,
+      "delta": -4.06655038434997,
       "ratio": null
     },
     "raw/class-panasonic->jpg/bd_rate_ssim": {
@@ -37217,8 +37217,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -13.700870011959392,
-      "delta": -13.700870011959392,
+      "ours": -13.658302092600284,
+      "delta": -13.658302092600284,
       "ratio": null
     },
     "raw/class-panasonic->jpg/bytes": {
@@ -37227,8 +37227,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 775378.5,
-      "delta": -77887.5,
+      "ours": 775357,
+      "delta": -77883,
       "ratio": null
     },
     "raw/class-panasonic->jpg/converts": {
@@ -37247,8 +37247,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 39.090633499999996,
-      "delta": -0.1114470000000054,
+      "ours": 38.6696785,
+      "delta": -0.15200699999999756,
       "ratio": null
     },
     "raw/class-panasonic->jpg/ssim": {
@@ -37257,8 +37257,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.9536155,
-      "delta": 0.0030089999999999284,
+      "ours": 0.9534750000000001,
+      "delta": 0.0029890000000001304,
       "ratio": null
     },
     "raw/class-panasonic->png/bytes": {
@@ -37297,8 +37297,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -6.617472209854769,
-      "delta": -6.617472209854769,
+      "ours": 31.818343554599494,
+      "delta": 31.818343554599494,
       "ratio": null
     },
     "raw/class-pentax->jpg/bd_rate_ssim": {
@@ -37307,8 +37307,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.009410538355045,
-      "delta": -8.009410538355045,
+      "ours": -5.739365338633961,
+      "delta": -5.739365338633961,
       "ratio": null
     },
     "raw/class-pentax->jpg/bytes": {
@@ -37317,8 +37317,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 401084,
-      "delta": -76144,
+      "ours": 401103,
+      "delta": -76063,
       "ratio": null
     },
     "raw/class-pentax->jpg/converts": {
@@ -37337,8 +37337,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 46.534402,
-      "delta": -0.15003800000000211,
+      "ours": 44.406344,
+      "delta": -0.7832849999999993,
       "ratio": null
     },
     "raw/class-pentax->jpg/ssim": {
@@ -37347,8 +37347,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.982749,
-      "delta": -0.000148000000000037,
+      "ours": 0.982485,
+      "delta": -0.0002669999999999062,
       "ratio": null
     },
     "raw/class-pentax->png/bytes": {
@@ -37387,8 +37387,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.98932053651393,
-      "delta": -4.98932053651393,
+      "ours": 12.66226007774054,
+      "delta": 12.66226007774054,
       "ratio": null
     },
     "raw/class-sony->jpg/bd_rate_ssim": {
@@ -37397,8 +37397,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -12.441082270811654,
-      "delta": -12.441082270811654,
+      "ours": -11.50256857867632,
+      "delta": -11.50256857867632,
       "ratio": null
     },
     "raw/class-sony->jpg/bytes": {
@@ -37407,8 +37407,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 1633120,
-      "delta": -203912,
+      "ours": 1633098,
+      "delta": -203793,
       "ratio": null
     },
     "raw/class-sony->jpg/converts": {
@@ -37427,8 +37427,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 43.22037,
-      "delta": -0.25983599999999996,
+      "ours": 42.208103,
+      "delta": -0.7367519999999956,
       "ratio": null
     },
     "raw/class-sony->jpg/ssim": {
@@ -37437,8 +37437,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.974057,
-      "delta": 0.0003709999999998992,
+      "ours": 0.973684,
+      "delta": 0.000156000000000045,
       "ratio": null
     },
     "raw/class-sony->png/bytes": {
@@ -37477,8 +37477,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.835092067502393,
-      "delta": -8.835092067502393,
+      "ours": 15.877623992145962,
+      "delta": 15.877623992145962,
       "ratio": null
     },
     "raw/class-xtrans->jpg/bd_rate_ssim": {
@@ -37487,8 +37487,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -9.955593897994873,
-      "delta": -9.955593897994873,
+      "ours": -9.264164870495462,
+      "delta": -9.264164870495462,
       "ratio": null
     },
     "raw/class-xtrans->jpg/bytes": {
@@ -37497,8 +37497,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 610548,
-      "delta": -124234,
+      "ours": 610519,
+      "delta": -124288,
       "ratio": null
     },
     "raw/class-xtrans->jpg/converts": {
@@ -37517,8 +37517,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.260132,
-      "delta": -0.1447210000000041,
+      "ours": 42.92162,
+      "delta": -0.4782300000000035,
       "ratio": null
     },
     "raw/class-xtrans->jpg/ssim": {
@@ -37527,8 +37527,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.969282,
-      "delta": -0.0006470000000000642,
+      "ours": 0.969094,
+      "delta": -0.0007159999999999389,
       "ratio": null
     },
     "raw/class-xtrans->png/bytes": {
@@ -37667,8 +37667,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.062064116348678,
-      "delta": -8.062064116348678,
+      "ours": -20.699000750961805,
+      "delta": -20.699000750961805,
       "ratio": null
     },
     "raw/dng->jpg/bd_rate_ssim": {
@@ -37677,8 +37677,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.135509975689011,
-      "delta": -4.135509975689011,
+      "ours": -4.420618598530024,
+      "delta": -4.420618598530024,
       "ratio": null
     },
     "raw/dng->jpg/bytes": {
@@ -37687,8 +37687,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 23570,
-      "delta": -4949,
+      "ours": 23568,
+      "delta": -4954,
       "ratio": null
     },
     "raw/dng->jpg/psnr": {
@@ -37697,8 +37697,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.092935,
-      "delta": -0.2184790000000021,
+      "ours": 42.903598,
+      "delta": 0.11750700000000336,
       "ratio": null
     },
     "raw/dng->jpg/ssim": {
@@ -37707,8 +37707,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.967443,
-      "delta": -0.0019489999999999785,
+      "ours": 0.967357,
+      "delta": -0.0019040000000000168,
       "ratio": null
     },
     "raw/dng->jpg/throughput": {
@@ -37757,8 +37757,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": 0.012205319752234267,
-      "delta": 0.012205319752234267,
+      "ours": 0.405751614942651,
+      "delta": 0.405751614942651,
       "ratio": null
     },
     "raw/raw-canon-eos450d.cr2->jpg/bd_rate_ssim": {
@@ -37767,8 +37767,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.2102111863109175,
-      "delta": -2.2102111863109175,
+      "ours": -2.186771983188218,
+      "delta": -2.186771983188218,
       "ratio": null
     },
     "raw/raw-canon-eos450d.cr2->jpg/bytes": {
@@ -37777,8 +37777,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 1103452,
-      "delta": -197744,
+      "ours": 1103498,
+      "delta": -197714,
       "ratio": null
     },
     "raw/raw-canon-eos450d.cr2->jpg/converts": {
@@ -37797,8 +37797,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 40.447521,
-      "delta": -0.5488649999999993,
+      "ours": 40.039142,
+      "delta": -0.5260630000000006,
       "ratio": null
     },
     "raw/raw-canon-eos450d.cr2->jpg/ssim": {
@@ -37807,8 +37807,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.943058,
-      "delta": -0.00541400000000003,
+      "ours": 0.942936,
+      "delta": -0.005449999999999955,
       "ratio": null
     },
     "raw/raw-canon-eos450d.cr2->png/bytes": {
@@ -37967,8 +37967,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.8439550259450135,
-      "delta": -5.8439550259450135,
+      "ours": 8.106062840952454,
+      "delta": 8.106062840952454,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-compress.dng->jpg/bd_rate_ssim": {
@@ -37977,8 +37977,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.06340484692184,
-      "delta": -8.06340484692184,
+      "ours": -7.19240046945826,
+      "delta": -7.19240046945826,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-compress.dng->jpg/bytes": {
@@ -37987,8 +37987,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 89744,
-      "delta": -8043,
+      "ours": 89745,
+      "delta": -8058,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-compress.dng->jpg/converts": {
@@ -38007,8 +38007,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 46.046556,
-      "delta": -0.11752599999999802,
+      "ours": 44.488144,
+      "delta": -0.6316610000000011,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-compress.dng->jpg/ssim": {
@@ -38017,8 +38017,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.986813,
-      "delta": -0.00000999999999995449,
+      "ours": 0.986665,
+      "delta": -0.00012599999999995948,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-compress.dng->jpg/throughput": {
@@ -38177,8 +38177,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -3.057616937238594,
-      "delta": -3.057616937238594,
+      "ours": -3.339026152662361,
+      "delta": -3.339026152662361,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-m24.dng->jpg/bd_rate_ssim": {
@@ -38187,8 +38187,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.354199649563235,
-      "delta": -11.354199649563235,
+      "ours": -11.298849592563176,
+      "delta": -11.298849592563176,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-m24.dng->jpg/bytes": {
@@ -38197,8 +38197,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 263843,
-      "delta": -25876,
+      "ours": 263834,
+      "delta": -25869,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-m24.dng->jpg/converts": {
@@ -38217,8 +38217,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 39.226638,
-      "delta": -0.2665969999999973,
+      "ours": 38.835612,
+      "delta": -0.2279440000000008,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-m24.dng->jpg/ssim": {
@@ -38227,8 +38227,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.948048,
-      "delta": 0.001387000000000027,
+      "ours": 0.947921,
+      "delta": 0.0013650000000000606,
       "ratio": null
     },
     "raw/raw-canon-eos5d3-m24.dng->png/bytes": {
@@ -38367,8 +38367,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -6.47368716382103,
-      "delta": -6.47368716382103,
+      "ours": -7.96401023486899,
+      "delta": -7.96401023486899,
       "ratio": null
     },
     "raw/raw-canon-g1.crw->jpg/bd_rate_ssim": {
@@ -38377,8 +38377,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.481560964128299,
-      "delta": -8.481560964128299,
+      "ours": -8.549150841093711,
+      "delta": -8.549150841093711,
       "ratio": null
     },
     "raw/raw-canon-g1.crw->jpg/bytes": {
@@ -38388,7 +38388,7 @@
         "rel": 0.03
       },
       "ours": 168074,
-      "delta": -27317,
+      "delta": -27328,
       "ratio": null
     },
     "raw/raw-canon-g1.crw->jpg/converts": {
@@ -38407,8 +38407,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 43.779449,
-      "delta": -0.22166899999999856,
+      "ours": 42.679775,
+      "delta": -0.12407000000000323,
       "ratio": null
     },
     "raw/raw-canon-g1.crw->jpg/ssim": {
@@ -38417,8 +38417,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.965036,
-      "delta": -0.0011550000000000171,
+      "ours": 0.964968,
+      "delta": -0.0011309999999999931,
       "ratio": null
     },
     "raw/raw-canon-g1.crw->png/bytes": {
@@ -38457,8 +38457,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.526918760854857,
-      "delta": -2.526918760854857,
+      "ours": -2.6382296033085284,
+      "delta": -2.6382296033085284,
       "ratio": null
     },
     "raw/raw-canon-r6.cr3->jpg/bd_rate_ssim": {
@@ -38467,8 +38467,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -1.7537664876915549,
-      "delta": -1.7537664876915549,
+      "ours": -1.9164823279881116,
+      "delta": -1.9164823279881116,
       "ratio": null
     },
     "raw/raw-canon-r6.cr3->jpg/bytes": {
@@ -38477,8 +38477,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 372663,
-      "delta": -85601,
+      "ours": 372670,
+      "delta": -85741,
       "ratio": null
     },
     "raw/raw-canon-r6.cr3->jpg/converts": {
@@ -38497,8 +38497,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.970075,
-      "delta": -0.5843209999999956,
+      "ours": 44.953268,
+      "delta": -0.5766330000000011,
       "ratio": null
     },
     "raw/raw-canon-r6.cr3->jpg/ssim": {
@@ -38507,8 +38507,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.976249,
-      "delta": -0.002854999999999941,
+      "ours": 0.976102,
+      "delta": -0.002834000000000003,
       "ratio": null
     },
     "raw/raw-canon-r6.cr3->png/bytes": {
@@ -38547,8 +38547,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.835092067502393,
-      "delta": -8.835092067502393,
+      "ours": 15.877623992145962,
+      "delta": 15.877623992145962,
       "ratio": null
     },
     "raw/raw-fujifilm-xe1.raf->jpg/bd_rate_ssim": {
@@ -38557,8 +38557,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -9.955593897994873,
-      "delta": -9.955593897994873,
+      "ours": -9.264164870495462,
+      "delta": -9.264164870495462,
       "ratio": null
     },
     "raw/raw-fujifilm-xe1.raf->jpg/bytes": {
@@ -38567,8 +38567,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 610548,
-      "delta": -124234,
+      "ours": 610519,
+      "delta": -124288,
       "ratio": null
     },
     "raw/raw-fujifilm-xe1.raf->jpg/converts": {
@@ -38587,8 +38587,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 44.260132,
-      "delta": -0.1447210000000041,
+      "ours": 42.92162,
+      "delta": -0.4782300000000035,
       "ratio": null
     },
     "raw/raw-fujifilm-xe1.raf->jpg/ssim": {
@@ -38597,8 +38597,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.969282,
-      "delta": -0.0006470000000000642,
+      "ours": 0.969094,
+      "delta": -0.0007159999999999389,
       "ratio": null
     },
     "raw/raw-fujifilm-xe1.raf->png/bytes": {
@@ -38637,8 +38637,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.319891477895965,
-      "delta": -4.319891477895965,
+      "ours": 0.9337089538140164,
+      "delta": 0.9337089538140164,
       "ratio": null
     },
     "raw/raw-nikon-d70.nef->jpg/bd_rate_ssim": {
@@ -38647,8 +38647,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -7.722335829262006,
-      "delta": -7.722335829262006,
+      "ours": -7.785676856246104,
+      "delta": -7.785676856246104,
       "ratio": null
     },
     "raw/raw-nikon-d70.nef->jpg/bytes": {
@@ -38657,8 +38657,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 329958,
-      "delta": -42866,
+      "ours": 329992,
+      "delta": -42818,
       "ratio": null
     },
     "raw/raw-nikon-d70.nef->jpg/converts": {
@@ -38677,8 +38677,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 41.511191,
-      "delta": -0.1315930000000023,
+      "ours": 43.371146,
+      "delta": -0.3647709999999975,
       "ratio": null
     },
     "raw/raw-nikon-d70.nef->jpg/ssim": {
@@ -38687,8 +38687,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.978531,
-      "delta": -0.0005809999999999427,
+      "ours": 0.978362,
+      "delta": -0.0005810000000000537,
       "ratio": null
     },
     "raw/raw-nikon-d70.nef->png/bytes": {
@@ -38727,8 +38727,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -5.684217052218077,
-      "delta": -5.684217052218077,
+      "ours": -7.190802901284155,
+      "delta": -7.190802901284155,
       "ratio": null
     },
     "raw/raw-nikon-d90.nef->jpg/bd_rate_ssim": {
@@ -38737,8 +38737,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -14.032175475221266,
-      "delta": -14.032175475221266,
+      "ours": -14.11617481351566,
+      "delta": -14.11617481351566,
       "ratio": null
     },
     "raw/raw-nikon-d90.nef->jpg/bytes": {
@@ -38747,8 +38747,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 1245729,
-      "delta": -148198,
+      "ours": 1245765,
+      "delta": -148009,
       "ratio": null
     },
     "raw/raw-nikon-d90.nef->jpg/converts": {
@@ -38767,8 +38767,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 40.077066,
-      "delta": -0.19278599999999813,
+      "ours": 39.518321,
+      "delta": -0.1056249999999963,
       "ratio": null
     },
     "raw/raw-nikon-d90.nef->jpg/ssim": {
@@ -38777,8 +38777,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.958563,
-      "delta": 0.0012950000000000461,
+      "ours": 0.958499,
+      "delta": 0.001334999999999975,
       "ratio": null
     },
     "raw/raw-nikon-d90.nef->png/bytes": {
@@ -38817,8 +38817,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -7.65516845675468,
-      "delta": -7.65516845675468,
+      "ours": -4.7719596695015465,
+      "delta": -4.7719596695015465,
       "ratio": null
     },
     "raw/raw-olympus-epl1.orf->jpg/bd_rate_ssim": {
@@ -38827,8 +38827,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.140885037751481,
-      "delta": -11.140885037751481,
+      "ours": -11.046589720328848,
+      "delta": -11.046589720328848,
       "ratio": null
     },
     "raw/raw-olympus-epl1.orf->jpg/bytes": {
@@ -38837,8 +38837,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 1239167,
-      "delta": -156796,
+      "ours": 1239196,
+      "delta": -156596,
       "ratio": null
     },
     "raw/raw-olympus-epl1.orf->jpg/converts": {
@@ -38857,8 +38857,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 37.484191,
-      "delta": -0.08313799999999816,
+      "ours": 37.237919,
+      "delta": -0.14769300000000385,
       "ratio": null
     },
     "raw/raw-olympus-epl1.orf->jpg/ssim": {
@@ -38867,8 +38867,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.894986,
-      "delta": 0.0002369999999999317,
+      "ours": 0.894901,
+      "delta": 0.00019399999999991646,
       "ratio": null
     },
     "raw/raw-olympus-epl1.orf->png/bytes": {
@@ -38907,8 +38907,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.358012689873303,
-      "delta": -4.358012689873303,
+      "ours": -3.3320247710247886,
+      "delta": -3.3320247710247886,
       "ratio": null
     },
     "raw/raw-panasonic-g1.rw2->jpg/bd_rate_ssim": {
@@ -38917,8 +38917,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -13.190543741165595,
-      "delta": -13.190543741165595,
+      "ours": -13.177361734205295,
+      "delta": -13.177361734205295,
       "ratio": null
     },
     "raw/raw-panasonic-g1.rw2->jpg/bytes": {
@@ -38927,8 +38927,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 1291556,
-      "delta": -136895,
+      "ours": 1291480,
+      "delta": -136888,
       "ratio": null
     },
     "raw/raw-panasonic-g1.rw2->jpg/converts": {
@@ -38947,8 +38947,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 39.327875,
-      "delta": -0.22431600000000174,
+      "ours": 38.858376,
+      "delta": -0.24002500000000282,
       "ratio": null
     },
     "raw/raw-panasonic-g1.rw2->jpg/ssim": {
@@ -38957,8 +38957,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.960697,
-      "delta": 0.0015279999999999738,
+      "ours": 0.960534,
+      "delta": 0.0015300000000000313,
       "ratio": null
     },
     "raw/raw-panasonic-g1.rw2->png/bytes": {
@@ -39097,8 +39097,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -6.361554126497115,
-      "delta": -6.361554126497115,
+      "ours": -4.801075997675152,
+      "delta": -4.801075997675152,
       "ratio": null
     },
     "raw/raw-panasonic-lx7.rw2->jpg/bd_rate_ssim": {
@@ -39107,8 +39107,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -14.21119628275319,
-      "delta": -14.21119628275319,
+      "ours": -14.13924245099527,
+      "delta": -14.13924245099527,
       "ratio": null
     },
     "raw/raw-panasonic-lx7.rw2->jpg/bytes": {
@@ -39117,8 +39117,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 259201,
-      "delta": -18880,
+      "ours": 259234,
+      "delta": -18878,
       "ratio": null
     },
     "raw/raw-panasonic-lx7.rw2->jpg/converts": {
@@ -39137,8 +39137,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 38.853392,
-      "delta": 0.001421999999998036,
+      "ours": 38.480981,
+      "delta": -0.06398899999999941,
       "ratio": null
     },
     "raw/raw-panasonic-lx7.rw2->jpg/ssim": {
@@ -39147,8 +39147,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.946534,
-      "delta": 0.004489999999999994,
+      "ours": 0.946416,
+      "delta": 0.0044480000000000075,
       "ratio": null
     },
     "raw/raw-panasonic-lx7.rw2->png/bytes": {
@@ -39187,8 +39187,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.497835102558733,
-      "delta": -4.497835102558733,
+      "ours": 40.04805936792162,
+      "delta": 40.04805936792162,
       "ratio": null
     },
     "raw/raw-pentax-k5.dng->jpg/bd_rate_ssim": {
@@ -39197,8 +39197,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -6.63702051474282,
-      "delta": -6.63702051474282,
+      "ours": -4.72864361788009,
+      "delta": -4.72864361788009,
       "ratio": null
     },
     "raw/raw-pentax-k5.dng->jpg/bytes": {
@@ -39207,8 +39207,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 367640,
-      "delta": -57335,
+      "ours": 367643,
+      "delta": -57372,
       "ratio": null
     },
     "raw/raw-pentax-k5.dng->jpg/converts": {
@@ -39227,8 +39227,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 46.889313,
-      "delta": -0.17871099999999984,
+      "ours": 44.591733,
+      "delta": -0.8004620000000031,
       "ratio": null
     },
     "raw/raw-pentax-k5.dng->jpg/ssim": {
@@ -39237,8 +39237,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.984095,
-      "delta": -0.00008899999999989472,
+      "ours": 0.983846,
+      "delta": -0.00018700000000004824,
       "ratio": null
     },
     "raw/raw-pentax-k5.dng->png/bytes": {
@@ -39277,8 +39277,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -6.617472209854769,
-      "delta": -6.617472209854769,
+      "ours": 31.818343554599494,
+      "delta": 31.818343554599494,
       "ratio": null
     },
     "raw/raw-pentax-k5.pef->jpg/bd_rate_ssim": {
@@ -39287,8 +39287,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -8.009410538355045,
-      "delta": -8.009410538355045,
+      "ours": -5.739365338633961,
+      "delta": -5.739365338633961,
       "ratio": null
     },
     "raw/raw-pentax-k5.pef->jpg/bytes": {
@@ -39297,8 +39297,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 401084,
-      "delta": -76144,
+      "ours": 401103,
+      "delta": -76063,
       "ratio": null
     },
     "raw/raw-pentax-k5.pef->jpg/converts": {
@@ -39317,8 +39317,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 46.534402,
-      "delta": -0.15003800000000211,
+      "ours": 44.406344,
+      "delta": -0.7832849999999993,
       "ratio": null
     },
     "raw/raw-pentax-k5.pef->jpg/ssim": {
@@ -39327,8 +39327,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.982749,
-      "delta": -0.000148000000000037,
+      "ours": 0.982485,
+      "delta": -0.0002669999999999062,
       "ratio": null
     },
     "raw/raw-pentax-k5.pef->png/bytes": {
@@ -39367,8 +39367,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -4.98932053651393,
-      "delta": -4.98932053651393,
+      "ours": 12.66226007774054,
+      "delta": 12.66226007774054,
       "ratio": null
     },
     "raw/raw-sony-a7m2.arw->jpg/bd_rate_ssim": {
@@ -39377,8 +39377,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -12.441082270811654,
-      "delta": -12.441082270811654,
+      "ours": -11.50256857867632,
+      "delta": -11.50256857867632,
       "ratio": null
     },
     "raw/raw-sony-a7m2.arw->jpg/bytes": {
@@ -39387,8 +39387,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 1633120,
-      "delta": -203912,
+      "ours": 1633098,
+      "delta": -203793,
       "ratio": null
     },
     "raw/raw-sony-a7m2.arw->jpg/converts": {
@@ -39407,8 +39407,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 43.22037,
-      "delta": -0.25983599999999996,
+      "ours": 42.208103,
+      "delta": -0.7367519999999956,
       "ratio": null
     },
     "raw/raw-sony-a7m2.arw->jpg/ssim": {
@@ -39417,8 +39417,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.974057,
-      "delta": 0.0003709999999998992,
+      "ours": 0.973684,
+      "delta": 0.000156000000000045,
       "ratio": null
     },
     "raw/raw-sony-a7m2.arw->png/bytes": {
