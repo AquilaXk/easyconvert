@@ -237,9 +237,20 @@ interface Histogram {
   lab: Float64Array;
 }
 
+const HISTOGRAM_COUNTS = new Uint32Array(HISTOGRAM_BINS);
+const HISTOGRAM_SUMS_R = new Uint32Array(HISTOGRAM_BINS);
+const HISTOGRAM_SUMS_G = new Uint32Array(HISTOGRAM_BINS);
+const HISTOGRAM_SUMS_B = new Uint32Array(HISTOGRAM_BINS);
+
 function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTransparent: boolean): Histogram {
-  const counts = new Uint32Array(HISTOGRAM_BINS);
-  const sums = new Float64Array(HISTOGRAM_BINS * RGB_STRIDE);
+  const counts = HISTOGRAM_COUNTS;
+  const sumsR = HISTOGRAM_SUMS_R;
+  const sumsG = HISTOGRAM_SUMS_G;
+  const sumsB = HISTOGRAM_SUMS_B;
+  counts.fill(0);
+  sumsR.fill(0);
+  sumsG.fill(0);
+  sumsB.fill(0);
   for (let p = 0; p < pixelCount; p += 1) {
     const i = p * RGBA_STRIDE;
     if (ignoreTransparent && pixels[i + 3] < QUANT_ALPHA_THRESHOLD) continue;
@@ -248,9 +259,9 @@ function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTra
     const b = pixels[i + 2];
     const bin = ((r >> HISTOGRAM_SHIFT) << (2 * QUANT_HISTOGRAM_BITS)) | ((g >> HISTOGRAM_SHIFT) << QUANT_HISTOGRAM_BITS) | (b >> HISTOGRAM_SHIFT);
     counts[bin] += 1;
-    sums[bin * RGB_STRIDE] += r;
-    sums[bin * RGB_STRIDE + 1] += g;
-    sums[bin * RGB_STRIDE + 2] += b;
+    sumsR[bin] += r;
+    sumsG[bin] += g;
+    sumsB[bin] += b;
   }
   let occupied = 0;
   for (let bin = 0; bin < HISTOGRAM_BINS; bin += 1) if (counts[bin] > 0) occupied += 1;
@@ -262,9 +273,9 @@ function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTra
     if (n === 0) continue;
     weight[k] = n;
     linearToOklab(
-      srgbToLinear(sums[bin * RGB_STRIDE] / n),
-      srgbToLinear(sums[bin * RGB_STRIDE + 1] / n),
-      srgbToLinear(sums[bin * RGB_STRIDE + 2] / n),
+      srgbToLinear(sumsR[bin] / n),
+      srgbToLinear(sumsG[bin] / n),
+      srgbToLinear(sumsB[bin] / n),
       lab,
       k * RGB_STRIDE
     );
@@ -360,21 +371,24 @@ function medianCut(histogram: Histogram, k: number): { order: Uint32Array; boxes
 }
 
 /** Weighted k-means over the histogram from the median-cut centroids; returns the refined centroids (L, a, b). */
-function refineCentroids(histogram: Histogram, initial: Float64Array, count: number): Float64Array {
+function refineCentroids(histogram: Histogram, initial: Float64Array, count: number, initialAssigned?: Int32Array): Float64Array {
   let centroids = Float64Array.from(initial);
   const sums = new Float64Array(count * RGB_STRIDE);
   const weights = new Float64Array(count);
-  const assigned = new Int32Array(histogram.size);
+  const assigned = initialAssigned ? Int32Array.from(initialAssigned) : new Int32Array(histogram.size).fill(-1);
   for (let iteration = 0; iteration < QUANT_MAX_ITERATIONS; iteration += 1) {
     const tree = new KdTree3(centroids, count);
     sums.fill(0);
     weights.fill(0);
     let worst = -1;
     let worstDistance = -1;
+    let lastCluster = 0;
     for (let e = 0; e < histogram.size; e += 1) {
       const o = e * RGB_STRIDE;
-      const c = tree.nearestIndex(histogram.lab[o], histogram.lab[o + 1], histogram.lab[o + 2]);
+      const hint = assigned[e] >= 0 ? assigned[e] : lastCluster;
+      const c = tree.nearestIndex(histogram.lab[o], histogram.lab[o + 1], histogram.lab[o + 2], hint);
       assigned[e] = c;
+      lastCluster = c;
       const w = histogram.weight[e];
       weights[c] += w;
       sums[c * RGB_STRIDE] += w * histogram.lab[o];
@@ -428,12 +442,14 @@ function buildPalette(pixels: ArrayLike<number>, pixelCount: number, maxColors: 
   const histogram = buildHistogram(pixels, pixelCount, ignoreTransparent);
   const { order, boxes } = medianCut(histogram, maxColors);
   const initial = new Float64Array(boxes.length * RGB_STRIDE);
+  const initialAssigned = new Int32Array(histogram.size);
   const mean = new Float64Array(RGB_STRIDE);
   boxes.forEach((box, i) => {
     boxStatistics(histogram, order, box.start, box.end, mean);
     initial.set(mean, i * RGB_STRIDE);
+    for (let j = box.start; j < box.end; j += 1) initialAssigned[order[j]] = i;
   });
-  const centroids = refineCentroids(histogram, initial, boxes.length);
+  const centroids = refineCentroids(histogram, initial, boxes.length, initialAssigned);
   const palette = new Uint8Array(boxes.length * RGB_STRIDE);
   for (let i = 0; i < boxes.length; i += 1) {
     const rgb = oklabToRgb({ L: centroids[i * RGB_STRIDE], a: centroids[i * RGB_STRIDE + 1], b: centroids[i * RGB_STRIDE + 2] });
@@ -497,14 +513,27 @@ function paletteSpacing(model: PaletteModel): { linear: number; oklab: number } 
   return { linear: median(linear), oklab: median(perceptual) };
 }
 
+const MAP_CACHE_BITS = 14;
+const MAP_CACHE_SIZE = 1 << MAP_CACHE_BITS;
+const MAP_CACHE_SHIFT = 32 - MAP_CACHE_BITS;
+const MAP_CACHE_KEYS = new Int32Array(MAP_CACHE_SIZE);
+const MAP_CACHE_INDICES = new Uint16Array(MAP_CACHE_SIZE);
+const MAP_CACHE_DIST2 = new Float64Array(MAP_CACHE_SIZE);
+const MAP_CACHE_LAB = new Float64Array(MAP_CACHE_SIZE * RGB_STRIDE);
+
 function mapNearest(pixels: ArrayLike<number>, pixelCount: number, model: PaletteModel, transparentIndex: number, runTolerance = 0): Uint8Array {
   const out = new Uint8Array(pixelCount);
-  if (pixelCount >= GRID_MIN_PIXELS) model.tree.enableGrid();
   const lab = new Float64Array(RGB_STRIDE);
   const keepsRuns = runTolerance > 0;
   const distanceFactor = (1 + runTolerance) ** 2;
+  const cacheKeys = MAP_CACHE_KEYS;
+  cacheKeys.fill(-1);
+  const cacheIndices = MAP_CACHE_INDICES;
+  const cacheDist2 = keepsRuns ? MAP_CACHE_DIST2 : null;
+  const cacheLab = keepsRuns ? MAP_CACHE_LAB : null;
   let lastKey = -1;
   let lastIndex = 0;
+  let lastNearest = 0;
   let previousIndex = -1;
   for (let p = 0; p < pixelCount; p += 1) {
     const i = p * RGBA_STRIDE;
@@ -515,14 +544,46 @@ function mapNearest(pixels: ArrayLike<number>, pixelCount: number, model: Palett
     }
     const key = (pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2];
     if (key !== lastKey) {
-      linearToOklab(SRGB_TO_LINEAR_TABLE[pixels[i]], SRGB_TO_LINEAR_TABLE[pixels[i + 1]], SRGB_TO_LINEAR_TABLE[pixels[i + 2]], lab, 0);
-      lastIndex = model.tree.nearestIndex(lab[0], lab[1], lab[2], lastIndex);
+      const slot = Math.imul(key, 0x9e3779b1) >>> MAP_CACHE_SHIFT;
+      let nearest: number;
+      let dist2 = 0;
+      let l0 = 0;
+      let a0 = 0;
+      let b0 = 0;
+      if (cacheKeys[slot] === key) {
+        nearest = cacheIndices[slot];
+        if (keepsRuns && cacheDist2 !== null && cacheLab !== null) {
+          dist2 = cacheDist2[slot];
+          const cOff = slot * RGB_STRIDE;
+          l0 = cacheLab[cOff];
+          a0 = cacheLab[cOff + 1];
+          b0 = cacheLab[cOff + 2];
+        }
+      } else {
+        linearToOklab(SRGB_TO_LINEAR_TABLE[pixels[i]], SRGB_TO_LINEAR_TABLE[pixels[i + 1]], SRGB_TO_LINEAR_TABLE[pixels[i + 2]], lab, 0);
+        l0 = lab[0];
+        a0 = lab[1];
+        b0 = lab[2];
+        nearest = model.tree.nearestIndex(l0, a0, b0, lastNearest);
+        dist2 = model.tree.lastDistance2;
+        cacheKeys[slot] = key;
+        cacheIndices[slot] = nearest;
+        if (keepsRuns && cacheDist2 !== null && cacheLab !== null) {
+          cacheDist2[slot] = dist2;
+          const cOff = slot * RGB_STRIDE;
+          cacheLab[cOff] = l0;
+          cacheLab[cOff + 1] = a0;
+          cacheLab[cOff + 2] = b0;
+        }
+      }
+      lastNearest = nearest;
+      lastIndex = nearest;
       if (keepsRuns && previousIndex >= 0 && previousIndex !== lastIndex) {
         const at = previousIndex * RGB_STRIDE;
-        const dx = lab[0] - model.oklab[at];
-        const dy = lab[1] - model.oklab[at + 1];
-        const dz = lab[2] - model.oklab[at + 2];
-        if (dx * dx + dy * dy + dz * dz <= model.tree.lastDistance2 * distanceFactor) lastIndex = previousIndex;
+        const dx = l0 - model.oklab[at];
+        const dy = a0 - model.oklab[at + 1];
+        const dz = b0 - model.oklab[at + 2];
+        if (dx * dx + dy * dy + dz * dz <= dist2 * distanceFactor) lastIndex = previousIndex;
       }
       lastKey = key;
     }

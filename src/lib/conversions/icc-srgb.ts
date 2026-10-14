@@ -19,9 +19,19 @@ const SRGB_TOE_SLOPE = 12.92;
 const SRGB_OFFSET = 0.055;
 const SRGB_GAMMA = 2.4;
 
+const SRGB_LINEAR_TOE = SRGB_TOE / SRGB_TOE_SLOPE;
+const SIXTEEN_BIT_MAX = 65535;
+
 /** The sRGB tone curve (IEC 61966-2-1) from encoded to linear. */
 function srgbToLinear(encoded: number): number {
   return encoded <= SRGB_TOE ? encoded / SRGB_TOE_SLOPE : ((encoded + SRGB_OFFSET) / (1 + SRGB_OFFSET)) ** SRGB_GAMMA;
+}
+
+/** The inverse sRGB tone curve (IEC 61966-2-1) from linear light to encoded sample in [0, 1]. */
+function linearToSrgb(linear: number): number {
+  if (linear <= 0) return 0;
+  if (linear >= 1) return 1;
+  return linear <= SRGB_LINEAR_TOE ? linear * SRGB_TOE_SLOPE : (1 + SRGB_OFFSET) * linear ** (1 / SRGB_GAMMA) - SRGB_OFFSET;
 }
 
 function hasSrgbColorants(profile: IccMatrixTrcProfile): boolean {
@@ -59,3 +69,30 @@ export function isSrgbProfile(icc: Buffer): boolean {
     return false;
   }
 }
+
+/**
+ * Returns per-channel 16-bit lookup tables mapping a matrix/TRC profile with sRGB colorants (whose tone curve differs from
+ * IEC 61966-2-1 sRGB, such as a camera RAW decoder's gamma 2.222 curve) to 16-bit IEC 61966-2-1 sRGB samples, or null when
+ * the profile is not a non-sRGB tone curve over sRGB primaries.
+ */
+export function srgb16LutsFromProfile(icc: Buffer): readonly [Uint16Array, Uint16Array, Uint16Array] | null {
+  try {
+    const profile = readIccProfile(icc);
+    if (profile.kind !== 'matrix-trc' || !hasSrgbColorants(profile) || describesSrgb(profile)) return null;
+    const buildChannelLut = (curve: (encoded: number) => number): Uint16Array => {
+      const lut = new Uint16Array(SIXTEEN_BIT_MAX + 1);
+      for (let sample = 0; sample <= SIXTEEN_BIT_MAX; sample += 1) {
+        lut[sample] = Math.round(linearToSrgb(curve(sample / SIXTEEN_BIT_MAX)) * SIXTEEN_BIT_MAX);
+      }
+      return lut;
+    };
+    return [
+      buildChannelLut(profile.curves[0]),
+      buildChannelLut(profile.curves[1]),
+      buildChannelLut(profile.curves[2]),
+    ];
+  } catch {
+    return null;
+  }
+}
+

@@ -509,5 +509,20 @@ Quality evidence
 - **Verified by**: `tests/font-woff2-encode.test.ts` and the public `font` parity suite (`font-lato-regular.ttf->woff`, `font-notosansjp-regular.otf->woff2`, `font-notocoloremoji-flags.ttf.woff->ttf`, and `font-notocoloremoji-flags.ttf.woff2->ttf`).
 - **Revisit when**: Node.js exposes a native 3-byte match option in `node:zlib` or variable CFF2-to-TrueType outline conversion is added.
 
+## 25. 16-bit sRGB tone-curve mapping and RAW development parity
 
-
+- **Status**: Implemented (#745).
+- **Decision**:
+  - **16-bit sRGB-primaries tone-curve lookup (`srgb16LutsFromProfile`)**: when a 16-bit image carries a matrix/TRC ICC profile with sRGB colorants whose tone reproduction curve differs from IEC 61966-2-1 sRGB (such as the RAW decoder's gamma 2.222 / 4.5-slope development curve) and is converted to a 16-bit or high-bit-depth target (`png`, `tiff`, `tif`, `avif`, `psd`), its 16-bit samples are extracted without the image library's intermediate Display P3 working-space transform and mapped in place through per-channel 65,536-entry `Uint16Array` lookup tables from the embedded TRC to the IEC 61966-2-1 inverse transfer curve.
+  - **8-bit targets with sRGB-primaries development curves**: when converting a 16-bit source carrying a non-sRGB tone curve over sRGB primaries to an 8-bit target (`jpg`, `webp`, `gif`), the pipeline stays in 8-bit sRGB so the native ICC transform applies the tone curve and strips the profile in one pass.
+  - **16-bit PNG Paeth filter selection (`PAETH_PENALTY = 1.01`)**: the adaptive scanline filter heuristic for 16-bit photographs lowers the Paeth tie-break penalty from `1.015` to `1.01` so rows where Paeth beats Sub/Up/Average by more than 1 % select Paeth.
+- **Why**:
+  - Calling `.withIccProfile('srgb').toColourspace('rgb16')` on a 16-bit image in the native image library triggers two `vips_icc_transform` passes: first from the embedded profile into its 16-bit Display P3 working profile (while leaving the source profile attached in memory), and then from that source profile to sRGB a second time, lifting shadow zeros (`0 -> 2826`) and shifting colours by up to 17 dB of PSNR on developed camera RAW files.
+  - Applying the exact 65,536-entry TRC-to-IEC-61966-2-1 lookup table directly to the untouched 16-bit samples matches the reference LittleCMS transform within 1 LSB (`~87 dB` PSNR) and preserves black at `0`.
+- **Trade-offs**:
+  - Building and applying the 65,536-entry `Uint16Array` LUT adds one pass over the 16-bit samples in memory for deep targets (`png`, `tiff`, `avif`, `psd`), while 8-bit targets (`jpg`, `webp`, `gif`) avoid the extra buffer round-trip.
+- **Alternatives rejected**:
+  - **Passing `-g 2.4 12.92` to the RAW decoder**: the decoder's internal power/toe curve differs from the standard ICC profile transform by up to 9 dB of PSNR on 14-bit camera files.
+  - **Calling `.withIccProfile('srgb')` on a `rgb16` pipeline**: triggers the double ICC transform through Display P3 in the native image library.
+- **Verified by**: `tests/icc-srgb.test.ts` and the `raw` quality and speed parity suites across Canon, Nikon, Sony, Olympus, Panasonic, Pentax, Fujifilm X-Trans, and DNG samples.
+- **Revisit when**: the upstream image library stops routing `rgb16` inputs with an explicit output `icc_transform` through an intermediate Display P3 working profile.

@@ -75,7 +75,7 @@ import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_O
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { normalizeSvgBufferForRendering } from './svg-geometry';
 import { decodePlainPngOnce } from './image-decoded-source';
-import { hasSrgbPrimaries, isSrgbProfile } from './icc-srgb';
+import { hasSrgbPrimaries, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
 import { EIGHT_BIT_ONLY_TARGETS, roundedToEightBits } from './image-depth';
 import { pinBaseImageThreads, withImageThreads } from './image-threads';
 import { buildOdgPackage } from './odg';
@@ -1571,10 +1571,56 @@ const SOURCE_BLOCK_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp'
  * colour (red drops, saturation rises). Those images keep only their blocks and reach the encoder as plain device RGB. The
  * pipeline has already been auto-oriented, which removes the Orientation tag from the kept EXIF block.
  */
+/**
+ * Applies an embedded matrix/TRC profile with sRGB primaries and a non-sRGB tone curve (such as `dcraw_emu -o 1`'s gamma
+ * 2.222 development curve) directly to 16-bit RGB/RGBA samples in place. Calling `.withIccProfile('srgb').toColourspace('rgb16')`
+ * on a 16-bit image in sharp runs two `vips_icc_transform` passes (first to Display P3 for `rgb16`, leaving the source
+ * profile attached, then from the source profile to sRGB a second time), which lifts shadow zeros and shifts colours.
+ */
+async function apply16BitSrgbPrimariesCurve(pipeline: Sharp, meta: Metadata, target: string): Promise<Sharp> {
+  if (meta.depth !== SHARP_SIXTEEN_BIT_DEPTH || meta.icc === undefined || (meta.channels ?? 0) < RGB_CHANNEL_COUNT) {
+    return pipeline;
+  }
+  const luts = srgb16LutsFromProfile(meta.icc);
+  if (luts === null) return pipeline;
+  const { data, info } = await pipeline
+    .clone()
+    .keepIccProfile()
+    .toColourspace('rgb16')
+    .raw({ depth: 'ushort' })
+    .toBuffer({ resolveWithObject: true });
+  const samples = new Uint16Array(data.buffer, data.byteOffset, data.byteLength >> 1);
+  const channels = info.channels;
+  const [lutR, lutG, lutB] = luts;
+  for (let i = 0; i < samples.length; i += channels) {
+    samples[i] = lutR[samples[i]];
+    samples[i + 1] = lutG[samples[i + 1]];
+    samples[i + 2] = lutB[samples[i + 2]];
+  }
+  let out = sharp(samples, {
+    raw: { width: info.width, height: info.height, channels: info.channels },
+  }).toColourspace('rgb16');
+  if (meta.xmp !== undefined) out = out.withXmp(meta.xmp.toString('utf8'));
+  if (meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI) out = out.withDensity(meta.density);
+  if (SRGB_TAGGED_TARGETS.has(target)) out = out.withIccProfile('srgb', { attach: true });
+  return out;
+}
+
+const SIXTEEN_BIT_CURVE_TARGETS: ReadonlySet<string> = new Set(['png', 'tiff', 'tif', 'avif', 'psd']);
+
 async function preserveMetadata(pipeline: Sharp, target: string): Promise<Sharp> {
   // Float targets apply the input's own colour description to the samples (see sdr-linear.ts) and write no metadata.
   if (FLOAT_TARGETS.has(target)) return pipeline;
   const meta = await pipeline.metadata();
+  if (
+    meta.depth === SHARP_SIXTEEN_BIT_DEPTH &&
+    SIXTEEN_BIT_CURVE_TARGETS.has(target) &&
+    meta.icc !== undefined &&
+    hasSrgbPrimaries(meta.icc) &&
+    !isSrgbProfile(meta.icc)
+  ) {
+    return apply16BitSrgbPrimariesCurve(pipeline, meta, target);
+  }
   if (SOURCE_BLOCK_TARGETS.has(target)) return keepSourceBlocks(pipeline, meta, target);
   const hasMetadataBlock = meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined;
   const hasCustomDensity = meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
