@@ -94,6 +94,24 @@ describe('parseDxfDrawing', () => {
     expect(expectedY).toBeGreaterThan(bezier(0.5)[1]);
   });
 
+  it('evaluates a periodic or unclamped cubic SPLINE whose knot vector is strictly increasing instead of throwing a division-by-zero', () => {
+    const control: Array<[number, number]> = [[0, 0], [1, 3], [4, 3], [5, 0]];
+    const uniformKnots = [0, 1, 2, 3, 4, 5, 6, 7].map((k): [number, number] => [40, k]);
+    const body =
+      pairs([0, 'SPLINE'], [70, 11], [71, 3], [72, 8], [73, 4], ...uniformKnots) +
+      control.map(([x, y]) => pairs([10, x], [20, y], [30, 0])).join('');
+    const [curve] = polylines(parseDxfDrawing(dxf(body)).strokes);
+    expect(curve.points.length).toBeGreaterThan(16);
+    for (const [x, y] of curve.points) {
+      expect(Number.isFinite(x)).toBe(true);
+      expect(Number.isFinite(y)).toBe(true);
+    }
+    // At the midpoint t = 3.5 of uniform knots [0..7], the cubic B-spline weights are [1, 23, 23, 1] / 48 -> (2.5, 2.875).
+    const mid = curve.points[Math.floor((curve.points.length - 1) / 2)];
+    near(mid[0], 2.5, 6);
+    near(mid[1], 138 / 48, 6);
+  });
+
   describe('blocks', () => {
     const block = (name: string, body: string, base: [number, number] = [0, 0]): string =>
       pairs([0, 'BLOCK'], [2, name], [10, base[0]], [20, base[1]]) + body + pairs([0, 'ENDBLK']);
@@ -133,6 +151,21 @@ describe('parseDxfDrawing', () => {
       for (const [x, y] of shape.points) near((x / 3) ** 2 + y ** 2, 1, 9);
     });
 
+    it('flips the OCS x axis of an INSERT when its extrusion z (code 230) is negative, and skips a degenerate zero-scale INSERT', () => {
+      const blk = block('B', pairs([0, 'LINE'], [10, 1], [20, 2], [11, 3], [21, 4]));
+      const inserts =
+        pairs([0, 'INSERT'], [2, 'B'], [10, 10], [20, 20], [230, -1]) +
+        pairs([0, 'INSERT'], [2, 'B'], [10, 99], [20, 99], [41, 1], [42, 1], [43, 0]);
+      const drawing = parseDxfDrawing(dxf(inserts, blk));
+      expect(drawing.strokes).toHaveLength(1);
+      const [line] = drawing.strokes as Array<Extract<DxfStroke, { kind: 'line' }>>;
+      // Extrusion z = -1 flips the OCS x axis to -WCS x: OCS (10 + 1, 20 + 2) -> (-11, 22), OCS (10 + 3, 20 + 4) -> (-13, 24).
+      near(line.a[0], -11);
+      near(line.a[1], 22);
+      near(line.b[0], -13);
+      near(line.b[1], 24);
+    });
+
     it('draws the anonymous block a DIMENSION names, and nested blocks', () => {
       const inner = block('INNER', pairs([0, 'LINE'], [10, 0], [20, 0], [11, 1], [21, 1]));
       const outer = block('OUTER', pairs([0, 'INSERT'], [2, 'INNER'], [10, 5], [20, 0]));
@@ -159,6 +192,23 @@ describe('parseDxfDrawing', () => {
       near(texts[0].rotation, Math.PI / 2);
       expect(texts[1].lines).toEqual(['NOTES', 'ALL one/two IN MM']);
       expect(texts[1].hangsFromTop).toBe(true);
+    });
+
+    it('places aligned, middle and fit TEXT at its alignment points, decodes %%d/%%p/%%c, and skips R2007 linked MTEXT column entities', () => {
+      const body =
+        pairs([0, 'TEXT'], [10, 0], [20, 0], [11, 20], [21, 10], [40, 4], [72, 1], [73, 2], [1, '45%%d %%p0.1 %%c10']) +
+        pairs([0, 'TEXT'], [10, 0], [20, 0], [11, 12], [21, 0], [40, 10], [72, 5], [73, 0], [1, 'FITTEXT']) +
+        pairs([0, 'MTEXT'], [5, '80'], [10, 0], [20, 30], [40, 2], [71, 1], [1000, 'ACAD_MTEXT_COLUMNS_BEGIN'], [1005, '81'], [3, 'COL1\\P'], [1, 'COL2']) +
+        pairs([0, 'MTEXT'], [5, '81'], [10, 50], [20, 30], [40, 2], [71, 1], [1, 'COL2']);
+      const { texts } = parseDxfDrawing(dxf(body));
+      expect(texts).toHaveLength(3);
+      expect(texts[0]).toMatchObject({ anchor: 'middle', lines: ['45° ±0.1 Ø10'] });
+      near(texts[0].at[0], 20);
+      near(texts[0].at[1], 10 - 0.5 * 4);
+      expect(texts[1]).toMatchObject({ anchor: 'middle', fitLength: 12, lines: ['FITTEXT'] });
+      near(texts[1].at[0], 6);
+      near(texts[1].at[1], 0);
+      expect(texts[2].lines).toEqual(['COL1', 'COL2']);
     });
 
     it('does not draw entities of a layer that is off or frozen', () => {
