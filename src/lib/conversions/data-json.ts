@@ -24,13 +24,36 @@ export function isDataObject(value: unknown): value is DataObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Own-property assignment that also stores a "__proto__" key as data. */
+const ORDERED_KEYS = new WeakMap<object, string[]>();
+let hasOrderedObjects = false;
+
+function startsWithAsciiDigit(key: string): boolean {
+  const c = key.charCodeAt(0);
+  return c >= 0x30 && c <= 0x39;
+}
+
+/** Own-property assignment that also stores a "__proto__" key as data and preserves insertion order for integer-index keys. */
 export function setOwn(target: DataObject, key: string, value: DataValue): void {
+  let ordered = hasOrderedObjects ? ORDERED_KEYS.get(target) : undefined;
+  if (ordered === undefined && startsWithAsciiDigit(key)) {
+    ordered = Object.keys(target);
+    ORDERED_KEYS.set(target, ordered);
+    hasOrderedObjects = true;
+  }
+  const existed = ordered !== undefined && Object.prototype.hasOwnProperty.call(target, key);
   if (key === '__proto__') {
     Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
   } else {
     target[key] = value;
   }
+  if (ordered !== undefined && !existed) {
+    ordered.push(key);
+  }
+}
+
+/** Own enumerable keys of an object in source insertion order (preserving order when integer-index keys are mixed with string keys). */
+export function dataObjectKeys(target: object): string[] {
+  return (hasOrderedObjects ? ORDERED_KEYS.get(target) : undefined) ?? Object.keys(target);
 }
 
 export function positionOf(text: string, index: number): { line: number; column: number } {
@@ -322,10 +345,19 @@ function containersNeedingLosslessWrite(root: DataValue): Set<object> {
     if (depth > MAX_DATA_NESTING_DEPTH) {
       throw new DataLimitExceededError(`Data nesting exceeds ${MAX_DATA_NESTING_DEPTH} levels.`);
     }
-    let needed = false;
-    const children: DataValue[] = Array.isArray(value) ? value : Object.values(value);
-    for (const child of children) {
-      if (visit(child, depth + 1)) needed = true;
+    if (Array.isArray(value)) {
+      let needed = false;
+      for (let i = 0; i < value.length; i++) {
+        if (visit(value[i], depth + 1)) needed = true;
+      }
+      if (needed) marked.add(value);
+      return needed;
+    }
+    let needed = hasOrderedObjects && ORDERED_KEYS.has(value);
+    const obj = value as DataObject;
+    const keys = needed ? (ORDERED_KEYS.get(value) as string[]) : Object.keys(obj);
+    for (let i = 0; i < keys.length; i++) {
+      if (visit(obj[keys[i]], depth + 1)) needed = true;
     }
     if (needed) marked.add(value);
     return needed;
@@ -353,8 +385,10 @@ class LosslessJsonWriter {
       this.out.push(this.indent && prefix ? text.replace(/\n/g, `\n${prefix}`) : text);
       return;
     }
-    const keys = Array.isArray(value) ? null : Object.keys(value);
-    const items: DataValue[] = Array.isArray(value) ? value : Object.values(value);
+    const keys = Array.isArray(value) ? null : dataObjectKeys(value);
+    const items: DataValue[] = Array.isArray(value)
+      ? value
+      : (keys as string[]).map((key) => (value as DataObject)[key]);
     const [open, close] = keys ? ['{', '}'] : ['[', ']'];
     if (items.length === 0) {
       this.out.push(open, close);
@@ -445,7 +479,7 @@ export function normalizeDataValue(input: unknown, options: NormalizeOptions): D
         throw new DataRepresentationError(`${options.label} contains an unsupported ${value.constructor?.name ?? 'object'} value.`);
       }
       const result: DataObject = {};
-      for (const key of Object.keys(value)) {
+      for (const key of dataObjectKeys(value)) {
         setOwn(result, key, visit((value as Record<string, unknown>)[key], depth + 1));
       }
       return result;

@@ -187,6 +187,16 @@ describe('JSON to CSV flattens nested values', () => {
     expect(err).toBeInstanceOf(DataRepresentationError);
     expect(err.message).toMatch(/"a\.b"/);
   });
+
+  oracleTest('preserves source key order when an object mixes string keys and integer-like year keys', ['python3'], async () => {
+    const json = '[{"code":"A","TQ":10,"1976":-566000,"1977":1200},{"code":"B","TQ":20,"1976":300,"1977":400}]';
+    const csv = await convertFile(Buffer.from(json, 'utf-8'), 'json', 'csv', {}, 'budget.json');
+    expect(pythonCsvRows(csv.buffer)).toEqual([
+      ['code', 'TQ', '1976', '1977'],
+      ['A', '10', '-566000', '1200'],
+      ['B', '20', '300', '400'],
+    ]);
+  });
 });
 
 describe('JSON and NDJSON input fail closed', () => {

@@ -8267,8 +8267,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/class-codecs->json/converts": {
@@ -8277,8 +8277,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -0.5,
+      "ours": 1,
+      "delta": 0.5,
       "ratio": null
     },
     "data/class-mixed->json/cell_mismatches": {
@@ -8338,7 +8338,7 @@
         "rel": 0.03
       },
       "ours": 61955.5,
-      "delta": -6219,
+      "delta": -6223.5,
       "ratio": null
     },
     "data/class-mixed->xlsx/cell_mismatches": {
@@ -8427,8 +8427,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 230516,
-      "delta": 86021,
+      "ours": 138114,
+      "delta": -6381,
       "ratio": null
     },
     "data/class-numeric->parquet/cell_mismatches": {
@@ -8458,7 +8458,7 @@
         "rel": 0.03
       },
       "ours": 405759,
-      "delta": 9456,
+      "delta": 9454,
       "ratio": null
     },
     "data/class-numeric->xlsx/cell_mismatches": {
@@ -8487,8 +8487,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/class-strings->json/converts": {
@@ -8497,8 +8497,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0.5,
-      "delta": -0.5,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/class-strings->parquet/bytes": {
@@ -8538,7 +8538,7 @@
         "rel": 0.03
       },
       "ours": 66351,
-      "delta": -4307,
+      "delta": -4308,
       "ratio": null
     },
     "data/class-strings->xlsx/cell_mismatches": {
@@ -8617,8 +8617,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 1,
-      "delta": 1,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "data/class-text->csv/converts": {
@@ -8637,8 +8637,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/class-types->json/converts": {
@@ -8647,8 +8647,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/class-unicode->json/cell_mismatches": {
@@ -8708,7 +8708,7 @@
         "rel": 0.03
       },
       "ours": 943391,
-      "delta": -57970,
+      "delta": -57977,
       "ratio": null
     },
     "data/class-unicode->xlsx/cell_mismatches": {
@@ -8737,8 +8737,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0.5,
-      "delta": -0.5,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/class-wide->json/converts": {
@@ -8747,8 +8747,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0.5,
-      "delta": -0.5,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/class-wide->parquet/bytes": {
@@ -8757,8 +8757,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 157953,
-      "delta": 42410,
+      "ours": 96460,
+      "delta": -19083,
       "ratio": null
     },
     "data/class-wide->parquet/cell_mismatches": {
@@ -8788,7 +8788,7 @@
         "rel": 0.03
       },
       "ours": 134006,
-      "delta": 1256,
+      "delta": 1249,
       "ratio": null
     },
     "data/class-wide->xlsx/cell_mismatches": {
@@ -8867,8 +8867,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/data-alltypes-tiny-pages.parquet->json/converts": {
@@ -8877,8 +8877,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/data-budget.json->csv/cell_mismatches": {
@@ -8887,8 +8887,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 10542,
-      "delta": 10542,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "data/data-budget.json->csv/converts": {
@@ -8907,8 +8907,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/data-byte-stream-split.parquet->json/converts": {
@@ -8917,8 +8917,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": 0,
+      "ours": 1,
+      "delta": 1,
       "ratio": null
     },
     "data/data-delta-binary-packed.csv->json/cell_mismatches": {
@@ -8947,8 +8947,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 157953,
-      "delta": 42410,
+      "ours": 96460,
+      "delta": -19083,
       "ratio": null
     },
     "data/data-delta-binary-packed.csv->parquet/cell_mismatches": {
@@ -8978,7 +8978,7 @@
         "rel": 0.03
       },
       "ours": 134006,
-      "delta": 1256,
+      "delta": 1249,
       "ratio": null
     },
     "data/data-delta-binary-packed.csv->xlsx/cell_mismatches": {
@@ -9007,8 +9007,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/data-delta-binary-packed.parquet->json/converts": {
@@ -9017,8 +9017,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/data-delta-byte-array.csv->json/cell_mismatches": {
@@ -9049,7 +9049,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 4.095854582105133
+      "ratio": 3.9771809434922343
     },
     "data/data-delta-byte-array.csv->parquet/bytes": {
       "direction": "lower",
@@ -9089,7 +9089,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.22277876273616093
+      "ratio": 0.24687097461721444
     },
     "data/data-delta-byte-array.csv->xlsx/bytes": {
       "direction": "lower",
@@ -9098,7 +9098,7 @@
         "rel": 0.03
       },
       "ours": 66351,
-      "delta": -4307,
+      "delta": -4308,
       "ratio": null
     },
     "data/data-delta-byte-array.csv->xlsx/cell_mismatches": {
@@ -9129,7 +9129,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 20.49894538220035
+      "ratio": 22.095411084392786
     },
     "data/data-delta-byte-array.parquet->csv/converts": {
       "direction": "higher",
@@ -9137,8 +9137,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/data-delta-byte-array.parquet->json/converts": {
@@ -9147,8 +9147,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/data-gapminder.json->csv/cell_mismatches": {
@@ -9197,8 +9197,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 230516,
-      "delta": 86021,
+      "ours": 138114,
+      "delta": -6381,
       "ratio": null
     },
     "data/data-gdp.csv->parquet/cell_mismatches": {
@@ -9228,7 +9228,7 @@
         "rel": 0.03
       },
       "ours": 405759,
-      "delta": 9456,
+      "delta": 9454,
       "ratio": null
     },
     "data/data-gdp.csv->xlsx/cell_mismatches": {
@@ -9257,8 +9257,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 1,
-      "delta": 1,
+      "ours": 0,
+      "delta": 0,
       "ratio": null
     },
     "data/data-gsm8k-test.jsonl->csv/converts": {
@@ -9277,8 +9277,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/data-lz4-raw-larger.parquet->json/converts": {
@@ -9287,8 +9287,8 @@
         "abs": 0,
         "rel": 0
       },
-      "ours": 0,
-      "delta": -1,
+      "ours": 1,
+      "delta": 0,
       "ratio": null
     },
     "data/data-penguins.json->csv/cell_mismatches": {
@@ -9319,7 +9319,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.7859576868712523
+      "ratio": 1.1530086964741606
     },
     "data/data-sp500-constituents.csv->json/cell_mismatches": {
       "direction": "lower",
@@ -9378,7 +9378,7 @@
         "rel": 0.03
       },
       "ours": 35550,
-      "delta": -3751,
+      "delta": -3755,
       "ratio": null
     },
     "data/data-sp500-constituents.csv->xlsx/cell_mismatches": {
@@ -9458,7 +9458,7 @@
         "rel": 0.03
       },
       "ours": 88361,
-      "delta": -8687,
+      "delta": -8692,
       "ratio": null
     },
     "data/data-weather.csv->xlsx/cell_mismatches": {
@@ -9538,7 +9538,7 @@
         "rel": 0.03
       },
       "ours": 943391,
-      "delta": -57970,
+      "delta": -57977,
       "ratio": null
     },
     "data/data-world-cities.csv->xlsx/cell_mismatches": {
@@ -9579,7 +9579,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 4.47946785333702
+      "ratio": 3.4133952500794984
     },
     "data/table.csv->parquet/bytes": {
       "direction": "lower",
@@ -9609,7 +9609,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.1226980513594412
+      "ratio": 0.1444521167036567
     },
     "data/table.csv->xlsx/bytes": {
       "direction": "lower",
@@ -9618,7 +9618,7 @@
         "rel": 0.03
       },
       "ours": 139240,
-      "delta": -8374,
+      "delta": -8366,
       "ratio": null
     },
     "data/table.csv->xlsx/cell_mismatches": {
@@ -9639,7 +9639,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 9.602325787152594
+      "ratio": 12.255392318245313
     },
     "data/table.jsonl->csv/cell_mismatches": {
       "direction": "lower",
@@ -9659,7 +9659,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.6439668868825815
+      "ratio": 0.6430192994676549
     },
     "data/table.parquet->csv/cell_mismatches": {
       "direction": "lower",
@@ -9679,7 +9679,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.24341961327839798
+      "ratio": 0.19327721730780026
     },
     "data/table.parquet->json/cell_mismatches": {
       "direction": "lower",
@@ -9699,7 +9699,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.34201185347820506
+      "ratio": 0.20124683113327926
     },
     "data/table.xlsx->csv/cell_mismatches": {
       "direction": "lower",
@@ -9719,7 +9719,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 2.3282890292964638
+      "ratio": 3.623615489331758
     },
     "document/book.epub->docx:headings/structure_precision": {
       "direction": "higher",
@@ -44590,6 +44590,166 @@
       "ours": null,
       "delta": null,
       "ratio": 1.0097307903056703
+    },
+    "data/class-codecs->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 13,
+      "delta": -200,
+      "ratio": null
+    },
+    "data/class-strings->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/class-strings->json/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/class-types->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -5840,
+      "ratio": null
+    },
+    "data/class-types->json/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/class-wide->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/class-wide->json/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/data-alltypes-tiny-pages.parquet->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": -5840,
+      "ratio": null
+    },
+    "data/data-alltypes-tiny-pages.parquet->json/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/data-byte-stream-split.parquet->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 26,
+      "delta": -400,
+      "ratio": null
+    },
+    "data/data-delta-binary-packed.parquet->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/data-delta-binary-packed.parquet->json/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/data-delta-byte-array.parquet->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/data-delta-byte-array.parquet->json/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/data-lz4-raw-larger.parquet->csv/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
+    },
+    "data/data-lz4-raw-larger.parquet->json/cell_mismatches": {
+      "direction": "lower",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 0,
+      "delta": 0,
+      "ratio": null
     }
   }
 }

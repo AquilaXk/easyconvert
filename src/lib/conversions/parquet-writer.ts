@@ -1,3 +1,4 @@
+import { dataObjectKeys } from './data-json';
 import { compressPage, isZstdWriteAvailable } from './parquet-codec';
 import {
   ColumnSchema,
@@ -29,7 +30,7 @@ import { CompactProtocolWriter, ThriftType } from './parquet-thrift';
 
 /**
  * Parquet writer: typed OPTIONAL columns, RLE/bit-packed definition levels, dictionary encoding with
- * a PLAIN fallback, SNAPPY/ZSTD page compression, column statistics, and bounded row groups.
+ * a PLAIN fallback, SNAPPY/GZIP/ZSTD page compression, column statistics, and bounded row groups.
  *
  * Governing spec: Apache Parquet format (parquet.thrift, Encodings.md, LogicalTypes.md).
  * Data pages are version 1: `<4-byte length><definition levels (RLE hybrid, width 1)><values>`.
@@ -44,8 +45,9 @@ export interface ParquetWriteOptions {
   dictionaryMaxBytes?: number;
 }
 
-interface ResolvedOptions {
+export interface ResolvedOptions {
   codec: CompressionCodec;
+  autoCodec: boolean;
   rowGroupMaxRows: number;
   rowGroupMaxBytes: number;
   dataPageMaxRows: number;
@@ -66,6 +68,7 @@ const FAMILY_KINDS = [KIND_STRING, NUMBER_KINDS, KIND_BOOL, KIND_DATE];
 const SUPPORTED_WRITE_CODECS: ReadonlySet<CompressionCodec> = new Set([
   CompressionCodec.UNCOMPRESSED,
   CompressionCodec.SNAPPY,
+  CompressionCodec.GZIP,
   CompressionCodec.ZSTD,
 ]);
 
@@ -77,6 +80,10 @@ const BITS_PER_BYTE = 8;
 const DICTIONARY_INITIAL_BYTES = 4096;
 /** Room beyond the dictionary byte bound for the entry that trips it. */
 const DICTIONARY_SLACK_BYTES = 64;
+export const NUMERIC_TEXT_RE = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+export const NUMERIC_TEXT_SNAPPY_MAX_RATIO = 0.69;
+export const NUMERIC_TEXT_MIN_RAW_BYTES = 131_072;
+export const NUMERIC_TEXT_MIN_WIDE_COLUMNS = 32;
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const ANY_SURROGATE = /[\uD800-\uDFFF]/;
 const UTF16_SURROGATE_START = 0xd800;
@@ -124,7 +131,7 @@ function analyzeRecords(records: readonly unknown[]): AnalyzedColumn[] {
     if (row === null || typeof row !== 'object' || Array.isArray(row)) {
       throw new ParquetValueError(`Cannot write Parquet: record ${r} is not an object of column values.`);
     }
-    const keys = Object.keys(row);
+    const keys = dataObjectKeys(row);
     for (const key of keys) {
       let index = columnIndex.get(key);
       if (index === undefined) {
@@ -161,7 +168,7 @@ function inferType(flags: number): ParquetType {
   return ParquetType.BYTE_ARRAY;
 }
 
-function schemaFor(name: string, type: ParquetType): ColumnSchema {
+export function schemaFor(name: string, type: ParquetType): ColumnSchema {
   if (type === ParquetType.BYTE_ARRAY) {
     return { name, type, convertedType: ConvertedType.UTF8, repetitionType: FieldRepetitionType.OPTIONAL };
   }
@@ -248,7 +255,7 @@ function planColumn(column: AnalyzedColumn): ColumnPlan {
 // Statistics
 // ==========================================
 
-interface ChunkStatistics {
+export interface ChunkStatistics {
   nullCount: number;
   min: Buffer | null;
   max: Buffer | null;
@@ -339,8 +346,9 @@ interface DictionaryResult {
   pageBody: Buffer;
 }
 
-interface EncodedChunk {
+export interface EncodedChunk {
   schema: ColumnSchema;
+  codec: CompressionCodec;
   parts: Buffer[];
   numValues: number;
   encodings: Encoding[];
@@ -516,7 +524,7 @@ function splitPages(g: Gathered, dictionary: boolean, maxRows: number): PageSlic
   return pages;
 }
 
-function pageHeaderBytes(
+export function pageHeaderBytes(
   pageType: PageType,
   uncompressedSize: number,
   compressedSize: number,
@@ -635,13 +643,27 @@ function writeStatistics(w: CompactProtocolWriter, stats: ChunkStatistics): void
   w.writeStructEnd();
 }
 
+function isNumericTextChunk(strings: readonly string[], count: number): boolean {
+  for (let i = 0; i < count; i++) {
+    if (!NUMERIC_TEXT_RE.test(strings[i])) return false;
+  }
+  return true;
+}
+
+interface UncompressedPage {
+  body: Buffer;
+  numValues: number;
+  statistics: ChunkStatistics;
+}
+
 function encodeColumnChunk(
   plan: ColumnPlan,
   rowStart: number,
   rowEnd: number,
   fileOffset: number,
   options: ResolvedOptions,
-  sink: ByteSink
+  sink: ByteSink,
+  totalColumns = 1
 ): EncodedChunk {
   const g = gatherChunk(plan, rowStart, rowEnd);
   const rows = rowEnd - rowStart;
@@ -660,9 +682,15 @@ function encodeColumnChunk(
   let totalUncompressed = 0;
   let totalCompressed = 0;
   let dictionaryPageOffset: number | null = null;
+  let chunkCodec = options.codec;
 
-  const pushPage = (pageType: PageType, body: Uint8Array, numValues: number, pageStats: ChunkStatistics | null) => {
-    const compressed = compressPage(options.codec, body);
+  const pushEncodedPage = (
+    pageType: PageType,
+    body: Uint8Array,
+    compressed: Buffer,
+    numValues: number,
+    pageStats: ChunkStatistics | null
+  ) => {
     const encoding = pageType === PageType.DICTIONARY_PAGE ? Encoding.PLAIN : valueEncoding;
     const header = pageHeaderBytes(pageType, body.length, compressed.length, numValues, encoding, pageStats);
     // total_uncompressed_size counts headers as they would be written without compression.
@@ -675,10 +703,12 @@ function encodeColumnChunk(
 
   if (dictionary) {
     dictionaryPageOffset = position;
-    pushPage(PageType.DICTIONARY_PAGE, dictionary.pageBody, dictionary.entryCount, null);
+    const compressedDict = compressPage(chunkCodec, dictionary.pageBody);
+    pushEncodedPage(PageType.DICTIONARY_PAGE, dictionary.pageBody, compressedDict, dictionary.entryCount, null);
   }
   const dataPageOffset = position;
 
+  const rawPages: UncompressedPage[] = [];
   for (const page of splitPages(g, dictionary !== null, options.dataPageMaxRows)) {
     sink.reset();
     const lengthAt = sink.length;
@@ -704,7 +734,36 @@ function encodeColumnChunk(
     const pageRows = page.rowEnd - page.rowStart;
     const pageNulls = pageRows - (page.valueEnd - page.valueStart);
     const pageStats = rangeStatistics(g, dictionary, page.valueStart, page.valueEnd, pageNulls);
-    pushPage(PageType.DATA_PAGE, sink.toBuffer(), pageRows, pageStats);
+    rawPages.push({ body: Buffer.from(sink.toBuffer()), numValues: pageRows, statistics: pageStats });
+  }
+
+  const snappyCompressed = rawPages.map((p) => compressPage(chunkCodec, p.body));
+  let rawSum = 0;
+  let snappySum = 0;
+  for (let i = 0; i < rawPages.length; i++) {
+    rawSum += rawPages[i].body.length;
+    snappySum += snappyCompressed[i].length;
+  }
+  const checkNumericGzip =
+    options.autoCodec &&
+    dictionary === null &&
+    g.type === ParquetType.BYTE_ARRAY &&
+    g.nonNullCount > 0 &&
+    (rawSum >= NUMERIC_TEXT_MIN_RAW_BYTES || totalColumns >= NUMERIC_TEXT_MIN_WIDE_COLUMNS) &&
+    snappySum > rawSum * NUMERIC_TEXT_SNAPPY_MAX_RATIO &&
+    isNumericTextChunk(g.strings as string[], g.nonNullCount);
+
+  if (checkNumericGzip) {
+    chunkCodec = CompressionCodec.GZIP;
+    for (let i = 0; i < rawPages.length; i++) {
+      const p = rawPages[i];
+      pushEncodedPage(PageType.DATA_PAGE, p.body, compressPage(CompressionCodec.GZIP, p.body), p.numValues, p.statistics);
+    }
+  } else {
+    for (let i = 0; i < rawPages.length; i++) {
+      const p = rawPages[i];
+      pushEncodedPage(PageType.DATA_PAGE, p.body, snappyCompressed[i], p.numValues, p.statistics);
+    }
   }
 
   const encodings = dictionary
@@ -712,6 +771,7 @@ function encodeColumnChunk(
     : [Encoding.PLAIN, Encoding.RLE];
   return {
     schema: plan.schema,
+    codec: chunkCodec,
     parts,
     numValues: rows,
     encodings,
@@ -727,7 +787,7 @@ function encodeColumnChunk(
 // Footer
 // ==========================================
 
-interface EncodedRowGroup {
+export interface EncodedRowGroup {
   chunks: EncodedChunk[];
   numRows: number;
   startOffset: number;
@@ -760,7 +820,7 @@ function writeSchemaElement(w: CompactProtocolWriter, s: ColumnSchema): void {
   w.writeStructEnd();
 }
 
-function writeColumnChunkMeta(w: CompactProtocolWriter, chunk: EncodedChunk, codec: CompressionCodec): void {
+function writeColumnChunkMeta(w: CompactProtocolWriter, chunk: EncodedChunk): void {
   w.writeStructBegin();
   w.writeFieldBegin(2, ThriftType.I64);
   w.writeI64(BigInt(chunk.dictionaryPageOffset ?? chunk.dataPageOffset));
@@ -775,7 +835,7 @@ function writeColumnChunkMeta(w: CompactProtocolWriter, chunk: EncodedChunk, cod
   w.writeListBegin(ThriftType.BINARY, 1);
   w.writeString(chunk.schema.name);
   w.writeFieldBegin(4, ThriftType.I32);
-  w.writeI32(codec);
+  w.writeI32(chunk.codec);
   w.writeFieldBegin(5, ThriftType.I64);
   w.writeI64(BigInt(chunk.numValues));
   w.writeFieldBegin(6, ThriftType.I64);
@@ -799,8 +859,7 @@ function writeColumnChunkMeta(w: CompactProtocolWriter, chunk: EncodedChunk, cod
 function buildFooter(
   schemas: ColumnSchema[],
   rowGroups: EncodedRowGroup[],
-  numRows: number,
-  codec: CompressionCodec
+  numRows: number
 ): Buffer {
   const w = new CompactProtocolWriter();
   w.writeStructBegin();
@@ -827,7 +886,7 @@ function buildFooter(
     w.writeStructBegin();
     w.writeFieldBegin(1, ThriftType.LIST);
     w.writeListBegin(ThriftType.STRUCT, rg.chunks.length);
-    for (const chunk of rg.chunks) writeColumnChunkMeta(w, chunk, codec);
+    for (const chunk of rg.chunks) writeColumnChunkMeta(w, chunk);
     w.writeFieldBegin(2, ThriftType.I64);
     w.writeI64(BigInt(rg.totalUncompressed));
     w.writeFieldBegin(3, ThriftType.I64);
@@ -875,11 +934,11 @@ function resolveLimit(name: string, value: number | undefined, fallback: number,
   return value;
 }
 
-function resolveOptions(options: ParquetWriteOptions): ResolvedOptions {
+export function resolveOptions(options: ParquetWriteOptions): ResolvedOptions {
   const codec = options.codec ?? CompressionCodec.SNAPPY;
   if (!SUPPORTED_WRITE_CODECS.has(codec)) {
     throw new ParquetCodecUnavailableError(
-      `Unsupported Parquet write codec ${String(codec)}. Supported: UNCOMPRESSED, SNAPPY, ZSTD.`
+      `Unsupported Parquet write codec ${String(codec)}. Supported: UNCOMPRESSED, SNAPPY, GZIP, ZSTD.`
     );
   }
   if (codec === CompressionCodec.ZSTD && !isZstdWriteAvailable()) {
@@ -889,6 +948,7 @@ function resolveOptions(options: ParquetWriteOptions): ResolvedOptions {
   }
   return {
     codec,
+    autoCodec: options.codec === undefined,
     rowGroupMaxRows: resolveLimit('rowGroupMaxRows', options.rowGroupMaxRows, PARQUET_ROW_GROUP_MAX_ROWS, PARQUET_MAX_ROWS),
     rowGroupMaxBytes: resolveLimit(
       'rowGroupMaxBytes',
@@ -961,7 +1021,7 @@ export function encodeParquet(records: Record<string, unknown>[], options: Parqu
       totalCompressed: 0,
     };
     for (const plan of plans) {
-      const chunk = encodeColumnChunk(plan, rowStart, rowEnd, offset, resolved, pageSink);
+      const chunk = encodeColumnChunk(plan, rowStart, rowEnd, offset, resolved, pageSink, plans.length);
       for (const part of chunk.parts) {
         body.push(part);
         offset += part.length;
@@ -973,7 +1033,17 @@ export function encodeParquet(records: Record<string, unknown>[], options: Parqu
     rowGroups.push(group);
   }
 
-  const footer = buildFooter(schemas, rowGroups, numRows, resolved.codec);
+  return finishParquetFile(body, schemas, rowGroups, numRows);
+}
+
+/** Appends the footer, its length and the closing magic to the file body and joins the parts. */
+export function finishParquetFile(
+  body: Buffer[],
+  schemas: ColumnSchema[],
+  rowGroups: EncodedRowGroup[],
+  numRows: number
+): Buffer {
+  const footer = buildFooter(schemas, rowGroups, numRows);
   const footerLength = Buffer.alloc(BYTE_ARRAY_LENGTH_PREFIX_BYTES);
   footerLength.writeUInt32LE(footer.length, 0);
   body.push(footer, footerLength, Buffer.from(PARQUET_MAGIC, 'ascii'));

@@ -274,11 +274,13 @@ describe('CSV output BOM and formula escaping', () => {
     { name: 'G', value: '-2+3' },
     { name: 'H', value: '=1\n=2' },
     { name: 'I', value: -7 },
+    { name: 'J', value: '-566,000' },
+    { name: 'K', value: '- step one\nstep two' },
   ];
   const JSON_INPUT = Buffer.from(JSON.stringify(RECORDS), 'utf-8');
 
   // Hand-written: a leading ' neutralizes = + - @ TAB CR, the escaped cell is quoted, and
-  // plain numeric literals (-5, +1.5e3, -7) are values, not formulas, so they stay as they are.
+  // plain numeric literals (-5, +1.5e3, -7), thousands-grouped numbers (-566,000), and multi-line prose stay as they are.
   const ESCAPED_ROWS = [
     'name,value',
     `A,"'=SUM(A1:A2)"`,
@@ -290,6 +292,8 @@ describe('CSV output BOM and formula escaping', () => {
     `G,"'-2+3"`,
     `H,"'=1\n=2"`,
     'I,-7',
+    `J,"-566,000"`,
+    `K,"- step one\nstep two"`,
   ];
 
   it('writes a UTF-8 BOM and escapes formula cells by default for CSV', async () => {

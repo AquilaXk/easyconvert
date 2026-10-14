@@ -29,6 +29,7 @@ import { renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
   MAX_INTEGER_LITERAL_DIGITS,
+  dataObjectKeys,
   isDataObject,
   normalizeDataValue,
   parseJsonLossless,
@@ -41,6 +42,7 @@ import {
 import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMlDocument } from './data-xml';
 import { assertToml10Syntax } from './data-toml';
 import { assertConversionOptionsObject } from './options-guard';
+import { delimitedToParquet } from './data-fast-paths';
 import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
 import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter, parseDelimitedRecords } from './delimited-detect';
 
@@ -465,7 +467,7 @@ interface DataTable {
 /** Writes one table cell per leaf: nested objects become dot paths, arrays their JSON text. */
 function flattenInto(value: DataValue, path: string, cells: Map<string, DataValue>): void {
   if (isDataObject(value)) {
-    const keys = Object.keys(value);
+    const keys = dataObjectKeys(value);
     if (keys.length === 0) {
       setCell(cells, path, '{}');
       return;
@@ -770,9 +772,7 @@ function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, opt
     return { value: xmlToJsonMlDocument(root), records: () => xmlRecords(root), text: () => xmlStringValue(root) };
   }
   if (src === 'parquet') {
-    const records = asRecords(
-      normalizeDataValue(decodeParquet(inputBuffer), { maxValues: Number.POSITIVE_INFINITY, label: 'Parquet file' })
-    );
+    const records = decodeParquet(inputBuffer) as DataValue[];
     return { value: records, records: () => records, text: () => stringifyJsonLossless(records, JSON_INDENT) };
   }
   throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
@@ -873,7 +873,8 @@ function assertTomlRepresentable(value: DataValue, path: string): void {
   if (Array.isArray(value)) {
     value.forEach((item, index) => assertTomlRepresentable(item, `${path}[${index}]`));
   } else if (isDataObject(value)) {
-    for (const [key, child] of Object.entries(value)) {
+    for (const key of dataObjectKeys(value)) {
+      const child = value[key];
       const childPath = path === '' ? key : `${path}.${key}`;
       if (UNPAIRED_SURROGATE.test(key)) {
         throw new DataRepresentationError(`TOML keys must be valid Unicode; "${childPath}" holds an unpaired surrogate.`);
@@ -895,7 +896,7 @@ function markNegativeZeros(value: DataValue, marker: string, count: { replaced: 
   if (Array.isArray(value)) return value.map((item) => markNegativeZeros(item, marker, count));
   if (isDataObject(value)) {
     const copy: DataObject = {};
-    for (const [key, child] of Object.entries(value)) setOwn(copy, key, markNegativeZeros(child, marker, count));
+    for (const key of dataObjectKeys(value)) setOwn(copy, key, markNegativeZeros(value[key], marker, count));
     return copy;
   }
   return value;
@@ -956,6 +957,13 @@ export async function convertData(
     // Decoding re-infers column types (INT32 -> INT64, FLOAT -> DOUBLE) and drops the codec, so a
     // re-encode would not reproduce the file; returning the input unchanged is not a conversion.
     throw new UnsupportedTargetError('Parquet to Parquet is not a supported conversion.');
+  }
+
+  if (tgt === 'parquet' && (src === 'csv' || src === 'tsv' || src === 'tab')) {
+    const parquetBuffer = delimitedToParquet(inputBuffer, src, options);
+    if (parquetBuffer !== null) {
+      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
+    }
   }
 
   if (src === 'parquet') {
@@ -1039,7 +1047,7 @@ function generateTableHtml(data: Record<string, unknown>[], title: string): stri
     return `<!DOCTYPE html><html><body><p>Empty dataset</p></body></html>`;
   }
 
-  const headers = Object.keys(data[0] || {});
+  const headers = dataObjectKeys(data[0] || {});
   const headerHtml = headers
     .map(
       (h) =>
