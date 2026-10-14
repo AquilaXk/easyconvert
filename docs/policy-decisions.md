@@ -61,6 +61,10 @@ Tabular data
 
 26. [Tabular data fidelity and Parquet encodings](#26-tabular-data-fidelity-and-parquet-encodings)
 
+Compression
+
+28. [Zstandard level 3 match finder and literal cost floor](#28-zstandard-level-3-match-finder-and-literal-cost-floor)
+
 ---
 
 ## 1. AVIF chroma and bit depth
@@ -573,4 +577,24 @@ Tabular data
   - **Always returning the rewritten PDF even when larger on clean inputs**: breaks idempotency when compressing an already-compressed clean PDF a second time.
 - **Verified by**: `tests/fb2-book-structure.test.ts`, `tests/pdf-compress.test.ts`, and the public `ebook` and `pdf-ops` parity suites (`book-help-ru.fb2`, `book-linear-algebra.epub->pdf`, `pdf-gov-000012.pdf->compress`, `pdf-gov-001071.pdf->compress`, `pdf-gov-003966.pdf->compress`, and `pdf-vera-ua1-annotations.pdf->compress`).
 - **Revisit when**: a dedicated MathML layout engine is added to the in-process PDF writer.
+
+## 28. Zstandard level 3 match finder and literal cost floor
+
+- **Status**: Implemented (issue #737).
+- **Decision**:
+  - **Level 3 match-finder parameters**: the default Zstandard encoder level (`level = 3`) uses `windowLog = 20`, `hashLog = 18`, `chainLog = 18`, `searchDepth = 8`, `minMatch = 4`, `niceLength = 32`, `lazyDepth = 1`, `skipStrength = 7`, `insertMatchInterior = true`, and `interiorInsertCap = 16`, with levels 4 to 6 scaled monotonically (`searchDepth = 10, 12, 14`, `hashLog = 18`, `chainLog = 18, 18, 19`).
+  - **Lazy lookahead length floor (`chainFloor`)**: during 1-step lazy lookahead in `parseBlock`, `MatchFinder.findBest` skips match-length extension and offset-bit scoring on any chain candidate whose `src[cand + chainFloor]` byte does not match `src[p + chainFloor]`, where `chainFloor = len - 1` is the current match length minus one.
+  - **Post-LZ77 literal cost floor (`LITERAL_BITS_MIN = 6.5`)**: the hash-chain match finder clamps its per-block literal bit-cost estimate to at least `6.5` bits per byte when scoring short matches against FSE sequence overhead (`MATCH_OVERHEAD_BITS + OFFSET_SYMBOL_BITS + highBit32(offset + 1)`).
+- **Why**:
+  - Whole-block order-0 Shannon entropy underestimates the cost of the unmatched literals that remain after LZ77 removes repetitive runs. On zero-padded binary slices such as 3D medical volumes (where 50 to 65 % of each 128 KB block is `0x00`), raw block entropy drops to 2.3 to 2.6 bits per byte while the non-zero tissue bytes left in the Huffman literals stream cost 5.4 to 5.6 bits per literal; on natural-language prose, raw block entropy is 4.5 to 4.8 bits per byte while post-LZ77 literal residuals cost 5.3 to 5.4 bits per literal. With `LITERAL_BITS_MIN = 1`, the match scorer rejected every 4-byte match at `offset >= 63` in prose and every 4- to 8-byte cross-slice match in zero-padded medical volumes.
+  - Raising `chainLog` from 16 (64 KiB chain reach) to 18 (256 KiB chain reach) prevents the 64 KiB dense job history from overwriting all chain links into the sparse window and brings prose, source code, XML, and chemical database recurrences between 64 KiB and 256 KiB into chain reach.
+  - Enabling 1-step lazy matching (`lazyDepth = 1`) with the `src[cand + len - 1]` filter avoids taking a 4-byte match at `p` when `p + 1` starts a longer match, without paying `matchLength` and `highBit32` calls on shorter chain candidates.
+- **Trade-offs**:
+  - `hashLog = 18` and `chainLog = 18` allocate 1 MiB for `head` and 1 MiB for `chain` per worker thread (up from 512 KiB and 256 KiB), reused across blocks and jobs inside each worker.
+  - 1-step lazy lookahead evaluates up to two additional positions per match, kept within the throughput parity budget by the `chainFloor` pre-check and the 4-worker parallel job pool.
+- **Alternatives rejected**:
+  - **Raising `windowLog` above 20 or enabling multi-step lazy matching (`lazyDepth = 2`) at level 3**: increases memory footprint and slows down single-block and multi-worker throughput without needed ratio gains once `LITERAL_BITS_MIN = 6.5` and `chainLog = 18` are in place.
+  - **Two-pass per-block literal entropy estimation**: requires a trial LZ77 pass over every 128 KB block before scoring matches, nearly doubling parse time.
+- **Verified by**: `tests/zstd-job-frames.test.ts`, `tests/zstd-engine.test.ts`, `tests/zstd-level-pins.test.ts`, `tests/zstd-throughput.perf.test.ts`, and the `compression` quality and speed parity suites across all 12 Silesia files and all 8 content classes.
+- **Revisit when**: a dedicated double-hash fast matcher (separate short-match and long-match tables without a chain array) is introduced for levels 1 to 4.
 

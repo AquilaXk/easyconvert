@@ -5057,8 +5057,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.3676793020900264,
-      "delta": -0.005487560349289655,
+      "ours": 0.3508999894583958,
+      "delta": -0.02642834902303315,
       "ratio": null
     },
     "compression/class-compressed.tar->7z/compression_ratio": {
@@ -5107,8 +5107,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.8809482302983201,
-      "delta": 0.0015690501437429782,
+      "ours": 0.8770629093711203,
+      "delta": -0.0024199771048549756,
       "ratio": null
     },
     "compression/class-data.tar->7z/compression_ratio": {
@@ -5157,8 +5157,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.7412226294080594,
-      "delta": -0.021598898171304115,
+      "ours": 0.7304780621582295,
+      "delta": -0.034993651357484334,
       "ratio": null
     },
     "compression/class-database.tar->7z/compression_ratio": {
@@ -5207,8 +5207,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.14809679175769067,
-      "delta": 0.0028822985903316223,
+      "ours": 0.13903831581973142,
+      "delta": -0.006500106819272211,
       "ratio": null
     },
     "compression/class-markup.tar->7z/compression_ratio": {
@@ -5257,8 +5257,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.12198762272509578,
-      "delta": 0.00300115241858237,
+      "ours": 0.10962138559626437,
+      "delta": -0.009949151400862069,
       "ratio": null
     },
     "compression/class-medical.tar->7z/compression_ratio": {
@@ -5307,8 +5307,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.5337516733709938,
-      "delta": 0.01143259641034955,
+      "ours": 0.4970277808319351,
+      "delta": -0.025323283456956225,
       "ratio": null
     },
     "compression/class-source.tar->7z/compression_ratio": {
@@ -5357,8 +5357,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.23184061204087678,
-      "delta": 0.0023823033915876812,
+      "ours": 0.21868432501481042,
+      "delta": -0.011753184241706183,
       "ratio": null
     },
     "compression/class-text.tar->7z/compression_ratio": {
@@ -5407,8 +5407,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.31181759383513424,
-      "delta": 0.00645784278680811,
+      "ours": 0.2888223261015936,
+      "delta": -0.017119890208057154,
       "ratio": null
     },
     "compression/mixed.7z->tar/throughput": {
@@ -5597,8 +5597,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.37478372816664585,
-      "delta": -0.003828966201264772,
+      "ours": 0.36678485283552714,
+      "delta": -0.013913349576090583,
       "ratio": null
     },
     "compression/mixed.tar->zst/throughput": {
@@ -5777,8 +5777,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.38418089239815445,
-      "delta": 0.02460243596090672,
+      "ours": 0.35366397820503537,
+      "delta": -0.006333219719780736,
       "ratio": null
     },
     "compression/silesia-dickens.tar->zst/lossless_exact": {
@@ -5947,8 +5947,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.3526873235080968,
-      "delta": -0.004226395379348213,
+      "ours": 0.3363105148565574,
+      "delta": -0.024965423986655355,
       "ratio": null
     },
     "compression/silesia-mozilla.tar->zst/lossless_exact": {
@@ -6117,8 +6117,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.39159891055310414,
-      "delta": 0.03574431697143715,
+      "ours": 0.35442087328259464,
+      "delta": -0.0014651127057606628,
       "ratio": null
     },
     "compression/silesia-mr.tar->zst/lossless_exact": {
@@ -6287,8 +6287,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.08722907588177607,
-      "delta": 0.0027250853079318627,
+      "ours": 0.07825920706502715,
+      "delta": -0.006518198056861227,
       "ratio": null
     },
     "compression/silesia-nci.tar->zst/lossless_exact": {
@@ -6537,8 +6537,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.49249600792693077,
-      "delta": -0.015987472432589855,
+      "ours": 0.47236562187916115,
+      "delta": -0.03860802783788281,
       "ratio": null
     },
     "compression/silesia-ooffice.tar->zst/lossless_exact": {
@@ -6747,8 +6747,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.35059387147168203,
-      "delta": 0.0034053218403432006,
+      "ours": 0.34124061392365657,
+      "delta": -0.006439920187862269,
       "ratio": null
     },
     "compression/silesia-osdb.tar->zst/lossless_exact": {
@@ -6917,8 +6917,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.3025542302769706,
-      "delta": 0.010126596412784794,
+      "ours": 0.2797636166816705,
+      "delta": -0.013272267843955854,
       "ratio": null
     },
     "compression/silesia-reymont.tar->zst/lossless_exact": {
@@ -7087,8 +7087,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.23184061204087678,
-      "delta": 0.0023823033915876812,
+      "ours": 0.21868432501481042,
+      "delta": -0.011753184241706183,
       "ratio": null
     },
     "compression/silesia-samba.tar->zst/lossless_exact": {
@@ -7257,8 +7257,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.7412226294080594,
-      "delta": -0.021598898171304115,
+      "ours": 0.7304780621582295,
+      "delta": -0.034993651357484334,
       "ratio": null
     },
     "compression/silesia-sao.tar->zst/lossless_exact": {
@@ -7427,8 +7427,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.2940273843105994,
-      "delta": 0.0019970716401813138,
+      "ours": 0.27288128140429285,
+      "delta": -0.01977174732166609,
       "ratio": null
     },
     "compression/silesia-webster.tar->zst/lossless_exact": {
@@ -7597,8 +7597,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.7010048098708557,
-      "delta": -0.01717192338191975,
+      "ours": 0.6648152518691942,
+      "delta": -0.0533941686806132,
       "ratio": null
     },
     "compression/silesia-x-ray.tar->zst/lossless_exact": {
@@ -7847,8 +7847,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.12198762272509578,
-      "delta": 0.00300115241858237,
+      "ours": 0.10962138559626437,
+      "delta": -0.009949151400862069,
       "ratio": null
     },
     "compression/silesia-xml.tar->zst/lossless_exact": {
@@ -8217,8 +8217,8 @@
         "abs": 0,
         "rel": 0.01
       },
-      "ours": 0.9995632389650498,
-      "delta": -0.00046088180987691185,
+      "ours": 0.9995646085989573,
+      "delta": -0.00045951217596940097,
       "ratio": null
     },
     "compression/wm-tmax100-grain.jpg.tar->zst/lossless_exact": {

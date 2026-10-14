@@ -79,13 +79,13 @@ const LEVEL_PARAMS_TABLE: readonly ZstdLevelParams[] = [
   // level 2
   { windowLog: 19, hashLog: 15, chainLog: 0, searchDepth: 1, minMatch: 5, niceLength: 24, lazyDepth: 0, skipStrength: 6, insertMatchInterior: false },
   // level 3
-  { windowLog: 20, hashLog: 16, chainLog: 16, searchDepth: 4, minMatch: 4, niceLength: 32, lazyDepth: 0, skipStrength: 7, insertMatchInterior: true, interiorInsertCap: 16 },
+  { windowLog: 20, hashLog: 18, chainLog: 18, searchDepth: 8, minMatch: 4, niceLength: 32, lazyDepth: 1, skipStrength: 7, insertMatchInterior: true, interiorInsertCap: 16 },
   // level 4
-  { windowLog: 20, hashLog: 17, chainLog: 17, searchDepth: 6, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 7, insertMatchInterior: true },
+  { windowLog: 20, hashLog: 18, chainLog: 18, searchDepth: 10, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 7, insertMatchInterior: true },
   // level 5
-  { windowLog: 21, hashLog: 17, chainLog: 18, searchDepth: 8, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 8, insertMatchInterior: true },
+  { windowLog: 21, hashLog: 18, chainLog: 18, searchDepth: 12, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 8, insertMatchInterior: true },
   // level 6
-  { windowLog: 21, hashLog: 18, chainLog: 18, searchDepth: 12, minMatch: 4, niceLength: 64, lazyDepth: 1, skipStrength: 8, insertMatchInterior: true },
+  { windowLog: 21, hashLog: 18, chainLog: 19, searchDepth: 14, minMatch: 4, niceLength: 64, lazyDepth: 1, skipStrength: 8, insertMatchInterior: true },
   // level 7
   { windowLog: 21, hashLog: 18, chainLog: 19, searchDepth: 16, minMatch: 4, niceLength: 64, lazyDepth: 1, skipStrength: 0, insertMatchInterior: true },
   // level 8
@@ -133,7 +133,12 @@ const MATCH_OVERHEAD_BITS = 10;
 const OFFSET_SYMBOL_BITS = 3;
 const REP_SYMBOL_BITS = 2;
 const LITERAL_BITS_MAX = 8;
-const LITERAL_BITS_MIN = 1;
+/**
+ * Floor on the estimated bits per unmatched literal. Raw block byte entropy is pulled down by long zero or repeat runs
+ * that LZ77 encodes as matches rather than literals; pricing unmatched literals below this floor rejects short 4-to-7
+ * byte matches at medium offsets whose sequence cost is smaller than four Huffman-coded residual literals.
+ */
+const LITERAL_BITS_MIN = 6.5;
 /** Every 2^N consecutive unmatched bytes halve the chain search depth, bounding time on incompressible data. */
 const LITERAL_RUN_DEPTH_SHIFT = 8;
 const LITERAL_RUN_DEPTH_SHIFT_MAX = 6;
@@ -416,7 +421,7 @@ class MatchFinder {
   }
 
   /** Sets bestLen/bestOffset/bestScore for position p; bestLen is 0 when nothing qualifies. */
-  private findBest(p: number, limit: number): void {
+  private findBest(p: number, limit: number, chainFloor = 0): void {
     const maxLen = limit - p;
     let bestLen = 0;
     let bestOffset = 0;
@@ -438,7 +443,7 @@ class MatchFinder {
     }
 
     if (bestLen < maxLen && bestLen < this.params.niceLength) {
-      const found = this.searchChain(p, maxLen, bestLen);
+      const found = this.searchChain(p, maxLen, bestLen > chainFloor ? bestLen : chainFloor);
       if (found > 0) {
         const score =
           found * this.literalBits - MATCH_OVERHEAD_BITS - OFFSET_SYMBOL_BITS - highBit32(this.bestOffset + 1);
@@ -567,7 +572,7 @@ class MatchFinder {
       if (lazyDepth > 0 && len < params.niceLength) {
         for (let depth = 0; depth < lazyDepth && p + 1 <= lastProbe && len < params.niceLength; depth++) {
           this.catchUpTo(p + 1);
-          this.findBest(p + 1, blockEnd);
+          this.findBest(p + 1, blockEnd, len - 1);
           if (this.bestLen > 0 && this.bestScore > score + this.literalBits) {
             p++;
             len = this.bestLen;
