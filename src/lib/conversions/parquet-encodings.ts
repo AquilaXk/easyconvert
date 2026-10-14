@@ -116,7 +116,7 @@ export function decodeDeltaBinaryPacked(
           `Corrupted Parquet file: delta bit width ${bw} exceeds ${bitWidthLimit} in column '${column}'`
         );
       }
-      const miniBlockBytes = (valuesPerMiniBlock * bw) >>> 3;
+      const miniBlockBytes = (valuesPerMiniBlock / BITS_PER_BYTE) * bw;
       if (pos + miniBlockBytes > page.length) {
         throw new ParquetFormatError(`Corrupted Parquet file: truncated delta miniblock data in column '${column}'`);
       }

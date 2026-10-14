@@ -36,6 +36,7 @@ import {
   positionOf,
   setOwn,
   stringifyJsonLossless,
+  withOrderedKeysView,
   type DataObject,
   type DataValue,
 } from './data-json';
@@ -689,7 +690,7 @@ function parseYamlText(text: string): DataValue {
   let raw: unknown;
   try {
     // Aliases resolve to shared objects; the value cap below bounds their expansion.
-    raw = document.toJS({ maxAliasCount: -1 });
+    raw = document.toJS({ maxAliasCount: -1, mapAsMap: true });
   } catch (err) {
     throw new DataParseError(`YAML parsing failed: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -834,7 +835,7 @@ function yamlEscape(char: string): string {
  * U+FFFE/U+FFFF.
  */
 function writeYamlText(value: DataValue): string {
-  const document = new YamlDocument(value, {
+  const document = new YamlDocument(withOrderedKeysView(value), {
     compat: 'yaml-1.1',
     aliasDuplicateObjects: false,
     customTags: (tags) => [YAML_EXPONENT_FLOAT_TAG, ...tags],
@@ -911,7 +912,7 @@ function writeTomlText(value: DataValue): string {
   // that is then replaced by -0.0. The count check proves no user string produced the marker.
   const marker = `negative-zero-${randomUUID()}`;
   const count = { replaced: 0 };
-  const marked = markNegativeZeros(value, marker, count);
+  const marked = withOrderedKeysView(markNegativeZeros(value, marker, count));
   const toml = stringifyToml(marked, { maxDepth: MAX_DATA_NESTING_DEPTH });
   if (count.replaced === 0) return toml;
   const pieces = toml.split(JSON.stringify(marker));

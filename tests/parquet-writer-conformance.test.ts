@@ -632,6 +632,17 @@ describe('Parquet writer conformance (issue 526)', () => {
       const bpLevels = new Uint8Array(4);
       expect(decodeBitPackedLevels(Buffer.from([0xa0]), 0, 1, 4, bpLevels, 'col')).toBe(1);
       expect(Array.from(bpLevels)).toEqual([1, 0, 1, 0]);
+
+      // Rejects a crafted delta header whose valuesPerMiniBlock * bw = 2^32 (blockSize=2^27, miniBlocks=1, bw=32)
+      const overflowHeader = Buffer.from([
+        0x80, 0x80, 0x80, 0x40, // blockSize = 134_217_728 (2^27)
+        0x01,                   // miniBlocks = 1
+        0x02,                   // totalCount = 2
+        0x00,                   // firstValue = 0
+        0x00,                   // minDelta = 0
+        0x20,                   // bitWidth = 32 -> miniBlockBytes = 536_870_912
+      ]);
+      expect(() => decodeDeltaBinaryPacked(overflowHeader, 0, 2, 32, 'col')).toThrow(ParquetFormatError);
     });
 
     it('rejects a page whose compressed bytes are damaged', () => {

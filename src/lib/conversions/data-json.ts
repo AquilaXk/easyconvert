@@ -56,6 +56,24 @@ export function dataObjectKeys(target: object): string[] {
   return (hasOrderedObjects ? ORDERED_KEYS.get(target) : undefined) ?? Object.keys(target);
 }
 
+/**
+ * Wraps DataObjects carrying recorded source key order in an `ownKeys` Proxy so third-party
+ * serializers (`yaml`, `smol-toml`) that call `Object.keys`/`Object.entries` observe source order.
+ */
+export function withOrderedKeysView(value: DataValue): DataValue {
+  if (!hasOrderedObjects || value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map((item) => withOrderedKeysView(item));
+  const copy: DataObject = {};
+  for (const key of dataObjectKeys(value)) {
+    setOwn(copy, key, withOrderedKeysView(value[key]));
+  }
+  const ordered = ORDERED_KEYS.get(copy);
+  if (ordered === undefined) return copy;
+  return new Proxy(copy, {
+    ownKeys: () => [...ordered],
+  });
+}
+
 export function positionOf(text: string, index: number): { line: number; column: number } {
   let line = 1;
   let lineStart = 0;
@@ -474,6 +492,14 @@ export function normalizeDataValue(input: unknown, options: NormalizeOptions): D
     ancestors.add(value);
     try {
       if (Array.isArray(value)) return value.map((item) => visit(item, depth + 1));
+      if (value instanceof Map) {
+        const result: DataObject = {};
+        for (const [rawKey, child] of value.entries()) {
+          const key = rawKey === null || rawKey === undefined ? '' : String(rawKey);
+          setOwn(result, key, visit(child, depth + 1));
+        }
+        return result;
+      }
       const prototype = Object.getPrototypeOf(value);
       if (prototype !== Object.prototype && prototype !== null) {
         throw new DataRepresentationError(`${options.label} contains an unsupported ${value.constructor?.name ?? 'object'} value.`);
