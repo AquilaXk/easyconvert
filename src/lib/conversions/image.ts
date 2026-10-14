@@ -1577,7 +1577,7 @@ const SOURCE_BLOCK_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg', 'webp'
  * on a 16-bit image in sharp runs two `vips_icc_transform` passes (first to Display P3 for `rgb16`, leaving the source
  * profile attached, then from the source profile to sRGB a second time), which lifts shadow zeros and shifts colours.
  */
-async function apply16BitSrgbPrimariesCurve(pipeline: Sharp, meta: Metadata): Promise<Sharp> {
+async function apply16BitSrgbPrimariesCurve(pipeline: Sharp, meta: Metadata, target: string): Promise<Sharp> {
   if (meta.depth !== SHARP_SIXTEEN_BIT_DEPTH || meta.icc === undefined || (meta.channels ?? 0) < RGB_CHANNEL_COUNT) {
     return pipeline;
   }
@@ -1597,9 +1597,13 @@ async function apply16BitSrgbPrimariesCurve(pipeline: Sharp, meta: Metadata): Pr
     samples[i + 1] = lutG[samples[i + 1]];
     samples[i + 2] = lutB[samples[i + 2]];
   }
-  return sharp(samples, {
+  let out = sharp(samples, {
     raw: { width: info.width, height: info.height, channels: info.channels },
   }).toColourspace('rgb16');
+  if (meta.xmp !== undefined) out = out.withXmp(meta.xmp.toString('utf8'));
+  if (meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI) out = out.withDensity(meta.density);
+  if (SRGB_TAGGED_TARGETS.has(target)) out = out.withIccProfile('srgb', { attach: true });
+  return out;
 }
 
 const SIXTEEN_BIT_CURVE_TARGETS: ReadonlySet<string> = new Set(['png', 'tiff', 'tif', 'avif', 'psd']);
@@ -1615,7 +1619,7 @@ async function preserveMetadata(pipeline: Sharp, target: string): Promise<Sharp>
     hasSrgbPrimaries(meta.icc) &&
     !isSrgbProfile(meta.icc)
   ) {
-    return apply16BitSrgbPrimariesCurve(pipeline, meta);
+    return apply16BitSrgbPrimariesCurve(pipeline, meta, target);
   }
   if (SOURCE_BLOCK_TARGETS.has(target)) return keepSourceBlocks(pipeline, meta, target);
   const hasMetadataBlock = meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined;
@@ -2264,12 +2268,14 @@ export async function convertImage(
   // A 16-bit picture on its way to an 8-bit target is reduced with rounding at the end of the pipeline (see image-depth.ts), so it is
   // kept at 16 bits until then: a pipeline in sRGB would have floored it at the start. A picture with an alpha plane, a background
   // to flatten onto, or a non-sRGB development curve that the ICC transform turns into 8-bit sRGB keeps the 8-bit sRGB pipeline.
+  const originalExt = originalFilename?.split('.').pop()?.toLowerCase() ?? '';
+  const isRawOrigin = isRawInput || RAW_CAMERA_FORMATS.has(originalExt);
   const reductionMeta = EIGHT_BIT_ONLY_TARGETS.has(fmt) ? await pipeline.metadata() : undefined;
   const convertsToneCurve = reductionMeta?.icc !== undefined && hasSrgbPrimaries(reductionMeta.icc) && !isSrgbProfile(reductionMeta.icc);
   const roundsToEightBits =
     reductionMeta?.depth === SHARP_SIXTEEN_BIT_DEPTH && !convertsToneCurve && (fmt === 'webp' || (reductionMeta.hasAlpha !== true && background === undefined));
   if ((background !== undefined || isOpaqueTarget) && !dropsOpaqueAlpha) {
-    if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !decodedRaster && !isRawInput && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) deepPipeline = pipeline.clone();
+    if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !decodedRaster && !isRawOrigin && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) deepPipeline = pipeline.clone();
     if (!roundsToEightBits) pipeline = pipeline.pipelineColourspace('srgb');
   }
 
@@ -2288,7 +2294,7 @@ export async function convertImage(
   // A deep picture written as AVIF is encoded by the command-line tool whatever its content, so its class is awaited
   // by the encoder, after the PNG for the tool has been started; the other encoders need it at once.
   let pendingContent: Promise<ContentClass> | undefined;
-  if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif') && !frameSelection?.keepsAnimation && !isRawInput) {
+  if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif') && !frameSelection?.keepsAnimation && !isRawOrigin) {
     if (decodedRaster) content = classifyRaster(decodedRaster);
     else if (fmt === 'avif' && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) {
       pendingContent = classifyContent(pipeline, deepPipeline);
