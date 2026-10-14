@@ -2268,14 +2268,12 @@ export async function convertImage(
   // A 16-bit picture on its way to an 8-bit target is reduced with rounding at the end of the pipeline (see image-depth.ts), so it is
   // kept at 16 bits until then: a pipeline in sRGB would have floored it at the start. A picture with an alpha plane, a background
   // to flatten onto, or a non-sRGB development curve that the ICC transform turns into 8-bit sRGB keeps the 8-bit sRGB pipeline.
-  const originalExt = originalFilename?.split('.').pop()?.toLowerCase() ?? '';
-  const isRawOrigin = isRawInput || RAW_CAMERA_FORMATS.has(originalExt);
   const reductionMeta = EIGHT_BIT_ONLY_TARGETS.has(fmt) ? await pipeline.metadata() : undefined;
   const convertsToneCurve = reductionMeta?.icc !== undefined && hasSrgbPrimaries(reductionMeta.icc) && !isSrgbProfile(reductionMeta.icc);
   const roundsToEightBits =
     reductionMeta?.depth === SHARP_SIXTEEN_BIT_DEPTH && !convertsToneCurve && (fmt === 'webp' || (reductionMeta.hasAlpha !== true && background === undefined));
   if ((background !== undefined || isOpaqueTarget) && !dropsOpaqueAlpha) {
-    if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !decodedRaster && !isRawOrigin && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) deepPipeline = pipeline.clone();
+    if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !decodedRaster && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) deepPipeline = pipeline.clone();
     if (!roundsToEightBits) pipeline = pipeline.pipelineColourspace('srgb');
   }
 
@@ -2288,13 +2286,12 @@ export async function convertImage(
   const inputSpace = inputMeta?.space;
   const deepColourspace = deepColourspaceOf(inputMeta, options);
 
-  // Content analysis reads a thumbnail of the picture before any resize is attached to the pipeline. Camera RAW sensor
-  // captures are continuous-tone photographs by construction, so they skip the extra full-image TIFF decode and ICC pass.
+  // Content analysis reads a thumbnail of the picture before any resize is attached to the pipeline.
   let content: ContentClass = 'photo';
   // A deep picture written as AVIF is encoded by the command-line tool whatever its content, so its class is awaited
   // by the encoder, after the PNG for the tool has been started; the other encoders need it at once.
   let pendingContent: Promise<ContentClass> | undefined;
-  if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif') && !frameSelection?.keepsAnimation && !isRawOrigin) {
+  if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif') && !frameSelection?.keepsAnimation) {
     if (decodedRaster) content = classifyRaster(decodedRaster);
     else if (fmt === 'avif' && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) {
       pendingContent = classifyContent(pipeline, deepPipeline);

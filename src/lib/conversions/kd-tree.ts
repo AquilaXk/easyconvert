@@ -273,9 +273,6 @@ export class KdTree3 {
     return bestIndex;
   }
 
-  /** Number of hinted queries seen so far; the O(N^2 log N) neighbour table is built once queries amortize it. */
-  private hintedQueries = 0;
-
   /**
    * Index of the point nearest to (x, y, z); ties go to the lower index. `hint` is a point to start from (any index,
    * for speed only), `otherHint` a second one. The squared distance is left in `lastDistance2`.
@@ -305,8 +302,7 @@ export class KdTree3 {
       }
     }
     if (hint >= 0 && hint < this.size && this.size <= NEIGHBOUR_TABLE_MAX_POINTS && this.size > 1) {
-      this.hintedQueries += 1;
-      if (this.neighbours !== null || otherHint >= 0 || this.hintedQueries >= this.size * 32) {
+      if (this.neighbours !== null || otherHint >= 0) {
         let start = hint;
         if (otherHint >= 0 && otherHint < this.size && otherHint !== hint) {
           // Of two guesses, start from the one nearer the query: the smaller its distance, the fewer neighbours to measure.

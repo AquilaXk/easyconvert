@@ -237,11 +237,20 @@ interface Histogram {
   lab: Float64Array;
 }
 
+const HISTOGRAM_COUNTS = new Uint32Array(HISTOGRAM_BINS);
+const HISTOGRAM_SUMS_R = new Uint32Array(HISTOGRAM_BINS);
+const HISTOGRAM_SUMS_G = new Uint32Array(HISTOGRAM_BINS);
+const HISTOGRAM_SUMS_B = new Uint32Array(HISTOGRAM_BINS);
+
 function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTransparent: boolean): Histogram {
-  const counts = new Uint32Array(HISTOGRAM_BINS);
-  const sumsR = new Uint32Array(HISTOGRAM_BINS);
-  const sumsG = new Uint32Array(HISTOGRAM_BINS);
-  const sumsB = new Uint32Array(HISTOGRAM_BINS);
+  const counts = HISTOGRAM_COUNTS;
+  const sumsR = HISTOGRAM_SUMS_R;
+  const sumsG = HISTOGRAM_SUMS_G;
+  const sumsB = HISTOGRAM_SUMS_B;
+  counts.fill(0);
+  sumsR.fill(0);
+  sumsG.fill(0);
+  sumsB.fill(0);
   for (let p = 0; p < pixelCount; p += 1) {
     const i = p * RGBA_STRIDE;
     if (ignoreTransparent && pixels[i + 3] < QUANT_ALPHA_THRESHOLD) continue;
@@ -507,16 +516,21 @@ function paletteSpacing(model: PaletteModel): { linear: number; oklab: number } 
 const MAP_CACHE_BITS = 14;
 const MAP_CACHE_SIZE = 1 << MAP_CACHE_BITS;
 const MAP_CACHE_SHIFT = 32 - MAP_CACHE_BITS;
+const MAP_CACHE_KEYS = new Int32Array(MAP_CACHE_SIZE);
+const MAP_CACHE_INDICES = new Uint16Array(MAP_CACHE_SIZE);
+const MAP_CACHE_DIST2 = new Float64Array(MAP_CACHE_SIZE);
+const MAP_CACHE_LAB = new Float64Array(MAP_CACHE_SIZE * RGB_STRIDE);
 
 function mapNearest(pixels: ArrayLike<number>, pixelCount: number, model: PaletteModel, transparentIndex: number, runTolerance = 0): Uint8Array {
   const out = new Uint8Array(pixelCount);
   const lab = new Float64Array(RGB_STRIDE);
   const keepsRuns = runTolerance > 0;
   const distanceFactor = (1 + runTolerance) ** 2;
-  const cacheKeys = new Int32Array(MAP_CACHE_SIZE).fill(-1);
-  const cacheIndices = new Uint16Array(MAP_CACHE_SIZE);
-  const cacheDist2 = keepsRuns ? new Float64Array(MAP_CACHE_SIZE) : null;
-  const cacheLab = keepsRuns ? new Float64Array(MAP_CACHE_SIZE * RGB_STRIDE) : null;
+  const cacheKeys = MAP_CACHE_KEYS;
+  cacheKeys.fill(-1);
+  const cacheIndices = MAP_CACHE_INDICES;
+  const cacheDist2 = keepsRuns ? MAP_CACHE_DIST2 : null;
+  const cacheLab = keepsRuns ? MAP_CACHE_LAB : null;
   let lastKey = -1;
   let lastIndex = 0;
   let lastNearest = 0;
