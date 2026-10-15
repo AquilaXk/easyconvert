@@ -122,7 +122,9 @@ jobs:
   # the timing job has the machine to itself. The plain baseline run above stays as it was.
   bench-parity-quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Every family of the public sample sets, with the reference side measured from an empty cache on the first night: 59 minutes got
+    # as far as the RAW family.
+    timeout-minutes: 150
 
     services:
       redis:

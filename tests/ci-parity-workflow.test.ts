@@ -248,6 +248,10 @@ describe('the public benchmark samples in the workflows', () => {
     expect(action.runs.steps.map((step) => step.if)).toEqual(SAMPLE_FAMILIES.map((family) => `contains(format(',{0},', inputs.families), ',${family},')`));
   });
 
+  it('leaves the nightly quality job time for every family, which took 59 minutes to reach the RAW family from an empty cache', () => {
+    expect(nightlyQuality['timeout-minutes']).toBeGreaterThanOrEqual(120);
+  });
+
   it('is saved by the nightly parity jobs even when they fail, under a key of its own for each run', () => {
     const save = parse(read('.github', 'actions', 'bench-corpora-save', 'action.yml')) as { runs: { steps: Step[] } };
     expect(save.runs.steps.map((step) => step.with?.path)).toEqual(SAMPLE_FAMILIES.map((family) => `.bench-corpora/${family}`));
