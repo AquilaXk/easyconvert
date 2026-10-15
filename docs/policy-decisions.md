@@ -276,6 +276,7 @@ Compression
   - DXF is read in-process. It covers lines, arcs, circles, ellipses, clamped and unclamped B-splines (sampled over their valid Cox-de Boor domain `[knots[degree], knots[control.length]]`), polylines with bulges, blocks with nesting, arrays and negative-Z OCS extrusion, dimensions, and single-line and multi-line text (including horizontal/vertical alignments, `Aligned`/`Fit` baseline orientation and width scaling, `STYLE` width factors, `%%` control codes, and linked multi-column `MTEXT` records wrapped to single-column width). Degenerate block insertions with a zero scale factor are skipped after accounting for their visit budget.
   - Output is one vector page fitted to the drawing extents (both strokes and text boxes), with every text line placed at its true drawing coordinates.
   - Expansion is bounded by one budget for the whole drawing; a drawing over it fails with 422.
+  - The CAD parity score reads every output the same way, whatever the renderer draws: ink is any pixel that differs from the page colour, the frame of the drawing is fitted so that the reference strokes lie on ink, and the tolerance is a symmetric 1 % dilation. The score names no colour, line weight or page layout of the product or of the reference tool. B-splines whose knot vector is unclamped are sampled over their valid domain with the reference library's domain sampler, because its path conversion leaves the domain.
   - DWG is converted to DXF by an open-source reader run as a separate program.
 - **Why**:
   - Fidelity: dropping entity types, misplacing aligned or multi-column text, ignoring negative-Z block extrusion, or extrapolating unclamped B-spline knot vectors outside their domain gives visibly wrong drawings.
@@ -285,7 +286,9 @@ Compression
 - **Alternatives rejected**:
   - Paid DWG libraries.
   - Adding a title and frame to the page, which users then have to crop.
-- **Verified by**: the CAD parity rows and `tests/cad-dxf-*.test.ts`.
+  - Keying the score on the stroke and text colours of the product, which put the reference tool's black drawings in a different frame and understated them.
+  - Using the box of all ink as the frame, which counts text outside the strokes as a scale error.
+- **Verified by**: the CAD parity rows, `tests/cad-dxf-*.test.ts` and `tests/bench-cad-ink.test.ts` (the same drawing in several palettes, light on dark included, scores alike; a missing outline costs recall; text or a stray mark outside the strokes does not move the frame).
 - **Revisit when**: users hit the budget with real drawings.
 
 ## 14. SVG to PDF
