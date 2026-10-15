@@ -248,12 +248,15 @@ describe('the public benchmark samples in the workflows', () => {
     expect(action.runs.steps.map((step) => step.if)).toEqual(SAMPLE_FAMILIES.map((family) => `contains(format(',{0},', inputs.families), ',${family},')`));
   });
 
-  it('is saved by the nightly parity jobs even when they fail, under a key of its own for each run', () => {
+  it('is saved by the nightly parity jobs even when they fail, under a key of its own for each run, attempt and job', () => {
     const save = parse(read('.github', 'actions', 'bench-corpora-save', 'action.yml')) as { runs: { steps: Step[] } };
     expect(save.runs.steps.map((step) => step.with?.path)).toEqual(SAMPLE_FAMILIES.map((family) => `.bench-corpora/${family}`));
-    for (const step of save.runs.steps) {
+    const restorePrefix = (family: string): string => String(action.runs.steps.find((step) => step.with?.path === `.bench-corpora/${family}`)?.with?.['restore-keys']).trim();
+    for (const [index, step] of save.runs.steps.entries()) {
       expect(step.uses).toMatch(/^actions\/cache\/save@[0-9a-f]{40}$/);
-      expect(String(step.with?.key)).toContain('${{ github.run_id }}');
+      // The restore reads by prefix, so the extra tokens of the save key must come after the family and the manifest digest.
+      expect(String(step.with?.key).startsWith(restorePrefix(SAMPLE_FAMILIES[index]))).toBe(true);
+      expect(String(step.with?.key)).toMatch(/-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ github\.job \}\}$/);
       expect(String(step.if)).toMatch(/^always\(\) && contains\(/);
     }
     for (const job of [nightly.jobs['bench-parity-quality'], nightly.jobs['bench-parity-speed']]) {
