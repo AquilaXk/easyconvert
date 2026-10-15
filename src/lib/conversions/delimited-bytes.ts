@@ -165,6 +165,23 @@ function guessOutsideQuotes(head: Buffer): 'lf' | 'crlf' | 'cr' {
   return pairs >= (carriageReturns + 1) / 2 ? 'crlf' : 'cr';
 }
 
+const sharedHeaderStarts = new Int32Array(PARQUET_MAX_COLUMNS + 1);
+const sharedHeaderLengths = new Int32Array(PARQUET_MAX_COLUMNS + 1);
+let sharedChunkStarts = new Int32Array(INITIAL_CHUNK_ROWS * 16);
+let sharedChunkLengths = new Int32Array(INITIAL_CHUNK_ROWS * 16);
+
+/** Gives back cell-offset scratch that a large row group grew past its initial size, so it is not held until exit. */
+export function releaseChunkScratch(): void {
+  if (sharedChunkStarts.length <= INITIAL_CHUNK_ROWS * 16) return;
+  sharedChunkStarts = new Int32Array(INITIAL_CHUNK_ROWS * 16);
+  sharedChunkLengths = new Int32Array(INITIAL_CHUNK_ROWS * 16);
+}
+
+/** Entries of the shared cell-offset scratch; tests use it to check that {@link releaseChunkScratch} shrinks it. */
+export function chunkScratchLength(): number {
+  return sharedChunkStarts.length;
+}
+
 export class DelimitedByteScanner {
   /** The input, or a private copy of it once a cell with doubled quotes had to be collapsed in place. */
   data: Buffer;
@@ -175,8 +192,6 @@ export class DelimitedByteScanner {
   private pos: number;
   private owned = false;
   private pending: { starts: Int32Array; lengths: Int32Array; bytes: number } | null = null;
-  private rowStarts = new Int32Array(0);
-  private rowLengths = new Int32Array(0);
 
   private constructor(
     data: Buffer,
@@ -207,8 +222,8 @@ export class DelimitedByteScanner {
   }
 
   private readHeader(autoDetected: boolean): void {
-    const starts = new Int32Array(PARQUET_MAX_COLUMNS + 1);
-    const lengths = new Int32Array(PARQUET_MAX_COLUMNS + 1);
+    const starts = sharedHeaderStarts;
+    const lengths = sharedHeaderLengths;
     const count = this.readCells(starts, lengths, 0, PARQUET_MAX_COLUMNS + 1, true);
     if (count < 0) unsupported('no header record');
     if (count > PARQUET_MAX_COLUMNS) unsupported('more columns than a Parquet file holds');
@@ -217,8 +232,6 @@ export class DelimitedByteScanner {
     for (let i = 0; i < count; i++) names.push(this.data.toString('utf8', starts[i], starts[i] + lengths[i]));
     this.width = count;
     this.header = renameDuplicateHeaders(names);
-    this.rowStarts = new Int32Array(count);
-    this.rowLengths = new Int32Array(count);
   }
 
   /**
@@ -319,9 +332,13 @@ export class DelimitedByteScanner {
    */
   nextChunk(maxRows: number, maxBytes: number): CellChunk | null {
     const width = this.width;
-    let capacity = Math.min(maxRows, INITIAL_CHUNK_ROWS);
-    let starts = new Int32Array(capacity * width);
-    let lengths = new Int32Array(capacity * width);
+    let capacity = Math.min(maxRows, Math.max(INITIAL_CHUNK_ROWS, Math.floor(sharedChunkStarts.length / Math.max(1, width))));
+    if (capacity * width > sharedChunkStarts.length) {
+      sharedChunkStarts = new Int32Array(capacity * width);
+      sharedChunkLengths = new Int32Array(capacity * width);
+    }
+    let starts = sharedChunkStarts;
+    let lengths = sharedChunkLengths;
     let rows = 0;
     let bytes = 0;
     if (this.pending) {
@@ -331,27 +348,28 @@ export class DelimitedByteScanner {
       rows = 1;
       this.pending = null;
     }
-    const rowStarts = this.rowStarts;
-    const rowLengths = this.rowLengths;
     while (rows < maxRows) {
       if (rows >= capacity) {
         capacity = Math.min(maxRows, capacity * 2);
         const grownStarts = new Int32Array(capacity * width);
         const grownLengths = new Int32Array(capacity * width);
-        grownStarts.set(starts);
-        grownLengths.set(lengths);
-        starts = grownStarts;
-        lengths = grownLengths;
+        grownStarts.set(starts.subarray(0, rows * width));
+        grownLengths.set(lengths.subarray(0, rows * width));
+        sharedChunkStarts = starts = grownStarts;
+        sharedChunkLengths = lengths = grownLengths;
       }
-      if (this.readCells(rowStarts, rowLengths, 0, width) < 0) break;
+      const base = rows * width;
+      if (this.readCells(starts, lengths, base, width) < 0) break;
       let rowBytes = width * BYTES_PER_LENGTH_PREFIX;
-      for (let c = 0; c < width; c++) rowBytes += rowLengths[c];
+      for (let c = 0; c < width; c++) rowBytes += lengths[base + c];
       if (rows > 0 && bytes + rowBytes > maxBytes) {
-        this.pending = { starts: rowStarts.slice(), lengths: rowLengths.slice(), bytes: rowBytes };
+        this.pending = {
+          starts: starts.slice(base, base + width),
+          lengths: lengths.slice(base, base + width),
+          bytes: rowBytes,
+        };
         break;
       }
-      starts.set(rowStarts, rows * width);
-      lengths.set(rowLengths, rows * width);
       rows++;
       bytes += rowBytes;
     }
