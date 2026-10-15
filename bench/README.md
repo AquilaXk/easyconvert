@@ -547,7 +547,9 @@ npm run bench:realworld -- merge --out realworld-results realworld-shard-*.json 
 - **Corpus:** `bench/realworld/manifest.json` lists every file's origin, size, SHA-256 and the licence statement of its
   source. Files are never committed; the runner downloads them (single ZIP entries are read with range requests),
   checks each digest and caches them in `~/.cache/easyconvert-realworld`. `scripts/realworld-manifest.ts` rebuilds the
-  manifest deterministically.
+  manifest deterministically. A file that holds no content (an empty sheet, a body with no text) carries `emptyInput` and
+  the reason it is empty, read with a tool other than the converter; only such a file may convert to zero bytes, and the
+  rebuild keeps the mark while the file's digest is unchanged.
 - **Jobs:** each file goes through `--per-file` of its format's advertised targets, rotating so that the corpus covers
   every pair. Jobs run in child processes with a deadline and a heap cap; a job past its deadline kills its process group.
 - **Verdicts:** `ok`; `refused` (a typed error the API answers with 4xx or 503); `crash` (anything the API would answer

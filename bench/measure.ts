@@ -39,7 +39,9 @@ export function decodeImageToPng(kind: ImageKind, input: string, output: string,
     runTool(tools.avifdec, ['--ignore-icc', input, output]);
     dropExifChunk(output);
   } else {
-    runTool(tools.ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-i', input, '-frames:v', '1', output]);
+    // ffmpeg's SIMD inverse transforms and colour conversions differ between CPU architectures, which moved the PSNR of a decoded
+    // JPEG by 1 to 2 dB between the arm64 machine of a baseline and the x86-64 runner. `-cpuflags 0` runs the portable C code, the same everywhere.
+    runTool(tools.ffmpeg, ['-hide_banner', '-nostdin', '-v', 'error', '-y', '-cpuflags', '0', '-i', input, '-frames:v', '1', output]);
   }
   if (!fs.existsSync(output)) throw new OutputIntegrityError(`${kind} decoder wrote no picture for ${path.basename(input)}`);
 }

@@ -8,7 +8,8 @@ import sharp from 'sharp';
 import { inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory, ZipRangeError } from '../bench/realworld/zip-range';
 import { ManifestError, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
 import { planJobs, shardJobs } from '../bench/realworld/plan';
-import { answeredStatus, isTypedRefusal } from '../bench/realworld/verdict';
+import { answeredStatus, crashDetail, exitSummary, isTypedRefusal } from '../bench/realworld/verdict';
+import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { evaluate, mergeShards, pairStats, readKnownFailures, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
 import { outputProblem } from '../bench/realworld/output-check';
@@ -173,6 +174,49 @@ describe('verdicts and gate', () => {
     expect(evaluate([tracked], null, known).pass).toBe(true);
   });
 
+  it('matches a known failure to one corpus file when it names the file, so the same crash in another file still fails the gate', () => {
+    const tracked: JobRecord = { file: 'office-document-attachments.docx', source: 'docx', target: 'jpg', verdict: 'crash', ms: 1, detail: 'SandboxedProcessError: exit 139' };
+    const other: JobRecord = { ...tracked, file: 'another.docx' };
+    const known = [{ pair: 'docx->jpg', verdict: 'crash' as const, detail: '^SandboxedProcessError: ', file: 'office-document-attachments.docx', issue: 760 }];
+    const gate = evaluate([tracked, other], null, known);
+    expect(gate.known).toEqual([{ job: tracked, issue: 760 }]);
+    expect(gate.fatal.map((j) => j.file)).toEqual(['another.docx']);
+  });
+
+  it('names how a sandboxed process ended in the detail of a crash, so a known failure can pin it', () => {
+    expect(exitSummary(new SandboxedProcessError('Warning: failed to launch javaldx', 139, 'Warning: failed to launch javaldx'))).toBe('exit 139');
+    expect(exitSummary(new SandboxedProcessError('Process terminated by signal SIGSEGV', null, '', 'SIGSEGV'))).toBe('signal SIGSEGV');
+    expect(exitSummary(new TypeError('x is undefined'))).toBeNull();
+    expect(crashDetail('SandboxedProcessError', 'Warning: failed', 'exit 139')).toBe('SandboxedProcessError (exit 139): Warning: failed');
+    expect(crashDetail('TypeError', 'x is undefined', null)).toBe('TypeError: x is undefined');
+  });
+
+  it('excuses the tracked office suite crash of a file only with its exit 139 or SIGSEGV, so another failure of that file still fails the gate', () => {
+    const stderr = 'Warning: failed to launch javaldx - java may not function correctly\n';
+    const job = (target: string, file: string, exit: string): JobRecord => ({
+      file,
+      source: 'docx',
+      target,
+      verdict: 'crash',
+      ms: 1,
+      detail: crashDetail('SandboxedProcessError', stderr, exit),
+    });
+    const tracked = 'office-document-wordwithattachments.docx';
+    const jobs = [
+      job('jpg', tracked, 'exit 139'),
+      job('png', tracked, 'signal SIGSEGV'),
+      job('jpg', tracked, 'exit 1'),
+      job('png', tracked, 'signal SIGKILL'),
+      job('jpg', 'another.docx', 'exit 139'),
+    ];
+    const gate = evaluate(jobs, null, readKnownFailures());
+    expect(gate.known.map((k) => [k.job.target, k.job.detail?.slice(0, 40), k.issue])).toEqual([
+      ['jpg', 'SandboxedProcessError (exit 139): Warnin', 760],
+      ['png', 'SandboxedProcessError (signal SIGSEGV): ', 760],
+    ]);
+    expect(gate.fatal).toEqual(jobs.slice(2));
+  });
+
   it('accepts only known failures that name their tracking issue and a failing verdict', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-known-'));
     const write = (body: unknown): string => {
@@ -315,6 +359,43 @@ describe('job deadline by size', () => {
   }, POOL_TEST_TIMEOUT_MS);
 });
 
+describe('empty output in the job server', () => {
+  const WORKBOOK =
+    '<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets></workbook>';
+  const RELS = '<Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>';
+
+  async function workbookOf(sheetData: string): Promise<Buffer> {
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', '<Types/>');
+    zip.file('xl/workbook.xml', WORKBOOK);
+    zip.file('xl/_rels/workbook.xml.rels', RELS);
+    zip.file('xl/worksheets/sheet1.xml', `<worksheet><sheetData>${sheetData}</sheetData></worksheet>`);
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  it('accepts the zero bytes of a sheet with no cells only when the manifest marks it, although the conversion declares every blank result empty', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-empty-'));
+    const blank = path.join(dir, 'blank.xlsx');
+    fs.writeFileSync(blank, await workbookOf(''));
+    const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
+    const pool = await JobPool.start({ workers: 1, deadlineMs: JOB_DEADLINE_MS, heapMb: HEAP_MB, env });
+    try {
+      const [marked, unmarked] = await pool.runAll([
+        { path: blank, name: 'blank.xlsx', format: 'xlsx', target: 'csv', emptyInput: true },
+        { path: blank, name: 'blank.xlsx', format: 'xlsx', target: 'csv' },
+      ]);
+      expect(marked.detail).toBeUndefined();
+      expect(marked.verdict).toBe('ok');
+      expect(marked.bytes).toBe(0);
+      expect(unmarked.verdict).toBe('bad-output');
+      expect(unmarked.detail).toBe('empty output');
+    } finally {
+      pool.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, POOL_TEST_TIMEOUT_MS);
+});
+
 describe('output check', () => {
   const NO_READERS = { pdfinfo: '', identify: '' };
   const ZIP_MIME = 'application/zip';
@@ -327,6 +408,15 @@ describe('output check', () => {
     expect(await check(PNG_1X1, 'png')).toBeNull();
     const eps = Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nshowpage\n');
     expect(await check(await zipOf({ 'doc-1.eps': eps, 'doc-2.eps': eps }, 'DEFLATE'), 'eps', ZIP_MIME)).toBeNull();
+  });
+
+  it('accepts an empty output only for an input the corpus manifest marks as having no content, and for no other', async () => {
+    const empty = Buffer.alloc(0);
+    expect(await outputProblem(empty, 'csv', os.tmpdir(), { ...NO_READERS, emptyInput: true })).toBeNull();
+    expect(await outputProblem(empty, 'csv', os.tmpdir(), { ...NO_READERS, emptyInput: false })).toBe('empty output');
+    expect(await check(empty, 'csv')).toBe('empty output');
+    // A marked input does not excuse a picture: its bytes are still read.
+    expect(await outputProblem(Buffer.from('not an image'), 'png', os.tmpdir(), { ...NO_READERS, emptyInput: true })).toBe('output bytes do not match png');
   });
 
   it('rejects a page archive that is empty, holds a page of another type, or is not a ZIP', async () => {
@@ -374,5 +464,36 @@ describe('manifest file', () => {
     const parsed = parseManifest(JSON.stringify(manifest));
     expect(parsed.files.length).toBeGreaterThanOrEqual(MIN_CORPUS_FILES);
     expect(new Set(parsed.files.map((f) => f.source))).toEqual(new Set(parsed.sources.map((s) => s.id)));
+  });
+});
+
+describe('empty inputs in the manifest', () => {
+  const file = (extra: Record<string, unknown>): string =>
+    JSON.stringify({
+      schema: 1,
+      sources: [{ id: 's', description: 'd', licence: 'l' }],
+      files: [{ id: 'a.xlsx', source: 's', origin: { kind: 'file', url: 'https://example.org/a.xlsx' }, format: 'xlsx', size: 10, sha256: SHA, ...extra }],
+    });
+
+  it('takes an empty-input mark that gives its reason, and refuses a mark without one or a reason without a mark', () => {
+    expect(parseManifest(file({ emptyInput: true, emptyInputReason: 'sheetData holds no row' })).files[0].emptyInput).toBe(true);
+    expect(() => parseManifest(file({ emptyInput: true }))).toThrow(ManifestError);
+    expect(() => parseManifest(file({ emptyInput: true, emptyInputReason: ' ' }))).toThrow(ManifestError);
+    expect(() => parseManifest(file({ emptyInput: false, emptyInputReason: 'x' }))).toThrow(ManifestError);
+    expect(() => parseManifest(file({ emptyInputReason: 'x' }))).toThrow(ManifestError);
+  });
+
+  it('marks exactly the six corpus files that hold no content, each with the reason read from the file', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'realworld', 'manifest.json'), 'utf8')) as CorpusManifest;
+    const marked = manifest.files.filter((f) => f.emptyInput === true).map((f) => f.id).sort();
+    expect(marked).toEqual([
+      'govdocs1-001782.html',
+      'office-document-51921-word-crash067.docx',
+      'office-document-issue_51265_1.docx',
+      'office-spreadsheet-47504.xlsx',
+      'office-spreadsheet-60825.xlsx',
+      'office-spreadsheet-template.xlsx',
+    ]);
+    for (const f of manifest.files.filter((candidate) => candidate.emptyInput === true)) expect(f.emptyInputReason?.length ?? 0).toBeGreaterThan(20);
   });
 });

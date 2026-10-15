@@ -176,6 +176,15 @@ jobs:
           ORACLE_STRICT_MODE: "1"
         run: npm run bench:quality -- --parity --quality-only
 
+      # Saved even when the benchmark fails: a host that refuses a download one night (a rate limit, an outage) would otherwise
+      # be asked for every file again the next night, since the cache of a job that fails is not kept. Files are digest-checked
+      # before they are written, so what is kept is complete.
+      - name: Save the public samples
+        if: always()
+        uses: ./.github/actions/bench-corpora-save
+        with:
+          families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
+
       # Saved even when the benchmark fails, since a failing night is exactly when the pull requests need the cache.
       # The key carries the run id: a cache entry is immutable, and entries are keyed inside the cache anyway.
       - name: Save the reference measurements
@@ -236,6 +245,15 @@ jobs:
         env:
           ORACLE_STRICT_MODE: "1"
         run: npm run bench:quality -- --parity --speed-only
+
+      # Saved even when the benchmark fails: a host that refuses a download one night (a rate limit, an outage) would otherwise
+      # be asked for every file again the next night, since the cache of a job that fails is not kept. Files are digest-checked
+      # before they are written, so what is kept is complete.
+      - name: Save the public samples
+        if: always()
+        uses: ./.github/actions/bench-corpora-save
+        with:
+          families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
 
       # The ratios this run measured on the runner are what bench/baseline.json and bench/parity-gaps.json record. This
       # step lists what refreshing them from this run would change; the refresh itself is a reviewed commit:
