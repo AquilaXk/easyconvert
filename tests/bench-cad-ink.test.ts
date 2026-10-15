@@ -4,8 +4,9 @@ import type { Raster } from '../bench/vector-raster';
 
 /**
  * The geometric score of a rendered CAD drawing (bench/cad-ink.ts): a drawing that is the truth in another page, scale and
- * line weight scores 1; a missing entity costs recall, a stray mark costs precision, a stretched or mirrored page shows
- * in the extent error. The rasters are drawn here from the truth with a plain line brush, not by any converter.
+ * line weight scores 1; a missing entity costs recall, a stray mark costs precision, a stretched page shows in the extent
+ * error, and a mirrored or rotated page shows in recall and precision (the fitted frame never flips). The rasters are
+ * drawn here from the truth with a plain line brush, not by any converter.
  */
 
 const TRUTH: CadTruth = {
@@ -68,6 +69,40 @@ function draw(frame: Frame): Raster {
 }
 
 const SAME: Frame = { width: 700, height: 500, scaleX: 5, scaleY: 5, left: 100, top: 80, brush: 1 };
+type Line4 = [number, number, number, number];
+
+/** Pixel lines that fill the box solid (the brush of SAME is three pixels wide, so every second row). */
+function solid(x0: number, y0: number, x1: number, y1: number): Line4[] {
+  const lines: Line4[] = [];
+  for (let y = y0; y <= y1; y += 2) lines.push([x0, y, x1, y]);
+  return lines;
+}
+
+/** Vertical ticks every `gap` pixels: ink of about the coverage of a line of glyphs. */
+function ticks(x0: number, y0: number, x1: number, y1: number, gap: number): Line4[] {
+  const lines: Line4[] = [];
+  for (let x = x0; x <= x1; x += gap) lines.push([x, y0, x, y1]);
+  return lines;
+}
+
+/** Diagonal hatching clipped to the box, every `gap` pixels along x. */
+function hatch(x0: number, y0: number, x1: number, y1: number, gap: number): Line4[] {
+  const lines: Line4[] = [];
+  const h = y1 - y0;
+  for (let start = x0 - h; start <= x1; start += gap) {
+    const from = Math.max(0, x0 - start);
+    const to = Math.min(h, x1 - start);
+    if (from < to) lines.push([start + from, y1 - from, start + to, y1 - to]);
+  }
+  return lines;
+}
+
+/**
+ * A drawing with two text lines away from its strokes. In pixels at SAME, the text boxes with their 30% growth are
+ * x 80-320, y 85-165 and x 380-620, y 308-372; glyphs lie in x 125-275, y 100-150 and x 425-575, y 330-350.
+ */
+const TEXTY: CadTruth = { ...TRUTH, textBoxes: [[5, 46, 35, 56], [65, 4, 95, 12]] };
+const GLYPHS: Line4[] = [...ticks(125, 100, 275, 150, 9), ...ticks(425, 330, 575, 350, 9)];
 
 describe('scoreInk', () => {
   it('scores the truth itself, in any page position, scale and line weight, as complete', () => {
@@ -171,5 +206,83 @@ describe('scoreInk', () => {
     expect(scoreInk(draw(SAME), everywhere).precision).toBeGreaterThan(0.99);
     const withMark = draw({ ...SAME, extra: [[300, 200, 400, 210]] });
     expect(scoreInk(withMark, everywhere).precision).toBeGreaterThan(0.99);
+  });
+
+  it('sees ink that differs from the page in one channel only, in each of the three', () => {
+    for (const colour of [[255, 0, 255], [0, 255, 255], [255, 255, 0]] as Array<[number, number, number]>) {
+      const score = scoreInk(draw({ ...SAME, colour }), TRUTH);
+      expect(score.recall).toBeGreaterThan(0.99);
+      expect(score.precision).toBeGreaterThan(0.99);
+      expect(score.extentError).toBeLessThan(0.02);
+    }
+  });
+
+  it('lets the frame reach past the box of all ink by a few percent on every side, for truth strokes that are not drawn', () => {
+    // Four short stubs that the truth has and the render lacks: the box of the strokes is 4% to 5% larger than the box of the ink on each side.
+    const stubs: CadTruth = { ...TRUTH, strokes: [...TRUTH.strokes, [[-4, 30], [0, 30]], [[100, 30], [104, 30]], [[50, 60], [50, 62.4]], [[50, 0], [50, -2.4]]] };
+    const frame: Frame = { ...SAME, top: 92 };
+    const score = scoreInk(draw(frame), stubs);
+    expect(score.extentError).toBeLessThan(0.02);
+    expect(score.precision).toBeGreaterThan(0.99);
+    expect(score.recall).toBeGreaterThan(0.95);
+  });
+
+  it('charges ink in the text boxes beyond the coverage of glyphs to precision', () => {
+    const glyphs = scoreInk(draw({ ...SAME, extra: GLYPHS }), TEXTY);
+    expect(glyphs.precision).toBeGreaterThan(0.99);
+    expect(glyphs.recall).toBeGreaterThan(0.99);
+    const blocks = scoreInk(draw({ ...SAME, extra: [...solid(80, 85, 320, 165), ...solid(380, 308, 620, 372)] }), TEXTY);
+    expect(blocks.precision).toBeLessThan(0.7);
+    const scribbles = scoreInk(draw({ ...SAME, extra: [...hatch(80, 85, 320, 165, 6), ...hatch(380, 308, 620, 372, 6)] }), TEXTY);
+    expect(scribbles.precision).toBeLessThan(0.8);
+    expect(blocks.recall).toBeGreaterThan(0.99);
+    expect(scribbles.recall).toBeGreaterThan(0.99);
+  });
+
+  it('does not let ink in a text box meet a truth stroke outside the text boxes', () => {
+    // The text box ends 1.25 pixels above the stroke, with ink up to its edge: it is within reach of the stroke, and is not the stroke.
+    const line: CadTruth = { strokes: [TRUTH.strokes[0], [[20, 30], [80, 30]]], textBoxes: [[20, 32.5, 80, 40]], words: [] };
+    const textOnly = scoreInk(draw({ ...SAME, skip: (index) => index > 0, extra: [[200, 227, 500, 227]] }), line);
+    const withStroke = scoreInk(draw({ ...SAME, skip: (index) => index > 3, extra: [] }), { ...line, strokes: [TRUTH.strokes[0], [[20, 30], [80, 30]]] });
+    expect(textOnly.recall).toBeLessThan(0.9);
+    expect(withStroke.recall).toBeGreaterThan(0.99);
+  });
+
+  it('loses recall for inner strokes that are missing from a drawing whose text is drawn', () => {
+    const score = scoreInk(draw({ ...SAME, skip: (index) => index > 0, extra: GLYPHS }), TEXTY);
+    expect(score.recall).toBeLessThan(0.65);
+    expect(score.recall).toBeGreaterThan(0.5);
+    expect(score.precision).toBeGreaterThan(0.99);
+  });
+
+  it('finds the drawing inside a page border, and charges the border to precision only', () => {
+    const border: Line4[] = [[5, 5, 695, 5], [695, 5, 695, 495], [695, 495, 5, 495], [5, 495, 5, 5]];
+    const score = scoreInk(draw({ ...SAME, extra: border }), TRUTH);
+    expect(score.recall).toBeGreaterThan(0.99);
+    expect(score.extentError).toBeLessThan(0.02);
+    expect(score.precision).toBeGreaterThan(0.3);
+    expect(score.precision).toBeLessThan(0.7);
+  });
+
+  it('scores a truth with nothing to register as nothing drawn, instead of failing', () => {
+    const page = draw(SAME);
+    const nothing = { precision: 0, recall: 0, extentError: 1 };
+    for (const strokes of [[], [[[5, 5], [5, 5]]], [[[0, 0], [100, 0]], [[0, 0], [50, 0]]], [[[0, 0], [0, 60]]]] as CadTruth['strokes']) {
+      expect(scoreInk(page, { strokes, textBoxes: [], words: [] })).toEqual(nothing);
+    }
+  });
+
+  it('takes the box of the ink for the frame where every frame fits equally well', () => {
+    // A solid block is ink everywhere, so no frame fits better than another and the box of the ink, which is the start, is kept.
+    const score = scoreInk(draw({ ...SAME, skip: () => true, extra: solid(150, 100, 549, 399) }), TRUTH);
+    expect(score.extentError).toBeCloseTo(0.2, 2);
+    expect(score.precision).toBeGreaterThan(0.12);
+    expect(score.recall).toBeGreaterThan(0.99);
+  });
+
+  it('counts a pixel as ink only when it differs from the page by more than the threshold', () => {
+    const drawn = (grey: number): number => scoreInk(draw({ ...SAME, colour: [grey, grey, grey] }), TRUTH).recall;
+    expect(drawn(207)).toBe(0);
+    expect(drawn(206)).toBeGreaterThan(0.99);
   });
 });
