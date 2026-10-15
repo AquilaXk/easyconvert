@@ -20,6 +20,7 @@ import {
   pinSeeds,
   readRemoteManifest,
   redirectAllowed,
+  retryDelayMs,
   type RemoteManifest,
   type RemoteSample,
   remoteSamples,
@@ -316,15 +317,48 @@ describe('what a host may make the fetcher read', () => {
     expect(redirectAllowed(new URL('http://127.0.0.1:8080/a'), new URL('http://127.0.0.1:8080/b'), [])).toBe(true);
   });
 
+  describe('pause before a retry', () => {
+    it('grows with the attempt for an ordinary failure', () => {
+      expect(retryDelayMs(0, 500, null)).toBe(2000);
+      expect(retryDelayMs(2, 500, null)).toBe(8000);
+    });
+
+    it('follows the Retry-After seconds of a rate limit or an overloaded host, never shorter than the ordinary pause', () => {
+      expect(retryDelayMs(0, 429, '30')).toBe(30_000);
+      expect(retryDelayMs(1, 503, '1')).toBe(4000);
+    });
+
+    it('waits a long time for a rate limit that names no time, and caps what a host asks for', () => {
+      expect(retryDelayMs(0, 429, null)).toBe(30_000);
+      expect(retryDelayMs(0, 429, '86400')).toBe(120_000);
+      expect(retryDelayMs(0, 429, 'Wed, 21 Oct 2026 07:28:00 GMT')).toBe(30_000);
+    });
+  });
+
   describe('over HTTP', () => {
     let server: http.Server;
     let base: string;
     let endlessClosed: Promise<number>;
     let sent = 0;
+    let firstLimitedAt: number | undefined;
+    let downloadHits = 0;
     beforeAll(async () => {
       server = http.createServer((request, response) => {
         if (request.url === '/away') {
           response.writeHead(302, { location: 'http://evil.invalid/payload' }).end();
+        } else if (request.url === '/limited') {
+          // A rate-limit window: every request in the 2.5 seconds after the first one is refused, naming the time to wait.
+          firstLimitedAt ??= Date.now();
+          if (Date.now() - firstLimitedAt < 2500) response.writeHead(429, { 'retry-after': '3' }).end();
+          else response.writeHead(200, { 'content-length': 4 }).end('body');
+        } else if (request.url === '/download') {
+          // A download page that answers each request with a redirect to a signed address of the file (a rate-limited front host).
+          downloadHits += 1;
+          response.writeHead(302, { location: '/signed' }).end();
+        } else if (request.url === '/signed') {
+          const range = /^bytes=(\d+)-(\d+)$/.exec(String(request.headers.range));
+          if (range === null) response.writeHead(200, { 'content-length': 10 }).end('0123456789');
+          else response.writeHead(206, { 'content-length': Number(range[2]) - Number(range[1]) + 1 }).end('0123456789'.slice(Number(range[1]), Number(range[2]) + 1));
         } else if (request.url === '/near') {
           response.writeHead(302, { location: '/body' }).end();
         } else if (request.url === '/endless') {
@@ -353,6 +387,24 @@ describe('what a host may make the fetcher read', () => {
     it('refuses a redirect to another host, naming it, and follows one on the same host', async () => {
       await expect(httpBytes(`${base}/away`, null, 1000)).rejects.toThrow(/redirect to evil\.invalid is not allowed/);
       expect((await httpBytes(`${base}/near`, null, 1000)).toString()).toBe('body');
+    });
+
+    it('waits out a rate limit for the time the host names, then gets the body', async () => {
+      process.env.BENCH_CORPUS_RETRIES = '1';
+      try {
+        expect((await httpBytes(`${base}/limited`, null, 1000)).toString()).toBe('body');
+      } finally {
+        process.env.BENCH_CORPUS_RETRIES = '0';
+      }
+    });
+
+    it('asks the front host of a download once and reads the ranges of one archive from the address it redirected to', async () => {
+      downloadHits = 0;
+      const url = `${base}/download`;
+      expect((await httpBytes(url, [0, 3], 100)).toString()).toBe('0123');
+      expect((await httpBytes(url, [4, 6], 100)).toString()).toBe('456');
+      expect((await httpBytes(url, [7, 9], 100)).toString()).toBe('789');
+      expect(downloadHits).toBe(1);
     });
 
     it('stops reading a body once it is longer than the size the manifest pins, without taking the rest', async () => {

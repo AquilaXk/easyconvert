@@ -1,0 +1,99 @@
+name: Save the public benchmark samples
+description: >-
+  Saves the verified downloads of the public sample sets (bench/corpus/remote-manifest.json) that ./.github/actions/bench-corpora
+  restores, whether the job passed or not. The post step of a cache action runs only for a job that passed, and a job that a
+  refusing host fails would never keep the files it had already downloaded. The key carries the run id, the attempt and the job,
+  because a cache entry is immutable: the two parallel parity jobs of a run, and a re-run of a failed job, must each reserve a key
+  of their own; the restore reads the newest entry of the manifest's digest.
+
+inputs:
+  families:
+    description: Comma-separated benchmark families the job measures (as for ./.github/actions/bench-corpora).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Save the image samples
+      if: always() && contains(format(',{0},', inputs.families), ',image,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/image
+        key: bench-corpora-image-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the video samples
+      if: always() && contains(format(',{0},', inputs.families), ',video,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/video
+        key: bench-corpora-video-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the audio samples
+      if: always() && contains(format(',{0},', inputs.families), ',audio,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/audio
+        key: bench-corpora-audio-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the compression samples
+      if: always() && contains(format(',{0},', inputs.families), ',compression,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/compression
+        key: bench-corpora-compression-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the document samples
+      if: always() && contains(format(',{0},', inputs.families), ',document,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/document
+        key: bench-corpora-document-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the pdf-ops samples
+      if: always() && contains(format(',{0},', inputs.families), ',pdf-ops,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/pdf-ops
+        key: bench-corpora-pdf-ops-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the ebook samples
+      if: always() && contains(format(',{0},', inputs.families), ',ebook,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/ebook
+        key: bench-corpora-ebook-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the font samples
+      if: always() && contains(format(',{0},', inputs.families), ',font,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/font
+        key: bench-corpora-font-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the cad samples
+      if: always() && contains(format(',{0},', inputs.families), ',cad,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/cad
+        key: bench-corpora-cad-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the raw samples
+      if: always() && contains(format(',{0},', inputs.families), ',raw,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/raw
+        key: bench-corpora-raw-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the vector samples
+      if: always() && contains(format(',{0},', inputs.families), ',vector,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/vector
+        key: bench-corpora-vector-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+
+    - name: Save the data samples
+      if: always() && contains(format(',{0},', inputs.families), ',data,')
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-corpora/data
+        key: bench-corpora-data-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}

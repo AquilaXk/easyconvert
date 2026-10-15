@@ -1,9 +1,11 @@
 name: Public benchmark samples
 description: >-
   Restores the verified downloads of the public sample sets (bench/corpus/remote-manifest.json) of the benchmark families a
-  job runs, and saves them when the job finishes, keyed by the digest of the manifest. The benchmark checks every file against
-  the manifest's SHA-256 whatever the cache holds (bench/corpora.ts), so a stale or damaged cache costs a download, never a
-  wrong measurement. One cache per family: a job that measures one family restores only the files of that family.
+  job runs, from the newest cache of the manifest's digest. The benchmark checks every file against the manifest's SHA-256
+  whatever the cache holds (bench/corpora.ts), so a stale or damaged cache costs a download, never a wrong measurement. One
+  cache per family: a job that measures one family restores only the files of that family. The nightly parity jobs save what
+  they hold with ./.github/actions/bench-corpora-save, also when they fail, so a host that refuses a download one night is
+  asked for fewer files the next.
 
 inputs:
   families:
@@ -13,86 +15,110 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Cache the image samples
+    - name: Restore the image samples
       if: contains(format(',{0},', inputs.families), ',image,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/image
-        key: bench-corpora-image-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-image-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-image-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the video samples
+    - name: Restore the video samples
       if: contains(format(',{0},', inputs.families), ',video,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/video
-        key: bench-corpora-video-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-video-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-video-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the audio samples
+    - name: Restore the audio samples
       if: contains(format(',{0},', inputs.families), ',audio,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/audio
-        key: bench-corpora-audio-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-audio-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-audio-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the compression samples
+    - name: Restore the compression samples
       if: contains(format(',{0},', inputs.families), ',compression,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/compression
-        key: bench-corpora-compression-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-compression-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-compression-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the document samples
+    - name: Restore the document samples
       if: contains(format(',{0},', inputs.families), ',document,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/document
-        key: bench-corpora-document-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-document-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-document-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the pdf-ops samples
+    - name: Restore the pdf-ops samples
       if: contains(format(',{0},', inputs.families), ',pdf-ops,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/pdf-ops
-        key: bench-corpora-pdf-ops-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-pdf-ops-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-pdf-ops-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the ebook samples
+    - name: Restore the ebook samples
       if: contains(format(',{0},', inputs.families), ',ebook,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/ebook
-        key: bench-corpora-ebook-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-ebook-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-ebook-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the font samples
+    - name: Restore the font samples
       if: contains(format(',{0},', inputs.families), ',font,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/font
-        key: bench-corpora-font-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-font-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-font-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the cad samples
+    - name: Restore the cad samples
       if: contains(format(',{0},', inputs.families), ',cad,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/cad
-        key: bench-corpora-cad-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-cad-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-cad-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the raw samples
+    - name: Restore the raw samples
       if: contains(format(',{0},', inputs.families), ',raw,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/raw
-        key: bench-corpora-raw-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-raw-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-raw-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the vector samples
+    - name: Restore the vector samples
       if: contains(format(',{0},', inputs.families), ',vector,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/vector
-        key: bench-corpora-vector-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-vector-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-vector-${{ hashFiles('bench/corpus/remote-manifest.json') }}
 
-    - name: Cache the data samples
+    - name: Restore the data samples
       if: contains(format(',{0},', inputs.families), ',data,')
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: .bench-corpora/data
-        key: bench-corpora-data-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+        key: bench-corpora-data-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+        restore-keys: |
+          bench-corpora-data-${{ hashFiles('bench/corpus/remote-manifest.json') }}

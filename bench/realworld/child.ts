@@ -9,7 +9,7 @@ import path from 'node:path';
 import { dispatchConversion } from '../../src/lib/conversions/dispatch';
 import { ConversionFailedError } from '../../src/lib/types';
 import { outputProblem } from './output-check';
-import type { ErrorFacts } from './verdict';
+import { exitSummary, type ErrorFacts } from './verdict';
 
 export interface JobRequest {
   id: number;
@@ -17,12 +17,14 @@ export interface JobRequest {
   name: string;
   format: string;
   target: string;
+  /** The corpus manifest marks the file as having no content, so zero bytes are its right output. */
+  emptyInput?: boolean;
 }
 
 export type JobReply =
   | { id: number; kind: 'ok'; bytes: number; ms: number }
   | { id: number; kind: 'bad-output'; bytes: number; ms: number; reason: string }
-  | { id: number; kind: 'error'; ms: number; facts: ErrorFacts; name: string; message: string };
+  | { id: number; kind: 'error'; ms: number; facts: ErrorFacts; name: string; message: string; exit: string | null };
 
 /** Tool paths the parent resolved; an empty value means the validator for that kind is not run. */
 const PDFINFO = process.env.REALWORLD_PDFINFO ?? '';
@@ -39,14 +41,14 @@ async function runJob(job: JobRequest): Promise<JobReply> {
   try {
     const result = await dispatchConversion(fs.readFileSync(job.path), job.format, job.target, {}, job.name);
     const ms = performance.now() - started;
-    const problem = await outputProblem(result.buffer, job.target, workDir, { mimeType: result.mimeType, pdfinfo: PDFINFO, identify: IDENTIFY });
+    const problem = await outputProblem(result.buffer, job.target, workDir, { mimeType: result.mimeType, pdfinfo: PDFINFO, identify: IDENTIFY, emptyInput: job.emptyInput === true });
     if (problem !== null) return { id: job.id, kind: 'bad-output', bytes: result.buffer.length, ms, reason: problem };
     return { id: job.id, kind: 'ok', bytes: result.buffer.length, ms };
   } catch (error) {
     const ms = performance.now() - started;
     const message = error instanceof Error ? error.message : String(error);
     const name = error instanceof Error ? error.name : typeof error;
-    return { id: job.id, kind: 'error', ms, facts: errorFacts(error), name, message: message.slice(0, 500) };
+    return { id: job.id, kind: 'error', ms, facts: errorFacts(error), name, message: message.slice(0, 500), exit: exitSummary(error) };
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
