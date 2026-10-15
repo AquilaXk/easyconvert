@@ -313,12 +313,6 @@ function writeAllOnesDefinitionLevels(sink: ByteSink, pageRows: number): void {
   sink.writeByte((1 << pageRows) - 1);
 }
 
-/** The first two bytes of a value as one sortable integer; -1 for an empty value, which sorts before every other. */
-function valuePrefix(data: Uint8Array, at: number, length: number): number {
-  if (length === 0) return -1;
-  return (data[at] << 9) | (length > 1 ? data[at + 1] + 1 : 0);
-}
-
 function zigzagVarintBytes(n: number): number {
   const v = n * 2;
   if (v < 0x80) return 1;
@@ -481,7 +475,9 @@ function encodeTextColumnChunk(
           data.copy(sinkBytes, writePos, at, at + length);
         }
         writePos += length;
-        const prefix = valuePrefix(data, at, length);
+        // The first two bytes of the value as one sortable integer; -1 for an empty value, which sorts before the rest.
+        let prefix = -1;
+        if (length > 0) prefix = (data[at] << 9) | (length > 1 ? data[at + 1] + 1 : 0);
         if (minAt < 0) {
           minAt = maxAt = at;
           minLength = maxLength = length;
