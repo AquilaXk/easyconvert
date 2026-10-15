@@ -5666,6 +5666,16 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   // The sheets of one workbook share a decoded-byte budget, so many large sheets cannot add up past it; one sheet may
   // take all of it, because a sheet of a million rows is hundreds of MB of XML.
   const sheetBudget = new InflateBudget();
+  // The cells and rows the reader builds for all sheets, the empty ones that pad a cell out to its column and a row out to its
+  // row number included: a few bytes of XML ('<c r="XFD1"/>' on each of 1300 rows) otherwise ask for millions of them.
+  let materialisedCells = 0;
+  const chargeCells = (count: number): void => {
+    if (count <= 0) return;
+    materialisedCells += count;
+    if (materialisedCells > XLSX_MAX_MATERIALISED_CELLS) {
+      throw new PayloadLimitError(`The XLSX sheets hold more than ${XLSX_MAX_MATERIALISED_CELLS} cells, the empty cells and rows that pad a sparse sheet included.`);
+    }
+  };
 
   for (let entryIdx = 0; entryIdx < sheetEntries.length; entryIdx++) {
     const entry = sheetEntries[entryIdx];
@@ -5706,11 +5716,13 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       if (rowAttrs.r) {
         const targetRowIdx = parseInt(rowAttrs.r, 10) - 1;
         if (targetRowIdx >= XLSX_MAX_ROWS) throw worksheetBoundError(entry.name, `row ${targetRowIdx + 1} is past the last row of a worksheet (${XLSX_MAX_ROWS})`);
+        chargeCells(targetRowIdx - rows.length);
         while (rows.length < targetRowIdx) {
           rows.push([]);
           structuredRows.push([]);
         }
       }
+      chargeCells(1);
       const cells: string[] = [];
       const structuredCells: OfficeWorksheetCell[] = [];
       const cellEls = safeExtractXmlElements(rowEl.content, 'c');
@@ -5740,6 +5752,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
           if (colIdx >= XLSX_MAX_COLUMNS) throw worksheetBoundError(entry.name, `column ${rRefMatch[1]} is past the last column of a worksheet (${XLSX_LAST_COLUMN_NAME})`);
         }
 
+        chargeCells(colIdx + 1 - cells.length);
         while (cells.length < colIdx) {
           cells.push('');
           structuredCells.push({ value: '' });
@@ -8449,6 +8462,12 @@ export function getExcelColumnName(colIndex: number): string {
 const XLSX_MAX_ROWS = 1_048_576;
 const XLSX_MAX_COLUMNS = 16_384;
 const XLSX_LAST_COLUMN_NAME = 'XFD';
+/**
+ * Most cells and rows the reader builds for one workbook, padding included: the 20 million cells that the data-format readers
+ * (Parquet) allow for a table. A sparse sheet inside the bounds above can still ask for 16.7 billion padded cells (a cell at XFD
+ * on each of 1048576 rows), and each padded cell takes about 53 bytes of heap.
+ */
+const XLSX_MAX_MATERIALISED_CELLS = 20_000_000;
 
 function worksheetBoundError(sheetName: string, problem: string): ConversionFailedError {
   return new ConversionFailedError(`Invalid XLSX worksheet '${sheetName}': ${problem}.`);
