@@ -9169,7 +9169,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 3.9771809434922343
+      "ratio": 4.289952360958774
     },
     "data/data-delta-byte-array.csv->parquet/bytes": {
       "direction": "lower",
@@ -9209,7 +9209,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.24687097461721444
+      "ratio": 1.259080637113918
     },
     "data/data-delta-byte-array.csv->xlsx/bytes": {
       "direction": "lower",
@@ -9249,7 +9249,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 22.095411084392786
+      "ratio": 20.29148863667263
     },
     "data/data-delta-byte-array.parquet->csv/cell_mismatches": {
       "direction": "lower",
@@ -9479,7 +9479,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 1.1530086964741606
+      "ratio": 2.147144639650894
     },
     "data/data-sp500-constituents.csv->json/cell_mismatches": {
       "direction": "lower",
@@ -9739,7 +9739,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 3.4133952500794984
+      "ratio": 4.308645442773367
     },
     "data/table.csv->parquet/bytes": {
       "direction": "lower",
@@ -9769,7 +9769,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.1444521167036567
+      "ratio": 1.0310099303859512
     },
     "data/table.csv->xlsx/bytes": {
       "direction": "lower",
@@ -9799,7 +9799,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 12.255392318245313
+      "ratio": 11.168670897417968
     },
     "data/table.jsonl->csv/cell_mismatches": {
       "direction": "lower",
@@ -9819,7 +9819,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.6430192994676549
+      "ratio": 1.9521344964511955
     },
     "data/table.parquet->csv/cell_mismatches": {
       "direction": "lower",
@@ -9839,7 +9839,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.19327721730780026
+      "ratio": 1.8503450232444445
     },
     "data/table.parquet->json/cell_mismatches": {
       "direction": "lower",
@@ -9859,7 +9859,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 0.20124683113327926
+      "ratio": 1.6325456999303265
     },
     "data/table.xlsx->csv/cell_mismatches": {
       "direction": "lower",
@@ -9879,7 +9879,7 @@
       },
       "ours": null,
       "delta": null,
-      "ratio": 3.623615489331758
+      "ratio": 2.464315531096749
     },
     "document/book.epub->docx:headings/structure_precision": {
       "direction": "higher",
