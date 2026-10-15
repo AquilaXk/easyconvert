@@ -5718,8 +5718,8 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
         if (targetRowIdx >= XLSX_MAX_ROWS) throw worksheetBoundError(entry.name, `row ${targetRowIdx + 1} is past the last row of a worksheet (${XLSX_MAX_ROWS})`);
         chargeCells(targetRowIdx - rows.length);
         while (rows.length < targetRowIdx) {
-          rows.push([]);
-          structuredRows.push([]);
+          rows.push(XLSX_EMPTY_ROW);
+          structuredRows.push(XLSX_EMPTY_STRUCTURED_ROW);
         }
       }
       chargeCells(1);
@@ -8468,6 +8468,12 @@ const XLSX_LAST_COLUMN_NAME = 'XFD';
  * on each of 1048576 rows), and each padded cell takes about 53 bytes of heap.
  */
 const XLSX_MAX_MATERIALISED_CELLS = 20_000_000;
+/**
+ * The row that pads a sheet out to the number of its next row. Every padded row shares this frozen array, so a sheet whose cells sit
+ * on its last row costs one reference per empty row and not two arrays; a reader that tried to write into it would throw.
+ */
+const XLSX_EMPTY_ROW: string[] = Object.freeze([]) as unknown as string[];
+const XLSX_EMPTY_STRUCTURED_ROW: OfficeWorksheetCell[] = Object.freeze([]) as unknown as OfficeWorksheetCell[];
 
 function worksheetBoundError(sheetName: string, problem: string): ConversionFailedError {
   return new ConversionFailedError(`Invalid XLSX worksheet '${sheetName}': ${problem}.`);
