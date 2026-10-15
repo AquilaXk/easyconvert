@@ -424,8 +424,9 @@ describe('the known gaps', () => {
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
     expect(issuesOf('image/', false)).toEqual([]);
     expect(issuesOf('image/', true)).toEqual([641]);
-    expect(issuesOf('audio/', true)).toEqual([642]);
-    expect(issuesOf('video/', true)).toEqual([643]);
+    // The audio and video rows (642, 643) and the zstd encode row (497) reached parity on the CI runner, so they are no longer known gaps.
+    expect(issuesOf('audio/', true)).toEqual([]);
+    expect(issuesOf('video/', true)).toEqual([]);
     expect(issuesOf('ocr/', true)).toEqual([644]);
     // The document gaps: the PDF text reader (672) and the slide and sheet pages to PNG, tracked under the render speed issue (735).
     expect(issuesOf('document/', true)).toEqual([672, 735]);
@@ -435,7 +436,7 @@ describe('the known gaps', () => {
     for (const family of ['raw/', 'vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
     expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([685, 685, 685]);
-    expect(byId['compression/mixed.tar->zst/throughput']).toBe(497);
+    expect(byId['compression/mixed.tar->zst/throughput']).toBeUndefined();
     // The decode row reached parity on the CI runner, so it is no longer a known gap.
     expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
     expect(issuesOf('pdf-ops/', true)).toEqual([695]);
