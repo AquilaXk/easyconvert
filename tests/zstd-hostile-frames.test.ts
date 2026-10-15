@@ -465,8 +465,9 @@ describe('encoder boundary cases', () => {
   });
 
   it('emits the three-byte sequence-count form for a block with at least 32512 sequences', () => {
+    // The input is a stream of distinct 4-byte matches; level 3 hashes five bytes and does not take matches that short, so level 4 stands in for it.
     const input = maxSequenceBlockInput(190, 190);
-    for (const level of [3, 9, 19]) {
+    for (const level of [4, 9, 19]) {
       const frame = compressZstd(input, { level });
       assertFrameChecksum(frame, input);
       expect(firstBlockSequenceCount(frame), `level ${level}`).toBeGreaterThanOrEqual(32512);
