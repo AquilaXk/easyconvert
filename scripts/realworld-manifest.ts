@@ -13,7 +13,7 @@ import path from 'node:path';
 import { getFormatByExtension } from '../src/lib/registry';
 import { download, mapLimit, MAX_CORPUS_FILE_BYTES, sha256 } from '../bench/realworld/fetch';
 import { fetchBytes, fetchSize } from '../bench/realworld/http';
-import { MANIFEST_PATH, MANIFEST_SCHEMA, parseManifest, type CorpusFile, type CorpusManifest, type CorpusSource } from '../bench/realworld/manifest';
+import { MANIFEST_PATH, MANIFEST_SCHEMA, parseManifest, readManifest, type CorpusFile, type CorpusManifest, type CorpusSource } from '../bench/realworld/manifest';
 import { EOCD_SEARCH_BYTES, locateCentralDirectory, parseCentralDirectory } from '../bench/realworld/zip-range';
 
 const GOVDOCS_BASE = 'https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles';
@@ -97,7 +97,18 @@ function officeCandidates(listFile: string, commit: string): Candidate[] {
   return out;
 }
 
+/** The marks of the manifest being replaced that say a file holds no content: kept while the file's digest is the one that was read. */
+function previousEmptyInputMarks(): Map<string, CorpusFile> {
+  if (!fs.existsSync(MANIFEST_PATH)) return new Map();
+  return new Map(readManifest().files.filter((file) => file.emptyInput === true).map((file) => [file.id, file]));
+}
+
 async function main(): Promise<void> {
+  const previousMarks = previousEmptyInputMarks();
+  const emptyInputMark = (id: string, digest: string): Pick<CorpusFile, 'emptyInput' | 'emptyInputReason'> => {
+    const previous = previousMarks.get(id);
+    return previous !== undefined && previous.sha256 === digest ? { emptyInput: true, emptyInputReason: previous.emptyInputReason } : {};
+  };
   const args = process.argv.slice(2);
   const value = (name: string): string => {
     const at = args.indexOf(name);
@@ -119,7 +130,7 @@ async function main(): Promise<void> {
     });
     if (++downloaded % 200 === 0) console.log(`hashed ${downloaded}/${candidates.length}`);
     if (bytes === null || bytes.length === 0 || bytes.length > SIZE_CAP_BYTES) return null;
-    return { ...probe, size: bytes.length, sha256: sha256(bytes) };
+    return { ...probe, size: bytes.length, sha256: sha256(bytes), ...emptyInputMark(candidate.id, sha256(bytes)) };
   });
   const unique = new Map<string, CorpusFile>();
   for (const file of files) if (file !== null && !unique.has(file.id)) unique.set(file.id, file);

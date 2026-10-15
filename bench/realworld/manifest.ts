@@ -43,6 +43,12 @@ export interface CorpusFile {
   format: string;
   size: number;
   sha256: string;
+  /**
+   * The file holds no content (an empty sheet, a body with no text, a frameset page), so a text conversion of it is rightly zero
+   * bytes. Set only after reading the file with a tool that is not the converter, and explained in `emptyInputReason`.
+   */
+  emptyInput?: true;
+  emptyInputReason?: string;
 }
 
 export interface CorpusManifest {
@@ -66,6 +72,10 @@ function checkFile(file: CorpusFile, sources: ReadonlySet<string>, seen: Set<str
   if (!SHA256_HEX.test(file.sha256)) throw new ManifestError(`${file.id}: sha256 is not 64 lower-case hex digits`);
   if (!Number.isSafeInteger(file.size) || file.size <= 0) throw new ManifestError(`${file.id}: size must be a positive integer`);
   if (typeof file.format !== 'string' || file.format === '') throw new ManifestError(`${file.id}: format is missing`);
+  if (file.emptyInput !== undefined && file.emptyInput !== true) throw new ManifestError(`${file.id}: emptyInput is either absent or true`);
+  const reason = file.emptyInputReason;
+  if (file.emptyInput === true && (typeof reason !== 'string' || reason.trim() === '')) throw new ManifestError(`${file.id}: emptyInput needs the reason the file is empty`);
+  if (file.emptyInput === undefined && reason !== undefined) throw new ManifestError(`${file.id}: emptyInputReason without emptyInput`);
   const origin = file.origin;
   if (origin.kind === 'zip') {
     if (!origin.archive.startsWith('https://') || origin.entry === '') throw new ManifestError(`${file.id}: zip origin needs an https archive and an entry`);

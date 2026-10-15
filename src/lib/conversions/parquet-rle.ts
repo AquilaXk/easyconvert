@@ -142,6 +142,11 @@ export class ByteSink {
     this.length = 0;
   }
 
+  /** Direct access to the underlying buffer after calling ensure(). */
+  rawBuffer(): Buffer {
+    return this.bytes;
+  }
+
   /** Returns a view of the written bytes (valid until the next write or reset). */
   toBuffer(): Buffer {
     return this.bytes.subarray(0, this.length);
@@ -150,17 +155,20 @@ export class ByteSink {
 
 function packGroups(sink: ByteSink, values: ArrayLike<number>, start: number, groups: number, bitWidth: number): void {
   const end = start + groups * RLE_GROUP_VALUES;
+  const bytes = sink.rawBuffer();
+  let pos = sink.length;
   let acc = 0;
   let accBits = 0;
   for (let i = start; i < end; i++) {
     acc |= values[i] << accBits;
     accBits += bitWidth;
     while (accBits >= BITS_PER_BYTE) {
-      sink.writeByte(acc & BYTE_MASK);
+      bytes[pos++] = acc & BYTE_MASK;
       acc >>>= BITS_PER_BYTE;
       accBits -= BITS_PER_BYTE;
     }
   }
+  sink.length = pos;
 }
 
 function emitBitPackedRun(
@@ -171,24 +179,29 @@ function emitBitPackedRun(
   bitWidth: number
 ): void {
   const groups = Math.ceil(count / RLE_GROUP_VALUES);
+  sink.ensure(RLE_MAX_VARINT_BYTES + groups * bitWidth);
   sink.writeVarint((groups << RUN_LENGTH_SHIFT) | BIT_PACKED_FLAG);
   const fullGroups = Math.floor(count / RLE_GROUP_VALUES);
   packGroups(sink, values, start, fullGroups, bitWidth);
   const tail = count - fullGroups * RLE_GROUP_VALUES;
   if (tail > 0) {
     // The last group is zero padded; readers stop at the declared value count.
+    const bytes = sink.rawBuffer();
+    let pos = sink.length;
     let acc = 0;
     let accBits = 0;
+    const base = start + fullGroups * RLE_GROUP_VALUES;
     for (let k = 0; k < RLE_GROUP_VALUES; k++) {
-      const v = k < tail ? values[start + fullGroups * RLE_GROUP_VALUES + k] : 0;
+      const v = k < tail ? values[base + k] : 0;
       acc |= v << accBits;
       accBits += bitWidth;
       while (accBits >= BITS_PER_BYTE) {
-        sink.writeByte(acc & BYTE_MASK);
+        bytes[pos++] = acc & BYTE_MASK;
         acc >>>= BITS_PER_BYTE;
         accBits -= BITS_PER_BYTE;
       }
     }
+    sink.length = pos;
   }
 }
 
@@ -296,9 +309,54 @@ export function decodeRleHybrid(
       const runBytes = groups * bitWidth;
       if (pos + runBytes > end) throw new ParquetFormatError('Corrupted Parquet RLE stream: truncated bit-packed run');
       const take = Math.min(runValues, count - produced);
-      const bitBase = pos * BITS_PER_BYTE;
-      for (let k = 0; k < take; k++) {
-        out[produced + k] = bitWidth === 0 ? 0 : readBitsSafe(buf, bitBase + k * bitWidth, bitWidth, end);
+      if (bitWidth === 0) {
+        out.fill(0, produced, produced + take);
+      } else if (bitWidth === 1) {
+        let rem = take;
+        let bIdx = pos;
+        let outIdx = produced;
+        while (rem >= 8) {
+          const b = buf[bIdx++];
+          out[outIdx] = b & 1;
+          out[outIdx + 1] = (b >>> 1) & 1;
+          out[outIdx + 2] = (b >>> 2) & 1;
+          out[outIdx + 3] = (b >>> 3) & 1;
+          out[outIdx + 4] = (b >>> 4) & 1;
+          out[outIdx + 5] = (b >>> 5) & 1;
+          out[outIdx + 6] = (b >>> 6) & 1;
+          out[outIdx + 7] = (b >>> 7) & 1;
+          outIdx += 8;
+          rem -= 8;
+        }
+        if (rem > 0) {
+          const b = buf[bIdx];
+          for (let k = 0; k < rem; k++) out[outIdx + k] = (b >>> k) & 1;
+        }
+      } else if (bitWidth <= RLE_MAX_NARROW_READ_WIDTH) {
+        const bitBase = pos * BITS_PER_BYTE;
+        const mask = (1 << bitWidth) - 1;
+        const safeByteLimit = end - 4;
+        for (let k = 0; k < take; k++) {
+          const bitPos = bitBase + k * bitWidth;
+          const byte = bitPos >>> BYTE_INDEX_SHIFT;
+          if (byte <= safeByteLimit) {
+            const shift = bitPos & BYTE_SHIFT_MASK;
+            const window =
+              (buf[byte] |
+                (buf[byte + 1] << BITS_PER_BYTE) |
+                (buf[byte + 2] << (2 * BITS_PER_BYTE)) |
+                (buf[byte + 3] << (3 * BITS_PER_BYTE))) >>>
+              shift;
+            out[produced + k] = (window & mask) >>> 0;
+          } else {
+            out[produced + k] = readBitsSafe(buf, bitPos, bitWidth, end);
+          }
+        }
+      } else {
+        const bitBase = pos * BITS_PER_BYTE;
+        for (let k = 0; k < take; k++) {
+          out[produced + k] = readBitsSafe(buf, bitBase + k * bitWidth, bitWidth, end);
+        }
       }
       produced += take;
       pos += runBytes;

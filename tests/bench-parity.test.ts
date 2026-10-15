@@ -424,6 +424,8 @@ describe('the known gaps', () => {
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
     expect(issuesOf('image/', false)).toEqual([]);
     expect(issuesOf('image/', true)).toEqual([641]);
+    // The HEVC encode row and the zstd encode row (497) reached parity on the CI runner with room to spare, so they are no longer known gaps.
+    // The H.264 and VP9 rows of the clip and the Opus row sit at 0.99 with an interval that crosses 0.97 from run to run: they stay tracked.
     expect(issuesOf('audio/', true)).toEqual([642]);
     expect(issuesOf('video/', true)).toEqual([643]);
     expect(issuesOf('ocr/', true)).toEqual([644]);
@@ -435,7 +437,8 @@ describe('the known gaps', () => {
     for (const family of ['raw/', 'vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
     expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([685, 685, 685]);
-    expect(byId['compression/mixed.tar->zst/throughput']).toBe(497);
+    expect(byId['compression/mixed.tar->zst/throughput']).toBeUndefined();
+    expect(byId['video/clip.mp4->hevc/throughput']).toBeUndefined();
     // The decode row reached parity on the CI runner, so it is no longer a known gap.
     expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
     expect(issuesOf('pdf-ops/', true)).toEqual([695]);

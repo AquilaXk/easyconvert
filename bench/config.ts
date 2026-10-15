@@ -121,6 +121,7 @@ export const QUICK_PUBLIC_SUBSET: Readonly<Record<string, readonly string[]>> = 
   compression: [
     ...['tar->zst', 'tar->7z', 'tar->zip', 'tar->gz', 'tar->tar.bz2', 'zst->tar', 'xz->tar', '7z->tar', 'zip->tar', 'gz->tar', 'bz2->tar', 'rar->tar'].map((pair) => `silesia-ooffice.${pair}`),
     ...['tar->zst', 'tar->7z', 'tar->zip'].map((pair) => `wm-tmax100-grain.jpg.${pair}`),
+    ...['silesia-dickens', 'silesia-mr', 'silesia-reymont', 'silesia-nci', 'silesia-samba', 'silesia-xml'].map((sample) => `${sample}.tar->zst`),
   ],
   document: [
     'doc-poi-61787.docx->pdf',

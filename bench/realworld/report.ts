@@ -52,6 +52,8 @@ export interface KnownFailure {
   verdict: Verdict;
   /** Regular expression the job detail must match. */
   detail: string;
+  /** The corpus file the defect is in; absent when any file of the pair has it. */
+  file?: string;
   /** The open issue that tracks the fix. */
   issue: number;
 }
@@ -109,7 +111,7 @@ export function pairStats(jobs: readonly JobRecord[]): PairStats[] {
 
 function knownIssue(job: JobRecord, known: readonly KnownFailure[]): number | null {
   const pair = `${job.source}->${job.target}`;
-  const match = known.find((k) => (k.pair === '*' || k.pair === pair) && k.verdict === job.verdict && new RegExp(k.detail).test(job.detail ?? ''));
+  const match = known.find((k) => (k.pair === '*' || k.pair === pair) && k.verdict === job.verdict && (k.file === undefined || k.file === job.file) && new RegExp(k.detail).test(job.detail ?? ''));
   return match === undefined ? null : match.issue;
 }
 

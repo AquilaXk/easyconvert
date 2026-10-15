@@ -24,7 +24,8 @@ Image output
 
 1. [AVIF chroma and bit depth](#1-avif-chroma-and-bit-depth)
 2. [JPEG chroma and encoder tools](#2-jpeg-chroma-and-encoder-tools)
-19. [Image metadata and alpha](#19-image-metadata-and-alpha)
+22. [Image metadata and alpha](#22-image-metadata-and-alpha)
+25. [16-bit sRGB tone-curve mapping and RAW development parity](#25-16-bit-srgb-tone-curve-mapping-and-raw-development-parity)
 
 Media and documents
 
@@ -39,6 +40,9 @@ Media and documents
 19. [HTML character encoding](#19-html-character-encoding)
 20. [Damaged office files](#20-damaged-office-files)
 21. [Charts, notes and sheets in PDF](#21-charts-notes-and-sheets-in-pdf)
+23. [Embedded SVG images, physical units and child clip paths](#23-embedded-svg-images-physical-units-and-child-clip-paths)
+24. [WOFF/WOFF2 font compression and colour bitmap fonts](#24-woffwoff2-font-compression-and-colour-bitmap-fonts)
+27. [Ebook FB2/MathML text fidelity and PDF compression structural repair](#27-ebook-fb2mathml-text-fidelity-and-pdf-compression-structural-repair)
 
 Engines
 
@@ -61,6 +65,10 @@ Tabular data
 
 26. [Tabular data fidelity and Parquet encodings](#26-tabular-data-fidelity-and-parquet-encodings)
 
+Compression
+
+28. [Zstandard level 3 match finder and literal cost floor](#28-zstandard-level-3-match-finder-and-literal-cost-floor)
+
 ---
 
 ## 1. AVIF chroma and bit depth
@@ -70,12 +78,12 @@ Tabular data
   - **Lossy output** is 4:2:0 for all content, photographs and graphics alike.
   - **Lossless output** (quality 100), and pictures with an identity colour matrix, are 4:4:4.
   - **Bit depth**: an 8-bit source is written at 8 bits. A 9- or 10-bit source is written at 10 bits. A source of 11 bits or more, 16-bit included, is written at 12 bits. HDR renditions (PQ or HLG) keep their 10 bits.
-  - **Alpha and metadata**: see [19. Image metadata and alpha](#19-image-metadata-and-alpha).
+  - **Alpha and metadata**: see [22. Image metadata and alpha](#22-image-metadata-and-alpha).
 - **Why**: users compare our files with the ones the leading converters give them. Those use 4:2:0 for lossy AVIF and keep high-bit-depth sources at a matching depth. Matching this keeps file sizes comparable for every content class, so a user switching to us does not get files that are suddenly larger. 4:2:0 is also the layout every AVIF decoder handles fastest. Keeping 12 bits for 16-bit sources preserves gradations and editing headroom that a 10-bit cap would throw away.
 - **Trade-offs**:
   - At the same quality setting, 4:2:0 softens coloured edges in screenshots, text and line art. 4:4:4 would keep them sharp, at a larger file.
   - 12-bit AVIF needs the AV1 Professional profile. Some hardware decoders, and decoders that implement only the AVIF Baseline profile (AV1 Main), cannot open it, so a 16-bit source can produce a file that does not open on every device.
-  - Measured against the reference encoder at the same constraints (BD-rate, 0 is parity, lower is better): the 11 photographs that were 1.6 to 4.9 % behind in SSIM are now between -3.1 and +0.9 %; the 16-bit class is 12 to 13 % ahead in WebP and AVIF PSNR. Photographs stay on the in-process encoder, whose speed is 1.2 to 1.4 times the reference's; the command-line encoder with edge-preserving chroma conversion took the same photographs to +1.3 to +1.7 % SSIM at 0.7 times the speed, which is why the 4:4:4 reference could not be met by encoder tuning alone.
+  - Measured against the reference encoder at the same constraints (BD-rate, 0 is parity, lower is better): the 11 photographs that were 1.6 to 4.9 % behind in SSIM are now between -3.1 and +0.9 %; the 16-bit class is 12 to 13 % ahead in WebP and AVIF PSNR. Photographs stay on the in-process encoder, whose speed is 1.2 to 1.4 times the reference's; the command-line encoder with edge-preserving chroma conversion took the same photographs to +1.3 to +1.7 % SSIM at 0.7 times the speed, which is why the 4:4:4 reference could not be met by encoder tuning alone. On the CI runner after the change the in-process encoder reads 0.95 of the reference's speed on `kodim23` and `photo-b` (the reference now runs at 4:2:0 as well), which #641 tracks.
   - The 4:4:4 policy it replaces was the reason for the photo SSIM gap: against a 4:4:4 reference no encoder setting tried (perceptual tuning, edge-preserving conversion, quantiser modulation, a slower speed preset) met both metrics inside the speed gate.
 - **Alternatives rejected**:
   - **Graphics 4:4:4 with a 10-bit cap** (the previous policy). It gave sharper graphic edges and wider device support, but its file sizes and bit depths diverged from what users expect from converters.
@@ -210,7 +218,7 @@ Tabular data
   - Macros never affect a static render, and removing them takes untrusted code out of the renderer's reach.
 - **Trade-offs**: none for rendered output. Macro-to-macro conversions do not exist.
 - **Alternatives rejected**: failing empty inputs, which breaks batch jobs.
-- **Verified by**: the office output-check tests.
+- **Verified by**: the office output-check tests, and the real-world corpus gate, which accepts a zero-byte output only for the six corpus files that the manifest marks `emptyInput`, each with the reason read from the file by a tool other than the converter, and never because the conversion declared `emptyOutput` (it does so for any blank text result) (`tests/realworld-corpus.test.ts`).
 - **Revisit when**: a format is added whose macros change the rendered result.
 
 ## 9. Conversion warnings
@@ -411,15 +419,22 @@ Tabular data
 - **Decision**: a document that is damaged in a way mature readers read through is read through, and what was read is reported when it matters.
   - **RTF control-word parameters** beyond the 32-bit range are clamped to its largest value. A writer in the wild emits a 19-digit character expansion. No parameter of that size has a meaning that a clamp changes (a clamped `\bin` length still fails when it runs past the end of the file).
   - **RTF groups that close early**: when the document group closes before the end of the file and RTF content (a group or a control word) follows, the reader keeps reading and one warning says so. Other trailing data is still refused.
+  - **XLSX coordinates past the sheet limits**: a row number above 1048576, a cell reference or column range past column XFD (16384) is refused with a typed error naming the sheet. The limits are those of the format (ECMA-376) and of every spreadsheet application. A fuzzer-made workbook with the row number 231999999999940 took the reader to its heap limit before this rule.
+  - **XLSX sparse sheets**: the reader builds one workbook with at most 20 million cells and rows, the empty cells that pad a cell out to its column and the empty rows that pad a row out to its row number included. A workbook past it is refused with a payload-limit error (413) that says the padding is counted. The 20 million is the cap the Parquet reader and writer already apply to a table, so one number bounds every tabular reader. The count covers all sheets of the workbook together, because they stay in memory together.
 - **Why**: users convert the files they have, and the reference office suite opens them. Refusing the document for one parameter loses all of it. For the early close, the suite stops at the stray brace and drops the rest of the text; keeping the rest loses nothing the file holds.
+  - **Sparse sheets** are the case the format bounds do not cover: a cell at column XFD on each of 2000 rows is a workbook of 11 KB, and the reader padded it to 33 million cells, 1.7 GB of heap. Padded cells hold nothing, but they are the grid every target is written from, and a part of a few kilobytes must not decide the heap of a worker. Counting what the reader builds, not what the file declares, bounds the memory whatever shape the coordinates take.
 - **Trade-offs**:
   - A document with a structural error is read with the same trust as a clean one. The warning is the only mark.
   - Reading past an early close can show content the suite hides. The file contains it, and the warning says where the structure broke.
+  - A legitimate sheet with more than 20 million cells and rows, padding included, is refused. A sheet that fills 1220 rows to column XFD is inside the budget; one that fills 1221 rows is not. A workbook that reaches the budget with real values needs about 57 bytes of heap per padded cell and more per filled cell (measured at the budget: a sheet of 1219 rows with a cell at XFD, 1.17 GB), so the cap is also the largest workbook the worker is allowed to build in one conversion.
 - **Alternatives rejected**:
   - **Refusing the document**, which made the user's file unusable for one bad number.
   - **Stopping at the early close** as the reference does: the output would lose half of the text without a trace.
-- **Verified by**: `tests/rtf-text-extraction.test.ts` (including the office suite as the oracle of what a clamped parameter reads as) and the public row `doc-lo-footnotes.rtf`.
-- **Revisit when**: a damaged file reads wrongly after a clamp, or QA decides that structural errors must fail.
+  - **Reading sparse sheets without padding** (a map of cells in place of rows of arrays): the converters read a sheet as rows of arrays, so it would move the cost to every one of them and change what each of them reads.
+  - **A limit per sheet**: many small-XML sheets, each just inside the budget, add up to any heap size.
+  - **A limit on the file size alone**: the example above is 11 KB.
+- **Verified by**: `tests/rtf-text-extraction.test.ts` (including the office suite as the oracle of what a clamped parameter reads as) the public row `doc-lo-footnotes.rtf`, and `tests/xlsx-sheet-limits.test.ts` (the last row and column are read, the next ones refused; a workbook of 1320 rows with a cell at XFD is refused before it is built while 100 such rows and 10 filled rows of 16384 cells are read; twenty sheets that end on the last row are counted together) with the corpus workbook `clusterfuzz-testcase-minimized-POIXSSFFuzzer-5937385319563264`.
+- **Revisit when**: a damaged file reads wrongly after a clamp, or QA decides that structural errors must fail; a user reports a real sheet refused for its padding; or the worker memory share changes (the cap follows it).
 
 ## 21. Charts, notes and sheets in PDF
 
@@ -531,27 +546,34 @@ Tabular data
 - **Verified by**: `tests/icc-srgb.test.ts` and the `raw` quality and speed parity suites across Canon, Nikon, Sony, Olympus, Panasonic, Pentax, Fujifilm X-Trans, and DNG samples.
 - **Revisit when**: the upstream image library stops routing `rgb16` inputs with an explicit output `icc_transform` through an intermediate Display P3 working profile.
 
-## 26. Tabular data fidelity and Parquet encodings
+## 26. Tabular data fidelity, Parquet encodings, and columnar fast paths
 
-- **Status**: Implemented (issue #743).
+- **Status**: Implemented (issues #743, #730).
 - **Decision**:
   - **Parquet reader coverage**: the in-process Parquet reader decodes `DATA_PAGE` and `DATA_PAGE_V2` headers, `PLAIN`, `RLE_DICTIONARY`/`PLAIN_DICTIONARY`, `RLE`, `BIT_PACKED`, `DELTA_BINARY_PACKED`, `DELTA_LENGTH_BYTE_ARRAY`, `DELTA_BYTE_ARRAY`, and `BYTE_STREAM_SPLIT` encodings, `UNCOMPRESSED`, `SNAPPY`, `GZIP`, `ZSTD`, and `LZ4_RAW` page codecs, and `INT96` (Julian day + nanosecond time of day to ISO-8601 UTC timestamp text) and `FLOAT16` (IEEE 754 binary16) logical/physical types.
-  - **Parquet writer adaptive compression and columnar fast path**: when the caller does not specify a compression codec, the general and direct delimited-byte Parquet writers use `SNAPPY` by default, switching individual non-dictionary `BYTE_ARRAY` columns whose values are predominantly numeric digits and punctuation (`0-9`, `.`, `-`, `+`, `,`) to `GZIP` when the raw column byte budget is at least 128 KB or the table has at least 32 columns.
+  - **Direct columnar and byte-scanning fast paths (`data-fast-paths.ts`)**:
+    - `csv`/`tsv`/`tab -> parquet` (`delimitedToParquet`): scans UTF-8 delimited bytes into column spans (`DelimitedByteScanner`) and encodes Parquet pages directly from the input buffer without building intermediate row objects.
+    - `parquet -> csv`/`tsv` (`parquetToDelimited`) and `parquet -> json` (`parquetToJson`): `FormattedParquetTable` formats the cells of each page once (a dictionary entry once per distinct value, not once per row) and hands out row windows that end at the next page boundary of any column, so a table is never held as one JavaScript string per cell. Rows are written to `ChunkedOutput` while they are read, preserving BOM defaults, formula escaping, 1-column empty-cell quoting, column order (including integer-named and `"__proto__"` columns) and `-0`. Non-finite doubles are written to CSV as the general route writes them, without a formula guard.
+    - `jsonl`/`ndjson -> csv`/`tsv` (`jsonLinesToDelimited`): scans flat UTF-8 JSON object lines directly into delimited rows, written in 32-row batches to `ChunkedOutput`, while preserving exact integer literals up to 4,096 digits, standard JSON escapes, and omitted or reordered keys, declining (`null`) to the general lossless parser whenever nested containers, `\uXXXX` escapes, new keys after the first record, or syntax/encoding errors require full AST handling.
+    - **Memory**: input and output are buffers outside the V8 heap. The heap holds one decoded page per column (Parquet) or one 32-row batch (JSON Lines). `ChunkedOutput` collects output in chunks of up to 4 MiB and joins them once, and fails with `DataLimitExceededError` when the table would exceed one buffer (about 2 GiB). A 190 MB JSON Lines file and a 12-million-cell Parquet file convert inside a 128 MiB heap (`tests/data-columnar-memory.test.ts`). Parquet input stays bound by the reader's existing caps (1 GiB decompressed, 512 MiB of decoded text, 20 million cells).
+  - **Parquet writer adaptive compression**: when the caller does not specify a compression codec, the general and direct delimited-byte Parquet writers use `SNAPPY` by default, switching individual non-dictionary `BYTE_ARRAY` columns whose values are predominantly numeric digits and punctuation (`0-9`, `.`, `-`, `+`, `,`) to `GZIP` when the raw column byte budget is at least 128 KB or the table has at least 32 columns.
   - **JSON and YAML key order**: the lossless JSON reader records the source key order of every object whose keys include non-negative integer indices (`"0"`, `"1970"`, etc.) in a side table, and JSON, YAML, TOML, HTML, and tabular flattening iterate keys in that recorded source order instead of ECMAScript's ascending array-index order.
   - **CSV and TSV formula escaping**: a cell beginning with `=`, `@`, `\t`, or `\r` is always prefixed with `'`; a cell beginning with `+` or `-` is prefixed with `'` only when it is a single-line non-prose expression that is neither a plain number (`-5`, `+1.5e3`) nor a thousands-grouped number (`-566,000`).
 - **Why**:
   - Columnar engines emit `DATA_PAGE_V2`, delta encodings, `BYTE_STREAM_SPLIT`, `LZ4_RAW`, `INT96`, and `FLOAT16` in standard datasets; refusing them leaves common analytical files unreadable.
+  - Materializing intermediate JS objects and `Map` cells for every row (`parseDelimitedRecords` -> `tabulate` -> `encodeParquet` / `writeDelimited` / `stringifyJsonLossless`) dominated CPU and GC time on multi-thousand-row tables. Operating on page-sized column windows and UTF-8 byte spans eliminates per-row object and `Map` allocations while producing the same cells as the general route; windows also bound the memory a large table needs, because Parquet pages of different columns end at different rows and a whole row group can be too large to hold decoded.
   - CSV inputs store numeric columns as `BYTE_ARRAY` text unless schema inference is requested. On dense decimal text or wide numeric tables, byte-aligned `SNAPPY` cannot exploit sub-byte digit entropy, whereas `GZIP`'s Huffman coding shrinks those pages past the reference columnar writer's size while keeping `SNAPPY` speed on general text.
   - V8 reorders non-negative integer property keys ahead of string keys on ordinary JS objects, which scrambled year-keyed columns (`"1976"`..`"2099"`) when flattening nested JSON to CSV or Parquet.
   - Prefixing `'` to negative thousands-grouped numbers (`"-566,000"`) or multi-line prose starting with `"- "` corrupts legitimate data values that no spreadsheet evaluates as a formula.
 - **Trade-offs**:
-  - Compressing wide or large non-dictionary numeric-text `BYTE_ARRAY` columns with `GZIP` trades a small CPU cost on those columns for 35 to 45 % smaller Parquet output, while the direct byte-scanner CSV-to-Parquet fast path avoids per-cell string allocations and runs faster than the reference writer.
+  - Maintaining direct columnar/byte fast paths alongside the general structured-data pipeline adds specialized serializers for the four hot tabular pairs, mitigated by strict decline-to-general fallback (`return null`) on any non-flat or malformed input and byte-exact equivalence tests against the general route.
+  - Compressing wide or large non-dictionary numeric-text `BYTE_ARRAY` columns with `GZIP` trades a small CPU cost on those columns for 35 to 45 % smaller Parquet output.
   - Recording key order in a `WeakMap` adds a small per-object array only when an object mixes or reorders array-index keys.
 - **Alternatives rejected**:
   - **Coercing CSV numeric strings to `DOUBLE` or `INT64` in the Parquet writer**: loses formatting fidelity (leading zeros, trailing decimals) and diverges from string-preserving tabular conversion.
   - **Using `ZSTD` or `GZIP` unconditionally for all Parquet columns**: slows down general text and dictionary-encoded columns where `SNAPPY` already meets size parity.
   - **Disabling `+`/`-` formula escaping altogether**: would leave single-token spreadsheet formulas such as `-2+3` or `+A1` unescaped.
-- **Verified by**: `tests/parquet-writer-conformance.test.ts`, `tests/parquet-logical-types.test.ts`, `tests/parquet-codec.test.ts`, `tests/data-csv-encoding.test.ts`, `tests/data-json-yaml-lossless.test.ts`, `tests/data-columnar-fast-paths.test.ts`, and the `data` parity rows.
+- **Verified by**: `tests/parquet-writer-conformance.test.ts`, `tests/parquet-logical-types.test.ts`, `tests/parquet-codec.test.ts`, `tests/data-csv-encoding.test.ts`, `tests/data-json-yaml-lossless.test.ts`, `tests/data-columnar-fast-paths.test.ts`, `tests/data-columnar-memory.test.ts`, `tests/chunked-output.test.ts`, and the `data` quality and speed parity suites.
 - **Revisit when**: callers gain an explicit schema-inference option for CSV-to-Parquet, or spreadsheet formula rules are configured per target dialect.
 
 ## 27. Ebook FB2/MathML text fidelity and PDF compression structural repair
@@ -573,4 +595,30 @@ Tabular data
   - **Always returning the rewritten PDF even when larger on clean inputs**: breaks idempotency when compressing an already-compressed clean PDF a second time.
 - **Verified by**: `tests/fb2-book-structure.test.ts`, `tests/pdf-compress.test.ts`, and the public `ebook` and `pdf-ops` parity suites (`book-help-ru.fb2`, `book-linear-algebra.epub->pdf`, `pdf-gov-000012.pdf->compress`, `pdf-gov-001071.pdf->compress`, `pdf-gov-003966.pdf->compress`, and `pdf-vera-ua1-annotations.pdf->compress`).
 - **Revisit when**: a dedicated MathML layout engine is added to the in-process PDF writer.
+
+## 28. Zstandard level 3 match finder and literal cost floor
+
+- **Status**: Implemented (issue #737).
+- **Decision**:
+  - **Level 3 match-finder parameters**: the default Zstandard encoder level (`level = 3`) uses `windowLog = 20`, `hashLog = 18`, `chainLog = 18`, `searchDepth = 6`, `minMatch = 5`, `niceLength = 24`, `lazyDepth = 1`, `lazyLength = 8`, `skipStrength = 7`, `insertMatchInterior = true`, and `interiorInsertCap = 4`. Levels 4 to 6 scale `searchDepth` (10, 12, 14), `hashLog` (18), and `chainLog` (18, 18, 19) monotonically from level 3.
+  - **Five-byte hash (`minMatch = 5`)**: the chain is keyed on five bytes, so a four-byte match is taken only as a repeat-offset match. The level 4 and higher chains keep the four-byte hash.
+  - **Lazy length cap (`lazyLength`)**: a match of at least `lazyLength` bytes is emitted without probing the next position for a better one; a shorter match is still compared against the match starting one byte later, with the chain floor `len - 1` so that candidates that cannot beat the current match are rejected on one byte. It defaults to `niceLength`, which leaves every other level unchanged.
+  - **Interior insertion cap**: with `interiorInsertCap = 4`, a match longer than 8 bytes inserts only its first and last 4 positions into the chains.
+  - **Post-LZ77 literal cost floor (`LITERAL_BITS_MIN = 6.5`)**: the match finder clamps its per-block literal bit-cost estimate to at least `6.5` bits per byte when scoring short matches against the sequence overhead (`MATCH_OVERHEAD_BITS + OFFSET_SYMBOL_BITS + highBit32(offset + 1)`).
+- **Why**:
+  - Whole-block order-0 Shannon entropy underestimates the cost of the unmatched literals that remain after LZ77 removes repetitive runs. On zero-padded binary slices such as 3D medical volumes (where 50 to 65 % of each 128 KB block is `0x00`), raw block entropy drops to 2.3 to 2.6 bits per byte while the non-zero tissue bytes left in the Huffman literals stream cost 5.4 to 5.6 bits per literal; on natural-language prose, raw block entropy is 4.5 to 4.8 bits per byte while post-LZ77 literal residuals cost 5.3 to 5.4 bits per literal. With `LITERAL_BITS_MIN = 1`, the scorer rejected every four-byte match at `offset >= 63` in prose and every four- to eight-byte cross-slice match in zero-padded medical volumes.
+  - The reference level 3 strategy (double-hash fast matcher) also hashes five bytes. A four-byte chain fills with positions that share only their first four bytes, so each probe is mostly a collision or a match too short to pay for its offset; a five-byte chain spends the same probes on candidates that can win. Measured on the public set, five-byte hashing improved the ratio of the medical, prose, and source samples by 1 to 3 points at the same speed, which is what allowed `searchDepth` to fall from 8 to 6.
+  - Raising `chainLog` from 16 (64 KiB chain reach) to 18 (256 KiB chain reach) prevents the 64 KiB dense job history from overwriting all chain links into the sparse window and brings prose, source code, XML, and chemical database recurrences between 64 KiB and 256 KiB into chain reach.
+  - Enabling 1-step lazy matching (`lazyDepth = 1`) avoids taking a short match at `p` when `p + 1` starts a longer one. The first version of this change also probed the next position for matches up to 32 bytes and inserted every position of matches up to 32 bytes, which made the mixed benchmark input 19 % slower than the previous level 3 (speed gate: no more than 15 % slower than the base). Matches of 8 or more bytes are rarely beaten by a match one byte later, and the middle of a short match is mostly redundant with positions already in the chain, so `lazyLength` and `interiorInsertCap` remove that work.
+- **Trade-offs**:
+  - `hashLog = 18` and `chainLog = 18` allocate 1 MiB for `head` and 1 MiB for `chain` per worker thread (up from 512 KiB and 256 KiB), reused across blocks and jobs inside each worker.
+  - A four-byte match at a medium offset is no longer found by the chain at level 3, and a long match is less often replaced by a better one that starts a byte later; both cost ratio against a higher-effort setting (the mixed benchmark input is 1.9 % smaller than the reference and the Silesia `nci` sample 2.3 % smaller, against 3.7 % and 7.7 % for the intermediate setting), but every sample and class stays below the reference level 3 size.
+  - The speed measured on the mixed benchmark input is within 5 % of the previous level 3 (the gate allows 15 %), because the lazy lookahead, the larger tables and the deeper search all cost time that the cheaper insertion only partly returns.
+- **Alternatives rejected**:
+  - **Keeping the four-byte hash with `searchDepth = 8`, `niceLength = 24`, `lazyLength = 12`**: the same speed range but 1 to 3 points less ratio on the medical, prose, and Polish text samples, with the `mr` sample only 0.4 % below the reference.
+  - **Raising `windowLog` above 20 or enabling multi-step lazy matching (`lazyDepth = 2`) at level 3**: increases memory footprint and slows down single-block and multi-worker throughput without needed ratio gains once `LITERAL_BITS_MIN = 6.5`, `minMatch = 5`, and `chainLog = 18` are in place.
+  - **Two-pass per-block literal entropy estimation**: requires a trial LZ77 pass over every 128 KB block before scoring matches, nearly doubling parse time.
+  - **Hoisting fields and pre-filtering candidates on their first bytes without changing the search**: byte-identical output, and no measurable speed change; the time is spent in cache misses on the hash and chain tables, not in instruction count.
+- **Verified by**: `tests/zstd-job-frames.test.ts`, `tests/zstd-engine.test.ts`, `tests/zstd-level-pins.test.ts`, `tests/zstd-hostile-frames.test.ts`, `tests/zstd-throughput.perf.test.ts`, and the `compression` quality and speed parity suites across all 12 Silesia files and all 8 content classes.
+- **Revisit when**: a dedicated double-hash fast matcher (separate short-match and long-match tables without a chain array) is introduced for levels 1 to 4.
 
