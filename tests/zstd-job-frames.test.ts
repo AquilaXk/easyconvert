@@ -6,7 +6,7 @@ import { compressZstd, compressZstdAsync, decompressZstd, planZstdJobs, ZSTD_POO
 import { ZSTD_BLOCK_SIZE_MAX } from '../src/lib/conversions/zstd-tables';
 import { CpuPoolOverloadedError, CpuTaskAbortedError, EngineUnavailableError } from '../src/lib/types';
 import { getCpuPool, shutdownCpuPool } from '../src/lib/workers/cpu-pool';
-import { SeededRandom, jsonRecords, runBytes, sourceText, zipfText } from './helpers/archive-corpus';
+import { SeededRandom, jsonRecords, proseText, runBytes, sourceText, zipfText } from './helpers/archive-corpus';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 
@@ -103,16 +103,43 @@ describe.each(INPUTS)('frames of jobs: %s', (_name, build) => {
   });
 });
 
+/**
+ * 32 KB slices whose first 65% is zero background and whose remaining samples repeat across slices with perturbations
+ * every 5 to 7 bytes (as in a 3D MRI volume, where the zero runs lower the raw block byte entropy while the non-zero
+ * tissue bytes have high entropy and short cross-slice matches at a 32 KB offset).
+ */
+function zeroPaddedSlices(bytes: number, seed: number): Buffer {
+  const rng = new SeededRandom(seed);
+  const out = Buffer.alloc(bytes);
+  const sliceBytes = 32768;
+  const baseSlice = Buffer.alloc(sliceBytes);
+  const tissueStart = Math.floor(sliceBytes * 0.65);
+  for (let i = tissueStart; i < sliceBytes; i++) baseSlice[i] = 1 + rng.below(255);
+  for (let pos = 0; pos < bytes; pos += sliceBytes) {
+    const n = Math.min(sliceBytes, bytes - pos);
+    baseSlice.copy(out, pos, 0, n);
+    for (let i = Math.min(n, tissueStart); i < n; i += 5 + rng.below(3)) {
+      out[pos + i] = 1 + rng.below(255);
+    }
+  }
+  return out;
+}
+
 describe('ratio of the frame of jobs', () => {
-  oracleTest('is no larger than the reference encoder frame at level 3 on JSON records and on the benchmark mixed input', ['zstd'], () => {
+  oracleTest('is no larger than the reference encoder frame at level 3 across prose, source, JSON, slice volumes and the benchmark mixed input', ['zstd'], () => {
     const zstd = getOracleToolPath('zstd')!;
     const cases: Array<[string, Buffer]> = [
+      ['prose', proseText(JOB_INPUT_BYTES, 62)],
+      ['source', sourceText(JOB_INPUT_BYTES, 61)],
       ['json', jsonRecords(JOB_INPUT_BYTES, 64)],
+      ['zero-padded slice volume', zeroPaddedSlices(JOB_INPUT_BYTES, 68)],
       ['benchmark mixed input', benchmarkMixedInput()],
     ];
     for (const [name, data] of cases) {
       const reference = execFileSync(zstd, ['-3', '-q', '-c'], { input: data, maxBuffer: 1 << 26 }).length;
-      expect(compressZstd(data, { level: 3 }).length, name).toBeLessThanOrEqual(reference);
+      const frame = compressZstd(data, { level: 3 });
+      expect(frame.length, name).toBeLessThanOrEqual(reference);
+      expect(decompressZstd(frame).equals(data), name).toBe(true);
     }
   });
 });
