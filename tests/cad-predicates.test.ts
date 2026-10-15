@@ -11,30 +11,47 @@ import {
   split,
 } from '../src/lib/conversions/cad-predicates';
 
+/** The exact value of a double as a fraction n / 2^1074, so sums and products of doubles compare without rounding. */
+const EXACT_SHIFT = 1074n;
+function exact(x: number): bigint {
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, x);
+  const bits = view.getBigUint64(0);
+  const sign = bits >> 63n ? -1n : 1n;
+  const exponent = Number((bits >> 52n) & 0x7ffn);
+  const fraction = bits & ((1n << 52n) - 1n);
+  const mantissa = exponent === 0 ? fraction : fraction | (1n << 52n);
+  const power = BigInt(exponent === 0 ? 1 : exponent) - 1075n + EXACT_SHIFT;
+  return sign * (mantissa << power);
+}
+
 describe('Shewchuk Exact Robust Geometric Predicates', () => {
   describe('Exact Arithmetic Foundations', () => {
     it('computes exact twoSum and twoDiff without precision loss', () => {
       const a = 1.0;
       const b = 1e-16;
       const [sum, sumErr] = twoSum(a, b);
-      // Falsifiability: Compare with ground-truth constant values instead of `a + b` tautology
+      // Independent oracle: the pair must represent a + b exactly, checked in integer arithmetic, and the error is non-zero.
+      expect(exact(sum) + exact(sumErr)).toBe(exact(a) + exact(b));
       expect(sum).toBe(1.0);
-      expect(sumErr).toBe(1e-16);
+      expect(sumErr).not.toBe(0);
 
       const [diff, diffErr] = twoDiff(a, b);
-      expect(diff).toBe(0.9999999999999999);
-      expect(diffErr).toBe(1.1022302462515656e-17);
+      expect(exact(diff) + exact(diffErr)).toBe(exact(a) - exact(b));
+      expect(diffErr).not.toBe(0);
     });
 
     it('computes exact twoProduct using Veltkamp-Dekker splitting', () => {
       const a = 1e8 + 0.123456789;
       const b = 1e8 - 0.987654321;
       const [prod, prodErr] = twoProduct(a, b);
-      expect(prod).toBe(9999999913580246);
-      expect(prodErr).toBeCloseTo(0.14777027733931725, 14); // Avoid floating comparison issue if slightly off
+      // prod + prodErr equals a * b exactly; the product of two fractions over 2^1074 is over 2^2148.
+      expect((exact(prod) + exact(prodErr)) << EXACT_SHIFT).toBe(exact(a) * exact(b));
+      expect(prodErr).not.toBe(0);
       const [hi, lo] = split(a);
-      expect(hi).toBe(100000000);
-      expect(lo).toBeCloseTo(0.12345679104328156, 14);
+      expect(exact(hi) + exact(lo)).toBe(exact(a));
+      // Each half fits in 26 bits of mantissa, so hi * hi is exact in a double.
+      expect(exact(hi * hi) << EXACT_SHIFT).toBe(exact(hi) * exact(hi));
     });
   });
 
