@@ -214,7 +214,7 @@ Tabular data
   - Macros never affect a static render, and removing them takes untrusted code out of the renderer's reach.
 - **Trade-offs**: none for rendered output. Macro-to-macro conversions do not exist.
 - **Alternatives rejected**: failing empty inputs, which breaks batch jobs.
-- **Verified by**: the office output-check tests, and the real-world corpus gate, which accepts a zero-byte output only from a result that declares `emptyOutput` (`tests/realworld-corpus.test.ts`).
+- **Verified by**: the office output-check tests, and the real-world corpus gate, which accepts a zero-byte output only for the six corpus files that the manifest marks `emptyInput`, each with the reason read from the file by a tool other than the converter, and never because the conversion declared `emptyOutput` (it does so for any blank text result) (`tests/realworld-corpus.test.ts`).
 - **Revisit when**: a format is added whose macros change the rendered result.
 
 ## 9. Conversion warnings

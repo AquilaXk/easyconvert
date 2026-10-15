@@ -33,3 +33,19 @@ export const VERDICT_ORDER: readonly Verdict[] = ['ok', 'refused', 'bad-output',
 
 /** Verdicts that fail the gate whatever the baseline says. */
 export const FATAL_VERDICTS: ReadonlySet<Verdict> = new Set<Verdict>(['crash', 'hang', 'bad-output']);
+
+/**
+ * How a sandboxed process failed, as the report names it: `exit 139` or `signal SIGSEGV`, or null for an error that carries
+ * neither (the sandbox puts only the process's stderr in the message, so the exit status is otherwise lost).
+ */
+export function exitSummary(error: unknown): string | null {
+  const { exitCode, signal } = error as { exitCode?: unknown; signal?: unknown };
+  if (typeof signal === 'string' && signal !== '') return `signal ${signal}`;
+  if (typeof exitCode === 'number') return `exit ${exitCode}`;
+  return null;
+}
+
+/** The detail of a crash: the error class, how its process ended when it did, and its message. */
+export function crashDetail(name: string, message: string, exit: string | null | undefined): string {
+  return exit === null || exit === undefined ? `${name}: ${message}` : `${name} (${exit}): ${message}`;
+}

@@ -31,8 +31,12 @@ export interface OutputCheckOptions {
   pdfinfo: string;
   /** Path of ImageMagick `identify`; an empty value skips the image reader. */
   identify: string;
-  /** The conversion declared its result empty because the input has no content (docs/policy-decisions.md, "Empty documents and macros"): zero bytes are then the right output. */
-  emptyOutput?: boolean;
+  /**
+   * The corpus manifest marks the input as having no content (`emptyInput`, with the reason read from the file): zero bytes are then
+   * the right output (docs/policy-decisions.md, "Empty documents and macros"). The mark comes from the corpus, never from the
+   * conversion under test, which declares every blank text result empty, content or not.
+   */
+  emptyInput?: boolean;
 }
 
 async function pageArchiveProblem(buffer: Buffer, target: string, workDir: string, options: OutputCheckOptions): Promise<string | null> {
@@ -49,7 +53,7 @@ async function pageArchiveProblem(buffer: Buffer, target: string, workDir: strin
 
 /** Why the output is not a readable file of the target type, or null when it is. */
 export async function outputProblem(buffer: Buffer, target: string, workDir: string, options: OutputCheckOptions): Promise<string | null> {
-  if (buffer.length === 0) return options.emptyOutput === true ? null : 'empty output';
+  if (buffer.length === 0) return options.emptyInput === true ? null : 'empty output';
   if (options.mimeType === ZIP_MIME_TYPE && PAGE_TARGETS.has(target)) return pageArchiveProblem(buffer, target, workDir, options);
   if (!isFormatCompatibleWithMagicBytes(buffer, target)) return `output bytes do not match ${target}`;
   const part = PACKAGE_PARTS[target];
