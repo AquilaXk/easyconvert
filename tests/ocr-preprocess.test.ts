@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
+import { decodePnm, pnmGray } from './helpers/pnm-decode';
 import { OcrEngineUnavailableError, OcrPreprocessError } from '../src/lib/types';
 import {
   oddWindow,
@@ -500,9 +501,10 @@ describe('mapping boxes back to the source image', () => {
   });
 });
 
-async function grayPixels(png: Buffer): Promise<{ data: Buffer; width: number; height: number }> {
-  const { data, info } = await sharp(png).toColourspace('b-w').raw().toBuffer({ resolveWithObject: true });
-  return { data, width: info.width, height: info.height };
+/** The gray pixels of a prepared page, read with the independent Netpbm reader. */
+async function grayPixels(image: Buffer): Promise<{ data: Buffer; width: number; height: number }> {
+  const decoded = decodePnm(image);
+  return { data: Buffer.from(pnmGray(decoded)), width: decoded.width, height: decoded.height };
 }
 
 describe('preprocessOcrImage', () => {
@@ -575,8 +577,8 @@ describe('preprocessOcrImage', () => {
       const thin = await sharp({ create: { width, height, channels: 3, background: '#ffffff' } }).png().toBuffer();
       const result = await preprocessOcrImage(thin);
       expect([result.geometry.sourceWidth, result.geometry.sourceHeight]).toEqual([width, height]);
-      const meta = await sharp(result.image).metadata();
-      expect([meta.width, meta.height]).toEqual([result.geometry.outputWidth, result.geometry.outputHeight]);
+      const decoded = decodePnm(result.image);
+      expect([decoded.width, decoded.height]).toEqual([result.geometry.outputWidth, result.geometry.outputHeight]);
     }
   });
 
@@ -590,15 +592,28 @@ describe('preprocessOcrImage', () => {
     const result = await preprocessOcrImage(page);
     expect(result.applied).toEqual({ rescale: false, deskew: false, binarize: false });
     expect(result.geometry).toEqual(identityGeometry(width, height));
-    const reencoded = await sharp(page).rotate().png().toBuffer();
-    expect(Buffer.compare(result.image, reencoded)).toBe(0);
+    // Same pixels as the decoder gives for the source, written uncompressed.
+    const decoded = decodePnm(result.image);
+    expect([decoded.format, decoded.width, decoded.height]).toEqual(['P6', width, height]);
+    const source = await sharp(page).rotate().raw().toBuffer();
+    expect(Buffer.compare(Buffer.from(decoded.samples), source)).toBe(0);
   }, 60_000);
 
   it('records no resolution in the prepared image: a 300 dpi hint made the Korean pages read worse', async () => {
     for (const name of ['en_a__dpi72', 'en_a__shade', 'en_a__skew3']) {
-      const { density } = await sharp((await preprocessOcrImage(fixture(name))).image).metadata();
-      expect(density, name).toBeUndefined();
+      const { image } = await preprocessOcrImage(fixture(name));
+      const { headerBytes, width, height, format } = decodePnm(image);
+      // The whole header is the magic number and the size (and the sample range for gray), nothing else.
+      const expected = format === 'P4' ? `P4\n${width} ${height}\n` : `${format}\n${width} ${height}\n255\n`;
+      expect(image.subarray(0, headerBytes).toString('ascii'), name).toBe(expected);
     }
+  });
+
+  it('writes a binarized page as a bitonal P4 and a page left in gray levels as P5', async () => {
+    const binarized = await preprocessOcrImage(fixture('en_a__shade'));
+    expect(decodePnm(binarized.image).format).toBe('P4');
+    const gray = await preprocessOcrImage(fixture('en_a__dpi72'), { rescale: true, deskew: false, binarize: false });
+    expect(decodePnm(gray.image).format).toBe('P5');
   });
 
   it('enlarges without binarizing when only the rescale step is on', async () => {
@@ -662,8 +677,11 @@ describe('preprocessOcrImage', () => {
     const source = fixture('en_a__shade');
     const result = await preprocessOcrImage(source, { rescale: false, deskew: false, binarize: false });
     expect(result.applied).toEqual({ rescale: false, deskew: false, binarize: false });
-    const expected = await sharp(source).rotate().png().toBuffer();
-    expect(result.image.equals(expected)).toBe(true);
+    // The pixels are the decoder's own (the fixture is 8-bit gray), uncompressed.
+    const decoded = decodePnm(result.image);
+    const expected = await sharp(source).rotate().greyscale().raw().toBuffer({ resolveWithObject: true });
+    expect([decoded.format, decoded.width, decoded.height]).toEqual(['P5', expected.info.width, expected.info.height]);
+    expect(Buffer.from(decoded.samples).equals(expected.data)).toBe(true);
   });
 
   it('reads text on a transparent background (alpha is flattened onto white)', async () => {

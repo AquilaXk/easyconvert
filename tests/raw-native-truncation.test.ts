@@ -28,6 +28,7 @@ describe.runIf(STRICT_MODE)('RAW truncation tooling', () => {
   });
 });
 
+// skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
 describe.skipIf(!enabled)('truncated camera files are rejected, never returned as an image', () => {
   it.each(TRUNCATED_FORMATS)(
     'a 50%% truncation of the real %s sample fails with RawDecodeError',

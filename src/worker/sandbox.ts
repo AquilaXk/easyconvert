@@ -11,6 +11,7 @@ export {
   getPrlimitCapability,
   buildPrlimitArgs,
   resetPrlimitCapabilityCache,
+  rethrowSandboxUnavailable,
   SandboxedProcessError,
   SandboxedTimeoutError,
   SandboxedBufferLimitError,

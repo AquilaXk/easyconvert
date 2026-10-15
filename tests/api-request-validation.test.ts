@@ -146,14 +146,14 @@ describe('API Request Schema Validation & Quota Conservation', () => {
     expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
   });
 
-  it('rejects planned options (aspectRatio, fastStart, duration) with 422 option_not_supported and unchanged quota', async () => {
-    const plannedOptionCases: Array<{ name: string; optionPayload: Record<string, any> }> = [
-      { name: 'aspectRatio', optionPayload: { aspectRatio: '16:9' } },
-      { name: 'fastStart', optionPayload: { fastStart: true } },
-      { name: 'duration', optionPayload: { duration: 45 } },
+  it('rejects malformed values of the media options aspectRatio, fastStart and duration with 422 and unchanged quota', async () => {
+    const invalidValueCases: Array<{ name: string; optionPayload: Record<string, any> }> = [
+      { name: 'aspectRatio', optionPayload: { aspectRatio: 'wide' } },
+      { name: 'fastStart', optionPayload: { fastStart: 'yes' } },
+      { name: 'duration', optionPayload: { duration: -45 } },
     ];
 
-    for (const testCase of plannedOptionCases) {
+    for (const testCase of invalidValueCases) {
       const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
 
       const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
@@ -176,16 +176,9 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
       const problem = await res.json();
       expect(problem.status).toBe(422);
-      expect(problem.type).toBe('https://api.easyconvert.io/problems/option-not-supported');
-      expect(problem.title).toBe('Option Not Supported');
-      expect(problem.detail).toContain('option_not_supported');
+      expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
       expect(problem.invalidParams).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            name: expect.stringContaining(testCase.name),
-            reason: 'option_not_supported',
-          }),
-        ])
+        expect.arrayContaining([expect.objectContaining({ name: expect.stringContaining(testCase.name) })])
       );
 
       const quotaAfter = await redisKeyStore.getQuotaUsage(testUser.id);
@@ -230,13 +223,13 @@ describe('API Request Schema Validation & Quota Conservation', () => {
     expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
   });
 
-  it('rejects planned options in multipart POST /api/v1/convert with 422 option_not_supported', async () => {
+  it('rejects a malformed media option in multipart POST /api/v1/convert with 422', async () => {
     const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
 
     const formData = new FormData();
     formData.append('file', new File(['document text'], 'document.pdf', { type: 'application/pdf' }));
     formData.append('targetFormat', 'txt');
-    formData.append('options', JSON.stringify({ aspectRatio: '16:9' })); // Planned option
+    formData.append('options', JSON.stringify({ aspectRatio: 'wide' })); // Malformed ratio
 
     const req = new NextRequest('http://localhost:3000/api/v1/convert', {
       method: 'POST',
@@ -251,8 +244,10 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/option-not-supported');
-    expect(problem.detail).toContain('option_not_supported');
+    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.invalidParams).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: expect.stringContaining('aspectRatio') })])
+    );
 
     const quotaAfter = await redisKeyStore.getQuotaUsage(testUser.id);
     expect(quotaAfter.usedToday).toBe(quotaBefore.usedToday);
@@ -295,14 +290,14 @@ describe('API Request Schema Validation & Quota Conservation', () => {
     expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
   });
 
-  it('rejects planned options in multipart POST /api/v1/jobs with 422 option_not_supported and unchanged quota', async () => {
+  it('rejects a malformed media option in multipart POST /api/v1/jobs with 422 and unchanged quota', async () => {
     const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
     const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52]);
 
     const formData = new FormData();
     formData.append('file', new File([pngHeader], 'sample.png', { type: 'image/png' }));
     formData.append('targetFormat', 'webp');
-    formData.append('options', JSON.stringify({ aspectRatio: '16:9' })); // Planned option
+    formData.append('options', JSON.stringify({ aspectRatio: 'wide' })); // Malformed ratio
 
     const req = new NextRequest('http://localhost:3000/api/v1/jobs', {
       method: 'POST',
@@ -317,15 +312,17 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/option-not-supported');
-    expect(problem.detail).toContain('option_not_supported');
+    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.invalidParams).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: expect.stringContaining('aspectRatio') })])
+    );
 
     const quotaAfter = await redisKeyStore.getQuotaUsage(testUser.id);
     expect(quotaAfter.usedToday).toBe(quotaBefore.usedToday);
     expect(quotaAfter.remaining).toBe(quotaBefore.remaining);
   });
 
-  it('rejects planned options inside multipart tasks in POST /api/v1/jobs with 422 option_not_supported and unchanged quota', async () => {
+  it('rejects a malformed media option inside multipart tasks in POST /api/v1/jobs with 422 and unchanged quota', async () => {
     const quotaBefore = await redisKeyStore.getQuotaUsage(testUser.id);
     const pngHeader = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52]);
 
@@ -337,7 +334,7 @@ describe('API Request Schema Validation & Quota Conservation', () => {
         name: 'extract-sheet',
         operation: 'convert',
         targetFormat: 'webp',
-        options: { aspectRatio: '16:9' },
+        options: { aspectRatio: 'wide' },
       },
     ]));
 
@@ -354,8 +351,10 @@ describe('API Request Schema Validation & Quota Conservation', () => {
 
     const problem = await res.json();
     expect(problem.status).toBe(422);
-    expect(problem.type).toBe('https://api.easyconvert.io/problems/option-not-supported');
-    expect(problem.detail).toContain('option_not_supported');
+    expect(problem.type).toBe('https://api.easyconvert.io/problems/unprocessable-entity');
+    expect(problem.invalidParams).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: expect.stringContaining('aspectRatio') })])
+    );
 
     const quotaAfter = await redisKeyStore.getQuotaUsage(testUser.id);
     expect(quotaAfter.usedToday).toBe(quotaBefore.usedToday);

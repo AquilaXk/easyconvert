@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import Papa from 'papaparse';
 import iconv from 'iconv-lite';
-import PDFDocument from 'pdfkit';
 import { parse as parseToml, stringify as stringifyToml, TomlError } from 'smol-toml';
 import {
   Document as YamlDocument,
@@ -15,6 +14,7 @@ import {
 } from 'yaml';
 import {
   ConversionOptions,
+  ConversionFailedError,
   ConversionResult,
   DataEncodingError,
   DataLimitExceededError,
@@ -25,22 +25,25 @@ import {
 } from '../types';
 import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
-import { assertNoComplexScript } from './ctl';
+import { renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
   MAX_INTEGER_LITERAL_DIGITS,
+  dataObjectKeys,
   isDataObject,
   normalizeDataValue,
   parseJsonLossless,
   positionOf,
   setOwn,
   stringifyJsonLossless,
+  withOrderedKeysView,
   type DataObject,
   type DataValue,
 } from './data-json';
 import { parseXmlDocument, serializeDataToXml, xmlRecords, xmlStringValue, xmlToJsonMlDocument } from './data-xml';
 import { assertToml10Syntax } from './data-toml';
 import { assertConversionOptionsObject } from './options-guard';
+import { delimitedToParquet } from './data-fast-paths';
 import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
 import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter, parseDelimitedRecords } from './delimited-detect';
 
@@ -465,7 +468,7 @@ interface DataTable {
 /** Writes one table cell per leaf: nested objects become dot paths, arrays their JSON text. */
 function flattenInto(value: DataValue, path: string, cells: Map<string, DataValue>): void {
   if (isDataObject(value)) {
-    const keys = Object.keys(value);
+    const keys = dataObjectKeys(value);
     if (keys.length === 0) {
       setCell(cells, path, '{}');
       return;
@@ -687,7 +690,7 @@ function parseYamlText(text: string): DataValue {
   let raw: unknown;
   try {
     // Aliases resolve to shared objects; the value cap below bounds their expansion.
-    raw = document.toJS({ maxAliasCount: -1 });
+    raw = document.toJS({ maxAliasCount: -1, mapAsMap: true });
   } catch (err) {
     throw new DataParseError(`YAML parsing failed: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -770,9 +773,7 @@ function readStructuredSource(inputBuffer: Buffer, src: string, tgt: string, opt
     return { value: xmlToJsonMlDocument(root), records: () => xmlRecords(root), text: () => xmlStringValue(root) };
   }
   if (src === 'parquet') {
-    const records = asRecords(
-      normalizeDataValue(decodeParquet(inputBuffer), { maxValues: Number.POSITIVE_INFINITY, label: 'Parquet file' })
-    );
+    const records = decodeParquet(inputBuffer) as DataValue[];
     return { value: records, records: () => records, text: () => stringifyJsonLossless(records, JSON_INDENT) };
   }
   throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
@@ -834,7 +835,7 @@ function yamlEscape(char: string): string {
  * U+FFFE/U+FFFF.
  */
 function writeYamlText(value: DataValue): string {
-  const document = new YamlDocument(value, {
+  const document = new YamlDocument(withOrderedKeysView(value), {
     compat: 'yaml-1.1',
     aliasDuplicateObjects: false,
     customTags: (tags) => [YAML_EXPONENT_FLOAT_TAG, ...tags],
@@ -873,7 +874,8 @@ function assertTomlRepresentable(value: DataValue, path: string): void {
   if (Array.isArray(value)) {
     value.forEach((item, index) => assertTomlRepresentable(item, `${path}[${index}]`));
   } else if (isDataObject(value)) {
-    for (const [key, child] of Object.entries(value)) {
+    for (const key of dataObjectKeys(value)) {
+      const child = value[key];
       const childPath = path === '' ? key : `${path}.${key}`;
       if (UNPAIRED_SURROGATE.test(key)) {
         throw new DataRepresentationError(`TOML keys must be valid Unicode; "${childPath}" holds an unpaired surrogate.`);
@@ -895,7 +897,7 @@ function markNegativeZeros(value: DataValue, marker: string, count: { replaced: 
   if (Array.isArray(value)) return value.map((item) => markNegativeZeros(item, marker, count));
   if (isDataObject(value)) {
     const copy: DataObject = {};
-    for (const [key, child] of Object.entries(value)) setOwn(copy, key, markNegativeZeros(child, marker, count));
+    for (const key of dataObjectKeys(value)) setOwn(copy, key, markNegativeZeros(value[key], marker, count));
     return copy;
   }
   return value;
@@ -910,7 +912,7 @@ function writeTomlText(value: DataValue): string {
   // that is then replaced by -0.0. The count check proves no user string produced the marker.
   const marker = `negative-zero-${randomUUID()}`;
   const count = { replaced: 0 };
-  const marked = markNegativeZeros(value, marker, count);
+  const marked = withOrderedKeysView(markNegativeZeros(value, marker, count));
   const toml = stringifyToml(marked, { maxDepth: MAX_DATA_NESTING_DEPTH });
   if (count.replaced === 0) return toml;
   const pieces = toml.split(JSON.stringify(marker));
@@ -956,6 +958,13 @@ export async function convertData(
     // Decoding re-infers column types (INT32 -> INT64, FLOAT -> DOUBLE) and drops the codec, so a
     // re-encode would not reproduce the file; returning the input unchanged is not a conversion.
     throw new UnsupportedTargetError('Parquet to Parquet is not a supported conversion.');
+  }
+
+  if (tgt === 'parquet' && (src === 'csv' || src === 'tsv' || src === 'tab')) {
+    const parquetBuffer = delimitedToParquet(inputBuffer, src, options);
+    if (parquetBuffer !== null) {
+      return { buffer: parquetBuffer, mimeType: 'application/vnd.apache.parquet', filename: `${baseName}.parquet`, size: parquetBuffer.length };
+    }
   }
 
   if (src === 'parquet') {
@@ -1013,7 +1022,7 @@ async function convertStructured(
     return textResult(generateTableHtml(tableRecords(table), baseName), 'text/html', baseName, 'html');
   }
   if (tgt === 'pdf') {
-    const pdfBuffer = await renderDataToPdf(tableRecords(table), baseName, options);
+    const pdfBuffer = await renderDataToPdf(table, baseName);
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
   if (tgt === 'ods') {
@@ -1039,7 +1048,7 @@ function generateTableHtml(data: Record<string, unknown>[], title: string): stri
     return `<!DOCTYPE html><html><body><p>Empty dataset</p></body></html>`;
   }
 
-  const headers = Object.keys(data[0] || {});
+  const headers = dataObjectKeys(data[0] || {});
   const headerHtml = headers
     .map(
       (h) =>
@@ -1088,102 +1097,17 @@ function escapeHtml(str: string): string {
 }
 
 /**
- * Renders structured tabular dataset into a formatted PDF document with lavender palette
+ * Renders a table into a PDF that draws only its cells: the title is stored in the PDF metadata, every row is
+ * drawn (paginated, with the header row repeated), long cell text wraps, and a table wider than the page
+ * continues in further column groups.
  */
-async function renderDataToPdf(
-  data: Record<string, unknown>[],
-  title: string,
-  options: ConversionOptions
-): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS Data to PDF');
-  if (Array.isArray(data)) {
-    for (const item of data) {
-      if (item && typeof item === 'object') {
-        for (const [key, val] of Object.entries(item)) {
-          assertNoComplexScript(key, 'Pure-TS Data to PDF');
-          if (typeof val === 'string') {
-            assertNoComplexScript(val, 'Pure-TS Data to PDF');
-          }
-        }
-      }
-    }
+async function renderDataToPdf(table: DataTable, title: string): Promise<Buffer> {
+  if (table.fields.length === 0 || table.rows.length === 0) {
+    throw new ConversionFailedError('The dataset has no rows to draw in a PDF.');
   }
-
-  return new Promise<Buffer>((resolve, reject) => {
-    const doc = new PDFDocument({
-      size: 'A4',
-      layout: 'landscape',
-      margin: 30,
-    });
-
-    const chunks: Buffer[] = [];
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', (err) => reject(err));
-
-    // Title header
-    doc.fillColor('#5C6BC0').fontSize(16).text(title, 30, 30);
-    doc.fillColor('#8E95AF').fontSize(9).text(`Structured Data Export • ${new Date().toLocaleDateString()}`, 30, 50);
-
-    if (!Array.isArray(data) || data.length === 0) {
-      doc.fillColor('#4D536B').fontSize(11).text('No records found in dataset.', 30, 80);
-      doc.end();
-      return;
-    }
-
-    const headers = Object.keys(data[0] || {}).slice(0, 10);
-    if (headers.length === 0) {
-      doc.end();
-      return;
-    }
-
-    const startX = 30;
-    const startY = 75;
-    const pageWidth = doc.page.width - 60;
-    const colWidth = Math.floor(pageWidth / headers.length);
-    const rowHeight = 22;
-
-    let currY = startY;
-
-    // Header Background
-    doc.rect(startX, currY, pageWidth, rowHeight).fill('#F0F2FE');
-    doc.rect(startX, currY, pageWidth, rowHeight).strokeColor('#CCD2FC').lineWidth(1).stroke();
-
-    headers.forEach((h, idx) => {
-      doc.fillColor('#1F2340').fontSize(10).font('Helvetica-Bold');
-      doc.text(h, startX + idx * colWidth + 6, currY + 6, {
-        width: colWidth - 12,
-        ellipsis: true,
-      });
-    });
-
-    currY += rowHeight;
-
-    // Data rows
-    doc.font('Helvetica');
-    data.slice(0, 200).forEach((row, rIdx) => {
-      if (currY + rowHeight > doc.page.height - 40) {
-        doc.addPage({ size: 'A4', layout: 'landscape', margin: 30 });
-        currY = 30;
-      }
-
-      if (rIdx % 2 === 1) {
-        doc.rect(startX, currY, pageWidth, rowHeight).fill('#FAFAFE');
-      }
-      doc.rect(startX, currY, pageWidth, rowHeight).strokeColor('#E1E4EE').lineWidth(0.5).stroke();
-
-      headers.forEach((h, idx) => {
-        const val = String(row[h] ?? '');
-        doc.fillColor('#4D536B').fontSize(9);
-        doc.text(val, startX + idx * colWidth + 6, currY + 6, {
-          width: colWidth - 12,
-          ellipsis: true,
-        });
-      });
-
-      currY += rowHeight;
-    });
-
-    doc.end();
-  });
+  const strings = tableStrings(table);
+  return renderPdfTables(
+    [{ rows: strings.map((row) => row.map((text) => ({ text }))), headerRows: 1 }],
+    { title, orientation: 'landscape' }
+  );
 }

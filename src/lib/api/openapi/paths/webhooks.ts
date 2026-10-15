@@ -135,7 +135,7 @@ export const webhookPaths = {
     post: {
       summary: 'Rotate Webhook Signing Secret',
       description:
-        'Programmatically rotates a webhook signing secret with dual-signature grace period support. Requires "convert:write" scope.',
+        'Programmatically rotates the signing secret of one webhook target, an endpoint (`endpointId`) or an API key (`apiKeyId`), with dual-signature grace period support. Requires "convert:write" scope. A request that names neither target is rejected; there is no shared default secret.',
       operationId: 'rotateWebhookSecretV1',
       security: requireScope('convert:write'),
       requestBody: {
@@ -159,7 +159,7 @@ export const webhookPaths = {
             },
           },
         },
-        '400': createProblemResponse('Malformed JSON payload'),
+        '400': createProblemResponse('Malformed JSON payload, or neither `endpointId` nor `apiKeyId` was given.'),
         '401': createProblemResponse('Unauthorized'),
         '422': createProblemResponse('Unprocessable Entity (schema validation failure)'),
       },

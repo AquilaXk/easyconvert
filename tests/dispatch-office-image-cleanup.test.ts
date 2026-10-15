@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { InvalidPageRangeError } from '../src/lib/types';
-import { HAS_PDFTOPPM, HAS_SOFFICE } from './helpers/native-tools';
+import { skipWithoutTools } from './helpers/strict-skip';
 
 const SAMPLE_DOCX = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
@@ -35,7 +35,7 @@ afterAll(() => {
   rmSync(privateTmp, { recursive: true, force: true });
 });
 
-describe.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM)('office to image chain cleanup (needs soffice, pdftoppm)', () => {
+describe.skipIf(skipWithoutTools('soffice', 'pdftoppm'))('office to image chain cleanup (needs soffice, pdftoppm)', () => {
   it('leaves no intermediate PDF behind after a successful docx to png conversion', async () => {
     const result = await dispatchConversion(SAMPLE_DOCX, 'docx', 'png', {}, 'sample.docx');
     expect(result.buffer.subarray(0, PNG_MAGIC.length)).toEqual(PNG_MAGIC);

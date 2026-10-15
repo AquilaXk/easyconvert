@@ -10,6 +10,7 @@ import {
   JobResourceSchema,
 } from '../src/lib/api/contracts/schemas';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { validateOrProblem } from '../src/lib/api/contracts/validate';
 
 describe('API Contract SSOT & Schema Drift Safeguards', () => {
   it('(a) validates OpenAPI 3.1 specification document using third-party OpenAPI schema validator', async () => {
@@ -68,14 +69,17 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
     }
   });
 
-  it('marks all unread planned options with x-easyconvert-status: planned', () => {
-    const plannedKeys = ['aspectRatio', 'fastStart', 'duration'];
+  it('carries no planned marker on the media options that are now implemented', () => {
     const properties = ConversionOptionsSchema.properties as Record<string, any>;
 
-    for (const plannedKey of plannedKeys) {
-      expect(properties[plannedKey]).toBeDefined();
-      expect(properties[plannedKey]['x-easyconvert-status']).toBe('planned');
+    // aspectRatio, fastStart and duration were planned; the engines read them now, with ranges.
+    for (const key of ['aspectRatio', 'fastStart', 'duration']) {
+      expect(properties[key]).toBeDefined();
+      expect(properties[key]['x-easyconvert-status']).toBeUndefined();
     }
+    expect(properties.duration.exclusiveMinimum).toBe(0);
+    expect(properties.fastStart.type).toBe('boolean');
+    expect(properties.aspectRatio.oneOf).toHaveLength(2);
 
     // WP-40 promoted 'pages' to a fully active, supported conversion option
     expect(properties.pages).toBeDefined();
@@ -110,6 +114,18 @@ describe('API Contract SSOT & Schema Drift Safeguards', () => {
     expect(properties.packaging).toBeDefined();
     expect(properties.packaging.type).toBe('object');
     expect(properties.packaging['x-easyconvert-status']).toBeUndefined();
+  });
+
+  it('still rejects an option a schema marks planned with 422 option_not_supported', () => {
+    // No shipped option is planned now, so the keyword is exercised on a schema of its own.
+    const schema = { type: 'object', properties: { later: { type: 'string', 'x-easyconvert-status': 'planned' }, now: { type: 'string' } } };
+    expect(validateOrProblem(schema, { now: 'x' }).ok).toBe(true);
+    const rejected = validateOrProblem(schema, { later: 'x' });
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) throw new Error('schema accepted a planned option');
+    expect(rejected.problem.status).toBe(422);
+    expect(rejected.problem.type).toBe('https://api.easyconvert.io/problems/option-not-supported');
+    expect(rejected.problem.invalidParams?.map((p) => p.name)).toEqual(['later']);
   });
 
   it('enforces canonical $id URIs across all contract schemas', () => {

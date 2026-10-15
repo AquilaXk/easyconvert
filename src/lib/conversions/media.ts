@@ -1,3 +1,4 @@
+import { stageTimeoutMs } from './job-time';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -14,13 +15,29 @@ import {
 } from '../types';
 export { ConversionFailedError };
 import { executeSandboxedBinary, SandboxedProcessError } from '../security/process-sandbox';
-import { buildFfmpegArguments, buildHlsDashArguments, usesHardwareVideoEncoder } from './media-ffmpeg-args';
-import { encodeFlacStream } from './media-encoder';
+import {
+  buildFfmpegArguments,
+  buildHlsDashArguments,
+  buildTwoPassArguments,
+  DEFAULT_PACKAGING_LADDER,
+  isTwoPassRequested,
+  PackagingSource,
+  probePackagingSource,
+  usesHardwareVideoEncoder,
+} from './media-ffmpeg-args';
+import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
+import { describeAudioProcessing, measureLoudnessStage } from './media-audio-run';
+import { describeDroppedStreams } from './media-dropped-streams';
+import { type FfprobePath, probeInput, resolveFfprobeBinary } from './media-ffprobe';
+import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
+import { encodeFlacStreamAsync } from './flac-encoder';
 import {
   resampleInterleavedInt16,
   resamplePlanarFloat,
   type ResampleOptions,
 } from './audio-resampler';
+import { readMp4Layout } from './mp4-layout';
+import { readWavPcmInfo } from './wav-header';
 import {
   decodeAudioBuffer,
   decodeWav,
@@ -58,9 +75,11 @@ let resolvedFfmpegPath: string | null = null;
 export function getFfmpegPath(): string | null {
   if (resolvedFfmpegPath !== null) return resolvedFfmpegPath || null;
   const envPath = process.env.FFMPEG_PATH;
-  if (envPath && fs.existsSync(envPath)) {
-    resolvedFfmpegPath = envPath;
-    return envPath;
+  if (envPath) {
+    // An explicit override is authoritative, as in the worker's resolver: a path with no file behind it
+    // means the tool is not installed, not that another install should be searched for.
+    resolvedFfmpegPath = fs.existsSync(envPath) ? envPath : '';
+    return resolvedFfmpegPath || null;
   }
   const fixedLocations = [
     '/usr/bin/ffmpeg',
@@ -108,50 +127,58 @@ export function getFfprobePath(): string | null {
 }
 
 /**
- * Probes the duration of an audio/video file in seconds using ffprobe CLI.
- * Returns 0 if ffprobe is unavailable or if parsing fails.
+ * Duration of an audio/video file in seconds, which bounds how long a job may run: from the header of a WAVE file
+ * or a plain MP4 when it states one, otherwise from the ffprobe that belongs to `ffmpegBin` (or the one found on
+ * the host). That probe is remembered for the file, so the stream planner of the same conversion reads it again at
+ * no cost. Returns 0 if ffprobe is unavailable or if parsing fails.
  */
-export function probeMediaDuration(filePath: string, options?: ConversionOptions): number {
+export function probeMediaDuration(filePath: string, options?: ConversionOptions, ffmpegBin?: string | null): number {
   if (typeof options?.duration === 'number' && Number.isFinite(options.duration) && options.duration > 0) {
     return options.duration;
   }
-  const ffprobe = getFfprobePath();
-  if (ffprobe && fs.existsSync(filePath)) {
-    try {
-      const out = execFileSync(
-        ffprobe,
-        [
-          '-v',
-          'error',
-          '-show_entries',
-          'format=duration',
-          '-of',
-          'default=noprint_wrappers=1:nokey=1',
-          filePath,
-        ],
-        {
-          stdio: ['ignore', 'pipe', 'ignore'],
-          timeout: 3000,
-        }
-      )
-        .toString('utf-8')
-        .trim();
-      const parsed = Number.parseFloat(out);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        return parsed;
-      }
-    } catch {}
+  // The duration of a WAVE file with uncompressed samples is in its header; no prober process is needed.
+  const wav = readWavPcmInfo(filePath);
+  if (wav !== null) return wav.durationSeconds;
+  // So is the length of a plain MP4, in its movie header.
+  const header = readMp4Layout(filePath);
+  if (header?.durationSec !== undefined) return header.durationSec;
+  if (!fs.existsSync(filePath)) return 0;
+  try {
+    const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
+    if (!ffprobe) return 0;
+    return probeInput(filePath, ffprobe as FfprobePath).durationSec ?? 0;
+  } catch {
+    return 0;
   }
-  return 0;
 }
+
+/** Longest a media job may run when the caller names no tier ceiling. */
+export const DEFAULT_MEDIA_TIER_MAX_MS = 180_000;
 
 /**
  * Computes dynamic transcoding timeout: min(tierMax, 3 * durationSeconds + 60) in milliseconds.
  */
-export function computeMediaTimeoutMs(durationSeconds: number, tierMaxMs = 180000): number {
+export function computeMediaTimeoutMs(durationSeconds: number, tierMaxMs = DEFAULT_MEDIA_TIER_MAX_MS): number {
   const duration = Math.max(0, durationSeconds || 0);
   const baseTimeoutMs = Math.round((3 * duration + 60) * 1000);
   return Math.max(10000, Math.min(tierMaxMs, baseTimeoutMs));
+}
+
+/**
+ * Timeout of an adaptive-bitrate package: every rung is a full encode of the clip, so the duration is
+ * counted once per rung, under the same tier ceiling as a transcode.
+ */
+export function computePackagingTimeoutMs(
+  durationSeconds: number,
+  rungCount: number,
+  tierMaxMs = DEFAULT_MEDIA_TIER_MAX_MS
+): number {
+  return computeMediaTimeoutMs(packagingBudgetSeconds(durationSeconds, rungCount), tierMaxMs);
+}
+
+/** Rungs the packager will encode: the requested (or default) ladder cut to what the source can fill. */
+export function plannedRungCount(packaging: MediaPackagingOptions, source: PackagingSource): number {
+  return capLadderToSource(packaging.ladder ?? DEFAULT_PACKAGING_LADDER, source.geometry).length;
 }
 
 
@@ -212,7 +239,7 @@ export async function convertMedia(
   const isThumbnail = Boolean(options.thumbnail) || (['jpg', 'jpeg', 'png'].includes(tgt) && Boolean(options.thumbnail));
   if (isThumbnail) {
     if (!checkFfmpeg()) {
-      throw new ConversionFailedError('Native FFmpeg engine is required for thumbnail extraction.');
+      throw new EngineUnavailableError('ffmpeg', 'Native FFmpeg engine is required for thumbnail extraction.');
     }
     return await executeFfmpegThumbnails(inputBuffer, src, tgt, options, baseName);
   }
@@ -221,7 +248,7 @@ export async function convertMedia(
   const isSubtitleExtract = options.subtitles?.mode === 'extract' || ['srt', 'vtt', 'ass'].includes(tgt);
   if (isSubtitleExtract && options.subtitles?.mode === 'extract') {
     if (!checkFfmpeg()) {
-      throw new ConversionFailedError('Native FFmpeg engine is required for subtitle extraction.');
+      throw new EngineUnavailableError('ffmpeg', 'Native FFmpeg engine is required for subtitle extraction.');
     }
     return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
   }
@@ -230,7 +257,7 @@ export async function convertMedia(
   const isPackaging = Boolean(options.packaging) || tgt === 'hls' || tgt === 'dash';
   if (isPackaging) {
     if (!checkFfmpeg()) {
-      throw new ConversionFailedError('Native FFmpeg engine is required for ABR media packaging.');
+      throw new EngineUnavailableError('ffmpeg', 'Native FFmpeg engine is required for ABR media packaging.');
     }
     const resolvedPackaging: MediaPackagingOptions = options.packaging || {
       format: (tgt === 'dash' ? 'dash' : 'hls'),
@@ -241,8 +268,9 @@ export async function convertMedia(
   // If FFmpeg is explicitly requested, fail-closed if not available or if execution fails
   if (options.useFfmpeg) {
     if (!checkFfmpeg()) {
-      throw new ConversionFailedError(
-        `Native FFmpeg engine requested via options.useFfmpeg but FFmpeg is not available in execution environment.`
+      throw new EngineUnavailableError(
+        'ffmpeg',
+        'Native FFmpeg engine requested via options.useFfmpeg but FFmpeg is not available in execution environment.'
       );
     }
     return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
@@ -254,7 +282,7 @@ export async function convertMedia(
       return await executeFfmpegTranscode(inputBuffer, src, tgt, options, baseName);
     } catch (err) {
       // Invalid options are the caller's error (HTTP 400); keep their type.
-      if (err instanceof InvalidMediaOptionError) {
+      if (err instanceof InvalidMediaOptionError || err instanceof EngineUnavailableError || isTypedConversionError(err)) {
         throw err;
       }
       throw new ConversionFailedError(
@@ -280,7 +308,12 @@ export async function convertMedia(
   }
 
   // Pure TypeScript zero-dependency pipeline for the lossless targets (WAV, FLAC)
-  return processMediaPure(inputBuffer, src, tgt, options, baseName);
+  return await processMediaPure(inputBuffer, src, tgt, options, baseName);
+}
+
+/** A ConversionFailedError subclass (no video stream, too many streams, ...): a verdict on the input that keeps its type. */
+function isTypedConversionError(err: unknown): err is ConversionFailedError {
+  return err instanceof ConversionFailedError && err.constructor !== ConversionFailedError;
 }
 
 export const LOSSY_PSYCHOACOUSTIC_FORMATS = new Set([
@@ -355,35 +388,51 @@ async function executeFfmpegTranscode(
 
   try {
     const ffmpegBin = getFfmpegPath() || '/usr/bin/ffmpeg';
-    const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin);
-    const durationSeconds = probeMediaDuration(inputPath, options);
-    const timeoutMs = computeMediaTimeoutMs(durationSeconds, options.timeoutMs);
-    const runFfmpeg = (ffmpegArgs: string[]) =>
+    const durationSeconds = probeMediaDuration(inputPath, options, ffmpegBin);
+    const timeoutMs = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
+    const runFfmpegWith = (ffmpegArgs: string[], limitMs: number, cwd?: string) =>
       executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
-        timeoutMs,
+        timeoutMs: limitMs,
         maxBuffer: 50 * 1024 * 1024,
         networkIsolated: true,
         signal: options.signal,
+        ...(cwd ? { cwd } : {}),
       });
-    try {
-      await runFfmpeg(args);
-    } catch (err) {
-      // An advertised hardware encoder can still fail at runtime (missing device or driver).
-      // Retry exactly once in software; every other failure, and a failed retry, reports the original error.
-      // Any non-zero exit counts: driver and device messages differ across vendors and versions, so
-      // matching them would miss real hardware failures. The cost is a second run for an input that
-      // fails in software too, which then reports the original error. A cancelled job is never retried.
-      const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
-      if (!hardwareEncoderFailed || options.signal?.aborted) {
-        throw err;
-      }
-      const softwareArgs = buildFfmpegArguments(
-        inputPath, outputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin
-      );
+    const runFfmpeg = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeoutMs);
+    // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
+    const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
+
+    if (isTwoPassRequested(options)) {
+      // Pass logs live in a job directory of their own, removed whether the passes succeed or fail.
+      const passDir = fs.mkdtempSync(path.join(tmpDir, 'easyconvert_pass_'));
       try {
-        await runFfmpeg(softwareArgs);
-      } catch {
-        throw err;
+        const passes = buildTwoPassArguments(inputPath, outputPath, src, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
+        await runTwoPass(passes, twoPassBudgetMs(timeoutMs), (passArgs, limitMs) => runFfmpegWith(passArgs, limitMs, passDir));
+      } finally {
+        fs.rmSync(passDir, { recursive: true, force: true });
+      }
+    } else {
+      const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
+      try {
+        await runFfmpeg(args);
+      } catch (err) {
+        // An advertised hardware encoder can still fail at runtime (missing device or driver).
+        // Retry exactly once in software; every other failure, and a failed retry, reports the original error.
+        // Any non-zero exit counts: driver and device messages differ across vendors and versions, so
+        // matching them would miss real hardware failures. The cost is a second run for an input that
+        // fails in software too, which then reports the original error. A cancelled job is never retried.
+        const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
+        if (!hardwareEncoderFailed || options.signal?.aborted) {
+          throw err;
+        }
+        const softwareArgs = buildFfmpegArguments(
+          inputPath, outputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
+        );
+        try {
+          await runFfmpeg(softwareArgs);
+        } catch {
+          throw err;
+        }
       }
     }
 
@@ -396,6 +445,10 @@ async function executeFfmpegTranscode(
       mimeType: getMimeTypeForMedia(tgt),
       filename: `${baseName}.${tgt}`,
       size: outputBuffer.length,
+      metadata: {
+        ...describeAudioProcessing(options, ffmpegBin, loudnessStage),
+        ...describeDroppedStreams(inputPath, tgt, options, ffmpegBin),
+      },
     };
   } finally {
     if (fs.existsSync(inputPath)) fs.unlinkSync(inputPath);
@@ -486,7 +539,7 @@ export async function packageHlsDashMedia(
 
   const ffmpegBin = getFfmpegPath();
   if (!ffmpegBin) {
-    throw new ConversionFailedError('Native FFmpeg engine is required for ABR media packaging.');
+    throw new EngineUnavailableError('ffmpeg', 'Native FFmpeg engine is required for ABR media packaging.');
   }
 
   const tmpDir = os.tmpdir();
@@ -501,10 +554,11 @@ export async function packageHlsDashMedia(
   fs.mkdirSync(outputDir, { recursive: true });
 
   try {
-    const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin);
+    const source = probePackagingSource(inputPath, ffmpegBin);
+    const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
     await executeSandboxedBinary(ffmpegBin, args, {
       cwd: outputDir,
-      timeoutMs: options.timeoutMs || 120000,
+      timeoutMs: computePackagingTimeoutMs(source.geometry.durationSec, plannedRungCount(packaging, source), stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS)),
       maxBuffer: 100 * 1024 * 1024,
       networkIsolated: true,
       signal: options.signal,
@@ -568,13 +622,13 @@ export async function packageHlsDashMedia(
  * Parses RIFF WAV, decodes PCM audio, performs sample rate conversion,
  * applies volume normalization, generates valid audio frames and containers.
  */
-function processMediaPure(
+async function processMediaPure(
   inputBuffer: Buffer,
   src: string,
   tgt: string,
   options: ConversionOptions,
   baseName: string
-): ConversionResult {
+): Promise<ConversionResult> {
   // 1. Extract PCM audio samples from source using pure audio decoder stack
   const decoded = decodeAudioBuffer(inputBuffer, src);
   assertPureSourceIsFaithful(decoded);
@@ -643,7 +697,7 @@ function processMediaPure(
       break;
 
     case 'flac':
-      outputBuffer = encodeFlacContainer(pcmData, sampleRate, channels);
+      outputBuffer = await encodeFlacStreamAsync(pcmData, sampleRate, channels);
       break;
 
     default:
@@ -965,14 +1019,6 @@ export function createOggPage(
 
   return page;
 }
-
-/**
- * Encodes FLAC container with fLaC magic marker, STREAMINFO metadata, and RFC 9639 frames
- */
-function encodeFlacContainer(samples: Int16Array, sampleRate: number, channels: number): Buffer {
-  return encodeFlacStream(samples, sampleRate, channels);
-}
-
 
 /**
  * Bandlimited polyphase resampler (Kaiser-windowed sinc, cutoff scaled to the lower rate).

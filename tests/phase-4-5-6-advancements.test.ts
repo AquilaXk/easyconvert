@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   inCircle2D,
   lawsonEdgeFlipHealing2D,
@@ -28,6 +28,10 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
   beforeEach(() => {
     userStore.resetStore();
     redisKeyStore.resetStore();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   // ==========================================================================
@@ -455,6 +459,8 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
     });
 
     it('guard rejects requests with status 403 when client IP is not whitelisted on API key', async () => {
+      // The deployment declares its front proxy; the proxy-observed address is the identity.
+      vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
       const user = await userStore.createUser({
         email: 'ip-guard@example.com',
         name: 'IP Guard User',
@@ -606,6 +612,7 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
     });
 
     it('extractClientIp normalizes IPv6 bracket notations and trailing port numbers', () => {
+      vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
       // IPv6 with brackets and port
       const reqIpv6Port = new NextRequest('http://localhost/api/v1/convert', {
         headers: { 'x-forwarded-for': '[2001:db8::1]:8080' },
@@ -624,9 +631,9 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       });
       expect(extractClientIp(reqIpv4Port)).toBe('192.168.1.100');
 
-      // Fallback to 127.0.0.1 when no header is present
+      // No forwarding header and no known peer: unattributed, never a loopback default an allowlist could match
       const reqEmpty = new NextRequest('http://localhost/api/v1/convert');
-      expect(extractClientIp(reqEmpty)).toBe('127.0.0.1');
+      expect(extractClientIp(reqEmpty)).toBe('unattributed');
     });
 
     it('WebhookDispatcher cleans up AbortController timer even when fetch throws an error', async () => {

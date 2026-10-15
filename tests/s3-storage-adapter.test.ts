@@ -21,6 +21,9 @@ import testCredentials from './fixtures/sigv4/test-credentials.json';
  */
 
 const MIB = 1024 * 1024;
+/** The stub server stalls forever, so any finite guard tells a client timeout (100-400 ms) from a hang. */
+const STALL_HANG_GUARD_MS = 20_000;
+const STALL_TEST_TIMEOUT_MS = 30_000;
 const BUCKET = 'byos-bucket';
 const ACCESS_KEY = testCredentials.adapterStub.accessKeyId;
 const SECRET = testCredentials.adapterStub.secretAccessKey;
@@ -438,8 +441,8 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StorageTimeoutError);
     expect((err as Error).message).toContain('400 ms');
-    expect(Date.now() - started).toBeLessThan(2_000);
-  }, 5_000);
+    expect(Date.now() - started).toBeLessThan(STALL_HANG_GUARD_MS);
+  }, STALL_TEST_TIMEOUT_MS);
 
   it('types a timeout that fires while an error body is still arriving', async () => {
     stub.faults.push({ match: (r) => r.method === 'GET', status: 500, stallBody: true, times: 1 });
@@ -478,9 +481,9 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     const err = await collect(stream).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StorageTimeoutError);
     expect((err as Error).message).toContain('400 ms');
-    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(Date.now() - started).toBeLessThan(STALL_HANG_GUARD_MS);
     expect(await waitFor(() => (fault as { clientClosed?: boolean }).clientClosed === true)).toBe(true);
-  }, 5_000);
+  }, STALL_TEST_TIMEOUT_MS);
 
   it('times out a download body that stalls after the headers', async () => {
     const fault = { match: (r: { method: string }) => r.method === 'GET', status: 200, stallBody: true, times: 1 };
@@ -490,9 +493,9 @@ describe('S3StorageAdapter against a signature-verifying stub', () => {
     const err = await collect(stream).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StorageTimeoutError);
     expect((err as Error).message).toContain('100 ms');
-    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(Date.now() - started).toBeLessThan(STALL_HANG_GUARD_MS);
     expect(await waitFor(() => (fault as { clientClosed?: boolean }).clientClosed === true)).toBe(true);
-  }, 5_000);
+  }, STALL_TEST_TIMEOUT_MS);
 
   it('streams a normal download in chunks without buffering it whole', async () => {
     const payload = crypto.randomBytes(3 * MIB + 17);

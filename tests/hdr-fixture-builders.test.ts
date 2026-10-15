@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import { floatToHalfBits, halfBitsToFloat, writeOpenExr, writeRgbOpenExr } from './helpers/openexr-writer';
-import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR, probeExr, probeStill } from './helpers/ffmpeg-exr';
+import { decodeExrWithFfmpeg, probeExr, probeStill } from './helpers/ffmpeg-exr';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { parseUltraHdrStructure, readHdrgmAttribute } from './helpers/ultrahdr-builder';
 import {
   buildPatchExr,
@@ -14,6 +15,9 @@ import {
   ULTRA_HDR_METADATA,
   ultraHdrSdrPatch,
 } from './helpers/hdr-test-images';
+
+/** FFmpeg decodes the OpenEXR files these suites write; both tools are needed. */
+const SKIP_WITHOUT_FFMPEG_EXR = skipWithoutTools('ffmpeg', 'ffprobe');
 
 /**
  * Validates the independent EXR writer and Ultra HDR builder that feed the HDR conversion suites.
@@ -97,7 +101,7 @@ describe('writeOpenExr', () => {
     ).toThrow(/expected 4/);
   });
 
-  it.skipIf(!HAS_FFMPEG_EXR)('decodes in FFmpeg with the written dimensions, pixel format and half-quantised values', () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('decodes in FFmpeg with the written dimensions, pixel format and half-quantised values', () => {
     const rgb = new Float32Array([0.5, 0.25, 4, 1, 0, 0.1, 0.0, 0.2, 0.3, 8, 8, 8]);
     const file = writeRgbOpenExr(rgb, 2, 2, 'half');
     const info = probeExr(file);
@@ -109,13 +113,13 @@ describe('writeOpenExr', () => {
     expect(decoded.rgb[7]).toBeCloseTo(0.19995117, 7);
   });
 
-  it.skipIf(!HAS_FFMPEG_EXR)('decodes FLOAT channels bit-exactly in FFmpeg', () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('decodes FLOAT channels bit-exactly in FFmpeg', () => {
     const rgb = new Float32Array([0.5, 0.2, 4, 1, 0, 0.1, 1e-3, 0.2, 0.3, 8, 8, 1234.5]);
     const decoded = decodeExrWithFfmpeg(writeRgbOpenExr(rgb, 2, 2, 'float'));
     expect(Array.from(decoded.rgb)).toEqual(Array.from(rgb));
   });
 
-  it.skipIf(!HAS_FFMPEG_EXR)('decodes the patch image with every patch at its linear colour', () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('decodes the patch image with every patch at its linear colour', () => {
     const decoded = decodeExrWithFfmpeg(buildPatchExr('half'));
     expect(decoded.width).toBe(HDR_IMAGE_WIDTH);
     expect(decoded.height).toBe(HDR_IMAGE_HEIGHT);
@@ -184,7 +188,7 @@ describe('buildUltraHdrJpeg', () => {
     });
   });
 
-  it.skipIf(!HAS_FFMPEG_EXR)('is read by ffprobe as a JPEG whose first image has the patch dimensions', async () => {
+  it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('is read by ffprobe as a JPEG whose first image has the patch dimensions', async () => {
     const file = await buildPatchUltraHdr();
     expect(probeStill(file, 'jpg')).toMatchObject({ codec: 'mjpeg', width: HDR_IMAGE_WIDTH, height: HDR_IMAGE_HEIGHT });
   });

@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
 import { convertImage } from '../src/lib/conversions/image';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
-import { bombGif, bombJpeg, bombPng, bombTiff, bombWebp, withBrokenIhdrCrc } from './helpers/image-bombs';
+import { bombGif, bombJpeg, bombPng, bombTiff, bombWebp, withCorruptIhdr } from './helpers/image-bombs';
 import { ConversionFailedError } from '../src/lib/types';
 import { cbzWithImages, pptxWithPicture } from './helpers/embedded-image-docs';
 
@@ -83,9 +83,9 @@ describe('images embedded in documents are held to the input pixel limit', () =>
   });
 
   describe('a header the size check cannot read is refused, not waved through', () => {
-    const brokenBomb = (): Buffer => withBrokenIhdrCrc(bombPng(OVER_CAP_SIDE, OVER_CAP_SIDE));
+    const brokenBomb = (): Buffer => withCorruptIhdr(bombPng(OVER_CAP_SIDE, OVER_CAP_SIDE));
 
-    it('refuses a CBZ page whose PNG header has a bad checksum, which pdfkit would still decode', async () => {
+    it('refuses a CBZ page whose PNG header is corrupt, which pdfkit would still decode', async () => {
       const cbz = await cbzWithImages([{ name: '001.png', data: brokenBomb() }]);
       const run = convertFile(cbz, 'cbz', 'pdf', {}, 'comic.cbz');
       await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
@@ -105,10 +105,11 @@ describe('images embedded in documents are held to the input pixel limit', () =>
       await expect(run).rejects.toThrow(/header could not be decoded/);
     });
 
-    it('keeps converting a CBZ page and a PPTX picture in a format pdfkit never decodes', async () => {
+    it('refuses a CBZ page that is no image, but keeps converting a PPTX picture in a format pdfkit never decodes', async () => {
       const notAnImage = Buffer.from('EMF placeholder bytes, not a PNG or a JPEG');
-      const comic = await convertFile(await cbzWithImages([{ name: '001.bmp', data: notAnImage }]), 'cbz', 'pdf', {}, 'ok.cbz');
-      expect(comic.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      const comic = convertFile(await cbzWithImages([{ name: '001.bmp', data: notAnImage }]), 'cbz', 'pdf', {}, 'bad.cbz');
+      await expect(comic).rejects.toBeInstanceOf(ConversionFailedError);
+      await expect(comic).rejects.toThrow(/CBZ page "001\.bmp" cannot be decoded/);
       const deck = await convertFile(await pptxWithPicture('chart.emf', notAnImage), 'pptx', 'pdf', {}, 'ok.pptx');
       expect(deck.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
     });

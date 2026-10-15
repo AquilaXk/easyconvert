@@ -77,8 +77,71 @@ function distanceToSegment(pt: Pt, a: Pt, b: Pt): number {
   return distance(pt, { x: a.x + t * dx, y: a.y + t * dy });
 }
 
-/** Largest distance from any point of `from` to the polyline through `polyline`. */
+/** Segments per bounding box of the index below. */
+const INDEX_BLOCK = 16;
+/** A box counts as farther than `best` only beyond this margin, so rounding in a distance can never make the skip differ from the full scan. */
+const SKIP_MARGIN = 1e-9;
+
+/** Smallest distance from `pt` to the segments `first`..`last - 1` of the polyline (segment i joins points i - 1 and i); a NaN distance is ignored, `Infinity` when there is none. */
+function nearestInRange(pt: Pt, polyline: Pt[], first: number, last: number): number {
+  let best = Infinity;
+  for (let i = first; i < last; i++) {
+    const d = distanceToSegment(pt, polyline[i - 1], polyline[i]);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+/**
+ * Largest distance from any point of `from` to the polyline through `polyline`, where the distance of a point is the exact
+ * minimum over all segments (a NaN segment is ignored, no segment at all gives `Infinity`, as in the plain double loop kept
+ * below as the reference of the tests). The polyline is cut into blocks of INDEX_BLOCK segments whose bounding boxes are
+ * computed once; a block whose box is beyond the best distance found cannot hold a nearer segment and is not scanned. A
+ * point starts with the block that held the nearest segment of the point before it (the points follow a curve), so the best
+ * distance is tight from the start. A NaN coordinate makes its box NaN, and a NaN box is never skipped.
+ */
 function maxDistanceToPolyline(from: Pt[], polyline: Pt[]): number {
+  const segments = Math.max(0, polyline.length - 1);
+  const blocks = Math.ceil(segments / INDEX_BLOCK);
+  const minX = new Float64Array(blocks).fill(Infinity);
+  const maxX = new Float64Array(blocks).fill(-Infinity);
+  const minY = new Float64Array(blocks).fill(Infinity);
+  const maxY = new Float64Array(blocks).fill(-Infinity);
+  for (let i = 1; i <= segments; i++) {
+    const block = Math.floor((i - 1) / INDEX_BLOCK);
+    const a = polyline[i - 1];
+    const b = polyline[i];
+    minX[block] = Math.min(minX[block], a.x, b.x);
+    maxX[block] = Math.max(maxX[block], a.x, b.x);
+    minY[block] = Math.min(minY[block], a.y, b.y);
+    maxY[block] = Math.max(maxY[block], a.y, b.y);
+  }
+  const rangeOf = (block: number): [number, number] => [block * INDEX_BLOCK + 1, Math.min(segments, (block + 1) * INDEX_BLOCK) + 1];
+  let worst = 0;
+  let hint = 0;
+  for (const pt of from) {
+    let best = Infinity;
+    let nearest = hint;
+    if (hint < blocks) best = nearestInRange(pt, polyline, ...rangeOf(hint));
+    let reach = best * (1 + SKIP_MARGIN);
+    for (let block = 0; block < blocks; block++) {
+      if (block === hint) continue;
+      if (minX[block] - pt.x > reach || pt.x - maxX[block] > reach || minY[block] - pt.y > reach || pt.y - maxY[block] > reach) continue;
+      const d = nearestInRange(pt, polyline, ...rangeOf(block));
+      if (d < best) {
+        best = d;
+        nearest = block;
+        reach = best * (1 + SKIP_MARGIN);
+      }
+    }
+    hint = nearest;
+    if (best > worst) worst = best;
+  }
+  return worst;
+}
+
+/** The plain double loop: the reference the indexed search above must equal, bit for bit, on every input. */
+function maxDistanceToPolylineByScan(from: Pt[], polyline: Pt[]): number {
   let worst = 0;
   for (const pt of from) {
     let best = Infinity;
@@ -122,6 +185,70 @@ const LOOP_CURVE = {
   c2: { x: -200, y: 800 },
   p3: { x: 800, y: 0 },
 };
+
+/** A small seeded generator (mulberry32), so the random polylines of the tests are the same on every run. */
+function seededRandom(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe('the distance oracle', () => {
+  const same = (from: Pt[], polyline: Pt[]): void => {
+    expect(Object.is(maxDistanceToPolyline(from, polyline), maxDistanceToPolylineByScan(from, polyline))).toBe(true);
+  };
+  const SCALES = [1, 1000, 65535, 1e9, 1e15, 1e154, 1e-300];
+
+  it('returns exactly the distance of the plain double loop on random polylines of every scale, including 1e154 where a squared distance overflows', () => {
+    const random = seededRandom(12345);
+    const uniform = (count: number, scale: number): Pt[] => Array.from({ length: count }, () => ({ x: (random() - 0.5) * scale, y: (random() - 0.5) * scale }));
+    const walk = (count: number, scale: number): Pt[] => {
+      const out: Pt[] = [{ x: 0, y: 0 }];
+      for (let i = 1; i < count; i++) out.push({ x: out[i - 1].x + (random() - 0.5) * scale, y: out[i - 1].y + (random() - 0.5) * scale });
+      return out;
+    };
+    const grid = (count: number, scale: number): Pt[] => Array.from({ length: count }, () => ({ x: Math.floor(random() * 4) * scale, y: Math.floor(random() * 4) * scale }));
+    const offset = (count: number): Pt[] => Array.from({ length: count }, () => ({ x: 1e15 + Math.floor(random() * 8), y: -1e15 + Math.floor(random() * 8) }));
+    for (let round = 0; round < 600; round++) {
+      const scale = SCALES[round % SCALES.length];
+      const make = [uniform, walk, grid][round % 3];
+      same(make(1 + Math.floor(random() * 40), scale), make(2 + Math.floor(random() * 80), scale));
+      same(offset(10), offset(40));
+    }
+  });
+
+  it('returns exactly the distance of the plain double loop on the long curves the converter tests use', () => {
+    const wave = (count: number, phase: number): Pt[] => Array.from({ length: count }, (_, i) => ({ x: 65535 * Math.cos(3 * (i / (count - 1)) + phase), y: 65535 * Math.sin(5 * (i / (count - 1))) }));
+    same(wave(5000, 0), wave(2001, 1e-4));
+    same(wave(2001, 1e-4), wave(5000, 0));
+  });
+
+  it('ignores a NaN segment as the plain loop does and reports a NaN sample as infinitely far, so a corrupt chain cannot read as zero', () => {
+    const good = Array.from({ length: 50 }, (_, i) => ({ x: i * 3, y: (i % 5) * 2 }));
+    const nanHead = [{ x: NaN, y: NaN }, ...good];
+    same(good, nanHead);
+    same(nanHead, good);
+    expect(maxDistanceToPolyline(nanHead, good)).toBe(Infinity);
+    const nanSample = [...good.slice(0, 10), { x: NaN, y: 0 }];
+    same(nanSample, good);
+    expect(maxDistanceToPolyline(nanSample, good)).toBe(Infinity);
+    same(good, [{ x: 0, y: 0 }]);
+    same(good, []);
+    expect(maxDistanceToPolyline(good, [])).toBe(Infinity);
+  });
+
+  it('measures a chain whose first piece has a NaN control point as far from the curve', () => {
+    const { p0, c1, c2, p3 } = S_CURVE;
+    const chain = cubicToQuadraticBezier(p0, c1, c2, p3);
+    const corrupt = [{ ...chain[0], q: { x: NaN, y: NaN } }, ...chain.slice(1)];
+    expect(hausdorff(p0, c1, c2, p3, chain)).toBeLessThanOrEqual(DEFAULT_TOLERANCE + SAMPLING_SLACK);
+    expect(hausdorff(p0, c1, c2, p3, corrupt)).toBeGreaterThan(DEFAULT_TOLERANCE + SAMPLING_SLACK);
+  });
+});
 
 describe('cubicToQuadraticBezier', () => {
   it('measures a large deviation for the single-quadratic approximation of a quarter circle (oracle self-check)', () => {

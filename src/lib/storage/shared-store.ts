@@ -22,7 +22,8 @@ export class SharedObjectStore extends Map<string, StoredObject> {
     super();
     this.storageDir =
       process.env.EASYCONVERT_STORAGE_DIR || path.resolve(process.cwd(), '.easyconvert/storage');
-    this.ensureDirectory();
+    // The directory is created by the first write, so importing this module (which happens under
+    // an object-store driver too) never touches the disk.
   }
 
   private ensureDirectory(): void {

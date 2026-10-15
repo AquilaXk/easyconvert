@@ -160,11 +160,17 @@ export function bombGif(width: number, height: number): Buffer {
   ]);
 }
 
-const PNG_IHDR_CRC_OFFSET = 29;
+/** Offset of the IHDR compression-method byte: signature 8 + chunk length 4 + type 4 + width 4 + height 4 + depth 1 + colour type 1. */
+const PNG_IHDR_COMPRESSION_OFFSET = 26;
+/** The only compression method the PNG specification defines (ISO/IEC 15948 section 11.2.2). */
+const PNG_UNDEFINED_COMPRESSION_METHOD = 1;
 
-/** The same PNG with a wrong CRC on its IHDR chunk: libvips refuses the header, lenient PNG readers do not. */
-export function withBrokenIhdrCrc(png: Buffer): Buffer {
+/**
+ * The same PNG with an undefined compression method in its IHDR: libvips refuses the header, lenient PNG readers
+ * (pdfkit, pdf-lib) do not. A wrong IHDR checksum no longer does the job, libvips 8.18 reads such a header.
+ */
+export function withCorruptIhdr(png: Buffer): Buffer {
   const broken = Buffer.from(png);
-  broken[PNG_IHDR_CRC_OFFSET] ^= 0xff;
+  broken[PNG_IHDR_COMPRESSION_OFFSET] = PNG_UNDEFINED_COMPRESSION_METHOD;
   return broken;
 }

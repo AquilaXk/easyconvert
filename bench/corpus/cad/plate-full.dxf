@@ -1,0 +1,1040 @@
+  0
+SECTION
+  2
+HEADER
+  9
+$ACADVER
+  1
+AC1015
+  9
+$INSUNITS
+ 70
+4
+  9
+$EXTMIN
+ 10
+0
+ 20
+0
+ 30
+0
+  9
+$EXTMAX
+ 10
+200
+ 20
+120
+ 30
+0
+  0
+ENDSEC
+  0
+SECTION
+  2
+TABLES
+  0
+TABLE
+  2
+LTYPE
+ 70
+2
+  0
+LTYPE
+  2
+CONTINUOUS
+ 70
+0
+  3
+Solid line
+ 72
+65
+ 73
+0
+ 40
+0
+  0
+LTYPE
+  2
+CENTER
+ 70
+0
+  3
+Center ____ _ ____ _ ____
+ 72
+65
+ 73
+4
+ 40
+10
+ 49
+6
+ 49
+-1.5
+ 49
+1
+ 49
+-1.5
+  0
+ENDTAB
+  0
+TABLE
+  2
+LAYER
+ 70
+6
+  0
+LAYER
+  2
+0
+ 70
+0
+ 62
+7
+  6
+CONTINUOUS
+  0
+LAYER
+  2
+OUTLINE
+ 70
+0
+ 62
+7
+  6
+CONTINUOUS
+  0
+LAYER
+  2
+HOLES
+ 70
+0
+ 62
+1
+  6
+CONTINUOUS
+  0
+LAYER
+  2
+CENTER
+ 70
+0
+ 62
+5
+  6
+CENTER
+  0
+LAYER
+  2
+DETAIL
+ 70
+0
+ 62
+3
+  6
+CONTINUOUS
+  0
+LAYER
+  2
+ANNOTATION
+ 70
+0
+ 62
+2
+  6
+CONTINUOUS
+  0
+ENDTAB
+  0
+TABLE
+  2
+STYLE
+ 70
+1
+  0
+STYLE
+  2
+STANDARD
+ 70
+0
+ 40
+0
+ 41
+1
+ 50
+0
+ 71
+0
+ 42
+2.5
+  3
+txt
+  4
+
+  0
+ENDTAB
+  0
+ENDSEC
+  0
+SECTION
+  2
+BLOCKS
+  0
+BLOCK
+  8
+0
+  2
+BOLT
+ 70
+0
+ 10
+0
+ 20
+0
+ 30
+0
+  3
+BOLT
+  0
+CIRCLE
+  8
+DETAIL
+ 10
+0
+ 20
+0
+ 30
+0
+ 40
+3
+  0
+LWPOLYLINE
+  8
+DETAIL
+ 90
+6
+ 70
+1
+ 10
+5
+ 20
+0
+ 10
+2.5
+ 20
+4.33
+ 10
+-2.5
+ 20
+4.33
+ 10
+-5
+ 20
+0
+ 10
+-2.5
+ 20
+-4.33
+ 10
+2.5
+ 20
+-4.33
+  0
+ENDBLK
+  8
+0
+  0
+ENDSEC
+  0
+SECTION
+  2
+ENTITIES
+  0
+LINE
+  5
+100
+100
+AcDbEntity
+  8
+OUTLINE
+100
+AcDbLine
+ 10
+15
+ 20
+0
+ 30
+0
+ 11
+185
+ 21
+0
+ 31
+0
+  0
+ARC
+  5
+101
+100
+AcDbEntity
+  8
+OUTLINE
+100
+AcDbCircle
+ 10
+185
+ 20
+15
+ 30
+0
+ 40
+15
+100
+AcDbArc
+ 50
+270
+ 51
+360
+  0
+LINE
+  5
+102
+100
+AcDbEntity
+  8
+OUTLINE
+100
+AcDbLine
+ 10
+200
+ 20
+15
+ 30
+0
+ 11
+200
+ 21
+105
+ 31
+0
+  0
+ARC
+  5
+103
+100
+AcDbEntity
+  8
+OUTLINE
+100
+AcDbCircle
+ 10
+185
+ 20
+105
+ 30
+0
+ 40
+15
+100
+AcDbArc
+ 50
+0
+ 51
+90
+  0
+LINE
+  5
+104
+100
+AcDbEntity
+  8
+OUTLINE
+100
+AcDbLine
+ 10
+185
+ 20
+120
+ 30
+0
+ 11
+15
+ 21
+120
+ 31
+0
+  0
+ARC
+  5
+105
+100
+AcDbEntity
+  8
+OUTLINE
+100
+AcDbCircle
+ 10
+15
+ 20
+105
+ 30
+0
+ 40
+15
+100
+AcDbArc
+ 50
+90
+ 51
+180
+  0
+LINE
+  5
+106
+100
+AcDbEntity
+  8
+OUTLINE
+100
+AcDbLine
+ 10
+0
+ 20
+105
+ 30
+0
+ 11
+0
+ 21
+15
+ 31
+0
+  0
+ARC
+  5
+107
+100
+AcDbEntity
+  8
+OUTLINE
+100
+AcDbCircle
+ 10
+15
+ 20
+15
+ 30
+0
+ 40
+15
+100
+AcDbArc
+ 50
+180
+ 51
+270
+  0
+CIRCLE
+  5
+108
+100
+AcDbEntity
+  8
+HOLES
+100
+AcDbCircle
+ 10
+30
+ 20
+30
+ 30
+0
+ 40
+6
+  0
+CIRCLE
+  5
+109
+100
+AcDbEntity
+  8
+HOLES
+100
+AcDbCircle
+ 10
+170
+ 20
+30
+ 30
+0
+ 40
+6
+  0
+CIRCLE
+  5
+10A
+100
+AcDbEntity
+  8
+HOLES
+100
+AcDbCircle
+ 10
+30
+ 20
+90
+ 30
+0
+ 40
+6
+  0
+CIRCLE
+  5
+10B
+100
+AcDbEntity
+  8
+HOLES
+100
+AcDbCircle
+ 10
+170
+ 20
+90
+ 30
+0
+ 40
+6
+  0
+LINE
+  5
+10C
+100
+AcDbEntity
+  8
+HOLES
+100
+AcDbLine
+ 10
+76
+ 20
+54
+ 30
+0
+ 11
+124
+ 21
+54
+ 31
+0
+  0
+ARC
+  5
+10D
+100
+AcDbEntity
+  8
+HOLES
+100
+AcDbCircle
+ 10
+124
+ 20
+60
+ 30
+0
+ 40
+6
+100
+AcDbArc
+ 50
+270
+ 51
+90
+  0
+LINE
+  5
+10E
+100
+AcDbEntity
+  8
+HOLES
+100
+AcDbLine
+ 10
+124
+ 20
+66
+ 30
+0
+ 11
+76
+ 21
+66
+ 31
+0
+  0
+ARC
+  5
+10F
+100
+AcDbEntity
+  8
+HOLES
+100
+AcDbCircle
+ 10
+76
+ 20
+60
+ 30
+0
+ 40
+6
+100
+AcDbArc
+ 50
+90
+ 51
+270
+  0
+LINE
+  5
+110
+100
+AcDbEntity
+  8
+CENTER
+100
+AcDbLine
+ 10
+100
+ 20
+5
+ 30
+0
+ 11
+100
+ 21
+115
+ 31
+0
+  0
+LINE
+  5
+111
+100
+AcDbEntity
+  8
+CENTER
+100
+AcDbLine
+ 10
+5
+ 20
+60
+ 30
+0
+ 11
+195
+ 21
+60
+ 31
+0
+  0
+LWPOLYLINE
+  5
+112
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbPolyline
+ 90
+5
+ 70
+0
+ 10
+20
+ 20
+102
+ 10
+30
+ 20
+112
+ 10
+40
+ 20
+102
+ 10
+50
+ 20
+112
+ 10
+60
+ 20
+102
+  0
+LWPOLYLINE
+  5
+113
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbPolyline
+ 90
+4
+ 70
+1
+ 10
+140
+ 20
+20
+ 10
+180
+ 20
+20
+ 10
+180
+ 20
+45
+ 10
+140
+ 20
+45
+  0
+ELLIPSE
+  5
+114
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbEllipse
+ 10
+100
+ 20
+60
+ 30
+0
+ 11
+38
+ 21
+0
+ 31
+0
+210
+0
+220
+0
+230
+1
+ 40
+0.5
+ 41
+0
+ 42
+6.283185307179586
+  0
+POLYLINE
+  5
+115
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDb2dPolyline
+ 66
+1
+ 10
+0
+ 20
+0
+ 30
+0
+ 70
+1
+  0
+VERTEX
+  5
+116
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbVertex
+100
+AcDb2dVertex
+ 10
+20
+ 20
+72
+ 30
+0
+  0
+VERTEX
+  5
+117
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbVertex
+100
+AcDb2dVertex
+ 10
+46
+ 20
+72
+ 30
+0
+  0
+VERTEX
+  5
+118
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbVertex
+100
+AcDb2dVertex
+ 10
+58
+ 20
+84
+ 30
+0
+  0
+VERTEX
+  5
+119
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbVertex
+100
+AcDb2dVertex
+ 10
+46
+ 20
+96
+ 30
+0
+  0
+VERTEX
+  5
+11A
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbVertex
+100
+AcDb2dVertex
+ 10
+20
+ 20
+96
+ 30
+0
+  0
+SEQEND
+  5
+11B
+  8
+DETAIL
+  0
+SPLINE
+  5
+11C
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbSpline
+210
+0
+220
+0
+230
+1
+ 70
+8
+ 71
+3
+ 72
+10
+ 73
+6
+ 74
+0
+ 40
+0
+ 40
+0
+ 40
+0
+ 40
+0
+ 40
+0.3333333333333333
+ 40
+0.6666666666666666
+ 40
+1
+ 40
+1
+ 40
+1
+ 40
+1
+ 10
+20
+ 20
+70
+ 30
+0
+ 10
+35
+ 20
+95
+ 30
+0
+ 10
+55
+ 20
+40
+ 30
+0
+ 10
+75
+ 20
+75
+ 30
+0
+ 10
+90
+ 20
+30
+ 30
+0
+ 10
+110
+ 20
+35
+ 30
+0
+  0
+INSERT
+  5
+11D
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbBlockReference
+  2
+BOLT
+ 10
+50
+ 20
+60
+ 30
+0
+ 41
+1
+ 42
+1
+ 43
+1
+ 50
+0
+  0
+INSERT
+  5
+11E
+100
+AcDbEntity
+  8
+DETAIL
+100
+AcDbBlockReference
+  2
+BOLT
+ 10
+150
+ 20
+60
+ 30
+0
+ 41
+1.5
+ 42
+1.5
+ 43
+1.5
+ 50
+30
+  0
+TEXT
+  5
+11F
+100
+AcDbEntity
+  8
+ANNOTATION
+100
+AcDbText
+ 10
+105
+ 20
+108
+ 30
+0
+ 40
+5
+  1
+PLATE A-100
+100
+AcDbText
+  0
+MTEXT
+  5
+120
+100
+AcDbEntity
+  8
+ANNOTATION
+100
+AcDbMText
+ 10
+105
+ 20
+98
+ 30
+0
+ 40
+4
+ 41
+104
+ 71
+1
+  1
+NOTES ALL DIMENSIONS IN MM
+  0
+ENDSEC
+  0
+EOF

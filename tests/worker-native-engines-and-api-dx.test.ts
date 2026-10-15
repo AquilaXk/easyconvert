@@ -11,6 +11,7 @@ import {
   assertNotSpoofedFileVfs,
 } from '../src/worker/engines';
 import { assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
+import { withMissingBinary } from './helpers/native-tools';
 import { FileExtensionSpoofError } from '../src/lib/registry';
 import { convertArchive } from '../src/lib/conversions/archive';
 import { POST as convertRouteHandler } from '../src/app/api/v1/convert/route';
@@ -20,9 +21,15 @@ import { userStore } from '../src/lib/auth/user-store';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { buildRateLimitHeaders } from '../src/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '../src/lib/api/problem-details';
+import { expectRateLimitHeaders, requiredHeader } from './helpers/ratelimit-headers';
+import { skipUnless } from './helpers/strict-skip';
+
+/** Daily quotas of the account tiers (hand-written from the pricing table: free 25, pro 500, enterprise 10,000). */
+const FREE_DAILY_LIMIT = 25;
+const PRO_DAILY_LIMIT = 500;
 
 let userCounter = 0;
-async function createUniqueTestUser(tier: 'free' | 'starter' | 'pro' | 'enterprise' = 'starter') {
+async function createUniqueTestUser(tier: 'free' | 'pro' | 'enterprise' = 'free') {
   userCounter++;
   const uniqueId = `${Date.now()}_${userCounter}_${Math.random().toString(36).slice(2, 7)}`;
   return userStore.sanitizeUser(
@@ -36,16 +43,16 @@ async function createUniqueTestUser(tier: 'free' | 'starter' | 'pro' | 'enterpri
 
 describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
   describe('1. Dockerfile.worker Engine Completeness', () => {
-    it('verifies tesseract-ocr, tesseract-ocr-kor, tesseract-ocr-eng, and p7zip-rar are installed', () => {
+    it('verifies tesseract-ocr, tesseract-ocr-kor, tesseract-ocr-eng, and the pinned 7-Zip build are installed', () => {
       const dockerfilePath = path.join(process.cwd(), 'Dockerfile.worker');
       expect(fs.existsSync(dockerfilePath)).toBe(true);
 
       const dockerfileContent = fs.readFileSync(dockerfilePath, 'utf-8');
-      expect(dockerfileContent).toContain('p7zip-rar');
+      // 7-Zip is the pinned upstream build (see worker-seven-zip-packaging.test.ts), not apt's p7zip.
+      expect(dockerfileContent).toContain('COPY --from=sevenzip /seven-zip/7zzs /usr/local/bin/7zz');
       expect(dockerfileContent).toContain('tesseract-ocr');
       expect(dockerfileContent).toContain('tesseract-ocr-eng');
       expect(dockerfileContent).toContain('tesseract-ocr-kor');
-      expect(dockerfileContent).toContain('p7zip-full');
       expect(dockerfileContent).toContain('poppler-utils');
       expect(dockerfileContent).toContain('libreoffice-writer');
     });
@@ -67,16 +74,21 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(typeof diagnostics.tesseract).toBe('boolean');
     });
 
-    it('gracefully handles missing 7z binary with fail-closed or pure TS fallback', async () => {
-      const sampleZip = Buffer.from('PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00');
-      const res = await convertWithNative7z(sampleZip, 'zip', 'tar', {}, 'archive.zip');
-      if (res !== null) {
-        expect(res.engineUsed).toBe('native-7z');
-        expect(res.filename).toBe('archive.tar');
-        expect(res.size).toBeGreaterThan(0);
-      } else {
-        expect(res).toBeNull();
-      }
+    const EMPTY_ZIP = Buffer.from('PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00');
+
+    it('reports a missing 7z binary as null so the caller can choose another engine', async () => {
+      const res = await withMissingBinary('P7ZIP_PATH', () =>
+        convertWithNative7z(EMPTY_ZIP, 'zip', 'tar', {}, 'archive.zip')
+      );
+
+      expect(res).toBeNull();
+    });
+
+    it.skipIf(skipUnless('7z (p7zip)', Boolean(probeNativeEngines().p7zip)))('throws a typed error for an archive without entries instead of returning null', async () => {
+      await expect(convertWithNative7z(EMPTY_ZIP, 'zip', 'tar', {}, 'archive.zip')).rejects.toMatchObject({
+        name: 'ConversionFailedError',
+        message: 'The archive contains no files to convert.',
+      });
     });
 
     it('gracefully handles missing Poppler binary with fail-closed return', async () => {
@@ -202,7 +214,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     });
 
     it('injects IETF RateLimit headers on successful synchronous conversion', async () => {
-      const user = await createUniqueTestUser('starter');
+      const user = await createUniqueTestUser('free');
       const { secretKey } = await keyStore.generateApiKey(user.id, 'RateLimit Key');
 
       const csvContent = 'id,name\n1,Alice\n2,Bob';
@@ -222,12 +234,8 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       const res = await convertRouteHandler(req);
       expect(res.status).toBe(200);
 
-      // Verify RateLimit headers presence
-      expect(res.headers.get('RateLimit-Limit')).toBeDefined();
-      expect(res.headers.get('RateLimit-Remaining')).toBeDefined();
-      expect(res.headers.get('RateLimit-Reset')).toBeDefined();
-      expect(res.headers.get('RateLimit-Policy')).toContain('w=86400');
-      expect(res.headers.get('X-RateLimit-Limit')).toBeDefined();
+      // The headers report the quota as it stood when the request was admitted: no unit had been spent yet.
+      expectRateLimitHeaders(res.headers, { limit: FREE_DAILY_LIMIT, remaining: FREE_DAILY_LIMIT, tier: 'free' });
 
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -259,7 +267,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       expect(res.status).toBe(202);
       expect(res.headers.get('Preference-Applied')).toBe('respond-async');
       expect(res.headers.get('Location')).toMatch(/^\/api\/v1\/jobs\/.+/);
-      expect(res.headers.get('RateLimit-Limit')).toBeDefined();
+      expect(requiredHeader(res.headers, 'RateLimit-Limit')).toBe(String(PRO_DAILY_LIMIT));
 
       const body = await res.json();
       expect(body.success).toBe(true);
@@ -333,7 +341,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
     });
 
     it('formats 400 validation errors using RFC 9457 with RateLimit headers', async () => {
-      const user = await createUniqueTestUser('starter');
+      const user = await createUniqueTestUser('free');
       const { secretKey } = await keyStore.generateApiKey(user.id, 'Bad Req Key');
 
       const form = new FormData();
@@ -351,7 +359,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       const res = await convertRouteHandler(req);
       expect(res.status).toBe(400);
       expect(res.headers.get('content-type')).toContain('application/problem+json');
-      expect(res.headers.get('RateLimit-Limit')).toBeDefined();
+      expect(requiredHeader(res.headers, 'RateLimit-Limit')).toBe(String(FREE_DAILY_LIMIT));
 
       const body = await res.json();
       expect(body.type).toBe('https://api.easyconvert.io/problems/bad-request');

@@ -958,15 +958,99 @@ function stripEventHandlerAttributes(src: string): string {
   return parts.join('');
 }
 
+const IMAGE_ELEMENT = 'image';
+const HREF_ATTRIBUTE = 'href';
+const DATA_SVG_MIME_PREFIX = 'data:image/svg+xml';
+const MAX_EMBEDDED_SVG_DEPTH = 2;
+const MAX_EMBEDDED_SVG_COUNT = 32;
+const MAX_TOTAL_EMBEDDED_SVG_CHARS = MAX_SVG_INPUT_CHARS;
+const BASE64_PAYLOAD_PATTERN = /^[A-Za-z0-9+/]+=*$/;
+
+interface EmbeddedSvgBudget {
+  count: number;
+  totalChars: number;
+  /** Canonical `data:image/svg+xml;base64,...` attribute values already sanitized in this run. */
+  sanitizedValues: Set<string>;
+}
+
 function attributeLocalName(attributeName: string): string {
   return localNameOf(attributeName.replace(/^["'=]+/, ''));
 }
 
+/** Decodes the body of a `data:image/svg+xml` URI (base64 or URL-encoded text), or returns null when malformed. */
+function decodeEmbeddedSvgPayload(rawValue: string): string | null {
+  const decodedValue = decodeHtmlEntities(rawValue).trim();
+  const comma = decodedValue.indexOf(',');
+  if (comma === -1) return null;
+  const header = decodedValue.slice(0, comma).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
+  if (!header.startsWith(DATA_SVG_MIME_PREFIX)) return null;
+  const suffix = header.slice(DATA_SVG_MIME_PREFIX.length);
+  if (suffix !== '' && !suffix.startsWith(';')) return null;
+
+  const rawPayload = decodedValue.slice(comma + 1);
+  const params = suffix.split(';').filter(Boolean);
+  if (params.includes('base64')) {
+    const cleanBase64 = rawPayload.replace(/[\s\x00-\x1f]+/g, '');
+    if (
+      cleanBase64.length === 0 ||
+      cleanBase64.length > MAX_SVG_INPUT_CHARS * 2 ||
+      !BASE64_PAYLOAD_PATTERN.test(cleanBase64)
+    ) {
+      return null;
+    }
+    return Buffer.from(cleanBase64, 'base64').toString('utf-8');
+  }
+  try {
+    return rawPayload.includes('%') ? decodeURIComponent(rawPayload) : rawPayload;
+  } catch {
+    return null;
+  }
+}
+
+/** Sanitizes an embedded `data:image/svg+xml` URI on an `<image>` element, or neutralizes it to `href="#"`. */
+function sanitizeEmbeddedSvgHref(attribute: TagAttribute, depth: number, budget: EmbeddedSvgBudget): string | null {
+  if (budget.sanitizedValues.has(attribute.value)) return null;
+  if (depth >= MAX_EMBEDDED_SVG_DEPTH || budget.count >= MAX_EMBEDDED_SVG_COUNT) return 'href="#"';
+  const innerSvg = decodeEmbeddedSvgPayload(attribute.value);
+  if (
+    innerSvg === null ||
+    innerSvg.length === 0 ||
+    innerSvg.length > MAX_SVG_INPUT_CHARS ||
+    budget.totalChars + innerSvg.length > MAX_TOTAL_EMBEDDED_SVG_CHARS ||
+    !isSvg(innerSvg)
+  ) {
+    return 'href="#"';
+  }
+  budget.count += 1;
+  budget.totalChars += innerSvg.length;
+  const cleanInner = sanitizeSvgStringAtDepth(innerSvg, depth + 1, budget);
+  if (!isSvg(cleanInner)) return 'href="#"';
+  const encodedValue = `data:image/svg+xml;base64,${Buffer.from(cleanInner, 'utf-8').toString('base64')}`;
+  budget.sanitizedValues.add(encodedValue);
+  const canonicalName = /^xlink:href$/i.test(attribute.name) ? attribute.name : HREF_ATTRIBUTE;
+  return `${canonicalName}="${encodedValue}"`;
+}
+
 /** Replacement for an attribute whose value is a dangerous URI, or null when it is left alone. */
-function neutralizedAttribute(attribute: TagAttribute): string | null {
+function neutralizedAttribute(
+  attribute: TagAttribute,
+  tagName: string,
+  depth: number,
+  originalText: string,
+  budget: EmbeddedSvgBudget
+): string | null {
   const local = attributeLocalName(attribute.name);
   if (LINK_ATTRIBUTES.has(local)) {
-    return isDangerousUri(normalizeUriText(attribute.value)) ? 'href="#"' : null;
+    const normalizedUri = normalizeUriText(attribute.value);
+    if (
+      local === HREF_ATTRIBUTE &&
+      localNameOf(tagName) === IMAGE_ELEMENT &&
+      normalizedUri.startsWith(DATA_SVG_MIME_PREFIX)
+    ) {
+      const rewritten = sanitizeEmbeddedSvgHref(attribute, depth, budget);
+      return rewritten === null || rewritten === originalText ? null : rewritten;
+    }
+    return isDangerousUri(normalizedUri) ? 'href="#"' : null;
   }
   if (ANIMATION_VALUE_ATTRIBUTES.has(local)) {
     return hasDangerousUriItem(attribute.value) ? `${local}="#"` : null;
@@ -987,7 +1071,7 @@ function neutralizedAttribute(attribute: TagAttribute): string | null {
  * Rewrites href/src, animation value, presentation and style attributes, but only where the tokenizer finds a real attribute
  * inside a real tag; text, comments and attribute values that merely mention them are left untouched.
  */
-function rewriteAttributes(src: string): string {
+function rewriteAttributes(src: string, depth: number, budget: EmbeddedSvgBudget): string {
   const parts: string[] = [];
   let copied = 0;
   let search = 0;
@@ -1006,7 +1090,7 @@ function rewriteAttributes(src: string): string {
     }
     const tag = readTag(src, lt);
     for (const attribute of tag.attributes) {
-      const replacement = neutralizedAttribute(attribute);
+      const replacement = neutralizedAttribute(attribute, tag.name, depth, src.slice(attribute.start, attribute.end), budget);
       if (replacement === null) continue;
       parts.push(src.slice(copied, attribute.start), replacement);
       copied = attribute.end;
@@ -1047,20 +1131,35 @@ export function decodeHtmlEntities(str: string): string {
 const SVG_SNIFF_BYTES = 256 * 1024;
 const SVG_SNIFF_CHARS = SVG_SNIFF_BYTES;
 
+/** Bytes decoded first to see whether a payload can be markup at all; a longer run of whitespace falls through to the full sniff. */
+const SVG_HEAD_BYTES = 64;
+
+/** True when a payload starts with the signature of a raster format: such a payload is never SVG text. */
+function startsWithRasterSignature(input: Buffer): boolean {
+  if (input.length >= 3 && input[0] === 0xff && input[1] === 0xd8 && input[2] === 0xff) return true; // JPG
+  if (input.length >= 8 && input[0] === 0x89 && input[1] === 0x50 && input[2] === 0x4e && input[3] === 0x47) return true; // PNG
+  return input.length >= 4 && input[0] === 0x47 && input[1] === 0x49 && input[2] === 0x46 && input[3] === 0x38; // GIF
+}
+
+/**
+ * False when the first character after the whitespace is not `<`. The root element follows only an XML declaration,
+ * comments and a doctype, which all start with `<`, so a payload that opens with anything else is not SVG; the head
+ * is enough to see it, where the whole sniff window decoded as text cost milliseconds for a binary image.
+ */
+function mayBeMarkup(input: Buffer): boolean {
+  const head = input.toString('utf-8', 0, SVG_HEAD_BYTES).trim();
+  return head === '' || head.startsWith('<');
+}
+
 /**
  * Checks whether the given buffer or text represents an SVG document.
  */
 export function isSvg(input: string | Buffer): boolean {
   if (!input) return false;
+  // Raster payloads are turned away from their signature and their first character, before any of them is decoded as text.
+  if (typeof input !== 'string' && (startsWithRasterSignature(input) || !mayBeMarkup(input))) return false;
   // The root element follows only an XML declaration, comments and a doctype, so the start decides.
   const str = typeof input === 'string' ? input.slice(0, SVG_SNIFF_CHARS) : input.toString('utf-8', 0, SVG_SNIFF_BYTES);
-
-  // Guard against binary files
-  if (typeof input !== 'string') {
-    if (input.length >= 3 && input[0] === 0xff && input[1] === 0xd8 && input[2] === 0xff) return false; // JPG
-    if (input.length >= 8 && input[0] === 0x89 && input[1] === 0x50 && input[2] === 0x4e && input[3] === 0x47) return false; // PNG
-    if (input.length >= 4 && input[0] === 0x47 && input[1] === 0x49 && input[2] === 0x46 && input[3] === 0x38) return false; // GIF
-  }
 
   const trimmed = str.trim();
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) return false; // JSON
@@ -1075,22 +1174,19 @@ export function isSvg(input: string | Buffer): boolean {
 /**
  * One full sanitation pass: dangerous markup removal followed by URI and style rewrites.
  */
-function sanitizePass(input: string): string {
+function sanitizePass(input: string, depth: number, budget: EmbeddedSvgBudget): string {
   // 1-3. Strip DOCTYPE/ENTITY declarations, executable and embedding elements, and on* event handlers.
   let result = stripDangerousMarkupPass(input);
 
   // 4-6. Rewrite href-like, animation value and style attributes of real tags against dangerous URIs, SSRF and
   // data exfiltration, then clean <style> element bodies.
-  result = rewriteAttributes(result);
+  result = rewriteAttributes(result, depth, budget);
   result = sanitizeStyleElements(result);
 
   return result;
 }
 
-/**
- * Sanitizes an SVG string by stripping dangerous tags, attributes, and script execution vectors.
- */
-export function sanitizeSvgString(svg: string): string {
+function sanitizeSvgStringAtDepth(svg: string, depth: number, budget: EmbeddedSvgBudget): string {
   if (!svg || typeof svg !== 'string') return '';
 
   // Every pass strips dangerous markup and then rewrites URIs and styles. A rewrite can join fragments into
@@ -1099,7 +1195,7 @@ export function sanitizeSvgString(svg: string): string {
   let result = svg;
   let stable = false;
   for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
-    const next = sanitizePass(result);
+    const next = sanitizePass(result, depth, budget);
     if (next === result) {
       stable = true;
       break;
@@ -1110,6 +1206,14 @@ export function sanitizeSvgString(svg: string): string {
     throw new SvgSanitizationError('SVG contains nested markup that cannot be sanitized safely.');
   }
   return result.trim();
+}
+
+/**
+ * Sanitizes an SVG string by stripping dangerous tags, attributes, and script execution vectors.
+ */
+export function sanitizeSvgString(svg: string): string {
+  const budget: EmbeddedSvgBudget = { count: 0, totalChars: 0, sanitizedValues: new Set() };
+  return sanitizeSvgStringAtDepth(svg, 0, budget);
 }
 
 /**

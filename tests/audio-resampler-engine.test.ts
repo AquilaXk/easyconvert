@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   AudioResampleError,
   MAX_RESAMPLE_CHANNELS,
@@ -18,6 +18,10 @@ import {
   synthesizeTones,
   toDb,
 } from './helpers/audio-spectrum';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * Engine behaviour of the polyphase resampler: design formulas, exact rational stepping,

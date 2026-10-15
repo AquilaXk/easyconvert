@@ -15,7 +15,8 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { EngineUnavailableError } from '../src/lib/types';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
-import { HAS_PDFTOPPM, HAS_PDFTOTEXT, HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
+import { withMissingBinary } from './helpers/native-tools';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 
 /**
@@ -198,7 +199,7 @@ describe('entry points fail with 503 when the native engine a pair needs is miss
   });
 });
 
-describe.skipIf(!HAS_SOFFICE || !HAS_PDFTOTEXT)('entry points convert through LibreOffice when it is installed (needs soffice, pdftotext)', () => {
+describe.skipIf(skipWithoutTools('soffice', 'pdftotext'))('entry points convert through LibreOffice when it is installed (needs soffice, pdftotext)', () => {
   it('POST /api/v1/convert (sync) recalculates the sheet natively into a PDF', async () => {
     const req = multipart(
       'http://localhost/api/v1/convert?raw=true',
@@ -247,7 +248,7 @@ describe('pairs only a native engine converts', () => {
     await expectEngineUnavailableProblem(res);
   });
 
-  describe.skipIf(!HAS_SOFFICE || !HAS_PDFTOPPM)('with LibreOffice and Poppler installed (needs soffice, pdftoppm)', () => {
+  describe.skipIf(skipWithoutTools('soffice', 'pdftoppm'))('with LibreOffice and Poppler installed (needs soffice, pdftoppm)', () => {
     it('POST /api/v1/convert (sync) renders docx->png', async () => {
       const res = await v1ConvertPost(
         multipart('http://localhost/api/v1/convert?raw=true', { file: docxBlob(), targetFormat: 'png' }, 'sample.docx')
@@ -294,7 +295,7 @@ describe('entry points answer typed input errors from the dispatcher with 400', 
     await expectBadRequestProblem(res, /^File spoofing rejected for file "fake\.docx": /);
   });
 
-  it.skipIf(!HAS_PDFTOPPM)('POST /api/v1/convert (sync) rejects an out-of-range page selection with a 400 problem (needs pdftoppm)', async () => {
+  it.skipIf(skipWithoutTools('pdftoppm'))('POST /api/v1/convert (sync) rejects an out-of-range page selection with a 400 problem (needs pdftoppm)', async () => {
     const pdf = new Blob([new Uint8Array(SAMPLE_PDF)], { type: 'application/pdf' });
     const res = await v1ConvertPost(
       multipart('http://localhost/api/v1/convert', { file: pdf, targetFormat: 'png', options: JSON.stringify({ pages: '50-60' }) }, 'sample.pdf')

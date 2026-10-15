@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer)\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/",
+  "families": {
+    "image": { "bench": "image" },
+    "video": { "bench": "video" },
+    "audio": { "bench": "audio" },
+    "ocr": { "bench": "ocr" },
+    "document": { "bench": "document" },
+    "compression": { "bench": "compression" },
+    "pdf-ops": { "bench": "pdf-ops" },
+    "data": { "bench": "data" },
+    "ebook": { "bench": "ebook" },
+    "font": { "bench": "font" },
+    "cad": { "bench": "cad" },
+    "raw": { "bench": "raw" },
+    "vector": { "bench": "vector" },
+    "hdr-image": { "bench": null }
+  },
+  "rules": [
+    {
+      "families": ["*"],
+      "match": "^bench/(family-map\\.json|ab-noise-samples\\.json|(baseline-from-report|gate|parity|parity-gaps|speed-history|speed-parity|ab-speed|ab-config|ab-host|ab-child|ab-child-core|ab-protocol|product|judge|speed-config|speed-timing|speed-rows|report-schema|simulate-speed-gate|replay-speed-reports|config|run|context|rows|report|tools|stats|measure|ref-cache|harness-hash|scope|convert|errors|refresh-speed|families/index)\\.ts)$|^bench/corpus/(?!remote-manifest\\.json$|PROVENANCE\\.md$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$"
+    },
+    {
+      "families": ["document", "pdf-ops", "ebook", "font", "cad", "raw", "vector", "data"],
+      "match": "^bench/public-support\\.ts$"
+    },
+    {
+      "families": ["*"],
+      "rows": "baseline",
+      "match": "^bench/baseline\\.json$"
+    },
+    {
+      "families": ["*"],
+      "rows": "gaps",
+      "match": "^bench/parity-gaps\\.json$"
+    },
+    {
+      "families": ["image"],
+      "match": "^bench/families/image\\.ts$|^bench/png-metadata\\.ts$"
+    },
+    {
+      "families": ["video"],
+      "match": "^bench/families/video\\.ts$"
+    },
+    {
+      "families": ["audio"],
+      "match": "^bench/families/audio\\.ts$"
+    },
+    {
+      "families": ["image", "video", "audio", "raw"],
+      "match": "^bench/bd-rate\\.ts$"
+    },
+    {
+      "families": ["image", "video", "audio", "compression", "document", "pdf-ops", "ebook", "font", "cad", "raw", "vector", "data"],
+      "match": "^bench/(corpora|class-rows)\\.ts$|^bench/corpus/(remote-manifest\\.json|PROVENANCE\\.md)$"
+    },
+    {
+      "families": ["cad"],
+      "match": "^bench/families/cad\\.ts$|^bench/cad-ink\\.ts$"
+    },
+    {
+      "families": ["vector"],
+      "match": "^bench/families/vector[^/]*\\.ts$|^bench/metafile-check\\.ts$"
+    },
+    {
+      "families": ["cad", "vector"],
+      "match": "^bench/vector-raster\\.ts$"
+    },
+    {
+      "families": ["raw"],
+      "match": "^bench/families/raw\\.ts$"
+    },
+    {
+      "families": ["ocr"],
+      "match": "^bench/families/ocr\\.ts$"
+    },
+    {
+      "families": ["document"],
+      "match": "^bench/families/document[^/]*\\.ts$"
+    },
+    {
+      "families": ["document", "ebook"],
+      "match": "^bench/structure-(extract|metrics)\\.ts$"
+    },
+    {
+      "families": ["ocr", "document", "ebook", "pdf-ops"],
+      "match": "^bench/text-metrics\\.ts$"
+    },
+    {
+      "families": ["compression"],
+      "match": "^bench/families/compression[^/]*\\.ts$"
+    },
+    {
+      "families": ["data"],
+      "match": "^bench/families/data\\.ts$"
+    },
+    {
+      "families": ["ebook"],
+      "match": "^bench/families/ebook\\.ts$"
+    },
+    {
+      "families": ["font"],
+      "match": "^bench/families/font\\.ts$"
+    },
+    {
+      "families": ["data", "font", "cad", "document"],
+      "match": "^bench/reference-server\\.(ts|py)$"
+    },
+    {
+      "families": ["document"],
+      "match": "^bench/office-words\\.ts$"
+    },
+    {
+      "families": ["pdf-ops"],
+      "match": "^bench/families/pdf-ops[^/]*\\.ts$|^bench/pdf-(stamp|ink|photo)\\.ts$"
+    },
+    {
+      "families": ["*"],
+      "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard|conversion-warnings)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output)\\.ts$"
+    },
+    {
+      "families": ["*"],
+      "match": "^src/lib/queue/graph/node-executor\\.ts$"
+    },
+    {
+      "families": ["pdf-ops", "image"],
+      "match": "^src/lib/conversions/optimizers\\.ts$"
+    },
+    {
+      "families": ["pdf-ops"],
+      "match": "^src/lib/jobs/artifact-helpers\\.ts$"
+    },
+    {
+      "families": ["*"],
+      "match": "^src/lib/security/process-sandbox\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/"
+    },
+    {
+      "families": ["image", "vector"],
+      "match": "^src/lib/security/svg-sanitizer\\.ts$"
+    },
+    {
+      "families": ["compression"],
+      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|lzma-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$"
+    },
+    {
+      "families": ["image", "raw"],
+      "match": "^src/lib/conversions/(avif-cli|avif-colour|bitmap-pipeline|blue-noise-mask|bmp|ccitt-g4|cicp|color-quantizer|colour-primaries|gif-writer|icc-(reader|srgb)|ico|image[^/]*|kd-tree|png-photo-bands|png16|pnm|psd-writer|quantize|sdr-linear|still-cicp)\\.ts$"
+    },
+    {
+      "families": ["hdr-image"],
+      "match": "^src/lib/conversions/(float16|hdr-image|hdr-tonemap|openexr-[^/]*)\\.ts$"
+    },
+    {
+      "families": ["raw"],
+      "match": "^src/lib/conversions/raw-[^/]*\\.ts$|^src/worker/raw-[^/]*\\.ts$"
+    },
+    {
+      "families": ["audio"],
+      "match": "^src/lib/conversions/(audio-[^/]*|flac-encoder|media-audio-[^/]*|wav-header)\\.ts$|^src/lib/conversions/wasm/(resampler-mac|wasm-assembler)\\.ts$"
+    },
+    {
+      "families": ["video"],
+      "match": "^src/lib/conversions/(media|media-encoder|media-decoder|media-two-pass|media-hdr|mp4-layout)\\.ts$"
+    },
+    {
+      "families": ["video", "audio"],
+      "match": "^src/lib/conversions/media-(dropped-streams|encoder-threads|ffmpeg-args|ffprobe|packaging|stream-plan)\\.ts$"
+    },
+    {
+      "families": ["ocr"],
+      "match": "^src/lib/conversions/(ocr[^/]*\\.ts|ocr-calibration/.*|dla-engine\\.ts|pdf-page-render\\.ts)$"
+    },
+    {
+      "families": ["document", "ebook", "data"],
+      "match": "^src/lib/conversions/(office|office/spreadsheet-limits)\\.ts$"
+    },
+    {
+      "families": ["document", "ebook"],
+      "match": "^src/lib/conversions/(epub-reader|document-model/epub)\\.ts$"
+    },
+    {
+      "families": ["ebook"],
+      "match": "^src/lib/conversions/(office/(mobi-reader|pml-reader)|fb2-model|mobi-model)\\.ts$"
+    },
+    {
+      "families": ["document"],
+      "match": "^src/lib/conversions/(document|document-language|document-targets|docx-[^/]*|epub-reader|office|markdown|markdown-pdf|html-[^/]*|package-access|zip-entry-reader|source-model|text-input|text-wrap|css-references|ctl|symbol-font-map|public-address|hwp[^/]*|cfbf-writer|xml-tree|native-engine-pairs|ooxml-variants|output-check)\\.ts$|^src/lib/conversions/(office|document-model)/|^src/worker/libreoffice-pool\\.ts$"
+    },
+    {
+      "families": ["document"],
+      "match": "^src/lib/conversions/(pdf-text-[^/]*|pdf-winansi-tounicode|pdf-office|pdf-blocks|pdf-fonts)\\.ts$|^src/lib/conversions/(pdf-layout|text-shaping)/"
+    },
+    {
+      "families": ["pdf-ops"],
+      "match": "^src/lib/conversions/(pdf-[^/]*|pdfjs-node-compat|page-range)\\.ts$|^src/lib/conversions/pdf-postprocess/|^src/worker/pdf-decrypt\\.ts$"
+    },
+    {
+      "families": ["vector"],
+      "match": "^src/lib/conversions/(svg-[^/]*|vector-metafile|metafile-draw-plan|openxps|xps-text-layout|odg)\\.ts$"
+    },
+    {
+      "families": ["cad"],
+      "match": "^src/lib/conversions/(cad-[^/]*|vector-cad|vector-dxf)\\.ts$"
+    },
+    {
+      "families": ["font"],
+      "match": "^src/lib/conversions/font[^/]*\\.ts$"
+    },
+    {
+      "families": ["data"],
+      "match": "^src/lib/conversions/(data[^/]*|delimited-[^/]*|parquet[^/]*|xml-wellformed)\\.ts$"
+    }
+  ]
+}

@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { RawDecodeError } from '../src/lib/types';
 import { decodeCamfBytes, readX3fDirectory } from '../src/lib/conversions/raw-x3f';
+import { skipWithoutRawSamples } from './helpers/strict-skip';
 
 const SAMPLE = path.join(__dirname, 'fixtures', 'raw', '.cache', 'x3f.x3f');
-const ENABLED = existsSync(SAMPLE);
+const SKIP_WITHOUT_SAMPLE = skipWithoutRawSamples('x3f');
 const TIMEOUT_MS = 120_000;
 const CAMF_HEADER_BYTES = 28;
 const CAMF_TYPE_XOR = 2;
@@ -51,7 +52,7 @@ function withCalibrationValue(name: string, value: number): Buffer {
   return file;
 }
 
-describe.skipIf(!ENABLED)('X3F calibration values are range-checked', () => {
+describe.skipIf(SKIP_WITHOUT_SAMPLE)('X3F calibration values are range-checked', () => {
   it('decodes the sample re-encoded as a type-2 CAMF with its original ISO', async () => {
     const result = await dispatchConversion(withCalibrationValue('CaptureISO', 400), 'x3f', 'png', {}, 's.x3f');
     expect(result.buffer.subarray(1, 4).toString('latin1')).toBe('PNG');

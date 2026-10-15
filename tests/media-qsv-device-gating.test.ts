@@ -103,6 +103,7 @@ afterEach(() => {
 });
 
 describe('QSV capability probe', () => {
+  // skip-ok: platform capability: the stand-in probes are POSIX shell scripts, and CI runs Linux.
   const noPosixShell = process.platform === 'win32';
 
   it.skipIf(noPosixShell)('does not enable qsv when the host has no DRM render node', () => {

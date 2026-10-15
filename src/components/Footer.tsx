@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import BrandLogo from './BrandLogo';
 import { Globe, ChevronDown, Moon, Sun, ShieldCheck } from 'lucide-react';
 
@@ -167,14 +168,14 @@ export default function Footer() {
         {/* Secondary Navigation Row */}
         <div className="pt-10 mt-10 border-t border-neutral-border dark:border-[#1E2640]">
           <nav className="flex flex-wrap items-center gap-x-7 gap-y-3 text-[13.5px]">
-            <a href="/about" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">About Us</a>
-            <a href="/#how-it-works" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">How It Works</a>
-            <a href="/#format-catalog" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Formats</a>
-            <a href="/privacy" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Privacy</a>
-            <a href="/terms" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Terms</a>
-            <a href="/security" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Security</a>
-            <a href="/contact" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Contact</a>
-            <a href="/status" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Status</a>
+            <Link href="/about" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">About Us</Link>
+            <Link href="/#how-it-works" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">How It Works</Link>
+            <Link href="/#format-catalog" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Formats</Link>
+            <Link href="/privacy" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Privacy</Link>
+            <Link href="/terms" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Terms</Link>
+            <Link href="/security" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Security</Link>
+            <Link href="/contact" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Contact</Link>
+            <Link href="/status" className="text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors duration-150 font-medium">Status</Link>
           </nav>
         </div>
 
@@ -182,9 +183,9 @@ export default function Footer() {
         <div className="pt-8 mt-6 border-t border-neutral-border/80 dark:border-[#1E2640]/80 flex flex-col md:flex-row items-center justify-between gap-5">
           {/* Brand & Identity */}
           <div className="flex items-center gap-3">
-            <a href="/" className="flex items-center gap-2.5 group">
+            <Link href="/" className="flex items-center gap-2.5 group">
               <BrandLogo size="sm" textClassName="text-brand-950 dark:text-white" />
-            </a>
+            </Link>
           </div>
 
           {/* Privacy Badge & Copyright */}

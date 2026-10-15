@@ -1,12 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { storageProvider } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
 interface RouteContext {
-  params: Promise<{ id: string }> | { id: string };
+  params: Promise<{ id: string }>;
+}
+
+function internalError(instanceUri: string) {
+  return createProblemDetailsResponse(500, 'Storage operation error', instanceUri, 'Internal Server Error');
 }
 
 export async function DELETE(req: NextRequest, context: RouteContext) {
@@ -36,8 +41,22 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     );
   }
 
+  if (!storageProvider.getUploadSession) {
+    return createProblemDetailsResponse(
+      501,
+      'The configured storage provider does not support upload sessions.',
+      instanceUri,
+      'Not Implemented'
+    );
+  }
+
   // 2. Session and ownership verification (fail-closed against cross-user enumeration)
-  const session = s3Storage.getUploadSession(uploadId);
+  let session;
+  try {
+    session = await storageProvider.getUploadSession(uploadId);
+  } catch (err: unknown) {
+    return storageErrorResponse(err, instanceUri) ?? internalError(instanceUri);
+  }
   if (!session) {
     return createProblemDetailsResponse(
       404,
@@ -47,7 +66,8 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     );
   }
 
-  if (session.ownerUserId && session.ownerUserId !== auth.user.id) {
+  // A session without an owner belongs to server-side code, never to a caller.
+  if (session.ownerUserId !== auth.user.id) {
     return createProblemDetailsResponse(
       404,
       `Upload session "${uploadId}" not found.`,
@@ -57,7 +77,12 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   }
 
   // 3. Abort multipart session and purge temporary files
-  const aborted = s3Storage.abortMultipartUpload(uploadId);
+  let aborted: boolean;
+  try {
+    aborted = await storageProvider.abortMultipartUpload(uploadId);
+  } catch (err: unknown) {
+    return storageErrorResponse(err, instanceUri) ?? internalError(instanceUri);
+  }
   if (!aborted) {
     return createProblemDetailsResponse(
       404,

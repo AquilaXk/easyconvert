@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { convertFile, BitWriter, encodePureMp3, checkFfmpeg } from '../src/lib/conversions/index';
+import { describe, it, expect, vi } from 'vitest';
+import { convertFile, BitWriter, checkFfmpeg } from '../src/lib/conversions/index';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import {
   bestSnrDb,
@@ -9,8 +9,20 @@ import {
   wavFromSamples,
 } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { assertDecodedMedia, LOSSY_AUDIO_MIN_SNR_DB } from './oracles/product/media-oracle';
+import { ffmpegDecodedAudioBytes } from './helpers/ffmpeg-media-fixtures';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 const MIN_ROUNDTRIP_SNR_DB = 25;
+const SOURCE_RATE = 44100;
+const SOURCE_CHANNELS = 2;
+/** Priming plus padding of a lossy encoder: two 1152-sample MP3 frames, the widest of the codecs used here. */
+const LOSSY_PADDING_SAMPLES = 2304;
+const RAMP_VOLUME_PERCENT = 50;
+const VOLUME_DOWN_RATE = 22050;
 
 describe('Media Conversion Engine (Audio & Video)', () => {
   // Helper to generate a genuine RIFF WAV buffer
@@ -118,31 +130,48 @@ describe('Media Conversion Engine (Audio & Video)', () => {
     );
   });
 
-  it('converts audio to WebM container with EBML header when FFmpeg available or fails closed', async () => {
-    const wav = createTestWavBuffer(44100, 2, 0.5);
-    if (checkFfmpeg()) {
-      const result = await convertFile(wav, 'wav', 'webm', {}, 'clip.wav');
-      expect(result.mimeType).toBe('video/webm');
-      expect(result.filename).toBe('clip.webm');
-      // WebM EBML marker [0x1A, 0x45, 0xDF, 0xA3]
-      expect(result.buffer[0]).toBe(0x1a);
-      expect(result.buffer[1]).toBe(0x45);
-      expect(result.buffer[2]).toBe(0xdf);
-      expect(result.buffer[3]).toBe(0xa3);
-    } else {
-      await expect(convertFile(wav, 'wav', 'webm', {}, 'clip.wav')).rejects.toThrow(
-        ConversionFailedError
-      );
-    }
+  oracleTest('converts audio to a WebM container whose Opus track decodes back to the source tone', ['ffmpeg', 'ffprobe'], async () => {
+    const source = sineSamples(SOURCE_RATE, SOURCE_CHANNELS, 1);
+    const wav = wavFromSamples(source, SOURCE_RATE, SOURCE_CHANNELS);
+    const result = await convertFile(wav, 'wav', 'webm', {}, 'clip.wav');
+    expect(result.mimeType).toBe('video/webm');
+    expect(result.filename).toBe('clip.webm');
+    // WebM EBML marker [0x1A, 0x45, 0xDF, 0xA3]
+    expect(Array.from(result.buffer.subarray(0, 4))).toEqual([0x1a, 0x45, 0xdf, 0xa3]);
+    // Decoded at the 48 kHz the Opus coder works at, the track holds the source second plus codec padding.
+    assertDecodedMedia(result.buffer, 'webm', 'audio', {
+      streams: { audio: 1, video: 0 },
+      audio: {
+        sampleRate: SOURCE_RATE,
+        channels: SOURCE_CHANNELS,
+        samplesPerChannel: SOURCE_RATE,
+        toleranceSamples: LOSSY_PADDING_SAMPLES,
+        reference: source,
+        minSnrDb: LOSSY_AUDIO_MIN_SNR_DB.opus,
+      },
+    });
   });
 
-  oracleTest('converts an MP4 container to MP3 through the native engine', ['ffmpeg', 'ffprobe'], async () => {
-    const wav = wavFromSamples(sineSamples(44100, 2, 1), 44100, 2);
+  oracleTest('converts an MP4 container to MP3 that decodes back to the source tone', ['ffmpeg', 'ffprobe'], async () => {
+    const source = sineSamples(SOURCE_RATE, SOURCE_CHANNELS, 1);
+    const wav = wavFromSamples(source, SOURCE_RATE, SOURCE_CHANNELS);
     const mp4Result = await convertFile(wav, 'wav', 'mp4', {}, 'movie.wav');
     const mp3Result = await convertFile(mp4Result.buffer, 'mp4', 'mp3', {}, 'movie.mp4');
 
     expect(mp3Result.mimeType).toBe('audio/mpeg');
     expect(probeStream(mp3Result.buffer, 'mp3', 'a').codec_name).toBe('mp3');
+    // Two lossy generations (AAC, then MP3): the tone survives, and nothing is truncated.
+    assertDecodedMedia(mp3Result.buffer, 'mp3', 'audio', {
+      streams: { audio: 1 },
+      audio: {
+        sampleRate: SOURCE_RATE,
+        channels: SOURCE_CHANNELS,
+        samplesPerChannel: SOURCE_RATE,
+        toleranceSamples: 2 * LOSSY_PADDING_SAMPLES,
+        reference: source,
+        minSnrDb: LOSSY_AUDIO_MIN_SNR_DB.mp3,
+      },
+    });
   });
 
   it('applies volume and sample rate parameters correctly', async () => {
@@ -165,6 +194,33 @@ describe('Media Conversion Engine (Audio & Video)', () => {
     expect(channels).toBe(1);
   });
 
+  oracleTest('applies volume, sample rate and channel parameters to the decoded samples', ['ffmpeg', 'ffprobe'], async () => {
+    const wav = createTestWavBuffer(SOURCE_RATE, SOURCE_CHANNELS, 0.5);
+    const result = await convertFile(
+      wav,
+      'wav',
+      'wav',
+      { audioVolume: RAMP_VOLUME_PERCENT, audioSampleRate: VOLUME_DOWN_RATE, audioChannels: 'mono' },
+      'scaled.wav'
+    );
+
+    expect(result.mimeType).toBe('audio/wav');
+    expect(result.filename).toBe('scaled.wav');
+    expect(result.buffer.readUInt32LE(24)).toBe(VOLUME_DOWN_RATE);
+    expect(result.buffer.readUInt16LE(22)).toBe(1);
+    // Decoded: half a second of mono at the lower rate, at half the source amplitude (the tone peaks at 16000).
+    const decoded = assertDecodedMedia(result.buffer, 'wav', 'audio', {
+      streams: { audio: 1 },
+      audio: { sampleRate: VOLUME_DOWN_RATE, channels: 1, samplesPerChannel: VOLUME_DOWN_RATE / 2, toleranceSamples: 1 },
+    });
+    let peak = 0;
+    for (let i = 0; i < decoded.audio!.pcm.length; i += 2) peak = Math.max(peak, Math.abs(decoded.audio!.pcm.readInt16LE(i)));
+    const expectedPeak = (16000 * RAMP_VOLUME_PERCENT) / 100;
+    expect(peak).toBeGreaterThan(expectedPeak * 0.95);
+    expect(peak).toBeLessThan(expectedPeak * 1.05);
+    expect(ffmpegDecodedAudioBytes(result.buffer, 'wav')).toBe((VOLUME_DOWN_RATE / 2) * 2);
+  });
+
   describe('Pure TypeScript Media Encoders (Zero-Dependency)', () => {
     it('encodes Exp-Golomb and bitfields with BitWriter', () => {
       const writer = new BitWriter();
@@ -177,24 +233,6 @@ describe('Media Conversion Engine (Audio & Video)', () => {
       expect(buf).toHaveLength(2);
       expect(buf[0]).toBe(0b10111000);
       expect(buf[1]).toBe(0b10001100);
-    });
-
-    it('encodes PCM samples to a pure MP3 stream with an ID3v2 header', () => {
-      const samples = new Int16Array(44100 * 0.1); // 0.1s
-      for (let i = 0; i < samples.length; i++) {
-        samples[i] = Math.round(Math.sin((i / 44100) * 440 * 2 * Math.PI) * 16000);
-      }
-
-      const mp3 = encodePureMp3(samples, 44100, 1, '128k', 'Test Pure');
-      expect(mp3.toString('ascii', 0, 3)).toBe('ID3');
-      expect(mp3.length).toBeGreaterThan(100);
-    });
-
-    it('handles empty PCM audio sample buffers gracefully without NaN corruption', () => {
-      const emptySamples = new Int16Array(0);
-      const mp3 = encodePureMp3(emptySamples, 44100, 2, '192k', 'Silent Empty');
-      expect(mp3.toString('ascii', 0, 3)).toBe('ID3');
-      expect(mp3.length).toBeGreaterThan(100);
     });
   });
 });

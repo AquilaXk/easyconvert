@@ -25,6 +25,7 @@ import {
   injectBitFlip,
 } from './index';
 import { oracleTest } from '../../helpers/oracle-test';
+import { sineSamples, wavFromSamples } from '../../helpers/media-lossy-oracle';
 
 describe('Phase 6: Product-Level Differential Oracles & Mutation Sensitivity Gate (#349)', () => {
   // =========================================================================
@@ -201,26 +202,16 @@ describe('Phase 6: Product-Level Differential Oracles & Mutation Sensitivity Gat
     });
 
     oracleTest('inspects media format and streams using ffprobe CLI', ['ffprobe'], async () => {
-      // Test is executed only when ffprobe binary is present in environment
-      // (Skips automatically if missing without silent passes)
-      const mockWavHeader = Buffer.alloc(44);
-      mockWavHeader.write('RIFF', 0);
-      mockWavHeader.writeUInt32LE(36, 4);
-      mockWavHeader.write('WAVE', 8);
-      mockWavHeader.write('fmt ', 12);
-      mockWavHeader.writeUInt32LE(16, 16);
-      mockWavHeader.writeUInt16LE(1, 20); // PCM
-      mockWavHeader.writeUInt16LE(2, 22); // Stereo
-      mockWavHeader.writeUInt32LE(44100, 24);
-      mockWavHeader.writeUInt32LE(176400, 28);
-      mockWavHeader.writeUInt16LE(4, 32);
-      mockWavHeader.writeUInt16LE(16, 34);
-      mockWavHeader.write('data', 36);
-      mockWavHeader.writeUInt32LE(0, 40);
+      // One second of a 440 Hz stereo tone authored here, so the probed facts are known in advance.
+      const wav = wavFromSamples(sineSamples(44100, 2, 1), 44100, 2);
 
-      const probe = await inspectMediaWithFfprobe(mockWavHeader, 'wav');
-      expect(probe.format.format_name).toContain('wav');
-      expect(probe.audioStreams.length).toBeGreaterThanOrEqual(1);
+      const probe = await inspectMediaWithFfprobe(wav, 'wav');
+      expect(probe.format.format_name).toBe('wav');
+      expect(probe.audioStreams).toHaveLength(1);
+      expect(probe.audioStreams[0].codec_name).toBe('pcm_s16le');
+      expect(Number(probe.audioStreams[0].sample_rate)).toBe(44100);
+      expect(probe.audioStreams[0].channels).toBe(2);
+      expect(probe.format.duration).toBeCloseTo(1, 3);
     });
   });
 

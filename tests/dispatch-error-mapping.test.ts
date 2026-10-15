@@ -5,17 +5,18 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { ConversionFailedError, EngineUnavailableError, UnsupportedOptionError } from '../src/lib/types';
-import { HAS_SOFFICE, withMissingBinary } from './helpers/native-tools';
+import { withMissingBinary } from './helpers/native-tools';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 
 const ENGINE_UNAVAILABLE_TYPE = 'https://api.easyconvert.io/problems/engine-unavailable';
 const HTTP_SERVICE_UNAVAILABLE = 503;
-const HTTP_INTERNAL_ERROR = 500;
-const GENERIC_INTERNAL_DETAIL = 'Internal conversion error';
+const HTTP_BAD_REQUEST = 400;
 const CONVERT_TIMEOUT_MS = 120_000;
 const ZIP_SIGNATURE = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+const PDF_SIGNATURE = '%PDF-';
 const ARABIC_TEXT = Buffer.from('مرحبا بالعالم', 'utf-8');
 
 const SAMPLE_DOCX = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));
@@ -41,10 +42,10 @@ describe('engine-missing conditions surface as EngineUnavailableError', () => {
     await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
   });
 
-  it('maps complex-script rendering that needs a missing LibreOffice', async () => {
-    const run = withMissingBinary('SOFFICE_PATH', () => dispatchConversion(ARABIC_TEXT, 'txt', 'pdf', {}, 'in.txt'));
-    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
-    await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
+  it('shapes complex-script text in-process when LibreOffice is missing instead of failing', async () => {
+    const result = await withMissingBinary('SOFFICE_PATH', () => dispatchConversion(ARABIC_TEXT, 'txt', 'pdf', {}, 'in.txt'));
+    expect(result.engineUsed).toBe('internal-fallback');
+    expect(result.buffer.subarray(0, PDF_SIGNATURE.length).toString('latin1')).toBe(PDF_SIGNATURE);
   });
 
   it('keeps an undecodable OCR image a client error, not a missing engine', async () => {
@@ -98,21 +99,14 @@ describe('POST /api/v1/convert error responses', () => {
     expect(JSON.stringify(problem)).not.toContain('/tmp/');
   });
 
-  it.skipIf(!HAS_SOFFICE)(
-    'does not echo internal error messages or sandbox paths in a 500 response (needs soffice)',
+  it.skipIf(skipWithoutTools('soffice'))(
+    'answers a document LibreOffice cannot open with a 400 that names the file, not a 500, and echoes no sandbox path (needs soffice)',
     async () => {
-      const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
-      try {
-        const res = await v1ConvertPost(convertRequest(BROKEN_DOCX, 'broken.docx', 'png'));
-        expect(res.status).toBe(HTTP_INTERNAL_ERROR);
-        const problem = await res.json();
-        expect(problem.detail).toBe(GENERIC_INTERNAL_DETAIL);
-        expect(JSON.stringify(problem)).not.toContain('/tmp');
-        const loggedText = logged.mock.calls.flat().map(String).join('\n');
-        expect(loggedText).toContain('LibreOffice');
-      } finally {
-        logged.mockRestore();
-      }
+      const res = await v1ConvertPost(convertRequest(BROKEN_DOCX, 'broken.docx', 'png'));
+      expect(res.status).toBe(HTTP_BAD_REQUEST);
+      const problem = await res.json();
+      expect(problem.detail).toContain('LibreOffice could not read the .docx file');
+      expect(JSON.stringify(problem)).not.toContain('/tmp');
     },
     CONVERT_TIMEOUT_MS
   );

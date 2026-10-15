@@ -4,91 +4,117 @@ import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { parseXmlDocument, xmlToJsonMl } from '../src/lib/conversions/data-xml';
 import { isSvg, sanitizeSvgBuffer, sanitizeSvgDocument, sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { ConversionFailedError, SvgSanitizationError } from '../src/lib/types';
+import { expectNoHangOnInput, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
 
-// Every input below took more than 2 s on the regex-based sanitizer; the linear scanner must stay far below that.
-const LINEAR_BUDGET_MS = 1000;
-const NESTED_OPENER_DEPTH = 5000;
+// Every input below took more than 2 s on the regex-based sanitizer. Here each shape must terminate within the hang
+// guard of tests/helpers/timing.ts; that the time grows linearly (the same shape at a quarter of the size takes about
+// a quarter of the time) is measured by svg-sanitizer-redos.perf.test.ts.
+const BASE_BYTES = 512 * 1024;
+/** Shapes the scanner discards in one pass run too fast at BASE_BYTES to time; they use this larger base. */
+const FAST_SHAPE_BASE_BYTES = 4 * 1024 * 1024;
+/** Twice the isSvg sniff window, so the modest input already exceeds what isSvg reads. */
+const ISVG_MODEST_BYTES = 512 * 1024;
 
-function timed<T>(run: () => T): { value: T; ms: number } {
-  const start = performance.now();
-  const value = run();
-  return { value, ms: performance.now() - start };
+/** A document built from `units` repetitions of one adversarial unit. */
+type Shape = { unit: string; wrap: (units: string) => string; baseBytes?: number };
+
+/**
+ * Sanitizes the shape at LARGE_BYTES under the hang guard and returns the input with its output so the caller can
+ * assert the exact result. The growth ratio against BASE_BYTES is measured by svg-sanitizer-redos.perf.test.ts.
+ */
+async function expectTerminatingShape(shape: Shape): Promise<{ input: string; output: string; units: number }> {
+  const unitsAt = (bytes: number) => Math.floor(bytes / shape.unit.length);
+  const build = (bytes: number) => shape.wrap(shape.unit.repeat(unitsAt(bytes)));
+  const baseBytes = shape.baseBytes ?? BASE_BYTES;
+  const largeBytes = baseBytes * SCALING_FACTOR;
+  const input = build(largeBytes);
+  const { largeResult } = await expectNoHangOnInput('sanitizeSvgString', (svg: string) => sanitizeSvgString(svg), input);
+  return { input, output: largeResult, units: unitsAt(largeBytes) };
 }
 
-function expectLinear(input: string): string {
-  const { value, ms } = timed(() => sanitizeSvgString(input));
-  expect(ms).toBeLessThan(LINEAR_BUDGET_MS);
-  return value;
-}
-
-describe('SVG sanitizer linear-time guarantees (issue #399)', () => {
-  const unterminatedOpeners: Array<[string, string, number]> = [
-    ['script', '<script>', 40000],
-    ['foreignObject', '<foreignObject>', 28000],
-    ['iframe', '<iframe>', 120000],
-    ['object', '<object>', 120000],
-    ['embed', '<embed>', 40000],
-    ['meta', '<meta ', 30000],
-    ['link', '<link ', 30000],
+describe('SVG sanitizer terminates on adversarial shapes (issue #399)', () => {
+  const unterminatedOpeners: Array<[string, string]> = [
+    ['script', '<script>'],
+    ['foreignObject', '<foreignObject>'],
+    ['iframe', '<iframe>'],
+    ['object', '<object>'],
+    ['embed', '<embed>'],
+    ['meta', '<meta '],
+    ['link', '<link '],
   ];
 
-  for (const [name, opener, count] of unterminatedOpeners) {
-    it(`strips ${count} unterminated <${name}> openers in linear time`, () => {
-      const out = expectLinear(`<svg><circle r="1"/>${opener.repeat(count)}`);
-      expect(out).toBe('<svg><circle r="1"/>');
-    });
+  for (const [name, opener] of unterminatedOpeners) {
+    it(`strips unterminated <${name}> openers in linear time`, async () => {
+      const { output } = await expectTerminatingShape({ unit: opener, wrap: (units) => `<svg><circle r="1"/>${units}` });
+      expect(output).toBe('<svg><circle r="1"/>');
+    }, SCALING_TEST_TIMEOUT_MS);
   }
 
-  it('neutralizes many unterminated <style> openers in linear time', () => {
-    const out = expectLinear(`<svg>${'<style>'.repeat(40000)}</svg>`);
-    expect(out).toBe(`<svg><style>${'<style>'.repeat(39999)}</svg></style>`);
-  });
+  it('neutralizes many unterminated <style> openers without hanging', async () => {
+    const { output, units } = await expectTerminatingShape({ unit: '<style>', wrap: (u) => `<svg>${u}</svg>` });
+    expect(output).toBe(`<svg><style>${'<style>'.repeat(units - 1)}</svg></style>`);
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('strips many unterminated DOCTYPE openers in linear time', () => {
-    const out = expectLinear(`<svg>${'<!DOCTYPE '.repeat(25000)}`);
-    expect(out).toBe('<svg>');
-  });
+  it('strips many unterminated DOCTYPE openers without hanging', async () => {
+    const { output } = await expectTerminatingShape({ unit: '<!DOCTYPE ', wrap: (u) => `<svg>${u}` });
+    expect(output).toBe('<svg>');
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('strips many unterminated DOCTYPE internal subsets in linear time', () => {
-    const out = expectLinear(`<svg>${'<!DOCTYPE a ['.repeat(45000)}</svg>`);
-    expect(out).toBe('<svg>');
-  });
+  it('strips many unterminated DOCTYPE internal subsets without hanging', async () => {
+    const { output } = await expectTerminatingShape({ unit: '<!DOCTYPE a [', wrap: (u) => `<svg>${u}</svg>`, baseBytes: FAST_SHAPE_BASE_BYTES });
+    expect(output).toBe('<svg>');
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('strips many unterminated ENTITY declarations in linear time', () => {
-    const out = expectLinear(`<svg>${'<!ENTITY '.repeat(30000)}`);
-    expect(out).toBe('<svg>');
-  });
+  it('strips many unterminated ENTITY declarations without hanging', async () => {
+    const { output } = await expectTerminatingShape({ unit: '<!ENTITY ', wrap: (u) => `<svg>${u}` });
+    expect(output).toBe('<svg>');
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('handles a long whitespace run before attributes in linear time', () => {
-    const out = expectLinear(`<svg>${' '.repeat(80000)}<circle r="1"/></svg>`);
-    expect(out).toBe(`<svg>${' '.repeat(80000)}<circle r="1"/></svg>`);
-  });
+  it('handles a long whitespace run before attributes without hanging', async () => {
+    const { input, output } = await expectTerminatingShape({ unit: ' ', wrap: (u) => `<svg>${u}<circle r="1"/></svg>` });
+    expect(output).toBe(input);
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('neutralizes many unterminated CSS url() externals in linear time', () => {
-    const out = expectLinear(`<svg><style>${'url(http:'.repeat(15000)}</style></svg>`);
-    expect(out).toBe('<svg><style>none</style></svg>');
-  });
+  it('neutralizes many unterminated CSS url() externals without hanging', async () => {
+    const { output } = await expectTerminatingShape({ unit: 'url(http:', wrap: (u) => `<svg><style>${u}</style></svg>` });
+    expect(output).toBe('<svg><style>none</style></svg>');
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('neutralizes many quote-mismatched CSS url() externals in linear time', () => {
-    const out = expectLinear(`<svg><style>${"url('http:".repeat(15000)}")</style></svg>`);
-    expect(out).toBe('<svg><style>none</style></svg>');
-  });
+  it('neutralizes many quote-mismatched CSS url() externals without hanging', async () => {
+    const { output } = await expectTerminatingShape({ unit: "url('http:", wrap: (u) => `<svg><style>${u}")</style></svg>` });
+    expect(output).toBe('<svg><style>none</style></svg>');
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('rejects deeply nested split-opener payloads with a typed error in linear time', () => {
-    const payload = `<svg>${'<scr'.repeat(NESTED_OPENER_DEPTH)}<script>${'ipt>'.repeat(NESTED_OPENER_DEPTH)}</svg>`;
-    const { ms } = timed(() => {
-      expect(() => sanitizeSvgString(payload)).toThrow(SvgSanitizationError);
-      expect(() => sanitizeSvgString(payload)).toThrow(/cannot be sanitized safely/);
-    });
-    expect(ms).toBeLessThan(LINEAR_BUDGET_MS);
-  });
+  it('rejects deeply nested split-opener payloads with a typed error without hanging', async () => {
+    const SPLIT_PAIR_BYTES = '<scr'.length + 'ipt>'.length;
+    const nested = (bytes: number) => {
+      const depth = Math.floor(bytes / SPLIT_PAIR_BYTES);
+      return `<svg>${'<scr'.repeat(depth)}<script>${'ipt>'.repeat(depth)}</svg>`;
+    };
+    const { largeResult } = await expectNoHangOnInput(
+      'nested split openers',
+      (payload: string) => settle(() => sanitizeSvgString(payload)),
+      nested(BASE_BYTES * SCALING_FACTOR)
+    );
+    if (largeResult.ok) throw new Error('the nested split-opener payload was sanitized instead of rejected');
+    expect(largeResult.error).toBeInstanceOf(SvgSanitizationError);
+    expect((largeResult.error as Error).message).toMatch(/cannot be sanitized safely/);
+  }, SCALING_TEST_TIMEOUT_MS);
 
-  it('isSvg handles many unterminated comments in linear time', () => {
-    const { value, ms } = timed(() => isSvg(`${'<!--'.repeat(150000)}<svg/>`));
-    expect(ms).toBeLessThan(LINEAR_BUDGET_MS);
-    expect(value).toBe(false);
+  it('isSvg reads a bounded prefix of many unterminated comments, however long the input', async () => {
+    // isSvg decides from the first SVG_SNIFF_BYTES (256 KiB), where the unterminated comments are scanned once;
+    // a quadratic scan of that prefix would take minutes, so a generous absolute guard catches it.
+    const SNIFF_PREFIX_HANG_GUARD_MS = 5_000;
+    const withComments = (bytes: number) => `${'<!--'.repeat(Math.floor(bytes / '<!--'.length))}<svg/>`;
+    const { largeResult } = await expectNoHangOnInput(
+      'isSvg',
+      (input: string) => isSvg(input),
+      withComments(ISVG_MODEST_BYTES * SCALING_FACTOR),
+      SNIFF_PREFIX_HANG_GUARD_MS
+    );
+    expect(largeResult).toBe(false);
     expect(isSvg('<!-- note --><svg/>')).toBe(true);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 });
 
 describe('SVG sanitizer scanner semantics', () => {

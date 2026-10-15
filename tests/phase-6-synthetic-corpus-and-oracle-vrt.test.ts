@@ -13,7 +13,9 @@ import {
   parseXlsxToAst,
 } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { dxfFacts, packageFacts, parquetFacts, pdfFacts, pngFacts, sevenZipFacts, tarFacts, xpathNames, zstdFacts } from './helpers/corpus-facts';
 import { compareImages } from './helpers/vrt-engine';
+import { readHwpWithReference } from './helpers/hwp-reference';
 import { decodeParquet } from '../src/lib/conversions/parquet';
 import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
 import { synthesizeGradientStressCard } from './helpers/golden-corpus-suite';
@@ -59,7 +61,7 @@ describe('Phase 6: Automated Synthetic Corpus Generator & Differential Oracle VR
       expect(categories).toContain('archive');
     });
 
-    it('1.2 creates valid signed manifest file and verifies sha256 checksums on disk', () => {
+    oracleTest('1.2 creates valid signed manifest file and verifies sha256 checksums on disk', ['pdfinfo', '7z'], () => {
       const manifestPath = path.join(testOutputDir, 'corpus-manifest.json');
       expect(fs.existsSync(manifestPath)).toBe(true);
 
@@ -74,20 +76,117 @@ describe('Phase 6: Automated Synthetic Corpus Generator & Differential Oracle VR
         const actualHash = crypto.createHash('sha256').update(content).digest('hex');
         expect(actualHash).toBe(file.sha256);
         expect(content.length).toBe(file.sizeBytes);
-        expect(file.verified).toBe(true);
+        // The integrity check ran and passed for every format that has one (raw and otf have none).
+        expect(file.verified, file.name).toBe(!['raw', 'otf'].includes(file.format));
       }
     });
 
-    oracleTest('1.3 validates format integrity across all synthesized files via assertFormatIntegrity', ['pdfinfo', '7z', 'ffmpeg'], () => {
-      for (const file of testManifest.files) {
-        if (file.format === 'raw' || file.format === 'otf') {
-          continue;
-        }
-        const fullPath = path.resolve(file.relativePath);
-        const content = fs.readFileSync(fullPath);
-        expect(() => assertFormatIntegrity(content, file.format)).not.toThrow();
+    oracleTest(
+      '1.3 standard tools read every synthesized file and report the content it is meant to hold',
+      ['pdfinfo', 'pdftotext', '7z', 'tar', 'zstd', 'identify', 'xmllint', 'python3'],
+      async () => {
+        const bytesOf = (name: string): Buffer => {
+          const file = testManifest.files.find((candidate) => candidate.name === name);
+          expect(file, name).toBeTruthy();
+          return fs.readFileSync(path.resolve((file as { relativePath: string }).relativePath));
+        };
+
+        // PDF (poppler): two pages, the title and the text of both.
+        expect(pdfFacts(bytesOf('differential-layout.pdf'))).toEqual({
+          pages: 2,
+          title: 'EasyConvert Enterprise Golden PDF Standard',
+          text:
+            'Enterprise High-Fidelity Differential Architecture Column A: Distributed Core Engine Column B: Differential Oracle Gate ' +
+            'Zero-heap multipart chunk streaming ensures Automated cross-comparison against reference safe bounded RAM consumption. ' +
+            'AST structures and SSIM/PSNR gates. Page 2: OCR Scanned Document Sandwich Simulation Recognized Text: Enterprise Scanned Document Searchable Text Layer',
+        });
+
+        // 7-Zip, tar, zstd and ImageMagick.
+        expect(sevenZipFacts(bytesOf('enterprise-bundle.7z'))).toEqual({
+          testPassed: true,
+          entries: [
+            { path: 'config.json', size: 42, crc: '0743FA30' },
+            { path: 'manifest.txt', size: 55, crc: '35AFA211' },
+          ],
+        });
+        expect(tarFacts(bytesOf('conformance-bundle.tar'))).toEqual([
+          { path: 'manifest.json', size: 80 },
+          { path: 'data/audit.log', size: 76 },
+        ]);
+        expect(zstdFacts(bytesOf('compressed-stream.zst'))).toEqual({
+          testPassed: true,
+          text: 'EasyConvert RFC 8878 Zstandard Golden Corpus High-Throughput Verification Stream',
+        });
+        expect(pngFacts(bytesOf('perceptual-stress-card.png'))).toBe('PNG 96x96 8-bit sRGB');
+
+        // Packages: every XML part is well-formed per xmllint and the parts are the ones each format needs.
+        const xlsx = await packageFacts(bytesOf('multi-sheet-enterprise.xlsx'));
+        expect(xlsx.malformedParts).toEqual([]);
+        expect(xlsx.entries.filter((name) => name.startsWith('xl/worksheets/'))).toEqual([
+          'xl/worksheets/sheet1.xml',
+          'xl/worksheets/sheet2.xml',
+          'xl/worksheets/sheet3.xml',
+        ]);
+        expect(xpathNames(await xlsx.zip.files['xl/workbook.xml'].async('text'), "//*[local-name()='sheet']/@name")).toEqual([
+          'Executive_Summary',
+          'Q1_Financials',
+          'Regional_Breakdown',
+        ]);
+
+        const ods = await packageFacts(bytesOf('multi-sheet-enterprise.ods'));
+        expect(ods.malformedParts).toEqual([]);
+        expect(ods.entries[0]).toBe('mimetype');
+        expect(await ods.zip.files.mimetype.async('text')).toBe('application/vnd.oasis.opendocument.spreadsheet');
+
+        const pptx = await packageFacts(bytesOf('drawingml-shapes-presentation.pptx'));
+        expect(pptx.malformedParts).toEqual([]);
+        expect(pptx.entries.filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name))).toHaveLength(3);
+
+        const docx = await packageFacts(bytesOf('multi-column-annotated.docx'));
+        expect(docx.malformedParts).toEqual([]);
+        expect(docx.entries).toContain('word/footnotes.xml');
+
+        // CAD text formats: group-code pairs of the DXF, the STEP cube's topology counts (V - E + F = 2).
+        expect(dxfFacts(bytesOf('multi-layer-drawing.dxf').toString('utf-8'))).toEqual({
+          entities: ['LINE', 'LINE', 'CIRCLE', '3DFACE', 'TEXT'],
+          layers: ['0', 'STRUCTURAL_CONTOUR', 'ANNOTATIONS'],
+        });
+        const step = bytesOf('brep-solid.step').toString('utf-8');
+        const stepCount = (entity: string) => (step.match(new RegExp(`=${entity}\\(`, 'g')) ?? []).length;
+        expect([stepCount('VERTEX_POINT'), stepCount('EDGE_CURVE'), stepCount('ADVANCED_FACE')]).toEqual([8, 12, 6]);
+
+        // Parquet (pyarrow): 60 rows of the 10 corpus columns, Snappy.
+        expect(parquetFacts(bytesOf('columnar-snappy-records.parquet'))).toEqual({
+          numRows: 60,
+          columns: [
+            'transaction_id:int64',
+            'account_code:string',
+            'category:string',
+            'region:string',
+            'amount:double',
+            'tax_rate:double',
+            'is_cleared:bool',
+            'timestamp:int64',
+            'execution_latency_ms:double',
+            'notes:string',
+          ],
+          codec: 'SNAPPY',
+        });
+
+        // Raw sensor frame: 64 x 64 samples of 16 bits; HWP: 7-Zip opens the compound file and lists its HWP streams.
+        expect(bytesOf('sensor-raw-frame.raw').length).toBe(64 * 64 * 2);
+        expect(readHwpWithReference(bytesOf('enterprise-compound-document.hwp'))).toMatchObject({
+          streamPaths: ['BodyText/Section0', 'DocInfo', 'FileHeader'],
+          version: '5.0.3.0',
+          paragraphs: [
+            'HWP 5.0 Enterprise Financial & Technical Architecture Specification',
+            'This document validates KS C 5601 binary stream extraction and EqEdit math transpilation.',
+            'Mathematical formulations are parsed from HWPTAG_EQEDIT records into clean MathML and LaTeX representations.',
+          ],
+          tables: [[['Metric Name', 'Observed Value', 'Compliance Target'], ['Tessellation Delta Ratio', '0.0002', '< 0.0005'], ['Memory Shredding Cycles', '3 Passes', 'DoD 5220.22-M']]],
+        });
       }
-    });
+    );
   });
 
   // =========================================================================

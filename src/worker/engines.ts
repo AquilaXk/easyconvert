@@ -1,3 +1,4 @@
+import { stageTimeoutMs } from '../lib/conversions/job-time';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -7,7 +8,9 @@ import { PDFDocument } from 'pdf-lib';
 import {
   ConversionOptions,
   ConversionResult,
+  ConversionFailedError,
   ArchiveEncryptionUnavailableError,
+  ArchiveNotEncryptedError,
   UnsupportedOptionError,
   EngineUnavailableError,
   InvalidPageRangeError,
@@ -18,28 +21,65 @@ import {
   UnsupportedRawCompressionError,
   InvalidRawSensorError,
   RawEngineRequiredError,
+  PayloadLimitError,
+  PdfPasswordRequiredError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
+import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
+import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
-import { hasComplexTextScript } from '../lib/conversions/ctl';
+import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
+import { encodeSvgPageToDxf } from '../lib/conversions/vector-dxf';
+import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
+import { decodeHtmlInput } from '../lib/conversions/html-encoding';
+import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
+import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
+import { runWithImageFetchSession } from '../lib/conversions/html-image-fetch';
+import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
+import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resources';
+import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
+import { readPersistedOutput } from './persisted-output';
 import { getFormatByExtension, assertNotSpoofedFile } from '../lib/registry';
 import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
-import { parsePageRanges, groupConsecutiveRanges, PageInterval } from '../lib/conversions/page-range';
+import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSelection, PageInterval } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
+  buildTwoPassArguments,
+  isTwoPassRequested,
+  probePackagingSource,
   probeHardwareAcceleration,
+  usesHardwareVideoEncoder,
   HardwareAccelerationCapabilities,
 } from '../lib/conversions/media-ffmpeg-args';
-import { probeMediaDuration, computeMediaTimeoutMs } from '../lib/conversions/media';
-import { executeSandboxedBinary, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedBufferLimitError } from './sandbox';
-import { isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import {
+  probeMediaDuration,
+  computeMediaTimeoutMs,
+  computePackagingTimeoutMs,
+  plannedRungCount,
+  DEFAULT_MEDIA_TIER_MAX_MS,
+} from '../lib/conversions/media';
+import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
+import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
+import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
+import {
+  executeSandboxedBinary,
+  rethrowSandboxUnavailable,
+  SandboxedMemoryLimitError,
+  SandboxedProcessError,
+  SandboxedBufferLimitError,
+} from './sandbox';
+import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import { PdfStructureError } from '../lib/conversions/pdf-document';
+import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
+import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
+import { normalizeSvgForRendering } from '../lib/conversions/svg-geometry';
 import {
   RAW_DECODE_MAX_OUTPUT_BYTES,
   assertCompleteDecodedImage,
@@ -47,8 +87,42 @@ import {
   hasRepeatedTail,
   readDecodedTiffLayout,
 } from './raw-decoded-tiff';
-import { extractWithSpannedStream7z } from '../lib/conversions/archive';
-import { LibreOfficePoolManager, LibreOfficePoolTimeoutError, resolveLibreOfficeFilter } from './libreoffice-pool';
+import { ARCHIVE_SECURITY_LIMITS, SEVEN_ZIP_BINARY_CANDIDATES, extractWithSpannedStream7z } from '../lib/conversions/archive';
+import {
+  cleanupDirectoryTree,
+  extractArchiveContained,
+  sanitizeLeafFilename,
+} from '../lib/conversions/archive-extraction-safety';
+import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
+import {
+  sevenZipToTar,
+  stageTarForSevenZip,
+  streamToTar,
+  type ArchiveSource,
+  type StagedTar,
+  type StreamedArchive,
+} from '../lib/conversions/archive-stream';
+import {
+  SEVEN_ZIP_ASK_PASSWORD_SWITCH,
+  archivePasswordError,
+  MAX_ENCRYPTION_LISTING_BYTES,
+  archiveFailureStderr,
+  assertArchivePasswordSafe,
+  assertListingShowsEncryption,
+  assertEncryptedArchiveInputWithinLimits,
+  assertZipPasswordSupported,
+  isArchivePasswordError,
+  sevenZipCreatePasswordInput,
+  sevenZipEncryptionCheckInput,
+  sevenZipReadPasswordInput,
+  walkArchiveTreePaths,
+} from '../lib/conversions/archive-password';
+import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
+import {
+  LibreOfficePoolManager,
+  LibreOfficePoolTimeoutError,
+  resolveLibreOfficeFilter,
+} from './libreoffice-pool';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
@@ -76,7 +150,7 @@ export interface WorkerEngineOptions extends ConversionOptions {
 }
 
 export interface WorkerConversionResult extends ConversionResult {
-  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'native-raw' | 'in-process-raw' | 'internal-fallback';
+  engineUsed: 'native-soffice' | 'native-soffice-pool' | 'native-ffmpeg' | 'native-7z' | 'native-poppler' | 'native-postscript' | 'native-svg' | 'native-raw' | 'in-process-raw' | 'internal-fallback';
   executionTimeMs: number;
   filePath?: string;
   metadata?: Record<string, unknown>;
@@ -99,12 +173,17 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/local/bin/ffmpeg',
     '/opt/homebrew/bin/ffmpeg',
   ],
+  // Same names and order as the library (7zz first, then the p7zip names). 7zr reads 7z only, and
+  // the worker also needs zip, tar and rar, so it is not a candidate here.
   p7zip: [
     ...(process.env.P7ZIP_PATH ? [process.env.P7ZIP_PATH] : []),
-    '/usr/bin/7z',
-    '/usr/bin/7za',
-    '/usr/local/bin/7z',
-    '/opt/homebrew/bin/7z',
+    ...SEVEN_ZIP_BINARY_CANDIDATES.filter((candidate) => !candidate.endsWith('/7zr')),
+  ],
+  ffprobe: [
+    ...(process.env.FFPROBE_PATH ? [process.env.FFPROBE_PATH] : []),
+    '/usr/bin/ffprobe',
+    '/usr/local/bin/ffprobe',
+    '/opt/homebrew/bin/ffprobe',
   ],
   pdfinfo: [
     ...(process.env.PDFINFO_PATH ? [process.env.PDFINFO_PATH] : []),
@@ -130,11 +209,29 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/local/bin/pdftotext',
     '/opt/homebrew/bin/pdftotext',
   ],
+  pdftops: [
+    ...(process.env.PDFTOPS_PATH ? [process.env.PDFTOPS_PATH] : []),
+    '/usr/bin/pdftops',
+    '/usr/local/bin/pdftops',
+    '/opt/homebrew/bin/pdftops',
+  ],
+  rsvgConvert: [
+    ...(process.env.RSVG_CONVERT_PATH ? [process.env.RSVG_CONVERT_PATH] : []),
+    '/usr/bin/rsvg-convert',
+    '/usr/local/bin/rsvg-convert',
+    '/opt/homebrew/bin/rsvg-convert',
+  ],
   dcrawEmu: [
     ...(process.env.DCRAW_EMU_PATH ? [process.env.DCRAW_EMU_PATH] : []),
     '/usr/bin/dcraw_emu',
     '/usr/local/bin/dcraw_emu',
     '/opt/homebrew/bin/dcraw_emu',
+  ],
+  ps2pdf: [
+    ...(process.env.PS2PDF_PATH ? [process.env.PS2PDF_PATH] : []),
+    '/usr/bin/ps2pdf',
+    '/usr/local/bin/ps2pdf',
+    '/opt/homebrew/bin/ps2pdf',
   ],
   tesseract: [
     ...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []),
@@ -167,6 +264,41 @@ function resolveBinary(candidates: string[], envOverride?: string): string | nul
     }
   }
   return null;
+}
+
+/** Native CLIs a health check can ask about, keyed as in BINARY_PATHS. */
+export type NativeBinaryName =
+  | 'soffice'
+  | 'ffmpeg'
+  | 'ffprobe'
+  | 'p7zip'
+  | 'pdftoppm'
+  | 'pdftotext'
+  | 'tesseract'
+  | 'ps2pdf'
+  | 'rsvgConvert'
+  | 'dcrawEmu';
+
+/** The environment variable that overrides each native CLI's location. */
+const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
+  soffice: 'SOFFICE_PATH',
+  ffmpeg: 'FFMPEG_PATH',
+  ffprobe: 'FFPROBE_PATH',
+  p7zip: 'P7ZIP_PATH',
+  pdftoppm: 'PDFTOPPM_PATH',
+  pdftotext: 'PDFTOTEXT_PATH',
+  tesseract: 'TESSERACT_PATH',
+  ps2pdf: 'PS2PDF_PATH',
+  rsvgConvert: 'RSVG_CONVERT_PATH',
+  dcrawEmu: 'DCRAW_EMU_PATH',
+};
+
+/**
+ * Where the worker finds a native CLI: the environment override when one is set, otherwise the
+ * fixed install locations, or null. Reads the environment on every call and runs nothing.
+ */
+export function resolveNativeBinary(name: NativeBinaryName): string | null {
+  return resolveBinary(BINARY_PATHS[name], process.env[NATIVE_BINARY_ENV_VARS[name]]);
 }
 
 /**
@@ -219,11 +351,7 @@ async function withSandboxDir<T>(
   try {
     return await operation(tempDir);
   } finally {
-    try {
-      if (fs.existsSync(tempDir)) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-    } catch {}
+    cleanupDirectoryTree(tempDir);
   }
 }
 
@@ -281,24 +409,72 @@ export function assertNotSpoofedFileVfs(
 /**
  * Persists an output file to target VFS destination outside ephemeral sandbox before cleanup.
  */
+function resolveOutputPath(targetFormat: string, options?: WorkerEngineOptions, vfsPayload?: WorkerVfsPayload): string {
+  const desiredOutput = vfsPayload?.outputPath || (options as any)?.outputPath;
+  if (desiredOutput) return desiredOutput;
+  const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
+  if (!fs.existsSync(vfsDir)) {
+    try {
+      fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
+    } catch {}
+  }
+  return path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${targetFormat}`);
+}
+
 export function preserveOutput(
   tempOutputPath: string,
   targetFormat: string,
   options?: WorkerEngineOptions,
   vfsPayload?: WorkerVfsPayload
 ): string {
-  const desiredOutput = vfsPayload?.outputPath || (options as any)?.outputPath;
-  let finalPath = desiredOutput;
-  if (!finalPath) {
-    const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
-    if (!fs.existsSync(vfsDir)) {
-      try {
-        fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
-      } catch {}
-    }
-    finalPath = path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${targetFormat}`);
-  }
+  const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
   fs.copyFileSync(tempOutputPath, finalPath);
+  return finalPath;
+}
+
+/**
+ * Hands the finished output of a job to its destination and leaves nothing of it in the job directory. An output
+ * nobody named a place for goes to a file of the worker's own naming, and the job directory is on the same volume as
+ * that file in all but unusual setups, so the file is renamed into place and its bytes are not written a second time;
+ * across volumes, or when the caller named the destination (which may be a link or a mount of its own), it is copied.
+ */
+function handOffOutput(
+  tempOutputPath: string,
+  targetFormat: string,
+  options?: WorkerEngineOptions,
+  vfsPayload?: WorkerVfsPayload
+): string {
+  const named = vfsPayload?.outputPath || (options as { outputPath?: string } | undefined)?.outputPath;
+  if (named) return preserveOutput(tempOutputPath, targetFormat, options, vfsPayload);
+  const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
+  try {
+    fs.renameSync(tempOutputPath, finalPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+    fs.copyFileSync(tempOutputPath, finalPath);
+  }
+  return finalPath;
+}
+
+/** Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy. */
+function writeOutputSegments(
+  segments: readonly Uint8Array[],
+  targetFormat: string,
+  options?: WorkerEngineOptions,
+  vfsPayload?: WorkerVfsPayload
+): string {
+  const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
+  const fd = fs.openSync(finalPath, 'w');
+  try {
+    for (const segment of segments) {
+      let written = 0;
+      while (written < segment.length) {
+        written += fs.writeSync(fd, segment, written, segment.length - written);
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
   return finalPath;
 }
 
@@ -322,18 +498,8 @@ export function createConversionResult(
     engineUsed,
     executionTimeMs,
     get buffer(): Buffer {
-      if (cachedBuffer) return cachedBuffer;
-      // V8 Buffer max size is 2GB - 1 byte (2147483647)
-      if (stat.size > 2 * 1024 * 1024 * 1024 - 1) {
-        throw new RangeError(
-          `Cannot read file (${stat.size} bytes) into single Node.js Buffer because it exceeds 2GB V8 buffer limit. Use filePath streaming instead.`
-        );
-      }
-      if (fs.existsSync(persistedFilePath)) {
-        cachedBuffer = fs.readFileSync(persistedFilePath);
-        return cachedBuffer;
-      }
-      return Buffer.alloc(0);
+      cachedBuffer ??= readPersistedOutput(persistedFilePath, stat.size);
+      return cachedBuffer;
     },
     set buffer(b: Buffer) {
       cachedBuffer = b;
@@ -379,6 +545,8 @@ export async function convertWithHeadlessOffice(
         return poolResult;
       }
     } catch (poolErr) {
+      // The standalone run below needs the same sandbox the pool just failed to get.
+      rethrowSandboxUnavailable(poolErr);
       if (options.signal?.aborted || poolErr instanceof SandboxedMemoryLimitError) {
         throw poolErr;
       }
@@ -396,7 +564,7 @@ export async function convertWithHeadlessOffice(
     return await withSandboxDir('easyconvert-office-', async (tempDir) => {
       const { inputPath } = resolveInputContext(input, src, tempDir);
 
-      const timeout = Math.min(options.timeoutMs || 45000, 120000);
+      const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
       await executeSandboxedBinary(
@@ -444,6 +612,8 @@ export async function convertWithHeadlessOffice(
     if (options.throwOnUnavailable) {
       throw err;
     }
+    // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
+    rethrowSandboxUnavailable(err);
     return null;
   }
 }
@@ -476,8 +646,8 @@ export async function convertWithNativeFfmpeg(
       const { inputPath } = resolveInputContext(input, src, tempDir);
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
-      const durationSeconds = probeMediaDuration(inputPath, options);
-      const timeout = computeMediaTimeoutMs(durationSeconds, options.timeoutMs || 180000);
+      const durationSeconds = probeMediaDuration(inputPath, options, ffmpegBin);
+      const timeout = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       if (options.thumbnail?.at && options.thumbnail.at.length > 1) {
         const parts: { filename: string; buffer: Buffer }[] = [];
@@ -522,10 +692,15 @@ export async function convertWithNativeFfmpeg(
         const outputDir = path.join(tempDir, 'packaged');
         fs.mkdirSync(outputDir, { recursive: true });
 
-        const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin);
+        const source = probePackagingSource(inputPath, ffmpegBin);
+        const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
         await executeSandboxedBinary(ffmpegBin, args, {
           cwd: outputDir,
-          timeoutMs: timeout,
+          timeoutMs: computePackagingTimeoutMs(
+            source.geometry.durationSec,
+            plannedRungCount(packaging, source),
+            stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS)
+          ),
           maxBuffer,
           networkIsolated: true,
           signal: options.signal,
@@ -570,35 +745,71 @@ export async function convertWithNativeFfmpeg(
         return res;
       }
 
-      const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin);
+      const runFfmpegWith = (ffmpegArgs: string[], limitMs: number) =>
+        executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
+          cwd: tempDir,
+          timeoutMs: limitMs,
+          maxBuffer,
+          networkIsolated: true,
+          signal: options.signal,
+        });
+      const runFfmpeg = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
+      // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
+      const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
 
-      await executeSandboxedBinary(ffmpegBin, args, {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer,
-        networkIsolated: true,
-        signal: options.signal,
-      });
+      if (isTwoPassRequested(options)) {
+        // The pass logs go to the job's sandbox directory (the working directory), which is removed with it.
+        const passes = buildTwoPassArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
+        await runTwoPass(passes, twoPassBudgetMs(timeout), runFfmpegWith);
+      } else {
+        const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
+        try {
+          await runFfmpeg(args);
+        } catch (err) {
+          // A hardware encoder that passed the capability probe can still fail at runtime (device lost,
+          // driver error). Retry exactly once in software; a failed retry reports the original error,
+          // and a cancelled job is never retried.
+          const hardwareEncoderFailed = err instanceof SandboxedProcessError && usesHardwareVideoEncoder(args);
+          if (!hardwareEncoderFailed || options.signal?.aborted) {
+            throw err;
+          }
+          const softwareArgs = buildFfmpegArguments(
+            inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
+          );
+          try {
+            await runFfmpeg(softwareArgs);
+          } catch {
+            throw err;
+          }
+        }
+      }
 
       if (!fs.existsSync(tempOutputPath)) {
         throw new Error(`FFmpeg execution completed without producing expected output file "${tempOutputPath}"`);
       }
 
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+      const persistedPath = handOffOutput(tempOutputPath, tgt, options, vfsPayload);
 
-      return createConversionResult(
+      const transcoded = createConversionResult(
         persistedPath,
         tgt,
         baseName,
         'native-ffmpeg',
         Date.now() - startTime
       );
+      transcoded.metadata = {
+        ...describeAudioProcessing(options, ffmpegBin, loudnessStage),
+        ...describeDroppedStreams(inputPath, tgt, options, ffmpegBin),
+      };
+      return transcoded;
     });
   } catch (err) {
     if (options.throwOnUnavailable) {
       throw err;
     }
+    // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
+    rethrowSandboxUnavailable(err);
     return null;
   }
 }
@@ -610,6 +821,8 @@ const ARCHIVE_EXTRACT_FORMATS = new Set([
   'zip', '7z', 'rar', 'tar', 'gz', 'gzip', 'tgz', 'tar.gz',
   'bz2', 'bzip2', 'tbz2', 'tar.bz2', 'xz', 'txz', 'tar.xz',
   'iso', 'deb', 'rpm', 'cab', 'wim', 'arj', 'cpio', 'lzh', 'zstd', 'zst',
+  // Sources the in-process archive engine leaves to this engine (NATIVE_SEVEN_ZIP_SOURCES in archive.ts).
+  'dmg', 'img', 'lha', 'lzma', 'z', 'tar.z', 'tz',
 ]);
 
 const ARCHIVE_TARGET_FORMATS = new Set([
@@ -653,10 +866,42 @@ interface Package7zArchiveParams {
   timeout: number;
   maxBuffer: number;
   options?: WorkerEngineOptions;
+  /** Validated level, passed to 7-Zip as `-mx`. */
+  compressionLevel: number;
+}
+
+/**
+ * Lists the password-protected archive just written, without its password, and throws
+ * ArchiveNotEncryptedError unless it is encrypted: a 7-Zip that ignores its prompt exits 0 with
+ * a plaintext archive.
+ */
+async function assertCreatedArchiveEncrypted(
+  p7zBin: string,
+  archivePath: string,
+  format: 'zip' | '7z',
+  limits: { cwd: string; timeoutMs: number; signal?: AbortSignal }
+): Promise<void> {
+  let outcome: { listing?: string; failureOutput?: string };
+  try {
+    const result = await executeSandboxedBinary(p7zBin, ['l', '-slt', archivePath], {
+      cwd: limits.cwd,
+      timeoutMs: limits.timeoutMs,
+      maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
+      networkIsolated: true,
+      stdin: sevenZipEncryptionCheckInput(),
+      signal: limits.signal,
+    });
+    outcome = { listing: result.stdout.toString('utf-8') };
+  } catch (err) {
+    rethrowSandboxUnavailable(err);
+    outcome = { failureOutput: archiveFailureStderr(err) };
+  }
+  assertListingShowsEncryption(format, outcome);
 }
 
 async function package7zArchive(params: Package7zArchiveParams): Promise<boolean> {
-  const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options } = params;
+  const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options, compressionLevel } = params;
+  const levelArgs = [`-mx=${compressionLevel}`];
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
@@ -679,7 +924,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
     } else if (isTarBz2) {
       subType = '-tbzip2';
     }
-    await executeSandboxedBinary(p7zBin, ['a', '-y', subType, tempOutputPath, tarPath], {
+    await executeSandboxedBinary(p7zBin, ['a', '-y', subType, ...levelArgs, tempOutputPath, tarPath], {
       cwd: tempDir,
       timeoutMs: timeout,
       maxBuffer,
@@ -692,20 +937,23 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
   const archiveType = get7zArchiveType(tgt);
   if (!archiveType) return false;
 
+  if (options?.password && (tgt === 'zip' || tgt === '7z')) {
+    assertEncryptedArchiveInputWithinLimits(walkArchiveTreePaths(extractDir));
+  }
   const pwArgs: string[] = [];
   if (options?.password) {
     if (tgt === '7z') {
-      pwArgs.push('-mhe=on', '-p');
+      pwArgs.push('-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
     } else if (tgt === 'zip') {
-      pwArgs.push('-mem=AES256', '-p');
+      pwArgs.push('-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH);
     }
   }
   const pwInput =
     options?.password && (tgt === 'zip' || tgt === '7z')
-      ? Buffer.from(`${options.password}\n${options.password}\n`)
+      ? sevenZipCreatePasswordInput(options.password)
       : undefined;
 
-  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...pwArgs, tempOutputPath, '.'], {
+  await executeSandboxedBinary(p7zBin, ['a', '-y', `-t${archiveType}`, ...(tgt === 'tar' ? [] : levelArgs), ...pwArgs, tempOutputPath, '.'], {
     cwd: extractDir,
     timeoutMs: timeout,
     maxBuffer,
@@ -713,7 +961,24 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
     stdin: pwInput,
     signal: options?.signal,
   });
+  if (options?.password && (tgt === 'zip' || tgt === '7z')) {
+    await assertCreatedArchiveEncrypted(p7zBin, tempOutputPath, tgt, {
+      cwd: tempDir,
+      timeoutMs: timeout,
+      signal: options.signal,
+    });
+  }
   return true;
+}
+
+/** Turns a failed `7z a` run into a typed error; other failures (timeouts, aborts) keep their own type. */
+function toPackagingFailure(err: unknown, targetFormat: string): unknown {
+  if (err instanceof SandboxedProcessError) {
+    return new ConversionFailedError(
+      `7-Zip failed to create the ${targetFormat} archive (exit code ${err.exitCode ?? 'unknown'}).`
+    );
+  }
+  return err;
 }
 
 interface ExtractArchiveParams {
@@ -726,32 +991,119 @@ interface ExtractArchiveParams {
   options?: WorkerEngineOptions;
 }
 
-async function extractSourceArchive(params: ExtractArchiveParams): Promise<void> {
+/** 7-Zip opens a Z stream by its `.z` name; it does not know `.tz`, the registry name of a tar compressed with compress. */
+const SEVEN_ZIP_INPUT_EXTENSION: ReadonlyMap<string, string> = new Map([['tz', 'z']]);
+
+/** Compression wrappers that unpack to a single tar, which is repackaged without being extracted. */
+const COMPRESSED_STREAM_FORMATS = new Set([
+  'gz', 'gzip', 'tgz', 'tar.gz',
+  'bz2', 'bzip2', 'tbz2', 'tar.bz2',
+  'xz', 'txz', 'tar.xz',
+  'lzma', 'z', 'tar.z', 'tz',
+]);
+
+interface SourceExtraction {
+  entryCount: number;
+  skippedLinks: string[];
+}
+
+/**
+ * Extracts the source archive into `extractDir` through the contained 7z pipeline (list, vet,
+ * extract, re-verify). Throws a typed error for any unsafe, oversized or unreadable archive; it
+ * never returns a partial result.
+ */
+async function extractSourceArchive(params: ExtractArchiveParams, src: string): Promise<SourceExtraction> {
   const { p7zBin, inputPath, extractDir, tempDir, timeout, maxBuffer, options } = params;
+
   if (options?.archiveParts && options.archiveParts.length > 0) {
-    await extractWithSpannedStream7z(options.archiveParts as any, extractDir, {
+    // Multi-volume input is stitched to one seekable file so it is listed like any other archive.
+    const spanned = await extractWithSpannedStream7z(options.archiveParts, extractDir, {
       timeoutMs: timeout,
       maxBuffer,
       password: options.password,
+      skipLinks: options.skipLinks,
+      collisionPolicy: options.collisionPolicy,
+      signal: options.signal,
     });
-  } else {
-    const pwArgs = options?.password ? ['-p'] : [];
-    const includeArgs = (options?.entries && options.entries.length > 0)
-      ? options.entries.map((p) => `-i!${p}`)
-      : [];
-    await executeSandboxedBinary(
-      p7zBin,
-      ['x', '-y', ...pwArgs, `-o${extractDir}`, inputPath, ...includeArgs],
-      {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer,
-        networkIsolated: true,
-        stdin: options?.password ? Buffer.from(options.password + '\n') : undefined,
-        signal: options?.signal,
-      }
-    );
+    return { entryCount: spanned.entryCount, skippedLinks: spanned.skippedLinks };
   }
+
+  const includePatterns = options?.entries && options.entries.length > 0 ? options.entries : undefined;
+  const tree = await extractArchiveContained({
+    p7zBin,
+    archivePath: inputPath,
+    extractDir,
+    cwd: tempDir,
+    timeoutMs: timeout,
+    maxBuffer,
+    limits: ARCHIVE_SECURITY_LIMITS,
+    label: 'archive',
+    password: options?.password,
+    includePatterns,
+    skipLinks: options?.skipLinks,
+    collisionPolicy: options?.collisionPolicy,
+    validateNestedTar: COMPRESSED_STREAM_FORMATS.has(src),
+    signal: options?.signal,
+  });
+  return { entryCount: tree.entryCount, skippedLinks: tree.skippedLinks };
+}
+
+/**
+ * The result of a streamed conversion. The dispatcher keeps an output on disk only for a payload that already lives on
+ * disk, a zero-heap request or a requested output path; any other caller gets the bytes back in memory, so a Buffer
+ * conversion writes no output file only to read it back and delete it.
+ */
+function streamedArchiveResult(
+  streamed: StreamedArchive,
+  context: { tgt: string; baseName: string; options: WorkerEngineOptions; vfsPayload?: WorkerVfsPayload; startTime: number }
+): WorkerConversionResult {
+  const { tgt, baseName, options, vfsPayload, startTime } = context;
+  const wantsFile = vfsPayload !== undefined || Boolean(options.zeroHeap) || Boolean((options as { outputPath?: string }).outputPath);
+  if (wantsFile) {
+    const persistedPath = writeOutputSegments(streamed.segments, tgt, options, vfsPayload);
+    return createConversionResult(persistedPath, tgt, baseName, 'native-7z', Date.now() - startTime);
+  }
+  const buffer = streamed.segments.length === 1 ? Buffer.from(streamed.segments[0].buffer, streamed.segments[0].byteOffset, streamed.segments[0].byteLength) : Buffer.concat(streamed.segments);
+  return {
+    mimeType: getMimeType(tgt),
+    filename: `${baseName}.${tgt}`,
+    size: buffer.length,
+    buffer,
+    engineUsed: 'native-7z',
+    executionTimeMs: Date.now() - startTime,
+  };
+}
+
+/** The archive a conversion reads, as the streaming routes take it: in memory, or a file left where it is. */
+function archiveSourceOf(input: Buffer | WorkerVfsPayload): ArchiveSource {
+  if (Buffer.isBuffer(input)) return { buffer: input };
+  if (input.inputBuffer) return { buffer: input.inputBuffer };
+  if (input.inputPath && fs.existsSync(input.inputPath)) return { filePath: input.inputPath };
+  throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
+}
+
+/** Runs a streaming route; null hands the request to the general pipeline (see archive-stream.ts). */
+async function runStreamingRoute(
+  route: Extract<NativeArchiveRoute, { kind: 'stream-to-tar' | 'seven-zip-to-tar' }>,
+  params: {
+    p7zBin: string;
+    input: Buffer | WorkerVfsPayload;
+    originalFilename: string;
+    timeout: number;
+    options: WorkerEngineOptions;
+  }
+): Promise<StreamedArchive | null> {
+  const common = {
+    p7zBin: params.p7zBin,
+    source: archiveSourceOf(params.input),
+    originalFilename: params.originalFilename,
+    timeoutMs: params.timeout,
+    skipLinks: params.options.skipLinks,
+    collisionPolicy: params.options.collisionPolicy,
+    signal: params.options.signal,
+  };
+  if (route.kind === 'stream-to-tar') return streamToTar({ ...common, compressor: route.source.compressor });
+  return sevenZipToTar(common);
 }
 
 /**
@@ -766,12 +1118,22 @@ export async function convertWithNative7z(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
+  assertArchivePasswordSafe(options.password);
+  // Refused before any tool runs; the pack steps read the same validated value.
+  const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
 
   const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
   const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
   const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
+  assertArchivePasswordSafe(options.password);
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
+  }
+  if (tgt === 'zip') assertZipPasswordSupported(options.password);
+
+  // Stock 7-Zip builds cannot open or create Zstandard streams; the in-process zstd engine owns them.
+  if (src.includes('zst') || tgt.includes('zst')) {
+    return null;
   }
 
   const p7zBin = resolveBinary(BINARY_PATHS.p7zip, process.env.P7ZIP_PATH);
@@ -789,40 +1151,81 @@ export async function convertWithNative7z(
 
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
+  const timeout = Math.min(stageTimeoutMs(options, 60000), 180000);
+  const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
+  const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
 
-  try {
-    return await withSandboxDir('easyconvert-7z-', async (tempDir) => {
-      const inputExt = src.includes('.') ? src.split('.').pop()! : src;
+  // The routing decision lives in planNativeArchiveRoute; a null plan is the general extract-then-pack pipeline.
+  const route = planNativeArchiveRoute(src, tgt, options);
+  if (route?.kind === 'stream-to-tar' || route?.kind === 'seven-zip-to-tar') {
+    const streamed = await runStreamingRoute(route, { p7zBin, input, originalFilename, timeout, options });
+    if (streamed) {
+      const result = streamedArchiveResult(streamed, { tgt, baseName, options, vfsPayload, startTime });
+      if (streamed.skippedLinks.length > 0) {
+        result.skippedLinks = streamed.skippedLinks;
+      }
+      return result;
+    }
+  }
+
+  // Failures are typed errors that propagate: a bad archive must never become a null that lets a
+  // caller drop to another engine.
+  return withSandboxDir('easyconvert-7z-', async (tempDir) => {
+    // A tar headed for 7z is read and vetted in process and written once into the tree 7-Zip packs.
+    const staged: StagedTar | null =
+      route?.kind === 'tar-to-seven-zip'
+        ? stageTarForSevenZip({
+            source: archiveSourceOf(input),
+            workDir: tempDir,
+            skipLinks: options.skipLinks,
+            collisionPolicy: options.collisionPolicy,
+          })
+        : null;
+
+    let extractDir = path.join(tempDir, 'extracted');
+    let entryCount: number;
+    let skippedLinks: string[] = [];
+    if (staged) {
+      extractDir = staged.stagingDir;
+      entryCount = staged.entryCount;
+      skippedLinks = staged.skippedLinks;
+    } else {
+      const inputExt = SEVEN_ZIP_INPUT_EXTENSION.get(src) ?? (src.includes('.') ? src.split('.').pop()! : src);
       const { inputPath } = resolveInputContext(input, inputExt, tempDir);
-
-      const timeout = Math.min(options.timeoutMs || 60000, 180000);
-      const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
-      const extractDir = path.join(tempDir, 'extracted');
       fs.mkdirSync(extractDir, { recursive: true });
 
       // Step 1: Extract if source is an archive container, otherwise copy/place single file into extract directory
       if (ARCHIVE_EXTRACT_FORMATS.has(src)) {
-        await extractSourceArchive({
-          p7zBin,
-          inputPath,
-          extractDir,
-          tempDir,
-          timeout,
-          maxBuffer,
-          options,
-        });
+        const extraction = await extractSourceArchive(
+          {
+            p7zBin,
+            inputPath,
+            extractDir,
+            tempDir,
+            timeout,
+            maxBuffer,
+            options,
+          },
+          src
+        );
+        entryCount = extraction.entryCount;
+        skippedLinks = extraction.skippedLinks;
       } else {
-        const destPath = path.join(extractDir, originalFilename || `file.${src}`);
+        // The caller-supplied name becomes a single path component inside the extraction root.
+        const destPath = path.join(extractDir, sanitizeLeafFilename(originalFilename || `file.${src}`));
         fs.copyFileSync(inputPath, destPath);
+        entryCount = 1;
       }
+    }
 
-      const extractedFiles = fs.readdirSync(extractDir);
-      if (extractedFiles.length === 0) {
-        throw new Error('7-Zip extraction completed without producing any files');
-      }
+    if (entryCount === 0) {
+      throw new ConversionFailedError('The archive contains no files to convert.');
+    }
 
-      const tempOutputPath = path.join(tempDir, `output.${tgt}`);
-      const packaged = await package7zArchive({
+    const tempOutputPath = path.join(tempDir, `output.${tgt}`);
+    let packaged: boolean;
+    try {
+      packaged = await package7zArchive({
         p7zBin,
         tgt,
         extractDir,
@@ -831,28 +1234,26 @@ export async function convertWithNative7z(
         timeout,
         maxBuffer,
         options,
+        compressionLevel,
       });
-      if (!packaged || !fs.existsSync(tempOutputPath)) {
-        throw new Error('7-Zip packaging failed to produce output archive');
-      }
-
-      const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-      const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-      return createConversionResult(
-        persistedPath,
-        tgt,
-        baseName,
-        'native-7z',
-        Date.now() - startTime
-      );
-    });
-  } catch (err) {
-    if (options.throwOnUnavailable) {
-      throw err;
+    } catch (err) {
+      throw toPackagingFailure(err, tgt);
+    } finally {
+      // The staged directories keep the tar's modes while 7-Zip packs them; the sandbox removes them afterwards.
+      staged?.release();
     }
-    return null;
-  }
+    if (!packaged || !fs.existsSync(tempOutputPath)) {
+      throw new ConversionFailedError('7-Zip packaging failed to produce output archive');
+    }
+
+    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+
+    const result = createConversionResult(persistedPath, tgt, baseName, 'native-7z', Date.now() - startTime);
+    if (skippedLinks.length > 0) {
+      result.skippedLinks = skippedLinks;
+    }
+    return result;
+  });
 }
 
 /**
@@ -901,6 +1302,7 @@ async function countPagesOfReadablePdf(
         if (pages > 0) return pages;
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       const passwordError = toPopplerPasswordError(err);
       if (passwordError) {
         throw passwordError;
@@ -909,17 +1311,27 @@ async function countPagesOfReadablePdf(
     }
   }
 
-  // Fallback via pdf-lib
+  // Fallback via pdf-lib. A password was already applied through qpdf, so an encrypted buffer here is one nobody
+  // opened: it is refused, never read with its encryption ignored.
   const buf = inputBuffer ?? fs.readFileSync(inputPath);
   try {
-    const pdfDoc = await PDFDocument.load(buf, { ignoreEncryption: true });
+    if (inspectPdfEncryption(buf).encrypted) {
+      throw new PdfPasswordRequiredError(PDF_PASSWORD_REJECTED_MESSAGE);
+    }
+    const pdfDoc = await PDFDocument.load(buf);
     const count = pdfDoc.getPageCount();
     if (count > 0) return count;
-  } catch {
-    // Fall-through to error
+  } catch (err) {
+    if (err instanceof PdfPasswordRequiredError) throw err;
+    // Fall-through to the typed error
   }
-  throw new Error('Unable to determine PDF page count: invalid or corrupted PDF structure.');
+  throw new PdfStructureError('Unable to determine PDF page count: invalid or corrupted PDF structure.');
 }
+
+/** Raster density of a PDF page image: the default and the range the API accepts. */
+const PDF_RASTER_DEFAULT_DPI = 150;
+const PDF_RASTER_MIN_DPI = 72;
+const PDF_RASTER_MAX_DPI = 600;
 
 function buildPdftoppmArgs(
   tgt: string,
@@ -929,7 +1341,10 @@ function buildPdftoppmArgs(
   inputPath: string,
   prefix: string
 ): string[] {
-  const dpi = options.dpi && options.dpi >= 72 && options.dpi <= 600 ? options.dpi : 150;
+  const dpi = options.dpi ?? PDF_RASTER_DEFAULT_DPI;
+  if (!Number.isFinite(dpi) || dpi < PDF_RASTER_MIN_DPI || dpi > PDF_RASTER_MAX_DPI) {
+    throw new UnsupportedOptionError(`The dpi option ${options.dpi} is outside the supported range of ${PDF_RASTER_MIN_DPI} to ${PDF_RASTER_MAX_DPI}.`);
+  }
   const args: string[] = ['-r', String(dpi)];
 
   if (tgt === 'png') {
@@ -944,6 +1359,17 @@ function buildPdftoppmArgs(
   return args;
 }
 
+/**
+ * pdftotext flags for a text export. The default is poppler's reading-order mode, which follows
+ * the page's own text flow and reads columns one after another. `layout: true` keeps physical
+ * layout (`-layout`) so table rows stay on one line. Any other `layout` value is a client error.
+ */
+function buildPdftotextArgs(options: WorkerEngineOptions): string[] {
+  if (options.layout === undefined || options.layout === false) return [];
+  if (options.layout === true) return ['-layout'];
+  throw new UnsupportedOptionError('The layout option must be a boolean.');
+}
+
 async function convertPdfToTextWithPoppler(
   input: Buffer | WorkerVfsPayload,
   options: WorkerEngineOptions,
@@ -952,6 +1378,7 @@ async function convertPdfToTextWithPoppler(
   timeout: number,
   maxBuffer: number
 ): Promise<WorkerConversionResult | null> {
+  const pdftotextArgs = buildPdftotextArgs(options);
   const pdftotextBin = resolveBinary(BINARY_PATHS.pdftotext, process.env.PDFTOTEXT_PATH);
   if (!pdftotextBin) {
     if (options.throwOnUnavailable) {
@@ -970,7 +1397,7 @@ async function convertPdfToTextWithPoppler(
         { inputPath, tempDir, password: options.password, timeoutMs: timeout, signal: options.signal },
         async (readablePath) => {
           try {
-            await executeSandboxedBinary(pdftotextBin, ['-layout', readablePath, tempOutputPath], {
+            await executeSandboxedBinary(pdftotextBin, [...pdftotextArgs, readablePath, tempOutputPath], {
               cwd: tempDir,
               timeoutMs: timeout,
               maxBuffer,
@@ -1002,24 +1429,20 @@ async function convertPdfToTextWithPoppler(
     if (options.throwOnUnavailable) {
       throw err;
     }
+    // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
+    rethrowSandboxUnavailable(err);
     return null;
   }
 }
 
 function resolveRequestedPages(options: WorkerEngineOptions, pageCount: number): number[] {
-  let requestedPages: number[];
-  if (options.pages) {
-    requestedPages = parsePageRanges(options.pages, pageCount);
-  } else if (typeof options.page === 'number') {
-    if (!Number.isInteger(options.page) || options.page < 1 || options.page > pageCount) {
-      throw new InvalidPageRangeError(
-        `Page number ${options.page} is out of bounds (1-${pageCount})`
-      );
-    }
-    requestedPages = [options.page];
-  } else {
-    requestedPages = Array.from({ length: pageCount }, (_, i) => i + 1);
-  }
+  const requestedPages =
+    resolvePageSelection(
+      options.page,
+      options.pages,
+      pageCount,
+      (page, count) => new InvalidPageRangeError(`Page number ${page} is out of bounds (1-${count})`)
+    ) ?? Array.from({ length: pageCount }, (_, i) => i + 1);
 
   if (requestedPages.length === 0) {
     throw new InvalidPageRangeError('No pages selected for rendering');
@@ -1055,6 +1478,7 @@ function matchOutputPageFiles(
 }
 
 interface FinalizeMultiPageParams {
+  singleFile?: boolean;
   tempDir: string;
   resolvedFiles: Array<{ file: string; pageNum: number }>;
   requestedPages: number[];
@@ -1067,6 +1491,7 @@ interface FinalizeMultiPageParams {
 
 async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise<WorkerConversionResult> {
   const {
+    singleFile,
     tempDir,
     resolvedFiles,
     requestedPages,
@@ -1077,7 +1502,7 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
     startTime,
   } = params;
 
-  const isSingleOutput = requestedPages.length === 1 || options.multiPageOutput === 'first';
+  const isSingleOutput = singleFile || requestedPages.length === 1 || options.multiPageOutput === 'first';
   const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
 
   if (isSingleOutput) {
@@ -1097,10 +1522,9 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
   // Multi-page bundle: package into ZIP with standard formatted names: <baseName>-p001.<tgt>
   const zip = new JSZip();
   const maxPage = requestedPages.at(-1) ?? 1;
-  const padLen = Math.max(3, String(maxPage).length);
 
   for (const item of resolvedFiles) {
-    const entryName = `${baseName}-p${String(item.pageNum).padStart(padLen, '0')}.${tgt}`;
+    const entryName = pageEntryName(baseName, item.pageNum, maxPage, tgt);
     const fileBytes = fs.readFileSync(path.join(tempDir, item.file));
     zip.file(entryName, fileBytes);
   }
@@ -1127,6 +1551,8 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
 
 interface PopplerRenderParams {
   sandboxPrefix: string;
+  /** The one output file covers every selected page (a multi-page PostScript file), so it is never zipped. */
+  singleFile?: boolean;
   tgt: string;
   input: Buffer | WorkerVfsPayload;
   options: WorkerEngineOptions;
@@ -1151,6 +1577,7 @@ function loadPdfInputBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefine
 async function executePopplerRender(params: PopplerRenderParams): Promise<WorkerConversionResult | null> {
   const {
     sandboxPrefix,
+    singleFile,
     tgt,
     input,
     options,
@@ -1184,6 +1611,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
 
           const resolvedFiles = matchOutputPageFiles(files, requestedPages);
           return finalizeMultiPageOutput({
+            singleFile,
             tempDir,
             resolvedFiles,
             requestedPages,
@@ -1200,6 +1628,8 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
     if (options.throwOnUnavailable) {
       throw err;
     }
+    // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
+    rethrowSandboxUnavailable(err);
     return null;
   }
 }
@@ -1313,7 +1743,7 @@ export async function convertWithNativePoppler(
   if (src !== 'pdf') return null;
 
   const startTime = Date.now();
-  const timeout = Math.min(options.timeoutMs || 45000, 120000);
+  const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
   const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
 
   // 1. Text extraction via pdftotext
@@ -1332,6 +1762,239 @@ export async function convertWithNativePoppler(
   }
 
   return null;
+}
+
+/**
+ * Raster targets written by the in-process image encoders: Poppler renders each page to PNG and the encoder
+ * takes the picture from there, the way the camera RAW route hands its decoded image to the same encoders.
+ */
+const ENCODED_RASTER_TARGETS: ReadonlySet<string> = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'webp']);
+/** PostScript targets: Poppler's pdftops writes them from the PDF. */
+const POSTSCRIPT_TARGETS: ReadonlySet<string> = new Set(['eps', 'ps']);
+const EPS_TARGET = 'eps';
+const DXF_TARGET = 'dxf';
+const PNG_FORMAT = 'png';
+const SVG_FORMAT = 'svg';
+/** Poppler tools: default and ceiling for the run time, and for the bytes read from a tool's output pipes. */
+const POPPLER_DEFAULT_TIMEOUT_MS = 45_000;
+const POPPLER_MAX_TIMEOUT_MS = 120_000;
+const POPPLER_DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
+const POPPLER_MAX_BUFFER_BYTES = 500 * 1024 * 1024;
+/** Pages one request may re-encode: the page images are already rendered, the encoders then run once per page. */
+const CHAINED_PAGE_ENCODE_MAX_PAGES = 500;
+
+/** Every target a PDF turns into with native tools: Poppler images and SVG, the encoded rasters, PostScript and DXF. */
+function isPdfChainTarget(tgt: string): boolean {
+  return (
+    POPPLER_IMAGE_FORMATS.has(tgt) ||
+    tgt === SVG_FORMAT ||
+    ENCODED_RASTER_TARGETS.has(tgt) ||
+    POSTSCRIPT_TARGETS.has(tgt) ||
+    tgt === DXF_TARGET
+  );
+}
+
+interface ChainOutputContext {
+  /** The engine reported for the result: the one that did the page rendering. */
+  engine: WorkerConversionResult['engineUsed'];
+  baseName: string;
+  options: WorkerEngineOptions;
+  input: Buffer | WorkerVfsPayload;
+  startTime: number;
+}
+
+/** Writes a chain's final bytes where the request asked for them, like every other engine does. */
+async function persistChainOutput(buffer: Buffer, extension: string, context: ChainOutputContext): Promise<WorkerConversionResult> {
+  return withSandboxDir('easyconvert-chain-', async (tempDir) => {
+    const outputPath = path.join(tempDir, `output.${extension}`);
+    fs.writeFileSync(outputPath, buffer);
+    const vfsPayload = Buffer.isBuffer(context.input) ? undefined : context.input;
+    const persistedPath = preserveOutput(outputPath, extension, context.options, vfsPayload);
+    return createConversionResult(persistedPath, extension, context.baseName, context.engine, Date.now() - context.startTime);
+  });
+}
+
+/**
+ * Re-encodes every page Poppler rendered. A single page is one file; several pages arrive as the ZIP of per-page
+ * files every Poppler route returns, and leave as a ZIP with the same entry names and the new extension.
+ */
+async function reencodeRenderedPages(
+  rendered: WorkerConversionResult,
+  renderedExtension: string,
+  targetExtension: string,
+  encode: (page: Buffer, entryName: string) => Promise<Buffer>,
+  context: ChainOutputContext
+): Promise<WorkerConversionResult> {
+  try {
+    if (!rendered.filename.endsWith('.zip')) {
+      return await persistChainOutput(await encode(rendered.buffer, rendered.filename), targetExtension, context);
+    }
+    const pages = await JSZip.loadAsync(rendered.buffer);
+    const entryNames = Object.keys(pages.files)
+      .filter((name) => !pages.files[name].dir)
+      .sort((a, b) => a.localeCompare(b));
+    if (entryNames.length > CHAINED_PAGE_ENCODE_MAX_PAGES) {
+      throw new PayloadLimitError(
+        `The document has ${entryNames.length} pages; at most ${CHAINED_PAGE_ENCODE_MAX_PAGES} can be converted to .${targetExtension} in one request. Select a page range.`
+      );
+    }
+    const encoded = new JSZip();
+    const renderedSuffix = `.${renderedExtension}`;
+    for (const entryName of entryNames) {
+      const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
+      const page = await pages.files[entryName].async('nodebuffer');
+      encoded.file(`${stem}.${targetExtension}`, await encode(page, entryName));
+    }
+    const zipBuffer = await encoded.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    return await persistChainOutput(zipBuffer, 'zip', context);
+  } finally {
+    // The intermediate pages are an implementation detail of this chain: never leave them on disk.
+    discardPersistedOutput(rendered.filePath, context.input, context.options);
+  }
+}
+
+/** The page images written by an encoder from PNG renders: page selection already happened in Poppler. */
+function encoderOptions(options: WorkerEngineOptions): ConversionOptions {
+  return { ...options, page: undefined, pages: undefined, multiPageOutput: undefined, password: undefined };
+}
+
+/** Options for a chain's first step: its output is an intermediate, so it is never written to the requested path. */
+function intermediateOptions(options: WorkerEngineOptions): WorkerEngineOptions {
+  return { ...options, outputPath: undefined } as WorkerEngineOptions;
+}
+
+/** PDF pages to avif, bmp, gif, ico, psd or webp: pdftoppm renders PNG pages, then the image encoder writes the target. */
+async function convertPdfToEncodedRaster(
+  input: Buffer | WorkerVfsPayload,
+  tgt: string,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  context: ChainOutputContext
+): Promise<WorkerConversionResult | null> {
+  const rendered = await convertWithNativePoppler(input, 'pdf', PNG_FORMAT, intermediateOptions(options), originalFilename);
+  if (!rendered) return null;
+  const pageOptions = encoderOptions(options);
+  return reencodeRenderedPages(
+    rendered,
+    PNG_FORMAT,
+    tgt,
+    async (page, entryName) => (await convertImage(page, tgt, pageOptions, entryName, PNG_FORMAT)).buffer,
+    context
+  );
+}
+
+/** PDF pages to DXF: pdftocairo draws each page as SVG geometry and the DXF writer turns the geometry into entities. */
+async function convertPdfToDxf(
+  input: Buffer | WorkerVfsPayload,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  context: ChainOutputContext
+): Promise<WorkerConversionResult | null> {
+  const rendered = await convertWithNativePoppler(input, 'pdf', SVG_FORMAT, intermediateOptions(options), originalFilename);
+  if (!rendered) return null;
+  return reencodeRenderedPages(rendered, SVG_FORMAT, DXF_TARGET, async (page) => encodeSvgPageToDxf(page), context);
+}
+
+/** True when the pages are consecutive, in order: the only selection one PostScript file can hold. */
+function isConsecutivePageRun(pages: readonly number[]): boolean {
+  return pages.every((page, index) => index === 0 || page === pages[index - 1] + 1);
+}
+
+/**
+ * PDF pages to PostScript with pdftops. PostScript holds many pages: one file covers the selected pages, which
+ * must be consecutive. EPS holds one picture, so each page becomes its own EPS file and several pages come back
+ * as the ZIP of per-page files every Poppler route returns (`multiPageOutput: 'first'` keeps page one).
+ */
+async function convertPdfToPostScript(
+  input: Buffer | WorkerVfsPayload,
+  tgt: string,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  startTime: number
+): Promise<WorkerConversionResult | null> {
+  const pdftopsBin = resolveBinary(BINARY_PATHS.pdftops, process.env.PDFTOPS_PATH);
+  if (!pdftopsBin) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('pdftops', 'pdftops binary is not installed or not in PATH');
+    }
+    return null;
+  }
+  const timeout = Math.min(stageTimeoutMs(options, POPPLER_DEFAULT_TIMEOUT_MS), POPPLER_MAX_TIMEOUT_MS);
+  const maxBuffer = Math.min(options.maxBufferBytes || POPPLER_DEFAULT_MAX_BUFFER_BYTES, POPPLER_MAX_BUFFER_BYTES);
+  const isEps = tgt === EPS_TARGET;
+  const run = (tempDir: string, args: string[]) =>
+    executeSandboxedBinary(pdftopsBin, args, { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal });
+
+  return executePopplerRender({
+    sandboxPrefix: 'easyconvert-poppler-ps-',
+    singleFile: !isEps,
+    tgt,
+    input,
+    options,
+    originalFilename,
+    startTime,
+    timeout,
+    filterOutputFile: (f) => f.endsWith(`.${tgt}`),
+    missingOutputError: `pdftops execution completed without producing any .${tgt} output`,
+    renderPages: async (tempDir, inputPath, requestedPages) => {
+      if (isEps) {
+        for (const page of requestedPages) {
+          await run(tempDir, ['-eps', '-f', String(page), '-l', String(page), inputPath, path.join(tempDir, `page-${page}.eps`)]);
+        }
+        return;
+      }
+      if (!isConsecutivePageRun(requestedPages)) {
+        throw new InvalidPageRangeError('PostScript output holds one run of consecutive pages: select a single range such as 2-4.');
+      }
+      const pages = options.multiPageOutput === 'first' ? requestedPages.slice(0, 1) : requestedPages;
+      const first = pages[0];
+      const last = pages[pages.length - 1];
+      await run(tempDir, ['-f', String(first), '-l', String(last), inputPath, path.join(tempDir, `output.${tgt}`)]);
+    },
+  });
+}
+
+/**
+ * A rendered PDF as HTML: the document text, page by page, from the in-process PDF reader. It fails with a typed
+ * error when the pages hold no text, so a presentation of pictures never becomes an empty page.
+ */
+async function convertPdfToHtml(
+  pdf: Buffer,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  input: Buffer | WorkerVfsPayload,
+  engine: WorkerConversionResult['engineUsed']
+): Promise<WorkerConversionResult> {
+  const startTime = Date.now();
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const html = await convertFile(pdf, 'pdf', HTML_TARGET, encoderOptions(options), `${baseName}.pdf`);
+  const body = HTML_BODY_PATTERN.exec(html.buffer.toString('utf-8'))?.[1] ?? '';
+  if (body.replace(HTML_TAG_PATTERN, '').trim() === '') {
+    throw new ConversionFailedError('The rendered pages hold no text, so there is nothing to write as HTML.');
+  }
+  return persistChainOutput(html.buffer, HTML_TARGET, { engine, baseName, options, input, startTime });
+}
+
+/**
+ * Turns a PDF into any target a native tool chain writes from PDF pages: Poppler images and SVG, the encoded
+ * rasters (pdftoppm, then the image encoder), PostScript and EPS (pdftops) and DXF (pdftocairo, then the DXF
+ * writer). Returns null for any other target, and for a missing tool unless the caller asked for an error.
+ */
+export async function convertPdfPagesWithNativeTools(
+  input: Buffer | WorkerVfsPayload,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult | null> {
+  const tgt = validateFormat(targetFormat);
+  if (!isPdfChainTarget(tgt)) return null;
+  const startTime = Date.now();
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const context: ChainOutputContext = { engine: 'native-poppler', baseName, options, input, startTime };
+  if (ENCODED_RASTER_TARGETS.has(tgt)) return convertPdfToEncodedRaster(input, tgt, options, originalFilename, context);
+  if (tgt === DXF_TARGET) return convertPdfToDxf(input, options, originalFilename, context);
+  if (POSTSCRIPT_TARGETS.has(tgt)) return convertPdfToPostScript(input, tgt, options, originalFilename, startTime);
+  return convertWithNativePoppler(input, 'pdf', tgt, options, originalFilename);
 }
 
 /** Targets that package the original camera file instead of rendering its pixels. */
@@ -1369,7 +2032,7 @@ export async function convertWithNativeRaw(
 
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const startTime = Date.now();
-  const timeout = Math.min(options.timeoutMs || RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_MAX_TIMEOUT_MS);
+  const timeout = Math.min(stageTimeoutMs(options, RAW_DECODE_DEFAULT_TIMEOUT_MS), RAW_DECODE_MAX_TIMEOUT_MS);
 
   return withSandboxDir('easyconvert-raw-', async (tempDir) => {
     const { inputPath } = resolveInputContext(input, src, tempDir);
@@ -1425,6 +2088,154 @@ export async function convertWithNativeRaw(
   });
 }
 
+/** SVG drawings written as PDF: librsvg draws the vectors and the text, so the page stays a vector page. */
+const SVG_SOURCE = 'svg';
+const SVG_DEFAULT_TIMEOUT_MS = 60_000;
+const SVG_MAX_TIMEOUT_MS = 300_000;
+const SVG_MEMORY_LIMIT_MB = 2048;
+const SVG_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
+const SVG_MAX_STDERR_CHARS = 300;
+
+/**
+ * Writes an SVG as a vector PDF with librsvg's `rsvg-convert` (an unmodified separate program, LGPL): paths stay paths and
+ * text stays text, the way the standard SVG renderer writes it, instead of a raster picture inside a PDF page. The SVG
+ * is sanitised first and the renderer runs in the sandbox without network. Returns null when the target is not PDF or
+ * `rsvg-convert` is missing and the caller did not ask for an error.
+ */
+export async function convertWithNativeSvg(
+  input: Buffer | WorkerVfsPayload,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult | null> {
+  const src = validateFormat(sourceFormat);
+  const tgt = validateFormat(targetFormat);
+  if (src !== SVG_SOURCE || tgt !== PDF_SOURCE_FORMAT) return null;
+  const renderer = resolveBinary(BINARY_PATHS.rsvgConvert, process.env.RSVG_CONVERT_PATH);
+  if (!renderer) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('rsvg-convert', 'rsvg-convert (librsvg2-bin) is not installed or not in PATH');
+    }
+    return null;
+  }
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const startTime = Date.now();
+  const timeout = Math.min(stageTimeoutMs(options, SVG_DEFAULT_TIMEOUT_MS), SVG_MAX_TIMEOUT_MS);
+  const svg = normalizeSvgForRendering(sanitizeSvgDocument(readRawInputBuffer(input).toString('utf-8')));
+
+  return withSandboxDir('easyconvert-svg-', async (tempDir) => {
+    const inputPath = path.join(tempDir, 'input.svg');
+    const outputPath = path.join(tempDir, 'output.pdf');
+    fs.writeFileSync(inputPath, svg);
+    try {
+      await executeSandboxedBinary(renderer, ['--format', 'pdf', '--output', outputPath, inputPath], {
+        cwd: tempDir,
+        timeoutMs: timeout,
+        maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
+        maxFileSize: SVG_MAX_OUTPUT_BYTES,
+        memoryLimitMb: SVG_MEMORY_LIMIT_MB,
+        networkIsolated: true,
+        signal: options.signal,
+      });
+    } catch (err) {
+      if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
+        throw new ConversionFailedError('The SVG renderer exceeded its output or memory limit on the drawing.');
+      }
+      if (err instanceof SandboxedProcessError) {
+        const detail = err.stderr.trim().slice(0, SVG_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+        throw new ConversionFailedError(`The SVG renderer rejected the drawing${detail ? `: ${detail}` : ''}`);
+      }
+      throw err;
+    }
+    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+      throw new ConversionFailedError('The SVG renderer wrote no page from the drawing.');
+    }
+    const persistedPath = preserveOutput(outputPath, 'pdf', options, Buffer.isBuffer(input) ? undefined : input);
+    return createConversionResult(persistedPath, 'pdf', baseName, 'native-svg', Date.now() - startTime);
+  });
+}
+
+/** PostScript sources: only an interpreter can draw them, so the worker runs ps2pdf and then Poppler. */
+const POSTSCRIPT_SOURCES: ReadonlySet<string> = new Set(['eps', 'ps']);
+const POSTSCRIPT_DEFAULT_TIMEOUT_MS = 120_000;
+const POSTSCRIPT_MAX_TIMEOUT_MS = 600_000;
+const POSTSCRIPT_MEMORY_LIMIT_MB = 2048;
+const POSTSCRIPT_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
+const POSTSCRIPT_MAX_STDERR_CHARS = 300;
+/** The interpreter runs in its safe mode: the file cannot read or write other files or start programs. */
+const POSTSCRIPT_INTERPRETER_FLAGS: readonly string[] = ['-dSAFER'];
+/** An EPS is a figure, not a page: the PDF page is cropped to its %%BoundingBox instead of the default paper size. */
+const EPS_SOURCE = 'eps';
+const EPS_CROP_FLAG = '-dEPSCrop';
+
+/**
+ * Renders PostScript (EPS, PS) with `ps2pdf` and, for targets other than PDF, hands the PDF to the native tools
+ * every PDF source uses (Poppler images and SVG, the encoded rasters, pdftops and the DXF writer). Returns null when `ps2pdf` is missing and the caller did not
+ * ask for an error; with `throwOnUnavailable` a missing interpreter is an EngineUnavailableError.
+ */
+export async function convertWithNativePostScript(
+  input: Buffer | WorkerVfsPayload,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult | null> {
+  const src = validateFormat(sourceFormat);
+  const tgt = validateFormat(targetFormat);
+  if (!POSTSCRIPT_SOURCES.has(src)) return null;
+  const interpreter = resolveBinary(BINARY_PATHS.ps2pdf, process.env.PS2PDF_PATH);
+  if (!interpreter) {
+    if (options.throwOnUnavailable) {
+      throw new EngineUnavailableError('ps2pdf', 'ps2pdf (Ghostscript) is not installed or not in PATH');
+    }
+    return null;
+  }
+  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
+  const startTime = Date.now();
+  const timeout = Math.min(stageTimeoutMs(options, POSTSCRIPT_DEFAULT_TIMEOUT_MS), POSTSCRIPT_MAX_TIMEOUT_MS);
+
+  const pdf = await withSandboxDir('easyconvert-postscript-', async (tempDir) => {
+    const { inputPath } = resolveInputContext(input, src, tempDir);
+    const pdfPath = path.join(tempDir, 'rendered.pdf');
+    try {
+      const flags = src === EPS_SOURCE ? [...POSTSCRIPT_INTERPRETER_FLAGS, EPS_CROP_FLAG] : POSTSCRIPT_INTERPRETER_FLAGS;
+      await executeSandboxedBinary(interpreter, [...flags, inputPath, pdfPath], {
+        cwd: tempDir,
+        timeoutMs: timeout,
+        maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
+        maxFileSize: POSTSCRIPT_MAX_OUTPUT_BYTES,
+        memoryLimitMb: POSTSCRIPT_MEMORY_LIMIT_MB,
+        networkIsolated: true,
+        signal: options.signal,
+      });
+    } catch (err) {
+      if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
+        throw new ConversionFailedError(`The PostScript interpreter exceeded its output or memory limit on the .${src} file.`);
+      }
+      if (err instanceof SandboxedProcessError) {
+        const detail = err.stderr.trim().slice(0, POSTSCRIPT_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
+        throw new ConversionFailedError(`The PostScript interpreter rejected the .${src} file${detail ? `: ${detail}` : ''}`);
+      }
+      throw err;
+    }
+    if (!fs.existsSync(pdfPath) || fs.statSync(pdfPath).size === 0) {
+      throw new ConversionFailedError(`The PostScript interpreter drew no page from the .${src} file.`);
+    }
+    return fs.readFileSync(pdfPath);
+  });
+
+  if (tgt === 'pdf') {
+    return withSandboxDir('easyconvert-postscript-out-', async (tempDir) => {
+      const outputPath = path.join(tempDir, 'output.pdf');
+      fs.writeFileSync(outputPath, pdf);
+      const persistedPath = preserveOutput(outputPath, 'pdf', options, Buffer.isBuffer(input) ? undefined : input);
+      return createConversionResult(persistedPath, 'pdf', baseName, 'native-postscript', Date.now() - startTime);
+    });
+  }
+  return convertPdfPagesWithNativeTools(pdf, tgt, options, originalFilename);
+}
+
 /**
  * Camera RAW formats LibRaw's distribution build cannot open and that are decoded in-process from the
  * real sensor data instead: Sigma X3F (Foveon) and Raspberry Pi frames (a JPEG followed by a "BRCM" Bayer dump).
@@ -1468,7 +2279,7 @@ export async function convertWithInProcessRawSensor(
   if (!recognized) return null;
 
   const startTime = Date.now();
-  const timeout = Math.min(options.timeoutMs || RAW_DECODE_DEFAULT_TIMEOUT_MS, RAW_DECODE_MAX_TIMEOUT_MS);
+  const timeout = Math.min(stageTimeoutMs(options, RAW_DECODE_DEFAULT_TIMEOUT_MS), RAW_DECODE_MAX_TIMEOUT_MS);
   const decoded = await decodeRawInThread(src as 'x3f' | 'raw', file, timeout, options.signal);
   const intermediate = encode16BitTiff(decoded.width, decoded.height, decoded.rgb16);
   const converted = await convertImage(intermediate, tgt, options, originalFilename, 'tiff');
@@ -1486,39 +2297,279 @@ export async function convertWithInProcessRawSensor(
  * Dispatches to native container engines first, with fail-closed security and pure TS fallback.
  */
 const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf']);
-const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
-const COMPLEX_TEXT_FORMATS = new Set(['txt', 'html', 'htm', 'md']);
+/**
+ * Sources LibreOffice reads and renders: the Office formats plus PowerPoint templates, Keynote
+ * presentations and OpenDocument drawings, none of which the in-process engine can render. Targets
+ * are still limited to OFFICE_FORMATS, because LibreOffice cannot write the other formats.
+ */
+const OFFICE_NATIVE_SOURCES: ReadonlySet<string> = new Set([
+  ...OFFICE_FORMATS,
+  'potx',
+  'key',
+  'odg',
+  'odd',
+  // Macro-enabled, template and slideshow variants: LibreOffice opens them like their plain formats, without running macros.
+  ...Object.keys(OOXML_VARIANT_FAMILY),
+]);
+/** LibreOffice application that opens and writes each Office format: a document is only converted into its own application's formats (and PDF). */
+const LIBREOFFICE_APPLICATION: Readonly<Record<string, 'writer' | 'calc' | 'impress'>> = {
+  doc: 'writer', docx: 'writer', odt: 'writer', rtf: 'writer', docm: 'writer', dotx: 'writer', dotm: 'writer',
+  xls: 'calc', xlsx: 'calc', ods: 'calc', xlsm: 'calc', xltx: 'calc', xltm: 'calc',
+  ppt: 'impress', pptx: 'impress', odp: 'impress', potx: 'impress', pptm: 'impress', potm: 'impress', ppsx: 'impress', ppsm: 'impress',
+};
+/** Whether LibreOffice has no export filter for the pair: a text document cannot be saved as a presentation, nor a workbook as a text document. */
+function crossesLibreOfficeApplications(src: string, tgt: string): boolean {
+  const from = LIBREOFFICE_APPLICATION[src];
+  const to = LIBREOFFICE_APPLICATION[tgt];
+  return from !== undefined && to !== undefined && from !== to;
+}
+/** Formats LibreOffice also writes back out: a drawing template is saved again as a normalised template (.otg). */
+const OFFICE_NATIVE_RESAVE_FORMATS: ReadonlySet<string> = new Set(['odd']);
+/** A presentation LibreOffice can only read: its HTML is the text of the PDF it renders. */
+const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
+/** Sources only LibreOffice renders: an unreadable file is the client's, so it answers a typed 400 instead of an untyped failure. */
+const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
+const LIBREOFFICE_ONLY_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd', 'key']);
+const LIBREOFFICE_NO_OUTPUT_PATTERN = /^LibreOffice execution completed without producing expected output file/;
+/**
+ * The package a macro-enabled variant is handed to LibreOffice as: the plain package without its macro project, so no
+ * macro is ever in reach of the office suite. Inputs that are not in memory and other formats are handed over as they are.
+ */
+export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload, src: string): Promise<Buffer | WorkerVfsPayload> {
+  const family = OOXML_VARIANT_FAMILY[src];
+  const buffer = family === undefined ? undefined : inputAsBuffer(input);
+  if (family === undefined || buffer === undefined) return input;
+  const plain = await ooxmlVariantAsPlainPackage(buffer, src, family);
+  return plain.droppedMacros ? plain.buffer : input;
+}
+/** LibreOffice's stderr when it cannot load the file, or loads it as another kind of document (a text file named .ppt) that has no export filter for the target. */
+const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded|no export filter for/;
 
-function checkInputContainsComplexScript(input: Buffer | WorkerVfsPayload, src: string): boolean {
-  if (!COMPLEX_TEXT_FORMATS.has(src)) return false;
-  try {
-    let buf: Buffer | undefined;
-    if (Buffer.isBuffer(input)) {
-      buf = input;
-    } else if (input.inputBuffer) {
-      buf = input.inputBuffer;
-    } else if (input.inputPath && fs.existsSync(input.inputPath)) {
-      const fd = fs.openSync(input.inputPath, 'r');
-      const stat = fs.fstatSync(fd);
-      const readLen = Math.min(512 * 1024, stat.size);
-      const readBuf = Buffer.alloc(readLen);
-      fs.readSync(fd, readBuf, 0, readLen, 0);
-      fs.closeSync(fd);
-      buf = readBuf;
-    }
-    if (buf) {
-      return hasComplexTextScript(buf.toString('utf-8'));
-    }
-  } catch {
-    // Ignore read errors
+/** The input as a buffer when it is held in memory or small enough to be read (files too big for memory go straight to LibreOffice). */
+function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
+  if (Buffer.isBuffer(input)) return input;
+  if (input.inputBuffer) return input.inputBuffer;
+  if (input.inputPath && fs.existsSync(input.inputPath) && fs.statSync(input.inputPath).size <= getMaxInMemoryBytes()) {
+    return fs.readFileSync(input.inputPath);
   }
-  return false;
+  return undefined;
+}
+
+/** Proves, before LibreOffice starts, that a drawing is an OpenDocument drawing package. */
+async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src: string): Promise<void> {
+  if (!DRAWING_SOURCES.has(src)) return;
+  const buffer = inputAsBuffer(input);
+  if (buffer) await assertOpenDocumentGraphic(buffer, src);
+}
+
+/**
+ * Answers an encrypted legacy workbook with the same typed error (HTTP 422) on every route. The in-process reader
+ * raises it for the text targets; LibreOffice would only report that the source could not be loaded, which is
+ * indistinguishable from a damaged file, so the FilePass record is looked for before it starts.
+ */
+function assertWorkbookNotEncrypted(input: Buffer | WorkerVfsPayload, src: string): void {
+  if (src !== 'xls') return;
+  const buffer = inputAsBuffer(input);
+  if (buffer) assertXlsNotEncrypted(buffer);
+}
+
+/** LibreOffice ran and wrote nothing for a drawing or Keynote file: the file is damaged or not that kind of document (typed 400). */
+function asUnreadableDocument(err: unknown, src: string): unknown {
+  if (OFFICE_NATIVE_SOURCES.has(src) && err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
+    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
+  }
+  if (OFFICE_NATIVE_SOURCES.has(src) && err instanceof SandboxedProcessError && LIBREOFFICE_LOAD_FAILURE_PATTERN.test(err.message)) {
+    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged, encrypted or not a valid ${src.toUpperCase()} document.`);
+  }
+  return err;
+}
+const HTML_TARGET = 'html';
+const HTML_BODY_PATTERN = /<body[^>]*>([\s\S]*)<\/body>/i;
+const HTML_TAG_PATTERN = /<[^>]*>/g;
+const MEDIA_FORMATS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma']);
+/** Text sources rendered to PDF; CJK or complex-script text and all HTML prefer LibreOffice. */
+const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
+/** Sources LibreOffice reads directly; their text is scanned in chunks, whatever the size. HTML is decoded whole, by encoding sniffing. */
+const STREAMED_TEXT_SOURCES: ReadonlySet<string> = new Set(['txt']);
+/** HTML always prefers LibreOffice, which keeps its full structure. */
+const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
+const HTML_FORMAT = 'html';
+const PLAIN_TEXT_SOURCE = 'txt';
+const MARKDOWN_SOURCE = 'md';
+const TEXT_SCAN_CHUNK_BYTES = 1024 * 1024;
+
+/** CSS page sizes LibreOffice applies to staged HTML (the last @page rule wins). */
+const PAGE_SIZE_CSS: Readonly<Record<'portrait' | 'landscape', string>> = {
+  portrait: '210mm 297mm',
+  landscape: '297mm 210mm',
+};
+
+type PageOrientation = 'portrait' | 'landscape';
+
+interface TextPdfRoute {
+  /** Text has Arabic, Hebrew, Indic or another complex script: LibreOffice lays it out first, the in-process shaper is the fallback. */
+  readonly complexScript: boolean;
+  /** LibreOffice renders this input first when installed. */
+  readonly preferNative: boolean;
+  /** Page orientation LibreOffice must apply, when one was requested. */
+  readonly orientation?: PageOrientation;
+  /** The checked HTML LibreOffice renders, rebuilt from the parsed input (absent when it reads the text file itself). */
+  readonly stagedHtml?: Buffer;
+  /** Warnings the staging produced, one per external image it left out of the HTML. */
+  readonly stagedWarnings?: readonly string[];
+}
+
+/** Every distinct character of a text file, read and strictly decoded in chunks, whatever the size. */
+function distinctCharactersOfFile(filePath: string): string {
+  const seen = new Set<number>();
+  const chunk = Buffer.alloc(TEXT_SCAN_CHUNK_BYTES);
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    let bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
+    const decode = createTextInputDecoder(chunk.subarray(0, bytesRead));
+    while (bytesRead > 0) {
+      for (const ch of decode(chunk.subarray(0, bytesRead))) seen.add(ch.codePointAt(0) as number);
+      bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
+    }
+    for (const ch of decode()) seen.add(ch.codePointAt(0) as number);
+  } finally {
+    fs.closeSync(fd);
+  }
+  let text = '';
+  for (const codePoint of seen) text += String.fromCodePoint(codePoint);
+  return text;
+}
+
+/** The text whose scripts decide the PDF route: the file's characters, or the HWP document text. */
+function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): string {
+  if (src === 'hwp') {
+    const hwp = parseHwpDocument(readRawInputBuffer(input));
+    return [...hwp.paragraphs.map((p) => p.text), ...hwp.tables.flatMap((t) => t.rows.flat())].join('\n');
+  }
+  if (HTML_SOURCES.has(src)) return decodeHtmlInput(readRawInputBuffer(input));
+  const filePath = !Buffer.isBuffer(input) && !input.inputBuffer ? input.inputPath : undefined;
+  if (STREAMED_TEXT_SOURCES.has(src) && filePath && fs.existsSync(filePath)) {
+    return distinctCharactersOfFile(filePath);
+  }
+  const raw = readRawInputBuffer(input);
+  return decodeTextInput(raw);
+}
+
+/**
+ * Decides how text and HTML go to PDF. Complex-script text prefers LibreOffice and is shaped in-process without it. HTML prefers it for
+ * its full structure, and so do CJK Markdown and HWP; plain CJK text stays in-process when the
+ * installed fonts cover it. With an explicit orientation, everything but complex-script text stays
+ * in-process, which applies the orientation itself. Both engines draw with the installed fonts, so
+ * CJK or complex-script letters no installed font covers fail first with EngineUnavailableError.
+ */
+async function planTextPdfRoute(
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  tgt: string,
+  originalFilename: string,
+  orientation?: PageOrientation,
+  policy: HtmlResourcePolicy = {}
+): Promise<TextPdfRoute | null> {
+  if (tgt !== 'pdf' || !TEXT_PDF_SOURCES.has(src)) return null;
+  await loadFontCoverageIndex();
+  const text = textForPdfRouting(input, src);
+  const complexScript = hasComplexTextScript(text);
+  const cjk = hasCjkScript(text);
+  if (complexScript || cjk) {
+    const scriptLetters = new Set<string>();
+    for (const ch of text) {
+      if (hasCjkScript(ch) || hasComplexTextScript(ch)) scriptLetters.add(ch);
+    }
+    assertFontCoverage(Array.from(scriptLetters).join(''));
+  }
+  const route = planTextPdfEngine(src, text, complexScript, cjk, orientation);
+  if (!route.preferNative || (src === PLAIN_TEXT_SOURCE && !route.orientation)) return route;
+  // Staged here, before LibreOffice is tried, so a refused reference is a 400 and never a fallback.
+  const staged = await stageTextPdfHtml(input, src, originalFilename, route.orientation, policy);
+  return { ...route, stagedHtml: staged.html, stagedWarnings: staged.warnings };
+}
+
+/**
+ * The HTML LibreOffice renders for a text source, rebuilt from the parsed document so it reads
+ * only what was checked: HTML as given, Markdown and HWP converted in-process (LibreOffice cannot
+ * open them), and text as one paragraph per line. A requested orientation is a CSS page size.
+ */
+async function stageTextPdfHtml(
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  originalFilename: string,
+  orientation?: PageOrientation,
+  policy: HtmlResourcePolicy = {}
+): Promise<{ html: Buffer; warnings: string[] }> {
+  const raw = readRawInputBuffer(input);
+  let html: string;
+  if (HTML_SOURCES.has(src)) {
+    html = decodeHtmlInput(raw);
+  } else if (src === PLAIN_TEXT_SOURCE) {
+    html = plainTextToHtml(decodeTextInput(raw));
+  } else if (src === MARKDOWN_SOURCE) {
+    html = markdownToSafeHtml(decodeTextInput(raw), originalFilename.replace(/\.[^/.]+$/, ''));
+  } else {
+    html = (await convertFile(raw, src, HTML_FORMAT, {}, originalFilename)).buffer.toString('utf-8');
+  }
+  // Appended last so it overrides any @page rule of the document.
+  const pageSize = orientation ? `\n<style>@page { size: ${PAGE_SIZE_CSS[orientation]}; }</style>\n` : '';
+  const staged = await stageHtmlForNativeEngine(html, policy);
+  return { html: Buffer.from(staged.html + pageSize, 'utf-8'), warnings: staged.warnings };
+}
+
+function planTextPdfEngine(
+  src: string,
+  text: string,
+  complexScript: boolean,
+  cjk: boolean,
+  orientation?: PageOrientation
+): TextPdfRoute {
+  if (complexScript) return { complexScript, preferNative: true, orientation };
+  if (orientation) return { complexScript, preferNative: false };
+  if (HTML_SOURCES.has(src)) return { complexScript, preferNative: true };
+  if (src === PLAIN_TEXT_SOURCE) return { complexScript, preferNative: cjk && findUncoveredCodePoint(text) !== null };
+  return { complexScript, preferNative: cjk };
+}
+
+function escapeHtmlText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Plain text as an HTML document, one paragraph per line. */
+function plainTextToHtml(text: string): string {
+  const paragraphs = text.split(/\r\n?|\n/).map((line) => (line.trim() ? `<p>${escapeHtmlText(line)}</p>` : '<p><br></p>'));
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>\n${paragraphs.join('\n')}\n</body></html>\n`;
+}
+
+/**
+ * Renders text or HTML to PDF with LibreOffice: the staged HTML when the route has one (HTML,
+ * Markdown, HWP, or text with an orientation), otherwise the text file itself.
+ */
+async function convertTextPdfWithHeadlessOffice(
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  options: WorkerEngineOptions,
+  originalFilename: string,
+  stagedHtml?: Buffer
+): Promise<WorkerConversionResult | null> {
+  if (!stagedHtml) {
+    return convertWithHeadlessOffice(input, src, 'pdf', options, originalFilename);
+  }
+  if (!resolveBinary(BINARY_PATHS.soffice, process.env.SOFFICE_PATH)) {
+    throw new EngineUnavailableError('soffice', 'LibreOffice binary is not installed or not in PATH');
+  }
+  const stagedInput: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? stagedHtml : { inputBuffer: stagedHtml, outputPath: input.outputPath };
+  return convertWithHeadlessOffice(stagedInput, HTML_FORMAT, 'pdf', options, originalFilename);
 }
 
 /** Whether text output holds any character other than whitespace (form feeds from empty pages count as blank). */
 function hasNonWhitespaceText(buffer: Buffer): boolean {
   return buffer.toString('utf-8').trim().length > 0;
 }
+
+const ILLUSTRATOR_FORMAT = 'ai';
+const PDF_SOURCE_FORMAT = 'pdf';
 
 /** Deletes an engine's temporary output file unless it is the destination the caller asked for. */
 function discardPersistedOutput(filePath: string | undefined, input: Buffer | WorkerVfsPayload, options: WorkerEngineOptions): void {
@@ -1528,7 +2579,22 @@ function discardPersistedOutput(filePath: string | undefined, input: Buffer | Wo
   fs.rmSync(filePath, { force: true });
 }
 
-export async function executeWorkerConversion(
+/**
+ * Converts one file. The images an HTML page names are fetched through one session for the whole call, so the caps on
+ * their number, size and time hold across the LibreOffice route and the in-process route that may follow it.
+ */
+export function executeWorkerConversion(
+  input: Buffer | WorkerVfsPayload,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult> {
+  // Options that are not an object are refused by the conversion itself; here only their signal is read.
+  return runWithImageFetchSession(options?.signal, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename));
+}
+
+async function convertWithinImageSession(
   input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
   targetFormat: string,
@@ -1536,37 +2602,59 @@ export async function executeWorkerConversion(
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
   assertConversionOptionsObject(options);
-  const src = validateFormat(sourceFormat);
+  // An aborted job (deadline, cancel) starts no further stage: work that cannot be interrupted must not begin.
+  options.signal?.throwIfAborted();
+  const declaredSource = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
   const startTime = Date.now();
 
   // Fail-closed verification against spoofed file extensions before any native engine execution
-  assertNotSpoofedFileVfs(input, src, originalFilename);
+  assertNotSpoofedFileVfs(input, declaredSource, originalFilename);
+  // An Illustrator file is a PDF with private data; once the check above has seen the PDF signature, it takes the PDF path
+  // (Poppler pages, PostScript, the encoded rasters). Packaging keeps the file as it is.
+  const src = declaredSource === ILLUSTRATOR_FORMAT && !RAW_PACKAGING_TARGETS.has(tgt) ? PDF_SOURCE_FORMAT : declaredSource;
 
   let fallbackReason: string | undefined;
   let lastUnavailable: EngineUnavailableError | undefined;
   const fallbackChain: string[] = [];
   const nativeOptions: WorkerEngineOptions = { ...options, throwOnUnavailable: true };
-  const isComplexText = tgt === 'pdf' && checkInputContainsComplexScript(input, src);
+  const textPdfRoute = await planTextPdfRoute(input, src, tgt, originalFilename, options.orientation, {
+    requireResources: options.requireResources,
+    signal: options.signal,
+  });
+  const isNativeTextPdf = Boolean(textPdfRoute?.preferNative);
   const isRecalculate = Boolean(options.recalculate) && (src === 'xlsx' || src === 'xls' || src === 'ods');
 
   // 1. Native Headless Office
-  if (isComplexText || isRecalculate || (OFFICE_FORMATS.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)))) {
+  await assertDrawingPackage(input, src);
+  assertWorkbookNotEncrypted(input, src);
+  if (OFFICE_NATIVE_SOURCES.has(src)) input = await officeInputWithoutMacros(input, src);
+  const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
+  if (isNativeTextPdf || isRecalculate || isOfficeResave || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)) && !crossesLibreOfficeApplications(src, tgt))) {
     try {
-      const officeRes = await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
+      const officeRes = isNativeTextPdf
+        ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
+        : await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
       if (officeRes) {
+        const stagedWarnings = isNativeTextPdf ? (textPdfRoute?.stagedWarnings ?? []) : [];
         return {
           ...officeRes,
+          ...(stagedWarnings.length > 0 ? { metadata: { ...officeRes.metadata, warnings: stagedWarnings } } : {}),
           fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
         };
       }
     } catch (err) {
-      if (err instanceof EngineUnavailableError) {
-        if (isComplexText) {
-          throw new ComplexScriptRequiresNativeEngineError(
-            `Rendering complex text script (${src} to pdf) requires the native LibreOffice engine: ${err.message}`
-          );
+      rethrowSandboxUnavailable(err);
+      if (isNativeTextPdf && !options.signal?.aborted) {
+        // Text and HTML: a LibreOffice that is missing, fails or times out never surfaces as an untyped error.
+        const message = err instanceof Error ? err.message : String(err);
+        if (options.pdfStandard) {
+          throw new EngineUnavailableError('soffice', `Native LibreOffice engine is required for pdfStandard '${options.pdfStandard}': ${message}`);
         }
+        fallbackChain.push(`native-soffice: ${message}`);
+        fallbackReason = message;
+        if (err instanceof EngineUnavailableError) lastUnavailable = err;
+      } else if (err instanceof EngineUnavailableError) {
         if (isRecalculate) {
           throw new EngineUnavailableError(
             'soffice',
@@ -1583,13 +2671,15 @@ export async function executeWorkerConversion(
         fallbackReason = err.message;
         lastUnavailable = err;
       } else {
-        throw err;
+        throw asUnreadableDocument(err, src);
       }
     }
   }
 
-  // 1b. Office Documents -> Raster / Vector Image Chaining via LibreOffice + Poppler
-  if (OFFICE_FORMATS.has(src) && (POPPLER_IMAGE_FORMATS.has(tgt) || tgt === 'svg')) {
+  // 1b. Office Documents -> pages via LibreOffice + native PDF tools: Poppler images and SVG, the encoded
+  // rasters, PostScript and EPS, DXF; a presentation LibreOffice only reads also becomes HTML.
+  const isPresentationHtml = PRESENTATION_HTML_SOURCES.has(src) && tgt === HTML_TARGET;
+  if (OFFICE_NATIVE_SOURCES.has(src) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
       intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);
@@ -1597,13 +2687,9 @@ export async function executeWorkerConversion(
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
           : intermediatePdf.buffer;
-        const popplerRes = await convertWithNativePoppler(
-          popplerInput,
-          'pdf',
-          tgt,
-          nativeOptions,
-          originalFilename
-        );
+        const popplerRes = isPresentationHtml
+          ? await convertPdfToHtml(intermediatePdf.buffer, nativeOptions, originalFilename, input, intermediatePdf.engineUsed)
+          : await convertPdfPagesWithNativeTools(popplerInput, tgt, nativeOptions, originalFilename);
         if (popplerRes) {
           return {
             ...popplerRes,
@@ -1612,6 +2698,7 @@ export async function executeWorkerConversion(
         }
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (isPasswordHandlingUnavailable(err, options.password)) {
         throw err;
       }
@@ -1620,7 +2707,7 @@ export async function executeWorkerConversion(
         fallbackReason = err.message;
         lastUnavailable = err;
       } else {
-        throw err;
+        throw asUnreadableDocument(err, src);
       }
     } finally {
       // The intermediate PDF is an implementation detail of this chain: never leave it on disk.
@@ -1648,6 +2735,49 @@ export async function executeWorkerConversion(
     }
   }
 
+  // 1c''. SVG drawings written as PDF: librsvg keeps the vectors and the text. A worker without it keeps the in-process raster page.
+  if (src === SVG_SOURCE && tgt === PDF_SOURCE_FORMAT) {
+    try {
+      const svgRes = await convertWithNativeSvg(input, src, tgt, nativeOptions, originalFilename);
+      if (svgRes) {
+        return {
+          ...svgRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
+    } catch (err) {
+      rethrowSandboxUnavailable(err);
+      if (err instanceof EngineUnavailableError) {
+        fallbackChain.push(`native-svg: ${err.message}`);
+        fallbackReason = err.message;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // 1c'. PostScript sources: ps2pdf, then the native PDF tools for every page target.
+  if (POSTSCRIPT_SOURCES.has(src) && (tgt === 'pdf' || isPdfChainTarget(tgt))) {
+    try {
+      const psRes = await convertWithNativePostScript(input, src, tgt, nativeOptions, originalFilename);
+      if (psRes) {
+        return {
+          ...psRes,
+          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
+        };
+      }
+    } catch (err) {
+      rethrowSandboxUnavailable(err);
+      if (err instanceof EngineUnavailableError) {
+        fallbackChain.push(`native-postscript: ${err.message}`);
+        fallbackReason = err.message;
+        lastUnavailable = err;
+      } else {
+        throw err;
+      }
+    }
+  }
+
   // 1d. Native RAW sensor decode (LibRaw). Formats LibRaw does not recognize may still yield an
   // embedded preview in-process, but only when the request opted in.
   if (RAW_CAMERA_FORMATS.has(src) && !RAW_PACKAGING_TARGETS.has(tgt)) {
@@ -1660,6 +2790,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-raw: ${err.message}`);
         fallbackReason = err.message;
@@ -1690,6 +2821,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-ffmpeg: ${err.message}`);
         fallbackReason = err.message;
@@ -1723,6 +2855,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (isPasswordHandlingUnavailable(err, options.password)) {
         // Only qpdf can open the document; falling back would convert an unreadable file.
         throw err;
@@ -1748,6 +2881,7 @@ export async function executeWorkerConversion(
         };
       }
     } catch (err) {
+      rethrowSandboxUnavailable(err);
       if (err instanceof EngineUnavailableError) {
         fallbackChain.push(`native-7z: ${err.message}`);
         fallbackReason = err.message;
@@ -1794,6 +2928,8 @@ export async function executeWorkerConversion(
   }
   let internalRes: ConversionResult;
   try {
+    // The in-process engine cannot be interrupted once it runs: it must not start for an aborted job.
+    options.signal?.throwIfAborted();
     internalRes = await convertFile(inputBuffer, src, tgt, options, originalFilename);
   } catch (err) {
     // The in-process engine cannot decode this camera data, yet the native RAW engine could have.
@@ -1826,7 +2962,7 @@ export async function executeWorkerConversion(
       filePath: finalPath,
       engineUsed: 'internal-fallback',
       executionTimeMs: Date.now() - startTime,
-      metadata: fallbackMetadata,
+      metadata: { ...internalRes.metadata, ...fallbackMetadata },
       fallbackReason,
       fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
     };
@@ -1835,7 +2971,7 @@ export async function executeWorkerConversion(
     ...internalRes,
     engineUsed: 'internal-fallback',
     executionTimeMs: Date.now() - startTime,
-    metadata: fallbackMetadata,
+    metadata: { ...internalRes.metadata, ...fallbackMetadata },
     fallbackReason,
     fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
   };

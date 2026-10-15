@@ -29,6 +29,8 @@ playwright/
 
 # Documentation & Misc
 *.md
+# The worker image ships the third-party notices under /licenses.
+!THIRD_PARTY_NOTICES.md
 .DS_Store
 *.log
 npm-debug.log*

@@ -239,7 +239,7 @@ describe('Algorithmic Advancements & Standards Parity Suite', () => {
       const csvText = result.buffer.toString('utf-8');
 
       // The 4th row should have computed 60 (SUM) and 200 (AVERAGE)
-      expect(csvText).toContain('60,200');
+      expect(csvText).toBe('10,100\n20,200\n30,300\n60,200');
     });
   });
 });

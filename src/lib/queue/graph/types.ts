@@ -1,4 +1,4 @@
-import type { ConversionOptions } from '@/lib/types';
+import type { ConversionOptions, MediaPackagingOptions } from '@/lib/types';
 
 export type NodeId = string;
 
@@ -9,10 +9,15 @@ export interface ImportUploadNode {
   storageKey: string;
 }
 
+/**
+ * `url` and `headers` are bearer secrets. Submitted as plaintext, they are replaced by `sealed`
+ * before the node is stored or queued, and opened only by the worker that runs the node.
+ */
 export interface ImportUrlNode {
   op: 'import.url';
-  url: string;
+  url?: string;
   headers?: Record<string, string>;
+  sealed?: string;
 }
 
 export interface ConvertNode {
@@ -57,9 +62,11 @@ export interface ArchiveExtractNode {
 export interface ExportUrlNode {
   op: 'export.url';
   input: NodeId | NodeId[];
-  url: string;
+  /** Plaintext only on submission; see ImportUrlNode. */
+  url?: string;
   method?: 'PUT' | 'POST';
   headers?: Record<string, string>;
+  sealed?: string;
 }
 
 export interface WatermarkNode {
@@ -80,6 +87,48 @@ export interface PdfProtectNode {
   options?: ConversionOptions;
 }
 
+/** Removes the encryption and owner restrictions of PDFs (`options.password`, `options.confirmEditRights`). */
+export interface PdfUnlockNode {
+  op: 'pdf.unlock';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+/** Cuts PDFs into parts, returned as one ZIP per input (`options.split`). */
+export interface PdfSplitPagesNode {
+  op: 'pdf.split-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+/** Keeps the pages of `options.pages`, in the order listed. */
+export interface PdfExtractPagesNode {
+  op: 'pdf.extract-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+/** Removes the pages of `options.pages`. */
+export interface PdfDeletePagesNode {
+  op: 'pdf.delete-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+/** Puts the pages of `options.reorder.order` first, in that order; the others follow. */
+export interface PdfReorderPagesNode {
+  op: 'pdf.reorder-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
+/** Turns pages clockwise (`options.rotate`). */
+export interface PdfRotatePagesNode {
+  op: 'pdf.rotate-pages';
+  input: NodeId | NodeId[];
+  options?: ConversionOptions;
+}
+
 export interface ThumbnailNode {
   op: 'thumbnail';
   input: NodeId;
@@ -87,10 +136,20 @@ export interface ThumbnailNode {
   options?: ConversionOptions & { thumbnail?: { width?: number; height?: number; format?: 'jpg' | 'png' } };
 }
 
+/** Adaptive-bitrate packaging (HLS or MPEG-DASH) of a video; the output is one ZIP with the manifest and segments. */
+export interface MediaPackageNode {
+  op: 'media.package';
+  input: NodeId;
+  targetFormat?: 'zip';
+  options?: ConversionOptions & { packaging?: MediaPackagingOptions };
+}
+
 export interface MergeNode {
   op: 'merge';
   input: NodeId[];
   targetFormat: 'pdf' | 'txt';
+  /** `passwords` (open password of each input, in order) and `confirmEditRights` for encrypted PDF inputs. */
+  options?: ConversionOptions;
 }
 
 export interface MetadataNode {
@@ -110,11 +169,18 @@ export type GraphNode =
   | OcrNode
   | OptimizeNode
   | ThumbnailNode
+  | MediaPackageNode
   | MergeNode
   | MetadataNode
   | WatermarkNode
   | PdfWatermarkNode
   | PdfProtectNode
+  | PdfUnlockNode
+  | PdfSplitPagesNode
+  | PdfExtractPagesNode
+  | PdfDeletePagesNode
+  | PdfReorderPagesNode
+  | PdfRotatePagesNode
   | ArchiveCreateNode
   | ArchiveExtractNode
   | ExportUrlNode

@@ -29,6 +29,7 @@ import {
 } from './helpers/font-oracles';
 import { buildGlyfFont, type GlyfFontSpec, type GlyfGlyphSpec } from './helpers/glyf-font-builder';
 import { assembleSfnt } from './helpers/mac-font-containers';
+import { SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
 
 /**
  * TrueType (glyf) to OpenType CFF conversion.
@@ -688,7 +689,7 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
   const FULL_TURN = 2 * Math.PI;
   const SHARED_COMPONENTS = 1000;
   const COMPOSITE_GLYPHS = 1000;
-  const FAST_REJECT_MS = 1000;
+  const EXPANSION_FACTOR = 6;
   const RSS_GROWTH_LIMIT_BYTES = 400 * 1024 * 1024;
   const BYTES_PER_MB = 1024 * 1024;
   const SMALL_FONT_BYTES = 100 * 1024;
@@ -707,27 +708,26 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
     return buildGlyfFont({ family: 'Amplifier', glyphs });
   }
 
-  it.each([
-    [SHARED_COMPONENTS, COMPOSITE_GLYPHS], // 37 KB expanding to 32 million points
-    [SHARED_COMPONENTS * 2, COMPOSITE_GLYPHS * 3], // 76 KB expanding to 192 million points
-  ])('rejects a small font whose composites expand to tens of millions of points (%i components, %i glyphs), quickly and without large allocations', (shared, composites) => {
-    const font = amplifierFont(shared, composites);
-    expect(font.length).toBeLessThan(SMALL_FONT_BYTES);
+  it('rejects a small font whose composites expand to tens of millions of points, quickly and without large allocations (hang guard; growth ratio in the perf suite)', async () => {
+    // The same number of glyphs, claiming 32 million points in one font and six times as many in the other: the
+    // amplification guard refuses both after reading the glyphs, so the time must not follow the claimed expansion
+    // (tests/helpers/timing.ts). Growing the glyph count as well would grow the reading, which is legitimate work.
+    const modest = amplifierFont(SHARED_COMPONENTS, COMPOSITE_GLYPHS);
+    const huge = amplifierFont(SHARED_COMPONENTS * EXPANSION_FACTOR, COMPOSITE_GLYPHS);
+    expect(modest.length).toBeLessThan(SMALL_FONT_BYTES);
+    expect(huge.length).toBeLessThan(SMALL_FONT_BYTES);
     const rssBefore = process.memoryUsage().rss;
-    const started = performance.now();
-    let caught: unknown;
-    try {
-      convertFontToOpenTypeCff(font);
-    } catch (error) {
-      caught = error;
-    }
-    const elapsed = performance.now() - started;
+    const { largeResult } = await expectNoHangOnInput(
+      'composite amplification',
+      (font: Buffer) => settle(() => convertFontToOpenTypeCff(font)),
+      huge
+    );
     const rssGrowth = process.memoryUsage().rss - rssBefore;
-    expect(caught, 'conversion must throw').toBeInstanceOf(ConversionFailedError);
-    expect((caught as Error).message).toMatch(/points|expand/i);
-    expect(elapsed).toBeLessThan(FAST_REJECT_MS);
+    if (largeResult.ok) throw new Error('the amplifying font was converted instead of rejected');
+    expect(largeResult.error, 'conversion must throw').toBeInstanceOf(ConversionFailedError);
+    expect((largeResult.error as Error).message).toMatch(/points|expand/i);
     expect(rssGrowth, `rss grew by ${Math.round(rssGrowth / BYTES_PER_MB)} MB`).toBeLessThan(RSS_GROWTH_LIMIT_BYTES);
-  });
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('converts a Hangul-style font: 11,172 compact composites of three shared jamo outlines', () => {
     // Each syllable is 3 components (about 30 bytes) and flattens to 180 points, so the 2.0 million
@@ -758,7 +758,8 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
       const expected: Cmd[] = jamoRing(jamo).map((pt, i) => [i === 0 ? 'M' : 'L', pt.x, pt.y] as Cmd);
       expect(hausdorff(flattenCharstringContour(outline.contours[c]), flattenCommands(expected)), `component ${c}`).toBeLessThan(GEOMETRY_TOLERANCE);
     });
-  });
+    // The conversion takes about 2 s on an idle core, which a shard running at twice its CPU count stretches past the 5 s default.
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('still converts a font whose glyphs share a component many times within the budget', () => {
     const font = amplifierFont(2, 300); // 300 glyphs x 64 points, far below the budget
@@ -771,6 +772,7 @@ describe('TrueType to CFF: composite expansion is bounded across the whole font'
 // External oracles
 // ---------------------------------------------------------------------------
 
+// skip-ok: requireStrictFcScan / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when fc-scan is missing.
 describe.skipIf(!HAS_FC_SCAN)('TrueType to CFF: fontconfig reads the output as the same face (needs fc-scan)', () => {
   it('reports a CFF face with the family, names and character set of the source', async () => {
     const ttf = buildGlyfFont(fixtureSpec());
@@ -787,6 +789,7 @@ describe.skipIf(!HAS_FC_SCAN)('TrueType to CFF: fontconfig reads the output as t
   });
 });
 
+// skip-ok: requireStrictFreeType / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when FreeType is missing.
 describe.skipIf(!HAS_FREETYPE)('TrueType to CFF: FreeType renders the output like the input (needs ImageMagick with FreeType)', () => {
   it('draws the same ink for every glyph before and after conversion', async () => {
     const ttf = buildGlyfFont(fixtureSpec());

@@ -1,7 +1,8 @@
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
-import { localFsStorage } from '@/lib/storage';
+import { LocalFsStorage, objectStorage, storageProvider } from '@/lib/storage';
 import {
   tusEngine,
   TusOffsetMismatchError,
@@ -10,8 +11,12 @@ import {
   TusUnsupportedChecksumAlgorithmError,
   TusUploadExceededLengthError,
   TusNotFoundError,
+  TusInvalidMetadataError,
 } from '@/lib/storage/tus-engine';
+import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError } from '@/lib/storage/declared-format';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
 import { POST as directCompletePostHandler } from '../direct/complete/route';
@@ -35,6 +40,9 @@ const MIN_PART_SIZE = 5 * 1024 * 1024; // 5 MiB
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // 5 GiB
 const MAX_TOTAL_SIZE = 10 * 1024 * 1024 * 1024; // 10 GiB
 const MAX_PARTS_COUNT = 10000;
+/** Part URLs handed out with an initiate response: at most this many parts, each good for 15 minutes. */
+const MAX_PREGENERATED_PART_URLS = 100;
+const LOCAL_KEY_RANDOM_BYTES = 8;
 
 interface InitiateUploadBody {
   filename: string;
@@ -77,7 +85,16 @@ function createTusHeaders(extra: Record<string, string> = {}): Headers {
   return headers;
 }
 
-function resolveSessionId(params?: { id?: string[] }): string | null {
+// Next.js 15 passes route params as a promise.
+interface UploadRouteParams {
+  id?: string[];
+}
+
+interface UploadRouteContext {
+  params: Promise<UploadRouteParams>;
+}
+
+function resolveSessionId(params?: UploadRouteParams): string | null {
   if (!params?.id || !Array.isArray(params.id) || params.id.length === 0) {
     return null;
   }
@@ -108,13 +125,24 @@ async function handlePartUpload(
     return createProblemDetailsResponse(400, 'Empty part payload body.', instanceUri);
   }
 
-  const part = await localFsStorage.savePartStream(uploadId, partNumber, req.body);
+  // Against an object store the client PUTs each part straight to its presigned object-store URL;
+  // only local storage receives parts through this application.
+  if (!(objectStorage instanceof LocalFsStorage)) {
+    return createProblemDetailsResponse(
+      404,
+      'Parts are uploaded directly to the object store through the presigned URLs.',
+      instanceUri
+    );
+  }
+
+  const part = await objectStorage.savePartStream(uploadId, partNumber, req.body);
   return NextResponse.json({ success: true, part });
 }
 
 async function handleInitiateUpload(
   req: NextRequest,
-  instanceUri: string
+  instanceUri: string,
+  userId: string
 ): Promise<Response> {
   const body: InitiateUploadBody = await req.json().catch(() => ({}));
   const { filename, mimeType = 'application/octet-stream', totalSize } = body;
@@ -145,17 +173,40 @@ async function handleInitiateUpload(
     );
   }
 
+  const pregenLimit = Math.min(totalParts, MAX_PREGENERATED_PART_URLS);
+
+  // Against an object store the session is a signed token that carries the declared size, part
+  // size and owner: part URLs exist only for the declared parts and the object's key is unique.
+  if (storageProvider.kind === 'remote' && storageProvider.generatePresignedUploadPartUrl) {
+    const remoteSession = await storageProvider.initiateMultipartUpload(filename, mimeType, totalSize, userId, chosenPartSize);
+    const remoteUrls = await Promise.all(
+      Array.from({ length: pregenLimit }, async (_, idx) =>
+        storageProvider.generatePresignedUploadPartUrl!(remoteSession.key, remoteSession.uploadId, idx + 1, PART_URL_TTL_SECONDS)
+      )
+    );
+    return NextResponse.json({
+      success: true,
+      uploadId: remoteSession.uploadId,
+      key: remoteSession.key,
+      partSize: remoteSession.partSize,
+      totalParts: remoteSession.totalParts,
+      expiresAt: remoteSession.expiresAt,
+      presignedUrls: remoteUrls,
+    });
+  }
+
   const safeFilename = path.basename(filename);
-  const session = await localFsStorage.createMultipart(`uploads/${safeFilename}`, {
+  const uniqueKey = `uploads/${Date.now()}_${crypto.randomBytes(LOCAL_KEY_RANDOM_BYTES).toString('hex')}_${safeFilename}`;
+  const session = await objectStorage.createMultipart(uniqueKey, {
     contentType: mimeType,
     filename: safeFilename,
   });
 
-  const pregenLimit = Math.min(totalParts, 100);
-  const presignedPromises = Array.from({ length: pregenLimit }, (_, idx) =>
-    localFsStorage.presignPart(session.key, session.uploadId, idx + 1, 86400)
+  const presignedUrls = await Promise.all(
+    Array.from({ length: pregenLimit }, (_, idx) =>
+      objectStorage.presignPart(session.key, session.uploadId, idx + 1, PART_URL_TTL_SECONDS)
+    )
   );
-  const presignedUrls = await Promise.all(presignedPromises);
 
   return NextResponse.json({
     success: true,
@@ -168,11 +219,58 @@ async function handleInitiateUpload(
   });
 }
 
+/**
+ * Completes an object-store upload against the size declared at initiation. The client's own
+ * `expectedSize` never relaxes it, and an assembled object of any other size is deleted.
+ */
+async function completeRemoteUpload(
+  body: CompleteUploadBody,
+  instanceUri: string,
+  userId: string
+): Promise<Response> {
+  const { uploadId, key, parts, expectedSize } = body;
+  if (typeof uploadId !== 'string' || !uploadId || !Array.isArray(parts) || parts.length === 0) {
+    return createProblemDetailsResponse(400, 'Missing "uploadId" or "parts" array in complete payload.', instanceUri);
+  }
+  const session = await storageProvider.getUploadSession?.(uploadId);
+  if (session?.ownerUserId !== userId) {
+    return createProblemDetailsResponse(404, 'Upload session not found or has expired.', instanceUri);
+  }
+  if (key !== undefined && key !== session.key) {
+    return createProblemDetailsResponse(400, '"key" does not belong to this upload session.', instanceUri);
+  }
+  if (expectedSize !== undefined && expectedSize !== session.totalSize) {
+    return createProblemDetailsResponse(400, '"expectedSize" does not match the size declared at initiation.', instanceUri);
+  }
+
+  const completed = await storageProvider.completeMultipartUpload(uploadId, parts);
+  const stored = await storageProvider.stat(completed.key);
+  if (stored?.size !== session.totalSize) {
+    await storageProvider.deleteObject(completed.key);
+    return createProblemDetailsResponse(
+      400,
+      `Uploaded size ${stored?.size ?? 'unknown'} bytes does not match the declared totalSize ${session.totalSize} bytes.`,
+      instanceUri
+    );
+  }
+  return NextResponse.json({
+    success: true,
+    location: `/api/storage/file/${encodeURIComponent(completed.key)}`,
+    key: completed.key,
+    size: stored.size,
+    etag: completed.etag,
+  });
+}
+
 async function handleCompleteUpload(
   req: NextRequest,
-  instanceUri: string
+  instanceUri: string,
+  userId: string
 ): Promise<Response> {
   const body: CompleteUploadBody = await req.json().catch(() => ({}));
+  if (storageProvider.kind === 'remote') {
+    return completeRemoteUpload(body, instanceUri, userId);
+  }
   const { uploadId, key, parts, expectedSize } = body;
 
   if (!uploadId || !key || !Array.isArray(parts) || parts.length === 0) {
@@ -183,7 +281,7 @@ async function handleCompleteUpload(
     );
   }
 
-  const completedObject = await localFsStorage.completeMultipart(key, uploadId, parts, expectedSize);
+  const completedObject = await objectStorage.completeMultipart(key, uploadId, parts, expectedSize);
 
   return NextResponse.json({
     success: true,
@@ -196,16 +294,29 @@ async function handleCompleteUpload(
 
 async function handleAbortUpload(
   req: NextRequest,
-  instanceUri: string
+  instanceUri: string,
+  userId: string
 ): Promise<Response> {
   const body: AbortUploadBody = await req.json().catch(() => ({}));
   const { uploadId, key } = body;
+
+  if (storageProvider.kind === 'remote') {
+    if (typeof uploadId !== 'string' || !uploadId) {
+      return createProblemDetailsResponse(400, 'Missing "uploadId" in abort payload.', instanceUri);
+    }
+    const owner = await storageProvider.getUploadOwner?.(uploadId);
+    if (!owner || owner !== userId) {
+      return createProblemDetailsResponse(404, 'Upload session not found or has expired.', instanceUri);
+    }
+    const abortedRemote = (await storageProvider.abortMultipartUpload?.(uploadId)) ?? false;
+    return NextResponse.json({ success: true, aborted: abortedRemote });
+  }
 
   if (!uploadId || !key) {
     return createProblemDetailsResponse(400, 'Missing "uploadId" or "key" in abort payload.', instanceUri);
   }
 
-  const aborted = await localFsStorage.abortMultipart(key, uploadId);
+  const aborted = await objectStorage.abortMultipart(key, uploadId);
   return NextResponse.json({ success: true, aborted });
 }
 
@@ -226,17 +337,18 @@ export function OPTIONS() {
 
 export async function POST(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
-  if (context.params?.id?.[0] === 'direct') {
-    if (context.params.id[1] === 'complete') {
+  const params = await context.params;
+  if (params?.id?.[0] === 'direct') {
+    if (params.id[1] === 'complete') {
       return directCompletePostHandler(req);
     }
     return directPostHandler(req);
   }
 
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
-  const sessionId = resolveSessionId(context.params);
+  const sessionId = resolveSessionId(params);
 
   // If a session ID is provided in POST, reject as invalid TUS method
   if (sessionId) {
@@ -266,15 +378,17 @@ export async function POST(
         case 'part':
           return await handlePartUpload(req, searchParams, instanceUri);
         case 'initiate':
-          return await handleInitiateUpload(req, instanceUri);
+          return await handleInitiateUpload(req, instanceUri, auth.user.id);
         case 'complete':
-          return await handleCompleteUpload(req, instanceUri);
+          return await handleCompleteUpload(req, instanceUri, auth.user.id);
         case 'abort':
-          return await handleAbortUpload(req, instanceUri);
+          return await handleAbortUpload(req, instanceUri, auth.user.id);
         default:
           return createProblemDetailsResponse(400, `Unsupported action "${action}".`, instanceUri);
       }
     } catch (err: any) {
+      const storageProblem = storageErrorResponse(err, instanceUri);
+      if (storageProblem) return storageProblem;
       return createProblemDetailsResponse(400, err?.message || 'Error executing upload operation', instanceUri);
     }
   }
@@ -354,6 +468,13 @@ export async function POST(
             'Tus-Resumable': TUS_RESUMABLE_VERSION,
           });
         }
+        if (err instanceof UnknownDeclaredFormatError) {
+          return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE, {
+            'Tus-Resumable': TUS_RESUMABLE_VERSION,
+          });
+        }
+        const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
+        if (storageProblem) return storageProblem;
         return createProblemDetailsResponse(
           400,
           err?.message || 'Error processing creation-with-upload chunk',
@@ -378,6 +499,13 @@ export async function POST(
 
     return new NextResponse(null, { status: 201, headers });
   } catch (err: any) {
+    if (err instanceof TusInvalidMetadataError) {
+      return createProblemDetailsResponse(400, err.message, instanceUri, undefined, undefined, {
+        'Tus-Resumable': TUS_RESUMABLE_VERSION,
+      });
+    }
+    const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
+    if (storageProblem) return storageProblem;
     return createProblemDetailsResponse(
       500,
       err?.message || 'Failed to initialize TUS upload session',
@@ -391,13 +519,14 @@ export async function POST(
 
 export async function HEAD(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
+  const params = await context.params;
   const versionMismatch = checkTusVersion(req);
   if (versionMismatch) return versionMismatch;
 
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
-  const sessionId = resolveSessionId(context.params);
+  const sessionId = resolveSessionId(params);
 
   if (!sessionId) {
     return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri, undefined, undefined, {
@@ -449,13 +578,14 @@ export async function HEAD(
 
 export async function PATCH(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
+  const params = await context.params;
   const versionMismatch = checkTusVersion(req);
   if (versionMismatch) return versionMismatch;
 
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
-  const sessionId = resolveSessionId(context.params);
+  const sessionId = resolveSessionId(params);
 
   if (!sessionId) {
     return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri, undefined, undefined, {
@@ -551,6 +681,13 @@ export async function PATCH(
         'Tus-Resumable': TUS_RESUMABLE_VERSION,
       });
     }
+    if (err instanceof UnknownDeclaredFormatError) {
+      return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE, {
+        'Tus-Resumable': TUS_RESUMABLE_VERSION,
+      });
+    }
+    const storageProblem = storageErrorResponse(err, instanceUri, { 'Tus-Resumable': TUS_RESUMABLE_VERSION });
+    if (storageProblem) return storageProblem;
     return createProblemDetailsResponse(400, err?.message || 'Error processing TUS chunk upload', instanceUri, undefined, undefined, {
       'Tus-Resumable': TUS_RESUMABLE_VERSION,
     });
@@ -559,9 +696,10 @@ export async function PATCH(
 
 export async function PUT(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
-  if (context.params?.id?.[0] === 'direct' && context.params.id[1] === 'part') {
+  const params = await context.params;
+  if (params?.id?.[0] === 'direct' && params.id[1] === 'part') {
     return directPartPutHandler(req);
   }
   return new NextResponse('Method Not Allowed', { status: 405 });
@@ -569,17 +707,18 @@ export async function PUT(
 
 export async function DELETE(
   req: NextRequest,
-  context: { params?: { id?: string[] } } = {}
+  context: UploadRouteContext
 ) {
-  if (context.params?.id?.[0] === 'direct' && context.params.id[1]) {
-    return directDeleteHandler(req, { params: { id: context.params.id[1] } });
+  const params = await context.params;
+  if (params?.id?.[0] === 'direct' && params.id[1]) {
+    return directDeleteHandler(req, { params: Promise.resolve({ id: params.id[1] }) });
   }
 
   const versionMismatch = checkTusVersion(req);
   if (versionMismatch) return versionMismatch;
 
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads';
-  const sessionId = resolveSessionId(context.params);
+  const sessionId = resolveSessionId(params);
 
   if (!sessionId) {
     return createProblemDetailsResponse(404, 'TUS upload session ID required in request path.', instanceUri, undefined, undefined, {

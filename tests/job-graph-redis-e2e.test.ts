@@ -31,6 +31,7 @@ function saveCsvUpload(): string {
   return key;
 }
 
+// skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
 describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => {
   let redis: Redis;
   let workers: Worker<ConversionJobData, ConversionJobResult>[] = [];

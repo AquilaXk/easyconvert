@@ -7,7 +7,7 @@ import { toPublicDlqEntry } from '@/lib/api-keys/public-views';
 export const dynamic = 'force-dynamic';
 
 interface RouteContext {
-  params: Promise<{ id: string }> | { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function GET(req: NextRequest, context: RouteContext) {

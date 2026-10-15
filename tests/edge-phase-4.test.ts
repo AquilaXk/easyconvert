@@ -40,10 +40,13 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
       const readSpy = vi.fn(async (_offset: number, size: number) => new Uint8Array(size));
       const writeSpy = vi.fn(async (_offset: number, _data: Uint8Array) => {});
 
+      // The window machinery is under test, so the transformation is a plain copy supplied by the test itself.
       const processed = await transformer.transformChunked(
         totalVirtualBytes,
         readSpy,
-        writeSpy
+        writeSpy,
+        undefined,
+        (chunk) => chunk
       );
 
       expect(processed).toBe(totalVirtualBytes);
@@ -192,8 +195,8 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
       const result = await processOpfsStreaming(
         {
           jobId: 'test-stream-job',
-          sourceFormat: 'bin',
-          targetFormat: 'bin',
+          sourceFormat: 'rgba',
+          targetFormat: 'grayscale',
           totalSize: testBuffer.byteLength,
         },
         testBuffer,
@@ -336,8 +339,11 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
       });
 
       try {
-        const dummyFile = new File([new Uint8Array(10 * 1024 * 1024)], 'huge.bin'); // 10MB
-        const res = await streamWithSyncAccessHandle('session-test-uuid', dummyFile);
+        const dummyFile = new File([new Uint8Array(10 * 1024 * 1024)], 'huge.rgba'); // 10MB of RGBA pixels
+        const res = await streamWithSyncAccessHandle(
+          { jobId: 'session-test-uuid', sourceFormat: 'rgba', targetFormat: 'grayscale', totalSize: dummyFile.size },
+          dummyFile
+        );
 
         expect(res.outputSize).toBe(1024);
         expect(createdSessionDir).toBe('session-test-uuid');

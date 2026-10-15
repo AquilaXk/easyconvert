@@ -51,6 +51,11 @@ function scanItem(overrides: Partial<ConversionQueueItem['options']> = {}): Conv
   };
 }
 
+/** A PNG with a pixel task and an image target, so L1A decodes it (and meets the failing GPU upload of the tests). */
+function gpuScanItem(): ConversionQueueItem {
+  return { ...scanItem({ invert: true } as Partial<ConversionQueueItem['options']>), targetFormat: 'png' };
+}
+
 function largeCsvItem(overrides: Partial<ConversionQueueItem['options']> = {}): ConversionQueueItem {
   const file = new File(['id,name\n1,Alice\n'], 'export.csv', { type: 'text/csv' });
   return {
@@ -89,7 +94,8 @@ describe('Client edge tier attribution and escalation reasons', () => {
         })
       );
 
-      const result = await tryProcessClientEdge(scanItem());
+      // A pixel task is requested, so L1A decodes the image and meets the failing GPU upload.
+      const result = await tryProcessClientEdge(gpuScanItem());
 
       expect(result).toEqual({
         resultUrl: 'blob:edge-ocr-result',
@@ -151,7 +157,7 @@ describe('Client edge tier attribution and escalation reasons', () => {
     it('escalates from L2 with both tier failures in the reason', async () => {
       failBothEdgeTiers();
 
-      const attempt = tryProcessClientEdge(scanItem());
+      const attempt = tryProcessClientEdge(gpuScanItem());
 
       await expect(attempt).rejects.toBeInstanceOf(ClientEdgeEscalationError);
       await expect(attempt).rejects.toMatchObject({ fallbackFrom: 'L2', message: CHAINED_REASON });
@@ -167,7 +173,7 @@ describe('Client edge tier attribution and escalation reasons', () => {
       const onSuccess = vi.fn();
       const onError = vi.fn();
 
-      await executeItemConversion(scanItem(), { onProgress: () => undefined, onSuccess, onError });
+      await executeItemConversion(gpuScanItem(), { onProgress: () => undefined, onSuccess, onError });
 
       expect(onError).not.toHaveBeenCalled();
       expect(fetchSpy).toHaveBeenCalledTimes(1);

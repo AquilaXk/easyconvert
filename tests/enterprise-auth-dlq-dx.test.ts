@@ -507,17 +507,17 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
       const itemReq = new Request('https://easyconvert.app/api/webhooks/dlq/dlq_route_test_1', {
         headers: { Cookie: sessionCookie },
       });
-      const itemRes = await getDlqItem(itemReq as any, { params: { id: 'dlq_route_test_1' } });
+      const itemRes = await getDlqItem(itemReq as any, { params: Promise.resolve({ id: 'dlq_route_test_1' }) });
       const itemJson = await itemRes.json();
       expect(itemJson.success).toBe(true);
       expect(itemJson.entry.id).toBe('dlq_route_test_1');
 
       // DELETE /api/webhooks/dlq/:id
-      const delRes = await deleteDlqItem(itemReq as any, { params: { id: 'dlq_route_test_1' } });
+      const delRes = await deleteDlqItem(itemReq as any, { params: Promise.resolve({ id: 'dlq_route_test_1' }) });
       const delJson = await delRes.json();
       expect(delJson.success).toBe(true);
 
-      const notFoundRes = await getDlqItem(itemReq as any, { params: { id: 'dlq_route_test_1' } });
+      const notFoundRes = await getDlqItem(itemReq as any, { params: Promise.resolve({ id: 'dlq_route_test_1' }) });
       expect(notFoundRes.status).toBe(404);
     });
 
@@ -576,7 +576,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${readOnlyKey.secretKey}` },
       });
-      const readDelItemRes = await deleteDlqItem(readDelItemReq as any, { params: { id: 'dlq_rbac_test_1' } });
+      const readDelItemRes = await deleteDlqItem(readDelItemReq as any, { params: Promise.resolve({ id: 'dlq_rbac_test_1' }) });
       expect(readDelItemRes.status).toBe(403);
 
       // Read-only key attempting POST /api/webhooks/dlq/:id/replay -> 403 Forbidden
@@ -584,7 +584,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         method: 'POST',
         headers: { Authorization: `Bearer ${readOnlyKey.secretKey}` },
       });
-      const readReplayRes = await replayDlqItem(readReplayReq as any, { params: { id: 'dlq_rbac_test_1' } });
+      const readReplayRes = await replayDlqItem(readReplayReq as any, { params: Promise.resolve({ id: 'dlq_rbac_test_1' }) });
       expect(readReplayRes.status).toBe(403);
 
       // Admin key attempting DELETE /api/webhooks/dlq/:id -> 200 OK
@@ -592,7 +592,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${adminKey.secretKey}` },
       });
-      const adminDelRes = await deleteDlqItem(adminDelReq as any, { params: { id: 'dlq_rbac_test_1' } });
+      const adminDelRes = await deleteDlqItem(adminDelReq as any, { params: Promise.resolve({ id: 'dlq_rbac_test_1' }) });
       expect(adminDelRes.status).toBe(200);
     });
 
@@ -676,7 +676,7 @@ describe('Enterprise Auth, Distributed Quotas, DLQ & SDK Parity', () => {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${restrictedKey.secretKey}` },
       });
-      const deleteRes = await deleteKeyRoute(deleteReq as any, { params: { id: 'dummy_id' } });
+      const deleteRes = await deleteKeyRoute(deleteReq as any, { params: Promise.resolve({ id: 'dummy_id' }) });
       expect(deleteRes.status).toBe(403);
     });
 

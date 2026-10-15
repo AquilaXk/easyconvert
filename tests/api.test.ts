@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { NextRequest } from 'next/server';
 import { GET as getFormats } from '../src/app/api/formats/route';
-import { GET as getHealth } from '../src/app/api/health/route';
 import { POST as fetchUrl } from '../src/app/api/fetch-url/route';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 
@@ -15,19 +14,6 @@ describe('API Route Logic Tests', () => {
     expect(data.count).toBeGreaterThan(15);
     expect(Array.isArray(data.categories)).toBe(true);
     expect(Array.isArray(data.formats)).toBe(true);
-  });
-
-  it('GET /api/health returns healthy service status', async () => {
-    const res = await getHealth();
-    expect(res.status).toBe(200);
-
-    const data = await res.json();
-    expect(data.status).toBe('healthy');
-    expect(data.service).toBe('EasyConvert');
-    expect(data.features.imageProcessing).toBe(true);
-    expect(data.features.documentProcessing).toBe(true);
-    expect(data.features.dataTransformation).toBe(true);
-    expect(data.features.archiveBundling).toBe(true);
   });
 
   it('POST /api/fetch-url blocks SSRF attempts to private hosts and localhost', async () => {

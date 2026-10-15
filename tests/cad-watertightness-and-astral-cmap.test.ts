@@ -5,6 +5,7 @@ import {
   Parametric2DPoint,
 } from '../src/lib/conversions/cad-nurbs';
 import { createToUnicodeCMap } from '../src/lib/conversions/ocr-pdf-combiner';
+import { readToUnicodeCMap } from './helpers/cmap-reader';
 
 describe('Phase 5: B-Rep Mesh Watertightness & Astral Unicode CMap Compliance', () => {
   describe('1. B-Rep Watertight Mesh Refinement with Collinear Edge-Splitting', () => {
@@ -175,35 +176,36 @@ describe('Phase 5: B-Rep Mesh Watertightness & Astral Unicode CMap Compliance', 
         [0x0005, 0x10000], // CID 5 -> Linear B (Astral)
       ];
 
-      const cmap = createToUnicodeCMap(mappings);
+      // Read the stream back the way a PDF consumer does (tests/helpers/cmap-reader.ts, written from
+      // ISO 32000-1 9.10.3 and Adobe TN 5014), not by searching the generated text.
+      const cmap = readToUnicodeCMap(createToUnicodeCMap(mappings));
 
-      // Verify CMap structural markers
-      expect(cmap).toContain('/CIDInit /ProcSet findresource begin');
-      expect(cmap).toContain('/CMapType 2 def');
-      expect(cmap).toContain('beginbfchar');
-      expect(cmap).toContain('endbfchar');
-
-      // Verify BMP mappings: 2-byte CID to 2-byte UTF-16BE
-      expect(cmap).toContain('<0001> <0041>');
-      expect(cmap).toContain('<0002> <AC00>');
-
-      // Verify Astral mappings (ISO 32000-1 Section 9.10.3 compliant):
-      // Source CID MUST remain 2-byte (<0003>), destination MUST be 4-byte UTF-16BE (<D83DDE00>)
-      expect(cmap).toContain('<0003> <D83DDE00>');
-      expect(cmap).toContain('<0004> <D840DC0B>');
-      expect(cmap).toContain('<0005> <D800DC00>');
-
-      // Verify that no fake surrogate CIDs (<D83D> or <DE00> as source) are present
-      expect(cmap).not.toContain('<D83D> <');
-      expect(cmap).not.toContain('<DE00> <');
+      // Source codes stay two bytes wide; the astral destinations are UTF-16BE surrogate pairs, never CIDs of their own.
+      expect(cmap.codespaces).toEqual([{ low: 0, high: 0xffff, bytes: 2 }]);
+      expect(cmap.bfranges).toEqual([]);
+      expect([...cmap.bfchars.keys()]).toEqual([0x0001, 0x0002, 0x0003, 0x0004, 0x0005]);
+      expect(Object.fromEntries([...cmap.bfchars].map(([code, text]) => [code, [...text].map((c) => c.codePointAt(0))]))).toEqual({
+        1: [0x0041],
+        2: [0xac00],
+        3: [0x1f600],
+        4: [0x2000b],
+        5: [0x10000],
+      });
+      // The surrogate halves in the destinations, as UTF-16 code units (hand-derived: cp - 0x10000 split 10/10 bits).
+      expect(cmap.bfchars.get(3)!.length).toBe(2);
+      expect([cmap.bfchars.get(3)!.charCodeAt(0), cmap.bfchars.get(3)!.charCodeAt(1)]).toEqual([0xd83d, 0xde00]);
+      expect([cmap.bfchars.get(4)!.charCodeAt(0), cmap.bfchars.get(4)!.charCodeAt(1)]).toEqual([0xd840, 0xdc0b]);
+      expect([cmap.bfchars.get(5)!.charCodeAt(0), cmap.bfchars.get(5)!.charCodeAt(1)]).toEqual([0xd800, 0xdc00]);
     });
 
     it('generates standard identity CMap when no mappings are provided', () => {
-      const cmap = createToUnicodeCMap();
-      // ISO 32000-1 §9.10.3: only the last byte may vary inside a bfrange, so no identity range is emitted
-      expect(cmap).toContain('<0000> <FFFF>');
-      expect(cmap).not.toContain('bfrange');
-      expect(cmap).not.toContain('<0000> <FFFF> <0000>');
+      // ISO 32000-1 9.10.3: only the last byte may vary inside a bfrange, so no identity range is emitted; an empty
+      // table is a bare two-byte codespace and no mapping at all.
+      const cmap = readToUnicodeCMap(createToUnicodeCMap());
+      expect(cmap.name).toBe('Custom-ToUnicode');
+      expect(cmap.codespaces).toEqual([{ low: 0, high: 0xffff, bytes: 2 }]);
+      expect(cmap.bfchars.size).toBe(0);
+      expect(cmap.bfranges).toEqual([]);
     });
   });
 });

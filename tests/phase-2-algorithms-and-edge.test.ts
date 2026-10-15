@@ -10,11 +10,6 @@ import {
   triangulatePolygonEarcut,
   Point3D,
 } from '../src/lib/conversions/cad-nurbs';
-import {
-  buildFmp4InitSegment,
-  buildFmp4MediaSegment,
-  muxFmp4Stream,
-} from '../src/lib/edge/workers/webcodecs.worker';
 import sharp from 'sharp';
 
 describe('Phase 2: State-of-the-Art Algorithms & Edge Acceleration', () => {
@@ -128,55 +123,4 @@ describe('Phase 2: State-of-the-Art Algorithms & Edge Acceleration', () => {
     });
   });
 
-  describe('4. fMP4 / CMAF Streaming Muxer', () => {
-    it('builds fMP4 initialization segment with ftyp, moov, and mvex boxes', () => {
-      const init = buildFmp4InitSegment(640, 480, 'avc1.4d002a', 90000);
-      const str = Buffer.from(init).toString('ascii');
-
-      expect(str).toContain('ftyp');
-      expect(str).toContain('moov');
-      expect(str).toContain('mvex');
-      expect(str).toContain('trex');
-      expect(str).toContain('trak');
-    });
-
-    it('builds fMP4 media fragment (moof + mdat) with sequence numbers and decode timestamps', () => {
-      const mockChunks = [
-        { data: new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x65, 0x88]), timestampMicros: 0, isKeyFrame: true },
-        { data: new Uint8Array([0x00, 0x00, 0x00, 0x01, 0x41, 0x99]), timestampMicros: 33333, isKeyFrame: false },
-      ];
-
-      const mediaSeg = buildFmp4MediaSegment(1, mockChunks, 0, 90000);
-      const str = Buffer.from(mediaSeg).toString('ascii');
-
-      expect(str).toContain('moof');
-      expect(str).toContain('mfhd');
-      expect(str).toContain('traf');
-      expect(str).toContain('tfhd');
-      expect(str).toContain('tfdt');
-      expect(str).toContain('trun');
-      expect(str).toContain('mdat');
-    });
-
-    it('streams fMP4 sequentially progressive segments without unbounded memory buffering', () => {
-      const mockChunks = [
-        { data: new Uint8Array([0x01, 0x02]), timestampMicros: 0, isKeyFrame: true },
-        { data: new Uint8Array([0x03, 0x04]), timestampMicros: 33333, isKeyFrame: false },
-        { data: new Uint8Array([0x05, 0x06]), timestampMicros: 66666, isKeyFrame: false },
-      ];
-
-      const emittedSegments: Uint8Array[] = [];
-      const stream = muxFmp4Stream(mockChunks, 320, 240, {
-        fragmentChunkCount: 2,
-        onSegment: (seg) => emittedSegments.push(seg),
-      });
-
-      expect(stream.byteLength).toBeGreaterThan(100);
-      // Init segment + 2 media fragments = 3 emitted segments
-      expect(emittedSegments).toHaveLength(3);
-      expect(Buffer.from(emittedSegments[0]).toString('ascii')).toContain('ftyp');
-      expect(Buffer.from(emittedSegments[1]).toString('ascii')).toContain('moof');
-      expect(Buffer.from(emittedSegments[2]).toString('ascii')).toContain('moof');
-    });
-  });
 });

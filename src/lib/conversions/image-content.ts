@@ -1,0 +1,181 @@
+import type { Sharp } from 'sharp';
+
+/**
+ * Cheap content analysis for the lossy encoders. Screenshots, line art and rendered text have large flat areas
+ * and hard coloured edges: chroma subsampling smears those edges and the AV1/WebP palette and intra-block tools
+ * pay off at a higher effort. Photographs are noisy and smooth, so subsampled chroma costs little there.
+ */
+
+export type ContentClass = 'graphic' | 'photo';
+
+/** Longest side of the thumbnail the classifier reads; 128 x 128 pixels bound the work whatever the input size. */
+export const CLASSIFIER_SIDE = 128;
+/**
+ * Share of horizontally adjacent thumbnail pixels with the same colour above which an image is graphic. The
+ * thumbnail is taken by nearest-neighbour sampling, so noise and gradients make neighbours differ: measured on
+ * the benchmark corpus the photographs score 0.00 to 0.04 and the screenshot and the line drawing 0.55 to 0.93.
+ */
+export const GRAPHIC_FLAT_PAIR_SHARE = 0.4;
+const RGB_CHANNELS = 3;
+const SIXTEEN_BIT_RANGE = 65536;
+
+/**
+ * Number of distinct tones in the thumbnail of a picture with more than 8 bits per sample above which it is continuous tone
+ * whatever its flat areas say. A graphic has a palette: even anti-aliased and converted to 16-bit grey it shows a few hundred
+ * tones (the benchmark's 16-bit line art 643, its screenshot 116), and an 8-bit picture stored in a 16-bit container at most
+ * 256. A radiograph, a night-sky frame or a developed camera file shows thousands (2438, 1490 and 6388 for the three 16-bit
+ * pictures of the benchmark). Such a picture can have a flat black background that reaches the flat share of a graphic (a
+ * radiograph scores 0.44 against 0.4), and the graphic JPEG tables zero the fine detail it is made of.
+ */
+export const DEEP_CONTINUOUS_TONE_COUNT = 1024;
+
+/** One number for the `bands` samples of the pixel at `at` (exact: three 16-bit samples are 48 bits). */
+function toneKey(samples: ArrayLike<number>, at: number, bands: number): number {
+  let key = samples[at];
+  for (let band = 1; band < bands; band += 1) key = key * SIXTEEN_BIT_RANGE + samples[at + band];
+  return key;
+}
+
+/** Share of adjacent same-colour pixel pairs in a packed RGB thumbnail; 0 for a thumbnail of one column. */
+export function flatPairShare(rgb: Uint8Array, width: number, height: number): number {
+  if (width < 2 || height < 1) return 0;
+  let flat = 0;
+  for (let y = 0; y < height; y += 1) {
+    const row = y * width * RGB_CHANNELS;
+    for (let x = 1; x < width; x += 1) {
+      const a = row + x * RGB_CHANNELS;
+      if (rgb[a] === rgb[a - 3] && rgb[a + 1] === rgb[a - 2] && rgb[a + 2] === rgb[a - 1]) flat += 1;
+    }
+  }
+  return flat / ((width - 1) * height);
+}
+
+/** Decoded samples of a picture: interleaved, 8 or 16 bits per sample, with an alpha band last when `channels` is 2 or 4. */
+export interface Raster {
+  samples: Uint8Array | Uint16Array;
+  width: number;
+  height: number;
+  channels: number;
+}
+
+const BYTE_MAX = 255;
+const SIXTEEN_BIT_MAX = 65535;
+
+/**
+ * Classifies decoded samples the way `classifyContent` classifies a pipeline, without a native call: the thumbnail is the
+ * nearest sample of a grid no larger than `CLASSIFIER_SIDE` on a side, 16-bit samples are scaled to 8 bits, grey is the
+ * three equal channels it would be in sRGB and alpha is left out. A native thumbnail of a 16-bit grey picture costs 2 ms,
+ * about a quarter of converting a 640 x 640 line drawing to JPEG.
+ */
+export function classifyRaster(raster: Raster): ContentClass {
+  const { samples, width, height, channels } = raster;
+  const scale = Math.min(1, CLASSIFIER_SIDE / width, CLASSIFIER_SIDE / height);
+  const thumbWidth = Math.max(1, Math.round(width * scale));
+  const thumbHeight = Math.max(1, Math.round(height * scale));
+  if (thumbWidth < 2) return 'photo';
+  const colour = channels >= RGB_CHANNELS;
+  const bands = colour ? RGB_CHANNELS : 1;
+  const wide = samples instanceof Uint16Array;
+  const level = (at: number): number => (wide ? Math.round((samples[at] * BYTE_MAX) / SIXTEEN_BIT_MAX) : samples[at]);
+  const columns = Array.from({ length: thumbWidth }, (_, x) => Math.min(width - 1, Math.floor(((x + 0.5) * width) / thumbWidth)));
+  let flat = 0;
+  const tones = new Set<number>();
+  for (let y = 0; y < thumbHeight; y += 1) {
+    const row = Math.min(height - 1, Math.floor(((y + 0.5) * height) / thumbHeight)) * width;
+    for (let x = 0; x < thumbWidth; x += 1) {
+      const a = (row + columns[x]) * channels;
+      if (wide) tones.add(toneKey(samples, a, bands));
+      if (x === 0) continue;
+      const b = (row + columns[x - 1]) * channels;
+      let same = true;
+      for (let band = 0; band < bands && same; band += 1) same = level(a + band) === level(b + band);
+      if (same) flat += 1;
+    }
+  }
+  if (wide && tones.size >= DEEP_CONTINUOUS_TONE_COUNT) return 'photo';
+  return flat / ((thumbWidth - 1) * thumbHeight) >= GRAPHIC_FLAT_PAIR_SHARE ? 'graphic' : 'photo';
+}
+
+/**
+ * Classifies the picture the pipeline will encode from a nearest-neighbour thumbnail of it. A picture with more than 8 bits per
+ * sample that the thumbnail calls graphic is read again at its own depth, where its tones are counted (`classifyRaster` does
+ * the same for decoded samples); a picture the thumbnail already calls a photograph costs no second read. A caller that has put
+ * `pipeline` in 8-bit sRGB passes the 16-bit pipeline it was before as `deepPipeline`.
+ */
+export async function classifyContent(pipeline: Sharp, deepPipeline?: Sharp): Promise<ContentClass> {
+  const { data, info } = await pipeline
+    .clone()
+    .resize({ width: CLASSIFIER_SIDE, height: CLASSIFIER_SIDE, fit: 'inside', kernel: 'nearest', withoutEnlargement: true })
+    .removeAlpha()
+    .toColourspace('srgb')
+    .raw({ depth: 'uchar' })
+    .toBuffer({ resolveWithObject: true });
+  if (info.channels !== RGB_CHANNELS) return 'photo';
+  if (flatPairShare(data, info.width, info.height) < GRAPHIC_FLAT_PAIR_SHARE) return 'photo';
+  const wide = deepPipeline ?? pipeline;
+  return (await wide.metadata()).depth === SIXTEEN_BIT_DEPTH && (await showsContinuousTone(wide)) ? 'photo' : 'graphic';
+}
+
+/** Whether a nearest-neighbour thumbnail of a 16-bit picture (colour bands only) shows `DEEP_CONTINUOUS_TONE_COUNT` tones or more. */
+async function showsContinuousTone(pipeline: Sharp): Promise<boolean> {
+  const meta = await pipeline.metadata();
+  const grey = meta.space === 'b-w' || meta.space === 'grey16';
+  const { data, info } = await pipeline
+    .clone()
+    .resize({ width: CLASSIFIER_SIDE, height: CLASSIFIER_SIDE, fit: 'inside', kernel: 'nearest', withoutEnlargement: true })
+    .removeAlpha()
+    .toColourspace(grey ? 'grey16' : 'rgb16')
+    .raw({ depth: SIXTEEN_BIT_DEPTH })
+    .toBuffer({ resolveWithObject: true });
+  const aligned = data.byteOffset % 2 === 0 ? data : Buffer.from(data);
+  const samples = new Uint16Array(aligned.buffer, aligned.byteOffset, aligned.length / 2);
+  const tones = new Set<number>();
+  for (let at = 0; at + info.channels <= samples.length; at += info.channels) tones.add(toneKey(samples, at, info.channels));
+  return tones.size >= DEEP_CONTINUOUS_TONE_COUNT;
+}
+
+/**
+ * Drops an alpha channel on which every pixel is fully opaque: it carries no information, and the encoders that
+ * keep alpha as a separate plane (AVIF, lossy WebP) spend a few hundred bytes on it. A picture with any
+ * transparent or translucent pixel keeps its channel untouched.
+ */
+export async function withoutOpaqueAlpha(pipeline: Sharp, alphaIsOpaque?: boolean): Promise<Sharp> {
+  const meta = await pipeline.metadata();
+  if (!meta.hasAlpha) return pipeline;
+  // A caller that has seen every alpha sample says so; otherwise the plane is read and scanned.
+  const opaque = alphaIsOpaque ?? (await alphaIsOpaquePlane(pipeline, meta.depth === SIXTEEN_BIT_DEPTH));
+  return opaque ? pipeline.removeAlpha() : pipeline;
+}
+
+const SIXTEEN_BIT_DEPTH = 'ushort';
+const OPAQUE_BYTE = 0xff;
+/** Bytes compared per native call; the all-ones block is allocated once. */
+const OPAQUE_BLOCK_BYTES = 64 * 1024;
+const OPAQUE_BLOCK = Buffer.alloc(OPAQUE_BLOCK_BYTES, OPAQUE_BYTE);
+
+/**
+ * True when every byte is 0xff. The maximum alpha of an 8-bit plane is 255 and of a 16-bit plane 65535, so in both
+ * depths the opaque plane is one run of 0xff bytes whatever the byte order; comparing it block by block against a
+ * constant block runs in native code, where a loop over 16-bit samples in script was the larger half of the check.
+ */
+function isAllOpaqueBytes(data: Buffer): boolean {
+  for (let at = 0; at < data.length; at += OPAQUE_BLOCK_BYTES) {
+    const end = Math.min(at + OPAQUE_BLOCK_BYTES, data.length);
+    if (data.compare(OPAQUE_BLOCK, 0, end - at, at, end) !== 0) return false;
+  }
+  return true;
+}
+
+/**
+ * True when every alpha sample is the maximum. The alpha plane is read on its own at the picture's own depth
+ * (reducing 16 bits to 8 could turn 65534 into 255) and scanned for any other value; this costs one decode of the
+ * picture, where the library's full statistics pass costs ten times that.
+ */
+async function alphaIsOpaquePlane(pipeline: Sharp, deep: boolean): Promise<boolean> {
+  // A single extracted 16-bit band is reinterpreted as 8-bit unless it is declared grey16 first.
+  const plane = pipeline.clone().extractChannel('alpha');
+  const { data } = await (deep ? plane.toColourspace('grey16') : plane)
+    .raw({ depth: deep ? SIXTEEN_BIT_DEPTH : 'uchar' })
+    .toBuffer({ resolveWithObject: true });
+  return isAllOpaqueBytes(data);
+}

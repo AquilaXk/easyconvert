@@ -3,6 +3,7 @@ import { encodeEmf, encodeWmf, encodeCgm, estimateMetafileBytes } from '../src/l
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError } from '../src/lib/types';
 import { convertFile } from '../src/lib/conversions';
 import { emfOracleRecords, emfOraclePlayback, wmfOraclePlayback, cgmOracleDocument, cgmOraclePoints, cgmOraclePolygonSet, type PlaybackShape } from './helpers/metafile-oracle';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
 
 function svgDoc(body: string, rootAttrs = 'width="100" height="100" viewBox="0 0 100 100"'): Buffer {
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" ${rootAttrs}>${body}</svg>`, 'utf-8');
@@ -767,20 +768,24 @@ describe('SVG document model for metafile encoders', () => {
   });
 
   describe('fill-rule analysis budget', () => {
-    it('fails fast with a typed error when a nonzero CGM fill is too complex to verify (300 strips)', () => {
-      const STRIPS = 150;
-      const parts: string[] = [];
-      for (let k = 0; k < STRIPS; k++) {
-        const t = 2 * k + 1;
-        parts.push(`M0 ${t} L300 ${t + 97.3} V${t + 97.8} L0 ${t + 0.5} Z`, `M${t} 0 V400 H${t + 0.5} V0 Z`);
-      }
-      // Alternate orientation so overlapping strips cancel (winding 0), forcing a full analysis.
-      const svg = svgDoc(`<path fill="#000" d="${parts.join(' ')}"/>`, 'width="300" height="400"');
-      const start = performance.now();
-      expect(() => encodeCgm(svg)).toThrow(CadGeometryUnavailableError);
-      expect(() => encodeCgm(svg)).toThrow(/too complex/);
-      expect(performance.now() - start).toBeLessThan(1000);
-    });
+    it('fails fast with a typed error when a nonzero CGM fill is too complex to verify (300 strips) (hang guard; growth ratio in the perf suite)', async () => {
+      // Alternate orientation so overlapping strips cancel (winding 0), forcing a full analysis. Every strip crosses
+      // every other, so an unbudgeted analysis grows with the square of the strip count. The budget caps it, leaving
+      // only the parse of the path text, which grows with the input: four times the strips must cost at most linear
+      // time (tests/helpers/timing.ts), where the uncapped analysis takes about sixteen times as long.
+      const stripDoc = (count: number) => svgDoc(`<path fill="#000" d="${strips(count)}"/>`, 'width="300" height="400"');
+      const { largeResult } = await expectNoHangOnInput(
+        'CGM fill analysis',
+        (svg: Buffer) => settle(() => encodeCgm(svg)),
+        stripDoc(STRIPS * SCALING_FACTOR)
+      );
+      if (largeResult.ok) throw new Error('the over-complex fill was encoded instead of refused');
+      expect(largeResult.error).toBeInstanceOf(CadGeometryUnavailableError);
+      expect((largeResult.error as Error).message).toMatch(/too complex/);
+    }, SCALING_TEST_TIMEOUT_MS);
+
+    const STRIPS = 150;
+    const LONGEST_POINT_LIST = 1_200_000;
 
     function strips(count: number): string {
       const parts: string[] = [];
@@ -799,59 +804,71 @@ describe('SVG document model for metafile encoders', () => {
       expect(() => encodeCgm(many)).toThrow(/too complex/);
     });
 
-    it('stops flattening a multi-megabyte path of cubics and arcs as soon as the vertex cap is crossed', () => {
+    it('stops flattening a multi-megabyte path of cubics and arcs as soon as the vertex cap is crossed (hang guard; growth ratio in the perf suite)', async () => {
       const SEGMENTS = 250_000;
-      const parts = ['M0 0'];
-      for (let k = 0; k < SEGMENTS; k++) {
-        parts.push(k % 2 === 0 ? 'c 40 -90 -40 90 1 0' : 'a 30 30 0 1 1 1 0');
-      }
-      const d = parts.join(' ');
-      expect(d.length).toBeGreaterThan(4_000_000);
-      const svg = svgDoc(`<path fill="none" stroke="#000" d="${d}"/>`, 'width="100" height="100" viewBox="0 -100 100000 200"');
+      const pathDoc = (segments: number) => {
+        const parts = ['M0 0'];
+        for (let k = 0; k < segments; k++) {
+          parts.push(k % 2 === 0 ? 'c 40 -90 -40 90 1 0' : 'a 30 30 0 1 1 1 0');
+        }
+        const d = parts.join(' ');
+        return { d, svg: svgDoc(`<path fill="none" stroke="#000" d="${d}"/>`, 'width="100" height="100" viewBox="0 -100 100000 200"') };
+      };
+      const huge = pathDoc(SEGMENTS);
+      expect(huge.d.length).toBeGreaterThan(4_000_000);
       const rssBefore = process.memoryUsage().rss;
-      const start = performance.now();
-      let err: unknown = null;
-      try {
-        encodeEmf(svg);
-      } catch (e) {
-        err = e;
-      }
-      const elapsed = performance.now() - start;
+      // Both paths cross the vertex cap early, so 4x the segments is refused after about the same work.
+      const { largeResult } = await expectNoHangOnInput(
+        'vertex cap on a long path',
+        (svg: Buffer) => settle(() => encodeEmf(svg)),
+        huge.svg
+      );
       const RSS_GROWTH_LIMIT = 400 * 1024 * 1024;
-      expect(elapsed).toBeLessThan(1000);
       expect(process.memoryUsage().rss - rssBefore).toBeLessThan(RSS_GROWTH_LIMIT);
-      expect(err).toBeInstanceOf(CadGeometryUnavailableError);
-      expect((err as Error).message).toMatch(/too complex/);
-    });
+      if (largeResult.ok) throw new Error('the over-complex path was encoded instead of refused');
+      expect(largeResult.error).toBeInstanceOf(CadGeometryUnavailableError);
+      expect((largeResult.error as Error).message).toMatch(/too complex/);
+    }, SCALING_TEST_TIMEOUT_MS);
 
-    it('charges polygon point lists against the vertex cap while parsing', () => {
-      const pts = Array.from({ length: 600_000 }, (_, k) => `${k % 100},${(k * 7) % 100}`).join(' ');
-      const start = performance.now();
-      expect(() => encodeWmf(svgDoc(`<polygon fill="#000" points="${pts}"/>`))).toThrow(/too complex/);
-      expect(performance.now() - start).toBeLessThan(1000);
-    });
+    it('charges polygon point lists against the vertex cap while parsing (hang guard; growth ratio in the perf suite)', async () => {
+      // Single-digit coordinates keep a point at 4 characters, so the largest list the 5 MiB document limit admits
+      // (about 1.3 million points) is 2.4x a list one point past the 500,000 vertex cap. A reader that parsed the
+      // whole list before charging it would take 2.4x as long for the longer one; one that charges as it reads
+      // stops at the cap in both. A list below the cap would be read and encoded whole, which is different work.
+      const polygonDoc = (points: number) => {
+        const pts = Array.from({ length: points }, (_, k) => `${k % 10},${(k * 7) % 10}`).join(' ');
+        return svgDoc(`<polygon fill="#000" points="${pts}"/>`);
+      };
+      const { largeResult } = await expectNoHangOnInput(
+        'polygon point cap',
+        (svg: Buffer) => settle(() => encodeWmf(svg)),
+        polygonDoc(LONGEST_POINT_LIST)
+      );
+      if (largeResult.ok) throw new Error('the over-complex polygon was encoded instead of refused');
+      expect((largeResult.error as Error).message).toMatch(/too complex/);
+    }, SCALING_TEST_TIMEOUT_MS);
 
-    it('rejects documents that expand past the vertex cap fast (2000 copies of a 2230-vertex polygon)', () => {
+    it('rejects documents that expand past the vertex cap fast (2000 copies of a 2230-vertex polygon) (hang guard; growth ratio in the perf suite)', async () => {
       const VERTICES = 2230;
+      const COPIES = 2000;
       const pts = Array.from({ length: VERTICES }, (_, k) => {
         const a = (k / VERTICES) * 2 * Math.PI;
         return `${(50 + 40 * Math.cos(a)).toFixed(3)},${(50 + 40 * Math.sin(a)).toFixed(3)}`;
       }).join(' ');
-      const uses = Array.from({ length: 2000 }, () => '<use href="#p"/>').join('');
-      const svg = svgDoc(`<defs><polygon id="p" fill="#000" points="${pts}"/></defs>${uses}`);
+      const copiesDoc = (copies: number) =>
+        svgDoc(`<defs><polygon id="p" fill="#000" points="${pts}"/></defs>${Array.from({ length: copies }, () => '<use href="#p"/>').join('')}`);
+      // The expansion is charged copy by copy, so 4x the copies is refused after about the same work.
       for (const encode of [encodeEmf, encodeWmf, encodeCgm]) {
-        const start = performance.now();
-        let err: unknown = null;
-        try {
-          encode(svg);
-        } catch (e) {
-          err = e;
-        }
-        expect(performance.now() - start).toBeLessThan(1000);
-        expect(err).toBeInstanceOf(CadGeometryUnavailableError);
-        expect((err as Error).message).toMatch(/too complex/);
+        const { largeResult } = await expectNoHangOnInput(
+          `vertex cap on ${encode.name}`,
+          (svg: Buffer) => settle(() => encode(svg)),
+          copiesDoc(COPIES * SCALING_FACTOR)
+        );
+        if (largeResult.ok) throw new Error('the over-complex document was encoded instead of refused');
+        expect(largeResult.error).toBeInstanceOf(CadGeometryUnavailableError);
+        expect((largeResult.error as Error).message).toMatch(/too complex/);
       }
-    });
+    }, SCALING_TEST_TIMEOUT_MS);
   });
 
   describe('strict input parsing', () => {

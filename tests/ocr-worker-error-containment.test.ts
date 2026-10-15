@@ -1,9 +1,9 @@
 import { describe, it, expect, onTestFinished } from 'vitest';
-import { existsSync } from 'node:fs';
-import path from 'node:path';
 import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import { generateSearchablePdf, performOcr } from '../src/lib/conversions/ocr';
+import { skipUnless } from './helpers/strict-skip';
+import { hasTesseractLanguage } from './helpers/tessdata';
 
 /**
  * The OCR worker's image reader accepts fewer formats than the image decoder used for
@@ -11,16 +11,7 @@ import { generateSearchablePdf, performOcr } from '../src/lib/conversions/ocr';
  * the worker message handler, which can crash the process, and were never recognized.
  */
 
-const TESSDATA_DIRS = [
-  ...(process.env.TESSDATA_PREFIX ? [process.env.TESSDATA_PREFIX] : []),
-  process.cwd(),
-  '/usr/share/tesseract-ocr/5/tessdata',
-  '/usr/share/tesseract-ocr/4.00/tessdata',
-  '/usr/share/tessdata',
-];
-const HAS_ENG = TESSDATA_DIRS.some(
-  (dir) => existsSync(path.join(dir, 'eng.traineddata')) || existsSync(path.join(dir, 'eng.traineddata.gz'))
-);
+const SKIP_WITHOUT_ENG = skipUnless('eng.traineddata (Tesseract English data)', hasTesseractLanguage('eng'));
 
 const WORD = 'HARBOR';
 const TEXT_SVG = Buffer.from(
@@ -48,7 +39,7 @@ async function encodings(): Promise<Record<string, Buffer>> {
   };
 }
 
-describe.skipIf(!HAS_ENG)('OCR worker error containment (needs eng.traineddata)', () => {
+describe.skipIf(SKIP_WITHOUT_ENG)('OCR worker error containment (needs eng.traineddata)', () => {
   it('recognizes decodable images the OCR reader cannot open natively, without uncaught errors', async () => {
     const uncaught = captureUncaught();
     for (const [format, buffer] of Object.entries(await encodings())) {
@@ -76,7 +67,7 @@ async function rotatedPhotoJpeg(): Promise<Buffer> {
     .toBuffer();
 }
 
-describe.skipIf(!HAS_ENG)('OCR of EXIF-rotated photos (needs eng.traineddata)', () => {
+describe.skipIf(SKIP_WITHOUT_ENG)('OCR of EXIF-rotated photos (needs eng.traineddata)', () => {
   it('recognizes text in the displayed orientation and reports upright dimensions', async () => {
     const photo = await rotatedPhotoJpeg();
     const stored = await sharp(photo).metadata();
@@ -92,6 +83,8 @@ describe.skipIf(!HAS_ENG)('OCR of EXIF-rotated photos (needs eng.traineddata)', 
     const result = await performOcr(photo, 'eng');
     const pdf = await PDFDocument.load(await generateSearchablePdf(photo, result));
     const { width, height } = pdf.getPage(0).getSize();
-    expect([width, height]).toEqual([480, 160]);
+    // The photo's Exif declares 72 dpi, so the page is the upright image in points: pixels x 72 / 72.
+    expect(width).toBeCloseTo(480, 6);
+    expect(height).toBeCloseTo(160, 6);
   }, 120_000);
 });

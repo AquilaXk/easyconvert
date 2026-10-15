@@ -1,6 +1,8 @@
 import JSZip from 'jszip';
-import { ConversionOptions, ConversionResult } from '../types';
-import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, parseHwpDocument, convertHwpDocument } from './hwp';
+import { readZipEntryText } from './zip-entry-reader';
+import { ConversionOptions, ConversionResult, CorruptStreamError } from '../types';
+import { assertWellFormedXml } from './xml-wellformed';
+import { HwpDocument, HwpParagraph, HwpTable, buildHwpCompoundFile, legacyHwpModel, parseHwpDocument, convertHwpDocument } from './hwp';
 
 function escapeXml(str?: string | null): string {
   if (!str) return '';
@@ -25,7 +27,7 @@ export async function isHwpxContainer(buffer: Buffer): Promise<boolean> {
     const zip = await JSZip.loadAsync(buffer);
     const mimeFile = zip.file('mimetype');
     if (mimeFile) {
-      const mime = (await mimeFile.async('text')).trim();
+      const mime = (await readZipEntryText(mimeFile)).trim();
       if (mime === 'application/hwp+zip') return true;
     }
     const hasSection = Object.keys(zip.files).some((name) => /(?:Contents\/)?section\d*\.xml$/i.test(name));
@@ -34,7 +36,7 @@ export async function isHwpxContainer(buffer: Buffer): Promise<boolean> {
     const containerFile = zip.file('META-INF/container.xml');
     let hasHwpxContainerXml = false;
     if (containerFile) {
-      const cXml = await containerFile.async('text');
+      const cXml = await readZipEntryText(containerFile);
       hasHwpxContainerXml = cXml.includes('content.hpf') || cXml.includes('application/hwp+zip');
     }
     return (hasSection && (hasVersion || hasHpf)) || hasHpf || hasHwpxContainerXml;
@@ -49,21 +51,21 @@ export async function isHwpxContainer(buffer: Buffer): Promise<boolean> {
  */
 export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocument> {
   if (!inputBuffer || inputBuffer.length < 30) {
-    throw new Error('Invalid HWPX package: File buffer is too small or empty.');
+    throw new CorruptStreamError('Invalid HWPX package: File buffer is too small or empty.');
   }
 
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(inputBuffer);
   } catch (err: any) {
-    throw new Error(`Invalid HWPX package: Not a valid ZIP archive (${err?.message || 'load error'}).`);
+    throw new CorruptStreamError(`Invalid HWPX package: Not a valid ZIP archive (${err?.message || 'load error'}).`);
   }
 
   // 1. Version Detection
   let version = '1.0.0.0';
   const versionFile = zip.file('version.xml') || zip.file('Contents/version.xml');
   if (versionFile) {
-    const versionXml = await versionFile.async('text');
+    const versionXml = await readZipEntryText(versionFile);
     const verMatch = versionXml.match(/version="([^"]+)"/i);
     if (verMatch) {
       version = verMatch[1];
@@ -77,7 +79,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
 
   const hpfFile = zip.file('Contents/content.hpf') || zip.file('content.hpf');
   if (hpfFile) {
-    const hpfXml = await hpfFile.async('text');
+    const hpfXml = await readZipEntryText(hpfFile);
     const titleMatch = hpfXml.match(/<(?:dc:|opf:)?title[^>]*>([\s\S]*?)<\/(?:dc:|opf:)?title>/i);
     if (titleMatch) title = titleMatch[1].trim();
 
@@ -107,14 +109,15 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
   }
 
   if (sectionFiles.length === 0) {
-    throw new Error('Invalid HWPX package: Missing KS X 6101 Section body XML.');
+    throw new CorruptStreamError('Invalid HWPX package: Missing KS X 6101 Section body XML.');
   }
 
   const paragraphs: HwpParagraph[] = [];
   const tables: HwpTable[] = [];
 
   for (const sFile of sectionFiles) {
-    const secXml = await zip.files[sFile].async('text');
+    const secXml = await readZipEntryText(zip.files[sFile]);
+    assertWellFormedXml(sFile, secXml, 'HWPX');
 
     // Extract tables (<hp:tbl> ... </hp:tbl>)
     const tblRegex = /<(?:hp:)?tbl\b[\s\S]*?<\/(?:hp:)?tbl>/gi;
@@ -202,6 +205,7 @@ export async function parseHwpxDocument(inputBuffer: Buffer): Promise<HwpDocumen
     isDistributed: false,
     paragraphs,
     tables,
+    model: legacyHwpModel(paragraphs, tables),
     metadata: {
       title,
       author,

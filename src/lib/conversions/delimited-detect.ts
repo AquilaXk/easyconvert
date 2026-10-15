@@ -178,9 +178,14 @@ export function parseDelimitedRecords(text: string, delimiter: string, src: stri
   const rows = parsed.data.filter((row) => !isBlankRow(row));
   if (rows.length === 0) return { fields: [], records: [] };
   const fields = renameDuplicateHeaders(rows[0]);
+  const needsSetOwn = fields.some((f) => f === '__proto__' || (f.charCodeAt(0) >= 0x30 && f.charCodeAt(0) <= 0x39));
   const records = rows.slice(1).map((row) => {
     const record: DataObject = {};
-    fields.forEach((field, index) => setOwn(record, field, row[index]));
+    if (needsSetOwn) {
+      for (let i = 0; i < fields.length; i++) setOwn(record, fields[i], row[i]);
+    } else {
+      for (let i = 0; i < fields.length; i++) record[fields[i]] = row[i];
+    }
     return record;
   });
   return { fields, records };

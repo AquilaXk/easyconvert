@@ -28,20 +28,20 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
         text: 'EASYCONVERT OCR 2026',
         bbox: { x: 50, y: 100, width: 300, height: 25 },
         words: [
-          { text: 'EASYCONVERT', bbox: { x: 50, y: 100, width: 140, height: 25 }, confidence: 95 },
-          { text: 'OCR', bbox: { x: 200, y: 100, width: 45, height: 25 }, confidence: 92 },
-          { text: '2026', bbox: { x: 255, y: 100, width: 95, height: 25 }, confidence: 98 },
+          { text: 'EASYCONVERT', bbox: { x: 50, y: 100, width: 140, height: 25 }, confidence: 0.95 },
+          { text: 'OCR', bbox: { x: 200, y: 100, width: 45, height: 25 }, confidence: 0.92 },
+          { text: '2026', bbox: { x: 255, y: 100, width: 95, height: 25 }, confidence: 0.98 },
         ],
       },
       {
         text: 'High-Fidelity Document Processing & Analysis',
         bbox: { x: 50, y: 140, width: 420, height: 20 },
         words: [
-          { text: 'High-Fidelity', bbox: { x: 50, y: 140, width: 95, height: 20 }, confidence: 89 },
-          { text: 'Document', bbox: { x: 155, y: 140, width: 80, height: 20 }, confidence: 93 },
-          { text: 'Processing', bbox: { x: 245, y: 140, width: 85, height: 20 }, confidence: 91 },
-          { text: '&', bbox: { x: 338, y: 140, width: 12, height: 20 }, confidence: 99 },
-          { text: 'Analysis', bbox: { x: 358, y: 140, width: 65, height: 20 }, confidence: 94 },
+          { text: 'High-Fidelity', bbox: { x: 50, y: 140, width: 95, height: 20 }, confidence: 0.89 },
+          { text: 'Document', bbox: { x: 155, y: 140, width: 80, height: 20 }, confidence: 0.93 },
+          { text: 'Processing', bbox: { x: 245, y: 140, width: 85, height: 20 }, confidence: 0.91 },
+          { text: '&', bbox: { x: 338, y: 140, width: 12, height: 20 }, confidence: 0.99 },
+          { text: 'Analysis', bbox: { x: 358, y: 140, width: 65, height: 20 }, confidence: 0.94 },
         ],
       },
     ];
@@ -146,9 +146,9 @@ describe('OCR Fidelity, Exports (hOCR 1.2, ALTO 4.x), Smart Multi-Page, and Vert
         text: 'DIGITAL PRESERVATION STANDARD',
         bbox: { x: 40, y: 80, width: 350, height: 22 },
         words: [
-          { text: 'DIGITAL', bbox: { x: 40, y: 80, width: 90, height: 22 }, confidence: 96 },
-          { text: 'PRESERVATION', bbox: { x: 140, y: 80, width: 140, height: 22 }, confidence: 93 },
-          { text: 'STANDARD', bbox: { x: 290, y: 80, width: 100, height: 22 }, confidence: 95 },
+          { text: 'DIGITAL', bbox: { x: 40, y: 80, width: 90, height: 22 }, confidence: 0.96 },
+          { text: 'PRESERVATION', bbox: { x: 140, y: 80, width: 140, height: 22 }, confidence: 0.93 },
+          { text: 'STANDARD', bbox: { x: 290, y: 80, width: 100, height: 22 }, confidence: 0.95 },
         ],
       },
     ];

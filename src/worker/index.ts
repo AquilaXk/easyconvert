@@ -1,3 +1,6 @@
+// First import on purpose: modules evaluate in import order, so a bad production configuration stops the worker
+// (non-zero exit, ConfigurationError on stderr) before any later import connects to a queue, a store or a bucket.
+import { workerConfig } from '../lib/config/worker-startup';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -9,10 +12,13 @@ import {
   attachInputCleanupOnCompletion,
 } from '../lib/queue/conversion-queue';
 import { Worker, Job, IQueueEngine, JobCancelledError } from '../lib/queue/bullmq-engine';
+import { legacyJobTimeoutMs } from '../lib/queue/enqueue';
 import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../lib/types';
 import { storageProvider as ociStorage } from '../lib/storage';
 import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
 import { killProcessGroup } from '../lib/security/process-sandbox';
+import { probeNativeEngines } from './engines';
+import { assertSealingKeyConfigured } from '../lib/security/job-secret-seal';
 import { shutdownSharedOcrWorkerPool } from '../lib/conversions/ocr-worker-pool';
 
 export interface WorkerLifecycleConfig {
@@ -26,12 +32,12 @@ export interface WorkerLifecycleConfig {
 
 export function getWorkerLifecycleConfig(): WorkerLifecycleConfig {
   return {
-    concurrency: Number.parseInt(process.env.WORKER_CONCURRENCY || '3', 10),
-    maxJobsBeforeRecycle: Number.parseInt(process.env.WORKER_MAX_JOBS || '1000', 10),
-    maxRssMbBeforeRecycle: Number.parseInt(process.env.WORKER_MAX_RSS_MB || '4096', 10),
-    drainTimeoutMs: Number.parseInt(process.env.WORKER_DRAIN_TIMEOUT_MS || '60000', 10),
-    heartbeatIntervalMs: Number.parseInt(process.env.WORKER_HEARTBEAT_INTERVAL_MS || '5000', 10),
-    heartbeatFilePath: process.env.WORKER_HEARTBEAT_FILE || path.join(os.tmpdir(), 'worker-heartbeat.json'),
+    concurrency: workerConfig.WORKER_CONCURRENCY,
+    maxJobsBeforeRecycle: workerConfig.WORKER_MAX_JOBS,
+    maxRssMbBeforeRecycle: workerConfig.WORKER_MAX_RSS_MB,
+    drainTimeoutMs: workerConfig.WORKER_DRAIN_TIMEOUT_MS,
+    heartbeatIntervalMs: workerConfig.WORKER_HEARTBEAT_INTERVAL_MS,
+    heartbeatFilePath: workerConfig.WORKER_HEARTBEAT_FILE ?? path.join(os.tmpdir(), 'worker-heartbeat.json'),
   };
 }
 
@@ -169,12 +175,20 @@ export function resolveSubscribedQueues(): IQueueEngine<ConversionJobData, Conve
     : (allConversionQueues as IQueueEngine<ConversionJobData, ConversionJobResult>[]);
 }
 
+// Fail closed before any job is popped: without a sealing key the worker could not open the
+// secrets of the jobs it would take, so it refuses to start (SealingKeyConfigError).
+assertSealingKeyConfigured();
+
 const config = getWorkerLifecycleConfig();
 const subscribedQueues = resolveSubscribedQueues();
 
 console.log(
   `[EasyConvert OCI Worker] Initializing daemon (Concurrency: ${config.concurrency}, Queues: ${subscribedQueues.map((q) => q.name).join(', ')})...`
 );
+
+// Resolve the native binaries and probe ffmpeg's hardware encoders once at startup. The probe is
+// synchronous and cached per binary, so jobs hit the cache instead of blocking the event loop.
+probeNativeEngines();
 
 export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
   subscribedQueues,
@@ -202,8 +216,22 @@ export const ociWorker = new Worker<ConversionJobData, ConversionJobResult>(
       }
     }
   },
-  { concurrency: config.concurrency }
+  { concurrency: config.concurrency, defaultTimeoutMs: legacyJobTimeoutMs, stuckProcessorMs: workerConfig.JOB_STUCK_RECYCLE_MS }
 );
+
+// A conversion that ignored its abort at the job deadline cannot be stopped from inside the process: the worker
+// drains and exits through the recycle path, and the supervisor starts a fresh one.
+ociWorker.on('stuck', (job: Job<ConversionJobData, ConversionJobResult>) => {
+  console.error(
+    `[EasyConvert OCI Worker] Job ${job.id} ignored its abort for ${workerConfig.JOB_STUCK_RECYCLE_MS}ms. Recycling the worker...`
+  );
+  if (isDraining) return;
+  void drainWorker('RECYCLE').then(() => {
+    if (process.env.NODE_ENV !== 'test') {
+      process.exit(0);
+    }
+  });
+});
 
 // Attach 2-phase quota accounting, webhook dispatch listeners, and input cleanup
 attachJobLifecycleListeners(ociWorker);

@@ -4,6 +4,12 @@ import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { renderDrawingMlToSvg } from '../src/lib/conversions/office';
 import { applyFloydSteinbergDither, ColorRgb } from '../src/lib/conversions/quantize';
 
+/** Side of the tiles whose average colour is compared. */
+const DITHER_BLOCK = 8;
+/** Levels (0 to 255) by which the average colour of a dithered tile may stray from the source. */
+/** Measured 4.1 for the dithered image and 22.5 for the nearest-colour image; the bound keeps about twice the measured error. */
+const DITHERED_MAX_BLOCK_ERROR = 8;
+
 describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
   // Helper to create a solid or patterned test PNG
   async function createTestImage(
@@ -260,7 +266,7 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
       expect(res.mismatchedPixels).toBe(0);
     });
 
-    it('quantizes image while maintaining high structural similarity (SSIM >= 0.75)', async () => {
+    it('error diffusion keeps the average colour of every block, which the nearest palette colour does not', () => {
       const width = 64;
       const height = 64;
       const gradientBuf = Buffer.alloc(width * height * 4);
@@ -287,19 +293,41 @@ describe('Phase 4: Visual Regression Testing (VRT) CI Gate', () => {
         { r: 31, g: 35, b: 64 },
       ];
 
-      const dither = applyFloydSteinbergDither(gradientBuf, width, height, 4, palette, true, true);
-      const quantizedBuf = Buffer.alloc(width * height * 4);
+      const render = (indices: Uint8Array): Buffer => {
+        const out = Buffer.alloc(width * height * 4);
+        for (let i = 0; i < indices.length; i++) {
+          const c = palette[indices[i]];
+          out.set([c.r, c.g, c.b, 255], i * 4);
+        }
+        return out;
+      };
+      // Mean absolute difference of the per-channel average over each BLOCK x BLOCK tile, against the source.
+      const blockMeanError = (candidate: Buffer): number => {
+        let total = 0;
+        let count = 0;
+        for (let by = 0; by < height; by += DITHER_BLOCK) {
+          for (let bx = 0; bx < width; bx += DITHER_BLOCK) {
+            for (let channel = 0; channel < 3; channel++) {
+              let source = 0;
+              let quantized = 0;
+              for (let y = by; y < by + DITHER_BLOCK; y++) {
+                for (let x = bx; x < bx + DITHER_BLOCK; x++) {
+                  source += gradientBuf[(y * width + x) * 4 + channel];
+                  quantized += candidate[(y * width + x) * 4 + channel];
+                }
+              }
+              total += Math.abs(source - quantized) / (DITHER_BLOCK * DITHER_BLOCK);
+              count += 1;
+            }
+          }
+        }
+        return total / count;
+      };
 
-      for (let i = 0; i < dither.length; i++) {
-        const c = palette[dither[i]];
-        quantizedBuf[i * 4] = c.r;
-        quantizedBuf[i * 4 + 1] = c.g;
-        quantizedBuf[i * 4 + 2] = c.b;
-        quantizedBuf[i * 4 + 3] = 255;
-      }
-
-      const ssim = computeSsim(gradientBuf, quantizedBuf, width, height, 4);
-      expect(ssim).toBeGreaterThanOrEqual(0.70);
+      const dithered = blockMeanError(render(applyFloydSteinbergDither(gradientBuf, width, height, 4, palette, true, true)));
+      const nearest = blockMeanError(render(applyFloydSteinbergDither(gradientBuf, width, height, 4, palette, false, true)));
+      expect(dithered).toBeLessThan(DITHERED_MAX_BLOCK_ERROR);
+      expect(dithered).toBeLessThan(nearest / 2);
     });
   });
 

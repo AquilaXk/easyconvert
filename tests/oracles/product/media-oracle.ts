@@ -7,6 +7,21 @@ import {
   requireOracleTool,
   OracleToolMissingError,
 } from '../../helpers/differential-oracle';
+import {
+  AudioDecode,
+  MediaDecodeError,
+  StreamCounts,
+  VideoDecode,
+  countStreams,
+  decodeAudioStream,
+  decodeEveryStream,
+  decodeVideoFrames,
+  measureSsimPsnr,
+  probeFile,
+  recordMetric,
+  withMediaFile,
+} from '../../helpers/ffmpeg-measure';
+import { bestSnrDb } from '../../helpers/media-lossy-oracle';
 
 export interface MediaProbeStream {
   index: number;
@@ -314,4 +329,198 @@ export function verifyAudioDownmixSnr(
     Float64Array.from({ length: Math.floor(pcm.length / PCM16_BYTES) }, (_, i) => pcm.readInt16LE(i * PCM16_BYTES) / PCM16_FULL_SCALE);
   // Decode each buffer whole so a truncated output is compared against the full reference.
   return computeAudioSnr(decode(actualPcm16), decode(referencePcm16), minSnrDb);
+}
+
+// ============================================================================
+// Decode-based verification (the verdict of a media output is a full decode)
+// ============================================================================
+
+/**
+ * SNR floor of a lossy audio encode against its source, per codec. 20 dB is the floor the brief names; the
+ * codecs sit well above it on a tonal source at the bitrates the tests use (measured 25 to 45 dB), so the
+ * margin absorbs differences between ffmpeg builds while a silent, zeroed or scrambled decode (0 dB or less)
+ * is far below it.
+ */
+export const LOSSY_AUDIO_MIN_SNR_DB: Readonly<Record<string, number>> = {
+  aac: 20,
+  mp3: 20,
+  opus: 20,
+  vorbis: 20,
+};
+
+/** Default SSIM floor of a video output against its source; a re-encode at default quality scores 0.98 or more. */
+export const VIDEO_MIN_SSIM = 0.95;
+
+export type MediaKind = 'audio' | 'video';
+
+export class MediaOracleAssertionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MediaOracleAssertionError';
+  }
+}
+
+export interface DecodeMediaOptions {
+  /** Output layout of the audio decode; defaults to the stream's own rate and channel count. */
+  sampleRate?: number;
+  channels?: number;
+  /** Index among the audio streams. */
+  audioStreamIndex?: number;
+}
+
+export interface DecodedMedia {
+  kind: MediaKind;
+  streams: StreamCounts;
+  audio?: AudioDecode;
+  video?: VideoDecode;
+}
+
+/**
+ * Decodes the first stream of `kind` with `ffmpeg -v error -xerror` to raw PCM (s16le) or rgb24 frames. A
+ * decode error, a missing stream or an empty decode throws MediaDecodeError: the caller never receives
+ * something that merely looks like a stream. Every other stream of the file is decoded too, so a corrupt
+ * second track cannot hide behind a healthy first one.
+ */
+export function decodeMediaWithFfmpeg(
+  buffer: Buffer,
+  extension: string,
+  kind: MediaKind,
+  options: DecodeMediaOptions = {}
+): DecodedMedia {
+  const ffmpeg = requireOracleTool('ffmpeg');
+  const ffprobe = requireOracleTool('ffprobe');
+  return withMediaFile(buffer, extension, (file) => {
+    const probed = probeFile(ffprobe, file);
+    const streams = countStreams(probed);
+    const wanted = probed.streams.filter((s) => s.codec_type === kind);
+    if (wanted.length === 0) {
+      throw new MediaDecodeError(`the file has no ${kind} stream`);
+    }
+    decodeEveryStream(ffmpeg, file);
+    if (kind === 'audio') {
+      const stream = wanted[options.audioStreamIndex ?? 0];
+      if (!stream) throw new MediaDecodeError(`the file has no audio stream ${options.audioStreamIndex}`);
+      const sampleRate = options.sampleRate ?? Number(stream.sample_rate);
+      const channels = options.channels ?? Number(stream.channels);
+      const audio = decodeAudioStream(ffmpeg, file, sampleRate, channels, options.audioStreamIndex ?? 0);
+      if (audio.samplesPerChannel === 0) {
+        throw new MediaDecodeError('the audio stream decoded to zero samples');
+      }
+      return { kind, streams, audio };
+    }
+    const stream = wanted[0];
+    if (!stream.width || !stream.height) throw new MediaDecodeError('the video stream reports no geometry');
+    const video = decodeVideoFrames(ffmpeg, file, stream.width, stream.height);
+    if (video.frameCount === 0) {
+      throw new MediaDecodeError('the video stream decoded to zero frames');
+    }
+    return { kind, streams, video };
+  });
+}
+
+export interface AudioExpectation {
+  sampleRate: number;
+  channels: number;
+  /** Expected samples per channel after decoding at the layout above (source duration times rate). */
+  samplesPerChannel: number;
+  /** Accepted difference in samples per channel: 0 for lossless, a codec frame or two of padding for lossy. */
+  toleranceSamples?: number;
+  /** Interleaved s16le source at the same layout. */
+  reference?: Int16Array;
+  /** PCM must be byte-equal to the reference (lossless codecs, after the same resample). */
+  lossless?: boolean;
+  /** Lossy: minimum best-lag SNR in dB against the reference. */
+  minSnrDb?: number;
+}
+
+export interface VideoExpectation {
+  /** Exact decoded frame count. */
+  frameCount?: number;
+  /** Source to compare against by SSIM. */
+  reference?: { bytes: Buffer; extension: string };
+  minSsim?: number;
+}
+
+export interface DecodedMediaExpectation {
+  /** Exact stream counts by type; a type left out is not checked. */
+  streams?: Partial<StreamCounts>;
+  audio?: AudioExpectation;
+  video?: VideoExpectation;
+}
+
+function pcmToInt16(pcm: Buffer): Int16Array {
+  const out = new Int16Array(Math.floor(pcm.length / PCM16_BYTES));
+  for (let i = 0; i < out.length; i++) out[i] = pcm.readInt16LE(i * PCM16_BYTES);
+  return out;
+}
+
+function assertAudio(decoded: AudioDecode, expected: AudioExpectation): void {
+  const tolerance = expected.toleranceSamples ?? 0;
+  const drift = Math.abs(decoded.samplesPerChannel - expected.samplesPerChannel);
+  if (drift > tolerance) {
+    throw new MediaOracleAssertionError(
+      `decoded ${decoded.samplesPerChannel} samples per channel; expected ${expected.samplesPerChannel} (+-${tolerance})`
+    );
+  }
+  if (!expected.reference) return;
+  const reference = Buffer.alloc(expected.reference.length * PCM16_BYTES);
+  expected.reference.forEach((sample, i) => reference.writeInt16LE(sample, i * PCM16_BYTES));
+  if (expected.lossless) {
+    if (!decoded.pcm.equals(reference)) {
+      throw new MediaOracleAssertionError('decoded PCM is not byte-equal to the source');
+    }
+    return;
+  }
+  if (expected.minSnrDb === undefined) {
+    throw new MediaOracleAssertionError('a lossy audio expectation needs minSnrDb');
+  }
+  const snr = bestSnrDb(expected.reference, pcmToInt16(decoded.pcm), expected.channels);
+  if (!(snr >= expected.minSnrDb)) {
+    throw new MediaOracleAssertionError(`SNR ${snr.toFixed(2)} dB is below the ${expected.minSnrDb} dB floor`);
+  }
+}
+
+function assertVideo(buffer: Buffer, extension: string, decoded: VideoDecode, expected: VideoExpectation): void {
+  if (expected.frameCount !== undefined && decoded.frameCount !== expected.frameCount) {
+    throw new MediaOracleAssertionError(`decoded ${decoded.frameCount} frames; expected ${expected.frameCount}`);
+  }
+  if (!expected.reference) return;
+  const ffmpeg = requireOracleTool('ffmpeg');
+  const minSsim = expected.minSsim ?? VIDEO_MIN_SSIM;
+  const measured = withMediaFile(buffer, extension, (actualFile) =>
+    withMediaFile(expected.reference!.bytes, expected.reference!.extension, (referenceFile) =>
+      measureSsimPsnr(ffmpeg, actualFile, referenceFile, { width: decoded.width, height: decoded.height })
+    )
+  );
+  recordMetric(`ssim of ${extension} output against its source`, measured.ssim);
+  recordMetric(`psnr of ${extension} output against its source (dB)`, measured.psnr);
+  if (!(measured.ssim >= minSsim)) {
+    throw new MediaOracleAssertionError(`SSIM ${measured.ssim} is below the ${minSsim} floor`);
+  }
+}
+
+/**
+ * Decodes `buffer` completely and checks it against `expected`: stream counts by type, sample or frame
+ * count, and content similarity to the source (byte-equal PCM, SNR, or SSIM). Throws on the first
+ * violation; returns the decode so a test can add its own assertions.
+ */
+export function assertDecodedMedia(
+  buffer: Buffer,
+  extension: string,
+  kind: MediaKind,
+  expected: DecodedMediaExpectation,
+  options: DecodeMediaOptions = {}
+): DecodedMedia {
+  const audioLayout: DecodeMediaOptions =
+    expected.audio ? { sampleRate: expected.audio.sampleRate, channels: expected.audio.channels, ...options } : options;
+  const decoded = decodeMediaWithFfmpeg(buffer, extension, kind, audioLayout);
+  for (const [type, count] of Object.entries(expected.streams ?? {})) {
+    const actual = decoded.streams[type as keyof StreamCounts];
+    if (actual !== count) {
+      throw new MediaOracleAssertionError(`the file has ${actual} ${type} stream(s); expected ${count}`);
+    }
+  }
+  if (expected.audio && decoded.audio) assertAudio(decoded.audio, expected.audio);
+  if (expected.video && decoded.video) assertVideo(buffer, extension, decoded.video, expected.video);
+  return decoded;
 }

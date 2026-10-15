@@ -104,20 +104,26 @@ describe('page numbers follow document position', () => {
   });
 });
 
-describe('word confidence stays on one 0..100 scale', () => {
+describe('word confidence is one probability scale, 0..1, in memory and in both formats', () => {
   const hocrWith = (wconf: string): string =>
     `<html><body><div class="ocr_page" title="bbox 0 0 100 100"><span class="ocr_line" title="bbox 10 10 90 30"><span class="ocrx_word" title="bbox 10 10 90 30; x_wconf ${wconf}">w</span></span></div></body></html>`;
   const altoWith = (wc: string): string => ALTO_TWO_PAGES('1', '2').replace(/<String CONTENT="one"/, `<String WC="${wc}" CONTENT="one"`);
 
-  it('keeps x_wconf 0, 1, 57 and 100 through hOCR to hOCR', () => {
-    for (const value of [0, 1, 57, 100]) {
-      const parsed = parseHocr(hocrWith(String(value)));
-      expect(parsed.lineBlocks?.[0].words[0].confidence).toBe(value);
-      expect(exportHocr(parsed)).toContain(`; x_wconf ${value}">w</span>`);
+  it('reads x_wconf 0, 1, 57 and 100 as 0, 0.01, 0.57 and 1 and writes them back unchanged', () => {
+    const expected: Array<[number, number]> = [
+      [0, 0],
+      [1, 0.01],
+      [57, 0.57],
+      [100, 1],
+    ];
+    for (const [wconf, fraction] of expected) {
+      const parsed = parseHocr(hocrWith(String(wconf)));
+      expect(parsed.lineBlocks?.[0].words[0].confidence).toBe(fraction);
+      expect(exportHocr(parsed)).toContain(`; x_wconf ${wconf}">w</span>`);
     }
   });
 
-  it('writes ALTO WC as the 0..100 confidence divided by 100, so x_wconf 1 is 0.01 and 100 is 1.00', () => {
+  it('writes ALTO WC as the confidence itself, so x_wconf 1 is 0.01 and 100 is 1.00', () => {
     const expected: Array<[string, string]> = [
       ['0', '0.00'],
       ['1', '0.01'],
@@ -129,16 +135,16 @@ describe('word confidence stays on one 0..100 scale', () => {
     }
   });
 
-  it('reads ALTO WC back onto the same scale and writes the same x_wconf', () => {
-    const expected: Array<[string, number]> = [
-      ['0', 0],
-      ['0.01', 1],
-      ['0.57', 57],
-      ['1', 100],
+  it('reads ALTO WC as the confidence itself and writes the matching x_wconf', () => {
+    const expected: Array<[string, number, number]> = [
+      ['0', 0, 0],
+      ['0.01', 0.01, 1],
+      ['0.57', 0.57, 57],
+      ['1', 1, 100],
     ];
-    for (const [wc, percent] of expected) {
+    for (const [wc, fraction, percent] of expected) {
       const parsed = parseAlto(altoWith(wc));
-      expect(parsed.lineBlocks?.[0].words[0].confidence).toBe(percent);
+      expect(parsed.lineBlocks?.[0].words[0].confidence).toBe(fraction);
       expect(exportHocr(parsed)).toContain(`; x_wconf ${percent}">one</span>`);
     }
   });
@@ -161,8 +167,8 @@ describe('word confidence stays on one 0..100 scale', () => {
     expect(xpathCount(alto, "//*[local-name()='String'][@WC]")).toBe(0);
   });
 
-  it('clamps a confidence outside 0..100 into the range', () => {
-    const hocr = exportHocr(result([page(1, [line('high', 140), line('low', -3, 40)])]));
+  it('clamps a confidence outside 0..1 into the range', () => {
+    const hocr = exportHocr(result([page(1, [line('high', 1.4), line('low', -0.03, 40)])]));
     expect(hocr.match(/x_wconf \d+/g)).toEqual(['x_wconf 100', 'x_wconf 0']);
   });
 });

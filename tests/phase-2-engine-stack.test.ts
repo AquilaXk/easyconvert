@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import {
-  muxMp4Media,
-  muxIsoBmffMp4,
-  buildMp4MoovBox,
-} from '../src/lib/edge/workers/webcodecs.worker';
-import {
   encodeWoff2,
   decodeWoff2,
   encodeUIntBase128,
@@ -28,82 +23,6 @@ import {
 import sharp from 'sharp';
 
 describe('Phase 2: Commercial-grade Engine Stack Integration', () => {
-  describe('1. Level 1 MP4 Muxer with Complete ISO BMFF moov Box', () => {
-    it('generates fully compliant ISO BMFF container with ftyp, mdat, and moov atom hierarchy', () => {
-      const chunks = [
-        {
-          data: new Uint8Array([0x00, 0x00, 0x00, 0x05, 0x67, 0x42, 0x00, 0x1f, 0x01]),
-          timestampMicros: 0,
-          isKeyFrame: true,
-        },
-        {
-          data: new Uint8Array([0x00, 0x00, 0x00, 0x03, 0x41, 0x02, 0x03]),
-          timestampMicros: 33333,
-          isKeyFrame: false,
-        },
-        {
-          data: new Uint8Array([0x00, 0x00, 0x00, 0x03, 0x41, 0x04, 0x05]),
-          timestampMicros: 66666,
-          isKeyFrame: false,
-        },
-      ];
-
-      const mp4 = muxIsoBmffMp4(chunks, 1920, 1080);
-      expect(mp4.length).toBeGreaterThan(40);
-
-      // Verify 'ftyp' at offset 4
-      const ftypTag = String.fromCharCode(...mp4.subarray(4, 8));
-      expect(ftypTag).toBe('ftyp');
-
-      // Verify 'mdat' box
-      const ftypLen = new DataView(mp4.buffer, mp4.byteOffset, 4).getUint32(0);
-      expect(ftypLen).toBe(32);
-      const mdatTag = String.fromCharCode(...mp4.subarray(ftypLen + 4, ftypLen + 8));
-      expect(mdatTag).toBe('mdat');
-
-      // Verify 'moov' atom presence
-      const mp4Buffer = Buffer.from(mp4);
-      const moovIdx = mp4Buffer.indexOf('moov');
-      expect(moovIdx).toBeGreaterThan(0);
-
-      // Verify essential atoms inside moov: mvhd, trak, mdia, minf, stbl, stsd, stsz, stco
-      expect(mp4Buffer.indexOf('mvhd')).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('trak')).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('tkhd')).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('mdia')).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('minf')).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('stbl')).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('stsd')).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('avc1', moovIdx)).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('stts')).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('stsz')).toBeGreaterThan(moovIdx);
-      expect(mp4Buffer.indexOf('stco')).toBeGreaterThan(moovIdx);
-    });
-
-    it('computes accurate chunk offsets in stco pointing to actual sample bytes in mdat', () => {
-      const chunks = [
-        { data: new Uint8Array([1, 2, 3, 4, 5]), timestampMicros: 0, isKeyFrame: true },
-        { data: new Uint8Array([6, 7, 8]), timestampMicros: 33333, isKeyFrame: false },
-      ];
-      const mdatDataOffset = 40; // 32 ftyp + 8 mdat
-      const moov = buildMp4MoovBox(chunks, 1280, 720, mdatDataOffset);
-      const moovBuf = Buffer.from(moov);
-
-      const stcoIdx = moovBuf.indexOf('stco');
-      expect(stcoIdx).toBeGreaterThan(0);
-
-      // In stco: 4 bytes size, 4 bytes 'stco', 4 bytes version+flags, 4 bytes entry_count
-      const entryCount = moovBuf.readUInt32BE(stcoIdx + 8);
-      expect(entryCount).toBe(2);
-
-      const offset1 = moovBuf.readUInt32BE(stcoIdx + 12);
-      const offset2 = moovBuf.readUInt32BE(stcoIdx + 16);
-
-      expect(offset1).toBe(mdatDataOffset);
-      expect(offset2).toBe(mdatDataOffset + 5);
-    });
-  });
-
   describe('2. Level 2 Wasm SIMD Pixel Manipulation', () => {
     it('applies fixed-point integer RGBA grayscale with alpha channel preservation', () => {
       // 4 pixels: Red, Green, Blue, White with various alphas

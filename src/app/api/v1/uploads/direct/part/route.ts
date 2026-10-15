@@ -1,9 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageProvider } from '@/lib/storage';
+import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { verifySigV4QueryUrl } from '@/lib/storage/sigv4-presigner';
 
 export const dynamic = 'force-dynamic';
+
+/** A backend that receives parts on this application and verifies the URLs it issued itself. */
+type PartReceivingStorage = IStorageBackend &
+  Required<Pick<IStorageBackend, 'getUploadSession' | 'getSigningSecret' | 'verifyPresignedSignature' | 'uploadPartStream'>>;
+
+function receivesParts(storage: IStorageBackend): storage is PartReceivingStorage {
+  return (
+    storage.kind === 'local' &&
+    Boolean(
+      storage.getUploadSession && storage.getSigningSecret && storage.verifyPresignedSignature && storage.uploadPartStream
+    )
+  );
+}
 
 export async function PUT(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads/direct/part';
@@ -31,8 +45,20 @@ export async function PUT(req: NextRequest) {
     );
   }
 
+  // Against an object store the client PUTs each part straight to the presigned object-store URL;
+  // this route only exists to receive the parts of local storage.
+  if (!receivesParts(storageProvider)) {
+    return createProblemDetailsResponse(
+      404,
+      'Parts are uploaded directly to the object store through the presigned URLs.',
+      instanceUri,
+      'Not Found'
+    );
+  }
+  const storage: PartReceivingStorage = storageProvider;
+
   // 1. Session lookup
-  const session = s3Storage.getUploadSession(uploadId);
+  const session = await storage.getUploadSession(uploadId);
   if (!session) {
     return createProblemDetailsResponse(
       404,
@@ -61,7 +87,7 @@ export async function PUT(req: NextRequest) {
       headersRecord[keyName] = val;
     });
     const sigv4 = verifySigV4QueryUrl(req.url, {
-      secretAccessKey: s3Storage.getSigningSecret(),
+      secretAccessKey: storage.getSigningSecret(),
       expectedMethod: 'PUT',
       headers: headersRecord,
     });
@@ -96,7 +122,7 @@ export async function PUT(req: NextRequest) {
       );
     }
 
-    const validHmac = s3Storage.verifyPresignedSignature(
+    const validHmac = storage.verifyPresignedSignature(
       'PUT',
       key,
       expiresAt,
@@ -126,7 +152,7 @@ export async function PUT(req: NextRequest) {
   }
 
   try {
-    const part = await s3Storage.uploadPartStream(uploadId, partNumber, req.body);
+    const part = await storage.uploadPartStream(uploadId, partNumber, req.body);
     const headers = new Headers();
     headers.set('ETag', part.etag);
     headers.set('Content-Type', 'application/json');

@@ -78,18 +78,6 @@ describe('targets the pure engine cannot produce fail closed without FFmpeg', ()
     expect(err).toBeInstanceOf(EngineUnavailableError);
     expect((err as EngineUnavailableError).engineName).toBe('ffmpeg');
   });
-
-  it.each(PURE_UNAVAILABLE_TARGETS)(
-    'ignores the allowPureLossyBitstream opt-in for wav -> %s',
-    async (target) => {
-      const err = await captureError(
-        convertMedia(wav, 'wav', target, { disableNativeEngine: true, allowPureLossyBitstream: true }, 'tone.wav')
-      );
-      expect(err).toBeInstanceOf(EngineUnavailableError);
-      expect(err).toBeInstanceOf(ConversionFailedError);
-      expect((err as EngineUnavailableError).engineName).toBe('ffmpeg');
-    }
-  );
 });
 
 describe('an undecodable source is a typed client error, never a bare Error', () => {
@@ -173,12 +161,12 @@ describe('lossy encodes with FFmpeg come from FFmpeg and decode back to the sour
 
   for (const { sampleRate, channels } of cases) {
     oracleTest(
-      `wav -> aac at ${sampleRate} Hz x${channels} keeps SNR >= ${MIN_ROUNDTRIP_SNR_DB} dB even when the pure opt-in is set`,
+      `wav -> aac at ${sampleRate} Hz x${channels} keeps SNR >= ${MIN_ROUNDTRIP_SNR_DB} dB`,
       ['ffmpeg', 'ffprobe'],
       async () => {
         const source = chirpSamples(sampleRate, channels, 1);
         const wav = wavFromSamples(source, sampleRate, channels);
-        const result = await convertMedia(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'tone.wav');
+        const result = await convertMedia(wav, 'wav', 'aac', {}, 'tone.wav');
 
         const stream = probeStream(result.buffer, 'aac', 'a');
         expect(stream.codec_name).toBe('aac');
@@ -205,7 +193,7 @@ describe('lossy encodes with FFmpeg come from FFmpeg and decode back to the sour
         async () => {
           const source = chirpSamples(44100, channels, 1);
           const wav = wavFromSamples(source, 44100, channels);
-          const result = await convertMedia(wav, 'wav', target, { allowPureLossyBitstream: true }, 'tone.wav');
+          const result = await convertMedia(wav, 'wav', target, {}, 'tone.wav');
           expect(probeStream(result.buffer, target, 'a').codec_name).toBe(codec);
           const decoded = decodeAudioWithFfmpeg(result.buffer, target, 44100, channels);
           expect(bestSnrDb(source, decoded, channels)).toBeGreaterThanOrEqual(MIN_ROUNDTRIP_SNR_DB);
@@ -230,7 +218,7 @@ describe('lossy encodes with FFmpeg come from FFmpeg and decode back to the sour
         ]);
         const source = fs.readFileSync(sourcePath);
 
-        const result = await convertMedia(source, 'mp4', 'mp4', { allowPureLossyBitstream: true }, 'source.mp4');
+        const result = await convertMedia(source, 'mp4', 'mp4', {}, 'source.mp4');
 
         const video = probeStream(result.buffer, 'mp4', 'v');
         expect(video.codec_name).toBe('h264');

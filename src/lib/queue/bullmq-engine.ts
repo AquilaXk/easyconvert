@@ -1,7 +1,9 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
+import { redactForOutput, redactText, scrubError } from '../security/redact';
 import { classifyJobFailure } from './job-failure';
+import { JobTimeoutError, QueueUnavailableError } from '../types';
 
 export interface JobOptions {
   jobId?: string;
@@ -14,7 +16,15 @@ export interface JobOptions {
   };
   removeOnComplete?: boolean | number;
   removeOnFail?: boolean | number;
+  /** Wall-clock limit of one attempt in milliseconds. */
   timeout?: number;
+  /**
+   * Absolute time the job must be finished by. The worker sets it when the first attempt starts (start plus
+   * `timeout`, the time spent waiting in the queue does not count) unless the producer set an earlier one, and a
+   * retry or a requeue after a stall runs with `min(timeout, deadlineAt - now)`: it fails at once when that is not
+   * positive. A job therefore never runs longer than its deadline across attempts.
+   */
+  deadlineAt?: number;
 }
 
 export type JobState = 'waiting' | 'active' | 'completed' | 'failed' | 'delayed' | 'cancelled';
@@ -52,16 +62,8 @@ export class JobCancelledError extends Error {
   }
 }
 
-/** Abort reason for an attempt that exceeded `JobOptions.timeout`. The attempt fails and may retry. */
-export class JobTimeoutError extends Error {
-  readonly timeoutMs: number;
-
-  constructor(timeoutMs: number) {
-    super(`Job timed out after ${timeoutMs}ms`);
-    this.name = 'TimeoutError';
-    this.timeoutMs = timeoutMs;
-  }
-}
+/** Abort reason for an attempt that exceeded `JobOptions.timeout`. A typed 504 failure that is not retried. */
+export { JobTimeoutError };
 
 /** Abort reason for an attempt that lost its job to another attempt (Redis mode, after stall recovery). */
 export class JobOwnershipLostError extends Error {
@@ -160,7 +162,7 @@ export class Job<T = any, R = any> {
   }
 
   async log(row: string): Promise<void> {
-    const entry = `[${new Date().toISOString()}] ${row}`;
+    const entry = `[${new Date().toISOString()}] ${redactText(row)}`;
     this.logs.push(entry);
     if (this.onUpdateHook) {
       try {
@@ -249,6 +251,14 @@ export interface IQueueEngine<T = any, R = any> extends EventEmitter {
   _onJobFailed?(job: Job<T, R>, err: any): Promise<boolean> | boolean;
   /** Supervises an attempt the worker just started (heartbeat, remote cancel). Returns a stop function. */
   _monitorActiveJob?(job: Job<T, R>): () => void;
+  /**
+   * @internal Distributed engines: records `candidateAt` as the job's absolute deadline unless one is already
+   * recorded, and returns the recorded one. The deadline outlives the attempt (a retry or a stall requeue loads the
+   * job from the store, where `opts` is the original), so every attempt of a job shares one deadline. Resolves
+   * undefined, writing nothing, when this queue holds no record of the job (it lives in another queue, or was removed):
+   * a claim never creates a job record.
+   */
+  _claimDeadline?(job: Job<T, R>, candidateAt: number): Promise<number | undefined>;
   /** Recovers active jobs whose worker stopped heartbeating. Returns the jobs it moved to failed. */
   _recoverStalledJobs?(): Promise<Job<T, R>[]>;
   getDlqEntries?(): Promise<DlqEntry<T>[]>;
@@ -266,6 +276,23 @@ export interface IQueueWorker<T = any, R = any> extends EventEmitter {
   readonly name: string;
   pause(): void;
   close(): Promise<void>;
+}
+
+/**
+ * Dead-letter record of a failed job. Everything in it is masked: the reason and stack traces may
+ * quote a request, and the job data may hold credentials. A part of the data beyond the redaction
+ * limits is replaced by the mask rather than stored as it is.
+ */
+function buildDlqEntry<T, R>(job: Job<T, R>, reason: string): DlqEntry<T> {
+  return {
+    jobId: job.id,
+    name: job.name,
+    data: redactForOutput(job.data),
+    failedReason: redactText(reason),
+    attemptsMade: job.attemptsMade,
+    timestamp: Date.now(),
+    stacktrace: job.stacktrace.map(redactText),
+  };
 }
 
 export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngine<T, R> {
@@ -543,15 +570,7 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
   }
 
   async moveToDlq(job: Job<T, R>, reason: string): Promise<void> {
-    const entry: DlqEntry<T> = {
-      jobId: job.id,
-      name: job.name,
-      data: job.data,
-      failedReason: reason,
-      attemptsMade: job.attemptsMade,
-      timestamp: Date.now(),
-      stacktrace: [...job.stacktrace],
-    };
+    const entry = buildDlqEntry(job, reason);
     this.dlq.push(entry);
     this.emit('dlq', entry);
   }
@@ -577,7 +596,20 @@ export class Queue<T = any, R = any> extends EventEmitter implements IQueueEngin
 
 export interface WorkerOptions {
   concurrency?: number;
+  /**
+   * Timeout for a job that carries none (queued before deadlines existed), resolved when the attempt starts. A
+   * worker of conversion jobs sets it to the maximum deadline of the job owner's tier.
+   */
+  defaultTimeoutMs?: (job: Job<any, any>) => Promise<number | undefined> | number | undefined;
+  /**
+   * Milliseconds an aborted processor may stay unsettled before the worker emits `stuck`; the owner of the process
+   * is expected to recycle it, since nothing else can stop work that ignores its signal. Default 30 000.
+   */
+  stuckProcessorMs?: number;
 }
+
+/** Default for `WorkerOptions.stuckProcessorMs`. */
+export const DEFAULT_STUCK_PROCESSOR_MS = 30_000;
 
 export type Processor<T, R> = (job: Job<T, R>) => Promise<R>;
 
@@ -611,6 +643,10 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   private pollingTimer?: NodeJS.Timeout;
   private stalledSweepTimer?: NodeJS.Timeout;
   private waitingListeners: Map<IQueueEngine<T, R>, () => void> = new Map();
+  private readonly defaultTimeoutMs?: WorkerOptions['defaultTimeoutMs'];
+  private readonly stuckProcessorMs: number;
+  /** Processors that were aborted at their deadline and have not settled yet; each keeps its concurrency slot. */
+  private readonly unsettledProcessors = new WeakMap<Job<T, R>, Promise<void>>();
 
   get queue(): IQueueEngine<T, R> {
     return this.queues[0];
@@ -630,6 +666,8 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     this.name = queueList[0].name;
     this.processor = processor;
     this.concurrency = opts.concurrency || 5;
+    this.defaultTimeoutMs = opts.defaultTimeoutMs;
+    this.stuckProcessorMs = opts.stuckProcessorMs ?? DEFAULT_STUCK_PROCESSOR_MS;
 
     // Listen for new jobs arriving in any of the subscribed queues
     for (const q of this.queues) {
@@ -700,11 +738,14 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
           if (!poppedJob || !sourceQueue) break;
 
           this.activeCount++;
-          void this.executeJob(poppedJob, sourceQueue)
+          const running = poppedJob;
+          void this.executeJob(running, sourceQueue)
             .catch((err) => {
               console.error(`[Worker:${this.name}] Unhandled executeJob error:`, err);
             })
-            .finally(() => {
+            .finally(async () => {
+              // A processor that ignored its abort is still running: its slot is free only when it settles.
+              await this.unsettledProcessors.get(running);
               this.activeCount--;
               this.checkAndProcess();
             });
@@ -734,7 +775,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     try {
       let result: R;
       try {
-        result = await this.runAttempt(job);
+        result = await this.runAttempt(job, queue);
       } catch (err: any) {
         // A cancelled or superseded attempt never retries, never reaches the DLQ, and never emits `failed`.
         if (isAttemptDiscarded(job)) {
@@ -750,28 +791,65 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   }
 
   /**
-   * Runs the processor for one attempt. With `opts.timeout`, the attempt's signal is aborted with a
-   * JobTimeoutError once the timeout elapses and the attempt fails even if the processor ignores it.
+   * Runs the processor for one attempt. With a timeout, the attempt's signal is aborted with a JobTimeoutError once
+   * it elapses and the attempt fails even if the processor ignores the signal. The timeout is held to the job's
+   * absolute deadline, so a retry gets only the time that is left and a job whose deadline passed fails at once.
    */
-  private async runAttempt(job: Job<T, R>): Promise<R> {
-    const timeoutMs = job.opts.timeout;
-    if (!timeoutMs || timeoutMs <= 0) {
+  private async runAttempt(job: Job<T, R>, queue: IQueueEngine<T, R>): Promise<R> {
+    if (job.opts.timeout === undefined && this.defaultTimeoutMs) {
+      const resolved = await this.defaultTimeoutMs(job);
+      if (resolved !== undefined) job.opts.timeout = resolved;
+    }
+    const budgetMs = job.opts.timeout;
+    if (!budgetMs || budgetMs <= 0) {
       return this.processor(job);
     }
 
+    const startedAt = Date.now();
+    const claimedAt = (await queue._claimDeadline?.(job, startedAt + budgetMs)) ?? startedAt + budgetMs;
+    job.opts.deadlineAt = Math.min(job.opts.deadlineAt ?? Number.POSITIVE_INFINITY, claimedAt);
+    const timeoutMs = Math.min(budgetMs, job.opts.deadlineAt - startedAt);
+    if (timeoutMs <= 0) {
+      const expired = new JobTimeoutError(budgetMs);
+      job._abortAttempt(expired);
+      throw expired;
+    }
+
+    const processing = Promise.resolve(this.processor(job));
     let timer: NodeJS.Timeout | undefined;
     const timedOut = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
         const timeoutError = new JobTimeoutError(timeoutMs);
         job._abortAttempt(timeoutError);
+        this.keepSlotUntilSettled(job, processing);
         reject(timeoutError);
       }, timeoutMs);
     });
     try {
-      return await Promise.race([this.processor(job), timedOut]);
+      return await Promise.race([processing, timedOut]);
+    } catch (err) {
+      // A processor that wraps the abort into another error must not turn the deadline into a different failure.
+      if (job.signal.reason instanceof JobTimeoutError) throw job.signal.reason;
+      throw err;
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * An aborted processor may keep running (it ignored the signal, or is in a loop that does not look at it). Its
+   * slot stays taken until it settles, so work that cannot be stopped does not pile up beyond the concurrency, and
+   * `stuck` is emitted if it is still unsettled after `stuckProcessorMs`.
+   */
+  private keepSlotUntilSettled(job: Job<T, R>, processing: Promise<R>): void {
+    const settled = processing.then(
+      () => undefined,
+      () => undefined
+    );
+    this.unsettledProcessors.set(job, settled);
+    const stuckTimer = setTimeout(() => this.emit('stuck', job), this.stuckProcessorMs);
+    if (typeof stuckTimer.unref === 'function') stuckTimer.unref();
+    void settled.then(() => clearTimeout(stuckTimer));
   }
 
   private async completeJob(job: Job<T, R>, queue: IQueueEngine<T, R>, result: R): Promise<void> {
@@ -816,13 +894,15 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
   }
 
   private async handleJobFailure(job: Job<T, R>, queue: IQueueEngine<T, R>, err: any): Promise<void> {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    // Mask the error itself so the failed event, console output and rethrows also show masked text.
+    scrubError(err);
+    const errorMessage = redactText(err instanceof Error ? err.message : String(err));
     job.failedReason = errorMessage;
     const failure = classifyJobFailure(err);
     job.failedCode = failure.code;
     job.failedStatus = failure.status;
     if (err instanceof Error && err.stack) {
-      job.stacktrace.push(err.stack);
+      job.stacktrace.push(redactText(err.stack));
     }
 
     const maxAttempts = job.opts.attempts || 1;
@@ -1125,6 +1205,21 @@ end
 return 1
 `;
 
+/** Reply of CLAIM_DEADLINE_LUA_SCRIPT for a job hash that does not exist. */
+export const CLAIM_DEADLINE_NO_JOB = -1;
+
+export const CLAIM_DEADLINE_LUA_SCRIPT = `
+-- KEYS[1]: job hash key
+-- ARGV[1]: candidate deadline (absolute time in milliseconds)
+-- Records the deadline on an existing job hash only if none is recorded, and returns the recorded one. A job hash
+-- that does not exist is never created (HSETNX alone would write a hash holding only this field): returns -1.
+if redis.call('EXISTS', KEYS[1]) == 0 then
+  return -1
+end
+redis.call('HSETNX', KEYS[1], 'deadlineAt', ARGV[1])
+return redis.call('HGET', KEYS[1], 'deadlineAt')
+`;
+
 export const COMPLETE_JOB_LUA_SCRIPT = `
 -- KEYS[1]: job hash key
 -- KEYS[2]: activeKey
@@ -1328,10 +1423,49 @@ function flatHashToRecord(flat: string[]): Record<string, string> {
   return record;
 }
 
+const REDIS_WRONGTYPE_PREFIX = 'WRONGTYPE';
+
+/** ioredis states of a client that has not finished connecting yet (`wait`: lazy, not started). */
+const REDIS_HANDSHAKE_STATUSES: ReadonlySet<string> = new Set(['wait', 'connecting', 'connect']);
+/** Longest a request waits for a starting Redis connection before the queue answers unavailable. */
+export const REDIS_READY_WAIT_MS = 1_000;
+
+/** Resolves true once the client is ready, false on close/end or after `timeoutMs`. */
+function waitForRedisReady(client: Redis, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const finish = (ready: boolean) => {
+      clearTimeout(timer);
+      client.off('ready', onReady);
+      client.off('end', onDown);
+      client.off('close', onDown);
+      resolve(ready);
+    };
+    const onReady = () => finish(true);
+    const onDown = () => finish(false);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    client.once('ready', onReady);
+    client.once('end', onDown);
+    client.once('close', onDown);
+  });
+}
+
+/**
+ * The waiting key is a sorted set, or a list on data written by an older version; a command for the
+ * other type answers WRONGTYPE and the caller tries the other command. Any other failure is Redis
+ * not answering and must reach the caller.
+ */
+function rethrowUnlessWrongType(err: unknown): void {
+  if (!(err instanceof Error && err.message.startsWith(REDIS_WRONGTYPE_PREFIX))) {
+    throw err;
+  }
+}
+
 /**
  * Distributed Queue Adapter for Redis/BullMQ clustering.
  * Provides authentic Redis cluster storage (Hashes, Lists, Sets, Sorted Sets, Pub/Sub)
- * and seamless, zero-config in-memory fallback for local development and testnets.
+ * and a zero-config in-memory stand-in for local development, used only while no Redis is
+ * configured. Once Redis is configured, a disconnected client fails closed with
+ * `QueueUnavailableError` instead of falling back to process memory.
  */
 export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter implements IQueueEngine<T, R> {
   readonly name: string;
@@ -1554,6 +1688,42 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     }
   }
 
+  /**
+   * Fails closed once Redis is configured: a client that is not connected is a queue that cannot
+   * answer. Only the no-Redis configuration (local development) may use the in-memory engine.
+   */
+  private async assertRedisConnected(): Promise<void> {
+    const client = this.redisClient;
+    const status = (client as { status?: unknown } | null)?.status;
+    if (client && typeof status === 'string' && REDIS_HANDSHAKE_STATUSES.has(status)) {
+      // A client still completing its handshake (the offline queue is off) would reject the
+      // command; wait for it, bounded, so a request right after start-up is not refused.
+      if (!(await waitForRedisReady(client, REDIS_READY_WAIT_MS))) {
+        throw new QueueUnavailableError(this.name);
+      }
+      return;
+    }
+    if (!this.redisConnected) {
+      throw new QueueUnavailableError(this.name);
+    }
+  }
+
+  /** Any failure of a Redis operation means the queue cannot answer; the cause stays server-side. */
+  private toQueueUnavailable(err: unknown): QueueUnavailableError {
+    if (err instanceof QueueUnavailableError) {
+      return err;
+    }
+    return new QueueUnavailableError(this.name, err instanceof Error ? err.message : String(err));
+  }
+
+  private async redisOp<V>(operation: () => Promise<V>): Promise<V> {
+    try {
+      return await operation();
+    } catch (err) {
+      throw this.toQueueUnavailable(err);
+    }
+  }
+
   private getJobKey(id: string): string {
     return `${this.keyPrefix}{${this.name}}:job:${id}`;
   }
@@ -1640,6 +1810,11 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     try {
       parsedOpts = JSON.parse(raw.opts || '{}');
     } catch {}
+    // The deadline claimed by the job's first attempt: a later attempt does not get a fresh one.
+    const claimedDeadline = Number(raw.deadlineAt);
+    if (Number.isFinite(claimedDeadline) && claimedDeadline > 0) {
+      parsedOpts.deadlineAt = Math.min(parsedOpts.deadlineAt ?? Number.POSITIVE_INFINITY, claimedDeadline);
+    }
 
     const job = new Job<T, R>(
       raw.id,
@@ -1680,7 +1855,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async add(name: string, data: T, opts: JobOptions = {}): Promise<Job<T, R>> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
+      const redis = this.redisClient;
       const id = opts.jobId || generateJobId();
       const userId = (data as any)?.userId ? String((data as any).userId) : '';
       const userJobsKey = userId ? this.getUserJobsKey(userId) : '';
@@ -1722,22 +1899,24 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           flatHash.push(k, v);
         }
 
-        const res = (await this.redisClient.eval(
-          ADD_JOB_LUA_SCRIPT,
-          4,
-          this.getJobKey(id),
-          this.waitingKey,
-          this.delayedKey,
-          userJobsKey || `${this.keyPrefix}{${this.name}}:user_jobs:none`,
-          id,
-          isDelayed ? '1' : '0',
-          String(delayUntil),
-          String(priorityScore),
-          String(now),
-          userId,
-          this.eventsChannel,
-          this.getJobEventsChannel(id),
-          ...flatHash
+        const res = (await this.redisOp(() =>
+          redis.eval(
+            ADD_JOB_LUA_SCRIPT,
+            4,
+            this.getJobKey(id),
+            this.waitingKey,
+            this.delayedKey,
+            userJobsKey || `${this.keyPrefix}{${this.name}}:user_jobs:none`,
+            id,
+            isDelayed ? '1' : '0',
+            String(delayUntil),
+            String(priorityScore),
+            String(now),
+            userId,
+            this.eventsChannel,
+            this.getJobEventsChannel(id),
+            ...flatHash
+          )
         )) as [number, string[]?];
 
         if (Array.isArray(res) && res[0] === 0 && res[1]) {
@@ -1775,23 +1954,23 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         });
 
         const hash = this.jobToHash(job);
-        await this.redisClient.hset(this.getJobKey(id), hash);
+        await this.redisOp(() => redis.hset(this.getJobKey(id), hash));
 
         if (isDelayed) {
-          if (typeof this.redisClient.zadd === 'function') {
-            await this.redisClient.zadd(this.delayedKey, delayUntil, id);
+          if (typeof redis.zadd === 'function') {
+            await this.redisOp(() => redis.zadd(this.delayedKey, delayUntil, id));
           }
         } else {
-          if (typeof this.redisClient.zadd === 'function') {
-            await this.redisClient.zadd(this.waitingKey, priorityScore, id);
-          } else if (typeof this.redisClient.rpush === 'function') {
-            await this.redisClient.rpush(this.waitingKey, id);
+          if (typeof redis.zadd === 'function') {
+            await this.redisOp(() => redis.zadd(this.waitingKey, priorityScore, id));
+          } else if (typeof redis.rpush === 'function') {
+            await this.redisOp(() => redis.rpush(this.waitingKey, id));
           }
           await this.publishEvent({ event: 'waiting', jobId: id });
         }
 
-        if (userId && typeof this.redisClient.zadd === 'function') {
-          await this.redisClient.zadd(userJobsKey, now, id);
+        if (userId && typeof redis.zadd === 'function') {
+          await this.redisOp(() => redis.zadd(userJobsKey, now, id));
         }
 
         this.emit('waiting', job);
@@ -1802,22 +1981,21 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async getJob(id: string): Promise<Job<T, R> | undefined> {
-    if (this.redisClient && this.redisConnected) {
-      try {
-        const raw = await this.redisClient.hgetall(this.getJobKey(id));
-        if (!raw || !raw.id) {
-          return undefined;
-        }
-        return this.hashToJob(raw);
-      } catch {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
+      const redis = this.redisClient;
+      const raw = await this.redisOp(() => redis.hgetall(this.getJobKey(id)));
+      if (!raw || !raw.id) {
         return undefined;
       }
+      return this.hashToJob(raw);
     }
     return this.memoryFallback.getJob(id);
   }
 
   async getJobs(types: JobState[]): Promise<Job<T, R>[]> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const ids: string[] = [];
         for (const type of types) {
@@ -1826,7 +2004,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             if (typeof this.redisClient.zrange === 'function') {
               try {
                 list = await this.redisClient.zrange(this.waitingKey, 0, -1 as any);
-              } catch {}
+              } catch (err) {
+                rethrowUnlessWrongType(err);
+              }
             }
             if ((!list || list.length === 0) && typeof this.redisClient.lrange === 'function') {
               try {
@@ -1834,7 +2014,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
                 if (legacyList && legacyList.length > 0) {
                   list = legacyList;
                 }
-              } catch {}
+              } catch (err) {
+                rethrowUnlessWrongType(err);
+              }
             }
             ids.push(...(list || []));
           } else if (type === 'delayed') {
@@ -1861,15 +2043,16 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           if (j) jobs.push(j);
         }
         return jobs;
-      } catch {
-        return [];
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.getJobs(types);
   }
 
   async getJobCounts(): Promise<JobCounts> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const getWaitingCount = async (): Promise<number> => {
           if (!this.redisClient) return 0;
@@ -1877,13 +2060,17 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             try {
               const count = await this.redisClient.zcard(this.waitingKey);
               if (typeof count === 'number' && !Number.isNaN(count)) return count;
-            } catch {}
+            } catch (err) {
+              rethrowUnlessWrongType(err);
+            }
           }
           if (typeof this.redisClient.llen === 'function') {
             try {
               const count = await this.redisClient.llen(this.waitingKey);
               if (typeof count === 'number' && !Number.isNaN(count)) return count;
-            } catch {}
+            } catch (err) {
+              rethrowUnlessWrongType(err);
+            }
           }
           return 0;
         };
@@ -1904,8 +2091,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           delayed: delayed || 0,
           cancelled: cancelled || 0,
         };
-      } catch {
-        return { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0, cancelled: 0 };
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.getJobCounts();
@@ -1917,7 +2104,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     limit: number = 50,
     offset: number = 0
   ): Promise<Job<T, R>[]> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const userKey = this.getUserJobsKey(userId);
         const allJobIds = await this.redisClient.zrevrange(userKey, 0, -1);
@@ -1954,15 +2142,16 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         }
 
         return matchedJobs.slice(offset, offset + limit);
-      } catch {
-        return [];
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.getJobsByUser(userId, states, limit, offset);
   }
 
   async clean(grace: number, limit: number, type: 'completed' | 'failed' | 'cancelled'): Promise<string[]> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const setKeysByType = {
           completed: this.completedKey,
@@ -1994,8 +2183,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
           }
         }
         return removed;
-      } catch {
-        return [];
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.clean(grace, limit, type);
@@ -2003,26 +2192,29 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async cancelJob(id: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const client = this.redisClient;
-    if (!client || !this.redisConnected) {
+    if (!client) {
       return this.memoryFallback.cancelJob(id, reason);
     }
+    await this.assertRedisConnected();
 
     // Fail closed: a Redis error propagates instead of reporting a cancel that did not happen.
     const finishedOn = Date.now();
     const logEntry = `[${new Date(finishedOn).toISOString()}] Job cancelled: ${reason}`;
-    const outcome = await client.eval(
-      CANCEL_JOB_LUA_SCRIPT,
-      6,
-      this.getJobKey(id),
-      this.waitingKey,
-      this.delayedKey,
-      this.activeKey,
-      this.cancelledKey,
-      this.getHeartbeatKey(id),
-      id,
-      reason,
-      String(finishedOn),
-      logEntry
+    const outcome = await this.redisOp(() =>
+      client.eval(
+        CANCEL_JOB_LUA_SCRIPT,
+        6,
+        this.getJobKey(id),
+        this.waitingKey,
+        this.delayedKey,
+        this.activeKey,
+        this.cancelledKey,
+        this.getHeartbeatKey(id),
+        id,
+        reason,
+        String(finishedOn),
+        logEntry
+      )
     );
     if (!Array.isArray(outcome)) {
       return false;
@@ -2038,7 +2230,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async getDlqEntries(): Promise<DlqEntry<T>[]> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const raws = await this.redisClient.lrange(this.dlqKey, 0, -1);
         return raws.map((r: string) => {
@@ -2056,8 +2249,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
             };
           }
         });
-      } catch {
-        return [];
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.getDlqEntries ? this.memoryFallback.getDlqEntries() : [];
@@ -2066,15 +2259,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   async moveToDlq(job: Job<T, R>, reason: string): Promise<void> {
     if (this.redisClient && this.redisConnected) {
       try {
-        const entry: DlqEntry<T> = {
-          jobId: job.id,
-          name: job.name,
-          data: job.data,
-          failedReason: reason,
-          attemptsMade: job.attemptsMade,
-          timestamp: Date.now(),
-          stacktrace: [...job.stacktrace],
-        };
+        const entry = buildDlqEntry(job, reason);
         await this.redisClient.rpush(this.dlqKey, JSON.stringify(entry));
         this.emit('dlq', entry);
       } catch {}
@@ -2086,13 +2271,14 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   }
 
   async purgeDlq(): Promise<number> {
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient) {
+      await this.assertRedisConnected();
       try {
         const count = await this.redisClient.llen(this.dlqKey);
         await this.redisClient.del(this.dlqKey);
         return count;
-      } catch {
-        return 0;
+      } catch (err) {
+        throw this.toQueueUnavailable(err);
       }
     }
     return this.memoryFallback.purgeDlq ? this.memoryFallback.purgeDlq() : 0;
@@ -2100,7 +2286,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   async ping(): Promise<{ ok: boolean; latencyMs: number }> {
     const start = Date.now();
-    if (this.redisClient && this.redisConnected) {
+    if (this.redisClient && !this.redisConnected) {
+      return { ok: false, latencyMs: Date.now() - start };
+    }
+    if (this.redisClient) {
       try {
         await this.redisClient.ping();
         return { ok: true, latencyMs: Date.now() - start };
@@ -2230,6 +2419,22 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     } catch {}
   }
 
+  async _claimDeadline(job: Job<T, R>, candidateAt: number): Promise<number | undefined> {
+    if (!this.redisClient || !this.redisConnected) {
+      return candidateAt;
+    }
+    try {
+      const recorded = Number(await this.redisClient.eval(CLAIM_DEADLINE_LUA_SCRIPT, 1, this.getJobKey(job.id), String(candidateAt)));
+      if (recorded === CLAIM_DEADLINE_NO_JOB) return undefined;
+      return Number.isFinite(recorded) && recorded > 0 ? recorded : candidateAt;
+    } catch (err) {
+      // The store is unreachable: this attempt runs under its own timer, and the completion write will fail or
+      // succeed on its own terms.
+      console.warn(`[Queue:${this.name}] Could not record the deadline of job ${job.id}:`, err);
+      return candidateAt;
+    }
+  }
+
   async _requeue(job: Job<T, R>, delayMs: number = 0): Promise<boolean> {
     if (!this.redisClient || !this.redisConnected) {
       return this.memoryFallback._requeue(job, delayMs);
@@ -2344,7 +2549,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         this.getHeartbeatKey(job.id),
         job.id,
         String(job.finishedOn || Date.now()),
-        job.failedReason || String(err),
+        job.failedReason || redactText(String(err)),
         JSON.stringify(job.stacktrace || []),
         String(job.attemptsMade),
         job.opts?.removeOnFail === true ? '1' : '0',
@@ -2358,7 +2563,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         );
         return false;
       }
-      await this.publishEvent({ event: 'failed', jobId: job.id, error: String(err) });
+      await this.publishEvent({ event: 'failed', jobId: job.id, error: redactText(String(err)) });
       if (job.opts?.removeOnFail === true) {
         const userId = (job.data as any)?.userId;
         if (userId) {

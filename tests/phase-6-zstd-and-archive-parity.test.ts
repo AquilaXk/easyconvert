@@ -22,7 +22,6 @@ import {
   extract7zArchive,
   createRarArchive,
   extractRarArchive,
-  buildSyntheticStoredRarBuffer,
   convertWithNative7z,
   getXzBinaryPath,
   get7zBinaryPath,
@@ -30,6 +29,14 @@ import {
 import { decodeZstdCompressedBlockWithDict } from '../src/lib/conversions/zstd-dict';
 import { getZstdBinaryPath } from '../src/lib/conversions/zstd';
 import { ConversionFailedError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
+import { buildStoredRar4 } from './helpers/rar4-stored';
+import { skipUnless } from './helpers/strict-skip';
+
+/** A stored RAR 4.x archive written by the independent fixture writer (tests/helpers/rar4-stored.ts). */
+function storedRar(files: { filename: string; buffer: Buffer }[]): Buffer {
+  return buildStoredRar4(files.map((file) => ({ name: file.filename, data: file.buffer })));
+}
 
 describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
   const sha256 = (b: Buffer | Uint8Array): string =>
@@ -121,16 +128,18 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       expect(decompressed.toString('utf-8')).toBe(originalXml.toString('utf-8'));
     });
 
-    it('authentically encodes and decodes high sequence counts (>255 sequences) conforming to RFC 8878 Section 3.1.1.3.2', () => {
-      const dictPattern = 'AlphaBetaGammaDelta0123456789!@#$%^&*()_+{}[]:;<>,.?/~`';
-      const dict = Buffer.from(dictPattern, 'utf-8');
-
-      // Generate input with 300 distinct sequence matches against dict
+    const highSeqDictPattern = 'AlphaBetaGammaDelta0123456789!@#$%^&*()_+{}[]:;<>,.?/~`';
+    const buildHighSeqFixture = (): { dict: Buffer; input: Buffer } => {
+      // Input with 300 distinct sequence matches against the dictionary
       const parts: string[] = [];
       for (let i = 0; i < 300; i++) {
-        parts.push(dictPattern.slice(0, 16) + String(i).padStart(4, '0'));
+        parts.push(highSeqDictPattern.slice(0, 16) + String(i).padStart(4, '0'));
       }
-      const highSeqInput = Buffer.from(parts.join(''), 'utf-8');
+      return { dict: Buffer.from(highSeqDictPattern, 'utf-8'), input: Buffer.from(parts.join(''), 'utf-8') };
+    };
+
+    it('authentically encodes and decodes high sequence counts (>255 sequences) conforming to RFC 8878 Section 3.1.1.3.2', () => {
+      const { dict, input: highSeqInput } = buildHighSeqFixture();
 
       const compressed = compressWithZstdDict(highSeqInput, dict, { dictId: 0 });
       expect(compressed.length).toBeLessThan(highSeqInput.length);
@@ -139,34 +148,40 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       const tsDecompressed = decompressWithZstdDict(compressed, dict);
       expect(tsDecompressed.length).toBe(highSeqInput.length);
       expect(sha256(tsDecompressed)).toBe(sha256(highSeqInput));
+    });
 
-      // Official zstd CLI round-trip if available
+    // oracleTest skips explicitly when the zstd CLI is missing and throws under ORACLE_STRICT_MODE=1.
+    oracleTest('high sequence counts decode identically with the official zstd CLI', ['zstd'], () => {
       const zstdBin = getZstdBinaryPath();
-      if (zstdBin) {
-        const tmpDir = os.tmpdir();
-        const token = crypto.randomBytes(8).toString('hex');
-        const compFile = path.join(tmpDir, `zstd_high_seq_${token}.zst`);
-        const dictFile = path.join(tmpDir, `zstd_high_dict_${token}.dict`);
+      if (!zstdBin) {
+        throw new Error('zstd CLI path unavailable although the oracle precondition passed.');
+      }
+      const { dict, input: highSeqInput } = buildHighSeqFixture();
+      const compressed = compressWithZstdDict(highSeqInput, dict, { dictId: 0 });
 
-        try {
-          fs.writeFileSync(compFile, compressed);
-          fs.writeFileSync(dictFile, dict);
+      const tmpDir = os.tmpdir();
+      const token = crypto.randomBytes(8).toString('hex');
+      const compFile = path.join(tmpDir, `zstd_high_seq_${token}.zst`);
+      const dictFile = path.join(tmpDir, `zstd_high_dict_${token}.dict`);
 
-          const cliOutput = execFileSync(zstdBin, ['-d', '-D', dictFile, compFile, '-c', '-q'], {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            timeout: 10000,
-          });
+      try {
+        fs.writeFileSync(compFile, compressed);
+        fs.writeFileSync(dictFile, dict);
 
-          expect(cliOutput.length).toBe(highSeqInput.length);
-          expect(sha256(cliOutput)).toBe(sha256(highSeqInput));
-        } finally {
-          try { fs.unlinkSync(compFile); } catch {}
-          try { fs.unlinkSync(dictFile); } catch {}
-        }
+        const cliOutput = execFileSync(zstdBin, ['-d', '-D', dictFile, compFile, '-c', '-q'], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 10000,
+        });
+
+        expect(cliOutput.length).toBe(highSeqInput.length);
+        expect(sha256(cliOutput)).toBe(sha256(highSeqInput));
+      } finally {
+        try { fs.unlinkSync(compFile); } catch {}
+        try { fs.unlinkSync(dictFile); } catch {}
       }
     });
 
-    it.skipIf(!getZstdBinaryPath())('decompresses losslessly via official zstd CLI binary when available', () => {
+    it.skipIf(skipUnless('zstd', Boolean(getZstdBinaryPath())))('decompresses losslessly via official zstd CLI binary when available', () => {
       const zstdBin = getZstdBinaryPath()!;
 
       // Generate a repetitive input that exercises sequences
@@ -309,7 +324,7 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       expect(() => unpackXz(validXz.subarray(0, 20))).toThrow(/buffer too small/i);
     });
 
-    it.skipIf(!getXzBinaryPath())('decompresses pure TS XZ packaging losslessly with official xz CLI binary when available', () => {
+    it.skipIf(skipUnless('xz', Boolean(getXzBinaryPath())))('decompresses pure TS XZ packaging losslessly with official xz CLI binary when available', () => {
       const xzBin = getXzBinaryPath()!;
 
       const content = Buffer.from('Official XZ CLI Interoperability Verification Payload.\n'.repeat(30), 'utf-8');
@@ -372,7 +387,7 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       // D8 Enforcement: Production RAR creation is permanently disabled
       expect(() => createRarArchive(testFiles, {}, 'dataset.rar')).toThrow(ConversionFailedError);
 
-      const rarBuffer = buildSyntheticStoredRarBuffer(testFiles);
+      const rarBuffer = storedRar(testFiles);
 
       // Verify RAR4 signature: 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00
       expect(rarBuffer.subarray(0, 7)).toEqual(
@@ -402,9 +417,7 @@ describe('Phase 6: Zstandard FSE Entropy & Archive Native Parity', () => {
       ).rejects.toThrow(/Unsupported archive target format/i);
     });
 
-    it.skipIf(!get7zBinaryPath())('correctly executes convertWithNative7z when native 7z binary is present', () => {
-      const p7zBin = get7zBinaryPath()!;
-
+    it.skipIf(skipUnless('7z', Boolean(get7zBinaryPath())))('correctly executes convertWithNative7z when native 7z binary is present', () => {
       const input = Buffer.from('7z native CLI acceleration test.\n'.repeat(10), 'utf-8');
       const res = convertWithNative7z(input, 'txt', '7z', {}, 'sample.txt');
 

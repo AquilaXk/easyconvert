@@ -1,14 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { RawDecodeError } from '../src/lib/types';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
+import { skipWithoutRawSamples } from './helpers/strict-skip';
 
 const CACHE_DIR = path.join(__dirname, 'fixtures', 'raw', '.cache');
 const samplePath = (format: string) => path.join(CACHE_DIR, `${format}.${format}`);
-const ENABLED = existsSync(samplePath('x3f')) && existsSync(samplePath('raw'));
+const SKIP_WITHOUT_SAMPLES = skipWithoutRawSamples('x3f', 'raw');
 const TIMEOUT_MS = 120_000;
 const IMAGE_HEADER_FORMAT_OFFSET = 12;
 const UNSUPPORTED_FORMAT = 0x25;
@@ -27,7 +28,7 @@ function unknownSensorPi(): Buffer {
   return file;
 }
 
-describe.skipIf(!ENABLED)('unsupported in-process RAW variants', () => {
+describe.skipIf(SKIP_WITHOUT_SAMPLES)('unsupported in-process RAW variants', () => {
   it.each([
     ['x3f', unsupportedX3f],
     ['raw', unknownSensorPi],

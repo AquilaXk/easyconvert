@@ -253,7 +253,7 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
       const htmlResult = await convertOffice(docxBuffer, 'docx', 'html');
       const htmlString = htmlResult.buffer.toString('utf-8');
 
-      expect(htmlString).toContain('Parent Row 1 Header<br/>Parent Subtitle Line');
+      expect(htmlString).toContain('<p>Parent Row 1 Header</p>\n<p>Parent Subtitle Line</p>');
       expect(htmlString).toContain('Nested Cell 1');
       expect(htmlString).toContain('Nested Cell 2');
     });
@@ -315,7 +315,7 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
       const conv = recordedCalls[1];
       expect(conv.args.some((a) => /^--accept=pipe,name=ec_\d+_worker_[0-9a-f]{8};urp;$/.test(a))).toBe(true);
       expect(conv.args).toContain('--convert-to');
-      expect(conv.args).toContain('pdf');
+      expect(conv.args[conv.args.indexOf('--convert-to') + 1]).toMatch(/^pdf:\w+_pdf_Export:\{/);
     });
 
     it('triggers rolling recycling when a worker reaches maxJobsPerWorker threshold', async () => {

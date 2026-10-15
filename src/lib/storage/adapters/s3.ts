@@ -33,11 +33,11 @@ export const S3_MAX_PART_BYTES = 5 * GIB;
 export const S3_MAX_PARTS = 10_000;
 export const S3_DEFAULT_PART_BYTES = 8 * MIB;
 const DEFAULT_REGION = 'us-east-1';
-const DEFAULT_MAX_ATTEMPTS = 4;
-const DEFAULT_RETRY_BASE_DELAY_MS = 200;
-const MAX_RETRY_DELAY_MS = 5_000;
+export const DEFAULT_MAX_ATTEMPTS = 4;
+export const DEFAULT_RETRY_BASE_DELAY_MS = 200;
+export const MAX_RETRY_DELAY_MS = 5_000;
 /** Inactivity timeout: reset whenever response bytes arrive (S3 keepalive whitespace counts). */
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 /**
  * Absolute ceiling for one request, however steadily bytes trickle in, so a slow peer cannot hold
  * a connection open indefinitely. CompleteMultipartUpload of a large object can keep the response
@@ -46,9 +46,9 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
  */
 export const S3_REQUEST_MAX_DURATION_MS = 15 * 60_000;
 /** Error documents are small; a larger body is truncated so a hostile endpoint cannot exhaust memory. */
-const MAX_ERROR_BODY_BYTES = 64 * 1024;
+export const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const PROVIDER = 's3';
-const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
+export const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
 
 /**
  * Comma-separated `host[:port]` list of endpoints that may be private or plain HTTP, for a local
@@ -56,16 +56,16 @@ const DEFAULT_CONTENT_TYPE = 'application/octet-stream';
  */
 export const S3_DEV_ENDPOINT_ALLOWLIST_ENV = 'BYOS_S3_DEV_ENDPOINT_ALLOWLIST';
 
-const HTTP_NOT_FOUND = 404;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const HTTP_TOO_MANY_REQUESTS = 429;
-const HTTP_SERVER_ERROR_MIN = 500;
-const HTTP_REDIRECT_MIN = 300;
-const HTTP_REDIRECT_MAX = 399;
+export const HTTP_NOT_FOUND = 404;
+export const HTTP_UNAUTHORIZED = 401;
+export const HTTP_FORBIDDEN = 403;
+export const HTTP_TOO_MANY_REQUESTS = 429;
+export const HTTP_SERVER_ERROR_MIN = 500;
+export const HTTP_REDIRECT_MIN = 300;
+export const HTTP_REDIRECT_MAX = 399;
 
-const NOT_FOUND_CODES: ReadonlySet<string> = new Set(['NoSuchKey', 'NoSuchBucket', 'NotFound']);
-const AUTH_ERROR_CODES: ReadonlySet<string> = new Set([
+export const NOT_FOUND_CODES: ReadonlySet<string> = new Set(['NoSuchKey', 'NoSuchBucket', 'NotFound']);
+export const AUTH_ERROR_CODES: ReadonlySet<string> = new Set([
   'AccessDenied',
   'AccountProblem',
   'AllAccessDisabled',
@@ -76,7 +76,7 @@ const AUTH_ERROR_CODES: ReadonlySet<string> = new Set([
   'SignatureDoesNotMatch',
   'TokenRefreshRequired',
 ]);
-const RETRYABLE_ERROR_CODES: ReadonlySet<string> = new Set([
+export const RETRYABLE_ERROR_CODES: ReadonlySet<string> = new Set([
   'InternalError',
   'RequestLimitExceeded',
   'RequestThrottled',
@@ -94,6 +94,30 @@ const XML_ENTITIES: ReadonlyMap<string, string> = new Map([
   ['&quot;', '"'],
   ['&apos;', "'"],
 ]);
+/**
+ * One predefined entity (group 1), a hexadecimal (group 2) or a decimal (group 3) character
+ * reference. The digit runs are matched whole and bounded afterwards, so an over-long reference is
+ * refused instead of being left in the text.
+ */
+const XML_REFERENCE_PATTERN = /&(?:(amp|lt|gt|quot|apos)|#x([0-9A-Fa-f]+)|#([0-9]+));/g;
+const HEX_RADIX = 16;
+const DECIMAL_RADIX = 10;
+/**
+ * The most digits a reference to any legal code point needs: U+10FFFF is `10FFFF` / `1114111`.
+ * XML 1.0 section 4.1 also allows leading zeros (`&#0000034;`); a longer run is refused on purpose
+ * (fail closed) rather than parsed, since no server pads a reference that way.
+ */
+const MAX_HEX_REFERENCE_DIGITS = 6;
+const MAX_DECIMAL_REFERENCE_DIGITS = 7;
+const XML_TAB = 0x09;
+const XML_LINE_FEED = 0x0a;
+const XML_CARRIAGE_RETURN = 0x0d;
+const XML_CHAR_BMP_LOW_FIRST = 0x20;
+const XML_CHAR_BMP_LOW_LAST = 0xd7ff;
+const XML_CHAR_BMP_HIGH_FIRST = 0xe000;
+const XML_CHAR_BMP_HIGH_LAST = 0xfffd;
+const XML_CHAR_SUPPLEMENTARY_FIRST = 0x10000;
+const XML_CHAR_SUPPLEMENTARY_LAST = 0x10ffff;
 const XML_ESCAPES: ReadonlyMap<string, string> = new Map([
   ['&', '&amp;'],
   ['<', '&lt;'],
@@ -101,17 +125,17 @@ const XML_ESCAPES: ReadonlyMap<string, string> = new Map([
   ['"', '&quot;'],
   ["'", '&apos;'],
 ]);
-const ERROR_ELEMENT_PATTERN = /<Error\b/;
+export const ERROR_ELEMENT_PATTERN = /<Error\b/;
 /** S3 never sends a DTD; a document declaring one (or an entity) is refused instead of interpreted. */
 const DTD_DECLARATION_PATTERN = /<!(?:DOCTYPE|ENTITY)/i;
-const MALFORMED_XML_CODE = 'MalformedXML';
-const NO_SUCH_UPLOAD_CODE = 'NoSuchUpload';
-const BODY_LENGTH_MISMATCH_CODE = 'BodyLengthMismatch';
+export const MALFORMED_XML_CODE = 'MalformedXML';
+export const NO_SUCH_UPLOAD_CODE = 'NoSuchUpload';
+export const BODY_LENGTH_MISMATCH_CODE = 'BodyLengthMismatch';
 /** A 2xx Complete answer that does not prove the object was assembled. */
-const UNCONFIRMED_COMPLETION_CODE = 'UnconfirmedCompletion';
-const COMPLETE_RESULT_ELEMENT = '<CompleteMultipartUploadResult';
+export const UNCONFIRMED_COMPLETION_CODE = 'UnconfirmedCompletion';
+export const COMPLETE_RESULT_ELEMENT = '<CompleteMultipartUploadResult';
 /** XML whitespace (space, tab, LF, CR): S3 pads a slow Complete with it before the result. */
-const XML_WHITESPACE_BYTES: ReadonlySet<number> = new Set([0x20, 0x09, 0x0a, 0x0d]);
+export const XML_WHITESPACE_BYTES: ReadonlySet<number> = new Set([0x20, 0x09, 0x0a, 0x0d]);
 
 export interface S3AdapterOptions {
   /** Multipart part size; at least 5 MiB. Grows automatically to stay within 10,000 parts. */
@@ -129,22 +153,75 @@ export interface S3ErrorDocument {
   requestId?: string;
 }
 
-function decodeXmlText(text: string): string {
-  return text.replace(/&(?:amp|lt|gt|quot|apos);/g, (entity) => XML_ENTITIES.get(entity) ?? entity);
+/** XML 1.0 production `Char`: the code points a document, and so a character reference, may name. */
+function isXmlChar(codePoint: number): boolean {
+  // Checked in order of frequency: almost every reference names a code point below U+D800.
+  if (codePoint >= XML_CHAR_BMP_LOW_FIRST && codePoint <= XML_CHAR_BMP_LOW_LAST) {
+    return true;
+  }
+  if (codePoint === XML_TAB || codePoint === XML_LINE_FEED || codePoint === XML_CARRIAGE_RETURN) {
+    return true;
+  }
+  if (codePoint >= XML_CHAR_BMP_HIGH_FIRST && codePoint <= XML_CHAR_BMP_HIGH_LAST) {
+    return true;
+  }
+  return codePoint >= XML_CHAR_SUPPLEMENTARY_FIRST && codePoint <= XML_CHAR_SUPPLEMENTARY_LAST;
 }
 
-function escapeXmlText(text: string): string {
+function decodeCharacterReference(digits: string, radix: number, maxDigits: number): string {
+  const codePoint = digits.length <= maxDigits ? Number.parseInt(digits, radix) : Number.NaN;
+  if (!isXmlChar(codePoint)) {
+    throw new StorageServiceError('S3 response has an invalid XML character reference', PROVIDER, {
+      code: MALFORMED_XML_CODE,
+      retryable: false,
+    });
+  }
+  return String.fromCodePoint(codePoint);
+}
+
+/**
+ * Decodes the five predefined entities and numeric character references in one pass (a decoded
+ * `&` never starts another reference). Servers differ in how they write a quote: some send
+ * `&quot;`, others `&#34;` (XML 1.0 section 4.1 allows both). A reference to a code point
+ * XML forbids, such as `&#0;` or a surrogate, throws a MalformedXML StorageServiceError.
+ */
+export function decodeXmlText(text: string): string {
+  return text.replace(XML_REFERENCE_PATTERN, (reference, named?: string, hex?: string, decimal?: string) => {
+    if (named !== undefined) {
+      return XML_ENTITIES.get(reference) ?? reference;
+    }
+    if (hex !== undefined) {
+      return decodeCharacterReference(hex, HEX_RADIX, MAX_HEX_REFERENCE_DIGITS);
+    }
+    return decodeCharacterReference(decimal as string, DECIMAL_RADIX, MAX_DECIMAL_REFERENCE_DIGITS);
+  });
+}
+
+export function escapeXmlText(text: string): string {
   return text.replace(/[&<>"']/g, (ch) => XML_ESCAPES.get(ch) ?? ch);
 }
 
 /** The only S3 response elements the adapter reads. */
-type S3XmlElement = 'Code' | 'Message' | 'RequestId' | 'UploadId' | 'ETag';
+export type S3XmlElement =
+  | 'Code'
+  | 'Message'
+  | 'RequestId'
+  | 'UploadId'
+  | 'ETag'
+  | 'Key'
+  | 'Size'
+  | 'LastModified'
+  | 'IsTruncated'
+  | 'NextContinuationToken'
+  | 'PartNumber'
+  | 'NextPartNumberMarker'
+  | 'EncodingType';
 
 /**
  * Returns the decoded text of the first `<name>text</name>` whose content has no markup, using
  * plain string search (no pattern is built from input).
  */
-function readXmlElement(xml: string, name: S3XmlElement): string | undefined {
+export function readXmlElement(xml: string, name: S3XmlElement): string | undefined {
   const open = `<${name}>`;
   const close = `</${name}>`;
   let from = xml.indexOf(open);
@@ -162,24 +239,32 @@ function readXmlElement(xml: string, name: S3XmlElement): string | undefined {
   return undefined;
 }
 
-function declaresDtd(xml: string): boolean {
+export function declaresDtd(xml: string): boolean {
   return DTD_DECLARATION_PATTERN.test(xml);
 }
 
 /**
  * Extracts Code, Message, and RequestId from an S3 `<Error>` document. Elements are read as
- * plain text: only the five predefined entities are decoded, and a document that declares a DTD
- * or entity yields nothing, so the HTTP status alone decides the error.
+ * plain text: only the predefined entities and numeric character references are decoded, and a
+ * document that declares a DTD or entity, or holds an illegal character reference, yields
+ * nothing, so the HTTP status alone decides the error.
  */
 export function parseS3ErrorXml(xml: string): S3ErrorDocument {
   if (declaresDtd(xml)) {
     return {};
   }
-  return {
-    code: readXmlElement(xml, 'Code'),
-    message: readXmlElement(xml, 'Message'),
-    requestId: readXmlElement(xml, 'RequestId'),
-  };
+  try {
+    return {
+      code: readXmlElement(xml, 'Code'),
+      message: readXmlElement(xml, 'Message'),
+      requestId: readXmlElement(xml, 'RequestId'),
+    };
+  } catch (error) {
+    if (error instanceof StorageServiceError && error.code === MALFORMED_XML_CODE) {
+      return {};
+    }
+    throw error;
+  }
 }
 
 const DEVELOPMENT_ENV = 'development';
@@ -217,7 +302,7 @@ function devDispatcher(): Dispatcher {
   return devAgent;
 }
 
-function toNodeReadable(stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>): Readable {
+export function toNodeReadable(stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>): Readable {
   if ('getReader' in stream) {
     return Readable.fromWeb(stream as unknown as NodeWebReadableStream<Uint8Array>);
   }
@@ -225,7 +310,7 @@ function toNodeReadable(stream: NodeJS.ReadableStream | ReadableStream<Uint8Arra
 }
 
 /** Splits a stream into buffers of exactly `chunkSize` bytes (the last may be shorter), holding one chunk at a time. */
-async function* readChunks(stream: Readable, chunkSize: number): AsyncGenerator<Buffer> {
+export async function* readChunks(stream: Readable, chunkSize: number): AsyncGenerator<Buffer> {
   let pending: Buffer[] = [];
   let pendingBytes = 0;
   for await (const piece of stream) {
@@ -248,15 +333,15 @@ async function* readChunks(stream: Readable, chunkSize: number): AsyncGenerator<
   }
 }
 
-function stripQuotes(etag: string | null | undefined): string | undefined {
+export function stripQuotes(etag: string | null | undefined): string | undefined {
   return etag ? etag.replace(/"/g, '') : undefined;
 }
 
-function sleep(ms: number): Promise<void> {
+export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isAbortError(err: unknown): boolean {
+export function isAbortError(err: unknown): boolean {
   return err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
 }
 
@@ -272,7 +357,7 @@ function firstContentByte(chunk: Uint8Array): number {
  * S3 sends as keepalive while completing an upload. `onBytes` runs for every chunk so the caller
  * can extend its inactivity deadline.
  */
-async function readLimitedText(res: Response, onBytes?: () => void): Promise<string> {
+export async function readLimitedText(res: Response, onBytes?: () => void): Promise<string> {
   if (!res.body) return '';
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -320,7 +405,7 @@ const PART_MD5_PATTERN = /^[0-9a-f]{32}$/i;
  * MD5 digest for the S3 ETag. This computes an S3 protocol integrity checksum, not a security
  * control: S3 defines object and multipart ETags as MD5, so no other hash can be compared.
  */
-function s3EtagMd5(data: Buffer): Buffer {
+export function s3EtagMd5(data: Buffer): Buffer {
   return crypto.createHash('md5').update(data).digest(); // NOSONAR S4790: S3 protocol ETag checksum, not a security control
 }
 
@@ -330,7 +415,7 @@ function s3EtagMd5(data: Buffer): Buffer {
  * when a part ETag is not a plain MD5 (e.g. server-side encryption with KMS), in which case
  * completion cannot be proven this way.
  */
-function expectedMultipartEtag(partEtags: readonly string[]): string | undefined {
+export function expectedMultipartEtag(partEtags: readonly string[]): string | undefined {
   const digests: Buffer[] = [];
   for (const etag of partEtags) {
     const hex = etag.replace(/"/g, '');

@@ -8,21 +8,20 @@ export * from './errors';
 export * from './credentials-vault';
 export * from './adapters';
 export * from './byos-operations';
+export { RemoteStorageBackend } from './remote-storage-backend';
+export {
+  isRemoteStorageConfig,
+  resolveStorageConfig,
+  type StorageConfig,
+  type StorageDriver,
+} from './storage-config';
+export { objectStorage, storageConfig, storageProvider } from './selected-storage';
 
-import { s3Storage } from './s3-storage';
-import { LocalFsStorage } from './local-fs-storage';
-import { S3CompatibleStorage } from './s3-compatible-storage';
+import { storageProvider } from './selected-storage';
 import type { IStorageBackend } from './oci-storage';
-
-/**
- * Modern Stream-First Object Storage Singletons.
- */
-export const localFsStorage = new LocalFsStorage();
-export const s3CompatibleStorage = new S3CompatibleStorage();
 
 /**
  * SSOT Default Storage Provider Interface.
  * Used uniformly across API routes and backend workers to prevent tenancy/provider mismatch.
  */
-export const storageProvider: IStorageBackend = s3Storage;
-export const defaultStorage: IStorageBackend = s3Storage;
+export const defaultStorage: IStorageBackend = storageProvider;

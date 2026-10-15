@@ -8,8 +8,10 @@ import sharp from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { UnsupportedTargetError } from '../src/lib/types';
 import { getOracleToolPath } from './helpers/differential-oracle';
+import { skipWithoutTools } from './helpers/strict-skip';
 
 const FFMPEG = getOracleToolPath('ffmpeg');
+const SKIP_WITHOUT_FFMPEG = skipWithoutTools('ffmpeg');
 const SAMPLE_MP4 = readFileSync(path.resolve(__dirname, 'fixtures', 'sample.mp4'));
 const CONVERT_TIMEOUT_MS = 120_000;
 const SUBTITLE_TEXT = 'Hello dispatch subtitles';
@@ -75,7 +77,7 @@ describe('task-driven media targets the registry does not list', () => {
     await expect(run).rejects.toThrow(/^Unsupported conversion from \.mp4 to \.docx/);
   });
 
-  it.skipIf(!FFMPEG)(
+  it.skipIf(SKIP_WITHOUT_FFMPEG)(
     'extracts a jpg thumbnail from a video when the thumbnail option is present (needs ffmpeg)',
     async () => {
       const result = await dispatchConversion(decodableMp4, 'mp4', 'jpg', { thumbnail: { at: [THUMBNAIL_OFFSET] } }, 'sample.mp4');
@@ -88,7 +90,7 @@ describe('task-driven media targets the registry does not list', () => {
     CONVERT_TIMEOUT_MS
   );
 
-  it.skipIf(!FFMPEG)(
+  it.skipIf(SKIP_WITHOUT_FFMPEG)(
     'extracts a png thumbnail from a video when the thumbnail option is present (needs ffmpeg)',
     async () => {
       const result = await dispatchConversion(decodableMp4, 'mp4', 'png', { thumbnail: { at: [THUMBNAIL_OFFSET] } }, 'sample.mp4');
@@ -98,7 +100,7 @@ describe('task-driven media targets the registry does not list', () => {
     CONVERT_TIMEOUT_MS
   );
 
-  it.skipIf(!FFMPEG)(
+  it.skipIf(SKIP_WITHOUT_FFMPEG)(
     'packages a video to HLS when the packaging option is present (needs ffmpeg)',
     async () => {
       const result = await dispatchConversion(decodableMp4, 'mp4', 'hls', { packaging: { format: 'hls', segmentSeconds: 2 } }, 'sample.mp4');
@@ -111,7 +113,7 @@ describe('task-driven media targets the registry does not list', () => {
     CONVERT_TIMEOUT_MS
   );
 
-  it.skipIf(!FFMPEG)(
+  it.skipIf(SKIP_WITHOUT_FFMPEG)(
     'extracts a subtitle stream from mkv to srt and vtt in extract mode (needs ffmpeg)',
     async () => {
       const srt = await dispatchConversion(mkvWithSubtitles, 'mkv', 'srt', { subtitles: { mode: 'extract', streamIndex: 0 } }, 'in.mkv');

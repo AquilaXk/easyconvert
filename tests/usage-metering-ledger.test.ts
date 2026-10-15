@@ -13,6 +13,7 @@ import { userStore } from '@/lib/auth/user-store';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { ajv } from '@/lib/api/contracts/validate';
 import { GET } from '@/app/api/v1/usage/route';
+import { requiredHeader } from './helpers/ratelimit-headers';
 
 /**
  * Independent Differential Pricing Oracle
@@ -317,9 +318,9 @@ describe('WP-13 Usage Metering Ledger & Standard RateLimit Headers', () => {
       const res = await GET(req);
       expect(res.status).toBe(200);
 
-      // Verify RateLimit headers present on response
-      expect(res.headers.get('ratelimit')).toBeDefined();
-      expect(res.headers.get('ratelimit-policy')).toBeDefined();
+      // Reading the usage ledger spends no unit of the pro quota (500 a day).
+      expect(requiredHeader(res.headers, 'ratelimit')).toMatch(/^limit=500, remaining=500, reset=\d+$/);
+      expect(requiredHeader(res.headers, 'ratelimit-policy')).toBe('500;w=86400;comment="pro daily quota"');
 
       const body = await res.json();
       expect(body.success).toBe(true);

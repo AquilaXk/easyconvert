@@ -1,86 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import sharp from 'sharp';
+import { existsSync } from 'node:fs';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { RawDecodeError } from '../src/lib/types';
 import { OracleToolMissingError } from './helpers/differential-oracle';
-import { withMissingBinary } from './helpers/native-tools';
-import { compareWithPreview, readPiFrame, readX3fContainer, type RegionComparison } from './helpers/raw-container-oracle';
+import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
+import { ENABLED, STRICT_MODE, SAMPLES, load, samplePath, type SampleName } from './helpers/raw-sample-set';
 
-const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
-const CACHE_DIR = path.join(__dirname, 'fixtures', 'raw', '.cache');
-
-/**
- * Every sample the decoders are checked against: the primary sample of each format (`manifest.json`) and
- * the sensor-data variants (`variants.json`). The compression of each is what the section headers declare:
- *  - x3f: TRUE (type 3, format 0x1e), one Huffman table, three full-resolution planes
- *  - x3f-sd14: Huffman (type 3, format 0x06), 1024-entry difference and code tables, interleaved layers
- *  - x3f-merrill: TRUE per-layer planes (type 1, format 0x1e)
- *  - x3f-quattro: TRUE planes (type 1, format 0x23), full-resolution top layer, quarter-resolution lower layers
- *  - raw: Raspberry Pi ov5647, MIPI RAW10; raw-imx219: RAW10; raw-imx477: MIPI RAW12
- */
-const SAMPLES = ['x3f', 'x3f-sd14', 'x3f-merrill', 'x3f-quattro', 'raw', 'raw-imx219', 'raw-imx477'] as const;
-type SampleName = (typeof SAMPLES)[number];
-const formatOf = (name: string) => name.split('-')[0];
-const samplePath = (name: string) => path.join(CACHE_DIR, `${name}.${formatOf(name)}`);
-const SAMPLES_PRESENT = SAMPLES.every((name) => existsSync(samplePath(name)));
-const ENABLED = STRICT_MODE || SAMPLES_PRESENT;
-
-const DECODE_TIMEOUT_MS = 180_000;
-/** A hostile file must be rejected quickly: decoding the largest real sample takes about ten seconds. */
-const HOSTILE_TIME_LIMIT_MS = 15_000;
-const TARGETS = ['png', 'jpg'];
-
-interface Tolerance {
-  lumaRatioError: number;
-  chromaRelativeError: number;
-  chromaAbsoluteError: number;
-  /** Lower bound of the rank correlation of the cell lumas. */
-  lumaRankCorrelation: number;
-}
-
-/**
- * Tolerances of the comparison with the camera's own preview, on a 6x6 grid of region means. The
- * preview is the firmware's rendering (its own tone curve, white balance and shading correction), so
- * the check is of structure and colour relationships, not of identical pixels.
- *  - luma: per-cell luma over the image's mean luma, so exposure differences cancel; the firmware's
- *    contrast curve moves the darkest and brightest cells (Merrill: bright lamp and black background);
- *  - chroma (relative): red and blue shares of the cell's total after removing each image's mean cast;
- *  - chroma (absolute): the same without removing the cast, only meant to catch swapped channels;
- *  - rank: Spearman correlation of the 36 cell lumas, which any monotonic tone curve preserves.
- * Observed on the real samples through the dispatcher (luma / relative / absolute / rank), measured after
- * the 16-bit encode stopped shifting colours through a wide-gamut working profile:
- *   x3f 0.049 / 0.008 / 0.007 / 0.999      x3f-sd14 0.124 / 0.016 / 0.024 / 0.998
- *   x3f-merrill 0.496 / 0.039 / 0.039 / 0.996   x3f-quattro 0.203 / 0.037 / 0.038 / 0.985
- *   raw 0.165 / 0.012 / 0.056 / 0.804      raw-imx219 0.183 / 0.031 / 0.067 / 0.798
- *   raw-imx477 0.154 / 0.071 / 0.103 / 0.988
- * The Raspberry Pi frames carry no sensor colour characterisation (grey-world white balance and a generic
- * matrix), which is why their chroma limits are looser than the X3F ones.
- */
-const TOLERANCE: Readonly<Record<SampleName, Tolerance>> = {
-  x3f: { lumaRatioError: 0.1, chromaRelativeError: 0.02, chromaAbsoluteError: 0.02, lumaRankCorrelation: 0.99 },
-  'x3f-sd14': { lumaRatioError: 0.17, chromaRelativeError: 0.025, chromaAbsoluteError: 0.035, lumaRankCorrelation: 0.98 },
-  'x3f-merrill': { lumaRatioError: 0.6, chromaRelativeError: 0.05, chromaAbsoluteError: 0.055, lumaRankCorrelation: 0.98 },
-  'x3f-quattro': { lumaRatioError: 0.26, chromaRelativeError: 0.045, chromaAbsoluteError: 0.05, lumaRankCorrelation: 0.96 },
-  raw: { lumaRatioError: 0.25, chromaRelativeError: 0.03, chromaAbsoluteError: 0.1, lumaRankCorrelation: 0.7 },
-  'raw-imx219': { lumaRatioError: 0.25, chromaRelativeError: 0.04, chromaAbsoluteError: 0.08, lumaRankCorrelation: 0.7 },
-  'raw-imx477': { lumaRatioError: 0.18, chromaRelativeError: 0.09, chromaAbsoluteError: 0.12, lumaRankCorrelation: 0.96 },
-};
-
-/** Names of the metrics of `result` outside `limit` (the rank correlation is a lower bound). */
-function exceeded(result: RegionComparison, limit: Tolerance): string[] {
-  const names = (Object.keys(limit) as (keyof Tolerance)[]).filter((metric) =>
-    metric === 'lumaRankCorrelation' ? result[metric] < limit[metric] : result[metric] > limit[metric]
-  );
-  return names;
-}
-
-function load(name: string): Buffer {
-  return readFileSync(samplePath(name));
-}
-
-const containerOf = (name: string, file: Buffer) => (formatOf(name) === 'x3f' ? readX3fContainer(file) : readPiFrame(file));
+/** Hang guard: a hostile header is rejected in milliseconds; decoding the largest real sample takes about ten seconds. */
+const HOSTILE_HANG_GUARD_MS = 15_000;
 
 describe('in-process RAW sample files', () => {
   it.skipIf(!STRICT_MODE)('are present in strict mode', () => {
@@ -90,137 +17,11 @@ describe('in-process RAW sample files', () => {
   });
 });
 
-describe.skipIf(!ENABLED)('Sigma X3F and Raspberry Pi RAW decode through the dispatcher', () => {
-  const pairs = SAMPLES.flatMap((name) => TARGETS.map((target) => [name, target] as [SampleName, string]));
-
-  it.each(pairs)(
-    '%s -> %s decodes the sensor data to the declared size and agrees with the camera preview',
-    async (name, target) => {
-      const format = formatOf(name);
-      const file = load(name);
-      const container = containerOf(name, file);
-      const result = await dispatchConversion(file, format, target, {}, `sample.${format}`);
-      expect(result.engineUsed).toBe('in-process-raw');
-
-      const meta = await sharp(result.buffer).metadata();
-      expect(meta.format).toBe(target === 'jpg' ? 'jpeg' : 'png');
-      expect({ width: meta.width, height: meta.height }).toEqual({
-        width: container.declaredWidth,
-        height: container.declaredHeight,
-      });
-      // The finished X3F frame is the sensor array without its calibration margins.
-      expect(container.declaredWidth).toBeLessThanOrEqual(container.sensorWidth);
-      expect(container.declaredHeight).toBeLessThanOrEqual(container.sensorHeight);
-
-      const comparison = await compareWithPreview(result.buffer, container.previewJpeg);
-      expect(exceeded(comparison, TOLERANCE[name]), JSON.stringify(comparison)).toEqual([]);
-    },
-    DECODE_TIMEOUT_MS
-  );
-
-  it.each(SAMPLES)(
-    'decodes %s without LibRaw installed',
-    async (name) => {
-      const format = formatOf(name);
-      const result = await withMissingBinary('DCRAW_EMU_PATH', () => dispatchConversion(load(name), format, 'png', {}, `sample.${format}`));
-      expect(result.engineUsed).toBe('in-process-raw');
-      const { channels } = await sharp(result.buffer).stats();
-      expect(Math.max(...channels.map((channel) => channel.stdev))).toBeGreaterThan(10);
-    },
-    DECODE_TIMEOUT_MS
-  );
-});
-
-describe.skipIf(!ENABLED)('region comparison negative controls', () => {
-  it('the comparator rejects a vertically flipped decode', async () => {
-    const file = load('x3f');
-    const container = readX3fContainer(file);
-    const result = await dispatchConversion(file, 'x3f', 'png', {}, 'sample.x3f');
-    const flipped = await sharp(result.buffer).flip().png().toBuffer();
-    const comparison = await compareWithPreview(flipped, container.previewJpeg);
-    expect(exceeded(comparison, TOLERANCE.x3f)).toContain('lumaRatioError');
-    expect(comparison.lumaRatioError).toBeGreaterThan(TOLERANCE.x3f.lumaRatioError * 3);
-  }, DECODE_TIMEOUT_MS);
-
-  it('a Raspberry Pi frame with a third of its sensor rows blanked fails the comparison', async () => {
-    const file = Buffer.from(load('raw'));
-    const frame = readPiFrame(file);
-    const start = frame.sensorDataOffset + Math.floor(frame.declaredHeight / 3) * frame.stride;
-    file.fill(0, start, start + Math.floor(frame.declaredHeight / 3) * frame.stride);
-    const result = await dispatchConversion(file, 'raw', 'png', {}, 'corrupt.raw');
-    const comparison = await compareWithPreview(result.buffer, frame.previewJpeg);
-    expect(comparison.lumaRatioError).toBeGreaterThan(TOLERANCE.raw.lumaRatioError);
-  }, DECODE_TIMEOUT_MS);
-
-  it('a Raspberry Pi frame whose sensor data is replaced by noise fails the comparison', async () => {
-    const file = Buffer.from(load('raw'));
-    const frame = readPiFrame(file);
-    let state = 0x2545f491;
-    for (let at = frame.sensorDataOffset; at < file.length; at += 1) {
-      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-      file[at] = state >>> 24;
-    }
-    const result = await dispatchConversion(file, 'raw', 'png', {}, 'noise.raw');
-    const comparison = await compareWithPreview(result.buffer, frame.previewJpeg);
-    expect(exceeded(comparison, TOLERANCE.raw)).toEqual(expect.arrayContaining(['lumaRatioError', 'chromaRelativeError']));
-  }, DECODE_TIMEOUT_MS);
-
-  const VARIANTS = SAMPLES.filter((name) => name.includes('-'));
-
-  it.each(VARIANTS)('the comparator rejects a vertically flipped decode of %s', async (name) => {
-    const format = formatOf(name);
-    const file = load(name);
-    const container = containerOf(name, file);
-    const result = await dispatchConversion(file, format, 'png', {}, `sample.${format}`);
-    const flipped = await sharp(result.buffer).flip().png().toBuffer();
-    const comparison = await compareWithPreview(flipped, container.previewJpeg);
-    const failed = exceeded(comparison, TOLERANCE[name]);
-    expect(failed).toContain('lumaRatioError');
-    expect(failed).toContain('lumaRankCorrelation');
-    expect(comparison.lumaRatioError).toBeGreaterThan(TOLERANCE[name].lumaRatioError * 1.2);
-  }, DECODE_TIMEOUT_MS);
-
-  it.each(['raw-imx219', 'raw-imx477'] as const)('a %s frame whose sensor data is replaced by noise fails the comparison', async (name) => {
-    const file = Buffer.from(load(name));
-    const frame = readPiFrame(file);
-    let state = 0x2545f491;
-    for (let at = frame.sensorDataOffset; at < file.length; at += 1) {
-      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-      file[at] = state >>> 24;
-    }
-    const result = await dispatchConversion(file, 'raw', 'png', {}, 'noise.raw');
-    const comparison = await compareWithPreview(result.buffer, frame.previewJpeg);
-    expect(comparison.lumaRankCorrelation).toBeLessThan(TOLERANCE[name].lumaRankCorrelation - 0.3);
-    expect(comparison.chromaRelativeError).toBeGreaterThan(TOLERANCE[name].chromaRelativeError);
-  }, DECODE_TIMEOUT_MS);
-
-  it.each(['x3f-sd14', 'x3f-merrill', 'x3f-quattro'] as const)('an %s file with damaged compressed sensor data is rejected with RawDecodeError', async (name) => {
-    const file = Buffer.from(load(name));
-    const container = readX3fContainer(file);
-    const middle = container.sensorDataOffset + Math.floor((container.sensorSectionLength - 28) / 3);
-    for (let at = middle; at < middle + 4096; at += 1) file[at] ^= 0xa5;
-    const error = await dispatchConversion(file, 'x3f', 'png', {}, 'damaged.x3f').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(RawDecodeError);
-    expect((error as RawDecodeError).message).toMatch(/malformed/);
-  }, DECODE_TIMEOUT_MS);
-
-  it('an X3F file with damaged compressed sensor data is rejected with RawDecodeError', async () => {
-    const file = Buffer.from(load('x3f'));
-    const container = readX3fContainer(file);
-    const middle = container.sensorDataOffset + 4_000_000;
-    for (let at = middle; at < middle + 64; at += 1) file[at] ^= 0xa5;
-    // Entropy-coded layers desynchronise after the damage: the decoder must not return a picture.
-    const error = await dispatchConversion(file, 'x3f', 'png', {}, 'damaged.x3f').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(RawDecodeError);
-    expect((error as RawDecodeError).message).toMatch(/malformed/);
-  }, DECODE_TIMEOUT_MS);
-});
-
 /** Runs a conversion that must fail with a RawDecodeError, quickly. */
 async function expectRejected(file: Buffer, format: string, message: RegExp, unrecognized = false): Promise<void> {
   const started = performance.now();
   const error = await dispatchConversion(file, format, 'png', {}, `hostile.${format}`).catch((e: unknown) => e);
-  expect(performance.now() - started).toBeLessThan(HOSTILE_TIME_LIMIT_MS);
+  expect(performance.now() - started).toBeLessThan(HOSTILE_HANG_GUARD_MS);
   expect(error).toBeInstanceOf(RawDecodeError);
   expect((error as RawDecodeError).message).toMatch(message);
   // A layout the decoder does not know is reported as unrecognized; a damaged one is not.

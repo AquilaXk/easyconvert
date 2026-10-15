@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { collectOutput } from '../src/lib/edge/workers/chunk-transformer';
 import { resolveChunkTransformer, runOpfsWorkerJob, type ChunkTransformerFn } from '../src/lib/edge/workers/opfs-vfs.worker';
 import { rehydrateWorkerError, serializeWorkerError } from '../src/lib/edge/workers/worker-errors';
 import { streamConvertWithOpfs } from '../src/lib/edge/pipelines/opfs-streaming-pipeline';
@@ -18,6 +19,7 @@ import {
 } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 
 /**
  * The browser L3 streaming path for large CSV <-> TSV files applies the server's delimited-output
@@ -30,8 +32,14 @@ import { oracleTest } from './helpers/oracle-test';
 const UTF8_BOM = [0xef, 0xbb, 0xbf];
 const LARGE_FILE_BYTES = 150 * 1024 * 1024;
 const STREAM_CHUNK_BYTES = 4 * 1024 * 1024;
-/** Generous bound for streaming 4 MiB of quoted CR-only records; a quadratic line count takes tens of seconds. */
-const LINEAR_TIME_BOUND_MS = 2000;
+/**
+ * Consecutive full-size chunks the proportionality test streams. Output that carried bytes over from earlier chunks
+ * would exceed twice the chunk size by the third chunk; more chunks only add CPU time (the parser handles roughly
+ * 12 MB/s, so a dozen 4 MiB chunks took 4 s of the 5 s test budget on an idle machine and failed under load).
+ */
+const PROPORTIONALITY_CHUNKS = 3;
+/** Bytes of quoted CR-only records in the small run; the large run is four times as many (up to 4 MiB). */
+const LINE_COUNT_BASE_BYTES = 1024 * 1024;
 
 const CSV_INPUT =
   'name,formula,note\r\n"Kim, Min",=SUM(A1:A2),"says ""hi"""\r\n이름,-5,"line1\nline2"\r\n"Tab\there",@cmd,+1.5e3\r\n';
@@ -47,7 +55,7 @@ async function stream(transformer: ChunkTransformerFn, bytes: Uint8Array, cuts: 
   const out: Uint8Array[] = [];
   let start = 0;
   for (const end of [...cuts, bytes.byteLength]) {
-    out.push(await transformer(bytes.subarray(start, end), start, bytes.byteLength));
+    out.push(await collectOutput(transformer(bytes.subarray(start, end), start, bytes.byteLength)));
     start = end;
   }
   return Buffer.concat(out);
@@ -131,11 +139,10 @@ describe('streamed CSV <-> TSV applies the server output rules', () => {
     const record = 'id,value,=formula\n';
     const chunk = new TextEncoder().encode(record.repeat(Math.floor(STREAM_CHUNK_BYTES / record.length)));
     const transformer = resolveChunkTransformer('csv', 'tsv', {});
-    const chunks = 12;
-    const total = chunk.byteLength * chunks;
+    const total = chunk.byteLength * PROPORTIONALITY_CHUNKS;
     let largest = 0;
-    for (let index = 0; index < chunks; index++) {
-      const out = await transformer(chunk, index * chunk.byteLength, total);
+    for (let index = 0; index < PROPORTIONALITY_CHUNKS; index++) {
+      const out = await collectOutput(transformer(chunk, index * chunk.byteLength, total));
       largest = Math.max(largest, out.byteLength);
     }
     // Quoting and the ' prefix add at most a few bytes per record; nothing accumulates across chunks.
@@ -260,17 +267,18 @@ describe('streamed CSV <-> TSV matches the server parser', () => {
     }
   });
 
-  it('records the line of quoted fields in linear time', async () => {
+  it('records the line of quoted fields in linear time (hang guard; growth ratio in the perf suite)', async () => {
     // A CR-only file holds no LF, so every quoted field asks for the line of a position with no LF after it.
     const record = '"a","b"\r';
-    const input = new TextEncoder().encode(`h1,h2\r${record.repeat(Math.floor((4 * 1024 * 1024) / record.length))}`);
-    const transformer = resolveChunkTransformer('csv', 'tsv', { delimiter: ',' });
-    const started = performance.now();
-    const out = transformer(input, 0, input.byteLength) as Uint8Array;
-    const elapsedMs = performance.now() - started;
-    expect(out.byteLength).toBeGreaterThan(input.byteLength / 2);
-    expect(elapsedMs).toBeLessThan(LINEAR_TIME_BOUND_MS);
-  }, 120_000);
+    const crOnly = (bytes: number) => new TextEncoder().encode(`h1,h2\r${record.repeat(Math.floor(bytes / record.length))}`);
+    // 4x the bytes may cost at most 8x the time (tests/helpers/timing.ts); a quadratic line count takes 16x.
+    const { largeResult } = await expectNoHangOnInput(
+      'csv to tsv',
+      (input: Uint8Array) => resolveChunkTransformer('csv', 'tsv', { delimiter: ',' })(input, 0, input.byteLength) as Uint8Array,
+      crOnly(LINE_COUNT_BASE_BYTES * SCALING_FACTOR)
+    );
+    expect(largeResult.byteLength).toBeGreaterThan((LINE_COUNT_BASE_BYTES * SCALING_FACTOR) / 2);
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('refuses to buffer a delimiter sample beyond its cap', async () => {
     const transformer = resolveChunkTransformer('csv', 'tsv', {});

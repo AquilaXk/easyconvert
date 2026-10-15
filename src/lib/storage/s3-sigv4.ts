@@ -7,8 +7,12 @@ import {
   deriveSigningKey,
   formatSigV4Date,
   getCanonicalHeaders,
+  hasLoneSurrogate,
+  SigV4SigningError,
   uriEncode,
 } from './sigv4-presigner';
+
+export { SigV4SigningError };
 
 /**
  * AWS Signature Version 4 header signing for S3-compatible object storage requests.
@@ -33,13 +37,9 @@ const UNSIGNABLE_HEADERS: ReadonlySet<string> = new Set([
   'transfer-encoding',
 ]);
 const SEGMENT_SEPARATOR = '/';
-
-export class SigV4SigningError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'SigV4SigningError';
-  }
-}
+/** S3 and OCI Object Storage both cap an object name at 1024 bytes of UTF-8. */
+export const MAX_OBJECT_KEY_BYTES = 1024;
+const MS_PER_SECOND = 1000;
 
 export interface SigV4RequestCredentials {
   accessKeyId: string;
@@ -114,13 +114,17 @@ function parseOrigin(origin: string): URL {
   return parsed;
 }
 
-function assertSignableInput(input: SignedRequestInput): void {
-  if (!input.credentials.accessKeyId || !input.credentials.secretAccessKey) {
+function assertSignableCredentials(credentials: SigV4RequestCredentials, region: string): void {
+  if (!credentials.accessKeyId || !credentials.secretAccessKey) {
     throw new SigV4SigningError('Access key id and secret access key are required.');
   }
-  if (!REGION_PATTERN.test(input.region)) {
+  if (!REGION_PATTERN.test(region)) {
     throw new SigV4SigningError('Region must be lowercase letters, digits, and hyphens.');
   }
+}
+
+function assertSignableInput(input: SignedRequestInput): void {
+  assertSignableCredentials(input.credentials, input.region);
   if (input.payloadHash !== UNSIGNED_PAYLOAD && !SHA256_HEX_PATTERN.test(input.payloadHash)) {
     throw new SigV4SigningError('Payload hash must be lowercase hex SHA-256 or UNSIGNED-PAYLOAD.');
   }
@@ -190,6 +194,97 @@ export function signS3Request(input: SignedRequestInput): SignedRequest {
   };
 }
 
+/** SigV4 query-string authentication allows 1 second to 7 days (AWS "Authenticating requests: query parameters"). */
+export const PRESIGN_MIN_EXPIRES_SECONDS = 1;
+export const PRESIGN_MAX_EXPIRES_SECONDS = 604_800;
+
+export interface PresignedRequestInput {
+  method: string;
+  /** Scheme and authority only; any path is ignored. */
+  origin: string;
+  /** Raw, decoded path beginning with "/"; each segment is URI-encoded once. */
+  path: string;
+  /** Extra query parameters that become part of the signature (e.g. `uploadId`, `partNumber`). */
+  query?: ReadonlyArray<readonly [string, string]>;
+  credentials: SigV4RequestCredentials;
+  region: string;
+  service?: string;
+  expiresInSeconds: number;
+  now?: Date;
+}
+
+export interface PresignedRequest {
+  url: string;
+  /** Millisecond epoch time after which the URL is rejected. */
+  expiresAt: number;
+  signature: string;
+  canonicalRequest: string;
+  stringToSign: string;
+}
+
+/**
+ * Builds a SigV4 query-string presigned URL. Only the `host` header is signed and the payload is
+ * `UNSIGNED-PAYLOAD`, so the holder of the URL can upload any body (or none) to exactly this
+ * method, path and query until it expires.
+ */
+export function presignS3Request(input: PresignedRequestInput): PresignedRequest {
+  assertSignableCredentials(input.credentials, input.region);
+  if (
+    !Number.isInteger(input.expiresInSeconds) ||
+    input.expiresInSeconds < PRESIGN_MIN_EXPIRES_SECONDS ||
+    input.expiresInSeconds > PRESIGN_MAX_EXPIRES_SECONDS
+  ) {
+    throw new SigV4SigningError(
+      `Presign expiry must be an integer between ${PRESIGN_MIN_EXPIRES_SECONDS} and ${PRESIGN_MAX_EXPIRES_SECONDS} seconds.`
+    );
+  }
+  const origin = parseOrigin(input.origin);
+  const service = input.service ?? S3_SERVICE;
+  const now = input.now ?? new Date();
+  const { requestDate, dateStamp } = formatSigV4Date(now);
+  const credentialScope = `${dateStamp}/${input.region}/${service}/aws4_request`;
+
+  const { canonicalHeaders, signedHeaders } = getCanonicalHeaders({ host: origin.host });
+  const query: Array<readonly [string, string]> = [
+    ...(input.query ?? []),
+    ['X-Amz-Algorithm', SIGV4_ALGORITHM],
+    ['X-Amz-Credential', `${input.credentials.accessKeyId}/${credentialScope}`],
+    ['X-Amz-Date', requestDate],
+    ['X-Amz-Expires', String(input.expiresInSeconds)],
+    ['X-Amz-SignedHeaders', signedHeaders],
+  ];
+  if (input.credentials.sessionToken) {
+    query.push(['X-Amz-Security-Token', input.credentials.sessionToken]);
+  }
+
+  const canonicalUri = encodeS3Path(input.path);
+  const canonicalQueryString = encodeS3Query(query);
+  const canonicalRequest = buildCanonicalRequest({
+    method: input.method,
+    canonicalUri,
+    canonicalQueryString,
+    canonicalHeaders,
+    signedHeaders,
+    hashedPayload: UNSIGNED_PAYLOAD,
+  });
+  const stringToSign = buildStringToSign({
+    algorithm: SIGV4_ALGORITHM,
+    requestDate,
+    credentialScope,
+    canonicalRequest,
+  });
+  const signingKey = deriveSigningKey(input.credentials.secretAccessKey, dateStamp, input.region, service);
+  const signature = calculateSignature(signingKey, stringToSign);
+
+  return {
+    url: `${origin.protocol}//${origin.host}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`,
+    expiresAt: now.getTime() + input.expiresInSeconds * MS_PER_SECOND,
+    signature,
+    canonicalRequest,
+    stringToSign,
+  };
+}
+
 export interface S3AddressInput {
   bucket: string;
   key: string;
@@ -197,6 +292,8 @@ export interface S3AddressInput {
   /** Custom endpoint origin (scheme and host[:port]); defaults to the regional S3 endpoint. */
   endpoint?: string;
   forcePathStyle?: boolean;
+  /** Which naming rules the bucket must satisfy; defaults to the DNS-style rules. */
+  bucketNameRules?: BucketNameRules;
 }
 
 export interface S3Address {
@@ -206,13 +303,18 @@ export interface S3Address {
   style: 'path' | 'virtual-hosted';
 }
 
+/** Bucket naming rules: generic S3 services use DNS-style names, OCI Object Storage its own wider set. */
+export type BucketNameRules = 'dns' | 'oci';
+
 const BUCKET_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+/** OCI bucket names: letters of both cases, digits, hyphens, underscores and periods; 1 to 256 characters, case-sensitive. */
+const OCI_BUCKET_NAME_PATTERN = /^[A-Za-z0-9._-]{1,256}$/;
 const IPV4_LIKE_PATTERN = /^\d+\.\d+\.\d+\.\d+$/;
 const DOT_SEGMENTS: ReadonlySet<string> = new Set(['.', '..']);
 
 /** Bucket names that can be a DNS label under TLS (no dots, so the wildcard certificate matches). */
 function isVirtualHostableBucket(bucket: string): boolean {
-  return !bucket.includes('.') && !bucket.includes('--');
+  return BUCKET_NAME_PATTERN.test(bucket) && !bucket.includes('.') && !bucket.includes('--');
 }
 
 /** An IP address cannot take a bucket subdomain, so such an endpoint is always path-style. */
@@ -220,7 +322,14 @@ function isIpLiteralHost(endpoint: URL): boolean {
   return net.isIP(endpoint.hostname.replace(/^\[|\]$/g, '')) !== 0;
 }
 
-export function assertValidBucketName(bucket: string): void {
+export function assertValidBucketName(bucket: string, rules: BucketNameRules = 'dns'): void {
+  if (rules === 'oci') {
+    // A name made only of dots would address another path (".." in "/<bucket>/<key>").
+    if (!OCI_BUCKET_NAME_PATTERN.test(bucket) || DOT_SEGMENTS.has(bucket)) {
+      throw new SigV4SigningError(`Invalid bucket name "${bucket}".`);
+    }
+    return;
+  }
   if (!BUCKET_NAME_PATTERN.test(bucket) || IPV4_LIKE_PATTERN.test(bucket) || bucket.includes('..')) {
     throw new SigV4SigningError(`Invalid bucket name "${bucket}".`);
   }
@@ -231,8 +340,14 @@ export function assertValidBucketName(bucket: string): void {
  * would move a path-style request into another bucket.
  */
 export function assertValidObjectKey(key: string): void {
-  if (!key) {
-    throw new SigV4SigningError('Object key must not be empty.');
+  if (typeof key !== 'string' || !key) {
+    throw new SigV4SigningError('Object key must be a non-empty string.');
+  }
+  if (Buffer.byteLength(key, 'utf-8') > MAX_OBJECT_KEY_BYTES) {
+    throw new SigV4SigningError(`Object key must be at most ${MAX_OBJECT_KEY_BYTES} bytes of UTF-8.`);
+  }
+  if (hasLoneSurrogate(key)) {
+    throw new SigV4SigningError('Object key must be valid Unicode (no unpaired surrogates).');
   }
   if (key.split(SEGMENT_SEPARATOR).some((segment) => DOT_SEGMENTS.has(segment))) {
     throw new SigV4SigningError('Object key must not contain "." or ".." path segments.');
@@ -245,7 +360,7 @@ export function defaultS3Endpoint(region: string): string {
 
 /** Resolves path-style or virtual-hosted-style addressing for an object. */
 export function resolveS3Address(input: S3AddressInput): S3Address {
-  assertValidBucketName(input.bucket);
+  assertValidBucketName(input.bucket, input.bucketNameRules);
   if (input.key !== '') {
     assertValidObjectKey(input.key);
   }

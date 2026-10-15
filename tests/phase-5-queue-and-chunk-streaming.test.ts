@@ -19,6 +19,7 @@ import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
 import { NextRequest } from 'next/server';
+import crypto from 'node:crypto';
 
 describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () => {
   describe('1. Backoff with Jitter Calculations', () => {
@@ -218,10 +219,18 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       const partNumber = 1;
 
       const presigned = oci.generatePresignedUploadUrl(key, partNumber, uploadId, 3600);
-      expect(presigned.url).toContain(key);
-      expect(presigned.url).toContain(uploadId);
-      expect(presigned.url).toContain('partNumber=1');
-      expect(presigned.signature).toBeDefined();
+      const url = new URL(presigned.url);
+      expect(url.searchParams.get('key')).toBe(key);
+      expect(url.searchParams.get('uploadId')).toBe(uploadId);
+      expect(url.searchParams.get('partNumber')).toBe('1');
+      expect(url.searchParams.get('signature')).toBe(presigned.signature);
+
+      // Independent oracle: HMAC-SHA256(secret, "PUT\n<key>\n<uploadId>\n<partNumber>\n<expiresAt>").
+      const expected = crypto
+        .createHmac('sha256', oci.getSigningSecret())
+        .update(`PUT\n${key}\n${uploadId}\n${partNumber}\n${presigned.expiresAt}`)
+        .digest('hex');
+      expect(presigned.signature).toBe(expected);
 
       const isValid = oci.verifyPresignedSignature(
         'PUT',
@@ -234,33 +243,31 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       expect(isValid).toBe(true);
     });
 
-    it('generates secure presigned download URLs with HMAC signature', () => {
+    it('does not mint download URLs for a host that cannot verify them', () => {
+      expect((oci as { generatePresignedDownloadUrl?: unknown }).generatePresignedDownloadUrl).toBeUndefined();
+      expect((s3 as { generatePresignedDownloadUrl?: unknown }).generatePresignedDownloadUrl).toBeUndefined();
+    });
+
+    it('verifies GET capability signatures computed independently with HMAC-SHA256', () => {
       const key = 'results/output-file.pdf';
-      const presigned = s3.generatePresignedDownloadUrl(key, 1800);
+      const expiresAt = Date.now() + 1_800_000;
+      const signature = crypto.createHmac('sha256', s3.getSigningSecret()).update(`GET\n${key}\n${expiresAt}`).digest('hex');
 
-      expect(presigned.url).toContain(key);
-      expect(presigned.url).toContain('signature=');
-
-      const isValid = s3.verifyPresignedSignature(
-        'GET',
-        key,
-        presigned.expiresAt,
-        presigned.signature
-      );
-      expect(isValid).toBe(true);
+      expect(s3.verifyPresignedSignature('GET', key, expiresAt, signature)).toBe(true);
+      expect(s3.verifyPresignedSignature('GET', 'results/other.pdf', expiresAt, signature)).toBe(false);
     });
 
     it('fails closed when signature is tampered or expired', () => {
       const key = 'secure/contract.docx';
-      const presigned = oci.generatePresignedDownloadUrl(key, 3600);
+      const presigned = oci.generatePresignedUploadUrl(key, 1, 'up_tamper', 3600);
 
       // Tampered signature
       const tampered = '0'.repeat(64);
-      expect(oci.verifyPresignedSignature('GET', key, presigned.expiresAt, tampered)).toBe(false);
+      expect(oci.verifyPresignedSignature('PUT', key, presigned.expiresAt, tampered, 'up_tamper', 1)).toBe(false);
 
       // Expired timestamp
       const expiredTimestamp = Math.floor(Date.now() / 1000) - 100;
-      expect(oci.verifyPresignedSignature('GET', key, expiredTimestamp, presigned.signature)).toBe(false);
+      expect(oci.verifyPresignedSignature('PUT', key, expiredTimestamp, presigned.signature, 'up_tamper', 1)).toBe(false);
     });
   });
 
@@ -304,7 +311,7 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       expect(json.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
     });
 
-    it('handles action=presign for download', async () => {
+    it('answers action=presign for download with HTTP 400 when the local backend cannot mint object-store URLs', async () => {
       const user = await userStore.createUser({
         name: 'Presign Download Tester',
         email: `presign_dl_${Date.now()}@test.com`,
@@ -326,12 +333,11 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
       });
 
       const res = await multipartPost(req);
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(400);
 
       const json = await res.json();
-      expect(json.success).toBe(true);
-      expect(json.url).toBeDefined();
-      expect(json.signature).toBeDefined();
+      expect(json.success).toBe(false);
+      expect(json.detail).toBe('Storage provider does not support presigned URLs or invalid type specified.');
     });
 
     it('rejects presign request with missing required parameters with HTTP 400', async () => {

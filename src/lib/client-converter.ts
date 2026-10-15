@@ -1,11 +1,17 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
-import { resolveConversionTier, checkOpfsSupport, ConversionTier } from './edge/tier-router';
+import { resolveConversionTier, resolveTierAfterEdgeFailure, checkOpfsSupport, ConversionTier } from './edge/tier-router';
 import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
-import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported } from './edge/pure/pure-canvas';
+import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
+import { OPFS_MAX_FILE_BYTES } from './edge/opfs/limits';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
+import { canvasToBlob } from './edge/pipelines/canvas-blob';
+import { assertEncodedBlob, BMP_MIME_TYPE, canvasMimeType } from './edge/canvas-encoding';
+import { EdgeUnsupportedError } from './edge/workers/worker-errors';
+import { requestedAudioChannels } from './edge/pipelines/webcodecs-options';
 import { executeWasmTask } from './edge/pipelines/wasm-simd-pipeline';
+import { deriveQuantizerLevels } from './edge/quantizer-levels';
 import { streamConvertWithOpfs } from './edge/pipelines/opfs-streaming-pipeline';
 import { executeServerlessCloudFallback } from './edge/pipelines/fallback-pipeline';
 import {
@@ -70,7 +76,7 @@ function describeEdgeError(err: unknown): string {
  */
 export function getEffectiveMaxFileSize(baseMax: number = 100 * 1024 * 1024): number {
   if (typeof window !== 'undefined' && checkOpfsSupport()) {
-    return 2 * 1024 * 1024 * 1024; // 2 GB OPFS VFS ceiling
+    return OPFS_MAX_FILE_BYTES; // 2 GB OPFS VFS ceiling
   }
   return baseMax;
 }
@@ -94,65 +100,16 @@ export async function tryProcessClientEdge(
 
   // 1. Level 0: Pure Isomorphic Fast-Paths (0 MB Wasm)
   if (resolution.tier === 'L0') {
-    onProgress?.(25);
-
-    // Structured data never resolves to L0: the router sends it to the server data engine.
-
-    // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
-    if (isPureCadConvertible(src, tgt)) {
-      const arrayBuf = await item.file.arrayBuffer();
-      onProgress?.(50);
-      const baseName = item.name.replace(/\.[^/.]+$/, '');
-      const res = convertPureCad(new Uint8Array(arrayBuf), src, tgt, baseName);
-      onProgress?.(95);
-      const blob = new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
-    }
-
-    // Pure Audio conversion (WAV, PCM, MP3)
-    if (isPureAudioConvertible(src, tgt)) {
-      const arrayBuf = await item.file.arrayBuffer();
-      onProgress?.(50);
-      const res = convertPureAudio(new Uint8Array(arrayBuf), src, tgt, {
-        sampleRate: item.options.audioSampleRate,
-        channels: item.options.audioChannels === 'mono' ? 1 : 2,
-        bitrate: item.options.audioBitrate,
-      });
-      onProgress?.(95);
-      const blob = new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
-    }
-
-    // Pure Canvas 2D image transcoding (PNG, JPEG, WebP, BMP)
-    if (isPureCanvasConvertible(src, tgt) && isCanvasSupported()) {
-      onProgress?.(50);
-      const res = await convertPureCanvas(item.file, src, tgt, {
-        quality: item.options.quality,
-        width: item.options.width,
-        height: item.options.height,
-        fit: item.options.fit,
-      });
-      onProgress?.(95);
-      const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });
-      const resultUrl = URL.createObjectURL(blob);
-      return {
-        resultUrl,
-        resultSize: blob.size,
-        tier: 'L0',
-        tierName: 'Edge L0 (Instant)',
-      };
+    try {
+      const l0Res = await processL0Conversion(item, src, tgt, onProgress);
+      if (l0Res) return l0Res;
+    } catch (err: unknown) {
+      // The pure engine cannot convert this file (a layout it cannot mix, a mesh it cannot write): the router
+      // names the server tier, which converts the original file. No edge result stands in for it.
+      if (resolveTierAfterEdgeFailure('L0', err)) {
+        throw new ClientEdgeEscalationError('L0', describeEdgeError(err));
+      }
+      throw err;
     }
   }
 
@@ -172,8 +129,13 @@ export async function tryProcessClientEdge(
         tier: 'L1',
         tierName: 'Edge L1 (Hardware VPU)',
       };
-    } catch {
-      // Adaptive cascade fallback: if WebCodecs hardware encoder fails or is unsupported,
+    } catch (err: unknown) {
+      // The worker has no demuxer, decoder or encoder for this file: the router names the server tier, which
+      // converts the original file. No edge result stands in for it.
+      if (resolveTierAfterEdgeFailure('L1', err)) {
+        throw new ClientEdgeEscalationError('L1', describeEdgeError(err));
+      }
+      // Adaptive cascade fallback: if WebCodecs hardware encoder fails,
       // cascade gracefully to L2 (Wasm) or L4 (Cloud Fallback)
       const l2Res = await processL2Conversion(item, src, tgt, onProgress);
       if (l2Res) return l2Res;
@@ -245,6 +207,170 @@ export async function tryProcessClientEdge(
   return null;
 }
 
+/** Source formats the filter tiers (L1A, L2) read through createImageBitmap. */
+const EDGE_FILTER_IMAGE_SOURCES = new Set(['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif']);
+/** Targets whose format has no alpha channel: transparent pixels are flattened onto white, as the server does. */
+const EDGE_OPAQUE_TARGETS = new Set(['jpg', 'jpeg', 'bmp']);
+const EDGE_FILTER_DEFAULT_QUALITY = 90;
+const PERCENT = 100;
+const WHITE = '#FFFFFF';
+
+/** An edge filter result is never resized: a requested size is the server's to apply. */
+function assertNoResizeRequested(item: ConversionQueueItem): void {
+  const { width, height, fit } = item.options;
+  if (width !== undefined || height !== undefined || fit !== undefined) {
+    throw new EdgeUnsupportedError('The edge filter pipeline does not resize the image (resize requested); the server converts it.');
+  }
+}
+
+/** Throws EdgeUnsupportedError before any pixel work when the browser has no honest encoder for `tgt`. */
+function assertEdgeImageTargetEncodable(tgt: string): void {
+  if (tgt !== 'bmp') canvasMimeType(tgt);
+}
+
+interface FilterCanvasContext {
+  fillStyle: unknown;
+  globalCompositeOperation: unknown;
+  fillRect(x: number, y: number, width: number, height: number): void;
+  getImageData(x: number, y: number, width: number, height: number): { data: Uint8ClampedArray; width: number; height: number };
+}
+
+/**
+ * Encodes the canvas as `tgt` and proves the bytes are that format. BMP is written by the TypedArray encoder (a canvas
+ * cannot encode it); PNG, JPEG and WebP by the canvas, then checked against their file signature, so a browser that
+ * answers a WebP request with a PNG, or with nothing, sends the file to the server instead of delivering a substitute.
+ */
+async function encodeEdgeImage(
+  canvas: Parameters<typeof canvasToBlob>[0],
+  ctx: FilterCanvasContext,
+  width: number,
+  height: number,
+  tgt: string,
+  quality: number
+): Promise<Blob> {
+  if (EDGE_OPAQUE_TARGETS.has(tgt)) {
+    // Paint white behind the picture: a format without alpha would otherwise turn transparency black.
+    ctx.globalCompositeOperation = 'destination-over';
+    ctx.fillStyle = WHITE;
+    ctx.fillRect(0, 0, width, height);
+  }
+  let blob: Blob;
+  if (tgt === 'bmp') {
+    const bytes = encodeBmpFromImageData(ctx.getImageData(0, 0, width, height));
+    blob = new Blob([bytes as BlobPart], { type: BMP_MIME_TYPE });
+  } else {
+    blob = await canvasToBlob(canvas, canvasMimeType(tgt), quality);
+  }
+  await assertEncodedBlob(blob, tgt);
+  return blob;
+}
+
+/**
+ * Helper to process Level 0 (pure isomorphic) conversion: CAD tessellation, audio, canvas transcoding.
+ */
+async function processL0Conversion(
+  item: ConversionQueueItem,
+  src: string,
+  tgt: string,
+  onProgress?: (progress: number) => void
+): Promise<ClientEdgeResult | null> {
+  onProgress?.(25);
+
+  // Structured data never resolves to L0: the router sends it to the server data engine.
+
+  // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
+  if (isPureCadConvertible(src, tgt)) {
+    const arrayBuf = await item.file.arrayBuffer();
+    onProgress?.(50);
+    const baseName = item.name.replace(/\.[^/.]+$/, '');
+    const res = convertPureCad(new Uint8Array(arrayBuf), src, tgt, baseName);
+    onProgress?.(95);
+    const blob = new Blob([res.data as any], { type: res.mimeType });
+    const resultUrl = URL.createObjectURL(blob);
+    return {
+      resultUrl,
+      resultSize: blob.size,
+      tier: 'L0',
+      tierName: 'Edge L0 (Instant)',
+    };
+  }
+
+  // Pure Audio conversion (WAV, PCM, MP3). The source layout and rate stay unless the request names others.
+  if (isPureAudioConvertible(src, tgt)) {
+    const arrayBuf = await item.file.arrayBuffer();
+    onProgress?.(50);
+    const res = convertPureAudio(new Uint8Array(arrayBuf), src, tgt, {
+      sampleRate: item.options.audioSampleRate,
+      channels: requestedAudioChannels(item.options.audioChannels),
+      bitrate: item.options.audioBitrate,
+    });
+    onProgress?.(95);
+    const blob = new Blob([res.data as any], { type: res.mimeType });
+    const resultUrl = URL.createObjectURL(blob);
+    return {
+      resultUrl,
+      resultSize: blob.size,
+      tier: 'L0',
+      tierName: 'Edge L0 (Instant)',
+    };
+  }
+
+  // Pure Canvas 2D image transcoding (PNG, JPEG, WebP, BMP)
+  if (isPureCanvasConvertible(src, tgt) && isCanvasSupported()) {
+    onProgress?.(50);
+    const res = await convertPureCanvas(item.file, src, tgt, {
+      quality: item.options.quality,
+      width: item.options.width,
+      height: item.options.height,
+      fit: item.options.fit,
+    });
+    onProgress?.(95);
+    const blob = res.blob || new Blob([res.data as any], { type: res.mimeType });
+    const resultUrl = URL.createObjectURL(blob);
+    return {
+      resultUrl,
+      resultSize: blob.size,
+      tier: 'L0',
+      tierName: 'Edge L0 (Instant)',
+    };
+  }
+
+  return null;
+}
+
+/**
+ * The GPU task the options ask for, or null when they ask for no pixel change. Converting the format alone needs no
+ * compute pass: choosing a default task here would change the picture (a grey one) that nobody asked to change.
+ */
+function selectWebGpuTask(item: ConversionQueueItem): WebGpuComputeTask | null {
+  const options = item.options as ConversionQueueItem['options'] & {
+    grayscale?: boolean;
+    invert?: boolean;
+    brightnessDelta?: number;
+    blurRadius?: number;
+    blurSigma?: number;
+  };
+  if (options.colorDepth === 1 || options.grayscale === true) {
+    return { type: 'color-transform', options: { mode: 'grayscale' } };
+  }
+  if (options.invert === true) {
+    return { type: 'color-transform', options: { mode: 'invert' } };
+  }
+  if (options.brightnessDelta !== undefined) {
+    return { type: 'color-transform', options: { mode: 'brightness', param: options.brightnessDelta } };
+  }
+  if (options.blurRadius !== undefined) {
+    return { type: 'gaussian-blur', options: { radius: options.blurRadius, sigma: options.blurSigma ?? 1.5 } };
+  }
+  if (options.palette === true || options.colorDepth !== undefined || options.colors !== undefined) {
+    const maxColors = options.colors ?? (options.colorDepth ? 1 << options.colorDepth : 256);
+    // The same levels the Wasm path derives, so both paths keep at most `maxColors` colours.
+    const { r: rLevels, g: gLevels, b: bLevels } = deriveQuantizerLevels(maxColors);
+    return { type: 'quantize', options: { rLevels, gLevels, bLevels } };
+  }
+  return null;
+}
+
 /**
  * Helper to process Level 1A (WebGPU Compute Shader) conversion.
  */
@@ -254,8 +380,7 @@ async function processL1AWebGpuConversion(
   tgt: string,
   onProgress?: (progress: number) => void
 ): Promise<ClientEdgeResult | null> {
-  const isImage = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(src);
-  if (!isImage || !isWebGpuComputeSupported()) {
+  if (!EDGE_FILTER_IMAGE_SOURCES.has(src) || !isWebGpuComputeSupported()) {
     return null;
   }
 
@@ -265,6 +390,14 @@ async function processL1AWebGpuConversion(
   ) {
     return null;
   }
+
+  // No pixel task: the next tier re-encodes the picture as it is. Nothing is run on the GPU.
+  const task = selectWebGpuTask(item);
+  if (!task) {
+    return null;
+  }
+  assertNoResizeRequested(item);
+  assertEdgeImageTargetEncodable(tgt);
 
   onProgress?.(10);
   const bitmap = await createImageBitmap(item.file);
@@ -300,39 +433,6 @@ async function processL1AWebGpuConversion(
 
   onProgress?.(30);
 
-  let task: WebGpuComputeTask;
-  if (item.options.colorDepth === 1 || (item.options as any).grayscale === true) {
-    task = { type: 'color-transform', options: { mode: 'grayscale' } };
-  } else if ((item.options as any).invert === true) {
-    task = { type: 'color-transform', options: { mode: 'invert' } };
-  } else if ((item.options as any).brightnessDelta !== undefined) {
-    task = {
-      type: 'color-transform',
-      options: { mode: 'brightness', param: (item.options as any).brightnessDelta },
-    };
-  } else if ((item.options as any).blurRadius !== undefined) {
-    task = {
-      type: 'gaussian-blur',
-      options: {
-        radius: (item.options as any).blurRadius,
-        sigma: (item.options as any).blurSigma ?? 1.5,
-      },
-    };
-  } else if (
-    item.options.palette === true ||
-    item.options.colorDepth !== undefined ||
-    item.options.colors !== undefined
-  ) {
-    const maxColors =
-      item.options.colors ?? (item.options.colorDepth ? 1 << item.options.colorDepth : 256);
-    const rLevels = maxColors <= 16 ? 4 : 8;
-    const gLevels = maxColors <= 16 ? 4 : 8;
-    const bLevels = maxColors <= 16 ? 2 : 4;
-    task = { type: 'quantize', options: { rLevels, gLevels, bLevels } };
-  } else {
-    task = { type: 'color-transform', options: { mode: 'grayscale' } };
-  }
-
   onProgress?.(50);
   const computeRes = await executeWebGpuCompute({
     width,
@@ -350,28 +450,7 @@ async function processL1AWebGpuConversion(
   const newImgData = new ImageData(processedClamped as any, width, height);
   ctx.putImageData(newImgData, 0, 0);
 
-  const mimeType =
-    tgt === 'jpg' || tgt === 'jpeg'
-      ? 'image/jpeg'
-      : tgt === 'webp'
-      ? 'image/webp'
-      : 'image/png';
-
-  let resultBlob: Blob;
-  if ('convertToBlob' in canvas) {
-    resultBlob = await canvas.convertToBlob({
-      type: mimeType,
-      quality: (item.options.quality || 90) / 100,
-    });
-  } else {
-    resultBlob = await new Promise<Blob>((resolve) => {
-      canvas.toBlob(
-        (b: Blob | null) => resolve(b || new Blob([])),
-        mimeType,
-        (item.options.quality || 90) / 100
-      );
-    });
-  }
+  const resultBlob = await encodeEdgeImage(canvas, ctx, width, height, tgt, (item.options.quality || EDGE_FILTER_DEFAULT_QUALITY) / PERCENT);
 
   onProgress?.(100);
   const resultUrl = URL.createObjectURL(resultBlob);
@@ -410,10 +489,12 @@ async function processL2Conversion(
       tierName: 'Edge L2 (SIMD Wasm)',
     };
   } else {
-    const isImage = ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'].includes(src);
+    const isImage = EDGE_FILTER_IMAGE_SOURCES.has(src);
     if (isImage) {
       try {
         if (typeof createImageBitmap !== 'undefined' && (typeof OffscreenCanvas !== 'undefined' || typeof document !== 'undefined')) {
+          assertNoResizeRequested(item);
+          assertEdgeImageTargetEncodable(tgt);
           const bitmap = await createImageBitmap(item.file);
           const width = bitmap.width;
           const height = bitmap.height;
@@ -486,15 +567,7 @@ async function processL2Conversion(
             ctx.putImageData(newImgData, 0, 0);
           }
 
-          const mimeType = tgt === 'jpg' || tgt === 'jpeg' ? 'image/jpeg' : (tgt === 'webp' ? 'image/webp' : 'image/png');
-          let resultBlob: Blob;
-          if ('convertToBlob' in canvas) {
-            resultBlob = await canvas.convertToBlob({ type: mimeType, quality: (item.options.quality || 90) / 100 });
-          } else {
-            resultBlob = await new Promise<Blob>((resolve) => {
-              canvas.toBlob((b: Blob | null) => resolve(b || new Blob([])), mimeType, (item.options.quality || 90) / 100);
-            });
-          }
+          const resultBlob = await encodeEdgeImage(canvas, ctx, width, height, tgt, (item.options.quality || EDGE_FILTER_DEFAULT_QUALITY) / PERCENT);
 
           const resultUrl = URL.createObjectURL(resultBlob);
           return {
@@ -504,7 +577,11 @@ async function processL2Conversion(
             tierName: 'Edge L2 (SIMD Wasm)',
           };
         }
-      } catch {
+      } catch (err: unknown) {
+        // The browser cannot produce this file (no encoder, a substituted or empty result): the server converts it.
+        if (resolveTierAfterEdgeFailure('L2', err)) {
+          throw new ClientEdgeEscalationError('L2', describeEdgeError(err));
+        }
         // If bitmap decoding or canvas operation fails, gracefully fall back to serverless bridge
         return null;
       }

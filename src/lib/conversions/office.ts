@@ -1,18 +1,63 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
+import { InflateBudget } from './bounded-inflate';
+import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
+import { HTML_MAX_EMBEDDED_BASE64_CHARS, PptxMedia, base64Length } from './office/pptx-media';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
 import PDFDocument from 'pdfkit';
-import sharp from 'sharp';
-import { assertEmbeddableImageWithinLimit, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
-import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidSheetIndexError } from '../types';
-import { extractTextFromPdf, extractEmbeddedImageFromPdf, extractStructuredTextFromPdf } from './pdf-utils';
+import sharp, { type Sharp } from 'sharp';
+import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, rethrowInputPixelLimit } from './image-input-limits';
+import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
+import { assertWellFormedXml } from './xml-wellformed';
+import { unconvertibleOfficeTarget } from './native-engine-pairs';
+import { readPdfForOffice } from './pdf-office';
+import { documentToDocx } from './document-model/docx';
+import { documentToStructuredText } from './document-model/markdown';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
 import { performOcr } from './ocr';
-import { encodeBmp, encodePostscript } from './image';
-import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf } from './hwp';
+import { AVIF_EFFORT, AVIF_TUNE, decodeBmp, encodeBmp, encodePostscript } from './image';
+import { buildTiffOptions } from './image-tiff-options';
+import { convertHwp, parseHwpDocument, buildHwpCompoundFile, isCfbfContainer, parseCfbf, type CfbfContainer } from './hwp';
+import { getMaxInMemoryBytes } from '../storage/errors';
+import {
+  XLSX_MAX_CELL_TEXT_CHARS_ENV,
+  XLS_MAX_CELL_TEXT_CHARS_ENV,
+  XLS_MAX_GRID_CELLS_ENV,
+  XLS_MAX_PDF_TEXT_CELLS_ENV,
+  xlsMaxCellTextChars,
+  xlsMaxGridCells,
+  xlsMaxPdfTextCells,
+  xlsxMaxCellTextChars,
+} from './office/spreadsheet-limits';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
-import { assertNoComplexScript } from './ctl';
+import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
+import { readDocText } from './office/doc-reader';
+import { readRtfText } from './office/rtf-reader';
+import { readBiffCharts } from './office/biff-chart';
+import { readPptSlides } from './office/ppt-reader';
+import { readMobiText } from './office/mobi-reader';
+import { readPmlText } from './office/pml-reader';
+import { extractPrintReplicaPdf } from './office/print-replica';
+import { extract7zArchive, extractRarArchive } from './archive';
+import { htmlToText } from './office/html-text';
+import { decodeHtmlInput } from './html-encoding';
+import { decodeWindows1252 } from './office/windows-1252';
+import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './office/legacy-office-errors';
+import { renderPdfTables } from './pdf-table-layout';
+import { decodeXmlBytes, openPackage, readPackageEntry, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
+import { EPUB_MAX_CHAPTER_BYTES, EPUB_MAX_TEXT_CHARS, EPUB_TEXT_MEDIA_TYPES, openEpubPackage } from './epub-reader';
+import { readDocxModel } from './docx-model';
+import { documentToEpub } from './document-model/epub';
+import { documentToOdt } from './document-model/odt';
+import { documentToText } from './document-model/text';
+import { plainTextModel } from './document-model/plain';
+import type { DocumentModel } from './document-model/model';
+import { renderModelTarget } from './document-targets';
+import { htmlToDocumentModel } from './html-model';
+import { readFb2Model } from './fb2-model';
+import { readMobiModel } from './mobi-model';
+import { markdownToDocumentModel, readEpubModel } from './source-model';
+import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variants';
 
 export { buildOpenXpsPackage };
 
@@ -30,6 +75,24 @@ export async function convertOffice(
   const baseName = (originalFilename || 'document').replace(/\.[^/.]+$/, '');
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
+  // PDF and raster writers draw text with installed fonts found through the coverage index.
+  await loadFontCoverageIndex();
+
+  // 0. Macro-enabled, template and slideshow variants: read by the reader of their plain format, macros never run.
+  const ooxmlFamily = OOXML_VARIANT_FAMILY[src];
+  if (ooxmlFamily !== undefined) {
+    if (tgt === ooxmlFamily) return ooxmlVariantToPlainFormat(inputBuffer, src, ooxmlFamily, baseName);
+    if (tgt === 'xps' || tgt === 'oxps') {
+      // The plain format's reader gives the text (a workbook, its rows as CSV lines); the XPS writer lays it out like the
+      // one of the other text-based sources.
+      const textTarget = ooxmlFamily === 'xlsx' ? 'csv' : 'txt';
+      const text = (await convertOffice(inputBuffer, ooxmlFamily, textTarget, options, originalFilename)).buffer.toString('utf-8');
+      const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      const buffer = await buildOpenXpsPackage([{ title: baseName, lines }], baseName);
+      return { buffer, mimeType: 'application/oxps', filename: `${baseName}.${tgt}`, size: buffer.length };
+    }
+    return convertOffice(inputBuffer, ooxmlFamily, tgt, options, originalFilename);
+  }
 
   // 1. DOCX Source
   if (src === 'docx') {
@@ -66,9 +129,15 @@ export async function convertOffice(
     return convertOdtSource(inputBuffer, tgt, options, baseName);
   }
 
-  // 8. Other presentation sources (ppt, potx, key)
-  if (['ppt', 'potx', 'key'].includes(src)) {
-    return convertGenericPresentationSource(inputBuffer, src, tgt, options, baseName);
+  // 8. Other presentation sources: PowerPoint 97-2003 binary, PowerPoint templates and Keynote
+  if (src === 'ppt') {
+    return convertPptSource(inputBuffer, tgt, options, baseName);
+  }
+  if (src === 'potx') {
+    return convertPotxSource(inputBuffer, tgt, options, baseName);
+  }
+  if (src === 'key') {
+    throw new EngineUnavailableError('soffice', 'Keynote presentations are read by LibreOffice; the in-process engine has no Keynote reader.');
   }
 
   // 9. EPUB Source
@@ -114,11 +183,19 @@ export async function convertOffice(
 
   // 12.3 ODG, ODD (OpenDocument Graphics / Drawing)
   if (['odg', 'odd'].includes(src)) {
-    return convertOpenDocumentGraphicSource(inputBuffer, src, tgt, options, baseName);
+    return convertOpenDocumentGraphicSource(inputBuffer, src, tgt);
   }
 
-  // 12.4 AZW4, CBC, HTMLZ, TXTZ, PML, OEB (Ebooks)
-  if (['azw4', 'cbc', 'htmlz', 'txtz', 'pml', 'oeb'].includes(src)) {
+  // 12.35 AZW4 (Print Replica: a PDF inside a PalmDB container) and CBC (a collection of comic archives)
+  if (src === 'azw4') {
+    return viaPdf(await extractPrintReplicaPdf(inputBuffer), tgt, options, baseName);
+  }
+  if (src === 'cbc') {
+    return convertCbcSource(inputBuffer, tgt, options, baseName);
+  }
+
+  // 12.4 HTMLZ, TXTZ, PML, OEB (Ebooks)
+  if (['htmlz', 'txtz', 'pml', 'oeb'].includes(src)) {
     return convertGenericEbookSource(inputBuffer, src, tgt, options, baseName);
   }
 
@@ -148,9 +225,18 @@ export async function convertOffice(
   }
 
   // 13. Target is DOCX (from Markdown, HTML, TXT, PDF, RTF, etc.)
+  if (tgt === 'docx' && src === 'pdf') {
+    // A PDF keeps the structure its layout analysis found: columns, headings, lists, tables and images.
+    const docxBuffer = await documentToDocx(await readPdfForOffice(inputBuffer, options, true));
+    return {
+      buffer: docxBuffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      filename: `${baseName}.docx`,
+      size: docxBuffer.length,
+    };
+  }
   if (tgt === 'docx') {
-    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    const docxBuffer = await generateDocxFromText(textContent, src, options, baseName);
+    const docxBuffer = await generateDocxFromSource(inputBuffer, src, options, baseName);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -228,8 +314,7 @@ export async function convertOffice(
 
   // 19. Target is ODT (OpenDocument Text)
   if (tgt === 'odt') {
-    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    const odtBuffer = await generateOdtFromText(textContent, baseName);
+    const odtBuffer = await generateOdtFromSource(inputBuffer, src, options, baseName);
     return {
       buffer: odtBuffer,
       mimeType: 'application/vnd.oasis.opendocument.text',
@@ -326,6 +411,25 @@ export async function convertOffice(
   throw new Error(`Unsupported office conversion from ${sourceFormat} to ${targetFormat}`);
 }
 
+/** An ODT from any other source: PDF text keeps the text writer; every other source is written from the block model. */
+async function generateOdtFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
+  if (src === 'epub') return documentToOdt(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
+  const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+  if (src === 'pdf') return generateOdtFromText(textContent, baseName);
+  return documentToOdt(await modelFromExtractedText(textContent, src), { title: baseName, language: options.language });
+}
+
+/**
+ * A DOCX from any other source. PDF text keeps the existing text writer; every other source is read into the block
+ * model first (EPUB through its package reader, the rest through the text extractor) and written by the DOCX writer.
+ */
+async function generateDocxFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
+  if (src === 'epub') return documentToDocx(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
+  const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
+  if (src === 'pdf') return generateDocxFromText(textContent, src, options, baseName);
+  return generateDocxFromExtractedText(textContent, src, options, baseName);
+}
+
 /**
  * Extracts clean text content from various source formats for Office generation
  */
@@ -336,44 +440,11 @@ export async function extractTextContentForOffice(
   baseName: string
 ): Promise<string> {
   if (src === 'pdf') {
-    const structuredPdf = extractStructuredTextFromPdf(inputBuffer);
-    let extracted = structuredPdf.text;
-    if (!extracted || extracted.trim() === '' || options.ocrEnabled) {
-      const embeddedImg = extractEmbeddedImageFromPdf(inputBuffer);
-      if (embeddedImg) {
-        const ocr = await performOcr(embeddedImg, options.ocrLanguage);
-        if (ocr.text) extracted = ocr.text;
-      } else {
-        const ocr = await performOcr(inputBuffer, options.ocrLanguage);
-        if (ocr.text) extracted = ocr.text;
-      }
-    } else if (structuredPdf.blocks && structuredPdf.blocks.length > 0) {
-      const dlaBoxes: DlaBoundingBox[] = structuredPdf.blocks.map((b) => ({
-        x: b.x,
-        y: b.y,
-        width: Math.max(1, b.width),
-        height: Math.max(1, b.height),
-        text: b.text,
-        fontSize: b.fontSize,
-      }));
-      const layout = analyzeDocumentLayout(dlaBoxes, 612, 792);
-      if (layout.blocks && layout.blocks.length > 0) {
-        extracted = layout.blocks
-          .map((b) => {
-            if (b.type === 'heading') return `## ${b.text}`;
-            if (b.type === 'list_item') return `- ${b.text.replace(/^[•\-\*]\s*/, '')}`;
-            if (b.type === 'header') return `*${b.text}*\n\n---`;
-            if (b.type === 'footer') return `---\n*${b.text}*`;
-            return b.text;
-          })
-          .join('\n\n');
-      }
-    }
-    return extracted;
+    return documentToStructuredText(await readPdfForOffice(inputBuffer, options));
   }
 
   if (src === 'rtf') {
-    return extractTextFromRtf(inputBuffer.toString('utf-8'));
+    return extractTextFromRtf(inputBuffer);
   }
 
   if (src === 'odt') {
@@ -389,12 +460,11 @@ export async function extractTextContentForOffice(
   }
 
   if (src === 'hwp') {
-    const doc = parseHwpDocument(inputBuffer);
-    const parts = doc.paragraphs.map((p) => p.text);
-    doc.tables.forEach((t) => {
-      parts.push(t.rows.map((r) => r.join('\t')).join('\n'));
-    });
-    return parts.join('\n\n');
+    return documentToText(parseHwpDocument(inputBuffer).model);
+  }
+
+  if (src === 'html' || src === 'htm') {
+    return decodeHtmlInput(inputBuffer);
   }
 
   const UNSUPPORTED_BINARY_OFFICE_FORMATS = new Set([
@@ -463,105 +533,15 @@ export async function extractTextContentForOffice(
 }
 
 export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
-  try {
-    const zip = await JSZip.loadAsync(buffer);
-    const contentXml = zip.file('content.xml');
-    if (contentXml) {
-      const xml = await contentXml.async('text');
-      const paragraphs: string[] = [];
-      const elements = safeExtractXmlElements(xml, ['text:p', 'text:h']);
-      for (const el of elements) {
-        const text = safeDecodeXmlEntities(el.content.replace(/<[^>]+>/g, '')).trim();
-        if (text) paragraphs.push(text);
-      }
-      return paragraphs.join('\n\n');
-    }
-  } catch {
-    // fallback
-  }
-  throw new Error('Failed to extract text content from ODT document: fail-closed.');
+  return readOdtText(buffer);
 }
 
-function sanitizeControlChars(text: string): string {
-  let result = '';
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if ((code >= 0 && code <= 8) || code === 11 || code === 12 || (code >= 14 && code <= 31)) {
-      result += ' ';
-    } else {
-      result += text[i];
-    }
-  }
-  return result;
-}
-
+/**
+ * Text of a Word 97-2003 binary document, read through its CLX piece table ([MS-DOC]). Malformed input
+ * throws a LegacyOfficeFormatError (400) and an encrypted document an EncryptedOfficeDocumentError (422).
+ */
 export function extractTextFromDoc(buffer: Buffer): string {
-  // 1. OLE2 Compound File Binary Format (.doc)
-  if (isCfbfContainer(buffer)) {
-    try {
-      const cfbf = parseCfbf(buffer);
-      const wordDoc = cfbf.streams.get('WordDocument') || cfbf.streams.get('worddocument');
-      if (wordDoc && wordDoc.length >= 0x0100) {
-        // Parse File Information Block (FIB)
-        const wIdent = wordDoc.readUInt16LE(0);
-        // Standard Microsoft Word binary signatures: 0xA5EC (Word 97-2003), 0xA5DC (Word 95)
-        if (wIdent === 0xa5ec || wIdent === 0xa5dc || wIdent === 0xa5cd) {
-          const fcMin = wordDoc.length > 0x001c ? wordDoc.readUInt32LE(0x0018) : 0;
-          const ccpText = wordDoc.length > 0x0050 ? wordDoc.readUInt32LE(0x004c) : 0;
-
-          if (fcMin > 0 && fcMin < wordDoc.length && ccpText > 0) {
-            // Text stream starting at fcMin
-            const textBytes = Math.min(ccpText * 2, wordDoc.length - fcMin);
-            const textSlice = wordDoc.subarray(fcMin, fcMin + textBytes);
-
-            // Attempt UTF-16LE decode
-            const decodedUtf16 = sanitizeControlChars(textSlice.toString('utf16le')).trim();
-
-            if (decodedUtf16.length > 0) {
-              const paragraphs = decodedUtf16
-                .split(/\r?\n/)
-                .map((p) => p.trim())
-                .filter((p) => p.length > 0);
-              if (paragraphs.length > 0) {
-                return paragraphs.join('\n\n');
-              }
-            }
-          }
-        }
-
-        // If FIB offsets point outside or 8-bit text: inspect WordDocument stream directly
-        const rawUtf16 = sanitizeControlChars(wordDoc.toString('utf16le'));
-        const utf16Candidate = rawUtf16
-          .split(/\r?\n/)
-          .map((s) => s.trim())
-          .filter((s) => s.length >= 3);
-
-        if (utf16Candidate.length > 0) {
-          return utf16Candidate.join('\n\n');
-        }
-      }
-    } catch {
-      // Fallback to byte scraping on malformed CFBF
-    }
-  }
-
-  // 2. Fallback character scanner for raw or fragmented text
-  const strings: string[] = [];
-  let curr = '';
-  for (let i = 0; i < buffer.length; i++) {
-    const byte = buffer[i];
-    if (byte >= 32 && byte <= 126) {
-      curr += String.fromCharCode(byte);
-    } else if (byte === 10 || byte === 13) {
-      if (curr.trim().length >= 4) strings.push(curr.trim());
-      curr = '';
-    } else {
-      if (curr.trim().length >= 5) strings.push(curr.trim());
-      curr = '';
-    }
-  }
-  if (curr.trim().length >= 4) strings.push(curr.trim());
-  return strings.join('\n\n') || 'Extracted document content.';
+  return readDocText(buffer);
 }
 
 function extractTextFromTexString(tex: string): string {
@@ -574,19 +554,103 @@ function extractTextFromTexString(tex: string): string {
 }
 
 /**
- * Strips RTF control words and formats text
+ * Text of an RTF document: groups, \uN escapes with \ucN fallbacks, \'hh bytes in the document or font
+ * code page, and non-text destinations are handled by the tokenizer. Malformed input throws a
+ * LegacyOfficeFormatError (400).
  */
-export function extractTextFromRtf(rtf: string): string {
-  return rtf
-    .replace(/\{\\(?:fonttbl|colortbl|stylesheet)[\s\S]*?\}/g, '')
-    .replace(/\\par[d]?/g, '\n')
-    .replace(/\\tab/g, '\t')
-    .replace(/\\[a-zA-Z]+(-?[0-9]+)?[ ]?/g, '')
-    .replace(/[{}]/g, '')
-    .replace(/\r?\n\s*\r?\n/g, '\n\n')
-    .replace(/[ \t]+/g, ' ')
-    .trim();
+export function extractTextFromRtf(rtf: Buffer): string {
+  return readRtfText(rtf);
 }
+
+// ---------------------------------------------------------------------------
+// E-book and OpenDocument text readers
+// ---------------------------------------------------------------------------
+
+const PARAGRAPH_SEPARATOR = '\n\n';
+
+/**
+ * The text of an EPUB in reading order (EPUB Packages 3.3 and Open Packaging Format 2.0.1): META-INF/container.xml
+ * names the package document, whose spine lists the content documents, and each XHTML document contributes its
+ * body text. Navigation documents, scripts and styles are not text. A book with no text, a DRM-protected one or a
+ * broken package is a typed error.
+ */
+async function readEpubText(input: Buffer): Promise<string> {
+  const book = await openEpubPackage(input);
+  const chapters: string[] = [];
+  let totalChars = 0;
+  for (const item of book.spine) {
+    if (!EPUB_TEXT_MEDIA_TYPES.has(item.mediaType) || item.properties.includes('nav')) continue;
+    if (item.encrypted) {
+      throw new EncryptedOfficeDocumentError('The EPUB content is protected by DRM, so its text cannot be read.');
+    }
+    const text = htmlToText(decodeXmlBytes(await book.read(item.path, 'EPUB spine'), `EPUB chapter ${item.path}`));
+    if (text === '') continue;
+    totalChars += text.length;
+    if (totalChars > EPUB_MAX_TEXT_CHARS) throw new PayloadLimitError(`The EPUB text is longer than ${EPUB_MAX_TEXT_CHARS} characters.`);
+    chapters.push(text);
+  }
+  if (chapters.length === 0) throw new ConversionFailedError('The EPUB holds no text.');
+  return chapters.join(PARAGRAPH_SEPARATOR);
+}
+
+/** OpenDocument text: the most characters one document may hold, and the longest run one `text:s` element may stand for. */
+const ODT_MAX_TEXT_CHARS = 128 * 1024 * 1024;
+const ODT_MAX_SPACE_RUN = 1000;
+const ODF_TEXT_MIMETYPE_PREFIX = 'application/vnd.oasis.opendocument.text';
+const ODF_MANIFEST_PATH = 'META-INF/manifest.xml';
+
+/** The text of one text:p or text:h element: spaces, tabs and line breaks (text:s, text:tab, text:line-break) are characters. */
+function odfParagraphText(content: string): string {
+  const withoutNotes = content.replace(/<text:note\b[^>]*>[\s\S]*?<\/text:note>/g, '');
+  const spaced = withoutNotes
+    .replace(/<text:line-break\s*\/>/g, '\n')
+    .replace(/<text:tab\s*\/>/g, '\t')
+    .replace(/<text:s(?:\s+text:c="(\d+)")?\s*\/>/g, (_, count?: string) => ' '.repeat(Math.min(count === undefined ? 1 : Number(count), ODT_MAX_SPACE_RUN)));
+  return safeDecodeXmlEntities(spaced.replace(/<[^>]+>/g, ''));
+}
+
+/**
+ * The paragraphs and headings of an OpenDocument text file in document order (ODF 1.3, text:p and text:h). A file
+ * that is not an OpenDocument text package, an encrypted one, or one without text is a typed error.
+ */
+async function readOdtText(input: Buffer): Promise<string> {
+  const zip = await openPackage(input, 'ODT');
+  const mimetypeEntry = zip.file('mimetype');
+  const mimetype = mimetypeEntry ? await readZipEntryText(mimetypeEntry, { maxBytes: MAX_MIMETYPE_ENTRY_BYTES }) : undefined;
+  if (mimetype !== undefined && !mimetype.startsWith(ODF_TEXT_MIMETYPE_PREFIX)) {
+    throw new ConversionFailedError('The ODT file is not an OpenDocument text document.');
+  }
+  const content = zip.file('content.xml');
+  if (!content) throw new ConversionFailedError('The ODT file has no content.xml.');
+  const manifest = zip.file(ODF_MANIFEST_PATH);
+  if (manifest) {
+    const entry = safeExtractXmlElements(await readZipEntryText(manifest), 'manifest:file-entry').find((el) => el.attrs['manifest:full-path'] === 'content.xml');
+    if (entry?.content.includes('encryption-data')) {
+      throw new EncryptedOfficeDocumentError('The ODT file is password protected, so its text cannot be read.');
+    }
+  }
+  const xml = decodeXmlBytes(await readZipEntryBytes(content), 'ODT content.xml');
+  assertWellFormedXml('content.xml', xml, 'ODT');
+  const paragraphs: string[] = [];
+  let totalChars = 0;
+  for (const element of safeExtractXmlElements(xml, ['text:p', 'text:h'], { maxElements: ODT_MAX_TEXT_CHARS })) {
+    const text = odfParagraphText(element.content).trim();
+    if (text === '') continue;
+    totalChars += text.length;
+    if (totalChars > ODT_MAX_TEXT_CHARS) throw new PayloadLimitError(`The ODT text is longer than ${ODT_MAX_TEXT_CHARS} characters.`);
+    paragraphs.push(text);
+  }
+  if (paragraphs.length === 0) throw new ConversionFailedError('The ODT file holds no text.');
+  return paragraphs.join(PARAGRAPH_SEPARATOR);
+}
+
+/** DOCX targets only LibreOffice writes. */
+const DOCX_NATIVE_ENGINE_TARGETS: ReadonlySet<string> = new Set(['rtf', 'doc', 'jpg', 'png']);
+
+/** Targets written from the structured DOCX model. */
+const MODEL_DOCX_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'md', 'pdf', 'epub', 'odt']);
+
+const convertModelTarget = renderModelTarget;
 
 /**
  * DOCX Source Parser & Converter
@@ -597,19 +661,27 @@ async function convertDocxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'DOCX');
   const docXmlFile = zip.file('word/document.xml');
   if (!docXmlFile) {
-    throw new Error('Invalid DOCX format: word/document.xml not found.');
+    throw new ConversionFailedError('Invalid DOCX format: word/document.xml not found.');
   }
 
-  const xmlText = await docXmlFile.async('text');
+  const xmlText = await readZipEntryText(docXmlFile);
+  assertWellFormedXml('word/document.xml', xmlText, 'DOCX');
+
+  // Documents without charts or drawing shapes are read into the structured model (styles, numbering, images,
+  // notes); the targets it serves are written from it. Documents with shapes keep the drawing-aware reader below.
+  const read = await readDocxModel(zip);
+  if (!read.drawsShapes && MODEL_DOCX_TARGETS.has(tgt)) {
+    return convertModelTarget(read.model, tgt, options, baseName);
+  }
 
   // Load chart relationships and parts if present
   const chartMap = new Map<string, string>();
   const docRelsFile = zip.file('word/_rels/document.xml.rels');
   if (docRelsFile) {
-    const relsXml = await docRelsFile.async('text');
+    const relsXml = await readZipEntryText(docRelsFile);
     for (const rEl of safeExtractXmlElements(relsXml, 'Relationship')) {
       const rId = rEl.attrs.Id;
       const target = rEl.attrs.Target;
@@ -621,7 +693,7 @@ async function convertDocxSource(
           : `word/${target}`;
         const cFile = zip.file(chartPath) || zip.file(target);
         if (cFile) {
-          const cXml = await cFile.async('text');
+          const cXml = await readZipEntryText(cFile);
           chartMap.set(rId, cXml);
         }
       }
@@ -629,7 +701,7 @@ async function convertDocxSource(
   }
   for (const fName of Object.keys(zip.files)) {
     if (/^word\/charts\/chart\d+\.xml$/i.test(fName)) {
-      const cXml = await zip.files[fName].async('text');
+      const cXml = await readZipEntryText(zip.files[fName]);
       chartMap.set(fName, cXml);
     }
   }
@@ -639,7 +711,7 @@ async function convertDocxSource(
   const stylesFile = zip.file('word/styles.xml');
   if (stylesFile) {
     try {
-      const stylesXml = await stylesFile.async('text');
+      const stylesXml = await readZipEntryText(stylesFile);
       styleMap = parseWordStyles(stylesXml);
     } catch {}
   }
@@ -699,7 +771,7 @@ async function convertDocxSource(
   // DOCX -> EPUB
   if (tgt === 'epub') {
     const text = generateMarkdownFromDocx(paragraphs, tables, elements);
-    const epubBuffer = await generateEpubFromText(text, 'txt', options, baseName);
+    const epubBuffer = await generateEpubFromText(text, 'md', options, baseName);
     return { buffer: epubBuffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: epubBuffer.length };
   }
 
@@ -737,7 +809,10 @@ async function convertDocxSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from DOCX to ${tgt}`);
+  if (DOCX_NATIVE_ENGINE_TARGETS.has(tgt)) {
+    throw new EngineUnavailableError('soffice', `Converting DOCX to .${tgt} needs the native LibreOffice engine; the in-process engine has no writer for it.`);
+  }
+  throw new UnsupportedTargetError(`Cannot convert DOCX documents to '.${tgt}'.`);
 }
 
 export interface DocxRun {
@@ -829,6 +904,9 @@ export interface OpenXmlChartSeries {
 export interface OpenXmlChartData {
   type: 'bar' | 'line' | 'pie' | 'area' | 'doughnut' | 'scatter';
   title?: string;
+  /** Titles of the value axis and of the category axis, where the chart has them. */
+  valueAxisTitle?: string;
+  categoryAxisTitle?: string;
   categories: string[];
   series: OpenXmlChartSeries[];
 }
@@ -1349,9 +1427,27 @@ export function parseOpenXmlChart(chartXml: string): OpenXmlChartData | null {
   return {
     type,
     title,
+    ...axisTitlesOf(chartXml),
     categories: sharedCategories,
     series,
   };
+}
+
+/** The titles the value axis and the category axis carry (`c:title` inside `c:valAx` and `c:catAx`/`c:dateAx`). */
+function axisTitlesOf(chartXml: string): { valueAxisTitle?: string; categoryAxisTitle?: string } {
+  const titleOf = (axis: string | string[]): string | undefined => {
+    const axisEl = safeExtractFirstXmlElement(chartXml, axis);
+    const titleEl = axisEl ? safeExtractFirstXmlElement(axisEl.content, 'c:title') : null;
+    if (!titleEl) return undefined;
+    const text = safeExtractXmlElements(titleEl.content, 'a:t')
+      .map((t) => safeDecodeXmlEntities(t.content.replace(/<[^>]+>/g, '')).trim())
+      .filter(Boolean)
+      .join(' ');
+    return text === '' ? undefined : text;
+  };
+  const valueAxisTitle = titleOf('c:valAx');
+  const categoryAxisTitle = titleOf(['c:catAx', 'c:dateAx']);
+  return { ...(valueAxisTitle ? { valueAxisTitle } : {}), ...(categoryAxisTitle ? { categoryAxisTitle } : {}) };
 }
 
 const CHART_PALETTE = [
@@ -3226,80 +3322,46 @@ export function sanitizeWinAnsi(text: string): string {
   return out;
 }
 
-const CANDIDATE_UNICODE_FONT_PATHS = [
-  '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
-  '/Library/Fonts/Arial Unicode.ttf',
-  '/System/Library/Fonts/AppleSDGothicNeo.ttc',
-  '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
-  '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
-  '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',
-  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-  '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-  'C:\\Windows\\Fonts\\malgun.ttf',
-  'C:\\Windows\\Fonts\\msyh.ttc',
-  'C:\\Windows\\Fonts\\arialuni.ttf',
-];
+/** Documents whose text is drawn with an embedded Unicode font (an installed one was found). */
+const unicodeFontDocuments = new WeakSet<PDFKit.PDFDocument>();
 
-let cachedFontPath: string | null | undefined = undefined;
+/** One Unicode text writer per pdfkit document, so each embedded font is registered once. */
+const unicodeTextWriters = new WeakMap<PDFKit.PDFDocument, PdfUnicodeTextWriter>();
 
-/**
- * Resolves an available CJK / Unicode TrueType font from system paths or custom options.
- */
-export function resolveUnicodeFallbackFont(customPath?: string): string | null {
-  if (customPath && fs.existsSync(customPath)) {
-    return customPath;
+function unicodeTextWriterFor(doc: PDFKit.PDFDocument, customPath?: string): PdfUnicodeTextWriter {
+  let writer = unicodeTextWriters.get(doc);
+  if (!writer) {
+    writer = new PdfUnicodeTextWriter(doc, customPath);
+    unicodeTextWriters.set(doc, writer);
   }
-  if (cachedFontPath !== undefined) {
-    return cachedFontPath;
-  }
-  for (const p of CANDIDATE_UNICODE_FONT_PATHS) {
-    try {
-      if (fs.existsSync(p)) {
-        cachedFontPath = p;
-        return p;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  cachedFontPath = null;
-  return null;
+  return writer;
 }
 
 /**
- * Registers and configures a Unicode fallback font in PDFKit if available.
+ * Resolves the preferred installed Unicode font, or the custom font when it exists.
+ */
+export function resolveUnicodeFallbackFont(customPath?: string): string | null {
+  return preferredUnicodeFontPath(customPath);
+}
+
+/**
+ * Selects the preferred installed Unicode font in the document. Text drawn through
+ * renderSafePdfText then picks, per run, an embedded font that covers its characters.
  */
 export function configurePdfKitFontFallback(
   doc: PDFKit.PDFDocument,
   customPath?: string
 ): { hasUnicodeFont: boolean; fontName?: string } {
-  const fontPath = resolveUnicodeFallbackFont(customPath);
-  if (fontPath) {
-    try {
-      let fontSubName: any = undefined;
-      if (fontPath.toLowerCase().endsWith('.ttc')) {
-        try {
-          const fontkit = require('fontkit');
-          const col = fontkit.openSync(fontPath);
-          if (col && col.fonts && col.fonts.length > 0) {
-            fontSubName = col.fonts[0].postscriptName;
-          }
-        } catch {
-          // ignore
-        }
-      }
-      doc.registerFont('UnicodeFallback', fontPath, fontSubName);
-      doc.font('UnicodeFallback');
-      return { hasUnicodeFont: true, fontName: 'UnicodeFallback' };
-    } catch {
-      // fallback
-    }
-  }
-  return { hasUnicodeFont: false };
+  const fontName = unicodeTextWriterFor(doc, customPath).usePrimaryFace();
+  if (!fontName) return { hasUnicodeFont: false };
+  unicodeFontDocuments.add(doc);
+  return { hasUnicodeFont: true, fontName };
 }
 
 /**
- * Writes text into a PDFKit document safely, preventing WinAnsi encoding crashes on CJK text.
+ * Writes text into a PDFKit document with embedded fonts chosen per run by glyph coverage.
+ * Throws EngineUnavailableError when no installed font covers a character, instead of drawing
+ * empty boxes. Without any installed Unicode font, WinAnsi-only text keeps the standard font.
  */
 export function renderSafePdfText(
   doc: PDFKit.PDFDocument,
@@ -3311,46 +3373,49 @@ export function renderSafePdfText(
 ): PDFKit.PDFDocument {
   const stringText = String(text ?? '');
   if (!stringText) return doc;
-  assertNoComplexScript(stringText, 'Pure-TS Office PDF rendering');
 
-  if (hasUnicodeFont) {
-    try {
-      if (x !== undefined && y !== undefined) {
-        return doc.text(stringText, x, y, options);
-      }
-      return doc.text(stringText, options);
-    } catch {
-      // fallback to dynamic configuration or verification
+  if (!hasUnicodeFont && !isNonWinAnsi(stringText)) {
+    if (x !== undefined && y !== undefined) {
+      return doc.text(stringText, x, y, options);
     }
+    return doc.text(stringText, options);
   }
 
-  // Attempt dynamic Unicode font fallback configuration
-  const fontConfig = configurePdfKitFontFallback(doc);
-  if (fontConfig.hasUnicodeFont) {
-    try {
-      if (x !== undefined && y !== undefined) {
-        return doc.text(stringText, x, y, options);
-      }
-      return doc.text(stringText, options);
-    } catch {
-      // Font failed on edge glyph
-    }
-  }
-
-  const safe = sanitizeWinAnsi(stringText);
-  // Fail-Closed: Never silently drop CJK / non-WinAnsi characters in mixed strings
-  if (safe !== stringText) {
-    throw new Error(
-      `Cannot render text with standard WinAnsi font and no suitable Unicode fallback font is available. Text contains non-WinAnsi characters: "${stringText.length > 40 ? stringText.slice(0, 40) + '...' : stringText}"`
-    );
-  }
-
-  if (x !== undefined && y !== undefined) {
-    return doc.text(safe, x, y, options);
-  }
-  return doc.text(safe, options);
+  unicodeTextWriterFor(doc).write(stringText, options ?? {}, x, y);
+  return doc;
 }
 
+
+/**
+ * Height the text takes at the given options, measured with the fonts that renderSafePdfText draws it
+ * with: each run in its own embedded font, never the font that happens to be selected in the document.
+ */
+export function measurePdfTextHeight(doc: PDFKit.PDFDocument, text: string, options: PDFKit.Mixins.TextOptions): number {
+  if (!text) return 0;
+  if (!unicodeFontDocuments.has(doc) && !isNonWinAnsi(text)) {
+    return doc.heightOfString(text, options);
+  }
+  return unicodeTextWriterFor(doc).heightOf(text, options);
+}
+
+/** Tick values 0, step, 2 step ... up to the first multiple of a rounded step (1, 2 or 5 times a power of ten) that covers `max`, about five steps. */
+function niceAxisTicks(max: number): number[] {
+  const rough = max / 5;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const fraction = rough / magnitude;
+  const multiple = [1, 2, 5].find((candidate) => fraction <= candidate) ?? 10;
+  const step = multiple * magnitude;
+  const count = Math.ceil(max / step - 1e-9);
+  return Array.from({ length: count + 1 }, (_, i) => Number((i * step).toPrecision(12)));
+}
+
+function formatAxisTick(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(6)));
+}
+
+/** Share of a pie chart's width the list of its slice names takes, on the right. */
+const PIE_LEGEND_SHARE = 0.45;
+const PIE_LEGEND_FONT_SIZE = 7.5;
 
 export function renderPdfChart(
   doc: PDFKit.PDFDocument,
@@ -3363,7 +3428,14 @@ export function renderPdfChart(
 ): void {
   const startX = x !== undefined ? x : 50;
   const chartWidth = width !== undefined ? width : doc.page.width - 100;
-  const chartHeight = height !== undefined ? height : 220;
+  const circularChart = chart.type === 'pie' || chart.type === 'doughnut';
+  const legendLabels = circularChart ? chart.categories : [];
+  const legendWidth = chartWidth * PIE_LEGEND_SHARE - 16;
+  doc.fontSize(PIE_LEGEND_FONT_SIZE);
+  const legendHeights = legendLabels.map((label) => Math.max(PIE_LEGEND_FONT_SIZE + 4, measurePdfTextHeight(doc, label, { width: legendWidth }) + 4));
+  const legendHeight = legendHeights.reduce((sum, h) => sum + h, 0);
+  // A chart whose size the caller did not give grows to hold the names of all its slices.
+  const chartHeight = height !== undefined ? height : Math.max(220, legendHeight + (chart.title ? 40 : 26));
 
   if (y === undefined && doc.y + chartHeight > doc.page.height - 60) {
     doc.addPage();
@@ -3391,12 +3463,16 @@ export function renderPdfChart(
   const plotLeft = startX + 45;
   const plotRight = startX + chartWidth - 25;
   const plotTop = startY + titleH;
-  const plotBottom = startY + chartHeight - 35;
+  const plotBottom = startY + chartHeight - (chart.categoryAxisTitle ? 47 : 35);
   const pw = Math.max(10, plotRight - plotLeft);
   const ph = Math.max(10, plotBottom - plotTop);
 
   const allVals = chart.series.flatMap((s) => s.values);
-  const maxVal = Math.max(1, ...allVals);
+  const dataMax = Math.max(1, ...allVals);
+  const circular = chart.type === 'pie' || chart.type === 'doughnut';
+  // Charts with axes scale to a rounded top value and label it, as every chart with a value axis does.
+  const ticks = circular ? [] : niceAxisTicks(dataMax);
+  const maxVal = ticks.length > 0 ? ticks[ticks.length - 1] : dataMax;
 
   // Axes
   doc
@@ -3407,11 +3483,15 @@ export function renderPdfChart(
     .strokeColor('#CCD2FC')
     .stroke();
 
-  // Gridlines
-  const gridSteps = 3;
+  // Gridlines and the value axis labels
+  const gridSteps = ticks.length > 1 ? ticks.length - 1 : 3;
   for (let i = 0; i <= gridSteps; i++) {
     const gy = plotBottom - (i / gridSteps) * ph;
     doc.moveTo(plotLeft, gy).lineTo(plotRight, gy).lineWidth(0.5).strokeColor('#E1E4EE').stroke();
+    if (ticks.length > 0) {
+      doc.fillColor('#4D536B').fontSize(7);
+      renderSafePdfText(doc, formatAxisTick(ticks[i]), hasUnicodeFont, { width: 36, align: 'right', lineBreak: false }, plotLeft - 40, gy - 4);
+    }
   }
 
   if (chart.type === 'bar') {
@@ -3515,9 +3595,10 @@ export function renderPdfChart(
       );
     });
   } else if (chart.type === 'pie' || chart.type === 'doughnut') {
-    const cx = plotLeft + pw / 2;
+    const pieWidth = pw * (1 - PIE_LEGEND_SHARE);
+    const cx = plotLeft + pieWidth / 2;
     const cy = plotTop + ph / 2;
-    const radius = (Math.min(pw, ph) / 2) * 0.8;
+    const radius = (Math.min(pieWidth, ph) / 2) * 0.8;
     const rInner = chart.type === 'doughnut' ? radius * 0.55 : 0;
     const total = allVals.reduce((a, b) => a + b, 0) || 1;
     let startAngle = -Math.PI / 2;
@@ -3562,12 +3643,32 @@ export function renderPdfChart(
       doc.restore();
       startAngle = endAngle;
     });
+
+    // The name of each slice, beside the swatch of its colour.
+    let legendY = plotTop;
+    const legendX = startX + chartWidth * (1 - PIE_LEGEND_SHARE);
+    legendLabels.forEach((label, index) => {
+      doc.rect(legendX, legendY + 1, 8, 8).fill(CHART_PALETTE[index % CHART_PALETTE.length]);
+      doc.fillColor('#4D536B').fontSize(PIE_LEGEND_FONT_SIZE);
+      renderSafePdfText(doc, label, hasUnicodeFont, { width: legendWidth }, legendX + 12, legendY);
+      legendY += legendHeights[index];
+    });
+  }
+
+  // The titles of the axes: the value axis above its labels, the category axis below the category labels.
+  if (chart.valueAxisTitle) {
+    doc.fillColor('#4D536B').fontSize(7.5);
+    renderSafePdfText(doc, chart.valueAxisTitle, hasUnicodeFont, { width: chartWidth - 20, lineBreak: false }, startX + 10, plotTop - 11);
+  }
+  if (chart.categoryAxisTitle) {
+    doc.fillColor('#4D536B').fontSize(7.5);
+    renderSafePdfText(doc, chart.categoryAxisTitle, hasUnicodeFont, { width: pw, align: 'center', lineBreak: false }, plotLeft, plotBottom + 17);
   }
 
   // Draw legend if multiple series
   if (chart.series.length > 1) {
     let lx = plotLeft;
-    const ly = startY + chartHeight - 12;
+    const ly = startY + chartHeight - 8;
     chart.series.forEach((s, sIdx) => {
       const color = CHART_PALETTE[sIdx % CHART_PALETTE.length];
       doc.rect(lx, ly - 6, 8, 8).fill(color);
@@ -3841,31 +3942,6 @@ async function generatePdfFromDocx(
   title: string,
   elements?: DocxBlockElement[]
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS DOCX to PDF');
-  for (const p of paragraphs) {
-    assertNoComplexScript(p.text, 'Pure-TS DOCX to PDF');
-  }
-  for (const tbl of tables) {
-    for (const r of tbl.rows) {
-      for (const cell of r) {
-        assertNoComplexScript(cell, 'Pure-TS DOCX to PDF');
-      }
-    }
-  }
-  if (elements) {
-    for (const el of elements) {
-      if (el.type === 'paragraph') {
-        assertNoComplexScript(el.paragraph.text, 'Pure-TS DOCX to PDF');
-      } else if (el.type === 'table') {
-        for (const r of el.table.rows) {
-          for (const cell of r) {
-            assertNoComplexScript(cell, 'Pure-TS DOCX to PDF');
-          }
-        }
-      }
-    }
-  }
-
   return new Promise((resolve, reject) => {
     const isLandscape = options.orientation === 'landscape';
     const doc = new PDFDocument({
@@ -3881,15 +3957,6 @@ async function generatePdfFromDocx(
     doc.on('error', (err) => reject(err));
 
     const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-
-    // Accent header line in signature lavender
-    doc.rect(50, 40, doc.page.width - 100, 3).fill('#5C6BC0');
-    doc.moveDown(1.5);
-
-    // Title
-    doc.fillColor('#1F2340').fontSize(20);
-    renderSafePdfText(doc, title, hasUnicodeFont, { underline: false });
-    doc.moveDown(1);
 
     const renderTable = (tbl: DocxTable) => {
       if (tbl.rows.length === 0) return;
@@ -3948,7 +4015,7 @@ async function generatePdfFromDocx(
             const fontSize = cell.isHeader || rIdx === 0 ? 9 : 8.5;
             doc.fontSize(fontSize);
             const cellText = cell.text || '';
-            const textHeight = cellText.trim().length > 0 ? doc.heightOfString(cellText, { width: textWidth }) : 0;
+            const textHeight = cellText.trim().length > 0 ? measurePdfTextHeight(doc, cellText, { width: textWidth }) : 0;
             let requiredHeight = Math.ceil(textHeight + 10);
 
             const tablesToRender = cell.nestedTables && cell.nestedTables.length > 0
@@ -3972,7 +4039,7 @@ async function generatePdfFromDocx(
                   if (Array.isArray(rowItem)) {
                     for (const subCell of rowItem) {
                       const subText = typeof subCell === 'string' ? subCell : (subCell?.text || '');
-                      const subTh = doc.heightOfString(subText || ' ', { width: Math.max(5, nColW - 6) });
+                      const subTh = measurePdfTextHeight(doc, subText || ' ', { width: Math.max(5, nColW - 6) });
                       if (subTh + 6 > maxSubH) maxSubH = Math.ceil(subTh + 6);
                     }
                   }
@@ -3981,7 +4048,7 @@ async function generatePdfFromDocx(
                 requiredHeight += 4;
               }
             } else if (cell.fullCellText && cell.fullCellText !== cell.text) {
-              const fullH = doc.heightOfString(cell.fullCellText, { width: textWidth });
+              const fullH = measurePdfTextHeight(doc, cell.fullCellText, { width: textWidth });
               requiredHeight = Math.max(requiredHeight, Math.ceil(fullH + 10));
             }
             if (requiredHeight > maxCellHeight) {
@@ -4064,7 +4131,7 @@ async function generatePdfFromDocx(
                 x + 5,
                 textOffsetY
               );
-              const tH = doc.heightOfString(cell.text, { width: colWidth - 10 });
+              const tH = measurePdfTextHeight(doc, cell.text, { width: colWidth - 10 });
               textOffsetY += Math.ceil(tH + 4);
             }
 
@@ -4093,7 +4160,7 @@ async function generatePdfFromDocx(
                   doc.fontSize(7.5);
                   nRow.forEach((nCell) => {
                     const nText = nCell.text || '';
-                    const nTh = doc.heightOfString(nText || ' ', { width: Math.max(5, nColW - 6) });
+                    const nTh = measurePdfTextHeight(doc, nText || ' ', { width: Math.max(5, nColW - 6) });
                     if (nTh + 6 > nRowH) nRowH = Math.ceil(nTh + 6);
                   });
 
@@ -4142,7 +4209,7 @@ async function generatePdfFromDocx(
           const fontSize = rIdx === 0 ? 9 : 8.5;
           doc.fontSize(fontSize);
           row.forEach((cellText) => {
-            const textHeight = doc.heightOfString(cellText || ' ', { width: Math.max(10, colWidth - 10) });
+            const textHeight = measurePdfTextHeight(doc, cellText || ' ', { width: Math.max(10, colWidth - 10) });
             const reqH = Math.ceil(textHeight + 10);
             if (reqH > maxCellHeight) maxCellHeight = reqH;
           });
@@ -4178,6 +4245,8 @@ async function generatePdfFromDocx(
     };
 
     const renderParagraph = (p: DocxParagraph) => {
+      // Cells, shapes and charts are drawn at absolute positions and leave doc.x at the last one; a paragraph starts at the margin.
+      doc.x = doc.page.margins.left;
       if (p.isHeading) {
         doc.moveDown(0.5);
         doc.fillColor('#5C6BC0').fontSize(p.headingLevel === 1 ? 16 : 14);
@@ -5073,8 +5142,56 @@ export class SpreadsheetDagEngine {
 /**
  * XLSX Source Parser & Converter
  */
+/** Built-in number formats (ECMA-376 Part 1, 18.8.30) that show numbers, with the fraction digits each one shows. */
+const BUILTIN_FRACTION_DIGITS: ReadonlyMap<number, number> = new Map([
+  [1, 0], // 0
+  [2, 2], // 0.00
+  [3, 0], // #,##0
+  [4, 2], // #,##0.00
+  [9, 0], // 0%
+  [10, 2], // 0.00%
+  [37, 0], // #,##0 ;(#,##0)
+  [38, 0], // #,##0 ;[Red](#,##0)
+  [39, 2], // #,##0.00;(#,##0.00)
+  [40, 2], // #,##0.00;[Red](#,##0.00)
+  [44, 2], // accounting, two decimals
+]);
+const BUILTIN_PERCENT_IDS: ReadonlySet<number> = new Set([9, 10]);
+const BUILTIN_GROUPED_IDS: ReadonlySet<number> = new Set([3, 4, 37, 38, 39, 40, 44]);
+const BUILTIN_CURRENCY_IDS: ReadonlySet<number> = new Set([44]);
+const CURRENCY_SYMBOLS = ['$', '\u20a9', '\u20ac', '\u00a3'];
+const DEFAULT_CURRENCY_SYMBOL = '$';
+/** A format code made only of digit placeholders and one decimal point shows a plain fixed-point number. */
+const PLAIN_NUMBER_FORMAT = /^[0#?]+(\.[0#?]+)?$/;
+/** A comma between two digit placeholders groups thousands; a trailing comma scales by a thousand instead. */
+const THOUSANDS_SEPARATOR = /[0#?],[0#?]/;
+
 /**
- * Formats a raw spreadsheet cell value according to Excel NumberFormat specification
+ * The first section of a format code with `[$-409]` (a locale) dropped and `[$EUR-407]` reduced to its currency symbol,
+ * other bracketed parts (colours, conditions) removed. Quoted text is kept: `"$"#,##0` names its currency in quotes.
+ */
+function numberFormatFirstSection(formatCode: string): string {
+  return formatCode
+    .replace(/\[\$([^\]-]*)[^\]]*\]/g, '$1')
+    .replace(/\[[^\]]*\]/g, '')
+    .split(';')[0];
+}
+
+/** What is left of a format section once quoted text, escaped characters, padding and alignment directives are removed: placeholders and separators. */
+function numberFormatSkeleton(firstSection: string): string {
+  return firstSection.replace(/"[^"]*"/g, '').replace(/\\./g, '').replace(/[_*]./g, '');
+}
+
+/** Fewest and most fraction digits a format code shows: `0` placeholders after the decimal point are required, `#` and `?` optional. */
+function numberFormatFractionDigits(skeleton: string): { min: number; max: number } {
+  const fraction = /\.([0#?]*)/.exec(skeleton)?.[1] ?? '';
+  return { min: (fraction.match(/0/g) ?? []).length, max: fraction.length };
+}
+
+/**
+ * Formats a raw spreadsheet cell value according to its Excel number format: percent, grouped thousands, currency and
+ * fixed-point formats show the fraction digits the format code asks for; dates become ISO dates. Anything else is
+ * shown as stored.
  */
 export function formatSpreadsheetCellValue(
   rawVal: string,
@@ -5084,38 +5201,37 @@ export function formatSpreadsheetCellValue(
   if (!rawVal || isNaN(Number(rawVal))) return rawVal;
   const num = Number(rawVal);
 
-  // Currency formats (numFmtId 44 or custom formats with currency symbols)
-  if (
-    numFmtId === 44 ||
-    (customFormat &&
-      (customFormat.includes('$') ||
-        customFormat.includes('₩') ||
-        customFormat.includes('€') ||
-        customFormat.includes('£')))
-  ) {
-    return num.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+  const firstSection = customFormat === undefined ? undefined : numberFormatFirstSection(customFormat);
+  const skeleton = firstSection === undefined ? undefined : numberFormatSkeleton(firstSection);
+  const builtinDigits = numFmtId === undefined ? undefined : BUILTIN_FRACTION_DIGITS.get(numFmtId);
+  const digits =
+    skeleton === undefined
+      ? { min: builtinDigits ?? 0, max: builtinDigits ?? 0 }
+      : numberFormatFractionDigits(skeleton);
+  const grouped =
+    (skeleton !== undefined && THOUSANDS_SEPARATOR.test(skeleton)) || (numFmtId !== undefined && BUILTIN_GROUPED_IDS.has(numFmtId));
+  const show = (value: number, extra: Intl.NumberFormatOptions = {}): string =>
+    new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: digits.min,
+      maximumFractionDigits: digits.max,
+      useGrouping: grouped,
+      ...extra,
+    }).format(value);
+
+  // Currency formats (numFmtId 44, or custom formats naming a currency symbol)
+  const symbol = firstSection === undefined ? undefined : CURRENCY_SYMBOLS.find((candidate) => firstSection.includes(candidate));
+  if (symbol !== undefined || (numFmtId !== undefined && BUILTIN_CURRENCY_IDS.has(numFmtId))) {
+    return `${num < 0 ? '-' : ''}${symbol ?? DEFAULT_CURRENCY_SYMBOL}${show(Math.abs(num))}`;
   }
 
-  // Percentage formats (numFmtId 9, 10 or contains '%')
-  if (numFmtId === 9 || numFmtId === 10 || (customFormat && customFormat.includes('%'))) {
-    const decimals = numFmtId === 10 || (customFormat && customFormat.includes('.0')) ? 2 : 0;
-    return (num * 100).toFixed(decimals) + '%';
+  // Percentage formats (numFmtId 9, 10 or a code containing '%'): Intl scales on the decimal digits, not on the binary double
+  if ((numFmtId !== undefined && BUILTIN_PERCENT_IDS.has(numFmtId)) || (skeleton !== undefined && skeleton.includes('%'))) {
+    return show(num, { style: 'percent' });
   }
 
-  // Number with thousand separator (numFmtId 3, 4, 37, 38 or contains '#,##0')
-  if (
-    numFmtId === 3 ||
-    numFmtId === 4 ||
-    numFmtId === 37 ||
-    numFmtId === 38 ||
-    (customFormat && customFormat.includes('#,##0'))
-  ) {
-    const decimals =
-      numFmtId === 4 || numFmtId === 38 || (customFormat && customFormat.includes('.00')) ? 2 : 0;
-    return num.toLocaleString('en-US', {
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals,
-    });
+  // Grouped thousands (numFmtId 3, 4, 37 to 40 or a code with a thousands separator) and plain fixed-point formats
+  if (grouped || (skeleton !== undefined ? PLAIN_NUMBER_FORMAT.test(skeleton) : builtinDigits !== undefined)) {
+    return show(num);
   }
 
   // Excel serial date formatting (numFmtId 14..22 or contains date tokens)
@@ -5161,6 +5277,8 @@ export interface OfficeWorksheetPrintArea {
 export interface OfficeWorksheet {
   name: string;
   rows: string[][];
+  /** The charts the sheet's drawing holds, in the order the drawing places them. */
+  charts?: OpenXmlChartData[];
   structuredRows?: OfficeWorksheetCell[][];
   columnWidths?: number[];
   printArea?: OfficeWorksheetPrintArea;
@@ -5289,6 +5407,39 @@ export function formatCsvCell(cell: string, delimiter: string): string {
  * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
  * and workbook.xml.rels, resolving shared strings, NumberFormats, and formulas.
  */
+/** The relationships of a package part: target by relationship id, with the relationship's type. */
+async function readPartRelationships(zip: JSZip, partPath: string): Promise<Map<string, { type: string; target: string }>> {
+  const slash = partPath.lastIndexOf('/');
+  const directory = partPath.slice(0, slash);
+  const relsFile = zip.file(`${directory}/_rels/${partPath.slice(slash + 1)}.rels`);
+  const relationships = new Map<string, { type: string; target: string }>();
+  if (!relsFile) return relationships;
+  for (const rel of safeExtractXmlElements(await readZipEntryText(relsFile), 'Relationship')) {
+    if (rel.attrs.Id && rel.attrs.Target && rel.attrs.TargetMode !== 'External') {
+      relationships.set(rel.attrs.Id, { type: rel.attrs.Type ?? '', target: resolveZipPath(directory, rel.attrs.Target) });
+    }
+  }
+  return relationships;
+}
+
+/** The charts of the drawings a worksheet shows (worksheet to drawing to chart parts), in the order each drawing places them. */
+async function readWorksheetCharts(zip: JSZip, sheetPath: string): Promise<OpenXmlChartData[]> {
+  const charts: OpenXmlChartData[] = [];
+  for (const drawing of (await readPartRelationships(zip, sheetPath)).values()) {
+    if (!drawing.type.endsWith('/drawing')) continue;
+    const drawingFile = zip.file(drawing.target);
+    if (!drawingFile) continue;
+    const references = await readPartRelationships(zip, drawing.target);
+    const drawingXml = await readZipEntryText(drawingFile);
+    for (const match of drawingXml.matchAll(/<(?:\w+:)?chart\b[^>]*?\br:id="([^"]+)"/g)) {
+      const chartFile = zip.file(references.get(match[1])?.target ?? '');
+      const chart = chartFile ? parseOpenXmlChart(await readZipEntryText(chartFile)) : null;
+      if (chart) charts.push(chart);
+    }
+  }
+  return charts;
+}
+
 export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8Array): Promise<OfficeWorksheet[]> {
   const zip = (zipOrBuffer && typeof (zipOrBuffer as JSZip).file === 'function')
     ? (zipOrBuffer as JSZip)
@@ -5298,7 +5449,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   const sharedStrings: string[] = [];
   const sstFile = zip.file('xl/sharedStrings.xml');
   if (sstFile) {
-    const sstXml = await sstFile.async('text');
+    const sstXml = await readZipEntryText(sstFile);
     const siElements = safeExtractXmlElements(sstXml, 'si');
     if (siElements.length > 0) {
       for (const si of siElements) {
@@ -5327,7 +5478,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
   const stylesFile = zip.file('xl/styles.xml');
   if (stylesFile) {
-    const stylesXml = await stylesFile.async('text');
+    const stylesXml = await readZipEntryText(stylesFile);
 
     // Parse custom <numFmt numFmtId="..." formatCode="..."/>
     const numFmtRegex = /<numFmt\s+[^>]*?numFmtId="(\d+)"[^>]*?formatCode="([^"]*)"/gi;
@@ -5439,11 +5590,11 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   const wbRelsFile = zip.file('xl/_rels/workbook.xml.rels');
 
   if (wbFile) {
-    const wbXml = await wbFile.async('text');
+    const wbXml = await readZipEntryText(wbFile);
     const relsMap = new Map<string, string>();
 
     if (wbRelsFile) {
-      const wbRelsXml = await wbRelsFile.async('text');
+      const wbRelsXml = await readZipEntryText(wbRelsFile);
       for (const rEl of safeExtractXmlElements(wbRelsXml, 'Relationship')) {
         if (rEl.attrs.Id && rEl.attrs.Target) {
           relsMap.set(rEl.attrs.Id, rEl.attrs.Target);
@@ -5505,11 +5656,16 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   }
 
   if (sheetEntries.length === 0) {
-    throw new Error('Invalid XLSX workbook: no worksheets found in archive.');
+    throw new ConversionFailedError('Invalid XLSX workbook: no worksheets found in archive.');
   }
 
   // 4. Parse all discovered worksheets
   const allSheets: OfficeWorksheet[] = [];
+  let expandedTextChars = 0;
+  const maxCellTextChars = xlsxMaxCellTextChars();
+  // The sheets of one workbook share a decoded-byte budget, so many large sheets cannot add up past it; one sheet may
+  // take all of it, because a sheet of a million rows is hundreds of MB of XML.
+  const sheetBudget = new InflateBudget();
 
   for (let entryIdx = 0; entryIdx < sheetEntries.length; entryIdx++) {
     const entry = sheetEntries[entryIdx];
@@ -5517,7 +5673,8 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     const sFile = zip.file(entry.path);
     if (!sFile) continue;
 
-    const sheetXml = await sFile.async('text');
+    const sheetXml = await readZipEntryText(sFile, { budget: sheetBudget, maxBytes: sheetBudget.limit });
+    assertWellFormedXml(entry.path, sheetXml, 'XLSX');
     const rows: string[][] = [];
     const structuredRows: OfficeWorksheetCell[][] = [];
     const cellMap: Record<string, any> = {};
@@ -5607,6 +5764,11 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
           cellValue = safeDecodeXmlEntities(tContent);
         }
 
+        expandedTextChars += cellValue.length;
+        if (expandedTextChars > maxCellTextChars) {
+          throw new PayloadLimitError(`The XLSX cells expand to more than ${maxCellTextChars} characters (${XLSX_MAX_CELL_TEXT_CHARS_ENV}).`);
+        }
+
         if (ref) {
           cellMap[ref] = cellValue;
         }
@@ -5649,174 +5811,59 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       }
     }
 
+    const charts = await readWorksheetCharts(zip, entry.path);
     allSheets.push({
       name: entry.name,
       rows,
       structuredRows,
       columnWidths: columnWidths.length > 0 ? columnWidths : undefined,
       printArea,
+      ...(charts.length > 0 ? { charts } : {}),
     });
   }
 
   return allSheets;
 }
 
+/** Columns above which a worksheet is drawn on a landscape page. */
+const WORKSHEET_LANDSCAPE_COLUMNS = 6;
+
+/**
+ * Draws worksheets as tables: the workbook title goes into the PDF metadata, each sheet name becomes an
+ * outline entry, and every row and column is drawn (see renderPdfTables).
+ */
 async function generatePdfFromWorksheets(
   sheets: OfficeWorksheet[],
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS Spreadsheet to PDF');
-  for (const s of sheets) {
-    assertNoComplexScript(s.name, 'Pure-TS Spreadsheet to PDF');
-    for (const r of s.rows) {
-      for (const cell of r) {
-        assertNoComplexScript(cell, 'Pure-TS Spreadsheet to PDF');
-      }
-    }
+  let widestRow = 1;
+  for (const sheet of sheets) {
+    for (const row of sheet.rows) widestRow = Math.max(widestRow, row.length);
   }
-
-  return new Promise((resolve, reject) => {
-    let maxCols = 1;
-    sheets.forEach((s) => {
-      s.rows.forEach((r) => {
-        if (r.length > maxCols) maxCols = r.length;
-      });
-    });
-
-    const isLandscape = options.orientation === 'landscape' || maxCols > 6;
-    const doc = new PDFDocument({
-      size: 'A4',
-      layout: isLandscape ? 'landscape' : 'portrait',
-      margin: 36,
-      info: { Title: title, Creator: 'EasyConvert Spreadsheet Engine' },
-    });
-
-    const chunks: Buffer[] = [];
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', (err) => reject(err));
-
-    const pageWidth = doc.page.width;
-    const pageHeight = doc.page.height;
-    const margin = 36;
-    const availableWidth = pageWidth - margin * 2;
-
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-
-    sheets.forEach((sheet, sheetIdx) => {
-      if (sheetIdx > 0) doc.addPage();
-
-      // Top lavender brand accent bar
-      doc.rect(margin, 28, availableWidth, 3).fill('#5C6BC0');
-      doc.y = 40;
-
-      // Title & Sheet Name
-      doc.fillColor('#1F2340').fontSize(16);
-      renderSafePdfText(doc, title, hasUnicodeFont, {}, margin, doc.y);
-      if (sheets.length > 1) {
-        doc.fillColor('#5C6BC0').fontSize(11);
-        renderSafePdfText(doc, `Sheet: ${sheet.name}`, hasUnicodeFont, {}, margin, doc.y + 4);
-      }
-      doc.y += 12;
-
-      if (sheet.rows.length === 0) return;
-
-      const colCount = Math.max(1, ...sheet.rows.map((r) => r.length));
-
-      // Calculate dynamic column widths
-      const colWidths: number[] = new Array(colCount).fill(0);
-      let totalAssigned = 0;
-
-      for (let c = 0; c < colCount; c++) {
-        if (sheet.columnWidths && sheet.columnWidths[c] && sheet.columnWidths[c] > 20) {
-          colWidths[c] = sheet.columnWidths[c];
-        } else {
-          let maxLen = 4;
-          sheet.rows.forEach((r) => {
-            const val = r[c] || '';
-            if (val.length > maxLen) maxLen = Math.min(30, val.length);
-          });
-          colWidths[c] = maxLen * 7.5;
-        }
-        totalAssigned += colWidths[c];
-      }
-
-      const scale = availableWidth / Math.max(1, totalAssigned);
-      for (let c = 0; c < colCount; c++) {
-        colWidths[c] = Math.round(colWidths[c] * scale);
-      }
-
-      const rowHeight = 20;
-
-      const renderRow = (rIdx: number, isHeader = false) => {
-        const row = sheet.rows[rIdx] || [];
-        const structuredRow = sheet.structuredRows?.[rIdx] || [];
-        const curY = doc.y;
-
-        let curX = margin;
-        for (let cIdx = 0; cIdx < colCount; cIdx++) {
-          const colW = colWidths[cIdx];
-          const cell = structuredRow[cIdx];
-          const text = cell?.value ?? (row[cIdx] || '');
-
-          const isHdr = isHeader || rIdx === 0;
-          let fill = cell?.fillColor;
-          if (!fill) {
-            if (isHdr) fill = '#F0F2FE';
-            else if (rIdx % 2 === 1) fill = '#FAFAFE';
-            else fill = '#FFFFFF';
-          }
-          doc.rect(curX, curY, colW, rowHeight).fill(fill);
-
-          const borderCol = cell?.borderColor || (isHdr ? '#CCD2FC' : '#E1E4EE');
-          doc.rect(curX, curY, colW, rowHeight).strokeColor(borderCol).lineWidth(0.5).stroke();
-
-          if (text) {
-            const bold = isHdr || !!cell?.bold;
-            const italic = !!cell?.italic;
-            if (!hasUnicodeFont) {
-              const fontName = bold && italic ? 'Helvetica-BoldOblique' : bold ? 'Helvetica-Bold' : italic ? 'Helvetica-Oblique' : 'Helvetica';
-              doc.font(fontName);
-            }
-            const fontCol = cell?.fontColor || (isHdr ? '#1F2340' : '#4D536B');
-            const align = cell?.align || 'left';
-
-            doc.fontSize(isHdr ? 9 : 8.5).fillColor(fontCol);
-            renderSafePdfText(
-              doc,
-              text,
-              hasUnicodeFont,
-              {
-                width: Math.max(10, colW - 8),
-                height: rowHeight - 8,
-                align,
-                lineBreak: false,
-                ellipsis: true,
-              },
-              curX + 4,
-              curY + 5
-            );
-          }
-
-          curX += colW;
-        }
-
-        doc.y = curY + rowHeight;
-      };
-
-      sheet.rows.forEach((_, rIdx) => {
-        if (doc.y + rowHeight > pageHeight - margin) {
-          doc.addPage();
-          doc.y = margin;
-          renderRow(0, true);
-        }
-        renderRow(rIdx, rIdx === 0);
-      });
-    });
-
-    doc.end();
-  });
+  const isLandscape = options.orientation === 'landscape' || widestRow > WORKSHEET_LANDSCAPE_COLUMNS;
+  return renderPdfTables(
+    sheets.map((sheet) => ({
+      name: sheet.name,
+      headerRows: 1,
+      widthHints: sheet.columnWidths,
+      afterTable: sheet.charts?.length ? (doc: PDFKit.PDFDocument) => sheet.charts?.forEach((chart) => renderPdfChart(doc, chart, true)) : undefined,
+      rows: sheet.rows.map((row, r) => {
+        const structured = sheet.structuredRows?.[r] ?? [];
+        return Array.from({ length: Math.max(row.length, structured.length) }, (_, c) => {
+          const cell = structured[c];
+          return {
+            text: cell?.value ?? row[c] ?? '',
+            fill: cell?.fillColor,
+            fontColor: cell?.fontColor,
+            align: cell?.align,
+            borderColor: cell?.borderColor,
+          };
+        });
+      }),
+    })),
+    { title, orientation: isLandscape ? 'landscape' : 'portrait', customFontPath: (options as { fontPath?: string }).fontPath }
+  );
 }
 
 /**
@@ -5828,7 +5875,7 @@ async function convertXlsxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'XLSX');
   const rawSheets = await parseAllXlsxWorksheets(zip);
 
   // 1. Slicing by print area if range: 'printArea'
@@ -5961,10 +6008,10 @@ async function convertXlsxSource(
   if (tgt === 'tsv') {
     let tsvContent: string;
     if (allSheets.length <= 1) {
-      tsvContent = primaryRows.map((r) => r.join('\t')).join(lineEnding);
+      tsvContent = primaryRows.map((r) => r.map((c) => formatCsvCell(c, '\t')).join('\t')).join(lineEnding);
     } else {
       tsvContent = allSheets
-        .map((s) => `### Sheet: ${s.name}\n` + s.rows.map((r) => r.join('\t')).join(lineEnding))
+        .map((s) => `### Sheet: ${s.name}\n` + s.rows.map((r) => r.map((c) => formatCsvCell(c, '\t')).join('\t')).join(lineEnding))
         .join(lineEnding + lineEnding);
     }
     const buffer = Buffer.from(tsvContent, 'utf-8');
@@ -6110,7 +6157,7 @@ async function convertXlsxSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from XLSX to ${tgt}`);
+  throw unconvertibleOfficeTarget('xlsx', tgt);
 }
 
 /**
@@ -6182,7 +6229,8 @@ export async function parsePptxSlideSceneGraph(
   slideHeight: number,
   relsMap: Map<string, string>,
   zip: JSZip,
-  texts: string[]
+  texts: string[],
+  media: PptxMedia = new PptxMedia()
 ): Promise<VisualSlideShape[]> {
   const shapes: VisualSlideShape[] = [];
 
@@ -6216,7 +6264,8 @@ export async function parsePptxSlideSceneGraph(
       slideHeight,
       relsMap,
       zip,
-      texts
+      texts,
+      media
     );
     shapes.push(...childShapes);
   }
@@ -6323,7 +6372,7 @@ export async function parsePptxSlideSceneGraph(
           const dataPath = resolveZipPath('ppt/slides', target);
           const dataFile = zip.file(dataPath) || zip.file(`ppt/${target}`);
           if (dataFile) {
-            const dataXml = await dataFile.async('text');
+            const dataXml = await readZipEntryText(dataFile);
             const ptEls = safeExtractXmlElements(dataXml, 'dgm:pt');
             const nodeTexts: string[] = [];
             for (const pt of ptEls) {
@@ -6463,7 +6512,7 @@ export async function parsePptxSlideSceneGraph(
           const chartPath = resolveZipPath('ppt/slides', target);
           const chartFile = zip.file(chartPath) || zip.file(`ppt/${target}`);
           if (chartFile) {
-            const chartXml = await chartFile.async('text');
+            const chartXml = await readZipEntryText(chartFile);
             chartData = parseOpenXmlChart(chartXml);
           }
         } else if (
@@ -6528,24 +6577,10 @@ export async function parsePptxSlideSceneGraph(
       const target = relsMap.get(rId);
       if (target) {
         const mediaPath = resolveZipPath('ppt/slides', target);
-        const mediaFile = zip.file(mediaPath);
-        if (mediaFile) {
-          let imgBuffer = await mediaFile.async('nodebuffer');
-          // PNG and JPEG are embedded without a re-encode, whatever the part is called: check their header.
-          // Pictures are processed one at a time on purpose: each decode can hold up to the pixel limit in memory.
-          await assertEmbeddableImageWithinLimit(imgBuffer); // NOSONAR S9382: sequential to bound memory
-          let mimeType = 'image/png';
-          const lower = mediaPath.toLowerCase();
-          if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
-            mimeType = 'image/jpeg';
-          } else if (!lower.endsWith('.png')) {
-            try {
-              imgBuffer = await openLimitedSharp(imgBuffer).png().toBuffer(); // NOSONAR S9382: sequential to bound memory
-              mimeType = 'image/png';
-            } catch (err) {
-              rethrowInputPixelLimit(err);
-            }
-          }
+        const picture = await media.picture(zip, mediaPath);
+        if (picture) {
+          let imgBuffer = picture.buffer;
+          const mimeType = picture.mimeType;
 
           // DrawingML <a:srcRect> image cropping (ISO/IEC 29500-1 §20.1.8.56)
           const srcRectEl = safeExtractFirstXmlElement(picXml, 'a:srcRect');
@@ -6555,6 +6590,7 @@ export async function parsePptxSlideSceneGraph(
             const r = parseInt(srcRectEl.attrs.r || '0', 10);
             const b = parseInt(srcRectEl.attrs.b || '0', 10);
             if (l > 0 || t > 0 || r > 0 || b > 0) {
+              let cropped: Buffer | undefined;
               try {
                 const meta = await sharp(imgBuffer).metadata();
                 if (meta.width && meta.height) {
@@ -6564,12 +6600,17 @@ export async function parsePptxSlideSceneGraph(
                   const cropBottom = Math.max(0, Math.min(meta.height - cropTop - 1, Math.round((meta.height * b) / 100000)));
                   const extractW = Math.max(1, meta.width - cropLeft - cropRight);
                   const extractH = Math.max(1, meta.height - cropTop - cropBottom);
-                  imgBuffer = await openLimitedSharp(imgBuffer) // NOSONAR S9382: sequential to bound memory
+                  cropped = await openLimitedSharp(imgBuffer) // NOSONAR S9382: sequential to bound memory
                     .extract({ left: cropLeft, top: cropTop, width: extractW, height: extractH })
                     .toBuffer();
                 }
               } catch (err) {
                 rethrowInputPixelLimit(err);
+              }
+              // Outside the try: rethrowInputPixelLimit passes every other error on, which would swallow the budget's 413.
+              if (cropped) {
+                media.chargeDerived(cropped.length, mediaPath);
+                imgBuffer = cropped;
               }
             }
           }
@@ -6711,7 +6752,7 @@ async function convertPptxSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'PPTX');
 
   // 1. Parse presentation slide size from ppt/presentation.xml (in EMUs, 12700 EMUs = 1 pt)
   let slideWidth = 960; // 16:9 standard width in points (12,192,000 EMUs)
@@ -6719,7 +6760,7 @@ async function convertPptxSource(
 
   const presFile = zip.file('ppt/presentation.xml');
   if (presFile) {
-    const presXml = await presFile.async('text');
+    const presXml = await readZipEntryText(presFile);
     const sldSzEl = safeExtractFirstXmlElement(presXml, 'p:sldSz');
     if (sldSzEl?.attrs.cx && sldSzEl?.attrs.cy) {
       const cx = parseInt(sldSzEl.attrs.cx, 10);
@@ -6741,9 +6782,16 @@ async function convertPptxSource(
     });
 
   const slides: VisualSlide[] = [];
+  const slideBudget = new InflateBudget();
+  // Only the HTML and PDF targets draw pictures; an HTML page also cannot hold more than a string can.
+  const media = new PptxMedia({
+    enabled: tgt === 'html' || tgt === 'pdf',
+    maxPartBytes: tgt === 'html' ? Math.floor(HTML_MAX_EMBEDDED_BASE64_CHARS / 4) * 3 : undefined,
+  });
 
   for (let i = 0; i < slideFiles.length; i++) {
-    const xml = await zip.files[slideFiles[i]].async('text');
+    const xml = await readZipEntryText(zip.files[slideFiles[i]], { budget: slideBudget });
+    assertWellFormedXml(slideFiles[i], xml, 'PPTX');
 
     // Extract slide background color
     let backgroundColor: string | undefined;
@@ -6765,7 +6813,7 @@ async function convertPptxSource(
     const relsFile = zip.file(relsFileName);
     const relsMap = new Map<string, string>();
     if (relsFile) {
-      const relsXml = await relsFile.async('text');
+      const relsXml = await readZipEntryText(relsFile);
       for (const rEl of safeExtractXmlElements(relsXml, 'Relationship')) {
         if (rEl.attrs.Id && rEl.attrs.Target) {
           relsMap.set(rEl.attrs.Id, rEl.attrs.Target);
@@ -6780,7 +6828,8 @@ async function convertPptxSource(
       slideHeight,
       relsMap,
       zip,
-      texts
+      texts,
+      media
     );
 
     slides.push({
@@ -6793,15 +6842,7 @@ async function convertPptxSource(
     });
   }
 
-  if (slides.length === 0) {
-    slides.push({
-      number: 1,
-      texts: [baseName, 'Presentation slide content'],
-      shapes: [],
-      width: slideWidth,
-      height: slideHeight,
-    });
-  }
+  if (slides.length === 0) throw new ConversionFailedError('The PPTX file has no slides.');
 
   // PPTX -> TXT
   if (tgt === 'txt') {
@@ -6828,7 +6869,7 @@ async function convertPptxSource(
   // PPTX -> DOCX
   if (tgt === 'docx') {
     const text = slides.map((s) => `# Slide ${s.number}\n\n` + s.texts.join('\n')).join('\n\n---\n\n');
-    const docxBuffer = await generateDocxFromText(text, 'pptx', options, baseName);
+    const docxBuffer = await generateDocxFromExtractedText(text, 'pptx', options, baseName);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -6858,7 +6899,7 @@ async function convertPptxSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from PPTX to ${tgt}`);
+  throw unconvertibleOfficeTarget('pptx', tgt);
 }
 
 /**
@@ -6871,30 +6912,21 @@ async function convertOdpSource(
   baseName: string
 ): Promise<ConversionResult> {
   const slides: { number: number; texts: string[] }[] = [];
-  try {
-    const zip = await JSZip.loadAsync(inputBuffer);
-    const contentXmlFile = zip.file('content.xml');
-    if (contentXmlFile) {
-      const xml = await contentXmlFile.async('text');
-      const pageElements = safeExtractXmlElements(xml, 'draw:page');
-      let pageNum = 1;
-      for (const pageEl of pageElements) {
-        const pageXml = pageEl.content;
-        const texts: string[] = [];
-        for (const pEl of safeExtractXmlElements(pageXml, 'text:p')) {
-          const t = safeExtractAllText(pEl.content).trim();
-          if (t) texts.push(t);
-        }
-        slides.push({ number: pageNum++, texts });
-      }
+  const zip = await openPackage(inputBuffer, 'ODP');
+  const contentXmlFile = zip.file('content.xml');
+  if (!contentXmlFile) throw new ConversionFailedError('The ODP file has no content.xml.');
+  const xml = await readZipEntryText(contentXmlFile);
+  assertWellFormedXml('content.xml', xml, 'ODP');
+  let pageNum = 1;
+  for (const pageEl of safeExtractXmlElements(xml, 'draw:page')) {
+    const texts: string[] = [];
+    for (const pEl of safeExtractXmlElements(pageEl.content, 'text:p')) {
+      const t = safeExtractAllText(pEl.content).trim();
+      if (t) texts.push(t);
     }
-  } catch {
-    // fallback
+    slides.push({ number: pageNum++, texts });
   }
-
-  if (slides.length === 0) {
-    slides.push({ number: 1, texts: [baseName, 'Presentation slide content'] });
-  }
+  if (slides.length === 0) throw new ConversionFailedError('The ODP file has no slides.');
 
   if (tgt === 'txt') {
     const text = slides.map((s) => `--- Slide ${s.number} ---\n` + s.texts.join('\n')).join('\n\n');
@@ -6926,7 +6958,7 @@ async function convertOdpSource(
 
   if (tgt === 'docx') {
     const text = slides.map((s) => `# Slide ${s.number}\n\n` + s.texts.join('\n')).join('\n\n---\n\n');
-    const docxBuffer = await generateDocxFromText(text, 'odp', options, baseName);
+    const docxBuffer = await generateDocxFromExtractedText(text, 'odp', options, baseName);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -6944,53 +6976,204 @@ async function convertOdpSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from ODP to ${tgt}`);
+  throw unconvertibleOfficeTarget('odp', tgt);
+}
+
+const ODF_CHART_CLASSES: Readonly<Record<string, OpenXmlChartData['type']>> = {
+  'chart:bar': 'bar',
+  'chart:line': 'line',
+  'chart:area': 'area',
+  'chart:circle': 'pie',
+  'chart:ring': 'doughnut',
+  'chart:scatter': 'scatter',
+};
+const ODF_CHART_STORAGE_STREAM = 'package_stream';
+
+/** The text inside the first element `tag` of `xml`, or undefined when there is none or it is empty. */
+function odfElementText(xml: string, tag: string): string | undefined {
+  const element = safeExtractFirstXmlElement(xml, tag);
+  const text = element ? safeExtractAllText(element.content).trim() : '';
+  return text === '' ? undefined : text;
 }
 
 /**
- * Generic Presentation Source Parser (PPT, POTX, KEY)
+ * The chart in an OpenDocument chart package (the `package_stream` an office suite stores in the compound file of an embedded
+ * chart): its type, titles, and the table that holds its data (series names in the header row, categories in the first column).
  */
-async function convertGenericPresentationSource(
+async function readOdfChartPackage(bytes: Buffer): Promise<OpenXmlChartData | null> {
+  const zip = await JSZip.loadAsync(bytes);
+  const contentFile = zip.file('content.xml');
+  if (!contentFile) return null;
+  const content = await readZipEntryText(contentFile);
+  const chartEl = safeExtractFirstXmlElement(content, 'chart:chart');
+  if (!chartEl) return null;
+  const plotStart = chartEl.content.indexOf('<chart:plot-area');
+  const title = odfElementText(plotStart < 0 ? chartEl.content : chartEl.content.slice(0, plotStart), 'chart:title');
+  const axisTitles = new Map<string, string>();
+  for (const axis of safeExtractXmlElements(chartEl.content, 'chart:axis')) {
+    const axisTitle = odfElementText(axis.content, 'chart:title');
+    if (axisTitle !== undefined && axis.attrs['chart:dimension']) axisTitles.set(axis.attrs['chart:dimension'], axisTitle);
+  }
+  const table = safeExtractFirstXmlElement(content, 'table:table');
+  const rows = table
+    ? safeExtractXmlElements(table.content, 'table:table-row').map((row) =>
+        safeExtractXmlElements(row.content, ['table:table-cell', 'table:covered-table-cell']).map((cell) => ({
+          text: safeExtractAllText(cell.content).trim(),
+          value: cell.attrs['office:value'],
+        }))
+      )
+    : [];
+  const [header, ...body] = rows;
+  const series = (header ?? []).slice(1).map((cell, index) => ({
+    name: cell.text || `Series ${index + 1}`,
+    values: body.map((row) => Number(row[index + 1]?.value)).filter((value) => !Number.isNaN(value)),
+  }));
+  const categories = body.map((row) => row[0]?.text ?? '');
+  const xTitle = axisTitles.get('x');
+  const yTitle = axisTitles.get('y');
+  return {
+    type: ODF_CHART_CLASSES[chartEl.attrs['chart:class'] ?? ''] ?? 'bar',
+    ...(title ? { title } : {}),
+    ...(yTitle ? { valueAxisTitle: yTitle } : {}),
+    ...(xTitle ? { categoryAxisTitle: xTitle } : {}),
+    categories,
+    series,
+  };
+}
+
+/**
+ * The charts of the compound files a slide embeds: the chart sheets of an Excel workbook (what PowerPoint stores) and the OpenDocument
+ * chart package an office suite stores. An object that is not a chart is left out, and one that cannot be read is reported.
+ */
+async function readEmbeddedCharts(objects: readonly Buffer[], slideNumber: number, warnings: string[]): Promise<OpenXmlChartData[]> {
+  const charts: OpenXmlChartData[] = [];
+  for (const object of objects) {
+    if (!isCfbfContainer(object)) continue;
+    try {
+      const container = parseCfbf(object);
+      const odfPackage = container.streams.get(ODF_CHART_STORAGE_STREAM);
+      if (odfPackage !== undefined) {
+        const chart = await readOdfChartPackage(odfPackage);
+        if (chart) charts.push(chart);
+        continue;
+      }
+      const stream = selectWorkbookStream(container);
+      if (stream === undefined) continue;
+      const worksheets = readBiff8Worksheets(stream);
+      charts.push(...readBiffCharts(stream, (worksheet, row, column) => worksheets[worksheet]?.cells.get(row)?.get(column)));
+    } catch (error) {
+      warnings.push(`Slide ${slideNumber}: an embedded chart could not be read (${error instanceof Error ? error.message : 'unreadable data'}).`);
+    }
+  }
+  return charts;
+}
+
+/** What a chart says as text: its title, axis titles, category labels and series names. */
+function chartTextLines(chart: OpenXmlChartData): string[] {
+  const lines = [chart.title, chart.valueAxisTitle, chart.categoryAxisTitle].filter((line): line is string => Boolean(line));
+  if (chart.categories.some(Boolean)) lines.push(chart.categories.filter(Boolean).join(', '));
+  if (chart.series.length > 0) lines.push(chart.series.map((series) => series.name).join(', '));
+  return lines;
+}
+
+/**
+ * PowerPoint 97-2003 binary source. The slide text comes from the presentation's records in slide order
+ * ([MS-PPT]); malformed or encrypted files throw typed errors instead of producing text.
+ */
+async function convertPptSource(
   inputBuffer: Buffer,
-  src: string,
   tgt: string,
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const text = inputBuffer.toString('utf-8');
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  const slides = [{ number: 1, texts: lines.length > 0 ? lines : [baseName] }];
+  const warnings: string[] = [];
+  const readSlides = readPptSlides(inputBuffer, warnings);
+  const slides = [];
+  for (const slide of readSlides) slides.push({ ...slide, charts: await readEmbeddedCharts(slide.embedded, slide.number, warnings) });
+  // The text targets list what the charts say as lines of the slide; the PDF draws the charts.
+  const slidesWithChartText = slides.map((slide) => ({ ...slide, texts: [...slide.texts, ...slide.charts.flatMap(chartTextLines)] }));
+  const withWarnings = (result: ConversionResult): ConversionResult => (warnings.length > 0 ? { ...result, metadata: { ...result.metadata, warnings } } : result);
 
   if (tgt === 'txt') {
-    const buffer = Buffer.from(lines.join('\n'), 'utf-8');
-    return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
+    const text = slidesWithChartText
+      .filter((slide) => slide.texts.length > 0)
+      .map((slide) => slide.texts.join('\n'))
+      .join('\n\n');
+    const buffer = Buffer.from(text, 'utf-8');
+    return withWarnings({ buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length });
   }
 
   if (tgt === 'html') {
-    const html = generateHtmlFromSlides(slides, baseName);
+    const html = generateHtmlFromSlides(slidesWithChartText, baseName);
     const buffer = Buffer.from(html, 'utf-8');
-    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+    return withWarnings({ buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length });
   }
 
   if (tgt === 'pdf') {
     const pdfBuffer = await generatePdfFromSlides(slides, options, baseName);
-    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+    return withWarnings({ buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length });
   }
 
   if (tgt === 'pptx') {
-    const pptxBuffer = await generatePptxFromText(text, src, options, baseName);
-    return {
+    const text = slidesWithChartText
+      .filter((slide) => slide.texts.length > 0)
+      .map((slide) => `# Slide ${slide.number}\n\n` + slide.texts.join('\n'))
+      .join('\n\n---\n\n');
+    const pptxBuffer = await generatePptxFromText(text, 'ppt', options, baseName);
+    return withWarnings({
       buffer: pptxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
       filename: `${baseName}.pptx`,
       size: pptxBuffer.length,
-    };
+    });
   }
 
-  throw new Error(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
+  throw unconvertibleOfficeTarget('ppt', tgt);
 }
 
-function generateHtmlFromSlides(
+const POTX_TEMPLATE_MAIN_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.template.main+xml';
+const PPTX_MAIN_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml';
+const CONTENT_TYPES_PART = '[Content_Types].xml';
+
+/**
+ * PowerPoint template source: an OpenXML package with the slide parts of a presentation, so it is read as
+ * one. A package that is not a ZIP, or has no presentation part, fails with a typed 400 error.
+ */
+async function convertPotxSource(
+  inputBuffer: Buffer,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(inputBuffer);
+  } catch {
+    throw new ConversionFailedError('The POTX file is not a valid OpenXML package.');
+  }
+  if (!zip.file('ppt/presentation.xml')) {
+    throw new ConversionFailedError('The POTX package has no ppt/presentation.xml part.');
+  }
+  if (tgt === 'pptx') {
+    // The package becomes a presentation: its main part loses the template content type.
+    const contentTypes = zip.file(CONTENT_TYPES_PART);
+    if (!contentTypes) {
+      throw new ConversionFailedError(`The POTX package has no ${CONTENT_TYPES_PART} part.`);
+    }
+    const xml = (await readZipEntryText(contentTypes)).replace(POTX_TEMPLATE_MAIN_CONTENT_TYPE, PPTX_MAIN_CONTENT_TYPE);
+    zip.file(CONTENT_TYPES_PART, xml);
+    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    return {
+      buffer,
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      filename: `${baseName}.pptx`,
+      size: buffer.length,
+    };
+  }
+  return convertPptxSource(inputBuffer, tgt, options, baseName);
+}
+
+export function generateHtmlFromSlides(
   slides: Array<{
     number: number;
     texts: string[];
@@ -7002,6 +7185,8 @@ function generateHtmlFromSlides(
   title: string
 ): string {
   let slidesHtml = '';
+  // Every picture is written in full where it is drawn, so a part used by several pictures counts once per picture.
+  let embeddedBase64Chars = 0;
   slides.forEach((slide) => {
     const sWidth = slide.width || 960;
     const sHeight = slide.height || 540;
@@ -7030,6 +7215,12 @@ function generateHtmlFromSlides(
             transforms.push(`translate(${cx} ${cy}) scale(${sx} ${sy}) translate(${-cx} ${-cy})`);
           }
           const trAttr = transforms.length > 0 ? ` transform="${transforms.join(' ')}"` : '';
+          embeddedBase64Chars += base64Length(s.imageData.length);
+          if (embeddedBase64Chars > HTML_MAX_EMBEDDED_BASE64_CHARS) {
+            throw new PayloadLimitError(
+              `The pictures of this deck would embed more than ${HTML_MAX_EMBEDDED_BASE64_CHARS} base64 characters, more than an HTML page can hold.`
+            );
+          }
           svgElements += `        <image href="data:${mime};base64,${s.imageData.toString('base64')}" x="${s.x}" y="${s.y}" width="${s.width}" height="${s.height}" preserveAspectRatio="none"${trAttr}/>\n`;
         } else if (type === 'table' && s.tableData) {
           const rowCount = Math.max(1, s.tableData.rows.length);
@@ -7093,10 +7284,15 @@ ${svgElements}        </svg>
   )}</h1>${slidesHtml}</body></html>`;
 }
 
+/** Margin of the pages that hold slide text, in points. */
+const SLIDE_TEXT_MARGIN = 40;
+
 async function generatePdfFromSlides(
   slides: Array<{
     number: number;
     texts: string[];
+    /** Charts drawn below the text of a slide that has no shapes of its own. */
+    charts?: OpenXmlChartData[];
     shapes?: VisualSlideShape[];
     width?: number;
     height?: number;
@@ -7105,19 +7301,12 @@ async function generatePdfFromSlides(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  assertNoComplexScript(title, 'Pure-TS Presentation to PDF');
-  for (const s of slides) {
-    for (const t of s.texts) {
-      assertNoComplexScript(t, 'Pure-TS Presentation to PDF');
-    }
-  }
-
   return new Promise<Buffer>((resolve, reject) => {
     const firstSlide = slides[0];
     const width = firstSlide?.width || 960;
     const height = firstSlide?.height || 540;
 
-    const doc = new PDFDocument({ size: [width, height], margin: 0 });
+    const doc = new PDFDocument({ size: [width, height], margin: SLIDE_TEXT_MARGIN, info: { Title: title } });
     const chunks: Buffer[] = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -7128,7 +7317,7 @@ async function generatePdfFromSlides(
     slides.forEach((slide, idx) => {
       const sWidth = slide.width || width;
       const sHeight = slide.height || height;
-      if (idx > 0) doc.addPage({ size: [sWidth, sHeight], margin: 0 });
+      if (idx > 0) doc.addPage({ size: [sWidth, sHeight], margin: SLIDE_TEXT_MARGIN });
 
       // 1. Draw slide background
       if (slide.backgroundColor) {
@@ -7199,12 +7388,7 @@ async function generatePdfFromSlides(
                       doc,
                       cell.text,
                       hasUnicodeFont,
-                      {
-                        width: Math.max(10, colW - 8),
-                        height: rowHeight - 8,
-                        lineBreak: false,
-                        ellipsis: true,
-                      },
+                      { width: Math.max(10, colW - 8) },
                       curX + 4,
                       curY + 4
                     );
@@ -7243,17 +7427,18 @@ async function generatePdfFromSlides(
           }
         });
       } else {
-        // Fallback layout for text-only presentations
-        doc.rect(40, 40, sWidth - 80, 4).fill('#5C6BC0');
-        doc.fillColor('#1F2340').fontSize(20);
-        renderSafePdfText(doc, `${title} — Slide ${slide.number}`, hasUnicodeFont, undefined, 40, 55);
-        doc.moveDown(1.5);
-
+        // Text-only slide: the text itself, top to bottom, continuing on further pages when it is long.
+        doc.x = SLIDE_TEXT_MARGIN;
+        doc.y = SLIDE_TEXT_MARGIN;
         slide.texts.forEach((line) => {
-          doc.fillColor('#4D536B').fontSize(14).lineGap(6);
-          renderSafePdfText(doc, `• ${line}`, hasUnicodeFont);
+          doc.fillColor('#1F2340').fontSize(14).lineGap(6);
+          renderSafePdfText(doc, line, hasUnicodeFont, { width: sWidth - 2 * SLIDE_TEXT_MARGIN }, SLIDE_TEXT_MARGIN, doc.y);
           doc.moveDown(0.5);
         });
+        for (const chart of slide.charts ?? []) {
+          doc.x = SLIDE_TEXT_MARGIN;
+          renderPdfChart(doc, chart, hasUnicodeFont, SLIDE_TEXT_MARGIN, undefined, sWidth - 2 * SLIDE_TEXT_MARGIN);
+        }
       }
     });
 
@@ -7270,43 +7455,20 @@ async function convertEpubSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
-  const htmlFiles = Object.keys(zip.files).filter((name) => /\.(xhtml|html|htm)$/i.test(name));
-
-  let extractedText = '';
-  for (const filename of htmlFiles) {
-    const content = await zip.files[filename].async('text');
-    const text = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    if (text) {
-      extractedText += text + '\n\n';
-    }
-  }
+  const extractedText = await readEpubText(inputBuffer);
 
   if (tgt === 'txt') {
     const buffer = Buffer.from(extractedText, 'utf-8');
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
   }
 
-  if (tgt === 'html') {
-    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(
-      baseName
-    )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.7;max-width:800px;margin:2rem auto;padding:0 1.5rem;color:#1F2340;}h1{color:#5C6BC0;}</style></head><body><h1>${escapeHtml(
-      baseName
-    )}</h1>${extractedText
-      .split('\n\n')
-      .map((p) => `<p>${escapeHtml(p)}</p>`)
-      .join('\n')}</body></html>`;
-    const buffer = Buffer.from(html, 'utf-8');
-    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-  }
-
-  if (tgt === 'md') {
-    const buffer = Buffer.from(`# ${baseName}\n\n` + extractedText, 'utf-8');
-    return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
+  if (tgt === 'html' || tgt === 'md' || tgt === 'pdf') {
+    const model = await readEpubModel(inputBuffer);
+    return convertModelTarget(model, tgt, options, baseName);
   }
 
   if (tgt === 'docx') {
-    const docxBuffer = await generateDocxFromText(extractedText, 'epub', options, baseName);
+    const docxBuffer = await documentToDocx(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -7315,28 +7477,12 @@ async function convertEpubSource(
     };
   }
 
-  if (tgt === 'pdf') {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const chunks: Buffer[] = [];
-    const p = new Promise<Buffer>((resolve, reject) => {
-      doc.on('data', (c) => chunks.push(c));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', (err) => reject(err));
-    });
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-    doc.fillColor('#1F2340').fontSize(18);
-    renderSafePdfText(doc, baseName, hasUnicodeFont);
-    doc.moveDown(1);
-    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3);
-    renderSafePdfText(doc, extractedText || 'Epub content', hasUnicodeFont);
-    doc.end();
-
-    const buffer = await p;
-    return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
-  }
-
   throw new Error(`Unsupported conversion from EPUB to ${tgt}`);
 }
+
+/** FB2: the most paragraphs one book may hold, and how far into the file the FictionBook root element must start. */
+const FB2_MAX_PARAGRAPHS = 5_000_000;
+const FB2_ROOT_SCAN_CHARS = 4096;
 
 /**
  * FictionBook 2 (FB2) Parser & Converter
@@ -7347,7 +7493,11 @@ async function convertFb2Source(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const xml = inputBuffer.toString('utf-8');
+  const xml = decodeXmlBytes(inputBuffer, 'FB2 book');
+  const bodies = safeExtractXmlElements(xml, 'body');
+  if (!/<FictionBook\b/.test(xml.slice(0, FB2_ROOT_SCAN_CHARS)) || bodies.length === 0) {
+    throw new ConversionFailedError('The FB2 file is not a FictionBook document with a body.');
+  }
 
   // Parse title and author
   const titleEl = safeExtractFirstXmlElement(xml, 'book-title');
@@ -7363,9 +7513,12 @@ async function convertFb2Source(
     authorStr = `${fn} ${ln}`.trim();
   }
 
+  // The text of a FictionBook is in its bodies (the story and the notes); the description holds metadata only.
+  const bodyXml = bodies.map((body) => body.content).join('\n');
+
   // Parse tables (<table ...>)
   const tables: string[][][] = [];
-  for (const tblEl of safeExtractXmlElements(xml, 'table')) {
+  for (const tblEl of safeExtractXmlElements(bodyXml, 'table')) {
     const currentTbl: string[][] = [];
     for (const trEl of safeExtractXmlElements(tblEl.content, 'tr')) {
       const row: string[] = [];
@@ -7377,11 +7530,14 @@ async function convertFb2Source(
     if (currentTbl.length > 0) tables.push(currentTbl);
   }
 
-  // Parse paragraphs (<p>)
+  // Paragraphs, poem lines, list items, subtitles and the authors of quotations, in document order.
   const paragraphs: string[] = [];
-  for (const pEl of safeExtractXmlElements(xml, 'p')) {
+  for (const pEl of safeExtractXmlElements(bodyXml, ['p', 'v', 'subtitle', 'text-author', 'li'], { maxElements: FB2_MAX_PARAGRAPHS })) {
     const text = safeExtractAllText(pEl.content).trim();
     if (text) paragraphs.push(text);
+  }
+  if (paragraphs.length === 0 && tables.length === 0) {
+    throw new ConversionFailedError('The FB2 book holds no text.');
   }
 
   const fullText = paragraphs.join('\n\n');
@@ -7430,15 +7586,9 @@ async function convertFb2Source(
     return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
   }
 
-  if (tgt === 'epub') {
-    let md = `# ${bookTitle}\n\n` + fullText;
-    for (const t of tables) {
-      if (t.length > 0) {
-        md += `\n\n| ${t[0].join(' | ')} |\n| ${t[0].map(() => '---').join(' | ')} |\n` + t.slice(1).map((r) => `| ${r.join(' | ')} |`).join('\n');
-      }
-    }
-    const epubBuffer = await generateEpubFromText(md, 'fb2', options, bookTitle);
-    return { buffer: epubBuffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: epubBuffer.length };
+  // The structured targets are written from the book's own structure: sections, headings, pictures, notes.
+  if (tgt === 'epub' || tgt === 'pdf') {
+    return convertModelTarget(await readFb2Model(xml, bookTitle), tgt, options, baseName);
   }
 
   if (tgt === 'docx') {
@@ -7448,38 +7598,13 @@ async function convertFb2Source(
         md += `\n\n| ${t[0].join(' | ')} |\n| ${t[0].map(() => '---').join(' | ')} |\n` + t.slice(1).map((r) => `| ${r.join(' | ')} |`).join('\n');
       }
     }
-    const docxBuffer = await generateDocxFromText(md, 'fb2', options, bookTitle);
+    const docxBuffer = await generateDocxFromExtractedText(md, 'fb2', options, bookTitle);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       filename: `${baseName}.docx`,
       size: docxBuffer.length,
     };
-  }
-
-  if (tgt === 'pdf') {
-    const doc = new PDFDocument({ size: 'A4', margin: 50 });
-    const chunks: Buffer[] = [];
-    const p = new Promise<Buffer>((resolve, reject) => {
-      doc.on('data', (c) => chunks.push(c));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', (err) => reject(err));
-    });
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-    doc.fillColor('#1F2340').fontSize(18);
-    renderSafePdfText(doc, bookTitle, hasUnicodeFont);
-    if (authorStr) {
-      doc.moveDown(0.3);
-      doc.fillColor('#5C6BC0').fontSize(12);
-      renderSafePdfText(doc, authorStr, hasUnicodeFont);
-    }
-    doc.moveDown(1);
-    doc.fillColor('#4D536B').fontSize(10.5).lineGap(3);
-    renderSafePdfText(doc, fullText || 'FB2 text content', hasUnicodeFont);
-    doc.end();
-
-    const buffer = await p;
-    return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
   }
 
   throw new Error(`Unsupported conversion from FB2 to ${tgt}`);
@@ -7629,19 +7754,15 @@ async function convertMobiSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  // Extract text chunks from MOBI binary stream
-  const raw = inputBuffer.toString('binary');
-  const textPieces: string[] = [];
-  const strRegex = /[\x20-\x7E\s]{4,}/g;
-  let m: RegExpExecArray | null;
-  while ((m = strRegex.exec(raw)) !== null) {
-    const s = m[0].trim();
-    if (s.length > 10 && !/^(BOOKMOBIP|EXTH|CONT)/.test(s)) {
-      textPieces.push(s);
-    }
+  if ((src === 'mobi' || src === 'azw') && (tgt === 'epub' || tgt === 'pdf')) {
+    // A book with markup is written from its structure (chapters, headings, pictures, cover); a plain PalmDOC book has none.
+    const structured = await readMobiModel(inputBuffer, baseName);
+    if (structured) return convertModelTarget(structured, tgt, options, baseName);
   }
 
-  const fullText = textPieces.join('\n\n') || `Extracted content from ${baseName}.${src}`;
+  // A MOBI, AZW or AZW3 book is read from its PalmDB records; callers that already hold the text pass it with the source `txt`.
+  const fullText = src === 'txt' ? inputBuffer.toString('utf-8').trim() : readMobiText(inputBuffer);
+  if (fullText === '') throw new ConversionFailedError(`There is no text to write as .${tgt}.`);
 
   if (tgt === 'txt') {
     const buffer = Buffer.from(fullText, 'utf-8');
@@ -7701,8 +7822,112 @@ async function convertMobiSource(
   throw new Error(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
 }
 
+/** Most pages one comic archive may hold. */
+export const CBZ_MAX_PAGES = 5000;
+/** Largest decoded page image, in bytes, the converter reads out of a comic archive. */
+export const CBZ_MAX_PAGE_BYTES = 256 * 1024 * 1024;
+/** Most bytes the `mimetype` entry of an OpenDocument package may hold; the real one is under 100. */
+const MAX_MIMETYPE_ENTRY_BYTES = 1024 * 1024;
+const CBZ_IMAGE_PATTERN = /\.(png|jpe?g|webp|bmp|gif)$/i;
+/** Archive members that are not pages: macOS resource forks and hidden files. */
+const CBZ_JUNK_MEMBER_PATTERN = /(^|\/)(__MACOSX\/|\.[^/]*$)/;
+const DIGIT_RUN_PATTERN = /(\d+)/;
+const PDF_PAGE_MARGIN = 40;
+const BMP_SIGNATURE = 'BM';
+/** Formats pdfkit embeds as they are; every other page format is decoded and embedded as PNG. */
+const PDF_EMBEDDABLE_FORMATS: ReadonlySet<string> = new Set(['png', 'jpeg']);
+
 /**
- * Comic Book Zip (CBZ) Parser & Converter
+ * Orders names the way people number comic pages: digit runs compare by value ("page2" before "page10"),
+ * the rest compares case-insensitively, and equal keys fall back to the raw names so the order is total.
+ */
+export function compareNaturally(a: string, b: string): number {
+  const left = a.toLowerCase().split(DIGIT_RUN_PATTERN);
+  const right = b.toLowerCase().split(DIGIT_RUN_PATTERN);
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    if (left[i] === right[i]) continue;
+    const isDigitRun = i % 2 === 1;
+    if (isDigitRun) {
+      const l = left[i].replace(/^0+(?=\d)/, '');
+      const r = right[i].replace(/^0+(?=\d)/, '');
+      if (l.length !== r.length) return l.length - r.length;
+      if (l !== r) return l < r ? -1 : 1;
+    } else {
+      return left[i] < right[i] ? -1 : 1;
+    }
+  }
+  if (left.length !== right.length) return left.length - right.length;
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/** One page of a comic: its name in the archive and a reader that loads and size-checks its bytes. */
+interface ComicPage {
+  name: string;
+  read: () => Promise<Buffer>;
+}
+
+/** The page images of a ZIP comic archive in natural name order; each is read, size-checked and decoded only when bound. */
+function zipComicPages(zip: JSZip, label: string): ComicPage[] {
+  return Object.keys(zip.files)
+    .filter((name) => !zip.files[name].dir && CBZ_IMAGE_PATTERN.test(name) && !CBZ_JUNK_MEMBER_PATTERN.test(name))
+    .sort(compareNaturally)
+    .map((name) => ({
+      name: label === '' ? name : `${label}/${name}`,
+      read: async () => {
+        const declared = (zip.files[name] as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
+        if (declared !== undefined && declared > CBZ_MAX_PAGE_BYTES) {
+          throw new ConversionFailedError(`CBZ page "${name}" declares ${declared} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
+        }
+        return readZipEntryBytes(zip.files[name], { maxBytes: CBZ_MAX_PAGE_BYTES });
+      },
+    }));
+}
+
+/**
+ * Binds comic pages into a PDF, one image per A4 page in the order given. A page that cannot be decoded, or no
+ * pages at all, fails with a typed 400 error; no page is replaced by text.
+ */
+async function bindComicPagesToPdf(pages: ComicPage[], format: string, baseName: string): Promise<ConversionResult> {
+  if (pages.length === 0) {
+    throw new ConversionFailedError(`The ${format} archive holds no page images.`);
+  }
+  if (pages.length > CBZ_MAX_PAGES) {
+    throw new ConversionFailedError(`The ${format} archive holds ${pages.length} pages, more than the ${CBZ_MAX_PAGES} page limit.`);
+  }
+
+  const doc = new PDFDocument({ autoFirstPage: false });
+  const chunks: Buffer[] = [];
+  const done = new Promise<Buffer>((resolve, reject) => {
+    doc.on('data', (c) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', (err) => reject(err));
+  });
+
+  for (const comicPage of pages) {
+    // Pages are processed one at a time on purpose: each is decoded into memory.
+    const page = await decodeComicPage(await comicPage.read(), comicPage.name, format); // NOSONAR S9382: sequential to bound memory
+    doc.addPage({ size: 'A4' });
+    try {
+      doc.image(page, PDF_PAGE_MARGIN, PDF_PAGE_MARGIN, {
+        fit: [doc.page.width - 2 * PDF_PAGE_MARGIN, doc.page.height - 2 * PDF_PAGE_MARGIN],
+        align: 'center',
+        valign: 'center',
+      });
+    } catch (err) {
+      throw new ConversionFailedError(`${format} page "${comicPage.name}" cannot be embedded: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  doc.end();
+  const buffer = await done;
+  return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
+}
+
+/**
+ * Comic Book Zip (CBZ) source: a ZIP of page images. A comic has no text layer, so the only conversion is
+ * binding the pages into a PDF, one image per page in natural name order. A page that cannot be decoded, or
+ * an archive without pages, fails with a typed 400 error; no page is replaced by text.
  */
 async function convertCbzSource(
   inputBuffer: Buffer,
@@ -7710,46 +7935,140 @@ async function convertCbzSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
-  const imageNames = Object.keys(zip.files)
-    .filter((n) => /\.(png|jpe?g|webp|bmp|gif)$/i.test(n))
-    .sort();
-
-  if (tgt === 'pdf') {
-    const doc = new PDFDocument({ autoFirstPage: false });
-    const chunks: Buffer[] = [];
-    const p = new Promise<Buffer>((resolve, reject) => {
-      doc.on('data', (c) => chunks.push(c));
-      doc.on('end', () => resolve(Buffer.concat(chunks)));
-      doc.on('error', (err) => reject(err));
-    });
-
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
-
-    for (const name of imageNames) {
-      const imgBuf = await zip.files[name].async('nodebuffer');
-      // Pages are processed one at a time on purpose: pdfkit decodes each into memory.
-      await assertEmbeddableImageWithinLimit(imgBuf); // NOSONAR S9382: sequential to bound memory
-      doc.addPage({ size: 'A4' });
-      try {
-        doc.image(imgBuf, 40, 40, { fit: [doc.page.width - 80, doc.page.height - 80], align: 'center', valign: 'center' });
-      } catch {
-        renderSafePdfText(doc, `[Image ${name}]`, hasUnicodeFont);
-      }
-    }
-
-    if (imageNames.length === 0) {
-      doc.addPage({ size: 'A4' });
-      doc.fontSize(16);
-      renderSafePdfText(doc, `CBZ Comic: ${baseName} (No images extracted)`, hasUnicodeFont);
-    }
-
-    doc.end();
-    const buffer = await p;
-    return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
+  if (tgt !== 'pdf') {
+    throw new Error(`Unsupported conversion from CBZ to ${tgt}`);
   }
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(inputBuffer);
+  } catch {
+    throw new ConversionFailedError('The CBZ file is not a valid ZIP archive.');
+  }
+  return bindComicPagesToPdf(zipComicPages(zip, ''), 'CBZ', baseName);
+}
 
-  throw new Error(`Unsupported conversion from CBZ to ${tgt}`);
+/** Comic Book Collection (CBC): the most volumes one collection may list, and the largest volume archive read. */
+const CBC_MAX_VOLUMES = 1000;
+const CBC_MAX_VOLUME_BYTES = 1024 * 1024 * 1024;
+const CBC_LISTING_NAME = 'comics.txt';
+const CBC_VOLUME_PATTERN = /\.(cbz|cbr|cb7)$/i;
+/** A listing line names a volume and its title: `volume.cbz:Title`. */
+const CBC_LISTING_LINE = /^(.+?\.(?:cbz|cbr|cb7))\s*:/i;
+
+/** The page images of one volume of a collection: a CBZ is read lazily, a CBR or CB7 is unpacked by the archive readers. */
+async function cbcVolumePages(name: string, bytes: Buffer): Promise<ComicPage[]> {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.cbz')) {
+    return zipComicPages(await openPackage(bytes, `CBC volume ${name}`), name);
+  }
+  let members: { filename: string; buffer: Buffer }[];
+  try {
+    members = lower.endsWith('.cbr') ? extractRarArchive(bytes) : extract7zArchive(bytes);
+  } catch (err) {
+    throw new ConversionFailedError(`The CBC volume "${name}" cannot be unpacked: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return members
+    .filter((m) => CBZ_IMAGE_PATTERN.test(m.filename) && !CBZ_JUNK_MEMBER_PATTERN.test(m.filename))
+    .sort((a, b) => compareNaturally(a.filename, b.filename))
+    .map((m) => ({
+      name: `${name}/${m.filename}`,
+      read: async () => {
+        if (m.buffer.length > CBZ_MAX_PAGE_BYTES) {
+          throw new ConversionFailedError(`CBC page "${name}/${m.filename}" is ${m.buffer.length} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
+        }
+        return m.buffer;
+      },
+    }));
+}
+
+/**
+ * The pages of a Comic Book Collection: a ZIP of CBZ, CBR and CB7 volumes with an optional `comics.txt` that lists
+ * them (`volume.cbz:Title`, one per line). Volumes the listing names come first in its order, then any other
+ * volume in natural name order; a listed volume that is not in the archive is a typed 400 error.
+ */
+async function readCbcPages(input: Buffer): Promise<ComicPage[]> {
+  const zip = await openPackage(input, 'CBC');
+  const present = Object.keys(zip.files).filter((n) => !zip.files[n].dir && CBC_VOLUME_PATTERN.test(n) && !CBZ_JUNK_MEMBER_PATTERN.test(n));
+  if (present.length === 0) throw new ConversionFailedError('The CBC archive holds no comic volumes (.cbz, .cbr or .cb7).');
+  if (present.length > CBC_MAX_VOLUMES) throw new ConversionFailedError(`The CBC archive holds ${present.length} volumes, more than the ${CBC_MAX_VOLUMES} volume limit.`);
+
+  const listed: string[] = [];
+  const listing = zip.file(CBC_LISTING_NAME);
+  if (listing) {
+    for (const line of (await readZipEntryText(listing)).split(/\r?\n/)) {
+      const volume = CBC_LISTING_LINE.exec(line.trim())?.[1];
+      if (volume === undefined || listed.includes(volume)) continue;
+      if (!present.includes(volume)) throw new ConversionFailedError(`The CBC listing names "${volume}", which is not in the archive.`);
+      listed.push(volume);
+    }
+  }
+  const ordered = [...listed, ...present.filter((n) => !listed.includes(n)).sort(compareNaturally)];
+
+  const pages: ComicPage[] = [];
+  for (const volume of ordered) {
+    const bytes = await readPackageEntry(zip, volume, CBC_MAX_VOLUME_BYTES, 'CBC listing'); // NOSONAR S9382: one volume in memory at a time
+    pages.push(...(await cbcVolumePages(volume, bytes))); // NOSONAR S9382: sequential to bound memory
+    if (pages.length > CBZ_MAX_PAGES) throw new ConversionFailedError(`The CBC collection holds more than the ${CBZ_MAX_PAGES} page limit.`);
+  }
+  return pages;
+}
+
+/**
+ * Delivers a PDF made from another source: as the PDF itself, or, for every other target, as the text of its pages
+ * (the text layer, or OCR when the pages are pictures) written in that target. Pages with no recognisable text are a
+ * typed 400 error, never an empty book.
+ */
+async function viaPdf(pdf: Buffer, tgt: string, options: ConversionOptions, baseName: string): Promise<ConversionResult> {
+  if (tgt === 'pdf') return { buffer: pdf, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdf.length };
+  const { convertFile } = await import('./index');
+  const extractText = async (ocrEnabled: boolean) =>
+    (await convertFile(pdf, 'pdf', 'txt', { ...options, ocrEnabled }, `${baseName}.pdf`)).buffer.toString('utf-8').trim();
+  // The text layer first; pages that are pictures have none, so they are read with OCR.
+  let text = await extractText(false);
+  if (text === '') text = await extractText(true);
+  if (text === '') {
+    throw new ConversionFailedError(`No text was recognised on the pages, so there is nothing to write as .${tgt}.`);
+  }
+  return writeEbookTargetFromText(text, 'pdf', tgt, options, baseName);
+}
+
+/**
+ * Comic Book Collection (CBC) source: every volume's pages, volume after volume, bound like a CBZ. A comic has no
+ * text layer, so the text and e-book targets read the lettering of the bound pages with OCR and answer with a typed
+ * error when none is recognised.
+ */
+async function convertCbcSource(
+  inputBuffer: Buffer,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
+  const pdf = await bindComicPagesToPdf(await readCbcPages(inputBuffer), 'CBC', baseName);
+  return viaPdf(pdf.buffer, tgt, options, baseName);
+}
+
+/** Proves that a page decodes and returns bytes pdfkit can embed (PNG and JPEG as stored). */
+async function decodeComicPage(bytes: Buffer, name: string, format: string): Promise<Buffer> {
+  if (bytes.length > CBZ_MAX_PAGE_BYTES) {
+    throw new ConversionFailedError(`${format} page "${name}" is ${bytes.length} bytes, more than the ${CBZ_MAX_PAGE_BYTES} byte limit.`);
+  }
+  try {
+    if (bytes.length >= BMP_SIGNATURE.length && bytes.toString('latin1', 0, BMP_SIGNATURE.length) === BMP_SIGNATURE) {
+      // libvips has no BMP loader: the in-process decoder reads the pixels, checking the declared size first.
+      const bmp = decodeBmp(bytes);
+      return await sharp(bmp.raw, { raw: { width: bmp.width, height: bmp.height, channels: bmp.channels } }).png().toBuffer();
+    }
+    const image = await openInputImage(bytes);
+    const format = (await image.metadata()).format ?? '';
+    if (PDF_EMBEDDABLE_FORMATS.has(format)) {
+      await openLimitedSharp(bytes).stats();
+      return bytes;
+    }
+    return await image.png().toBuffer();
+  } catch (err) {
+    rethrowInputPixelLimit(err);
+    throw new ConversionFailedError(`${format} page "${name}" cannot be decoded: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /**
@@ -7954,6 +8273,7 @@ export async function generatePptxFromText(
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
+  if (text.trim() === '') throw new ConversionFailedError('There is no text to put on slides.');
   const zip = new JSZip();
 
   // Split text into slides based on markdown headings, dividers, or paragraph groups
@@ -7986,9 +8306,6 @@ export async function generatePptxFromText(
     }
   }
 
-  if (slideTexts.length === 0) {
-    slideTexts.push({ title, bullets: ['Generated presentation content'] });
-  }
 
   // [Content_Types].xml
   let contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -8140,6 +8457,30 @@ export function getExcelColumnIndex(colLetters: string): number {
   return Math.max(0, idx - 1);
 }
 
+const JSON_TABLE_SHAPE_MESSAGE = 'Invalid JSON table: expected an array of objects or an array of values.';
+
+/**
+ * The table a JSON document holds: an array of objects becomes a header row (the keys of the first record) and one
+ * row per record; an array of plain values becomes a single "Value" column. Anything else is not a table and is
+ * refused, as is text that is not JSON: a sheet holding the document's own text would be a substitute result.
+ */
+function parseJsonTableRows(text: string): string[][] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new DataParseError(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
+  const first: unknown = parsed[0];
+  if (typeof first === 'object' && first !== null && !Array.isArray(first)) {
+    const headers = Object.keys(first);
+    return [headers, ...parsed.map((item) => headers.map((header) => String((item as Record<string, unknown>)[header] ?? '')))];
+  }
+  if (parsed.some((item) => typeof item === 'object' && item !== null)) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
+  return [['Value'], ...parsed.map((item) => [String(item)])];
+}
+
 /**
  * Generates OpenXML XLSX Zip Archive from CSV / TSV / JSON
  */
@@ -8154,18 +8495,7 @@ export async function generateXlsxFromData(
 
   let rows: string[][] = [];
   if (sourceType === 'json') {
-    try {
-      const parsed = JSON.parse(rawText);
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object') {
-        const headers = Object.keys(parsed[0]);
-        rows.push(headers);
-        parsed.forEach((item) => rows.push(headers.map((h) => String(item[h] ?? ''))));
-      } else {
-        rows = [['Value'], ...parsed.map((p: any) => [String(p)])];
-      }
-    } catch {
-      rows = [['Data'], [rawText]];
-    }
+    rows = parseJsonTableRows(rawText);
   } else {
     // Delimited (CSV or TSV) using Papa.parse for RFC 4180 compliance
     const delim = sourceType === 'tsv' ? '\t' : options.delimiter || ',';
@@ -8245,187 +8575,34 @@ export async function generateXlsxFromData(
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-/** BCP 47 tag for content whose language is not known. */
-const UNDETERMINED_LANGUAGE = 'und';
+/** Sources whose extracted text is Markdown (headings, lists, tables), read as such when writing an EPUB or DOCX. */
+const MARKDOWN_TEXT_SOURCES: ReadonlySet<string> = new Set(['md', 'markdown', 'pdf', 'fb2']);
 
-/**
- * Generates IDPF EPUB Container with EPUB 3 Navigation & NCX Semantic Markup
- */
+/** The document model of text extracted from a source: Markdown or HTML where the source produces it, else plain paragraphs. */
+async function modelFromExtractedText(text: string, sourceType: string): Promise<DocumentModel> {
+  if (MARKDOWN_TEXT_SOURCES.has(sourceType)) return markdownToDocumentModel(text);
+  if (sourceType === 'html' || sourceType === 'htm') return htmlToDocumentModel(text);
+  return plainTextModel(text, { lines: 'keep' });
+}
 
+/** Writes an EPUB from text extracted from a source, through the block model. */
 async function generateEpubFromText(
   text: string,
   sourceType: string,
   options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
-  const zip = new JSZip();
-  // Every book gets its own identifier; the input carries no language metadata, so it is undetermined.
-  const bookId = `urn:uuid:${crypto.randomUUID()}`;
-  const language = UNDETERMINED_LANGUAGE;
+  return documentToEpub(await modelFromExtractedText(text, sourceType), { title, language: options.language });
+}
 
-  // mimetype must be uncompressed first entry in EPUB
-  zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
-
-  zip.file(
-    'META-INF/container.xml',
-    `<?xml version="1.0"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>`
-  );
-
-  const lines = text.split(/\r?\n/);
-  const bodyElements: string[] = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const trimmed = line.trim();
-    if (!trimmed) {
-      i++;
-      continue;
-    }
-
-    // Markdown Table
-    if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < lines.length && lines[i + 1].trim().startsWith('|')) {
-      const tableLines: string[] = [];
-      while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
-        tableLines.push(lines[i].trim());
-        i++;
-      }
-      if (tableLines.length >= 2) {
-        let tbl = '<table class="semantic-table">\n';
-        const headers = tableLines[0].split('|').slice(1, -1).map((c) => c.trim());
-        tbl += '  <thead>\n    <tr>\n' + headers.map((h) => `      <th>${escapeXml(h)}</th>\n`).join('') + '    </tr>\n  </thead>\n  <tbody>\n';
-        const rows = tableLines.slice(2).map((l) => l.split('|').slice(1, -1).map((c) => c.trim()));
-        for (const r of rows) {
-          tbl += '    <tr>\n' + r.map((c) => `      <td>${escapeXml(c)}</td>\n`).join('') + '    </tr>\n';
-        }
-        tbl += '  </tbody>\n</table>';
-        bodyElements.push(tbl);
-        continue;
-      }
-    }
-
-    // Headings & Blockquotes
-    if (trimmed.startsWith('# ')) {
-      bodyElements.push(`<h1>${escapeXml(trimmed.slice(2))}</h1>`);
-    } else if (trimmed.startsWith('## ')) {
-      bodyElements.push(`<h2>${escapeXml(trimmed.slice(3))}</h2>`);
-    } else if (trimmed.startsWith('### ')) {
-      bodyElements.push(`<h3>${escapeXml(trimmed.slice(4))}</h3>`);
-    } else if (trimmed.startsWith('> ')) {
-      bodyElements.push(`<blockquote><p>${escapeXml(trimmed.slice(2))}</p></blockquote>`);
-    } else {
-      bodyElements.push(`<p>${escapeXml(trimmed)}</p>`);
-    }
-    i++;
-  }
-
-  const contentHtml = bodyElements.join('\n');
-
-  // Stylesheet
-  zip.file(
-    'OEBPS/styles.css',
-    `body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Georgia, serif; line-height: 1.7; padding: 1.5rem; color: #1F2340; }
-h1, h2, h3 { color: #5C6BC0; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.8rem; }
-p { margin-bottom: 1rem; text-align: justify; }
-table.semantic-table { border-collapse: collapse; width: 100%; margin: 1.5rem 0; }
-table.semantic-table th, table.semantic-table td { border: 1px solid #CCD2FC; padding: 8px 12px; text-align: left; }
-table.semantic-table th { background-color: #F0F2FE; color: #1F2340; font-weight: 600; }
-blockquote { border-left: 4px solid #5C6BC0; margin: 1.5rem 0; padding: 0.5rem 1rem; color: #4D536B; background: #F8F9FE; }`
-  );
-
-  // Chapter 1 XHTML with semantic markup
-  zip.file(
-    'OEBPS/chapter1.xhtml',
-    `<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="${language}">
-<head>
-  <title>${escapeXml(title)}</title>
-  <link rel="stylesheet" type="text/css" href="styles.css"/>
-</head>
-<body>
-  <header>
-    <h1>${escapeXml(title)}</h1>
-  </header>
-  <main>
-    <article>
-      ${contentHtml}
-    </article>
-  </main>
-</body>
-</html>`
-  );
-
-  // Navigation document (EPUB 3)
-  zip.file(
-    'OEBPS/nav.xhtml',
-    `<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${language}">
-<head>
-  <title>Navigation</title>
-  <link rel="stylesheet" type="text/css" href="styles.css"/>
-</head>
-<body>
-  <nav epub:type="toc" id="toc">
-    <h1>Table of Contents</h1>
-    <ol>
-      <li><a href="chapter1.xhtml">${escapeXml(title)}</a></li>
-    </ol>
-  </nav>
-</body>
-</html>`
-  );
-
-  // NCX (EPUB 2 backward compatibility for all e-readers)
-  zip.file(
-    'OEBPS/toc.ncx',
-    `<?xml version="1.0" encoding="UTF-8"?>
-<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
-  <head>
-    <meta name="dtb:uid" content="${bookId}"/>
-    <meta name="dtb:depth" content="1"/>
-    <meta name="dtb:totalPageCount" content="0"/>
-    <meta name="dtb:maxPageNumber" content="0"/>
-  </head>
-  <docTitle><text>${escapeXml(title)}</text></docTitle>
-  <navMap>
-    <navPoint id="navpoint-1" playOrder="1">
-      <navLabel><text>${escapeXml(title)}</text></navLabel>
-      <content src="chapter1.xhtml"/>
-    </navPoint>
-  </navMap>
-</ncx>`
-  );
-
-  // Package manifest (content.opf)
-  zip.file(
-    'OEBPS/content.opf',
-    `<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0">
-  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-    <dc:title>${escapeXml(title)}</dc:title>
-    <dc:language>${language}</dc:language>
-    <dc:identifier id="BookId">${bookId}</dc:identifier>
-    <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z$/, 'Z')}</meta>
-  </metadata>
-  <manifest>
-    <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
-    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-    <item id="css" href="styles.css" media-type="text/css"/>
-  </manifest>
-  <spine toc="ncx">
-    <itemref idref="chapter1"/>
-  </spine>
-</package>`
-  );
-
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+/** Writes a DOCX from text extracted from a source, through the block model (real styles, numbering and tables). */
+async function generateDocxFromExtractedText(
+  text: string,
+  sourceType: string,
+  options: ConversionOptions,
+  title: string
+): Promise<Buffer> {
+  return documentToDocx(await modelFromExtractedText(text, sourceType), { title, language: options.language });
 }
 
 /**
@@ -8487,9 +8664,7 @@ export function generateFb2FromText(
     sections.push(currentSection);
   }
 
-  if (sections.length === 0) {
-    sections.push({ title, paragraphs: [text.trim() || 'Electronic Book Content'] });
-  }
+  if (sections.length === 0) throw new ConversionFailedError('There is no text to write as an FB2 book.');
 
   let bodyXml = `    <title><p>${escapeXml(title)}</p></title>\n`;
   for (const sec of sections) {
@@ -8576,13 +8751,14 @@ export async function convertOdsSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const zip = await JSZip.loadAsync(inputBuffer);
+  const zip = await openPackage(inputBuffer, 'ODS');
   const contentXml = zip.file('content.xml');
   if (!contentXml) {
-    throw new Error('Invalid ODS workbook: content.xml not found.');
+    throw new ConversionFailedError('Invalid ODS workbook: content.xml not found.');
   }
 
-  const xml = await contentXml.async('text');
+  const xml = await readZipEntryText(contentXml);
+  assertWellFormedXml('content.xml', xml, 'ODS');
   const rows: string[][] = [];
   const rowElements = safeExtractXmlElements(xml, 'table:table-row');
   for (const rEl of rowElements) {
@@ -8626,7 +8802,7 @@ export async function convertOdsSource(
   // ODS -> TSV
   if (tgt === 'tsv') {
     const lineEnding = options.lineEnding === 'crlf' ? '\r\n' : '\n';
-    const tsv = rows.map((r) => r.join('\t')).join(lineEnding);
+    const tsv = rows.map((r) => r.map((c) => formatCsvCell(c, '\t')).join('\t')).join(lineEnding);
     const buffer = Buffer.from(tsv, 'utf-8');
     return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
   }
@@ -8650,7 +8826,8 @@ export async function convertOdsSource(
 
   // ODS -> XLSX
   if (tgt === 'xlsx') {
-    const csv = rows.map((r) => r.join(',')).join('\n');
+    const delim = options.delimiter || ',';
+    const csv = rows.map((r) => r.map((c) => formatCsvCell(c, delim)).join(delim)).join('\n');
     const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
     return {
       buffer: xlsxBuffer,
@@ -8706,8 +8883,17 @@ export async function convertOdsSource(
     };
   }
 
-  throw new Error(`Unsupported conversion from ODS to ${tgt}`);
+  throw unconvertibleOfficeTarget('ods', tgt);
 }
+
+/** FilePass record ([MS-XLS] 2.4.117): present in the workbook globals of an XOR-obfuscated or RC4-encrypted workbook. */
+const BIFF_RECORD_FILEPASS = 0x002f;
+/** Index of the last column (IV) of a BIFF sheet: 256 columns. Rows are a 16-bit field, so their 65536 are bounded by the record itself. */
+const BIFF_MAX_COLUMN_INDEX = 255;
+/** EOF record: ends the workbook globals and each sheet substream. */
+const BIFF_RECORD_EOF = 0x000a;
+/** Record ids of the BOF that starts a BIFF stream: BIFF8 and BIFF5, BIFF4, BIFF3, BIFF2. */
+const BIFF_BOF_RECORDS: ReadonlySet<number> = new Set([0x0809, 0x0409, 0x0209, 0x0009]);
 
 /**
  * Decodes a 32-bit BIFF RK number into its floating point or integer value
@@ -8721,17 +8907,283 @@ export function decodeRk(rk: number): number {
   } else {
     const buf = Buffer.alloc(8);
     buf.writeUInt32LE(0, 0);
-    buf.writeUInt32LE(rk & ~3, 4);
+    // `& ~3` yields a signed 32-bit value, negative when the sign bit of the double is set; the high word is unsigned.
+    buf.writeUInt32LE((rk & ~3) >>> 0, 4);
     val = buf.readDoubleLE(0);
   }
   return is100 ? val / 100 : val;
 }
+
+/** Bytes of the SST record before its first string: the total and the unique string counts ([MS-XLS] 2.4.265). */
+/** BOF version word of a BIFF8 stream. */
+const BIFF8_BOF_VERSION = 0x0600;
+const SST_HEADER_BYTES = 8;
+/** Bytes of an XLUnicodeRichExtendedString before its characters: character count and option flags. */
+const SST_STRING_HEADER_BYTES = 3;
+const SST_FLAG_UTF16 = 0x01;
+const SST_FLAG_PHONETIC = 0x04;
+const SST_FLAG_RICH = 0x08;
+const SST_RICH_RUN_BYTES = 4;
+
+/**
+ * Reads the strings of a BIFF8 shared string table from the bodies of the SST record and the CONTINUE records
+ * after it ([MS-XLS] 2.4.265, 2.5.293). A string whose characters run across a record boundary starts the
+ * continuation with a flag byte that gives the character width of the rest; formatting runs and phonetic data are
+ * skipped across boundaries without one. A table that ends inside a string is refused.
+ */
+function readBiff8SharedStrings(chunks: readonly Buffer[]): string[] {
+  const truncated = (): LegacyOfficeFormatError =>
+    new LegacyOfficeFormatError('Corrupt XLS: the shared string table ends inside a string.');
+  const strings: string[] = [];
+  if (chunks[0].length < SST_HEADER_BYTES) return strings;
+  const uniqueStrings = chunks[0].readUInt32LE(4);
+  let chunkIndex = 0;
+  let offset = SST_HEADER_BYTES;
+
+  const hasMore = (): boolean => {
+    while (chunkIndex < chunks.length && offset >= chunks[chunkIndex].length) {
+      chunkIndex++;
+      offset = 0;
+    }
+    return chunkIndex < chunks.length;
+  };
+  const readBytes = (count: number): Buffer => {
+    const parts: Buffer[] = [];
+    let needed = count;
+    while (needed > 0) {
+      if (!hasMore()) throw truncated();
+      const take = Math.min(needed, chunks[chunkIndex].length - offset);
+      parts.push(chunks[chunkIndex].subarray(offset, offset + take));
+      offset += take;
+      needed -= take;
+    }
+    return parts.length === 1 ? parts[0] : Buffer.concat(parts);
+  };
+  const skipBytes = (count: number): void => {
+    let needed = count;
+    while (needed > 0) {
+      if (!hasMore()) throw truncated();
+      const take = Math.min(needed, chunks[chunkIndex].length - offset);
+      offset += take;
+      needed -= take;
+    }
+  };
+  const readCharacters = (count: number, utf16: boolean): string => {
+    let text = '';
+    let remaining = count;
+    let wide = utf16;
+    while (remaining > 0) {
+      if (offset >= chunks[chunkIndex].length) {
+        chunkIndex++;
+        if (chunkIndex >= chunks.length || chunks[chunkIndex].length === 0) throw truncated();
+        wide = (chunks[chunkIndex][0] & SST_FLAG_UTF16) !== 0;
+        offset = 1;
+      }
+      const width = wide ? 2 : 1;
+      const available = Math.floor((chunks[chunkIndex].length - offset) / width);
+      if (available === 0) throw truncated();
+      const take = Math.min(remaining, available);
+      text += chunks[chunkIndex].toString(wide ? 'utf16le' : 'latin1', offset, offset + take * width);
+      offset += take * width;
+      remaining -= take;
+    }
+    return text;
+  };
+
+  for (let i = 0; i < uniqueStrings && hasMore(); i++) {
+    const header = readBytes(SST_STRING_HEADER_BYTES);
+    const flags = header[2];
+    const richRuns = (flags & SST_FLAG_RICH) !== 0 ? readBytes(2).readUInt16LE(0) : 0;
+    const phoneticBytes = (flags & SST_FLAG_PHONETIC) !== 0 ? readBytes(4).readUInt32LE(0) : 0;
+    strings.push(readCharacters(header.readUInt16LE(0), (flags & SST_FLAG_UTF16) !== 0));
+    skipBytes(richRuns * SST_RICH_RUN_BYTES);
+    skipBytes(phoneticBytes);
+  }
+  return strings;
+}
+
+/**
+ * The cells of one legacy spreadsheet, row by row. A sheet read from a BIFF stream keeps only the cells that were
+ * written: its used range can be 65536 rows by 256 columns for a single cell, which the text targets write one
+ * row at a time and only the grid-building targets (`toRows`) expand, under a limit.
+ */
+interface XlsSheet {
+  readonly rowCount: number;
+  /** The cells of one row; a blank row of a sparse sheet is one shared array, not to be changed. */
+  row(index: number): readonly string[];
+  /** The whole grid as arrays; a sparse sheet refuses a grid over the limit with HTTP 413. */
+  toRows(limit?: GridLimit): string[][];
+}
+
+/** A cap on what a dense grid holds (every cell of the used range, or only the cells with text) and the setting that names it. */
+interface GridLimit {
+  readonly counts: 'grid' | 'text';
+  readonly cells: () => number;
+  readonly setting: string;
+}
+
+const GRID_LIMIT: GridLimit = { counts: 'grid', cells: xlsMaxGridCells, setting: XLS_MAX_GRID_CELLS_ENV };
+const PDF_TEXT_LIMIT: GridLimit = { counts: 'text', cells: xlsMaxPdfTextCells, setting: XLS_MAX_PDF_TEXT_CELLS_ENV };
+
+function sparseXlsSheet(cells: ReadonlyMap<number, ReadonlyMap<number, string>>, rowCount: number, columnCount: number): XlsSheet {
+  const blankRow: readonly string[] = new Array<string>(columnCount).fill('');
+  const buildRow = (index: number): string[] => {
+    const row = new Array<string>(columnCount).fill('');
+    for (const [column, value] of cells.get(index) ?? []) row[column] = value;
+    return row;
+  };
+  return {
+    rowCount,
+    row: (index) => (cells.has(index) ? buildRow(index) : blankRow),
+    toRows: (limit = GRID_LIMIT) => {
+      const maxChars = xlsMaxCellTextChars();
+      let expandedChars = 0;
+      for (const rowCells of cells.values()) {
+        for (const value of rowCells.values()) expandedChars += value.length;
+      }
+      if (expandedChars > maxChars) {
+        throw new PayloadLimitError(`The XLS cells expand to more than ${maxChars} characters (${XLS_MAX_CELL_TEXT_CHARS_ENV}).`);
+      }
+      const maxCells = limit.cells();
+      if (limit.counts === 'grid' && rowCount * columnCount > maxCells) {
+        throw new PayloadLimitError(
+          `The XLS sheet spans ${rowCount} rows by ${columnCount} columns (${rowCount * columnCount} cells); at most ${maxCells} are supported (${limit.setting}).`
+        );
+      }
+      if (limit.counts === 'text') {
+        let textCells = 0;
+        for (const rowCells of cells.values()) {
+          for (const value of rowCells.values()) if (value) textCells++;
+        }
+        if (textCells > maxCells) {
+          throw new PayloadLimitError(`The XLS sheet holds ${textCells} cells with text; at most ${maxCells} are supported (${limit.setting}).`);
+        }
+      }
+      return Array.from({ length: rowCount }, (_, index) => buildRow(index));
+    },
+  };
+}
+
+function denseXlsSheet(rows: string[][]): XlsSheet {
+  return { rowCount: rows.length, row: (index) => rows[index], toRows: () => rows };
+}
+
+/** Characters gathered before they are encoded into a byte chunk. */
+const XLS_TEXT_CHUNK_CHARS = 1 << 20;
+
+interface XlsTextLayout {
+  readonly head: string;
+  readonly rowSeparator: string;
+  readonly tail: string;
+  renderRow(cells: readonly string[]): string;
+}
+
+/**
+ * Writes a sheet as text one row at a time, never holding the grid: the output is gathered as encoded chunks and
+ * refused with HTTP 413 once it passes the in-memory limit that the result buffer is held to.
+ */
+function encodeXlsSheetText(sheet: XlsSheet, layout: XlsTextLayout, target: string): Buffer {
+  const limit = getMaxInMemoryBytes();
+  const chunks: Buffer[] = [];
+  let pending: string[] = [];
+  let pendingChars = 0;
+  let encodedBytes = 0;
+  const flush = (): void => {
+    if (pending.length === 0) return;
+    const chunk = Buffer.from(pending.join(''), 'utf-8');
+    encodedBytes += chunk.length;
+    if (encodedBytes > limit) throw new PayloadLimitError(`The XLS sheet converts to more than ${limit} bytes of .${target} output.`);
+    chunks.push(chunk);
+    pending = [];
+    pendingChars = 0;
+  };
+  const write = (text: string): void => {
+    pending.push(text);
+    pendingChars += text.length;
+    if (pendingChars >= XLS_TEXT_CHUNK_CHARS) flush();
+  };
+
+  write(layout.head);
+  let previousCells: readonly string[] | undefined;
+  let previousText = '';
+  for (let index = 0; index < sheet.rowCount; index++) {
+    const cells = sheet.row(index);
+    // Blank rows of a sparse sheet are one array: their text is rendered once.
+    if (cells !== previousCells) {
+      previousText = layout.renderRow(cells);
+      previousCells = cells;
+    }
+    if (index > 0) write(layout.rowSeparator);
+    write(previousText);
+  }
+  write(layout.tail);
+  flush();
+  return Buffer.concat(chunks, encodedBytes);
+}
+
+const delimitedLayout = (delimiter: string): XlsTextLayout => ({
+  head: '',
+  rowSeparator: '\n',
+  tail: '',
+  renderRow: (cells) => cells.map((cell) => formatCsvCell(cell, delimiter)).join(delimiter),
+});
+
+/** The layout of `JSON.stringify(rows, null, 2)` for an array of non-empty rows of strings. */
+const JSON_ROWS_LAYOUT: XlsTextLayout = {
+  head: '[\n',
+  rowSeparator: ',\n',
+  tail: '\n]',
+  renderRow: (cells) => `  [\n${cells.map((cell) => `    ${JSON.stringify(cell)}`).join(',\n')}\n  ]`,
+};
 
 /**
  * Authentic BIFF8 Binary Spreadsheet Stream Parser
  * Parses BOF, SST, LABELSST, LABEL, NUMBER, RK, MULRK, FORMULA, STRING records.
  */
 export function parseBiff8Workbook(stream: Buffer): string[][] {
+  return readBiff8Sheet(stream).toRows();
+}
+
+/** The sheet of a stream that is not a BIFF workbook: no rows. */
+const EMPTY_XLS_SHEET: XlsSheet = { rowCount: 0, row: () => [], toRows: () => [] };
+
+const BIFF_RECORD_BOUNDSHEET = 0x0085;
+const BIFF_RECORD_COLINFO = 0x007d;
+const BIFF_COLUMN_WIDTH_UNITS_PER_CHARACTER = 256;
+/** Points a column of one character is drawn at, as for the columns of an XLSX sheet. */
+const POINTS_PER_COLUMN_CHARACTER = 7.5;
+const BIFF_SUBSTREAM_GLOBALS = 0x0005;
+const BIFF_SUBSTREAM_WORKSHEET = 0x0010;
+/** A BOF of BIFF2 to BIFF4 states no substream type before its type word; the stream is one worksheet. */
+const BIFF_BOF_TYPE_OFFSET = 2;
+
+/** The cells one worksheet substream wrote. */
+interface BiffWorksheet {
+  /** Name from the BOUNDSHEET record of the worksheet; absent for a stream that has none. */
+  name?: string;
+  readonly cells: Map<number, Map<number, string>>;
+  maxRow: number;
+  maxCol: number;
+  /** Width in points of each column the COLINFO records give one for. */
+  readonly columnWidths: number[];
+}
+
+/** A BOUNDSHEET name: [MS-XLS] 2.4.28 (BIFF8: character count, flag byte, characters) or the BIFF5 byte string. */
+function boundSheetName(data: Buffer, hasTextFlags: boolean): string | undefined {
+  if (data.length < 8) return undefined;
+  const count = data[6];
+  if (!hasTextFlags) return data.toString('latin1', 7, Math.min(data.length, 7 + count));
+  const wide = (data[7] & SST_FLAG_UTF16) !== 0;
+  return wide ? data.toString('utf16le', 8, Math.min(data.length, 8 + count * 2)) : data.toString('latin1', 8, Math.min(data.length, 8 + count));
+}
+
+/**
+ * Reads the cells of a BIFF stream, one list entry per worksheet substream (`BOF` with the worksheet type until its `EOF`).
+ * The substreams of charts and macro sheets hold no cells and the globals substream holds none either. A stream whose cells
+ * come outside any worksheet substream (a hand-written or truncated one) keeps them in one worksheet of their own.
+ * The grid of the used range is never built here: a sheet whose only cell sits at IV65536 would need 16.7 million entries.
+ */
+function readBiff8Worksheets(stream: Buffer): BiffWorksheet[] {
   if (stream.length < 4) return [];
 
   const firstRec = stream.readUInt16LE(0);
@@ -8739,14 +9191,36 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
     return [];
   }
 
+  // BOF record id and version word ([MS-XLS] 2.4.21): only a BIFF8 BOF (id 0x0809, version 0x0600) writes text with option
+  // flags; BIFF5 (id 0x0809, version 0x0500) and BIFF2 to BIFF4 (ids 0x0009, 0x0209, 0x0409) write it without.
+  const hasTextFlags = firstRec === 0x0809 && stream.length >= 6 && stream.readUInt16LE(4) >= BIFF8_BOF_VERSION;
+
   const sst: string[] = [];
-  const cells = new Map<number, Map<number, string>>();
-  let maxRow = -1;
-  let maxCol = -1;
-  let lastFormulaCell: { r: number; c: number } | null = null;
+  const worksheets: BiffWorksheet[] = [];
+  /** Names by the stream position of the substream they belong to (lbPlyPos), and in the order the workbook lists them. */
+  const namesByPosition = new Map<number, string>();
+  const namesInOrder: string[] = [];
+  let worksheetsStarted = 0;
+  /** What each open substream is: a worksheet, or anything else (globals, chart, macro sheet, VB module). */
+  const substreams: Array<'worksheet' | 'globals' | 'other'> = [];
+  let implicitWorksheet: BiffWorksheet | undefined;
+  let lastFormulaCell: { r: number; c: number; sheet: BiffWorksheet } | null = null;
+
+  /** The worksheet that cells are written to now; undefined inside a chart or macro substream. */
+  const activeWorksheet = (): BiffWorksheet | undefined => {
+    const kind = substreams[substreams.length - 1];
+    if (kind === 'worksheet') return worksheets[worksheets.length - 1];
+    if (kind === 'other') return undefined;
+    if (implicitWorksheet === undefined) {
+      implicitWorksheet = { cells: new Map(), maxRow: -1, maxCol: -1, columnWidths: [] };
+      worksheets.push(implicitWorksheet);
+    }
+    return implicitWorksheet;
+  };
 
   let pos = 0;
   while (pos + 4 <= stream.length) {
+    const recordStart = pos;
     const recId = stream.readUInt16LE(pos);
     const recLen = stream.readUInt16LE(pos + 2);
     pos += 4;
@@ -8754,7 +9228,50 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
     const data = stream.subarray(pos, pos + recLen);
     pos += recLen;
 
-    // 0x00FC: SST (Shared String Table)
+    if (BIFF_BOF_RECORDS.has(recId)) {
+      const type = data.length >= BIFF_BOF_TYPE_OFFSET + 2 ? data.readUInt16LE(BIFF_BOF_TYPE_OFFSET) : undefined;
+      lastFormulaCell = null;
+      if (type === BIFF_SUBSTREAM_GLOBALS) {
+        substreams.push('globals');
+      } else if (type === undefined || type === BIFF_SUBSTREAM_WORKSHEET) {
+        // A worksheet takes the name of its BOUNDSHEET: matched by position, else by order.
+        const name = namesByPosition.get(recordStart) ?? namesInOrder[worksheetsStarted];
+        worksheetsStarted++;
+        worksheets.push({ name, cells: new Map(), maxRow: -1, maxCol: -1, columnWidths: [] });
+        substreams.push('worksheet');
+      } else {
+        substreams.push('other');
+      }
+      continue;
+    }
+    if (recId === BIFF_RECORD_EOF) {
+      substreams.pop();
+      lastFormulaCell = null;
+      continue;
+    }
+    if (recId === BIFF_RECORD_COLINFO && data.length >= 6) {
+      // [MS-XLS] 2.4.48: the first and last column, then the width in 1/256 of the width of a character.
+      const sheet = activeWorksheet();
+      const last = Math.min(data.readUInt16LE(2), BIFF_MAX_COLUMN_INDEX);
+      if (sheet !== undefined) {
+        const points = Math.round((data.readUInt16LE(4) / BIFF_COLUMN_WIDTH_UNITS_PER_CHARACTER) * POINTS_PER_COLUMN_CHARACTER);
+        for (let column = data.readUInt16LE(0); column <= last; column++) sheet.columnWidths[column] = points;
+      }
+      continue;
+    }
+    if (recId === BIFF_RECORD_BOUNDSHEET && data.length >= 4) {
+      const name = boundSheetName(data, hasTextFlags) ?? '';
+      namesByPosition.set(data.readUInt32LE(0), name);
+      namesInOrder.push(name);
+      continue;
+    }
+
+    // 0x002F: FILEPASS. Every record after it is obfuscated or encrypted, so reading it as cells yields garbage.
+    if (recId === BIFF_RECORD_FILEPASS) {
+      throw new EncryptedOfficeDocumentError('The XLS workbook is encrypted or password protected, so its cells cannot be read.');
+    }
+
+    // 0x00FC: SST (Shared String Table), followed by the CONTINUE records that carry the rest of its strings
     if (recId === 0x00FC) {
       const sstChunks: Buffer[] = [data];
       let peekPos = pos;
@@ -8769,54 +9286,19 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
           break;
         }
       }
-      const sstBuf = Buffer.concat(sstChunks);
-      if (sstBuf.length >= 8) {
-        const uniqueStrings = sstBuf.readUInt32LE(4);
-        let off = 8;
-        for (let i = 0; i < uniqueStrings && off < sstBuf.length; i++) {
-          if (off + 3 > sstBuf.length) break;
-          const charCount = sstBuf.readUInt16LE(off);
-          const flags = sstBuf.readUInt8(off + 2);
-          off += 3;
-          const isUnicode = (flags & 0x01) !== 0;
-          const hasExt = (flags & 0x04) !== 0;
-          const hasRich = (flags & 0x08) !== 0;
-          let richRuns = 0;
-          if (hasRich) {
-            if (off + 2 > sstBuf.length) break;
-            richRuns = sstBuf.readUInt16LE(off);
-            off += 2;
-          }
-          let extLen = 0;
-          if (hasExt) {
-            if (off + 4 > sstBuf.length) break;
-            extLen = sstBuf.readUInt32LE(off);
-            off += 4;
-          }
-          let str = '';
-          if (isUnicode) {
-            const byteLen = charCount * 2;
-            const avail = Math.min(byteLen, Math.floor((sstBuf.length - off) / 2) * 2);
-            str = sstBuf.toString('utf16le', off, off + avail);
-            off += byteLen;
-          } else {
-            const byteLen = charCount;
-            const avail = Math.min(byteLen, sstBuf.length - off);
-            str = sstBuf.toString('latin1', off, off + avail);
-            off += byteLen;
-          }
-          off += richRuns * 4;
-          off += extLen;
-          sst.push(str);
-        }
-      }
+      sst.push(...readBiff8SharedStrings(sstChunks));
     }
 
     const setCell = (r: number, c: number, val: string) => {
-      if (!cells.has(r)) cells.set(r, new Map());
-      cells.get(r)!.set(c, val);
-      if (r > maxRow) maxRow = r;
-      if (c > maxCol) maxCol = c;
+      if (c > BIFF_MAX_COLUMN_INDEX) {
+        throw new LegacyOfficeFormatError(`Corrupt XLS: a cell lies in column ${c}, past the last column (${BIFF_MAX_COLUMN_INDEX}) of a BIFF sheet.`);
+      }
+      const sheet = activeWorksheet();
+      if (sheet === undefined) return;
+      if (!sheet.cells.has(r)) sheet.cells.set(r, new Map());
+      sheet.cells.get(r)!.set(c, val);
+      if (r > sheet.maxRow) sheet.maxRow = r;
+      if (c > sheet.maxCol) sheet.maxCol = c;
     };
 
     // 0x00FD: LABELSST
@@ -8832,7 +9314,9 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
       const r = data.readUInt16LE(0);
       const c = data.readUInt16LE(2);
       const len = data.readUInt16LE(6);
-      if (data.length >= 9) {
+      if (!hasTextFlags) {
+        setCell(r, c, data.toString('latin1', 8, Math.min(data.length, 8 + len)));
+      } else if (data.length >= 9) {
         const flags = data.readUInt8(8);
         const isUnicode = (flags & 0x01) !== 0;
         let str = '';
@@ -8890,7 +9374,8 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
     else if (recId === 0x0006 && data.length >= 14) {
       const r = data.readUInt16LE(0);
       const c = data.readUInt16LE(2);
-      lastFormulaCell = { r, c };
+      const formulaSheet = activeWorksheet();
+      lastFormulaCell = formulaSheet === undefined ? null : { r, c, sheet: formulaSheet };
       if (data[12] === 0xff && data[13] === 0xff) {
         const fType = data[6];
         if (fType === 1) setCell(r, c, data[8] === 1 ? 'TRUE' : 'FALSE');
@@ -8904,36 +9389,156 @@ export function parseBiff8Workbook(stream: Buffer): string[][] {
     // 0x0207: STRING
     else if (recId === 0x0207 && lastFormulaCell && data.length >= 3) {
       const len = data.readUInt16LE(0);
-      const flags = data.readUInt8(2);
+      const flags = hasTextFlags ? data.readUInt8(2) : 0;
+      const textStart = hasTextFlags ? 3 : 2;
       const isUnicode = (flags & 0x01) !== 0;
       let str = '';
       if (isUnicode) {
-        str = data.toString('utf16le', 3, Math.min(data.length, 3 + len * 2));
+        str = data.toString('utf16le', textStart, Math.min(data.length, textStart + len * 2));
       } else {
-        str = data.toString('latin1', 3, Math.min(data.length, 3 + len));
+        str = data.toString('latin1', textStart, Math.min(data.length, textStart + len));
       }
-      setCell(lastFormulaCell.r, lastFormulaCell.c, str);
+      const owner = lastFormulaCell.sheet;
+      if (!owner.cells.has(lastFormulaCell.r)) owner.cells.set(lastFormulaCell.r, new Map());
+      owner.cells.get(lastFormulaCell.r)!.set(lastFormulaCell.c, str);
       lastFormulaCell = null;
     }
   }
 
-  if (maxRow < 0 || maxCol < 0) return [];
+  return worksheets.filter((sheet) => sheet.maxRow >= 0 && sheet.maxCol >= 0);
+}
 
-  const rows: string[][] = [];
-  for (let r = 0; r <= maxRow; r++) {
-    const rowMap = cells.get(r);
-    const row: string[] = [];
-    for (let c = 0; c <= maxCol; c++) {
-      row.push(rowMap?.get(c) ?? '');
+/** The sheet of one worksheet's cells; rows after the last one that holds text are not part of it. */
+function sheetOfCells(cells: ReadonlyMap<number, ReadonlyMap<number, string>>, maxCol: number): XlsSheet {
+  let rowCount = 0;
+  for (const [r, rowMap] of cells) {
+    if (r < rowCount) continue;
+    for (const value of rowMap.values()) {
+      if (value) {
+        rowCount = r + 1;
+        break;
+      }
     }
-    rows.push(row);
   }
+  return sparseXlsSheet(cells, rowCount, maxCol + 1);
+}
 
-  while (rows.length > 0 && rows[rows.length - 1].every((cell) => !cell)) {
-    rows.pop();
+/** The worksheets, each as its own sheet with its name and column widths. */
+function namedSheetsOf(worksheets: readonly BiffWorksheet[]): Array<{ name: string; sheet: XlsSheet; columnWidths: number[] }> {
+  return worksheets.map((worksheet, index) => ({
+    name: worksheet.name || `Sheet${index + 1}`,
+    sheet: sheetOfCells(worksheet.cells, worksheet.maxCol),
+    columnWidths: worksheet.columnWidths,
+  }));
+}
+
+/**
+ * The cells of every worksheet laid over each other in one sparse sheet, as the text targets have always written them.
+ * The PDF target keeps the worksheets apart (namedSheetsOf).
+ */
+function mergedSheetOf(worksheets: readonly BiffWorksheet[]): XlsSheet {
+  if (worksheets.length === 0) return EMPTY_XLS_SHEET;
+  if (worksheets.length === 1) return sheetOfCells(worksheets[0].cells, worksheets[0].maxCol);
+  const cells = new Map<number, Map<number, string>>();
+  let maxCol = -1;
+  for (const worksheet of worksheets) {
+    for (const [r, rowMap] of worksheet.cells) {
+      const merged = cells.get(r) ?? new Map<number, string>();
+      cells.set(r, merged);
+      for (const [c, value] of rowMap) merged.set(c, value);
+    }
+    maxCol = Math.max(maxCol, worksheet.maxCol);
   }
+  return sheetOfCells(cells, maxCol);
+}
 
-  return rows;
+/** The workbook stream of a CFBF container: the BIFF8 `Workbook` of an Excel 97-2003 or Kingsoft file, or else the `Book` of an older one. */
+function selectWorkbookStream(cfbf: CfbfContainer): Buffer | undefined {
+  // A file saved by Excel 97 or later for old readers keeps a BIFF5 `Book` next to the BIFF8 `Workbook`; the newer one wins.
+  let workbookStream: Buffer | undefined;
+  let bookStream: Buffer | undefined;
+  for (const [name, buf] of cfbf.streams.entries()) {
+    const lowerName = name.toLowerCase();
+    if (lowerName === 'workbook') workbookStream ??= buf;
+    else if (lowerName === 'book') bookStream ??= buf;
+  }
+  return workbookStream ?? bookStream;
+}
+
+/** The worksheets of the BIFF workbook stream inside a CFBF container. */
+function readCfbfWorkbookSheets(inputBuffer: Buffer): BiffWorksheet[] {
+  const workbookStream = selectWorkbookStream(parseCfbf(inputBuffer));
+  if (!workbookStream) {
+    throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
+  }
+  const worksheets = readBiff8Worksheets(workbookStream);
+  if (mergedSheetOf(worksheets).rowCount === 0) {
+    throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
+  }
+  return worksheets;
+}
+
+/** The sheet of the BIFF workbook stream inside a CFBF container. */
+function readCfbfWorkbookSheet(inputBuffer: Buffer): XlsSheet {
+  return mergedSheetOf(readCfbfWorkbookSheets(inputBuffer));
+}
+
+function readBiff8Sheet(stream: Buffer): XlsSheet {
+  return mergedSheetOf(readBiff8Worksheets(stream));
+}
+
+/** True when the record after the BOF of a BIFF stream's globals is a FilePass: the workbook is password protected or obfuscated. */
+function biffGlobalsHaveFilePass(stream: Buffer): boolean {
+  let pos = 0;
+  while (pos + 4 <= stream.length) {
+    const recId = stream.readUInt16LE(pos);
+    if (recId === BIFF_RECORD_FILEPASS) return true;
+    if (recId === BIFF_RECORD_EOF) return false;
+    pos += 4 + stream.readUInt16LE(pos + 2);
+  }
+  return false;
+}
+
+/**
+ * Throws the encrypted-document error (HTTP 422) for an XLS whose workbook carries a FilePass record, so that the
+ * office suite is not started for a file only to report that it cannot load it. A file this cannot read as a
+ * BIFF workbook is left to the converter that was asked for.
+ */
+export function assertXlsNotEncrypted(inputBuffer: Buffer): void {
+  let stream: Buffer | undefined = inputBuffer;
+  if (isCfbfContainer(inputBuffer)) {
+    try {
+      stream = selectWorkbookStream(parseCfbf(inputBuffer));
+    } catch {
+      return;
+    }
+  }
+  if (stream && stream.length >= 4 && BIFF_BOF_RECORDS.has(stream.readUInt16LE(0)) && biffGlobalsHaveFilePass(stream)) {
+    throw new EncryptedOfficeDocumentError('The XLS workbook is encrypted or password protected, so its cells cannot be read.');
+  }
+}
+
+/**
+ * The cells of a worksheet that a PDF page can show: columns without any text are left out, rows without any text are kept
+ * as one blank row between rows that have text (a run of them collapses to one) and are dropped before the first and after the
+ * last. A sheet whose only cell is at IV65536 would otherwise be 65535 blank rows long. No text is lost.
+ */
+function compactWorksheetForPdf(name: string, rows: string[][], columnWidths: readonly number[]): OfficeWorksheet {
+  const usedColumns = new Set<number>();
+  for (const row of rows) row.forEach((text, column) => text !== '' && usedColumns.add(column));
+  const used = [...usedColumns].sort((a, b) => a - b);
+  const compact: string[][] = [];
+  let pendingBlank = false;
+  for (const row of rows) {
+    if (row.every((text) => text === '')) {
+      pendingBlank = compact.length > 0;
+      continue;
+    }
+    if (pendingBlank) compact.push(used.map(() => ''));
+    pendingBlank = false;
+    compact.push(used.map((column) => row[column] ?? ''));
+  }
+  return { name, rows: compact, columnWidths: used.map((column) => columnWidths[column]) };
 }
 
 /**
@@ -8945,40 +9550,29 @@ export async function convertXlsSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const rows: string[][] = [];
+  let sheet: XlsSheet;
+  /** The worksheets of a BIFF workbook, kept apart for the PDF target. */
+  let worksheets: readonly BiffWorksheet[] | undefined;
 
   // 1. CFBF Compound File Binary Format containing Workbook stream
   if (isCfbfContainer(inputBuffer)) {
-    const cfbf = parseCfbf(inputBuffer);
-    let workbookStream: Buffer | undefined;
-    for (const [name, buf] of cfbf.streams.entries()) {
-      if (name.toLowerCase() === 'workbook' || name.toLowerCase() === 'book') {
-        workbookStream = buf;
-        break;
-      }
-    }
-    if (!workbookStream) {
-      throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
-    }
-    const parsed = parseBiff8Workbook(workbookStream);
-    if (parsed.length === 0) {
-      throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
-    }
-    rows.push(...parsed);
+    worksheets = readCfbfWorkbookSheets(inputBuffer);
+    sheet = mergedSheetOf(worksheets);
   }
   // 2. Raw BIFF stream (without CFBF container)
   else if (
     inputBuffer.length >= 4 &&
     (inputBuffer.readUInt16LE(0) === 0x0809 || inputBuffer.readUInt16LE(0) === 0x0409)
   ) {
-    const parsed = parseBiff8Workbook(inputBuffer);
-    if (parsed.length === 0) {
+    worksheets = readBiff8Worksheets(inputBuffer);
+    sheet = mergedSheetOf(worksheets);
+    if (sheet.rowCount === 0) {
       throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in raw BIFF stream');
     }
-    rows.push(...parsed);
   }
   // 3. XML Spreadsheet 2003 (<Row><Cell><Data ...>)
   else {
+    const rows: string[][] = [];
     const text = inputBuffer.toString('utf-8');
     if (text.includes('<Row') || text.includes('<row')) {
       const rowElements = safeExtractXmlElements(text, ['Row', 'row']);
@@ -9002,21 +9596,46 @@ export async function convertXlsSource(
         });
       }
     }
+    sheet = denseXlsSheet(rows);
   }
 
-  if (rows.length === 0) {
+  if (sheet.rowCount === 0) {
     throw new ConversionFailedError('Failed to parse XLS spreadsheet: invalid or empty content');
   }
 
   if (tgt === 'csv') {
-    const delim = options.delimiter || ',';
-    const csv = rows.map((r) => r.join(delim)).join('\n');
-    const buffer = Buffer.from(csv, 'utf-8');
+    const buffer = encodeXlsSheetText(sheet, delimitedLayout(options.delimiter || ','), tgt);
     return { buffer, mimeType: 'text/csv', filename: `${baseName}.csv`, size: buffer.length };
   }
 
+  if (tgt === 'json') {
+    const buffer = encodeXlsSheetText(sheet, JSON_ROWS_LAYOUT, tgt);
+    return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
+  }
+
+  if (tgt === 'tsv') {
+    const buffer = encodeXlsSheetText(sheet, delimitedLayout('\t'), tgt);
+    return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
+  }
+
+  if (tgt === 'xls') {
+    return { buffer: inputBuffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: inputBuffer.length };
+  }
+
+  if (tgt === 'pdf' && worksheets !== undefined) {
+    const sheets: OfficeWorksheet[] = namedSheetsOf(worksheets)
+      .filter(({ sheet: worksheet }) => worksheet.rowCount > 0)
+      .map(({ name, sheet: worksheet, columnWidths }) => compactWorksheetForPdf(name, worksheet.toRows(PDF_TEXT_LIMIT), columnWidths));
+    const pdfBuffer = await generatePdfFromWorksheets(sheets, options, baseName);
+    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+  }
+
+  // The remaining targets build documents from the whole grid.
+  const rows = sheet.toRows(tgt === 'pdf' ? PDF_TEXT_LIMIT : GRID_LIMIT);
+
   if (tgt === 'xlsx') {
-    const csv = rows.map((r) => r.join(',')).join('\n');
+    const delim = options.delimiter || ',';
+    const csv = rows.map((r) => r.map((c) => formatCsvCell(c, delim)).join(delim)).join('\n');
     const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
     return {
       buffer: xlsxBuffer,
@@ -9041,17 +9660,6 @@ export async function convertXlsSource(
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
 
-  if (tgt === 'json') {
-    const buffer = Buffer.from(JSON.stringify(rows, null, 2), 'utf-8');
-    return { buffer, mimeType: 'application/json', filename: `${baseName}.json`, size: buffer.length };
-  }
-
-  if (tgt === 'tsv') {
-    const tsv = rows.map((r) => r.join('\t')).join('\n');
-    const buffer = Buffer.from(tsv, 'utf-8');
-    return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
-  }
-
   if (tgt === 'html') {
     let tableHtml = '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%;border-color:#CCD2FC;">\n';
     rows.forEach((r, idx) => {
@@ -9074,11 +9682,7 @@ export async function convertXlsSource(
     return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
   }
 
-  if (tgt === 'xls') {
-    return { buffer: inputBuffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: inputBuffer.length };
-  }
-
-  throw new Error(`Unsupported conversion from XLS to ${tgt}`);
+  throw unconvertibleOfficeTarget('xls', tgt);
 }
 
 /**
@@ -9090,24 +9694,7 @@ export async function convertOdtSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  let text = '';
-  try {
-    const zip = await JSZip.loadAsync(inputBuffer);
-    const contentXml = zip.file('content.xml');
-    if (contentXml) {
-      const xml = await contentXml.async('text');
-      const paragraphs: string[] = [];
-      for (const el of safeExtractXmlElements(xml, ['text:p', 'text:h'])) {
-        const t = safeExtractAllText(el.content).trim();
-        if (t) paragraphs.push(t);
-      }
-      text = paragraphs.join('\n\n');
-    }
-  } catch {
-    text = inputBuffer.toString('utf-8');
-  }
-
-  if (!text) text = `Extracted content from ${baseName}.odt`;
+  const text = await readOdtText(inputBuffer);
 
   if (tgt === 'txt') {
     const buffer = Buffer.from(text, 'utf-8');
@@ -9135,7 +9722,7 @@ export async function convertOdtSource(
   }
 
   if (tgt === 'docx') {
-    const docxBuffer = await generateDocxFromText(text, 'odt', options, baseName);
+    const docxBuffer = await generateDocxFromExtractedText(text, 'odt', options, baseName);
     return {
       buffer: docxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -9158,7 +9745,7 @@ export async function convertOdtSource(
     return { buffer: inputBuffer, mimeType: 'application/vnd.oasis.opendocument.text', filename: `${baseName}.odt`, size: inputBuffer.length };
   }
 
-  throw new Error(`Unsupported conversion from ODT to ${tgt}`);
+  throw unconvertibleOfficeTarget('odt', tgt);
 }
 
 /**
@@ -9342,37 +9929,28 @@ async function extractRowsForOffice(
   options: ConversionOptions
 ): Promise<string[][]> {
   if (src === 'xlsx') {
-    try {
-      const zip = await JSZip.loadAsync(inputBuffer);
-      const allSheets = await parseAllXlsxWorksheets(zip);
-      if (allSheets.length > 0) {
-        if (allSheets.length === 1) return allSheets[0].rows;
-        const merged: string[][] = [];
-        allSheets.forEach((s, idx) => {
-          if (idx > 0 && s.rows.length > 0) {
-            merged.push([`### Sheet: ${s.name}`]);
-          }
-          merged.push(...s.rows);
-        });
-        return merged;
+    // A workbook that cannot be read is refused: re-reading its ZIP bytes as CSV text would answer with junk rows.
+    const zip = await openPackage(inputBuffer, 'XLSX');
+    const allSheets = await parseAllXlsxWorksheets(zip);
+    if (allSheets.length === 1) return allSheets[0].rows;
+    const merged: string[][] = [];
+    allSheets.forEach((sheet, idx) => {
+      if (idx > 0 && sheet.rows.length > 0) {
+        merged.push([`### Sheet: ${sheet.name}`]);
       }
-    } catch {
-      // fallback
-    }
+      merged.push(...sheet.rows);
+    });
+    return merged;
+  }
+
+  if (src === 'et') {
+    // A Kingsoft workbook is an OOXML package or a BIFF8 compound file; neither is CSV text.
+    if (startsWithBytes(inputBuffer, ZIP_LOCAL_HEADER_SIGNATURE)) return extractRowsForOffice(inputBuffer, 'xlsx', options);
+    if (isCfbfContainer(inputBuffer)) return readCfbfWorkbookSheet(inputBuffer).toRows();
   }
 
   const text = inputBuffer.toString('utf-8');
-  if (src === 'json') {
-    try {
-      const parsed = JSON.parse(text);
-      if (Array.isArray(parsed) && parsed.length > 0 && typeof parsed[0] === 'object') {
-        const headers = Object.keys(parsed[0]);
-        return [headers, ...parsed.map((item) => headers.map((h) => String(item[h] ?? '')))];
-      }
-    } catch {
-      // fallback
-    }
-  }
+  if (src === 'json') return parseJsonTableRows(text);
 
   const delim = src === 'tsv' ? '\t' : options.delimiter || ',';
   const parsedCsv = Papa.parse<string[]>(text, {
@@ -9398,7 +9976,7 @@ export async function extractAllSheetsForOffice(
   options: ConversionOptions = {}
 ): Promise<OfficeWorksheet[]> {
   if (src === 'xlsx') {
-    const zip = await JSZip.loadAsync(inputBuffer);
+    const zip = await openPackage(inputBuffer, 'XLSX');
     return parseAllXlsxWorksheets(zip);
   }
   const rows = await extractRowsForOffice(inputBuffer, src, options);
@@ -9426,7 +10004,7 @@ async function convertEtSource(
   }
 
   if (tgt === 'xlsx') {
-    const buffer = await generateXlsxFromData(inputBuffer, 'et', options, baseName);
+    const buffer = await generateXlsxFromData(Buffer.from(Papa.unparse(rows), 'utf-8'), 'csv', { ...options, delimiter: ',' }, baseName);
     return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename: `${baseName}.xlsx`, size: buffer.length };
   }
 
@@ -9482,15 +10060,11 @@ async function convertGenericDocumentSource(
     );
   }
 
-  let text = '';
-  try {
-    text = inputBuffer.toString('utf-8');
-  } catch {
-    text = `${baseName} document content`;
-  }
+  const text = inputBuffer.toString('utf-8');
+  if (text.trim() === '') throw new ConversionFailedError(`The .${src} file holds no text.`);
 
   if (tgt === 'docx') {
-    const buffer = await generateDocxFromText(text, src, options, baseName);
+    const buffer = await generateDocxFromExtractedText(text, src, options, baseName);
     return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', filename: `${baseName}.docx`, size: buffer.length };
   }
   if (tgt === 'odt') {
@@ -9525,35 +10099,55 @@ async function convertGenericDocumentSource(
   return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
 }
 
-async function convertOpenDocumentGraphicSource(
-  inputBuffer: Buffer,
-  src: string,
-  tgt: string,
-  options: ConversionOptions,
-  baseName: string
-): Promise<ConversionResult> {
-  let content = '';
+const ODF_GRAPHICS_MIMETYPE_PREFIX = 'application/vnd.oasis.opendocument.graphics';
+
+/**
+ * OpenDocument Drawing (ODG) and drawing template (ODD) source. A drawing has no text target, and the
+ * in-process engine has no vector renderer: LibreOffice Draw renders every advertised target, so this
+ * validates the package (a malformed file is a typed 400 error) and then reports the missing engine
+ * with a typed 503 error. It never answers with the drawing's text under another format's name.
+ */
+export async function assertOpenDocumentGraphic(inputBuffer: Buffer, src: string): Promise<void> {
+  let zip: JSZip;
   try {
-    const zip = await JSZip.loadAsync(inputBuffer);
-    const c = zip.file('content.xml');
-    if (c) content = await c.async('text');
+    zip = await JSZip.loadAsync(inputBuffer);
   } catch {
-    content = inputBuffer.toString('utf-8');
+    throw new ConversionFailedError(`The ${src.toUpperCase()} file is not a valid OpenDocument package.`);
   }
-
-  const plainText = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || `${baseName} drawing`;
-
-  if (tgt === 'pdf') {
-    const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
-    return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
+  const mimetypeEntry = zip.file('mimetype');
+  const mimetype = mimetypeEntry ? await readZipEntryText(mimetypeEntry, { maxBytes: MAX_MIMETYPE_ENTRY_BYTES }) : undefined;
+  if (!mimetype?.startsWith(ODF_GRAPHICS_MIMETYPE_PREFIX) || !zip.file('content.xml')) {
+    throw new ConversionFailedError(`The ${src.toUpperCase()} file is not an OpenDocument drawing.`);
   }
-  if (['png', 'jpg', 'jpeg', 'webp', 'avif', 'tiff', 'gif', 'bmp', 'eps', 'ps', 'ico', 'psd'].includes(tgt)) {
-    const rendered = await renderTextToRaster(plainText, tgt, baseName);
-    return { buffer: rendered.buffer, mimeType: rendered.mimeType, filename: `${baseName}.${tgt}`, size: rendered.buffer.length };
-  }
+}
 
-  const pdfBuffer = await generatePdfFromDocx([{ text: plainText, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
-  return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.${tgt}`, size: pdfBuffer.length };
+async function convertOpenDocumentGraphicSource(inputBuffer: Buffer, src: string, tgt: string): Promise<ConversionResult> {
+  await assertOpenDocumentGraphic(inputBuffer, src);
+  throw new EngineUnavailableError('soffice', `Rendering a drawing to ${tgt} requires LibreOffice Draw; the in-process engine has no drawing renderer.`);
+}
+
+/** The text of an e-book in a ZIP wrapper (HTMLZ, TXTZ) or in a plain-text/markup file (OEB package, PML). */
+async function readGenericEbookText(input: Buffer, src: string): Promise<string> {
+  if (src === 'htmlz' || src === 'txtz') {
+    const zip = await openPackage(input, src.toUpperCase());
+    const mainName = src === 'htmlz' ? 'index.html' : 'index.txt';
+    const names = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
+    const entryName = names.includes(mainName) ? mainName : names.sort((a, b) => a.localeCompare(b)).find((name) => (src === 'htmlz' ? /\.(x?html?)$/i : /\.txt$/i).test(name));
+    if (!entryName) throw new ConversionFailedError(`The ${src.toUpperCase()} archive has no ${mainName}.`);
+    const decoded = decodeXmlBytes(await readPackageEntry(zip, entryName, EPUB_MAX_CHAPTER_BYTES, `${src.toUpperCase()} archive`), `${src.toUpperCase()} text`);
+    const text = src === 'htmlz' ? htmlToText(decoded) : decoded.trim();
+    if (text === '') throw new ConversionFailedError(`The ${src.toUpperCase()} archive holds no text.`);
+    return text;
+  }
+  if (src === 'oeb') {
+    // An OEB 1.x package names its documents in separate files; the project's single-file package carries its text in <text>.
+    const xml = input.toString('utf-8');
+    const body = /<text>\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*<\/text>/.exec(xml)?.[1]?.trim();
+    if (!body) throw new ConversionFailedError('The OEB package holds no text: its content documents are separate files that a single file cannot carry.');
+    return body;
+  }
+  if (src === 'pml') return readPmlText(input);
+  throw new ConversionFailedError(`Reading .${src} files is not supported.`);
 }
 
 async function convertGenericEbookSource(
@@ -9563,21 +10157,17 @@ async function convertGenericEbookSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  let text = '';
-  try {
-    const zip = await JSZip.loadAsync(inputBuffer);
-    for (const [filename, file] of Object.entries(zip.files)) {
-      if (/\.(html|htm|txt|xhtml)$/i.test(filename) && !file.dir) {
-        const c = await file.async('text');
-        text += c.replace(/<[^>]+>/g, ' ') + '\n\n';
-      }
-    }
-  } catch {
-    text = inputBuffer.toString('utf-8');
-  }
+  return writeEbookTargetFromText(await readGenericEbookText(inputBuffer, src), src, tgt, options, baseName);
+}
 
-  text = text.trim() || `${baseName} ebook content`;
-
+/** Writes the text of an e-book in any target the e-book sources advertise: EPUB, the Palm family, TXT, RTF, rasters and PDF. */
+async function writeEbookTargetFromText(
+  text: string,
+  src: string,
+  tgt: string,
+  options: ConversionOptions,
+  baseName: string
+): Promise<ConversionResult> {
   if (tgt === 'epub') {
     const buffer = await generateEpubFromText(text, src, options, baseName);
     return { buffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: buffer.length };
@@ -9604,7 +10194,7 @@ async function convertGenericEbookSource(
 }
 
 async function rasterizePipeline(
-  pipeline: sharp.Sharp,
+  pipeline: Sharp,
   tgt: string
 ): Promise<{ buffer: Buffer; mimeType: string }> {
   switch (tgt) {
@@ -9618,11 +10208,11 @@ async function rasterizePipeline(
       return { buffer, mimeType: 'image/webp' };
     }
     case 'avif': {
-      const buffer = await pipeline.avif().toBuffer();
+      const buffer = await pipeline.avif({ tune: AVIF_TUNE, effort: AVIF_EFFORT }).toBuffer();
       return { buffer, mimeType: 'image/avif' };
     }
     case 'tiff': {
-      const buffer = await pipeline.tiff().toBuffer();
+      const buffer = await pipeline.tiff(buildTiffOptions({})).toBuffer();
       return { buffer, mimeType: 'image/tiff' };
     }
     case 'gif': {

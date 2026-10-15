@@ -232,10 +232,10 @@ function newBox(): Box {
   return { x0: 0, y0: 0, x1: 0, y1: 0 };
 }
 
-/** A word's confidence on the 0..100 scale used throughout, or null when the word has none. */
-function confidencePercent(confidence: number | undefined): number | null {
+/** A word's confidence as a probability (0..1, clamped), or null when the word has none. */
+function confidenceFraction(confidence: number | undefined): number | null {
   if (typeof confidence !== 'number' || Number.isNaN(confidence)) return null;
-  return Math.max(0, Math.min(PERCENT_SCALE, confidence));
+  return Math.max(0, Math.min(1, confidence));
 }
 
 /** The pages of one result: its `pages` when it has them, otherwise the result itself as one page. */
@@ -432,8 +432,8 @@ function writeHocrWords(out: string[], line: OcrLineBlock, pageNumber: number, l
   for (let wIdx = 0; wIdx < words.length; wIdx++) {
     const w = words[wIdx];
     const wb = fillBox(scratch, w.bbox, 'a word box');
-    const percent = confidencePercent(w.confidence);
-    const wconf = percent === null ? '' : `; x_wconf ${Math.round(percent)}`;
+    const fraction = confidenceFraction(w.confidence);
+    const wconf = fraction === null ? '' : `; x_wconf ${Math.round(fraction * PERCENT_SCALE)}`;
     out.push(
       `          <span class="ocrx_word" id="word_${pageNumber}_${lineNumber}_${wIdx + 1}" title="bbox ${wb.x0} ${wb.y0} ${wb.x1} ${wb.y1}${wconf}">${escapeXml(w.text)}</span>`
     );
@@ -543,8 +543,8 @@ function writeAltoLine(
   for (let wIdx = 0; wIdx < words.length; wIdx++) {
     const w = words[wIdx];
     const wb = fillBox(scratch, w.bbox, 'a word box');
-    const percent = confidencePercent(w.confidence);
-    const wc = percent === null ? '' : ` WC="${(percent / PERCENT_SCALE).toFixed(ALTO_CONFIDENCE_DECIMALS)}"`;
+    const fraction = confidenceFraction(w.confidence);
+    const wc = fraction === null ? '' : ` WC="${fraction.toFixed(ALTO_CONFIDENCE_DECIMALS)}"`;
     out.push(
       `${wordIndent}<String CONTENT="${escapeAttribute(w.text)}" HPOS="${wb.x0}" VPOS="${wb.y0}" WIDTH="${wb.x1 - wb.x0}" HEIGHT="${wb.y1 - wb.y0}"${wc} />`
     );

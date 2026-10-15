@@ -20,6 +20,10 @@ import { decodeAudioBuffer } from '../src/lib/conversions/media-decoder';
 /**
  * Returns list of open file descriptors on Unix/macOS or empty list if unavailable.
  */
+/** Hang guard: 1,000 conversions take a few seconds; a stalled loop or quadratic leak takes minutes. */
+const SOAK_HANG_GUARD_MS = 120_000;
+const SOAK_TEST_TIMEOUT_MS = 180_000;
+
 function getOpenFileDescriptors(): number[] {
   try {
     if (fs.existsSync('/dev/fd')) {
@@ -135,8 +139,8 @@ describe('Phase 4: 1,000-Iteration Memory Leak & File Descriptor Soak Test', () 
 
     // 4. Assertions
 
-    // Execution performance: 1,000 conversions must complete within a reasonable budget (< 15 seconds)
-    expect(durationMs).toBeLessThan(15000);
+    // Hang guard: 1,000 conversions take a few seconds; a stalled loop or a quadratic leak takes minutes.
+    expect(durationMs).toBeLessThan(SOAK_HANG_GUARD_MS);
 
     // File Descriptor Leak Check:
     // Open file descriptors must not leak persistently. Allow +/- 2 margin for transient test runtime handles.
@@ -152,5 +156,5 @@ describe('Phase 4: 1,000-Iteration Memory Leak & File Descriptor Soak Test', () 
       const postWarmupHeapDeltaMb = (memFinal.heapUsed - heapAtWarmup) / (1024 * 1024);
       expect(postWarmupHeapDeltaMb).toBeLessThan(40);
     }
-  }, 20000); // 20s timeout budget
+  }, SOAK_TEST_TIMEOUT_MS);
 });

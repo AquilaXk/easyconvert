@@ -11,6 +11,7 @@ import { withDecryptedPdf } from '../src/worker/pdf-decrypt';
 import { SandboxedTimeoutError } from '../src/worker/sandbox';
 import { getOracleToolPath, type ExternalOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { skipUnless } from './helpers/strict-skip';
 
 /**
  * Issue #450: a PDF password must never appear in the argument vector of any spawned process,
@@ -336,7 +337,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       expect(binariesSpawned(calls).has('pdftotext')).toBe(true);
       expect(result.engineUsed).toBe('native-poppler');
 
-      const oracleText = execFileSync(tool('pdftotext'), ['-layout', fixture.plainPath, '-'], { encoding: 'utf-8' });
+      const oracleText = execFileSync(tool('pdftotext'), [fixture.plainPath, '-'], { encoding: 'utf-8' });
       const text = result.buffer.toString('utf-8');
       expect(text).toBe(oracleText);
       for (let page = 1; page <= PAGE_COUNT; page++) {
@@ -680,7 +681,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       expect(isAlive(pid)).toBe(false);
     }
 
-    it.skipIf(!HAS_STUB_TOOLS)('aborting during qpdf kills it and leaves no password file, decrypted copy or process', async () => {
+    it.skipIf(skipUnless('/bin/sh and prlimit', HAS_STUB_TOOLS))('aborting during qpdf kills it and leaves no password file, decrypted copy or process', async () => {
       const stub = createSlowQpdf();
       const controller = new AbortController();
       const reason = new Error('client went away during decrypt');
@@ -706,7 +707,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       });
     }, TEST_TIMEOUT_MS);
 
-    it.skipIf(!HAS_STUB_TOOLS)('a qpdf timeout raises SandboxedTimeoutError and leaves nothing behind', async () => {
+    it.skipIf(skipUnless('/bin/sh and prlimit', HAS_STUB_TOOLS))('a qpdf timeout raises SandboxedTimeoutError and leaves nothing behind', async () => {
       const stub = createSlowQpdf();
 
       await withEnv('QPDF_PATH', stub.stubPath, async () => {
@@ -727,7 +728,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       });
     }, TEST_TIMEOUT_MS);
 
-    it.skipIf(!HAS_STUB_TOOLS)('a decrypted output beyond the size limit fails closed and leaves nothing behind', async () => {
+    it.skipIf(skipUnless('/bin/sh and prlimit', HAS_STUB_TOOLS))('a decrypted output beyond the size limit fails closed and leaves nothing behind', async () => {
       const dir = makeWorkDir('easyconvert-pdfpw-oversize-');
       const stubPath = path.join(dir, 'qpdf-stub.sh');
       // Writes far more than max(4 x input, 1 MiB) into the output path, which is the last argument.

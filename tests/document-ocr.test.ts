@@ -1,7 +1,16 @@
 import { describe, it, expect } from 'vitest';
-import sharp from 'sharp';
-import { convertFile, extractTextFromPdf, decodePdfHexString } from '../src/lib/conversions/index';
+import fs from 'node:fs';
+import path from 'node:path';
+import { convertFile, extractTextFromPdf } from '../src/lib/conversions/index';
+import { flate, singlePagePdf } from './helpers/pdf-craft';
 import { performOcr } from '../src/lib/conversions/ocr';
+import { oracleTest } from './helpers/oracle-test';
+import { characterErrorRatePercent, normalizeOcrText } from './helpers/ocr-cer';
+
+const OCR_FIXTURES = path.join(__dirname, 'fixtures', 'ocr');
+/** Budget for clean 300 dpi English (measured 0.00 on all three fixture pages). */
+const MAX_CLEAN_ENGLISH_CER_PERCENT = 2;
+const MIN_CLEAN_CONFIDENCE = 0.7;
 
 describe('Document Tables & OCR Recognition Engine', () => {
   it('converts markdown table to PDF with structured formatting intact', async () => {
@@ -20,81 +29,33 @@ Additional summary notes below table.`;
     expect(result.buffer.toString('ascii', 0, 4)).toBe('%PDF');
   });
 
-  it('runs OCR on synthetic scanned document image', async () => {
-    // Generate a high-contrast bitmap with distinct text lines
-    const testImage = await sharp({
-      create: {
-        width: 300,
-        height: 100,
-        channels: 3,
-        background: { r: 255, g: 255, b: 255 }, // White page
-      },
-    })
-      .composite([
-        {
-          input: Buffer.from(
-            `<svg width="300" height="100">
-              <text x="20" y="35" font-family="monospace" font-size="20" fill="black">EASYCONVERT</text>
-              <text x="20" y="70" font-family="monospace" font-size="18" fill="black">DOCS 2026</text>
-            </svg>`
-          ),
-          top: 0,
-          left: 0,
-        },
-      ])
-      .png()
-      .toBuffer();
+  oracleTest('recognizes the text of a 300 dpi scanned page within the clean-English error budget', ['tesseract'], async () => {
+    // tests/fixtures/ocr/en_a__clean300.png is rendered from en_a.gt.txt (see generate_golden.py), so the ground truth
+    // is the text the page was drawn from, not anything the OCR engine produced.
+    const image = fs.readFileSync(path.join(OCR_FIXTURES, 'en_a__clean300.png'));
+    const groundTruth = fs.readFileSync(path.join(OCR_FIXTURES, 'en_a.gt.txt'), 'utf-8');
 
-    const ocrResult = await performOcr(testImage);
-    expect(ocrResult.confidence).toBeGreaterThan(0.7);
-    expect(ocrResult.lines.length).toBeGreaterThan(0);
-    expect(ocrResult.wordCount).toBeGreaterThan(0);
+    const ocrResult = await performOcr(image, 'en');
+
+    expect(characterErrorRatePercent(groundTruth, ocrResult.text)).toBeLessThanOrEqual(MAX_CLEAN_ENGLISH_CER_PERCENT);
+    // The word and line counts describe the recognised text rather than an arbitrary non-zero number.
+    expect(ocrResult.wordCount).toBe(normalizeOcrText(ocrResult.text).split(' ').length);
+    expect(ocrResult.lines.map((line) => normalizeOcrText(line))).toEqual(
+      ocrResult.text.split('\n').map((line) => normalizeOcrText(line)).filter((line) => line !== '')
+    );
+    expect(ocrResult.confidence).toBeGreaterThan(MIN_CLEAN_CONFIDENCE);
   });
 
-  it('extracts text from PDF stream with octal and escaped sequences correctly', () => {
-    const pdfStream = Buffer.from(
-      '%PDF-1.4\n1 0 obj\n<< /Length 75 >>\nstream\nBT\n/F1 12 Tf\n(Hello\\040World\\nLine\\041) Tj\nET\nendstream\nendobj\n%%EOF',
-      'utf-8'
-    );
-    const text = extractTextFromPdf(pdfStream);
-    expect(text).toContain('Hello World\nLine!');
+  it('reads literal strings with octal and escaped sequences (ISO 32000-1 table 3)', async () => {
+    // \040 is a space, \041 an exclamation mark and \( \) are literal parentheses.
+    const pdf = singlePagePdf(flate(Buffer.from('BT\n/F1 12 Tf\n72 700 Td\n(Hello\\040World\\041 \\(escaped\\)) Tj\nET\n', 'latin1'))).buffer;
+    expect(await extractTextFromPdf(pdf)).toBe('Hello World! (escaped)');
   });
 
-  it('extracts UTF-16BE BOM hex strings and handles odd-length hex without crashing', () => {
-    // UTF-16BE encoded "Hello": 0048 0065 006c 006c 006f with BOM FEFF
-    const pdfStream = Buffer.from(
-      '%PDF-1.4\n1 0 obj\n<< /Length 85 >>\nstream\nBT\n<FEFF00480065006C006C006F> Tj\nET\nendstream\nendobj\n%%EOF',
-      'utf-8'
-    );
-    const text = extractTextFromPdf(pdfStream);
-    expect(text).toContain('Hello');
-
-    // Odd-length hex string with BOM: <FEFF48> or trailing odd nibble
-    const oddHex = '<FEFF48>';
-    const decoded = decodePdfHexString(oddHex);
-    expect(typeof decoded).toBe('string');
-  });
-
-  it('supports PDF single quote and double quote operators with both literal and hex strings', () => {
-    const pdfStream = Buffer.from(
-      `%PDF-1.4
-1 0 obj
-<< /Length 120 >>
-stream
-BT
-/F1 12 Tf
-(First Line) Tj
-(Second Line with \\(nested\\) parens) '
-0 0 <FEFF00540068006900720064> "
-ET
-endstream
-endobj
-%%EOF`,
-      'utf-8'
-    );
-    const text = extractTextFromPdf(pdfStream);
-    expect(text).toContain('First Line');
-    expect(text).toContain('Second Line with (nested) parens');
-    expect(text).toContain('Third');
+  it('shows the strings of the single quote and double quote operators in order', async () => {
+    // ' moves to the next line and shows its string; " does the same after setting word and character spacing.
+    const content = "BT\n/F1 12 Tf\n72 700 Td\n14 TL\n(First Line) Tj\n(Second Line with \\(nested\\) parens) '\n0 0 (Third) \"\nET\n";
+    const text = await extractTextFromPdf(singlePagePdf(flate(Buffer.from(content, 'latin1'))).buffer);
+    expect(text.replace(/\s+/g, ' ')).toBe('First Line Second Line with (nested) parens Third');
   });
 });

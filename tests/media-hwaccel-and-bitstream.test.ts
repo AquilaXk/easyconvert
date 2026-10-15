@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -12,6 +12,7 @@ import { probeNativeEngines, executeWorkerConversion } from '../src/worker/engin
 import { convertMedia } from '../src/lib/conversions/media';
 import { EngineUnavailableError } from '../src/lib/types';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
+import { avcProfileAndLevelHex, ffprobeReport } from './helpers/ffprobe-json';
 import {
   verifyAudioBitstreamWithFfprobe,
   verifyVideoBitstreamWithFfprobe,
@@ -27,6 +28,10 @@ import {
   wavFromSamples,
 } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 const MIN_ROUNDTRIP_SNR_DB = 25;
 
@@ -87,11 +92,14 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(args).toContain('+faststart');
       expect(args[args.indexOf('-c:a') + 1]).toBe('aac');
       expect(args[args.indexOf('-b:a') + 1]).toBe('256k');
-      expect(args[args.indexOf('-r') + 1]).toBe('30');
+      // One frame-rate control: the fps filter, never -r next to it.
+      expect(args).not.toContain('-r');
+      expect(args[args.indexOf('-vf') + 1]).toContain('fps=30');
+      expect(args).not.toContain('-fps_mode');
     });
 
     it('generates VP9 and Opus arguments for WebM container', () => {
-      const args = buildFfmpegArguments('/tmp/in.mp4', '/tmp/out.webm', 'mp4', 'webm', {});
+      const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.webm', 'mp4', 'webm', {});
       expect(args[0]).toBe('-y');
       expect(args[args.length - 1]).toBe('/tmp/out.webm');
       expect(args[args.indexOf('-c:v') + 1]).toBe('libvpx-vp9');
@@ -129,7 +137,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(args[0]).toBe('-y');
       expect(args[args.length - 1]).toBe('/tmp/out.mp4');
       expect(args[args.indexOf('-ac') + 1]).toBe('1');
-      expect(args[args.indexOf('-filter:a') + 1]).toBe('volume=0.8');
+      expect(args[args.indexOf('-filter:a') + 1]).toBe('aresample=async=1:first_pts=0,volume=0.8');
       expect(args[args.indexOf('-ar') + 1]).toBe('48000');
       expect(args[args.indexOf('-vf') + 1]).toBe(
         'scale=1920:1080:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2'
@@ -150,7 +158,9 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
 
       const track = demuxMp4(toArrayBuffer(mp4));
       expect(track?.type).toBe('video');
-      expect(track?.codec).toBe('avc1');
+      const probed = ffprobeReport(new Uint8Array(mp4), 'mp4').streams.find((stream) => stream.codec_type === 'video');
+      const { profileIdc, level } = avcProfileAndLevelHex(probed!);
+      expect(track?.codec).toMatch(new RegExp(`^avc1\\.${profileIdc}[0-9a-f]{2}${level}$`));
       expect(track?.samples.length).toBe(25);
       expect(track?.samples[0].isKeyFrame).toBe(true);
     });
@@ -178,7 +188,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       expect(wavStream.codec_name).toBe('pcm_s16le');
       expect(Number(wavStream.channels)).toBe(2);
 
-      const aacConv = await convertMedia(wav, 'wav', 'aac', { allowPureLossyBitstream: true }, 'test-audio');
+      const aacConv = await convertMedia(wav, 'wav', 'aac', {}, 'test-audio');
       const aacStream = probeStream(aacConv.buffer, 'aac', 'a');
       expect(aacStream.codec_name).toBe('aac');
       expect(Number(aacStream.sample_rate)).toBe(44100);
@@ -187,7 +197,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
       );
     });
 
-    it('gracefully rejects truncated or invalid media buffers', () => {
+    oracleTest('rejects truncated or invalid media buffers by decoding them', ['ffmpeg', 'ffprobe'], () => {
       const brokenBuf = Buffer.from([0x00, 0x01, 0x02]);
       const resAudio = verifyAudioBitstreamWithFfprobe(brokenBuf, 'wav');
       expect(resAudio.valid).toBe(false);
@@ -219,7 +229,7 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
           wav,
           'wav',
           target,
-          { allowPureLossyBitstream: true, disableNativeEngine: true },
+          { disableNativeEngine: true },
           'test.wav'
         ).catch((err: unknown) => err);
         expect(error).toBeInstanceOf(EngineUnavailableError);

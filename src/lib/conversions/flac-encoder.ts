@@ -17,6 +17,7 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { ConversionFailedError } from '../types';
+import { CPU_POOL_MIN_BYTES, getCpuPool, shareBytes } from '../workers/cpu-pool';
 
 // ============================================================================
 // 1. Input contract
@@ -1601,4 +1602,35 @@ export function encodeFlacStream(
     flacPcmMd5(samples, bitsPerSample)
   );
   return Buffer.concat([info, ...frames]);
+}
+
+/** Samples at or above this size are encoded on a pool thread; smaller inputs finish in a few milliseconds inline. */
+export const FLAC_POOL_MIN_BYTES = CPU_POOL_MIN_BYTES;
+
+/** What a FLAC pool task receives: the samples sit in memory shared with the calling thread. */
+export interface FlacTaskPayload {
+  samples: Int16Array | Int32Array;
+  sampleRate: number;
+  channels: number;
+  options: FlacEncodeOptions;
+}
+
+/** `encodeFlacStream` on a pool thread (inline for a small input): the same stream, without blocking the event loop. */
+export async function encodeFlacStreamAsync(
+  samples: Int16Array | Int32Array,
+  sampleRate: number,
+  channels: number,
+  options: FlacEncodeOptions & { signal?: AbortSignal } = {}
+): Promise<Buffer> {
+  const { signal, ...encoderOptions } = options;
+  // Rejects unsupported input here, with the same typed error, before anything is copied for a thread.
+  validateFlacInput(samples, sampleRate, channels, encoderOptions.bitsPerSample ?? FLAC_DEFAULT_BITS_PER_SAMPLE);
+  if (samples.byteLength < FLAC_POOL_MIN_BYTES) return encodeFlacStream(samples, sampleRate, channels, encoderOptions);
+  const bytes = await shareBytes(new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength));
+  const shared = samples instanceof Int16Array
+    ? new Int16Array(bytes.buffer, bytes.byteOffset, samples.length)
+    : new Int32Array(bytes.buffer, bytes.byteOffset, samples.length);
+  const payload: FlacTaskPayload = { samples: shared, sampleRate, channels, options: encoderOptions };
+  const reply = await getCpuPool().submit<Uint8Array>('flac', payload, { signal });
+  return Buffer.from(reply.buffer, reply.byteOffset, reply.byteLength);
 }

@@ -1,6 +1,6 @@
 import { SaxesParser } from 'saxes';
 import { DataLimitExceededError, DataParseError, DataRepresentationError } from '../types';
-import { MAX_DATA_NESTING_DEPTH, isDataObject, setOwn, type DataObject, type DataValue } from './data-json';
+import { MAX_DATA_NESTING_DEPTH, dataObjectKeys, isDataObject, setOwn, type DataObject, type DataValue } from './data-json';
 
 /**
  * XML for data conversions, parsed by saxes (a conformant, namespace-aware XML 1.0 parser).
@@ -543,9 +543,10 @@ function isJsonMlElement(value: DataValue, depth = 0): value is JsonMlElement {
   let index = JSONML_ATTRIBUTES_INDEX;
   const attributes = value[JSONML_ATTRIBUTES_INDEX];
   if (isDataObject(attributes)) {
-    const entries = Object.entries(attributes);
-    if (entries.length === 0) return false;
-    for (const [name, attribute] of entries) {
+    const keys = dataObjectKeys(attributes);
+    if (keys.length === 0) return false;
+    for (const name of keys) {
+      const attribute = attributes[name];
       if (!QNAME_PATTERN.test(name) || attribute === null || typeof attribute === 'object') return false;
     }
     index = JSONML_ATTRIBUTES_INDEX + 1;
@@ -570,7 +571,8 @@ function writeJsonMlElement(element: JsonMlElement, out: string[]): void {
   let index = JSONML_ATTRIBUTES_INDEX;
   const attributes = element[JSONML_ATTRIBUTES_INDEX];
   if (isDataObject(attributes)) {
-    for (const [attribute, value] of Object.entries(attributes)) {
+    for (const attribute of dataObjectKeys(attributes)) {
+      const value = attributes[attribute];
       out.push(' ', attribute, '="', escapeAttribute(scalarText(value)), '"');
     }
     index = JSONML_ATTRIBUTES_INDEX + 1;
@@ -624,9 +626,10 @@ function writeGenericElement(value: DataValue, tag: string, out: string[], depth
   if (Array.isArray(value)) {
     for (const item of value) writeGenericElement(item, 'item', out, depth + 1);
   } else if (isDataObject(value)) {
-    const entries = Object.entries(value);
-    const names = elementNamesForKeys(entries.map(([key]) => key));
-    for (const [index, [, child]] of entries.entries()) {
+    const keys = dataObjectKeys(value);
+    const names = elementNamesForKeys(keys);
+    for (let index = 0; index < keys.length; index++) {
+      const child = value[keys[index]];
       const name = names[index];
       if (Array.isArray(child)) {
         for (const item of child) writeGenericElement(item, name, out, depth + 1);

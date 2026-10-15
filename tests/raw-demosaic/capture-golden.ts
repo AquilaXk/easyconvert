@@ -1,12 +1,13 @@
 /**
- * Records tests/fixtures/raw/demosaic-golden.json from the in-place AHD and AMaZE functions of
- * src/lib/conversions/image.ts, the implementation that was live before the flat-plane rewrite
- * (it stays in image.ts as the reference). Run with `npx tsx tests/raw-demosaic/capture-golden.ts`.
+ * Records tests/fixtures/raw/demosaic-golden.json from the in-place AHD and AMaZE functions in
+ * tests/raw-demosaic/legacy-demosaic.ts, the implementation that was live before the flat-plane rewrite (moved there
+ * from src/lib/conversions/image.ts unchanged). Run with `npx tsx tests/raw-demosaic/capture-golden.ts`.
  *
  * The golden is an output of the OLD code. Never regenerate it from the rewritten engine.
  */
 import { writeFileSync } from 'node:fs';
-import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa, type BayerSensorData } from '../../src/lib/conversions/image';
+import type { BayerSensorData } from '../../src/lib/conversions/image';
+import { legacyDemosaicAhdBayerCfa as demosaicAhdBayerCfa, legacyDemosaicAmazeBayerCfa as demosaicAmazeBayerCfa } from './legacy-demosaic';
 import { REAL_CROP_CASES, SYNTHETIC_CASES, buildSensor, cropSensor, type DemosaicName } from './inputs';
 import { GOLDEN_PATH, digestOutput, loadImx477Plane, type GoldenEntry } from './golden';
 

@@ -1,0 +1,325 @@
+{
+  "reports": 14,
+  "rows": [
+    {
+      "id": "image/photo-a.jpg->webp/throughput",
+      "weight": "light",
+      "noise": 0.0231,
+      "bias": -0.0013,
+      "pairMs": 135,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-a.jpg->avif/throughput",
+      "weight": "light",
+      "noise": 0.033,
+      "bias": 0.0018,
+      "pairMs": 307,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-a.jpg->jpg/throughput",
+      "weight": "light",
+      "noise": 0.04,
+      "bias": -0.0004,
+      "pairMs": 95,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-b.png->webp/throughput",
+      "weight": "light",
+      "noise": 0.0153,
+      "bias": 0.004,
+      "pairMs": 119,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-b.png->avif/throughput",
+      "weight": "light",
+      "noise": 0.0208,
+      "bias": -0.0033,
+      "pairMs": 305,
+      "reports": 2
+    },
+    {
+      "id": "image/photo-b.png->jpg/throughput",
+      "weight": "light",
+      "noise": 0.0372,
+      "bias": -0.0011,
+      "pairMs": 88,
+      "reports": 2
+    },
+    {
+      "id": "image/screenshot.png->webp/throughput",
+      "weight": "light",
+      "noise": 0.0245,
+      "bias": -0.0025,
+      "pairMs": 382,
+      "reports": 2
+    },
+    {
+      "id": "image/screenshot.png->avif/throughput",
+      "weight": "light",
+      "noise": 0.0248,
+      "bias": 0.004,
+      "pairMs": 2291,
+      "reports": 2
+    },
+    {
+      "id": "image/screenshot.png->jpg/throughput",
+      "weight": "light",
+      "noise": 0.0415,
+      "bias": -0.0159,
+      "pairMs": 154,
+      "reports": 2
+    },
+    {
+      "id": "image/lineart.png->webp/throughput",
+      "weight": "light",
+      "noise": 0.0177,
+      "bias": -0.0046,
+      "pairMs": 250,
+      "reports": 2
+    },
+    {
+      "id": "image/lineart.png->avif/throughput",
+      "weight": "light",
+      "noise": 0.0333,
+      "bias": 0.0021,
+      "pairMs": 406,
+      "reports": 2
+    },
+    {
+      "id": "image/lineart.png->jpg/throughput",
+      "weight": "light",
+      "noise": 0.0338,
+      "bias": -0.0063,
+      "pairMs": 143,
+      "reports": 2
+    },
+    {
+      "id": "video/clip.mp4->h264/throughput",
+      "weight": "heavy",
+      "noise": 0.0306,
+      "bias": -0.0014,
+      "pairMs": 584,
+      "reports": 2
+    },
+    {
+      "id": "video/clip.mp4->hevc/throughput",
+      "weight": "heavy",
+      "noise": 0.0197,
+      "bias": -0.0022,
+      "pairMs": 1232,
+      "reports": 2
+    },
+    {
+      "id": "video/clip.mp4->vp9/throughput",
+      "weight": "heavy",
+      "noise": 0.0286,
+      "bias": 0.0006,
+      "pairMs": 2650,
+      "reports": 2
+    },
+    {
+      "id": "audio/music.wav->opus/throughput",
+      "weight": "light",
+      "noise": 0.0355,
+      "bias": 0.0017,
+      "pairMs": 301,
+      "reports": 2
+    },
+    {
+      "id": "audio/music.wav->aac/throughput",
+      "weight": "light",
+      "noise": 0.032,
+      "bias": -0.0008,
+      "pairMs": 624,
+      "reports": 2
+    },
+    {
+      "id": "audio/music.wav->flac/throughput",
+      "weight": "light",
+      "noise": 0.0307,
+      "bias": -0.0004,
+      "pairMs": 215,
+      "reports": 2
+    },
+    {
+      "id": "audio/speech.wav->opus/throughput",
+      "weight": "light",
+      "noise": 0.0202,
+      "bias": -0.0029,
+      "pairMs": 520,
+      "reports": 2
+    },
+    {
+      "id": "audio/speech.wav->aac/throughput",
+      "weight": "light",
+      "noise": 0.023,
+      "bias": 0.0009,
+      "pairMs": 310,
+      "reports": 2
+    },
+    {
+      "id": "audio/speech.wav->flac/throughput",
+      "weight": "light",
+      "noise": 0.0447,
+      "bias": -0.008,
+      "pairMs": 191,
+      "reports": 2
+    },
+    {
+      "id": "ocr/scan.png->pdf/throughput",
+      "weight": "heavy",
+      "noise": 0.0391,
+      "bias": 0.0098,
+      "pairMs": 1170,
+      "reports": 2
+    },
+    {
+      "id": "document/report.docx->pdf/throughput",
+      "weight": "heavy",
+      "noise": 0.0567,
+      "bias": 0.0098,
+      "pairMs": 586,
+      "reports": 2
+    },
+    {
+      "id": "document/rich-structure.docx->html/throughput",
+      "weight": "heavy",
+      "noise": 0.1956,
+      "bias": -0.0014,
+      "pairMs": 530,
+      "reports": 2
+    },
+    {
+      "id": "document/rich-structure.docx->odt/throughput",
+      "weight": "heavy",
+      "noise": 0.136,
+      "bias": 0.1692,
+      "pairMs": 659,
+      "reports": 2
+    },
+    {
+      "id": "document/rich-structure.docx->epub/throughput",
+      "weight": "heavy",
+      "noise": 0.1972,
+      "bias": 0.0155,
+      "pairMs": 562,
+      "reports": 2
+    },
+    {
+      "id": "document/rich-structure.docx->pdf/throughput",
+      "weight": "heavy",
+      "noise": 0.0477,
+      "bias": 0.002,
+      "pairMs": 628,
+      "reports": 2
+    },
+    {
+      "id": "document/noori.hwp->txt/throughput",
+      "weight": "heavy",
+      "noise": 0.1812,
+      "bias": -0.0773,
+      "pairMs": 53,
+      "reports": 2
+    },
+    {
+      "id": "document/pdf-text->txt/throughput",
+      "weight": "heavy",
+      "noise": 0.0288,
+      "bias": -0.004,
+      "pairMs": 397,
+      "reports": 2
+    },
+    {
+      "id": "document/pdf-structure->docx/throughput",
+      "weight": "heavy",
+      "noise": 0.1868,
+      "bias": -0.0127,
+      "pairMs": 1237,
+      "reports": 2
+    },
+    {
+      "id": "document/complex-script txt->pdf/throughput",
+      "weight": "heavy",
+      "noise": 0.0557,
+      "bias": 0.0119,
+      "pairMs": 3045,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.tar->zst/throughput",
+      "weight": "light",
+      "noise": 0.0545,
+      "bias": 0.004,
+      "pairMs": 51,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.tar->7z/throughput",
+      "weight": "light",
+      "noise": 0.315,
+      "bias": 0.009,
+      "pairMs": 247,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.zst->tar/throughput",
+      "weight": "light",
+      "noise": 0.1221,
+      "bias": 0.0148,
+      "pairMs": 20,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.xz->tar/throughput",
+      "weight": "light",
+      "noise": 0.0737,
+      "bias": -0.0083,
+      "pairMs": 69,
+      "reports": 2
+    },
+    {
+      "id": "compression/mixed.7z->tar/throughput",
+      "weight": "light",
+      "noise": 0.116,
+      "bias": -0.0035,
+      "pairMs": 71,
+      "reports": 2
+    },
+    {
+      "id": "pdf-ops/merge.pdf->pdf/throughput",
+      "weight": "light",
+      "noise": 0.1052,
+      "bias": -0.0321,
+      "pairMs": 24,
+      "reports": 2
+    },
+    {
+      "id": "pdf-ops/watermark.pdf->pdf/throughput",
+      "weight": "light",
+      "noise": 0.0788,
+      "bias": 0.0136,
+      "pairMs": 50,
+      "reports": 2
+    },
+    {
+      "id": "pdf-ops/protect.pdf->pdf/throughput",
+      "weight": "light",
+      "noise": 0.0615,
+      "bias": -0.0009,
+      "pairMs": 51,
+      "reports": 2
+    },
+    {
+      "id": "pdf-ops/decrypt.pdf->pdf/throughput",
+      "weight": "light",
+      "noise": 0.0792,
+      "bias": -0.0095,
+      "pairMs": 56,
+      "reports": 2
+    }
+  ]
+}

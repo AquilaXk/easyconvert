@@ -1,11 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import {
-  parseToUnicodeCMap,
-  extractPdfFontCMaps,
-  recursiveXyCut,
-  extractStructuredTextFromPdf,
-  PdfTextBlock,
-} from '../src/lib/conversions/pdf-utils';
+import { oracleTest } from './helpers/oracle-test';
+import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
 import {
   evaluateSurfaceCurvature,
   tessellateBSplineSurfaceAdaptive,
@@ -24,119 +19,6 @@ import {
 } from '../src/lib/conversions/hwp';
 
 describe('Phase 2: Core Engine SOTA Algorithms & High-Fidelity Domain Engines (#66)', () => {
-  // =========================================================================
-  // 1. PDF ISO 32000-1 /ToUnicode CMap Parsing
-  // =========================================================================
-  describe('1. PDF ISO 32000-1 /ToUnicode CMap Parsing', () => {
-    it('parses beginbfchar mapping single and multi-character Unicode glyphs', () => {
-      const cmapData = `
-/CIDInit /ProcSet findresource begin
-12 dict begin
-begincmap
-/CMapName /Custom-ToUnicode def
-/CMapType 2 def
-3 beginbfchar
-  <0001> <0041>
-  <0002> <0042>
-  <0003> <00660069>
-endbfchar
-endcmap
-`;
-      const cmap = parseToUnicodeCMap(cmapData);
-      expect(cmap.name).toBe('Custom-ToUnicode');
-      expect(cmap.charMap.get(1)).toBe('A');
-      expect(cmap.charMap.get(2)).toBe('B');
-      expect(cmap.charMap.get(3)).toBe('fi'); // ligature
-    });
-
-    it('parses beginbfrange sequential range and bracketed array forms', () => {
-      const cmapData = `
-begincmap
-2 beginbfrange
-  <0010> <0013> <0061>
-  <0020> <0022> [ <0058> <0059> <005A> ]
-endbfrange
-endcmap
-`;
-      const cmap = parseToUnicodeCMap(cmapData);
-      // Sequential: 0x10 -> 'a', 0x11 -> 'b', 0x12 -> 'c', 0x13 -> 'd'
-      expect(cmap.charMap.get(0x10)).toBe('a');
-      expect(cmap.charMap.get(0x11)).toBe('b');
-      expect(cmap.charMap.get(0x12)).toBe('c');
-      expect(cmap.charMap.get(0x13)).toBe('d');
-
-      // Array form: 0x20 -> 'X', 0x21 -> 'Y', 0x22 -> 'Z'
-      expect(cmap.charMap.get(0x20)).toBe('X');
-      expect(cmap.charMap.get(0x21)).toBe('Y');
-      expect(cmap.charMap.get(0x22)).toBe('Z');
-    });
-
-    it('parses begincidchar mappings for CID-keyed fonts', () => {
-      const cmapData = `
-begincmap
-2 begincidchar
-  <0064> 100
-  <0065> 101
-endcidchar
-endcmap
-`;
-      const cmap = parseToUnicodeCMap(cmapData);
-      expect(cmap.charMap.get(0x64)).toBe('d'); // ASCII 100
-      expect(cmap.charMap.get(0x65)).toBe('e'); // ASCII 101
-    });
-  });
-
-  // =========================================================================
-  // 2. Recursive XY-Cut++ Reading Order Layout Segmentation
-  // =========================================================================
-  describe('2. Recursive XY-Cut++ Reading Order Layout Segmentation', () => {
-    it('orders multi-column document blocks column-by-column rather than interleaved lines', () => {
-      // Simulate two-column layout on 600x800 page
-      // Left Column (x ~ 50, width ~ 200)
-      const leftCol1: PdfTextBlock = { text: 'Left Col Line 1', x: 50, y: 700, width: 180, height: 12 };
-      const leftCol2: PdfTextBlock = { text: 'Left Col Line 2', x: 50, y: 650, width: 180, height: 12 };
-      const leftCol3: PdfTextBlock = { text: 'Left Col Line 3', x: 50, y: 600, width: 180, height: 12 };
-
-      // Right Column (x ~ 350, width ~ 200, gap = 100 points)
-      const rightCol1: PdfTextBlock = { text: 'Right Col Line 1', x: 350, y: 700, width: 180, height: 12 };
-      const rightCol2: PdfTextBlock = { text: 'Right Col Line 2', x: 350, y: 650, width: 180, height: 12 };
-      const rightCol3: PdfTextBlock = { text: 'Right Col Line 3', x: 350, y: 600, width: 180, height: 12 };
-
-      // Input blocks in arbitrary shuffled order
-      const shuffled = [rightCol2, leftCol3, rightCol1, leftCol1, rightCol3, leftCol2];
-
-      const ordered = recursiveXyCut(shuffled, { minGapX: 30, minGapY: 10 });
-      const orderedTexts = ordered.map((b) => b.text);
-
-      // Must read entire left column first, then entire right column
-      expect(orderedTexts).toEqual([
-        'Left Col Line 1',
-        'Left Col Line 2',
-        'Left Col Line 3',
-        'Right Col Line 1',
-        'Right Col Line 2',
-        'Right Col Line 3',
-      ]);
-    });
-
-    it('correctly splits paragraphs with horizontal projection profile valleys', () => {
-      const p1Line1: PdfTextBlock = { text: 'P1 Line 1', x: 50, y: 750, width: 200, height: 12 };
-      const p1Line2: PdfTextBlock = { text: 'P1 Line 2', x: 50, y: 735, width: 200, height: 12 };
-
-      // Large paragraph gap (y from 735 down to 680)
-      const p2Line1: PdfTextBlock = { text: 'P2 Line 1', x: 50, y: 680, width: 200, height: 12 };
-      const p2Line2: PdfTextBlock = { text: 'P2 Line 2', x: 50, y: 665, width: 200, height: 12 };
-
-      const ordered = recursiveXyCut([p2Line2, p1Line1, p2Line1, p1Line2]);
-      expect(ordered.map((b) => b.text)).toEqual([
-        'P1 Line 1',
-        'P1 Line 2',
-        'P2 Line 1',
-        'P2 Line 2',
-      ]);
-    });
-  });
-
   // =========================================================================
   // 3. CAD NURBS Curvature-Adaptive Subdivision & 2D CDT Face Trimming
   // =========================================================================
@@ -305,18 +187,25 @@ endcmap
       expect(hwpEquationToLaTeX(rootScript)).toBe('\\sqrt[3]{x^2}');
     });
 
-    it('transpiles HWP big operators and Greek symbols', () => {
+    oracleTest('transpiles HWP big operators and Greek symbols', ['xmllint'], () => {
       const sumScript = 'sum_{i=1}^{n} {alpha + beta}';
       const mathml = hwpEquationToMathML(sumScript);
       const latex = hwpEquationToLaTeX(sumScript);
 
-      expect(mathml).toContain('<munderover>');
-      expect(mathml).toContain('∑');
-      expect(mathml).toContain('α');
-      expect(mathml).toContain('β');
-      expect(latex).toContain('\\sum');
-      expect(latex).toContain('\\alpha');
-      expect(latex).toContain('\\beta');
+      // LaTeX: the summation with its limits, then the Greek letters as control sequences.
+      expect(latex).toBe('\\sum_{i=1}^{n} {\\alpha + \\beta}');
+
+      // MathML, read with XPath: well-formed, and the structure of a sum with limits (MathML 3, 3.4.5 munderover:
+      // base, underscript, overscript) followed by the braced group alpha + beta (one row of three, no stray
+      // spacing operators between them).
+      expect(xmlWellFormed(mathml).ok).toBe(true);
+      expect(xpathString(mathml, 'name(/math/*[1])')).toBe('munderover');
+      expect(xpathString(mathml, 'string(/math/munderover/*[1])')).toBe('∑');
+      expect(xpathString(mathml, 'string(/math/munderover/*[2])')).toBe('i=1');
+      expect(xpathString(mathml, 'string(/math/munderover/*[3])')).toBe('n');
+      expect(xpathString(mathml, 'count(/math/*)')).toBe('2');
+      expect(xpathString(mathml, 'name(/math/*[2])')).toBe('mrow');
+      expect([1, 2, 3].map((position) => xpathString(mathml, `string(/math/mrow/*[${position}])`))).toEqual(['α', '+', 'β']);
     });
 
     it('serializes and parses HWP 5.0 CFBF document with embedded EQEDIT records', () => {

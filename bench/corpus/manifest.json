@@ -1,0 +1,170 @@
+{
+  "totalBytes": 4100098,
+  "files": [
+    {
+      "file": "cad/plate-basic.dxf",
+      "bytes": 3207,
+      "sha256": "94f9b3cf811aecbc27d43ee5a904b8fe29b83d35211299e67182705eab04910e"
+    },
+    {
+      "file": "cad/plate-basic.truth.json",
+      "bytes": 17705,
+      "sha256": "f52ef69a0fd809cd7dc8c8638ac3908747ccaa86b6f5d5848e03ccce1ca6d0ce"
+    },
+    {
+      "file": "cad/plate-full.dxf",
+      "bytes": 4824,
+      "sha256": "52c55dfae58564141e5f432bdc73b67985499a61bf11758b80eb6b3e96b586c4"
+    },
+    {
+      "file": "cad/plate-full.truth.json",
+      "bytes": 28579,
+      "sha256": "cc408da867baf15bb88aeed15ded1ab0a8134e7f79d890cf6473c762c0446f09"
+    },
+    {
+      "file": "clip.mp4",
+      "bytes": 374912,
+      "sha256": "0c15e7bfe55b4b4b971e8bf29051d46f01cbc89eeb9e9fe7d4fac55dd433d347"
+    },
+    {
+      "file": "data/records.jsonl",
+      "bytes": 651013,
+      "sha256": "d561dceeb0cfde354fdd9400661788f17d7e4b99d8e9d73dbbe19c6e3dacc78c"
+    },
+    {
+      "file": "data/table.csv",
+      "bytes": 228903,
+      "sha256": "b49d4a69f210683567238102ae8aa3aa98aaffb055c2bef84480a0e047ccc225"
+    },
+    {
+      "file": "data/table.jsonl",
+      "bytes": 416152,
+      "sha256": "3817c9248b5497531c2f3390a6ef921e5ffc999cf4ed671a8e8d5929ae5aef65"
+    },
+    {
+      "file": "data/table.parquet",
+      "bytes": 87515,
+      "sha256": "3af39f582592f9ddf8b015d5ae660611307a40c41435d7f12253b8401259c64d"
+    },
+    {
+      "file": "data/table.xlsx",
+      "bytes": 147030,
+      "sha256": "a51e76f195bd0ee876515cd178b23a85d27dbcfb7e86a73d1c5605db3cfda55d"
+    },
+    {
+      "file": "ebooks/book.epub",
+      "bytes": 29716,
+      "sha256": "7c5a5ba45141db52829bc9fbc9a8655a5a0facb11bf11f836683481cefcaceb2"
+    },
+    {
+      "file": "ebooks/book.fb2",
+      "bytes": 59449,
+      "sha256": "aa4e57a24251834d68202abbfd569f460096635427855898839f57628933ff1a"
+    },
+    {
+      "file": "ebooks/book.gt.txt",
+      "bytes": 38220,
+      "sha256": "68e639e981d29bdf5abc6696e790680faf95ba27716938b567bcebc37eaafee4"
+    },
+    {
+      "file": "ebooks/book.mobi",
+      "bytes": 46699,
+      "sha256": "bdcd52e4ffad518e173084b56d12ed0d0a277c10ce6b4a88bba278974e6acd28"
+    },
+    {
+      "file": "fonts/sans-cff.otf",
+      "bytes": 84268,
+      "sha256": "046297ff837128fbd8525100bacc8fce2a7e1bd5d949cf70eb7f071cc0c01ea9"
+    },
+    {
+      "file": "fonts/sans.ttf",
+      "bytes": 90156,
+      "sha256": "d30984cf26bec0f6f9402f9c731ed41cfaae4062633188010f5fbb197420d216"
+    },
+    {
+      "file": "lineart.png",
+      "bytes": 95791,
+      "sha256": "f155f2c783a9626e9b549263e72b2c5bd0e0f856c1508555cf674c6a376fbd81"
+    },
+    {
+      "file": "music.wav",
+      "bytes": 705644,
+      "sha256": "6b62570f08055f9f2b3c376381b0134b4a29f35a5f3d01348d04b61dfb7bdd16"
+    },
+    {
+      "file": "office/workbook.gt.txt",
+      "bytes": 769,
+      "sha256": "d75b296b1ef2ec6c1779e39ce3e65805ea50452aedfaa6cf3b8f4b307a253b51"
+    },
+    {
+      "file": "office/workbook.xlsx",
+      "bytes": 3961,
+      "sha256": "97055834e69dce57b2e16a6fd38a9e6e6a10729bf3e5c304bda22e6dca0d3278"
+    },
+    {
+      "file": "photo-a.jpg",
+      "bytes": 113064,
+      "sha256": "46e3f7f8ae1afd8e91cff2e954d62e2bec230397944ee389ad7f685f84c525aa"
+    },
+    {
+      "file": "photo-b.png",
+      "bytes": 392255,
+      "sha256": "891112bcf6ebb073b7e364c7765e1566d91364fea614cf52e8af0d7e188517cd"
+    },
+    {
+      "file": "report.docx",
+      "bytes": 1504,
+      "sha256": "5723087aed0b26c1fb0c99245ffdf96180d8dbd99a194d65b293c190e60e1b51"
+    },
+    {
+      "file": "report.gt.txt",
+      "bytes": 618,
+      "sha256": "80ad41e98759452bbe7700372f7aa40458529f6363ee4896aff1d8ea7180dceb"
+    },
+    {
+      "file": "scan.gt.txt",
+      "bytes": 639,
+      "sha256": "7f6eddca4578650caf6b8e125d648e5c5cc281014980974ebff62e869b4f46b6"
+    },
+    {
+      "file": "scan.png",
+      "bytes": 158356,
+      "sha256": "6d57b08e6abf172f15b293cafb614ea1fc34c814b4f673fb634271461507b6e8"
+    },
+    {
+      "file": "screenshot.png",
+      "bytes": 58727,
+      "sha256": "5a49a476a3f48b9d682acd20b931aff1322f56cc712d4a74e9f0af191edc9b12"
+    },
+    {
+      "file": "speech.wav",
+      "bytes": 252364,
+      "sha256": "ea112972d60fc21150f64e3e1a3cf3c7dab1b46d1b0e99fb214f690ffd5020c3"
+    },
+    {
+      "file": "vector/label.gt.txt",
+      "bytes": 57,
+      "sha256": "7adbedaf47715b698abda0eb3ce98b9498d0299e35291b23923b93813d660479"
+    },
+    {
+      "file": "vector/label.svg",
+      "bytes": 494,
+      "sha256": "baa191673a95249b8611925a3dfc639ae2b9f13a10a2e50fb7b51d66941c5afd"
+    },
+    {
+      "file": "vector/shapes.eps",
+      "bytes": 740,
+      "sha256": "8a3f257fdc4a3daedc24b08655ff8a20621257fcd0866bb8b36b6a4eca78a1f7"
+    },
+    {
+      "file": "vector/shapes.svg",
+      "bytes": 637,
+      "sha256": "b0953d6373741ec5888501808f500e15851b6da2cccd6145078cb25343a511f2"
+    },
+    {
+      "file": "vector/shapes.truth.png",
+      "bytes": 6130,
+      "sha256": "46a738e72dec3da03989af93382588e6691807941abcbe6bbbae07382345914e"
+    }
+  ]
+}

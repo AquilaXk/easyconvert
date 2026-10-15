@@ -207,6 +207,7 @@ describe('WOFF2 decoder: reference files from independent encoders', () => {
   });
 });
 
+// skip-ok: requireStrictFcScan / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when fc-scan is missing.
 describe.skipIf(!HAS_FC_SCAN)('WOFF2 decoder: fontconfig reads the converted reference file (needs fc-scan)', () => {
   it('converts a reference WOFF2 to TTF with the family and coverage of the source font', async () => {
     const result = await convertFont(fixture('dejavu-sans-latin.reference.woff2'), 'woff2', 'ttf', {}, 'dejavu.woff2');

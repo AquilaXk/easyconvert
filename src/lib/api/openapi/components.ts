@@ -10,10 +10,20 @@ import {
   WebhookSecretRotateResponseSchema,
   UsageLedgerEntrySchema,
   UsageQueryResponseSchema,
+  OcrLanguageEntrySchema,
+  OcrLanguagesResponseSchema,
   ArchiveInspectResponseSchema,
   PdfWatermarkOptionsSchema,
   PdfProtectOptionsSchema,
   PdfAOptionsSchema,
+  PdfSplitOptionsSchema,
+  PdfRotateOptionsSchema,
+  PdfReorderOptionsSchema,
+  PdfOptimizeOptionsSchema,
+  PdfaValidationProblemSchema,
+  ConversionWarningsProperties,
+  DroppedStreamsProperties,
+  EngineTraceProperties,
 } from '@/lib/api/contracts';
 import { SESSION_COOKIE_NAME } from '@/lib/auth/session';
 import { API_KEY_SCOPES } from './shared';
@@ -48,6 +58,13 @@ export const components = {
       },
     },
     ProblemDetails: ProblemDetailsSchema,
+    PdfaValidationProblem: {
+      description: 'Problem details of a PDF/A output that veraPDF rejected, with the requested profile and the failed rules.',
+      allOf: [
+        { $ref: '#/components/schemas/ProblemDetails' },
+        { type: 'object', required: PdfaValidationProblemSchema.required, properties: PdfaValidationProblemSchema.properties },
+      ],
+    },
     ConversionOptions: ConversionOptionsSchema,
     PipelineTask: PipelineTaskSchema,
     JobGraph: JobGraphSchema,
@@ -71,6 +88,19 @@ export const components = {
         durationMs: { type: 'number' },
         dataUri: { type: 'string' },
         expiresAt: { type: 'number' },
+        ...EngineTraceProperties,
+        ...DroppedStreamsProperties,
+        ...ConversionWarningsProperties,
+        sourceFrameCount: {
+          type: 'integer',
+          minimum: 2,
+          description: 'Frames or pages the source image holds; present only for multi-frame sources.',
+        },
+        frameUsed: {
+          type: 'integer',
+          minimum: 1,
+          description: '1-based frame or page a single-image output was taken from; present only when one was chosen.',
+        },
       },
     },
     JobSummary: {
@@ -164,6 +194,21 @@ export const components = {
         },
       },
     },
+    OcrLanguageEntry: {
+      ...OcrLanguageEntrySchema,
+      $id: undefined,
+    },
+    OcrLanguagesResponse: {
+      ...OcrLanguagesResponseSchema,
+      $id: undefined,
+      properties: {
+        ...OcrLanguagesResponseSchema.properties,
+        languages: {
+          type: 'array',
+          items: { $ref: '#/components/schemas/OcrLanguageEntry' },
+        },
+      },
+    },
     ArchiveInspectResponse: {
       ...ArchiveInspectResponseSchema,
       $id: undefined,
@@ -179,6 +224,18 @@ export const components = {
     PdfAOptions: {
       ...PdfAOptionsSchema,
       $id: undefined,
+    },
+    PdfSplitOptions: {
+      ...PdfSplitOptionsSchema,
+    },
+    PdfRotateOptions: {
+      ...PdfRotateOptionsSchema,
+    },
+    PdfReorderOptions: {
+      ...PdfReorderOptionsSchema,
+    },
+    PdfOptimizeOptions: {
+      ...PdfOptimizeOptionsSchema,
     },
   },
 };

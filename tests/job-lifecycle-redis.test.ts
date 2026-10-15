@@ -17,7 +17,10 @@ import {
   processConversionJob,
   attachJobLifecycleListeners,
   attachInputCleanupOnCompletion,
+  allConversionQueues,
+  resourceQueues,
 } from '../src/lib/queue/conversion-queue';
+import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
@@ -48,6 +51,7 @@ function createGate() {
   return { promise, release };
 }
 
+// skip-ok: mode selection. The shards run without REDIS_URL; the Redis-mode CI step (npm run test:redis) sets it and runs this file.
 describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () => {
   let keyPrefix: string;
   let admin: Redis;
@@ -318,6 +322,108 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
         attemptsMade: 2,
       });
     });
+
+    it('holds one deadline across the attempts of a job: a retry loaded from the store keeps the first attempt deadline', async () => {
+      const queue = connect('deadline-across-attempts');
+      const deadlines: number[] = [];
+      const worker = new Worker(
+        queue,
+        async (job) => {
+          deadlines.push(job.opts.deadlineAt as number);
+          if (deadlines.length === 1) throw new Error('transient');
+          return 'done';
+        },
+        { concurrency: 1 }
+      );
+      const completed = nextEvent(worker, 'completed');
+      const before = Date.now();
+      const job = await queue.add('convert', { payload: 'retry' }, { attempts: 2, backoff: { type: 'fixed', delay: 150 }, timeout: 60_000 });
+      await completed;
+      await worker.close();
+
+      expect(deadlines).toHaveLength(2);
+      // Both attempts see the deadline claimed when the first one started, not a fresh one for the retry.
+      expect(deadlines[1]).toBe(deadlines[0]);
+      expect(deadlines[0]).toBeGreaterThanOrEqual(before + 60_000);
+      expect(deadlines[0]).toBeLessThanOrEqual(before + 60_000 + 5_000);
+      expect(Number(await admin.hget(keyOf('deadline-across-attempts', `job:${job.id}`), 'deadlineAt'))).toBe(deadlines[0]);
+    }, 15000);
+
+    it('fails a requeued job at once when the deadline claimed by its first attempt has passed', async () => {
+      const queue = connect('deadline-past');
+      let runs = 0;
+      const worker = new Worker(
+        queue,
+        async () => {
+          runs++;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          throw new Error('transient');
+        },
+        { concurrency: 1 }
+      );
+      const failed = nextEvent(worker, 'failed');
+      await queue.add('convert', { payload: 'late retry' }, { attempts: 3, backoff: { type: 'fixed', delay: 300 }, timeout: 350 });
+      const [, err] = (await failed) as [unknown, Error];
+      await worker.close();
+      expect(err.name).toBe('JobTimeoutError');
+      expect(runs).toBe(1);
+    }, 15000);
+
+    it('never creates a job record when it claims the deadline of a job its queue does not hold', async () => {
+      const queue = connect('claim-missing');
+      const ghost = { id: 'ghost-job' } as never;
+      expect(await queue._claimDeadline(ghost, Date.now() + 60_000)).toBeUndefined();
+      expect(await admin.exists(keyOf('claim-missing', 'job:ghost-job'))).toBe(0);
+
+      const job = await queue.add('convert', { payload: 'removed' }, { timeout: 60_000 });
+      await queue._popNextWaiting();
+      await admin.del(keyOf('claim-missing', `job:${job.id}`));
+      expect(await queue._claimDeadline(job, Date.now() + 60_000)).toBeUndefined();
+      expect(await admin.exists(keyOf('claim-missing', `job:${job.id}`))).toBe(0);
+    });
+
+    it('records the deadline on the job it belongs to, once, and returns the recorded one to a later claim', async () => {
+      const queue = connect('claim-once');
+      const job = await queue.add('convert', { payload: 'claimed' }, { timeout: 60_000 });
+      const first = Date.now() + 60_000;
+      expect(await queue._claimDeadline(job, first)).toBe(first);
+      expect(await queue._claimDeadline(job, first + 5_000)).toBe(first);
+      const hash = await admin.hgetall(keyOf('claim-once', `job:${job.id}`));
+      expect(hash.deadlineAt).toBe(String(first));
+      expect(hash.state).toBe('waiting');
+    });
+
+    it('claims on the queue that holds the job when a worker takes it through the default queue, and leaves no stub record elsewhere', async () => {
+      const worker = new Worker([...allConversionQueues], async (job) => ({ jobId: job.id, status: 'completed' }) as never, { concurrency: 1 });
+      try {
+        const completed = nextEvent(worker, 'completed');
+        const job = await enqueueConversionJob(
+          resourceQueues.light,
+          'convert',
+          {
+            jobId: '',
+            originalFilename: 'a.csv',
+            sourceFormat: 'csv',
+            targetFormat: 'json',
+            fileSize: 1,
+            options: {},
+            inputBufferBase64: Buffer.from('a\n1\n').toString('base64'),
+          },
+          { attempts: 1 },
+          { tier: 'free', inputBytes: 8 }
+        );
+        await completed;
+        const keys = await admin.keys(`*:job:${job.id}`);
+        expect(keys).toHaveLength(1);
+        expect(keys[0]).toContain('easyconvert-jobs:light');
+        const hash = await admin.hgetall(keys[0]);
+        expect(hash.state).toBe('completed');
+        expect(Number(hash.deadlineAt)).toBeGreaterThan(Date.now());
+        await admin.del(...keys);
+      } finally {
+        await worker.close();
+      }
+    }, 15000);
 
     it('does not recover a stalled id twice when two sweepers race', async () => {
       const sweeperA = connect('stalled-race');

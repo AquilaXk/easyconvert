@@ -38,7 +38,7 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
     it.each([
       { src: 'csv', tgt: 'json', size: 1024, opts: {}, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
       { src: 'step', tgt: 'stl', size: 50_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
-      { src: 'wav', tgt: 'mp3', size: 200_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
+      { src: 'wav', tgt: 'wav', size: 200_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'png', tgt: 'webp', size: 100_000, opts: {}, caps: { hasCanvas: true }, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'mp4', tgt: 'webm', size: 10_000_000, opts: {}, caps: { hasWebCodecsVideo: true }, expectedTier: 'L1', expectedName: 'Edge L1 (Hardware VPU)', clientEdge: true },
       { src: 'png', tgt: 'pdf', size: 500_000, opts: { ocrEnabled: true }, caps: {}, expectedTier: 'L2', expectedName: 'Edge L2 (SIMD Wasm)', clientEdge: true },
@@ -229,7 +229,7 @@ END-ISO-10303-21;
         name: 'audio.wav',
         size: file.size,
         sourceFormat: 'wav',
-        targetFormat: 'mp3',
+        targetFormat: 'wav',
         status: 'ready',
         progress: 0,
         options: {},

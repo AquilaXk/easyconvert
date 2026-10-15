@@ -15,6 +15,7 @@ import {
   UnsupportedTargetError,
 } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, expectNoHangOnInput } from './helpers/timing';
 import { oracleTest } from './helpers/oracle-test';
 
 /**
@@ -186,6 +187,16 @@ describe('JSON to CSV flattens nested values', () => {
     expect(err).toBeInstanceOf(DataRepresentationError);
     expect(err.message).toMatch(/"a\.b"/);
   });
+
+  oracleTest('preserves source key order when an object mixes string keys and integer-like year keys', ['python3'], async () => {
+    const json = '[{"code":"A","TQ":10,"1976":-566000,"1977":1200},{"code":"B","TQ":20,"1976":300,"1977":400}]';
+    const csv = await convertFile(Buffer.from(json, 'utf-8'), 'json', 'csv', {}, 'budget.json');
+    expect(pythonCsvRows(csv.buffer)).toEqual([
+      ['code', 'TQ', '1976', '1977'],
+      ['A', '10', '-566000', '1200'],
+      ['B', '20', '300', '400'],
+    ]);
+  });
 });
 
 describe('JSON and NDJSON input fail closed', () => {
@@ -287,37 +298,26 @@ describe('YAML expansion is capped', () => {
 });
 
 describe('YAML keys are checked in linear time', () => {
-  const SMALL_KEY_COUNT = 25_000;
-  const LARGE_KEY_COUNT = 100_000;
+  const SMALL_KEY_COUNT = 10_000;
   /**
-   * 4x the keys may cost at most 8x the time: linear work scales by about 4, the pairwise
-   * uniqueness check this replaces scaled by 16 (19 s at 40,000 keys, 147 s at 100,000).
+   * 4x the keys may cost at most 8x the time (tests/helpers/timing.ts): linear work scales by about 4, the
+   * pairwise uniqueness check this replaces scaled by 16 (19 s at 40,000 keys, 147 s at 100,000).
    */
-  const MAX_SCALING_RATIO = 8;
-  /** Ceiling for 100,000 keys on a loaded runner; the pairwise check needed minutes. */
-  const LARGE_KEYS_CEILING_MS = 10_000;
-  const TIMING_RUNS = 2;
+  const LARGE_KEY_COUNT = SMALL_KEY_COUNT * SCALING_FACTOR;
 
-  async function fastestConversionMs(keyCount: number): Promise<number> {
-    const yamlText = Buffer.from(Array.from({ length: keyCount }, (_, i) => `k${i}: ${i}`).join('\n'), 'utf-8');
-    let fastest = Number.POSITIVE_INFINITY;
-    for (let run = 0; run < TIMING_RUNS; run++) {
-      const started = performance.now();
-      const result = await convertFile(yamlText, 'yaml', 'json', {}, 'keys.yaml');
-      fastest = Math.min(fastest, performance.now() - started);
-      const parsed = JSON.parse(result.buffer.toString('utf-8')) as Record<string, number>;
-      expect(Object.keys(parsed)).toHaveLength(keyCount);
-      expect(parsed[`k${keyCount - 1}`]).toBe(keyCount - 1);
-    }
-    return fastest;
-  }
+  const yamlWithKeys = (keyCount: number) =>
+    Buffer.from(Array.from({ length: keyCount }, (_, i) => `k${i}: ${i}`).join('\n'), 'utf-8');
 
-  it('converts YAML maps in time linear in their key count', async () => {
-    const small = await fastestConversionMs(SMALL_KEY_COUNT);
-    const large = await fastestConversionMs(LARGE_KEY_COUNT);
-    expect(large / small).toBeLessThan(MAX_SCALING_RATIO);
-    expect(large).toBeLessThan(LARGE_KEYS_CEILING_MS);
-  }, 60_000);
+  it('converts YAML maps in time linear in their key count (hang guard; growth ratio in the perf suite)', async () => {
+    const { largeResult } = await expectNoHangOnInput(
+      'yaml to json',
+      (yamlText: Buffer) => convertFile(yamlText, 'yaml', 'json', {}, 'keys.yaml'),
+      yamlWithKeys(LARGE_KEY_COUNT)
+    );
+    const parsed = JSON.parse(largeResult.buffer.toString('utf-8')) as Record<string, number>;
+    expect(Object.keys(parsed)).toHaveLength(LARGE_KEY_COUNT);
+    expect(parsed[`k${LARGE_KEY_COUNT - 1}`]).toBe(LARGE_KEY_COUNT - 1);
+  }, SCALING_TEST_TIMEOUT_MS);
 
   const DUPLICATES: readonly [label: string, yamlText: string, line: number][] = [
     ['a repeated key', 'a: 1\nb: 2\na: 3\n', 3],
@@ -393,3 +393,25 @@ describe('parquet to parquet', () => {
     expect(err.message).toMatch(/parquet/i);
   });
 });
+
+describe('source key order with integer-index keys', () => {
+  it('preserves key order when converting JSON with integer-index keys to YAML, TOML, XML, and back', async () => {
+    const json = '{"code":"A","TQ":10,"1976":-566000,"1975":1200}';
+    const yamlRes = await convertData(Buffer.from(json, 'utf-8'), 'json', 'yaml', {}, 'budget.json');
+    const yamlText = yamlRes.buffer.toString('utf-8');
+    expect(yamlText.indexOf('code:')).toBeLessThan(yamlText.indexOf("'1976':") >= 0 ? yamlText.indexOf("'1976':") : yamlText.indexOf('"1976":'));
+    const roundTripJson = await convertData(yamlRes.buffer, 'yaml', 'json', {}, 'budget.yaml');
+    expect(roundTripJson.buffer.toString('utf-8').replace(/\s+/g, '')).toBe(json);
+
+    const tomlRes = await convertData(Buffer.from(json, 'utf-8'), 'json', 'toml', {}, 'budget.json');
+    const tomlText = tomlRes.buffer.toString('utf-8');
+    expect(tomlText.indexOf('code')).toBeLessThan(tomlText.indexOf('1976'));
+    expect(tomlText.indexOf('1976')).toBeLessThan(tomlText.indexOf('1975'));
+
+    const xmlRes = await convertData(Buffer.from(json, 'utf-8'), 'json', 'xml', {}, 'budget.json');
+    const xmlText = xmlRes.buffer.toString('utf-8');
+    expect(xmlText.indexOf('<code>')).toBeLessThan(xmlText.indexOf('<_1976>'));
+    expect(xmlText.indexOf('<_1976>')).toBeLessThan(xmlText.indexOf('<_1975>'));
+  });
+});
+

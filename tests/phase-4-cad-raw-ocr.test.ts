@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, PDFNumber } from 'pdf-lib';
 import sharp from 'sharp';
+import { oracleTest } from './helpers/oracle-test';
+import { CAIRO_COORDINATE_DIGITS, diagonalSegments, pdfPageCount, pdfPageToSvg, svgPathSegments } from './helpers/pdftocairo-svg';
 import {
-  buildTrianglesFromPoints,
   tessellateCurvesToMesh,
-  Point3D,
   BSplineCurve,
 } from '../src/lib/conversions/cad-nurbs';
 import {
@@ -104,33 +104,6 @@ function verifyNormals(normals: [number, number, number][], expectedPlane?: 'z')
 
 describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
   describe('1. 3D CAD Triangulation & Normal Computation', () => {
-    it('triangulates coplanar 3D points via Delaunay and computes exact plane normals', () => {
-      const points: Point3D[] = [
-        { x: 0, y: 0, z: 5 },
-        { x: 2, y: 0, z: 5 },
-        { x: 2, y: 2, z: 5 },
-        { x: 1, y: 3, z: 5 },
-        { x: 0, y: 2, z: 5 },
-      ];
-
-      const mesh = buildTrianglesFromPoints(points, 'test-polygon');
-      expect(mesh.vertices).toHaveLength(5);
-      expect(mesh.faces.length).toBeGreaterThanOrEqual(3);
-
-      for (const face of mesh.faces) {
-        expect(face).toHaveLength(3);
-        expect(face[0]).toBeGreaterThanOrEqual(0);
-        expect(face[0]).toBeLessThan(5);
-        expect(face[1]).toBeGreaterThanOrEqual(0);
-        expect(face[1]).toBeLessThan(5);
-        expect(face[2]).toBeGreaterThanOrEqual(0);
-        expect(face[2]).toBeLessThan(5);
-      }
-
-      expect(mesh.normals).toHaveLength(5);
-      verifyNormals(mesh.normals, 'z');
-    });
-
     it('tessellates a single 3D curve with adaptive tangent-orthogonal ribbon extrusion', () => {
       const curve = createLinearCurve(0, 0, 10, 0);
       const mesh = tessellateCurvesToMesh([curve], 'single-curve');
@@ -150,8 +123,8 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
       verifyNormals(mesh.normals, 'z');
     });
 
-    it('renders DXF with > 100 entities to PDF with complete entity preservation and affine bounding box scaling', async () => {
-      // Build DXF with 150 LINE entities exceeding the old 100 entity cutoff
+    oracleTest('renders DXF with > 100 entities to PDF with complete entity preservation and affine bounding box scaling', ['pdftocairo', 'pdfinfo'], async () => {
+      // Build DXF with 150 LINE entities exceeding the old 100 entity cutoff; entity i runs from (10i, 5i) to (10i + 5, 5i + 5)
       const lines: string[] = ['0', 'SECTION', '2', 'ENTITIES'];
       for (let i = 0; i < 150; i++) {
         lines.push('0', 'LINE', '10', `${i * 10}`, '20', `${i * 5}`, '11', `${i * 10 + 5}`, '21', `${i * 5 + 5}`);
@@ -163,8 +136,32 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
 
       expect(result.mimeType).toBe('application/pdf');
       expect(result.filename).toBe('large-schematic.pdf');
-      expect(result.buffer.length).toBeGreaterThan(1000);
-      expect(result.buffer.subarray(0, 5).toString('ascii')).toBe('%PDF-');
+      expect(pdfPageCount(result.buffer)).toBe(1);
+
+      // Poppler draws the page. Every one of the 150 lines is there, in order, scaled by one factor (a uniform affine
+      // map of the DXF extent into the page): each has equal run and rise like the 5 by 5 source line, and a start that
+      // advances by twice the run (10 units per line against a run of 5). A page line is a few points long, so the run
+      // is measured over the whole drawing, from the first start to the last, instead of from one rounded segment.
+      const svg = pdfPageToSvg(result.buffer);
+      const drawn = diagonalSegments(svgPathSegments(svg));
+      expect(drawn).toHaveLength(150);
+      const pitch = (drawn[149].x1 - drawn[0].x1) / 149;
+      expect(pitch).toBeGreaterThan(0);
+      drawn.forEach((segment, index) => {
+        expect(segment.x2 - segment.x1, `run of line ${index}`).toBeCloseTo(pitch / 2, CAIRO_COORDINATE_DIGITS);
+        expect(segment.y1 - segment.y2, `rise of line ${index}`).toBeCloseTo(pitch / 2, CAIRO_COORDINATE_DIGITS);
+        expect(segment.x1 - drawn[0].x1, `start of line ${index}`).toBeCloseTo(pitch * index, CAIRO_COORDINATE_DIGITS);
+        expect(segment.y1 - drawn[0].y1, `height of line ${index}`).toBeCloseTo((-pitch * index) / 2, CAIRO_COORDINATE_DIGITS);
+      });
+      const root = /<svg[^>]*\swidth="([\d.]+)(?:pt)?"[^>]*\sheight="([\d.]+)(?:pt)?"/.exec(svg);
+      for (const segment of drawn) {
+        for (const [x, y] of [[segment.x1, segment.y1], [segment.x2, segment.y2]]) {
+          expect(x).toBeGreaterThan(0);
+          expect(x).toBeLessThan(Number(root?.[1]));
+          expect(y).toBeGreaterThan(0);
+          expect(y).toBeLessThan(Number(root?.[2]));
+        }
+      }
     });
   });
 

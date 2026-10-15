@@ -327,7 +327,7 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
         },
       });
 
-      const delRes = await credentialsDelete(deleteReq, { params: { id: credRef } });
+      const delRes = await credentialsDelete(deleteReq, { params: Promise.resolve({ id: credRef }) });
       expect(delRes.status).toBe(204);
 
       // Verify it is gone

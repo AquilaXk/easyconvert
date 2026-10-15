@@ -1,8 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+
+/** Each case spawns the guard as a subprocess (about 1.3 s idle); the 5 s default fails on a loaded CI shard. */
+const GUARD_SUBPROCESS_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: GUARD_SUBPROCESS_TEST_TIMEOUT_MS });
 
 describe('Anti-Cheat Guard AST Rules & Ratchet Baseline Engine (#252)', () => {
   const guardScript = path.resolve('scripts/guard-anti-cheat.ts');
@@ -234,6 +238,284 @@ it('checks substantive properties', () => {
         expect(res.status).toBe(0);
         expect(res.stderr + res.stdout).not.toContain('G4b-WEAK-ONLY-ASSERTIONS');
       });
+    });
+  });
+
+  // =========================================================================
+  // 4b. G4c: toBeDefined() on lookups that answer null
+  // =========================================================================
+  describe('Rule G4c: toBeDefined() on a lookup that returns null', () => {
+    function guardOutputFor(source: string): { status: number; output: string } {
+      let result = { status: -1, output: '' };
+      withTempDir((dir) => {
+        const testsDir = path.join(dir, 'tests');
+        fs.mkdirSync(testsDir, { recursive: true });
+        fs.writeFileSync(path.join(testsDir, 'lookup.test.ts'), source);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        result = { status: res.status, output: res.stderr + res.stdout };
+      });
+      return result;
+    }
+
+    it('flags a JSZip entry and a Headers value checked only with toBeDefined (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks an archive entry', async () => {
+  const zip = await JSZip.loadAsync(new Uint8Array());
+  expect(zip.file('word/document.xml')).toBeDefined();
+  expect(await zip.file('word/document.xml')!.async('string')).toBe('<w:document/>');
+});
+it('checks a response header', () => {
+  const res = new Response('', { headers: { 'X-Limit': '5' } });
+  expect(res.headers.get('X-Limit')).toBeDefined();
+  expect(res.status).toBe(200);
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output.match(/G4c-HOLLOW-NULL-CHECK/g)).toHaveLength(2);
+      expect(output).toContain("expect(zip.file('word/document.xml')).toBeDefined()");
+      expect(output).toContain("expect(res.headers.get('X-Limit')).toBeDefined()");
+    });
+
+    it('follows a local variable bound to the lookup (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks a bound header', () => {
+  const location = new Response('', { headers: { Location: '/x' } }).headers.get('Location');
+  expect(location).toBeDefined();
+  expect(location).toMatch(/^\\//);
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output).toContain('G4c-HOLLOW-NULL-CHECK');
+      expect(output).toContain('expect(location).toBeDefined()');
+    });
+
+    it('follows an alias of the headers object and a Headers built in the test (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks a header through an alias', () => {
+  const res = new Response('', { headers: { ETag: '"abc"' } });
+  const h = res.headers;
+  expect(h.get('etag')).toBeDefined();
+  expect(res.status).toBe(200);
+});
+it('checks a header through two aliases', () => {
+  const res = new Response('', { headers: { ETag: '"abc"' } });
+  const first = res.headers;
+  const second = first;
+  expect(second.get('etag')).toBeDefined();
+});
+it('checks a Headers object built in the test', () => {
+  const sent = new Headers({ 'X-Limit': '5' });
+  expect(sent.get('x-limit')).toBeDefined();
+});
+it('checks a bound value read through an alias', () => {
+  const res = new Response('', { headers: { Location: '/x' } });
+  const h = res.headers;
+  const location = h.get('Location');
+  expect(location).toBeDefined();
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output.match(/G4c-HOLLOW-NULL-CHECK/g)).toHaveLength(4);
+      expect(output).toContain("expect(h.get('etag')).toBeDefined()");
+      expect(output).toContain("expect(second.get('etag')).toBeDefined()");
+      expect(output).toContain("expect(sent.get('x-limit')).toBeDefined()");
+      expect(output).toContain('expect(location).toBeDefined()');
+    });
+
+    it('permits an alias of a Map, which answers undefined for a missing key (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks a Map through an alias', () => {
+  const registry = new Map([['a', 1]]);
+  const alias = registry;
+  expect(alias.get('a')).toBeDefined();
+  expect(alias.get('a')).toBe(1);
+});
+it('checks a Headers value strictly', () => {
+  const h = new Headers({ ETag: '"abc"' });
+  expect(h.get('etag')).not.toBeNull();
+  expect(h.get('etag')).toBe('"abc"');
+});
+          `);
+      expect(output).not.toContain('G4c-HOLLOW-NULL-CHECK');
+      expect(status).toBe(0);
+    });
+
+    it('permits not.toBeNull(), Map.get and an undefined-returning lookup (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, expect } from 'vitest';
+it('checks an archive entry strictly', async () => {
+  const zip = await JSZip.loadAsync(new Uint8Array());
+  expect(zip.file('word/document.xml')).not.toBeNull();
+  expect(await zip.file('word/document.xml')!.async('string')).toBe('<w:document/>');
+});
+it('checks a Map lookup, which answers undefined for a missing key', () => {
+  const registry = new Map([['a', 1]]);
+  expect(registry.get('a')).toBeDefined();
+  expect(registry.get('a')).toBe(1);
+});
+          `);
+      expect(output).not.toContain('G4c-HOLLOW-NULL-CHECK');
+      expect(status).toBe(0);
+    });
+  });
+
+  // =========================================================================
+  // 4c. G2c: skips that stay silent under ORACLE_STRICT_MODE=1
+  // =========================================================================
+  describe('Rule G2c: a skip must fail under ORACLE_STRICT_MODE=1', () => {
+    /** `helperFiles` are written to tests/helpers/ of the scanned tree, for conditions that import a constant. */
+    function guardOutputFor(source: string, helperFiles: Record<string, string> = {}): { status: number; output: string } {
+      let result = { status: -1, output: '' };
+      withTempDir((dir) => {
+        const testsDir = path.join(dir, 'tests');
+        fs.mkdirSync(path.join(testsDir, 'helpers'), { recursive: true });
+        for (const [name, text] of Object.entries(helperFiles)) fs.writeFileSync(path.join(testsDir, 'helpers', name), text);
+        fs.writeFileSync(path.join(testsDir, 'skips.test.ts'), source);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        result = { status: res.status, output: res.stderr + res.stdout };
+      });
+      return result;
+    }
+
+    it('flags a skip on a missing tool, an unconditional skip and a context skip (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+const HAS_BZIP2 = true;
+it.skipIf(!HAS_BZIP2)('round-trips through bzip2', () => {});
+describe.runIf(process.env.PERF_BENCH === '1')('benchmark', () => {});
+it.skip('retired', () => {});
+it('skips from inside', (ctx) => {
+  if (!HAS_BZIP2) ctx.skip();
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output.match(/G2c-SKIP-SILENT-UNDER-STRICT/g)).toHaveLength(4);
+      expect(output).toContain('it.skipIf(!HAS_BZIP2)');
+      expect(output).toContain('permanently skipped test');
+    });
+
+    it('follows a constant to the strict-aware helper it is built from (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+import { skipUnless, skipWithoutTools, skipWithoutRawSamples } from './helpers/strict-skip';
+const SKIP = skipWithoutTools('bzip2');
+const SKIP_WITHOUT_X = skipUnless('x', false);
+const NEEDS_SAMPLES = skipWithoutRawSamples('x3f');
+it.skipIf(SKIP)('uses a helper constant', () => {});
+it.skipIf(SKIP_WITHOUT_X)('uses another helper constant', () => {});
+describe.skipIf(NEEDS_SAMPLES)('samples', () => {});
+          `);
+      expect(output).not.toContain('G2c-SKIP-SILENT-UNDER-STRICT');
+      expect(status).toBe(0);
+    });
+
+    it('permits strict-flag, platform and explained skips (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
+const ENABLED = STRICT_MODE || Boolean(process.env.SAMPLES);
+it.skipIf(!ENABLED)('runs under strict mode', () => {});
+// skip-ok: platform capability: reads /proc, CI runs Linux.
+it.skipIf(process.platform !== 'linux')('reads /proc', () => {});
+// skip-ok: the Redis-mode CI step sets REDIS_URL and runs this file.
+describe.skipIf(!process.env.REDIS_URL)('redis', () => {});
+it('opts out on a slow runner', (ctx) => {
+  // skip-ok: explicit opt-out, never set in CI.
+  if (process.env.SLOW === '1') ctx.skip();
+});
+it('throws when strict, skips otherwise', (ctx) => {
+  if (!process.env.TOOL) {
+    if (process.env.ORACLE_STRICT_MODE === '1') throw new Error('tool required');
+    ctx.skip();
+  }
+});
+          `);
+      expect(output).not.toContain('G2c-SKIP-SILENT-UNDER-STRICT');
+      expect(status).toBe(0);
+    });
+
+    it('flags conditions that merely mention the strict flag, or a helper that is not the strict-aware one (positive case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
+const HAS_TOOL = Boolean(process.env.TOOL);
+function skipUnless(what: string, available: boolean): boolean {
+  return !available;
+}
+it.skipIf(!HAS_TOOL || STRICT_MODE)('skips when the tool is missing, and also when strict', () => {});
+it.skipIf(STRICT_MODE && !HAS_TOOL)('skips only under strict mode', () => {});
+it.skipIf(!HAS_TOOL && process.platform === 'linux')('a platform test is not a strict-mode test', () => {});
+it.skipIf(skipUnless('tool', HAS_TOOL))('a local function of the same name does not throw', () => {});
+it.runIf(HAS_TOOL)('runs only when the tool is present', () => {});
+it.runIf(!STRICT_MODE)('runs only when not strict', () => {});
+it('skips with a condition argument', (ctx) => {
+  ctx.skip(!HAS_TOOL);
+});
+it('skips with a condition argument that skips under strict mode', (ctx) => {
+  ctx.skip(!HAS_TOOL || STRICT_MODE, 'tool missing');
+});
+it('names the flag in a comment only', (ctx) => {
+  // ORACLE_STRICT_MODE and STRICT_MODE are handled by the CI preflight, not here.
+  if (!HAS_TOOL) ctx.skip();
+});
+it('names the flag in a string only', (ctx) => {
+  const note = 'throws when ORACLE_STRICT_MODE=1';
+  if (!HAS_TOOL) ctx.skip();
+});
+it('throws only on a branch that strict mode may not take', (ctx) => {
+  if (process.env.TOOL_NAME) throw new Error('named tool is broken');
+  if (!HAS_TOOL) ctx.skip();
+});
+          `);
+      expect(status).not.toBe(0);
+      expect(output.match(/G2c-SKIP-SILENT-UNDER-STRICT/g)).toHaveLength(11);
+      expect(output).toContain('it.skipIf(!HAS_TOOL || STRICT_MODE)');
+      expect(output).toContain('ctx.skip(!HAS_TOOL)');
+      expect(output).toContain('ctx.skip(!HAS_TOOL || STRICT_MODE, \'tool missing\')');
+      expect(output).toContain('it.skipIf(skipUnless(\'tool\', HAS_TOOL))');
+    });
+
+    it('accepts a strict-aware helper call, or a conjunct that needs strict mode off, however the condition is spelled (negative case)', () => {
+      const { status, output } = guardOutputFor(`
+import { it, describe } from 'vitest';
+import * as strict from './helpers/strict-skip';
+import { skipUnless as requireOrSkip, skipWithoutTools, isStrictMode } from './helpers/strict-skip';
+import { SKIP_WITHOUT_BINARY } from './helpers/skip-flags';
+const STRICT_MODE = process.env.ORACLE_STRICT_MODE === '1';
+const HAS_TOOL = Boolean(process.env.TOOL);
+const missing = (name: string) => !STRICT_MODE && !HAS_TOOL;
+it.skipIf(!HAS_TOOL && !STRICT_MODE)('conjunct of a negated flag', () => {});
+it.skipIf(!HAS_TOOL && !isStrictMode())('conjunct of a negated call', () => {});
+it.skipIf((!HAS_TOOL && process.env.TOOL_DIR === undefined) && process.env.ORACLE_STRICT_MODE !== '1')('conjunct on the environment', () => {});
+it.skipIf(requireOrSkip('tool', HAS_TOOL))('a helper imported under another name', () => {});
+it.skipIf(strict.skipUnless('tool', HAS_TOOL) || skipWithoutTools('ffmpeg'))('namespace and named helpers', () => {});
+it.skipIf(SKIP_WITHOUT_BINARY)('a constant defined in another helper', () => {});
+it.skipIf(missing('sample'))('a local arrow function', () => {});
+it.runIf(STRICT_MODE)('runs under strict mode', () => {});
+it.runIf(!requireOrSkip('tool', HAS_TOOL))('a helper, negated for runIf', () => {});
+it('skips with a condition that needs strict mode off', (ctx) => {
+  ctx.skip(!HAS_TOOL && !STRICT_MODE);
+});
+it('throws before skipping when strict', (ctx) => {
+  if (!HAS_TOOL) {
+    if (isStrictMode()) throw new Error('tool required');
+    ctx.skip();
+  }
+});
+it('skips only in the branch strict mode does not take', (ctx) => {
+  if (!STRICT_MODE) {
+    ctx.skip();
+  }
+});
+          `, {
+        'skip-flags.ts': `export const SKIP_WITHOUT_BINARY = !Boolean(process.env.BINARY) && process.env.ORACLE_STRICT_MODE !== '1';\n`,
+      });
+      expect(output).not.toContain('G2c-SKIP-SILENT-UNDER-STRICT');
+      expect(status).toBe(0);
     });
   });
 

@@ -1,0 +1,8 @@
+{
+  "generatedWith": "python3 + cryptography (HKDF-SHA256, AESGCM); see generate.py",
+  "kek": "known-answer-kek-0123456789abcdef-xyz",
+  "jobId": "g_kat123:import_source",
+  "plaintext": "{\"url\":\"https://files.example.org/in/data.csv?X-Amz-Signature=abc123\",\"headers\":{\"X-Api-Key\":\"k-1\"}}",
+  "keyId": "39ec8fe48da7",
+  "blob": "sealed:v1:39ec8fe48da7:AAECAwQFBgcICQoL:j1q1LpeVjeYCfNgo7STOow==:hiu4xn2QF5yeAxY6Qq4nxpAJfiV00tNi8L8vStz9Ve5piXp66iSu8W5DGIRiUXRWXLF3+nPMiicp7bA2FPiRMXFD71jTkqvNDFw2YcarYHAjcw2Va89StUbJCKyVonIZEl1uIw=="
+}

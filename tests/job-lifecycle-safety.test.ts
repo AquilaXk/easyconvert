@@ -294,7 +294,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
   });
 
   describe.each(IN_PROCESS_ENGINES)('2. Job timeout enforcement ($label)', ({ create }) => {
-    it('aborts a hung attempt, retries it, then fails the job into the DLQ', async () => {
+    it('aborts a hung attempt and fails the job into the DLQ without a retry: a deadline is a verdict on the job', async () => {
       const queue = create('timeout-retry');
       const abortReasons: unknown[] = [];
 
@@ -328,20 +328,22 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
 
       const final = await queue.getJob(job.id);
       expect(final?.state).toBe('failed');
-      expect(final?.attemptsMade).toBe(2);
+      expect(final?.attemptsMade).toBe(1);
       expect(final?.failedReason).toBe('Job timed out after 50ms');
+      expect(final?.failedCode).toBe('JobTimeoutError');
+      expect(final?.failedStatus).toBe(504);
 
-      expect(abortReasons).toHaveLength(2);
+      expect(abortReasons).toHaveLength(1);
       for (const reason of abortReasons) {
         expect(reason).toBeInstanceOf(JobTimeoutError);
-        expect((reason as Error).name).toBe('TimeoutError');
+        expect((reason as Error).name).toBe('JobTimeoutError');
       }
 
       const dlq = queue.getDlqEntries ? await queue.getDlqEntries() : [];
       expect(dlq).toHaveLength(1);
       expect(dlq[0].jobId).toBe(job.id);
       expect(dlq[0].failedReason).toBe('Job timed out after 50ms');
-      expect(dlq[0].attemptsMade).toBe(2);
+      expect(dlq[0].attemptsMade).toBe(1);
 
       await worker.close();
       await queue.close();
@@ -373,7 +375,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
 
       const res = await getLegacyJob(
         new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}?stream=true`),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       const events = await readSseEvents(res);
       expect(events).toHaveLength(1);
@@ -482,7 +484,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
       await queue.close();
     });
 
-    it('never lets a timed-out attempt that outlived its timeout store a result after the retry', async () => {
+    it('never lets a timed-out attempt that outlived its timeout store a result', async () => {
       const queue = new Queue<ConversionJobData, ConversionJobResult>('stale-attempt');
       const job = await queue.add('convert', csvJobData(), {
         attempts: 2,
@@ -491,7 +493,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
       });
       const saveSpy = vi.spyOn(s3Storage, 'saveObject');
 
-      // Hold only the first attempt past its 50ms timeout, right before convertFile.
+      // Hold the attempt past its 50ms timeout, right before convertFile.
       const releaseFirstAttempt = createGate();
       let heldFirstAttempt = false;
       const originalUpdateProgress = job.updateProgress.bind(job);
@@ -513,19 +515,18 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
         },
         { concurrency: 1 }
       );
-      const completed = nextEvent(worker, 'completed');
-      await completed;
+      const failed = nextEvent(worker, 'failed');
+      await failed;
 
       releaseFirstAttempt.release();
       const outcomes = await Promise.allSettled(attempts);
-      expect(outcomes.map((o) => o.status)).toEqual(['rejected', 'fulfilled']);
+      expect(outcomes.map((o) => o.status)).toEqual(['rejected']);
       expect((outcomes[0] as PromiseRejectedResult).reason).toBeInstanceOf(JobTimeoutError);
 
-      const resultWrites = saveSpy.mock.calls.filter(([key]) => String(key).startsWith(`results/${job.id}/`));
-      expect(resultWrites).toHaveLength(1);
+      expect(saveSpy.mock.calls.filter(([key]) => String(key).startsWith(`results/${job.id}/`))).toEqual([]);
       const final = await queue.getJob(job.id);
-      expect(final?.state).toBe('completed');
-      expect(final?.attemptsMade).toBe(2);
+      expect(final?.state).toBe('failed');
+      expect(final?.attemptsMade).toBe(1);
 
       await worker.close();
       await queue.close();
@@ -544,7 +545,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
           method: 'DELETE',
           headers: { Cookie: `easyconvert_session=${createSessionToken(redisUserStore.sanitizeUser(user))}` },
         }),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       expect(res.status).toBe(200);
       const body = await res.json();
@@ -583,7 +584,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
 
       const res = await deleteLegacyJob(
         new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}`, { method: 'DELETE' }),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       expect(res.status).toBe(409);
       const body = await res.json();
@@ -595,7 +596,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
     it('returns 404 for an unknown job id', async () => {
       const res = await deleteLegacyJob(
         new NextRequest('https://easyconvert.app/api/queue/jobs/job_unknown', { method: 'DELETE' }),
-        { params: { id: 'job_unknown' } }
+        { params: Promise.resolve({ id: 'job_unknown' }) }
       );
       expect(res.status).toBe(404);
     });
@@ -604,13 +605,13 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
       const job = await conversionQueue.add('convert', csvJobData());
       const res = await getLegacyJob(
         new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}?stream=true`),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       const eventsPromise = readSseEvents(res);
 
       const cancelRes = await deleteLegacyJob(
         new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}`, { method: 'DELETE' }),
-        { params: { id: job.id } }
+        { params: Promise.resolve({ id: job.id }) }
       );
       expect(cancelRes.status).toBe(200);
 

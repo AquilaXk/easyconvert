@@ -1,13 +1,12 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
   extractClientIp,
   isIpInCidr,
   normalizeIp,
   isIpAllowed,
-  getTrustedProxies,
-  DEFAULT_TRUSTED_PROXIES,
 } from '../src/lib/api-keys/ip-utils';
+import { DEFAULT_TRUSTED_PROXY_RANGES } from '../src/lib/security/client-ip';
 import {
   checkTokenBucketRateLimit,
   redisKeyStore,
@@ -25,11 +24,20 @@ describe('Phase 3: Auth & Developer API Enterprise Hardening', () => {
     redisKeyStore.resetStore();
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe('Trusted Proxy IP Spoofing Defense (Right-to-Left Traversal)', () => {
-    it('contains standard RFC 1918 and loopback CIDRs in default trusted proxies', () => {
-      expect(DEFAULT_TRUSTED_PROXIES).toContain('127.0.0.1/8');
-      expect(DEFAULT_TRUSTED_PROXIES.length).toBeGreaterThan(0);
-      expect(getTrustedProxies()).toEqual(expect.arrayContaining(['127.0.0.1/8', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']));
+    it('contains standard RFC 1918 and loopback CIDRs in the default trusted proxies of the shared resolver', () => {
+      expect(DEFAULT_TRUSTED_PROXY_RANGES).toEqual([
+        '127.0.0.1/8',
+        '::1/128',
+        '10.0.0.0/8',
+        '172.16.0.0/12',
+        '192.168.0.0/16',
+        'fc00::/7',
+      ]);
     });
 
     it('identifies valid CIDR ranges correctly', () => {
@@ -66,20 +74,25 @@ describe('Phase 3: Auth & Developer API Enterprise Hardening', () => {
       expect(resolvedIp).toBe('198.51.100.5');
     });
 
-    it('resolves remote IP from cf-connecting-ip or fallback header when x-forwarded-for is missing', () => {
+    it('honours cf-connecting-ip only for a verified CDN peer, and never reads x-real-ip', () => {
+      // Without TRUSTED_CDN the header is attacker-controlled, so nothing can be attributed.
       const cfReq = new NextRequest('https://easyconvert.app/api/v1/convert', {
         headers: {
           'cf-connecting-ip': '203.0.113.42',
         },
       });
-      expect(extractClientIp(cfReq)).toBe('203.0.113.42');
+      expect(extractClientIp(cfReq, [], '203.0.113.7')).toBe('203.0.113.7');
+
+      vi.stubEnv('TRUSTED_CDN', 'cloudflare');
+      // 173.245.48.5 lies in the published Cloudflare range 173.245.48.0/20.
+      expect(extractClientIp(cfReq, [], '173.245.48.5')).toBe('203.0.113.42');
 
       const directReq = new NextRequest('https://easyconvert.app/api/v1/convert', {
         headers: {
           'x-real-ip': '198.51.100.77',
         },
       });
-      expect(extractClientIp(directReq)).toBe('198.51.100.77');
+      expect(extractClientIp(directReq, ['10.0.0.0/8'], '10.0.0.9')).toBe('10.0.0.9');
     });
 
     it('rejects spoofed CF-Connecting-IP and X-Real-IP when direct connecting peer is untrusted', () => {
@@ -102,15 +115,16 @@ describe('Phase 3: Auth & Developer API Enterprise Hardening', () => {
       expect(resolvedReal).toBe('198.51.100.200');
     });
 
-    it('trusts CF-Connecting-IP and X-Real-IP when direct connecting peer is a verified trusted proxy', () => {
-      // Direct peer is trusted reverse proxy (172.16.0.5)
+    it('ignores CF-Connecting-IP from a trusted private proxy (a proxy is not a verified CDN edge)', () => {
+      // Direct peer is trusted reverse proxy (172.16.0.5); the header is client-writable behind it.
       const trustedCf = new NextRequest('https://easyconvert.app/api/v1/convert', {
         headers: {
           'cf-connecting-ip': '203.0.113.42',
+          'x-forwarded-for': '198.51.100.9',
         },
       });
       const resolvedCf = extractClientIp(trustedCf, ['172.16.0.0/12'], '172.16.0.5');
-      expect(resolvedCf).toBe('203.0.113.42');
+      expect(resolvedCf).toBe('198.51.100.9');
     });
 
     it('normalizes hex-encoded IPv4-mapped IPv6 addresses to standard dotted-quad format', () => {

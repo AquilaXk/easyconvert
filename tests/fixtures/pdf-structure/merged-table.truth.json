@@ -1,0 +1,62 @@
+{
+ "rows": [
+  [
+   {
+    "text": "Region",
+    "colSpan": 2,
+    "rowSpan": 1
+   },
+   {
+    "text": "Total",
+    "colSpan": 1,
+    "rowSpan": 1
+   }
+  ],
+  [
+   {
+    "text": "North",
+    "colSpan": 1,
+    "rowSpan": 2
+   },
+   {
+    "text": "Q1",
+    "colSpan": 1,
+    "rowSpan": 1
+   },
+   {
+    "text": "10",
+    "colSpan": 1,
+    "rowSpan": 1
+   }
+  ],
+  [
+   {
+    "text": "Q2",
+    "colSpan": 1,
+    "rowSpan": 1
+   },
+   {
+    "text": "20",
+    "colSpan": 1,
+    "rowSpan": 1
+   }
+  ],
+  [
+   {
+    "text": "South",
+    "colSpan": 1,
+    "rowSpan": 1
+   },
+   {
+    "text": "Q1",
+    "colSpan": 1,
+    "rowSpan": 1
+   },
+   {
+    "text": "30",
+    "colSpan": 1,
+    "rowSpan": 1
+   }
+  ]
+ ]
+}

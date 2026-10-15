@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
+import { redactForOutput, redactText } from '../security/redact';
 import { fetch as undiciFetch, Agent } from 'undici';
 import { createSsrfSafeAgent, validateUrlForSsrf } from '../security/ssrf';
 import type { WebhookDlqEntry } from './types';
 import { redisKeyStore } from './redis-key-store';
-import { getWebhookSecretStore } from './webhook-secret-store';
+import { getWebhookSecretStore, requireWebhookTargetId } from './webhook-secret-store';
 import {
   createQueueEngine,
   Worker,
@@ -394,6 +395,9 @@ export class WebhookDispatcher {
     const deliveryId = options.deliveryId || `wh_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
     const timestamp = Math.floor(Date.now() / 1000);
     const startTime = Date.now();
+    // An explicitly named target must not be blank; the typed error replaces the old silent fallback.
+    const namedTarget = options.targetId ?? options.ownerKeyId;
+    const secretTargetId = namedTarget === undefined ? undefined : requireWebhookTargetId(namedTarget);
 
     // Check event subscription filter
     if (options.subscribedEvents && !this.shouldDispatchEvent(event, options.subscribedEvents)) {
@@ -469,10 +473,11 @@ export class WebhookDispatcher {
     let previousSecret = options.previousSecret;
     let previousExpiresAt = options.previousExpiresAt;
 
-    if (options.ownerUserId) {
+    // Rotated secrets are stored per target. A dispatch that names no target reads no record: its owner
+    // only attributes dead-letter entries, and there is no shared slot to fall back to.
+    if (options.ownerUserId && secretTargetId !== undefined) {
       try {
-        const targetId = options.targetId || options.ownerKeyId || 'default';
-        const record = await getWebhookSecretStore().getSecretRecord(options.ownerUserId, targetId);
+        const record = await getWebhookSecretStore().getSecretRecord(options.ownerUserId, secretTargetId);
         if (record) {
           if (!primarySecret || primarySecret === record.primary) {
             primarySecret = record.primary;
@@ -523,11 +528,13 @@ export class WebhookDispatcher {
       return result;
     }
 
+    // Payloads are built from job state and error text: nothing secret leaves in a delivery, a
+    // signature input, or the dead-letter copy of either.
     const payload: WebhookPayload<T> = {
       id: deliveryId,
       event,
       timestamp,
-      data,
+      data: redactForOutput(data),
     };
 
     const bodyString = JSON.stringify(payload);
@@ -674,7 +681,14 @@ export class WebhookDispatcher {
     return result;
   }
 
-  public async saveToDlq(entry: WebhookDlqEntry): Promise<void> {
+  public async saveToDlq(unmasked: WebhookDlqEntry): Promise<void> {
+    // The target URL and signing secret stay as they are because a replay needs them; the payload
+    // and the error text are what a reader of the queue sees, so they are stored masked.
+    const entry: WebhookDlqEntry = {
+      ...unmasked,
+      payload: redactForOutput(unmasked.payload),
+      errorMessage: unmasked.errorMessage === undefined ? undefined : redactText(unmasked.errorMessage),
+    };
     const client = redisKeyStore.getRedisClient();
     if (client) {
       try {

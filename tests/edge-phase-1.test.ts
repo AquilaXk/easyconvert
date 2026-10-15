@@ -14,7 +14,6 @@ import {
   convertPureAudio,
   encodePcmToWav,
   parseWavPcm,
-  encodePureMp3,
 } from '@/lib/edge/pure/pure-audio';
 import {
   isCanvasSupported,
@@ -34,8 +33,8 @@ import {
   executeItemConversion,
 } from '@/lib/client-converter';
 import { ConversionQueueItem } from '@/lib/types';
-import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { collectModuleGraph, identifierUses, parseSource } from './helpers/ts-source';
 
 describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => {
   let originalWindow: any;
@@ -59,32 +58,51 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
   // 1. Dependency Isolation & Purity Verification
   // ==========================================================================
   describe('Dependency Isolation Audit', () => {
-    it('pure-data.ts strictly avoids importing pdfkit, office, sharp, or fs', () => {
-      const filePath = path.join(process.cwd(), 'src/lib/edge/pure/pure-data.ts');
-      const content = fs.readFileSync(filePath, 'utf-8');
-      expect(content).not.toContain("from 'pdfkit'");
-      expect(content).not.toContain("from './office'");
-      expect(content).not.toContain("from 'sharp'");
-      expect(content).not.toMatch(/['"](?:node:)?fs['"]/);
+    // The modules are followed through every run-time import, so a heavy dependency pulled in by a helper of a
+    // helper is found; text matching on the entry file alone would miss it. Type-only imports are erased and do
+    // not count.
+    const SRC_ROOT = path.join(process.cwd(), 'src');
+    const pureGraph = (name: string) => collectModuleGraph(path.join(SRC_ROOT, 'lib/edge/pure', `${name}.ts`), SRC_ROOT);
+    const relativeFiles = (graph: ReturnType<typeof pureGraph>) => graph.files.map((file) => path.relative(SRC_ROOT, file));
+
+    it('pure-data.ts reaches no package beyond the YAML and CSV parsers, and no server-side conversion module', () => {
+      const graph = pureGraph('pure-data');
+      // node:path arrives through the format registry.
+      expect(graph.externalSpecifiers).toEqual(['js-yaml', 'node:path', 'papaparse']);
+      expect(relativeFiles(graph).filter((file) => /office|pdf|sharp|vector-cad/i.test(file))).toEqual([]);
     });
 
-    it('pure-cad.ts strictly avoids importing sharp, pdfkit, zlib, or vector-cad.ts', () => {
-      const filePath = path.join(process.cwd(), 'src/lib/edge/pure/pure-cad.ts');
-      const content = fs.readFileSync(filePath, 'utf-8');
-      expect(content).not.toContain("from 'sharp'");
-      expect(content).not.toContain("from 'pdfkit'");
-      expect(content).not.toMatch(/['"](?:node:)?zlib['"]/);
-      expect(content).not.toContain("from './vector-cad'");
-      expect(content).not.toContain("from '../../conversions/vector-cad'");
+    it('pure-cad.ts reaches only the STEP reader of the conversions, no raster, PDF or archive module', () => {
+      const graph = pureGraph('pure-cad');
+      expect(graph.externalSpecifiers).toEqual(['node:path']);
+      expect(relativeFiles(graph).filter((file) => file.startsWith('lib/conversions/'))).toEqual([
+        'lib/conversions/cad-nurbs.ts',
+        'lib/conversions/cad-predicates.ts',
+      ]);
     });
 
-    it('pure-audio.ts strictly avoids Node Buffer globals and methods', () => {
-      const filePath = path.join(process.cwd(), 'src/lib/edge/pure/pure-audio.ts');
-      const content = fs.readFileSync(filePath, 'utf-8');
-      expect(content).not.toContain('Buffer.alloc');
-      expect(content).not.toContain('Buffer.concat');
-      expect(content).not.toContain('Buffer.from');
-      expect(content).not.toContain(': Buffer');
+    it('the audio path never names the Node Buffer, and converts with the Buffer global removed', () => {
+      const graph = pureGraph('pure-audio');
+      expect(graph.externalSpecifiers).toEqual(['node:path']);
+      // The registry, the shared types and the job graph are imported for their names and are also used on the
+      // server, where they do use Buffer; the audio engine itself is every other file in the graph.
+      const audioFiles = graph.files.filter((file) => !/lib\/(?:registry|types)\.ts$|lib\/(?:jobs|api)\//.test(file));
+      expect(audioFiles.map((file) => path.relative(SRC_ROOT, file))).toContain('lib/edge/pure/pure-audio.ts');
+      const bufferUses = audioFiles.flatMap((file) =>
+        identifierUses(parseSource(file), 'Buffer').map((position) => `${path.relative(SRC_ROOT, file)}:${position}`)
+      );
+      expect(bufferUses).toEqual([]);
+
+      // Behaviour agrees with the source: a conversion runs and returns the samples it was given, with no Buffer.
+      const samples = new Int16Array([0, 1000, -1000, 32767, -32768]);
+      const wavBytes = encodePcmToWav(samples, 8000, 1);
+      vi.stubGlobal('Buffer', undefined);
+      try {
+        const converted = convertPureAudio(wavBytes, 'wav', 'wav');
+        expect(parseWavPcm(converted.data).samples).toEqual(samples);
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
   });
 
@@ -157,22 +175,12 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
     });
 
     it('safely serializes JSON primitives and arrays of primitives to CSV/TSV without throwing', () => {
-      const arrayRes = convertPureData('[10, 20, 30]', 'json', 'csv');
-      expect(arrayRes.text).toContain('value');
-      expect(arrayRes.text).toContain('10');
-      expect(arrayRes.text).toContain('20');
-      expect(arrayRes.text).toContain('30');
-
-      const stringRes = convertPureData('"single string"', 'json', 'tsv');
-      expect(stringRes.text).toContain('value');
-      expect(stringRes.text).toContain('single string');
-
-      const numRes = convertPureData('42', 'json', 'csv');
-      expect(numRes.text).toContain('value');
-      expect(numRes.text).toContain('42');
-
-      const nullRes = convertPureData('null', 'json', 'csv');
-      expect(nullRes.text).toContain('value');
+      // A bare value becomes a one-column table headed "value"; records end with CRLF (RFC 4180).
+      expect(convertPureData('[10, 20, 30]', 'json', 'csv').text).toBe('value\r\n10\r\n20\r\n30');
+      expect(convertPureData('"single string"', 'json', 'tsv').text).toBe('value\r\nsingle string');
+      expect(convertPureData('42', 'json', 'csv').text).toBe('value\r\n42');
+      // JSON null is no value: the table has its header and no row.
+      expect(convertPureData('null', 'json', 'csv').text).toBe('value\r\n');
     });
 
     it('handles empty or whitespace YAML converting to JSON with valid object rather than string undefined', () => {
@@ -243,10 +251,41 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
     });
 
     it('correctly handles Uint8Array input for CAD conversion', () => {
-      const bytes = new TextEncoder().encode(SAMPLE_STEP);
-      const res = convertPureCad(bytes, 'stp', 'stl');
-      expect(res.text).toContain('solid');
-      expect(res.data).toBeInstanceOf(Uint8Array);
+      const fromBytes = convertPureCad(new TextEncoder().encode(SAMPLE_STEP), 'stp', 'stl', 'bytes_model');
+      const fromText = convertPureCad(SAMPLE_STEP, 'step', 'stl', 'bytes_model');
+      // The same model gives the same mesh whether the STEP text arrives as a string or as bytes, and the
+      // returned bytes are exactly the UTF-8 of the returned text.
+      expect(fromBytes.text).toBe(fromText.text);
+      expect(fromBytes.text.startsWith('solid bytes_model\n')).toBe(true);
+      expect(new TextDecoder().decode(fromBytes.data)).toBe(fromBytes.text);
+
+      // Independent read of the ASCII STL: the facets tile the rectangle between the two ruled curves,
+      // x 1.25..12.5 by y 2.5..14.5 at z 3.75, an area of 11.25 * 12 = 135.
+      const facets = [...fromBytes.text.matchAll(/facet normal (\S+) (\S+) (\S+)\s+outer loop\s+vertex (\S+) (\S+) (\S+)\s+vertex (\S+) (\S+) (\S+)\s+vertex (\S+) (\S+) (\S+)/g)].map(
+        (match) => match.slice(1).map(Number)
+      );
+      expect(facets).toHaveLength((fromBytes.text.match(/facet normal/g) ?? []).length);
+      let area = 0;
+      for (const facet of facets) {
+        const [a, b, c] = [facet.slice(3, 6), facet.slice(6, 9), facet.slice(9, 12)];
+        for (const vertex of [a, b, c]) {
+          expect(vertex[0]).toBeGreaterThanOrEqual(1.25);
+          expect(vertex[0]).toBeLessThanOrEqual(12.5);
+          expect(vertex[1]).toBeGreaterThanOrEqual(2.5);
+          expect(vertex[1]).toBeLessThanOrEqual(14.5);
+          expect(vertex[2]).toBe(3.75);
+        }
+        const cross = [
+          (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+          (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+          (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
+        ];
+        const twiceArea = Math.hypot(cross[0], cross[1], cross[2]);
+        // The stored normal is the unit normal of the winding order.
+        expect(facet.slice(0, 3).map((value, axis) => Math.abs(value - cross[axis] / twiceArea))).toEqual([0, 0, 0]);
+        area += twiceArea / 2;
+      }
+      expect(area).toBeCloseTo(135, 9);
     });
 
     it('fails closed when given empty or unparseable CAD content', () => {
@@ -285,9 +324,13 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
   // ==========================================================================
   describe('Pure Audio Engine (pure-audio.ts)', () => {
     it('correctly reports audio format capability', () => {
-      expect(isPureAudioConvertible('wav', 'mp3')).toBe(true);
-      expect(isPureAudioConvertible('pcm', 'wav')).toBe(true);
-      expect(isPureAudioConvertible('raw', 'mp3')).toBe(true);
+      // MP3 is not a pure target: the server engine encodes it.
+      expect(isPureAudioConvertible('wav', 'mp3')).toBe(false);
+      expect(isPureAudioConvertible('wav', 'wav')).toBe(true);
+      // Raw PCM has no header: it is convertible only when the options describe it.
+      expect(isPureAudioConvertible('pcm', 'wav')).toBe(false);
+      expect(isPureAudioConvertible('raw', 'mp3')).toBe(false);
+      expect(isPureAudioConvertible('pcm', 'wav', { source: { sampleRate: 44100, channels: 2, bitDepth: 16 } })).toBe(true);
       expect(isPureAudioConvertible('wav', 'flac')).toBe(false);
       expect(isPureAudioConvertible('mp3', 'aac')).toBe(false);
     });
@@ -334,43 +377,14 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       }
     });
 
-    it('encodes PCM samples to compliant MP3 with ID3v2 metadata and sync frames', () => {
-      const sampleCount = 1152 * 4; // 4 frames stereo
-      const samples = new Int16Array(sampleCount * 2);
-      for (let i = 0; i < samples.length; i++) {
-        samples[i] = (i % 2000) - 1000;
-      }
-
-      const mp3Bytes = encodePureMp3(samples, 44100, 2, '192k', 'Test Track');
-      expect(mp3Bytes).toBeInstanceOf(Uint8Array);
-      expect(mp3Bytes.length).toBeGreaterThan(100);
-
-      // Verify ID3v2 header: 'ID3' at byte 0, version 3 at byte 3
-      const id3Magic = String.fromCharCode(mp3Bytes[0], mp3Bytes[1], mp3Bytes[2]);
-      expect(id3Magic).toBe('ID3');
-      expect(mp3Bytes[3]).toBe(3); // ID3v2.3
-
-      // Find MPEG-1 Layer III Sync Word (0xFF, 0xFB) after ID3 tag
-      let foundSyncWord = false;
-      for (let i = 10; i < mp3Bytes.length - 1; i++) {
-        if (mp3Bytes[i] === 0xff && (mp3Bytes[i + 1] & 0xfe) === 0xfa) {
-          foundSyncWord = true;
-          break;
-        }
-      }
-      expect(foundSyncWord).toBe(true);
-    });
-
-    it('executes end-to-end convertPureAudio for WAV to MP3', () => {
-      const samples = new Int16Array(1152 * 2);
+    it('executes end-to-end convertPureAudio for WAV to WAV', () => {
+      const samples = Int16Array.from({ length: 1152 * 2 }, (_, i) => (i % 200) - 100);
       const wavBytes = encodePcmToWav(samples, 44100, 2);
 
-      const res = convertPureAudio(wavBytes, 'wav', 'mp3', {
-        title: 'Isomorphic Edge Song',
-      });
-      expect(res.mimeType).toBe('audio/mpeg');
-      expect(res.extension).toBe('mp3');
-      expect(res.data.length).toBeGreaterThan(0);
+      const res = convertPureAudio(wavBytes, 'wav', 'wav');
+      expect(res.mimeType).toBe('audio/wav');
+      expect(res.extension).toBe('wav');
+      expect(Buffer.from(res.data).equals(Buffer.from(wavBytes))).toBe(true);
     });
 
     it('parses WAV with odd-length metadata chunk preceding data chunk', () => {
@@ -475,33 +489,6 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(parsed24.samples[0]).toBe(0x1234);
     });
 
-    it('synchronizes MP3 frame length with bitrate index for standard rates and encodes UTF-8 ID3 title', () => {
-      const samples = new Int16Array(1152 * 4);
-      const titleUtf8 = '한국어 오디오 트랙';
-      const mp3Bytes = encodePureMp3(samples, 44100, 2, '320k', titleUtf8);
-
-      // Frame length for 320k at 44.1kHz: Math.floor(144 * 320000 / 44100) = 1044 bytes
-      const expectedFrameLen = 1044;
-      const expectedBitrateIdx = 14; // 320kbps in MPEG-1 Layer III
-
-      // First sync frame header after ID3 header
-      let syncOffset = -1;
-      for (let i = 10; i < mp3Bytes.length - 1; i++) {
-        if (mp3Bytes[i] === 0xff && (mp3Bytes[i + 1] & 0xfe) === 0xfa) {
-          syncOffset = i;
-          break;
-        }
-      }
-      expect(syncOffset).toBeGreaterThan(0);
-      const headerByte2 = mp3Bytes[syncOffset + 2];
-      const actualBitrateIdx = (headerByte2 >> 4) & 0x0f;
-      expect(actualBitrateIdx).toBe(expectedBitrateIdx);
-
-      // Next sync word should be at syncOffset + expectedFrameLen
-      const nextSync = syncOffset + expectedFrameLen;
-      expect(mp3Bytes[nextSync]).toBe(0xff);
-      expect((mp3Bytes[nextSync + 1] & 0xfe)).toBe(0xfa);
-    });
   });
 
   // ==========================================================================
@@ -592,7 +579,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
     });
 
     it('routes pure Audio pairs to Level 0 (Instant)', () => {
-      const res = resolveConversionTier('wav', 'mp3', 44100);
+      const res = resolveConversionTier('wav', 'wav', 44100);
       expect(res.tier).toBe('L0');
       expect(res.tierName).toBe('Edge L0 (Instant)');
       expect(res.isClientEdge).toBe(true);

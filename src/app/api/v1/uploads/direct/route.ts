@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { s3Storage } from '@/lib/storage/s3-storage';
+import { storageErrorResponse } from '@/lib/api/storage-error-response';
+import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
+import { storageProvider } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -87,37 +89,59 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 3. Initiate multipart upload session in s3Storage
-  const session = s3Storage.initiateMultipartUpload(
-    filename,
-    mimeType,
-    totalSize,
-    auth.user.id,
-    chosenPartSize
-  );
-
-  // 4. Generate presigned part URLs
-  const isLocal =
-    process.env.STORAGE_EMULATION === 'true' ||
-    req.nextUrl?.hostname === 'localhost' ||
-    req.nextUrl?.hostname === '127.0.0.1' ||
-    !process.env.S3_ENDPOINT;
-
-  const parts = Array.from({ length: totalParts }, (_, idx) => {
-    const partNumber = idx + 1;
-    const presigned = s3Storage.generatePresignedUploadPartUrl(
-      session.key,
-      session.uploadId,
-      partNumber,
-      900,
-      isLocal
+  const presignPart = storageProvider.generatePresignedUploadPartUrl?.bind(storageProvider);
+  if (!presignPart) {
+    return createProblemDetailsResponse(
+      501,
+      'The configured storage provider cannot issue presigned part URLs.',
+      instanceUri,
+      'Not Implemented'
     );
-    return {
-      partNumber,
-      uploadUrl: presigned.url,
-      expiresAt: presigned.expiresAt,
-    };
-  });
+  }
+
+  // 3. Initiate the multipart upload session
+  let session;
+  try {
+    session = await storageProvider.initiateMultipartUpload(
+      filename,
+      mimeType,
+      totalSize,
+      auth.user.id,
+      chosenPartSize
+    );
+  } catch (err: unknown) {
+    return (
+      storageErrorResponse(err, instanceUri) ??
+      createProblemDetailsResponse(
+        400,
+        err instanceof Error ? err.message : 'Failed to initiate the multipart upload.',
+        instanceUri,
+        'Bad Request'
+      )
+    );
+  }
+
+  // 4. Generate presigned part URLs: object-store URLs for a remote provider, URLs on this
+  // application for local storage
+  let parts;
+  try {
+    parts = await Promise.all(
+      Array.from({ length: totalParts }, async (_, idx) => {
+        const partNumber = idx + 1;
+        const presigned = await presignPart(session.key, session.uploadId, partNumber, PART_URL_TTL_SECONDS);
+        return {
+          partNumber,
+          uploadUrl: presigned.url,
+          expiresAt: presigned.expiresAt,
+        };
+      })
+    );
+  } catch (err: unknown) {
+    return (
+      storageErrorResponse(err, instanceUri) ??
+      createProblemDetailsResponse(500, 'Failed to presign the upload parts.', instanceUri, 'Internal Server Error')
+    );
+  }
 
   return NextResponse.json(
     {

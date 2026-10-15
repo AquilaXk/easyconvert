@@ -240,7 +240,7 @@ describe('WP-30: Job Graph Schema, Kahn Topological Sort, Validation & Linear Ad
         import_src: { op: 'import.upload', storageKey: 'uploads/doc.pdf' },
       };
       for (let i = 1; i <= 7; i++) {
-        nodes[`step_${i}`] = { op: 'optimize', input: i === 1 ? 'import_src' : `step_${i - 1}` };
+        nodes[`step_${i}`] = { op: 'convert', targetFormat: 'pdf', input: i === 1 ? 'import_src' : `step_${i - 1}` };
       }
       nodes.out = { op: 'export.internal', input: 'step_7' }; // Total 9 nodes
 
@@ -256,7 +256,7 @@ describe('WP-30: Job Graph Schema, Kahn Topological Sort, Validation & Linear Ad
         import_src: { op: 'import.upload', storageKey: 'uploads/doc.pdf' },
       };
       for (let i = 1; i <= 6; i++) {
-        nodes[`step_${i}`] = { op: 'optimize', input: i === 1 ? 'import_src' : `step_${i - 1}` };
+        nodes[`step_${i}`] = { op: 'metadata', input: i === 1 ? 'import_src' : `step_${i - 1}` };
       }
       nodes.out = { op: 'export.internal', input: 'step_6' }; // Total 8 nodes
 

@@ -3,6 +3,7 @@ import { validateApiAccess, authErrorHeaders } from './guard';
 import { conversionQueue } from '../queue/conversion-queue';
 import { storageProvider } from '../storage';
 import { classifyStorageKey, isUploadKey } from '../storage/key-namespace';
+import { QueueUnavailableError } from '../types';
 
 /** Response detail for a job input key that is missing or that the caller may not use. */
 export const STORAGE_OBJECT_NOT_FOUND = 'Storage object not found.';
@@ -45,8 +46,8 @@ export type ObjectOwnership =
 /**
  * Resolves the user that owns a stored object from its key namespace.
  * A job result is resolved only while its job record can be read: jobs are never removed after
- * they finish, so a missing record means a queue outage (the distributed adapter reports a Redis
- * error as a missing job) or a restarted in-memory queue, and the owner cannot be proven.
+ * they finish, so a missing record or a queue outage (`QueueUnavailableError`) or a restarted
+ * in-memory queue means the owner cannot be proven, and access is denied.
  * Every other key (anonymous uploads) has no owner.
  */
 export async function resolveObjectOwnership(key: string): Promise<ObjectOwnership> {
@@ -55,11 +56,18 @@ export async function resolveObjectOwnership(key: string): Promise<ObjectOwnersh
     return { resolved: true, ownerUserId: classified.userId };
   }
   if (classified.namespace === 'job-result') {
-    const job = await conversionQueue.getJob(classified.jobId);
-    if (!job) {
-      return { resolved: false };
+    try {
+      const job = await conversionQueue.getJob(classified.jobId);
+      if (!job) {
+        return { resolved: false };
+      }
+      return { resolved: true, ownerUserId: job.data?.userId };
+    } catch (err) {
+      if (err instanceof QueueUnavailableError) {
+        return { resolved: false };
+      }
+      throw err;
     }
-    return { resolved: true, ownerUserId: job.data?.userId };
   }
   return { resolved: true, ownerUserId: undefined };
 }
@@ -74,7 +82,7 @@ export async function mayUseStorageKeyAsJobInput(
   key: string,
   callerUserId: string | undefined
 ): Promise<boolean> {
-  if (!storageProvider.getObject(key)) {
+  if (!(await storageProvider.stat(key))) {
     return false;
   }
   if (isUploadKey(key)) {

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { NextRequest } from 'next/server';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import {
@@ -32,6 +32,14 @@ import {
   padToBlock,
   paxRecordBytes,
 } from './helpers/tar-craft';
+import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
+
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+const PAX_FLOOD_HEADERS = 16;
+const SLASH_RUN_BASE = 2000;
+const SLASH_RUN_ROUND_TRIPS = 100;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 
 /**
  * Hardening of the POSIX TAR reader and writer: resource budgets, hostile numeric fields, link
@@ -115,17 +123,24 @@ describe('TAR reader: cumulative extension-header budget', () => {
     expect(readTarEntries(tar).map((e) => e.filename)).toEqual(['f']);
   });
 
-  it('stops a flood of maximum-size pax headers within a bounded amount of work', () => {
-    const flood: Buffer[] = [];
-    for (let i = 0; i < 16; i++) {
-      flood.push(craftPaxHeader('x', paxRecordBytes(`k${i}`, 'v'.repeat(PAX_CAP - KIB))));
-    }
-    const tar = Buffer.concat([...flood, craftEntry('f', 'X'), END_OF_ARCHIVE]);
-    const started = process.hrtime.bigint();
-    expect(() => readTarEntries(tar)).toThrow(ConversionFailedError);
-    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
-    expect(elapsedMs).toBeLessThan(2000);
-  });
+  it('stops a flood of maximum-size pax headers within a bounded amount of work (hang guard; growth ratio in the perf suite)', async () => {
+    // The reader refuses the archive once the pax budget is spent, so a flood four times as long must be
+    // refused after about the same work (tests/helpers/timing.ts), not after reading all of it.
+    const floodTar = (headers: number) => {
+      const flood: Buffer[] = [];
+      for (let i = 0; i < headers; i++) {
+        flood.push(craftPaxHeader('x', paxRecordBytes(`k${i}`, 'v'.repeat(PAX_CAP - KIB))));
+      }
+      return Buffer.concat([...flood, craftEntry('f', 'X'), END_OF_ARCHIVE]);
+    };
+    const { largeResult } = await expectNoHangOnInput(
+      'pax flood',
+      (tar: Buffer) => settle(() => readTarEntries(tar)),
+      floodTar(PAX_FLOOD_HEADERS * SCALING_FACTOR)
+    );
+    expect(largeResult.ok).toBe(false);
+    expect(!largeResult.ok && largeResult.error).toBeInstanceOf(ConversionFailedError);
+  }, SCALING_TEST_TIMEOUT_MS);
 });
 
 describe('TAR reader: NUL bytes in paths', () => {
@@ -448,13 +463,24 @@ describe('TAR writer: collisions keep directories as directories', () => {
     expect(resolveArchiveEntryCollisions(files, 'rename').map((f) => f.filename)).toEqual(['a.txt', 'a-1.txt']);
   });
 
-  it('writes and reads names made of long slash runs in linear time', () => {
-    const name = `a${'/'.repeat(8000)}b`;
-    const started = process.hrtime.bigint();
-    const tar = createTarArchive([{ filename: name, buffer: Buffer.alloc(0) }]).buffer;
-    expect(readTarEntries(tar)[0].filename).toBe('a/b');
-    expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(500);
-  });
+  it('writes and reads names made of long slash runs in linear time (hang guard; growth ratio in the perf suite)', async () => {
+    // The writer refuses names over 8192 characters, so the largest run is 8000 slashes; repeating the round
+    // trip makes the smallest run long enough to time.
+    const roundTrip = (slashes: number) => {
+      const name = `a${'/'.repeat(slashes)}b`;
+      let filename = '';
+      for (let i = 0; i < SLASH_RUN_ROUND_TRIPS; i++) {
+        filename = readTarEntries(createTarArchive([{ filename: name, buffer: Buffer.alloc(0) }]).buffer)[0].filename;
+      }
+      return filename;
+    };
+    const { largeResult } = await expectNoHangOnInput(
+      'slash-run names',
+      roundTrip,
+      SLASH_RUN_BASE * SCALING_FACTOR
+    );
+    expect(largeResult).toBe('a/b');
+  }, SCALING_TEST_TIMEOUT_MS);
 });
 
 describe('TAR inspection reads pax and GNU long names', () => {

@@ -52,3 +52,5 @@
 - [ ] Claude Code review findings are addressed and all review threads are resolved.
 - [ ] Changes match acceptance criteria of the related issue.
 - [ ] No extraneous files or secrets included.
+- [ ] If a policy or default changed: `docs/policy-decisions.md` is updated with the decision, why it is right in practice, its benefits and trade-offs, the alternatives rejected, and how it is verified.
+- [ ] If a conversion family changed: `parity quality` passes, and the `automerge` label has been added so `parity speed` runs on the final commit (a row listed in `bench/parity-gaps.json` fails when its median falls below the 99% prediction bound of its CI history or below 65% of the median of that history, whichever is higher).

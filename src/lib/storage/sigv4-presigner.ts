@@ -1,5 +1,20 @@
 import crypto from 'node:crypto';
 
+/** A request cannot be signed: an unencodable key, a bad credential, an out-of-range expiry. */
+export class SigV4SigningError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SigV4SigningError';
+  }
+}
+
+/** A UTF-16 surrogate with no partner cannot be percent-encoded: encodeURIComponent throws on it. */
+const LONE_SURROGATE_PATTERN = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+export function hasLoneSurrogate(input: string): boolean {
+  return LONE_SURROGATE_PATTERN.test(input);
+}
+
 export interface SigV4Credentials {
   accessKeyId: string;
   secretAccessKey: string;
@@ -52,6 +67,9 @@ export interface VerifySigV4Result {
  * If encodeSlash is false, '/' (%2F) is preserved unencoded.
  */
 export function uriEncode(input: string, encodeSlash: boolean = true): string {
+  if (hasLoneSurrogate(input)) {
+    throw new SigV4SigningError('Value contains an unpaired UTF-16 surrogate and cannot be URI-encoded.');
+  }
   const encoded = encodeURIComponent(input).replace(
     /[!'()*]/g,
     (c) => '%' + c.codePointAt(0)!.toString(16).toUpperCase()

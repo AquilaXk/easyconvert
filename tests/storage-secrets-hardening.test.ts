@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { S3ObjectStorageService } from '../src/lib/storage/s3-storage';
 import { OciObjectStorageService } from '../src/lib/storage/oci-storage';
+import { StorageConfigError, StorageSigningSecretMissingError } from '../src/lib/storage/errors';
 
 describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
   const originalEnv = { ...process.env };
@@ -19,79 +20,101 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
       process.env.NODE_ENV = 'production';
       delete process.env.S3_SIGNING_SECRET;
       delete process.env.STORAGE_SIGNING_SECRET;
+      delete process.env.OCI_SIGNING_SECRET;
 
       expect(() => new S3ObjectStorageService()).toThrow(
-        /Missing required S3_SIGNING_SECRET or STORAGE_SIGNING_SECRET environment variable in production/
+        /Missing required STORAGE_SIGNING_SECRET environment variable in production/
       );
     });
 
-    it('generates an ephemeral random secret in non-production when secret is unconfigured', () => {
+    it('refuses to sign in non-production when no secret is configured instead of generating a per-process one', () => {
       delete process.env.S3_SIGNING_SECRET;
       delete process.env.STORAGE_SIGNING_SECRET;
       process.env.NODE_ENV = 'development';
 
-      const service1 = new S3ObjectStorageService();
-      const service2 = new S3ObjectStorageService();
-
-      const presigned1 = service1.generatePresignedDownloadUrl('sample.pdf', 60);
-      const presigned2 = service2.generatePresignedDownloadUrl('sample.pdf', 60);
-
-      expect(presigned1.signature).not.toBe(presigned2.signature);
+      const service = new S3ObjectStorageService();
+      try {
+        expect(() => service.generatePresignedUploadUrl('sample.pdf', 1, 'up_1', 60)).toThrow(
+          StorageSigningSecretMissingError
+        );
+      } finally {
+        service.stopGc();
+      }
     });
 
-    it('fails closed in production when AWS access key ID is missing during presigned URL generation', () => {
+    it('fails closed in production when APP_URL is missing during local presigned URL generation', () => {
       process.env.NODE_ENV = 'production';
       process.env.S3_SIGNING_SECRET = 'prod-signing-secret-minimum-32-bytes-long';
-      delete process.env.AWS_ACCESS_KEY_ID;
-      delete process.env.S3_ACCESS_KEY_ID;
+      delete process.env.APP_URL;
 
       const service = new S3ObjectStorageService();
-
-      expect(() => service.generatePresignedUploadUrl('test-key', 1, 'up_123', 900)).toThrow(
-        /Missing required AWS_ACCESS_KEY_ID or S3_ACCESS_KEY_ID environment variable in production/
-      );
-
-      expect(() => service.generatePresignedDownloadUrl('test-key', 3600)).toThrow(
-        /Missing required AWS_ACCESS_KEY_ID or S3_ACCESS_KEY_ID environment variable in production/
-      );
+      try {
+        expect(() => service.generatePresignedUploadUrl('test-key', 1, 'up_123', 900)).toThrow(StorageConfigError);
+        expect(() => service.generatePresignedUploadUrl('test-key', 1, 'up_123', 900)).toThrow(
+          /APP_URL is required in production/
+        );
+      } finally {
+        service.stopGc();
+      }
     });
 
-    it('resolves real access key ID and region from environment for SigV4 credential scope', () => {
+    it('signs local presigned URLs with the application signing secret under a credential label, not an object store key', () => {
       process.env.AWS_ACCESS_KEY_ID = 'AKIA_CUSTOM_REAL_TENANT_KEY';
       process.env.AWS_REGION = 'ap-northeast-2';
       process.env.S3_SIGNING_SECRET = 'tenant-custom-s3-signing-secret';
+      process.env.APP_URL = 'https://app.example.test';
 
       const service = new S3ObjectStorageService();
-      const presigned = service.generatePresignedUploadUrl('uploads/doc.pdf', 2, 'upload_abc999', 600);
+      try {
+        const presigned = service.generatePresignedUploadUrl('uploads/doc.pdf', 2, 'upload_abc999', 600);
 
-      const parsedUrl = new URL(presigned.url);
-      const credentialParam = parsedUrl.searchParams.get('X-Amz-Credential');
-      expect(credentialParam).toMatch(/^AKIA_CUSTOM_REAL_TENANT_KEY\/\d{8}\/ap-northeast-2\/s3\/aws4_request$/);
-      expect(parsedUrl.searchParams.get('partNumber')).toBe('2');
-      expect(parsedUrl.searchParams.get('uploadId')).toBe('upload_abc999');
-      expect(presigned.signature).toHaveLength(64);
+        const parsedUrl = new URL(presigned.url);
+        expect(parsedUrl.origin).toBe('https://app.example.test');
+        const credentialParam = parsedUrl.searchParams.get('X-Amz-Credential');
+        expect(credentialParam).toMatch(/^local-emulation\/\d{8}\/local\/s3\/aws4_request$/);
+        expect(presigned.url).not.toContain('AKIA_CUSTOM_REAL_TENANT_KEY');
+        expect(parsedUrl.searchParams.get('partNumber')).toBe('2');
+        expect(parsedUrl.searchParams.get('uploadId')).toBe('upload_abc999');
+        expect(presigned.signature).toHaveLength(64);
+
+        const verified = service.verifySigV4Url(presigned.url, 'PUT');
+        expect(verified.valid).toBe(true);
+        expect(verified.accessKeyId).toBe('local-emulation');
+      } finally {
+        service.stopGc();
+      }
     });
 
     it('safely rejects presigned signatures with length mismatch without throwing TypeError', () => {
-      const service = new S3ObjectStorageService({ signingSecret: 'secure-shared-signing-secret-123' });
-      const presigned = service.generatePresignedDownloadUrl('safe-key.png', 300);
+      const secret = 'secure-shared-signing-secret-123';
+      const service = new S3ObjectStorageService({ signingSecret: secret });
+      try {
+        // Independent oracle: the GET capability signature is HMAC-SHA256(secret, "GET\n<key>\n<expiresAt>").
+        const expiresAt = Date.now() + 300_000;
+        const signature = crypto.createHmac('sha256', secret).update(`GET\nsafe-key.png\n${expiresAt}`).digest('hex');
 
-      // Truncated signature (length mismatch)
-      const truncatedSig = presigned.signature.slice(0, 10);
-      expect(service.verifyPresignedSignature('GET', 'safe-key.png', presigned.expiresAt, truncatedSig)).toBe(false);
+        // Truncated signature (length mismatch)
+        expect(service.verifyPresignedSignature('GET', 'safe-key.png', expiresAt, signature.slice(0, 10))).toBe(false);
 
-      // Extended signature (length mismatch)
-      const extendedSig = presigned.signature + 'deadbeef';
-      expect(service.verifyPresignedSignature('GET', 'safe-key.png', presigned.expiresAt, extendedSig)).toBe(false);
+        // Extended signature (length mismatch)
+        expect(service.verifyPresignedSignature('GET', 'safe-key.png', expiresAt, signature + 'deadbeef')).toBe(false);
 
-      // Malformed non-hex string
-      expect(service.verifyPresignedSignature('GET', 'safe-key.png', presigned.expiresAt, 'invalid-non-hex!@#$%^')).toBe(false);
+        // Malformed non-hex string
+        expect(service.verifyPresignedSignature('GET', 'safe-key.png', expiresAt, 'invalid-non-hex!@#$%^')).toBe(false);
 
-      // Valid signature
-      expect(service.verifyPresignedSignature('GET', 'safe-key.png', presigned.expiresAt, presigned.signature)).toBe(true);
+        // Valid signature
+        expect(service.verifyPresignedSignature('GET', 'safe-key.png', expiresAt, signature)).toBe(true);
 
-      // Expired timestamp
-      expect(service.verifyPresignedSignature('GET', 'safe-key.png', presigned.expiresAt - 1000000, presigned.signature)).toBe(false);
+        // Signature for another key
+        expect(service.verifyPresignedSignature('GET', 'other-key.png', expiresAt, signature)).toBe(false);
+
+        // Expired timestamp
+        const past = Date.now() - 1_000_000;
+        const expiredSignature = crypto.createHmac('sha256', secret).update(`GET\nsafe-key.png\n${past}`).digest('hex');
+        expect(service.verifyPresignedSignature('GET', 'safe-key.png', past, expiredSignature)).toBe(false);
+      } finally {
+        service.stopGc();
+      }
     });
   });
 
@@ -110,10 +133,11 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
       process.env.NODE_ENV = 'production';
       process.env.OCI_NAMESPACE = 'tenant-oci-namespace';
       delete process.env.STORAGE_SIGNING_SECRET;
+      delete process.env.S3_SIGNING_SECRET;
       delete process.env.OCI_SIGNING_SECRET;
 
       expect(() => new OciObjectStorageService()).toThrow(
-        /Missing required STORAGE_SIGNING_SECRET or OCI_SIGNING_SECRET environment variable in production/
+        /Missing required STORAGE_SIGNING_SECRET environment variable in production/
       );
     });
 

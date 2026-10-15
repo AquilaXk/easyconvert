@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import {
   applyPdfWatermark,
@@ -16,13 +16,8 @@ import {
   EngineUnavailableError,
 } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
-import { getOracleToolPath } from './helpers/differential-oracle';
-
-/** Whether a veraPDF binary answers on PATH or VERAPDF_PATH; checked independently of the module under test. */
-function verapdfInstalled(): boolean {
-  const run = spawnSync(process.env.VERAPDF_PATH || 'verapdf', ['--version'], { encoding: 'utf-8', timeout: 60_000 });
-  return run.status === 0;
-}
+import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
+import { withMissingBinary } from './helpers/native-tools';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 
@@ -301,22 +296,27 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
   });
 
   describe('3. PDF/A Archival Conversion & Metadata Reporting', () => {
-    it('reports transparent validation metadata (pdfaValidated matches whether veraPDF is installed)', async () => {
-      const originalPdf = await createSamplePdf(1, ['Archival Record 2026']);
+    oracleTest(
+      'reports the verified level and a validated verdict when veraPDF validated the output',
+      ['soffice', 'verapdf'],
+      async () => {
+        const originalPdf = await createSamplePdf(1, ['Archival Record 2026']);
 
-      // When LibreOffice is available, converts and sets pdfaValidated; when not, throws EngineUnavailableError.
-      // PDF/A-2b: this LibreOffice build's 1b output fails veraPDF rule 6.7.3-1 (issue #582).
-      const soffice = getOracleToolPath('soffice');
-      if (soffice) {
         const result = await convertToPdfA(originalPdf, { conformance: 'pdfa-2b' });
+
         expect(result.buffer.length).toBeGreaterThan(0);
         expect(result.conformanceLevel).toBe('pdfa-2b');
-        expect(result.pdfaValidated).toBe(verapdfInstalled());
-      } else {
-        await expect(convertToPdfA(originalPdf, { conformance: 'pdfa-2b' })).rejects.toThrow(
-          EngineUnavailableError
-        );
-      }
+        expect(result.pdfaValidated).toBe(true);
+      },
+      120_000
+    );
+
+    it('answers with an engine-unavailable error instead of an unvalidated file when veraPDF is absent', async () => {
+      const originalPdf = await createSamplePdf(1, ['Archival Record 2026']);
+
+      await withMissingBinary('VERAPDF_PATH', async () => {
+        await expect(convertToPdfA(originalPdf, { conformance: 'pdfa-2b' })).rejects.toThrow(EngineUnavailableError);
+      });
     });
 
     it('fails closed when input buffer is empty', async () => {
@@ -325,7 +325,7 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
   });
 
   describe('4. Job Graph Node Execution Integration', () => {
-    it('executes pdf.watermark and pdf.protect nodes sequentially in graph scheduler', async () => {
+    oracleTest('executes pdf.watermark and pdf.protect nodes sequentially in graph scheduler', ['pdfinfo'], async () => {
       const samplePdf = await createSamplePdf(1, ['Graph Pipeline Document']);
       const graphId = `graph_test_${Date.now()}`;
 
@@ -393,18 +393,15 @@ describe('WP-41: PDF Watermark, AES-256 Protect Encryption, and PDF/A Support', 
       expect(finalStored).toBeDefined();
       expect(finalStored!.buffer.length).toBeGreaterThan(100);
 
-      // Verify that final stored artifact is encrypted with AES-256
-      const pdfinfo = getOracleToolPath('pdfinfo');
-      if (pdfinfo) {
-        const tmpDir = os.tmpdir();
-        const testFile = path.join(tmpDir, `graph_final_${Date.now()}.pdf`);
-        fs.writeFileSync(testFile, finalStored!.buffer);
-        try {
-          const info = execFileSync(pdfinfo, ['-upw', 'GraphUserPw123', testFile], { encoding: 'utf-8' });
-          expect(info).toContain('Encrypted:       yes');
-        } finally {
-          try { fs.unlinkSync(testFile); } catch {}
-        }
+      // Verify that final stored artifact is encrypted with AES-256: pdfinfo opens it with the user password
+      const testFile = path.join(os.tmpdir(), `graph_final_${Date.now()}.pdf`);
+      fs.writeFileSync(testFile, finalStored!.buffer);
+      try {
+        const info = execFileSync(requireOracleTool('pdfinfo'), ['-upw', 'GraphUserPw123', testFile], { encoding: 'utf-8' });
+        expect(info).toContain('Encrypted:       yes');
+        expect(info).toMatch(/algorithm:AES-256/);
+      } finally {
+        fs.rmSync(testFile, { force: true });
       }
     });
   });

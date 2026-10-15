@@ -1,0 +1,32 @@
+{
+ "version": "5.0.5.0",
+ "compressed": true,
+ "encrypted": false,
+ "distributed": false,
+ "sections": 1,
+ "paragraphs": [
+  {
+   "level": 1,
+   "text": "안녕하세요."
+  },
+  {
+   "level": 1,
+   "text": "이것은 샘플입니다."
+  }
+ ],
+ "tables": [],
+ "body": [
+  {
+   "kind": "paragraph",
+   "text": "안녕하세요."
+  },
+  {
+   "kind": "paragraph",
+   "text": "이것은 샘플입니다."
+  }
+ ],
+ "headerFooter": [],
+ "notes": [],
+ "captions": [],
+ "pictures": []
+}

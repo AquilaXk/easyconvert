@@ -11,6 +11,7 @@ const fake = vi.hoisted(() => {
   class FakeWorker {
     readonly handlers = new Map<string, Array<(...args: unknown[]) => void>>();
     terminated = false;
+    readonly posted: unknown[] = [];
     constructor(...args: unknown[]) {
       state.calls.push(args);
       if (state.construct) state.construct();
@@ -23,6 +24,11 @@ const fake = vi.hoisted(() => {
     emit(event: string, ...args: unknown[]): void {
       for (const handler of this.handlers.get(event) ?? []) handler(...args);
     }
+    postMessage(message: unknown): void {
+      this.posted.push(message);
+    }
+    ref(): void {}
+    unref(): void {}
     terminate(): Promise<number> {
       this.terminated = true;
       return Promise.resolve(0);
@@ -43,6 +49,7 @@ vi.mock('node:worker_threads', async (importOriginal) => {
 });
 
 import { convertFile } from '../src/lib/conversions/index';
+import { shutdownPdfTextThreads } from '../src/lib/conversions/pdf-text-host';
 import { inspectPdfPagesTextDensity } from '../src/lib/conversions/ocr';
 import { extractPdfTextLayerPages, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-geometry';
 import { EngineUnavailableError } from '../src/lib/types';
@@ -84,6 +91,8 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env[DEADLINE_ENV];
   vi.restoreAllMocks();
+  // Threads are kept between jobs; every test starts without any.
+  shutdownPdfTextThreads();
 });
 
 describe('worker thread failures', () => {
@@ -155,10 +164,9 @@ describe('density analysis', () => {
   it('reads the text density on the worker thread, under the same deadline', async () => {
     const pending = inspectPdfPagesTextDensity(pdf(), 15);
     const thread = await startedThread();
-    const [, options] = fake.state.calls[0] as [unknown, { workerData: { job: unknown } }];
-    expect(options.workerData.job).toEqual({ densityThreshold: 15, geometry: 'none' });
+    expect((thread.posted[0] as { job: unknown }).job).toEqual({ densityThreshold: 15, geometry: 'none' });
     const analysis = { pageNumber: 1, width: 200, height: 100, charCount: 10, wordCount: 2, hasTextLayer: false, text: 'Hello world' };
-    thread.emit('message', { ok: true, result: { analyses: [analysis], geometry: new Map() } });
+    thread.emit('message', { ok: true, result: { analyses: [analysis], geometry: new Map(), content: [], fonts: [] } });
     await expect(pending).resolves.toEqual([analysis]);
   });
 
@@ -172,10 +180,12 @@ describe('density analysis', () => {
     expect((err as Error).message).toBe("Engine 'pdf-text-thread' is unavailable: the thread could not be started: resource exhausted");
   });
 
-  it('still converts a PDF whose text layer the reader rejects, as a scanned document', async () => {
-    const pending = convertFile(pdf(), 'pdf', 'txt', {}, 'doc.pdf');
+  it('refuses a PDF whose text layer the reader rejects with a typed 400, not a guess', async () => {
+    const pending = failure(convertFile(pdf(), 'pdf', 'txt', {}, 'doc.pdf'));
     (await startedThread()).emit('message', { ok: false, message: 'PDF text geometry could not be read: damaged' });
-    const converted = await pending;
-    expect(converted.filename).toBe('doc.txt');
+    const err = await pending;
+    expect(err).toBeInstanceOf(PdfTextGeometryError);
+    expect((err as PdfTextGeometryError).status).toBe(400);
+    expect((err as Error).message).toBe('PDF text geometry could not be read: damaged');
   });
 });

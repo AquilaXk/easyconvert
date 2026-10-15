@@ -8,10 +8,26 @@
  * 4. Memory-bounded processing for 100MB+ ~ 2GB files with peak memory strictly bounded (<50MB).
  */
 
+import { ConversionFailedError } from '../../types';
+import { type ChunkTransformerFn, forEachOutputPiece } from './chunk-transformer';
 import { createDelimitedStreamTransformer, isStreamableDelimitedPair } from './delimited-stream';
-import { serializeWorkerError, type SerializedWorkerError } from './worker-errors';
+import { resolveAudioStreamTransformer } from './opfs-audio';
+import {
+  createGunzipTarTransformer,
+  createTarGzipTransformer,
+  OPFS_MAX_DECOMPRESSED_BYTES,
+} from './opfs-archive';
+import {
+  EdgeStorageQuotaError,
+  EdgeUnsupportedError,
+  serializeWorkerError,
+  type SerializedWorkerError,
+} from './worker-errors';
+
+export type { ChunkTransformerFn } from './chunk-transformer';
 
 export const OPFS_CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB chunk window
+const RGBA_PIXEL_BYTES = 4;
 
 export interface OpfsConversionJob {
   jobId: string;
@@ -19,6 +35,8 @@ export interface OpfsConversionJob {
   targetFormat: string;
   totalSize: number;
   options?: Record<string, any>;
+  /** Lowers the most bytes an inflating conversion may write; it never raises it above the file size limit. */
+  maxOutputBytes?: number;
 }
 
 export interface OpfsChunkProgress {
@@ -44,173 +62,37 @@ export interface OpfsJobError {
   error: SerializedWorkerError;
 }
 
-export type ChunkTransformerFn = (
-  chunk: Uint8Array,
-  offset: number,
-  totalSize: number
-) => Uint8Array | Promise<Uint8Array>;
-
-const IMA_INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
-const IMA_STEP_TABLE = [
-  7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
-  19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
-  50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
-  130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
-  337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
-  876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
-  2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
-  5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
-  15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
-];
-
-function encodeImaAdpcmSample(
-  sample: number,
-  state: { predictedSample: number; stepIndex: number }
-): number {
-  let step = IMA_STEP_TABLE[state.stepIndex];
-  let diff = sample - state.predictedSample;
-  let nibble = 0;
-
-  if (diff < 0) {
-    nibble = 8;
-    diff = -diff;
-  }
-
-  let delta = step >> 3;
-  if (diff >= step) {
-    nibble |= 4;
-    diff -= step;
-    delta += step;
-  }
-  step >>= 1;
-  if (diff >= step) {
-    nibble |= 2;
-    diff -= step;
-    delta += step;
-  }
-  step >>= 1;
-  if (diff >= step) {
-    nibble |= 1;
-    delta += step;
-  }
-
-  if (nibble & 8) {
-    state.predictedSample -= delta;
-  } else {
-    state.predictedSample += delta;
-  }
-
-  state.predictedSample = Math.max(-32768, Math.min(32767, state.predictedSample));
-  state.stepIndex += IMA_INDEX_TABLE[nibble];
-  state.stepIndex = Math.max(0, Math.min(88, state.stepIndex));
-
-  return nibble;
-}
-
-function decodeImaAdpcmSample(
-  nibble: number,
-  state: { predictedSample: number; stepIndex: number }
-): number {
-  let step = IMA_STEP_TABLE[state.stepIndex];
-  let delta = step >> 3;
-  if (nibble & 4) delta += step;
-  if (nibble & 2) delta += step >> 1;
-  if (nibble & 1) delta += step >> 2;
-
-  if (nibble & 8) {
-    state.predictedSample -= delta;
-  } else {
-    state.predictedSample += delta;
-  }
-
-  state.predictedSample = Math.max(-32768, Math.min(32767, state.predictedSample));
-  state.stepIndex += IMA_INDEX_TABLE[nibble];
-  state.stepIndex = Math.max(0, Math.min(88, state.stepIndex));
-
-  return state.predictedSample;
-}
-
-function isEndianSwapPair(src: string, tgt: string): boolean {
-  return (
-    ((src === 'pcm' || src === 'pcm_le') && tgt === 'pcm_be') ||
-    (src === 'pcm_be' && (tgt === 'pcm' || tgt === 'pcm_le'))
-  );
-}
-
-function isU8PcmPair(src: string, tgt: string): boolean {
-  return (src === 'pcm' || src === 'wav') && (tgt === 'pcm_u8' || tgt === 'u8');
-}
-
 function isGrayscalePair(src: string, tgt: string): boolean {
   return (src === 'rgba' || src === 'raw') && (tgt === 'grayscale' || tgt === 'gray');
 }
 
-function isArchivePair(src: string, tgt: string): boolean {
-  return (
-    (src === 'tar' && (tgt === 'tar_gz' || tgt === 'gz')) ||
-    (src === 'gz' && tgt === 'tar') ||
-    (src === 'tar_gz' && tgt === 'tar')
-  );
+function isTarGzipPair(src: string, tgt: string): boolean {
+  return src === 'tar' && (tgt === 'tar_gz' || tgt === 'gz');
 }
 
-function buildEndianSwapTransformer(): ChunkTransformerFn {
-  let leftoverByte: number | null = null;
-  return (chunk: Uint8Array) => {
-    let data = chunk;
-    if (leftoverByte !== null) {
-      const combined = new Uint8Array(chunk.byteLength + 1);
-      combined[0] = leftoverByte;
-      combined.set(chunk, 1);
-      data = combined;
-      leftoverByte = null;
-    }
-    const hasOdd = data.byteLength % 2 !== 0;
-    const len = hasOdd ? data.byteLength - 1 : data.byteLength;
-    if (hasOdd) {
-      leftoverByte = data[data.byteLength - 1];
-    }
-    const out = new Uint8Array(len);
-    for (let i = 0; i < len; i += 2) {
-      out[i] = data[i + 1];
-      out[i + 1] = data[i];
-    }
-    return out;
-  };
+function isGunzipTarPair(src: string, tgt: string): boolean {
+  return (src === 'gz' || src === 'tar_gz') && tgt === 'tar';
 }
 
-function buildU8PcmTransformer(): ChunkTransformerFn {
-  let leftoverByte: number | null = null;
-  return (chunk: Uint8Array) => {
-    let data = chunk;
-    if (leftoverByte !== null) {
-      const combined = new Uint8Array(chunk.byteLength + 1);
-      combined[0] = leftoverByte;
-      combined.set(chunk, 1);
-      data = combined;
-      leftoverByte = null;
-    }
-    const hasOdd = data.byteLength % 2 !== 0;
-    if (hasOdd) {
-      leftoverByte = data[data.byteLength - 1];
-      data = data.subarray(0, data.byteLength - 1);
-    }
-    const sampleCount = Math.floor(data.byteLength / 2);
-    const out = new Uint8Array(sampleCount);
-    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-    for (let i = 0; i < sampleCount; i++) {
-      const s16 = view.getInt16(i * 2, true);
-      out[i] = Math.max(0, Math.min(255, Math.floor((s16 + 32768) / 256)));
-    }
-    return out;
-  };
+/** Whether the pair writes far more than it reads, so that only a disk-backed output can hold it. */
+function isExpandingPair(sourceFormat: string, targetFormat: string): boolean {
+  return isGunzipTarPair(sourceFormat.toLowerCase(), targetFormat.toLowerCase());
 }
 
 function buildGrayscaleTransformer(): ChunkTransformerFn {
-  return (chunk: Uint8Array) => {
+  let checked = false;
+  return (chunk: Uint8Array, _offset: number, totalSize: number) => {
+    if (!checked) {
+      checked = true;
+      // Windows are a multiple of the pixel size, so only the whole input can end inside a pixel.
+      if (totalSize % RGBA_PIXEL_BYTES !== 0) {
+        throw new EdgeUnsupportedError('The raw image is not a whole number of RGBA pixels; the server engine converts it.');
+      }
+    }
     const out = new Uint8Array(chunk.byteLength);
-    const pixelCount = Math.floor(chunk.byteLength / 4);
+    const pixelCount = Math.floor(chunk.byteLength / RGBA_PIXEL_BYTES);
     for (let i = 0; i < pixelCount; i++) {
-      const idx = i * 4;
+      const idx = i * RGBA_PIXEL_BYTES;
       const r = chunk[idx];
       const g = chunk[idx + 1];
       const b = chunk[idx + 2];
@@ -225,162 +107,29 @@ function buildGrayscaleTransformer(): ChunkTransformerFn {
   };
 }
 
-function buildWavToPcmTransformer(): ChunkTransformerFn {
-  let isFirstChunk = true;
-  return (chunk: Uint8Array) => {
-    if (isFirstChunk) {
-      isFirstChunk = false;
-      if (
-        chunk.byteLength >= 44 &&
-        chunk[0] === 0x52 &&
-        chunk[1] === 0x49 &&
-        chunk[2] === 0x46 &&
-        chunk[3] === 0x46
-      ) {
-        return chunk.subarray(44);
-      }
-    }
-    return chunk;
-  };
-}
-
-function buildPcmToWavTransformer(options?: Record<string, any>): ChunkTransformerFn {
-  let isFirstChunk = true;
-  const sampleRate = options?.sampleRate || 44100;
-  const channels = options?.channels || 2;
-  const bitsPerSample = options?.bitsPerSample || 16;
-  const byteRate = Math.floor(sampleRate * channels * (bitsPerSample / 8));
-  const blockAlign = Math.floor(channels * (bitsPerSample / 8));
-
-  return (chunk: Uint8Array) => {
-    if (isFirstChunk) {
-      isFirstChunk = false;
-      const header = new Uint8Array(44);
-      const view = new DataView(header.buffer);
-
-      header[0] = 0x52; header[1] = 0x49; header[2] = 0x46; header[3] = 0x46;
-      view.setUint32(4, 36 + chunk.byteLength, true);
-      header[8] = 0x57; header[9] = 0x41; header[10] = 0x56; header[11] = 0x45;
-      header[12] = 0x66; header[13] = 0x6d; header[14] = 0x74; header[15] = 0x20;
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true);
-      view.setUint16(22, channels, true);
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, byteRate, true);
-      view.setUint16(32, blockAlign, true);
-      view.setUint16(34, bitsPerSample, true);
-      header[36] = 0x64; header[37] = 0x61; header[38] = 0x74; header[39] = 0x61;
-      view.setUint32(40, chunk.byteLength, true);
-
-      const out = new Uint8Array(44 + chunk.byteLength);
-      out.set(header, 0);
-      out.set(chunk, 44);
-      return out;
-    }
-    return chunk;
-  };
-}
-
-function buildImaAdpcmCompressor(src: string): ChunkTransformerFn {
-  let leftoverByte: number | null = null;
-  let isFirstChunk = true;
-  const state = { predictedSample: 0, stepIndex: 0 };
-
-  return (chunk: Uint8Array) => {
-    let data = chunk;
-    if (src === 'wav' && isFirstChunk) {
-      isFirstChunk = false;
-      if (
-        chunk.byteLength >= 44 &&
-        chunk[0] === 0x52 &&
-        chunk[1] === 0x49 &&
-        chunk[2] === 0x46 &&
-        chunk[3] === 0x46
-      ) {
-        data = chunk.subarray(44);
-      }
-    }
-
-    if (leftoverByte !== null) {
-      const combined = new Uint8Array(data.byteLength + 1);
-      combined[0] = leftoverByte;
-      combined.set(data, 1);
-      data = combined;
-      leftoverByte = null;
-    }
-
-    const hasOdd = data.byteLength % 2 !== 0;
-    if (hasOdd) {
-      leftoverByte = data[data.byteLength - 1];
-      data = data.subarray(0, data.byteLength - 1);
-    }
-
-    const sampleCount = Math.floor(data.byteLength / 2);
-    const inView = new DataView(data.buffer, data.byteOffset, data.byteLength);
-    const outBytes = Math.floor((sampleCount + 1) / 2);
-    const out = new Uint8Array(outBytes);
-
-    for (let i = 0; i < sampleCount; i += 2) {
-      const s1 = inView.getInt16(i * 2, true);
-      const n1 = encodeImaAdpcmSample(s1, state);
-      let n2 = 0;
-      if (i + 1 < sampleCount) {
-        const s2 = inView.getInt16((i + 1) * 2, true);
-        n2 = encodeImaAdpcmSample(s2, state);
-      }
-      out[i / 2] = (n1 & 0x0f) | ((n2 & 0x0f) << 4);
-    }
-
-    return out;
-  };
-}
-
-function buildImaAdpcmDecompressor(): ChunkTransformerFn {
-  const state = { predictedSample: 0, stepIndex: 0 };
-  return (chunk: Uint8Array) => {
-    const sampleCount = chunk.byteLength * 2;
-    const out = new Uint8Array(sampleCount * 2);
-    const outView = new DataView(out.buffer);
-
-    for (let i = 0; i < chunk.byteLength; i++) {
-      const b = chunk[i];
-      const n1 = b & 0x0f;
-      const n2 = (b >> 4) & 0x0f;
-      const s1 = decodeImaAdpcmSample(n1, state);
-      const s2 = decodeImaAdpcmSample(n2, state);
-      outView.setInt16(i * 4, s1, true);
-      outView.setInt16(i * 4 + 2, s2, true);
-    }
-
-    return out;
-  };
-}
-
 /**
- * Resolves a chunk-level transformer for streaming format conversion.
+ * Resolves a chunk-level transformer for streaming format conversion. A pair with no transformer here is an
+ * EdgeUnsupportedError (the server engine converts it): nothing is copied through, inverted or relabelled.
  */
 export function resolveChunkTransformer(
   sourceFormat?: string,
   targetFormat?: string,
-  options?: Record<string, any>
+  options?: Record<string, any>,
+  limits: { maxOutputBytes?: number } = {}
 ): ChunkTransformerFn {
   const src = (sourceFormat || '').toLowerCase();
   const tgt = (targetFormat || '').toLowerCase();
 
-  if (isEndianSwapPair(src, tgt)) return buildEndianSwapTransformer();
-  if (isU8PcmPair(src, tgt)) return buildU8PcmTransformer();
+  const audio = resolveAudioStreamTransformer(src, tgt, options);
+  if (audio) return audio;
   if (isStreamableDelimitedPair(src, tgt)) return createDelimitedStreamTransformer(src, tgt, options);
   if (isGrayscalePair(src, tgt)) return buildGrayscaleTransformer();
-  if (src === 'wav' && tgt === 'pcm') return buildWavToPcmTransformer();
-  if (src === 'pcm' && tgt === 'wav') return buildPcmToWavTransformer(options);
-  if ((src === 'pcm' || src === 'wav') && tgt === 'adpcm') return buildImaAdpcmCompressor(src);
-  if (src === 'adpcm' && (tgt === 'pcm' || tgt === 'wav')) return buildImaAdpcmDecompressor();
-  if (isArchivePair(src, tgt)) return (chunk: Uint8Array) => chunk;
-  if (options?.invert || tgt === 'invert') return (chunk: Uint8Array) => chunk.map((b) => b ^ 0xff);
-  if (typeof options?.chunkTransformer === 'function') return options.chunkTransformer;
-  if (src === tgt || options?.allowPassThrough === true) return (chunk: Uint8Array) => chunk;
+  if (isTarGzipPair(src, tgt)) return createTarGzipTransformer();
+  if (isGunzipTarPair(src, tgt)) {
+    return createGunzipTarTransformer(Math.min(limits.maxOutputBytes ?? OPFS_MAX_DECOMPRESSED_BYTES, OPFS_MAX_DECOMPRESSED_BYTES));
+  }
 
-  throw new Error(`Unsupported streaming transformation: ${sourceFormat} to ${targetFormat}`);
+  throw new EdgeUnsupportedError(`Unsupported streaming transformation: ${sourceFormat} to ${targetFormat}`);
 }
 
 /**
@@ -389,6 +138,19 @@ export function resolveChunkTransformer(
 export function calculateChunkCount(totalBytes: number, chunkSize: number = OPFS_CHUNK_SIZE): number {
   if (totalBytes <= 0) return 0;
   return Math.ceil(totalBytes / chunkSize);
+}
+
+/**
+ * Windows a transformer is called with: one per chunk, and one empty window for an empty input so that a
+ * transformer sees the end of the stream and can refuse input that is too short to be the format it claims.
+ */
+function transformWindowCount(totalBytes: number, chunkSize: number): number {
+  return Math.max(1, calculateChunkCount(totalBytes, chunkSize));
+}
+
+function progressPercent(bytesProcessed: number, totalBytes: number): number {
+  if (totalBytes <= 0) return 99;
+  return Math.min(99, Math.round((bytesProcessed / totalBytes) * 95));
 }
 
 /**
@@ -414,10 +176,10 @@ export class OpfsStreamTransformer {
     totalSize: number,
     readChunkFn: (offset: number, size: number) => Promise<Uint8Array>,
     writeChunkFn: (offset: number, data: Uint8Array) => Promise<void>,
-    onProgress?: (progress: number, bytesProcessed: number) => void,
-    chunkTransformer?: ChunkTransformerFn
+    onProgress: ((progress: number, bytesProcessed: number) => void) | undefined,
+    chunkTransformer: ChunkTransformerFn
   ): Promise<number> {
-    const chunkCount = calculateChunkCount(totalSize, this.chunkSize);
+    const chunkCount = transformWindowCount(totalSize, this.chunkSize);
     let bytesProcessed = 0;
     let outputOffset = 0;
     this.peakAllocatedBytes = this.chunkSize;
@@ -429,20 +191,15 @@ export class OpfsStreamTransformer {
       // 1. Read bounded chunk from VFS disk handle
       const chunkData = await readChunkFn(offset, currentChunkSize);
 
-      // 2. Perform streaming transformation (bounded in-place or custom transformer)
-      const transformed = chunkTransformer
-        ? await chunkTransformer(chunkData, offset, totalSize)
-        : chunkData;
-
-      this.peakAllocatedBytes = Math.max(this.peakAllocatedBytes, transformed.byteLength);
-
-      // 3. Write bounded chunk to destination VFS handle
-      await writeChunkFn(outputOffset, transformed);
-      outputOffset += transformed.byteLength;
+      // 2. Perform streaming transformation and 3. write each bounded output piece to the destination
+      await forEachOutputPiece(chunkTransformer(chunkData, offset, totalSize), async (piece) => {
+        this.peakAllocatedBytes = Math.max(this.peakAllocatedBytes, piece.byteLength);
+        await writeChunkFn(outputOffset, piece);
+        outputOffset += piece.byteLength;
+      });
 
       bytesProcessed += currentChunkSize;
-      const progress = Math.min(99, Math.round((bytesProcessed / totalSize) * 95));
-      onProgress?.(progress, bytesProcessed);
+      onProgress?.(progressPercent(bytesProcessed, totalSize), bytesProcessed);
     }
 
     onProgress?.(100, bytesProcessed);
@@ -450,39 +207,89 @@ export class OpfsStreamTransformer {
   }
 }
 
+const QUOTA_EXCEEDED_ERROR_NAME = 'QuotaExceededError';
+
+function isQuotaExceeded(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { name?: unknown }).name === QUOTA_EXCEEDED_ERROR_NAME;
+}
+
+/** The runtime has no usable OPFS sync access handle (a window, a blocked context): nothing has been converted yet. */
+class SyncAccessUnavailableError extends Error {}
+
+function quotaError(): EdgeStorageQuotaError {
+  return new EdgeStorageQuotaError(
+    'The browser storage quota is used up, so the edge cannot hold this conversion; the server engine converts the file.'
+  );
+}
+
 /**
- * Synchronously streams data through OPFS FileSystemSyncAccessHandle with session isolation.
+ * Synchronously streams data through OPFS FileSystemSyncAccessHandle with session isolation. It throws
+ * SyncAccessUnavailableError, before any data is read, when the runtime cannot open a sync access handle; every
+ * other failure ends the conversion, deletes what it wrote, and is typed (a full quota is EdgeStorageQuotaError).
  */
 export async function streamWithSyncAccessHandle(
-  jobOrId: string | OpfsConversionJob,
+  job: OpfsConversionJob,
   file: Blob | File,
   onProgress?: (progress: number, bytesProcessed: number) => void
 ): Promise<{ blob: Blob; outputSize: number }> {
   if (typeof navigator === 'undefined' || !navigator.storage?.getDirectory) {
-    throw new Error('OPFS is not supported in this runtime environment');
+    throw new SyncAccessUnavailableError('OPFS is not supported in this runtime environment');
   }
 
-  const job: OpfsConversionJob = typeof jobOrId === 'string'
-    ? { jobId: jobOrId, sourceFormat: 'bin', targetFormat: 'bin', totalSize: file.size }
-    : jobOrId;
   const jobId = job.jobId;
-  const transformer = resolveChunkTransformer(job.sourceFormat, job.targetFormat, job.options);
-
-  const root = await navigator.storage.getDirectory();
-  const easyconvertDir = await root.getDirectoryHandle('easyconvert', { create: true });
-  const sessionsDir = await easyconvertDir.getDirectoryHandle('sessions', { create: true });
-  const sessionDir = await sessionsDir.getDirectoryHandle(jobId, { create: true });
-
-  const inputHandle = await sessionDir.getFileHandle('input.bin', { create: true });
-  const outputHandle = await sessionDir.getFileHandle('output.bin', { create: true });
-
+  let sessionsDir: FileSystemDirectoryHandle | null = null;
+  let sessionDir: FileSystemDirectoryHandle | null = null;
+  let outputHandle: FileSystemFileHandle | null = null;
   let inputAccess: any = null;
   let outputAccess: any = null;
 
+  const closeHandles = (): void => {
+    for (const access of [inputAccess, outputAccess]) {
+      try {
+        access?.close();
+      } catch {}
+    }
+    inputAccess = null;
+    outputAccess = null;
+  };
+  /** Removes everything this conversion wrote, once its handles are closed. */
+  const discardSession = async (): Promise<void> => {
+    closeHandles();
+    for (const name of ['output.bin', 'input.bin']) {
+      try {
+        await sessionDir?.removeEntry(name);
+      } catch {}
+    }
+    try {
+      await sessionsDir?.removeEntry(jobId, { recursive: true });
+    } catch {}
+  };
+
+  // Phase 1: open the session. A failure here, other than a full quota, means no handle is available.
   try {
+    const root = await navigator.storage.getDirectory();
+    const easyconvertDir = await root.getDirectoryHandle('easyconvert', { create: true });
+    sessionsDir = await easyconvertDir.getDirectoryHandle('sessions', { create: true });
+    sessionDir = await sessionsDir.getDirectoryHandle(jobId, { create: true });
+    const inputHandle = await sessionDir.getFileHandle('input.bin', { create: true });
+    outputHandle = await sessionDir.getFileHandle('output.bin', { create: true });
+    if (typeof (inputHandle as any).createSyncAccessHandle !== 'function') {
+      throw new SyncAccessUnavailableError('The runtime has no FileSystemSyncAccessHandle (it exists in workers only)');
+    }
     inputAccess = await (inputHandle as any).createSyncAccessHandle();
     outputAccess = await (outputHandle as any).createSyncAccessHandle();
+  } catch (error) {
+    await discardSession();
+    if (isQuotaExceeded(error)) throw quotaError();
+    if (error instanceof SyncAccessUnavailableError) throw error;
+    throw new SyncAccessUnavailableError(error instanceof Error ? error.message : String(error));
+  }
 
+  // Phase 2: convert. From here on a failure is final.
+  try {
+    const transformer = resolveChunkTransformer(job.sourceFormat, job.targetFormat, job.options, {
+      maxOutputBytes: job.maxOutputBytes,
+    });
     const totalBytes = file.size;
     const chunkCount = calculateChunkCount(totalBytes, OPFS_CHUNK_SIZE);
     let bytesProcessed = 0;
@@ -499,19 +306,20 @@ export async function streamWithSyncAccessHandle(
     inputAccess.flush();
 
     // 2. Stream chunked transformation between disk handles
-    for (let i = 0; i < chunkCount; i++) {
+    const windowCount = transformWindowCount(totalBytes, OPFS_CHUNK_SIZE);
+    for (let i = 0; i < windowCount; i++) {
       const start = i * OPFS_CHUNK_SIZE;
       const currentSize = Math.min(OPFS_CHUNK_SIZE, totalBytes - start);
       const readBuf = new Uint8Array(currentSize);
       inputAccess.read(readBuf, { at: start });
 
-      const transformed = await transformer(readBuf, start, totalBytes);
-      outputAccess.write(transformed, { at: outputOffset });
-      outputOffset += transformed.byteLength;
+      await forEachOutputPiece(transformer(readBuf, start, totalBytes), (piece) => {
+        outputAccess.write(piece, { at: outputOffset });
+        outputOffset += piece.byteLength;
+      });
 
       bytesProcessed += currentSize;
-      const progress = Math.min(99, Math.round((bytesProcessed / totalBytes) * 95));
-      onProgress?.(progress, bytesProcessed);
+      onProgress?.(progressPercent(bytesProcessed, totalBytes), bytesProcessed);
     }
 
     if (typeof outputAccess.truncate === 'function') {
@@ -519,26 +327,20 @@ export async function streamWithSyncAccessHandle(
     }
     outputAccess.flush();
     onProgress?.(100, bytesProcessed);
-  } finally {
-    // Deterministic release of OS file locks
-    if (inputAccess) {
-      try {
-        inputAccess.close();
-      } catch {}
-    }
-    if (outputAccess) {
-      try {
-        outputAccess.close();
-      } catch {}
-    }
+  } catch (error) {
+    await discardSession();
+    if (isQuotaExceeded(error)) throw quotaError();
+    throw error;
   }
+  // Deterministic release of OS file locks
+  closeHandles();
 
   // Retrieve File directly backed by OPFS disk block (zero JS heap memory copy)
-  const outputFile = await outputHandle.getFile();
+  const outputFile = await (outputHandle as FileSystemFileHandle).getFile();
 
   // Remove temporary input file to immediately reclaim disk space
   try {
-    await sessionDir.removeEntry('input.bin');
+    await sessionDir?.removeEntry('input.bin');
   } catch {}
 
   return {
@@ -555,6 +357,12 @@ async function streamWithChunkTransformer(
   input: Blob | File | ArrayBuffer,
   onProgress?: (progress: number, bytesProcessed: number) => void
 ): Promise<{ buffer?: ArrayBuffer; blob?: Blob; outputSize: number }> {
+  // The in-memory path keeps every output byte in RAM, so it never runs a conversion that expands its input.
+  if (isExpandingPair(job.sourceFormat, job.targetFormat)) {
+    throw new EdgeUnsupportedError(
+      'Inflating an archive needs a disk-backed output (OPFS sync access handles), which this runtime does not have; the server engine converts it.'
+    );
+  }
   const isBlob = typeof Blob !== 'undefined' && input instanceof Blob;
   const totalSize = isBlob ? (input as Blob).size : (input as ArrayBuffer).byteLength;
   const transformer = new OpfsStreamTransformer(OPFS_CHUNK_SIZE);
@@ -629,10 +437,12 @@ export async function processOpfsStreaming(
 
   if (hasSyncAccess && (typeof Blob !== 'undefined' && input instanceof Blob)) {
     try {
-      const res = await streamWithSyncAccessHandle(job, input as Blob, onProgress);
-      return res;
-    } catch {
-      // Graceful fallback to chunk transformer if sync access handle throws (e.g. in test mock)
+      return await streamWithSyncAccessHandle(job, input as Blob, onProgress);
+    } catch (error) {
+      // Only a runtime with no sync access handle (a window; nothing was read yet) falls back to the in-memory
+      // chunk transformer. Any failure after the conversion started, a full quota included, is final: restarting
+      // it in memory would hold the whole output in RAM.
+      if (!(error instanceof SyncAccessUnavailableError)) throw error;
     }
   }
 
@@ -667,6 +477,8 @@ export async function runOpfsWorkerJob(data: Record<string, any>, post: WorkerPo
       post({ type: 'COMPLETED', jobId: data.jobId, outputSize: result.outputSize, blob: result.blob });
     } else if (result.buffer) {
       post({ type: 'COMPLETED', jobId: data.jobId, outputSize: result.outputSize, buffer: result.buffer }, [result.buffer]);
+    } else {
+      throw new ConversionFailedError('The streaming conversion finished without producing an output.');
     }
   } catch (err) {
     const error = serializeWorkerError(err);

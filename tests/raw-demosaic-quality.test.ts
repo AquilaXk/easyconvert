@@ -3,11 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  demosaicAhdBayerCfa as referenceAhd,
-  demosaicAmazeBayerCfa as referenceAmaze,
-  type BayerSensorData,
-} from '../src/lib/conversions/image';
+import type { BayerSensorData } from '../src/lib/conversions/image';
+import { legacyDemosaicAhdBayerCfa as referenceAhd, legacyDemosaicAmazeBayerCfa as referenceAmaze } from './raw-demosaic/legacy-demosaic';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa, type DemosaicResult } from '../src/lib/conversions/raw-demosaic';
 import { OracleToolMissingError, getOracleToolPath } from './helpers/differential-oracle';
 import { readTiff16 } from './raw-demosaic/tiff16';
@@ -72,6 +69,7 @@ describe('demosaic quality against LibRaw interpolators', () => {
     expect(path.basename(DCRAW_EMU!)).toBe('dcraw_emu');
   });
 
+  // skip-ok: a strict-mode test in this file fails (instead of skipping) when dcraw_emu, raw-identify or the samples are missing.
   it.skipIf(!CHECKS_ENABLED)(
     'AHD and AMaZE are no worse than before against LibRaw AHD (-q 3) and DCB (-q 4)',
     () => {

@@ -4,6 +4,15 @@ import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import { convertFile } from '../src/lib/conversions/index';
 import { getFullDocxCellText } from '../src/lib/conversions/office';
+import { zipEntryText } from './helpers/zip-entry';
+
+/** ECMA-376 Part 2 / Open Packaging Conventions content types of the main parts. */
+const CT_DOCX_MAIN = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml';
+const CT_PPTX_MAIN = 'application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml';
+const CT_PPTX_SLIDE = 'application/vnd.openxmlformats-officedocument.presentationml.slide+xml';
+const CT_XLSX_MAIN = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml';
+const CT_XLSX_SHEET = 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml';
+const override = (partName: string, contentType: string) => `<Override PartName="${partName}" ContentType="${contentType}"/>`;
 
 describe('Office & Ebook Conversion Engine (DOCX, XLSX, PPTX, EPUB, MOBI, FB2, ODP)', () => {
   it('converts Markdown to a genuine OpenXML DOCX archive', async () => {
@@ -18,10 +27,9 @@ describe('Office & Ebook Conversion Engine (DOCX, XLSX, PPTX, EPUB, MOBI, FB2, O
 
     // Verify it is a valid ZIP containing word/document.xml
     const zip = await JSZip.loadAsync(result.buffer);
-    expect(zip.file('word/document.xml')).toBeDefined();
-    expect(zip.file('[Content_Types].xml')).toBeDefined();
+    expect(await zipEntryText(zip, '[Content_Types].xml')).toContain(override('/word/document.xml', CT_DOCX_MAIN));
 
-    const docXml = await zip.file('word/document.xml')!.async('text');
+    const docXml = await zipEntryText(zip, 'word/document.xml');
     expect(docXml).toContain('Title of Document');
   });
 
@@ -92,11 +100,12 @@ Summary after table.`;
     expect(result.filename).toBe('deck.pptx');
 
     const zip = await JSZip.loadAsync(result.buffer);
-    expect(zip.file('[Content_Types].xml')).toBeDefined();
-    expect(zip.file('ppt/presentation.xml')).toBeDefined();
-    expect(zip.file('ppt/slides/slide1.xml')).toBeDefined();
+    const contentTypes = await zipEntryText(zip, '[Content_Types].xml');
+    expect(contentTypes).toContain(override('/ppt/presentation.xml', CT_PPTX_MAIN));
+    expect(contentTypes).toContain(override('/ppt/slides/slide1.xml', CT_PPTX_SLIDE));
+    expect(await zipEntryText(zip, 'ppt/presentation.xml')).toContain('<p:sldId ');
 
-    const slide1Xml = await zip.file('ppt/slides/slide1.xml')!.async('text');
+    const slide1Xml = await zipEntryText(zip, 'ppt/slides/slide1.xml');
     expect(slide1Xml).toContain('Product Overview');
     expect(slide1Xml).toContain('5C6BC0'); // Signature lavender color
   });
@@ -155,10 +164,12 @@ Summary after table.`;
 
     // Verify OpenXML spreadsheet contents
     const zip = await JSZip.loadAsync(result.buffer);
-    expect(zip.file('xl/workbook.xml')).toBeDefined();
-    expect(zip.file('xl/worksheets/sheet1.xml')).toBeDefined();
+    const contentTypes = await zipEntryText(zip, '[Content_Types].xml');
+    expect(contentTypes).toContain(override('/xl/workbook.xml', CT_XLSX_MAIN));
+    expect(contentTypes).toContain(override('/xl/worksheets/sheet1.xml', CT_XLSX_SHEET));
+    expect(await zipEntryText(zip, 'xl/workbook.xml')).toContain('<sheet ');
 
-    const sheetXml = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
+    const sheetXml = await zipEntryText(zip, 'xl/worksheets/sheet1.xml');
     expect(sheetXml).toContain('Widget A');
   });
 
@@ -196,12 +207,15 @@ Summary after table.`;
     expect(result.filename).toBe('novel.epub');
 
     const zip = await JSZip.loadAsync(result.buffer);
-    expect(zip.file('mimetype')).toBeDefined();
-    expect(zip.file('META-INF/container.xml')).toBeDefined();
-    expect(zip.file('OEBPS/content.opf')).toBeDefined();
-    expect(zip.file('OEBPS/chapter1.xhtml')).toBeDefined();
+    // OCF 3.0: the first entry is the stored "mimetype" file holding exactly the media type, and the container
+    // file points at the package document.
+    expect(await zipEntryText(zip, 'mimetype')).toBe('application/epub+zip');
+    expect(await zipEntryText(zip, 'META-INF/container.xml')).toContain(
+      '<rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
+    );
+    expect(await zipEntryText(zip, 'OEBPS/content.opf')).toContain('href="chapter1.xhtml"');
 
-    const chapterHtml = await zip.file('OEBPS/chapter1.xhtml')!.async('text');
+    const chapterHtml = await zipEntryText(zip, 'OEBPS/chapter1.xhtml');
     expect(chapterHtml).toContain('The Beginning');
   });
 

@@ -51,11 +51,15 @@ function countSegmentationRetries(): () => number {
   const run = pool.run.bind(pool);
   let retries = 0;
   vi.spyOn(pool, 'run').mockImplementation((spec, job) =>
-    run(spec, (recognize, recognizeWith) =>
-      job(recognize, (parameters, image, options, output) => {
-        retries++;
-        return recognizeWith(parameters, image, options, output);
-      })
+    run(spec, (recognize, recognizeWith, detect) =>
+      job(
+        recognize,
+        (parameters, image, options, output) => {
+          retries++;
+          return recognizeWith(parameters, image, options, output);
+        },
+        detect
+      )
     )
   );
   return () => retries;

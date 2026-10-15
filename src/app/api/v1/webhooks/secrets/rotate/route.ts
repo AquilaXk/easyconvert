@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
-import { getWebhookSecretStore } from '@/lib/api-keys/webhook-secret-store';
+import {
+  getWebhookSecretStore,
+  requireWebhookTargetId,
+  WebhookTargetRequiredError,
+} from '@/lib/api-keys/webhook-secret-store';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import {
   validateOrProblem,
@@ -57,7 +61,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
 
   const { endpointId, apiKeyId, graceSeconds = 86400 } = validation.data;
-  const targetId = endpointId || apiKeyId || 'default';
+  // Every secret belongs to one endpoint or API key; there is no shared default slot.
+  let targetId: string;
+  try {
+    targetId = requireWebhookTargetId(endpointId, apiKeyId);
+  } catch (error) {
+    if (!(error instanceof WebhookTargetRequiredError)) throw error;
+    return createProblemDetailsResponse(error.status, error.message, instanceUri);
+  }
 
   // 4. Rotate secret in enterprise WebhookSecretStore
   const store = getWebhookSecretStore();

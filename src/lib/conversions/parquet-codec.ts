@@ -37,6 +37,13 @@ export function codecName(codec: CompressionCodec): string {
   return CompressionCodec[codec] ?? String(codec);
 }
 
+const LZ4_TOKEN_MASK = 0x0f;
+const LZ4_TOKEN_SHIFT = 4;
+const LZ4_EXTENDED_LENGTH = 15;
+const LZ4_CONTINUATION_BYTE = 255;
+const LZ4_MIN_MATCH = 4;
+const LZ4_OFFSET_BYTES = 2;
+
 /** Compresses one page body with a codec the writer supports. */
 export function compressPage(codec: CompressionCodec, data: Uint8Array): Buffer {
   if (codec === CompressionCodec.UNCOMPRESSED) {
@@ -44,6 +51,7 @@ export function compressPage(codec: CompressionCodec, data: Uint8Array): Buffer 
     return Buffer.from(data);
   }
   if (codec === CompressionCodec.SNAPPY) return compressSnappy(data);
+  if (codec === CompressionCodec.GZIP) return zlib.gzipSync(data);
   if (codec === CompressionCodec.ZSTD) {
     const native = nativeZstd();
     if (!native) {
@@ -55,7 +63,7 @@ export function compressPage(codec: CompressionCodec, data: Uint8Array): Buffer 
     return native.zstdCompressSync(data, { params: { [level]: ZSTD_WRITE_LEVEL } });
   }
   throw new ParquetCodecUnavailableError(
-    `Unsupported Parquet write codec: ${codecName(codec)}. Supported: UNCOMPRESSED, SNAPPY, ZSTD.`
+    `Unsupported Parquet write codec: ${codecName(codec)}. Supported: UNCOMPRESSED, SNAPPY, GZIP, ZSTD.`
   );
 }
 
@@ -72,6 +80,75 @@ function gunzip(data: Buffer, expectedBytes: number): Buffer {
       throw new ParquetFormatError('Corrupted Parquet page: GZIP data is not valid');
     }
   }
+}
+
+/**
+ * Decompresses an LZ4 raw block (Parquet LZ4_RAW codec) into a buffer of `expectedBytes` bytes.
+ */
+export function decompressLz4Raw(data: Buffer, expectedBytes: number): Buffer {
+  if (expectedBytes === 0) {
+    if (data.length !== 0) {
+      throw new ParquetFormatError('Corrupted Parquet page: non-empty LZ4_RAW block for 0 uncompressed bytes');
+    }
+    return Buffer.alloc(0);
+  }
+  const out = Buffer.alloc(expectedBytes);
+  let pos = 0;
+  let outPos = 0;
+  while (pos < data.length) {
+    const token = data[pos++];
+    let literalLen = token >>> LZ4_TOKEN_SHIFT;
+    if (literalLen === LZ4_EXTENDED_LENGTH) {
+      for (;;) {
+        if (pos >= data.length) {
+          throw new ParquetFormatError('Corrupted Parquet page: truncated LZ4_RAW literal length');
+        }
+        const extra = data[pos++];
+        literalLen += extra;
+        if (extra !== LZ4_CONTINUATION_BYTE) break;
+      }
+    }
+    if (pos + literalLen > data.length || outPos + literalLen > expectedBytes) {
+      throw new ParquetFormatError('Corrupted Parquet page: LZ4_RAW literal exceeds bounds');
+    }
+    data.copy(out, outPos, pos, pos + literalLen);
+    pos += literalLen;
+    outPos += literalLen;
+    if (pos === data.length) break;
+
+    if (pos + LZ4_OFFSET_BYTES > data.length) {
+      throw new ParquetFormatError('Corrupted Parquet page: truncated LZ4_RAW match offset');
+    }
+    const offset = data.readUInt16LE(pos);
+    pos += LZ4_OFFSET_BYTES;
+    if (offset === 0 || offset > outPos) {
+      throw new ParquetFormatError(`Corrupted Parquet page: invalid LZ4_RAW match offset ${offset}`);
+    }
+    let matchLen = (token & LZ4_TOKEN_MASK) + LZ4_MIN_MATCH;
+    if ((token & LZ4_TOKEN_MASK) === LZ4_EXTENDED_LENGTH) {
+      for (;;) {
+        if (pos >= data.length) {
+          throw new ParquetFormatError('Corrupted Parquet page: truncated LZ4_RAW match length');
+        }
+        const extra = data[pos++];
+        matchLen += extra;
+        if (extra !== LZ4_CONTINUATION_BYTE) break;
+      }
+    }
+    if (outPos + matchLen > expectedBytes) {
+      throw new ParquetFormatError('Corrupted Parquet page: LZ4_RAW match exceeds declared size');
+    }
+    let matchSrc = outPos - offset;
+    for (let i = 0; i < matchLen; i++) {
+      out[outPos++] = out[matchSrc++];
+    }
+  }
+  if (outPos !== expectedBytes) {
+    throw new ParquetFormatError(
+      `Corrupted Parquet page: LZ4_RAW page decoded to ${outPos} bytes, header declares ${expectedBytes}`
+    );
+  }
+  return out;
 }
 
 /**
@@ -121,9 +198,11 @@ export function decompressPage(codec: CompressionCodec, data: Buffer, expectedBy
     out = gunzip(data, expectedBytes);
   } else if (codec === CompressionCodec.ZSTD) {
     out = zstdDecode(data, expectedBytes);
+  } else if (codec === CompressionCodec.LZ4_RAW) {
+    out = decompressLz4Raw(data, expectedBytes);
   } else {
     throw new ParquetFormatError(
-      `Unsupported Parquet compression codec: ${codecName(codec)}. Supported codecs: UNCOMPRESSED, SNAPPY, GZIP, ZSTD.`
+      `Unsupported Parquet compression codec: ${codecName(codec)}. Supported codecs: UNCOMPRESSED, SNAPPY, GZIP, ZSTD, LZ4_RAW.`
     );
   }
   if (out.length !== expectedBytes) {

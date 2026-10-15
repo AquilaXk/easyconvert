@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { oracleTest } from './helpers/oracle-test';
+import { readHwpWithReference } from './helpers/hwp-reference';
+import { CorruptStreamError } from '../src/lib/types';
 import JSZip from 'jszip';
 import {
   parseCfbf,
@@ -69,22 +72,30 @@ describe('HWP 5.0 OLE CFBF Container & Record Parser', () => {
     expect(doc.tables[0].rows[1]).toEqual(['수입', '급여', '3,500,000']);
   });
 
-  it('filters inline control codes in decodeHwpText while preserving standard whitespace', () => {
-    // UTF-16LE buffer with inline control characters (0x000B, 0x0010) and standard tab (0x0009)
-    const rawCodes = [
-      0x0048, 0x0065, 0x006c, 0x006c, 0x006f, // "Hello"
-      0x000b, // inline control (should be filtered)
-      0x0009, // tab (should be preserved)
-      0x0057, 0x006f, 0x0072, 0x006c, 0x0064, // "World"
-      0x0010, // inline control (should be filtered)
-      0x000a, // newline (should be preserved)
-    ];
+  it('decodes paragraph text by the control-character classes of the format', () => {
+    const units = (...codes: number[]): Buffer => {
+      const buffer = Buffer.alloc(codes.length * 2);
+      codes.forEach((code, index) => buffer.writeUInt16LE(code, index * 2));
+      return buffer;
+    };
+    const text = (value: string): number[] => Array.from(value, (char) => char.charCodeAt(0));
 
-    const buf = Buffer.alloc(rawCodes.length * 2);
-    rawCodes.forEach((code, idx) => buf.writeUInt16LE(code, idx * 2));
+    // An extended control (0x0b: table) takes eight units; its data units must not surface as characters.
+    expect(decodeHwpText(units(...text('A'), 0x000b, 0x6c20, 0x7462, 0, 0, 0, 0, 0x000b, ...text('B'), 0x000d))).toBe('AB');
+    // A tab is an eight-unit inline control that reads as a tab character.
+    expect(decodeHwpText(units(...text('a'), 0x0009, 0, 0, 0, 0, 0, 0, 0x0009, ...text('b')))).toBe('a\tb');
+    // A line break stays a newline; the hyphen control is a hyphen; fixed-width spaces are spaces; the paragraph end is dropped.
+    expect(decodeHwpText(units(...text('x'), 0x000a, ...text('y'), 0x0018, ...text('z'), 0x001e, 0x001f, 0x000d))).toBe('x\ny-z  ');
+    // Other single-unit controls carry no text.
+    expect(decodeHwpText(units(...text('k'), 0x0000, 0x0019, ...text('l')))).toBe('kl');
+  });
 
-    const decoded = decodeHwpText(buf);
-    expect(decoded).toBe('Hello\tWorld\n');
+  it('refuses paragraph text whose control is cut off or whose length is odd', () => {
+    const cutOff = Buffer.alloc(8);
+    cutOff.writeUInt16LE(0x000b, 0);
+    expect(() => decodeHwpText(cutOff)).toThrow(CorruptStreamError);
+    expect(() => decodeHwpText(cutOff)).toThrow('Corrupt HWP paragraph text: control character 11 is cut off by the end of the record.');
+    expect(() => decodeHwpText(Buffer.alloc(3))).toThrow('Corrupt HWP paragraph text: the record does not hold whole UTF-16 characters.');
   });
 
   it('converts HWP to structured PDF preserving paragraph layout and table grids', async () => {
@@ -160,9 +171,9 @@ describe('HWP 5.0 OLE CFBF Container & Record Parser', () => {
     const result = await convertHwp(hwpBuffer, 'html', {}, 'test.hwp');
     expect(result.mimeType).toBe('text/html');
     const html = result.buffer.toString('utf-8');
-    expect(html).toContain('<h2>웹 보고서</h2>');
+    expect(html).toContain('<p>웹 보고서</p>');
     expect(html).toContain('<p>HTML 변환 테스트 단락입니다.</p>');
-    expect(html).toContain('<table>');
+    expect(html).toContain('<table border="1">');
     expect(html).toContain('<th>번호</th>');
     expect(html).toContain('<td>김철수</td>');
   });
@@ -226,12 +237,11 @@ describe('HWP 5.0 OLE CFBF Container & Record Parser', () => {
     expect(zip.file('[Content_Types].xml')).not.toBeNull();
   });
 
-  it('handles non-CFBF plaintext input gracefully via fail-safe fallback', async () => {
+  it('refuses non-CFBF plaintext input instead of making a document of it', async () => {
     const rawPlaintext = Buffer.from('일반 텍스트 형식의 한글 문서 내용입니다.', 'utf-8');
-    const result = await convertFile(rawPlaintext, 'hwp', 'pdf', {}, 'plain.hwp');
-
-    expect(result.mimeType).toBe('application/pdf');
-    expect(result.buffer.subarray(0, 4).toString('ascii')).toBe('%PDF');
+    const failure = await convertFile(rawPlaintext, 'hwp', 'pdf', {}, 'plain.hwp').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(CorruptStreamError);
+    expect((failure as Error).message).toBe('Invalid HWP document: the file is not an OLE2 compound file.');
   });
 
   it('safely decodes massive UTF-16LE text streams (150,000+ chars) without call stack overflow', () => {
@@ -295,6 +305,34 @@ describe('HWP 5.0 OLE CFBF Container & Record Parser', () => {
     expect(() => parseHwpDocument(encCompound)).toThrow(/Encrypted HWP documents with password protection cannot be converted/);
   });
 
+  oracleTest('a written HWP opens in 7-Zip and its records read back through the specification layout', ['7z'], () => {
+    const written = buildHwpCompoundFile({
+      paragraphs: [{ text: '대한민국 헌법 전문' }, { text: 'Second paragraph' }],
+      tables: [
+        { rows: [['구분', '항목', '금액'], ['수입', '급여', '3,500,000'], ['지출', '식비', '800,000']] },
+        { rows: [['x']] },
+      ],
+      equations: ['a over b'],
+      compressed: true,
+    });
+    const reference = readHwpWithReference(written);
+    expect(reference.streamPaths).toEqual(['BodyText/Section0', 'DocInfo', 'FileHeader']);
+    expect(reference.version).toBe('5.0.3.0');
+    expect(reference.compressed).toBe(true);
+    expect(reference.paragraphs).toEqual(['대한민국 헌법 전문', 'Second paragraph']);
+    expect(reference.tables).toEqual([
+      [['구분', '항목', '금액'], ['수입', '급여', '3,500,000'], ['지출', '식비', '800,000']],
+      [['x']],
+    ]);
+  });
+
+  oracleTest('an uncompressed written HWP reads back the same', ['7z'], () => {
+    const reference = readHwpWithReference(buildHwpCompoundFile({ paragraphs: [{ text: '압축하지 않은 문서' }], compressed: false }));
+    expect(reference.compressed).toBe(false);
+    expect(reference.paragraphs).toEqual(['압축하지 않은 문서']);
+    expect(reference.tables).toEqual([]);
+  });
+
   it('converts markdown documents with tables directly to authentic HWP 5.0 compound files', async () => {
     const md = `# 분기 실적 보고
 대한민국 소프트웨어 산업의 성장과 혁신 보고서입니다.
@@ -320,5 +358,14 @@ describe('HWP 5.0 OLE CFBF Container & Record Parser', () => {
     expect(doc.tables[0].rowCount).toBe(3);
     expect(doc.tables[0].rows[0]).toEqual(['부서', '담당자', '목표달성률']);
     expect(doc.tables[0].rows[1]).toEqual(['연구개발', '홍길동', '110%']);
+  });
+
+  oracleTest('markdown converted to HWP reads back through the reference reader', ['7z'], async () => {
+    const md = '# 분기 실적 보고\n본문 단락입니다.\n\n| 부서 | 담당자 |\n| --- | --- |\n| 연구개발 | 홍길동 |\n';
+    const result = await convertFile(Buffer.from(md, 'utf-8'), 'md', 'hwp', {}, 'quarterly.md');
+    const reference = readHwpWithReference(result.buffer);
+    expect(reference.paragraphs.join('\n')).toContain('분기 실적 보고');
+    expect(reference.paragraphs.join('\n')).toContain('본문 단락입니다.');
+    expect(reference.tables).toEqual([[['부서', '담당자'], ['연구개발', '홍길동']]]);
   });
 });

@@ -1,0 +1,13 @@
+Quarterly Maintenance Report
+This report summarises the maintenance work carried out on the pumping stations during the third quarter.
+All stations were inspected twice, and every valve was tested under full load.
+Completed work
+Replaced the worn bearings in the east station pump.
+Repainted the control cabinets at the north and south stations.
+Calibrated the level sensors and recorded the new offsets.
+Station readings
+Station Flow rate Pressure
+East 420 litres per second 6.1 bar
+North 380 litres per second 5.8 bar
+South 405 litres per second 6.0 bar
+The next inspection is planned for the first week of January.

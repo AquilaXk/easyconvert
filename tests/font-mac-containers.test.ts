@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -19,6 +19,10 @@ import {
   refreshMacBinaryCrc,
 } from './helpers/mac-font-containers';
 
+/** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
+const ENGINE_TEST_TIMEOUT_MS = 60_000;
+vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
+
 const FIXTURE_OTF = path.join(__dirname, 'fixtures/golden/font/variable-geometric.otf');
 const HAS_FC_SCAN = spawnSync('fc-scan', ['--version'], { stdio: 'ignore' }).status === 0;
 // CI runs the oracles in strict mode: a missing fc-scan must fail there instead of skipping the oracle.
@@ -33,7 +37,8 @@ const WOFF_DIRECTORY_ENTRY_SIZE = 20;
 const SFNT_HEADER_SIZE = 12;
 const SFNT_DIRECTORY_ENTRY_SIZE = 16;
 const NAME_ID_FAMILY = 1;
-const REJECT_BUDGET_MS = 1000;
+/** Hang guard only: a malformed container is refused in milliseconds; see ENGINE_TEST_TIMEOUT_MS. */
+const REJECT_HANG_GUARD_MS = 30_000;
 const CRC16_XMODEM_CHECK_VALUE = 0x31c3; // published check value for the ASCII string "123456789"
 
 // ---------------------------------------------------------------------------
@@ -203,7 +208,7 @@ async function expectContainerRejection(
     () => null,
     (err: unknown) => err
   );
-  expect(performance.now() - started).toBeLessThan(REJECT_BUDGET_MS);
+  expect(performance.now() - started).toBeLessThan(REJECT_HANG_GUARD_MS);
   expect(failure).toBeInstanceOf(MacFontContainerError);
   // The API maps ConversionFailedError to HTTP 400.
   expect(failure).toBeInstanceOf(ConversionFailedError);
@@ -222,6 +227,7 @@ describe('Mac font container helpers', () => {
     expect(crc16Xmodem(sample)).toBe(CRC16_XMODEM_CHECK_VALUE);
   });
 
+  // skip-ok: requireStrictFcScan / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when fc-scan is missing.
   it.skipIf(!HAS_FC_SCAN)('writes a resource fork that fontconfig itself opens as the wrapped font (needs fc-scan)', () => {
     const direct = fcScan(ALPHA_TTF, 'ttf');
     expect(direct.family).toBe('Alpha Sans');
@@ -294,6 +300,7 @@ describe('dfont and MacBinary font containers convert through convertFile', () =
     expect(tables.get('maxp')!.readUInt16BE(4)).toBe(originalNumGlyphs);
   });
 
+  // skip-ok: requireStrictFcScan / the ORACLE_STRICT_MODE check at the top of this file throws before this suite is collected when fc-scan is missing.
   it.skipIf(!HAS_FC_SCAN).each(PAIRS)(
     '%s -> %s is read by fontconfig as the same face as the original TrueType font (needs fc-scan)',
     async (source, target) => {

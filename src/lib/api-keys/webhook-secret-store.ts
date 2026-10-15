@@ -25,6 +25,26 @@ export interface RotateSecretResult {
   previousExpiresAt?: number;
 }
 
+const HTTP_BAD_REQUEST = 400;
+
+/** A webhook secret operation named no target (endpoint or API key). There is no shared default target. */
+export class WebhookTargetRequiredError extends Error {
+  readonly status = HTTP_BAD_REQUEST;
+
+  constructor(message = 'A webhook target id is required: pass endpointId or apiKeyId.') {
+    super(message);
+    this.name = 'WebhookTargetRequiredError';
+  }
+}
+
+/** The first candidate that is a non-blank string; throws WebhookTargetRequiredError when there is none. */
+export function requireWebhookTargetId(...candidates: Array<string | undefined>): string {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim().length > 0) return candidate;
+  }
+  throw new WebhookTargetRequiredError();
+}
+
 export interface WebhookSecretStore {
   getSecretRecord(ownerUserId: string, targetId: string): Promise<WebhookSecretRecord | null>;
   setPrimarySecret(ownerUserId: string, targetId: string, secret: string): Promise<void>;
@@ -107,9 +127,10 @@ export function generateWebhookSecret(): string {
   return `whsec_${crypto.randomBytes(32).toString('hex')}`;
 }
 
+/** The one place a record key is built, so no operation can reach a record without naming its target. */
 function buildSecretStorageKey(ownerUserId: string, targetId: string): string {
   const sanitizedUser = ownerUserId.replace(/[{}]/g, '_');
-  const sanitizedTarget = targetId.replace(/[{}]/g, '_');
+  const sanitizedTarget = requireWebhookTargetId(targetId).replace(/[{}]/g, '_');
   return `webhook:sec:{${sanitizedUser}}:${sanitizedTarget}`;
 }
 
@@ -121,13 +142,13 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
     this.clock = options?.clock || (() => Date.now());
   }
 
-  public getSecretRecord(
+  public async getSecretRecord(
     ownerUserId: string,
     targetId: string
   ): Promise<WebhookSecretRecord | null> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
     const stored = this.store.get(key);
-    if (!stored) return Promise.resolve(null);
+    if (!stored) return null;
 
     const primary = decryptWebhookSecret(stored.primaryEncrypted);
     let previous: string | undefined;
@@ -135,16 +156,16 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
       previous = decryptWebhookSecret(stored.previousEncrypted);
     }
 
-    return Promise.resolve({
+    return {
       primary,
       previous,
       previousExpiresAt: stored.previousExpiresAt,
       createdAt: stored.createdAt,
       rotatedAt: stored.rotatedAt,
-    });
+    };
   }
 
-  public setPrimarySecret(
+  public async setPrimarySecret(
     ownerUserId: string,
     targetId: string,
     secret: string
@@ -159,10 +180,9 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
       createdAt: existing?.createdAt || now,
       rotatedAt: existing?.rotatedAt,
     });
-    return Promise.resolve();
   }
 
-  public rotateSecret(
+  public async rotateSecret(
     ownerUserId: string,
     targetId: string,
     graceSeconds: number = 86400
@@ -184,17 +204,17 @@ export class InMemoryWebhookSecretStore implements WebhookSecretStore {
       rotatedAt: now,
     });
 
-    return Promise.resolve({
+    return {
       newSecret,
       expiresAt,
       graceSeconds: clampedGrace,
       previousExpiresAt: existing ? expiresAt : undefined,
-    });
+    };
   }
 
-  public deleteSecretRecord(ownerUserId: string, targetId: string): Promise<boolean> {
+  public async deleteSecretRecord(ownerUserId: string, targetId: string): Promise<boolean> {
     const key = buildSecretStorageKey(ownerUserId, targetId);
-    return Promise.resolve(this.store.delete(key));
+    return this.store.delete(key);
   }
 
   public reset(): Promise<void> {
