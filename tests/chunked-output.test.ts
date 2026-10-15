@@ -11,7 +11,7 @@ describe('ChunkedOutput', () => {
     out.writeLatin1(Buffer.from(parts[2], 'latin1').toString('latin1'));
     out.writeUtf8(parts[3]);
     const expected = Buffer.concat(parts.map((part) => Buffer.from(part, 'utf8')));
-    expect(out.length).toBe(expected.length);
+    expect(out).toHaveLength(expected.length);
     expect(out.toBuffer().equals(expected)).toBe(true);
   });
 
@@ -23,7 +23,7 @@ describe('ChunkedOutput', () => {
   });
 
   it('returns an empty buffer when nothing was written', () => {
-    expect(new ChunkedOutput().toBuffer().length).toBe(0);
+    expect(new ChunkedOutput().toBuffer()).toHaveLength(0);
   });
 
   it('fails with a typed limit error instead of growing past its bound', () => {

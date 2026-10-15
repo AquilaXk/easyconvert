@@ -49,6 +49,10 @@ function fail(message: string): never {
   process.exit(1);
 }
 
+function describe(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
 function expectEqual(actual: unknown, expected: unknown, what: string): void {
   if (actual !== expected) fail(`${what}: expected ${String(expected)}, got ${String(actual)}`);
 }
@@ -65,7 +69,7 @@ async function run(scenario: Scenario, rows: number): Promise<void> {
     const output = (await convertData(input, 'jsonl', 'csv', { bom: false }, 'table.jsonl')).buffer;
     expectEqual(count(output, '\r\n'), rows, 'record separators of the CSV');
     expectEqual(output.subarray(0, 100).toString('utf8').startsWith('id,code,city,amount,score,active,note,tag\r\n0,00000000,'), true, 'CSV head');
-    expectEqual(output.subarray(output.length - 60).toString('utf8').endsWith(csvRow(rows - 1)), true, 'CSV tail');
+    expectEqual(output.subarray(-60).toString('utf8').endsWith(csvRow(rows - 1)), true, 'CSV tail');
     return;
   }
   const parquet = await parquetOf(rows);
@@ -76,12 +80,12 @@ async function run(scenario: Scenario, rows: number): Promise<void> {
   if (scenario === 'parquet-to-csv') {
     const output = (await convertData(parquet, 'parquet', 'csv', { bom: false }, 'table.parquet')).buffer;
     expectEqual(count(output, '\r\n'), rows, 'record separators of the CSV');
-    expectEqual(output.subarray(output.length - 60).toString('utf8').endsWith(csvRow(rows - 1)), true, 'CSV tail');
+    expectEqual(output.subarray(-60).toString('utf8').endsWith(csvRow(rows - 1)), true, 'CSV tail');
     return;
   }
   const output = (await convertData(parquet, 'parquet', 'json', {}, 'table.parquet')).buffer;
   expectEqual(count(output, '\n  {\n'), rows, 'objects of the JSON array');
-  expectEqual(output.subarray(output.length - 3).toString('utf8'), '}\n]', 'JSON tail');
+  expectEqual(output.subarray(-3).toString('utf8'), '}\n]', 'JSON tail');
 }
 
 const scenario = process.argv[2] as Scenario;
@@ -89,5 +93,5 @@ const rows = Number(process.argv[3]);
 if (!SCENARIOS.includes(scenario) || !Number.isInteger(rows) || rows <= 0) fail(`usage: <${SCENARIOS.join('|')}> <rows>`);
 run(scenario, rows).then(
   () => process.stdout.write(`ok ${scenario} ${rows} rows, peak heap limit respected, rss ${Math.round(process.memoryUsage().rss / MIB)} MiB\n`),
-  (error: unknown) => fail(`${scenario}: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`)
+  (error: unknown) => fail(`${scenario}: ${describe(error)}`)
 );
