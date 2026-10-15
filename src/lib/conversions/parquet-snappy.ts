@@ -275,7 +275,8 @@ class SnappyElementDecoder {
 
   run(): void {
     const { buf, end, out } = this;
-    while (this.offset < end && this.outPos < out.length) {
+    const total = out.length;
+    while (this.offset < end && this.outPos < total) {
       const tag = buf[this.offset++];
       const elemType = tag & TAG_TYPE_MASK;
       if (elemType === SNAPPY_TAG_LITERAL) this.copyLiteral(tag);
@@ -307,15 +308,17 @@ class SnappyElementDecoder {
     if (this.offset + len > this.end || this.outPos + len > out.length) {
       throw new ParquetFormatError('Snappy decompression error: literal bounds exceeded');
     }
+    const from = this.offset;
+    const to = this.outPos;
     if (len <= SNAPPY_SHORT_LITERAL_BYTES) {
-      for (let i = 0; i < len; i++) out[this.outPos + i] = buf[this.offset + i];
+      for (let i = 0; i < len; i++) out[to + i] = buf[from + i];
     } else if (Buffer.isBuffer(buf)) {
-      buf.copy(out, this.outPos, this.offset, this.offset + len);
+      buf.copy(out, to, from, from + len);
     } else {
-      out.set(buf.subarray(this.offset, this.offset + len), this.outPos);
+      out.set(buf.subarray(from, from + len), to);
     }
-    this.offset += len;
-    this.outPos += len;
+    this.offset = from + len;
+    this.outPos = to + len;
   }
 
   /** Reads the offset bytes of a copy element; returns the offset and moves past them. */
@@ -343,11 +346,11 @@ class SnappyElementDecoder {
       throw new ParquetFormatError('Snappy decompression error: copy length exceeds uncompressed size');
     }
     // Byte-wise on purpose: overlapping copies (offset < length) replicate a pattern.
-    let srcPos = this.outPos - copyOffset;
-    const endPos = this.outPos + copyLen;
-    while (this.outPos < endPos) {
-      out[this.outPos++] = out[srcPos++];
-    }
+    let writePos = this.outPos;
+    let srcPos = writePos - copyOffset;
+    const endPos = writePos + copyLen;
+    while (writePos < endPos) out[writePos++] = out[srcPos++];
+    this.outPos = writePos;
   }
 }
 
