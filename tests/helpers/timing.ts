@@ -91,12 +91,27 @@ async function timeOnce<T>(work: () => T | Promise<T>): Promise<{ ms: number; va
   return { ms: performance.now() - started, value };
 }
 
+/** A clock in milliseconds. */
+export type Clock = () => number;
+/** Wall-clock time: what a user waits, and what a busy neighbour on the runner stretches. */
+export const wallClockMs: Clock = () => performance.now();
+/**
+ * CPU time this process has used (user and system, every thread: the garbage collector's too). A pre-empted process
+ * is not charged for the time it waits for a core, so a comparison of two sizes of the same work is not stretched
+ * by the other test files that share the runner's cores. Use it where the claim is about the work done, in a test
+ * file that runs in a process of its own (the default pool does).
+ */
+export const cpuClockMs: Clock = () => {
+  const used = process.cpuUsage();
+  return (used.user + used.system) / 1000;
+};
+
 /** Times `repetitions` back-to-back runs of `work` as one sample and returns the last result. */
-async function timeSample<T>(work: () => T | Promise<T>, repetitions: number): Promise<{ ms: number; value: T }> {
-  const started = performance.now();
+async function timeSample<T>(work: () => T | Promise<T>, repetitions: number, clock: Clock): Promise<{ ms: number; value: T }> {
+  const started = clock();
   let value!: T;
   for (let run = 0; run < repetitions; run++) value = (await work()) as T;
-  return { ms: performance.now() - started, value };
+  return { ms: clock() - started, value };
 }
 
 /**
@@ -106,15 +121,55 @@ async function timeSample<T>(work: () => T | Promise<T>, repetitions: number): P
  */
 async function timeAdaptiveSample<T>(
   work: () => T | Promise<T>,
-  startRepetitions: number
+  startRepetitions: number,
+  clock: Clock
 ): Promise<{ ms: number; value: T; repetitions: number }> {
   let repetitions = startRepetitions;
   for (;;) {
-    const sample = await timeSample(work, repetitions);
+    const sample = await timeSample(work, repetitions, clock);
     if (sample.ms >= MIN_SAMPLE_MS || repetitions >= MAX_SAMPLE_REPETITIONS) return { ...sample, repetitions };
     // Aim a little past the floor so that the next sample clears it even when it runs slightly faster.
     const wanted = Math.ceil((repetitions * MIN_SAMPLE_MS * SAMPLE_OVERSHOOT) / Math.max(sample.ms, MIN_TIMER_MS));
     repetitions = Math.min(MAX_SAMPLE_REPETITIONS, Math.max(repetitions * 2, wanted));
+  }
+}
+
+/** Warm-up ends after this many runs in a row that are no faster than the best run so far, once it has lasted WARMUP_MIN_MS. */
+export const WARMUP_STEADY_RUNS = 8;
+/** A run counts as faster when it takes less than this fraction of the best run so far. */
+export const WARMUP_GAIN = 0.95;
+/**
+ * Warm-up lasts at least this long: the engine's last compiler tier can arrive after a plateau of dozens of equal runs (the
+ * pure LZMA2 decoder ran 30 runs at one speed and then 22% faster), so a run of steady times alone does not show it is done.
+ */
+export const WARMUP_MIN_MS = 1500;
+/** Warm-up gives up after this many runs or this long: work that never settles is measured as it is. */
+export const WARMUP_MAX_RUNS = 400;
+export const WARMUP_MAX_MS = 10_000;
+
+/**
+ * Runs `work` until its time has stopped falling and returns how many runs that took. The JavaScript engine compiles hot code
+ * in tiers: a comparison that starts after one warm-up run times whichever tier is installed then (the pure LZMA2 decoder read
+ * 1.5 times the reference before its last tier arrived and 1.2 after, on a quiet machine; the nightly runner read 1.87 against
+ * a bound of 1.8). A comparison of steady speeds starts here.
+ */
+export async function warmUpUntilSteady(
+  work: () => unknown | Promise<unknown>,
+  limits: { minMs?: number; maxMs?: number; maxRuns?: number } = {}
+): Promise<number> {
+  const { minMs = WARMUP_MIN_MS, maxMs = WARMUP_MAX_MS, maxRuns = WARMUP_MAX_RUNS } = limits;
+  const started = performance.now();
+  let best = Number.POSITIVE_INFINITY;
+  let steady = 0;
+  let runs = 0;
+  for (;;) {
+    const elapsed = performance.now() - started;
+    const settled = steady >= WARMUP_STEADY_RUNS && elapsed >= minMs;
+    if (settled || runs >= maxRuns || elapsed >= maxMs) return runs;
+    const { ms } = await timeOnce(work);
+    runs++;
+    steady = ms < best * WARMUP_GAIN ? 0 : steady + 1;
+    best = Math.min(best, ms);
   }
 }
 
@@ -127,7 +182,8 @@ export async function measureInterleaved<R = unknown>(
   small: () => unknown,
   large: () => R | Promise<R>,
   passes: number = SCALING_PASSES,
-  acceptRatio?: number
+  acceptRatio?: number,
+  clock: Clock = wallClockMs
 ): Promise<ScalingMeasurement<R>> {
   const started = performance.now();
   await small();
@@ -139,11 +195,11 @@ export async function measureInterleaved<R = unknown>(
   let smallSampleMs = Number.POSITIVE_INFINITY;
   for (let pass = 0; ; pass++) {
     if (pass >= passes && !wantsExtraPass(pass, largeMs / smallMs, performance.now() - started, acceptRatio)) break;
-    const smallSample = await timeAdaptiveSample(small, smallRepetitions);
+    const smallSample = await timeAdaptiveSample(small, smallRepetitions, clock);
     smallRepetitions = smallSample.repetitions;
     smallMs = Math.min(smallMs, smallSample.ms / smallSample.repetitions);
     smallSampleMs = Math.min(smallSampleMs, smallSample.ms);
-    const largeSample = await timeAdaptiveSample<R>(large, largeRepetitions);
+    const largeSample = await timeAdaptiveSample<R>(large, largeRepetitions, clock);
     largeRepetitions = largeSample.repetitions;
     largeMs = Math.min(largeMs, largeSample.ms / largeSample.repetitions);
     largeResult = largeSample.value;
@@ -194,11 +250,11 @@ export async function expectLinearScaling<R = unknown>(
 export async function expectLinearOnInputs<T, R = unknown>(
   label: string,
   run: (input: T) => R | Promise<R>,
-  inputs: { small: T; large: T; factor?: number; passes?: number; maxRatio?: number }
+  inputs: { small: T; large: T; factor?: number; passes?: number; maxRatio?: number; clock?: Clock }
 ): Promise<ScalingMeasurement<R>> {
   const factor = inputs.factor ?? SCALING_FACTOR;
   const maxRatio = inputs.maxRatio ?? factor * LINEAR_RATIO_SLACK;
-  const measurement = await measureInterleaved(() => run(inputs.small), () => run(inputs.large), inputs.passes, maxRatio);
+  const measurement = await measureInterleaved(() => run(inputs.small), () => run(inputs.large), inputs.passes, maxRatio, inputs.clock);
   assertLinearRatio(label, measurement, factor, inputs.maxRatio);
   return measurement;
 }

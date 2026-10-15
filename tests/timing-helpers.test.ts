@@ -12,6 +12,9 @@ import {
   SCALING_PASSES,
   SCALING_FACTOR,
   SCALING_TEST_TIMEOUT_MS,
+  cpuClockMs,
+  WARMUP_STEADY_RUNS,
+  warmUpUntilSteady,
 } from './helpers/timing';
 
 /**
@@ -264,5 +267,75 @@ describe('expectNoHangOnInput', () => {
         throw failure;
       }, 0)
     ).rejects.toBe(failure);
+  });
+});
+
+describe('warm-up until the time of the work is steady', () => {
+  /** Work that lasts `ms` whatever the load: it waits for the clock, so a busy runner cannot shorten or lengthen the plan. */
+  const spin = (ms: number): void => {
+    const until = performance.now() + ms;
+    while (performance.now() < until);
+  };
+  const SLOW_MS = 3;
+  const FAST_MS = 1;
+  const PLATEAU_RUNS = 12;
+  const SHORT_MIN_MS = 80;
+
+  it('runs on through a plateau of equal times until the work gets faster and then settles at the new speed', async () => {
+    const costs: number[] = [];
+    const runs = await warmUpUntilSteady(
+      () => {
+        const cost = costs.length < PLATEAU_RUNS ? SLOW_MS : FAST_MS;
+        costs.push(cost);
+        spin(cost);
+      },
+      { minMs: SHORT_MIN_MS }
+    );
+    expect(runs).toBe(costs.length);
+    // More than WARMUP_STEADY_RUNS slow runs in a row did not end it: the minimum duration had not passed (12 x 3 ms < 80 ms).
+    expect(PLATEAU_RUNS).toBeGreaterThan(WARMUP_STEADY_RUNS);
+    expect(costs.slice(-WARMUP_STEADY_RUNS)).toEqual(Array(WARMUP_STEADY_RUNS).fill(FAST_MS));
+  });
+
+  it('stops once the minimum duration has passed with the time steady', async () => {
+    const started = performance.now();
+    const runs = await warmUpUntilSteady(() => spin(FAST_MS), { minMs: SHORT_MIN_MS });
+    expect(performance.now() - started).toBeGreaterThanOrEqual(SHORT_MIN_MS);
+    expect(runs).toBeGreaterThanOrEqual(WARMUP_STEADY_RUNS);
+  });
+
+  it('gives up at the run limit for work that keeps getting faster', async () => {
+    const maxRuns = 15;
+    let cost = 6;
+    const runs = await warmUpUntilSteady(
+      () => {
+        spin(cost);
+        cost *= 0.8;
+      },
+      { minMs: SHORT_MIN_MS, maxRuns }
+    );
+    expect(runs).toBe(maxRuns);
+  });
+});
+
+describe('the CPU clock', () => {
+  const SLEEP_MS = 60;
+  const SPIN_MS = 30;
+
+  it('does not run while the process waits and runs while it works', async () => {
+    const idleStart = cpuClockMs();
+    await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
+    const idle = cpuClockMs() - idleStart;
+    const busyStart = cpuClockMs();
+    const until = performance.now() + SPIN_MS;
+    while (performance.now() < until);
+    const busy = cpuClockMs() - busyStart;
+    expect(idle).toBeLessThan(SLEEP_MS / 2);
+    expect(busy).toBeGreaterThanOrEqual(SPIN_MS / 2);
+  });
+
+  it('still tells a linear loop from a quadratic one when it is the clock of the comparison', async () => {
+    const measurement = await measureInterleaved(() => quadraticWork(QUADRATIC_BASE), () => quadraticWork(QUADRATIC_BASE * SCALING_FACTOR), SCALING_PASSES, undefined, cpuClockMs);
+    expect(measurement.ratio).toBeGreaterThan(SCALING_FACTOR * LINEAR_RATIO_SLACK);
   });
 });

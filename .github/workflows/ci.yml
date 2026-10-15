@@ -383,6 +383,19 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379
         run: npm run test:redis
 
+      # The Parquet writer writes ZSTD pages through node:zlib, which has zstd from Node 22.15. The shards run Node 20, so
+      # this one file runs here, last (the steps above stay on Node 20). With ORACLE_STRICT_MODE a runtime without zstd
+      # fails the ZSTD rows instead of skipping them.
+      - name: Setup Node.js 22 for the Parquet ZSTD rows
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Run the Parquet writer conformance with ZSTD pages
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npx --no-install vitest run tests/parquet-writer-conformance.test.ts
+
   # Builds the worker image and proves the container hardening from inside a container started with the
   # compose security settings (scripts/verify-worker-container.sh). It runs in parallel with the other
   # jobs and does the work only when a file that affects the image, its compose settings or the sandbox

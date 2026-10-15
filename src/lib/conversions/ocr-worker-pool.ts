@@ -314,21 +314,38 @@ export class OcrWorkerPool {
     job: (recognize: OcrRecognizeFn, recognizeWith: OcrRecognizeWithFn, detect: OcrDetectFn) => Promise<T>
   ): Promise<T> {
     const { worker } = entry;
+    // A job that outlives its run (the timeout, the abort signal or a shutdown ended the run and terminated the worker)
+    // must not call the worker again: tesseract.js drops its thread handle on terminate, and a call then posts to null,
+    // which surfaces as an unhandled rejection that fails the whole process.
+    const live = (): void => {
+      if (!this.entries.has(entry)) throw new OcrEngineUnavailableError('The OCR worker was terminated.');
+    };
+    live();
     await worker.setParameters(spec.parameters);
     const recognizeWith: OcrRecognizeWithFn = async (overrides, image, options, output, jobId) => {
+      live();
       await worker.setParameters({ ...spec.parameters, ...overrides });
       try {
+        live();
         return await worker.recognize(image, options, output, jobId);
       } finally {
-        // Put the job's own parameters back whether or not the recognition worked.
-        await worker.setParameters(spec.parameters).catch(() => undefined);
+        // Put the job's own parameters back whether or not the recognition worked, while the worker is still there.
+        if (this.entries.has(entry)) await worker.setParameters(spec.parameters).catch(() => undefined);
       }
     };
     const detect: OcrDetectFn = (image, jobId) => {
+      live();
       if (!worker.detect) throw new OcrEngineUnavailableError('This OCR worker cannot detect orientation.');
       return worker.detect(image, jobId);
     };
-    return job((image, options, output, jobId) => worker.recognize(image, options, output, jobId), recognizeWith, detect);
+    return job(
+      (image, options, output, jobId) => {
+        live();
+        return worker.recognize(image, options, output, jobId);
+      },
+      recognizeWith,
+      detect
+    );
   }
 
   private async acquire(spec: OcrWorkerSpec, signal?: AbortSignal): Promise<PoolEntry> {
