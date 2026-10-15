@@ -39,7 +39,7 @@ async function runJob(job: JobRequest): Promise<JobReply> {
   try {
     const result = await dispatchConversion(fs.readFileSync(job.path), job.format, job.target, {}, job.name);
     const ms = performance.now() - started;
-    const problem = await outputProblem(result.buffer, job.target, workDir, { mimeType: result.mimeType, pdfinfo: PDFINFO, identify: IDENTIFY });
+    const problem = await outputProblem(result.buffer, job.target, workDir, { mimeType: result.mimeType, pdfinfo: PDFINFO, identify: IDENTIFY, emptyOutput: result.metadata?.emptyOutput === true });
     if (problem !== null) return { id: job.id, kind: 'bad-output', bytes: result.buffer.length, ms, reason: problem };
     return { id: job.id, kind: 'ok', bytes: result.buffer.length, ms };
   } catch (error) {

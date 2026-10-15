@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "pair": "docx->jpg",
+    "verdict": "crash",
+    "detail": "^SandboxedProcessError: Warning: failed to launch javaldx",
+    "file": "office-document-wordwithattachments.docx",
+    "issue": 760
+  },
+  {
+    "pair": "docx->png",
+    "verdict": "crash",
+    "detail": "^SandboxedProcessError: Warning: failed to launch javaldx",
+    "file": "office-document-wordwithattachments.docx",
+    "issue": 760
+  }
+]

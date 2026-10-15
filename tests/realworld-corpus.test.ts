@@ -173,6 +173,15 @@ describe('verdicts and gate', () => {
     expect(evaluate([tracked], null, known).pass).toBe(true);
   });
 
+  it('matches a known failure to one corpus file when it names the file, so the same crash in another file still fails the gate', () => {
+    const tracked: JobRecord = { file: 'office-document-attachments.docx', source: 'docx', target: 'jpg', verdict: 'crash', ms: 1, detail: 'SandboxedProcessError: exit 139' };
+    const other: JobRecord = { ...tracked, file: 'another.docx' };
+    const known = [{ pair: 'docx->jpg', verdict: 'crash' as const, detail: '^SandboxedProcessError: ', file: 'office-document-attachments.docx', issue: 760 }];
+    const gate = evaluate([tracked, other], null, known);
+    expect(gate.known).toEqual([{ job: tracked, issue: 760 }]);
+    expect(gate.fatal.map((j) => j.file)).toEqual(['another.docx']);
+  });
+
   it('accepts only known failures that name their tracking issue and a failing verdict', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-known-'));
     const write = (body: unknown): string => {
@@ -327,6 +336,15 @@ describe('output check', () => {
     expect(await check(PNG_1X1, 'png')).toBeNull();
     const eps = Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\nshowpage\n');
     expect(await check(await zipOf({ 'doc-1.eps': eps, 'doc-2.eps': eps }, 'DEFLATE'), 'eps', ZIP_MIME)).toBeNull();
+  });
+
+  it('accepts an empty output only when the conversion declared the input empty (an emptyOutput result), and no other', async () => {
+    const empty = Buffer.alloc(0);
+    expect(await outputProblem(empty, 'csv', os.tmpdir(), { ...NO_READERS, emptyOutput: true })).toBeNull();
+    expect(await outputProblem(empty, 'csv', os.tmpdir(), { ...NO_READERS, emptyOutput: false })).toBe('empty output');
+    expect(await check(empty, 'csv')).toBe('empty output');
+    // A declared empty result does not excuse a picture: its bytes are still read.
+    expect(await outputProblem(Buffer.from('not an image'), 'png', os.tmpdir(), { ...NO_READERS, emptyOutput: true })).toBe('output bytes do not match png');
   });
 
   it('rejects a page archive that is empty, holds a page of another type, or is not a ZIP', async () => {
