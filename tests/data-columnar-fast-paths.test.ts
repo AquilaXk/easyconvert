@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { oracleTest } from './helpers/oracle-test';
-import { duckdbRead, pyarrowRead } from './helpers/parquet-oracle';
+import { duckdbRead, pyarrowRead, pyarrowWrite } from './helpers/parquet-oracle';
 import {
   delimitedToParquet,
   jsonLinesToDelimited,
@@ -289,6 +289,71 @@ describe('Parquet to delimited text and JSON, direct routes', () => {
     expect((directJson as Buffer).toString('utf8')).toBe(expectedJson);
   });
 
+  it('writes non-finite doubles to CSV as the general route does, without a formula guard', async () => {
+    const parquetBytes = encodeParquet([{ v: Number.NEGATIVE_INFINITY, w: 'a' }, { v: Number.POSITIVE_INFINITY, w: 'b' }, { v: Number.NaN, w: 'c' }]);
+    const direct = parquetToDelimited(parquetBytes, 'csv', { bom: false });
+    expect(direct).not.toBeNull();
+    expect((direct as Buffer).toString('utf8')).toBe('v,w\r\n-Infinity,a\r\nInfinity,b\r\nNaN,c');
+    const viaDecode = await convertData(parquetBytes, 'parquet', 'csv', { bom: false }, 'table.parquet');
+    expect((direct as Buffer).equals(viaDecode.buffer)).toBe(true);
+  });
+
+  /** The general route for a Parquet file: its records, written as JSON, then read by the JSON-to-table route. */
+  async function generalTable(parquetBytes: Buffer, target: 'csv' | 'tsv', options = {}): Promise<Buffer> {
+    const json = stringifyJsonLossless(decodeParquet(parquetBytes) as never, 2);
+    return (await convertData(Buffer.from(json, 'utf8'), 'json', target, options, 'table.json')).buffer;
+  }
+
+  it('reads many row groups and pages, with nulls, as the general route does', async () => {
+    const records: Record<string, unknown>[] = [];
+    for (let i = 0; i < 700; i++) {
+      records.push({
+        id: i,
+        city: i % 5 === 0 ? null : ['São Paulo', 'Osaka', '李小龍', 'say "hi"', ' padded '][i % 5],
+        unique: `row-${i}-${(i * 7919) % 1000}`,
+        score: i % 9 === 0 ? null : (i % 800) / 8 + (i % 3 === 0 ? 0.1 : 0),
+        flag: i % 4 === 0 ? null : i % 3 === 0,
+        wide: i % 11 === 0 ? 2 ** 40 + i : -i,
+      });
+    }
+    const parquetBytes = encodeParquet(records, { rowGroupMaxRows: 130, dataPageMaxRows: 37 });
+    for (const target of ['csv', 'tsv'] as const) {
+      const direct = parquetToDelimited(parquetBytes, target, {});
+      expect(direct).not.toBeNull();
+      expect((direct as Buffer).equals(await generalTable(parquetBytes, target))).toBe(true);
+    }
+    expect(parquetToJson(parquetBytes).toString('utf8')).toBe(stringifyJsonLossless(decodeParquet(parquetBytes) as never, 2));
+  });
+
+  it('writes a string that needs a JSON escape and holds a non-ASCII letter', () => {
+    const records = [{ s: 'ctl\u001d\u06fc "q" \\ é' }, { s: 'pair 😀 and \ttab' }, { s: 'plain' }];
+    const parquetBytes = encodeParquet(records);
+    expect(parquetToJson(parquetBytes).toString('utf8')).toBe(stringifyJsonLossless(decodeParquet(parquetBytes) as never, 2));
+  });
+
+  oracleTest('reads pages that end at different rows in each column, as the general route does', ['python3'], async () => {
+    const rows = 260_000;
+    const columns = {
+      id: Array.from({ length: rows }, (_, i) => i),
+      text: Array.from({ length: rows }, (_, i) => (i % 17 === 0 ? null : `unique text of row ${i} ${(i * 2654435761) % 1000003}`)),
+      flag: Array.from({ length: rows }, (_, i) => i % 3 === 0),
+      measure: Array.from({ length: rows }, (_, i) => (i % 1000) / 8),
+    };
+    const parquetBytes = pyarrowWrite(
+      columns,
+      [
+        ['id', 'int64'],
+        ['text', 'string'],
+        ['flag', 'bool'],
+        ['measure', 'double'],
+      ],
+      'snappy'
+    );
+    const direct = parquetToDelimited(parquetBytes, 'csv', {});
+    expect(direct).not.toBeNull();
+    expect((direct as Buffer).equals(await generalTable(parquetBytes, 'csv'))).toBe(true);
+  }, 120_000);
+
   it('preserves -0 and rejects non-finite numbers in parquetToJson', () => {
     const negZeroParquet = encodeParquet([{ v: -0 }, { v: 1.5 }]);
     const directNegZero = parquetToJson(negZeroParquet);
@@ -331,6 +396,20 @@ describe('JSON Lines to delimited text, direct route', () => {
     expect(csvDirect).not.toBeNull();
     expect((csvDirect as Buffer).toString('utf8')).toBe('a,b,c\r\n1,two,true\r\n2,,false\r\n,three,');
   });
+
+  it('writes the rows of a file larger than one output chunk as the general route does', async () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 140_000; i++) {
+      lines.push(`{"id":${i},"name":"${i % 7 === 0 ? 'Müller, Anna' : 'plain name'}","amount":${(i * 37) % 1000}.5,"ok":${i % 2 === 0},"note":${i % 5 === 0 ? 'null' : `"row ${i}"`}}`);
+    }
+    const input = Buffer.from(`${lines.join('\n')}\n`, 'utf8');
+    expect(input.length).toBeGreaterThan(8 * 1024 * 1024);
+    const direct = jsonLinesToDelimited(input, 'jsonl', 'csv', {});
+    expect(direct).not.toBeNull();
+    const records = lines.map((line, i) => parseJsonLossless(line, 'JSONL', i + 1));
+    const general = await convertData(Buffer.from(stringifyJsonLossless(records as never, 2), 'utf8'), 'json', 'csv', {}, 'table.json');
+    expect((direct as Buffer).equals(general.buffer)).toBe(true);
+  }, 60_000);
 
   const declinedJsonl: { name: string; bytes: Buffer; error?: new (...args: never[]) => Error }[] = [
     { name: 'nested objects', bytes: Buffer.from('{"a":{"b":1}}\n') },

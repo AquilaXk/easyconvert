@@ -59,12 +59,12 @@ const FOOTER_TRAILER_BYTES = 8;
 const MAGIC_BYTES = 4;
 const MIN_FILE_BYTES = 12;
 const BITS_PER_BYTE = 8;
-const BYTE_ARRAY_LENGTH_PREFIX_BYTES = 4;
-const WIDE_VALUE_BYTES = 8;
-const NARROW_VALUE_BYTES = 4;
+export const BYTE_ARRAY_LENGTH_PREFIX_BYTES = 4;
+export const WIDE_VALUE_BYTES = 8;
+export const NARROW_VALUE_BYTES = 4;
 const MAX_DEFINITION_LEVEL = 1;
 const MAX_DICTIONARY_INDEX_BIT_WIDTH = 32;
-const UINT32_RANGE = 2 ** 32;
+export const UINT32_RANGE = 2 ** 32;
 
 /** SchemaElement / LogicalType / PageHeader field ids (parquet.thrift). */
 const SCHEMA_TYPE = 1;
@@ -90,9 +90,9 @@ const LOGICAL_FLOAT16 = 15;
 const LOGICAL_NAMES: Record<number, string> = { 2: 'MAP', 3: 'LIST', 11: 'UNKNOWN' };
 const TIME_UNIT_BY_FIELD: Record<number, TimeUnit> = { 1: 'millis', 2: 'micros', 3: 'nanos' };
 
-const DICTIONARY_DATA_ENCODINGS: ReadonlySet<number> = new Set([Encoding.PLAIN_DICTIONARY, Encoding.RLE_DICTIONARY]);
+export const DICTIONARY_DATA_ENCODINGS: ReadonlySet<number> = new Set([Encoding.PLAIN_DICTIONARY, Encoding.RLE_DICTIONARY]);
 
-interface LeafColumn {
+export interface LeafColumn {
   name: string;
   colIndex: number;
   type: ParquetType;
@@ -118,13 +118,13 @@ interface RowGroupMeta {
   chunks: ChunkMeta[];
 }
 
-interface FileMeta {
+export interface FileMeta {
   leaves: LeafColumn[];
   numRows: number;
   rowGroups: RowGroupMeta[];
 }
 
-interface PageHeader {
+export interface PageHeader {
   type: PageType;
   uncompressedSize: number;
   compressedSize: number;
@@ -140,13 +140,13 @@ interface PageHeader {
   headerEnd: number;
 }
 
-interface ScannedPage {
+export interface ScannedPage {
   header: PageHeader;
   bodyStart: number;
   bodyEnd: number;
 }
 
-interface ChunkPlan {
+export interface ChunkPlan {
   chunk: ChunkMeta;
   leaf: LeafColumn;
   rows: number;
@@ -155,7 +155,7 @@ interface ChunkPlan {
   pages: ScannedPage[];
 }
 
-interface DecodeBudget {
+export interface DecodeBudget {
   /** Decoded-cell bytes still available (cells, plus UTF-8 bytes per string reference). */
   valueBytes: number;
 }
@@ -558,39 +558,13 @@ function scanChunkPages(buffer: Buffer, plan: ChunkPlan, decompressBudget: { rem
   }
 }
 
-interface Dictionary {
+export interface Dictionary {
   values: ColumnValue[];
   /** UTF-8 bytes each entry costs per row that references it. */
   bytes: Uint32Array;
-  formatted?: string[];
-}
-
-export interface ColumnCellFormatter {
-  nullCell: string;
-  trueCell: string;
-  falseCell: string;
-  numberPrefix?: string;
-  numberSuffix?: string;
-  formatNumber: (val: number) => string;
-  formatString: (val: string) => string;
-  formatTextSlice?: (page: Buffer, start: number, end: number) => string | null;
-}
-
-export type ColumnFormatterFactory = (
-  names: string[],
-  colIndex: number,
-  safeAsciiString: boolean
-) => ColumnCellFormatter;
-
-export interface DecodedFormattedParquetColumns {
-  names: string[];
-  columns: string[][];
-  numRows: number;
-  totalStringBytes: number;
 }
 
 let scratchIndices = new Uint32Array(8192);
-const EIGHTH_SUFFIX: readonly string[] = ['', '.125', '.25', '.375', '.5', '.625', '.75', '.875'];
 
 function isAllOnesRleLevels(buf: Uint8Array, start: number, end: number, count: number): boolean {
   const len = end - start;
@@ -624,7 +598,7 @@ function isAllOnesRleLevels(buf: Uint8Array, start: number, end: number, count: 
   );
 }
 
-function minPlainBytes(type: ParquetType, width: number, count: number): number {
+export function minPlainBytes(type: ParquetType, width: number, count: number): number {
   if (type === ParquetType.BOOLEAN) return Math.ceil(count / BITS_PER_BYTE);
   if (type === ParquetType.FIXED_LEN_BYTE_ARRAY || type === ParquetType.INT96) return count * width;
   if (type === ParquetType.BYTE_ARRAY || type === ParquetType.INT32 || type === ParquetType.FLOAT) {
@@ -633,285 +607,180 @@ function minPlainBytes(type: ParquetType, width: number, count: number): number 
   return count * WIDE_VALUE_BYTES;
 }
 
-function int64Value(page: Buffer, pos: number): number | string {
-  const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
-  const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
-  const approx = high * UINT32_RANGE + low;
-  if ((high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)) return approx;
-  return page.readBigInt64LE(pos).toString();
+/** Fails when a PLAIN page is too short to hold `count` values, so a hostile count cannot force a large allocation. */
+export function assertPlainBytes(page: Buffer, start: number, leaf: LeafColumn, count: number): void {
+  if (start + minPlainBytes(leaf.type, leaf.reader.width, count) > page.length) {
+    throw new ParquetFormatError(`Corrupted Parquet file: truncated ${ParquetType[leaf.type].toLowerCase()} data in column '${leaf.name}'`);
+  }
 }
 
-function readPlainValues(
-  page: Buffer,
-  start: number,
-  leaf: LeafColumn,
-  count: number,
-  byteLengths?: Uint32Array
-): { values: ColumnValue[]; end: number; stringBytes: number } {
-  const reader = leaf.reader;
-  const type = leaf.type;
-  const fixedWidth = reader.width;
-  // Every value occupies at least this many bytes, so a hostile count cannot force a large allocation.
-  if (start + minPlainBytes(type, fixedWidth, count) > page.length) {
-    throw new ParquetFormatError(`Corrupted Parquet file: truncated ${ParquetType[type].toLowerCase()} data in column '${leaf.name}'`);
+/** The little-endian signed 32-bit integer at `pos`. */
+export function int32At(page: Uint8Array, pos: number): number {
+  return page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24);
+}
+
+/** The little-endian unsigned 32-bit integer at `pos`. */
+export function uint32At(page: Uint8Array, pos: number): number {
+  return int32At(page, pos) >>> 0;
+}
+
+/** A high word below 2^21 in magnitude: with any low word, the 64-bit integer is exact in a double. */
+const SAFE_HIGH_WORD_BIAS = 0x00_1f_ff_ff;
+const SAFE_HIGH_WORD_SPAN = 0x00_3f_ff_fe;
+
+/** The little-endian signed 64-bit integer at `pos` when it is a safe integer; NaN otherwise. */
+export function safeInt64At(page: Uint8Array, pos: number): number {
+  const high = int32At(page, pos + NARROW_VALUE_BYTES);
+  const approx = high * UINT32_RANGE + uint32At(page, pos);
+  return (high + SAFE_HIGH_WORD_BIAS) >>> 0 <= SAFE_HIGH_WORD_SPAN || Number.isSafeInteger(approx) ? approx : Number.NaN;
+}
+
+function int64Value(page: Buffer, pos: number): number | string {
+  const safe = safeInt64At(page, pos);
+  return Number.isNaN(safe) ? page.readBigInt64LE(pos).toString() : safe;
+}
+
+/** The length of the BYTE_ARRAY value whose 4-byte prefix starts at `pos`. */
+export function byteArrayLengthAt(page: Buffer, pos: number, leaf: LeafColumn): number {
+  if (pos + BYTE_ARRAY_LENGTH_PREFIX_BYTES > page.length) {
+    throw new ParquetFormatError(`Corrupted Parquet file: truncated string length in column '${leaf.name}'`);
   }
-  const values: ColumnValue[] = new Array<ColumnValue>(count);
+  return uint32At(page, pos);
+}
+
+/** Fails when a value of `length` bytes ending at `end` runs past the page. */
+export function assertValueWithinPage(page: Buffer, end: number, length: number, leaf: LeafColumn): void {
+  if (end > page.length) {
+    throw new ParquetFormatError(`Corrupted Parquet file: string length ${length} exceeds page bounds in column '${leaf.name}'`);
+  }
+}
+
+interface PlainRead {
+  values: ColumnValue[];
+  end: number;
+  stringBytes: number;
+}
+
+function readPlainBooleans(page: Buffer, start: number, count: number): PlainRead {
+  const values = new Array<ColumnValue>(count);
+  for (let i = 0; i < count; i++) values[i] = ((page[start + (i >> 3)] >> (i & 7)) & 1) === 1;
+  return { values, end: start + Math.ceil(count / BITS_PER_BYTE), stringBytes: 0 };
+}
+
+function readPlainByteArrays(page: Buffer, start: number, leaf: LeafColumn, count: number, byteLengths?: Uint32Array): PlainRead {
+  const { width: fixedWidth, readSlice, map } = leaf.reader;
+  const exactBytes = Boolean(leaf.reader.sliceByteLengthExact);
+  const values = new Array<ColumnValue>(count);
   let pos = start;
   let stringBytes = 0;
-  const map = reader.map;
-
-  if (reader.kind === 'bool') {
-    for (let i = 0; i < count; i++) values[i] = ((page[pos + (i >> 3)] >> (i & 7)) & 1) === 1;
-    return { values, end: pos + Math.ceil(count / BITS_PER_BYTE), stringBytes };
-  }
-  if (reader.kind === 'bytes') {
-    const readSlice = reader.readSlice;
-    const exactBytes = Boolean(reader.sliceByteLengthExact);
-    for (let i = 0; i < count; i++) {
-      let len = fixedWidth;
-      if (fixedWidth === 0) {
-        if (pos + BYTE_ARRAY_LENGTH_PREFIX_BYTES > page.length) {
-          throw new ParquetFormatError(`Corrupted Parquet file: truncated string length in column '${leaf.name}'`);
-        }
-        len = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
-        pos += BYTE_ARRAY_LENGTH_PREFIX_BYTES;
-      }
-      const end = pos + len;
-      if (end > page.length) {
-        throw new ParquetFormatError(`Corrupted Parquet file: string length ${len} exceeds page bounds in column '${leaf.name}'`);
-      }
-      const val = readSlice
-        ? readSlice(page, pos, end)
-        : (map as (raw: Buffer) => ColumnValue)(page.subarray(pos, end));
-      values[i] = val;
-      if (byteLengths) {
-        if (exactBytes) {
-          byteLengths[i] = len;
-        } else if (typeof val === 'string') {
-          byteLengths[i] = val.length === len ? len : Buffer.byteLength(val, 'utf8');
-        }
-      }
-      stringBytes += len;
-      pos = end;
+  for (let i = 0; i < count; i++) {
+    let len = fixedWidth;
+    if (fixedWidth === 0) {
+      len = byteArrayLengthAt(page, pos, leaf);
+      pos += BYTE_ARRAY_LENGTH_PREFIX_BYTES;
     }
-    return { values, end: pos, stringBytes };
-  }
-
-  if (reader.kind === 'f64') {
-    const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      values[i] = view.getFloat64(pos, true);
-    }
-  } else if (reader.kind === 'f32') {
-    const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
-    for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-      values[i] = view.getFloat32(pos, true);
-    }
-  } else if (reader.kind === 'i32') {
-    if (map) {
-      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-        values[i] = map(page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24));
-      }
-    } else {
-      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-        values[i] = page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24);
-      }
-    }
-  } else if (reader.kind === 'u32') {
-    for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-      values[i] = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
-    }
-  } else if (reader.kind === 'u64') {
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      values[i] = unsignedInteger(page.readBigInt64LE(pos));
-    }
-  } else if (reader.mapNumber && map) {
-    const mapNumber = reader.mapNumber;
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
-      const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
-      const approx = high * UINT32_RANGE + low;
-      values[i] =
-        (high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)
-          ? mapNumber(approx)
-          : map(page.readBigInt64LE(pos));
-    }
-  } else if (map) {
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      values[i] = map(page.readBigInt64LE(pos));
-    }
-  } else {
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      values[i] = int64Value(page, pos);
-    }
+    const end = pos + len;
+    assertValueWithinPage(page, end, len, leaf);
+    const val = readSlice ? readSlice(page, pos, end) : (map as (raw: Buffer) => ColumnValue)(page.subarray(pos, end));
+    values[i] = val;
+    if (byteLengths) byteLengths[i] = byteLengthOf(val, len, exactBytes);
+    stringBytes += len;
+    pos = end;
   }
   return { values, end: pos, stringBytes };
 }
 
-function readPlainValuesFormatted(
-  page: Buffer,
-  start: number,
-  leaf: LeafColumn,
-  count: number,
-  formatter: ColumnCellFormatter
-): string[] {
-  const reader = leaf.reader;
-  const type = leaf.type;
-  const fixedWidth = reader.width;
-  if (start + minPlainBytes(type, fixedWidth, count) > page.length) {
-    throw new ParquetFormatError(`Corrupted Parquet file: truncated ${ParquetType[type].toLowerCase()} data in column '${leaf.name}'`);
-  }
-  const formatted = new Array<string>(count);
-  let pos = start;
-  const map = reader.map;
-  const { trueCell, falseCell, numberPrefix, numberSuffix = '', formatNumber, formatString, formatTextSlice } = formatter;
-
-  if (reader.kind === 'bool') {
-    for (let i = 0; i < count; i++) {
-      formatted[i] = ((page[pos + (i >> 3)] >> (i & 7)) & 1) === 1 ? trueCell : falseCell;
-    }
-    return formatted;
-  }
-  if (reader.kind === 'bytes') {
-    const readSlice = reader.readSlice;
-    const isStrictText =
-      formatTextSlice !== undefined &&
-      (leaf.annotation.tag === 'string' || leaf.annotation.tag === 'enum' || leaf.annotation.tag === 'json');
-    for (let i = 0; i < count; i++) {
-      let len = fixedWidth;
-      if (fixedWidth === 0) {
-        if (pos + BYTE_ARRAY_LENGTH_PREFIX_BYTES > page.length) {
-          throw new ParquetFormatError(`Corrupted Parquet file: truncated string length in column '${leaf.name}'`);
-        }
-        len = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
-        pos += BYTE_ARRAY_LENGTH_PREFIX_BYTES;
-      }
-      const end = pos + len;
-      if (end > page.length) {
-        throw new ParquetFormatError(`Corrupted Parquet file: string length ${len} exceeds page bounds in column '${leaf.name}'`);
-      }
-      if (isStrictText) {
-        const fast = formatTextSlice(page, pos, end);
-        if (fast !== null) {
-          formatted[i] = fast;
-          pos = end;
-          continue;
-        }
-      }
-      const val = readSlice
-        ? readSlice(page, pos, end)
-        : (map as (raw: Buffer) => ColumnValue)(page.subarray(pos, end));
-      formatted[i] = typeof val === 'string' ? formatString(val) : formatNumber(val as number);
-      pos = end;
-    }
-    return formatted;
-  }
-
-  if (reader.kind === 'f64') {
-    const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
-    if (numberPrefix !== undefined) {
-      for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-        const v = view.getFloat64(pos, true);
-        const eights = v * 8;
-        const k = eights | 0;
-        if (k === eights && k > 0) {
-          const rem = k & 7;
-          const tail = rem === 0 ? `${k >> 3}${numberSuffix}` : `${k >> 3}${EIGHTH_SUFFIX[rem]}${numberSuffix}`;
-          formatted[i] = numberPrefix + tail;
-        } else {
-          formatted[i] = formatNumber(v);
-        }
-      }
-    } else {
-      for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-        formatted[i] = formatNumber(view.getFloat64(pos, true));
-      }
-    }
-  } else if (reader.kind === 'f32') {
-    const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
-    for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-      formatted[i] = formatNumber(view.getFloat32(pos, true));
-    }
-  } else if (reader.kind === 'i32') {
-    if (map) {
-      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-        const v = map(page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24));
-        formatted[i] = typeof v === 'string' ? formatString(v) : formatNumber(v as number);
-      }
-    } else if (numberPrefix !== undefined) {
-      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-        const v = page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24);
-        formatted[i] = numberSuffix === '' ? numberPrefix + v : numberPrefix + v + numberSuffix;
-      }
-    } else {
-      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-        formatted[i] = formatNumber(page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24));
-      }
-    }
-  } else if (reader.kind === 'u32') {
-    if (numberPrefix !== undefined) {
-      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-        const v = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
-        formatted[i] = numberSuffix === '' ? numberPrefix + v : numberPrefix + v + numberSuffix;
-      }
-    } else {
-      for (let i = 0; i < count; i++, pos += NARROW_VALUE_BYTES) {
-        formatted[i] = formatNumber((page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0);
-      }
-    }
-  } else if (reader.kind === 'u64') {
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      const v = unsignedInteger(page.readBigInt64LE(pos));
-      formatted[i] = typeof v === 'number' ? formatNumber(v) : formatString(v);
-    }
-  } else if (reader.mapNumber && map) {
-    const mapNumber = reader.mapNumber;
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
-      const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
-      const approx = high * UINT32_RANGE + low;
-      const v =
-        (high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)
-          ? mapNumber(approx)
-          : map(page.readBigInt64LE(pos));
-      formatted[i] = formatString(v as string);
-    }
-  } else if (map) {
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      const v = map(page.readBigInt64LE(pos));
-      formatted[i] = typeof v === 'string' ? formatString(v) : formatNumber(v as number);
-    }
-  } else if (numberPrefix !== undefined) {
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
-      const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
-      const approx = high * UINT32_RANGE + low;
-      if ((high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)) {
-        formatted[i] = numberSuffix === '' ? numberPrefix + approx : numberPrefix + approx + numberSuffix;
-      } else {
-        formatted[i] = formatString(page.readBigInt64LE(pos).toString());
-      }
-    }
-  } else {
-    for (let i = 0; i < count; i++, pos += WIDE_VALUE_BYTES) {
-      const low = (page[pos] | (page[pos + 1] << 8) | (page[pos + 2] << 16) | (page[pos + 3] << 24)) >>> 0;
-      const high = page[pos + 4] | (page[pos + 5] << 8) | (page[pos + 6] << 16) | (page[pos + 7] << 24);
-      const approx = high * UINT32_RANGE + low;
-      if ((high + 0x001f_ffff) >>> 0 <= 0x003f_fffe || Number.isSafeInteger(approx)) {
-        formatted[i] = formatNumber(approx);
-      } else {
-        formatted[i] = formatString(page.readBigInt64LE(pos).toString());
-      }
-    }
-  }
-  return formatted;
+function byteLengthOf(value: ColumnValue, sliceLength: number, exactBytes: boolean): number {
+  if (exactBytes) return sliceLength;
+  if (typeof value !== 'string') return 0;
+  return value.length === sliceLength ? sliceLength : Buffer.byteLength(value, 'utf8');
 }
 
-function chargeValueBytes(budget: DecodeBudget, bytes: number): void {
+function readPlainFloats(page: Buffer, start: number, leaf: LeafColumn, count: number): PlainRead {
+  const wide = leaf.reader.kind === 'f64';
+  const width = wide ? WIDE_VALUE_BYTES : NARROW_VALUE_BYTES;
+  const view = new DataView(page.buffer, page.byteOffset, page.byteLength);
+  const values = new Array<ColumnValue>(count);
+  for (let i = 0, pos = start; i < count; i++, pos += width) {
+    values[i] = wide ? view.getFloat64(pos, true) : view.getFloat32(pos, true);
+  }
+  return { values, end: start + count * width, stringBytes: 0 };
+}
+
+function readPlainInt32s(page: Buffer, start: number, leaf: LeafColumn, count: number): PlainRead {
+  const { kind, map } = leaf.reader;
+  const values = new Array<ColumnValue>(count);
+  for (let i = 0, pos = start; i < count; i++, pos += NARROW_VALUE_BYTES) {
+    if (kind === 'u32') values[i] = uint32At(page, pos);
+    else values[i] = map ? map(int32At(page, pos)) : int32At(page, pos);
+  }
+  return { values, end: start + count * NARROW_VALUE_BYTES, stringBytes: 0 };
+}
+
+function readPlainInt64s(page: Buffer, start: number, leaf: LeafColumn, count: number): PlainRead {
+  const { kind, map, mapNumber } = leaf.reader;
+  const values = new Array<ColumnValue>(count);
+  for (let i = 0, pos = start; i < count; i++, pos += WIDE_VALUE_BYTES) {
+    if (kind === 'u64') {
+      values[i] = unsignedInteger(page.readBigInt64LE(pos));
+    } else if (map) {
+      const safe = mapNumber ? safeInt64At(page, pos) : Number.NaN;
+      values[i] = Number.isNaN(safe) ? map(page.readBigInt64LE(pos)) : (mapNumber as (raw: number) => ColumnValue)(safe);
+    } else {
+      values[i] = int64Value(page, pos);
+    }
+  }
+  return { values, end: start + count * WIDE_VALUE_BYTES, stringBytes: 0 };
+}
+
+function readPlainValues(page: Buffer, start: number, leaf: LeafColumn, count: number, byteLengths?: Uint32Array): PlainRead {
+  assertPlainBytes(page, start, leaf, count);
+  switch (leaf.reader.kind) {
+    case 'bool':
+      return readPlainBooleans(page, start, count);
+    case 'bytes':
+      return readPlainByteArrays(page, start, leaf, count, byteLengths);
+    case 'f64':
+    case 'f32':
+      return readPlainFloats(page, start, leaf, count);
+    case 'i32':
+    case 'u32':
+      return readPlainInt32s(page, start, leaf, count);
+    default:
+      return readPlainInt64s(page, start, leaf, count);
+  }
+}
+
+export function chargeValueBytes(budget: DecodeBudget, bytes: number): void {
   budget.valueBytes -= bytes;
   if (budget.valueBytes < 0) {
     throw new ParquetFormatError(
       `Corrupted Parquet file: decoded values exceed the limit of ${PARQUET_MAX_DECODED_VALUE_BYTES} bytes`
+    );
+  }
+}
+
+/** Decodes the RLE/bit-packed dictionary indices of a data page into a scratch array (valid until the next call). */
+export function readDictionaryIndices(page: Buffer, pos: number, count: number, leaf: LeafColumn): Uint32Array {
+  if (pos >= page.length) {
+    throw new ParquetFormatError(`Corrupted Parquet file: truncated dictionary indices in column '${leaf.name}'`);
+  }
+  const bitWidth = page[pos];
+  if (bitWidth > MAX_DICTIONARY_INDEX_BIT_WIDTH) {
+    throw new ParquetFormatError(`Corrupted Parquet file: dictionary index bit width ${bitWidth} in column '${leaf.name}'`);
+  }
+  if (scratchIndices.length < count) {
+    scratchIndices = new Uint32Array(Math.max(count, scratchIndices.length * 2));
+  }
+  decodeRleHybrid(page, pos + 1, page.length, bitWidth, count, scratchIndices);
+  return scratchIndices;
+}
+
+/** Fails on a dictionary index past the end of the dictionary. */
+export function assertDictionaryIndex(index: number, dictionaryLength: number, leaf: LeafColumn): void {
+  if (index >= dictionaryLength) {
+    throw new ParquetFormatError(
+      `Corrupted Parquet file: dictionary index ${index} out of range (${dictionaryLength} entries) in column '${leaf.name}'`
     );
   }
 }
@@ -925,29 +794,14 @@ function decodeDictionaryIndices(
   budget: DecodeBudget
 ): ColumnValue[] {
   if (count === 0) return [];
-  if (pos >= page.length) {
-    throw new ParquetFormatError(`Corrupted Parquet file: truncated dictionary indices in column '${leaf.name}'`);
-  }
-  const bitWidth = page[pos++];
-  if (bitWidth > MAX_DICTIONARY_INDEX_BIT_WIDTH) {
-    throw new ParquetFormatError(`Corrupted Parquet file: dictionary index bit width ${bitWidth} in column '${leaf.name}'`);
-  }
-  if (scratchIndices.length < count) {
-    scratchIndices = new Uint32Array(Math.max(count, scratchIndices.length * 2));
-  }
-  decodeRleHybrid(page, pos, page.length, bitWidth, count, scratchIndices);
+  const indices = readDictionaryIndices(page, pos, count, leaf);
   const dictValues = dictionary.values;
-  const dictLen = dictValues.length;
   const dictBytes = dictionary.bytes;
   const present = new Array<ColumnValue>(count);
   let referencedBytes = 0;
   for (let i = 0; i < count; i++) {
-    const index = scratchIndices[i];
-    if (index >= dictLen) {
-      throw new ParquetFormatError(
-        `Corrupted Parquet file: dictionary index ${index} out of range (${dictLen} entries) in column '${leaf.name}'`
-      );
-    }
+    const index = indices[i];
+    assertDictionaryIndex(index, dictValues.length, leaf);
     referencedBytes += dictBytes[index];
     present[i] = dictValues[index];
   }
@@ -956,7 +810,7 @@ function decodeDictionaryIndices(
   return present;
 }
 
-function decodeEncodedValues(
+export function decodeEncodedValues(
   page: Buffer,
   pos: number,
   nonNull: number,
@@ -1057,56 +911,63 @@ function assembleNulls(levels: Uint8Array | null, present: ColumnValue[], count:
   return out;
 }
 
-function decodeDataPageLevels(
-  page: Buffer,
-  header: PageHeader,
-  leaf: LeafColumn,
-  budget: DecodeBudget
-): { levels: Uint8Array | null; nonNull: number; pos: number } {
+export interface PageLevels {
+  /** Definition levels per value, or null when every value is present. */
+  levels: Uint8Array | null;
+  /** Values present (not null). */
+  nonNull: number;
+  /** Where the encoded values start in the page body. */
+  pos: number;
+}
+
+/** Sums the presence levels of a page, failing on a level above the column's maximum. */
+function countPresentLevels(levels: Uint8Array, count: number, leaf: LeafColumn): number {
+  let present = 0;
+  for (let i = 0; i < count; i++) {
+    if (levels[i] > MAX_DEFINITION_LEVEL) {
+      throw new ParquetFormatError(`Corrupted Parquet file: definition level ${levels[i]} out of range in column '${leaf.name}'`);
+    }
+    present += levels[i];
+  }
+  return present;
+}
+
+/** RLE-encoded definition levels behind a 4-byte length; null levels when every value is present. */
+function readRleDefinitionLevels(page: Buffer, count: number, leaf: LeafColumn): { levels: Uint8Array | null; pos: number } {
+  if (page.length < BYTE_ARRAY_LENGTH_PREFIX_BYTES) {
+    throw new ParquetFormatError(`Corrupted Parquet file: truncated definition levels in column '${leaf.name}'`);
+  }
+  const levelEnd = BYTE_ARRAY_LENGTH_PREFIX_BYTES + page.readUInt32LE(0);
+  if (levelEnd > page.length) {
+    throw new ParquetFormatError(`Corrupted Parquet file: definition levels exceed page bounds in column '${leaf.name}'`);
+  }
+  if (isAllOnesRleLevels(page, BYTE_ARRAY_LENGTH_PREFIX_BYTES, levelEnd, count)) return { levels: null, pos: levelEnd };
+  const levels = new Uint8Array(count);
+  decodeRleHybrid(page, BYTE_ARRAY_LENGTH_PREFIX_BYTES, levelEnd, MAX_DEFINITION_LEVEL, count, levels);
+  return { levels, pos: levelEnd };
+}
+
+export function decodeDataPageLevels(page: Buffer, header: PageHeader, leaf: LeafColumn, budget: DecodeBudget): PageLevels {
   const count = header.numValues;
   chargeValueBytes(budget, count * PARQUET_CELL_BYTES);
-  const optional = leaf.repetition === FieldRepetitionType.OPTIONAL;
-  let pos = 0;
-  let levels: Uint8Array | null = null;
   // PLAIN levels are not a valid Parquet level encoding: older easyconvert files declared them but
   // wrote no level bytes, so every row holds a value.
-  const legacyLayout = optional && header.definitionLevelEncoding === Encoding.PLAIN;
-  if (optional && !legacyLayout) {
-    if (header.definitionLevelEncoding === Encoding.RLE) {
-      if (page.length < BYTE_ARRAY_LENGTH_PREFIX_BYTES) {
-        throw new ParquetFormatError(`Corrupted Parquet file: truncated definition levels in column '${leaf.name}'`);
-      }
-      const levelBytes = page.readUInt32LE(0);
-      const levelEnd = BYTE_ARRAY_LENGTH_PREFIX_BYTES + levelBytes;
-      if (levelEnd > page.length) {
-        throw new ParquetFormatError(`Corrupted Parquet file: definition levels exceed page bounds in column '${leaf.name}'`);
-      }
-      if (!isAllOnesRleLevels(page, BYTE_ARRAY_LENGTH_PREFIX_BYTES, levelEnd, count)) {
-        levels = new Uint8Array(count);
-        decodeRleHybrid(page, BYTE_ARRAY_LENGTH_PREFIX_BYTES, levelEnd, MAX_DEFINITION_LEVEL, count, levels);
-      }
-      pos = levelEnd;
-    } else if (header.definitionLevelEncoding === Encoding.BIT_PACKED) {
-      levels = new Uint8Array(count);
-      pos = decodeBitPackedLevels(page, 0, MAX_DEFINITION_LEVEL, count, levels, leaf.name);
-    } else {
-      throw new ParquetUnsupportedError(
-        `Unsupported Parquet definition level encoding ${header.definitionLevelEncoding} in column '${leaf.name}'`
-      );
-    }
-  }
+  const hasLevels = leaf.repetition === FieldRepetitionType.OPTIONAL && header.definitionLevelEncoding !== Encoding.PLAIN;
+  if (!hasLevels) return { levels: null, nonNull: count, pos: 0 };
 
-  let nonNull = count;
-  if (levels) {
-    nonNull = 0;
-    for (let i = 0; i < count; i++) {
-      if (levels[i] > MAX_DEFINITION_LEVEL) {
-        throw new ParquetFormatError(`Corrupted Parquet file: definition level ${levels[i]} out of range in column '${leaf.name}'`);
-      }
-      nonNull += levels[i];
-    }
+  let levels: Uint8Array | null;
+  let pos: number;
+  if (header.definitionLevelEncoding === Encoding.RLE) {
+    ({ levels, pos } = readRleDefinitionLevels(page, count, leaf));
+  } else if (header.definitionLevelEncoding === Encoding.BIT_PACKED) {
+    levels = new Uint8Array(count);
+    pos = decodeBitPackedLevels(page, 0, MAX_DEFINITION_LEVEL, count, levels, leaf.name);
+  } else {
+    throw new ParquetUnsupportedError(
+      `Unsupported Parquet definition level encoding ${header.definitionLevelEncoding} in column '${leaf.name}'`
+    );
   }
-  return { levels, nonNull, pos };
+  return { levels, nonNull: levels ? countPresentLevels(levels, count, leaf) : count, pos };
 }
 
 function decodeDataPage(
@@ -1121,7 +982,47 @@ function decodeDataPage(
   return assembleNulls(levels, present, header.numValues, leaf.name);
 }
 
-function decodeDataPageV2LevelsAndValues(
+/** Definition levels of a v2 page (stored outside the compressed body), checked against the header's null count. */
+function readV2DefinitionLevels(rawBody: Buffer, header: PageHeader, leaf: LeafColumn): Uint8Array | null {
+  const count = header.numValues;
+  const repBytes = header.repetitionLevelsByteLength;
+  const levelBytes = repBytes + header.definitionLevelsByteLength;
+  if (leaf.repetition !== FieldRepetitionType.OPTIONAL) {
+    if (header.numNulls !== 0) {
+      throw new ParquetFormatError(`Corrupted Parquet file: required column '${leaf.name}' declares ${header.numNulls} nulls`);
+    }
+    return null;
+  }
+  if (header.definitionLevelsByteLength > 0) {
+    if (header.numNulls === 0 && isAllOnesRleLevels(rawBody, repBytes, levelBytes, count)) return null;
+    const levels = new Uint8Array(count);
+    decodeRleHybrid(rawBody, repBytes, levelBytes, MAX_DEFINITION_LEVEL, count, levels);
+    return levels;
+  }
+  if (header.numNulls === count) return new Uint8Array(count);
+  if (header.numNulls !== 0) {
+    throw new ParquetFormatError(`Corrupted Parquet file: missing v2 definition levels in column '${leaf.name}'`);
+  }
+  return null;
+}
+
+/** The values section of a v2 page, decompressed when the header says it is compressed. */
+function readV2ValuesPage(rawBody: Buffer, codec: CompressionCodec, header: PageHeader, leaf: LeafColumn): Buffer {
+  const levelBytes = header.repetitionLevelsByteLength + header.definitionLevelsByteLength;
+  const compressedValues = rawBody.subarray(levelBytes);
+  const uncompressedValuesBytes = header.uncompressedSize - levelBytes;
+  if (header.isCompressed && codec !== CompressionCodec.UNCOMPRESSED && uncompressedValuesBytes > 0) {
+    return decompressPage(codec, compressedValues, uncompressedValuesBytes);
+  }
+  if (compressedValues.length !== uncompressedValuesBytes) {
+    throw new ParquetFormatError(
+      `Corrupted Parquet file: uncompressed v2 page body of ${compressedValues.length} bytes does not match declared ${uncompressedValuesBytes} bytes in column '${leaf.name}'`
+    );
+  }
+  return compressedValues;
+}
+
+export function decodeDataPageV2LevelsAndValues(
   rawBody: Buffer,
   codec: CompressionCodec,
   header: PageHeader,
@@ -1130,59 +1031,18 @@ function decodeDataPageV2LevelsAndValues(
 ): { levels: Uint8Array | null; nonNull: number; valuesPage: Buffer } {
   const count = header.numValues;
   chargeValueBytes(budget, count * PARQUET_CELL_BYTES);
-  const repBytes = header.repetitionLevelsByteLength;
-  const defBytes = header.definitionLevelsByteLength;
-  const levelBytes = repBytes + defBytes;
-  const optional = leaf.repetition === FieldRepetitionType.OPTIONAL;
-
-  let levels: Uint8Array | null = null;
-  if (optional) {
-    if (defBytes > 0) {
-      if (header.numNulls !== 0 || !isAllOnesRleLevels(rawBody, repBytes, levelBytes, count)) {
-        levels = new Uint8Array(count);
-        decodeRleHybrid(rawBody, repBytes, levelBytes, MAX_DEFINITION_LEVEL, count, levels);
-      }
-    } else if (header.numNulls === count) {
-      levels = new Uint8Array(count);
-    } else if (header.numNulls !== 0) {
-      throw new ParquetFormatError(`Corrupted Parquet file: missing v2 definition levels in column '${leaf.name}'`);
-    }
-  } else if (header.numNulls !== 0) {
-    throw new ParquetFormatError(`Corrupted Parquet file: required column '${leaf.name}' declares ${header.numNulls} nulls`);
-  }
-
+  const levels = readV2DefinitionLevels(rawBody, header, leaf);
   let nonNull = count - header.numNulls;
   if (levels) {
-    let countedPresent = 0;
-    for (let i = 0; i < count; i++) {
-      if (levels[i] > MAX_DEFINITION_LEVEL) {
-        throw new ParquetFormatError(`Corrupted Parquet file: definition level ${levels[i]} out of range in column '${leaf.name}'`);
-      }
-      countedPresent += levels[i];
-    }
-    if (countedPresent !== nonNull) {
+    const present = countPresentLevels(levels, count, leaf);
+    if (present !== nonNull) {
       throw new ParquetFormatError(
-        `Corrupted Parquet file: v2 page header declares ${header.numNulls} nulls but levels contain ${count - countedPresent} in column '${leaf.name}'`
+        `Corrupted Parquet file: v2 page header declares ${header.numNulls} nulls but levels contain ${count - present} in column '${leaf.name}'`
       );
     }
-    nonNull = countedPresent;
+    nonNull = present;
   }
-
-  const compressedValues = rawBody.subarray(levelBytes);
-  const uncompressedValuesBytes = header.uncompressedSize - levelBytes;
-  let valuesPage: Buffer;
-  if (header.isCompressed && codec !== CompressionCodec.UNCOMPRESSED && uncompressedValuesBytes > 0) {
-    valuesPage = decompressPage(codec, compressedValues, uncompressedValuesBytes);
-  } else {
-    if (compressedValues.length !== uncompressedValuesBytes) {
-      throw new ParquetFormatError(
-        `Corrupted Parquet file: uncompressed v2 page body of ${compressedValues.length} bytes does not match declared ${uncompressedValuesBytes} bytes in column '${leaf.name}'`
-      );
-    }
-    valuesPage = compressedValues;
-  }
-
-  return { levels, nonNull, valuesPage };
+  return { levels, nonNull, valuesPage: readV2ValuesPage(rawBody, codec, header, leaf) };
 }
 
 function decodeDataPageV2(
@@ -1198,223 +1058,17 @@ function decodeDataPageV2(
   return assembleNulls(levels, present, header.numValues, leaf.name);
 }
 
-function writeFormattedPageValues(
-  page: Buffer,
-  pos: number,
-  count: number,
-  nonNull: number,
-  levels: Uint8Array | null,
-  encoding: number,
-  leaf: LeafColumn,
-  formattedDict: string[] | null,
-  budget: DecodeBudget,
-  formatter: ColumnCellFormatter,
-  colOut: string[],
-  writePos: number
-): number {
-  const allNonNull = !levels || nonNull === count;
-  if (DICTIONARY_DATA_ENCODINGS.has(encoding)) {
-    if (!formattedDict) {
-      throw new ParquetFormatError(`Corrupted Parquet file: dictionary-encoded page without a dictionary in column '${leaf.name}'`);
-    }
-    if (nonNull > 0) {
-      if (pos >= page.length) {
-        throw new ParquetFormatError(`Corrupted Parquet file: truncated dictionary indices in column '${leaf.name}'`);
-      }
-      const bitWidth = page[pos++];
-      if (bitWidth > MAX_DICTIONARY_INDEX_BIT_WIDTH) {
-        throw new ParquetFormatError(`Corrupted Parquet file: dictionary index bit width ${bitWidth} in column '${leaf.name}'`);
-      }
-      if (scratchIndices.length < nonNull) {
-        scratchIndices = new Uint32Array(Math.max(nonNull, scratchIndices.length * 2));
-      }
-      decodeRleHybrid(page, pos, page.length, bitWidth, nonNull, scratchIndices);
-    }
-    const dictLen = formattedDict.length;
-    let pageStringBytes = 0;
-    if (allNonNull) {
-      for (let i = 0; i < count; i++) {
-        const index = scratchIndices[i];
-        if (index >= dictLen) {
-          throw new ParquetFormatError(
-            `Corrupted Parquet file: dictionary index ${index} out of range (${dictLen} entries) in column '${leaf.name}'`
-          );
-        }
-        const s = formattedDict[index];
-        colOut[writePos + i] = s;
-        pageStringBytes += s.length;
-      }
-    } else {
-      const nullCell = formatter.nullCell;
-      const nullLen = nullCell.length;
-      let next = 0;
-      for (let i = 0; i < count; i++) {
-        if (levels[i] === 1) {
-          const index = scratchIndices[next++];
-          if (index >= dictLen) {
-            throw new ParquetFormatError(
-              `Corrupted Parquet file: dictionary index ${index} out of range (${dictLen} entries) in column '${leaf.name}'`
-            );
-          }
-          const s = formattedDict[index];
-          colOut[writePos + i] = s;
-          pageStringBytes += s.length;
-        } else {
-          colOut[writePos + i] = nullCell;
-          pageStringBytes += nullLen;
-        }
-      }
-    }
-    if (leaf.reader.kind === 'bytes' || leaf.reader.map !== null) {
-      const overhead = count * formatter.nullCell.length;
-      if (pageStringBytes > overhead) chargeValueBytes(budget, pageStringBytes - overhead);
-    }
-    return pageStringBytes;
+/** The decompressed body of a dictionary page, after its encoding and entry count are checked. */
+export function readDictionaryPageBody(buffer: Buffer, plan: ChunkPlan, page: ScannedPage): Buffer {
+  const { header } = page;
+  const body = decompressPageSlice(plan.chunk.codec, buffer, page.bodyStart, page.bodyEnd, header.uncompressedSize);
+  if (header.encoding !== Encoding.PLAIN && header.encoding !== Encoding.PLAIN_DICTIONARY) {
+    throw new ParquetUnsupportedError(`Unsupported Parquet dictionary encoding ${header.encoding} in column '${plan.leaf.name}'`);
   }
-
-  if (encoding === Encoding.PLAIN) {
-    const formatted = readPlainValuesFormatted(page, pos, leaf, nonNull, formatter);
-    let pageStringBytes = 0;
-    if (allNonNull) {
-      for (let i = 0; i < count; i++) {
-        const s = formatted[i];
-        colOut[writePos + i] = s;
-        pageStringBytes += s.length;
-      }
-    } else {
-      const nullCell = formatter.nullCell;
-      const nullLen = nullCell.length;
-      let next = 0;
-      for (let i = 0; i < count; i++) {
-        if (levels[i] === 1) {
-          const s = formatted[next++];
-          colOut[writePos + i] = s;
-          pageStringBytes += s.length;
-        } else {
-          colOut[writePos + i] = nullCell;
-          pageStringBytes += nullLen;
-        }
-      }
-    }
-    if (leaf.reader.kind === 'bytes' || leaf.reader.map !== null) {
-      const overhead = count * formatter.nullCell.length;
-      if (pageStringBytes > overhead) chargeValueBytes(budget, pageStringBytes - overhead);
-    }
-    return pageStringBytes;
+  if (header.numValues > PARQUET_MAX_ROWS) {
+    throw new ParquetFormatError(`Corrupted Parquet file: dictionary of ${header.numValues} entries in column '${plan.leaf.name}'`);
   }
-
-  const present = decodeEncodedValues(page, pos, nonNull, encoding, leaf, null, budget);
-  const { nullCell, trueCell, falseCell, formatNumber, formatString } = formatter;
-  let pageStringBytes = 0;
-  if (allNonNull) {
-    for (let i = 0; i < count; i++) {
-      const v = present[i];
-      let s: string;
-      if (typeof v === 'string') s = formatString(v);
-      else if (typeof v === 'number') s = formatNumber(v);
-      else if (typeof v === 'boolean') s = v ? trueCell : falseCell;
-      else s = nullCell;
-      colOut[writePos + i] = s;
-      pageStringBytes += s.length;
-    }
-  } else {
-    const nullLen = nullCell.length;
-    let next = 0;
-    for (let i = 0; i < count; i++) {
-      if (levels[i] === 1) {
-        const v = present[next++];
-        let s: string;
-        if (typeof v === 'string') s = formatString(v);
-        else if (typeof v === 'number') s = formatNumber(v);
-        else if (typeof v === 'boolean') s = v ? trueCell : falseCell;
-        else s = nullCell;
-        colOut[writePos + i] = s;
-        pageStringBytes += s.length;
-      } else {
-        colOut[writePos + i] = nullCell;
-        pageStringBytes += nullLen;
-      }
-    }
-  }
-  return pageStringBytes;
-}
-
-function decodeChunkFormatted(
-  buffer: Buffer,
-  plan: ChunkPlan,
-  budget: DecodeBudget,
-  formatter: ColumnCellFormatter,
-  colOut: string[],
-  baseOffset: number
-): number {
-  const { chunk, leaf, rows } = plan;
-  let writePos = baseOffset;
-  let chunkStringBytes = 0;
-  let formattedDict: string[] | null = null;
-  for (const page of plan.pages) {
-    const { header } = page;
-    if (header.type === PageType.INDEX_PAGE) continue;
-
-    if (header.type === PageType.DICTIONARY_PAGE) {
-      const body = decompressPageSlice(chunk.codec, buffer, page.bodyStart, page.bodyEnd, header.uncompressedSize);
-      if (header.encoding !== Encoding.PLAIN && header.encoding !== Encoding.PLAIN_DICTIONARY) {
-        throw new ParquetUnsupportedError(`Unsupported Parquet dictionary encoding ${header.encoding} in column '${leaf.name}'`);
-      }
-      if (header.numValues > PARQUET_MAX_ROWS) {
-        throw new ParquetFormatError(`Corrupted Parquet file: dictionary of ${header.numValues} entries in column '${leaf.name}'`);
-      }
-      formattedDict = readPlainValuesFormatted(body, 0, leaf, header.numValues, formatter);
-      if (header.numValues * 4 <= rows) {
-        for (let i = 0; i < header.numValues; i++) formattedDict[i].charCodeAt(0);
-      }
-      continue;
-    }
-    if (header.type === PageType.DATA_PAGE) {
-      const body = decompressPageSlice(chunk.codec, buffer, page.bodyStart, page.bodyEnd, header.uncompressedSize);
-      const { levels, nonNull, pos } = decodeDataPageLevels(body, header, leaf, budget);
-      chunkStringBytes += writeFormattedPageValues(
-        body,
-        pos,
-        header.numValues,
-        nonNull,
-        levels,
-        header.encoding,
-        leaf,
-        formattedDict,
-        budget,
-        formatter,
-        colOut,
-        writePos
-      );
-      writePos += header.numValues;
-      continue;
-    }
-    if (header.type === PageType.DATA_PAGE_V2) {
-      const rawSlice = buffer.subarray(page.bodyStart, page.bodyEnd);
-      const { levels, nonNull, valuesPage } = decodeDataPageV2LevelsAndValues(rawSlice, chunk.codec, header, leaf, budget);
-      chunkStringBytes += writeFormattedPageValues(
-        valuesPage,
-        0,
-        header.numValues,
-        nonNull,
-        levels,
-        header.encoding,
-        leaf,
-        formattedDict,
-        budget,
-        formatter,
-        colOut,
-        writePos
-      );
-      writePos += header.numValues;
-      continue;
-    }
-    throw new ParquetUnsupportedError(`Unsupported Parquet page type ${header.type} in column '${leaf.name}'`);
-  }
-  if (writePos - baseOffset !== rows) {
-    throw new ParquetFormatError(`Corrupted Parquet file: column '${leaf.name}' ends before all rows are present`);
-  }
-  return chunkStringBytes;
+  return body;
 }
 
 function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): ColumnValue[] {
@@ -1426,13 +1080,7 @@ function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): Col
     if (header.type === PageType.INDEX_PAGE) continue;
 
     if (header.type === PageType.DICTIONARY_PAGE) {
-      const body = decompressPageSlice(chunk.codec, buffer, page.bodyStart, page.bodyEnd, header.uncompressedSize);
-      if (header.encoding !== Encoding.PLAIN && header.encoding !== Encoding.PLAIN_DICTIONARY) {
-        throw new ParquetUnsupportedError(`Unsupported Parquet dictionary encoding ${header.encoding} in column '${leaf.name}'`);
-      }
-      if (header.numValues > PARQUET_MAX_ROWS) {
-        throw new ParquetFormatError(`Corrupted Parquet file: dictionary of ${header.numValues} entries in column '${leaf.name}'`);
-      }
+      const body = readDictionaryPageBody(buffer, plan, page);
       const bytes = new Uint32Array(header.numValues);
       const plain = readPlainValues(body, 0, leaf, header.numValues, bytes);
       if (leaf.reader.kind !== 'bytes' && (leaf.reader.map !== null || leaf.reader.kind === 'i64' || leaf.reader.kind === 'u64')) {
@@ -1531,7 +1179,7 @@ export interface DecodedParquetColumns {
   numRows: number;
 }
 
-function prepareParquetPlans(buffer: Buffer): { meta: FileMeta; plans: ChunkPlan[] } {
+export function prepareParquetPlans(buffer: Buffer): { meta: FileMeta; plans: ChunkPlan[] } {
   if (buffer.length < MIN_FILE_BYTES) {
     throw new ParquetFormatError('Invalid Parquet file: buffer too small (minimum 12 bytes).');
   }
@@ -1621,52 +1269,6 @@ function decodeParquetColumnsUnguarded(buffer: Buffer): DecodedParquetColumns {
   const names = meta.leaves.map((leaf) => leaf.name).filter((name) => columns.has(name));
   const columnValues = names.map((name) => columns.get(name) as ColumnValue[]);
   return { names, columns: columnValues, numRows: meta.numRows };
-}
-
-/**
- * Deserializes a flat Parquet file into formatted string column vectors in schema leaf order,
- * formatting dictionary entries at dictionary decode time instead of per row.
- */
-export function decodeParquetFormattedColumns(
-  buffer: Buffer,
-  makeFormatter: ColumnFormatterFactory
-): DecodedFormattedParquetColumns {
-  try {
-    const { meta, plans } = prepareParquetPlans(buffer);
-    const names = meta.leaves.map((leaf) => leaf.name);
-    if (meta.numRows === 0) {
-      return { names, columns: meta.leaves.map(() => []), numRows: 0, totalStringBytes: 0 };
-    }
-    const numCols = meta.leaves.length;
-    const formatters: ColumnCellFormatter[] = new Array<ColumnCellFormatter>(numCols);
-    const columns: string[][] = new Array<string[]>(numCols);
-    for (let c = 0; c < numCols; c++) {
-      const leaf = meta.leaves[c];
-      const safeAsciiString =
-        leaf.reader.kind !== 'bytes' ||
-        leaf.type === ParquetType.INT96 ||
-        leaf.annotation.tag === 'decimal' ||
-        leaf.annotation.tag === 'uuid' ||
-        leaf.annotation.tag === 'bson';
-      formatters[c] = makeFormatter(names, c, safeAsciiString);
-      columns[c] = new Array<string>(meta.numRows);
-    }
-    const budget: DecodeBudget = { valueBytes: PARQUET_MAX_DECODED_VALUE_BYTES };
-    const writeOffsets = new Int32Array(numCols);
-    let totalStringBytes = 0;
-    for (const plan of plans) {
-      const c = plan.leaf.colIndex;
-      const base = writeOffsets[c];
-      totalStringBytes += decodeChunkFormatted(buffer, plan, budget, formatters[c], columns[c], base);
-      writeOffsets[c] = base + plan.rows;
-    }
-    return { names, columns, numRows: meta.numRows, totalStringBytes };
-  } catch (error) {
-    if (error instanceof RangeError) {
-      throw new ParquetFormatError(`Unsupported Parquet file: the decoded table exceeds engine limits (${error.message})`);
-    }
-    throw error;
-  }
 }
 
 /**
