@@ -5691,6 +5691,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
           const max = parseInt(cl.attrs.max, 10) - 1;
           const width = parseFloat(cl.attrs.width);
           const ptWidth = Math.round(width * 7.5);
+          if (max >= XLSX_MAX_COLUMNS) throw worksheetBoundError(entry.name, `column ${max + 1} is past the last column of a worksheet (${XLSX_LAST_COLUMN_NAME})`);
           for (let c = min; c <= max; c++) {
             columnWidths[c] = ptWidth;
           }
@@ -5704,6 +5705,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       const rowAttrs = rowEl.attrs;
       if (rowAttrs.r) {
         const targetRowIdx = parseInt(rowAttrs.r, 10) - 1;
+        if (targetRowIdx >= XLSX_MAX_ROWS) throw worksheetBoundError(entry.name, `row ${targetRowIdx + 1} is past the last row of a worksheet (${XLSX_MAX_ROWS})`);
         while (rows.length < targetRowIdx) {
           rows.push([]);
           structuredRows.push([]);
@@ -5735,6 +5737,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
         let colIdx = nextColIdx;
         if (rRefMatch && rRefMatch[1]) {
           colIdx = getExcelColumnIndex(rRefMatch[1]);
+          if (colIdx >= XLSX_MAX_COLUMNS) throw worksheetBoundError(entry.name, `column ${rRefMatch[1]} is past the last column of a worksheet (${XLSX_LAST_COLUMN_NAME})`);
         }
 
         while (cells.length < colIdx) {
@@ -8440,6 +8443,15 @@ export function getExcelColumnName(colIndex: number): string {
     temp = Math.floor((temp - 1) / 26);
   }
   return colName;
+}
+
+/** The most rows and columns an OOXML worksheet can hold (ECMA-376 Part 1, 18.3.1.35 and 18.3.1.13); a damaged part must not make the reader build more. */
+const XLSX_MAX_ROWS = 1_048_576;
+const XLSX_MAX_COLUMNS = 16_384;
+const XLSX_LAST_COLUMN_NAME = 'XFD';
+
+function worksheetBoundError(sheetName: string, problem: string): ConversionFailedError {
+  return new ConversionFailedError(`Invalid XLSX worksheet '${sheetName}': ${problem}.`);
 }
 
 /**
