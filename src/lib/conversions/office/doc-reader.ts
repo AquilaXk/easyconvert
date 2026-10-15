@@ -1,10 +1,14 @@
+import { reportConversionWarning } from '../conversion-warnings';
+import { isSymbolFontName, isSymbolFontPrivateUse, mapSymbolFontCharacter, SYMBOL_FONT_PRIVATE_USE_BASE, symbolReplacementWarning, undrawableSymbolWarning } from '../symbol-font-map';
 import { CheckedReader, readCfbStreams, requireCfbStream } from './cfb-streams';
+import { CharacterFormatting, type CharacterFormattingLocations } from './doc-character-formatting';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
 
 /**
  * Text reader for Word 97-2003 binary documents ([MS-DOC] 2.5 FIB, 2.9.38 Clx, 2.9.177 PlcPcd).
- * It reads the main document story through the CLX piece table; it does not interpret formatting.
+ * It reads the main document story through the CLX piece table. The only formatting it interprets is the font of a
+ * character (doc-character-formatting.ts), to map the private-use characters of symbol fonts to Unicode.
  */
 
 const LABEL = 'Word document';
@@ -32,11 +36,17 @@ const FIB_CSW_VALUE = 14;
 const FIB_CSLW_OFFSET = 62;
 const FIB_CSLW_VALUE = 22;
 const FIB_CCP_TEXT_OFFSET = 76;
+// ccpFtn, ccpHdd, (reserved), ccpAtn, ccpEdn, ccpTxbx, ccpHdrTxbx follow ccpText, 4 bytes each.
+const FIB_CCP_OTHER_STORIES_OFFSETS = [80, 84, 92, 96, 100, 104];
 const FIB_CB_RG_FC_LCB_OFFSET = 152;
 const FIB_RG_FC_LCB_OFFSET = 154;
 const FC_LCB_PAIR_BYTES = 8;
 /** Index of the (fcClx, lcbClx) pair in FibRgFcLcb97. */
 const FC_LCB_CLX_INDEX = 33;
+/** Indexes of the (fc, lcb) pairs of the style sheet, the character formatting table and the font table in FibRgFcLcb97. */
+const FC_LCB_STSH_INDEX = 1;
+const FC_LCB_PLC_BTE_CHPX_INDEX = 12;
+const FC_LCB_STTB_FFN_INDEX = 15;
 
 // Clx ([MS-DOC] 2.9.38).
 const CLX_PRC = 0x01;
@@ -63,6 +73,12 @@ const CH_FIELD_SEPARATOR = 0x14;
 const CH_FIELD_END = 0x15;
 const CH_NON_BREAKING_HYPHEN = 0x1e;
 const CH_OPTIONAL_HYPHEN = 0x1f;
+/** The placeholder a Symbol field character (sprmCSymbol) stands for in the text. */
+const CH_SYMBOL_PLACEHOLDER = 0x28;
+const REPLACEMENT_CHARACTER = '\uFFFD';
+const SYMBOL_FONT_LAST_BYTE = 0xff;
+const SURROGATE_FIRST = 0xd800;
+const SURROGATE_LAST = 0xdfff;
 const FIRST_PRINTABLE = 0x20;
 const FIRST_C1_CONTROL = 0x80;
 const LAST_C1_CONTROL = 0x9f;
@@ -80,6 +96,7 @@ interface FibInfo {
   tableStream: string;
   fcClx: number;
   lcbClx: number;
+  formatting: CharacterFormattingLocations;
 }
 
 function readFib(word: CheckedReader): FibInfo {
@@ -101,11 +118,21 @@ function readFib(word: CheckedReader): FibInfo {
     throw new LegacyOfficeFormatError(`${LABEL}: the file information block has no piece table entry.`);
   }
   const clxAt = FIB_RG_FC_LCB_OFFSET + FC_LCB_CLX_INDEX * FC_LCB_PAIR_BYTES;
+  const pairAt = (index: number): { fc: number; lcb: number } => {
+    const at = FIB_RG_FC_LCB_OFFSET + index * FC_LCB_PAIR_BYTES;
+    return { fc: word.u32(at), lcb: word.u32(at + CP_BYTES) };
+  };
   return {
     ccpText: word.u32(FIB_CCP_TEXT_OFFSET),
     tableStream: flags & FIB_FLAG_WHICH_TABLE_STREAM ? '1Table' : '0Table',
     fcClx: word.u32(clxAt),
     lcbClx: word.u32(clxAt + CP_BYTES),
+    formatting: {
+      stsh: pairAt(FC_LCB_STSH_INDEX),
+      plcBteChpx: pairAt(FC_LCB_PLC_BTE_CHPX_INDEX),
+      sttbfFfn: pairAt(FC_LCB_STTB_FFN_INDEX),
+      textChars: FIB_CCP_OTHER_STORIES_OFFSETS.reduce((sum, at) => sum + word.u32(at), word.u32(FIB_CCP_TEXT_OFFSET)),
+    },
   };
 }
 
@@ -183,12 +210,62 @@ function readMainStory(word: Buffer, pieces: Piece[], ccpText: number): string {
   return parts.join('');
 }
 
+/** Where a character of the main story is stored and which font its run uses, to read symbol-font characters. */
+interface StoryFonts {
+  formatting: CharacterFormatting;
+  /** Whether the output can draw a character; a mapped symbol character it cannot draw becomes U+FFFD. Absent: every character can be drawn. */
+  canDraw?: (character: string) => boolean;
+  /** The file offset of the character at a character position; positions must be asked for in ascending order. */
+  fileOffsetOf: (cp: number) => number;
+}
+
+/** The U+FFFD a character with no Unicode counterpart becomes, reported once per font and code. */
+function replaceSymbolCharacter(font: string | undefined, code: number): string {
+  reportConversionWarning(symbolReplacementWarning(font, code));
+  return REPLACEMENT_CHARACTER;
+}
+
+/** The mapped character of a symbol-font code, U+FFFD when the font has none or the output cannot draw it. */
+function drawableSymbol(fonts: StoryFonts, font: string | undefined, code: number, mapped: string | undefined): string {
+  if (mapped === undefined) return replaceSymbolCharacter(font, code);
+  if (fonts.canDraw === undefined || fonts.canDraw(mapped)) return mapped;
+  reportConversionWarning(undrawableSymbolWarning(font, code, mapped));
+  return REPLACEMENT_CHARACTER;
+}
+
+/** The character a private-use code point depicts in the font of its run. */
+function mapPrivateUse(fonts: StoryFonts, cp: number, code: number): string {
+  const font = fonts.formatting.privateUseFontAt(fonts.fileOffsetOf(cp));
+  return drawableSymbol(fonts, font, code, font === undefined ? undefined : mapSymbolFontCharacter(font, code));
+}
+
+function isSurrogate(code: number): boolean {
+  return code >= SURROGATE_FIRST && code <= SURROGATE_LAST;
+}
+
+/**
+ * The character a Symbol field stands for, or undefined when the placeholder at `cp` carries none. In a symbol font the
+ * code is a glyph of that font (stored as the byte or at U+F000 + byte); in any other font it is the Unicode character.
+ */
+function symbolFieldCharacter(fonts: StoryFonts, cp: number): string | undefined {
+  const field = fonts.formatting.symbolFieldAt(fonts.fileOffsetOf(cp));
+  if (field === undefined) return undefined;
+  if (field.font !== undefined && isSymbolFontName(field.font)) {
+    const code = field.xchar <= SYMBOL_FONT_LAST_BYTE ? SYMBOL_FONT_PRIVATE_USE_BASE + field.xchar : field.xchar;
+    return drawableSymbol(fonts, field.font, code, mapSymbolFontCharacter(field.font, code));
+  }
+  const control = field.xchar < FIRST_PRINTABLE || (field.xchar >= FIRST_C1_CONTROL && field.xchar <= LAST_C1_CONTROL);
+  if (control || isSymbolFontPrivateUse(field.xchar) || isSurrogate(field.xchar)) return replaceSymbolCharacter(field.font, field.xchar);
+  return String.fromCharCode(field.xchar);
+}
+
 /**
  * Maps the special characters of the main story to plain text: paragraph ends and line breaks become
  * newlines, cell marks become tabs (a doubled mark ends the row), field instructions are dropped while
- * field results are kept, and drawing, picture and reference placeholders disappear.
+ * field results are kept, drawing, picture and reference placeholders disappear, and the private-use
+ * characters of symbol fonts become the characters their glyphs depict.
  */
-function renderStory(story: string): string {
+function renderStory(story: string, fonts: StoryFonts): string {
   const out: string[] = [];
   const openFields: boolean[] = []; // true once the field reached its result part
   let codeDepth = 0;
@@ -235,6 +312,10 @@ function renderStory(story: string): string {
       continue;
     } else if (code < FIRST_PRINTABLE || (code >= FIRST_C1_CONTROL && code <= LAST_C1_CONTROL)) {
       continue;
+    } else if (isSymbolFontPrivateUse(code)) {
+      out.push(mapPrivateUse(fonts, i, code));
+    } else if (code === CH_SYMBOL_PLACEHOLDER && fonts.formatting.hasSymbolFields) {
+      out.push(symbolFieldCharacter(fonts, i) ?? story[i]);
     } else {
       out.push(story[i]);
     }
@@ -246,10 +327,26 @@ function renderStory(story: string): string {
 }
 
 /**
- * Extracts the text of the main story of a Word 97-2003 document. Throws a LegacyOfficeFormatError for
- * malformed or empty documents and an EncryptedOfficeDocumentError for encrypted ones.
+ * A function from character position to the file offset the character is stored at: pieces start at `byteOffset` and
+ * advance one byte per character when compressed, two otherwise. Positions are asked for in ascending order.
  */
-export function readDocText(buffer: Buffer): string {
+function fileOffsetLocator(pieces: readonly Piece[]): (cp: number) => number {
+  let index = 0;
+  return (cp: number): number => {
+    if (cp < pieces[index].cpStart) index = 0;
+    while (index < pieces.length - 1 && cp >= pieces[index].cpEnd) index++;
+    const piece = pieces[index];
+    return piece.byteOffset + (cp - piece.cpStart) * (piece.compressed ? COMPRESSED_BYTES_PER_CHAR : UNICODE_BYTES_PER_CHAR);
+  };
+}
+
+/**
+ * Extracts the text of the main story of a Word 97-2003 document. Throws a LegacyOfficeFormatError for
+ * malformed or empty documents and an EncryptedOfficeDocumentError for encrypted ones. A symbol-font character with no
+ * Unicode counterpart becomes U+FFFD and is reported to the running conversion's warnings; so does one whose
+ * counterpart `canDraw` (the output's glyph coverage, when it has a limit) rejects.
+ */
+export function readDocText(buffer: Buffer, canDraw?: (character: string) => boolean): string {
   const streams = readCfbStreams(buffer, LABEL);
   const wordStream = requireCfbStream(streams, WORD_DOCUMENT_STREAM, LABEL);
   const fib = readFib(new CheckedReader(wordStream, LABEL));
@@ -258,7 +355,8 @@ export function readDocText(buffer: Buffer): string {
     throw new LegacyOfficeFormatError(`${LABEL}: the CLX lies outside the ${fib.tableStream} stream.`);
   }
   const pieces = parsePieces(locatePlcPcd(table, fib));
-  const rendered = renderStory(readMainStory(wordStream, pieces, fib.ccpText));
+  const formatting = CharacterFormatting.read(wordStream, table, fib.formatting);
+  const rendered = renderStory(readMainStory(wordStream, pieces, fib.ccpText), { formatting, canDraw, fileOffsetOf: fileOffsetLocator(pieces) });
   let end = rendered.length;
   while (end > 0 && rendered.charCodeAt(end - 1) === NEWLINE_CODE) end--;
   const text = rendered.slice(0, end);
