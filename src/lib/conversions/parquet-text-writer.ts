@@ -1,4 +1,9 @@
-import { DelimitedBytesUnsupported, DelimitedByteScanner, type CellChunk } from './delimited-bytes';
+import {
+  DelimitedBytesUnsupported,
+  DelimitedByteScanner,
+  releaseChunkScratch,
+  type CellChunk,
+} from './delimited-bytes';
 import { compressPage } from './parquet-codec';
 import {
   ColumnSchema,
@@ -13,7 +18,7 @@ import {
   PARQUET_STATS_MAX_BYTES,
   ParquetType,
 } from './parquet-format';
-import { bitWidthFor, ByteSink, encodeRleHybrid } from './parquet-rle';
+import { ByteSink, encodeRleHybrid } from './parquet-rle';
 import {
   type ChunkStatistics,
   type EncodedChunk,
@@ -58,8 +63,11 @@ interface GroupScratch {
   entryHash: Int32Array;
   entryStart: Int32Array;
   entryLength: Int32Array;
+  entryWord0: Int32Array;
+  entryWord1: Int32Array;
+  entrySlot: Int32Array;
   indices: Uint32Array;
-  ones: Uint8Array;
+  usedEntries: number;
 }
 
 interface TextDictionary {
@@ -67,13 +75,6 @@ interface TextDictionary {
   bitWidth: number;
   /** PLAIN dictionary page body: a length prefix and the bytes of every distinct value, in first-seen order. */
   body: Buffer;
-}
-
-function hashCell(data: Uint8Array, start: number, length: number): number {
-  let hash = FNV_OFFSET;
-  const end = start + length;
-  for (let i = start; i < end; i++) hash = Math.imul(hash ^ data[i], FNV_PRIME);
-  return hash ^ (hash >>> HASH_MIX_SHIFT);
 }
 
 function sameBytes(data: Uint8Array, a: number, b: number, length: number): boolean {
@@ -86,24 +87,58 @@ function sameBytes(data: Uint8Array, a: number, b: number, length: number): bool
 /** Orders two byte ranges lexicographically as unsigned bytes. */
 function compareRanges(data: Uint8Array, a: number, aLength: number, b: number, bLength: number): number {
   const shared = aLength < bLength ? aLength : bLength;
-  for (let i = 0; i < shared; i++) {
+  let i = 0;
+  for (; i + 3 < shared; i += 4) {
+    const wa = ((data[a + i] << 24) | (data[a + i + 1] << 16) | (data[a + i + 2] << 8) | data[a + i + 3]) >>> 0;
+    const wb = ((data[b + i] << 24) | (data[b + i + 1] << 16) | (data[b + i + 2] << 8) | data[b + i + 3]) >>> 0;
+    if (wa !== wb) return wa < wb ? -1 : 1;
+  }
+  for (; i < shared; i++) {
     const difference = data[a + i] - data[b + i];
     if (difference !== 0) return difference;
   }
   return aLength - bLength;
 }
 
+let sharedGroupScratch: GroupScratch | null = null;
+/** Rows up to which the group scratch stays cached between conversions; a larger one is released after use. */
+const RETAINED_SCRATCH_ROWS = 4096;
+
+/** Drops group scratch that a large row group grew past {@link RETAINED_SCRATCH_ROWS}, so it is not held until exit. */
+function releaseGroupScratch(): void {
+  if (sharedGroupScratch && sharedGroupScratch.indices.length > RETAINED_SCRATCH_ROWS) sharedGroupScratch = null;
+}
+
+/** Rows of the cached group scratch (0 when none); tests use it to check that the scratch is released. */
+export function groupScratchRows(): number {
+  return sharedGroupScratch ? sharedGroupScratch.indices.length : 0;
+}
+
 function scratchFor(rows: number): GroupScratch {
   let slots = MIN_HASH_SLOTS;
   while (slots < rows * 2) slots *= 2;
-  return {
+  if (
+    sharedGroupScratch &&
+    sharedGroupScratch.table.length >= slots &&
+    sharedGroupScratch.indices.length >= rows
+  ) {
+    const { table, entrySlot, usedEntries } = sharedGroupScratch;
+    for (let e = 0; e < usedEntries; e++) table[entrySlot[e]] = 0;
+    sharedGroupScratch.usedEntries = 0;
+    return sharedGroupScratch;
+  }
+  sharedGroupScratch = {
     table: new Int32Array(slots),
     entryHash: new Int32Array(rows),
     entryStart: new Int32Array(rows),
     entryLength: new Int32Array(rows),
+    entryWord0: new Int32Array(rows),
+    entryWord1: new Int32Array(rows),
+    entrySlot: new Int32Array(rows),
     indices: new Uint32Array(rows),
-    ones: new Uint8Array(rows).fill(1),
+    usedEntries: 0,
   };
+  return sharedGroupScratch;
 }
 
 /**
@@ -119,22 +154,61 @@ function buildDictionary(
   scratch: GroupScratch
 ): TextDictionary | null {
   const { data, rows, starts, lengths } = chunk;
-  const { table, entryHash, entryStart, entryLength, indices } = scratch;
-  const mask = table.length - 1;
-  table.fill(0);
+  const { table, entryHash, entryStart, entryLength, entryWord0, entryWord1, entrySlot, indices } = scratch;
+  let slots = MIN_HASH_SLOTS;
+  while (slots < rows * 2) slots *= 2;
+  const mask = slots - 1;
+  for (let e = 0; e < scratch.usedEntries; e++) table[entrySlot[e]] = 0;
+  scratch.usedEntries = 0;
+
   let entries = 0;
   let dictionaryBytes = 0;
+  let bitWidth = MIN_DICTIONARY_INDEX_BIT_WIDTH;
+  let nextBitThreshold = 2;
+  let maxDictBytes = Math.min(maxDictionaryBytes, plainBytes - 1 - Math.ceil(rows / BITS_PER_BYTE));
+  if (maxDictBytes < 0) return null;
+
   for (let r = 0, cell = column; r < rows; r++, cell += width) {
     const start = starts[cell];
     const length = lengths[cell];
-    const hash = hashCell(data, start, length);
+    let w0 = 0;
+    let w1 = 0;
+    let hash = FNV_OFFSET;
+    if (length >= 4) {
+      const end = start + length;
+      w0 = data[start] | (data[start + 1] << 8) | (data[start + 2] << 16) | (data[start + 3] << 24);
+      w1 = data[end - 4] | (data[end - 3] << 8) | (data[end - 2] << 16) | (data[end - 1] << 24);
+      let h = Math.imul(w0 ^ length, FNV_PRIME);
+      h = Math.imul(h ^ w1, FNV_PRIME);
+      if (length > 8) {
+        const w2 = data[end - 8] | (data[end - 7] << 8) | (data[end - 6] << 16) | (data[end - 5] << 24);
+        h = Math.imul(h ^ w2, FNV_PRIME);
+        if (length > 16) {
+          const mid = start + (length >> 1);
+          const wMid = data[mid] | (data[mid + 1] << 8) | (data[mid + 2] << 16) | (data[mid + 3] << 24);
+          h = Math.imul(h ^ wMid, FNV_PRIME);
+        }
+      }
+      hash = h ^ (h >>> HASH_MIX_SHIFT);
+    } else if (length > 0) {
+      w0 = data[start] | (data[start + (length >> 1)] << 8) | (data[start + length - 1] << 16) | (length << 24);
+      const h = Math.imul(w0 ^ FNV_OFFSET, FNV_PRIME);
+      hash = h ^ (h >>> HASH_MIX_SHIFT);
+    }
+
     let slot = hash & mask;
     let index = -1;
     for (;;) {
       const held = table[slot];
       if (held === 0) break;
       const candidate = held - 1;
-      if (entryHash[candidate] === hash && entryLength[candidate] === length && sameBytes(data, entryStart[candidate], start, length)) {
+      if (
+        entryHash[candidate] === hash &&
+        entryLength[candidate] === length &&
+        entryWord0[candidate] === w0 &&
+        entryWord1[candidate] === w1 &&
+        (length <= 8 || sameBytes(data, entryStart[candidate] + 4, start + 4, length - 8))
+      ) {
         index = candidate;
         break;
       }
@@ -142,23 +216,40 @@ function buildDictionary(
     }
     if (index < 0) {
       dictionaryBytes += BYTE_ARRAY_LENGTH_PREFIX_BYTES + length;
-      if (dictionaryBytes > maxDictionaryBytes) return null;
+      if (entries === nextBitThreshold) {
+        bitWidth++;
+        nextBitThreshold <<= 1;
+        const budgetFromPlain = plainBytes - 1 - Math.ceil((rows * bitWidth) / BITS_PER_BYTE);
+        if (budgetFromPlain < maxDictBytes) maxDictBytes = budgetFromPlain;
+      }
+      if (dictionaryBytes > maxDictBytes) {
+        scratch.usedEntries = entries;
+        return null;
+      }
       index = entries++;
       table[slot] = entries;
       entryHash[index] = hash;
       entryStart[index] = start;
       entryLength[index] = length;
+      entryWord0[index] = w0;
+      entryWord1[index] = w1;
+      entrySlot[index] = slot;
     }
     indices[r] = index;
+    if (rows >= 1024 && r === 255 && entries === 256) {
+      scratch.usedEntries = entries;
+      return null;
+    }
   }
-  const bitWidth = Math.max(MIN_DICTIONARY_INDEX_BIT_WIDTH, bitWidthFor(entries - 1));
-  const indexBytes = Math.ceil((rows * bitWidth) / BITS_PER_BYTE);
-  if (dictionaryBytes + indexBytes >= plainBytes) return null;
+  scratch.usedEntries = entries;
   const body = Buffer.allocUnsafe(dictionaryBytes);
   let at = 0;
   for (let e = 0; e < entries; e++) {
     const length = entryLength[e];
-    body.writeUInt32LE(length, at);
+    body[at] = length;
+    body[at + 1] = length >>> 8;
+    body[at + 2] = length >>> 16;
+    body[at + 3] = length >>> 24;
     at += BYTE_ARRAY_LENGTH_PREFIX_BYTES;
     const from = entryStart[e];
     if (length <= SHORT_COPY_BYTES) {
@@ -189,8 +280,18 @@ interface Page {
 }
 
 /** Pages of a PLAIN chunk close on a row count or on the byte target; those of a dictionary chunk on a row count. */
-function splitPages(chunk: CellChunk, width: number, column: number, dictionary: boolean, maxRows: number): Page[] {
+function splitPages(
+  chunk: CellChunk,
+  width: number,
+  column: number,
+  dictionary: boolean,
+  maxRows: number,
+  plainBytes: number
+): Page[] {
   const { rows, lengths } = chunk;
+  if (rows <= maxRows && (dictionary || plainBytes < PAGE_TARGET_BYTES)) {
+    return [{ rowStart: 0, rowEnd: rows }];
+  }
   if (dictionary) {
     const pages: Page[] = [];
     for (let rowStart = 0; rowStart < rows; rowStart += maxRows) pages.push({ rowStart, rowEnd: Math.min(rows, rowStart + maxRows) });
@@ -209,6 +310,33 @@ function splitPages(chunk: CellChunk, width: number, column: number, dictionary:
   }
   if (rowStart < rows) pages.push({ rowStart, rowEnd: rows });
   return pages;
+}
+
+function writeAllOnesDefinitionLevels(sink: ByteSink, pageRows: number): void {
+  if (pageRows === 0) {
+    sink.writeUint32(0);
+    return;
+  }
+  if (pageRows >= 8) {
+    const lengthAt = sink.length;
+    sink.writeUint32(0);
+    sink.writeVarint(pageRows << 1);
+    sink.writeByte(DEFINITION_LEVEL_BIT_WIDTH);
+    sink.patchUint32(lengthAt, sink.length - lengthAt - BYTE_ARRAY_LENGTH_PREFIX_BYTES);
+    return;
+  }
+  sink.writeUint32(2);
+  sink.writeByte(3);
+  sink.writeByte((1 << pageRows) - 1);
+}
+
+function zigzagVarintBytes(n: number): number {
+  const v = n * 2;
+  if (v < 0x80) return 1;
+  if (v < 0x4000) return 2;
+  if (v < 0x20_00_00) return 3;
+  if (v < 0x10_00_00_00) return 4;
+  return 5;
 }
 
 function isNumericTextColumn(chunk: CellChunk, width: number, column: number): boolean {
@@ -265,11 +393,11 @@ function encodeTextColumnChunk(
     const encoding = pageType === PageType.DICTIONARY_PAGE ? Encoding.PLAIN : valueEncoding;
     const header = pageHeaderBytes(pageType, body.length, compressed.length, numValues, encoding, stats);
     // total_uncompressed_size counts headers as they would be written without compression.
-    const uncompressedHeader = pageHeaderBytes(pageType, body.length, body.length, numValues, encoding, stats);
+    const uncompressedHeaderLen = header.length + zigzagVarintBytes(body.length) - zigzagVarintBytes(compressed.length);
     parts.push(header, compressed);
     position += header.length + compressed.length;
     totalCompressed += header.length + compressed.length;
-    totalUncompressed += uncompressedHeader.length + body.length;
+    totalUncompressed += uncompressedHeaderLen + body.length;
   };
 
   if (dictionary) {
@@ -278,17 +406,15 @@ function encodeTextColumnChunk(
   }
   const dataPageOffset = position;
 
-  const pages = splitPages(chunk, width, column, dictionary !== null, options.dataPageMaxRows);
+  const pages = splitPages(chunk, width, column, dictionary !== null, options.dataPageMaxRows, plainBytes);
+  const singlePage = pages.length === 1;
   let wholeStatistics: ChunkStatistics | null = null;
-  const seen = dictionary ? new Uint8Array(dictionary.entries) : null;
+  const seen = dictionary && !singlePage ? new Uint8Array(dictionary.entries) : null;
   const rawPages: UncompressedTextPage[] = [];
   for (const page of pages) {
     const pageRows = page.rowEnd - page.rowStart;
     sink.reset();
-    const lengthAt = sink.length;
-    sink.writeUint32(0);
-    encodeRleHybrid(sink, scratch.ones, pageRows, DEFINITION_LEVEL_BIT_WIDTH);
-    sink.patchUint32(lengthAt, sink.length - lengthAt - BYTE_ARRAY_LENGTH_PREFIX_BYTES);
+    writeAllOnesDefinitionLevels(sink, pageRows);
 
     let minAt = -1;
     let minLength = 0;
@@ -297,52 +423,104 @@ function encodeTextColumnChunk(
     if (dictionary) {
       sink.writeByte(dictionary.bitWidth);
       encodeRleHybrid(sink, scratch.indices.subarray(page.rowStart, page.rowEnd), pageRows, dictionary.bitWidth);
-      // Only the distinct entries of the page need comparing.
-      (seen as Uint8Array).fill(0);
-      for (let r = page.rowStart; r < page.rowEnd; r++) {
-        const index = scratch.indices[r];
-        if ((seen as Uint8Array)[index] === 1) continue;
-        (seen as Uint8Array)[index] = 1;
-        const at = scratch.entryStart[index];
-        const length = scratch.entryLength[index];
-        if (minAt < 0) {
-          minAt = maxAt = at;
-          minLength = maxLength = length;
-          continue;
+      if (singlePage) {
+        for (let index = 0; index < dictionary.entries; index++) {
+          const at = scratch.entryStart[index];
+          const length = scratch.entryLength[index];
+          if (minAt < 0) {
+            minAt = maxAt = at;
+            minLength = maxLength = length;
+            continue;
+          }
+          if (compareRanges(data, at, length, minAt, minLength) < 0) {
+            minAt = at;
+            minLength = length;
+          }
+          if (compareRanges(data, at, length, maxAt, maxLength) > 0) {
+            maxAt = at;
+            maxLength = length;
+          }
         }
-        if (compareRanges(data, at, length, minAt, minLength) < 0) {
-          minAt = at;
-          minLength = length;
-        }
-        if (compareRanges(data, at, length, maxAt, maxLength) > 0) {
-          maxAt = at;
-          maxLength = length;
+      } else {
+        // Only the distinct entries of the page need comparing.
+        (seen as Uint8Array).fill(0);
+        for (let r = page.rowStart; r < page.rowEnd; r++) {
+          const index = scratch.indices[r];
+          if ((seen as Uint8Array)[index] === 1) continue;
+          (seen as Uint8Array)[index] = 1;
+          const at = scratch.entryStart[index];
+          const length = scratch.entryLength[index];
+          if (minAt < 0) {
+            minAt = maxAt = at;
+            minLength = maxLength = length;
+            continue;
+          }
+          if (compareRanges(data, at, length, minAt, minLength) < 0) {
+            minAt = at;
+            minLength = length;
+          }
+          if (compareRanges(data, at, length, maxAt, maxLength) > 0) {
+            maxAt = at;
+            maxLength = length;
+          }
         }
       }
     } else {
+      let pagePlainBytes = plainBytes;
+      if (!singlePage) {
+        pagePlainBytes = pageRows * BYTE_ARRAY_LENGTH_PREFIX_BYTES;
+        for (let r = page.rowStart, cell = page.rowStart * width + column; r < page.rowEnd; r++, cell += width) {
+          pagePlainBytes += lengths[cell];
+        }
+      }
+      sink.ensure(pagePlainBytes);
+      const sinkBytes = sink.rawBuffer();
+      let writePos = sink.length;
+      let minPrefix = -1;
+      let maxPrefix = -1;
       for (let r = page.rowStart, cell = page.rowStart * width + column; r < page.rowEnd; r++, cell += width) {
         const at = starts[cell];
         const length = lengths[cell];
-        sink.writeUint32(length);
-        sink.writeSlice(data, at, length);
+        sinkBytes[writePos] = length;
+        sinkBytes[writePos + 1] = length >>> 8;
+        sinkBytes[writePos + 2] = length >>> 16;
+        sinkBytes[writePos + 3] = length >>> 24;
+        writePos += BYTE_ARRAY_LENGTH_PREFIX_BYTES;
+        if (length <= SHORT_COPY_BYTES) {
+          for (let i = 0; i < length; i++) sinkBytes[writePos + i] = data[at + i];
+        } else {
+          data.copy(sinkBytes, writePos, at, at + length);
+        }
+        writePos += length;
+        // The first two bytes of the value as one sortable integer; -1 for an empty value, which sorts before the rest.
+        let prefix = -1;
+        if (length > 0) prefix = (data[at] << 9) | (length > 1 ? data[at + 1] + 1 : 0);
         if (minAt < 0) {
           minAt = maxAt = at;
           minLength = maxLength = length;
+          minPrefix = maxPrefix = prefix;
           continue;
         }
-        if (compareRanges(data, at, length, minAt, minLength) < 0) {
+        if (prefix < minPrefix || (prefix === minPrefix && length > 1 && compareRanges(data, at, length, minAt, minLength) < 0)) {
           minAt = at;
           minLength = length;
+          minPrefix = prefix;
         }
-        if (compareRanges(data, at, length, maxAt, maxLength) > 0) {
+        if (prefix > maxPrefix || (prefix === maxPrefix && length > 1 && compareRanges(data, at, length, maxAt, maxLength) > 0)) {
           maxAt = at;
           maxLength = length;
+          maxPrefix = prefix;
         }
       }
+      sink.length = writePos;
     }
     const pageStatistics = statisticsOf(data, minAt, minLength, maxAt, maxLength);
-    if (pages.length === 1) wholeStatistics = pageStatistics;
-    rawPages.push({ body: Buffer.from(sink.toBuffer()), numValues: pageRows, statistics: pageStatistics });
+    if (singlePage) wholeStatistics = pageStatistics;
+    rawPages.push({
+      body: singlePage ? sink.toBuffer() : Buffer.from(sink.toBuffer()),
+      numValues: pageRows,
+      statistics: pageStatistics,
+    });
   }
   if (wholeStatistics === null) wholeStatistics = wholeChunkStatistics(chunk, width, column);
 
@@ -409,6 +587,8 @@ function wholeChunkStatistics(chunk: CellChunk, width: number, column: number): 
   return statisticsOf(data, minAt, minLength, maxAt, maxLength);
 }
 
+const sharedPageSink = new ByteSink(PARQUET_DATA_PAGE_TARGET_BYTES);
+
 /**
  * Writes every record of `scanner` as a Parquet file of OPTIONAL UTF-8 string columns, one row group at a time, so
  * only one group's cell offsets are held at once. Throws {@link DelimitedBytesUnsupported} for a table the general
@@ -421,28 +601,33 @@ export function encodeParquetFromScanner(scanner: DelimitedByteScanner, options:
   const body: Buffer[] = [Buffer.from(PARQUET_MAGIC, 'ascii')];
   let offset = PARQUET_MAGIC.length;
   const rowGroups: EncodedRowGroup[] = [];
-  const pageSink = new ByteSink(PARQUET_DATA_PAGE_TARGET_BYTES);
+  const pageSink = sharedPageSink;
   let totalRows = 0;
-  for (;;) {
-    const chunk = scanner.nextChunk(resolved.rowGroupMaxRows, resolved.rowGroupMaxBytes);
-    if (chunk === null) break;
-    totalRows += chunk.rows;
-    if (totalRows > PARQUET_MAX_ROWS || totalRows * width > PARQUET_MAX_CELLS) {
-      throw new DelimitedBytesUnsupported('a table beyond the Parquet row and cell limits');
-    }
-    const scratch = scratchFor(chunk.rows);
-    const group: EncodedRowGroup = { chunks: [], numRows: chunk.rows, startOffset: offset, totalUncompressed: 0, totalCompressed: 0 };
-    for (let column = 0; column < width; column++) {
-      const encoded = encodeTextColumnChunk(chunk, width, column, schemas[column], offset, resolved, scratch, pageSink);
-      for (const part of encoded.parts) {
-        body.push(part);
-        offset += part.length;
+  try {
+    for (;;) {
+      const chunk = scanner.nextChunk(resolved.rowGroupMaxRows, resolved.rowGroupMaxBytes);
+      if (chunk === null) break;
+      totalRows += chunk.rows;
+      if (totalRows > PARQUET_MAX_ROWS || totalRows * width > PARQUET_MAX_CELLS) {
+        throw new DelimitedBytesUnsupported('a table beyond the Parquet row and cell limits');
       }
-      group.chunks.push(encoded);
-      group.totalUncompressed += encoded.totalUncompressed;
-      group.totalCompressed += encoded.totalCompressed;
+      const scratch = scratchFor(chunk.rows);
+      const group: EncodedRowGroup = { chunks: [], numRows: chunk.rows, startOffset: offset, totalUncompressed: 0, totalCompressed: 0 };
+      for (let column = 0; column < width; column++) {
+        const encoded = encodeTextColumnChunk(chunk, width, column, schemas[column], offset, resolved, scratch, pageSink);
+        for (const part of encoded.parts) {
+          body.push(part);
+          offset += part.length;
+        }
+        group.chunks.push(encoded);
+        group.totalUncompressed += encoded.totalUncompressed;
+        group.totalCompressed += encoded.totalCompressed;
+      }
+      rowGroups.push(group);
     }
-    rowGroups.push(group);
+  } finally {
+    releaseChunkScratch();
+    releaseGroupScratch();
   }
   if (totalRows === 0) throw new DelimitedBytesUnsupported('a table without records');
   return finishParquetFile(body, schemas, rowGroups, totalRows);
