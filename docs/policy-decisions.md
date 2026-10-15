@@ -61,6 +61,10 @@ Tabular data
 
 26. [Tabular data fidelity and Parquet encodings](#26-tabular-data-fidelity-and-parquet-encodings)
 
+Compression
+
+28. [Zstandard level 3 match finder and literal cost floor](#28-zstandard-level-3-match-finder-and-literal-cost-floor)
+
 ---
 
 ## 1. AVIF chroma and bit depth
@@ -580,4 +584,30 @@ Tabular data
   - **Always returning the rewritten PDF even when larger on clean inputs**: breaks idempotency when compressing an already-compressed clean PDF a second time.
 - **Verified by**: `tests/fb2-book-structure.test.ts`, `tests/pdf-compress.test.ts`, and the public `ebook` and `pdf-ops` parity suites (`book-help-ru.fb2`, `book-linear-algebra.epub->pdf`, `pdf-gov-000012.pdf->compress`, `pdf-gov-001071.pdf->compress`, `pdf-gov-003966.pdf->compress`, and `pdf-vera-ua1-annotations.pdf->compress`).
 - **Revisit when**: a dedicated MathML layout engine is added to the in-process PDF writer.
+
+## 28. Zstandard level 3 match finder and literal cost floor
+
+- **Status**: Implemented (issue #737).
+- **Decision**:
+  - **Level 3 match-finder parameters**: the default Zstandard encoder level (`level = 3`) uses `windowLog = 20`, `hashLog = 18`, `chainLog = 18`, `searchDepth = 6`, `minMatch = 5`, `niceLength = 24`, `lazyDepth = 1`, `lazyLength = 8`, `skipStrength = 7`, `insertMatchInterior = true`, and `interiorInsertCap = 4`. Levels 4 to 6 scale `searchDepth` (10, 12, 14), `hashLog` (18), and `chainLog` (18, 18, 19) monotonically from level 3.
+  - **Five-byte hash (`minMatch = 5`)**: the chain is keyed on five bytes, so a four-byte match is taken only as a repeat-offset match. The level 4 and higher chains keep the four-byte hash.
+  - **Lazy length cap (`lazyLength`)**: a match of at least `lazyLength` bytes is emitted without probing the next position for a better one; a shorter match is still compared against the match starting one byte later, with the chain floor `len - 1` so that candidates that cannot beat the current match are rejected on one byte. It defaults to `niceLength`, which leaves every other level unchanged.
+  - **Interior insertion cap**: with `interiorInsertCap = 4`, a match longer than 8 bytes inserts only its first and last 4 positions into the chains.
+  - **Post-LZ77 literal cost floor (`LITERAL_BITS_MIN = 6.5`)**: the match finder clamps its per-block literal bit-cost estimate to at least `6.5` bits per byte when scoring short matches against the sequence overhead (`MATCH_OVERHEAD_BITS + OFFSET_SYMBOL_BITS + highBit32(offset + 1)`).
+- **Why**:
+  - Whole-block order-0 Shannon entropy underestimates the cost of the unmatched literals that remain after LZ77 removes repetitive runs. On zero-padded binary slices such as 3D medical volumes (where 50 to 65 % of each 128 KB block is `0x00`), raw block entropy drops to 2.3 to 2.6 bits per byte while the non-zero tissue bytes left in the Huffman literals stream cost 5.4 to 5.6 bits per literal; on natural-language prose, raw block entropy is 4.5 to 4.8 bits per byte while post-LZ77 literal residuals cost 5.3 to 5.4 bits per literal. With `LITERAL_BITS_MIN = 1`, the scorer rejected every four-byte match at `offset >= 63` in prose and every four- to eight-byte cross-slice match in zero-padded medical volumes.
+  - The reference level 3 strategy (double-hash fast matcher) also hashes five bytes. A four-byte chain fills with positions that share only their first four bytes, so each probe is mostly a collision or a match too short to pay for its offset; a five-byte chain spends the same probes on candidates that can win. Measured on the public set, five-byte hashing improved the ratio of the medical, prose, and source samples by 1 to 3 points at the same speed, which is what allowed `searchDepth` to fall from 8 to 6.
+  - Raising `chainLog` from 16 (64 KiB chain reach) to 18 (256 KiB chain reach) prevents the 64 KiB dense job history from overwriting all chain links into the sparse window and brings prose, source code, XML, and chemical database recurrences between 64 KiB and 256 KiB into chain reach.
+  - Enabling 1-step lazy matching (`lazyDepth = 1`) avoids taking a short match at `p` when `p + 1` starts a longer one. The first version of this change also probed the next position for matches up to 32 bytes and inserted every position of matches up to 32 bytes, which made the mixed benchmark input 19 % slower than the previous level 3 (speed gate: no more than 15 % slower than the base). Matches of 8 or more bytes are rarely beaten by a match one byte later, and the middle of a short match is mostly redundant with positions already in the chain, so `lazyLength` and `interiorInsertCap` remove that work.
+- **Trade-offs**:
+  - `hashLog = 18` and `chainLog = 18` allocate 1 MiB for `head` and 1 MiB for `chain` per worker thread (up from 512 KiB and 256 KiB), reused across blocks and jobs inside each worker.
+  - A four-byte match at a medium offset is no longer found by the chain at level 3, and a long match is less often replaced by a better one that starts a byte later; both cost ratio against a higher-effort setting (the mixed benchmark input is 1.9 % smaller than the reference and the Silesia `nci` sample 2.3 % smaller, against 3.7 % and 7.7 % for the intermediate setting), but every sample and class stays below the reference level 3 size.
+  - The speed measured on the mixed benchmark input is within 5 % of the previous level 3 (the gate allows 15 %), because the lazy lookahead, the larger tables and the deeper search all cost time that the cheaper insertion only partly returns.
+- **Alternatives rejected**:
+  - **Keeping the four-byte hash with `searchDepth = 8`, `niceLength = 24`, `lazyLength = 12`**: the same speed range but 1 to 3 points less ratio on the medical, prose, and Polish text samples, with the `mr` sample only 0.4 % below the reference.
+  - **Raising `windowLog` above 20 or enabling multi-step lazy matching (`lazyDepth = 2`) at level 3**: increases memory footprint and slows down single-block and multi-worker throughput without needed ratio gains once `LITERAL_BITS_MIN = 6.5`, `minMatch = 5`, and `chainLog = 18` are in place.
+  - **Two-pass per-block literal entropy estimation**: requires a trial LZ77 pass over every 128 KB block before scoring matches, nearly doubling parse time.
+  - **Hoisting fields and pre-filtering candidates on their first bytes without changing the search**: byte-identical output, and no measurable speed change; the time is spent in cache misses on the hash and chain tables, not in instruction count.
+- **Verified by**: `tests/zstd-job-frames.test.ts`, `tests/zstd-engine.test.ts`, `tests/zstd-level-pins.test.ts`, `tests/zstd-hostile-frames.test.ts`, `tests/zstd-throughput.perf.test.ts`, and the `compression` quality and speed parity suites across all 12 Silesia files and all 8 content classes.
+- **Revisit when**: a dedicated double-hash fast matcher (separate short-match and long-match tables without a chain array) is introduced for levels 1 to 4.
 
