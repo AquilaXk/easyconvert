@@ -341,6 +341,7 @@ describe('what a host may make the fetcher read', () => {
     let endlessClosed: Promise<number>;
     let sent = 0;
     let firstLimitedAt: number | undefined;
+    let downloadHits = 0;
     beforeAll(async () => {
       server = http.createServer((request, response) => {
         if (request.url === '/away') {
@@ -350,6 +351,14 @@ describe('what a host may make the fetcher read', () => {
           firstLimitedAt ??= Date.now();
           if (Date.now() - firstLimitedAt < 2500) response.writeHead(429, { 'retry-after': '3' }).end();
           else response.writeHead(200, { 'content-length': 4 }).end('body');
+        } else if (request.url === '/download') {
+          // A download page that answers each request with a redirect to a signed address of the file (a rate-limited front host).
+          downloadHits += 1;
+          response.writeHead(302, { location: '/signed' }).end();
+        } else if (request.url === '/signed') {
+          const range = /^bytes=(\d+)-(\d+)$/.exec(String(request.headers.range));
+          if (range === null) response.writeHead(200, { 'content-length': 10 }).end('0123456789');
+          else response.writeHead(206, { 'content-length': Number(range[2]) - Number(range[1]) + 1 }).end('0123456789'.slice(Number(range[1]), Number(range[2]) + 1));
         } else if (request.url === '/near') {
           response.writeHead(302, { location: '/body' }).end();
         } else if (request.url === '/endless') {
@@ -387,6 +396,15 @@ describe('what a host may make the fetcher read', () => {
       } finally {
         process.env.BENCH_CORPUS_RETRIES = '0';
       }
+    });
+
+    it('asks the front host of a download once and reads the ranges of one archive from the address it redirected to', async () => {
+      downloadHits = 0;
+      const url = `${base}/download`;
+      expect((await httpBytes(url, [0, 3], 100)).toString()).toBe('0123');
+      expect((await httpBytes(url, [4, 6], 100)).toString()).toBe('456');
+      expect((await httpBytes(url, [7, 9], 100)).toString()).toBe('789');
+      expect(downloadHits).toBe(1);
     });
 
     it('stops reading a body once it is longer than the size the manifest pins, without taking the rest', async () => {

@@ -271,13 +271,29 @@ export function redirectAllowed(from: URL, to: URL, extraHosts: readonly string[
   return extraHosts.some((host) => to.hostname === host || to.hostname.endsWith(`.${host}`));
 }
 
+/**
+ * Where a download that redirects led the last time, by the address it started from. Several samples are ranges of one archive, each
+ * asked for by the same address, and the front host of a download that redirects to a signed storage address rate-limits the
+ * requests (HTTP 429 after about twenty-five). The redirect is followed once and the ranges are read from where it led; an address
+ * that fails is forgotten, so the next request asks the front host again.
+ */
+const redirectedTo = new Map<string, URL>();
+
 /** The final response of a GET, following at most MAX_REDIRECTS redirects that `redirectAllowed` accepts. */
 async function fetchPinned(url: string, headers: Record<string, string>, extraHosts: readonly string[]): Promise<Response> {
   const start = new URL(url);
-  let current = start;
+  const remembered = redirectedTo.get(url);
+  let current = remembered ?? start;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const response = await fetch(current, { headers, redirect: 'manual', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
-    if (!REDIRECT_STATUSES.has(response.status)) return response;
+    if (!REDIRECT_STATUSES.has(response.status)) {
+      if (response.ok) {
+        if (current !== start) redirectedTo.set(url, current);
+      } else {
+        redirectedTo.delete(url);
+      }
+      return response;
+    }
     await response.body?.cancel();
     const location = response.headers.get('location');
     if (location === null) throw new CorpusFetchError(`${url}: HTTP ${response.status} without a location`);
