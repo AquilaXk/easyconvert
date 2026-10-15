@@ -210,7 +210,7 @@
     },
     {
       "families": ["data"],
-      "match": "^src/lib/conversions/(data[^/]*|delimited-[^/]*|parquet[^/]*|jsonl-[^/]*|table-text|chunked-output|xml-wellformed)\\.ts$"
+      "match": "^src/lib/conversions/(data[^/]*|delimited-[^/]*|parquet[^/]*|jsonl-[^/]*|table-text|chunked-output|flat-string|xml-wellformed)\\.ts$"
     }
   ]
 }
