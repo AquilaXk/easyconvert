@@ -57,6 +57,8 @@ export interface ZstdLevelParams {
   niceLength: number;
   /** Lazy evaluation lookahead: 0 greedy, 1 lazy, 2 lazy2. */
   lazyDepth: number;
+  /** A match at least this long is taken without looking ahead for a better one at the next position; defaults to `niceLength`. */
+  lazyLength?: number;
   /** Search acceleration: step grows every 2^skipStrength unmatched bytes; 0 disables it. */
   skipStrength: number;
   /** Insert every position of an accepted match into the hash chains. */
@@ -79,7 +81,7 @@ const LEVEL_PARAMS_TABLE: readonly ZstdLevelParams[] = [
   // level 2
   { windowLog: 19, hashLog: 15, chainLog: 0, searchDepth: 1, minMatch: 5, niceLength: 24, lazyDepth: 0, skipStrength: 6, insertMatchInterior: false },
   // level 3
-  { windowLog: 20, hashLog: 18, chainLog: 18, searchDepth: 8, minMatch: 4, niceLength: 32, lazyDepth: 1, skipStrength: 7, insertMatchInterior: true, interiorInsertCap: 16 },
+  { windowLog: 20, hashLog: 18, chainLog: 18, searchDepth: 6, minMatch: 5, niceLength: 24, lazyDepth: 1, lazyLength: 8, skipStrength: 7, insertMatchInterior: true, interiorInsertCap: 4 },
   // level 4
   { windowLog: 20, hashLog: 18, chainLog: 18, searchDepth: 10, minMatch: 4, niceLength: 48, lazyDepth: 1, skipStrength: 7, insertMatchInterior: true },
   // level 5
@@ -543,6 +545,7 @@ class MatchFinder {
   public parseBlock(blockStart: number, blockEnd: number, store: SequenceStore): number {
     const params = this.params;
     const lazyDepth = params.lazyDepth;
+    const lazyLength = params.lazyLength ?? params.niceLength;
     const skipStrength = params.skipStrength;
     const interiorCap = params.interiorInsertCap ?? Infinity;
     const lastProbe = Math.min(blockEnd - REP_MIN_MATCH, this.insertEnd);
@@ -570,8 +573,8 @@ class MatchFinder {
       let offset = this.bestOffset;
       let score = this.bestScore;
 
-      if (lazyDepth > 0 && len < params.niceLength) {
-        for (let depth = 0; depth < lazyDepth && p + 1 <= lastProbe && len < params.niceLength; depth++) {
+      if (lazyDepth > 0 && len < lazyLength) {
+        for (let depth = 0; depth < lazyDepth && p + 1 <= lastProbe && len < lazyLength; depth++) {
           this.catchUpTo(p + 1);
           this.findBest(p + 1, blockEnd, len - 1);
           if (this.bestLen > 0 && this.bestScore > score + this.literalBits) {
