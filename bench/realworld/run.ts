@@ -107,6 +107,7 @@ async function runShard(args: string[]): Promise<number> {
         name: `${job.file.id}`,
         format: job.file.format,
         target: job.target,
+        emptyInput: job.file.emptyInput === true,
         deadlineMs: scaledDeadlineMs(deadlineMs, pages.get(job.file.id) ?? 0),
       })),
       () => {

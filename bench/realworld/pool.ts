@@ -7,7 +7,7 @@ import { fork, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import type { JobReply, JobRequest } from './child';
 import { ocrPageBudgetMs } from '../../src/lib/conversions/ocr-work-budget';
-import { isTypedRefusal, type Verdict } from './verdict';
+import { crashDetail, isTypedRefusal, type Verdict } from './verdict';
 
 const CHILD_SCRIPT = path.join(__dirname, 'child.ts');
 const CHILD_START_TIMEOUT_MS = 120_000;
@@ -98,7 +98,7 @@ function outcomeOf(reply: JobReply): JobOutcome {
   if (reply.kind === 'ok') return { verdict: 'ok', ms: reply.ms, bytes: reply.bytes };
   if (reply.kind === 'bad-output') return { verdict: 'bad-output', ms: reply.ms, bytes: reply.bytes, detail: reply.reason };
   const verdict: Verdict = isTypedRefusal(reply.facts) ? 'refused' : 'crash';
-  return { verdict, ms: reply.ms, detail: `${reply.name}: ${reply.message}`, status: reply.facts.status };
+  return { verdict, ms: reply.ms, detail: crashDetail(reply.name, reply.message, reply.exit), status: reply.facts.status };
 }
 
 export class JobPool {

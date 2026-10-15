@@ -4,8 +4,8 @@
     {
       "id": "compression/mixed.7z->tar/throughput",
       "issue": 685,
-      "ratio": 0.89,
-      "note": "speed ratio 0.89 or below when recorded on the CI runner (previous record 0.84): ours is slower than the reference tool",
+      "ratio": 0.92,
+      "note": "speed ratio 0.92 or below when recorded on the CI runner (previous record 0.89): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.8332,
@@ -19,14 +19,19 @@
           "ratio": 0.8969,
           "at": "2026-10-09T17:25:35.334Z",
           "commit": "733cec6253e85597ed2f1d77fe1d2928aaad06b6"
+        },
+        {
+          "ratio": 0.923,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "compression/mixed.tar->7z/throughput",
       "issue": 685,
-      "ratio": 0.96,
-      "note": "speed ratio 0.96 or below when recorded on the CI runner (previous record 0.94): ours is slower than the reference tool",
+      "ratio": 0.98,
+      "note": "speed ratio 0.98 or below when recorded on the CI runner (previous record 0.96): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.7987,
@@ -44,43 +49,19 @@
           "ratio": 0.9694,
           "at": "2026-10-09T17:25:35.334Z",
           "commit": "733cec6253e85597ed2f1d77fe1d2928aaad06b6"
-        }
-      ]
-    },
-    {
-      "id": "compression/mixed.tar->zst/throughput",
-      "issue": 497,
-      "ratio": 0.6,
-      "note": "speed ratio 0.6 or below when recorded on the CI runner (previous record 0.87): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.5052,
-          "at": "2026-10-09T11:03:43.847Z"
         },
         {
-          "ratio": 0.5833,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
-        {
-          "ratio": 0.6577,
-          "at": "2026-10-09T16:06:56.945Z"
-        },
-        {
-          "ratio": 0.8731,
-          "at": "2026-10-09T16:36:46.008Z"
-        },
-        {
-          "ratio": 0.6038,
-          "at": "2026-10-09T17:25:35.334Z",
-          "commit": "733cec6253e85597ed2f1d77fe1d2928aaad06b6"
+          "ratio": 0.9829,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "compression/mixed.xz->tar/throughput",
       "issue": 685,
-      "ratio": 0.89,
-      "note": "speed ratio 0.89 or below when recorded on the CI runner (previous record 0.82): ours is slower than the reference tool",
+      "ratio": 0.94,
+      "note": "speed ratio 0.94 or below when recorded on the CI runner (previous record 0.89): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.8487,
@@ -94,14 +75,19 @@
           "ratio": 0.8942,
           "at": "2026-10-09T17:25:35.334Z",
           "commit": "733cec6253e85597ed2f1d77fe1d2928aaad06b6"
+        },
+        {
+          "ratio": 0.9408,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "image/lineart.png->avif/throughput",
       "issue": 641,
-      "ratio": 0.9,
-      "note": "speed ratio 0.9 or below when recorded on the CI runner (previous record 0.8): ours is slower than the reference tool",
+      "ratio": 0.87,
+      "note": "speed ratio 0.87 or below when recorded on the CI runner (previous record 0.9): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.8028,
@@ -116,27 +102,37 @@
           "ratio": 0.9038,
           "at": "2026-10-10T20:50:04.660Z",
           "commit": "5c546b1e4ff88f5d7321464c63baf1a889a9ad99"
+        },
+        {
+          "ratio": 0.8784,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "image/lineart.png->webp/throughput",
       "issue": 641,
-      "ratio": 0.91,
-      "note": "speed ratio 0.91 or below when recorded on the CI runner (previous record 0.42): ours is slower than the reference tool",
+      "ratio": 0.9,
+      "note": "speed ratio 0.9 or below when recorded on the CI runner (previous record 0.91): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.9113,
           "at": "2026-10-10T20:50:04.660Z",
           "commit": "5c546b1e4ff88f5d7321464c63baf1a889a9ad99"
+        },
+        {
+          "ratio": 0.9032,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "image/screenshot.png->avif/throughput",
       "issue": 641,
-      "ratio": 0.96,
-      "note": "speed ratio 0.96 or below when recorded on the CI runner (previous record 0.89): ours is slower than the reference tool",
+      "ratio": 0.95,
+      "note": "speed ratio 0.95 or below when recorded on the CI runner (previous record 0.96): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.9388,
@@ -151,56 +147,50 @@
           "ratio": 0.9611,
           "at": "2026-10-10T20:50:04.660Z",
           "commit": "5c546b1e4ff88f5d7321464c63baf1a889a9ad99"
+        },
+        {
+          "ratio": 0.9503,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "image/screenshot.png->jpg/throughput",
       "issue": 641,
-      "ratio": 0.94,
-      "note": "speed ratio 0.94 or below when recorded on the CI runner (previous record 0.34): ours is slower than the reference tool",
+      "ratio": 0.82,
+      "note": "speed ratio 0.82 or below when recorded on the CI runner (previous record 0.94): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.9491,
           "at": "2026-10-10T20:50:04.660Z",
           "commit": "5c546b1e4ff88f5d7321464c63baf1a889a9ad99"
+        },
+        {
+          "ratio": 0.8261,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "image/screenshot.png->webp/throughput",
       "issue": 641,
-      "ratio": 0.3,
-      "note": "speed ratio 0.3 or below when recorded on the CI runner (previous record 0.37): ours is slower than the reference tool",
+      "ratio": 0.95,
+      "note": "speed ratio 0.95 or below when recorded on the CI runner (previous record 0.3): ours is slower than the reference tool",
       "history": [
         {
-          "ratio": 0.2937,
-          "at": "2026-10-09T11:03:43.847Z"
-        },
-        {
-          "ratio": 0.2937,
-          "at": "2026-10-09T11:26:27.370Z"
-        },
-        {
-          "ratio": 0.3102,
-          "at": "2026-10-09T16:06:56.945Z"
-        },
-        {
-          "ratio": 0.3716,
-          "at": "2026-10-09T16:36:46.008Z"
-        },
-        {
-          "ratio": 0.3054,
-          "at": "2026-10-09T17:25:35.334Z",
-          "commit": "733cec6253e85597ed2f1d77fe1d2928aaad06b6"
+          "ratio": 0.9576,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "ocr/scan.png->pdf/throughput",
       "issue": 644,
-      "ratio": 0.82,
-      "note": "speed ratio 0.82 or below when recorded on the CI runner (previous record 0.83): ours is slower than the reference tool",
+      "ratio": 0.68,
+      "note": "speed ratio 0.68 or below when recorded on the CI runner (previous record 0.82): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.7929,
@@ -214,6 +204,11 @@
           "ratio": 0.8271,
           "at": "2026-10-09T17:25:35.334Z",
           "commit": "733cec6253e85597ed2f1d77fe1d2928aaad06b6"
+        },
+        {
+          "ratio": 0.681,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
@@ -233,21 +228,26 @@
     {
       "id": "document/pdf-text->txt/throughput",
       "issue": 672,
-      "ratio": 1.2,
+      "ratio": 1.08,
       "note": "speed ratio 1.48 on the CI runner, but the interval [0.72, 1.72] straddled 0.97 at the cap on pairs: the run-to-run variance of PDF text extraction is tracked in #672",
       "history": [
         {
           "ratio": 1.2079,
           "at": "2026-10-09T17:25:35.334Z",
           "commit": "733cec6253e85597ed2f1d77fe1d2928aaad06b6"
+        },
+        {
+          "ratio": 1.0847,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "pdf-ops/protect.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.91,
-      "note": "speed ratio 0.91 or below when recorded on the CI runner (previous record 0.89): ours is slower than the reference tool",
+      "ratio": 0.93,
+      "note": "speed ratio 0.93 or below when recorded on the CI runner (previous record 0.91): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.8975,
@@ -258,14 +258,19 @@
           "ratio": 0.9183,
           "at": "2026-10-10T03:04:37.950Z",
           "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
+        },
+        {
+          "ratio": 0.9368,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "pdf-ops/decrypt.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.89,
-      "note": "speed ratio 0.89 or below when recorded on the CI runner (previous record 0.92): ours is slower than the reference tool",
+      "ratio": 0.91,
+      "note": "speed ratio 0.91 or below when recorded on the CI runner (previous record 0.89): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.9255,
@@ -276,97 +281,119 @@
           "ratio": 0.898,
           "at": "2026-10-10T03:04:37.950Z",
           "commit": "00fe9123ccb036812e3f46edd1bb8b7795f38f28"
+        },
+        {
+          "ratio": 0.9182,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "pdf-ops/unlock.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.88,
-      "note": "speed ratio 0.88 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
+      "ratio": 0.93,
+      "note": "speed ratio 0.93 or below when recorded on the CI runner (previous record 0.88): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.8889,
           "at": "2026-10-10T09:06:00.343Z",
           "commit": "f17eeecaa1285f2bc7ac2a969d807a5b1d25f941"
+        },
+        {
+          "ratio": 0.9377,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "pdf-ops/split.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.76,
+      "ratio": 0.9,
       "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
       "history": [
         {
           "ratio": 0.7679,
           "at": "2026-10-10T22:36:40.942Z",
           "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
+        },
+        {
+          "ratio": 0.9049,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "pdf-ops/extract.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.76,
+      "ratio": 0.92,
       "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
       "history": [
         {
           "ratio": 0.7639,
           "at": "2026-10-10T22:36:40.942Z",
           "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
+        },
+        {
+          "ratio": 0.9288,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "pdf-ops/delete.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.76,
+      "ratio": 0.91,
       "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
       "history": [
         {
           "ratio": 0.7658,
           "at": "2026-10-10T22:36:40.942Z",
           "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
+        },
+        {
+          "ratio": 0.9194,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "pdf-ops/reorder.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.77,
+      "ratio": 0.93,
       "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
       "history": [
         {
           "ratio": 0.7709,
           "at": "2026-10-10T22:36:40.942Z",
           "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
+        },
+        {
+          "ratio": 0.9394,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "pdf-ops/rotate.pdf->pdf/throughput",
       "issue": 695,
-      "ratio": 0.75,
+      "ratio": 0.92,
       "note": "ours is slower than the reference tool on the CI runner; the ratio and history are written by bench:refresh-speed from the CI run that measured the row",
       "history": [
         {
           "ratio": 0.7592,
           "at": "2026-10-10T22:36:40.942Z",
           "commit": "ac11418418a62dd414efab10efd872b7b845ac5a"
-        }
-      ]
-    },
-    {
-      "id": "video/clip.mp4->hevc/throughput",
-      "issue": 643,
-      "ratio": 0.97,
-      "note": "speed ratio 0.97 or below when recorded on the CI runner (previous record none): ours is slower than the reference tool",
-      "history": [
+        },
         {
-          "ratio": 0.9741,
-          "at": "2026-10-10T05:52:36.145Z",
-          "commit": "467616a13794421adc9d744e38fd288235201e5a"
+          "ratio": 0.9236,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
@@ -399,130 +426,180 @@
     {
       "id": "compression/mixed.tar->zip/throughput",
       "issue": 685,
-      "ratio": 0.26,
-      "note": "speed ratio 0.26 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "ratio": 0.25,
+      "note": "speed ratio 0.25 or below when recorded on the CI runner (previous record 0.26): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.2631,
           "at": "2026-10-11T02:07:19.470Z",
           "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        },
+        {
+          "ratio": 0.2565,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "compression/mixed.tar->gz/throughput",
       "issue": 685,
-      "ratio": 0.26,
-      "note": "speed ratio 0.26 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "ratio": 0.25,
+      "note": "speed ratio 0.25 or below when recorded on the CI runner (previous record 0.26): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.2617,
           "at": "2026-10-11T02:07:19.470Z",
           "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        },
+        {
+          "ratio": 0.2576,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "compression/mixed.tar->tar.bz2/throughput",
       "issue": 685,
-      "ratio": 0.46,
-      "note": "speed ratio 0.46 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "ratio": 0.51,
+      "note": "speed ratio 0.51 or below when recorded on the CI runner (previous record 0.46): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.4676,
           "at": "2026-10-11T02:07:19.470Z",
           "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        },
+        {
+          "ratio": 0.5118,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "compression/mixed.zip->tar/throughput",
       "issue": 685,
-      "ratio": 0.32,
-      "note": "speed ratio 0.32 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "ratio": 0.33,
+      "note": "speed ratio 0.33 or below when recorded on the CI runner (previous record 0.32): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.3229,
           "at": "2026-10-11T02:07:19.470Z",
           "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        },
+        {
+          "ratio": 0.3373,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "compression/mixed.gz->tar/throughput",
       "issue": 685,
-      "ratio": 0.75,
-      "note": "speed ratio 0.75 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "ratio": 0.74,
+      "note": "speed ratio 0.74 or below when recorded on the CI runner (previous record 0.75): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.7511,
           "at": "2026-10-11T02:07:19.470Z",
           "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        },
+        {
+          "ratio": 0.7436,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "compression/mixed.rar->tar/throughput",
       "issue": 685,
-      "ratio": 0.28,
-      "note": "speed ratio 0.28 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "ratio": 0.3,
+      "note": "speed ratio 0.3 or below when recorded on the CI runner (previous record 0.28): ours is slower than the reference tool",
       "history": [
         {
           "ratio": 0.2821,
           "at": "2026-10-11T02:07:19.470Z",
           "commit": "f496db2500ddd4416beb55634b3be81d6fc47bb5"
+        },
+        {
+          "ratio": 0.3031,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "raw/dng->gif/throughput",
       "issue": 686,
-      "ratio": 0.7,
+      "ratio": 0.84,
       "note": "ours is slower than the reference tool: the palette search of the in-process quantizer takes longer than the reference's quantizer (the LZW coder is no longer the cost)",
       "history": [
         {
           "ratio": 0.7061,
           "at": "2026-10-11T03:10:11.413Z",
           "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        },
+        {
+          "ratio": 0.8493,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "raw/arw->gif/throughput",
       "issue": 686,
-      "ratio": 0.88,
+      "ratio": 0.91,
       "note": "ours is slower than the reference tool: the palette search of the in-process quantizer takes longer than the reference's quantizer (the LZW coder is no longer the cost)",
       "history": [
         {
           "ratio": 0.8826,
           "at": "2026-10-11T03:10:11.413Z",
           "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        },
+        {
+          "ratio": 0.9179,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "vector/shapes.svg->pdf/throughput",
       "issue": 735,
-      "ratio": 0.89,
+      "ratio": 0.93,
       "note": "ours is slower than the reference tool: the SVG is sanitised and the renderer starts in the sandbox, where the reference starts the renderer alone",
       "history": [
         {
           "ratio": 0.8957,
           "at": "2026-10-11T03:10:11.413Z",
           "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        },
+        {
+          "ratio": 0.9319,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "vector/shapes.eps->png/throughput",
       "issue": 735,
-      "ratio": 0.49,
+      "ratio": 0.46,
       "note": "ours is slower than the reference tool: the page path starts the PostScript interpreter and then the PDF page tool, where the reference starts one",
       "history": [
         {
           "ratio": 0.4908,
           "at": "2026-10-11T03:10:11.413Z",
           "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        },
+        {
+          "ratio": 0.4681,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
@@ -536,19 +613,29 @@
           "ratio": 0.8961,
           "at": "2026-10-11T03:10:11.413Z",
           "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        },
+        {
+          "ratio": 0.8979,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
     {
       "id": "vector/shapes.ai->png/throughput",
       "issue": 735,
-      "ratio": 0.62,
+      "ratio": 0.6,
       "note": "ours is slower than the reference tool: the page path starts the PDF page tool in the sandbox and encodes the picture, where the reference starts the page tool alone",
       "history": [
         {
           "ratio": 0.626,
           "at": "2026-10-11T03:10:11.413Z",
           "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        },
+        {
+          "ratio": 0.6031,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
@@ -562,6 +649,11 @@
           "ratio": 0.9647,
           "at": "2026-10-11T03:10:11.413Z",
           "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        },
+        {
+          "ratio": 0.9675,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     },
@@ -575,6 +667,11 @@
           "ratio": 0.9529,
           "at": "2026-10-11T03:10:11.413Z",
           "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
+        },
+        {
+          "ratio": 0.9581,
+          "at": "2026-10-15T08:12:52.765Z",
+          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
     }
