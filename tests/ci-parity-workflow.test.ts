@@ -238,13 +238,30 @@ describe('the public benchmark samples in the workflows', () => {
   const nightlyQuality = nightly.jobs['bench-parity-quality'];
   const nightlySpeed = nightly.jobs['bench-parity-speed'];
 
-  it('caches one directory per family, keyed by the hash of the manifest that pins the files, and only for the families a job names', () => {
+  it('restores one directory per family, from the newest cache of the manifest digest, and only for the families a job names', () => {
     expect(action.runs.steps.map((step) => step.with?.path)).toEqual(SAMPLE_FAMILIES.map((family) => `.bench-corpora/${family}`));
     for (const step of action.runs.steps) {
       expect(String(step.with?.key)).toContain("hashFiles('bench/corpus/remote-manifest.json')");
-      expect(step.uses).toMatch(/^actions\/cache@[0-9a-f]{40}$/);
+      expect(String(step.with?.['restore-keys'])).toContain("hashFiles('bench/corpus/remote-manifest.json')");
+      expect(step.uses).toMatch(/^actions\/cache\/restore@[0-9a-f]{40}$/);
     }
     expect(action.runs.steps.map((step) => step.if)).toEqual(SAMPLE_FAMILIES.map((family) => `contains(format(',{0},', inputs.families), ',${family},')`));
+  });
+
+  it('is saved by the nightly parity jobs even when they fail, under a key of its own for each run', () => {
+    const save = parse(read('.github', 'actions', 'bench-corpora-save', 'action.yml')) as { runs: { steps: Step[] } };
+    expect(save.runs.steps.map((step) => step.with?.path)).toEqual(SAMPLE_FAMILIES.map((family) => `.bench-corpora/${family}`));
+    for (const step of save.runs.steps) {
+      expect(step.uses).toMatch(/^actions\/cache\/save@[0-9a-f]{40}$/);
+      expect(String(step.with?.key)).toContain('${{ github.run_id }}');
+      expect(String(step.if)).toMatch(/^always\(\) && contains\(/);
+    }
+    for (const job of [nightly.jobs['bench-parity-quality'], nightly.jobs['bench-parity-speed']]) {
+      const saved = job.steps.find((step) => step.uses === './.github/actions/bench-corpora-save');
+      expect(saved?.if).toBe('always()');
+      expect(saved?.with?.families).toBe(SAMPLE_FAMILIES.join(','));
+      expect(job.steps.indexOf(saved as Step)).toBeGreaterThan(job.steps.findIndex((step) => step.uses === './.github/actions/bench-corpora'));
+    }
   });
 
   it('is restored before the quick quality run, for the families of the change', () => {

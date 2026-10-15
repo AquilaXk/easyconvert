@@ -31,6 +31,12 @@ const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 /** Attempts after the first one; BENCH_CORPUS_RETRIES lowers it for a test that fetches from nowhere. */
 const DEFAULT_RETRIES = 3;
 const BACKOFF_BASE_MS = 2000;
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_UNAVAILABLE = 503;
+/** A rate limit that names no time is a window of seconds to minutes; the pause that fits it. */
+const RATE_LIMIT_DEFAULT_WAIT_MS = 30_000;
+/** The longest pause a host may ask for; a longer one is a failed fetch, which the cache of the verified samples lets the next run resume. */
+const RATE_LIMIT_MAX_WAIT_MS = 120_000;
 const REQUEST_TIMEOUT_MS = 300_000;
 const HTTP_OK = 200;
 const HTTP_PARTIAL = 206;
@@ -127,6 +133,17 @@ export class CorpusError extends BenchError {}
 export class CorpusDigestError extends CorpusError {}
 /** A host did not deliver a sample (network, status, size). */
 export class CorpusFetchError extends CorpusError {}
+
+/** A host that refused a request because of its rate (HTTP 429) or load (HTTP 503), with the `Retry-After` it sent, if any. */
+class CorpusBusyHostError extends CorpusFetchError {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfter: string | null
+  ) {
+    super(message);
+  }
+}
 
 export const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
@@ -295,7 +312,11 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
   if (range) headers.range = `bytes=${range[0]}-${range[1]}`;
   const response = await fetchPinned(url, headers, extraHosts);
   const expected = range ? HTTP_PARTIAL : HTTP_OK;
-  if (response.status !== expected) throw new CorpusFetchError(`${url}: HTTP ${response.status}, expected ${expected}`);
+  if (response.status !== expected) {
+    const message = `${url}: HTTP ${response.status}, expected ${expected}`;
+    if (response.status === HTTP_TOO_MANY_REQUESTS || response.status === HTTP_UNAVAILABLE) throw new CorpusBusyHostError(message, response.status, response.headers.get('retry-after'));
+    throw new CorpusFetchError(message);
+  }
   const declared = Number(response.headers.get('content-length') ?? '0');
   if (declared > maxBytes) {
     await response.body?.cancel();
@@ -304,6 +325,19 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
   const body = await readCapped(url, response, maxBytes);
   if (range && body.length !== range[1] - range[0] + 1) throw new CorpusFetchError(`${url}: the range returned ${body.length} bytes, expected ${range[1] - range[0] + 1}`);
   return body;
+}
+
+/**
+ * The pause before retry number `tryNumber` + 1. It doubles with the attempt; a host that refuses for its rate or load and names
+ * the seconds to wait (`Retry-After`) is waited for that long, up to RATE_LIMIT_MAX_WAIT_MS, and a rate limit that names no time
+ * gets RATE_LIMIT_DEFAULT_WAIT_MS. The pause is never shorter than the ordinary one.
+ */
+export function retryDelayMs(tryNumber: number, status: number | null, retryAfter: string | null): number {
+  const ordinary = BACKOFF_BASE_MS * 2 ** tryNumber;
+  const seconds = retryAfter !== null && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null;
+  if (seconds !== null && (status === HTTP_TOO_MANY_REQUESTS || status === HTTP_UNAVAILABLE)) return Math.max(ordinary, Math.min(seconds * 1000, RATE_LIMIT_MAX_WAIT_MS));
+  if (status === HTTP_TOO_MANY_REQUESTS) return Math.max(ordinary, RATE_LIMIT_DEFAULT_WAIT_MS);
+  return ordinary;
 }
 
 /** The body of `url`, or of the inclusive byte range of it, retried with a pause on network and server errors. */
@@ -315,7 +349,7 @@ export async function httpBytes(url: string, range: [number, number] | null, max
       return await attempt(url, range, maxBytes, extraHosts);
     } catch (error) {
       last = error;
-      if (tryNumber < retries) await sleep(BACKOFF_BASE_MS * 2 ** tryNumber);
+      if (tryNumber < retries) await sleep(error instanceof CorpusBusyHostError ? retryDelayMs(tryNumber, error.status, error.retryAfter) : retryDelayMs(tryNumber, null, null));
     }
   }
   throw new CorpusFetchError(`${url}: failed after ${retries + 1} attempts: ${last instanceof Error ? last.message : String(last)}`);
