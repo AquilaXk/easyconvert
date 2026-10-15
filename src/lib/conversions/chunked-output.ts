@@ -11,7 +11,6 @@ export interface ChunkedOutputOptions {
   chunkBytes?: number;
   maxBytes?: number;
 }
-const UTF8_MAX_BYTES_PER_UNIT = 3;
 
 /**
  * Output of a direct table route, collected in chunks of a few MiB instead of one string or one buffer sized in
@@ -44,9 +43,9 @@ export class ChunkedOutput {
 
   /** Appends a string as UTF-8. */
   writeUtf8(text: string): void {
-    const room = text.length * UTF8_MAX_BYTES_PER_UNIT;
-    this.reserve(room);
-    this.used += this.current.write(text, this.used, room, 'utf8');
+    const bytes = Buffer.byteLength(text, 'utf8');
+    this.reserve(bytes);
+    this.used += this.current.write(text, this.used, bytes, 'utf8');
   }
 
   /** The bytes written so far, as one buffer. */

@@ -1,4 +1,9 @@
-import { DelimitedBytesUnsupported, DelimitedByteScanner, type CellChunk } from './delimited-bytes';
+import {
+  DelimitedBytesUnsupported,
+  DelimitedByteScanner,
+  releaseChunkScratch,
+  type CellChunk,
+} from './delimited-bytes';
 import { compressPage } from './parquet-codec';
 import {
   ColumnSchema,
@@ -96,6 +101,18 @@ function compareRanges(data: Uint8Array, a: number, aLength: number, b: number, 
 }
 
 let sharedGroupScratch: GroupScratch | null = null;
+/** Rows up to which the group scratch stays cached between conversions; a larger one is released after use. */
+const RETAINED_SCRATCH_ROWS = 4096;
+
+/** Drops group scratch that a large row group grew past {@link RETAINED_SCRATCH_ROWS}, so it is not held until exit. */
+function releaseGroupScratch(): void {
+  if (sharedGroupScratch && sharedGroupScratch.indices.length > RETAINED_SCRATCH_ROWS) sharedGroupScratch = null;
+}
+
+/** Rows of the cached group scratch (0 when none); tests use it to check that the scratch is released. */
+export function groupScratchRows(): number {
+  return sharedGroupScratch ? sharedGroupScratch.indices.length : 0;
+}
 
 function scratchFor(rows: number): GroupScratch {
   let slots = MIN_HASH_SLOTS;
@@ -586,26 +603,31 @@ export function encodeParquetFromScanner(scanner: DelimitedByteScanner, options:
   const rowGroups: EncodedRowGroup[] = [];
   const pageSink = sharedPageSink;
   let totalRows = 0;
-  for (;;) {
-    const chunk = scanner.nextChunk(resolved.rowGroupMaxRows, resolved.rowGroupMaxBytes);
-    if (chunk === null) break;
-    totalRows += chunk.rows;
-    if (totalRows > PARQUET_MAX_ROWS || totalRows * width > PARQUET_MAX_CELLS) {
-      throw new DelimitedBytesUnsupported('a table beyond the Parquet row and cell limits');
-    }
-    const scratch = scratchFor(chunk.rows);
-    const group: EncodedRowGroup = { chunks: [], numRows: chunk.rows, startOffset: offset, totalUncompressed: 0, totalCompressed: 0 };
-    for (let column = 0; column < width; column++) {
-      const encoded = encodeTextColumnChunk(chunk, width, column, schemas[column], offset, resolved, scratch, pageSink);
-      for (const part of encoded.parts) {
-        body.push(part);
-        offset += part.length;
+  try {
+    for (;;) {
+      const chunk = scanner.nextChunk(resolved.rowGroupMaxRows, resolved.rowGroupMaxBytes);
+      if (chunk === null) break;
+      totalRows += chunk.rows;
+      if (totalRows > PARQUET_MAX_ROWS || totalRows * width > PARQUET_MAX_CELLS) {
+        throw new DelimitedBytesUnsupported('a table beyond the Parquet row and cell limits');
       }
-      group.chunks.push(encoded);
-      group.totalUncompressed += encoded.totalUncompressed;
-      group.totalCompressed += encoded.totalCompressed;
+      const scratch = scratchFor(chunk.rows);
+      const group: EncodedRowGroup = { chunks: [], numRows: chunk.rows, startOffset: offset, totalUncompressed: 0, totalCompressed: 0 };
+      for (let column = 0; column < width; column++) {
+        const encoded = encodeTextColumnChunk(chunk, width, column, schemas[column], offset, resolved, scratch, pageSink);
+        for (const part of encoded.parts) {
+          body.push(part);
+          offset += part.length;
+        }
+        group.chunks.push(encoded);
+        group.totalUncompressed += encoded.totalUncompressed;
+        group.totalCompressed += encoded.totalCompressed;
+      }
+      rowGroups.push(group);
     }
-    rowGroups.push(group);
+  } finally {
+    releaseChunkScratch();
+    releaseGroupScratch();
   }
   if (totalRows === 0) throw new DelimitedBytesUnsupported('a table without records');
   return finishParquetFile(body, schemas, rowGroups, totalRows);

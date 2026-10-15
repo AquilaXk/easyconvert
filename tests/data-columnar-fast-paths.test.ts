@@ -7,7 +7,9 @@ import {
   parquetToDelimited,
   parquetToJson,
 } from '../src/lib/conversions/data-fast-paths';
-import { DelimitedByteScanner, DelimitedBytesUnsupported } from '../src/lib/conversions/delimited-bytes';
+import { chunkScratchLength, DelimitedByteScanner, DelimitedBytesUnsupported } from '../src/lib/conversions/delimited-bytes';
+import { groupScratchRows } from '../src/lib/conversions/parquet-text-writer';
+import { ChunkedOutput } from '../src/lib/conversions/chunked-output';
 import { parseDelimitedRecords } from '../src/lib/conversions/delimited-detect';
 import { convertData } from '../src/lib/conversions/data';
 import { decodeParquet, encodeParquet, type ParquetWriteOptions } from '../src/lib/conversions/parquet';
@@ -258,8 +260,8 @@ describe('Parquet to delimited text and JSON, direct routes', () => {
           };
           const directBuf = parquetToDelimited(parquetBytes, target, opts);
           expect(directBuf).not.toBeNull();
-          const viaConvert = await convertData(parquetBytes, 'parquet', target, opts, 'table.parquet');
-          expect((directBuf as Buffer).equals(viaConvert.buffer)).toBe(true);
+          const general = await generalTable(parquetBytes, target, opts);
+          expect((directBuf as Buffer).equals(general)).toBe(true);
         }
       }
     }
@@ -366,7 +368,7 @@ describe('Parquet to delimited text and JSON, direct routes', () => {
 });
 
 describe('JSON Lines to delimited text, direct route', () => {
-  it('writes the exact CSV and TSV bytes for flat JSON Lines with escapes, big integers, and formulas', () => {
+  it('writes the exact CSV and TSV bytes for flat JSON Lines with escapes, big integers, and formulas', async () => {
     const lines = [
       '{"id":1,"big":90071992547409931234567890,"negZero":-0,"float":153.375,"active":true,"note":"say \\"hi\\"\\ntwo\\tlines","formula":"=SUM(A1)","grouped":"-566,000","empty":null}',
       '   ',
@@ -381,13 +383,13 @@ describe('JSON Lines to delimited text, direct route', () => {
     expect(csvDirect).not.toBeNull();
     const text = (csvDirect as Buffer).toString('utf8');
     expect(text.startsWith('\uFEFFid,big,negZero,float,active,note,formula,grouped,empty\r\n')).toBe(true);
-    expect(text).toContain('90071992547409931234567890');
-    expect(text).toContain('-90071992547409931234567890');
-    expect(parsed).toHaveLength(3);
+    const general = (target: 'csv' | 'tsv') =>
+      convertData(Buffer.from(stringifyJsonLossless(parsed as never, 2), 'utf8'), 'json', target, {}, 'table.json');
+    expect((csvDirect as Buffer).equals((await general('csv')).buffer)).toBe(true);
 
     const tsvDirect = jsonLinesToDelimited(input, 'jsonl', 'tsv', {});
     expect(tsvDirect).not.toBeNull();
-    expect((tsvDirect as Buffer).toString('utf8').startsWith('id\tbig\tnegZero\t')).toBe(true);
+    expect((tsvDirect as Buffer).equals((await general('tsv')).buffer)).toBe(true);
   });
 
   it('handles rows that omit keys or reorder keys known from the first record', () => {
@@ -438,3 +440,55 @@ describe('JSON Lines to delimited text, direct route', () => {
   }
 });
 
+
+describe('scratch space of the delimited text to Parquet route', () => {
+  it('returns to its initial size after a large conversion and after a failed one', () => {
+    const initialChunk = chunkScratchLength();
+    expect(groupScratchRows()).toBeLessThanOrEqual(4096);
+    const rows = ['a,b,c,d'];
+    for (let i = 0; i < 30000; i++) rows.push(`${i},v${i % 97},w${i},${i * 7}`);
+    const big = Buffer.from(`${rows.join('\n')}\n`, 'utf8');
+    const parquet = delimitedToParquet(big, 'csv', {});
+    expect(parquet).not.toBeNull();
+    expect(decodeParquet(parquet as Buffer)).toHaveLength(30000);
+    expect(chunkScratchLength()).toBe(initialChunk);
+    expect(groupScratchRows()).toBeLessThanOrEqual(4096);
+
+    const oversized = Buffer.from(`${rows.join('\n')}\n`, 'utf8');
+    expect(() => delimitedToParquet(oversized, 'csv', {}, { rowGroupMaxRows: 0 })).toThrow();
+    expect(chunkScratchLength()).toBe(initialChunk);
+    expect(groupScratchRows()).toBeLessThanOrEqual(4096);
+  });
+});
+
+describe('ChunkedOutput size accounting', () => {
+  it('accepts a write that fills maxBytes exactly and rejects one byte more', () => {
+    const exact = new ChunkedOutput({ maxBytes: 10 });
+    exact.writeUtf8('é'.repeat(5));
+    expect(exact.length).toBe(10);
+    expect(exact.toBuffer().toString('utf8')).toBe('é'.repeat(5));
+
+    const over = new ChunkedOutput({ maxBytes: 10 });
+    expect(() => over.writeUtf8('é'.repeat(5) + 'a')).toThrow(DataLimitExceededError);
+    const overByMultibyte = new ChunkedOutput({ maxBytes: 9 });
+    expect(() => overByMultibyte.writeUtf8('é'.repeat(5))).toThrow(DataLimitExceededError);
+  });
+
+  it('counts a three-byte character as three bytes, not as the worst case per UTF-16 unit', () => {
+    const output = new ChunkedOutput({ maxBytes: 6 });
+    output.writeUtf8('日本');
+    expect(output.length).toBe(6);
+    expect(output.toBuffer().equals(Buffer.from('日本', 'utf8'))).toBe(true);
+  });
+
+  it('does not keep a backing buffer larger than the bytes written beyond one chunk', () => {
+    const chunkBytes = 64 * 1024;
+    const output = new ChunkedOutput({ chunkBytes, expectedBytes: chunkBytes });
+    const text = 'x'.repeat(200 * 1024);
+    output.writeUtf8(text);
+    output.writeUtf8('日本語');
+    const joined = output.toBuffer();
+    expect(joined.length).toBe(text.length + 9);
+    expect(joined.buffer.byteLength - joined.length).toBeLessThan(chunkBytes);
+  });
+});

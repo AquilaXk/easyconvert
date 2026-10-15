@@ -170,6 +170,18 @@ const sharedHeaderLengths = new Int32Array(PARQUET_MAX_COLUMNS + 1);
 let sharedChunkStarts = new Int32Array(INITIAL_CHUNK_ROWS * 16);
 let sharedChunkLengths = new Int32Array(INITIAL_CHUNK_ROWS * 16);
 
+/** Gives back cell-offset scratch that a large row group grew past its initial size, so it is not held until exit. */
+export function releaseChunkScratch(): void {
+  if (sharedChunkStarts.length <= INITIAL_CHUNK_ROWS * 16) return;
+  sharedChunkStarts = new Int32Array(INITIAL_CHUNK_ROWS * 16);
+  sharedChunkLengths = new Int32Array(INITIAL_CHUNK_ROWS * 16);
+}
+
+/** Entries of the shared cell-offset scratch; tests use it to check that {@link releaseChunkScratch} shrinks it. */
+export function chunkScratchLength(): number {
+  return sharedChunkStarts.length;
+}
+
 export class DelimitedByteScanner {
   /** The input, or a private copy of it once a cell with doubled quotes had to be collapsed in place. */
   data: Buffer;
