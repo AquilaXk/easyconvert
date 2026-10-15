@@ -65,6 +65,7 @@ describe.skipIf(toolsMissing)('Word symbol-font characters in real corpus files'
       `${id}: maps every symbol character, converts to PDF without warnings and keeps the words the office suite reads`,
       async (ctx) => {
         const doc = await corpusFile(id);
+        // skip-ok: corpusFile returns null only outside ORACLE_STRICT_MODE; under strict mode it throws.
         if (!doc) return ctx.skip();
         const text = extractTextFromDoc(doc);
         expect(text).toMatch(expected);

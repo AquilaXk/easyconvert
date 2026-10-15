@@ -241,6 +241,70 @@ describe('Word 97-2003 malformed character formatting', () => {
     }
   });
 
+  /** Replaces the PlcBteChpx with `pages` entries over [fc, fc] that all address FKP page `pageNumber`. */
+  function repointPlc(parts: WordBinaryParts, pageNumbers: number[], fcs: number[]): void {
+    const plc = Buffer.alloc(4 + pageNumbers.length * 8);
+    fcs.forEach((fc, i) => plc.writeUInt32LE(fc, i * 4));
+    pageNumbers.forEach((pn, i) => plc.writeUInt32LE(pn, (pageNumbers.length + 1) * 4 + i * 4));
+    parts.word.writeUInt32LE(parts.table.length, parts.layout.pairOffset(12));
+    parts.word.writeUInt32LE(plc.length, parts.layout.pairOffset(12) + 4);
+    parts.table = Buffer.concat([parts.table, plc]);
+  }
+
+  /** Rewrites FKP page 0 as `count` zero-width runs at one offset, all with a Chpx that sets the ASCII font. */
+  function zeroWidthPage(parts: WordBinaryParts, count: number, fc: number): number {
+    const pageAt = parts.layout.fkpPages[0];
+    const page = parts.word.subarray(pageAt, pageAt + 512);
+    page.fill(0);
+    for (let i = 0; i <= count; i++) page.writeUInt32LE(fc, i * 4);
+    const chpxAt = 504;
+    for (let i = 0; i < count; i++) page[(count + 1) * 4 + i] = chpxAt / 2;
+    page[chpxAt] = 4;
+    page.writeUInt16LE(0x4a4f, chpxAt + 1);
+    page.writeUInt16LE(F_WINGDINGS, chpxAt + 3);
+    page[511] = count;
+    return pageAt / 512;
+  }
+
+  it('refuses a PlcBteChpx that addresses the same FKP page twice', () => {
+    const parts = valid();
+    const pn = parts.layout.fkpPages[0] / 512;
+    repointPlc(parts, [pn, pn], [0, 0x10000, 0x20000]);
+    expectRefused(parts, /FKP page \d+ is addressed more than once/);
+  });
+
+  it('refuses amplified zero-width runs: many entries of one FKP page full of runs that cover no character', () => {
+    const parts = valid();
+    const pn = zeroWidthPage(parts, 90, 0x10000);
+    const pages = 4096;
+    repointPlc(parts, new Array<number>(pages).fill(pn), new Array<number>(pages + 1).fill(0x10000));
+    expectRefused(parts, /addressed more than once/);
+  });
+
+  it('does not count zero-width runs against the run limit', () => {
+    const parts = valid();
+    const pn = zeroWidthPage(parts, 90, 0x10000);
+    repointPlc(parts, [pn], [0, 0x10000]);
+    expect(extractTextFromDoc(wrap(parts))).toBe('a\uFFFDb');
+  });
+
+  it('refuses more character runs than the text and pages can hold', () => {
+    const parts = valid();
+    const count = 90;
+    const pageAt = parts.layout.fkpPages[0];
+    const page = parts.word.subarray(pageAt, pageAt + 512);
+    page.fill(0);
+    for (let i = 0; i <= count; i++) page.writeUInt32LE(0x10000 + i, i * 4);
+    const chpxAt = 504;
+    for (let i = 0; i < count; i++) page[(count + 1) * 4 + i] = chpxAt / 2;
+    page[chpxAt] = 4;
+    page.writeUInt16LE(0x4a4f, chpxAt + 1);
+    page.writeUInt16LE(F_WINGDINGS, chpxAt + 3);
+    page[511] = count;
+    repointPlc(parts, [pageAt / 512], [0, 0x10000 + count]);
+    expectRefused(parts, /more character runs than its text can hold/);
+  });
+
   it('refuses FKP file offsets that are not in ascending order', () => {
     const parts = valid();
     const page = parts.layout.fkpPages[0];

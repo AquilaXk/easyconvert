@@ -36,6 +36,8 @@ const FIB_CSW_VALUE = 14;
 const FIB_CSLW_OFFSET = 62;
 const FIB_CSLW_VALUE = 22;
 const FIB_CCP_TEXT_OFFSET = 76;
+// ccpFtn, ccpHdd, (reserved), ccpAtn, ccpEdn, ccpTxbx, ccpHdrTxbx follow ccpText, 4 bytes each.
+const FIB_CCP_OTHER_STORIES_OFFSETS = [80, 84, 92, 96, 100, 104];
 const FIB_CB_RG_FC_LCB_OFFSET = 152;
 const FIB_RG_FC_LCB_OFFSET = 154;
 const FC_LCB_PAIR_BYTES = 8;
@@ -125,7 +127,12 @@ function readFib(word: CheckedReader): FibInfo {
     tableStream: flags & FIB_FLAG_WHICH_TABLE_STREAM ? '1Table' : '0Table',
     fcClx: word.u32(clxAt),
     lcbClx: word.u32(clxAt + CP_BYTES),
-    formatting: { stsh: pairAt(FC_LCB_STSH_INDEX), plcBteChpx: pairAt(FC_LCB_PLC_BTE_CHPX_INDEX), sttbfFfn: pairAt(FC_LCB_STTB_FFN_INDEX) },
+    formatting: {
+      stsh: pairAt(FC_LCB_STSH_INDEX),
+      plcBteChpx: pairAt(FC_LCB_PLC_BTE_CHPX_INDEX),
+      sttbfFfn: pairAt(FC_LCB_STTB_FFN_INDEX),
+      textChars: FIB_CCP_OTHER_STORIES_OFFSETS.reduce((sum, at) => sum + word.u32(at), word.u32(FIB_CCP_TEXT_OFFSET)),
+    },
   };
 }
 

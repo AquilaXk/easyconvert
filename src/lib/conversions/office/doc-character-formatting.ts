@@ -19,6 +19,8 @@ const LABEL = 'Word document';
 export const DOC_MAX_CHPX_PAGES = 32_768;
 /** Most runs one Chpx FKP page holds: 5 bytes of offsets per run (and 4 for the end) in the 511 bytes before the count. */
 export const DOC_MAX_CHARACTER_RUNS_PER_PAGE = 101;
+/** Most font-setting runs one document may carry, whatever its text length claims. */
+export const DOC_MAX_CHARACTER_RUNS = 1_048_576;
 
 const FKP_BYTES = 512;
 const FKP_RUN_COUNT_OFFSET = FKP_BYTES - 1;
@@ -79,6 +81,8 @@ export interface CharacterFormattingLocations {
   plcBteChpx: TableRange;
   sttbfFfn: TableRange;
   stsh: TableRange;
+  /** Characters of all stories of the document (the FIB ccp fields): a run covers at least one of them. */
+  textChars: number;
 }
 
 /** A Symbol field character: the font name (undefined when the font index names no font) and the code in it. */
@@ -146,7 +150,7 @@ function setsFont({ slots, symbol }: Pick<CharacterRun, 'slots' | 'symbol'>): bo
 }
 
 /** Reads the runs of one Chpx FKP page that set a font into `runs`; returns the file offset where the page ended. */
-function readFkpPage(word: Buffer, pageNumber: number, previousEnd: number, runs: CharacterRun[]): number {
+function readFkpPage(word: Buffer, pageNumber: number, previousEnd: number, runs: CharacterRun[], maxRuns: number): number {
   const pageStart = pageNumber * FKP_BYTES;
   if (pageStart + FKP_BYTES > word.length) refuse(`the FKP page ${pageNumber} lies outside the WordDocument stream.`);
   const page = word.subarray(pageStart, pageStart + FKP_BYTES);
@@ -169,12 +173,14 @@ function readFkpPage(word: Buffer, pageNumber: number, previousEnd: number, runs
     const length = page[chpxAt];
     if (chpxAt + 1 + length > FKP_RUN_COUNT_OFFSET) refuse(`the Chpx at offset ${chpxAt} of the FKP page ${pageNumber} runs past the end of the page.`);
     const properties = readGrpprl(page.subarray(chpxAt + 1, chpxAt + 1 + length));
-    if (setsFont(properties)) runs.push({ fcStart, fcEnd, ...properties });
+    if (fcEnd === fcStart || !setsFont(properties)) continue;
+    if (runs.length >= maxRuns) refuse(`the document has more character runs than its text can hold (limit ${maxRuns}).`);
+    runs.push({ fcStart, fcEnd, ...properties });
   }
   return end;
 }
 
-function readRuns(word: Buffer, table: CheckedReader, range: TableRange): CharacterRun[] {
+function readRuns(word: Buffer, table: CheckedReader, range: TableRange, textChars: number): CharacterRun[] {
   if (range.lcb === 0) return [];
   assertInTable(table, range, 'character formatting table');
   const entryBytes = FC_BYTES + PN_BYTES;
@@ -183,10 +189,16 @@ function readRuns(word: Buffer, table: CheckedReader, range: TableRange): Charac
   if (pages > DOC_MAX_CHPX_PAGES) refuse(`the character formatting table addresses ${pages} pages, more than the ${DOC_MAX_CHPX_PAGES} limit.`);
   const plc = table.slice(range.fc, range.lcb);
   const pnBase = (pages + 1) * FC_BYTES;
+  // A run covers at least one character and file offsets ascend strictly, so runs cannot outnumber characters plus pages.
+  const maxRuns = Math.min(textChars + pages, DOC_MAX_CHARACTER_RUNS);
   const runs: CharacterRun[] = [];
+  const seenPages = new Set<number>();
   let end = 0;
   for (let i = 0; i < pages; i++) {
-    end = readFkpPage(word, plc.readUInt32LE(pnBase + i * PN_BYTES) & PN_MASK, end, runs);
+    const pageNumber = plc.readUInt32LE(pnBase + i * PN_BYTES) & PN_MASK;
+    if (seenPages.has(pageNumber)) refuse(`the FKP page ${pageNumber} is addressed more than once.`);
+    seenPages.add(pageNumber);
+    end = readFkpPage(word, pageNumber, end, runs, maxRuns);
   }
   return runs;
 }
@@ -233,7 +245,7 @@ export class CharacterFormatting {
   static read(word: Buffer, table: CheckedReader, locations: CharacterFormattingLocations): CharacterFormatting {
     const fontNames = readFontNames(table, locations.sttbfFfn);
     const defaults = readStyleSheetFonts(table, locations.stsh);
-    return new CharacterFormatting(fontNames, defaults, readRuns(word, table, locations.plcBteChpx));
+    return new CharacterFormatting(fontNames, defaults, readRuns(word, table, locations.plcBteChpx, locations.textChars));
   }
 
   /** Whether any run carries a Symbol field character, so the placeholders of the text are worth looking up. */
