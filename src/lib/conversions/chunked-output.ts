@@ -60,8 +60,10 @@ export class ChunkedOutput {
       throw new DataLimitExceededError(`The converted table exceeds ${this.maxBytes} bytes.`);
     }
     if (bytes <= this.current.length - this.used) return;
+    // Chunks double in size up to the full chunk size, so a small table is a few small buffers, not one of 4 MiB.
+    const next = Math.min(this.chunkBytes, this.current.length * 2);
     this.seal();
-    this.current = Buffer.allocUnsafe(Math.max(this.chunkBytes, bytes));
+    this.current = Buffer.allocUnsafe(Math.max(next, bytes, MIN_FIRST_CHUNK_BYTES));
   }
 
   private seal(): void {

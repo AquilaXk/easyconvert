@@ -311,7 +311,7 @@ describe('Parquet to delimited text and JSON, direct routes', () => {
         id: i,
         city: i % 5 === 0 ? null : ['São Paulo', 'Osaka', '李小龍', 'say "hi"', ' padded '][i % 5],
         unique: `row-${i}-${(i * 7919) % 1000}`,
-        score: i % 9 === 0 ? null : (i % 800) / 8 + (i % 3 === 0 ? 0.1 : 0),
+        score: i % 9 === 0 ? null : (i % 800) / 8 + (i % 3) / 30,
         flag: i % 4 === 0 ? null : i % 3 === 0,
         wide: i % 11 === 0 ? 2 ** 40 + i : -i,
       });
