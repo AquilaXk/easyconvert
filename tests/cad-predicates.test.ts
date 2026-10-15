@@ -28,17 +28,28 @@ function exact(x: number): bigint {
 describe('Shewchuk Exact Robust Geometric Predicates', () => {
   describe('Exact Arithmetic Foundations', () => {
     it('computes exact twoSum and twoDiff without precision loss', () => {
-      const a = 1.0;
-      const b = 1e-16;
-      const [sum, sumErr] = twoSum(a, b);
-      // Independent oracle: the pair must represent a + b exactly, checked in integer arithmetic, and the error is non-zero.
-      expect(exact(sum) + exact(sumErr)).toBe(exact(a) + exact(b));
-      expect(sum).toBe(1.0);
-      expect(sumErr).not.toBe(0);
+      // Pairs where the rounded result differs from the first operand (0.1 + 0.2 is 0.30000000000000004) and a pair where it equals it (1 + 1e-16 is 1).
+      const pairs: Array<[number, number]> = [
+        [1.0, 1e-16],
+        [0.1, 0.2],
+        [1e16, 1.5],
+        [-3.3, 1.1],
+      ];
+      for (const [a, b] of pairs) {
+        const [sum, sumErr] = twoSum(a, b);
+        // The leading term is the IEEE 754 rounded sum, which the platform computes independently of the module; the pair carries the rest exactly.
+        expect(sum).toBe(a + b);
+        expect(exact(sum) + exact(sumErr)).toBe(exact(a) + exact(b));
 
-      const [diff, diffErr] = twoDiff(a, b);
-      expect(exact(diff) + exact(diffErr)).toBe(exact(a) - exact(b));
-      expect(diffErr).not.toBe(0);
+        const [diff, diffErr] = twoDiff(a, b);
+        expect(diff).toBe(a - b);
+        expect(exact(diff) + exact(diffErr)).toBe(exact(a) - exact(b));
+      }
+      // Both errors are non-zero where the rounding lost bits.
+      expect(twoSum(1.0, 1e-16)[1]).not.toBe(0);
+      expect(twoDiff(1.0, 1e-16)[1]).not.toBe(0);
+      expect(twoSum(0.1, 0.2)[0]).not.toBe(0.1);
+      expect(twoSum(0.1, 0.2)[1]).not.toBe(0);
     });
 
     it('computes exact twoProduct using Veltkamp-Dekker splitting', () => {
@@ -50,8 +61,13 @@ describe('Shewchuk Exact Robust Geometric Predicates', () => {
       expect(prodErr).not.toBe(0);
       const [hi, lo] = split(a);
       expect(exact(hi) + exact(lo)).toBe(exact(a));
-      // Each half fits in 26 bits of mantissa, so hi * hi is exact in a double.
+      // Each half fits in 26 bits of mantissa, so every product of the halves is exact in a double. A split that returns [0, a] fails on lo * lo,
+      // because a has 53 bits and its square does not fit.
       expect(exact(hi * hi) << EXACT_SHIFT).toBe(exact(hi) * exact(hi));
+      expect(exact(lo * lo) << EXACT_SHIFT).toBe(exact(lo) * exact(lo));
+      expect(exact(hi * lo) << EXACT_SHIFT).toBe(exact(hi) * exact(lo));
+      expect(hi).not.toBe(0);
+      expect(lo).not.toBe(0);
     });
   });
 
