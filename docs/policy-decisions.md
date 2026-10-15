@@ -186,11 +186,13 @@ Compression
 
 ## 7. Characters without a Unicode counterpart
 
-- **Status**: Implemented (#725); extended to every in-process PDF writer (#742). Legacy binary word-processing documents (`.doc`) are tracked in #726.
+- **Status**: Implemented (#725); extended to every in-process PDF writer (#742) and to legacy binary word-processing documents (`.doc`, #726).
 - **Decision**:
   - Symbol-font private-use characters are mapped to Unicode with the standard tables for the symbol fonts.
   - A character that no table maps becomes U+FFFD, and a warning names the font and the code.
   - **The PDF writers apply the same rule to any code point no font can draw** (unassigned, private-use, noncharacter, lone surrogate). The code point becomes U+FFFD and the result carries one warning line for each distinct code point. They no longer refuse the document.
+  - **Binary word-processing documents (`.doc`) take the font from the character formatting of the run**: the font set on the run for the ASCII, East Asian or other text (the first of these three that is a symbol font), else the default character fonts of the style sheet. A Symbol field character (a placeholder in the text plus its own font and code) maps the same way, and in any other font it is the Unicode character it names. A document without a font table or a run whose font index names no font maps nothing, and the warning names no font.
+  - **A symbol-font character whose Unicode counterpart no installed font can draw becomes U+FFFD in a PDF**, with a warning that names the font, the code and the counterpart. Text, HTML and the other outputs keep the counterpart. Installing a font that covers the counterpart makes the next conversion draw it.
 - **Why**:
   - The whole document must still convert. Failing it for one glyph is worse than any substitute.
   - A replacement mark is honest.
@@ -199,13 +201,15 @@ Compression
 - **Trade-offs**:
   - The reader sees a replacement mark where the original showed a glyph.
   - Plain text, Markdown and HTML to PDF follow the rule too. A file with a stray noncharacter converts, where it used to fail with HTTP 400.
-  - A character that is assigned but that no installed font covers still fails, because installing a font fixes it.
+  - A character that is assigned but that no installed font covers still fails, because installing a font fixes it. The exception is a character that came from a symbol-font mapping in a `.doc`: the pictograph and arrow blocks the Wingdings and Webdings tables map to are covered by few fonts, and a bullet or an arrow is not worth a failed document.
+  - Paragraph and character styles are not followed, so a symbol-font character whose font comes only from a style is replaced and reported under the font the run resolves to.
 - **Alternatives rejected**:
   - **Refusing the document.**
   - **Rendering with a bundled symbol font**: wrong glyphs, silently.
   - **Dropping the character**: the loss would leave no trace in the output.
-- **Verified by**: the PPT symbol-font tests, `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` converts).
-- **Revisit when**: a reliable glyph source for the remaining math fonts appears.
+  - **Refusing a `.doc` whose mapped character has no installed glyph**: the same document converts on a machine with the font and fails on one without, for a decoration.
+- **Verified by**: the PPT and `.doc` symbol-font tests (`tests/doc-symbol-fonts.test.ts`, with a document written by the office suite and the PDF text read by a separate PDF reader, and `tests/doc-corpus-symbol-fonts.test.ts` on public documents), `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` converts).
+- **Revisit when**: a reliable glyph source for the remaining math fonts appears, or the `.doc` reader follows styles.
 
 ## 8. Empty documents and macros
 
