@@ -161,7 +161,7 @@ function buildDictionary(
       const end = start + length;
       w0 = data[start] | (data[start + 1] << 8) | (data[start + 2] << 16) | (data[start + 3] << 24);
       w1 = data[end - 4] | (data[end - 3] << 8) | (data[end - 2] << 16) | (data[end - 1] << 24);
-      let h = Math.imul((w0 ^ length) | 0, FNV_PRIME);
+      let h = Math.imul(w0 ^ length, FNV_PRIME);
       h = Math.imul(h ^ w1, FNV_PRIME);
       if (length > 8) {
         const w2 = data[end - 8] | (data[end - 7] << 8) | (data[end - 6] << 16) | (data[end - 5] << 24);
@@ -313,12 +313,18 @@ function writeAllOnesDefinitionLevels(sink: ByteSink, pageRows: number): void {
   sink.writeByte((1 << pageRows) - 1);
 }
 
+/** The first two bytes of a value as one sortable integer; -1 for an empty value, which sorts before every other. */
+function valuePrefix(data: Uint8Array, at: number, length: number): number {
+  if (length === 0) return -1;
+  return (data[at] << 9) | (length > 1 ? data[at + 1] + 1 : 0);
+}
+
 function zigzagVarintBytes(n: number): number {
   const v = n * 2;
   if (v < 0x80) return 1;
   if (v < 0x4000) return 2;
-  if (v < 0x20_0000) return 3;
-  if (v < 0x1000_0000) return 4;
+  if (v < 0x20_00_00) return 3;
+  if (v < 0x10_00_00_00) return 4;
   return 5;
 }
 
@@ -475,7 +481,7 @@ function encodeTextColumnChunk(
           data.copy(sinkBytes, writePos, at, at + length);
         }
         writePos += length;
-        const prefix = length === 0 ? -1 : (data[at] << 9) | (length > 1 ? data[at + 1] + 1 : 0);
+        const prefix = valuePrefix(data, at, length);
         if (minAt < 0) {
           minAt = maxAt = at;
           minLength = maxLength = length;

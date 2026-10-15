@@ -79,9 +79,16 @@ function formatBooleans(page: Buffer, pos: number, count: number, formatter: Col
   return cells;
 }
 
+/** One BYTE_ARRAY value, decoded by the column's rules, as the text of its cell. */
+function formatByteArrayValue(page: Buffer, start: number, end: number, leaf: LeafColumn, formatter: ColumnCellFormatter): string {
+  const { readSlice, map } = leaf.reader;
+  const value = readSlice ? readSlice(page, start, end) : (map as (raw: Buffer) => ColumnValue)(page.subarray(start, end));
+  return typeof value === 'string' ? formatter.formatString(value) : formatter.formatNumber(value as number);
+}
+
 function formatByteArrays(page: Buffer, pos: number, count: number, leaf: LeafColumn, formatter: ColumnCellFormatter): string[] {
-  const { width: fixedWidth, readSlice, map } = leaf.reader;
-  const { formatNumber, formatString, formatTextSlice } = formatter;
+  const fixedWidth = leaf.reader.width;
+  const { formatTextSlice } = formatter;
   const textSlice = formatTextSlice !== undefined && TEXT_ANNOTATIONS.has(leaf.annotation.tag) ? formatTextSlice : undefined;
   const cells = new Array<string>(count);
   let cursor = pos;
@@ -93,13 +100,7 @@ function formatByteArrays(page: Buffer, pos: number, count: number, leaf: LeafCo
     }
     const end = cursor + length;
     assertValueWithinPage(page, end, length, leaf);
-    const fast = textSlice === undefined ? null : textSlice(page, cursor, end);
-    if (fast === null) {
-      const value = readSlice ? readSlice(page, cursor, end) : (map as (raw: Buffer) => ColumnValue)(page.subarray(cursor, end));
-      cells[i] = typeof value === 'string' ? formatString(value) : formatNumber(value as number);
-    } else {
-      cells[i] = fast;
-    }
+    cells[i] = textSlice?.(page, cursor, end) ?? formatByteArrayValue(page, cursor, end, leaf, formatter);
     cursor = end;
   }
   return cells;
@@ -248,7 +249,7 @@ function placeNulls(present: string[], levels: Uint8Array, count: number, nullCe
 function chargeFormattedCells(cells: string[], leaf: LeafColumn, formatter: ColumnCellFormatter, budget: DecodeBudget): void {
   if (leaf.reader.kind !== 'bytes' && leaf.reader.map === null) return;
   let bytes = 0;
-  for (let i = 0; i < cells.length; i++) bytes += cells[i].length;
+  for (const cell of cells) bytes += cell.length;
   const overhead = cells.length * formatter.nullCell.length;
   if (bytes > overhead) chargeValueBytes(budget, bytes - overhead);
 }

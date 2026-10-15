@@ -87,18 +87,14 @@ const REPLACEMENT_CHARACTER = '\ufffd';
 
 const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true });
 const TWO_DIGITS: readonly string[] = Array.from({ length: 100 }, (_, i) => (i < 10 ? `0${i}` : `${i}`));
-const THREE_DIGITS: readonly string[] = Array.from({ length: 1000 }, (_, i) =>
-  i < 10 ? `00${i}` : i < 100 ? `0${i}` : `${i}`
-);
+const THREE_DIGITS: readonly string[] = Array.from({ length: 1000 }, (_, i) => String(i).padStart(3, '0'));
 const DOT_THREE_DIGITS: readonly string[] = Array.from({ length: 1000 }, (_, i) => (i === 0 ? '' : `.${THREE_DIGITS[i]}`));
 const DOT_THREE_DIGITS_Z: readonly string[] = Array.from({ length: 1000 }, (_, i) => (i === 0 ? 'Z' : `.${THREE_DIGITS[i]}Z`));
 const HOURS_PER_DAY = 24;
 const MIN_SEC_STRINGS: readonly string[] = Array.from({ length: SECONDS_PER_HOUR }, (_, i) => {
-  const m = (i / SECONDS_PER_MINUTE) | 0;
+  const m = Math.trunc(i / SECONDS_PER_MINUTE);
   const s = i - m * SECONDS_PER_MINUTE;
-  const str = `${TWO_DIGITS[m]}:${TWO_DIGITS[s]}`;
-  str.charCodeAt(0);
-  return str;
+  return `${TWO_DIGITS[m]}:${TWO_DIGITS[s]}`;
 });
 let cachedDayCount = Number.NaN;
 let cachedDayText = '';
@@ -156,7 +152,6 @@ function formatHourPrefix(hourKey: number): string {
   if (hourOfDay < 0) hourOfDay += HOURS_PER_DAY;
   const days = (hourKey - hourOfDay) / HOURS_PER_DAY;
   const prefix = `${formatDatePrefix(days)}${TWO_DIGITS[hourOfDay]}:`;
-  prefix.charCodeAt(0);
   cachedHourKey = hourKey;
   cachedHourPrefix = prefix;
   return prefix;
@@ -174,62 +169,54 @@ function formatFraction(fraction: bigint, unit: TimeUnit): string {
 }
 
 function formatClock(secondOfDay: number): string {
-  const hours = (secondOfDay / SECONDS_PER_HOUR) | 0;
+  const hours = Math.trunc(secondOfDay / SECONDS_PER_HOUR);
   const rem = secondOfDay - hours * SECONDS_PER_HOUR;
   return `${TWO_DIGITS[hours]}:${MIN_SEC_STRINGS[rem]}`;
 }
 
-const MAX_INT32_SECONDS = 0x7fff_ffff;
+const MAX_INT32_SECONDS = 0x7f_ff_ff_ff;
 const MAX_FAST_EPOCH_MILLIS = 2_147_483_647_999;
 
-function formatTimestampMillisUtc(value: number): string {
+/** The remainder of a safe integer by a positive divisor, in [0, divisor). */
+function floorRemainder(value: number, divisor: number): number {
+  const remainder = value % divisor;
+  return remainder < 0 ? remainder + divisor : remainder;
+}
+
+/**
+ * ISO-8601 text of a millisecond count since the epoch. `fractions` holds the text of each fraction of a second, with
+ * the zone designator when there is one. Counts inside the 32-bit range of seconds are divided without a remainder
+ * operation, which is the common case for dates between 1970 and 2038.
+ */
+function formatTimestampMillis(value: number, fractions: readonly string[]): string {
   let seconds: number;
   let frac: number;
   if (value >= 0 && value <= MAX_FAST_EPOCH_MILLIS) {
-    seconds = (value / MILLIS_PER_SECOND) | 0;
+    seconds = Math.trunc(value / MILLIS_PER_SECOND);
     frac = value - seconds * MILLIS_PER_SECOND;
   } else {
-    frac = value % MILLIS_PER_SECOND;
-    if (frac < 0) frac += MILLIS_PER_SECOND;
+    frac = floorRemainder(value, MILLIS_PER_SECOND);
     seconds = (value - frac) / MILLIS_PER_SECOND;
   }
   let hourKey: number;
   let secOfHour: number;
   if (seconds >= 0 && seconds <= MAX_INT32_SECONDS) {
-    hourKey = (seconds / SECONDS_PER_HOUR) | 0;
+    hourKey = Math.trunc(seconds / SECONDS_PER_HOUR);
     secOfHour = seconds - hourKey * SECONDS_PER_HOUR;
   } else {
-    secOfHour = seconds % SECONDS_PER_HOUR;
-    if (secOfHour < 0) secOfHour += SECONDS_PER_HOUR;
+    secOfHour = floorRemainder(seconds, SECONDS_PER_HOUR);
     hourKey = (seconds - secOfHour) / SECONDS_PER_HOUR;
   }
   const prefix = hourKey === cachedHourKey ? cachedHourPrefix : formatHourPrefix(hourKey);
-  return prefix + (MIN_SEC_STRINGS[secOfHour] + DOT_THREE_DIGITS_Z[frac]);
+  return prefix + (MIN_SEC_STRINGS[secOfHour] + fractions[frac]);
+}
+
+function formatTimestampMillisUtc(value: number): string {
+  return formatTimestampMillis(value, DOT_THREE_DIGITS_Z);
 }
 
 function formatTimestampMillisLocal(value: number): string {
-  let seconds: number;
-  let frac: number;
-  if (value >= 0 && value <= MAX_FAST_EPOCH_MILLIS) {
-    seconds = (value / MILLIS_PER_SECOND) | 0;
-    frac = value - seconds * MILLIS_PER_SECOND;
-  } else {
-    frac = value % MILLIS_PER_SECOND;
-    if (frac < 0) frac += MILLIS_PER_SECOND;
-    seconds = (value - frac) / MILLIS_PER_SECOND;
-  }
-  let hourKey: number;
-  let secOfHour: number;
-  if (seconds >= 0 && seconds <= MAX_INT32_SECONDS) {
-    hourKey = (seconds / SECONDS_PER_HOUR) | 0;
-    secOfHour = seconds - hourKey * SECONDS_PER_HOUR;
-  } else {
-    secOfHour = seconds % SECONDS_PER_HOUR;
-    if (secOfHour < 0) secOfHour += SECONDS_PER_HOUR;
-    hourKey = (seconds - secOfHour) / SECONDS_PER_HOUR;
-  }
-  const prefix = hourKey === cachedHourKey ? cachedHourPrefix : formatHourPrefix(hourKey);
-  return prefix + (MIN_SEC_STRINGS[secOfHour] + DOT_THREE_DIGITS[frac]);
+  return formatTimestampMillis(value, DOT_THREE_DIGITS);
 }
 
 /** Fast ISO-8601 timestamp formatter for safe-integer millis or micros counts since epoch. */
@@ -511,6 +498,13 @@ function resolveInt32(column: string, annotation: Annotation): ColumnReader {
   }
 }
 
+/** The fast formatter of a timestamp column's safe-integer values; nanosecond counts leave the safe range, so they have none. */
+function timestampNumberFormatter(unit: TimeUnit, adjustedToUtc: boolean): ((raw: number) => ColumnValue) | undefined {
+  if (unit === 'nanos') return undefined;
+  if (unit === 'millis') return adjustedToUtc ? formatTimestampMillisUtc : formatTimestampMillisLocal;
+  return (raw) => formatTimestampNumber(raw, unit, adjustedToUtc);
+}
+
 function resolveInt64(column: string, annotation: Annotation): ColumnReader {
   switch (annotation.tag) {
     case 'none':
@@ -525,14 +519,7 @@ function resolveInt64(column: string, annotation: Annotation): ColumnReader {
         kind: 'i64',
         width: 0,
         map: (raw) => formatTimestamp(raw as bigint, annotation.unit, annotation.adjustedToUtc),
-        mapNumber:
-          annotation.unit === 'millis'
-            ? annotation.adjustedToUtc
-              ? formatTimestampMillisUtc
-              : formatTimestampMillisLocal
-            : annotation.unit !== 'nanos'
-              ? (raw) => formatTimestampNumber(raw, annotation.unit, annotation.adjustedToUtc)
-              : undefined,
+        mapNumber: timestampNumberFormatter(annotation.unit, annotation.adjustedToUtc),
       };
     case 'decimal':
       validateDecimal(column, annotation);

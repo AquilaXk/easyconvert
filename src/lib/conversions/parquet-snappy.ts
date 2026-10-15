@@ -40,6 +40,8 @@ const COPY1_OFFSET_ENCODE_SHIFT = 5;
 const COPY1_OFFSET_BYTES = 1;
 const COPY2_OFFSET_BYTES = 2;
 const COPY4_OFFSET_BYTES = 4;
+/** Bytes of offset after a copy tag, by tag type (type 0 is a literal). */
+const COPY_OFFSET_BYTES: readonly number[] = [0, COPY1_OFFSET_BYTES, COPY2_OFFSET_BYTES, COPY4_OFFSET_BYTES];
 const LITERAL_LENGTH_PREFIX_BASE = 59;
 /** Worst-case output is 32 bytes plus the input plus one sixth of it. */
 const WORST_CASE_SLACK_BYTES = 32;
@@ -242,102 +244,122 @@ export function compressSnappy(input: Uint8Array): Buffer {
   return out;
 }
 
-function decompressRawSnappyBlockRange(
-  buf: Uint8Array,
-  start: number,
-  end: number,
-  maxOutputBytes: number
-): Buffer {
+/** The varint length at the head of a raw block; `next` is where the elements start. */
+function readDeclaredLength(buf: Uint8Array, start: number, end: number): { length: number; next: number } {
   let offset = start;
-  let uncompressedLen = 0;
+  let length = 0;
   let shift = 0;
-
   for (;;) {
     if (offset >= end) throw new ParquetFormatError('Corrupted Snappy block: truncated length prefix');
     const b = buf[offset++];
-    uncompressedLen += shift < 28 ? (b & VARINT_PAYLOAD_MASK) << shift : (b & VARINT_PAYLOAD_MASK) * 2 ** shift;
-    if ((b & VARINT_CONTINUATION) === 0) break;
+    length += shift < 28 ? (b & VARINT_PAYLOAD_MASK) << shift : (b & VARINT_PAYLOAD_MASK) * 2 ** shift;
+    if ((b & VARINT_CONTINUATION) === 0) return { length, next: offset };
     shift += VARINT_PAYLOAD_BITS;
     if (shift > SNAPPY_MAX_VARINT_SHIFT) throw new ParquetFormatError('Corrupted Snappy varint uncompressed length');
   }
+}
+
+/** Decodes the elements of one raw block into `out`, which is as long as the block declares. */
+class SnappyElementDecoder {
+  private offset: number;
+  private outPos = 0;
+
+  constructor(
+    private readonly buf: Uint8Array,
+    start: number,
+    private readonly end: number,
+    private readonly out: Buffer
+  ) {
+    this.offset = start;
+  }
+
+  run(): void {
+    const { buf, end, out } = this;
+    while (this.offset < end && this.outPos < out.length) {
+      const tag = buf[this.offset++];
+      const elemType = tag & TAG_TYPE_MASK;
+      if (elemType === SNAPPY_TAG_LITERAL) this.copyLiteral(tag);
+      else this.copyMatch(tag, elemType);
+    }
+    if (this.outPos !== out.length) {
+      throw new ParquetFormatError(`Snappy decompression error: produced ${this.outPos} of ${out.length} declared bytes`);
+    }
+  }
+
+  /** The length of the literal a tag opens; long literals keep their length in the bytes after the tag. */
+  private literalLength(tag: number): number {
+    const inline = tag >> TAG_LENGTH_SHIFT;
+    if (inline < SNAPPY_LITERAL_INLINE_MAX) return inline + 1;
+    const extraBytes = inline - SNAPPY_LITERAL_INLINE_MAX + 1;
+    if (this.offset + extraBytes > this.end) throw new ParquetFormatError('Snappy decompression error: truncated literal length');
+    const { buf, offset } = this;
+    let len = 0;
+    if (extraBytes === 1) len = buf[offset];
+    else if (extraBytes === 2) len = buf[offset] | (buf[offset + 1] << BYTE_BITS);
+    else for (let i = 0; i < extraBytes; i++) len += buf[offset + i] * 2 ** (BYTE_BITS * i);
+    this.offset += extraBytes;
+    return len + 1;
+  }
+
+  private copyLiteral(tag: number): void {
+    const { buf, out } = this;
+    const len = this.literalLength(tag);
+    if (this.offset + len > this.end || this.outPos + len > out.length) {
+      throw new ParquetFormatError('Snappy decompression error: literal bounds exceeded');
+    }
+    if (len <= SNAPPY_SHORT_LITERAL_BYTES) {
+      for (let i = 0; i < len; i++) out[this.outPos + i] = buf[this.offset + i];
+    } else if (Buffer.isBuffer(buf)) {
+      buf.copy(out, this.outPos, this.offset, this.offset + len);
+    } else {
+      out.set(buf.subarray(this.offset, this.offset + len), this.outPos);
+    }
+    this.offset += len;
+    this.outPos += len;
+  }
+
+  /** Reads the offset bytes of a copy element; returns the offset and moves past them. */
+  private copyOffset(tag: number, elemType: number): number {
+    const { buf } = this;
+    const offsetBytes = COPY_OFFSET_BYTES[elemType];
+    if (this.offset + offsetBytes > this.end) throw new ParquetFormatError('Snappy decompression error: truncated copy');
+    let copyOffset: number;
+    if (elemType === SNAPPY_TAG_COPY1) copyOffset = ((tag & COPY1_OFFSET_HIGH_MASK) << COPY1_OFFSET_DECODE_SHIFT) | buf[this.offset];
+    else if (elemType === SNAPPY_TAG_COPY2) copyOffset = buf[this.offset] | (buf[this.offset + 1] << BYTE_BITS);
+    else copyOffset = load32(buf, this.offset) >>> 0;
+    this.offset += offsetBytes;
+    return copyOffset;
+  }
+
+  private copyMatch(tag: number, elemType: number): void {
+    const { out } = this;
+    const copyLen =
+      elemType === SNAPPY_TAG_COPY1 ? ((tag >> TAG_LENGTH_SHIFT) & COPY1_LENGTH_MASK) + SNAPPY_MIN_MATCH_BYTES : (tag >> TAG_LENGTH_SHIFT) + 1;
+    const copyOffset = this.copyOffset(tag, elemType);
+    if (copyOffset <= 0 || copyOffset > this.outPos) {
+      throw new ParquetFormatError(`Snappy decompression error: invalid copy offset ${copyOffset} (outPos=${this.outPos})`);
+    }
+    if (this.outPos + copyLen > out.length) {
+      throw new ParquetFormatError('Snappy decompression error: copy length exceeds uncompressed size');
+    }
+    // Byte-wise on purpose: overlapping copies (offset < length) replicate a pattern.
+    let srcPos = this.outPos - copyOffset;
+    const endPos = this.outPos + copyLen;
+    while (this.outPos < endPos) {
+      out[this.outPos++] = out[srcPos++];
+    }
+  }
+}
+
+function decompressRawSnappyBlockRange(buf: Uint8Array, start: number, end: number, maxOutputBytes: number): Buffer {
+  const { length: uncompressedLen, next } = readDeclaredLength(buf, start, end);
   if (uncompressedLen > SNAPPY_MAX_DECLARED_BYTES || uncompressedLen > maxOutputBytes) {
     throw new ParquetFormatError(
       `Snappy decompression error: declared size ${uncompressedLen} exceeds the ${maxOutputBytes} byte limit`
     );
   }
-
   const out = uncompressedLen <= SNAPPY_FRAGMENT_BYTES ? Buffer.allocUnsafe(uncompressedLen) : Buffer.alloc(uncompressedLen);
-  let outPos = 0;
-
-  while (offset < end && outPos < uncompressedLen) {
-    const tag = buf[offset++];
-    const elemType = tag & TAG_TYPE_MASK;
-
-    if (elemType === SNAPPY_TAG_LITERAL) {
-      let len = tag >> TAG_LENGTH_SHIFT;
-      if (len >= SNAPPY_LITERAL_INLINE_MAX) {
-        const extraBytes = len - SNAPPY_LITERAL_INLINE_MAX + 1;
-        if (offset + extraBytes > end) throw new ParquetFormatError('Snappy decompression error: truncated literal length');
-        if (extraBytes === 1) {
-          len = buf[offset];
-        } else if (extraBytes === 2) {
-          len = buf[offset] | (buf[offset + 1] << BYTE_BITS);
-        } else {
-          len = 0;
-          for (let i = 0; i < extraBytes; i++) len += buf[offset + i] * 2 ** (BYTE_BITS * i);
-        }
-        offset += extraBytes;
-      }
-      len += 1;
-      if (offset + len > end || outPos + len > uncompressedLen) {
-        throw new ParquetFormatError('Snappy decompression error: literal bounds exceeded');
-      }
-      if (len <= SNAPPY_SHORT_LITERAL_BYTES) {
-        for (let i = 0; i < len; i++) out[outPos + i] = buf[offset + i];
-      } else if (Buffer.isBuffer(buf)) {
-        buf.copy(out, outPos, offset, offset + len);
-      } else {
-        out.set(buf.subarray(offset, offset + len), outPos);
-      }
-      offset += len;
-      outPos += len;
-    } else {
-      let copyLen = 0;
-      let copyOffset = 0;
-      if (elemType === SNAPPY_TAG_COPY1) {
-        if (offset + COPY1_OFFSET_BYTES > end) throw new ParquetFormatError('Snappy decompression error: truncated copy');
-        copyLen = ((tag >> TAG_LENGTH_SHIFT) & COPY1_LENGTH_MASK) + SNAPPY_MIN_MATCH_BYTES;
-        copyOffset = ((tag & COPY1_OFFSET_HIGH_MASK) << COPY1_OFFSET_DECODE_SHIFT) | buf[offset++];
-      } else if (elemType === SNAPPY_TAG_COPY2) {
-        if (offset + COPY2_OFFSET_BYTES > end) throw new ParquetFormatError('Snappy decompression error: truncated copy');
-        copyLen = (tag >> TAG_LENGTH_SHIFT) + 1;
-        copyOffset = buf[offset] | (buf[offset + 1] << BYTE_BITS);
-        offset += COPY2_OFFSET_BYTES;
-      } else if (elemType === SNAPPY_TAG_COPY4) {
-        if (offset + COPY4_OFFSET_BYTES > end) throw new ParquetFormatError('Snappy decompression error: truncated copy');
-        copyLen = (tag >> TAG_LENGTH_SHIFT) + 1;
-        copyOffset = load32(buf, offset) >>> 0;
-        offset += COPY4_OFFSET_BYTES;
-      }
-
-      if (copyOffset <= 0 || copyOffset > outPos) {
-        throw new ParquetFormatError(`Snappy decompression error: invalid copy offset ${copyOffset} (outPos=${outPos})`);
-      }
-      if (outPos + copyLen > uncompressedLen) {
-        throw new ParquetFormatError('Snappy decompression error: copy length exceeds uncompressed size');
-      }
-      // Byte-wise on purpose: overlapping copies (offset < length) replicate a pattern.
-      let srcPos = outPos - copyOffset;
-      const endPos = outPos + copyLen;
-      while (outPos < endPos) {
-        out[outPos++] = out[srcPos++];
-      }
-    }
-  }
-
-  if (outPos !== uncompressedLen) {
-    throw new ParquetFormatError(`Snappy decompression error: produced ${outPos} of ${uncompressedLen} declared bytes`);
-  }
+  new SnappyElementDecoder(buf, next, end, out).run();
   return out;
 }
 

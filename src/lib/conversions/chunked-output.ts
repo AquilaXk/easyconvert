@@ -1,7 +1,7 @@
 import { DataLimitExceededError } from '../types';
 
 /** Largest output a direct route builds: the offset range of one buffer, as for the input of the byte scanners. */
-export const MAX_CHUNKED_OUTPUT_BYTES = 0x7fff_fff0;
+export const MAX_CHUNKED_OUTPUT_BYTES = 0x7f_ff_ff_f0;
 const CHUNK_BYTES = 4 * 1024 * 1024;
 const MIN_FIRST_CHUNK_BYTES = 64 * 1024;
 

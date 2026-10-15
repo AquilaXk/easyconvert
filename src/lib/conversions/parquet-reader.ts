@@ -810,6 +810,72 @@ function decodeDictionaryIndices(
   return present;
 }
 
+function wrongTypeForEncoding(encoding: string, leaf: LeafColumn): ParquetFormatError {
+  return new ParquetFormatError(`Corrupted Parquet file: ${encoding} on ${ParquetType[leaf.type]} column '${leaf.name}'`);
+}
+
+function decodeDeltaIntegers(page: Buffer, pos: number, nonNull: number, leaf: LeafColumn): ColumnValue[] {
+  if (leaf.type !== ParquetType.INT32 && leaf.type !== ParquetType.INT64) throw wrongTypeForEncoding('DELTA_BINARY_PACKED', leaf);
+  const bitWidthLimit = leaf.type === ParquetType.INT32 ? 32 : 64;
+  const decoded = decodeDeltaBinaryPacked(page, pos, nonNull, bitWidthLimit, leaf.name);
+  const { map, kind } = leaf.reader;
+  const present = new Array<ColumnValue>(nonNull);
+  for (let i = 0; i < nonNull; i++) {
+    const raw = decoded.values[i];
+    if (kind === 'i32') present[i] = map ? map(Number(raw)) : Number(raw);
+    else if (kind === 'u32') present[i] = Number(BigInt.asUintN(32, raw));
+    else if (kind === 'u64') present[i] = unsignedInteger(raw);
+    else present[i] = map ? map(raw) : exactInteger(raw);
+  }
+  return present;
+}
+
+function mapByteSlices(slices: Buffer[], nonNull: number, leaf: LeafColumn): ColumnValue[] {
+  const map = leaf.reader.map as (raw: Buffer) => ColumnValue;
+  const present = new Array<ColumnValue>(nonNull);
+  for (let i = 0; i < nonNull; i++) present[i] = map(slices[i]);
+  return present;
+}
+
+function decodeDeltaLengthByteArrays(page: Buffer, pos: number, nonNull: number, leaf: LeafColumn, budget: DecodeBudget): ColumnValue[] {
+  if (leaf.type !== ParquetType.BYTE_ARRAY) throw wrongTypeForEncoding('DELTA_LENGTH_BYTE_ARRAY', leaf);
+  const decoded = decodeDeltaLengthByteArray(page, pos, nonNull, leaf.name, budget.valueBytes);
+  chargeValueBytes(budget, decoded.totalBytes);
+  return mapByteSlices(decoded.slices, nonNull, leaf);
+}
+
+function decodeDeltaByteArrays(page: Buffer, pos: number, nonNull: number, leaf: LeafColumn, budget: DecodeBudget): ColumnValue[] {
+  if (leaf.type !== ParquetType.BYTE_ARRAY && leaf.type !== ParquetType.FIXED_LEN_BYTE_ARRAY) {
+    throw wrongTypeForEncoding('DELTA_BYTE_ARRAY', leaf);
+  }
+  const decoded = decodeDeltaByteArray(page, pos, nonNull, leaf.name, budget.valueBytes, leaf.reader.width);
+  chargeValueBytes(budget, decoded.totalBytes);
+  return mapByteSlices(decoded.slices, nonNull, leaf);
+}
+
+/** Bytes of one value in a BYTE_STREAM_SPLIT stream. */
+function byteStreamSplitWidth(leaf: LeafColumn): number {
+  switch (leaf.type) {
+    case ParquetType.FLOAT:
+    case ParquetType.INT32:
+      return NARROW_VALUE_BYTES;
+    case ParquetType.DOUBLE:
+    case ParquetType.INT64:
+      return WIDE_VALUE_BYTES;
+    case ParquetType.FIXED_LEN_BYTE_ARRAY:
+      return leaf.typeLength;
+    default:
+      throw wrongTypeForEncoding('BYTE_STREAM_SPLIT', leaf);
+  }
+}
+
+function decodeByteStreamSplitValues(page: Buffer, pos: number, nonNull: number, leaf: LeafColumn, budget: DecodeBudget): ColumnValue[] {
+  const transposed = decodeByteStreamSplit(page, pos, nonNull, byteStreamSplitWidth(leaf), leaf.name);
+  const plain = readPlainValues(transposed.buffer, 0, leaf, nonNull);
+  chargeValueBytes(budget, plain.stringBytes);
+  return plain.values;
+}
+
 export function decodeEncodedValues(
   page: Buffer,
   pos: number,
@@ -825,77 +891,28 @@ export function decodeEncodedValues(
     }
     return decodeDictionaryIndices(page, pos, nonNull, dictionary, leaf, budget);
   }
-  if (encoding === Encoding.PLAIN) {
-    const plain = readPlainValues(page, pos, leaf, nonNull);
-    chargeValueBytes(budget, plain.stringBytes);
-    return plain.values;
-  }
-  if (encoding === Encoding.RLE) {
-    if (leaf.type !== ParquetType.BOOLEAN) {
-      throw new ParquetUnsupportedError(`Unsupported Parquet RLE value encoding on ${ParquetType[leaf.type]} column '${leaf.name}'`);
+  switch (encoding) {
+    case Encoding.PLAIN: {
+      const plain = readPlainValues(page, pos, leaf, nonNull);
+      chargeValueBytes(budget, plain.stringBytes);
+      return plain.values;
     }
-    return decodeBooleanRle(page, pos, nonNull, leaf.name).values;
-  }
-  if (encoding === Encoding.DELTA_BINARY_PACKED) {
-    if (leaf.type !== ParquetType.INT32 && leaf.type !== ParquetType.INT64) {
-      throw new ParquetFormatError(`Corrupted Parquet file: DELTA_BINARY_PACKED on ${ParquetType[leaf.type]} column '${leaf.name}'`);
-    }
-    const bitWidthLimit = leaf.type === ParquetType.INT32 ? 32 : 64;
-    const decoded = decodeDeltaBinaryPacked(page, pos, nonNull, bitWidthLimit, leaf.name);
-    const present = new Array<ColumnValue>(nonNull);
-    const map = leaf.reader.map;
-    const kind = leaf.reader.kind;
-    for (let i = 0; i < nonNull; i++) {
-      const raw = decoded.values[i];
-      if (kind === 'i32') {
-        const n = Number(raw);
-        present[i] = map ? map(n) : n;
-      } else if (kind === 'u32') {
-        present[i] = Number(BigInt.asUintN(32, raw));
-      } else if (kind === 'u64') {
-        present[i] = unsignedInteger(raw);
-      } else {
-        present[i] = map ? map(raw) : exactInteger(raw);
+    case Encoding.RLE:
+      if (leaf.type !== ParquetType.BOOLEAN) {
+        throw new ParquetUnsupportedError(`Unsupported Parquet RLE value encoding on ${ParquetType[leaf.type]} column '${leaf.name}'`);
       }
-    }
-    return present;
+      return decodeBooleanRle(page, pos, nonNull, leaf.name).values;
+    case Encoding.DELTA_BINARY_PACKED:
+      return decodeDeltaIntegers(page, pos, nonNull, leaf);
+    case Encoding.DELTA_LENGTH_BYTE_ARRAY:
+      return decodeDeltaLengthByteArrays(page, pos, nonNull, leaf, budget);
+    case Encoding.DELTA_BYTE_ARRAY:
+      return decodeDeltaByteArrays(page, pos, nonNull, leaf, budget);
+    case Encoding.BYTE_STREAM_SPLIT:
+      return decodeByteStreamSplitValues(page, pos, nonNull, leaf, budget);
+    default:
+      throw new ParquetUnsupportedError(`Unsupported Parquet value encoding ${encoding} in column '${leaf.name}'`);
   }
-  if (encoding === Encoding.DELTA_LENGTH_BYTE_ARRAY) {
-    if (leaf.type !== ParquetType.BYTE_ARRAY) {
-      throw new ParquetFormatError(`Corrupted Parquet file: DELTA_LENGTH_BYTE_ARRAY on ${ParquetType[leaf.type]} column '${leaf.name}'`);
-    }
-    const decoded = decodeDeltaLengthByteArray(page, pos, nonNull, leaf.name, budget.valueBytes);
-    chargeValueBytes(budget, decoded.totalBytes);
-    const map = leaf.reader.map as (raw: Buffer) => ColumnValue;
-    const present = new Array<ColumnValue>(nonNull);
-    for (let i = 0; i < nonNull; i++) present[i] = map(decoded.slices[i]);
-    return present;
-  }
-  if (encoding === Encoding.DELTA_BYTE_ARRAY) {
-    if (leaf.type !== ParquetType.BYTE_ARRAY && leaf.type !== ParquetType.FIXED_LEN_BYTE_ARRAY) {
-      throw new ParquetFormatError(`Corrupted Parquet file: DELTA_BYTE_ARRAY on ${ParquetType[leaf.type]} column '${leaf.name}'`);
-    }
-    const decoded = decodeDeltaByteArray(page, pos, nonNull, leaf.name, budget.valueBytes, leaf.reader.width);
-    chargeValueBytes(budget, decoded.totalBytes);
-    const map = leaf.reader.map as (raw: Buffer) => ColumnValue;
-    const present = new Array<ColumnValue>(nonNull);
-    for (let i = 0; i < nonNull; i++) present[i] = map(decoded.slices[i]);
-    return present;
-  }
-  if (encoding === Encoding.BYTE_STREAM_SPLIT) {
-    let elemWidth = 0;
-    if (leaf.type === ParquetType.FLOAT || leaf.type === ParquetType.INT32) elemWidth = NARROW_VALUE_BYTES;
-    else if (leaf.type === ParquetType.DOUBLE || leaf.type === ParquetType.INT64) elemWidth = WIDE_VALUE_BYTES;
-    else if (leaf.type === ParquetType.FIXED_LEN_BYTE_ARRAY) elemWidth = leaf.typeLength;
-    else {
-      throw new ParquetFormatError(`Corrupted Parquet file: BYTE_STREAM_SPLIT on ${ParquetType[leaf.type]} column '${leaf.name}'`);
-    }
-    const transposed = decodeByteStreamSplit(page, pos, nonNull, elemWidth, leaf.name);
-    const plain = readPlainValues(transposed.buffer, 0, leaf, nonNull);
-    chargeValueBytes(budget, plain.stringBytes);
-    return plain.values;
-  }
-  throw new ParquetUnsupportedError(`Unsupported Parquet value encoding ${encoding} in column '${leaf.name}'`);
 }
 
 function assembleNulls(levels: Uint8Array | null, present: ColumnValue[], count: number, column: string): ColumnValue[] {
@@ -1096,14 +1113,14 @@ function decodeChunk(buffer: Buffer, plan: ChunkPlan, budget: DecodeBudget): Col
       const body = decompressPageSlice(chunk.codec, buffer, page.bodyStart, page.bodyEnd, header.uncompressedSize);
       const pageValues = decodeDataPage(body, header, leaf, dictionary, budget);
       if (!values) values = pageValues;
-      else for (let i = 0; i < pageValues.length; i++) values.push(pageValues[i]);
+      else for (const value of pageValues) values.push(value);
       continue;
     }
     if (header.type === PageType.DATA_PAGE_V2) {
       const rawSlice = buffer.subarray(page.bodyStart, page.bodyEnd);
       const pageValues = decodeDataPageV2(rawSlice, chunk.codec, header, leaf, dictionary, budget);
       if (!values) values = pageValues;
-      else for (let i = 0; i < pageValues.length; i++) values.push(pageValues[i]);
+      else for (const value of pageValues) values.push(value);
       continue;
     }
     throw new ParquetUnsupportedError(`Unsupported Parquet page type ${header.type} in column '${leaf.name}'`);
@@ -1285,6 +1302,15 @@ export function decodeParquetColumns(buffer: Buffer): DecodedParquetColumns {
   }
 }
 
+const CHAR_ZERO = 0x30;
+const CHAR_NINE = 0x39;
+
+/** A column name that a plain record assignment would mangle: `__proto__`, or an array index, which reorders keys. */
+function isUnsafeRecordKey(name: string): boolean {
+  const first = name.codePointAt(0) ?? 0;
+  return name === '__proto__' || (first >= CHAR_ZERO && first <= CHAR_NINE);
+}
+
 /**
  * Deserializes a flat Parquet file into row records. Integers beyond 2^53, decimals, dates, times and
  * timestamps are returned as exact strings; binary that is not UTF-8 text is returned as base64.
@@ -1293,7 +1319,7 @@ export function decodeParquet(buffer: Buffer): Record<string, unknown>[] {
   try {
     const { names, columns: columnValues, numRows } = decodeParquetColumnsUnguarded(buffer);
     if (numRows === 0) return [];
-    const needsSetOwn = names.some((n) => n === '__proto__' || (n.charCodeAt(0) >= 0x30 && n.charCodeAt(0) <= 0x39));
+    const needsSetOwn = names.some(isUnsafeRecordKey);
     const records: Record<string, unknown>[] = new Array<Record<string, unknown>>(numRows);
     for (let r = 0; r < numRows; r++) {
       const row: Record<string, ColumnValue> = {};
