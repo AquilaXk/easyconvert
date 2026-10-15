@@ -1,17 +1,14 @@
 import { ChunkedOutput } from './chunked-output';
-import {
-  ASCII_LIMIT,
-  CHAR_BACKSLASH,
-  CHAR_NINE,
-  CHAR_QUOTE,
-  CHAR_SPACE,
-  CHAR_ZERO,
-  formatDelimitedString,
-  mayTriggerFormula,
-} from './delimited-cells';
-import { DELIMITED_RECORD_SEPARATOR } from './delimited-rules';
+import * as delimitedCells from './delimited-cells';
+import { flatCopy } from './flat-string';
+import * as delimitedRules from './delimited-rules';
 import { DataRepresentationError } from '../types';
 import type { ColumnCellFormatter, ColumnFormatterFactory, FormattedParquetTable, FormattedRowWindow } from './parquet-formatted';
+
+// Bound once at load: the cell formatters below run for every cell, and a binding imported from another module costs a
+// property lookup on every use when the code runs through a TypeScript loader.
+const { ASCII_LIMIT, CHAR_BACKSLASH, CHAR_NINE, CHAR_QUOTE, CHAR_SPACE, CHAR_ZERO, formatDelimitedString, mayTriggerFormula } = delimitedCells;
+const { DELIMITED_RECORD_SEPARATOR } = delimitedRules;
 
 /**
  * Cell text of the Parquet-to-text routes. A cell is written as a string of one-byte characters that holds the UTF-8
@@ -111,9 +108,9 @@ export function delimitedFormatters(style: DelimitedStyle): ColumnFormatterFacto
     const singleColumn = names.length === 1;
     const prefix = column === 0 ? DELIMITED_RECORD_SEPARATOR : style.delimiter;
     return {
-      nullCell: column === 0 && singleColumn ? `${DELIMITED_RECORD_SEPARATOR}""` : prefix,
-      trueCell: `${prefix}true`,
-      falseCell: `${prefix}false`,
+      nullCell: flatCopy(column === 0 && singleColumn ? `${DELIMITED_RECORD_SEPARATOR}""` : prefix),
+      trueCell: flatCopy(`${prefix}true`),
+      falseCell: flatCopy(`${prefix}false`),
       numberPrefix: prefix,
       numberSuffix: '',
       formatNumber: delimitedNumber(prefix),
@@ -182,14 +179,14 @@ function jsonTextSlice(prefix: string, suffix: string) {
 export function jsonFormatters(): ColumnFormatterFactory {
   return (names, column, asciiOnly): ColumnCellFormatter => {
     const suffix = column === names.length - 1 ? '\n  }' : '';
-    const prefix = `${column === 0 ? ',\n  {\n    ' : ',\n    '}${formatJsonString(names[column])}: `;
+    const prefix = flatCopy(`${column === 0 ? ',\n  {\n    ' : ',\n    '}${formatJsonString(names[column])}: `);
     return {
-      nullCell: `${prefix}null${suffix}`,
-      trueCell: `${prefix}true${suffix}`,
-      falseCell: `${prefix}false${suffix}`,
+      nullCell: flatCopy(`${prefix}null${suffix}`),
+      trueCell: flatCopy(`${prefix}true${suffix}`),
+      falseCell: flatCopy(`${prefix}false${suffix}`),
       numberPrefix: prefix,
       numberSuffix: suffix,
-      formatNumber: jsonNumber(prefix, suffix, `${prefix}-0${suffix}`),
+      formatNumber: jsonNumber(prefix, suffix, flatCopy(`${prefix}-0${suffix}`)),
       formatString: jsonText(prefix, suffix, asciiOnly),
       formatTextSlice: jsonTextSlice(prefix, suffix),
     };

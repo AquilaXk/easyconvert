@@ -1,32 +1,34 @@
+import { flatCopy } from './flat-string';
 import { decompressPageSlice } from './parquet-codec';
 import { Encoding, PageType, PARQUET_MAX_DECODED_VALUE_BYTES, ParquetFormatError, ParquetUnsupportedError, ParquetType } from './parquet-format';
-import { ColumnValue, unsignedInteger } from './parquet-logical';
-import {
+import * as logical from './parquet-logical';
+import type { ColumnValue } from './parquet-logical';
+import * as reader from './parquet-reader';
+import type { ChunkPlan, DecodeBudget, LeafColumn, PageHeader, PageLevels, ScannedPage } from './parquet-reader';
+
+// Bound once at load: the page formatters below call these for every value, and a binding imported from another module
+// costs a property lookup on every use when the code runs through a TypeScript loader.
+const {
   assertDictionaryIndex,
   assertPlainBytes,
   assertValueWithinPage,
   byteArrayLengthAt,
   BYTE_ARRAY_LENGTH_PREFIX_BYTES,
   chargeValueBytes,
-  ChunkPlan,
-  DecodeBudget,
   decodeDataPageLevels,
   decodeDataPageV2LevelsAndValues,
   decodeEncodedValues,
   DICTIONARY_DATA_ENCODINGS,
   int32At,
-  LeafColumn,
   NARROW_VALUE_BYTES,
-  PageHeader,
-  PageLevels,
   prepareParquetPlans,
   readDictionaryIndices,
   readDictionaryPageBody,
   safeInt64At,
-  ScannedPage,
   uint32At,
   WIDE_VALUE_BYTES,
-} from './parquet-reader';
+} = reader;
+const { unsignedInteger } = logical;
 
 /**
  * Parquet pages formatted straight into the text of their cells. A dictionary entry is formatted once, not once per
@@ -63,6 +65,8 @@ export interface FormattedRowWindow {
 const EIGHTH_SUFFIX: readonly string[] = ['', '.125', '.25', '.375', '.5', '.625', '.75', '.875'];
 const MAX_EIGHTHS = 0x7f_ff_ff_ff;
 const TEXT_ANNOTATIONS: ReadonlySet<string> = new Set(['string', 'enum', 'json']);
+/** A dictionary is flattened when its rows reference each entry this many times on average. */
+const DICTIONARY_REUSE_FACTOR = 4;
 /** log2 of the bits in a byte: boolean values are packed eight to a byte. */
 const BOOLEAN_BYTE_SHIFT = 3;
 
@@ -345,7 +349,12 @@ class FormattedChunkCursor {
   private readDictionary(page: ScannedPage): void {
     const { leaf } = this.plan;
     const body = readDictionaryPageBody(this.buffer, this.plan, page);
-    this.dictionary = formatPlainValues(body, 0, leaf, page.header.numValues, this.formatter);
+    const entries = formatPlainValues(body, 0, leaf, page.header.numValues, this.formatter);
+    // An entry that many rows repeat is joined into one flat string now, not walked again by every row that writes it.
+    if (entries.length * DICTIONARY_REUSE_FACTOR <= this.plan.rows) {
+      for (let i = 0; i < entries.length; i++) entries[i] = flatCopy(entries[i]);
+    }
+    this.dictionary = entries;
   }
 
   private readDataPage(page: ScannedPage): PageValues {

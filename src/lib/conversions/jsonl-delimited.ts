@@ -1,24 +1,9 @@
 import { isUtf8 } from 'node:buffer';
 import type { ConversionOptions } from '../types';
 import { ChunkedOutput } from './chunked-output';
-import { MAX_INTEGER_LITERAL_DIGITS } from './data-json';
-import {
-  CHAR_AT,
-  CHAR_BACKSLASH,
-  CHAR_COMMA,
-  CHAR_CR,
-  CHAR_EQUALS,
-  CHAR_LF,
-  CHAR_MINUS,
-  CHAR_NINE,
-  CHAR_PLUS,
-  CHAR_QUOTE,
-  CHAR_SPACE,
-  CHAR_TAB,
-  CHAR_ZERO,
-  formatDelimitedString,
-} from './delimited-cells';
-import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
+import { MAX_INTEGER_LITERAL_DIGITS as IMPORTED_MAX_INTEGER_DIGITS } from './data-json';
+import { formatDelimitedString } from './delimited-cells';
+import * as delimitedRules from './delimited-rules';
 
 /**
  * JSON Lines / NDJSON to CSV or TSV, read straight from the bytes of flat UTF-8 object lines. It declines (returns
@@ -41,6 +26,24 @@ function decline(): never {
   throw DECLINE;
 }
 
+const MAX_INTEGER_LITERAL_DIGITS = IMPORTED_MAX_INTEGER_DIGITS;
+const { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } = delimitedRules;
+
+// Byte values, defined here rather than imported: the scanner reads them in its innermost loops, and a binding imported
+// from another module costs a property lookup on every use when the code runs through a TypeScript loader.
+const CHAR_TAB = 0x09;
+const CHAR_LF = 0x0a;
+const CHAR_CR = 0x0d;
+const CHAR_SPACE = 0x20;
+const CHAR_QUOTE = 0x22;
+const CHAR_PLUS = 0x2b;
+const CHAR_COMMA = 0x2c;
+const CHAR_MINUS = 0x2d;
+const CHAR_ZERO = 0x30;
+const CHAR_NINE = 0x39;
+const CHAR_EQUALS = 0x3d;
+const CHAR_AT = 0x40;
+const CHAR_BACKSLASH = 0x5c;
 const CHAR_COLON = 0x3a;
 const CHAR_DOT = 0x2e;
 const CHAR_SLASH = 0x2f;
