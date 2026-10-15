@@ -1,4 +1,4 @@
-import { convertData } from '../../src/lib/conversions/data';
+import { convertData } from '../src/lib/conversions/data';
 
 /**
  * Child process of tests/data-columnar-memory.test.ts. It is started with a small V8 heap limit, builds one large input

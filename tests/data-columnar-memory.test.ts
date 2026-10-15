@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
  * capped far below the size of the table: a route that keeps a string per row, or per cell, of the table cannot finish.
  */
 
-const CHILD = path.resolve(__dirname, 'helpers/columnar-heap-child.ts');
+const CHILD = path.resolve(__dirname, 'data-columnar-memory-child.ts');
 const HEAP_LIMIT_MIB = 128;
 const CASE_TIMEOUT_MS = 240_000;
 
