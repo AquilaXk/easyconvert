@@ -217,6 +217,62 @@ describe('the encoder reads the source file', () => {
     60_000
   );
 
+  describe.each([
+    ['16-bit colour with an alpha plane', 4, 'rgb16'],
+    ['16-bit grey with an alpha plane', 2, 'grey16'],
+  ] as const)('%s on which every pixel is opaque', (_name, channels, space) => {
+    oracleTest(
+      'gives the AVIF of the same samples without the alpha plane, as the regular route does',
+      ['avifenc', 'avifdec'],
+      async () => {
+        const wrapper = copyingWrapper(`opaque-${space}`);
+        process.env.AVIFENC_PATH = wrapper.script;
+        const colour = channels === 4;
+        const base = await sharp(colour ? await interface16() : await lineArt16()).toColourspace(space).raw({ depth: 'ushort' }).toBuffer({ resolveWithObject: true });
+        const withAlpha = new Uint16Array((base.data.byteLength / 2 / base.info.channels) * channels);
+        const plain = new Uint16Array(base.data.buffer, base.data.byteOffset, base.data.byteLength / 2);
+        const colours = base.info.channels;
+        for (let pixel = 0; pixel * colours < plain.length; pixel += 1) {
+          for (let c = 0; c < colours; c += 1) withAlpha[pixel * channels + c] = plain[pixel * colours + c];
+          withAlpha[pixel * channels + colours] = 0xffff;
+        }
+        const { width, height } = base.info;
+        const source = await sharp(withAlpha, { raw: { width, height, channels } }).toColourspace(space).png().toBuffer();
+        const alphaFree = await sharp(plain, { raw: { width, height, channels: colours } }).toColourspace(space).png().toBuffer();
+        const out = await convertImage(source, 'avif', { quality: 60 }, 'opaque.png', 'png');
+        expect(readFileSync(wrapper.input).equals(source), 'the encoder was given the source file').toBe(true);
+        expect(execFileSync(requireOracleTool('avifdec'), ['--info', writeOut(`opaque-${space}.avif`, out.buffer)], { encoding: 'utf-8' })).not.toMatch(/Alpha\s*:\s*Present/i);
+        expect(out.buffer.equals(encoderOnSource(wrapper.args, alphaFree, `opaque-${space}`))).toBe(true);
+      },
+      60_000
+    );
+
+    oracleTest(
+      'gives the bytes of the regenerated PNG when the alpha plane is one step below opaque (it is read at the precision the encoder works at)',
+      ['avifenc', 'avifdec'],
+      async () => {
+        const wrapper = copyingWrapper(`almost-${space}`);
+        process.env.AVIFENC_PATH = wrapper.script;
+        const colour = channels === 4;
+        const base = await sharp(colour ? await interface16() : await lineArt16()).toColourspace(space).raw({ depth: 'ushort' }).toBuffer({ resolveWithObject: true });
+        const colours = base.info.channels;
+        const plain = new Uint16Array(base.data.buffer, base.data.byteOffset, base.data.byteLength / 2);
+        const withAlpha = new Uint16Array((plain.length / colours) * channels);
+        for (let pixel = 0; pixel * colours < plain.length; pixel += 1) {
+          for (let c = 0; c < colours; c += 1) withAlpha[pixel * channels + c] = plain[pixel * colours + c];
+          withAlpha[pixel * channels + colours] = 0xfffe;
+        }
+        const { width, height } = base.info;
+        const source = await sharp(withAlpha, { raw: { width, height, channels } }).toColourspace(space).png().toBuffer();
+        const regenerated = await sharp(source).toColourspace(space).png({ compressionLevel: 0 }).toBuffer();
+        const out = await convertImage(source, 'avif', { quality: 60 }, 'almost.png', 'png');
+        expect(readFileSync(wrapper.input).equals(source)).toBe(true);
+        expect(out.buffer.equals(encoderOnSource(wrapper.args, regenerated, `almost-${space}`))).toBe(true);
+      },
+      60_000
+    );
+  });
+
   oracleTest(
     'a continuous-tone 16-bit picture is encoded with the photograph tuning, from the same source file',
     ['avifenc', 'avifdec'],

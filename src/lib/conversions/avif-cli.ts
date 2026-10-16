@@ -310,7 +310,10 @@ async function readEncoderOutput(outputPath: string, maxBytes: number): Promise<
 export interface AvifCliRun {
   /** The AVIF file, or the error `encodeAvifWithCli` would throw; the reason of the abort once `cancel` was called. */
   result: Promise<Buffer>;
-  /** Stops the encoder and settles once its process is gone and its working directory is removed. */
+  /**
+   * Stops the encoder: settles once the kill signal has been sent to its process group and its working directory is removed. It does not
+   * wait for the process to be reaped; the sandbox rejects the run as soon as the signal is sent.
+   */
   cancel: () => Promise<void>;
 }
 
