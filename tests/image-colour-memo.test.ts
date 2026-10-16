@@ -88,12 +88,13 @@ describe('colour memo', () => {
       memo.add(key, paletteIndex, key / 1e7, 1, 2, 3);
     }
     expect(memo.count).toBe(oracle.size);
+    // One assertion over all entries: a per-entry expect call costs more than the lookups on a loaded runner.
+    const wrong: Array<{ key: number; entry: number }> = [];
     for (const [key, paletteIndex] of oracle) {
       const entry = memo.find(key);
-      expect(entry).toBeGreaterThanOrEqual(0);
-      expect(memo.index[entry]).toBe(paletteIndex);
-      expect(memo.lab[entry * COLOUR_MEMO_LAB_STRIDE]).toBe(key / 1e7);
+      if (entry < 0 || memo.index[entry] !== paletteIndex || memo.lab[entry * COLOUR_MEMO_LAB_STRIDE] !== key / 1e7) wrong.push({ key, entry });
     }
+    expect(wrong).toEqual([]);
   });
 
   it.each([1, 3, 100, 5000])('holds more colours than the %i it was told to expect', (expected) => {

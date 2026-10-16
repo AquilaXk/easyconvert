@@ -532,42 +532,6 @@
       ]
     },
     {
-      "id": "raw/dng->gif/throughput",
-      "issue": 686,
-      "ratio": 0.84,
-      "note": "ours is slower than the reference tool: the palette search of the in-process quantizer takes longer than the reference's quantizer (the LZW coder is no longer the cost)",
-      "history": [
-        {
-          "ratio": 0.7061,
-          "at": "2026-10-11T03:10:11.413Z",
-          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
-        },
-        {
-          "ratio": 0.8493,
-          "at": "2026-10-15T08:12:52.765Z",
-          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
-        }
-      ]
-    },
-    {
-      "id": "raw/arw->gif/throughput",
-      "issue": 686,
-      "ratio": 0.91,
-      "note": "ours is slower than the reference tool: the palette search of the in-process quantizer takes longer than the reference's quantizer (the LZW coder is no longer the cost)",
-      "history": [
-        {
-          "ratio": 0.8826,
-          "at": "2026-10-11T03:10:11.413Z",
-          "commit": "b6da9b06691bdf73e38644fe79829dc3fc4473cb"
-        },
-        {
-          "ratio": 0.9179,
-          "at": "2026-10-15T08:12:52.765Z",
-          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
-        }
-      ]
-    },
-    {
       "id": "vector/shapes.svg->pdf/throughput",
       "issue": 735,
       "ratio": 0.93,
