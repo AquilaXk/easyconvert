@@ -553,6 +553,102 @@
           "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }
       ]
+    },
+    {
+      "id": "pdf-ops/pdf-pdfjs-Pages-tree-refs.pdf->compress/pdf_check_failures",
+      "issue": 783,
+      "ratio": null,
+      "note": "damaged page tree (a loop through the Pages references): the repaired PDF still has 1 check failure, the reference has none",
+      "recorded": 1,
+      "reference": 0
+    },
+    {
+      "id": "pdf-ops/pdf-qpdf-pages-loop.pdf->compress/pdf_check_failures",
+      "issue": 783,
+      "ratio": null,
+      "note": "damaged page tree (a Pages loop): the repaired PDF still has 1 check failure, the reference has none",
+      "recorded": 1,
+      "reference": 0
+    },
+    {
+      "id": "pdf-ops/class-damaged->compress/pdf_check_failures",
+      "issue": 783,
+      "ratio": null,
+      "note": "mean over the 5 damaged files: follows from the two page-tree rows above (2 of 5 files)",
+      "recorded": 0.4,
+      "reference": 0
+    },
+    {
+      "id": "pdf-ops/pdf-qpdf-form-errors.pdf->delete/bytes",
+      "issue": 783,
+      "ratio": null,
+      "note": "form with errors: the output is 960 bytes larger than the reference, past the 3% allowance of 776",
+      "recorded": 26830,
+      "reference": 25870
+    },
+    {
+      "id": "raw/raw-samsung-s23.dng->jpg/converts",
+      "issue": 686,
+      "ratio": null,
+      "note": "the product refuses the file (RawDecodeError: data corrupted at 4384328); the reference develops it",
+      "recorded": 0,
+      "reference": 1
+    },
+    {
+      "id": "raw/raw-samsung-s23.dng->png/converts",
+      "issue": 686,
+      "ratio": null,
+      "note": "the product refuses the file (RawDecodeError: data corrupted at 4384328); the reference develops it",
+      "recorded": 0,
+      "reference": 1
+    },
+    {
+      "id": "raw/class-phone->jpg/converts",
+      "issue": 686,
+      "ratio": null,
+      "note": "mean over the 2 phone files: follows from the Samsung S23 row (1 of 2 files refused)",
+      "recorded": 0.5,
+      "reference": 1
+    },
+    {
+      "id": "raw/class-phone->png/converts",
+      "issue": 686,
+      "ratio": null,
+      "note": "mean over the 2 phone files: follows from the Samsung S23 row (1 of 2 files refused)",
+      "recorded": 0.5,
+      "reference": 1
+    },
+    {
+      "id": "raw/raw-canon-r5-raw.cr3->jpg/bd_rate_psnr",
+      "issue": 686,
+      "ratio": null,
+      "note": "JPEG rate-distortion curve of the Canon R5 CR3: +1.93% bits at equal PSNR against the reference, allowance 1.5",
+      "recorded": 1.9267,
+      "reference": 0
+    },
+    {
+      "id": "raw/raw-canon-r5-raw.cr3->jpg/psnr",
+      "issue": 686,
+      "ratio": null,
+      "note": "point of the curve above: judged with bd_rate_psnr because the sizes differ, so it follows that row",
+      "recorded": 44.2972,
+      "reference": 44.7351
+    },
+    {
+      "id": "raw/class-canoncr3->jpg/bd_rate_psnr",
+      "issue": 686,
+      "ratio": null,
+      "note": "class of one file (Canon R5 CR3): the same curve as raw-canon-r5-raw.cr3->jpg",
+      "recorded": 1.9267,
+      "reference": 0
+    },
+    {
+      "id": "raw/class-canoncr3->jpg/psnr",
+      "issue": 686,
+      "ratio": null,
+      "note": "class of one file (Canon R5 CR3): the same point as raw-canon-r5-raw.cr3->jpg/psnr",
+      "recorded": 44.2972,
+      "reference": 44.7351
     }
   ]
 }

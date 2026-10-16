@@ -438,9 +438,19 @@ applies to what the change did to the row.
 
 **Known gaps and the staged rollout.** Most speed rows are below the reference today, so the gate is staged:
 
-- *Quality is immediate.* Every quality row of a touched family must be at or above the reference. `bench/parity-gaps.json`
-  never excuses a quality row: an entry only names the issue in the failure message (the image quality rows are tracked
-  by #640 and still fail).
+- *Quality is immediate.* Every quality row of a touched family must be at or above the reference, unless an entry in
+  `bench/parity-gaps.json` tracks it (next bullet group). An unlisted row below the reference fails (the image quality rows
+  are tracked by #640 and still fail).
+- *A quality row that is listed is "tracked" at a recorded value.* The entry has `ratio: null`, the issue, the `recorded`
+  value of the row and the `reference` value then. The row's own direction and allowance judge it: not worse than `recorded`
+  by more than the allowance passes (`TRACK`); worse fails (`tracked-worse-than-recorded`); better but still below the
+  reference fails too (`tracked-better-than-recorded`: set `recorded` to the new value, so the ratchet tightens and a lenient
+  record cannot stay); a row that passes the normal rule is reported (`DONE`) and its entry is removed. The entry excuses no
+  other row, and a run that is about the row (its family, `--quick` subset and `--quality-only`/`--speed-only` scope, as the
+  baseline gate counts them) fails with `gap-row-missing` when the report lacks it. An entry a pull request adds or edits is
+  backed by the base's `bench/baseline.json` (`--base-gaps` and `--base-baseline`, read from the first parent of the tested
+  merge by the quality job): for a row that baseline holds, `recorded` may not be worse than its value by more than that
+  entry's own allowance, or the entry fails with `gap-not-backed`; a row the base does not baseline is new and is allowed.
 - *A speed row that is not listed* has to pass the sign-test rule outright.
 - *A speed row that is listed is "tracked".* Being below the reference does not fail it, but it fails when its median gets
   slower than its own history predicts or falls 35 percent under the median of its history (next section). A tracked row that now passes the normal rule is reported as
