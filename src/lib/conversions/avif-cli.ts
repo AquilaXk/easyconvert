@@ -93,6 +93,10 @@ export interface AvifCliRequest {
   layout: AvifPlaneLayout;
   /** Tuning metric for the colour planes, or undefined for the encoder's own. */
   tune?: string;
+  /** The picture is a PNG file whose colour description chunks (profile, gamma, chromaticities) the encoder is to ignore. */
+  ignoreColourChunks?: boolean;
+  /** The picture is a PNG file whose XMP packet the encoder is to leave out (the request strips metadata). */
+  ignoreXmp?: boolean;
   /** Colour tags to write instead of the encoder's defaults, for HDR output. */
   cicp?: AvifCicp;
   /** Aborting kills the encoder's process group; the private directory is removed as for any other failure. */
@@ -247,11 +251,16 @@ export function avifencArguments(request: AvifCliRequest, inputPath: string, out
     '-j',
     String(encoderThreads()),
   ];
+  if (request.ignoreColourChunks) args.push('--ignore-icc');
+  if (request.ignoreXmp) args.push('--ignore-xmp');
   if (request.tune !== undefined) args.push('-a', `c:tune=${request.tune}`);
   if (request.cicp) args.push('--cicp', `${request.cicp.primaries}/${request.cicp.transfer}/${request.cicp.matrix}`);
   args.push(inputPath, '-o', outputPath);
   return args;
 }
+
+/** The encoder ran and exited with a failure (as opposed to a timeout, a memory limit, a missing tool or an abort). */
+export class AvifEncoderFailedError extends ConversionFailedError {}
 
 function describeFailure(err: unknown, timeoutMs: number): Error {
   rethrowSandboxUnavailable(err);
@@ -266,7 +275,7 @@ function describeFailure(err: unknown, timeoutMs: number): Error {
       return new EngineUnavailableError('avifenc', 'the executable cannot be started');
     }
     console.warn(`[avif] avifenc failed with status ${String(err.exitCode)}: ${err.stderr.replace(/\s+/g, ' ').trim().slice(0, AVIFENC_DIAGNOSTIC_LOGGED_CHARS)}`);
-    return new ConversionFailedError('Cannot encode the image as .avif (the AVIF encoder failed on the picture)');
+    return new AvifEncoderFailedError('Cannot encode the image as .avif (the AVIF encoder failed on the picture)');
   }
   return err instanceof Error ? err : new Error(String(err));
 }
@@ -295,6 +304,36 @@ async function readEncoderOutput(outputPath: string, maxBytes: number): Promise<
   } finally {
     await handle?.close();
   }
+}
+
+/** An encode that has started: its file when it ends, and a way to stop it. */
+export interface AvifCliRun {
+  /** The AVIF file, or the error `encodeAvifWithCli` would throw; the reason of the abort once `cancel` was called. */
+  result: Promise<Buffer>;
+  /**
+   * Stops the encoder: settles once the kill signal has been sent to its process group and its working directory is removed. It does not
+   * wait for the process to be reaped; the sandbox rejects the run as soon as the signal is sent.
+   */
+  cancel: () => Promise<void>;
+}
+
+/** Starts an encode that the caller may stop again (see `AvifCliRun`); the request's own signal still aborts it. */
+export function startAvifWithCli(avifenc: string, request: AvifCliRequest, limits: AvifCliLimits = {}): AvifCliRun {
+  const stop = new AbortController();
+  const signal = request.signal ? AbortSignal.any([request.signal, stop.signal]) : stop.signal;
+  const result = encodeAvifWithCli(avifenc, { ...request, signal }, limits);
+  // A caller that stops the run never looks at its result: the rejection is theirs to read or to ignore.
+  const ended = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return {
+    result,
+    cancel: () => {
+      stop.abort();
+      return ended;
+    },
+  };
 }
 
 /** Encodes `request` with the executable at `avifenc` and returns the AVIF file. */

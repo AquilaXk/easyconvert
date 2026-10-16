@@ -10,16 +10,11 @@ import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
-import { classifyContent, classifyRaster, withoutOpaqueAlpha, type ContentClass, type Raster } from './image-content';
+import { classifyContent, classifyRaster, type ContentClass, type Raster } from './image-content';
 import {
   AVIF_EFFORT,
   AVIF_TUNE,
   FALLBACK_QUALITY,
-  avifLibraryOptionsOf,
-  AVIF_CLI_MAX_PIXELS,
-  avifEncoderFor,
-  avifPolicyFor,
-  AVIF_HDR_BITDEPTH,
   type AvifEncoder,
   clampQuality,
   jpegOptionsFor,
@@ -33,14 +28,8 @@ import {
 } from './image-resample';
 import { decodeIco, decodeIcns } from './ico';
 import { setAvifColour } from './avif-colour';
-import {
-  AVIF_ENCODER_IMAGE_LIBRARY,
-  AVIF_ENCODER_LIBRARY_CLI,
-  encodeAvifWithCli,
-  findAvifenc,
-  type AvifCicp,
-} from './avif-cli';
-import { CICP_MATRIX_BT2020_NCL, CICP_MATRIX_IDENTITY, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ, type Cicp, writePngCicp } from './cicp';
+import { AVIF_ENCODER_IMAGE_LIBRARY } from './avif-cli';
+import { CICP_MATRIX_IDENTITY, CICP_PRIMARIES_BT2020, CICP_TRANSFER_PQ, type Cicp, writePngCicp } from './cicp';
 import { BT709_PRIMARIES, samePrimaries, primariesToPrimaries } from './colour-primaries';
 import { type HdrStillTarget, type ToneMapReport, NO_TONE_MAP_MESSAGE, PQ_OUTPUT_TARGETS, encodePq2020, exrNits, exrPrimaries, hdrTransferOf, holdsHdr, renderHdrStill, renderNitsAsSdr, resolveToneMap } from './hdr-image';
 import { encodeSrgb } from './hdr-tonemap';
@@ -74,10 +63,14 @@ import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { normalizeSvgBufferForRendering } from './svg-geometry';
-import { decodePlainPngOnce } from './image-decoded-source';
+import { DirectAvifSlot, startDirectAvifOn } from './image-avif-direct';
+import { metadataOf, withHeader } from './image-metadata';
+import { decodePlainPngForTarget, type DecodedForTarget } from './image-decoded-source';
 import { hasSrgbPrimaries, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
-import { EIGHT_BIT_ONLY_TARGETS, roundedToEightBits } from './image-depth';
-import { pinBaseImageThreads, withImageThreads } from './image-threads';
+import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
+import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
+import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
+import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
 import { buildOdgPackage } from './odg';
 import { RAW_CAMERA_FORMATS } from './raw-formats';
 import { demosaicAhdBayerCfa, demosaicAmazeBayerCfa } from './raw-demosaic';
@@ -1611,7 +1604,7 @@ const SIXTEEN_BIT_CURVE_TARGETS: ReadonlySet<string> = new Set(['png', 'tiff', '
 async function preserveMetadata(pipeline: Sharp, target: string, srgbProfileIgnored: boolean): Promise<Sharp> {
   // Float targets apply the input's own colour description to the samples (see sdr-linear.ts) and write no metadata.
   if (FLOAT_TARGETS.has(target)) return pipeline;
-  const meta = await pipeline.metadata();
+  const meta = await metadataOf(pipeline);
   if (
     meta.depth === SHARP_SIXTEEN_BIT_DEPTH &&
     SIXTEEN_BIT_CURVE_TARGETS.has(target) &&
@@ -1640,7 +1633,7 @@ async function preserveMetadata(pipeline: Sharp, target: string, srgbProfileIgno
  * profile is none or not sRGB.
  */
 async function openWithoutSrgbProfile(pipeline: Sharp, selection: FrameSelection): Promise<Sharp | null> {
-  const meta = await pipeline.metadata();
+  const meta = await metadataOf(pipeline);
   if (!meta.hasProfile || meta.icc === undefined || !isSrgbProfile(meta.icc)) return null;
   return openLimitedSharp(selection.source, { ...selection.input, ignoreIcc: true });
 }
@@ -1699,8 +1692,6 @@ function toImageFailure(err: unknown, target: string): unknown {
 }
 
 const RGB_CHANNEL_COUNT = 3;
-/** First EXIF orientation that turns the picture a quarter turn (width and height swap). */
-const FIRST_QUARTER_TURN_ORIENTATION = 5;
 const MIN_PALETTE_COLOURS = 2;
 const MAX_PALETTE_COLOURS = 256;
 const FULL_DITHER = 1.0;
@@ -1712,6 +1703,11 @@ function requestedResizeOf(options: ConversionOptions): PageResize | null {
   const height = outputSideOf(options.height, 'height');
   if (width === undefined && height === undefined) return null;
   return { width, height, fit: options.fit || 'contain' };
+}
+
+/** Whether the request resizes the picture or flattens it onto a background, so that the encoder would not read the source's own pixels. */
+function changesSourcePixels(options: ConversionOptions, background: unknown): boolean {
+  return requestedResizeOf(options) !== null || background !== undefined;
 }
 
 /**
@@ -1789,7 +1785,7 @@ function assertRgbSamples(info: OutputInfo, target: string): void {
  * budget from its header, with the resize that will be applied, before the raster is decoded.
  */
 async function assertFloatBudgetBeforeDecode(pipeline: Sharp, options: ConversionOptions): Promise<void> {
-  const { width, height, orientation } = await pipeline.metadata();
+  const { width, height, orientation } = await metadataOf(pipeline);
   if (width === undefined || height === undefined) return;
   // The picture is turned upright before it is resized, so a quarter-turn orientation swaps the sides.
   const quarterTurn = (orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
@@ -1866,78 +1862,6 @@ function deepPixelBytes(meta: Metadata | undefined): number {
   return meta?.width !== undefined && meta.height !== undefined ? meta.width * meta.height * (meta.channels ?? 1) * 2 : 0;
 }
 
-/** Deflate level of the PNG handed to the AVIF encoder: it is read once and thrown away, so it is written stored (level 0) and the encoder reads it back at memory speed. */
-const AVIFENC_INPUT_PNG_COMPRESSION = 0;
-/** Colour tags of an HDR AVIF: BT.2020 primaries, PQ transfer and the matching BT.2020 matrix. */
-const PQ_AVIF_CICP: AvifCicp = { primaries: CICP_PRIMARIES_BT2020, transfer: CICP_TRANSFER_PQ, matrix: CICP_MATRIX_BT2020_NCL };
-
-/** What `encodeAvifFromPipeline` returns: the file and the encoder that wrote it. */
-interface EncodedAvif {
-  buffer: Buffer;
-  encoder: AvifEncoder;
-}
-
-/**
- * AVIF from the pipeline: pictures with more than 8 bits per sample are encoded at 10 bits (a source of 9 or 10 bits) or 12 bits
- * (more; the 8-bit path would cap the result near 51 dB PSNR whatever the quality), and an alpha channel
- * that is fully opaque is dropped instead of encoded as a second plane. The reference library's encoder writes the
- * file when it is installed (grey sources as monochrome); without it the image library does.
- */
-async function encodeAvifFromPipeline(
-  pipeline: Sharp,
-  options: ConversionOptions,
-  contentOf: ContentClass | Promise<ContentClass>,
-  keepsGrey: boolean,
-  cicp: AvifCicp | undefined,
-  alphaIsOpaque: boolean | undefined
-): Promise<EncodedAvif> {
-  const source = await pipeline.metadata();
-  const deep = source.depth === SHARP_SIXTEEN_BIT_DEPTH;
-  const opaque = await withoutOpaqueAlpha(pipeline, alphaIsOpaque);
-  // The metadata describes the input; the encoder sees the upright, resized picture.
-  const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
-  const upright = swapsSides ? { width: source.height ?? 0, height: source.width ?? 0 } : { width: source.width ?? 0, height: source.height ?? 0 };
-  const target = resizedDimensions(upright.width, upright.height, options);
-  const grey = (source.space === 'b-w' || source.space === 'grey16') && keepsGrey;
-  const avifenc = await findAvifenc();
-  const pixels = target.width * target.height;
-  const raster = grey ? opaque.toColourspace(deep ? 'grey16' : 'b-w') : deep ? opaque.toColourspace('rgb16') : opaque;
-  // An HDR picture (tagged by CICP) keeps its own route; an untagged deep photograph goes to the command-line encoder
-  // whatever its content, so the PNG the encoder reads is written while the content class is still being found.
-  const toCommandLine = avifenc !== null && deep && cicp === undefined && pixels <= AVIF_CLI_MAX_PIXELS;
-  const pendingPng = toCommandLine ? raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer() : null;
-  const [content, speculativePng] = await Promise.all([contentOf, pendingPng]);
-  const encoder = avifEncoderFor(content, grey, pixels, avifenc !== null, deep && cicp === undefined);
-  // The bits per sample the source holds (the library reports every depth above 8 as 16-bit); an HDR rendition is delivered at 10.
-  const sourceBits = deep ? Math.max(source.bitsPerSample ?? SIXTEEN_BITS, EIGHT_BITS + 1) : EIGHT_BITS;
-  const policy = avifPolicyFor(options.quality, content, pixels, cicp === undefined ? sourceBits : Math.min(sourceBits, AVIF_HDR_BITDEPTH), grey, encoder);
-  if (avifenc !== null && encoder === AVIF_ENCODER_LIBRARY_CLI) {
-    const png = speculativePng ?? (await raster.png({ compressionLevel: AVIFENC_INPUT_PNG_COMPRESSION }).toBuffer());
-    const buffer = await encodeAvifWithCli(avifenc, {
-      png,
-      width: target.width,
-      height: target.height,
-      quality: policy.quality,
-      effort: policy.effort,
-      bitdepth: policy.bitdepth,
-      layout: policy.layout,
-      tune: policy.tune,
-      cicp,
-      signal: options.signal,
-    });
-    return { buffer, encoder };
-  }
-  const prepared = deep ? opaque.toColourspace(grey ? 'grey16' : 'rgb16') : opaque;
-  const encode = (): Promise<Buffer> => prepared.avif(avifLibraryOptionsOf(policy)).toBuffer();
-  // With threads the encoder splits the picture into tiles, which costs a little compression: affordable on a photograph
-  // (BD-rate in PSNR -14.0% against the reference, -13.1% with threads), not on an interface, which went from -14.4% to +1.6%, past the allowance.
-  return { buffer: content === 'photo' ? await withImageThreads(encode) : await encode(), encoder };
-}
-
-const EIGHT_BITS = 8;
-const SIXTEEN_BITS = 16;
-/** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
-const SHARP_SIXTEEN_BIT_DEPTH = 'ushort';
 /** Colourspaces whose pixels an embedded RGB ICC profile describes unchanged. */
 const PROFILE_PRESERVING_SPACES: ReadonlySet<string> = new Set(['srgb', 'rgb16']);
 
@@ -1947,7 +1871,7 @@ const PROFILE_PRESERVING_SPACES: ReadonlySet<string> = new Set(['srgb', 'rgb16']
  * header (after the requested resize) before the picture is decoded.
  */
 async function encodePsdFromPipeline(pipeline: Sharp, options: ConversionOptions): Promise<Buffer> {
-  const source = await pipeline.metadata();
+  const source = await metadataOf(pipeline);
   if (source.width !== undefined && source.height !== undefined) {
     const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
     const upright = swapsSides ? { width: source.height, height: source.width } : { width: source.width, height: source.height };
@@ -1978,12 +1902,34 @@ async function encodePsdFromPipeline(pipeline: Sharp, options: ConversionOptions
   });
 }
 
-export async function convertImage(
+/**
+ * The public conversion: an AVIF encoder that `convertImage` started on the source file is stopped on every way out of the conversion
+ * that did not use it.
+ */
+async function convertImageReleasingEncoder(
   inputBuffer: Buffer,
   targetFormat: string,
   options: ConversionOptions = {},
   originalFilename: string = 'image.png',
   sourceFormat?: string
+): Promise<ConversionResult> {
+  const directAvif = new DirectAvifSlot();
+  try {
+    return await convertImage(inputBuffer, targetFormat, options, originalFilename, sourceFormat, directAvif);
+  } finally {
+    await directAvif.abandon();
+  }
+}
+
+export { convertImageReleasingEncoder as convertImage };
+
+async function convertImage(
+  inputBuffer: Buffer,
+  targetFormat: string,
+  options: ConversionOptions,
+  originalFilename: string,
+  sourceFormat: string | undefined,
+  directAvif: DirectAvifSlot
 ): Promise<ConversionResult> {
   const baseName = (originalFilename || 'image.png').replace(/\.[^/.]+$/, '');
   const fmt = targetFormat.toLowerCase();
@@ -1997,7 +1943,7 @@ export async function convertImage(
   if (fmt === 'pdf') {
     if (RAW_CAMERA_FORMATS.has(src)) {
       // Camera files are not readable as a picture: decode to PNG first, then place that on the page.
-      const decoded = await convertImage(inputBuffer, 'png', options, originalFilename, src);
+      const decoded = await convertImageReleasingEncoder(inputBuffer, 'png', options, originalFilename, src);
       return convertImageToPdf(decoded.buffer, options, baseName, 'png');
     }
     return convertImageToPdf(inputBuffer, options, baseName, src);
@@ -2076,9 +2022,9 @@ export async function convertImage(
   let tagsPq = false;
   let inputCicp: Cicp | null = null;
   let hdrRadiance: { rgb: Float32Array; width: number; height: number } | undefined;
-  // Whether the alpha plane of a PNG decoded once is fully opaque; unknown (undefined) for any other source.
-  let decodedAlphaIsOpaque: boolean | undefined;
-  let decodedRaster: Raster | undefined;
+  // A plain PNG decoded once: its samples, whether its alpha plane is fully opaque (undefined for any other source) and the class
+  // of its 16-bit samples when the pipeline holds them reduced.
+  let decoded: DecodedForTarget | null = null;
   // Whether the input was opened without its sRGB profile (see `openWithoutSrgbProfile`), which then needs no transform.
   let srgbProfileIgnored = false;
 
@@ -2106,7 +2052,7 @@ export async function convertImage(
       };
     }
     const convertPage = (page: number) =>
-      convertImage(
+      convertImageReleasingEncoder(
         inputBuffer,
         targetFormat,
         { ...options, page, pages: undefined, multiPageOutput: undefined },
@@ -2213,11 +2159,11 @@ export async function convertImage(
       // Multi-frame sources: animated targets keep every frame, still targets take frame 1 (or `page`),
       // multi-page documents become one image per page.
       // The declared canvas is checked from the header before any frame or page is decoded.
-      await assertEncodedImageWithinLimit(activeBuffer);
-      frameSelection = await selectFrames(activeBuffer, fmt, options, requestedResizeOf(options));
+      const header = await assertEncodedImageWithinLimit(activeBuffer);
+      frameSelection = await selectFrames(activeBuffer, fmt, options, requestedResizeOf(options), header);
       const packaged = await packageMultiFrameSource(frameSelection);
       if (packaged) return packaged;
-      pipeline = openLimitedSharp(frameSelection.source, frameSelection.input);
+      pipeline = withHeader(openLimitedSharp(frameSelection.source, frameSelection.input), frameSelection.metadata);
       inputCicp = readStillCicp(activeBuffer);
       const hdrTransfer = hdrTransferOf(inputCicp);
       if (inputCicp !== null && hdrTransfer !== null) {
@@ -2237,14 +2183,11 @@ export async function convertImage(
         inputCicp = null;
       } else if (inputCicp === null && CONTENT_CLASSIFIED_TARGETS.has(fmt) && !frameSelection.keepsAnimation) {
         // The content class, the alpha check and the encoder would each decode the PNG again: decode it once.
-        const decoded = await decodePlainPngOnce(pipeline, undefined, fmt === 'jpg' || fmt === 'jpeg');
-        if (decoded !== null) {
-          pipeline = decoded.pipeline;
-          decodedAlphaIsOpaque = decoded.alphaIsOpaque;
-          decodedRaster = decoded.raster;
-        }
+        const changesPixels = changesSourcePixels(options, background);
+        decoded = await decodePlainPngForTarget(pipeline, frameSelection.source, { fmt, changesPixels, stripsMetadata: options.stripMetadata === true }, startDirectAvifOn(directAvif, fmt, changesPixels, frameSelection.source, options));
+        pipeline = decoded?.pipeline ?? pipeline;
       }
-      if (inputCicp === null && decodedRaster === undefined && !frameSelection.keepsAnimation && options.stripMetadata !== true && SOURCE_BLOCK_TARGETS.has(fmt)) {
+      if (inputCicp === null && decoded === null && !frameSelection.keepsAnimation && options.stripMetadata !== true && SOURCE_BLOCK_TARGETS.has(fmt)) {
         const withoutProfile = await openWithoutSrgbProfile(pipeline, frameSelection);
         if (withoutProfile !== null) {
           pipeline = withoutProfile;
@@ -2254,7 +2197,7 @@ export async function convertImage(
     }
 
     if (isRawInput) {
-      await pipeline.metadata();
+      await metadataOf(pipeline);
     }
 
     // Apply the EXIF Orientation (1-8) to the pixels before any resize, so sizes follow the upright image,
@@ -2284,7 +2227,7 @@ export async function convertImage(
   // A picture whose alpha samples are all at the maximum has nothing to flatten: the alpha band is dropped, which writes the
   // very pixels flattening onto any background would, without the arithmetic or the detour through sRGB it needs for a grey one.
   // Only an unresized picture with no background of the request's own qualifies (a resize filters the alpha samples).
-  const dropsOpaqueAlpha = isOpaqueTarget && decodedAlphaIsOpaque === true && background === undefined && options.width === undefined && options.height === undefined;
+  const dropsOpaqueAlpha = isOpaqueTarget && decoded?.alphaIsOpaque === true && background === undefined && options.width === undefined && options.height === undefined;
 
   // libvips uses only the first component of a background colour for 1 and 2 band (gray) images; work in
   // sRGB whenever a background colour is applied so flatten and letterbox bars get the whole colour.
@@ -2293,12 +2236,10 @@ export async function convertImage(
   // A 16-bit picture on its way to an 8-bit target is reduced with rounding at the end of the pipeline (see image-depth.ts), so it is
   // kept at 16 bits until then: a pipeline in sRGB would have floored it at the start. A picture with an alpha plane, a background
   // to flatten onto, or a non-sRGB development curve that the ICC transform turns into 8-bit sRGB keeps the 8-bit sRGB pipeline.
-  const reductionMeta = EIGHT_BIT_ONLY_TARGETS.has(fmt) ? await pipeline.metadata() : undefined;
-  const convertsToneCurve = reductionMeta?.icc !== undefined && hasSrgbPrimaries(reductionMeta.icc) && !isSrgbProfile(reductionMeta.icc);
-  const roundsToEightBits =
-    reductionMeta?.depth === SHARP_SIXTEEN_BIT_DEPTH && !convertsToneCurve && (fmt === 'webp' || (reductionMeta.hasAlpha !== true && background === undefined));
+  const reductionMeta = EIGHT_BIT_ONLY_TARGETS.has(fmt) ? await metadataOf(pipeline) : undefined;
+  const roundsToEightBits = reducesAtEncode(fmt, reductionMeta, background !== undefined, dropsOpaqueAlpha);
   if ((background !== undefined || isOpaqueTarget) && !dropsOpaqueAlpha) {
-    if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && !decodedRaster && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) deepPipeline = pipeline.clone();
+    if (CONTENT_CLASSIFIED_TARGETS.has(fmt) && decoded === null && (await metadataOf(pipeline)).depth === SHARP_SIXTEEN_BIT_DEPTH) deepPipeline = pipeline.clone();
     if (!roundsToEightBits) pipeline = pipeline.pipelineColourspace('srgb');
   }
 
@@ -2307,7 +2248,7 @@ export async function convertImage(
 
   // What the input is, before any resize: a grey source stays a one-component picture in JPEG (three components
   // that always agree only cost bytes), and a source with 16 bits per sample keeps them in PNG and TIFF.
-  const inputMeta = DEPTH_AWARE_TARGETS.has(fmt) || FLOAT_TARGETS.has(fmt) ? await pipeline.metadata() : undefined;
+  const inputMeta = DEPTH_AWARE_TARGETS.has(fmt) || FLOAT_TARGETS.has(fmt) ? await metadataOf(pipeline) : undefined;
   const inputSpace = inputMeta?.space;
   const deepColourspace = deepColourspaceOf(inputMeta, options);
 
@@ -2317,8 +2258,8 @@ export async function convertImage(
   // by the encoder, after the PNG for the tool has been started; the other encoders need it at once.
   let pendingContent: Promise<ContentClass> | undefined;
   if ((CONTENT_CLASSIFIED_TARGETS.has(fmt) || fmt === 'gif') && !frameSelection?.keepsAnimation) {
-    if (decodedRaster) content = classifyRaster(decodedRaster);
-    else if (fmt === 'avif' && (await pipeline.metadata()).depth === SHARP_SIXTEEN_BIT_DEPTH) {
+    if (decoded) content = decoded.content ?? classifyRaster(decoded.raster);
+    else if (fmt === 'avif' && (await metadataOf(pipeline)).depth === SHARP_SIXTEEN_BIT_DEPTH) {
       pendingContent = classifyContent(pipeline, deepPipeline);
       // Awaited by the encoder; a failure before that must not surface as an unhandled rejection.
       pendingContent.catch(() => undefined);
@@ -2335,7 +2276,7 @@ export async function convertImage(
       const resized = resizedDimensions(canvas.width, canvas.height, resizeOptions);
       assertAnimationBudget(resized.width, resized.height, canvas.frames, 'The resized animation');
     } else {
-      const source = await pipeline.metadata();
+      const source = await metadataOf(pipeline);
       const swapsSides = (source.orientation ?? 1) >= FIRST_QUARTER_TURN_ORIENTATION;
       const sourceWidth = (swapsSides ? source.height : source.width) ?? 0;
       const sourceHeight = (swapsSides ? source.width : source.height) ?? 0;
@@ -2361,7 +2302,7 @@ export async function convertImage(
 
   const quality = clampQuality(options.quality, FALLBACK_QUALITY);
   // A resize filters the alpha samples, which can move one off the maximum: only an unresized picture keeps the answer of the decode.
-  const alphaIsOpaqueAfterResize = resizeOptions ? undefined : decodedAlphaIsOpaque;
+  const alphaIsOpaqueAfterResize = resizeOptions ? undefined : decoded?.alphaIsOpaque;
 
   let outputBuffer: Buffer;
   let mimeType: string;
@@ -2381,7 +2322,8 @@ export async function convertImage(
           );
         } else {
           const keepsGrey = (inputSpace === 'b-w' || inputSpace === 'grey16') && isNeutralColour(background);
-          outputBuffer = await (keepsGrey ? pipeline.toColourspace('b-w') : pipeline).jpeg(jpegOptionsFor(options.quality, content, keepsGrey)).toBuffer();
+          const jpeg = (keepsGrey ? pipeline.toColourspace('b-w') : pipeline).jpeg(jpegOptionsFor(options.quality, content, keepsGrey));
+          outputBuffer = await withPipelineThreads(() => jpeg.toBuffer());
         }
         mimeType = 'image/jpeg';
         break;
@@ -2469,7 +2411,7 @@ export async function convertImage(
         break;
 
       case 'avif': {
-        const avif = await encodeAvifFromPipeline(pipeline, options, pendingContent ?? content, isNeutralColour(background), tagsPq ? PQ_AVIF_CICP : undefined, alphaIsOpaqueAfterResize);
+        const avif = await encodeAvif({ pipeline, options, contentOf: pendingContent ?? content, keepsGrey: isNeutralColour(background), cicp: tagsPq ? PQ_AVIF_CICP : undefined, alphaIsOpaque: alphaIsOpaqueAfterResize, directAvif });
         // The library encoder writes the tags itself, matrix 9 included, because it converts RGB to YCbCr with the matrix it
         // tags. The image library converts with BT.601 and cannot be told otherwise, so its file keeps matrix 6 and only the
         // primaries and transfer are set: tagging 9 on BT.601 samples would make every decoder return shifted colours.
@@ -2540,7 +2482,7 @@ export async function convertImage(
           } else {
             await assertFloatBudgetBeforeDecode(pipeline, options);
             // The picture's own colour description (ICC profile or CICP tag) is applied; untagged means sRGB.
-            const linear = await decodeLinearBt709(pipeline, inputMeta ?? (await pipeline.metadata()), inputCicp);
+            const linear = await decodeLinearBt709(pipeline, inputMeta ?? (await metadataOf(pipeline)), inputCicp);
             assertPixelBudget(linear.width, linear.height, HDR_FLOAT_PIXEL_BUDGET);
             outputBuffer = await encodeOpenExrAsync(linear.rgb, linear.width, linear.height, options.outputDepth !== 32);
           }
@@ -2560,7 +2502,7 @@ export async function convertImage(
           );
         } else {
           await assertFloatBudgetBeforeDecode(pipeline, options);
-          const linear = await decodeLinearBt709(pipeline, inputMeta ?? (await pipeline.metadata()), inputCicp);
+          const linear = await decodeLinearBt709(pipeline, inputMeta ?? (await metadataOf(pipeline)), inputCicp);
           assertPixelBudget(linear.width, linear.height, HDR_FLOAT_PIXEL_BUDGET);
           // The SDR base is the sRGB rendition of the same light, so a wide-gamut or 16-bit source needs no second guess.
           const base = Buffer.allocUnsafe(linear.rgb.length);

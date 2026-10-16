@@ -230,6 +230,14 @@ export function webpOptionsFor(requestedQuality: number | undefined): WebpOption
 
 export type AvifBitdepth = typeof AVIF_STANDARD_BITDEPTH | typeof AVIF_HDR_BITDEPTH | typeof AVIF_DEEP_BITDEPTH;
 
+/** The sample depth the library reports for every picture of more than 8 bits per sample, and the depth it has when a PNG's own is not known. */
+const DEEP_SOURCE_BITS = 16;
+
+/** Bits per sample the AVIF bit depth follows: 8 for a picture of 8 bits, the bits the library reports (16 when it names none) for a deeper one. */
+export function avifSourceBitsOf(deep: boolean, bitsPerSample: number | undefined): number {
+  return deep ? Math.max(bitsPerSample ?? DEEP_SOURCE_BITS, AVIF_STANDARD_BITDEPTH + 1) : AVIF_STANDARD_BITDEPTH;
+}
+
 /** 8 bits for a source of 8 bits or fewer, 10 for 9 and 10 bits, 12 from 11 bits (see `AVIF_DEEP_BITDEPTH`). */
 export function avifBitdepthFor(sourceBits: number): AvifBitdepth {
   if (sourceBits <= AVIF_STANDARD_BITDEPTH) return AVIF_STANDARD_BITDEPTH;

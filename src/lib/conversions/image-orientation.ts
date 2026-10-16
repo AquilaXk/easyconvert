@@ -17,7 +17,7 @@ const RGBA_BYTES_PER_PIXEL = 4;
 const MIN_ORIENTATION = 1;
 const MAX_ORIENTATION = 8;
 /** Orientations 5 to 8 turn the picture a quarter turn, so width and height swap. */
-const FIRST_QUARTER_TURN_ORIENTATION = TRANSPOSE;
+export const FIRST_QUARTER_TURN_ORIENTATION = TRANSPOSE;
 
 const TAG_ORIENTATION = 0x0112;
 const TYPE_SHORT = 3;

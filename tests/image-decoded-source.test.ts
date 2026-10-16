@@ -5,6 +5,11 @@ import { decodePlainPngOnce, isPlainPng, type DecodedPng } from '../src/lib/conv
 import { classifyContent, classifyRaster, type ContentClass } from '../src/lib/conversions/image-content';
 import { flattenColour } from '../src/lib/conversions/image-background';
 import { jpegOptionsFor, webpOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
+import { countPipelineRuns } from './helpers/pipeline-runs';
+
+/** Pipeline runs of one conversion of `source` to `target` (see `countPipelineRuns`). */
+const pipelineRuns = (source: Buffer, target: string, options: Record<string, unknown> = {}) =>
+  countPipelineRuns(source, () => convertImage(source, target, { quality: 70, ...options }, 'plain.png', 'png'));
 import { srgbProfileChunk, textChunk, withChunksAfterHeader } from './helpers/png-chunks';
 
 const WIDTH = 96;
@@ -153,23 +158,6 @@ describe('convertImage on a plain PNG', () => {
     vi.restoreAllMocks();
   });
 
-  /** Native pipeline runs (`toBuffer`) a conversion makes, and how many of them read the PNG itself rather than pixels in memory. */
-  async function pipelineRuns(source: Buffer, target: string, options: Record<string, unknown> = {}): Promise<{ all: number; pngReads: number }> {
-    const proto = Object.getPrototypeOf(sharp({ create: { width: 1, height: 1, channels: 3, background: '#000' } })) as Sharp;
-    const toBuffer = proto.toBuffer;
-    const runs = { all: 0, pngReads: 0 };
-    vi.spyOn(proto, 'toBuffer').mockImplementation(function (this: Sharp, ...args: unknown[]) {
-      const input = (this as unknown as { options: { input: { buffer?: Buffer } } }).options.input;
-      runs.all += 1;
-      // A cloned pipeline holds a copy of the input, so the PNG is recognised by its bytes.
-      if (input.buffer !== undefined && Buffer.from(input.buffer).equals(source)) runs.pngReads += 1;
-      return (toBuffer as (...a: unknown[]) => Promise<unknown>).apply(this, args);
-    } as never);
-    await convertImage(source, target, { quality: 70, ...options }, 'plain.png', 'png');
-    vi.restoreAllMocks();
-    return runs;
-  }
-
   it.each(['jpg', 'webp', 'avif'])('inflates the PNG once for %s: the content class, the alpha check and the encoder read the decoded pixels', async (target) => {
     expect((await pipelineRuns(await png(4, false), target)).pngReads).toBe(1);
   });
@@ -203,14 +191,36 @@ describe('convertImage on a plain PNG', () => {
     return depths;
   }
 
-  it.each([
-    ['jpg', 'uchar'],
-    ['jpeg', 'uchar'],
-    ['avif', 'ushort'],
-  ] as const)('decodes a 16-bit colour PNG once at %s samples for %s: only an 8-bit encoder takes the high byte', async (target, depth) => {
+  it('decodes a 16-bit colour PNG once at 16-bit samples for AVIF: the encoder takes them all', async () => {
     const source = await png(4, true, (image) => image.toColourspace('rgb16'));
-    const depths = await rawDepths(source, target);
-    expect(depths[0]).toBe(depth);
+    expect((await rawDepths(source, 'avif'))[0]).toBe('ushort');
+  });
+
+  it.each(['jpg', 'jpeg'])('decodes a 16-bit colour PNG with an opaque alpha plane once at 16-bit samples for %s: the content class reads their tones, and the encoder reduces them', async (target) => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'), true);
+    expect(await rawDepths(source, target)).toEqual(['ushort']);
+  });
+
+  it.each(['jpg', 'jpeg'])('decodes a 16-bit colour PNG with a translucent sample again at 8 bits for %s: the flatten works on the 8-bit levels', async (target) => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'));
+    expect(await rawDepths(source, target)).toEqual(['ushort', 'uchar']);
+  });
+
+  it('decodes a 16-bit colour PNG that is resized for JPEG once at 8 bits: the resize works on the 8-bit levels', async () => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'), true);
+    const proto = Object.getPrototypeOf(sharp({ create: { width: 1, height: 1, channels: 3, background: '#000' } })) as Sharp;
+    const raw = proto.raw;
+    const depths: unknown[] = [];
+    vi.spyOn(proto, 'raw').mockImplementation(function (this: Sharp, ...args: unknown[]) {
+      depths.push((args[0] as { depth?: unknown } | undefined)?.depth);
+      return (raw as (...a: unknown[]) => Sharp).apply(this, args);
+    } as never);
+    try {
+      await convertImage(source, 'jpg', { quality: 70, width: 48 }, 'plain.png', 'png');
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(depths).toEqual(['uchar']);
   });
 
   it('decodes a 16-bit colour PNG for WebP without a raw read: the encoder reads the PNG itself', async () => {
