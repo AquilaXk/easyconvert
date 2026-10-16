@@ -452,7 +452,9 @@ describe('the known gaps', () => {
     expect([byIdOf('raw/dng->gif/throughput'), byIdOf('raw/arw->gif/throughput')]).toEqual([undefined, undefined]);
     expect(issuesOf('vector/', true)).toEqual([735]);
     expect(issuesOf('cad/', true)).toEqual([]);
-    for (const family of ['raw/', 'vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
+    // The quality rows below the reference are tracked at a recorded value: the RAW files the product refuses or develops past the allowance (686).
+    expect(issuesOf('raw/', false)).toEqual([686]);
+    for (const family of ['vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
     expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([685, 685, 685]);
     expect(byId['compression/mixed.tar->zst/throughput']).toBeUndefined();
@@ -468,7 +470,8 @@ describe('the known gaps', () => {
     // The decode row reached parity on the CI runner, so it is no longer a known gap.
     expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
     expect(issuesOf('pdf-ops/', true)).toEqual([695]);
-    expect(issuesOf('pdf-ops/', false)).toEqual([]);
+    // The damaged PDF files whose page tree loops, and the form with errors (783).
+    expect(issuesOf('pdf-ops/', false)).toEqual([783]);
   });
 
   it('accepts a family name with a hyphen in a row id', () => {
