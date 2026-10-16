@@ -216,6 +216,58 @@ function summarise(entries: readonly SmellEntry[]): string {
   return [...perRule.entries()].map(([rule, count]) => `${rule}=${count}`).join(' ');
 }
 
+interface PairTotals {
+  count: number;
+  maxValue: number;
+}
+
+function totalsByFilePair(entries: readonly SmellEntry[]): Map<string, PairTotals> {
+  const totals = new Map<string, PairTotals>();
+  for (const entry of entries) {
+    const pair = `${entry.file} :: ${entry.rule}`;
+    const total = totals.get(pair) ?? { count: 0, maxValue: 0 };
+    total.count += entry.count;
+    total.maxValue = Math.max(total.maxValue, entry.maxValue ?? 0);
+    totals.set(pair, total);
+  }
+  return totals;
+}
+
+/**
+ * Compares the baseline of a change with the baseline of its base branch, so `--update --allow-growth` in the change cannot
+ * hide a new violation. Totals are summed per file + rule, which lets a renamed function pass; a pair the base lacks, or a
+ * higher summed count or worst value, is growth. Returns one message per growth.
+ */
+export function baselineGrowth(base: readonly SmellEntry[], head: readonly SmellEntry[]): string[] {
+  const baseTotals = totalsByFilePair(base);
+  const growth: string[] = [];
+  for (const [pair, total] of totalsByFilePair(head)) {
+    const before = baseTotals.get(pair);
+    if (before === undefined) {
+      growth.push(`NEW PAIR ${pair} (count ${total.count}, worst ${total.maxValue}); the base branch has none`);
+    } else if (total.count > before.count || total.maxValue > before.maxValue) {
+      growth.push(`GREW ${pair} (count ${total.count}, worst ${total.maxValue}); base has count ${before.count}, worst ${before.maxValue}`);
+    }
+  }
+  return growth;
+}
+
+/** Checks the committed baseline against the base branch's copy; a missing base file (the change that adds the gate) passes. */
+export function runBaseCheck(root: string, baseBaselinePath: string): number {
+  if (!fs.existsSync(baseBaselinePath)) {
+    console.log(`[PASS] The base branch has no ${BASELINE_RELATIVE_PATH} yet; nothing to compare with.`);
+    return 0;
+  }
+  const base = JSON.parse(fs.readFileSync(baseBaselinePath, 'utf-8')) as SmellEntry[];
+  const growth = baselineGrowth(base, readBaseline(path.join(root, BASELINE_RELATIVE_PATH)));
+  if (growth.length > 0) {
+    console.error(`[REJECTED] The baseline grew against the base branch. Fix the smells instead of raising it:\n  ${growth.join('\n  ')}`);
+    return 1;
+  }
+  console.log('[PASS] The baseline does not exceed the base branch baseline.');
+  return 0;
+}
+
 export interface GuardOptions {
   root: string;
   update: boolean;
@@ -254,8 +306,13 @@ export async function runCodeSmellGuard(options: GuardOptions): Promise<number> 
 }
 
 if (require.main === module) {
-  const args = new Set(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const args = new Set(argv);
   const root = process.env.GUARD_ROOT ? path.resolve(process.env.GUARD_ROOT) : path.resolve(__dirname, '..');
+  const baseFlag = argv.indexOf('--check-base');
+  if (baseFlag !== -1) {
+    process.exit(runBaseCheck(root, path.resolve(argv[baseFlag + 1] ?? '')));
+  }
   runCodeSmellGuard({ root, update: args.has('--update'), allowGrowth: args.has('--allow-growth') }).then(
     (code) => process.exit(code),
     (error: unknown) => {

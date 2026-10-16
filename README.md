@@ -255,6 +255,7 @@ Existing violations are recorded in `.github/code-smell-baseline.json`, keyed by
 - `NEW` or `GREW` lines name the file, function, rule and measured value of a smell above the baseline. Fix the code; do not raise the baseline.
 - `GONE` or improved lines mean you removed a smell. Run `npm run guard:code-smells -- --update` and commit the smaller baseline in the same change. `--update` refuses to raise any entry.
 - A hot codec loop that must stay may keep its entry; add an optional `reason` field to that baseline entry. `--update` preserves it.
+- On pull requests CI also runs `npm run guard:code-smells -- --check-base <base baseline file>`: the baseline may not exceed the base branch's, summed per file and rule (a rename passes). Pushes to main skip this comparison.
 
 - **Deterministic Test Suite**: 21 test files containing 192 tests verifying RFC compliance, pure-TS mathematical basis functions, OLE2 CFBF structures, and memory safety.
 - **Fail-Closed Principle**: Zero-byte files, unknown extensions, and corrupt binary headers immediately trigger HTTP 400 Bad Request responses.

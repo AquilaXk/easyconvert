@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runCodeSmellGuard, type SmellEntry } from '../scripts/guard-code-smells';
+import { baselineGrowth, runBaseCheck, runCodeSmellGuard, type SmellEntry } from '../scripts/guard-code-smells';
 
 /** ESLint start-up dominates each case; the default 5 s fails on a loaded CI shard. */
 const GUARD_TEST_TIMEOUT_MS = 60_000;
@@ -124,5 +124,44 @@ describe('code smell ratchet guard (#774)', () => {
     writeSource('big.ts', 'export const x = 1;\n'.repeat(1501));
     expect(await run(true, true)).toBe(0);
     expect(readBaseline()).toEqual([{ file: 'src/big.ts', rule: 'max-lines', function: '<module>', count: 1, maxValue: 1501 }]);
+  });
+
+  describe('comparison with the base branch baseline', () => {
+    const entry = (fn: string, count: number, maxValue?: number, file = 'src/a.ts', rule = 'complexity'): SmellEntry => ({ file, rule, function: fn, count, maxValue });
+    const base = [entry('f', 2, 40)];
+
+    it('passes an identical or smaller baseline', () => {
+      expect(baselineGrowth(base, base)).toEqual([]);
+      expect(baselineGrowth(base, [entry('f', 1, 35)])).toEqual([]);
+      expect(baselineGrowth(base, [])).toEqual([]);
+    });
+
+    it('fails a raised count', () => {
+      expect(baselineGrowth(base, [entry('f', 3, 40)])).toEqual([expect.stringContaining('GREW src/a.ts :: complexity (count 3')]);
+    });
+
+    it('fails a raised maxValue', () => {
+      expect(baselineGrowth(base, [entry('f', 2, 41)])).toEqual([expect.stringContaining('worst 41); base has count 2, worst 40')]);
+    });
+
+    it('fails a file and rule pair the base does not have', () => {
+      expect(baselineGrowth(base, [...base, entry('g', 1, 31, 'src/b.ts')])).toEqual([expect.stringContaining('NEW PAIR src/b.ts :: complexity')]);
+      expect(baselineGrowth(base, [...base, entry('g', 1, undefined, 'src/a.ts', 'max-params')])).toEqual([expect.stringContaining('NEW PAIR src/a.ts :: max-params')]);
+    });
+
+    it('passes a rename within one file and rule', () => {
+      expect(baselineGrowth(base, [entry('renamed', 2, 40)])).toEqual([]);
+    });
+
+    it('passes when the base branch has no baseline file, and fails growth from a base file', () => {
+      expect(runBaseCheck(root, path.join(root, 'missing-base.json'))).toBe(0);
+      fs.mkdirSync(path.join(root, '.github'), { recursive: true });
+      fs.writeFileSync(path.join(root, BASELINE_FILE), JSON.stringify([entry('f', 3, 40)]));
+      const baseFile = path.join(root, 'base.json');
+      fs.writeFileSync(baseFile, JSON.stringify(base));
+      expect(runBaseCheck(root, baseFile)).toBe(1);
+      fs.writeFileSync(path.join(root, BASELINE_FILE), JSON.stringify([entry('f', 2, 40)]));
+      expect(runBaseCheck(root, baseFile)).toBe(0);
+    });
   });
 });
