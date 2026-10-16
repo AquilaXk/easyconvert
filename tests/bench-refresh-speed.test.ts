@@ -79,7 +79,7 @@ const gaps = (): GapFile => ({
   gaps: [
     { id: SLOW, issue: 487, ratio: 0.46, note: 'speed ratio 0.46 or below when recorded (baseline 0.46, measured 0.46): ours is slower than the reference tool' },
     { id: NEAR, issue: 497, ratio: 0.92, note: 'TODO(lead): file a dedicated issue' },
-    { id: 'image/photo-a.jpg->webp/bd_rate_psnr', issue: 640, ratio: null, note: 'quality gap' },
+    { id: 'image/photo-a.jpg->webp/bd_rate_psnr', issue: 640, ratio: null, note: 'quality gap', recorded: 4, reference: 0 },
   ],
 });
 

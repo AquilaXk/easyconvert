@@ -1,7 +1,7 @@
 import { GAP_BACKING_LOG_MARGIN, GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './speed-config';
 import { ParityInputError } from './errors';
 import { allowedWorsening, worsening } from './gate';
-import { describeGap, type GapEntry, type GapFile, gapIndex, isSpeedRowId } from './parity-gaps';
+import { describeGap, type GapEntry, type GapFile, gapIndex, isQualityGap, isSpeedRowId, type QualityGap } from './parity-gaps';
 import type { BenchReport, BenchRow, Family } from './report';
 import { AB_NIGHTLY_ONLY, type AbNightlyOnly } from './ab-config';
 import { slowdownLine } from './ab-speed';
@@ -19,11 +19,17 @@ import { speedGapThreshold } from './speed-history';
  *                        trade-off is the BD-rate of the case, so these rows pass or fail with it
  *   throughput           the lower bound of the speed-ratio interval is at least 1 - SPEED_PARITY_TOLERANCE
  *
- * Staged rollout: a quality row is never excused. A speed row listed in bench/parity-gaps.json is tracked: below the
- * reference does not fail it, getting slower than its history predicts does (the upper bound of its interval under the
- * lower edge of the one-sided prediction bound over the CI-measured ratios of its latest runs, bench/speed-history.ts),
- * and reaching parity is reported so the entry can be removed. With fewer points than SPEED_HISTORY_MIN_POINTS the
- * row is reported and not failed. A speed row that is not listed has to pass outright.
+ * Staged rollout: a row listed in bench/parity-gaps.json is tracked, a row that is not listed has to pass outright.
+ *  - A speed row below the reference does not fail while it is tracked; getting slower than its history predicts does (the
+ *    upper bound of its interval under the lower edge of the one-sided prediction bound over the CI-measured ratios of its
+ *    latest runs, bench/speed-history.ts), and reaching parity is reported so the entry can be removed. With fewer points
+ *    than SPEED_HISTORY_MIN_POINTS the row is reported and not failed.
+ *  - A quality row below the reference does not fail while it is tracked and not worse than the value its entry records by
+ *    more than the row's own allowance. Quality numbers are deterministic for fixed tool versions, so the record is a
+ *    ratchet in both directions: worse fails, and so does a better value that is still below the reference, which asks for
+ *    the entry to be updated (an entry that lags behind would let the row slide back to its old value later). A row that
+ *    passes the normal rule is reported so the entry can be removed. An entry whose row a run is about but did not produce
+ *    fails, as a baseline entry does.
  */
 
 export type ParityOutcome = 'pass' | 'fail' | 'not-evaluated';
@@ -40,6 +46,10 @@ export type ParityBasis =
   | 'tracked-short-history'
   | 'tracked-now-at-parity'
   | 'tracked-slower-than-gap'
+  | 'tracked-quality-gap'
+  | 'tracked-worse-than-recorded'
+  | 'tracked-better-than-recorded'
+  | 'gap-row-missing'
   | 'speed-slower-than-base'
   | 'speed-lost-parity'
   | 'speed-not-slower-than-base'
@@ -71,9 +81,9 @@ export interface ParitySummary {
   /** Passing rows whose worsening is inside the measurement allowance, listed so a drift is visible. */
   withinAllowance: number;
   fail: number;
-  /** Passing speed rows that are below the reference and tracked by a gap entry, at or above their recorded ratio. */
+  /** Passing rows below the reference that a gap entry tracks: speed rows within their history, quality rows at their recorded value. */
   tracked: number;
-  /** Tracked speed rows that now pass the parity rule: their gap entry can be removed. */
+  /** Tracked rows that now pass the parity rule: their gap entry can be removed. */
   nowAtParity: number;
   notEvaluated: number;
 }
@@ -86,8 +96,8 @@ export interface ParityVerdict {
   rows: RowVerdict[];
 }
 
-/** A speed row below the reference that a gap entry tracks and that passed: within its history, or too new to judge. */
-const isTracked = (row: RowVerdict): boolean => row.basis === 'tracked-gap' || row.basis === 'tracked-short-history';
+/** A row below the reference that a gap entry tracks and that passed: a speed row within its history or too new to judge, a quality row at its record. */
+const isTracked = (row: RowVerdict): boolean => row.basis === 'tracked-gap' || row.basis === 'tracked-short-history' || row.basis === 'tracked-quality-gap';
 
 /** Metrics measured at one rate-distortion point; at unequal size they are judged with the case's BD-rate. */
 const POINT_QUALITY_METRICS: ReadonlySet<string> = new Set(['ssim', 'psnr', 'vmaf', 'ssimulacra2', 'snr']);
@@ -126,9 +136,9 @@ function describeDirect(row: BenchRow, d: Direct): string {
   return d.ok ? `${numbers}, allowance ${show(d.allowance)})` : `${numbers}; ours is worse by ${show(d.worsening)}, allowance ${show(d.allowance)})`;
 }
 
-type SpeedJudgement = Omit<RowVerdict, 'id' | 'family' | 'case' | 'metric' | 'gap'>;
+type Judgement = Omit<RowVerdict, 'id' | 'family' | 'case' | 'metric' | 'gap'>;
 
-function judgeAbsolute(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
+function judgeAbsolute(row: BenchRow, gap: GapEntry | null): Judgement {
   if (row.speedVerdict === undefined) {
     throw new ParityInputError(`${row.id} is a throughput row without a speed decision; measure it with --parity`);
   }
@@ -188,13 +198,70 @@ function judgeAbsolute(row: BenchRow, gap: GapEntry | null): SpeedJudgement {
  * level of the history (its median, or the recorded ratio) times the median head-to-base ratio is the ratio the history
  * would have measured, and the history's floor and prediction bound apply to that.
  */
-function judgeTrackedAgainstBase(row: BenchRow, gap: GapEntry, headVsBaseMedian: number): SpeedJudgement {
+function judgeTrackedAgainstBase(row: BenchRow, gap: GapEntry, headVsBaseMedian: number): Judgement {
   const recorded = gap.ratio ?? 1;
   const history = (gap.history ?? []).map((point) => point.ratio);
   const level = speedGapThreshold(history, recorded).level;
   const adjusted = level * headVsBaseMedian;
   const judged = judgeAbsolute({ ...row, ratio: adjusted, ratioMedian: adjusted, ratioLow: undefined, ratioHigh: undefined, speedVerdict: adjusted >= 1 - SPEED_PARITY_TOLERANCE ? 'pass' : 'fail', unstableAtCap: false }, gap);
   return { ...judged, detail: `its history level ${show(level)} times the head-to-base ratio ${show(headVsBaseMedian)}: ${judged.detail}` };
+}
+
+/**
+ * A quality row against the reference alone. A point of a rate-distortion curve stands on its own only when the size is
+ * not larger; otherwise the case is judged with its BD-rate rows.
+ */
+function judgeQuality(row: BenchRow, siblings: BenchRow[]): Judgement {
+  const own = direct(row);
+  const ownJudgement: Judgement = { outcome: own.ok ? 'pass' : 'fail', basis: directBasis(own), detail: describeDirect(row, own), worsening: own.worsening, allowance: own.allowance };
+  const bdRows = siblings.filter((other) => other.kind === 'bdrate');
+  const tradeOff = bdRows.length > 0 && (POINT_QUALITY_METRICS.has(row.metric) || SIZE_METRICS.has(row.metric));
+  if (!tradeOff) return ownJudgement;
+  const sizeOk = siblings.filter((other) => SIZE_METRICS.has(other.metric)).every((size) => direct(size).ok);
+  if (own.ok && (SIZE_METRICS.has(row.metric) || sizeOk)) return ownJudgement;
+  const bdOk = bdRows.every((bd) => direct(bd).ok);
+  const bdNames = bdRows.map((bd) => bd.metric).join(', ');
+  return {
+    ...ownJudgement,
+    outcome: bdOk ? 'pass' : 'fail',
+    basis: bdOk ? 'defers-to-bd-rate' : 'below-reference',
+    detail: `${describeDirect(row, own)}; the sizes differ, so the case is judged by ${bdNames}${bdOk ? ', which is at or above the reference' : ', which is below the reference'}`,
+  };
+}
+
+/**
+ * A quality row that a gap entry tracks. A row that passes the normal rule is at parity and its entry is stale. A row that
+ * fails it is held to the record in both directions, within the row's own allowance (the direction and the allowance are
+ * the row's, not the entry's): worse than the record is a regression, and better is an entry that no longer says what the
+ * row does, which a later slide back would hide.
+ */
+function judgeQualityGap(row: BenchRow, normal: Judgement, gap: QualityGap): Judgement {
+  if (normal.outcome === 'pass') {
+    return { ...normal, basis: 'tracked-now-at-parity', detail: `${normal.detail}; now at parity: remove ${row.id} from bench/parity-gaps.json (issue #${gap.issue})` };
+  }
+  const ours = row.ours as number;
+  const allowance = normal.allowance as number;
+  const behindRecord = worsening(row.direction, gap.recorded, ours);
+  const measured = `${row.metric} ${show(ours)} ${row.unit} against the recorded ${show(gap.recorded)} (the reference was ${show(gap.reference)} then, ${show(row.reference as number)} now; allowance ${show(allowance)})`;
+  if (behindRecord > allowance + GATE_EPSILON) {
+    return { ...normal, outcome: 'fail', basis: 'tracked-worse-than-recorded', detail: `${measured}; tracked (issue #${gap.issue}), but ours is worse than the recorded value by ${show(behindRecord)}: the gap got worse` };
+  }
+  if (-behindRecord > allowance + GATE_EPSILON) {
+    return { ...normal, outcome: 'fail', basis: 'tracked-better-than-recorded', detail: `${measured}; tracked (issue #${gap.issue}), but ours is better than the recorded value by ${show(-behindRecord)} and still below the reference: update recorded to ${show(ours)} in bench/parity-gaps.json` };
+  }
+  return { ...normal, outcome: 'pass', basis: 'tracked-quality-gap', detail: `${measured}; below the reference, tracked (issue #${gap.issue}), not worse than recorded` };
+}
+
+/** The entries of quality rows that a run is about (`expected`) and did not produce: a vanished row cannot carry a gap. */
+function missingGapRows(gaps: GapFile, produced: ReadonlySet<string>, expected: ((id: string) => boolean) | undefined): RowVerdict[] {
+  if (expected === undefined) return [];
+  return gaps.gaps
+    .filter((gap) => !isSpeedRowId(gap.id) && !produced.has(gap.id) && expected(gap.id))
+    .map((gap) => {
+      const [family, caseName, metric] = gap.id.split('/');
+      const detail = `known-gap entry (issue #${gap.issue}) names a row this run did not produce: restore the row, or remove the entry if the row is gone for good`;
+      return { id: gap.id, family: family as Family, case: caseName, metric, outcome: 'fail', basis: 'gap-row-missing', detail, worsening: null, allowance: null, gap };
+    });
 }
 
 export interface ParityOptions {
@@ -216,6 +283,12 @@ export interface ParityOptions {
    * workflow sets to the one family of each shard.
    */
   families?: readonly Family[];
+  /**
+   * Whether this run is about the quality row `id` (its family and case are measured, and the run measures quality). A
+   * quality gap entry for such a row that the report does not contain fails, as a baseline entry does
+   * (bench/gate.ts). Without it no entry is asked for its row, which suits a partial run.
+   */
+  expectedRows?: (id: string) => boolean;
 }
 
 const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, issue: gap.issue, ratio: gap.ratio, note: gap.note, history: gap.history ?? [] });
@@ -252,7 +325,7 @@ function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: Bench
  * Otherwise the change did not make the row worse and it passes; a row below the reference that the base was already
  * below is the standing gap the nightly run reports (the absolute rule), not a failure of this change.
  */
-function judgeSpeed(row: BenchRow, gap: GapEntry | null, options: ParityOptions): SpeedJudgement {
+function judgeSpeed(row: BenchRow, gap: GapEntry | null, options: ParityOptions): Judgement {
   const comparedWithBase = row.abPairs !== undefined || row.abFallback !== undefined;
   const nightly = (options.nightlyOnly ?? AB_NIGHTLY_ONLY)[row.id];
   if (nightly !== undefined && comparedWithBase) {
@@ -316,47 +389,12 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
       verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options) });
       continue;
     }
-    const siblings = byCase.get(caseKey(row)) ?? [];
-    const bdRows = siblings.filter((other) => other.kind === 'bdrate');
-    const own = direct(row);
-    const tradeOff = bdRows.length > 0 && (POINT_QUALITY_METRICS.has(row.metric) || SIZE_METRICS.has(row.metric));
-    if (!tradeOff) {
-      verdicts.push({
-        ...base(row),
-        outcome: own.ok ? 'pass' : 'fail',
-        basis: directBasis(own),
-        detail: describeDirect(row, own),
-        worsening: own.worsening,
-        allowance: own.allowance,
-      });
-      continue;
-    }
-    // A point of a rate-distortion curve: it stands on its own only when the size is not larger.
-    const sizeRows = siblings.filter((other) => SIZE_METRICS.has(other.metric));
-    const sizeOk = sizeRows.every((size) => direct(size).ok);
-    const standsAlone = own.ok && (SIZE_METRICS.has(row.metric) || sizeOk);
-    if (standsAlone) {
-      verdicts.push({
-        ...base(row),
-        outcome: 'pass',
-        basis: directBasis(own),
-        detail: describeDirect(row, own),
-        worsening: own.worsening,
-        allowance: own.allowance,
-      });
-      continue;
-    }
-    const bdOk = bdRows.every((bd) => direct(bd).ok);
-    const bdNames = bdRows.map((bd) => bd.metric).join(', ');
-    verdicts.push({
-      ...base(row),
-      outcome: bdOk ? 'pass' : 'fail',
-      basis: bdOk ? 'defers-to-bd-rate' : 'below-reference',
-      detail: `${describeDirect(row, own)}; the sizes differ, so the case is judged by ${bdNames}${bdOk ? ', which is at or above the reference' : ', which is below the reference'}`,
-      worsening: own.worsening,
-      allowance: own.allowance,
-    });
+    const normal = judgeQuality(row, byCase.get(caseKey(row)) ?? []);
+    const gap = gapById.get(row.id) ?? null;
+    verdicts.push({ ...base(row), ...(isQualityGap(gap) ? judgeQualityGap(row, normal, gap) : normal) });
   }
+
+  verdicts.push(...missingGapRows(gaps, new Set(verdicts.map((verdict) => verdict.id)), options.expectedRows));
 
   if (options.baseGaps) {
     const baseById = gapIndex(options.baseGaps);

@@ -356,24 +356,36 @@ Compression
 
 ## 17. Parity gate: quality and speed against reference tools
 
-- **Status**: Implemented (#639, #700, #704, #723, #724).
+- **Status**: Implemented (#639, #700, #704, #723, #724); quality gaps as expected failures decided by QA on 2026-10-17 (epic #763; rows of #783 and #686).
 - **Decision**: every conversion change must keep its quality rows at or above the reference tools. Speed rows have two checks.
   - **Base comparison**: a change may not make a row slower than the base branch by more than the row's threshold, measured in the same job. The default threshold is 10 % (`AB_DEFAULT_REGRESSION`). A row whose measured noise needs a different threshold has its own entry in `AB_ROW_REGRESSION`; each entry records the measurement that justifies it, and no threshold may exceed the cap.
   - **Reference check**: rows below the reference must have a tracked gap entry and issue.
 
-  Quality rows can never be excused by a gap entry. Gate files are taken from the base branch, so a change cannot weaken its own gate.
+  A quality row below the reference may also be a tracked gap, as an expected failure recorded with its current result. The entry in `bench/parity-gaps.json` holds the issue, the `recorded` value of the row and the `reference` value at that time. The direction of the metric and its allowance are the row's own, so the entry repeats neither and cannot widen them.
+  - Not worse than the record by more than the allowance: the row passes and is listed as tracked with its issue.
+  - Worse than the record by more than the allowance: the row fails.
+  - Better than the record by more than the allowance and still below the reference: the row fails and asks for `recorded` to be set to the new value. A lenient record would let the row slide back to its old value unseen, and a record that a pull request writes by hand is checked by the same run against the measured value.
+  - Passing the normal rule (at or above the reference, within its allowance, or deferring to a passing BD-rate): the row is reported as now at parity and the entry is removed.
+  - A run that is about the row (its family, the `--quick` subset and the quality scope, counted as the baseline gate counts them) and does not produce it fails the entry; a skipped row is not evaluated, as any skipped row. An entry excuses no other row, and a metric worse than our own baseline still fails whatever the entry says. There is no switch that turns the check off.
+
+  Gate files are taken from the base branch, so a change cannot weaken its own gate.
 - **Why**:
   - "Industry-best quality and speed" needs a measured definition, not a claim.
   - Comparing against the base in the same job removes runner noise.
   - Taking the gate from the base stops a change from judging itself.
+  - Large conformance suites keep expectation files: a known failure is stored with its current result, a changed result (worse or better) is reported, and a better one asks for the file to be updated. Quality numbers are deterministic for fixed tool versions, so the same ratchet fits: the gate stays green only while nothing gets worse, and a nightly that is red for weeks for known rows stops telling the team about new ones.
 - **Trade-offs**:
   - CI time.
   - A change that makes output more correct, and therefore slower, must also be optimised. QA confirmed in #727 that the 10 % rule stays.
+  - A known quality gap no longer turns the nightly red, so it is only as visible as the report section and the issue that tracks it. The entry carries the issue, and the report lists every tracked row.
+  - Any improvement of a tracked row that stays below the reference needs the record updated in the same pull request.
 - **Alternatives rejected**:
   - **Absolute timing thresholds**: noisy on shared runners.
-  - **Allowing quality gaps**: hides regressions.
-- **Verified by**: `tests/bench-parity.test.ts` and the CI parity workflow tests.
-- **Revisit when**: runner hardware changes enough to need new baselines.
+  - **Keeping the gate red until the rows are fixed**: a permanently failing check hides the next regression and trains the team to ignore it; QA chose the ratchet instead.
+  - **Deleting the rows**: loses the measurement that shows the gap and its closing.
+  - **A gap that excuses the row without a record**: hides regressions; the record is what makes the entry a ratchet.
+- **Verified by**: `tests/bench-parity.test.ts` (hand-built reports and gap files with verdicts worked out on paper, the gap file validation and the inventory of families and issues that may hold quality entries) and the CI parity workflow tests.
+- **Revisit when**: runner hardware changes enough to need new baselines, or the number of tracked quality rows grows past what the issues can hold.
 
 ## 18. Public sample sets as evidence
 

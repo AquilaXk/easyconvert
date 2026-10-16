@@ -6,7 +6,7 @@ import { PARITY_SCHEMA_VERSION, PARITY_VERDICT_FILE, SCHEMA_VERSION } from '../b
 import { BenchArgumentError, ParityInputError, ReportSchemaError } from '../bench/errors';
 import { evaluateParity, failureLines, type ParityRunFile, renderParityMarkdown, renderParityText } from '../bench/parity';
 import { describeGap, type GapFile, validateGaps } from '../bench/parity-gaps';
-import type { BenchReport, BenchRow } from '../bench/report';
+import { FAMILIES, type BenchReport, type BenchRow } from '../bench/report';
 import { parseArgs, main } from '../bench/run';
 
 /**
@@ -297,7 +297,6 @@ describe('the known gaps', () => {
       { id: XZ, issue: 487, ratio: 0.46, note: 'LZMA decode speed', history: history(0.46, 0.46, 0.46, 0.46) },
       // [1, 2, 2, 2, 4] scaled by 0.25: geometric mean 0.5, lower edge 0.25 * 0.26750 = 0.066875.
       { id: ZST, issue: 497, ratio: 0.5, note: 'zstd level 3 speed', history: history(0.25, 0.5, 0.5, 0.5, 1) },
-      { id: 'image/a.jpg->avif/bd_rate_psnr', issue: 640, ratio: null, note: 'AVIF curve' },
     ],
   };
   const speed = (id: string, over: Partial<BenchRow>): BenchRow =>
@@ -370,12 +369,12 @@ describe('the known gaps', () => {
     expect(verdict.summary).toMatchObject({ tracked: 0, nowAtParity: 1 });
   });
 
-  it('never excuses a quality row: a listed quality gap still fails, with its issue named', () => {
+  it('fails a quality row that is not listed, and says it is not a known gap', () => {
     const bd = row({ id: 'image/a.jpg->avif/bd_rate_psnr', direction: 'lower', kind: 'bdrate', ours: 6, reference: 0, tolerance: { abs: 1.5, rel: 0 } });
     const verdict = judged([bd]);
     expect(verdict.verdict).toBe('fail');
-    expect(verdict.rows[0]).toMatchObject({ outcome: 'fail', basis: 'below-reference' });
-    expect(failureLines(verdict)[0]).toContain('known gap, issue #640: AVIF curve');
+    expect(verdict.rows[0]).toMatchObject({ outcome: 'fail', basis: 'below-reference', gap: null });
+    expect(failureLines(verdict)[0]).toContain('not a known gap: bring it to parity');
   });
 
   it('describes a gap by its issue or by its absence', () => {
@@ -388,15 +387,15 @@ describe('the known gaps', () => {
     ['another schema version', { schemaVersion: 2, gaps: [] }, /schemaVersion/],
     ['gaps that are not a list', { schemaVersion: 1, gaps: {} }, /gaps must be an array/],
     ['an id that is not a row id', { schemaVersion: 1, gaps: [{ id: 'nonsense', issue: 1, ratio: null, note: 'n' }] }, /<family>\/<case>\/<metric>/],
-    ['a repeated id', { schemaVersion: 1, gaps: [{ id: 'a/b/c', issue: 1, ratio: null, note: 'n' }, { id: 'a/b/c', issue: 2, ratio: null, note: 'n' }] }, /listed twice/],
+    ['a repeated id', { schemaVersion: 1, gaps: [{ id: 'a/b/c', issue: 1, ratio: null, note: 'n', recorded: 1, reference: 0 }, { id: 'a/b/c', issue: 2, ratio: null, note: 'n', recorded: 1, reference: 0 }] }, /listed twice/],
     ['a null issue', { schemaVersion: 1, gaps: [{ id: 'a/b/throughput', issue: null, ratio: 0.5, note: 'n' }] }, /issue must be a positive integer/],
     ['a missing issue', { schemaVersion: 1, gaps: [{ id: 'a/b/c', ratio: null, note: 'n' }] }, /issue must be a positive integer/],
     ['an issue that is not a positive integer', { schemaVersion: 1, gaps: [{ id: 'a/b/c', issue: 0, ratio: null, note: 'n' }] }, /issue must be a positive integer/],
     ['a speed row without a ratio', { schemaVersion: 1, gaps: [{ id: 'a/b/throughput', issue: 3, ratio: null, note: 'n' }] }, /ratio must be a positive speed ratio/],
     ['a speed row with a non-positive ratio', { schemaVersion: 1, gaps: [{ id: 'a/b/throughput', issue: 3, ratio: 0, note: 'n' }] }, /ratio must be a positive speed ratio/],
-    ['a quality row with a ratio', { schemaVersion: 1, gaps: [{ id: 'a/b/ssim', issue: 3, ratio: 0.5, note: 'n' }] }, /ratio must be null for the quality row/],
-    ['a missing note', { schemaVersion: 1, gaps: [{ id: 'a/b/c', issue: 3, ratio: null, note: '' }] }, /note/],
-    ['a history on a quality row', { schemaVersion: 1, gaps: [{ id: 'a/b/ssim', issue: 3, ratio: null, note: 'n', history: [] }] }, /history is only for speed rows/],
+    ['a quality row with a ratio', { schemaVersion: 1, gaps: [{ id: 'a/b/ssim', issue: 3, ratio: 0.5, note: 'n', recorded: 0.9, reference: 0.95 }] }, /ratio must be null for the quality row/],
+    ['a missing note', { schemaVersion: 1, gaps: [{ id: 'a/b/c', issue: 3, ratio: null, note: '', recorded: 1, reference: 0 }] }, /note/],
+    ['a history on a quality row', { schemaVersion: 1, gaps: [{ id: 'a/b/ssim', issue: 3, ratio: null, note: 'n', recorded: 0.9, reference: 0.95, history: [] }] }, /history is only for speed rows/],
     ['a history that is not a list', { schemaVersion: 1, gaps: [{ id: 'a/b/throughput', issue: 3, ratio: 0.5, note: 'n', history: {} }] }, /history must be an array/],
     ['a history point without a positive ratio', { schemaVersion: 1, gaps: [{ id: 'a/b/throughput', issue: 3, ratio: 0.5, note: 'n', history: [{ ratio: 0, at: '2026-10-01T02:00:00.000Z' }] }] }, /history\[0\]\.ratio/],
     ['a history point without a run time', { schemaVersion: 1, gaps: [{ id: 'a/b/throughput', issue: 3, ratio: 0.5, note: 'n', history: [{ ratio: 0.5, at: 'yesterday' }] }] }, /history\[0\]\.at/],
@@ -408,13 +407,28 @@ describe('the known gaps', () => {
     expect(() => validateGaps(value)).toThrow(message);
   });
 
-  it('ships a gap file whose every entry names an issue and a row the baseline records', () => {
+  // The families whose quality rows may be tracked as known gaps, with the issue that holds each: a new family or issue is a decision to take here.
+  const QUALITY_GAP_ISSUE_BY_FAMILY: Readonly<Record<string, number>> = { 'pdf-ops': 783, raw: 686 };
+
+  it('ships a gap file whose every entry names an issue, and whose speed entries name a row the baseline records', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
     expect(shipped.gaps.length).toBeGreaterThan(15);
     for (const gap of shipped.gaps) {
       expect(Number.isInteger(gap.issue) && gap.issue > 0, gap.id).toBe(true);
-      expect(gap.id in baseline.entries, gap.id).toBe(true);
+      // A quality row may be new and not baselined yet; the run refuses an entry whose row it did not produce (gap-row-missing).
+      if (gap.ratio !== null) expect(gap.id in baseline.entries, gap.id).toBe(true);
+    }
+  });
+
+  it('holds quality entries only for the families and issues the rollout allows, each with a record', () => {
+    const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
+    for (const gap of shipped.gaps.filter((candidate) => !candidate.id.endsWith('/throughput'))) {
+      const family = gap.id.split('/')[0];
+      expect(FAMILIES, gap.id).toContain(family);
+      expect(gap.issue, gap.id).toBe(QUALITY_GAP_ISSUE_BY_FAMILY[family]);
+      expect(typeof gap.recorded, gap.id).toBe('number');
+      expect(typeof gap.reference, gap.id).toBe('number');
     }
   });
 
@@ -459,6 +473,155 @@ describe('the known gaps', () => {
   it('accepts a family name with a hyphen in a row id', () => {
     const gaps = validateGaps({ schemaVersion: 1, gaps: [{ id: 'pdf-ops/watermark.pdf->pdf/throughput', issue: 695, ratio: 0.83, note: 'n' }] });
     expect(gaps.gaps.map((gap) => gap.id)).toEqual(['pdf-ops/watermark.pdf->pdf/throughput']);
+  });
+});
+
+describe('the quality gaps', () => {
+  // Hand-built rows with the numbers of the rows these entries exist for; every verdict below is worked out on paper.
+  const CHECKS = 'pdf-ops/pdf-qpdf-pages-loop.pdf->compress/pdf_check_failures';
+  const BYTES = 'pdf-ops/pdf-qpdf-form-errors.pdf->delete/bytes';
+  const CONVERTS = 'raw/raw-samsung-s23.dng->jpg/converts';
+  const CURVE = 'raw/raw-canon-r5-raw.cr3->jpg/bd_rate_psnr';
+  const checks = (ours: number): BenchRow => row({ id: CHECKS, direction: 'lower', kind: 'exact', ours, reference: 0, tolerance: { abs: 0, rel: 0 } });
+  // 3 percent of 25,870 bytes is 776.1: the allowance of the size row.
+  const bytes = (ours: number): BenchRow => row({ id: BYTES, direction: 'lower', kind: 'size', ours, reference: 25870, tolerance: { abs: 0, rel: 0.03 } });
+  const converts = (ours: number): BenchRow => row({ id: CONVERTS, direction: 'higher', kind: 'exact', ours, reference: 1, tolerance: { abs: 0, rel: 0 } });
+  const curve = (ours: number): BenchRow => row({ id: CURVE, direction: 'lower', kind: 'bdrate', ours, reference: 0, tolerance: { abs: 1.5, rel: 0 } });
+  const entry = (id: string, recorded: number, reference: number, issue = 783): GapFile['gaps'][number] => ({ id, issue, ratio: null, note: 'known gap', recorded, reference });
+  const gaps = (...entries: GapFile['gaps']): GapFile => ({ schemaVersion: PARITY_SCHEMA_VERSION, gaps: entries });
+  const verdictOf = (rows: BenchRow[], file: GapFile, id: string): ReturnType<typeof evaluateParity>['rows'][number] => {
+    const found = evaluateParity(report(rows, ['pdf-ops', 'raw']), file).rows.find((candidate) => candidate.id === id);
+    if (!found) throw new Error(`no verdict for ${id}`);
+    return found;
+  };
+
+  it('tracks a row that has exactly the recorded value, with its issue and both values', () => {
+    const tracked = verdictOf([checks(1)], gaps(entry(CHECKS, 1, 0)), CHECKS);
+    expect(tracked).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    expect(tracked.detail).toContain('issue #783');
+    expect(tracked.detail).toContain('recorded 1');
+    expect(tracked.detail).toContain('the reference was 0 then, 0 now');
+  });
+
+  it('fails a row that got worse than the recorded value by more than its allowance, and tracks one inside it', () => {
+    expect(verdictOf([checks(2)], gaps(entry(CHECKS, 1, 0)), CHECKS)).toMatchObject({ outcome: 'fail', basis: 'tracked-worse-than-recorded' });
+    // Higher is better for converts: 0 recorded against 1, and the metric cannot fall below 0, so only the value above counts.
+    expect(verdictOf([converts(0)], gaps(entry(CONVERTS, 0, 1, 686)), CONVERTS)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    // Allowance 776.1 bytes: 776 more than the recorded 26,830 is inside it, 777 is not.
+    expect(verdictOf([bytes(27606)], gaps(entry(BYTES, 26830, 25870)), BYTES)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    const worse = verdictOf([bytes(27607)], gaps(entry(BYTES, 26830, 25870)), BYTES);
+    expect(worse).toMatchObject({ outcome: 'fail', basis: 'tracked-worse-than-recorded', gap: { issue: 783 } });
+    expect(worse.detail).toContain('ours is worse than the recorded value by 777');
+  });
+
+  it('judges the direction of the metric: a lower value of a higher-is-better row is worse than the record', () => {
+    const higherBetter = row({ id: 'raw/raw-samsung-s23.dng->jpg/ssim', direction: 'higher', ours: 0.80, reference: 0.95, tolerance: { abs: 0.01, rel: 0 } });
+    const file = gaps(entry(higherBetter.id, 0.85, 0.95, 686));
+    expect(verdictOf([{ ...higherBetter, ours: 0.84, delta: -0.11 }], file, higherBetter.id)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    expect(verdictOf([{ ...higherBetter, ours: 0.83, delta: -0.12 }], file, higherBetter.id)).toMatchObject({ outcome: 'fail', basis: 'tracked-worse-than-recorded' });
+    expect(verdictOf([{ ...higherBetter, ours: 0.86, delta: -0.09 }], file, higherBetter.id)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+  });
+
+  it('fails a row that is better than the record by more than its allowance yet still below the reference, so a lenient record cannot stay', () => {
+    // Recorded +4.0 against 0; allowance 1.5. +2.5 is 1.5 better (inside), +2.4 is 1.6 better (stale entry), and both are still above the allowance of the reference.
+    expect(verdictOf([curve(2.5)], gaps(entry(CURVE, 4, 0, 686)), CURVE)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    const stale = verdictOf([curve(2.4)], gaps(entry(CURVE, 4, 0, 686)), CURVE);
+    expect(stale).toMatchObject({ outcome: 'fail', basis: 'tracked-better-than-recorded' });
+    expect(stale.detail).toContain('update recorded to 2.4');
+  });
+
+  it('reports a row that passes the normal rule as now at parity, so the entry gets removed', () => {
+    const done = verdictOf([checks(0)], gaps(entry(CHECKS, 1, 0)), CHECKS);
+    expect(done).toMatchObject({ outcome: 'pass', basis: 'tracked-now-at-parity' });
+    expect(done.detail).toContain(`now at parity: remove ${CHECKS} from bench/parity-gaps.json (issue #783)`);
+    // Within the allowance of the reference counts as parity, as it does for a row without an entry: 25,870 + 776 bytes.
+    expect(verdictOf([bytes(26646)], gaps(entry(BYTES, 26830, 25870)), BYTES)).toMatchObject({ outcome: 'pass', basis: 'tracked-now-at-parity' });
+    expect(verdictOf([converts(1)], gaps(entry(CONVERTS, 0, 1, 686)), CONVERTS)).toMatchObject({ outcome: 'pass', basis: 'tracked-now-at-parity' });
+  });
+
+  it('counts tracked and now-at-parity quality rows in the summary and shows them in the sections', () => {
+    const verdict = evaluateParity(report([checks(1), bytes(25870), curve(1.93)], ['pdf-ops', 'raw']), gaps(entry(CHECKS, 1, 0), entry(BYTES, 26830, 25870), entry(CURVE, 1.93, 0, 686)));
+    expect(verdict.verdict).toBe('pass');
+    expect(verdict.summary).toMatchObject({ evaluated: 3, fail: 0, tracked: 2, nowAtParity: 1 });
+    const text = renderParityText(verdict);
+    expect(text).toEqual(expect.arrayContaining([expect.stringContaining(`TRACK ${CHECKS} [tracked-quality-gap]`)]));
+    expect(text).toEqual(expect.arrayContaining([expect.stringContaining(`DONE ${BYTES} [tracked-now-at-parity]`)]));
+    expect(renderParityMarkdown(verdict)).toContain(`| ${CURVE} | tracked-quality-gap |`);
+  });
+
+  it('excuses nothing but its own row: a regression of any other row still fails the verdict', () => {
+    const other = row({ id: 'pdf-ops/other.pdf->compress/pdf_check_failures', direction: 'lower', kind: 'exact', ours: 1, reference: 0, tolerance: { abs: 0, rel: 0 } });
+    const verdict = evaluateParity(report([checks(1), other], ['pdf-ops']), gaps(entry(CHECKS, 1, 0)));
+    expect(verdict.verdict).toBe('fail');
+    expect(verdict.rows.map((candidate) => [candidate.id, candidate.outcome])).toEqual([[CHECKS, 'pass'], [other.id, 'fail']]);
+    expect(failureLines(verdict)).toEqual([expect.stringContaining('not a known gap')]);
+  });
+
+  it('judges a point of a rate-distortion curve that defers to the BD-rate by its final outcome', () => {
+    const id = 'raw/raw-canon-r5-raw.cr3->jpg/ssim';
+    const point = row({ id, direction: 'higher', ours: 0.9, reference: 0.95, tolerance: { abs: 0.003, rel: 0 } });
+    const rows = [point, row({ id: 'raw/raw-canon-r5-raw.cr3->jpg/bytes', direction: 'lower', kind: 'size', ours: 120, reference: 100, tolerance: { abs: 0, rel: 0.01 } }), curve(-3)].map((candidate) => ({ ...candidate, case: 'raw-canon-r5-raw.cr3->jpg' }));
+    const done = evaluateParity(report(rows, ['raw']), gaps(entry(id, 0.88, 0.95, 686))).rows.find((candidate) => candidate.id === id);
+    // The BD-rate is ahead, so the point passes by the curve and its entry is stale.
+    expect(done).toMatchObject({ outcome: 'pass', basis: 'tracked-now-at-parity' });
+  });
+
+  describe('a row the entry names that the run did not produce', () => {
+    const expected = (id: string): boolean => id.startsWith('pdf-ops/');
+    const lost = (options: Parameters<typeof evaluateParity>[2]): ReturnType<typeof evaluateParity> => evaluateParity(report([curve(1.93)], ['pdf-ops', 'raw']), gaps(entry(CHECKS, 1, 0)), options);
+
+    it('fails when the run is about that row, rather than letting a vanished row carry a gap', () => {
+      const verdict = lost({ expectedRows: expected });
+      expect(verdict.verdict).toBe('fail');
+      expect(verdict.rows.find((candidate) => candidate.id === CHECKS)).toMatchObject({ outcome: 'fail', basis: 'gap-row-missing', family: 'pdf-ops', case: 'pdf-qpdf-pages-loop.pdf->compress', metric: 'pdf_check_failures' });
+      expect(failureLines(verdict).filter((line) => line.includes(CHECKS))).toEqual([expect.stringContaining('did not produce')]);
+    });
+
+    it('leaves it alone when the run is not about that row, or does not say which rows it is about', () => {
+      expect(lost({ expectedRows: () => false }).rows.map((candidate) => candidate.id)).toEqual([CURVE]);
+      expect(lost({}).rows.map((candidate) => candidate.id)).toEqual([CURVE]);
+    });
+
+    it('lists a skipped row as not evaluated, as any skipped row, and does not fail it', () => {
+      const skipped = row({ id: CHECKS, direction: 'lower', kind: 'exact', status: 'skipped', ours: null, reference: null, delta: null, skipKind: 'missing-tool', skipReason: 'qpdf is not installed' });
+      const verdict = evaluateParity(report([skipped], ['pdf-ops']), gaps(entry(CHECKS, 1, 0)), { expectedRows: expected });
+      expect(verdict.rows).toHaveLength(1);
+      expect(verdict.rows[0]).toMatchObject({ outcome: 'not-evaluated', basis: 'skipped' });
+    });
+
+    it('does not ask a speed entry for a quality run, which the speed backing handles', () => {
+      const speedEntry = { id: 'pdf-ops/watermark.pdf->pdf/throughput', issue: 695, ratio: 0.8, note: 'n' };
+      const verdict = evaluateParity(report([curve(0)], ['pdf-ops', 'raw']), { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [speedEntry] }, { expectedRows: expected });
+      expect(verdict.rows.map((candidate) => candidate.id)).toEqual([CURVE]);
+    });
+  });
+
+  describe('the gap file', () => {
+    const valid = { id: CHECKS, issue: 783, ratio: null, note: 'n', recorded: 1, reference: 0 };
+    it('accepts a quality entry that records its value and the reference then', () => {
+      expect(validateGaps({ schemaVersion: 1, gaps: [valid] }).gaps[0]).toEqual(valid);
+      expect(validateGaps({ schemaVersion: 1, gaps: [{ ...valid, recorded: -0.5, reference: 0 }] }).gaps[0].recorded).toBe(-0.5);
+    });
+
+    it.each<[string, Record<string, unknown>, RegExp]>([
+      ['no recorded value', { recorded: undefined }, /recorded must be a finite number/],
+      ['a recorded value that is not a number', { recorded: '1' }, /recorded must be a finite number/],
+      ['a recorded value that is not finite', { recorded: Number.POSITIVE_INFINITY }, /recorded must be a finite number/],
+      ['no reference value', { reference: undefined }, /reference must be a finite number/],
+      ['a reference that is not a number', { reference: null }, /reference must be a finite number/],
+    ])('rejects a quality entry with %s', (_name, over, message) => {
+      expect(() => validateGaps({ schemaVersion: 1, gaps: [{ ...valid, ...over }] })).toThrow(message);
+    });
+
+    it('rejects a record on a speed entry, which is judged by its speed history', () => {
+      const speedEntry = { id: 'pdf-ops/watermark.pdf->pdf/throughput', issue: 695, ratio: 0.8, note: 'n' };
+      expect(() => validateGaps({ schemaVersion: 1, gaps: [{ ...speedEntry, recorded: 1 }] })).toThrow(/recorded is only for quality rows/);
+      expect(() => validateGaps({ schemaVersion: 1, gaps: [{ ...speedEntry, reference: 1 }] })).toThrow(/reference is only for quality rows/);
+    });
+
+    it('describes a quality gap by its issue and note', () => {
+      expect(describeGap(valid)).toBe('known gap, issue #783: n');
+    });
   });
 });
 
@@ -689,12 +852,44 @@ describe('a parity run on a saved report', () => {
     expect(regressed.lines.some((line) => line.startsWith(`REGRESSION ${SSIM_ID}`))).toBe(true);
   });
 
-  it('exits 3 for a quality gap, which a gap entry never excuses', async () => {
-    const baseline = baselineEntries(1.1);
-    baseline[BD_ID] = { ...baseline[BD_ID], ours: 4, delta: 4 };
-    const { code, lines } = await run(rowsWith(4, 0.96, 'pass'), { baseline, gaps: [{ id: BD_ID, issue: 640, ratio: null, note: 'curve' }] });
-    expect(code).toBe(3);
-    expect(lines.some((line) => line.startsWith(`BELOW REFERENCE ${BD_ID}`) && line.includes('known gap, issue #640'))).toBe(true);
+  describe('a quality gap in a run', () => {
+    const gapAt = (recorded: number): Record<string, unknown> => ({ id: BD_ID, issue: 640, ratio: null, note: 'curve', recorded, reference: 0 });
+    const baselineAt4 = (): Record<string, Entry> => ({ ...baselineEntries(1.1), [BD_ID]: { ...baselineEntries(1.1)[BD_ID], ours: 4, delta: 4 } });
+
+    it('exits 3 for a BD-rate behind the reference that no entry lists', async () => {
+      const { code, lines } = await run(rowsWith(4, 0.96, 'pass'), { baseline: baselineAt4() });
+      expect(code).toBe(3);
+      expect(lines.some((line) => line.startsWith(`BELOW REFERENCE ${BD_ID}`) && line.includes('not a known gap'))).toBe(true);
+    });
+
+    it('exits 0 and lists the row as tracked once an entry records the value it has', async () => {
+      const { code, lines, verdict } = await run(rowsWith(4, 0.96, 'pass'), { baseline: baselineAt4(), gaps: [gapAt(4)] });
+      expect(code).toBe(0);
+      expect(lines.some((line) => line.includes(`TRACK ${BD_ID} [tracked-quality-gap]`) && line.includes('issue #640'))).toBe(true);
+      expect(verdict.parity.summary).toMatchObject({ fail: 0, tracked: 1 });
+    });
+
+    it('exits 3 when the row is worse than the value the entry records', async () => {
+      const { code, lines } = await run(rowsWith(4, 0.96, 'pass'), { baseline: baselineAt4(), gaps: [gapAt(2)] });
+      expect(code).toBe(3);
+      expect(lines.some((line) => line.startsWith(`BELOW REFERENCE ${BD_ID}`) && line.includes('known gap, issue #640'))).toBe(true);
+    });
+
+    it('still exits 1 for a metric worse than our own baseline, which an entry does not excuse', async () => {
+      const baseline = { ...baselineEntries(1.1), [BD_ID]: { ...baselineEntries(1.1)[BD_ID], ours: 1, delta: 1 } };
+      expect((await run(rowsWith(4, 0.96, 'pass'), { baseline, gaps: [gapAt(4)] })).code).toBe(1);
+    });
+
+    it('exits 3 for an entry whose row this run should have produced, and leaves it alone when the run is not about quality rows', async () => {
+      const lost = [...rowsWith(-2, 0.96, 'pass')].filter((candidate) => candidate.id !== BD_ID);
+      const baseline = baselineEntries(1.1);
+      delete baseline[BD_ID];
+      const missing = await run(lost, { baseline, gaps: [gapAt(4)] });
+      expect(missing.code).toBe(3);
+      expect(missing.lines.some((line) => line.startsWith(`BELOW REFERENCE ${BD_ID}`) && line.includes('did not produce'))).toBe(true);
+      expect((await run(lost, { baseline, gaps: [gapAt(4)], flags: ['--speed-only'] })).code).toBe(0);
+      expect((await run(lost, { baseline, gaps: [{ ...gapAt(4), id: 'pdf-ops/a.pdf->compress/pdf_check_failures' }] })).code).toBe(0);
+    });
   });
 
   it('exits 3 for a BD-rate behind the reference and names that row', async () => {

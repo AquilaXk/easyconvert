@@ -65,7 +65,10 @@ export function judgeParity(report: BenchReport, options: JudgeOptions, out: (li
   printGate(gate, out);
   // A quality-only run measures no speed, so it cannot back a gap entry; the speed run of the same change does.
   const baseGaps = options.baseGapsPath && scope !== 'quality' ? readGaps(options.baseGapsPath) : undefined;
-  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps, families: options.families });
+  const measuredFamilies = new Set<string>(options.families);
+  // The rows this run is about, as the baseline gate counts them: a quality entry for one of them that the report lacks fails.
+  const expectedRows = (id: string): boolean => measuredFamilies.has(id.split('/')[0]) && include(id, { ratio: null });
+  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps, families: options.families, expectedRows });
   for (const line of failureLines(parity)) out(line);
   for (const line of renderParityText(parity)) out(line);
 
