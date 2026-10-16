@@ -1,7 +1,8 @@
 /**
  * Builds bench/realworld/manifest.json. Deterministic: archives and file lists are walked in order and files are taken
  * per format until each quota is met, skipping empty files and files over the size cap. Every chosen file is
- * downloaded once to record its SHA-256.
+ * downloaded once to record its SHA-256. The sources and files of every other source (the hand-picked format samples,
+ * bench/realworld/PROVENANCE.md) are carried over unchanged.
  *
  *   tsx scripts/realworld-manifest.ts --govdocs 0-19 --office-list FILE --office-commit SHA
  *
@@ -13,7 +14,7 @@ import path from 'node:path';
 import { getFormatByExtension } from '../src/lib/registry';
 import { download, mapLimit, MAX_CORPUS_FILE_BYTES, sha256 } from '../bench/realworld/fetch';
 import { fetchBytes, fetchSize } from '../bench/realworld/http';
-import { MANIFEST_PATH, MANIFEST_SCHEMA, parseManifest, readManifest, type CorpusFile, type CorpusManifest, type CorpusSource } from '../bench/realworld/manifest';
+import { curatedEntries, MANIFEST_PATH, MANIFEST_SCHEMA, parseManifest, readManifest, type CorpusFile, type CorpusManifest, type CorpusSource } from '../bench/realworld/manifest';
 import { EOCD_SEARCH_BYTES, locateCentralDirectory, parseCentralDirectory } from '../bench/realworld/zip-range';
 
 const GOVDOCS_BASE = 'https://digitalcorpora.s3.amazonaws.com/corpora/files/govdocs1/zipfiles';
@@ -134,7 +135,9 @@ async function main(): Promise<void> {
   });
   const unique = new Map<string, CorpusFile>();
   for (const file of files) if (file !== null && !unique.has(file.id)) unique.set(file.id, file);
-  const manifest: CorpusManifest = { schema: MANIFEST_SCHEMA, sources: SOURCES, files: [...unique.values()] };
+  // The format samples of #780 are chosen by hand, not by quota: a rebuild keeps them as they are.
+  const curated = fs.existsSync(MANIFEST_PATH) ? curatedEntries(readManifest(), new Set(SOURCES.map((source) => source.id))) : { sources: [], files: [] };
+  const manifest: CorpusManifest = { schema: MANIFEST_SCHEMA, sources: [...SOURCES, ...curated.sources], files: [...unique.values(), ...curated.files] };
   parseManifest(JSON.stringify(manifest));
   // One file per line keeps the manifest compact and its diffs readable.
   const body = [

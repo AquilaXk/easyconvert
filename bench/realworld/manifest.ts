@@ -43,6 +43,14 @@ export interface CorpusFile {
   format: string;
   size: number;
   sha256: string;
+  /** Licence code of this file when it differs from its source's statement (see bench/realworld/PROVENANCE.md). */
+  licence?: string;
+  /** The application and version, or the device, that wrote the file, where the publisher says. */
+  producer?: string;
+  /** The publisher's page for the file (a Wikimedia Commons file page), where the licence and the author are stated. */
+  page?: string;
+  /** The author to credit, where the licence asks for it. */
+  credit?: string;
   /**
    * The file holds no content (an empty sheet, a body with no text, a frameset page), so a text conversion of it is rightly zero
    * bytes. Set only after reading the file with a tool that is not the converter, and explained in `emptyInputReason`.
@@ -73,6 +81,11 @@ function checkFile(file: CorpusFile, sources: ReadonlySet<string>, seen: Set<str
   if (!Number.isSafeInteger(file.size) || file.size <= 0) throw new ManifestError(`${file.id}: size must be a positive integer`);
   if (typeof file.format !== 'string' || file.format === '') throw new ManifestError(`${file.id}: format is missing`);
   if (file.emptyInput !== undefined && file.emptyInput !== true) throw new ManifestError(`${file.id}: emptyInput is either absent or true`);
+  for (const field of ['licence', 'producer', 'page', 'credit'] as const) {
+    const value = file[field];
+    if (value !== undefined && (typeof value !== 'string' || value.trim() === '')) throw new ManifestError(`${file.id}: ${field} is either absent or a non-empty string`);
+  }
+  if (file.page !== undefined && !file.page.startsWith('https://')) throw new ManifestError(`${file.id}: page must be an https URL`);
   const reason = file.emptyInputReason;
   if (file.emptyInput === true && (typeof reason !== 'string' || reason.trim() === '')) throw new ManifestError(`${file.id}: emptyInput needs the reason the file is empty`);
   if (file.emptyInput === undefined && reason !== undefined) throw new ManifestError(`${file.id}: emptyInputReason without emptyInput`);
@@ -105,4 +118,12 @@ export function parseManifest(json: string): CorpusManifest {
 
 export function readManifest(file = MANIFEST_PATH): CorpusManifest {
   return parseManifest(fs.readFileSync(file, 'utf8'));
+}
+
+/** The sources the generator does not own, with their files: hand-picked entries that a rebuild of the generated sources keeps. */
+export function curatedEntries(manifest: CorpusManifest, generatedSources: ReadonlySet<string>): Pick<CorpusManifest, 'sources' | 'files'> {
+  return {
+    sources: manifest.sources.filter((source) => !generatedSources.has(source.id)),
+    files: manifest.files.filter((file) => !generatedSources.has(file.source)),
+  };
 }

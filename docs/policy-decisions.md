@@ -63,6 +63,7 @@ Quality evidence
 
 17. [Parity gate: quality and speed against reference tools](#17-parity-gate-quality-and-speed-against-reference-tools)
 18. [Public sample sets as evidence](#18-public-sample-sets-as-evidence)
+37. [Real sample files for every input format](#37-real-sample-files-for-every-input-format)
 
 Tabular data
 
@@ -867,3 +868,21 @@ Compression
   - **Encoder settings that are faster with the same or better quality on these pictures** (AVIF superblock 64, WebP effort 3) are measured in the pull request and left to a decision: they change the files.
 - **Verified by**: `tests/image-avif-direct-handoff.test.ts` (which PNG files the encoder may read as they are, chunk by chunk; the file the encoder is given is the source; the AVIF is the one the encoder writes for that file, run on the source with the recorded arguments; the regular route gives the same bytes, also for 16-bit colour and 16-bit grey pictures whose alpha plane is fully opaque or one step below (the encoder's PNG reader drops a fully opaque plane exactly as the regular route does); a failing encoder is run again on the decoded pixels; an encoder that writes nothing is not; the working directory and the process of an abandoned run are gone), `tests/image-decoded-source-blocks.test.ts` (packet, background, density and stripping: read once, same bytes, and the packet and the density in the output read by `exiftool`), `tests/image-16bit-jpeg-class.test.ts` (the class of a 16-bit colour PNG, the equality with the 8-bit PNG of the nearest levels, resize, background and translucent alpha), `tests/image-header-reads.test.ts` (one header read), `tests/image-threads.test.ts` (the JPEG lease), and the `image` parity rows.
 - **Revisit when**: the reference tools change how they read the PNG, a WebP pipeline gets a measured gain from threads, or the AVIF encoder offers a way to read pixels from a pipe without a file.
+
+## 37. Real sample files for every input format
+
+- **Status**: Implemented (issue #780), decided 2026-10-16 (QA decision: the sample sets are completed before more speed work).
+- **Decision**:
+  - Every input format the registry accepts has at least three real sample files in the corpus manifests (`bench/corpus/remote-manifest.json`, `bench/realworld/manifest.json`, `tests/fixtures/raw/*.json`), or an entry in `bench/realworld/format-coverage-exceptions.json` that states why no further public sample with a usable licence exists and lists the sources searched. `tests/corpus-format-coverage.test.ts` fails for a format with neither, and for an entry whose format has since reached three samples.
+  - A real sample is a file published by somebody other than this project. Files that a test or a generator of this repository writes do not count.
+  - New samples go to the real-world corpus: pinned by origin, size and SHA-256, never committed, fetched when a run needs them, with the licence statement of their source in `bench/realworld/PROVENANCE.md`. Sources are chosen for a stated licence and a pinned address (a commit, a release tag, an archive that keeps old versions); where the publisher states no licence the files are fetched for conversion testing only. Files from exploit databases, fuzzer outputs and files of unknown licence from government forms are not used.
+  - The nightly real-world run converts every sample through three of its format's targets. A crash, hang or bad output of a new sample fails the night unless it is listed in `bench/realworld/known-failures.json` with the issue that tracks the fix.
+- **Why it is right in practice**: published evaluations of converters and decoders use corpora of files from many producers, because a format reader written against one producer's files passes its own tests and fails on the next application's output. Format-detection and conversion test suites of mature open-source projects therefore keep one example file per producer and version, and track files they cannot handle in a list instead of deleting them. A count per format that a test checks stops the corpus from drifting back to the formats that are easy to find.
+- **Trade-offs**: the nightly corpus grows by about 600 files (about 370 MB across the ten shard caches, and about ten percent more jobs); some hosts (a mirror, a sample collection) may move a file, which fails the run until the file is re-pinned. A format with fewer than three public files stays on the exceptions list with its reason, and the third sample of a rare format is often a test file of a library rather than a document from a user. The producer of a file is recorded where the publisher states it but not enforced: whether a second producer exists is a finding of the search.
+- **Alternatives rejected**:
+  - **Generating samples with the converters' reference tools**: a file we wrote tests our own producer; the point of the rule is inputs we did not write.
+  - **Committing the files**: several sources state no licence or restrict redistribution, and the repository would grow by hundreds of megabytes.
+  - **A minimum of 10 samples per format**: the rarer formats (Palm eBook variants, StarOffice generations, Real audio) have two or three public files in total.
+  - **Adding the samples to the parity quality families**: each sample would need an oracle and a baseline row; the real-world run needs neither and finds crashes, hangs and wrong outputs on all of them. The families keep the sample sets of #733.
+- **Verified by**: `tests/corpus-format-coverage.test.ts` (the counting rule on synthetic manifests, then the real manifests against the registry, the exceptions list and the provenance notes), `tests/realworld-corpus.test.ts` (manifest validation, plan and gate), and the nightly real-world run.
+- **Revisit when**: a format on the exceptions list gets a public sample, the registry gains a format, or a source stops publishing a pinned file.

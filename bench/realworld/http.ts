@@ -2,6 +2,7 @@
  * HTTP reads for the corpus fetcher: whole files and byte ranges, with bounded retries and a size cap. A proxy named in
  * HTTPS_PROXY is honoured so the fetcher works behind one.
  */
+import net from 'node:net';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
 
 const RETRIES = 6;
@@ -9,6 +10,12 @@ const BACKOFF_BASE_MS = 2000;
 const HTTP_OK = 200;
 const HTTP_PARTIAL = 206;
 const REQUEST_TIMEOUT_MS = 120_000;
+/** Node gives each address of a host 250 ms to connect before it tries the next one, which a host across an ocean does not meet. */
+const CONNECT_ATTEMPT_TIMEOUT_MS = 3000;
+/** Names the project to the hosts, as some (Wikimedia) refuse anonymous clients. */
+const USER_AGENT = 'easyconvert-realworld-corpus/1.0 (+https://github.com/AquilaXk/easyconvert)';
+
+net.setDefaultAutoSelectFamilyAttemptTimeout(CONNECT_ATTEMPT_TIMEOUT_MS);
 
 let dispatcherSet = false;
 
@@ -28,7 +35,7 @@ export class FetchError extends Error {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function attempt(url: string, range: [number, number] | null, maxBytes: number): Promise<Buffer> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { 'user-agent': USER_AGENT };
   if (range) headers.range = `bytes=${range[0]}-${range[1]}`;
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   const expectedStatus = range ? HTTP_PARTIAL : HTTP_OK;
@@ -63,7 +70,7 @@ export function fetchBytes(url: string, range: [number, number] | null, maxBytes
 /** Size of the resource at `url`, from a one-byte range request's Content-Range header. */
 export function fetchSize(url: string): Promise<number> {
   return withRetries(url, async () => {
-    const response = await fetch(url, { headers: { range: 'bytes=0-0' }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    const response = await fetch(url, { headers: { range: 'bytes=0-0', 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     await response.arrayBuffer();
     const total = /\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
     if (response.status !== HTTP_PARTIAL || total === null) throw new FetchError(`${url}: server did not answer a range request (HTTP ${response.status})`);

@@ -540,7 +540,7 @@ node scripts/ci-conformance-parts.mjs --summary 10    # planned load per part, t
 hangs and broken outputs that hand-authored fixtures miss. It runs nightly in ten shards (`.github/workflows/nightly.yml`).
 
 ```sh
-npm run bench:realworld -- run --shard 1/10 [--per-file 3] [--workers N] [--deadline-ms 180000] [--limit 50]
+npm run bench:realworld -- run --shard 1/10 [--per-file 3] [--workers N] [--deadline-ms 180000] [--limit 50] [--sources a,b]
 npm run bench:realworld -- merge --out realworld-results realworld-shard-*.json [--update-baseline]
 ```
 
@@ -549,7 +549,13 @@ npm run bench:realworld -- merge --out realworld-results realworld-shard-*.json 
   checks each digest and caches them in `~/.cache/easyconvert-realworld`. `scripts/realworld-manifest.ts` rebuilds the
   manifest deterministically. A file that holds no content (an empty sheet, a body with no text) carries `emptyInput` and
   the reason it is empty, read with a tool other than the converter; only such a file may convert to zero bytes, and the
-  rebuild keeps the mark while the file's digest is unchanged.
+  rebuild keeps the mark while the file's digest is unchanged. The rebuild also keeps every source it does not generate:
+  the hand-picked format samples below.
+- **Format samples:** every input format of the registry has at least three real sample files in the corpus manifests, or
+  an entry in `bench/realworld/format-coverage-exceptions.json` with the reason and the sources searched
+  (`tests/corpus-format-coverage.test.ts`; `npx tsx bench/realworld/format-coverage.ts` prints the table). The licence and
+  address of every source are in `bench/realworld/PROVENANCE.md`. `--sources a,b` runs only the files of the named
+  sources, for example the format samples of a change.
 - **Jobs:** each file goes through `--per-file` of its format's advertised targets, rotating so that the corpus covers
   every pair. Jobs run in child processes with a deadline and a heap cap; a job past its deadline kills its process group.
 - **Verdicts:** `ok`; `refused` (a typed error the API answers with 4xx or 503); `crash` (anything the API would answer
