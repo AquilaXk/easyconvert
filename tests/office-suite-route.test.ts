@@ -251,6 +251,12 @@ describe('which targets the office suite writes in one pass', () => {
     ['dot', 'txt', false],
     ['dot', 'html', false],
     ['pdf', 'docx', false],
+    ['docm', 'odt', true],
+    ['xlsm', 'docx', false],
+    ['pptm', 'pptx', true],
+    ['key', 'pptx', true],
+    ['key', 'docx', false],
+    ['odg', 'odt', false],
   ])('.%s to .%s: %s', (source, target, writes) => {
     expect(officeSuiteWritesTarget(source, target)).toBe(writes);
   });
@@ -311,6 +317,14 @@ describe('the export filter of the office suite for each source', () => {
     ['pptx', 'impress_pdf_Export'],
     ['odg', 'draw_pdf_Export'],
     ['docx', 'writer_pdf_Export'],
+    ['dotx', 'writer_pdf_Export'],
+    ['xlsm', 'calc_pdf_Export'],
+    ['csv', 'calc_pdf_Export'],
+    ['ppsx', 'impress_pdf_Export'],
+    ['potx', 'impress_pdf_Export'],
+    ['key', 'impress_pdf_Export'],
+    ['odd', 'draw_pdf_Export'],
+    ['txt', 'writer_pdf_Export'],
   ])('.%s is exported to PDF by %s', (source, filter) => {
     expect(resolveLibreOfficeFilter('pdf', source)).toMatch(new RegExp(`^pdf:${filter}:`));
   });

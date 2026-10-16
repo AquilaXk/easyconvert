@@ -38,17 +38,10 @@ export const OFFICE_NATIVE_SOURCES: ReadonlySet<string> = new Set([
   ...OFFICE_SUITE_SOURCE_FORMATS,
 ]);
 
-/** LibreOffice application that opens and writes each Office format: a document is only converted into its own application's formats (and PDF). */
-const LIBREOFFICE_APPLICATION: Readonly<Record<string, 'writer' | 'calc' | 'impress'>> = {
-  doc: 'writer', docx: 'writer', odt: 'writer', rtf: 'writer', docm: 'writer', dotx: 'writer', dotm: 'writer',
-  xls: 'calc', xlsx: 'calc', ods: 'calc', xlsm: 'calc', xltx: 'calc', xltm: 'calc',
-  ppt: 'impress', pptx: 'impress', odp: 'impress', potx: 'impress', pptm: 'impress', potm: 'impress', ppsx: 'impress', ppsm: 'impress',
-};
-
-/** Whether LibreOffice has no export filter for the pair: a text document cannot be saved as a presentation, nor a workbook as a text document. */
+/** Whether LibreOffice has no export filter for the pair, since a document is only converted into its own application's formats (and PDF): a text document cannot be saved as a presentation, nor a workbook as a text document. */
 function crossesLibreOfficeApplications(src: string, tgt: string): boolean {
-  const from = LIBREOFFICE_APPLICATION[src] ?? officeSuiteApplication(src);
-  const to = LIBREOFFICE_APPLICATION[tgt];
+  const from = officeSuiteApplication(src);
+  const to = officeSuiteApplication(tgt);
   return from !== undefined && to !== undefined && from !== to;
 }
 

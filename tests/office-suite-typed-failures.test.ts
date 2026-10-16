@@ -9,10 +9,11 @@ import { buildWordBinary } from './helpers/word-binary-builder';
 import { asUnreadableDocument } from '../src/worker/office-suite-route';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
-import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { FORMAT_REGISTRY, getFormatByExtension } from '../src/lib/registry';
 import { assertReadableAsText } from '../src/lib/conversions/office/text-source-guard';
 import {
   OFFICE_SUITE_SOURCE_FORMATS,
+  TEXT_ONLY_TARGETS,
   isOfficeSuiteOnlySource,
   legacyReaderRetryInterchange,
   officeSuiteApplication,
@@ -188,8 +189,49 @@ describe('how the office suite reaches the targets it does not write', () => {
     expect(officeSuiteApplication(source)).toBe(application);
   });
 
-  it('knows no application for a format it does not cover', () => {
-    expect(officeSuiteApplication('docx')).toBeUndefined();
+  it.each([
+    ['docx', 'writer'],
+    ['rtf', 'writer'],
+    ['dotx', 'writer'],
+    ['docm', 'writer'],
+    ['xlsx', 'calc'],
+    ['xlsm', 'calc'],
+    ['xltx', 'calc'],
+    ['csv', 'calc'],
+    ['pptx', 'impress'],
+    ['ppsx', 'impress'],
+    ['potx', 'impress'],
+    ['key', 'impress'],
+    ['odg', 'draw'],
+    ['odd', 'draw'],
+  ])('.%s is opened by the %s application', (format, application) => {
+    expect(officeSuiteApplication(format)).toBe(application);
+  });
+
+  it('knows no application for a format the office suite does not open', () => {
+    expect(officeSuiteApplication('pdf')).toBeUndefined();
+    expect(officeSuiteApplication('png')).toBeUndefined();
+  });
+});
+
+describe('the targets the in-process engine writes from plain text only', () => {
+  const TEXT = 'Quarterly report\n\nRevenue grew by four percent.';
+
+  it('are the targets it offers for a text file and not for a Word document, which is why a refused document reaches them through its text', () => {
+    const fromText = getFormatByExtension('txt')?.targetFormats ?? [];
+    const fromWordDocument = new Set(getFormatByExtension('docx')?.targetFormats);
+    const notFromWordDocument = fromText.filter((target) => !fromWordDocument.has(target) && target !== 'docx');
+    expect([...notFromWordDocument].sort()).toEqual([...TEXT_ONLY_TARGETS].sort());
+  });
+
+  it.each([...TEXT_ONLY_TARGETS])('.%s is written from text, and the engine turns a Word document down for it', async (target) => {
+    const written = await convertFile(Buffer.from(TEXT), 'txt', target, {}, 'report.txt');
+    expect(written.filename).toBe(`report.${target}`);
+    expect(written.buffer.length).toBeGreaterThan(0);
+    const wordDocument = (await convertFile(Buffer.from(TEXT), 'txt', 'docx', {}, 'report.txt')).buffer;
+    const refusal = await convertFile(wordDocument, 'docx', target, {}, 'report.docx').catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(ConversionFailedError);
+    expect((refusal as Error).message).toMatch(new RegExp(`^Cannot convert from Microsoft Word \\(DOCX\\) \\(\\.docx\\) to target format \\.${target}\\.`));
   });
 });
 
@@ -221,17 +263,30 @@ describe('the guard that keeps binary bytes from being read as text', () => {
     expect(() => assertReadableAsText(container, 'lwp')).toThrow("Cannot extract plain text from binary/compressed container for format '.lwp': fail-closed against mojibake corruption.");
   });
 
+  /** What the guard answers for the bytes: that it accepts them, or the message of its refusal. */
+  function verdictOf(input: Buffer): string {
+    try {
+      assertReadableAsText(input, 'lwp');
+      return 'accepted';
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConversionFailedError);
+      return (error as Error).message;
+    }
+  }
+
   it('refuses a null byte in the first 4096 bytes and accepts one after them', () => {
     const inside = Buffer.alloc(4096, 0x61);
     inside[4095] = 0;
-    expect(() => assertReadableAsText(inside, 'lwp')).toThrow("Binary null bytes detected in source format '.lwp': fail-closed against mojibake corruption.");
+    expect(verdictOf(inside)).toBe("Binary null bytes detected in source format '.lwp': fail-closed against mojibake corruption.");
     const after = Buffer.alloc(4097, 0x61);
     after[4096] = 0;
-    expect(assertReadableAsText(after, 'lwp')).toBeUndefined();
+    expect(verdictOf(after)).toBe('accepted');
   });
 
-  it('accepts text, and a file shorter than a signature', () => {
-    expect(assertReadableAsText(Buffer.from('plain text of a memo\n'), 'lwp')).toBeUndefined();
-    expect(assertReadableAsText(Buffer.from([0x50, 0x4b]), 'lwp')).toBeUndefined();
+  it('accepts text, and a file shorter than a signature, and refuses the same bytes once a signature starts them', () => {
+    const memo = Buffer.from('plain text of a memo\n');
+    expect(verdictOf(memo)).toBe('accepted');
+    expect(verdictOf(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), memo]))).toMatch(/^Cannot extract plain text from binary\/compressed container/);
+    expect(verdictOf(Buffer.from([0x50, 0x4b]))).toBe('accepted');
   });
 });

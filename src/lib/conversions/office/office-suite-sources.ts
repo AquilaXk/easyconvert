@@ -52,17 +52,33 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
 };
 
 /** Targets the in-process engine writes from plain text only: the Palm family, the Sony and Open eBook formats, XPS and the Hangul formats. */
-const TEXT_ONLY_TARGETS: ReadonlySet<string> = new Set(['azw3', 'mobi', 'lrf', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx']);
+export const TEXT_ONLY_TARGETS: ReadonlySet<string> = new Set(['azw3', 'mobi', 'lrf', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx']);
 /** Sources of the ebook readers of the office suite: their targets written from text only are written from the text the suite exports. */
 const EBOOK_SOURCES: ReadonlySet<string> = new Set(['lrf', 'pdb', 'rb']);
 
-/** The application of every format the office suite reads that the in-process engine cannot render: the sources above and their aliases. */
-const APPLICATION_OF_ALIAS: Readonly<Record<string, OfficeSuiteApplication>> = {
+/**
+ * The application of the office suite that opens each format it reads in its own right. A template or slide show is listed
+ * under the format whose reader reads it (`officeReadingFormat`) and a macro enabled or template variant under its plain
+ * format (`OOXML_VARIANT_FAMILY`). This is the one table behind the export filter, the check that an application writes only
+ * its own formats and the import of the formats only the office suite reads.
+ */
+const APPLICATION_OF_READING_FORMAT: Readonly<Record<string, OfficeSuiteApplication>> = {
   doc: 'writer',
-  xls: 'calc',
-  ppt: 'impress',
+  docx: 'writer',
   odt: 'writer',
+  rtf: 'writer',
+  xls: 'calc',
+  xlsx: 'calc',
+  ods: 'calc',
+  csv: 'calc',
+  tsv: 'calc',
+  ppt: 'impress',
+  pptx: 'impress',
   odp: 'impress',
+  potx: 'impress',
+  key: 'impress',
+  odg: 'draw',
+  odd: 'draw',
 };
 
 /** Every source format of this table: the formats only the office suite reads and the aliases. */
@@ -108,11 +124,12 @@ export function assertReadableInProcess(format: string): void {
   }
 }
 
-/** The application of the office suite that imports a source format; undefined for a format it does not import under this table. */
+/** The application of the office suite that opens a format; undefined for a format it does not open (an image, a PDF). */
 export function officeSuiteApplication(format: string): OfficeSuiteApplication | undefined {
   if (Object.hasOwn(OFFICE_SUITE_ONLY_SOURCES, format)) return OFFICE_SUITE_ONLY_SOURCES[format].application;
-  if (Object.hasOwn(OFFICE_FORMAT_ALIAS, format)) return APPLICATION_OF_ALIAS[OFFICE_FORMAT_ALIAS[format]];
-  return undefined;
+  const reading = officeReadingFormat(format);
+  const plain = Object.hasOwn(OOXML_VARIANT_FAMILY, reading) ? OOXML_VARIANT_FAMILY[reading] : reading;
+  return Object.hasOwn(APPLICATION_OF_READING_FORMAT, plain) ? APPLICATION_OF_READING_FORMAT[plain] : undefined;
 }
 
 /** Whether the office suite writes plain text itself for this source: its writer applications (word processors and ebook readers). */
