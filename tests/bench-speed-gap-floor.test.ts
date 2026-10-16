@@ -367,7 +367,7 @@ describe('re-seeding the histories that are on file', () => {
     gaps: [
       { id: 'image/lineart.png->avif/throughput', issue: 641, ratio: 0.8, note: 'n', history: points(0.0513, 0.0553, 0.0722, 0.8028) },
       { id: 'image/photo-a.jpg->avif/throughput', issue: 641, ratio: 0.8, note: 'n', history: points(0.8241, 0.8417, 0.864, 0.8088) },
-      { id: 'image/a.jpg->avif/bd_rate_psnr', issue: 640, ratio: null, note: 'quality' },
+      { id: 'image/a.jpg->avif/bd_rate_psnr', issue: 640, ratio: null, note: 'quality', recorded: 4, reference: 0 },
     ],
   });
 

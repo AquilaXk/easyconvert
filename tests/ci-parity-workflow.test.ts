@@ -85,6 +85,17 @@ describe('parity-quality', () => {
     expect(runOf(quality, 'bench')).not.toContain('--speed-only');
   });
 
+  it('backs the quality entries a change adds or edits with the gap file and the baseline of the first parent of the tested merge', () => {
+    const base = stepNamed(quality, 'base');
+    expect(base.run).toContain("git cat-file -p HEAD | sed -n 's/^parent //p'");
+    expect(base.run).toContain('git show "$parent:bench/parity-gaps.json" > ab-base-files/parity-gaps.json');
+    expect(base.run).toContain('git show "$parent:bench/baseline.json" > ab-base-files/baseline.json');
+    expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+    expect(runOf(quality, 'bench')).toContain('--base-gaps ab-base-files/parity-gaps.json --base-baseline ab-base-files/baseline.json');
+    // Read before the measurement, from git alone: no checkout of the base and no dependency of it.
+    expect(quality.steps.findIndex((s) => s.id === 'base')).toBeLessThan(quality.steps.findIndex((s) => s.id === 'bench'));
+  });
+
   it('fails a change to a family without bench rows with the instruction to add them', () => {
     const step = stepNamed(quality, 'Require bench rows for every changed conversion family');
     expect(step.if).toBe("env.BENCH_UNMAPPED != ''");
