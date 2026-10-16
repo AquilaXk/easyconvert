@@ -10,6 +10,7 @@ import { executeWorkerConversion, getPdfPageCount } from '../src/worker/engines'
 import { withDecryptedPdf } from '../src/worker/pdf-decrypt';
 import { SandboxedTimeoutError } from '../src/worker/sandbox';
 import { getOracleToolPath, type ExternalOracleTool } from './helpers/differential-oracle';
+import { decodeRgba } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
 import { skipUnless } from './helpers/strict-skip';
 
@@ -253,6 +254,17 @@ function oracleRasterPage(pdfPath: string, page: number): Buffer {
   return fs.readFileSync(`${prefix}.png`);
 }
 
+/**
+ * True when two PNG files hold the same pixels at the same size. The worker compresses the pages Poppler renders itself,
+ * so its bytes are not those of `pdftoppm -png`; the render is what has to match, read by a decoder that shares no code
+ * with the encoder.
+ */
+function samePixels(png: Buffer, reference: Buffer): boolean {
+  const ours = decodeRgba(png, 'png');
+  const theirs = decodeRgba(reference, 'png');
+  return ours.width === theirs.width && ours.height === theirs.height && ours.data.equals(theirs.data);
+}
+
 function trackOutput(result: { filePath?: string }): void {
   if (result.filePath) producedFiles.push(result.filePath);
 }
@@ -287,7 +299,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       const oracle = oracleRasterPage(fixture.plainPath, 2);
       expect(pngDimensions(result.buffer)).toEqual(pngDimensions(oracle));
       expect(pngDimensions(result.buffer).width).toBe(Math.ceil((PAGE_WIDTH_PT * RASTER_DPI) / 72));
-      expect(result.buffer.equals(oracle)).toBe(true);
+      expect(samePixels(result.buffer, oracle)).toBe(true);
     }, TEST_TIMEOUT_MS);
 
     oracleTest('rasterizes every page to a ZIP whose entry count equals the pdfinfo page count', REQUIRED_TOOLS, async () => {
@@ -304,7 +316,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       expect(names).toHaveLength(oraclePageCount(fixture.encryptedPath, USER_PASSWORD));
       for (const [index, name] of names.entries()) {
         const entry = await zip.files[name].async('nodebuffer');
-        expect(entry.equals(oracleRasterPage(fixture.plainPath, index + 1))).toBe(true);
+        expect(samePixels(entry, oracleRasterPage(fixture.plainPath, index + 1))).toBe(true);
       }
     }, TEST_TIMEOUT_MS);
 
@@ -562,7 +574,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       trackOutput(result);
 
       expect(binariesSpawned(calls).has('qpdf')).toBe(false);
-      expect(result.buffer.equals(oracleRasterPage(fixture.plainPath, 1))).toBe(true);
+      expect(samePixels(result.buffer, oracleRasterPage(fixture.plainPath, 1))).toBe(true);
     }, TEST_TIMEOUT_MS);
 
     oracleTest('still converts an unprotected PDF when a password is supplied anyway', REQUIRED_TOOLS, async () => {
@@ -574,7 +586,7 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       trackOutput(result);
 
       expect(passwordLeaks(calls, USER_PASSWORD)).toEqual([]);
-      expect(result.buffer.equals(oracleRasterPage(fixture.plainPath, 1))).toBe(true);
+      expect(samePixels(result.buffer, oracleRasterPage(fixture.plainPath, 1))).toBe(true);
     }, TEST_TIMEOUT_MS);
   });
   describe('password requests never reach an engine that cannot honour them', () => {
