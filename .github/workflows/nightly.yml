@@ -244,6 +244,8 @@ jobs:
       - name: Run the speed parity benchmark
         env:
           ORACLE_STRICT_MODE: "1"
+          # The heap bound the service runs with (docker-compose.yml); see the parity speed job in ci.yml.
+          MALLOC_ARENA_MAX: "2"
         run: npm run bench:quality -- --parity --speed-only
 
       # Saved even when the benchmark fails: a host that refuses a download one night (a rate limit, an outage) would otherwise
@@ -330,6 +332,7 @@ jobs:
         env:
           ORACLE_STRICT_MODE: "1"
           BENCH_BASE_ROOT: ab-base
+          MALLOC_ARENA_MAX: "2"
           FAMILY: ${{ matrix.family }}
           AB_REPEATS: ${{ inputs.ab_repeats }}
           # The comparison with a base stands in for the pull request speed job, which times the generated corpus only.
