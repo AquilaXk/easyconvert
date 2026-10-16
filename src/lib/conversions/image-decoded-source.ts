@@ -29,6 +29,7 @@ const SIXTEEN_BIT_DEPTH = 'ushort';
 const EIGHT_BIT_DEPTH = 'uchar';
 const BYTES_PER_16_BIT_SAMPLE = 2;
 const MAX_8_BIT_SAMPLE = 0xff;
+const MAX_16_BIT_SAMPLE = 0xffff;
 /** Density libvips reports for a PNG that carries none (72 pixels per inch). */
 const DEFAULT_DENSITY_PPI = 72;
 const UPRIGHT_ORIENTATION = 1;
@@ -114,34 +115,20 @@ export interface DecodedPng {
   raster: Raster;
 }
 
-/** Bytes of a word the scan below reads at a time. */
-const WORD_BYTES = 4;
-
-/**
- * True when every alpha sample of interleaved `samples` is the maximum, which is every bit of its bytes set. The alpha samples are
- * the last of a pixel, and a pixel is one word (8-bit colour with alpha, 16-bit grey with alpha) or two (16-bit colour with alpha), so the
- * last word of every pixel is ANDed into one accumulator and its alpha bytes are read at the end: no branch and no early exit per
- * sample, which is 0.15 ms where a loop over the samples took 0.4 to 0.6 ms for a 1 to 1.5 megapixel picture. The accumulator is read
- * back through a byte view, so the bytes are in memory order whatever the byte order of the machine is.
- */
-export function alphaIsOpaquePlane(samples: Uint8Array | Uint16Array, channels: number): boolean {
-  const sampleBytes = samples.BYTES_PER_ELEMENT;
-  const pixelBytes = channels * sampleBytes;
-  if (pixelBytes % WORD_BYTES !== 0) throw new RangeError(`a pixel of ${pixelBytes} bytes is not a whole number of words`);
-  // A typed array of words starts on a word; the decoded buffers do, a copy is made for one that does not.
-  const bytesOf = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
-  const aligned = samples.byteOffset % WORD_BYTES === 0 ? bytesOf : new Uint8Array(bytesOf);
-  const words = new Uint32Array(aligned.buffer, aligned.byteOffset, aligned.byteLength / WORD_BYTES);
-  const wordsPerPixel = pixelBytes / WORD_BYTES;
-  let all = -1;
-  for (let at = wordsPerPixel - 1; at < words.length; at += wordsPerPixel) all &= words[at];
-  const accumulated = new Uint32Array(1);
-  accumulated[0] = all;
-  const bytes = new Uint8Array(accumulated.buffer);
-  for (let at = WORD_BYTES - sampleBytes; at < WORD_BYTES; at += 1) {
-    if (bytes[at] !== MAX_8_BIT_SAMPLE) return false;
+/** True when every `stride`-th sample from `first` is `maximum`; the alpha plane of interleaved samples. */
+function everySampleIs(samples: Uint8Array | Uint16Array, first: number, stride: number, maximum: number): boolean {
+  for (let at = first; at < samples.length; at += stride) {
+    if (samples[at] !== maximum) return false;
   }
   return true;
+}
+
+/** The blocks the output of the PNG route would carry, written again by the decoded pipeline: the XMP packet, and the print density when the encoder writes one. */
+function carriedBlocks(decoded: Sharp, meta: Metadata, blocks: BlockHandling): Sharp {
+  if (blocks.strips) return decoded;
+  const withXmp = meta.xmp === undefined ? decoded : decoded.withXmp(meta.xmp.toString('utf8'));
+  const writesDensity = !blocks.ignoresDensity && blocks.exactDensity !== undefined && meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
+  return writesDensity ? withXmp.withDensity(blocks.exactDensity as number) : withXmp;
 }
 
 /**
@@ -155,16 +142,9 @@ export function alphaIsOpaquePlane(samples: Uint8Array | Uint16Array, channels: 
  * 16 bits (the library's grey reduction is not the high byte, and drops a grey picture's alpha band).
  *
  * `onPlain` is called with the picture's metadata once the picture qualifies and before it is decoded, for work that can run
- * while the decode does (an encoder that reads the source file, see image-avif-direct.ts).
+ * while the decode does (an encoder that reads the source file, see image-avif-direct.ts). `blocks` says what the encoder does with the
+ * blocks of the PNG (see `BlockHandling`).
  */
-/** The blocks the output of the PNG route would carry, written again by the decoded pipeline: the XMP packet, and the print density when the encoder writes one. */
-function carriedBlocks(decoded: Sharp, meta: Metadata, blocks: BlockHandling): Sharp {
-  if (blocks.strips) return decoded;
-  const withXmp = meta.xmp === undefined ? decoded : decoded.withXmp(meta.xmp.toString('utf8'));
-  const writesDensity = !blocks.ignoresDensity && blocks.exactDensity !== undefined && meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
-  return writesDensity ? withXmp.withDensity(blocks.exactDensity as number) : withXmp;
-}
-
 export async function decodePlainPngOnce(
   pipeline: Sharp,
   maxBytes: number = DECODED_SOURCE_MAX_BYTES,
@@ -187,7 +167,7 @@ export async function decodePlainPngOnce(
   // The library takes the sample depth of a raw input from the typed array that holds it.
   const wide = deep && !narrow;
   const samples = wide ? samples16Of(data) : data;
-  const alphaIsOpaque = info.channels === 2 || info.channels === 4 ? alphaIsOpaquePlane(samples, info.channels) : undefined;
+  const alphaIsOpaque = info.channels === 2 || info.channels === 4 ? everySampleIs(samples, info.channels - 1, info.channels, wide ? MAX_16_BIT_SAMPLE : MAX_8_BIT_SAMPLE) : undefined;
   return {
     pipeline: carriedBlocks(sharp(samples, { raw: { width: info.width, height: info.height, channels: info.channels }, limitInputPixels: maxInputPixels() }), meta, blocks),
     alphaIsOpaque,
