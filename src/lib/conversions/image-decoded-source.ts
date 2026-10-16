@@ -12,10 +12,12 @@ import { metadataOf } from './image-metadata';
  * encoder's own read. Decoded once into memory, the analyses and the encoder read the pixels from there.
  *
  * Only a PNG with nothing the output keeps besides pixels qualifies, so the pipeline that continues from the decoded pixels
- * writes the very bytes the pipeline from the PNG would: a colour profile that does something, EXIF, XMP, IPTC, a pixel density
- * or an orientation would be lost on the way through raw pixels. Two things a PNG can hold never reach the output of the encoders
- * that read the decoded pixels (JPEG and AVIF) and do not disqualify it: text chunks (the encoders write no text), and a profile
- * that describes sRGB (it is not written, and converting through it changes no pixel; see `openWithoutSrgbProfile` in image.ts).
+ * writes the very bytes the pipeline from the PNG would: a colour profile that does something, EXIF, IPTC, a pixel density
+ * or an orientation would be lost on the way through raw pixels. Four things a PNG can hold do not disqualify it: text chunks
+ * (the encoders write no text), a profile that describes sRGB (it is not written, and converting through it changes no pixel; see
+ * `openWithoutSrgbProfile` in image.ts), a background colour (no encoder of the route uses it) and an XMP packet, which the decoded
+ * pipeline writes again from its text (`withXmp`, byte for byte when the packet is UTF-8, which `carriesXmp` checks). A print density
+ * qualifies the picture only for an encoder that writes none (`ignoresDensity`: AVIF; a JPEG writes it).
  */
 
 /** Largest decoded picture, in bytes, held in memory this way; a larger PNG is still read by the encoder from the PNG. */
@@ -36,13 +38,18 @@ function decodedBytes(meta: Metadata): number {
   return meta.width * meta.height * meta.channels * sampleBytes;
 }
 
-/** True when the picture is a plain single-frame PNG small enough to hold decoded. */
-export function isPlainPng(meta: Metadata, maxBytes: number = DECODED_SOURCE_MAX_BYTES): boolean {
+/** Whether an XMP packet is text that the decoded pipeline writes again exactly: UTF-8 that survives a round trip through a string. */
+function carriesXmp(xmp: Buffer): boolean {
+  return Buffer.from(xmp.toString('utf8'), 'utf8').equals(xmp);
+}
+
+/** True when the picture is a plain single-frame PNG small enough to hold decoded; `ignoresDensity` for an encoder that writes no print density. */
+export function isPlainPng(meta: Metadata, maxBytes: number = DECODED_SOURCE_MAX_BYTES, ignoresDensity = false): boolean {
   if (meta.format !== 'png' || (meta.pages ?? 1) !== 1) return false;
   if (meta.hasProfile && (meta.icc === undefined || !isSrgbProfile(meta.icc))) return false;
-  if (meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined) return false;
-  if (meta.background !== undefined || meta.tifftagPhotoshop !== undefined) return false;
-  if (meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI) return false;
+  if (meta.exif !== undefined || meta.iptc !== undefined || meta.tifftagPhotoshop !== undefined) return false;
+  if (meta.xmp !== undefined && !carriesXmp(meta.xmp)) return false;
+  if (!ignoresDensity && meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI) return false;
   if (meta.orientation !== undefined && meta.orientation !== UPRIGHT_ORIENTATION) return false;
   if (meta.depth !== EIGHT_BIT_DEPTH && meta.depth !== SIXTEEN_BIT_DEPTH) return false;
   if (!RAW_EXACT_SPACES.has(meta.space)) return false;
@@ -116,10 +123,11 @@ export async function decodePlainPngOnce(
   pipeline: Sharp,
   maxBytes: number = DECODED_SOURCE_MAX_BYTES,
   eightBit = false,
-  onPlain?: (meta: Metadata) => Promise<void>
+  onPlain?: (meta: Metadata) => Promise<void>,
+  ignoresDensity = false
 ): Promise<DecodedPng | null> {
   const meta = await metadataOf(pipeline);
-  if (!isPlainPng(meta, maxBytes)) return null;
+  if (!isPlainPng(meta, maxBytes, ignoresDensity)) return null;
   await onPlain?.(meta);
   const deep = meta.depth === SIXTEEN_BIT_DEPTH;
   const narrow = deep && eightBit && meta.space === 'rgb16';
@@ -134,8 +142,9 @@ export async function decodePlainPngOnce(
   const wide = deep && !narrow;
   const samples = wide ? samples16Of(data) : data;
   const alphaIsOpaque = info.channels === 2 || info.channels === 4 ? alphaIsOpaquePlane(samples, info.channels) : undefined;
+  const decodedPixels = sharp(samples, { raw: { width: info.width, height: info.height, channels: info.channels }, limitInputPixels: maxInputPixels() });
   return {
-    pipeline: sharp(samples, { raw: { width: info.width, height: info.height, channels: info.channels }, limitInputPixels: maxInputPixels() }),
+    pipeline: meta.xmp === undefined ? decodedPixels : decodedPixels.withXmp(meta.xmp.toString('utf8')),
     alphaIsOpaque,
     raster: { samples, width: info.width, height: info.height, channels: info.channels },
   };
@@ -147,6 +156,8 @@ export interface DecodedForTarget extends DecodedPng {
 }
 
 const JPEG_TARGETS: ReadonlySet<string> = new Set(['jpg', 'jpeg']);
+/** Targets whose files carry no print density: an AVIF holds none, and its viewers ignore it. */
+const DENSITY_FREE_TARGETS: ReadonlySet<string> = new Set(['avif']);
 const RGBA_CHANNELS = 4;
 
 /**
@@ -163,11 +174,11 @@ export async function decodePlainPngForTarget(
   onPlain: ((meta: Metadata) => Promise<void>) | undefined
 ): Promise<DecodedForTarget | null> {
   const isJpeg = JPEG_TARGETS.has(fmt);
-  const decoded = await decodePlainPngOnce(pipeline, undefined, isJpeg && changesPixels, onPlain);
+  const decoded = await decodePlainPngOnce(pipeline, undefined, isJpeg && changesPixels, onPlain, DENSITY_FREE_TARGETS.has(fmt));
   if (decoded === null || !isJpeg || changesPixels) return decoded;
   const translucentColour = decoded.alphaIsOpaque === false && decoded.raster.channels === RGBA_CHANNELS && decoded.raster.samples instanceof Uint16Array;
   if (!translucentColour) return decoded;
   const content = classifyRaster(decoded.raster);
-  const reduced = await decodePlainPngOnce(pipeline, undefined, true);
+  const reduced = await decodePlainPngOnce(pipeline, undefined, true, undefined, false);
   return reduced === null ? null : { ...reduced, content };
 }

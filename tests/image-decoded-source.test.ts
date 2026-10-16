@@ -5,6 +5,7 @@ import { alphaIsOpaquePlane, decodePlainPngOnce, isPlainPng, type DecodedPng } f
 import { classifyContent, classifyRaster, type ContentClass } from '../src/lib/conversions/image-content';
 import { flattenColour } from '../src/lib/conversions/image-background';
 import { jpegOptionsFor, webpOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
+import { pipelineRuns } from './helpers/pipeline-runs';
 import { srgbProfileChunk, textChunk, withChunksAfterHeader } from './helpers/png-chunks';
 
 const WIDTH = 96;
@@ -152,23 +153,6 @@ describe('convertImage on a plain PNG', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
-
-  /** Native pipeline runs (`toBuffer`) a conversion makes, and how many of them read the PNG itself rather than pixels in memory. */
-  async function pipelineRuns(source: Buffer, target: string, options: Record<string, unknown> = {}): Promise<{ all: number; pngReads: number }> {
-    const proto = Object.getPrototypeOf(sharp({ create: { width: 1, height: 1, channels: 3, background: '#000' } })) as Sharp;
-    const toBuffer = proto.toBuffer;
-    const runs = { all: 0, pngReads: 0 };
-    vi.spyOn(proto, 'toBuffer').mockImplementation(function (this: Sharp, ...args: unknown[]) {
-      const input = (this as unknown as { options: { input: { buffer?: Buffer } } }).options.input;
-      runs.all += 1;
-      // A cloned pipeline holds a copy of the input, so the PNG is recognised by its bytes.
-      if (input.buffer !== undefined && Buffer.from(input.buffer).equals(source)) runs.pngReads += 1;
-      return (toBuffer as (...a: unknown[]) => Promise<unknown>).apply(this, args);
-    } as never);
-    await convertImage(source, target, { quality: 70, ...options }, 'plain.png', 'png');
-    vi.restoreAllMocks();
-    return runs;
-  }
 
   it.each(['jpg', 'webp', 'avif'])('inflates the PNG once for %s: the content class, the alpha check and the encoder read the decoded pixels', async (target) => {
     expect((await pipelineRuns(await png(4, false), target)).pngReads).toBe(1);
