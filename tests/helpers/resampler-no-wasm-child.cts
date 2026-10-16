@@ -1,5 +1,5 @@
 /**
- * Run by tests/audio-resampler-simd.test.ts in a Node process started with --no-expose-wasm, so that `WebAssembly` does
+ * Run by tests/audio-resampler-simd.test.ts in a Node process that preloads no-webassembly-preload.cjs, so that `WebAssembly` does
  * not exist: reports the kernel the resampler picks and what a forced SIMD request does. Prints one JSON line.
  */
 const { resampleInterleavedInt16 } = require('../../src/lib/conversions/audio-resampler');

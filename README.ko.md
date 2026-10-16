@@ -180,7 +180,7 @@ EasyConvert는 동기식 REST 엔드포인트와 장시간 대용량 처리를 �
 
 ### 요구 사양
 
-- Node.js >= 20.x
+- Node.js >= 24 (활성 LTS)
 - npm >= 10.x
 
 ### 설치

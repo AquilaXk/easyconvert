@@ -1,5 +1,5 @@
 /**
- * Run by tests/xxh64-wasm.test.ts in a Node process started with --no-expose-wasm, so that `WebAssembly` does not exist:
+ * Run by tests/xxh64-wasm.test.ts in a Node process that preloads no-webassembly-preload.cjs, so that `WebAssembly` does not exist:
  * the zstd content checksum must still be computed (by the script implementation). Prints one JSON line.
  */
 const { computeZstdChecksum, compressZstd, decompressZstd } = require('../../src/lib/conversions/zstd');
