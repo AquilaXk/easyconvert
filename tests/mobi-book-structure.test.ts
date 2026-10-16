@@ -12,6 +12,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { runEpubcheck } from './helpers/epubcheck';
 import { buildMobi, palmDocCompress } from './helpers/mobi-builder';
 import { oracleTest } from './helpers/oracle-test';
+import { cpuClockMs, expectLinearOnInputs, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * A MOBI book keeps its structure when it becomes an EPUB or a PDF: the chapters its table of contents names are headings
@@ -310,23 +311,16 @@ describe('the table of contents of a MOBI book', () => {
   });
 });
 
-/** Time of the slowest of `runs` calls of the reader on the input of `size` bytes, in milliseconds (the reader's refusal counts: it did the work). */
-async function readTime(make: (size: number) => Buffer, size: number, runs = 3): Promise<number> {
-  const input = make(size);
-  let best = Number.POSITIVE_INFINITY;
-  for (let run = 0; run < runs; run += 1) {
-    const started = performance.now();
-    await readMobiModel(input, 'book').catch(() => undefined);
-    best = Math.min(best, performance.now() - started);
-  }
-  return best;
-}
-
 describe('the time the reader takes on markup built to make it slow', () => {
   const SMALL = 100_000;
   const GROWTH = 4;
   // A linear reader takes about GROWTH times as long on GROWTH times the input, a quadratic one GROWTH squared: the bound sits between.
   const MAX_RATIO = 8;
+  // The reader's work on 100 KB is a few milliseconds, which a garbage collection or a busy neighbour on the runner can double,
+  // and on 400 KB a preemption of a hundred milliseconds in every pass of the larger size read 13x against 4.9x on a quiet
+  // machine. The sizes are therefore timed alternately, in CPU time (a process waiting for a core is not charged), each sample at
+  // least MIN_SAMPLE_MS long, and the best pass of each size is kept (tests/helpers/timing.ts); work that grows as the square of
+  // the input keeps its ratio near GROWTH squared.
   const endBook = (tail: string, size: number): Buffer => {
     const filler = tail.repeat(Math.ceil(size / tail.length));
     return bookOf(layout(`${guide}${chapterTemplate(CHAPTERS)}${mark('toc')}<mbp:pagebreak/>${tocLinks(CHAPTERS)}${filler}<mbp:pagebreak/></body></html>`));
@@ -344,10 +338,14 @@ describe('the time the reader takes on markup built to make it slow', () => {
     ['picture tags that are never closed', (size: number) => afterMarkup('<img ', size)],
     ['MOBI tags that are never closed', (size: number) => afterMarkup('<mbp:', size)],
     ['link tags with a position that are never closed', (size: number) => afterMarkup('<a filepos=1 ', size)],
-  ])('grows in proportion to the input on %s', async (_name, make) => {
-    await readTime(make, SMALL / 4, 1);
-    const small = await readTime(make, SMALL);
-    const large = await readTime(make, SMALL * GROWTH);
-    expect(large / Math.max(small, 1)).toBeLessThan(MAX_RATIO);
-  }, 120_000);
+  ])('grows in proportion to the input on %s', async (name, make) => {
+    // The reader's refusal of a book counts: it did the work. The books are built before the clock starts.
+    await expectLinearOnInputs(name, (input: Buffer) => readMobiModel(input, 'book').catch(() => undefined), {
+      small: make(SMALL),
+      large: make(SMALL * GROWTH),
+      factor: GROWTH,
+      maxRatio: MAX_RATIO,
+      clock: cpuClockMs,
+    });
+  }, SCALING_TEST_TIMEOUT_MS);
 });
