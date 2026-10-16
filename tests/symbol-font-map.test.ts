@@ -83,3 +83,51 @@ describe('symbol font tables', () => {
     expect(SYMBOL_FONT_LAST_CODE).toBe(0xff);
   });
 });
+
+describe('WordPerfect Greek fonts', () => {
+  /**
+   * The WP Greek TrueType fonts lay the WordPerfect character set 8 out from code 0x21, in alphabet order as capital and
+   * small pairs: the Greek alphabet is the oracle (Unicode Greek and Coptic block, letter names), written out by hand.
+   * Slots the set fills with a repeat of another letter (a second capital beta, a second capital sigma) have no glyph of
+   * their own, and nothing maps them.
+   */
+  const ALPHABET: ReadonlyArray<readonly [number, string]> = [
+    [0x21, 'Α'], [0x22, 'α'], [0x23, 'Β'], [0x24, 'β'], [0x26, 'ϐ'], [0x27, 'Γ'], [0x28, 'γ'], [0x29, 'Δ'], [0x2a, 'δ'],
+    [0x2b, 'Ε'], [0x2c, 'ε'], [0x2d, 'Ζ'], [0x2e, 'ζ'], [0x2f, 'Η'], [0x30, 'η'], [0x31, 'Θ'], [0x32, 'θ'], [0x33, 'Ι'],
+    [0x34, 'ι'], [0x35, 'Κ'], [0x36, 'κ'], [0x37, 'Λ'], [0x38, 'λ'], [0x39, 'Μ'], [0x3a, 'μ'], [0x3b, 'Ν'], [0x3c, 'ν'],
+    [0x3d, 'Ξ'], [0x3e, 'ξ'], [0x3f, 'Ο'], [0x40, 'ο'], [0x41, 'Π'], [0x42, 'π'], [0x43, 'Ρ'], [0x44, 'ρ'], [0x45, 'Σ'],
+    [0x46, 'σ'], [0x48, 'ς'], [0x49, 'Τ'], [0x4a, 'τ'], [0x4b, 'Υ'], [0x4c, 'υ'], [0x4d, 'Φ'], [0x4e, 'φ'], [0x4f, 'Χ'],
+    [0x50, 'χ'], [0x51, 'Ψ'], [0x52, 'ψ'], [0x53, 'Ω'], [0x54, 'ω'],
+  ];
+
+  it('maps the letters of every WP Greek face to the Greek alphabet in order', () => {
+    for (const font of ['WP Greek Century', 'WP Greek Courier', 'WP Greek Helve']) {
+      const differences = ALPHABET.filter(([code, letter]) => mapSymbolFontCharacter(font, privateUse(code)) !== letter);
+      expect({ font, differences }).toEqual({ font, differences: [] });
+    }
+  });
+
+  it('maps the characters the Greek letters of two public documents stand for', () => {
+    // govdocs1-001634: "TGF" + alpha; govdocs1-004581: "10" + sigma, "3.5" + mu + "m", "Lyman" + alpha, "Delta".
+    expect(mapSymbolFontCharacter('WP Greek Century', 0xf022)).toBe('\u03B1');
+    expect(mapSymbolFontCharacter('WP Greek Courier', 0xf046)).toBe('\u03C3');
+    expect(mapSymbolFontCharacter('WP Greek Courier', 0xf03a)).toBe('\u03BC');
+    expect(mapSymbolFontCharacter('WP Greek Courier', 0xf029)).toBe('\u0394');
+  });
+
+  it('selects the table for a WP Greek face and for no other WP face', () => {
+    expect(isSymbolFontName('WP Greek Century')).toBe(true);
+    expect(isSymbolFontName('wpgreekcourier')).toBe(true);
+    expect(isSymbolFontName('WP Greek')).toBe(true);
+    expect(isSymbolFontName('WP MathA')).toBe(false);
+    expect(isSymbolFontName('Greek Century')).toBe(false);
+    expect(mapSymbolFontCharacter('WP Greek Courier', 0xf020)).toBe(' ');
+  });
+
+  it('leaves the slots the set repeats and the codes beyond the verified letters unmapped', () => {
+    expect(mapSymbolFontCharacter('WP Greek Courier', 0xf025)).toBeUndefined();
+    expect(mapSymbolFontCharacter('WP Greek Courier', 0xf047)).toBeUndefined();
+    expect(mapSymbolFontCharacter('WP Greek Courier', 0xf0ff)).toBeUndefined();
+  });
+});
+

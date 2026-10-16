@@ -64,7 +64,7 @@ export interface PackRequest extends RepackRequest {
 /**
  * Most bytes of file data a ZIP or gzip is packed from in process. Above it the 7-Zip route serves the request. The
  * platform's zlib hashes four bytes, so on binary data without long repeats it writes up to 3.6 percent more than gzip -6
- * (docs/policy-decisions.md, entry 29); the samples that show it are 5 MB and larger, and past a few megabytes the cost
+ * (docs/policy-decisions.md, entry 30); the samples that show it are 5 MB and larger, and past a few megabytes the cost
  * of starting 7-Zip is small against its encode.
  */
 export const IN_PROCESS_DEFLATE_MAX_BYTES = 4 * 1024 * 1024;

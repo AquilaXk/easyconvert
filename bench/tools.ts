@@ -43,6 +43,7 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   dcraw_emu: ['dcraw_emu'],
   'rsvg-convert': ['rsvg-convert'],
   gs: ['gs'],
+  dwg2dxf: ['dwg2dxf'],
 };
 
 /** Arguments that make each tool print its version, and the first line of output is kept. */
@@ -72,6 +73,7 @@ const VERSION_ARGS: Readonly<Record<string, readonly string[]>> = {
   ssimulacra2: ['--version'],
   'rsvg-convert': ['--version'],
   gs: ['--version'],
+  dwg2dxf: ['--version'],
   pdftoppm: ['-v'],
   qpdf: ['--version'],
 };

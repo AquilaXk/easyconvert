@@ -2,7 +2,7 @@ import { inflateSync } from 'node:zlib';
 import { CheckedReader, readCfbStreams, requireCfbStream } from './cfb-streams';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
-import { isSymbolFontPrivateUse, mapSymbolFontCharacter, symbolReplacementWarning } from '../symbol-font-map';
+import { isSymbolFontPrivateUse, mapSymbolFontCharacter, symbolReplacementWarning, undrawableSymbolWarning } from '../symbol-font-map';
 import { readCharacterFontRuns, type CharacterFontRun } from './ppt-text-style';
 
 /**
@@ -298,19 +298,39 @@ function readFontNames(reader: CheckedReader, document: RecordHeader, budget: Re
   return names;
 }
 
-/** The fonts of a presentation and the symbol characters no table could map, in the order they were met. */
+/** The fonts of a presentation and the symbol characters shown as U+FFFD, in the order they were met. */
 interface TextContext {
   readonly fontNames: readonly string[];
+  /** Whether the output can draw a character; a mapped symbol character it cannot draw becomes U+FFFD. Absent: every character can be drawn. */
+  readonly canDraw?: (character: string) => boolean;
   readonly replaced: Map<string, string>;
   replacedTotal: number;
 }
 
-function recordReplacement(context: TextContext, font: string | undefined, code: number): void {
+/** Records one warning line per font and code, listing at most PPT_MAX_REPORTED_REPLACEMENTS and counting the rest. */
+function recordReplacement(context: TextContext, font: string | undefined, code: number, warning: string): void {
   const key = `${font ?? ''}|${code}`;
   if (context.replaced.has(key)) return;
   context.replacedTotal++;
   if (context.replaced.size >= PPT_MAX_REPORTED_REPLACEMENTS) return;
-  context.replaced.set(key, symbolReplacementWarning(font, code));
+  context.replaced.set(key, warning);
+}
+
+/**
+ * The character a private-use code depicts in the font of its run: U+FFFD when the font has no table or no counterpart for
+ * the code, and when the output cannot draw the counterpart (a PDF with no installed font that covers it).
+ */
+function symbolCharacter(context: TextContext, font: string | undefined, code: number): string {
+  const mapped = font === undefined ? undefined : mapSymbolFontCharacter(font, code);
+  if (mapped === undefined) {
+    recordReplacement(context, font, code, symbolReplacementWarning(font, code));
+    return REPLACEMENT_CHARACTER;
+  }
+  if (context.canDraw !== undefined && !context.canDraw(mapped)) {
+    recordReplacement(context, font, code, undrawableSymbolWarning(font, code, mapped));
+    return REPLACEMENT_CHARACTER;
+  }
+  return mapped;
 }
 
 /** The symbol font of the character at `index`: the run's symbol typeface, else its typeface, else none. */
@@ -333,10 +353,7 @@ function paragraphsOf(block: TextBlock, context: TextContext): string[] {
       paragraphs.push(line);
       line = '';
     } else if (isSymbolFontPrivateUse(code)) {
-      const font = symbolFontAt(block, i, context.fontNames);
-      const mapped = font === undefined ? undefined : mapSymbolFontCharacter(font, code);
-      if (mapped === undefined) recordReplacement(context, font, code);
-      line += mapped ?? REPLACEMENT_CHARACTER;
+      line += symbolCharacter(context, symbolFontAt(block, i, context.fontNames), code);
     } else if (code === CH_TAB || code >= FIRST_PRINTABLE) {
       line += ch;
     }
@@ -481,9 +498,10 @@ function readEmbeddedObject(reader: CheckedReader, chain: EditChain, persistId: 
 /**
  * Reads the slides of a PowerPoint 97-2003 presentation with their text in slide order. Malformed or empty
  * presentations throw a LegacyOfficeFormatError, encrypted ones an EncryptedOfficeDocumentError. A symbol-font character
- * with no Unicode counterpart becomes U+FFFD and one line per font and code is appended to `warnings`.
+ * with no Unicode counterpart becomes U+FFFD, and so does one whose counterpart `canDraw` (the output's glyph coverage,
+ * when it has a limit) rejects; one line per font and code is appended to `warnings`.
  */
-export function readPptSlides(buffer: Buffer, warnings: string[] = []): PptSlide[] {
+export function readPptSlides(buffer: Buffer, warnings: string[] = [], canDraw?: (character: string) => boolean): PptSlide[] {
   const streams = readCfbStreams(buffer, LABEL);
   const documentStream = new CheckedReader(requireCfbStream(streams, DOCUMENT_STREAM, LABEL), LABEL);
   const currentUser = new CheckedReader(requireCfbStream(streams, CURRENT_USER_STREAM, LABEL), LABEL);
@@ -491,7 +509,7 @@ export function readPptSlides(buffer: Buffer, warnings: string[] = []): PptSlide
   const budget = new RecordBudget();
   const entries = readSlideEntries(documentStream, chain, budget);
   const fontNames = readFontNames(documentStream, persistedRecord(documentStream, chain, chain.docPersistId, RT_DOCUMENT, 'document'), budget);
-  const context: TextContext = { fontNames, replaced: new Map(), replacedTotal: 0 };
+  const context: TextContext = { fontNames, canDraw, replaced: new Map(), replacedTotal: 0 };
   const documentRecord = persistedRecord(documentStream, chain, chain.docPersistId, RT_DOCUMENT, 'document');
   const objectPersistIds = readEmbeddedObjectPersistIds(documentStream, documentRecord, budget);
   const slides: PptSlide[] = entries.map((entry, i) => {
@@ -508,6 +526,6 @@ export function readPptSlides(buffer: Buffer, warnings: string[] = []): PptSlide
   }
   warnings.push(...context.replaced.values());
   const unlisted = context.replacedTotal - context.replaced.size;
-  if (unlisted > 0) warnings.push(`Replaced ${unlisted} more private-use characters with U+FFFD: no Unicode counterpart is known.`);
+  if (unlisted > 0) warnings.push(`Replaced ${unlisted} more private-use characters with U+FFFD.`);
   return slides;
 }

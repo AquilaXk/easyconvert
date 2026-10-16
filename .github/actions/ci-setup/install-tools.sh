@@ -6,13 +6,14 @@
 #   verapdf  the PDF/A validator, from the cached install when the cache was restored
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
 #   calibre   the ebook converter the ebook benchmark compares against, from its release archive checked against a pinned SHA-256
+#   libredwg the DWG reader (dwg2dxf), built from its release archive checked against a pinned SHA-256, or the cached build
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
 # Every part runs under `timeout` with its own limit, so a part that hangs fails the step by name once its limit has
 # passed, long before the job timeout. Each part logs to its own file; the logs are printed in groups afterwards, a
 # failed or stopped part is printed in full outside a group, and a cancelled job prints them as well.
 #
-# Environment: ACTION_PATH, APT_DEBS, APT_CACHE_HIT, VERAPDF_CACHE_HIT and S3_TEST_SERVER (true or false). With
+# Environment: ACTION_PATH, APT_DEBS, APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT and S3_TEST_SERVER (true or false). With
 # S3_TEST_SERVER=true also S3_IMAGE_CACHE_DIR and the STORAGE_TEST_S3_* variables of the job.
 #
 # Sourcing the file defines the functions and runs nothing, which is how the tests exercise the limits.
@@ -50,6 +51,7 @@ declare -A task_limit_seconds=(
   [verapdf]=240
   [epubcheck]=120
   [calibre]=240
+  [libredwg]=300
   [raw]=240
   [s3]=360
 )
@@ -62,6 +64,8 @@ configure() {
   export apt_cache_hit="${APT_CACHE_HIT:-false}"
   export verapdf_cache_hit="${VERAPDF_CACHE_HIT:-false}"
   export verapdf_dir=/opt/verapdf
+  export libredwg_cache_hit="${LIBREDWG_CACHE_HIT:-false}"
+  export libredwg_dir=/opt/libredwg
   s3_test_server="${S3_TEST_SERVER-}"
   case "$s3_test_server" in
     false) ;;
@@ -88,7 +92,7 @@ configure() {
 
 # The tasks of this job; the S3 test server only when the job runs tests that read it.
 select_tasks() {
-  tasks=(apt pip verapdf epubcheck calibre raw)
+  tasks=(apt pip verapdf epubcheck calibre libredwg raw)
   if [ "$s3_test_server" = true ]; then
     tasks+=(s3)
   fi
@@ -148,6 +152,17 @@ task_calibre() {
 
 task_raw() {
   npm run fixtures:raw
+}
+
+# DWG input is read by LibreDWG's `dwg2dxf` (GPL-3.0-or-later, an unmodified separate program), built from the pinned release
+# archive in scripts/install-libredwg.sh, which checks the SHA-256 before anything in it runs. The build is cached by the hash of that script.
+task_libredwg() {
+  if [ "$libredwg_cache_hit" = true ] && [ -x "$libredwg_dir/bin/dwg2dxf" ]; then
+    sudo ln -sf "$libredwg_dir/bin/dwg2dxf" /usr/local/bin/dwg2dxf
+    dwg2dxf --version
+  else
+    sudo scripts/install-libredwg.sh "$libredwg_dir"
+  fi
 }
 
 # Pulls the pinned image, trying a bounded number of times: anonymous registry pulls are rate limited.
@@ -238,7 +253,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_verapdf task_epubcheck task_calibre task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_verapdf task_epubcheck task_calibre task_libredwg task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {

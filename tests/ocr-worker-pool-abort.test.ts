@@ -14,6 +14,8 @@ const HANG_GUARD_MS = 2_000;
 interface FakeWorker extends OcrPooledWorker {
   terminated: boolean;
   recognized: number;
+  /** Calls that reached the worker after it was terminated: with the real engine each posts to a null handle. */
+  callsAfterTerminate: number;
 }
 
 /** Workers whose reading never finishes on its own, so only the signal can end it. */
@@ -24,8 +26,12 @@ class HangingPool extends OcrWorkerPool {
     const worker: FakeWorker = {
       terminated: false,
       recognized: 0,
-      setParameters: async () => undefined,
+      callsAfterTerminate: 0,
+      setParameters: async () => {
+        worker.callsAfterTerminate += worker.terminated ? 1 : 0;
+      },
       recognize: () => {
+        worker.callsAfterTerminate += worker.terminated ? 1 : 0;
         worker.recognized++;
         return new Promise<never>(() => undefined);
       },
@@ -102,6 +108,54 @@ describe('a pool job with an AbortSignal', () => {
     const pool = new HangingPool();
     const value = await pool.run(SPEC, async () => 'read');
     expect(value).toBe('read');
+    await pool.shutdown();
+  });
+
+  it('never calls a worker it has terminated: a job that is still running after the abort reads nothing more', async () => {
+    // tesseract.js sets its worker handle to null on terminate; a later call posts to null, which surfaces as an unhandled
+    // rejection that fails the whole test run (TypeError: Cannot read properties of null (reading 'postMessage')).
+    const pool = new HangingPool({ maxWorkersTotal: 1, maxWorkersPerKey: 1 });
+    const controller = new AbortController();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const errors: unknown[] = [];
+    const afterTerminate: string[] = [];
+    const job = pool.run(
+      SPEC,
+      async (recognize, recognizeWith, detect) => {
+        await gate;
+        for (const [name, call] of [
+          ['recognize', () => recognize(Buffer.alloc(1) as never, {}, {} as never)],
+          ['recognizeWith', () => recognizeWith({ tessedit_pageseg_mode: '6' }, Buffer.alloc(1) as never, {}, {} as never)],
+          ['detect', () => detect!(Buffer.alloc(1) as never)],
+        ] as const) {
+          try {
+            void Promise.resolve(call()).catch((error: unknown) => errors.push(error));
+          } catch (error) {
+            errors.push(error);
+          }
+          afterTerminate.push(name);
+        }
+      },
+      controller.signal
+    );
+    await settle();
+    const worker = pool.created[0];
+    worker.detect = () => {
+      worker.callsAfterTerminate += worker.terminated ? 1 : 0;
+      return new Promise<never>(() => undefined);
+    };
+    controller.abort(reasonOf('job deadline'));
+    expect(await outcomeOf(job)).toBeInstanceOf(Error);
+    await settle();
+    expect(worker.terminated).toBe(true);
+    release();
+    await settle();
+    expect(afterTerminate).toEqual(['recognize', 'recognizeWith', 'detect']);
+    expect(worker.callsAfterTerminate).toBe(0);
+    expect(errors.every((error) => error instanceof Error && /terminated/.test(error.message))).toBe(true);
     await pool.shutdown();
   });
 });

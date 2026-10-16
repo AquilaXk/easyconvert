@@ -50,6 +50,7 @@ Engines
 12. [Engine choice and version pinning](#12-engine-choice-and-version-pinning)
 13. [CAD input](#13-cad-input)
 14. [SVG to PDF](#14-svg-to-pdf)
+29. [DWG input](#29-dwg-input)
 
 Usage limits
 
@@ -187,13 +188,15 @@ Compression
 
 ## 7. Characters without a Unicode counterpart
 
-- **Status**: Implemented (#725); extended to every in-process PDF writer (#742) and to legacy binary word-processing documents (`.doc`, #726).
+- **Status**: Implemented (#725); extended to every in-process PDF writer (#742), to legacy binary word-processing documents (`.doc`, #726) and, with styles, WP Greek and presentations, in the follow-ups of #760.
 - **Decision**:
   - Symbol-font private-use characters are mapped to Unicode with the standard tables for the symbol fonts.
   - A character that no table maps becomes U+FFFD, and a warning names the font and the code.
   - **The PDF writers apply the same rule to any code point no font can draw** (unassigned, private-use, noncharacter, lone surrogate). The code point becomes U+FFFD and the result carries one warning line for each distinct code point. They no longer refuse the document.
-  - **Binary word-processing documents (`.doc`) take the font from the character formatting of the run**: the font set on the run for the ASCII, East Asian or other text (the first of these three that is a symbol font), else the default character fonts of the style sheet. A Symbol field character (a placeholder in the text plus its own font and code) maps the same way, and in any other font it is the Unicode character it names. A document without a font table or a run whose font index names no font maps nothing, and the warning names no font.
-  - **A symbol-font character whose Unicode counterpart no installed font can draw becomes U+FFFD in a PDF**, with a warning that names the font, the code and the counterpart. Text, HTML and the other outputs keep the counterpart. Installing a font that covers the counterpart makes the next conversion draw it.
+  - **Binary word-processing documents (`.doc`) take the font from the formatting of the character**. Each of the ASCII, East Asian and other fonts is the first one set by the run, then by the character style of the run, then by the paragraph style of its paragraph (the Normal style when it has no entry of its own), then by the default character fonts of the style sheet; a style that sets no font hands the choice to the style it is based on. The font of the character is the first of the three that is a symbol font. A Symbol field character (a placeholder in the text plus its own font and code) maps the same way, and in any other font it is the Unicode character it names. A document without a font table or a character whose font index names no font maps nothing, and the warning names no font.
+  - **A style chain is followed for at most 32 styles, and a malformed one is refused** (HTTP 400): styles based on each other, a style the sheet does not hold, a style whose size runs outside the table stream, a chain longer than the limit. Each style is resolved once per document.
+  - **The WP Greek faces (WordPerfect character set 8) have a table of their own**: the capital and small Greek letters in alphabet order from code 0x21. The slots the set fills with a repeat of another letter and the accented and polytonic letters (their order differs between versions of the set) map to nothing, so they become U+FFFD with a warning like any other unmapped code.
+  - **A symbol-font character whose Unicode counterpart no installed font can draw becomes U+FFFD in a PDF**, with a warning that names the font, the code and the counterpart. Text, HTML and the other outputs keep the counterpart. Installing a font that covers the counterpart makes the next conversion draw it. **Binary presentations (`.ppt`) follow the same rule**: the same helper decides what the installed fonts cover, and the warning lines are the same. Presentations in the XML format do not map symbol fonts at all; their private-use characters fall under the rule of the PDF writers above.
 - **Why**:
   - The whole document must still convert. Failing it for one glyph is worse than any substitute.
   - A replacement mark is honest.
@@ -203,14 +206,15 @@ Compression
   - The reader sees a replacement mark where the original showed a glyph.
   - Plain text, Markdown and HTML to PDF follow the rule too. A file with a stray noncharacter converts, where it used to fail with HTTP 400.
   - A character that is assigned but that no installed font covers still fails, because installing a font fixes it. The exception is a character that came from a symbol-font mapping in a `.doc`: the pictograph and arrow blocks the Wingdings and Webdings tables map to are covered by few fonts, and a bullet or an arrow is not worth a failed document.
-  - Paragraph and character styles are not followed, so a symbol-font character whose font comes only from a style is replaced and reported under the font the run resolves to.
+  - A symbol-font character that the document stores with the font of an ordinary text style (a check box in the Normal style, whose font is Arial) is not a symbol character to the reader, and it is replaced and reported under that font. The formatting names no symbol font, so any guess would invent a glyph.
+  - A PDF made from a presentation shows U+FFFD for an arrow or a pictograph that no installed font covers, where it used to fail the file.
 - **Alternatives rejected**:
   - **Refusing the document.**
   - **Rendering with a bundled symbol font**: wrong glyphs, silently.
   - **Dropping the character**: the loss would leave no trace in the output.
   - **Refusing a `.doc` whose mapped character has no installed glyph**: the same document converts on a machine with the font and fails on one without, for a decoration.
-- **Verified by**: the PPT and `.doc` symbol-font tests (`tests/doc-symbol-fonts.test.ts`, with a document written by the office suite and the PDF text read by a separate PDF reader, and `tests/doc-corpus-symbol-fonts.test.ts` on public documents), `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` converts).
-- **Revisit when**: a reliable glyph source for the remaining math fonts appears, or the `.doc` reader follows styles.
+- **Verified by**: the PPT and `.doc` symbol-font tests (`tests/doc-symbol-fonts.test.ts`, with a document written by the office suite and the PDF text read by a separate PDF reader; `tests/doc-style-fonts.test.ts`, with documents written by hand from the file format; `tests/ppt-text-extraction.test.ts`; and `tests/doc-corpus-symbol-fonts.test.ts` and `tests/ppt-corpus-symbol-fonts.test.ts` on public documents, the Greek letters read against the sentences they stand in), `tests/symbol-font-map.test.ts` (the Greek alphabet in order), `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` and `doc-poi-41246-2.ppt` convert).
+- **Revisit when**: a reliable glyph source for the remaining math fonts appears, the accented letters of the WP Greek set are confirmed against a real document, or the `.pptx` reader names the font of a run.
 
 ## 8. Empty documents and macros
 
@@ -258,7 +262,7 @@ Compression
 - **Status**: Implemented.
 - **Decision**:
   - Every engine is open source and free to run.
-  - Copyleft engines, such as the PostScript interpreter and the DWG reader planned in #728, are used only as unmodified separate programs.
+  - Copyleft engines, such as the PostScript interpreter and the DWG reader (29), are used only as unmodified separate programs.
   - No paid engine, service or CI runner is adopted.
 - **Why**: per-conversion licence costs would make free tiers uneconomic. Using copyleft tools as separate programs keeps their obligations with those programs, and the licence notice lists them (`docs/licensing.md`).
 - **Trade-offs**: some formats have no open engine that matches the best paid ones. The gap is measured, not hidden, and tracked as an issue.
@@ -280,13 +284,13 @@ Compression
 
 ## 13. CAD input
 
-- **Status**: Implemented for DXF (#727, #744). DWG is decided (#728).
+- **Status**: Implemented for DXF (#727, #744) and for DWG (#728, see [29](#29-dwg-input)).
 - **Decision**:
   - DXF is read in-process. It covers lines, arcs, circles, ellipses, clamped and unclamped B-splines (sampled over their valid Cox-de Boor domain `[knots[degree], knots[control.length]]`), polylines with bulges, blocks with nesting, arrays and negative-Z OCS extrusion, dimensions, and single-line and multi-line text (including horizontal/vertical alignments, `Aligned`/`Fit` baseline orientation and width scaling, `STYLE` width factors, `%%` control codes, and linked multi-column `MTEXT` records wrapped to single-column width). Degenerate block insertions with a zero scale factor are skipped after accounting for their visit budget.
   - Output is one vector page fitted to the drawing extents (both strokes and text boxes), with every text line placed at its true drawing coordinates.
   - Expansion is bounded by one budget for the whole drawing; a drawing over it fails with 422.
   - The CAD parity score reads every output the same way, whatever the renderer draws: ink is any pixel that differs from the page colour, the frame of the drawing is fitted so that the truth strokes (the strokes read from the DXF) lie on ink, and the tolerance is a symmetric 1 % dilation. Ink inside a text box that is on no stroke is taken for glyphs up to a quarter of the box; beyond that it is charged to precision, and ink in a text box never meets a truth stroke that lies outside the text boxes. The score names no colour, line weight or page layout of the product or of the reference tool. B-splines whose knot vector is unclamped are sampled over their valid domain with the reference library's domain sampler, because its path conversion leaves the domain.
-  - DWG is converted to DXF by an open-source reader run as a separate program.
+  - DWG is converted to DXF by an open-source reader run as a separate program (see [29](#29-dwg-input)).
 - **Why**:
   - Fidelity: dropping entity types, misplacing aligned or multi-column text, ignoring negative-Z block extrusion, or extrapolating unclamped B-spline knot vectors outside their domain gives visibly wrong drawings.
   - Fitting the page to the drawing extents matches what CAD exporters produce.
@@ -639,7 +643,38 @@ Compression
 - **Verified by**: `tests/zstd-job-frames.test.ts`, `tests/zstd-engine.test.ts`, `tests/zstd-level-pins.test.ts`, `tests/zstd-hostile-frames.test.ts`, `tests/zstd-throughput.perf.test.ts`, and the `compression` quality and speed parity suites across all 12 Silesia files and all 8 content classes.
 - **Revisit when**: a dedicated double-hash fast matcher (separate short-match and long-match tables without a chain array) is introduced for levels 1 to 4.
 
-## 29. Archive repacking in process: deflate engine, size bound and fail-over
+## 29. DWG input
+
+- **Status**: Implemented (#728).
+- **Decision**:
+  - A DWG is converted to DXF by `dwg2dxf`, the command-line reader of an open-source DWG library (GPL-3.0-or-later). The program is unmodified, runs as a separate process in the process sandbox (no network, 2 GiB of memory, a file-size limit, the time left of the job at most 120 s, a 4 MiB diagnostics buffer, its own scratch directory removed afterwards), and is never linked into the application. The DXF path then draws SVG, PDF and the raster formats from what it wrote; a DXF target returns that DXF.
+  - The release code at the start of the file (`AC1015`, ...) is read before the program starts. R13 (`AC1012`), R14, 2000, 2004, 2007, 2010, 2013 and 2018 (`AC1032`, which every release from 2018 on writes) are converted. R12 and older (`AC1009` and the codes before it), a code newer than `AC1032` and a code nobody released are refused with HTTP 422 that names the release and says to save the drawing as a newer DWG or as a DXF. Bytes that do not start with any DWG code, including a DXF saved under the name `.dwg`, are refused with 400.
+  - What the program writes is checked before the DXF path reads it: pairs of an integer group code and a value, no NUL bytes, balanced `SECTION` and `ENDSEC`, an `ENTITIES` section and the `EOF` record last. A program that exits with an error or a signal, writes nothing, writes a file that fails the check, or outruns its limit is a typed error: 422 for the drawing, a typed timeout for the clock, 503 and a retry on another worker when the program is missing. There is no estimate and no fallback to a guess.
+  - Proxy entities (objects of an add-on application, which a DWG stores with no drawable geometry) are left out of the drawing and reported in `warnings` with their number.
+  - The pinned reader is a snapshot of the 0.14 series (0.14.8601), built from its release archive checked against a SHA-256 (`scripts/install-libredwg.sh`) in the worker image and in CI. It is not the 0.14 release of 2026-06-27, which still has the heap overflow in the R2004 section decompressor that was fixed on 2026-07-01.
+  - The licence notice lists the reader as a separate program (`docs/licensing.md`), and the image carries its licence text and the name and digest of the archive it was built from in `/licenses`.
+- **Why**:
+  - Fidelity and cost: DWG is the common CAD exchange format and no open-source library decodes it as completely as this reader (its decoder reads R13 to R2018, with a few advanced objects of 2010 and later skipped). A DWG decoder of our own would take years and be wrong in ways nobody could check, and licensed decoders are out of scope (11).
+  - Safety: the reader is a C program that parses an attacker-controlled file, and its advisories and fuzzing fixes are frequent (a heap overflow in the R2004 decompressor, a non-terminating loop in the R13 to 2000 decoder, an unbounded allocation in the pre-R13 entity decoder). A separate sandboxed process with limits turns each of them into a refused job instead of a hung or compromised worker, and the output check keeps a half-written file from reaching the DXF reader.
+  - R13 as the lower bound: the reader prints that its output for R9 to R11 is experimental, the advisory about the unbounded allocation concerns exactly the pre-R13 decoder and had no fixed release when this was decided, and no pre-R13 drawing of the pinned sample sets has a truth that is not the reader's own. Refusing them with the way out is better than a drawing that may be wrong. The lower bounds that commercial converters publish range from R12 to R14, and an unsupported release is a stated limit of theirs too (an error that names the supported releases), not a silent failure.
+  - Release by release, not one sample: the same entities saved by the drawing program as six releases give the same coordinates through the reader, so the check does not rest on one release's layout.
+- **Trade-offs**:
+  - R12 and older drawings are refused although the reader can decode them; some commercial converters accept R12.
+  - The reader skips some advanced objects of R2010 and later (and keeps the proxies above as stubs), and the DXF path draws what it knows (lines, arcs, circles, ellipses, splines, polylines, text, blocks, dimensions); the rest is absent from the output, with a warning only for proxies.
+  - External references are not resolved: the referenced file is not part of the request, so what it draws is absent from the output.
+  - A statically linked build of the reader is part of every worker image and CI run (about a minute and a half to build on four cores, cached by the hash of the install script).
+  - The DXF a DWG becomes is the reader's, so a defect of the reader (a wrong colour index, a text style) reaches the output. The parity rows judge the drawing step against the DXF the reader wrote and cannot see such a defect; the AutoCAD property dumps of the single-entity drawings do.
+- **Alternatives rejected**:
+  - **A DWG decoder in this project**: the format is only documented by a reverse-engineered specification, and the reader already has years of fuzzing behind it.
+  - **A paid DWG library or service**: out of scope (11).
+  - **The 0.14 release itself or the 0.13 series**: both carry the R2004 decompressor overflow.
+  - **Distribution packages**: Debian ships no package of the reader.
+  - **Linking the library into the application**: it would bring the GPL to the application and put a memory-unsafe parser in the process that serves requests.
+  - **Accepting every release code and letting the reader decide**: its refusal of an old file is a crash or a hang, not a message, and the unbounded allocation would cost a worker its memory.
+- **Verified by**: `tests/cad-dwg-version.test.ts` (the release table of the Open Design Specification for .dwg files, written out in the test), `tests/cad-dwg-reader.test.ts` (a line, an arc and a circle saved as six releases against the values of the drawing program's own property dump read by an independent DXF library; the ink score of SVG, PDF and PNG output; refusals before the program starts; stand-in programs for every way the program can fail; proxy warnings), `tests/cad-dwg-fuzz.test.ts` (truncated, bit-flipped and zero-filled copies of three real drawings are converted or refused with a typed error inside the limit), `tests/cad-dwg-routes.test.ts` (the 422 and 400 answers of the routes), and the DWG rows of the CAD parity family.
+- **Revisit when**: a licensed pre-R13 drawing with an independent truth exists and the reader fixes its pre-R13 decoder (accept R11 and R12); the reader publishes a release after 0.14 with the fixes of the pinned snapshot (pin it); a release newer than `AC1032` appears (accept its code once the reader decodes it); or users report drawings where proxy entities or external references are the content.
+
+## 30. Archive repacking in process: deflate engine, size bound and fail-over
 
 - **Status**: Implemented (issue #685).
 - **Decision**:
@@ -666,3 +701,4 @@ Compression
   - **A smaller bzip2 block for parallelism** on the tar to tar.bz2 row: 7-Zip's bzip2 is single-threaded for the two blocks a 0.9 MB input makes (73.5 ms against 51.7 ms for `bzip2 -9`, pipes or files alike); blocks of 300 or 450 KB run in parallel but write up to 11 % more than `bzip2 -9` on text. The in-repo encoder takes 115 to 150 ms. The row stays a tracked gap.
 - **Verified by**: `tests/deflate-blocks.test.ts`, `tests/archive-inprocess-repack.test.ts` and `tests/archive-inprocess-unpack.test.ts` (outputs read back by `unzip -t`, `zipinfo`, `7z t`, `gzip -t`, `gzip -N`, `tar` and `unrar`; entry-by-entry SHA-256, modes and times; sizes against `zip -6` and `gzip -6`; no 7-Zip call; traversal, link, collision, entry-count, size, ratio, CRC and encryption refusals), `tests/archive-stream-to-tar.test.ts`, `tests/archive-native-compression-level.test.ts`, and the `compression` quality and speed parity rows (`mixed.tar->zip`, `mixed.tar->gz`, `mixed.zip->tar`, `mixed.gz->tar`, `mixed.rar->tar`).
 - **Revisit when**: a WebAssembly deflate with a three-byte hash (libdeflate, or zlib without the CRC-32C hash) is vendored, which removes the 4 MiB bound; or the stored-only RAR reader is extended to RAR 5 and extended times.
+

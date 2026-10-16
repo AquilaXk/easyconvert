@@ -18,13 +18,23 @@ const FC_LCB_PAIRS = 93;
 const CLX_FC_LCB_INDEX = 33;
 const STSH_FC_LCB_INDEX = 1;
 const CHPX_BTE_FC_LCB_INDEX = 12;
+const PAPX_BTE_FC_LCB_INDEX = 13;
 const FFN_FC_LCB_INDEX = 15;
 const FKP_BYTES = 512;
 const FKP_MAX_RUNS = 101;
+const PAPX_MAX_RUNS = 29;
 const SPRM_C_RG_FTC0 = 0x4a4f;
 const SPRM_C_RG_FTC1 = 0x4a50;
 const SPRM_C_RG_FTC2 = 0x4a51;
 const SPRM_C_SYMBOL = 0x6a09;
+const SPRM_C_ISTD = 0x4a30;
+const SPRM_P_F_KEEP = 0x2405;
+const PAPX_BX_BYTES = 13;
+const STD_BASE_BYTES = 10;
+const STI_USER_DEFINED = 0x0ffe;
+const ISTD_NONE = 0x0fff;
+const SGC_PARAGRAPH = 1;
+const SGC_CHARACTER = 2;
 const SPRM_C_F_SPEC = 0x0855;
 const FFN_FIXED_BYTES = 39;
 const FC_COMPRESSED = 0x40000000;
@@ -56,6 +66,30 @@ export interface WordRun {
   ftcOther?: number;
   /** A Symbol field character: the placeholder 0x28 in the text plus sprmCSymbol (font, character). */
   symbol?: { ftc: number; xchar: number };
+  /** The character style of the run (sprmCIstd): an index into `styles`. */
+  istd?: number;
+}
+
+/** A style of the style sheet ([MS-DOC] 2.9.260 Std); its position in `styles` is its istd. */
+export interface WordStyle {
+  kind: 'paragraph' | 'character';
+  name: string;
+  /** istdBase: the style this one is based on; none when absent. */
+  basedOn?: number;
+  /** The font indexes the style's character properties set (sprmCRgFtc0, sprmCRgFtc1, sprmCRgFtc2). */
+  ftcAscii?: number;
+  ftcFarEast?: number;
+  ftcOther?: number;
+  /** Writes the Std without its character properties (the LPUpxChpx), as a style that sets no character formatting. */
+  noCharacterProperties?: boolean;
+}
+
+/** The paragraph style (istd) of the next `chars` characters of the main story ([MS-DOC] 2.9.? PapxFkp). */
+export interface WordParagraph {
+  chars: number;
+  istd: number;
+  /** Writes the PapxInFkp with a paragraph property after the istd, which selects the form whose cb is not zero. */
+  withProperty?: boolean;
 }
 
 export interface WordBuildOptions {
@@ -77,6 +111,10 @@ export interface WordBuildOptions {
   styleFonts?: { ascii: number; farEast: number; other: number };
   /** Character formatting of the main story, in character order; characters past the last run carry none. */
   runs?: readonly WordRun[];
+  /** The styles of the style sheet, by istd. */
+  styles?: readonly WordStyle[];
+  /** Paragraph formatting (the istd of each paragraph) of the main story, in character order. */
+  paragraphs?: readonly WordParagraph[];
 }
 
 /** Where the builder placed the structures, so a test can corrupt exactly one of them. */
@@ -85,6 +123,12 @@ export interface WordBinaryLayout {
   plcBteChpx: { offset: number; length: number };
   fonts: { offset: number; length: number };
   styleSheet: { offset: number; length: number };
+  /** Offset in the table stream of the Std of each style (after its cbStd), by istd. */
+  stdOffsets: number[];
+  /** Offset in the table stream of the PlcBtePapx and its length. */
+  plcBtePapx: { offset: number; length: number };
+  /** Offsets in the WordDocument stream of the PapxFkp pages, in PlcBtePapx order. */
+  papxPages: number[];
   /** Offsets in the WordDocument stream of the FKP pages, in PlcBteChpx order. */
   fkpPages: number[];
   /** Offset in the WordDocument stream of the FIB (FibRgFcLcb97) pair for an index. */
@@ -121,8 +165,9 @@ function sprm(opcode: number, ...operand: number[]): Buffer {
   return out;
 }
 
-function chpxOf(run: WordRun): Buffer {
+function chpxGrpprl(run: WordRun): Buffer {
   const sprms: Buffer[] = [];
+  if (run.istd !== undefined) sprms.push(sprm(SPRM_C_ISTD, run.istd));
   if (run.ftcAscii !== undefined) sprms.push(sprm(SPRM_C_RG_FTC0, run.ftcAscii));
   if (run.ftcFarEast !== undefined) sprms.push(sprm(SPRM_C_RG_FTC1, run.ftcFarEast));
   if (run.ftcOther !== undefined) sprms.push(sprm(SPRM_C_RG_FTC2, run.ftcOther));
@@ -130,7 +175,11 @@ function chpxOf(run: WordRun): Buffer {
     sprms.push(Buffer.from([SPRM_C_F_SPEC & 0xff, SPRM_C_F_SPEC >> 8, 1]));
     sprms.push(sprm(SPRM_C_SYMBOL, run.symbol.ftc, run.symbol.xchar));
   }
-  const grpprl = Buffer.concat(sprms);
+  return Buffer.concat(sprms);
+}
+
+function chpxOf(run: WordRun): Buffer {
+  const grpprl = chpxGrpprl(run);
   return Buffer.concat([Buffer.from([grpprl.length]), grpprl]);
 }
 
@@ -162,13 +211,73 @@ function fontTable(names: readonly string[]): Buffer {
   return Buffer.concat([uint16(names.length), uint16(0), ...entries]);
 }
 
-/** The STSH: cbStshi, then the Stshif with the default character fonts, no styles. */
-function styleSheet(fonts: { ascii: number; farEast: number; other: number }): Buffer {
+/** A length-prefixed UPX: cb, the bytes, and a pad byte when cb is odd so the next one starts on a word boundary. */
+function lpUpx(bytes: Buffer): Buffer {
+  return Buffer.concat([uint16(bytes.length), bytes, Buffer.alloc(bytes.length % 2)]);
+}
+
+/** The Std of one style ([MS-DOC] 2.9.260): StdfBase, the name as an Xstz, then the UPXs of the style's kind. */
+function stdOf(style: WordStyle, istd: number): Buffer {
+  const sgc = style.kind === 'paragraph' ? SGC_PARAGRAPH : SGC_CHARACTER;
+  const cupx = style.kind === 'paragraph' ? 2 : 1;
+  const base = Buffer.alloc(STD_BASE_BYTES);
+  base.writeUInt16LE(STI_USER_DEFINED, 0);
+  base.writeUInt16LE(sgc | ((style.basedOn ?? ISTD_NONE) << 4), 2);
+  base.writeUInt16LE(cupx | (istd << 4), 4);
+  const name = Buffer.from(`${style.name}\0`, 'utf16le');
+  const chpx = style.noCharacterProperties ? Buffer.alloc(0) : chpxGrpprl({ chars: 0, ftcAscii: style.ftcAscii, ftcFarEast: style.ftcFarEast, ftcOther: style.ftcOther });
+  const upx = style.kind === 'paragraph' ? [lpUpx(uint16(istd)), lpUpx(chpx)] : [lpUpx(chpx)];
+  return Buffer.concat([base, uint16(style.name.length), name, ...upx]);
+}
+
+/** The STSH: cbStshi, the Stshif with the default character fonts, then the LPStd array of the styles. */
+function styleSheet(fonts: { ascii: number; farEast: number; other: number }, styles: readonly WordStyle[]): { bytes: Buffer; stdOffsets: number[] } {
   const stshi = Buffer.alloc(20);
+  stshi.writeUInt16LE(styles.length, 0);
+  stshi.writeUInt16LE(STD_BASE_BYTES, 2);
   stshi.writeUInt16LE(fonts.ascii, 12);
   stshi.writeUInt16LE(fonts.farEast, 14);
   stshi.writeUInt16LE(fonts.other, 16);
-  return Buffer.concat([uint16(stshi.length), stshi]);
+  const parts: Buffer[] = [uint16(stshi.length), stshi];
+  const stdOffsets: number[] = [];
+  let at = 2 + stshi.length;
+  styles.forEach((style, istd) => {
+    const std = stdOf(style, istd);
+    parts.push(uint16(std.length), std);
+    stdOffsets.push(at + 2);
+    at += 2 + std.length;
+  });
+  return { bytes: Buffer.concat(parts), stdOffsets };
+}
+
+/** One PapxFkp page ([MS-DOC] 2.9.? PapxFkp): rgfc, the 13-byte BxPap entries, the PapxInFkp structures, crun last. */
+function papxPage(boundaries: readonly number[], papx: readonly (Buffer | null)[]): Buffer {
+  const page = Buffer.alloc(FKP_BYTES);
+  const count = papx.length;
+  boundaries.forEach((fc, i) => page.writeUInt32LE(fc, i * 4));
+  let cursor = (count + 1) * 4 + count * PAPX_BX_BYTES;
+  cursor += cursor % 2;
+  papx.forEach((bytes, i) => {
+    if (bytes === null) return;
+    page[(count + 1) * 4 + i * PAPX_BX_BYTES] = cursor / 2;
+    bytes.copy(page, cursor);
+    cursor += bytes.length + (bytes.length % 2);
+  });
+  page[FKP_BYTES - 1] = count;
+  return page;
+}
+
+/**
+ * The PapxInFkp of a paragraph: GrpprlAndIstd is the istd and the paragraph properties. With cb non-zero its size is
+ * 2 * cb - 1 bytes (the odd size of an istd and one three-byte sprm); with cb zero a second byte gives half its size.
+ */
+function papxOf(paragraph: WordParagraph): Buffer {
+  if (paragraph.withProperty) {
+    const grpprlAndIstd = Buffer.concat([uint16(paragraph.istd), Buffer.from([SPRM_P_F_KEEP & 0xff, SPRM_P_F_KEEP >> 8, 1])]);
+    return Buffer.concat([Buffer.from([(grpprlAndIstd.length + 1) / 2]), grpprlAndIstd]);
+  }
+  const grpprlAndIstd = uint16(paragraph.istd);
+  return Buffer.concat([Buffer.from([0, grpprlAndIstd.length / 2]), grpprlAndIstd]);
 }
 
 export function buildWordBinary(options: WordBuildOptions): Buffer {
@@ -195,58 +304,72 @@ export function buildWordBinaryParts(options: WordBuildOptions): WordBinaryParts
     cursor += encoded[index].length;
   }
 
-  // The character runs become FKP pages placed after the text on 512-byte boundaries, ascending by file offset.
+  // The character runs and the paragraphs become FKP pages placed after the text on 512-byte boundaries, ascending by file offset.
   const pieceStartCp: number[] = [];
   let cpCursor = 0;
   pieces.forEach((piece) => {
     pieceStartCp.push(cpCursor);
     cpCursor += piece.text.length;
   });
-  const segments: Array<{ fcStart: number; fcEnd: number; chpx: Buffer | null }> = [];
-  const runs = options.runs ?? [];
-  let runIndex = 0;
-  let runLeft = runs.length > 0 ? runs[0].chars : 0;
-  pieces.forEach((piece, pieceIndex) => {
-    const bytesPerChar = piece.compressed ? 1 : 2;
-    let fc = offsets[pieceIndex];
-    let left = piece.text.length;
-    const inMain = pieceIndex < options.pieces.length;
-    while (left > 0) {
-      while (inMain && runIndex < runs.length && runLeft === 0) {
-        runIndex++;
-        runLeft = runIndex < runs.length ? runs[runIndex].chars : 0;
+  /** Splits the file ranges of the pieces at the boundaries of `items` (consecutive character counts of the main story). */
+  const segmentsOf = <T extends { chars: number }>(items: readonly T[], make: (item: T) => Buffer | null): Array<{ fcStart: number; fcEnd: number; bytes: Buffer | null }> => {
+    const segments: Array<{ fcStart: number; fcEnd: number; bytes: Buffer | null }> = [];
+    let itemIndex = 0;
+    let itemLeft = items.length > 0 ? items[0].chars : 0;
+    pieces.forEach((piece, pieceIndex) => {
+      const bytesPerChar = piece.compressed ? 1 : 2;
+      let fc = offsets[pieceIndex];
+      let left = piece.text.length;
+      const inMain = pieceIndex < options.pieces.length;
+      while (left > 0) {
+        while (inMain && itemIndex < items.length && itemLeft === 0) {
+          itemIndex++;
+          itemLeft = itemIndex < items.length ? items[itemIndex].chars : 0;
+        }
+        const item = inMain && itemIndex < items.length ? items[itemIndex] : undefined;
+        const take = item === undefined ? left : Math.min(left, itemLeft);
+        segments.push({ fcStart: fc, fcEnd: fc + take * bytesPerChar, bytes: item === undefined ? null : make(item) });
+        fc += take * bytesPerChar;
+        left -= take;
+        if (item !== undefined) itemLeft -= take;
       }
-      const run = inMain && runIndex < runs.length ? runs[runIndex] : undefined;
-      const take = run === undefined ? left : Math.min(left, runLeft);
-      segments.push({ fcStart: fc, fcEnd: fc + take * bytesPerChar, chpx: run === undefined ? null : chpxOf(run) });
-      fc += take * bytesPerChar;
-      left -= take;
-      if (run !== undefined) runLeft -= take;
-    }
-  });
-  segments.sort((a, b) => a.fcStart - b.fcStart);
-  const fkpPages: Buffer[] = [];
-  const fkpBoundaries: number[] = [];
-  if (options.runs !== undefined) {
-    // A page holds as many runs as fit: 4 bytes of file offset and 1 byte of Chpx offset per run, the final offset, the Chpx structures.
+    });
+    return segments.sort((a, b) => a.fcStart - b.fcStart);
+  };
+  /** Packs segments into FKP pages: as many entries as fit in 511 bytes, `perEntry` bytes of offsets and index each. */
+  const pagesOf = (
+    segments: ReadonlyArray<{ fcStart: number; fcEnd: number; bytes: Buffer | null }>,
+    perEntry: number,
+    maxEntries: number,
+    page: (boundaries: number[], contents: Array<Buffer | null>) => Buffer
+  ): { pages: Buffer[]; boundaries: number[] } => {
+    const pages: Buffer[] = [];
+    const boundaries: number[] = [];
     for (let at = 0; at < segments.length; ) {
       let size = 4 + 1;
       let end = at;
-      while (end < segments.length && end - at < FKP_MAX_RUNS) {
-        const chpxSize = segments[end].chpx === null ? 0 : segments[end].chpx!.length + (segments[end].chpx!.length % 2);
-        if (size + 5 + chpxSize + 1 > FKP_BYTES - 1) break;
-        size += 5 + chpxSize;
+      while (end < segments.length && end - at < maxEntries) {
+        const bytes = segments[end].bytes;
+        const contentSize = bytes === null ? 0 : bytes.length + (bytes.length % 2);
+        if (size + 4 + perEntry + contentSize + 1 > FKP_BYTES - 1) break;
+        size += 4 + perEntry + contentSize;
         end++;
       }
       const slice = segments.slice(at, end);
-      fkpBoundaries.push(slice[0].fcStart);
-      fkpPages.push(fkpPage([...slice.map((segment) => segment.fcStart), slice[slice.length - 1].fcEnd], slice.map((segment) => segment.chpx)));
+      boundaries.push(slice[0].fcStart);
+      pages.push(page([...slice.map((segment) => segment.fcStart), slice[slice.length - 1].fcEnd], slice.map((segment) => segment.bytes)));
       at = end;
     }
-    fkpBoundaries.push(segments[segments.length - 1].fcEnd);
-  }
+    boundaries.push(segments[segments.length - 1].fcEnd);
+    return { pages, boundaries };
+  };
+  const chpxPages = options.runs === undefined ? { pages: [], boundaries: [] } : pagesOf(segmentsOf(options.runs, chpxOf), 1, FKP_MAX_RUNS, fkpPage);
+  const papxPages = options.paragraphs === undefined ? { pages: [], boundaries: [] } : pagesOf(segmentsOf(options.paragraphs, papxOf), PAPX_BX_BYTES, PAPX_MAX_RUNS, papxPage);
+  const fkpPages = chpxPages.pages;
+  const fkpBoundaries = chpxPages.boundaries;
   const fkpStart = Math.ceil(cursor / FKP_BYTES) * FKP_BYTES;
-  const wordLength = options.runs === undefined ? cursor : fkpStart + fkpPages.length * FKP_BYTES;
+  const papxStart = fkpStart + fkpPages.length * FKP_BYTES;
+  const wordLength = fkpPages.length + papxPages.pages.length === 0 ? cursor : papxStart + papxPages.pages.length * FKP_BYTES;
 
   const word = Buffer.alloc(wordLength);
   word.writeUInt16LE(W_IDENT, 0);
@@ -290,7 +413,11 @@ export function buildWordBinaryParts(options: WordBuildOptions): WordBinaryParts
 
   const unplaced = { offset: 0, length: 0 };
   const fonts = options.fonts === undefined ? unplaced : place(fontTable(options.fonts), FFN_FC_LCB_INDEX);
-  const styles = options.styleFonts === undefined ? unplaced : place(styleSheet(options.styleFonts), STSH_FC_LCB_INDEX);
+  const sheet =
+    options.styleFonts === undefined && options.styles === undefined
+      ? undefined
+      : styleSheet(options.styleFonts ?? { ascii: 0, farEast: 0, other: 0 }, options.styles ?? []);
+  const styles = sheet === undefined ? unplaced : place(sheet.bytes, STSH_FC_LCB_INDEX);
   let plcBteChpx = unplaced;
   if (options.runs !== undefined) {
     const plc = Buffer.alloc(fkpBoundaries.length * 4 + fkpPages.length * 4);
@@ -298,6 +425,15 @@ export function buildWordBinaryParts(options: WordBuildOptions): WordBinaryParts
     fkpPages.forEach((_, i) => plc.writeUInt32LE((fkpStart + i * FKP_BYTES) / FKP_BYTES, fkpBoundaries.length * 4 + i * 4));
     plcBteChpx = place(plc, CHPX_BTE_FC_LCB_INDEX);
     fkpPages.forEach((page, i) => page.copy(word, fkpStart + i * FKP_BYTES));
+  }
+  let plcBtePapx = unplaced;
+  if (options.paragraphs !== undefined) {
+    const { boundaries } = papxPages;
+    const plc = Buffer.alloc(boundaries.length * 4 + papxPages.pages.length * 4);
+    boundaries.forEach((fc, i) => plc.writeUInt32LE(fc, i * 4));
+    papxPages.pages.forEach((_, i) => plc.writeUInt32LE((papxStart + i * FKP_BYTES) / FKP_BYTES, boundaries.length * 4 + i * 4));
+    plcBtePapx = place(plc, PAPX_BTE_FC_LCB_INDEX);
+    papxPages.pages.forEach((page, i) => page.copy(word, papxStart + i * FKP_BYTES));
   }
   const table = Buffer.concat([...tableParts, Buffer.alloc(Math.max(0, TEXT_AREA_START - tableCursor))]);
 
@@ -309,6 +445,9 @@ export function buildWordBinaryParts(options: WordBuildOptions): WordBinaryParts
       plcBteChpx,
       fonts,
       styleSheet: styles,
+      stdOffsets: sheet === undefined ? [] : sheet.stdOffsets.map((at) => styles.offset + at),
+      plcBtePapx,
+      papxPages: papxPages.pages.map((_, i) => papxStart + i * FKP_BYTES),
       fkpPages: fkpPages.map((_, i) => fkpStart + i * FKP_BYTES),
       pairOffset: (index: number) => 154 + index * 8,
     },
