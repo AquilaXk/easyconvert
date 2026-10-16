@@ -95,6 +95,11 @@ type ChildEntry = { binary: string; args: string[] };
 
 let childEntry: ChildEntry | null | undefined;
 
+/** How the helper is started (the command and arguments), or null when it cannot be; exported for the tests that run the helper on its own. */
+export function sandboxLauncherChildEntry(): ChildEntry | null {
+  return resolveChildEntry();
+}
+
 /** How to start the helper: the bundled file next to this module or under `dist/`, otherwise the source through tsx; null when neither exists. */
 function resolveChildEntry(): ChildEntry | null {
   if (childEntry !== undefined) return childEntry;

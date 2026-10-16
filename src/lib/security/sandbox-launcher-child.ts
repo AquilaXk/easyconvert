@@ -97,6 +97,11 @@ async function run(request: Extract<LauncherRequest, { type: 'run' }>, stdin: Bu
   }
 }
 
+/** Stops every program still running, each in its own process group; the kill is made before this returns. */
+function abortAll(): void {
+  for (const controller of running.values()) controller.abort();
+}
+
 function main(): void {
   const reader = new FrameReader<LauncherRequest>();
   process.stdin.on('data', (chunk: Buffer) => {
@@ -111,12 +116,14 @@ function main(): void {
       process.exit(1);
     }
   });
-  process.stdin.on('end', () => {
-    for (const controller of running.values()) controller.abort();
-    // Aborting kills the process group of each program at once; the worker that would read the replies is gone.
-    process.exit(0);
-  });
-  process.on('SIGTERM', () => process.exit(0));
+  // Whichever way the helper ends (input closed, a request it cannot read, a signal, a crash), the programs it started
+  // go with it: they run in their own process groups, so nothing else would stop them or hold them to a limit. Only a
+  // kill the process cannot handle (SIGKILL, the out-of-memory killer) leaves them running.
+  process.on('exit', abortAll);
+  process.stdin.on('end', () => process.exit(0));
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, () => process.exit(0));
+  process.on('uncaughtException', () => process.exit(1));
+  process.on('unhandledRejection', () => process.exit(1));
   send({ type: 'ready' });
 }
 

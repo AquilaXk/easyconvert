@@ -1,13 +1,15 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   launchPays,
+  sandboxLauncherChildEntry,
   launchSandboxedBinary,
   sandboxLauncherState,
   startSandboxLauncher,
   stopSandboxLauncher,
 } from '../src/lib/security/sandbox-launcher';
+import { encodeFrame, FrameReader, isBadFrame, type LauncherReply, type LauncherRequest } from '../src/lib/security/sandbox-launcher-protocol';
 import {
   SandboxedBufferLimitError,
   SandboxedProcessError,
@@ -286,5 +288,54 @@ describe('sandbox launcher', () => {
     const after = sandboxLauncherState();
     expect(after.launched - before.launched).toBe(1);
     expect(after.direct - before.direct).toBe(1);
+  });
+
+  describe('a helper that ends without its input closing', () => {
+    /** The helper on its own, with a program running through it that would run for 30 seconds. */
+    async function startHelperWithProgram(marker: string): Promise<{ child: ChildProcess; exited: Promise<number | null> }> {
+      const entry = sandboxLauncherChildEntry();
+      expect(entry).not.toBeNull();
+      const child = spawn(entry!.binary, entry!.args, { stdio: ['pipe', 'pipe', 'ignore'], cwd: process.cwd() });
+      const reader = new FrameReader<LauncherReply>();
+      const ready = new Promise<void>((resolve) => {
+        child.stdout!.on('data', (chunk: Buffer) => {
+          for (const frame of reader.push(chunk)) if (!isBadFrame(frame) && frame.header.type === 'ready') resolve();
+        });
+      });
+      const exited = new Promise<number | null>((resolve) => child.once('exit', (code) => resolve(code)));
+      await ready;
+      const request: LauncherRequest = {
+        type: 'run',
+        id: 1,
+        binary: SH,
+        args: shell(`sleep 30; echo ${marker}`),
+        hasStdin: false,
+        options: { strictIsolation: false, networkIsolated: false, timeoutMs: 60_000 },
+      };
+      for (const part of encodeFrame(request)) child.stdin!.write(part);
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(spawnSync('/usr/bin/pgrep', ['-f', marker]).status).toBe(0);
+      return { child, exited };
+    }
+
+    const gone = (marker: string): boolean => spawnSync('/usr/bin/pgrep', ['-f', marker]).status === 1;
+
+    it('takes the program with it when it is terminated', async () => {
+      const marker = `launcher-term-${crypto.randomUUID()}`;
+      const { child, exited } = await startHelperWithProgram(marker);
+      child.kill('SIGTERM');
+      await exited;
+      expect(gone(marker)).toBe(true);
+    }, 30_000);
+
+    it('takes the program with it when it meets a request it cannot read', async () => {
+      const marker = `launcher-protocol-${crypto.randomUUID()}`;
+      const { child, exited } = await startHelperWithProgram(marker);
+      const prefix = Buffer.alloc(8);
+      prefix.writeUInt32BE(4, 0);
+      child.stdin!.write(Buffer.concat([prefix, Buffer.from('nope')]));
+      expect(await exited).toBe(1);
+      expect(gone(marker)).toBe(true);
+    }, 30_000);
   });
 });
