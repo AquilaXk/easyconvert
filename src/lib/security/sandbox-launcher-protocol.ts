@@ -33,16 +33,38 @@ export type LauncherRequest =
 
 export type LauncherErrorKind = 'process' | 'timeout' | 'buffer' | 'memory' | 'unavailable' | 'aborted' | 'other';
 
+/**
+ * A failed run. The text the program printed travels in the payload (standard output, then standard error), capped to
+ * its head and tail by capStream, so a program that prints megabytes before it fails cannot overflow a header.
+ */
 export interface LauncherErrorDetail {
   kind: LauncherErrorKind;
+  /** Short: the head and tail of the full message. */
   message: string;
   exitCode?: number | null;
   signal?: NodeJS.Signals | null;
-  stderr?: string;
-  stdout?: string;
+  /** Length of the standard output in the payload; the standard error follows it. */
+  stdoutBytes?: number;
   timeoutMs?: number;
   limitBytes?: number;
   limitMb?: number;
+}
+
+/** What is kept of the text a failed program printed: this many bytes from each end. */
+export const ERROR_STREAM_HEAD_BYTES = 32 * 1024;
+export const ERROR_STREAM_TAIL_BYTES = 32 * 1024;
+/** What is kept of the message of an error. */
+export const ERROR_MESSAGE_HEAD_BYTES = 512;
+export const ERROR_MESSAGE_TAIL_BYTES = 512;
+
+/**
+ * `text` with the middle cut out when it is longer than `head + tail` bytes, a note of the cut in its place. The
+ * start (where a tool names its error) and the end (where it names its cause) are kept whole.
+ */
+export function capStream(text: Buffer, head: number, tail: number): Buffer {
+  if (text.length <= head + tail) return text;
+  const note = Buffer.from(`\n[... ${text.length - head - tail} bytes omitted ...]\n`, 'utf8');
+  return Buffer.concat([text.subarray(0, head), note, text.subarray(text.length - tail)]);
 }
 
 export type LauncherReply =
@@ -75,44 +97,96 @@ export function encodeFrame(header: LauncherRequest | LauncherReply, ...payload:
   return [prefix, ...parts];
 }
 
+export function isBadFrame<T>(frame: Frame<T> | BadFrame): frame is BadFrame {
+  return 'bad' in frame;
+}
+
 /** A peer that sent something that is not a frame. */
 export class LauncherProtocolError extends Error {}
 
-/** Cuts a stream of chunks into frames, joining the chunks of a frame once, when it is complete. */
+/** A frame that could not be read: its header was too long or not JSON. `id` is the request it belongs to, when that can be told. */
+export interface BadFrame {
+  bad: true;
+  id?: number;
+  reason: string;
+}
+
+const ID_PATTERN = /"id"\s*:\s*(\d{1,15})/;
+/** How much of a header is searched for the id: both peers write `type` and `id` first. */
+const ID_SEARCH_BYTES = 128;
+
+function idOf(header: Buffer): number | undefined {
+  const match = ID_PATTERN.exec(header.toString('utf8', 0, Math.min(header.length, ID_SEARCH_BYTES)));
+  return match ? Number.parseInt(match[1], 10) : undefined;
+}
+
+/**
+ * Cuts a stream of chunks into frames, joining the chunks of a frame once, when it is complete. A frame with a header
+ * that is too long or not JSON comes out as a BadFrame (with the id of its request when the first bytes of the header
+ * show it) and its bytes are skipped without being held, so one bad frame does not end the stream.
+ */
 export class FrameReader<T> {
   private chunks: Buffer[] = [];
   private total = 0;
   private needed = 0;
+  private skipping = 0;
 
-  push(chunk: Buffer): Array<Frame<T>> {
+  push(chunk: Buffer): Array<Frame<T> | BadFrame> {
     this.chunks.push(chunk);
     this.total += chunk.length;
-    const frames: Array<Frame<T>> = [];
+    const frames: Array<Frame<T> | BadFrame> = [];
     for (;;) {
+      if (this.skipping > 0) {
+        this.drop(Math.min(this.skipping, this.total));
+        if (this.skipping > 0) break;
+      }
       if (this.needed === 0) {
         if (this.total < FRAME_PREFIX_BYTES) break;
         const joined = this.join();
         const headerBytes = joined.readUInt32BE(0);
-        if (headerBytes > MAX_HEADER_BYTES) throw new LauncherProtocolError('frame header too long');
-        this.needed = FRAME_PREFIX_BYTES + headerBytes + joined.readUInt32BE(4);
+        const payloadBytes = joined.readUInt32BE(4);
+        if (headerBytes > MAX_HEADER_BYTES) {
+          const seen = joined.subarray(FRAME_PREFIX_BYTES, Math.min(joined.length, FRAME_PREFIX_BYTES + ID_SEARCH_BYTES));
+          frames.push({ bad: true, id: idOf(seen), reason: 'frame header too long' });
+          this.skipping = FRAME_PREFIX_BYTES + headerBytes + payloadBytes;
+          continue;
+        }
+        this.needed = FRAME_PREFIX_BYTES + headerBytes + payloadBytes;
       }
       if (this.total < this.needed) break;
       const joined = this.join();
-      const headerBytes = joined.readUInt32BE(0);
-      const headerEnd = FRAME_PREFIX_BYTES + headerBytes;
-      let header: T;
+      const headerEnd = FRAME_PREFIX_BYTES + joined.readUInt32BE(0);
+      const headerBytes = joined.subarray(FRAME_PREFIX_BYTES, headerEnd);
+      let header: T | undefined;
       try {
-        header = JSON.parse(joined.toString('utf8', FRAME_PREFIX_BYTES, headerEnd)) as T;
+        header = JSON.parse(headerBytes.toString('utf8')) as T;
       } catch {
-        throw new LauncherProtocolError('frame header is not JSON');
+        frames.push({ bad: true, id: idOf(headerBytes), reason: 'frame header is not JSON' });
       }
-      frames.push({ header, payload: joined.subarray(headerEnd, this.needed) });
+      if (header !== undefined) frames.push({ header, payload: joined.subarray(headerEnd, this.needed) });
       const rest = joined.subarray(this.needed);
       this.chunks = rest.length > 0 ? [rest] : [];
       this.total = rest.length;
       this.needed = 0;
     }
     return frames;
+  }
+
+  /** Throws away the next `count` bytes of the stream, which have all arrived. */
+  private drop(count: number): void {
+    let left = count;
+    while (left > 0 && this.chunks.length > 0) {
+      const first = this.chunks[0];
+      if (first.length <= left) {
+        this.chunks.shift();
+        left -= first.length;
+      } else {
+        this.chunks[0] = first.subarray(left);
+        left = 0;
+      }
+    }
+    this.total -= count;
+    this.skipping -= count;
   }
 
   private join(): Buffer {

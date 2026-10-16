@@ -41,8 +41,11 @@ describe('sandbox launcher', () => {
   }, 60_000);
 
   afterEach(async () => {
-    // A test that stopped the helper leaves the next one a running one.
-    if (!sandboxLauncherState().ready) await startSandboxLauncher();
+    // A test that stopped the helper, or killed it, leaves the next one a running one.
+    if (!sandboxLauncherState().ready) {
+      stopSandboxLauncher();
+      await startSandboxLauncher();
+    }
   });
 
   afterAll(() => {
@@ -85,6 +88,30 @@ describe('sandbox launcher', () => {
     expect(failure.exitCode).toBe(3);
     expect(failure.stderr).toBe('boom');
     expect(failure.stdout).toBe('partial');
+  });
+
+  it('keeps a failing program\'s long stderr whole at both ends, and its neighbours unharmed', async () => {
+    // 2 MiB of stderr between a recognisable head and tail, then a failure: far past the 1 MiB a frame header may hold.
+    const noisy = launch(SH, shell("printf HEAD-MARK >&2; head -c 2097152 /dev/zero | tr '\\0' x >&2; printf TAIL-MARK >&2; exit 3"), { networkIsolated: false });
+    const neighbour = launch(SH, shell('sleep 0.3; echo neighbour-done'), { networkIsolated: false });
+    const [failure, fine] = await Promise.all([noisy.catch((e: unknown) => e), neighbour]);
+    expect(fine.stdout.toString('utf8').trim()).toBe('neighbour-done');
+    const error = failure as SandboxedProcessError;
+    expect(error).toBeInstanceOf(SandboxedProcessError);
+    expect(error.exitCode).toBe(3);
+    expect(error.stderr.startsWith('HEAD-MARK')).toBe(true);
+    expect(error.stderr.endsWith('TAIL-MARK')).toBe(true);
+    expect(error.stderr.length).toBeLessThan(1024 * 1024);
+    // The helper stayed up for the next request.
+    expect(sandboxLauncherState().ready).toBe(true);
+    const next = await launch(SH, shell('echo after-noise'), { networkIsolated: false });
+    expect(next.stdout.toString('utf8').trim()).toBe('after-noise');
+  });
+
+  it('keeps the text a caller matches on in a short stderr exactly as the program wrote it', async () => {
+    const error = (await launch(SH, shell("printf 'qpdf: in.pdf: invalid password' >&2; exit 2"), { networkIsolated: false }).catch((e: unknown) => e)) as SandboxedProcessError;
+    expect(error.stderr).toBe('qpdf: in.pdf: invalid password');
+    expect(error.message).toBe('qpdf: in.pdf: invalid password');
   });
 
   it('reports a program that does not exist as the typed 127 failure', async () => {
@@ -189,9 +216,14 @@ describe('sandbox launcher', () => {
     process.kill(pid, 'SIGKILL');
     await expect(running).rejects.toBeInstanceOf(SandboxedProcessError);
     expect(sandboxLauncherState().ready).toBe(false);
-    // The next request does not wait for a new helper: it runs directly, and the helper starts again behind it.
-    const next = await launch(SH, shell('echo after'), { networkIsolated: false });
-    expect(next.stdout.toString('utf8').trim()).toBe('after');
+    // A helper that ended by itself is not replaced at once: until the backoff is over (or the launcher is reset),
+    // programs run directly and no new helper starts.
+    expect(await startSandboxLauncher()).toBe(false);
+    const launchedBefore = sandboxLauncherState().launched;
+    const next = await launch(SH, shell('echo $PPID'), { networkIsolated: false });
+    expect(Number.parseInt(next.stdout.toString('utf8').trim(), 10)).toBe(process.pid);
+    expect(sandboxLauncherState()).toMatchObject({ ready: false, pid: undefined, launched: launchedBefore });
+    stopSandboxLauncher();
     expect(await startSandboxLauncher()).toBe(true);
     expect(sandboxLauncherState().pid).not.toBe(pid);
   });

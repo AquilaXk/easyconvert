@@ -18,6 +18,7 @@ import {
 import {
   encodeFrame,
   FrameReader,
+  isBadFrame,
   type LauncherErrorDetail,
   type LauncherReply,
   type LauncherRequest,
@@ -74,7 +75,7 @@ const DEFAULT_OUTPUT_SHARE = 4;
 const IDLE_MS = 60_000;
 /** Longest the helper may take to boot and say it is ready. */
 const BOOT_TIMEOUT_MS = 30_000;
-/** After a helper ended before it was ready, programs run directly for this long before another is tried. */
+/** After a helper that never booted, or ended by itself, programs run directly for this long before another is tried. */
 const RESTART_BACKOFF_MS = 30_000;
 
 export type LaunchedExecutionOptions = Pick<
@@ -126,10 +127,18 @@ interface Pending {
   detach(): void;
 }
 
-function toError(detail: LauncherErrorDetail): Error {
+function toError(detail: LauncherErrorDetail, payload: Buffer): Error {
   switch (detail.kind) {
-    case 'process':
-      return new SandboxedProcessError(detail.message, detail.exitCode ?? null, detail.stderr ?? '', detail.signal ?? null, detail.stdout ?? '');
+    case 'process': {
+      const stdoutBytes = detail.stdoutBytes ?? 0;
+      return new SandboxedProcessError(
+        detail.message,
+        detail.exitCode ?? null,
+        payload.toString('utf8', stdoutBytes),
+        detail.signal ?? null,
+        payload.toString('utf8', 0, stdoutBytes)
+      );
+    }
     case 'timeout':
       return new SandboxedTimeoutError(detail.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS);
     case 'buffer':
@@ -157,6 +166,8 @@ class LauncherHost {
   ready = false;
   /** Whether it ever said so: a helper that ended before that did not boot. */
   wasReady = false;
+  /** Whether this process ended it (idle, stop, boot timeout) rather than the helper ending by itself. */
+  stoppedOnPurpose = false;
   onEnd: () => void = () => undefined;
   onReady: () => void = () => undefined;
 
@@ -207,7 +218,7 @@ class LauncherHost {
       const timer = setTimeout(() => {
         // The helper is silent past the time limit it was given: it is lost, and so is every request it holds.
         this.fail(id, new SandboxedTimeoutError(timeoutMs));
-        this.stop();
+        this.stop(true);
       }, timeoutMs + REPLY_ALLOWANCE_MS);
       const onAbort = (): void => {
         this.fail(id, signal?.reason ?? new Error('The operation was aborted'));
@@ -253,10 +264,20 @@ class LauncherHost {
     try {
       frames = this.reader.push(chunk);
     } catch {
-      this.stop();
+      this.stop(true);
       return;
     }
-    for (const { header, payload } of frames) {
+    for (const frame of frames) {
+      if (isBadFrame(frame)) {
+        // A reply that can be attributed fails its own request; one that cannot leaves nothing to trust.
+        if (frame.id === undefined || !this.pending.has(frame.id)) {
+          this.stop(true);
+          return;
+        }
+        this.fail(frame.id, new SandboxedProcessError(`Sandboxed execution error: the launcher sent a reply that could not be read (${frame.reason})`, null, frame.reason));
+        continue;
+      }
+      const { header, payload } = frame;
       if (header.type === 'ready') {
         this.ready = true;
         this.wasReady = true;
@@ -275,7 +296,7 @@ class LauncherHost {
           sandboxType: header.sandboxType,
         });
       } else {
-        this.fail(header.id, toError(header.error));
+        this.fail(header.id, toError(header.error, payload));
       }
     }
   }
@@ -292,7 +313,8 @@ class LauncherHost {
   }
 
   /** Ends the helper: closing its input makes it close its programs, and it is killed if it does not go. */
-  stop(): void {
+  stop(abnormal = false): void {
+    this.stoppedOnPurpose = !abnormal;
     try {
       this.process.stdin?.end();
     } catch {
@@ -338,7 +360,8 @@ export function startSandboxLauncher(): Promise<boolean> {
     created.onEnd = () => {
       clearTimeout(boot);
       if (host === created) host = null;
-      if (!created.wasReady) retryAfter = Date.now() + RESTART_BACKOFF_MS;
+      // A helper that never booted, or ended without being stopped (killed, out of memory, a protocol error), is not replaced at once.
+      if (!created.wasReady || !created.stoppedOnPurpose) retryAfter = Date.now() + RESTART_BACKOFF_MS;
       resolve(false);
     };
   }).finally(() => {
@@ -349,6 +372,7 @@ export function startSandboxLauncher(): Promise<boolean> {
 
 /** Ends the helper and the programs it still runs. */
 export function stopSandboxLauncher(): void {
+  retryAfter = 0;
   const current = host;
   host = null;
   current?.stop();
