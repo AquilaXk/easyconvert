@@ -2397,7 +2397,7 @@ async function convertWithOfficeSuiteRoutes(
   assertConversionOptionsObject(options);
   options.signal?.throwIfAborted();
   const request = { input, src: validateFormat(sourceFormat), tgt: validateFormat(targetFormat), options, originalFilename };
-  const interchange = interchangeNeeded(request.src, request.tgt, isPdfChainTarget(request.tgt));
+  const interchange = interchangeNeeded(request.src, request.tgt, isPdfChainTarget(request.tgt) || ARCHIVE_TARGET_FORMATS.has(request.tgt));
   if (interchange !== undefined) {
     assertNotSpoofedFileVfs(input, request.src, originalFilename);
     return convertThroughInterchange(OFFICE_SUITE_DEPS, request, interchange);

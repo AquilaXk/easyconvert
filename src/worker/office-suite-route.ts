@@ -53,10 +53,11 @@ export function officeSuiteWritesTarget(src: string, tgt: string): boolean {
 
 /**
  * The interchange format the office suite has to write first for a target it does not write itself, or undefined when the
- * suite writes the target (or the page chain renders it from a PDF) or the source has no interchange format.
+ * suite writes the target, when it is made from the source file or from a PDF of it (`madeWithoutInterchange`: the page chain
+ * renders images from a PDF, an archive packs the file as it is) or when the source has no interchange format.
  */
-export function interchangeNeeded(src: string, tgt: string, isPageTarget: boolean): string | undefined {
-  if (officeSuiteWritesTarget(src, tgt) || isPageTarget) return undefined;
+export function interchangeNeeded(src: string, tgt: string, madeWithoutInterchange: boolean): string | undefined {
+  if (officeSuiteWritesTarget(src, tgt) || madeWithoutInterchange) return undefined;
   return officeSuiteInterchange(src, tgt);
 }
 

@@ -32,24 +32,30 @@ function documentWithEmbeddedWord(): Buffer {
   ]);
 }
 
+const sofficeMissing = skipWithoutTools('soffice');
+
 describe('Word document with an embedded Word object', () => {
   it('reads the text of the document, not of the embedded object', () => {
     expect(extractTextFromDoc(documentWithEmbeddedWord())).toBe('Quarterly budget report with an embedded spreadsheet.');
   });
 
-  it('reads the same text as the office suite', () => {
-    // skip-ok: the oracle needs soffice; under ORACLE_STRICT_MODE=1 its absence fails the suite by name.
-    if (skipWithoutTools('soffice')) return;
+  it.skipIf(sofficeMissing)('reads the same text as the office suite', () => {
     const reference = sofficeConvert(documentWithEmbeddedWord(), 'doc', 'txt:Text (encoded):UTF8', 'txt').toString('utf-8');
     expect(reference.replace(/^\uFEFF/u, '').trim()).toBe('Quarterly budget report with an embedded spreadsheet.');
   });
 });
 
 describe('Word document whose last text piece also holds the footnote story', () => {
-  it('reads the main story and stops at its end although the piece goes on', () => {
+  it('reads the main story and stops at its end although the piece goes on, with a piece of another story after it', () => {
     // One piece holds the main story (11 characters) and the footnote story after it, as Word writes a document whose
-    // first piece boundary lies past the end of the main story.
-    const { word, table } = buildWordBinaryParts({ pieces: [{ text: 'Main body.\rFootnote text.\r', compressed: true }] });
+    // first piece boundary lies past the end of the main story; the header story follows in a piece of its own, which
+    // starts where the first piece ends and not where the main story does.
+    const { word, table } = buildWordBinaryParts({
+      pieces: [
+        { text: 'Main body.\rFootnote text.\r', compressed: true },
+        { text: 'Header text.\r', compressed: true },
+      ],
+    });
     const FIB_CCP_TEXT_OFFSET = 76;
     word.writeUInt32LE('Main body.\r'.length, FIB_CCP_TEXT_OFFSET);
     const piecesAfterMainStory = buildCompoundFile([
