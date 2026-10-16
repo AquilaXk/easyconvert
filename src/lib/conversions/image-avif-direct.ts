@@ -62,9 +62,9 @@ export function readsAsPixelsOnly(png: Buffer): boolean {
   return false;
 }
 
-/** The fields of a policy that reach the encoder's command line. */
+/** The fields of a policy that reach the encoder's command line (both policies are the command-line encoder's). */
 function samePolicy(a: AvifPolicy, b: AvifPolicy): boolean {
-  return a.encoder === b.encoder && a.quality === b.quality && a.effort === b.effort && a.bitdepth === b.bitdepth && a.layout === b.layout && a.tune === b.tune;
+  return a.quality === b.quality && a.effort === b.effort && a.bitdepth === b.bitdepth && a.layout === b.layout && a.tune === b.tune;
 }
 
 function requestFor(png: Buffer, size: { width: number; height: number }, policy: AvifPolicy, options: ConversionOptions): AvifCliRequest {
@@ -129,7 +129,7 @@ export class DirectAvif {
     try {
       return await this.run.result;
     } catch (err) {
-      if (err instanceof AvifEncoderFailedError && this.options.signal?.aborted !== true) return null;
+      if (err instanceof AvifEncoderFailedError) return null;
       rethrowSandboxUnavailable(err);
       throw err;
     }

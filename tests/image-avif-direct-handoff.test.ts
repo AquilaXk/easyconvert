@@ -123,9 +123,14 @@ function copyingWrapper(name: string, guard = ''): { script: string; args: strin
   const input = path.join(workDir, `${name}.in.png`);
   const script = path.join(workDir, name);
   const real = requireOracleTool('avifenc');
-  writeFileSync(script, `#!/bin/sh\n[ "$1" = "--version" ] && exec '${real}' "$@"\nfor last; do :; done\ndir=$(dirname "$last")\n${guard}\ncp "$dir/in.png" '${input}'\nprintf '%s\\n' "$@" > '${args}'\nexec '${real}' "$@"\n`);
+  writeFileSync(script, `#!/bin/sh\n[ "$1" = "--version" ] && exec '${real}' "$@"\nfor last; do :; done\ndir=$(dirname "$last")\n${guard}\ncp "$dir/in.png" '${input}'\nprintf '%s\\n' "$@" > '${args}'\necho run >> '${args}.runs'\nexec '${real}' "$@"\n`);
   chmodSync(script, SCRIPT_MODE);
   return { script, args, input };
+}
+
+/** How many times the wrapper ran the encoder (not counting the version probe). */
+function runsOf(wrapper: { args: string }): number {
+  return existsSync(`${wrapper.args}.runs`) ? readFileSync(`${wrapper.args}.runs`, 'utf-8').trim().split('\n').length : 0;
 }
 
 /** What a person would get by typing the product's command line with the source file as the input. */
@@ -156,6 +161,7 @@ describe('the encoder reads the source file', () => {
       const out = await convertImage(source, 'avif', { quality: 70 }, 'grey.png', 'png');
       expect(out.metadata).toMatchObject({ avifEncoder: 'library-cli' });
       expect(readFileSync(wrapper.input).equals(source)).toBe(true);
+      expect(runsOf(wrapper), 'the run started before the class was known is the one that wrote the file').toBe(1);
       expect(out.buffer.equals(encoderOnSource(wrapper.args, source, 'grey16'))).toBe(true);
     },
     60_000
@@ -208,6 +214,7 @@ describe('the encoder reads the source file', () => {
       expect(readFileSync(wrapper.input).equals(source)).toBe(true);
       const args = readFileSync(wrapper.args, 'utf-8').trim().split('\n');
       expect(args[args.indexOf('-a') + 1]).toBe('c:tune=ssim');
+      expect(runsOf(wrapper), 'at most the run that was replaced and the run of the photograph').toBeLessThanOrEqual(2);
       expect(out.buffer.equals(encoderOnSource(wrapper.args, source, 'photo16'))).toBe(true);
     },
     60_000
@@ -284,6 +291,24 @@ describe('the encoder reads the source file', () => {
         else process.env.TMPDIR = savedTmp;
         rmSync(tmp, { recursive: true, force: true });
       }
+    },
+    60_000
+  );
+
+  oracleTest(
+    'an encoder that writes nothing for the source file is an error of the conversion, not a reason to encode the decoded pixels',
+    ['avifenc', 'avifdec'],
+    async () => {
+      const source = await interface16();
+      const silent = copyingWrapper('silent-on-source', `[ "$(wc -c < "$dir/in.png")" -eq ${source.length} ] && exit 0`);
+      process.env.AVIFENC_PATH = silent.script;
+      const failure = await convertImage(source, 'avif', {}, 'ui.png', 'png').then(
+        () => null,
+        (err: unknown) => err
+      );
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toMatch(/produced no output/);
+      expect(runsOf(silent), 'no run on the decoded pixels').toBe(0);
     },
     60_000
   );
@@ -401,6 +426,20 @@ describe('the run in a slot', () => {
     expect(await DirectAvif.start(colour8, await sharp(colour8).metadata(), OPTIONS)).toBeNull();
     expect(existsSync(tool.pidFile)).toBe(false);
   });
+
+  it('starts a run for a picture at the pixel budget of the command-line encoder and for none above it', async () => {
+    const tool = sleepingTool('budget-sleeper');
+    process.env.AVIFENC_PATH = tool.script;
+    const source = await lineArt16();
+    const meta = await sharp(source).metadata();
+    expect(await DirectAvif.start(source, { ...meta, width: 7000, height: 7000 }, OPTIONS), '49 megapixels').toBeNull();
+    expect(existsSync(tool.pidFile)).toBe(false);
+    const within = await DirectAvif.start(source, { ...meta, width: 6900, height: 6900 }, OPTIONS);
+    expect(within, '47.6 megapixels').not.toBeNull();
+    await within?.abandon();
+    expect(await DirectAvif.start(source, { ...meta, width: undefined }, OPTIONS), 'no width').toBeNull();
+    expect(await DirectAvif.start(source, { ...meta, height: undefined }, OPTIONS), 'no height').toBeNull();
+  }, 30_000);
 
   it('does not start a run when the encoder is not installed', async () => {
     process.env.AVIFENC_PATH = path.join(workDir, 'no-such-avifenc');
