@@ -7,8 +7,9 @@
  * weighted k-means (S. Lloyd, 1982) over the histogram then refines the centroids until they stop moving.
  * An image that has no more distinct colours than the palette allows keeps them exactly.
  *
- * Mapping: a k-d tree over the palette gives the exact nearest colour in Oklab. Floyd-Steinberg error diffusion
- * (1976) runs serpentine in linear light, so the average light of a dithered area matches the source; Riemersma
+ * Mapping: a k-d tree over the palette gives the exact nearest colour in Oklab; without dithering it is asked once for
+ * each distinct colour of the raster and `colour-memo.ts` keeps the answer for the pixels that repeat it. Floyd-Steinberg
+ * error diffusion (1976) runs serpentine in linear light, so the average light of a dithered area matches the source; Riemersma
  * (1998) dithering follows a Hilbert curve; blue-noise dithering thresholds with a void-and-cluster mask
  * (`blue-noise-mask.ts`).
  *
@@ -17,6 +18,7 @@
 
 import { ConversionFailedError } from '../types';
 import { BLUE_NOISE_SIDE, blueNoiseCentred } from './blue-noise-mask';
+import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from './colour-memo';
 import { KdTree3 } from './kd-tree';
 
 export interface RgbColor {
@@ -513,24 +515,22 @@ function paletteSpacing(model: PaletteModel): { linear: number; oklab: number } 
   return { linear: median(linear), oklab: median(perceptual) };
 }
 
-const MAP_CACHE_BITS = 14;
-const MAP_CACHE_SIZE = 1 << MAP_CACHE_BITS;
-const MAP_CACHE_SHIFT = 32 - MAP_CACHE_BITS;
-const MAP_CACHE_KEYS = new Int32Array(MAP_CACHE_SIZE);
-const MAP_CACHE_INDICES = new Uint16Array(MAP_CACHE_SIZE);
-const MAP_CACHE_DIST2 = new Float64Array(MAP_CACHE_SIZE);
-const MAP_CACHE_LAB = new Float64Array(MAP_CACHE_SIZE * RGB_STRIDE);
+/** Whether a colour is at most `distanceFactor` (squared) times as far from palette colour `previous` as from its nearest one. */
+function withinRunTolerance(memo: ColourMemo, entry: number, model: PaletteModel, previous: number, distanceFactor: number): boolean {
+  const at = entry * COLOUR_MEMO_LAB_STRIDE;
+  const to = previous * RGB_STRIDE;
+  const dx = memo.lab[at + 1] - model.oklab[to];
+  const dy = memo.lab[at + 2] - model.oklab[to + 1];
+  const dz = memo.lab[at + 3] - model.oklab[to + 2];
+  return dx * dx + dy * dy + dz * dz <= memo.lab[at] * distanceFactor;
+}
 
 function mapNearest(pixels: ArrayLike<number>, pixelCount: number, model: PaletteModel, transparentIndex: number, runTolerance = 0): Uint8Array {
   const out = new Uint8Array(pixelCount);
   const lab = new Float64Array(RGB_STRIDE);
   const keepsRuns = runTolerance > 0;
   const distanceFactor = (1 + runTolerance) ** 2;
-  const cacheKeys = MAP_CACHE_KEYS;
-  cacheKeys.fill(-1);
-  const cacheIndices = MAP_CACHE_INDICES;
-  const cacheDist2 = keepsRuns ? MAP_CACHE_DIST2 : null;
-  const cacheLab = keepsRuns ? MAP_CACHE_LAB : null;
+  const memo = new ColourMemo(keepsRuns, pixelCount);
   let lastKey = -1;
   let lastIndex = 0;
   let lastNearest = 0;
@@ -544,46 +544,16 @@ function mapNearest(pixels: ArrayLike<number>, pixelCount: number, model: Palett
     }
     const key = (pixels[i] << 16) | (pixels[i + 1] << 8) | pixels[i + 2];
     if (key !== lastKey) {
-      const slot = Math.imul(key, 0x9e3779b1) >>> MAP_CACHE_SHIFT;
-      let nearest: number;
-      let dist2 = 0;
-      let l0 = 0;
-      let a0 = 0;
-      let b0 = 0;
-      if (cacheKeys[slot] === key) {
-        nearest = cacheIndices[slot];
-        if (keepsRuns && cacheDist2 !== null && cacheLab !== null) {
-          dist2 = cacheDist2[slot];
-          const cOff = slot * RGB_STRIDE;
-          l0 = cacheLab[cOff];
-          a0 = cacheLab[cOff + 1];
-          b0 = cacheLab[cOff + 2];
-        }
-      } else {
+      let entry = memo.find(key);
+      if (entry < 0) {
         linearToOklab(SRGB_TO_LINEAR_TABLE[pixels[i]], SRGB_TO_LINEAR_TABLE[pixels[i + 1]], SRGB_TO_LINEAR_TABLE[pixels[i + 2]], lab, 0);
-        l0 = lab[0];
-        a0 = lab[1];
-        b0 = lab[2];
-        nearest = model.tree.nearestIndex(l0, a0, b0, lastNearest);
-        dist2 = model.tree.lastDistance2;
-        cacheKeys[slot] = key;
-        cacheIndices[slot] = nearest;
-        if (keepsRuns && cacheDist2 !== null && cacheLab !== null) {
-          cacheDist2[slot] = dist2;
-          const cOff = slot * RGB_STRIDE;
-          cacheLab[cOff] = l0;
-          cacheLab[cOff + 1] = a0;
-          cacheLab[cOff + 2] = b0;
-        }
+        const nearest = model.tree.nearestIndex(lab[0], lab[1], lab[2], lastNearest);
+        entry = memo.add(key, nearest, model.tree.lastDistance2, lab[0], lab[1], lab[2]);
       }
-      lastNearest = nearest;
-      lastIndex = nearest;
-      if (keepsRuns && previousIndex >= 0 && previousIndex !== lastIndex) {
-        const at = previousIndex * RGB_STRIDE;
-        const dx = l0 - model.oklab[at];
-        const dy = a0 - model.oklab[at + 1];
-        const dz = b0 - model.oklab[at + 2];
-        if (dx * dx + dy * dy + dz * dz <= dist2 * distanceFactor) lastIndex = previousIndex;
+      lastNearest = memo.index[entry];
+      lastIndex = lastNearest;
+      if (keepsRuns && previousIndex >= 0 && previousIndex !== lastIndex && withinRunTolerance(memo, entry, model, previousIndex, distanceFactor)) {
+        lastIndex = previousIndex;
       }
       lastKey = key;
     }
