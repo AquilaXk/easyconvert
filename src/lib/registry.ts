@@ -2947,8 +2947,11 @@ const BOX_SIZE_TO_END = 0;
 const AVIF_BRANDS = new Set(['avif', 'avis']);
 /** HEVC-coded HEIF brands (ISO/IEC 23008-12 Annex B): images, image sequences and their extended-range variants. */
 const HEVC_IMAGE_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs']);
-/** Codec-neutral HEIF structural brands (ISO/IEC 23008-12 section 10): image item and image sequence. */
-const HEIF_STRUCTURAL_BRANDS = new Set(['mif1', 'msf1']);
+/**
+ * Codec-neutral HEIF structural brands (ISO/IEC 23008-12 section 10): image item (mif1, mif2), the minimized image
+ * item whose payload sits in a `mini` box instead of `meta` (mif3) and image sequence (msf1).
+ */
+const HEIF_STRUCTURAL_BRANDS = new Set(['mif1', 'mif2', 'mif3', 'msf1']);
 /** File extensions that an AV1 image or a HEIF image may carry. */
 const AVIF_EXTENSIONS = new Set(['avif']);
 const HEIF_EXTENSIONS = new Set(['heic', 'heif']);
@@ -2995,6 +2998,36 @@ function sniffIsoBaseMediaBrands(buf: Buffer): string {
     return 'image/heif';
   }
   return 'video/mp4';
+}
+
+/** Compressed SVG: a gzip member (RFC 1952) holding an SVG document. */
+const SVGZ_EXTENSION = 'svgz';
+/** gzip member header (RFC 1952 section 2.3): ID1, ID2, compression method, flags, then MTIME, XFL and OS. */
+const GZIP_HEADER_BYTES = 10;
+const GZIP_DEFLATE_METHOD = 8;
+const GZIP_FLAGS_OFFSET = 3;
+/** FLG bits 5 to 7 are reserved and must be zero (RFC 1952 section 2.3.1). */
+const GZIP_RESERVED_FLAGS = 0xe0;
+
+/**
+ * True when the buffer opens with a well-formed gzip member header: the deflate method and no reserved flag. The
+ * stream itself is inflated, bounded, where it is read; this check only keeps a stream that no gzip reader accepts
+ * from passing as compressed SVG.
+ */
+function hasGzipMemberHeader(buf: Uint8Array): boolean {
+  return buf.length >= GZIP_HEADER_BYTES && buf[2] === GZIP_DEFLATE_METHOD && (buf[GZIP_FLAGS_OFFSET] & GZIP_RESERVED_FLAGS) === 0;
+}
+
+/** Adobe Illustrator artwork: PDF-compatible files (the default since CS) open with `%PDF`; versions 3 to 8 are PostScript. */
+const ILLUSTRATOR_EXTENSION = 'ai';
+/** The Illustrator header comments and procedure sets sit in the PostScript prolog, near the start of the file. */
+const ILLUSTRATOR_PROLOG_BYTES = 8192;
+/** `%%Creator: Adobe Illustrator`, the `%AI<n>_...` format comments, or the `Adobe_Illustrator_AI<n>` procedure set. */
+const ILLUSTRATOR_MARKERS = /%%Creator:\s*Adobe Illustrator|%AI\d+_|Adobe_Illustrator_AI\d/;
+
+/** True when a PostScript file carries the markers that Adobe Illustrator writes into its prolog. */
+function hasIllustratorMarkers(buf: Uint8Array): boolean {
+  return ILLUSTRATOR_MARKERS.test(Buffer.from(buf.subarray(0, ILLUSTRATOR_PROLOG_BYTES)).toString('latin1'));
 }
 
 /**
@@ -3475,11 +3508,11 @@ export function isFormatCompatibleWithMagicBytes(
   if (sniffed === 'audio/x-matroska') return cleanExt === 'mka' || mkvFormats.has(cleanExt);
   if (sniffed === 'video/x-msvideo') return aviFormats.has(cleanExt);
   if (sniffed === 'application/x-7z-compressed') return sevenZipFormats.has(cleanExt);
-  if (sniffed === 'application/gzip') return gzipFormats.has(cleanExt);
+  if (sniffed === 'application/gzip') return gzipFormats.has(cleanExt) || (cleanExt === SVGZ_EXTENSION && hasGzipMemberHeader(buffer));
   if (sniffed === 'application/x-bzip2') return bzipFormats.has(cleanExt);
   if (sniffed === 'application/zstd') return zstdFormats.has(cleanExt);
   if (sniffed === 'application/vnd.rar') return rarFormats.has(cleanExt);
-  if (sniffed === 'application/postscript') return cleanExt === 'ps' || cleanExt === 'eps';
+  if (sniffed === 'application/postscript') return cleanExt === 'ps' || cleanExt === 'eps' || (cleanExt === ILLUSTRATOR_EXTENSION && hasIllustratorMarkers(buffer));
   if (sniffed === 'model/step') return cleanExt === 'step' || cleanExt === 'stp';
   if (sniffed === 'application/vnd.apache.parquet') return cleanExt === 'parquet';
 

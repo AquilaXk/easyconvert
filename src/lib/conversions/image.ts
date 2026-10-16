@@ -9,6 +9,7 @@ import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground }
 import { buildTiffOptions } from './image-tiff-options';
 import { encodePsd, PSD_MAX_SIDE, type PsdChannels } from './psd-writer';
 import { decodeBmp } from './bmp';
+import { decodeExternalImage } from './image-external-source';
 import { buildJpegPdf, planJpegPassthrough } from './pdf-jpeg-passthrough';
 import { classifyContent, classifyRaster, type ContentClass, type Raster } from './image-content';
 import {
@@ -1903,8 +1904,9 @@ async function encodePsdFromPipeline(pipeline: Sharp, options: ConversionOptions
 }
 
 /**
- * The public conversion: an AVIF encoder that `convertImage` started on the source file is stopped on every way out of the conversion
- * that did not use it.
+ * The public conversion: a source the image library cannot read is decoded by its command-line decoder first and converted as the
+ * PNG (or TIFF) that comes back; an AVIF encoder that `convertImage` started on the source file is stopped on every way out of the
+ * conversion that did not use it.
  */
 async function convertImageReleasingEncoder(
   inputBuffer: Buffer,
@@ -1913,6 +1915,10 @@ async function convertImageReleasingEncoder(
   originalFilename: string = 'image.png',
   sourceFormat?: string
 ): Promise<ConversionResult> {
+  const external = await decodeExternalImage(inputBuffer, sourceFormat?.toLowerCase(), options.signal);
+  if (external !== null) {
+    return convertImageReleasingEncoder(external.buffer, targetFormat, options, originalFilename, external.format);
+  }
   const directAvif = new DirectAvifSlot();
   try {
     return await convertImage(inputBuffer, targetFormat, options, originalFilename, sourceFormat, directAvif);
