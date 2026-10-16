@@ -9,6 +9,11 @@ const RETRIES = 6;
 const BACKOFF_BASE_MS = 2000;
 const HTTP_OK = 200;
 const HTTP_PARTIAL = 206;
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_UNAVAILABLE = 503;
+/** A rate limit that names no time gets this pause, and a host may ask for at most RATE_LIMIT_MAX_WAIT_MS. */
+const RATE_LIMIT_DEFAULT_WAIT_MS = 30_000;
+const RATE_LIMIT_MAX_WAIT_MS = 120_000;
 const REQUEST_TIMEOUT_MS = 120_000;
 /** Node gives each address of a host 250 ms to connect before it tries the next one, which a host across an ocean does not meet. */
 const CONNECT_ATTEMPT_TIMEOUT_MS = 3000;
@@ -32,6 +37,30 @@ export class FetchError extends Error {
   }
 }
 
+/** A host that refused for its rate (HTTP 429) or load (HTTP 503), with the `Retry-After` seconds it sent, if any. */
+class BusyHostError extends FetchError {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfter: string | null
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * The pause before retry number `tryNumber` + 1: it doubles with the attempt; a rate limit or an overloaded host that names the
+ * seconds to wait is waited for that long, up to RATE_LIMIT_MAX_WAIT_MS, and a rate limit that names no time gets
+ * RATE_LIMIT_DEFAULT_WAIT_MS. The pause is never shorter than the ordinary one.
+ */
+export function retryDelayMs(tryNumber: number, status: number | null, retryAfter: string | null): number {
+  const ordinary = BACKOFF_BASE_MS * 2 ** tryNumber;
+  const seconds = retryAfter !== null && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null;
+  if (seconds !== null && (status === HTTP_TOO_MANY_REQUESTS || status === HTTP_UNAVAILABLE)) return Math.max(ordinary, Math.min(seconds * 1000, RATE_LIMIT_MAX_WAIT_MS));
+  if (status === HTTP_TOO_MANY_REQUESTS) return Math.max(ordinary, RATE_LIMIT_DEFAULT_WAIT_MS);
+  return ordinary;
+}
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function attempt(url: string, range: [number, number] | null, maxBytes: number): Promise<Buffer> {
@@ -39,6 +68,9 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
   if (range) headers.range = `bytes=${range[0]}-${range[1]}`;
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   const expectedStatus = range ? HTTP_PARTIAL : HTTP_OK;
+  if (response.status === HTTP_TOO_MANY_REQUESTS || response.status === HTTP_UNAVAILABLE) {
+    throw new BusyHostError(`${url}: HTTP ${response.status}, expected ${expectedStatus}`, response.status, response.headers.get('retry-after'));
+  }
   if (response.status !== expectedStatus) throw new FetchError(`${url}: HTTP ${response.status}, expected ${expectedStatus}`);
   const declared = Number(response.headers.get('content-length') ?? '0');
   if (declared > maxBytes) throw new FetchError(`${url}: ${declared} bytes exceeds the ${maxBytes}-byte cap`);
@@ -56,7 +88,7 @@ async function withRetries<T>(url: string, run: () => Promise<T>): Promise<T> {
       return await run();
     } catch (error) {
       lastError = error;
-      if (tryNumber < RETRIES) await sleep(BACKOFF_BASE_MS * 2 ** tryNumber);
+      if (tryNumber < RETRIES) await sleep(error instanceof BusyHostError ? retryDelayMs(tryNumber, error.status, error.retryAfter) : retryDelayMs(tryNumber, null, null));
     }
   }
   throw new FetchError(`${url}: failed after ${RETRIES + 1} attempts: ${String(lastError)}`);

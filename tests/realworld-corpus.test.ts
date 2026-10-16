@@ -5,6 +5,9 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import sharp from 'sharp';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { fetchBytes, retryDelayMs } from '../bench/realworld/http';
 import { inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory, ZipRangeError } from '../bench/realworld/zip-range';
 import { ManifestError, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
 import { planJobs, shardJobs } from '../bench/realworld/plan';
@@ -496,4 +499,44 @@ describe('empty inputs in the manifest', () => {
     ]);
     for (const f of manifest.files.filter((candidate) => candidate.emptyInput === true)) expect(f.emptyInputReason?.length ?? 0).toBeGreaterThan(20);
   });
+});
+
+describe('the pause before a retry of a real-world download', () => {
+  it('doubles with the attempt for an ordinary failure', () => {
+    expect([0, 1, 2].map((attempt) => retryDelayMs(attempt, null, null))).toEqual([2000, 4000, 8000]);
+    expect(retryDelayMs(0, 500, '10')).toBe(2000);
+  });
+
+  it('follows the Retry-After seconds of a rate limit or an overloaded host, bounded and never shorter than the ordinary pause', () => {
+    expect(retryDelayMs(0, 429, '30')).toBe(30_000);
+    expect(retryDelayMs(0, 503, '7')).toBe(7000);
+    expect(retryDelayMs(5, 429, '1')).toBe(64_000);
+    expect(retryDelayMs(0, 429, '86400')).toBe(120_000);
+  });
+
+  it('gives a rate limit that names no time the default pause', () => {
+    expect(retryDelayMs(0, 429, null)).toBe(30_000);
+    expect(retryDelayMs(0, 429, 'Wed, 21 Oct 2026 07:28:00 GMT')).toBe(30_000);
+  });
+});
+
+describe('a real-world download from a host that limits its rate', () => {
+  it('waits for the Retry-After seconds of a 429 and then reads the body', async () => {
+    const times: number[] = [];
+    const server = http.createServer((request, response) => {
+      times.push(Date.now());
+      if (times.length === 1) response.writeHead(429, { 'retry-after': '1' }).end();
+      else response.writeHead(206, { 'content-length': 4 }).end(request.headers.range === 'bytes=2-5' ? 'body' : 'nope');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/file`;
+      const body = await fetchBytes(url, [2, 5], 1024);
+      expect(body.toString('latin1')).toBe('body');
+      expect(times).toHaveLength(2);
+      expect(times[1] - times[0]).toBeGreaterThanOrEqual(1900);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 20_000);
 });
