@@ -21,6 +21,7 @@ import {
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
 import { MAX_SVG_INPUT_CHARS, normalizeSvgBufferForRendering } from './svg-geometry';
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
+import { convertDwgToDxf } from './cad-dwg';
 import { encodeSvgPageToDxf } from './vector-dxf';
 import { sanitizeSvgDocument } from '../security/svg-sanitizer';
 
@@ -584,7 +585,8 @@ async function convertDxfSource(
 }
 
 /**
- * Converts DWG Source
+ * Converts a DWG: the pinned reader (an unmodified separate program, see cad-dwg.ts) writes a DXF, and the DXF path draws it.
+ * A DWG is never written (there is no DWG encoder), so that target fails before the reader starts.
  */
 async function convertDwgSource(
   inputBuffer: Buffer,
@@ -592,14 +594,10 @@ async function convertDwgSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  // Extract ASCII DXF streams if present, fail closed if binary DWG decoder is missing
-  const raw = inputBuffer.toString('utf-8');
-
-  if (!raw.includes('SECTION') || !raw.includes('ENTITIES')) {
-    throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary decoder unavailable');
+  if (tgt === 'dwg') {
+    throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary encoder unavailable');
   }
-
-  const dxfBuf = Buffer.from(raw, 'utf-8');
+  const dxfBuf = await convertDwgToDxf(inputBuffer, options);
   if (tgt === 'dxf') {
     return {
       buffer: dxfBuf,

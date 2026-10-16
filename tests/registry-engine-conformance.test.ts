@@ -31,6 +31,8 @@ import { buildMobiFromBytes } from './helpers/mobi-builder';
 import { buildAzw4, textPdf } from './helpers/print-replica-builder';
 import { loadConformanceDurations, partOfKey, planConformanceParts } from '../scripts/ci-conformance-parts.mjs';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
+import { ensureSample } from '../bench/corpora';
+import { pinnedDwgSample } from './helpers/dwg-samples';
 
 /**
  * Registry/engine conformance gate.
@@ -491,6 +493,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // come from independent writers in tests/helpers, not from the engine's own encoders.
   exr: () => buildPatchExr('half'),
   ultrahdr: () => buildPatchUltraHdr(),
+  // A DWG is read by the DWG reader, which refuses everything that is not a DWG of a release it decodes, so the probe is a real
+  // drawing: three circles, AutoCAD 2000, a pinned sample of an open-source test set (fetched by digest, never committed).
+  dwg: async () => readFileSync(await ensureSample(pinnedDwgSample('dwg-gdal-circles-2000.dwg'))),
 };
 
 /** TrueType probe font: glyf/loca outlines for A, B and C, mapped in the cmap. */

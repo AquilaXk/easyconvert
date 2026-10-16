@@ -59,6 +59,7 @@ export type ExternalOracleTool =
   | 'dcraw_emu'
   | 'ps2pdf'
   | 'rsvg-convert'
+  | 'dwg2dxf'
   | 'woff2_decompress'
   | 'woff2_info'
   | 'tiffinfo'
@@ -84,7 +85,7 @@ export class OracleToolMissingError extends Error {
 const toolCache = new Map<string, string | null>();
 
 /** Tools that are not on PATH on a typical host and are located through the environment variable the worker also reads. */
-const TOOL_PATH_ENV: Partial<Record<ExternalOracleTool, string>> = { verapdf: 'VERAPDF_PATH', epubcheck: 'EPUBCHECK_PATH' };
+const TOOL_PATH_ENV: Partial<Record<ExternalOracleTool, string>> = { verapdf: 'VERAPDF_PATH', epubcheck: 'EPUBCHECK_PATH', dwg2dxf: 'DWG2DXF_PATH' };
 
 export function getOracleToolPath(tool: ExternalOracleTool): string | null {
   // The override is read on every call: a test may point the variable at a different binary.

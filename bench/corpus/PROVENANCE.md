@@ -198,6 +198,8 @@ by a third party).
 | `openai-gsm8k` | grade school math problems, MIT | https://github.com/openai/grade-school-math/blob/3101c7d5072418e28b9008a6636bde82a006892c/LICENSE |
 | `dxf-libraries` | test drawings of an MIT-licensed DXF library, written by AutoCAD, OpenSCAD and other programs | https://github.com/skymakerolof/dxf/blob/cb571d1d7631dd0daaf923a256d75ef0917ff806/LICENSE |
 | `ezdxf-examples` | example drawings of the ezdxf library, MIT | https://github.com/mozman/ezdxf/blob/7c64bce52c9d60b9db2dad4d2793c1168c8d3f64/LICENSE |
+| `libredwg-test-data` | test drawings of an open-source DWG library, saved by AutoCAD in several releases; GPL-3.0-or-later like the library, fetched for reading only and never redistributed | https://github.com/LibreDWG/libredwg/blob/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/COPYING |
+| `gdal-cad-test-data` | CAD test drawings of an open-source geospatial library, MIT style licence | https://github.com/OSGeo/gdal/blob/c8b4c45fca87d3e6fbf80e7a7898b8a661ad0edc/LICENSE.TXT |
 | `resvg-tests` | SVG rendering tests with the reference picture of each, Apache-2.0 or MIT | https://github.com/linebender/resvg/blob/77b12f4951a7b75d759c42e8c9497cff7c839c3c/LICENSE-MIT |
 | `gutenberg` | public-domain books as EPUB and Kindle files | https://www.gutenberg.org/policy/permission.html |
 | `idpf-epub3-samples` | EPUB 3 sample publications, CC BY-SA 3.0 unless the sample table of the project says otherwise | https://github.com/IDPF/epub3-samples/blob/7651e2002b631e6577fadf7e9e0692fa6efb8746/README.md |
@@ -288,6 +290,19 @@ by a third party).
 | `cad-text-alignments.dxf` | text | TEXT in all alignments, DXF 2004; `ezdxf-examples`; `MIT` |
 | `cad-text-fonts.dxf` | text | 384 TEXT entities in many styles, DXF 2013; `ezdxf-examples`; `MIT` |
 | `cad-columns-r2007.dxf` | text | MTEXT with columns, DXF 2007; `ezdxf-examples`; `MIT` |
+| `dwg-example-r13.dwg` | dwg-legacy | the example drawing saved as R13 (AC1012); `libredwg-test-data`; `GPL-3.0-or-later` |
+| `dwg-example-r14.dwg` | dwg-legacy | the same drawing as R14 (AC1014); `libredwg-test-data`; `GPL-3.0-or-later` |
+| `dwg-example-2000.dwg` | dwg-classic | the same drawing as AutoCAD 2000 (AC1015); `libredwg-test-data`; `GPL-3.0-or-later` |
+| `dwg-example-2004.dwg` | dwg-classic | the same drawing as AutoCAD 2004 (AC1018); `libredwg-test-data`; `GPL-3.0-or-later` |
+| `dwg-example-2007.dwg` | dwg-modern | the same drawing as AutoCAD 2007 (AC1021); `libredwg-test-data`; `GPL-3.0-or-later` |
+| `dwg-example-2010.dwg` | dwg-modern | the same drawing as AutoCAD 2010 (AC1024); `libredwg-test-data`; `GPL-3.0-or-later` |
+| `dwg-example-2013.dwg` | dwg-modern | the same drawing as AutoCAD 2013 (AC1027); `libredwg-test-data`; `GPL-3.0-or-later` |
+| `dwg-example-2018.dwg` | dwg-modern | the same drawing as AutoCAD 2018 (AC1032); `libredwg-test-data`; `GPL-3.0-or-later` |
+| `dwg-gdal-circles-2000.dwg` | dwg-classic | three circles, AutoCAD 2000; `gdal-cad-test-data`; `MIT` |
+| `dwg-gdal-ellipse-2000.dwg` | dwg-classic | one ellipse, AutoCAD 2000; `gdal-cad-test-data`; `MIT` |
+| `dwg-gdal-attribs-2013.dwg` | dwg-modern | blocks with attributes and the proxy entities of an add-on application, AutoCAD 2013; `gdal-cad-test-data`; `MIT` |
+
+The DWG samples are read by the pinned open-source reader (`dwg2dxf`, an unmodified separate program), and the benchmark judges the drawing step against the DXF the reader writes (`bench/families/cad.ts`). The single-entity drawings that `tests/cad-dwg-reader.test.ts` converts (one line, arc and circle saved as AutoCAD 2000, 2004, 2007, 2010, 2013 and 2018, with the AutoCAD property dump beside each) are pinned in `tests/fixtures/dwg/entity-pins.json` with the same set, licence, size and SHA-256, and fetched into the same cache; their coordinates in the test are the values of those dumps.
 
 ### Vector (`vector`)
 

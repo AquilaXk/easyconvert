@@ -162,7 +162,7 @@ describe('the committed package list and scripts', () => {
 
   it('starts every part of the setup in the background and fails the step when any part failed', () => {
     const script = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
-    expect(script).toContain('tasks=(apt pip verapdf epubcheck calibre raw)');
+    expect(script).toContain('tasks=(apt pip verapdf epubcheck calibre libredwg raw)');
     expect(script).toContain('tasks+=(s3)');
     expect(script).toContain('run_bounded "$task" > "$task_logs/$task.log" 2>&1 &');
     expect(script).toContain('failed+=("$task")');
@@ -178,6 +178,22 @@ describe('the committed package list and scripts', () => {
     const check = script.indexOf('sha256sum -c -');
     expect(check).toBeGreaterThan(-1);
     expect(check).toBeLessThan(script.indexOf('unzip -q "$archive"'));
+  });
+
+  it('builds the DWG reader from a pinned release archive over HTTPS only, checks its digest before unpacking it, and caches the build by the install script', () => {
+    const tools = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
+    const install = readFileSync(path.join(ROOT, 'scripts', 'install-libredwg.sh'), 'utf-8');
+    expect(install).toMatch(/^LIBREDWG_VERSION="\d+\.\d+\.\d+"$/m);
+    expect(install).toMatch(/^LIBREDWG_SHA256="[0-9a-f]{64}"$/m);
+    expect(install).toContain("--proto '=https'");
+    const check = install.indexOf('sha256sum --check --strict');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(install.indexOf('tar -xJf'));
+    const task = tools.slice(tools.indexOf('task_libredwg() {'));
+    expect(task).toContain('scripts/install-libredwg.sh');
+    const action = readFileSync(path.join(ACTION_DIR, 'action.yml'), 'utf-8');
+    expect(action).toMatch(/key: libredwg-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ hashFiles\('scripts\/install-libredwg\.sh'\) \}\}/);
+    expect(action).toContain('LIBREDWG_CACHE_HIT: ${{ steps.libredwg-cache.outputs.cache-hit }}');
   });
 
   it('installs the ebook converter from a pinned archive over HTTPS only and checks its digest before unpacking it', () => {

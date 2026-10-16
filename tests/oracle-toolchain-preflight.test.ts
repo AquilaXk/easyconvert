@@ -37,6 +37,7 @@ const ORACLE_BINARIES: { name: string; tool: ExternalOracleTool }[] = [
   { name: 'qpdf', tool: 'qpdf' },
   { name: 'ghostscript (ps2pdf)', tool: 'ps2pdf' },
   { name: 'librsvg (rsvg-convert)', tool: 'rsvg-convert' },
+  { name: 'libredwg (dwg2dxf)', tool: 'dwg2dxf' },
   { name: 'veraPDF', tool: 'verapdf' },
   { name: 'libreoffice (soffice)', tool: 'soffice' },
   { name: 'tesseract-ocr (tesseract)', tool: 'tesseract' },
@@ -49,7 +50,7 @@ const ORACLE_BINARIES: { name: string; tool: ExternalOracleTool }[] = [
   { name: 'util-linux (unshare)', tool: 'unshare' },
 ];
 
-const PYTHON_MODULES = ['pyarrow', 'duckdb', 'fitz', 'fontTools', 'brotli'];
+const PYTHON_MODULES = ['pyarrow', 'duckdb', 'fitz', 'fontTools', 'brotli', 'ezdxf'];
 /** English for the reference pages, Korean and Japanese for the CJK suites, the orientation model for rotated scans. */
 const TESSERACT_LANGUAGES = ['eng', 'kor', 'jpn', 'osd'];
 

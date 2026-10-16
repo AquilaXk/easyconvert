@@ -34,11 +34,11 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
       ).rejects.toThrow(/(Unsupported audio format|Native FFmpeg transcoding failed)/i);
     });
 
-    it('fails closed on binary DWG decoding when native decoder is unavailable', async () => {
+    it('fails closed on bytes that are no DWG instead of reading them as a drawing (the DWG reader is tested in cad-dwg-reader.test.ts)', async () => {
       const dummyDwg = Buffer.from([0x00, 0x01, 0x02, 0x03, 0xff, 0xfe]);
       await expect(
         convertVectorCad(dummyDwg, 'dwg', 'dxf', {}, 'drawing.dwg')
-      ).rejects.toThrow('Unsupported CAD format: DWG binary decoder unavailable');
+      ).rejects.toThrow('The file is not a DWG drawing: it does not start with a DWG release code.');
     });
 
     it('fails closed on DWG encoding when native encoder is unavailable', async () => {
