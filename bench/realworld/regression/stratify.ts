@@ -61,7 +61,7 @@ export function selectStratified<T extends StratumCandidate>(pool: readonly T[],
       const key = stratumOf(candidate);
       strata.set(key, [...(strata.get(key) ?? []), candidate]);
     }
-    const keys = [...strata.keys()].sort();
+    const keys = [...strata.keys()].sort((a, b) => (a < b ? -1 : 1));
     const counts = allocate(keys.map((key) => strata.get(key)!.length), budget);
     keys.forEach((key, index) => {
       const ordered = strata.get(key)!.map((entry) => ({ entry, hash: hashOf(entry.id) })).sort((a, b) => (a.hash < b.hash ? -1 : 1));

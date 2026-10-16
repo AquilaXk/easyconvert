@@ -75,7 +75,7 @@ export function mergeRegression(
 /** The maintained list with the files of this run's failures added: untracked and tracked failures and regressions alike, sorted, once each. */
 export function withRecordedFailures(existing: readonly string[], gate: GateResult & Pick<RegressionGate, 'regressions' | 'knownRegressions'>): string[] {
   const failed = [...gate.fatal.map((job) => job.file), ...gate.known.map(({ job }) => job.file), ...gate.regressions.map((r) => r.file), ...gate.knownRegressions.map(({ regression }) => regression.file)];
-  return [...new Set([...existing, ...failed])].sort();
+  return [...new Set([...existing, ...failed])].sort((a, b) => (a < b ? -1 : 1));
 }
 
 export function readFailedBefore(file = FAILED_BEFORE_PATH): string[] {

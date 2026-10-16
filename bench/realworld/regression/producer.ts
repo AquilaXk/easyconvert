@@ -47,27 +47,29 @@ const OCTAL_ESCAPE = /^[0-7]{1,3}/;
 /** The byte a backslash escape at `at` stands for, and the index of its last character. */
 function readEscape(text: string, at: number): { byte: number; last: number } {
   const octal = OCTAL_ESCAPE.exec(text.slice(at, at + 3));
-  if (octal !== null) return { byte: parseInt(octal[0], 8) & 0xff, last: at + octal[0].length - 1 };
+  if (octal !== null) return { byte: Number.parseInt(octal[0], 8) & 0xff, last: at + octal[0].length - 1 };
   const char = text[at] ?? '';
-  return { byte: (ESCAPES[char] ?? char).charCodeAt(0), last: at };
+  return { byte: (ESCAPES[char] ?? char).codePointAt(0) ?? 0, last: at };
 }
 
 /** The literal string that starts at `start` (just after its opening parenthesis), with escapes and balanced parentheses. */
 function readLiteral(text: string, start: number): Buffer | null {
   const out: number[] = [];
   let depth = 1;
-  for (let at = start; at < text.length && out.length <= MAX_STRING_SCAN_BYTES; at++) {
+  let at = start;
+  while (at < text.length && out.length <= MAX_STRING_SCAN_BYTES) {
     const char = text[at];
     if (char === '\\') {
       const escape = readEscape(text, at + 1);
       out.push(escape.byte);
-      at = escape.last;
-    } else {
-      if (char === '(') depth++;
-      if (char === ')') depth--;
-      if (depth === 0) return Buffer.from(out);
-      out.push(char.charCodeAt(0));
+      at = escape.last + 1;
+      continue;
     }
+    if (char === '(') depth++;
+    if (char === ')') depth--;
+    if (depth === 0) return Buffer.from(out);
+    out.push(char.codePointAt(0) ?? 0);
+    at++;
   }
   return null;
 }
@@ -373,7 +375,7 @@ const withoutVersions = (text: string): string =>
   text
     .replace(/\([^)]*\)/g, ' ')
     .replace(/[®™©]/g, ' ')
-    .replace(/\bv?\d+(?:[._-]\d+)*[a-z]?\b/g, ' ');
+    .replace(/\bv?\d+(?:[._-]\d+)*[a-z]?\b/g, ' '); // NOSONAR S8786: each repeat starts with a separator, so the match is linear
 
 /** The coarse class of a producer string: a known writer, else its first two words without versions, else `unknown`. */
 export function producerClass(raw: string | null): string {
@@ -381,6 +383,12 @@ export function producerClass(raw: string | null): string {
   const known = KNOWN_PRODUCERS.find(([pattern]) => pattern.test(lower));
   if (known !== undefined) return known[1];
   const words = withoutVersions(lower).match(/[a-z][a-z0-9]*/g) ?? [];
-  const name = words.slice(0, CLASS_NAME_WORDS).join('-').slice(0, MAX_CLASS_CHARS).replace(/-+$/, '');
-  return name === '' ? UNKNOWN_CLASS : name;
+  const name = words.slice(0, CLASS_NAME_WORDS).join('-').slice(0, MAX_CLASS_CHARS);
+  return trimTrailingHyphens(name) || UNKNOWN_CLASS;
+}
+
+function trimTrailingHyphens(text: string): string {
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '-') end--;
+  return text.slice(0, end);
 }
