@@ -184,7 +184,7 @@ EasyConvert provides synchronous REST endpoints, an asynchronous job queue for l
 
 ### Prerequisites
 
-- Node.js >= 20.x
+- Node.js >= 24 (active LTS)
 - npm >= 10.x
 
 ### Installation

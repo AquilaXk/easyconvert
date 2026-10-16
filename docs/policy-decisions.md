@@ -52,6 +52,7 @@ Engines
 14. [SVG to PDF](#14-svg-to-pdf)
 29. [DWG input](#29-dwg-input)
 31. [Starting external programs from a small helper process](#31-starting-external-programs-from-a-small-helper-process)
+35. [Base image and Node.js LTS](#35-base-image-and-nodejs-lts)
 
 Usage limits
 
@@ -801,3 +802,38 @@ Compression
   - **Reading the page count in process instead of `pdfinfo`**: the damaged and encrypted answers come from `pdfinfo` and the fallback parser; a second implementation of them would drift.
 - **Verified by**: `tests/poppler-ppm-png.test.ts` (pixels, size, chunk layout and density against `pdftoppm -png`; the ZIP of pages; page selection; the raw-size fallback; a page file that is not a PPM; batches; the errors for a damaged document, a missing page and a resolution out of range), `tests/postscript-direct-interpreter.test.ts` (one `gs` start for EPS to PDF and to PNG, PDF equal to `ps2pdf` output by `pdfinfo` and Poppler pixels, PNG equal to `gs -sDEVICE=png16m` pixels, multi-page and page-selection routes, the raw-size route, `-dNOGC` and its second run, the typed errors), `tests/svg-native-pdf-route.test.ts` (the renderer's command line and its pixels against `rsvg-convert` from a file), `tests/render-limits-stubbed-sandbox.test.ts` (the raw-size fallback in both ways a page can be too large, and the SVG output limit, with the process runner stubbed so that every branch runs on every platform), and the `vector` and `document` parity rows (speed interleaved against the base and the reference tool; quality at or above the reference tool).
 - **Revisit when**: the reference tool's PNG, EPS or SVG route changes; Poppler or Ghostscript change how they write PNG or start (a Ghostscript with a cheaper start would shrink the `-dNOGC` gain); a request type arrives that renders many pages of one document at once (page-parallel processes become worth their start-up); or the worker image drops `gs` from the directory of `ps2pdf`.
+
+## 35. Base image and Node.js LTS
+
+- **Status**: Implemented (issues #682 and #679), decided by QA on 2026-10-10.
+- **Decision**:
+  - **Every stage of the worker image** (`Dockerfile.worker`: application build, 7-Zip, DWG reader, runner) starts from one pinned base: the Node.js 24 LTS release `24.20.0` on Debian 13 (trixie), slim variant. The tag and the digest of its multi-architecture index (amd64 and arm64) are declared once, in `ARG NODE_IMAGE`, so a rebuild cannot pick up a different base.
+  - **CI, the nightly and the soak runs, `.nvmrc` and the esbuild targets** use Node.js 24; `package.json` and the lock file require `>=24.0.0`. The Parquet ZSTD conformance no longer needs a second, newer Node.js setup: Node.js 24 has zstd in `node:zlib`.
+  - **System packages** keep their Debian names (checked against the trixie package index for both architectures) and now come from trixie. `libavif-bin` is added, so `avifenc` 1.2.1 is found at `/usr/bin/avifenc` (the encoder search list) and the AVIF encoder path runs against the same library generation as the CI runner.
+  - **The image records its versions**: `/licenses/tool-versions.txt` lists every Debian package with its version, and the Node.js version.
+  - **Pinned downloads** (7-Zip, the DWG reader, the PDF/A validator) keep their pins and checksums.
+- **Why**:
+  - Node.js 20 reached end of life in April 2026 and Debian 12 left regular security support in 2026 (it is on the long-term support programme with partial package coverage). A service that handles untrusted files has to run on a runtime and an operating system that still get security fixes.
+  - Node.js 24 is the active LTS; its maintenance phase starts in October 2026 and its end of life is April 2028. Debian 13 has regular security support into 2028 and long-term support after that.
+  - The engines are the conversion quality: trixie ships ffmpeg 7.1 (bookworm 5.1), LibreOffice 25.2 (bookworm 7.4) and libavif 1.2.1 (bookworm 0.11.1, too old for the encoder options of the AVIF policy, entry 1). The image and the CI runner (Ubuntu 24.04 packages) were generations apart; they are now closer.
+  - Pinning the exact release tag with its digest makes the build reproducible and reviewable; the tag chosen was published more than two weeks before the change, so early regressions in a fresh release have surfaced.
+- **Trade-offs**:
+  - **Size**: the base grows (compressed amd64 layer set 71.4 MB for the previous base against 85.3 MB), and so do newer LibreOffice and media packages. The final image size is read from the container job, not estimated.
+  - **Engine behaviour moves**: major engine upgrades can change output bytes. The parity gate measures the CI runner's packages, not the image's, so the image's engines are covered by the container verification (one conversion in the sandbox) and by the image-level checks listed under revisit, not by the parity rows.
+  - **A digest pin does not move on its own**: security rebuilds of the base are taken by bumping the tag and digest together, on a schedule or when an advisory names the base.
+  - **Pure-script fallbacks for older runtimes stay in the code** (the zstd decoder for Parquet, the runtime shims for the PDF renderer). They are inert on Node.js 24 and are removed separately so this change touches no conversion code.
+- **Alternatives rejected**:
+  - **Staying on Debian 12**: partial long-term support only, and its libavif cannot drive the AVIF policy.
+  - **Node.js 22 LTS**: ends in April 2027, a year earlier than 24, and would be moved again soon.
+  - **A musl-based minimal distribution**: the office suite, the media framework with hardware acceleration drivers and the prebuilt native modules are built and tested for glibc; a musl image would need its own build of each and a separate quality pass.
+  - **A distroless runtime**: no package manager and no shell, while the worker image installs about thirty system packages, starts every child through `unshare` and `prlimit` from the system tools, and is checked by a shell script that runs inside the container.
+  - **Tracking a floating tag** (`node:24-trixie-slim`): a rebuild could change engines under a release without review.
+- **Verified by**:
+  - `tests/runtime-baseline.test.ts`: every stage uses the one pinned Node.js 24 trixie image, no Debian 12 or Node.js 20 base remains, `libavif-bin` is installed, the package metadata, the `.nvmrc`, the esbuild targets and every `setup-node` step say Node.js 24.
+  - The CI `container` job builds the image on the new base and runs the hardening checks and one conversion inside it (`scripts/verify-worker-container.sh`).
+  - The full unit and integration suites run on Node.js 24 in CI.
+- **Revisit when**:
+  - Node.js 24 enters its end-of-life window (April 2028), or the next LTS line (Node.js 26) has run in active LTS for a quarter.
+  - Debian 13 leaves regular security support, or a security advisory names the pinned base.
+  - A parity or real-world corpus run on the image shows a quality or speed change against the previous base.
+  - The inert older-runtime fallbacks are removed.

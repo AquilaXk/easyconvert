@@ -61,7 +61,7 @@ const WRITE_CODECS: { name: string; codec: CompressionCodec; reference: 'snappy'
 /**
  * The ZSTD rows write pages through node:zlib, which has zstd from Node 22.15. A runtime without it cannot run them:
  * locally that is a skip, and under ORACLE_STRICT_MODE a failure (oracleTest rethrows this error in strict mode), so a CI
- * job on an older Node cannot pass with the ZSTD rows unrun. CI runs this file on Node 22 in the `integration` job.
+ * job on an older Node cannot pass with the ZSTD rows unrun. CI runs this file in strict mode in the `integration` job.
  */
 function requireZstdWrite(codec: CompressionCodec): void {
   if (codec === CompressionCodec.ZSTD && !ZSTD_WRITE_AVAILABLE) {
