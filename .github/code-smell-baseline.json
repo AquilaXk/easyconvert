@@ -1508,13 +1508,6 @@
     "maxValue": 8
   },
   {
-    "file": "src/lib/conversions/ocr-text-metrics.ts",
-    "rule": "max-params",
-    "function": "takeRowInk",
-    "count": 1,
-    "maxValue": 7
-  },
-  {
     "file": "src/lib/conversions/ocr.ts",
     "rule": "no-nested-ternary",
     "function": "evaluatePageOcrDecisions",
