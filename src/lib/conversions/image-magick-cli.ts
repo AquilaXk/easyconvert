@@ -87,7 +87,7 @@ const FAST_COMPRESSION = ['-quality', '10'] as const;
 const LOSSLESS_TIFF = ['-compress', 'Zip'] as const;
 
 /** Where ImageMagick is installed, or null. */
-export function findMagick(env: NodeJS.ProcessEnv = process.env): string | null {
+export function findMagick(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
   return findDecoderTool(MAGICK_PATH_ENV, MAGICK_EXECUTABLE_NAMES, env);
 }
 

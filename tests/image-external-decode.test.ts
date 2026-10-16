@@ -256,6 +256,57 @@ describe.skipIf(needsMagick)('files that cannot be decoded', () => {
       }
     });
 
+    describe('the arguments of a run', () => {
+      // A stand-in that writes one line per argument to a file named by the first run, and answers the size probe.
+      async function argumentsOf(input: Buffer, format: string, canvas = false): Promise<string[][]> {
+        const log = path.join(stubDir, `arguments-${stubCount}.log`);
+        const stub = path.join(stubDir, `magick-${stubCount++}`);
+        fs.writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$@" >> '${log}'\nprintf -- '--run-end--\\n' >> '${log}'\nprintf '%s' '4 4'\n`, { mode: 0o755 });
+        const saved = process.env[MAGICK_PATH_ENV];
+        process.env[MAGICK_PATH_ENV] = stub;
+        try {
+          await toPng(input, format).catch(() => undefined);
+        } finally {
+          if (saved === undefined) delete process.env[MAGICK_PATH_ENV];
+          else process.env[MAGICK_PATH_ENV] = saved;
+        }
+        return fs.readFileSync(log, 'utf8').split('--run-end--\n').filter((run) => run !== '').map((run) => run.split('\n').filter((line) => line !== ''));
+      }
+
+      it('name the coder and the file, limit the run, and make a warning a failure, with no word of the request', async () => {
+        const [probe, decode] = await argumentsOf(buildTga(1, 1, [RED], false), 'tga');
+        expect(probe).toEqual(['-limit', 'memory', '1GiB', '-limit', 'map', '2GiB', '-limit', 'area', '1GiB', '-limit', 'disk', '8GiB', '-limit', 'thread', '2', '-limit', 'time', '100', '-regard-warnings', '-ping', 'tga:in[0]', '-format', '%w %h\\n', 'info:']);
+        expect(decode).toEqual(['-limit', 'memory', '1GiB', '-limit', 'map', '2GiB', '-limit', 'area', '1GiB', '-limit', 'disk', '8GiB', '-limit', 'thread', '2', '-limit', 'time', '100', '-regard-warnings', 'tga:in[0]', '-quality', '10', 'png:out']);
+      });
+
+      it('draw the layers of a GIMP project on the canvas its header states', async () => {
+        const header = Buffer.alloc(24);
+        header.write('gimp xcf v011', 0, 'latin1');
+        header.writeUInt32BE(640, 14);
+        header.writeUInt32BE(480, 18);
+        const [probe, decode] = await argumentsOf(header, 'xcf');
+        expect(probe.slice(-5)).toEqual(['-ping', 'xcf:in', '-format', '%w %h\\n', 'info:']);
+        expect(decode.slice(-9)).toEqual(['xcf:in', '-repage', '640x480', '-background', 'none', '-flatten', '-quality', '10', 'png:out']);
+      });
+
+      it('keep every page of a TIFF as a Deflate page, and let libtiff warn', async () => {
+        const tiff = Buffer.alloc(8 + 2 + 12 + 4);
+        tiff.write('II', 0, 'latin1');
+        tiff.writeUInt16LE(42, 2);
+        tiff.writeUInt32LE(8, 4);
+        tiff.writeUInt16LE(1, 8);
+        tiff.writeUInt16LE(259, 10);
+        tiff.writeUInt16LE(3, 12);
+        tiff.writeUInt32LE(1, 14);
+        tiff.writeUInt16LE(6, 18);
+        const [probe, decode] = await argumentsOf(tiff, 'tif');
+        expect(probe).not.toContain('-regard-warnings');
+        expect(probe.slice(-5)).toEqual(['-ping', 'tiff:in', '-format', '%w %h\\n', 'info:']);
+        expect(decode).not.toContain('-regard-warnings');
+        expect(decode.slice(-4)).toEqual(['tiff:in', '-compress', 'Zip', 'tiff:out']);
+      });
+    });
+
     it('refuses a size probe that exits with another failure status', async () => {
       await expect(convertWithStub('10 10', 'exit 1')).rejects.toMatchObject(pictureRefusal);
     });

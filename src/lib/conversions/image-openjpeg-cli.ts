@@ -81,7 +81,7 @@ function declaredSize(buf: Buffer, codestreamStart: number): { width: number; he
 }
 
 /** Where `opj_decompress` is installed, or null. */
-export function findOpenJpeg(env: NodeJS.ProcessEnv = process.env): string | null {
+export function findOpenJpeg(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
   return findDecoderTool(OPJ_DECOMPRESS_PATH_ENV, OPJ_EXECUTABLE_NAMES, env);
 }
 

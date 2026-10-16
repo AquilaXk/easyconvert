@@ -38,7 +38,7 @@ function isExecutableFile(candidate: string): boolean {
  * be the absolute path of an executable file; otherwise the standard directories are searched for each name in turn.
  * The environment is read on every call.
  */
-export function findDecoderTool(envName: string, names: readonly string[], env: NodeJS.ProcessEnv = process.env): string | null {
+export function findDecoderTool(envName: string, names: readonly string[], env: Readonly<Record<string, string | undefined>> = process.env): string | null {
   const override = env[envName];
   if (override !== undefined && override !== '') {
     return path.isAbsolute(override) && isExecutableFile(override) ? override : null;
