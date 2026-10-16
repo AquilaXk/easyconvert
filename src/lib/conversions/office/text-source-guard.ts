@@ -2,7 +2,7 @@ import { ConversionFailedError } from '../../types';
 import { startsWithBytes } from '../package-access';
 
 /**
- * The bytes of a source format with no reader are never taken for text. A ZIP, OLE2 compound file or 7-Zip container, or
+ * The bytes of a source format with no reader are never taken for text. A ZIP, OLE2 compound file or 7z container, or
  * a file with a null byte in its first 4 KiB, is binary: reading it as UTF-8 would pack mojibake into the output, so it is
  * refused with a typed error that names the format.
  */

@@ -75,3 +75,25 @@ describe('Word document whose last text piece also holds the footnote story', ()
     expect(extractTextFromDoc(doc)).toBe('First part of the body. Second part.');
   });
 });
+
+describe('Word document whose piece table runs backwards', () => {
+  it('is refused as not contiguous when a piece ends before it starts, although it starts where the last one ended', () => {
+    const { word, table } = buildWordBinaryParts({
+      pieces: [
+        { text: 'First piece of text. ', compressed: true },
+        { text: 'Second piece.\r', compressed: true },
+      ],
+    });
+    // The PlcPcd of the CLX: a type byte (2), a 4-byte size, then the character positions 0, end of piece 1, end of piece 2.
+    const FIB_FC_CLX_OFFSET = 154 + 33 * 8;
+    const clx = word.readUInt32LE(FIB_FC_CLX_OFFSET);
+    const positions = clx + 5;
+    const firstEnd = table.readUInt32LE(positions + 4);
+    table.writeUInt32LE(firstEnd - 1, positions + 8);
+    const doc = buildCompoundFile([
+      { name: 'WordDocument', data: word },
+      { name: '1Table', data: table },
+    ]);
+    expect(() => extractTextFromDoc(doc)).toThrow('Word document: the piece table character positions are not contiguous.');
+  });
+});

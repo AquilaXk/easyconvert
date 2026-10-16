@@ -345,8 +345,9 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
         }
         const entryPath = entryPaths.get(entry.id);
         // `streams` is by leaf name: a stream of the root storage is the file's own, so it is never replaced by a same-named
-        // stream of an embedded object (the WordDocument and 1Table of an embedded Word document); nested ones only fill gaps.
-        const inRootStorage = entryPath === undefined || !entryPath.includes('/');
+        // stream of an embedded object (the WordDocument and 1Table of an embedded Word document); nested ones only fill gaps. An entry the directory
+        // tree does not reach has no path and counts as the root's, as it did before.
+        const inRootStorage = !entryPath?.includes('/');
         if (inRootStorage || !streams.has(entry.name)) streams.set(entry.name, streamData);
         if (entryPath !== undefined) paths.set(entryPath, streamData);
       }
