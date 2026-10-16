@@ -18,22 +18,21 @@ export interface ExternalDecoded {
 }
 
 const MAGICK_BY_FORMAT: ReadonlyMap<string, MagickSource> = new Map<string, MagickSource>([
-  ['psd', { coder: 'psd', label: 'PSD', scenes: 'first' }],
-  ['tga', { coder: 'tga', label: 'TGA', scenes: 'first' }],
-  ['pcx', { coder: 'pcx', label: 'PCX', scenes: 'first' }],
-  ['dds', { coder: 'dds', label: 'DDS', scenes: 'first' }],
-  ['pbm', { coder: 'pnm', label: 'PBM', scenes: 'first' }],
-  ['pgm', { coder: 'pnm', label: 'PGM', scenes: 'first' }],
-  ['ppm', { coder: 'pnm', label: 'PPM', scenes: 'first' }],
-  ['pnm', { coder: 'pnm', label: 'PNM', scenes: 'first' }],
-  ['heic', { coder: 'heic', label: 'HEIC', scenes: 'first' }],
-  ['heif', { coder: 'heic', label: 'HEIF', scenes: 'first' }],
+  ['psd', { coder: 'psd', label: 'PSD', result: { kind: 'first' } }],
+  ['tga', { coder: 'tga', label: 'TGA', result: { kind: 'first' } }],
+  ['pcx', { coder: 'pcx', label: 'PCX', result: { kind: 'first' } }],
+  ['dds', { coder: 'dds', label: 'DDS', result: { kind: 'first' } }],
+  ['pbm', { coder: 'pnm', label: 'PBM', result: { kind: 'first' } }],
+  ['pgm', { coder: 'pnm', label: 'PGM', result: { kind: 'first' } }],
+  ['ppm', { coder: 'pnm', label: 'PPM', result: { kind: 'first' } }],
+  ['pnm', { coder: 'pnm', label: 'PNM', result: { kind: 'first' } }],
+  ['heic', { coder: 'heic', label: 'HEIC', result: { kind: 'first' } }],
+  ['heif', { coder: 'heic', label: 'HEIF', result: { kind: 'first' } }],
 ]);
-const XCF_SOURCE: MagickSource = { coder: 'xcf', label: 'XCF', scenes: 'flatten' };
 const OPENJPEG_FORMATS: ReadonlySet<string> = new Set(['jp2', 'j2k']);
 const HEIF_FORMATS: ReadonlySet<string> = new Set(['heic', 'heif']);
 const TIFF_FORMATS: ReadonlySet<string> = new Set(['tif', 'tiff']);
-const OLD_STYLE_JPEG_TIFF: MagickSource = { coder: 'tiff', label: 'TIFF', scenes: 'all', tolerateWarnings: true };
+const OLD_STYLE_JPEG_TIFF: MagickSource = { coder: 'tiff', label: 'TIFF', result: { kind: 'pages' }, tolerateWarnings: true };
 
 /** TIFF 6.0 (Adobe, 1992) header and directory layout, and the compression tag with its old-style JPEG value. */
 const TIFF_MAGIC = 42;
@@ -123,7 +122,7 @@ export function withUprightExifOrientation(png: Buffer): Buffer {
  */
 export async function decodeExternalImage(input: Buffer, format: string, signal?: AbortSignal): Promise<ExternalDecoded | null> {
   if (OPENJPEG_FORMATS.has(format)) return { buffer: await decodeWithOpenJpeg(input, signal), format: 'png' };
-  if (format === 'xcf') return decodeWithMagick(input, { ...XCF_SOURCE, canvas: xcfCanvas(input) }, signal);
+  if (format === 'xcf') return decodeWithMagick(input, { coder: 'xcf', label: 'XCF', result: { kind: 'canvas', ...xcfCanvas(input) } }, signal);
   const magick = MAGICK_BY_FORMAT.get(format);
   if (magick !== undefined) {
     const decoded = await decodeWithMagick(input, magick, signal);

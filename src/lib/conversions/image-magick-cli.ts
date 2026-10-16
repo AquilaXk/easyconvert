@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { executeSandboxedBinary } from '../security/process-sandbox';
+import { executeSandboxedBinary, type SandboxedExecutionResult } from '../security/process-sandbox';
 import { ConversionFailedError } from '../types';
 import {
   DECODER_INPUT_NAME,
@@ -29,26 +29,25 @@ export const MAGICK_PATH_ENV = 'MAGICK_PATH';
 /** `magick` is ImageMagick 7; `convert` is the command of version 6, and of the compatibility alias of version 7. */
 const MAGICK_EXECUTABLE_NAMES = ['magick', 'magick-im7.q16', 'convert', 'convert-im6.q16'] as const;
 
-/** How many of the pictures in the file the result holds. */
-export type MagickScenes =
-  /** The first picture: the merged image of a layered file. */
-  | 'first'
-  /** Every picture composited on the canvas given as `canvas`, the layers of a GIMP project. */
-  | 'flatten'
+/** What of the file the result holds. */
+export type MagickResult =
+  /** The first picture, as a PNG: the merged image of a layered file. */
+  | { kind: 'first' }
   /** Every picture as a page of one TIFF. */
-  | 'all';
+  | { kind: 'pages' }
+  /**
+   * Every picture drawn on a canvas of this size, as a PNG: the layers of a GIMP project. The canvas is the one the file's header
+   * states; ImageMagick's own is not trusted, because for the files of GIMP 3 (XCF 19 and later) it takes the first layer's size
+   * and crops every other layer.
+   */
+  | { kind: 'canvas'; width: number; height: number };
 
 export interface MagickSource {
   /** ImageMagick's name of the coder that reads the format. */
   coder: string;
   /** The format in the words of an error message. */
   label: string;
-  scenes: MagickScenes;
-  /**
-   * The canvas the layers are composited on, which the file's header states. ImageMagick's own canvas is not trusted: for
-   * the files of GIMP 3 (XCF 19 and later) it takes the first layer's size and crops every other layer.
-   */
-  canvas?: { width: number; height: number };
+  result: MagickResult;
   /**
    * The coder reports harmless findings as warnings (libtiff names every private tag it does not know), so a warning does not
    * fail the run; the library's errors still do.
@@ -62,7 +61,6 @@ export interface MagickDecoded {
 }
 
 const FIRST_SCENE = '[0]';
-const OUTPUT_CODERS: Readonly<Record<MagickScenes, 'png' | 'tiff'>> = { first: 'png', flatten: 'png', all: 'tiff' };
 /** Rows of the size probe: width and height, one row per picture. */
 const SIZE_FORMAT = '%w %h\\n';
 const SIZE_ROW = /^(\d+) (\d+)$/;
@@ -84,8 +82,6 @@ const MAGICK_LIMITS: readonly string[] = [
 ];
 /** Makes a warning a failure. */
 const STRICT_READ = '-regard-warnings';
-/** Sets the canvas size, which the offsets of the layers keep, then draws every layer on a transparent canvas of that size. */
-const flattenOnCanvas = (canvas: { width: number; height: number }): string[] => ['-repage', `${canvas.width}x${canvas.height}`, '-background', 'none', '-flatten'];
 /** Fastest PNG compression (zlib level 1, no row filter): the result is read once by the next step, not stored. */
 const FAST_COMPRESSION = ['-quality', '10'] as const;
 const LOSSLESS_TIFF = ['-compress', 'Zip'] as const;
@@ -116,49 +112,55 @@ function parseSceneSizes(output: string, label: string): SceneSize[] {
 }
 
 /** Pixels the run decodes (each picture, and the canvas a composite is drawn on), each held to the input pixel limit and all of them together. */
-function checkedPixels(sizes: readonly SceneSize[], canvas: MagickSource['canvas']): number {
+function checkedPixels(sizes: readonly SceneSize[], result: MagickResult): number {
+  const drawn = result.kind === 'canvas' ? [{ width: result.width, height: result.height }] : [];
   let pixels = 0;
-  for (const size of sizes) {
+  for (const size of [...sizes, ...drawn]) {
     assertInputPixels(size.width, size.height);
     pixels += size.width * size.height;
-  }
-  if (canvas !== undefined) {
-    assertInputPixels(canvas.width, canvas.height);
-    pixels += canvas.width * canvas.height;
   }
   if (pixels > maxInputPixels()) throw new InputPixelLimitError(maxInputPixels());
   return pixels;
 }
 
-/** The pixels the picture declares, read from its header without decoding it, before the run that decodes it. */
-async function declaredPixels(magick: string, jobDir: string, source: MagickSource, signal: AbortSignal | undefined): Promise<number> {
-  const selected = `${source.coder}:${DECODER_INPUT_NAME}${source.scenes === 'first' ? FIRST_SCENE : ''}`;
-  try {
-    const run = await executeSandboxedBinary(magick, [...MAGICK_LIMITS, ...warningPolicy(source), '-ping', selected, '-format', SIZE_FORMAT, 'info:'], {
-      cwd: jobDir,
-      timeoutMs: DECODER_TIMEOUT_MS,
-      maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,
-      memoryLimitMb: DECODER_MEMORY_LIMIT_MB,
-      networkIsolated: true,
-      signal,
-    });
-    return checkedPixels(parseSceneSizes(run.stdout.toString('utf-8'), source.label), source.canvas);
-  } catch (err) {
-    if (err instanceof ConversionFailedError) throw err;
-    throw describeDecoderFailure(err, 'magick', source.label, DECODER_TIMEOUT_MS);
-  }
+/** The coder and the file, and which picture of it is read. */
+function inputSpecifier(source: MagickSource): string {
+  return `${source.coder}:${DECODER_INPUT_NAME}${source.result.kind === 'first' ? FIRST_SCENE : ''}`;
 }
 
 function warningPolicy(source: MagickSource): string[] {
   return source.tolerateWarnings === true ? [] : [STRICT_READ];
 }
 
-function decodeArguments(source: MagickSource): string[] {
-  const selected = `${source.coder}:${DECODER_INPUT_NAME}${source.scenes === 'first' ? FIRST_SCENE : ''}`;
-  const output = OUTPUT_CODERS[source.scenes];
-  const operators = source.scenes === 'flatten' && source.canvas !== undefined ? flattenOnCanvas(source.canvas) : [];
-  const writer = output === 'png' ? FAST_COMPRESSION : LOSSLESS_TIFF;
-  return [...MAGICK_LIMITS, ...warningPolicy(source), selected, ...operators, ...writer, `${output}:${DECODER_OUTPUT_NAME}`];
+/** One sandboxed ImageMagick run in the job directory; a failure is the conversion's typed error. */
+async function runMagick(magick: string, jobDir: string, source: MagickSource, args: readonly string[], signal: AbortSignal | undefined, maxFileSize?: number): Promise<SandboxedExecutionResult> {
+  try {
+    return await executeSandboxedBinary(magick, [...MAGICK_LIMITS, ...warningPolicy(source), ...args], {
+      cwd: jobDir,
+      timeoutMs: DECODER_TIMEOUT_MS,
+      maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,
+      maxFileSize,
+      memoryLimitMb: DECODER_MEMORY_LIMIT_MB,
+      networkIsolated: true,
+      signal,
+    });
+  } catch (err) {
+    throw describeDecoderFailure(err, 'magick', source.label, DECODER_TIMEOUT_MS);
+  }
+}
+
+/** The pixels the picture declares, read from its header without decoding it, before the run that decodes it. */
+async function declaredPixels(magick: string, jobDir: string, source: MagickSource, signal: AbortSignal | undefined): Promise<number> {
+  const run = await runMagick(magick, jobDir, source, ['-ping', inputSpecifier(source), '-format', SIZE_FORMAT, 'info:'], signal);
+  return checkedPixels(parseSceneSizes(run.stdout.toString('utf-8'), source.label), source.result);
+}
+
+/** The operators and the writer that give the result its form: a canvas is set and drawn on, a PNG is written fast, TIFF pages deflate. */
+function resultArguments(result: MagickResult): { format: 'png' | 'tiff'; arguments: string[] } {
+  if (result.kind === 'pages') return { format: 'tiff', arguments: [...LOSSLESS_TIFF] };
+  // The canvas size is set and the offsets of the layers kept, then every layer is drawn on a transparent canvas of that size.
+  const operators = result.kind === 'canvas' ? ['-repage', `${result.width}x${result.height}`, '-background', 'none', '-flatten'] : [];
+  return { format: 'png', arguments: [...operators, ...FAST_COMPRESSION] };
 }
 
 /** Decodes `input` with ImageMagick; see the module comment for what the result holds. */
@@ -166,22 +168,10 @@ export async function decodeWithMagick(input: Buffer, source: MagickSource, sign
   const magick = findMagick();
   if (magick === null) throw decoderUnavailable('magick', 'ImageMagick');
   return withDecoderJob(input, DECODER_INPUT_NAME, async (jobDir) => {
-    const pixels = await declaredPixels(magick, jobDir, source, signal);
-    const maxOutputBytes = pixels * OUTPUT_BYTES_PER_PIXEL + OUTPUT_OVERHEAD_BYTES;
-    try {
-      await executeSandboxedBinary(magick, decodeArguments(source), {
-        cwd: jobDir,
-        timeoutMs: DECODER_TIMEOUT_MS,
-        maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,
-        maxFileSize: maxOutputBytes,
-        memoryLimitMb: DECODER_MEMORY_LIMIT_MB,
-        networkIsolated: true,
-        signal,
-      });
-    } catch (err) {
-      throw describeDecoderFailure(err, 'magick', source.label, DECODER_TIMEOUT_MS);
-    }
+    const maxOutputBytes = (await declaredPixels(magick, jobDir, source, signal)) * OUTPUT_BYTES_PER_PIXEL + OUTPUT_OVERHEAD_BYTES;
+    const { format, arguments: resultOptions } = resultArguments(source.result);
+    await runMagick(magick, jobDir, source, [inputSpecifier(source), ...resultOptions, `${format}:${DECODER_OUTPUT_NAME}`], signal, maxOutputBytes);
     const buffer = await readDecodedFile(path.join(jobDir, DECODER_OUTPUT_NAME), maxOutputBytes, source.label);
-    return { buffer, format: OUTPUT_CODERS[source.scenes] };
+    return { buffer, format };
   });
 }
