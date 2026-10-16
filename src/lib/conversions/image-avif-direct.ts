@@ -94,6 +94,17 @@ function requestFor(source: DirectAvifSource, policy: AvifPolicy, options: Conve
   return { png, width, height, ignoreColourChunks: ignoresColourChunks, quality: policy.quality, effort: policy.effort, bitdepth: policy.bitdepth, layout: policy.layout, tune: policy.tune, signal: options.signal };
 }
 
+/**
+ * Compressed bytes per pixel of a PNG above which the run is started with the policy of a photograph. A palette of flat areas deflates to
+ * a fraction of a byte per pixel (the benchmark's 16-bit line art 0.23, its interface 0.09), continuous tone to several (a 16-bit colour
+ * photograph 4.5, noise 6): the guess only saves the replacement of a run that has the wrong tuning, the class itself is found from the pixels.
+ */
+const PHOTOGRAPH_PNG_BYTES_PER_PIXEL = 1;
+
+function guessedClass(png: Buffer, pixels: number): ContentClass {
+  return png.length / pixels > PHOTOGRAPH_PNG_BYTES_PER_PIXEL ? 'photo' : 'graphic';
+}
+
 /** What the policy of a content class depends on besides the content and the quality. */
 interface DirectAvifSource {
   avifenc: string;
@@ -123,7 +134,7 @@ export class DirectAvif {
   /**
    * Starts the encoder on `png` when the picture described by `meta` is one the command-line encoder takes whatever its content,
    * the file qualifies and the options leave its pixels as they are (the caller checks that); null otherwise. The policy it starts
-   * with is the one of graphic content, the class of most grey and deep pictures.
+   * with is the one of the class the size of the file suggests (`guessedClass`).
    */
   static async start(png: Buffer, meta: Metadata, options: ConversionOptions): Promise<DirectAvif | null> {
     const { width, height } = meta;
@@ -135,7 +146,7 @@ export class DirectAvif {
     const avifenc = await findAvifenc();
     if (avifenc === null) return null;
     const source = { avifenc, png, width, height, grey, ignoresColourChunks: chunks.ignoresColourChunks, sourceBits: avifSourceBitsOf(deep, meta.bitsPerSample) };
-    const started = avifPolicyFor(options.quality, 'graphic', width * height, source.sourceBits, grey, 'library-cli');
+    const started = avifPolicyFor(options.quality, guessedClass(png, width * height), width * height, source.sourceBits, grey, 'library-cli');
     return new DirectAvif(source, options, started, startAvifWithCli(avifenc, requestFor(source, started, options)));
   }
 

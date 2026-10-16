@@ -229,7 +229,7 @@ describe('the encoder reads the source file', () => {
       expect(readFileSync(wrapper.input).equals(source)).toBe(true);
       const args = readFileSync(wrapper.args, 'utf-8').trim().split('\n');
       expect(args[args.indexOf('-a') + 1]).toBe('c:tune=ssim');
-      expect(runsOf(wrapper), 'at most the run that was replaced and the run of the photograph').toBeLessThanOrEqual(2);
+      expect(runsOf(wrapper), 'a picture that deflates to several bytes per pixel is started with the photograph tuning').toBe(1);
       expect(out.buffer.equals(encoderOnSource(wrapper.args, source, 'photo16'))).toBe(true);
     },
     60_000
