@@ -11,7 +11,7 @@ import { attemptOurs, convertsRow, speedSample } from '../public-support';
 import { numberRecord } from '../ref-cache';
 import { ReferenceServer } from '../reference-server';
 import type { BenchRow } from '../report';
-import { measuredRow, type MetricSpec, skippedGroup, skippedRow, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
+import { measuredRow, type MetricSpec, skippedGroup, SPEC, speedRowId, throughputRow, unavailableSampleRows } from '../rows';
 import { wordF1 } from '../text-metrics';
 import { EZDXF_PSEUDO_TOOL, runTool } from '../tools';
 import { readRaster, renderPdfPage, renderSvg } from '../vector-raster';
@@ -24,8 +24,11 @@ import { readRaster, renderPdfPage, renderSvg } from '../vector-raster';
  *
  * - `plate-basic.dxf` uses only LINE, ARC, CIRCLE, LWPOLYLINE and TEXT.
  * - `plate-full.dxf` adds what drawings from the field contain: ELLIPSE, SPLINE, POLYLINE, INSERT of a block and MTEXT.
- * - DWG is listed with its reason: the engine has no binary DWG reader, and no reference converter is packaged for the
- *   runner image, so there is neither an output nor a reference to measure.
+ * - DWG drawings (public samples of AutoCAD releases R13 to 2018, `meta.format` "dwg") go through the pinned open-source reader
+ *   (`dwg2dxf`, an unmodified separate program) that the product also runs. The truth and the reference both start from the DXF
+ *   that reader writes: ezdxf reads the strokes of that DXF, and the office suite draws that DXF, so the row measures the drawing
+ *   step against the reference and not the reader against itself. What the reader reads from the DWG is checked against the values
+ *   AutoCAD reports for the same entities in tests/cad-dwg-reader.test.ts. The timing of the reference includes the reader.
  *
  * The public samples (bench/corpus/remote-manifest.json) are drawings from several authoring programs and versions (AutoCAD
  * R12 to 2018, OpenSCAD, BricsCAD, LibreCAD, ezdxf) in the content classes basic geometry, curves, blocks, text and
@@ -43,8 +46,9 @@ type Target = (typeof TARGETS)[number];
 const RENDER_WIDTH_PX = 2400;
 const INK_SPECS: readonly MetricSpec[] = [SPEC.inkRecall, SPEC.inkPrecision, SPEC.extentError];
 const parseInk = numberRecord(['precision', 'recall', 'extentError', 'wordF1']);
-const DWG_REASON =
-  'the engine has no binary DWG reader (it fails closed; issue #728), no licensed DWG sample is committed, and no open-source DWG converter is packaged for the runner image; the bar for DWG is the Open Design Specification once a reader exists';
+/** The pinned reader of DWG drawings. */
+const DWG_READER = 'dwg2dxf';
+const isDwgSample = (sample: RemoteSample | null): boolean => sample !== null && sample.meta.format === 'dwg';
 
 /** A drawing the family measures: a generated plate (the name is the file stem) or a public sample (the name is its id). */
 interface Subject {
@@ -110,45 +114,69 @@ export const runCad: FamilyRunner = async (ctx) => {
   } finally {
     await (server as ReferenceServer | null)?.close();
   }
-  rows.push(...dwgRows(ctx));
   return rows;
 };
 
 const QUALITY_SPECS = (target: Target): MetricSpec[] => specsOf(target).filter((spec) => spec.kind !== 'throughput');
 const textlessSpecs = (target: Target): MetricSpec[] => QUALITY_SPECS(target).filter((spec) => spec.metric !== SPEC.wordF1.metric);
 
+/** Comment pairs (group code 999) at the start of a DXF: the reader writes its name there. */
+const LEADING_COMMENTS = /^(?:\s*999\r?\n[^\n]*\n)+/;
+
+/**
+ * Writes the DXF of a DWG with the pinned reader (`dwg2dxf`), run as the product runs it: an unmodified separate program.
+ * The comment pair the reader starts the file with is dropped from this copy, which the truth and the office suite read: the DXF
+ * reference allows it, but the office suite takes a file that does not start with a section for text and imports no drawing.
+ */
+function readDwg(reader: string, dwgFile: string, dxfFile: string): void {
+  runTool(reader, ['-y', '-o', dxfFile, dwgFile]);
+  fs.writeFileSync(dxfFile, fs.readFileSync(dxfFile, 'latin1').replace(LEADING_COMMENTS, ''), 'latin1');
+}
+
 async function runDrawing(ctx: FamilyContext, subject: Subject, target: Target, shared: Shared): Promise<BenchRow[]> {
   const { sample } = subject;
   // A speed-only run times a few public samples; the others have only quality rows, which it does not measure.
   if (sample && !ctx.quality && !speedSample('cad', sample.id)) return [];
   const caseName = caseOf(subject, target);
-  const tools = ['ffmpeg', 'rsvg-convert', 'pdftoppm', 'pdftotext', REFERENCE, ...(sample ? ['python3', EZDXF_PSEUDO_TOOL] : [])];
+  const dwg = isDwgSample(sample);
+  const tools = ['ffmpeg', 'rsvg-convert', 'pdftoppm', 'pdftotext', REFERENCE, ...(sample ? ['python3', EZDXF_PSEUDO_TOOL] : []), ...(dwg ? [DWG_READER] : [])];
   const plan = ctx.plan(tools, caseName);
   if (!plan.ok) return skippedGroup('cad', caseName, specsOf(target), REFERENCE, plan);
   const { ffmpeg, pdftoppm, pdftotext, soffice } = plan.paths;
+  const reader = plan.paths[DWG_READER];
   const rsvg = plan.paths['rsvg-convert'];
   const dxfName = `cad/${subject.name}.dxf`;
+  /** The drawing the product converts: the DXF of a plate or a DXF sample, the DWG of a DWG sample. */
+  let sourceFile: string;
+  /** The DXF the truth and the reference start from: the file itself, or what the pinned reader wrote from the DWG. */
   let dxfFile: string;
   let truth: CadTruth;
   if (sample === null) {
     dxfFile = ctx.corpusPath(dxfName);
+    sourceFile = dxfFile;
     truth = JSON.parse(fs.readFileSync(ctx.corpusPath(`cad/${subject.name}.truth.json`), 'utf8')) as CadTruth;
   } else {
     const cached = await ctx.remote(sample);
     if (cached === null) return unavailableSampleRows('cad', caseName, specsOf(target), REFERENCE, sample.id);
     // The office suite takes the format from the extension, so it reads the drawing under its own name.
-    dxfFile = ctx.scratch(sample.id);
-    fs.copyFileSync(cached, dxfFile);
+    sourceFile = ctx.scratch(sample.id);
+    fs.copyFileSync(cached, sourceFile);
+    dxfFile = dwg ? ctx.scratch(sample.id.replace(/\.dwg$/i, '.dxf')) : sourceFile;
+    if (dwg) readDwg(reader, sourceFile, dxfFile);
     truth = await shared.server().call<CadTruth>('cad.truth', { file: dxfFile });
   }
   ctx.log(`cad ${caseName}`);
-  const dxf = fs.readFileSync(dxfFile);
+  const input = fs.readFileSync(sourceFile);
   const profile = `file://${path.join(ctx.work, 'soffice-profile-cad')}`;
   const rows: BenchRow[] = [];
   const hasText = truth.words.length > 0;
 
-  const ours = async (): Promise<Buffer> => (await convertWithProject(dxf, 'dxf', target, {}, sample ? sample.id : `${subject.name}.dxf`)).buffer;
-  const reference = (outDir: string): string => sofficeConvert(soffice, profile, dxfFile, target, outDir);
+  const ours = async (): Promise<Buffer> => (await convertWithProject(input, dwg ? 'dwg' : 'dxf', target, {}, sample ? sample.id : `${subject.name}.dxf`)).buffer;
+  // The reference of a DWG reads it with the same pinned reader first, and the timing counts that step on both sides.
+  const reference = (outDir: string): string => {
+    if (dwg) readDwg(reader, sourceFile, dxfFile);
+    return sofficeConvert(soffice, profile, dxfFile, target, outDir);
+  };
   const measure = (file: string): Measured => {
     const picture = ctx.scratch(`drawn-${target}.png`);
     if (target === 'svg') renderSvg(rsvg, file, picture, RENDER_WIDTH_PX);
@@ -214,20 +242,7 @@ async function runDrawing(ctx: FamilyContext, subject: Subject, target: Target, 
       'heavy',
       IN_PROCESS_REPEATS
     );
-    rows.push(throughputRow('cad', caseName, dxf.length, timing, REFERENCE));
-  }
-  return rows;
-}
-
-/** DWG sources are listed, not measured: see DWG_REASON. */
-function dwgRows(ctx: FamilyContext): BenchRow[] {
-  const rows: BenchRow[] = [];
-  for (const target of TARGETS) {
-    const caseName = `plate.dwg->${target}`;
-    if (!ctx.inScope('cad', caseName)) continue;
-    for (const spec of specsOf(target)) {
-      if (spec.kind === 'throughput' ? ctx.speed : ctx.quality) rows.push(skippedRow('cad', caseName, spec, REFERENCE, 'unsupported', DWG_REASON));
-    }
+    rows.push(throughputRow('cad', caseName, input.length, timing, REFERENCE));
   }
   return rows;
 }

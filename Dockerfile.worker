@@ -58,7 +58,22 @@ RUN apt-get update \
     && grep -q ' Rar5 ' /tmp/7zip-formats.txt
 
 # ==============================================================================
-# Stage 3: Hardened Runtime Container
+# Stage 3: Pinned LibreDWG reader (dwg2dxf)
+# ==============================================================================
+# The DWG to DXF step of DWG input. LibreDWG is GPL-3.0-or-later and is built here from its unmodified release archive,
+# pinned by SHA-256 in scripts/install-libredwg.sh, as a statically linked program that the worker runs as a separate
+# sandboxed process; nothing links it into the application. Debian ships no package of it. The stage fails the build if
+# the program does not start.
+FROM node:20-bookworm-slim AS libredwg
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-libredwg.sh /tmp/install-libredwg.sh
+RUN /tmp/install-libredwg.sh /opt/libredwg
+
+# ==============================================================================
+# Stage 4: Hardened Runtime Container
 # ==============================================================================
 FROM node:20-bookworm-slim AS runner
 
@@ -116,6 +131,12 @@ COPY --from=sevenzip /seven-zip/7zzs /usr/local/bin/7zz
 COPY --from=sevenzip /seven-zip/License.txt /usr/share/doc/7zip/License.txt
 RUN ln -s 7zz /usr/local/bin/7z
 
+# DWG reader (pinned release built in the libredwg stage). Its licence text goes to /usr/share/doc/libredwg/copyright, which the
+# notices step below collects into /licenses with the system packages; the SOURCE file names the release archive it was built from.
+COPY --from=libredwg /opt/libredwg/bin/dwg2dxf /usr/local/bin/dwg2dxf
+COPY --from=libredwg /opt/libredwg/share/doc/libredwg /usr/share/doc/libredwg
+RUN dwg2dxf --version
+
 # PDF/A validator (pinned release, checksum-verified); the PDF/A post-process refuses to run without it.
 COPY scripts/install-verapdf.sh /tmp/install-verapdf.sh
 RUN /tmp/install-verapdf.sh /opt/verapdf && rm /tmp/install-verapdf.sh
@@ -144,6 +165,7 @@ RUN mkdir -p /licenses \
        done \
     && if [ "$copied" -eq 0 ]; then echo "no copyright files found under /usr/share/doc" >&2; exit 1; fi
 COPY THIRD_PARTY_NOTICES.md /licenses/
+RUN cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE
 RUN chmod -R a+rX /licenses
 
 # 5. Drop to unprivileged non-root user (UID:GID 10001:10001)

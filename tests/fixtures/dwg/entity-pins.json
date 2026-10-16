@@ -1,0 +1,344 @@
+[
+  {
+    "id": "entity-line-2000.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One line saved as AutoCAD 2000, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2000/Line.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1015",
+      "release": "R2000"
+    },
+    "bytes": 174005,
+    "sha256": "358fc09c7c27737ba3b500eac122caee4c83c270f5ccb8a9f7f8f3d4b763d937"
+  },
+  {
+    "id": "entity-arc-2000.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One arc saved as AutoCAD 2000, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2000/Arc.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1015",
+      "release": "R2000"
+    },
+    "bytes": 173717,
+    "sha256": "02f62c8632b8e5a4af1c73d37226186d068a8733bdab74fc73bdfa23ba19e0a9"
+  },
+  {
+    "id": "entity-circle-2000.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One circle saved as AutoCAD 2000, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2000/circle.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1015",
+      "release": "R2000"
+    },
+    "bytes": 177345,
+    "sha256": "d2c2e592c4d501aa416bf41383b8067f7f72c32af558d1dea8481bb7d884b6dc"
+  },
+  {
+    "id": "entity-line-2004.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One line saved as AutoCAD 2004, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2004/Line.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1018",
+      "release": "R2004"
+    },
+    "bytes": 62118,
+    "sha256": "60c86e1d4f038a3f1755d15bd22710c34608900957af61282432e4719b730c24"
+  },
+  {
+    "id": "entity-arc-2004.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One arc saved as AutoCAD 2004, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2004/Arc.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1018",
+      "release": "R2004"
+    },
+    "bytes": 62825,
+    "sha256": "561657206743a8def291998b1811d127cd44757bde2c873c8e5d495ede489deb"
+  },
+  {
+    "id": "entity-circle-2004.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One circle saved as AutoCAD 2004, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2004/circle.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1018",
+      "release": "R2004"
+    },
+    "bytes": 64038,
+    "sha256": "40744fae8c68234f1259afc25a4d172ba70477a7de6a7f18b1cc97ac39a31efb"
+  },
+  {
+    "id": "entity-line-2007.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One line saved as AutoCAD 2007, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2007/Line.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1021",
+      "release": "R2007"
+    },
+    "bytes": 74880,
+    "sha256": "75ed6e8ad65af25133def49823a33bb8754b6626881d5fa3d9ed5436c4645bde"
+  },
+  {
+    "id": "entity-arc-2007.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One arc saved as AutoCAD 2007, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2007/Arc.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1021",
+      "release": "R2007"
+    },
+    "bytes": 75392,
+    "sha256": "5e479da6db8e628d64f47d5ca92af0ce975bcda9d5f0b96da5eb1cb440186fd3"
+  },
+  {
+    "id": "entity-circle-2007.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One circle saved as AutoCAD 2007, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2007/circle.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1021",
+      "release": "R2007"
+    },
+    "bytes": 77472,
+    "sha256": "2dbaacba3ec90eb1c81c4e8b31f98df649aa0e019524076131eedc5b375ad661"
+  },
+  {
+    "id": "entity-line-2010.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One line saved as AutoCAD 2010, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2010/Line.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1024",
+      "release": "R2010"
+    },
+    "bytes": 62664,
+    "sha256": "315729e57328ea09fc0e3530540294144fb1217922ca28ba076936bf52a9d0ec"
+  },
+  {
+    "id": "entity-arc-2010.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One arc saved as AutoCAD 2010, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2010/Arc.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1024",
+      "release": "R2010"
+    },
+    "bytes": 63276,
+    "sha256": "92f71737e697bac4c4e547f3cbc30e6c02bd29c8d83807784410d1299ec73826"
+  },
+  {
+    "id": "entity-circle-2010.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One circle saved as AutoCAD 2010, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2010/circle.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1024",
+      "release": "R2010"
+    },
+    "bytes": 64302,
+    "sha256": "c1f4ec9a377ffbccdb024530ed82d16752deb5922639b0cc85cce14a2bc4de47"
+  },
+  {
+    "id": "entity-line-2013.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One line saved as AutoCAD 2013, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2013/Line.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1027",
+      "release": "R2013"
+    },
+    "bytes": 37961,
+    "sha256": "351a239cdae05894fe11863aabecfde171bd4d1758a3dd1c9868d8fe534fe6c1"
+  },
+  {
+    "id": "entity-arc-2013.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One arc saved as AutoCAD 2013, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2013/Arc.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1027",
+      "release": "R2013"
+    },
+    "bytes": 36305,
+    "sha256": "dbeae61442f85490a6f32ebdd3afcb5a74f9c3421beb8bc7850f30d096554950"
+  },
+  {
+    "id": "entity-circle-2013.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One circle saved as AutoCAD 2013, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2013/circle.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1027",
+      "release": "R2013"
+    },
+    "bytes": 30971,
+    "sha256": "e6b00316de1360f5bfd550aa8a2c3b9b25ec898b921a351ac044f56d96441d82"
+  },
+  {
+    "id": "entity-line-2018.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One line saved as AutoCAD 2018, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2018/Line.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1032",
+      "release": "R2018"
+    },
+    "bytes": 27982,
+    "sha256": "1f4edd4c11aaf28b3295fd69fa59376f9cb911c637aa47a6073408ecac4797a3"
+  },
+  {
+    "id": "entity-arc-2018.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One arc saved as AutoCAD 2018, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2018/Arc.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1032",
+      "release": "R2018"
+    },
+    "bytes": 27822,
+    "sha256": "22f3275c5cd7d2899068043b07b19eacabbc38b3bbd785b8cc02cdc5b824c2a1"
+  },
+  {
+    "id": "entity-circle-2018.dwg",
+    "family": "cad",
+    "class": "entity",
+    "set": "libredwg-test-data",
+    "description": "One circle saved as AutoCAD 2018, with the AutoCAD property dump beside it",
+    "origin": {
+      "kind": "file",
+      "url": "https://raw.githubusercontent.com/LibreDWG/libredwg/a3d51f13f7afc143c2adb87d4b0e858e24cdac95/test/test-data/2018/circle.dwg"
+    },
+    "licence": "GPL-3.0-or-later",
+    "meta": {
+      "format": "dwg",
+      "version": "AC1032",
+      "release": "R2018"
+    },
+    "bytes": 27886,
+    "sha256": "003bbd8925ae17962814e31293a401655409a3576220922dea747ace928e1020"
+  }
+]

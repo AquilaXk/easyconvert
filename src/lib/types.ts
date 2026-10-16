@@ -792,6 +792,31 @@ export class CadExpansionLimitError extends ConversionFailedError {
   }
 }
 
+/**
+ * A CAD drawing that is intact (or looks intact) but that this engine cannot read: a DWG release the reader does not decode
+ * reliably, or a drawing the reader refused. The request was understood, so the routes answer HTTP 422 (through `status`)
+ * like the other inputs that are understood and not processable. It is not an `EngineMissingError`: another worker would
+ * refuse the same file, so the queue does not retry it.
+ */
+export class UnprocessableCadInputError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnprocessableCadInputError';
+  }
+}
+
+/** A DWG whose release code (`AC1009`, `AC1033`, ...) names a release the DWG reader does not decode reliably, or one that is newer than the reader knows. */
+export class UnsupportedDwgVersionError extends UnprocessableCadInputError {
+  /** The six-character release code at the start of the file. */
+  readonly magic: string;
+  constructor(message: string, magic: string) {
+    super(message);
+    this.name = 'UnsupportedDwgVersionError';
+    this.magic = magic;
+  }
+}
+
 export class EngineUnavailableError extends EngineMissingError {
   public readonly engineName: string;
   public readonly reason: string;
