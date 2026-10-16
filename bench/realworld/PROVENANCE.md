@@ -122,7 +122,7 @@ redistribution, which does not happen here: the files are read to test conversio
   FFmpeg collections, raw.pixls.us, Wikimedia Commons, the Library of Congress, kernel.org, the GNU and Slackware mirrors, the
   CentOS vault, Tiny Core, iPXE and the Open Preservation Foundation files are pinned by digest only, and a change at the host fails
   the run until the file is re-pinned (`bench/realworld/fetch.ts` never accepts other bytes).
-- Licence rule: only files whose licence allows commercial use are used; Creative Commons NonCommercial (NC) and NoDerivatives (ND) files are excluded, however they are used. Where the publisher lists a licence per file (the camera sample archive) it is read from that list and not from the statement of the source.
+- Licence rule (the research and R&D sets of the parity benchmark are described in `bench/corpus/PROVENANCE.md`; none is in this corpus): only files whose licence allows commercial use are used; Creative Commons NonCommercial (NC) and NoDerivatives (ND) files are excluded, however they are used. Where the publisher lists a licence per file (the camera sample archive) it is read from that list and not from the statement of the source.
 - Selection: files from exploit databases (the `EDB-` and `CVE-` named test documents of LibreOffice), fuzzer outputs and files the
   project marks as failing import are not used, and neither are government form templates whose licence is not stated. The entries
   of `format-coverage-exceptions.json` say where that cost a format its third sample.
