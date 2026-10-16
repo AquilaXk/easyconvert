@@ -44,17 +44,17 @@ interface SampleCase {
 const SAMPLES: readonly SampleCase[] = [
   { id: 'lo-tdf120761_zorder.dot', extension: 'dot', targets: ['docx', 'odt', 'pdf', 'txt'] },
   { id: 'govdocs1-000003.doc', extension: 'dot', targets: ['docx', 'odt', 'pdf', 'txt', 'html', 'xps'], resaveAs: 'dot:MS Word 97 Vorlage' },
-  { id: 'lo-works_6.0.wps', extension: 'wps', targets: ['docx', 'odt', 'pdf', 'txt', 'html', 'md'] },
+  { id: 'tika-testworks.wps', extension: 'wps', targets: ['docx', 'odt', 'pdf', 'txt', 'html', 'md'] },
   { id: 'opf-testwordperfect_6_61.wpd', extension: 'wpd', targets: ['docx', 'odt', 'pdf', 'txt', 'html', 'md'] },
-  { id: 'lo-writer.ott', extension: 'ott', targets: ['odt', 'docx', 'pdf', 'txt'] },
-  { id: 'tika-teststaroffice-6.0-writer.sxw', extension: 'sxw', targets: ['odt', 'docx', 'pdf', 'txt'] },
+  { id: 'lo-tdf151375.ott', extension: 'ott', targets: ['odt', 'docx', 'pdf', 'txt'] },
+  { id: 'lo-ooo32780-1.sxw', extension: 'sxw', targets: ['odt', 'docx', 'pdf', 'txt'] },
   { id: 'tika-testexcel_template.xlt', extension: 'xlt', targets: ['xlsx', 'csv', 'pdf'] },
-  { id: 'lo-numbers_2.numbers', extension: 'numbers', targets: ['xlsx', 'xls', 'csv'] },
+  { id: 'tika-testnumbers.numbers', extension: 'numbers', targets: ['xlsx', 'xls', 'csv'] },
   { id: 'govdocs1-764092.pps', extension: 'pps', targets: ['pptx', 'odp', 'pdf', 'html', 'txt'] },
   { id: 'lo-impress.otp', extension: 'otp', targets: ['odp', 'pptx', 'pdf'] },
   { id: 'tika-teststaroffice-6.0-draw.sxi', extension: 'sxi', targets: ['odp', 'pptx', 'pdf'] },
   { id: 'tika-teststaroffice-6.0-draw.sxd', extension: 'sxd', targets: ['pdf', 'png'] },
-  { id: 'lo-fdo59355-1.pub', extension: 'pub', targets: ['pdf', 'png', 'jpg', 'bmp'] },
+  { id: 'office-60685.pub', extension: 'pub', targets: ['pdf', 'png', 'jpg', 'bmp'] },
   { id: 'opf-lorem-ipsum-090.lrf', extension: 'lrf', targets: ['epub', 'pdf', 'txt', 'rtf', 'azw3', 'pdb'] },
   { id: 'lo-plucker.pdb', extension: 'pdb', targets: ['txt', 'pdf', 'epub', 'mobi', 'lrf'] },
   { id: 'opf-lorem-ipsum-090.rb', extension: 'rb', targets: ['epub', 'pdf', 'txt', 'oeb'] },
@@ -71,6 +71,14 @@ function wordsOf(text: string): string[] {
   return text
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word.length >= MIN_WORD_LENGTH);
+}
+
+/** The words of spreadsheet cells: letters only, because the display of a number (thousands separators, a currency suffix) differs between versions of the office suite. */
+function cellWordsOf(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^\p{L}]+/u)
     .filter((word) => word.length >= MIN_WORD_LENGTH);
 }
 
@@ -91,18 +99,32 @@ function stripMarkup(markup: string): string {
 
 /** Spreadsheet formats: their words are the cells, which the office suite's CSV export holds without the headers and page numbers of a printed page. */
 const SPREADSHEET_EXTENSIONS: ReadonlySet<string> = new Set(['xlt', 'numbers']);
+/** Source formats the office suite opens in its word processor, which exports plain text. */
+const WORD_PROCESSOR_EXTENSIONS: ReadonlySet<string> = new Set(['dot', 'wps', 'wpd', 'ott', 'sxw', 'lrf', 'pdb', 'rb']);
+/** The office suite's CSV export of the first sheet with every cell as it is shown (UTF-8, comma, double quote): the text of a CSV that Excel saves. */
+const CSV_AS_SHOWN = 'csv:Text - txt - csv (StarCalc):44,34,76,1,,0,false,true';
 const SPREADSHEET_TARGETS: ReadonlySet<string> = new Set(['xlsx', 'xls', 'ods']);
 
 /** The office suite's own reading of the sample: the words on its pages, or the cells of a spreadsheet. */
 function referenceWords(sample: Buffer, extension: string): Set<string> {
   if (SPREADSHEET_EXTENSIONS.has(extension)) {
-    return new Set(sofficeConvert(sample, `in.${extension}`, 'csv', (output) => wordsOf(output.read().toString('utf-8'))));
+    return new Set(sofficeConvert(sample, `in.${extension}`, CSV_AS_SHOWN, (output) => cellWordsOf(output.read().toString('utf-8'))));
   }
   return new Set(sofficeConvert(sample, `in.${extension}`, 'pdf', (output) => pdfWords(output.read())));
 }
 
 /** The e-book formats calibre also reads, which gives a second reference for their words. */
 const CALIBRE_EXTENSIONS: ReadonlySet<string> = new Set(['lrf', 'pdb', 'rb']);
+
+/** The words of the office suite's plain-text export of a word-processor document, or undefined for a format it exports no text of. */
+function textExportWords(sample: Buffer, extension: string): Set<string> | undefined {
+  if (SPREADSHEET_EXTENSIONS.has(extension) || !WORD_PROCESSOR_EXTENSIONS.has(extension)) return undefined;
+  try {
+    return new Set(sofficeConvert(sample, `in.${extension}`, 'txt:Text (encoded):UTF8', (output) => wordsOf(output.read().toString('utf-8'))));
+  } catch {
+    return undefined;
+  }
+}
 
 /** The reference words, or undefined for a format of which this office suite has no import filter (it cannot load the file). */
 function referenceOrRefusal(sample: Buffer, extension: string): Set<string> | undefined {
@@ -140,10 +162,11 @@ async function epubWords(epub: Buffer): Promise<string[]> {
 async function outputWords(output: Buffer, target: string): Promise<string[] | undefined> {
   if (target === 'pdf') return pdfWords(output);
   if (target === 'html') return wordsOf(stripMarkup(output.toString('utf-8')));
+  if (target === 'csv') return cellWordsOf(output.toString('utf-8'));
   if (TEXT_TARGETS.has(target)) return wordsOf(output.toString('utf-8'));
   if (target === 'epub') return epubWords(output);
   if (target === 'xps') return wordsOf(await xpsGlyphText(output));
-  if (SPREADSHEET_TARGETS.has(target)) return sofficeConvert(output, `out.${target}`, 'csv', (rendered) => wordsOf(rendered.read().toString('utf-8')));
+  if (SPREADSHEET_TARGETS.has(target)) return sofficeConvert(output, `out.${target}`, CSV_AS_SHOWN, (rendered) => cellWordsOf(rendered.read().toString('utf-8')));
   if (OFFICE_RENDERED_TARGETS.has(target)) return sofficeConvert(output, `out.${target}`, 'pdf', (rendered) => pdfWords(rendered.read()));
   return undefined;
 }
@@ -211,6 +234,7 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
           expect((refusal as Error).message).toMatch(/has no import filter/);
           return;
         }
+        const textReference = textExportWords(sample, extension);
         const calibre = calibreWords(sample, extension);
         for (const target of targets) {
           const label = `${id} -> ${target}`;
@@ -229,7 +253,8 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
           }
           const produced = await outputWords(result.buffer, target);
           expect(produced, label).toBeDefined();
-          expectWordsOf(reference, produced ?? [], label);
+          // The text export of a word processor leaves out page headers and frames, as the plain-text target does.
+          expectWordsOf(target === 'txt' && textReference !== undefined ? textReference : reference, produced ?? [], label);
           if (calibre && (target === 'txt' || target === 'epub')) expectWordsOf(calibre, produced ?? [], `${label} (calibre)`);
         }
       },
