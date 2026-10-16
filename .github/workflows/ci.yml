@@ -644,6 +644,9 @@ jobs:
       BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
       # The pull request times the generated corpus only; the public sample sets are timed by the nightly run (bench/scope.ts).
       BENCH_CORPUS_TIER: pr
+      # Timed with the heap bound the service runs with (docker-compose.yml): without it image encodes lease at most two threads
+      # (src/lib/conversions/image-threads.ts), and the rows would time a configuration that is never deployed.
+      MALLOC_ARENA_MAX: "2"
 
     steps:
       - name: Say that there is nothing to measure

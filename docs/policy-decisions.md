@@ -476,7 +476,7 @@ Compression
 - **Status**: Implemented (#749, issue #736), decided 2026-10-11.
 - **Decision**:
   - **Metadata blocks**: a JPEG, WebP or AVIF carries the EXIF block, the XMP packet and the ICC profile of its source unchanged. The profile is attached and the pixels are not converted through it. No block is made up.
-  - **sRGB-gamut profiles**: a profile with sRGB primaries (whether IEC 61966-2-1 sRGB or a development curve over sRGB primaries such as a camera RAW decoder's gamma 2.222 curve) is not written. The pixels go through it into standard sRGB; wider-gamut and grey profiles stay attached.
+  - **sRGB-gamut profiles**: a profile with sRGB primaries (whether IEC 61966-2-1 sRGB or a development curve over sRGB primaries such as a camera RAW decoder's gamma 2.222 curve) is not written. A development curve goes through the profile into standard sRGB; a profile that describes sRGB itself changes no pixel (the samples are read as they are, #641); wider-gamut and grey profiles stay attached.
   - **Print density**: a JPEG keeps it (in its header, together with an EXIF block made from it when the source has none); WebP and AVIF do not.
   - **Alpha**: the alpha plane of an AVIF is encoded at the colour quality. There is no separate alpha setting.
   - **16 to 8 bits**: a 16-bit picture written as JPEG or WebP is reduced to the nearest 8-bit level, not to the high byte.
@@ -490,15 +490,18 @@ Compression
   - A profile that is not sRGB makes a file larger by the profile (4.5 kB for the grey profile of the radiograph) where the earlier policy baked it in. That is the cost of exact colours, paid by the pictures that need it.
   - Dropping an sRGB profile changes no colour a viewer shows, but a reader that treats an untagged file as another colour space will see it differently; the web formats and every browser assume sRGB.
   - Alpha at the colour quality moves the edge pixels of flat graphics: at quality 70 a flat chart reads 57 dB on the flattened picture, where lossless alpha gives an exact picture at 2.5 times the bytes (51.2 kB against 20.0 kB). The service does the former, so the files stay comparable.
-  - Rounding adds one pass over the samples of a 16-bit picture (no measurable time: 24 ms either way on the 16-bit space photograph).
+  - Rounding is the image library's scaling step in front of its high-byte cast. Placed between the two colour transforms the library runs for a picture with an sRGB profile (through a wide-gamut working space and back), it cost the 16-bit space photograph 31 ms against 23 ms before the step; with the profile read as it is (#641) it takes 18 ms (Linux test machine, medians of 40 runs).
+  - A picture with an sRGB profile is read without converting its samples through the profile. For 8-bit samples that transform is the identity on the pictures of the benchmark (0 of 1.7 to 6.8 million samples differ) and costs 3 to 6 ms per read of a 1 to 2 megapixel picture; on noise it moves 0.3 % of the samples by one level. For 16-bit samples it goes through a wide-gamut space and back and moved 3.5 % of the nearest 8-bit levels one level too low.
+  - A PNG that holds only text chunks and an sRGB profile is decoded once for JPEG and AVIF like a plain PNG: neither encoder writes text, and the profile is not written.
   - A JPEG with a print density gets an EXIF block it did not have.
 - **Alternatives rejected**:
   - **Lossless alpha** (the standalone encoder's default): exact, but 2.5 times the bytes on a flat chart and not what the service writes.
   - **Converting every profile into the pixels and writing none** (the earlier policy): smaller, but irreversible for wide-gamut pictures, and the pictures differ from the service's.
   - **Keeping every profile, the sRGB one included**: 3 kB more than the service on most photographs.
   - **Dithering the 16 to 8 bit reduction**: adds noise the encoder must code, and loses PSNR and SSIM at the same size.
+  - **Keeping the colour transform through an sRGB profile**: an identity for 8-bit samples and an error of one step of 65535 for 16-bit ones, at the cost of two reads' worth of transform time per conversion.
 - **Verified by**:
-  - `tests/image-metadata-overhead.test.ts` (no block made up; a wide-gamut profile kept byte for byte in JPEG, WebP and AVIF; an sRGB profile not written; XMP kept alone), `tests/icc-srgb.test.ts`, `tests/image-16bit-rounding.test.ts`, and the argument test of `tests/image-avif-library-encoder.test.ts` (alpha quality equals the colour quality).
+  - `tests/image-metadata-overhead.test.ts` (no block made up; a wide-gamut profile kept byte for byte in JPEG, WebP and AVIF; an sRGB profile not written; XMP kept alone), `tests/icc-srgb.test.ts`, `tests/image-16bit-rounding.test.ts`, `tests/image-16bit-reduction.test.ts` (all 65536 inputs against exact rational arithmetic; a picture with an sRGB profile written as the same file as the one without), and the argument test of `tests/image-avif-library-encoder.test.ts` (alpha quality equals the colour quality).
   - The image parity rows, where the reference receives the same blocks and the colour quality for alpha (`bench/png-metadata.ts`).
 - **Revisit when**:
   - A target other than JPEG, WebP and AVIF should follow (PNG and TIFF still apply the profile to the pixels).
