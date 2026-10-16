@@ -420,6 +420,7 @@ describe('the known gaps', () => {
 
   it('files each gap under the issue of its family, as the rollout assigned them', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
+    const byIdOf = (id: string): number | undefined => shipped.gaps.find((g) => g.id === id)?.issue;
     const issuesOf = (prefix: string, speedRows: boolean): number[] =>
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
     expect(issuesOf('image/', false)).toEqual([]);
@@ -431,7 +432,9 @@ describe('the known gaps', () => {
     expect(issuesOf('ocr/', true)).toEqual([644]);
     // The document gap is the PDF text reader (672); the slide and sheet pages to PNG reached parity on the CI runner (735).
     expect(issuesOf('document/', true)).toEqual([672]);
-    expect(issuesOf('raw/', true)).toEqual([686]);
+    // The RAW to GIF rows reached parity on the CI runner (686).
+    expect(issuesOf('raw/', true)).toEqual([]);
+    expect([byIdOf('raw/dng->gif/throughput'), byIdOf('raw/arw->gif/throughput')]).toEqual([undefined, undefined]);
     expect(issuesOf('vector/', true)).toEqual([735]);
     expect(issuesOf('cad/', true)).toEqual([]);
     for (const family of ['raw/', 'vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
