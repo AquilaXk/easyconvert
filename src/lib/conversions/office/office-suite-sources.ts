@@ -53,7 +53,7 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
 
 /** Targets the in-process engine writes from plain text only: the Palm family, the Sony and Open eBook formats, XPS and the Hangul formats. */
 const TEXT_ONLY_TARGETS: ReadonlySet<string> = new Set(['azw3', 'mobi', 'lrf', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx']);
-/** Sources of the e-book readers of the office suite: their text-only targets are written from the text the suite exports. */
+/** Sources of the ebook readers of the office suite: their text-only targets are written from the text the suite exports. */
 const EBOOK_SOURCES: ReadonlySet<string> = new Set(['lrf', 'pdb', 'rb']);
 
 /** The application of every format the office suite reads that the in-process engine cannot render: the sources above and their aliases. */
@@ -65,7 +65,7 @@ const APPLICATION_OF_ALIAS: Readonly<Record<string, OfficeSuiteApplication>> = {
   odp: 'impress',
 };
 
-/** Every source format of this table: the office-suite-only formats and the aliases. */
+/** Every source format of this table: the formats only the office suite reads and the aliases. */
 export const OFFICE_SUITE_SOURCE_FORMATS: readonly string[] = [...Object.keys(OFFICE_SUITE_ONLY_SOURCES), ...Object.keys(OFFICE_FORMAT_ALIAS)];
 
 /**
@@ -96,7 +96,7 @@ export function officeReadingFormat(format: string): string {
   return Object.hasOwn(OFFICE_FORMAT_ALIAS, lower) ? OFFICE_FORMAT_ALIAS[lower] : lower;
 }
 
-/** Whether `format` is a variant of a plain Office format (a macro-enabled, template or slide show file) that the reader of the plain format reads. */
+/** Whether `format` is a variant of a plain Office format (a macro enabled, template or slide show file) that the reader of the plain format reads. */
 export function isPlainOfficeVariant(format: string): boolean {
   return Object.hasOwn(OOXML_VARIANT_FAMILY, format) || Object.hasOwn(OFFICE_FORMAT_ALIAS, format);
 }
@@ -115,14 +115,14 @@ export function officeSuiteApplication(format: string): OfficeSuiteApplication |
   return undefined;
 }
 
-/** Whether the office suite writes plain text itself for this source: its writer applications (word processors and e-book readers). */
+/** Whether the office suite writes plain text itself for this source: its writer applications (word processors and ebook readers). */
 export function officeSuiteWritesText(format: string, target: string): boolean {
   return target === TEXT_INTERCHANGE && isOfficeSuiteOnlySource(format) && OFFICE_SUITE_ONLY_SOURCES[format].application === 'writer';
 }
 
 /**
  * The format the office suite writes so that the in-process converter of that format can write `target`: plain text for
- * the e-book targets of an e-book source, the source's interchange format for every other target. Undefined for a
+ * the ebook targets of an ebook source, the source's interchange format for every other target. Undefined for a
  * source that has none.
  */
 export function officeSuiteInterchange(format: string, target: string): string | undefined {
