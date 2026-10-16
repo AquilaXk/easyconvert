@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { ConversionFailedError, CorruptStreamError, EngineUnavailableError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
 import {
@@ -8,6 +9,7 @@ import {
   officeSuiteWritesText,
 } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
+import { startsWithBytes } from '../lib/conversions/package-access';
 import { SandboxedProcessError, rethrowSandboxUnavailable } from './sandbox';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 
@@ -152,16 +154,41 @@ export async function convertThroughInterchange(deps: OfficeSuiteRouteDeps, requ
   }
 }
 
+/** The signature every OLE2 compound file starts with (MS-CFB section 2.2): the container of Word, Excel and PowerPoint 97-2003 files. */
+const OLE2_SIGNATURE: readonly number[] = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+/** The start of a Word 5.0 for Macintosh file (a Word binary that is no compound file), which the office suite reads and the in-process reader refuses. */
+const WORD_5_MACINTOSH_SIGNATURE: readonly number[] = [0xfe, 0x37, 0x00, 0x23];
+const LEGACY_BINARY_SIGNATURES: ReadonlyArray<readonly number[]> = [OLE2_SIGNATURE, WORD_5_MACINTOSH_SIGNATURE];
+const LONGEST_SIGNATURE_BYTES = Math.max(...LEGACY_BINARY_SIGNATURES.map((signature) => signature.length));
+
+/** The first bytes of the input, read without loading the file when it is not in memory. */
+function leadingBytes(input: Buffer | WorkerVfsPayload): Buffer {
+  if (Buffer.isBuffer(input)) return input.subarray(0, LONGEST_SIGNATURE_BYTES);
+  if (input.inputBuffer) return input.inputBuffer.subarray(0, LONGEST_SIGNATURE_BYTES);
+  if (input.inputPath === undefined) return Buffer.alloc(0);
+  const descriptor = fs.openSync(input.inputPath, 'r');
+  try {
+    const head = Buffer.alloc(LONGEST_SIGNATURE_BYTES);
+    return head.subarray(0, fs.readSync(descriptor, head, 0, head.length, 0));
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 /**
  * A legacy binary Office document (Word, Excel, PowerPoint, and their templates and slide shows) that the strict in-process
  * reader refuses as malformed is read by the office suite instead, which reads damaged files the way the application that
- * wrote them does and also reads the RTF, HTML or text that real files carry under these extensions. When the office suite
- * cannot read it either, the reader's own refusal stands (undefined here).
+ * wrote them does. Only a file that starts like a legacy binary document is handed over: the office suite also loads the
+ * HTML, RTF and text that real files carry under these extensions, and those bodies go through the staged HTML path (with its
+ * image fetch guard) or the reader of their own format, never straight to the suite. When the office suite cannot read the
+ * document either, the reader's own refusal stands (undefined here).
  */
 export async function retryRefusedLegacyDocument(deps: OfficeSuiteRouteDeps, request: OfficeSuiteRequest, refusal: unknown): Promise<WorkerConversionResult | undefined> {
   const interchange = legacyReaderRetryInterchange(request.src, request.tgt);
   const refused = refusal instanceof LegacyOfficeFormatError || refusal instanceof CorruptStreamError;
   if (interchange === undefined || !refused || request.options.signal?.aborted) return undefined;
+  const head = leadingBytes(request.input);
+  if (!LEGACY_BINARY_SIGNATURES.some((signature) => startsWithBytes(head, signature))) return undefined;
   try {
     const retried = await convertThroughInterchange(deps, request, interchange);
     return { ...retried, fallbackChain: [...(retried.fallbackChain ?? []), `in-process reader refused the document: ${(refusal as Error).message}`] };

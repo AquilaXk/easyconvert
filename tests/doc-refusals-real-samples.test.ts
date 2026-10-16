@@ -54,6 +54,7 @@ describe.skipIf(toolsMissing)('Word documents the in-process reader refused', ()
         expect(reference.size).toBeGreaterThan(0);
         for (const target of TARGETS) {
           const result = await dispatchConversion(doc, 'doc', target, {}, id);
+          if (target === 'txt') expect(result.buffer.subarray(0, 3), 'a text export starts with a UTF-8 byte order mark').not.toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
           const text = await textOf(result.buffer, target);
           const have = new Set(wordsOf(text));
           const missing = [...reference].filter((word) => !have.has(word));

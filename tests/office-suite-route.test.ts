@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   asUnreadableDocument,
   convertThroughInterchange,
@@ -125,12 +128,19 @@ describe('the interchange file of a format only the office suite reads', () => {
   });
 });
 
+/** The signature every OLE2 compound file starts with (MS-CFB section 2.2): the container of Word, Excel and PowerPoint 97-2003 files. */
+const OLE2_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+/** The start of a Word 5.0 for Macintosh file (a Word binary that is not an OLE2 compound file). */
+const WORD_5_MACINTOSH_START = Buffer.from([0xfe, 0x37, 0x00, 0x23, 0x00, 0x00, 0x00, 0x00]);
+const compoundFile = (): Buffer => Buffer.concat([OLE2_SIGNATURE, Buffer.from('the rest of the compound file')]);
+
 describe('a legacy document the strict reader refused', () => {
   const refusal = new LegacyOfficeFormatError('Word document: the CLX holds an unknown entry type 0x0.');
+  const legacy = (overrides: Partial<OfficeSuiteRequest>): OfficeSuiteRequest => request({ input: compoundFile(), ...overrides });
 
   it('is tried by the office suite, and the answer says why the reader gave it up', async () => {
     const { deps, calls } = standIns();
-    const answer = await retryRefusedLegacyDocument(deps, request({ src: 'doc', tgt: 'html' }), refusal);
+    const answer = await retryRefusedLegacyDocument(deps, legacy({ src: 'doc', tgt: 'html' }), refusal);
     expect(answer?.fallbackChain).toEqual(['in-process reader refused the document: Word document: the CLX holds an unknown entry type 0x0.']);
     expect(calls.written[0]).toMatchObject({ src: 'doc', target: 'docx' });
     expect(calls.converted[0]).toMatchObject({ src: 'docx', target: 'html' });
@@ -138,37 +148,74 @@ describe('a legacy document the strict reader refused', () => {
 
   it('keeps the steps already in the fallback chain of the conversion it got', async () => {
     const { deps } = standIns({ convert: async () => result({ fallbackChain: ['native-soffice: unavailable'] }) });
-    const answer = await retryRefusedLegacyDocument(deps, request({ src: 'doc', tgt: 'html' }), refusal);
+    const answer = await retryRefusedLegacyDocument(deps, legacy({ src: 'doc', tgt: 'html' }), refusal);
     expect(answer?.fallbackChain).toEqual(['native-soffice: unavailable', 'in-process reader refused the document: Word document: the CLX holds an unknown entry type 0x0.']);
   });
 
   it('is read as text for a text target, so that text outside the body is not lost', async () => {
     const { deps, calls } = standIns({ write: async () => result({ filePath: '/out/x.txt' }) });
-    await retryRefusedLegacyDocument(deps, request({ src: 'dot', tgt: 'txt' }), refusal);
+    await retryRefusedLegacyDocument(deps, legacy({ src: 'dot', tgt: 'txt' }), refusal);
     expect(calls.written[0]).toMatchObject({ src: 'dot', target: 'txt' });
     expect(calls.converted).toEqual([]);
   });
 
   it('accepts a corrupt compound file as a refusal too', async () => {
     const { deps, calls } = standIns();
-    const answer = await retryRefusedLegacyDocument(deps, request({ src: 'xls', tgt: 'csv' }), new CorruptStreamError('Corrupt CFBF container'));
+    const answer = await retryRefusedLegacyDocument(deps, legacy({ src: 'xls', tgt: 'csv' }), new CorruptStreamError('Corrupt CFBF container'));
     expect(answer).toBeDefined();
     expect(calls.written[0]).toMatchObject({ src: 'xls', target: 'xlsx' });
   });
 
   it.each([
-    ['a refusal of another kind', request({ src: 'doc', tgt: 'html' }), new Error('out of memory')],
-    ['a format with no office-suite reader behind it', request({ src: 'docx', tgt: 'html' }), refusal],
-    ['a request that was cancelled', request({ src: 'doc', tgt: 'html', options: { signal: AbortSignal.abort() } }), refusal],
+    ['a refusal of another kind', legacy({ src: 'doc', tgt: 'html' }), new Error('out of memory')],
+    ['a format with no office-suite reader behind it', legacy({ src: 'docx', tgt: 'html' }), refusal],
+    ['a request that was cancelled', legacy({ src: 'doc', tgt: 'html', options: { signal: AbortSignal.abort() } }), refusal],
   ])('is not retried for %s', async (_name, retried, error) => {
     const { deps, calls } = standIns();
     expect(await retryRefusedLegacyDocument(deps, retried, error)).toBeUndefined();
     expect(calls.written).toEqual([]);
   });
 
+  it.each([
+    ['an HTML page', '<html><body><img src="file:///etc/hostname"></body></html>'],
+    ['an RTF document', '{\\rtf1\\ansi A letter.}'],
+    ['plain text', 'A letter in plain words.'],
+  ])('is not retried for %s under a legacy Office name, and its refusal stands', async (_name, body) => {
+    const { deps, calls } = standIns();
+    const answer = await retryRefusedLegacyDocument(deps, request({ input: Buffer.from(body), src: 'doc', tgt: 'html', originalFilename: 'letter.doc' }), refusal);
+    expect(answer).toBeUndefined();
+    expect(calls.written).toEqual([]);
+  });
+
+  it('is tried when the file is a Word 5.0 for Macintosh file, a Word binary that is no compound file', async () => {
+    const { deps, calls } = standIns();
+    const answer = await retryRefusedLegacyDocument(deps, request({ input: WORD_5_MACINTOSH_START, src: 'doc', tgt: 'html' }), refusal);
+    expect(answer).toBeDefined();
+    expect(calls.written[0]).toMatchObject({ src: 'doc', target: 'docx' });
+  });
+
+  it('reads the start of a file that is not in memory and is tried only when it is a compound file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'legacy-retry-'));
+    try {
+      const compound = path.join(dir, 'compound.doc');
+      const html = path.join(dir, 'page.doc');
+      fs.writeFileSync(compound, compoundFile());
+      fs.writeFileSync(html, '<html><body>a page</body></html>');
+      const tried = standIns();
+      expect(await retryRefusedLegacyDocument(tried.deps, legacy({ input: { inputPath: compound }, src: 'doc', tgt: 'html' }), refusal)).toBeDefined();
+      const skipped = standIns();
+      expect(await retryRefusedLegacyDocument(skipped.deps, legacy({ input: { inputPath: html }, src: 'doc', tgt: 'html' }), refusal)).toBeUndefined();
+      expect(skipped.calls.written).toEqual([]);
+      const held = standIns();
+      expect(await retryRefusedLegacyDocument(held.deps, legacy({ input: { inputBuffer: compoundFile() }, src: 'doc', tgt: 'html' }), refusal)).toBeDefined();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the reader’s own refusal when the office suite cannot read the file either', async () => {
     const { deps } = standIns({ write: async () => Promise.reject(new Error('could not be loaded')) });
-    expect(await retryRefusedLegacyDocument(deps, request({ src: 'doc', tgt: 'html' }), refusal)).toBeUndefined();
+    expect(await retryRefusedLegacyDocument(deps, legacy({ src: 'doc', tgt: 'html' }), refusal)).toBeUndefined();
   });
 
   it('stops with the failure when the request is cancelled while the office suite runs', async () => {
@@ -180,7 +227,7 @@ describe('a legacy document the strict reader refused', () => {
         return Promise.reject(cancelled);
       },
     });
-    await expect(retryRefusedLegacyDocument(deps, request({ src: 'doc', tgt: 'html', options: { signal: controller.signal } }), refusal)).rejects.toBe(cancelled);
+    await expect(retryRefusedLegacyDocument(deps, legacy({ src: 'doc', tgt: 'html', options: { signal: controller.signal } }), refusal)).rejects.toBe(cancelled);
   });
 });
 
@@ -268,8 +315,8 @@ describe('the export filter of the office suite for each source', () => {
     expect(resolveLibreOfficeFilter('pdf', source)).toMatch(new RegExp(`^pdf:${filter}:`));
   });
 
-  it('writes plain text as UTF-8 through the encoded text filter, and every other target under its own name', () => {
-    expect(resolveLibreOfficeFilter('txt', 'wps')).toBe('txt:Text (encoded):UTF8');
+  it('writes plain text as UTF-8 with LF line ends and no byte order mark through the encoded text filter, and every other target under its own name', () => {
+    expect(resolveLibreOfficeFilter('txt', 'wps')).toBe('txt:Text (encoded):UTF8,LF,,,false');
     expect(resolveLibreOfficeFilter('docx', 'wps')).toBe('docx');
     expect(resolveLibreOfficeFilter('odd', 'odd')).toBe('otg');
   });

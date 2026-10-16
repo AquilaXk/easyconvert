@@ -159,10 +159,13 @@ const PDF_EXPORT_FILTER_OF_APPLICATION: Readonly<Record<OfficeSuiteApplication, 
   draw: 'draw_pdf_Export',
 };
 /**
- * Formats LibreOffice writes under another name: an OpenDocument drawing template is its `otg` export, and plain text is
- * the writer's encoded text export in UTF-8.
+ * The writer's encoded text export in UTF-8, with LF line ends and no byte order mark: the filter options are the character
+ * set, the line end, the font, the language and whether to write the mark (which the filter writes unless told not to,
+ * while the in-process text engine never does).
  */
-const LIBREOFFICE_TARGET_NAMES: Readonly<Record<string, string>> = { odd: 'otg', txt: 'txt:Text (encoded):UTF8' };
+const LIBREOFFICE_UTF8_TEXT_FILTER = 'txt:Text (encoded):UTF8,LF,,,false';
+/** Formats LibreOffice writes under another name: an OpenDocument drawing template is its `otg` export, and plain text its UTF-8 text export. */
+const LIBREOFFICE_TARGET_NAMES: Readonly<Record<string, string>> = { odd: 'otg', txt: LIBREOFFICE_UTF8_TEXT_FILTER };
 
 /** PDF export filter of the LibreOffice component that opens a source format. */
 function pdfExportFilterName(sourceFormat: string): string {

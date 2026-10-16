@@ -60,6 +60,9 @@ const SAMPLES: readonly SampleCase[] = [
   { id: 'opf-lorem-ipsum-090.rb', extension: 'rb', targets: ['epub', 'pdf', 'txt', 'oeb'] },
 ];
 
+/** The UTF-8 byte order mark that the office suite's text export writes unless told not to. */
+const UTF8_BYTE_ORDER_MARK = Buffer.from([0xef, 0xbb, 0xbf]);
+
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'bmp']);
 /** E-book targets read back only for their container: the Palm family, the Sony format and the Open eBook package of text. */
 const EBOOK_CONTAINER_TARGETS: ReadonlySet<string> = new Set(['azw3', 'mobi', 'pdb', 'lrf', 'oeb']);
@@ -251,6 +254,7 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
             expectEbookContainer(result.buffer, target);
             continue;
           }
+          if (target === 'txt') expect(result.buffer.subarray(0, UTF8_BYTE_ORDER_MARK.length), `${label} starts with a byte order mark`).not.toEqual(UTF8_BYTE_ORDER_MARK);
           const produced = await outputWords(result.buffer, target);
           expect(produced, label).toBeDefined();
           // The text export of a word processor leaves out page headers and frames, as the plain-text target does.
