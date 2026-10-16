@@ -23,6 +23,11 @@ function corpusFile(id: string): CorpusFile {
   return found;
 }
 
+/** The bytes of the cached sample `id`, fetched by digest when absent; a failure to fetch is the caller's error. */
+export async function realworldSampleBytes(id: string): Promise<Buffer> {
+  return fs.readFileSync(await ensureCached(corpusFile(id), CACHE_DIRECTORY));
+}
+
 /** What the test context offers: `skip` ends the test as skipped. */
 interface SkippableContext {
   skip: () => never;
