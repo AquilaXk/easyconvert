@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PARITY_SCHEMA_VERSION, PARITY_VERDICT_FILE, SCHEMA_VERSION } from '../bench/config';
 import { BenchArgumentError, ParityInputError, ReportSchemaError } from '../bench/errors';
 import { evaluateParity, failureLines, type ParityRunFile, renderParityMarkdown, renderParityText } from '../bench/parity';
+import type { Baseline } from '../bench/gate';
 import { describeGap, type GapFile, validateGaps } from '../bench/parity-gaps';
 import { FAMILIES, type BenchReport, type BenchRow } from '../bench/report';
 import { parseArgs, main } from '../bench/run';
@@ -596,6 +597,79 @@ describe('the quality gaps', () => {
     });
   });
 
+  describe('an entry the change adds or edits, against the baseline of the base branch', () => {
+    // The base's baseline holds the curve at +0.5 with a tolerance of 1.5 and the converts row at 1 with none: the most an entry may excuse.
+    const baseBaseline: Baseline = {
+      schemaVersion: 1,
+      entries: {
+        [CURVE]: { direction: 'lower', tolerance: { abs: 1.5, rel: 0 }, ours: 0.5, delta: 0.5, ratio: null },
+        [CONVERTS]: { direction: 'higher', tolerance: { abs: 0, rel: 0 }, ours: 1, delta: 0, ratio: null },
+      },
+    };
+    const judgedWith = (rows: BenchRow[], head: GapFile, base: GapFile, baseline: Baseline = baseBaseline, families?: BenchReport['families']): ReturnType<typeof evaluateParity> =>
+      evaluateParity(report(rows, ['pdf-ops', 'raw']), head, { qualityBase: { gaps: base, baseline }, families });
+    const rowOf = (verdict: ReturnType<typeof evaluateParity>, id: string): ReturnType<typeof evaluateParity>['rows'][number] => verdict.rows.find((candidate) => candidate.id === id) as ReturnType<typeof evaluateParity>['rows'][number];
+
+    it('allows a new entry for a row the base has no baseline entry for, which is new', () => {
+      const verdict = judgedWith([checks(1)], gaps(entry(CHECKS, 1, 0)), gaps());
+      expect(rowOf(verdict, CHECKS)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    });
+
+    it('refuses a new entry whose record is worse than the base baseline by more than its tolerance, though the row has that value', () => {
+      // 0.5 + 1.5 is the most the baseline gate would have let the row reach; 2.01 is past it.
+      const bad = judgedWith([curve(2.01)], gaps(entry(CURVE, 2.01, 0, 686)), gaps());
+      expect(bad.verdict).toBe('fail');
+      expect(rowOf(bad, CURVE)).toMatchObject({ outcome: 'fail', basis: 'gap-not-backed', gap: { issue: 686 } });
+      expect(rowOf(bad, CURVE).detail).toContain('the recorded value 2.01 is worse than the baseline of the base branch 0.5');
+      expect(rowOf(judgedWith([curve(2)], gaps(entry(CURVE, 2, 0, 686)), gaps()), CURVE)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    });
+
+    it('judges the direction of the baseline entry: a lower record of a higher-is-better row is the worse one', () => {
+      expect(rowOf(judgedWith([converts(0)], gaps(entry(CONVERTS, 0, 1, 686)), gaps()), CONVERTS)).toMatchObject({ outcome: 'fail', basis: 'gap-not-backed' });
+      const zero: Baseline = { schemaVersion: 1, entries: { [CONVERTS]: { ...baseBaseline.entries[CONVERTS], ours: 0 } } };
+      expect(rowOf(judgedWith([converts(0)], gaps(entry(CONVERTS, 0, 1, 686)), gaps(), zero), CONVERTS)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    });
+
+    it('allows a new entry whose record is equal to or better than the base baseline', () => {
+      // The base accepted the curve at +4 (a tolerance of 1.5 around it is what the gate holds); +2 is still above the allowance of the reference.
+      const four: Baseline = { schemaVersion: 1, entries: { [CURVE]: { ...baseBaseline.entries[CURVE], ours: 4, delta: 4 } } };
+      expect(rowOf(judgedWith([curve(4)], gaps(entry(CURVE, 4, 0, 686)), gaps(), four), CURVE)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+      expect(rowOf(judgedWith([curve(2)], gaps(entry(CURVE, 2, 0, 686)), gaps(), four), CURVE)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    });
+
+    it('leaves an entry the base already has as it is, whatever its record', () => {
+      const same = gaps(entry(CURVE, 2.5, 0, 686));
+      expect(rowOf(judgedWith([curve(2.5)], same, same), CURVE)).toMatchObject({ outcome: 'pass', basis: 'tracked-quality-gap' });
+    });
+
+    it('checks an entry the change edited, and an edit of anything the verdict reads', () => {
+      const edited = judgedWith([curve(2.5)], gaps(entry(CURVE, 2.5, 0, 686)), gaps(entry(CURVE, 1.5, 0, 686)));
+      expect(rowOf(edited, CURVE)).toMatchObject({ outcome: 'fail', basis: 'gap-not-backed' });
+      const referenceEdited = judgedWith([curve(2.5)], gaps(entry(CURVE, 2.5, 0.1, 686)), gaps(entry(CURVE, 2.5, 0, 686)));
+      expect(rowOf(referenceEdited, CURVE)).toMatchObject({ outcome: 'fail', basis: 'gap-not-backed' });
+    });
+
+    it('checks the families of its own shard only, and every family without a list', () => {
+      const head = gaps(entry(CURVE, 2.5, 0, 686));
+      expect(rowOf(judgedWith([curve(2.5)], head, gaps(), baseBaseline, ['pdf-ops']), CURVE).basis).toBe('tracked-quality-gap');
+      expect(rowOf(judgedWith([curve(2.5)], head, gaps(), baseBaseline, ['raw']), CURVE).basis).toBe('gap-not-backed');
+      expect(rowOf(judgedWith([curve(2.5)], head, gaps(), baseBaseline, []), CURVE).basis).toBe('gap-not-backed');
+    });
+
+    it('fails closed on a baseline entry that holds no value, and reports the refusal of an entry whose row is absent', () => {
+      const noValue: Baseline = { schemaVersion: 1, entries: { [CURVE]: { ...baseBaseline.entries[CURVE], ours: null } } };
+      expect(rowOf(judgedWith([curve(2.5)], gaps(entry(CURVE, 2.5, 0, 686)), gaps(), noValue), CURVE)).toMatchObject({ outcome: 'fail', basis: 'gap-not-backed' });
+      const absent = judgedWith([], gaps(entry(CURVE, 2.5, 0, 686)), gaps());
+      expect(absent.rows).toEqual([expect.objectContaining({ id: CURVE, family: 'raw', case: 'raw-canon-r5-raw.cr3->jpg', metric: 'bd_rate_psnr', outcome: 'fail', basis: 'gap-not-backed' })]);
+    });
+
+    it('does not look at a speed entry, which the speed backing handles', () => {
+      const speedEntry = { id: 'pdf-ops/watermark.pdf->pdf/throughput', issue: 695, ratio: 0.8, note: 'n' };
+      const verdict = evaluateParity(report([curve(0)], ['raw']), { schemaVersion: PARITY_SCHEMA_VERSION, gaps: [speedEntry] }, { qualityBase: { gaps: gaps(), baseline: baseBaseline } });
+      expect(verdict.rows.map((candidate) => candidate.id)).toEqual([CURVE]);
+    });
+  });
+
   describe('the gap file', () => {
     const valid = { id: CHECKS, issue: 783, ratio: null, note: 'n', recorded: 1, reference: 0 };
     it('accepts a quality entry that records its value and the reference then', () => {
@@ -682,6 +756,7 @@ describe('the command line', () => {
     expect(parseArgs(['--parity', '--speed-only'])).toMatchObject({ parity: true, speedOnly: true });
     expect(() => parseArgs(['--quick'])).toThrow(/--quick needs --parity/);
     expect(() => parseArgs(['--quality-only'])).toThrow(/--quality-only needs --parity/);
+    expect(() => parseArgs(['--base-baseline', 'base.json'])).toThrow(/--base-baseline needs --parity/);
     expect(() => parseArgs(['--speed-only'])).toThrow(/--speed-only needs --parity/);
     expect(() => parseArgs(['--parity', '--quality-only', '--speed-only'])).toThrow(/exclude each other/);
     expect(() => parseArgs(['--parity', '--update-baseline'])).toThrow(BenchArgumentError);
@@ -717,14 +792,17 @@ describe('a parity run on a saved report', () => {
   ];
 
   /** Writes the report, baseline and gaps files, runs the command and returns the printed lines and the verdict file. */
-  async function run(rows: BenchRow[], options: { baseline?: Record<string, Entry>; flags?: string[]; gaps?: unknown[]; baseGaps?: unknown[]; families?: BenchReport['families']; shard?: string } = {}): Promise<{ code: number; lines: string[]; verdict: ParityRunFile }> {
-    const files = { report: path.join(dir, 'report.json'), baseline: path.join(dir, 'baseline.json'), gaps: path.join(dir, 'gaps.json'), baseGaps: path.join(dir, 'base-gaps.json') };
+  async function run(rows: BenchRow[], options: { baseline?: Record<string, Entry>; baseBaseline?: Record<string, Entry> | null; flags?: string[]; gaps?: unknown[]; baseGaps?: unknown[]; families?: BenchReport['families']; shard?: string } = {}): Promise<{ code: number; lines: string[]; verdict: ParityRunFile }> {
+    const files = { report: path.join(dir, 'report.json'), baseline: path.join(dir, 'baseline.json'), gaps: path.join(dir, 'gaps.json'), baseGaps: path.join(dir, 'base-gaps.json'), baseBaseline: path.join(dir, 'base-baseline.json') };
     fs.writeFileSync(files.report, JSON.stringify(report(rows, options.families)));
     fs.writeFileSync(files.baseline, JSON.stringify({ schemaVersion: 1, entries: options.baseline ?? baselineEntries(1.1) }));
     fs.writeFileSync(files.gaps, JSON.stringify({ schemaVersion: 1, gaps: options.gaps ?? [] }));
     if (options.baseGaps) fs.writeFileSync(files.baseGaps, JSON.stringify({ schemaVersion: 1, gaps: options.baseGaps }));
+    // The base's baseline travels with its gap file, as in the workflow; unless a test says otherwise it is the one the run uses.
+    const baseBaseline = options.baseBaseline === null ? undefined : (options.baseBaseline ?? (options.baseGaps ? baselineEntries(1.1) : undefined));
+    if (baseBaseline) fs.writeFileSync(files.baseBaseline, JSON.stringify({ schemaVersion: 1, entries: baseBaseline }));
     const lines: string[] = [];
-    const code = await main(['--parity', '--compare-report', files.report, '--baseline', files.baseline, '--gaps', files.gaps, ...(options.baseGaps ? ['--base-gaps', files.baseGaps] : []), '--family', options.shard ?? 'image', '--out', dir, ...(options.flags ?? [])], (line) => lines.push(line));
+    const code = await main(['--parity', '--compare-report', files.report, '--baseline', files.baseline, '--gaps', files.gaps, ...(options.baseGaps ? ['--base-gaps', files.baseGaps] : []), ...(baseBaseline ? ['--base-baseline', files.baseBaseline] : []), '--family', options.shard ?? 'image', '--out', dir, ...(options.flags ?? [])], (line) => lines.push(line));
     return { code, lines, verdict: JSON.parse(fs.readFileSync(path.join(dir, PARITY_VERDICT_FILE), 'utf8')) as ParityRunFile };
   }
 
@@ -878,6 +956,26 @@ describe('a parity run on a saved report', () => {
     it('still exits 1 for a metric worse than our own baseline, which an entry does not excuse', async () => {
       const baseline = { ...baselineEntries(1.1), [BD_ID]: { ...baselineEntries(1.1)[BD_ID], ours: 1, delta: 1 } };
       expect((await run(rowsWith(4, 0.96, 'pass'), { baseline, gaps: [gapAt(4)] })).code).toBe(1);
+    });
+
+    it('exits 3 for a new entry worse than the baseline of the base branch, and 0 once the base holds the entry', async () => {
+      // The base's baseline has the curve at -2 with a tolerance of 1.5: +4 is past anything it let the row reach.
+      const rows = rowsWith(4, 0.96, 'pass');
+      const refused = await run(rows, { baseline: baselineAt4(), gaps: [gapAt(4)], baseGaps: [] });
+      expect(refused.code).toBe(3);
+      expect(refused.lines.some((line) => line.startsWith(`BELOW REFERENCE ${BD_ID}: known-gap entry not backed by this run`))).toBe(true);
+      expect(refused.verdict.parity.rows.find((candidate) => candidate.id === BD_ID)).toMatchObject({ outcome: 'fail', basis: 'gap-not-backed' });
+      expect((await run(rows, { baseline: baselineAt4(), gaps: [gapAt(4)], baseGaps: [gapAt(4)] })).code).toBe(0);
+      // A new row (the base's baseline does not know it) is allowed; the run holds its record against the measured value.
+      const { [BD_ID]: _curve, ...withoutCurve } = baselineEntries(1.1);
+      expect((await run(rows, { baseline: baselineAt4(), gaps: [gapAt(4)], baseGaps: [], baseBaseline: withoutCurve })).code).toBe(0);
+    });
+
+    it('needs the baseline of the base wherever it judges quality rows against the base gap file', async () => {
+      await expect(run(rowsWith(4, 0.96, 'pass'), { baseline: baselineAt4(), gaps: [gapAt(4)], baseGaps: [], baseBaseline: null })).rejects.toThrow(/--base-baseline/);
+      await expect(run(rowsWith(4, 0.96, 'pass'), { baseline: baselineAt4(), gaps: [gapAt(4)], baseGaps: [], baseBaseline: null, flags: ['--quality-only'] })).rejects.toThrow(/--base-baseline/);
+      // A speed run backs speed entries only and has no use for it.
+      expect((await run(rowsWith(4, 0.96, 'pass'), { baseline: baselineAt4(), gaps: [gapAt(4)], baseGaps: [], baseBaseline: null, flags: ['--speed-only'] })).code).toBe(0);
     });
 
     it('exits 3 for an entry whose row this run should have produced, and leaves it alone when the run is not about quality rows', async () => {

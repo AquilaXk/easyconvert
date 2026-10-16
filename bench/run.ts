@@ -104,6 +104,8 @@ export interface CliOptions {
   baseRoot: string | null;
   /** Parity only: the gap file of the base of the change; its new or changed entries must be backed by the speed rows measured in this run. */
   baseGapsPath: string | null;
+  /** Parity only: the baseline of the base of the change, which backs the quality entries its gap file lacks. */
+  baseBaselinePath: string | null;
   /** Print a hash of the reference tool versions and exit (the key of the CI cache). */
   printToolFingerprint: boolean;
   /** Add the rows of this CI report that the baseline has no entry for, and exit (bench/baseline-from-report.ts). */
@@ -135,6 +137,7 @@ export function parseArgs(args: string[]): CliOptions {
     gapsPath: PARITY_GAPS_PATH,
     baseRoot: null,
     baseGapsPath: null,
+    baseBaselinePath: null,
     printToolFingerprint: false,
     baselineFromReport: null,
   };
@@ -179,6 +182,8 @@ export function parseArgs(args: string[]): CliOptions {
       options.baseRoot = path.resolve(takeValue(args, i++, flag));
     } else if (flag === '--base-gaps') {
       options.baseGapsPath = path.resolve(takeValue(args, i++, flag));
+    } else if (flag === '--base-baseline') {
+      options.baseBaselinePath = path.resolve(takeValue(args, i++, flag));
     } else if (flag === '--print-tool-fingerprint') {
       options.printToolFingerprint = true;
     } else if (flag === '--baseline-from-report') {
@@ -200,6 +205,7 @@ export function parseArgs(args: string[]): CliOptions {
   if (options.baseRoot && !(options.parity && options.speedOnly)) throw new BenchArgumentError('--base-root needs --parity and --speed-only');
   if (options.parity && !options.gate) throw new BenchArgumentError('--parity cannot be combined with --no-gate');
   if (options.baseGapsPath && !options.parity) throw new BenchArgumentError('--base-gaps needs --parity');
+  if (options.baseBaselinePath && !options.parity) throw new BenchArgumentError('--base-baseline needs --parity');
   return options;
 }
 

@@ -587,13 +587,29 @@ jobs:
         with:
           families: ${{ env.BENCH_FAMILIES }}
 
+      # A quality entry the change adds or edits in bench/parity-gaps.json is backed by the baseline of the base: it may not
+      # record a value worse than the baseline held the row to. The base is the first parent of the merge commit this job
+      # tested, as in the speed job; only its two files are read, from git.
+      - name: Read the gap file and the baseline of the base
+        id: base
+        env:
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
+          parent="${parent:-$EVENT_BASE_SHA}"
+          git fetch --no-tags --depth=1 origin "$parent"
+          mkdir -p ab-base-files
+          git show "$parent:bench/parity-gaps.json" > ab-base-files/parity-gaps.json
+          git show "$parent:bench/baseline.json" > ab-base-files/baseline.json
+          echo "the base is $parent"
+
       # The run exits 1 for a regression against our own baseline and 3 for a row below the reference; the verdict
       # file it leaves is what the policy step below reads, so this step never fails the job by itself.
       - name: Measure quality against the reference tools
         id: bench
         run: |
           set +e
-          npm run bench:quality -- --parity --quality-only --quick --family "$BENCH_FAMILIES"
+          npm run bench:quality -- --parity --quality-only --quick --family "$BENCH_FAMILIES" --base-gaps ab-base-files/parity-gaps.json --base-baseline ab-base-files/baseline.json
           code=$?
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
           echo "benchmark exit code: $code"

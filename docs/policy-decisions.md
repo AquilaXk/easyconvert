@@ -356,7 +356,7 @@ Compression
 
 ## 17. Parity gate: quality and speed against reference tools
 
-- **Status**: Implemented (#639, #700, #704, #723, #724); quality gaps as expected failures decided by QA on 2026-10-17 (epic #763; rows of #783 and #686).
+- **Status**: Implemented (#639, #700, #704, #723, #724); quality gaps as expected failures decided by QA on 2026-10-17 (#785, epic #763; rows of #783 and #686).
 - **Decision**: every conversion change must keep its quality rows at or above the reference tools. Speed rows have two checks.
   - **Base comparison**: a change may not make a row slower than the base branch by more than the row's threshold, measured in the same job. The default threshold is 10 % (`AB_DEFAULT_REGRESSION`). A row whose measured noise needs a different threshold has its own entry in `AB_ROW_REGRESSION`; each entry records the measurement that justifies it, and no threshold may exceed the cap.
   - **Reference check**: rows below the reference must have a tracked gap entry and issue.
@@ -366,6 +366,7 @@ Compression
   - Worse than the record by more than the allowance: the row fails.
   - Better than the record by more than the allowance and still below the reference: the row fails and asks for `recorded` to be set to the new value. A lenient record would let the row slide back to its old value unseen, and a record that a pull request writes by hand is checked by the same run against the measured value.
   - Passing the normal rule (at or above the reference, within its allowance, or deferring to a passing BD-rate): the row is reported as now at parity and the entry is removed.
+  - A quality entry that a change adds or edits is backed by the baseline of the base branch, read from git in the quality job: for a row that baseline holds, the recorded value may not be worse than the baseline value by more than that baseline entry's own allowance, so a change cannot excuse its own regression by writing the worse value into the entry. A row the base branch does not baseline is new and is allowed, because the same run holds its record against the value it measures. The quality run refuses to start with the base's gap file and no base baseline rather than check less.
   - A run that is about the row (its family, the `--quick` subset and the quality scope, counted as the baseline gate counts them) and does not produce it fails the entry; a skipped row is not evaluated, as any skipped row. An entry excuses no other row, and a metric worse than our own baseline still fails whatever the entry says. There is no switch that turns the check off.
 
   Gate files are taken from the base branch, so a change cannot weaken its own gate.

@@ -26,6 +26,8 @@ export interface JudgeOptions {
   baselinePath: string;
   gapsPath: string;
   baseGapsPath: string | null;
+  /** The baseline of the base of the change: with its gap file it backs the quality entries a change adds or edits. */
+  baseBaselinePath: string | null;
   families: Family[];
   quick: boolean;
   qualityOnly: boolean;
@@ -65,10 +67,13 @@ export function judgeParity(report: BenchReport, options: JudgeOptions, out: (li
   printGate(gate, out);
   // A quality-only run measures no speed, so it cannot back a gap entry; the speed run of the same change does.
   const baseGaps = options.baseGapsPath && scope !== 'quality' ? readGaps(options.baseGapsPath) : undefined;
+  // A speed run backs speed entries only. A run that judges quality rows needs the base's baseline to back the quality ones, and fails without it rather than checking less.
+  if (options.baseGapsPath && scope !== 'speed' && !options.baseBaselinePath) throw new BenchArgumentError('--base-gaps in a run that judges quality rows needs --base-baseline, the baseline of the same base');
+  const qualityBase = options.baseGapsPath && options.baseBaselinePath && scope !== 'speed' ? { gaps: readGaps(options.baseGapsPath), baseline: readBaseline(options.baseBaselinePath) } : undefined;
   const measuredFamilies = new Set<string>(options.families);
   // The rows this run is about, as the baseline gate counts them: a quality entry for one of them that the report lacks fails.
   const expectedRows = (id: string): boolean => measuredFamilies.has(id.split('/')[0]) && include(id, { ratio: null });
-  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps, families: options.families, expectedRows });
+  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps, families: options.families, expectedRows, qualityBase });
   for (const line of failureLines(parity)) out(line);
   for (const line of renderParityText(parity)) out(line);
 

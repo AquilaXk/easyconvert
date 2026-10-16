@@ -1,6 +1,6 @@
 import { GAP_BACKING_LOG_MARGIN, GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './speed-config';
 import { ParityInputError } from './errors';
-import { allowedWorsening, worsening } from './gate';
+import { allowedWorsening, type Baseline, worsening } from './gate';
 import { describeGap, type GapEntry, type GapFile, gapIndex, isQualityGap, isSpeedRowId, type QualityGap } from './parity-gaps';
 import type { BenchReport, BenchRow, Family } from './report';
 import { AB_NIGHTLY_ONLY, type AbNightlyOnly } from './ab-config';
@@ -289,9 +289,16 @@ export interface ParityOptions {
    * (bench/gate.ts). Without it no entry is asked for its row, which suits a partial run.
    */
   expectedRows?: (id: string) => boolean;
+  /**
+   * The gap file and the baseline of the base branch. When given, every quality entry that is new or changed against that
+   * gap file, in a family this run is the shard of, must be backed by that baseline: for a row it holds, the recorded value
+   * may not be worse than the baseline value by more than the baseline entry's own allowance, or a change could excuse its
+   * own regression by writing the worse value into the entry. A row the baseline does not hold is new and is allowed.
+   */
+  qualityBase?: { gaps: GapFile; baseline: Baseline };
 }
 
-const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, issue: gap.issue, ratio: gap.ratio, note: gap.note, history: gap.history ?? [] });
+const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, issue: gap.issue, ratio: gap.ratio, note: gap.note, history: gap.history ?? [], recorded: gap.recorded, reference: gap.reference });
 
 /** Why a new or changed gap entry is not backed by the measured row, or null when it is. */
 function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: BenchRow | undefined): string | null {
@@ -356,6 +363,59 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null, options: ParityOptions)
   return { outcome: 'pass', basis: 'speed-unchanged-below-reference', detail: `${against} (${bound}); below the reference on the base as well (${show(baseVersusReference)}): the standing gap the nightly run reports`, ...none };
 }
 
+/** Why a new or changed quality entry excuses more than the base branch's baseline held the row to, or null when it does not. */
+function qualityBackingFailure(gap: QualityGap, baseline: Baseline): string | null {
+  const entry = baseline.entries[gap.id];
+  // A row the base branch does not baseline is new: the run holds its record against the value it measures.
+  if (entry === undefined) return null;
+  if (entry.ours === null) return `the baseline of the base branch holds no value for ${gap.id}, so the recorded value ${show(gap.recorded)} cannot be compared with it`;
+  const allowed = allowedWorsening(entry.tolerance, entry.ours);
+  const behind = worsening(entry.direction, entry.ours, gap.recorded);
+  if (behind <= allowed + GATE_EPSILON) return null;
+  return `the recorded value ${show(gap.recorded)} is worse than the baseline of the base branch ${show(entry.ours)} by ${show(behind)}, more than its allowance ${show(allowed)}: an entry cannot excuse what the baseline gate held the row to`;
+}
+
+/**
+ * Fails the entries a change adds or edits that are not backed: speed entries by the speed rows of this run
+ * (`options.baseGaps`), quality entries by the baseline of the base branch (`options.qualityBase`). An entry the base
+ * already holds is not rechecked, and a shard checks the entries of its own families only; the shards of the others check theirs.
+ */
+function markUnbackedGaps(verdicts: RowVerdict[], report: BenchReport, gaps: GapFile, options: ParityOptions): void {
+  // A family that emitted no rows is still the shard's, so its entries are refused as unmeasured.
+  const shardFamilies = options.families === undefined || options.families.length === 0 ? null : new Set<string>(options.families);
+  const inShard = (gap: GapEntry): boolean => shardFamilies === null || shardFamilies.has(gap.id.split('/')[0]);
+  const unbacked: Array<{ gap: GapEntry; failure: string }> = [];
+  if (options.baseGaps) {
+    const baseById = gapIndex(options.baseGaps);
+    const measuredById = new Map(report.rows.map((row) => [row.id, row] as const));
+    for (const gap of gaps.gaps) {
+      const base = baseById.get(gap.id);
+      if (!inShard(gap) || !isSpeedRowId(gap.id) || (base !== undefined && canonicalGap(base) === canonicalGap(gap))) continue;
+      const failure = gapBackingFailure(gap, base, measuredById.get(gap.id));
+      if (failure !== null) unbacked.push({ gap, failure });
+    }
+  }
+  if (options.qualityBase) {
+    const baseById = gapIndex(options.qualityBase.gaps);
+    for (const gap of gaps.gaps) {
+      const base = baseById.get(gap.id);
+      if (!inShard(gap) || !isQualityGap(gap) || (base !== undefined && canonicalGap(base) === canonicalGap(gap))) continue;
+      const failure = qualityBackingFailure(gap, options.qualityBase.baseline);
+      if (failure !== null) unbacked.push({ gap, failure });
+    }
+  }
+  for (const { gap, failure } of unbacked) {
+    const detail = `known-gap entry not backed by this run: ${failure}`;
+    const index = verdicts.findIndex((verdict) => verdict.id === gap.id);
+    if (index >= 0) {
+      verdicts[index] = { ...verdicts[index], outcome: 'fail', basis: 'gap-not-backed', detail: `${detail}; ${verdicts[index].detail}`, gap };
+    } else {
+      const [family, caseName, metric] = gap.id.split('/');
+      verdicts.push({ id: gap.id, family: family as Family, case: caseName, metric, outcome: 'fail', basis: 'gap-not-backed', detail, worsening: null, allowance: null, gap });
+    }
+  }
+}
+
 export function evaluateParity(report: BenchReport, gaps: GapFile, options: ParityOptions = {}): ParityVerdict {
   const gapById = gapIndex(gaps);
   const verdicts: RowVerdict[] = [];
@@ -396,26 +456,7 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
 
   verdicts.push(...missingGapRows(gaps, new Set(verdicts.map((verdict) => verdict.id)), options.expectedRows));
 
-  if (options.baseGaps) {
-    const baseById = gapIndex(options.baseGaps);
-    const measuredById = new Map(report.rows.map((row) => [row.id, row] as const));
-    // A shard backs the entries of its own families only; the shards of the others back theirs. A family that emitted no rows is still the shard's, so its entries are refused as unmeasured.
-    const shardFamilies = options.families === undefined || options.families.length === 0 ? null : new Set<string>(options.families);
-    for (const gap of gaps.gaps) {
-      const base = baseById.get(gap.id);
-      if ((shardFamilies !== null && !shardFamilies.has(gap.id.split('/')[0])) || !isSpeedRowId(gap.id) || (base !== undefined && canonicalGap(base) === canonicalGap(gap))) continue;
-      const failure = gapBackingFailure(gap, base, measuredById.get(gap.id));
-      if (failure === null) continue;
-      const detail = `known-gap entry not backed by this run: ${failure}`;
-      const index = verdicts.findIndex((verdict) => verdict.id === gap.id);
-      if (index >= 0) {
-        verdicts[index] = { ...verdicts[index], outcome: 'fail', basis: 'gap-not-backed', detail: `${detail}; ${verdicts[index].detail}`, gap };
-      } else {
-        const [family, caseName, metric] = gap.id.split('/');
-        verdicts.push({ id: gap.id, family: family as Family, case: caseName, metric, outcome: 'fail', basis: 'gap-not-backed', detail, worsening: null, allowance: null, gap });
-      }
-    }
-  }
+  markUnbackedGaps(verdicts, report, gaps, options);
 
   const evaluated = verdicts.filter((row) => row.outcome !== 'not-evaluated');
   const summary: ParitySummary = {
