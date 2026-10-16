@@ -413,6 +413,33 @@ describe('the run in a slot', () => {
     await waitFor(() => !isRunning(pid));
   }, 30_000);
 
+  oracleTest(
+    'keeps the run that was started when the class has the same policy, and replaces it by a run of the class when it has another',
+    ['avifenc', 'avifdec'],
+    async () => {
+      const source = await lineArt16();
+      const meta = await sharp(source).metadata();
+      const start = async (name: string): Promise<{ direct: DirectAvif; wrapper: ReturnType<typeof copyingWrapper> }> => {
+        const wrapper = copyingWrapper(name);
+        process.env.AVIFENC_PATH = wrapper.script;
+        const direct = await DirectAvif.start(source, meta, OPTIONS);
+        expect(direct).not.toBeNull();
+        await waitFor(() => runsOf(wrapper) === 1);
+        return { direct: direct as DirectAvif, wrapper };
+      };
+      const same = await start('same-policy');
+      const file = await same.direct.finish('graphic');
+      expect(file?.subarray(4, 12).toString('latin1')).toBe('ftypavif');
+      expect(runsOf(same.wrapper)).toBe(1);
+      const other = await start('other-policy');
+      const photo = await other.direct.finish('photo');
+      expect(photo?.subarray(4, 12).toString('latin1')).toBe('ftypavif');
+      expect(readFileSync(other.wrapper.args, 'utf-8')).toContain('c:tune=ssim');
+      expect(runsOf(other.wrapper)).toBe(2);
+    },
+    60_000
+  );
+
   it('has nothing to finish or abandon when no run was started', async () => {
     const slot = new DirectAvifSlot();
     expect(await slot.finish('graphic')).toBeNull();
