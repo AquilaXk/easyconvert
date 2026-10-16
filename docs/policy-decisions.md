@@ -702,3 +702,15 @@ Compression
 - **Verified by**: `tests/deflate-blocks.test.ts`, `tests/archive-inprocess-repack.test.ts` and `tests/archive-inprocess-unpack.test.ts` (outputs read back by `unzip -t`, `zipinfo`, `7z t`, `gzip -t`, `gzip -N`, `tar` and `unrar`; entry-by-entry SHA-256, modes and times; sizes against `zip -6` and `gzip -6`; no 7-Zip call; traversal, link, collision, entry-count, size, ratio, CRC and encryption refusals), `tests/archive-stream-to-tar.test.ts`, `tests/archive-native-compression-level.test.ts`, and the `compression` quality and speed parity rows (`mixed.tar->zip`, `mixed.tar->gz`, `mixed.zip->tar`, `mixed.gz->tar`, `mixed.rar->tar`).
 - **Revisit when**: a WebAssembly deflate with a three-byte hash (libdeflate, or zlib without the CRC-32C hash) is vendored, which removes the 4 MiB bound; or the stored-only RAR reader is extended to RAR 5 and extended times.
 
+
+## 31. Code smell ratchet
+
+- **Decision**: CI fails on any new violation of `complexity` 30, `max-depth` 5, `max-lines-per-function` 250, `max-params` 6, `no-nested-ternary`, `@typescript-eslint/no-explicit-any` and `max-lines` 1500 in `src/**/*.{ts,tsx}`. Existing violations sit in `.github/code-smell-baseline.json`, keyed by file, rule and enclosing function name with a count and the worst measured value. The baseline can only shrink: a rise fails, and so does a fall until `--update` rewrites the baseline in the same change. Inline `eslint-disable` comments do not count for this gate.
+- **Why it is right in practice**: large codebases that cannot be cleaned in one pass hold the line with a ratchet instead of a flag day: new code meets the bar, old code is paid down as it is touched. Keys without line numbers survive unrelated edits, so the baseline does not churn.
+- **Benefits and trade-offs**: reviewers stop meeting new 300-line, deeply nested functions. Cost: a refactor that lowers one number must also commit the smaller baseline, and a function renamed or moved shows as one removed and one new key; the change then fails until the baseline is regenerated, which is reviewed as a diff. A hot codec loop that has to stay long keeps its entry with a recorded `reason`.
+- **Alternatives rejected**:
+  - **Adding the rules to the framework lint preset as warnings**: nobody reads 700 warnings and nothing blocks a new one.
+  - **Failing only on changed lines**: it needs the base commit at check time and misses growth of an existing function in an unchanged line range.
+  - **Line-number keys**: every edit above a violation would invalidate the baseline.
+- **Verified by**: `tests/guard-code-smells.test.ts` (known violation recorded under the right key, a rising count or value fails, a new function fails, inserted lines keep keys, a removed violation fails until `--update`, `--update` never raises) and the `checks` job step `npm run guard:code-smells`.
+- **Revisit when**: the baseline is small enough to switch to zero tolerance, or the thresholds are tightened.

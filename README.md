@@ -229,6 +229,12 @@ Run ESLint syntax and rule validation:
 npm run lint
 ```
 
+Check that no new code smell entered `src` (see [Code smell ratchet](#code-smell-ratchet)):
+
+```bash
+npm run guard:code-smells
+```
+
 ### Production Build
 
 ```bash
@@ -239,6 +245,16 @@ npm start
 ---
 
 ## Code Quality & Engineering Standards
+
+### Code smell ratchet
+
+`npm run guard:code-smells` (CI `checks` job) runs ESLint with only these rules over `src/**/*.{ts,tsx}`, independent of `next lint`: `complexity` 30, `max-depth` 5, `max-lines-per-function` 250 (blank lines and comments skipped), `max-params` 6, `no-nested-ternary`, `@typescript-eslint/no-explicit-any` and `max-lines` 1500. Inline `eslint-disable` comments are ignored by this gate.
+
+Existing violations are recorded in `.github/code-smell-baseline.json`, keyed by file, rule and enclosing function name (never by line number, so unrelated edits do not move keys), with a count and the worst measured value. The baseline only shrinks:
+
+- `NEW` or `GREW` lines name the file, function, rule and measured value of a smell above the baseline. Fix the code; do not raise the baseline.
+- `GONE` or improved lines mean you removed a smell. Run `npm run guard:code-smells -- --update` and commit the smaller baseline in the same change. `--update` refuses to raise any entry.
+- A hot codec loop that must stay may keep its entry; add an optional `reason` field to that baseline entry. `--update` preserves it.
 
 - **Deterministic Test Suite**: 21 test files containing 192 tests verifying RFC compliance, pure-TS mathematical basis functions, OLE2 CFBF structures, and memory safety.
 - **Fail-Closed Principle**: Zero-byte files, unknown extensions, and corrupt binary headers immediately trigger HTTP 400 Bad Request responses.

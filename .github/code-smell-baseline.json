@@ -1,0 +1,3133 @@
+[
+  {
+    "file": "src/app/[slug]/page.tsx",
+    "rule": "complexity",
+    "function": "DynamicConverterPage",
+    "count": 1,
+    "maxValue": 40
+  },
+  {
+    "file": "src/app/[slug]/page.tsx",
+    "rule": "max-lines-per-function",
+    "function": "DynamicConverterPage",
+    "count": 1,
+    "maxValue": 518
+  },
+  {
+    "file": "src/app/api-docs/page.tsx",
+    "rule": "max-lines-per-function",
+    "function": "ApiDocsPage",
+    "count": 1,
+    "maxValue": 425
+  },
+  {
+    "file": "src/app/api-docs/page.tsx",
+    "rule": "no-nested-ternary",
+    "function": "ApiDocsPage",
+    "count": 1
+  },
+  {
+    "file": "src/app/api/convert/batch/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 40
+  },
+  {
+    "file": "src/app/api/convert/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "POST",
+    "count": 2
+  },
+  {
+    "file": "src/app/api/convert/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 55
+  },
+  {
+    "file": "src/app/api/fetch-url/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "POST",
+    "count": 1
+  },
+  {
+    "file": "src/app/api/fetch-url/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 54
+  },
+  {
+    "file": "src/app/api/keys/[id]/route.ts",
+    "rule": "complexity",
+    "function": "PATCH",
+    "count": 1,
+    "maxValue": 32
+  },
+  {
+    "file": "src/app/api/queue/jobs/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "POST",
+    "count": 1
+  },
+  {
+    "file": "src/app/api/queue/jobs/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 41
+  },
+  {
+    "file": "src/app/api/storage/file/[...key]/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "GET",
+    "count": 2
+  },
+  {
+    "file": "src/app/api/storage/multipart/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "POST",
+    "count": 3
+  },
+  {
+    "file": "src/app/api/storage/multipart/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 91
+  },
+  {
+    "file": "src/app/api/storage/multipart/route.ts",
+    "rule": "max-lines-per-function",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 322
+  },
+  {
+    "file": "src/app/api/v1/archives/inspect/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "POST",
+    "count": 1
+  },
+  {
+    "file": "src/app/api/v1/archives/inspect/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 41
+  },
+  {
+    "file": "src/app/api/v1/convert/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "POST",
+    "count": 4
+  },
+  {
+    "file": "src/app/api/v1/convert/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 64
+  },
+  {
+    "file": "src/app/api/v1/convert/route.ts",
+    "rule": "max-lines-per-function",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 367
+  },
+  {
+    "file": "src/app/api/v1/jobs/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "POST",
+    "count": 5
+  },
+  {
+    "file": "src/app/api/v1/jobs/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 185
+  },
+  {
+    "file": "src/app/api/v1/jobs/route.ts",
+    "rule": "max-depth",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/app/api/v1/jobs/route.ts",
+    "rule": "max-lines-per-function",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 615
+  },
+  {
+    "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "PATCH",
+    "count": 1
+  },
+  {
+    "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "POST",
+    "count": 3
+  },
+  {
+    "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
+    "rule": "complexity",
+    "function": "POST",
+    "count": 1,
+    "maxValue": 44
+  },
+  {
+    "file": "src/app/api/v1/uploads/direct/complete/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "POST",
+    "count": 1
+  },
+  {
+    "file": "src/app/api/v1/uploads/direct/part/route.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "PUT",
+    "count": 1
+  },
+  {
+    "file": "src/app/auth/page.tsx",
+    "rule": "max-lines-per-function",
+    "function": "LoginFormContent",
+    "count": 1,
+    "maxValue": 301
+  },
+  {
+    "file": "src/app/dashboard/page.tsx",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "DashboardPage",
+    "count": 1
+  },
+  {
+    "file": "src/app/dashboard/page.tsx",
+    "rule": "complexity",
+    "function": "DashboardPage",
+    "count": 1,
+    "maxValue": 37
+  },
+  {
+    "file": "src/app/dashboard/page.tsx",
+    "rule": "max-lines-per-function",
+    "function": "DashboardPage",
+    "count": 1,
+    "maxValue": 1122
+  },
+  {
+    "file": "src/components/BrandLogo.tsx",
+    "rule": "no-nested-ternary",
+    "function": "BrandLogo",
+    "count": 1
+  },
+  {
+    "file": "src/components/ConversionQueue.tsx",
+    "rule": "max-lines-per-function",
+    "function": "ConversionQueue",
+    "count": 1,
+    "maxValue": 296
+  },
+  {
+    "file": "src/components/Features.tsx",
+    "rule": "max-lines-per-function",
+    "function": "Features",
+    "count": 1,
+    "maxValue": 366
+  },
+  {
+    "file": "src/components/Footer.tsx",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "Footer",
+    "count": 2
+  },
+  {
+    "file": "src/components/Header.tsx",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "Header",
+    "count": 2
+  },
+  {
+    "file": "src/components/Header.tsx",
+    "rule": "max-lines-per-function",
+    "function": "Header",
+    "count": 1,
+    "maxValue": 267
+  },
+  {
+    "file": "src/components/Hero.tsx",
+    "rule": "max-lines-per-function",
+    "function": "Hero",
+    "count": 1,
+    "maxValue": 297
+  },
+  {
+    "file": "src/components/OptionsModal.tsx",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "OptionsModal",
+    "count": 2
+  },
+  {
+    "file": "src/components/OptionsModal.tsx",
+    "rule": "complexity",
+    "function": "OptionsModal",
+    "count": 1,
+    "maxValue": 33
+  },
+  {
+    "file": "src/components/OptionsModal.tsx",
+    "rule": "max-lines-per-function",
+    "function": "OptionsModal",
+    "count": 1,
+    "maxValue": 339
+  },
+  {
+    "file": "src/components/StatusDashboard.tsx",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "runDiagnostics",
+    "count": 1
+  },
+  {
+    "file": "src/components/StatusDashboard.tsx",
+    "rule": "max-lines-per-function",
+    "function": "StatusDashboard",
+    "count": 1,
+    "maxValue": 353
+  },
+  {
+    "file": "src/components/UnitConverter.tsx",
+    "rule": "max-lines-per-function",
+    "function": "UnitConverter",
+    "count": 1,
+    "maxValue": 355
+  },
+  {
+    "file": "src/components/UnitConverter.tsx",
+    "rule": "no-nested-ternary",
+    "function": "UnitConverter",
+    "count": 1
+  },
+  {
+    "file": "src/hooks/useClientQueue.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "useClientQueue",
+    "count": 1
+  },
+  {
+    "file": "src/lib/api-keys/guard.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "checkQuotaAndReserve",
+    "count": 1
+  },
+  {
+    "file": "src/lib/api-keys/redis-key-store.ts",
+    "rule": "max-depth",
+    "function": "listApiKeys",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/api-keys/redis-key-store.ts",
+    "rule": "max-depth",
+    "function": "verifyApiKey",
+    "count": 2,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/api-keys/webhook-dispatcher.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "dispatch",
+    "count": 2
+  },
+  {
+    "file": "src/lib/api-keys/webhook-dispatcher.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "enqueueDelivery",
+    "count": 1
+  },
+  {
+    "file": "src/lib/api-keys/webhook-dispatcher.ts",
+    "rule": "complexity",
+    "function": "dispatch",
+    "count": 1,
+    "maxValue": 40
+  },
+  {
+    "file": "src/lib/api-keys/webhook-dispatcher.ts",
+    "rule": "max-lines-per-function",
+    "function": "dispatch",
+    "count": 1,
+    "maxValue": 260
+  },
+  {
+    "file": "src/lib/api-keys/webhook-dispatcher.ts",
+    "rule": "max-params",
+    "function": "verifyStandardSignatureWithDualSecrets",
+    "count": 2,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/api/contracts/schemas.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 1674
+  },
+  {
+    "file": "src/lib/api/contracts/validate.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "validateOrProblem",
+    "count": 4
+  },
+  {
+    "file": "src/lib/api/contracts/validate.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "validatePlannedStatus",
+    "count": 2
+  },
+  {
+    "file": "src/lib/api/idempotency.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "canonicalJSON",
+    "count": 2
+  },
+  {
+    "file": "src/lib/api/idempotency.ts",
+    "rule": "no-nested-ternary",
+    "function": "canonicalJSON",
+    "count": 1
+  },
+  {
+    "file": "src/lib/api/problem-details.ts",
+    "rule": "max-params",
+    "function": "createProblemDetailsResponse",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/api/with-idempotency.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 1
+  },
+  {
+    "file": "src/lib/api/with-idempotency.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "extractFormDataFingerprint",
+    "count": 1
+  },
+  {
+    "file": "src/lib/api/with-idempotency.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "withIdempotency",
+    "count": 1
+  },
+  {
+    "file": "src/lib/api/with-idempotency.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "wrappedRouteHandler",
+    "count": 1
+  },
+  {
+    "file": "src/lib/api/with-idempotency.ts",
+    "rule": "no-nested-ternary",
+    "function": "handleAcquireOutcome",
+    "count": 1
+  },
+  {
+    "file": "src/lib/auth/jwt.ts",
+    "rule": "complexity",
+    "function": "verifyJwt",
+    "count": 1,
+    "maxValue": 32
+  },
+  {
+    "file": "src/lib/auth/redis-user-store.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "createUser",
+    "count": 1
+  },
+  {
+    "file": "src/lib/client-converter.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "executeItemConversion",
+    "count": 2
+  },
+  {
+    "file": "src/lib/client-converter.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "processL0Conversion",
+    "count": 3
+  },
+  {
+    "file": "src/lib/client-converter.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "processL1AWebGpuConversion",
+    "count": 3
+  },
+  {
+    "file": "src/lib/client-converter.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "processL2Conversion",
+    "count": 6
+  },
+  {
+    "file": "src/lib/client-converter.ts",
+    "rule": "max-depth",
+    "function": "processL2Conversion",
+    "count": 2,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/archive-sevenzip-filters.ts",
+    "rule": "no-nested-ternary",
+    "function": "decodeBcj2",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/archive-split.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "_read",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/archive-split.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "cleanupCurrentChild",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/archive-split.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "onData",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/archive-split.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "onEnd",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/archive-split.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "pump",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/archive-split.ts",
+    "rule": "complexity",
+    "function": "validateAndSortSplitParts",
+    "count": 1,
+    "maxValue": 35
+  },
+  {
+    "file": "src/lib/conversions/archive-split.ts",
+    "rule": "no-nested-ternary",
+    "function": "splitArchive",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/archive-zip-reader.ts",
+    "rule": "complexity",
+    "function": "readEndRecord",
+    "count": 1,
+    "maxValue": 35
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertArchive",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "extractRarArchive",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "inspectArchiveVia7zCli",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "complexity",
+    "function": "convertArchive",
+    "count": 1,
+    "maxValue": 117
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "complexity",
+    "function": "convertWithNative7z",
+    "count": 1,
+    "maxValue": 67
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "complexity",
+    "function": "extractRarArchive",
+    "count": 1,
+    "maxValue": 49
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "complexity",
+    "function": "inspectArchiveEntries",
+    "count": 1,
+    "maxValue": 45
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "complexity",
+    "function": "inspectZipBuffer",
+    "count": 1,
+    "maxValue": 46
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "complexity",
+    "function": "repairZipArchive",
+    "count": 1,
+    "maxValue": 32
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "max-depth",
+    "function": "inspectZipBuffer",
+    "count": 2,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "max-depth",
+    "function": "repairZipArchive",
+    "count": 2,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "max-lines-per-function",
+    "function": "convertArchive",
+    "count": 1,
+    "maxValue": 362
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 4253
+  },
+  {
+    "file": "src/lib/conversions/archive.ts",
+    "rule": "no-nested-ternary",
+    "function": "convertWithNative7z",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/audio-resampler.ts",
+    "rule": "max-params",
+    "function": "buildKernelRows",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/audio-resampler.ts",
+    "rule": "max-params",
+    "function": "convolveExactBlock",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/audio-resampler.ts",
+    "rule": "max-params",
+    "function": "convolveInterpolatedBlock",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/audio-resampler.ts",
+    "rule": "max-params",
+    "function": "convolveRowAsymmetric",
+    "count": 1,
+    "maxValue": 10
+  },
+  {
+    "file": "src/lib/conversions/audio-resampler.ts",
+    "rule": "max-params",
+    "function": "convolveRowCentreSymmetric",
+    "count": 1,
+    "maxValue": 10
+  },
+  {
+    "file": "src/lib/conversions/audio-resampler.ts",
+    "rule": "max-params",
+    "function": "convolveRowPalindrome",
+    "count": 1,
+    "maxValue": 10
+  },
+  {
+    "file": "src/lib/conversions/audio-resampler.ts",
+    "rule": "max-params",
+    "function": "dotFrame",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/audio-resampler.ts",
+    "rule": "max-params",
+    "function": "dotStereo",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/bmp.ts",
+    "rule": "complexity",
+    "function": "readHeader",
+    "count": 1,
+    "maxValue": 42
+  },
+  {
+    "file": "src/lib/conversions/bzip2-bwt.ts",
+    "rule": "complexity",
+    "function": "induceSort",
+    "count": 1,
+    "maxValue": 33
+  },
+  {
+    "file": "src/lib/conversions/bzip2.ts",
+    "rule": "complexity",
+    "function": "encodeBlock",
+    "count": 1,
+    "maxValue": 41
+  },
+  {
+    "file": "src/lib/conversions/cad-dxf.ts",
+    "rule": "complexity",
+    "function": "entity",
+    "count": 1,
+    "maxValue": 34
+  },
+  {
+    "file": "src/lib/conversions/cad-dxf.ts",
+    "rule": "max-params",
+    "function": "nurbsPoint",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "extractStepBRepMesh",
+    "count": 6
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "extractStepBSplineCurves",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "extractStepBSplineSurfaces",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "extractStepPoint",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseStepArgTuple",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseStepToken",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "tessellateSvgArc",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "adaptiveIncrementalBRepMesh",
+    "count": 1,
+    "maxValue": 38
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "consolidatePolygonLoopsWithBridges",
+    "count": 1,
+    "maxValue": 37
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "extractStepBRepMesh",
+    "count": 1,
+    "maxValue": 93
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "extractStepBSplineSurfaces",
+    "count": 1,
+    "maxValue": 44
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "glueBRepTopologicalEdges",
+    "count": 1,
+    "maxValue": 37
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "lawsonEdgeFlipHealing2D",
+    "count": 1,
+    "maxValue": 47
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "parseIgesBRepMesh",
+    "count": 1,
+    "maxValue": 37
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "parseIgesUnit",
+    "count": 1,
+    "maxValue": 41
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "parseStepEntities",
+    "count": 1,
+    "maxValue": 31
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "parseStepUnit",
+    "count": 1,
+    "maxValue": 41
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "tessellateBSplineSurfaceAdaptive",
+    "count": 1,
+    "maxValue": 39
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "tessellateTrimmedFaceCDT",
+    "count": 1,
+    "maxValue": 85
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "complexity",
+    "function": "verifyWatertightManifoldMesh",
+    "count": 1,
+    "maxValue": 49
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-depth",
+    "function": "extractStepBSplineSurfaces",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-depth",
+    "function": "glueBRepTopologicalEdges",
+    "count": 4,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-depth",
+    "function": "lawsonEdgeFlipHealing2D",
+    "count": 2,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-depth",
+    "function": "parseStepEntities",
+    "count": 2,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-depth",
+    "function": "splitNormalsByCreaseAngle",
+    "count": 2,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-depth",
+    "function": "tessellateTrimmedFaceCDT",
+    "count": 6,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-depth",
+    "function": "verifyWatertightManifoldMesh",
+    "count": 2,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-depth",
+    "function": "weldCoincidentVertices",
+    "count": 2,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-lines-per-function",
+    "function": "extractStepBRepMesh",
+    "count": 1,
+    "maxValue": 394
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-lines-per-function",
+    "function": "tessellateTrimmedFaceCDT",
+    "count": 1,
+    "maxValue": 253
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 4870
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "max-params",
+    "function": "isPointInTriangle",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "no-nested-ternary",
+    "function": "extractStepBSplineCurves",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "no-nested-ternary",
+    "function": "extractStepPoint",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/cad-nurbs.ts",
+    "rule": "no-nested-ternary",
+    "function": "tessellateCadBuffer",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/cad-predicates.ts",
+    "rule": "max-params",
+    "function": "incircleExact",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/color-quantizer.ts",
+    "rule": "max-params",
+    "function": "diffuse",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/color-quantizer.ts",
+    "rule": "max-params",
+    "function": "mapToPalette",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/delimited-bytes.ts",
+    "rule": "complexity",
+    "function": "readCells",
+    "count": 1,
+    "maxValue": 33
+  },
+  {
+    "file": "src/lib/conversions/delimited-bytes.ts",
+    "rule": "max-depth",
+    "function": "readCells",
+    "count": 2,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/document-model/docx.ts",
+    "rule": "complexity",
+    "function": "documentToDocx",
+    "count": 1,
+    "maxValue": 48
+  },
+  {
+    "file": "src/lib/conversions/document.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertDocument",
+    "count": 4
+  },
+  {
+    "file": "src/lib/conversions/document.ts",
+    "rule": "complexity",
+    "function": "convertDocument",
+    "count": 1,
+    "maxValue": 175
+  },
+  {
+    "file": "src/lib/conversions/document.ts",
+    "rule": "max-depth",
+    "function": "convertDocument",
+    "count": 3,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/document.ts",
+    "rule": "max-lines-per-function",
+    "function": "convertDocument",
+    "count": 1,
+    "maxValue": 506
+  },
+  {
+    "file": "src/lib/conversions/docx-model.ts",
+    "rule": "complexity",
+    "function": "readRun",
+    "count": 1,
+    "maxValue": 37
+  },
+  {
+    "file": "src/lib/conversions/fb2-model.ts",
+    "rule": "complexity",
+    "function": "openBody",
+    "count": 1,
+    "maxValue": 43
+  },
+  {
+    "file": "src/lib/conversions/flac-encoder.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 1636
+  },
+  {
+    "file": "src/lib/conversions/flac-encoder.ts",
+    "rule": "max-params",
+    "function": "buildStreamInfo",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/flac-encoder.ts",
+    "rule": "max-params",
+    "function": "tryLpc",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/font-cff.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 1514
+  },
+  {
+    "file": "src/lib/conversions/font-cff.ts",
+    "rule": "max-params",
+    "function": "constructor",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/font-svg-path.ts",
+    "rule": "complexity",
+    "function": "parseSvgPathData",
+    "count": 1,
+    "maxValue": 38
+  },
+  {
+    "file": "src/lib/conversions/font-svg-path.ts",
+    "rule": "max-params",
+    "function": "arcToSegments",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/font-woff2-glyf.ts",
+    "rule": "complexity",
+    "function": "reconstructGlyf",
+    "count": 1,
+    "maxValue": 90
+  },
+  {
+    "file": "src/lib/conversions/font-woff2-glyf.ts",
+    "rule": "complexity",
+    "function": "transformGlyf",
+    "count": 1,
+    "maxValue": 69
+  },
+  {
+    "file": "src/lib/conversions/font-woff2-glyf.ts",
+    "rule": "max-lines-per-function",
+    "function": "reconstructGlyf",
+    "count": 1,
+    "maxValue": 255
+  },
+  {
+    "file": "src/lib/conversions/font-woff2.ts",
+    "rule": "complexity",
+    "function": "parseContainer",
+    "count": 1,
+    "maxValue": 54
+  },
+  {
+    "file": "src/lib/conversions/font-woff2.ts",
+    "rule": "complexity",
+    "function": "prepareWoff2Container",
+    "count": 1,
+    "maxValue": 33
+  },
+  {
+    "file": "src/lib/conversions/font.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertFontToOpenTypeCff",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/font.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertFontToTrueType",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/font.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 3496
+  },
+  {
+    "file": "src/lib/conversions/hwp-reader.ts",
+    "rule": "max-params",
+    "function": "control",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/hwp.ts",
+    "rule": "complexity",
+    "function": "parseHwpDocument",
+    "count": 1,
+    "maxValue": 35
+  },
+  {
+    "file": "src/lib/conversions/hwpx.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseHwpxDocument",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/hwpx.ts",
+    "rule": "complexity",
+    "function": "parseHwpxDocument",
+    "count": 1,
+    "maxValue": 36
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseIfd",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "complexity",
+    "function": "convertImage",
+    "count": 1,
+    "maxValue": 220
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "complexity",
+    "function": "decodeLosslessJpegStrip",
+    "count": 1,
+    "maxValue": 38
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "complexity",
+    "function": "decodeRawBayerSensor",
+    "count": 1,
+    "maxValue": 110
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "complexity",
+    "function": "parseIfd",
+    "count": 1,
+    "maxValue": 68
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "complexity",
+    "function": "resolveBayerColorMatrix",
+    "count": 1,
+    "maxValue": 35
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "max-depth",
+    "function": "decodeRawBayerSensor",
+    "count": 9,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "max-lines-per-function",
+    "function": "convertImage",
+    "count": 1,
+    "maxValue": 676
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "max-lines-per-function",
+    "function": "decodeRawBayerSensor",
+    "count": 1,
+    "maxValue": 501
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 2921
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "no-nested-ternary",
+    "function": "convertImage",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "no-nested-ternary",
+    "function": "encodeAvifFromPipeline",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "no-nested-ternary",
+    "function": "getNumberArray",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/image.ts",
+    "rule": "no-nested-ternary",
+    "function": "validateBayerSensorCalibration",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/index.ts",
+    "rule": "complexity",
+    "function": "convertFileInScope",
+    "count": 1,
+    "maxValue": 38
+  },
+  {
+    "file": "src/lib/conversions/lzma-decoder.ts",
+    "rule": "complexity",
+    "function": "decode",
+    "count": 1,
+    "maxValue": 83
+  },
+  {
+    "file": "src/lib/conversions/lzma-decoder.ts",
+    "rule": "max-depth",
+    "function": "decode",
+    "count": 14,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/lzma-decoder.ts",
+    "rule": "max-lines-per-function",
+    "function": "decode",
+    "count": 1,
+    "maxValue": 398
+  },
+  {
+    "file": "src/lib/conversions/lzma-encoder-core.ts",
+    "rule": "complexity",
+    "function": "expandNode",
+    "count": 1,
+    "maxValue": 34
+  },
+  {
+    "file": "src/lib/conversions/lzma-encoder-core.ts",
+    "rule": "max-params",
+    "function": "relax",
+    "count": 1,
+    "maxValue": 10
+  },
+  {
+    "file": "src/lib/conversions/lzma-encoder-core.ts",
+    "rule": "no-nested-ternary",
+    "function": "expandNode",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/lzma-encoder-core.ts",
+    "rule": "no-nested-ternary",
+    "function": "parseFast",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/lzma-encoder-core.ts",
+    "rule": "no-nested-ternary",
+    "function": "parseOptimal",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/media-decoder.ts",
+    "rule": "complexity",
+    "function": "decodeAudioBuffer",
+    "count": 1,
+    "maxValue": 45
+  },
+  {
+    "file": "src/lib/conversions/media-decoder.ts",
+    "rule": "complexity",
+    "function": "decodeFlac",
+    "count": 1,
+    "maxValue": 83
+  },
+  {
+    "file": "src/lib/conversions/media-decoder.ts",
+    "rule": "complexity",
+    "function": "decodeMp3",
+    "count": 1,
+    "maxValue": 32
+  },
+  {
+    "file": "src/lib/conversions/media-decoder.ts",
+    "rule": "complexity",
+    "function": "decodeOgg",
+    "count": 1,
+    "maxValue": 33
+  },
+  {
+    "file": "src/lib/conversions/media-decoder.ts",
+    "rule": "complexity",
+    "function": "decodeWav",
+    "count": 1,
+    "maxValue": 32
+  },
+  {
+    "file": "src/lib/conversions/media-decoder.ts",
+    "rule": "no-nested-ternary",
+    "function": "decodeMp3",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/media-ffmpeg-args.ts",
+    "rule": "complexity",
+    "function": "buildFfmpegArguments",
+    "count": 1,
+    "maxValue": 375
+  },
+  {
+    "file": "src/lib/conversions/media-ffmpeg-args.ts",
+    "rule": "max-lines-per-function",
+    "function": "buildFfmpegArguments",
+    "count": 1,
+    "maxValue": 671
+  },
+  {
+    "file": "src/lib/conversions/media-ffmpeg-args.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 1855
+  },
+  {
+    "file": "src/lib/conversions/media-ffmpeg-args.ts",
+    "rule": "max-params",
+    "function": "buildFfmpegArguments",
+    "count": 1,
+    "maxValue": 9
+  },
+  {
+    "file": "src/lib/conversions/media-ffmpeg-args.ts",
+    "rule": "max-params",
+    "function": "buildTwoPassArguments",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/media-ffmpeg-args.ts",
+    "rule": "no-nested-ternary",
+    "function": "buildFfmpegArguments",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/media.ts",
+    "rule": "no-nested-ternary",
+    "function": "processMediaPure",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/ocr-export.ts",
+    "rule": "max-params",
+    "function": "writeAltoLine",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "engineBaseline",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "engineBox",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "ensureUnicodeFont",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseTesseractBlocks",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "registerFontOnPage",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "complexity",
+    "function": "detectColumnGutters",
+    "count": 1,
+    "maxValue": 36
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "complexity",
+    "function": "sortLineBlocksTopological",
+    "count": 1,
+    "maxValue": 40
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "max-depth",
+    "function": "parseTesseractBlocks",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "max-lines-per-function",
+    "function": "sortLineBlocksTopological",
+    "count": 1,
+    "maxValue": 291
+  },
+  {
+    "file": "src/lib/conversions/ocr-pdf-combiner.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 1703
+  },
+  {
+    "file": "src/lib/conversions/ocr-sauvola.ts",
+    "rule": "max-params",
+    "function": "thresholdRow",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/ocr-text-metrics.ts",
+    "rule": "max-params",
+    "function": "takeRowInk",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/ocr.ts",
+    "rule": "no-nested-ternary",
+    "function": "evaluatePageOcrDecisions",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/ocr.ts",
+    "rule": "no-nested-ternary",
+    "function": "readPreparedPage",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "constructor",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertMobiSource",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertXlsxSource",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "evaluate",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "evaluateWithDag",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "executeFunction",
+    "count": 8
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "flattenNumbers",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "generatePdfFromDocx",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "generatePdfFromSlides",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "getCellValue",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "isCellMatch",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "isErrorCode",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseAdditive",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseAllXlsxWorksheets",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseComparison",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseConcat",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseDocxXml",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseFunctionCall",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseMultiplicative",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parsePower",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parsePrimary",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "parseUnary",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "resolveRange",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "resolveRange2D",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "setCell",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "walk",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "convertFb2Source",
+    "count": 1,
+    "maxValue": 31
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "convertOffice",
+    "count": 1,
+    "maxValue": 54
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "convertXlsxSource",
+    "count": 1,
+    "maxValue": 37
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "evaluateWithDag",
+    "count": 1,
+    "maxValue": 50
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "executeFunction",
+    "count": 1,
+    "maxValue": 113
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "formatSpreadsheetCellValue",
+    "count": 1,
+    "maxValue": 33
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "parseAllXlsxWorksheets",
+    "count": 1,
+    "maxValue": 108
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "parseDrawingMlShapes",
+    "count": 1,
+    "maxValue": 82
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "parsePptxSlideSceneGraph",
+    "count": 1,
+    "maxValue": 121
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "parseSingleDocxTable",
+    "count": 1,
+    "maxValue": 53
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "readBiff8Worksheets",
+    "count": 1,
+    "maxValue": 62
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "renderPdfChart",
+    "count": 1,
+    "maxValue": 31
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "renderSinglePdfShape",
+    "count": 1,
+    "maxValue": 53
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "renderSingleShapeSvg",
+    "count": 1,
+    "maxValue": 77
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "renderTable",
+    "count": 2,
+    "maxValue": 50
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "safeExtractXmlAttributes",
+    "count": 1,
+    "maxValue": 35
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "safeExtractXmlElements",
+    "count": 1,
+    "maxValue": 63
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "complexity",
+    "function": "tokenize",
+    "count": 1,
+    "maxValue": 31
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-depth",
+    "function": "parseAllXlsxWorksheets",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-depth",
+    "function": "parseDrawingMlShapes",
+    "count": 8,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-depth",
+    "function": "parsePptxSlideSceneGraph",
+    "count": 17,
+    "maxValue": 9
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-depth",
+    "function": "renderTable",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-lines-per-function",
+    "function": "convertOffice",
+    "count": 1,
+    "maxValue": 268
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-lines-per-function",
+    "function": "convertXlsxSource",
+    "count": 1,
+    "maxValue": 257
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-lines-per-function",
+    "function": "generatePdfFromDocx",
+    "count": 2,
+    "maxValue": 313
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-lines-per-function",
+    "function": "parseAllXlsxWorksheets",
+    "count": 1,
+    "maxValue": 335
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-lines-per-function",
+    "function": "parseDrawingMlShapes",
+    "count": 1,
+    "maxValue": 281
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-lines-per-function",
+    "function": "parsePptxSlideSceneGraph",
+    "count": 1,
+    "maxValue": 473
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-lines-per-function",
+    "function": "renderTable",
+    "count": 1,
+    "maxValue": 258
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 10339
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-params",
+    "function": "computeGroupTransformMatrix",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-params",
+    "function": "parsePptxSlideSceneGraph",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-params",
+    "function": "renderPdfChart",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "max-params",
+    "function": "renderSinglePdfShape",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "no-nested-ternary",
+    "function": "computeGroupTransformMatrix",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "no-nested-ternary",
+    "function": "convertDocxSource",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "no-nested-ternary",
+    "function": "executeFunction",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "no-nested-ternary",
+    "function": "parseBorder",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "no-nested-ternary",
+    "function": "parseDocxXml",
+    "count": 3
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "no-nested-ternary",
+    "function": "renderParagraph",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "no-nested-ternary",
+    "function": "renderTable",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/office.ts",
+    "rule": "no-nested-ternary",
+    "function": "renderTableToRaster",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/office/biff-chart.ts",
+    "rule": "complexity",
+    "function": "readChartRecord",
+    "count": 1,
+    "maxValue": 31
+  },
+  {
+    "file": "src/lib/conversions/office/html-text.ts",
+    "rule": "complexity",
+    "function": "htmlToText",
+    "count": 1,
+    "maxValue": 31
+  },
+  {
+    "file": "src/lib/conversions/office/pml-reader.ts",
+    "rule": "complexity",
+    "function": "pmlToText",
+    "count": 1,
+    "maxValue": 34
+  },
+  {
+    "file": "src/lib/conversions/office/ppt-text-style.ts",
+    "rule": "complexity",
+    "function": "readCharacterFontRuns",
+    "count": 1,
+    "maxValue": 32
+  },
+  {
+    "file": "src/lib/conversions/openexr-decode-piz.ts",
+    "rule": "max-params",
+    "function": "waveletDecode",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/openexr-decode-piz.ts",
+    "rule": "max-params",
+    "function": "waveletLevel",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/openexr-decode.ts",
+    "rule": "max-params",
+    "function": "decodeScanlines",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/openexr-decode.ts",
+    "rule": "max-params",
+    "function": "decodeTiled",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/parquet-logical.ts",
+    "rule": "no-nested-ternary",
+    "function": "decodeFloat16",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/parquet-reader.ts",
+    "rule": "max-params",
+    "function": "decodeEncodedValues",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/parquet-text-writer.ts",
+    "rule": "complexity",
+    "function": "encodeTextColumnChunk",
+    "count": 1,
+    "maxValue": 49
+  },
+  {
+    "file": "src/lib/conversions/parquet-text-writer.ts",
+    "rule": "max-params",
+    "function": "encodeTextColumnChunk",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/parquet-writer.ts",
+    "rule": "max-params",
+    "function": "encodeColumnChunk",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/pdf-document.ts",
+    "rule": "complexity",
+    "function": "parseValue",
+    "count": 1,
+    "maxValue": 37
+  },
+  {
+    "file": "src/lib/conversions/pdf-document.ts",
+    "rule": "no-nested-ternary",
+    "function": "filterChain",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-jpeg-passthrough.ts",
+    "rule": "complexity",
+    "function": "planJpegPassthrough",
+    "count": 1,
+    "maxValue": 60
+  },
+  {
+    "file": "src/lib/conversions/pdf-layout/lists.ts",
+    "rule": "no-nested-ternary",
+    "function": "parseListMarker",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-postprocess/pdfa.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertToPdfA",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-postprocess/watermark.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "loadAndPrepareDocument",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-postprocess/watermark.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "reorderContentStreamUnder",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-postprocess/watermark.ts",
+    "rule": "max-params",
+    "function": "renderTiled",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/pdf-rasterizer.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "decodePdfImages",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-rasterizer.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "imageObjectToPng",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-rasterizer.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "ocrFailureOf",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-rasterizer.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "paintedImageObject",
+    "count": 6
+  },
+  {
+    "file": "src/lib/conversions/pdf-rasterizer.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "rawSamplesOf",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-rasterizer.ts",
+    "rule": "no-nested-ternary",
+    "function": "decodePdfImages",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/pdf-text-content.ts",
+    "rule": "max-params",
+    "function": "readPageContent",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/pdf-text-geometry.ts",
+    "rule": "max-params",
+    "function": "readPages",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/pdf-text-geometry.ts",
+    "rule": "max-params",
+    "function": "wordCorners",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/quantize.ts",
+    "rule": "complexity",
+    "function": "quantizeXiaolinWu",
+    "count": 1,
+    "maxValue": 34
+  },
+  {
+    "file": "src/lib/conversions/quantize.ts",
+    "rule": "max-params",
+    "function": "applyFloydSteinbergDither",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/raw-demosaic-tiles.ts",
+    "rule": "max-params",
+    "function": "copyTile",
+    "count": 1,
+    "maxValue": 9
+  },
+  {
+    "file": "src/lib/conversions/raw-demosaic-tiles.ts",
+    "rule": "max-params",
+    "function": "emitRegion",
+    "count": 1,
+    "maxValue": 10
+  },
+  {
+    "file": "src/lib/conversions/raw-demosaic-tiles.ts",
+    "rule": "max-params",
+    "function": "gatherNormalized",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/raw-demosaic-tiles.ts",
+    "rule": "max-params",
+    "function": "median3x3",
+    "count": 1,
+    "maxValue": 10
+  },
+  {
+    "file": "src/lib/conversions/raw-demosaic-tiles.ts",
+    "rule": "max-params",
+    "function": "storeLab",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/raw-hdr.ts",
+    "rule": "complexity",
+    "function": "demosaicRcdBayerCfa",
+    "count": 1,
+    "maxValue": 50
+  },
+  {
+    "file": "src/lib/conversions/raw-hdr.ts",
+    "rule": "complexity",
+    "function": "processFloat32LinearPipeline",
+    "count": 1,
+    "maxValue": 40
+  },
+  {
+    "file": "src/lib/conversions/raw-hdr.ts",
+    "rule": "complexity",
+    "function": "unpackRawSensorBits",
+    "count": 1,
+    "maxValue": 41
+  },
+  {
+    "file": "src/lib/conversions/raw-hdr.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 1818
+  },
+  {
+    "file": "src/lib/conversions/raw-hdr.ts",
+    "rule": "no-nested-ternary",
+    "function": "demosaicRcdBayerCfa",
+    "count": 4
+  },
+  {
+    "file": "src/lib/conversions/raw-x3f.ts",
+    "rule": "max-depth",
+    "function": "decodeHuffmanLayers",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/conversions/raw-x3f.ts",
+    "rule": "max-params",
+    "function": "decodeCamfBlocks",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/raw-x3f.ts",
+    "rule": "max-params",
+    "function": "decodeTruePlane",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/svg-geometry.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 1848
+  },
+  {
+    "file": "src/lib/conversions/text-shaping/paragraph-layout.ts",
+    "rule": "max-params",
+    "function": "buildLine",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/vector-cad.ts",
+    "rule": "complexity",
+    "function": "encodeIges",
+    "count": 1,
+    "maxValue": 32
+  },
+  {
+    "file": "src/lib/conversions/vector-cad.ts",
+    "rule": "complexity",
+    "function": "parse3dCad",
+    "count": 1,
+    "maxValue": 33
+  },
+  {
+    "file": "src/lib/conversions/vector-cad.ts",
+    "rule": "max-lines-per-function",
+    "function": "encodeIges",
+    "count": 1,
+    "maxValue": 273
+  },
+  {
+    "file": "src/lib/conversions/wasm/resampler-mac.ts",
+    "rule": "max-params",
+    "function": "multiPeriodLoop",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/xz-format.ts",
+    "rule": "complexity",
+    "function": "unpackXzStream",
+    "count": 1,
+    "maxValue": 36
+  },
+  {
+    "file": "src/lib/conversions/zip-writer.ts",
+    "rule": "complexity",
+    "function": "hasCompressedMagic",
+    "count": 1,
+    "maxValue": 43
+  },
+  {
+    "file": "src/lib/conversions/zip-writer.ts",
+    "rule": "no-nested-ternary",
+    "function": "localHeader",
+    "count": 2
+  },
+  {
+    "file": "src/lib/conversions/zstd-decoder.ts",
+    "rule": "complexity",
+    "function": "decodeCompressedBlock",
+    "count": 1,
+    "maxValue": 46
+  },
+  {
+    "file": "src/lib/conversions/zstd-decoder.ts",
+    "rule": "max-params",
+    "function": "readSymbolTable",
+    "count": 1,
+    "maxValue": 9
+  },
+  {
+    "file": "src/lib/conversions/zstd-decoder.ts",
+    "rule": "no-nested-ternary",
+    "function": "streamBits",
+    "count": 1
+  },
+  {
+    "file": "src/lib/conversions/zstd-dict.ts",
+    "rule": "complexity",
+    "function": "writeSlice",
+    "count": 1,
+    "maxValue": 38
+  },
+  {
+    "file": "src/lib/conversions/zstd-encoder.ts",
+    "rule": "complexity",
+    "function": "writeSequenceBitstream",
+    "count": 1,
+    "maxValue": 42
+  },
+  {
+    "file": "src/lib/conversions/zstd-encoder.ts",
+    "rule": "max-params",
+    "function": "writeSequenceBitstream",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/zstd-huffman.ts",
+    "rule": "max-params",
+    "function": "decodeFourStreamsLockstep",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/zstd-huffman.ts",
+    "rule": "max-params",
+    "function": "decodeHuffmanBulk",
+    "count": 1,
+    "maxValue": 8
+  },
+  {
+    "file": "src/lib/conversions/zstd-huffman.ts",
+    "rule": "max-params",
+    "function": "decodeHuffmanLiterals",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/zstd-huffman.ts",
+    "rule": "max-params",
+    "function": "decodeHuffmanStream",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/zstd-huffman.ts",
+    "rule": "max-params",
+    "function": "encodeHuffmanLiterals",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/zstd-huffman.ts",
+    "rule": "max-params",
+    "function": "encodeHuffmanStream",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/zstd-huffman.ts",
+    "rule": "max-params",
+    "function": "finishHuffmanStream",
+    "count": 1,
+    "maxValue": 10
+  },
+  {
+    "file": "src/lib/conversions/zstd.ts",
+    "rule": "complexity",
+    "function": "decodeZstdFrames",
+    "count": 1,
+    "maxValue": 45
+  },
+  {
+    "file": "src/lib/edge-ocr/index.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "recognizeImage",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/opfs/storage-gc.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "destroySessionImmediately",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/opfs/storage-gc.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "openSessionsDirectory",
+    "count": 2
+  },
+  {
+    "file": "src/lib/edge/opfs/storage-gc.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "registerZeroRetentionLifecycleHooks",
+    "count": 2
+  },
+  {
+    "file": "src/lib/edge/opfs/storage-gc.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "sweepDirectoryEntries",
+    "count": 2
+  },
+  {
+    "file": "src/lib/edge/opfs/storage-gc.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "sweepOrphanedSessions",
+    "count": 2
+  },
+  {
+    "file": "src/lib/edge/pipelines/wasm-simd-pipeline.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "sendToWorker",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/pipelines/webgpu-compute-pipeline.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/pipelines/webgpu-compute-pipeline.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "getWebGpuDevice",
+    "count": 2
+  },
+  {
+    "file": "src/lib/edge/pipelines/webgpu-compute-pipeline.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "isWebGpuComputeSupported",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/pure/pure-canvas.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertPureCanvas",
+    "count": 2
+  },
+  {
+    "file": "src/lib/edge/pure/pure-data.ts",
+    "rule": "complexity",
+    "function": "convertPureData",
+    "count": 1,
+    "maxValue": 33
+  },
+  {
+    "file": "src/lib/edge/tier-router.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "checkWebGpuSupport",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/tier-router.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "evaluateMicroVMOffload",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/tier-router.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "probeEdgeCapabilities",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/tier-router.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "probeWebGpuCapabilities",
+    "count": 4
+  },
+  {
+    "file": "src/lib/edge/tier-router.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "resolveConversionTier",
+    "count": 3
+  },
+  {
+    "file": "src/lib/edge/tier-router.ts",
+    "rule": "complexity",
+    "function": "resolveConversionTier",
+    "count": 1,
+    "maxValue": 61
+  },
+  {
+    "file": "src/lib/edge/workers/opfs-vfs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 3
+  },
+  {
+    "file": "src/lib/edge/workers/opfs-vfs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "resolveChunkTransformer",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/opfs-vfs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "runOpfsWorkerJob",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/opfs-vfs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "streamWithChunkTransformer",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/opfs-vfs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "streamWithSyncAccessHandle",
+    "count": 5
+  },
+  {
+    "file": "src/lib/edge/workers/wasm-engine.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 2
+  },
+  {
+    "file": "src/lib/edge/workers/wasm-engine.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "executeTask",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/wasm-engine.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "runWasmWorkerJob",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 4
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "assertAudioPlatformSupport",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "assertConfigSupported",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "assertVideoPlatformSupport",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "captureDecoderConfig",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "closeQuietly",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "encodeAudioTrack",
+    "count": 2
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "encodeVideoTrack",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "feed",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "nextDequeue",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "output",
+    "count": 6
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "processDecoded",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "processFrame",
+    "count": 2
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "selectVideoEncoderConfig",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "waitForDecodeQueue",
+    "count": 1
+  },
+  {
+    "file": "src/lib/edge/workers/webcodecs.worker.ts",
+    "rule": "max-params",
+    "function": "encodeVideoTrack",
+    "count": 1,
+    "maxValue": 9
+  },
+  {
+    "file": "src/lib/jobs/graph-operations.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "requestedTargetFormat",
+    "count": 1
+  },
+  {
+    "file": "src/lib/jobs/graph.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 3
+  },
+  {
+    "file": "src/lib/jobs/graph.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "linearTasksToJobGraph",
+    "count": 1
+  },
+  {
+    "file": "src/lib/jobs/graph.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "normalizeNodeEntry",
+    "count": 1
+  },
+  {
+    "file": "src/lib/jobs/graph.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "rawGraphNodeEntries",
+    "count": 2
+  },
+  {
+    "file": "src/lib/jobs/graph.ts",
+    "rule": "complexity",
+    "function": "validateJobGraph",
+    "count": 1,
+    "maxValue": 107
+  },
+  {
+    "file": "src/lib/jobs/graph.ts",
+    "rule": "max-lines-per-function",
+    "function": "validateJobGraph",
+    "count": 1,
+    "maxValue": 388
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "_onJobCompleted",
+    "count": 3
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "_onJobFailed",
+    "count": 5
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "<module>",
+    "count": 17
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "add",
+    "count": 3
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "clean",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "createQueueEngine",
+    "count": 2
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "executeJob",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "getJobs",
+    "count": 2
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "handleJobFailure",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "onCompleted",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "onFailed",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "publishEvent",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "setupConnectionTracking",
+    "count": 3
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "subscribeToJobTelemetry",
+    "count": 2
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "max-depth",
+    "function": "_popNextWaiting",
+    "count": 1,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "max-depth",
+    "function": "checkAndProcess",
+    "count": 2,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "max-depth",
+    "function": "clean",
+    "count": 2,
+    "maxValue": 6
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "max-depth",
+    "function": "getJobs",
+    "count": 3,
+    "maxValue": 7
+  },
+  {
+    "file": "src/lib/queue/bullmq-engine.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 2768
+  },
+  {
+    "file": "src/lib/queue/conversion-queue.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "attachJobLifecycleListeners",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/conversion-queue.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "get",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/enqueue.ts",
+    "rule": "no-nested-ternary",
+    "function": "base64ByteLength",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/graph/in-memory-scheduler.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "enqueueNodeJob",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/graph/node-executor.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "processGraphNodeJob",
+    "count": 6
+  },
+  {
+    "file": "src/lib/queue/graph/node-executor.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "requireTargetFormat",
+    "count": 1
+  },
+  {
+    "file": "src/lib/queue/graph/node-executor.ts",
+    "rule": "complexity",
+    "function": "processGraphNodeJob",
+    "count": 1,
+    "maxValue": 113
+  },
+  {
+    "file": "src/lib/queue/graph/node-executor.ts",
+    "rule": "max-lines-per-function",
+    "function": "processGraphNodeJob",
+    "count": 1,
+    "maxValue": 521
+  },
+  {
+    "file": "src/lib/queue/node-processor.ts",
+    "rule": "complexity",
+    "function": "processNodeJob",
+    "count": 1,
+    "maxValue": 63
+  },
+  {
+    "file": "src/lib/queue/node-processor.ts",
+    "rule": "no-nested-ternary",
+    "function": "processNodeJob",
+    "count": 2
+  },
+  {
+    "file": "src/lib/queue/resource-class.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "resolveNodeResourceClass",
+    "count": 1
+  },
+  {
+    "file": "src/lib/registry.ts",
+    "rule": "complexity",
+    "function": "isFormatCompatibleWithMagicBytes",
+    "count": 1,
+    "maxValue": 105
+  },
+  {
+    "file": "src/lib/registry.ts",
+    "rule": "complexity",
+    "function": "sniffMimeTypeFromMagicBytes",
+    "count": 1,
+    "maxValue": 178
+  },
+  {
+    "file": "src/lib/registry.ts",
+    "rule": "max-lines-per-function",
+    "function": "sniffMimeTypeFromMagicBytes",
+    "count": 1,
+    "maxValue": 254
+  },
+  {
+    "file": "src/lib/registry.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 3531
+  },
+  {
+    "file": "src/lib/security/memory-shredder.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "secureWipeObject",
+    "count": 1
+  },
+  {
+    "file": "src/lib/security/process-sandbox.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "cleanup",
+    "count": 3
+  },
+  {
+    "file": "src/lib/security/process-sandbox.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "executeSandboxedBinary",
+    "count": 2
+  },
+  {
+    "file": "src/lib/security/process-sandbox.ts",
+    "rule": "no-nested-ternary",
+    "function": "detectSandboxEnvironment",
+    "count": 1
+  },
+  {
+    "file": "src/lib/security/process-sandbox.ts",
+    "rule": "no-nested-ternary",
+    "function": "getProcessRssMb",
+    "count": 1
+  },
+  {
+    "file": "src/lib/security/ssrf.ts",
+    "rule": "complexity",
+    "function": "isBlockedIpv4",
+    "count": 1,
+    "maxValue": 32
+  },
+  {
+    "file": "src/lib/slug-parser.ts",
+    "rule": "complexity",
+    "function": "parseConverterSlug",
+    "count": 1,
+    "maxValue": 41
+  },
+  {
+    "file": "src/lib/slug-parser.ts",
+    "rule": "no-nested-ternary",
+    "function": "parseConverterSlug",
+    "count": 4
+  },
+  {
+    "file": "src/lib/storage/adapters/azure-blob.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "uploadStream",
+    "count": 1
+  },
+  {
+    "file": "src/lib/storage/adapters/gcs.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "uploadStream",
+    "count": 1
+  },
+  {
+    "file": "src/lib/storage/adapters/webdav.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "uploadStream",
+    "count": 1
+  },
+  {
+    "file": "src/lib/storage/byos-operations.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "uploadToUrl",
+    "count": 1
+  },
+  {
+    "file": "src/lib/storage/local-fs-storage.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "toNodeReadable",
+    "count": 3
+  },
+  {
+    "file": "src/lib/storage/s3-storage.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "uploadPartStream",
+    "count": 6
+  },
+  {
+    "file": "src/lib/storage/sigv4-presigner.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "verifySigV4QueryUrl",
+    "count": 1
+  },
+  {
+    "file": "src/lib/storage/sigv4-presigner.ts",
+    "rule": "no-nested-ternary",
+    "function": "getCanonicalHeaders",
+    "count": 1
+  },
+  {
+    "file": "src/lib/storage/tus-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "appendChunk",
+    "count": 1
+  },
+  {
+    "file": "src/lib/storage/tus-engine.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "toNodeReadable",
+    "count": 3
+  },
+  {
+    "file": "src/lib/streaming/large-payload-streamer.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "runSoakSession",
+    "count": 6
+  },
+  {
+    "file": "src/lib/streaming/large-payload-streamer.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "streamProcessLargePayload",
+    "count": 2
+  },
+  {
+    "file": "src/worker/engines.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertWithHeadlessOffice",
+    "count": 1
+  },
+  {
+    "file": "src/worker/engines.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "convertWithinImageSession",
+    "count": 1
+  },
+  {
+    "file": "src/worker/engines.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "renderPages",
+    "count": 2
+  },
+  {
+    "file": "src/worker/engines.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "resolveOutputPath",
+    "count": 1
+  },
+  {
+    "file": "src/worker/engines.ts",
+    "rule": "complexity",
+    "function": "convertWithinImageSession",
+    "count": 1,
+    "maxValue": 140
+  },
+  {
+    "file": "src/worker/engines.ts",
+    "rule": "max-lines-per-function",
+    "function": "convertWithinImageSession",
+    "count": 1,
+    "maxValue": 345
+  },
+  {
+    "file": "src/worker/engines.ts",
+    "rule": "max-lines",
+    "function": "<module>",
+    "count": 1,
+    "maxValue": 3027
+  },
+  {
+    "file": "src/worker/engines.ts",
+    "rule": "max-params",
+    "function": "renderPdfToImageWithPoppler",
+    "count": 1,
+    "maxValue": 7
+  },
+  {
+    "file": "src/worker/libreoffice-pool.ts",
+    "rule": "@typescript-eslint/no-explicit-any",
+    "function": "buildPersistedResult",
+    "count": 2
+  }
+]

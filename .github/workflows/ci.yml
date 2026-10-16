@@ -134,7 +134,7 @@ jobs:
           fi
           node scripts/ci-parity-shards.mjs "$FAMILIES"
 
-  # Static gates that need no external tools: the anti-cheat scan, the linter and the production build (which
+  # Static gates that need no external tools: the anti-cheat scan, the code-smell ratchet, the linter and the production build (which
   # type-checks). They run in their own job so the tool install does not delay them.
   checks:
     needs: changes
@@ -157,6 +157,9 @@ jobs:
 
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
+
+      - name: Gate new code smells against the shrinking baseline
+        run: npm run guard:code-smells
 
       # The licence gate runs only when the dependency set or the notices tooling changes: an unchanged
       # lockfile cannot bring in a new licence.
