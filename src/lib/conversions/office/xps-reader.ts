@@ -1,5 +1,6 @@
 import type JSZip from 'jszip';
-import { ConversionFailedError, PayloadLimitError } from '../../types';
+import { ConversionFailedError, CorruptStreamError, PayloadLimitError } from '../../types';
+import { InflateBudget, MAX_DOCUMENT_INFLATE_BYTES } from '../bounded-inflate';
 import { decodeXmlBytes, openPackage, readPackageEntry, resolvePackagePath } from '../package-access';
 import { childElements, parseXmlTree, type XmlElement } from '../xml-tree';
 
@@ -15,8 +16,12 @@ const LABEL = 'XPS';
 /** The relationship that points a package at its fixed document sequence (XPS 2005 and OpenXPS names end the same way). */
 const FIXED_REPRESENTATION_SUFFIX = '/fixedrepresentation';
 const RELATIONSHIPS_PART = '_rels/.rels';
-/** Most bytes one package part may inflate to, and the most pages and glyph runs one document may hold. */
+/**
+ * Most bytes one package part may inflate to, the most bytes all parts of a package may inflate to together, and the most
+ * documents, pages and glyph runs a package may hold. A part is read once, however many references name it.
+ */
 const XPS_MAX_PART_BYTES = 64 * 1024 * 1024;
+const XPS_MAX_DOCUMENT_REFERENCES = 1_000;
 const XPS_MAX_PAGES = 10_000;
 const XPS_MAX_GLYPH_RUNS = 5_000_000;
 const XPS_MAX_TEXT_CHARS = 128 * 1024 * 1024;
@@ -130,7 +135,7 @@ function joinLine(line: readonly GlyphRun[]): string {
     let end = start + 1;
     while (ordered[start].rightToLeft && end < ordered.length && ordered[end].rightToLeft) end += 1;
     const stretch = ordered.slice(start, end);
-    reading.push(...(ordered[start].rightToLeft ? stretch.reverse() : stretch));
+    for (const run of ordered[start].rightToLeft ? stretch.reverse() : stretch) reading.push(run);
     start = end;
   }
   let text = reading[0].text;
@@ -143,9 +148,20 @@ function joinLine(line: readonly GlyphRun[]): string {
   return text.trimEnd();
 }
 
-async function readXmlPart(zip: JSZip, path: string, what: string): Promise<XmlElement> {
-  const bytes = await readPackageEntry(zip, path, XPS_MAX_PART_BYTES, what);
-  return parseXmlTree(decodeXmlBytes(bytes, `${LABEL} ${path}`), path, LABEL);
+/** The parts of one package, read under the budget of the whole package and the signal of the job. */
+class XpsPackage {
+  private readonly budget = new InflateBudget(MAX_DOCUMENT_INFLATE_BYTES);
+
+  constructor(
+    private readonly zip: JSZip,
+    private readonly signal: AbortSignal | undefined
+  ) {}
+
+  async readXml(path: string, what: string): Promise<XmlElement> {
+    this.signal?.throwIfAborted();
+    const bytes = await readPackageEntry(this.zip, path, XPS_MAX_PART_BYTES, what, this.budget);
+    return parseXmlTree(decodeXmlBytes(bytes, `${LABEL} ${path}`), path, LABEL);
+  }
 }
 
 function directoryOf(path: string): string {
@@ -160,26 +176,40 @@ function referencedParts(holder: string, root: XmlElement, referenceName: string
   });
 }
 
-async function fixedDocumentSequencePart(zip: JSZip): Promise<string> {
-  const relationships = await readXmlPart(zip, RELATIONSHIPS_PART, `${LABEL} package relationships`);
+async function fixedDocumentSequencePart(source: XpsPackage): Promise<string> {
+  const relationships = await source.readXml(RELATIONSHIPS_PART, `${LABEL} package relationships`);
   const fixed = childElements(relationships, 'Relationship').find((relationship) => relationship.attrs.get('Type')?.toLowerCase().endsWith(FIXED_REPRESENTATION_SUFFIX));
   const target = fixed?.attrs.get('Target');
   if (target === undefined) throw new ConversionFailedError(`The ${LABEL} package has no fixed document sequence: it is not an XPS document.`);
   return resolvePackagePath('', target);
 }
 
-/** The text of each fixed page, in reading order: one string per page, lines separated by a newline. */
-export async function readXpsPages(input: Buffer): Promise<string[]> {
-  const zip = await openPackage(input, LABEL);
-  const sequencePart = await fixedDocumentSequencePart(zip);
-  const sequence = await readXmlPart(zip, sequencePart, `${LABEL} fixed document sequence`);
+/** Records that `part` is named, refusing a package that names it a second time: every part is read once, so a repeated name is not a way to make the reader work longer. */
+function claimOnce(named: Set<string>, part: string, kind: string): void {
+  if (named.has(part)) throw new CorruptStreamError(`The ${LABEL} package references the ${kind} "${part}" more than once.`);
+  named.add(part);
+}
+
+/** The text of each fixed page, in reading order: one string per page, lines separated by a newline. The signal stops the reading between parts. */
+export async function readXpsPages(input: Buffer, signal?: AbortSignal): Promise<string[]> {
+  const source = new XpsPackage(await openPackage(input, LABEL), signal);
+  const sequencePart = await fixedDocumentSequencePart(source);
+  const sequence = await source.readXml(sequencePart, `${LABEL} fixed document sequence`);
+  const documentParts = referencedParts(sequencePart, sequence, 'DocumentReference');
+  if (documentParts.length > XPS_MAX_DOCUMENT_REFERENCES) {
+    throw new PayloadLimitError(`The ${LABEL} package names more than ${XPS_MAX_DOCUMENT_REFERENCES} documents.`);
+  }
   const pages: string[] = [];
+  const namedDocuments = new Set<string>();
+  const namedPages = new Set<string>();
   let totalChars = 0;
-  for (const documentPart of referencedParts(sequencePart, sequence, 'DocumentReference')) {
-    const document = await readXmlPart(zip, documentPart, `${LABEL} fixed document`);
+  for (const documentPart of documentParts) {
+    claimOnce(namedDocuments, documentPart, 'fixed document');
+    const document = await source.readXml(documentPart, `${LABEL} fixed document`);
     for (const pagePart of referencedParts(documentPart, document, 'PageContent')) {
       if (pages.length >= XPS_MAX_PAGES) throw new PayloadLimitError(`The ${LABEL} document has more than ${XPS_MAX_PAGES} pages.`);
-      const page = linesOf(glyphRunsOf(await readXmlPart(zip, pagePart, `${LABEL} fixed page`), pagePart)).join(LINE_SEPARATOR);
+      claimOnce(namedPages, pagePart, 'fixed page');
+      const page = linesOf(glyphRunsOf(await source.readXml(pagePart, `${LABEL} fixed page`), pagePart)).join(LINE_SEPARATOR);
       totalChars += page.length;
       if (totalChars > XPS_MAX_TEXT_CHARS) throw new PayloadLimitError(`The ${LABEL} text is longer than ${XPS_MAX_TEXT_CHARS} characters.`);
       pages.push(page);
@@ -190,8 +220,8 @@ export async function readXpsPages(input: Buffer): Promise<string[]> {
 }
 
 /** The text of an XPS or OpenXPS document: its pages one after another, a blank line between them. */
-export async function readXpsText(input: Buffer): Promise<string> {
-  const text = (await readXpsPages(input)).join(PAGE_SEPARATOR).trim();
+export async function readXpsText(input: Buffer, signal?: AbortSignal): Promise<string> {
+  const text = (await readXpsPages(input, signal)).join(PAGE_SEPARATOR).trim();
   if (text === '') throw new ConversionFailedError(`The ${LABEL} document holds no text.`);
   return text;
 }

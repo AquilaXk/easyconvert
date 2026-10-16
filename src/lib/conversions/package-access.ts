@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
 import { readZipEntryBytes } from './zip-entry-reader';
+import type { InflateBudget } from './bounded-inflate';
 import { ConversionFailedError, PayloadLimitError } from '../types';
 import { decodeWindows1252 } from './office/windows-1252';
 
@@ -48,15 +49,18 @@ export async function openPackage(input: Buffer, format: string): Promise<JSZip>
   }
 }
 
-/** Reads one package entry as bytes, refusing one that declares more than `limit` bytes or inflates past it. */
-export async function readPackageEntry(zip: JSZip, entryPath: string, limit: number, what: string): Promise<Buffer> {
+/**
+ * Reads one package entry as bytes, refusing one that declares more than `limit` bytes or inflates past it. A reader that
+ * opens many entries of one package passes a `budget`, which every entry it reads is charged to.
+ */
+export async function readPackageEntry(zip: JSZip, entryPath: string, limit: number, what: string, budget?: InflateBudget): Promise<Buffer> {
   const entry = zip.file(entryPath);
   if (!entry) throw new ConversionFailedError(`The ${what} names "${entryPath}", which is not in the package.`);
   const declared = (entry as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize;
   if (declared !== undefined && declared > limit) {
     throw new PayloadLimitError(`"${entryPath}" declares ${declared} bytes, more than the ${limit} byte limit.`);
   }
-  return readZipEntryBytes(entry, { maxBytes: limit, label: `"${entryPath}"` });
+  return readZipEntryBytes(entry, { maxBytes: limit, label: `"${entryPath}"`, budget });
 }
 
 /** The package path a manifest `href` names, relative to the directory of the file that holds it; never above the package root. */

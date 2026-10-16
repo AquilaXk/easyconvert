@@ -464,7 +464,7 @@ export async function extractTextContentForOffice(
   }
 
   if (src === 'xps' || src === 'oxps') {
-    return readXpsText(inputBuffer);
+    return readXpsText(inputBuffer, options.signal);
   }
 
   if (src === 'hwp') {
