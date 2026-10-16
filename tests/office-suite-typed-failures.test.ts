@@ -10,6 +10,7 @@ import { asUnreadableDocument } from '../src/worker/office-suite-route';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { assertReadableAsText } from '../src/lib/conversions/office/text-source-guard';
 import {
   OFFICE_SUITE_SOURCE_FORMATS,
   isOfficeSuiteOnlySource,
@@ -207,5 +208,30 @@ describe('the dispatcher without the office suite', () => {
     const run = withMissingBinary('SOFFICE_PATH', () => dispatchConversion(bytes, source, target, {}, `sample.${source}`));
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
+  });
+});
+
+describe('the guard that keeps binary bytes from being read as text', () => {
+  it.each([
+    ['a ZIP package', [0x50, 0x4b, 0x03, 0x04]],
+    ['an OLE2 compound file', [0xd0, 0xcf, 0x11, 0xe0]],
+    ['a 7-Zip archive', [0x37, 0x7a, 0xbc, 0xaf]],
+  ])('refuses %s by its signature, naming the format', (_name, signature) => {
+    const container = Buffer.from([...signature, 0x41, 0x42]);
+    expect(() => assertReadableAsText(container, 'lwp')).toThrow("Cannot extract plain text from binary/compressed container for format '.lwp': fail-closed against mojibake corruption.");
+  });
+
+  it('refuses a null byte in the first 4096 bytes and accepts one after them', () => {
+    const inside = Buffer.alloc(4096, 0x61);
+    inside[4095] = 0;
+    expect(() => assertReadableAsText(inside, 'lwp')).toThrow("Binary null bytes detected in source format '.lwp': fail-closed against mojibake corruption.");
+    const after = Buffer.alloc(4097, 0x61);
+    after[4096] = 0;
+    expect(assertReadableAsText(after, 'lwp')).toBeUndefined();
+  });
+
+  it('accepts text, and a file shorter than a signature', () => {
+    expect(assertReadableAsText(Buffer.from('plain text of a memo\n'), 'lwp')).toBeUndefined();
+    expect(assertReadableAsText(Buffer.from([0x50, 0x4b]), 'lwp')).toBeUndefined();
   });
 });
