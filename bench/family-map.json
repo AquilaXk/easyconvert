@@ -205,6 +205,14 @@
       "match": "^src/lib/conversions/(svg-[^/]*|vector-metafile|metafile-draw-plan|openxps|xps-text-layout|odg)\\.ts$"
     },
     {
+      "families": ["vector"],
+      "match": "^src/worker/postscript-(render|gs)\\.ts$"
+    },
+    {
+      "families": ["document", "pdf-ops", "vector"],
+      "match": "^src/worker/poppler-ppm\\.ts$"
+    },
+    {
       "families": ["cad"],
       "match": "^src/lib/conversions/(cad-[^/]*|vector-cad|vector-dxf)\\.ts$"
     },
