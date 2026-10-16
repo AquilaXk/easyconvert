@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { classifyContent, classifyRaster, type Raster } from '../src/lib/conversions/image-content';
-import { AVIF_CLI_MAX_PIXELS, WEBP_EFFORT, webpOptionsFor, avifBitdepthFor, avifEncoderFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSpeedFor, jpegChromaFor, jpegOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
+import { AVIF_CLI_MAX_PIXELS, WEBP_EFFORT, webpOptionsFor, avifBitdepthFor, avifEncoderFor, avifEffortFor, avifChromaFor, avifLayoutFor, avifLibraryOptionsOf, avifPolicyFor, avifSourceBitsOf, avifSpeedFor, jpegChromaFor, jpegOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
 import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
 import { measureSsimPsnr } from './helpers/ffmpeg-measure';
 import { decodeRgba, runConvert, runIdentify, SKIP_WITHOUT_MAGICK, withTempImage } from './helpers/imagemagick';
@@ -375,6 +375,10 @@ describe.skipIf(skipWithoutTools('avifdec'))('AVIF encoding', () => {
     const out = (await convertImage(rgb16, 'avif', { quality: 90 }, 'rgb16.png', 'png')).buffer;
     expect(avifInfo(writeIn('rgb16.avif', out)).depth).toBe(12);
   });
+  it('takes the bits per sample of a source from the library: 8 for a picture of 8 bits, what it reports for a deeper one, 16 when it reports none, and never fewer than 9 for a deeper one', () => {
+    expect([avifSourceBitsOf(false, undefined), avifSourceBitsOf(false, 8), avifSourceBitsOf(true, 16), avifSourceBitsOf(true, 10), avifSourceBitsOf(true, undefined), avifSourceBitsOf(true, 8)]).toEqual([8, 8, 16, 10, 16, 9]);
+  });
+
 
   it('keeps an 8-bit source at 8 bits', async () => {
     const out = (await convertImage(await photoPng(), 'avif', {}, 'p.png', 'png')).buffer;

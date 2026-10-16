@@ -1,4 +1,4 @@
-import sharp, { type Sharp, type SharpOptions } from 'sharp';
+import sharp, { type Metadata, type Sharp, type SharpOptions } from 'sharp';
 import { ConversionFailedError } from '../types';
 import {
   DEFAULT_MAX_INPUT_PIXELS,
@@ -165,23 +165,23 @@ export function openLimitedSharp(input: Buffer, options: SharpOptions = {}): Sha
  * Reads the declared dimensions from the container header (no pixel is decoded) and throws
  * `InputPixelLimitError` when they exceed the input limit. A header sharp cannot read is refused with a
  * `ConversionFailedError`: a lenient decoder (pdfkit, pdf-lib) may accept bytes that libvips rejects, so an
- * unreadable header proves nothing about the size.
+ * unreadable header proves nothing about the size. Returns the header it read, for a caller that needs it next.
  */
-export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget, options: SharpOptions = {}): Promise<void> {
-  let width: number | undefined;
-  let height: number | undefined;
+export async function assertEncodedImageWithinLimit(input: Buffer, budget?: PixelBudget, options: SharpOptions = {}): Promise<Metadata> {
+  let meta: Metadata;
   try {
-    const meta = await sharp(input, { ...options, limitInputPixels: false }).metadata();
-    ({ width, height } = meta);
+    meta = await sharp(input, { ...options, limitInputPixels: false }).metadata();
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     throw new ConversionFailedError(`Invalid image: the header could not be decoded (${reason}).`);
   }
+  const { width, height } = meta;
   if (width === undefined || height === undefined) {
     throw new ConversionFailedError('Invalid image: the header declares no dimensions.');
   }
   assertInputPixels(width, height);
   if (budget) assertPixelBudget(width, height, budget);
+  return meta;
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);

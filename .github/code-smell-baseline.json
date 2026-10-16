@@ -1192,7 +1192,7 @@
     "rule": "complexity",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 220
+    "maxValue": 214
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1234,7 +1234,7 @@
     "rule": "max-lines-per-function",
     "function": "convertImage",
     "count": 1,
-    "maxValue": 676
+    "maxValue": 672
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1248,19 +1248,13 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2921
+    "maxValue": 2865
   },
   {
     "file": "src/lib/conversions/image.ts",
     "rule": "no-nested-ternary",
     "function": "convertImage",
     "count": 2
-  },
-  {
-    "file": "src/lib/conversions/image.ts",
-    "rule": "no-nested-ternary",
-    "function": "encodeAvifFromPipeline",
-    "count": 1
   },
   {
     "file": "src/lib/conversions/image.ts",

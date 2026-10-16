@@ -1,7 +1,7 @@
 import sharp, { type Sharp } from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
-import { decodePlainPngOnce, isPlainPng, type DecodedPng } from '../src/lib/conversions/image-decoded-source';
+import { alphaIsOpaquePlane, decodePlainPngOnce, isPlainPng, type DecodedPng } from '../src/lib/conversions/image-decoded-source';
 import { classifyContent, classifyRaster, type ContentClass } from '../src/lib/conversions/image-content';
 import { flattenColour } from '../src/lib/conversions/image-background';
 import { jpegOptionsFor, webpOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
@@ -203,14 +203,36 @@ describe('convertImage on a plain PNG', () => {
     return depths;
   }
 
-  it.each([
-    ['jpg', 'uchar'],
-    ['jpeg', 'uchar'],
-    ['avif', 'ushort'],
-  ] as const)('decodes a 16-bit colour PNG once at %s samples for %s: only an 8-bit encoder takes the high byte', async (target, depth) => {
+  it('decodes a 16-bit colour PNG once at 16-bit samples for AVIF: the encoder takes them all', async () => {
     const source = await png(4, true, (image) => image.toColourspace('rgb16'));
-    const depths = await rawDepths(source, target);
-    expect(depths[0]).toBe(depth);
+    expect((await rawDepths(source, 'avif'))[0]).toBe('ushort');
+  });
+
+  it.each(['jpg', 'jpeg'])('decodes a 16-bit colour PNG with an opaque alpha plane once at 16-bit samples for %s: the content class reads their tones, and the encoder reduces them', async (target) => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'), true);
+    expect(await rawDepths(source, target)).toEqual(['ushort']);
+  });
+
+  it.each(['jpg', 'jpeg'])('decodes a 16-bit colour PNG with a translucent sample again at 8 bits for %s: the flatten works on the 8-bit levels', async (target) => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'));
+    expect(await rawDepths(source, target)).toEqual(['ushort', 'uchar']);
+  });
+
+  it('decodes a 16-bit colour PNG that is resized for JPEG once at 8 bits: the resize works on the 8-bit levels', async () => {
+    const source = await png(4, true, (image) => image.toColourspace('rgb16'), true);
+    const proto = Object.getPrototypeOf(sharp({ create: { width: 1, height: 1, channels: 3, background: '#000' } })) as Sharp;
+    const raw = proto.raw;
+    const depths: unknown[] = [];
+    vi.spyOn(proto, 'raw').mockImplementation(function (this: Sharp, ...args: unknown[]) {
+      depths.push((args[0] as { depth?: unknown } | undefined)?.depth);
+      return (raw as (...a: unknown[]) => Sharp).apply(this, args);
+    } as never);
+    try {
+      await convertImage(source, 'jpg', { quality: 70, width: 48 }, 'plain.png', 'png');
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(depths).toEqual(['uchar']);
   });
 
   it('decodes a 16-bit colour PNG for WebP without a raw read: the encoder reads the PNG itself', async () => {
@@ -322,5 +344,60 @@ describe('convertImage on a plain PNG', () => {
   it('reports a truncated PNG as an undecodable image', async () => {
     const source = await png(3, false);
     await expect(convertImage(source.subarray(0, source.length - 40), 'jpg', {}, 'cut.png', 'png')).rejects.toThrow(/Invalid image|could not be decoded|premature|truncated/i);
+  });
+});
+
+describe('alphaIsOpaquePlane', () => {
+  const LAYOUTS = [
+    { name: '8-bit colour with alpha', channels: 4, make: (samples: number) => new Uint8Array(samples), maximum: 0xff },
+    { name: '16-bit grey with alpha', channels: 2, make: (samples: number) => new Uint16Array(samples), maximum: 0xffff },
+    { name: '16-bit colour with alpha', channels: 4, make: (samples: number) => new Uint16Array(samples), maximum: 0xffff },
+  ] as const;
+  const PIXELS = 37;
+
+  /** Opaque everywhere, colour samples all zero: only the alpha plane decides. */
+  function opaque(layout: (typeof LAYOUTS)[number]): Uint8Array | Uint16Array {
+    const samples = layout.make(PIXELS * layout.channels);
+    for (let at = layout.channels - 1; at < samples.length; at += layout.channels) samples[at] = layout.maximum;
+    return samples;
+  }
+
+  describe.each(LAYOUTS)('$name', (layout) => {
+    it('is opaque when every alpha sample is the maximum, whatever the colour samples hold', () => {
+      expect(alphaIsOpaquePlane(opaque(layout), layout.channels)).toBe(true);
+    });
+
+    it.each([0, 1, 18, PIXELS - 2, PIXELS - 1])('is not opaque when the alpha sample of pixel %i is one below the maximum', (pixel) => {
+      const samples = opaque(layout);
+      samples[pixel * layout.channels + layout.channels - 1] = layout.maximum - 1;
+      expect(alphaIsOpaquePlane(samples, layout.channels)).toBe(false);
+    });
+
+    it('is not opaque when only the high byte of a 16-bit alpha sample is short of the maximum', () => {
+      const samples = opaque(layout);
+      samples[20 * layout.channels + layout.channels - 1] = layout.maximum === 0xffff ? 0xfeff : 0x7f;
+      expect(alphaIsOpaquePlane(samples, layout.channels)).toBe(false);
+    });
+
+    it('does not take a colour sample for an alpha sample', () => {
+      const samples = opaque(layout);
+      for (let at = 0; at < samples.length; at += layout.channels) samples[at] = 0;
+      expect(alphaIsOpaquePlane(samples, layout.channels)).toBe(true);
+      samples[layout.channels * 5 + layout.channels - 1] = 0;
+      expect(alphaIsOpaquePlane(samples, layout.channels)).toBe(false);
+    });
+  });
+
+  it('reads samples that start on an odd 16-bit offset as they are', () => {
+    const bytes = new Uint8Array(2 + PIXELS * 4 * 2);
+    const samples = new Uint16Array(bytes.buffer, 2, PIXELS * 4);
+    for (let at = 3; at < samples.length; at += 4) samples[at] = 0xffff;
+    expect(alphaIsOpaquePlane(samples, 4)).toBe(true);
+    samples[PIXELS * 4 - 1] = 0xfffe;
+    expect(alphaIsOpaquePlane(samples, 4)).toBe(false);
+  });
+
+  it('refuses a pixel that is not a whole number of words instead of guessing', () => {
+    expect(() => alphaIsOpaquePlane(new Uint8Array(8), 2)).toThrow(RangeError);
   });
 });
