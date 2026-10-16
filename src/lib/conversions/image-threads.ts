@@ -80,20 +80,51 @@ export function pinBaseImageThreads(): number {
   return sharp.concurrency(baseImageThreads());
 }
 
-/** Encodes in flight that hold the lease. */
-let leases = 0;
+/**
+ * Threads a JPEG pipeline leases. A second thread lets the conversion of the 16-bit samples (the reduction to 8 bits, the dropped alpha
+ * plane) overlap the JPEG encoder: the JPEG stage of a 1024 x 640 interface went from 4.2 ms to 3.7 ms and of a 640 x 640 grey drawing from 3.7 ms to 3.6 ms, with the
+ * same bytes. A WebP pipeline does not take the lease: its encode of a colour picture or of a grey photograph got 2 to 16% slower on two threads
+ * (a 768 x 512 photograph 17.3 ms to 20.3 ms), and only a grey drawing with an alpha plane gained. More threads make the pipeline of a
+ * picture this small slower, as the lease of a photograph in AVIF says above; two is the count `IMAGE_UNBOUNDED_HEAP_THREADS` allows while
+ * the heap is not bounded.
+ */
+export const IMAGE_PIPELINE_THREADS = 2;
 
 /**
- * Runs `encode` with the image library on `imageThreadsFor` threads. The count is process-wide, so concurrent encodes
- * share one lease: the first sets it, the last puts the base count back, whether they end or fail.
+ * Threads for a JPEG pipeline: `IMAGE_PIPELINE_THREADS` where the cores, the heap and the memory limit allow them (see
+ * `imageThreadsFor`), never fewer than the base count, which an operator's `VIPS_CONCURRENCY` sets for every operation.
  */
-export async function withImageThreads<T>(encode: () => Promise<T>): Promise<T> {
-  if (leases === 0) sharp.concurrency(imageThreadsFor(os.availableParallelism(), memoryLimitBytes()));
+export function pipelineThreadsFor(cores: number, memoryBytes: number = Number.POSITIVE_INFINITY, env: Env = process.env): number {
+  return Math.max(baseImageThreads(env), Math.min(IMAGE_PIPELINE_THREADS, imageThreadsFor(cores, memoryBytes, env)));
+}
+
+/** Encodes in flight that hold the lease, and the largest count any of them asked for. */
+let leases = 0;
+let leasedThreads = 0;
+
+/**
+ * Runs `encode` with the image library on `threads` threads (`imageThreadsFor` unless the caller names a count). The count is process-wide,
+ * so concurrent encodes share it: a lease that asks for more raises it for all, the last to end puts the base count back, whether they
+ * end or fail.
+ */
+export async function withImageThreads<T>(encode: () => Promise<T>, threads: number = imageThreadsFor(os.availableParallelism(), memoryLimitBytes())): Promise<T> {
+  if (threads > leasedThreads) {
+    sharp.concurrency(threads);
+    leasedThreads = threads;
+  }
   leases += 1;
   try {
     return await encode();
   } finally {
     leases -= 1;
-    if (leases === 0) sharp.concurrency(baseImageThreads());
+    if (leases === 0) {
+      leasedThreads = 0;
+      sharp.concurrency(baseImageThreads());
+    }
   }
+}
+
+/** `withImageThreads` for the pipeline of a JPEG encode. */
+export function withPipelineThreads<T>(encode: () => Promise<T>): Promise<T> {
+  return withImageThreads(encode, pipelineThreadsFor(os.availableParallelism(), memoryLimitBytes()));
 }

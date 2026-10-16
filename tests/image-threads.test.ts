@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import '../src/lib/conversions/image';
-import { baseImageThreads, IMAGE_BASE_THREADS, IMAGE_MAX_THREADS, IMAGE_THREADS_ENV, IMAGE_UNBOUNDED_HEAP_THREADS, MALLOC_ARENA_ENV, imageThreadsFor, memoryLimitBytes, withImageThreads } from '../src/lib/conversions/image-threads';
+import { baseImageThreads, IMAGE_BASE_THREADS, IMAGE_MAX_THREADS, IMAGE_PIPELINE_THREADS, IMAGE_THREADS_ENV, IMAGE_UNBOUNDED_HEAP_THREADS, MALLOC_ARENA_ENV, imageThreadsFor, memoryLimitBytes, pipelineThreadsFor, withImageThreads, withPipelineThreads } from '../src/lib/conversions/image-threads';
 
 const GIB = 1024 * 1024 * 1024;
 
@@ -47,6 +47,23 @@ describe('baseImageThreads', () => {
   });
 });
 
+describe('pipelineThreadsFor', () => {
+  it('is two threads where the cores, the heap and the memory allow them: the conversion of a picture and the JPEG encode overlap on them', () => {
+    expect(IMAGE_PIPELINE_THREADS).toBe(2);
+    expect([2, 4, 64].map((cores) => pipelineThreadsFor(cores, GIB * 64, { [MALLOC_ARENA_ENV]: '2' }))).toEqual([2, 2, 2]);
+    expect([2, 4].map((cores) => pipelineThreadsFor(cores, GIB * 64, {}))).toEqual([2, 2]);
+  });
+
+  it('is one thread on one core and where the memory limit pays for one thread', () => {
+    expect(pipelineThreadsFor(1, GIB * 64, { [MALLOC_ARENA_ENV]: '2' })).toBe(1);
+    expect(pipelineThreadsFor(8, GIB / 8, { [MALLOC_ARENA_ENV]: '2' })).toBe(1);
+  });
+
+  it('keeps the count the operator names, below two or above it: the operator chose it for every operation', () => {
+    expect([pipelineThreadsFor(8, GIB * 64, { [IMAGE_THREADS_ENV]: '1' }), pipelineThreadsFor(8, GIB * 64, { [IMAGE_THREADS_ENV]: '6' })]).toEqual([1, 6]);
+  });
+});
+
 describe('withImageThreads', () => {
   const before = sharp.concurrency();
   const leased = imageThreadsFor(os.availableParallelism(), memoryLimitBytes());
@@ -66,6 +83,31 @@ describe('withImageThreads', () => {
     await expect(withImageThreads(async () => Promise.reject(new Error('encode failed')))).rejects.toThrow('encode failed');
     expect(sharp.concurrency()).toBe(1);
     expect(await withImageThreads(async () => 'done')).toBe('done');
+  });
+
+  it('leases the count it is given, and a larger lease that starts while a smaller one runs raises the count for both until the last ends', async () => {
+    sharp.concurrency(1);
+    let releaseSmall = (): void => undefined;
+    let releaseLarge = (): void => undefined;
+    const small = withImageThreads(() => new Promise<void>((resolve) => { releaseSmall = resolve; }), 2);
+    expect(sharp.concurrency()).toBe(2);
+    const large = withImageThreads(() => new Promise<void>((resolve) => { releaseLarge = resolve; }), 5);
+    expect(sharp.concurrency()).toBe(5);
+    await withImageThreads(async () => undefined, 3);
+    expect(sharp.concurrency()).toBe(5);
+    releaseLarge();
+    await large;
+    expect(sharp.concurrency()).toBe(5);
+    releaseSmall();
+    await small;
+    expect(sharp.concurrency()).toBe(1);
+  });
+
+  it('runs a pipeline lease on the pipeline thread count and puts the previous count back', async () => {
+    sharp.concurrency(1);
+    const during = await withPipelineThreads(async () => sharp.concurrency());
+    expect(during).toBe(pipelineThreadsFor(os.availableParallelism(), memoryLimitBytes()));
+    expect(sharp.concurrency()).toBe(1);
   });
 
   it('keeps the lease until the last of several concurrent encodes ends', async () => {
@@ -116,5 +158,37 @@ describe('the AVIF encode of the image library', () => {
 
   it('keeps a graphic on the single thread it had: the tiles that threads bring moved an interface from -14.4% to +1.6% BD-rate in PSNR', async () => {
     expect(await threadsAsked(await picture(true))).toEqual([]);
+  });
+});
+
+describe('the JPEG and WebP encodes', () => {
+  const SIDE = 64;
+  const source = (): Promise<Buffer> => {
+    const raw = Buffer.alloc(SIDE * SIDE * 3);
+    for (let i = 0; i < raw.length; i += 1) raw[i] = (Math.floor(i / 3 / 8) % 2) * 200;
+    return sharp(raw, { raw: { width: SIDE, height: SIDE, channels: 3 } }).png().toBuffer();
+  };
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function threadsAsked(target: string): Promise<unknown[]> {
+    const asked: unknown[] = [];
+    const concurrency = sharp.concurrency;
+    vi.spyOn(sharp, 'concurrency').mockImplementation(((count?: number) => {
+      if (count !== undefined) asked.push(count);
+      return concurrency(count as number);
+    }) as typeof sharp.concurrency);
+    await convertImage(await source(), target, { quality: 60 }, 'p.png', 'png');
+    return asked;
+  }
+
+  it('runs the JPEG encode on the pipeline threads and puts the previous count back', async () => {
+    const before = sharp.concurrency();
+    expect(await threadsAsked('jpg')).toEqual([pipelineThreadsFor(os.availableParallelism(), memoryLimitBytes()), before]);
+  });
+
+  it('keeps the WebP encode on the single thread it had: two threads made the encode of colour pictures and of grey photographs slower', async () => {
+    expect(await threadsAsked('webp')).toEqual([]);
   });
 });

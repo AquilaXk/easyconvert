@@ -12,7 +12,7 @@ import {
   RGBA_BYTES_PER_PIXEL,
 } from './image-limits';
 import { maxInputPixels, resizedDimensions } from './image-input-limits';
-import { EXIF_ORIENTATION_NORMAL, orientRgbaFrame, withUprightOrientation } from './image-orientation';
+import { EXIF_ORIENTATION_NORMAL, FIRST_QUARTER_TURN_ORIENTATION, orientRgbaFrame, withUprightOrientation } from './image-orientation';
 import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './page-range';
 
 /**
@@ -45,7 +45,6 @@ const MULTI_PAGE_TIFF_TARGET = 'tiff';
 const FIRST_FRAME = 1;
 const SINGLE_FRAME = 1;
 const PLAY_ONCE = 1;
-const FIRST_QUARTER_TURN_ORIENTATION = 5;
 
 /** The output size a request asks for: validated sides (at least one) and the fit that places the page in them. */
 export interface PageResize {
@@ -71,6 +70,8 @@ export interface FrameSelection {
   /** What sharp decodes: the source itself, or one composed APNG frame as raw RGBA. */
   source: Buffer;
   input: SharpOptions;
+  /** The header of `source`, when a pipeline opened on `source` with `input` would report exactly it (a single-frame source). */
+  metadata?: Metadata;
   /** sharp's own animated pipeline keeps every frame (gif/webp source to gif/webp target). */
   keepsAnimation: boolean;
   /** Frames the caller decodes and assembles itself (oriented animations, APNG). */
@@ -298,20 +299,22 @@ async function selectDocumentPages(
 /**
  * Decides which frames or pages of `buffer` the conversion to `targetFormat` decodes. Single-frame sources
  * are returned untouched (`page` is not interpreted for them). `resize` is the output size the request asks
- * for, which a multi-page document is charged for against the aggregate page budget.
+ * for, which a multi-page document is charged for against the aggregate page budget. A caller that has read the header of
+ * `buffer` already passes it as `header`.
  */
 export async function selectFrames(
   buffer: Buffer,
   targetFormat: string,
   options: FrameOptions,
-  resize: PageResize | null = null
+  resize: PageResize | null = null,
+  header?: Metadata
 ): Promise<FrameSelection> {
-  const untouched: FrameSelection = { source: buffer, input: {}, keepsAnimation: false };
   const apng = parseApng(buffer);
   if (apng) return selectApng(buffer, apng, targetFormat, options);
 
-  const meta = await sharp(buffer, { limitInputPixels: maxInputPixels() }).metadata();
+  const meta = header ?? (await sharp(buffer, { limitInputPixels: maxInputPixels() }).metadata());
   const frames = meta.pages ?? SINGLE_FRAME;
+  const untouched: FrameSelection = { source: buffer, input: {}, keepsAnimation: false, ...(frames <= SINGLE_FRAME ? { metadata: meta } : {}) };
   if (frames <= SINGLE_FRAME || meta.format === undefined) return untouched;
   if (ANIMATION_SOURCE_FORMATS.has(meta.format)) {
     return selectAnimationFrames(buffer, meta, frames, targetFormat, options);
