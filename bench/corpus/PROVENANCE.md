@@ -60,14 +60,16 @@ them to measure an encoder, which each set's publisher allows. Where a licence r
 |---|---|
 | `Kodak-PhotoCD-rights` | Kodak Photo CD Photo Sampler rights statement (https://www.math.purdue.edu/~lucier/PHOTO_CD/RIGHTS/RIGHTS.USE): holders of the disc may use, manipulate, store, transmit, reproduce and display the images "for any purpose associated with electronic imaging", with a credit to the photographer on each reproduction (none is reproduced here). The pictures are not in the public domain. |
 | `Unsplash` | CLIC dataset page (https://archive.compression.cc/datasets/): the professional pictures may be used under the Unsplash licence (https://unsplash.com/license/): free to use and modify, not to be sold unaltered or compiled into a competing service. |
-| `CC0-1.0`, `CC-BY-2.0`, `CC-BY-SA-4.0`, `CC-BY-4.0`, `Public-domain` | The licence the file's page on Wikimedia Commons shows (its `LicenseShortName`, read through the API; reuse terms at https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia), or the video sequence's own copyright note. Share-alike and attribution terms bind a redistribution, which does not happen here. |
+| `CC0-1.0`, `CC-BY-2.0`, `CC-BY-3.0`, `CC-BY-SA-4.0`, `CC-BY-4.0`, `Public-domain` | The licence the file's page on Wikimedia Commons shows (its `LicenseShortName`, read through the API; reuse terms at https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia), the video sequence's own copyright note, or (`CC-BY-4.0` for the Voice Bank speech) the licence the data set's item page states (https://datashare.ed.ac.uk/handle/10283/2791: "Creative Commons Attribution 4.0 International Public License"). Share-alike and attribution terms bind a redistribution, which does not happen here. |
 | `PD-Vidyo`, `PD-game-capture` | "This sequence is in the public domain. Author: Vidyo"; "These video game recordings are placed in the public domain" (the sequence's `_Copyright.txt` at https://media.xiph.org/video/aomctc/test_set/). |
 | `TUM-no-restrictions`, `SVT-no-restrictions` | The sequence's note: "Restrictions of use: No restrictions. Copyright: No Copyright" (Taurus Media Technik for the Technical University of Munich material; SVT Sveriges Television for the SVT material). |
 | `NTIA-ITS-research` | NTIA/ITS video quality sequences: "may be used for research purposes, only"; use, copy, modify and redistribute with the acknowledgement of NTIA/ITS's ownership (the sequence's `_Copyright.txt`). |
+| `CC-BY-NC-SA-4.0` | Creative Commons Attribution-NonCommercial-ShareAlike 4.0, the licence the archive's file list shows for 146 of its older files (https://creativecommons.org/licenses/by-nc-sa/4.0/). The file is read to test a conversion, never shown, stored or redistributed; one sample uses it (`raw-panasonic-g1.rw2`) and is recorded here because a non-commercial licence is a limit that should be decided, not hidden. |
 | `EBU-SQAM-RD` | EBU Tech 3253 SQAM material (https://tech.ebu.ch/publications/sqamcd): "By downloading this file you agree not to use this material for commercial purposes other than as a R&D tool." The benchmark is such a tool. |
 | `Silesia-mixed`, `Silesia-unstated`, `Public-domain`, `GPL-2.0-or-later`, `GPL-2.0`, `LGPL-2.1`, `MPL-1.1` | The corpus page (https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) names the origin of each file and states no licence of its own. The code is the licence of the origin project (Samba, the OpenOffice.org 1.01 library, the Mozilla 1.0 build, the Open Source Database Benchmark), or public domain for the Project Gutenberg texts, the NCI and SAO catalogues and a book whose author died in 1925; `Silesia-mixed` is a concatenation of XML files from several projects (the XMLPPM test files), and `Silesia-unstated` marks the two medical images, whose terms the corpus page does not give. The files are fetched, never stored or shown. |
 
-Notes on how the benchmark uses them. Video sequences are uncompressed 4:2:0 8-bit `.y4m` streams of 5 to 700 MB; the manifest pins only
+Notes on how the benchmark uses them. Video sequences are uncompressed 4:2:0 8-bit `.y4m` streams of 5 to 700 MB (the 10-bit and HDR10 sequences of the same
+set are not used here: the video rows encode an 8-bit lossless copy, and HDR clips with their colour tags are in the real-world corpus); the manifest pins only
 the first frames of each (a byte range, 17 to 75 MB), which is 0.7 to 3 s of video (the 1080p and 720p clips are shorter so that a
 pull request stays inside its time). Audio tracks are the stored FLAC entries of the SQAM archive; the benchmark cuts the first 12 s
 (6 s for the edge case at 96 kHz) to 16-bit or 24-bit PCM with ffmpeg. Images are used as published; the alpha and 16-bit samples are
@@ -107,6 +109,10 @@ declared in the manifest and checked against the decoded file.
 | `aom-scenecomposition-1080p.y4m` | screen | `b2_scc/SceneComposition_1`, 24 frames; `CC-BY-SA-4.0` (Yu-Chen Sun) |
 | `aom-glasshalf-1080p.y4m` | animation | `b1_syn/GlassHalf_1920x1080p_24p_8bit_420`, 24 frames; `CC-BY-4.0` (Blender Cloud) |
 | `aom-noise-animation-720p.y4m` | grain | `e_nonpristine/Noise_Animation_1280x720_2398fps`, 36 frames; `CC-BY-SA-4.0` (an excerpt of a Russian animated series; the copyright note names the channel) |
+| `aom-kristenandsara-720p.y4m` | natural | `a3_720p/KristenAndSara_1280x720_60`, 40 frames; `PD-Vidyo` |
+| `aom-speedbag-360p.y4m` | highmotion | `a4_360p/SpeedBag_640x360_2997`, 90 frames; `NTIA-ITS-research` |
+| `aom-wikipedia-1080p.y4m` | screen | `b2_scc/Wikipedia_1920x1080p30`, 24 frames; `CC0-1.0` (Thomas Daede; the sequence's note names the CC0 licence) |
+| `aom-cosmos-treetrunk-858p.y4m` | animation | `b1_syn/CosmosTreeTrunk_sdr_2048x858_25_8bit` (an excerpt of the Blender open movie "Cosmos Laundromat"), 24 frames; `CC-BY-3.0` (Blender Foundation) |
 
 ### Audio (`bench/families/audio.ts`)
 
@@ -118,6 +124,15 @@ declared in the manifest and checked against the decoded file.
 | `sqam-27-castanets.flac`, `sqam-26-claves.flac`, `sqam-28-side-drum.flac` | transient | the same archive, tracks 27, 26 and 28; `EBU-SQAM-RD` |
 | `sqam-65-orchestra-strauss.flac`, `sqam-66-wind-ensemble-stravinsky.flac`, `sqam-68-orchestra-baird.flac` | orchestra | the same archive, tracks 65, 66 and 68; `EBU-SQAM-RD` |
 | `sqam-69-pop-abba.flac` | pop | the same archive, track 69; `EBU-SQAM-RD` |
+| `sqam-50-speech-en-m.flac`, `sqam-53-speech-de-f.flac` | speech-ebu | the same archive, tracks 50 and 53 (male English and female German speech); `EBU-SQAM-RD` |
+| `sqam-13-flute.flac` | woodwind | the same archive, track 13; `EBU-SQAM-RD` |
+| `sqam-22-trombone.flac` | brass | the same archive, track 22; `EBU-SQAM-RD` |
+| `sqam-29-bass-drum.flac` | percussion | the same archive, track 29; `EBU-SQAM-RD` |
+| `sqam-39-grand-piano.flac` | keyboard | the same archive, track 39; `EBU-SQAM-RD` |
+| `sqam-64-choir-orff.flac` | ensemble | the same archive, track 64; `EBU-SQAM-RD` |
+| `sqam-70-pop-rabbitt.flac` | pop2 | the same archive, track 70 (Eddie Rabbitt); `EBU-SQAM-RD` |
+| `vctk-p232-001.wav`, `vctk-p232-003.wav`, `vctk-p232-005.wav` | speech-vctk | utterances of speaker p232 (male) from `clean_testset_wav.zip` of the Voice Bank noisy speech database (entries read with range requests), the clean read speech of the CSTR VCTK corpus (48 kHz, 16-bit, mono); `CC-BY-4.0` (Edinburgh DataShare item https://datashare.ed.ac.uk/handle/10283/2791, attribution to the CSTR team of the University of Edinburgh) |
+| `vctk-p257-001.wav`, `vctk-p257-002.wav`, `vctk-p257-003.wav` | speech-vctk | utterances of speaker p257 (female) from the same archive; `CC-BY-4.0` |
 | `pteraxys-part1.flac` | modern24 | "Pteraxys Part 1", a 24-bit 44.1 kHz instrumental production by Cyrille R W Chaussepied on Wikimedia Commons; `CC-BY-SA-4.0` |
 | `edge-quiet-with-burst.wav` | edge | generated by ffmpeg `sine` (997 Hz, 0.5 s, -6 dB) inside 9 s of silence; nothing third-party, CC0 |
 | `edge-telephone-speech-8k.wav` | edge | `sqam-49-speech-en-f.flac` mixed to mono at 8 kHz; `EBU-SQAM-RD` |
@@ -187,7 +202,7 @@ by a third party).
 
 | Set | What it is | Terms |
 |---|---|---|
-| `pixls` | the open camera sample archive, every file CC0 | https://raw.pixls.us/ |
+| `pixls` | the open camera sample archive; its file list (https://raw.pixls.us/json/getrepository.php?set=all) gives the licence of every file: CC0 for all samples used here but one | https://raw.pixls.us/ |
 | `ofl-fonts` | open font families of the Google Fonts catalogue under the SIL Open Font License 1.1 | https://github.com/google/fonts/blob/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/lato/OFL.txt |
 | `noto-emoji` | Noto Color Emoji fonts, OFL-1.1 | https://github.com/googlefonts/noto-emoji/blob/e20cbc2bbec1926686be9f9bee7d1d2cfa1fea0e/LICENSE |
 | `noto-cjk` | Noto Sans CJK subset OpenType/CFF fonts, OFL-1.1 | https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/LICENSE |
@@ -207,6 +222,10 @@ by a third party).
 | `govdocs1` | documents collected from public .gov web servers (the govdocs1 research corpus) | https://digitalcorpora.org/corpora/file-corpora/files/ |
 | `verapdf-corpus` | the PDF/A and PDF/UA conformance corpus, CC BY 4.0 | https://github.com/veraPDF/veraPDF-corpus/blob/bb75f4f0073d9350dfd058c0162a367e6fadf25e/README.md |
 | `pdfjs-corpus` | PDF files of the PDF.js regression suite, Apache-2.0 | https://github.com/mozilla/pdf.js/blob/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/LICENSE |
+| `qpdf-tests` | PDF files of the qpdf test suite, Apache-2.0 | https://github.com/qpdf/qpdf/blob/4eba95899886e851cc41d76886483b347612f2a8/LICENSE.txt |
+| `pdfbox-tests` | PDF files of the Apache PDFBox test resources, Apache-2.0 | https://github.com/apache/pdfbox/blob/c8ab655799cb0a2f15d8e9622a1a7a678fddf46e/LICENSE.txt |
+| `pypdf-sample-files` | sample PDF files of the py-pdf project, CC BY-SA 4.0 | https://github.com/py-pdf/sample-files/blob/02b8203bf416db3dbdb03438bc8278dfcb0555f3/LICENSE |
+| `vctk-voicebank` | clean read speech of two speakers of the CSTR VCTK corpus, from the Voice Bank noisy speech database, CC BY 4.0 | https://datashare.ed.ac.uk/handle/10283/2791 |
 | `poi-test-data` | office documents from the test data of an Apache-licensed office-format library | https://www.apache.org/licenses/LICENSE-2.0 |
 | `libreoffice-tests` | test documents of an office suite, MPL-2.0 | https://github.com/LibreOffice/core/blob/4f93a10d5279c2fd403ececfefe6b85349e3522d/COPYING.MPL |
 | `openxml-sdk-tests` | test data of an Open XML library, MIT | https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/LICENSE |
@@ -224,11 +243,16 @@ by a third party).
 | `raw-nikon-d90.nef` | nikon | Nikon D90, NEF; `pixls`; `CC0-1.0` |
 | `raw-nikon-d70.nef` | nikon | Nikon D70, NEF; `pixls`; `CC0-1.0` |
 | `raw-olympus-epl1.orf` | olympus | Olympus E-PL1, ORF; `pixls`; `CC0-1.0` |
-| `raw-panasonic-g1.rw2` | panasonic | Panasonic DMC-G1, RW2; `pixls`; `CC0-1.0` |
+| `raw-panasonic-g1.rw2` | panasonic | Panasonic DMC-G1, RW2; `pixls`; `CC-BY-NC-SA-4.0` (the archive's file list shows this licence for it, and for 146 older files of the former rawsamples.ch collection; every other sample here is CC0) |
 | `raw-panasonic-lx7.rw2` | panasonic | Panasonic DMC-LX7, RW2; `pixls`; `CC0-1.0` |
 | `raw-pentax-k5.pef` | pentax | Pentax K-5, PEF; `pixls`; `CC0-1.0` |
 | `raw-sony-a7m2.arw` | sony | Sony ILCE-7M2, ARW; `pixls`; `CC0-1.0` |
 | `raw-fujifilm-xe1.raf` | xtrans | Fujifilm X-E1, RAF with an X-Trans sensor; `pixls`; `CC0-1.0` |
+| `raw-sigma-sd14.x3f` | foveon | Sigma SD14, X3F file of the Foveon X3 three-layer sensor; `pixls`; `CC0-1.0` |
+| `raw-apple-iphone12pro.dng`, `raw-samsung-s23.dng` | phone | DNG files written by the camera apps of an Apple iPhone 12 Pro and a Samsung Galaxy S23; `pixls`; `CC0-1.0` |
+| `raw-nikon-z9-he.nef` | nikonz | Nikon Z 9, NEF with lossy high-efficiency compression; `pixls`; `CC0-1.0` |
+| `raw-sony-a7m4-lossless.arw` | sonynew | Sony A7 IV, ARW with lossless compression; `pixls`; `CC0-1.0` |
+| `raw-canon-r5-raw.cr3` | canoncr3 | Canon EOS R5, CR3 (RAW mode, cropped frame); `pixls`; `CC0-1.0` |
 
 ### Fonts (`font`)
 
@@ -394,6 +418,23 @@ For a Kindle file the `text` companion of the manifest is the EPUB of the same b
 | `pdf-pdfjs-cjk-2.pdf` | cjk | one page in a CJK font; `pdfjs-corpus`; `Apache-2.0` |
 | `pdf-pdfjs-cjk-3.pdf` | cjk | one page in a CJK font; `pdfjs-corpus`; `Apache-2.0` |
 | `pdf-pdfjs-tamreview.pdf` | long | magazine issue, 23 pages; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-Pages-tree-refs.pdf`, `pdf-pdfjs-issue7229.pdf` | damaged | a page tree whose references loop (qpdf: loop detected in /Pages) and a two-page file of 1.1 MB with wrong object offsets that qpdf rebuilds; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-qpdf-shared-images-errors.pdf`, `pdf-qpdf-pages-loop.pdf`, `pdf-qpdf-form-errors.pdf` | damaged | files of the qpdf test suite that exercise its error handling (image streams that fail to inflate, a looping page tree, a damaged field tree); `qpdf-tests`; `Apache-2.0` |
+| `pdf-pdfjs-xfa_issue14315.pdf` | xfa | form with an XFA entry in the AcroForm dictionary, one page; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-form_two_pages.pdf` | acroform | AcroForm over two pages with CID fonts; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-page_with_number_and_link.pdf` | tagged-docs | tagged document of 17 pages with CID fonts; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pypdf-GeoTopo-komprimiert.pdf` | longdoc | a linearized document of 117 pages written by pdfLaTeX, 1.8 MB (qpdf warns that the first-page length is wrong); `pypdf-sample-files`; `CC-BY-SA-4.0` |
+| `pdf-pdfjs-issue22011.pdf` | longdoc | a document of 57 pages; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-issue19532.pdf` | type3 | a page set in a Type 3 font (PDF/A); `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-issue12963.pdf` | cidfonts | eight pages with CID TrueType and CID CFF fonts; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pdfjs-vertical.pdf` | nounicode | three pages in a CID TrueType font subset without a ToUnicode map; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-qpdf-lin5.pdf` | linearized | linearized document of 30 pages with a wrong first-page length; `qpdf-tests`; `Apache-2.0` |
+| `pdf-pdfjs-prefilled_f1040.pdf` | incremental | form of two pages saved with seven incremental updates; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pypdf-crazyones-pdfa.pdf` | pdfa | PDF/A file with an embedded CFF font; `pypdf-sample-files`; `CC-BY-SA-4.0` |
+| `pdf-vera-pdfa4-devicecolour.pdf` | pdfa | conforming file of the veraPDF corpus for PDF/A-4 (device colour spaces); `verapdf-corpus`; `CC-BY-4.0` |
+| `pdf-pdfjs-issue5747.pdf` | imagecodecs | a page with a CCITT fax image and a CID TrueType font; `pdfjs-corpus`; `Apache-2.0` |
+| `pdf-pypdf-ocg_map_test.pdf` | features | optional content groups (layers); `pypdf-sample-files`; `CC-BY-SA-4.0` |
+| `pdf-qpdf-digitally-signed.pdf` | features | digitally signed document; `qpdf-tests`; `Apache-2.0` |
 
 ### Office documents (`document`)
 
