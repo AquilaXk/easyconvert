@@ -38,8 +38,11 @@ const ILLUSTRATOR_PROLOG_BYTES = 8192;
 /** `%%Creator: Adobe Illustrator`, the `%AI<n>_...` format comments, or the `Adobe_Illustrator_AI<n>` procedure set. */
 const ILLUSTRATOR_MARKERS = /%%Creator:\s*Adobe Illustrator|%AI\d+_|Adobe_Illustrator_AI\d/;
 
+/** The prolog is ASCII; every byte maps to one character, whatever the rest of the file holds. */
+const LATIN1 = new TextDecoder('latin1');
+
 /** Whether a buffer whose first bytes are `%!PS` may carry the extension `ext`. */
 export function isPostScriptCompatible(ext: string, buf: Uint8Array): boolean {
   if (POSTSCRIPT_EXTENSIONS.has(ext)) return true;
-  return ext === ILLUSTRATOR_EXTENSION && ILLUSTRATOR_MARKERS.test(Buffer.from(buf.subarray(0, ILLUSTRATOR_PROLOG_BYTES)).toString('latin1'));
+  return ext === ILLUSTRATOR_EXTENSION && ILLUSTRATOR_MARKERS.test(LATIN1.decode(buf.subarray(0, ILLUSTRATOR_PROLOG_BYTES)));
 }
