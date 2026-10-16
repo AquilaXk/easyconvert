@@ -378,6 +378,28 @@ describe('the in-process packers apply the extraction policy first', () => {
     TEST_TIMEOUT_MS
   );
 
+  for (const target of ['zip', 'gz'] as const) {
+    oracleTest(
+      `tar to ${target} with skipLinks refuses an entry written through the skipped link, as the 7-Zip route does`,
+      ['7z', 'python3'],
+      async () => {
+        const tar = fs.readFileSync(
+          buildTarWithEntries(path.join(ws.fixturesDir, `through-${target}.tar`), [
+            { name: 'link', kind: 'symlink', target: '/etc' },
+            { name: 'link/pwn.txt', data: 'pwned' },
+          ])
+        );
+        await expect(convertWithNative7z(tar, 'tar', target, { skipLinks: true }, 'through.tar')).rejects.toMatchObject({
+          name: 'UnsafeArchiveError',
+          reason: 'link-entry',
+          message: expect.stringMatching(/would also drop regular entries/),
+        });
+        expectNoSevenZipCall();
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
+
   oracleTest(
     'tar to zip with the overwrite policy keeps the last of two entries for one path',
     ['7z', 'python3', 'unzip'],

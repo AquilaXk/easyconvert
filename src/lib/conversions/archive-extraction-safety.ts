@@ -536,6 +536,20 @@ export function assertSafeArchiveListing(
     if (shared) {
       throw new UnsafeArchiveError('link-entry', 'A link entry shares its path with another entry and cannot be skipped safely.');
     }
+    // An entry below a skipped link was written through the link: an exclusion pattern drops it with the link, and a
+    // route that reads the archive in process must refuse it the same way, so the verdict does not depend on the route.
+    const linkKeys = new Set(skippedLinks.map(normalizeEntryKey));
+    const below = entries.some((entry) => {
+      if (entry.linkKind !== null) return false;
+      const key = normalizeEntryKey(entry.path);
+      for (let slash = key.indexOf('/'); slash > 0; slash = key.indexOf('/', slash + 1)) {
+        if (linkKeys.has(key.slice(0, slash))) return true;
+      }
+      return false;
+    });
+    if (below) {
+      throw new UnsafeArchiveError('link-entry', 'Skipping link entries would also drop regular entries, so the archive was rejected.');
+    }
   }
   assertWithinSizeAndRatio(totalBytes, archiveBytes, limits);
   return { entryCount: entries.length, totalBytes, skippedLinks };
