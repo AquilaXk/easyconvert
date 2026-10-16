@@ -8,7 +8,8 @@ import { decodeWindows1252 } from './windows-1252';
 /**
  * Text reader for Word 97-2003 binary documents ([MS-DOC] 2.5 FIB, 2.9.38 Clx, 2.9.177 PlcPcd).
  * It reads the main document story through the CLX piece table. The only formatting it interprets is the font of a
- * character (doc-character-formatting.ts), to map the private-use characters of symbol fonts to Unicode.
+ * character (doc-character-formatting.ts: its run, its character and paragraph styles, the document defaults), to map
+ * the private-use characters of symbol fonts to Unicode.
  */
 
 const LABEL = 'Word document';
@@ -43,9 +44,10 @@ const FIB_RG_FC_LCB_OFFSET = 154;
 const FC_LCB_PAIR_BYTES = 8;
 /** Index of the (fcClx, lcbClx) pair in FibRgFcLcb97. */
 const FC_LCB_CLX_INDEX = 33;
-/** Indexes of the (fc, lcb) pairs of the style sheet, the character formatting table and the font table in FibRgFcLcb97. */
+/** Indexes of the (fc, lcb) pairs of the style sheet, the character and paragraph formatting tables and the font table in FibRgFcLcb97. */
 const FC_LCB_STSH_INDEX = 1;
 const FC_LCB_PLC_BTE_CHPX_INDEX = 12;
+const FC_LCB_PLC_BTE_PAPX_INDEX = 13;
 const FC_LCB_STTB_FFN_INDEX = 15;
 
 // Clx ([MS-DOC] 2.9.38).
@@ -130,6 +132,7 @@ function readFib(word: CheckedReader): FibInfo {
     formatting: {
       stsh: pairAt(FC_LCB_STSH_INDEX),
       plcBteChpx: pairAt(FC_LCB_PLC_BTE_CHPX_INDEX),
+      plcBtePapx: pairAt(FC_LCB_PLC_BTE_PAPX_INDEX),
       sttbfFfn: pairAt(FC_LCB_STTB_FFN_INDEX),
       textChars: FIB_CCP_OTHER_STORIES_OFFSETS.reduce((sum, at) => sum + word.u32(at), word.u32(FIB_CCP_TEXT_OFFSET)),
     },

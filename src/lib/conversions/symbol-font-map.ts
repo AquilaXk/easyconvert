@@ -10,6 +10,14 @@
  * for the others, with the space of every font at code 0x20. Codes without a Unicode counterpart (the radical extender
  * of Symbol, the Windows logo of Wingdings) are absent: the caller decides what to show in their place, and this
  * module invents no glyph.
+ *
+ * WP Greek (the WP Greek Century, Courier and Helve faces of WordPerfect) is a different kind of table: the faces lay
+ * WordPerfect character set 8 out from code 0x21, so the code of a glyph is 0x21 plus its index in that set. The set
+ * (WordPerfect 6 file format, "Greek" character set 8) holds the capital and small Greek letters as pairs in alphabet
+ * order; the table keeps those letters, and leaves out the slots the set fills with a repeat of another letter and the
+ * accented and polytonic letters, whose order differs between versions of the set. The layout was confirmed on
+ * the text of two public documents: alpha at 0x22, delta at 0x29, mu at 0x3A and sigma at 0x46 read as the
+ * letters their sentences need (a growth factor "TGF-alpha", "10 sigma", "3.5 micrometre", "capital Delta").
  */
 
 /** First and last character code a symbol font defines, and the private-use offset Office adds to it. */
@@ -123,6 +131,12 @@ const WEBDINGS =
   'F4:1F41F F5:1F415 F6:1F408 F7:1F66C F8:1F66E F9:1F66D FA:1F66F FB:1F5FA FC:1F30D FD:1F30F FE:1F30E ' +
   'FF:1F54A';
 
+const WP_GREEK =
+  '20:0020 21:0391 22:03B1 23:0392 24:03B2 26:03D0 27:0393 28:03B3 29:0394 2A:03B4 2B:0395 2C:03B5 2D:0396 2E:03B6 ' +
+  '2F:0397 30:03B7 31:0398 32:03B8 33:0399 34:03B9 35:039A 36:03BA 37:039B 38:03BB 39:039C 3A:03BC 3B:039D 3C:03BD ' +
+  '3D:039E 3E:03BE 3F:039F 40:03BF 41:03A0 42:03C0 43:03A1 44:03C1 45:03A3 46:03C3 48:03C2 49:03A4 4A:03C4 4B:03A5 ' +
+  '4C:03C5 4D:03A6 4E:03C6 4F:03A7 50:03C7 51:03A8 52:03C8 53:03A9 54:03C9';
+
 const HEX = 16;
 
 function parseTable(pairs: string): ReadonlyMap<number, string> {
@@ -140,14 +154,19 @@ const TABLES: ReadonlyMap<string, ReadonlyMap<number, string>> = new Map([
   ['wingdings2', parseTable(WINGDINGS_2)],
   ['wingdings3', parseTable(WINGDINGS_3)],
   ['webdings', parseTable(WEBDINGS)],
+  ['wpgreek', parseTable(WP_GREEK)],
 ]);
 
 /** Font names that only differ from a symbol font by a foundry or style suffix ("SymbolMT", "Wingdings-Regular"). */
 const FONT_NAME_SUFFIX = /(?:regular|mt)$/;
 
+/** The WP Greek faces differ by typeface ("WP Greek Century", "WP Greek Courier") and share one table. */
+const WP_GREEK_FACE = /^wpgreek(?:century|courier|helve)?$/;
+
 /** The key of the symbol-font table a font name selects, or undefined when the font is not a symbol font. */
 function tableKey(fontName: string): string | undefined {
   const key = fontName.toLowerCase().replace(/[^a-z0-9]/g, '').replace(FONT_NAME_SUFFIX, '');
+  if (WP_GREEK_FACE.test(key)) return 'wpgreek';
   return TABLES.has(key) ? key : undefined;
 }
 

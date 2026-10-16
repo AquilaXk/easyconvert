@@ -38,7 +38,7 @@ import { rethrowInputPixelLimit } from './image-input-limits';
 import { createLosslessSandwichPdfFromPdf } from './ocr-pdf-combiner';
 import { characterWeightedConfidence } from './ocr-calibration';
 import { renderPdfBlocks, type PdfBlock } from './pdf-blocks';
-import { findUncoveredCodePoint, loadFontCoverageIndex } from './pdf-fonts';
+import { canDrawInPdf, loadFontCoverageIndex } from './pdf-fonts';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeHtmlInput } from './html-encoding';
 import { decodeTextInput } from './text-input';
@@ -581,7 +581,7 @@ export async function convertDocument(
   } else if (src === 'doc') {
     // A PDF draws with installed fonts: a symbol-font character none of them covers shows as U+FFFD and is reported.
     if (tgt === 'pdf') await loadFontCoverageIndex();
-    textContent = extractTextFromDoc(inputBuffer, tgt === 'pdf' ? (character) => findUncoveredCodePoint(character) === null : undefined);
+    textContent = extractTextFromDoc(inputBuffer, tgt === 'pdf' ? canDrawInPdf : undefined);
   } else if (src === 'tex') {
     textContent = extractTextFromTex(inputBuffer.toString('utf-8'));
   } else if (HTML_SOURCE_FORMATS.has(src)) {

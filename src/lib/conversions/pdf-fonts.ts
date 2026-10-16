@@ -545,6 +545,11 @@ export function findUncoveredCodePoint(text: string, customFontPath?: string): n
   return null;
 }
 
+/** Whether an installed font covers every character of `text` (the glyph coverage a PDF is drawn with). */
+export function canDrawInPdf(text: string): boolean {
+  return findUncoveredCodePoint(text) === null;
+}
+
 /** First face, in preference order, that covers every code point; null when no single face does. */
 function singleCoveringFace(codePoints: readonly number[], customFontPath?: PdfPreferredFont): PdfFontFace | null {
   return orderedFaces(customFontPath).find((face) => codePoints.every((cp) => face.font.hasGlyphForCodePoint(cp))) ?? null;
