@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { sofficeConvert } from './helpers/soffice-convert';
+import { xpsGlyphText } from './helpers/xps-glyphs';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -18,7 +19,7 @@ const CONVERSION_TIMEOUT_MS = 300_000;
 const MIN_WORD_LENGTH = 4;
 /** Share of the office suite's words that the output may lack (page headers and footers are laid out differently). */
 const MAX_MISSING_SHARE = 0.05;
-const TARGETS = ['txt', 'html', 'md'] as const;
+const TARGETS = ['txt', 'html', 'md', 'xps'] as const;
 
 const DOCUMENTS: ReadonlyArray<{ id: string; why: string }> = [
   { id: 'govdocs1-061894.doc', why: 'embedded Word and Visio objects keep their own WordDocument and 1Table streams' },
@@ -38,6 +39,11 @@ function stripMarkup(markup: string): string {
   return markup.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 }
 
+async function textOf(output: Buffer, target: (typeof TARGETS)[number]): Promise<string> {
+  if (target === 'xps') return xpsGlyphText(output);
+  return target === 'html' ? stripMarkup(output.toString('utf-8')) : output.toString('utf-8');
+}
+
 describe.skipIf(toolsMissing)('Word documents the in-process reader refused', () => {
   for (const { id, why } of DOCUMENTS) {
     it(
@@ -48,7 +54,7 @@ describe.skipIf(toolsMissing)('Word documents the in-process reader refused', ()
         expect(reference.size).toBeGreaterThan(0);
         for (const target of TARGETS) {
           const result = await dispatchConversion(doc, 'doc', target, {}, id);
-          const text = target === 'html' ? stripMarkup(result.buffer.toString('utf-8')) : result.buffer.toString('utf-8');
+          const text = await textOf(result.buffer, target);
           const have = new Set(wordsOf(text));
           const missing = [...reference].filter((word) => !have.has(word));
           expect({ target, missing: missing.slice(0, 10), withinLimit: missing.length <= reference.size * MAX_MISSING_SHARE }).toEqual({

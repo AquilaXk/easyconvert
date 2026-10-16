@@ -33,6 +33,7 @@ import { loadConformanceDurations, partOfKey, planConformanceParts } from '../sc
 import { buildPptBinary } from './helpers/ppt-binary-builder';
 import { ensureSample } from '../bench/corpora';
 import { pinnedDwgSample } from './helpers/dwg-samples';
+import { isOfficeSuiteOnlySource, officeReadingFormat } from '../src/lib/conversions/office/office-suite-sources';
 import { realworldSampleBytes } from './helpers/realworld-sample';
 
 /**
@@ -445,6 +446,15 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // documents from tests/helpers (a Word piece table and a PowerPoint record tree), not plain text.
   doc: () => buildWordBinary({ pieces: [{ text: 'Probe heading\rFirst probe paragraph.\r', compressed: true }] }),
   ppt: () => buildPptBinary({ slides: [{ shapes: [{ chars: 'Probe slide title' }, { chars: 'First probe bullet' }] }] }),
+  // Templates and slide shows are the file layout of a plain format under another extension: a Word template is a Word
+  // document, a PowerPoint slide show a presentation, an OpenDocument template a package with the template mimetype.
+  dot: () => buildWordBinary({ pieces: [{ text: 'Probe heading\rFirst probe paragraph.\r', compressed: true }] }),
+  pps: () => buildPptBinary({ slides: [{ shapes: [{ chars: 'Probe slide title' }, { chars: 'First probe bullet' }] }] }),
+  pot: () => buildPptBinary({ slides: [{ shapes: [{ chars: 'Probe slide title' }, { chars: 'First probe bullet' }] }] }),
+  ott: () => withOpenDocumentMimetype('odt', 'application/vnd.oasis.opendocument.text-template'),
+  otp: () => withOpenDocumentMimetype('odp', 'application/vnd.oasis.opendocument.presentation-template'),
+  // The OpenXPS writer of the product is what makes a probe package; the reader takes both XPS variants by their parts.
+  oxps: () => requireDerived('xps'),
   rtf: () => Buffer.from('{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times New Roman;}}Probe heading\\par First probe paragraph.\\par}', 'latin1'),
   // A template is a presentation package whose main part has the template content type.
   potx: buildProbePotx,
@@ -521,6 +531,13 @@ const FONT_OTF_SEED = buildOtf({
 
 async function wrapFontSeed(target: 'woff' | 'woff2' | 'eot'): Promise<Buffer> {
   return (await convertFile(FONT_TTF_SEED, 'ttf', target, {}, 'probe.ttf')).buffer;
+}
+
+/** An OpenDocument template: the package of the plain format with the mimetype of the template. */
+async function withOpenDocumentMimetype(plain: 'odt' | 'odp', mimetype: string): Promise<Buffer> {
+  const zip = await JSZip.loadAsync(await requireDerived(plain));
+  zip.file('mimetype', mimetype, { compression: 'STORE' });
+  return zip.generateAsync({ type: 'nodebuffer' });
 }
 
 async function requireDerived(format: string): Promise<Buffer> {
@@ -604,8 +621,19 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   xlsx: ['jpg', 'png'],
 };
 
+/**
+ * Sources only the office suite imports (Works, WordPerfect, OpenOffice.org 1.x, Numbers, Publisher, the Sony, Palm and
+ * RocketBook e-books) have no in-process reader, so every pair but the ZIP wrapper is the office suite's. Their conversions
+ * are proven on real files by tests/office-suite-real-samples.test.ts and the missing-engine answer by
+ * tests/office-suite-typed-failures.test.ts.
+ */
+function isOfficeSuiteOnlyPair(source: string, target: string): boolean {
+  return isOfficeSuiteOnlySource(source) && target !== 'zip';
+}
+
 function isNativeEnginePair(source: string, target: string): boolean {
-  return NATIVE_ENGINE_PAIRS[source]?.includes(target) ?? false;
+  // A template or slide show is converted as the format it is a layout of (pps as ppt).
+  return (NATIVE_ENGINE_PAIRS[officeReadingFormat(source)]?.includes(target) ?? false) || isOfficeSuiteOnlyPair(source, target);
 }
 
 type PairOutcome = 'routed' | 'unrouted' | 'inconclusive' | 'native';
@@ -953,7 +981,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     pdb: ['rtf'],
     pdf: ['avif', 'bmp', 'doc', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ppt', 'ps', 'psd', 'webp', 'wmf'],
     png: ['svg'],
-    pot: ['emf', 'jpg', 'png', 'ppt'],
+    pot: ['emf', 'jpg', 'png', 'ppt', 'xps'],
     potx: ['emf', 'jpg', 'odp', 'png', 'ppt', 'xps'],
     pps: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
     ppsx: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],

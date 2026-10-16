@@ -51,9 +51,9 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
   pub: { application: 'draw' },
 };
 
-/** Targets the in-process e-book writers produce from plain text: the Palm family and the Sony and Open eBook formats. */
-const TEXT_EBOOK_TARGETS: ReadonlySet<string> = new Set(['azw3', 'mobi', 'lrf', 'oeb', 'pdb']);
-/** Sources of the e-book readers of the office suite: the writers of these targets read text, not a document package. */
+/** Targets the in-process engine writes from plain text only: the Palm family, the Sony and Open eBook formats, XPS and the Hangul formats. */
+const TEXT_ONLY_TARGETS: ReadonlySet<string> = new Set(['azw3', 'mobi', 'lrf', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx']);
+/** Sources of the e-book readers of the office suite: their text-only targets are written from the text the suite exports. */
 const EBOOK_SOURCES: ReadonlySet<string> = new Set(['lrf', 'pdb', 'rb']);
 
 /** The application of every format the office suite reads that the in-process engine cannot render: the sources above and their aliases. */
@@ -77,12 +77,13 @@ const LEGACY_BINARY_INTERCHANGE: Readonly<Record<string, string>> = { doc: 'docx
 
 /**
  * The format to retry a refused legacy binary Office document with (templates and slide shows included): the plain text
- * the suite's writer exports for a text target, else the interchange format. Undefined for any other format.
+ * the suite's writer exports for a Word document's text target or a target written from plain text only, else the
+ * interchange format. Undefined for any other format.
  */
 export function legacyReaderRetryInterchange(format: string, target: string): string | undefined {
   const reader = OFFICE_FORMAT_ALIAS[format] ?? format;
   if (!Object.hasOwn(LEGACY_BINARY_INTERCHANGE, reader)) return undefined;
-  return reader === 'doc' && target === TEXT_INTERCHANGE ? TEXT_INTERCHANGE : LEGACY_BINARY_INTERCHANGE[reader];
+  return reader === 'doc' && (target === TEXT_INTERCHANGE || TEXT_ONLY_TARGETS.has(target)) ? TEXT_INTERCHANGE : LEGACY_BINARY_INTERCHANGE[reader];
 }
 
 export function isOfficeSuiteOnlySource(format: string): boolean {
@@ -126,6 +127,6 @@ export function officeSuiteWritesText(format: string, target: string): boolean {
  */
 export function officeSuiteInterchange(format: string, target: string): string | undefined {
   if (!isOfficeSuiteOnlySource(format)) return undefined;
-  if (EBOOK_SOURCES.has(format) && TEXT_EBOOK_TARGETS.has(target)) return TEXT_INTERCHANGE;
+  if (EBOOK_SOURCES.has(format) && TEXT_ONLY_TARGETS.has(target)) return TEXT_INTERCHANGE;
   return OFFICE_SUITE_ONLY_SOURCES[format].interchange;
 }

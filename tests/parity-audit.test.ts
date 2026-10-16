@@ -41,7 +41,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'dps->eps', 'dps->jpg', 'dps->md', 'dps->png', 'dps->ppt',
   'key->doc', 'key->jpg', 'key->png', 'key->ppt', 'key->xls',
   'odp->eps', 'odp->md',
-  'pot->emf', 'pot->jpg', 'pot->png', 'pot->ppt',
+  'pot->emf', 'pot->jpg', 'pot->png', 'pot->ppt', 'pot->xps',
   'potx->emf', 'potx->jpg', 'potx->odp', 'potx->png', 'potx->ppt', 'potx->xps',
   'pps->eps', 'pps->jpg', 'pps->md', 'pps->png', 'pps->ppt',
   'ppsx->eps', 'ppsx->jpg', 'ppsx->md', 'ppsx->png', 'ppsx->ppt',

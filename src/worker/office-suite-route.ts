@@ -75,14 +75,25 @@ const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded|no exp
  */
 const LIBREOFFICE_STOPPED_PATTERN = /Unspecified Application Error|Fatal exception: Signal/;
 
+/** Formats that only some LibreOffice builds import (LibreOffice 24.2 of Ubuntu 24.04 has no RocketBook filter, 26.8 reads the format), so that "could not be loaded" may mean there is no filter. */
+const IMPORT_FILTER_OPTIONAL_SOURCES: ReadonlySet<string> = new Set(['rb']);
+
+/** The answer for a file LibreOffice cannot read: why, where a missing import filter is among the possible reasons. */
+function cannotReadMessage(src: string, reason: string): string {
+  const possibleReason = IMPORT_FILTER_OPTIONAL_SOURCES.has(src)
+    ? `it is damaged, or the LibreOffice of this worker has no import filter for ${src.toUpperCase()} files`
+    : reason;
+  return `LibreOffice could not read the .${src} file: ${possibleReason}.`;
+}
+
 /** LibreOffice ran and wrote nothing, could not load the file, or stopped on it: the file is damaged or not that kind of document (typed 400). */
 export function asUnreadableDocument(err: unknown, src: string): unknown {
   if (!OFFICE_NATIVE_SOURCES.has(src)) return err;
   if (err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
-    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
+    return new ConversionFailedError(cannotReadMessage(src, `it is damaged or not a valid ${src.toUpperCase()} document`));
   }
   if (err instanceof SandboxedProcessError && LIBREOFFICE_LOAD_FAILURE_PATTERN.test(err.message)) {
-    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged, encrypted or not a valid ${src.toUpperCase()} document.`);
+    return new ConversionFailedError(cannotReadMessage(src, `it is damaged, encrypted or not a valid ${src.toUpperCase()} document`));
   }
   if (err instanceof SandboxedProcessError && LIBREOFFICE_STOPPED_PATTERN.test(err.message)) {
     return new ConversionFailedError(

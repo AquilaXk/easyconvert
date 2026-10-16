@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { withMissingBinary } from './helpers/native-tools';
 import { convertOffice } from '../src/lib/conversions/office';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
 import { buildWordBinary } from './helpers/word-binary-builder';
@@ -92,6 +94,23 @@ describe('an office suite that stops on a document', () => {
     );
   });
 
+  it('names a missing import filter for a format that only some builds import, and a damaged file for any other', () => {
+    const cannotLoad = new SandboxedProcessError('SandboxedProcessError (exit 1): Error: source file could not be loaded', 1, 'Error: source file could not be loaded');
+    expect((asUnreadableDocument(cannotLoad, 'rb') as Error).message).toBe(
+      'LibreOffice could not read the .rb file: it is damaged, or the LibreOffice of this worker has no import filter for RB files.'
+    );
+    expect((asUnreadableDocument(cannotLoad, 'wps') as Error).message).toBe(
+      'LibreOffice could not read the .wps file: it is damaged, encrypted or not a valid WPS document.'
+    );
+    const wroteNothing = new Error('LibreOffice execution completed without producing expected output file for target format "txt"');
+    expect((asUnreadableDocument(wroteNothing, 'rb') as Error).message).toBe(
+      'LibreOffice could not read the .rb file: it is damaged, or the LibreOffice of this worker has no import filter for RB files.'
+    );
+    expect((asUnreadableDocument(wroteNothing, 'sxw') as Error).message).toBe(
+      'LibreOffice could not read the .sxw file: it is damaged or not a valid SXW document.'
+    );
+  });
+
   it('leaves the failures of a format it does not read untouched', () => {
     const stopped = new SandboxedProcessError(`SandboxedProcessError (exit 134): ${LIBREOFFICE_LAYOUT_CRASH}`, 134, LIBREOFFICE_LAYOUT_CRASH, 'SIGABRT');
     expect(asUnreadableDocument(stopped, 'pdf')).toBe(stopped);
@@ -136,6 +155,10 @@ describe('how the office suite reaches the targets it does not write', () => {
     ['dot', 'md', 'docx'],
     ['doc', 'txt', 'txt'],
     ['dot', 'txt', 'txt'],
+    ['doc', 'xps', 'txt'],
+    ['dot', 'hwpx', 'txt'],
+    ['doc', 'mobi', 'txt'],
+    ['doc', 'epub', 'docx'],
     ['xls', 'csv', 'xlsx'],
     ['xlt', 'csv', 'xlsx'],
     ['ppt', 'html', 'pptx'],
@@ -166,5 +189,23 @@ describe('how the office suite reaches the targets it does not write', () => {
 
   it('knows no application for a format it does not cover', () => {
     expect(officeSuiteApplication('docx')).toBeUndefined();
+  });
+});
+
+describe('the dispatcher without the office suite', () => {
+  /** A compound file header (Works) and an empty ZIP package (OpenOffice.org 1.x and Numbers): enough to pass the signature check. */
+  const COMPOUND_FILE = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504)]);
+  const ZIP_PACKAGE = Buffer.from([0x50, 0x4b, 0x05, 0x06, ...new Array<number>(18).fill(0)]);
+
+  it.each([
+    ['wps', 'docx', COMPOUND_FILE],
+    ['wps', 'html', COMPOUND_FILE],
+    ['wps', 'txt', COMPOUND_FILE],
+    ['sxw', 'odt', ZIP_PACKAGE],
+    ['numbers', 'csv', ZIP_PACKAGE],
+  ])('.%s to .%s is an unavailable-engine answer (503), never a conversion of the bytes', async (source, target, bytes) => {
+    const run = withMissingBinary('SOFFICE_PATH', () => dispatchConversion(bytes, source, target, {}, `sample.${source}`));
+    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
   });
 });

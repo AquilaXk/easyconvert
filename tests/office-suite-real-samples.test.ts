@@ -6,10 +6,12 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { ConversionFailedError } from '../src/lib/types';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { defaultResolver } from '../bench/tools';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { sofficeConvert } from './helpers/soffice-convert';
+import { xpsGlyphText } from './helpers/xps-glyphs';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -99,10 +101,23 @@ function referenceWords(sample: Buffer, extension: string): Set<string> {
   return new Set(sofficeConvert(sample, `in.${extension}`, 'pdf', (output) => pdfWords(output.read())));
 }
 
-/** calibre's text of an e-book, or undefined when `ebook-convert` is not installed. */
+/** The e-book formats calibre also reads, which gives a second reference for their words. */
+const CALIBRE_EXTENSIONS: ReadonlySet<string> = new Set(['lrf', 'pdb', 'rb']);
+
+/** The reference words, or undefined for a format of which this office suite has no import filter (it cannot load the file). */
+function referenceOrRefusal(sample: Buffer, extension: string): Set<string> | undefined {
+  try {
+    return referenceWords(sample, extension);
+  } catch (error) {
+    if (extension === 'rb') return undefined;
+    throw error;
+  }
+}
+
+/** calibre's text of an e-book, or undefined when `ebook-convert` is not installed (or the format is not an e-book). */
 function calibreWords(sample: Buffer, extension: string): Set<string> | undefined {
   const tool = defaultResolver()('ebook-convert');
-  if (!tool) return undefined;
+  if (!tool || !CALIBRE_EXTENSIONS.has(extension)) return undefined;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'calibre-ref-'));
   try {
     fs.writeFileSync(path.join(dir, `in.${extension}`), sample);
@@ -122,23 +137,12 @@ async function epubWords(epub: Buffer): Promise<string[]> {
   return wordsOf(parts.join(' '));
 }
 
-/** The words of an XPS package: the UnicodeString of every glyph run of its fixed pages. */
-async function xpsWords(xps: Buffer): Promise<string[]> {
-  const zip = await JSZip.loadAsync(xps);
-  const runs: string[] = [];
-  for (const name of Object.keys(zip.files)) {
-    if (!/\.fpage$/i.test(name)) continue;
-    for (const match of (await zip.files[name].async('string')).matchAll(/UnicodeString="([^"]*)"/g)) runs.push(match[1]);
-  }
-  return wordsOf(runs.join(' '));
-}
-
 async function outputWords(output: Buffer, target: string): Promise<string[] | undefined> {
   if (target === 'pdf') return pdfWords(output);
   if (target === 'html') return wordsOf(stripMarkup(output.toString('utf-8')));
   if (TEXT_TARGETS.has(target)) return wordsOf(output.toString('utf-8'));
   if (target === 'epub') return epubWords(output);
-  if (target === 'xps') return xpsWords(output);
+  if (target === 'xps') return wordsOf(await xpsGlyphText(output));
   if (SPREADSHEET_TARGETS.has(target)) return sofficeConvert(output, `out.${target}`, 'csv', (rendered) => wordsOf(rendered.read().toString('utf-8')));
   if (OFFICE_RENDERED_TARGETS.has(target)) return sofficeConvert(output, `out.${target}`, 'pdf', (rendered) => pdfWords(rendered.read()));
   return undefined;
@@ -199,7 +203,14 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
       async (ctx) => {
         const { bytes: original } = await requireRealworldSample(ctx, id);
         const sample = resaveAs === undefined ? original : sofficeConvert(original, id, resaveAs, (output) => output.read());
-        const reference = referenceWords(sample, extension);
+        const reference = referenceOrRefusal(sample, extension);
+        if (reference === undefined) {
+          // The office suite of this machine has no import filter for the format: the answer is a typed refusal that says so.
+          const refusal = await dispatchConversion(sample, extension, targets[0], {}, id).catch((error: unknown) => error);
+          expect(refusal).toBeInstanceOf(ConversionFailedError);
+          expect((refusal as Error).message).toMatch(/has no import filter/);
+          return;
+        }
         const calibre = calibreWords(sample, extension);
         for (const target of targets) {
           const label = `${id} -> ${target}`;

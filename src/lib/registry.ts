@@ -1324,7 +1324,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Legacy PowerPoint presentation template.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'xps', 'odp'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'odp'],
   },
   ppsx: {
     id: 'ppsx',
