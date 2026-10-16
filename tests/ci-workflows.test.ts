@@ -117,6 +117,20 @@ describe('the pull request workflow', () => {
     expect(run).not.toContain('--shard');
   });
 
+  it('runs the Parquet writer conformance in strict mode on Node 22.15 or newer, which has zstd in node:zlib, and in no shard', () => {
+    const file = 'tests/parquet-writer-conformance.test.ts';
+    expect(listShardedTests(), 'a Node 20 shard cannot run the ZSTD rows').not.toContain(file);
+    const steps = ci.jobs.integration.steps;
+    const at = steps.findIndex((step) => (step.run ?? '').includes(file));
+    expect(at, 'a step of the integration job runs the file').toBeGreaterThan(-1);
+    expect(steps[at].env?.ORACLE_STRICT_MODE).toBe('1');
+    const nodeSteps = steps.slice(0, at).filter((step) => String(step.uses ?? '').startsWith('actions/setup-node@'));
+    const nodeVersion = String(nodeSteps[nodeSteps.length - 1]?.with?.['node-version']);
+    expect(Number(nodeVersion), 'the last Node.js setup before the step').toBeGreaterThanOrEqual(22);
+    // The earlier steps are the ones that assert on Node 20, the worker runtime: only this step moves to a newer Node.
+    expect(String(nodeSteps[0]?.with?.['node-version'])).toBe('20');
+  });
+
   it('does not install the test tools for the static gates', () => {
     const uses = ci.jobs.checks.steps.map((step) => step.uses ?? '');
     expect(uses).not.toContain('./.github/actions/ci-setup');

@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
+import { OracleToolMissingError } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import {
   duckdbRead,
@@ -50,11 +52,22 @@ const ZSTD_WRITE_AVAILABLE = isZstdWriteAvailable();
 const SIZE_RATIO_LIMIT = 1.2;
 const SIZE_FIXTURE_ROWS = 200_000;
 
-const WRITE_CODECS: { name: string; codec: CompressionCodec; reference: 'snappy' | 'zstd' | 'none'; available: boolean }[] = [
-  { name: 'UNCOMPRESSED', codec: CompressionCodec.UNCOMPRESSED, reference: 'none', available: true },
-  { name: 'SNAPPY', codec: CompressionCodec.SNAPPY, reference: 'snappy', available: true },
-  { name: 'ZSTD', codec: CompressionCodec.ZSTD, reference: 'zstd', available: ZSTD_WRITE_AVAILABLE },
+const WRITE_CODECS: { name: string; codec: CompressionCodec; reference: 'snappy' | 'zstd' | 'none' }[] = [
+  { name: 'UNCOMPRESSED', codec: CompressionCodec.UNCOMPRESSED, reference: 'none' },
+  { name: 'SNAPPY', codec: CompressionCodec.SNAPPY, reference: 'snappy' },
+  { name: 'ZSTD', codec: CompressionCodec.ZSTD, reference: 'zstd' },
 ];
+
+/**
+ * The ZSTD rows write pages through node:zlib, which has zstd from Node 22.15. A runtime without it cannot run them:
+ * locally that is a skip, and under ORACLE_STRICT_MODE a failure (oracleTest rethrows this error in strict mode), so a CI
+ * job on an older Node cannot pass with the ZSTD rows unrun. CI runs this file on Node 22 in the `integration` job.
+ */
+function requireZstdWrite(codec: CompressionCodec): void {
+  if (codec === CompressionCodec.ZSTD && !ZSTD_WRITE_AVAILABLE) {
+    throw new OracleToolMissingError('node:zlib zstd', `ZSTD pages need node:zlib zstd (Node.js 22.15 or newer), this is Node.js ${process.versions.node}`);
+  }
+}
 
 type Row = Record<string, unknown>;
 
@@ -169,11 +182,11 @@ describe('Parquet writer conformance (issue 526)', () => {
   );
 
   for (const spec of WRITE_CODECS) {
-    const register = spec.available ? oracleTest : oracleTest.skip;
-    register(
-      `pyarrow reads every edge value exactly with ${spec.name}${spec.available ? '' : ' (zstd unavailable in this Node runtime)'}`,
+    oracleTest(
+      `pyarrow reads every edge value exactly with ${spec.name}`,
       ['python3'],
       () => {
+        requireZstdWrite(spec.codec);
         const read = pyarrowRead(encodeParquet(EDGE_ROWS, { codec: spec.codec }));
         expect(read.numRows).toBe(EDGE_ROWS.length);
         for (const name of ['id', 'dbl', 'txt', 'flag', 'only_null']) {
@@ -193,8 +206,9 @@ describe('Parquet writer conformance (issue 526)', () => {
     );
   }
 
-  oracleTest('duckdb reads every edge value exactly with each available codec', ['python3'], () => {
-    for (const spec of WRITE_CODECS.filter((c) => c.available)) {
+  oracleTest('duckdb reads every edge value exactly with each codec', ['python3'], () => {
+    for (const spec of WRITE_CODECS) {
+      requireZstdWrite(spec.codec);
       const read = duckdbRead(encodeParquet(EDGE_ROWS, { codec: spec.codec }));
       expect(read.numRows).toBe(EDGE_ROWS.length);
       for (const name of ['id', 'dbl', 'txt', 'flag']) {
@@ -362,11 +376,11 @@ describe('Parquet writer conformance (issue 526)', () => {
   // -------------------------------------------------------------------------
 
   for (const spec of WRITE_CODECS.filter((c) => c.codec !== CompressionCodec.UNCOMPRESSED)) {
-    const register = spec.available ? oracleTest : oracleTest.skip;
-    register(
-      `200k-row file is within ${SIZE_RATIO_LIMIT}x of the reference writer with ${spec.name}${spec.available ? '' : ' (zstd unavailable in this Node runtime)'}`,
+    oracleTest(
+      `200k-row file is within ${SIZE_RATIO_LIMIT}x of the reference writer with ${spec.name}`,
       ['python3'],
       () => {
+        requireZstdWrite(spec.codec);
         const fixture = sizeFixture();
         const ours = encodeParquet(fixture.rows, { codec: spec.codec });
         const reference = pyarrowWrite(fixture.columns, fixture.schema, spec.reference);
@@ -550,8 +564,9 @@ describe('Parquet writer conformance (issue 526)', () => {
   });
 
   describe('decoding our own output', () => {
-    for (const spec of [...WRITE_CODECS.filter((c) => c.available), { name: 'GZIP', codec: CompressionCodec.GZIP, reference: 'none' as const, available: true }]) {
-      it(`round-trips edge rows with ${spec.name} (nulls preserved, no coercion)`, () => {
+    for (const spec of [...WRITE_CODECS, { name: 'GZIP', codec: CompressionCodec.GZIP, reference: 'none' as const }]) {
+      oracleTest(`round-trips edge rows with ${spec.name} (nulls preserved, no coercion)`, [], () => {
+        requireZstdWrite(spec.codec);
         const rows = decodeParquet(encodeParquet(EDGE_ROWS, { codec: spec.codec }));
         expect(rows.length).toBe(EDGE_ROWS.length);
         for (const name of ['id', 'dbl', 'txt', 'flag']) {
@@ -705,9 +720,20 @@ describe('Parquet writer conformance (issue 526)', () => {
       expect(() => encodeParquet(rows, { codec: CompressionCodec.BROTLI })).toThrow(ParquetCodecUnavailableError);
     });
 
-    // skip-ok: runtime capability: whether this Node build has zstd in node:zlib.
-    it.skipIf(ZSTD_WRITE_AVAILABLE)('reports ZSTD as unavailable with a typed error on runtimes without node:zlib zstd', () => {
-      expect(() => encodeParquet([{ a: 1 }], { codec: CompressionCodec.ZSTD })).toThrow(ParquetCodecUnavailableError);
+    it('reports ZSTD as unavailable with a typed error on runtimes without node:zlib zstd', () => {
+      // Runs on every runtime: node:zlib is shown without its zstd functions, as Node 20 has it, for this one call.
+      const names = ['zstdCompressSync', 'zstdDecompressSync'] as const;
+      const saved = names.map((name) => Object.getOwnPropertyDescriptor(zlib, name));
+      for (const name of names) Object.defineProperty(zlib, name, { value: undefined, configurable: true, writable: true });
+      try {
+        expect(() => encodeParquet([{ a: 1 }], { codec: CompressionCodec.ZSTD })).toThrow(ParquetCodecUnavailableError);
+      } finally {
+        names.forEach((name, index) => {
+          const descriptor = saved[index];
+          if (descriptor === undefined) delete (zlib as unknown as Record<string, unknown>)[name];
+          else Object.defineProperty(zlib, name, descriptor);
+        });
+      }
     });
 
     // convertData tabulates records first: nested objects become dotted columns, as for every table target.
@@ -753,9 +779,9 @@ describe('Parquet writer conformance (issue 526)', () => {
     });
   });
 
-  // skip-ok: runtime capability: whether this Node build has zstd in node:zlib.
-  describe.skipIf(!ZSTD_WRITE_AVAILABLE)('ZSTD output', () => {
+  describe('ZSTD output', () => {
     oracleTest('pyarrow and the reader agree on ZSTD pages with dictionary and plain columns', ['python3'], () => {
+      requireZstdWrite(CompressionCodec.ZSTD);
       const fixture = sizeFixture();
       const bytes = encodeParquet(fixture.rows.slice(0, 5000), { codec: CompressionCodec.ZSTD });
       const read = pyarrowRead(bytes);

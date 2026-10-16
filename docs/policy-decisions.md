@@ -187,13 +187,15 @@ Compression
 
 ## 7. Characters without a Unicode counterpart
 
-- **Status**: Implemented (#725); extended to every in-process PDF writer (#742) and to legacy binary word-processing documents (`.doc`, #726).
+- **Status**: Implemented (#725); extended to every in-process PDF writer (#742), to legacy binary word-processing documents (`.doc`, #726) and, with styles, WP Greek and presentations, in the follow-ups of #760.
 - **Decision**:
   - Symbol-font private-use characters are mapped to Unicode with the standard tables for the symbol fonts.
   - A character that no table maps becomes U+FFFD, and a warning names the font and the code.
   - **The PDF writers apply the same rule to any code point no font can draw** (unassigned, private-use, noncharacter, lone surrogate). The code point becomes U+FFFD and the result carries one warning line for each distinct code point. They no longer refuse the document.
-  - **Binary word-processing documents (`.doc`) take the font from the character formatting of the run**: the font set on the run for the ASCII, East Asian or other text (the first of these three that is a symbol font), else the default character fonts of the style sheet. A Symbol field character (a placeholder in the text plus its own font and code) maps the same way, and in any other font it is the Unicode character it names. A document without a font table or a run whose font index names no font maps nothing, and the warning names no font.
-  - **A symbol-font character whose Unicode counterpart no installed font can draw becomes U+FFFD in a PDF**, with a warning that names the font, the code and the counterpart. Text, HTML and the other outputs keep the counterpart. Installing a font that covers the counterpart makes the next conversion draw it.
+  - **Binary word-processing documents (`.doc`) take the font from the formatting of the character**. Each of the ASCII, East Asian and other fonts is the first one set by the run, then by the character style of the run, then by the paragraph style of its paragraph (the Normal style when it has no entry of its own), then by the default character fonts of the style sheet; a style that sets no font hands the choice to the style it is based on. The font of the character is the first of the three that is a symbol font. A Symbol field character (a placeholder in the text plus its own font and code) maps the same way, and in any other font it is the Unicode character it names. A document without a font table or a character whose font index names no font maps nothing, and the warning names no font.
+  - **A style chain is followed for at most 32 styles, and a malformed one is refused** (HTTP 400): styles based on each other, a style the sheet does not hold, a style whose size runs outside the table stream, a chain longer than the limit. Each style is resolved once per document.
+  - **The WP Greek faces (WordPerfect character set 8) have a table of their own**: the capital and small Greek letters in alphabet order from code 0x21. The slots the set fills with a repeat of another letter and the accented and polytonic letters (their order differs between versions of the set) map to nothing, so they become U+FFFD with a warning like any other unmapped code.
+  - **A symbol-font character whose Unicode counterpart no installed font can draw becomes U+FFFD in a PDF**, with a warning that names the font, the code and the counterpart. Text, HTML and the other outputs keep the counterpart. Installing a font that covers the counterpart makes the next conversion draw it. **Binary presentations (`.ppt`) follow the same rule**: the same helper decides what the installed fonts cover, and the warning lines are the same. Presentations in the XML format do not map symbol fonts at all; their private-use characters fall under the rule of the PDF writers above.
 - **Why**:
   - The whole document must still convert. Failing it for one glyph is worse than any substitute.
   - A replacement mark is honest.
@@ -203,14 +205,15 @@ Compression
   - The reader sees a replacement mark where the original showed a glyph.
   - Plain text, Markdown and HTML to PDF follow the rule too. A file with a stray noncharacter converts, where it used to fail with HTTP 400.
   - A character that is assigned but that no installed font covers still fails, because installing a font fixes it. The exception is a character that came from a symbol-font mapping in a `.doc`: the pictograph and arrow blocks the Wingdings and Webdings tables map to are covered by few fonts, and a bullet or an arrow is not worth a failed document.
-  - Paragraph and character styles are not followed, so a symbol-font character whose font comes only from a style is replaced and reported under the font the run resolves to.
+  - A symbol-font character that the document stores with the font of an ordinary text style (a check box in the Normal style, whose font is Arial) is not a symbol character to the reader, and it is replaced and reported under that font. The formatting names no symbol font, so any guess would invent a glyph.
+  - A PDF made from a presentation shows U+FFFD for an arrow or a pictograph that no installed font covers, where it used to fail the file.
 - **Alternatives rejected**:
   - **Refusing the document.**
   - **Rendering with a bundled symbol font**: wrong glyphs, silently.
   - **Dropping the character**: the loss would leave no trace in the output.
   - **Refusing a `.doc` whose mapped character has no installed glyph**: the same document converts on a machine with the font and fails on one without, for a decoration.
-- **Verified by**: the PPT and `.doc` symbol-font tests (`tests/doc-symbol-fonts.test.ts`, with a document written by the office suite and the PDF text read by a separate PDF reader, and `tests/doc-corpus-symbol-fonts.test.ts` on public documents), `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` converts).
-- **Revisit when**: a reliable glyph source for the remaining math fonts appears, or the `.doc` reader follows styles.
+- **Verified by**: the PPT and `.doc` symbol-font tests (`tests/doc-symbol-fonts.test.ts`, with a document written by the office suite and the PDF text read by a separate PDF reader; `tests/doc-style-fonts.test.ts`, with documents written by hand from the file format; `tests/ppt-text-extraction.test.ts`; and `tests/doc-corpus-symbol-fonts.test.ts` and `tests/ppt-corpus-symbol-fonts.test.ts` on public documents, the Greek letters read against the sentences they stand in), `tests/symbol-font-map.test.ts` (the Greek alphabet in order), `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` and `doc-poi-41246-2.ppt` convert).
+- **Revisit when**: a reliable glyph source for the remaining math fonts appears, the accented letters of the WP Greek set are confirmed against a real document, or the `.pptx` reader names the font of a run.
 
 ## 8. Empty documents and macros
 
@@ -474,7 +477,7 @@ Compression
 - **Status**: Implemented (#749, issue #736), decided 2026-10-11.
 - **Decision**:
   - **Metadata blocks**: a JPEG, WebP or AVIF carries the EXIF block, the XMP packet and the ICC profile of its source unchanged. The profile is attached and the pixels are not converted through it. No block is made up.
-  - **sRGB-gamut profiles**: a profile with sRGB primaries (whether IEC 61966-2-1 sRGB or a development curve over sRGB primaries such as a camera RAW decoder's gamma 2.222 curve) is not written. The pixels go through it into standard sRGB; wider-gamut and grey profiles stay attached.
+  - **sRGB-gamut profiles**: a profile with sRGB primaries (whether IEC 61966-2-1 sRGB or a development curve over sRGB primaries such as a camera RAW decoder's gamma 2.222 curve) is not written. A development curve goes through the profile into standard sRGB; a profile that describes sRGB itself changes no pixel (the samples are read as they are, #641); wider-gamut and grey profiles stay attached.
   - **Print density**: a JPEG keeps it (in its header, together with an EXIF block made from it when the source has none); WebP and AVIF do not.
   - **Alpha**: the alpha plane of an AVIF is encoded at the colour quality. There is no separate alpha setting.
   - **16 to 8 bits**: a 16-bit picture written as JPEG or WebP is reduced to the nearest 8-bit level, not to the high byte.
@@ -488,15 +491,18 @@ Compression
   - A profile that is not sRGB makes a file larger by the profile (4.5 kB for the grey profile of the radiograph) where the earlier policy baked it in. That is the cost of exact colours, paid by the pictures that need it.
   - Dropping an sRGB profile changes no colour a viewer shows, but a reader that treats an untagged file as another colour space will see it differently; the web formats and every browser assume sRGB.
   - Alpha at the colour quality moves the edge pixels of flat graphics: at quality 70 a flat chart reads 57 dB on the flattened picture, where lossless alpha gives an exact picture at 2.5 times the bytes (51.2 kB against 20.0 kB). The service does the former, so the files stay comparable.
-  - Rounding adds one pass over the samples of a 16-bit picture (no measurable time: 24 ms either way on the 16-bit space photograph).
+  - Rounding is the image library's scaling step in front of its high-byte cast. Placed between the two colour transforms the library runs for a picture with an sRGB profile (through a wide-gamut working space and back), it cost the 16-bit space photograph 31 ms against 23 ms before the step; with the profile read as it is (#641) it takes 18 ms (Linux test machine, medians of 40 runs).
+  - A picture with an sRGB profile is read without converting its samples through the profile. For 8-bit samples that transform is the identity on the pictures of the benchmark (0 of 1.7 to 6.8 million samples differ) and costs 3 to 6 ms per read of a 1 to 2 megapixel picture; on noise it moves 0.3 % of the samples by one level. For 16-bit samples it goes through a wide-gamut space and back and moved 3.5 % of the nearest 8-bit levels one level too low.
+  - A PNG that holds only text chunks and an sRGB profile is decoded once for JPEG and AVIF like a plain PNG: neither encoder writes text, and the profile is not written.
   - A JPEG with a print density gets an EXIF block it did not have.
 - **Alternatives rejected**:
   - **Lossless alpha** (the standalone encoder's default): exact, but 2.5 times the bytes on a flat chart and not what the service writes.
   - **Converting every profile into the pixels and writing none** (the earlier policy): smaller, but irreversible for wide-gamut pictures, and the pictures differ from the service's.
   - **Keeping every profile, the sRGB one included**: 3 kB more than the service on most photographs.
   - **Dithering the 16 to 8 bit reduction**: adds noise the encoder must code, and loses PSNR and SSIM at the same size.
+  - **Keeping the colour transform through an sRGB profile**: an identity for 8-bit samples and an error of one step of 65535 for 16-bit ones, at the cost of two reads' worth of transform time per conversion.
 - **Verified by**:
-  - `tests/image-metadata-overhead.test.ts` (no block made up; a wide-gamut profile kept byte for byte in JPEG, WebP and AVIF; an sRGB profile not written; XMP kept alone), `tests/icc-srgb.test.ts`, `tests/image-16bit-rounding.test.ts`, and the argument test of `tests/image-avif-library-encoder.test.ts` (alpha quality equals the colour quality).
+  - `tests/image-metadata-overhead.test.ts` (no block made up; a wide-gamut profile kept byte for byte in JPEG, WebP and AVIF; an sRGB profile not written; XMP kept alone), `tests/icc-srgb.test.ts`, `tests/image-16bit-rounding.test.ts`, `tests/image-16bit-reduction.test.ts` (all 65536 inputs against exact rational arithmetic; a picture with an sRGB profile written as the same file as the one without), and the argument test of `tests/image-avif-library-encoder.test.ts` (alpha quality equals the colour quality).
   - The image parity rows, where the reference receives the same blocks and the colour quality for alpha (`bench/png-metadata.ts`).
 - **Revisit when**:
   - A target other than JPEG, WebP and AVIF should follow (PNG and TIFF still apply the profile to the pixels).

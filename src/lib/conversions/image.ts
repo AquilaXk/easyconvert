@@ -1608,7 +1608,7 @@ async function apply16BitSrgbPrimariesCurve(pipeline: Sharp, meta: Metadata, tar
 
 const SIXTEEN_BIT_CURVE_TARGETS: ReadonlySet<string> = new Set(['png', 'tiff', 'tif', 'avif', 'psd']);
 
-async function preserveMetadata(pipeline: Sharp, target: string): Promise<Sharp> {
+async function preserveMetadata(pipeline: Sharp, target: string, srgbProfileIgnored: boolean): Promise<Sharp> {
   // Float targets apply the input's own colour description to the samples (see sdr-linear.ts) and write no metadata.
   if (FLOAT_TARGETS.has(target)) return pipeline;
   const meta = await pipeline.metadata();
@@ -1621,7 +1621,7 @@ async function preserveMetadata(pipeline: Sharp, target: string): Promise<Sharp>
   ) {
     return apply16BitSrgbPrimariesCurve(pipeline, meta, target);
   }
-  if (SOURCE_BLOCK_TARGETS.has(target)) return keepSourceBlocks(pipeline, meta, target);
+  if (SOURCE_BLOCK_TARGETS.has(target)) return keepSourceBlocks(pipeline, meta, target, srgbProfileIgnored);
   const hasMetadataBlock = meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined;
   const hasCustomDensity = meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI;
   const isDeepWithoutProfile = meta.depth !== SHARP_EIGHT_BIT_DEPTH && !meta.hasProfile;
@@ -1632,10 +1632,24 @@ async function preserveMetadata(pipeline: Sharp, target: string): Promise<Sharp>
 }
 
 /**
+ * The input opened again without its ICC profile when the profile describes sRGB, for the targets that write the source's blocks: such a
+ * profile is not written and changes no pixel (`isSrgbProfile`), so converting through it only costs time. For an 8-bit picture the
+ * transform to sRGB is the identity and costs 3 to 6 ms per read of a 1 to 2 megapixel picture, and a thumbnail, the encode and the alpha
+ * check each read it. For a 16-bit picture the transform goes through a wide-gamut working space and back, which moves about a third of the
+ * samples by one step of 65535, enough to turn the nearest 8-bit level of 3.5% of them into the one below. Returns null when the
+ * profile is none or not sRGB.
+ */
+async function openWithoutSrgbProfile(pipeline: Sharp, selection: FrameSelection): Promise<Sharp | null> {
+  const meta = await pipeline.metadata();
+  if (!meta.hasProfile || meta.icc === undefined || !isSrgbProfile(meta.icc)) return null;
+  return openLimitedSharp(selection.source, { ...selection.input, ignoreIcc: true });
+}
+
+/**
  * The pipeline keeping the EXIF block, XMP packet and ICC profile the input has, and no block it has not. A source with an
  * IPTC block keeps it in a JPEG, which the library can only do by keeping everything.
  */
-function keepSourceBlocks(pipeline: Sharp, meta: Metadata, target: string): Sharp {
+function keepSourceBlocks(pipeline: Sharp, meta: Metadata, target: string, srgbProfileIgnored: boolean): Sharp {
   if (meta.iptc !== undefined && (target === 'jpg' || target === 'jpeg')) return pipeline.keepMetadata();
   let kept = pipeline;
   // The library writes a JPEG's print density only along with an EXIF block (made from the density when the source has none):
@@ -1645,9 +1659,11 @@ function keepSourceBlocks(pipeline: Sharp, meta: Metadata, target: string): Shar
   if (meta.xmp !== undefined) kept = kept.keepXmp();
   // A profile in the sRGB gamut (either IEC 61966-2-1 sRGB, which says nothing a viewer does not assume and the reference service's
   // PNG reader drops, or a development curve over sRGB primaries such as a RAW decoder's gamma 2.222 curve) is applied to the pixels
-  // and not written; a wider-gamut or grey profile is kept attached.
-  if (meta.hasProfile) kept = meta.icc !== undefined && !hasSrgbPrimaries(meta.icc) ? kept.keepIccProfile() : kept.withIccProfile('srgb', { attach: false });
-  return kept;
+  // and not written; a wider-gamut or grey profile is kept attached. An sRGB profile the input was opened without (`openWithoutSrgbProfile`)
+  // has nothing left to apply.
+  if (!meta.hasProfile) return kept;
+  if (meta.icc !== undefined && !hasSrgbPrimaries(meta.icc)) return kept.keepIccProfile();
+  return srgbProfileIgnored ? kept : kept.withIccProfile('srgb', { attach: false });
 }
 
 /** Keeps typed conversion errors; wraps any other decoder failure in a ConversionFailedError (HTTP 400). */
@@ -2063,6 +2079,8 @@ export async function convertImage(
   // Whether the alpha plane of a PNG decoded once is fully opaque; unknown (undefined) for any other source.
   let decodedAlphaIsOpaque: boolean | undefined;
   let decodedRaster: Raster | undefined;
+  // Whether the input was opened without its sRGB profile (see `openWithoutSrgbProfile`), which then needs no transform.
+  let srgbProfileIgnored = false;
 
   /** Package outputs that are not one image of the pipeline: assembled animations and per-page ZIPs. */
   const packageMultiFrameSource = async (selection: FrameSelection): Promise<ConversionResult | null> => {
@@ -2226,6 +2244,13 @@ export async function convertImage(
           decodedRaster = decoded.raster;
         }
       }
+      if (inputCicp === null && decodedRaster === undefined && !frameSelection.keepsAnimation && options.stripMetadata !== true && SOURCE_BLOCK_TARGETS.has(fmt)) {
+        const withoutProfile = await openWithoutSrgbProfile(pipeline, frameSelection);
+        if (withoutProfile !== null) {
+          pipeline = withoutProfile;
+          srgbProfileIgnored = true;
+        }
+      }
     }
 
     if (isRawInput) {
@@ -2238,7 +2263,7 @@ export async function convertImage(
 
     // Preserve ICC color profiles and EXIF metadata unless explicitly stripped
     if (options.stripMetadata !== true) {
-      pipeline = await preserveMetadata(pipeline, fmt);
+      pipeline = await preserveMetadata(pipeline, fmt, srgbProfileIgnored);
     }
   } catch (err: unknown) {
     if (err instanceof InputPixelLimitError) throw err;

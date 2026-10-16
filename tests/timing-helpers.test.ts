@@ -12,6 +12,9 @@ import {
   SCALING_PASSES,
   SCALING_FACTOR,
   SCALING_TEST_TIMEOUT_MS,
+  cpuClockMs,
+  WARMUP_STEADY_RUNS,
+  warmUpUntilSteady,
 } from './helpers/timing';
 
 /**
@@ -127,6 +130,8 @@ describe('size-independence check', () => {
       expectSizeIndependent('short linear', linearWork, {
         modestSize: SHORT_LINEAR_MODEST,
         hugeSize: SHORT_LINEAR_MODEST * SCALING_FACTOR,
+        // CPU time: on a busy runner a preempted modest sample read as slow as the 4x one, and the growth went unseen.
+        clock: cpuClockMs,
       })
     ).rejects.toThrow(/short linear: the larger input took .* the work must not grow with the input/);
   }, SCALING_TEST_TIMEOUT_MS);
@@ -264,5 +269,87 @@ describe('expectNoHangOnInput', () => {
         throw failure;
       }, 0)
     ).rejects.toBe(failure);
+  });
+});
+
+describe('warm-up until the time of the work is steady', () => {
+  /**
+   * A clock the work itself advances: each run of the work "takes" the cost the plan gives it, so the plan is exact on a
+   * busy runner too, where real time would stretch a run or add pauses between them.
+   */
+  function plannedRuns(costOf: (run: number) => number): { clock: () => number; work: () => void; costs: number[] } {
+    let now = 0;
+    const costs: number[] = [];
+    return {
+      clock: () => now,
+      work: () => {
+        const cost = costOf(costs.length);
+        costs.push(cost);
+        now += cost;
+      },
+      costs,
+    };
+  }
+  const SLOW_MS = 3;
+  const FAST_MS = 1;
+  const PLATEAU_RUNS = 12;
+  const SHORT_MIN_MS = 80;
+
+  it('runs on through a plateau of equal times until the work gets faster and then settles at the new speed', async () => {
+    const plan = plannedRuns((run) => (run < PLATEAU_RUNS ? SLOW_MS : FAST_MS));
+    const runs = await warmUpUntilSteady(plan.work, { minMs: SHORT_MIN_MS, clock: plan.clock });
+    expect(runs).toBe(plan.costs.length);
+    // More than WARMUP_STEADY_RUNS slow runs in a row did not end it: the minimum duration had not passed (12 x 3 ms < 80 ms).
+    expect(PLATEAU_RUNS).toBeGreaterThan(WARMUP_STEADY_RUNS);
+    expect(plan.costs.slice(0, PLATEAU_RUNS)).toEqual(Array(PLATEAU_RUNS).fill(SLOW_MS));
+    expect(plan.costs.slice(-WARMUP_STEADY_RUNS)).toEqual(Array(WARMUP_STEADY_RUNS).fill(FAST_MS));
+  });
+
+  it('stops at the first run after the minimum duration when the time has been steady', async () => {
+    const plan = plannedRuns(() => FAST_MS);
+    const runs = await warmUpUntilSteady(plan.work, { minMs: SHORT_MIN_MS, clock: plan.clock });
+    expect(runs).toBe(SHORT_MIN_MS / FAST_MS);
+  });
+
+  it('does not stop before WARMUP_STEADY_RUNS steady runs even when the minimum duration has passed', async () => {
+    const plan = plannedRuns((run) => (run < 5 ? 40 : FAST_MS));
+    const runs = await warmUpUntilSteady(plan.work, { minMs: SHORT_MIN_MS, clock: plan.clock });
+    expect(plan.costs.slice(-WARMUP_STEADY_RUNS)).toEqual(Array(WARMUP_STEADY_RUNS).fill(FAST_MS));
+    expect(runs).toBe(5 + WARMUP_STEADY_RUNS + 1);
+  });
+
+  it('gives up at the run limit for work that keeps getting faster', async () => {
+    const maxRuns = 15;
+    const plan = plannedRuns((run) => 6 * 0.8 ** run);
+    const runs = await warmUpUntilSteady(plan.work, { minMs: SHORT_MIN_MS, maxRuns, clock: plan.clock });
+    expect(runs).toBe(maxRuns);
+  });
+
+  it('gives up at the time limit for work that never settles within it', async () => {
+    const plan = plannedRuns((run) => 10 * 0.9 ** run);
+    const runs = await warmUpUntilSteady(plan.work, { minMs: SHORT_MIN_MS, maxMs: 30, clock: plan.clock });
+    expect(runs).toBeLessThan(10);
+    expect(plan.costs.reduce((sum, cost) => sum + cost, 0)).toBeGreaterThanOrEqual(30);
+  });
+});
+
+describe('the CPU clock', () => {
+  const SLEEP_MS = 60;
+  const BUSY_CPU_MS = 10;
+
+  it('stands still while the process waits and moves while it works', async () => {
+    const idleStart = cpuClockMs();
+    await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
+    expect(cpuClockMs() - idleStart).toBeLessThan(SLEEP_MS / 2);
+    // Moves: this loop ends only once the clock has been charged BUSY_CPU_MS, however long a busy runner takes to give them.
+    const busyStart = cpuClockMs();
+    let sink = 0;
+    while (cpuClockMs() - busyStart < BUSY_CPU_MS) sink += 1;
+    expect(sink).toBeGreaterThan(0);
+  });
+
+  it('still tells a linear loop from a quadratic one when it is the clock of the comparison', async () => {
+    const measurement = await measureInterleaved(() => quadraticWork(QUADRATIC_BASE), () => quadraticWork(QUADRATIC_BASE * SCALING_FACTOR), SCALING_PASSES, undefined, cpuClockMs);
+    expect(measurement.ratio).toBeGreaterThan(SCALING_FACTOR * LINEAR_RATIO_SLACK);
   });
 });

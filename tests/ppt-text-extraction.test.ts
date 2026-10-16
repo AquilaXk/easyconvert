@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
-import { readPptSlides, PPT_MAX_RECORD_DEPTH } from '../src/lib/conversions/office/ppt-reader';
+import { readPptSlides, PPT_MAX_RECORD_DEPTH, PPT_MAX_REPORTED_REPLACEMENTS } from '../src/lib/conversions/office/ppt-reader';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
@@ -295,6 +295,49 @@ describe('PowerPoint 97-2003 symbol-font characters', () => {
     const warnings: string[] = [];
     expect(texts(readPptSlides(ppt, warnings))).toEqual([['Bullet \uFFFD']]);
     expect(warnings).toEqual(['Replaced U+F0FC with U+FFFD: no Unicode counterpart is known.']);
+  });
+
+  describe('in an output that cannot draw every character', () => {
+    /** Wingdings 0xE8 is a long right arrow (U+1F87A) and 0xFC a check mark (U+2713); written out from the Unicode pictograph charts. */
+    const DECK = buildPptBinary({
+      slides: [{ shapes: [{ chars: 'Go \uF0E8 ok \uF0FC \uF0E8', fontRuns: [{ count: 3 }, { count: 1, symbolFont: 'Wingdings' }, { count: 4 }, { count: 1, symbolFont: 'Wingdings' }, { count: 1 }, { count: 1, symbolFont: 'Wingdings' }] }] }],
+    });
+    const cannotDrawArrow = (character: string): boolean => character !== '\u{1F87A}';
+
+    it('replaces a mapped character the output cannot draw by U+FFFD and reports it once per font and code', () => {
+      const warnings: string[] = [];
+      expect(texts(readPptSlides(DECK, warnings, cannotDrawArrow))).toEqual([['Go \uFFFD ok \u2713 \uFFFD']]);
+      expect(warnings).toEqual(['Replaced U+F0E8 of the font "Wingdings" with U+FFFD: its character U+1F87A has no glyph in the installed fonts.']);
+    });
+
+    it('keeps every mapped character when the output can draw them all', () => {
+      const warnings: string[] = [];
+      expect(texts(readPptSlides(DECK, warnings, () => true))).toEqual([['Go \u{1F87A} ok \u2713 \u{1F87A}']]);
+      expect(warnings).toEqual([]);
+      expect(texts(readPptSlides(DECK, warnings))).toEqual([['Go \u{1F87A} ok \u2713 \u{1F87A}']]);
+    });
+
+    it('reports a character with no counterpart and one the output cannot draw as separate lines', () => {
+      const ppt = buildPptBinary({
+        slides: [{ shapes: [{ chars: '\uF0E8\uF0FF', fontRuns: [{ count: 2, symbolFont: 'Wingdings' }] }] }],
+      });
+      const warnings: string[] = [];
+      expect(texts(readPptSlides(ppt, warnings, cannotDrawArrow))).toEqual([['\uFFFD\uFFFD']]);
+      expect(warnings).toEqual([
+        'Replaced U+F0E8 of the font "Wingdings" with U+FFFD: its character U+1F87A has no glyph in the installed fonts.',
+        'Replaced U+F0FF of the font "Wingdings" with U+FFFD: no Unicode counterpart is known.',
+      ]);
+    });
+
+    it('lists the characters the output cannot draw up to the report limit and counts the rest', () => {
+      // Webdings 0x21-0x70 map to 80 different characters, none of which the output may draw.
+      const codes = Array.from({ length: 80 }, (_, i) => String.fromCharCode(0xf021 + i)).join('');
+      const ppt = buildPptBinary({ slides: [{ shapes: [{ chars: codes, fontRuns: [{ count: 80, symbolFont: 'Webdings' }] }] }] });
+      const warnings: string[] = [];
+      expect(texts(readPptSlides(ppt, warnings, () => false))).toEqual([['\uFFFD'.repeat(80)]]);
+      expect(warnings).toHaveLength(PPT_MAX_REPORTED_REPLACEMENTS + 1);
+      expect(warnings[PPT_MAX_REPORTED_REPLACEMENTS]).toBe('Replaced 30 more private-use characters with U+FFFD.');
+    });
   });
 
   oracleTest('writes the mapped characters into a PDF whose text and embedded fonts a separate PDF reader confirms', ['pdftotext', 'pdffonts'], async () => {
