@@ -12,8 +12,6 @@ name: Regression corpus
 # No Actions cache holds the files: each shard reads its files from the archives by byte range, checks the digest, judges the
 # file and deletes it (bench/README.md, Regression corpus). A failed run shows in the run summary, which lists each file by verdict.
 on:
-  push:
-    branches: [test/780-regression-corpus]
   schedule:
     # 03:17 UTC, off the busy top of the hour and after the nightly run of 02:37 has released the runners.
     - cron: '17 3 * * 1-6'
@@ -62,7 +60,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE: ${{ github.event.schedule }}
-          INPUT_MODE: ${{ inputs.mode || 'full' }}
+          INPUT_MODE: ${{ inputs.mode }}
         run: |
           if [ "$EVENT_NAME" = schedule ]; then
             if [ "$SCHEDULE" = "$FULL_CRON" ]; then mode=full; else mode=nightly; fi
@@ -111,7 +109,7 @@ jobs:
           RUN_DATE: ${{ needs.plan.outputs.date }}
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.plan.outputs.count }}
-          LIMIT: ${{ inputs.limit || '40' }}
+          LIMIT: ${{ inputs.limit }}
         run: |
           args=(--mode "$MODE" --date "$RUN_DATE" --shard "$SHARD/$SHARDS" --cache "$RUNNER_TEMP/regression-corpus" --out "regression-shard-$SHARD.json")
           if [ -n "$LIMIT" ]; then args+=(--limit "$LIMIT"); fi
