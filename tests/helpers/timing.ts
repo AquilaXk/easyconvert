@@ -85,10 +85,10 @@ export function settle<T>(fn: () => T): Settled<T> {
   }
 }
 
-async function timeOnce<T>(work: () => T | Promise<T>): Promise<{ ms: number; value: T }> {
-  const started = performance.now();
+async function timeOnce<T>(work: () => T | Promise<T>, clock: Clock = wallClockMs): Promise<{ ms: number; value: T }> {
+  const started = clock();
   const value = (await work()) as T;
-  return { ms: performance.now() - started, value };
+  return { ms: clock() - started, value };
 }
 
 /** A clock in milliseconds. */
@@ -155,18 +155,18 @@ export const WARMUP_MAX_MS = 10_000;
  */
 export async function warmUpUntilSteady(
   work: () => unknown | Promise<unknown>,
-  limits: { minMs?: number; maxMs?: number; maxRuns?: number } = {}
+  limits: { minMs?: number; maxMs?: number; maxRuns?: number; clock?: Clock } = {}
 ): Promise<number> {
-  const { minMs = WARMUP_MIN_MS, maxMs = WARMUP_MAX_MS, maxRuns = WARMUP_MAX_RUNS } = limits;
-  const started = performance.now();
+  const { minMs = WARMUP_MIN_MS, maxMs = WARMUP_MAX_MS, maxRuns = WARMUP_MAX_RUNS, clock = wallClockMs } = limits;
+  const started = clock();
   let best = Number.POSITIVE_INFINITY;
   let steady = 0;
   let runs = 0;
   for (;;) {
-    const elapsed = performance.now() - started;
+    const elapsed = clock() - started;
     const settled = steady >= WARMUP_STEADY_RUNS && elapsed >= minMs;
     if (settled || runs >= maxRuns || elapsed >= maxMs) return runs;
-    const { ms } = await timeOnce(work);
+    const { ms } = await timeOnce(work, clock);
     runs++;
     steady = ms < best * WARMUP_GAIN ? 0 : steady + 1;
     best = Math.min(best, ms);
@@ -286,10 +286,10 @@ function assertLinearRatio(
 export async function expectSizeIndependentOnInputs<T, R = unknown>(
   label: string,
   run: (input: T) => R | Promise<R>,
-  inputs: { modest: T; huge: T; passes?: number; maxRatio?: number }
+  inputs: { modest: T; huge: T; passes?: number; maxRatio?: number; clock?: Clock }
 ): Promise<ScalingMeasurement<R>> {
   const maxRatio = inputs.maxRatio ?? CONSTANT_RATIO_BOUND;
-  const measurement = await measureInterleaved(() => run(inputs.modest), () => run(inputs.huge), inputs.passes, maxRatio);
+  const measurement = await measureInterleaved(() => run(inputs.modest), () => run(inputs.huge), inputs.passes, maxRatio, inputs.clock);
   // The raw per-call ratio: measureInterleaved repeats a fast side until its sample is long enough to time, so no
   // floor on the baseline is needed (and one would hide growth of work that takes under a millisecond).
   expect(
@@ -304,13 +304,14 @@ export async function expectSizeIndependentOnInputs<T, R = unknown>(
 export async function expectSizeIndependent<R = unknown>(
   label: string,
   run: (claimedSize: number) => R | Promise<R>,
-  options: { modestSize: number; hugeSize: number; passes?: number; maxRatio?: number }
+  options: { modestSize: number; hugeSize: number; passes?: number; maxRatio?: number; clock?: Clock }
 ): Promise<ScalingMeasurement<R>> {
   return expectSizeIndependentOnInputs(label, run, {
     modest: options.modestSize,
     huge: options.hugeSize,
     passes: options.passes,
     maxRatio: options.maxRatio,
+    clock: options.clock,
   });
 }
 
