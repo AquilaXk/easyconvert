@@ -4,16 +4,11 @@
  */
 import net from 'node:net';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
+import { isBusyHostStatus, retryDelayMs } from '../http-retry';
 
 const RETRIES = 6;
-const BACKOFF_BASE_MS = 2000;
 const HTTP_OK = 200;
 const HTTP_PARTIAL = 206;
-const HTTP_TOO_MANY_REQUESTS = 429;
-const HTTP_UNAVAILABLE = 503;
-/** A rate limit that names no time gets this pause, and a host may ask for at most RATE_LIMIT_MAX_WAIT_MS. */
-const RATE_LIMIT_DEFAULT_WAIT_MS = 30_000;
-const RATE_LIMIT_MAX_WAIT_MS = 120_000;
 const REQUEST_TIMEOUT_MS = 120_000;
 /** Node gives each address of a host 250 ms to connect before it tries the next one, which a host across an ocean does not meet. */
 const CONNECT_ATTEMPT_TIMEOUT_MS = 3000;
@@ -48,18 +43,6 @@ class BusyHostError extends FetchError {
   }
 }
 
-/**
- * The pause before retry number `tryNumber` + 1: it doubles with the attempt; a rate limit or an overloaded host that names the
- * seconds to wait is waited for that long, up to RATE_LIMIT_MAX_WAIT_MS, and a rate limit that names no time gets
- * RATE_LIMIT_DEFAULT_WAIT_MS. The pause is never shorter than the ordinary one.
- */
-export function retryDelayMs(tryNumber: number, status: number | null, retryAfter: string | null): number {
-  const ordinary = BACKOFF_BASE_MS * 2 ** tryNumber;
-  const seconds = retryAfter !== null && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null;
-  if (seconds !== null && (status === HTTP_TOO_MANY_REQUESTS || status === HTTP_UNAVAILABLE)) return Math.max(ordinary, Math.min(seconds * 1000, RATE_LIMIT_MAX_WAIT_MS));
-  if (status === HTTP_TOO_MANY_REQUESTS) return Math.max(ordinary, RATE_LIMIT_DEFAULT_WAIT_MS);
-  return ordinary;
-}
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -68,7 +51,7 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
   if (range) headers.range = `bytes=${range[0]}-${range[1]}`;
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   const expectedStatus = range ? HTTP_PARTIAL : HTTP_OK;
-  if (response.status === HTTP_TOO_MANY_REQUESTS || response.status === HTTP_UNAVAILABLE) {
+  if (isBusyHostStatus(response.status)) {
     throw new BusyHostError(`${url}: HTTP ${response.status}, expected ${expectedStatus}`, response.status, response.headers.get('retry-after'));
   }
   if (response.status !== expectedStatus) throw new FetchError(`${url}: HTTP ${response.status}, expected ${expectedStatus}`);
@@ -109,3 +92,5 @@ export function fetchSize(url: string): Promise<number> {
     return Number(total[1]);
   });
 }
+
+export { retryDelayMs };
