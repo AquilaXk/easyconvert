@@ -51,15 +51,16 @@ describe('the format an Illustrator file is converted as', () => {
 const needsGhostscript = skipUnless('Ghostscript (ps2pdf, pdfinfo)', getOracleToolPath('ps2pdf') !== null && getOracleToolPath('pdfinfo') !== null);
 
 describe.skipIf(needsGhostscript)('a PostScript Illustrator file', () => {
-  it('converts to a one-page PDF and to pictures of the page its header states', async (ctx) => {
+  it('converts to a one-page PDF and to pictures of the shape of its page', async (ctx) => {
     const sample = await requireRealworldSample(ctx, 'tika-testai_ps.ai');
     const pdfFile = path.join(workDir, 'art.pdf');
     fs.writeFileSync(pdfFile, (await dispatchConversion(sample.bytes, 'ai', 'pdf', {}, 'art.ai')).buffer);
     const info = execFileSync(getOracleToolPath('pdfinfo') as string, [pdfFile], { encoding: 'utf8' });
     expect(info).toMatch(/Pages:\s+1\b/);
-    // `%AI5_ArtSize: 612 792` of the file: a page of 612 x 792 points.
-    expect(info).toMatch(/Page size:\s+612 x 792 pts/);
-    const aspect = 612 / 792;
+    // The page is the interpreter's default paper (letter or A4, by the host's configuration): the pictures have the shape of the PDF's page.
+    const page = /Page size:\s+(\d+(?:\.\d+)?) x (\d+(?:\.\d+)?) pts/.exec(info);
+    expect(page).not.toBeNull();
+    const aspect = Number(page?.[1]) / Number(page?.[2]);
     for (const target of ['png', 'jpg']) {
       const picture = await decodeRgba((await dispatchConversion(sample.bytes, 'ai', target, {}, 'art.ai')).buffer);
       expect(picture.width / picture.height).toBeCloseTo(aspect, 1);
