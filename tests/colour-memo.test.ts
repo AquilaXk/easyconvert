@@ -79,6 +79,23 @@ describe('colour memo', () => {
     }
   });
 
+  it.each([
+    [1, 8],
+    [3, 8],
+    [5, 8],
+    [100, 128],
+    [5000, 8192],
+    [100_000, 32_768],
+    [Infinity, 32_768],
+  ])('starts a raster of %i pixels with room for %i entries, half of its table', (expected, capacity) => {
+    expect(new ColourMemo(false, expected).capacity).toBe(capacity);
+  });
+
+  it('never starts with room for more entries than its limit', () => {
+    expect(new ColourMemo(false, Infinity, 20).capacity).toBe(20);
+    expect(new ColourMemo(false, 5000, 20).capacity).toBe(20);
+  });
+
   it.each([1, 3, 100, 5000])('holds more colours than the %i it was told to expect', (expected) => {
     const memo = new ColourMemo(true, expected);
     for (let key = 0; key < 9000; key += 1) memo.add(key * 1861, key % 256, key, key + 1, key + 2, key + 3);

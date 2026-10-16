@@ -38,11 +38,16 @@ export class ColourMemo {
     this.keepsLab = keepsLab;
     this.maxEntries = maxEntries;
     this.slotBits = Math.max(MIN_SLOT_BITS, Math.min(MAX_INITIAL_SLOT_BITS, Math.ceil(Math.log2(2 * expectedColours))));
-    const entries = this.entryCapacity();
+    const entries = this.capacity;
     this.slots = new Int32Array(1 << this.slotBits).fill(EMPTY);
     this.keys = new Int32Array(entries);
     this.index = new Uint16Array(entries);
     this.lab = new Float64Array(keepsLab ? entries * COLOUR_MEMO_LAB_STRIDE : 0);
+  }
+
+  /** Entries the arrays hold before the next `add` doubles them (or, at the limit, empties the memo). */
+  get capacity(): number {
+    return Math.min(this.maxEntries, 1 << (this.slotBits - 1));
   }
 
   /** The entry number of `key` (a packed 0xRRGGBB colour), or -1 when the memo does not hold it. */
@@ -64,7 +69,7 @@ export class ColourMemo {
    */
   add(key: number, paletteIndex: number, distance2: number, l: number, a: number, b: number): number {
     if (this.count === this.maxEntries) this.clear();
-    else if (this.count === this.entryCapacity()) this.grow();
+    else if (this.count === this.capacity) this.grow();
     const entry = this.count;
     this.count += 1;
     this.slots[this.freeSlot(key)] = entry;
@@ -78,10 +83,6 @@ export class ColourMemo {
       this.lab[at + 3] = b;
     }
     return entry;
-  }
-
-  private entryCapacity(): number {
-    return Math.min(this.maxEntries, 1 << (this.slotBits - 1));
   }
 
   private freeSlot(key: number): number {
@@ -100,7 +101,7 @@ export class ColourMemo {
   private grow(): void {
     this.slotBits += 1;
     this.slots = new Int32Array(1 << this.slotBits).fill(EMPTY);
-    const entries = this.entryCapacity();
+    const entries = this.capacity;
     const keys = new Int32Array(entries);
     keys.set(this.keys);
     this.keys = keys;
