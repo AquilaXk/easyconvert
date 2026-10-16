@@ -142,11 +142,29 @@ describe('sandbox launcher', () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
     controller.abort(new Error('job cancelled'));
     await expect(running).rejects.toThrow('job cancelled');
-    // `pgrep -f` matches the command line, which carries the marker: nothing may be left running.
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const { spawnSync } = await import('node:child_process');
+    // As on the direct path, the caller hears of the abort after the program is dead: a `finally` that removes the files
+    // the program reads must not run while it is still alive. `pgrep -f` matches the command line, which carries the marker.
     expect(spawnSync('/usr/bin/pgrep', ['-f', marker]).status).toBe(1);
   });
+
+  it('rejects an abort within two seconds when the helper does not answer the cancel', async () => {
+    const controller = new AbortController();
+    const running = launch(SH, shell('sleep 30'), { networkIsolated: false, signal: controller.signal, timeoutMs: 60_000 });
+    running.catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const pid = sandboxLauncherState().pid as number;
+    process.kill(pid, 'SIGSTOP');
+    const started = Date.now();
+    controller.abort(new Error('job cancelled'));
+    try {
+      await expect(running).rejects.toThrow('job cancelled');
+      expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
+      expect(Date.now() - started).toBeLessThan(4000);
+    } finally {
+      process.kill(pid, 'SIGKILL');
+      while (sandboxLauncherState().ready) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }, 20_000);
 
   it('rejects at once for a signal that is already aborted', async () => {
     const controller = new AbortController();

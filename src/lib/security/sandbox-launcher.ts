@@ -67,6 +67,8 @@ const BASELINE_RESIDENT_BYTES = 112 * 1024 * 1024;
 const COPY_MS_PER_BYTE = 2.5e-6;
 /** Wall-clock a reply may take beyond the run's own time limit before the helper is judged lost. */
 const REPLY_ALLOWANCE_MS = 10_000;
+/** After a cancel is sent, the helper has this long to say the program is dead before the caller is told anyway. */
+const CANCEL_ALLOWANCE_MS = 2000;
 const DEFAULT_RUN_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 /** Without a hint the output is taken to be a quarter of the limit (the callers size the limit as a multiple of the input). */
@@ -130,6 +132,8 @@ interface Pending {
   reject(error: unknown): void;
   timer: NodeJS.Timeout;
   detach(): void;
+  /** Set once the caller aborted: the request then ends with this reason, whatever the helper answers. */
+  aborted?: { reason: unknown; timer: NodeJS.Timeout };
 }
 
 function toError(detail: LauncherErrorDetail, payload: Buffer): Error {
@@ -225,8 +229,14 @@ class LauncherHost {
         this.fail(id, new SandboxedTimeoutError(timeoutMs));
         this.stop(true);
       }, timeoutMs + REPLY_ALLOWANCE_MS);
+      // On abort the helper is asked to kill the program and the caller hears of it when the helper says it is dead, so
+      // that what a caller's `finally` removes (a decrypted copy, a password file) is not removed under a live program,
+      // as on the direct path. A helper that does not answer in time is not waited for longer.
       const onAbort = (): void => {
-        this.fail(id, signal?.reason ?? new Error('The operation was aborted'));
+        const pending = this.pending.get(id);
+        if (!pending || pending.aborted) return;
+        const reason = signal?.reason ?? new Error('The operation was aborted');
+        pending.aborted = { reason, timer: setTimeout(() => this.fail(id, reason), CANCEL_ALLOWANCE_MS) };
         this.send({ type: 'cancel', id });
       };
       signal?.addEventListener('abort', onAbort, { once: true });
@@ -252,6 +262,7 @@ class LauncherHost {
     if (!pending) return undefined;
     this.pending.delete(id);
     clearTimeout(pending.timer);
+    if (pending.aborted) clearTimeout(pending.aborted.timer);
     pending.detach();
     if (this.pending.size === 0 && !this.ended) {
       this.setReferenced(false);
@@ -291,6 +302,9 @@ class LauncherHost {
           this.armIdle();
         }
         this.onReady();
+      } else if (this.pending.get(header.id)?.aborted) {
+        // Answered after the caller aborted (the program ended on its own, or was killed): the caller aborted.
+        this.fail(header.id, this.pending.get(header.id)?.aborted?.reason);
       } else if (header.type === 'result') {
         this.settle(header.id)?.resolve({
           stdout: payload.subarray(0, header.stdoutBytes),
@@ -312,7 +326,7 @@ class LauncherHost {
     this.ready = false;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     for (const id of [...this.pending.keys()]) {
-      this.fail(id, new SandboxedProcessError(`Sandboxed execution error: ${reason}`, null, reason));
+      this.fail(id, this.pending.get(id)?.aborted?.reason ?? new SandboxedProcessError(`Sandboxed execution error: ${reason}`, null, reason));
     }
     this.onEnd();
   }
