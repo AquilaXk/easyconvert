@@ -118,7 +118,7 @@
     },
     {
       "families": ["*"],
-      "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard|conversion-warnings)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output)\\.ts$"
+      "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard|conversion-warnings)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output|worker-output|worker-types)\\.ts$"
     },
     {
       "families": ["*"],
@@ -203,6 +203,14 @@
     {
       "families": ["vector"],
       "match": "^src/lib/conversions/(svg-[^/]*|vector-metafile|metafile-draw-plan|openxps|xps-text-layout|odg)\\.ts$"
+    },
+    {
+      "families": ["vector"],
+      "match": "^src/worker/postscript-(render|gs)\\.ts$"
+    },
+    {
+      "families": ["document", "pdf-ops", "vector"],
+      "match": "^src/worker/poppler-ppm\\.ts$"
     },
     {
       "families": ["cad"],

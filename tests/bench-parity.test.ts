@@ -429,8 +429,8 @@ describe('the known gaps', () => {
     expect(issuesOf('audio/', true)).toEqual([642]);
     expect(issuesOf('video/', true)).toEqual([643]);
     expect(issuesOf('ocr/', true)).toEqual([644]);
-    // The document gaps: the PDF text reader (672) and the slide and sheet pages to PNG, tracked under the render speed issue (735).
-    expect(issuesOf('document/', true)).toEqual([672, 735]);
+    // The document gap is the PDF text reader (672); the slide and sheet pages to PNG reached parity on the CI runner (735).
+    expect(issuesOf('document/', true)).toEqual([672]);
     expect(issuesOf('raw/', true)).toEqual([686]);
     expect(issuesOf('vector/', true)).toEqual([735]);
     expect(issuesOf('cad/', true)).toEqual([]);
@@ -439,6 +439,14 @@ describe('the known gaps', () => {
     expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([685, 685, 685]);
     expect(byId['compression/mixed.tar->zst/throughput']).toBeUndefined();
     expect(byId['video/clip.mp4->hevc/throughput']).toBeUndefined();
+    // The PostScript to PDF, Illustrator to PNG, slide and sheet page rows reached parity on the CI runner (735).
+    for (const id of [
+      'vector/shapes.eps->pdf/throughput',
+      'vector/shapes.ai->png/throughput',
+      'document/drawingml-shapes-presentation.pptx->png/throughput',
+      'document/workbook.xlsx->png/throughput',
+    ]) expect(byId[id]).toBeUndefined();
+    expect([byId['vector/shapes.svg->pdf/throughput'], byId['vector/shapes.eps->png/throughput']]).toEqual([735, 735]);
     // The decode row reached parity on the CI runner, so it is no longer a known gap.
     expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
     expect(issuesOf('pdf-ops/', true)).toEqual([695]);
