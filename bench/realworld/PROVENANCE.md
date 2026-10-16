@@ -101,6 +101,40 @@ manifest's `sources` array holds the same statements.
 | `gsm8k-data` | JSON lines files of the GSM8K data set | MIT (`LICENSE`) | 2 |
 | `vega-datasets-files` | A tab-separated data set (US unemployment by county) of the Vega datasets | `datapackage.json` declares BSD 3-clause for the repository and the U.S. Government Works terms for this data set | 1 |
 
+## Regression corpus
+
+`bench/realworld/regression-manifest.json` is a second manifest, for the regression corpus of #780 (QA decision 2026-10-17): about
+20,000 office and PDF files drawn from two public corpora and run weekly, in part nightly, by `.github/workflows/regression-corpus.yml`
+(`bench/README.md`, Regression corpus). It pins every file by archive, entry, offset, size and SHA-256, and records the producing application
+(`producer`: the PDF Producer or Creator, the application name of the OLE SummaryInformation stream, or `Application` of the OOXML
+`docProps/app.xml`). **No file is committed, redistributed, shown or shipped.** Each shard reads its files out of the publisher's ZIP
+archives with range requests, checks the digest, converts the file and deletes it; no Actions cache holds them. This is internal test use,
+as for the other sets whose terms allow research and development use (`docs/policy-decisions.md`, entries 37 and 39).
+
+| Source id | What it is | Licence statement | Files |
+|---|---|---|---|
+| `govdocs1` | The same government document corpus as above, now drawn from all 1,000 archives (office files: doc, xls, ppt, pps, docx, xlsx, pptx; and PDF), without the entries the real-world corpus already holds | Published as freely redistributable to the best of the publisher's knowledge | 15,003: doc 4,000, xls 3,300, ppt 2,400, pps 400, docx 162, xlsx 37, pptx 204, pdf 4,500 |
+| `cc-main-2021-31-pdf` | PDF files of the CC-MAIN-2021-31 web crawl, re-fetched untruncated and packaged in ZIP archives by the digital corpora project for the SafeDocs programme (40 of the 7,933 archives are indexed; the file number inside the corpus follows the hash of the PDF, so any archive is a random sample of the crawl) | Files collected by Common Crawl from public web servers: Common Crawl terms of use (<https://commoncrawl.org/terms-of-use>) and the terms of the digital corpora project. No licence of the individual file is stated; the files are fetched for conversion testing only | 5,000: pdf |
+
+How the files were chosen (`scripts/regression-corpus-manifest.ts`, steps `index`, `profile` and `select`):
+
+- **Strata.** A file belongs to a stratum of its format, the class of the application that wrote it (`producerClass` in
+  `bench/realworld/regression/producer.ts`: for example `microsoft-word`, `acrobat-distiller`, `openoffice-family`, else the first two
+  words of the producer name without versions) and its size class (under 64 KiB, under 512 KiB, under 2 MiB, larger). The budget of each
+  format (and, for PDF, of each source) is shared equally between its strata; a stratum with fewer files than its share is taken whole.
+  Producers are read from the file itself where it names one; for the crawl PDFs the producer of the corpus's `pdfinfo` metadata table
+  is the fallback.
+- **Pool.** The draw is made from a pool of 1.5 times the budget, stratified by format and size class (and, for the crawl, by the producer
+  of the metadata table), so a producer that is rarer than about one file in a thousand of its format may not be seen.
+- **Left out.** Files above 8 MiB; empty files; entries the real-world corpus already holds; names that mark an exploit sample, a fuzzer
+  output or malware (`bench/realworld/regression/build.ts`); crawl PDFs whose metadata says they carry JavaScript; and, after reading
+  the bytes, files with a Visual Basic project (an OLE document with a `VBA` storage, an OOXML package with a `vbaProject.bin`) or a
+  PDF with a script or launch action. The UNSAFE-DOCS set and any malicious-file or fuzzing corpus are not used: they belong to the
+  pre-launch security batch (#761). A web crawl can still hold a hostile PDF that none of these checks finds, so the converters run in
+  their sandbox and the bytes are never executed or rendered by the tooling that builds the manifest.
+- **Known gap.** The government corpus holds few OOXML files (162 docx, 37 xlsx and 204 pptx within the size cap), so those strata are
+  small; the office sets of the format-sample sources above cover them better.
+
 ## Licence codes of single files
 
 Files from Wikimedia Commons carry the licence code of their file page; the page itself and the author are in the manifest (`page`,

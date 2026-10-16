@@ -93,4 +93,15 @@ export function fetchSize(url: string): Promise<number> {
   });
 }
 
+/**
+ * The body of `url` as a stream, for a table too large to hold in memory. No retry: a stream that breaks half way is read again
+ * from the start by the caller, which a ranged read cannot do for a gzip stream.
+ */
+export async function fetchStream(url: string): Promise<ReadableStream<Uint8Array>> {
+  applyProxyFromEnvironment();
+  const response = await fetch(url, { headers: { 'user-agent': USER_AGENT } });
+  if (response.status !== HTTP_OK || response.body === null) throw new FetchError(`${url}: HTTP ${response.status}, expected ${HTTP_OK} with a body`);
+  return response.body;
+}
+
 export { retryDelayMs };
