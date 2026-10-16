@@ -557,10 +557,12 @@ describe('the nightly run', () => {
       const save = quality.steps.find((step) => step.uses?.startsWith('actions/cache/save@'));
       expect(String(save?.with?.key)).toContain('-${{ matrix.group }}-');
       const action = parse(read('.github', 'actions', 'bench-ref-cache', 'action.yml')) as { runs: { steps: Step[] } };
-      const restored = action.runs.steps.map((step) => /inputs\.fingerprint \}\}-([a-z-]+)-\$\{\{ hashFiles/.exec(String(step.with?.key))?.[1]);
+      const [newest, ...perGroup] = action.runs.steps;
+      expect(String(newest.with?.['restore-keys'])).toMatch(/inputs\.fingerprint \}\}-\s*$/);
+      const restored = perGroup.map((step) => /inputs\.fingerprint \}\}-([a-z-]+)-\$\{\{ hashFiles/.exec(String(step.with?.key))?.[1]);
       expect(restored).toEqual(groups.map((entry) => entry.group));
       for (const entry of groups) {
-        const step = action.runs.steps[groups.indexOf(entry)];
+        const step = perGroup[groups.indexOf(entry)];
         expect(String(step.with?.['restore-keys'])).toContain(`inputs.fingerprint }}-${entry.group}-`);
       }
     });
