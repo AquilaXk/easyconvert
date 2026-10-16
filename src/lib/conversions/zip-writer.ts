@@ -152,7 +152,11 @@ export interface ZipEntryInput {
   mode?: number;
 }
 
+export type ZipDeflater = (data: Uint8Array, level: number) => Promise<Uint8Array>;
+
 export interface ZipWriterOptions {
+  /** Raw deflate of an entry held in memory, for a caller that compresses in parallel; defaults to one zlib call. */
+  deflate?: ZipDeflater;
   /** `auto` writes ZIP64 records only where a field overflows; `always` writes them for every entry and the archive. */
   zip64?: 'auto' | 'always';
   defaultLevel?: number;
@@ -200,9 +204,11 @@ export class ZipWriter {
   private finished = false;
   private readonly zip64Always: boolean;
   private readonly defaultLevel: number;
+  private readonly deflater: ZipDeflater;
 
   constructor(private readonly sink: ZipSink, options: ZipWriterOptions = {}) {
     this.zip64Always = options.zip64 === 'always';
+    this.deflater = options.deflate ?? deflateRaw;
     const level = options.defaultLevel ?? ZIP_DEFAULT_LEVEL;
     if (!Number.isInteger(level) || level < ZIP_LEVEL_MIN || level > ZIP_LEVEL_MAX) {
       throw new UnsupportedOptionError(`ZIP compression level must be an integer from ${ZIP_LEVEL_MIN} to ${ZIP_LEVEL_MAX}.`);
@@ -270,7 +276,7 @@ export class ZipWriter {
     let method = wantedMethod;
     let payload: Uint8Array = data;
     if (method === METHOD_DEFLATE && data.length > 0) {
-      const deflated = await deflateRaw(data, level);
+      const deflated = await this.deflater(data, level);
       // Deflate that does not shrink the data is not worth the decode time: keep the original bytes.
       if (deflated.length < data.length) payload = deflated;
       else method = METHOD_STORE;

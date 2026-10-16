@@ -28,14 +28,14 @@ const FIXED_MTIME = '202103040506';
 interface Compressor {
   /** Registry names the same stream goes by. */
   sources: string[];
-  /** The type switch 7-Zip is expected to be given for it. */
-  sevenZipType: string;
+  /** The type switch 7-Zip is expected to be given for it; null for a stream that is decoded in process (gzip). */
+  sevenZipType: string | null;
   compress: (input: Buffer) => Buffer;
 }
 
 const COMPRESSORS: Compressor[] = [
   { sources: ['xz', 'txz', 'tar.xz'], sevenZipType: '-txz', compress: (input) => execFileSync('xz', ['-6', '-c'], { input }) },
-  { sources: ['gz', 'tgz', 'tar.gz'], sevenZipType: '-tgzip', compress: (input) => execFileSync('gzip', ['-6', '-c', '-n'], { input }) },
+  { sources: ['gz', 'tgz', 'tar.gz'], sevenZipType: null, compress: (input) => execFileSync('gzip', ['-6', '-c', '-n'], { input }) },
   { sources: ['bz2', 'tbz2', 'tar.bz2'], sevenZipType: '-tbzip2', compress: (input) => execFileSync('bzip2', ['-9', '-c'], { input }) },
 ];
 
@@ -140,6 +140,10 @@ describe('native route: a compressed tar comes back as a tar with the same membe
           }
 
           const calls = spy.calls();
+          if (compressor.sevenZipType === null) {
+            expect(calls, 'a gzip stream is decoded in process').toHaveLength(0);
+            return;
+          }
           expect(calls).toHaveLength(1);
           const [call] = calls;
           expect(call.slice(0, 3)).toEqual(['x', '-so', '-y']);
@@ -186,7 +190,7 @@ describe('native route: a payload that is not a tar is wrapped in a one-member t
 
         expect(tarNames(result.buffer, `plain-${source}`)).toEqual(['notes']);
         expect(tarMember(result.buffer, 'notes').equals(payload)).toBe(true);
-        expect(spy.calls()).toHaveLength(1);
+        expect(spy.calls()).toHaveLength(compressor.sevenZipType === null ? 0 : 1);
       },
       TEST_TIMEOUT_MS
     );

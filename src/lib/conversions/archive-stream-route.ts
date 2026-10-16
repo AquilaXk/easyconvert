@@ -3,12 +3,14 @@ import { hasTarMagicBlock, isTarHeaderBlock } from './archive-extraction-safety'
 /**
  * The one place that decides how an archive-to-archive pair is served without extracting to disk.
  *
- * Three pairs have a cheaper shape than "extract everything, then pack everything again":
- *  - a single-stream compressor (xz, gzip, bzip2) to tar is stream decompression; the unpacked tar is read and vetted
- *    entry by entry and written again from those entries (never passed through), and a one-member tar is written
- *    around the bytes when the payload is not a tar;
+ * Some pairs have a cheaper shape than "extract everything, then pack everything again":
+ *  - a single-stream compressor (xz, gzip, bzip2) to tar is stream decompression (gzip in process, the others through one
+ *    stream-only 7-Zip call); the unpacked tar is read and vetted entry by entry and written again from those entries
+ *    (never passed through), and a one-member tar is written around the bytes when the payload is not a tar;
  *  - 7z to tar streams the members out of 7-Zip in file-table order and writes them into the tar as they arrive;
- *  - tar to 7z reads the tar in process and hands 7-Zip a staging tree it can compress at once.
+ *  - tar to 7z reads the tar in process and hands 7-Zip a staging tree it can compress at once;
+ *  - tar to ZIP and to gzip are packed in process from the vetted tar, and ZIP and stored RAR to tar are read in
+ *    process (archive-repack.ts).
  *
  * Both engines (the native worker route and the in-process converter) read these tables, so a format never ends up
  * treated as a tarball by one engine and as a plain stream by the other.
@@ -42,7 +44,11 @@ const STREAM_SOURCES: ReadonlyMap<string, StreamSource> = new Map<string, Stream
 export type NativeArchiveRoute =
   | { kind: 'stream-to-tar'; source: StreamSource }
   | { kind: 'seven-zip-to-tar' }
-  | { kind: 'tar-to-seven-zip' };
+  | { kind: 'tar-to-seven-zip' }
+  | { kind: 'zip-to-tar' }
+  | { kind: 'rar-to-tar' }
+  | { kind: 'tar-to-zip' }
+  | { kind: 'tar-to-gzip' };
 
 /** The request fields that decide whether a route applies. */
 export interface ArchiveRouteRequest {
@@ -67,9 +73,14 @@ export function planNativeArchiveRoute(src: string, tgt: string, request: Archiv
     const source = STREAM_SOURCES.get(src);
     if (source) return { kind: 'stream-to-tar', source };
     if (src === '7z') return { kind: 'seven-zip-to-tar' };
+    if (src === 'zip') return { kind: 'zip-to-tar' };
+    if (src === 'rar') return { kind: 'rar-to-tar' };
     return null;
   }
-  if (src === 'tar' && tgt === '7z') return { kind: 'tar-to-seven-zip' };
+  if (src !== 'tar') return null;
+  if (tgt === '7z') return { kind: 'tar-to-seven-zip' };
+  if (tgt === 'zip') return { kind: 'tar-to-zip' };
+  if (tgt === 'gz' || tgt === 'gzip') return { kind: 'tar-to-gzip' };
   return null;
 }
 
