@@ -260,6 +260,27 @@ describe('the encoder reads the source file', () => {
   );
 
   oracleTest(
+    'a request that strips metadata tells the encoder to leave the XMP packet out and gives the bytes of the picture without it',
+    ['avifenc', 'avifdec'],
+    async () => {
+      const plain = await interface16();
+      const marked = withChunksAfterHeader(plain, [xmpChunk()]);
+      const stripped = copyingWrapper('strip-xmp');
+      process.env.AVIFENC_PATH = stripped.script;
+      const out = await convertImage(marked, 'avif', { quality: 60, stripMetadata: true }, 'x.png', 'png');
+      expect(readFileSync(stripped.args, 'utf-8')).toContain('--ignore-xmp');
+      expect(out.buffer.includes(Buffer.from('xmpmeta'))).toBe(false);
+      const reference = await convertImage(plain, 'avif', { quality: 60, stripMetadata: true }, 'x.png', 'png');
+      expect(out.buffer.equals(reference.buffer)).toBe(true);
+      const kept = copyingWrapper('keep-xmp');
+      process.env.AVIFENC_PATH = kept.script;
+      await convertImage(marked, 'avif', { quality: 60 }, 'x.png', 'png');
+      expect(readFileSync(kept.args, 'utf-8')).not.toContain('--ignore-xmp');
+    },
+    60_000
+  );
+
+  oracleTest(
     'a picture without colour description chunks is not told to ignore anything',
     ['avifenc', 'avifdec'],
     async () => {

@@ -95,6 +95,8 @@ export interface AvifCliRequest {
   tune?: string;
   /** The picture is a PNG file whose colour description chunks (profile, gamma, chromaticities) the encoder is to ignore. */
   ignoreColourChunks?: boolean;
+  /** The picture is a PNG file whose XMP packet the encoder is to leave out (the request strips metadata). */
+  ignoreXmp?: boolean;
   /** Colour tags to write instead of the encoder's defaults, for HDR output. */
   cicp?: AvifCicp;
   /** Aborting kills the encoder's process group; the private directory is removed as for any other failure. */
@@ -250,6 +252,7 @@ export function avifencArguments(request: AvifCliRequest, inputPath: string, out
     String(encoderThreads()),
   ];
   if (request.ignoreColourChunks) args.push('--ignore-icc');
+  if (request.ignoreXmp) args.push('--ignore-xmp');
   if (request.tune !== undefined) args.push('-a', `c:tune=${request.tune}`);
   if (request.cicp) args.push('--cicp', `${request.cicp.primaries}/${request.cicp.transfer}/${request.cicp.matrix}`);
   args.push(inputPath, '-o', outputPath);

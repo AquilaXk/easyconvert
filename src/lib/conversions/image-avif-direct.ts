@@ -91,7 +91,7 @@ function samePolicy(a: AvifPolicy, b: AvifPolicy): boolean {
 
 function requestFor(source: DirectAvifSource, policy: AvifPolicy, options: ConversionOptions): AvifCliRequest {
   const { png, width, height, ignoresColourChunks } = source;
-  return { png, width, height, ignoreColourChunks: ignoresColourChunks, quality: policy.quality, effort: policy.effort, bitdepth: policy.bitdepth, layout: policy.layout, tune: policy.tune, signal: options.signal };
+  return { png, width, height, ignoreColourChunks: ignoresColourChunks, ignoreXmp: options.stripMetadata === true, quality: policy.quality, effort: policy.effort, bitdepth: policy.bitdepth, layout: policy.layout, tune: policy.tune, signal: options.signal };
 }
 
 /**
