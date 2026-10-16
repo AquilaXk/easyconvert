@@ -49,9 +49,11 @@ const SETUP_ACTION = path.join(ROOT, '.github', 'actions', 'ci-setup', 'action.y
 const read = (file: string): string => readFileSync(file, 'utf-8');
 const ciText = read(path.join(WORKFLOWS, 'ci.yml'));
 const nightlyText = read(path.join(WORKFLOWS, 'nightly.yml'));
+const regressionText = read(path.join(WORKFLOWS, 'regression-corpus.yml'));
 const setupText = read(SETUP_ACTION);
 const ci = parse(ciText) as Workflow;
 const nightly = parse(nightlyText) as Workflow;
+const regression = parse(regressionText) as Workflow;
 const setup = parse(setupText) as { inputs?: Record<string, { default?: string; required?: boolean }>; runs: { steps: Step[] } };
 
 /** The longest a job may be allowed to run: a hung job must not hold a runner for hours. */
@@ -90,6 +92,7 @@ describe('concurrency and triggers of ci.yml', () => {
 describe.each([
   ['ci.yml', ci],
   ['nightly.yml', nightly],
+  ['regression-corpus.yml', regression],
 ])('jobs of %s', (_name, workflow) => {
   it('has a timeout-minutes on every job', () => {
     for (const [name, job] of Object.entries(workflow.jobs)) {
@@ -213,6 +216,7 @@ describe('third-party actions', () => {
   const all = [
     ...stepsOf(ci).map(({ job, step }) => ({ where: `ci.yml ${job}`, uses: step.uses })),
     ...stepsOf(nightly).map(({ job, step }) => ({ where: `nightly.yml ${job}`, uses: step.uses })),
+    ...stepsOf(regression).map(({ job, step }) => ({ where: `regression-corpus.yml ${job}`, uses: step.uses })),
     ...setup.runs.steps.map((step) => ({ where: 'ci-setup', uses: step.uses })),
   ].filter((entry): entry is { where: string; uses: string } => typeof entry.uses === 'string' && !entry.uses.startsWith('./'));
 
@@ -226,7 +230,7 @@ describe('third-party actions', () => {
   });
 
   it('carry the version they pin in a comment', () => {
-    for (const text of [ciText, nightlyText, setupText]) {
+    for (const text of [ciText, nightlyText, regressionText, setupText]) {
       const pinned = text.split('\n').map((line) => line.trim().replace(/^- /, '')).filter((line) => line.startsWith('uses:') && !line.startsWith('uses: ./'));
       expect(pinned.length).toBeGreaterThan(0);
       for (const line of pinned) expect(line).toMatch(SHA_PINNED_COMMENT);
