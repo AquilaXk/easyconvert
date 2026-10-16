@@ -1,5 +1,6 @@
 import sharp, { type Metadata, type Sharp } from 'sharp';
 import type { Raster } from './image-content';
+import { isSrgbProfile } from './icc-srgb';
 import { roundedToEightBits } from './image-depth';
 import { maxInputPixels } from './image-input-limits';
 
@@ -9,9 +10,11 @@ import { maxInputPixels } from './image-input-limits';
  * each time; a PNG cannot be decoded at a reduced size the way a JPEG can, so the thumbnail costs as much as the
  * encoder's own read. Decoded once into memory, the analyses and the encoder read the pixels from there.
  *
- * Only a PNG with nothing besides pixels qualifies, so the pipeline that continues from the decoded pixels writes the
- * very bytes the pipeline from the PNG would: a colour profile, EXIF, XMP, IPTC, a pixel density, text blocks or an
- * orientation would be lost on the way through raw pixels.
+ * Only a PNG with nothing the output keeps besides pixels qualifies, so the pipeline that continues from the decoded pixels
+ * writes the very bytes the pipeline from the PNG would: a colour profile that does something, EXIF, XMP, IPTC, a pixel density
+ * or an orientation would be lost on the way through raw pixels. Two things a PNG can hold never reach the output of the encoders
+ * that read the decoded pixels (JPEG and AVIF) and do not disqualify it: text chunks (the encoders write no text), and a profile
+ * that describes sRGB (it is not written, and converting through it changes no pixel; see `openWithoutSrgbProfile` in image.ts).
  */
 
 /** Largest decoded picture, in bytes, held in memory this way; a larger PNG is still read by the encoder from the PNG. */
@@ -36,8 +39,9 @@ function decodedBytes(meta: Metadata): number {
 /** True when the picture is a plain single-frame PNG small enough to hold decoded. */
 export function isPlainPng(meta: Metadata, maxBytes: number = DECODED_SOURCE_MAX_BYTES): boolean {
   if (meta.format !== 'png' || (meta.pages ?? 1) !== 1) return false;
-  if (meta.hasProfile || meta.icc !== undefined || meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined) return false;
-  if (meta.comments !== undefined || meta.background !== undefined || meta.tifftagPhotoshop !== undefined) return false;
+  if (meta.hasProfile && (meta.icc === undefined || !isSrgbProfile(meta.icc))) return false;
+  if (meta.exif !== undefined || meta.xmp !== undefined || meta.iptc !== undefined) return false;
+  if (meta.background !== undefined || meta.tifftagPhotoshop !== undefined) return false;
   if (meta.density !== undefined && meta.density !== DEFAULT_DENSITY_PPI) return false;
   if (meta.orientation !== undefined && meta.orientation !== UPRIGHT_ORIENTATION) return false;
   if (meta.depth !== EIGHT_BIT_DEPTH && meta.depth !== SIXTEEN_BIT_DEPTH) return false;
@@ -89,7 +93,9 @@ export async function decodePlainPngOnce(pipeline: Sharp, maxBytes: number = DEC
   const deep = meta.depth === SIXTEEN_BIT_DEPTH;
   const narrow = deep && eightBit && meta.space === 'rgb16';
   // Written in the colourspace the PNG is in: left to itself the raw output turns a grey picture into three colour bands.
-  const { data, info } = await (narrow ? roundedToEightBits(pipeline.clone(), meta.channels) : pipeline.clone())
+  // The raw output carries no profile, and the decode must not convert the samples through an sRGB profile the PNG holds.
+  const decoder = meta.hasProfile ? pipeline.clone().keepIccProfile() : pipeline.clone();
+  const { data, info } = await (narrow ? roundedToEightBits(decoder, meta.channels) : decoder)
     .toColourspace(narrow ? 'srgb' : meta.space)
     .raw({ depth: deep && !narrow ? SIXTEEN_BIT_DEPTH : EIGHT_BIT_DEPTH })
     .toBuffer({ resolveWithObject: true });
