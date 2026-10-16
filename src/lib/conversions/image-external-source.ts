@@ -1,5 +1,7 @@
 import { crc32 } from './crc32';
 import { withUprightOrientation } from './image-orientation';
+import { ConversionFailedError, type ConversionOptions, type ConversionResult } from '../types';
+import { convertImage } from './image';
 import { decodeWithMagick, type MagickSource } from './image-magick-cli';
 import { decodeWithOpenJpeg } from './image-openjpeg-cli';
 
@@ -17,7 +19,6 @@ export interface ExternalDecoded {
 
 const MAGICK_BY_FORMAT: ReadonlyMap<string, MagickSource> = new Map<string, MagickSource>([
   ['psd', { coder: 'psd', label: 'PSD', scenes: 'first' }],
-  ['xcf', { coder: 'xcf', label: 'XCF', scenes: 'flatten' }],
   ['tga', { coder: 'tga', label: 'TGA', scenes: 'first' }],
   ['pcx', { coder: 'pcx', label: 'PCX', scenes: 'first' }],
   ['dds', { coder: 'dds', label: 'DDS', scenes: 'first' }],
@@ -28,6 +29,7 @@ const MAGICK_BY_FORMAT: ReadonlyMap<string, MagickSource> = new Map<string, Magi
   ['heic', { coder: 'heic', label: 'HEIC', scenes: 'first' }],
   ['heif', { coder: 'heic', label: 'HEIF', scenes: 'first' }],
 ]);
+const XCF_SOURCE: MagickSource = { coder: 'xcf', label: 'XCF', scenes: 'flatten' };
 const OPENJPEG_FORMATS: ReadonlySet<string> = new Set(['jp2', 'j2k']);
 const HEIF_FORMATS: ReadonlySet<string> = new Set(['heic', 'heif']);
 const TIFF_FORMATS: ReadonlySet<string> = new Set(['tif', 'tiff']);
@@ -71,6 +73,21 @@ export function usesOldStyleJpeg(tiff: Buffer): boolean {
   return false;
 }
 
+/** GIMP XCF file header: `gimp xcf `, a four-character version, a NUL, then the canvas width and height as big-endian 32-bit values. */
+const XCF_MAGIC = 'gimp xcf ';
+const XCF_VERSION_END = 13;
+const XCF_CANVAS_OFFSET = 14;
+const XCF_HEADER_BYTES = 22;
+
+/** The canvas the header of a GIMP project states. */
+function xcfCanvas(xcf: Buffer): { width: number; height: number } {
+  const valid = xcf.length >= XCF_HEADER_BYTES && xcf.toString('latin1', 0, XCF_MAGIC.length) === XCF_MAGIC && xcf[XCF_VERSION_END] === 0;
+  const width = valid ? xcf.readUInt32BE(XCF_CANVAS_OFFSET) : 0;
+  const height = valid ? xcf.readUInt32BE(XCF_CANVAS_OFFSET + 4) : 0;
+  if (width === 0 || height === 0) throw new ConversionFailedError('Invalid image: the XCF header could not be decoded');
+  return { width, height };
+}
+
 const PNG_SIGNATURE_BYTES = 8;
 const PNG_CHUNK_OVERHEAD_BYTES = 12;
 const PNG_CRC_OFFSET_FROM_END = 4;
@@ -104,9 +121,9 @@ export function withUprightExifOrientation(png: Buffer): Buffer {
  * Decodes `input` when its format is one the image library cannot read, or null when the library reads it. `format` is
  * the registry id of the source.
  */
-export async function decodeExternalImage(input: Buffer, format: string | undefined, signal?: AbortSignal): Promise<ExternalDecoded | null> {
-  if (format === undefined) return null;
+export async function decodeExternalImage(input: Buffer, format: string, signal?: AbortSignal): Promise<ExternalDecoded | null> {
   if (OPENJPEG_FORMATS.has(format)) return { buffer: await decodeWithOpenJpeg(input, signal), format: 'png' };
+  if (format === 'xcf') return decodeWithMagick(input, { ...XCF_SOURCE, canvas: xcfCanvas(input) }, signal);
   const magick = MAGICK_BY_FORMAT.get(format);
   if (magick !== undefined) {
     const decoded = await decodeWithMagick(input, magick, signal);
@@ -114,4 +131,20 @@ export async function decodeExternalImage(input: Buffer, format: string | undefi
   }
   if (TIFF_FORMATS.has(format) && usesOldStyleJpeg(input)) return decodeWithMagick(input, OLD_STYLE_JPEG_TIFF, signal);
   return null;
+}
+
+/**
+ * Converts a still-image source: one the image library cannot read is decoded by its command-line decoder first and
+ * converted as the PNG (or TIFF) that comes back; every other source is converted as it is.
+ */
+export async function convertImageSource(
+  input: Buffer,
+  targetFormat: string,
+  options: ConversionOptions,
+  originalFilename: string,
+  sourceFormat: string
+): Promise<ConversionResult> {
+  const external = await decodeExternalImage(input, sourceFormat, options.signal);
+  if (external === null) return convertImage(input, targetFormat, options, originalFilename, sourceFormat);
+  return convertImage(external.buffer, targetFormat, options, originalFilename, external.format);
 }

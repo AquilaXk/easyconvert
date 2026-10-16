@@ -1317,6 +1317,8 @@ const SCHEMA_ENTRIES = [
   toolPath('FFMPEG_PATH', 'Path of the ffmpeg executable; searched in the standard locations when unset.', BOTH),
   toolPath('FFPROBE_PATH', 'Path of the ffprobe executable.', BOTH),
   absoluteToolPath('AVIFENC_PATH', 'Absolute path of the libavif `avifenc` executable that encodes AVIF; searched in the standard locations when unset. The image library encodes when the tool is not installed, is not an executable file or is older than libavif 1.0.0; a value that is not an absolute path is rejected at start-up.', BOTH),
+  absoluteToolPath('MAGICK_PATH', 'Absolute path of the ImageMagick executable (`magick`, or `convert` of version 6) that decodes HEIC, HEIF, PSD, XCF, TGA, PCX, DDS, PNM and old-style JPEG TIFF pictures; searched in the standard locations when unset. Those conversions fail with HTTP 503 when the tool is not installed or is not an executable file; a value that is not an absolute path is rejected at start-up.', BOTH),
+  absoluteToolPath('OPJ_DECOMPRESS_PATH', 'Absolute path of the OpenJPEG `opj_decompress` executable that decodes JPEG 2000 (JP2, J2K) pictures; searched in the standard locations when unset. Those conversions fail with HTTP 503 when the tool is not installed or is not an executable file; a value that is not an absolute path is rejected at start-up.', BOTH),
   toolPath('P7ZIP_PATH', 'Path of the 7-Zip executable (`7zz`, `7z` or `7za`).', BOTH),
   toolPath('P7Z_PATH', 'Alternative name of P7ZIP_PATH for the archive code paths; used when P7ZIP_PATH is not set.', BOTH),
   toolPath('ZIP_PATH', 'Path of the Info-ZIP `zip` executable.', BOTH),

@@ -1,13 +1,23 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
+import { outputProblem } from '../bench/realworld/output-check';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { assertNotSpoofedFile, FileExtensionSpoofError, isFormatCompatibleWithMagicBytes, sniffMimeTypeFromMagicBytes } from '../src/lib/registry';
+import { getOracleToolPath } from './helpers/differential-oracle';
+import { buildPatchUltraHdr } from './helpers/hdr-test-images';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { skipUnless } from './helpers/strict-skip';
 
 /**
  * The signatures of three image formats the spoof check refused although the files are what their names say (#783):
  * compressed SVG (RFC 1952 gzip member), Adobe Illustrator artwork (PDF-compatible, or PostScript with the Illustrator
  * prolog) and HEIF (ISO/IEC 23008-12 brands). Each accepted case is a real file or a header written from the layout in
- * the specification; each refused case is a file of another kind, or a header the specification does not allow.
+ * the specification; each refused case is a file of another kind, or a header the specification does not allow. An Ultra HDR
+ * image is a JPEG, so its output is judged as one (the real-world run called every Ultra HDR output "bad").
  */
 
 const SVG = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>';
@@ -34,7 +44,7 @@ describe('compressed SVG (.svgz)', () => {
     expect(() => assertNotSpoofedFile(bytes, 'svgz', 'drawing.svgz')).not.toThrow();
   });
 
-  it.each(['okular-checkmark.svgz', 'okular-hisc-apps-okular.svgz', 'tika-testsvg.svgz'])('accepts the real file %s', async (id, ctx) => {
+  it.for(['okular-checkmark.svgz', 'okular-hisc-apps-okular.svgz', 'tika-testsvg.svgz'])('accepts the real file %s', async (id, ctx) => {
     const sample = await requireRealworldSample(ctx, id);
     expect(isFormatCompatibleWithMagicBytes(sample.bytes, 'svgz')).toBe(true);
   });
@@ -119,7 +129,7 @@ describe('HEIF brands (.heif, .heic)', () => {
     expect(isFormatCompatibleWithMagicBytes(bytes, 'heic')).toBe(true);
   });
 
-  it.each(['libheif-lightning_mini.heif', 'libheif-uncompressed_comp_rgb_tiled_row_tile_align.heif', 'pil-hopper.heif', 'nokiac-c002.heic'])('accepts the real file %s', async (id, ctx) => {
+  it.for(['libheif-lightning_mini.heif', 'libheif-uncompressed_comp_rgb_tiled_row_tile_align.heif', 'pil-hopper.heif', 'nokiac-c002.heic'])('accepts the real file %s', async (id, ctx) => {
     const sample = await requireRealworldSample(ctx, id);
     expect(isFormatCompatibleWithMagicBytes(sample.bytes, sample.format)).toBe(true);
   });
@@ -135,5 +145,39 @@ describe('HEIF brands (.heif, .heic)', () => {
     expect(isFormatCompatibleWithMagicBytes(bytes, 'mp4')).toBe(false);
     expect(isFormatCompatibleWithMagicBytes(bytes, 'png')).toBe(false);
     expect(isFormatCompatibleWithMagicBytes(bytes, 'avif')).toBe(false);
+  });
+});
+
+describe('Ultra HDR images (.ultrahdr)', () => {
+  it('are JPEG files: the independent builder\'s Ultra HDR image passes under both names', async () => {
+    const bytes = await buildPatchUltraHdr();
+    expect(sniffMimeTypeFromMagicBytes(bytes)).toBe('image/jpeg');
+    expect(isFormatCompatibleWithMagicBytes(bytes, 'ultrahdr')).toBe(true);
+    expect(isFormatCompatibleWithMagicBytes(bytes, 'jpg')).toBe(true);
+  });
+
+  it('are still refused when the bytes are another kind of file', () => {
+    const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
+    expect(isFormatCompatibleWithMagicBytes(png, 'ultrahdr')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(ftypBox('isom', ['isom']), 'ultrahdr')).toBe(false);
+    expect(() => assertNotSpoofedFile(png, 'ultrahdr', 'photo.ultrahdr')).toThrow(FileExtensionSpoofError);
+  });
+
+  const exiftool = getOracleToolPath('exiftool');
+  const needsRawTools = skipUnless('dcraw_emu and exiftool', getOracleToolPath('dcraw_emu') !== null && exiftool !== null);
+  it.skipIf(needsRawTools)('are what a DNG file converts to, with the gain map the format needs', { timeout: 120_000 }, async (ctx) => {
+    const sample = await requireRealworldSample(ctx, 'pix-xiaomi-mi8.dng');
+    const result = await dispatchConversion(sample.bytes, 'dng', 'ultrahdr', {}, 'phone.dng');
+    expect(await outputProblem(result.buffer, 'ultrahdr', os.tmpdir(), { mimeType: result.mimeType, pdfinfo: '', identify: '' })).toBeNull();
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ultrahdr-out-')), 'out.jpg');
+    fs.writeFileSync(file, result.buffer);
+    try {
+      const tags = execFileSync(exiftool as string, ['-G1', '-a', '-s', file], { encoding: 'utf8' });
+      expect(tags).toMatch(/DirectorySemantic\s*: Primary/);
+      expect(tags).toMatch(/DirectorySemantic\s*: GainMap/);
+      expect(tags).toMatch(/NumberOfImages\s*: 2/);
+    } finally {
+      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    }
   });
 });

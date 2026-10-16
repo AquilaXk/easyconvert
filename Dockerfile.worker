@@ -114,6 +114,9 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         libreoffice-core-nogui \
         libreoffice-writer-nogui \
         libraw-bin \
+        imagemagick-7.q16 \
+        libheif-plugin-libde265 \
+        libopenjp2-tools \
         poppler-utils \
         tesseract-ocr \
         tesseract-ocr-eng \
@@ -130,6 +133,16 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
     && groupadd -r -f video && groupadd -r -f render \
     && groupadd -g 10001 -r easyconvert \
     && useradd -u 10001 -r -g easyconvert -G video,render -m -d /home/easyconvert -s /bin/bash easyconvert
+
+# Decoders of the picture formats the image library has no loader for: ImageMagick reads PSD, XCF, TGA, PCX, DDS, PNM, HEIC, HEIF and
+# old-style JPEG TIFF (HEIC is HEVC-coded, which libheif decodes through its libde265 module; without recommends the module is named
+# here), OpenJPEG reads JPEG 2000. Both run as separate sandboxed programs (docs/policy-decisions.md, "Pictures the image library cannot
+# read"). The build fails if ImageMagick cannot list the HEIC and PSD coders or a tool is missing.
+RUN MAGICK="$(command -v magick || command -v magick-im7.q16)" \
+    && "${MAGICK}" -list format | grep -Eq '^ +HEIC\*? +HEIC +r' \
+    && "${MAGICK}" -list format | grep -Eq '^ +PSD\*? +PSD +r' \
+    && dpkg -s libheif-plugin-libde265 > /dev/null \
+    && opj_decompress -h 2>&1 | grep -q 'OpenJPEG'
 
 # 7-Zip: the statically linked upstream build is installed as `7zz`, with `7z` as an alias so
 # operators and scripts find it under the usual name. The worker resolves either name.

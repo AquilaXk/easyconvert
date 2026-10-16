@@ -33,7 +33,7 @@ const MAGICK_EXECUTABLE_NAMES = ['magick', 'magick-im7.q16', 'convert', 'convert
 export type MagickScenes =
   /** The first picture: the merged image of a layered file. */
   | 'first'
-  /** Every picture composited on the canvas, the layers of a GIMP project. */
+  /** Every picture composited on the canvas given as `canvas`, the layers of a GIMP project. */
   | 'flatten'
   /** Every picture as a page of one TIFF. */
   | 'all';
@@ -44,6 +44,11 @@ export interface MagickSource {
   /** The format in the words of an error message. */
   label: string;
   scenes: MagickScenes;
+  /**
+   * The canvas the layers are composited on, which the file's header states. ImageMagick's own canvas is not trusted: for
+   * the files of GIMP 3 (XCF 19 and later) it takes the first layer's size and crops every other layer.
+   */
+  canvas?: { width: number; height: number };
   /**
    * The coder reports harmless findings as warnings (libtiff names every private tag it does not know), so a warning does not
    * fail the run; the library's errors still do.
@@ -58,9 +63,9 @@ export interface MagickDecoded {
 
 const FIRST_SCENE = '[0]';
 const OUTPUT_CODERS: Readonly<Record<MagickScenes, 'png' | 'tiff'>> = { first: 'png', flatten: 'png', all: 'tiff' };
-/** Rows of the size probe: width, height and the canvas the picture sits on, one row per picture. */
-const SIZE_FORMAT = '%w %h %W %H\\n';
-const SIZE_ROW = /^(\d+) (\d+) (\d+) (\d+)$/;
+/** Rows of the size probe: width and height, one row per picture. */
+const SIZE_FORMAT = '%w %h\\n';
+const SIZE_ROW = /^(\d+) (\d+)$/;
 /** Largest sample the result holds is 16 bits of four channels; a PNG or a Deflate TIFF is never larger than that plus headers. */
 const OUTPUT_BYTES_PER_PIXEL = 8;
 const OUTPUT_OVERHEAD_BYTES = 64 * 1024;
@@ -79,7 +84,8 @@ const MAGICK_LIMITS: readonly string[] = [
 ];
 /** Makes a warning a failure. */
 const STRICT_READ = '-regard-warnings';
-const FLATTEN_ON_TRANSPARENT = ['-background', 'none', '-flatten'] as const;
+/** Sets the canvas size, which the offsets of the layers keep, then draws every layer on a transparent canvas of that size. */
+const flattenOnCanvas = (canvas: { width: number; height: number }): string[] => ['-repage', `${canvas.width}x${canvas.height}`, '-background', 'none', '-flatten'];
 /** Fastest PNG compression (zlib level 1, no row filter): the result is read once by the next step, not stored. */
 const FAST_COMPRESSION = ['-quality', '10'] as const;
 const LOSSLESS_TIFF = ['-compress', 'Zip'] as const;
@@ -92,8 +98,6 @@ export function findMagick(env: NodeJS.ProcessEnv = process.env): string | null 
 interface SceneSize {
   width: number;
   height: number;
-  canvasWidth: number;
-  canvasHeight: number;
 }
 
 function parseSceneSizes(output: string, label: string): SceneSize[] {
@@ -106,22 +110,21 @@ function parseSceneSizes(output: string, label: string): SceneSize[] {
     throw new ConversionFailedError(`Invalid image: the ${label} header could not be decoded`);
   }
   return rows.map((row) => {
-    const [width, height, canvasWidth, canvasHeight] = (row as RegExpExecArray).slice(1).map(Number);
-    return { width, height, canvasWidth, canvasHeight };
+    const [width, height] = (row as RegExpExecArray).slice(1).map(Number);
+    return { width, height };
   });
 }
 
 /** Pixels the run decodes (each picture, and the canvas a composite is drawn on), each held to the input pixel limit and all of them together. */
-function checkedPixels(sizes: readonly SceneSize[], scenes: MagickScenes): number {
+function checkedPixels(sizes: readonly SceneSize[], canvas: MagickSource['canvas']): number {
   let pixels = 0;
   for (const size of sizes) {
     assertInputPixels(size.width, size.height);
     pixels += size.width * size.height;
   }
-  if (scenes === 'flatten') {
-    const { canvasWidth, canvasHeight } = sizes[0];
-    assertInputPixels(canvasWidth, canvasHeight);
-    pixels += canvasWidth * canvasHeight;
+  if (canvas !== undefined) {
+    assertInputPixels(canvas.width, canvas.height);
+    pixels += canvas.width * canvas.height;
   }
   if (pixels > maxInputPixels()) throw new InputPixelLimitError(maxInputPixels());
   return pixels;
@@ -139,7 +142,7 @@ async function declaredPixels(magick: string, jobDir: string, source: MagickSour
       networkIsolated: true,
       signal,
     });
-    return checkedPixels(parseSceneSizes(run.stdout.toString('utf-8'), source.label), source.scenes);
+    return checkedPixels(parseSceneSizes(run.stdout.toString('utf-8'), source.label), source.canvas);
   } catch (err) {
     if (err instanceof ConversionFailedError) throw err;
     throw describeDecoderFailure(err, 'magick', source.label, DECODER_TIMEOUT_MS);
@@ -153,7 +156,7 @@ function warningPolicy(source: MagickSource): string[] {
 function decodeArguments(source: MagickSource): string[] {
   const selected = `${source.coder}:${DECODER_INPUT_NAME}${source.scenes === 'first' ? FIRST_SCENE : ''}`;
   const output = OUTPUT_CODERS[source.scenes];
-  const operators = source.scenes === 'flatten' ? FLATTEN_ON_TRANSPARENT : [];
+  const operators = source.scenes === 'flatten' && source.canvas !== undefined ? flattenOnCanvas(source.canvas) : [];
   const writer = output === 'png' ? FAST_COMPRESSION : LOSSLESS_TIFF;
   return [...MAGICK_LIMITS, ...warningPolicy(source), selected, ...operators, ...writer, `${output}:${DECODER_OUTPUT_NAME}`];
 }
