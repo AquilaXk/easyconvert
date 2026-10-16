@@ -1,8 +1,12 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   launchPays,
+  resolveLauncherChildEntry,
   sandboxLauncherChildEntry,
   launchSandboxedBinary,
   sandboxLauncherState,
@@ -355,5 +359,57 @@ describe('sandbox launcher', () => {
       expect(await exited).toBe(1);
       expect(gone(marker)).toBe(true);
     }, 30_000);
+  });
+
+  describe('which build of the helper is started', () => {
+    const SECURITY_DIR = path.join(process.cwd(), 'src', 'lib', 'security');
+    const CHILD = 'sandbox-launcher-child';
+    let scratch: string;
+
+    beforeAll(() => {
+      scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-entry-'));
+    });
+    afterAll(() => {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    });
+
+    const place = (relative: string, mtime: Date): string => {
+      const file = path.join(scratch, relative);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '// stand-in\n');
+      fs.utimesSync(file, mtime, mtime);
+      return file;
+    };
+    const bootstrapped = (entry: { args: string[] } | null, source: string): boolean => (entry?.args.find((arg) => arg.includes('register()')) ?? '').includes(JSON.stringify(source));
+
+    it('runs the source beside the module through tsx, not a build under dist that may be older', () => {
+      const cwd = path.join(scratch, 'with-dist');
+      const stale = place('with-dist/dist/sandbox-launcher-child.js', new Date(2020, 0, 1));
+      const entry = resolveLauncherChildEntry(SECURITY_DIR, cwd);
+      expect(bootstrapped(entry, path.join(SECURITY_DIR, `${CHILD}.ts`))).toBe(true);
+      expect(entry?.args).not.toContain(stale);
+    });
+
+    it('runs the build next to the module, or under dist, when there is no source beside it', () => {
+      const moduleDir = path.join(scratch, 'bundle');
+      const beside = place(`bundle/${CHILD}.js`, new Date());
+      expect(resolveLauncherChildEntry(moduleDir, path.join(scratch, 'elsewhere'))?.args.at(-1)).toBe(beside);
+      const cwd = path.join(scratch, 'only-dist');
+      const dist = place(`only-dist/dist/${CHILD}.js`, new Date());
+      expect(resolveLauncherChildEntry(path.join(scratch, 'empty'), cwd)?.args.at(-1)).toBe(dist);
+    });
+
+    it('ignores a build under dist that is older than the source under src of the working directory', () => {
+      const cwd = path.join(scratch, 'checkout');
+      const source = place(`checkout/src/lib/security/${CHILD}.ts`, new Date());
+      place(`checkout/dist/${CHILD}.js`, new Date(2020, 0, 1));
+      expect(bootstrapped(resolveLauncherChildEntry(path.join(scratch, 'empty'), cwd), source)).toBe(true);
+      const fresh = place(`checkout/dist/${CHILD}.js`, new Date(Date.now() + 60_000));
+      expect(resolveLauncherChildEntry(path.join(scratch, 'empty'), cwd)?.args.at(-1)).toBe(fresh);
+    });
+
+    it('starts nothing when neither a build nor a source can be found', () => {
+      expect(resolveLauncherChildEntry(path.join(scratch, 'empty'), path.join(scratch, 'nowhere'))).toBeNull();
+    });
   });
 });

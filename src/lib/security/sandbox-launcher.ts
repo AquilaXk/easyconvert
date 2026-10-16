@@ -102,28 +102,47 @@ export function sandboxLauncherChildEntry(): ChildEntry | null {
   return resolveChildEntry();
 }
 
-/** How to start the helper: the bundled file next to this module or under `dist/`, otherwise the source through tsx; null when neither exists. */
-function resolveChildEntry(): ChildEntry | null {
-  if (childEntry !== undefined) return childEntry;
-  const heap = `--max-old-space-size=${CHILD_HEAP_MB}`;
-  const compiled = [path.join(__dirname, `${CHILD_FILE}.js`), path.join(process.cwd(), 'dist', `${CHILD_FILE}.js`)].find((candidate) => fs.existsSync(candidate));
-  if (compiled) {
-    childEntry = { binary: process.execPath, args: [heap, compiled] };
-    return childEntry;
-  }
-  const source = [path.join(__dirname, `${CHILD_FILE}.ts`), path.join(process.cwd(), 'src', 'lib', 'security', `${CHILD_FILE}.ts`)].find((candidate) => fs.existsSync(candidate));
+/** The command that runs the helper from the source through tsx, or null when tsx cannot be found. */
+function sourceEntry(source: string, heap: string, searchFrom: readonly string[]): ChildEntry | null {
   let tsxApi: string | null = null;
   try {
-    tsxApi = createRequire(path.join(process.cwd(), 'package.json')).resolve(TSX_REGISTER_SPECIFIER);
+    tsxApi = createRequire(path.join(searchFrom[0], 'package.json')).resolve(TSX_REGISTER_SPECIFIER, { paths: [...searchFrom] });
   } catch {
     tsxApi = null;
   }
-  if (source && tsxApi) {
-    const bootstrap = `require(${JSON.stringify(tsxApi)}).register(); require(${JSON.stringify(source)});`;
-    childEntry = { binary: process.execPath, args: [heap, '-e', bootstrap] };
-    return childEntry;
+  if (!tsxApi) return null;
+  return { binary: process.execPath, args: [heap, '-e', `require(${JSON.stringify(tsxApi)}).register(); require(${JSON.stringify(source)});`] };
+}
+
+const modifiedAt = (file: string): number => fs.statSync(file).mtimeMs;
+
+/**
+ * How to start the helper, or null when it cannot be:
+ *  1. the source beside this module, through tsx: whoever runs the source (development, tests) gets the helper of the
+ *     source, never a build under `dist/` that may be older;
+ *  2. the bundled file next to this module or under `dist/` of the working directory, unless the working directory also
+ *     holds a newer source;
+ *  3. the source under `src/` of the working directory, through tsx.
+ */
+export function resolveLauncherChildEntry(moduleDir: string, cwd: string): ChildEntry | null {
+  const heap = `--max-old-space-size=${CHILD_HEAP_MB}`;
+  const searchFrom = [cwd, moduleDir, __dirname];
+  const beside = path.join(moduleDir, `${CHILD_FILE}.ts`);
+  if (fs.existsSync(beside)) {
+    const entry = sourceEntry(beside, heap, searchFrom);
+    if (entry) return entry;
   }
-  childEntry = null;
+  const cwdSource = path.join(cwd, 'src', 'lib', 'security', `${CHILD_FILE}.ts`);
+  const sourceTime = fs.existsSync(cwdSource) ? modifiedAt(cwdSource) : 0;
+  const compiled = [path.join(moduleDir, `${CHILD_FILE}.js`), path.join(cwd, 'dist', `${CHILD_FILE}.js`)].find(
+    (candidate) => fs.existsSync(candidate) && modifiedAt(candidate) >= sourceTime
+  );
+  if (compiled) return { binary: process.execPath, args: [heap, compiled] };
+  return fs.existsSync(cwdSource) ? sourceEntry(cwdSource, heap, searchFrom) : null;
+}
+
+function resolveChildEntry(): ChildEntry | null {
+  if (childEntry === undefined) childEntry = resolveLauncherChildEntry(__dirname, process.cwd());
   return childEntry;
 }
 
