@@ -783,7 +783,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-xpsdocument',
     category: 'document',
     description: 'Microsoft XML Paper Specification fixed document format.',
-    targetFormats: ['pdf', 'txt', 'zip', 'html'],
+    targetFormats: ['txt', 'zip', 'html'],
   },
   oxps: {
     id: 'oxps',
@@ -792,7 +792,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/oxps',
     category: 'document',
     description: 'Open XML Paper Specification standardized by ECMA-388.',
-    targetFormats: ['pdf', 'txt', 'zip'],
+    targetFormats: ['txt', 'zip'],
   },
   eml: {
     id: 'eml',
@@ -1324,7 +1324,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Legacy PowerPoint presentation template.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'xps', 'odp'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'odp'],
   },
   ppsx: {
     id: 'ppsx',
@@ -1404,8 +1404,8 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     extension: 'sxd',
     mimeType: 'application/vnd.sun.xml.draw',
     category: 'presentation',
-    description: 'Sun OpenOffice 1.x drawing and slide presentation.',
-    targetFormats: ['odp', 'pptx', 'pdf', 'zip'],
+    description: 'Sun OpenOffice 1.x drawing, rendered as PDF or page images.',
+    targetFormats: ['pdf', 'jpg', 'png', 'bmp', 'zip'],
   },
   sxi: {
     id: 'sxi',

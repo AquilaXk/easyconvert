@@ -348,12 +348,6 @@
         "file lists of Apache POI, Tika, LibreOffice core, VLC and the Open Preservation Foundation format corpus at pinned commits"
       ]
     },
-    "pps": {
-      "reason": "No PowerPoint 97 slide show (.pps) is published by the sources searched; their slide shows are .ppsx.",
-      "searched": [
-        "file lists of Apache POI, Tika, LibreOffice core and the Open Preservation Foundation format corpus at pinned commits"
-      ]
-    },
     "xlt": {
       "reason": "One Excel 97 template is published (Tika testEXCEL_template.xlt); no other collection searched holds one.",
       "searched": [

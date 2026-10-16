@@ -192,11 +192,15 @@ function readMainStory(word: Buffer, pieces: Piece[], ccpText: number): string {
   }
   const parts: string[] = [];
   let covered = 0;
+  // The character position the next piece must start at: the end of the previous piece, which lies past the end of the main
+  // story when that piece also holds the first characters of the footnote, header or comment stories.
+  let expectedStart = 0;
   for (const piece of pieces) {
-    if (piece.cpEnd < piece.cpStart || piece.cpStart !== covered) {
+    if (piece.cpEnd < piece.cpStart || piece.cpStart !== expectedStart) {
       throw new LegacyOfficeFormatError(`${LABEL}: the piece table character positions are not contiguous.`);
     }
     if (covered >= ccpText) break;
+    expectedStart = piece.cpEnd;
     const length = Math.min(piece.cpEnd, ccpText) - piece.cpStart;
     const bytesPerChar = piece.compressed ? COMPRESSED_BYTES_PER_CHAR : UNICODE_BYTES_PER_CHAR;
     const byteLength = length * bytesPerChar;

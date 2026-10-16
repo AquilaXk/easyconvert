@@ -38,7 +38,7 @@ Certain format conversions require specialized external command-line utilities. 
 - **Process Isolation**: veraPDF runs as an independent Java CLI application (`/opt/verapdf/verapdf`) inside the worker container. Execution output is parsed via standard XML/CLI stdout reporting.
 
 ### 2.4 LibreOffice (MPL 2.0)
-- **Role**: Headless conversion for legacy and complex office documents (`.doc`, `.xls`, `.ppt`, `.odt`, `.ods`, `.odp`).
+- **Role**: Headless conversion for legacy and complex office documents (`.doc`, `.xls`, `.ppt`, `.odt`, `.ods`, `.odp`), the importer of the formats no in-process reader covers (Works, WordPerfect, OpenOffice.org 1.x, Numbers, Publisher, and the Sony BBeB and Palm e-books), and the second reader of Word, Excel and PowerPoint files that the strict in-process readers refuse as malformed. The importers are the document-format libraries that the LibreOffice packages depend on (libwps, libwpd, libetonyek, libmspub, libe-book; each MPL 2.0, several also LGPL 2.1 or later); nothing is added to the worker image for them.
 - **Process Isolation**: Invoked headlessly as an isolated system process (`soffice --headless --convert-to ...`).
 
 ### 2.5 Ghostscript (`gs`) (AGPL 3.0+)

@@ -28,6 +28,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/stora
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
+import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteWritesTarget, retryRefusedLegacyDocument, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -2116,41 +2117,12 @@ export async function convertWithInProcessRawSensor(
  * Universal Worker Conversion Orchestrator.
  * Dispatches to native container engines first, with fail-closed security and pure TS fallback.
  */
-const OFFICE_FORMATS = new Set(['docx', 'doc', 'pptx', 'ppt', 'xlsx', 'xls', 'odt', 'ods', 'odp', 'rtf']);
-/**
- * Sources LibreOffice reads and renders: the Office formats plus PowerPoint templates, Keynote
- * presentations and OpenDocument drawings, none of which the in-process engine can render. Targets
- * are still limited to OFFICE_FORMATS, because LibreOffice cannot write the other formats.
- */
-const OFFICE_NATIVE_SOURCES: ReadonlySet<string> = new Set([
-  ...OFFICE_FORMATS,
-  'potx',
-  'key',
-  'odg',
-  'odd',
-  // Macro-enabled, template and slideshow variants: LibreOffice opens them like their plain formats, without running macros.
-  ...Object.keys(OOXML_VARIANT_FAMILY),
-]);
-/** LibreOffice application that opens and writes each Office format: a document is only converted into its own application's formats (and PDF). */
-const LIBREOFFICE_APPLICATION: Readonly<Record<string, 'writer' | 'calc' | 'impress'>> = {
-  doc: 'writer', docx: 'writer', odt: 'writer', rtf: 'writer', docm: 'writer', dotx: 'writer', dotm: 'writer',
-  xls: 'calc', xlsx: 'calc', ods: 'calc', xlsm: 'calc', xltx: 'calc', xltm: 'calc',
-  ppt: 'impress', pptx: 'impress', odp: 'impress', potx: 'impress', pptm: 'impress', potm: 'impress', ppsx: 'impress', ppsm: 'impress',
-};
-/** Whether LibreOffice has no export filter for the pair: a text document cannot be saved as a presentation, nor a workbook as a text document. */
-function crossesLibreOfficeApplications(src: string, tgt: string): boolean {
-  const from = LIBREOFFICE_APPLICATION[src];
-  const to = LIBREOFFICE_APPLICATION[tgt];
-  return from !== undefined && to !== undefined && from !== to;
-}
 /** Formats LibreOffice also writes back out: a drawing template is saved again as a normalised template (.otg). */
 const OFFICE_NATIVE_RESAVE_FORMATS: ReadonlySet<string> = new Set(['odd']);
 /** A presentation LibreOffice can only read: its HTML is the text of the PDF it renders. */
 const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
 /** Sources only LibreOffice renders: an unreadable file is the client's, so it answers a typed 400 instead of an untyped failure. */
 const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
-const LIBREOFFICE_ONLY_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd', 'key']);
-const LIBREOFFICE_NO_OUTPUT_PATTERN = /^LibreOffice execution completed without producing expected output file/;
 /**
  * The package a macro-enabled variant is handed to LibreOffice as: the plain package without its macro project, so no
  * macro is ever in reach of the office suite. Inputs that are not in memory and other formats are handed over as they are.
@@ -2162,9 +2134,6 @@ export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload,
   const plain = await ooxmlVariantAsPlainPackage(buffer, src, family);
   return plain.droppedMacros ? plain.buffer : input;
 }
-/** LibreOffice's stderr when it cannot load the file, or loads it as another kind of document (a text file named .ppt) that has no export filter for the target. */
-const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded|no export filter for/;
-
 /** The input as a buffer when it is held in memory or small enough to be read (files too big for memory go straight to LibreOffice). */
 function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
   if (Buffer.isBuffer(input)) return input;
@@ -2182,27 +2151,19 @@ async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src: strin
   if (buffer) await assertOpenDocumentGraphic(buffer, src);
 }
 
+/** Sources that are Excel 97-2003 workbooks (BIFF8): the workbook and its template. */
+const BIFF_WORKBOOK_SOURCES: ReadonlySet<string> = new Set(['xls', 'xlt']);
 /**
  * Answers an encrypted legacy workbook with the same typed error (HTTP 422) on every route. The in-process reader
  * raises it for the text targets; LibreOffice would only report that the source could not be loaded, which is
  * indistinguishable from a damaged file, so the FilePass record is looked for before it starts.
  */
 function assertWorkbookNotEncrypted(input: Buffer | WorkerVfsPayload, src: string): void {
-  if (src !== 'xls') return;
+  if (!BIFF_WORKBOOK_SOURCES.has(src)) return;
   const buffer = inputAsBuffer(input);
   if (buffer) assertXlsNotEncrypted(buffer);
 }
 
-/** LibreOffice ran and wrote nothing for a drawing or Keynote file: the file is damaged or not that kind of document (typed 400). */
-function asUnreadableDocument(err: unknown, src: string): unknown {
-  if (OFFICE_NATIVE_SOURCES.has(src) && err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
-    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
-  }
-  if (OFFICE_NATIVE_SOURCES.has(src) && err instanceof SandboxedProcessError && LIBREOFFICE_LOAD_FAILURE_PATTERN.test(err.message)) {
-    return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged, encrypted or not a valid ${src.toUpperCase()} document.`);
-  }
-  return err;
-}
 const HTML_TARGET = 'html';
 const HTML_BODY_PATTERN = /<body[^>]*>([\s\S]*)<\/body>/i;
 const HTML_TAG_PATTERN = /<[^>]*>/g;
@@ -2411,7 +2372,41 @@ export function executeWorkerConversion(
   originalFilename = 'file'
 ): Promise<WorkerConversionResult> {
   // Options that are not an object are refused by the conversion itself; here only their signal is read.
-  return runWithImageFetchSession(options?.signal, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename));
+  return runWithImageFetchSession(options?.signal, () => convertWithOfficeSuiteRoutes(input, sourceFormat, targetFormat, options, originalFilename));
+}
+
+/** What the office-suite routes run on: the LibreOffice run, the whole conversion of the interchange file, and the clean-up of intermediate output. */
+const OFFICE_SUITE_DEPS: OfficeSuiteRouteDeps = {
+  writeWithOfficeSuite: convertWithHeadlessOffice,
+  convert: convertWithOfficeSuiteRoutes,
+  discardOutput: discardPersistedOutput,
+};
+
+/**
+ * One conversion of the request's image session. A format only the office suite reads goes to a target it does not write
+ * through an interchange file; any other conversion runs the engines, and a legacy Office document that the strict
+ * in-process reader refuses is then tried by the office suite.
+ */
+async function convertWithOfficeSuiteRoutes(
+  input: Buffer | WorkerVfsPayload,
+  sourceFormat: string,
+  targetFormat: string,
+  options: WorkerEngineOptions = {},
+  originalFilename = 'file'
+): Promise<WorkerConversionResult> {
+  assertConversionOptionsObject(options);
+  options.signal?.throwIfAborted();
+  const request = { input, src: validateFormat(sourceFormat), tgt: validateFormat(targetFormat), options, originalFilename };
+  const interchange = interchangeNeeded(request.src, request.tgt, isPdfChainTarget(request.tgt) || ARCHIVE_TARGET_FORMATS.has(request.tgt));
+  if (interchange !== undefined) {
+    assertNotSpoofedFileVfs(input, request.src, originalFilename);
+    return convertThroughInterchange(OFFICE_SUITE_DEPS, request, interchange);
+  }
+  return convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename).catch(async (refusal: unknown) => {
+    const retried = await retryRefusedLegacyDocument(OFFICE_SUITE_DEPS, request, refusal);
+    if (retried) return retried;
+    throw refusal;
+  });
 }
 
 async function convertWithinImageSession(
@@ -2449,7 +2444,7 @@ async function convertWithinImageSession(
   assertWorkbookNotEncrypted(input, src);
   if (OFFICE_NATIVE_SOURCES.has(src)) input = await officeInputWithoutMacros(input, src);
   const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
-  if (isNativeTextPdf || isRecalculate || isOfficeResave || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)) && !crossesLibreOfficeApplications(src, tgt))) {
+  if (isNativeTextPdf || isRecalculate || isOfficeResave || officeSuiteWritesTarget(src, tgt)) {
     try {
       const officeRes = isNativeTextPdf
         ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)

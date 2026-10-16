@@ -14,6 +14,7 @@ import {
 } from '../lib/security/process-sandbox';
 import { EngineUnavailableError } from '../lib/types';
 import { buildPdfExportFilterData } from '../lib/conversions/pdf-export-options';
+import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
 /** Engine name reported by the typed error when the pool cannot serve conversions. */
@@ -147,18 +148,25 @@ const MIME_TYPES: Record<string, string> = {
   rtf: 'application/rtf',
 };
 
-const SPREADSHEET_SOURCES: ReadonlySet<string> = new Set(['xlsx', 'xls', 'ods', 'csv', 'tsv']);
-const PRESENTATION_SOURCES: ReadonlySet<string> = new Set(['pptx', 'ppt', 'odp', 'potx', 'key']);
-const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
-/** Formats LibreOffice writes under another name: an OpenDocument drawing template is its `otg` export. */
-const LIBREOFFICE_TARGET_NAMES: Readonly<Record<string, string>> = { odd: 'otg' };
+/** The PDF export filter of each application of the office suite. */
+const PDF_EXPORT_FILTER_OF_APPLICATION: Readonly<Record<OfficeSuiteApplication, string>> = {
+  writer: 'writer_pdf_Export',
+  calc: 'calc_pdf_Export',
+  impress: 'impress_pdf_Export',
+  draw: 'draw_pdf_Export',
+};
+/**
+ * The writer's encoded text export in UTF-8, with LF line ends and no byte order mark: the filter options are the character
+ * set, the line end, the font, the language and whether to write the mark (which the filter writes unless told not to,
+ * while the in-process text engine never does).
+ */
+const LIBREOFFICE_UTF8_TEXT_FILTER = 'txt:Text (encoded):UTF8,LF,,,false';
+/** Formats LibreOffice writes under another name: an OpenDocument drawing template is its `otg` export, and plain text its UTF-8 text export. */
+const LIBREOFFICE_TARGET_NAMES: Readonly<Record<string, string>> = { odd: 'otg', txt: LIBREOFFICE_UTF8_TEXT_FILTER };
 
-/** PDF export filter of the LibreOffice component that opens a source format. */
+/** PDF export filter of the LibreOffice component that opens a source format (the word processor for a format no component is named for). */
 function pdfExportFilterName(sourceFormat: string): string {
-  if (SPREADSHEET_SOURCES.has(sourceFormat)) return 'calc_pdf_Export';
-  if (PRESENTATION_SOURCES.has(sourceFormat)) return 'impress_pdf_Export';
-  if (DRAWING_SOURCES.has(sourceFormat)) return 'draw_pdf_Export';
-  return 'writer_pdf_Export';
+  return PDF_EXPORT_FILTER_OF_APPLICATION[officeSuiteApplication(sourceFormat) ?? 'writer'];
 }
 
 /**

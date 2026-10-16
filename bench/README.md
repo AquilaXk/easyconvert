@@ -595,7 +595,7 @@ npx tsx scripts/regression-corpus-manifest.ts index|profile|select --work DIR
   producer). Nothing is committed: a shard reads each file out of the publisher's ZIP archive with range requests, checks its
   digest, judges it and deletes it, in batches of 200 files, so a runner never holds more than two batches. A file whose bytes differ
   from the manifest, or that the host does not serve, is listed as unavailable, fails the run and is not judged; the others are.
-  The manifest holds 20,003 files, 23.5 GB: 15,003 from the government corpus (doc 4,000, xls 3,300, ppt 2,400, pps 400,
+  The manifest holds 19,996 files, 23.5 GB: 14,996 from the government corpus (doc 3,996, xls 3,300, ppt 2,400, pps 397,
   docx 162, xlsx 37, pptx 204, pdf 4,500) and 5,000 PDFs of the crawl, in 1,352 combinations of format and producer class
   (1,325 of them PDF producers; the office files of the government corpus come from a handful of applications). `npm run bench:regression -- stats` prints the table.
 - **Strata:** the draw takes the same number of files from every combination of format, producing application and size class, so a

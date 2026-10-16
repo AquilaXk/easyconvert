@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { SandboxedTimeoutError } from '../security/process-sandbox';
 import { requiresNativeEngine } from './native-engine-pairs';
+import { OFFICE_SUITE_SOURCE_FORMATS } from './office/office-suite-sources';
 import { checkConversionOutput } from './output-check';
 import { applyPdfPostProcessing, assertPdfPostProcessOptions, verifyPdfA } from './index';
 import { directPdfAExportConformance, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
@@ -26,6 +27,7 @@ const PDF_FORMAT = 'pdf';
 /** Sources of the office suite, PDF and PostScript tools, whose time-limit failures are typed. */
 const TIMEOUT_TYPED_SOURCES: ReadonlySet<string> = new Set([
   'pdf', 'ps', 'doc', 'docx', 'docm', 'dotx', 'dotm', 'rtf', 'odt', 'xls', 'xlsx', 'xlsm', 'xltx', 'xltm', 'ods', 'ppt', 'pptx', 'pptm', 'potx', 'potm', 'ppsx', 'ppsm', 'odp',
+  ...OFFICE_SUITE_SOURCE_FORMATS,
 ]);
 const IN_PROCESS_ENGINE: WorkerConversionResult['engineUsed'] = 'internal-fallback';
 
