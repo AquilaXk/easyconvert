@@ -5,6 +5,7 @@ import { decodePlainPngOnce, isPlainPng, type DecodedPng } from '../src/lib/conv
 import { classifyContent, classifyRaster, type ContentClass } from '../src/lib/conversions/image-content';
 import { flattenColour } from '../src/lib/conversions/image-background';
 import { jpegOptionsFor, webpOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
+import { srgbProfileChunk, textChunk, withChunksAfterHeader } from './helpers/png-chunks';
 
 const WIDTH = 96;
 const HEIGHT = 64;
@@ -171,6 +172,18 @@ describe('convertImage on a plain PNG', () => {
 
   it.each(['jpg', 'webp', 'avif'])('inflates the PNG once for %s: the content class, the alpha check and the encoder read the decoded pixels', async (target) => {
     expect((await pipelineRuns(await png(4, false), target)).pngReads).toBe(1);
+  });
+
+  it.each(['jpg', 'avif'])('inflates a PNG with text chunks and an sRGB profile once for %s: nothing in them reaches the output', async (target) => {
+    const source = withChunksAfterHeader(await png(3, false), [srgbProfileChunk(), textChunk()]);
+    const meta = await sharp(source).metadata();
+    expect([meta.hasProfile, meta.comments?.length]).toEqual([true, 1]);
+    expect((await pipelineRuns(source, target)).pngReads).toBe(1);
+  });
+
+  it('leaves a PNG with a wide-gamut profile, which the output carries, to the encoder', async () => {
+    const source = await sharp(await png(3, false)).withIccProfile('p3').png().toBuffer();
+    expect((await pipelineRuns(source, 'jpg')).pngReads).toBeGreaterThan(1);
   });
 
   /** Sample depths asked of the raw output by a conversion: the decode of the PNG is the first raw read, and the WebP path makes none. */
