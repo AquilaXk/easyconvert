@@ -164,8 +164,9 @@ export async function decodePlainPngForTarget(
 ): Promise<DecodedForTarget | null> {
   const isJpeg = JPEG_TARGETS.has(fmt);
   const decoded = await decodePlainPngOnce(pipeline, undefined, isJpeg && changesPixels, onPlain);
-  const translucentColour = decoded !== null && decoded.alphaIsOpaque === false && decoded.raster.channels === RGBA_CHANNELS && decoded.raster.samples instanceof Uint16Array;
-  if (decoded === null || !isJpeg || changesPixels || !translucentColour) return decoded;
+  if (decoded === null || !isJpeg || changesPixels) return decoded;
+  const translucentColour = decoded.alphaIsOpaque === false && decoded.raster.channels === RGBA_CHANNELS && decoded.raster.samples instanceof Uint16Array;
+  if (!translucentColour) return decoded;
   const content = classifyRaster(decoded.raster);
   const reduced = await decodePlainPngOnce(pipeline, undefined, true);
   return reduced === null ? null : { ...reduced, content };
