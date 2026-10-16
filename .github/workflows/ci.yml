@@ -149,7 +149,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
@@ -237,7 +237,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
@@ -288,7 +288,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
@@ -352,7 +352,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
@@ -397,14 +397,9 @@ jobs:
           REDIS_URL: redis://127.0.0.1:6379
         run: npm run test:redis
 
-      # The Parquet writer writes ZSTD pages through node:zlib, which has zstd from Node 22.15. The shards run Node 20, so
-      # this one file runs here, last (the steps above stay on Node 20). With ORACLE_STRICT_MODE a runtime without zstd
-      # fails the ZSTD rows instead of skipping them.
-      - name: Setup Node.js 22 for the Parquet ZSTD rows
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22
-
+      # The Parquet writer writes ZSTD pages through node:zlib, which has zstd from Node 22.15 (the job runs Node 24). The
+      # file is kept out of the shards (scripts/ci-test-shards.mjs) and runs here, last, in strict mode, so a runtime
+      # without zstd fails the ZSTD rows instead of skipping them.
       - name: Run the Parquet writer conformance with ZSTD pages
         env:
           ORACLE_STRICT_MODE: "1"
@@ -564,7 +559,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
@@ -696,7 +691,7 @@ jobs:
         if: env.BENCH_CHANGED == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 20
+          node-version: 24
           cache: 'npm'
 
       - name: Install dependencies

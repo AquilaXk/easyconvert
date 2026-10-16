@@ -149,7 +149,7 @@ describe.skipIf(skipUnless('WebAssembly', xxh64WasmSupported()))('WebAssembly XX
 
   it('falls back to the script implementation, with the same values, in a runtime without WebAssembly', () => {
     const child = path.join(__dirname, 'helpers', 'xxh64-no-wasm-child.cts');
-    const output = execFileSync(process.execPath, ['--no-expose-wasm', '-r', 'tsx/cjs', child], { encoding: 'utf8', cwd: path.join(__dirname, '..') });
+    const output = execFileSync(process.execPath, ['-r', path.join(__dirname, 'helpers', 'no-webassembly-preload.cjs'), '-r', 'tsx/cjs', child], { encoding: 'utf8', cwd: path.join(__dirname, '..') });
     const result = JSON.parse(output.trim().split('\n').pop() ?? '{}') as Record<string, unknown>;
     const data = Buffer.alloc(5000);
     for (let i = 0; i < data.length; i++) data[i] = (i * 31 + (i >> 3)) & 0xff;

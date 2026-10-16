@@ -22,7 +22,7 @@ const TEST_SUFFIX = '.test.ts';
 /**
  * Files the sharded job does not run: the timing suites run nightly, the conformance gate has its own jobs, the
  * real-server storage tests run in the one job that starts the S3 test server (the `integration` job of ci.yml), and the
- * Parquet writer conformance runs in that job too, on a Node with zstd in node:zlib (22.15 or newer; the shards run Node 20).
+ * Parquet writer conformance runs in that job too, in strict mode, so a runtime without zstd in node:zlib (Node 22.15 or newer has it) fails the ZSTD rows.
  */
 const EXCLUDED_SUFFIXES = ['.perf.test.ts'];
 const EXCLUDED_FILES = new Set([
