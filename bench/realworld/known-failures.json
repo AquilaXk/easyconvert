@@ -17,59 +17,59 @@
     "pair": "*",
     "verdict": "crash",
     "detail": "^Error: Cannot extract plain text from binary/compressed container for format '\\.(dot|otp|ott|pub|sxd|sxi|sxw|wps|xlt)': fail-closed against mojibake corruption",
-    "issue": 760
+    "issue": 783
   },
   {
     "pair": "*",
     "verdict": "crash",
     "detail": "^Error: Binary null bytes detected in source format '\\.(lrf|pdb|rb|wpd)': fail-closed against mojibake corruption",
-    "issue": 760
+    "issue": 783
   },
   {
     "pair": "*",
     "verdict": "crash",
     "detail": "^InvalidConversionOutputError: The conversion of the \\.(numbers|ott|sxw|xps) file to \\.(csv|txt) produced bytes that are not a \\.(csv|txt) file",
-    "issue": 760
+    "issue": 783
   },
   {
     "pair": "*",
     "verdict": "crash",
     "detail": "^Error: Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font",
     "file": "ft-testt1-regular.pfa",
-    "issue": 760
+    "issue": 783
   },
   {
     "pair": "*",
     "verdict": "crash",
     "detail": "^Error: Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font",
     "file": "ft-testt1-ellipsis-hinted.pfa",
-    "issue": 760
+    "issue": 783
   },
   {
     "pair": "*",
     "verdict": "crash",
     "detail": "^Error: Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font",
     "file": "ft-testt1-regular.pfb",
-    "issue": 760
+    "issue": 783
   },
   {
     "pair": "*",
     "verdict": "crash",
     "detail": "^Error: source: bad seek to \\d+",
-    "issue": 760
+    "issue": 783
   },
   {
     "pair": "*",
     "verdict": "crash",
     "detail": "^Error: tiff2vips: Old-style JPEG compression support is not configured",
     "file": "opf-old-style-jpeg-compression.tif",
-    "issue": 760
+    "issue": 783
   },
   {
     "pair": "wav->aac",
     "verdict": "bad-output",
     "detail": "^empty output$",
     "file": "kaitai-small.wav",
-    "issue": 760
+    "issue": 783
   }
 ]
