@@ -5,6 +5,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { EngineUnavailableError } from '../src/lib/types';
+import { decodeRgba } from './helpers/imagemagick';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
 import { oracleTest } from './helpers/oracle-test';
@@ -72,5 +73,31 @@ describe('SVG to PDF', () => {
     const run = dispatchConversion(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect'), 'svg', 'pdf', {}, 'broken.svg');
     await expect(run).rejects.toThrow(/^The SVG renderer rejected the drawing/);
     await expect(run).rejects.not.toBeInstanceOf(EngineUnavailableError);
+  });
+
+  oracleTest('hands the drawing to the renderer through its input and takes the PDF from its output, drawing what rsvg-convert draws from a file', ['rsvg-convert', 'pdftoppm', 'identify'], async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rsvg-shim-'));
+    const previous = process.env.RSVG_CONVERT_PATH;
+    try {
+      const log = path.join(dir, 'calls.log');
+      const shim = path.join(dir, 'rsvg-convert');
+      fs.writeFileSync(shim, ['#!/bin/sh', `printf '%s\\n' "$*" >> '${log}'`, `exec '${requireOracleTool('rsvg-convert')}' "$@"`, ''].join('\n'), { mode: 0o755 });
+      process.env.RSVG_CONVERT_PATH = shim;
+      const result = await dispatchConversion(Buffer.from(SVG), 'svg', 'pdf', {}, 'art.svg');
+      // One start; no input or output file on the command line, so none was written.
+      expect(fs.readFileSync(log, 'utf8').trim().split('\n')).toEqual(['--format pdf']);
+      fs.writeFileSync(path.join(dir, 'ours.pdf'), result.buffer);
+      fs.writeFileSync(path.join(dir, 'in.svg'), SVG);
+      execFileSync(requireOracleTool('rsvg-convert'), ['--format', 'pdf', '--output', path.join(dir, 'ref.pdf'), path.join(dir, 'in.svg')]);
+      const raster = (name: string) => {
+        execFileSync(requireOracleTool('pdftoppm'), ['-r', '96', '-png', '-singlefile', path.join(dir, `${name}.pdf`), path.join(dir, name)]);
+        return decodeRgba(fs.readFileSync(path.join(dir, `${name}.png`)), 'png');
+      };
+      expect(raster('ours').data.equals(raster('ref').data)).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.RSVG_CONVERT_PATH;
+      else process.env.RSVG_CONVERT_PATH = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

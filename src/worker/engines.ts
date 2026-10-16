@@ -75,6 +75,8 @@ import {
   SandboxedProcessError,
   SandboxedBufferLimitError,
 } from './sandbox';
+import { convertPostScript } from './postscript-render';
+import { ppmBatchPages, renderPngBatch, selectsPages, splitIntoBatches } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
@@ -344,7 +346,7 @@ export function getLibreOfficePool(): LibreOfficePoolManager {
 /**
  * Scoped sandbox directory runner with automated cleanup and error encapsulation.
  */
-async function withSandboxDir<T>(
+export async function withSandboxDir<T>(
   prefix: string,
   operation: (tempDir: string) => Promise<T>
 ): Promise<T> {
@@ -439,7 +441,7 @@ export function preserveOutput(
  * that file in all but unusual setups, so the file is renamed into place and its bytes are not written a second time;
  * across volumes, or when the caller named the destination (which may be a link or a mount of its own), it is copied.
  */
-function handOffOutput(
+export function handOffOutput(
   tempOutputPath: string,
   targetFormat: string,
   options?: WorkerEngineOptions,
@@ -458,7 +460,7 @@ function handOffOutput(
 }
 
 /** Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy. */
-function writeOutputSegments(
+export function writeOutputSegments(
   segments: readonly Uint8Array[],
   targetFormat: string,
   options?: WorkerEngineOptions,
@@ -1348,6 +1350,15 @@ const PDF_RASTER_DEFAULT_DPI = 150;
 const PDF_RASTER_MIN_DPI = 72;
 const PDF_RASTER_MAX_DPI = 600;
 
+/** The raster density of a PDF page image, validated against the range the API accepts. */
+export function resolvePdfRasterDpi(options: WorkerEngineOptions): number {
+  const dpi = options.dpi ?? PDF_RASTER_DEFAULT_DPI;
+  if (!Number.isFinite(dpi) || dpi < PDF_RASTER_MIN_DPI || dpi > PDF_RASTER_MAX_DPI) {
+    throw new UnsupportedOptionError(`The dpi option ${options.dpi} is outside the supported range of ${PDF_RASTER_MIN_DPI} to ${PDF_RASTER_MAX_DPI}.`);
+  }
+  return dpi;
+}
+
 function buildPdftoppmArgs(
   tgt: string,
   options: WorkerEngineOptions,
@@ -1356,10 +1367,7 @@ function buildPdftoppmArgs(
   inputPath: string,
   prefix: string
 ): string[] {
-  const dpi = options.dpi ?? PDF_RASTER_DEFAULT_DPI;
-  if (!Number.isFinite(dpi) || dpi < PDF_RASTER_MIN_DPI || dpi > PDF_RASTER_MAX_DPI) {
-    throw new UnsupportedOptionError(`The dpi option ${options.dpi} is outside the supported range of ${PDF_RASTER_MIN_DPI} to ${PDF_RASTER_MAX_DPI}.`);
-  }
+  const dpi = resolvePdfRasterDpi(options);
   const args: string[] = ['-r', String(dpi)];
 
   if (tgt === 'png') {
@@ -1576,7 +1584,19 @@ interface PopplerRenderParams {
   timeout: number;
   filterOutputFile: (fileName: string) => boolean;
   missingOutputError: string;
-  renderPages: (tempDir: string, inputPath: string, requestedPages: number[]) => Promise<void>;
+  /**
+   * Starts rendering the first pages while the page count is being read, when the request selects no pages: the count
+   * is only needed to know how many pages follow. The count is read first, every failure it reports is reported, and
+   * the early run is awaited (never left running) before the job directory goes.
+   */
+  startEarly?: (tempDir: string, inputPath: string) => EarlyRender | null;
+  renderPages: (tempDir: string, inputPath: string, requestedPages: number[], early: EarlyRender | null) => Promise<void>;
+}
+
+/** Pages 1 to `throughPage` are being rendered by `done` (it resolves once they are on disk, and rejects as the render would). */
+interface EarlyRender {
+  throughPage: number;
+  done: Promise<void>;
 }
 
 function loadPdfInputBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
@@ -1601,6 +1621,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
     timeout,
     filterOutputFile,
     missingOutputError,
+    startEarly,
     renderPages,
   } = params;
 
@@ -1614,10 +1635,18 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
         async (readablePath) => {
           // With a password the fallback parser must read the decrypted copy, not the encrypted input.
           const inputBuffer = options.password ? undefined : loadPdfInputBuffer(input);
-          const pageCount = await countPagesOfReadablePdf(readablePath, tempDir, timeout, options.signal, inputBuffer);
-
-          const requestedPages = resolveRequestedPages(options, pageCount);
-          await renderPages(tempDir, readablePath, requestedPages);
+          const early = startEarly ? startEarly(tempDir, readablePath) : null;
+          // An early run that fails is reported where the render would have reported it, below.
+          early?.done.catch(() => undefined);
+          let requestedPages: number[];
+          try {
+            const pageCount = await countPagesOfReadablePdf(readablePath, tempDir, timeout, options.signal, inputBuffer);
+            requestedPages = resolveRequestedPages(options, pageCount);
+          } catch (err) {
+            await early?.done.catch(() => undefined);
+            throw err;
+          }
+          await renderPages(tempDir, readablePath, requestedPages, early);
 
           const files = fs.readdirSync(tempDir).filter(filterOutputFile);
           if (files.length === 0) {
@@ -1676,20 +1705,35 @@ async function renderPdfToImageWithPoppler(
     timeout,
     filterOutputFile: (f) => f.startsWith('page') && !f.endsWith('.pdf'),
     missingOutputError: 'pdftoppm execution completed without producing any output images',
-    renderPages: async (tempDir, inputPath, requestedPages) => {
+    startEarly: (tempDir, inputPath) => {
+      if (tgt !== PNG_FORMAT || selectsPages(options)) return null;
+      const dpi = resolvePdfRasterDpi(options);
+      const throughPage = ppmBatchPages(dpi);
+      const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
+      const prefix = path.join(tempDir, 'page');
+      const done = renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix));
+      return { throughPage, done };
+    },
+    renderPages: async (tempDir, inputPath, requestedPages, early) => {
       const intervals = groupConsecutiveRanges(requestedPages);
       const prefix = path.join(tempDir, 'page');
+      const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
+      if (tgt === PNG_FORMAT) {
+        const dpi = resolvePdfRasterDpi(options);
+        await early?.done;
+        const rendered = early?.throughPage ?? 0;
+        for (const interval of intervals) {
+          for (const batch of splitIntoBatches(Math.max(interval.start, rendered + 1), interval.end, ppmBatchPages(dpi))) {
+            await renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, batch.start, batch.end, inputPath, prefix));
+          }
+        }
+        return;
+      }
       let step: Promise<any> = Promise.resolve();
       for (const interval of intervals) {
         step = step.then(() => {
           const args = buildPdftoppmArgs(tgt, options, interval.start, interval.end, inputPath, prefix);
-          return executeSandboxedBinary(pdftoppmBin, args, {
-            cwd: tempDir,
-            timeoutMs: timeout,
-            maxBuffer,
-            networkIsolated: true,
-            signal: options.signal,
-          });
+          return executeSandboxedBinary(pdftoppmBin, args, sandbox);
         });
       }
       await step;
@@ -2139,55 +2183,42 @@ export async function convertWithNativeSvg(
   const timeout = Math.min(stageTimeoutMs(options, SVG_DEFAULT_TIMEOUT_MS), SVG_MAX_TIMEOUT_MS);
   const svg = normalizeSvgForRendering(sanitizeSvgDocument(readRawInputBuffer(input).toString('utf-8')));
 
-  return withSandboxDir('easyconvert-svg-', async (tempDir) => {
-    const inputPath = path.join(tempDir, 'input.svg');
-    const outputPath = path.join(tempDir, 'output.pdf');
-    fs.writeFileSync(inputPath, svg);
-    try {
-      await executeSandboxedBinary(renderer, ['--format', 'pdf', '--output', outputPath, inputPath], {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
-        maxFileSize: SVG_MAX_OUTPUT_BYTES,
-        memoryLimitMb: SVG_MEMORY_LIMIT_MB,
-        networkIsolated: true,
-        signal: options.signal,
-      });
-    } catch (err) {
-      if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
-        throw new ConversionFailedError('The SVG renderer exceeded its output or memory limit on the drawing.');
-      }
-      if (err instanceof SandboxedProcessError) {
-        const detail = err.stderr.trim().slice(0, SVG_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
-        throw new ConversionFailedError(`The SVG renderer rejected the drawing${detail ? `: ${detail}` : ''}`);
-      }
-      throw err;
+  // The drawing goes in through the pipe and the PDF comes back through it: no job directory, no file copies. The
+  // renderer has no file to take a base location from, so nothing the drawing names is looked for beside it.
+  let rendered: Buffer;
+  try {
+    ({ stdout: rendered } = await executeSandboxedBinary(renderer, ['--format', 'pdf'], {
+      timeoutMs: timeout,
+      maxBuffer: options.maxBufferBytes || SVG_MAX_OUTPUT_BYTES,
+      memoryLimitMb: SVG_MEMORY_LIMIT_MB,
+      networkIsolated: true,
+      signal: options.signal,
+      stdin: Buffer.from(svg, 'utf-8'),
+    }));
+  } catch (err) {
+    if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
+      throw new ConversionFailedError('The SVG renderer exceeded its output or memory limit on the drawing.');
     }
-    if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-      throw new ConversionFailedError('The SVG renderer wrote no page from the drawing.');
+    if (err instanceof SandboxedProcessError) {
+      const detail = err.stderr.trim().slice(0, SVG_MAX_STDERR_CHARS);
+      throw new ConversionFailedError(`The SVG renderer rejected the drawing${detail ? `: ${detail}` : ''}`);
     }
-    const persistedPath = preserveOutput(outputPath, 'pdf', options, Buffer.isBuffer(input) ? undefined : input);
-    return createConversionResult(persistedPath, 'pdf', baseName, 'native-svg', Date.now() - startTime);
-  });
+    throw err;
+  }
+  if (rendered.length === 0) {
+    throw new ConversionFailedError('The SVG renderer wrote no page from the drawing.');
+  }
+  const persistedPath = writeOutputSegments([rendered], 'pdf', options, Buffer.isBuffer(input) ? undefined : input);
+  return createConversionResult(persistedPath, 'pdf', baseName, 'native-svg', Date.now() - startTime);
 }
 
-/** PostScript sources: only an interpreter can draw them, so the worker runs ps2pdf and then Poppler. */
+/** PostScript sources: only an interpreter can draw them. */
 const POSTSCRIPT_SOURCES: ReadonlySet<string> = new Set(['eps', 'ps']);
-const POSTSCRIPT_DEFAULT_TIMEOUT_MS = 120_000;
-const POSTSCRIPT_MAX_TIMEOUT_MS = 600_000;
-const POSTSCRIPT_MEMORY_LIMIT_MB = 2048;
-const POSTSCRIPT_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
-const POSTSCRIPT_MAX_STDERR_CHARS = 300;
-/** The interpreter runs in its safe mode: the file cannot read or write other files or start programs. */
-const POSTSCRIPT_INTERPRETER_FLAGS: readonly string[] = ['-dSAFER'];
-/** An EPS is a figure, not a page: the PDF page is cropped to its %%BoundingBox instead of the default paper size. */
-const EPS_SOURCE = 'eps';
-const EPS_CROP_FLAG = '-dEPSCrop';
-
 /**
- * Renders PostScript (EPS, PS) with `ps2pdf` and, for targets other than PDF, hands the PDF to the native tools
- * every PDF source uses (Poppler images and SVG, the encoded rasters, pdftops and the DXF writer). Returns null when `ps2pdf` is missing and the caller did not
- * ask for an error; with `throwOnUnavailable` a missing interpreter is an EngineUnavailableError.
+ * Renders PostScript (EPS, PS) with the interpreter (postscript-render.ts) and, for targets other than PDF and PNG, hands
+ * the PDF to the native tools every PDF source uses (Poppler images and SVG, the encoded rasters, pdftops and the DXF
+ * writer). Returns null when `ps2pdf` is missing and the caller did not ask for an error; with `throwOnUnavailable` a
+ * missing interpreter is an EngineUnavailableError.
  */
 export async function convertWithNativePostScript(
   input: Buffer | WorkerVfsPayload,
@@ -2206,49 +2237,7 @@ export async function convertWithNativePostScript(
     }
     return null;
   }
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
-  const startTime = Date.now();
-  const timeout = Math.min(stageTimeoutMs(options, POSTSCRIPT_DEFAULT_TIMEOUT_MS), POSTSCRIPT_MAX_TIMEOUT_MS);
-
-  const pdf = await withSandboxDir('easyconvert-postscript-', async (tempDir) => {
-    const { inputPath } = resolveInputContext(input, src, tempDir);
-    const pdfPath = path.join(tempDir, 'rendered.pdf');
-    try {
-      const flags = src === EPS_SOURCE ? [...POSTSCRIPT_INTERPRETER_FLAGS, EPS_CROP_FLAG] : POSTSCRIPT_INTERPRETER_FLAGS;
-      await executeSandboxedBinary(interpreter, [...flags, inputPath, pdfPath], {
-        cwd: tempDir,
-        timeoutMs: timeout,
-        maxBuffer: options.maxBufferBytes || 100 * 1024 * 1024,
-        maxFileSize: POSTSCRIPT_MAX_OUTPUT_BYTES,
-        memoryLimitMb: POSTSCRIPT_MEMORY_LIMIT_MB,
-        networkIsolated: true,
-        signal: options.signal,
-      });
-    } catch (err) {
-      if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
-        throw new ConversionFailedError(`The PostScript interpreter exceeded its output or memory limit on the .${src} file.`);
-      }
-      if (err instanceof SandboxedProcessError) {
-        const detail = err.stderr.trim().slice(0, POSTSCRIPT_MAX_STDERR_CHARS).replaceAll(tempDir, '<tmp>');
-        throw new ConversionFailedError(`The PostScript interpreter rejected the .${src} file${detail ? `: ${detail}` : ''}`);
-      }
-      throw err;
-    }
-    if (!fs.existsSync(pdfPath) || fs.statSync(pdfPath).size === 0) {
-      throw new ConversionFailedError(`The PostScript interpreter drew no page from the .${src} file.`);
-    }
-    return fs.readFileSync(pdfPath);
-  });
-
-  if (tgt === 'pdf') {
-    return withSandboxDir('easyconvert-postscript-out-', async (tempDir) => {
-      const outputPath = path.join(tempDir, 'output.pdf');
-      fs.writeFileSync(outputPath, pdf);
-      const persistedPath = preserveOutput(outputPath, 'pdf', options, Buffer.isBuffer(input) ? undefined : input);
-      return createConversionResult(persistedPath, 'pdf', baseName, 'native-postscript', Date.now() - startTime);
-    });
-  }
-  return convertPdfPagesWithNativeTools(pdf, tgt, options, originalFilename);
+  return convertPostScript({ input, src, tgt, options, originalFilename, interpreter });
 }
 
 /**
