@@ -23,11 +23,20 @@ import {
   RawEngineRequiredError,
   PayloadLimitError,
   PdfPasswordRequiredError,
+  CorruptStreamError,
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
+import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
+import {
+  OFFICE_SUITE_SOURCE_FORMATS,
+  legacyReaderRetryInterchange,
+  officeSuiteApplication,
+  officeSuiteInterchange,
+  officeSuiteWritesText,
+} from '../lib/conversions/office/office-suite-sources';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -2129,6 +2138,8 @@ const OFFICE_NATIVE_SOURCES: ReadonlySet<string> = new Set([
   'odd',
   // Macro-enabled, template and slideshow variants: LibreOffice opens them like their plain formats, without running macros.
   ...Object.keys(OOXML_VARIANT_FAMILY),
+  // Binary and OpenDocument templates and slide shows, and the formats only the office suite imports (Works, WordPerfect, OpenOffice.org 1.x, Numbers, Publisher, e-books).
+  ...OFFICE_SUITE_SOURCE_FORMATS,
 ]);
 /** LibreOffice application that opens and writes each Office format: a document is only converted into its own application's formats (and PDF). */
 const LIBREOFFICE_APPLICATION: Readonly<Record<string, 'writer' | 'calc' | 'impress'>> = {
@@ -2138,7 +2149,7 @@ const LIBREOFFICE_APPLICATION: Readonly<Record<string, 'writer' | 'calc' | 'impr
 };
 /** Whether LibreOffice has no export filter for the pair: a text document cannot be saved as a presentation, nor a workbook as a text document. */
 function crossesLibreOfficeApplications(src: string, tgt: string): boolean {
-  const from = LIBREOFFICE_APPLICATION[src];
+  const from = LIBREOFFICE_APPLICATION[src] ?? officeSuiteApplication(src);
   const to = LIBREOFFICE_APPLICATION[tgt];
   return from !== undefined && to !== undefined && from !== to;
 }
@@ -2163,6 +2174,11 @@ export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload,
 }
 /** LibreOffice's stderr when it cannot load the file, or loads it as another kind of document (a text file named .ppt) that has no export filter for the target. */
 const LIBREOFFICE_LOAD_FAILURE_PATTERN = /source file could not be loaded|no export filter for/;
+/**
+ * LibreOffice's stderr when the office suite itself stops on the document: an import filter that gives up ("Unspecified
+ * Application Error") or a crash of its layout (a fatal signal). Another run on the same document stops the same way.
+ */
+const LIBREOFFICE_STOPPED_PATTERN = /Unspecified Application Error|Fatal exception: Signal/;
 
 /** The input as a buffer when it is held in memory or small enough to be read (files too big for memory go straight to LibreOffice). */
 function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
@@ -2181,24 +2197,31 @@ async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src: strin
   if (buffer) await assertOpenDocumentGraphic(buffer, src);
 }
 
+/** Sources that are Excel 97-2003 workbooks (BIFF8): the workbook and its template. */
+const BIFF_WORKBOOK_SOURCES: ReadonlySet<string> = new Set(['xls', 'xlt']);
 /**
  * Answers an encrypted legacy workbook with the same typed error (HTTP 422) on every route. The in-process reader
  * raises it for the text targets; LibreOffice would only report that the source could not be loaded, which is
  * indistinguishable from a damaged file, so the FilePass record is looked for before it starts.
  */
 function assertWorkbookNotEncrypted(input: Buffer | WorkerVfsPayload, src: string): void {
-  if (src !== 'xls') return;
+  if (!BIFF_WORKBOOK_SOURCES.has(src)) return;
   const buffer = inputAsBuffer(input);
   if (buffer) assertXlsNotEncrypted(buffer);
 }
 
 /** LibreOffice ran and wrote nothing for a drawing or Keynote file: the file is damaged or not that kind of document (typed 400). */
-function asUnreadableDocument(err: unknown, src: string): unknown {
+export function asUnreadableDocument(err: unknown, src: string): unknown {
   if (OFFICE_NATIVE_SOURCES.has(src) && err instanceof Error && !(err instanceof ConversionFailedError) && LIBREOFFICE_NO_OUTPUT_PATTERN.test(err.message)) {
     return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged or not a valid ${src.toUpperCase()} document.`);
   }
   if (OFFICE_NATIVE_SOURCES.has(src) && err instanceof SandboxedProcessError && LIBREOFFICE_LOAD_FAILURE_PATTERN.test(err.message)) {
     return new ConversionFailedError(`LibreOffice could not read the .${src} file: it is damaged, encrypted or not a valid ${src.toUpperCase()} document.`);
+  }
+  if (OFFICE_NATIVE_SOURCES.has(src) && err instanceof SandboxedProcessError && LIBREOFFICE_STOPPED_PATTERN.test(err.message)) {
+    return new ConversionFailedError(
+      `LibreOffice stopped while reading the .${src} file: the office suite fails on the content of this document, so it cannot be converted.`
+    );
   }
   return err;
 }
@@ -2413,6 +2436,67 @@ export function executeWorkerConversion(
   return runWithImageFetchSession(options?.signal, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename));
 }
 
+/**
+ * A format only the office suite reads, converted to a target it does not write: LibreOffice writes the interchange file
+ * (never the requested output path), then the converter of that format writes the target, so the result is what the same
+ * conversion of a native file of the interchange format gives. A missing office suite is an unavailable engine: there is
+ * no in-process reader to fall back to.
+ */
+async function convertThroughInterchange(
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  interchange: string,
+  tgt: string,
+  options: WorkerEngineOptions,
+  originalFilename: string
+): Promise<WorkerConversionResult> {
+  const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
+  const writesTarget = interchange === tgt;
+  const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) || writesTarget ? input : { ...input, outputPath: undefined };
+  let written: WorkerConversionResult | null;
+  try {
+    const writerOptions = writesTarget ? options : intermediateOptions(options);
+    written = await convertWithHeadlessOffice(source, src, interchange, { ...writerOptions, throwOnUnavailable: true }, originalFilename);
+  } catch (err) {
+    rethrowSandboxUnavailable(err);
+    throw asUnreadableDocument(err, src);
+  }
+  if (!written) throw new EngineUnavailableError('soffice', `LibreOffice produced no .${interchange} file for the .${src} source`);
+  // The suite writes the target itself (the text of a document): nothing is left for the in-process converter.
+  if (writesTarget) return written;
+  try {
+    const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? written.buffer : { inputBuffer: written.buffer, outputPath: requestedOutput };
+    return await convertWithinImageSession(next, interchange, tgt, { ...options, inProcessFallback: undefined }, originalFilename);
+  } finally {
+    discardPersistedOutput(written.filePath, input, options);
+  }
+}
+
+/**
+ * A legacy binary Office document (Word, Excel, PowerPoint, and their templates and slide shows) that the strict in-process
+ * reader refuses as malformed is read by the office suite instead, which reads damaged files the way the application that
+ * wrote them does and also reads the RTF, HTML or text that real files carry under these extensions. When the office suite
+ * cannot read it either, the reader's own refusal stands (undefined here).
+ */
+async function retryRefusedLegacyDocument(
+  refusal: unknown,
+  input: Buffer | WorkerVfsPayload,
+  src: string,
+  tgt: string,
+  options: WorkerEngineOptions,
+  originalFilename: string
+): Promise<WorkerConversionResult | undefined> {
+  const interchange = legacyReaderRetryInterchange(src, tgt);
+  const refused = refusal instanceof LegacyOfficeFormatError || refusal instanceof CorruptStreamError;
+  if (interchange === undefined || !refused || options.signal?.aborted) return undefined;
+  try {
+    return await convertThroughInterchange(input, src, interchange, tgt, options, originalFilename);
+  } catch (retryError) {
+    if (options.signal?.aborted) throw retryError;
+    return undefined;
+  }
+}
+
 async function convertWithinImageSession(
   input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
@@ -2449,7 +2533,14 @@ async function convertWithinImageSession(
   assertWorkbookNotEncrypted(input, src);
   if (OFFICE_NATIVE_SOURCES.has(src)) input = await officeInputWithoutMacros(input, src);
   const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
-  if (isNativeTextPdf || isRecalculate || isOfficeResave || (OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt)) && !crossesLibreOfficeApplications(src, tgt))) {
+  const interchange = officeSuiteInterchange(src, tgt);
+  const officeSuiteWritesTarget =
+    OFFICE_NATIVE_SOURCES.has(src) && (tgt === 'pdf' || OFFICE_FORMATS.has(tgt) || officeSuiteWritesText(src, tgt)) && !crossesLibreOfficeApplications(src, tgt);
+  if (interchange !== undefined && !officeSuiteWritesTarget && !isPdfChainTarget(tgt)) {
+    // A format only the office suite reads, to a target it does not write: it writes the interchange file, the in-process converter of that format writes the target.
+    return convertThroughInterchange(input, src, interchange, tgt, options, originalFilename);
+  }
+  if (isNativeTextPdf || isRecalculate || isOfficeResave || officeSuiteWritesTarget) {
     try {
       const officeRes = isNativeTextPdf
         ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
@@ -2751,6 +2842,8 @@ async function convertWithinImageSession(
     options.signal?.throwIfAborted();
     internalRes = await convertFile(inputBuffer, src, tgt, options, originalFilename);
   } catch (err) {
+    const retried = await retryRefusedLegacyDocument(err, input, src, tgt, options, originalFilename);
+    if (retried) return { ...retried, fallbackChain: [...(fallbackChain ?? []), `in-process reader refused the document: ${(err as Error).message}`] };
     // The in-process engine cannot decode this camera data, yet the native RAW engine could have.
     const nativeCouldDecode =
       err instanceof UnsupportedRawCompressionError ||

@@ -14,6 +14,7 @@ import {
 } from '../lib/security/process-sandbox';
 import { EngineUnavailableError } from '../lib/types';
 import { buildPdfExportFilterData } from '../lib/conversions/pdf-export-options';
+import { officeSuiteApplication, type OfficeSuiteApplication } from '../lib/conversions/office/office-suite-sources';
 import type { WorkerEngineOptions, WorkerConversionResult } from './engines';
 
 /** Engine name reported by the typed error when the pool cannot serve conversions. */
@@ -150,11 +151,23 @@ const MIME_TYPES: Record<string, string> = {
 const SPREADSHEET_SOURCES: ReadonlySet<string> = new Set(['xlsx', 'xls', 'ods', 'csv', 'tsv']);
 const PRESENTATION_SOURCES: ReadonlySet<string> = new Set(['pptx', 'ppt', 'odp', 'potx', 'key']);
 const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
-/** Formats LibreOffice writes under another name: an OpenDocument drawing template is its `otg` export. */
-const LIBREOFFICE_TARGET_NAMES: Readonly<Record<string, string>> = { odd: 'otg' };
+/** The PDF export filter of each application of the office suite. */
+const PDF_EXPORT_FILTER_OF_APPLICATION: Readonly<Record<OfficeSuiteApplication, string>> = {
+  writer: 'writer_pdf_Export',
+  calc: 'calc_pdf_Export',
+  impress: 'impress_pdf_Export',
+  draw: 'draw_pdf_Export',
+};
+/**
+ * Formats LibreOffice writes under another name: an OpenDocument drawing template is its `otg` export, and plain text is
+ * the writer's encoded text export in UTF-8.
+ */
+const LIBREOFFICE_TARGET_NAMES: Readonly<Record<string, string>> = { odd: 'otg', txt: 'txt:Text (encoded):UTF8' };
 
 /** PDF export filter of the LibreOffice component that opens a source format. */
 function pdfExportFilterName(sourceFormat: string): string {
+  const application = officeSuiteApplication(sourceFormat);
+  if (application !== undefined) return PDF_EXPORT_FILTER_OF_APPLICATION[application];
   if (SPREADSHEET_SOURCES.has(sourceFormat)) return 'calc_pdf_Export';
   if (PRESENTATION_SOURCES.has(sourceFormat)) return 'impress_pdf_Export';
   if (DRAWING_SOURCES.has(sourceFormat)) return 'draw_pdf_Export';

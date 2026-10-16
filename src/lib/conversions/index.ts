@@ -1,4 +1,4 @@
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, EngineUnavailableError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
 import {
   FORMAT_REGISTRY,
   assertNotSpoofedFile,
@@ -29,6 +29,7 @@ import {
 } from './media';
 import { assertPdfExportOptions, pdfaMetadata, resolvePdfAConformance } from './pdf-export-options';
 import { OOXML_VARIANT_FAMILY } from './ooxml-variants';
+import { OFFICE_FORMAT_ALIAS, isOfficeSuiteOnlySource } from './office/office-suite-sources';
 import { convertOffice, formatSpreadsheetCellValue, parseBiff8Workbook, decodeRk } from './office';
 import { buildOpenXpsPackage } from './openxps';
 import {
@@ -494,6 +495,12 @@ async function convertFileInScope(
     return convertArchive(inputBuffer, src, tgt, options, originalFilename);
   }
 
+  // 1b. Formats only the office suite imports (Works, WordPerfect, OpenOffice.org 1.x, Numbers, Publisher, e-books): the
+  // in-process engine has no reader, and the bytes are never taken for text.
+  if (isOfficeSuiteOnlySource(src)) {
+    throw new EngineUnavailableError('soffice', `.${src} files are imported by LibreOffice; the in-process engine has no reader for them.`);
+  }
+
   // 2. Media (Audio & Video) routing
   if (
     srcDef.category === 'audio' ||
@@ -605,6 +612,7 @@ async function convertFileInScope(
     srcDef.category === 'presentation' ||
     srcDef.category === 'spreadsheet' ||
     Object.hasOwn(OOXML_VARIANT_FAMILY, src) ||
+    Object.hasOwn(OFFICE_FORMAT_ALIAS, src) ||
     [
       'docx',
       'xlsx',
@@ -622,6 +630,8 @@ async function convertFileInScope(
       'hwpx',
       'lwp',
       'pub',
+      'xps',
+      'oxps',
       'odg',
       'odd',
       'htmlz',

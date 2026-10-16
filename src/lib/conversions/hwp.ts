@@ -296,7 +296,7 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
     return res.length > size ? Buffer.from(res.subarray(0, size)) : res;
   }
 
-  // 6. Extract all streams into lookup maps, by leaf name and by full path from the root
+  // 6. Extract all streams into lookup maps, by leaf name (the root storage's streams first) and by full path from the root
   const streams = new Map<string, Buffer>();
   const paths = new Map<string, Buffer>();
 
@@ -343,8 +343,11 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
             `Corrupt CFBF container: stream "${entry.name}" declares ${entry.streamSize} bytes but its sector chain holds ${streamData.length}.`
           );
         }
-        streams.set(entry.name, streamData);
         const entryPath = entryPaths.get(entry.id);
+        // `streams` is by leaf name: a stream of the root storage is the file's own, so it is never replaced by a same-named
+        // stream of an embedded object (the WordDocument and 1Table of an embedded Word document); nested ones only fill gaps.
+        const inRootStorage = entryPath === undefined || !entryPath.includes('/');
+        if (inRootStorage || !streams.has(entry.name)) streams.set(entry.name, streamData);
         if (entryPath !== undefined) paths.set(entryPath, streamData);
       }
     }

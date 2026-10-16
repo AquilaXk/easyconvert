@@ -33,6 +33,7 @@ import { buildOpenXpsPackage, XpsPageInput } from './openxps';
 import { PdfUnicodeTextWriter, canDrawInPdf, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 import { readDocText } from './office/doc-reader';
 import { readRtfText } from './office/rtf-reader';
+import { readXpsText } from './office/xps-reader';
 import { readBiffCharts } from './office/biff-chart';
 import { readPptSlides } from './office/ppt-reader';
 import { readMobiText } from './office/mobi-reader';
@@ -58,6 +59,7 @@ import { readFb2Model } from './fb2-model';
 import { readMobiModel } from './mobi-model';
 import { markdownToDocumentModel, readEpubModel } from './source-model';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variants';
+import { OFFICE_FORMAT_ALIAS } from './office/office-suite-sources';
 
 export { buildOpenXpsPackage };
 
@@ -73,7 +75,9 @@ export async function convertOffice(
   originalFilename: string = 'document'
 ): Promise<ConversionResult> {
   const baseName = (originalFilename || 'document').replace(/\.[^/.]+$/, '');
-  const src = sourceFormat.toLowerCase();
+  // A template or slide show is read by the reader of the format it is a layout of.
+  const declaredSource = sourceFormat.toLowerCase();
+  const src = OFFICE_FORMAT_ALIAS[declaredSource] ?? declaredSource;
   const tgt = targetFormat.toLowerCase();
   // PDF and raster writers draw text with installed fonts found through the coverage index.
   await loadFontCoverageIndex();
@@ -459,6 +463,10 @@ export async function extractTextContentForOffice(
     return extractTextFromTexString(inputBuffer.toString('utf-8'));
   }
 
+  if (src === 'xps' || src === 'oxps') {
+    return readXpsText(inputBuffer);
+  }
+
   if (src === 'hwp') {
     return documentToText(parseHwpDocument(inputBuffer).model);
   }
@@ -490,8 +498,6 @@ export async function extractTextContentForOffice(
     'tcr',
     'chm',
     'djvu',
-    'xps',
-    'oxps',
     'xlsx',
     'xls',
     'docx',
@@ -518,13 +524,13 @@ export async function extractTextContentForOffice(
       (inputBuffer[0] === 0xd0 && inputBuffer[1] === 0xcf && inputBuffer[2] === 0x11 && inputBuffer[3] === 0xe0) ||
       (inputBuffer[0] === 0x37 && inputBuffer[1] === 0x7a && inputBuffer[2] === 0xbc && inputBuffer[3] === 0xaf))
   ) {
-    throw new Error(
+    throw new ConversionFailedError(
       `Cannot extract plain text from binary/compressed container for format '.${src}': fail-closed against mojibake corruption.`
     );
   }
 
   if (inputBuffer.subarray(0, Math.min(inputBuffer.length, 4096)).includes(0x00)) {
-    throw new Error(
+    throw new ConversionFailedError(
       `Binary null bytes detected in source format '.${src}': fail-closed against mojibake corruption.`
     );
   }
@@ -10088,13 +10094,13 @@ async function convertGenericDocumentSource(
       (inputBuffer[0] === 0xd0 && inputBuffer[1] === 0xcf && inputBuffer[2] === 0x11 && inputBuffer[3] === 0xe0) ||
       (inputBuffer[0] === 0x37 && inputBuffer[1] === 0x7a && inputBuffer[2] === 0xbc && inputBuffer[3] === 0xaf))
   ) {
-    throw new Error(
+    throw new ConversionFailedError(
       `Cannot extract plain text from binary/compressed container for format '.${src}': fail-closed against mojibake corruption.`
     );
   }
 
   if (inputBuffer.subarray(0, Math.min(inputBuffer.length, 4096)).includes(0x00)) {
-    throw new Error(
+    throw new ConversionFailedError(
       `Binary null bytes detected in source format '.${src}': fail-closed against mojibake corruption.`
     );
   }
