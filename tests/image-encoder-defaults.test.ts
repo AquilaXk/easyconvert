@@ -50,9 +50,15 @@ function svgPng(body: string): Promise<Buffer> {
   return sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}">${body}</svg>`)).png().toBuffer();
 }
 
-const textBody =
-  '<rect width="100%" height="100%" fill="#fff"/><text x="8" y="40" font-family="DejaVu Sans, sans-serif" font-size="28" fill="#c0392b">Red text 123</text>' +
-  '<text x="8" y="80" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#1f618d">Blue small print</text><rect x="8" y="96" width="170" height="3" fill="#27ae60"/>';
+/**
+ * The text picture is made once and kept, not drawn by each test: drawing text goes through the system's font stack, and
+ * on a loaded CI shard the two tests that drew it took 5.0 s (past their 5 s limit) and 2.3 s, while the shapes drawn beside
+ * it took 15 to 34 ms. It is the pixels the classifier sees either way. It was written from a 192x128 SVG of
+ * `<rect width="100%" height="100%" fill="#fff"/>`, `<text x="8" y="40" font-family="DejaVu Sans, sans-serif" font-size="28"
+ * fill="#c0392b">Red text 123</text>`, `<text x="8" y="80" font-family="DejaVu Sans, sans-serif" font-size="16"
+ * fill="#1f618d">Blue small print</text>` and `<rect x="8" y="96" width="170" height="3" fill="#27ae60"/>`.
+ */
+const TEXT_PNG = readFileSync(path.join(__dirname, 'fixtures', 'image-encoder-defaults', 'text-192x128.png'));
 const lineBody =
   '<rect width="100%" height="100%" fill="#fdfefe"/><g fill="none" stroke="#000" stroke-width="1.5"><circle cx="96" cy="64" r="50"/><circle cx="96" cy="64" r="30"/><path d="M10 10 L182 118 M182 10 L10 118"/></g>';
 const uiBody =
@@ -84,7 +90,7 @@ afterAll(() => {
 
 describe('content classification', () => {
   it('calls text, line art and UI graphic, and a noisy gradient a photo', async () => {
-    expect(await classifyContent(sharp(await svgPng(textBody)))).toBe('graphic');
+    expect(await classifyContent(sharp(TEXT_PNG))).toBe('graphic');
     expect(await classifyContent(sharp(await svgPng(lineBody)))).toBe('graphic');
     expect(await classifyContent(sharp(await svgPng(uiBody)))).toBe('graphic');
     expect(await classifyContent(sharp(await photoPng()))).toBe('photo');
@@ -121,7 +127,7 @@ describe('content classification of decoded samples', () => {
   }
 
   const pictures: Array<[string, () => Promise<Buffer>, 'graphic' | 'photo']> = [
-    ['text', () => svgPng(textBody), 'graphic'],
+    ['text', async () => TEXT_PNG, 'graphic'],
     ['line art', () => svgPng(lineBody), 'graphic'],
     ['interface', () => svgPng(uiBody), 'graphic'],
     ['photograph', photoPng, 'photo'],
@@ -279,11 +285,11 @@ describe.skipIf(SKIP_WITHOUT_MAGICK)('JPEG chroma subsampling', () => {
   it('subsamples the chroma of a photograph and of a screenshot below quality 90, as the reference encoder does', async () => {
     expect(await sampling(await photoPng(), { quality: 85 })).toBe('2x2,1x1,1x1');
     expect(await sampling(await photoPng(), {})).toBe('2x2,1x1,1x1');
-    expect(await sampling(await svgPng(textBody), { quality: 85 })).toBe('2x2,1x1,1x1');
+    expect(await sampling(TEXT_PNG, { quality: 85 })).toBe('2x2,1x1,1x1');
   });
 
   it('keeps the chroma of a screenshot at full resolution from quality 90', async () => {
-    expect(await sampling(await svgPng(textBody), { quality: 90 })).toBe('1x1,1x1,1x1');
+    expect(await sampling(TEXT_PNG, { quality: 90 })).toBe('1x1,1x1,1x1');
   });
 });
 
@@ -483,7 +489,7 @@ describe.skipIf(skipWithoutTools('avifdec', 'dwebp', 'ffmpeg'))('equal-size qual
 
   const fixtures: Array<[string, () => Promise<Buffer>, boolean]> = [
     ['photo', photoPng, false],
-    ['text', () => svgPng(textBody), true],
+    ['text', async () => TEXT_PNG, true],
     ['line art', () => svgPng(lineBody), true],
     ['interface', () => svgPng(uiBody), true],
     ['photo, rotated gradient', async () => sharp(await photoPng()).rotate(90).resize(WIDTH, HEIGHT, { fit: 'cover' }).png().toBuffer(), false],

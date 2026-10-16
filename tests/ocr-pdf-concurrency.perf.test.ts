@@ -29,6 +29,8 @@ import { fixtureImage, groundTruth, requireTessdata } from './helpers/ocr-fixtur
 const TEST_TIMEOUT_MS = 300_000;
 const SLOW_RUNNER = process.env.EASYCONVERT_SLOW_RUNNER === '1';
 const FOUR_PAGES = 4;
+/** Longest the recognitions wait for each other to hold a worker: starting a worker takes seconds on a loaded runner, a missing worker never comes. */
+const MEETING_WAIT_MS = 30_000;
 const TWENTY_PAGES = 20;
 /**
  * At least a 1.25x speedup from parallel pages. Shards share runner CPUs with other test files, so the bound
@@ -110,6 +112,31 @@ describe('ocrPageConcurrency', () => {
   });
 });
 
+/**
+ * A meeting point for `size` jobs: each one that calls it waits until `size` of them have, or fails after MEETING_WAIT_MS
+ * naming how many held a worker. A pool that runs fewer jobs at once than `size` never fills the meeting.
+ */
+function workersMeeting(size: number): () => Promise<void> {
+  let arrived = 0;
+  let complete!: () => void;
+  const everyone = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  return async () => {
+    arrived++;
+    if (arrived === size) complete();
+    let timer: NodeJS.Timeout | undefined;
+    const expired = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`only ${arrived} of ${size} recognitions held a worker at the same time`)), MEETING_WAIT_MS);
+    });
+    try {
+      await Promise.race([everyone, expired]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 async function scannedPdf(pages: Buffer[]): Promise<Buffer> {
   const doc = await PDFDocument.create();
   for (const png of pages) {
@@ -130,14 +157,20 @@ describe('recognizing the pages of a scanned PDF', () => {
       const run = pool.run.bind(pool);
       let active = 0;
       let peak = 0;
-      // Counts jobs that hold a worker, not the ones still waiting for one.
+      let meeting: (() => Promise<void>) | null = null;
+      // Counts jobs that hold a worker, not the ones still waiting for one. While `meeting` is set, a job that holds a worker
+      // stays in it until the others of its group hold theirs, so the overlap is observed, not left to how long a page takes to read
+      // against how long a worker takes to start.
       vi.spyOn(pool, 'run').mockImplementation((spec, job) =>
-        run(spec, (recognize, recognizeWith, detect) => {
+        run(spec, async (recognize, recognizeWith, detect) => {
           active++;
           peak = Math.max(peak, active);
-          return job(recognize, recognizeWith, detect).finally(() => {
+          try {
+            if (meeting !== null) await meeting();
+            return await job(recognize, recognizeWith, detect);
+          } finally {
             active--;
-          });
+          }
         })
       );
       const pages = Array.from({ length: FOUR_PAGES }, () => ({ buffer: fixtureImage('en_a', 'clean300') }));
@@ -145,6 +178,7 @@ describe('recognizing the pages of a scanned PDF', () => {
         await recognizePdfPages(pages, 'eng', 1, false);
         expect(peak).toBe(1);
         peak = 0;
+        meeting = workersMeeting(OCR_POOL_MAX_WORKERS_PER_KEY);
         await recognizePdfPages(pages, 'eng', ocrPageConcurrency(), false);
         expect(peak).toBe(OCR_POOL_MAX_WORKERS_PER_KEY);
       } finally {

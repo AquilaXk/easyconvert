@@ -19,6 +19,8 @@ const DURATIONS = loadDurations();
 const ci = readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf-8');
 /** The files that read the S3 test server: they run in the one job that starts it, not in a shard. */
 const S3_SERVER_FILES = ['tests/s3-minio-integration.test.ts', 'tests/s3-object-client.test.ts'];
+/** The Parquet writer conformance needs node:zlib zstd (Node 22.15+): it runs in the integration job on Node 22, not in a Node 20 shard. */
+const NODE_22_FILES = ['tests/parquet-writer-conformance.test.ts'];
 
 const load = (shard: { load: number }): number => shard.load;
 
@@ -28,7 +30,7 @@ describe('which files the sharded job runs', () => {
     expect(FILES.every((file) => file.startsWith('tests/') && file.endsWith('.test.ts'))).toBe(true);
     expect(FILES.filter((file) => file.endsWith('.perf.test.ts'))).toEqual([]);
     expect(FILES).not.toContain('tests/registry-engine-conformance.test.ts');
-    for (const file of S3_SERVER_FILES) expect(FILES, file).not.toContain(file);
+    for (const file of [...S3_SERVER_FILES, ...NODE_22_FILES]) expect(FILES, file).not.toContain(file);
     expect(FILES).toContain('tests/ci-test-shards.test.ts');
     expect([...FILES].sort()).toEqual(FILES);
   });
@@ -40,7 +42,7 @@ describe('which files the sharded job runs', () => {
       .split('\n')
       .map((line) => path.relative(ROOT, line.trim()).split(path.sep).join('/'))
       .filter((file) => file.endsWith('.test.ts'));
-    const excluded = new Set(['tests/registry-engine-conformance.test.ts', ...S3_SERVER_FILES]);
+    const excluded = new Set(['tests/registry-engine-conformance.test.ts', ...S3_SERVER_FILES, ...NODE_22_FILES]);
     const expected = all.filter((file) => !file.endsWith('.perf.test.ts') && !excluded.has(file)).sort();
     expect(FILES).toEqual(expected);
   }, 120_000);
