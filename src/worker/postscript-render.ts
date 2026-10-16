@@ -2,19 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { ConversionFailedError } from '../lib/types';
-import {
-  convertPdfPagesWithNativeTools,
-  createConversionResult,
-  handOffOutput,
-  resolveInputContext,
-  resolvePdfRasterDpi,
-  withSandboxDir,
-  writeOutputSegments,
-  type WorkerConversionResult,
-  type WorkerEngineOptions,
-  type WorkerVfsPayload,
-} from './engines';
-import { compressPpmPage, PPM_PAGE_MAX_BYTES, ppmPageEnd } from './poppler-ppm';
+import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
+import { compressPpmPage, PPM_PAGE_MAX_BYTES, ppmPageEnd, resolvePdfRasterDpi, selectsPages } from './poppler-ppm';
+import { createConversionResult, handOffOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
 import { ghostscriptPdfArguments, ghostscriptRasterArguments, siblingGhostscript, skipsGarbageCollection } from './postscript-gs';
 import {
   executeSandboxedBinary,
@@ -54,6 +44,8 @@ export interface PostScriptJob {
   originalFilename: string;
   /** The configured `ps2pdf`. */
   interpreter: string;
+  /** Hands a PDF to the native PDF tools (Poppler images and SVG, the encoded rasters, pdftops, the DXF writer). */
+  convertPdfPages: (pdf: Buffer, tgt: string, options: WorkerEngineOptions, originalFilename: string) => Promise<WorkerConversionResult | null>;
 }
 
 /** What one run of the interpreter needs besides its arguments. */
@@ -159,11 +151,6 @@ function baseNameOf(job: PostScriptJob): string {
   return job.originalFilename ? job.originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
 }
 
-/** True when the request names pages (`page` or `pages`), so the pages to draw depend on the document. */
-function namesPages(options: WorkerEngineOptions): boolean {
-  return Boolean(options.page) || Boolean(options.pages);
-}
-
 /**
  * Renders PostScript (EPS, PS) and, for targets other than PDF and PNG, hands the PDF to the native tools every PDF
  * source uses (Poppler images and SVG, the encoded rasters, pdftops and the DXF writer).
@@ -184,7 +171,7 @@ export async function convertPostScript(job: PostScriptJob): Promise<WorkerConve
   const smallInput = skipsGarbageCollection(inputByteLength(input));
 
   // An EPS figure that becomes a PNG is drawn once by the interpreter, straight to pixels.
-  if (tgt === PNG_TARGET && ghostscript && src === EPS_SOURCE && !namesPages(options)) {
+  if (tgt === PNG_TARGET && ghostscript && src === EPS_SOURCE && !selectsPages(options)) {
     const drawn = await renderEpsToPng(job, ghostscript, limits, smallInput);
     if (drawn) return drawn;
   }
@@ -205,5 +192,5 @@ export async function convertPostScript(job: PostScriptJob): Promise<WorkerConve
     await writePdf(job, ghostscript, { tempDir, limits, smallInput }, inputPath, pdfPath);
     return fs.readFileSync(pdfPath);
   });
-  return convertPdfPagesWithNativeTools(pdf, tgt, options, originalFilename);
+  return job.convertPdfPages(pdf, tgt, options, originalFilename);
 }

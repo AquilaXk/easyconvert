@@ -3092,12 +3092,6 @@
   },
   {
     "file": "src/worker/engines.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "resolveOutputPath",
-    "count": 1
-  },
-  {
-    "file": "src/worker/engines.ts",
     "rule": "complexity",
     "function": "convertWithinImageSession",
     "count": 1,
@@ -3115,7 +3109,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3016
+    "maxValue": 2797
   },
   {
     "file": "src/worker/engines.ts",

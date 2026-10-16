@@ -227,6 +227,17 @@ describe('PDF pages as PNG through PPM', () => {
     });
   }, NATIVE_TIMEOUT_MS);
 
+  oracleTest('nine pages at 72 dpi render as pages 1 to 8 (the early batch), then page 9 alone', ['pdftoppm', 'identify'], async () => {
+    const pdf = await drawing(Array.from({ length: 9 }, (_unused, index): [number, number] => [100 + index * 4, 80]));
+    await withPdftoppmShim(realPdftoppm(), async (calls) => {
+      const result = await dispatchConversion(pdf, 'pdf', 'png', { dpi: 72 }, 'nine.pdf');
+      const zip = await JSZip.loadAsync(result.buffer);
+      expect(Object.keys(zip.files)).toHaveLength(9);
+      const ranges = calls().map((call) => `${call[call.indexOf('-f') + 1]}-${call[call.indexOf('-l') + 1]}`);
+      expect(ranges).toEqual(['1-8', '9-9']);
+    });
+  }, NATIVE_TIMEOUT_MS);
+
   oracleTest('a page file that is not a binary PPM is a typed error, never a guessed picture', ['pdftoppm'], async () => {
     const pdf = await drawing([[200, 150]]);
     await withPdftoppmShim('for last; do :; done; printf "P3\\n1 1\\n255\\n0 0 0\\n" > "$last-1.ppm"', async () => {

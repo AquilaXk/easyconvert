@@ -4,13 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { ociStorage, s3Storage, storageProvider, globalSharedObjects } from '../src/lib/storage';
-import {
-  executeWorkerConversion,
-  resolveInputContext,
-  assertNotSpoofedFileVfs,
-  preserveOutput,
-  createConversionResult,
-} from '../src/worker/engines';
+import { executeWorkerConversion, assertNotSpoofedFileVfs } from '../src/worker/engines';
+import { resolveInputContext, preserveOutput, createConversionResult } from '../src/worker/worker-output';
 import { FileExtensionSpoofError } from '../src/lib/types';
 
 /** Node refuses to read a file into one Buffer past this size (ERR_FS_FILE_TOO_LARGE). */

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import { crc32 } from '../lib/conversions/crc32';
-import { ConversionFailedError } from '../lib/types';
+import { ConversionFailedError, UnsupportedOptionError } from '../lib/types';
 import { executeSandboxedBinary, SandboxedBufferLimitError, type SandboxedExecutionOptions } from './sandbox';
 
 /**
@@ -193,4 +193,18 @@ export async function renderPngBatch(pdftoppm: string, tempDir: string, dpi: num
 export function selectsPages(options: { page?: unknown; pages?: unknown }): boolean {
   const named = (value: unknown) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
   return named(options.page) || named(options.pages);
+}
+
+/** Raster density of a PDF page image: the default and the range the API accepts. */
+const PDF_RASTER_DEFAULT_DPI = 150;
+const PDF_RASTER_MIN_DPI = 72;
+const PDF_RASTER_MAX_DPI = 600;
+
+/** The raster density of a PDF page image, validated against the range the API accepts. */
+export function resolvePdfRasterDpi(options: { dpi?: number }): number {
+  const dpi = options.dpi ?? PDF_RASTER_DEFAULT_DPI;
+  if (!Number.isFinite(dpi) || dpi < PDF_RASTER_MIN_DPI || dpi > PDF_RASTER_MAX_DPI) {
+    throw new UnsupportedOptionError(`The dpi option ${options.dpi} is outside the supported range of ${PDF_RASTER_MIN_DPI} to ${PDF_RASTER_MAX_DPI}.`);
+  }
+  return dpi;
 }
