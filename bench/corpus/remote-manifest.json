@@ -2249,22 +2249,22 @@
       "sha256": "d8895526c8215925468d503d1879b18c2e3e38140bffeba77351b9e55683aac9"
     },
     {
-      "id": "raw-panasonic-g1.rw2",
+      "id": "raw-panasonic-fz80.rw2",
       "family": "raw",
       "class": "panasonic",
       "set": "pixls",
-      "description": "Panasonic DMC-G1, RW2 (12-bit)",
+      "description": "Panasonic DC-FZ80, RW2 (18 MP)",
       "origin": {
         "kind": "file",
-        "url": "https://raw.pixls.us/data/Panasonic/DMC-G1/RAW_PANASONIC_G1.RW2"
+        "url": "https://raw.pixls.us/data/Panasonic/DC-FZ80/P1010306.RW2"
       },
-      "licence": "CC-BY-NC-SA-4.0",
+      "licence": "CC0-1.0",
       "meta": {
         "format": "rw2",
         "targets": "jpg,png"
       },
-      "bytes": 14697984,
-      "sha256": "aa3b92d6592744a889d7ea50aaf3ea55e0ec961d04c740d437d3396ca79757be"
+      "bytes": 21909504,
+      "sha256": "34b1777a25c31053234006e172b72c142477994dc560f95bf945c742f0ca1ff9"
     },
     {
       "id": "raw-pentax-k5.pef",

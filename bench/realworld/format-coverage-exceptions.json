@@ -9,7 +9,7 @@
       ]
     },
     "3fr": {
-      "reason": "Two Hasselblad .3fr files fit the memory budget of the real-world run (the camera-RAW fixture H3D and CFV, 23 MB); the other CC0 files are 33 to 212 MB, and the only other small one (CF132, 22 MB) is licensed CC BY-NC-SA and was not added.",
+      "reason": "One Hasselblad .3fr file is in the camera-RAW fixtures (H3D, 39 MB, CC0); the other CC0 files are 39 to 212 MB, too large for three concurrent jobs of the real-world run, and the two small ones (CF132, CFV; 17 to 23 MB) are licensed CC BY-NC-SA, which a commercial test pipeline cannot use.",
       "searched": [
         "raw.pixls.us Hasselblad directory listing (CF132, CFV, H3D, H4D, X1D, X2D and CFV 50c/100c files)",
         "tests/fixtures/raw manifests"

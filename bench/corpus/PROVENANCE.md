@@ -64,9 +64,10 @@ them to measure an encoder, which each set's publisher allows. Where a licence r
 | `PD-Vidyo`, `PD-game-capture` | "This sequence is in the public domain. Author: Vidyo"; "These video game recordings are placed in the public domain" (the sequence's `_Copyright.txt` at https://media.xiph.org/video/aomctc/test_set/). |
 | `TUM-no-restrictions`, `SVT-no-restrictions` | The sequence's note: "Restrictions of use: No restrictions. Copyright: No Copyright" (Taurus Media Technik for the Technical University of Munich material; SVT Sveriges Television for the SVT material). |
 | `NTIA-ITS-research` | NTIA/ITS video quality sequences: "may be used for research purposes, only"; use, copy, modify and redistribute with the acknowledgement of NTIA/ITS's ownership (the sequence's `_Copyright.txt`). |
-| `CC-BY-NC-SA-4.0` | Creative Commons Attribution-NonCommercial-ShareAlike 4.0, the licence the archive's file list shows for 146 of its older files (https://creativecommons.org/licenses/by-nc-sa/4.0/). The file is read to test a conversion, never shown, stored or redistributed; one sample uses it (`raw-panasonic-g1.rw2`) and is recorded here because a non-commercial licence is a limit that should be decided, not hidden. |
 | `EBU-SQAM-RD` | EBU Tech 3253 SQAM material (https://tech.ebu.ch/publications/sqamcd): "By downloading this file you agree not to use this material for commercial purposes other than as a R&D tool." The benchmark is such a tool. |
 | `Silesia-mixed`, `Silesia-unstated`, `Public-domain`, `GPL-2.0-or-later`, `GPL-2.0`, `LGPL-2.1`, `MPL-1.1` | The corpus page (https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) names the origin of each file and states no licence of its own. The code is the licence of the origin project (Samba, the OpenOffice.org 1.01 library, the Mozilla 1.0 build, the Open Source Database Benchmark), or public domain for the Project Gutenberg texts, the NCI and SAO catalogues and a book whose author died in 1925; `Silesia-mixed` is a concatenation of XML files from several projects (the XMLPPM test files), and `Silesia-unstated` marks the two medical images, whose terms the corpus page does not give. The files are fetched, never stored or shown. |
+
+Licence rule: only files whose licence allows commercial use are used. Creative Commons NonCommercial (NC) and NoDerivatives (ND) licences are excluded, whatever the use (the files are read for testing and never shown or redistributed); 146 files of the camera sample archive are CC BY-NC-SA and none is used. Two sets carry research or R&D terms from before this rule (`EBU-SQAM-RD`, `NTIA-ITS-research`, below) and are listed for QA.
 
 Notes on how the benchmark uses them. Video sequences are uncompressed 4:2:0 8-bit `.y4m` streams of 5 to 700 MB (the 10-bit and HDR10 sequences of the same
 set are not used here: the video rows encode an 8-bit lossless copy, and HDR clips with their colour tags are in the real-world corpus); the manifest pins only
@@ -202,7 +203,7 @@ by a third party).
 
 | Set | What it is | Terms |
 |---|---|---|
-| `pixls` | the open camera sample archive; its file list (https://raw.pixls.us/json/getrepository.php?set=all) gives the licence of every file: CC0 for all samples used here but one | https://raw.pixls.us/ |
+| `pixls` | the open camera sample archive; its file list (https://raw.pixls.us/json/getrepository.php?set=all) gives the licence and SHA-256 of every file; only CC0 files are used | https://raw.pixls.us/ |
 | `ofl-fonts` | open font families of the Google Fonts catalogue under the SIL Open Font License 1.1 | https://github.com/google/fonts/blob/bd8f81ddb5c74d5c8897b36ad88b440266245103/ofl/lato/OFL.txt |
 | `noto-emoji` | Noto Color Emoji fonts, OFL-1.1 | https://github.com/googlefonts/noto-emoji/blob/e20cbc2bbec1926686be9f9bee7d1d2cfa1fea0e/LICENSE |
 | `noto-cjk` | Noto Sans CJK subset OpenType/CFF fonts, OFL-1.1 | https://github.com/notofonts/noto-cjk/blob/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/LICENSE |
@@ -243,7 +244,7 @@ by a third party).
 | `raw-nikon-d90.nef` | nikon | Nikon D90, NEF; `pixls`; `CC0-1.0` |
 | `raw-nikon-d70.nef` | nikon | Nikon D70, NEF; `pixls`; `CC0-1.0` |
 | `raw-olympus-epl1.orf` | olympus | Olympus E-PL1, ORF; `pixls`; `CC0-1.0` |
-| `raw-panasonic-g1.rw2` | panasonic | Panasonic DMC-G1, RW2; `pixls`; `CC-BY-NC-SA-4.0` (the archive's file list shows this licence for it, and for 146 older files of the former rawsamples.ch collection; every other sample here is CC0) |
+| `raw-panasonic-fz80.rw2` | panasonic | Panasonic DC-FZ80, RW2; `pixls`; `CC0-1.0` (replaces a CC BY-NC-SA file of the former rawsamples.ch collection) |
 | `raw-panasonic-lx7.rw2` | panasonic | Panasonic DMC-LX7, RW2; `pixls`; `CC0-1.0` |
 | `raw-pentax-k5.pef` | pentax | Pentax K-5, PEF; `pixls`; `CC0-1.0` |
 | `raw-sony-a7m2.arw` | sony | Sony ILCE-7M2, ARW; `pixls`; `CC0-1.0` |
