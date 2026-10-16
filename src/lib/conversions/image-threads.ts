@@ -7,8 +7,12 @@ import sharp from 'sharp';
  * photograph took 45 ms to encode as AVIF on a 4-core machine where the reference encoder (all cores) took 31 ms, and a
  * 24-megapixel one 9.6 s against 2.9 s on 4 threads.
  *
- * The threads are leased for the length of an AVIF encode of a photograph and not set for the process: the same threads
- * made the WebP encode of a 1024 x 640 interface 6 ms longer (27 ms to 33 ms) and gained nothing in JPEG, because the
+ * A second holder of the lease is the preparation of a page for OCR (`ocr-preprocess.ts`): the enlargement and the turn
+ * of a 840 x 260 scan took 30 ms of preparation on the single thread and 22 ms on the two it leases (4-core and 2-core
+ * Linux VM, medians of 30 runs), and the preparation holds only a few page-sized buffers.
+ *
+ * The threads are leased for the length of an AVIF encode of a photograph and of an OCR page preparation, and not set
+ * for the process: the same threads made the WebP encode of a 1024 x 640 interface 6 ms longer (27 ms to 33 ms) and gained nothing in JPEG, because the
  * thread pool of a picture this small costs more to start than it saves.
  *
  * Peak resident memory (Linux, 4 cores; 40 conversions of a 4-megapixel picture, one 24-megapixel AVIF), against the single
