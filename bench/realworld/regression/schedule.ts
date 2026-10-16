@@ -17,14 +17,14 @@ const HASH_PREFIX_BYTES = 4;
 export type RunMode = 'full' | 'nightly';
 
 /**
- * Shards of a run, sized from the real-world corpus run (nightly artifact `realworld-results` of 2026-10-16): the mean time of a
- * job there, by format and size class, weighted by the mix of this corpus (which draws more large files than that one) is 3.1 s
- * on 3 workers; the shards of that run took 11 to 20 minutes of the 60-minute limit with 1,650 jobs each. A full run of about
- * 20,000 jobs in 12 shards is 1,670 jobs a shard, 29 minutes of conversion; a nightly run of a seventh plus the canary, about
- * 4,200 jobs, in 4 shards is 1,050 jobs a shard, 18 minutes.
+ * Shards of a run. The time of a job in the real-world corpus run (nightly artifact `realworld-results` of 2026-10-16), by format
+ * and size class and weighted by the mix of this corpus (which draws more large files than that one), is 3.1 s on 3 workers; a trial
+ * of 480 jobs of this corpus on the CI runner measured 3.34 s, and 3.3 s is used. The shards of the real-world run took 11 to 20
+ * minutes of the 60-minute limit with 1,650 jobs each. A full run of about 20,000 jobs in 12 shards is 1,670 jobs a shard, 31
+ * minutes of conversion; a nightly run of a seventh plus the canary, about 4,200 jobs, in 4 shards is 1,050 jobs a shard, 18 minutes.
  */
 export const SHARDS: Readonly<Record<RunMode, number>> = { full: 12, nightly: 4 };
-export const ESTIMATED_MS_PER_JOB = 3100;
+export const ESTIMATED_MS_PER_JOB = 3300;
 export const JOB_WORKERS = 3;
 /** Conversion time a shard may be estimated at, leaving the rest of the 60-minute job limit to set-up, fetching and slow tails. */
 export const SHARD_CONVERSION_BUDGET_MINUTES = 35;

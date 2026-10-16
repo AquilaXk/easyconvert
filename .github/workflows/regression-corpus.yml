@@ -41,6 +41,8 @@ env:
   NIGHTLY_SHARDS: '4'
   # The schedule entry that starts a full run.
   FULL_CRON: '17 3 * * 0'
+  # The branch whose last full run is the baseline of the differential judge.
+  BASELINE_BRANCH: main
 
 jobs:
   plan:
@@ -153,7 +155,7 @@ jobs:
           path: regression-shards
           merge-multiple: true
 
-      # The result set of the newest full run on main that has not expired. A run on another branch is never the baseline.
+      # The result set of the newest full run on the baseline branch (main) that has not expired. A run on another branch is never the baseline.
       - name: Fetch the result set of the last full run
         id: previous
         shell: bash
@@ -161,9 +163,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=regression-baseline&per_page=30" \
-            --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")][0].workflow_run.id // empty')"
+            --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"$BASELINE_BRANCH\")][0].workflow_run.id // empty")"
           if [ -z "$run_id" ]; then
-            echo "No earlier full run on main: the differential judge is skipped for this run."
+            echo "No earlier full run on $BASELINE_BRANCH: the differential judge is skipped for this run."
             echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi

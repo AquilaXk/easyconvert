@@ -132,7 +132,8 @@ describe('storage', () => {
     expect(Number(keep?.with?.['retention-days'])).toBeGreaterThanOrEqual(30);
     const find = workflow.jobs.gate.steps.find((step) => step.id === 'previous');
     expect(find?.run).toContain('name=regression-baseline');
-    expect(find?.run).toContain('head_branch == "main"');
+    expect(find?.run).toContain('head_branch == \\"$BASELINE_BRANCH\\"');
+    expect(workflow.env?.BASELINE_BRANCH).toBe('main');
     expect(find?.run).toContain('--name regression-baseline');
   });
 });
