@@ -4,9 +4,9 @@
  */
 import net from 'node:net';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
+import { isBusyHostStatus, retryDelayMs } from '../http-retry';
 
 const RETRIES = 6;
-const BACKOFF_BASE_MS = 2000;
 const HTTP_OK = 200;
 const HTTP_PARTIAL = 206;
 const REQUEST_TIMEOUT_MS = 120_000;
@@ -32,6 +32,18 @@ export class FetchError extends Error {
   }
 }
 
+/** A host that refused for its rate (HTTP 429) or load (HTTP 503), with the `Retry-After` seconds it sent, if any. */
+class BusyHostError extends FetchError {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfter: string | null
+  ) {
+    super(message);
+  }
+}
+
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function attempt(url: string, range: [number, number] | null, maxBytes: number): Promise<Buffer> {
@@ -39,6 +51,9 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
   if (range) headers.range = `bytes=${range[0]}-${range[1]}`;
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   const expectedStatus = range ? HTTP_PARTIAL : HTTP_OK;
+  if (isBusyHostStatus(response.status)) {
+    throw new BusyHostError(`${url}: HTTP ${response.status}, expected ${expectedStatus}`, response.status, response.headers.get('retry-after'));
+  }
   if (response.status !== expectedStatus) throw new FetchError(`${url}: HTTP ${response.status}, expected ${expectedStatus}`);
   const declared = Number(response.headers.get('content-length') ?? '0');
   if (declared > maxBytes) throw new FetchError(`${url}: ${declared} bytes exceeds the ${maxBytes}-byte cap`);
@@ -56,7 +71,7 @@ async function withRetries<T>(url: string, run: () => Promise<T>): Promise<T> {
       return await run();
     } catch (error) {
       lastError = error;
-      if (tryNumber < RETRIES) await sleep(BACKOFF_BASE_MS * 2 ** tryNumber);
+      if (tryNumber < RETRIES) await sleep(error instanceof BusyHostError ? retryDelayMs(tryNumber, error.status, error.retryAfter) : retryDelayMs(tryNumber, null, null));
     }
   }
   throw new FetchError(`${url}: failed after ${RETRIES + 1} attempts: ${String(lastError)}`);
@@ -77,3 +92,5 @@ export function fetchSize(url: string): Promise<number> {
     return Number(total[1]);
   });
 }
+
+export { retryDelayMs };

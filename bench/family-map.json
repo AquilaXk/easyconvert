@@ -54,7 +54,7 @@
     },
     {
       "families": ["image", "video", "audio", "compression", "document", "pdf-ops", "ebook", "font", "cad", "raw", "vector", "data"],
-      "match": "^bench/(corpora|class-rows)\\.ts$|^bench/corpus/(remote-manifest\\.json|PROVENANCE\\.md)$"
+      "match": "^bench/(corpora|class-rows|http-retry)\\.ts$|^bench/corpus/(remote-manifest\\.json|PROVENANCE\\.md)$"
     },
     {
       "families": ["cad"],

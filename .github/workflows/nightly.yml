@@ -120,9 +120,36 @@ jobs:
   # measured here and cached for the pull request jobs) and speed by a confidence interval of the speed ratio. Also
   # gated on bench/baseline.json. The quality and the speed half run in separate jobs, so each fits one runner and
   # the timing job has the machine to itself. The plain baseline run above stays as it was.
+  #
+  # The quality half is one shard per family group: all families in one job took 18 to 57 minutes and was cut at 60 on
+  # two nights, and the public sample sets (#780) add to that. The heavy families (image, video, RAW, documents,
+  # compression) run alone and the light ones share a runner; the groups cover every benchmark family once
+  # (tests/ci-parity-workflow.test.ts checks it). Each shard saves the reference measurements
+  # under a key of its own group, which the pull request job reads back with ./.github/actions/bench-ref-cache; the
+  # report of a shard is uploaded under the name of its group. The `report` job below sees a failed shard as a failed
+  # bench-parity-quality.
   bench-parity-quality:
+    name: bench-parity-quality (${{ matrix.group }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: image
+            families: image
+          - group: video
+            families: video
+          - group: raw
+            families: raw
+          - group: document
+            families: document
+          - group: compression
+            families: compression
+          - group: pdf-audio
+            families: pdf-ops,audio
+          - group: small
+            families: ocr,data,ebook,font,cad,vector
 
     services:
       redis:
@@ -155,7 +182,7 @@ jobs:
       - name: Restore the public samples
         uses: ./.github/actions/bench-corpora
         with:
-          families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
+          families: ${{ matrix.families }}
 
       - name: Fingerprint the reference tools
         id: tools
@@ -167,14 +194,15 @@ jobs:
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .bench-cache
-          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
+          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ matrix.group }}-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
           restore-keys: |
-            bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-
+            bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ matrix.group }}-
 
       - name: Run the quality parity benchmark
         env:
           ORACLE_STRICT_MODE: "1"
-        run: npm run bench:quality -- --parity --quality-only
+          BENCH_FAMILIES: ${{ matrix.families }}
+        run: npm run bench:quality -- --parity --quality-only --family "$BENCH_FAMILIES"
 
       # Saved even when the benchmark fails: a host that refuses a download one night (a rate limit, an outage) would otherwise
       # be asked for every file again the next night, since the cache of a job that fails is not kept. Files are digest-checked
@@ -183,7 +211,7 @@ jobs:
         if: always()
         uses: ./.github/actions/bench-corpora-save
         with:
-          families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
+          families: ${{ matrix.families }}
 
       # Saved even when the benchmark fails, since a failing night is exactly when the pull requests need the cache.
       # The key carries the run id: a cache entry is immutable, and entries are keyed inside the cache anyway.
@@ -192,13 +220,13 @@ jobs:
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .bench-cache
-          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
+          key: bench-ref-${{ runner.os }}-${{ steps.tools.outputs.fingerprint }}-${{ matrix.group }}-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
 
       - name: Upload the benchmark report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: bench-quality-results
+          name: bench-quality-results-${{ matrix.group }}
           path: bench-results/
           if-no-files-found: ignore
           retention-days: 30

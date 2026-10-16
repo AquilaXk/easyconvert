@@ -122,6 +122,22 @@
     "openxml-sdk-tests": {
       "title": "Test data of the Open XML SDK (MIT License)",
       "terms": "https://github.com/dotnet/Open-XML-SDK/blob/431ab05cf160248cc3885a4a766026d4f8243792/LICENSE"
+    },
+    "vctk-voicebank": {
+      "title": "Clean test set of the Voice Bank noisy speech database: read English speech of two VCTK speakers (Creative Commons Attribution 4.0)",
+      "terms": "https://datashare.ed.ac.uk/handle/10283/2791"
+    },
+    "qpdf-tests": {
+      "title": "PDF files of the qpdf test suite (Apache License 2.0)",
+      "terms": "https://github.com/qpdf/qpdf/blob/4eba95899886e851cc41d76886483b347612f2a8/LICENSE.txt"
+    },
+    "pdfbox-tests": {
+      "title": "PDF files of the Apache PDFBox test resources (Apache License 2.0)",
+      "terms": "https://github.com/apache/pdfbox/blob/c8ab655799cb0a2f15d8e9622a1a7a678fddf46e/LICENSE.txt"
+    },
+    "pypdf-sample-files": {
+      "title": "Sample PDF files of the py-pdf project (Creative Commons Attribution-ShareAlike 4.0)",
+      "terms": "https://github.com/py-pdf/sample-files/blob/02b8203bf416db3dbdb03438bc8278dfcb0555f3/LICENSE"
     }
   },
   "samples": [
@@ -2233,22 +2249,22 @@
       "sha256": "d8895526c8215925468d503d1879b18c2e3e38140bffeba77351b9e55683aac9"
     },
     {
-      "id": "raw-panasonic-g1.rw2",
+      "id": "raw-panasonic-fz80.rw2",
       "family": "raw",
       "class": "panasonic",
       "set": "pixls",
-      "description": "Panasonic DMC-G1, RW2 (12-bit)",
+      "description": "Panasonic DC-FZ80, RW2 (18 MP)",
       "origin": {
         "kind": "file",
-        "url": "https://raw.pixls.us/data/Panasonic/DMC-G1/RAW_PANASONIC_G1.RW2"
+        "url": "https://raw.pixls.us/data/Panasonic/DC-FZ80/P1010306.RW2"
       },
       "licence": "CC0-1.0",
       "meta": {
         "format": "rw2",
         "targets": "jpg,png"
       },
-      "bytes": 14697984,
-      "sha256": "aa3b92d6592744a889d7ea50aaf3ea55e0ec961d04c740d437d3396ca79757be"
+      "bytes": 21909504,
+      "sha256": "34b1777a25c31053234006e172b72c142477994dc560f95bf945c742f0ca1ff9"
     },
     {
       "id": "raw-pentax-k5.pef",
@@ -5831,6 +5847,846 @@
       },
       "bytes": 67477,
       "sha256": "9801672f6c932e218e044df19608d1f31629fee5c87af0bc7c04bfc9f84dbb69"
+    },
+    {
+      "id": "aom-kristenandsara-720p.y4m",
+      "family": "video",
+      "class": "natural",
+      "set": "aom-ctc",
+      "description": "Video conference, two people talking, 1280x720, 60 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a3_720p/KristenAndSara_1280x720_60.y4m",
+        "start": 0,
+        "end": 55296298
+      },
+      "licence": "PD-Vidyo",
+      "meta": {
+        "source": "a3_720p/KristenAndSara_1280x720_60.y4m",
+        "width": 1280,
+        "height": 720,
+        "frames": 40,
+        "fps": "60:1",
+        "chroma": "420jpeg"
+      },
+      "bytes": 55296299,
+      "sha256": "5a26354487223cefb62d494645cd3180a9c0d861b33ab8d47d39445fa0b321bf"
+    },
+    {
+      "id": "aom-speedbag-360p.y4m",
+      "family": "video",
+      "class": "highmotion",
+      "set": "aom-ctc",
+      "description": "Boxer at a speed bag, fast motion, 640x360, 29.97 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/a4_360p/SpeedBag_640x360_2997.y4m",
+        "start": 0,
+        "end": 31104603
+      },
+      "licence": "NTIA-ITS-research",
+      "meta": {
+        "source": "a4_360p/SpeedBag_640x360_2997.y4m",
+        "width": 640,
+        "height": 360,
+        "frames": 90,
+        "fps": "30000:1001",
+        "chroma": "420jpeg"
+      },
+      "bytes": 31104604,
+      "sha256": "754966a578f0a60085bef928087fe0923500d3f58b60f95e276a268f242c5890"
+    },
+    {
+      "id": "aom-wikipedia-1080p.y4m",
+      "family": "video",
+      "class": "screen",
+      "set": "aom-ctc",
+      "description": "Screen recording of a web browser reading an encyclopedia article, 1920x1080, 30 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/b2_scc/Wikipedia_1920x1080p30.y4m",
+        "start": 0,
+        "end": 74649803
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "source": "b2_scc/Wikipedia_1920x1080p30.y4m",
+        "width": 1920,
+        "height": 1080,
+        "frames": 24,
+        "fps": "30:1",
+        "chroma": "420jpeg"
+      },
+      "bytes": 74649804,
+      "sha256": "61aee8ff577825b5049705d5326d801167af752c17305c977a4b5c51ac2c0fe3"
+    },
+    {
+      "id": "aom-cosmos-treetrunk-858p.y4m",
+      "family": "video",
+      "class": "animation",
+      "set": "aom-ctc",
+      "description": "Computer animation (Blender open movie), 2048x858, 24 fps",
+      "origin": {
+        "kind": "range",
+        "url": "https://media.xiph.org/video/aomctc/test_set/b1_syn/CosmosTreeTrunk_sdr_2048x858_25_8bit.y4m",
+        "start": 0,
+        "end": 63258826
+      },
+      "licence": "CC-BY-3.0",
+      "meta": {
+        "source": "b1_syn/CosmosTreeTrunk_sdr_2048x858_25_8bit.y4m",
+        "width": 2048,
+        "height": 858,
+        "frames": 24,
+        "fps": "24:1",
+        "chroma": "420jpeg"
+      },
+      "bytes": 63258827,
+      "sha256": "71584cd3957cf0dcd892c354bebb22bfc8b2c7616d874aa8777636f24927462b"
+    },
+    {
+      "id": "raw-sigma-sd14.x3f",
+      "family": "raw",
+      "class": "foveon",
+      "set": "pixls",
+      "description": "Sigma SD14, X3F (Foveon X3 three-layer sensor)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Sigma/SIGMA%20SD14/20120818-SDIM4579.X3F"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "x3f",
+        "targets": "jpg,png"
+      },
+      "bytes": 12180112,
+      "sha256": "c32f247eb372c3e66ad3b433518ec11f898fdc317c8432ebe025b46d4917bcf3"
+    },
+    {
+      "id": "raw-apple-iphone12pro.dng",
+      "family": "raw",
+      "class": "phone",
+      "set": "pixls",
+      "description": "Apple iPhone 12 Pro, DNG written by the camera app",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Apple/iPhone%2012%20Pro/IMG_1361.DNG"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "dng",
+        "targets": "jpg,png"
+      },
+      "bytes": 29195592,
+      "sha256": "e91e77a4533ed7cce551d83330676ea5c47dd5e55fb38adda7819366afdbdfc2"
+    },
+    {
+      "id": "raw-samsung-s23.dng",
+      "family": "raw",
+      "class": "phone",
+      "set": "pixls",
+      "description": "Samsung Galaxy S23, DNG written by the camera app",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Samsung/Galaxy%20S23/20230715_154550.dng"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "dng",
+        "targets": "jpg,png"
+      },
+      "bytes": 25412616,
+      "sha256": "873184113210f9c4f684ad1eccea587a973b2c4d4ca88036b6962a1f6ca513bb"
+    },
+    {
+      "id": "raw-nikon-z9-he.nef",
+      "family": "raw",
+      "class": "nikonz",
+      "set": "pixls",
+      "description": "Nikon Z 9, NEF with lossy high-efficiency compression (14-bit)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Nikon/Z%209/Nikon_-_NIKON_Z_9_-_14bit_compressed_(Lossy_High_Efficiency).NEF"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "nef",
+        "targets": "jpg,png"
+      },
+      "bytes": 24839168,
+      "sha256": "be91bac25573adf7ec6320a542105d87b4fb9c956d7b620ec90d57ac2ae6c3f0"
+    },
+    {
+      "id": "raw-sony-a7m4-lossless.arw",
+      "family": "raw",
+      "class": "sonynew",
+      "set": "pixls",
+      "description": "Sony A7 IV, ARW with lossless compression (small size)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Sony/ILCE-7M4/ILCE-7M4_DSC06676_FullFrame-LossLess-Compressed-Small.ARW"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "arw",
+        "targets": "jpg,png"
+      },
+      "bytes": 22933504,
+      "sha256": "cbbd0930c7d8706dff84c68a2004454266e6fd0d8354f5f76a106b5d776e0223"
+    },
+    {
+      "id": "raw-canon-r5-raw.cr3",
+      "family": "raw",
+      "class": "canoncr3",
+      "set": "pixls",
+      "description": "Canon EOS R5, CR3 in full RAW mode (cropped frame)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.pixls.us/data/Canon/EOS%20R5/Canon_EOS_R5_RAW_ISO_100_crop_nodual.CR3"
+      },
+      "licence": "CC0-1.0",
+      "meta": {
+        "format": "cr3",
+        "targets": "jpg,png"
+      },
+      "bytes": 17391702,
+      "sha256": "dc3ef975ef029fe527ba6cafa0f899720cfdcbcfb4f590edcff81f26d499c2f0"
+    },
+    {
+      "id": "sqam-50-speech-en-m.flac",
+      "family": "audio",
+      "class": "speech-ebu",
+      "set": "ebu-sqam",
+      "description": "Male speech, English (track 50)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "50.flac",
+        "offset": 106294965,
+        "compressedSize": 1135771,
+        "method": 8
+      },
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "track": "50",
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16
+      },
+      "bytes": 1147663,
+      "sha256": "6ac03efb51b6941d338fac56a2b322c36e8b52bb14dfe766c81e2253f2830fc9"
+    },
+    {
+      "id": "sqam-53-speech-de-f.flac",
+      "family": "audio",
+      "class": "speech-ebu",
+      "set": "ebu-sqam",
+      "description": "Female speech, German (track 53)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "53.flac",
+        "offset": 110334121,
+        "compressedSize": 971333,
+        "method": 8
+      },
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "track": "53",
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16
+      },
+      "bytes": 984977,
+      "sha256": "0899e68762cf361b1ae97569da3793a3722a9512dae98d4052c347f66c5d97e1"
+    },
+    {
+      "id": "sqam-13-flute.flac",
+      "family": "audio",
+      "class": "woodwind",
+      "set": "ebu-sqam",
+      "description": "Flute, arpeggio and melodious phrase (track 13)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "13.flac",
+        "offset": 20592840,
+        "compressedSize": 2633899,
+        "method": 8
+      },
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "track": "13",
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16
+      },
+      "bytes": 2655277,
+      "sha256": "ca54ec7155f7d509c08a319786bb98abdddb626b8c040202489b9ec25d3f576b"
+    },
+    {
+      "id": "sqam-22-trombone.flac",
+      "family": "audio",
+      "class": "brass",
+      "set": "ebu-sqam",
+      "description": "Trombone, arpeggio and melodious phrase (track 22)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "22.flac",
+        "offset": 38519519,
+        "compressedSize": 1432553,
+        "method": 8
+      },
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "track": "22",
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16
+      },
+      "bytes": 1462518,
+      "sha256": "91f6b8f8919f70128d5e71a7c485d336d76bb7f9c506ac69b54054e68d47ce0a"
+    },
+    {
+      "id": "sqam-29-bass-drum.flac",
+      "family": "audio",
+      "class": "percussion",
+      "set": "ebu-sqam",
+      "description": "Bass drum, single strokes (track 29)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "29.flac",
+        "offset": 51578015,
+        "compressedSize": 511015,
+        "method": 8
+      },
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "track": "29",
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16
+      },
+      "bytes": 559295,
+      "sha256": "d41929bd4d8680e63dda362ebec8703357e117a37778d63dcd068e1cd528c0ff"
+    },
+    {
+      "id": "sqam-39-grand-piano.flac",
+      "family": "audio",
+      "class": "keyboard",
+      "set": "ebu-sqam",
+      "description": "Grand piano, arpeggio, single tones and melodious phrase (track 39)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "39.flac",
+        "offset": 76725413,
+        "compressedSize": 5770982,
+        "method": 8
+      },
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "track": "39",
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16
+      },
+      "bytes": 5866789,
+      "sha256": "8d6b40ad1d1d76da20b4706c949fb020df8eec3cc466dc46465341d037e18fd8"
+    },
+    {
+      "id": "sqam-64-choir-orff.flac",
+      "family": "audio",
+      "class": "ensemble",
+      "set": "ebu-sqam",
+      "description": "Choir, Orff (track 64)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "64.flac",
+        "offset": 142456652,
+        "compressedSize": 2674719,
+        "method": 8
+      },
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "track": "64",
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16
+      },
+      "bytes": 2690746,
+      "sha256": "8ce7036a4d3a794faf9f4d36ac0c1282795a38646f9e60d688723d2a08c46cc4"
+    },
+    {
+      "id": "sqam-70-pop-rabbitt.flac",
+      "family": "audio",
+      "class": "pop2",
+      "set": "ebu-sqam",
+      "description": "Pop music, Eddie Rabbitt (track 70)",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://qc.ebu.io/testmaterials/523/1/download/",
+        "entry": "70.flac",
+        "offset": 168710755,
+        "compressedSize": 1311565,
+        "method": 8
+      },
+      "licence": "EBU-SQAM-RD",
+      "meta": {
+        "track": "70",
+        "sampleRate": 44100,
+        "channels": 2,
+        "bitDepth": 16
+      },
+      "bytes": 1326449,
+      "sha256": "06ea54c4444ee2836939199e306fd37277be4c66bf6cedd40dfc420858b669fd"
+    },
+    {
+      "id": "vctk-p232-001.wav",
+      "family": "audio",
+      "class": "speech-vctk",
+      "set": "vctk-voicebank",
+      "description": "Clean read speech, English, speaker p232 (male), utterance 001",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://datashare.ed.ac.uk/server/api/core/bitstreams/dec213d3-bf57-4777-9663-c24bdce92d5e/content",
+        "entry": "clean_testset_wav/p232_001.wav",
+        "offset": 64,
+        "compressedSize": 129773,
+        "method": 8
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "speaker": "p232",
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 16
+      },
+      "bytes": 167208,
+      "sha256": "58976c41995f22917a143bf00654bf54e86525ee15e729c7a805b8eef28849c3"
+    },
+    {
+      "id": "vctk-p232-003.wav",
+      "family": "audio",
+      "class": "speech-vctk",
+      "set": "vctk-voicebank",
+      "description": "Clean read speech, English, speaker p232 (male), utterance 003",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://datashare.ed.ac.uk/server/api/core/bitstreams/dec213d3-bf57-4777-9663-c24bdce92d5e/content",
+        "entry": "clean_testset_wav/p232_003.wav",
+        "offset": 348070,
+        "compressedSize": 550032,
+        "method": 8
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "speaker": "p232",
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 16
+      },
+      "bytes": 689790,
+      "sha256": "85bd30db189b8abdde6719efb07b34965fb5fb9b6e476ae23f6e6b2d4fd720db"
+    },
+    {
+      "id": "vctk-p232-005.wav",
+      "family": "audio",
+      "class": "speech-vctk",
+      "set": "vctk-voicebank",
+      "description": "Clean read speech, English, speaker p232 (male), utterance 005",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://datashare.ed.ac.uk/server/api/core/bitstreams/dec213d3-bf57-4777-9663-c24bdce92d5e/content",
+        "entry": "clean_testset_wav/p232_005.wav",
+        "offset": 898194,
+        "compressedSize": 499105,
+        "method": 8
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "speaker": "p232",
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 16
+      },
+      "bytes": 599720,
+      "sha256": "89b1ebdeabff150a3cc12629178e5b98a2366e052f3e8028ea853c2059f69494"
+    },
+    {
+      "id": "vctk-p257-001.wav",
+      "family": "audio",
+      "class": "speech-vctk",
+      "set": "vctk-voicebank",
+      "description": "Clean read speech, English, speaker p257 (female), utterance 001",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://datashare.ed.ac.uk/server/api/core/bitstreams/dec213d3-bf57-4777-9663-c24bdce92d5e/content",
+        "entry": "clean_testset_wav/p257_001.wav",
+        "offset": 75478226,
+        "compressedSize": 156189,
+        "method": 8
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "speaker": "p257",
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 16
+      },
+      "bytes": 213122,
+      "sha256": "7f6eed44c7831cf9aa979d7eb53c7a9f7e4e0b75576d2d0e7741ba4377724be0"
+    },
+    {
+      "id": "vctk-p257-002.wav",
+      "family": "audio",
+      "class": "speech-vctk",
+      "set": "vctk-voicebank",
+      "description": "Clean read speech, English, speaker p257 (female), utterance 002",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://datashare.ed.ac.uk/server/api/core/bitstreams/dec213d3-bf57-4777-9663-c24bdce92d5e/content",
+        "entry": "clean_testset_wav/p257_002.wav",
+        "offset": 75634507,
+        "compressedSize": 210716,
+        "method": 8
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "speaker": "p257",
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 16
+      },
+      "bytes": 266552,
+      "sha256": "b9608fa621bf688a9c8f40fd6e6bf225ef5e06823b806eab3836f2d3a941ca92"
+    },
+    {
+      "id": "vctk-p257-003.wav",
+      "family": "audio",
+      "class": "speech-vctk",
+      "set": "vctk-voicebank",
+      "description": "Clean read speech, English, speaker p257 (female), utterance 003",
+      "origin": {
+        "kind": "zip",
+        "archive": "https://datashare.ed.ac.uk/server/api/core/bitstreams/dec213d3-bf57-4777-9663-c24bdce92d5e/content",
+        "entry": "clean_testset_wav/p257_003.wav",
+        "offset": 75845315,
+        "compressedSize": 436942,
+        "method": 8
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {
+        "speaker": "p257",
+        "sampleRate": 48000,
+        "channels": 1,
+        "bitDepth": 16
+      },
+      "bytes": 530100,
+      "sha256": "394acaaf0d1bf55678ed10e4ce5f09cc691dcd4e0e99d0d66809637dbb37e197"
+    },
+    {
+      "id": "pdf-pdfjs-Pages-tree-refs.pdf",
+      "family": "pdf-ops",
+      "class": "damaged",
+      "set": "pdfjs-corpus",
+      "description": "Page tree whose references loop (qpdf: loop detected in /Pages)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/Pages-tree-refs.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 1098,
+      "sha256": "77c8817ea016296ea59e0991ea1a6d1440ef2480cdcd9acb59106938b649233f"
+    },
+    {
+      "id": "pdf-qpdf-shared-images-errors.pdf",
+      "family": "pdf-ops",
+      "class": "damaged",
+      "set": "qpdf-tests",
+      "description": "Ten-page file with image streams that fail to inflate",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/qpdf/qpdf/4eba95899886e851cc41d76886483b347612f2a8/qpdf/qtest/qpdf/shared-images-errors.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 32044,
+      "sha256": "5083a28f9a71cbc45350d1a1666403c0d56c9aacaebda3885caf0dd012cc3e79"
+    },
+    {
+      "id": "pdf-qpdf-pages-loop.pdf",
+      "family": "pdf-ops",
+      "class": "damaged",
+      "set": "qpdf-tests",
+      "description": "Page tree that loops back on itself (qpdf: loop detected in /Pages)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/qpdf/qpdf/4eba95899886e851cc41d76886483b347612f2a8/qpdf/qtest/qpdf/pages-loop.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 1123,
+      "sha256": "4b7edc99b4b06ae39a91dd4cac43d1435b94df0673a45349a37f388313232a4b"
+    },
+    {
+      "id": "pdf-qpdf-form-errors.pdf",
+      "family": "pdf-ops",
+      "class": "damaged",
+      "set": "qpdf-tests",
+      "description": "Three-page form with a damaged field tree (qpdf warns about a loop in the objects)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/qpdf/qpdf/4eba95899886e851cc41d76886483b347612f2a8/qpdf/qtest/qpdf/form-errors.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 54962,
+      "sha256": "1215418133f277c1f1805f727a8e89f97e3fbeeb0c8d1a9bb11ddbdfb443e6d1"
+    },
+    {
+      "id": "pdf-pdfjs-issue7229.pdf",
+      "family": "pdf-ops",
+      "class": "damaged",
+      "set": "pdfjs-corpus",
+      "description": "Two-page file of 1.1 MB with wrong object offsets (qpdf rebuilds the cross-reference table)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue7229.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 1153154,
+      "sha256": "af26f8639f6a9f5be9b82fd9f071539b1dd61b4f7bd9a261d77b9d3394efca95"
+    },
+    {
+      "id": "pdf-pdfjs-xfa_issue14315.pdf",
+      "family": "pdf-ops",
+      "class": "xfa",
+      "set": "pdfjs-corpus",
+      "description": "XFA form (AcroForm with an XFA entry), one page",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/xfa_issue14315.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 11568,
+      "sha256": "d039a40ea28384bae8d1a24929a4288aae1aeb433c441fd39c04fad618fa6f19"
+    },
+    {
+      "id": "pdf-pdfjs-form_two_pages.pdf",
+      "family": "pdf-ops",
+      "class": "acroform",
+      "set": "pdfjs-corpus",
+      "description": "AcroForm over two pages with CID fonts",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/form_two_pages.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 23136,
+      "sha256": "6d7c608d0102fa1e1b3cbc2c3b0a989783e90f84ff1a7fe7cbdb6dc2a1b60fbd"
+    },
+    {
+      "id": "pdf-pdfjs-page_with_number_and_link.pdf",
+      "family": "pdf-ops",
+      "class": "tagged-docs",
+      "set": "pdfjs-corpus",
+      "description": "Tagged document of 17 pages with CID fonts",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/page_with_number_and_link.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 71816,
+      "sha256": "f80ff0fe5fd0b0388f6496e243f44e2d5b9b3c5208dd35bae6a32dd1487dc14d"
+    },
+    {
+      "id": "pdf-pypdf-GeoTopo-komprimiert.pdf",
+      "family": "pdf-ops",
+      "class": "longdoc",
+      "set": "pypdf-sample-files",
+      "description": "The same 117 pages, linearized, 1.8 MB (qpdf warns that the first-page length is wrong)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/py-pdf/sample-files/02b8203bf416db3dbdb03438bc8278dfcb0555f3/009-pdflatex-geotopo/GeoTopo-komprimiert.pdf"
+      },
+      "licence": "CC-BY-SA-4.0",
+      "meta": {},
+      "bytes": 1793479,
+      "sha256": "20430e92d42bc06c606f5889d9832c8e5c4dde17f8333f99fbcba96b3a0cba14"
+    },
+    {
+      "id": "pdf-pdfjs-issue22011.pdf",
+      "family": "pdf-ops",
+      "class": "longdoc",
+      "set": "pdfjs-corpus",
+      "description": "Document of 57 pages",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue22011.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 19594,
+      "sha256": "176ef523a383236aaa78882d367ee18e1e57cfcc71bb70a7d63695b91fbb7184"
+    },
+    {
+      "id": "pdf-pdfjs-issue19532.pdf",
+      "family": "pdf-ops",
+      "class": "type3",
+      "set": "pdfjs-corpus",
+      "description": "Single page set in a Type 3 font (PDF/A)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue19532.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 10160,
+      "sha256": "37ff3dd93c34f01724565f07ba0cbfb931ac53a52ac37d004e3262d1202c0bd7"
+    },
+    {
+      "id": "pdf-pdfjs-issue12963.pdf",
+      "family": "pdf-ops",
+      "class": "cidfonts",
+      "set": "pdfjs-corpus",
+      "description": "Eight pages with CID TrueType and CID CFF fonts",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue12963.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 603342,
+      "sha256": "bd61f8496b77a479301705c00558ae8cd9e1c24cc8ee01817875f3f8dffb7b7e"
+    },
+    {
+      "id": "pdf-pdfjs-vertical.pdf",
+      "family": "pdf-ops",
+      "class": "nounicode",
+      "set": "pdfjs-corpus",
+      "description": "Three pages in a CID TrueType font subset without a ToUnicode map",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/vertical.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 6905,
+      "sha256": "514511143db12309893fb69cdf98c76f2361c20da394f79fdff2c119ed7a4393"
+    },
+    {
+      "id": "pdf-qpdf-lin5.pdf",
+      "family": "pdf-ops",
+      "class": "linearized",
+      "set": "qpdf-tests",
+      "description": "Linearized document of 30 pages with a wrong first-page length",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/qpdf/qpdf/4eba95899886e851cc41d76886483b347612f2a8/qpdf/qtest/qpdf/lin5.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 27464,
+      "sha256": "4b716274089f173a1e2d826523e6e616182a1cafb267eff1e2bffa193440054b"
+    },
+    {
+      "id": "pdf-pdfjs-prefilled_f1040.pdf",
+      "family": "pdf-ops",
+      "class": "incremental",
+      "set": "pdfjs-corpus",
+      "description": "Form of two pages saved with seven incremental updates",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/prefilled_f1040.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 306416,
+      "sha256": "899edb271684d2451337e225268003324a583a7d3429e23efd69f1654adf9bf9"
+    },
+    {
+      "id": "pdf-pypdf-crazyones-pdfa.pdf",
+      "family": "pdf-ops",
+      "class": "pdfa",
+      "set": "pypdf-sample-files",
+      "description": "PDF/A file with an embedded CFF font",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/py-pdf/sample-files/02b8203bf416db3dbdb03438bc8278dfcb0555f3/021-pdfa/crazyones-pdfa.pdf"
+      },
+      "licence": "CC-BY-SA-4.0",
+      "meta": {},
+      "bytes": 16368,
+      "sha256": "f05f2738a1fa8c1d2e1147881fe1a62516a7f8caaf784067790731f56df626c4"
+    },
+    {
+      "id": "pdf-pdfjs-issue5747.pdf",
+      "family": "pdf-ops",
+      "class": "imagecodecs",
+      "set": "pdfjs-corpus",
+      "description": "Page with a CCITT fax image and a CID TrueType font",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/mozilla/pdf.js/24176a9460ca69f4d2ea5df4577f5ac2302b6cc1/test/pdfs/issue5747.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 112018,
+      "sha256": "f7083a6dcef36f41e31eb7fa36a1798fa9b1552d9cd773b1ec05becb47552070"
+    },
+    {
+      "id": "pdf-pypdf-ocg_map_test.pdf",
+      "family": "pdf-ops",
+      "class": "features",
+      "set": "pypdf-sample-files",
+      "description": "Optional content groups (layers)",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/py-pdf/sample-files/02b8203bf416db3dbdb03438bc8278dfcb0555f3/029-optional-content-groups/ocg_map_test.pdf"
+      },
+      "licence": "CC-BY-SA-4.0",
+      "meta": {},
+      "bytes": 313834,
+      "sha256": "0d2b6fbcc9e58bda84d4f910d63499451b1825841572ef35616e24ab27f20182"
+    },
+    {
+      "id": "pdf-qpdf-digitally-signed.pdf",
+      "family": "pdf-ops",
+      "class": "features",
+      "set": "qpdf-tests",
+      "description": "Digitally signed document",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/qpdf/qpdf/4eba95899886e851cc41d76886483b347612f2a8/qpdf/qtest/qpdf/digitally-signed.pdf"
+      },
+      "licence": "Apache-2.0",
+      "meta": {},
+      "bytes": 68846,
+      "sha256": "05e969415b03d9782b0b132f147b86cb42eafddf6176aaf2710334a9cc643c3c"
+    },
+    {
+      "id": "pdf-vera-pdfa4-devicecolour.pdf",
+      "family": "pdf-ops",
+      "class": "pdfa",
+      "set": "verapdf-corpus",
+      "description": "PDF/A-4 conforming file with device colour spaces",
+      "origin": {
+        "kind": "file",
+        "url": "https://raw.githubusercontent.com/veraPDF/veraPDF-corpus/bb75f4f0073d9350dfd058c0162a367e6fadf25e/PDF_A-4/6.2%20Graphics/6.2.4%20Colour%20spaces/6.2.4.3%20Uncalibrated%20-Device%20colour%20spaces/veraPDF%20test%20suite%206-2-4-3-t02-pass-e.pdf"
+      },
+      "licence": "CC-BY-4.0",
+      "meta": {},
+      "bytes": 393354,
+      "sha256": "2bab6d0d0641ac6651dcd4e37cdd601e3319bdf737daded88a2b3ee9991c7096"
     }
   ]
 }

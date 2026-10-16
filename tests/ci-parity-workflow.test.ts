@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
+import { FAMILIES } from '../bench/report';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -107,14 +108,19 @@ describe('parity-quality', () => {
 
   it('reads the reference cache without writing it: a pull request cannot save into the cache main uses', () => {
     const uses = quality.steps.map((step) => step.uses ?? '');
-    expect(uses.some((u) => u.startsWith('actions/cache/restore@'))).toBe(true);
+    expect(uses).toContain('./.github/actions/bench-ref-cache');
     expect(uses.some((u) => /^actions\/cache(\/save)?@/.test(u))).toBe(false);
-    const restore = quality.steps.find((step) => step.uses?.startsWith('actions/cache/restore@'));
-    const key = String(restore?.with?.key);
-    expect(restore?.with?.path).toBe('.bench-cache');
-    expect(key).toContain('steps.tools.outputs.fingerprint');
-    expect(key).toContain("hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json')");
-    expect(String(restore?.with?.['restore-keys'])).toContain('steps.tools.outputs.fingerprint');
+    const restore = quality.steps.find((step) => step.uses === './.github/actions/bench-ref-cache');
+    expect(restore?.with?.fingerprint).toBe('${{ steps.tools.outputs.fingerprint }}');
+    const action = parse(read('.github', 'actions', 'bench-ref-cache', 'action.yml')) as { runs: { steps: Step[] } };
+    expect(action.runs.steps.length).toBeGreaterThan(0);
+    for (const step of action.runs.steps) {
+      expect(step.uses).toMatch(/^actions\/cache\/restore@[0-9a-f]{40}$/);
+      expect(step.with?.path).toBe('.bench-cache');
+      expect(String(step.with?.key)).toContain('inputs.fingerprint');
+      expect(String(step.with?.key)).toContain("hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json')");
+      expect(String(step.with?.['restore-keys'])).toContain('inputs.fingerprint');
+    }
   });
 
   it('records the benchmark exit code and lets the policy step decide, so one step owns the verdict', () => {
@@ -270,10 +276,13 @@ describe('the public benchmark samples in the workflows', () => {
       expect(String(step.with?.key)).toMatch(/-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ github\.job \}\}$/);
       expect(String(step.if)).toMatch(/^always\(\) && contains\(/);
     }
-    for (const job of [nightly.jobs['bench-parity-quality'], nightly.jobs['bench-parity-speed']]) {
+    for (const [job, families] of [
+      [nightly.jobs['bench-parity-quality'], '${{ matrix.families }}'],
+      [nightly.jobs['bench-parity-speed'], SAMPLE_FAMILIES.join(',')],
+    ] as const) {
       const saved = job.steps.find((step) => step.uses === './.github/actions/bench-corpora-save');
       expect(saved?.if).toBe('always()');
-      expect(saved?.with?.families).toBe(SAMPLE_FAMILIES.join(','));
+      expect(saved?.with?.families).toBe(families);
       expect(job.steps.indexOf(saved as Step)).toBeGreaterThan(job.steps.findIndex((step) => step.uses === './.github/actions/bench-corpora'));
     }
   });
@@ -292,9 +301,12 @@ describe('the public benchmark samples in the workflows', () => {
   });
 
   it('is restored by the nightly parity jobs, which stay in the full tier, while the plain baseline run keeps to the generated corpus', () => {
-    for (const job of [nightlyQuality, nightlySpeed]) {
+    for (const [job, families] of [
+      [nightlyQuality, '${{ matrix.families }}'],
+      [nightlySpeed, SAMPLE_FAMILIES.join(',')],
+    ] as const) {
       const restore = job.steps.find((step) => step.uses === './.github/actions/bench-corpora');
-      expect(restore?.with?.families).toBe(SAMPLE_FAMILIES.join(','));
+      expect(restore?.with?.families).toBe(families);
       expect(job.env?.BENCH_CORPUS_TIER).toBeUndefined();
     }
     const plain = nightly.jobs.bench;
@@ -512,13 +524,59 @@ describe('the nightly run', () => {
   it('runs the full parity benchmark in strict mode: every family, every case', () => {
     const q = stepNamed(quality, 'Run the quality parity benchmark');
     const s = stepNamed(speedJob, 'Run the speed parity benchmark');
-    expect(q.run).toBe('npm run bench:quality -- --parity --quality-only');
+    // The quality half is sharded by family group (below); the shards together measure every family.
+    expect(q.run).toBe('npm run bench:quality -- --parity --quality-only --family "$BENCH_FAMILIES"');
+    expect(q.env?.BENCH_FAMILIES).toBe('${{ matrix.families }}');
     expect(s.run).toBe('npm run bench:quality -- --parity --speed-only');
     for (const step of [q, s]) {
       expect(step.env?.ORACLE_STRICT_MODE).toBe('1');
       expect(step.run).not.toContain('--quick');
-      expect(step.run).not.toContain('--family');
     }
+    expect(s.run).not.toContain('--family');
+  });
+
+  describe('the quality half, sharded by family group', () => {
+    const matrix = (quality as unknown as { strategy: { 'fail-fast': boolean; matrix: { include: Array<{ group: string; families: string }> } } }).strategy;
+    const groups = matrix.matrix.include;
+
+    it('keeps the job name the report job and the artifacts are keyed by, with one shard per group', () => {
+      expect(matrix['fail-fast']).toBe(false);
+      expect((quality as unknown as { name: string }).name).toBe('bench-parity-quality (${{ matrix.group }})');
+      expect(new Set(groups.map((entry) => entry.group)).size).toBe(groups.length);
+      expect(quality['timeout-minutes']).toBeLessThanOrEqual(60);
+    });
+
+    it('measures every benchmark family in exactly one shard', () => {
+      const measured = groups.flatMap((entry) => entry.families.split(','));
+      expect([...measured].sort()).toEqual([...FAMILIES].sort());
+    });
+
+    it('puts no more than one of the heavy families in a shard', () => {
+      for (const entry of groups) {
+        const heavy = entry.families.split(',').filter((family) => ['image', 'video', 'raw', 'document', 'compression'].includes(family));
+        expect(heavy.length, entry.group).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it('uploads the report of each shard under a name of its own, since an artifact name can be used once per run', () => {
+      const upload = quality.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+      expect(upload?.with?.name).toBe('bench-quality-results-${{ matrix.group }}');
+      expect(upload?.if).toBe('always()');
+    });
+
+    it('saves the reference measurements of a shard under the key of its group, and the pull request job restores every group', () => {
+      const save = quality.steps.find((step) => step.uses?.startsWith('actions/cache/save@'));
+      expect(String(save?.with?.key)).toContain('-${{ matrix.group }}-');
+      const action = parse(read('.github', 'actions', 'bench-ref-cache', 'action.yml')) as { runs: { steps: Step[] } };
+      const [newest, ...perGroup] = action.runs.steps;
+      expect(String(newest.with?.['restore-keys'])).toMatch(/inputs\.fingerprint \}\}-\s*$/);
+      const restored = perGroup.map((step) => /inputs\.fingerprint \}\}-([a-z-]+)-\$\{\{ hashFiles/.exec(String(step.with?.key))?.[1]);
+      expect(restored).toEqual(groups.map((entry) => entry.group));
+      for (const entry of groups) {
+        const step = perGroup[groups.indexOf(entry)];
+        expect(String(step.with?.['restore-keys'])).toContain(`inputs.fingerprint }}-${entry.group}-`);
+      }
+    });
   });
 
   it('can measure the speed rows against another commit in the same pairs, by hand, one shard per family', () => {
@@ -538,6 +596,7 @@ describe('the nightly run', () => {
   it('is the writer of the reference cache, saved even when the benchmark fails', () => {
     const restore = quality.steps.find((step) => step.uses?.startsWith('actions/cache/restore@'));
     const save = quality.steps.find((step) => step.uses?.startsWith('actions/cache/save@'));
+    expect(String(restore?.with?.key)).toContain('${{ matrix.group }}');
     expect(restore?.with?.path).toBe('.bench-cache');
     expect(save?.with?.path).toBe('.bench-cache');
     expect(save?.if).toBe('always()');

@@ -9,7 +9,7 @@
       ]
     },
     "3fr": {
-      "reason": "Two Hasselblad .3fr files fit the memory budget of the real-world run (the camera-RAW fixture H3D and CFV, 23 MB); the other CC0 files are 33 to 212 MB.",
+      "reason": "One Hasselblad .3fr file is in the camera-RAW fixtures (H3D, 39 MB, CC0); the other CC0 files are 39 to 212 MB, too large for three concurrent jobs of the real-world run, and the two small ones (CF132, CFV; 17 to 23 MB) are licensed CC BY-NC-SA, which a commercial test pipeline cannot use.",
       "searched": [
         "raw.pixls.us Hasselblad directory listing (CF132, CFV, H3D, H4D, X1D, X2D and CFV 50c/100c files)",
         "tests/fixtures/raw manifests"
@@ -85,27 +85,6 @@
         "GNU FTP archive hello listing (.tar.bz2 only)"
       ]
     },
-    "tbz": {
-      "reason": "No file with the .tbz short extension is published by the sources searched; bzip2-compressed tarballs there are named .tar.bz2 (counted as tar.bz2).",
-      "searched": [
-        "file lists of Commons Compress, Tika, KDE Ark and KArchive at pinned commits",
-        "Slackware 12.2, 13.0 and 15.0 package mirror paths (.tgz and .txz; the .tbz path answers 404) and the GNU FTP archive"
-      ]
-    },
-    "tbz2": {
-      "reason": "One file with the .tbz2 extension is published (Tika test-documents.tbz2); other bzip2-compressed tarballs are named .tar.bz2 and counted there.",
-      "searched": [
-        "file lists of Commons Compress, Tika, KDE Ark and KArchive, libarchive at pinned commits (one .tbz2 file)",
-        "Slackware package mirror and the GNU FTP archive: no .tbz2 file"
-      ]
-    },
-    "tz": {
-      "reason": "No file with the .tz extension for compressed tarballs is published; tar.Z files are counted as tar.z.",
-      "searched": [
-        "file lists of Commons Compress, Tika, KDE Ark and KArchive, libarchive at pinned commits",
-        "GNU FTP archive (hello, gzip) listings"
-      ]
-    },
     "z": {
       "reason": "No single-file compress(1) archive (.Z) is published in the sources searched; the .Z files there are tarballs, counted as tar.z.",
       "searched": [
@@ -113,32 +92,11 @@
         "GNU FTP old-gnu directories (gawk, make, gperf, sh-utils, fileutils, regex, finger, queue, cpp2html) and gnu/gzip listing: no .Z file"
       ]
     },
-    "zstd": {
-      "reason": "The .zstd extension is an alias of .zst; every Zstandard file in the sources searched is named .zst or .pkg.tar.zst.",
-      "searched": [
-        "zstd test suite golden files, KDE Ark and KArchive at pinned commits",
-        "Arch Linux Archive package names"
-      ]
-    },
-    "3gpp": {
-      "reason": "No file with the .3gpp extension (Android voice recordings) is published; the 3GP files of the FFmpeg samples collection are named .3gp and counted there.",
-      "searched": [
-        "FFmpeg FATE suite (every sample named in tests/fate/*.mak) and samples.ffmpeg.org mobileVideo_3gp listing",
-        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
-      ]
-    },
     "alac": {
       "reason": "Apple Lossless audio is published as .m4a (counted there); no public file carries the .alac extension.",
       "searched": [
         "FFmpeg FATE suite and samples.ffmpeg.org listings",
         "file lists of Tika, KDE KFileMetaData, libsndfile, VLC and mpv test data at pinned commits"
-      ]
-    },
-    "caf": {
-      "reason": "Two Core Audio Format files are published (FATE caf-pcm16.caf and an Apple alert tone in the FFmpeg samples); no other open collection searched holds one.",
-      "searched": [
-        "FFmpeg FATE suite and samples.ffmpeg.org AIFF listing",
-        "file lists of libsndfile, Tika, KDE KFileMetaData, Kaitai samples, VLC and mpv at pinned commits"
       ]
     },
     "cavs": {
@@ -149,7 +107,7 @@
       ]
     },
     "divx": {
-      "reason": "One DivX file is published (FATE lmlm4/LMLM4_CIFat30fps.divx); the other DivX streams in the FFmpeg samples are named .avi.",
+      "reason": "Two DivX files are published (FATE lmlm4/LMLM4_CIFat30fps.divx and samples.ffmpeg.org sub/small.divx); the other DivX streams in the FFmpeg samples are named .avi.",
       "searched": [
         "FFmpeg FATE suite and samples.ffmpeg.org avi listing",
         "file lists of Tika, VLC and mpv test data at pinned commits"
@@ -163,7 +121,7 @@
       ]
     },
     "dv": {
-      "reason": "One raw DV stream is published (samples.ffmpeg.org DV-raw/shots0000.dv); FATE holds DV only inside AVI and MOV files.",
+      "reason": "Two raw DV streams are published (samples.ffmpeg.org DV-raw/shots0000.dv and small_test2.dv); FATE holds DV only inside AVI and MOV files.",
       "searched": [
         "FFmpeg FATE suite and samples.ffmpeg.org DV-raw and camera-dvr listings",
         "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
@@ -177,14 +135,14 @@
       ]
     },
     "m2ts": {
-      "reason": "One AVCHD/Blu-ray transport stream is published (samples.ffmpeg.org bluray/01200.m2ts); FATE holds MPEG-TS only as .ts files.",
+      "reason": "Two Blu-ray transport streams are published (samples.ffmpeg.org bluray/01200.m2ts and wrong-size-vc1.m2ts); the two AVCHD camcorder streams of the same collection are named .mts and counted there; FATE holds MPEG-TS only as .ts files.",
       "searched": [
         "FFmpeg FATE suite and samples.ffmpeg.org bluray listing",
         "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
       ]
     },
     "m2v": {
-      "reason": "No elementary MPEG-2 video file with the .m2v extension is published; MPEG-2 samples are program or transport streams (counted as mpg and ts).",
+      "reason": "Two elementary MPEG-2 video files are published (FATE sub/Closedcaption_rollup.m2v and samples.ffmpeg.org MPEG2/test422.m2v); the other MPEG-2 samples are program or transport streams (counted as mpg and ts).",
       "searched": [
         "FFmpeg FATE suite (mpeg2/ directory) and samples.ffmpeg.org MPEG2 listing",
         "file lists of Tika, VLC and mpv test data at pinned commits"
@@ -197,40 +155,11 @@
         "file lists of Tika, KDE KFileMetaData, libheif, VLC and mpv test data at pinned commits"
       ]
     },
-    "midi": {
-      "reason": "Standard MIDI files are published with the .mid extension (counted as mid); no collection searched uses .midi.",
-      "searched": [
-        "Wikimedia Commons audio/midi search (every file is .mid)",
-        "file lists of Tika, KDE KFileMetaData, libsndfile, VLC and mpv test data at pinned commits"
-      ]
-    },
     "mod": {
       "reason": "No camcorder MOD (MPEG-2 program stream) file is published; the only .mod file found (KDE KFileMetaData test.mod) is a tracker module, a different format.",
       "searched": [
         "FFmpeg FATE suite and samples.ffmpeg.org camera-dvr listing",
         "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
-      ]
-    },
-    "mpeg": {
-      "reason": "The one .mpeg file in the FFmpeg samples collection is a commercial video-game advertisement, and no open collection searched publishes a file with this extension; MPEG program streams are counted as mpg.",
-      "searched": [
-        "FFmpeg FATE suite and samples.ffmpeg.org MPEG1 and MPEG2 listings",
-        "Internet Archive public-domain and CC0 MPEG2 items (one result, a private voice message, not used)",
-        "file lists of Tika, VLC and mpv test data at pinned commits"
-      ]
-    },
-    "mts": {
-      "reason": "No AVCHD .mts file is published; the one AVCHD stream in the FFmpeg samples is named .m2ts.",
-      "searched": [
-        "FFmpeg FATE suite and samples.ffmpeg.org bluray listing",
-        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
-      ]
-    },
-    "ra": {
-      "reason": "Two RealAudio files are published (FATE ra3.ra and ra4_288.ra; the FFmpeg samples collection holds the same bytes under another name).",
-      "searched": [
-        "FFmpeg FATE suite (realaudio/) and samples.ffmpeg.org real-audio listing",
-        "file lists of Tika, VLC and mpv test data at pinned commits"
       ]
     },
     "rmvb": {
@@ -245,14 +174,6 @@
       "searched": [
         "xiph/speex repository file list at a pinned commit",
         "FFmpeg FATE suite and samples.ffmpeg.org ogg listing",
-        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
-      ]
-    },
-    "weba": {
-      "reason": "WebM audio files are published as .webm or .mka; no collection searched uses the .weba extension.",
-      "searched": [
-        "Wikimedia Commons search for file names containing .weba (only unrelated pictures)",
-        "FFmpeg FATE suite and samples.ffmpeg.org listings",
         "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
       ]
     },
@@ -275,23 +196,10 @@
         "FFmpeg FATE suite and samples.ffmpeg.org avi listings: no file named .xvid"
       ]
     },
-    "aifc": {
-      "reason": "Two AIFF-C files are published as audio test material (AFsp float32 and float64 files in the FFmpeg samples); the MACE-compressed AIFF-C files there are named .aiff.",
-      "searched": [
-        "FFmpeg FATE suite and samples.ffmpeg.org AIFF listing",
-        "file lists of libsndfile, Tika, KDE KFileMetaData and Commons Compress at pinned commits"
-      ]
-    },
     "dot": {
       "reason": "One Word 97 template is published in the test suites searched (LibreOffice tdf120761_zOrder.dot); the other .dot files there are Graphviz sources.",
       "searched": [
         "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
-      ]
-    },
-    "htm": {
-      "reason": "One .htm file is published in the corpora searched (Open Preservation Foundation lorem-ipsum.htm); HTML test files elsewhere are named .html.",
-      "searched": [
-        "file lists of the Open Preservation Foundation format corpus, LibreOffice core, Apache POI, Tika, calibre and KDE test data at pinned commits"
       ]
     },
     "zabw": {
@@ -324,18 +232,6 @@
         "file lists of Tika, Apache POI, LibreOffice core, Pillow, libarchive and KDE test data at pinned commits"
       ]
     },
-    "text": {
-      "reason": "Not a file extension: plain-text files are published as .txt (250 files in the real-world corpus).",
-      "searched": [
-        "bench/realworld/manifest.json txt files"
-      ]
-    },
-    "latex": {
-      "reason": "LaTeX sources are published as .tex (counted there); no collection searched uses a .latex extension.",
-      "searched": [
-        "file lists of Okular, Tika, LibreOffice core and Apache POI at pinned commits"
-      ]
-    },
     "azw": {
       "reason": "Kindle .azw books are commercial downloads; no open collection searched publishes one with a usable licence, and calibre writes azw3.",
       "searched": [
@@ -348,20 +244,6 @@
       "searched": [
         "file lists of calibre, libmobi, KOReader, Okular and the Open Preservation Foundation format corpus at pinned commits",
         "GitHub code search for .azw4 files (no result)"
-      ]
-    },
-    "cbr": {
-      "reason": "No comic archive with the .cbr extension and a usable licence was found; the RAR archives of the test suites are named .rar (counted there).",
-      "searched": [
-        "file lists of Komga, Okular, calibre and KDE Ark at pinned commits",
-        "web search for public-domain and Creative Commons comic downloads"
-      ]
-    },
-    "cbz": {
-      "reason": "One comic archive is published as a test file (Okular rotated_cb.cbz); the public comic downloads found require a login or are not at a stable URL.",
-      "searched": [
-        "file lists of Komga, Okular, calibre and KDE Ark at pinned commits",
-        "web search for public-domain and Creative Commons comic downloads"
       ]
     },
     "cb7": {
@@ -440,19 +322,6 @@
       "reason": "No OEB package file with the .oeb extension was found; OEB books are published as .epub or as an .opf package with loose files.",
       "searched": [
         "file lists of calibre, libmobi, KOReader and the Open Preservation Foundation format corpus at pinned commits"
-      ]
-    },
-    "djv": {
-      "reason": "DjVu documents are published as .djvu (counted there); no collection searched uses the short .djv extension.",
-      "searched": [
-        "Wikimedia Commons search for file names containing .djvu",
-        "file lists of Tika, Okular and the Open Preservation Foundation format corpus at pinned commits"
-      ]
-    },
-    "ndjson": {
-      "reason": "Newline-delimited JSON is published as .jsonl; no collection searched holds a file with the .ndjson extension.",
-      "searched": [
-        "file lists of the GSM8K data, Vega datasets, Tika, Pillow and file(1) test data at pinned commits"
       ]
     },
     "tab": {
@@ -641,12 +510,6 @@
       "reason": "Not a file extension: Ultra HDR images are JPEG files with a gain map and are published as .jpg (Pillow ultrahdr.jpg).",
       "searched": [
         "Pillow test images at a pinned commit"
-      ]
-    },
-    "jfif": {
-      "reason": "JFIF is the interchange format of .jpg and .jpeg files; no collection searched holds a file with the .jfif extension.",
-      "searched": [
-        "file lists of Pillow, ImageMagick, libvips, libjpeg-turbo and LibreOffice core at pinned commits"
       ]
     },
     "bin": {

@@ -71,5 +71,46 @@
     "detail": "^empty output$",
     "file": "kaitai-small.wav",
     "issue": 783
+  },
+  {
+    "pair": "mp4->webm",
+    "verdict": "crash",
+    "detail": "^SandboxedTimeoutError: Process execution timed out after \\d+ms$",
+    "file": "jellyfin-1080p-hevc-hdr10-3m.mp4",
+    "issue": 783
+  },
+  {
+    "pair": "pdf->txt",
+    "verdict": "crash",
+    "detail": "^SandboxedProcessError \\(exit 99\\): Syntax Error",
+    "file": "qpdf-issue-101.pdf",
+    "issue": 783
+  },
+  {
+    "pair": "dng->pdf",
+    "verdict": "crash",
+    "detail": "^job server died \\(code null, signal SIGKILL\\)$",
+    "file": "pix-google-pixel6pro.dng",
+    "issue": 783
+  },
+  {
+    "pair": "dng->ultrahdr",
+    "verdict": "bad-output",
+    "detail": "^output bytes do not match ultrahdr$",
+    "issue": 783
+  },
+  {
+    "pair": "pdf->md",
+    "verdict": "bad-output",
+    "detail": "^empty output$",
+    "file": "pdfjs-empty_protected.pdf",
+    "issue": 783
+  },
+  {
+    "pair": "pdf->md",
+    "verdict": "bad-output",
+    "detail": "^empty output$",
+    "file": "qpdf-encrypted-with-images.pdf",
+    "issue": 783
   }
 ]
