@@ -5,7 +5,11 @@ import { decodePlainPngOnce, isPlainPng, type DecodedPng } from '../src/lib/conv
 import { classifyContent, classifyRaster, type ContentClass } from '../src/lib/conversions/image-content';
 import { flattenColour } from '../src/lib/conversions/image-background';
 import { jpegOptionsFor, webpOptionsFor } from '../src/lib/conversions/image-encoder-defaults';
-import { pipelineRuns } from './helpers/pipeline-runs';
+import { countPipelineRuns } from './helpers/pipeline-runs';
+
+/** Pipeline runs of one conversion of `source` to `target` (see `countPipelineRuns`). */
+const pipelineRuns = (source: Buffer, target: string, options: Record<string, unknown> = {}) =>
+  countPipelineRuns(source, () => convertImage(source, target, { quality: 70, ...options }, 'plain.png', 'png'));
 import { srgbProfileChunk, textChunk, withChunksAfterHeader } from './helpers/png-chunks';
 
 const WIDTH = 96;

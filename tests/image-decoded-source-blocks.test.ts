@@ -9,7 +9,11 @@ import { convertImage } from '../src/lib/conversions/image';
 import { isPlainPng, pngDensityDpi } from '../src/lib/conversions/image-decoded-source';
 import { type Chunk, serializeChunks } from './helpers/apng-builder';
 import { requireOracleTool } from './helpers/differential-oracle';
-import { pipelineRuns } from './helpers/pipeline-runs';
+import { countPipelineRuns } from './helpers/pipeline-runs';
+
+/** Pipeline runs of one conversion of `source` to `target` (see `countPipelineRuns`). */
+const pipelineRuns = (source: Buffer, target: string, options: Record<string, unknown> = {}) =>
+  countPipelineRuns(source, () => convertImage(source, target, { quality: 70, ...options }, 'plain.png', 'png'));
 import { withChunksAfterHeader, xmpChunk } from './helpers/png-chunks';
 
 /**

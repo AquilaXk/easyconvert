@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -342,8 +343,11 @@ describe('the encoder reads the source file', () => {
     async () => {
       const wrapper = copyingWrapper('no-colour-chunks');
       process.env.AVIFENC_PATH = wrapper.script;
-      await convertImage(await interface16(), 'avif', {}, 'ui.png', 'png');
-      expect(readFileSync(wrapper.args, 'utf-8')).not.toContain('--ignore-icc');
+      const source = await interface16();
+      await convertImage(source, 'avif', {}, 'ui.png', 'png');
+      // The encoder read the source file itself, and was given neither of the flags that make it skip a chunk.
+      expect(createHash('sha256').update(readFileSync(wrapper.input)).digest('hex')).toBe(createHash('sha256').update(source).digest('hex'));
+      expect(readFileSync(wrapper.args, 'utf-8').trim().split('\n').filter((arg) => arg.startsWith('--ignore'))).toEqual([]);
     },
     60_000
   );
