@@ -40777,8 +40777,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 47.308936,
-      "delta": 1.7163160000000062,
+      "ours": 45.7101,
+      "delta": 0,
       "ratio": null
     },
     "vector/shapes.eps->png/ssim": {
@@ -40787,8 +40787,8 @@
         "abs": 0.003,
         "rel": 0
       },
-      "ours": 0.998703,
-      "delta": -0.000156000000000045,
+      "ours": 0.99886,
+      "delta": 0,
       "ratio": null
     },
     "vector/shapes.eps->png/throughput": {
