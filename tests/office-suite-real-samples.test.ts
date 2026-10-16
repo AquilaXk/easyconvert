@@ -6,7 +6,7 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { corpusSample } from './helpers/corpus-sample';
+import { requireRealworldSample } from './helpers/realworld-sample';
 import { defaultResolver } from '../bench/tools';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { sofficeConvert } from './helpers/soffice-convert';
@@ -197,15 +197,16 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
     it(
       `${id} as .${extension}: converts to ${targets.join(', ')} with the words the office suite shows`,
       async (ctx) => {
-        const original = await corpusSample(id);
-        // skip-ok: corpusSample returns null only outside ORACLE_STRICT_MODE; under strict mode it throws.
-        if (!original) return ctx.skip();
+        const { bytes: original } = await requireRealworldSample(ctx, id);
         const sample = resaveAs === undefined ? original : sofficeConvert(original, id, resaveAs, (output) => output.read());
         const reference = referenceWords(sample, extension);
         const calibre = calibreWords(sample, extension);
         for (const target of targets) {
           const label = `${id} -> ${target}`;
           const result = await dispatchConversion(sample, extension, target, {}, id);
+          // A document of several pages becomes one image per page, in a ZIP.
+          const extensions = IMAGE_TARGETS.has(target) ? [`.${target}`, '.zip'] : [`.${target}`];
+          expect(extensions, label).toContain(path.extname(result.filename));
           expect(result.buffer.length, label).toBeGreaterThan(0);
           if (IMAGE_TARGETS.has(target)) {
             await expectPageImage(result.buffer, target);

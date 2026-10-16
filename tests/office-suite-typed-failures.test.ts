@@ -4,7 +4,7 @@ import { convertFile } from '../src/lib/conversions';
 import { convertOffice } from '../src/lib/conversions/office';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
 import { buildWordBinary } from './helpers/word-binary-builder';
-import { asUnreadableDocument } from '../src/worker/engines';
+import { asUnreadableDocument } from '../src/worker/office-suite-route';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
@@ -78,7 +78,7 @@ describe('templates and slide shows are read as the format they are a layout of'
   it('reads a PowerPoint slide show with the PowerPoint reader', async () => {
     const slideShow = buildPptBinary({ slides: [{ shapes: [{ chars: 'Opening slide title' }] }] });
     const converted = await convertFile(slideShow, 'pps', 'txt', {}, 'show.pps');
-    expect(converted.buffer.toString('utf-8')).toContain('Opening slide title');
+    expect(converted.buffer.toString('utf-8').trim()).toBe('Opening slide title');
   });
 });
 

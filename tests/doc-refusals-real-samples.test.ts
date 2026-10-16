@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { corpusSample } from './helpers/corpus-sample';
+import { requireRealworldSample } from './helpers/realworld-sample';
 import { sofficeConvert } from './helpers/soffice-convert';
 import { skipWithoutTools } from './helpers/strict-skip';
 
@@ -43,9 +43,7 @@ describe.skipIf(toolsMissing)('Word documents the in-process reader refused', ()
     it(
       `${id} (${why}) converts to text, HTML and Markdown with the words the office suite shows`,
       async (ctx) => {
-        const doc = await corpusSample(id);
-        // skip-ok: corpusSample returns null only outside ORACLE_STRICT_MODE; under strict mode it throws.
-        if (!doc) return ctx.skip();
+        const { bytes: doc } = await requireRealworldSample(ctx, id);
         const reference = new Set(sofficeConvert(doc, id, 'txt:Text (encoded):UTF8', (output) => wordsOf(output.read().toString('utf-8'))));
         expect(reference.size).toBeGreaterThan(0);
         for (const target of TARGETS) {

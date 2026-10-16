@@ -8,7 +8,7 @@ import { convertFile } from '../src/lib/conversions';
 import { buildOpenXpsPackage } from '../src/lib/conversions/openxps';
 import { readXpsPages } from '../src/lib/conversions/office/xps-reader';
 import { ConversionFailedError } from '../src/lib/types';
-import { corpusSample } from './helpers/corpus-sample';
+import { requireRealworldSample } from './helpers/realworld-sample';
 import { pythonModuleAvailable, runPythonHelper } from './helpers/python-oracle';
 import { skipUnless } from './helpers/strict-skip';
 
@@ -47,9 +47,7 @@ describe.skipIf(mupdfMissing)('XPS text of real files against MuPDF', () => {
     it(
       `${id} converts to text and HTML with the words MuPDF reads`,
       async (ctx) => {
-        const xps = await corpusSample(id);
-        // skip-ok: corpusSample returns null only outside ORACLE_STRICT_MODE; under strict mode it throws.
-        if (!xps) return ctx.skip();
+        const { bytes: xps } = await requireRealworldSample(ctx, id);
         const reference = mupdfWords(xps);
         expect(reference.size).toBeGreaterThan(0);
         for (const target of ['txt', 'html'] as const) {
@@ -90,6 +88,6 @@ describe('XPS reader', () => {
   });
 
   it('answers bytes that are not a ZIP package with a typed error', async () => {
-    await expect(readXpsPages(Buffer.from('not a package at all'))).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(readXpsPages(Buffer.from('not a package at all'))).rejects.toThrow('The XPS file is not a valid ZIP package.');
   });
 });

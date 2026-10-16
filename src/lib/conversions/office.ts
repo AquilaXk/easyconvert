@@ -59,7 +59,8 @@ import { readFb2Model } from './fb2-model';
 import { readMobiModel } from './mobi-model';
 import { markdownToDocumentModel, readEpubModel } from './source-model';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variants';
-import { OFFICE_FORMAT_ALIAS } from './office/office-suite-sources';
+import { officeReadingFormat } from './office/office-suite-sources';
+import { assertReadableAsText } from './office/text-source-guard';
 
 export { buildOpenXpsPackage };
 
@@ -76,8 +77,7 @@ export async function convertOffice(
 ): Promise<ConversionResult> {
   const baseName = (originalFilename || 'document').replace(/\.[^/.]+$/, '');
   // A template or slide show is read by the reader of the format it is a layout of.
-  const declaredSource = sourceFormat.toLowerCase();
-  const src = OFFICE_FORMAT_ALIAS[declaredSource] ?? declaredSource;
+  const src = officeReadingFormat(sourceFormat);
   const tgt = targetFormat.toLowerCase();
   // PDF and raster writers draw text with installed fonts found through the coverage index.
   await loadFontCoverageIndex();
@@ -518,22 +518,7 @@ export async function extractTextContentForOffice(
     );
   }
 
-  if (
-    inputBuffer.length >= 4 &&
-    ((inputBuffer[0] === 0x50 && inputBuffer[1] === 0x4b && inputBuffer[2] === 0x03 && inputBuffer[3] === 0x04) ||
-      (inputBuffer[0] === 0xd0 && inputBuffer[1] === 0xcf && inputBuffer[2] === 0x11 && inputBuffer[3] === 0xe0) ||
-      (inputBuffer[0] === 0x37 && inputBuffer[1] === 0x7a && inputBuffer[2] === 0xbc && inputBuffer[3] === 0xaf))
-  ) {
-    throw new ConversionFailedError(
-      `Cannot extract plain text from binary/compressed container for format '.${src}': fail-closed against mojibake corruption.`
-    );
-  }
-
-  if (inputBuffer.subarray(0, Math.min(inputBuffer.length, 4096)).includes(0x00)) {
-    throw new ConversionFailedError(
-      `Binary null bytes detected in source format '.${src}': fail-closed against mojibake corruption.`
-    );
-  }
+  assertReadableAsText(inputBuffer, src);
 
   return inputBuffer.toString('utf-8');
 }
@@ -10088,22 +10073,7 @@ async function convertGenericDocumentSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  if (
-    inputBuffer.length >= 4 &&
-    ((inputBuffer[0] === 0x50 && inputBuffer[1] === 0x4b && inputBuffer[2] === 0x03 && inputBuffer[3] === 0x04) ||
-      (inputBuffer[0] === 0xd0 && inputBuffer[1] === 0xcf && inputBuffer[2] === 0x11 && inputBuffer[3] === 0xe0) ||
-      (inputBuffer[0] === 0x37 && inputBuffer[1] === 0x7a && inputBuffer[2] === 0xbc && inputBuffer[3] === 0xaf))
-  ) {
-    throw new ConversionFailedError(
-      `Cannot extract plain text from binary/compressed container for format '.${src}': fail-closed against mojibake corruption.`
-    );
-  }
-
-  if (inputBuffer.subarray(0, Math.min(inputBuffer.length, 4096)).includes(0x00)) {
-    throw new ConversionFailedError(
-      `Binary null bytes detected in source format '.${src}': fail-closed against mojibake corruption.`
-    );
-  }
+  assertReadableAsText(inputBuffer, src);
 
   const text = inputBuffer.toString('utf-8');
   if (text.trim() === '') throw new ConversionFailedError(`The .${src} file holds no text.`);

@@ -41,8 +41,7 @@ describe('Word document with an embedded Word object', () => {
     // skip-ok: the oracle needs soffice; under ORACLE_STRICT_MODE=1 its absence fails the suite by name.
     if (skipWithoutTools('soffice')) return;
     const reference = sofficeConvert(documentWithEmbeddedWord(), 'doc', 'txt:Text (encoded):UTF8', 'txt').toString('utf-8');
-    expect(reference).toContain('Quarterly budget report with an embedded spreadsheet.');
-    expect(reference).not.toContain('Embedded object text');
+    expect(reference.replace(/^\uFEFF/u, '').trim()).toBe('Quarterly budget report with an embedded spreadsheet.');
   });
 });
 

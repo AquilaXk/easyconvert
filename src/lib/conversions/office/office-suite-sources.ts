@@ -13,6 +13,9 @@
  *   into the target.
  */
 
+import { EngineUnavailableError } from '../../types';
+import { OOXML_VARIANT_FAMILY } from '../ooxml-variants';
+
 export type OfficeSuiteApplication = 'writer' | 'calc' | 'impress' | 'draw';
 
 /** Formats read by the reader of another format: Word, Excel and PowerPoint templates and slideshows, OpenDocument templates. */
@@ -84,6 +87,24 @@ export function legacyReaderRetryInterchange(format: string, target: string): st
 
 export function isOfficeSuiteOnlySource(format: string): boolean {
   return Object.hasOwn(OFFICE_SUITE_ONLY_SOURCES, format);
+}
+
+/** The format whose reader reads `format`: a template or slide show is read as the format it is a layout of, any other format as itself. */
+export function officeReadingFormat(format: string): string {
+  const lower = format.toLowerCase();
+  return Object.hasOwn(OFFICE_FORMAT_ALIAS, lower) ? OFFICE_FORMAT_ALIAS[lower] : lower;
+}
+
+/** Whether `format` is a variant of a plain Office format (a macro-enabled, template or slide show file) that the reader of the plain format reads. */
+export function isPlainOfficeVariant(format: string): boolean {
+  return Object.hasOwn(OOXML_VARIANT_FAMILY, format) || Object.hasOwn(OFFICE_FORMAT_ALIAS, format);
+}
+
+/** The in-process engine has no reader for a format only the office suite imports, so it never sees its bytes: the answer is an unavailable engine. */
+export function assertReadableInProcess(format: string): void {
+  if (isOfficeSuiteOnlySource(format)) {
+    throw new EngineUnavailableError('soffice', `.${format} files are imported by LibreOffice; the in-process engine has no reader for them.`);
+  }
 }
 
 /** The application of the office suite that imports a source format; undefined for a format it does not import under this table. */
