@@ -22,7 +22,7 @@ const XPS_MAX_GLYPH_RUNS = 5_000_000;
 const XPS_MAX_TEXT_CHARS = 128 * 1024 * 1024;
 /** A baseline differing by less than this share of the font size is the same line (superscripts and mixed sizes sit a little off). */
 const SAME_LINE_SHARE_OF_EM = 0.4;
-/** The width of a glyph as a share of the font size when no font is at hand: where a right-to-left run's left edge lies, to order it among the runs next to it. */
+/** The width of a glyph as a share of the font size when no font is at hand: where a right to left run's left edge lies, to order it among the runs next to it. */
 const AVERAGE_ADVANCE_EMS = 0.5;
 /** Advances in Indices are in hundredths of the font size. */
 const ADVANCE_UNITS_PER_EM = 100;
@@ -32,7 +32,7 @@ const ADVANCE_UNITS_PER_EM = 100;
  */
 const SPACE_GAP_MEASURED_EMS = 0.15;
 const SPACE_GAP_ESTIMATED_EMS = 0.6;
-/** The prefix that marks a UnicodeString whose braces are literal text (ECMA-388 section 5.3.1). */
+/** The prefix that marks a UnicodeString whose braces are literal text (ECMA 388 section 5.3.1). */
 const LITERAL_PREFIX = '{}';
 const LINE_SEPARATOR = '\n';
 const PAGE_SEPARATOR = '\n\n';
@@ -42,7 +42,7 @@ interface GlyphRun {
   y: number;
   em: number;
   text: string;
-  /** An odd BidiLevel: a right-to-left run, whose origin is its right edge. */
+  /** An odd BidiLevel: a right to left run, whose origin is its right edge. */
   rightToLeft: boolean;
   /** The width of the run when its Indices give the advance of every glyph; absent when a glyph uses the font's own advance. */
   width: number | undefined;
@@ -54,7 +54,7 @@ function numberAttr(element: XmlElement, name: string): number {
 }
 
 /**
- * The width of a run from its Indices (ECMA-388 section 5.3.3): `glyph,advance,uOffset,vOffset` entries separated by
+ * The width of a run from its Indices (ECMA 388 section 5.3.3): `glyph,advance,uOffset,vOffset` entries separated by
  * semicolons, the advance in hundredths of the font size. Undefined unless every glyph states its advance.
  */
 function runWidth(glyphs: XmlElement): number | undefined {
@@ -108,7 +108,7 @@ function linesOf(runs: readonly GlyphRun[]): string[] {
   return lines.map((line) => joinLine(line));
 }
 
-/** The left edge of a run: its origin, or for a right-to-left run (whose origin is its right edge) the origin less its estimated width. */
+/** The left edge of a run: its origin, or for a right to left run (whose origin is its right edge) the origin less its estimated width. */
 function leftEdge(run: GlyphRun): number {
   return run.rightToLeft ? run.x - AVERAGE_ADVANCE_EMS * run.em * run.text.length : run.x;
 }
@@ -122,7 +122,7 @@ function hasSpaceBetween(previous: GlyphRun, next: GlyphRun): boolean {
   return gap > (measured ? SPACE_GAP_MEASURED_EMS : SPACE_GAP_ESTIMATED_EMS) * previous.em;
 }
 
-/** The text of one line: the runs from left to right, with every stretch of right-to-left runs turned into reading order (right to left). */
+/** The text of one line: the runs from left to right, with every stretch of right to left runs turned into reading order (right to left). */
 function joinLine(line: readonly GlyphRun[]): string {
   const ordered = [...line].sort((a, b) => leftEdge(a) - leftEdge(b));
   const reading: GlyphRun[] = [];

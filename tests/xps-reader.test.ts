@@ -158,7 +158,41 @@ describe('XPS word gaps', () => {
   });
 });
 
+describe('XPS glyph advances', () => {
+  it('measures no width when a glyph leaves its advance to the font, and adds no space from a partial sum', async () => {
+    // Three glyphs state 25 hundredths of an em and the fourth none: summing the three would end the run at 107.5 and
+    // leave room for a space before 113; without the fourth advance the width is unknown, estimated from the characters.
+    const unstated = await xpsOf([[{ x: 100, y: 10, text: 'tika', advances: [25, 25, 25, '' as unknown as number] }, { x: 113, y: 10, text: 'content' }]]);
+    expect(await readXpsPages(unstated)).toEqual(['tikacontent']);
+    const notANumber = await xpsOf([[{ x: 100, y: 10, text: 'tika', advances: [25, 25, 25, 'x' as unknown as number] }, { x: 113, y: 10, text: 'content' }]]);
+    expect(await readXpsPages(notANumber)).toEqual(['tikacontent']);
+  });
+});
+
 describe('XPS right-to-left runs', () => {
+  it('orders a right to left run among its neighbours by its left edge, estimated from its characters', async () => {
+    // The origin of the run is 130; four characters of 10 pt reach back to about 110, before the left to right run at 120.
+    const xps = await xpsOf([
+      [
+        { x: 120, y: 10, em: 10, text: ' ab' },
+        { x: 130, y: 10, em: 10, text: 'wxyz', bidi: 1 },
+      ],
+    ]);
+    expect(await readXpsPages(xps)).toEqual(['wxyz ab']);
+  });
+
+  it('puts no space between runs of different directions, whatever the gap between them', async () => {
+    const xps = await xpsOf([[{ x: 100, y: 10, em: 10, text: 'ab' }, { x: 140, y: 10, em: 10, text: 'cd', bidi: 1 }]]);
+    expect(await readXpsPages(xps)).toEqual(['abcd']);
+  });
+
+  it('puts a space between right to left runs only when the gap between the left edge of one and the origin of the next is wide', async () => {
+    const adjacent = await xpsOf([[{ x: 200, y: 10, em: 10, text: 'ab', bidi: 1 }, { x: 191, y: 10, em: 10, text: 'cd', bidi: 1 }]]);
+    expect(await readXpsPages(adjacent)).toEqual(['abcd']);
+    const apart = await xpsOf([[{ x: 200, y: 10, em: 10, text: 'ab', bidi: 1 }, { x: 170, y: 10, em: 10, text: 'cd', bidi: 1 }]]);
+    expect(await readXpsPages(apart)).toEqual(['ab cd']);
+  });
+
   it('reads a stretch of right-to-left runs from the right, where each origin is the run\'s right edge', async () => {
     // Three Arabic words drawn leftwards from x = 210, 174 and 108: reading order is the rightmost first.
     const xps = await xpsOf([
