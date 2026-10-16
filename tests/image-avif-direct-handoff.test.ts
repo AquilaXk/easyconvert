@@ -498,8 +498,11 @@ describe('the run in a slot', () => {
     const within = await DirectAvif.start(source, { ...meta, width: 6900, height: 6900 }, OPTIONS);
     expect(within, '47.6 megapixels').not.toBeNull();
     await within?.abandon();
-    expect(await DirectAvif.start(source, { ...meta, width: undefined }, OPTIONS), 'no width').toBeNull();
-    expect(await DirectAvif.start(source, { ...meta, height: undefined }, OPTIONS), 'no height').toBeNull();
+    const { width: _width, ...withoutWidth } = meta;
+    const { height: _height, ...withoutHeight } = meta;
+    void [_width, _height];
+    expect(await DirectAvif.start(source, withoutWidth, OPTIONS), 'no width').toBeNull();
+    expect(await DirectAvif.start(source, withoutHeight, OPTIONS), 'no height').toBeNull();
   }, 30_000);
 
   it('does not start a run when the encoder is not installed', async () => {
