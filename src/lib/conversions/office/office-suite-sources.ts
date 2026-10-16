@@ -81,7 +81,7 @@ const LEGACY_BINARY_INTERCHANGE: Readonly<Record<string, string>> = { doc: 'docx
  * interchange format. Undefined for any other format.
  */
 export function legacyReaderRetryInterchange(format: string, target: string): string | undefined {
-  const reader = OFFICE_FORMAT_ALIAS[format] ?? format;
+  const reader = officeReadingFormat(format);
   if (!Object.hasOwn(LEGACY_BINARY_INTERCHANGE, reader)) return undefined;
   return reader === 'doc' && (target === TEXT_INTERCHANGE || TEXT_ONLY_TARGETS.has(target)) ? TEXT_INTERCHANGE : LEGACY_BINARY_INTERCHANGE[reader];
 }
