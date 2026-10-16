@@ -27,6 +27,7 @@ interface Step {
 
 interface Job {
   name?: string;
+  uses?: string;
   needs?: string | string[];
   if?: string;
   'timeout-minutes'?: number;
@@ -50,10 +51,12 @@ const read = (file: string): string => readFileSync(file, 'utf-8');
 const ciText = read(path.join(WORKFLOWS, 'ci.yml'));
 const nightlyText = read(path.join(WORKFLOWS, 'nightly.yml'));
 const regressionText = read(path.join(WORKFLOWS, 'regression-corpus.yml'));
+const reportText = read(path.join(WORKFLOWS, 'report-failure.yml'));
 const setupText = read(SETUP_ACTION);
 const ci = parse(ciText) as Workflow;
 const nightly = parse(nightlyText) as Workflow;
 const regression = parse(regressionText) as Workflow;
+const reportFailure = parse(reportText) as Workflow & { jobs: Record<string, Job> };
 const setup = parse(setupText) as { inputs?: Record<string, { default?: string; required?: boolean }>; runs: { steps: Step[] } };
 
 /** The longest a job may be allowed to run: a hung job must not hold a runner for hours. */
@@ -62,7 +65,7 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
 const SHA_PINNED_COMMENT = /^uses:\s*\S+@[0-9a-f]{40}\s+#\s*v\d+(\.\d+)*\s*$/;
 
 function stepsOf(workflow: Workflow): Array<{ job: string; step: Step }> {
-  return Object.entries(workflow.jobs).flatMap(([job, definition]) => definition.steps.map((step) => ({ job, step })));
+  return Object.entries(workflow.jobs).flatMap(([job, definition]) => (definition.steps ?? []).map((step) => ({ job, step })));
 }
 
 function stepRun(workflow: Workflow, job: string, id: string): string {
@@ -93,9 +96,11 @@ describe.each([
   ['ci.yml', ci],
   ['nightly.yml', nightly],
   ['regression-corpus.yml', regression],
+  ['report-failure.yml', reportFailure],
 ])('jobs of %s', (_name, workflow) => {
-  it('has a timeout-minutes on every job', () => {
+  it('has a timeout-minutes on every job that runs steps (a job that calls a workflow gets its limit from the called one)', () => {
     for (const [name, job] of Object.entries(workflow.jobs)) {
+      if (job.uses !== undefined) continue;
       const minutes = job['timeout-minutes'];
       expect(typeof minutes, `${name} needs timeout-minutes`).toBe('number');
       expect(minutes, name).toBeGreaterThan(0);
@@ -181,17 +186,28 @@ describe('the nightly workflow', () => {
     expect(licences?.run).toBe(guarded('licenses:check', 'package.json has no licenses:check script yet'));
   });
 
-  it('opens or updates one nightly-regression issue when a job fails, with the permissions to do it', () => {
+  it('opens or updates one nightly-regression issue when a job fails, through the workflow it shares with the regression corpus run', () => {
     const report = nightly.jobs.report;
     expect([...(report.needs as string[])].sort()).toEqual(['bench', 'bench-parity-quality', 'bench-parity-speed', 'licenses', 'perf', 'realworld', 'realworld-gate']);
     expect(report.if).toBe("always() && contains(needs.*.result, 'failure')");
     expect(report.permissions).toEqual({ actions: 'read', contents: 'read', issues: 'write' });
+    expect(report.uses).toBe('./.github/workflows/report-failure.yml');
+    expect(report.steps).toBeUndefined();
+  });
+
+  it('keeps the issue reporting in one reusable workflow with the permissions to do it', () => {
+    expect(reportFailure.on).toEqual({ workflow_call: null });
+    const report = reportFailure.jobs.report;
+    expect(report.permissions).toEqual({ actions: 'read', contents: 'read', issues: 'write' });
+    expect(report['timeout-minutes']).toBe(10);
     const script = String(report.steps[0].with?.script);
     expect(script).toContain("const label = 'nightly-regression'");
+    expect(script).toContain("const title = 'Nightly regression'");
     expect(script).toContain('github.rest.issues.create(');
     expect(script).toContain('github.rest.issues.createComment(');
     expect(script).toContain('actions/runs/${context.runId}');
     expect(script).toContain('job.html_url');
+    expect(Object.keys(reportFailure.jobs)).toEqual(['report']);
   });
 
   it('runs the real-world corpus in ten cached shards and gates on their merged report', () => {
@@ -217,6 +233,7 @@ describe('third-party actions', () => {
     ...stepsOf(ci).map(({ job, step }) => ({ where: `ci.yml ${job}`, uses: step.uses })),
     ...stepsOf(nightly).map(({ job, step }) => ({ where: `nightly.yml ${job}`, uses: step.uses })),
     ...stepsOf(regression).map(({ job, step }) => ({ where: `regression-corpus.yml ${job}`, uses: step.uses })),
+    ...stepsOf(reportFailure).map(({ job, step }) => ({ where: `report-failure.yml ${job}`, uses: step.uses })),
     ...setup.runs.steps.map((step) => ({ where: 'ci-setup', uses: step.uses })),
   ].filter((entry): entry is { where: string; uses: string } => typeof entry.uses === 'string' && !entry.uses.startsWith('./'));
 
@@ -230,7 +247,7 @@ describe('third-party actions', () => {
   });
 
   it('carry the version they pin in a comment', () => {
-    for (const text of [ciText, nightlyText, regressionText, setupText]) {
+    for (const text of [ciText, nightlyText, regressionText, reportText, setupText]) {
       const pinned = text.split('\n').map((line) => line.trim().replace(/^- /, '')).filter((line) => line.startsWith('uses:') && !line.startsWith('uses: ./'));
       expect(pinned.length).toBeGreaterThan(0);
       for (const line of pinned) expect(line).toMatch(SHA_PINNED_COMMENT);
@@ -269,7 +286,7 @@ describe('the S3 test server', () => {
   /** Jobs whose ci-setup step turns the server on, per workflow. */
   function jobsWithServer(workflow: Workflow): string[] {
     return Object.entries(workflow.jobs)
-      .filter(([, job]) => job.steps.some((step) => step.uses === SETUP_USE && step.with?.['s3-test-server'] === 'true'))
+      .filter(([, job]) => (job.steps ?? []).some((step) => step.uses === SETUP_USE && step.with?.['s3-test-server'] === 'true'))
       .map(([name]) => name);
   }
 

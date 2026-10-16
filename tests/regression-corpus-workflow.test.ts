@@ -25,6 +25,7 @@ interface Step {
 }
 
 interface Job {
+  uses?: string;
   needs?: string[];
   if?: string;
   'timeout-minutes'?: number;
@@ -49,7 +50,7 @@ const MAX_JOB_TIMEOUT_MINUTES = 60;
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const MILLISECONDS_PER_MINUTE = 60_000;
 
-const stepsOf = (job: Job): Step[] => job.steps;
+const stepsOf = (job: Job): Step[] => job.steps ?? [];
 const allSteps = Object.values(workflow.jobs).flatMap(stepsOf);
 
 describe('triggers', () => {
@@ -74,8 +75,22 @@ describe('triggers', () => {
     expect(workflow.concurrency).toEqual({ group: 'regression-corpus', 'cancel-in-progress': false });
     expect(workflow.permissions).toEqual({ contents: 'read' });
     for (const [name, job] of Object.entries(workflow.jobs)) {
-      for (const [scope, level] of Object.entries(job.permissions ?? {})) expect(level, `${name}: ${scope}`).not.toBe('write');
+      for (const [scope, level] of Object.entries(job.permissions ?? {})) {
+        if (name !== 'report') expect(level, `${name}: ${scope}`).not.toBe('write');
+      }
     }
+  });
+
+  it('reports a failed run through the workflow the nightly run uses, with the same condition and permissions', () => {
+    const report = workflow.jobs.report;
+    expect(report.uses).toBe('./.github/workflows/report-failure.yml');
+    expect([...(report.needs ?? [])].sort()).toEqual(['gate', 'plan', 'shard']);
+    expect(report.if).toBe("always() && contains(needs.*.result, 'failure')");
+    expect(report.permissions).toEqual({ actions: 'read', contents: 'read', issues: 'write' });
+    const nightly = parse(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'nightly.yml'), 'utf-8')) as Workflow;
+    expect(nightly.jobs.report.uses).toBe(report.uses);
+    expect(nightly.jobs.report.if).toBe(report.if);
+    expect(nightly.jobs.report.permissions).toEqual(report.permissions);
   });
 });
 
@@ -87,6 +102,7 @@ describe('shards', () => {
 
   it('runs every shard under the job limit, without stopping the others when one fails', () => {
     for (const [name, job] of Object.entries(workflow.jobs)) {
+      if (job.uses !== undefined) continue;
       expect(job['timeout-minutes'], name).toBeGreaterThan(0);
       expect(job['timeout-minutes'], name).toBeLessThanOrEqual(MAX_JOB_TIMEOUT_MINUTES);
     }

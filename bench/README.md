@@ -598,7 +598,8 @@ npx tsx scripts/regression-corpus-manifest.ts index|profile|select --work DIR
   the seventh chosen by the date (the hash of the id modulo 7 against the days since 1970-01-01 modulo 7), so seven nights cover the
   corpus once. Every night also runs the canary: one file of every format and producer class, and every file listed in
   `bench/realworld/regression/failed-before.json`. `merge --record-failures` adds the files that failed in a run to that list; it is
-  a reviewed commit.
+  a reviewed commit. A failed run opens the `nightly-regression` issue or comments on the open one, through the same reusable
+  workflow as the nightly run (`.github/workflows/report-failure.yml`).
 - **Verdicts and gate:** as for the real-world corpus (crash, hang, bad output, refusal), and also against the last full run on
   `main`: the merge job downloads its result set (the `regression-baseline` artifact, kept 90 days) and any job that was `ok`
   there and is not now is listed under "Converted before, not now" and fails the run, even when no reference tool can open the file.

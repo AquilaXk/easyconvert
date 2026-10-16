@@ -492,50 +492,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # Opens one issue for the failing night, or comments on the open one, so a streak of failures stays in one place.
+  # Opens one issue for the failing night, or comments on the open one, so a streak of failures stays in one place
+  # (.github/workflows/report-failure.yml, shared with the regression corpus run).
   report:
     needs: [perf, bench, bench-parity-quality, bench-parity-speed, licenses, realworld, realworld-gate]
     if: always() && contains(needs.*.result, 'failure')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
     permissions:
       actions: read
       contents: read
       issues: write
-
-    steps:
-      - name: Open or update the nightly-regression issue
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
-        with:
-          script: |
-            const label = 'nightly-regression';
-            const title = 'Nightly regression';
-            const { owner, repo } = context.repo;
-            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-
-            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
-              owner,
-              repo,
-              run_id: context.runId,
-              per_page: 100,
-            });
-            const failed = jobs.filter((job) => job.conclusion === 'failure');
-            const lines = failed.map((job) => `- [${job.name}](${job.html_url})`);
-            const body = [
-              `Run [${context.runId}](${runUrl}) failed on ${context.sha.slice(0, 7)}.`,
-              '',
-              'Failing jobs:',
-              ...(lines.length > 0 ? lines : ['- (the failing job could not be listed)']),
-            ].join('\n');
-
-            const open = await github.rest.issues.listForRepo({ owner, repo, labels: label, state: 'open', per_page: 1 });
-            if (open.data.length > 0) {
-              await github.rest.issues.createComment({ owner, repo, issue_number: open.data[0].number, body });
-              return;
-            }
-            try {
-              await github.rest.issues.createLabel({ owner, repo, name: label, color: 'b60205', description: 'A scheduled check failed' });
-            } catch (error) {
-              if (error.status !== 422) throw error;
-            }
-            await github.rest.issues.create({ owner, repo, title, labels: [label], body });
+    uses: ./.github/workflows/report-failure.yml
