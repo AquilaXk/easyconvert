@@ -249,12 +249,16 @@ describe('PDF pages as PNG through PPM', () => {
 
   oracleTest('the page count is read while the first pages render, and its failures are still the ones reported', ['pdftoppm', 'pdfinfo'], async () => {
     const pdf = await drawing([[200, 150]]);
-    await withPdftoppmShim(realPdftoppm(), async () => {
+    await withPdftoppmShim(realPdftoppm(), async (calls) => {
+      const ranges = () => calls().map((call) => call.slice(call.indexOf('-f'), call.indexOf('-l') + 2).join(' '));
       // A damaged document: pdfinfo cannot count it, whatever the early render did.
       await expect(dispatchConversion(pdf.subarray(0, 120), 'pdf', 'png', { dpi: DPI }, 'damaged.pdf')).rejects.toBeInstanceOf(PdfStructureError);
-      // A page that is not in the document, and a resolution out of range, are the client's.
-      await expect(dispatchConversion(pdf, 'pdf', 'png', { dpi: DPI, page: 9 }, 'drawing.pdf')).rejects.toBeInstanceOf(InvalidPageRangeError);
+      // The early batch was started (and awaited) before the count failed: exactly one run, of the first batch.
+      expect(ranges()).toEqual([`-f 1 -l ${ppmBatchPages(DPI)}`]);
+      // A page that is not in the document, and a resolution out of range, are the client's; neither starts a render.
+      await expect(dispatchConversion(pdf, 'pdf', 'png', { dpi: DPI, page: 9 }, 'drawing.pdf')).rejects.toThrow(new InvalidPageRangeError('Page number 9 is out of bounds (1-1)'));
       await expect(dispatchConversion(pdf, 'pdf', 'png', { dpi: 5000 }, 'drawing.pdf')).rejects.toBeInstanceOf(UnsupportedOptionError);
+      expect(ranges()).toEqual([`-f 1 -l ${ppmBatchPages(DPI)}`]);
     });
   }, NATIVE_TIMEOUT_MS);
 
