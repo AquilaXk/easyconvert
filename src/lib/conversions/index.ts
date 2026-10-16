@@ -12,6 +12,7 @@ import {
   type BayerPattern,
   type BayerSensorData,
 } from './image';
+import { convertImageSource } from './image-external-source';
 import { convertDocument, extractTextFromPdf } from './document';
 import { convertData } from './data';
 import {
@@ -658,7 +659,7 @@ async function convertFileInScope(
     // 7. Routing by source category
     switch (srcDef.category) {
       case 'image':
-        res = await convertImage(inputBuffer, tgt, options, originalFilename, src);
+        res = await convertImageSource(inputBuffer, tgt, options, originalFilename, src);
         break;
 
       case 'document':

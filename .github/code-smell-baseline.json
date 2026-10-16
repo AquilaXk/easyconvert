@@ -2914,7 +2914,7 @@
     "rule": "complexity",
     "function": "isFormatCompatibleWithMagicBytes",
     "count": 1,
-    "maxValue": 105
+    "maxValue": 104
   },
   {
     "file": "src/lib/registry.ts",

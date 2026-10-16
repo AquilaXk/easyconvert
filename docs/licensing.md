@@ -51,6 +51,11 @@ Certain format conversions require specialized external command-line utilities. 
 - **Process Isolation**: `dwg2dxf` is built from the unmodified upstream release archive (`scripts/install-libredwg.sh`, pinned by SHA-256) as a statically linked program, and executed as a separate process in the process sandbox with no network access and limits on time, memory and output size. Nothing links `libredwg` into the application, and the application code does not incorporate or modify LibreDWG source. Data is exchanged through a scratch directory that is removed after each run.
 - **Compliance**: Running an unmodified, separate GPL executable keeps EasyConvert's own code outside the GPL. The worker image carries the licence text (`/licenses/libredwg.copyright`) and a `SOURCE` note (`/licenses/libredwg.SOURCE`) that names the release archive and its SHA-256, so the corresponding source of the binary is the archive at the URL given there. A modified reader, or one linked into the application, would not be covered by this and needs a reviewed exception.
 
+### 2.7 ImageMagick, OpenJPEG, libheif and libde265 (ImageMagick License, BSD-2-Clause, LGPL 3.0)
+- **Role**: Decode the pictures the image library cannot read: PSD, XCF, TGA, PCX, DDS, PNM, HEIC, HEIF and old-style JPEG TIFF (ImageMagick, with libheif and its libde265 HEVC module for HEIC and HEIF), and JPEG 2000 (OpenJPEG `opj_decompress`). The result is a lossless PNG that the image pipeline converts.
+- **Process Isolation**: The Debian packages are unmodified and run as separate processes in the process sandbox, with no network and with limits on time, memory and output size. Nothing links them into the application. The ImageMagick License is a permissive, Apache-style licence; OpenJPEG is BSD-2-Clause; libheif and libde265 are LGPL 3.0 libraries loaded by the ImageMagick process, which the container's package notices cover (section 3).
+- **Patents**: HEVC (the codec of HEIC) is patent-encumbered; the worker already decodes it for video (`ffmpeg`). The decoder is the distribution package, not a build of ours.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images
@@ -69,7 +74,7 @@ Under the terms of the GNU Lesser General Public License (LGPLv3, Section 4), wh
 
 ### Copyright Notices Inside the Worker Container
 - The worker Docker image (`Dockerfile.worker`) preserves all Debian package copyright and license texts at `/licenses/`:
-  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, `libavif` (the `avifenc` AVIF encoder), `p7zip`, and `libredwg` (the DWG reader, with `/licenses/libredwg.SOURCE` naming the release archive it was built from).
+  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, `libavif` (the `avifenc` AVIF encoder), `imagemagick`, `libheif`, `libde265`, `openjpeg` (picture decoders), `p7zip`, and `libredwg` (the DWG reader, with `/licenses/libredwg.SOURCE` naming the release archive it was built from).
   - `/licenses/THIRD_PARTY_NOTICES.md` contains the complete production npm package notices.
   - `/licenses/tool-versions.txt` lists the version of every Debian package in the image and of the Node.js runtime. The image is built on Debian 13 (trixie) with Node.js 24 LTS (see the policy decision "Base image and Node.js LTS").
 

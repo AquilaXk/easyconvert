@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { getOracleToolPath, type ExternalOracleTool } from './helpers/differential-oracle';
+import { magickReads } from './helpers/image-decoder-capabilities';
 import { MAGICK_BINARY } from './helpers/imagemagick';
 
 /**
@@ -44,6 +45,9 @@ const ORACLE_BINARIES: { name: string; tool: ExternalOracleTool }[] = [
   { name: 'libxml2-utils (xmllint)', tool: 'xmllint' },
   { name: 'libraw-bin (dcraw_emu)', tool: 'dcraw_emu' },
   { name: 'libraw-bin (raw-identify)', tool: 'raw-identify' },
+  { name: 'libopenjp2-tools (opj_compress)', tool: 'opj_compress' },
+  { name: 'libopenjp2-tools (opj_decompress)', tool: 'opj_decompress' },
+  { name: 'libheif-examples (heif-convert)', tool: 'heif-convert' },
   { name: 'woff2 (woff2_decompress)', tool: 'woff2_decompress' },
   { name: 'woff2 (woff2_info)', tool: 'woff2_info' },
   { name: 'python3', tool: 'python3' },
@@ -92,6 +96,8 @@ export const CI_REQUIRED_ORACLE_TOOLS: RequiredTool[] = [
   ...ORACLE_BINARIES.map(({ name, tool }) => binary(name, tool)),
   // ImageMagick 7 installs `magick`; version 6, which Debian-based images carry, installs `convert`, `compare` and `identify`.
   { name: 'imagemagick (magick or convert)', resolve: () => MAGICK_BINARY },
+  // HEIC files are HEVC-coded: the coder is listed only when ImageMagick's libheif has a decoder module for it.
+  { name: 'imagemagick HEIC coder', resolve: () => (magickReads('HEIC') ? 'HEIC' : null) },
   { name: 'fontconfig (fc-scan)', resolve: fontconfigScanner },
   ...PYTHON_MODULES.map(pythonModule),
   ...TESSERACT_LANGUAGES.map(tesseractLanguage),
