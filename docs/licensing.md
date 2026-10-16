@@ -46,6 +46,11 @@ Certain format conversions require specialized external command-line utilities. 
 - **Process Isolation**: `gs` is the unmodified distribution package, executed as a separate process with `-dSAFER` and without network access. Nothing links `libgs` into the application, and the application code does not incorporate or modify Ghostscript source. Data is exchanged through files and standard streams.
 - **Compliance**: Running an unmodified, separate AGPL executable keeps EasyConvert's own code outside the AGPL. A modified Ghostscript, or one linked into the application, would not be covered by this and needs a reviewed exception.
 
+### 2.6 LibreDWG `dwg2dxf` (GPL 3.0+)
+- **Role**: Reads a DWG drawing and writes it as DXF, which the DXF path then draws as SVG, PDF or a raster image (DWG input).
+- **Process Isolation**: `dwg2dxf` is built from the unmodified upstream release archive (`scripts/install-libredwg.sh`, pinned by SHA-256) as a statically linked program, and executed as a separate process in the process sandbox with no network access and limits on time, memory and output size. Nothing links `libredwg` into the application, and the application code does not incorporate or modify LibreDWG source. Data is exchanged through a scratch directory that is removed after each run.
+- **Compliance**: Running an unmodified, separate GPL executable keeps EasyConvert's own code outside the GPL. The worker image carries the licence text (`/licenses/libredwg.copyright`) and a `SOURCE` note (`/licenses/libredwg.SOURCE`) that names the release archive and its SHA-256, so the corresponding source of the binary is the archive at the URL given there. A modified reader, or one linked into the application, would not be covered by this and needs a reviewed exception.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images
@@ -64,7 +69,7 @@ Under the terms of the GNU Lesser General Public License (LGPLv3, Section 4), wh
 
 ### Copyright Notices Inside the Worker Container
 - The worker Docker image (`Dockerfile.worker`) preserves all Debian package copyright and license texts at `/licenses/`:
-  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, and `p7zip`.
+  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, `p7zip`, and `libredwg` (the DWG reader, with `/licenses/libredwg.SOURCE` naming the release archive it was built from).
   - `/licenses/THIRD_PARTY_NOTICES.md` contains the complete production npm package notices.
 
 ---

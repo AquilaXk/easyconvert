@@ -189,7 +189,7 @@ export const PUBLIC_SPEED_SAMPLES: Readonly<Record<string, readonly string[]>> =
   'pdf-ops': ['pdf-pdfjs-form-test.pdf', 'pdf-gov-000142.pdf'],
   ebook: ['book-wasteland.epub'],
   font: ['font-lato-regular.ttf', 'font-sourcecodepro-regular.otf'],
-  cad: ['cad-openscad-export.dxf', 'cad-circles-ellipses-arcs.dxf'],
+  cad: ['cad-openscad-export.dxf', 'cad-circles-ellipses-arcs.dxf', 'dwg-example-2004.dwg', 'dwg-example-2013.dwg'],
   raw: ['raw-canon-eos5d3-compress.dng'],
   vector: ['vec-path-M-C-S.svg'],
   data: ['data-penguins.json', 'data-delta-byte-array.csv'],

@@ -1,6 +1,6 @@
 name: CI setup
 description: >-
-  Installs the conversion and oracle CLI tools, the Python format oracles and veraPDF, fetches the
+  Installs the conversion and oracle CLI tools, the Python format oracles, veraPDF and the DWG reader, fetches the
   RAW samples, and, for a job that asks for it, starts the S3 test server. Shared by every CI job that runs test
   suites. The .deb files of the package install, the veraPDF install and the S3 test server image are cached, and
   the independent parts of the setup run at once, each under a time limit (see install-tools.sh).
@@ -53,6 +53,18 @@ runs:
         path: /opt/verapdf
         key: verapdf-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-verapdf.sh') }}
 
+    # The DWG reader is built from the release archive pinned in scripts/install-libredwg.sh, so its hash is the key.
+    - name: Prepare the DWG reader directory
+      shell: bash
+      run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/libredwg
+
+    - name: Restore the cached DWG reader build
+      id: libredwg-cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: /opt/libredwg
+        key: libredwg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-libredwg.sh') }}
+
     - name: Restore RAW sample cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
@@ -79,6 +91,7 @@ runs:
         APT_DEBS: ${{ runner.temp }}/apt-debs
         APT_CACHE_HIT: ${{ steps.apt-cache.outputs.cache-hit }}
         VERAPDF_CACHE_HIT: ${{ steps.verapdf-cache.outputs.cache-hit }}
+        LIBREDWG_CACHE_HIT: ${{ steps.libredwg-cache.outputs.cache-hit }}
         S3_TEST_SERVER: ${{ inputs.s3-test-server }}
         S3_IMAGE_CACHE_DIR: ${{ runner.temp }}/s3-test-server-image
       run: bash "$ACTION_PATH/install-tools.sh"
