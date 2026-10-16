@@ -155,6 +155,6 @@ describe('documentation', () => {
     expect(provenance).toMatch(/\| `cc-main-2021-31-pdf` \|/);
     const policy = read('docs/policy-decisions.md');
     expect(policy).toMatch(/Regression corpus at the scale of the document engines/);
-    expect(policy).toMatch(/^## 38\. Layer cache of the worker image in the container registry$/m);
+    expect(policy).toMatch(/^## 39\. Layer cache of the worker image in the container registry$/m);
   });
 });
