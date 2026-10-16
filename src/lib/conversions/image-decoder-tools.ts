@@ -55,6 +55,11 @@ export function decoderUnavailable(tool: string, packageName: string): EngineUna
   return new EngineUnavailableError(tool, `${tool} (${packageName}) is not installed or not in PATH`);
 }
 
+/** A decoder's diagnostics for the log: they may echo bytes of the uploaded file, so control characters (escape sequences, line breaks) are dropped. */
+export function loggableDiagnostic(stderr: string): string {
+  return stderr.replace(/\p{Cc}+/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, LOGGED_DIAGNOSTIC_CHARS);
+}
+
 /** What the sandbox reports for a failed run, in the words of a conversion error; `label` names the format. */
 export function describeDecoderFailure(err: unknown, tool: string, label: string, timeoutMs: number): Error {
   rethrowSandboxUnavailable(err);
@@ -68,7 +73,7 @@ export function describeDecoderFailure(err: unknown, tool: string, label: string
     if (err.exitCode === NOT_EXECUTABLE_STATUS || err.exitCode === NOT_FOUND_STATUS) {
       return new EngineUnavailableError(tool, 'the executable cannot be started');
     }
-    console.warn(`[image-decode] ${tool} failed on a ${label} picture with status ${String(err.exitCode)}: ${err.stderr.replace(/\s+/g, ' ').trim().slice(0, LOGGED_DIAGNOSTIC_CHARS)}`);
+    console.warn(`[image-decode] ${tool} failed on a ${label} picture with status ${String(err.exitCode)}: ${loggableDiagnostic(err.stderr)}`);
     return new ConversionFailedError(`Invalid image: the ${label} picture could not be decoded`);
   }
   return err instanceof Error ? err : new Error(String(err));

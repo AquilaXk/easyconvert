@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { findDecoderTool } from '../src/lib/conversions/image-decoder-tools';
+import { findDecoderTool, loggableDiagnostic } from '../src/lib/conversions/image-decoder-tools';
 
 /**
  * How the command-line decoders are found: an environment variable is authoritative and must name an absolute path of an
@@ -40,5 +40,19 @@ describe('findDecoderTool', () => {
 
   it('answers null when no name is installed', () => {
     expect(findDecoderTool(ENV_NAME, ['nonesuch-tool'], {})).toBeNull();
+  });
+});
+
+describe('loggableDiagnostic', () => {
+  it('drops control characters, including escape sequences and line breaks, and collapses white space', () => {
+    expect(loggableDiagnostic('convert: bad \u001b[31mred\u001b[0m\r\n\u0000header\u0007 `in\'\n')).toBe("convert: bad [31mred [0m header `in'");
+  });
+
+  it('keeps at most the logged number of characters', () => {
+    expect(loggableDiagnostic('x'.repeat(2000))).toHaveLength(500);
+  });
+
+  it('keeps letters of every script', () => {
+    expect(loggableDiagnostic('이미지 画像 изображение')).toBe('이미지 画像 изображение');
   });
 });
