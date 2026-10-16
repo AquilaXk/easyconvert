@@ -2389,6 +2389,30 @@ function hasNonWhitespaceText(buffer: Buffer): boolean {
 
 const ILLUSTRATOR_FORMAT = 'ai';
 const PDF_SOURCE_FORMAT = 'pdf';
+const POSTSCRIPT_SOURCE_FORMAT = 'ps';
+const POSTSCRIPT_SIGNATURE = Buffer.from('%!PS');
+
+/** The first bytes of the input, for a signature check. */
+function readInputHead(input: Buffer | WorkerVfsPayload, bytes: number): Buffer {
+  if (Buffer.isBuffer(input)) return input.subarray(0, bytes);
+  if (input.inputBuffer) return input.inputBuffer.subarray(0, bytes);
+  if (!input.inputPath) return Buffer.alloc(0);
+  const fd = fs.openSync(input.inputPath, 'r');
+  try {
+    const head = Buffer.alloc(bytes);
+    return head.subarray(0, fs.readSync(fd, head, 0, bytes, 0));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * The format an Illustrator file is converted as. Files saved with PDF compatibility (the default since version CS) are PDFs
+ * with private data; versions 3 to 8 are PostScript programs, which the spoof check has accepted for their Illustrator prolog.
+ */
+function illustratorRouteFormat(input: Buffer | WorkerVfsPayload): string {
+  return readInputHead(input, POSTSCRIPT_SIGNATURE.length).equals(POSTSCRIPT_SIGNATURE) ? POSTSCRIPT_SOURCE_FORMAT : PDF_SOURCE_FORMAT;
+}
 
 /** Deletes an engine's temporary output file unless it is the destination the caller asked for. */
 function discardPersistedOutput(filePath: string | undefined, input: Buffer | WorkerVfsPayload, options: WorkerEngineOptions): void {
@@ -2429,9 +2453,9 @@ async function convertWithinImageSession(
 
   // Fail-closed verification against spoofed file extensions before any native engine execution
   assertNotSpoofedFileVfs(input, declaredSource, originalFilename);
-  // An Illustrator file is a PDF with private data; once the check above has seen the PDF signature, it takes the PDF path
-  // (Poppler pages, PostScript, the encoded rasters). Packaging keeps the file as it is.
-  const src = declaredSource === ILLUSTRATOR_FORMAT && !RAW_PACKAGING_TARGETS.has(tgt) ? PDF_SOURCE_FORMAT : declaredSource;
+  // An Illustrator file takes the path of the format it is written in, a PDF (Poppler pages, PostScript, the encoded rasters)
+  // or PostScript, as the check above has seen. Packaging keeps the file as it is.
+  const src = declaredSource === ILLUSTRATOR_FORMAT && !RAW_PACKAGING_TARGETS.has(tgt) ? illustratorRouteFormat(input) : declaredSource;
 
   let fallbackReason: string | undefined;
   let lastUnavailable: EngineUnavailableError | undefined;

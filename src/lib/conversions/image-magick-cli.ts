@@ -44,6 +44,11 @@ export interface MagickSource {
   /** The format in the words of an error message. */
   label: string;
   scenes: MagickScenes;
+  /**
+   * The coder reports harmless findings as warnings (libtiff names every private tag it does not know), so a warning does not
+   * fail the run; the library's errors still do.
+   */
+  tolerateWarnings?: true;
 }
 
 export interface MagickDecoded {
@@ -72,7 +77,7 @@ const MAGICK_LIMITS: readonly string[] = [
   '-limit', 'thread', '2',
   '-limit', 'time', String(MAGICK_TIME_LIMIT_SECONDS),
 ];
-/** Warnings are failures. */
+/** Makes a warning a failure. */
 const STRICT_READ = '-regard-warnings';
 const FLATTEN_ON_TRANSPARENT = ['-background', 'none', '-flatten'] as const;
 /** Fastest PNG compression (zlib level 1, no row filter): the result is read once by the next step, not stored. */
@@ -126,7 +131,7 @@ function checkedPixels(sizes: readonly SceneSize[], scenes: MagickScenes): numbe
 async function declaredPixels(magick: string, jobDir: string, source: MagickSource, signal: AbortSignal | undefined): Promise<number> {
   const selected = `${source.coder}:${DECODER_INPUT_NAME}${source.scenes === 'first' ? FIRST_SCENE : ''}`;
   try {
-    const run = await executeSandboxedBinary(magick, [...MAGICK_LIMITS, STRICT_READ, '-ping', selected, '-format', SIZE_FORMAT, 'info:'], {
+    const run = await executeSandboxedBinary(magick, [...MAGICK_LIMITS, ...warningPolicy(source), '-ping', selected, '-format', SIZE_FORMAT, 'info:'], {
       cwd: jobDir,
       timeoutMs: DECODER_TIMEOUT_MS,
       maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,
@@ -141,12 +146,16 @@ async function declaredPixels(magick: string, jobDir: string, source: MagickSour
   }
 }
 
+function warningPolicy(source: MagickSource): string[] {
+  return source.tolerateWarnings === true ? [] : [STRICT_READ];
+}
+
 function decodeArguments(source: MagickSource): string[] {
   const selected = `${source.coder}:${DECODER_INPUT_NAME}${source.scenes === 'first' ? FIRST_SCENE : ''}`;
   const output = OUTPUT_CODERS[source.scenes];
   const operators = source.scenes === 'flatten' ? FLATTEN_ON_TRANSPARENT : [];
   const writer = output === 'png' ? FAST_COMPRESSION : LOSSLESS_TIFF;
-  return [...MAGICK_LIMITS, STRICT_READ, selected, ...operators, ...writer, `${output}:${DECODER_OUTPUT_NAME}`];
+  return [...MAGICK_LIMITS, ...warningPolicy(source), selected, ...operators, ...writer, `${output}:${DECODER_OUTPUT_NAME}`];
 }
 
 /** Decodes `input` with ImageMagick; see the module comment for what the result holds. */

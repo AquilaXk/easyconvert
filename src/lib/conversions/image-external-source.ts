@@ -31,7 +31,7 @@ const MAGICK_BY_FORMAT: ReadonlyMap<string, MagickSource> = new Map<string, Magi
 const OPENJPEG_FORMATS: ReadonlySet<string> = new Set(['jp2', 'j2k']);
 const HEIF_FORMATS: ReadonlySet<string> = new Set(['heic', 'heif']);
 const TIFF_FORMATS: ReadonlySet<string> = new Set(['tif', 'tiff']);
-const OLD_STYLE_JPEG_TIFF: MagickSource = { coder: 'tiff', label: 'TIFF', scenes: 'all' };
+const OLD_STYLE_JPEG_TIFF: MagickSource = { coder: 'tiff', label: 'TIFF', scenes: 'all', tolerateWarnings: true };
 
 /** TIFF 6.0 (Adobe, 1992) header and directory layout, and the compression tag with its old-style JPEG value. */
 const TIFF_MAGIC = 42;
