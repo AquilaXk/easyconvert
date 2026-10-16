@@ -124,15 +124,19 @@ describe('the native route passes compressionLevel to 7-Zip', () => {
   );
 
   oracleTest(
-    'tar to zip honours the level',
+    'tar to zip honours the level: the in-process packer stores at 0 and shrinks with the level, with no 7-Zip call',
     [...TOOLS],
     async () => {
       const stored = await convert('zip', { compressionLevel: 0 });
-      expect(mxOf(packCall())).toEqual(['-mx=0']);
+      const fast = await convert('zip', { compressionLevel: 1 });
       const best = await convert('zip', { compressionLevel: 9 });
-      expect(mxOf(packCall())).toEqual(['-mx=9']);
-      expect(best.length).toBeLessThan(stored.length);
-      expect(extracted(best, 'best.zip').equals(PAYLOAD)).toBe(true);
+      expect(spy.calls(), 'the small ZIP is packed in process').toEqual([]);
+      expect(stored.length).toBeGreaterThan(PAYLOAD.length);
+      expect(fast.length).toBeLessThan(stored.length);
+      expect(best.length).toBeLessThan(fast.length);
+      for (const [label, archive] of [['stored', stored], ['fast', fast], ['best', best]] as const) {
+        expect(extracted(archive, `${label}.zip`).equals(PAYLOAD), label).toBe(true);
+      }
     },
     TEST_TIMEOUT_MS
   );

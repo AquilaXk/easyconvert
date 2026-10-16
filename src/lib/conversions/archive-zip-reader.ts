@@ -63,6 +63,8 @@ const METHOD_AES = 99;
 
 const EXTRA_ZIP64 = 0x0001;
 const EXTRA_UNICODE_PATH = 0x7075;
+const EXTRA_EXTENDED_TIMESTAMP = 0x5455;
+const EXTENDED_TIMESTAMP_MTIME_FLAG = 0x01;
 const EXTRA_HEADER_BYTES = 4;
 const ZIP64_FIELD_BYTES = 8;
 
@@ -90,6 +92,12 @@ export interface ZipDirectoryEntry {
   /** Offset of the local file header in the buffer (the central directory's offset shifted by any prefix). */
   localOffset: number;
   externalAttributes: number;
+  /** "Version made by": the creating system in the high byte decides whether `externalAttributes` holds a Unix mode. */
+  madeBy: number;
+  /** Modification time as MS-DOS date and time, local time with two-second resolution; 0 when the record has none. */
+  dosDateTime: number;
+  /** Modification time of the Info-ZIP extended timestamp field (seconds since the epoch), when the record has one. */
+  unixMtime?: number;
   isEncrypted: boolean;
 }
 
@@ -265,12 +273,21 @@ function unicodePathOf(buf: Buffer, fields: ExtraField[] | null, rawName: Buffer
   return buf.toString('utf8', field.start + 5, field.end);
 }
 
+/** The modification time (seconds) of the extended timestamp field (0x5455) when it carries one. */
+function extendedMtimeOf(buf: Buffer, fields: ExtraField[] | null): number | undefined {
+  const field = (fields ?? []).find((candidate) => candidate.id === EXTRA_EXTENDED_TIMESTAMP);
+  if (!field || field.end - field.start < 5 || (buf[field.start] & EXTENDED_TIMESTAMP_MTIME_FLAG) === 0) return undefined;
+  return buf.readUInt32LE(field.start + 1);
+}
+
 function parseCentralEntry(buf: Buffer, at: number, directoryEnd: number): { entry: ZipDirectoryEntry; next: number; storedOffset: number } {
   if (at + CENTRAL_HEADER_BYTES > directoryEnd || buf.readUInt32LE(at) !== CENTRAL_SIGNATURE) {
     throw malformed('a central directory record is missing or damaged');
   }
+  const madeBy = buf.readUInt16LE(at + 4);
   const flags = buf.readUInt16LE(at + 8);
   const method = buf.readUInt16LE(at + 10);
+  const dosDateTime = ((buf.readUInt16LE(at + 14) << 16) | buf.readUInt16LE(at + 12)) >>> 0;
   const crc = buf.readUInt32LE(at + 16);
   let compressedSize = buf.readUInt32LE(at + 20);
   let uncompressedSize = buf.readUInt32LE(at + 24);
@@ -319,6 +336,9 @@ function parseCentralEntry(buf: Buffer, at: number, directoryEnd: number): { ent
     uncompressedSize,
     localOffset: storedOffset,
     externalAttributes,
+    madeBy,
+    dosDateTime,
+    unixMtime: extendedMtimeOf(buf, fields),
     isEncrypted: (flags & ENCRYPTION_FLAGS) !== 0 || method === METHOD_AES,
   };
   return { entry, next, storedOffset };
@@ -426,12 +446,25 @@ function listedEntryOf(entry: ZipDirectoryEntry): ListedArchiveEntry {
 }
 
 /** Separator and dot normalisation of an accepted name: `\` becomes `/`, empty and `.` segments go. */
-function canonicalName(name: string): string {
+export function canonicalName(name: string): string {
   const kept: string[] = [];
   for (const segment of name.split(/[\\/]/)) {
     if (segment !== '' && segment !== '.') kept.push(segment);
   }
   return kept.join('/');
+}
+
+/** The largest output buffer a decode is asked to allocate in one piece, whatever size the record claims. */
+const INFLATE_CHUNK_MAX_BYTES = 16 * 1024 * 1024;
+const INFLATE_CHUNK_MIN_BYTES = 64 * 1024;
+
+/**
+ * Size of the buffer a decode is given: the length the container states for its output, so that output comes back as one
+ * piece and not as 16 KiB chunks joined at the end (1.0 ms instead of 2.8 ms for 0.9 MB). The statement is untrusted, so
+ * it only sizes a buffer; the output bound is `maxOutputLength`.
+ */
+export function inflateChunkHint(statedBytes: number): number {
+  return Math.min(Math.max(statedBytes + 1, INFLATE_CHUNK_MIN_BYTES), INFLATE_CHUNK_MAX_BYTES);
 }
 
 async function inflateEntry(data: Buffer, entry: ZipDirectoryEntry): Promise<Buffer> {
@@ -443,7 +476,7 @@ async function inflateEntry(data: Buffer, entry: ZipDirectoryEntry): Promise<Buf
   }
   const cap = Math.max(entry.uncompressedSize, 1);
   const output = await new Promise<Buffer>((resolve, reject) => {
-    zlib.inflateRaw(data, { maxOutputLength: cap }, (error, result) => {
+    zlib.inflateRaw(data, { maxOutputLength: cap, chunkSize: inflateChunkHint(entry.uncompressedSize) }, (error, result) => {
       if (!error) {
         resolve(result);
         return;
@@ -482,17 +515,69 @@ export function zipDirectoryHasEncryptedEntry(directory: ZipDirectory): boolean 
   return directory.entries.some((entry) => entry.isEncrypted);
 }
 
+/** One entry of a ZIP archive as read: its place in the tree, its bytes, and the mode and time the creator recorded. */
+export interface ZipArchiveEntry {
+  /** Canonical path: separators unified, empty and `.` segments dropped, no trailing slash. */
+  filename: string;
+  isDirectory: boolean;
+  /** The entry's bytes; empty for a directory. */
+  buffer: Buffer;
+  /** Permission bits (rwx) when a Unix system created the entry, else undefined. */
+  mode?: number;
+  /** Modification time in milliseconds since the epoch, when the record has a valid one. */
+  mtimeMs?: number;
+}
+
+const HOST_UNIX = 3;
+const HOST_OSX = 19;
+const HOST_SHIFT = 8;
+const PERMISSION_MASK = 0o777;
+const DOS_DAY_MASK = 0x1f;
+const DOS_MONTH_MASK = 0x0f;
+const DOS_MONTH_SHIFT = 5;
+const DOS_YEAR_SHIFT = 9;
+const DOS_YEAR_BASE = 1980;
+const DOS_TIME_BITS = 16;
+const DOS_SECOND_MASK = 0x1f;
+const DOS_MINUTE_MASK = 0x3f;
+const DOS_MINUTE_SHIFT = 5;
+const DOS_HOUR_SHIFT = 11;
+const MILLISECONDS_PER_SECOND = 1000;
+
+/** The rwx bits a Unix-made entry records, or undefined for an entry made elsewhere or one without a mode. */
+function unixPermissionsOf(entry: ZipDirectoryEntry): number | undefined {
+  const host = entry.madeBy >>> HOST_SHIFT;
+  if (host !== HOST_UNIX && host !== HOST_OSX) return undefined;
+  const mode = entry.externalAttributes >>> UNIX_MODE_SHIFT;
+  return (mode & S_IFMT) === 0 ? undefined : mode & PERMISSION_MASK;
+}
+
+/** Local time of an MS-DOS date and time (how 7-Zip and Info-ZIP read it), or undefined when the date is not a calendar date. */
+export function dosDateTimeMs(dosDateTime: number): number | undefined {
+  const date = dosDateTime >>> DOS_TIME_BITS;
+  const time = dosDateTime & 0xffff;
+  const month = (date >>> DOS_MONTH_SHIFT) & DOS_MONTH_MASK;
+  const day = date & DOS_DAY_MASK;
+  if (month < 1 || month > 12 || day < 1) return undefined;
+  const year = DOS_YEAR_BASE + (date >>> DOS_YEAR_SHIFT);
+  const moment = new Date(year, month - 1, day, time >>> DOS_HOUR_SHIFT, (time >>> DOS_MINUTE_SHIFT) & DOS_MINUTE_MASK, (time & DOS_SECOND_MASK) * 2);
+  return Number.isNaN(moment.getTime()) ? undefined : moment.getTime();
+}
+
+function modifiedMsOf(entry: ZipDirectoryEntry): number | undefined {
+  if (entry.unixMtime !== undefined) return entry.unixMtime * MILLISECONDS_PER_SECOND;
+  return dosDateTimeMs(entry.dosDateTime);
+}
+
 /**
- * The regular files of a ZIP archive in central directory order, duplicates included. Throws a UnsafeArchiveError
- * for a traversing or absolute name or a link, a CorruptStreamError (400) when the records disagree or the data does
- * not match them, a DecompressionLimitError (413) past the entry, byte or ratio caps, and an
- * UnsupportedArchiveMethodError (422) for a method that is not decoded.
+ * The entries of a ZIP archive in central directory order, duplicates included, directories only when asked for. The
+ * checks are those of {@link readZipFiles}: this is its body, and it returns the same files in the same order.
  */
-export async function readZipFiles(
+export async function readZipEntries(
   buf: Buffer,
   directory: ZipDirectory,
-  options: ZipReadOptions
-): Promise<{ filename: string; buffer: Buffer }[]> {
+  options: ZipReadOptions & { includeDirectories?: boolean }
+): Promise<ZipArchiveEntry[]> {
   const { limits } = options;
   const entries = directory.entries;
   if (zipDirectoryHasEncryptedEntry(directory)) {
@@ -524,22 +609,25 @@ export async function readZipFiles(
   const ranges = entries.map((entry) => locateEntryData(buf, entry, directory.directoryStart));
   assertNoOverlap(ranges);
 
-  const selected: Array<{ entry: ZipDirectoryEntry; data: EntryData; filename: string }> = [];
+  const selected: Array<{ entry: ZipDirectoryEntry; data: EntryData; filename: string; isDirectory: boolean }> = [];
   let declaredTotal = 0;
   entries.forEach((entry, index) => {
     const listed = listing[index];
-    if (listed.isDirectory || listed.linkKind !== null) return;
+    if (listed.linkKind !== null) return;
+    if (listed.isDirectory && !options.includeDirectories) return;
     const filename = canonicalName(entry.name);
     if (filename === '') throw new UnsafeArchiveError('invalid-entry-name', 'Archive contains an entry with an empty name or one holding NUL or a line break.');
     if (options.select && !options.select(filename)) return;
-    assertDecodable(entry);
-    declaredTotal += entry.uncompressedSize;
+    if (!listed.isDirectory) {
+      assertDecodable(entry);
+      declaredTotal += entry.uncompressedSize;
+    }
     if (declaredTotal > limits.MAX_UNCOMPRESSED_SIZE) {
       throw new DecompressionLimitError(
         `Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (${Math.round(limits.MAX_UNCOMPRESSED_SIZE / (1024 * 1024))}MB)`
       );
     }
-    selected.push({ entry, data: ranges[index], filename });
+    selected.push({ entry, data: ranges[index], filename, isDirectory: listed.isDirectory });
   });
   if (declaredTotal > ARCHIVE_RATIO_BASELINE_BYTES && buf.length > 0 && declaredTotal / buf.length > limits.MAX_RATIO) {
     throw new DecompressionLimitError(
@@ -547,11 +635,30 @@ export async function readZipFiles(
     );
   }
 
-  const files: { filename: string; buffer: Buffer }[] = [];
-  for (const { entry, data, filename } of selected) {
+  const files: ZipArchiveEntry[] = [];
+  for (const { entry, data, filename, isDirectory } of selected) {
+    if (isDirectory) {
+      files.push({ filename, isDirectory, buffer: Buffer.alloc(0), mode: unixPermissionsOf(entry), mtimeMs: modifiedMsOf(entry) });
+      continue;
+    }
     const bytes = await inflateEntry(buf.subarray(data.start, data.end), entry);
     if (crc32(bytes) !== entry.crc) throw malformed(`'${entry.name}' does not match its CRC-32`);
-    files.push({ filename, buffer: bytes });
+    files.push({ filename, isDirectory, buffer: bytes, mode: unixPermissionsOf(entry), mtimeMs: modifiedMsOf(entry) });
   }
   return files;
+}
+
+/**
+ * The regular files of a ZIP archive in central directory order, duplicates included. Throws a UnsafeArchiveError
+ * for a traversing or absolute name or a link, a CorruptStreamError (400) when the records disagree or the data does
+ * not match them, a DecompressionLimitError (413) past the entry, byte or ratio caps, and an
+ * UnsupportedArchiveMethodError (422) for a method that is not decoded.
+ */
+export async function readZipFiles(
+  buf: Buffer,
+  directory: ZipDirectory,
+  options: ZipReadOptions
+): Promise<{ filename: string; buffer: Buffer }[]> {
+  const entries = await readZipEntries(buf, directory, options);
+  return entries.map(({ filename, buffer }) => ({ filename, buffer }));
 }

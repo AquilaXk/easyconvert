@@ -94,6 +94,7 @@ import {
   sanitizeLeafFilename,
 } from '../lib/conversions/archive-extraction-safety';
 import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
+import { rarToTar, tarToGzip, tarToZip, zipToTar } from '../lib/conversions/archive-repack';
 import {
   sevenZipToTar,
   stageTarForSevenZip,
@@ -1084,13 +1085,14 @@ function archiveSourceOf(input: Buffer | WorkerVfsPayload): ArchiveSource {
 
 /** Runs a streaming route; null hands the request to the general pipeline (see archive-stream.ts). */
 async function runStreamingRoute(
-  route: Extract<NativeArchiveRoute, { kind: 'stream-to-tar' | 'seven-zip-to-tar' }>,
+  route: Exclude<NativeArchiveRoute, { kind: 'tar-to-seven-zip' }>,
   params: {
     p7zBin: string;
     input: Buffer | WorkerVfsPayload;
     originalFilename: string;
     timeout: number;
     options: WorkerEngineOptions;
+    compressionLevel: number;
   }
 ): Promise<StreamedArchive | null> {
   const common = {
@@ -1102,8 +1104,21 @@ async function runStreamingRoute(
     collisionPolicy: params.options.collisionPolicy,
     signal: params.options.signal,
   };
-  if (route.kind === 'stream-to-tar') return streamToTar({ ...common, compressor: route.source.compressor });
-  return sevenZipToTar(common);
+  const packing = { ...common, compressionLevel: params.compressionLevel };
+  switch (route.kind) {
+    case 'stream-to-tar':
+      return streamToTar({ ...common, compressor: route.source.compressor });
+    case 'seven-zip-to-tar':
+      return sevenZipToTar(common);
+    case 'zip-to-tar':
+      return zipToTar(common);
+    case 'rar-to-tar':
+      return rarToTar(common);
+    case 'tar-to-zip':
+      return tarToZip(packing);
+    case 'tar-to-gzip':
+      return tarToGzip(packing);
+  }
 }
 
 /**
@@ -1157,8 +1172,8 @@ export async function convertWithNative7z(
 
   // The routing decision lives in planNativeArchiveRoute; a null plan is the general extract-then-pack pipeline.
   const route = planNativeArchiveRoute(src, tgt, options);
-  if (route?.kind === 'stream-to-tar' || route?.kind === 'seven-zip-to-tar') {
-    const streamed = await runStreamingRoute(route, { p7zBin, input, originalFilename, timeout, options });
+  if (route && route.kind !== 'tar-to-seven-zip') {
+    const streamed = await runStreamingRoute(route, { p7zBin, input, originalFilename, timeout, options, compressionLevel });
     if (streamed) {
       const result = streamedArchiveResult(streamed, { tgt, baseName, options, vfsPayload, startTime });
       if (streamed.skippedLinks.length > 0) {
