@@ -135,7 +135,7 @@ describe('the pull request workflow', () => {
     const uses = ci.jobs.checks.steps.map((step) => step.uses ?? '');
     expect(uses).not.toContain('./.github/actions/ci-setup');
     expect(ci.jobs.checks.steps.map((step) => step.run)).toEqual(
-      expect.arrayContaining(['npm run guard:anti-cheat', 'npm run lint', 'npm run build'])
+      expect.arrayContaining(['npm run guard:anti-cheat', 'npm run guard:code-smells', 'npm run lint', 'npm run build'])
     );
   });
 

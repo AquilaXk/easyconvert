@@ -13,6 +13,7 @@
     "licenses:generate": "node scripts/third-party-notices.mjs",
     "licenses:check": "node scripts/third-party-notices.mjs --check",
     "guard:anti-cheat": "tsx scripts/guard-anti-cheat.ts",
+    "guard:code-smells": "tsx scripts/guard-code-smells.ts",
     "fixtures:raw": "node scripts/fetch-raw-fixtures.mjs",
     "pretest": "npm run guard:anti-cheat",
     "test": "vitest run",

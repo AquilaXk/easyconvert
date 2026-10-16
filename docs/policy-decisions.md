@@ -731,3 +731,16 @@ Compression
 - **Verified by**: `tests/sandbox-launcher.test.ts` (the program is started by the helper, by the parent process id it reports; results, errors, time and output limits, abort, concurrency, environment sanitizing, strict isolation, a dying helper, the direct path), `tests/sandbox-launcher-protocol.test.ts`, `tests/pdf-ops-launcher.test.ts` (the PDF operations through the helper read back by independent tools, and the guards: the edit gate, page ranges, emptied documents), and the `pdf-ops` parity rows `protect`, `decrypt`, `unlock`, `split`, `extract`, `delete`, `reorder` and `rotate`.
 - **Revisit when**: Node starts programs with `vfork` or `posix_spawn` on Linux, or the worker's resident size stays below 112 MiB.
 
+
+## 32. Code smell ratchet
+
+- **Decision**: CI fails on any new violation of `complexity` 30, `max-depth` 5, `max-lines-per-function` 250, `max-params` 6, `no-nested-ternary`, `@typescript-eslint/no-explicit-any` and `max-lines` 1500 in `src/**/*.{ts,tsx}`. Existing violations sit in `.github/code-smell-baseline.json`, keyed by file, rule and enclosing function name with a count and the worst measured value. The baseline can only shrink: a rise fails, and so does a fall until `--update` rewrites the baseline in the same change. Inline `eslint-disable` comments do not count for this gate. On pull requests CI also compares the baseline with the base branch's copy, summed per file and rule (a renamed function passes), so regenerating the baseline with `--allow-growth` cannot admit a new violation; pushes to main skip that comparison because the pull request already passed it.
+- **Why it is right in practice**: large codebases that cannot be cleaned in one pass hold the line with a ratchet instead of a flag day: new code meets the bar, old code is paid down as it is touched. Keys without line numbers survive unrelated edits, so the baseline does not churn.
+- **Benefits and trade-offs**: reviewers stop meeting new 300-line, deeply nested functions. Cost: a refactor that lowers one number must also commit the smaller baseline, and a function renamed or moved shows as one removed and one new key; the change then fails until the baseline is regenerated, which is reviewed as a diff. A hot codec loop that has to stay long keeps its entry with a recorded `reason`.
+- **Alternatives rejected**:
+  - **Adding the rules to the framework lint preset as warnings**: nobody reads 700 warnings and nothing blocks a new one.
+  - **Failing only on changed lines**: it needs the base commit at check time and misses growth of an existing function in an unchanged line range.
+  - **Line-number keys**: every edit above a violation would invalidate the baseline.
+- **Verified by**: `tests/guard-code-smells.test.ts` (known violation recorded under the right key, a rising count or value fails, a new function fails, inserted lines keep keys, a removed violation fails until `--update`, `--update` never raises) and the `checks` job step `npm run guard:code-smells`.
+- **Revisit when**: the baseline is small enough to switch to zero tolerance, or the thresholds are tightened.
+

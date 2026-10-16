@@ -134,7 +134,7 @@ jobs:
           fi
           node scripts/ci-parity-shards.mjs "$FAMILIES"
 
-  # Static gates that need no external tools: the anti-cheat scan, the linter and the production build (which
+  # Static gates that need no external tools: the anti-cheat scan, the code-smell ratchet, the linter and the production build (which
   # type-checks). They run in their own job so the tool install does not delay them.
   checks:
     needs: changes
@@ -157,6 +157,20 @@ jobs:
 
       - name: Verify test integrity and anti-cheating guards
         run: npm run guard:anti-cheat
+
+      - name: Gate new code smells against the shrinking baseline
+        run: npm run guard:code-smells
+
+      # --update --allow-growth in a change would pass the step above, so the baseline is also compared with the base
+      # branch's copy per file and rule (a rename passes). A push to main is skipped: its baseline was checked in the PR.
+      - name: Check the code-smell baseline does not grow against the base branch
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref || 'main' }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          git show "origin/$BASE_REF:.github/code-smell-baseline.json" > "$RUNNER_TEMP/base-code-smell-baseline.json" 2>/dev/null || rm -f "$RUNNER_TEMP/base-code-smell-baseline.json"
+          npm run guard:code-smells -- --check-base "$RUNNER_TEMP/base-code-smell-baseline.json"
 
       # The licence gate runs only when the dependency set or the notices tooling changes: an unchanged
       # lockfile cannot bring in a new licence.

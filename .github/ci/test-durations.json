@@ -221,6 +221,7 @@
   "tests/graph-scheduler.test.ts": 0.9,
   "tests/graph-validator-ssot.test.ts": 0,
   "tests/guard-anti-cheat-rules.test.ts": 57.7,
+  "tests/guard-code-smells.test.ts": 3,
   "tests/hdr-fixture-builders.test.ts": 1,
   "tests/hdr-source-conversion.test.ts": 2,
   "tests/hdr-tone-mapping.test.ts": 2.6,
