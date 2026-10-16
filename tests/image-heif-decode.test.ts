@@ -110,6 +110,16 @@ describe('the orientation of an EXIF chunk the decoder wrote', () => {
     expect(fixed.length).toBe(png.length);
   });
 
+  it('is left alone when the PNG ends inside the checksum of the EXIF chunk', () => {
+    const header = pngChunk('IHDR', Buffer.from([0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]));
+    const png = Buffer.concat([PNG_SIGNATURE, header, pngChunk('eXIf', exifWithOrientation(6))]);
+    for (const missing of [1, 2, 3, 4]) {
+      const cut = png.subarray(0, png.length - missing);
+      expect(withUprightExifOrientation(cut)).toEqual(cut);
+    }
+    expect(withUprightExifOrientation(png).readUInt16LE(PNG_SIGNATURE.length + header.length + 8 + ORIENTATION_VALUE_OFFSET)).toBe(1);
+  });
+
   it('is left alone when the PNG has no EXIF chunk or ends inside a chunk', () => {
     const header = pngChunk('IHDR', Buffer.from([0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0]));
     const plain = Buffer.concat([PNG_SIGNATURE, header, pngChunk('IEND', Buffer.alloc(0))]);

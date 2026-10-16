@@ -2,10 +2,11 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 import { afterAll, describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { usesOldStyleJpeg } from '../src/lib/conversions/image-external-source';
-import { findMagick } from '../src/lib/conversions/image-magick-cli';
+import { findMagick, MAGICK_PATH_ENV } from '../src/lib/conversions/image-magick-cli';
 import { decodeRgba, maxSampleDifference } from './helpers/image-pixels';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless } from './helpers/strict-skip';
@@ -98,6 +99,9 @@ describe('which TIFF files take the old-style JPEG route', () => {
     expect(usesOldStyleJpeg(bigTiff)).toBe(false);
     const whole = buildTiff([entries(COMPRESSION_OLD_STYLE_JPEG)], true);
     expect(usesOldStyleJpeg(whole.subarray(0, whole.length - 10))).toBe(false);
+    // The directory is whole but the offset of the next directory is cut short: the file is damaged, not a TIFF to route.
+    expect(usesOldStyleJpeg(whole.subarray(0, whole.length - 1))).toBe(false);
+    expect(usesOldStyleJpeg(whole)).toBe(true);
   });
 });
 
@@ -106,6 +110,21 @@ const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ojpeg-tiff-'));
 afterAll(() => fs.rmSync(workDir, { recursive: true, force: true }));
 const WIDTH = 4160;
 const HEIGHT = 870;
+
+describe('a TIFF without old-style JPEG compression', () => {
+  it('is read by the image library and never reaches ImageMagick', async () => {
+    const tiff = await sharp({ create: { width: 4, height: 4, channels: 3, background: { r: 10, g: 200, b: 30 } } }).tiff().toBuffer();
+    const saved = process.env[MAGICK_PATH_ENV];
+    process.env[MAGICK_PATH_ENV] = '/nonexistent/magick';
+    try {
+      const converted = await decodeRgba((await dispatchConversion(tiff, 'tif', 'png', {}, 'plain.tif')).buffer);
+      expect(Array.from(converted.data.subarray(0, 4))).toEqual([10, 200, 30, 255]);
+    } finally {
+      if (saved === undefined) delete process.env[MAGICK_PATH_ENV];
+      else process.env[MAGICK_PATH_ENV] = saved;
+    }
+  });
+});
 
 describe.skipIf(needsMagick)('a TIFF with old-style JPEG compression', () => {
   it.for(['png', 'jpg', 'webp', 'tiff'])('converts to %s, the picture ImageMagick decodes', { timeout: 60_000 }, async (target, ctx) => {

@@ -35,7 +35,6 @@ const CODESTREAM_BOX_TYPE = 'jp2c';
 const BOX_HEADER_BYTES = 8;
 const BOX_LARGE_HEADER_BYTES = 16;
 const BOX_LENGTH_LARGE = 1;
-const BOX_LENGTH_TO_END = 0;
 /** SIZ marker segment (T.800 A.5.1): marker, Lsiz (2), Rsiz (2), then Xsiz, Ysiz, XOsiz, YOsiz as 32-bit values. */
 const SIZ_FIELDS_OFFSET = CODESTREAM_START.length + 2 + 2;
 const SIZ_FIELD_BYTES = 4;
@@ -56,7 +55,8 @@ function findCodestreamBox(buf: Buffer): number {
     if (type === CODESTREAM_BOX_TYPE) return offset + header;
     if (offset + header > buf.length) return -1;
     const size = length === BOX_LENGTH_LARGE ? Number(buf.readBigUInt64BE(offset + BOX_HEADER_BYTES)) : length;
-    if (length === BOX_LENGTH_TO_END || size < header) return -1;
+    // A length of 0 (the box runs to the end of the file) is shorter than a header, like any other length that cannot hold one: no codestream box follows.
+    if (size < header) return -1;
     offset += size;
   }
   return -1;
