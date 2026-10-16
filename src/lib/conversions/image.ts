@@ -67,7 +67,7 @@ import { DirectAvifSlot, startDirectAvifOn } from './image-avif-direct';
 import { metadataOf, withHeader } from './image-metadata';
 import { decodePlainPngForTarget, type DecodedForTarget } from './image-decoded-source';
 import { hasSrgbPrimaries, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
-import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits } from './image-depth';
+import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
 import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
 import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
@@ -1862,8 +1862,6 @@ function deepPixelBytes(meta: Metadata | undefined): number {
   return meta?.width !== undefined && meta.height !== undefined ? meta.width * meta.height * (meta.channels ?? 1) * 2 : 0;
 }
 
-/** Sample depth of the 16-bit integer images libvips reports as `ushort`. */
-const SHARP_SIXTEEN_BIT_DEPTH = 'ushort';
 /** Colourspaces whose pixels an embedded RGB ICC profile describes unchanged. */
 const PROFILE_PRESERVING_SPACES: ReadonlySet<string> = new Set(['srgb', 'rgb16']);
 
