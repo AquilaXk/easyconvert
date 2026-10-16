@@ -10,6 +10,7 @@ import {
 } from '../src/worker/office-suite-route';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError, CorruptStreamError, EngineUnavailableError, SandboxUnavailableError } from '../src/lib/types';
+import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from '../src/worker/worker-types';
 
@@ -242,5 +243,34 @@ describe('the answer for a file the office suite cannot read', () => {
   it('is not made for a plain Error that is not the suite’s empty output', () => {
     const plain = new Error('Source file could not be loaded');
     expect(asUnreadableDocument(plain, 'wps')).toBe(plain);
+  });
+});
+
+describe('the export filter of the office suite for each source', () => {
+  it.each([
+    ['wps', 'writer_pdf_Export'],
+    ['lrf', 'writer_pdf_Export'],
+    ['sxw', 'writer_pdf_Export'],
+    ['dot', 'writer_pdf_Export'],
+    ['ott', 'writer_pdf_Export'],
+    ['numbers', 'calc_pdf_Export'],
+    ['xlt', 'calc_pdf_Export'],
+    ['sxi', 'impress_pdf_Export'],
+    ['pps', 'impress_pdf_Export'],
+    ['otp', 'impress_pdf_Export'],
+    ['pub', 'draw_pdf_Export'],
+    ['sxd', 'draw_pdf_Export'],
+    ['xlsx', 'calc_pdf_Export'],
+    ['pptx', 'impress_pdf_Export'],
+    ['odg', 'draw_pdf_Export'],
+    ['docx', 'writer_pdf_Export'],
+  ])('.%s is exported to PDF by %s', (source, filter) => {
+    expect(resolveLibreOfficeFilter('pdf', source)).toMatch(new RegExp(`^pdf:${filter}:`));
+  });
+
+  it('writes plain text as UTF-8 through the encoded text filter, and every other target under its own name', () => {
+    expect(resolveLibreOfficeFilter('txt', 'wps')).toBe('txt:Text (encoded):UTF8');
+    expect(resolveLibreOfficeFilter('docx', 'wps')).toBe('docx');
+    expect(resolveLibreOfficeFilter('odd', 'odd')).toBe('otg');
   });
 });
