@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mapToPalette } from '../src/lib/conversions/color-quantizer';
-import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from '../src/lib/conversions/colour-memo';
+import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from '../src/lib/conversions/image-colour-memo';
 import { KdTree3 } from '../src/lib/conversions/kd-tree';
 
 /**

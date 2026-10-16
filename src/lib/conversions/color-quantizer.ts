@@ -8,7 +8,7 @@
  * An image that has no more distinct colours than the palette allows keeps them exactly.
  *
  * Mapping: a k-d tree over the palette gives the exact nearest colour in Oklab; without dithering it is asked once for
- * each distinct colour of the raster and `colour-memo.ts` keeps the answer for the pixels that repeat it. Floyd-Steinberg
+ * each distinct colour of the raster and `image-colour-memo.ts` keeps the answer for the pixels that repeat it. Floyd-Steinberg
  * error diffusion (1976) runs serpentine in linear light, so the average light of a dithered area matches the source; Riemersma
  * (1998) dithering follows a Hilbert curve; blue-noise dithering thresholds with a void-and-cluster mask
  * (`blue-noise-mask.ts`).
@@ -18,7 +18,7 @@
 
 import { ConversionFailedError } from '../types';
 import { BLUE_NOISE_SIDE, blueNoiseCentred } from './blue-noise-mask';
-import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from './colour-memo';
+import { COLOUR_MEMO_LAB_STRIDE, ColourMemo } from './image-colour-memo';
 import { KdTree3 } from './kd-tree';
 
 export interface RgbColor {
