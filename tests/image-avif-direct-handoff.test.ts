@@ -5,6 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
+import { startAvifWithCli } from '../src/lib/conversions/avif-cli';
 import { DirectAvif, DirectAvifSlot, readsAsPixelsOnly, startDirectAvifOn } from '../src/lib/conversions/image-avif-direct';
 import { ConversionFailedError } from '../src/lib/types';
 import { type Chunk, serializeChunks } from './helpers/apng-builder';
@@ -398,4 +399,53 @@ describe('the run in a slot', () => {
     expect(startDirectAvifOn(slot, 'jpg', false, source, OPTIONS)).toBeUndefined();
     expect(startDirectAvifOn(slot, 'webp', false, source, OPTIONS)).toBeUndefined();
   });
+});
+
+describe('startAvifWithCli', () => {
+  it('stops the tool and removes the working directory when it is cancelled, and the result is the abort', async () => {
+    const tmp = mkdtempSync(path.join(os.tmpdir(), 'avif-cancel-'));
+    const savedTmp = process.env.TMPDIR;
+    process.env.TMPDIR = tmp;
+    try {
+      const pidFile = path.join(workDir, 'cancel.pid');
+      const tool = path.join(workDir, 'cancel-sleeper');
+      writeFileSync(tool, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 60\n`);
+      chmodSync(tool, SCRIPT_MODE);
+      const run = startAvifWithCli(tool, { png: await lineArt16(), width: 256, height: 256, quality: 60, effort: 3, bitdepth: 12, layout: '4:0:0' });
+      const result = run.result.then(
+        () => null,
+        (err: unknown) => err
+      );
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(pidFile) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+      const pid = Number(readFileSync(pidFile, 'utf-8'));
+      await run.cancel();
+      expect(await result).toBeInstanceOf(Error);
+      expect(readdirSync(tmp)).toEqual([]);
+      const gone = Date.now() + 5000;
+      let alive = true;
+      while (alive && Date.now() < gone) {
+        try {
+          process.kill(pid, 0);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } catch {
+          alive = false;
+        }
+      }
+      expect(alive).toBe(false);
+    } finally {
+      if (savedTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = savedTmp;
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('gives the file of a run that is not cancelled, and cancelling it afterwards changes nothing', async () => {
+    const real = requireOracleTool('avifenc');
+    const source = await lineArt16();
+    const run = startAvifWithCli(real, { png: source, width: 256, height: 256, quality: 60, effort: 3, bitdepth: 12, layout: '4:0:0' });
+    const file = await run.result;
+    await run.cancel();
+    expect(file.subarray(4, 12).toString('latin1')).toBe('ftypavif');
+  }, 60_000);
 });
