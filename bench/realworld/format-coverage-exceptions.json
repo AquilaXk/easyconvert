@@ -1,0 +1,696 @@
+{
+  "schema": 1,
+  "formats": {
+    "mos": {
+      "reason": "One Leaf .mos file fits the memory budget of the real-world run (the camera-RAW fixture, 23 MB); the other CC0 files are 42 to 84 MB, and converting two of them to large raster targets beside other jobs got the job server killed for memory, so they were taken out.",
+      "searched": [
+        "raw.pixls.us Leaf directory listing (Aptus 22, Aptus 75, AFi-II 12)",
+        "tests/fixtures/raw manifests"
+      ]
+    },
+    "3fr": {
+      "reason": "Two Hasselblad .3fr files fit the memory budget of the real-world run (the camera-RAW fixture H3D and CFV, 23 MB); the other CC0 files are 33 to 212 MB.",
+      "searched": [
+        "raw.pixls.us Hasselblad directory listing (CF132, CFV, H3D, H4D, X1D, X2D and CFV 50c/100c files)",
+        "tests/fixtures/raw manifests"
+      ]
+    },
+    "ace": {
+      "reason": "No public ACE (WinACE) archive was found. The one open reader, acefile, ships no archives and no open writer exists, so no project publishes test archives.",
+      "searched": [
+        "acefile repository (its tests ship no archives)",
+        "file lists of Commons Compress, Tika, libarchive, KDE Ark and KArchive, libmspack, rarfile, py7zr, lhasa and the Open Preservation Foundation format corpus at pinned commits: no .ace file",
+        "GitHub code search (indexes text files only) and web search for sample archives"
+      ]
+    },
+    "alz": {
+      "reason": "ALZip archives are written only by the proprietary ALZip program and no test suite or sample collection holding one was found.",
+      "searched": [
+        "file lists of Commons Compress, Tika, libarchive, KDE Ark and KArchive, libmspack and the Open Preservation Foundation format corpus at pinned commits: no .alz file",
+        "GitHub code search: the .alz files it returns are mind-map and group-theory data, not ALZip archives (no ALZ signature)"
+      ]
+    },
+    "arc": {
+      "reason": "No SEA ARC archive is published. The only .arc files in the test suites are web-crawl containers of the Internet Archive (Tika testARC.arc), a different format that the registry does not mean.",
+      "searched": [
+        "file lists of Commons Compress, Tika, libarchive, KDE Ark and KArchive, libmspack and the Open Preservation Foundation format corpus at pinned commits",
+        "web search for ARC sample archives: only tool documentation"
+      ]
+    },
+    "bz": {
+      "reason": "The .bz extension is the legacy bzip (version 0) format that no current tool writes; every bzip file in the test suites carries the BZh signature of bzip2 and is counted as bz2.",
+      "searched": [
+        "file lists of Commons Compress, Tika, KDE Ark and KArchive, libarchive at pinned commits"
+      ]
+    },
+    "lzo": {
+      "reason": "One lzop-compressed file is published in the test suites searched (KDE Ark test.png.lzo); the lzop project itself ships source tarballs only.",
+      "searched": [
+        "file lists of KDE Ark and KArchive, Commons Compress, Tika and libarchive at pinned commits (one .lzo file)",
+        "lzop download page (lzop.org/download): source tarballs only"
+      ]
+    },
+    "tar.lzo": {
+      "reason": "One lzop-compressed tar archive is published in the test suites searched (KDE Ark simplearchive.tar.lzo); no project searched releases tar.lzo files.",
+      "searched": [
+        "file lists of KDE Ark and KArchive, Commons Compress, Tika and libarchive at pinned commits (one .tar.lzo file)",
+        "GNU FTP archive (hello, gzip, lzip) and tukaani.org lzma release listings: no .tar.lzo file"
+      ]
+    },
+    "tzo": {
+      "reason": "The .tzo short extension for lzop-compressed tarballs is not used by any file in the sources searched.",
+      "searched": [
+        "file lists of KDE Ark and KArchive, Commons Compress, Tika and libarchive at pinned commits",
+        "GNU FTP archive (hello, gzip, lzip) and tukaani.org lzma release listings"
+      ]
+    },
+    "rz": {
+      "reason": "No rzip (.rz) file is published; no test suite searched holds an archive.",
+      "searched": [
+        "file lists of Commons Compress, Tika, libarchive, KDE Ark and KArchive at pinned commits",
+        "GNU FTP archive (hello, gzip, lzip) listings"
+      ]
+    },
+    "tar.7z": {
+      "reason": "No tar archive compressed with 7-Zip is published under this name; 7z archives that wrap a tar are counted as 7z.",
+      "searched": [
+        "file lists of Commons Compress, py7zr, KDE Ark and KArchive, Tika and libarchive at pinned commits",
+        "Slackware, Debian, CentOS and Arch package archives: none uses .tar.7z"
+      ]
+    },
+    "tar.bz": {
+      "reason": "Tar archives compressed with legacy bzip (version 0) are not published; the tar.bz2 files in the corpus carry the bzip2 signature.",
+      "searched": [
+        "file lists of Commons Compress, Tika, KDE Ark and KArchive at pinned commits",
+        "GNU FTP archive hello listing (.tar.bz2 only)"
+      ]
+    },
+    "tbz": {
+      "reason": "No file with the .tbz short extension is published by the sources searched; bzip2-compressed tarballs there are named .tar.bz2 (counted as tar.bz2).",
+      "searched": [
+        "file lists of Commons Compress, Tika, KDE Ark and KArchive at pinned commits",
+        "Slackware 12.2, 13.0 and 15.0 package mirror paths (.tgz and .txz; the .tbz path answers 404) and the GNU FTP archive"
+      ]
+    },
+    "tbz2": {
+      "reason": "One file with the .tbz2 extension is published (Tika test-documents.tbz2); other bzip2-compressed tarballs are named .tar.bz2 and counted there.",
+      "searched": [
+        "file lists of Commons Compress, Tika, KDE Ark and KArchive, libarchive at pinned commits (one .tbz2 file)",
+        "Slackware package mirror and the GNU FTP archive: no .tbz2 file"
+      ]
+    },
+    "tz": {
+      "reason": "No file with the .tz extension for compressed tarballs is published; tar.Z files are counted as tar.z.",
+      "searched": [
+        "file lists of Commons Compress, Tika, KDE Ark and KArchive, libarchive at pinned commits",
+        "GNU FTP archive (hello, gzip) listings"
+      ]
+    },
+    "z": {
+      "reason": "No single-file compress(1) archive (.Z) is published in the sources searched; the .Z files there are tarballs, counted as tar.z.",
+      "searched": [
+        "file lists of Commons Compress, Tika, KDE Ark and KArchive, libarchive at pinned commits (tar.Z only)",
+        "GNU FTP old-gnu directories (gawk, make, gperf, sh-utils, fileutils, regex, finger, queue, cpp2html) and gnu/gzip listing: no .Z file"
+      ]
+    },
+    "zstd": {
+      "reason": "The .zstd extension is an alias of .zst; every Zstandard file in the sources searched is named .zst or .pkg.tar.zst.",
+      "searched": [
+        "zstd test suite golden files, KDE Ark and KArchive at pinned commits",
+        "Arch Linux Archive package names"
+      ]
+    },
+    "3gpp": {
+      "reason": "No file with the .3gpp extension (Android voice recordings) is published; the 3GP files of the FFmpeg samples collection are named .3gp and counted there.",
+      "searched": [
+        "FFmpeg FATE suite (every sample named in tests/fate/*.mak) and samples.ffmpeg.org mobileVideo_3gp listing",
+        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "alac": {
+      "reason": "Apple Lossless audio is published as .m4a (counted there); no public file carries the .alac extension.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org listings",
+        "file lists of Tika, KDE KFileMetaData, libsndfile, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "caf": {
+      "reason": "Two Core Audio Format files are published (FATE caf-pcm16.caf and an Apple alert tone in the FFmpeg samples); no other open collection searched holds one.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org AIFF listing",
+        "file lists of libsndfile, Tika, KDE KFileMetaData, Kaitai samples, VLC and mpv at pinned commits"
+      ]
+    },
+    "cavs": {
+      "reason": "Chinese AVS streams are published only inside MPEG program streams (FATE cavs.mpg), not as files with the .cavs extension.",
+      "searched": [
+        "FFmpeg FATE suite (cavs/ directory)",
+        "file lists of Tika, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "divx": {
+      "reason": "One DivX file is published (FATE lmlm4/LMLM4_CIFat30fps.divx); the other DivX streams in the FFmpeg samples are named .avi.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org avi listing",
+        "file lists of Tika, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "dts": {
+      "reason": "Two DTS elementary streams are published (FATE dts_es.dts and master_audio_7.1_24bit.dts); the other DTS samples in the FFmpeg collection are inside AVI and transport streams.",
+      "searched": [
+        "FFmpeg FATE suite (dts/ directory) and samples.ffmpeg.org A-codecs/DTS listing",
+        "file lists of Tika, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "dv": {
+      "reason": "One raw DV stream is published (samples.ffmpeg.org DV-raw/shots0000.dv); FATE holds DV only inside AVI and MOV files.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org DV-raw and camera-dvr listings",
+        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "f4v": {
+      "reason": "No file with the .f4v extension is published; the F4V directory of the FFmpeg samples holds a single file named .mp4.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org F4V listing",
+        "file lists of Tika, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "m2ts": {
+      "reason": "One AVCHD/Blu-ray transport stream is published (samples.ffmpeg.org bluray/01200.m2ts); FATE holds MPEG-TS only as .ts files.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org bluray listing",
+        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "m2v": {
+      "reason": "No elementary MPEG-2 video file with the .m2v extension is published; MPEG-2 samples are program or transport streams (counted as mpg and ts).",
+      "searched": [
+        "FFmpeg FATE suite (mpeg2/ directory) and samples.ffmpeg.org MPEG2 listing",
+        "file lists of Tika, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "m4b": {
+      "reason": "One audiobook is published (samples.ffmpeg.org ipod/MAKE_2005-08-01.m4b); no open audiobook collection searched offers an .m4b file.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org ipod listing",
+        "file lists of Tika, KDE KFileMetaData, libheif, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "midi": {
+      "reason": "Standard MIDI files are published with the .mid extension (counted as mid); no collection searched uses .midi.",
+      "searched": [
+        "Wikimedia Commons audio/midi search (every file is .mid)",
+        "file lists of Tika, KDE KFileMetaData, libsndfile, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "mod": {
+      "reason": "No camcorder MOD (MPEG-2 program stream) file is published; the only .mod file found (KDE KFileMetaData test.mod) is a tracker module, a different format.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org camera-dvr listing",
+        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "mpeg": {
+      "reason": "The one .mpeg file in the FFmpeg samples collection is a commercial video-game advertisement, and no open collection searched publishes a file with this extension; MPEG program streams are counted as mpg.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org MPEG1 and MPEG2 listings",
+        "Internet Archive public-domain and CC0 MPEG2 items (one result, a private voice message, not used)",
+        "file lists of Tika, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "mts": {
+      "reason": "No AVCHD .mts file is published; the one AVCHD stream in the FFmpeg samples is named .m2ts.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org bluray listing",
+        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "ra": {
+      "reason": "Two RealAudio files are published (FATE ra3.ra and ra4_288.ra; the FFmpeg samples collection holds the same bytes under another name).",
+      "searched": [
+        "FFmpeg FATE suite (realaudio/) and samples.ffmpeg.org real-audio listing",
+        "file lists of Tika, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "rmvb": {
+      "reason": "Two RealMedia variable bitrate files are published in the FATE suite (spygames-2MB.rmvb and luckynight-partial.rmvb); the FFmpeg samples collection adds no other.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org real listing",
+        "file lists of Tika, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "spx": {
+      "reason": "Speex streams are published wrapped in Ogg and named .ogg; no collection searched holds a file with the .spx extension.",
+      "searched": [
+        "xiph/speex repository file list at a pinned commit",
+        "FFmpeg FATE suite and samples.ffmpeg.org ogg listing",
+        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "weba": {
+      "reason": "WebM audio files are published as .webm or .mka; no collection searched uses the .weba extension.",
+      "searched": [
+        "Wikimedia Commons search for file names containing .weba (only unrelated pictures)",
+        "FFmpeg FATE suite and samples.ffmpeg.org listings",
+        "file lists of Tika, KDE KFileMetaData, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "webpvideo": {
+      "reason": "Not a file format: an id the registry uses for animated WebP, whose files are named .webp (counted there).",
+      "searched": [
+        "Pillow, libvips, Tika and LibreOffice test image lists at pinned commits"
+      ]
+    },
+    "wtv": {
+      "reason": "Windows TV recordings are published only as recordings of broadcast television (FATE law-and-order-partial.wtv, which is used, and a BBC News recording in the FFmpeg samples that is not used because of broadcaster copyright).",
+      "searched": [
+        "FFmpeg FATE suite (wtv/) and samples.ffmpeg.org wtv listing",
+        "file lists of Tika, VLC and mpv test data at pinned commits"
+      ]
+    },
+    "xvid": {
+      "reason": "Not a file format: XviD video is stored in AVI, MP4 or MKV files with their own extensions.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org avi listings: no file named .xvid"
+      ]
+    },
+    "aifc": {
+      "reason": "Two AIFF-C files are published as audio test material (AFsp float32 and float64 files in the FFmpeg samples); the MACE-compressed AIFF-C files there are named .aiff.",
+      "searched": [
+        "FFmpeg FATE suite and samples.ffmpeg.org AIFF listing",
+        "file lists of libsndfile, Tika, KDE KFileMetaData and Commons Compress at pinned commits"
+      ]
+    },
+    "dot": {
+      "reason": "One Word 97 template is published in the test suites searched (LibreOffice tdf120761_zOrder.dot); the other .dot files there are Graphviz sources.",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "htm": {
+      "reason": "One .htm file is published in the corpora searched (Open Preservation Foundation lorem-ipsum.htm); HTML test files elsewhere are named .html.",
+      "searched": [
+        "file lists of the Open Preservation Foundation format corpus, LibreOffice core, Apache POI, Tika, calibre and KDE test data at pinned commits"
+      ]
+    },
+    "zabw": {
+      "reason": "Two gzip-compressed AbiWord documents are published (LibreOffice hello.zabw and the AbiWord documentation next_layout.zabw); the AbiWord build document BUILD.zabw is plain XML despite its extension.",
+      "searched": [
+        "file lists of the AbiWord repository, LibreOffice core, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "pdfa": {
+      "reason": "Not a file extension: PDF/A documents are PDF files with a conformance profile and are published as .pdf (the pdf-ops sample set holds veraPDF corpus files).",
+      "searched": [
+        "veraPDF corpus files already pinned in bench/corpus/remote-manifest.json"
+      ]
+    },
+    "oxps": {
+      "reason": "No OpenXPS (.oxps) file is published by the sources searched; their XPS files are named .xps (counted there).",
+      "searched": [
+        "file lists of Tika, KDE KFileMetaData, Okular, Apache POI and LibreOffice core at pinned commits"
+      ]
+    },
+    "log": {
+      "reason": "No application log with a licence that allows its use as test data was found; the only .log files in the corpora searched are database transaction logs of one tool, not text logs.",
+      "searched": [
+        "file lists of Tika, Apache POI, LibreOffice core, the Open Preservation Foundation format corpus and KDE test data at pinned commits"
+      ]
+    },
+    "man": {
+      "reason": "No troff manual page with the .man extension is published in the sources searched.",
+      "searched": [
+        "file lists of Tika, Apache POI, LibreOffice core, Pillow, libarchive and KDE test data at pinned commits"
+      ]
+    },
+    "text": {
+      "reason": "Not a file extension: plain-text files are published as .txt (250 files in the real-world corpus).",
+      "searched": [
+        "bench/realworld/manifest.json txt files"
+      ]
+    },
+    "latex": {
+      "reason": "LaTeX sources are published as .tex (counted there); no collection searched uses a .latex extension.",
+      "searched": [
+        "file lists of Okular, Tika, LibreOffice core and Apache POI at pinned commits"
+      ]
+    },
+    "azw": {
+      "reason": "Kindle .azw books are commercial downloads; no open collection searched publishes one with a usable licence, and calibre writes azw3.",
+      "searched": [
+        "file lists of calibre, libmobi, KOReader, Okular and the Open Preservation Foundation format corpus at pinned commits",
+        "GitHub code search for .azw files (one commercial book, unrelated files)"
+      ]
+    },
+    "azw4": {
+      "reason": "Kindle Print Replica books are commercial PDF-based downloads; no open collection searched publishes one.",
+      "searched": [
+        "file lists of calibre, libmobi, KOReader, Okular and the Open Preservation Foundation format corpus at pinned commits",
+        "GitHub code search for .azw4 files (no result)"
+      ]
+    },
+    "cbr": {
+      "reason": "No comic archive with the .cbr extension and a usable licence was found; the RAR archives of the test suites are named .rar (counted there).",
+      "searched": [
+        "file lists of Komga, Okular, calibre and KDE Ark at pinned commits",
+        "web search for public-domain and Creative Commons comic downloads"
+      ]
+    },
+    "cbz": {
+      "reason": "One comic archive is published as a test file (Okular rotated_cb.cbz); the public comic downloads found require a login or are not at a stable URL.",
+      "searched": [
+        "file lists of Komga, Okular, calibre and KDE Ark at pinned commits",
+        "web search for public-domain and Creative Commons comic downloads"
+      ]
+    },
+    "cb7": {
+      "reason": "No comic archive with the .cb7 extension was found in any open collection searched.",
+      "searched": [
+        "file lists of Komga, Okular, calibre and KDE Ark at pinned commits",
+        "web search for comic sample files"
+      ]
+    },
+    "cbt": {
+      "reason": "No comic archive with the .cbt extension was found in any open collection searched.",
+      "searched": [
+        "file lists of Komga, Okular, calibre and KDE Ark at pinned commits",
+        "web search for comic sample files"
+      ]
+    },
+    "cbc": {
+      "reason": "No calibre comic collection (.cbc) was found; the format is written only by calibre and the .cbc files on GitHub are unrelated build configurations.",
+      "searched": [
+        "file lists of calibre, Komga and Okular at pinned commits",
+        "GitHub code search for .cbc files (all unrelated)"
+      ]
+    },
+    "lit": {
+      "reason": "Two Microsoft Reader books are published (calibre 0.8.57 and 0.9.0 outputs in the Open Preservation Foundation format corpus); no other open tool writes the format.",
+      "searched": [
+        "file lists of calibre, libmobi, KOReader and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "prc": {
+      "reason": "No Mobipocket .prc book with a usable licence was found; Project Gutenberg and Standard Ebooks offer other Kindle formats.",
+      "searched": [
+        "file lists of calibre, libmobi, KOReader and the Open Preservation Foundation format corpus at pinned commits",
+        "GitHub code search for .prc files (all unrelated configuration files)"
+      ]
+    },
+    "pml": {
+      "reason": "No Palm eReader .pml source was found; the .pml files on GitHub are unrelated (Promela models, PyMOL scripts).",
+      "searched": [
+        "file lists of calibre, libmobi and the Open Preservation Foundation format corpus at pinned commits",
+        "GitHub code search for .pml files (all unrelated)"
+      ]
+    },
+    "rb": {
+      "reason": "Two Rocket eBook files are published (calibre 0.8.57 and 0.9.0 outputs in the Open Preservation Foundation format corpus); the .rb files of Ruby repositories are source code.",
+      "searched": [
+        "file lists of calibre, libmobi and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "snb": {
+      "reason": "Two Bambook books are published (calibre 0.8.57 and 0.9.0 outputs in the Open Preservation Foundation format corpus).",
+      "searched": [
+        "file lists of calibre, libmobi and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "tcr": {
+      "reason": "No Psion TCR book was found; the .tcr files on GitHub are unrelated (test-and-commit tooling, certificates).",
+      "searched": [
+        "file lists of calibre, libmobi and the Open Preservation Foundation format corpus at pinned commits",
+        "GitHub code search for .tcr files (all unrelated)"
+      ]
+    },
+    "htmlz": {
+      "reason": "Two zipped HTML books are published (calibre 0.8.57 and 0.9.0 outputs in the Open Preservation Foundation format corpus); no other collection searched holds .htmlz.",
+      "searched": [
+        "file lists of calibre, libmobi and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "txtz": {
+      "reason": "Two zipped text books are published (calibre 0.8.57 and 0.9.0 outputs in the Open Preservation Foundation format corpus); no other collection searched holds .txtz.",
+      "searched": [
+        "file lists of calibre, libmobi and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "oeb": {
+      "reason": "No OEB package file with the .oeb extension was found; OEB books are published as .epub or as an .opf package with loose files.",
+      "searched": [
+        "file lists of calibre, libmobi, KOReader and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "djv": {
+      "reason": "DjVu documents are published as .djvu (counted there); no collection searched uses the short .djv extension.",
+      "searched": [
+        "Wikimedia Commons search for file names containing .djvu",
+        "file lists of Tika, Okular and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "ndjson": {
+      "reason": "Newline-delimited JSON is published as .jsonl; no collection searched holds a file with the .ndjson extension.",
+      "searched": [
+        "file lists of the GSM8K data, Vega datasets, Tika, Pillow and file(1) test data at pinned commits"
+      ]
+    },
+    "tab": {
+      "reason": "No tab-separated data with the .tab extension and a usable licence was found; tab-separated files are published as .tsv (counted there).",
+      "searched": [
+        "file lists of Vega datasets, Tika, LibreOffice core and Apache POI at pinned commits"
+      ]
+    },
+    "prn": {
+      "reason": "No formatted text print file (.prn) was found in any collection searched; PRN files are printer spool dumps.",
+      "searched": [
+        "file lists of Tika, LibreOffice core, Apache POI and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "qpw": {
+      "reason": "One Quattro Pro 9 workbook is published (Tika and the Open Preservation Foundation format corpus share testQUATTRO.qpw, the same bytes); no other .qpw file is public.",
+      "searched": [
+        "file lists of Tika, LibreOffice core, Apache POI and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "pot": {
+      "reason": "No PowerPoint 97 template (.pot) is published; the only .pot file in the sources searched is a gettext message catalogue (VLC).",
+      "searched": [
+        "file lists of Apache POI, Tika, LibreOffice core, VLC and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "pps": {
+      "reason": "No PowerPoint 97 slide show (.pps) is published by the sources searched; their slide shows are .ppsx.",
+      "searched": [
+        "file lists of Apache POI, Tika, LibreOffice core and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "xlt": {
+      "reason": "One Excel 97 template is published (Tika testEXCEL_template.xlt); no other collection searched holds one.",
+      "searched": [
+        "file lists of Apache POI, Tika, LibreOffice core and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "xltx": {
+      "reason": "Two Excel templates are published (Apache POI test.xltx and Tika testEXCEL_template.xltx).",
+      "searched": [
+        "file lists of Apache POI, Tika, LibreOffice core and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "ots": {
+      "reason": "One OpenDocument spreadsheet template is published in the test suites searched (LibreOffice calc.ots).",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "otp": {
+      "reason": "One OpenDocument presentation template is published in the test suites searched (LibreOffice impress.otp).",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "odd": {
+      "reason": "No .odd file was found; the OpenDocument drawing template extension is .otg, and no collection searched holds a file with this extension.",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "sdc": {
+      "reason": "Two StarOffice spreadsheets are published (LibreOffice Calc_3.1.sdc and Tika StarOffice 5.2); no other open project distributes StarOffice-era files.",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "sda": {
+      "reason": "Two StarOffice drawings are published (LibreOffice Draw_3.1.sda and Tika StarOffice 5.2).",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "sxd": {
+      "reason": "Two OpenOffice.org 1.x drawings are published (LibreOffice SvxShape.sxd and Tika StarOffice 6.0).",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "sxi": {
+      "reason": "Two OpenOffice.org 1.x presentations are published (LibreOffice ooo41061-1.sxi and Tika StarOffice 6.0).",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "shw": {
+      "reason": "Two Corel Presentations shows are published (Apache POI TestCorel.shw and Tika testCOREL.shw).",
+      "searched": [
+        "file lists of Apache POI, Tika, LibreOffice core and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "keynotes": {
+      "reason": "Not a file extension: Keynote presentations are published as .key (counted there).",
+      "searched": [
+        "file lists of LibreOffice core, Tika and Okular at pinned commits"
+      ]
+    },
+    "presentation": {
+      "reason": "Not a file extension: a generic presentation id of the registry; presentations are published with their own extensions (pptx, odp, key).",
+      "searched": [
+        "bench/realworld/manifest.json pptx, odp and key files"
+      ]
+    },
+    "dps": {
+      "reason": "WPS Presentation files are written only by Kingsoft Office; no collection searched holds one.",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits",
+        "web search for WPS Office sample files"
+      ]
+    },
+    "et": {
+      "reason": "WPS Spreadsheets files are written only by Kingsoft Office; no collection searched holds one.",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits",
+        "web search for WPS Office sample files"
+      ]
+    },
+    "lwp": {
+      "reason": "No Lotus Word Pro file is published in any collection searched, including the LibreOffice import-filter test data.",
+      "searched": [
+        "file lists of LibreOffice core (writerperfect test data), Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "hwpx": {
+      "reason": "One HWPX document is published with a repository licence (the file(1) test suite HWP2016.hwpx); the other HWPX files found are government form templates (hwpx-skill assets) whose own licence is not stated and were not used.",
+      "searched": [
+        "file lists of Tika, pyhwp, hwpilot, hwpx-skill, hwpx-owpml-model and the file(1) test suite at pinned commits"
+      ]
+    },
+    "ai": {
+      "reason": "One Illustrator file is published in the test suites searched (Tika testAI_PS.ai, PostScript based); no PDF-based .ai file with an open licence was found.",
+      "searched": [
+        "file lists of Tika, LibreOffice core, Scribus, UniConvertor and ImageMagick at pinned commits"
+      ]
+    },
+    "cdr": {
+      "reason": "Two CorelDRAW files are published with open licences (LibreOffice fdo65220-2.cdr and Apache POI pb-poi.cdr); the other .cdr file in LibreOffice's data comes from an exploit database and was not used.",
+      "searched": [
+        "file lists of LibreOffice core, Apache POI, Tika, Scribus and UniConvertor at pinned commits"
+      ]
+    },
+    "dwf": {
+      "reason": "One Autodesk DWF file is published (Tika testDWF2010.dwf).",
+      "searched": [
+        "file lists of Tika, LibreOffice core, Apache POI and the Open Preservation Foundation format corpus at pinned commits"
+      ]
+    },
+    "sk": {
+      "reason": "No sK1 or Sketch file with the .sk extension was found in any collection searched.",
+      "searched": [
+        "file lists of the sK1 project (uniconvertor, sk1-wx), LibreOffice core, Tika and Scribus at pinned commits"
+      ]
+    },
+    "sk1": {
+      "reason": "No sK1 drawing was found; the sK1 project repositories ship no sample drawings.",
+      "searched": [
+        "file lists of the sK1 project (uniconvertor, sk1-wx), LibreOffice core, Tika and Scribus at pinned commits"
+      ]
+    },
+    "psb": {
+      "reason": "No Photoshop large document (.psb) with a usable licence was found; the .psd files of the test suites are standard documents.",
+      "searched": [
+        "file lists of Pillow, ImageMagick, libvips, Tika and LibreOffice core at pinned commits"
+      ]
+    },
+    "pnm": {
+      "reason": "One portable anymap is published as a test image (Pillow hopper.pnm); other Netpbm test files are named .ppm, .pgm and .pbm.",
+      "searched": [
+        "file lists of Pillow, ImageMagick, libvips, libjpeg-turbo and the file(1) tests at pinned commits"
+      ]
+    },
+    "pbm": {
+      "reason": "One bitmap is published as a Netpbm file (LibreOffice rhbz160429-1.pbm); the .pbm files in Pillow are PNG font images with a misleading extension.",
+      "searched": [
+        "file lists of Pillow, ImageMagick, libvips, libjpeg-turbo and LibreOffice core at pinned commits"
+      ]
+    },
+    "wbmp": {
+      "reason": "No Wireless Bitmap file is published by the image libraries searched.",
+      "searched": [
+        "file lists of Pillow, ImageMagick, libvips, libjpeg-turbo and LibreOffice core at pinned commits"
+      ]
+    },
+    "ultrahdr": {
+      "reason": "Not a file extension: Ultra HDR images are JPEG files with a gain map and are published as .jpg (Pillow ultrahdr.jpg).",
+      "searched": [
+        "Pillow test images at a pinned commit"
+      ]
+    },
+    "jfif": {
+      "reason": "JFIF is the interchange format of .jpg and .jpeg files; no collection searched holds a file with the .jfif extension.",
+      "searched": [
+        "file lists of Pillow, ImageMagick, libvips, libjpeg-turbo and LibreOffice core at pinned commits"
+      ]
+    },
+    "bin": {
+      "reason": "Not a content format: .bin names an arbitrary binary file, so no sample can represent it.",
+      "searched": [
+        "registry description of the bin format"
+      ]
+    },
+    "war": {
+      "reason": "Two web archives are published (Apache Tomcat sample.war and Tika testWAR.war); other open WAR files are application releases of tens of megabytes.",
+      "searched": [
+        "file lists of Tika and Commons Compress at pinned commits",
+        "Apache Tomcat documentation sample application"
+      ]
+    },
+    "ear": {
+      "reason": "One enterprise archive is published (Tika testEAR.ear); no other open collection searched holds one.",
+      "searched": [
+        "file lists of Tika and Commons Compress at pinned commits"
+      ]
+    },
+    "pfa": {
+      "reason": "Two Type 1 ASCII fonts are published as test files (fontTools TestT1-Regular.pfa and TestT1-ellipsis-hinted.pfa).",
+      "searched": [
+        "file lists of fontTools, Pillow, calibre and calibre-web at pinned commits"
+      ]
+    },
+    "pfb": {
+      "reason": "One Type 1 binary font is published with an open licence (fontTools TestT1-Regular.pfb); the Foxit .pfb fonts in calibre-web were not used because their licence was not verified.",
+      "searched": [
+        "file lists of fontTools, Pillow, calibre and calibre-web at pinned commits"
+      ]
+    },
+    "dfont": {
+      "reason": "One Mac data-fork font is published (fontTools TestDFONT.dfont).",
+      "searched": [
+        "file lists of fontTools, Pillow and calibre at pinned commits"
+      ]
+    },
+    "igs": {
+      "reason": "Two IGES files with the .igs extension are published (pythonocc sunglasses_lens.igs and testfile.igs); the other open IGES files are named .iges (counted there).",
+      "searched": [
+        "file lists of pythonocc-core, Open CASCADE Technology data, CadQuery and trimesh at pinned commits"
+      ]
+    }
+  }
+}

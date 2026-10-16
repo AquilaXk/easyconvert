@@ -1,7 +1,7 @@
 /**
  * Real-world corpus runner (`npm run bench:realworld`).
  *
- *   run   --shard I/N [--per-file K] [--workers W] [--deadline-ms D] [--cache DIR] [--out FILE] [--limit L]
+ *   run   --shard I/N [--per-file K] [--workers W] [--deadline-ms D] [--cache DIR] [--out FILE] [--limit L] [--sources A,B]
  *         Fetches this shard's files (digest-checked, cached), converts each through K of its advertised targets in
  *         isolated job servers, and writes the shard report.
  *   merge --out DIR [--update-baseline] REPORT...
@@ -78,13 +78,15 @@ async function runShard(args: string[]): Promise<number> {
   const workers = positiveInt(flag(args, '--workers'), Math.max(1, os.cpus().length - 1), '--workers');
   const deadlineMs = positiveInt(flag(args, '--deadline-ms'), DEFAULT_DEADLINE_MS, '--deadline-ms');
   const limit = flag(args, '--limit');
+  const sources = flag(args, '--sources')?.split(',');
   const cacheDir = flag(args, '--cache') ?? DEFAULT_CACHE;
   const out = flag(args, '--out') ?? `realworld-shard-${shard + 1}.json`;
   if (args.length > 0) throw new ArgumentError(`unknown arguments: ${args.join(' ')}`);
 
   const manifest = readManifest();
   const targetsOf = (format: string): string[] => getAvailableTargetFormats(format).map((def) => def.id);
-  let jobs = shardJobs(planJobs(manifest.files, targetsOf, perFile), shard, shards);
+  const wanted = sources === undefined ? manifest.files : manifest.files.filter((file) => sources.includes(file.source));
+  let jobs = shardJobs(planJobs(wanted, targetsOf, perFile), shard, shards);
   if (limit !== undefined) jobs = jobs.slice(0, positiveInt(limit, 1, '--limit'));
   const files = [...new Map(jobs.map((job) => [job.file.id, job.file])).values()];
   console.log(`shard ${shard + 1}/${shards}: ${jobs.length} jobs over ${files.length} files`);
