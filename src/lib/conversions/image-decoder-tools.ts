@@ -120,16 +120,13 @@ export async function withDecoderJob<T>(input: Buffer, inputName: string, task: 
  */
 export async function readDecodedFile(filePath: string, maxBytes: number, label: string): Promise<Buffer> {
   const missing = new ConversionFailedError(`Invalid image: the ${label} picture could not be decoded`);
-  const tooLarge = new PayloadLimitError(`Cannot decode the ${label} picture: it needs more memory than decoding allows`);
   const linkStat = await fs.promises.lstat(filePath).catch(() => null);
   if (linkStat === null || !linkStat.isFile()) throw missing;
-  if (linkStat.size > maxBytes) throw tooLarge;
-  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW).catch(() => undefined);
-  if (handle === undefined) throw missing;
+  if (linkStat.size > maxBytes) throw new PayloadLimitError(`Cannot decode the ${label} picture: it needs more memory than decoding allows`);
+  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW).catch(() => {
+    throw missing;
+  });
   try {
-    const opened = await handle.stat();
-    if (!opened.isFile()) throw missing;
-    if (opened.size > maxBytes) throw tooLarge;
     return await handle.readFile();
   } finally {
     await handle.close();
