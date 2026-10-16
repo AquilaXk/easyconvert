@@ -23,7 +23,7 @@ import { MAX_SVG_INPUT_CHARS, normalizeSvgBufferForRendering } from './svg-geome
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
 import { convertDwgToDxf } from './cad-dwg';
 import { encodeSvgPageToDxf } from './vector-dxf';
-import { sanitizeSvgDocument } from '../security/svg-sanitizer';
+import { isSvg, sanitizeSvgDocument } from '../security/svg-sanitizer';
 
 export {
   evaluateCubicBezier,
@@ -229,6 +229,8 @@ export async function convertVectorCad(
   // 2. SVGZ Source (Compressed SVG)
   if (src === 'svgz') {
     const uncompressed = gunzipSvgz(inputBuffer);
+    // The signature check sees only the gzip header; what the stream holds is judged here, where it is inflated.
+    if (!isSvg(uncompressed)) throw new ConversionFailedError('Invalid image: the SVGZ payload is not an SVG document');
     const cleanSvg = sanitizeSvgDocument(uncompressed.toString('utf-8'));
     return convertSvgSource(Buffer.from(cleanSvg, 'utf-8'), tgt, options, baseName);
   }

@@ -68,6 +68,10 @@ export type ExternalOracleTool =
   | 'avifenc'
   | 'avifdec'
   | 'heif-enc'
+  | 'heif-convert'
+  | 'heif-dec'
+  | 'opj_compress'
+  | 'opj_decompress'
   | 'cwebp'
   | 'dwebp'
   | 'epubcheck';

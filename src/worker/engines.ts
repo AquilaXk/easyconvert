@@ -76,6 +76,7 @@ import {
 } from './sandbox';
 import { convertPostScript } from './postscript-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
+import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
 import { ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, selectsPages, splitIntoBatches } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
@@ -2429,9 +2430,8 @@ async function convertWithinImageSession(
 
   // Fail-closed verification against spoofed file extensions before any native engine execution
   assertNotSpoofedFileVfs(input, declaredSource, originalFilename);
-  // An Illustrator file is a PDF with private data; once the check above has seen the PDF signature, it takes the PDF path
-  // (Poppler pages, PostScript, the encoded rasters). Packaging keeps the file as it is.
-  const src = declaredSource === ILLUSTRATOR_FORMAT && !RAW_PACKAGING_TARGETS.has(tgt) ? PDF_SOURCE_FORMAT : declaredSource;
+  // An Illustrator file takes the path of the format it is written in (PDF or PostScript); packaging keeps the file as it is.
+  const src = declaredSource === ILLUSTRATOR_FORMAT && !RAW_PACKAGING_TARGETS.has(tgt) ? illustratorRouteFormat(input) : declaredSource;
 
   let fallbackReason: string | undefined;
   let lastUnavailable: EngineUnavailableError | undefined;

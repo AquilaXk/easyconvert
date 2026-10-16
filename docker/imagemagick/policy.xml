@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ImageMagick policy of the picture decoders (src/lib/conversions/image-magick-cli.ts).
+  Every run is started with MAGICK_CONFIGURE_PATH naming the directory of this file, so these rules are read before
+  those of the distribution. The worker image carries the file read-only in /etc/easyconvert/imagemagick and CI uses it from the
+  repository. Rules apply in order and a later rule overrides an earlier one: everything is denied first, then only the coders the
+  route calls are allowed. The syntax works on ImageMagick 6.9 and 7.1. Do not write apostrophes, quotes or backticks in a
+  comment: the parser reads them as the start of a string. See docs/policy-decisions.md, section 38.
+-->
+<policymap>
+  <!-- Resource limits: the pixel limit of the input is 100 megapixels, a side above any real picture is refused, and the budget of one job -->
+  <policy domain="resource" name="width" value="100KP"/>
+  <policy domain="resource" name="height" value="100KP"/>
+  <policy domain="resource" name="area" value="1GiB"/>
+  <policy domain="resource" name="memory" value="1GiB"/>
+  <policy domain="resource" name="map" value="2GiB"/>
+  <policy domain="resource" name="disk" value="2GiB"/>
+  <policy domain="resource" name="list-length" value="4096"/>
+  <policy domain="resource" name="thread" value="2"/>
+  <policy domain="resource" name="time" value="100"/>
+
+  <!-- No file, program or URL is reached through a name inside a picture -->
+  <policy domain="path" rights="none" pattern="@*"/>
+  <policy domain="delegate" rights="none" pattern="*"/>
+
+  <!-- Coders: none, then the ones the route names. The size probe writes INFO and the result is a PNG or a TIFF -->
+  <policy domain="coder" rights="none" pattern="*"/>
+  <policy domain="coder" rights="read" pattern="{PSD,XCF,TGA,PCX,DDS,PNM,PBM,PGM,PPM,PAM,HEIC,HEIF}"/>
+  <policy domain="coder" rights="read | write" pattern="{TIFF,PNG,INFO}"/>
+</policymap>

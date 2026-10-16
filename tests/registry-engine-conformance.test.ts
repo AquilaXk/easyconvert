@@ -33,6 +33,7 @@ import { loadConformanceDurations, partOfKey, planConformanceParts } from '../sc
 import { buildPptBinary } from './helpers/ppt-binary-builder';
 import { ensureSample } from '../bench/corpora';
 import { pinnedDwgSample } from './helpers/dwg-samples';
+import { realworldSampleBytes } from './helpers/realworld-sample';
 
 /**
  * Registry/engine conformance gate.
@@ -413,6 +414,12 @@ async function cursorFromPngSeed(): Promise<Buffer> {
 const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   ndjson: () => NDJSON_TEXT,
   jsonl: () => NDJSON_TEXT,
+  // The pictures that command-line decoders read (docs/policy-decisions.md, section 38) are judged by their format, not by their name:
+  // a PNG under their name is refused, so each needs a file of its own. The small ones are in fixtures/images (a HEIC written by
+  // libheif's encoder, JPEG 2000 written by OpenJPEG's, the Netpbm, TGA, PCX and DDS ones written from the format documents);
+  // a GIMP project has no writer here, so a real file of the real-world corpus (fetched by digest) is the probe.
+  heif: () => readFileSync(path.join(FIXTURE_ROOT, 'images', 'heic-quarter-turn.heic')),
+  xcf: () => realworldSampleBytes('cc-logo.xcf'),
   cur: cursorFromPngSeed,
   yaml: () => YAML_MAPPING_TEXT,
   yml: () => YAML_MAPPING_TEXT,

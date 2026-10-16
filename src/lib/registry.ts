@@ -1,4 +1,5 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
+import { isGzipFamilyCompatible, isPostScriptCompatible } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
   // ==========================================
@@ -2947,8 +2948,8 @@ const BOX_SIZE_TO_END = 0;
 const AVIF_BRANDS = new Set(['avif', 'avis']);
 /** HEVC-coded HEIF brands (ISO/IEC 23008-12 Annex B): images, image sequences and their extended-range variants. */
 const HEVC_IMAGE_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs']);
-/** Codec-neutral HEIF structural brands (ISO/IEC 23008-12 section 10): image item and image sequence. */
-const HEIF_STRUCTURAL_BRANDS = new Set(['mif1', 'msf1']);
+/** Codec-neutral HEIF structural brands (ISO/IEC 23008-12 section 10): image item (mif1, mif2), minimized image item (mif3), image sequence (msf1). */
+const HEIF_STRUCTURAL_BRANDS = new Set(['mif1', 'mif2', 'mif3', 'msf1']);
 /** File extensions that an AV1 image or a HEIF image may carry. */
 const AVIF_EXTENSIONS = new Set(['avif']);
 const HEIF_EXTENSIONS = new Set(['heic', 'heif']);
@@ -3338,7 +3339,7 @@ export function isFormatCompatibleWithMagicBytes(
   ]);
   const pdfFormats = new Set(['pdf', 'ai']);
   const pngFormats = new Set(['png', 'apng']);
-  const jpegFormats = new Set(['jpg', 'jpeg', 'jpe', 'jfif', 'raw']);
+  const jpegFormats = new Set(['jpg', 'jpeg', 'jpe', 'jfif', 'raw', 'ultrahdr']);
   const gifFormats = new Set(['gif']);
   const tiffFormats = new Set(['tif', 'tiff', 'dng', 'cr2', 'nef', 'arw', '3fr', 'dcr', 'erf', 'mos', 'pef']);
   const webpFormats = new Set(['webp']);
@@ -3353,7 +3354,6 @@ export function isFormatCompatibleWithMagicBytes(
   const webmFormats = new Set(['webm', 'weba']);
   const aviFormats = new Set(['avi']);
   const sevenZipFormats = new Set(['7z', 'cb7']);
-  const gzipFormats = new Set(['gz', 'tgz', 'gzip', 'tar.gz']);
   const bzipFormats = new Set(['bz2', 'bz', 'tbz', 'tbz2', 'tar.bz2', 'tar.bz']);
   const zstdFormats = new Set(['zst', 'zstd', 'tar.zst']);
   const rarFormats = new Set(['rar', 'cbr']);
@@ -3475,11 +3475,11 @@ export function isFormatCompatibleWithMagicBytes(
   if (sniffed === 'audio/x-matroska') return cleanExt === 'mka' || mkvFormats.has(cleanExt);
   if (sniffed === 'video/x-msvideo') return aviFormats.has(cleanExt);
   if (sniffed === 'application/x-7z-compressed') return sevenZipFormats.has(cleanExt);
-  if (sniffed === 'application/gzip') return gzipFormats.has(cleanExt);
+  if (sniffed === 'application/gzip') return isGzipFamilyCompatible(cleanExt, buffer);
   if (sniffed === 'application/x-bzip2') return bzipFormats.has(cleanExt);
   if (sniffed === 'application/zstd') return zstdFormats.has(cleanExt);
   if (sniffed === 'application/vnd.rar') return rarFormats.has(cleanExt);
-  if (sniffed === 'application/postscript') return cleanExt === 'ps' || cleanExt === 'eps';
+  if (sniffed === 'application/postscript') return isPostScriptCompatible(cleanExt, buffer);
   if (sniffed === 'model/step') return cleanExt === 'step' || cleanExt === 'stp';
   if (sniffed === 'application/vnd.apache.parquet') return cleanExt === 'parquet';
 

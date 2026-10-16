@@ -30,8 +30,10 @@ ghostscript
 libraw-bin
 libavif-bin
 libheif-examples
+libheif-plugin-libde265
 libheif-plugin-x265
 libheif-plugin-aomenc
+libopenjp2-tools
 libimage-exiftool-perl
 libtiff-tools
 pngcheck

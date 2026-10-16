@@ -53,19 +53,6 @@
     "issue": 783
   },
   {
-    "pair": "*",
-    "verdict": "crash",
-    "detail": "^Error: source: bad seek to \\d+",
-    "issue": 783
-  },
-  {
-    "pair": "*",
-    "verdict": "crash",
-    "detail": "^Error: tiff2vips: Old-style JPEG compression support is not configured",
-    "file": "opf-old-style-jpeg-compression.tif",
-    "issue": 783
-  },
-  {
     "pair": "wav->aac",
     "verdict": "bad-output",
     "detail": "^empty output$",
@@ -91,12 +78,6 @@
     "verdict": "crash",
     "detail": "^job server died \\(code null, signal SIGKILL\\)$",
     "file": "pix-google-pixel6pro.dng",
-    "issue": 783
-  },
-  {
-    "pair": "dng->ultrahdr",
-    "verdict": "bad-output",
-    "detail": "^output bytes do not match ultrahdr$",
     "issue": 783
   },
   {
