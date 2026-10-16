@@ -1,6 +1,7 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { executeSandboxedBinary, type SandboxedExecutionResult } from '../security/process-sandbox';
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, EngineUnavailableError } from '../types';
 import {
   DECODER_INPUT_NAME,
   DECODER_MAX_DIAGNOSTIC_BYTES,
@@ -26,6 +27,13 @@ import { assertInputPixels, InputPixelLimitError, maxInputPixels } from './image
 
 /** Environment variable that names the executable; a value is authoritative, so a path that is not an executable file means "not installed". */
 export const MAGICK_PATH_ENV = 'MAGICK_PATH';
+/**
+ * Environment variable that names the directory of the ImageMagick policy (`policy.xml`); a value is authoritative. Without it
+ * the worker image's directory is used, then the repository's, which is where development and CI run from.
+ */
+export const MAGICK_POLICY_DIR_ENV = 'MAGICK_POLICY_DIR';
+const POLICY_FILE = 'policy.xml';
+const POLICY_DIRECTORY_CANDIDATES: readonly string[] = ['/etc/easyconvert/imagemagick', path.join(process.cwd(), 'docker', 'imagemagick')];
 /** `magick` is ImageMagick 7; `convert` is the command of version 6, and of the compatibility alias of version 7. */
 const MAGICK_EXECUTABLE_NAMES = ['magick', 'magick-im7.q16', 'convert', 'convert-im6.q16'] as const;
 
@@ -76,7 +84,7 @@ const MAGICK_LIMITS: readonly string[] = [
   '-limit', 'memory', '1GiB',
   '-limit', 'map', '2GiB',
   '-limit', 'area', '1GiB',
-  '-limit', 'disk', '8GiB',
+  '-limit', 'disk', '2GiB',
   '-limit', 'thread', '2',
   '-limit', 'time', String(MAGICK_TIME_LIMIT_SECONDS),
 ];
@@ -85,6 +93,16 @@ const STRICT_READ = '-regard-warnings';
 /** Fastest PNG compression (zlib level 1, no row filter): the result is read once by the next step, not stored. */
 const FAST_COMPRESSION = ['-quality', '10'] as const;
 const LOSSLESS_TIFF = ['-compress', 'Zip'] as const;
+
+/** Largest output of the size probe, which writes one short line per picture. */
+const PROBE_MAX_BYTES = 1024 * 1024;
+
+/** Where the ImageMagick policy is kept, or null when no directory holds a `policy.xml`. */
+export function findMagickPolicyDirectory(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
+  const override = env[MAGICK_POLICY_DIR_ENV];
+  const candidates = override !== undefined && override !== '' ? [override] : POLICY_DIRECTORY_CANDIDATES;
+  return candidates.find((dir) => path.isAbsolute(dir) && fs.existsSync(path.join(dir, POLICY_FILE))) ?? null;
+}
 
 /** Where ImageMagick is installed, or null. */
 export function findMagick(env: Readonly<Record<string, string | undefined>> = process.env): string | null {
@@ -132,11 +150,26 @@ function warningPolicy(source: MagickSource): string[] {
   return source.tolerateWarnings === true ? [] : [STRICT_READ];
 }
 
-/** One sandboxed ImageMagick run in the job directory; a failure is the conversion's typed error. */
-async function runMagick(magick: string, jobDir: string, source: MagickSource, args: readonly string[], signal: AbortSignal | undefined, maxFileSize?: number): Promise<SandboxedExecutionResult> {
+/** What every run of one conversion shares. */
+interface MagickJob {
+  magick: string;
+  /** The directory of the policy, which every run reads before any other. */
+  policyDir: string;
+  jobDir: string;
+  source: MagickSource;
+  signal: AbortSignal | undefined;
+}
+
+/**
+ * One sandboxed ImageMagick run in the job directory; a failure is the conversion's typed error. The policy is the repository's,
+ * and the pixel cache that spills past the memory limit is written inside the job directory, which is removed with it.
+ */
+async function runMagick(job: MagickJob, args: readonly string[], maxFileSize: number): Promise<SandboxedExecutionResult> {
+  const { magick, policyDir, jobDir, source, signal } = job;
   try {
     return await executeSandboxedBinary(magick, [...MAGICK_LIMITS, ...warningPolicy(source), ...args], {
       cwd: jobDir,
+      env: { MAGICK_CONFIGURE_PATH: policyDir, MAGICK_TEMPORARY_PATH: jobDir },
       timeoutMs: DECODER_TIMEOUT_MS,
       maxBuffer: DECODER_MAX_DIAGNOSTIC_BYTES,
       maxFileSize,
@@ -150,9 +183,9 @@ async function runMagick(magick: string, jobDir: string, source: MagickSource, a
 }
 
 /** The pixels the picture declares, read from its header without decoding it, before the run that decodes it. */
-async function declaredPixels(magick: string, jobDir: string, source: MagickSource, signal: AbortSignal | undefined): Promise<number> {
-  const run = await runMagick(magick, jobDir, source, ['-ping', inputSpecifier(source), '-format', SIZE_FORMAT, 'info:'], signal);
-  return checkedPixels(parseSceneSizes(run.stdout.toString('utf-8'), source.label), source.result);
+async function declaredPixels(job: MagickJob): Promise<number> {
+  const run = await runMagick(job, ['-ping', inputSpecifier(job.source), '-format', SIZE_FORMAT, 'info:'], PROBE_MAX_BYTES);
+  return checkedPixels(parseSceneSizes(run.stdout.toString('utf-8'), job.source.label), job.source.result);
 }
 
 /** The operators and the writer that give the result its form: a canvas is set and drawn on, a PNG is written fast, TIFF pages deflate. */
@@ -167,10 +200,14 @@ function resultArguments(result: MagickResult): { format: 'png' | 'tiff'; argume
 export async function decodeWithMagick(input: Buffer, source: MagickSource, signal?: AbortSignal): Promise<MagickDecoded> {
   const magick = findMagick();
   if (magick === null) throw decoderUnavailable('magick', 'ImageMagick');
+  // Without its policy the run would rest on the coder prefix alone: the conversion is refused instead.
+  const policyDir = findMagickPolicyDirectory();
+  if (policyDir === null) throw new EngineUnavailableError('magick', `its policy (${POLICY_FILE} in docker/imagemagick) is not installed`);
   return withDecoderJob(input, DECODER_INPUT_NAME, async (jobDir) => {
-    const maxOutputBytes = (await declaredPixels(magick, jobDir, source, signal)) * OUTPUT_BYTES_PER_PIXEL + OUTPUT_OVERHEAD_BYTES;
+    const job: MagickJob = { magick, policyDir, jobDir, source, signal };
+    const maxOutputBytes = (await declaredPixels(job)) * OUTPUT_BYTES_PER_PIXEL + OUTPUT_OVERHEAD_BYTES;
     const { format, arguments: resultOptions } = resultArguments(source.result);
-    await runMagick(magick, jobDir, source, [inputSpecifier(source), ...resultOptions, `${format}:${DECODER_OUTPUT_NAME}`], signal, maxOutputBytes);
+    await runMagick(job, [inputSpecifier(source), ...resultOptions, `${format}:${DECODER_OUTPUT_NAME}`], maxOutputBytes);
     const buffer = await readDecodedFile(path.join(jobDir, DECODER_OUTPUT_NAME), maxOutputBytes, source.label);
     return { buffer, format };
   });

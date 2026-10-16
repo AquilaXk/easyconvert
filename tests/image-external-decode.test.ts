@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { MAX_INPUT_PIXELS_ENV } from '../src/lib/conversions/image-input-limit-config';
-import { findMagick, MAGICK_PATH_ENV } from '../src/lib/conversions/image-magick-cli';
+import { findMagick, findMagickPolicyDirectory, MAGICK_PATH_ENV, MAGICK_POLICY_DIR_ENV } from '../src/lib/conversions/image-magick-cli';
 import { encodePsd } from '../src/lib/conversions/psd-writer';
 import { buildDdsArgb, buildDdsDxt1, buildPcx, buildPnm, buildRleTga, buildTga, dxt1Palette, type RgbaPixel } from './helpers/image-format-builders';
 import { decodeRgba, maxSampleDifference, rgbaBytes, sixteenBitSamples } from './helpers/image-pixels';
@@ -258,10 +258,15 @@ describe.skipIf(needsMagick)('files that cannot be decoded', () => {
 
     describe('the arguments of a run', () => {
       // A stand-in that writes one line per argument to a file named by the first run, and answers the size probe.
-      async function argumentsOf(input: Buffer, format: string, canvas = false): Promise<string[][]> {
+      async function argumentsOf(input: Buffer, format: string): Promise<string[][]> {
+        return (await runsOf(input, format)).map((run) => run.filter((line) => !line.startsWith('ENV ')));
+      }
+
+      async function runsOf(input: Buffer, format: string): Promise<string[][]> {
         const log = path.join(stubDir, `arguments-${stubCount}.log`);
         const stub = path.join(stubDir, `magick-${stubCount++}`);
-        fs.writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$@" >> '${log}'\nprintf -- '--run-end--\\n' >> '${log}'\nprintf '%s' '4 4'\n`, { mode: 0o755 });
+        // Each run logs its arguments, then a line with the policy directory, the temporary directory, the working directory and the file-size limit it was given.
+        fs.writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$@" >> '${log}'\nprintf 'ENV %s|%s|%s|%s\\n' "$MAGICK_CONFIGURE_PATH" "$MAGICK_TEMPORARY_PATH" "$(pwd -P)" "$(ulimit -f)" >> '${log}'\nprintf -- '--run-end--\\n' >> '${log}'\nprintf '%s' '4 4'\n`, { mode: 0o755 });
         const saved = process.env[MAGICK_PATH_ENV];
         process.env[MAGICK_PATH_ENV] = stub;
         try {
@@ -275,8 +280,24 @@ describe.skipIf(needsMagick)('files that cannot be decoded', () => {
 
       it('name the coder and the file, limit the run, and make a warning a failure, with no word of the request', async () => {
         const [probe, decode] = await argumentsOf(buildTga(1, 1, [RED], false), 'tga');
-        expect(probe).toEqual(['-limit', 'memory', '1GiB', '-limit', 'map', '2GiB', '-limit', 'area', '1GiB', '-limit', 'disk', '8GiB', '-limit', 'thread', '2', '-limit', 'time', '100', '-regard-warnings', '-ping', 'tga:in[0]', '-format', '%w %h\\n', 'info:']);
-        expect(decode).toEqual(['-limit', 'memory', '1GiB', '-limit', 'map', '2GiB', '-limit', 'area', '1GiB', '-limit', 'disk', '8GiB', '-limit', 'thread', '2', '-limit', 'time', '100', '-regard-warnings', 'tga:in[0]', '-quality', '10', 'png:out']);
+        expect(probe).toEqual(['-limit', 'memory', '1GiB', '-limit', 'map', '2GiB', '-limit', 'area', '1GiB', '-limit', 'disk', '2GiB', '-limit', 'thread', '2', '-limit', 'time', '100', '-regard-warnings', '-ping', 'tga:in[0]', '-format', '%w %h\\n', 'info:']);
+        expect(decode).toEqual(['-limit', 'memory', '1GiB', '-limit', 'map', '2GiB', '-limit', 'area', '1GiB', '-limit', 'disk', '2GiB', '-limit', 'thread', '2', '-limit', 'time', '100', '-regard-warnings', 'tga:in[0]', '-quality', '10', 'png:out']);
+      });
+
+      it('read the repository policy and keep the pixel cache in the job directory, and the size probe may write one line, not a file', async () => {
+        const runs = await runsOf(buildTga(1, 1, [RED], false), 'tga');
+        expect(runs).toHaveLength(2);
+        const [probe, decode] = runs.map((run) => (run.find((line) => line.startsWith('ENV ')) as string).slice(4).split('|'));
+        const [policyDir, temporaryDir, workingDir, probeFileLimit] = probe;
+        expect(policyDir).toBe(findMagickPolicyDirectory());
+        // The job directory is gone by now; its parent is compared with symbolic links resolved (macOS keeps /tmp behind /private).
+        expect(path.basename(temporaryDir)).toBe(path.basename(workingDir));
+        expect(fs.realpathSync(path.dirname(temporaryDir))).toBe(path.dirname(workingDir));
+        expect(path.basename(workingDir)).toMatch(/^easyconvert-decode-/);
+        expect(decode.slice(0, 3)).toEqual([policyDir, temporaryDir, workingDir]);
+        expect(fs.existsSync(workingDir)).toBe(false);
+        // The file-size limit is counted in 512-byte blocks where the sandbox applies it (Linux): 1 MiB for the probe.
+        if (process.platform === 'linux') expect(probeFileLimit).toBe('2048');
       });
 
       it('draw the layers of a GIMP project on the canvas its header states', async () => {
@@ -333,6 +354,32 @@ describe.skipIf(needsMagick)('files that cannot be decoded', () => {
     } finally {
       if (saved === undefined) delete process.env[MAGICK_PATH_ENV];
       else process.env[MAGICK_PATH_ENV] = saved;
+    }
+  });
+
+  it('refuses to run without its policy rather than rest on the coder prefix alone', async () => {
+    const saved = process.env[MAGICK_POLICY_DIR_ENV];
+    process.env[MAGICK_POLICY_DIR_ENV] = path.join(os.tmpdir(), 'no-such-policy-directory');
+    try {
+      await expect(toPng(buildTga(1, 1, [RED], false), 'tga')).rejects.toMatchObject({ name: 'EngineUnavailableError', engineName: 'magick', reason: expect.stringContaining('policy') });
+    } finally {
+      if (saved === undefined) delete process.env[MAGICK_POLICY_DIR_ENV];
+      else process.env[MAGICK_POLICY_DIR_ENV] = saved;
+    }
+  });
+
+  it('leaves nothing in the temporary directory of the host after a run, whether it ends in a picture or a refusal', async () => {
+    const hostTemporary = fs.mkdtempSync(path.join(os.tmpdir(), 'host-tmp-'));
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = hostTemporary;
+    try {
+      await toPng(buildTga(2, 2, FOUR_COLOURS, false), 'tga');
+      await toPng(Buffer.from('not a picture'), 'tga').catch(() => undefined);
+      expect(fs.readdirSync(hostTemporary)).toEqual([]);
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = saved;
+      fs.rmSync(hostTemporary, { recursive: true, force: true });
     }
   });
 
