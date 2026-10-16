@@ -10,63 +10,20 @@
  *
  * Exit codes: 0 pass, 1 gate failed, 2 the run itself failed (bad arguments, a fetch or digest failure).
  */
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getAvailableTargetFormats } from '../../src/lib/registry';
-import { ensureCached, mapLimit } from './fetch';
+import { ArgumentError, commit, EXIT_ERROR, EXIT_GATE, EXIT_PASS, flag, positiveInt, toolPath } from './cli';
+import { judgeJobs } from './judge';
 import { readManifest } from './manifest';
 import { planJobs, shardJobs } from './plan';
-import { ocrPageCount } from './ocr-path';
-import { JobPool, scaledDeadlineMs } from './pool';
 import { BASELINE_PATH, buildBaseline, evaluate, type JobRecord, mergeShards, readBaseline, readKnownFailures, readShard, renderMarkdown, REPORT_SCHEMA, type ShardReport } from './report';
 
-const EXIT_PASS = 0;
-const EXIT_GATE = 1;
-const EXIT_ERROR = 2;
 const DEFAULT_PER_FILE = 3;
 const DEFAULT_DEADLINE_MS = 180_000;
 const DEFAULT_HEAP_MB = 3072;
-const FETCH_CONCURRENCY = 8;
-const PROGRESS_EVERY = 100;
 const DEFAULT_CACHE = path.join(os.homedir(), '.cache', 'easyconvert-realworld');
-
-class ArgumentError extends Error {}
-
-function flag(args: string[], name: string): string | undefined {
-  const at = args.indexOf(name);
-  if (at === -1) return undefined;
-  const value = args[at + 1];
-  if (value === undefined || value.startsWith('--')) throw new ArgumentError(`${name} needs a value`);
-  args.splice(at, 2);
-  return value;
-}
-
-function positiveInt(value: string | undefined, fallback: number, name: string): number {
-  if (value === undefined) return fallback;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) throw new ArgumentError(`${name} must be a positive integer`);
-  return parsed;
-}
-
-/** Fixed system directories searched for tools; PATH is not trusted, so a writable directory on it cannot supply one. */
-const TOOL_DIRECTORIES = ['/usr/bin', '/usr/local/bin', '/bin'] as const;
-
-function toolPath(name: string): string {
-  const found = TOOL_DIRECTORIES.map((dir) => path.join(dir, name)).find((candidate) => fs.existsSync(candidate));
-  return found ?? '';
-}
-
-function commit(): string {
-  const git = toolPath('git');
-  if (git === '') return process.env.GITHUB_SHA ?? 'unknown';
-  try {
-    return execFileSync(git, ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  } catch {
-    return process.env.GITHUB_SHA ?? 'unknown';
-  }
-}
 
 async function runShard(args: string[]): Promise<number> {
   const shardArg = flag(args, '--shard') ?? '1/1';
@@ -88,44 +45,18 @@ async function runShard(args: string[]): Promise<number> {
   const wanted = sources === undefined ? manifest.files : manifest.files.filter((file) => sources.includes(file.source));
   let jobs = shardJobs(planJobs(wanted, targetsOf, perFile), shard, shards);
   if (limit !== undefined) jobs = jobs.slice(0, positiveInt(limit, 1, '--limit'));
-  const files = [...new Map(jobs.map((job) => [job.file.id, job.file])).values()];
-  console.log(`shard ${shard + 1}/${shards}: ${jobs.length} jobs over ${files.length} files`);
-  const paths = new Map<string, string>();
-  await mapLimit(files, FETCH_CONCURRENCY, async (file) => paths.set(file.id, await ensureCached(file, cacheDir)));
-
-  const pool = await JobPool.start({
+  const fileCount = new Set(jobs.map((job) => job.file.id)).size;
+  console.log(`shard ${shard + 1}/${shards}: ${jobs.length} jobs over ${fileCount} files`);
+  const { records } = await judgeJobs(jobs, {
+    cacheDir,
     workers,
     deadlineMs,
     heapMb: DEFAULT_HEAP_MB,
     env: { ...process.env, REALWORLD_PDFINFO: toolPath('pdfinfo'), REALWORLD_IDENTIFY: toolPath('identify') },
+    batchFiles: Math.max(1, fileCount),
+    deleteAfterJudged: false,
+    collectFetchErrors: false,
   });
-  let done = 0;
-  const pages = new Map<string, number>();
-  for (const file of files.filter((candidate) => candidate.format === 'pdf')) pages.set(file.id, await ocrPageCount(fs.readFileSync(paths.get(file.id)!)));
-  const outcomes = await pool
-    .runAll(
-      jobs.map((job) => ({
-        path: paths.get(job.file.id)!,
-        name: `${job.file.id}`,
-        format: job.file.format,
-        target: job.target,
-        emptyInput: job.file.emptyInput === true,
-        deadlineMs: scaledDeadlineMs(deadlineMs, pages.get(job.file.id) ?? 0),
-      })),
-      () => {
-        done++;
-        if (done % PROGRESS_EVERY === 0) console.log(`  ${done}/${jobs.length}`);
-      }
-    )
-    .finally(() => pool.stop());
-  const records: JobRecord[] = jobs.map((job, index) => ({
-    file: job.file.id,
-    source: job.file.format,
-    target: job.target,
-    verdict: outcomes[index].verdict,
-    ms: Math.round(outcomes[index].ms),
-    ...(outcomes[index].detail === undefined ? {} : { detail: outcomes[index].detail }),
-  }));
   const report: ShardReport = { schema: REPORT_SCHEMA, shard, shards, commit: commit(), jobs: records };
   fs.writeFileSync(out, JSON.stringify(report));
   console.log(`wrote ${out}`);
