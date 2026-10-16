@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getAllFormats } from '../src/lib/registry';
+import { getAllFormats, isFormatCompatibleWithMagicBytes } from '../src/lib/registry';
 import {
   collectRealSamples,
   coverageOf,
   EXCEPTIONS_SCHEMA,
+  FORMAT_ALIASES,
   MIN_REAL_SAMPLES,
   readExceptions,
   remoteFormatOf,
@@ -59,6 +60,64 @@ describe('format coverage rule', () => {
     expect(remoteFormatOf({ id: 'a.png', set: 's', meta: { format: 'gz' } }, known)).toBe('gz');
     expect(remoteFormatOf({ id: 'a.y4m', set: 's' }, known)).toBeNull();
     expect(remoteFormatOf({ id: 'silesia-xml', set: 's' }, known)).toBeNull();
+  });
+});
+
+/** The first bytes of a file of each canonical format, from the format's own specification (not from the registry). */
+const SIGNATURES: Readonly<Record<string, Buffer>> = {
+  jpg: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00]),
+  djvu: Buffer.concat([Buffer.from('AT&TFORM', 'latin1'), Buffer.from([0, 0, 0, 0x20]), Buffer.from('DJVM', 'latin1')]),
+  'tar.bz2': Buffer.concat([Buffer.from('BZh9', 'latin1'), Buffer.from([0x31, 0x41, 0x59, 0x26, 0x53, 0x59])]),
+  'tar.z': Buffer.from([0x1f, 0x9d, 0x90, 0x00, 0x00]),
+  mid: Buffer.concat([Buffer.from('MThd', 'latin1'), Buffer.from([0, 0, 0, 6, 0, 1, 0, 2, 0x01, 0xe0])]),
+  zst: Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x00]),
+  jsonl: Buffer.from('{"a":1}\n{"a":2}\n', 'utf8'),
+  tex: Buffer.from('\\documentclass{article}\n\\begin{document}x\\end{document}\n', 'utf8'),
+  html: Buffer.from('<!DOCTYPE html><html><body>x</body></html>', 'utf8'),
+  mpg: Buffer.from([0x00, 0x00, 0x01, 0xba, 0x44, 0x00, 0x04, 0x00, 0x04, 0x01, 0x89, 0xc3, 0xf8]),
+  '3gp': Buffer.concat([Buffer.from([0, 0, 0, 0x14]), Buffer.from('ftyp3gp4', 'latin1'), Buffer.from([0, 0, 0, 0]), Buffer.from('3gp4', 'latin1')]),
+  webm: Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x82, 0x84]), Buffer.from('webm', 'latin1')]),
+  txt: Buffer.from('plain text\n', 'utf8'),
+  m2ts: Buffer.from([0x00, 0x00, 0x00, 0x00, 0x47, 0x40, 0x00, 0x10]),
+};
+
+describe('extension aliases', () => {
+  it('counts the samples of the canonical format beside the alias own', () => {
+    const rows = coverageOf(['mid', 'midi', 'wav'], [sample('mid', 'p1'), sample('mid', 'p2'), sample('midi', 'p3'), sample('wav', 'p1')], { midi: 'mid' });
+    expect(rows).toEqual([
+      { format: 'mid', samples: 2, producers: 2 },
+      { format: 'midi', samples: 3, producers: 3, via: 'mid' },
+      { format: 'wav', samples: 1, producers: 1 },
+    ]);
+  });
+
+  it('names registry formats on both sides, with no chain and no alias of itself', () => {
+    const problems = Object.entries(FORMAT_ALIASES).flatMap(([alias, canonical]) => {
+      const found: string[] = [];
+      if (!KNOWN.has(alias)) found.push(`${alias}: not a registry format`);
+      if (!KNOWN.has(canonical)) found.push(`${canonical}: not a registry format`);
+      if (alias === canonical) found.push(`${alias}: an alias of itself`);
+      if (FORMAT_ALIASES[canonical] !== undefined) found.push(`${alias}: ${canonical} is an alias too`);
+      return found;
+    });
+    expect(problems).toEqual([]);
+  });
+
+  it('has a specification signature for every canonical format and the registry accepts it under the alias extension', () => {
+    const rejected = Object.entries(FORMAT_ALIASES).flatMap(([alias, canonical]) => {
+      const signature = SIGNATURES[canonical];
+      if (signature === undefined) return [`${canonical}: no signature in this test`];
+      const found: string[] = [];
+      if (!isFormatCompatibleWithMagicBytes(signature, canonical)) found.push(`${canonical}: the registry rejects its own signature`);
+      if (!isFormatCompatibleWithMagicBytes(signature, alias)) found.push(`${alias}: the registry rejects the signature of ${canonical}`);
+      return found;
+    });
+    expect(rejected).toEqual([]);
+  });
+
+  it('counts every alias through its canonical format in the report rows', () => {
+    const viaOf = new Map(ROWS.map((row) => [row.format, row.via]));
+    for (const [alias, canonical] of Object.entries(FORMAT_ALIASES)) expect(viaOf.get(alias)).toBe(canonical);
   });
 });
 

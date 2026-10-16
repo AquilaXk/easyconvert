@@ -5,7 +5,8 @@
  *
  *   npx tsx bench/realworld/format-coverage.ts   prints the table: format, samples, producers, sources
  *
- * The rule (tests/corpus-format-coverage.test.ts): every format has at least MIN_REAL_SAMPLES samples, or an entry in
+ * The rule (tests/corpus-format-coverage.test.ts): every format has at least MIN_REAL_SAMPLES samples (an extension alias counts the
+ * samples of its canonical format as well, FORMAT_ALIASES), or an entry in
  * format-coverage-exceptions.json that says why no public sample with a usable licence exists. The producer count is
  * reported, not enforced: whether a second producer of a format exists is a finding of the search, not a property a test can know.
  */
@@ -13,6 +14,32 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const MIN_REAL_SAMPLES = 3;
+
+/**
+ * Registry formats that are another extension of a format with samples: the bytes of an alias file are the bytes of its
+ * canonical format, so a real file of the canonical format is a real sample of the alias too (a renamed copy would count the
+ * same files twice and prove nothing more). The registry has no alias relation, so the table is written here; every pair is
+ * checked by tests/corpus-format-coverage.test.ts (both ids exist, neither side is itself an alias, and the registry accepts
+ * the signature of the canonical format under the alias extension). Only extensions of one byte format are listed: formats that merely share a
+ * container (a Dolby Vision file is not an HEVC alias, an `.m4b` book is not an `.m4a` track) stay out.
+ */
+export const FORMAT_ALIASES: Readonly<Record<string, string>> = {
+  jfif: 'jpg',
+  djv: 'djvu',
+  tbz: 'tar.bz2',
+  tbz2: 'tar.bz2',
+  tz: 'tar.z',
+  midi: 'mid',
+  zstd: 'zst',
+  ndjson: 'jsonl',
+  latex: 'tex',
+  htm: 'html',
+  mpeg: 'mpg',
+  '3gpp': '3gp',
+  weba: 'webm',
+  text: 'txt',
+  mts: 'm2ts',
+};
 export const EXCEPTIONS_PATH = path.join(__dirname, 'format-coverage-exceptions.json');
 export const EXCEPTIONS_SCHEMA = 1;
 
@@ -34,6 +61,8 @@ export interface FormatCoverage {
   format: string;
   samples: number;
   producers: number;
+  /** The canonical format whose samples this alias counts, when it is one. */
+  via?: string;
 }
 
 export interface CoverageException {
@@ -93,13 +122,15 @@ export function collectRealSamples(knownFormats: ReadonlySet<string>): RealSampl
   return samples;
 }
 
-/** Samples and distinct producers per format, for each of `formats`. */
-export function coverageOf(formats: readonly string[], samples: readonly RealSample[]): FormatCoverage[] {
+/** Samples and distinct producers per format, for each of `formats`; an alias adds the samples of its canonical format to its own. */
+export function coverageOf(formats: readonly string[], samples: readonly RealSample[], aliases: Readonly<Record<string, string>> = FORMAT_ALIASES): FormatCoverage[] {
   const byFormat = new Map<string, RealSample[]>();
   for (const sample of samples) byFormat.set(sample.format, [...(byFormat.get(sample.format) ?? []), sample]);
   return formats.map((format) => {
-    const own = byFormat.get(format) ?? [];
-    return { format, samples: own.length, producers: new Set(own.map((sample) => sample.producer)).size };
+    const canonical = aliases[format];
+    const own = [...(byFormat.get(format) ?? []), ...(canonical === undefined ? [] : (byFormat.get(canonical) ?? []))];
+    const row: FormatCoverage = { format, samples: own.length, producers: new Set(own.map((sample) => sample.producer)).size };
+    return canonical === undefined ? row : { ...row, via: canonical };
   });
 }
 
@@ -119,8 +150,8 @@ function printTable(): void {
   const { getAllFormats } = require('../../src/lib/registry') as typeof import('../../src/lib/registry');
   const formats = getAllFormats().map((def) => def.id);
   const rows = coverageOf(formats, collectRealSamples(new Set(formats)));
-  console.log('| Format | Samples | Producers |\n|---|---|---|');
-  for (const row of rows) console.log(`| ${row.format} | ${row.samples} | ${row.producers} |`);
+  console.log('| Format | Samples | Producers | Counted through |\n|---|---|---|---|');
+  for (const row of rows) console.log(`| ${row.format} | ${row.samples} | ${row.producers} | ${row.via ?? ''} |`);
 }
 
 if (require.main === module) printTable();
