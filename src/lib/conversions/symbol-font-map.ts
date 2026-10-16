@@ -170,3 +170,17 @@ export function mapSymbolFontCharacter(fontName: string, codePoint: number): str
   if (key === undefined || !isSymbolFontPrivateUse(codePoint)) return undefined;
   return TABLES.get(key)?.get(codePoint - SYMBOL_FONT_PRIVATE_USE_BASE);
 }
+
+/** The warning line for a symbol-font character whose Unicode counterpart no installed font can draw in a PDF. */
+export function undrawableSymbolWarning(font: string | undefined, codePoint: number, mapped: string): string {
+  const hex = (value: number): string => `U+${value.toString(HEX).toUpperCase()}`;
+  const source = font === undefined ? hex(codePoint) : `${hex(codePoint)} of the font "${font}"`;
+  return `Replaced ${source} with U+FFFD: its character ${hex(mapped.codePointAt(0) as number)} has no glyph in the installed fonts.`;
+}
+
+/** The warning line for a private-use character no symbol-font table maps; `font` is undefined when the run names none. */
+export function symbolReplacementWarning(font: string | undefined, codePoint: number): string {
+  const hex = `U+${codePoint.toString(HEX).toUpperCase()}`;
+  const source = font === undefined ? hex : `${hex} of the font "${font}"`;
+  return `Replaced ${source} with U+FFFD: no Unicode counterpart is known.`;
+}

@@ -186,11 +186,13 @@ Compression
 
 ## 7. Characters without a Unicode counterpart
 
-- **Status**: Implemented (#725); extended to every in-process PDF writer (#742). Legacy binary word-processing documents (`.doc`) are tracked in #726.
+- **Status**: Implemented (#725); extended to every in-process PDF writer (#742) and to legacy binary word-processing documents (`.doc`, #726).
 - **Decision**:
   - Symbol-font private-use characters are mapped to Unicode with the standard tables for the symbol fonts.
   - A character that no table maps becomes U+FFFD, and a warning names the font and the code.
   - **The PDF writers apply the same rule to any code point no font can draw** (unassigned, private-use, noncharacter, lone surrogate). The code point becomes U+FFFD and the result carries one warning line for each distinct code point. They no longer refuse the document.
+  - **Binary word-processing documents (`.doc`) take the font from the character formatting of the run**: the font set on the run for the ASCII, East Asian or other text (the first of these three that is a symbol font), else the default character fonts of the style sheet. A Symbol field character (a placeholder in the text plus its own font and code) maps the same way, and in any other font it is the Unicode character it names. A document without a font table or a run whose font index names no font maps nothing, and the warning names no font.
+  - **A symbol-font character whose Unicode counterpart no installed font can draw becomes U+FFFD in a PDF**, with a warning that names the font, the code and the counterpart. Text, HTML and the other outputs keep the counterpart. Installing a font that covers the counterpart makes the next conversion draw it.
 - **Why**:
   - The whole document must still convert. Failing it for one glyph is worse than any substitute.
   - A replacement mark is honest.
@@ -199,13 +201,15 @@ Compression
 - **Trade-offs**:
   - The reader sees a replacement mark where the original showed a glyph.
   - Plain text, Markdown and HTML to PDF follow the rule too. A file with a stray noncharacter converts, where it used to fail with HTTP 400.
-  - A character that is assigned but that no installed font covers still fails, because installing a font fixes it.
+  - A character that is assigned but that no installed font covers still fails, because installing a font fixes it. The exception is a character that came from a symbol-font mapping in a `.doc`: the pictograph and arrow blocks the Wingdings and Webdings tables map to are covered by few fonts, and a bullet or an arrow is not worth a failed document.
+  - Paragraph and character styles are not followed, so a symbol-font character whose font comes only from a style is replaced and reported under the font the run resolves to.
 - **Alternatives rejected**:
   - **Refusing the document.**
   - **Rendering with a bundled symbol font**: wrong glyphs, silently.
   - **Dropping the character**: the loss would leave no trace in the output.
-- **Verified by**: the PPT symbol-font tests, `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` converts).
-- **Revisit when**: a reliable glyph source for the remaining math fonts appears.
+  - **Refusing a `.doc` whose mapped character has no installed glyph**: the same document converts on a machine with the font and fails on one without, for a decoration.
+- **Verified by**: the PPT and `.doc` symbol-font tests (`tests/doc-symbol-fonts.test.ts`, with a document written by the office suite and the PDF text read by a separate PDF reader, and `tests/doc-corpus-symbol-fonts.test.ts` on public documents), `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` converts).
+- **Revisit when**: a reliable glyph source for the remaining math fonts appears, or the `.doc` reader follows styles.
 
 ## 8. Empty documents and macros
 
@@ -280,17 +284,26 @@ Compression
   - DXF is read in-process. It covers lines, arcs, circles, ellipses, clamped and unclamped B-splines (sampled over their valid Cox-de Boor domain `[knots[degree], knots[control.length]]`), polylines with bulges, blocks with nesting, arrays and negative-Z OCS extrusion, dimensions, and single-line and multi-line text (including horizontal/vertical alignments, `Aligned`/`Fit` baseline orientation and width scaling, `STYLE` width factors, `%%` control codes, and linked multi-column `MTEXT` records wrapped to single-column width). Degenerate block insertions with a zero scale factor are skipped after accounting for their visit budget.
   - Output is one vector page fitted to the drawing extents (both strokes and text boxes), with every text line placed at its true drawing coordinates.
   - Expansion is bounded by one budget for the whole drawing; a drawing over it fails with 422.
+  - The CAD parity score reads every output the same way, whatever the renderer draws: ink is any pixel that differs from the page colour, the frame of the drawing is fitted so that the truth strokes (the strokes read from the DXF) lie on ink, and the tolerance is a symmetric 1 % dilation. Ink inside a text box that is on no stroke is taken for glyphs up to a quarter of the box; beyond that it is charged to precision, and ink in a text box never meets a truth stroke that lies outside the text boxes. The score names no colour, line weight or page layout of the product or of the reference tool. B-splines whose knot vector is unclamped are sampled over their valid domain with the reference library's domain sampler, because its path conversion leaves the domain.
   - DWG is converted to DXF by an open-source reader run as a separate program.
 - **Why**:
   - Fidelity: dropping entity types, misplacing aligned or multi-column text, ignoring negative-Z block extrusion, or extrapolating unclamped B-spline knot vectors outside their domain gives visibly wrong drawings.
   - Fitting the page to the drawing extents matches what CAD exporters produce.
   - The budget stops a small file from expanding into millions of strokes.
-- **Trade-offs**: drawings beyond the budget are refused. The DWG reader does not handle every vendor version.
+  - Scoring: a score that names the product's colours, line weight or page cannot be applied to another renderer, so the same drawing would be judged in a different frame depending on who drew it. Registering the truth strokes onto the picture reads every renderer alike, and the 25 % glyph coverage is above the largest share measured on the corpus renders of both sides (22 % of a text box, median 5 %) while a solid box (100 %) or dense scribbling is not text.
+- **Trade-offs**:
+  - Drawings beyond the budget are refused. The DWG reader does not handle every vendor version.
+  - The fitted frame is optimistic for every renderer, the product and the reference tool alike: it moves to where the truth strokes find ink, so a render that is slightly off reads better than a fixed frame would score it. The product's margin over the reference tool shrinks where the reference was understated before.
+  - Each frame edge may move at most 40 % inward and 5 % outward of the box of all ink. A render that leaves out only the outermost outline is over-penalised: the frame cannot grow past 5 %, so it settles on inner strokes and loses precision as well as recall. A render with a page border or a title block is charged for those marks in precision, and the search also starts from the biggest component inside such a border.
+  - Text boxes: ink in them that is on no stroke is free up to 25 % of the grown box, so noise below glyph coverage is not charged; that bound is deliberate and the blind spot is at most a quarter of each text box. Text can move the frame when strokes are missing (the miss then shows in precision and extent error), but it never counts as a stroke outside the text boxes.
+  - A truth with no strokes, no length, or all strokes on one horizontal or vertical line cannot be registered and scores as nothing drawn for both sides.
 - **Alternatives rejected**:
   - Paid DWG libraries.
   - Adding a title and frame to the page, which users then have to crop.
-- **Verified by**: the CAD parity rows and `tests/cad-dxf-*.test.ts`.
-- **Revisit when**: users hit the budget with real drawings.
+  - Keying the score on the stroke and text colours of the product, which put the reference tool's black drawings in a different frame and understated them.
+  - Using the box of all ink as the frame, which counts text outside the strokes as a scale error.
+- **Verified by**: the CAD parity rows, `tests/cad-dxf-*.test.ts` and `tests/bench-cad-ink.test.ts` (the same drawing in several palettes, light on dark included, scores alike; a missing outline costs recall; text or a stray mark outside the strokes does not move the frame; solid or hatched text boxes lower precision; text does not stand in for strokes outside the text boxes; a drawing inside a page border is found).
+- **Revisit when**: users hit the budget with real drawings; a renderer draws a page border, a title block or text that the 25 % glyph coverage or the 5 % outward limit misreads; or the corpus gains drawings whose text is denser than the measured 22 %.
 
 ## 14. SVG to PDF
 

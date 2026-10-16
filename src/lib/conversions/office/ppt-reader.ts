@@ -2,7 +2,7 @@ import { inflateSync } from 'node:zlib';
 import { CheckedReader, readCfbStreams, requireCfbStream } from './cfb-streams';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
-import { isSymbolFontPrivateUse, mapSymbolFontCharacter } from '../symbol-font-map';
+import { isSymbolFontPrivateUse, mapSymbolFontCharacter, symbolReplacementWarning } from '../symbol-font-map';
 import { readCharacterFontRuns, type CharacterFontRun } from './ppt-text-style';
 
 /**
@@ -99,7 +99,6 @@ const FONT_FACE_NAME_BYTES = 64;
 const REPLACEMENT_CHARACTER = '\uFFFD';
 /** Most replaced symbol characters listed one by one; the rest are counted in a final line. */
 export const PPT_MAX_REPORTED_REPLACEMENTS = 50;
-const HEX_RADIX = 16;
 
 interface RecordHeader {
   offset: number;
@@ -311,9 +310,7 @@ function recordReplacement(context: TextContext, font: string | undefined, code:
   if (context.replaced.has(key)) return;
   context.replacedTotal++;
   if (context.replaced.size >= PPT_MAX_REPORTED_REPLACEMENTS) return;
-  const hex = `U+${code.toString(HEX_RADIX).toUpperCase()}`;
-  const source = font === undefined ? hex : `${hex} of the font "${font}"`;
-  context.replaced.set(key, `Replaced ${source} with U+FFFD: no Unicode counterpart is known.`);
+  context.replaced.set(key, symbolReplacementWarning(font, code));
 }
 
 /** The symbol font of the character at `index`: the run's symbol typeface, else its typeface, else none. */

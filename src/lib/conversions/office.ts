@@ -540,8 +540,8 @@ export async function extractTextFromOdt(buffer: Buffer): Promise<string> {
  * Text of a Word 97-2003 binary document, read through its CLX piece table ([MS-DOC]). Malformed input
  * throws a LegacyOfficeFormatError (400) and an encrypted document an EncryptedOfficeDocumentError (422).
  */
-export function extractTextFromDoc(buffer: Buffer): string {
-  return readDocText(buffer);
+export function extractTextFromDoc(buffer: Buffer, canDraw?: (character: string) => boolean): string {
+  return readDocText(buffer, canDraw);
 }
 
 function extractTextFromTexString(tex: string): string {
