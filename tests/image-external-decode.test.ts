@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { MAX_INPUT_PIXELS_ENV } from '../src/lib/conversions/image-input-limit-config';
 import { findMagick, MAGICK_PATH_ENV } from '../src/lib/conversions/image-magick-cli';
 import { encodePsd } from '../src/lib/conversions/psd-writer';
 import { buildDdsArgb, buildDdsDxt1, buildPcx, buildPnm, buildRleTga, buildTga, dxt1Palette, type RgbaPixel } from './helpers/image-format-builders';
@@ -165,6 +166,40 @@ describe.skipIf(needsMagick)('files that cannot be decoded', () => {
   it('refuses a tiny file that declares a picture over the input limit before decoding it', async () => {
     const huge = Buffer.from('P5\n20000 20000\n255\n');
     await expect(toPng(huge, 'pgm')).rejects.toMatchObject({ name: 'InputPixelLimitError', status: 413, width: 20000, height: 20000 });
+  });
+
+  it('refuses an XCF whose header does not state a canvas', async () => {
+    const header = (magic: string, terminator: number, width: number, height: number): Buffer => {
+      const bytes = Buffer.alloc(24);
+      bytes.write(magic, 0, 'latin1');
+      bytes.write('v011', 9, 'latin1');
+      bytes[13] = terminator;
+      bytes.writeUInt32BE(width, 14);
+      bytes.writeUInt32BE(height, 18);
+      return bytes;
+    };
+    const refusal = { name: 'ConversionFailedError', message: 'Invalid image: the XCF header could not be decoded' };
+    await expect(toPng(Buffer.from('gimp xcf'), 'xcf')).rejects.toMatchObject(refusal);
+    await expect(toPng(header('gimp xcg ', 0, 10, 10), 'xcf')).rejects.toMatchObject(refusal);
+    await expect(toPng(header('gimp xcf ', 1, 10, 10), 'xcf')).rejects.toMatchObject(refusal);
+    await expect(toPng(header('gimp xcf ', 0, 0, 10), 'xcf')).rejects.toMatchObject(refusal);
+    await expect(toPng(header('gimp xcf ', 0, 10, 0), 'xcf')).rejects.toMatchObject(refusal);
+  });
+
+  it('holds the layers of a GIMP project and the canvas they are drawn on to the input limit together', async (ctx) => {
+    // wc-orfeologoa1.xcf: a 503 x 172 canvas (86,516 pixels), a layer of the same size and a layer of 116 x 81 (9,396 pixels).
+    const sample = await requireRealworldSample(ctx, 'wc-orfeologoa1.xcf');
+    const saved = process.env[MAX_INPUT_PIXELS_ENV];
+    try {
+      process.env[MAX_INPUT_PIXELS_ENV] = '150000';
+      await expect(dispatchConversion(sample.bytes, 'xcf', 'png', {}, 'logo.xcf')).rejects.toMatchObject({ name: 'InputPixelLimitError', status: 413, limit: 150000 });
+      process.env[MAX_INPUT_PIXELS_ENV] = '200000';
+      const decoded = await decodeRgba((await dispatchConversion(sample.bytes, 'xcf', 'png', {}, 'logo.xcf')).buffer);
+      expect([decoded.width, decoded.height]).toEqual([503, 172]);
+    } finally {
+      if (saved === undefined) delete process.env[MAX_INPUT_PIXELS_ENV];
+      else process.env[MAX_INPUT_PIXELS_ENV] = saved;
+    }
   });
 
   it('names the missing engine when ImageMagick is not installed', async () => {

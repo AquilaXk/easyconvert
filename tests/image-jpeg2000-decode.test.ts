@@ -63,6 +63,35 @@ describe.skipIf(needsOpenJpeg)('JPEG 2000 pictures with known pixels', () => {
     expect(decoded).toEqual(Array.from({ length: 64 * 48 }, (_, i) => samples[i % samples.length]));
   });
 
+  it('finds the codestream behind boxes of every length form (T.800 I.4: a 32-bit length, a 64-bit length, a length to the end)', async () => {
+    const jp2 = encodeJpeg2000(gradientNetpbm, 'jp2');
+    // The codestream box is the last box of the file OpenJPEG writes: its 32-bit length, its type, then the codestream.
+    const codestreamBox = jp2.indexOf('jp2c', 0, 'latin1') - 4;
+    const box = (type: string, content: Buffer): Buffer => {
+      const head = Buffer.alloc(8);
+      head.writeUInt32BE(8 + content.length, 0);
+      head.write(type, 4, 'latin1');
+      return Buffer.concat([head, content]);
+    };
+    const largeBox = (type: string, content: Buffer): Buffer => {
+      const head = Buffer.alloc(16);
+      head.writeUInt32BE(1, 0);
+      head.write(type, 4, 'latin1');
+      head.writeBigUInt64BE(BigInt(16 + content.length), 8);
+      return Buffer.concat([head, content]);
+    };
+    const toEnd = Buffer.from(jp2);
+    toEnd.writeUInt32BE(0, codestreamBox);
+    for (const file of [
+      Buffer.concat([jp2.subarray(0, codestreamBox), box('free', Buffer.alloc(5)), jp2.subarray(codestreamBox)]),
+      Buffer.concat([jp2.subarray(0, codestreamBox), largeBox('xml ', Buffer.alloc(3)), jp2.subarray(codestreamBox)]),
+      toEnd,
+    ]) {
+      const decoded = await decodeRgba((await dispatchConversion(file, 'jp2', 'png', {}, 'boxes.jp2')).buffer);
+      expect(decoded.data).toEqual(rgbaBytes(gradient));
+    }
+  });
+
   it('takes the kind of file from its bytes, not from the name it was uploaded under', async () => {
     const codestream = encodeJpeg2000(gradientNetpbm, 'j2k');
     const decoded = await decodeRgba((await dispatchConversion(codestream, 'jp2', 'png', {}, 'misnamed.jp2')).buffer);
@@ -90,6 +119,33 @@ describe.skipIf(needsOpenJpeg)('real JPEG 2000 files', () => {
 describe.skipIf(needsOpenJpeg)('JPEG 2000 files that cannot be decoded', () => {
   it('refuses bytes that are neither a JP2 file nor a codestream', async () => {
     await expect(dispatchConversion(Buffer.from('not a picture, just text'), 'jp2', 'png', {}, 'x.jp2')).rejects.toMatchObject({ name: 'ConversionFailedError', message: 'Invalid image: the JPEG 2000 header could not be decoded' });
+  });
+
+  it('refuses a JP2 file whose boxes do not lead to a codestream, and a codestream header that is cut or empty', async () => {
+    const header = 'Invalid image: the JPEG 2000 header could not be decoded';
+    const signature = Buffer.from([0x00, 0x00, 0x00, 0x0c, 0x6a, 0x50, 0x20, 0x20, 0x0d, 0x0a, 0x87, 0x0a]);
+    const box = (length: number, type: string, content: Buffer): Buffer => {
+      const head = Buffer.alloc(8);
+      head.writeUInt32BE(length, 0);
+      head.write(type, 4, 'latin1');
+      return Buffer.concat([head, content]);
+    };
+    const codestream = encodeJpeg2000(gradientNetpbm, 'j2k');
+    await expect(dispatchConversion(signature, 'jp2', 'png', {}, 'a.jp2')).rejects.toMatchObject({ message: header });
+    await expect(dispatchConversion(Buffer.concat([signature, box(0, 'free', Buffer.alloc(4))]), 'jp2', 'png', {}, 'b.jp2')).rejects.toMatchObject({ message: header });
+    await expect(dispatchConversion(Buffer.concat([signature, box(4, 'free', Buffer.alloc(4))]), 'jp2', 'png', {}, 'c.jp2')).rejects.toMatchObject({ message: header });
+    const cutLarge = Buffer.concat([signature, box(1, 'free', Buffer.alloc(4))]);
+    await expect(dispatchConversion(cutLarge, 'jp2', 'png', {}, 'd.jp2')).rejects.toMatchObject({ message: header });
+    await expect(dispatchConversion(Buffer.concat([signature, box(8, 'jp2c', Buffer.from('ff4fff51', 'hex'))]), 'jp2', 'png', {}, 'e.jp2')).rejects.toMatchObject({ message: header });
+    await expect(dispatchConversion(Buffer.concat([signature, box(24, 'jp2c', Buffer.alloc(16))]), 'jp2', 'png', {}, 'f.jp2')).rejects.toMatchObject({ message: header });
+    await expect(dispatchConversion(codestream.subarray(0, 20), 'j2k', 'png', {}, 'g.j2k')).rejects.toMatchObject({ message: header });
+  });
+
+  it('refuses a codestream whose grid offset leaves no picture', async () => {
+    const whole = Buffer.from(encodeJpeg2000(gradientNetpbm, 'j2k'));
+    // SIZ: Xsiz, Ysiz, XOsiz and YOsiz follow the marker (4), Lsiz (2) and Rsiz (2); an offset equal to the grid size is an empty picture.
+    whole.writeUInt32BE(whole.readUInt32BE(8), 16);
+    await expect(dispatchConversion(whole, 'j2k', 'png', {}, 'empty.j2k')).rejects.toMatchObject({ name: 'ConversionFailedError', message: 'Invalid image: the JPEG 2000 header declares no picture' });
   });
 
   it('refuses a codestream that ends before its pixels do', async () => {

@@ -80,6 +80,16 @@ describe('which TIFF files take the old-style JPEG route', () => {
     expect(usesOldStyleJpeg(tiff)).toBe(false);
   });
 
+  it('answers false when the first directory lies beyond the end of the file', () => {
+    const tiff = buildTiff([entries(COMPRESSION_OLD_STYLE_JPEG)], true);
+    tiff.writeUInt32LE(tiff.length, 4);
+    expect(usesOldStyleJpeg(tiff)).toBe(false);
+    tiff.writeUInt32LE(tiff.length - 1, 4);
+    expect(usesOldStyleJpeg(tiff)).toBe(false);
+    tiff.writeUInt32LE(0, 4);
+    expect(usesOldStyleJpeg(tiff)).toBe(false);
+  });
+
   it('answers false for a file that is not a classic TIFF or ends inside a directory', () => {
     expect(usesOldStyleJpeg(Buffer.from('not a tiff at all'))).toBe(false);
     expect(usesOldStyleJpeg(Buffer.alloc(0))).toBe(false);
