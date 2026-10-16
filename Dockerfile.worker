@@ -1,10 +1,15 @@
 # EasyConvert OCI Backend Container Worker
 # Enterprise Multi-Stage Build: linux/arm64 (OCI Ampere A1), linux/amd64
 
+# Base of every stage: Node.js 24 (active LTS) on Debian 13 (trixie). The exact release tag and the digest of its
+# multi-architecture index are pinned together, so a rebuild cannot pick up a different base. Bump both together to take
+# a newer Node.js 24 release or a rebuilt base (docs/policy-decisions.md, "Base image and Node.js LTS").
+ARG NODE_IMAGE=node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0
+
 # ==============================================================================
 # Stage 1: Dependency & Application Builder
 # ==============================================================================
-FROM node:20-bookworm-slim AS builder
+FROM ${NODE_IMAGE} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
@@ -30,11 +35,11 @@ RUN npm prune --omit=dev --ignore-scripts
 # ==============================================================================
 # Stage 2: Pinned 7-Zip console build
 # ==============================================================================
-# The maintained upstream 7-Zip, not the legacy p7zip packages. Debian bookworm ships 7-Zip as the
-# `7zip` package without the RAR decoder (there is no `7zip-rar` on bookworm), so RAR input needs
-# the upstream build. The final grep fails the build if the RAR decoder is ever missing. Each
-# archive is pinned by SHA-256: bump SEVEN_ZIP_VERSION, SEVEN_ZIP_RELEASE and both digests together.
-FROM node:20-bookworm-slim AS sevenzip
+# The maintained upstream 7-Zip, not the legacy p7zip packages. Debian ships 7-Zip as the `7zip` package without the
+# RAR decoder (it is the separate non-free `7zip-rar` package), so RAR input uses the upstream build. The final grep
+# fails the build if the RAR decoder is ever missing. Each archive is pinned by SHA-256: bump SEVEN_ZIP_VERSION,
+# SEVEN_ZIP_RELEASE and both digests together.
+FROM ${NODE_IMAGE} AS sevenzip
 
 ARG SEVEN_ZIP_VERSION=26.01
 ARG SEVEN_ZIP_RELEASE=2601
@@ -64,7 +69,7 @@ RUN apt-get update \
 # pinned by SHA-256 in scripts/install-libredwg.sh, as a statically linked program that the worker runs as a separate
 # sandboxed process; nothing links it into the application. Debian ships no package of it. The stage fails the build if
 # the program does not start.
-FROM node:20-bookworm-slim AS libredwg
+FROM ${NODE_IMAGE} AS libredwg
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl xz-utils build-essential \
@@ -75,7 +80,7 @@ RUN /tmp/install-libredwg.sh /opt/libredwg
 # ==============================================================================
 # Stage 4: Hardened Runtime Container
 # ==============================================================================
-FROM node:20-bookworm-slim AS runner
+FROM ${NODE_IMAGE} AS runner
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
@@ -117,6 +122,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         qpdf \
         ghostscript \
         librsvg2-bin \
+        libavif-bin \
         default-jre-headless \
         unzip \
     && apt-get clean \
@@ -166,6 +172,8 @@ RUN mkdir -p /licenses \
     && if [ "$copied" -eq 0 ]; then echo "no copyright files found under /usr/share/doc" >&2; exit 1; fi
 COPY THIRD_PARTY_NOTICES.md /licenses/
 RUN cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE
+# The versions this image was built with (every Debian package, and the Node.js runtime), kept next to the notices.
+RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; } > /licenses/tool-versions.txt
 RUN chmod -R a+rX /licenses
 
 # 5. Drop to unprivileged non-root user (UID:GID 10001:10001)
