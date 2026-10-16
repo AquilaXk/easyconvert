@@ -97,6 +97,10 @@ describe('which PNG files the encoder may read as they are', () => {
     const rest = png.subarray(8 + 12 + 13);
     expect(readsAsPixelsOnly(Buffer.concat([png.subarray(0, 8), bytesOf(chunk('pHYs', Buffer.alloc(9))), header, rest]))).toBe(false);
     expect(readsAsPixelsOnly(Buffer.concat([png.subarray(0, 8), bytesOf(chunk('IHDR', Buffer.alloc(12))), rest]))).toBe(false);
+    // Well formed as a chunk, with a plausible depth and colour type, but not the 13 bytes of a header.
+    const longer = Buffer.concat([header.subarray(8, 8 + 13), Buffer.from([0])]);
+    expect(readsAsPixelsOnly(Buffer.concat([png.subarray(0, 8), bytesOf(chunk('IHDR', longer)), rest]))).toBe(false);
+    expect(readsAsPixelsOnly(png.subarray(0, 8 + 8 + 5))).toBe(false);
   });
 
   it('reads the bit depth and colour type from the header chunk: 8 and 16 bits, grey, colour, and either with alpha', async () => {

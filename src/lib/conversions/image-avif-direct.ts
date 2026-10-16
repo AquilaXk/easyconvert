@@ -51,7 +51,7 @@ export function readsAsPixelsOnly(png: Buffer): boolean {
     const type = png.toString('latin1', at + 4, at + CHUNK_HEADER_BYTES);
     if (!PIXEL_ONLY_CHUNKS.has(type) || (first && type !== 'IHDR')) return false;
     if (first) {
-      if (length !== HEADER_DATA_BYTES || at + CHUNK_HEADER_BYTES + HEADER_DATA_BYTES > png.length) return false;
+      if (length !== HEADER_DATA_BYTES) return false;
       const header = at + CHUNK_HEADER_BYTES;
       if (!SAMPLE_BIT_DEPTHS.has(png[header + HEADER_BIT_DEPTH_OFFSET]) || !SAMPLE_COLOUR_TYPES.has(png[header + HEADER_COLOUR_TYPE_OFFSET])) return false;
       first = false;
