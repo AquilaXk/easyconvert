@@ -2184,7 +2184,7 @@ async function convertImage(
       } else if (inputCicp === null && CONTENT_CLASSIFIED_TARGETS.has(fmt) && !frameSelection.keepsAnimation) {
         // The content class, the alpha check and the encoder would each decode the PNG again: decode it once.
         const changesPixels = changesSourcePixels(options, background);
-        decoded = await decodePlainPngForTarget(pipeline, fmt, changesPixels, startDirectAvifOn(directAvif, fmt, changesPixels, frameSelection.source, options));
+        decoded = await decodePlainPngForTarget(pipeline, frameSelection.source, { fmt, changesPixels, stripsMetadata: options.stripMetadata === true }, startDirectAvifOn(directAvif, fmt, changesPixels, frameSelection.source, options));
         pipeline = decoded?.pipeline ?? pipeline;
       }
       if (inputCicp === null && decoded === null && !frameSelection.keepsAnimation && options.stripMetadata !== true && SOURCE_BLOCK_TARGETS.has(fmt)) {

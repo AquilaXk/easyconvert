@@ -6,7 +6,7 @@ import sharp from 'sharp';
 import { afterEach, describe, expect, it } from 'vitest';
 import { vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
-import { isPlainPng } from '../src/lib/conversions/image-decoded-source';
+import { isPlainPng, pngDensityDpi } from '../src/lib/conversions/image-decoded-source';
 import { type Chunk, serializeChunks } from './helpers/apng-builder';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { pipelineRuns } from './helpers/pipeline-runs';
@@ -79,11 +79,14 @@ describe('which blocks keep a PNG on the decoded route', () => {
     expect(isPlainPng(meta)).toBe(true);
   });
 
-  it('lets a print density through only for an encoder that writes none', async () => {
-    const meta = await sharp(await picture(false, 300)).metadata();
+  it('lets a print density through for an encoder that writes none, and for one that writes it when the file states the figure exactly', async () => {
+    const png = await picture(false, 300);
+    const meta = await sharp(png).metadata();
     expect(meta.density).toBe(300);
     expect(isPlainPng(meta)).toBe(false);
-    expect(isPlainPng(meta, undefined, true)).toBe(true);
+    expect(isPlainPng(meta, undefined, { strips: false, ignoresDensity: true })).toBe(true);
+    expect(isPlainPng(meta, undefined, { strips: false, ignoresDensity: false, exactDensity: pngDensityDpi(png) })).toBe(true);
+    expect(isPlainPng(meta, undefined, { strips: false, ignoresDensity: false, exactDensity: 94.0054 }), 'a figure that does not round to the reported one').toBe(false);
   });
 
   it('still keeps an EXIF block on the route of the PNG', async () => {
@@ -120,17 +123,97 @@ describe.each([
     expect(dense.buffer.equals(normal.buffer)).toBe(true);
   });
 
-  it('with a print density stays on the route of the PNG for JPEG, which writes the density', async () => {
-    const source = await picture(deep, 300);
-    expect((await pipelineRuns(source, 'jpg')).pngReads).toBeGreaterThan(1);
+  it('with a print density is read once for JPEG, which writes the density the file states, to the last digit', async () => {
+    const source = await picture(deep, 94);
+    expect((await pipelineRuns(source, 'jpg')).pngReads).toBe(1);
     const out = (await convertImage(source, 'jpg', { quality: 70 }, 'x.png', 'png')).buffer;
     const dir = mkdtempSync(path.join(os.tmpdir(), 'blocks-'));
     try {
       const file = path.join(dir, 'out.jpg');
       writeFileSync(file, out);
-      expect(Math.round(Number(execFileSync(requireOracleTool('exiftool'), ['-s3', '-XResolution', file], { encoding: 'utf-8' })))).toBe(300);
+      const stated = (await pngPixelsPerMetre(source)) * 0.0254;
+      expect(Number(execFileSync(requireOracleTool('exiftool'), ['-s3', '-XResolution', file], { encoding: 'utf-8' }))).toBeCloseTo(stated, 3);
+      expect(execFileSync(requireOracleTool('exiftool'), ['-s3', '-ResolutionUnit', file], { encoding: 'utf-8' }).trim()).toBe('inches');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 });
+
+describe.each([
+  ['8-bit', false],
+  ['16-bit', true],
+] as const)('a %s PNG with an XMP packet and a print density, with metadata stripped', (_depth, deep) => {
+  it.each(['jpg', 'avif'])('is read once for %s and the output holds neither the packet nor a density', async (target) => {
+    const source = withChunksAfterHeader(await picture(deep, 94), [xmpChunk(PACKET)]);
+    expect((await pipelineRuns(source, target, { stripMetadata: true })).pngReads).toBe(1);
+    const out = (await convertImage(source, target, { quality: 70, stripMetadata: true }, 'x.png', 'png')).buffer;
+    expect(out.includes(Buffer.from('xmpmeta'))).toBe(false);
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'blocks-'));
+    try {
+      const file = path.join(dir, `out.${target}`);
+      writeFileSync(file, out);
+      expect(execFileSync(requireOracleTool('exiftool'), ['-s3', '-XResolution', '-XMP:all', file], { encoding: 'utf-8' }).trim()).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('gives the bytes of the same picture without the blocks', async () => {
+    const plain = await picture(deep);
+    const marked = withChunksAfterHeader(await picture(deep, 94), [xmpChunk(PACKET)]);
+    for (const target of ['jpg', 'avif']) {
+      const [a, b] = [await convertImage(marked, target, { quality: 70, stripMetadata: true }, 'x.png', 'png'), await convertImage(plain, target, { quality: 70, stripMetadata: true }, 'x.png', 'png')];
+      expect(a.buffer.equals(b.buffer), target).toBe(true);
+    }
+  });
+});
+
+describe('pngDensityDpi', () => {
+  const dpiOf = async (perMetreX: number, perMetreY: number, unit: number): Promise<number | undefined> => {
+    const data = Buffer.alloc(9);
+    data.writeUInt32BE(perMetreX, 0);
+    data.writeUInt32BE(perMetreY, 4);
+    data[8] = unit;
+    const plain = await picture(false);
+    const chunks: Chunk[] = [];
+    for (let at = 8; at < plain.length; at += 12 + plain.readUInt32BE(at)) {
+      const type = plain.toString('latin1', at + 4, at + 8);
+      chunks.push({ type, data: type === 'pHYs' ? data : plain.subarray(at + 8, at + 8 + plain.readUInt32BE(at)) });
+    }
+    return pngDensityDpi(serializeChunks(chunks));
+  };
+
+  it('gives the pixels per metre of the file as dots per inch', async () => {
+    expect(await dpiOf(3701, 3701, 1)).toBeCloseTo(94.0054, 4);
+    expect(await dpiOf(2835, 2835, 1)).toBeCloseTo(72.009, 3);
+  });
+
+  it('gives nothing for an aspect ratio only, for two different densities, for no density chunk or for no PNG', async () => {
+    expect(await dpiOf(1, 1, 0)).toBeUndefined();
+    expect(await dpiOf(3701, 2835, 1)).toBeUndefined();
+    const chunks: Chunk[] = [];
+    const plain = await picture(false);
+    for (let at = 8; at < plain.length; at += 12 + plain.readUInt32BE(at)) {
+      const type = plain.toString('latin1', at + 4, at + 8);
+      if (type !== 'pHYs') chunks.push({ type, data: plain.subarray(at + 8, at + 8 + plain.readUInt32BE(at)) });
+    }
+    expect(pngDensityDpi(serializeChunks(chunks))).toBeUndefined();
+    expect(pngDensityDpi(Buffer.from('not a png'))).toBeUndefined();
+  });
+
+  it('does not look past the first data chunk', async () => {
+    const plain = await picture(false);
+    const idat = plain.indexOf('IDAT', 0, 'latin1') - 4;
+    const late = serializeChunks([{ type: 'pHYs', data: Buffer.from([0, 0, 0x0e, 0x75, 0, 0, 0x0e, 0x75, 1]) }], Buffer.alloc(0));
+    const afterData = Buffer.concat([plain.subarray(0, plain.length - 12), late, plain.subarray(plain.length - 12)]);
+    const withoutHeaderDensity = Buffer.concat([afterData.subarray(0, 8 + 25), afterData.subarray(idat)]);
+    expect(pngDensityDpi(withoutHeaderDensity)).toBeUndefined();
+  });
+});
+
+/** The pixels per metre the density chunk of `png` states. */
+function pngPixelsPerMetre(png: Buffer): number {
+  const at = png.indexOf('pHYs', 0, 'latin1');
+  return png.readUInt32BE(at + 4);
+}
