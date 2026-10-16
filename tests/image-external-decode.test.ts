@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { MAX_INPUT_PIXELS_ENV } from '../src/lib/conversions/image-input-limit-config';
 import { findMagick, MAGICK_PATH_ENV } from '../src/lib/conversions/image-magick-cli';
@@ -202,11 +205,78 @@ describe.skipIf(needsMagick)('files that cannot be decoded', () => {
     }
   });
 
-  it('names the missing engine when ImageMagick is not installed', async () => {
+  describe('when the decoder answers with something this code cannot use', () => {
+    // A stand-in for ImageMagick: a script that ignores its arguments, prints `stdout` and then runs `after` in the job directory.
+    const stubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'magick-stub-'));
+    afterAll(() => fs.rmSync(stubDir, { recursive: true, force: true }));
+    let stubCount = 0;
+    async function convertWithStub(stdout: string, after = ''): Promise<unknown> {
+      const stub = path.join(stubDir, `magick-${stubCount++}`);
+      fs.writeFileSync(stub, `#!/bin/sh\nprintf '%s' '${stdout}'\n${after}\n`, { mode: 0o755 });
+      const saved = process.env[MAGICK_PATH_ENV];
+      process.env[MAGICK_PATH_ENV] = stub;
+      try {
+        return await toPng(buildTga(1, 1, [RED], false), 'tga');
+      } finally {
+        if (saved === undefined) delete process.env[MAGICK_PATH_ENV];
+        else process.env[MAGICK_PATH_ENV] = saved;
+      }
+    }
+    const pictureRefusal = { name: 'ConversionFailedError', message: 'Invalid image: the TGA picture could not be decoded' };
+
+    it.each(['', 'not a size', '10 abc', '10 10\nbroken'])('refuses a size probe that reads %j', async (stdout) => {
+      await expect(convertWithStub(stdout)).rejects.toMatchObject({ name: 'ConversionFailedError', message: 'Invalid image: the TGA header could not be decoded' });
+    });
+
+    it('refuses a picture whose probe declares more pixels than the limit, and pictures that together do', async () => {
+      await expect(convertWithStub('30000 30000')).rejects.toMatchObject({ name: 'InputPixelLimitError', width: 30000, height: 30000 });
+      await expect(convertWithStub('9000 9000\n9000 9000')).rejects.toMatchObject({ name: 'InputPixelLimitError', status: 413, limit: 100_000_000 });
+    });
+
+    it('refuses a run that exits cleanly without writing a picture, or writes something that is not a regular file', async () => {
+      await expect(convertWithStub('10 10')).rejects.toMatchObject(pictureRefusal);
+      await expect(convertWithStub('10 10', 'mkdir out')).rejects.toMatchObject(pictureRefusal);
+      await expect(convertWithStub('10 10', 'printf x > elsewhere; ln -s elsewhere out')).rejects.toMatchObject(pictureRefusal);
+    });
+
+    it.each([126, 127])('names the missing engine when the program cannot be started (exit status %i)', async (status) => {
+      await expect(convertWithStub('', `exit ${status}`)).rejects.toMatchObject({ name: 'EngineUnavailableError', engineName: 'magick' });
+    });
+
+    it('refuses a size probe that exits with another failure status', async () => {
+      await expect(convertWithStub('10 10', 'exit 1')).rejects.toMatchObject(pictureRefusal);
+    });
+
+    it('does not read a picture file larger than the pixels it declared can fill', async () => {
+      // 10 x 10 pixels declared: at most 800 bytes of samples and a 64 KiB allowance; the process writes 200 KiB. Where the sandbox
+      // limits file sizes the process is stopped (a refusal that the picture could not be decoded); elsewhere the file is not read (a size refusal).
+      await expect(convertWithStub('10 10', 'head -c 204800 /dev/zero > out')).rejects.toMatchObject({
+        name: expect.stringMatching(/^(ConversionFailedError|PayloadLimitError)$/),
+        message: expect.stringMatching(/TGA picture/),
+      });
+    });
+  });
+
+  it.each([
+    ['a path that does not exist', '/nonexistent/magick'],
+    ['a relative path', 'bin/magick'],
+    ['a file that is not executable', __filename],
+  ])('names the missing engine when MAGICK_PATH is %s', async (_label, value) => {
     const saved = process.env[MAGICK_PATH_ENV];
-    process.env[MAGICK_PATH_ENV] = '/nonexistent/magick';
+    process.env[MAGICK_PATH_ENV] = value;
     try {
       await expect(toPng(buildTga(1, 1, [RED], false), 'tga')).rejects.toMatchObject({ name: 'EngineUnavailableError', engineName: 'magick' });
+    } finally {
+      if (saved === undefined) delete process.env[MAGICK_PATH_ENV];
+      else process.env[MAGICK_PATH_ENV] = saved;
+    }
+  });
+
+  it('looks in the standard places when MAGICK_PATH is empty', async () => {
+    const saved = process.env[MAGICK_PATH_ENV];
+    process.env[MAGICK_PATH_ENV] = '';
+    try {
+      expect((await decodeRgba(await toPng(buildTga(1, 1, [RED], false), 'tga'))).data).toEqual(rgbaBytes([RED]));
     } finally {
       if (saved === undefined) delete process.env[MAGICK_PATH_ENV];
       else process.env[MAGICK_PATH_ENV] = saved;
