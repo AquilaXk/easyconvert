@@ -107,7 +107,7 @@ export function estimateLineHeight(binary: Uint8Array, width: number, height: nu
   return lineHeightFromProfile(horizontalProjection(binary, width, height));
 }
 
-interface InkPoints {
+export interface InkPoints {
   xs: Int32Array;
   ys: Int32Array;
   /** Points stored in `xs` and `ys`. */
@@ -163,8 +163,9 @@ function takeRowInk(binary: Uint8Array, y: number, width: number, centre: { x: n
 /**
  * Centre-relative coordinates of the ink pixels, thinned evenly to at most OCR_DESKEW_MAX_POINTS in one pass over
  * the page. Rows are scanned in plain functions with a hand-off to the event loop every SCAN_YIELD_PIXELS.
+ * Exported so that the sample can be checked against the page it was taken from.
  */
-async function collectInk(binary: Uint8Array, width: number, height: number): Promise<InkPoints> {
+export async function collectInk(binary: Uint8Array, width: number, height: number): Promise<InkPoints> {
   const rowsPerYield = Math.max(1, Math.floor(SCAN_YIELD_PIXELS / width));
   const collector: InkCollector = {
     xs: new Int32Array(OCR_DESKEW_MAX_POINTS),

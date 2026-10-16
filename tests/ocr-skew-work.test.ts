@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
 import { SAUVOLA_INK, SAUVOLA_PAPER } from '../src/lib/conversions/ocr-sauvola';
-import { estimateSkew, OCR_DESKEW_MAX_POINTS } from '../src/lib/conversions/ocr-text-metrics';
+import { collectInk, estimateSkew, OCR_DESKEW_MAX_POINTS } from '../src/lib/conversions/ocr-text-metrics';
 
 /**
  * Work contract of the skew search: every candidate angle projects every scored ink point once, so the number of
@@ -76,4 +76,98 @@ describe('skew search work', () => {
       expect(result.improvement).toBeGreaterThan(1);
     });
   }
+});
+
+/** Deterministic generator so every run sees the same page. */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** A page with scattered ink at the given density, so no spacing of the sample lines up with its rows. */
+function scatteredInkPage(width: number, height: number, density: number): Uint8Array {
+  const random = mulberry32(7);
+  const page = new Uint8Array(width * height).fill(SAUVOLA_PAPER);
+  for (let i = 0; i < page.length; i++) if (random() < density) page[i] = SAUVOLA_INK;
+  return page;
+}
+
+/** The ink pixels in reading order, relative to the page centre: the page read the plain way, with no thinning. */
+function inkInReadingOrder(binary: Uint8Array, width: number, height: number): Array<[number, number]> {
+  const all: Array<[number, number]> = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) if (binary[y * width + x] === SAUVOLA_INK) all.push([x - (width >> 1), y - (height >> 1)]);
+  }
+  return all;
+}
+
+describe('skew sample', () => {
+  const width = 600;
+  const height = 500;
+
+  // 300 000 pixels at 0.8 density hold about 240 000 ink pixels: the store of 40 000 fills and is halved three times.
+  it('is every 2^k-th ink pixel in reading order, with k the smallest spacing that fits the budget', async () => {
+    const page = scatteredInkPage(width, height, 0.8);
+    const ink = inkInReadingOrder(page, width, height);
+    let spacing = 1;
+    while (Math.ceil(ink.length / spacing) > OCR_DESKEW_MAX_POINTS) spacing *= 2;
+    expect(spacing).toBeGreaterThanOrEqual(8);
+
+    const sample = await collectInk(page, width, height);
+    const expected = ink.filter((_, index) => index % spacing === 0);
+    expect(sample.count).toBe(expected.length);
+    const stored = Array.from({ length: sample.count }, (_, i): [number, number] => [sample.xs[i], sample.ys[i]]);
+    expect(stored).toEqual(expected);
+    // The sample reaches the end of the page, not only its first rows.
+    expect(stored[stored.length - 1][1] + (height >> 1)).toBeGreaterThanOrEqual(height - 2);
+  });
+
+  it('is every 2^k-th ink pixel when the store is halved only once, and whole when it never fills', async () => {
+    for (const density of [0.1, 0.3]) {
+      const page = scatteredInkPage(width, height, density);
+      const ink = inkInReadingOrder(page, width, height);
+      let spacing = 1;
+      while (Math.ceil(ink.length / spacing) > OCR_DESKEW_MAX_POINTS) spacing *= 2;
+      const sample = await collectInk(page, width, height);
+      const expected = ink.filter((_, index) => index % spacing === 0);
+      expect(Array.from({ length: sample.count }, (_, i): [number, number] => [sample.xs[i], sample.ys[i]])).toEqual(expected);
+    }
+  });
+});
+
+describe('skew search hand-offs to the event loop', () => {
+  /** setImmediate calls made while `work` runs: every hand-off of the search is one. */
+  async function handOffsDuring<T>(work: () => Promise<T>): Promise<number> {
+    const original = globalThis.setImmediate;
+    const spy = vi.spyOn(globalThis, 'setImmediate').mockImplementation(((callback: () => void) => original(callback)) as typeof setImmediate);
+    try {
+      await work();
+      return spy.mock.calls.length;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('hands over once per half a million points scored, not once per angle', async () => {
+    const width = 600;
+    const height = 500;
+    const page = scatteredInkPage(width, height, 0.8);
+    const sample = await collectInk(page, width, height);
+    // The page is read in one chunk (524 288 pixels per hand-off cover more rows than it has). The search scores 40 angles on
+    // every fourth point (-10 to 10 degrees in steps of half a degree, one of them already known), then 10 and 10 angles
+    // on all of them: 30 sample sizes of work at the most. A hand-off follows each half million, and the remainder of
+    // a stretch is dropped when it is taken, so at least one follows 30 sample sizes of 29 993 points.
+    const handOffs = await handOffsDuring(() => estimateSkew(page, width, height));
+    const perHandOff = 1 << 19;
+    expect(handOffs).toBeGreaterThanOrEqual(Math.floor((29 * sample.count) / (perHandOff + sample.count)));
+    expect(handOffs).toBeLessThanOrEqual(Math.ceil((30 * sample.count) / perHandOff));
+    // Handing over at every angle would take 60.
+    expect(handOffs).toBeLessThan(10);
+  });
 });
