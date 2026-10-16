@@ -138,6 +138,12 @@ describe('the lists a run is judged with', () => {
     expect(known.filter((entry) => entry.file !== undefined && !ids.has(entry.file))).toEqual([]);
     expect(known.every((entry) => entry.issue > 0)).toBe(true);
   });
+
+  it('tracks every known failure on #783, the item that fixes conversion failures of real files (QA review of #787)', () => {
+    const known = readKnownFailures(REGRESSION_KNOWN_FAILURES_PATH);
+    expect(known.length).toBeGreaterThan(0);
+    expect(known.map((entry) => entry.issue)).toEqual(known.map(() => 783));
+  });
 });
 
 describe('documentation', () => {
