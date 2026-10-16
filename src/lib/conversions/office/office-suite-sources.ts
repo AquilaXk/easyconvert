@@ -53,7 +53,7 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
 
 /** Targets the in-process engine writes from plain text only: the Palm family, the Sony and Open eBook formats, XPS and the Hangul formats. */
 const TEXT_ONLY_TARGETS: ReadonlySet<string> = new Set(['azw3', 'mobi', 'lrf', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx']);
-/** Sources of the ebook readers of the office suite: their text-only targets are written from the text the suite exports. */
+/** Sources of the ebook readers of the office suite: their targets written from text only are written from the text the suite exports. */
 const EBOOK_SOURCES: ReadonlySet<string> = new Set(['lrf', 'pdb', 'rb']);
 
 /** The application of every format the office suite reads that the in-process engine cannot render: the sources above and their aliases. */
