@@ -78,6 +78,19 @@ describe('which PNG files the encoder may read as they are', () => {
     expect(readsAsPixelsOnly(await build())).toBe(expected);
   });
 
+  it('refuses a file whose signature is damaged in any byte, or cut short, whatever follows it', async () => {
+    const png = await sixteenBitColour;
+    expect(readsAsPixelsOnly(png)).toBe(true);
+    for (let at = 0; at < 8; at += 1) {
+      const damaged = Buffer.from(png);
+      damaged[at] ^= 0x01;
+      expect(readsAsPixelsOnly(damaged), `signature byte ${at}`).toBe(false);
+    }
+    expect(readsAsPixelsOnly(png.subarray(0, 7))).toBe(false);
+    expect(readsAsPixelsOnly(png.subarray(0, 8))).toBe(false);
+    expect(readsAsPixelsOnly(Buffer.alloc(0))).toBe(false);
+  });
+
   it('refuses a header chunk that is not first, or of the wrong length', async () => {
     const png = await sixteenBitColour;
     const header = png.subarray(8, 8 + 12 + 13);
