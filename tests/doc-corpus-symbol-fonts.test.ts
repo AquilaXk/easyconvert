@@ -26,7 +26,7 @@ const MIN_WORD_LENGTH = 4;
 const MAX_MISSING_SHARE = 0.02;
 const PRIVATE_USE = /[\uE000-\uF8FF]/u;
 
-const SYMBOL_DOCUMENTS: ReadonlyArray<{ id: string; expected: RegExp }> = [
+const SYMBOL_DOCUMENTS: ReadonlyArray<{ id: string; expected: RegExp; alsoExpected?: readonly RegExp[] }> = [
   { id: 'govdocs1-000677.doc', expected: /~700\u00B0C/u },
   { id: 'govdocs1-001265.doc', expected: /Range:\s+\u00B1\s+20 m\/s/u },
   { id: 'govdocs1-002680.doc', expected: /\u03C6ch\(m\/Pa\)/u },
@@ -36,6 +36,14 @@ const SYMBOL_DOCUMENTS: ReadonlyArray<{ id: string; expected: RegExp }> = [
   { id: 'govdocs1-004428.doc', expected: /\u2022\s+Complete IS-800: NRP/u },
   { id: 'govdocs1-004564.doc', expected: /runout \u226410% of channel/u },
   { id: 'govdocs1-006247.doc', expected: /Age \u2265 18 years of age/u },
+  // The WP Greek faces: "TGF-alpha" in a run of WP Greek Century; in the other document the Greek letters are Symbol
+  // fields of WP Greek Courier: "10 sigma", "3.5 micrometres", "Lyman alpha" and "Delta".
+  { id: 'govdocs1-001634.doc', expected: /TGF\u03B1 expression is a relatively late event/u },
+  {
+    id: 'govdocs1-004581.doc',
+    expected: /Lyman \u03B1, has sufficient flux/u,
+    alsoExpected: [/\(10\u03C3\) at 3\.5\u03BCm/u, /1\.5 \u03942, where Delta is the density/u, /cosmic web at \u0394=5/u],
+  },
 ];
 
 const toolsMissing = skipWithoutTools('soffice', 'pdftotext');
@@ -60,7 +68,7 @@ async function corpusFile(id: string): Promise<Buffer | null> {
 }
 
 describe.skipIf(toolsMissing)('Word symbol-font characters in real corpus files', () => {
-  for (const { id, expected } of SYMBOL_DOCUMENTS) {
+  for (const { id, expected, alsoExpected = [] } of SYMBOL_DOCUMENTS) {
     it(
       `${id}: maps every symbol character, converts to PDF without warnings and keeps the words the office suite reads`,
       async (ctx) => {
@@ -69,6 +77,7 @@ describe.skipIf(toolsMissing)('Word symbol-font characters in real corpus files'
         if (!doc) return ctx.skip();
         const text = extractTextFromDoc(doc);
         expect(text).toMatch(expected);
+        for (const more of alsoExpected) expect(text).toMatch(more);
         expect(text).not.toMatch(PRIVATE_USE);
         expect(text).not.toContain('\uFFFD');
 
@@ -76,6 +85,7 @@ describe.skipIf(toolsMissing)('Word symbol-font characters in real corpus files'
         expect(pdf.metadata?.warnings).toBeUndefined();
         const rendered = normalizeWhitespace(extractTextWithExternalPdftotext(pdf.buffer) ?? '');
         expect(rendered).toMatch(new RegExp(expected.source.replace(/\\s\+/g, '\\s+'), 'u'));
+        for (const more of alsoExpected) expect(rendered).toMatch(more);
 
         const reference = new Set(wordsOf(sofficeConvert(doc, 'doc', 'txt:Text (encoded):UTF8', 'txt').toString('utf-8')));
         const ours = wordsOf(text);

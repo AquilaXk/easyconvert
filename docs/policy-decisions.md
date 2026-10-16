@@ -186,13 +186,15 @@ Compression
 
 ## 7. Characters without a Unicode counterpart
 
-- **Status**: Implemented (#725); extended to every in-process PDF writer (#742) and to legacy binary word-processing documents (`.doc`, #726).
+- **Status**: Implemented (#725); extended to every in-process PDF writer (#742), to legacy binary word-processing documents (`.doc`, #726) and, with styles, WP Greek and presentations, in the follow-ups of #760.
 - **Decision**:
   - Symbol-font private-use characters are mapped to Unicode with the standard tables for the symbol fonts.
   - A character that no table maps becomes U+FFFD, and a warning names the font and the code.
   - **The PDF writers apply the same rule to any code point no font can draw** (unassigned, private-use, noncharacter, lone surrogate). The code point becomes U+FFFD and the result carries one warning line for each distinct code point. They no longer refuse the document.
-  - **Binary word-processing documents (`.doc`) take the font from the character formatting of the run**: the font set on the run for the ASCII, East Asian or other text (the first of these three that is a symbol font), else the default character fonts of the style sheet. A Symbol field character (a placeholder in the text plus its own font and code) maps the same way, and in any other font it is the Unicode character it names. A document without a font table or a run whose font index names no font maps nothing, and the warning names no font.
-  - **A symbol-font character whose Unicode counterpart no installed font can draw becomes U+FFFD in a PDF**, with a warning that names the font, the code and the counterpart. Text, HTML and the other outputs keep the counterpart. Installing a font that covers the counterpart makes the next conversion draw it.
+  - **Binary word-processing documents (`.doc`) take the font from the formatting of the character**. Each of the ASCII, East Asian and other fonts is the first one set by the run, then by the character style of the run, then by the paragraph style of its paragraph (the Normal style when it has no entry of its own), then by the default character fonts of the style sheet; a style that sets no font hands the choice to the style it is based on. The font of the character is the first of the three that is a symbol font. A Symbol field character (a placeholder in the text plus its own font and code) maps the same way, and in any other font it is the Unicode character it names. A document without a font table or a character whose font index names no font maps nothing, and the warning names no font.
+  - **A style chain is followed for at most 32 styles, and a malformed one is refused** (HTTP 400): styles based on each other, a style the sheet does not hold, a style whose size runs outside the table stream, a chain longer than the limit. Each style is resolved once per document.
+  - **The WP Greek faces (WordPerfect character set 8) have a table of their own**: the capital and small Greek letters in alphabet order from code 0x21. The slots the set fills with a repeat of another letter and the accented and polytonic letters (their order differs between versions of the set) map to nothing, so they become U+FFFD with a warning like any other unmapped code.
+  - **A symbol-font character whose Unicode counterpart no installed font can draw becomes U+FFFD in a PDF**, with a warning that names the font, the code and the counterpart. Text, HTML and the other outputs keep the counterpart. Installing a font that covers the counterpart makes the next conversion draw it. **Binary presentations (`.ppt`) follow the same rule**: the same helper decides what the installed fonts cover, and the warning lines are the same. Presentations in the XML format do not map symbol fonts at all; their private-use characters fall under the rule of the PDF writers above.
 - **Why**:
   - The whole document must still convert. Failing it for one glyph is worse than any substitute.
   - A replacement mark is honest.
@@ -202,14 +204,15 @@ Compression
   - The reader sees a replacement mark where the original showed a glyph.
   - Plain text, Markdown and HTML to PDF follow the rule too. A file with a stray noncharacter converts, where it used to fail with HTTP 400.
   - A character that is assigned but that no installed font covers still fails, because installing a font fixes it. The exception is a character that came from a symbol-font mapping in a `.doc`: the pictograph and arrow blocks the Wingdings and Webdings tables map to are covered by few fonts, and a bullet or an arrow is not worth a failed document.
-  - Paragraph and character styles are not followed, so a symbol-font character whose font comes only from a style is replaced and reported under the font the run resolves to.
+  - A symbol-font character that the document stores with the font of an ordinary text style (a check box in the Normal style, whose font is Arial) is not a symbol character to the reader, and it is replaced and reported under that font. The formatting names no symbol font, so any guess would invent a glyph.
+  - A PDF made from a presentation shows U+FFFD for an arrow or a pictograph that no installed font covers, where it used to fail the file.
 - **Alternatives rejected**:
   - **Refusing the document.**
   - **Rendering with a bundled symbol font**: wrong glyphs, silently.
   - **Dropping the character**: the loss would leave no trace in the output.
   - **Refusing a `.doc` whose mapped character has no installed glyph**: the same document converts on a machine with the font and fails on one without, for a decoration.
-- **Verified by**: the PPT and `.doc` symbol-font tests (`tests/doc-symbol-fonts.test.ts`, with a document written by the office suite and the PDF text read by a separate PDF reader, and `tests/doc-corpus-symbol-fonts.test.ts` on public documents), `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` converts).
-- **Revisit when**: a reliable glyph source for the remaining math fonts appears, or the `.doc` reader follows styles.
+- **Verified by**: the PPT and `.doc` symbol-font tests (`tests/doc-symbol-fonts.test.ts`, with a document written by the office suite and the PDF text read by a separate PDF reader; `tests/doc-style-fonts.test.ts`, with documents written by hand from the file format; `tests/ppt-text-extraction.test.ts`; and `tests/doc-corpus-symbol-fonts.test.ts` and `tests/ppt-corpus-symbol-fonts.test.ts` on public documents, the Greek letters read against the sentences they stand in), `tests/symbol-font-map.test.ts` (the Greek alphabet in order), `tests/pdf-unicode-text-writers.test.ts` (plain text), `tests/conversion-warnings-scope.test.ts`, and the public document rows (`doc-poi-bug59058.docx` and `doc-poi-41246-2.ppt` convert).
+- **Revisit when**: a reliable glyph source for the remaining math fonts appears, the accented letters of the WP Greek set are confirmed against a real document, or the `.pptx` reader names the font of a run.
 
 ## 8. Empty documents and macros
 

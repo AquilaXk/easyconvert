@@ -30,7 +30,7 @@ import {
   xlsxMaxCellTextChars,
 } from './office/spreadsheet-limits';
 import { buildOpenXpsPackage, XpsPageInput } from './openxps';
-import { PdfUnicodeTextWriter, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
+import { PdfUnicodeTextWriter, canDrawInPdf, loadFontCoverageIndex, preferredUnicodeFontPath } from './pdf-fonts';
 import { readDocText } from './office/doc-reader';
 import { readRtfText } from './office/rtf-reader';
 import { readBiffCharts } from './office/biff-chart';
@@ -7103,7 +7103,9 @@ async function convertPptSource(
   baseName: string
 ): Promise<ConversionResult> {
   const warnings: string[] = [];
-  const readSlides = readPptSlides(inputBuffer, warnings);
+  // A PDF draws with installed fonts: a symbol-font character none of them covers shows as U+FFFD and is reported.
+  if (tgt === 'pdf') await loadFontCoverageIndex();
+  const readSlides = readPptSlides(inputBuffer, warnings, tgt === 'pdf' ? canDrawInPdf : undefined);
   const slides = [];
   for (const slide of readSlides) slides.push({ ...slide, charts: await readEmbeddedCharts(slide.embedded, slide.number, warnings) });
   // The text targets list what the charts say as lines of the slide; the PDF draws the charts.
