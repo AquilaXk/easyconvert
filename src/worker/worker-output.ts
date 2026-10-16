@@ -1,0 +1,189 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { cleanupDirectoryTree } from '../lib/conversions/archive-extraction-safety';
+import { getFormatByExtension } from '../lib/registry';
+import { readPersistedOutput } from './persisted-output';
+import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
+
+/**
+ * The files a worker conversion reads and writes: its job directory, the input on disk, and the output handed to its
+ * destination. Every native route shares them; they know nothing of the engines that use them.
+ */
+
+/**
+ * Scoped sandbox directory runner with automated cleanup and error encapsulation.
+ */
+export async function withSandboxDir<T>(
+  prefix: string,
+  operation: (tempDir: string) => Promise<T>
+): Promise<T> {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  try {
+    return await operation(tempDir);
+  } finally {
+    cleanupDirectoryTree(tempDir);
+  }
+}
+
+/**
+ * Resolves disk input path and ownership from Buffer or WorkerVfsPayload.
+ */
+export function resolveInputContext(
+  input: Buffer | WorkerVfsPayload,
+  ext: string,
+  tempDir: string
+): { inputPath: string; isTemporary: boolean } {
+  if (Buffer.isBuffer(input)) {
+    const p = path.join(tempDir, `input.${ext}`);
+    fs.writeFileSync(p, input);
+    return { inputPath: p, isTemporary: true };
+  }
+  if (typeof input === 'object' && input !== null) {
+    if (input.inputPath && fs.existsSync(input.inputPath)) {
+      return { inputPath: input.inputPath, isTemporary: false };
+    }
+    if (input.inputBuffer) {
+      const p = path.join(tempDir, `input.${ext}`);
+      fs.writeFileSync(p, input.inputBuffer);
+      return { inputPath: p, isTemporary: true };
+    }
+  }
+  throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
+}
+
+/**
+ * Persists an output file to target VFS destination outside ephemeral sandbox before cleanup.
+ */
+function resolveOutputPath(targetFormat: string, options?: WorkerEngineOptions, vfsPayload?: WorkerVfsPayload): string {
+  const desiredOutput = vfsPayload?.outputPath || (options as { outputPath?: string } | undefined)?.outputPath;
+  if (desiredOutput) return desiredOutput;
+  const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
+  if (!fs.existsSync(vfsDir)) {
+    try {
+      fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
+    } catch {}
+  }
+  return path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${targetFormat}`);
+}
+
+export function preserveOutput(
+  tempOutputPath: string,
+  targetFormat: string,
+  options?: WorkerEngineOptions,
+  vfsPayload?: WorkerVfsPayload
+): string {
+  const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
+  fs.copyFileSync(tempOutputPath, finalPath);
+  return finalPath;
+}
+
+/**
+ * Hands the finished output of a job to its destination and leaves nothing of it in the job directory. An output
+ * nobody named a place for goes to a file of the worker's own naming, and the job directory is on the same volume as
+ * that file in all but unusual setups, so the file is renamed into place and its bytes are not written a second time;
+ * across volumes, or when the caller named the destination (which may be a link or a mount of its own), it is copied.
+ */
+export function handOffOutput(
+  tempOutputPath: string,
+  targetFormat: string,
+  options?: WorkerEngineOptions,
+  vfsPayload?: WorkerVfsPayload
+): string {
+  const named = vfsPayload?.outputPath || (options as { outputPath?: string } | undefined)?.outputPath;
+  if (named) return preserveOutput(tempOutputPath, targetFormat, options, vfsPayload);
+  const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
+  try {
+    fs.renameSync(tempOutputPath, finalPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
+    fs.copyFileSync(tempOutputPath, finalPath);
+  }
+  return finalPath;
+}
+
+/** Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy. */
+export function writeOutputSegments(
+  segments: readonly Uint8Array[],
+  targetFormat: string,
+  options?: WorkerEngineOptions,
+  vfsPayload?: WorkerVfsPayload
+): string {
+  const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
+  const fd = fs.openSync(finalPath, 'w');
+  try {
+    for (const segment of segments) {
+      let written = 0;
+      while (written < segment.length) {
+        written += fs.writeSync(fd, segment, written, segment.length - written);
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return finalPath;
+}
+
+/**
+ * Creates lazy zero-heap WorkerConversionResult supporting 2GB+ payloads without heap overflow.
+ */
+export function createConversionResult(
+  persistedFilePath: string,
+  targetFormat: string,
+  baseName: string,
+  engineUsed: WorkerConversionResult['engineUsed'],
+  executionTimeMs: number
+): WorkerConversionResult {
+  const stat = fs.statSync(persistedFilePath);
+  let cachedBuffer: Buffer | null = null;
+  return {
+    filePath: persistedFilePath,
+    mimeType: getMimeType(targetFormat),
+    filename: `${baseName}.${targetFormat}`,
+    size: stat.size,
+    engineUsed,
+    executionTimeMs,
+    get buffer(): Buffer {
+      cachedBuffer ??= readPersistedOutput(persistedFilePath, stat.size);
+      return cachedBuffer;
+    },
+    set buffer(b: Buffer) {
+      cachedBuffer = b;
+    },
+  };
+}
+
+export function getMimeType(format: string): string {
+  const cleanFormat = format.toLowerCase().trim();
+  const regDef = getFormatByExtension(cleanFormat);
+  if (regDef?.mimeType) {
+    return regDef.mimeType;
+  }
+
+  const map: Record<string, string> = {
+    pdf: 'application/pdf',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    zip: 'application/zip',
+    '7z': 'application/x-7z-compressed',
+    tar: 'application/x-tar',
+    gz: 'application/gzip',
+    tgz: 'application/gzip',
+    bz2: 'application/x-bzip2',
+    tbz2: 'application/x-bzip-compressed-tar',
+    xz: 'application/x-xz',
+    txz: 'application/x-xz',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    tiff: 'image/tiff',
+    ppm: 'image/x-portable-pixmap',
+    svg: 'image/svg+xml',
+    txt: 'text/plain',
+  };
+  return map[cleanFormat] || 'application/octet-stream';
+}

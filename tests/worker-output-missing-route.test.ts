@@ -25,12 +25,12 @@ const dispatchState = vi.hoisted(() => ({ outputDir: '' }));
 vi.mock('../src/lib/conversions/dispatch', async () => {
   const fsModule = await import('node:fs');
   const pathModule = await import('node:path');
-  const engines = await import('../src/worker/engines');
+  const workerOutput = await import('../src/worker/worker-output');
   return {
     dispatchConversion: async () => {
       const outputPath = pathModule.join(dispatchState.outputDir, WORKER_FILE_NAME);
       fsModule.writeFileSync(outputPath, 'tar bytes that are about to vanish');
-      const result = engines.createConversionResult(outputPath, 'tar', 'bundle', 'native-7z', 1);
+      const result = workerOutput.createConversionResult(outputPath, 'tar', 'bundle', 'native-7z', 1);
       fsModule.rmSync(outputPath);
       return result;
     },

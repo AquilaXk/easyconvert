@@ -58,6 +58,7 @@ export type ExternalOracleTool =
   | 'raw-identify'
   | 'dcraw_emu'
   | 'ps2pdf'
+  | 'gs'
   | 'rsvg-convert'
   | 'dwg2dxf'
   | 'woff2_decompress'

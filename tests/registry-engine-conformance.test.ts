@@ -1654,7 +1654,8 @@ describe('native-engine pairs route through the dispatcher', () => {
         return;
       }
       const result = await dispatchConversion(postscriptProbe(), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
-      expect(result.engineUsed).toBe('native-poppler');
+      // An EPS figure that becomes a PNG is drawn by the interpreter itself; every other page target goes through Poppler.
+      expect(result.engineUsed).toBe(source === 'eps' && target === 'png' ? 'native-postscript' : 'native-poppler');
       await expectPageTargetOutput(result.buffer, target);
     },
     NATIVE_TIMEOUT_MS
