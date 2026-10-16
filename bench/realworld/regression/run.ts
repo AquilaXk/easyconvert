@@ -39,7 +39,7 @@ function modeOf(value: string | undefined): RunMode {
 
 function shardOf(value: string | undefined): { shard: number; shards: number } {
   const match = /^(\d+)\/(\d+)$/.exec(value ?? '1/1');
-  if (match === null) throw new ArgumentError('--shard must look like 1/12');
+  if (match === null) throw new ArgumentError('--shard must look like 1/16');
   return { shard: Number(match[1]) - 1, shards: Number(match[2]) };
 }
 

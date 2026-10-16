@@ -576,7 +576,7 @@ government documents corpus and the web-crawl PDF corpus. Its sources, licence s
 
 ```sh
 npm run bench:regression -- stats
-npm run bench:regression -- run --mode full|nightly --shard 1/12 [--date YYYY-MM-DD] [--per-file 1] [--limit 40] [--out FILE]
+npm run bench:regression -- run --mode full|nightly --shard 1/16 [--date YYYY-MM-DD] [--per-file 1] [--limit 40] [--out FILE]
 npm run bench:regression -- merge --out regression-results [--previous corpus.json] [--record-failures] regression-shard-*.json
 npx tsx scripts/regression-corpus-manifest.ts index|profile|select --work DIR
 ```
@@ -593,8 +593,8 @@ npx tsx scripts/regression-corpus-manifest.ts index|profile|select --work DIR
   resumable steps; the producer is read from the file's own metadata).
 - **Jobs:** each file goes through one target of its format's advertised list, chosen by the hash of the file's id, so the pair of a
   file does not change when the corpus grows or when only part of it runs.
-- **Schedule** (`.github/workflows/regression-corpus.yml`): on Sunday the whole corpus runs as 12 shards (about 31 minutes of
-  conversion each at 3.3 s a job on 3 workers: 3.1 s from the times of the real-world run for this mix, 3.34 s measured in a trial on the CI runner; 60 minutes at most); on the other six days a seventh of it runs as 4 shards,
+- **Schedule** (`.github/workflows/regression-corpus.yml`): on Sunday the whole corpus runs as 16 shards (about 26 minutes of
+  conversion each at 3.7 s a job on 3 workers: 3.1 s from the times of the real-world run for this mix, 3.65 s measured in a trial of 3,600 jobs on the CI runner; 60 minutes at most); on the other six days a seventh of it runs as 4 shards,
   the seventh chosen by the date (the hash of the id modulo 7 against the days since 1970-01-01 modulo 7), so seven nights cover the
   corpus once. Every night also runs the canary: one file of every format and producer class, and every file listed in
   `bench/realworld/regression/failed-before.json`. `merge --record-failures` adds the files that failed in a run to that list; it is

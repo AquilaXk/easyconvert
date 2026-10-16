@@ -188,11 +188,11 @@ describe('plan step', () => {
     return Object.fromEntries(fs.readFileSync(output, 'utf-8').trim().split('\n').map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
   }
 
-  it.skipIf(skipUnless('bash', bash.status === 0))('plans a full run of twelve shards for the Sunday schedule', () => {
+  it.skipIf(skipUnless('bash', bash.status === 0))('plans a full run of sixteen shards for the Sunday schedule', () => {
     const out = planFor('schedule', '17 3 * * 0', '');
     expect(out.mode).toBe('full');
-    expect(out.count).toBe('12');
-    expect(out.shards).toBe('[1,2,3,4,5,6,7,8,9,10,11,12]');
+    expect(out.count).toBe('16');
+    expect(out.shards).toBe('[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]');
     expect(out.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
@@ -203,7 +203,7 @@ describe('plan step', () => {
   });
 
   it.skipIf(skipUnless('bash', bash.status === 0))('takes the mode of a manual run from its input', () => {
-    expect(planFor('workflow_dispatch', '', 'full').count).toBe('12');
+    expect(planFor('workflow_dispatch', '', 'full').count).toBe('16');
     expect(planFor('workflow_dispatch', '', 'nightly').count).toBe('4');
   });
 });

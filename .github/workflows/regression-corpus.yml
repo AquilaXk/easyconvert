@@ -5,7 +5,7 @@ name: Regression corpus
 # the converters and judged like the real-world corpus (crash, hang, bad output, refusal) and against the last full run: a
 # file that converted then and does not now is a regression even when no reference tool can open it.
 #
-#   - Sunday: the whole corpus, as 12 shards. The merged result set is kept as the `regression-baseline` artifact.
+#   - Sunday: the whole corpus, as 16 shards. The merged result set is kept as the `regression-baseline` artifact.
 #   - Monday to Saturday: a seventh of the corpus chosen by the date, plus the canary (one file of every format and producer
 #     class, and every file that failed before), as 4 shards, compared with the last full run on main.
 #
@@ -37,7 +37,7 @@ permissions:
 
 env:
   # Shards per mode (bench/realworld/regression/schedule.ts sizes them; tests/regression-corpus-workflow.test.ts keeps them equal).
-  FULL_SHARDS: '12'
+  FULL_SHARDS: '16'
   NIGHTLY_SHARDS: '4'
   # The schedule entry that starts a full run.
   FULL_CRON: '17 3 * * 0'
