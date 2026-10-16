@@ -75,6 +75,10 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, spawn: recordingSpawn, default: { ...actual, spawn: recordingSpawn } };
 });
 
+// The recorder above sees the programs this process starts. The launcher starts them from a helper process, which
+// the recorder cannot see, so these tests run with it off; tests/pdf-ops-launcher.test.ts covers the launched path.
+vi.stubEnv('SANDBOX_LAUNCHER', 'off');
+
 /** Shell-hostile but within the 32-byte limit of poppler's own `-upw` buffer, so the CLI oracle can read it. */
 const USER_PASSWORD = `Canary-7f3a "q" 'x' $H;#1`;
 const OWNER_PASSWORD = 'Owner-Canary-91bd';

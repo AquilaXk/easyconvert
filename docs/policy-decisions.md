@@ -51,6 +51,7 @@ Engines
 13. [CAD input](#13-cad-input)
 14. [SVG to PDF](#14-svg-to-pdf)
 29. [DWG input](#29-dwg-input)
+31. [Starting external programs from a small helper process](#31-starting-external-programs-from-a-small-helper-process)
 
 Usage limits
 
@@ -701,4 +702,32 @@ Compression
   - **A smaller bzip2 block for parallelism** on the tar to tar.bz2 row: 7-Zip's bzip2 is single-threaded for the two blocks a 0.9 MB input makes (73.5 ms against 51.7 ms for `bzip2 -9`, pipes or files alike); blocks of 300 or 450 KB run in parallel but write up to 11 % more than `bzip2 -9` on text. The in-repo encoder takes 115 to 150 ms. The row stays a tracked gap.
 - **Verified by**: `tests/deflate-blocks.test.ts`, `tests/archive-inprocess-repack.test.ts` and `tests/archive-inprocess-unpack.test.ts` (outputs read back by `unzip -t`, `zipinfo`, `7z t`, `gzip -t`, `gzip -N`, `tar` and `unrar`; entry-by-entry SHA-256, modes and times; sizes against `zip -6` and `gzip -6`; no 7-Zip call; traversal, link, collision, entry-count, size, ratio, CRC and encryption refusals), `tests/archive-stream-to-tar.test.ts`, `tests/archive-native-compression-level.test.ts`, and the `compression` quality and speed parity rows (`mixed.tar->zip`, `mixed.tar->gz`, `mixed.zip->tar`, `mixed.gz->tar`, `mixed.rar->tar`).
 - **Revisit when**: a WebAssembly deflate with a three-byte hash (libdeflate, or zlib without the CRC-32C hash) is vendored, which removes the 4 MiB bound; or the stored-only RAR reader is extended to RAR 5 and extended times.
+
+## 31. Starting external programs from a small helper process
+
+- **Status**: Implemented (issue #695).
+- **Decision**:
+  - The PDF page operations, protection, the edit gate and the decryption for the readers start `qpdf` through a small launcher helper process (`src/lib/security/sandbox-launcher.ts`) instead of from the worker process itself. The helper starts every program through the same sandboxed runner as before, so the sanitized environment, the network namespace, the resource limits, the time limit and the output limit are unchanged.
+  - The helper boots in the background on first use. Until it is ready, and whenever it is not worth using, a program is started directly. A helper that dies fails the requests it held with the typed process error, and the next request runs directly while a new helper starts. After a helper that never became ready, programs run directly for 30 seconds before another start is tried.
+  - It is used only when the fork it saves costs more than the helper adds: `(resident memory - 112 MiB) * 4.2 ms/GB > output bytes * 2.5 ms/MB`. A small PDF in a worker of 200 MB or more goes through the helper; a large document, or a small process, starts `qpdf` directly.
+  - `SANDBOX_LAUNCHER=off` turns the helper off. The `qpdf` command lines, and therefore every output byte, are unchanged: the object streams and stream compression of the output are the ones the reference tool writes with the same options.
+- **Why**:
+  - Node starts a program with `fork()`, which copies the page tables of the whole worker: on Linux the start costs about 4.2 ms per gigabyte of resident memory, on top of the 2 ms a small PDF tool needs. A worker that holds a few hundred megabytes spends more time starting `qpdf` than `qpdf` spends working. The pdf-ops rows ran the same `qpdf` command lines as the reference, with a wrapper cost of 0.06 to 0.2 ms around them (temporary input, environment, pipes), which was the 7 to 10 percent gap. Starting from a small process removes the fork cost, which is larger than that wrapper cost, and puts ours ahead of the reference on a worker of realistic size.
+  - Measured on the 4-core Linux test VM against main, with the parity bench (`--parity --speed-only --family pdf-ops`, five rounds, medians): protect 0.972 to 1.027, decrypt 0.986 to 1.080, unlock 0.978 to 1.019, split 0.931 to 1.034, extract 0.982 to 1.114, delete 0.979 to 1.144, reorder 0.978 to 1.121, rotate 0.989 to 1.091 (ratio of ours to the reference, throughput). Held constant, the helper takes 2.45 ms per small-PDF operation at 110 MB and at 430 MB of worker memory, where a direct start takes 2.44 and 3.82 ms.
+  - Where the profile shows no further overhead to remove: a start of `qpdf` takes 1.2 ms of dynamic linking, 0.55 ms of reading and checking a small PDF, 0.2 ms to pack the objects of the output, and for AES-256 2.9 ms (protect) to 3.5 ms (decrypt) of key derivation. All of that runs in `qpdf` and is the same for the reference.
+- **Trade-offs**:
+  - A request and its reply cross two pipes: about 0.1 to 0.25 ms of wake-ups, and the output is moved once more (up to 2.5 ms per megabyte for outputs of several 64 KB reads). Below a worker size of about 112 MB the helper is no faster than a direct start, and for outputs of several hundred kilobytes it pays only in a large worker, which is why it is chosen per request.
+  - The helper ends the programs it started whenever it ends on its own terms: its input closing, a request it cannot read, SIGTERM, SIGINT, SIGHUP, an uncaught error. A kill it cannot handle (SIGKILL, the out-of-memory killer) leaves the programs it had started running, without the time and output limits, until they finish; the worker has the same exposure for programs it starts directly when it is killed. A helper that ends by itself is not replaced for 30 seconds, so a document that could do this cannot make every request start a new one.
+  - One more process of about 50 MB per worker while it is used; it ends after 60 seconds without a request, and when the worker ends.
+  - The recorder-based argument tests in `tests/pdf-password-argv.test.ts` observe the programs this process starts, so they run with the helper off; `tests/pdf-ops-launcher.test.ts` covers the launched path with `qpdf --check`, `qpdf --json`, `pdfinfo` and `pdftotext`.
+  - One more built file, `dist/sandbox-launcher-child.js` (`npm run build:sandbox-launcher`). Without it the source is run through `tsx`, and without either the programs start directly.
+- **Alternatives rejected**:
+  - **`vfork`/`posix_spawn` from the worker**: Node's child process API does not offer it on Linux.
+  - **A different qpdf option set** (no object streams, lower compression level): shaves 0.1 to 0.2 ms but writes 13 percent larger files than the reference, or changes the output.
+  - **Incremental update for rotate**: appends to the original file, so the output keeps the unpacked objects of the input and is larger than the reference's; for extract, delete and split it would keep the content of the removed pages in the file.
+  - **qpdf compiled to WebAssembly in the worker**: the published builds are command-line wrappers for browsers, add a dependency outside the pinned engine set, and do not remove the cost of reading and writing the document that dominates the run.
+  - **Reading the input from a pipe or a file descriptor**: `qpdf` needs a seekable file; the temporary input file costs 0.02 ms.
+  - **Always using the helper**: slower than a direct start in a small process and for large outputs.
+- **Verified by**: `tests/sandbox-launcher.test.ts` (the program is started by the helper, by the parent process id it reports; results, errors, time and output limits, abort, concurrency, environment sanitizing, strict isolation, a dying helper, the direct path), `tests/sandbox-launcher-protocol.test.ts`, `tests/pdf-ops-launcher.test.ts` (the PDF operations through the helper read back by independent tools, and the guards: the edit gate, page ranges, emptied documents), and the `pdf-ops` parity rows `protect`, `decrypt`, `unlock`, `split`, `extract`, `delete`, `reorder` and `rotate`.
+- **Revisit when**: Node starts programs with `vfork` or `posix_spawn` on Linux, or the worker's resident size stays below 112 MiB.
 
