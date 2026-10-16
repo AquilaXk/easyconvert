@@ -575,3 +575,49 @@ npm run bench:realworld -- merge --out realworld-results realworld-shard-*.json 
   `bench/realworld/baseline.json` (pairs with at least 20 jobs).
 - **Triage:** reduce each failing file to a minimal input, commit it under `tests/fixtures/regressions/` with a failing
   test, then fix the reader.
+
+## Regression corpus
+
+`npm run bench:regression` runs about 20,000 office and PDF files through the conversions, to find the crashes, hangs and bad
+outputs that a corpus of thousands misses, and to catch a conversion that worked and no longer does (#780, QA decision 2026-10-17).
+The open document engines test their import and export against corpora of this size; this is ours, drawn from the public
+government documents corpus and the web-crawl PDF corpus. Its sources, licence statements and selection rules are in
+`bench/realworld/PROVENANCE.md` (Regression corpus), the policy in `docs/policy-decisions.md` (entry 37).
+
+```sh
+npm run bench:regression -- stats
+npm run bench:regression -- run --mode full|nightly --shard 1/16 [--date YYYY-MM-DD] [--per-file 1] [--limit 40] [--out FILE]
+npm run bench:regression -- merge --out regression-results [--previous corpus.json] [--record-failures] regression-shard-*.json
+npx tsx scripts/regression-corpus-manifest.ts index|profile|select --work DIR
+```
+
+- **Corpus:** `bench/realworld/regression-manifest.json` holds one file per line (id, format, archive, entry, offsets, size, SHA-256,
+  producer). Nothing is committed: a shard reads each file out of the publisher's ZIP archive with range requests, checks its
+  digest, judges it and deletes it, in batches of 200 files, so a runner never holds more than two batches. A file whose bytes differ
+  from the manifest, or that the host does not serve, is listed as unavailable, fails the run and is not judged; the others are.
+  The manifest holds 20,003 files, 23.5 GB: 15,003 from the government corpus (doc 4,000, xls 3,300, ppt 2,400, pps 400,
+  docx 162, xlsx 37, pptx 204, pdf 4,500) and 5,000 PDFs of the crawl, in 1,352 combinations of format and producer class
+  (1,325 of them PDF producers; the office files of the government corpus come from a handful of applications). `npm run bench:regression -- stats` prints the table.
+- **Strata:** the draw takes the same number of files from every combination of format, producing application and size class, so a
+  rare producer is present in full (`scripts/regression-corpus-manifest.ts` rebuilds the manifest deterministically in three
+  resumable steps; the producer is read from the file's own metadata).
+- **Jobs:** each file goes through one target of its format's advertised list, chosen by the hash of the file's id, so the pair of a
+  file does not change when the corpus grows or when only part of it runs.
+- **Schedule** (`.github/workflows/regression-corpus.yml`): on Sunday the whole corpus runs as 16 shards (about 26 minutes of
+  conversion each at 3.7 s a job on 3 workers: 3.1 s from the times of the real-world run for this mix, 3.65 s measured in a trial of 3,600 jobs on the CI runner; 60 minutes at most); on the other six days a seventh of it runs as 4 shards,
+  the seventh chosen by the date (the hash of the id modulo 7 against the days since 1970-01-01 modulo 7), so seven nights cover the
+  corpus once. Every night also runs the canary: one file of every format and producer class, and every file listed in
+  `bench/realworld/regression/failed-before.json`. `merge --record-failures` adds the files that failed in a run to that list; it is
+  a reviewed commit. A failed run opens the `nightly-regression` issue or comments on the open one, through the same reusable
+  workflow as the nightly run (`.github/workflows/report-failure.yml`).
+- **Verdicts and gate:** as for the real-world corpus (crash, hang, bad output, refusal), and also against the last full run on
+  `main`: the merge job downloads its result set (the `regression-baseline` artifact, kept 90 days) and any job that was `ok`
+  there and is not now is listed under "Converted before, not now" and fails the run, even when no reference tool can open the file.
+  A job that crashed or was refused in both runs is not a regression. Without an earlier full run (the first one, or after 90 days
+  without one) the run says so and judges the verdicts alone. The baseline is up to a week old, so a regression stays flagged on each
+  night until the next Sunday run records it as the new baseline; by then it has to be fixed or listed.
+- **Known failures:** `bench/realworld/regression/known-failures.json`, entries as for the real-world corpus (pair, verdict, a
+  pattern of the detail, the corpus file where it applies, the issue that tracks the fix). A tracked failure, and a regression it
+  explains, is reported but does not fail the run; an entry without an issue is refused when the list is read.
+- **Triage:** as for the real-world corpus; the run summary lists each failing file with its pair, producer class and detail, and the
+  non-ok jobs by format and producer class.

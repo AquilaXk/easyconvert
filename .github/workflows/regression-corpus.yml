@@ -1,0 +1,219 @@
+name: Regression corpus
+
+# About 20,000 office and PDF files from the public government documents corpus and the web-crawl PDF corpus
+# (bench/realworld/regression-manifest.json, issue #780), stratified by format, producing application and size, run through
+# the converters and judged like the real-world corpus (crash, hang, bad output, refusal) and against the last full run: a
+# file that converted then and does not now is a regression even when no reference tool can open it.
+#
+#   - Sunday: the whole corpus, as 16 shards. The merged result set is kept as the `regression-baseline` artifact.
+#   - Monday to Saturday: a seventh of the corpus chosen by the date, plus the canary (one file of every format and producer
+#     class, and every file that failed before), as 4 shards, compared with the last full run on main.
+#
+# No Actions cache holds the files: each shard reads its files from the archives by byte range, checks the digest, judges the
+# file and deletes it (bench/README.md, Regression corpus). A failed run shows in the run summary, which lists each file by verdict,
+# and opens or updates the `nightly-regression` issue like the nightly run does.
+on:
+  schedule:
+    # 03:17 UTC, off the busy top of the hour and after the nightly run of 02:37 has released the runners.
+    - cron: '17 3 * * 1-6'
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'full: every file; nightly: a seventh chosen by the date, plus the canary'
+        type: choice
+        options: [nightly, full]
+        default: nightly
+      limit:
+        description: 'Trial run: judge only this many jobs per shard (empty: all of them)'
+        required: false
+        default: ''
+
+concurrency:
+  group: regression-corpus
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Shards per mode (bench/realworld/regression/schedule.ts sizes them; tests/regression-corpus-workflow.test.ts keeps them equal).
+  FULL_SHARDS: '16'
+  NIGHTLY_SHARDS: '4'
+  # The schedule entry that starts a full run.
+  FULL_CRON: '17 3 * * 0'
+  # The branch whose last full run is the baseline of the differential judge.
+  BASELINE_BRANCH: main
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      date: ${{ steps.plan.outputs.date }}
+      count: ${{ steps.plan.outputs.count }}
+      shards: ${{ steps.plan.outputs.shards }}
+
+    steps:
+      # The date is fixed here, once, so that every shard of a run agrees on which seventh of the corpus the night covers.
+      - name: Decide the mode, the shards and the date
+        id: plan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$EVENT_NAME" = schedule ]; then
+            if [ "$SCHEDULE" = "$FULL_CRON" ]; then mode=full; else mode=nightly; fi
+          else
+            mode="$INPUT_MODE"
+          fi
+          if [ "$mode" = full ]; then count="$FULL_SHARDS"; else count="$NIGHTLY_SHARDS"; fi
+          {
+            echo "mode=$mode"
+            echo "date=$(date -u +%F)"
+            echo "count=$count"
+            echo "shards=[$(seq 1 "$count" | paste -sd, -)]"
+          } >> "$GITHUB_OUTPUT"
+
+  shard:
+    needs: [plan]
+    name: shard (${{ matrix.shard }}/${{ needs.plan.outputs.count }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Install tools and start test services
+        uses: ./.github/actions/ci-setup
+
+      # Files are fetched in batches into a directory of the runner and deleted after they are judged.
+      - name: Run the corpus shard
+        shell: bash
+        env:
+          MODE: ${{ needs.plan.outputs.mode }}
+          RUN_DATE: ${{ needs.plan.outputs.date }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.plan.outputs.count }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          args=(--mode "$MODE" --date "$RUN_DATE" --shard "$SHARD/$SHARDS" --cache "$RUNNER_TEMP/regression-corpus" --out "regression-shard-$SHARD.json")
+          if [ -n "$LIMIT" ]; then args+=(--limit "$LIMIT"); fi
+          npm run bench:regression -- run "${args[@]}"
+
+      - name: Upload the shard report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regression-shard-${{ matrix.shard }}
+          path: regression-shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  gate:
+    needs: [plan, shard]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Download the shard reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: regression-shard-*
+          path: regression-shards
+          merge-multiple: true
+
+      # The result set of the newest full run on the baseline branch (main) that has not expired. A run on another branch is never the baseline.
+      - name: Fetch the result set of the last full run
+        id: previous
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=regression-baseline&per_page=30" \
+            --jq "[.artifacts[] | select(.expired == false and .workflow_run.head_branch == \"$BASELINE_BRANCH\")][0].workflow_run.id // empty")"
+          if [ -z "$run_id" ]; then
+            echo "No earlier full run on $BASELINE_BRANCH: the differential judge is skipped for this run."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name regression-baseline --dir regression-previous
+          echo "Compared with the full run $run_id"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Merge and gate
+        shell: bash
+        env:
+          PREVIOUS_FOUND: ${{ steps.previous.outputs.found }}
+        run: |
+          args=(--out regression-results)
+          if [ "$PREVIOUS_FOUND" = true ]; then args+=(--previous regression-previous/corpus.json); fi
+          npm run bench:regression -- merge "${args[@]}" regression-shards/*.json
+
+      - name: Show the corpus report in the run summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f regression-results/corpus.md ]; then cat regression-results/corpus.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload the corpus report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regression-results
+          path: regression-results/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # Only a full run is a baseline: a night covers a seventh of the corpus. Kept for 90 days, so a week of failed runs leaves one.
+      - name: Keep the result set of a full run as the baseline
+        if: always() && needs.plan.outputs.mode == 'full' && hashFiles('regression-results/corpus.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: regression-baseline
+          path: regression-results/corpus.json
+          if-no-files-found: error
+          retention-days: 90
+
+  # Opens one issue for the failing run, or comments on the open one (.github/workflows/report-failure.yml, shared with nightly.yml).
+  report:
+    needs: [plan, shard, gate]
+    if: always() && contains(needs.*.result, 'failure')
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: ./.github/workflows/report-failure.yml

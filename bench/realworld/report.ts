@@ -109,7 +109,7 @@ export function pairStats(jobs: readonly JobRecord[]): PairStats[] {
     .sort((a, b) => a.pair.localeCompare(b.pair));
 }
 
-function knownIssue(job: JobRecord, known: readonly KnownFailure[]): number | null {
+export function knownIssue(job: JobRecord, known: readonly KnownFailure[]): number | null {
   const pair = `${job.source}->${job.target}`;
   const match = known.find((k) => (k.pair === '*' || k.pair === pair) && k.verdict === job.verdict && (k.file === undefined || k.file === job.file) && new RegExp(k.detail).test(job.detail ?? ''));
   return match === undefined ? null : match.issue;
@@ -165,7 +165,7 @@ export function readBaseline(file = BASELINE_PATH): Baseline | null {
   return baseline;
 }
 
-const cell = (text: string): string => text.replace(/\|/g, String.raw`\|`).replace(/\n/g, ' ');
+export const cell = (text: string): string => text.replace(/\|/g, String.raw`\|`).replace(/\n/g, ' ');
 
 function pairRows(jobs: readonly JobRecord[]): string[] {
   const header = ['| Pair | Jobs | ok | refused | bad-output | crash | hang | p95 ms |', '|---|---|---|---|---|---|---|---|'];
@@ -197,13 +197,13 @@ function regressionRows(regressions: GateResult['refusalRegressions']): string[]
   return ['', '## Refusal-rate regressions', '', '| Pair | Baseline | Now |', '|---|---|---|', ...rows];
 }
 
-export function renderMarkdown(jobs: readonly JobRecord[], gate: GateResult): string {
+export function renderMarkdown(jobs: readonly JobRecord[], gate: GateResult, title = 'Real-world corpus run'): string {
   const totals = emptyCounts();
   for (const job of jobs) totals[job.verdict]++;
   const summary = VERDICT_ORDER.map((v) => `${v} ${totals[v]}`).join(', ');
   const verdict = gate.pass ? 'pass' : 'fail';
   const lines = [
-    '# Real-world corpus run',
+    `# ${title}`,
     '',
     `Gate: **${verdict}**. Jobs: ${jobs.length}. ${summary}.`,
     '',

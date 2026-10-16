@@ -1,0 +1,22 @@
+[
+  {
+    "pair": "*",
+    "verdict": "crash",
+    "detail": "^Error: Cannot extract plain text from binary/compressed container for format '\\.pps': fail-closed against mojibake corruption",
+    "issue": 783
+  },
+  {
+    "pair": "doc->docx",
+    "verdict": "crash",
+    "detail": "^SandboxedProcessError \\((exit (134|139)|signal SIG(SEGV|ABRT))\\): Warning: failed to launch javaldx",
+    "file": "gd-579820.doc",
+    "issue": 783
+  },
+  {
+    "pair": "xls->png",
+    "verdict": "hang",
+    "detail": "^no answer within 180000 ms$",
+    "file": "gd-648529.xls",
+    "issue": 783
+  }
+]

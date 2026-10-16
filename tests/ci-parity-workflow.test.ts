@@ -25,6 +25,7 @@ interface Step {
   with?: Record<string, unknown>;
 }
 interface Job {
+  uses?: string;
   needs?: string | string[];
   if?: string;
   'timeout-minutes'?: number;
@@ -627,6 +628,8 @@ describe('the nightly run', () => {
     const report = nightly.jobs.report;
     expect([...(report.needs as string[])]).toEqual(expect.arrayContaining(['bench', 'bench-parity-quality', 'bench-parity-speed']));
     expect(report.if).toBe("always() && contains(needs.*.result, 'failure')");
-    expect(String(report.steps[0].with?.script)).toContain("const label = 'nightly-regression'");
+    expect(report.uses).toBe('./.github/workflows/report-failure.yml');
+    const reusable = parse(read('.github', 'workflows', 'report-failure.yml')) as { jobs: { report: { steps: Step[] } } };
+    expect(String(reusable.jobs.report.steps[0].with?.script)).toContain("const label = 'nightly-regression'");
   });
 });

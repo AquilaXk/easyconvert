@@ -24,6 +24,7 @@
     "bench:quality:update-baseline": "tsx bench/run.ts --update-baseline",
     "bench:refresh-speed": "tsx bench/refresh-speed.ts",
     "bench:realworld": "tsx bench/realworld/run.ts",
+    "bench:regression": "tsx bench/realworld/regression/run.ts",
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts",
     "generate:sdk": "tsx scripts/generate-sdk.ts",
     "config:docs": "tsx scripts/generate-config-docs.ts",

@@ -409,9 +409,18 @@ jobs:
   # compose security settings (scripts/verify-worker-container.sh). It runs in parallel with the other
   # jobs and does the work only when a file that affects the image, its compose settings or the sandbox
   # changed; otherwise it succeeds at once, so `verify` can always require it.
+  #
+  # The layer cache of the image is kept in the container registry of the repository (ghcr.io/<owner>/<repo>-worker:buildcache),
+  # not in the Actions cache, whose 10 GB limit the layers filled and evicted the sample, tool and dependency caches with. Only a
+  # push to main writes it (`packages: write` is used by that login alone), so a pull request cannot pollute it; pull requests
+  # read it anonymously, which works for pull requests from forks too once the package is public. A cache that is not there
+  # (the first run, a private package) is a build without cache, not a failure.
   container:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
 
     env:
       # Files whose change can alter the worker container or its sandbox.
@@ -462,6 +471,30 @@ jobs:
         if: steps.changes.outputs.relevant == 'true'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
+      - name: Log in to the container registry
+        if: steps.changes.outputs.relevant == 'true' && github.event_name == 'push'
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Find the layer cache
+        id: layer-cache
+        if: steps.changes.outputs.relevant == 'true'
+        shell: bash
+        run: |
+          # The registry name must be lower case; the repository name may not be.
+          ref="ghcr.io/${GITHUB_REPOSITORY,,}-worker:buildcache"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          if docker buildx imagetools inspect "$ref" > /dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "layer cache: $ref"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "layer cache: none at $ref (not written yet, or the package is private): building without it"
+          fi
+
       - name: Build the worker image
         if: steps.changes.outputs.relevant == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
@@ -470,8 +503,8 @@ jobs:
           file: Dockerfile.worker
           load: true
           tags: ${{ env.WORKER_IMAGE }}
-          cache-from: type=gha,scope=worker-container
-          cache-to: type=gha,mode=max,scope=worker-container
+          cache-from: ${{ steps.layer-cache.outputs.found == 'true' && format('type=registry,ref={0}', steps.layer-cache.outputs.ref) || '' }}
+          cache-to: ${{ github.event_name == 'push' && format('type=registry,ref={0},mode=max', steps.layer-cache.outputs.ref) || '' }}
 
       # Redis runs as the compose service so the worker container can reach it over the project network.
       - name: Start Redis
