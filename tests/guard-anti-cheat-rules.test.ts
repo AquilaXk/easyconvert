@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { runAntiCheatGuard } from '../scripts/guard-anti-cheat';
 
 /** Each case spawns the guard as a subprocess (about 1.3 s idle); the 5 s default fails on a loaded CI shard. */
 const GUARD_SUBPROCESS_TEST_TIMEOUT_MS = 60_000;
@@ -516,6 +517,114 @@ it('skips only in the branch strict mode does not take', (ctx) => {
       });
       expect(output).not.toContain('G2c-SKIP-SILENT-UNDER-STRICT');
       expect(status).toBe(0);
+    });
+  });
+
+  // =========================================================================
+  // G1b: reciprocal production calls inside one test
+  // =========================================================================
+  describe('Rule G1b: a function and its inverse in one test without an independent oracle', () => {
+    /** Titles of the tests the rule flags in a fixture test file, and whether the guard still passes. */
+    function flaggedTests(body: string): { titles: string[]; severities: string[]; success: boolean } {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'guard-g1b-'));
+      try {
+        fs.mkdirSync(path.join(dir, 'tests'), { recursive: true });
+        fs.writeFileSync(path.join(dir, 'tests', 'round-trip.test.ts'), body);
+        const result = runAntiCheatGuard({ targetDir: dir, strict: true });
+        const g1b = result.violations.filter((v) => v.rule === 'G1b-CIRCULAR-MOCKING-WARNING');
+        return { titles: g1b.map((v) => v.symbol ?? '').sort(), severities: [...new Set(g1b.map((v) => v.severity ?? 'error'))], success: result.success };
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    const wrap = (tests: string): string => `import { it, test, expect } from 'vitest';\n${tests}\n`;
+
+    it('flags the forms of a round trip: bare verbs, serialize pairs, member calls, and table tests (positive case)', () => {
+      const { titles } = flaggedTests(
+        wrap(`
+it('bare verbs', () => {
+  expect(decode(encode(input))).toEqual(input);
+});
+it('serialize pair', () => {
+  expect(deserialize(serialize(input))).toEqual(input);
+});
+it('suffixed member calls', () => {
+  expect(codec.decodeFrame(codec.encodeFrame(input))).toEqual(input);
+});
+it('bare member calls on one object', () => {
+  expect(codec.decode(codec.encode(input))).toEqual(input);
+});
+it('compression member calls', () => {
+  expect(archive.decompressBlock(archive.compressBlock(input))).toEqual(input);
+});
+it.each([1, 2])('table of %i', (n) => {
+  expect(decodeFrame(encodeFrame(n))).toBe(n);
+});
+test.each\`
+  n
+  \${1}
+\`('tagged table of $n', ({ n }) => {
+  expect(parseFrame(createFrame(n))).toBe(n);
+});
+it.only('only form', () => {
+  expect(extractText(createText(input))).toEqual(input);
+});
+        `)
+      );
+      expect(titles).toEqual([
+        'bare member calls on one object',
+        'bare verbs',
+        'compression member calls',
+        'only form',
+        'serialize pair',
+        'suffixed member calls',
+        'table of %i',
+        'tagged table of $n',
+      ]);
+    });
+
+    it('does not pair functions whose suffixes differ or whose bare verbs belong to other objects (negative case)', () => {
+      const { titles } = flaggedTests(
+        wrap(`
+it('temp dir and text extraction', () => {
+  const dir = createTempDir();
+  expect(extractText(dir)).toBe('text');
+});
+it('different suffixes', () => {
+  expect(decodeHeader(encodeFrame(input))).toEqual(input);
+});
+it('json and object', () => {
+  expect(JSON.parse(text)).toEqual(Object.create(null));
+});
+it('compress and extract', () => {
+  expect(extractText(compressFrame(input))).toBe('text');
+});
+        `)
+      );
+      expect(titles).toEqual([]);
+    });
+
+    it('accepts a round trip that is checked by an independent oracle, and only warns on one that is not', () => {
+      const withOracle = flaggedTests(
+        wrap(`
+it('verified', () => {
+  const bytes = encodeFrame(input);
+  assertFrame(bytes);
+  expect(decodeFrame(bytes)).toEqual(input);
+});
+it('verified through a helper object', () => {
+  const bytes = codec.encodeFrame(input);
+  reference.verifyFrame(bytes);
+  expect(codec.decodeFrame(bytes)).toEqual(input);
+});
+        `)
+      );
+      expect(withOracle.titles).toEqual([]);
+      const without = flaggedTests(wrap(`it('circular', () => {\n  expect(decodeFrame(encodeFrame(input))).toEqual(input);\n});`));
+      expect(without.titles).toEqual(['circular']);
+      expect(without.severities).toEqual(['warning']);
+      expect(without.success).toBe(true);
     });
   });
 

@@ -380,15 +380,16 @@ def cad_truth(args):
         if entity.dxftype() == "SPLINE":
             try:
                 bs = entity.construction_tool()
-                k = bs.knots()
-                if len(k) > bs.count and (k[bs.degree] > k[0] or k[bs.count] < k[-1]):
-                    steps = max(16, (bs.count - bs.degree) * 16)
-                    t0, t1 = k[bs.degree], k[bs.count]
-                    pts = [[round(p.x, 6), round(p.y, 6)] for p in (bs.point(t0 + (t1 - t0) * i / steps) for i in range(steps + 1))]
+                if not bs.is_clamped:
+                    # A B-spline is defined on [knots[degree], knots[count]] only (DXF reference, SPLINE group codes 40 and 72;
+                    # Piegl and Tiller, The NURBS Book, 2nd ed., section 2.3). make_path turns an unclamped spline into Bezier curves
+                    # that start at parameter 0 and leave that domain, so the library's own sampler of the domain is used instead: its
+                    # source says it works for clamped and unclamped curves. It takes 16 samples per span, a count that depends on no renderer.
+                    pts = [[round(p.x, 6), round(p.y, 6)] for p in bs.approximate(max(16, (bs.count - bs.degree) * 16))]
                     if len(pts) >= 2:
                         unclamped_polylines.append(pts)
                     continue
-            except Exception:  # noqa: BLE001 - fall back to make_path if construction_tool fails
+            except Exception:  # noqa: BLE001 - make_path reads what construction_tool cannot, or the entity is left out of the truth
                 pass
         clamped_strokes.append(entity)
     extent = bbox.extents(clamped_strokes, fast=True)

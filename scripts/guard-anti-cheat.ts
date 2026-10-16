@@ -98,6 +98,63 @@ function getNodeSnippet(sourceFile: ts.SourceFile, node: ts.Node): { line: numbe
 }
 
 // ============================================================================
+// Gate 1b helpers: reciprocal calls inside one test
+// ============================================================================
+const TEST_FUNCTION_NAMES: ReadonlySet<string> = new Set(['it', 'test', 'oracleTest']);
+const TEST_FUNCTION_MODIFIERS: ReadonlySet<string> = new Set(['only', 'concurrent']);
+
+/** A function a test calls: its name (the property name for a member call) and the text of the object it is called on, if any. */
+interface CalledFunction {
+  name: string;
+  receiver: string;
+}
+
+function calledFunction(callee: ts.Expression, sf: ts.SourceFile): CalledFunction | null {
+  if (ts.isIdentifier(callee)) return { name: callee.text, receiver: '' };
+  if (ts.isPropertyAccessExpression(callee)) return { name: callee.name.text, receiver: callee.expression.getText(sf) };
+  return null;
+}
+
+/** `it(...)`, `test.only(...)`, `oracleTest(...)`, and the table forms `it.each(cases)(...)` and ``it.each`table`(...)``. */
+function isTestCall(call: ts.CallExpression): boolean {
+  const callee = call.expression;
+  if (ts.isIdentifier(callee)) return TEST_FUNCTION_NAMES.has(callee.text);
+  if (ts.isPropertyAccessExpression(callee)) {
+    return ts.isIdentifier(callee.expression) && TEST_FUNCTION_NAMES.has(callee.expression.text) && TEST_FUNCTION_MODIFIERS.has(callee.name.text);
+  }
+  let table: ts.Expression | null = null;
+  if (ts.isCallExpression(callee)) table = callee.expression;
+  if (ts.isTaggedTemplateExpression(callee)) table = callee.tag;
+  return table !== null && ts.isPropertyAccessExpression(table) && table.name.text === 'each' && ts.isIdentifier(table.expression) && TEST_FUNCTION_NAMES.has(table.expression.text);
+}
+
+/** The inverse of each verb: a function named after the first is paired with one of the second that has the same suffix. */
+const RECIPROCAL_VERBS: ReadonlyArray<{ forward: RegExp; backward: RegExp }> = [
+  { forward: /^(?:encode|serialize|create)(?=$|[A-Z0-9])/, backward: /^(?:parse|decode|deserialize|extract)(?=$|[A-Z0-9])/ },
+  { forward: /^compress(?=$|[A-Z0-9])/, backward: /^decompress(?=$|[A-Z0-9])/ },
+];
+
+function verbSuffix(name: string, verb: RegExp): string | null {
+  const match = verb.exec(name);
+  return match === null ? null : name.slice(match[0].length);
+}
+
+/**
+ * Whether the calls hold a function and its inverse: `decodeFrame` with `encodeFrame`, `deserialize` with `serialize`,
+ * `codec.decode` with `codec.encode`. The suffixes must be equal, so `createTempDir` and `extractText` are not a pair. A bare
+ * verb (empty suffix) pairs only on the same object, which keeps `JSON.parse` and `Object.create` apart.
+ */
+function callsReciprocalFunctions(calls: readonly CalledFunction[]): boolean {
+  return RECIPROCAL_VERBS.some(({ forward, backward }) =>
+    calls.some((encoder) => {
+      const suffix = verbSuffix(encoder.name, forward);
+      if (suffix === null) return false;
+      return calls.some((decoder) => verbSuffix(decoder.name, backward) === suffix && (suffix !== '' || decoder.receiver === encoder.receiver));
+    })
+  );
+}
+
+// ============================================================================
 // Gate 1: Circular Mocking (Regex G1 + AST G1b)
 // ============================================================================
 function checkCircularMocking(targetDir?: string): Violation[] {
@@ -143,44 +200,36 @@ function checkCircularMocking(targetDir?: string): Violation[] {
     const sf = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
 
     function checkG1b(node: ts.Node) {
-      if (ts.isCallExpression(node)) {
-        const fnName = node.expression.getText(sf);
-        if (['it', 'test', 'oracleTest'].includes(fnName)) {
-          let testTitle = 'unknown';
-          if (node.arguments.length > 0 && (ts.isStringLiteral(node.arguments[0]) || ts.isNoSubstitutionTemplateLiteral(node.arguments[0]))) {
-            testTitle = node.arguments[0].text;
+      if (ts.isCallExpression(node) && isTestCall(node)) {
+        let testTitle = 'unknown';
+        if (node.arguments.length > 0 && (ts.isStringLiteral(node.arguments[0]) || ts.isNoSubstitutionTemplateLiteral(node.arguments[0]))) {
+          testTitle = node.arguments[0].text;
+        }
+
+        const calls: CalledFunction[] = [];
+        function collectCalls(n: ts.Node) {
+          if (ts.isCallExpression(n)) {
+            const called = calledFunction(n.expression, sf);
+            if (called !== null) calls.push(called);
           }
+          ts.forEachChild(n, collectCalls);
+        }
+        ts.forEachChild(node, collectCalls);
 
-          // Look for inverse pairs: encodeX / parseX, createX / extractX, compressX / decompressX
-          const callsInTest: string[] = [];
-          function collectCalls(n: ts.Node) {
-            if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
-              callsInTest.push(n.expression.text);
-            }
-            ts.forEachChild(n, collectCalls);
-          }
-          ts.forEachChild(node, collectCalls);
-
-          const hasEncode = callsInTest.some((c) => /^encode[A-Z0-9]/.test(c));
-          const hasParse = callsInTest.some((c) => /^(?:parse|decode)[A-Z0-9]/.test(c));
-          const hasCompress = callsInTest.some((c) => /^compress[A-Z0-9]/.test(c));
-          const hasDecompress = callsInTest.some((c) => /^decompress[A-Z0-9]/.test(c));
-
-          if ((hasEncode && hasParse) || (hasCompress && hasDecompress)) {
-            // Check if test has external oracle verification
-            const hasOracle = callsInTest.some((c) => /^(?:verify|assert)[A-Z0-9]/.test(c) || c.includes('Oracle'));
-            if (!hasOracle) {
-              const { line, snippet } = getNodeSnippet(sf, node);
-              violations.push({
-                file: path.relative(ROOT_DIR, file),
-                line,
-                rule: 'G1b-CIRCULAR-MOCKING-WARNING',
-                symbol: testTitle,
-                snippet,
-                message: `Test "${testTitle}" calls reciprocal production functions without an independent differential oracle verification.`,
-                severity: 'warning',
-              });
-            }
+        if (callsReciprocalFunctions(calls)) {
+          // Check if test has external oracle verification
+          const hasOracle = calls.some((c) => /^(?:verify|assert)[A-Z0-9]/.test(c.name) || c.name.includes('Oracle'));
+          if (!hasOracle) {
+            const { line, snippet } = getNodeSnippet(sf, node);
+            violations.push({
+              file: path.relative(ROOT_DIR, file),
+              line,
+              rule: 'G1b-CIRCULAR-MOCKING-WARNING',
+              symbol: testTitle,
+              snippet,
+              message: `Test "${testTitle}" calls reciprocal production functions without an independent differential oracle verification.`,
+              severity: 'warning',
+            });
           }
         }
       }
