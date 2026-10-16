@@ -1,0 +1,80 @@
+name: Reference measurements of the benchmark
+description: >-
+  Restores the reference side of the quality rows (.bench-cache) that the nightly parity run keeps. The nightly run measures
+  one shard per family group and saves each under the key of its group, so a job that reads the cache restores the newest entry and then every group
+  (a group the nightly run has not saved yet restores nothing). The files are named by the hash of their inputs, so the groups
+  merge into one directory. Read-only: only the nightly run on main writes the cache (a pull request cannot save into it).
+
+inputs:
+  fingerprint:
+    description: The fingerprint of the reference tool versions (npx tsx bench/run.ts --print-tool-fingerprint).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The newest entry of any key: the one a nightly run saved before the cache was split by group, until the groups have been
+    # saved once. The group steps below then add the files of their own group.
+    - name: Restore the newest reference measurements
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-cache
+        key: bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
+        restore-keys: |
+          bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-
+
+    - name: Restore the reference measurements of the image group
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-cache
+        key: bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-image-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
+        restore-keys: |
+          bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-image-
+
+    - name: Restore the reference measurements of the video group
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-cache
+        key: bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-video-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
+        restore-keys: |
+          bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-video-
+
+    - name: Restore the reference measurements of the raw group
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-cache
+        key: bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-raw-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
+        restore-keys: |
+          bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-raw-
+
+    - name: Restore the reference measurements of the document group
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-cache
+        key: bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-document-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
+        restore-keys: |
+          bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-document-
+
+    - name: Restore the reference measurements of the compression group
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-cache
+        key: bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-compression-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
+        restore-keys: |
+          bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-compression-
+
+    - name: Restore the reference measurements of the pdf-audio group
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-cache
+        key: bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-pdf-audio-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
+        restore-keys: |
+          bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-pdf-audio-
+
+    - name: Restore the reference measurements of the small group
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: .bench-cache
+        key: bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-small-${{ hashFiles('bench/corpus/manifest.json', 'bench/corpus/remote-manifest.json') }}
+        restore-keys: |
+          bench-ref-${{ runner.os }}-${{ inputs.fingerprint }}-small-

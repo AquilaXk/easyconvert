@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { REMOTE_CACHE_DIR, REMOTE_MANIFEST_PATH } from './config';
 import { BenchArgumentError, BenchError } from './errors';
+import { isBusyHostStatus, retryDelayMs } from './http-retry';
 import { EOCD_SEARCH_BYTES, inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory } from './realworld/zip-range';
 
 export const REMOTE_MANIFEST_SCHEMA = 1;
@@ -30,13 +31,6 @@ export const MAX_REMOTE_SAMPLE_BYTES = 256 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 /** Attempts after the first one; BENCH_CORPUS_RETRIES lowers it for a test that fetches from nowhere. */
 const DEFAULT_RETRIES = 3;
-const BACKOFF_BASE_MS = 2000;
-const HTTP_TOO_MANY_REQUESTS = 429;
-const HTTP_UNAVAILABLE = 503;
-/** A rate limit that names no time is a window of seconds to minutes; the pause that fits it. */
-const RATE_LIMIT_DEFAULT_WAIT_MS = 30_000;
-/** The longest pause a host may ask for; a longer one is a failed fetch, which the cache of the verified samples lets the next run resume. */
-const RATE_LIMIT_MAX_WAIT_MS = 120_000;
 const REQUEST_TIMEOUT_MS = 300_000;
 const HTTP_OK = 200;
 const HTTP_PARTIAL = 206;
@@ -330,7 +324,7 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
   const expected = range ? HTTP_PARTIAL : HTTP_OK;
   if (response.status !== expected) {
     const message = `${url}: HTTP ${response.status}, expected ${expected}`;
-    if (response.status === HTTP_TOO_MANY_REQUESTS || response.status === HTTP_UNAVAILABLE) throw new CorpusBusyHostError(message, response.status, response.headers.get('retry-after'));
+    if (isBusyHostStatus(response.status)) throw new CorpusBusyHostError(message, response.status, response.headers.get('retry-after'));
     throw new CorpusFetchError(message);
   }
   const declared = Number(response.headers.get('content-length') ?? '0');
@@ -343,18 +337,6 @@ async function attempt(url: string, range: [number, number] | null, maxBytes: nu
   return body;
 }
 
-/**
- * The pause before retry number `tryNumber` + 1. It doubles with the attempt; a host that refuses for its rate or load and names
- * the seconds to wait (`Retry-After`) is waited for that long, up to RATE_LIMIT_MAX_WAIT_MS, and a rate limit that names no time
- * gets RATE_LIMIT_DEFAULT_WAIT_MS. The pause is never shorter than the ordinary one.
- */
-export function retryDelayMs(tryNumber: number, status: number | null, retryAfter: string | null): number {
-  const ordinary = BACKOFF_BASE_MS * 2 ** tryNumber;
-  const seconds = retryAfter !== null && /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter.trim()) : null;
-  if (seconds !== null && (status === HTTP_TOO_MANY_REQUESTS || status === HTTP_UNAVAILABLE)) return Math.max(ordinary, Math.min(seconds * 1000, RATE_LIMIT_MAX_WAIT_MS));
-  if (status === HTTP_TOO_MANY_REQUESTS) return Math.max(ordinary, RATE_LIMIT_DEFAULT_WAIT_MS);
-  return ordinary;
-}
 
 /** The body of `url`, or of the inclusive byte range of it, retried with a pause on network and server errors. */
 export async function httpBytes(url: string, range: [number, number] | null, maxBytes: number = MAX_REMOTE_SAMPLE_BYTES, extraHosts: readonly string[] = []): Promise<Buffer> {
@@ -563,3 +545,5 @@ if (require.main === module) {
     }
   );
 }
+
+export { retryDelayMs };
