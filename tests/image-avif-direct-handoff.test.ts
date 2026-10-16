@@ -6,7 +6,8 @@ import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { startAvifWithCli } from '../src/lib/conversions/avif-cli';
-import { DirectAvif, DirectAvifSlot, readsAsPixelsOnly, startDirectAvifOn } from '../src/lib/conversions/image-avif-direct';
+import { DirectAvif, DirectAvifSlot, directSourceOf, startDirectAvifOn } from '../src/lib/conversions/image-avif-direct';
+import { xmpChunk } from './helpers/png-chunks';
 import { ConversionFailedError } from '../src/lib/types';
 import { type Chunk, serializeChunks } from './helpers/apng-builder';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -51,6 +52,9 @@ function ihdrOf(png: Buffer): Buffer {
   return Buffer.from(png.subarray(16, 29));
 }
 
+/** Whether the encoder may read the file as it is. */
+const readsAsPixelsOnly = (png: Buffer): boolean => directSourceOf(png) !== null;
+
 describe('which PNG files the encoder may read as they are', () => {
   const sixteenBitGrey = lineArt16();
   const sixteenBitColour = interface16();
@@ -60,9 +64,10 @@ describe('which PNG files the encoder may read as they are', () => {
     ['a 16-bit grey picture as the image library writes it (header, density, data, end)', async () => sixteenBitGrey, true],
     ['a 16-bit colour picture', async () => sixteenBitColour, true],
     ['with an sRGB rendering intent, a time stamp and a significant-bits chunk, which the encoder does not turn into output', async () => withChunksAfterHeader(await sixteenBitColour, [chunk('sRGB', Buffer.from([0])), chunk('tIME', Buffer.alloc(7)), chunk('sBIT', Buffer.from([16, 16, 16]))]), true],
-    ['with a gamma chunk, which the encoder turns into a colour tag', async () => withChunksAfterHeader(await sixteenBitColour, [gamma]), false],
-    ['with a chromaticity chunk, which the encoder turns into colour primaries', async () => withChunksAfterHeader(await sixteenBitColour, [chunk('cHRM', Buffer.alloc(32))]), false],
-    ['with an embedded colour profile', async () => withChunksAfterHeader(await sixteenBitColour, [chunk('iCCP', Buffer.from('p\0\0x'))]), false],
+    ['with a gamma chunk, a chromaticity chunk and a colour profile, which the encoder is told to ignore', async () => withChunksAfterHeader(await sixteenBitColour, [gamma, chunk('cHRM', Buffer.alloc(32)), chunk('iCCP', Buffer.from('p\0\0x'))]), true],
+    ['with an XMP packet in an international text chunk, which the regular route writes again', async () => withChunksAfterHeader(await sixteenBitColour, [xmpChunk()]), true],
+    ['with another international text chunk', async () => withChunksAfterHeader(await sixteenBitColour, [chunk('iTXt', Buffer.from('Comment\0\0\0\0\0hello'))]), false],
+    ['with an international text chunk too short to hold the XMP keyword', async () => withChunksAfterHeader(await sixteenBitColour, [chunk('iTXt', Buffer.from('XML:com'))]), false],
     ['with an EXIF block', async () => withChunksAfterHeader(await sixteenBitColour, [chunk('eXIf', Buffer.from('MM\0*\0\0\0\b\0\0'))]), false],
     ['with text, which can carry a raw metadata profile', async () => withChunksAfterHeader(await sixteenBitColour, [chunk('tEXt', Buffer.from('Raw profile type exif\0abc'))]), false],
     ['with a transparency key', async () => withChunksAfterHeader(await sixteenBitColour, [chunk('tRNS', Buffer.alloc(6))]), false],
@@ -76,6 +81,16 @@ describe('which PNG files the encoder may read as they are', () => {
     ['a JPEG', async () => sharp({ create: { width: 8, height: 8, channels: 3, background: '#336699' } }).jpeg().toBuffer(), false],
   ])('%s', async (_name, build, expected) => {
     expect(readsAsPixelsOnly(await build())).toBe(expected);
+  });
+
+  it('says whether the file holds colour description chunks, which the encoder is told to ignore', async () => {
+    const plain = await sixteenBitColour;
+    expect(directSourceOf(plain)).toEqual({ ignoresColourChunks: false });
+    for (const colour of [gamma, chunk('cHRM', Buffer.alloc(32)), chunk('iCCP', Buffer.from('p\0\0x'))]) {
+      expect(directSourceOf(withChunksAfterHeader(plain, [colour])), colour.type).toEqual({ ignoresColourChunks: true });
+    }
+    expect(directSourceOf(withChunksAfterHeader(plain, [xmpChunk()]))).toEqual({ ignoresColourChunks: false });
+    expect(directSourceOf(withChunksAfterHeader(plain, [chunk('sRGB', Buffer.from([0]))]))).toEqual({ ignoresColourChunks: false });
   });
 
   it('refuses a file whose signature is damaged in any byte, or cut short, whatever follows it', async () => {
@@ -221,18 +236,37 @@ describe('the encoder reads the source file', () => {
   );
 
   oracleTest(
-    'a picture with a gamma chunk is encoded from the decoded pixels and gives the bytes of the same picture without the chunk',
+    'a picture with colour description chunks and an XMP packet reaches the encoder as it is, told to ignore the colour chunks, and gives the bytes of the regular route',
     ['avifenc', 'avifdec'],
     async () => {
-      const plain = await interface16();
-      const wrapper = copyingWrapper('gamma');
+      const weirdChromaticities = chunk('cHRM', Buffer.from([0, 0, 0x82, 0x35, 0, 0, 0x82, 0x35, 0, 0, 0xea, 0x60, 0, 0, 0x75, 0x30, 0, 0, 0x75, 0x30, 0, 0, 0xea, 0x60, 0, 0, 0x3a, 0x98, 0, 0, 0x17, 0x70]));
+      const marked = withChunksAfterHeader(await interface16(), [chunk('gAMA', Buffer.from([0, 0x01, 0x86, 0xa0])), weirdChromaticities, xmpChunk()]);
+      const direct = copyingWrapper('colour-chunks');
+      process.env.AVIFENC_PATH = direct.script;
+      const fromSource = await convertImage(marked, 'avif', { quality: 60 }, 'c.png', 'png');
+      expect(readFileSync(direct.input).equals(marked)).toBe(true);
+      const args = readFileSync(direct.args, 'utf-8').trim().split('\n');
+      expect(args).toContain('--ignore-icc');
+      expect(fromSource.buffer.equals(encoderOnSource(direct.args, marked, 'colour-chunks'))).toBe(true);
+      // A text chunk keeps the picture on the regular route (decoded, written as a PNG without the chunks), which ignores it.
+      const regular = copyingWrapper('colour-chunks-regular');
+      process.env.AVIFENC_PATH = regular.script;
+      const viaPixels = await convertImage(withChunksAfterHeader(marked, [chunk('tEXt', Buffer.from('Comment\0hello'))]), 'avif', { quality: 60 }, 'c.png', 'png');
+      expect(readFileSync(regular.args, 'utf-8')).not.toContain('--ignore-icc');
+      expect(fromSource.buffer.equals(viaPixels.buffer)).toBe(true);
+      expect(fromSource.buffer.includes(Buffer.from('xmpmeta'))).toBe(true);
+    },
+    60_000
+  );
+
+  oracleTest(
+    'a picture without colour description chunks is not told to ignore anything',
+    ['avifenc', 'avifdec'],
+    async () => {
+      const wrapper = copyingWrapper('no-colour-chunks');
       process.env.AVIFENC_PATH = wrapper.script;
-      const marked = withChunksAfterHeader(plain, [chunk('gAMA', Buffer.from([0, 0, 0xb1, 0x8f]))]);
-      const fromMarked = await convertImage(marked, 'avif', { quality: 60 }, 'g.png', 'png');
-      expect(readFileSync(wrapper.input).equals(marked)).toBe(false);
-      await expect(sharp(readFileSync(wrapper.input)).metadata()).resolves.toMatchObject({ width: 256, height: 256 });
-      const fromPlain = await convertImage(plain, 'avif', { quality: 60 }, 'p.png', 'png');
-      expect(fromMarked.buffer.equals(fromPlain.buffer)).toBe(true);
+      await convertImage(await interface16(), 'avif', {}, 'ui.png', 'png');
+      expect(readFileSync(wrapper.args, 'utf-8')).not.toContain('--ignore-icc');
     },
     60_000
   );
