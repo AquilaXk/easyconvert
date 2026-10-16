@@ -302,6 +302,7 @@ describe('a missing or failing reader never passes for a conversion', () => {
     ['text that is no DXF', 'this is not a drawing\n'],
     ['a DXF cut off before its EOF record', MINIMAL_DXF.slice(0, MINIMAL_DXF.length - 8)],
     ['a DXF whose pairs are broken (a group code that is no integer)', MINIMAL_DXF.replace('  8\n0', ' XX\n0')],
+    ['a DXF with an empty line where a group code belongs', MINIMAL_DXF.replace('  8\n0', '\n0')],
     ['a DXF without an ENTITIES section', '  0\nSECTION\n  2\nHEADER\n  0\nENDSEC\n  0\nEOF\n'],
     ['bytes with NUL characters', `${MINIMAL_DXF}\0\0`],
   ])('answers 422 for %s and does not hand it to the DXF path', async (_name, content) => {

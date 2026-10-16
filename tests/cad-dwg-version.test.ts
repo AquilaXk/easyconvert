@@ -95,7 +95,12 @@ describe('assertReadableDwg', () => {
 
   it('refuses a release newer than the table, saying that the reader does not know it yet', () => {
     expect(() => assertReadableDwg(header('AC1040'))).toThrow(UnsupportedDwgVersionError);
-    expect(() => assertReadableDwg(header('AC1040'))).toThrow(/AC1040/);
+    expect(() => assertReadableDwg(header('AC1040'))).toThrow(/This DWG is a release newer than R2018 \(AC1040\)/);
+  });
+
+  it('refuses a code between released codes as an unreleased format code, not as a newer release', () => {
+    expect(() => assertReadableDwg(header('AC1013'))).toThrow(UnsupportedDwgVersionError);
+    expect(() => assertReadableDwg(header('AC1013'))).toThrow(/This DWG is an unreleased format code \(AC1013\)/);
   });
 
   it('refuses a file that is no DWG with a 400, not a 422: the bytes are not a drawing of any version', () => {
