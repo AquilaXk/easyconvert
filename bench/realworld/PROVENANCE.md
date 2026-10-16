@@ -109,7 +109,7 @@ manifest's `sources` array holds the same statements.
 (`producer`: the PDF Producer or Creator, the application name of the OLE SummaryInformation stream, or `Application` of the OOXML
 `docProps/app.xml`). **No file is committed, redistributed, shown or shipped.** Each shard reads its files out of the publisher's ZIP
 archives with range requests, checks the digest, converts the file and deletes it; no Actions cache holds them. This is internal test use,
-as for the other sets whose terms allow research and development use (`docs/policy-decisions.md`, entries 37 and 38).
+as for the other sets whose terms allow research and development use (`docs/policy-decisions.md`, entries 37 and 39).
 
 | Source id | What it is | Licence statement | Files |
 |---|---|---|---|

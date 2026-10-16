@@ -6,8 +6,11 @@ import type { SpeedHistoryPoint } from './speed-history';
 /**
  * Rows that are below the reference tool today, each with the issue that tracks it.
  *
- * Quality rows are never excused: an entry only names the issue in the failure message and in the security-exemption
- * comment, and the row still fails.
+ * A quality row listed here is "tracked" the way an expected failure of a conformance suite is: the entry records the
+ * value the row has (`recorded`) and the reference's value then (`reference`). The row passes while it is not worse than
+ * the record by more than its own allowance; a worse value fails, and so does a better one that is still below the
+ * reference, because the entry must then be tightened (or removed once the row passes the normal rule). The direction
+ * and the allowance are the row's own, so the entry repeats neither. An entry excuses no other row.
  *
  * A speed (throughput) row listed here is "tracked": being below the reference does not fail it, but getting slower
  * than its history does (the upper bound of its speed-ratio interval below the lower edge of the one-sided prediction
@@ -24,12 +27,20 @@ export interface GapEntry {
   /** Speed rows: the latest recorded speed ratio (reference time / our time), for display. Quality rows: null. */
   ratio: number | null;
   note: string;
+  /** Quality rows only: our value of the row when the gap was recorded; the row may not get worse than this by more than its allowance. */
+  recorded?: number;
+  /** Quality rows only: the reference tool's value of the row when the gap was recorded, for the reader. */
+  reference?: number;
   /** Speed rows: the median ratios of the latest CI runs, oldest first, written by `bench:refresh-speed` only. */
   history?: SpeedHistoryPoint[];
 }
 
 const THROUGHPUT_SUFFIX = '/throughput';
 export const isSpeedRowId = (id: string): boolean => id.endsWith(THROUGHPUT_SUFFIX);
+
+/** A quality entry that carries its record: the only kind that judges a row. */
+export type QualityGap = GapEntry & { recorded: number; reference: number };
+export const isQualityGap = (gap: GapEntry | null): gap is QualityGap => gap !== null && gap.recorded !== undefined && gap.reference !== undefined;
 
 export interface GapFile {
   schemaVersion: number;
@@ -60,6 +71,24 @@ function validateHistory(value: unknown, path: string): SpeedHistoryPoint[] {
   return points;
 }
 
+const RECORD_FIELDS = ['recorded', 'reference'] as const;
+
+/** The record of a quality entry (both values, finite), or nothing for a speed entry, which must not carry one. */
+function validateRecord(entry: Record<string, unknown>, path: string, speedRow: boolean): Pick<GapEntry, 'recorded' | 'reference'> {
+  const record: Pick<GapEntry, 'recorded' | 'reference'> = {};
+  for (const field of RECORD_FIELDS) {
+    const value = entry[field];
+    if (speedRow) {
+      if (value !== undefined) throw new ReportSchemaError(`parity gaps: ${path}.${field} is only for quality rows, and ${entry.id as string} is a speed row`);
+    } else if (typeof value !== 'number' || !Number.isFinite(value)) {
+      throw new ReportSchemaError(`parity gaps: ${path}.${field} must be a finite number for the quality row ${entry.id as string}`);
+    } else {
+      record[field] = value;
+    }
+  }
+  return record;
+}
+
 export function validateGaps(value: unknown): GapFile {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ReportSchemaError('parity gaps: must be an object');
   const obj = value as Record<string, unknown>;
@@ -82,10 +111,10 @@ export function validateGaps(value: unknown): GapFile {
     if (isSpeedRowId(entry.id)) {
       if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) throw new ReportSchemaError(`parity gaps: ${path}.ratio must be a positive speed ratio for the speed row ${entry.id}`);
     } else if (ratio !== null) {
-      throw new ReportSchemaError(`parity gaps: ${path}.ratio must be null for the quality row ${entry.id}, which a gap never excuses`);
+      throw new ReportSchemaError(`parity gaps: ${path}.ratio must be null for the quality row ${entry.id}; a quality gap is judged by its recorded value`);
     }
     if (typeof entry.note !== 'string' || entry.note === '') throw new ReportSchemaError(`parity gaps: ${path}.note must be a non-empty string`);
-    const parsed: GapEntry = { id: entry.id, issue, ratio: ratio as number | null, note: entry.note };
+    const parsed: GapEntry = { id: entry.id, issue, ratio: ratio as number | null, note: entry.note, ...validateRecord(entry, path, isSpeedRowId(entry.id)) };
     if (entry.history !== undefined) {
       if (!isSpeedRowId(entry.id)) throw new ReportSchemaError(`parity gaps: ${path}.history is only for speed rows, and ${entry.id} is a quality row`);
       parsed.history = validateHistory(entry.history, `${path}.history`);

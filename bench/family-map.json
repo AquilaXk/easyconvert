@@ -206,7 +206,7 @@
     },
     {
       "families": ["vector"],
-      "match": "^src/worker/postscript-(render|gs)\\.ts$"
+      "match": "^src/worker/(postscript-(render|gs)|illustrator-route)\\.ts$"
     },
     {
       "families": ["document", "pdf-ops", "vector"],
