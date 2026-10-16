@@ -501,8 +501,8 @@ describe('the run in a slot', () => {
     const { width: _width, ...withoutWidth } = meta;
     const { height: _height, ...withoutHeight } = meta;
     void [_width, _height];
-    expect(await DirectAvif.start(source, withoutWidth, OPTIONS), 'no width').toBeNull();
-    expect(await DirectAvif.start(source, withoutHeight, OPTIONS), 'no height').toBeNull();
+    expect(await DirectAvif.start(source, withoutWidth as typeof meta, OPTIONS), 'no width').toBeNull();
+    expect(await DirectAvif.start(source, withoutHeight as typeof meta, OPTIONS), 'no height').toBeNull();
   }, 30_000);
 
   it('does not start a run when the encoder is not installed', async () => {
