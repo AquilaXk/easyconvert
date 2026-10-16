@@ -9,7 +9,7 @@ import {
   SandboxedTimeoutError,
   type SandboxedExecutionResult,
 } from '../../security/process-sandbox';
-import { executeSandboxedBinary } from '../../../worker/sandbox';
+import { launchSandboxedBinary } from '../../security/sandbox-launcher';
 import { getQpdfBinaryPath } from './qpdf-path';
 
 /**
@@ -43,6 +43,8 @@ export interface QpdfWorkspace {
   inputPath: string;
   /** Most bytes one run of this workspace may print. */
   maxOutputBytes: number;
+  /** Size of the input PDF; a run that prints the document prints about this much. */
+  inputBytes: number;
 }
 
 export function requireQpdfBinary(): string {
@@ -65,7 +67,7 @@ export async function withQpdfWorkspace<T>(pdf: Buffer, operation: (workspace: Q
   try {
     const inputPath = path.join(dir, 'input.pdf');
     fs.writeFileSync(inputPath, pdf, { mode: 0o600 });
-    return await operation({ qpdf, dir, inputPath, maxOutputBytes: maxOutputBytesFor(pdf) });
+    return await operation({ qpdf, dir, inputPath, maxOutputBytes: maxOutputBytesFor(pdf), inputBytes: pdf.length });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -86,7 +88,7 @@ export async function withQpdfInputFile<T>(pdf: Buffer, operation: (workspace: Q
     } finally {
       fs.closeSync(fd);
     }
-    return await operation({ qpdf, dir, inputPath, maxOutputBytes: maxOutputBytesFor(pdf) });
+    return await operation({ qpdf, dir, inputPath, maxOutputBytes: maxOutputBytesFor(pdf), inputBytes: pdf.length });
   } finally {
     fs.rmSync(inputPath, { force: true });
   }
@@ -119,18 +121,21 @@ export interface QpdfInvocation {
   /** The working directory; defaults to the workspace directory. */
   cwd?: string;
   signal?: AbortSignal;
+  /** About how many bytes qpdf prints: nothing for a run that writes files, about the document for one that prints it. */
+  expectedOutputBytes?: number;
 }
 
 /** Runs qpdf in the workspace and returns what it prints; `--warning-exit-0` is added, as a recovered document is a result. */
 export async function runQpdf(workspace: QpdfWorkspace, invocation: QpdfInvocation): Promise<SandboxedExecutionResult> {
   try {
-    return await executeSandboxedBinary(workspace.qpdf, ['--warning-exit-0', ...invocation.args], {
+    return await launchSandboxedBinary(workspace.qpdf, ['--warning-exit-0', ...invocation.args], {
       cwd: invocation.cwd ?? workspace.dir,
       timeoutMs: QPDF_RUN_TIMEOUT_MS,
       maxBuffer: workspace.maxOutputBytes + QPDF_STDERR_SLACK_BYTES,
       networkIsolated: true,
       stdin: invocation.stdin,
       signal: invocation.signal,
+      expectedOutputBytes: invocation.expectedOutputBytes ?? 0,
     });
   } catch (error) {
     throw toQpdfError(error, workspace, invocation.action);
@@ -139,7 +144,7 @@ export async function runQpdf(workspace: QpdfWorkspace, invocation: QpdfInvocati
 
 /** Runs qpdf and returns the PDF it wrote to standard output; an empty result is a failure, never a document. */
 export async function runQpdfToBuffer(workspace: QpdfWorkspace, invocation: QpdfInvocation): Promise<Buffer> {
-  const { stdout } = await runQpdf(workspace, invocation);
+  const { stdout } = await runQpdf(workspace, { ...invocation, expectedOutputBytes: workspace.inputBytes });
   if (stdout.length === 0) {
     throw new PdfPostprocessError(`${invocation.action} failed: qpdf produced no output.`);
   }

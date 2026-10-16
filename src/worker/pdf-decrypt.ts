@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ConversionFailedError, EngineUnavailableError, PdfPasswordRequiredError } from '../lib/types';
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
+import { launchSandboxedBinary } from '../lib/security/sandbox-launcher';
 import {
-  executeSandboxedBinary,
   SandboxedBufferLimitError,
   SandboxedProcessError,
   type SandboxedExecutionResult,
@@ -120,12 +120,14 @@ async function runQpdfWithPassword(
   }, OUTPUT_WATCH_INTERVAL_MS);
   try {
     fs.writeFileSync(passwordFile, password, { mode: PRIVATE_FILE_MODE, flag: 'wx' });
-    return await executeSandboxedBinary(qpdf, buildArgs(passwordFile), {
+    return await launchSandboxedBinary(qpdf, buildArgs(passwordFile), {
       cwd: request.tempDir,
       timeoutMs: request.timeoutMs,
       maxBuffer: QPDF_MAX_OUTPUT_BYTES,
       networkIsolated: true,
       signal: request.signal ? AbortSignal.any([request.signal, overrun.signal]) : overrun.signal,
+      // qpdf writes the copy to a file and prints diagnostics only.
+      expectedOutputBytes: 0,
     });
   } catch (err) {
     throw toDecryptError(err);
@@ -146,16 +148,18 @@ async function runQpdfWithStdinPassword(
   request: PdfDecryptRequest,
   password: string,
   args: string[],
-  maxOutputBytes: number
+  maxOutputBytes: number,
+  expectedOutputBytes = 0
 ): Promise<SandboxedExecutionResult> {
   try {
-    return await executeSandboxedBinary(qpdf, ['--password-file=-', '--warning-exit-0', ...args], {
+    return await launchSandboxedBinary(qpdf, ['--password-file=-', '--warning-exit-0', ...args], {
       cwd: request.tempDir,
       timeoutMs: request.timeoutMs,
       maxBuffer: maxOutputBytes + QPDF_MAX_OUTPUT_BYTES,
       networkIsolated: true,
       stdin: Buffer.from(password, 'utf8'),
       signal: request.signal,
+      expectedOutputBytes,
     });
   } catch (err) {
     throw toDecryptError(err);
@@ -229,13 +233,15 @@ export async function readPdfAccess(request: PdfDecryptRequest & { password: str
  */
 export async function decryptPdfToBuffer(request: PdfDecryptRequest & { password: string }): Promise<Buffer> {
   const qpdf = requireQpdf(request.password);
-  const maxOutputBytes = Math.max(fs.statSync(request.inputPath).size * QPDF_OUTPUT_SIZE_FACTOR, QPDF_MIN_OUTPUT_BYTES);
+  const inputBytes = fs.statSync(request.inputPath).size;
+  const maxOutputBytes = Math.max(inputBytes * QPDF_OUTPUT_SIZE_FACTOR, QPDF_MIN_OUTPUT_BYTES);
   const result = await runQpdfWithStdinPassword(
     qpdf,
     request,
     request.password,
     ['--decrypt', path.resolve(request.inputPath), '-'],
-    maxOutputBytes
+    maxOutputBytes,
+    inputBytes
   );
   if (result.stdout.length === 0) {
     throw new ConversionFailedError(PDF_DECRYPT_FAILED_MESSAGE);
