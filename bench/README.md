@@ -106,7 +106,7 @@ links to its storage). A host that does not deliver fails a run under `ORACLE_ST
 (`.github/actions/bench-corpora`); `npx tsx bench/corpora.ts verify` fetches and checks everything, and
 `npx tsx bench/corpora.ts pin <seeds.json>` resolves the origin, size and digest of new samples.
 
-**Which runs measure them.** The nightly run measures every sample's quality rows and the throughput rows of the samples in
+**Which runs measure them.** The nightly quality parity job is one shard per family group (`bench-parity-quality` in `.github/workflows/nightly.yml`: the heavy families alone, the light ones together), so the full sets fit one runner each; each shard saves the reference measurements under the key of its group and the pull request job restores all groups (`.github/actions/bench-ref-cache`). The nightly run measures every sample's quality rows and the throughput rows of the samples in
 `PUBLIC_SPEED_SAMPLES` (`bench/config.ts`: a few per class, because speed follows the code path and the input size more than the picture,
 and a timed row costs many pairs). A pull request's quality job (`--quick`) measures the cases of `QUICK_PUBLIC_SUBSET`, whose
 reference side is read from the cache the nightly run keeps. A pull request's speed job sets `BENCH_CORPUS_TIER=pr` and times the
