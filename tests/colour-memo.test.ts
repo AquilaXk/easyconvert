@@ -22,6 +22,23 @@ const INITIAL_ENTRIES = 1 << (INITIAL_SLOT_BITS - 1);
 const slotOf = (key: number, bits: number): number => Math.imul(key, 0x9e3779b1) >>> (32 - bits);
 
 describe('colour memo', () => {
+  it.each([
+    [1, 8],
+    [3, 8],
+    [5, 8],
+    [100, 128],
+    [5000, 8192],
+    [100_000, 32_768],
+    [Infinity, 32_768],
+  ])('starts a raster of %i pixels with room for %i entries, half of its table', (expected, capacity) => {
+    expect(new ColourMemo(false, expected).capacity).toBe(capacity);
+  });
+
+  it('never starts with room for more entries than its limit', () => {
+    expect(new ColourMemo(false, Infinity, 20).capacity).toBe(20);
+    expect(new ColourMemo(false, 5000, 20).capacity).toBe(20);
+  });
+
   it('finds nothing before an add and the entry it numbered after', () => {
     const memo = new ColourMemo(true);
     expect(memo.find(0x123456)).toBe(-1);
@@ -77,23 +94,6 @@ describe('colour memo', () => {
       expect(memo.index[entry]).toBe(paletteIndex);
       expect(memo.lab[entry * COLOUR_MEMO_LAB_STRIDE]).toBe(key / 1e7);
     }
-  });
-
-  it.each([
-    [1, 8],
-    [3, 8],
-    [5, 8],
-    [100, 128],
-    [5000, 8192],
-    [100_000, 32_768],
-    [Infinity, 32_768],
-  ])('starts a raster of %i pixels with room for %i entries, half of its table', (expected, capacity) => {
-    expect(new ColourMemo(false, expected).capacity).toBe(capacity);
-  });
-
-  it('never starts with room for more entries than its limit', () => {
-    expect(new ColourMemo(false, Infinity, 20).capacity).toBe(20);
-    expect(new ColourMemo(false, 5000, 20).capacity).toBe(20);
   });
 
   it.each([1, 3, 100, 5000])('holds more colours than the %i it was told to expect', (expected) => {
