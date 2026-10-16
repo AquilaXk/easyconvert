@@ -243,6 +243,19 @@ describe.skipIf(needsMagick)('files that cannot be decoded', () => {
       await expect(convertWithStub('', `exit ${status}`)).rejects.toMatchObject({ name: 'EngineUnavailableError', engineName: 'magick' });
     });
 
+    it('does not take a relative MAGICK_PATH for a program, even one that exists from the working directory', async () => {
+      const stub = path.join(stubDir, 'relative-magick');
+      fs.writeFileSync(stub, "#!/bin/sh\nprintf '%s' '10 10'\n", { mode: 0o755 });
+      const saved = process.env[MAGICK_PATH_ENV];
+      process.env[MAGICK_PATH_ENV] = path.relative(process.cwd(), stub);
+      try {
+        await expect(toPng(buildTga(1, 1, [RED], false), 'tga')).rejects.toMatchObject({ name: 'EngineUnavailableError', engineName: 'magick' });
+      } finally {
+        if (saved === undefined) delete process.env[MAGICK_PATH_ENV];
+        else process.env[MAGICK_PATH_ENV] = saved;
+      }
+    });
+
     it('refuses a size probe that exits with another failure status', async () => {
       await expect(convertWithStub('10 10', 'exit 1')).rejects.toMatchObject(pictureRefusal);
     });
