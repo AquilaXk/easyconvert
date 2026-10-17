@@ -76,6 +76,7 @@
     "esbuild": "^0.28.2",
     "eslint": "^8.57.0",
     "eslint-config-next": "^15.5.27",
+    "occt-import-js": "0.0.23",
     "parse5": "^7.3.0",
     "postcss": "^8.5.29",
     "tailwindcss": "^3.4.14",

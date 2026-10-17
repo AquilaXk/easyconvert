@@ -1,12 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-
-vi.mock('../src/lib/conversions/cad-nurbs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/lib/conversions/cad-nurbs')>();
-  return { ...actual, tessellateCadText: vi.fn(actual.tessellateCadText) };
-});
-
-import { tessellateCadText, type TessellatedMesh } from '../src/lib/conversions/cad-nurbs';
-import { convertPureCad, encodeObj, encodeStl } from '../src/lib/edge/pure/pure-cad';
+import { describe, expect, it } from 'vitest';
+import { encodeObj, encodeStl, type TessellatedMesh } from '../src/lib/edge/pure/pure-cad';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
 
 function failureOf(work: () => unknown): Error {
@@ -94,17 +87,16 @@ describe('pure CAD encoders refuse a face that points at no vertex (issue #480)'
     expect(encodeStl(mesh).match(/facet normal/g)).toHaveLength(1);
   });
 
-  it.each(['stl', 'obj'])('stops a STEP conversion to %s when the tessellated mesh has a dangling index', (target) => {
-    vi.mocked(tessellateCadText).mockReturnValueOnce({ ...TRIANGLE, faces: [[0, 1, 4]] });
-    const error = failureOf(() => convertPureCad('ISO-10303-21;', 'step', target, 'part'));
+  it.each([
+    ['stl', encodeStl],
+    ['obj', encodeObj],
+  ])('stops the %s encoder when a face names a vertex the mesh does not have', (_target, encode) => {
+    const error = failureOf(() => encode({ ...TRIANGLE, faces: [[0, 1, 4]] }));
     expect(error).toBeInstanceOf(EdgeUnsupportedError);
     expect(error.message).toMatch(/vertex index 4/);
   });
 
   it('converts a valid mesh to the STL it describes', () => {
-    vi.mocked(tessellateCadText).mockReturnValueOnce(TRIANGLE);
-    const result = convertPureCad('ISO-10303-21;', 'step', 'stl', 'part');
-    expect(result.text).toBe(TRIANGLE_STL);
-    expect(Buffer.from(result.data).toString('utf8')).toBe(TRIANGLE_STL);
+    expect(encodeStl(TRIANGLE)).toBe(TRIANGLE_STL);
   });
 });

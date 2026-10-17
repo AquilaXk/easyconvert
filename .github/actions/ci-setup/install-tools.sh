@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Sets up the test tools of one CI job. The parts do not depend on each other, so they run at once and the step
 # lasts as long as the slowest one (the package install) instead of the sum of all of them:
-#   apt      conversion and oracle CLIs, from the cached .deb files when the cache was restored
+#   apt      conversion and oracle CLIs, from the cached .deb files when the cache was restored, and cad-convert (the STEP and IGES
+#            program, native/cad-convert) built against the Open CASCADE development packages of the same list
 #   pip      the Python format oracles
 #   verapdf  the PDF/A validator, from the cached install when the cache was restored
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
@@ -98,18 +99,27 @@ select_tasks() {
   fi
 }
 
-# Python format oracles (columnar readers, PDF text extraction, Word, Excel, EPUB, OLE2 and DXF readers): the tests run python3 -I, which ignores user
+# Python format oracles (columnar readers, PDF text extraction, Word, Excel, EPUB, OLE2 and DXF readers, mesh measurement): the tests run python3 -I, which ignores user
 # site-packages, so the pinned packages go to the system interpreter.
 # --ignore-installed: the image ships an older distro PyMuPDF that pip cannot uninstall. Test-only; nothing ships.
+# scipy is pinned with trimesh: the distro scipy (built for NumPy 1) is also on the image, and with the NumPy 2 that pip installs here it
+# makes `import trimesh` fail with a binary-incompatibility error, so pip's own scipy has to shadow it.
 task_pip() {
   sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2 \
-    python-docx==1.2.0 openpyxl==3.1.5 ebooklib==0.20 olefile==0.47 xlrd==2.0.2 ezdxf==1.4.4
+    python-docx==1.2.0 openpyxl==3.1.5 ebooklib==0.20 olefile==0.47 xlrd==2.0.2 ezdxf==1.4.4 trimesh==5.1.1 scipy==1.18.1
 }
 
 task_apt() {
   "$action_path/install-apt-tools.sh" "$apt_debs" "$action_path/apt-packages.txt" "$apt_cache_hit" || return 1
   # Pre-stage Tesseract traineddata assets for offline inference
   find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
+  # STEP and IGES input is read by our own program, linked to the Open CASCADE libraries of the runner image. It builds in seconds, so it
+  # needs no cache, and it follows the packages, which is why it is part of this task and not a task of its own.
+  sudo "$action_path/../../../native/cad-convert/build.sh" /usr/local/bin/cad-convert || return 1
+  # Run without arguments the program prints its usage and exits 2; that line is the sign that it starts.
+  local usage
+  usage="$(cad-convert 2>&1 || true)"
+  [[ "$usage" == *'usage: cad-convert'* ]] || { echo "cad-convert does not start" >&2; return 1; }
 }
 
 # PDF/A results are refused unless veraPDF validates them.
@@ -328,10 +338,31 @@ run_tasks() {
   fi
 }
 
+# The two tools the STEP and IGES tests cannot run without, checked the way the tests look for them (the first of each on the PATH), once all
+# parts are done: a missing one fails the step with its own name here, not as a collection error of every CAD suite later.
+verify_cad_tools() {
+  local usage python_problem
+  if ! command -v cad-convert > /dev/null; then
+    echo "::error::cad-convert is not on the PATH ($PATH); the apt task builds it into /usr/local/bin"
+    return 1
+  fi
+  usage="$(cad-convert 2>&1 || true)"
+  if [[ "$usage" != *'usage: cad-convert'* ]]; then
+    echo "::error::$(command -v cad-convert) does not start: $usage"
+    return 1
+  fi
+  if ! python_problem="$(python3 -I -c 'import trimesh' 2>&1)"; then
+    echo "::error::$(command -v python3) -I cannot import trimesh: $python_problem"
+    return 1
+  fi
+  echo "cad-convert: $(command -v cad-convert); python3 with trimesh: $(command -v python3)"
+}
+
 main() {
   configure
   select_tasks
-  run_tasks
+  run_tasks || return 1
+  verify_cad_tools
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

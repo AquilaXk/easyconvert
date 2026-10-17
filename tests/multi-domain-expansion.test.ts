@@ -3,7 +3,11 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions/index';
 import { buildTrueTypeFont } from './helpers/mac-font-containers';
-import { CadGeometryUnavailableError } from '../src/lib/types';
+import { UnprocessableCadInputError } from '../src/lib/types';
+import fs from 'node:fs';
+import path from 'node:path';
+import { haveCadConverter, haveCadOracles } from './helpers/cad-kernel';
+import { meshFacts } from './helpers/mesh-facts';
 import { zipEntryText } from './helpers/zip-entry';
 import { readDxf } from './helpers/dxf-reader';
 import { oracleTest } from './helpers/oracle-test';
@@ -183,7 +187,7 @@ describe('Multi-Domain Conversion Engine Expansion (Font, Vector/CAD, Spreadshee
       expect(meta.height).toBeGreaterThan(0);
     });
 
-    it('fails closed when 3D STEP payload contains only points without surface or curve geometry', async () => {
+    it.skipIf(!haveCadConverter)('fails closed when 3D STEP payload contains only points without surface or curve geometry', async () => {
       const pointOnlyStep = `ISO-10303-21;
 HEADER;
 FILE_DESCRIPTION(('EasyConvert Test Model'),'2;1');
@@ -195,35 +199,26 @@ DATA;
 ENDSEC;
 END-ISO-10303-21;`;
       const buffer = Buffer.from(pointOnlyStep, 'utf-8');
-      await expect(
-        convertFile(buffer, 'step', 'stl', {}, 'points_only.step')
-      ).rejects.toThrow(CadGeometryUnavailableError);
+      const failure = await convertFile(buffer, 'step', 'stl', {}, 'points_only.step').catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(UnprocessableCadInputError);
+      expect((failure as Error).message).toBe('The CAD converter could not convert this model: it exited with status 4 (no-shapes: the STEP file holds no shape that could be transferred).');
     });
 
-    it('converts 3D STEP solid/curve model to standard 3D STL mesh', async () => {
-      const step = `ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('EasyConvert Test Model'),'2;1');
-ENDSEC;
-DATA;
-#101 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
-#102 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
-#103 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
-#10 = B_SPLINE_CURVE_WITH_KNOTS('c1', 1, (#101, #102), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .PIECEWISE_BEZIER_KNOTS.);
-#20 = B_SPLINE_CURVE_WITH_KNOTS('c2', 1, (#102, #103), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .PIECEWISE_BEZIER_KNOTS.);
-ENDSEC;
-END-ISO-10303-21;`;
-      const buffer = Buffer.from(step, 'utf-8');
+    // A STEP file whose geometry is only two curves used to be answered with a ribbon surface the file does not hold; the kernel
+    // meshes the solid the file describes, here the 20 mm cube Open CASCADE wrote (tests/fixtures/sample.step).
+    it.skipIf(!haveCadOracles)('converts a 3D STEP solid to the standard 3D STL mesh of that solid', async () => {
+      const buffer = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.step'));
 
       const result = await convertFile(buffer, 'step', 'stl', {}, 'mechanical.step');
       expect(result.mimeType).toBe('model/stl');
       expect(result.filename).toBe('mechanical.stl');
 
-      const stl = result.buffer.toString('utf-8');
-      expect(stl).toContain('solid');
-      expect(stl).toContain('facet normal');
-      expect(stl).toContain('vertex');
-      expect(stl).toContain('endsolid');
+      const facts = meshFacts(result.buffer, 'stl');
+      expect(facts.triangles).toBe(12);
+      expect(facts.area).toBeCloseTo(6 * 20 * 20, 3);
+      expect(facts.min).toEqual([0, 0, 0]);
+      expect(facts.max).toEqual([20, 20, 20]);
+      expect(facts.watertight).toBe(true);
     });
 
     it('converts 3D STL mesh to Wavefront OBJ format', async () => {

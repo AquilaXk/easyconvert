@@ -78,7 +78,27 @@ COPY scripts/install-libredwg.sh /tmp/install-libredwg.sh
 RUN /tmp/install-libredwg.sh /opt/libredwg
 
 # ==============================================================================
-# Stage 4: Hardened Runtime Container
+# Stage 4: Open CASCADE program (cad-convert)
+# ==============================================================================
+# STEP and IGES input and output. native/cad-convert is our own small program, built here against the unmodified Open CASCADE
+# libraries of Debian (LGPL-2.1 with the exception) and linked to them dynamically; the worker runs it as a separate sandboxed process.
+# The runtime stage installs only the libraries it needs and copies the binary. The stage fails the build if the program does not link.
+FROM ${NODE_IMAGE} AS cadconvert
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        g++ \
+        libocct-data-exchange-dev \
+        libocct-ocaf-dev \
+        libocct-modeling-algorithms-dev \
+        libocct-modeling-data-dev \
+        libocct-foundation-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY native/cad-convert/ /src/cad-convert/
+RUN /src/cad-convert/build.sh /usr/local/bin/cad-convert
+
+# ==============================================================================
+# Stage 5: Hardened Runtime Container
 # ==============================================================================
 FROM ${NODE_IMAGE} AS runner
 
@@ -86,7 +106,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
 # 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip comes from the pinned stage), and CJK Font Packages
+# The Open CASCADE libraries (STEP and IGES, see the cadconvert stage) are packaged with occt-misc, whose 55 MB of sample models and images
+# and 5 MB of resource files the program never reads (it converts all four targets of the 11 real samples with the directory removed, and
+# opens nothing under it); the dpkg exclusion keeps the directory out of the image and nothing else of the package.
 RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+    && echo 'path-exclude=/usr/share/opencascade/*' > /etc/dpkg/dpkg.cfg.d/opencascade-unused-files \
     && apt-get update \
     && EXTRA_PKGS="" \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
@@ -129,6 +153,11 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         libavif-bin \
         default-jre-headless \
         unzip \
+        libocct-data-exchange-7.8 \
+        libocct-ocaf-7.8 \
+        libocct-modeling-algorithms-7.8 \
+        libocct-modeling-data-7.8 \
+        libocct-foundation-7.8 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -f video && groupadd -r -f render \
@@ -165,6 +194,13 @@ RUN ln -s 7zz /usr/local/bin/7z
 COPY --from=libredwg /opt/libredwg/bin/dwg2dxf /usr/local/bin/dwg2dxf
 COPY --from=libredwg /opt/libredwg/share/doc/libredwg /usr/share/doc/libredwg
 RUN dwg2dxf --version
+
+# STEP and IGES reader and writer (built in the cadconvert stage). It needs the Open CASCADE runtime libraries installed above and no
+# resource files; the build fails if one of them is missing or the program does not start. The libraries' licence texts are collected
+# into /licenses with the other system packages by the notices step below.
+COPY --from=cadconvert /usr/local/bin/cad-convert /usr/local/bin/cad-convert
+RUN ! ldd /usr/local/bin/cad-convert | grep -q 'not found' \
+    && cad-convert 2>&1 | grep -q 'usage: cad-convert'
 
 # PDF/A validator (pinned release, checksum-verified); the PDF/A post-process refuses to run without it.
 COPY scripts/install-verapdf.sh /tmp/install-verapdf.sh

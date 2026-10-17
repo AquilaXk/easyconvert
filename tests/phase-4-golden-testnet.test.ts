@@ -3,9 +3,11 @@ import path from 'node:path';
 import { beforeAll, describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { haveCadOracles } from './helpers/cad-kernel';
+import { meshFacts } from './helpers/mesh-facts';
 import { convertFile } from '../src/lib/conversions';
 import { encodeWoff2, decodeWoff2, createCanonicalFont } from '../src/lib/conversions/font';
-import { extractStepBRepMesh, parseStepEntities, extractStepPoint } from '../src/lib/conversions/cad-nurbs';
+
 import { ConversionFailedError, CorruptStreamError, FileExtensionSpoofError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 
@@ -14,59 +16,6 @@ const FIXTURES_DIR = path.resolve(__dirname, 'fixtures');
 async function ensureGoldenFixtures() {
   if (!fs.existsSync(FIXTURES_DIR)) {
     fs.mkdirSync(FIXTURES_DIR, { recursive: true });
-  }
-
-  // 1. Golden STEP Model (ISO-10303-21 B-Rep Cube)
-  const stepPath = path.join(FIXTURES_DIR, 'sample.step');
-  if (!fs.existsSync(stepPath)) {
-    const stepContent = `ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('EasyConvert Golden STEP B-Rep Model'), '2;1');
-FILE_NAME('cube.step', '2026-09-27', ('Antigravity'), ('EasyConvert Engine'), 'Processor', 'System', 'Auth');
-FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
-ENDSEC;
-DATA;
-#10=CARTESIAN_POINT('ORIGIN', (0.0, 0.0, 0.0));
-#20=CARTESIAN_POINT('P1', (0.0, 0.0, 0.0));
-#21=CARTESIAN_POINT('P2', (10.0, 0.0, 0.0));
-#22=CARTESIAN_POINT('P3', (10.0, 10.0, 0.0));
-#23=CARTESIAN_POINT('P4', (0.0, 10.0, 0.0));
-#24=CARTESIAN_POINT('P5', (0.0, 0.0, 10.0));
-#25=CARTESIAN_POINT('P6', (10.0, 0.0, 10.0));
-#26=CARTESIAN_POINT('P7', (10.0, 10.0, 10.0));
-#27=CARTESIAN_POINT('P8', (0.0, 10.0, 10.0));
-#30=VERTEX_POINT('V1', #20);
-#31=VERTEX_POINT('V2', #21);
-#32=VERTEX_POINT('V3', #22);
-#33=VERTEX_POINT('V4', #23);
-#34=VERTEX_POINT('V5', #24);
-#35=VERTEX_POINT('V6', #25);
-#36=VERTEX_POINT('V7', #26);
-#37=VERTEX_POINT('V8', #27);
-#40=LINE('L1', #20, #50);
-#50=VECTOR('VEC1', #60, 10.0);
-#60=DIRECTION('DIR1', (1.0, 0.0, 0.0));
-#70=EDGE_CURVE('E1', #30, #31, #40, .T.);
-#71=EDGE_CURVE('E2', #31, #32, #40, .T.);
-#72=EDGE_CURVE('E3', #32, #33, #40, .T.);
-#73=EDGE_CURVE('E4', #33, #30, #40, .T.);
-#80=ORIENTED_EDGE('OE1', *, *, #70, .T.);
-#81=ORIENTED_EDGE('OE2', *, *, #71, .T.);
-#82=ORIENTED_EDGE('OE3', *, *, #72, .T.);
-#83=ORIENTED_EDGE('OE4', *, *, #73, .T.);
-#90=EDGE_LOOP('LOOP_BOTTOM', (#80, #81, #82, #83));
-#100=FACE_OUTER_BOUND('BOUND_BOTTOM', #90, .T.);
-#110=PLANE('PLANE_BOTTOM', #120);
-#120=AXIS2_PLACEMENT_3D('AXIS_BOTTOM', #10, #130, #140);
-#130=DIRECTION('Z_BOTTOM', (0.0, 0.0, 1.0));
-#140=DIRECTION('X_BOTTOM', (1.0, 0.0, 0.0));
-#150=ADVANCED_FACE('FACE_BOTTOM', (#100), #110, .F.);
-#200=CLOSED_SHELL('CUBE_SHELL', (#150));
-#210=MANIFOLD_SOLID_BREP('CUBE_SOLID', #200);
-ENDSEC;
-END-ISO-10303-21;
-`;
-    fs.writeFileSync(stepPath, stepContent, 'utf-8');
   }
 
   // 2. Golden DOCX (Valid OpenXML package)
@@ -278,21 +227,6 @@ describe('Phase 4: Golden Binary Testnet, Decoder Oracle Validation & Fuzzing Gu
       expect(decodedSfnt.numTables).toBeGreaterThanOrEqual(1);
       expect(decodedSfnt.tables['head']).toBeDefined();
     });
-
-    it('verifies B-Rep topology mesh extraction on golden sample.step', () => {
-      const stepText = fs.readFileSync(path.join(FIXTURES_DIR, 'sample.step'), 'utf-8');
-      const entityMap = parseStepEntities(stepText);
-      const bRepMesh = extractStepBRepMesh(entityMap);
-
-      expect(bRepMesh).toBeDefined();
-      expect(bRepMesh!.vertices.length).toBeGreaterThan(0);
-      expect(bRepMesh!.faces.length).toBeGreaterThan(0);
-
-      // Verify vertex coordinate values match the STEP CARTESIAN_POINT definitions
-      const flatCoords = bRepMesh!.vertices.flat();
-      expect(flatCoords).toContain(10.0);
-      expect(flatCoords).toContain(0.0);
-    });
   });
 
   describe('2. Oracle Decoder Structural Validations (No Loose Size Checks)', () => {
@@ -328,23 +262,17 @@ describe('Phase 4: Golden Binary Testnet, Decoder Oracle Validation & Fuzzing Gu
       );
     });
 
-    it('converts golden STEP model to OBJ with verified geometric vertices and face definitions', async () => {
+    it.skipIf(!haveCadOracles)('converts golden STEP model to OBJ with the vertices and faces of the 20 mm cube it describes', async () => {
       const stepBuf = fs.readFileSync(path.join(FIXTURES_DIR, 'sample.step'));
       const result = await convertFile(stepBuf, 'step', 'obj', {}, 'sample.step');
 
-      const objText = result.buffer.toString('utf-8');
-      // OBJ must have valid 'v x y z' vertex definitions and 'f v1 v2 v3' face definitions
-      const lines = objText.split('\n');
-      const vLines = lines.filter((l) => l.startsWith('v '));
-      const fLines = lines.filter((l) => l.startsWith('f '));
-
-      expect(vLines.length).toBeGreaterThan(0);
-      expect(fLines.length).toBeGreaterThan(0);
-
-      // Verify vertex coordinate format
-      const firstVertex = vLines[0].split(/\s+/).slice(1).map(Number);
-      expect(firstVertex.length).toBe(3);
-      expect(firstVertex.every((n) => !Number.isNaN(n))).toBe(true);
+      // trimesh, an independent mesh reader, parses the OBJ: 'v x y z' vertices of the cube corners and 'f' triangles of its six faces.
+      const facts = meshFacts(result.buffer, 'obj');
+      expect(facts.triangles).toBe(12);
+      expect(facts.unmergedVertices).toBe(8);
+      expect(facts.min).toEqual([0, 0, 0]);
+      expect(facts.max).toEqual([20, 20, 20]);
+      expect(facts.area).toBeCloseTo(2400, 3);
     });
 
     it('converts golden ZIP archive to TAR with valid POSIX ustar headers', async () => {
@@ -389,20 +317,6 @@ describe('Phase 4: Golden Binary Testnet, Decoder Oracle Validation & Fuzzing Gu
       expect(() => decodeWoff2(corruptWoff2, 'corrupt.woff2')).toThrow(/missing wOF2 magic signature/);
     });
 
-    it('fails closed when given a truncated STEP file with broken syntax', () => {
-      const corruptStep = `ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('Corrupted Model'), '2;1');
-DATA;
-#10=CARTESIAN_POINT('CORRUPT', (invalid_syntax_not_numbers));
-ENDSEC;`;
-
-      const entityMap = parseStepEntities(corruptStep);
-      const mesh = extractStepBRepMesh(entityMap);
-      // Fails closed gracefully without crashing or throwing unhandled errors
-      expect(mesh).toBeNull();
-    });
-
     it('fails closed when given an invalid zip/docx file buffer', async () => {
       const corruptZip = Buffer.from('This is completely invalid non-zip binary payload');
       // The engine refuses a package that is not a ZIP with a typed error ...
@@ -423,46 +337,6 @@ ENDSEC;`;
       await expect(convertFile(corruptPdf, 'pdf', 'txt', { validateMagicBytes: true }, 'corrupt.pdf')).rejects.toThrow(
         FileExtensionSpoofError
       );
-    });
-
-    it('fails closed and prevents infinite recursion when given STEP entities with mutual circular reference', () => {
-      const loopStep = `ISO-10303-21;
-HEADER;
-FILE_NAME('loop.step', '2026-09-27', ('Auth'), ('EasyConvert'), '', '', '');
-ENDSEC;
-DATA;
-#10=VERTEX_POINT('V1', #20);
-#20=VERTEX_POINT('V2', #10);
-#70=EDGE_CURVE('E1', #10, #20, #40, .T.);
-#80=ORIENTED_EDGE('OE1', *, *, #70, .T.);
-#90=EDGE_LOOP('LOOP', (#80));
-#100=FACE_OUTER_BOUND('BOUND', #90, .T.);
-#150=ADVANCED_FACE('FACE', (#100), #110, .F.);
-ENDSEC;
-END-ISO-10303-21;`;
-
-      const entityMap = parseStepEntities(loopStep);
-      // Directly check point resolution and B-Rep extraction on cyclic graph
-      const pt = extractStepPoint(10, entityMap);
-      expect(pt).toBeNull();
-
-      const mesh = extractStepBRepMesh(entityMap);
-      expect(mesh).toBeNull();
-    });
-
-    it('fails closed and prevents infinite recursion when given self-referential STEP entities', () => {
-      const selfLoopStep = `ISO-10303-21;
-HEADER;
-FILE_NAME('self_loop.step', '2026-09-27', ('Auth'), ('EasyConvert'), '', '', '');
-ENDSEC;
-DATA;
-#10=VERTEX_POINT('V1', #10);
-ENDSEC;
-END-ISO-10303-21;`;
-
-      const entityMap = parseStepEntities(selfLoopStep);
-      const pt = extractStepPoint(10, entityMap);
-      expect(pt).toBeNull();
     });
 
     it('fails closed when WOFF2 has valid header but corrupted Brotli compressed stream instead of returning synthetic font', () => {

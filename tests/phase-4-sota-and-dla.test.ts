@@ -11,10 +11,7 @@ import {
   riemersmaDither,
   applyOklabQuantizationAndDither,
 } from '../src/lib/conversions/color-quantizer';
-import {
-  adaptiveIncrementalBRepMesh,
-  StepEntity,
-} from '../src/lib/conversions/cad-nurbs';
+
 import { performOcr } from '../src/lib/conversions/ocr';
 import {
   analyzeDocumentLayout,
@@ -125,72 +122,6 @@ describe('Phase 4 SOTA Algorithms & DLA Testnet', () => {
         expect(result.indexed[i]).toBeGreaterThanOrEqual(0);
         expect(result.indexed[i]).toBeLessThan(result.palette.length);
       }
-    });
-  });
-
-  // ==========================================================================
-  // 2. Adaptive Incremental BRepMesh Tessellation
-  // ==========================================================================
-  describe('Adaptive Incremental BRepMesh (Component 4.2)', () => {
-    it('adaptively subdivides B-Rep solid boundary faces based on chordal deflection', () => {
-      // Create a mock STEP entity map with a quad face
-      const entityMap = new Map<number, StepEntity>();
-
-      entityMap.set(10, {
-        id: 10,
-        type: 'ADVANCED_FACE',
-        args: ['', [20], 100, true],
-      });
-
-      entityMap.set(20, {
-        id: 20,
-        type: 'FACE_OUTER_BOUND',
-        args: ['', 30, true],
-      });
-
-      entityMap.set(30, {
-        id: 30,
-        type: 'EDGE_LOOP',
-        args: ['', [41, 42, 43, 44]],
-      });
-
-      // 4 oriented edges forming a 10x10 square
-      entityMap.set(41, { id: 41, type: 'ORIENTED_EDGE', args: ['', 0, 51, true] });
-      entityMap.set(42, { id: 42, type: 'ORIENTED_EDGE', args: ['', 0, 52, true] });
-      entityMap.set(43, { id: 43, type: 'ORIENTED_EDGE', args: ['', 0, 53, true] });
-      entityMap.set(44, { id: 44, type: 'ORIENTED_EDGE', args: ['', 0, 54, true] });
-
-      entityMap.set(51, { id: 51, type: 'EDGE_CURVE', args: ['', 61, 62, 0, true] });
-      entityMap.set(52, { id: 52, type: 'EDGE_CURVE', args: ['', 62, 63, 0, true] });
-      entityMap.set(53, { id: 53, type: 'EDGE_CURVE', args: ['', 63, 64, 0, true] });
-      entityMap.set(54, { id: 54, type: 'EDGE_CURVE', args: ['', 64, 61, 0, true] });
-
-      entityMap.set(61, { id: 61, type: 'VERTEX_POINT', args: ['', 71] });
-      entityMap.set(62, { id: 62, type: 'VERTEX_POINT', args: ['', 72] });
-      entityMap.set(63, { id: 63, type: 'VERTEX_POINT', args: ['', 73] });
-      entityMap.set(64, { id: 64, type: 'VERTEX_POINT', args: ['', 74] });
-
-      entityMap.set(71, { id: 71, type: 'CARTESIAN_POINT', args: ['', [0, 0, 0]] });
-      entityMap.set(72, { id: 72, type: 'CARTESIAN_POINT', args: ['', [10, 0, 0]] });
-      entityMap.set(73, { id: 73, type: 'CARTESIAN_POINT', args: ['', [10, 10, 0]] });
-      entityMap.set(74, { id: 74, type: 'CARTESIAN_POINT', args: ['', [0, 10, 0]] });
-
-      // Coarse deflection -> base mesh
-      const coarseMesh = adaptiveIncrementalBRepMesh(entityMap, {
-        linearDeflection: 1.0,
-        angularDeflection: 1.5,
-      });
-      expect(coarseMesh).toBeDefined();
-      expect(coarseMesh!.faces.length).toBeGreaterThan(0);
-
-      // Fine deflection -> adaptive subdivision producing more triangles
-      const fineMesh = adaptiveIncrementalBRepMesh(entityMap, {
-        linearDeflection: 0.05,
-        angularDeflection: 0.2,
-      });
-      expect(fineMesh).toBeDefined();
-      expect(fineMesh!.faces.length).toBeGreaterThan(coarseMesh!.faces.length);
-      expect(fineMesh!.vertices.length).toBeGreaterThan(coarseMesh!.vertices.length);
     });
   });
 

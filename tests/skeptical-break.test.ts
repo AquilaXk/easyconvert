@@ -4,7 +4,8 @@ import JSZip from 'jszip';
 import PDFDocument from 'pdfkit';
 import { convertFile } from '../src/lib/conversions/index';
 import { POST as convertRoute } from '../src/app/api/convert/route';
-import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedTargetError } from '../src/lib/types';
+import { ConversionFailedError, UnprocessableCadInputError, UnsupportedTargetError } from '../src/lib/types';
+import { haveCadConverter } from './helpers/cad-kernel';
 import { oracleTest } from './helpers/oracle-test';
 import { parseCsvWithPython, sheetRowsViaLibreOffice } from './helpers/sheet-rows';
 
@@ -224,7 +225,7 @@ endsolid TestModel`;
     expect(rtfRes.buffer.toString('utf-8')).toContain('{\\rtf1');
   });
 
-  it('12. iges with only points and no surface geometry fails closed', async () => {
+  it.skipIf(!haveCadConverter)('12. iges with only points and no surface geometry fails closed', async () => {
     const iges = `S      1
 EasyConvert IGES 3D Model                                               G      1
 1H,,1H;,sample,,20260925.120000,1.0,1,1,1,,1.0,1,,,;                    G      2
@@ -239,8 +240,8 @@ EasyConvert IGES 3D Model                                               G      1
 116,70.0,80.0,90.0;                                                     1P      3
 S      1G      2D      6P      3                                        T      1
 `;
-    await expect(
-      convertFile(Buffer.from(iges, 'utf-8'), 'iges', 'obj', {}, 'triangle.iges')
-    ).rejects.toThrow(CadGeometryUnavailableError);
+    const failure = await convertFile(Buffer.from(iges, 'utf-8'), 'iges', 'obj', {}, 'triangle.iges').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(UnprocessableCadInputError);
+    expect((failure as Error).message).toMatch(/^The CAD converter could not convert this model: it exited with status 4 \(no-(shapes|surfaces): /);
   });
 });

@@ -379,7 +379,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1674
+    "maxValue": 1655
   },
   {
     "file": "src/lib/api/contracts/validate.ts",
@@ -465,7 +465,7 @@
     "file": "src/lib/client-converter.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "processL0Conversion",
-    "count": 3
+    "count": 2
   },
   {
     "file": "src/lib/client-converter.ts",
@@ -730,134 +730,8 @@
   {
     "file": "src/lib/conversions/cad-nurbs.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "<module>",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "extractStepBRepMesh",
-    "count": 6
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "extractStepBSplineCurves",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "extractStepBSplineSurfaces",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "extractStepPoint",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseStepArgTuple",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "parseStepToken",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "tessellateSvgArc",
     "count": 1
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "adaptiveIncrementalBRepMesh",
-    "count": 1,
-    "maxValue": 38
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "consolidatePolygonLoopsWithBridges",
-    "count": 1,
-    "maxValue": 37
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "extractStepBRepMesh",
-    "count": 1,
-    "maxValue": 93
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "extractStepBSplineSurfaces",
-    "count": 1,
-    "maxValue": 44
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "glueBRepTopologicalEdges",
-    "count": 1,
-    "maxValue": 37
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "lawsonEdgeFlipHealing2D",
-    "count": 1,
-    "maxValue": 47
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "parseIgesBRepMesh",
-    "count": 1,
-    "maxValue": 37
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "parseIgesUnit",
-    "count": 1,
-    "maxValue": 41
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "parseStepEntities",
-    "count": 1,
-    "maxValue": 31
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "parseStepUnit",
-    "count": 1,
-    "maxValue": 41
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "tessellateBSplineSurfaceAdaptive",
-    "count": 1,
-    "maxValue": 39
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "complexity",
-    "function": "tessellateTrimmedFaceCDT",
-    "count": 1,
-    "maxValue": 85
   },
   {
     "file": "src/lib/conversions/cad-nurbs.ts",
@@ -869,111 +743,9 @@
   {
     "file": "src/lib/conversions/cad-nurbs.ts",
     "rule": "max-depth",
-    "function": "extractStepBSplineSurfaces",
-    "count": 1,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-depth",
-    "function": "glueBRepTopologicalEdges",
-    "count": 4,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-depth",
-    "function": "lawsonEdgeFlipHealing2D",
-    "count": 2,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-depth",
-    "function": "parseStepEntities",
-    "count": 2,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-depth",
-    "function": "splitNormalsByCreaseAngle",
-    "count": 2,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-depth",
-    "function": "tessellateTrimmedFaceCDT",
-    "count": 6,
-    "maxValue": 6
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-depth",
     "function": "verifyWatertightManifoldMesh",
     "count": 2,
     "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-depth",
-    "function": "weldCoincidentVertices",
-    "count": 2,
-    "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-lines-per-function",
-    "function": "extractStepBRepMesh",
-    "count": 1,
-    "maxValue": 394
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-lines-per-function",
-    "function": "tessellateTrimmedFaceCDT",
-    "count": 1,
-    "maxValue": 253
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-lines",
-    "function": "<module>",
-    "count": 1,
-    "maxValue": 4870
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "max-params",
-    "function": "isPointInTriangle",
-    "count": 1,
-    "maxValue": 8
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "no-nested-ternary",
-    "function": "extractStepBSplineCurves",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "no-nested-ternary",
-    "function": "extractStepPoint",
-    "count": 2
-  },
-  {
-    "file": "src/lib/conversions/cad-nurbs.ts",
-    "rule": "no-nested-ternary",
-    "function": "tessellateCadBuffer",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/cad-predicates.ts",
-    "rule": "max-params",
-    "function": "incircleExact",
-    "count": 1,
-    "maxValue": 8
   },
   {
     "file": "src/lib/conversions/color-quantizer.ts",
@@ -2286,13 +2058,6 @@
   },
   {
     "file": "src/lib/conversions/vector-cad.ts",
-    "rule": "complexity",
-    "function": "parse3dCad",
-    "count": 1,
-    "maxValue": 33
-  },
-  {
-    "file": "src/lib/conversions/vector-cad.ts",
     "rule": "max-lines-per-function",
     "function": "encodeIges",
     "count": 1,
@@ -2530,7 +2295,7 @@
     "rule": "complexity",
     "function": "resolveConversionTier",
     "count": 1,
-    "maxValue": 61
+    "maxValue": 60
   },
   {
     "file": "src/lib/edge/workers/opfs-vfs.worker.ts",

@@ -3,12 +3,7 @@ import {
   isPureDataConvertible,
   convertPureData,
 } from '@/lib/edge/pure/pure-data';
-import {
-  isPureCadConvertible,
-  convertPureCad,
-  encodeStl,
-  encodeObj,
-} from '@/lib/edge/pure/pure-cad';
+import { encodeStl, encodeObj } from '@/lib/edge/pure/pure-cad';
 import {
   isPureAudioConvertible,
   convertPureAudio,
@@ -72,13 +67,10 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(relativeFiles(graph).filter((file) => /office|pdf|sharp|vector-cad/i.test(file))).toEqual([]);
     });
 
-    it('pure-cad.ts reaches only the STEP reader of the conversions, no raster, PDF or archive module', () => {
+    it('pure-cad.ts reaches no conversion module and no package beyond node:path: it only encodes meshes, STEP and IGES are read on the server', () => {
       const graph = pureGraph('pure-cad');
       expect(graph.externalSpecifiers).toEqual(['node:path']);
-      expect(relativeFiles(graph).filter((file) => file.startsWith('lib/conversions/'))).toEqual([
-        'lib/conversions/cad-nurbs.ts',
-        'lib/conversions/cad-predicates.ts',
-      ]);
+      expect(relativeFiles(graph).filter((file) => file.startsWith('lib/conversions/'))).toEqual([]);
     });
 
     it('the audio path never names the Node Buffer, and converts with the Buffer global removed', () => {
@@ -194,106 +186,9 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
   });
 
   // ==========================================================================
-  // 3. Pure CAD Engine (STEP/IGES to STL/OBJ)
+  // 3. Pure CAD encoders (mesh to STL/OBJ)
   // ==========================================================================
   describe('Pure CAD Engine (pure-cad.ts)', () => {
-    const SAMPLE_STEP = [
-      'ISO-10303-21;',
-      'HEADER;',
-      "FILE_DESCRIPTION(('EasyConvert Edge Fast-Path Mesh'), '2;1');",
-      "FILE_NAME('isomorphic_mesh.step', '2026-09-27', ('EdgeEngine'), ('EasyConvert'), '', '', '');",
-      "FILE_SCHEMA(('AUTOMOTIVE_DESIGN'));",
-      'ENDSEC;',
-      'DATA;',
-      "#101 = CARTESIAN_POINT('Node_Origin', (1.25, 2.50, 3.75));",
-      "#202 = CARTESIAN_POINT('Node_X_Axis', (12.50, 2.50, 3.75));",
-      "#303 = CARTESIAN_POINT('Node_Y_Axis', (1.25, 14.50, 3.75));",
-      "#404 = CARTESIAN_POINT('Node_Diag', (12.50, 14.50, 3.75));",
-      "#505 = CARTESIAN_POINT('Node_Apex', (6.87, 8.50, 15.20));",
-      "#606 = CARTESIAN_POINT('Node_Base', (1.25, 2.50, 3.75));",
-      "#10 = B_SPLINE_CURVE_WITH_KNOTS('c1', 1, (#101, #202), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .PIECEWISE_BEZIER_KNOTS.);",
-      "#20 = B_SPLINE_CURVE_WITH_KNOTS('c2', 1, (#303, #404), .UNSPECIFIED., .F., .F., (2, 2), (0.0, 1.0), .PIECEWISE_BEZIER_KNOTS.);",
-      'ENDSEC;',
-      'END-ISO-10303-21;',
-    ].join('\n');
-
-    it('correctly reports CAD format capability', () => {
-      expect(isPureCadConvertible('step', 'stl')).toBe(true);
-      expect(isPureCadConvertible('stp', 'obj')).toBe(true);
-      expect(isPureCadConvertible('iges', 'stl')).toBe(true);
-      expect(isPureCadConvertible('igs', 'obj')).toBe(true);
-      expect(isPureCadConvertible('step', 'dwg')).toBe(false);
-      expect(isPureCadConvertible('obj', 'step')).toBe(false);
-    });
-
-    it('tessellates STEP model to valid ASCII STL mesh', () => {
-      const res = convertPureCad(SAMPLE_STEP, 'step', 'stl', 'test_model');
-      expect(res.mimeType).toBe('model/stl');
-      expect(res.extension).toBe('stl');
-      expect(res.text).toContain('solid test_model');
-      expect(res.text).toContain('facet normal');
-      expect(res.text).toContain('outer loop');
-      expect(res.text).toContain('vertex');
-      expect(res.text).toContain('endloop');
-      expect(res.text).toContain('endfacet');
-      expect(res.text).toContain('endsolid test_model');
-      expect(res.data.length).toBeGreaterThan(0);
-    });
-
-    it('tessellates STEP model to valid Wavefront OBJ format', () => {
-      const res = convertPureCad(SAMPLE_STEP, 'step', 'obj', 'test_model');
-      expect(res.mimeType).toBe('model/obj');
-      expect(res.extension).toBe('obj');
-      expect(res.text).toContain('o test_model');
-      expect(res.text).toContain('v 1.25 2.5 3.75');
-      expect(res.text).toContain('v 12.5 2.5 3.75');
-      expect(res.text).toContain('f ');
-    });
-
-    it('correctly handles Uint8Array input for CAD conversion', () => {
-      const fromBytes = convertPureCad(new TextEncoder().encode(SAMPLE_STEP), 'stp', 'stl', 'bytes_model');
-      const fromText = convertPureCad(SAMPLE_STEP, 'step', 'stl', 'bytes_model');
-      // The same model gives the same mesh whether the STEP text arrives as a string or as bytes, and the
-      // returned bytes are exactly the UTF-8 of the returned text.
-      expect(fromBytes.text).toBe(fromText.text);
-      expect(fromBytes.text.startsWith('solid bytes_model\n')).toBe(true);
-      expect(new TextDecoder().decode(fromBytes.data)).toBe(fromBytes.text);
-
-      // Independent read of the ASCII STL: the facets tile the rectangle between the two ruled curves,
-      // x 1.25..12.5 by y 2.5..14.5 at z 3.75, an area of 11.25 * 12 = 135.
-      const facets = [...fromBytes.text.matchAll(/facet normal (\S+) (\S+) (\S+)\s+outer loop\s+vertex (\S+) (\S+) (\S+)\s+vertex (\S+) (\S+) (\S+)\s+vertex (\S+) (\S+) (\S+)/g)].map(
-        (match) => match.slice(1).map(Number)
-      );
-      expect(facets).toHaveLength((fromBytes.text.match(/facet normal/g) ?? []).length);
-      let area = 0;
-      for (const facet of facets) {
-        const [a, b, c] = [facet.slice(3, 6), facet.slice(6, 9), facet.slice(9, 12)];
-        for (const vertex of [a, b, c]) {
-          expect(vertex[0]).toBeGreaterThanOrEqual(1.25);
-          expect(vertex[0]).toBeLessThanOrEqual(12.5);
-          expect(vertex[1]).toBeGreaterThanOrEqual(2.5);
-          expect(vertex[1]).toBeLessThanOrEqual(14.5);
-          expect(vertex[2]).toBe(3.75);
-        }
-        const cross = [
-          (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
-          (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
-          (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]),
-        ];
-        const twiceArea = Math.hypot(cross[0], cross[1], cross[2]);
-        // The stored normal is the unit normal of the winding order.
-        expect(facet.slice(0, 3).map((value, axis) => Math.abs(value - cross[axis] / twiceArea))).toEqual([0, 0, 0]);
-        area += twiceArea / 2;
-      }
-      expect(area).toBeCloseTo(135, 9);
-    });
-
-    it('fails closed when given empty or unparseable CAD content', () => {
-      expect(() => convertPureCad('NOT A VALID STEP FILE', 'step', 'stl')).toThrow(
-        /Failed to tessellate CAD geometry/
-      );
-    });
-
     it('sanitizes model names and handles quad/polygon faces in STL and OBJ', () => {
       const quadMesh = {
         name: 'My\nModel\rName',
@@ -571,11 +466,12 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       expect(res.isClientEdge).toBe(false);
     });
 
-    it('routes pure CAD pairs to Level 0 (Instant)', () => {
-      const res = resolveConversionTier('step', 'stl', 150000);
-      expect(res.tier).toBe('L0');
-      expect(res.tierName).toBe('Edge L0 (Instant)');
-      expect(res.isClientEdge).toBe(true);
+    it('sends STEP and IGES to the server, whose B-rep kernel is the only reader of them', () => {
+      for (const [source, target] of [['step', 'stl'], ['stp', 'obj'], ['iges', 'stl'], ['igs', 'obj'], ['step', 'iges']]) {
+        const res = resolveConversionTier(source, target, 150000);
+        expect(res.tier, `${source} to ${target}`).toBe('L4');
+        expect(res.isClientEdge, `${source} to ${target}`).toBe(false);
+      }
     });
 
     it('routes pure Audio pairs to Level 0 (Instant)', () => {

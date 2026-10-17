@@ -6,7 +6,6 @@ import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { extractZipArchive, createZipArchive, crc32 } from '../src/lib/conversions/archive';
-import { extractStepBRepMesh, parseStepEntities } from '../src/lib/conversions/cad-nurbs';
 import { decodeWoff2 } from '../src/lib/conversions/font';
 import { Woff2FormatError } from '../src/lib/conversions/font-woff2';
 import { CorruptStreamError } from '../src/lib/types';
@@ -507,11 +506,6 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
           // 5. ISO BMFF demuxer
           const arrayBuf = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
           expect(() => demuxMp4(arrayBuf)).toThrow(EdgeUnsupportedError);
-
-          // 6. CAD STEP parser
-          const stepEntities = parseStepEntities(buf.toString('utf-8'));
-          const stepMesh = extractStepBRepMesh(stepEntities);
-          expect(stepMesh).toBeNull();
         }
       });
     });
@@ -607,41 +601,6 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         // The directory chain 0 -> 0 is walked once and refused instead of being read as a container without entries.
         expect(() => parseCfbf(cyclicOle2)).toThrow(CorruptStreamError);
         expect(() => parseCfbf(cyclicOle2)).toThrow(/the sector chain starting at sector 0 returns to sector 0/);
-      });
-    });
-
-    describe('3.4 Hostile CAD STEP Fuzzing', () => {
-      it('fails closed when STEP contains cyclic entity references or unclosed shells', () => {
-        const cyclicStep = `ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('Cyclic Malformed STEP'), '2;1');
-FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
-ENDSEC;
-DATA;
-#10=ADVANCED_FACE('FACE_1', (#20), #30, .T.);
-#20=FACE_OUTER_BOUND('BOUND_1', #40, .T.);
-#40=EDGE_LOOP('LOOP_1', (#50));
-#50=ORIENTED_EDGE('OE_1', *, *, #60, .T.);
-#60=EDGE_CURVE('EC_1', #70, #80, #60, .T.);
-#70=VERTEX_POINT('V_1', #10);
-#80=VERTEX_POINT('V_2', #20);
-#30=PLANE('PL_1', #10);
-ENDSEC;
-END-ISO-10303-21;`;
-
-        const entities = parseStepEntities(cyclicStep);
-        expect(entities.size).toBeGreaterThan(0);
-
-        // extractStepBRepMesh must safely terminate without infinite recursion or crash
-        const mesh = extractStepBRepMesh(entities, 'cyclic_model');
-        expect(mesh === null || mesh.indices.length === 0).toBe(true);
-      });
-
-      it('fails closed when STEP syntax is severely truncated without ENDSEC or semicolons', () => {
-        const truncatedStep = 'ISO-10303-21; HEADER; #10=CARTESIAN_POINT(((';
-        const entities = parseStepEntities(truncatedStep);
-        const mesh = extractStepBRepMesh(entities);
-        expect(mesh).toBeNull();
       });
     });
 

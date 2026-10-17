@@ -27,7 +27,7 @@ describe('Dockerfile.worker base image', () => {
   });
 
   it('builds every stage from that single pinned image', () => {
-    expect(stages.map((stage) => stage.baseImage)).toEqual(['${NODE_IMAGE}', '${NODE_IMAGE}', '${NODE_IMAGE}', '${NODE_IMAGE}']);
+    expect(stages.map((stage) => stage.baseImage)).toEqual(['${NODE_IMAGE}', '${NODE_IMAGE}', '${NODE_IMAGE}', '${NODE_IMAGE}', '${NODE_IMAGE}']);
   });
 
   it('names no Debian 12 release or Node.js 20 base image any more', () => {

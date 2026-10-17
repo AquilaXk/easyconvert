@@ -2,7 +2,7 @@
  * Tier Capability Router & Runtime Probing Engine
  *
  * Implements 5-Tier Adaptive Edge routing across:
- * - Level 0: Pure Isomorphic Fast-Path (0 MB Wasm, pure TS/Data/CAD/Audio/Canvas)
+ * - Level 0: Pure Isomorphic Fast-Path (0 MB Wasm, pure TS/Audio/Canvas)
  * - Level 1: WebCodecs Hardware Media (GPU/VPU)
  * - Level 2: Zero-COOP SIMD Wasm (Wasm-vips, Tesseract OCR, pdf-lib)
  * - Level 3: OPFS Streaming VFS (100MB+ ~ GB large files)
@@ -10,7 +10,6 @@
  */
 
 import { ConversionOptions } from '../types';
-import { isPureCadConvertible } from './pure/pure-cad';
 import { isStreamableDelimitedPair, isStreamableEncoding } from './workers/delimited-stream';
 import { isAudioStreamPair, isStreamableAudioPair, type RawPcmOptions } from './workers/opfs-audio';
 import { isPureAudioConvertible } from './pure/pure-audio';
@@ -625,15 +624,6 @@ export function resolveConversionTier(
   // Structured data (CSV/TSV/JSON/NDJSON/YAML/XML/TOML) is not offered here: the server data
   // engine detects encodings and delimiters, escapes formulas, keeps big integers exact and caps
   // YAML/XML expansion, so those conversions fall through to the cloud tier.
-  if (isPureCadConvertible(src, tgt)) {
-    return {
-      tier: 'L0',
-      tierName: 'Edge L0 (Instant)',
-      isClientEdge: true,
-      reason: 'Pure mathematical CAD B-spline tessellation (STEP/IGES to STL/OBJ)',
-    };
-  }
-
   if (isPureAudioConvertible(src, tgt)) {
     return {
       tier: 'L0',
