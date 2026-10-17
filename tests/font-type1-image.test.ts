@@ -22,17 +22,18 @@ describe('FontForge in the worker image', () => {
   });
 
   it('fails the build when the program does not start', () => {
-    expect(runnerRuns).toContain("fontforge -lang=ff -c 'Print($version)' 2>/dev/null | grep -Eq '^[0-9]{8}$'");
+    const startChecks = runnerRuns.filter((argument) => argument === "fontforge -lang=ff -c 'Print($version)' 2>/dev/null | grep -Eq '^[0-9]{8}$'");
+    expect(startChecks).toHaveLength(1);
   });
 
   it('is installed in CI from the same package, so the suites that convert Type 1 fonts run instead of skipping', () => {
     const ciPackages = readFileSync(path.join(ROOT, '.github', 'actions', 'ci-setup', 'apt-packages.txt'), 'utf-8').split('\n');
-    expect(ciPackages).toContain('fontforge-nox');
+    expect(ciPackages.filter((line) => line.trim() === 'fontforge-nox')).toHaveLength(1);
   });
 
   it('is run by the container check on a Type 1 font inside the sandbox', () => {
     const script = readFileSync(path.join(ROOT, 'scripts', 'verify-worker-container.sh'), 'utf-8');
-    expect(script).toContain("fontforge -lang=ff -c 'Open($1); Generate($2)'");
+    expect(script.split('\n').filter((line) => line.includes("fontforge -lang=ff -c 'Open($1); Generate($2)'"))).toHaveLength(1);
     expect(script).toContain('"OTTO"');
     expect(script).toContain('fontforge converted a Type 1 font to an OpenType font inside the sandbox');
   });

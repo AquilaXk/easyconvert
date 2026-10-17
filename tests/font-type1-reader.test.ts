@@ -153,18 +153,27 @@ describe('readType1Font on files that are not Type 1 fonts', () => {
   it('answers a typed 400 for a PFB segment of an unknown type', () => {
     const file = Buffer.from(buildPfb(GLYPHS));
     file[1] = 9;
-    expect(failureOf(() => readType1Font(file))).toBeInstanceOf(CorruptStreamError);
+    const error = failureOf(() => readType1Font(file));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect((error as CorruptStreamError).status).toBe(400);
+    expect(error.message).toMatch(/unknown type 9/);
   });
 
   it('answers a typed 400 for a PFB without its end marker', () => {
     const file = buildPfb(GLYPHS);
-    expect(failureOf(() => readType1Font(file.subarray(0, file.length - 2)))).toBeInstanceOf(CorruptStreamError);
+    const error = failureOf(() => readType1Font(file.subarray(0, file.length - 2)));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect((error as CorruptStreamError).status).toBe(400);
+    expect(error.message).toMatch(/end marker/);
   });
 
   it('answers a typed 400 for a PFB whose first segment is not PostScript', () => {
     const body = Buffer.from('plain text, no font here');
     const header = Buffer.from([PFB_MARKER, PFB_ASCII, body.length, 0, 0, 0]);
-    expect(failureOf(() => readType1Font(Buffer.concat([header, body, Buffer.from([PFB_MARKER, PFB_END])])))).toBeInstanceOf(CorruptStreamError);
+    const error = failureOf(() => readType1Font(Buffer.concat([header, body, Buffer.from([PFB_MARKER, PFB_END])])));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect((error as CorruptStreamError).status).toBe(400);
+    expect(error.message).toMatch(/%!PS-AdobeFont or %!FontType1/);
   });
 
   it('answers a typed 400 for a PFA that has no encrypted part', () => {
@@ -193,7 +202,10 @@ describe('readType1Font on files that are not Type 1 fonts', () => {
     const cut = segments[1].data.subarray(0, segments[1].data.length - 60);
     const header = (type: number, length: number) => Buffer.from([PFB_MARKER, type, length & 0xff, (length >> 8) & 0xff, 0, 0]);
     const file = Buffer.concat([header(PFB_ASCII, segments[0].data.length), segments[0].data, header(PFB_BINARY, cut.length), cut, header(PFB_ASCII, segments[2].data.length), segments[2].data, Buffer.from([PFB_MARKER, PFB_END])]);
-    expect(failureOf(() => readType1Font(file))).toBeInstanceOf(UnprocessableFontInputError);
+    const error = failureOf(() => readType1Font(file));
+    expect(error).toBeInstanceOf(UnprocessableFontInputError);
+    expect((error as UnprocessableFontInputError).status).toBe(422);
+    expect(error.message).toMatch(/cut short/);
   });
 });
 
@@ -223,7 +235,9 @@ describe('readType1Font on files crafted to cost more than a font does', () => {
   it('does not refuse a file of exactly the size limit for its size', () => {
     const file = Buffer.alloc(MAX_TYPE1_FILE_BYTES, ' ');
     file.write('%!FontType1-1.0', 0, 'latin1');
-    expect(failureOf(() => readType1Font(file))).toBeInstanceOf(CorruptStreamError);
+    const error = failureOf(() => readType1Font(file));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect(error.message).toMatch(/eexec/);
   });
 
   it('refuses a private dictionary of millions of empty charstrings, inside the size limit, fast and without holding them', () => {
@@ -249,8 +263,12 @@ describe('readType1Font on files crafted to cost more than a font does', () => {
 
   it('counts the segments of a PFB: the limit itself is read, one more is refused', () => {
     // pfbWithZeroLengthSegments writes the text segment and then `count` empty binary ones; the file holds no font, so the one that is read is refused as a font.
-    expect(failureOf(() => readType1Font(pfbWithZeroLengthSegments(MAX_PFB_SEGMENTS - 1)))).toBeInstanceOf(UnprocessableFontInputError);
-    expect(failureOf(() => readType1Font(pfbWithZeroLengthSegments(MAX_PFB_SEGMENTS)))).toBeInstanceOf(PayloadLimitError);
+    const atLimit = failureOf(() => readType1Font(pfbWithZeroLengthSegments(MAX_PFB_SEGMENTS - 1)));
+    expect(atLimit).toBeInstanceOf(UnprocessableFontInputError);
+    expect((atLimit as UnprocessableFontInputError).status).toBe(422);
+    const overLimit = failureOf(() => readType1Font(pfbWithZeroLengthSegments(MAX_PFB_SEGMENTS)));
+    expect(overLimit).toBeInstanceOf(PayloadLimitError);
+    expect((overLimit as PayloadLimitError).status).toBe(413);
   });
 
   it('decodes a hexadecimal run of the size limit in a buffer of its own size: refused as a font, in bounded time and heap', () => {
