@@ -121,19 +121,6 @@ export interface NestedTable {
   };
 }
 
-export interface BSplineSurface {
-  uDegree: number;
-  vDegree: number;
-  uKnots: number[];
-  vKnots: number[];
-  controlPoints: Array<Array<{ x: number; y: number; z: number }>>;
-}
-
-export interface Parametric2DPoint {
-  u: number;
-  v: number;
-}
-
 export interface PdfTextBlock {
   text: string;
   x: number;
@@ -870,78 +857,6 @@ export function synthesizeAudioBitstreamCorpus(durationSeconds = 0.5): AudioBits
     sampleRate,
     channels,
     durationSeconds,
-  };
-}
-
-// ============================================================================
-// 6. CAD NURBS & CDT Trimmed Face Golden Corpus Synthesizer
-// ============================================================================
-
-export interface CadNurbsCorpus {
-  surface: BSplineSurface;
-  midPoint: { x: number; y: number; z: number };
-  outerLoop: Parametric2DPoint[];
-  innerHoles: Parametric2DPoint[][];
-}
-
-export function synthesizeCadNurbsCorpus(): CadNurbsCorpus {
-  const controlPoints = [
-    [
-      { x: 0, y: 0, z: 0 },
-      { x: 0, y: 10, z: 2 },
-      { x: 0, y: 20, z: 2 },
-      { x: 0, y: 30, z: 0 },
-    ],
-    [
-      { x: 10, y: 0, z: 2 },
-      { x: 10, y: 10, z: 8 },
-      { x: 10, y: 20, z: 8 },
-      { x: 10, y: 30, z: 2 },
-    ],
-    [
-      { x: 20, y: 0, z: 2 },
-      { x: 20, y: 10, z: 8 },
-      { x: 20, y: 20, z: 8 },
-      { x: 20, y: 30, z: 2 },
-    ],
-    [
-      { x: 30, y: 0, z: 0 },
-      { x: 30, y: 10, z: 2 },
-      { x: 30, y: 20, z: 2 },
-      { x: 30, y: 30, z: 0 },
-    ],
-  ];
-
-  const surface: BSplineSurface = {
-    uDegree: 3,
-    vDegree: 3,
-    controlPoints,
-    uKnots: [0, 0, 0, 0, 1, 1, 1, 1],
-    vKnots: [0, 0, 0, 0, 1, 1, 1, 1],
-  };
-
-  const midPoint = { x: 15, y: 15, z: 5.25 };
-  const outerLoop: Parametric2DPoint[] = [
-    { u: 0.0, v: 0.0 },
-    { u: 1.0, v: 0.0 },
-    { u: 1.0, v: 1.0 },
-    { u: 0.0, v: 1.0 },
-  ];
-
-  const innerHoles: Parametric2DPoint[][] = [
-    [
-      { u: 0.3, v: 0.3 },
-      { u: 0.7, v: 0.3 },
-      { u: 0.7, v: 0.7 },
-      { u: 0.3, v: 0.7 },
-    ],
-  ];
-
-  return {
-    surface,
-    midPoint,
-    outerLoop,
-    innerHoles,
   };
 }
 

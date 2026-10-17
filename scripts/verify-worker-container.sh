@@ -11,7 +11,7 @@
 #   2. executing a file from /tmp fails with EACCES (noexec)
 #   3. the process holds no cap_sys_admin (kernel view; `capsh --print` too when it is installed)
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
-#   5. one real conversion completes inside the sandbox
+#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
@@ -35,6 +35,7 @@ LISTENER_WAIT_SECONDS=0.1
 CONVERSION_TIMEOUT_SECONDS=120
 EXEC_DENIED_STATUS=126
 MARKER_TEXT="EasyConvertContainerCheck"
+STL_ONE_TRIANGLE_BYTES=134
 
 failures=0
 work_dir=""
@@ -174,6 +175,57 @@ if sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" pdftotext "$work_dir/input.pd
   pass "pdftotext converted a PDF inside the sandbox (found '$MARKER_TEXT' in the output)"
 else
   fail "pdftotext did not convert the PDF inside the sandbox: $(head -c 300 "$work_dir/pdftotext.err" 2>/dev/null)"
+fi
+
+# A STEP file with one triangular face (10 mm legs), as the kernel reads it; cad-convert meshes it to a binary STL of one triangle:
+# an 80-byte header, the count, and 50 bytes for the facet. It runs without any Open CASCADE resource files or environment.
+cat > "$work_dir/input.step" << 'STEP'
+ISO-10303-21;
+HEADER;
+FILE_DESCRIPTION(('EasyConvert CAD STEP AP214 B-Rep Model'), '2;1');
+FILE_NAME('cube.step', '2026-10-17T12:37:12', ('EasyConvert Core'), ('EasyConvert Engine'), 'Processor 2.0', 'EasyConvert', 'Authorization');
+FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));
+ENDSEC;
+DATA;
+#1 = APPLICATION_CONTEXT('core data for automotive mechanical design processes');
+#2 = APPLICATION_PROTOCOL_DEFINITION('international standard', 'automotive_design', 1994, #1);
+#3 = PRODUCT_CONTEXT('', #1, 'mechanical');
+#4 = PRODUCT('cube', 'cube', '', (#3));
+#5 = PRODUCT_DEFINITION_FORMATION('', '', #4);
+#6 = PRODUCT_DEFINITION_CONTEXT('part definition', #1, 'design');
+#7 = PRODUCT_DEFINITION('design', '', #5, #6);
+#8 = PRODUCT_DEFINITION_SHAPE('', '', #7);
+#9 = SHAPE_DEFINITION_REPRESENTATION(#8, #10);
+#11 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI., .METRE.) );
+#12 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($, .RADIAN.) );
+#13 = ( NAMED_UNIT(*) SI_UNIT($, .STERADIAN.) SOLID_ANGLE_UNIT() );
+#14 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07), #11, 'distance_accuracy_value', 'confusion accuracy');
+#15 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#14)) GLOBAL_UNIT_ASSIGNED_CONTEXT((#11, #12, #13)) REPRESENTATION_CONTEXT('Context #1', '3D Context with UNIT and UNCERTAINTY') );
+#16 = CARTESIAN_POINT('ORIGIN', (0.0, 0.0, 0.0));
+#17 = DIRECTION('DIR_Z', (0.0, 0.0, 1.0));
+#18 = DIRECTION('DIR_X', (1.0, 0.0, 0.0));
+#19 = AXIS2_PLACEMENT_3D('AXIS', #16, #17, #18);
+#20 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#21 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#22 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#28 = POLY_LOOP('', (#20, #22, #21));
+#29 = FACE_OUTER_BOUND('', #28, .T.);
+#30 = DIRECTION('', (0.0, 0.0, -1.0));
+#31 = DIRECTION('', (1.0, 0.0, 0.0));
+#32 = AXIS2_PLACEMENT_3D('', #20, #30, #31);
+#33 = PLANE('', #32);
+#34 = FACE_SURFACE('', (#29), #33, .T.);
+#112 = CLOSED_SHELL('', (#34));
+#113 = FACETED_BREP('tri', #112);
+#10 = FACETED_BREP_SHAPE_REPRESENTATION('tri', (#113, #19), #15);
+ENDSEC;
+END-ISO-10303-21;
+STEP
+if sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" cad-convert --from step --to stl "$work_dir/input.step" "$work_dir/output.stl" 2>"$work_dir/cad-convert.err" \
+  && [ "$(wc -c < "$work_dir/output.stl")" -eq "$STL_ONE_TRIANGLE_BYTES" ]; then
+  pass "cad-convert meshed a STEP face to a one-triangle STL inside the sandbox"
+else
+  fail "cad-convert did not convert the STEP file inside the sandbox: $(head -c 300 "$work_dir/cad-convert.err" 2>/dev/null)"
 fi
 
 if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then

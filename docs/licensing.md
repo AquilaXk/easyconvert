@@ -56,6 +56,11 @@ Certain format conversions require specialized external command-line utilities. 
 - **Process Isolation**: The Debian packages are unmodified and run as separate processes in the process sandbox, with no network and with limits on time, memory and output size. Nothing links them into the application. The ImageMagick License is a permissive, Apache-style licence; OpenJPEG is BSD-2-Clause; libheif and libde265 are LGPL 3.0 libraries loaded by the ImageMagick process, which the container's package notices cover (section 3).
 - **Patents**: HEVC (the codec of HEIC) is patent-encumbered; the worker already decodes it for video (`ffmpeg`). The decoder is the distribution package, not a build of ours.
 
+### 2.8 Open CASCADE and `cad-convert` (LGPL 2.1 with the Open CASCADE exception)
+- **Role**: Reads STEP and IGES files and writes STEP, IGES, STL and OBJ from the boundary representation (STEP and IGES input and output).
+- **Process Isolation**: `cad-convert` (`native/cad-convert`, about 400 lines of our own C++) is built in the worker image and in CI against the unmodified Debian and Ubuntu Open CASCADE libraries, linked to them dynamically, and executed as a separate process in the process sandbox with no network access and limits on time, memory and output size. Nothing of Open CASCADE is bundled into the application, and none of its source is modified.
+- **Compliance**: The libraries are replaceable shared objects of the distribution, so the LGPL relinking requirement is met by the package manager (section 3); the image carries the package notices in `/licenses/libocct-*.copyright`. The test oracle `occt-import-js` (a WebAssembly build of the same kernel, LGPL 2.1) is a development dependency of the test suite only and is not part of any image or build output.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images
@@ -74,7 +79,7 @@ Under the terms of the GNU Lesser General Public License (LGPLv3, Section 4), wh
 
 ### Copyright Notices Inside the Worker Container
 - The worker Docker image (`Dockerfile.worker`) preserves all Debian package copyright and license texts at `/licenses/`:
-  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, `libavif` (the `avifenc` AVIF encoder), `imagemagick`, `libheif`, `libde265`, `openjpeg` (picture decoders), `p7zip`, `libdeflate-tools` (the `libdeflate-gzip` deflate encoder for ZIP and gzip payloads past 4 MiB, MIT, run as a separate sandboxed process), and `libredwg` (the DWG reader, with `/licenses/libredwg.SOURCE` naming the release archive it was built from).
+  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, `libavif` (the `avifenc` AVIF encoder), `imagemagick`, `libheif`, `libde265`, `openjpeg` (picture decoders), `p7zip`, `libocct-*` (the Open CASCADE libraries behind STEP and IGES), `libdeflate-tools` (the `libdeflate-gzip` deflate encoder for ZIP and gzip payloads past 4 MiB, MIT, run as a separate sandboxed process), and `libredwg` (the DWG reader, with `/licenses/libredwg.SOURCE` naming the release archive it was built from).
   - `/licenses/THIRD_PARTY_NOTICES.md` contains the complete production npm package notices.
   - `/licenses/tool-versions.txt` lists the version of every Debian package in the image and of the Node.js runtime. The image is built on Debian 13 (trixie) with Node.js 24 LTS (see the policy decision "Base image and Node.js LTS").
 

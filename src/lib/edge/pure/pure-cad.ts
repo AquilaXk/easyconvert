@@ -1,39 +1,21 @@
 /**
- * Pure Isomorphic CAD Converter (Level 0 Fast-Path)
- *
- * Standalone mathematical STEP/IGES to STL/OBJ tessellation using TextDecoder
- * and pure typed arrays (strictly zero sharp, pdfkit, or vector-cad.ts imports).
+ * Pure mesh encoders: a triangle mesh as ASCII STL or Wavefront OBJ, in plain strings and arrays (no raster, PDF or
+ * archive module). STEP and IGES are not read here, because they need a B-rep kernel: the worker runs the Open CASCADE
+ * program for them (src/lib/conversions/cad-occt.ts), and the browser sends those files to the server.
  */
 
-import { tessellateCadText, TessellatedMesh } from '../../conversions/cad-nurbs';
 import { EdgeUnsupportedError } from '../workers/worker-errors';
+
+/** A mesh of vertices (x, y, z), faces of vertex indices, and optional per-vertex normals. */
+export interface TessellatedMesh {
+  name: string;
+  vertices: [number, number, number][];
+  normals: [number, number, number][];
+  faces: [number, number, number][];
+}
 
 const VERTEX_COMPONENTS = 3;
 const MIN_FACE_CORNERS = 3;
-
-export interface PureCadResult {
-  data: Uint8Array;
-  text: string;
-  mimeType: string;
-  extension: string;
-}
-
-const SUPPORTED_CAD_SOURCES = new Set(['step', 'stp', 'iges', 'igs']);
-const SUPPORTED_CAD_TARGETS = new Set(['stl', 'obj']);
-
-const CAD_MIME_MAP: Record<string, string> = {
-  stl: 'model/stl',
-  obj: 'model/obj',
-};
-
-/**
- * Checks whether the source and target formats are supported by the pure CAD engine.
- */
-export function isPureCadConvertible(sourceFormat: string, targetFormat: string): boolean {
-  const src = sourceFormat.toLowerCase();
-  const tgt = targetFormat.toLowerCase();
-  return SUPPORTED_CAD_SOURCES.has(src) && SUPPORTED_CAD_TARGETS.has(tgt);
-}
 
 /**
  * Checks that every vertex is three finite numbers and every corner of every face names a vertex that exists.
@@ -132,46 +114,4 @@ export function encodeObj(mesh: TessellatedMesh): string {
   });
 
   return obj;
-}
-
-/**
- * Converts STEP/IGES CAD model into 3D mesh (STL or OBJ) purely in-memory.
- */
-export function convertPureCad(
-  input: string | Uint8Array,
-  sourceFormat: string,
-  targetFormat: string,
-  modelName = 'cad_model'
-): PureCadResult {
-  const src = sourceFormat.toLowerCase();
-  const tgt = targetFormat.toLowerCase();
-
-  if (!isPureCadConvertible(src, tgt)) {
-    throw new Error(`Pure CAD engine does not support conversion from '${src}' to '${tgt}'.`);
-  }
-
-  const textContent =
-    typeof input === 'string' ? input : new TextDecoder('utf-8').decode(input);
-
-  const mesh = tessellateCadText(textContent, src, modelName);
-
-  let outputText = '';
-  if (tgt === 'stl') {
-    outputText = encodeStl(mesh);
-  } else if (tgt === 'obj') {
-    outputText = encodeObj(mesh);
-  } else {
-    throw new Error(`Unsupported target CAD format: ${tgt}`);
-  }
-
-  const encoder = new TextEncoder();
-  const data = encoder.encode(outputText);
-  const mimeType = CAD_MIME_MAP[tgt] || 'application/octet-stream';
-
-  return {
-    data,
-    text: outputText,
-    mimeType,
-    extension: tgt,
-  };
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
 import { convertOffice } from '../src/lib/conversions/office';
 import { extractZipArchive } from '../src/lib/conversions/archive';
-import { triangulatePolygonEarcut, Point3D } from '../src/lib/conversions/cad-nurbs';
+
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { EdgeUnsupportedError } from '../src/lib/edge/workers/worker-errors';
 import { CorruptStreamError } from '../src/lib/types';
@@ -49,32 +49,6 @@ describe('Skeptical Audit & Robustness Verification', () => {
     expect(csvLines).toHaveLength(4);
     expect(csvLines[0]).toBe('Header');
     expect(csvLines[3]).toBe('Row 4 Data');
-  });
-
-  it('preserves 3D face normal in triangulatePolygonEarcut when normal points along -Z', () => {
-    const normal: [number, number, number] = [0, 0, -1];
-    const polygon: Point3D[] = [
-      { x: 0, y: 0, z: 0 },
-      { x: 0, y: 1, z: 0 },
-      { x: 1, y: 1, z: 0 },
-      { x: 1, y: 0, z: 0 },
-    ];
-
-    const triangles = triangulatePolygonEarcut(polygon, normal);
-    expect(triangles).toHaveLength(2);
-
-    for (const [i0, i1, i2] of triangles) {
-      const p0 = polygon[i0];
-      const p1 = polygon[i1];
-      const p2 = polygon[i2];
-      const v0x = p1.x - p0.x;
-      const v0y = p1.y - p0.y;
-      const v1x = p2.x - p0.x;
-      const v1y = p2.y - p0.y;
-
-      const crossZ = v0x * v1y - v0y * v1x;
-      expect(crossZ).toBeLessThan(0);
-    }
   });
 
   it('fails closed when extractZipArchive is given a corrupted archive', async () => {

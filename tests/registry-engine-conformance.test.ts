@@ -175,7 +175,8 @@ const TAR_SEED = FIXTURES.get('tar')![0];
 /** A three-block tar small enough for the compress writer's 9-bit codes (tests/helpers/unix-compress.ts). */
 const SMALL_TAR_SEED = readFileSync(path.join(FIXTURE_ROOT, 'sample.tar'));
 const ZIP_SEED = FIXTURES.get('zip')![0];
-const STEP_SEED = FIXTURES.get('step')![0];
+// The STEP seed is a real solid (a 20 mm cube written by Open CASCADE): the STEP, STP, IGES and IGS probes are converted by the kernel.
+const STEP_SEED = readFileSync(path.join(FIXTURE_ROOT, 'sample.step'));
 const DXF_SEED = FIXTURES.get('dxf')![0];
 const VECTOR_PROBE_CATEGORIES = new Set(['image', 'vector', 'cad']);
 

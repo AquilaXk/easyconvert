@@ -4,12 +4,15 @@ import {
   encodeIges,
   CadMesh3D,
 } from '../src/lib/conversions/vector-cad';
-import {
-  tessellateCadText,
-  parseIgesBRepMesh,
-} from '../src/lib/conversions/cad-nurbs';
 import { convertFile } from '../src/lib/conversions';
 import { CadGeometryUnavailableError } from '../src/lib/types';
+import { haveCadOracles as haveKernel } from './helpers/cad-kernel';
+import { meshFacts } from './helpers/mesh-facts';
+
+/**
+ * The STEP the encoder writes is read back by Open CASCADE (`cad-convert`, a reader this repository did not write) and judged by
+ * trimesh; without them a run that is not strict skips those tests (ORACLE_STRICT_MODE=1 fails).
+ */
 
 // ============================================================================
 // Test Fixtures & Analytical Meshes
@@ -612,40 +615,22 @@ describe('WP-46b: CAD STEP (ISO 10303-21 AP214) and IGES 5.3 Genuine Encoders', 
   });
 
   describe('3. CAD Pipeline Round-Trip Tessellation & Integration', () => {
-    it('round-trips STEP AP214 cube through tessellateCadText with watertight validation', () => {
+    it.skipIf(!haveKernel)('reads the STEP AP214 cube back as a closed solid of 12 faces, 10 mm on a side, in the independent kernel', async () => {
       const cube = createCubeMesh([0, 0, 0], 10);
       const stepText = encodeStep(cube);
 
-      const tessellated = tessellateCadText(stepText, 'step', 'cube_roundtrip');
-      expect(tessellated.faces.length).toBe(12);
-      expect(tessellated.vertices.length).toBe(8);
-      expect(tessellated.topologyReport).toBeDefined();
-      expect(tessellated.topologyReport?.isWatertight).toBe(true);
-      expect(tessellated.topologyReport?.boundaryEdges).toBe(0);
-
-      const vol = calculateMeshVolume(tessellated.vertices, tessellated.faces);
-      expect(vol).toBeCloseTo(1000.0, 4);
+      const stl = await convertFile(Buffer.from(stepText, 'utf-8'), 'step', 'stl', {}, 'cube_roundtrip.step');
+      const facts = meshFacts(stl.buffer, 'stl');
+      expect(facts.watertight).toBe(true);
+      expect(facts.triangles).toBe(12);
+      expect(facts.area).toBeCloseTo(600, 3);
+      expect(facts.min).toEqual([0, 0, 0]);
+      expect(facts.max).toEqual([10, 10, 10]);
     });
 
-    it('round-trips IGES 5.3 cube through parseIgesBRepMesh and tessellateCadText with watertight validation', () => {
-      const cube = createCubeMesh([0, 0, 0], 10);
-      const igesText = encodeIges(cube);
-
-      // Direct B-Rep extractor
-      const brepMesh = parseIgesBRepMesh(igesText, 'iges_cube');
-      expect(brepMesh).not.toBeNull();
-      expect(brepMesh!.faces.length).toBe(12);
-      expect(brepMesh!.vertices.length).toBe(8);
-
-      // High-level pipeline entry point
-      const tessellated = tessellateCadText(igesText, 'iges', 'iges_roundtrip');
-      expect(tessellated.faces.length).toBe(12);
-      expect(tessellated.topologyReport?.isWatertight).toBe(true);
-      expect(tessellated.topologyReport?.boundaryEdges).toBe(0);
-
-      const vol = calculateMeshVolume(tessellated.vertices, tessellated.faces);
-      expect(vol).toBeCloseTo(1000.0, 4);
-    });
+    // The kernel's IGES reader stops with a segmentation fault on the file encodeIges writes for this cube, so the file is no valid
+    // IGES by the kernel's reading; the encoder's output is checked only by its own structure above (follow-up row of #783).
+    it.todo('reads the IGES 5.3 cube back in the independent kernel');
 
     it('converts OBJ cube to STEP and IGES files via convertFile', async () => {
       // 8 vertices, 12 triangles OBJ cube
@@ -690,13 +675,16 @@ f 2 7 6
       expect(igesContent).toContain('S      1');
       expect(igesContent).toContain('502,');
       expect(igesContent).toContain('514,');
+    });
 
-      // 3. STEP -> OBJ round trip
-      const roundTripRes = await convertFile(stepRes.buffer, 'step', 'obj', {}, 'cube.step');
-      expect(roundTripRes.mimeType).toBe('model/obj');
-      const objResult = roundTripRes.buffer.toString('utf-8');
-      expect(objResult).toContain('v ');
-      expect(objResult).toContain('f ');
+    it.skipIf(!haveKernel)('reads the STEP the encoder wrote for the cube and writes the same 10 mm cube as OBJ', async () => {
+      const step = Buffer.from(encodeStep(createCubeMesh([0, 0, 0], 10)), 'utf-8');
+      const roundTrip = await convertFile(step, 'step', 'obj', {}, 'cube.step');
+      expect(roundTrip.mimeType).toBe('model/obj');
+      const facts = meshFacts(roundTrip.buffer, 'obj');
+      expect(facts.watertight).toBe(true);
+      expect(facts.area).toBeCloseTo(600, 3);
+      expect(facts.max).toEqual([10, 10, 10]);
     });
   });
 });

@@ -7,10 +7,7 @@ import {
   parseDocxXml,
   parseWordStyles,
 } from '../src/lib/conversions/office';
-import {
-  adaptiveIncrementalBRepMesh,
-  parseStepEntities,
-} from '../src/lib/conversions/cad-nurbs';
+
 import {
   isZipBufferEncrypted,
   extractZipArchive,
@@ -223,66 +220,6 @@ describe('Phase 2 Domain Engine Remediation Test Suite', () => {
       expect(tbl.structuredRows![0][1].text).toBe('Item A');
       expect(tbl.structuredRows![1][1].text).toBe('Item B');
       expect(tbl.structuredRows![2][1].text).toBe('Item C');
-    });
-  });
-
-  describe('3. 3D CAD Conforming Red-Green B-Rep Tessellation', () => {
-    function generateSyntheticStepSolidBox(): string {
-      const coords = [
-        [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
-        [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
-      ];
-      const ptEntities = coords.map((c, i) => `#${i + 1} = CARTESIAN_POINT('', (${c.map((v) => v.toFixed(1)).join(', ')}));`).join('\n');
-      const vtEntities = coords.map((_, i) => `#${i + 11} = VERTEX_POINT('', #${i + 1});`).join('\n');
-
-      const edges = [
-        [11, 12], [12, 13], [13, 14], [14, 11],
-        [15, 16], [16, 17], [17, 18], [18, 15],
-        [11, 15], [12, 16], [13, 17], [14, 18],
-      ];
-      const edEntities = edges.map((e, i) => `#${i + 21} = EDGE_CURVE('', #${e[0]}, #${e[1]}, .T.);`).join('\n');
-
-      const loops = [
-        [21, 22, 23, 24], [25, 26, 27, 28], [21, 30, 25, 29],
-        [22, 31, 26, 30], [23, 32, 27, 31], [24, 29, 28, 32],
-      ];
-      const loopEntities = loops.map((l, i) => `#${i + 41} = EDGE_LOOP('', (${l.map((id) => `#${id}`).join(', ')}));`).join('\n');
-      const boundEntities = loops.map((_, i) => `#${i + 51} = FACE_OUTER_BOUND('', #${i + 41}, .T.);`).join('\n');
-      const faceEntities = loops.map((_, i) => `#${i + 61} = ADVANCED_FACE('', (#${i + 51}));`).join('\n');
-      const shellFaces = loops.map((_, i) => `#${i + 61}`).join(', ');
-
-      return `ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('Watertight Box Test'),'2;1');\nFILE_NAME('box.step','2026-09-28T00:00:00','','','EasyConvert','','');\nFILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));\nENDSEC;\nDATA;\n${ptEntities}\n${vtEntities}\n${edEntities}\n${loopEntities}\n${boundEntities}\n${faceEntities}\n#70 = CLOSED_SHELL('', (${shellFaces}));\n#80 = MANIFOLD_SOLID_BREP('', #70);\nENDSEC;\nEND-ISO-10303-21;\n`;
-    }
-
-    it('eliminates hanging nodes (T-junctions) via Red-Green closure', () => {
-      const stepBoxText = generateSyntheticStepSolidBox();
-      const entityMap = parseStepEntities(stepBoxText);
-      expect(entityMap.size).toBeGreaterThan(0);
-
-      // Run adaptiveIncrementalBRepMesh with fine linearDeflection
-      const refined = adaptiveIncrementalBRepMesh(entityMap, {
-        linearDeflection: 0.01,
-        angularDeflection: 0.1,
-      });
-
-      expect(refined).not.toBeNull();
-      expect(refined!.faces.length).toBeGreaterThanOrEqual(1);
-
-      // Verify manifold property: every undirected interior edge is shared by conforming triangles
-      const edgeUsage = new Map<string, number>();
-      for (const [a, b, c] of refined!.faces) {
-        const e1 = a < b ? `${a}-${b}` : `${b}-${a}`;
-        const e2 = b < c ? `${b}-${c}` : `${c}-${b}`;
-        const e3 = c < a ? `${c}-${a}` : `${a}-${c}`;
-        edgeUsage.set(e1, (edgeUsage.get(e1) || 0) + 1);
-        edgeUsage.set(e2, (edgeUsage.get(e2) || 0) + 1);
-        edgeUsage.set(e3, (edgeUsage.get(e3) || 0) + 1);
-      }
-
-      // In a conforming triangulation, no edge should be over-shared (> 2 for 2-manifold)
-      for (const [edge, count] of edgeUsage.entries()) {
-        expect(count).toBeLessThanOrEqual(2);
-      }
     });
   });
 
