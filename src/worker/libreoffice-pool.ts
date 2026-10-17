@@ -186,7 +186,7 @@ export function resolveLibreOfficeFilter(
   }
 
   if (tgt === 'pdf') {
-    return `${tgt}:${pdfExportFilterName(src)}:${JSON.stringify(buildPdfExportFilterData(options))}`;
+    return `${tgt}:${pdfExportFilterName(src)}:${JSON.stringify(buildPdfExportFilterData(options, options.pdfExportPageRange))}`;
   }
 
   return LIBREOFFICE_TARGET_NAMES[tgt] ?? tgt;
