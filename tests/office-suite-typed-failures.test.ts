@@ -51,7 +51,7 @@ describe('formats only the office suite reads, without the office suite', () => 
   });
 
   it('lists the formats the registry advertises with a source the in-process engine cannot read', () => {
-    expect(sources.sort()).toEqual(['lrf', 'numbers', 'pdb', 'pub', 'rb', 'sxd', 'sxi', 'sxw', 'wpd', 'wps']);
+    expect(sources.sort()).toEqual(['lrf', 'numbers', 'pdb', 'pub', 'qpw', 'rb', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'wpd', 'wps', 'zabw']);
   });
 });
 
@@ -131,11 +131,15 @@ describe('how the office suite reaches the targets it does not write', () => {
     ['pdb', 'epub', 'docx'],
     ['numbers', 'csv', 'xlsx'],
     ['sxw', 'html', 'docx'],
+    ['sdw', 'html', 'docx'],
+    ['zabw', 'md', 'docx'],
+    ['sdc', 'csv', 'xlsx'],
+    ['qpw', 'csv', 'xlsx'],
   ])('.%s to .%s is written from the %s the suite exports', (source, target, interchange) => {
     expect(officeSuiteInterchange(source, target)).toBe(interchange);
   });
 
-  it.each(['sxd', 'pub', 'doc', 'dot', 'pdf'])('.%s has no interchange file: the suite writes its targets or the reader does', (source) => {
+  it.each(['sxd', 'pub', 'sda', 'doc', 'dot', 'pdf'])('.%s has no interchange file: the suite writes its targets or the reader does', (source) => {
     expect(officeSuiteInterchange(source, 'html')).toBeUndefined();
   });
 

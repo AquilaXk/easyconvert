@@ -1,5 +1,5 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
-import { isGzipFamilyCompatible, isPostScriptCompatible } from './format-signatures';
+import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, sniffAacContainer, sniffFixedSignature, startsWithBytes } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
   // ==========================================
@@ -1395,8 +1395,8 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     extension: 'sda',
     mimeType: 'application/vnd.stardivision.draw',
     category: 'presentation',
-    description: 'StarOffice StarDraw vector presentation graphic.',
-    targetFormats: ['odp', 'pptx', 'pdf', 'zip'],
+    description: 'StarOffice StarDraw drawing, rendered as PDF or page images.',
+    targetFormats: ['pdf', 'jpg', 'png', 'bmp', 'zip'],
   },
   sxd: {
     id: 'sxd',
@@ -2937,6 +2937,12 @@ const FTYP_COMPATIBLE_BRANDS_OFFSET = 16;
 const FTYP_LARGESIZE_FIELD_VALUE = 1;
 const FTYP_LARGESIZE_OFFSET = 8;
 const FTYP_LARGESIZE_HEADER_BYTES = 16;
+/** The box type `ftyp` follows the 32-bit size field of the first box. */
+const FTYP_BOX_TYPE = [0x66, 0x74, 0x79, 0x70];
+const FTYP_TYPE_OFFSET = 4;
+const RIFF_MAGIC = [0x52, 0x49, 0x46, 0x46];
+/** EBML header (Matroska, WebM). */
+const EBML_MAGIC = [0x1a, 0x45, 0xdf, 0xa3];
 const FTYP_LARGESIZE_MAJOR_BRAND_OFFSET = 16;
 const FTYP_LARGESIZE_COMPATIBLE_BRANDS_OFFSET = 24;
 const FTYP_BRAND_BYTES = 4;
@@ -2950,6 +2956,8 @@ const AVIF_BRANDS = new Set(['avif', 'avis']);
 const HEVC_IMAGE_BRANDS = new Set(['heic', 'heix', 'heim', 'heis', 'hevc', 'hevx', 'hevm', 'hevs']);
 /** Codec-neutral HEIF structural brands (ISO/IEC 23008-12 section 10): image item (mif1, mif2), minimized image item (mif3), image sequence (msf1). */
 const HEIF_STRUCTURAL_BRANDS = new Set(['mif1', 'mif2', 'mif3', 'msf1']);
+/** AVC-coded HEIF brands (ISO/IEC 23008-12 Annex): image and image sequence. */
+const AVC_IMAGE_BRANDS = new Set(['avci', 'avcs']);
 /** File extensions that an AV1 image or a HEIF image may carry. */
 const AVIF_EXTENSIONS = new Set(['avif']);
 const HEIF_EXTENSIONS = new Set(['heic', 'heif']);
@@ -2990,6 +2998,7 @@ function sniffIsoBaseMediaBrands(buf: Buffer): string {
   if (major.startsWith('M4A') || major.startsWith('M4B')) return 'audio/mp4';
   if (AVIF_BRANDS.has(major)) return 'image/avif';
   if (HEVC_IMAGE_BRANDS.has(major)) return 'image/heic';
+  if (AVC_IMAGE_BRANDS.has(major)) return 'image/heif';
   if (HEIF_STRUCTURAL_BRANDS.has(major)) {
     if (compatible.some((brand) => AVIF_BRANDS.has(brand))) return 'image/avif';
     if (compatible.some((brand) => HEVC_IMAGE_BRANDS.has(brand))) return 'image/heic';
@@ -3007,67 +3016,8 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
   if (!buffer || buffer.length < 2) return undefined;
   const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
 
-  // 1. PNG (8 bytes: \x89PNG\r\n\x1a\n)
-  if (
-    buf.length >= 8 &&
-    buf[0] === 0x89 &&
-    buf[1] === 0x50 &&
-    buf[2] === 0x4e &&
-    buf[3] === 0x47 &&
-    buf[4] === 0x0d &&
-    buf[5] === 0x0a &&
-    buf[6] === 0x1a &&
-    buf[7] === 0x0a
-  ) {
-    return 'image/png';
-  }
-
-  // 2. PDF (%PDF-)
-  if (
-    buf.length >= 4 &&
-    buf[0] === 0x25 &&
-    buf[1] === 0x50 &&
-    buf[2] === 0x44 &&
-    buf[3] === 0x46
-  ) {
-    return 'application/pdf';
-  }
-
-  // 3. JPEG (FF D8 FF)
-  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
-    return 'image/jpeg';
-  }
-
-  // 4. GIF (GIF87a or GIF89a)
-  if (
-    buf.length >= 6 &&
-    buf[0] === 0x47 &&
-    buf[1] === 0x49 &&
-    buf[2] === 0x46 &&
-    buf[3] === 0x38 &&
-    (buf[4] === 0x37 || buf[4] === 0x39) &&
-    buf[5] === 0x61
-  ) {
-    return 'image/gif';
-  }
-
-  // 5. TIFF (II*\0 or MM\0* or BigTIFF)
-  if (buf.length >= 4) {
-    if (
-      buf[0] === 0x49 &&
-      buf[1] === 0x49 &&
-      ((buf[2] === 0x2a && buf[3] === 0x00) || (buf[2] === 0x2b && buf[3] === 0x00))
-    ) {
-      return 'image/tiff';
-    }
-    if (
-      buf[0] === 0x4d &&
-      buf[1] === 0x4d &&
-      ((buf[2] === 0x00 && buf[3] === 0x2a) || (buf[2] === 0x00 && buf[3] === 0x2b))
-    ) {
-      return 'image/tiff';
-    }
-  }
+  const fixed = sniffFixedSignature(buf);
+  if (fixed) return fixed;
 
   // 6. BMP (BM)
   if (buf.length >= 14 && buf[0] === 0x42 && buf[1] === 0x4d) {
@@ -3076,13 +3026,7 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
   }
 
   // 7. RIFF containers (WEBP, WAVE, AVI)
-  if (
-    buf.length >= 12 &&
-    buf[0] === 0x52 &&
-    buf[1] === 0x49 &&
-    buf[2] === 0x46 &&
-    buf[3] === 0x46
-  ) {
+  if (buf.length >= 12 && startsWithBytes(buf, RIFF_MAGIC)) {
     const riffType = buf.toString('ascii', 8, 12);
     if (riffType === 'WEBP') return 'image/webp';
     if (riffType === 'WAVE') return 'audio/wav';
@@ -3127,17 +3071,7 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
   }
 
   // 9. Compound File Binary Format (CFBF / OLE2)
-  if (
-    buf.length >= 8 &&
-    buf[0] === 0xd0 &&
-    buf[1] === 0xcf &&
-    buf[2] === 0x11 &&
-    buf[3] === 0xe0 &&
-    buf[4] === 0xa1 &&
-    buf[5] === 0xb1 &&
-    buf[6] === 0x1a &&
-    buf[7] === 0xe1
-  ) {
+  if (startsWithBytes(buf, CFBF_MAGIC)) {
     const scanLimit = Math.min(buf.length, 4096);
     const headerSnippet = buf.toString('latin1', 0, scanLimit);
     if (headerSnippet.includes('HWP Document File')) return 'application/x-hwp';
@@ -3147,82 +3081,15 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
     return 'application/x-cfbf';
   }
 
-  // 10. 7z archive (7z\xBC\xAF\x27\x1C)
-  if (
-    buf.length >= 6 &&
-    buf[0] === 0x37 &&
-    buf[1] === 0x7a &&
-    buf[2] === 0xbc &&
-    buf[3] === 0xaf &&
-    buf[4] === 0x27 &&
-    buf[5] === 0x1c
-  ) {
-    return 'application/x-7z-compressed';
-  }
-
-  // 11. GZIP (\x1F\x8B)
-  if (buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
-    return 'application/gzip';
-  }
-
-  // 12. BZIP2 (BZh)
-  if (buf.length >= 3 && buf[0] === 0x42 && buf[1] === 0x5a && buf[2] === 0x68) {
-    return 'application/x-bzip2';
-  }
-
-  // 13. Zstandard (28 B5 2F FD)
-  if (
-    buf.length >= 4 &&
-    buf[0] === 0x28 &&
-    buf[1] === 0xb5 &&
-    buf[2] === 0x2f &&
-    buf[3] === 0xfd
-  ) {
-    return 'application/zstd';
-  }
-
-  // 14. RAR (Rar!\x1A\x07)
-  if (
-    buf.length >= 6 &&
-    buf[0] === 0x52 &&
-    buf[1] === 0x61 &&
-    buf[2] === 0x72 &&
-    buf[3] === 0x21 &&
-    buf[4] === 0x1a &&
-    buf[5] === 0x07
-  ) {
-    return 'application/vnd.rar';
-  }
-
-  // 15. Audio: FLAC (fLaC)
-  if (
-    buf.length >= 4 &&
-    buf[0] === 0x66 &&
-    buf[1] === 0x4c &&
-    buf[2] === 0x61 &&
-    buf[3] === 0x43
-  ) {
-    return 'audio/flac';
-  }
-
-  // 16. Audio: Ogg (OggS)
-  if (
-    buf.length >= 4 &&
-    buf[0] === 0x4f &&
-    buf[1] === 0x67 &&
-    buf[2] === 0x67 &&
-    buf[3] === 0x53
-  ) {
-    return 'audio/ogg';
-  }
-
   // 17. Audio: AAC & MP3
   // AAC ADTS: sync word 0xFFF (12 bits) or 0xFF followed by (buf[1] & 0xF6 === 0xF0)
   if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xf6) === 0xf0) {
     return 'audio/aac';
   }
+  // AAC with an ADIF header, or in ADTS frames behind an ID3v2 tag (the tag is the same in MP3 and AAC files).
+  if (sniffAacContainer(buf)) return 'audio/aac';
   // MP3: ID3 header or sync word FF FB/F3/F2 (with valid layer != 00)
-  if (buf.length >= 3 && buf[0] === 0x49 && buf[1] === 0x44 && buf[2] === 0x33) {
+  if (startsWithBytes(buf, ID3_MAGIC)) {
     return 'audio/mpeg';
   }
   if (buf.length >= 2 && buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0 && (buf[1] & 0x06) !== 0x00) {
@@ -3230,13 +3097,7 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
   }
 
   // 18. ISO base media (ftyp): AVIF / HEIF images, MP4 / MOV / M4A
-  if (
-    buf.length >= 12 &&
-    buf[4] === 0x66 &&
-    buf[5] === 0x74 &&
-    buf[6] === 0x79 &&
-    buf[7] === 0x70
-  ) {
+  if (buf.length >= 12 && startsWithBytes(buf, FTYP_BOX_TYPE, FTYP_TYPE_OFFSET)) {
     return sniffIsoBaseMediaBrands(buf);
   }
 
@@ -3250,41 +3111,13 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
     if (tag === 'true') return 'font/ttf';
   }
 
-  // 20. Parquet (PAR1)
-  if (
-    buf.length >= 4 &&
-    buf[0] === 0x50 &&
-    buf[1] === 0x41 &&
-    buf[2] === 0x52 &&
-    buf[3] === 0x31
-  ) {
-    return 'application/vnd.apache.parquet';
-  }
-
-  // 21. PostScript (%!PS)
-  if (
-    buf.length >= 4 &&
-    buf[0] === 0x25 &&
-    buf[1] === 0x21 &&
-    buf[2] === 0x50 &&
-    buf[3] === 0x53
-  ) {
-    return 'application/postscript';
-  }
-
   // 22. STEP (ISO-10303-21;)
   if (buf.length >= 12 && buf.toString('ascii', 0, 12) === 'ISO-10303-21') {
     return 'model/step';
   }
 
   // 23. Matroska / WebM (EBML: 1A 45 DF A3)
-  if (
-    buf.length >= 4 &&
-    buf[0] === 0x1a &&
-    buf[1] === 0x45 &&
-    buf[2] === 0xdf &&
-    buf[3] === 0xa3
-  ) {
+  if (startsWithBytes(buf, EBML_MAGIC)) {
     const scanLimit = Math.min(buf.length, 4096);
     const headerSnippet = buf.toString('latin1', 0, scanLimit);
     if (headerSnippet.includes('webm')) return 'video/webm';
@@ -3292,24 +3125,23 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
     return 'video/x-matroska';
   }
 
-  // 24. Executable Binaries (Security Gate)
-  // ELF (\x7FELF)
-  if (
-    buf.length >= 4 &&
-    buf[0] === 0x7f &&
-    buf[1] === 0x45 &&
-    buf[2] === 0x4c &&
-    buf[3] === 0x46
-  ) {
-    return 'application/x-elf';
-  }
-  // DOS / Windows PE (MZ)
-  if (buf.length >= 2 && buf[0] === 0x4d && buf[1] === 0x5a) {
-    return 'application/x-dosexec';
-  }
-
   return undefined;
 }
+
+/** The MIME type a ZIP package sniffs as for the extensions of its own kind (a package that sniffs as plain ZIP is accepted under each of them). */
+const ZIP_PACKAGE_MIME_OF_EXTENSION: Readonly<Record<string, string>> = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  dotx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  xltx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  potx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  epub: 'application/epub+zip',
+  odt: 'application/vnd.oasis.opendocument.text',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  odp: 'application/vnd.oasis.opendocument.presentation',
+  hwpx: 'application/hwp+zip',
+};
 
 /**
  * Verifies whether the buffer's initial magic bytes are compatible with the declared format.
@@ -3336,6 +3168,7 @@ export function isFormatCompatibleWithMagicBytes(
   // Publisher, and the Kingsoft binary formats.
   const cfbfFormats = new Set([
     'doc', 'dot', 'xls', 'xlt', 'ppt', 'pot', 'pps', 'hwp', 'cfbf', 'msg', 'vsd', 'pub', 'et', 'wps', 'dps',
+    ...COMPOUND_FILE_ONLY_EXTENSIONS,
   ]);
   const pdfFormats = new Set(['pdf', 'ai']);
   const pngFormats = new Set(['png', 'apng']);
@@ -3346,13 +3179,16 @@ export function isFormatCompatibleWithMagicBytes(
   const bmpFormats = new Set(['bmp', 'dib']);
   const mp3Formats = new Set(['mp3']);
   const aacFormats = new Set(['aac', 'adts', 'm4a']);
+  // Names of a raw AAC file: it may also be an M4A file, or open with an ID3v2 tag so large (cover art) that its frames lie past the header window.
+  const adtsFileExtensions = new Set(['aac', 'adts']);
   const wavFormats = new Set(['wav']);
   const flacFormats = new Set(['flac']);
   const oggFormats = new Set(['ogg', 'oga', 'ogv', 'opus']);
   const mp4Formats = new Set(['mp4', 'm4a', 'm4b', 'm4v', 'mov', '3gp', '3gpp', '3g2', 'f4v', 'cr3']);
   const mkvFormats = new Set(['mkv', 'mk3d', 'mka', 'mks']);
   const webmFormats = new Set(['webm', 'weba']);
-  const aviFormats = new Set(['avi']);
+  // DivX and Xvid files are AVI (RIFF "AVI ") files whose video stream uses that MPEG-4 codec.
+  const aviFormats = new Set(['avi', 'divx', 'xvid']);
   const sevenZipFormats = new Set(['7z', 'cb7']);
   const bzipFormats = new Set(['bz2', 'bz', 'tbz', 'tbz2', 'tar.bz2', 'tar.bz']);
   const zstdFormats = new Set(['zst', 'zstd', 'tar.zst']);
@@ -3368,6 +3204,11 @@ export function isFormatCompatibleWithMagicBytes(
     const isRiffCdr = buffer.length >= 12 && Buffer.from(buffer.subarray(0, 4)).toString('latin1') === 'RIFF' && Buffer.from(buffer.subarray(8, 11)).toString('latin1') === 'CDR';
     const isZipPackage = buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b;
     return isRiffCdr || isZipPackage;
+  }
+
+  // A format that exists only as a compound file has no other signature to fall back on.
+  if (!sniffed && COMPOUND_FILE_ONLY_EXTENSIONS.has(cleanExt)) {
+    return false;
   }
 
   // If no definitive magic bytes were identified, allow unless declared format has strict signature
@@ -3416,39 +3257,8 @@ export function isFormatCompatibleWithMagicBytes(
     sniffed === 'application/vnd.oasis.opendocument.presentation' ||
     sniffed === 'application/hwp+zip'
   ) {
-    if (cleanExt === 'docx' || cleanExt === 'dotx') {
-      return (
-        sniffed === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
-        sniffed === 'application/zip'
-      );
-    }
-    if (cleanExt === 'xlsx' || cleanExt === 'xltx') {
-      return (
-        sniffed === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-        sniffed === 'application/zip'
-      );
-    }
-    if (cleanExt === 'pptx' || cleanExt === 'potx') {
-      return (
-        sniffed === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' ||
-        sniffed === 'application/zip'
-      );
-    }
-    if (cleanExt === 'epub') {
-      return sniffed === 'application/epub+zip' || sniffed === 'application/zip';
-    }
-    if (cleanExt === 'odt') {
-      return sniffed === 'application/vnd.oasis.opendocument.text' || sniffed === 'application/zip';
-    }
-    if (cleanExt === 'ods') {
-      return sniffed === 'application/vnd.oasis.opendocument.spreadsheet' || sniffed === 'application/zip';
-    }
-    if (cleanExt === 'odp') {
-      return sniffed === 'application/vnd.oasis.opendocument.presentation' || sniffed === 'application/zip';
-    }
-    if (cleanExt === 'hwpx') {
-      return sniffed === 'application/hwp+zip' || sniffed === 'application/zip';
-    }
+    const sniffedOfExtension = ZIP_PACKAGE_MIME_OF_EXTENSION[cleanExt];
+    if (sniffedOfExtension !== undefined) return sniffed === sniffedOfExtension || sniffed === 'application/zip';
     return zipFormats.has(cleanExt);
   }
 
@@ -3462,12 +3272,14 @@ export function isFormatCompatibleWithMagicBytes(
     return cfbfFormats.has(cleanExt);
   }
 
-  if (sniffed === 'audio/mpeg') return mp3Formats.has(cleanExt);
+  if (sniffed === 'audio/mpeg') return mp3Formats.has(cleanExt) || (adtsFileExtensions.has(cleanExt) && id3v2Payload(buffer) === 'beyond-window');
   if (sniffed === 'audio/aac') return aacFormats.has(cleanExt);
   if (sniffed === 'audio/wav') return wavFormats.has(cleanExt);
   if (sniffed === 'audio/flac') return flacFormats.has(cleanExt);
   if (sniffed === 'audio/ogg') return oggFormats.has(cleanExt);
-  if (sniffed === 'video/mp4' || sniffed === 'audio/mp4') return mp4Formats.has(cleanExt);
+  // An audio ISO base media file (M4A, M4B) is AAC in an MP4 box structure, which is also saved as `.aac`.
+  if (sniffed === 'audio/mp4') return mp4Formats.has(cleanExt) || adtsFileExtensions.has(cleanExt);
+  if (sniffed === 'video/mp4') return mp4Formats.has(cleanExt);
   if (sniffed === 'image/avif') return AVIF_EXTENSIONS.has(cleanExt);
   if (sniffed === 'image/heic' || sniffed === 'image/heif') return HEIF_EXTENSIONS.has(cleanExt);
   if (sniffed === 'video/webm') return webmFormats.has(cleanExt) || cleanExt === 'mkv';
