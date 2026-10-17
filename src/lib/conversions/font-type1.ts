@@ -1,4 +1,4 @@
-import { CorruptStreamError, UnprocessableFontInputError } from '../types';
+import { CorruptStreamError, PayloadLimitError, UnprocessableFontInputError } from '../types';
 
 /**
  * Reader of PostScript Type 1 fonts (PFA and PFB), written from Adobe's "Adobe Type 1 Font Format" (chapter 7: the eexec encryption and the
@@ -27,6 +27,16 @@ const CHARSTRINGS_NAME = '/CharStrings';
 const MAX_PROCEDURE_NAME_CHARS = 32;
 const MAX_CHARSTRING_DIGITS = 9;
 const EEXEC = 'eexec';
+/**
+ * Limits that keep a crafted file from costing more than a real font does. The largest Type 1 fonts are a few MB (Latin faces are 30 to
+ * 150 KB, the URW set 134 KB at most; a Type 1 CJK face with 20,000 glyphs is under 10 MB as PFA hex, half of that as PFB), so 16 MiB leaves
+ * a wide margin. A font holds at most 65,535 glyphs and as many subroutines, so no more charstring entries than that sum are read. A PFB has
+ * three segments in practice (Adobe splits long runs at 64 KB, 256 segments for 16 MiB); 4,096 leaves room, and an empty segment costs
+ * six bytes of file, so the count is capped rather than left to the size.
+ */
+export const MAX_TYPE1_FILE_BYTES = 16 * 1024 * 1024;
+export const MAX_TYPE1_CHARSTRING_ENTRIES = 2 * 65_536;
+export const MAX_PFB_SEGMENTS = 4096;
 /** The operator that starts the encrypted part: `currentfile eexec`, so the word in a comment or a font name is not taken for it. */
 const EEXEC_OPERATOR = /currentfile\s+eexec/;
 
@@ -66,12 +76,16 @@ function splitPfb(file: Buffer): Type1Parts {
   const text: Buffer[] = [];
   const binary: Buffer[] = [];
   let at = 0;
+  let segments = 0;
   for (;;) {
     if (at + 2 > file.length || file[at] !== PFB_MARKER) {
       throw new CorruptStreamError('The PFB file is damaged: a segment does not start with the 0x80 marker, or the end marker is missing.');
     }
     const type = file[at + 1];
     if (type === PFB_END) break;
+    if (++segments > MAX_PFB_SEGMENTS) {
+      throw new PayloadLimitError(`The PFB file has more than the ${MAX_PFB_SEGMENTS} segments the converter reads.`);
+    }
     if (type !== PFB_ASCII && type !== PFB_BINARY) {
       throw new CorruptStreamError(`The PFB file is damaged: a segment has the unknown type ${type}.`);
     }
@@ -101,7 +115,8 @@ function splitPfb(file: Buffer): Type1Parts {
 
 /** The hexadecimal digits of a PFA's encrypted run, ignoring white space, up to the first character that is neither. */
 function decodeHexRun(data: Buffer): Buffer {
-  const bytes: number[] = [];
+  const bytes = Buffer.alloc(data.length >> 1);
+  let length = 0;
   let high = -1;
   for (const character of data) {
     if (isWhitespace(character)) continue;
@@ -110,11 +125,11 @@ function decodeHexRun(data: Buffer): Buffer {
     if (high < 0) {
       high = digit;
     } else {
-      bytes.push(high * 16 + digit);
+      bytes[length++] = high * 16 + digit;
       high = -1;
     }
   }
-  return Buffer.from(bytes);
+  return bytes.subarray(0, length);
 }
 
 /** The clear text up to `eexec` and the encrypted run after it, which is hexadecimal when its first four characters are hexadecimal digits. */
@@ -180,6 +195,7 @@ function scanPrivateDictionary(plain: Buffer): PrivateScan {
   const charStringsAt = text.indexOf(CHARSTRINGS_NAME);
   const pieces: PrivatePiece[] = [];
   let glyphCount = 0;
+  let charstringEntries = 0;
   let position = 0;
   let endAt = text.indexOf(PRIVATE_DICTIONARY_END);
   for (;;) {
@@ -193,6 +209,9 @@ function scanPrivateDictionary(plain: Buffer): PrivateScan {
     }
     if (next === null) {
       throw new UnprocessableFontInputError('The Type 1 font is cut short: its private dictionary does not end with closefile.');
+    }
+    if (++charstringEntries > MAX_TYPE1_CHARSTRING_ENTRIES) {
+      throw new PayloadLimitError(`The Type 1 font has more than the ${MAX_TYPE1_CHARSTRING_ENTRIES} charstrings (glyphs and subroutines) a font can hold.`);
     }
     const dataStart = next.index + next[0].length;
     const dataEnd = dataStart + Number(next[1]);
@@ -234,6 +253,9 @@ function pfbTrailer(): Buffer {
  * intact but holds no usable font is an `UnprocessableFontInputError` (HTTP 422) that says why.
  */
 export function readType1Font(file: Buffer): Type1Font {
+  if (file.length > MAX_TYPE1_FILE_BYTES) {
+    throw new PayloadLimitError(`The Type 1 font is ${file.length} bytes; the converter reads at most ${MAX_TYPE1_FILE_BYTES} bytes (16 MiB).`);
+  }
   let parts: Type1Parts;
   if (file[0] === PFB_MARKER) {
     parts = splitPfb(file);

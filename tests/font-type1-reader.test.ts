@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { readType1Font } from '../src/lib/conversions/font-type1';
-import { CorruptStreamError, UnprocessableFontInputError } from '../src/lib/types';
+import { MAX_PFB_SEGMENTS, MAX_TYPE1_CHARSTRING_ENTRIES, MAX_TYPE1_FILE_BYTES, readType1Font } from '../src/lib/conversions/font-type1';
+import { CorruptStreamError, PayloadLimitError, UnprocessableFontInputError } from '../src/lib/types';
 import { expectSameOutlines, readFontFacts } from './helpers/font-outline-oracle';
 import { haveFontTools } from './helpers/fontforge-tool';
 import {
@@ -9,6 +9,9 @@ import {
   charstringCipher,
   circleGlyph,
   pfaWithGarbageRun,
+  pfaWithHexRun,
+  pfbWithPrivateDictionary,
+  pfbWithZeroLengthSegments,
   pfaWithoutPrivateDictionary,
   rectangleGlyph,
   type Type1Glyph,
@@ -191,5 +194,69 @@ describe('readType1Font on files that are not Type 1 fonts', () => {
     const header = (type: number, length: number) => Buffer.from([PFB_MARKER, type, length & 0xff, (length >> 8) & 0xff, 0, 0]);
     const file = Buffer.concat([header(PFB_ASCII, segments[0].data.length), segments[0].data, header(PFB_BINARY, cut.length), cut, header(PFB_ASCII, segments[2].data.length), segments[2].data, Buffer.from([PFB_MARKER, PFB_END])]);
     expect(failureOf(() => readType1Font(file))).toBeInstanceOf(UnprocessableFontInputError);
+  });
+});
+
+describe('readType1Font on files crafted to cost more than a font does', () => {
+  /** A private dictionary of `count` charstrings of no bytes each: five bytes of file per entry. */
+  const entryFlood = (count: number) =>
+    pfbWithPrivateDictionary(Buffer.concat([Buffer.from('/RD {string currentfile exch readstring pop} def\n/CharStrings 1 dict dup begin\n'), Buffer.from('0 RD '.repeat(count)), Buffer.from('end currentfile closefile\n')]));
+  const MAX_TIME_MS = 5000;
+  const MAX_HEAP_GROWTH_BYTES = 256 * 1024 * 1024;
+
+  /** Runs the reader on `file` and returns its failure with the milliseconds it took and the heap it left behind. */
+  function refusal(file: Buffer): { error: Error; ms: number; heapBytes: number } {
+    const heapBefore = process.memoryUsage().heapUsed;
+    const started = performance.now();
+    const error = failureOf(() => readType1Font(file));
+    return { error, ms: performance.now() - started, heapBytes: process.memoryUsage().heapUsed - heapBefore };
+  }
+
+  it('refuses a file over the size limit with a typed 413 that names the limit, before reading it', () => {
+    const { error, ms } = refusal(Buffer.alloc(MAX_TYPE1_FILE_BYTES + 1, '%'));
+    expect(error).toBeInstanceOf(PayloadLimitError);
+    expect((error as PayloadLimitError).status).toBe(413);
+    expect(error.message).toContain('16 MiB');
+    expect(ms).toBeLessThan(MAX_TIME_MS);
+  });
+
+  it('does not refuse a file of exactly the size limit for its size', () => {
+    const file = Buffer.alloc(MAX_TYPE1_FILE_BYTES, ' ');
+    file.write('%!FontType1-1.0', 0, 'latin1');
+    expect(failureOf(() => readType1Font(file))).toBeInstanceOf(CorruptStreamError);
+  });
+
+  it('refuses a private dictionary of millions of empty charstrings, inside the size limit, fast and without holding them', () => {
+    const { error, ms, heapBytes } = refusal(entryFlood(3_000_000));
+    expect(error).toBeInstanceOf(PayloadLimitError);
+    expect(error.message).toContain(`${MAX_TYPE1_CHARSTRING_ENTRIES}`);
+    expect(ms).toBeLessThan(MAX_TIME_MS);
+    expect(heapBytes).toBeLessThan(MAX_HEAP_GROWTH_BYTES);
+  });
+
+  it('reads as many charstrings as a font can hold and refuses one more', () => {
+    expect(readType1Font(entryFlood(MAX_TYPE1_CHARSTRING_ENTRIES)).glyphCount).toBe(MAX_TYPE1_CHARSTRING_ENTRIES);
+    expect(failureOf(() => readType1Font(entryFlood(MAX_TYPE1_CHARSTRING_ENTRIES + 1)))).toBeInstanceOf(PayloadLimitError);
+  });
+
+  it('refuses a PFB of millions of empty segments, inside the size limit, fast', () => {
+    const { error, ms, heapBytes } = refusal(pfbWithZeroLengthSegments(2_500_000));
+    expect(error).toBeInstanceOf(PayloadLimitError);
+    expect(error.message).toContain(`${MAX_PFB_SEGMENTS}`);
+    expect(ms).toBeLessThan(MAX_TIME_MS);
+    expect(heapBytes).toBeLessThan(MAX_HEAP_GROWTH_BYTES);
+  });
+
+  it('counts the segments of a PFB: the limit itself is read, one more is refused', () => {
+    // pfbWithZeroLengthSegments writes the text segment and then `count` empty binary ones; the file holds no font, so the one that is read is refused as a font.
+    expect(failureOf(() => readType1Font(pfbWithZeroLengthSegments(MAX_PFB_SEGMENTS - 1)))).toBeInstanceOf(UnprocessableFontInputError);
+    expect(failureOf(() => readType1Font(pfbWithZeroLengthSegments(MAX_PFB_SEGMENTS)))).toBeInstanceOf(PayloadLimitError);
+  });
+
+  it('decodes a hexadecimal run of the size limit in a buffer of its own size: refused as a font, in bounded time and heap', () => {
+    const { error, ms, heapBytes } = refusal(pfaWithHexRun(MAX_TYPE1_FILE_BYTES - 1024));
+    expect(error).toBeInstanceOf(UnprocessableFontInputError);
+    expect(ms).toBeLessThan(MAX_TIME_MS);
+    expect(heapBytes).toBeLessThan(MAX_HEAP_GROWTH_BYTES);
   });
 });

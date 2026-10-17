@@ -235,3 +235,22 @@ export function pfaWithGarbageRun(): Buffer {
 export function pfaWithoutPrivateDictionary(): Buffer {
   return Buffer.from('%!FontType1-1.0: Bare 1.0\n/FontName /Bare def\n/FontType 1 def\n', 'latin1');
 }
+
+/** A PFB whose encrypted run holds `plain` as its private dictionary: for dictionaries that no font writer would produce. */
+export function pfbWithPrivateDictionary(plain: Buffer): Buffer {
+  const run = encrypt(Buffer.concat([LEADING_BYTES, plain]), EEXEC_KEY);
+  const text = clearText({ fontName: 'Crafted', familyName: 'Crafted', lineEnding: '\n', signature: '%!FontType1-1.0' }, '\n');
+  return Buffer.concat([segment(1, text), segment(2, run), segment(1, trailer('\n')), Buffer.from([0x80, 3])]);
+}
+
+/** A PFB made of `count` binary segments of no bytes (six bytes each) after a real first segment. */
+export function pfbWithZeroLengthSegments(count: number): Buffer {
+  const text = clearText({ fontName: 'Crafted', familyName: 'Crafted', lineEnding: '\n', signature: '%!FontType1-1.0' }, '\n');
+  const empty = Buffer.from([0x80, 2, 0, 0, 0, 0]);
+  return Buffer.concat([segment(1, text), Buffer.alloc(count * empty.length).fill(empty), Buffer.from([0x80, 3])]);
+}
+
+/** A PFA whose encrypted run is `digits` hexadecimal digits long, with no font inside. */
+export function pfaWithHexRun(digits: number): Buffer {
+  return Buffer.concat([clearText({ fontName: 'Crafted', familyName: 'Crafted', lineEnding: '\n', signature: '%!FontType1-1.0' }, ' '), Buffer.alloc(digits, 'a'), Buffer.from('\n')]);
+}
