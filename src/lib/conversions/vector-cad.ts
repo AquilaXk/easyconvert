@@ -1,7 +1,7 @@
 import sharp, { type ResizeOptions, type Sharp } from 'sharp';
 import PDFDocument from 'pdfkit';
 import zlib from 'node:zlib';
-import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, CadTopologyError, EngineUnavailableError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, CadGeometryUnavailableError, EngineUnavailableError } from '../types';
 import { assertOutputPixels, outputSideOf } from './image-limits';
 import { AVIF_EFFORT, AVIF_TUNE, encodeBmp, encodePostscript } from './image';
 import { buildTiffOptions } from './image-tiff-options';
@@ -9,7 +9,6 @@ import { assertInputPixels, openInputImage, openLimitedSharp, resizedDimensions 
 import { loadFontCoverageIndex } from './pdf-fonts';
 
 import {
-  tessellateCadBuffer,
   evaluateCubicBezier,
   evaluateCubicBezierDerivative,
   adaptiveTessellateCubicBezier,
@@ -18,6 +17,7 @@ import {
   tessellateSvgArc,
   verifyWatertightManifoldMesh,
 } from './cad-nurbs';
+import { OCCT_CONVERTER_MIME, convertCadWithOcct, isOcctSource } from './cad-occt';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
 import { MAX_SVG_INPUT_CHARS, normalizeSvgBufferForRendering } from './svg-geometry';
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
@@ -623,6 +623,20 @@ async function convertPostScriptSource(inputBuffer: Buffer, src: string, tgt: st
 }
 
 /**
+ * Converts a STEP or IGES model with the Open CASCADE program (see cad-occt.ts). STEP, IGES, STL and OBJ are its own outputs;
+ * a DXF is drawn from the mesh it writes, as 3DFACE entities.
+ */
+async function convertOcctSource(inputBuffer: Buffer, src: string, tgt: string, options: ConversionOptions, baseName: string): Promise<ConversionResult> {
+  if (tgt === 'dxf') {
+    const stl = await convertCadWithOcct(inputBuffer, src, 'stl', options);
+    const buffer = Buffer.from(encode3dCadToDxf(parse3dCad(stl, 'stl', baseName)), 'utf-8');
+    return { buffer, mimeType: 'image/vnd.dxf', filename: `${baseName}.dxf`, size: buffer.length };
+  }
+  const buffer = await convertCadWithOcct(inputBuffer, src, tgt, options);
+  return { buffer, mimeType: OCCT_CONVERTER_MIME[tgt], filename: `${baseName}.${tgt}`, size: buffer.length };
+}
+
+/**
  * Converts 3D CAD formats (STEP, STP, IGES, IGS, STL, OBJ)
  */
 async function convert3dCad(
@@ -632,7 +646,8 @@ async function convert3dCad(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  const mesh = parse3dCad(inputBuffer, src, baseName, options);
+  if (isOcctSource(src)) return convertOcctSource(inputBuffer, src, tgt, options, baseName);
+  const mesh = parse3dCad(inputBuffer, src, baseName);
 
   let outputBuffer: Buffer;
   let mimeType: string;
@@ -689,9 +704,9 @@ export function svgToDxf(svgContent: string): string {
 }
 
 /**
- * 3D CAD Parser (STEP, STP, IGES, IGS, STL, OBJ)
+ * 3D mesh parser (STL, OBJ). STEP and IGES are read by the Open CASCADE program (cad-occt.ts), not here.
  */
-function parse3dCad(buffer: Buffer, format: string, defaultName: string, options: ConversionOptions = {}): CadMesh3D {
+function parse3dCad(buffer: Buffer, format: string, defaultName: string): CadMesh3D {
   const text = buffer.toString('utf-8');
 
   // 1. Binary or ASCII STL Parser
@@ -750,7 +765,7 @@ function parse3dCad(buffer: Buffer, format: string, defaultName: string, options
   }
 
   // 2. OBJ Parser
-  if (format === 'obj' || (format !== 'step' && format !== 'stp' && format !== 'iges' && format !== 'igs' && (text.includes('v ') || text.includes('f ')))) {
+  if (format === 'obj' || text.includes('v ') || text.includes('f ')) {
     const vertices: [number, number, number][] = [];
     const faces: [number, number, number][] = [];
     const normals: [number, number, number][] = [];
@@ -772,33 +787,6 @@ function parse3dCad(buffer: Buffer, format: string, defaultName: string, options
     if (vertices.length > 0) {
       return { name: defaultName, vertices, faces, normals };
     }
-  }
-
-  // 3. STEP (ISO 10303-21) and IGES with de Boor NURBS Tessellator
-  if (
-    ['step', 'stp', 'iges', 'igs'].includes(format) ||
-    text.includes('ISO-10303-21') ||
-    text.includes('S      1') ||
-    text.includes('G      1')
-  ) {
-    try {
-      const cadFmt = ['iges', 'igs'].includes(format) || text.includes('S      1') ? 'iges' : 'step';
-      const mesh = tessellateCadBuffer(buffer, cadFmt, defaultName, options);
-      if (mesh.vertices.length > 0) {
-        return mesh;
-      }
-    } catch (err) {
-      if (err instanceof CadGeometryUnavailableError || err instanceof CadTopologyError) {
-        throw err;
-      }
-      throw new CadGeometryUnavailableError(
-        `Failed to parse 3D CAD geometry from .${format}: ${(err as Error).message}`
-      );
-    }
-
-    throw new CadGeometryUnavailableError(
-      `Failed to parse 3D CAD geometry from .${format} file. No valid surface geometry found.`
-    );
   }
 
   // Fail-closed on explicit unsupported/malformed 3D formats

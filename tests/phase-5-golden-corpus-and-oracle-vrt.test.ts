@@ -38,6 +38,8 @@ import {
   extractTextWithExternalPdftotext,
 } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { haveCadConverter, haveCadOracles } from './helpers/cad-kernel';
+import { meshFacts } from './helpers/mesh-facts';
 import { pyarrowRead } from './helpers/parquet-oracle';
 import { shownSheetRowsViaLibreOffice } from './helpers/sheet-rows';
 import { dxfFacts, imageFacts, packageFacts, parquetFacts, xpathNames, zstdFacts } from './helpers/corpus-facts';
@@ -49,7 +51,7 @@ import { compareImages, computeSsim, pixelmatch } from './helpers/vrt-engine';
 import { convertFile } from '../src/lib/conversions';
 import { demosaicBayerCfa, decodeRawBayerSensor } from '../src/lib/conversions/image';
 import { convertOffice } from '../src/lib/conversions/office';
-import { CadGeometryUnavailableError, ConversionFailedError, DataParseError } from '../src/lib/types';
+import { ConversionFailedError, DataParseError, UnprocessableCadInputError } from '../src/lib/types';
 import { PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { decompressZstd, createTarArchive } from '../src/lib/conversions/archive';
@@ -750,11 +752,11 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       expect((failure as Error).message).toBe('The XLSX file is not a valid ZIP package.');
     });
 
-    it('4.4 fails closed or rejects corrupted CAD STEP with invalid entity references', async () => {
-      const failure = await convertVectorCad(corrupt.cadNonManifoldStep, 'step', 'svg').catch((err: unknown) => err);
-      expect(failure).toBeInstanceOf(CadGeometryUnavailableError);
+    it.skipIf(!haveCadConverter)('4.4 fails closed or rejects corrupted CAD STEP with invalid entity references', async () => {
+      const failure = await convertVectorCad(corrupt.cadNonManifoldStep, 'step', 'stl').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(UnprocessableCadInputError);
       expect((failure as Error).message).toBe(
-        'Failed to tessellate CAD geometry from step: No valid B-spline surfaces, B-Rep topology, or curves found.'
+        'The CAD converter could not convert this model: it exited with status 4 (no-shapes: the STEP file holds no shape that could be transferred).'
       );
     });
 
@@ -892,16 +894,18 @@ describe('Phase 5: Real-World Golden Corpus & Differential Oracle VRT CI Gates (
       expect(txt).toContain('Nested Cell B1');
     });
 
-    it('5.5 converts golden CAD STEP B-Rep solid to OBJ 3D model with vertices and faces', async () => {
-      const goldenStep = synthesizeEnterpriseStepBRep();
+    // The synthesized golden STEP above is a structure fixture (counts of V, E and F); it holds no geometry a B-rep kernel can mesh. The
+    // conversion is judged on the solid Open CASCADE wrote (tests/fixtures/sample.step), a 20 mm cube.
+    it.skipIf(!haveCadOracles)('5.5 converts a CAD STEP B-Rep solid to OBJ 3D model with the vertices and faces of its cube', async () => {
+      const step = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.step'));
 
-      const result = await convertVectorCad(goldenStep.buffer, 'step', 'obj');
+      const result = await convertVectorCad(step, 'step', 'obj');
       expect(result.mimeType).toBe('model/obj');
 
-      const objStr = result.buffer.toString('utf-8');
-      expect(objStr).toContain('v ');
-      expect(objStr).toContain('f ');
-      expect(result.size).toBeGreaterThan(100);
+      const facts = meshFacts(result.buffer, 'obj');
+      expect(facts.triangles).toBe(12);
+      expect(facts.unmergedVertices).toBe(8);
+      expect(facts.max).toEqual([20, 20, 20]);
     });
 
     it('5.6 converts golden CAD DXF with multiple layers to SVG', async () => {
