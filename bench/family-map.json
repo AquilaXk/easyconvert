@@ -146,7 +146,7 @@
     },
     {
       "families": ["compression"],
-      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|deflate-blocks|lzma-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$"
+      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|deflate-blocks|lz(ip|o1x|op)|lzma-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$|^src/worker/archive-source-extraction\\.ts$"
     },
     {
       "families": ["image", "raw"],

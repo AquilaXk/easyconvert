@@ -17,6 +17,8 @@ export interface HostileTarHeader {
   size?: number;
   /** One-character type flag; `0` is a regular file, `5` a directory. */
   typeflag?: string;
+  /** The link target at offset 157, for a link member. */
+  linkname?: string;
   mode?: number;
   /** The six bytes at offset 257; an empty string leaves a v7 header with no magic. */
   magic?: string;
@@ -42,6 +44,7 @@ export function hostileTarHeader(spec: HostileTarHeader): Buffer {
   octalField(spec.mtime ?? 1_614_834_360, 11).copy(header, 136);
   header.fill(0x20, CHECKSUM_OFFSET, CHECKSUM_OFFSET + CHECKSUM_LENGTH);
   header.write(spec.typeflag ?? '0', 156, 1, 'ascii');
+  if (spec.linkname !== undefined) header.write(spec.linkname, 157, 100, 'utf8');
   header.write(spec.magic ?? 'ustar\0', 257, 6, 'latin1');
   header.write(spec.version ?? '00', 263, 2, 'latin1');
   if (spec.prefix !== undefined) header.write(spec.prefix, 345, 155, 'utf8');

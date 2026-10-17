@@ -81,6 +81,8 @@ export interface ListedArchiveEntry {
   /** Declared uncompressed size, or null when the listing carries none. */
   sizeBytes: number | null;
   linkKind: 'symlink' | 'hardlink' | null;
+  /** What a link entry points at, as the listing prints it; absent for other entries and for links the listing gives no target for. */
+  linkTarget?: string;
   /** A device, FIFO or socket entry. */
   isSpecial: boolean;
   /** The single stream of a wrapper format (gz, bz2, xz, ...), whose size 7-Zip may not state. */
@@ -205,6 +207,10 @@ const WRAPPER_EXTENSION_SUFFIXES = new Map<string, string>([
   ['tbz2', '.tar'],
   ['tbz', '.tar'],
   ['txz', '.tar'],
+  // A package whose payload 7-Zip decompresses lists that stream without a name; a package whose payload it opens as a
+  // cpio or tar lists the files, so the single nameless block is the only case this name is used for.
+  ['rpm', ''],
+  ['deb', ''],
 ]);
 
 /** Output bound for a listing that may hold at most `limits.MAX_FILES` entries. */
@@ -325,12 +331,14 @@ function buildListedEntry(fields: Map<string, string>, payloadName?: string): Li
     linkKind = 'hardlink';
   }
 
+  const linkTarget = linkKind === 'symlink' ? symbolicTarget : hardTarget;
   const rawSize = fields.get('Size') ?? '';
   return {
     path: entryPath,
     isDirectory: classification.isDirectory,
     sizeBytes: DECIMAL_PATTERN.test(rawSize) ? Number(rawSize) : null,
     linkKind,
+    ...(linkTarget !== '' ? { linkTarget } : {}),
     isSpecial: classification.isSpecial,
     ...(fields.has('Path') ? {} : { wrapperPayload: true }),
   };
@@ -381,6 +389,27 @@ export function parse7zTechnicalListing(stdout: string, options: ListingParseOpt
 
   const isWrapperPayload = options.payloadName !== undefined && blocks.length === 1 && !blocks[0].has('Path');
   return blocks.map((block) => buildListedEntry(block, isWrapperPayload ? options.payloadName : undefined));
+}
+
+/**
+ * Hard links whose target is a regular entry of the same archive are as safe as the entries they repeat: 7-Zip makes them
+ * between names inside the extraction root, and the packer stores each name with its content. They come back as ordinary
+ * entries. A hard link whose target is not such an entry (missing, a link itself, a directory, or a name that is not a
+ * plain relative path) stays a link, for the policy to skip or refuse. The extracted tree is checked again afterwards
+ * (see `allowInternalHardLinks`), so this reading of the listing is not the only guard.
+ */
+export function acceptInternalHardLinks(entries: ListedArchiveEntry[]): ListedArchiveEntry[] {
+  const regularFiles = new Set<string>();
+  for (const entry of entries) {
+    if (entry.linkKind === null && !entry.isDirectory && !entry.isSpecial) regularFiles.add(normalizeEntryKey(entry.path));
+  }
+  return entries.map((entry) => {
+    const target = entry.linkTarget;
+    if (entry.linkKind !== 'hardlink' || target === undefined || entryPathProblem(target) !== null) return entry;
+    if (!regularFiles.has(normalizeEntryKey(target))) return entry;
+    const { linkTarget: _target, ...extracted } = entry;
+    return { ...extracted, linkKind: null };
+  });
 }
 
 /** Why an entry name cannot be extracted under the root, or null when it is a plain relative path. */
@@ -657,6 +686,19 @@ export function assertExclusionExact(full: ListedArchiveEntry[], filtered: Liste
   }
 }
 
+/**
+ * An archive may store any mode, down to no permission bits at all (the packages of a distribution have such files), and
+ * 7-Zip applies it. The owner needs read access to pack a file and read, write and search access to a directory, to list
+ * it and to delete it afterwards; the other bits are left as the archive had them.
+ */
+const OWNER_FILE_ACCESS = 0o600;
+const OWNER_DIRECTORY_ACCESS = 0o700;
+const PERMISSION_BITS = 0o7777;
+
+function grantOwnerAccess(entry: string, mode: number, access: number): void {
+  if ((mode & access) !== access) fs.chmodSync(entry, (mode & PERMISSION_BITS) | access);
+}
+
 function isInside(realRoot: string, candidate: string): boolean {
   return candidate === realRoot || candidate.startsWith(realRoot + path.sep);
 }
@@ -671,10 +713,13 @@ function isInside(realRoot: string, candidate: string): boolean {
 export function assertExtractionContained(
   root: string,
   archiveBytes: number,
-  limits: ArchiveExtractionLimits
+  limits: ArchiveExtractionLimits,
+  options: { allowInternalHardLinks?: boolean } = {}
 ): ContainedTree {
   const realRoot = fs.realpathSync(root);
   const files: ExtractedFile[] = [];
+  const sharedInodes = new Map<string, { names: number; links: number }>();
+  const sharedFiles: Array<{ abs: string; mode: number }> = [];
   let entryCount = 0;
   let totalBytes = 0;
   const pending: Array<{ abs: string; rel: string; depth: number }> = [{ abs: realRoot, rel: '', depth: 0 }];
@@ -702,10 +747,17 @@ export function assertExtractionContained(
       }
 
       if (stat.isDirectory()) {
+        grantOwnerAccess(abs, stat.mode, OWNER_DIRECTORY_ACCESS);
         pending.push({ abs, rel, depth });
       } else if (stat.isFile()) {
         if (stat.nlink > 1) {
-          throw new UnsafeArchiveError('link-entry', 'Extraction produced a hard link, which is not allowed.');
+          if (!options.allowInternalHardLinks) {
+            throw new UnsafeArchiveError('link-entry', 'Extraction produced a hard link, which is not allowed.');
+          }
+          recordSharedInode(sharedInodes, abs, stat.nlink);
+          sharedFiles.push({ abs, mode: stat.mode });
+        } else {
+          grantOwnerAccess(abs, stat.mode, OWNER_FILE_ACCESS);
         }
         totalBytes += stat.size;
         if (totalBytes > limits.MAX_UNCOMPRESSED_SIZE) {
@@ -718,9 +770,29 @@ export function assertExtractionContained(
     }
   }
 
+  // A name outside the root would make the inode's link count larger than the names found inside it.
+  for (const shared of sharedInodes.values()) {
+    if (shared.names !== shared.links) {
+      throw new UnsafeArchiveError('link-entry', 'Extraction produced a hard link to a file outside the extraction directory.');
+    }
+  }
+  // Only now is every name of these inodes known to be inside the root, so changing a mode cannot reach a file outside it.
+  for (const shared of sharedFiles) grantOwnerAccess(shared.abs, shared.mode, OWNER_FILE_ACCESS);
   assertWithinSizeAndRatio(totalBytes, archiveBytes, limits);
   files.sort((x, y) => (x.relPath < y.relPath ? -1 : 1));
   return { files, entryCount, totalBytes, skippedLinks: [] };
+}
+
+/** Counts one more name for the inode of `file`; the key is read as a bigint so two inodes never share a key by rounding. */
+function recordSharedInode(shared: Map<string, { names: number; links: number }>, file: string, links: number): void {
+  const exact = fs.lstatSync(file, { bigint: true });
+  const key = `${exact.dev}:${exact.ino}`;
+  const seen = shared.get(key);
+  if (seen) {
+    seen.names++;
+  } else {
+    shared.set(key, { names: 1, links });
+  }
 }
 
 /**
@@ -803,6 +875,11 @@ export interface ContainedExtractionRequest {
   ratioBaseBytes?: number;
   /** Opt in to leaving link entries out of the extraction (reported in `skippedLinks`) instead of rejecting. */
   skipLinks?: boolean;
+  /**
+   * Accept files that share an inode when every name of that inode is inside the extraction root. A cpio writes the
+   * hard links of a package that way and 7-Zip recreates them; one with a name outside the root is still refused.
+   */
+  allowInternalHardLinks?: boolean;
   /** What to do when two entries share a path. Defaults to 'rename', which native extraction hands to another engine. */
   collisionPolicy?: ArchiveCollisionPolicy;
   /**
@@ -986,7 +1063,13 @@ async function listArchive(request: ContainedExtractionRequest, target: ListTarg
     stdin,
     signal: request.signal,
   });
-  return parse7zTechnicalListing(stripSevenZipPasswordPrompt(result.stdout.toString('utf-8')), { payloadName: wrapperPayloadName(target.archivePath) });
+  return readListing(request, result.stdout.toString('utf-8'), target.archivePath);
+}
+
+/** Parses a listing; with `allowInternalHardLinks` the hard links between entries of the archive count as the files they are. */
+function readListing(request: ContainedExtractionRequest, stdout: string, archivePath: string): ListedArchiveEntry[] {
+  const entries = parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdout), { payloadName: wrapperPayloadName(archivePath) });
+  return request.allowInternalHardLinks ? acceptInternalHardLinks(entries) : entries;
 }
 
 /**
@@ -1014,7 +1097,7 @@ function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget
     maxBuffer: listingBufferLimit(request.limits),
     input: stdin,
   });
-  return parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdout.toString('utf-8')), { payloadName: wrapperPayloadName(target.archivePath) });
+  return readListing(request, stdout.toString('utf-8'), target.archivePath);
 }
 
 function excludeArgsFor(skippedLinks: string[]): string[] {
@@ -1175,7 +1258,10 @@ export async function extractArchiveContained(request: ContainedExtractionReques
     throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password));
   }
 
-  const tree = withSkippedLinks(assertExtractionContained(request.extractDir, ratioBytes, request.limits), skippedLinks);
+  const tree = withSkippedLinks(
+    assertExtractionContained(request.extractDir, ratioBytes, request.limits, { allowInternalHardLinks: request.allowInternalHardLinks }),
+    skippedLinks
+  );
 
   if (request.validateNestedTar) {
     await vetNestedTar(request, tree, ratioBytes);
@@ -1220,7 +1306,10 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
     throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password));
   }
 
-  return withSkippedLinks(assertExtractionContained(request.extractDir, ratioBytes, request.limits), skippedLinks);
+  return withSkippedLinks(
+    assertExtractionContained(request.extractDir, ratioBytes, request.limits, { allowInternalHardLinks: request.allowInternalHardLinks }),
+    skippedLinks
+  );
 }
 
 /**

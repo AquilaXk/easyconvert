@@ -43,6 +43,7 @@ import {
   ARCHIVE_RATIO_BASELINE_BYTES,
 } from './archive-extraction-safety';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
+import { isWrapperSource, unpackWrapperSource } from './archive-wrapper-sources';
 import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { crc32 } from './crc32';
@@ -3699,8 +3700,6 @@ async function inspectRarBuffer(
 
 /** Archive sources that are ZIP packages with another name: read with the ZIP reader. */
 const ZIP_PACKAGE_SOURCES: ReadonlySet<string> = new Set(['jar', 'war', 'ear']);
-const BZIP2_TAR_SOURCES: ReadonlySet<string> = new Set(['tar.bz2', 'tbz2', 'tbz', 'tar.bz']);
-const BZIP2_SOURCES: ReadonlySet<string> = new Set([...BZIP2_TAR_SOURCES, 'bz2', 'bz']);
 /** Archive sources only the native 7-Zip engine reads. */
 const NATIVE_SEVEN_ZIP_SOURCES: ReadonlySet<string> = new Set([
   'arj', 'cab', 'cpio', 'deb', 'dmg', 'img', 'iso', 'lha', 'lzma', 'rpm', 'tar.z', 'tz', 'z',
@@ -3946,28 +3945,16 @@ export async function convertArchive(
         `Failed to decompress GZIP archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
     }
-  } else if (BZIP2_SOURCES.has(src)) {
+  } else if (isWrapperSource(src)) {
+    let label = src.toUpperCase();
     try {
-      const uncompressed = decompressBzip2(effectiveBuffer, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
-      if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
-        throw new DecompressionLimitError(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-        );
-      }
-      if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
-        throw new DecompressionLimitError(
-          `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
-        );
-      }
-      if (BZIP2_TAR_SOURCES.has(src) || uncompressed.subarray(257, 262).toString('ascii') === 'ustar') {
-        files = extractTarArchive(uncompressed, options);
-      } else {
-        files = [{ filename: baseName, buffer: uncompressed }];
-      }
+      const unpacked = unpackWrapperSource(src, effectiveBuffer, ARCHIVE_SECURITY_LIMITS);
+      label = unpacked.label;
+      files = unpacked.isTar ? extractTarArchive(unpacked.payload, options) : [{ filename: baseName, buffer: unpacked.payload }];
     } catch (err) {
       if (isTypedArchiveFailure(err)) throw err;
       throw new ConversionFailedError(
-        `Failed to decompress BZIP2 archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
+        `Failed to decompress ${label} archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
     }
   } else if (src === 'rar') {

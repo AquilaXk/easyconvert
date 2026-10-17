@@ -50,3 +50,7 @@ libnss3
 libxkbcommon0
 libasound2t64
 libxcb-cursor0
+lzop
+lzip
+rpm2cpio
+cpio

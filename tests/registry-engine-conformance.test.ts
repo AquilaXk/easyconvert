@@ -503,6 +503,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // LHA is LZH under its other name. The ISO, CAB, ARJ, RPM, DEB, CPIO, DMG, IMG, LZMA and Z sources are
   // seeded by the same-extension files in fixtures/archive-sources, all written by tools other than 7-Zip.
   lha: () => readFileSync(path.join(FIXTURE_ROOT, 'archive-sources', 'probe.lzh')),
+  // lzip and lzop files are seeded by their extensions (lz, lzo); the tarball names are the lzop file of a tar.
+  'tar.lzo': () => readFileSync(path.join(FIXTURE_ROOT, 'archive-sources', 'tree.tar.lzo')),
+  tzo: () => readFileSync(path.join(FIXTURE_ROOT, 'archive-sources', 'tree.tar.lzo')),
   // Macintosh font containers wrapping a hand-built TrueType font.
   dfont: () => buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]),
   bin: () => buildMacBinary({ resourceFork: buildDfont([buildTrueTypeFont({ family: 'Probe Sans' })]) }),
@@ -747,10 +750,9 @@ function isTranscoderPair(category: string, target: string): boolean {
   return MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category !== 'archive';
 }
 
-// Besides the font pairs, the list holds every pair of the eight archive sources that no engine reads (ace, alz, arc, lz,
-// lzo, rz, tar.lzo, tzo): the registry advertises them, the converter refuses them with a typed error instead of
-// wrapping the file, and no tool of the CI image can write a sample to prove a route. A reader for one of them removes
-// its pairs from the list.
+// Besides the font pairs, the list holds every pair of the four archive sources that no engine reads (ace, alz, arc, rz):
+// the registry advertises them, the converter refuses them with a typed error instead of wrapping the file, and no tool of
+// the CI image can write a sample to prove a route. A reader for one of them removes its pairs from the list.
 const INCONCLUSIVE_ALLOWLIST: readonly string[] = JSON.parse(
   readFileSync(path.resolve(__dirname, 'registry-engine-conformance.inconclusive.json'), 'utf-8')
 );

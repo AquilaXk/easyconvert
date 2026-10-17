@@ -92,12 +92,10 @@ import {
   hasRepeatedTail,
   readDecodedTiffLayout,
 } from './raw-decoded-tiff';
-import { ARCHIVE_SECURITY_LIMITS, SEVEN_ZIP_BINARY_CANDIDATES, extractWithSpannedStream7z } from '../lib/conversions/archive';
-import {
-  extractArchiveContained,
-  sanitizeLeafFilename,
-} from '../lib/conversions/archive-extraction-safety';
+import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
+import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
 import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
+import { extractSourceArchive } from './archive-source-extraction';
 import { rarToTar, tarToGzip, tarToZip, zipToTar } from '../lib/conversions/archive-repack';
 import {
   sevenZipToTar,
@@ -814,72 +812,8 @@ function toPackagingFailure(err: unknown, targetFormat: string): unknown {
   return err;
 }
 
-interface ExtractArchiveParams {
-  p7zBin: string;
-  inputPath: string;
-  extractDir: string;
-  tempDir: string;
-  timeout: number;
-  maxBuffer: number;
-  options?: WorkerEngineOptions;
-}
-
 /** 7-Zip opens a Z stream by its `.z` name; it does not know `.tz`, the registry name of a tar compressed with compress. */
 const SEVEN_ZIP_INPUT_EXTENSION: ReadonlyMap<string, string> = new Map([['tz', 'z']]);
-
-/** Compression wrappers that unpack to a single tar, which is repackaged without being extracted. */
-const COMPRESSED_STREAM_FORMATS = new Set([
-  'gz', 'gzip', 'tgz', 'tar.gz',
-  'bz2', 'bzip2', 'tbz2', 'tar.bz2',
-  'xz', 'txz', 'tar.xz',
-  'lzma', 'z', 'tar.z', 'tz',
-]);
-
-interface SourceExtraction {
-  entryCount: number;
-  skippedLinks: string[];
-}
-
-/**
- * Extracts the source archive into `extractDir` through the contained 7z pipeline (list, vet,
- * extract, re-verify). Throws a typed error for any unsafe, oversized or unreadable archive; it
- * never returns a partial result.
- */
-async function extractSourceArchive(params: ExtractArchiveParams, src: string): Promise<SourceExtraction> {
-  const { p7zBin, inputPath, extractDir, tempDir, timeout, maxBuffer, options } = params;
-
-  if (options?.archiveParts && options.archiveParts.length > 0) {
-    // Multi-volume input is stitched to one seekable file so it is listed like any other archive.
-    const spanned = await extractWithSpannedStream7z(options.archiveParts, extractDir, {
-      timeoutMs: timeout,
-      maxBuffer,
-      password: options.password,
-      skipLinks: options.skipLinks,
-      collisionPolicy: options.collisionPolicy,
-      signal: options.signal,
-    });
-    return { entryCount: spanned.entryCount, skippedLinks: spanned.skippedLinks };
-  }
-
-  const includePatterns = options?.entries && options.entries.length > 0 ? options.entries : undefined;
-  const tree = await extractArchiveContained({
-    p7zBin,
-    archivePath: inputPath,
-    extractDir,
-    cwd: tempDir,
-    timeoutMs: timeout,
-    maxBuffer,
-    limits: ARCHIVE_SECURITY_LIMITS,
-    label: 'archive',
-    password: options?.password,
-    includePatterns,
-    skipLinks: options?.skipLinks,
-    collisionPolicy: options?.collisionPolicy,
-    validateNestedTar: COMPRESSED_STREAM_FORMATS.has(src),
-    signal: options?.signal,
-  });
-  return { entryCount: tree.entryCount, skippedLinks: tree.skippedLinks };
-}
 
 /**
  * The result of a streamed conversion. The dispatcher keeps an output on disk only for a payload that already lives on
@@ -1032,6 +966,7 @@ export async function convertWithNative7z(
     let extractDir = path.join(tempDir, 'extracted');
     let entryCount: number;
     let skippedLinks: string[] = [];
+    let mayBeEmpty = false;
     if (staged) {
       extractDir = staged.stagingDir;
       entryCount = staged.entryCount;
@@ -1057,6 +992,8 @@ export async function convertWithNative7z(
         );
         entryCount = extraction.entryCount;
         skippedLinks = extraction.skippedLinks;
+        extractDir = extraction.root ?? extractDir;
+        mayBeEmpty = extraction.mayBeEmpty === true;
       } else {
         // The caller-supplied name becomes a single path component inside the extraction root.
         const destPath = path.join(extractDir, sanitizeLeafFilename(originalFilename || `file.${src}`));
@@ -1065,7 +1002,7 @@ export async function convertWithNative7z(
       }
     }
 
-    if (entryCount === 0) {
+    if (entryCount === 0 && !mayBeEmpty) {
       throw new ConversionFailedError('The archive contains no files to convert.');
     }
 

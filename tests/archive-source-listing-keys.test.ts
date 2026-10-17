@@ -87,7 +87,16 @@ interface SourceFixture {
   expectedEntryCount?: number;
   /** Source format id the worker route accepts for this container, when it extracts it. */
   workerFormat?: string;
+  /** What the worker route converts to when it differs from the library route: a package converts to its payload files. */
+  workerExpected?: () => Record<string, Buffer>;
 }
+
+/** The files the probe packages install, under the prefix their build gave them. */
+const PACKAGE_PAYLOAD: Readonly<Record<string, Buffer>> = {
+  'opt/probe/hello.txt': HELLO,
+  'opt/probe/dir/nested.txt': NESTED,
+  'opt/probe/dir/data.bin': DATA_BIN,
+};
 
 const FIXTURES: SourceFixture[] = [
   {
@@ -151,6 +160,7 @@ const FIXTURES: SourceFixture[] = [
     expected: () => ({ 'probe-1.0-1.noarch.cpio': readFixture('probe.rpm.payload.cpio') }),
     exact: true,
     workerFormat: 'rpm',
+    workerExpected: () => ({ ...PACKAGE_PAYLOAD }),
   },
   {
     file: 'probe.deb',
@@ -162,6 +172,7 @@ const FIXTURES: SourceFixture[] = [
     },
     exact: true,
     workerFormat: 'deb',
+    workerExpected: () => ({ ...PACKAGE_PAYLOAD }),
   },
   {
     file: 'probe.wim',
@@ -280,8 +291,7 @@ function assertMagic(buffer: Buffer, expected: Magic): void {
   expect(buffer.subarray(start, start + expected.bytes.length)).toEqual(expected.bytes);
 }
 
-function expectFilesEqual(actual: Map<string, Buffer>, fixture: SourceFixture): void {
-  const expected = fixture.expected();
+function expectFilesEqual(actual: Map<string, Buffer>, fixture: SourceFixture, expected: Record<string, Buffer> = fixture.expected()): void {
   for (const [relPath, bytes] of Object.entries(expected)) {
     const found = actual.get(relPath);
     if (found === undefined) {
@@ -369,7 +379,7 @@ describe('7z listing key whitelist on every native archive source', () => {
           for (const [name, entry] of Object.entries(zip.files)) {
             if (!entry.dir) actual.set(name, await entry.async('nodebuffer'));
           }
-          expectFilesEqual(actual, fixture);
+          expectFilesEqual(actual, fixture, fixture.workerExpected?.());
         },
         SLOW_TEST_TIMEOUT_MS
       );
