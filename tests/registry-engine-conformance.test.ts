@@ -25,6 +25,7 @@ import { compressLzw } from './helpers/unix-compress';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
 import { buildOtf, cs } from './helpers/cff-font-builder';
+import { buildPfa, buildPfb, rectangleGlyph } from './helpers/type1-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 import { buildWordBinary } from './helpers/word-binary-builder';
 import { buildMobiFromBytes } from './helpers/mobi-builder';
@@ -496,6 +497,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // the gate would read as inconclusive. Both seeds come from the independent writers in tests/helpers.
   ttf: () => FONT_TTF_SEED,
   otf: () => FONT_OTF_SEED,
+  // PostScript Type 1 probes: a .notdef and one letter, from the independent Type 1 writer; FontForge reads them in the worker.
+  pfa: () => buildPfa(FONT_TYPE1_GLYPHS),
+  pfb: () => buildPfb(FONT_TYPE1_GLYPHS),
   // Web font containers wrapped around the TrueType seed.
   woff: () => wrapFontSeed('woff'),
   woff2: () => wrapFontSeed('woff2'),
@@ -521,6 +525,9 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
 
 /** TrueType probe font: glyf/loca outlines for A, B and C, mapped in the cmap. */
 const FONT_TTF_SEED = buildTrueTypeFont({ family: 'Probe Sans' });
+
+/** PostScript Type 1 probe glyphs: .notdef and a letter drawn as rectangles. */
+const FONT_TYPE1_GLYPHS = [rectangleGlyph('.notdef', 500, 50, 400, 700), rectangleGlyph('A', 600, 40, 300, 650)];
 
 /** OpenType probe font: a CFF charstring rectangle mapped to U+0041 in the cmap. */
 const FONT_OTF_SEED = buildOtf({
@@ -751,7 +758,7 @@ function isTranscoderPair(category: string, target: string): boolean {
   return MEDIA_CATEGORIES.has(category) && FORMAT_REGISTRY[target].category !== 'archive';
 }
 
-// Besides the font pairs, the list holds every pair of the four archive sources that no engine reads (ace, alz, arc, rz):
+// The list holds every pair of the four archive sources that no engine reads (ace, alz, arc, rz):
 // the registry advertises them, the converter refuses them with a typed error instead of wrapping the file, and no tool of
 // the CI image can write a sample to prove a route. The drawing sources dwf, sk and sk1 are listed for the same reason:
 // no reader of them is included in the worker, so each one is refused with its typed reason. A reader for one of these
