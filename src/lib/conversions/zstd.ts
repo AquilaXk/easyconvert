@@ -11,6 +11,7 @@ import { ZstdBlockEncoder, getZstdLevelParams } from './zstd-encoder';
 import { getCpuPool, shareBytes, yieldToEventLoop } from '../workers/cpu-pool';
 import { ZSTD_POOL_MIN_LEVEL, encodeZstdJob, planZstdJobs, zstdFrameWindow, type ZstdJob } from './zstd-jobs';
 import { XXH64_WASM_MIN_BYTES, xxh64Wasm } from './wasm/xxh64';
+import { exceedsArchiveRatio } from './archive-extraction-safety';
 import {
   ZSTD_BLOCK_SIZE_MAX,
   ZSTD_DECODER_WINDOW_SIZE_MAX,
@@ -40,26 +41,14 @@ export { ZSTD_POOL_MIN_LEVEL, planZstdJobs, type ZstdJob };
 export const ZSTD_MAGIC_NUMBER = 0xfd2fb528;
 export const ZSTD_MAGIC_LE = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 
-/**
- * The 100:1 ratio guard only applies once the decoded output is larger than this. Highly repetitive
- * but legitimate data (sparse files, repeated log lines) compresses past 100:1 at small sizes; a
- * real bomb has to grow beyond this floor to do harm, and the absolute cap still applies below it.
- */
-export const ZSTD_RATIO_GUARD_FLOOR_BYTES = 32 * 1024 * 1024;
-
 export const ZSTD_SECURITY_LIMITS = {
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB
   MAX_RATIO: 100, // 100:1
-  RATIO_GUARD_FLOOR_BYTES: ZSTD_RATIO_GUARD_FLOOR_BYTES,
 };
 
-/** True when `uncompressedBytes` from `compressedBytes` is past the floor and beyond the maximum ratio. */
+/** True when `uncompressedBytes` from `compressedBytes` is past the shared ratio floor and beyond the maximum ratio. */
 export function exceedsZstdRatioGuard(uncompressedBytes: number, compressedBytes: number): boolean {
-  return (
-    uncompressedBytes > ZSTD_RATIO_GUARD_FLOOR_BYTES &&
-    compressedBytes > 0 &&
-    uncompressedBytes / compressedBytes > ZSTD_SECURITY_LIMITS.MAX_RATIO
-  );
+  return exceedsArchiveRatio(uncompressedBytes, compressedBytes, ZSTD_SECURITY_LIMITS.MAX_RATIO);
 }
 
 let resolvedZstdPath: string | null = null;

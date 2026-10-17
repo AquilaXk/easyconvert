@@ -309,7 +309,7 @@ describe('7z to tar failure modes', () => {
       bytes[200] ^= 0xff; // inside the stored data, well before the header at the end
       await expect(convertWithNative7z(bytes, '7z', 'tar', {}, 'damaged.7z')).rejects.toMatchObject({
         name: 'UnreadableArchiveError',
-        message: expect.stringMatching(/^Could not read the archive: 7-Zip rejected/),
+        message: "Could not read the archive: the data of 'docs/readme.txt' is damaged (7-Zip reports a data error).",
       });
     },
     TEST_TIMEOUT_MS

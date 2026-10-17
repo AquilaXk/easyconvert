@@ -16,6 +16,7 @@ import {
   SandboxedBufferLimitError,
   SandboxedProcessError,
 } from '../security/process-sandbox';
+import { damagedEntryMessage, diskImageMessage, multiVolumeMessage } from './archive-refusal-reasons';
 import {
   archiveFailureStderr,
   assertArchivePasswordSafe,
@@ -81,8 +82,14 @@ export interface ListedArchiveEntry {
   /** Declared uncompressed size, or null when the listing carries none. */
   sizeBytes: number | null;
   linkKind: 'symlink' | 'hardlink' | null;
+  /** What a link entry points at, as the listing prints it; absent for other entries and for links the listing gives no target for. */
+  linkTarget?: string;
   /** A device, FIFO or socket entry. */
   isSpecial: boolean;
+  /** The entry continues in the next volume of a multi-volume archive (the listing's `Split After`). */
+  splitAfter?: boolean;
+  /** The entry began in the previous volume (the listing's `Split Before`). */
+  splitBefore?: boolean;
   /** The single stream of a wrapper format (gz, bz2, xz, ...), whose size 7-Zip may not state. */
   wrapperPayload?: boolean;
 }
@@ -105,6 +112,14 @@ export interface ContainedTree {
 
 /** The archive is damaged or in a format 7-Zip cannot read (as opposed to a policy violation). */
 export class UnreadableArchiveError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnreadableArchiveError';
+  }
+}
+
+/** 7-Zip gave no reason it could print for refusing the archive (as opposed to a damaged entry or a missing volume). */
+export class UnopenableArchiveError extends UnreadableArchiveError {
   constructor(message: string) {
     super(message);
     this.name = 'UnreadableArchiveError';
@@ -183,11 +198,18 @@ const KNOWN_LISTING_KEYS = new Set([
 export const MAX_ENTRY_PATH_DEPTH = 256;
 
 /**
- * Decoded output below which the compression ratio is not judged (1 MiB). A few kilobytes of repetitive text deflate
- * past 100:1 without being a bomb, and the absolute caps already bound what a small output can cost. The gzip reader
- * and the ZIP reader share this floor.
+ * Decoded output up to which the compression ratio is not judged (32 MiB). Legitimate data compresses past 100:1 at
+ * sizes far above a few kilobytes (a sparse disk image, repeated log lines, a file of one repeated pattern), and the
+ * absolute size cap already bounds what any output can cost, so a ratio verdict on a small output only refuses real
+ * files. Every archive path (the native 7-Zip pipeline, the gzip, ZIP and 7z readers, the single-stream wrappers, the
+ * package layers and Zstandard) shares this one floor; the ratio itself and the size cap are unchanged.
  */
-export const ARCHIVE_RATIO_BASELINE_BYTES = 1024 * 1024;
+export const ARCHIVE_RATIO_FLOOR_BYTES = 32 * 1024 * 1024;
+
+/** True when `decodedBytes` from `archiveBytes` is past the floor and beyond the maximum compression ratio. */
+export function exceedsArchiveRatio(decodedBytes: number, archiveBytes: number, maxRatio: number): boolean {
+  return decodedBytes > ARCHIVE_RATIO_FLOOR_BYTES && archiveBytes > 0 && decodedBytes / archiveBytes > maxRatio;
+}
 const MAX_ENTRY_FILTER_PATTERNS = 1_000;
 const MAX_ENTRY_FILTER_TOTAL_BYTES = 64 * 1024;
 const ENTRY_FILTER_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
@@ -205,6 +227,10 @@ const WRAPPER_EXTENSION_SUFFIXES = new Map<string, string>([
   ['tbz2', '.tar'],
   ['tbz', '.tar'],
   ['txz', '.tar'],
+  // A package whose payload 7-Zip decompresses lists that stream without a name; a package whose payload it opens as a
+  // cpio or tar lists the files, so the single nameless block is the only case this name is used for.
+  ['rpm', ''],
+  ['deb', ''],
 ]);
 
 /** Output bound for a listing that may hold at most `limits.MAX_FILES` entries. */
@@ -248,22 +274,23 @@ function assertWithinSizeAndRatio(totalBytes: number, archiveBytes: number, limi
   if (totalBytes > limits.MAX_UNCOMPRESSED_SIZE) {
     throw sizeError(limits);
   }
-  if (archiveBytes > 0 && totalBytes / archiveBytes > limits.MAX_RATIO) {
+  if (exceedsArchiveRatio(totalBytes, archiveBytes, limits.MAX_RATIO)) {
     throw ratioError(totalBytes, archiveBytes, limits);
   }
 }
 
 /**
- * The bound on what one archive may unpack to when only its size is known: the size cap, or the ratio cap times the
- * archive's own size when that is smaller. A stream that passes it is within both caps; one that does not is a bomb.
+ * The bound on what one archive may unpack to when only its size is known: the size cap, or the larger of the ratio
+ * floor and the ratio cap times the archive's own size when that is smaller. A stream that passes it is within both
+ * caps; one that does not is a bomb.
  */
 export function unpackedBytesCap(archiveBytes: number, limits: ArchiveExtractionLimits): number {
-  return Math.min(limits.MAX_UNCOMPRESSED_SIZE, Math.floor(archiveBytes * limits.MAX_RATIO));
+  return Math.min(limits.MAX_UNCOMPRESSED_SIZE, Math.max(ARCHIVE_RATIO_FLOOR_BYTES, Math.floor(archiveBytes * limits.MAX_RATIO)));
 }
 
 /** The typed error for output that outgrew {@link unpackedBytesCap}: the ratio cap when it was the binding one, else the size cap. */
 export function unpackedBytesCapError(archiveBytes: number, limits: ArchiveExtractionLimits): UnsafeArchiveError {
-  if (Math.floor(archiveBytes * limits.MAX_RATIO) < limits.MAX_UNCOMPRESSED_SIZE) {
+  if (Math.max(ARCHIVE_RATIO_FLOOR_BYTES, Math.floor(archiveBytes * limits.MAX_RATIO)) < limits.MAX_UNCOMPRESSED_SIZE) {
     return new UnsafeArchiveError(
       'compression-ratio',
       `Archive bomb detected: compression ratio exceeds ${limits.MAX_RATIO}:1 limit`
@@ -325,13 +352,17 @@ function buildListedEntry(fields: Map<string, string>, payloadName?: string): Li
     linkKind = 'hardlink';
   }
 
+  const linkTarget = linkKind === 'symlink' ? symbolicTarget : hardTarget;
   const rawSize = fields.get('Size') ?? '';
   return {
     path: entryPath,
     isDirectory: classification.isDirectory,
     sizeBytes: DECIMAL_PATTERN.test(rawSize) ? Number(rawSize) : null,
     linkKind,
+    ...(linkTarget !== '' ? { linkTarget } : {}),
     isSpecial: classification.isSpecial,
+    ...(fields.get('Split After') === '+' ? { splitAfter: true } : {}),
+    ...(fields.get('Split Before') === '+' ? { splitBefore: true } : {}),
     ...(fields.has('Path') ? {} : { wrapperPayload: true }),
   };
 }
@@ -381,6 +412,27 @@ export function parse7zTechnicalListing(stdout: string, options: ListingParseOpt
 
   const isWrapperPayload = options.payloadName !== undefined && blocks.length === 1 && !blocks[0].has('Path');
   return blocks.map((block) => buildListedEntry(block, isWrapperPayload ? options.payloadName : undefined));
+}
+
+/**
+ * Hard links whose target is a regular entry of the same archive are as safe as the entries they repeat: 7-Zip makes them
+ * between names inside the extraction root, and the packer stores each name with its content. They come back as ordinary
+ * entries. A hard link whose target is not such an entry (missing, a link itself, a directory, or a name that is not a
+ * plain relative path) stays a link, for the policy to skip or refuse. The extracted tree is checked again afterwards
+ * (see `allowInternalHardLinks`), so this reading of the listing is not the only guard.
+ */
+export function acceptInternalHardLinks(entries: ListedArchiveEntry[]): ListedArchiveEntry[] {
+  const regularFiles = new Set<string>();
+  for (const entry of entries) {
+    if (entry.linkKind === null && !entry.isDirectory && !entry.isSpecial) regularFiles.add(normalizeEntryKey(entry.path));
+  }
+  return entries.map((entry) => {
+    const target = entry.linkTarget;
+    if (entry.linkKind !== 'hardlink' || target === undefined || entryPathProblem(target) !== null) return entry;
+    if (!regularFiles.has(normalizeEntryKey(target))) return entry;
+    const { linkTarget: _target, ...extracted } = entry;
+    return { ...extracted, linkKind: null };
+  });
 }
 
 /** Why an entry name cannot be extracted under the root, or null when it is a plain relative path. */
@@ -657,6 +709,23 @@ export function assertExclusionExact(full: ListedArchiveEntry[], filtered: Liste
   }
 }
 
+/**
+ * 7-Zip applies the mode an archive stored. Two things about that are not safe to pass on. A mode may have no permission
+ * bits at all (the packages of a distribution have such files), so the owner is given read access to files and full access
+ * to directories, which packing, listing and deleting need. And a mode may carry setuid, setgid or sticky bits, which
+ * have no place in a converted archive: the packer would store them, and whoever extracts that archive as a privileged
+ * user would get a set-user-ID file. Only the nine permission bits are kept (plus the owner access).
+ */
+const OWNER_FILE_ACCESS = 0o600;
+const OWNER_DIRECTORY_ACCESS = 0o700;
+const PERMISSION_BITS = 0o777;
+const MODE_BITS = 0o7777;
+
+function normalizeExtractedMode(entry: string, mode: number, ownerAccess: number): void {
+  const wanted = (mode & PERMISSION_BITS) | ownerAccess;
+  if (wanted !== (mode & MODE_BITS)) fs.chmodSync(entry, wanted);
+}
+
 function isInside(realRoot: string, candidate: string): boolean {
   return candidate === realRoot || candidate.startsWith(realRoot + path.sep);
 }
@@ -671,10 +740,13 @@ function isInside(realRoot: string, candidate: string): boolean {
 export function assertExtractionContained(
   root: string,
   archiveBytes: number,
-  limits: ArchiveExtractionLimits
+  limits: ArchiveExtractionLimits,
+  options: { allowInternalHardLinks?: boolean } = {}
 ): ContainedTree {
   const realRoot = fs.realpathSync(root);
   const files: ExtractedFile[] = [];
+  const sharedInodes = new Map<string, { names: number; links: number }>();
+  const sharedFiles: Array<{ abs: string; mode: number }> = [];
   let entryCount = 0;
   let totalBytes = 0;
   const pending: Array<{ abs: string; rel: string; depth: number }> = [{ abs: realRoot, rel: '', depth: 0 }];
@@ -702,10 +774,17 @@ export function assertExtractionContained(
       }
 
       if (stat.isDirectory()) {
+        normalizeExtractedMode(abs, stat.mode, OWNER_DIRECTORY_ACCESS);
         pending.push({ abs, rel, depth });
       } else if (stat.isFile()) {
         if (stat.nlink > 1) {
-          throw new UnsafeArchiveError('link-entry', 'Extraction produced a hard link, which is not allowed.');
+          if (!options.allowInternalHardLinks) {
+            throw new UnsafeArchiveError('link-entry', 'Extraction produced a hard link, which is not allowed.');
+          }
+          recordSharedInode(sharedInodes, abs, stat.nlink);
+          sharedFiles.push({ abs, mode: stat.mode });
+        } else {
+          normalizeExtractedMode(abs, stat.mode, OWNER_FILE_ACCESS);
         }
         totalBytes += stat.size;
         if (totalBytes > limits.MAX_UNCOMPRESSED_SIZE) {
@@ -718,9 +797,29 @@ export function assertExtractionContained(
     }
   }
 
+  // A name outside the root would make the inode's link count larger than the names found inside it.
+  for (const shared of sharedInodes.values()) {
+    if (shared.names !== shared.links) {
+      throw new UnsafeArchiveError('link-entry', 'Extraction produced a hard link to a file outside the extraction directory.');
+    }
+  }
+  // Only now is every name of these inodes known to be inside the root, so changing a mode cannot reach a file outside it.
+  for (const shared of sharedFiles) normalizeExtractedMode(shared.abs, shared.mode, OWNER_FILE_ACCESS);
   assertWithinSizeAndRatio(totalBytes, archiveBytes, limits);
   files.sort((x, y) => (x.relPath < y.relPath ? -1 : 1));
   return { files, entryCount, totalBytes, skippedLinks: [] };
+}
+
+/** Counts one more name for the inode of `file`; the key is read as a bigint so two inodes never share a key by rounding. */
+function recordSharedInode(shared: Map<string, { names: number; links: number }>, file: string, links: number): void {
+  const exact = fs.lstatSync(file, { bigint: true });
+  const key = `${exact.dev}:${exact.ino}`;
+  const seen = shared.get(key);
+  if (seen) {
+    seen.names++;
+  } else {
+    shared.set(key, { names: 1, links });
+  }
 }
 
 /**
@@ -803,6 +902,11 @@ export interface ContainedExtractionRequest {
   ratioBaseBytes?: number;
   /** Opt in to leaving link entries out of the extraction (reported in `skippedLinks`) instead of rejecting. */
   skipLinks?: boolean;
+  /**
+   * Accept files that share an inode when every name of that inode is inside the extraction root. A cpio writes the
+   * hard links of a package that way and 7-Zip recreates them; one with a name outside the root is still refused.
+   */
+  allowInternalHardLinks?: boolean;
   /** What to do when two entries share a path. Defaults to 'rename', which native extraction hands to another engine. */
   collisionPolicy?: ArchiveCollisionPolicy;
   /**
@@ -929,10 +1033,15 @@ export function toArchiveFailure(
       ? new InvalidArchivePasswordError(`Invalid password for encrypted ${label}.`)
       : new ArchivePasswordRequiredError(`The ${label} is password protected. A password is required to extract.`);
   }
-  return new UnreadableArchiveError(
+  const missingVolume = phase === 'list' ? multiVolumeRefusal(err) : null;
+  if (missingVolume !== null) return missingVolume;
+  const damaged = damagedEntryMessage(stderr);
+  if (damaged !== null) return new UnreadableArchiveError(damaged);
+  return new UnopenableArchiveError(
     `Could not read the archive: 7-Zip rejected the ${label} as malformed or unsupported (exit code ${failure.exitCode ?? 'unknown'}).`
   );
 }
+
 
 interface ListTarget {
   archivePath: string;
@@ -986,7 +1095,13 @@ async function listArchive(request: ContainedExtractionRequest, target: ListTarg
     stdin,
     signal: request.signal,
   });
-  return parse7zTechnicalListing(stripSevenZipPasswordPrompt(result.stdout.toString('utf-8')), { payloadName: wrapperPayloadName(target.archivePath) });
+  return readListing(request, result.stdout.toString('utf-8'), target.archivePath);
+}
+
+/** Parses a listing; with `allowInternalHardLinks` the hard links between entries of the archive count as the files they are. */
+function readListing(request: ContainedExtractionRequest, stdout: string, archivePath: string): ListedArchiveEntry[] {
+  const entries = parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdout), { payloadName: wrapperPayloadName(archivePath) });
+  return request.allowInternalHardLinks ? acceptInternalHardLinks(entries) : entries;
 }
 
 /**
@@ -1014,11 +1129,33 @@ function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget
     maxBuffer: listingBufferLimit(request.limits),
     input: stdin,
   });
-  return parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdout.toString('utf-8')), { payloadName: wrapperPayloadName(target.archivePath) });
+  return readListing(request, stdout.toString('utf-8'), target.archivePath);
 }
 
 function excludeArgsFor(skippedLinks: string[]): string[] {
   return skippedLinks.map((linkPath) => `-x!${linkPath}`);
+}
+
+/**
+ * 7-Zip exits non-zero when the next volume of a set is missing, but it prints the listing first. That listing, read as any
+ * other, tells which part of the set this is; one that cannot be read (forged lines, for instance) leaves the generic answer.
+ */
+function multiVolumeRefusal(err: unknown): UnreadableArchiveError | null {
+  const printed = (err as { stdout?: unknown } | null)?.stdout;
+  if (typeof printed !== 'string' && !Buffer.isBuffer(printed)) return null;
+  try {
+    const message = multiVolumeMessage(parse7zTechnicalListing(stripSevenZipPasswordPrompt(printed.toString())));
+    return message === null ? null : new UnreadableArchiveError(message);
+  } catch {
+    return null;
+  }
+}
+
+/** A listing 7-Zip could not produce for a disk image is named for what the image is, not left as a generic refusal. */
+function refineListFailure(failure: unknown, request: ContainedExtractionRequest): unknown {
+  if (!(failure instanceof UnopenableArchiveError) || request.typeFlag !== undefined) return failure;
+  const message = diskImageMessage(request.archivePath);
+  return message === null ? failure : new UnreadableArchiveError(message);
 }
 
 /** Vets a listing and, when links are being skipped, returns the exclusion patterns plus the verdict. */
@@ -1027,6 +1164,8 @@ function vetListing(
   listing: ListedArchiveEntry[],
   ratioBytes: number
 ): ListingVerdict {
+  const incomplete = multiVolumeMessage(listing);
+  if (incomplete !== null) throw new UnreadableArchiveError(incomplete);
   return assertSafeArchiveListing(listing, ratioBytes, request.limits, { skipLinks: request.skipLinks });
 }
 
@@ -1156,7 +1295,7 @@ export async function extractArchiveContained(request: ContainedExtractionReques
     }
     assertCollisionPolicy(listing, request.collisionPolicy);
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
+    throw refineListFailure(toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password)), request);
   }
 
   try {
@@ -1175,7 +1314,10 @@ export async function extractArchiveContained(request: ContainedExtractionReques
     throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password));
   }
 
-  const tree = withSkippedLinks(assertExtractionContained(request.extractDir, ratioBytes, request.limits), skippedLinks);
+  const tree = withSkippedLinks(
+    assertExtractionContained(request.extractDir, ratioBytes, request.limits, { allowInternalHardLinks: request.allowInternalHardLinks }),
+    skippedLinks
+  );
 
   if (request.validateNestedTar) {
     await vetNestedTar(request, tree, ratioBytes);
@@ -1200,7 +1342,7 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
     }
     assertCollisionPolicy(listing, request.collisionPolicy);
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
+    throw refineListFailure(toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password)), request);
   }
 
   try {
@@ -1220,7 +1362,10 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
     throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password));
   }
 
-  return withSkippedLinks(assertExtractionContained(request.extractDir, ratioBytes, request.limits), skippedLinks);
+  return withSkippedLinks(
+    assertExtractionContained(request.extractDir, ratioBytes, request.limits, { allowInternalHardLinks: request.allowInternalHardLinks }),
+    skippedLinks
+  );
 }
 
 /**

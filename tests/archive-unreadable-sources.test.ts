@@ -37,7 +37,7 @@ describe('archive sources the in-process engine cannot read', () => {
     expect((failure as Error).message).toBe(`Engine '7-Zip' is unavailable: reading .${format} archives needs the native 7-Zip engine`);
   });
 
-  it.each(['ace', 'alz', 'arc', 'lz', 'lzo', 'rz', 'tar.lzo', 'tzo'])('.%s has no reader on any engine and is refused', async (format) => {
+  it.each(['ace', 'alz', 'arc', 'rz'])('.%s has no reader on any engine and is refused', async (format) => {
     const failure = await convertFile(Buffer.from('anything at all'), format, 'zip', {}, `sample.${format}`).catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(ConversionFailedError);
     expect(failure).not.toBeInstanceOf(EngineMissingError);

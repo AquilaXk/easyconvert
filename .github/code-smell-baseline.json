@@ -565,7 +565,7 @@
     "rule": "complexity",
     "function": "convertArchive",
     "count": 1,
-    "maxValue": 117
+    "maxValue": 112
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -579,7 +579,7 @@
     "rule": "complexity",
     "function": "extractRarArchive",
     "count": 1,
-    "maxValue": 49
+    "maxValue": 48
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -621,14 +621,14 @@
     "rule": "max-lines-per-function",
     "function": "convertArchive",
     "count": 1,
-    "maxValue": 362
+    "maxValue": 350
   },
   {
     "file": "src/lib/conversions/archive.ts",
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4253
+    "maxValue": 4234
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -3096,7 +3096,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2792
+    "maxValue": 2729
   },
   {
     "file": "src/worker/engines.ts",

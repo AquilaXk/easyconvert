@@ -74,7 +74,12 @@ export type ExternalOracleTool =
   | 'opj_decompress'
   | 'cwebp'
   | 'dwebp'
-  | 'epubcheck';
+  | 'epubcheck'
+  | 'lzop'
+  | 'lzip'
+  | 'rpm2cpio'
+  | 'cpio'
+  | 'dpkg-deb';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;

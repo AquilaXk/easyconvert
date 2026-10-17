@@ -161,8 +161,8 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
     });
 
     it('enforces maximum compression ratio limit (100:1)', async () => {
-      // 4 MiB of zeros compresses to a few kilobytes in DEFLATE, ratio > 100:1, past the 1 MiB output the ratio is judged from
-      const repetitiveData = Buffer.alloc(4 * 1024 * 1024, 0);
+      // 40 MiB of zeros compresses to a few tens of kilobytes in DEFLATE, ratio > 100:1, past the 32 MiB output the ratio is judged from
+      const repetitiveData = Buffer.alloc(40 * 1024 * 1024, 0);
       const zip = new JSZip();
       zip.file('repetitive.bin', repetitiveData, { compression: 'DEFLATE', compressionOptions: { level: 9 } });
       const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });

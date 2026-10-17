@@ -759,8 +759,8 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
   describe('8. Hardened Archive Decompression Bomb Defense & Stream Chunking', () => {
     it('aborts stream early and throws when archive compression ratio exceeds security limits', async () => {
       const zip = new JSZip();
-      // 4 MiB of zeros compresses down to a few kilobytes (> 1000:1 ratio, exceeding 100:1 limit) and is past the 1 MiB output the ratio is judged from
-      zip.file('bomb.bin', Buffer.alloc(4 * 1024 * 1024, 0));
+      // 40 MiB of zeros compresses down to a few tens of kilobytes (> 1000:1 ratio, exceeding 100:1 limit) and is past the 32 MiB output the ratio is judged from
+      zip.file('bomb.bin', Buffer.alloc(40 * 1024 * 1024, 0));
       const zipBuffer = await zip.generateAsync({
         type: 'nodebuffer',
         compression: 'DEFLATE',

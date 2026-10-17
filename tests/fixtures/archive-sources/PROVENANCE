@@ -48,6 +48,41 @@ long.txt.Z                 ncompress 5.0                                 compres
 long.txt.lzma              xz 5.4.5 (lzma alone)                         lzma -kc long.txt > long.txt.lzma
                            (long.txt = 400 lines `line NNNN of the archive probe payload\n`, NNNN zero-padded 0000..0399, 15600 bytes)
 
+Packages, a disk image and lzip / lzop files for tests/archive-package-sources.test.ts and tests/archive-lzip-lzop-sources.test.ts
+(built on Ubuntu 24.04 for everything except links.dmg; payload as above, plus `link.txt -> hello.txt` and `hard.txt`, a hard link of hello.txt):
+
+File                       Tool and version                              Command (run in WORK)
+-------------------------  --------------------------------------------  ---------------------------------------------------------------
+links.xz.deb               dpkg-deb 1.22.6                               dpkg-deb --root-owner-group -Zxz -b debroot links.xz.deb
+links.zst.deb              dpkg-deb 1.22.6                               dpkg-deb --root-owner-group -Zzstd -b debroot links.zst.deb
+                                                                         (debroot/opt/pkg/ holds the payload tree, `ln hello.txt hard.txt`, `ln -s hello.txt link.txt`;
+                                                                         DEBIAN/control names the package `pkg`, architecture all)
+links.xz.rpm               rpmbuild 4.18.2                               rpmbuild -bb --define "_topdir $PWD/rpmtop" --define "_binary_payload w9.xzdio"
+links.zst.rpm              rpmbuild 4.18.2                                 --define "_buildhost fixture" --define "use_source_date_epoch_as_buildtime 1"
+                                                                         --define "clamp_mtime_to_source_date_epoch 1" --define "source_date_epoch_from_changelog 0" links.spec
+                                                                         (zstd: w19.zstdio; generators/links.spec installs the same tree under /opt/pkg)
+empty.xz.deb               dpkg-deb 1.22.6                               dpkg-deb --root-owner-group -Zxz -b emptydeb empty.xz.deb   (emptydeb holds only DEBIAN/control)
+empty.xz.rpm               rpmbuild 4.18.2                               the rpmbuild command above with generators/empty.spec (an empty %files section)
+links.dmg                  hdiutil (macOS 27, Apple disk utility)        hdiutil create -srcfolder src -format UDZO -fs HFS+ -volname PROBE links.dmg
+                                                                         (src holds hello.txt, dir/nested.txt, dir/data.bin, `ln -s hello.txt link.txt`, `ln -s /Applications Applications`,
+                                                                         `ln -s ../hello.txt dir/up-link.txt`; the disk utility tagged each file with the extended attribute
+                                                                         com.apple.provenance, which 7-Zip lists as `<file>:com.apple.provenance`)
+long.txt.lzo               lzop 1.04 (LZO library 2.10)                  lzop -1 -c long.txt > long.txt.lzo
+long-best-crc32.txt.lzo    lzop 1.04                                     lzop -9 --crc32 -c long.txt > long-best-crc32.txt.lzo
+long-nochecksum.txt.lzo    lzop 1.04                                     lzop -1 -F -c long.txt > long-nochecksum.txt.lzo
+multiblock.txt.lzo         lzop 1.04                                     lzop -3 -c multiblock.txt > multiblock.txt.lzo
+                                                                         (multiblock.txt = 12000 lines `line NNNNNN of the multi block payload\n`, NNNNNN = line number // 10,
+                                                                         468000 bytes: two 256 KiB-class blocks)
+tree.tar.lzo               lzop 1.04                                     tar --format=ustar --owner=0 --group=0 --numeric-owner --mtime='2024-01-02 03:04:06' -cf tree.tar -C src hello.txt dir &&
+                                                                         lzop -1 -c tree.tar > tree.tar.lzo
+long.txt.lz                lzip 1.24.1                                   lzip -9 -c long.txt > long.txt.lz
+tree.tar.lz                lzip 1.24.1                                   lzip -9 -c tree.tar > tree.tar.lz
+two-members.txt.lz         lzip 1.24.1                                   head -c 7800 long.txt | lzip -9 -c > two-members.txt.lz && tail -c +7801 long.txt | lzip -9 -c >> two-members.txt.lz
+
+zeros-20mib.cab            gcab 1.6 (MSZIP)                              python3 -c 'open("zeros-20mib.bin","wb").write(bytes(20*1024*1024))' && touch -d '2024-01-02 03:04:06' zeros-20mib.bin &&
+                                                                         gcab -c -z zeros-20mib.cab zeros-20mib.bin   (20 MiB of zero bytes in 35,916 bytes: 584:1, a file the
+                                                                         ratio rule must not refuse; cabextract -l lists the one 20,971,520-byte member)
+
 Listing keys seen with `7z l -slt -ba` (7-Zip 23.01 and p7zip 16.02) that were not in the whitelist before this change:
   Metadata Changed   UDF images, HFS+ volumes (also inside the DMG)
 All other keys (including p7zip 16.02's `User` and `Group` for ext4 and DEB) were already allowed.

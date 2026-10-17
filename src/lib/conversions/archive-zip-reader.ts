@@ -6,7 +6,7 @@ import {
   UnsupportedArchiveMethodError,
 } from '../types';
 import {
-  ARCHIVE_RATIO_BASELINE_BYTES,
+  exceedsArchiveRatio,
   assertSafeArchiveEntryName,
   assertSafeArchiveListing,
   UnsafeArchiveError,
@@ -629,7 +629,7 @@ export async function readZipEntries(
     }
     selected.push({ entry, data: ranges[index], filename, isDirectory: listed.isDirectory });
   });
-  if (declaredTotal > ARCHIVE_RATIO_BASELINE_BYTES && buf.length > 0 && declaredTotal / buf.length > limits.MAX_RATIO) {
+  if (exceedsArchiveRatio(declaredTotal, buf.length, limits.MAX_RATIO)) {
     throw new DecompressionLimitError(
       `Archive bomb detected: compression ratio (${(declaredTotal / buf.length).toFixed(1)}:1) exceeds ${limits.MAX_RATIO}:1 limit`
     );

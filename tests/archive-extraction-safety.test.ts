@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   NativeRenameUnsupportedError,
   UnsafeArchiveError,
+  acceptInternalHardLinks,
   assertArchivePasswordSafe,
   assertCollisionPolicy,
   assertExclusionExact,
@@ -205,10 +206,22 @@ describe('assertSafeArchiveListing', () => {
     expect(unsafeReason(() => assertSafeArchiveListing(entries, 501 * MIB, LIMITS))).toBe('uncompressed-size');
   });
 
-  it('accepts exactly 100:1 and rejects anything above it', () => {
-    expect(assertSafeArchiveListing([file('a', 100_000)], 1000, LIMITS).totalBytes).toBe(100_000);
+  it('accepts exactly 100:1 and rejects anything above it, once the output is past the floor', () => {
+    expect(assertSafeArchiveListing([file('a', 100 * MIB)], MIB, LIMITS).totalBytes).toBe(100 * MIB);
 
-    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 100_001)], 1000, LIMITS))).toBe('compression-ratio');
+    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 100 * MIB + 1)], MIB, LIMITS))).toBe('compression-ratio');
+  });
+
+  it('does not judge the ratio of an output up to 32 MiB, however small the archive, and judges it from the next byte', () => {
+    expect(assertSafeArchiveListing([file('a', 32 * MIB)], 1000, LIMITS).totalBytes).toBe(32 * MIB);
+    expect(assertSafeArchiveListing([file('a', 20 * MIB), file('b', 12 * MIB)], 1000, LIMITS).totalBytes).toBe(32 * MIB);
+
+    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 32 * MIB + 1)], 1000, LIMITS))).toBe('compression-ratio');
+    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 20 * MIB), file('b', 12 * MIB + 1)], 1000, LIMITS))).toBe('compression-ratio');
+  });
+
+  it('keeps the size cap in force below the ratio floor of a tiny archive', () => {
+    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 500 * MIB + 1)], 1000, LIMITS))).toBe('uncompressed-size');
   });
 
   it('rejects a file entry whose size the listing does not state', () => {
@@ -297,6 +310,43 @@ describe('assertSafeArchiveListing with skipLinks', () => {
     const entries = [file('same', 3), symlink('same')];
 
     expect(unsafeReason(() => assertSafeArchiveListing(entries, 100, LIMITS, { skipLinks: true }))).toBe('link-entry');
+  });
+});
+
+describe('acceptInternalHardLinks', () => {
+  const hardLink = (entryPath: string, target: string | undefined): ListedArchiveEntry => ({
+    path: entryPath,
+    isDirectory: false,
+    sizeBytes: 0,
+    linkKind: 'hardlink',
+    ...(target === undefined ? {} : { linkTarget: target }),
+    isSpecial: false,
+  });
+  const symlink = (entryPath: string, target: string): ListedArchiveEntry => ({ ...hardLink(entryPath, target), linkKind: 'symlink' });
+  const accepted = (entries: ListedArchiveEntry[]): Array<string | null> => acceptInternalHardLinks(entries).map((entry) => entry.linkKind);
+
+  it('turns a hard link to a regular entry of the archive into an ordinary entry, whatever the spelling of the path', () => {
+    const result = acceptInternalHardLinks([file('./opt/a.txt', 5), hardLink('./opt/b.txt', './opt/a.txt')]);
+
+    expect(result[1]).toEqual({ path: './opt/b.txt', isDirectory: false, sizeBytes: 0, linkKind: null, isSpecial: false });
+    expect(accepted([file('opt/a.txt', 5), hardLink('b.txt', 'opt//./a.txt')])).toEqual([null, null]);
+  });
+
+  it('leaves a hard link whose target is missing, a directory, a link or not a plain relative path', () => {
+    expect(accepted([hardLink('b', 'missing')])).toEqual(['hardlink']);
+    expect(accepted([directory('d'), hardLink('b', 'd')])).toEqual([null, 'hardlink']);
+    expect(accepted([symlink('s', 'x'), hardLink('b', 's')])).toEqual(['symlink', 'hardlink']);
+    expect(accepted([file('a', 1), hardLink('b', '../a')])).toEqual([null, 'hardlink']);
+    expect(accepted([file('/etc/passwd', 1), hardLink('b', '/etc/passwd')])).toEqual([null, 'hardlink']);
+    expect(accepted([hardLink('b', undefined)])).toEqual(['hardlink']);
+  });
+
+  it('does not chain: a hard link to a hard link stays a link', () => {
+    expect(accepted([file('a', 1), hardLink('b', 'a'), hardLink('c', 'b')])).toEqual([null, null, 'hardlink']);
+  });
+
+  it('never touches a symbolic link', () => {
+    expect(accepted([file('a', 1), symlink('s', 'a')])).toEqual([null, 'symlink']);
   });
 });
 
@@ -478,6 +528,106 @@ describe('assertExtractionContained', () => {
     expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS))).toBe('link-entry');
   });
 
+  describe('with allowInternalHardLinks', () => {
+    it('accepts names of one file that are all inside the root, counting each name', () => {
+      fs.writeFileSync(path.join(root, 'real.txt'), 'real');
+      fs.linkSync(path.join(root, 'real.txt'), path.join(root, 'hard.txt'));
+      fs.linkSync(path.join(root, 'real.txt'), path.join(root, 'third.txt'));
+
+      const tree = assertExtractionContained(root, 1000, LIMITS, { allowInternalHardLinks: true });
+
+      expect(tree.files.map((f) => f.relPath)).toEqual(['hard.txt', 'real.txt', 'third.txt']);
+      expect(tree.totalBytes).toBe(12);
+    });
+
+    it('counts every name of a hard-linked file toward the size cap, so many links to one file cannot multiply it past the cap', () => {
+      const big = path.join(root, 'big.bin');
+      fs.closeSync(fs.openSync(big, 'w'));
+      fs.truncateSync(big, 300 * MIB);
+      fs.linkSync(big, path.join(root, 'again.bin'));
+
+      expect(unsafeReason(() => assertExtractionContained(root, 300 * MIB, LIMITS, { allowInternalHardLinks: true }))).toBe('uncompressed-size');
+    });
+
+    it('rejects a name that is a hard link to a file outside the root', () => {
+      const elsewhere = path.join(outside, 'secret.txt');
+      fs.linkSync(elsewhere, path.join(root, 'stolen.txt'));
+
+      expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS, { allowInternalHardLinks: true }))).toBe('link-entry');
+    });
+
+    it('does not change the mode of a file outside the root that a name inside the root is linked to', () => {
+      const elsewhere = path.join(outside, 'secret.txt');
+      fs.chmodSync(elsewhere, 0o044);
+      fs.linkSync(elsewhere, path.join(root, 'stolen.txt'));
+
+      expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS, { allowInternalHardLinks: true }))).toBe('link-entry');
+      expect(fs.statSync(elsewhere).mode & 0o777).toBe(0o044);
+      fs.chmodSync(elsewhere, 0o644);
+    });
+
+    it('still rejects a symbolic link', () => {
+      fs.writeFileSync(path.join(root, 'real.txt'), 'real');
+      fs.symlinkSync('real.txt', path.join(root, 'alias.txt'));
+
+      expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS, { allowInternalHardLinks: true }))).toBe('link-entry');
+    });
+  });
+
+  it('gives the owner access to an extracted file and directory that the archive stored with no permission bits', () => {
+    const locked = path.join(root, 'locked');
+    fs.mkdirSync(locked);
+    fs.writeFileSync(path.join(locked, 'inside.txt'), 'inside');
+    fs.writeFileSync(path.join(root, 'shadow'), 'secret');
+    fs.chmodSync(path.join(root, 'shadow'), 0o000);
+    fs.chmodSync(locked, 0o000);
+
+    const tree = assertExtractionContained(root, 1000, LIMITS);
+
+    expect(tree.files.map((f) => f.relPath)).toEqual(['locked/inside.txt', 'shadow']);
+    expect(fs.readFileSync(path.join(root, 'shadow'), 'utf-8')).toBe('secret');
+    expect(fs.statSync(path.join(root, 'shadow')).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(locked).mode & 0o777).toBe(0o700);
+  });
+
+  it('strips setuid, setgid and sticky bits from files and directories, and keeps the nine permission bits', () => {
+    const files: Array<[string, number, number]> = [
+      ['setuid', 0o4755, 0o755],
+      ['setgid', 0o2755, 0o755],
+      ['both', 0o6711, 0o711],
+    ];
+    for (const [name, stored] of files) {
+      fs.writeFileSync(path.join(root, name), name);
+      fs.chmodSync(path.join(root, name), stored);
+    }
+    fs.mkdirSync(path.join(root, 'sticky'));
+    fs.chmodSync(path.join(root, 'sticky'), 0o1777);
+
+    assertExtractionContained(root, 1000, LIMITS);
+
+    for (const [name, , expected] of files) expect(fs.statSync(path.join(root, name)).mode & 0o7777, name).toBe(expected);
+    expect(fs.statSync(path.join(root, 'sticky')).mode & 0o7777).toBe(0o777);
+  });
+
+  it('strips the special bits of names that share an inode once all of them are known to be inside the root', () => {
+    fs.writeFileSync(path.join(root, 'tool'), 'tool');
+    fs.linkSync(path.join(root, 'tool'), path.join(root, 'tool-again'));
+    fs.chmodSync(path.join(root, 'tool'), 0o4755);
+
+    assertExtractionContained(root, 1000, LIMITS, { allowInternalHardLinks: true });
+
+    expect(fs.statSync(path.join(root, 'tool')).mode & 0o7777).toBe(0o755);
+  });
+
+  it('adds only the owner bits, leaving the other permission bits as the archive had them', () => {
+    fs.writeFileSync(path.join(root, 'public.txt'), 'x');
+    fs.chmodSync(path.join(root, 'public.txt'), 0o044);
+
+    assertExtractionContained(root, 1000, LIMITS);
+
+    expect(fs.statSync(path.join(root, 'public.txt')).mode & 0o777).toBe(0o644);
+  });
+
   it.skipIf(skipUnless('mkfifo', fs.existsSync('/usr/bin/mkfifo')))('rejects a FIFO', () => {
     execFileSync('/usr/bin/mkfifo', [path.join(root, 'pipe')]);
 
@@ -500,12 +650,20 @@ describe('assertExtractionContained', () => {
     expect(unsafeReason(() => assertExtractionContained(root, 500 * MIB, LIMITS))).toBe('uncompressed-size');
   });
 
-  it('rejects output whose size is more than 100 times the archive', () => {
+  it('rejects output past the floor whose size is more than 100 times the archive', () => {
     const sparse = path.join(root, 'sparse.bin');
     fs.closeSync(fs.openSync(sparse, 'w'));
-    fs.truncateSync(sparse, MIB);
+    fs.truncateSync(sparse, 32 * MIB + 1);
 
     expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS))).toBe('compression-ratio');
+  });
+
+  it('accepts output of exactly 32 MiB however small the archive', () => {
+    const sparse = path.join(root, 'sparse.bin');
+    fs.closeSync(fs.openSync(sparse, 'w'));
+    fs.truncateSync(sparse, 32 * MIB);
+
+    expect(assertExtractionContained(root, 1000, LIMITS).totalBytes).toBe(32 * MIB);
   });
 
   it('accepts exactly the entry cap of files within a reasonable time', () => {

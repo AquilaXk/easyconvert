@@ -275,7 +275,7 @@ describe('native route: limits apply to the stream while it flows', () => {
       damaged[damaged.length >> 1] ^= 0xff;
       await expect(convertWithNative7z(damaged, 'xz', 'tar', {}, 'damaged.xz')).rejects.toMatchObject({
         name: 'UnreadableArchiveError',
-        message: expect.stringMatching(/^Could not read the archive: 7-Zip rejected/),
+        message: 'Could not read the archive: the compressed data is damaged (7-Zip reports a data error).',
       });
     },
     TEST_TIMEOUT_MS
