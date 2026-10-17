@@ -8,11 +8,7 @@ import {
   createCanonicalFont,
   WOFF2_KNOWN_TAGS,
 } from '../src/lib/conversions/font';
-import {
-  extractStepBRepMesh,
-  tessellateCadText,
-  parseStepEntities,
-} from '../src/lib/conversions/cad-nurbs';
+
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { convertImage } from '../src/lib/conversions/image';
 import {
@@ -97,94 +93,6 @@ describe('Phase 2: Commercial-grade Engine Stack Integration', () => {
       const decodedFont = decodeWoff2(woff2Buffer, 'SampleFont');
       expect(decodedFont.numTables).toBe(Object.keys(canonical.tables).length);
       expect(decodedFont.tables['head']).toBeDefined();
-    });
-  });
-
-  describe('4. B-Rep CAD STEP Topology Parsing & Tessellation', () => {
-    it('parses STEP ADVANCED_FACE and EDGE_LOOP entities into watertight 3D mesh', () => {
-      // Minimal STEP solid cube face (Z=0 plane bounded by 4 vertices)
-      const stepContent = `
-ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('STEP Model with B-Rep topology'),'2;1');
-FILE_NAME('cube_face.stp','2026-09-27T00:00:00',('Author'),('Org'),'','','');
-FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
-ENDSEC;
-DATA;
-#10 = ADVANCED_FACE('', (#11), #20, .T.);
-#11 = FACE_OUTER_BOUND('', #12, .T.);
-#12 = EDGE_LOOP('', (#13, #14, #15, #16));
-#13 = ORIENTED_EDGE('', *, *, #30, .T.);
-#14 = ORIENTED_EDGE('', *, *, #31, .T.);
-#15 = ORIENTED_EDGE('', *, *, #32, .T.);
-#16 = ORIENTED_EDGE('', *, *, #33, .T.);
-#30 = EDGE_CURVE('', #40, #41, #50, .T.);
-#31 = EDGE_CURVE('', #41, #42, #51, .T.);
-#32 = EDGE_CURVE('', #42, #43, #52, .T.);
-#33 = EDGE_CURVE('', #43, #40, #53, .T.);
-#40 = VERTEX_POINT('', #60);
-#41 = VERTEX_POINT('', #61);
-#42 = VERTEX_POINT('', #62);
-#43 = VERTEX_POINT('', #63);
-#60 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
-#61 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
-#62 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
-#63 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
-#20 = PLANE('', #70);
-#70 = AXIS2_PLACEMENT_3D('', #60, #71, #72);
-#71 = DIRECTION('', (0.0, 0.0, 1.0));
-#72 = DIRECTION('', (1.0, 0.0, 0.0));
-ENDSEC;
-END-ISO-10303-21;
-`;
-
-      const entityMap = parseStepEntities(stepContent);
-      const mesh = extractStepBRepMesh(entityMap, 'cube_face');
-
-      expect(mesh).not.toBeNull();
-      expect(mesh!.vertices.length).toBe(4);
-      expect(mesh!.faces.length).toBe(2); // Quad decomposed into 2 triangles
-      expect(mesh!.normals[0][2]).toBeCloseTo(1.0); // Normal along Z axis
-    });
-
-    it('converts STEP solid with B-Rep faces to valid STL mesh', async () => {
-      const stepContent = `
-ISO-10303-21;
-HEADER;
-FILE_NAME('brep_part.stp','2026-09-27',('Eng'),('Company'),'','','');
-ENDSEC;
-DATA;
-#10 = ADVANCED_FACE('TOP', (#11), #20, .T.);
-#11 = FACE_OUTER_BOUND('', #12, .T.);
-#12 = EDGE_LOOP('', (#13, #14, #15));
-#13 = ORIENTED_EDGE('', *, *, #30, .T.);
-#14 = ORIENTED_EDGE('', *, *, #31, .T.);
-#15 = ORIENTED_EDGE('', *, *, #32, .T.);
-#30 = EDGE_CURVE('', #40, #41, #50, .T.);
-#31 = EDGE_CURVE('', #41, #42, #51, .T.);
-#32 = EDGE_CURVE('', #42, #40, #52, .T.);
-#40 = VERTEX_POINT('', #60);
-#41 = VERTEX_POINT('', #61);
-#42 = VERTEX_POINT('', #62);
-#60 = CARTESIAN_POINT('', (0.0, 0.0, 5.0));
-#61 = CARTESIAN_POINT('', (5.0, 0.0, 5.0));
-#62 = CARTESIAN_POINT('', (0.0, 5.0, 5.0));
-ENDSEC;
-END-ISO-10303-21;
-`;
-
-      const res = await convertVectorCad(
-        Buffer.from(stepContent, 'utf-8'),
-        'step',
-        'stl',
-        {},
-        'part.step'
-      );
-
-      expect(res.filename).toBe('part.stl');
-      expect(res.mimeType).toBe('model/stl');
-      expect(res.buffer.toString('utf-8')).toContain('facet normal');
-      expect(res.buffer.toString('utf-8')).toContain('endsolid');
     });
   });
 

@@ -6,10 +6,7 @@ import {
   applyFloydSteinbergDither,
 } from '../src/lib/conversions/quantize';
 import { performOcr } from '../src/lib/conversions/ocr';
-import {
-  triangulatePolygonEarcut,
-  Point3D,
-} from '../src/lib/conversions/cad-nurbs';
+
 import sharp from 'sharp';
 
 describe('Phase 2: State-of-the-Art Algorithms & Edge Acceleration', () => {
@@ -87,39 +84,6 @@ describe('Phase 2: State-of-the-Art Algorithms & Edge Acceleration', () => {
       expect(result).toBeDefined();
       expect(result.imageWidth).toBe(120);
       expect(result.imageHeight).toBe(40);
-    });
-  });
-
-  describe('3. CAD 2D Parameter-Plane Earcut CDT Triangulation', () => {
-    it('triangulates convex and concave (L-shaped) polygons preserving watertight topology', () => {
-      // Concave L-shaped polygon (6 vertices)
-      // (0,0) -> (2,0) -> (2,1) -> (1,1) -> (1,2) -> (0,2)
-      const normal: [number, number, number] = [0, 0, 1];
-      const lPolygon: Point3D[] = [
-        { x: 0, y: 0, z: 0 },
-        { x: 2, y: 0, z: 0 },
-        { x: 2, y: 1, z: 0 },
-        { x: 1, y: 1, z: 0 },
-        { x: 1, y: 2, z: 0 },
-        { x: 0, y: 2, z: 0 },
-      ];
-
-      const triangles = triangulatePolygonEarcut(lPolygon, normal);
-      // An n-gon without holes always produces exactly (n - 2) triangles: 6 - 2 = 4 triangles
-      expect(triangles).toHaveLength(4);
-
-      for (const [i0, i1, i2] of triangles) {
-        expect(i0).toBeGreaterThanOrEqual(0);
-        expect(i0).toBeLessThan(6);
-        expect(i1).toBeGreaterThanOrEqual(0);
-        expect(i1).toBeLessThan(6);
-        expect(i2).toBeGreaterThanOrEqual(0);
-        expect(i2).toBeLessThan(6);
-        // All vertices of triangle must be distinct
-        expect(i0).not.toBe(i1);
-        expect(i1).not.toBe(i2);
-        expect(i0).not.toBe(i2);
-      }
     });
   });
 

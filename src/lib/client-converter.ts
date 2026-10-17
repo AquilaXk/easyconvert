@@ -1,7 +1,6 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
 import { resolveConversionTier, resolveTierAfterEdgeFailure, checkOpfsSupport, ConversionTier } from './edge/tier-router';
-import { isPureCadConvertible, convertPureCad } from './edge/pure/pure-cad';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
 import { OPFS_MAX_FILE_BYTES } from './edge/opfs/limits';
@@ -277,23 +276,6 @@ async function processL0Conversion(
   onProgress?.(25);
 
   // Structured data never resolves to L0: the router sends it to the server data engine.
-
-  // Pure CAD tessellation (STEP, IGES -> STL, OBJ)
-  if (isPureCadConvertible(src, tgt)) {
-    const arrayBuf = await item.file.arrayBuffer();
-    onProgress?.(50);
-    const baseName = item.name.replace(/\.[^/.]+$/, '');
-    const res = convertPureCad(new Uint8Array(arrayBuf), src, tgt, baseName);
-    onProgress?.(95);
-    const blob = new Blob([res.data as any], { type: res.mimeType });
-    const resultUrl = URL.createObjectURL(blob);
-    return {
-      resultUrl,
-      resultSize: blob.size,
-      tier: 'L0',
-      tierName: 'Edge L0 (Instant)',
-    };
-  }
 
   // Pure Audio conversion (WAV, PCM, MP3). The source layout and rate stay unless the request names others.
   if (isPureAudioConvertible(src, tgt)) {

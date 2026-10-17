@@ -13,7 +13,7 @@ Powered by authentic in-memory pure-TypeScript binary engines, distributed BullM
 - **292 Universal Formats Across 12 Categories**: Comprehensive support for Images, Documents, Spreadsheets, Presentations, Korean Office (HWP), Vector & CAD, Fonts, Audio, Video, E-Books, Structured Data, and Archives.
 - **Authentic Pure-TypeScript Algorithmic Engines**:
   - **HWP 5.0 CFBF**: Compound File Binary Format (OLE2) parser and bidirectional generator with paragraph and table extraction.
-  - **Cox-de Boor NURBS**: Recursive basis evaluator and adaptive $(u, v)$ tessellator for STEP and IGES boundary representations.
+  - **Cox-de Boor curves**: Recursive B-spline basis evaluator and Bézier flattening for the vector paths.
   - **Pure BZip2**: Native Burrows-Wheeler Transform (BWT), Move-To-Front (MTF), and Huffman coding encoder/decoder.
   - **Color Quantization**: NeuQuant (1994) neural-gas and Median Cut (1982) algorithms with Floyd-Steinberg error diffusion dithering.
   - **Media Encoders**: In-memory MP3 MDCT spectral quantization and H.264 NAL baseline encoder packaged into ISO BMFF MP4 containers.
@@ -85,7 +85,8 @@ easyconvert/
 │       ├── conversions/             # Authentic binary conversion engines
 │       │   ├── archive.ts           # ZIP, TAR, GZ, TGZ, BZ2, TBZ2, 7Z, RAR
 │       │   ├── bzip2.ts             # Pure TS BZip2 (BWT + MTF + Huffman)
-│       │   ├── cad-nurbs.ts         # Cox-de Boor NURBS tessellation for STEP/IGES
+│       │   ├── cad-nurbs.ts         # Cox-de Boor B-spline curves, Bézier flattening, mesh topology check
+│       │   ├── cad-occt.ts          # STEP/IGES through the Open CASCADE program (native/cad-convert)
 │       │   ├── data.ts              # CSV, TSV, JSON, JSONL, YAML, XML
 │       │   ├── document.ts          # PDFKit, Markdown, HTML, RTF, EPUB
 │       │   ├── font.ts              # TTF, OTF, WOFF, WOFF2, EOT, SVG Font

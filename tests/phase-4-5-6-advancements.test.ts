@@ -1,11 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  inCircle2D,
-  lawsonEdgeFlipHealing2D,
   verifyWatertightManifoldMesh,
-  tessellateTrimmedFaceCDT,
   HalfEdgeMesh,
-  BSplineSurface,
 } from '../src/lib/conversions/cad-nurbs';
 import {
   applyIec61966SrgbGamma,
@@ -38,46 +34,6 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
   // Phase 4: CAD Constrained Delaunay Triangulation & Watertight Verification
   // ==========================================================================
   describe('Phase 4: CAD Mesh & Geometry Core', () => {
-    it('inCircle2D correctly evaluates Delaunay circumcircle determinant', () => {
-      // CCW unit triangle: a(0,0), b(1,0), c(0,1)
-      const a = { u: 0, v: 0 };
-      const b = { u: 1, v: 0 };
-      const c = { u: 0, v: 1 };
-
-      // Point inside circumcircle (center 0.5, 0.5, radius ~0.707): (0.2, 0.2)
-      const pInside = { u: 0.2, v: 0.2 };
-      expect(inCircle2D(a, b, c, pInside)).toBeGreaterThan(0);
-
-      // Point outside circumcircle: (2.0, 2.0)
-      const pOutside = { u: 2.0, v: 2.0 };
-      expect(inCircle2D(a, b, c, pOutside)).toBeLessThan(0);
-    });
-
-    it('lawsonEdgeFlipHealing2D heals non-Delaunay interior edges while preserving constrained boundaries', () => {
-      // Convex quad with vertices: v0(0,1), v1(0,0), v2(1,0), v3(1,1)
-      const points = [
-        { u: 0, v: 1 }, // 0: Top-left
-        { u: 0, v: 0 }, // 1: Bottom-left
-        { u: 1, v: 0 }, // 2: Bottom-right
-        { u: 1, v: 1 }, // 3: Top-right
-      ];
-
-      // Two CCW triangles sharing diagonal edge 0-2:
-      // T1: (0, 1, 2), T2: (0, 2, 3)
-      const initialFaces: [number, number, number][] = [
-        [0, 1, 2],
-        [0, 2, 3],
-      ];
-
-      const healed = lawsonEdgeFlipHealing2D(points, initialFaces);
-      expect(healed).toHaveLength(2);
-
-      // Verify boundary constraints preservation:
-      // If edge (0, 2) is flagged as constrained, it must NOT be flipped
-      const constrainedEdge = new Set(['0-2', '2-0']);
-      const constrainedResult = lawsonEdgeFlipHealing2D(points, initialFaces, constrainedEdge);
-      expect(constrainedResult).toEqual(initialFaces);
-    });
 
     it('verifies watertight manifold mesh topology on a closed cube (Euler characteristic chi = 2)', () => {
       // 8 vertices of a unit cube
@@ -136,42 +92,6 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       const report = verifyWatertightManifoldMesh(openVertices, openFaces);
       expect(report.boundaryEdges).toBeGreaterThan(0);
       expect(report.isWatertight).toBe(false);
-    });
-
-    it('tessellateTrimmedFaceCDT safely handles degenerate zero-area inner holes', () => {
-      const dummySurface: BSplineSurface = {
-        uDegree: 1,
-        vDegree: 1,
-        controlPoints: [
-          [{ x: 0, y: 0, z: 0 }, { x: 0, y: 1, z: 0 }],
-          [{ x: 1, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }],
-        ],
-        uKnots: [0, 0, 1, 1],
-        vKnots: [0, 0, 1, 1],
-      };
-
-      const outer = [
-        { u: 0, v: 0 },
-        { u: 1, v: 0 },
-        { u: 1, v: 1 },
-        { u: 0, v: 1 },
-      ];
-
-      // Inner hole with zero area (all identical points or collinear points)
-      const zeroAreaHole = [
-        { u: 0.5, v: 0.5 },
-        { u: 0.5, v: 0.5 },
-        { u: 0.5, v: 0.5 },
-      ];
-
-      const mesh = tessellateTrimmedFaceCDT({
-        surface: dummySurface,
-        outerLoop: outer,
-        innerHoles: [zeroAreaHole],
-      });
-
-      expect(mesh.faces.length).toBe(2);
-      expect(mesh.vertices.length).toBe(4);
     });
 
     it('verifyWatertightManifoldMesh rejects meshes with floating isolated vertices', () => {

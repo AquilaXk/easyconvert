@@ -3,29 +3,13 @@ import { PDFDocument, PDFName, PDFNumber } from 'pdf-lib';
 import sharp from 'sharp';
 import { oracleTest } from './helpers/oracle-test';
 import { CAIRO_COORDINATE_DIGITS, diagonalSegments, pdfPageCount, pdfPageToSvg, svgPathSegments } from './helpers/pdftocairo-svg';
-import {
-  tessellateCurvesToMesh,
-  BSplineCurve,
-} from '../src/lib/conversions/cad-nurbs';
+
 import {
   buildMinimalTrueTypeFont,
   ensureUnicodeFont,
 } from '../src/lib/conversions/ocr-pdf-combiner';
 import { convertImage } from '../src/lib/conversions/image';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
-
-
-
-function createLinearCurve(x0: number, y0: number, x1: number, y1: number, z = 0): BSplineCurve {
-  return {
-    degree: 1,
-    controlPoints: [
-      { x: x0, y: y0, z },
-      { x: x1, y: y1, z },
-    ],
-    knots: [0, 0, 1, 1],
-  };
-}
 
 function assembleTestTiff(config: {
   width: number;
@@ -90,38 +74,8 @@ function assembleTestTiff(config: {
   return buf;
 }
 
-function verifyNormals(normals: [number, number, number][], expectedPlane?: 'z') {
-  for (const n of normals) {
-    const len = Math.hypot(n[0], n[1], n[2]);
-    expect(Math.abs(len - 1.0)).toBeLessThan(1e-4);
-    if (expectedPlane === 'z') {
-      expect(Math.abs(n[0])).toBeLessThan(1e-3);
-      expect(Math.abs(n[1])).toBeLessThan(1e-3);
-      expect(Math.abs(Math.abs(n[2]) - 1.0)).toBeLessThan(1e-3);
-    }
-  }
-}
-
 describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
   describe('1. 3D CAD Triangulation & Normal Computation', () => {
-    it('tessellates a single 3D curve with adaptive tangent-orthogonal ribbon extrusion', () => {
-      const curve = createLinearCurve(0, 0, 10, 0);
-      const mesh = tessellateCurvesToMesh([curve], 'single-curve');
-      expect(mesh.vertices.length).toBeGreaterThan(0);
-      expect(mesh.faces.length).toBeGreaterThan(0);
-      expect(mesh.normals).toHaveLength(mesh.vertices.length);
-      verifyNormals(mesh.normals);
-    });
-
-    it('tessellates adjacent curves into ruled quad strips with non-zero face normals', () => {
-      const curve1 = createLinearCurve(0, 0, 10, 0);
-      const curve2 = createLinearCurve(0, 5, 10, 5);
-
-      const mesh = tessellateCurvesToMesh([curve1, curve2], 'ruled-surface');
-      expect(mesh.faces.length).toBeGreaterThanOrEqual(60);
-      expect(mesh.normals).toHaveLength(mesh.vertices.length);
-      verifyNormals(mesh.normals, 'z');
-    });
 
     oracleTest('renders DXF with > 100 entities to PDF with complete entity preservation and affine bounding box scaling', ['pdftocairo', 'pdfinfo'], async () => {
       // Build DXF with 150 LINE entities exceeding the old 100 entity cutoff; entity i runs from (10i, 5i) to (10i + 5, 5i + 5)
@@ -164,7 +118,6 @@ describe('Phase 4: 3D CAD, Camera RAW & OCR Parity', () => {
       }
     });
   });
-
 
   describe('2. Multi-strip and Tiled Camera RAW Assembly', () => {
     it('decodes multi-strip DNG/TIFF sensor buffer without truncating trailing strips', async () => {

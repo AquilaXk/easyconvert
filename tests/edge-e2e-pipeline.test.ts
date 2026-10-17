@@ -37,7 +37,7 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
   describe('1. Universal 5-Tier Adaptive Resolution Matrix', () => {
     it.each([
       { src: 'csv', tgt: 'json', size: 1024, opts: {}, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
-      { src: 'step', tgt: 'stl', size: 50_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
+      { src: 'step', tgt: 'stl', size: 50_000, opts: {}, caps: {}, expectedTier: 'L4', expectedName: 'Cloud (Zero-Retention)', clientEdge: false },
       { src: 'wav', tgt: 'wav', size: 200_000, opts: {}, caps: {}, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'png', tgt: 'webp', size: 100_000, opts: {}, caps: { hasCanvas: true }, expectedTier: 'L0', expectedName: 'Edge L0 (Instant)', clientEdge: true },
       { src: 'mp4', tgt: 'webm', size: 10_000_000, opts: {}, caps: { hasWebCodecsVideo: true }, expectedTier: 'L1', expectedName: 'Edge L1 (Hardware VPU)', clientEdge: true },
@@ -175,24 +175,8 @@ describe('Phase 5: Serverless Fail-Closed Bridge & 5-Tier E2E Integration Gates'
       expect(resolveConversionTier('csv', 'json', file.size)).toMatchObject({ tier: 'L4', isClientEdge: false });
     });
 
-    it('executes Level 0 CAD tessellation directly in memory', async () => {
-      const stepData = `ISO-10303-21;
-HEADER;
-FILE_DESCRIPTION(('EasyConvert Test Surface'),'2;1');
-FILE_NAME('bracket.step','2026-09-26T00:00:00','','','EasyConvert','','');
-FILE_SCHEMA(('CONFIG_CONTROL_DESIGN'));
-ENDSEC;
-DATA;
-#10 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
-#11 = CARTESIAN_POINT('', (0.0, 10.0, 2.0));
-#12 = CARTESIAN_POINT('', (10.0, 0.0, 2.0));
-#13 = CARTESIAN_POINT('', (10.0, 10.0, 5.0));
-#20 = B_SPLINE_SURFACE_WITH_KNOTS('surface1', 1, 1, ((#10, #11), (#12, #13)), .UNSPECIFIED., .F., .F., .F., (2, 2), (2, 2), (0.0, 1.0), (0.0, 1.0), .PIECEWISE_BEZIER_KNOTS.);
-#30 = ADVANCED_FACE('face1', (), #20, .T.);
-ENDSEC;
-END-ISO-10303-21;
-`;
-      const file = new File([new TextEncoder().encode(stepData)], 'bracket.step', { type: 'text/plain' });
+    it('leaves STEP to the server: the edge has no B-rep kernel, so it converts nothing and the tier is the cloud', async () => {
+      const file = new File([new TextEncoder().encode('ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n')], 'bracket.step', { type: 'text/plain' });
 
       const item: ConversionQueueItem = {
         id: 'cad-item',
@@ -206,10 +190,8 @@ END-ISO-10303-21;
         options: {},
       };
 
-      const result = await tryProcessClientEdge(item);
-      expect(result).not.toBeNull();
-      expect(result?.tier).toBe('L0');
-      expect(result?.resultSize).toBeGreaterThan(0);
+      expect(await tryProcessClientEdge(item)).toBeNull();
+      expect(resolveConversionTier('step', 'stl', file.size)).toMatchObject({ tier: 'L4', isClientEdge: false });
     });
 
     it('executes Level 0 pure audio conversion directly in memory', async () => {

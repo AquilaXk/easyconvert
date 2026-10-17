@@ -13,7 +13,7 @@ EasyConvert는 Next.js 15(App Router), TypeScript, 그리고 고유한 라벤더
 - **12개 도메인에 걸친 292개 포맷 지원**: 이미지, 문서, 스프레드시트, 프레젠테이션, 한글 오피스(HWP), 벡터 및 CAD, 폰트, 오디오, 비디오, 전자책, 구조화 데이터, 아카이브 포맷 전반 지원.
 - **순수 TypeScript 바이너리 알고리즘 엔진**:
   - **HWP 5.0 OLE2 CFBF**: OLE2 복합 파일 바이너리 포맷 파서 및 양방향 생성기를 통해 문단, 표(Table) 구조 완벽 추출 및 렌더링.
-  - **Cox-de Boor NURBS 알고리즘**: STEP 및 IGES B-Rep 형상에 대한 재귀적 기저 함수 평가 및 적응형 $(u, v)$ 테셀레이터 구현.
+  - **Cox-de Boor 곡선**: 벡터 경로를 위한 재귀적 B-스플라인 기저 함수 평가 및 베지에 곡선 평탄화.
   - **순수 BZip2 엔진**: 버로우즈-휠러 변환(BWT), MTF(Move-To-Front), 허프만 코딩 기반 네이티브 인코더/디코더.
   - **색상 양자화(Color Quantization)**: NeuQuant(1994) 신경망 가스 알고리즘 및 Median Cut(1982) 알고리즘과 Floyd-Steinberg 오차 확산 디더링 지원.
   - **순수 미디어 인코더**: 순수 인메모리 MP3 MDCT 주파수 스펙트럼 양자화 및 ISO BMFF MP4 컨테이너 기반 H.264 NAL 베이스라인 인코더.
@@ -85,7 +85,8 @@ easyconvert/
 │       ├── conversions/             # 순수 바이너리 변환 하위 엔진 모음
 │       │   ├── archive.ts           # ZIP, TAR, GZ, TGZ, BZ2, TBZ2, 7Z, RAR
 │       │   ├── bzip2.ts             # 순수 TS BZip2 (BWT + MTF + Huffman)
-│       │   ├── cad-nurbs.ts         # STEP/IGES Cox-de Boor NURBS 테셀레이션
+│       │   ├── cad-nurbs.ts         # Cox-de Boor B-스플라인 곡선, 베지에 평탄화, 메시 위상 검사
+│       │   ├── cad-occt.ts          # Open CASCADE 프로그램(native/cad-convert)을 통한 STEP/IGES 변환
 │       │   ├── data.ts              # CSV, TSV, JSON, JSONL, YAML, XML
 │       │   ├── document.ts          # PDFKit, Markdown, HTML, RTF, EPUB
 │       │   ├── font.ts              # TTF, OTF, WOFF, WOFF2, EOT, SVG Font
