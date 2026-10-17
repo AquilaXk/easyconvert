@@ -28,7 +28,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/stora
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
-import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withSpreadsheetPageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -78,7 +78,7 @@ import { convertPostScript } from './postscript-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
-import { ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, selectsPages, splitIntoBatches } from './poppler-ppm';
+import { boundRenderedPages, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, selectsPages, splitIntoBatches } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
@@ -1224,7 +1224,7 @@ function resolveRequestedPages(options: WorkerEngineOptions, pageCount: number):
     throw new InvalidPageRangeError('No pages selected for rendering');
   }
 
-  return requestedPages;
+  return boundRenderedPages(requestedPages, options);
 }
 
 function matchOutputPageFiles(
@@ -1459,7 +1459,7 @@ async function renderPdfToImageWithPoppler(
     filterOutputFile: (f) => f.startsWith('page') && !f.endsWith('.pdf'),
     missingOutputError: 'pdftoppm execution completed without producing any output images',
     startEarly: (tempDir, inputPath) => {
-      if (tgt !== PNG_FORMAT || selectsPages(options)) return null;
+      if (tgt !== PNG_FORMAT || selectsPages(options) || options.multiPageOutput === 'first') return null;
       const dpi = resolvePdfRasterDpi(options);
       const throughPage = ppmBatchPages(dpi);
       const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
@@ -2432,14 +2432,14 @@ async function convertWithinImageSession(
   if (officeSuiteReadsInput(src, input) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
-      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);
+      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withSpreadsheetPageBounds(src, nativeOptions), originalFilename);
       if (intermediatePdf) {
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
           : intermediatePdf.buffer;
         const popplerRes = isPresentationHtml
           ? await convertPdfToHtml(intermediatePdf.buffer, nativeOptions, originalFilename, input, intermediatePdf.engineUsed)
-          : await convertPdfPagesWithNativeTools(popplerInput, tgt, nativeOptions, originalFilename);
+          : await convertPdfPagesWithNativeTools(popplerInput, tgt, withSpreadsheetPageBounds(src, nativeOptions), originalFilename);
         if (popplerRes) {
           return {
             ...popplerRes,
