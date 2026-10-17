@@ -93,3 +93,38 @@ export function fileDigests(files: Map<string, Buffer>): Record<string, string> 
   }
   return digests;
 }
+
+/**
+ * The permission string each entry of an archive carries (`-rwxr-xr-x`, `drwxrwxrwx`, with `s`, `S`, `t` or `T` where a
+ * set-user-ID, set-group-ID or sticky bit is stored), by path, read from the listing of the system `tar`, `zipinfo` or 7-Zip.
+ */
+export function listPermissionStrings(archive: Buffer, format: string): Map<string, string> {
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'archive-output-modes-'));
+  try {
+    const archiveFile = path.join(workDir, `archive.${format}`);
+    fs.writeFileSync(archiveFile, archive);
+    const modes = new Map<string, string>();
+    const options = { encoding: 'utf8' as const, timeout: EXTRACT_TIMEOUT_MS, maxBuffer: LISTING_MAX_BUFFER_BYTES };
+    if (format === '7z') {
+      const listing = execFileSync(requireOracleTool('7z'), ['l', '-slt', '-ba', archiveFile], options);
+      for (const block of listing.split(/\n\n+/)) {
+        const entryPath = /^Path = (.*)$/m.exec(block)?.[1];
+        const attributes = /^Attributes = (.*)$/m.exec(block)?.[1];
+        const permissions = attributes === undefined ? undefined : /[-dl][-rwxsStT]{9}/.exec(attributes)?.[0];
+        if (entryPath !== undefined && permissions !== undefined) modes.set(entryPath.replace(/^\.\//, '').replace(/\/$/, ''), permissions);
+      }
+      return modes;
+    }
+    const listing =
+      format === 'zip'
+        ? execFileSync(requireOracleTool('zipinfo'), [archiveFile], options)
+        : execFileSync(requireOracleTool('tar'), ['-tvf', archiveFile], options);
+    for (const line of listing.split('\n')) {
+      const match = /^([-dlbcps][-rwxsStT]{9})\s.*?(\S+)$/.exec(line.trimEnd());
+      if (match) modes.set(match[2].replace(/^\.\//, '').replace(/\/$/, ''), match[1]);
+    }
+    return modes;
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}

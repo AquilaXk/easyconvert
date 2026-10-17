@@ -590,6 +590,35 @@ describe('assertExtractionContained', () => {
     expect(fs.statSync(locked).mode & 0o777).toBe(0o700);
   });
 
+  it('strips setuid, setgid and sticky bits from files and directories, and keeps the nine permission bits', () => {
+    const files: Array<[string, number, number]> = [
+      ['setuid', 0o4755, 0o755],
+      ['setgid', 0o2755, 0o755],
+      ['both', 0o6711, 0o711],
+    ];
+    for (const [name, stored] of files) {
+      fs.writeFileSync(path.join(root, name), name);
+      fs.chmodSync(path.join(root, name), stored);
+    }
+    fs.mkdirSync(path.join(root, 'sticky'));
+    fs.chmodSync(path.join(root, 'sticky'), 0o1777);
+
+    assertExtractionContained(root, 1000, LIMITS);
+
+    for (const [name, , expected] of files) expect(fs.statSync(path.join(root, name)).mode & 0o7777, name).toBe(expected);
+    expect(fs.statSync(path.join(root, 'sticky')).mode & 0o7777).toBe(0o777);
+  });
+
+  it('strips the special bits of names that share an inode once all of them are known to be inside the root', () => {
+    fs.writeFileSync(path.join(root, 'tool'), 'tool');
+    fs.linkSync(path.join(root, 'tool'), path.join(root, 'tool-again'));
+    fs.chmodSync(path.join(root, 'tool'), 0o4755);
+
+    assertExtractionContained(root, 1000, LIMITS, { allowInternalHardLinks: true });
+
+    expect(fs.statSync(path.join(root, 'tool')).mode & 0o7777).toBe(0o755);
+  });
+
   it('adds only the owner bits, leaving the other permission bits as the archive had them', () => {
     fs.writeFileSync(path.join(root, 'public.txt'), 'x');
     fs.chmodSync(path.join(root, 'public.txt'), 0o044);

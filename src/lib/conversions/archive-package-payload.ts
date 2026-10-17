@@ -1,11 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { decompressZstd } from './zstd';
+import { SandboxedTimeoutError } from '../security/process-sandbox';
 import {
   UnreadableArchiveError,
   extractArchiveContained,
   hasTarHeaderChecksum,
+  removeDirectoryTree,
   unpackedBytesCap,
+  unpackedBytesCapError,
+  type ArchiveExtractionLimits,
   type ContainedExtractionRequest,
   type ContainedTree,
 } from './archive-extraction-safety';
@@ -92,10 +96,55 @@ function sniffPayload(file: string): PayloadKind | null {
   return compression === undefined ? null : compression[0];
 }
 
+/**
+ * One byte budget and one deadline for a whole package. Each layer is vetted on its own, but the layers and the final
+ * tree are all written to disk, so what the package may write is charged as a running total against the same bound a
+ * single-stream archive gets (the size cap, or the larger of the ratio floor and 100 times the upload), and the time it may
+ * take is fixed once: every 7-Zip call gets what is left of it, never a fresh allowance.
+ */
+export class PackageRun {
+  private spentBytes = 0;
+  private readonly capBytes: number;
+  private readonly deadline: number;
+
+  constructor(
+    private readonly request: ContainedExtractionRequest,
+    readonly archiveBytes: number,
+    private readonly now: () => number = Date.now
+  ) {
+    this.capBytes = unpackedBytesCap(archiveBytes, request.limits);
+    this.deadline = now() + request.timeoutMs;
+  }
+
+  /** Counts bytes written to disk; past the bound the package is a bomb, however small each layer was. */
+  charge(bytes: number): void {
+    this.spentBytes += bytes;
+    if (this.spentBytes > this.capBytes) throw unpackedBytesCapError(this.archiveBytes, this.request.limits);
+  }
+
+  /** The request for the next 7-Zip step, with the time left of the package's deadline. */
+  step(changes: Partial<ContainedExtractionRequest>): ContainedExtractionRequest {
+    const remaining = this.deadline - this.now();
+    if (remaining <= 0) throw new SandboxedTimeoutError(this.request.timeoutMs);
+    return { ...this.request, ...changes, timeoutMs: remaining };
+  }
+
+  get limits(): ArchiveExtractionLimits {
+    return this.request.limits;
+  }
+}
+
+/** Removes a layer that has been read: a file, or the directory it was extracted into. */
+function discard(target: string): void {
+  if (fs.lstatSync(target).isDirectory()) removeDirectoryTree(target);
+  else fs.rmSync(target, { force: true });
+}
+
 /** Decompresses a Zstandard payload into `outDir` and returns the file; the output is capped by the archive size and ratio caps. */
-function decodeZstdPayload(request: ContainedExtractionRequest, compressed: string, archiveBytes: number, outDir: string): string {
-  const decoded = decompressZstd(fs.readFileSync(compressed), { maxOutputBytes: unpackedBytesCap(archiveBytes, request.limits) });
-  const target = path.join(outDir, ZSTD_PAYLOAD_NAME);
+function decodeZstdPayload(run: PackageRun, compressed: string, outDir: string, layer: number): string {
+  const decoded = decompressZstd(fs.readFileSync(compressed), { maxOutputBytes: unpackedBytesCap(run.archiveBytes, run.limits) });
+  run.charge(decoded.length);
+  const target = path.join(outDir, `${ZSTD_PAYLOAD_NAME}-${layer}`);
   fs.writeFileSync(target, decoded);
   return target;
 }
@@ -121,70 +170,81 @@ function withDotSlashSpellings(patterns: string[] | undefined): string[] | undef
   return patterns?.flatMap((pattern) => (pattern.startsWith('./') ? [pattern] : [pattern, `./${pattern}`]));
 }
 
-/** Decompresses one compression layer into its own directory with 7-Zip and returns the single file it holds. */
-async function decompressLayer(
-  request: ContainedExtractionRequest,
-  layer: { file: string; kind: Exclude<CompressionKind, 'zstd'> },
-  layerDir: string,
-  ratioBaseBytes: number
-): Promise<string> {
+/** The file extension 7-Zip names the payload of each compression after (`x.xz` unpacks to `x`). */
+const COMPRESSION_EXTENSIONS: Readonly<Record<Exclude<CompressionKind, 'zstd'>, string>> = { gzip: 'gz', bzip2: 'bz2', xz: 'xz' };
+
+/**
+ * Decompresses one compression layer into its own directory with 7-Zip and returns the single file it holds. The layer is
+ * given the extension of its compression first, because 7-Zip lists the stream of a wrapper by that name.
+ */
+async function decompressLayer(run: PackageRun, layer: { file: string; kind: Exclude<CompressionKind, 'zstd'> }, layerDir: string): Promise<string> {
   fs.mkdirSync(layerDir);
-  const tree = await extractArchiveContained({
-    ...request,
-    archivePath: layer.file,
-    extractDir: layerDir,
-    typeFlag: SEVEN_ZIP_TYPE_FLAGS[layer.kind],
-    includePatterns: undefined,
-    ratioBaseBytes,
-    password: undefined,
-    allowInternalHardLinks: false,
-  });
+  const extension = `.${COMPRESSION_EXTENSIONS[layer.kind]}`;
+  const named = layer.file.endsWith(extension) ? layer.file : `${layer.file}${extension}`;
+  if (named !== layer.file) fs.renameSync(layer.file, named);
+  const tree = await extractArchiveContained(
+    run.step({
+      archivePath: named,
+      extractDir: layerDir,
+      typeFlag: SEVEN_ZIP_TYPE_FLAGS[layer.kind],
+      includePatterns: undefined,
+      ratioBaseBytes: run.archiveBytes,
+      password: undefined,
+      allowInternalHardLinks: false,
+    })
+  );
+  run.charge(tree.totalBytes);
   if (tree.files.length !== 1 || tree.entryCount !== 1) {
     throw new UnreadableArchiveError('Could not read the package: a compressed layer of its payload does not hold one stream.');
   }
   return tree.files[0].absPath;
 }
 
+interface PayloadStage {
+  file: string;
+  kind: PayloadKind | null;
+  /** What to remove once the next layer exists: the directory or file this stage lives in. */
+  disposable: string;
+}
+
 /**
- * Follows the compression layers of a payload stream down to the cpio or tar it carries.
+ * Follows the compression layers of a payload stream down to the cpio or tar it carries. At most
+ * MAX_COMPRESSION_LAYERS layers are decompressed; a stream that is still compressed after the last of them is refused
+ * without a further decode. Each layer is removed as soon as the layer inside it exists.
  * Returns null when the stream is not a payload at all; throws when a layer cannot be read.
  */
-async function openPayloadLayers(
-  request: ContainedExtractionRequest,
-  first: { file: string; kind: PayloadKind },
-  workDir: string,
-  archiveBytes: number
-): Promise<{ file: string; kind: ArchiveKind } | null> {
-  let current: { file: string; kind: PayloadKind | null } = first;
-  for (let layer = 0; layer < MAX_COMPRESSION_LAYERS; layer++) {
-    if (current.kind === 'cpio' || current.kind === 'tar') return { file: current.file, kind: current.kind };
-    if (current.kind === null) return null;
+async function openPayloadLayers(run: PackageRun, first: PayloadStage, workDir: string): Promise<{ file: string; kind: ArchiveKind; disposable: string } | null> {
+  let current = first;
+  for (let decoded = 0; ; decoded++) {
+    if (current.kind === 'cpio' || current.kind === 'tar') return { file: current.file, kind: current.kind, disposable: current.disposable };
+    if (current.kind === null || decoded === MAX_COMPRESSION_LAYERS) return null;
+    const layerDir = path.join(workDir, `layer-${decoded}`);
     const next =
       current.kind === 'zstd'
-        ? decodeZstdPayload(request, current.file, archiveBytes, workDir)
-        : await decompressLayer(request, { file: current.file, kind: current.kind }, path.join(workDir, `layer-${layer}`), archiveBytes);
-    current = { file: next, kind: sniffPayload(next) };
+        ? decodeZstdPayload(run, current.file, workDir, decoded)
+        : await decompressLayer(run, { file: current.file, kind: current.kind }, layerDir);
+    // The package's own extraction stays until the payload is known to be one: a package of a single file that merely
+    // looks compressed is converted from it.
+    if (current.disposable !== first.disposable) discard(current.disposable);
+    current = { file: next, kind: sniffPayload(next), disposable: current.kind === 'zstd' ? next : layerDir };
   }
-  return null;
 }
 
 /** The selected files of a package whose payload 7-Zip lists itself: the package is read again with the selection. */
-async function extractSelection(request: ContainedExtractionRequest): Promise<PackagePayload> {
+async function extractSelection(request: ContainedExtractionRequest, run: PackageRun): Promise<PackagePayload> {
   const root = `${request.extractDir}-selected`;
   fs.mkdirSync(root);
-  const tree = await extractArchiveContained({
-    ...request,
-    extractDir: root,
-    includePatterns: withDotSlashSpellings(request.includePatterns),
-    allowInternalHardLinks: true,
-  });
+  const tree = await extractArchiveContained(
+    run.step({ extractDir: root, includePatterns: withDotSlashSpellings(request.includePatterns), allowInternalHardLinks: true })
+  );
+  run.charge(tree.totalBytes);
   return { tree, root };
 }
 
 /** The files 7-Zip listed itself are the payload; a package without any entry is one whose payload it could not list (a cpio with stripped headers, for one). */
-async function listedPayload(request: ContainedExtractionRequest, outer: ContainedTree): Promise<PackagePayload> {
+async function listedPayload(request: ContainedExtractionRequest, outer: ContainedTree, run: PackageRun): Promise<PackagePayload> {
   if (outer.entryCount === 0) throw new UnreadableArchiveError('Could not read the package: its payload holds no entries 7-Zip can list.');
-  return request.includePatterns === undefined ? { tree: outer, root: request.extractDir } : extractSelection(request);
+  return request.includePatterns === undefined ? { tree: outer, root: request.extractDir } : extractSelection(request, run);
 }
 
 const NOT_AN_ARCHIVE_PAYLOAD =
@@ -192,40 +252,46 @@ const NOT_AN_ARCHIVE_PAYLOAD =
 
 /**
  * Extracts the payload files of an rpm or deb into `request.extractDir` (or a sibling directory when the payload is a
- * layer inside the package). Throws a typed error for anything unsafe, oversized or unreadable.
+ * layer inside the package). Throws a typed error for anything unsafe, oversized or unreadable; what the package writes
+ * is bounded as a whole (see {@link PackageRun}), and layers are removed once the next one exists.
  */
 export async function extractPackagePayload(request: ContainedExtractionRequest, format: 'rpm' | 'deb'): Promise<PackagePayload> {
-  const archiveBytes = fs.statSync(request.archivePath).size;
+  const run = new PackageRun(request, fs.statSync(request.archivePath).size);
   // The selection names files of the payload, so it cannot apply to the package's own layer.
-  const outer = await extractArchiveContained({ ...request, includePatterns: undefined, allowInternalHardLinks: true });
+  const outer = await extractArchiveContained(run.step({ includePatterns: undefined, allowInternalHardLinks: true }));
+  run.charge(outer.totalBytes);
   const stream = payloadFile(outer);
   if (stream === null) {
     // A deb is only ever its members: without a `data.tar` there is no payload to convert.
     if (format === 'deb') throw new UnreadableArchiveError(NOT_AN_ARCHIVE_PAYLOAD);
-    return listedPayload(request, outer);
+    return listedPayload(request, outer, run);
   }
 
   const payloadDir = `${request.extractDir}-payload`;
   fs.mkdirSync(payloadDir);
   const firstKind = sniffPayload(stream);
-  const archive = firstKind === null ? null : await openPayloadLayers(request, { file: stream, kind: firstKind }, payloadDir, archiveBytes);
+  const archive = firstKind === null ? null : await openPayloadLayers(run, { file: stream, kind: firstKind, disposable: request.extractDir }, payloadDir);
   if (archive === null) {
     // An rpm whose one file is not a payload is a package of that file; a deb has nothing else to be.
     if (format === 'deb') throw new UnreadableArchiveError(NOT_AN_ARCHIVE_PAYLOAD);
-    return listedPayload(request, outer);
+    return listedPayload(request, outer, run);
   }
 
+  if (archive.disposable !== request.extractDir) discard(request.extractDir);
   const filesDir = path.join(payloadDir, 'files');
   fs.mkdirSync(filesDir);
-  const tree = await extractArchiveContained({
-    ...request,
-    archivePath: archive.file,
-    extractDir: filesDir,
-    typeFlag: SEVEN_ZIP_TYPE_FLAGS[archive.kind],
-    includePatterns: withDotSlashSpellings(request.includePatterns),
-    ratioBaseBytes: archiveBytes,
-    password: undefined,
-    allowInternalHardLinks: true,
-  });
+  const tree = await extractArchiveContained(
+    run.step({
+      archivePath: archive.file,
+      extractDir: filesDir,
+      typeFlag: SEVEN_ZIP_TYPE_FLAGS[archive.kind],
+      includePatterns: withDotSlashSpellings(request.includePatterns),
+      ratioBaseBytes: run.archiveBytes,
+      password: undefined,
+      allowInternalHardLinks: true,
+    })
+  );
+  run.charge(tree.totalBytes);
+  discard(archive.disposable);
   return { tree, root: filesDir };
 }

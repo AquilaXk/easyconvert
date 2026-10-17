@@ -695,16 +695,20 @@ export function assertExclusionExact(full: ListedArchiveEntry[], filtered: Liste
 }
 
 /**
- * An archive may store any mode, down to no permission bits at all (the packages of a distribution have such files), and
- * 7-Zip applies it. The owner needs read access to pack a file and read, write and search access to a directory, to list
- * it and to delete it afterwards; the other bits are left as the archive had them.
+ * 7-Zip applies the mode an archive stored. Two things about that are not safe to pass on. A mode may have no permission
+ * bits at all (the packages of a distribution have such files), so the owner is given read access to files and full access
+ * to directories, which packing, listing and deleting need. And a mode may carry setuid, setgid or sticky bits, which
+ * have no place in a converted archive: the packer would store them, and whoever extracts that archive as a privileged
+ * user would get a set-user-ID file. Only the nine permission bits are kept (plus the owner access).
  */
 const OWNER_FILE_ACCESS = 0o600;
 const OWNER_DIRECTORY_ACCESS = 0o700;
-const PERMISSION_BITS = 0o7777;
+const PERMISSION_BITS = 0o777;
+const MODE_BITS = 0o7777;
 
-function grantOwnerAccess(entry: string, mode: number, access: number): void {
-  if ((mode & access) !== access) fs.chmodSync(entry, (mode & PERMISSION_BITS) | access);
+function normalizeExtractedMode(entry: string, mode: number, ownerAccess: number): void {
+  const wanted = (mode & PERMISSION_BITS) | ownerAccess;
+  if (wanted !== (mode & MODE_BITS)) fs.chmodSync(entry, wanted);
 }
 
 function isInside(realRoot: string, candidate: string): boolean {
@@ -755,7 +759,7 @@ export function assertExtractionContained(
       }
 
       if (stat.isDirectory()) {
-        grantOwnerAccess(abs, stat.mode, OWNER_DIRECTORY_ACCESS);
+        normalizeExtractedMode(abs, stat.mode, OWNER_DIRECTORY_ACCESS);
         pending.push({ abs, rel, depth });
       } else if (stat.isFile()) {
         if (stat.nlink > 1) {
@@ -765,7 +769,7 @@ export function assertExtractionContained(
           recordSharedInode(sharedInodes, abs, stat.nlink);
           sharedFiles.push({ abs, mode: stat.mode });
         } else {
-          grantOwnerAccess(abs, stat.mode, OWNER_FILE_ACCESS);
+          normalizeExtractedMode(abs, stat.mode, OWNER_FILE_ACCESS);
         }
         totalBytes += stat.size;
         if (totalBytes > limits.MAX_UNCOMPRESSED_SIZE) {
@@ -785,7 +789,7 @@ export function assertExtractionContained(
     }
   }
   // Only now is every name of these inodes known to be inside the root, so changing a mode cannot reach a file outside it.
-  for (const shared of sharedFiles) grantOwnerAccess(shared.abs, shared.mode, OWNER_FILE_ACCESS);
+  for (const shared of sharedFiles) normalizeExtractedMode(shared.abs, shared.mode, OWNER_FILE_ACCESS);
   assertWithinSizeAndRatio(totalBytes, archiveBytes, limits);
   files.sort((x, y) => (x.relPath < y.relPath ? -1 : 1));
   return { files, entryCount, totalBytes, skippedLinks: [] };

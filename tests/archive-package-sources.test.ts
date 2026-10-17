@@ -3,11 +3,15 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
+import { PackageRun, extractPackagePayload } from '../src/lib/conversions/archive-package-payload';
+import { SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import { oracleTest } from './helpers/oracle-test';
 import { ConversionFailedError } from '../src/lib/types';
-import { requireOracleTool } from './helpers/differential-oracle';
-import { fileDigests, readArchiveTree, unpackWith } from './helpers/archive-output-tree';
+import { getOracleToolPath, requireOracleTool } from './helpers/differential-oracle';
+import { fileDigests, listPermissionStrings, readArchiveTree, unpackWith } from './helpers/archive-output-tree';
 import { hostileTarEnd, hostileTarHeader, hostileTarMember, type HostileTarHeader } from './helpers/hostile-tar';
 
 /**
@@ -371,4 +375,151 @@ describe('a cpio source is vetted like the payload of an rpm', () => {
     const traversal = Buffer.concat([newcEntry('../outside.txt', 0o100644, Buffer.from('escaped')), newcEntry('TRAILER!!!', 0)]);
     expect(await refusal(dispatchConversion(traversal, 'cpio', 'zip', {}, 'up.cpio'))).toMatchObject({ reason: 'path-traversal' });
   }, ENGINE_TIMEOUT_MS);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// One byte budget, one deadline and a bounded number of layers for the whole package
+// ---------------------------------------------------------------------------------------------------------------------
+
+function xzOf(data: Buffer, dir: string): Buffer {
+  const file = path.join(dir, 'layer.bin');
+  fs.writeFileSync(file, data);
+  execFileSync(requireOracleTool('xz'), ['-9', '-k', '-f', file]);
+  return fs.readFileSync(`${file}.xz`);
+}
+
+describe('what a package writes is bounded as a whole', () => {
+  const tarOfZeros = (mib: number): Buffer => tarOf([{ name: 'zeros.bin' }, '\0'.repeat(mib * MIB)]);
+
+  oracleTest(
+    'layers that each fit the cap but add up past it are refused as a bomb; the same package a little smaller converts',
+    ['7z', 'xz', 'tar'],
+    async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-budget-'));
+      try {
+        // The upload is a few KB, so the bound is the 32 MiB ratio floor. The decompressed tar (20 MiB) and the files
+        // extracted from it (20 MiB) are each under it; together they are 40 MiB.
+        const over = buildDeb('data.tar.xz', xzOf(tarOfZeros(20), dir));
+        expect(over.length).toBeLessThan(MIB / 4);
+        expect(await refusal(convertDeb(over))).toMatchObject({ name: 'UnsafeArchiveError', reason: 'compression-ratio' });
+
+        const within = buildDeb('data.tar.xz', xzOf(tarOfZeros(12), dir));
+        const result = await dispatchConversion(within, 'deb', 'zip', {}, 'within.deb');
+        const output = await readArchiveTree(result.buffer, 'zip');
+        expect([...output.files.values()].map((bytes) => bytes.length)).toEqual([12 * MIB]);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    ENGINE_TIMEOUT_MS
+  );
+
+  it('charges bytes against the bound of the upload and refuses the byte that passes it', () => {
+    const run = new PackageRun({ timeoutMs: 1000, limits: ARCHIVE_SECURITY_LIMITS } as never, 1000);
+    run.charge(32 * MIB);
+    expect(() => run.charge(1)).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError', reason: 'compression-ratio' }));
+  });
+
+  it('gives each 7-Zip step what is left of one deadline, and refuses a step once it has passed', () => {
+    let clock = 10_000;
+    const run = new PackageRun({ timeoutMs: 1000, limits: ARCHIVE_SECURITY_LIMITS } as never, 1000, () => clock);
+    expect(run.step({}).timeoutMs).toBe(1000);
+    clock += 400;
+    expect(run.step({}).timeoutMs).toBe(600);
+    clock += 600;
+    expect(() => run.step({})).toThrow(SandboxedTimeoutError);
+  });
+});
+
+describe('the compression layers of a payload', () => {
+  const gzipTimes = (data: Buffer, layers: number): Buffer => Array.from({ length: layers }).reduce<Buffer>((inner) => zlib.gzipSync(inner), data);
+  const payloadTar = (): Buffer => tarOf([{ name: 'opt/a.txt' }, 'layered']);
+
+  oracleTest('a payload compressed three times is read', ['7z', 'tar'], async () => {
+    const deb = buildDeb('data.tar.gz', gzipTimes(payloadTar(), 3));
+    const output = await readArchiveTree((await dispatchConversion(deb, 'deb', 'zip', {}, 'layers.deb')).buffer, 'zip');
+    expect(fileDigests(output.files)).toEqual(digestsOf({ 'opt/a.txt': Buffer.from('layered') }));
+  }, ENGINE_TIMEOUT_MS);
+
+  oracleTest('a payload still compressed after the third layer is refused without a fourth decode', ['7z'], async () => {
+    // Three real layers around a fourth that only looks like gzip: a decode of it would be a "7-Zip rejected" error.
+    const looksCompressed = Buffer.concat([Buffer.from([0x1f, 0x8b, 0x08, 0x00]), Buffer.alloc(64, 0x41)]);
+    const deb = buildDeb('data.tar.gz', gzipTimes(looksCompressed, 3));
+    const failure = await refusal(convertDeb(deb));
+    expect(failure).toMatchObject({ name: 'UnreadableArchiveError' });
+    expect((failure as Error).message).toMatch(/not a cpio or tar archive/);
+  }, ENGINE_TIMEOUT_MS);
+});
+
+describe('the files a package leaves behind and the one deadline', () => {
+  const sevenZip = getOracleToolPath('7z');
+
+  function request(workDir: string, archive: Buffer, timeoutMs: number): Parameters<typeof extractPackagePayload>[0] {
+    const archivePath = path.join(workDir, 'input.deb');
+    fs.writeFileSync(archivePath, archive);
+    const extractDir = path.join(workDir, 'extracted');
+    fs.mkdirSync(extractDir);
+    return {
+      p7zBin: sevenZip!,
+      archivePath,
+      extractDir,
+      cwd: workDir,
+      timeoutMs,
+      maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
+      limits: ARCHIVE_SECURITY_LIMITS,
+      label: 'archive',
+      skipLinks: true,
+    };
+  }
+
+  oracleTest('every layer and the package extraction are removed once the files are extracted', ['7z'], async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-leftovers-'));
+    try {
+      const tar = tarOf([{ name: 'opt/a.txt' }, 'kept']);
+      const deb = buildDeb('data.tar.gz', zlib.gzipSync(zlib.gzipSync(tar)));
+      const payload = await extractPackagePayload(request(workDir, deb, 60_000), 'deb');
+      expect(fs.readFileSync(path.join(payload.root, 'opt', 'a.txt'), 'utf8')).toBe('kept');
+      expect(fs.readdirSync(workDir).sort()).toEqual(['extracted-payload', 'input.deb']);
+      expect(fs.readdirSync(path.join(workDir, 'extracted-payload'))).toEqual(['files']);
+    } finally {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  oracleTest('a package that has used its whole time allowance is stopped, not given a fresh one per step', ['7z'], async () => {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-deadline-'));
+    try {
+      const deb = buildDeb('data.tar.gz', zlib.gzipSync(tarOf([{ name: 'opt/a.txt' }, 'kept'])));
+      const failure = await extractPackagePayload(request(workDir, deb, 1), 'deb').catch((err: unknown) => err);
+      expect(failure).toMatchObject({ name: 'SandboxedTimeoutError', timeoutMs: 1 });
+    } finally {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('set-user-ID, set-group-ID and sticky bits do not reach the converted archive', () => {
+  const SETUID_FILE = 0o104755;
+  const SETGID_FILE = 0o102755;
+  const STICKY_DIR = 0o041777;
+
+  const payload = (): Buffer =>
+    Buffer.concat([
+      newcEntry('./opt', STICKY_DIR),
+      newcEntry('./opt/su', SETUID_FILE, Buffer.from('suid')),
+      newcEntry('./opt/sg', SETGID_FILE, Buffer.from('sgid')),
+      newcEntry('TRAILER!!!', 0),
+    ]);
+
+  for (const target of ['tar', 'tar.gz', 'zip', '7z'] as const) {
+    oracleTest(`an rpm with a setuid file, a setgid file and a sticky directory to ${target}`, ['7z', 'tar', 'zipinfo'], async () => {
+      const result = await dispatchConversion(buildRpm(payload()), 'rpm', target, {}, 'special.rpm');
+      const permissions = listPermissionStrings(result.buffer, target);
+      expect(permissions.get('opt/su'), target).toBe('-rwxr-xr-x');
+      expect(permissions.get('opt/sg'), target).toBe('-rwxr-xr-x');
+      // 7-Zip creates the directory under the umask, so only the absence of the sticky bit is the point here.
+      expect(permissions.get('opt'), target).toMatch(/^d[-rwx]{9}$/);
+      expect([...permissions.values()].filter((mode) => /[sStT]/.test(mode)), target).toEqual([]);
+    }, ENGINE_TIMEOUT_MS);
+  }
 });
