@@ -60,3 +60,4 @@ libocct-ocaf-dev
 libocct-modeling-algorithms-dev
 libocct-modeling-data-dev
 libocct-foundation-dev
+fontforge-nox
