@@ -37,7 +37,8 @@ const OVER_CAP_BOMB_MIB = 600;
 /** The bomb must stay a tiny file, orders of magnitude below its uncompressed size. */
 const MAX_BOMB_ARCHIVE_BYTES = 8 * 1024 * 1024;
 /** Below the size cap yet far above the 100:1 ratio cap. */
-const RATIO_BOMB_MIB = 3;
+/** Past the 32 MiB output below which the ratio is not judged. */
+const RATIO_BOMB_MIB = 40;
 /** One above the 50,000-entry cap. */
 const OVER_CAP_ENTRY_COUNT = 50_001;
 const AT_CAP_ENTRY_COUNT = 50_000;

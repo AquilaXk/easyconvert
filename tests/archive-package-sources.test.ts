@@ -281,7 +281,7 @@ describe('the payload of a package is vetted before anything is extracted', () =
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-bomb-'));
     try {
       const tarFile = path.join(dir, 'data.tar');
-      fs.writeFileSync(tarFile, tarOf([{ name: 'zeros.bin' }, '\0'.repeat(6 * MIB)]));
+      fs.writeFileSync(tarFile, tarOf([{ name: 'zeros.bin' }, '\0'.repeat(40 * MIB)]));
       execFileSync(requireOracleTool('xz'), ['-9', '-k', tarFile]);
       const deb = buildDeb('data.tar.xz', fs.readFileSync(`${tarFile}.xz`));
       expect(deb.length).toBeLessThan(MIB / 8);
@@ -295,7 +295,7 @@ describe('the payload of a package is vetted before anything is extracted', () =
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-zstd-bomb-'));
     try {
       const tarFile = path.join(dir, 'data.tar');
-      fs.writeFileSync(tarFile, tarOf([{ name: 'zeros.bin' }, '\0'.repeat(6 * MIB)]));
+      fs.writeFileSync(tarFile, tarOf([{ name: 'zeros.bin' }, '\0'.repeat(40 * MIB)]));
       execFileSync(requireOracleTool('zstd'), ['-19', '-q', tarFile]);
       const deb = buildDeb('data.tar.zst', fs.readFileSync(`${tarFile}.zst`));
       expect(deb.length).toBeLessThan(MIB / 8);

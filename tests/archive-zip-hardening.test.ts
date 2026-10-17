@@ -495,7 +495,7 @@ describe('an end record hidden whose comment stops short of the end of the file 
   });
 });
 
-describe('the compression ratio counts once the output passes the small-entry baseline', () => {
+describe('the compression ratio counts once the output passes the 32 MiB floor', () => {
   const repetitive = (bytes: number): Buffer => craftZip([{ name: 'text.txt', data: Buffer.alloc(bytes, 0x61) }]);
 
   oracleTest(
@@ -515,8 +515,11 @@ describe('the compression ratio counts once the output passes the small-entry ba
     }
   );
 
-  it('the same repetition past the baseline is a 413 naming the ratio', async () => {
-    const error = await rejection(() => extractZipArchive(repetitive(4 * MIB)));
+  it('the same repetition up to the floor is read, and one byte past it is a 413 naming the ratio', async () => {
+    const atFloor = await extractZipArchive(repetitive(32 * MIB));
+    expect(atFloor[0].buffer.length).toBe(32 * MIB);
+
+    const error = await rejection(() => extractZipArchive(repetitive(32 * MIB + 1)));
     expect(error).toBeInstanceOf(DecompressionLimitError);
     expect(statusOf(error)).toBe(413);
     expect((error as Error).message).toMatch(/compression ratio \(\d+\.\d:1\) exceeds 100:1/);

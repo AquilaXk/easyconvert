@@ -40,7 +40,8 @@ import {
   cleanupDirectoryTree,
   sanitizeLeafFilename,
   summarizeInspectionSafety,
-  ARCHIVE_RATIO_BASELINE_BYTES,
+  exceedsArchiveRatio,
+  unpackedBytesCap,
 } from './archive-extraction-safety';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
 import { isWrapperSource, unpackWrapperSource } from './archive-wrapper-sources';
@@ -62,7 +63,7 @@ import {
   type SevenZipListing,
   type SevenZipReadLimits,
 } from './sevenzip-reader';
-import { compressZstd, compressZstdAsync, decompressZstd, exceedsZstdRatioGuard, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
+import { compressZstd, compressZstdAsync, decompressZstd, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
 import {
   compressLzma,
   compressLzma2,
@@ -1840,7 +1841,7 @@ export function extractRarArchive(
             if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
               throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
             }
-            if (rarBuffer.length > 0 && totalUncompressedSize / rarBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+            if (exceedsArchiveRatio(totalUncompressedSize, rarBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
               throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
             }
             const sanitized = sanitizeArchivePath(relPath);
@@ -1942,7 +1943,7 @@ export function extractRarArchive(
         if (totalUncompressedSize > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
           throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`);
         }
-        if (rarBuffer.length > 0 && totalUncompressedSize / rarBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+        if (exceedsArchiveRatio(totalUncompressedSize, rarBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
           throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
         }
 
@@ -3034,12 +3035,8 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
         );
       }
 
-      // 2. Guard against compression ratio bomb (evaluated beyond 1MB threshold)
-      if (
-        inputBuffer.length > 0 &&
-        totalBytes > ARCHIVE_RATIO_BASELINE_BYTES &&
-        totalBytes / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
-      ) {
+      // 2. Guard against compression ratio bomb (evaluated beyond the shared ratio floor)
+      if (exceedsArchiveRatio(totalBytes, inputBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
         destroyed = true;
         cleanup();
         gunzip.destroy();
@@ -3055,11 +3052,8 @@ export async function gunzipStreamingWithLimits(inputBuffer: Buffer): Promise<Bu
 
     gunzip.on('end', () => {
       if (destroyed) return;
-      // Final ratio check for smaller buffers
-      if (
-        inputBuffer.length > 0 &&
-        totalBytes / inputBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO
-      ) {
+      // Final ratio check on the whole stream (the same floor, so it cannot disagree with the running check)
+      if (exceedsArchiveRatio(totalBytes, inputBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
         cleanup();
         return reject(
           new DecompressionLimitError(
@@ -3161,7 +3155,7 @@ export async function repairZipArchive(
   const salvagedFiles: { filename: string; buffer: Buffer }[] = [];
   // The salvaged entries share the limits extraction applies: the size cap and the ratio to the damaged archive.
   const salvageBudget = new InflateBudget(
-    Math.min(ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE, ARCHIVE_SECURITY_LIMITS.MAX_RATIO * zipBuffer.length)
+    unpackedBytesCap(zipBuffer.length, ARCHIVE_SECURITY_LIMITS)
   );
   const salvageDeflate = async (data: Buffer, entryName: string): Promise<Buffer | null> => {
     const salvage = await inflateRawSalvage(data, { label: `ZIP entry '${entryName}'`, budget: salvageBudget });
@@ -4000,8 +3994,8 @@ export async function convertArchive(
         `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
       );
     }
-    // Same rule as the decoder: the ratio only counts once the output is past the guard floor.
-    if (exceedsZstdRatioGuard(uncompressed.length, effectiveBuffer.length)) {
+    // Same rule as the decoder: the ratio only counts once the output is past the shared floor.
+    if (exceedsArchiveRatio(uncompressed.length, effectiveBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
       throw new DecompressionLimitError(
         `Archive bomb detected: compression ratio (${(uncompressed.length / effectiveBuffer.length).toFixed(1)}:1) exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
       );
@@ -4019,7 +4013,7 @@ export async function convertArchive(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
         );
       }
-      if (effectiveBuffer.length > 0 && uncompressed.length / effectiveBuffer.length > ARCHIVE_SECURITY_LIMITS.MAX_RATIO) {
+      if (exceedsArchiveRatio(uncompressed.length, effectiveBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
         throw new DecompressionLimitError(
           `Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`
         );

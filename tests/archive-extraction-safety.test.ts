@@ -206,10 +206,22 @@ describe('assertSafeArchiveListing', () => {
     expect(unsafeReason(() => assertSafeArchiveListing(entries, 501 * MIB, LIMITS))).toBe('uncompressed-size');
   });
 
-  it('accepts exactly 100:1 and rejects anything above it', () => {
-    expect(assertSafeArchiveListing([file('a', 100_000)], 1000, LIMITS).totalBytes).toBe(100_000);
+  it('accepts exactly 100:1 and rejects anything above it, once the output is past the floor', () => {
+    expect(assertSafeArchiveListing([file('a', 100 * MIB)], MIB, LIMITS).totalBytes).toBe(100 * MIB);
 
-    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 100_001)], 1000, LIMITS))).toBe('compression-ratio');
+    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 100 * MIB + 1)], MIB, LIMITS))).toBe('compression-ratio');
+  });
+
+  it('does not judge the ratio of an output up to 32 MiB, however small the archive, and judges it from the next byte', () => {
+    expect(assertSafeArchiveListing([file('a', 32 * MIB)], 1000, LIMITS).totalBytes).toBe(32 * MIB);
+    expect(assertSafeArchiveListing([file('a', 20 * MIB), file('b', 12 * MIB)], 1000, LIMITS).totalBytes).toBe(32 * MIB);
+
+    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 32 * MIB + 1)], 1000, LIMITS))).toBe('compression-ratio');
+    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 20 * MIB), file('b', 12 * MIB + 1)], 1000, LIMITS))).toBe('compression-ratio');
+  });
+
+  it('keeps the size cap in force below the ratio floor of a tiny archive', () => {
+    expect(unsafeReason(() => assertSafeArchiveListing([file('a', 500 * MIB + 1)], 1000, LIMITS))).toBe('uncompressed-size');
   });
 
   it('rejects a file entry whose size the listing does not state', () => {
@@ -609,12 +621,20 @@ describe('assertExtractionContained', () => {
     expect(unsafeReason(() => assertExtractionContained(root, 500 * MIB, LIMITS))).toBe('uncompressed-size');
   });
 
-  it('rejects output whose size is more than 100 times the archive', () => {
+  it('rejects output past the floor whose size is more than 100 times the archive', () => {
     const sparse = path.join(root, 'sparse.bin');
     fs.closeSync(fs.openSync(sparse, 'w'));
-    fs.truncateSync(sparse, MIB);
+    fs.truncateSync(sparse, 32 * MIB + 1);
 
     expect(unsafeReason(() => assertExtractionContained(root, 1000, LIMITS))).toBe('compression-ratio');
+  });
+
+  it('accepts output of exactly 32 MiB however small the archive', () => {
+    const sparse = path.join(root, 'sparse.bin');
+    fs.closeSync(fs.openSync(sparse, 'w'));
+    fs.truncateSync(sparse, 32 * MIB);
+
+    expect(assertExtractionContained(root, 1000, LIMITS).totalBytes).toBe(32 * MIB);
   });
 
   it('accepts exactly the entry cap of files within a reasonable time', () => {

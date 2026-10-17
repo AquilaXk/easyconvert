@@ -1,5 +1,6 @@
 import { DecompressionLimitError } from '../types';
 import {
+  exceedsArchiveRatio,
   unpackedBytesCap,
   unpackedBytesCapError,
   type ArchiveExtractionLimits,
@@ -42,7 +43,7 @@ function bzip2Payload(src: string, archive: Buffer, limits: ArchiveExtractionLim
       `Archive bomb detected: uncompressed size exceeds limit of ${limits.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
     );
   }
-  if (archive.length > 0 && payload.length / archive.length > limits.MAX_RATIO) {
+  if (exceedsArchiveRatio(payload.length, archive.length, limits.MAX_RATIO)) {
     throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${limits.MAX_RATIO}:1 limit`);
   }
   const hasUstarMagic = payload.subarray(TAR_MAGIC_OFFSET, TAR_MAGIC_OFFSET + TAR_MAGIC.length).toString('ascii') === TAR_MAGIC;

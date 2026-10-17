@@ -185,11 +185,18 @@ const KNOWN_LISTING_KEYS = new Set([
 export const MAX_ENTRY_PATH_DEPTH = 256;
 
 /**
- * Decoded output below which the compression ratio is not judged (1 MiB). A few kilobytes of repetitive text deflate
- * past 100:1 without being a bomb, and the absolute caps already bound what a small output can cost. The gzip reader
- * and the ZIP reader share this floor.
+ * Decoded output up to which the compression ratio is not judged (32 MiB). Legitimate data compresses past 100:1 at
+ * sizes far above a few kilobytes (a sparse disk image, repeated log lines, a file of one repeated pattern), and the
+ * absolute size cap already bounds what any output can cost, so a ratio verdict on a small output only refuses real
+ * files. Every archive path (the native 7-Zip pipeline, the gzip, ZIP and 7z readers, the single-stream wrappers, the
+ * package layers and Zstandard) shares this one floor; the ratio itself and the size cap are unchanged.
  */
-export const ARCHIVE_RATIO_BASELINE_BYTES = 1024 * 1024;
+export const ARCHIVE_RATIO_FLOOR_BYTES = 32 * 1024 * 1024;
+
+/** True when `decodedBytes` from `archiveBytes` is past the floor and beyond the maximum compression ratio. */
+export function exceedsArchiveRatio(decodedBytes: number, archiveBytes: number, maxRatio: number): boolean {
+  return decodedBytes > ARCHIVE_RATIO_FLOOR_BYTES && archiveBytes > 0 && decodedBytes / archiveBytes > maxRatio;
+}
 const MAX_ENTRY_FILTER_PATTERNS = 1_000;
 const MAX_ENTRY_FILTER_TOTAL_BYTES = 64 * 1024;
 const ENTRY_FILTER_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
@@ -254,22 +261,23 @@ function assertWithinSizeAndRatio(totalBytes: number, archiveBytes: number, limi
   if (totalBytes > limits.MAX_UNCOMPRESSED_SIZE) {
     throw sizeError(limits);
   }
-  if (archiveBytes > 0 && totalBytes / archiveBytes > limits.MAX_RATIO) {
+  if (exceedsArchiveRatio(totalBytes, archiveBytes, limits.MAX_RATIO)) {
     throw ratioError(totalBytes, archiveBytes, limits);
   }
 }
 
 /**
- * The bound on what one archive may unpack to when only its size is known: the size cap, or the ratio cap times the
- * archive's own size when that is smaller. A stream that passes it is within both caps; one that does not is a bomb.
+ * The bound on what one archive may unpack to when only its size is known: the size cap, or the larger of the ratio
+ * floor and the ratio cap times the archive's own size when that is smaller. A stream that passes it is within both
+ * caps; one that does not is a bomb.
  */
 export function unpackedBytesCap(archiveBytes: number, limits: ArchiveExtractionLimits): number {
-  return Math.min(limits.MAX_UNCOMPRESSED_SIZE, Math.floor(archiveBytes * limits.MAX_RATIO));
+  return Math.min(limits.MAX_UNCOMPRESSED_SIZE, Math.max(ARCHIVE_RATIO_FLOOR_BYTES, Math.floor(archiveBytes * limits.MAX_RATIO)));
 }
 
 /** The typed error for output that outgrew {@link unpackedBytesCap}: the ratio cap when it was the binding one, else the size cap. */
 export function unpackedBytesCapError(archiveBytes: number, limits: ArchiveExtractionLimits): UnsafeArchiveError {
-  if (Math.floor(archiveBytes * limits.MAX_RATIO) < limits.MAX_UNCOMPRESSED_SIZE) {
+  if (Math.max(ARCHIVE_RATIO_FLOOR_BYTES, Math.floor(archiveBytes * limits.MAX_RATIO)) < limits.MAX_UNCOMPRESSED_SIZE) {
     return new UnsafeArchiveError(
       'compression-ratio',
       `Archive bomb detected: compression ratio exceeds ${limits.MAX_RATIO}:1 limit`

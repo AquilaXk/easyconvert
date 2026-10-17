@@ -79,6 +79,10 @@ long.txt.lz                lzip 1.24.1                                   lzip -9
 tree.tar.lz                lzip 1.24.1                                   lzip -9 -c tree.tar > tree.tar.lz
 two-members.txt.lz         lzip 1.24.1                                   head -c 7800 long.txt | lzip -9 -c > two-members.txt.lz && tail -c +7801 long.txt | lzip -9 -c >> two-members.txt.lz
 
+zeros-20mib.cab            gcab 1.6 (MSZIP)                              python3 -c 'open("zeros-20mib.bin","wb").write(bytes(20*1024*1024))' && touch -d '2024-01-02 03:04:06' zeros-20mib.bin &&
+                                                                         gcab -c -z zeros-20mib.cab zeros-20mib.bin   (20 MiB of zero bytes in 35,916 bytes: 584:1, a file the
+                                                                         ratio rule must not refuse; cabextract -l lists the one 20,971,520-byte member)
+
 Listing keys seen with `7z l -slt -ba` (7-Zip 23.01 and p7zip 16.02) that were not in the whitelist before this change:
   Metadata Changed   UDF images, HFS+ volumes (also inside the DMG)
 All other keys (including p7zip 16.02's `User` and `Group` for ext4 and DEB) were already allowed.

@@ -565,7 +565,7 @@
     "rule": "complexity",
     "function": "convertArchive",
     "count": 1,
-    "maxValue": 113
+    "maxValue": 112
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -579,7 +579,7 @@
     "rule": "complexity",
     "function": "extractRarArchive",
     "count": 1,
-    "maxValue": 49
+    "maxValue": 48
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -628,7 +628,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4240
+    "maxValue": 4234
   },
   {
     "file": "src/lib/conversions/archive.ts",

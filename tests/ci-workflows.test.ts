@@ -544,3 +544,39 @@ describe('the automerge workflow', () => {
     }
   );
 });
+
+describe('the 7-Zip the real-world corpus is judged with', () => {
+  const PINNED_STEP = 'Install the pinned upstream 7-Zip';
+  const pinnedEnv = (workflow: Workflow, job: string): Record<string, string> => {
+    const step = workflow.jobs[job].steps.find((candidate) => candidate.name === PINNED_STEP);
+    if (!step) throw new Error(`no step ${PINNED_STEP} in ${job}`);
+    return step.env as Record<string, string>;
+  };
+
+  it('is the pinned upstream build of the worker image (it has the RAR decoders the distribution package lacks), not the distribution package', () => {
+    const fromCi = pinnedEnvFromAnyCiJob();
+    const fromNightly = pinnedEnv(nightly, 'realworld');
+    for (const key of ['SEVEN_ZIP_VERSION', 'SEVEN_ZIP_RELEASE', 'SEVEN_ZIP_SHA256_X64']) {
+      expect(fromNightly[key], key).toBe(fromCi[key]);
+    }
+  });
+
+  it('is installed before the corpus runs, verified against its digest, and handed to the worker through P7ZIP_PATH', () => {
+    const steps = nightly.jobs.realworld.steps;
+    const install = steps.findIndex((candidate) => candidate.name === PINNED_STEP);
+    const run = steps.findIndex((candidate) => candidate.name === 'Run the corpus shard');
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(run);
+    const script = stepRun(nightly, 'realworld', PINNED_STEP);
+    expect(script).toContain('sha256sum --check --strict');
+    expect(script).toContain('P7ZIP_PATH=');
+    expect(script).toContain('GITHUB_ENV');
+  });
+
+  function pinnedEnvFromAnyCiJob(): Record<string, string> {
+    for (const { step } of stepsOf(ci)) {
+      if (step.env && 'SEVEN_ZIP_SHA256_X64' in step.env) return step.env as Record<string, string>;
+    }
+    throw new Error('ci.yml has no step with the pinned 7-Zip digest');
+  }
+});

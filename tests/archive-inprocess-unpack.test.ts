@@ -32,7 +32,8 @@ const MTIME_SECONDS = 1_614_834_360;
 const OTHER_MTIME_SECONDS = 1_700_000_000;
 const MIB = 1024 * 1024;
 const OVER_CAP_BOMB_MIB = 600;
-const RATIO_BOMB_MIB = 3;
+/** Past the 32 MiB output below which the ratio is not judged. */
+const RATIO_BOMB_MIB = 40;
 const OVER_CAP_ENTRY_COUNT = 50_001;
 
 interface Member {

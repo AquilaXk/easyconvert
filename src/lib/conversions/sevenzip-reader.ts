@@ -8,6 +8,7 @@ import {
   PayloadLimitError,
   UnsupportedArchiveMethodError,
 } from '../types';
+import { exceedsArchiveRatio } from './archive-extraction-safety';
 
 /**
  * Reader for the 7z container (7-Zip's 7zFormat.txt): the 32-byte start header, the (possibly encoded) header with
@@ -560,7 +561,7 @@ function assertWithinBudget(size: number, archiveBytes: number, limits: SevenZip
   if (size > limits.maxUncompressedBytes) {
     throw new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${limits.maxUncompressedBytes} bytes (500MB)`);
   }
-  if (archiveBytes > 0 && size / archiveBytes > limits.maxRatio) {
+  if (exceedsArchiveRatio(size, archiveBytes, limits.maxRatio)) {
     throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${limits.maxRatio}:1 limit`);
   }
 }

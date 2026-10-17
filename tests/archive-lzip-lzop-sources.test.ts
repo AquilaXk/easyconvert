@@ -465,13 +465,14 @@ describe('lz, lzo, tar.lzo and tzo sources convert to every archive target', () 
   });
 
   oracleTest('a bomb of zeros is cut off at the ratio cap with the typed archive-bomb error', ['lzop', 'lzip'], async () => {
-    const zeros = Buffer.alloc(8 * MIB);
+    // Past the 32 MiB output below which the ratio is not judged.
+    const zeros = Buffer.alloc(40 * MIB);
     for (const [tool, format] of [
       ['lzop', 'lzo'],
       ['lzip', 'lz'],
     ] as const) {
       const packed = withTemporaryFile(zeros, (file) => execFileSync(requireOracleTool(tool), ['-9', '-c', file], { maxBuffer: 16 * MIB }));
-      expect(packed.length, tool).toBeLessThan(80_000);
+      expect(packed.length * 100, tool).toBeLessThan(40 * MIB);
       const failure = await convertFile(packed, format, 'zip', {}, `bomb.${format}`).catch((err: unknown) => err);
       expect(failure, tool).toMatchObject({ name: 'UnsafeArchiveError', reason: 'compression-ratio' });
     }

@@ -325,8 +325,8 @@ describe('Milestone 1 (P0): Engine Fidelity, Codecs, Lossless ToUnicode PDF & Fa
     });
 
     it('aborts gzip decompression stream early when compression ratio exceeds limit', async () => {
-      // 2MB of zeroes compresses to ~2KB, ratio ~1000:1 (exceeds 100:1 limit)
-      const repetitiveData = Buffer.alloc(2 * 1024 * 1024, 0);
+      // 40 MiB of zeroes compresses to ~40 KB, ratio ~1000:1 (exceeds 100:1 limit) and is past the 32 MiB floor
+      const repetitiveData = Buffer.alloc(40 * 1024 * 1024, 0);
       const compressed = zlib.gzipSync(repetitiveData, { level: 9 });
 
       expect(repetitiveData.length / compressed.length).toBeGreaterThan(100);
