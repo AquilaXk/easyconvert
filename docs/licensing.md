@@ -74,7 +74,7 @@ Under the terms of the GNU Lesser General Public License (LGPLv3, Section 4), wh
 
 ### Copyright Notices Inside the Worker Container
 - The worker Docker image (`Dockerfile.worker`) preserves all Debian package copyright and license texts at `/licenses/`:
-  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, `libavif` (the `avifenc` AVIF encoder), `imagemagick`, `libheif`, `libde265`, `openjpeg` (picture decoders), `p7zip`, and `libredwg` (the DWG reader, with `/licenses/libredwg.SOURCE` naming the release archive it was built from).
+  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, `libavif` (the `avifenc` AVIF encoder), `imagemagick`, `libheif`, `libde265`, `openjpeg` (picture decoders), `p7zip`, `libdeflate-tools` (the `libdeflate-gzip` deflate encoder for ZIP and gzip payloads past 4 MiB, MIT, run as a separate sandboxed process), and `libredwg` (the DWG reader, with `/licenses/libredwg.SOURCE` naming the release archive it was built from).
   - `/licenses/THIRD_PARTY_NOTICES.md` contains the complete production npm package notices.
   - `/licenses/tool-versions.txt` lists the version of every Debian package in the image and of the Node.js runtime. The image is built on Debian 13 (trixie) with Node.js 24 LTS (see the policy decision "Base image and Node.js LTS").
 
