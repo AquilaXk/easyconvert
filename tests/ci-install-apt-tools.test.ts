@@ -196,6 +196,23 @@ describe('the committed package list and scripts', () => {
     expect(action).toContain('LIBREDWG_CACHE_HIT: ${{ steps.libredwg-cache.outputs.cache-hit }}');
   });
 
+  it('builds cad-convert from native/cad-convert after the Open CASCADE development packages are installed, and fails the apt task when it does not start', () => {
+    const tools = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
+    const names = readFileSync(path.join(ACTION_DIR, 'apt-packages.txt'), 'utf-8');
+    for (const pkg of ['libocct-data-exchange-dev', 'libocct-ocaf-dev', 'libocct-modeling-algorithms-dev', 'libocct-modeling-data-dev', 'libocct-foundation-dev']) {
+      expect(names, pkg).toContain(pkg);
+    }
+    const task = tools.slice(tools.indexOf('task_apt() {'), tools.indexOf('task_verapdf() {'));
+    const install = task.indexOf('install-apt-tools.sh');
+    const build = task.indexOf('native/cad-convert/build.sh');
+    expect(install).toBeGreaterThan(-1);
+    expect(build).toBeGreaterThan(install);
+    expect(task).toContain('/usr/local/bin/cad-convert || return 1');
+    expect(task).toContain("does not start");
+    expect(existsSync(path.join(ROOT, 'native', 'cad-convert', 'build.sh'))).toBe(true);
+    expect(existsSync(path.join(ROOT, 'native', 'cad-convert', 'cad-convert.cpp'))).toBe(true);
+  });
+
   it('installs the ebook converter from a pinned archive over HTTPS only and checks its digest before unpacking it', () => {
     const script = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
     expect(script).toMatch(/^CALIBRE_VERSION=\d+\.\d+\.\d+$/m);

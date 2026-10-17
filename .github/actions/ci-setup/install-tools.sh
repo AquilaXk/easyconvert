@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Sets up the test tools of one CI job. The parts do not depend on each other, so they run at once and the step
 # lasts as long as the slowest one (the package install) instead of the sum of all of them:
-#   apt      conversion and oracle CLIs, from the cached .deb files when the cache was restored
+#   apt      conversion and oracle CLIs, from the cached .deb files when the cache was restored, and cad-convert (the STEP and IGES
+#            program, native/cad-convert) built against the Open CASCADE development packages of the same list
 #   pip      the Python format oracles
 #   verapdf  the PDF/A validator, from the cached install when the cache was restored
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
@@ -110,6 +111,13 @@ task_apt() {
   "$action_path/install-apt-tools.sh" "$apt_debs" "$action_path/apt-packages.txt" "$apt_cache_hit" || return 1
   # Pre-stage Tesseract traineddata assets for offline inference
   find /usr/share/tesseract-ocr /usr/share/tessdata -name "*.traineddata" -exec cp -u {} ./ \; 2>/dev/null || true
+  # STEP and IGES input is read by our own program, linked to the Open CASCADE libraries of the runner image. It builds in seconds, so it
+  # needs no cache, and it follows the packages, which is why it is part of this task and not a task of its own.
+  sudo "$action_path/../../../native/cad-convert/build.sh" /usr/local/bin/cad-convert || return 1
+  # Run without arguments the program prints its usage and exits 2; that line is the sign that it starts.
+  local usage
+  usage="$(cad-convert 2>&1 || true)"
+  [[ "$usage" == *'usage: cad-convert'* ]] || { echo "cad-convert does not start" >&2; return 1; }
 }
 
 # PDF/A results are refused unless veraPDF validates them.
