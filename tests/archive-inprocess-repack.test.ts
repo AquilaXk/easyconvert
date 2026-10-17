@@ -207,8 +207,8 @@ describe('tar to ZIP in process', () => {
   );
 
   oracleTest(
-    'leaves a payload past the in-process deflate bound to 7-Zip, which still writes a valid ZIP',
-    [...TOOLS],
+    'encodes a payload past the in-process deflate bound with libdeflate-gzip and still writes a valid ZIP (tests/archive-native-deflate.test.ts holds the detail)',
+    [...TOOLS, 'libdeflate-gzip'],
     async () => {
       const root = path.join(workDir, 'big-tree');
       const big = zipfText(IN_PROCESS_DEFLATE_MAX_BYTES + MIB, 71);
@@ -218,7 +218,7 @@ describe('tar to ZIP in process', () => {
       const archive = writeOut('big.zip', result.buffer);
       expect(execFileSync('unzip', ['-t', archive], { encoding: 'utf8' })).toContain('No errors detected');
       expect(sha256Hex(execFileSync('unzip', ['-p', archive, 'big.txt'], { maxBuffer: 64 * MIB }))).toBe(sha256Hex(big));
-      expect(spy.calls().some((call) => call.includes('a'))).toBe(true);
+      expectNoSevenZipCall();
     },
     TEST_TIMEOUT_MS
   );

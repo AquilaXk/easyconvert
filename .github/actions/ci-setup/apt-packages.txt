@@ -44,6 +44,7 @@ python3-numpy
 zip
 unzip
 bzip2
+libdeflate-tools
 woff-tools
 libegl1
 libopengl0

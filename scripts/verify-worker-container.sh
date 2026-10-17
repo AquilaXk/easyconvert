@@ -12,6 +12,7 @@
 #   3. the process holds no cap_sys_admin (kernel view; `capsh --print` too when it is installed)
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
 #   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; LibreOffice with VERIFY_LIBREOFFICE=1)
+#   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -236,6 +237,20 @@ if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then
     pass "LibreOffice converted a text file to PDF inside the sandbox"
   else
     fail "LibreOffice did not convert inside the sandbox: $(head -c 300 "$work_dir/soffice.out" 2>/dev/null)"
+  fi
+fi
+
+# --- 6. libdeflate-gzip -----------------------------------------------------------------------------
+# The archive conversions run it as `libdeflate-gzip -N` with the data on stdin; without it they fall back to 7-Zip, slower.
+if ! command -v libdeflate-gzip >/dev/null 2>&1; then
+  fail "libdeflate-gzip is not installed (package libdeflate-tools): ZIP and gzip payloads past 4 MiB fall back to the slower 7-Zip route"
+else
+  deflate_input="$(head -c 4096 /dev/zero | tr '\0' 'x')"
+  deflate_output="$(printf '%s' "$deflate_input" | sandboxed libdeflate-gzip -6 2>"$work_dir/libdeflate.err" | sandboxed libdeflate-gzip -d 2>>"$work_dir/libdeflate.err")"
+  if [ "$deflate_output" = "$deflate_input" ]; then
+    pass "libdeflate-gzip compressed and decompressed 4096 bytes inside the sandbox"
+  else
+    fail "libdeflate-gzip did not round-trip inside the sandbox: $(head -c 300 "$work_dir/libdeflate.err" 2>/dev/null)"
   fi
 fi
 
