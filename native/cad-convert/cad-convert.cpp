@@ -10,7 +10,8 @@
 //
 // Standard output stays empty. Standard error holds `cad-convert: note: ...` lines, and on failure one
 // `cad-convert: error: <code>: <message>` line. The exit status names the kind of failure:
-//   0 written   2 usage   3 unreadable input   4 nothing to write (no shapes, no surfaces)   5 transfer, mesh or write failed
+//   0 written   2 usage   3 unreadable input   4 nothing to write (no shapes, no surfaces)   5 transfer, mesh or write failed,
+//   or out of memory (the code of the error line is `memory`)
 //
 // The program links dynamically to the unmodified Open CASCADE libraries (LGPL-2.1 with the exception) and runs as a
 // separate process; it builds against Open CASCADE 7.6 to 7.9.
@@ -36,6 +37,7 @@
 #include <STEPControl_Controller.hxx>
 #include <STEPControl_StepModelType.hxx>
 #include <Standard_Failure.hxx>
+#include <Standard_OutOfMemory.hxx>
 #include <TCollection_HAsciiString.hxx>
 #include <TColStd_SequenceOfAsciiString.hxx>
 #include <TDF_Label.hxx>
@@ -60,6 +62,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -104,6 +107,10 @@ struct Failure {
 [[noreturn]] void fail(int status, const char* code, const std::string& message) {
   throw Failure{status, code, message};
 }
+
+// Running out of memory is told apart from every other failure: the model is too big for the limit the program runs under, which is
+// not a fault of the file or of the program.
+[[noreturn]] void failOutOfMemory() { fail(kExitFailed, "memory", "the model needs more memory than the program may use"); }
 
 void note(const std::string& text) { std::cerr << "cad-convert: note: " << text << "\n"; }
 
@@ -391,6 +398,7 @@ void run(const Arguments& arguments) {
     if (arguments.from == Format::Step) readStep(arguments.input, doc);
     else readIges(arguments.input, doc);
   } catch (const Standard_Failure& error) {
+    if (error.IsKind(STANDARD_TYPE(Standard_OutOfMemory))) failOutOfMemory();
     fail(kExitUnreadable, "unreadable", std::string("Open CASCADE failed while reading: ") + error.GetMessageString());
   }
 
@@ -414,6 +422,7 @@ void run(const Arguments& arguments) {
       else writeObj(triangles, arguments.output, *arguments.unit);
     }
   } catch (const Standard_Failure& error) {
+    if (error.IsKind(STANDARD_TYPE(Standard_OutOfMemory))) failOutOfMemory();
     fail(kExitFailed, "failed", std::string("Open CASCADE failed while writing: ") + error.GetMessageString());
   }
 }
@@ -429,6 +438,9 @@ int main(int argc, char** argv) {
   } catch (const Failure& failure) {
     std::cerr << "cad-convert: error: " << failure.code << ": " << failure.message << "\n";
     return failure.status;
+  } catch (const std::bad_alloc&) {
+    std::cerr << "cad-convert: error: memory: the model needs more memory than the program may use\n";
+    return kExitFailed;
   } catch (const Standard_Failure& error) {
     std::cerr << "cad-convert: error: failed: " << error.GetMessageString() << "\n";
     return kExitFailed;

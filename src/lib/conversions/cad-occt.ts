@@ -54,9 +54,12 @@ const PROGRAM_MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 const PROGRAM_MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
 const MAX_DETAIL_CHARS = 200;
 const SHELL_NOT_EXECUTABLE = 126;
+const OUTPUT_TOO_LARGE = 'The model is larger than the CAD converter may write.';
 const SHELL_NOT_FOUND = 127;
 const UNPRINTABLE = /[^\x20-\x7e]/g;
 const ERROR_LINE = /^cad-convert: error: (.*)$/m;
+/** The error line of a program that ran out of memory: `memory` is its code. */
+const MEMORY_ERROR_LINE = /^cad-convert: error: memory:/m;
 
 /** Length units the program writes in, by the `outputUnit` option; millimetres when the request names none. */
 const OUTPUT_UNITS: ReadonlySet<string> = new Set(['mm', 'cm', 'm', 'in']);
@@ -90,10 +93,17 @@ function toProgramError(error: unknown, sandboxDir: string, timeoutMs: number): 
   // The sandbox reports a signal SIGSEGV or SIGKILL of a memory-limited process as a memory error: running out of the limit
   // and crashing on a damaged file look the same to it, and the message says both.
   if (error instanceof SandboxedMemoryLimitError) return new UnprocessableCadInputError('The CAD converter ran out of memory or crashed on this model.');
-  if (error instanceof SandboxedBufferLimitError) return new UnprocessableCadInputError('The CAD converter printed more diagnostics than the limit allows: the file is damaged.');
+  if (error instanceof SandboxedBufferLimitError) {
+    // The sandbox reports a file that grew past its size limit (SIGXFSZ) with the same error as too much diagnostic output; the limit tells them apart.
+    if (error.limitBytes === PROGRAM_MAX_OUTPUT_BYTES) return new UnprocessableCadInputError(OUTPUT_TOO_LARGE);
+    return new UnprocessableCadInputError('The CAD converter printed more diagnostics than the limit allows: the file is damaged.');
+  }
   if (error instanceof SandboxedProcessError) {
     if (error.exitCode === SHELL_NOT_FOUND || error.exitCode === SHELL_NOT_EXECUTABLE) {
       return new EngineUnavailableError(PROGRAM_NAME, 'cad-convert (Open CASCADE) could not be started');
+    }
+    if (MEMORY_ERROR_LINE.test(error.stderr)) {
+      return new UnprocessableCadInputError(`The CAD converter ran out of memory: the model needs more than the ${PROGRAM_MEMORY_LIMIT_MB} MB it may use.`);
     }
     const how = error.signal ? `was stopped by ${error.signal}` : `exited with status ${error.exitCode}`;
     return new UnprocessableCadInputError(`The CAD converter could not convert this model: it ${how}${diagnostic(error.stderr, sandboxDir)}.`);
@@ -142,7 +152,7 @@ export async function convertCadWithOcct(input: Buffer, sourceFormat: string, ta
     }
     const size = fs.statSync(outputPath).size;
     if (size === 0) throw new UnprocessableCadInputError('The CAD converter wrote an empty file.');
-    if (size >= PROGRAM_MAX_OUTPUT_BYTES) throw new UnprocessableCadInputError('The model is larger than the CAD converter may write.');
+    if (size >= PROGRAM_MAX_OUTPUT_BYTES) throw new UnprocessableCadInputError(OUTPUT_TOO_LARGE);
     return fs.readFileSync(outputPath);
   } finally {
     cleanupWorkerSandboxDir(sandboxDir);
