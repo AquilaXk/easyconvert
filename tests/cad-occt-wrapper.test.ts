@@ -135,7 +135,7 @@ describe('a missing or failing converter never passes for a conversion', () => {
 
   it('answers 422 that the model is too large, not that the diagnostics are too long, when the output grows past the size limit', async () => {
     // 300 MB against the 256 MB limit: the sandbox stops the program with SIGXFSZ where it limits file sizes, and the size check catches the file otherwise.
-    await withProgram(standIn('head -c 300000000 /dev/zero > "$8"'), async () => {
+    await withProgram(standIn('exec head -c 300000000 /dev/zero > "$8"'), async () => {
       const failure = await failureOf(() => convertCadWithOcct(STEP_BYTES, 'step', 'stl'));
       expect(failure).toBeInstanceOf(UnprocessableCadInputError);
       expect(failure.message).toBe('The model is larger than the CAD converter may write.');
