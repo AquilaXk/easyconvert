@@ -1,5 +1,17 @@
 import fs from 'node:fs';
-import { assertNotSpoofedFile, FileExtensionSpoofError, FORMAT_REGISTRY } from '../registry';
+import { assertNotSpoofedFile as assertSignatureMatches, FileExtensionSpoofError, FORMAT_REGISTRY } from '../registry';
+import { assertGzippedXmlRoot } from './gzipped-xml-root';
+import { OBJECT_HEADER_BYTES } from '../storage/object-header';
+
+/**
+ * The server side spoof check of a buffer that holds the start of a file: the signature rules of the registry, then the root
+ * element of a gzipped XML format (`.svgz`, `.zabw`), which needs a decoder that the registry must not import. Every server
+ * entry point that checks an upload calls this one, not the registry's `assertNotSpoofedFile`.
+ */
+export function assertNotSpoofedFile(buffer: Buffer | Uint8Array, declaredExtensionOrFormatId: string, filename?: string): void {
+  assertSignatureMatches(buffer, declaredExtensionOrFormatId, filename);
+  assertGzippedXmlRoot(buffer, declaredExtensionOrFormatId, filename);
+}
 
 /**
  * Asserts fail-closed that initial magic bytes of a file on disk match the declared format.
@@ -28,10 +40,9 @@ export function assertNotSpoofedFilePath(
   }
   const fd = fs.openSync(filePath, 'r');
   try {
-    const maxHeaderBytes = 64 * 1024; // 64 KiB
-    const headerBuf = Buffer.alloc(maxHeaderBytes);
-    const bytesRead = fs.readSync(fd, headerBuf, 0, maxHeaderBytes, 0);
-    const slice = bytesRead < maxHeaderBytes ? headerBuf.subarray(0, bytesRead) : headerBuf;
+    const headerBuf = Buffer.alloc(OBJECT_HEADER_BYTES);
+    const bytesRead = fs.readSync(fd, headerBuf, 0, OBJECT_HEADER_BYTES, 0);
+    const slice = bytesRead < OBJECT_HEADER_BYTES ? headerBuf.subarray(0, bytesRead) : headerBuf;
 
     let formatOrExt = declaredExtensionOrFormatId;
     if (formatOrExt.includes('/')) {

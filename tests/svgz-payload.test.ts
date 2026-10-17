@@ -5,11 +5,11 @@ import { decodeRgba } from './helpers/image-pixels';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
- * The signature check of `.svgz` sees only the gzip header; what the stream holds is judged where it is inflated: a
- * stream that is not an SVG document is refused with a typed error, whatever it is.
+ * A gzip member under the `.svgz` name must hold an SVG document: the server side signature check inflates the head of the
+ * member and refuses one whose root element is not `svg` (a PNG, text, a program, JSON, a page), before the conversion starts.
  */
 
-const NOT_SVG = { name: 'ConversionFailedError', message: 'Invalid image: the SVGZ payload is not an SVG document' };
+const SPOOFED = { name: 'FileExtensionSpoofError', message: /the gzip member does not hold a <svg> document, which declared format ".svgz" requires/ };
 const PNG_HEADER = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
 const SVG = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#f00"/></svg>';
 
@@ -21,7 +21,7 @@ describe('the payload of an .svgz file', () => {
     ['JSON', Buffer.from('{"svg": true}')],
   ])('is refused when it is %s', async (_label, payload) => {
     for (const target of ['png', 'pdf', 'svg']) {
-      await expect(dispatchConversion(zlib.gzipSync(payload), 'svgz', target, {}, 'drawing.svgz')).rejects.toMatchObject(NOT_SVG);
+      await expect(dispatchConversion(zlib.gzipSync(payload), 'svgz', target, {}, 'drawing.svgz')).rejects.toMatchObject(SPOOFED);
     }
   });
 

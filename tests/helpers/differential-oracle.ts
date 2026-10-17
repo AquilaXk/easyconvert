@@ -79,7 +79,8 @@ export type ExternalOracleTool =
   | 'lzip'
   | 'rpm2cpio'
   | 'cpio'
-  | 'dpkg-deb';
+  | 'dpkg-deb'
+  | 'file';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;

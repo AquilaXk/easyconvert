@@ -19,7 +19,7 @@ import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 
 /**
  * Real files of the formats the office suite reads and the in-process engine does not (Works, WordPerfect, OpenOffice.org 1.x,
- * Numbers, Publisher, the Sony, Palm and RocketBook e-books) or reads as another format (Word, Excel and OpenDocument templates,
+ * Numbers, Publisher, StarOffice, AbiWord, Quattro Pro, the Sony, Palm and RocketBook e-books) or reads as another format (Word, Excel and OpenDocument templates,
  * PowerPoint slide shows). Until #783 these were handed to the in-process text extractor, which either refused the bytes with an
  * untyped error or, for some targets, returned the raw bytes read as text. Each file here is converted to every target the
  * registry advertises for it (a test below fails when one has no conversion). Two oracles read the result and neither is the
@@ -111,6 +111,31 @@ const SAMPLES: readonly SampleCase[] = [
     phrases: ['professional experience', 'caring registered nurse with six years experience'],
   },
   {
+    id: 'tika-teststaroffice-5.2-writer.sdw',
+    extension: 'sdw',
+    targets: ['docx', 'pdf', 'txt', 'odt', 'zip'],
+    phrases: ['this is an example staroffice 5 2 document'],
+  },
+  { id: 'lo-hello.zabw', extension: 'zabw', targets: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'], phrases: ['hello world'] },
+  {
+    id: 'tika-teststaroffice-5.2-calc.sdc',
+    extension: 'sdc',
+    targets: ['ods', 'xlsx', 'csv', 'zip'],
+    phrases: ['this is an example staroffice 5 2 spreadsheet'],
+  },
+  {
+    id: 'opf-testquattro.qpw',
+    extension: 'qpw',
+    targets: ['xlsx', 'csv', 'zip'],
+    phrases: ['this is an example spreadsheet made with quattro pro x3'],
+  },
+  {
+    id: 'tika-teststaroffice-5.2-draw.sda',
+    extension: 'sda',
+    targets: ['pdf', 'png', 'jpg', 'bmp', 'zip'],
+    phrases: ['this is an example staroffice 5 2 drawing'],
+  },
+  {
     id: 'opf-lorem-ipsum-090.lrf',
     extension: 'lrf',
     targets: ['epub', 'pdf', 'txt', 'rtf', 'azw3', 'mobi', 'oeb', 'pdb', 'zip'],
@@ -177,7 +202,7 @@ function stripMarkup(markup: string): string {
 }
 
 /** Spreadsheet formats: their words are the cells, which the office suite's CSV export holds without the headers and page numbers of a printed page. */
-const SPREADSHEET_EXTENSIONS: ReadonlySet<string> = new Set(['xlt', 'numbers']);
+const SPREADSHEET_EXTENSIONS: ReadonlySet<string> = new Set(['xlt', 'numbers', 'sdc', 'qpw']);
 /** The office suite's CSV export of the first sheet with every cell as it is shown (UTF-8, comma, double quote): the text of a CSV that Excel saves. */
 const CSV_AS_SHOWN = 'csv:Text - txt - csv (StarCalc):44,34,76,1,,0,false,true';
 const SPREADSHEET_TARGETS: ReadonlySet<string> = new Set(['xlsx', 'xls', 'ods']);

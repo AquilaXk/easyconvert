@@ -2914,28 +2914,21 @@
     "rule": "complexity",
     "function": "isFormatCompatibleWithMagicBytes",
     "count": 1,
-    "maxValue": 104
+    "maxValue": 91
   },
   {
     "file": "src/lib/registry.ts",
     "rule": "complexity",
     "function": "sniffMimeTypeFromMagicBytes",
     "count": 1,
-    "maxValue": 178
-  },
-  {
-    "file": "src/lib/registry.ts",
-    "rule": "max-lines-per-function",
-    "function": "sniffMimeTypeFromMagicBytes",
-    "count": 1,
-    "maxValue": 254
+    "maxValue": 66
   },
   {
     "file": "src/lib/registry.ts",
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3531
+    "maxValue": 3341
   },
   {
     "file": "src/lib/security/memory-shredder.ts",
@@ -3096,7 +3089,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2729
+    "maxValue": 2728
   },
   {
     "file": "src/worker/engines.ts",

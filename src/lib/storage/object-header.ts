@@ -1,8 +1,9 @@
 import type { Readable } from 'node:stream';
 import type { IStorageBackend } from './oci-storage';
+import { HEADER_WINDOW_BYTES } from '../format-signatures';
 
 /** Enough leading bytes for every magic-number check the registry performs. */
-export const OBJECT_HEADER_BYTES = 64 * 1024;
+export const OBJECT_HEADER_BYTES = HEADER_WINDOW_BYTES;
 
 /**
  * The first bytes of a stored object (at most `maxBytes`) without reading the rest of it, so a

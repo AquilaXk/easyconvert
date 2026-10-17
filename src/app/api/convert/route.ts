@@ -5,7 +5,8 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
-import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, assertNotSpoofedFile, getAvailableTargetFormats } from '@/lib/registry';
+import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
+import { assertNotSpoofedFile } from '@/lib/security/file-guard';
 import {
   ConversionOptions,
   ConversionFailedError,

@@ -7,10 +7,10 @@
  * - Aliases: a template or slideshow whose bytes are those of a plain format (a Word template is a Word 97-2003
  *   document, an Excel template a workbook, a PowerPoint slideshow a presentation, an OpenDocument template an
  *   OpenDocument file with another mimetype). They are read by the reader of the plain format.
- * - Office-suite-only sources: formats with no in-process reader (Works, WordPerfect, OpenOffice.org 1.x, Numbers,
- *   Publisher, the Sony, Palm and RocketBook e-books). Their bytes are never read as text; the office suite imports them
- *   and either writes the target itself or writes an interchange file that the in-process converter of that format turns
- *   into the target.
+ * - Office-suite-only sources: formats with no in-process reader (Works, WordPerfect, OpenOffice.org 1.x, StarOffice,
+ *   AbiWord, Quattro Pro, Numbers, Publisher, the Sony, Palm and RocketBook e-books). Their bytes are never read as text;
+ *   the office suite imports them and either writes the target itself or writes an interchange file that the in-process
+ *   converter of that format turns into the target.
  */
 
 import { EngineUnavailableError } from '../../types';
@@ -49,6 +49,11 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
   sxi: { application: 'impress', interchange: 'pptx' },
   sxd: { application: 'draw' },
   pub: { application: 'draw' },
+  sda: { application: 'draw' },
+  sdw: { application: 'writer', interchange: 'docx' },
+  zabw: { application: 'writer', interchange: 'docx' },
+  sdc: { application: 'calc', interchange: 'xlsx' },
+  qpw: { application: 'calc', interchange: 'xlsx' },
 };
 
 /** Targets the in-process engine writes from plain text only: the Palm family, the Sony and Open eBook formats, XPS and the Hangul formats. */

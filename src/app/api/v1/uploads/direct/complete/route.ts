@@ -4,7 +4,7 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { storageProvider } from '@/lib/storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
-import { assertNotSpoofedFile } from '@/lib/registry';
+import { assertNotSpoofedFile } from '@/lib/security/file-guard';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
 
 export const dynamic = 'force-dynamic';

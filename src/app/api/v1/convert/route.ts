@@ -15,7 +15,8 @@ import { conversionWarningsFields, conversionWarningsHeaders } from '@/lib/api/c
 import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
-import { detectFormatFromFilename, getFormatByExtension, assertNotSpoofedFile } from '@/lib/registry';
+import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { assertNotSpoofedFile } from '@/lib/security/file-guard';
 import { storageProvider } from '@/lib/storage';
 import {
   createProblemDetailsResponse,
