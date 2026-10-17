@@ -281,7 +281,7 @@ export async function convertVectorCad(
 
 /** The answer for a format that no reader exists for, by source: refused, never drawn from a placeholder. */
 const NO_READER_REFUSALS: Readonly<Record<string, string>> = {
-  dwf: 'DWF files cannot be converted: no open-source reader of DWF 6 (W2D) or DWFx files was found, and the format\'s own reader is Autodesk\'s proprietary toolkit, so the file is refused instead of drawn from a placeholder.',
+  dwf: 'DWF files cannot be converted: no reader of DWF 6 (W2D) or DWFx files is included in the worker, so the file is refused instead of drawn from a placeholder.',
   sk: 'Sketch and Skencil (.sk) files cannot be converted: no reader for them is included in the worker (the office suite does not import the format), so the file is refused instead of drawn from a placeholder.',
   sk1: 'sK1 (.sk1) files cannot be converted: no reader for them is included in the worker (the office suite does not import the format), so the file is refused instead of drawn from a placeholder.',
 };

@@ -676,13 +676,13 @@ describe('what the in-process engine no longer pretends to read', () => {
   });
 });
 
-describe('DWF, which has no open-source reader', () => {
+describe('DWF, which has no reader in the worker', () => {
   it('a real .dwf file is refused with the reason for every target the registry offers', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'tika-testdwf2010.dwf');
     for (const target of getFormatByExtension('dwf')?.targetFormats ?? []) {
       const failure = await dispatchConversion(bytes, 'dwf', target, {}, 'testDWF2010.dwf').catch((error: unknown) => error);
       expect(failure, `dwf -> ${target}`).toBeInstanceOf(CadGeometryUnavailableError);
-      expect((failure as Error).message, `dwf -> ${target}`).toMatch(/no open-source reader of DWF 6 \(W2D\) or DWFx files was found/);
+      expect((failure as Error).message, `dwf -> ${target}`).toMatch(/no reader of DWF 6 \(W2D\) or DWFx files is included in the worker/);
     }
   });
 });
