@@ -9,10 +9,10 @@ import { UnsupportedOptionError, type ConversionOptions } from '../src/lib/types
  * is a client error, never a silently ignored option.
  */
 
-/** The default export FilterData (keep JPEG streams, write the outline) with PDF/A-2 selected, written by hand. */
+/** The default export FilterData (keep JPEG streams, write the outline, no note annotations) with PDF/A-2 selected, written by hand. */
 const KEEP_JPEG_DATA_WITH_PDFA_2 =
   '{"ReduceImageResolution":{"type":"boolean","value":"false"},"Quality":{"type":"long","value":"100"},' +
-  '"ExportBookmarks":{"type":"boolean","value":"true"},"SelectPdfVersion":{"type":"long","value":"2"}}';
+  '"ExportBookmarks":{"type":"boolean","value":"true"},"ExportNotes":{"type":"boolean","value":"false"},"SelectPdfVersion":{"type":"long","value":"2"}}';
 
 describe('resolvePdfAConformance reads pdfVersion and pdfStandard independently', () => {
   it('reads pdfStandard when pdfVersion holds a plain PDF version', () => {

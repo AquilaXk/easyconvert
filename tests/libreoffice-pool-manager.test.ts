@@ -358,9 +358,9 @@ describe('Phase 3: Pre-warmed LibreOffice Daemon Pool Architecture', () => {
       // Hand-written goldens: JSON FilterData as LibreOffice's --convert-to syntax defines it.
       const keepJpegData =
         '"ReduceImageResolution":{"type":"boolean","value":"false"},"Quality":{"type":"long","value":"100"},' +
-        '"ExportBookmarks":{"type":"boolean","value":"true"}';
+        '"ExportBookmarks":{"type":"boolean","value":"true"},"ExportNotes":{"type":"boolean","value":"false"}';
 
-      // 1. The default export keeps JPEG streams (no downsampling, quality 100) and writes the outline
+      // 1. The default export keeps JPEG streams (no downsampling, quality 100), writes the outline and leaves comments out as note annotations
       expect(resolveLibreOfficeFilter('pdf', 'docx')).toBe(`pdf:writer_pdf_Export:{${keepJpegData}}`);
       expect(resolveLibreOfficeFilter('pdf', 'xlsx')).toBe(`pdf:calc_pdf_Export:{${keepJpegData}}`);
       expect(resolveLibreOfficeFilter('pdf', 'pptx')).toBe(`pdf:impress_pdf_Export:{${keepJpegData}}`);
@@ -393,7 +393,7 @@ describe('Phase 3: Pre-warmed LibreOffice Daemon Pool Architecture', () => {
       // 6b. Compression profile: downsample and re-encode only when asked
       expect(resolveLibreOfficeFilter('pdf', 'docx', { imageDpi: 150, jpegQuality: 60 })).toBe(
         'pdf:writer_pdf_Export:{"ReduceImageResolution":{"type":"boolean","value":"true"},' +
-          '"Quality":{"type":"long","value":"60"},"ExportBookmarks":{"type":"boolean","value":"true"},' +
+          '"Quality":{"type":"long","value":"60"},"ExportBookmarks":{"type":"boolean","value":"true"},"ExportNotes":{"type":"boolean","value":"false"},' +
           '"MaxImageResolution":{"type":"long","value":"150"}}'
       );
 
