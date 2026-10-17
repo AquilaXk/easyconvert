@@ -8,8 +8,12 @@
  * is the source of the byte pattern; where they disagree with the format specification, the specification decides.
  */
 
-import { gunzipHead } from './gzip-head';
-import { OBJECT_HEADER_BYTES } from './storage/object-header';
+
+/**
+ * How many leading bytes of a file the spoof check reads (and the storage layer hands it): enough for every rule here. A
+ * buffer of exactly this length may be the start of a longer file; a shorter one is the whole file.
+ */
+export const HEADER_WINDOW_BYTES = 64 * 1024;
 
 /** Whether `buf` holds the bytes of `prefix` at `offset`. */
 export function startsWithBytes(buf: Uint8Array, prefix: readonly number[], offset = 0): boolean {
@@ -22,16 +26,21 @@ const LATIN1 = new TextDecoder('latin1');
 /**
  * Gzip members that hold an XML document, by extension, and the element that document opens with: compressed SVG
  * (`svgz`) and compressed AbiWord (`zabw`). shared-mime-info lists both as a gzip file by name only (and `<abiword` at
- * offset 0 to 256 for the plain `.abw`); the root element of the inflated head is checked here as well, so a gzip member that
- * holds anything else (a page, a program, a picture) is not taken for either.
+ * offset 0 to 256 for the plain `.abw`). This module only tells that the bytes are a gzip member; reading the inflated head
+ * for the root element needs a decoder, which is the job of the server side gate (`security/file-guard`), because the
+ * registry is imported by the browser components and the edge engines.
  */
 const GZIPPED_XML_ROOT: Readonly<Record<string, string>> = { svgz: 'svg', zabw: 'abiword' };
 
 function isGzippedXmlExtension(ext: string): boolean {
   return Object.hasOwn(GZIPPED_XML_ROOT, ext);
 }
-/** The inflated bytes read to find the root element: enough for a licence comment and a doctype with an entity subset. */
-const XML_HEAD_BYTES = 16 * 1024;
+
+/** The root element that the gzip member under the name `ext` must hold; undefined for a name that is not a gzipped XML format. */
+export function gzippedXmlRootOf(ext: string): string | undefined {
+  return isGzippedXmlExtension(ext) ? GZIPPED_XML_ROOT[ext] : undefined;
+}
+
 /** Names that a gzip member may carry. */
 const GZIP_EXTENSIONS: ReadonlySet<string> = new Set(['gz', 'tgz', 'gzip', 'tar.gz']);
 /** gzip member header (RFC 1952 section 2.3): ID1, ID2, compression method, flags, then MTIME, XFL and OS. */
@@ -97,12 +106,12 @@ export function xmlRootElementName(head: Uint8Array): string | undefined {
   return ELEMENT_NAME.exec(text.slice(at))?.[1].toLowerCase();
 }
 
-/** Whether a buffer whose first bytes are a gzip signature may carry the extension `ext`. */
+/**
+ * Whether a buffer whose first bytes are a gzip signature may carry the extension `ext`. A gzipped XML name also needs a
+ * well-formed member header here; its root element is checked by the server side gate.
+ */
 export function isGzipFamilyCompatible(ext: string, buf: Uint8Array): boolean {
-  if (GZIP_EXTENSIONS.has(ext)) return true;
-  if (!isGzippedXmlExtension(ext) || !hasGzipMemberHeader(buf)) return false;
-  const head = gunzipHead(buf, XML_HEAD_BYTES);
-  return head !== undefined && xmlRootElementName(head) === GZIPPED_XML_ROOT[ext];
+  return GZIP_EXTENSIONS.has(ext) || (isGzippedXmlExtension(ext) && hasGzipMemberHeader(buf));
 }
 
 /** Adobe Illustrator artwork: PDF-compatible files (the default since CS) open with `%PDF`; versions 3 to 8 are PostScript. */
@@ -167,7 +176,7 @@ export function isAdtsFrameAt(buf: Uint8Array, offset: number): boolean {
 export function id3v2Payload(buf: Uint8Array): 'adts' | 'other' | 'beyond-window' | undefined {
   const offset = id3v2PayloadOffset(buf);
   if (offset === undefined) return undefined;
-  if (offset + 1 >= buf.length) return buf.length >= OBJECT_HEADER_BYTES ? 'beyond-window' : 'other';
+  if (offset + 1 >= buf.length) return buf.length >= HEADER_WINDOW_BYTES ? 'beyond-window' : 'other';
   return isAdtsFrameAt(buf, offset) ? 'adts' : 'other';
 }
 

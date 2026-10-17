@@ -5,11 +5,11 @@ import { decodeRgba } from './helpers/image-pixels';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
- * A gzip member under the `.svgz` name must hold an SVG document: the signature check inflates the head of the member and
- * refuses one whose root element is not `svg` (a PNG, text, a program, JSON, a page), before the conversion starts.
+ * A gzip member under the `.svgz` name must hold an SVG document: the server side signature check inflates the head of the
+ * member and refuses one whose root element is not `svg` (a PNG, text, a program, JSON, a page), before the conversion starts.
  */
 
-const SPOOFED = { name: 'FileExtensionSpoofError', message: /MIME type "application\/gzip", which is incompatible with declared format ".svgz"/ };
+const SPOOFED = { name: 'FileExtensionSpoofError', message: /the gzip member does not hold a <svg> document, which declared format ".svgz" requires/ };
 const PNG_HEADER = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
 const SVG = '<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#f00"/></svg>';
 

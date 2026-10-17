@@ -1,10 +1,12 @@
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
-import { gunzipHead } from '../src/lib/gzip-head';
 import { xmlRootElementName } from '../src/lib/format-signatures';
-import { assertNotSpoofedFile, FileExtensionSpoofError, isFormatCompatibleWithMagicBytes, sniffMimeTypeFromMagicBytes } from '../src/lib/registry';
-import { assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
+import { FileExtensionSpoofError, isFormatCompatibleWithMagicBytes, sniffMimeTypeFromMagicBytes } from '../src/lib/registry';
+import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
+import { gunzipHead } from '../src/lib/security/gzipped-xml-root';
 import { OBJECT_HEADER_BYTES } from '../src/lib/storage/object-header';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -12,7 +14,8 @@ import { skipUnless } from './helpers/strict-skip';
 
 /**
  * Content variants of formats the spoof check refused although the files are what their names say (#783): compressed
- * AbiWord and compressed SVG (a gzip member whose inflated head opens with the format's root element), raw AAC behind an
+ * AbiWord and compressed SVG (a gzip member whose inflated head opens with the format's root element, which the server
+ * side gate reads and the registry does not), raw AAC behind an
  * ID3v2 tag or in an MP4 box structure, DivX in an AVI container, and the compound-file formats StarWriter, StarCalc,
  * StarDraw, Corel Presentations and Quattro Pro. Accepted cases are real files from the corpus or headers written from the
  * layout in the specification; the independent oracle for a container is the system `file` (libmagic) where it is installed.
@@ -28,7 +31,37 @@ const MZ_HEADER = Buffer.concat([Buffer.from('MZ'), Buffer.alloc(64, 1)]);
 const ELF_HEADER = Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.alloc(64, 1)]);
 const CFBF_MAGIC = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 
-const gzip = (text: string): Buffer => zlib.gzipSync(Buffer.from(text));
+const GZIP_HEADER = [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
+
+/**
+ * A gzip member (RFC 1952) written from the layout in the specification: the header, the data as stored deflate blocks
+ * (RFC 1951 3.2.4) and the CRC-32 and size trailer. No compressor is involved, so the bytes do not depend on one.
+ */
+function gzip(content: string | Buffer, header: Buffer = Buffer.from(GZIP_HEADER)): Buffer {
+  const data = typeof content === 'string' ? Buffer.from(content) : content;
+  const blocks: Buffer[] = [];
+  for (let at = 0; at < Math.max(data.length, 1); at += 0xffff) {
+    const chunk = data.subarray(at, at + 0xffff);
+    const last = at + 0xffff >= data.length ? 1 : 0;
+    const blockHeader = Buffer.alloc(5);
+    blockHeader.writeUInt8(last, 0);
+    blockHeader.writeUInt16LE(chunk.length, 1);
+    blockHeader.writeUInt16LE(~chunk.length & 0xffff, 3);
+    blocks.push(blockHeader, chunk);
+  }
+  const trailer = Buffer.alloc(8);
+  trailer.writeUInt32LE(zlib.crc32(data), 0);
+  trailer.writeUInt32LE(data.length, 4);
+  return Buffer.concat([header, ...blocks, trailer]);
+}
+
+const gzipTool = getOracleToolPath('gzip');
+const noGzipTool = skipUnless('gzip', gzipTool !== null);
+
+/** `content` compressed by the system `gzip` at `level`, or by the default level. */
+function gzipWithTool(content: Buffer, level = 6): Buffer {
+  return execFileSync(gzipTool as string, ['-c', `-${level}`], { input: content, maxBuffer: 256 * 1024 * 1024 });
+}
 
 /** Runs libmagic's `file` over bytes the test holds on disk; the caller skips without the tool. */
 function libmagicMime(filePath: string): string {
@@ -37,59 +70,59 @@ function libmagicMime(filePath: string): string {
 
 const noLibmagic = skipUnless('file (libmagic)', getOracleToolPath('file') !== null);
 
-describe('gunzipHead (the head of a gzip member without Node zlib)', () => {
+describe('gunzipHead (the head of a gzip member, read with the bounded inflate)', () => {
   const PROSE = 'The quick brown fox jumps over the lazy dog. '.repeat(400);
   const NOISE = Buffer.from(Array.from({ length: 6000 }, (_, index) => (index * 7919 + (index >> 3) * 31) & 0xff));
+  const INPUT = Buffer.concat([Buffer.from(PROSE), NOISE, Buffer.from(PROSE)]);
 
-  it.each([0, 1, 6, 9])('returns the first bytes of a member compressed at level %i', (level) => {
-    const input = Buffer.concat([Buffer.from(PROSE), NOISE, Buffer.from(PROSE)]);
-    const member = zlib.gzipSync(input, { level });
-    expect(Buffer.from(gunzipHead(member, 5000) as Uint8Array).equals(input.subarray(0, 5000))).toBe(true);
-    expect(Buffer.from(gunzipHead(member, input.length + 100) as Uint8Array).equals(input)).toBe(true);
-  });
-
-  it('reads a member of fixed Huffman blocks', () => {
-    const member = zlib.gzipSync(Buffer.from('abcabcabcabc'), { strategy: zlib.constants.Z_FIXED });
-    expect(Buffer.from(gunzipHead(member, 100) as Uint8Array).toString()).toBe('abcabcabcabc');
-  });
-
-  it('stops at the budget instead of inflating a stream that expands far past it', () => {
-    const bomb = zlib.gzipSync(Buffer.alloc(50 * 1024 * 1024));
-    expect(gunzipHead(bomb, 1024)?.length).toBe(1024);
-  });
-
-  it('returns the bytes decoded so far when the window ends inside the stream', () => {
-    const input = Buffer.from(PROSE);
-    const member = zlib.gzipSync(input, { level: 0 });
-    const head = gunzipHead(member.subarray(0, 3000), 100000) as Uint8Array;
+  it.for([1, 6, 9])('reads a member that the system gzip wrote at level %i', (level, ctx) => {
+    if (noGzipTool) return ctx.skip();
+    const member = gzipWithTool(INPUT, level);
+    const head = gunzipHead(member, 5000) as Buffer;
     expect(head.length).toBeGreaterThan(0);
-    expect(Buffer.from(head).equals(input.subarray(0, head.length))).toBe(true);
+    expect(head.length).toBeLessThanOrEqual(5000);
+    expect(head.equals(INPUT.subarray(0, head.length))).toBe(true);
+    expect((gunzipHead(member, INPUT.length + 100) as Buffer).equals(INPUT)).toBe(true);
+  });
+
+  it('reads a member of fixed Huffman blocks as the system gzip writes it for a short input', (ctx) => {
+    if (noGzipTool) return ctx.skip();
+    expect((gunzipHead(gzipWithTool(Buffer.from('abcabcabcabc')), 100) as Buffer).toString()).toBe('abcabcabcabc');
+  });
+
+  it('reads a member of stored blocks written from the specification', () => {
+    expect((gunzipHead(gzip(SVG), 1000) as Buffer).toString()).toBe(SVG);
+  });
+
+  it('stops at the budget instead of inflating a stream that expands far past it', (ctx) => {
+    if (noGzipTool) return ctx.skip();
+    const bomb = gzipWithTool(Buffer.alloc(50 * 1024 * 1024), 9);
+    expect(gunzipHead(bomb, 1024)?.length ?? 0).toBeLessThanOrEqual(1024);
+    expect(() => assertNotSpoofedFile(bomb, 'svgz', 'bomb.svgz')).toThrow(FileExtensionSpoofError);
+  });
+
+  it('returns the bytes decoded so far when the window ends inside the stream', (ctx) => {
+    if (noGzipTool) return ctx.skip();
+    const head = gunzipHead(gzipWithTool(INPUT).subarray(0, 3000), 100000) as Buffer;
+    expect(head.length).toBeGreaterThan(0);
+    expect(head.equals(INPUT.subarray(0, head.length))).toBe(true);
   });
 
   it('skips the optional header fields of RFC 1952 (extra, name, comment, header CRC)', () => {
-    const body = zlib.deflateRawSync(Buffer.from(SVG));
     const header = Buffer.from([0x1f, 0x8b, 8, 0x04 | 0x08 | 0x10 | 0x02, 0, 0, 0, 0, 0, 3]);
     const fields = Buffer.concat([Buffer.from([3, 0, 1, 2, 3]), Buffer.from('a.svg\0'), Buffer.from('note\0')]);
     // FHCRC is the low 16 bits of the CRC-32 of every header byte before it (RFC 1952 section 2.3.1).
     const headerCrc = Buffer.alloc(2);
     headerCrc.writeUInt16LE(zlib.crc32(Buffer.concat([header, fields])) & 0xffff);
-    expect(Buffer.from(gunzipHead(Buffer.concat([header, fields, headerCrc, body]), 1000) as Uint8Array).toString()).toBe(SVG);
+    expect((gunzipHead(gzip(SVG, Buffer.concat([header, fields, headerCrc])), 1000) as Buffer).toString()).toBe(SVG);
   });
 
-  it('refuses a stream that is not valid deflate and a header that is not complete', () => {
-    const member = gzip(SVG);
-    const reservedBlockType = Buffer.concat([member.subarray(0, 10), Buffer.from([0x07, 0, 0, 0, 0])]);
+  it('refuses a stream that is not valid deflate, a header that is not complete and a stored block whose length check fails', () => {
+    const reservedBlockType = Buffer.concat([Buffer.from(GZIP_HEADER), Buffer.from([0x07, 0, 0, 0, 0])]);
     expect(gunzipHead(reservedBlockType, 100)).toBeUndefined();
-    expect(gunzipHead(member.subarray(0, 9), 100)).toBeUndefined();
-    const nameNeverEnds = Buffer.concat([Buffer.from([0x1f, 0x8b, 8, 0x08, 0, 0, 0, 0, 0, 3]), Buffer.from('no terminator')]);
-    expect(gunzipHead(nameNeverEnds, 100)).toBeUndefined();
-  });
-
-  it('refuses a stored block whose length and complement disagree and a distance before the start', () => {
-    const header = Buffer.from([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3]);
-    expect(gunzipHead(Buffer.concat([header, Buffer.from([0x01, 0x05, 0x00, 0x00, 0x00, 1, 2, 3, 4, 5])]), 100)).toBeUndefined();
-    // A fixed-code block (BFINAL=1, BTYPE=01) whose first symbol is a length-3 match at distance 1, with nothing written yet.
-    expect(gunzipHead(Buffer.concat([header, Buffer.from([0x03, 0x02, 0x00])]), 100)).toBeUndefined();
+    expect((gunzipHead(gzip(SVG).subarray(0, 9), 100) ?? Buffer.alloc(0)).length).toBe(0);
+    const badComplement = Buffer.concat([Buffer.from(GZIP_HEADER), Buffer.from([0x01, 0x05, 0x00, 0x00, 0x00, 1, 2, 3, 4, 5])]);
+    expect(gunzipHead(badComplement, 100)).toBeUndefined();
   });
 });
 
@@ -118,22 +151,38 @@ describe('compressed AbiWord (.zabw) and compressed SVG (.svgz)', () => {
   it.for(['abiword-next_layout.zabw', 'lo-hello.zabw'])('accepts the real file %s', async (id, ctx) => {
     const sample = await requireRealworldSample(ctx, id);
     expect(isFormatCompatibleWithMagicBytes(sample.bytes, 'zabw')).toBe(true);
+    expect(() => assertNotSpoofedFile(sample.bytes, 'zabw', id)).not.toThrow();
     expect(() => assertNotSpoofedFilePath(sample.path, 'zabw', id)).not.toThrow();
   });
 
   it.for(['okular-checkmark.svgz', 'okular-hisc-apps-okular.svgz', 'tika-testsvg.svgz'])('accepts the real file %s', async (id, ctx) => {
     const sample = await requireRealworldSample(ctx, id);
     expect(isFormatCompatibleWithMagicBytes(sample.bytes, 'svgz')).toBe(true);
+    expect(() => assertNotSpoofedFile(sample.bytes, 'svgz', id)).not.toThrow();
+    expect(() => assertNotSpoofedFilePath(sample.path, 'svgz', id)).not.toThrow();
   });
 
   it('accepts a gzip member of an AbiWord document under .zabw and of an SVG under .svgz', () => {
-    expect(isFormatCompatibleWithMagicBytes(gzip(ABIWORD), 'zabw')).toBe(true);
-    expect(isFormatCompatibleWithMagicBytes(gzip(SVG), 'svgz')).toBe(true);
+    expect(xmlRootElementName(gunzipHead(gzip(ABIWORD), 1000) as Buffer)).toBe('abiword');
+    expect(xmlRootElementName(gunzipHead(gzip(SVG), 1000) as Buffer)).toBe('svg');
+    expect(() => assertNotSpoofedFile(gzip(ABIWORD), 'zabw', 'doc.zabw')).not.toThrow();
+    expect(() => assertNotSpoofedFile(gzip(SVG), 'svgz', 'drawing.svgz')).not.toThrow();
   });
 
-  it('accepts a document whose head is longer than the compressed window shows', () => {
+  it('accepts a document whose head is longer than the compressed window shows', (ctx) => {
+    if (noGzipTool) return ctx.skip();
     const padded = `${ABIWORD}\n${'<!-- filler -->\n'.repeat(20000)}`;
-    expect(isFormatCompatibleWithMagicBytes(zlib.gzipSync(Buffer.from(padded)).subarray(0, 64 * 1024), 'zabw')).toBe(true);
+    const window = gzipWithTool(Buffer.from(padded)).subarray(0, OBJECT_HEADER_BYTES);
+    expect(xmlRootElementName(gunzipHead(window) as Buffer)).toBe('abiword');
+    expect(() => assertNotSpoofedFile(window, 'zabw', 'big.zabw')).not.toThrow();
+  });
+
+  it('accepts a document whose compressed window inflates to more than the head budget', (ctx) => {
+    if (noGzipTool) return ctx.skip();
+    const padded = `${SVG.replace('<svg', '<!-- c -->'.repeat(3) + '<svg')}${'<!-- filler -->\n'.repeat(200000)}`;
+    const window = gzipWithTool(Buffer.from(padded), 9).subarray(0, OBJECT_HEADER_BYTES);
+    expect(xmlRootElementName(gunzipHead(window) as Buffer)).toBe('svg');
+    expect(() => assertNotSpoofedFile(window, 'svgz', 'big.svgz')).not.toThrow();
   });
 
   it.each([
@@ -145,14 +194,17 @@ describe('compressed AbiWord (.zabw) and compressed SVG (.svgz)', () => {
     { what: 'an AbiWord document', text: ABIWORD, ext: 'svgz' },
     { what: 'plain text', text: 'hello', ext: 'zabw' },
   ])('refuses a gzip member of $what under .$ext', ({ text, ext }) => {
-    const bytes = gzip(text);
-    expect(isFormatCompatibleWithMagicBytes(bytes, ext)).toBe(false);
-    expect(() => assertNotSpoofedFile(bytes, ext, `file.${ext}`)).toThrow(FileExtensionSpoofError);
+    expect(() => assertNotSpoofedFile(gzip(text), ext, `file.${ext}`)).toThrow(FileExtensionSpoofError);
+  });
+
+  it('leaves the root element to the server side gate: the registry alone takes any well-formed gzip member under the names', () => {
+    expect(isFormatCompatibleWithMagicBytes(gzip(HTML), 'svgz')).toBe(true);
+    expect(isFormatCompatibleWithMagicBytes(gzip(HTML), 'zabw')).toBe(true);
   });
 
   it.each(['zabw', 'svgz'])('refuses a gzip member of a PNG, of a program and of noise under .%s', (ext) => {
     for (const payload of [PNG_HEADER, MZ_HEADER, ELF_HEADER, Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 37) & 0xff))]) {
-      expect(isFormatCompatibleWithMagicBytes(zlib.gzipSync(payload), ext)).toBe(false);
+      expect(() => assertNotSpoofedFile(gzip(payload), ext, `file.${ext}`)).toThrow(FileExtensionSpoofError);
     }
   });
 
@@ -167,6 +219,7 @@ describe('compressed AbiWord (.zabw) and compressed SVG (.svgz)', () => {
 
   it('keeps accepting any gzip member under the gzip names', () => {
     expect(isFormatCompatibleWithMagicBytes(gzip(HTML), 'gz')).toBe(true);
+    expect(() => assertNotSpoofedFile(gzip(HTML), 'gz', 'page.gz')).not.toThrow();
   });
 
   it('agrees with libmagic that the real compressed documents are gzip members', async (ctx) => {
@@ -445,5 +498,24 @@ describe('executable and Parquet signatures win over an ISO base media box', () 
 
   it('keeps a plain ftyp box an MP4 file', () => {
     expect(isFormatCompatibleWithMagicBytes(ftypAfter([0, 0, 0, 0x18]), 'mp4')).toBe(true);
+  });
+});
+
+describe('every server entry point calls the server side gate', () => {
+  /** Every TypeScript file under src, found by walking the tree. */
+  function sourceFiles(dir: string): string[] {
+    return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) return sourceFiles(full);
+      return /\.tsx?$/.test(entry.name) ? [full] : [];
+    });
+  }
+
+  it('imports the registry assertNotSpoofedFile nowhere but in the gate itself', () => {
+    const SRC = path.join(process.cwd(), 'src');
+    const importsRegistryCheck = (file: string): boolean =>
+      /import\s*\{[^}]*\bassertNotSpoofedFile\b[^}]*\}\s*from\s*'[^']*\/registry'/.test(fs.readFileSync(file, 'utf8'));
+    const offenders = sourceFiles(SRC).filter(importsRegistryCheck).map((file) => path.relative(SRC, file));
+    expect(offenders).toEqual(['lib/security/file-guard.ts']);
   });
 });

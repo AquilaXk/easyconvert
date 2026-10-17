@@ -45,8 +45,7 @@ import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging
 import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resources';
 import { parseHwpDocument } from '../lib/conversions/hwp';
 import { assertConversionOptionsObject } from '../lib/conversions/options-guard';
-import { assertNotSpoofedFile } from '../lib/registry';
-import { assertNotSpoofedFilePath } from '../lib/security/file-guard';
+import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../lib/security/file-guard';
 import { parsePageRanges, groupConsecutiveRanges, pageEntryName, resolvePageSelection, PageInterval } from '../lib/conversions/page-range';
 import {
   buildFfmpegArguments,

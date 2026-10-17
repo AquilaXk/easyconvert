@@ -15,7 +15,7 @@ import { pipeline } from 'node:stream/promises';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import type { IStorageBackend } from '../storage';
-import { assertNotSpoofedFile } from '../registry';
+import { assertNotSpoofedFile } from '../security/file-guard';
 
 export interface LargePayloadStreamConfig {
   /** Size of individual transfer chunks in bytes. Default: 64KB (65,536 bytes) */

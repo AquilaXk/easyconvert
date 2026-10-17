@@ -1,10 +1,6 @@
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
-import {
-  FORMAT_REGISTRY,
-  assertNotSpoofedFile,
-  sniffMimeTypeFromMagicBytes,
-  isFormatCompatibleWithMagicBytes,
-} from '../registry';
+import { FORMAT_REGISTRY, sniffMimeTypeFromMagicBytes, isFormatCompatibleWithMagicBytes } from '../registry';
+import { assertNotSpoofedFile } from '../security/file-guard';
 import {
   convertImage,
   demosaicBayerCfa,
