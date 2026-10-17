@@ -40,7 +40,7 @@ export interface ZstdZlib {
     options: DecodeOptions,
     callback: (error: Error | null, result: Buffer) => void
   ): void;
-  zstdDecompressSync(buffer: Uint8Array, options: DecodeOptions): Buffer;
+  zstdDecompressSync(buffer: Uint8Array, options: DecodeOptions & { maxOutputLength: number }): Buffer;
   constants: { ZSTD_c_compressionLevel: number; ZSTD_c_checksumFlag: number; ZSTD_d_windowLogMax: number };
 }
 
@@ -252,20 +252,18 @@ function decodeChunkBytes(declaredSize: number | null): number {
 /** One complete frame through libzstd, its output bounded by `maxOutputLength`. */
 function decodeFrame(frame: Buffer, span: FrameSpan, maxOutputLength: number, bound: OutputBound): Promise<Buffer> {
   const native = nativeZstdZlib();
-  const options: DecodeOptions = {
-    maxOutputLength: Math.max(1, maxOutputLength),
-    params: { [native.constants.ZSTD_d_windowLogMax]: DECODER_WINDOW_LOG_MAX },
-    chunkSize: decodeChunkBytes(span.declaredSize),
-  };
+  const cap = Math.max(1, maxOutputLength);
+  const params = { [native.constants.ZSTD_d_windowLogMax]: DECODER_WINDOW_LOG_MAX };
+  const chunkSize = decodeChunkBytes(span.declaredSize);
   if (span.declaredSize !== null && span.declaredSize <= SYNC_DECODE_MAX_DECLARED_BYTES) {
     try {
-      return Promise.resolve(native.zstdDecompressSync(frame, options));
+      return Promise.resolve(native.zstdDecompressSync(frame, { maxOutputLength: cap, params, chunkSize }));
     } catch (error) {
       return Promise.reject(decodeFailure(error, bound));
     }
   }
   return new Promise<Buffer>((resolve, reject) => {
-    native.zstdDecompress(frame, options, (error, result) => (error ? reject(decodeFailure(error, bound)) : resolve(result)));
+    native.zstdDecompress(frame, { maxOutputLength: cap, params, chunkSize }, (error, result) => (error ? reject(decodeFailure(error, bound)) : resolve(result)));
   });
 }
 
