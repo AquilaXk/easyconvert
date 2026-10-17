@@ -21,8 +21,11 @@ const LZIP_SOURCES: ReadonlySet<string> = new Set(['lz']);
 const LZOP_SOURCES: ReadonlySet<string> = new Set(['lzo', 'tar.lzo', 'tzo']);
 const LZOP_TARBALL_SOURCES: ReadonlySet<string> = new Set(['tar.lzo', 'tzo']);
 
-const TAR_MAGIC_OFFSET = 257;
-const TAR_MAGIC = 'ustar';
+
+/** A payload read as a tar when its first block is a tar header: the `ustar` magic, or a valid header checksum (a v7 tar). */
+function looksLikeTar(payload: Buffer): boolean {
+  return classifyUnpacked(payload) !== 'plain';
+}
 
 export function isWrapperSource(src: string): boolean {
   return BZIP2_SOURCES.has(src) || LZIP_SOURCES.has(src) || LZOP_SOURCES.has(src);
@@ -46,8 +49,7 @@ function bzip2Payload(src: string, archive: Buffer, limits: ArchiveExtractionLim
   if (exceedsArchiveRatio(payload.length, archive.length, limits.MAX_RATIO)) {
     throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${limits.MAX_RATIO}:1 limit`);
   }
-  const hasUstarMagic = payload.subarray(TAR_MAGIC_OFFSET, TAR_MAGIC_OFFSET + TAR_MAGIC.length).toString('ascii') === TAR_MAGIC;
-  return { payload, isTar: BZIP2_TARBALL_SOURCES.has(src) || hasUstarMagic, label: 'BZIP2' };
+  return { payload, isTar: BZIP2_TARBALL_SOURCES.has(src) || looksLikeTar(payload), label: 'BZIP2' };
 }
 
 /** lzip and lzop output is bounded by the archive size and ratio caps, as the other single-stream wrappers are. */
@@ -61,7 +63,7 @@ function lzPayload(src: string, archive: Buffer, limits: ArchiveExtractionLimits
     if (err instanceof DecompressionLimitError) throw unpackedBytesCapError(archive.length, limits);
     throw err;
   }
-  return { payload, isTar: LZOP_TARBALL_SOURCES.has(src) || classifyUnpacked(payload) !== 'plain', label: lzip ? 'LZIP' : 'LZOP' };
+  return { payload, isTar: LZOP_TARBALL_SOURCES.has(src) || looksLikeTar(payload), label: lzip ? 'LZIP' : 'LZOP' };
 }
 
 /** Decompresses a bzip2, lzip or lzop source; failures are typed (bomb, corrupt stream). */

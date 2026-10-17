@@ -146,13 +146,13 @@ describe('lzop files written by lzop', () => {
 
   it('tree.tar.lzo decodes to a tar of the three files', () => {
     const tar = decompressLzop(fixture('tree.tar.lzo'), NO_LIMIT);
-    expect(tar.length).toBe(10_240);
+    expect(tar).toHaveLength(10_240);
     expect(tar.toString('latin1', 257, 262)).toBe('ustar');
   });
 
   it('refuses an output over the limit before decoding the block that would pass it', () => {
     expect(() => decompressLzop(fixture('long.txt.lzo'), LONG_TEXT.length - 1)).toThrow(DecompressionLimitError);
-    expect(decompressLzop(fixture('long.txt.lzo'), LONG_TEXT.length).length).toBe(LONG_TEXT.length);
+    expect(decompressLzop(fixture('long.txt.lzo'), LONG_TEXT.length)).toHaveLength(LONG_TEXT.length);
   });
 
   it('refuses a flipped byte in the compressed data (the block checksum or the decoder notices)', () => {
@@ -197,17 +197,24 @@ function u32(value: number): Buffer {
   return out;
 }
 
+interface LzoBlock {
+  data: Buffer;
+  compressed: Buffer;
+}
+
 interface HandBuiltLzop {
   flags: number;
   version?: number;
   method?: number;
-  /** Stored blocks (compressed length equal to uncompressed length). */
-  blocks: Buffer[];
+  /** A Buffer is a stored block (compressed length equal to uncompressed length); an object is an LZO1X block and the bytes it decodes to. */
+  blocks: Array<Buffer | LzoBlock>;
   /** Replaces a block's declared uncompressed length, for the oversize checks. */
   declaredLength?: number;
 }
 
 const F_ADLER32_D = 0x1;
+const F_ADLER32_C = 0x2;
+const F_CRC32_C = 0x200;
 const F_CRC32_D = 0x100;
 const F_MULTIPART = 0x400;
 const F_FILTER = 0x800;
@@ -228,10 +235,16 @@ function buildLzop(spec: HandBuiltLzop): Buffer {
   const headerChecksum = spec.flags & F_H_CRC32 ? zlib.crc32(fields) : adler32(fields);
   const parts = [LZOP_MAGIC, fields, u32(headerChecksum)];
   for (const block of spec.blocks) {
-    parts.push(u32(spec.declaredLength ?? block.length), u32(block.length));
-    if (spec.flags & F_CRC32_D) parts.push(u32(zlib.crc32(block)));
-    else if (spec.flags & F_ADLER32_D) parts.push(u32(adler32(block)));
-    parts.push(block);
+    const { data, compressed } = Buffer.isBuffer(block) ? { data: block, compressed: block } : block;
+    parts.push(u32(spec.declaredLength ?? data.length), u32(compressed.length));
+    // Order of the format: the checksum of the decompressed block, then (for a block that is not stored) of the compressed one.
+    if (spec.flags & F_CRC32_D) parts.push(u32(zlib.crc32(data)));
+    else if (spec.flags & F_ADLER32_D) parts.push(u32(adler32(data)));
+    if (compressed !== data) {
+      if (spec.flags & F_CRC32_C) parts.push(u32(zlib.crc32(compressed)));
+      else if (spec.flags & F_ADLER32_C) parts.push(u32(adler32(compressed)));
+    }
+    parts.push(compressed);
   }
   parts.push(u32(0));
   return Buffer.concat(parts);
@@ -251,6 +264,59 @@ describe('the lzop container', () => {
     const file = buildLzop({ flags: F_ADLER32_D, blocks: [PAYLOAD] });
     file[file.length - 5] ^= 0x01;
     expectCorrupt(() => decompressLzop(file, NO_LIMIT), /decompressed block checksum/);
+  });
+
+  // 'x' then a 299-byte match at distance 1 (length 33 + 255 + 11), then the end marker: 10 bytes that decode to 300.
+  const COMPRESSED_X300 = Buffer.from([18, 0x78, 0x20, 0x00, 0x0b, 0x00, 0x00, 0x11, 0x00, 0x00]);
+  const LZO_BLOCK: LzoBlock = { data: Buffer.alloc(300, 'x'), compressed: COMPRESSED_X300 };
+  const CHECKSUM_FLAGS: Array<[string, number]> = [
+    ['no checksum', 0],
+    ['Adler-32 of the decompressed block', F_ADLER32_D],
+    ['CRC-32 of the decompressed block', F_CRC32_D],
+    ['Adler-32 of the compressed block', F_ADLER32_C],
+    ['CRC-32 of the compressed block', F_CRC32_C],
+    ['Adler-32 of both', F_ADLER32_D | F_ADLER32_C],
+    ['CRC-32 of both', F_CRC32_D | F_CRC32_C],
+    ['CRC-32 of the decompressed and Adler-32 of the compressed block', F_CRC32_D | F_ADLER32_C],
+  ];
+
+  it('decodes an LZO1X block under every checksum flag, the decompressed checksum written before the compressed one', () => {
+    for (const [label, flags] of CHECKSUM_FLAGS) {
+      expect(decompressLzop(buildLzop({ flags, blocks: [LZO_BLOCK] }), NO_LIMIT).equals(LZO_BLOCK.data), label).toBe(true);
+    }
+  });
+
+  it('refuses an LZO1X block whose compressed-block checksum is wrong, before it decodes the block', () => {
+    for (const [label, flags] of CHECKSUM_FLAGS.filter(([, f]) => (f & (F_ADLER32_C | F_CRC32_C)) !== 0)) {
+      const file = buildLzop({ flags, blocks: [LZO_BLOCK] });
+      // The compressed checksum is the last word before the compressed bytes.
+      file[file.length - 4 - COMPRESSED_X300.length - 1] ^= 0x01;
+      expect(() => decompressLzop(file, NO_LIMIT), label).toThrow(/Corrupt lzop data: the compressed block checksum/);
+    }
+  });
+
+  it('refuses an LZO1X block whose decompressed-block checksum is wrong', () => {
+    for (const [label, flags] of CHECKSUM_FLAGS.filter(([, f]) => (f & (F_ADLER32_D | F_CRC32_D)) !== 0)) {
+      const file = buildLzop({ flags, blocks: [LZO_BLOCK] });
+      // The decompressed checksum follows the two lengths; the compressed one, when present, sits between it and the data.
+      const compressedChecksumBytes = (flags & (F_ADLER32_C | F_CRC32_C)) !== 0 ? 4 : 0;
+      file[file.length - 4 - COMPRESSED_X300.length - compressedChecksumBytes - 1] ^= 0x01;
+      expect(() => decompressLzop(file, NO_LIMIT), label).toThrow(/Corrupt lzop data: the decompressed block checksum/);
+    }
+  });
+
+  it('refuses an LZO1X block whose bytes were damaged under a compressed-block checksum, and one the decoder cannot read under none', () => {
+    const withChecksum = buildLzop({ flags: F_CRC32_C, blocks: [LZO_BLOCK] });
+    withChecksum[withChecksum.length - 4 - 3] ^= 0x40;
+    expectCorrupt(() => decompressLzop(withChecksum, NO_LIMIT), /compressed block checksum/);
+    const noChecksum = buildLzop({ flags: 0, blocks: [{ data: LZO_BLOCK.data, compressed: Buffer.from(COMPRESSED_X300.subarray(0, 6)) }] });
+    expectCorrupt(() => decompressLzop(noChecksum, NO_LIMIT), /input ends inside an instruction/);
+  });
+
+  it('writes no compressed-block checksum for a stored block, whatever the flags say', () => {
+    for (const flags of [F_ADLER32_C, F_CRC32_C, F_ADLER32_D | F_ADLER32_C, F_CRC32_D | F_CRC32_C]) {
+      expect(decompressLzop(buildLzop({ flags, blocks: [PAYLOAD] }), NO_LIMIT).equals(PAYLOAD), flags.toString(16)).toBe(true);
+    }
   });
 
   it('refuses multi-part files, filters, old header versions, other methods and oversized or invalid blocks', () => {
@@ -281,14 +347,14 @@ describe('lzip files written by lzip', () => {
 
   it('tree.tar.lz decodes to a tar of the three files', () => {
     const tar = decompressLzip(fixture('tree.tar.lz'), NO_LIMIT);
-    expect(tar.length).toBe(10_240);
+    expect(tar).toHaveLength(10_240);
     expect(tar.toString('latin1', 257, 262)).toBe('ustar');
   });
 
   it('refuses an output over the limit before decoding', () => {
     expect(() => decompressLzip(fixture('long.txt.lz'), LONG_TEXT.length - 1)).toThrow(DecompressionLimitError);
     expect(() => decompressLzip(fixture('two-members.txt.lz'), LONG_TEXT.length - 1)).toThrow(DecompressionLimitError);
-    expect(decompressLzip(fixture('long.txt.lz'), LONG_TEXT.length).length).toBe(LONG_TEXT.length);
+    expect(decompressLzip(fixture('long.txt.lz'), LONG_TEXT.length)).toHaveLength(LONG_TEXT.length);
   });
 
   it('refuses damage anywhere in a member: the stream, the CRC-32, the sizes, the header and the version', () => {
@@ -301,10 +367,24 @@ describe('lzip files written by lzip', () => {
     expect(() => decompressLzip(mutate(100, intact[100] ^ 0x20), NO_LIMIT)).toThrow(CorruptStreamError);
     expectCorrupt(() => decompressLzip(mutate(-20, intact[intact.length - 20] ^ 1), NO_LIMIT), /CRC-32/);
     expectCorrupt(() => decompressLzip(mutate(-16, intact[intact.length - 16] ^ 1), NO_LIMIT), /different size than its trailer/);
-    expectCorrupt(() => decompressLzip(mutate(-8, intact[intact.length - 8] ^ 1), NO_LIMIT), /member header is missing|member size does not fit/);
+    // 327 becomes 326: the member would start one byte late, where no header is.
+    expectCorrupt(() => decompressLzip(mutate(-8, intact[intact.length - 8] ^ 1), NO_LIMIT), /a member header is missing/);
     expectCorrupt(() => decompressLzip(mutate(0, 0x4d), NO_LIMIT), /member header is missing/);
     expectCorrupt(() => decompressLzip(mutate(4, 0), NO_LIMIT), /version 0 is not supported/);
     expectCorrupt(() => decompressLzip(mutate(5, 0x00), NO_LIMIT), /invalid dictionary size/);
+  });
+
+  it('refuses a member size that cannot be a member of this file: smaller than a header and a trailer, or longer than the file', () => {
+    const intact = fixture('long.txt.lz');
+    const withMemberSize = (size: number): Buffer => {
+      const copy = Buffer.from(intact);
+      copy.writeBigUInt64LE(BigInt(size), copy.length - 8);
+      return copy;
+    };
+    expectCorrupt(() => decompressLzip(withMemberSize(25), NO_LIMIT), /member size does not fit/);
+    expectCorrupt(() => decompressLzip(withMemberSize(intact.length + 1), NO_LIMIT), /member size does not fit/);
+    // The size the file really has is the one that is accepted.
+    expect(decompressLzip(withMemberSize(intact.length), NO_LIMIT).equals(LONG_TEXT)).toBe(true);
   });
 
   it('refuses a truncated file, trailing data and a file that is not lzip', () => {

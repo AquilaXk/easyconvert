@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { decompressZstd } from './zstd';
 import { SandboxedTimeoutError } from '../security/process-sandbox';
+import { DecompressionLimitError } from '../types';
 import {
   UnreadableArchiveError,
   extractArchiveContained,
@@ -98,9 +99,10 @@ function sniffPayload(file: string): PayloadKind | null {
 
 /**
  * One byte budget and one deadline for a whole package. Each layer is vetted on its own, but the layers and the final
- * tree are all written to disk, so what the package may write is charged as a running total against the same bound a
- * single-stream archive gets (the size cap, or the larger of the ratio floor and 100 times the upload), and the time it may
- * take is fixed once: every 7-Zip call gets what is left of it, never a fresh allowance.
+ * tree all sit on disk, so the bytes the package holds there at once are charged against the same bound a single-stream
+ * archive gets (the size cap, or the larger of the ratio floor and 100 times the upload); a layer that has been removed is
+ * credited back, so the peak is what counts, not the sum of everything ever written. The time it may take is fixed once:
+ * every 7-Zip call gets what is left of it, never a fresh allowance.
  */
 export class PackageRun {
   private spentBytes = 0;
@@ -122,6 +124,13 @@ export class PackageRun {
     if (this.spentBytes > this.capBytes) throw unpackedBytesCapError(this.archiveBytes, this.request.limits);
   }
 
+  /** Removes a layer that has been read (a file, or the directory it was extracted into) and credits its bytes back. */
+  release(target: string, bytes: number): void {
+    if (fs.lstatSync(target).isDirectory()) removeDirectoryTree(target);
+    else fs.rmSync(target, { force: true });
+    this.spentBytes = Math.max(0, this.spentBytes - bytes);
+  }
+
   /** The request for the next 7-Zip step, with the time left of the package's deadline. */
   step(changes: Partial<ContainedExtractionRequest>): ContainedExtractionRequest {
     const remaining = this.deadline - this.now();
@@ -129,20 +138,26 @@ export class PackageRun {
     return { ...this.request, ...changes, timeoutMs: remaining };
   }
 
+  /** Bytes the package holds on disk at this moment, as charged. */
+  get liveBytes(): number {
+    return this.spentBytes;
+  }
+
   get limits(): ArchiveExtractionLimits {
     return this.request.limits;
   }
 }
 
-/** Removes a layer that has been read: a file, or the directory it was extracted into. */
-function discard(target: string): void {
-  if (fs.lstatSync(target).isDirectory()) removeDirectoryTree(target);
-  else fs.rmSync(target, { force: true });
-}
-
 /** Decompresses a Zstandard payload into `outDir` and returns the file; the output is capped by the archive size and ratio caps. */
-function decodeZstdPayload(run: PackageRun, compressed: string, outDir: string, layer: number): string {
-  const decoded = decompressZstd(fs.readFileSync(compressed), { maxOutputBytes: unpackedBytesCap(run.archiveBytes, run.limits) });
+export function decodeZstdPayload(run: PackageRun, compressed: string, outDir: string, layer: number): string {
+  let decoded: Buffer;
+  try {
+    decoded = decompressZstd(fs.readFileSync(compressed), { maxOutputBytes: unpackedBytesCap(run.archiveBytes, run.limits) });
+  } catch (err) {
+    // The decoder stops at the bound, before it has produced (or reserved) what a bomb claims.
+    if (err instanceof DecompressionLimitError) throw unpackedBytesCapError(run.archiveBytes, run.limits);
+    throw err;
+  }
   run.charge(decoded.length);
   const target = path.join(outDir, `${ZSTD_PAYLOAD_NAME}-${layer}`);
   fs.writeFileSync(target, decoded);
@@ -194,7 +209,7 @@ async function decompressLayer(run: PackageRun, layer: { file: string; kind: Exc
     })
   );
   run.charge(tree.totalBytes);
-  if (tree.files.length !== 1 || tree.entryCount !== 1) {
+  if (tree.files.length !== 1) {
     throw new UnreadableArchiveError('Could not read the package: a compressed layer of its payload does not hold one stream.');
   }
   return tree.files[0].absPath;
@@ -205,6 +220,8 @@ interface PayloadStage {
   kind: PayloadKind | null;
   /** What to remove once the next layer exists: the directory or file this stage lives in. */
   disposable: string;
+  /** What the stage holds on disk, credited back when it is removed. */
+  bytes: number;
 }
 
 /**
@@ -213,20 +230,20 @@ interface PayloadStage {
  * without a further decode. Each layer is removed as soon as the layer inside it exists.
  * Returns null when the stream is not a payload at all; throws when a layer cannot be read.
  */
-async function openPayloadLayers(run: PackageRun, first: PayloadStage, workDir: string): Promise<{ file: string; kind: ArchiveKind; disposable: string } | null> {
+async function openPayloadLayers(run: PackageRun, first: PayloadStage, workDir: string, keepFirst: boolean): Promise<{ file: string; kind: ArchiveKind; disposable: string; bytes: number } | null> {
   let current = first;
   for (let decoded = 0; ; decoded++) {
-    if (current.kind === 'cpio' || current.kind === 'tar') return { file: current.file, kind: current.kind, disposable: current.disposable };
+    if (current.kind === 'cpio' || current.kind === 'tar') return { file: current.file, kind: current.kind, disposable: current.disposable, bytes: current.bytes };
     if (current.kind === null || decoded === MAX_COMPRESSION_LAYERS) return null;
     const layerDir = path.join(workDir, `layer-${decoded}`);
     const next =
       current.kind === 'zstd'
         ? decodeZstdPayload(run, current.file, workDir, decoded)
-        : await decompressLayer(run, { file: current.file, kind: current.kind }, layerDir);
-    // The package's own extraction stays until the payload is known to be one: a package of a single file that merely
-    // looks compressed is converted from it.
-    if (current.disposable !== first.disposable) discard(current.disposable);
-    current = { file: next, kind: sniffPayload(next), disposable: current.kind === 'zstd' ? next : layerDir };
+        : await decompressLayer(run, { file: current.file, kind: current.kind }, layerDir); // NOSONAR S9382 sequential: each layer is the input of the next
+    // An rpm's own extraction stays until the payload is known to be one: a package of a single file that merely looks
+    // compressed is converted from it. A deb has no such fallback, so nothing keeps its extraction.
+    if (!keepFirst || current.disposable !== first.disposable) run.release(current.disposable, current.bytes);
+    current = { file: next, kind: sniffPayload(next), disposable: current.kind === 'zstd' ? next : layerDir, bytes: fs.statSync(next).size };
   }
 }
 
@@ -270,14 +287,14 @@ export async function extractPackagePayload(request: ContainedExtractionRequest,
   const payloadDir = `${request.extractDir}-payload`;
   fs.mkdirSync(payloadDir);
   const firstKind = sniffPayload(stream);
-  const archive = firstKind === null ? null : await openPayloadLayers(run, { file: stream, kind: firstKind, disposable: request.extractDir }, payloadDir);
+  const archive = firstKind === null ? null : await openPayloadLayers(run, { file: stream, kind: firstKind, disposable: request.extractDir, bytes: outer.totalBytes }, payloadDir, format === 'rpm');
   if (archive === null) {
     // An rpm whose one file is not a payload is a package of that file; a deb has nothing else to be.
     if (format === 'deb') throw new UnreadableArchiveError(NOT_AN_ARCHIVE_PAYLOAD);
     return listedPayload(request, outer, run);
   }
 
-  if (archive.disposable !== request.extractDir) discard(request.extractDir);
+  if (archive.disposable !== request.extractDir && fs.existsSync(request.extractDir)) run.release(request.extractDir, outer.totalBytes);
   const filesDir = path.join(payloadDir, 'files');
   fs.mkdirSync(filesDir);
   const tree = await extractArchiveContained(
@@ -292,6 +309,6 @@ export async function extractPackagePayload(request: ContainedExtractionRequest,
     })
   );
   run.charge(tree.totalBytes);
-  discard(archive.disposable);
+  run.release(archive.disposable, archive.bytes);
   return { tree, root: filesDir };
 }

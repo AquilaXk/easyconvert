@@ -16,6 +16,7 @@ import {
   SandboxedBufferLimitError,
   SandboxedProcessError,
 } from '../security/process-sandbox';
+import { damagedEntryMessage, diskImageMessage, multiVolumeMessage } from './archive-refusal-reasons';
 import {
   archiveFailureStderr,
   assertArchivePasswordSafe,
@@ -85,6 +86,10 @@ export interface ListedArchiveEntry {
   linkTarget?: string;
   /** A device, FIFO or socket entry. */
   isSpecial: boolean;
+  /** The entry continues in the next volume of a multi-volume archive (the listing's `Split After`). */
+  splitAfter?: boolean;
+  /** The entry began in the previous volume (the listing's `Split Before`). */
+  splitBefore?: boolean;
   /** The single stream of a wrapper format (gz, bz2, xz, ...), whose size 7-Zip may not state. */
   wrapperPayload?: boolean;
 }
@@ -107,6 +112,14 @@ export interface ContainedTree {
 
 /** The archive is damaged or in a format 7-Zip cannot read (as opposed to a policy violation). */
 export class UnreadableArchiveError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnreadableArchiveError';
+  }
+}
+
+/** 7-Zip gave no reason it could print for refusing the archive (as opposed to a damaged entry or a missing volume). */
+export class UnopenableArchiveError extends UnreadableArchiveError {
   constructor(message: string) {
     super(message);
     this.name = 'UnreadableArchiveError';
@@ -348,6 +361,8 @@ function buildListedEntry(fields: Map<string, string>, payloadName?: string): Li
     linkKind,
     ...(linkTarget !== '' ? { linkTarget } : {}),
     isSpecial: classification.isSpecial,
+    ...(fields.get('Split After') === '+' ? { splitAfter: true } : {}),
+    ...(fields.get('Split Before') === '+' ? { splitBefore: true } : {}),
     ...(fields.has('Path') ? {} : { wrapperPayload: true }),
   };
 }
@@ -1018,10 +1033,15 @@ export function toArchiveFailure(
       ? new InvalidArchivePasswordError(`Invalid password for encrypted ${label}.`)
       : new ArchivePasswordRequiredError(`The ${label} is password protected. A password is required to extract.`);
   }
-  return new UnreadableArchiveError(
+  const missingVolume = phase === 'list' ? multiVolumeRefusal(err) : null;
+  if (missingVolume !== null) return missingVolume;
+  const damaged = damagedEntryMessage(stderr);
+  if (damaged !== null) return new UnreadableArchiveError(damaged);
+  return new UnopenableArchiveError(
     `Could not read the archive: 7-Zip rejected the ${label} as malformed or unsupported (exit code ${failure.exitCode ?? 'unknown'}).`
   );
 }
+
 
 interface ListTarget {
   archivePath: string;
@@ -1116,12 +1136,36 @@ function excludeArgsFor(skippedLinks: string[]): string[] {
   return skippedLinks.map((linkPath) => `-x!${linkPath}`);
 }
 
+/**
+ * 7-Zip exits non-zero when the next volume of a set is missing, but it prints the listing first. That listing, read as any
+ * other, tells which part of the set this is; one that cannot be read (forged lines, for instance) leaves the generic answer.
+ */
+function multiVolumeRefusal(err: unknown): UnreadableArchiveError | null {
+  const printed = (err as { stdout?: unknown } | null)?.stdout;
+  if (typeof printed !== 'string' && !Buffer.isBuffer(printed)) return null;
+  try {
+    const message = multiVolumeMessage(parse7zTechnicalListing(stripSevenZipPasswordPrompt(printed.toString())));
+    return message === null ? null : new UnreadableArchiveError(message);
+  } catch {
+    return null;
+  }
+}
+
+/** A listing 7-Zip could not produce for a disk image is named for what the image is, not left as a generic refusal. */
+function refineListFailure(failure: unknown, request: ContainedExtractionRequest): unknown {
+  if (!(failure instanceof UnopenableArchiveError) || request.typeFlag !== undefined) return failure;
+  const message = diskImageMessage(request.archivePath);
+  return message === null ? failure : new UnreadableArchiveError(message);
+}
+
 /** Vets a listing and, when links are being skipped, returns the exclusion patterns plus the verdict. */
 function vetListing(
   request: ContainedExtractionRequest,
   listing: ListedArchiveEntry[],
   ratioBytes: number
 ): ListingVerdict {
+  const incomplete = multiVolumeMessage(listing);
+  if (incomplete !== null) throw new UnreadableArchiveError(incomplete);
   return assertSafeArchiveListing(listing, ratioBytes, request.limits, { skipLinks: request.skipLinks });
 }
 
@@ -1251,7 +1295,7 @@ export async function extractArchiveContained(request: ContainedExtractionReques
     }
     assertCollisionPolicy(listing, request.collisionPolicy);
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
+    throw refineListFailure(toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password)), request);
   }
 
   try {
@@ -1298,7 +1342,7 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
     }
     assertCollisionPolicy(listing, request.collisionPolicy);
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
+    throw refineListFailure(toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password)), request);
   }
 
   try {

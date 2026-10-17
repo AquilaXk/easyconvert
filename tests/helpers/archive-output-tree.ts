@@ -16,6 +16,7 @@ const EXTRACT_TIMEOUT_MS = 60_000;
 const LISTING_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
 const ZIP_FILE_TYPE_MASK = 0o170000;
 const ZIP_SYMLINK_TYPE = 0o120000;
+const PERMISSION_STRING = /^[-dlbcps][-rwxsStT]{9}$/;
 
 export interface ArchiveTree {
   /** Regular files by forward-slash path relative to the archive root, without a leading `./`. */
@@ -46,7 +47,7 @@ async function readZipTree(archive: Buffer): Promise<ArchiveTree> {
   for (const [name, entry] of Object.entries(zip.files)) {
     if (entry.dir) continue;
     const mode = typeof entry.unixPermissions === 'number' ? entry.unixPermissions : 0;
-    const content = await entry.async('nodebuffer');
+    const content = await entry.async('nodebuffer'); // NOSONAR S9382 sequential: one entry in memory at a time
     if ((mode & ZIP_FILE_TYPE_MASK) === ZIP_SYMLINK_TYPE) tree.links.set(name, content.toString('utf8'));
     else tree.files.set(name, content);
   }
@@ -88,7 +89,7 @@ export function unpackWith(run: (outDir: string) => void): ArchiveTree {
 /** Path to SHA-256, sorted by path: equality of two of these names the first file that differs. */
 export function fileDigests(files: Map<string, Buffer>): Record<string, string> {
   const digests: Record<string, string> = {};
-  for (const name of [...files.keys()].sort()) {
+  for (const name of [...files.keys()].sort((a, b) => (a < b ? -1 : 1))) {
     digests[name] = createHash('sha256').update(files.get(name)!).digest('hex');
   }
   return digests;
@@ -120,8 +121,10 @@ export function listPermissionStrings(archive: Buffer, format: string): Map<stri
         ? execFileSync(requireOracleTool('zipinfo'), [archiveFile], options)
         : execFileSync(requireOracleTool('tar'), ['-tvf', archiveFile], options);
     for (const line of listing.split('\n')) {
-      const match = /^([-dlbcps][-rwxsStT]{9})\s.*?(\S+)$/.exec(line.trimEnd());
-      if (match) modes.set(match[2].replace(/^\.\//, '').replace(/\/$/, ''), match[1]);
+      // `tar -tv` and `zipinfo` print the permission string first and the entry name last; plain string parsing, no backtracking.
+      const fields = line.trim().split(/\s+/);
+      const name = fields[fields.length - 1];
+      if (fields.length > 1 && PERMISSION_STRING.test(fields[0])) modes.set(name.replace(/^\.\//, '').replace(/\/$/, ''), fields[0]);
     }
     return modes;
   } finally {

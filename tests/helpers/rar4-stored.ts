@@ -19,6 +19,12 @@ export interface StoredRarEntry {
 export interface StoredRarOptions {
   /** Encrypts every entry with this password. Header names stay readable (as with `rar a -p`). */
   password?: string;
+  /**
+   * Writes the first volume of a multi-volume set: the main header carries the volume flag, the last entry is split (its
+   * header says it continues in the next volume and holds only the first half of its data) and the end block says another
+   * volume follows. The other volumes are not written.
+   */
+  firstVolume?: boolean;
 }
 
 const MARKER = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]);
@@ -29,6 +35,12 @@ const HEAD_END = 0x7b;
 const FLAG_LONG_BLOCK = 0x8000;
 /** End-of-archive flag: no further volume follows. */
 const FLAG_END_NO_NEXT_VOLUME = 0x4000;
+/** Main header flag: the archive is one volume of a set. */
+const FLAG_MAIN_VOLUME = 0x0001;
+/** File header flag: the entry continues in the next volume. */
+const FLAG_SPLIT_AFTER = 0x0002;
+/** End-of-archive flag: another volume follows. */
+const FLAG_END_NEXT_VOLUME = 0x0001;
 const MAIN_HEADER_BYTES = 13;
 const END_HEADER_BYTES = 7;
 /** Bytes of a file header before its name. */
@@ -108,18 +120,19 @@ function encryptEntry(data: Buffer, password: string): Buffer {
 export function buildStoredRar4(entries: readonly StoredRarEntry[], options: StoredRarOptions = {}): Buffer {
   const main = Buffer.alloc(MAIN_HEADER_BYTES);
   main.writeUInt8(HEAD_MAIN, 2);
-  main.writeUInt16LE(0, 3);
+  main.writeUInt16LE(options.firstVolume ? FLAG_MAIN_VOLUME : 0, 3);
   main.writeUInt16LE(MAIN_HEADER_BYTES, 5);
   const blocks: Buffer[] = [MARKER, sealHeader(main)];
 
-  for (const entry of entries) {
+  entries.forEach((entry, index) => {
+    const split = options.firstVolume === true && index === entries.length - 1;
     const name = Buffer.from(entry.name, 'latin1');
     const encrypted = options.password === undefined ? undefined : encryptEntry(entry.data, options.password);
-    const stored = encrypted ?? entry.data;
+    const stored = split ? entry.data.subarray(0, Math.floor(entry.data.length / 2)) : (encrypted ?? entry.data);
     const saltBytes = encrypted ? SALT_BYTES : 0;
     const header = Buffer.alloc(FILE_HEADER_FIXED_BYTES + name.length + saltBytes);
     header.writeUInt8(HEAD_FILE, 2);
-    header.writeUInt16LE(FLAG_LONG_BLOCK | (encrypted ? FLAG_PASSWORD | FLAG_SALT : 0), 3);
+    header.writeUInt16LE(FLAG_LONG_BLOCK | (split ? FLAG_SPLIT_AFTER : 0) | (encrypted ? FLAG_PASSWORD | FLAG_SALT : 0), 3);
     header.writeUInt16LE(header.length, 5);
     header.writeUInt32LE(stored.length, 7);
     header.writeUInt32LE(entry.data.length, 11);
@@ -133,11 +146,11 @@ export function buildStoredRar4(entries: readonly StoredRarEntry[], options: Sto
     name.copy(header, FILE_HEADER_FIXED_BYTES);
     if (encrypted) FIXED_SALT.copy(header, FILE_HEADER_FIXED_BYTES + name.length);
     blocks.push(sealHeader(header), stored);
-  }
+  });
 
   const end = Buffer.alloc(END_HEADER_BYTES);
   end.writeUInt8(HEAD_END, 2);
-  end.writeUInt16LE(FLAG_END_NO_NEXT_VOLUME, 3);
+  end.writeUInt16LE(options.firstVolume ? FLAG_END_NEXT_VOLUME : FLAG_END_NO_NEXT_VOLUME, 3);
   end.writeUInt16LE(END_HEADER_BYTES, 5);
   blocks.push(sealHeader(end));
   return Buffer.concat(blocks);

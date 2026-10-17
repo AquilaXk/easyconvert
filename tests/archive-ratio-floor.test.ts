@@ -1,4 +1,4 @@
-import { describe, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
+import { exceedsArchiveRatio, unpackedBytesCap } from '../src/lib/conversions/archive-extraction-safety';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { fileDigests, readArchiveTree } from './helpers/archive-output-tree';
@@ -34,6 +36,24 @@ async function refusal(promise: Promise<unknown>): Promise<unknown> {
     (err: unknown) => err
   );
 }
+
+describe('the floor, without any tool', () => {
+  const maxRatio = ARCHIVE_SECURITY_LIMITS.MAX_RATIO;
+
+  it('does not judge the ratio of an output up to 32 MiB, and judges it from the next byte', () => {
+    expect(exceedsArchiveRatio(32 * MIB, 1, maxRatio)).toBe(false);
+    expect(exceedsArchiveRatio(32 * MIB + 1, 1, maxRatio)).toBe(true);
+    expect(exceedsArchiveRatio(100 * MIB, MIB, maxRatio)).toBe(false);
+    expect(exceedsArchiveRatio(100 * MIB + 1, MIB, maxRatio)).toBe(true);
+    expect(exceedsArchiveRatio(40 * MIB, 0, maxRatio)).toBe(false);
+  });
+
+  it('bounds an output known only by the size of its archive by the larger of the floor and the ratio, under the size cap', () => {
+    expect(unpackedBytesCap(1000, ARCHIVE_SECURITY_LIMITS)).toBe(32 * MIB);
+    expect(unpackedBytesCap(MIB, ARCHIVE_SECURITY_LIMITS)).toBe(100 * MIB);
+    expect(unpackedBytesCap(10 * MIB, ARCHIVE_SECURITY_LIMITS)).toBe(ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+  });
+});
 
 describe('a cabinet of 20 MiB of one repeated byte in 36 KB (584:1) converts', () => {
   oracleTest(

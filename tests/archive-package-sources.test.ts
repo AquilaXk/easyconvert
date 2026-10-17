@@ -6,7 +6,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
-import { PackageRun, extractPackagePayload } from '../src/lib/conversions/archive-package-payload';
+import { PackageRun, decodeZstdPayload, extractPackagePayload } from '../src/lib/conversions/archive-package-payload';
 import { SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import { oracleTest } from './helpers/oracle-test';
 import { ConversionFailedError } from '../src/lib/types';
@@ -303,9 +303,8 @@ describe('the payload of a package is vetted before anything is extracted', () =
       execFileSync(requireOracleTool('zstd'), ['-19', '-q', tarFile]);
       const deb = buildDeb('data.tar.zst', fs.readFileSync(`${tarFile}.zst`));
       expect(deb.length).toBeLessThan(MIB / 8);
-      const failure = await refusal(convertDeb(deb));
-      expect(failure).toBeInstanceOf(ConversionFailedError);
-      expect((failure as { status?: number }).status ?? 400).toBeLessThan(500);
+      // A 7-Zip that decodes Zstandard stops at the listing; one that does not leaves the stream to the in-process decoder.
+      expect(await refusal(convertDeb(deb))).toMatchObject({ name: 'UnsafeArchiveError', reason: 'compression-ratio' });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -486,7 +485,7 @@ describe('the files a package leaves behind and the one deadline', () => {
     }
   });
 
-  oracleTest('a package that has used its whole time allowance is stopped, not given a fresh one per step', ['7z'], async () => {
+  oracleTest('a package with a 1 ms allowance times out instead of running its steps', ['7z'], async () => {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-deadline-'));
     try {
       const deb = buildDeb('data.tar.gz', zlib.gzipSync(tarOf([{ name: 'opt/a.txt' }, 'kept'])));
@@ -522,4 +521,90 @@ describe('set-user-ID, set-group-ID and sticky bits do not reach the converted a
       expect([...permissions.values()].filter((mode) => /[sStT]/.test(mode)), target).toEqual([]);
     }, ENGINE_TIMEOUT_MS);
   }
+});
+
+describe('the bytes a package holds at once, not the bytes it ever wrote', () => {
+  const sevenZip = getOracleToolPath('7z');
+  const STORED = { level: 0 };
+  const storedGzip = (data: Buffer): Buffer => zlib.gzipSync(data, STORED);
+
+  // A tiny upload is judged against the 32 MiB floor, which is too large to fill in a test; a size cap of 3 MiB is the same
+  // rule at a scale a test can reach. Stored layers keep every layer about the size of the payload.
+  const SMALL_LIMITS = { ...ARCHIVE_SECURITY_LIMITS, MAX_UNCOMPRESSED_SIZE: 3 * MIB };
+
+  function layeredPackage(payloadBytes: number): Buffer {
+    let seed = 1;
+    // Printable bytes, so the tar's UTF-8 body is exactly as long as asked.
+    const noise = Buffer.alloc(payloadBytes, 0).map(() => (((seed = (seed * 1103515245 + 12345) >>> 0) >>> 16) & 0x3f) + 0x30);
+    return buildDeb('data.tar.gz', storedGzip(storedGzip(tarOf([{ name: 'opt/noise.bin' }, noise.toString('latin1')]))));
+  }
+
+  async function extractWithSmallLimits(workDir: string, deb: Buffer): Promise<unknown> {
+    const archivePath = path.join(workDir, 'input.deb');
+    fs.writeFileSync(archivePath, deb);
+    const extractDir = path.join(workDir, 'extracted');
+    fs.mkdirSync(extractDir);
+    return extractPackagePayload(
+      { p7zBin: sevenZip!, archivePath, extractDir, cwd: workDir, timeoutMs: 60_000, maxBuffer: SMALL_LIMITS.MAX_UNCOMPRESSED_SIZE, limits: SMALL_LIMITS, label: 'archive', skipLinks: true },
+      'deb'
+    ).catch((err: unknown) => err);
+  }
+
+  oracleTest(
+    'a payload whose layers would add up to more than the cap but never sit on disk together is read; one whose peak passes the cap is refused',
+    ['7z'],
+    async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-live-'));
+      try {
+        // 1.2 MiB per layer: written in all about 6 MiB over the package's layers and tree, never more than 2.4 MiB held.
+        const fits = await extractWithSmallLimits(workDir, layeredPackage(1_200_000));
+        expect(fits).toMatchObject({ root: expect.stringContaining('files') });
+        fs.rmSync(workDir, { recursive: true, force: true });
+        fs.mkdirSync(workDir);
+        // 1.6 MiB: the layer being read and the tree being written are 3.2 MiB together.
+        const over = await extractWithSmallLimits(workDir, layeredPackage(1_600_000));
+        expect(over).toMatchObject({ name: 'UnsafeArchiveError', reason: expect.stringMatching(/compression-ratio|uncompressed-size/) });
+      } finally {
+        fs.rmSync(workDir, { recursive: true, force: true });
+      }
+    },
+    ENGINE_TIMEOUT_MS
+  );
+
+  it('credits the bytes of a layer back when it is removed, and refuses the byte that passes the bound', () => {
+    const run = new PackageRun({ timeoutMs: 1000, limits: SMALL_LIMITS } as never, 1000);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-credit-'));
+    try {
+      const layer = path.join(dir, 'layer.bin');
+      fs.writeFileSync(layer, 'x');
+      run.charge(2 * MIB);
+      run.release(layer, 2 * MIB);
+      expect(fs.existsSync(layer)).toBe(false);
+      expect(run.liveBytes).toBe(0);
+      run.charge(3 * MIB);
+      expect(() => run.charge(1)).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError' }));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the Zstandard bound of the in-process decoder', () => {
+  // Frame header only: magic, a single-segment frame whose 4-byte content size says 100 MiB (within the decoder's window limit), one empty raw block. Nothing
+  // follows that a decoder could produce, so only a bound checked on the declared size refuses it before any output.
+  const DECLARES_100_MIB = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0xa0, 0x00, 0x00, 0x40, 0x06, 0x01, 0x00, 0x00]);
+
+  it('refuses a frame that declares more than the upload may unpack to, before it decodes or charges anything', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'package-zstd-bound-'));
+    try {
+      const frame = path.join(dir, 'payload.zst');
+      fs.writeFileSync(frame, DECLARES_100_MIB);
+      const run = new PackageRun({ timeoutMs: 1000, limits: ARCHIVE_SECURITY_LIMITS } as never, DECLARES_100_MIB.length);
+      expect(() => decodeZstdPayload(run, frame, dir, 0)).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError', reason: 'compression-ratio' }));
+      expect(run.liveBytes).toBe(0);
+      expect(fs.readdirSync(dir)).toEqual(['payload.zst']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
