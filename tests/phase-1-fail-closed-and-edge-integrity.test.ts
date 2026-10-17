@@ -22,7 +22,7 @@ describe('Phase 1: Fail-Closed Principle, L2 Wasm Color Integrity & 7z Multi-fil
 
       await expect(
         convertVectorCad(mockBinaryCdr, 'cdr', 'svg', {}, 'design.cdr')
-      ).rejects.toThrow(/Unsupported or unparseable \.cdr vector format/);
+      ).rejects.toThrow(/\.cdr files are imported by LibreOffice; the in-process engine has no reader for them/);
 
       await expect(
         convertVectorCad(mockBinaryCdr, 'wmf', 'svg', {}, 'sketch.wmf')
@@ -34,11 +34,11 @@ describe('Phase 1: Fail-Closed Principle, L2 Wasm Color Integrity & 7z Multi-fil
 
       await expect(
         convertVectorCad(mockBinaryCdr, 'dwf', 'svg', {}, 'blueprint.dwf')
-      ).rejects.toThrow(/Unsupported or unparseable \.dwf vector format/);
+      ).rejects.toThrow(/no open-source DWF reader exists/);
 
       await expect(
         convertVectorCad(mockBinaryCdr, 'vsd', 'svg', {}, 'diagram.vsd')
-      ).rejects.toThrow(/Unsupported or unparseable \.vsd vector format/);
+      ).rejects.toThrow(/\.vsd files are imported by LibreOffice; the in-process engine has no reader for them/);
     });
 
     it('parses genuine CGM commands into real SVG elements without dummy templates', async () => {

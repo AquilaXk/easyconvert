@@ -255,6 +255,12 @@ describe('Dockerfile.worker', () => {
     const runner = dockerfile.slice(dockerfile.indexOf('AS runner'));
     expect(runner).toMatch(/^\s+libcap2-bin \\$/m);
   });
+
+  it('installs the LibreOffice Draw application, which imports Visio and CorelDRAW drawings', () => {
+    const dockerfile = readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8');
+    const runner = dockerfile.slice(dockerfile.indexOf('AS runner'));
+    expect(runner).toMatch(/^\s+libreoffice-draw-nogui \\$/m);
+  });
 });
 
 describe('scripts/verify-worker-container.sh', () => {

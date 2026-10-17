@@ -245,6 +245,10 @@ describe('which targets the office suite writes in one pass', () => {
     ['sxi', 'docx', false],
     ['sxd', 'pdf', true],
     ['sxd', 'odp', false],
+    ['vsd', 'pdf', true],
+    ['vsd', 'svg', false],
+    ['cdr', 'pdf', true],
+    ['cdr', 'png', false],
     ['pub', 'txt', false],
     ['lrf', 'rtf', true],
     ['dot', 'docx', true],
@@ -269,6 +273,8 @@ describe('which targets the office suite writes in one pass', () => {
     ['lrf', 'epub', false, 'docx'],
     ['numbers', 'csv', false, 'xlsx'],
     ['pub', 'html', false, undefined],
+    ['vsd', 'svg', true, undefined],
+    ['cdr', 'eps', true, undefined],
     ['pdf', 'html', false, undefined],
   ])('.%s to .%s with page target %s goes through %s', (source, target, pageTarget, interchange) => {
     expect(interchangeNeeded(source, target, pageTarget)).toBe(interchange);
@@ -313,6 +319,8 @@ describe('the export filter of the office suite for each source', () => {
     ['otp', 'impress_pdf_Export'],
     ['pub', 'draw_pdf_Export'],
     ['sxd', 'draw_pdf_Export'],
+    ['vsd', 'draw_pdf_Export'],
+    ['cdr', 'draw_pdf_Export'],
     ['xlsx', 'calc_pdf_Export'],
     ['pptx', 'impress_pdf_Export'],
     ['odg', 'draw_pdf_Export'],

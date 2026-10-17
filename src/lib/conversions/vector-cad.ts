@@ -24,6 +24,7 @@ import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingT
 import { convertDwgToDxf } from './cad-dwg';
 import { encodeSvgPageToDxf } from './vector-dxf';
 import { isSvg, sanitizeSvgDocument } from '../security/svg-sanitizer';
+import { assertReadableInProcess } from './office/office-suite-sources';
 
 export {
   evaluateCubicBezier,
@@ -257,8 +258,17 @@ export async function convertVectorCad(
   }
 
 
-  // 7. Expanded Vector and CAD sources (CDR, CGM, DWF, EMF, SK, SK1, VSD, WMF)
-  if (['cdr', 'cgm', 'dwf', 'emf', 'sk', 'sk1', 'vsd', 'wmf'].includes(src)) {
+  // 7. Visio and CorelDRAW drawings are imported by the office suite's Draw application, which has the import libraries of both
+  // formats; the in-process engine has no reader for them.
+  assertReadableInProcess(src);
+
+  // 8. DWF: Autodesk publishes the only reader as a proprietary toolkit, so no open-source reader exists to convert it with.
+  if (src === 'dwf') {
+    throw new CadGeometryUnavailableError(DWF_REFUSAL);
+  }
+
+  // 9. Expanded Vector and CAD sources (CGM, EMF, SK, SK1, WMF)
+  if (['cgm', 'emf', 'sk', 'sk1', 'wmf'].includes(src)) {
     let svgStr = '';
     const textSample = inputBuffer.toString('utf-8');
     if (textSample.includes('<svg')) {
@@ -284,6 +294,10 @@ export async function convertVectorCad(
 
   throw new Error(`Unsupported Vector/CAD conversion from .${src} to .${tgt}`);
 }
+
+/** The answer for a DWF file: refused, never drawn from a placeholder. */
+const DWF_REFUSAL =
+  'DWF files cannot be converted: the only reader of the format is a proprietary Autodesk toolkit and no open-source DWF reader exists, so the file is refused instead of drawn from a placeholder.';
 
 /** Resolution an SVG is rendered at when the request names none. */
 const DEFAULT_SVG_RENDER_DPI = 300;

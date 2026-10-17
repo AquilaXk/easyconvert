@@ -67,7 +67,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'tif->svg',
   'tiff->svg',
   'webp->svg',
-  'cdr->emf', 'cdr->wmf',
+  'cdr->dxf', 'cdr->emf', 'cdr->wmf',
   // No CGM, EMF or WMF decoder exists, so none of them is advertised as a source.
   'cgm->dxf', 'cgm->emf', 'cgm->eps', 'cgm->pdf', 'cgm->png', 'cgm->ps', 'cgm->svg', 'cgm->wmf',
   'dwf->cgm', 'dwf->dwg', 'dwf->wmf',
@@ -76,7 +76,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'emf->png', 'emf->ps', 'emf->psd', 'emf->svg', 'emf->tiff', 'emf->webp', 'emf->wmf',
   'sk->emf', 'sk->wmf',
   'sk1->emf', 'sk1->wmf',
-  'vsd->emf', 'vsd->wmf',
+  'vsd->dxf', 'vsd->emf', 'vsd->wmf',
   'wmf->dxf', 'wmf->emf', 'wmf->eps', 'wmf->pdf', 'wmf->png', 'wmf->ps', 'wmf->svg', 'wmf->wmf',
   'dps->swf',
   'gif->aac', 'gif->aiff', 'gif->flac', 'gif->m4a', 'gif->mp3', 'gif->wav', 'gif->wma',

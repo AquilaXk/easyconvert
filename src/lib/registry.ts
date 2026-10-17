@@ -2583,7 +2583,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.corel-draw',
     category: 'vector',
     description: 'CorelDRAW proprietary vector illustration and design file format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
+    targetFormats: ['pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {dimensions:true,quality:true},
   },
   cgm: {
@@ -2665,7 +2665,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.visio',
     category: 'vector',
     description: 'Microsoft Visio technical diagrams and vector schematics format.',
-    targetFormats: ['dxf', 'pdf', 'eps', 'png', 'ps', 'svg'],
+    targetFormats: ['pdf', 'eps', 'png', 'ps', 'svg'],
     optionsSchema: {pages:true},
   },
   wmf: {

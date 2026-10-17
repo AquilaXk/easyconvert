@@ -12,7 +12,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { parseCsvWithPython } from './helpers/sheet-rows';
 import { sofficeConvert } from './helpers/soffice-office';
 import sharp from 'sharp';
-import { CadGeometryUnavailableError, ConversionFailedError, CorruptStreamError } from '../src/lib/types';
+import { ConversionFailedError, CorruptStreamError, EngineUnavailableError } from '../src/lib/types';
 import { FileExtensionSpoofError } from '../src/lib/registry';
 import { extractTarArchive, extractZipArchive, extractRarArchive, createZipArchive } from '../src/lib/conversions/archive';
 import { buildStoredRar4 } from './helpers/rar4-stored';
@@ -138,7 +138,7 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(res1.buffer.toString('utf-8')).toContain('SECTION');
 
     // cdr: an SVG document under a CorelDRAW name is refused by the magic-byte gate, and a genuine CorelDRAW RIFF
-    // container (form type CDR6) has no vector reader, so it is refused with the typed engine error, never answered with a drawing
+    // container (form type CDR6) has no in-process reader (LibreOffice Draw imports it), so it is refused with the typed engine error, never answered with a drawing
     const spoofedCdr = await convertFile(svgBuffer, 'cdr', 'svg', { validateMagicBytes: true }, 'design.cdr').catch((err: unknown) => err);
     expect(spoofedCdr).toBeInstanceOf(FileExtensionSpoofError);
     expect((spoofedCdr as Error).message).toMatch(/incompatible with declared format "\.cdr"/);
@@ -147,8 +147,8 @@ describe('Universal Engine Conversion Coverage', () => {
     riffCdr.writeUInt32LE(riffCdr.length - 8, 4);
     riffCdr.write('CDR6', 8, 'latin1');
     const genuineCdr = await convertFile(riffCdr, 'cdr', 'svg', { validateMagicBytes: true }, 'design.cdr').catch((err: unknown) => err);
-    expect(genuineCdr).toBeInstanceOf(CadGeometryUnavailableError);
-    expect((genuineCdr as Error).message).toBe('Unsupported or unparseable .cdr vector format: fail-closed against dummy placeholder synthesis.');
+    expect(genuineCdr).toBeInstanceOf(EngineUnavailableError);
+    expect((genuineCdr as Error).message).toBe("Engine 'soffice' is unavailable: .cdr files are imported by LibreOffice; the in-process engine has no reader for them.");
 
     // emf -> png: no EMF decoder exists, so the pair is not advertised and is refused
     await expect(convertFile(svgBuffer, 'emf', 'png', {}, 'graphic.emf')).rejects.toThrow(
