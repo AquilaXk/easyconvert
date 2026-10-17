@@ -752,7 +752,9 @@ function isTranscoderPair(category: string, target: string): boolean {
 
 // Besides the font pairs, the list holds every pair of the four archive sources that no engine reads (ace, alz, arc, rz):
 // the registry advertises them, the converter refuses them with a typed error instead of wrapping the file, and no tool of
-// the CI image can write a sample to prove a route. A reader for one of them removes its pairs from the list.
+// the CI image can write a sample to prove a route. The drawing sources dwf, sk and sk1 are listed for the same reason:
+// no reader of them is included in the worker, so each one is refused with its typed reason. A reader for one of these
+// sources removes its pairs from the list.
 const INCONCLUSIVE_ALLOWLIST: readonly string[] = JSON.parse(
   readFileSync(path.resolve(__dirname, 'registry-engine-conformance.inconclusive.json'), 'utf-8')
 );
