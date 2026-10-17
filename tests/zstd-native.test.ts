@@ -44,6 +44,9 @@ function sample(): Buffer {
   return Buffer.concat([zipfText(900_000, 11), jsonRecords(600_000, 12)]);
 }
 
+/** What the zstd routes answer when the request is cancelled. */
+const ABORT_MESSAGE = 'The zstd task was cancelled';
+
 async function rejection(run: Promise<unknown>): Promise<unknown> {
   try {
     await run;
@@ -109,8 +112,11 @@ describe('compressZstdNative', () => {
   });
 
   it('refuses a level outside the zstd range instead of passing it on', async () => {
-    await expect(compressZstdNative(Buffer.from('x'), { level: 0 })).rejects.toBeInstanceOf(ConversionFailedError);
-    await expect(compressZstdNative(Buffer.from('x'), { level: 23 })).rejects.toBeInstanceOf(ConversionFailedError);
+    for (const level of [0, 23]) {
+      const error = await rejection(compressZstdNative(Buffer.from('x'), { level }));
+      expect(error).toBeInstanceOf(ConversionFailedError);
+      expect((error as Error).message).toBe(`Unsupported zstd compression level ${level}: expected an integer from 1 to 19.`);
+    }
   });
 
   oracleTest(
@@ -127,14 +133,18 @@ describe('compressZstdNative', () => {
   it('stops with the abort error when the signal is aborted', async () => {
     const controller = new AbortController();
     controller.abort();
-    await expect(compressZstdNative(sample(), { signal: controller.signal })).rejects.toBeInstanceOf(CpuTaskAbortedError);
+    const error = await rejection(compressZstdNative(sample(), { signal: controller.signal }));
+    expect(error).toBeInstanceOf(CpuTaskAbortedError);
+    expect((error as CpuTaskAbortedError).message).toBe(ABORT_MESSAGE);
   });
 
   it('stops while the native job runs when the signal fires', async () => {
     const controller = new AbortController();
     const pending = rejection(compressZstdNative(sample(), { level: 19, signal: controller.signal }));
     controller.abort();
-    expect(await pending).toBeInstanceOf(CpuTaskAbortedError);
+    const error = await pending;
+    expect(error).toBeInstanceOf(CpuTaskAbortedError);
+    expect((error as CpuTaskAbortedError).message).toBe(ABORT_MESSAGE);
   });
 });
 
@@ -197,18 +207,20 @@ describe('decompressZstdNative', () => {
       const frame = zstdCli(['-3', '-c', '-q'], sample());
       const flipped = Buffer.from(frame);
       flipped[flipped.length - 1] ^= 0xff;
-      const cases: Array<[string, Buffer]> = [
-        ['truncated by six bytes', frame.subarray(0, frame.length - 6)],
-        ['truncated to the first block', frame.subarray(0, 200)],
-        ['truncated in the second of two frames', Buffer.concat([frame, frame.subarray(0, frame.length - 6)])],
-        ['flipped checksum', flipped],
-        ['three bytes after the frame', Buffer.concat([frame, Buffer.from([1, 2, 3])])],
-        ['eight garbage bytes after the frame', Buffer.concat([frame, Buffer.alloc(8, 7)])],
-        ['not a frame', Buffer.from('this is not a zstd stream at all')],
+      const truncated = /^Malformed Zstandard (?:compressed |raw |RLE )?(?:block|frame): (?:truncated|missing content checksum)/;
+      const cases: Array<[string, Buffer, RegExp]> = [
+        ['truncated by six bytes', frame.subarray(0, frame.length - 6), truncated],
+        ['truncated to the first block', frame.subarray(0, 200), truncated],
+        ['truncated in the second of two frames', Buffer.concat([frame, frame.subarray(0, frame.length - 6)]), truncated],
+        ['flipped checksum', flipped, /^Malformed Zstandard frame: .*checksum/],
+        ['three bytes after the frame', Buffer.concat([frame, Buffer.from([1, 2, 3])]), /^Malformed Zstandard stream: trailing bytes after the last frame\.$/],
+        ['eight garbage bytes after the frame', Buffer.concat([frame, Buffer.alloc(8, 7)]), /^Invalid Zstandard magic signature: 0x7070707 at offset \d+$/],
+        ['not a frame', Buffer.from('this is not a zstd stream at all'), /^Invalid Zstandard magic signature: 0x73696874 at offset 0$/],
       ];
-      for (const [name, input] of cases) {
+      for (const [name, input, message] of cases) {
         const error = await rejection(decompressZstdNative(input));
         expect(error, name).toBeInstanceOf(ConversionFailedError);
+        expect((error as Error).message, name).toMatch(message);
       }
     },
     TEST_TIMEOUT_MS
@@ -230,7 +242,9 @@ describe('decompressZstdNative', () => {
 
   it('refuses a content size that the frame does not decode to', async () => {
     const frame = buildFrame([rawBlock(Buffer.from('payload'))], { singleSegment: true, contentSize: 9 });
-    await expect(decompressZstdNative(frame)).rejects.toBeInstanceOf(ConversionFailedError);
+    const error = await rejection(decompressZstdNative(frame));
+    expect(error).toBeInstanceOf(ConversionFailedError);
+    expect((error as Error).message).toMatch(/content size|Malformed Zstandard frame/);
   });
 
   it('refuses a ratio bomb with the archive bomb error, with and without a declared size', async () => {
@@ -275,6 +289,8 @@ describe('decompressZstdNative', () => {
     const controller = new AbortController();
     controller.abort();
     const frame = await compressZstdNative(Buffer.from('abort me '.repeat(1000)));
-    await expect(decompressZstdNative(frame, { signal: controller.signal })).rejects.toBeInstanceOf(CpuTaskAbortedError);
+    const error = await rejection(decompressZstdNative(frame, { signal: controller.signal }));
+    expect(error).toBeInstanceOf(CpuTaskAbortedError);
+    expect((error as CpuTaskAbortedError).message).toBe(ABORT_MESSAGE);
   });
 });
