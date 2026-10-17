@@ -2,10 +2,13 @@ import fs from 'node:fs';
 import { ConversionFailedError, CorruptStreamError, EngineUnavailableError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
 import {
+  CGM_ENCODING_PROBE_BYTES,
   OFFICE_SUITE_SOURCE_FORMATS,
+  isOfficeSuiteOnlySource,
   legacyReaderRetryInterchange,
   officeSuiteApplication,
   officeSuiteInterchange,
+  officeSuiteReadsBytes,
   officeSuiteWritesText,
 } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
@@ -153,7 +156,7 @@ const OLE2_SIGNATURE: readonly number[] = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0
 /** The start of a Word 5.0 for Macintosh file (a Word binary that is no compound file), which the office suite reads and the in-process reader refuses. */
 const WORD_5_MACINTOSH_SIGNATURE: readonly number[] = [0xfe, 0x37, 0x00, 0x23];
 const LEGACY_BINARY_SIGNATURES: ReadonlyArray<readonly number[]> = [OLE2_SIGNATURE, WORD_5_MACINTOSH_SIGNATURE];
-const LONGEST_SIGNATURE_BYTES = Math.max(...LEGACY_BINARY_SIGNATURES.map((signature) => signature.length));
+const LONGEST_SIGNATURE_BYTES = Math.max(CGM_ENCODING_PROBE_BYTES, ...LEGACY_BINARY_SIGNATURES.map((signature) => signature.length));
 
 /** The first bytes of the input, read without loading the file when it is not in memory. */
 function leadingBytes(input: Buffer | WorkerVfsPayload): Buffer {
@@ -167,6 +170,16 @@ function leadingBytes(input: Buffer | WorkerVfsPayload): Buffer {
   } finally {
     fs.closeSync(descriptor);
   }
+}
+
+/** Whether the office suite reads this input: every source of its table, but not a clear-text CGM, which the in-process parser reads. */
+export function officeSuiteReadsInput(src: string, input: Buffer | WorkerVfsPayload): boolean {
+  return OFFICE_NATIVE_SOURCES.has(src) && (!isOfficeSuiteOnlySource(src) || officeSuiteReadsBytes(src, leadingBytes(input)));
+}
+
+/** Whether the office suite reads this input and writes `tgt` in the one pass that opens it. */
+export function officeSuiteReadsInputAndWrites(src: string, tgt: string, input: Buffer | WorkerVfsPayload): boolean {
+  return officeSuiteReadsInput(src, input) && officeSuiteWritesTarget(src, tgt);
 }
 
 /**

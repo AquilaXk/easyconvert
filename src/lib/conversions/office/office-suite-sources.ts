@@ -8,7 +8,7 @@
  *   document, an Excel template a workbook, a PowerPoint slideshow a presentation, an OpenDocument template an
  *   OpenDocument file with another mimetype). They are read by the reader of the plain format.
  * - Office-suite-only sources: formats with no in-process reader (Works, WordPerfect, OpenOffice.org 1.x, StarOffice,
- *   AbiWord, Quattro Pro, Numbers, Publisher, the Sony, Palm and RocketBook e-books, the Visio and CorelDRAW drawings). Their bytes are never read as text;
+ *   AbiWord, Quattro Pro, Numbers, Publisher, the Sony, Palm and RocketBook e-books, the Visio and CorelDRAW drawings, the Windows and Computer Graphics metafiles). Their bytes are never read as text;
  *   the office suite imports them and either writes the target itself or writes an interchange file that the in-process
  *   converter of that format turns into the target.
  */
@@ -52,6 +52,10 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
   sda: { application: 'draw' },
   vsd: { application: 'draw' },
   cdr: { application: 'draw' },
+  emf: { application: 'draw' },
+  wmf: { application: 'draw' },
+  // The Computer Graphics Metafile import of the suite opens the file in Impress.
+  cgm: { application: 'impress' },
   sdw: { application: 'writer', interchange: 'docx' },
   zabw: { application: 'writer', interchange: 'docx' },
   sdc: { application: 'calc', interchange: 'xlsx' },
@@ -124,9 +128,24 @@ export function isPlainOfficeVariant(format: string): boolean {
   return Object.hasOwn(OOXML_VARIANT_FAMILY, format) || Object.hasOwn(OFFICE_FORMAT_ALIAS, format);
 }
 
+/** How a clear-text CGM starts (ISO 8632-4): the `BEGMF` command, after optional white space. The binary encoding starts with a command header. */
+const CLEAR_TEXT_CGM_PATTERN = /^\s*BEGMF\b/i;
+/** Bytes of a file that decide whether a CGM is clear text: white space, then the command. */
+export const CGM_ENCODING_PROBE_BYTES = 64;
+
+/** Whether the bytes are a clear-text CGM, the one encoding of a format the office suite reads that the in-process parser reads too. */
+export function isClearTextCgm(head: Buffer): boolean {
+  return CLEAR_TEXT_CGM_PATTERN.test(head.subarray(0, CGM_ENCODING_PROBE_BYTES).toString('latin1'));
+}
+
+/** Whether the office suite reads a file of `format` that starts with `head`: every format of its table except a clear-text CGM. */
+export function officeSuiteReadsBytes(format: string, head: Buffer): boolean {
+  return isOfficeSuiteOnlySource(format) && !(format === 'cgm' && isClearTextCgm(head));
+}
+
 /** The in-process engine has no reader for a format only the office suite imports, so it never sees its bytes: the answer is an unavailable engine. */
-export function assertReadableInProcess(format: string): void {
-  if (isOfficeSuiteOnlySource(format)) {
+export function assertReadableInProcess(format: string, head: Buffer): void {
+  if (officeSuiteReadsBytes(format, head)) {
     throw new EngineUnavailableError('soffice', `.${format} files are imported by LibreOffice; the in-process engine has no reader for them.`);
   }
 }

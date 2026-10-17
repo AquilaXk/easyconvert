@@ -150,9 +150,9 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(genuineCdr).toBeInstanceOf(EngineUnavailableError);
     expect((genuineCdr as Error).message).toBe("Engine 'soffice' is unavailable: .cdr files are imported by LibreOffice; the in-process engine has no reader for them.");
 
-    // emf -> png: no EMF decoder exists, so the pair is not advertised and is refused
+    // emf -> png: LibreOffice imports EMF files, the in-process engine has no EMF decoder, so an SVG named .emf is refused with the typed engine error
     await expect(convertFile(svgBuffer, 'emf', 'png', {}, 'graphic.emf')).rejects.toThrow(
-      /Cannot convert from Enhanced Metafile \(EMF\) \(\.emf\) to target format \.png/
+      "Engine 'soffice' is unavailable: .emf files are imported by LibreOffice; the in-process engine has no reader for them."
     );
 
     // svg -> bmp (must NOT be disguised PNG)
@@ -170,11 +170,9 @@ describe('Universal Engine Conversion Coverage', () => {
     expect(epsText).toContain('colorimage');
     expect(epsText).not.toContain('<svg');
 
-    // cgm -> svg: the CGM reader drops polygon sets, colours and widths, so CGM is not a source
+    // cgm -> svg: a clear-text CGM is read in process, and one that states no picture extent is refused by the parser, not drawn from a placeholder
     const cgmContent = Buffer.from('BEGMF "sample"; ENDMF;', 'utf-8');
-    await expect(convertFile(cgmContent, 'cgm', 'svg', {}, 'drawing.cgm')).rejects.toThrow(
-      /Cannot convert from .+ \(\.cgm\) to target format \.svg/
-    );
+    await expect(convertFile(cgmContent, 'cgm', 'svg', {}, 'drawing.cgm')).rejects.toThrow(/The CGM states no VDC extent/);
 
     // svg -> emf
     const resEmf = await convertFile(svgBuffer, 'svg', 'emf', {}, 'drawing.svg');

@@ -258,36 +258,20 @@ export async function convertVectorCad(
   }
 
 
-  // 7. Visio and CorelDRAW drawings are imported by the office suite's Draw application, which has the import libraries of both
-  // formats; the in-process engine has no reader for them.
-  assertReadableInProcess(src);
+  // 7. Visio, CorelDRAW and the metafiles are imported by the office suite's Draw and Impress applications, which have the
+  // import filters of those formats; the in-process engine has no reader for them (a clear-text CGM excepted).
+  assertReadableInProcess(src, inputBuffer);
 
-  // 8. DWF: Autodesk publishes the only reader as a proprietary toolkit, so no open-source reader exists to convert it with.
-  if (src === 'dwf') {
-    throw new CadGeometryUnavailableError(DWF_REFUSAL);
+  // 8. Formats no reader exists for: refused with the reason, never drawn from a placeholder.
+  if (Object.hasOwn(NO_READER_REFUSALS, src)) {
+    throw new CadGeometryUnavailableError(NO_READER_REFUSALS[src]);
   }
 
-  // 9. Expanded Vector and CAD sources (CGM, EMF, SK, SK1, WMF)
-  if (['cgm', 'emf', 'sk', 'sk1', 'wmf'].includes(src)) {
-    let svgStr = '';
-    const textSample = inputBuffer.toString('utf-8');
-    if (textSample.includes('<svg')) {
-      svgStr = textSample.substring(textSample.indexOf('<svg'));
-      const endIdx = svgStr.lastIndexOf('</svg>');
-      if (endIdx !== -1) svgStr = svgStr.substring(0, endIdx + 6);
-    } else if (src === 'cgm') {
-      const parsedCgm = parseCgmToSvg(textSample);
-      if (parsedCgm) {
-        svgStr = parsedCgm;
-      } else {
-        throw new CadGeometryUnavailableError(
-          `Unsupported or unparseable .${src} vector format: fail-closed against dummy placeholder synthesis.`
-        );
-      }
-    } else {
-      throw new CadGeometryUnavailableError(
-        `Unsupported or unparseable .${src} vector format: fail-closed against dummy placeholder synthesis.`
-      );
+  // 9. Clear-text CGM
+  if (src === 'cgm') {
+    const svgStr = parseCgmToSvg(inputBuffer.toString('utf-8'));
+    if (svgStr === null) {
+      throw new CadGeometryUnavailableError('Unsupported or unparseable .cgm vector format: fail-closed against dummy placeholder synthesis.');
     }
     return convertSvgSource(Buffer.from(sanitizeSvgDocument(svgStr), 'utf-8'), tgt, options, baseName);
   }
@@ -295,9 +279,12 @@ export async function convertVectorCad(
   throw new Error(`Unsupported Vector/CAD conversion from .${src} to .${tgt}`);
 }
 
-/** The answer for a DWF file: refused, never drawn from a placeholder. */
-const DWF_REFUSAL =
-  'DWF files cannot be converted: the only reader of the format is a proprietary Autodesk toolkit and no open-source DWF reader exists, so the file is refused instead of drawn from a placeholder.';
+/** The answer for a format that no reader exists for, by source: refused, never drawn from a placeholder. */
+const NO_READER_REFUSALS: Readonly<Record<string, string>> = {
+  dwf: 'DWF files cannot be converted: the only reader of the format is a proprietary Autodesk toolkit and no open-source DWF reader exists, so the file is refused instead of drawn from a placeholder.',
+  sk: 'Sketch and Skencil (.sk) files cannot be converted: no reader exists in the worker (the office suite does not import the format and no open-source library reads it), so the file is refused instead of drawn from a placeholder.',
+  sk1: 'sK1 (.sk1) files cannot be converted: no reader exists in the worker (the office suite does not import the format and no open-source library reads it), so the file is refused instead of drawn from a placeholder.',
+};
 
 /** Resolution an SVG is rendered at when the request names none. */
 const DEFAULT_SVG_RENDER_DPI = 300;

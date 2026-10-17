@@ -493,7 +493,7 @@ async function convertFileInScope(
 
   // 1b. Formats only the office suite imports (Works, WordPerfect, OpenOffice.org 1.x, Numbers, Publisher, e-books): the
   // in-process engine has no reader, and the bytes are never taken for text.
-  assertReadableInProcess(src);
+  assertReadableInProcess(src, inputBuffer);
 
   // 2. Media (Audio & Video) routing
   if (

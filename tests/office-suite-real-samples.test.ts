@@ -416,8 +416,8 @@ describe.skipIf(toolsMissing || calibreMissing)('e-book outputs of the formats t
   }
 });
 
-/** The Visio and CorelDRAW drawings are converted from real files by tests/vector-sources-real-samples.test.ts, which checks its own coverage of the registry. */
-const DRAWING_FORMATS_OF_OTHER_SUITE: ReadonlySet<string> = new Set(['vsd', 'cdr']);
+/** The drawings and metafiles are converted from real files by tests/vector-sources-real-samples.test.ts, which checks its own coverage of the registry. */
+const DRAWING_FORMATS_OF_OTHER_SUITE: ReadonlySet<string> = new Set(['vsd', 'cdr', 'emf', 'wmf', 'cgm']);
 
 describe('the conversions of the real files cover the registry', () => {
   const sampleTargets = (extension: string): Set<string> => new Set(SAMPLES.filter((sample) => sample.extension === extension).flatMap((sample) => sample.targets));

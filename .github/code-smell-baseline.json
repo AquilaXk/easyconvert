@@ -2268,7 +2268,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1848
+    "maxValue": 1733
   },
   {
     "file": "src/lib/conversions/text-shaping/paragraph-layout.ts",

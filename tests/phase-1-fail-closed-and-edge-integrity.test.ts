@@ -26,11 +26,11 @@ describe('Phase 1: Fail-Closed Principle, L2 Wasm Color Integrity & 7z Multi-fil
 
       await expect(
         convertVectorCad(mockBinaryCdr, 'wmf', 'svg', {}, 'sketch.wmf')
-      ).rejects.toThrow(/Unsupported or unparseable \.wmf vector format/);
+      ).rejects.toThrow(/\.wmf files are imported by LibreOffice; the in-process engine has no reader for them/);
 
       await expect(
         convertVectorCad(mockBinaryCdr, 'emf', 'png', {}, 'layout.emf')
-      ).rejects.toThrow(/Unsupported or unparseable \.emf vector format/);
+      ).rejects.toThrow(/\.emf files are imported by LibreOffice; the in-process engine has no reader for them/);
 
       await expect(
         convertVectorCad(mockBinaryCdr, 'dwf', 'svg', {}, 'blueprint.dwf')
@@ -78,10 +78,17 @@ ENDMF;
     });
 
     it('fails closed when CGM input contains arbitrary non-CGM text', async () => {
+      // Not clear text: the office suite imports binary CGM, and the in-process engine has no reader for it.
       const badCgm = Buffer.from('NOT_A_CGM_FILE_RANDOM_GARBAGE');
       await expect(
         convertVectorCad(badCgm, 'cgm', 'svg', {}, 'corrupted.cgm')
-      ).rejects.toThrow(/Unsupported or unparseable \.cgm vector format/);
+      ).rejects.toThrow(/\.cgm files are imported by LibreOffice; the in-process engine has no reader for them/);
+
+      // Clear text that is no CGM drawing: the in-process parser refuses it.
+      const badClearText = Buffer.from('BEGMF "garbage"; NOT_A_CGM_COMMAND (1,2); ENDMF;');
+      await expect(
+        convertVectorCad(badClearText, 'cgm', 'svg', {}, 'corrupted.cgm')
+      ).rejects.toThrow(/Unsupported or unparseable \.cgm vector format|The CGM states no VDC extent/);
     });
   });
 
