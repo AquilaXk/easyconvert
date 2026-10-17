@@ -6,7 +6,7 @@ import { parseDockerfile } from './helpers/dockerfile';
 /**
  * How the worker image gets `cad-convert` (STEP and IGES, native/cad-convert): built in its own stage against the development
  * packages of the Open CASCADE libraries, run in the runner stage with only the five runtime library packages the program links,
- * without the 55 MB of sample data of occt-misc, and checked at build time. The expectations are written out here.
+ * without the sample data and resource files of occt-misc, and checked at build time. The expectations are written out here.
  */
 
 const ROOT = path.resolve(__dirname, '..');
@@ -28,13 +28,13 @@ describe('the cad-convert stage of Dockerfile.worker', () => {
     expect(argumentsOf('cadconvert', 'RUN')).toContain('/src/cad-convert/build.sh /usr/local/bin/cad-convert');
   });
 
-  it('installs only the five runtime library packages in the runner, keeps the sample data of occt-misc out and copies the binary', () => {
+  it('installs only the five runtime library packages in the runner, keeps the files of occt-misc out and copies the binary', () => {
     const runnerRuns = argumentsOf('runner', 'RUN');
     const install = runnerRuns.find((argument) => /apt-get install/.test(argument)) ?? '';
     for (const pkg of RUNTIME_PACKAGES) expect(install, pkg).toMatch(new RegExp(`\\b${pkg}\\b`));
     expect(install).not.toMatch(/occt-misc|libocct-draw|libocct-visualization|-dev\b/);
     // The exclusion is written before the install, or dpkg would unpack the data first.
-    const exclusion = install.indexOf("path-exclude=/usr/share/opencascade/data/*");
+    const exclusion = install.indexOf('path-exclude=/usr/share/opencascade/*');
     expect(exclusion).toBeGreaterThan(-1);
     expect(exclusion).toBeLessThan(install.indexOf('apt-get install'));
     expect(argumentsOf('runner', 'COPY')).toContain('--from=cadconvert /usr/local/bin/cad-convert /usr/local/bin/cad-convert');

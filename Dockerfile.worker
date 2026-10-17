@@ -107,9 +107,10 @@ ENV NODE_ENV=production
 
 # 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip comes from the pinned stage), and CJK Font Packages
 # The Open CASCADE libraries (STEP and IGES, see the cadconvert stage) are packaged with occt-misc, whose 55 MB of sample models and images
-# the program never reads; the dpkg exclusion keeps those files out of the image and nothing else of the package.
+# and 5 MB of resource files the program never reads (it converts all four targets of the 11 real samples with the directory removed, and
+# opens nothing under it); the dpkg exclusion keeps the directory out of the image and nothing else of the package.
 RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
-    && echo 'path-exclude=/usr/share/opencascade/data/*' > /etc/dpkg/dpkg.cfg.d/opencascade-no-sample-data \
+    && echo 'path-exclude=/usr/share/opencascade/*' > /etc/dpkg/dpkg.cfg.d/opencascade-unused-files \
     && apt-get update \
     && EXTRA_PKGS="" \
     && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
