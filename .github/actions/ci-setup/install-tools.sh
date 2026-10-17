@@ -336,10 +336,31 @@ run_tasks() {
   fi
 }
 
+# The two tools the STEP and IGES tests cannot run without, checked the way the tests look for them (the first of each on the PATH), once all
+# parts are done: a missing one fails the step with its own name here, not as a collection error of every CAD suite later.
+verify_cad_tools() {
+  local usage python_problem
+  if ! command -v cad-convert > /dev/null; then
+    echo "::error::cad-convert is not on the PATH ($PATH); the apt task builds it into /usr/local/bin"
+    return 1
+  fi
+  usage="$(cad-convert 2>&1 || true)"
+  if [[ "$usage" != *'usage: cad-convert'* ]]; then
+    echo "::error::$(command -v cad-convert) does not start: $usage"
+    return 1
+  fi
+  if ! python_problem="$(python3 -I -c 'import trimesh' 2>&1)"; then
+    echo "::error::$(command -v python3) -I cannot import trimesh: $python_problem"
+    return 1
+  fi
+  echo "cad-convert: $(command -v cad-convert); python3 with trimesh: $(command -v python3)"
+}
+
 main() {
   configure
   select_tasks
-  run_tasks
+  run_tasks || return 1
+  verify_cad_tools
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

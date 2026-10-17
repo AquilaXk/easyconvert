@@ -213,6 +213,17 @@ describe('the committed package list and scripts', () => {
     expect(existsSync(path.join(ROOT, 'native', 'cad-convert', 'cad-convert.cpp'))).toBe(true);
   });
 
+  it('verifies cad-convert and the trimesh import by name after all parts are done, so a missing one fails the setup with its own message', () => {
+    const tools = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
+    const verify = tools.slice(tools.indexOf('verify_cad_tools() {'), tools.indexOf('main() {'));
+    expect(verify).toContain('command -v cad-convert');
+    expect(verify).toContain("::error::cad-convert is not on the PATH");
+    expect(verify).toContain("'usage: cad-convert'");
+    expect(verify).toContain("python3 -I -c 'import trimesh'");
+    expect(verify).toContain('cannot import trimesh');
+    expect(tools.slice(tools.indexOf('main() {'))).toMatch(/run_tasks \|\| return 1\n\s+verify_cad_tools/);
+  });
+
   it('installs the ebook converter from a pinned archive over HTTPS only and checks its digest before unpacking it', () => {
     const script = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
     expect(script).toMatch(/^CALIBRE_VERSION=\d+\.\d+\.\d+$/m);
