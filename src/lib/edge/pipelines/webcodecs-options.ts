@@ -33,7 +33,7 @@ const NOT_ABOUT_MEDIA = [
   'quality', 'fit', 'stripMetadata', 'background', 'dpi', 'layout', 'colorDepth', 'colors', 'palette', 'dither',
   'quantizer', 'ditherMethod', 'useWebGpu', 'gpuAcceleration', 'falseColorSuppression', 'allowEmbeddedPreview',
   'demosaicMethod', 'kelvin', 'tint', 'highlightReconstruction', 'targetColorSpace', 'outputDepth', 'gainMap', 'tiffCompression', 'kernel',
-  'uSamples', 'vSamples', 'allowOpenMesh', 'smoothingAngleDeg', 'outputUnit', 'page', 'pages', 'multiPageOutput',
+  'outputUnit', 'page', 'pages', 'multiPageOutput',
   'pageCount', 'password', 'confirmEditRights', 'passwords', 'orientation', 'preserveTables', 'language', 'ocrEnabled', 'ocrLanguage', 'ocrMode',
   'ocrDensityThreshold', 'ocrDetectOrientation', 'ocrEngineMarkup', 'clientEdgeMode', 'margin', 'validateMagicBytes', 'delimiter', 'encoding', 'bom',
   'escapeFormulas', 'hasHeaders', 'sheetMode', 'sheetIndex', 'range', 'lineEnding', 'recalculate',

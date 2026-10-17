@@ -58,7 +58,11 @@ const SHELL_NOT_FOUND = 127;
 const UNPRINTABLE = /[^\x20-\x7e]/g;
 const ERROR_LINE = /^cad-convert: error: (.*)$/m;
 
-export type OcctConverterOptions = Pick<ConversionOptions, 'signal' | 'timeoutMs'> & JobDeadlined;
+/** Length units the program writes in, by the `outputUnit` option; millimetres when the request names none. */
+const OUTPUT_UNITS: ReadonlySet<string> = new Set(['mm', 'cm', 'm', 'in']);
+const DEFAULT_OUTPUT_UNIT = 'mm';
+
+export type OcctConverterOptions = Pick<ConversionOptions, 'signal' | 'timeoutMs' | 'outputUnit'> & JobDeadlined;
 
 /** Whether the program reads a file of this extension. */
 export function isOcctSource(format: string): boolean {
@@ -109,6 +113,10 @@ export async function convertCadWithOcct(input: Buffer, sourceFormat: string, ta
   if (from === undefined || to === undefined) {
     throw new UnprocessableCadInputError(`The CAD converter does not convert .${sourceFormat} to .${targetFormat}.`);
   }
+  const unit = options.outputUnit ?? DEFAULT_OUTPUT_UNIT;
+  if (!OUTPUT_UNITS.has(unit)) {
+    throw new UnprocessableCadInputError(`The output unit '${unit}' is not one of mm, cm, m and in.`);
+  }
   const binary = programBinary();
   const timeoutMs = stageTimeoutMs(options, PROGRAM_DEFAULT_TIMEOUT_MS);
   const sandboxDir = createWorkerSandboxDir();
@@ -117,7 +125,7 @@ export async function convertCadWithOcct(input: Buffer, sourceFormat: string, ta
     const outputPath = path.join(sandboxDir, `output.${targetFormat}`);
     fs.writeFileSync(inputPath, input, { mode: 0o600 });
     try {
-      await executeSandboxedBinary(binary, ['--from', from, '--to', to, inputPath, outputPath], {
+      await executeSandboxedBinary(binary, ['--from', from, '--to', to, '--unit', unit, inputPath, outputPath], {
         cwd: sandboxDir,
         timeoutMs,
         maxBuffer: PROGRAM_MAX_DIAGNOSTIC_BYTES,

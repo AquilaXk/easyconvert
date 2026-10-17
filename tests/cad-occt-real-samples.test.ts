@@ -182,6 +182,59 @@ describe.skipIf(!haveTools)('the red cube and blue cylinder', () => {
   });
 });
 
+describe.skipIf(!haveTools)('the outputUnit option', () => {
+  const ID = 'cq-red_cube_blue_cylinder.step';
+  /** How many of each unit make one millimetre, and the unit flag IGES 5.3 gives it (Global parameter 14: 1 inch, 2 mm, 6 m, 10 cm). */
+  const UNITS = [
+    { unit: 'cm', perMillimetre: 0.1, igesFlag: 10, stepUnit: 'SI_UNIT(.CENTI.,.METRE.)' },
+    { unit: 'm', perMillimetre: 0.001, igesFlag: 6, stepUnit: 'SI_UNIT($,.METRE.)' },
+    { unit: 'in', perMillimetre: 1 / 25.4, igesFlag: 1, stepUnit: "CONVERSION_BASED_UNIT('INCH'" },
+  ] as const;
+  const CUBE_AND_CYLINDER_AREA_MM2 = 6 * 10 * 10 + 2 * Math.PI * 5 * 10 + 2 * Math.PI * 5 * 5;
+  const FILE_BOX_MM = { min: [-10, 0, 0], max: [15, 10, 10] };
+
+  for (const { unit, perMillimetre, igesFlag, stepUnit } of UNITS) {
+    it(`writes STL and OBJ in ${unit}: the box scales by ${perMillimetre.toPrecision(4)} and the area by its square`, { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, ID);
+      for (const target of ['stl', 'obj'] as const) {
+        const { buffer } = await convertVectorCad(bytes, 'step', target, { outputUnit: unit }, ID);
+        const facts = meshFacts(buffer, target);
+        expect(Math.abs(facts.area / (CUBE_AND_CYLINDER_AREA_MM2 * perMillimetre ** 2) - 1), `${target} area`).toBeLessThan(0.002);
+        for (let axis = 0; axis < 3; axis++) {
+          expect(facts.min[axis], `${target} min[${axis}]`).toBeCloseTo(FILE_BOX_MM.min[axis] * perMillimetre, 5);
+          expect(facts.max[axis], `${target} max[${axis}]`).toBeCloseTo(FILE_BOX_MM.max[axis] * perMillimetre, 5);
+        }
+      }
+    });
+
+    it(`writes STEP and IGES in ${unit}, declares it, and the independent reader still measures the same millimetres`, { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, ID);
+      const expected = await truth(ID, bytes, 'step');
+      const iges = (await convertVectorCad(bytes, 'step', 'iges', { outputUnit: unit }, ID)).buffer;
+      expect(igesLengthUnitFlag(iges.toString('latin1'))).toBe(igesFlag);
+      const fromIges = await oracleFacts(iges, 'iges');
+      expectArea(fromIges.area, expected.area);
+      expectBox(fromIges, expected);
+
+      const step = (await convertVectorCad(bytes, 'step', 'step', { outputUnit: unit }, ID)).buffer;
+      expect(step.toString('latin1').replace(/\s+/g, '')).toContain(stepUnit.replace(/\s+/g, ''));
+      const fromStep = await oracleFacts(step, 'step');
+      expectArea(fromStep.area, expected.area);
+      expectBox(fromStep, expected);
+    });
+  }
+
+  it('converts an IGES file to STEP in centimetres and the independent reader measures the same millimetres', { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
+    const { bytes, format } = await requireRealworldSample(ctx, 'occt-hammer.iges');
+    const expected = await truth('occt-hammer.iges', bytes, format);
+    const step = (await convertVectorCad(bytes, format, 'step', { outputUnit: 'cm' }, 'hammer')).buffer;
+    expect(step.toString('latin1').replace(/\s+/g, '').match(/LENGTH_UNIT\(\)NAMED_UNIT\(\*\)SI_UNIT\(([^)]*)\)/)?.[1]).toBe('.CENTI.,.METRE.');
+    const again = await oracleFacts(step, 'step');
+    expectArea(again.area, expected.area);
+    expectBox(again, expected);
+  });
+});
+
 const EMPTY_STEP = Buffer.from(
   "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('a','',(''),(''),'','','');\nFILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\nENDSEC;\nEND-ISO-10303-21;\n"
 );

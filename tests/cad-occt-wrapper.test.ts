@@ -37,7 +37,7 @@ async function withProgram<T>(program: string, body: () => Promise<T>): Promise<
   }
 }
 
-/** A shell script that stands in for the program: the arguments are $1 (--from) $2 format $3 (--to) $4 format $5 input $6 output. */
+/** A shell script that stands in for the program: the arguments are $1 (--from) $2 format $3 (--to) $4 format $5 (--unit) $6 unit $7 input $8 output. */
 function standIn(body: string): string {
   const file = path.join(tmpDir('cad-standin-'), 'cad-convert');
   fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
@@ -75,7 +75,7 @@ describe('a missing or failing converter never passes for a conversion', () => {
   });
 
   it('answers 422 with the program message, without the path of its scratch directory, when the file is unreadable', async () => {
-    const program = standIn('echo "cad-convert: error: unreadable: cannot read $5" >&2; exit 3');
+    const program = standIn('echo "cad-convert: error: unreadable: cannot read $7" >&2; exit 3');
     await withProgram(program, async () => {
       const failure = await failureOf(() => convertCadWithOcct(STEP_BYTES, 'step', 'stl'));
       expect(failure).toBeInstanceOf(UnprocessableCadInputError);
@@ -95,7 +95,7 @@ describe('a missing or failing converter never passes for a conversion', () => {
   });
 
   it('answers 422 when the program writes an empty file', async () => {
-    await withProgram(standIn('shift 5; : > "$1"'), async () => {
+    await withProgram(standIn('shift 7; : > "$1"'), async () => {
       const failure = await failureOf(() => convertCadWithOcct(STEP_BYTES, 'step', 'stl'));
       expect(failure).toBeInstanceOf(UnprocessableCadInputError);
       expect(failure.message).toBe('The CAD converter wrote an empty file.');
@@ -137,16 +137,16 @@ describe('what the wrapper asks the converter for', () => {
     const dir = tmpDir('cad-args-');
     const stl = path.join(dir, 'triangle.stl');
     fs.writeFileSync(stl, oneTriangleStl());
-    const program = standIn(`printf '%s %s %s %s %s %s' "$1" "$2" "$3" "$4" "$(basename "$5")" "$(basename "$6")" > ${path.join(dir, ARGUMENTS_FILE)}\ncp ${stl} "$6"`);
+    const program = standIn(`printf '%s %s %s %s %s %s %s %s' "$1" "$2" "$3" "$4" "$5" "$6" "$(basename "$7")" "$(basename "$8")" > ${path.join(dir, ARGUMENTS_FILE)}\ncp ${stl} "$8"`);
     return { program, recorded: () => fs.readFileSync(path.join(dir, ARGUMENTS_FILE), 'utf8') };
   }
 
   it.each([
-    ['step', 'stl', '--from step --to stl input.step output.stl'],
-    ['stp', 'obj', '--from step --to obj input.stp output.obj'],
-    ['iges', 'step', '--from iges --to step input.iges output.step'],
-    ['igs', 'stp', '--from iges --to step input.igs output.stp'],
-    ['step', 'igs', '--from step --to iges input.step output.igs'],
+    ['step', 'stl', '--from step --to stl --unit mm input.step output.stl'],
+    ['stp', 'obj', '--from step --to obj --unit mm input.stp output.obj'],
+    ['iges', 'step', '--from iges --to step --unit mm input.iges output.step'],
+    ['igs', 'stp', '--from iges --to step --unit mm input.igs output.stp'],
+    ['step', 'igs', '--from step --to iges --unit mm input.step output.igs'],
   ])('converts .%s to .%s as %s', async (source, target, expected) => {
     const { program, recorded } = recordingProgram();
     await withProgram(program, async () => {
@@ -155,10 +155,28 @@ describe('what the wrapper asks the converter for', () => {
     expect(recorded()).toBe(expected);
   });
 
+  it.each(['mm', 'cm', 'm', 'in'] as const)('asks for the %s unit named by the outputUnit option', async (unit) => {
+    const { program, recorded } = recordingProgram();
+    await withProgram(program, async () => {
+      await convertCadWithOcct(STEP_BYTES, 'step', 'iges', { outputUnit: unit });
+    });
+    expect(recorded()).toBe(`--from step --to iges --unit ${unit} input.step output.iges`);
+  });
+
+  it('refuses a unit the program does not write before it starts', async () => {
+    const marker = path.join(tmpDir('cad-marker-'), 'started');
+    await withProgram(standIn(`touch ${marker}`), async () => {
+      const failure = await failureOf(() => convertCadWithOcct(STEP_BYTES, 'step', 'stl', { outputUnit: 'furlong' as never }));
+      expect(failure).toBeInstanceOf(UnprocessableCadInputError);
+      expect(failure.message).toBe("The output unit 'furlong' is not one of mm, cm, m and in.");
+    });
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
   it('draws a DXF from the STL the program writes, one 3DFACE per triangle, in the units of the mesh', async () => {
     const { program, recorded } = recordingProgram();
     const result = await withProgram(program, () => convertVectorCad(STEP_BYTES, 'step', 'dxf', {}, 'part.step'));
-    expect(recorded()).toBe('--from step --to stl input.step output.stl');
+    expect(recorded()).toBe('--from step --to stl --unit mm input.step output.stl');
     expect(result.mimeType).toBe('image/vnd.dxf');
     const dxf = result.buffer.toString('utf-8');
     expect(dxf.split('\n').filter((line) => line === '3DFACE')).toHaveLength(1);

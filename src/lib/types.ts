@@ -55,9 +55,6 @@ export interface FormatOptionsSchema {
   colors?: boolean;
   palette?: boolean;
   dither?: boolean;
-  // CAD / NURBS options
-  uSamples?: boolean;
-  vSamples?: boolean;
   allowEmbeddedPreview?: boolean;
   // RAW & HDR pipeline options
   outputDepth?: boolean;
@@ -121,11 +118,7 @@ export interface ConversionOptions {
    * `clip` (hard clip at SDR white) or `none` (keep HDR, for targets that can carry it).
    */
   toneMap?: 'none' | 'clip' | 'bt2390';
-  // CAD & NURBS options
-  uSamples?: number;
-  vSamples?: number;
-  allowOpenMesh?: boolean;
-  smoothingAngleDeg?: number;
+  // CAD options
   outputUnit?: 'mm' | 'cm' | 'm' | 'in';
   // Document & PDF options
   page?: number;
@@ -761,13 +754,6 @@ export class SvgSanitizationError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'SvgSanitizationError';
-  }
-}
-
-export class CadTopologyError extends ConversionFailedError {
-  constructor(message = 'CAD mesh failed topology or watertightness validation') {
-    super(message);
-    this.name = 'CadTopologyError';
   }
 }
 

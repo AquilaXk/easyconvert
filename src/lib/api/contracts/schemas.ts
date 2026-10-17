@@ -344,31 +344,12 @@ export const ConversionOptionsSchema = {
         'HDR to SDR rendering of OpenEXR, PQ or HLG tagged pictures and HDR video. bt2390 (default) compresses highlights with the ITU-R BT.2390 EETF toward a 100 cd/m2 display; clip cuts everything above SDR white; none keeps HDR and is accepted only for targets that hold it (AVIF, PNG, EXR, Ultra HDR).',
     },
 
-    // CAD & NURBS options
-    uSamples: {
-      type: 'integer',
-      minimum: 1,
-      description: 'Evaluation sample grid density along U parametric coordinate.',
-    },
-    vSamples: {
-      type: 'integer',
-      minimum: 1,
-      description: 'Evaluation sample grid density along V parametric coordinate.',
-    },
-    allowOpenMesh: {
-      type: 'boolean',
-      description: 'Allow non-watertight or open surface mesh generation from CAD solids without throwing CadTopologyError.',
-    },
-    smoothingAngleDeg: {
-      type: 'number',
-      minimum: 0,
-      maximum: 180,
-      description: 'Crease angle threshold in degrees for facet normal splitting.',
-    },
+    // CAD options
     outputUnit: {
       type: 'string',
       enum: ['mm', 'cm', 'm', 'in'],
-      description: 'Target dimensional unit scale for exported CAD geometry.',
+      description:
+        'Length unit of the result of a STEP or IGES conversion to STEP, IGES, STL or OBJ (default mm). STL and OBJ have no unit field, so the choice decides what their numbers mean: pick the unit your slicer or viewer expects. STEP and IGES results declare the unit they are written in.',
     },
 
     // Document & PDF options

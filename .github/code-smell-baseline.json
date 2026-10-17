@@ -379,7 +379,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1674
+    "maxValue": 1655
   },
   {
     "file": "src/lib/api/contracts/validate.ts",

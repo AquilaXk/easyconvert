@@ -1,11 +1,12 @@
 // cad-convert: reads a STEP or IGES file with the Open CASCADE data exchange libraries and writes STEP, IGES, binary STL or OBJ.
 //
-//   cad-convert --from step|iges --to step|iges|stl|obj <input> <output>
+//   cad-convert --from step|iges --to step|iges|stl|obj [--unit mm|cm|m|in] <input> <output>
 //
 // STEP and IGES are written from the B-rep, not from a mesh, with the colours and names that the document model (XDE)
 // carries. STL and OBJ are meshed from the B-rep. Every output is in millimetres: the readers convert the file's length
 // unit to millimetres, the STEP and IGES writers are told to write millimetres, and STL and OBJ (which have no unit that
-// slicers and viewers read) hold millimetre coordinates.
+// slicers and viewers read) hold millimetre coordinates. --unit asks for another length unit (centimetre, metre, inch) in
+// every output: STEP and IGES are written in it and declare it, STL and OBJ coordinates are scaled to it.
 //
 // Standard output stays empty. Standard error holds `cad-convert: note: ...` lines, and on failure one
 // `cad-convert: error: <code>: <message>` line. The exit status names the kind of failure:
@@ -74,7 +75,25 @@ constexpr int kExitFailed = 5;
 // neighbouring triangles of a curved surface may turn by 0.5 radian (about 29 degrees) at most. In millimetres.
 constexpr double kLinearDeflectionOfExtent = 0.001;
 constexpr double kAngularDeflectionRadians = 0.5;
-constexpr const char* kUnit = "MM";
+
+// The kernel works in millimetres: the readers convert to them (xstep.cascade.unit), and the output unit is applied on the way out.
+constexpr const char* kKernelUnit = "MM";
+
+// A length unit the output can be written in: its name on the command line, its name in the kernel's writer parameters, how many
+// of it make one millimetre, and how the headers of STL and OBJ say it.
+struct OutputUnit {
+  const char* name;
+  const char* writerName;
+  double perMillimetre;
+  const char* label;
+};
+
+constexpr OutputUnit kOutputUnits[] = {
+    {"mm", "MM", 1.0, "millimetres"},
+    {"cm", "CM", 0.1, "centimetres"},
+    {"m", "M", 0.001, "metres"},
+    {"in", "INCH", 1.0 / 25.4, "inches"},
+};
 
 struct Failure {
   int status;
@@ -128,7 +147,7 @@ void readStep(const std::string& path, Handle(TDocStd_Document)& doc) {
   STEPCAFControl_Reader reader;
   reader.SetColorMode(Standard_True);
   reader.SetNameMode(Standard_True);
-  setStaticString("xstep.cascade.unit", kUnit);
+  setStaticString("xstep.cascade.unit", kKernelUnit);
   if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) fail(kExitUnreadable, "unreadable", "the file is not a STEP file Open CASCADE can read");
   describeStepUnit(reader);
   if (!reader.Transfer(doc)) fail(kExitNothing, "no-shapes", "the STEP file holds no shape that could be transferred");
@@ -139,7 +158,7 @@ void readIges(const std::string& path, Handle(TDocStd_Document)& doc) {
   IGESCAFControl_Reader reader;
   reader.SetColorMode(Standard_True);
   reader.SetNameMode(Standard_True);
-  setStaticString("xstep.cascade.unit", kUnit);
+  setStaticString("xstep.cascade.unit", kKernelUnit);
   if (reader.ReadFile(path.c_str()) != IFSelect_RetDone) fail(kExitUnreadable, "unreadable", "the file is not an IGES file Open CASCADE can read");
   describeIgesUnit(reader);
   if (!reader.Transfer(doc)) fail(kExitNothing, "no-shapes", "the IGES file holds no shape that could be transferred");
@@ -172,9 +191,9 @@ int countFaces(const TopoDS_Shape& shape) {
 // ---------------------------------------------------------------------------------------------------------------------
 // Writing B-rep formats
 
-void writeStep(const Handle(TDocStd_Document)& doc, const std::string& path) {
+void writeStep(const Handle(TDocStd_Document)& doc, const std::string& path, const OutputUnit& unit) {
   STEPControl_Controller::Init();
-  setStaticString("write.step.unit", kUnit);
+  setStaticString("write.step.unit", unit.writerName);
   STEPCAFControl_Writer writer;
   writer.SetColorMode(Standard_True);
   writer.SetNameMode(Standard_True);
@@ -182,9 +201,9 @@ void writeStep(const Handle(TDocStd_Document)& doc, const std::string& path) {
   if (writer.Write(path.c_str()) != IFSelect_RetDone) fail(kExitFailed, "write", "the STEP file could not be written");
 }
 
-void writeIges(const Handle(TDocStd_Document)& doc, const std::string& path) {
+void writeIges(const Handle(TDocStd_Document)& doc, const std::string& path, const OutputUnit& unit) {
   IGESControl_Controller::Init();
-  setStaticString("write.iges.unit", kUnit);
+  setStaticString("write.iges.unit", unit.writerName);
   IGESCAFControl_Writer writer;
   writer.SetColorMode(Standard_True);
   writer.SetNameMode(Standard_True);
@@ -208,7 +227,7 @@ double largestExtent(const TopoDS_Shape& shape) {
   return std::fmax(xMax - xMin, std::fmax(yMax - yMin, zMax - zMin));
 }
 
-std::vector<Triangle> meshTriangles(const TopoDS_Shape& shape) {
+std::vector<Triangle> meshTriangles(const TopoDS_Shape& shape, const OutputUnit& unit) {
   const double extent = largestExtent(shape);
   if (!(extent > 0.0) || !std::isfinite(extent)) fail(kExitNothing, "no-surfaces", "the model has no extent to mesh");
   BRepMesh_IncrementalMesh mesher(shape, extent * kLinearDeflectionOfExtent, Standard_False, kAngularDeflectionRadians, Standard_False);
@@ -229,9 +248,9 @@ std::vector<Triangle> meshTriangles(const TopoDS_Shape& shape) {
       Triangle triangle;
       for (int k = 0; k < 3; ++k) {
         const gp_Pnt point = mesh->Node(corner[k]).Transformed(placement);
-        triangle.vertex[k][0] = static_cast<float>(point.X());
-        triangle.vertex[k][1] = static_cast<float>(point.Y());
-        triangle.vertex[k][2] = static_cast<float>(point.Z());
+        triangle.vertex[k][0] = static_cast<float>(point.X() * unit.perMillimetre);
+        triangle.vertex[k][1] = static_cast<float>(point.Y() * unit.perMillimetre);
+        triangle.vertex[k][2] = static_cast<float>(point.Z() * unit.perMillimetre);
       }
       triangles.push_back(triangle);
     }
@@ -257,11 +276,11 @@ void normalOf(const Triangle& t, float out[3]) {
 
 // Binary STL: an 80-byte header, the triangle count, then per triangle a normal, three vertices and a 16-bit attribute.
 // The header names the unit, because the format has none.
-void writeStl(const std::vector<Triangle>& triangles, const std::string& path) {
+void writeStl(const std::vector<Triangle>& triangles, const std::string& path, const OutputUnit& unit) {
   std::ofstream out(path, std::ios::binary);
   if (!out) fail(kExitFailed, "write", "the STL file cannot be opened for writing");
   char header[80] = {};
-  std::snprintf(header, sizeof header, "binary STL, coordinates in millimetres");
+  std::snprintf(header, sizeof header, "binary STL, coordinates in %s", unit.label);
   out.write(header, sizeof header);
   const std::uint32_t count = static_cast<std::uint32_t>(triangles.size());
   out.write(reinterpret_cast<const char*>(&count), sizeof count);
@@ -293,7 +312,7 @@ struct VertexKeyHash {
 };
 
 // Wavefront OBJ: shared vertices are written once, so the triangles of neighbouring faces meet at the same index.
-void writeObj(const std::vector<Triangle>& triangles, const std::string& path) {
+void writeObj(const std::vector<Triangle>& triangles, const std::string& path, const OutputUnit& unit) {
   std::unordered_map<VertexKey, std::uint32_t, VertexKeyHash> index;
   std::vector<VertexKey> vertices;
   std::vector<std::uint32_t> corners;
@@ -308,7 +327,7 @@ void writeObj(const std::vector<Triangle>& triangles, const std::string& path) {
   }
   std::ofstream out(path);
   if (!out) fail(kExitFailed, "write", "the OBJ file cannot be opened for writing");
-  out << "# Wavefront OBJ, coordinates in millimetres\n";
+  out << "# Wavefront OBJ, coordinates in " << unit.label << "\n";
   char line[128];
   for (const VertexKey& v : vertices) {
     std::snprintf(line, sizeof line, "v %.9g %.9g %.9g\n", v.x, v.y, v.z);
@@ -324,6 +343,7 @@ void writeObj(const std::vector<Triangle>& triangles, const std::string& path) {
 struct Arguments {
   Format from = Format::Step;
   Format to = Format::Stl;
+  const OutputUnit* unit = &kOutputUnits[0];
   std::string input;
   std::string output;
 };
@@ -344,11 +364,19 @@ Arguments parseArguments(int argc, char** argv) {
         arguments.to = format;
         haveTo = true;
       }
+    } else if (argument == "--unit" && i + 1 < argc) {
+      const std::string name = argv[++i];
+      const OutputUnit* found = nullptr;
+      for (const OutputUnit& candidate : kOutputUnits) {
+        if (name == candidate.name) found = &candidate;
+      }
+      if (found == nullptr) fail(kExitUsage, "usage", "unknown unit " + name + " (mm, cm, m or in)");
+      arguments.unit = found;
     } else {
       positional.push_back(argument);
     }
   }
-  if (!haveFrom || !haveTo || positional.size() != 2) fail(kExitUsage, "usage", "cad-convert --from step|iges --to step|iges|stl|obj <input> <output>");
+  if (!haveFrom || !haveTo || positional.size() != 2) fail(kExitUsage, "usage", "cad-convert --from step|iges --to step|iges|stl|obj [--unit mm|cm|m|in] <input> <output>");
   if (arguments.from != Format::Step && arguments.from != Format::Iges) fail(kExitUsage, "usage", "--from takes step or iges");
   arguments.input = positional[0];
   arguments.output = positional[1];
@@ -370,19 +398,20 @@ void run(const Arguments& arguments) {
   const TopoDS_Compound compound = freeShapes(doc, shapes);
   if (shapes == 0) fail(kExitNothing, "no-shapes", "the file holds no shape");
   const int faces = countFaces(compound);
+  note(std::string("the result is written in ") + arguments.unit->label);
   note(std::to_string(shapes) + " shape(s), " + std::to_string(faces) + " face(s)");
 
   try {
     if (arguments.to == Format::Step) {
-      writeStep(doc, arguments.output);
+      writeStep(doc, arguments.output, *arguments.unit);
     } else if (arguments.to == Format::Iges) {
-      writeIges(doc, arguments.output);
+      writeIges(doc, arguments.output, *arguments.unit);
     } else {
       if (faces == 0) fail(kExitNothing, "no-surfaces", "the file holds curves or points but no surface to mesh");
-      const std::vector<Triangle> triangles = meshTriangles(compound);
+      const std::vector<Triangle> triangles = meshTriangles(compound, *arguments.unit);
       note(std::to_string(triangles.size()) + " triangle(s)");
-      if (arguments.to == Format::Stl) writeStl(triangles, arguments.output);
-      else writeObj(triangles, arguments.output);
+      if (arguments.to == Format::Stl) writeStl(triangles, arguments.output, *arguments.unit);
+      else writeObj(triangles, arguments.output, *arguments.unit);
     }
   } catch (const Standard_Failure& error) {
     fail(kExitFailed, "failed", std::string("Open CASCADE failed while writing: ") + error.GetMessageString());
