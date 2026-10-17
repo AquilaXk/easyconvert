@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { convertWithNative7z } from '../src/worker/engines';
 import { IN_PROCESS_DEFLATE_MAX_BYTES } from '../src/lib/conversions/archive-repack';
+import { DEFLATE_BLOCK_BYTES } from '../src/lib/conversions/deflate-blocks';
 import { SeededRandom, jsonRecords, sha256Hex, zipfText } from './helpers/archive-corpus';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -168,6 +169,24 @@ describe('tar to ZIP past the in-process bound', () => {
       expect(libdeflateCalls()).toEqual(['-7', '-7']);
       expect(sevenZipSpy.calls()).toHaveLength(0);
       expect(fs.statSync(archive).size).toBeLessThanOrEqual(referenceZipBytes('multi-reference.zip', members));
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'starts no libdeflate process for a tar within the in-process bound, even with an entry of a native size',
+    [...TOOLS],
+    async () => {
+      const members = [{ name: 'within.txt', data: zipfText(MIB, 121) }];
+      expect(members[0].data.length).toBeLessThanOrEqual(IN_PROCESS_DEFLATE_MAX_BYTES);
+      expect(members[0].data.length).toBeGreaterThanOrEqual(DEFLATE_BLOCK_BYTES);
+      const tar = tarOf('within.tar', members);
+      const zip = await withLibdeflate(recordingLibdeflate(), async () => zipOf(tar));
+      expectZipMembers(writeOut('within.zip', zip), members);
+      const gz = await withLibdeflate(recordingLibdeflate(), async () => gzipOf(tar));
+      expect(sha256Hex(execFileSync('gzip', ['-dc'], { input: gz, maxBuffer: 16 * MIB }))).toBe(sha256Hex(members[0].data));
+      expect(libdeflateCalls()).toEqual([]);
+      expect(sevenZipSpy.calls()).toHaveLength(0);
     },
     TEST_TIMEOUT_MS
   );
