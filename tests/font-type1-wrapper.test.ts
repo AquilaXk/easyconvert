@@ -150,6 +150,68 @@ describe('a missing or failing FontForge never passes for a conversion', () => {
     });
   });
 
+  it('answers 422 that the font is too large, not that the diagnostics are too long, when the output grows past the size limit', async () => {
+    // 150 MB against the 128 MB limit: the sandbox stops the program with SIGXFSZ where it limits file sizes, and the size check catches the file otherwise.
+    await withProgram(standIn('exec head -c 150000000 /dev/zero > "$5"'), async () => {
+      const failure = await failureOf(() => convertPfa());
+      expect(failure).toBeInstanceOf(UnprocessableFontInputError);
+      expect(failure.message).toBe('The font is larger than FontForge may write.');
+    });
+  });
+
+  it('answers 422 that the diagnostics are too long when the program floods its error output', async () => {
+    // 3 MB of messages against the 1 MiB buffer.
+    await withProgram(standIn('head -c 3000000 /dev/zero | tr "\\000" "x" >&2; exit 1'), async () => {
+      const failure = await failureOf(() => convertPfa());
+      expect(failure).toBeInstanceOf(UnprocessableFontInputError);
+      expect(failure.message).toBe('FontForge printed more diagnostics than the limit allows: the font is damaged.');
+    });
+  });
+
+  describe('a result that is cut short or has a damaged table directory is a 422, never a crash', () => {
+    /** A stand-in that writes `bytes` as its result. */
+    function standInWriting(bytes: Buffer): string {
+      const file = path.join(tmpDir('fontforge-result-'), 'result.otf');
+      fs.writeFileSync(file, bytes);
+      return standIn(`cp ${file} "$5"`);
+    }
+    const header = (tables: number) => {
+      const bytes = Buffer.alloc(12);
+      bytes.write('OTTO', 0, 'latin1');
+      bytes.writeUInt16BE(tables, 4);
+      return bytes;
+    };
+    const record = (tag: string, offset: number) => {
+      const bytes = Buffer.alloc(16);
+      bytes.write(tag, 0, 'latin1');
+      bytes.writeUInt32BE(offset, 8);
+      return bytes;
+    };
+
+    it.each([
+      ['only the OTTO signature', Buffer.from('OTTO')],
+      ['twelve bytes that are not an OpenType header', Buffer.from('XXXXXXXXXXXX')],
+    ])('answers "not an OpenType font" for %s', async (_label, bytes) => {
+      await withProgram(standInWriting(bytes), async () => {
+        const failure = await failureOf(() => convertPfa());
+        expect(failure).toBeInstanceOf(UnprocessableFontInputError);
+        expect(failure.message).toBe('FontForge wrote something that is not an OpenType font.');
+      });
+    });
+
+    it.each([
+      ['a directory of 100 tables in a file of twelve bytes', header(100)],
+      ['a directory without a maxp table', Buffer.concat([header(1), record('head', 28), Buffer.alloc(8)])],
+      ['a maxp table that starts past the end of the file', Buffer.concat([header(1), record('maxp', 4000)])],
+    ])('answers "without a glyph count" for %s', async (_label, bytes) => {
+      await withProgram(standInWriting(bytes), async () => {
+        const failure = await failureOf(() => convertPfa());
+        expect(failure).toBeInstanceOf(UnprocessableFontInputError);
+        expect(failure.message).toBe('FontForge wrote an OpenType font without a glyph count.');
+      });
+    });
+  });
+
   it('answers a typed timeout when the program overruns its time', async () => {
     await withProgram(standIn('sleep 30'), async () => {
       const failure = await failureOf(() => convertPfa({ timeoutMs: FIXED_TIMEOUT_MS }));
@@ -166,7 +228,7 @@ describe('what the wrapper asks FontForge for', () => {
     const font = path.join(dir, 'font.otf');
     fs.writeFileSync(font, buildOtf({ family: 'Stand In', glyphs: Array.from({ length: GLYPHS.length }, () => ({ charstring: cs('endchar'), advance: 500, lsb: 0 })), codePoints: [65] }));
     const record = path.join(dir, 'arguments.txt');
-    const program = standIn(`printf '%s\\n' "$1" "$2" "$3" "$(basename "$4")" "$(basename "$5")" > ${record}\ncp ${font} "$5"`);
+    const program = standIn(`printf '%s\\n' "$1" "$2" "$3" "$(basename "$4")" "$(basename "$5")" "$HOME" "$TMPDIR" "$TMP" "$TEMP" "$(dirname "$4")" > ${record}\ncp ${font} "$5"`);
     return { program, recorded: () => fs.readFileSync(record, 'utf8') };
   }
 
@@ -178,6 +240,10 @@ describe('what the wrapper asks FontForge for', () => {
     await withProgram(program, async () => {
       await convertFont(source === 'pfa' ? buildPfa(GLYPHS) : buildPfb(GLYPHS), source, target, {}, "evil';Quit();'.pfa");
     });
-    expect(recorded()).toBe('-lang=ff\n-c\nOpen($1); Generate($2)\ninput.pfb\noutput.otf\n');
+    const [language, flag, script, input, output, home, tmpdir, tmp, temp, scratch] = recorded().split('\n');
+    expect([language, flag, script, input, output]).toEqual(['-lang=ff', '-c', 'Open($1); Generate($2)', 'input.pfb', 'output.otf']);
+    // Home and every temporary-directory variable name the scratch directory the font was written to, not the shared temporary directory.
+    expect([home, tmpdir, tmp, temp]).toEqual([scratch, scratch, scratch, scratch]);
+    expect(scratch).not.toBe(os.tmpdir());
   });
 });

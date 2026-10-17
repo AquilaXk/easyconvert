@@ -131,7 +131,8 @@ export async function type1ToOpenType(font: Type1Font, options: FontForgeOptions
     try {
       await executeSandboxedBinary(binary, [SCRIPT_LANGUAGE, '-c', SCRIPT, inputPath, outputPath], {
         cwd: sandboxDir,
-        env: { HOME: sandboxDir },
+        // The scratch directory is also where the program puts anything it writes to a temporary file, as the other sandboxed programs do.
+        env: { HOME: sandboxDir, TMPDIR: sandboxDir, TMP: sandboxDir, TEMP: sandboxDir },
         timeoutMs,
         maxBuffer: PROGRAM_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: PROGRAM_MAX_OUTPUT_BYTES,
