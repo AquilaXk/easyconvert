@@ -22,6 +22,8 @@ export function startsWithBytes(buf: Uint8Array, prefix: readonly number[], offs
 
 /** The prolog is ASCII; every byte maps to one character, whatever the rest of the file holds. */
 const LATIN1 = new TextDecoder('latin1');
+/** ZIP entry names, read as UTF-8 the way the package writers store them. */
+const UTF8 = new TextDecoder('utf-8');
 
 /**
  * Gzip members that hold an XML document, by extension, and the element that document opens with: compressed SVG
@@ -195,7 +197,7 @@ export const CGM_ENCODING_PROBE_BYTES = 64;
 
 /** Whether the bytes are a clear-text CGM, the one encoding of a format the office suite reads that the in-process parser reads too. */
 export function isClearTextCgm(head: Uint8Array): boolean {
-  return CLEAR_TEXT_CGM_PATTERN.test(Buffer.from(head.subarray(0, CGM_ENCODING_PROBE_BYTES)).toString('latin1'));
+  return CLEAR_TEXT_CGM_PATTERN.test(LATIN1.decode(head.subarray(0, CGM_ENCODING_PROBE_BYTES)));
 }
 
 /** Container signatures that the registry reads in more than one place. */
@@ -259,7 +261,7 @@ const WMF_STANDARD_HEADER_BYTES = 18;
 /** Binary CGM (ISO 8632-3): the first command is BEGIN METAFILE, class 0 and id 1, so the 16-bit header is 0x0020 plus a parameter length of up to 31. */
 const CGM_BEGIN_METAFILE_HEADERS = { first: 0x0020, last: 0x003f };
 /** Visio keeps its drawing in a compound-file stream of this name, stored in UTF-16LE in the directory. */
-const VISIO_STREAM_NAME = Buffer.from('VisioDocument', 'utf16le');
+const VISIO_STREAM_NAME: readonly number[] = [...'VisioDocument'].flatMap((char) => [char.charCodeAt(0), 0]);
 /** CorelDRAW (libcdr `CDRDocument::isSupported`): a RIFF file whose form type starts with CDR, or an X4 and later ZIP package holding one of these entries. */
 const CDR_RIFF_FORM_PREFIXES: ReadonlySet<string> = new Set(['CDR', 'cdr']);
 const CDR_PACKAGE_ENTRIES: ReadonlySet<string> = new Set(['content/riffData.cdr', 'content/root.dat']);
@@ -269,22 +271,34 @@ const ZIP_LOCAL_HEADER = 0x04034b50;
 const ZIP_LOCAL_HEADER_BYTES = 30;
 const ZIP_DATA_DESCRIPTOR_FLAG = 0x08;
 
+/** A view of the bytes for little- and big-endian reads; the registry runs in the browser and the edge engines, so no Node Buffer. */
+function dataView(buf: Uint8Array): DataView {
+  return new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+
+/** Whether `needle` occurs anywhere in `buf`. */
+function includesBytes(buf: Uint8Array, needle: readonly number[]): boolean {
+  for (let offset = buf.indexOf(needle[0]); offset !== -1 && offset + needle.length <= buf.length; offset = buf.indexOf(needle[0], offset + 1)) {
+    if (startsWithBytes(buf, needle, offset)) return true;
+  }
+  return false;
+}
+
 function isEmf(buf: Uint8Array): boolean {
-  const view = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
-  return view.length > EMF_SIGNATURE_OFFSET + 4 && view.readUInt32LE(0) === EMF_HEADER_RECORD_TYPE && view.readUInt32LE(EMF_SIGNATURE_OFFSET) === EMF_SIGNATURE;
+  const view = dataView(buf);
+  return buf.length > EMF_SIGNATURE_OFFSET + 4 && view.getUint32(0, true) === EMF_HEADER_RECORD_TYPE && view.getUint32(EMF_SIGNATURE_OFFSET, true) === EMF_SIGNATURE;
 }
 
 function isWmf(buf: Uint8Array): boolean {
-  const view = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
-  if (view.length >= 4 && view.readUInt32LE(0) === WMF_PLACEABLE_KEY) return true;
-  const type = view.length >= WMF_STANDARD_HEADER_BYTES ? view.readUInt16LE(0) : 0;
-  return (type === 1 || type === 2) && view.readUInt16LE(2) === WMF_STANDARD_HEADER_WORDS;
+  const view = dataView(buf);
+  if (buf.length >= 4 && view.getUint32(0, true) === WMF_PLACEABLE_KEY) return true;
+  const type = buf.length >= WMF_STANDARD_HEADER_BYTES ? view.getUint16(0, true) : 0;
+  return (type === 1 || type === 2) && view.getUint16(2, true) === WMF_STANDARD_HEADER_WORDS;
 }
 
 function isCgm(buf: Uint8Array): boolean {
-  const view = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
-  const header = view.length >= 2 ? view.readUInt16BE(0) : 0;
-  return (header >= CGM_BEGIN_METAFILE_HEADERS.first && header <= CGM_BEGIN_METAFILE_HEADERS.last) || isClearTextCgm(view);
+  const header = buf.length >= 2 ? dataView(buf).getUint16(0, false) : 0;
+  return (header >= CGM_BEGIN_METAFILE_HEADERS.first && header <= CGM_BEGIN_METAFILE_HEADERS.last) || isClearTextCgm(buf);
 }
 
 /**
@@ -293,30 +307,30 @@ function isCgm(buf: Uint8Array): boolean {
  */
 function isVisio(buf: Uint8Array): boolean {
   if (!startsWithBytes(buf, CFBF_MAGIC)) return false;
-  return Buffer.from(buf.buffer, buf.byteOffset, buf.length).includes(VISIO_STREAM_NAME) || buf.length === HEADER_WINDOW_BYTES;
+  return includesBytes(buf, VISIO_STREAM_NAME) || buf.length === HEADER_WINDOW_BYTES;
 }
 
 /** The entries a ZIP names in its local file headers, in order, until the bytes end, a header cannot be skipped or the headers end. */
-function zipLocalEntryNames(view: Buffer): { names: string[]; complete: boolean } {
+function zipLocalEntryNames(buf: Uint8Array): { names: string[]; complete: boolean } {
+  const view = dataView(buf);
   const names: string[] = [];
   let offset = 0;
-  while (offset + ZIP_LOCAL_HEADER_BYTES <= view.length && view.readUInt32LE(offset) === ZIP_LOCAL_HEADER) {
-    const nameLength = view.readUInt16LE(offset + 26);
-    const extraLength = view.readUInt16LE(offset + 28);
-    const storedLength = view.readUInt32LE(offset + 18);
-    if (offset + ZIP_LOCAL_HEADER_BYTES + nameLength > view.length) return { names, complete: false };
-    names.push(view.toString('utf8', offset + ZIP_LOCAL_HEADER_BYTES, offset + ZIP_LOCAL_HEADER_BYTES + nameLength));
-    const sizeKnown = (view.readUInt16LE(offset + 6) & ZIP_DATA_DESCRIPTOR_FLAG) === 0 || storedLength > 0;
+  while (offset + ZIP_LOCAL_HEADER_BYTES <= buf.length && view.getUint32(offset, true) === ZIP_LOCAL_HEADER) {
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const storedLength = view.getUint32(offset + 18, true);
+    if (offset + ZIP_LOCAL_HEADER_BYTES + nameLength > buf.length) return { names, complete: false };
+    names.push(UTF8.decode(buf.subarray(offset + ZIP_LOCAL_HEADER_BYTES, offset + ZIP_LOCAL_HEADER_BYTES + nameLength)));
+    const sizeKnown = (view.getUint16(offset + 6, true) & ZIP_DATA_DESCRIPTOR_FLAG) === 0 || storedLength > 0;
     if (!sizeKnown) return { names, complete: false };
     offset += ZIP_LOCAL_HEADER_BYTES + nameLength + extraLength + storedLength;
   }
-  return { names, complete: offset + ZIP_LOCAL_HEADER_BYTES <= view.length };
+  return { names, complete: offset + ZIP_LOCAL_HEADER_BYTES <= buf.length };
 }
 
 function isCorelDraw(buf: Uint8Array): boolean {
-  const view = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
-  if (view.length >= 12 && view.toString('latin1', 0, 4) === 'RIFF') return CDR_RIFF_FORM_PREFIXES.has(view.toString('latin1', 8, 11));
-  const { names, complete } = zipLocalEntryNames(view);
+  if (buf.length >= 12 && LATIN1.decode(buf.subarray(0, 4)) === 'RIFF') return CDR_RIFF_FORM_PREFIXES.has(LATIN1.decode(buf.subarray(8, 11)));
+  const { names, complete } = zipLocalEntryNames(buf);
   if (names.some((name) => CDR_PACKAGE_ENTRIES.has(name))) return true;
   return !complete && names.length > 0 && CDR_PACKAGE_FOLDERS.some((folder) => names[0].startsWith(folder));
 }
