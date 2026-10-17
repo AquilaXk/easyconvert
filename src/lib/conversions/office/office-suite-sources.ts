@@ -14,6 +14,7 @@
  */
 
 import { EngineUnavailableError } from '../../types';
+import { CGM_ENCODING_PROBE_BYTES, isClearTextCgm } from '../../format-signatures';
 import { OOXML_VARIANT_FAMILY } from '../ooxml-variants';
 
 export type OfficeSuiteApplication = 'writer' | 'calc' | 'impress' | 'draw';
@@ -128,15 +129,7 @@ export function isPlainOfficeVariant(format: string): boolean {
   return Object.hasOwn(OOXML_VARIANT_FAMILY, format) || Object.hasOwn(OFFICE_FORMAT_ALIAS, format);
 }
 
-/** How a clear-text CGM starts (ISO 8632-4): the `BEGMF` command, after optional white space. The binary encoding starts with a command header. */
-const CLEAR_TEXT_CGM_PATTERN = /^\s*BEGMF\b/i;
-/** Bytes of a file that decide whether a CGM is clear text: white space, then the command. */
-export const CGM_ENCODING_PROBE_BYTES = 64;
-
-/** Whether the bytes are a clear-text CGM, the one encoding of a format the office suite reads that the in-process parser reads too. */
-export function isClearTextCgm(head: Buffer): boolean {
-  return CLEAR_TEXT_CGM_PATTERN.test(head.subarray(0, CGM_ENCODING_PROBE_BYTES).toString('latin1'));
-}
+export { CGM_ENCODING_PROBE_BYTES, isClearTextCgm };
 
 /** Whether the office suite reads a file of `format` that starts with `head`: every format of its table except a clear-text CGM. */
 export function officeSuiteReadsBytes(format: string, head: Buffer): boolean {

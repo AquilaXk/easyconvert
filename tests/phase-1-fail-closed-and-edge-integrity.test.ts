@@ -34,7 +34,7 @@ describe('Phase 1: Fail-Closed Principle, L2 Wasm Color Integrity & 7z Multi-fil
 
       await expect(
         convertVectorCad(mockBinaryCdr, 'dwf', 'svg', {}, 'blueprint.dwf')
-      ).rejects.toThrow(/no open-source DWF reader exists/);
+      ).rejects.toThrow(/no open-source reader of DWF 6 \(W2D\) or DWFx files was found/);
 
       await expect(
         convertVectorCad(mockBinaryCdr, 'vsd', 'svg', {}, 'diagram.vsd')

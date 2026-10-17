@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { encodeSvgPageToDxf } from '../src/lib/conversions/vector-dxf';
 import { parseSvgGeometries } from '../src/lib/conversions/svg-geometry';
+import { MAX_PAGE_CLIP_PATH_CHARS, PAGE_CLIP_TOLERANCE_PIXELS, createPageClipCheck, type ClipNode } from '../src/lib/conversions/svg-page-clip';
 import { readDxf } from './helpers/dxf-reader';
+
+const TOLERANCE = PAGE_CLIP_TOLERANCE_PIXELS;
 
 /**
  * A clip path that is one axis-aligned rectangle covering the whole page clips nothing, so the geometry readers drop it;
@@ -113,5 +116,109 @@ describe('a clip path that clips something stays refused', () => {
     expect(() => encodeSvgPageToDxf(Buffer.from(page(pathClip('c', 'M 10 10 L 150 10 L 150 90 L 10 90 Z'), clippedGroup('c'))))).toThrow(
       /The page cannot be written as DXF: SVG clip-path "url\(#c\)" is not supported\./
     );
+  });
+});
+
+/** A rectangle clip with the given edges, as a path. */
+const rectangleClip = (left: number, top: number, right: number, bottom: number): string => pathClip('c', `M ${left} ${top} L ${right} ${top} L ${right} ${bottom} L ${left} ${bottom} Z`);
+const coversPage = (clip: string): boolean => {
+  try {
+    return parseSvgGeometries(page(clip, clippedGroup('c'))).elements.length === 1;
+  } catch {
+    return false;
+  }
+};
+
+describe('the tolerance of a page clip is one point on each side, and no more', () => {
+  const sides: ReadonlyArray<[string, (distance: number) => string]> = [
+    ['left', (d) => rectangleClip(d, 0, PAGE_WIDTH, PAGE_HEIGHT)],
+    ['top', (d) => rectangleClip(0, d, PAGE_WIDTH, PAGE_HEIGHT)],
+    ['right', (d) => rectangleClip(0, 0, PAGE_WIDTH - d, PAGE_HEIGHT)],
+    ['bottom', (d) => rectangleClip(0, 0, PAGE_WIDTH, PAGE_HEIGHT - d)],
+  ];
+
+  it.each(sides)('a clip short of the %s edge only: dropped within the tolerance, exactly at it, and refused beyond it', (_side, clipShortBy) => {
+    expect(coversPage(clipShortBy(0))).toBe(true);
+    expect(coversPage(clipShortBy(0.75))).toBe(true);
+    expect(coversPage(clipShortBy(TOLERANCE))).toBe(true);
+    expect(coversPage(clipShortBy(TOLERANCE + 0.01))).toBe(false);
+    expect(coversPage(clipShortBy(20))).toBe(false);
+  });
+
+  it('the tolerance is one point of an SVG sized in points, which is 4/3 of a pixel', () => {
+    expect(TOLERANCE).toBe(96 / 72);
+  });
+});
+
+describe('what may not change a clip', () => {
+  const refusedClip = (clip: string): void => {
+    expect(() => parseSvgGeometries(page(clip, clippedGroup('c')))).toThrow(/clip-path "url\(#c\)" is not supported/);
+  };
+  const box = `${PAGE_RECTANGLE}`;
+
+  it.each([
+    ['style="transform: translate(10px, 0)"'],
+    ['style="width:10px"'],
+    ['class="shifted"'],
+  ])('%s on the clipPath makes it a real clip', (attribute) => {
+    refusedClip(`<clipPath id="c" ${attribute}><path d="${box}"/></clipPath>`);
+  });
+
+  it.each([
+    ['style="transform: translate(10px, 0)"'],
+    ['style="width:10px"'],
+    ['class="shifted"'],
+  ])('%s on the shape of the clip makes it a real clip', (attribute) => {
+    refusedClip(`<clipPath id="c"><path ${attribute} d="${box}"/></clipPath>`);
+  });
+});
+
+describe('a clip is read once, however many elements refer to it', () => {
+  const clipNode = (d: string): ClipNode => ({ name: 'clipPath', attrs: new Map(), children: [{ name: 'path', attrs: new Map([['d', d]]), children: [] }] });
+  const identity: [number, number, number, number, number, number] = [1, 0, 0, 1, 0, 0];
+
+  it('parses the shape of a clip once for any number of references, whatever matrix each is drawn under', () => {
+    let parsed = 0;
+    const check = createPageClipCheck(new Map([['c', clipNode(PAGE_RECTANGLE)]]), { width: PAGE_WIDTH, height: PAGE_HEIGHT }, () => {
+      parsed++;
+      return [[{ x: 0, y: 0 }, { x: PAGE_WIDTH, y: 0 }, { x: PAGE_WIDTH, y: PAGE_HEIGHT }, { x: 0, y: PAGE_HEIGHT }, { x: 0, y: 0 }]];
+    });
+    const verdicts = Array.from({ length: 1000 }, (_, i) => check('url(#c)', i % 2 === 0 ? identity : [0.5, 0, 0, 0.5, 0, 0]));
+    expect(parsed).toBe(1);
+    expect(verdicts.filter(Boolean)).toHaveLength(500);
+  });
+
+  it('remembers that a clip is no page clip, so a refused clip is not parsed again either', () => {
+    let parsed = 0;
+    const check = createPageClipCheck(new Map([['c', clipNode(PAGE_RECTANGLE)]]), { width: PAGE_WIDTH, height: PAGE_HEIGHT }, () => {
+      parsed++;
+      return [[{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }]];
+    });
+    for (let i = 0; i < 100; i++) expect(check('url(#c)', identity)).toBe(false);
+    expect(parsed).toBe(1);
+  });
+
+  it('does not parse a path longer than a page rectangle needs, which a long run of subpaths would make costly to read', () => {
+    let parsed = 0;
+    const longPath = `M 0 0 ${'M 1 1 '.repeat(MAX_PAGE_CLIP_PATH_CHARS)}`;
+    const check = createPageClipCheck(new Map([['c', clipNode(longPath)]]), { width: PAGE_WIDTH, height: PAGE_HEIGHT }, () => {
+      parsed++;
+      return null;
+    });
+    expect(check('url(#c)', identity)).toBe(false);
+    expect(parsed).toBe(0);
+  });
+
+  it('keeps a document with many elements under one page clip inside its limits: every element is read, the clip is charged once', () => {
+    const groups = Array.from({ length: 5000 }, () => `<g clip-path="url(#c)"><path d="${BOX_PATH}" fill="red"/></g>`).join('');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_WIDTH}" height="${PAGE_HEIGHT}"><defs>${pathClip('c', PAGE_RECTANGLE)}</defs>${groups}</svg>`;
+    expect(parseSvgGeometries(svg).elements).toHaveLength(5000);
+  });
+
+  it('refuses a document whose page clip is a long path with the unsupported-clip answer at the first reference', () => {
+    const longPath = `M 0 0 ${'M 1 1 '.repeat(MAX_PAGE_CLIP_PATH_CHARS)}`;
+    const groups = Array.from({ length: 5000 }, () => `<g clip-path="url(#c)"><path d="${BOX_PATH}"/></g>`).join('');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_WIDTH}" height="${PAGE_HEIGHT}"><defs>${pathClip('c', longPath)}</defs>${groups}</svg>`;
+    expect(() => parseSvgGeometries(svg)).toThrow(/clip-path "url\(#c\)" is not supported/);
   });
 });

@@ -49,7 +49,7 @@ const COMPARE_DPI = 50;
 const POINT_TOLERANCE = 0.6;
 /** Lowest SSIM of a page against another renderer's page of the same file (measured 0.95 to 1.0 against Inkscape). */
 const MIN_RENDERER_SSIM = 0.9;
-/** Lowest SSIM of the PNG, the SVG and the PostScript render against the PDF page they were written from (measured 0.83 to 1.0: each renderer rasterises text, thin lines and photographs its own way). A blank or other page scores far lower. */
+/** Lowest SSIM of the PNG, the SVG and the PostScript render against the PDF page they were written from (measured 0.83 to 1.0: each renderer rasterises text, thin lines and photographs its own way). A blank or other page scores far lower. The floors were measured on macOS (Poppler 26, LibreOffice 26.8); their first run on the Linux image (Poppler 24, LibreOffice 24.2) is the CI run. */
 const MIN_CHAIN_SSIM = 0.8;
 /** Largest distance, in one 8-bit colour channel, between a colour of the render and the same spot of CorelDRAW's thumbnail. */
 const THUMBNAIL_COLOUR_TOLERANCE = 16;
@@ -299,6 +299,10 @@ function ezdxfFacts(dxf: Buffer): DxfFacts {
 const EMF_RECORD_HEADER_BYTES = 8;
 /** EMF bitmap records (MS-EMF 2.3): BITBLT, STRETCHBLT, MASKBLT, PLGBLT, SETDIBITSTODEVICE, STRETCHDIBITS, ALPHABLEND, TRANSPARENTBLT. */
 const EMF_BITMAP_RECORDS: ReadonlySet<number> = new Set([0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x72, 0x74]);
+const EMF_HEADER_RECORD = 1;
+const EMF_SIGNATURE = 0x464d4520;
+const EMF_SIGNATURE_OFFSET = 40;
+const WMF_HEADER_WORDS = 9;
 const WMF_PLACEABLE_KEY = 0x9ac6cdd7;
 const WMF_PLACEABLE_HEADER_BYTES = 22;
 const WMF_HEADER_BYTES = 18;
@@ -322,18 +326,24 @@ function bitmapRecordCount(metafile: Buffer, extension: 'emf' | 'wmf'): number {
   return count;
 }
 
-const CGM_BEGIN_PICTURE = { elementClass: 0, elementId: 3 };
+const CGM_CLASS = { delimiter: 0, graphicalPrimitive: 4 };
+const CGM_ELEMENT = { beginPicture: 3, text: 4, restrictedText: 5 };
 const CGM_SHORT_FORM_MAX_LENGTH = 30;
 const CGM_PARTITION_BIT = 0x8000;
 
+interface CgmElement {
+  elementClass: number;
+  id: number;
+  parameters: Buffer;
+}
+
 /**
- * The number of pictures a binary CGM declares: its elements are walked by the layout of ISO 8632-3 (a 16-bit header of
- * a 4-bit class, a 7-bit id and a 5-bit parameter length, a long form of its own, parameters padded to an even length)
- * and the BEGIN PICTURE elements counted. Independent of the office suite's reader.
+ * The elements of a binary CGM, walked by the layout of ISO 8632-3: a 16-bit header of a 4-bit class, a 7-bit id and a
+ * 5-bit parameter length, a long form of its own, parameters padded to an even length. Independent of the office suite's reader.
  */
-function cgmPictureCount(cgm: Buffer): number {
+function cgmElements(cgm: Buffer): CgmElement[] {
+  const elements: CgmElement[] = [];
   let offset = 0;
-  let pictures = 0;
   while (offset + 2 <= cgm.length) {
     const header = cgm.readUInt16BE(offset);
     offset += 2;
@@ -344,12 +354,118 @@ function cgmPictureCount(cgm: Buffer): number {
       expect(long & CGM_PARTITION_BIT, 'a partitioned element is not walked here').toBe(0);
       length = long & ~CGM_PARTITION_BIT;
     }
+    elements.push({ elementClass: header >> 12, id: (header >> 5) & 0x7f, parameters: cgm.subarray(offset, offset + length) });
     offset += length + (length % 2);
-    if (header >> 12 === CGM_BEGIN_PICTURE.elementClass && ((header >> 5) & 0x7f) === CGM_BEGIN_PICTURE.elementId) pictures++;
   }
   expect(offset, 'the elements end where the file ends').toBe(cgm.length);
-  return pictures;
+  return elements;
 }
+
+/** The number of pictures a binary CGM declares: its BEGIN PICTURE elements. */
+function cgmPictureCount(cgm: Buffer): number {
+  return cgmElements(cgm).filter((element) => element.elementClass === CGM_CLASS.delimiter && element.id === CGM_ELEMENT.beginPicture).length;
+}
+
+/** For each picture, how many graphical primitives (lines, polygons, arcs, text, ...: class 4) it draws. */
+function cgmPrimitivesPerPicture(cgm: Buffer): number[] {
+  const counts: number[] = [];
+  for (const element of cgmElements(cgm)) {
+    if (element.elementClass === CGM_CLASS.delimiter && element.id === CGM_ELEMENT.beginPicture) counts.push(0);
+    else if (element.elementClass === CGM_CLASS.graphicalPrimitive && counts.length > 0) counts[counts.length - 1]++;
+  }
+  return counts;
+}
+
+const CGM_BACKGROUND_COLOUR = { elementClass: 2, id: 7 };
+const CGM_COLOUR_PRECISION = { elementClass: 1, id: 7 };
+
+/** The background colour of a binary CGM with a 16-bit direct colour precision (class 2, id 7): three 16-bit components, red, green and blue. */
+function cgmBackgroundColour(cgm: Buffer): [number, number, number] {
+  const elements = cgmElements(cgm);
+  const precision = elements.find((element) => element.elementClass === CGM_COLOUR_PRECISION.elementClass && element.id === CGM_COLOUR_PRECISION.id);
+  expect(precision?.parameters.readUInt16BE(0), 'the colour components have 16 bits').toBe(16);
+  const background = elements.find((element) => element.elementClass === CGM_BACKGROUND_COLOUR.elementClass && element.id === CGM_BACKGROUND_COLOUR.id);
+  expect(background?.parameters.length, 'a direct colour has three 16-bit components').toBe(6);
+  const [red, green, blue] = [0, 2, 4].map((at) => (background as CgmElement).parameters.readUInt16BE(at));
+  return [red, green, blue];
+}
+
+/** The characters of the strings that the TEXT and RESTRICTED TEXT elements carry: the string is the last parameter, a length byte and its characters. */
+function cgmTextCharacters(cgm: Buffer): Set<string> {
+  const characters = new Set<string>();
+  for (const { elementClass, id, parameters } of cgmElements(cgm)) {
+    if (elementClass !== CGM_CLASS.graphicalPrimitive || (id !== CGM_ELEMENT.text && id !== CGM_ELEMENT.restrictedText)) continue;
+    const start = [...parameters.keys()].find((at) => parameters[at] === parameters.length - at - 1);
+    expect(start, 'a text element ends in a length byte and that many characters').toBeDefined();
+    for (const character of parameters.subarray((start as number) + 1).toString('latin1')) characters.add(character);
+  }
+  return characters;
+}
+
+const WMF_ROUND_RECTANGLE_RECORD = 0x061c;
+
+/** The box of the first ROUNDRECT record of a WMF file (MS-WMF 2.3.3.20: height, width, bottom, right, top, left, each a 16-bit value). */
+function wmfRoundRectangleBox(wmf: Buffer): { width: number; height: number } {
+  let offset = (wmf.readUInt32LE(0) === WMF_PLACEABLE_KEY ? WMF_PLACEABLE_HEADER_BYTES : 0) + WMF_HEADER_BYTES;
+  while (offset + WMF_RECORD_HEADER_BYTES <= wmf.length) {
+    if (wmf.readUInt16LE(offset + 4) === WMF_ROUND_RECTANGLE_RECORD) {
+      const [bottom, right, top, left] = [10, 12, 14, 16].map((at) => wmf.readInt16LE(offset + at));
+      return { width: right - left, height: bottom - top };
+    }
+    offset += wmf.readUInt32LE(offset) * 2;
+  }
+  throw new Error('the WMF file has no ROUNDRECT record');
+}
+
+/** How far the aspect of the drawn ink may differ from the aspect of the box the file records: a stroke widens the ink by its width. */
+const RECORD_ASPECT_TOLERANCE = 0.06;
+/** The page corner that a CGM background colour must reach, and the distance in one 8-bit channel the converted colour may differ by. */
+const CORNER_PIXEL = 3;
+const BACKGROUND_COLOUR_TOLERANCE = 8;
+
+interface RecordFactInput {
+  bytes: Buffer;
+  pdf: Buffer;
+  /** The pages of the PNG output, in page order. */
+  pngPages: Buffer[];
+}
+
+async function expectInkAspect(pdf: Buffer, recorded: { width: number; height: number }, label: string): Promise<void> {
+  const ink = await inkBoxOfPdf(pdf);
+  const drawn = (ink.maxX - ink.minX) / (ink.maxY - ink.minY);
+  const expected = recorded.width / recorded.height;
+  expect({ label, withinTolerance: Math.abs(drawn / expected - 1) <= RECORD_ASPECT_TOLERANCE, drawn, expected }).toMatchObject({ label, withinTolerance: true });
+}
+
+/**
+ * One fact per sample that no phrase or second reader judges, read from the records of the file itself and checked in the
+ * output: the box of the one rounded rectangle of a WMF file, the background colour of a CGM drawing, which pictures of a CGM file
+ * draw anything, and the characters of the text a CGM file carries.
+ */
+const RECORD_FACTS: Readonly<Record<string, (input: RecordFactInput) => Promise<void>>> = {
+  'lo-testroundrect.wmf': ({ bytes, pdf }) => expectInkAspect(pdf, wmfRoundRectangleBox(bytes), 'the rounded rectangle of the WMF record'),
+  'lo-binary_corvette.cgm': async ({ bytes, pngPages }) => {
+    const expected = cgmBackgroundColour(bytes);
+    const { data, info } = await sharp(pngPages[0]).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const corner = (CORNER_PIXEL * info.width + CORNER_PIXEL) * info.channels;
+    const distance = Math.max(...[0, 1, 2].map((channel) => Math.abs(data[corner + channel] - expected[channel])));
+    expect({ background: expected, nearEnough: distance <= BACKGROUND_COLOUR_TOLERANCE }).toMatchObject({ nearEnough: true });
+  },
+  'lo-circles.cgm': async ({ bytes, pngPages }) => {
+    const primitives = cgmPrimitivesPerPicture(bytes);
+    expect(primitives.length).toBe(pngPages.length);
+    for (const [index, count] of primitives.entries()) {
+      expect(count, `picture ${index + 1} of the file draws something`).toBeGreaterThan(0);
+      await expectDrawnPicture(pngPages[index], `page ${index + 1} of circles.cgm, a picture that draws ${count} primitives`);
+    }
+  },
+  'tika-plotutils-bin-cgm-v3.cgm': async ({ bytes, pdf }) => {
+    const wanted = cgmTextCharacters(bytes);
+    expect([...wanted].sort().join('')).toBe('.0123456');
+    const shown = new Set(pdfPageTexts(pdf).join(''));
+    expect({ missing: [...wanted].filter((character) => !shown.has(character)) }).toEqual({ missing: [] });
+  },
+};
 
 // ---------------------------------------------------------------------------
 // CorelDRAW's own thumbnail of a page
@@ -408,11 +524,13 @@ describe.skipIf(toolsMissing)('real Visio, CorelDRAW, EMF, WMF and CGM files', (
         }
         const pdfPage = firstPageOfPdf(pdf);
 
+        let pngPages: Buffer[] = [];
         for (const target of sample.targets.filter((candidate) => candidate !== 'pdf' && candidate !== 'dxf')) {
           const result = await dispatchConversion(bytes, sample.extension, target, {}, sample.id);
           const outputs = await pagesOf(result.buffer);
           if (target !== 'ps') expect(outputs.length, `${label(target)} pages`).toBe(pages.count);
           if (target === 'png' || target === 'jpg') {
+            if (target === 'png') pngPages = outputs;
             for (const image of outputs) await expectDrawnPicture(image, label(target));
             expect(await ssim(outputs[0], pdfPage), `${label(target)} against the PDF page`).toBeGreaterThan(MIN_CHAIN_SSIM);
           } else if (target === 'svg') {
@@ -430,6 +548,7 @@ describe.skipIf(toolsMissing)('real Visio, CorelDRAW, EMF, WMF and CGM files', (
             expect(target, 'a target the checks above do not cover').toBe('dxf');
           }
         }
+        await RECORD_FACTS[sample.id]?.({ bytes, pdf, pngPages });
       },
       CONVERSION_TIMEOUT_MS
     );
@@ -477,6 +596,12 @@ async function expectDxfHoldsTheInk(dxf: Buffer, pdf: Buffer, label: string): Pr
 
 /** The office suite reads the EMF or WMF back (its own import filter) and draws the page the PNG of the drawing shows. */
 async function expectMetafileDrawsThePage(metafile: Buffer, target: string, pdfPage: Buffer, label: string): Promise<void> {
+  if (target === 'emf') {
+    expect({ label, record: metafile.readUInt32LE(0), signature: metafile.readUInt32LE(EMF_SIGNATURE_OFFSET) }).toEqual({ label, record: EMF_HEADER_RECORD, signature: EMF_SIGNATURE });
+  } else {
+    const header = metafile.readUInt32LE(0) === WMF_PLACEABLE_KEY ? WMF_PLACEABLE_HEADER_BYTES : 0;
+    expect({ label, type: [1, 2].includes(metafile.readUInt16LE(header)), headerWords: metafile.readUInt16LE(header + 2) }).toEqual({ label, type: true, headerWords: WMF_HEADER_WORDS });
+  }
   const redrawn = sofficeConvert(metafile, `out.${target}`, 'png', (output) => output.read());
   await expectDrawnPicture(redrawn, label);
   expect(await ssim(redrawn, pdfPage), `${label} drawn again by the office suite`).toBeGreaterThan(MIN_METAFILE_REIMPORT_SSIM);
@@ -533,7 +658,7 @@ describe('what the in-process engine no longer pretends to read', () => {
     for (const bytes of [svg, Buffer.from('##Sketch 1 2\nlayer(\'Layer 1\')\n')]) {
       const failure = await convertVectorCad(bytes, extension, 'svg', {}, `drawing.${extension}`).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(CadGeometryUnavailableError);
-      expect((failure as Error).message).toMatch(/no reader exists in the worker/);
+      expect((failure as Error).message).toMatch(/no reader for them is included in the worker/);
     }
   });
 
@@ -557,7 +682,7 @@ describe('DWF, which has no open-source reader', () => {
     for (const target of getFormatByExtension('dwf')?.targetFormats ?? []) {
       const failure = await dispatchConversion(bytes, 'dwf', target, {}, 'testDWF2010.dwf').catch((error: unknown) => error);
       expect(failure, `dwf -> ${target}`).toBeInstanceOf(CadGeometryUnavailableError);
-      expect((failure as Error).message, `dwf -> ${target}`).toMatch(/no open-source DWF reader exists/);
+      expect((failure as Error).message, `dwf -> ${target}`).toMatch(/no open-source reader of DWF 6 \(W2D\) or DWFx files was found/);
     }
   });
 });

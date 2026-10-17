@@ -1,5 +1,5 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
-import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, sniffAacContainer, sniffFixedSignature, startsWithBytes } from './format-signatures';
+import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, sniffAacContainer, sniffFixedSignature, startsWithBytes } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
   // ==========================================
@@ -3204,12 +3204,9 @@ export function isFormatCompatibleWithMagicBytes(
     return false;
   }
 
-  // CorelDRAW files are RIFF containers whose form type starts with "CDR" (versions 3 to 9) or ZIP packages (X4 and later).
-  if (cleanExt === 'cdr') {
-    const isRiffCdr = buffer.length >= 12 && Buffer.from(buffer.subarray(0, 4)).toString('latin1') === 'RIFF' && Buffer.from(buffer.subarray(8, 11)).toString('latin1') === 'CDR';
-    const isZipPackage = buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b;
-    return isRiffCdr || isZipPackage;
-  }
+  // The drawings the office suite imports must open with the signature of their own format (CorelDRAW, Visio, EMF, WMF, CGM).
+  const ownSignature = ownSignatureVerdict(cleanExt, buffer);
+  if (ownSignature !== undefined) return ownSignature;
 
   // A format that exists only as a compound file or as a gzip member of XML has no other signature to fall back on.
   if (lacksOwnSignature(cleanExt, sniffed)) return false;

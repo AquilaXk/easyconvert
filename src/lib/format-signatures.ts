@@ -188,6 +188,16 @@ export function id3v2Payload(buf: Uint8Array): 'adts' | 'other' | 'beyond-window
  */
 export const COMPOUND_FILE_ONLY_EXTENSIONS: ReadonlySet<string> = new Set(['sdw', 'sdc', 'sda', 'shw', 'qpw']);
 
+/** How a clear-text CGM starts (ISO 8632-4): the `BEGMF` command, after optional white space. The binary encoding starts with a command header. */
+const CLEAR_TEXT_CGM_PATTERN = /^\s*BEGMF\b/i;
+/** Bytes of a file that decide whether a CGM is clear text: white space, then the command. */
+export const CGM_ENCODING_PROBE_BYTES = 64;
+
+/** Whether the bytes are a clear-text CGM, the one encoding of a format the office suite reads that the in-process parser reads too. */
+export function isClearTextCgm(head: Uint8Array): boolean {
+  return CLEAR_TEXT_CGM_PATTERN.test(Buffer.from(head.subarray(0, CGM_ENCODING_PROBE_BYTES)).toString('latin1'));
+}
+
 /** Container signatures that the registry reads in more than one place. */
 export const CFBF_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 
@@ -236,4 +246,91 @@ export function sniffFixedSignature(buf: Uint8Array): string | undefined {
 export function lacksOwnSignature(ext: string, sniffed: string | undefined): boolean {
   if (isGzippedXmlExtension(ext)) return sniffed !== 'application/gzip';
   return COMPOUND_FILE_ONLY_EXTENSIONS.has(ext) && sniffed === undefined;
+}
+
+/** EMF (MS-EMF 2.2.9): the header record is type 1, and its signature field holds ` EMF` at byte 40. */
+const EMF_HEADER_RECORD_TYPE = 1;
+const EMF_SIGNATURE = 0x464d4520;
+const EMF_SIGNATURE_OFFSET = 40;
+/** WMF (MS-WMF 2.3.2.2, 2.2.2.6): an Aldus placeable header opens the file, or the standard header of 9 words (memory or disk metafile). */
+const WMF_PLACEABLE_KEY = 0x9ac6cdd7;
+const WMF_STANDARD_HEADER_WORDS = 9;
+const WMF_STANDARD_HEADER_BYTES = 18;
+/** Binary CGM (ISO 8632-3): the first command is BEGIN METAFILE, class 0 and id 1, so the 16-bit header is 0x0020 plus a parameter length of up to 31. */
+const CGM_BEGIN_METAFILE_HEADERS = { first: 0x0020, last: 0x003f };
+/** Visio keeps its drawing in a compound-file stream of this name, stored in UTF-16LE in the directory. */
+const VISIO_STREAM_NAME = Buffer.from('VisioDocument', 'utf16le');
+/** CorelDRAW (libcdr `CDRDocument::isSupported`): a RIFF file whose form type starts with CDR, or an X4 and later ZIP package holding one of these entries. */
+const CDR_RIFF_FORM_PREFIXES: ReadonlySet<string> = new Set(['CDR', 'cdr']);
+const CDR_PACKAGE_ENTRIES: ReadonlySet<string> = new Set(['content/riffData.cdr', 'content/root.dat']);
+/** The folders a CorelDRAW package keeps its parts in: the first entry of one that continues past the bytes read. */
+const CDR_PACKAGE_FOLDERS = ['content/', 'metadata/', 'color/'];
+const ZIP_LOCAL_HEADER = 0x04034b50;
+const ZIP_LOCAL_HEADER_BYTES = 30;
+const ZIP_DATA_DESCRIPTOR_FLAG = 0x08;
+
+function isEmf(buf: Uint8Array): boolean {
+  const view = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
+  return view.length > EMF_SIGNATURE_OFFSET + 4 && view.readUInt32LE(0) === EMF_HEADER_RECORD_TYPE && view.readUInt32LE(EMF_SIGNATURE_OFFSET) === EMF_SIGNATURE;
+}
+
+function isWmf(buf: Uint8Array): boolean {
+  const view = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
+  if (view.length >= 4 && view.readUInt32LE(0) === WMF_PLACEABLE_KEY) return true;
+  const type = view.length >= WMF_STANDARD_HEADER_BYTES ? view.readUInt16LE(0) : 0;
+  return (type === 1 || type === 2) && view.readUInt16LE(2) === WMF_STANDARD_HEADER_WORDS;
+}
+
+function isCgm(buf: Uint8Array): boolean {
+  const view = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
+  const header = view.length >= 2 ? view.readUInt16BE(0) : 0;
+  return (header >= CGM_BEGIN_METAFILE_HEADERS.first && header <= CGM_BEGIN_METAFILE_HEADERS.last) || isClearTextCgm(view);
+}
+
+/**
+ * A Visio file is a compound file whose directory names the `VisioDocument` stream. A directory that lies past the bytes read
+ * cannot be searched, so a file that fills the whole header window with no such name is taken on its container signature.
+ */
+function isVisio(buf: Uint8Array): boolean {
+  if (!startsWithBytes(buf, CFBF_MAGIC)) return false;
+  return Buffer.from(buf.buffer, buf.byteOffset, buf.length).includes(VISIO_STREAM_NAME) || buf.length === HEADER_WINDOW_BYTES;
+}
+
+/** The entries a ZIP names in its local file headers, in order, until the bytes end, a header cannot be skipped or the headers end. */
+function zipLocalEntryNames(view: Buffer): { names: string[]; complete: boolean } {
+  const names: string[] = [];
+  let offset = 0;
+  while (offset + ZIP_LOCAL_HEADER_BYTES <= view.length && view.readUInt32LE(offset) === ZIP_LOCAL_HEADER) {
+    const nameLength = view.readUInt16LE(offset + 26);
+    const extraLength = view.readUInt16LE(offset + 28);
+    const storedLength = view.readUInt32LE(offset + 18);
+    if (offset + ZIP_LOCAL_HEADER_BYTES + nameLength > view.length) return { names, complete: false };
+    names.push(view.toString('utf8', offset + ZIP_LOCAL_HEADER_BYTES, offset + ZIP_LOCAL_HEADER_BYTES + nameLength));
+    const sizeKnown = (view.readUInt16LE(offset + 6) & ZIP_DATA_DESCRIPTOR_FLAG) === 0 || storedLength > 0;
+    if (!sizeKnown) return { names, complete: false };
+    offset += ZIP_LOCAL_HEADER_BYTES + nameLength + extraLength + storedLength;
+  }
+  return { names, complete: offset + ZIP_LOCAL_HEADER_BYTES <= view.length };
+}
+
+function isCorelDraw(buf: Uint8Array): boolean {
+  const view = Buffer.from(buf.buffer, buf.byteOffset, buf.length);
+  if (view.length >= 12 && view.toString('latin1', 0, 4) === 'RIFF') return CDR_RIFF_FORM_PREFIXES.has(view.toString('latin1', 8, 11));
+  const { names, complete } = zipLocalEntryNames(view);
+  if (names.some((name) => CDR_PACKAGE_ENTRIES.has(name))) return true;
+  return !complete && names.length > 0 && CDR_PACKAGE_FOLDERS.some((folder) => names[0].startsWith(folder));
+}
+
+/** The sources the office suite imports that open with a signature of their own, so that no other kind of file reaches the suite under their name. */
+const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean>> = {
+  emf: isEmf,
+  wmf: isWmf,
+  cgm: isCgm,
+  vsd: isVisio,
+  cdr: isCorelDraw,
+};
+
+/** Whether the bytes carry the signature of `ext`; undefined for a format whose signature is not checked here. */
+export function ownSignatureVerdict(ext: string, buf: Uint8Array): boolean | undefined {
+  return Object.hasOwn(OWN_SIGNATURE_CHECKS, ext) ? OWN_SIGNATURE_CHECKS[ext](buf) : undefined;
 }

@@ -1,6 +1,7 @@
 import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-nurbs';
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
+import { createPageClipCheck } from './svg-page-clip';
 
 export { parseCssColor, resolvePaint } from './svg-paint';
 export type { RgbColor } from './svg-paint';
@@ -1214,65 +1215,6 @@ function assertNoUnsupportedReferences(attrs: Map<string, string>, clipsNothing?
   }
 }
 
-/**
- * How far a page-sized clip rectangle may fall short of the page on each side, as a share of that side. Office suites
- * clip the page they export to its size rounded to hundredths of a millimetre, so the rectangle misses the page edge
- * by up to a point (measured: 0.13 percent of the width, 0.07 percent of the height); anything that cuts more than the
- * rounding is a real clip.
- */
-const PAGE_CLIP_TOLERANCE = 0.005;
-const CLIP_URL_PATTERN = /^url\(\s*#([^)\s"']+)\s*\)$/;
-const RECTANGLE_CORNERS = 4;
-const CLIP_CORNER_EPSILON = 1e-6;
-
-/** The only child of a plain `<clipPath>` (user-space units, no transform, no clip of its own) when it is a `<rect>` or `<path>` with no transform or clip of its own. */
-function plainClipShape(clip: SvgNode | undefined): SvgNode | null {
-  if (clip === undefined || clip.name !== 'clipPath' || clip.children.length !== 1) return null;
-  const [shape] = clip.children;
-  const hasOwnEffect = (node: SvgNode): boolean => ['transform', 'clip-path', 'clipPathUnits'].some((name) => node.attrs.has(name));
-  if (hasOwnEffect(clip) || hasOwnEffect(shape) || parseStyleDeclarations(shape.attrs.get('style')).has('clip-path')) return null;
-  return shape.name === 'rect' || shape.name === 'path' ? shape : null;
-}
-
-/** The four corners of a closed outline that is exactly one rectangle with sides parallel to the axes, or null. */
-function axisAlignedCorners(points: { x: number; y: number }[]): { x: number; y: number }[] | null {
-  const closed = points.length > 1 && Math.hypot(points[0].x - points[points.length - 1].x, points[0].y - points[points.length - 1].y) < CLIP_CORNER_EPSILON;
-  const corners = closed ? points.slice(0, -1) : points;
-  if (corners.length !== RECTANGLE_CORNERS) return null;
-  const xs = corners.map((p) => p.x);
-  const ys = corners.map((p) => p.y);
-  const [minX, maxX, minY, maxY] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
-  const onBoundsCorner = (p: { x: number; y: number }): boolean =>
-    (Math.abs(p.x - minX) < CLIP_CORNER_EPSILON || Math.abs(p.x - maxX) < CLIP_CORNER_EPSILON) &&
-    (Math.abs(p.y - minY) < CLIP_CORNER_EPSILON || Math.abs(p.y - maxY) < CLIP_CORNER_EPSILON);
-  const distinct = new Set(corners.map((p) => `${p.x > minX + CLIP_CORNER_EPSILON}:${p.y > minY + CLIP_CORNER_EPSILON}`));
-  return corners.every(onBoundsCorner) && distinct.size === RECTANGLE_CORNERS ? corners : null;
-}
-
-/**
- * Whether `clip-path: url(#id)` on an element drawn under `ctm` is one axis-aligned rectangle that covers the whole
- * page (within PAGE_CLIP_TOLERANCE), which clips nothing and is dropped. A smaller rectangle, a rounded one, several
- * shapes, a transformed clip or any other path stay unsupported.
- */
-function clipCoversPage(value: string, ctm: AffineMatrix, state: RenderState): boolean {
-  const reference = CLIP_URL_PATTERN.exec(value);
-  const shape = reference ? plainClipShape(state.ids.get(reference[1])) : null;
-  if (shape === null) return false;
-  const geometry = shapeGeometry(shape.name, shape.attrs);
-  if (geometry === null || geometry.subpaths.length !== 1) return false;
-  const device = axisAlignedCorners(geometry.subpaths[0].map((p) => applyMatrix(ctm, p.x, p.y)));
-  if (device === null) return false;
-  const xs = device.map((p) => p.x);
-  const ys = device.map((p) => p.y);
-  const { width, height } = state.page;
-  return (
-    Math.min(...xs) <= width * PAGE_CLIP_TOLERANCE &&
-    Math.max(...xs) >= width * (1 - PAGE_CLIP_TOLERANCE) &&
-    Math.min(...ys) <= height * PAGE_CLIP_TOLERANCE &&
-    Math.max(...ys) >= height * (1 - PAGE_CLIP_TOLERANCE)
-  );
-}
-
 /** Elements in a foreign (editor) namespace, e.g. sodipodi:namedview, which SVG renderers ignore. */
 function isForeignNamespaceElement(name: string): boolean {
   return name.includes(':');
@@ -1289,8 +1231,8 @@ interface RenderState {
   shapeCache: Map<SvgNode, UserShape | null>;
   sheet: CssRule[];
   depth: number;
-  /** Size of the page in device units, which a clip rectangle must cover to clip nothing. */
-  page: { width: number; height: number };
+  /** Whether a `clip-path` value, on an element drawn under the matrix, is a clip that covers the page and clips nothing. */
+  clipsNothing: (value: string, ctm: AffineMatrix) => boolean;
 }
 
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
@@ -1415,7 +1357,7 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   assertValidPaintDeclarations(declared);
   if (declared.get('display') === 'none') return;
   const ctx = deriveContext(parent, node.attrs, declared);
-  assertNoUnsupportedReferences(node.attrs, (value) => clipCoversPage(value, ctx.ctm, state));
+  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm));
   if (kind === 'shape') {
     emitShape(node, ctx, state);
   } else if (kind === 'use') {
@@ -1447,7 +1389,10 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
   assertValidPaintDeclarations(declared);
   assertNoUnsupportedReferences(root.attrs);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
-  const state: RenderState = { elements: [], ids: new Map(), useChain: [], renderedNodes: 0, vertices: new VertexBudget(), shapeCache: new Map(), sheet, depth: 0, page: { width: viewport.width, height: viewport.height } };
+  const ids = new Map<string, SvgNode>();
+  const vertices = new VertexBudget();
+  const clipsNothing = createPageClipCheck(ids, viewport, (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null);
+  const state: RenderState = { elements: [], ids, useChain: [], renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, clipsNothing };
   indexIds(root, state.ids);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };

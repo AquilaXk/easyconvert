@@ -417,12 +417,12 @@ describe.skipIf(toolsMissing || calibreMissing)('e-book outputs of the formats t
 });
 
 /** The drawings and metafiles are converted from real files by tests/vector-sources-real-samples.test.ts, which checks its own coverage of the registry. */
-const DRAWING_FORMATS_OF_OTHER_SUITE: ReadonlySet<string> = new Set(['vsd', 'cdr', 'emf', 'wmf', 'cgm']);
+const DRAWING_FORMATS_OF_OTHER_TEST_FILE: ReadonlySet<string> = new Set(['vsd', 'cdr', 'emf', 'wmf', 'cgm']);
 
 describe('the conversions of the real files cover the registry', () => {
   const sampleTargets = (extension: string): Set<string> => new Set(SAMPLES.filter((sample) => sample.extension === extension).flatMap((sample) => sample.targets));
 
-  it.each(OFFICE_SUITE_SOURCE_FORMATS.filter((format) => isOfficeSuiteOnlySource(format) && !DRAWING_FORMATS_OF_OTHER_SUITE.has(format)))(
+  it.each(OFFICE_SUITE_SOURCE_FORMATS.filter((format) => isOfficeSuiteOnlySource(format) && !DRAWING_FORMATS_OF_OTHER_TEST_FILE.has(format)))(
     'every target the registry advertises for .%s has a conversion of a real file above',
     (extension) => {
       const advertised = getFormatByExtension(extension)?.targetFormats ?? [];
