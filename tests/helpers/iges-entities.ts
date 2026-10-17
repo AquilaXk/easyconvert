@@ -53,3 +53,36 @@ function globalParameters(text: string): string[] {
 export function igesLengthUnitFlag(text: string): number {
   return Number(globalParameters(text)[IGES_UNIT_FLAG_PARAMETER - 1]);
 }
+
+/** The records of the Parameter Data section, joined without their section columns. */
+function parameterData(text: string): string {
+  return recordsOf(text, 'P')
+    .map((record) => record.slice(0, 64))
+    .join('');
+}
+
+/**
+ * The control points of the first Rational B-Spline Surface (entity 128) of the Parameter Data section, in the numbers of the file
+ * (before any unit is applied): parameters 2 to 10 are the degrees and flags, then the knots, the weights and the points (IGES 5.3, 4.23).
+ */
+export function igesFirstSurfaceControlPoints(text: string): Array<[number, number, number]> {
+  const entity = parameterData(text)
+    .split(';')
+    .map((data) => data.trim())
+    .find((data) => data.startsWith('128,'));
+  if (entity === undefined) throw new Error('the IGES file has no Rational B-Spline Surface (entity 128)');
+  const numbers = entity.split(',').map((token) => Number(token.trim().replace('D', 'E')));
+  const [k1, k2, m1, m2] = numbers.slice(1, 5);
+  const knots = k1 + m1 + 2 + (k2 + m2 + 2);
+  const weights = (k1 + 1) * (k2 + 1);
+  const first = 10 + knots + weights;
+  const points: Array<[number, number, number]> = [];
+  for (let i = 0; i < weights; i++) points.push([numbers[first + 3 * i], numbers[first + 3 * i + 1], numbers[first + 3 * i + 2]]);
+  return points;
+}
+
+/** The unit name the Global section spells out as a Hollerith string right after the unit flag: `2HMM`, or null. */
+export function igesDeclaredUnitName(text: string): string | null {
+  const match = /,(\d+),(\d+)H([^,;]+),/.exec(recordsOf(text, 'G').join(''));
+  return match === null ? null : match[3].slice(0, Number(match[2]));
+}

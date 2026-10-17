@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { haveCadOracles } from './helpers/cad-kernel';
-import { igesEntityCounts, igesLengthUnitFlag } from './helpers/iges-entities';
+import { igesDeclaredUnitName, igesEntityCounts, igesFirstSurfaceControlPoints, igesLengthUnitFlag } from './helpers/iges-entities';
 import { meshFacts } from './helpers/mesh-facts';
 import { oracleFacts, type OracleMesh } from './helpers/occt-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -29,7 +29,6 @@ const SAMPLES = [
   'occt-screw.step',
   'pyocc-example_45_faces.iges',
   'pyocc-sunglasses_lens.igs',
-  'pyocc-testfile.igs',
   'pyocc-as1-oc-214.step',
   'pyocc-as1_pe_203.stp',
   'pyocc-eight_cyl.stp',
@@ -49,6 +48,17 @@ function expectBox(actual: { min: readonly number[]; max: readonly number[] }, t
     expect(Math.abs(actual.min[axis] - truth.min[axis]), `min[${axis}]`).toBeLessThanOrEqual(diagonal * BOX_TOLERANCE);
     expect(Math.abs(actual.max[axis] - truth.max[axis]), `max[${axis}]`).toBeLessThanOrEqual(diagonal * BOX_TOLERANCE);
   }
+}
+
+/**
+ * A closed solid must have one winding all over its surface and a positive volume: a face the mesher turned the wrong way (the
+ * reversed faces of the model, which the writer must swap back) makes trimesh report an inconsistent winding or a smaller or negative volume.
+ * Open surface models are left out, because the faces of an IGES surface model come in the orientations the file gives them.
+ */
+function expectOutwardWhenClosed(facts: { watertight: boolean; windingConsistent: boolean; volume: number }): void {
+  if (!facts.watertight) return;
+  expect(facts.windingConsistent).toBe(true);
+  expect(facts.volume).toBeGreaterThan(0);
 }
 
 function expectArea(actual: number, truth: number): void {
@@ -83,6 +93,7 @@ describe.skipIf(!haveTools)('STEP and IGES samples through cad-convert', () => {
         expect(facts.triangles).toBe(buffer.readUInt32LE(80));
         expectArea(facts.area, expected.area);
         expectBox(facts, expected);
+        expectOutwardWhenClosed(facts);
       });
 
       it('writes an OBJ in millimetres with shared vertices whose area and box match the independent mesher', { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
@@ -93,6 +104,7 @@ describe.skipIf(!haveTools)('STEP and IGES samples through cad-convert', () => {
         const facts = meshFacts(buffer, 'obj');
         expectArea(facts.area, expected.area);
         expectBox(facts, expected);
+        expectOutwardWhenClosed(facts);
         expect(facts.unmergedVertices).toBeLessThan(facts.triangles * 3);
       });
 
@@ -150,6 +162,7 @@ describe.skipIf(!haveTools)('the red cube and blue cylinder', () => {
   const CYLINDER_AREA = 2 * Math.PI * 5 * 10 + 2 * Math.PI * 5 * 5;
   const EXPECTED_AREA = CUBE_AREA + CYLINDER_AREA;
   const FILE_BOX = { min: [-10, 0, 0], max: [15, 10, 10] };
+  const EXPECTED_VOLUME = 10 ** 3 + Math.PI * 5 ** 2 * 10;
 
   it('keeps the cylinder and writes millimetres to STL', { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, ID);
@@ -163,6 +176,10 @@ describe.skipIf(!haveTools)('the red cube and blue cylinder', () => {
       expect(facts.max[axis]).toBeCloseTo(FILE_BOX.max[axis], 3);
     }
     expect(facts.watertight).toBe(true);
+    expect(facts.windingConsistent).toBe(true);
+    // The cube (10^3) and the cylinder (pi 5^2 x 10) of the file, as the signed volume of the triangles: the cylinder is inscribed, so
+    // a little less than exact, and any face turned inside out would take its own volume away twice.
+    expect(Math.abs(facts.volume / EXPECTED_VOLUME - 1)).toBeLessThan(0.003);
   });
 
   it('keeps both parts with their names and colours in STEP', { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
@@ -295,10 +312,26 @@ describe.skipIf(!haveTools)('files the kernel cannot use', () => {
   });
 });
 
-describe.skipIf(!haveTools)('known follow-up', () => {
-  // Rhino wrote this file with a wrong Hollerith count in its Global section (38 for the 32 characters of the file name), so the
-  // kernel reads the following fields one place late and takes the model for inches: it is 25.4 times too large in every output,
-  // and so in the independent reader, which is why the tests above agree with it. A repair of the Global section by the
-  // specification, not by the file's name, is the follow-up (#783 checklist row).
-  it.todo('pyocc-testfile.igs is read at its real size once the Global section count is repaired');
+describe.skipIf(!haveTools)('known defect: pyocc-testfile.igs', () => {
+  // Rhino wrote this file with a wrong Hollerith count in its Global section (38 for the 32 characters of the file name), so the kernel
+  // reads every following parameter one place late, takes the unit for inches and makes the model 25.4 times too large in every output
+  // (and in the independent reader, which is the same kernel). The facts below do not come from the kernel: the Global section spells
+  // the unit `2HMM`, and the control points of the file's one surface are in its parameter data. A repair of the Global section by the
+  // specification (not by the file name) makes the ratio 1: this test then fails, and the expected ratio becomes 1 (issue #783 checklist row).
+  const ID = 'pyocc-testfile.igs';
+  const KERNEL_SCALE_OF_THE_DEFECT = 25.4;
+
+  it('still reads the file at 25.4 times the size its own control points and unit name give', { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, ID);
+    const text = bytes.toString('latin1');
+    expect(igesDeclaredUnitName(text)).toBe('MM');
+    const points = igesFirstSurfaceControlPoints(text);
+    const extentOfFile = [0, 1].map((axis) => Math.max(...points.map((p) => p[axis])) - Math.min(...points.map((p) => p[axis])));
+
+    const { buffer } = await convertVectorCad(bytes, 'igs', 'stl', {}, ID);
+    const facts = meshFacts(buffer, 'stl');
+    const extentOfOutput = [0, 1].map((axis) => facts.max[axis] - facts.min[axis]);
+    expect(extentOfOutput[0] / extentOfFile[0]).toBeCloseTo(KERNEL_SCALE_OF_THE_DEFECT, 3);
+    expect(extentOfOutput[1] / extentOfFile[1]).toBeCloseTo(KERNEL_SCALE_OF_THE_DEFECT, 3);
+  });
 });

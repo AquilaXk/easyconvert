@@ -13,6 +13,10 @@ export interface FileMeshFacts {
   min: number[];
   max: number[];
   watertight: boolean;
+  /** Whether every shared edge is walked in opposite directions by its two triangles. */
+  windingConsistent: boolean;
+  /** Signed volume: positive when the triangles face outward, negative when they are turned inside out. */
+  volume: number;
   unmergedVertices: number;
 }
 
