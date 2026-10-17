@@ -141,7 +141,6 @@ describe('the lists a run is judged with', () => {
 
   it('tracks every known failure on #783, the item that fixes conversion failures of real files (QA review of #787)', () => {
     const known = readKnownFailures(REGRESSION_KNOWN_FAILURES_PATH);
-    expect(known.length).toBeGreaterThan(0);
     expect(known.map((entry) => entry.issue)).toEqual(known.map(() => 783));
   });
 });

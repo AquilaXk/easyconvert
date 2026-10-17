@@ -13,6 +13,8 @@ import {
 } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
 import { startsWithBytes } from '../lib/conversions/package-access';
+import { SPREADSHEET_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
+import { selectsPages } from './poppler-ppm';
 import { SandboxedProcessError, rethrowSandboxUnavailable } from './sandbox';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 
@@ -62,6 +64,25 @@ export function officeSuiteWritesTarget(src: string, tgt: string): boolean {
 export function interchangeNeeded(src: string, tgt: string, madeWithoutInterchange: boolean): string | undefined {
   if (officeSuiteWritesTarget(src, tgt) || madeWithoutInterchange) return undefined;
   return officeSuiteInterchange(src, tgt);
+}
+
+/** First page of the printed document, in the PDF export's page range syntax. */
+const FIRST_PAGE_RANGE = '1';
+
+/**
+ * The options of a spreadsheet that becomes page images (the office suite writes the PDF, Poppler draws the pages): a request
+ * renders at most `SPREADSHEET_IMAGE_MAX_PAGES` pages, and the one that asks for the first page (`multiPageOutput: "first"`,
+ * no page selection) has the suite print that page only, which skips the layout and the PDF of every other page. Both limits are
+ * set here, over whatever the request carried. Other sources are returned as they are.
+ */
+export function withSpreadsheetPageBounds(src: string, options: WorkerEngineOptions): WorkerEngineOptions {
+  if (officeSuiteApplication(src) !== 'calc') return options;
+  const firstPageOnly = options.multiPageOutput === 'first' && !selectsPages(options);
+  return {
+    ...options,
+    maxRenderedPages: SPREADSHEET_IMAGE_MAX_PAGES,
+    pdfExportPageRange: firstPageOnly ? FIRST_PAGE_RANGE : undefined,
+  };
 }
 
 /** LibreOffice's stderr when it wrote nothing for a file. */

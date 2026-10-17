@@ -205,6 +205,11 @@ describe('verdicts and gate', () => {
       detail: crashDetail('SandboxedProcessError', stderr, exit),
     });
     const tracked = 'office-document-wordwithattachments.docx';
+    // The entries the list held for this file until its crash was fixed (#783), kept here as the example of the exit-status match.
+    const entry = (pair: string) => ({ pair, verdict: 'crash', detail: '^SandboxedProcessError \\((exit 139|signal SIGSEGV)\\): Warning: failed to launch javaldx', file: tracked, issue: 760 });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-known-'));
+    const listFile = path.join(dir, 'known-failures.json');
+    fs.writeFileSync(listFile, JSON.stringify([entry('docx->jpg'), entry('docx->png')]));
     const jobs = [
       job('jpg', tracked, 'exit 139'),
       job('png', tracked, 'signal SIGSEGV'),
@@ -212,7 +217,9 @@ describe('verdicts and gate', () => {
       job('png', tracked, 'signal SIGKILL'),
       job('jpg', 'another.docx', 'exit 139'),
     ];
-    const gate = evaluate(jobs, null, readKnownFailures());
+    const known = readKnownFailures(listFile);
+    fs.rmSync(dir, { recursive: true, force: true });
+    const gate = evaluate(jobs, null, known);
     expect(gate.known.map((k) => [k.job.target, k.job.detail?.slice(0, 40), k.issue])).toEqual([
       ['jpg', 'SandboxedProcessError (exit 139): Warnin', 760],
       ['png', 'SandboxedProcessError (signal SIGSEGV): ', 760],

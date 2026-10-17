@@ -1,19 +1,5 @@
 [
   {
-    "pair": "docx->jpg",
-    "verdict": "crash",
-    "detail": "^SandboxedProcessError \\((exit 139|signal SIGSEGV)\\): Warning: failed to launch javaldx",
-    "file": "office-document-wordwithattachments.docx",
-    "issue": 760
-  },
-  {
-    "pair": "docx->png",
-    "verdict": "crash",
-    "detail": "^SandboxedProcessError \\((exit 139|signal SIGSEGV)\\): Warning: failed to launch javaldx",
-    "file": "office-document-wordwithattachments.docx",
-    "issue": 760
-  },
-  {
     "pair": "*",
     "verdict": "crash",
     "detail": "^Error: Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font",

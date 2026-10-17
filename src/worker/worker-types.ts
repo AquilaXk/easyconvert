@@ -23,6 +23,16 @@ export interface WorkerEngineOptions extends ConversionOptions {
    * UnsupportedTargetError when no native route handles the pair at all.
    */
   inProcessFallback?: boolean;
+  /**
+   * Pages of the printed document the office suite writes into the PDF of a chain (its range syntax, `1`). Set by the worker
+   * for a spreadsheet that becomes the first page image; the request schema has no such field.
+   */
+  pdfExportPageRange?: string;
+  /**
+   * Most pages the worker renders to page images for this request; a larger selection is refused (413). Set by the worker for
+   * the sources whose page count a request cannot predict; the request schema has no such field.
+   */
+  maxRenderedPages?: number;
 }
 
 export interface WorkerConversionResult extends ConversionResult {
