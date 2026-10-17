@@ -102,9 +102,11 @@ select_tasks() {
 # Python format oracles (columnar readers, PDF text extraction, Word, Excel, EPUB, OLE2 and DXF readers, mesh measurement): the tests run python3 -I, which ignores user
 # site-packages, so the pinned packages go to the system interpreter.
 # --ignore-installed: the image ships an older distro PyMuPDF that pip cannot uninstall. Test-only; nothing ships.
+# scipy is pinned with trimesh: the distro scipy (built for NumPy 1) is also on the image, and with the NumPy 2 that pip installs here it
+# makes `import trimesh` fail with a binary-incompatibility error, so pip's own scipy has to shadow it.
 task_pip() {
   sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2 \
-    python-docx==1.2.0 openpyxl==3.1.5 ebooklib==0.20 olefile==0.47 xlrd==2.0.2 ezdxf==1.4.4 trimesh==5.1.1
+    python-docx==1.2.0 openpyxl==3.1.5 ebooklib==0.20 olefile==0.47 xlrd==2.0.2 ezdxf==1.4.4 trimesh==5.1.1 scipy==1.18.1
 }
 
 task_apt() {

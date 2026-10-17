@@ -216,6 +216,8 @@ describe('the committed package list and scripts', () => {
   it('verifies cad-convert and the trimesh import by name after all parts are done, so a missing one fails the setup with its own message', () => {
     const tools = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
     const verify = tools.slice(tools.indexOf('verify_cad_tools() {'), tools.indexOf('main() {'));
+    // trimesh imports the distro scipy that sits on the image, which fails against the NumPy 2 of pip: pip's scipy is installed with it.
+    expect(tools.slice(tools.indexOf('task_pip() {'), tools.indexOf('task_apt() {'))).toMatch(/trimesh==5\.1\.1 scipy==\d+\.\d+\.\d+/);
     expect(verify).toContain('command -v cad-convert');
     expect(verify).toContain("::error::cad-convert is not on the PATH");
     expect(verify).toContain("'usage: cad-convert'");
