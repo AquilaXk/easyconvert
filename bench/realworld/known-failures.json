@@ -14,27 +14,6 @@
     "issue": 760
   },
   {
-    "pair": "*",
-    "verdict": "crash",
-    "detail": "^Error: Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font",
-    "file": "ft-testt1-regular.pfa",
-    "issue": 783
-  },
-  {
-    "pair": "*",
-    "verdict": "crash",
-    "detail": "^Error: Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font",
-    "file": "ft-testt1-ellipsis-hinted.pfa",
-    "issue": 783
-  },
-  {
-    "pair": "*",
-    "verdict": "crash",
-    "detail": "^Error: Unsupported or corrupted font format: input is not a valid SFNT/WOFF/WOFF2/EOT/SVG font",
-    "file": "ft-testt1-regular.pfb",
-    "issue": 783
-  },
-  {
     "pair": "wav->aac",
     "verdict": "bad-output",
     "detail": "^empty output$",
