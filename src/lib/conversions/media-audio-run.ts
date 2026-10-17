@@ -34,7 +34,7 @@ export async function measureLoudnessStage(input: LoudnessPassInput): Promise<Lo
   const args = buildLoudnessMeasureArguments(input.inputPath, input.src, input.tgt, input.options, input.ffmpegBin);
   const { stderr } = await input.run(args);
   const track = typeof input.options.audio.track === 'number' ? input.options.audio.track : 0;
-  const sampleRate = probeAudioSampleRate(input.inputPath, resolveFfprobeBinary(input.ffmpegBin), track);
+  const sampleRate = probeAudioSampleRate(input.inputPath, resolveFfprobeBinary(input.ffmpegBin), track, input.options);
   return { kind: 'apply', measurement: parseLoudnormMeasurement(stderr.toString('utf-8'), sampleRate) };
 }
 

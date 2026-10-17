@@ -35,6 +35,7 @@ import {
   resolveFfprobeBinary,
   probeVideoGeometry,
   VideoGeometry,
+  type ProbeJob,
 } from './media-ffprobe';
 import { DEFAULT_TONE_MAP, TONE_MAP_MODES } from './hdr-tonemap';
 import { softwareEncoderThreads } from './media-encoder-threads';
@@ -388,7 +389,7 @@ function resolveOutputDuration(options: ConversionOptions, inputPath: string, ff
     throw new InvalidMediaOptionError(`Invalid duration ${String(duration)}. Must be more than 0 and at most ${MAX_OUTPUT_DURATION_SEC} seconds.`);
   }
   if (fs.existsSync(inputPath)) {
-    const sourceDuration = probeInputDuration(inputPath, resolveFfprobeBinary(ffmpegBin));
+    const sourceDuration = probeInputDuration(inputPath, resolveFfprobeBinary(ffmpegBin), options);
     if (duration > sourceDuration + DURATION_EPSILON_SEC) {
       throw new InvalidMediaOptionError(`Invalid duration ${duration}: the input lasts ${sourceDuration.toFixed(3)} seconds.`);
     }
@@ -642,7 +643,7 @@ function channelsToWrite(options: ConversionOptions, inputPath: string, ffmpegBi
   const requested = requestedChannelCount(options);
   if (requested !== undefined || !fs.existsSync(inputPath)) return requested;
   const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
-  return probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin), track);
+  return probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin), track, options);
 }
 
 function assertMaxChannels(
@@ -697,7 +698,7 @@ function audioOnlyStreamArgs(
     throw new InvalidMediaOptionError('Audio track index must be a non-negative integer.');
   }
   if (fs.existsSync(inputPath)) {
-    const available = probeAudioStreamCount(inputPath, resolveFfprobeBinary(ffmpegBin));
+    const available = probeAudioStreamCount(inputPath, resolveFfprobeBinary(ffmpegBin), options);
     if (available === 0) {
       throw new NoAudioStreamError(`The input has no audio stream, so it cannot be converted to '${tgt}'.`);
     }
@@ -906,7 +907,7 @@ export function buildFfmpegArguments(
   // A missing input file (argument-only callers) keeps the earlier selection rules.
   const inputLayout =
     !audioSpec && isVideo && fs.existsSync(inputPath)
-      ? probeStreamLayout(inputPath, resolveFfprobeBinary(ffmpegBin))
+      ? probeStreamLayout(inputPath, resolveFfprobeBinary(ffmpegBin), options)
       : undefined;
   const inputStreams = inputLayout?.streams;
   const burnRequested = options.subtitles?.mode === 'burn';
@@ -1100,7 +1101,7 @@ export function buildFfmpegArguments(
           );
         }
         assertZscaleAvailable(ffmpegBin);
-        hdrToSdr = planVideoToneMap(transfer, toneMapMode, probeVideoMaxLightLevel(inputPath, resolveFfprobeBinary(ffmpegBin)));
+        hdrToSdr = planVideoToneMap(transfer, toneMapMode, probeVideoMaxLightLevel(inputPath, resolveFfprobeBinary(ffmpegBin), options));
       }
     }
 
@@ -1448,7 +1449,7 @@ export function buildFfmpegArguments(
     const is71 =
       options.audio.channels === 8 ||
       options.audioChannels === '7.1' ||
-      (fs.existsSync(inputPath) && probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin)) === 8);
+      (fs.existsSync(inputPath) && probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin), 0, options) === 8);
     if (is71) {
       audioFilters.push('pan=stereo|FL=0.3204*FL+0.2265*FC+0.2265*BL+0.2265*SL|FR=0.3204*FR+0.2265*FC+0.2265*BR+0.2265*SR');
     } else {
@@ -1479,7 +1480,7 @@ export function buildFfmpegArguments(
     // The caller set no rate: an input the encoder codes natively keeps its rate (a forced rate makes libopus
     // code a band the signal does not have), and one it cannot code is brought into its supported set.
     const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
-    const resampleRate = resampleRateFor(audioSpec, probeAudioSampleRate(inputPath, resolveFfprobeBinary(ffmpegBin), track));
+    const resampleRate = resampleRateFor(audioSpec, probeAudioSampleRate(inputPath, resolveFfprobeBinary(ffmpegBin), track, options));
     if (resampleRate !== undefined) {
       audioFormatArgs.push('-ar', String(resampleRate));
     }
@@ -1600,11 +1601,11 @@ export interface PackagingSource {
 }
 
 /** Probes the first video stream (exact frame rate, displayed size, duration) and whether the input has audio. */
-export function probePackagingSource(inputPath: string, ffmpegBin?: string | null): PackagingSource {
+export function probePackagingSource(inputPath: string, ffmpegBin?: string | null, job?: ProbeJob): PackagingSource {
   const ffprobe = resolveFfprobeBinary(ffmpegBin);
   return {
-    geometry: probeVideoGeometry(inputPath, ffprobe),
-    hasAudio: probeAudioChannels(inputPath, ffprobe) > 0,
+    geometry: probeVideoGeometry(inputPath, ffprobe, job),
+    hasAudio: probeAudioChannels(inputPath, ffprobe, 0, job) > 0,
   };
 }
 
