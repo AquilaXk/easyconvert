@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import JSZip from 'jszip';
 import { FORMAT_REGISTRY, isFormatCompatibleWithMagicBytes } from '../src/lib/registry';
 
 /**
@@ -78,8 +79,10 @@ describe('CorelDRAW files', () => {
     expect(isFormatCompatibleWithMagicBytes(riff(formType), 'cdr')).toBe(true);
   });
 
-  it('a ZIP package (CorelDRAW X4 and later) passes', () => {
-    expect(isFormatCompatibleWithMagicBytes(Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0]), 'cdr')).toBe(true);
+  it.each([['content/riffData.cdr'], ['content/root.dat']])('a ZIP package (CorelDRAW X4 and later) whose entries include %s passes', async (entry) => {
+    const zip = new JSZip();
+    zip.file(entry, Buffer.from([1, 2, 3]));
+    expect(isFormatCompatibleWithMagicBytes(await zip.generateAsync({ type: 'nodebuffer' }), 'cdr')).toBe(true);
   });
 
   it.each([
@@ -99,7 +102,8 @@ describe('CorelDRAW files', () => {
 const ZIP_PACKAGE_EXTENSIONS = [
   'docm', 'xlsm', 'pptm', 'ppsx', 'ott', 'ots', 'otp', 'sxw', 'sxi', 'sxd', 'xps', 'oxps', 'pages', 'numbers', 'ibooks', 'war', 'ear', 'et',
 ];
-const COMPOUND_FILE_EXTENSIONS = ['dot', 'xlt', 'pot', 'pps', 'msg', 'vsd', 'pub', 'et', 'wps', 'dps'];
+// A Visio file (.vsd) is a compound file too, but its directory must name the VisioDocument stream: tests/office-source-signatures.test.ts.
+const COMPOUND_FILE_EXTENSIONS = ['dot', 'xlt', 'pot', 'pps', 'msg', 'pub', 'et', 'wps', 'dps'];
 const ZIP_HEADER = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 const COMPOUND_FILE_HEADER = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(16)]);
 const RAR_HEADER = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00, 0, 0, 0, 0, 0]);

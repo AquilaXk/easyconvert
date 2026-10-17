@@ -6,6 +6,7 @@ import {
   asUnreadableDocument,
   convertThroughInterchange,
   interchangeNeeded,
+  officeSuiteReadsInput,
   officeSuiteWritesTarget,
   retryRefusedLegacyDocument,
   type OfficeSuiteRequest,
@@ -245,6 +246,13 @@ describe('which targets the office suite writes in one pass', () => {
     ['sxi', 'docx', false],
     ['sxd', 'pdf', true],
     ['sxd', 'odp', false],
+    ['vsd', 'pdf', true],
+    ['vsd', 'svg', false],
+    ['cdr', 'pdf', true],
+    ['cdr', 'png', false],
+    ['emf', 'pdf', true],
+    ['emf', 'wmf', false],
+    ['cgm', 'pdf', true],
     ['pub', 'txt', false],
     ['lrf', 'rtf', true],
     ['dot', 'docx', true],
@@ -269,9 +277,44 @@ describe('which targets the office suite writes in one pass', () => {
     ['lrf', 'epub', false, 'docx'],
     ['numbers', 'csv', false, 'xlsx'],
     ['pub', 'html', false, undefined],
+    ['vsd', 'svg', true, undefined],
+    ['cdr', 'eps', true, undefined],
+    ['emf', 'jpg', true, undefined],
+    ['cgm', 'wmf', true, undefined],
     ['pdf', 'html', false, undefined],
   ])('.%s to .%s with page target %s goes through %s', (source, target, pageTarget, interchange) => {
     expect(interchangeNeeded(source, target, pageTarget)).toBe(interchange);
+  });
+});
+
+describe('which inputs the office suite reads', () => {
+  const BINARY_CGM = Buffer.from([0x00, 0x34, 0x13, 0x43, 0x49, 0x52, 0x43, 0x4c, 0x45]);
+
+  it.each([
+    ['vsd', Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), true],
+    ['emf', Buffer.alloc(88), true],
+    ['docx', Buffer.from('PK'), true],
+    ['pdf', Buffer.from('%PDF-1.7'), false],
+    ['cgm', BINARY_CGM, true],
+    ['cgm', Buffer.from('BEGMF "drawing";\n'), false],
+    ['cgm', Buffer.from('\n  begmf "drawing";\n'), false],
+    ['cgm', Buffer.from('BEGMFX is no command'), true],
+  ])('.%s that starts %j: %s', (source, head, reads) => {
+    expect(officeSuiteReadsInput(source, head)).toBe(reads);
+  });
+
+  it('reads the start of a file that is not in memory', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'office-reads-'));
+    try {
+      const clearText = path.join(dir, 'clear.cgm');
+      const binary = path.join(dir, 'binary.cgm');
+      fs.writeFileSync(clearText, 'BEGMF "drawing";\nENDMF;\n');
+      fs.writeFileSync(binary, BINARY_CGM);
+      expect(officeSuiteReadsInput('cgm', { inputPath: clearText })).toBe(false);
+      expect(officeSuiteReadsInput('cgm', { inputPath: binary })).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -313,6 +356,11 @@ describe('the export filter of the office suite for each source', () => {
     ['otp', 'impress_pdf_Export'],
     ['pub', 'draw_pdf_Export'],
     ['sxd', 'draw_pdf_Export'],
+    ['vsd', 'draw_pdf_Export'],
+    ['cdr', 'draw_pdf_Export'],
+    ['emf', 'draw_pdf_Export'],
+    ['wmf', 'draw_pdf_Export'],
+    ['cgm', 'impress_pdf_Export'],
     ['xlsx', 'calc_pdf_Export'],
     ['pptx', 'impress_pdf_Export'],
     ['odg', 'draw_pdf_Export'],

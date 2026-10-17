@@ -752,7 +752,9 @@ function isTranscoderPair(category: string, target: string): boolean {
 
 // Besides the font pairs, the list holds every pair of the four archive sources that no engine reads (ace, alz, arc, rz):
 // the registry advertises them, the converter refuses them with a typed error instead of wrapping the file, and no tool of
-// the CI image can write a sample to prove a route. A reader for one of them removes its pairs from the list.
+// the CI image can write a sample to prove a route. The drawing sources dwf, sk and sk1 are listed for the same reason:
+// no reader of them is included in the worker, so each one is refused with its typed reason. A reader for one of these
+// sources removes its pairs from the list.
 const INCONCLUSIVE_ALLOWLIST: readonly string[] = JSON.parse(
   readFileSync(path.resolve(__dirname, 'registry-engine-conformance.inconclusive.json'), 'utf-8')
 );
@@ -943,8 +945,8 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     cbr: ['azw3', 'cbz', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     cbt: ['cbz'],
     cbz: ['azw3', 'cbr', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf', 'txt'],
-    cdr: ['emf', 'wmf'],
-    cgm: ['dxf', 'emf', 'eps', 'pdf', 'png', 'ps', 'svg', 'wmf'],
+    cdr: ['dxf', 'emf', 'wmf'],
+    cgm: ['dxf', 'emf', 'wmf'],
     chm: ['azw3', 'epub', 'html', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     csv: ['jpg', 'png'],
     dbf: ['json', 'tsv'],
@@ -960,7 +962,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     dwf: ['cgm', 'dwg', 'wmf'],
     dwg: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
     dxf: ['bmp', 'cgm', 'dwg', 'eps', 'gif', 'tiff', 'wmf'],
-    emf: ['avif', 'bmp', 'dxf', 'emf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp', 'wmf'],
+    emf: ['avif', 'bmp', 'dxf', 'emf', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp', 'wmf'],
     eps: ['emf', 'ico', 'odd', 'psd', 'wmf'],
     fb2: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'rtf'],
     fods: ['json'],
@@ -1006,11 +1008,10 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     tif: ['svg'],
     tiff: ['svg'],
     txt: ['doc', 'jpg', 'png', 'rtf', 'tex'],
-    vsd: ['emf', 'wmf'],
     webp: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'svg', 'wav', 'wma'],
     wk1: ['tsv'],
     wks: ['tsv'],
-    wmf: ['dxf', 'emf', 'eps', 'pdf', 'png', 'ps', 'svg', 'wmf'],
+    wmf: ['dxf', 'emf', 'wmf'],
     wpd: ['doc', 'jpg', 'png', 'rtf'],
     wps: ['doc', 'jpg', 'png', 'rtf'],
     xls: ['xps'],

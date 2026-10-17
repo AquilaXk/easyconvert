@@ -2268,7 +2268,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1848
+    "maxValue": 1678
   },
   {
     "file": "src/lib/conversions/text-shaping/paragraph-layout.ts",
@@ -2914,7 +2914,7 @@
     "rule": "complexity",
     "function": "isFormatCompatibleWithMagicBytes",
     "count": 1,
-    "maxValue": 91
+    "maxValue": 86
   },
   {
     "file": "src/lib/registry.ts",
@@ -2928,7 +2928,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3341
+    "maxValue": 3338
   },
   {
     "file": "src/lib/security/memory-shredder.ts",

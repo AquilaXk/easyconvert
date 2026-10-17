@@ -28,14 +28,14 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/stora
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
-import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteWritesTarget, retryRefusedLegacyDocument, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
-import { encodeSvgPageToDxf } from '../lib/conversions/vector-dxf';
+import { isSvgPageTarget, svgPageEncoder } from './svg-page-encoders';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { decodeHtmlInput } from '../lib/conversions/html-encoding';
 import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
@@ -1584,7 +1584,6 @@ const ENCODED_RASTER_TARGETS: ReadonlySet<string> = new Set(['avif', 'bmp', 'gif
 /** PostScript targets: Poppler's pdftops writes them from the PDF. */
 const POSTSCRIPT_TARGETS: ReadonlySet<string> = new Set(['eps', 'ps']);
 const EPS_TARGET = 'eps';
-const DXF_TARGET = 'dxf';
 const PNG_FORMAT = 'png';
 const SVG_FORMAT = 'svg';
 /** Poppler tools: default and ceiling for the run time, and for the bytes read from a tool's output pipes. */
@@ -1595,14 +1594,14 @@ const POPPLER_MAX_BUFFER_BYTES = 500 * 1024 * 1024;
 /** Pages one request may re-encode: the page images are already rendered, the encoders then run once per page. */
 const CHAINED_PAGE_ENCODE_MAX_PAGES = 500;
 
-/** Every target a PDF turns into with native tools: Poppler images and SVG, the encoded rasters, PostScript and DXF. */
+/** Every target a PDF turns into with native tools: Poppler images and SVG, the encoded rasters, PostScript, DXF and the metafiles. */
 function isPdfChainTarget(tgt: string): boolean {
   return (
     POPPLER_IMAGE_FORMATS.has(tgt) ||
     tgt === SVG_FORMAT ||
     ENCODED_RASTER_TARGETS.has(tgt) ||
     POSTSCRIPT_TARGETS.has(tgt) ||
-    tgt === DXF_TARGET
+    isSvgPageTarget(tgt)
   );
 }
 
@@ -1695,16 +1694,17 @@ async function convertPdfToEncodedRaster(
   );
 }
 
-/** PDF pages to DXF: pdftocairo draws each page as SVG geometry and the DXF writer turns the geometry into entities. */
-async function convertPdfToDxf(
+/** PDF pages to DXF, EMF or WMF: pdftocairo draws each page as SVG geometry and the writer of the target (`svg-page-encoders.ts`) turns the geometry into the format. */
+async function convertPdfToSvgPageFormat(
   input: Buffer | WorkerVfsPayload,
+  tgt: string,
   options: WorkerEngineOptions,
   originalFilename: string,
   context: ChainOutputContext
 ): Promise<WorkerConversionResult | null> {
   const rendered = await convertWithNativePoppler(input, 'pdf', SVG_FORMAT, intermediateOptions(options), originalFilename);
   if (!rendered) return null;
-  return reencodeRenderedPages(rendered, SVG_FORMAT, DXF_TARGET, async (page) => encodeSvgPageToDxf(page), context);
+  return reencodeRenderedPages(rendered, SVG_FORMAT, tgt, async (page) => svgPageEncoder(tgt)(page), context);
 }
 
 /** True when the pages are consecutive, in order: the only selection one PostScript file can hold. */
@@ -1804,7 +1804,7 @@ export async function convertPdfPagesWithNativeTools(
   const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
   const context: ChainOutputContext = { engine: 'native-poppler', baseName, options, input, startTime };
   if (ENCODED_RASTER_TARGETS.has(tgt)) return convertPdfToEncodedRaster(input, tgt, options, originalFilename, context);
-  if (tgt === DXF_TARGET) return convertPdfToDxf(input, options, originalFilename, context);
+  if (isSvgPageTarget(tgt)) return convertPdfToSvgPageFormat(input, tgt, options, originalFilename, context);
   if (POSTSCRIPT_TARGETS.has(tgt)) return convertPdfToPostScript(input, tgt, options, originalFilename, startTime);
   return convertWithNativePoppler(input, 'pdf', tgt, options, originalFilename);
 }
@@ -2380,7 +2380,7 @@ async function convertWithinImageSession(
   assertWorkbookNotEncrypted(input, src);
   if (OFFICE_NATIVE_SOURCES.has(src)) input = await officeInputWithoutMacros(input, src);
   const isOfficeResave = src === tgt && OFFICE_NATIVE_RESAVE_FORMATS.has(src);
-  if (isNativeTextPdf || isRecalculate || isOfficeResave || officeSuiteWritesTarget(src, tgt)) {
+  if (isNativeTextPdf || isRecalculate || isOfficeResave || officeSuiteReadsInputAndWrites(src, tgt, input)) {
     try {
       const officeRes = isNativeTextPdf
         ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
@@ -2429,7 +2429,7 @@ async function convertWithinImageSession(
   // 1b. Office Documents -> pages via LibreOffice + native PDF tools: Poppler images and SVG, the encoded
   // rasters, PostScript and EPS, DXF; a presentation LibreOffice only reads also becomes HTML.
   const isPresentationHtml = PRESENTATION_HTML_SOURCES.has(src) && tgt === HTML_TARGET;
-  if (OFFICE_NATIVE_SOURCES.has(src) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
+  if (officeSuiteReadsInput(src, input) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
       intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', nativeOptions, originalFilename);

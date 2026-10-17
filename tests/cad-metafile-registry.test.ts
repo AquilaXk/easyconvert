@@ -3,7 +3,8 @@ import zlib from 'node:zlib';
 import { FORMAT_REGISTRY, getAvailableTargetFormats } from '../src/lib/registry';
 import { convertFile } from '../src/lib/conversions';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
-import { ConversionFailedError } from '../src/lib/types';
+import { EngineUnavailableError } from '../src/lib/types';
+import { isOfficeSuiteOnlySource } from '../src/lib/conversions/office/office-suite-sources';
 import { emfOraclePlayback, wmfOraclePlayback, cgmOracleDocument, cgmOracleColour, cgmOraclePoints } from './helpers/metafile-oracle';
 
 const METAFILE_TARGETS = ['emf', 'wmf', 'cgm'];
@@ -59,10 +60,11 @@ function assertOutputFormat(target: string, out: Buffer): void {
 }
 
 describe('Metafile registry advertises only working conversion pairs', () => {
-  it('never advertises EMF, WMF or CGM as conversion sources, since no faithful decoder exists', () => {
+  it('advertises EMF, WMF and CGM as conversion sources only through the office suite, which imports them: none has an in-process reader', () => {
     for (const source of ['emf', 'wmf', 'cgm']) {
-      expect(FORMAT_REGISTRY[source].targetFormats).toEqual([]);
-      expect(getAvailableTargetFormats(source)).toEqual([]);
+      expect(isOfficeSuiteOnlySource(source)).toBe(true);
+      expect(FORMAT_REGISTRY[source].targetFormats.length).toBeGreaterThan(0);
+      expect(getAvailableTargetFormats(source).map((format) => format.id)).toEqual(FORMAT_REGISTRY[source].targetFormats);
     }
   });
 
@@ -74,11 +76,14 @@ describe('Metafile registry advertises only working conversion pairs', () => {
       }
     }
     const sorted = [...advertised].sort((a, b) => a.localeCompare(b));
-    expect(sorted).toEqual(['svg->cgm', 'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf']);
+    // A Visio drawing reaches EMF and WMF through the SVG that Poppler draws from the office suite's PDF; the other pairs are
+    // written from SVG by the in-process encoders. Pairs that the office suite's sources cannot give (their pages hold pictures
+    // or clip regions the encoders cannot write) are withdrawn; tests/vector-sources-real-samples.test.ts converts real files.
+    expect(sorted).toEqual(['svg->cgm', 'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf', 'vsd->emf', 'vsd->wmf']);
   });
 
   const metafilePairs = Object.entries(FORMAT_REGISTRY).flatMap(([sourceId, def]) =>
-    def.targetFormats.filter((t) => METAFILE_TARGETS.includes(t)).map((t) => [sourceId, t] as const)
+    def.targetFormats.filter((t) => METAFILE_TARGETS.includes(t) && !isOfficeSuiteOnlySource(sourceId)).map((t) => [sourceId, t] as const)
   );
   for (const [source, target] of metafilePairs) {
     it(`converts advertised pair ${source} -> ${target} through convertFile`, async () => {
@@ -90,7 +95,7 @@ describe('Metafile registry advertises only working conversion pairs', () => {
     });
   }
 
-  it('rejects binary EMF/WMF input with a typed conversion error', async () => {
+  it('answers binary EMF/WMF input in process with the typed engine error: the office suite reads them, the SVG converter never takes their bytes for a drawing', async () => {
     const emfLike = Buffer.alloc(88);
     emfLike.writeUInt32LE(1, 0);
     emfLike.writeUInt32LE(88, 4);
@@ -100,8 +105,8 @@ describe('Metafile registry advertises only working conversion pairs', () => {
         () => null,
         (e: unknown) => e
       );
-      expect(err).toBeInstanceOf(ConversionFailedError);
-      expect((err as Error).message).toMatch(new RegExp(`\\.${source}`));
+      expect(err).toBeInstanceOf(EngineUnavailableError);
+      expect((err as Error).message).toContain(`.${source} files are imported by LibreOffice`);
     }
   });
 });
