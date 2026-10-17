@@ -9,6 +9,7 @@
  */
 
 import { gunzipHead } from './gzip-head';
+import { OBJECT_HEADER_BYTES } from './storage/object-header';
 
 /** Whether `buf` holds the bytes of `prefix` at `offset`. */
 export function startsWithBytes(buf: Uint8Array, prefix: readonly number[], offset = 0): boolean {
@@ -25,6 +26,10 @@ const LATIN1 = new TextDecoder('latin1');
  * holds anything else (a page, a program, a picture) is not taken for either.
  */
 const GZIPPED_XML_ROOT: Readonly<Record<string, string>> = { svgz: 'svg', zabw: 'abiword' };
+
+function isGzippedXmlExtension(ext: string): boolean {
+  return Object.hasOwn(GZIPPED_XML_ROOT, ext);
+}
 /** The inflated bytes read to find the root element: enough for a licence comment and a doctype with an entity subset. */
 const XML_HEAD_BYTES = 16 * 1024;
 /** Names that a gzip member may carry. */
@@ -95,7 +100,7 @@ export function xmlRootElementName(head: Uint8Array): string | undefined {
 /** Whether a buffer whose first bytes are a gzip signature may carry the extension `ext`. */
 export function isGzipFamilyCompatible(ext: string, buf: Uint8Array): boolean {
   if (GZIP_EXTENSIONS.has(ext)) return true;
-  if (!Object.hasOwn(GZIPPED_XML_ROOT, ext) || !hasGzipMemberHeader(buf)) return false;
+  if (!isGzippedXmlExtension(ext) || !hasGzipMemberHeader(buf)) return false;
   const head = gunzipHead(buf, XML_HEAD_BYTES);
   return head !== undefined && xmlRootElementName(head) === GZIPPED_XML_ROOT[ext];
 }
@@ -149,19 +154,20 @@ function id3v2PayloadOffset(buf: Uint8Array): number | undefined {
   return ID3_HEADER_BYTES + size + footer;
 }
 
-/** Whether an ADTS frame header starts at `offset`. */
+/** Whether an ADTS frame header starts at `offset`; a byte past the end of the buffer reads as undefined and never matches. */
 export function isAdtsFrameAt(buf: Uint8Array, offset: number): boolean {
-  return offset + 1 < buf.length && buf[offset] === ADTS_SYNC_BYTE && (buf[offset + 1] & ADTS_SYNC_MASK) === ADTS_SYNC_VALUE;
+  return buf[offset] === ADTS_SYNC_BYTE && (buf[offset + 1] & ADTS_SYNC_MASK) === ADTS_SYNC_VALUE;
 }
 
 /**
- * What follows the ID3v2 tag at the start of the buffer: an ADTS frame, bytes of another kind, or nothing yet because the tag
- * (cover art makes it large) runs past the window. Undefined when the buffer does not open with an ID3v2 tag.
+ * What follows the ID3v2 tag at the start of the buffer: an ADTS frame, bytes of another kind, or nothing to see because the
+ * tag (cover art makes it large) runs past a full header window. A buffer shorter than the window is the whole file, so a tag
+ * that ends with no frame behind it leaves nothing: 'other'. Undefined when the buffer does not open with an ID3v2 tag.
  */
 export function id3v2Payload(buf: Uint8Array): 'adts' | 'other' | 'beyond-window' | undefined {
   const offset = id3v2PayloadOffset(buf);
   if (offset === undefined) return undefined;
-  if (offset + 1 >= buf.length) return 'beyond-window';
+  if (offset + 1 >= buf.length) return buf.length >= OBJECT_HEADER_BYTES ? 'beyond-window' : 'other';
   return isAdtsFrameAt(buf, offset) ? 'adts' : 'other';
 }
 
@@ -176,11 +182,9 @@ export const COMPOUND_FILE_ONLY_EXTENSIONS: ReadonlySet<string> = new Set(['sdw'
 /** Container signatures that the registry reads in more than one place. */
 export const CFBF_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
 
-const ADIF_MAGIC = [0x41, 0x44, 0x49, 0x46];
-
-/** AAC with an ADIF header (ISO/IEC 13818-7 section 6.2.2; libmagic `audio/x-hx-aac-adif`), or ADTS frames behind an ID3v2 tag. */
+/** AAC in ADTS frames behind an ID3v2 tag. */
 export function sniffAacContainer(buf: Uint8Array): 'audio/aac' | undefined {
-  return (startsWithBytes(buf, ADIF_MAGIC) || id3v2Payload(buf) === 'adts') ? 'audio/aac' : undefined;
+  return id3v2Payload(buf) === 'adts' ? 'audio/aac' : undefined;
 }
 
 /**
@@ -214,4 +218,13 @@ const FIXED_SIGNATURES: readonly { mime: string; prefix: readonly number[] }[] =
 /** The MIME type of the first fixed signature the buffer opens with; undefined when it opens with none. */
 export function sniffFixedSignature(buf: Uint8Array): string | undefined {
   return FIXED_SIGNATURES.find(({ prefix }) => startsWithBytes(buf, prefix))?.mime;
+}
+
+/**
+ * Whether `ext` names a format with no signature but its container's, and the bytes (sniffed as `sniffed`, undefined when
+ * no signature matched) are not that container: a gzip member of XML (`.svgz`, `.zabw`) or a compound file (see above).
+ */
+export function lacksOwnSignature(ext: string, sniffed: string | undefined): boolean {
+  if (isGzippedXmlExtension(ext)) return sniffed !== 'application/gzip';
+  return COMPOUND_FILE_ONLY_EXTENSIONS.has(ext) && sniffed === undefined;
 }

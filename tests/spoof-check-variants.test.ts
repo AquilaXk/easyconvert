@@ -5,6 +5,7 @@ import { gunzipHead } from '../src/lib/gzip-head';
 import { xmlRootElementName } from '../src/lib/format-signatures';
 import { assertNotSpoofedFile, FileExtensionSpoofError, isFormatCompatibleWithMagicBytes, sniffMimeTypeFromMagicBytes } from '../src/lib/registry';
 import { assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
+import { OBJECT_HEADER_BYTES } from '../src/lib/storage/object-header';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless } from './helpers/strict-skip';
@@ -337,5 +338,112 @@ describe('formats that already passed keep their signatures', () => {
     expect(isFormatCompatibleWithMagicBytes(ftyp('avcs'), 'heic')).toBe(true);
     expect(isFormatCompatibleWithMagicBytes(ftyp('avci'), 'mp4')).toBe(false);
     expect(isFormatCompatibleWithMagicBytes(ftyp('avci'), 'avif')).toBe(false);
+  });
+});
+
+describe('where the raw AAC check can and cannot see the frame behind an ID3v2 tag', () => {
+  const ID3_HEADER_BYTES = 10;
+  const ADTS_FRAME = [0xff, 0xf1];
+  const NOT_A_FRAME = [0x4d, 0x5a];
+
+  /** A buffer of `length` bytes that opens with an ID3v2.3 tag ending at `payloadOffset`, with `payload` there as far as it fits. */
+  function taggedBuffer(length: number, payloadOffset: number, payload: readonly number[]): Buffer {
+    const size = payloadOffset - ID3_HEADER_BYTES;
+    const buffer = Buffer.alloc(length);
+    buffer.set([0x49, 0x44, 0x33, 0x03, 0x00, 0x00, (size >> 21) & 0x7f, (size >> 14) & 0x7f, (size >> 7) & 0x7f, size & 0x7f]);
+    payload.forEach((byte, index) => {
+      if (payloadOffset + index < length) buffer[payloadOffset + index] = byte;
+    });
+    return buffer;
+  }
+
+  describe('a file shorter than the header window, which is the whole file', () => {
+    const offset = 110;
+
+    it.each([offset, offset + 1])('refuses a tag that ends at or one byte before the end of a %i-byte file: no frame follows', (length) => {
+      expect(isFormatCompatibleWithMagicBytes(taggedBuffer(length, offset, ADTS_FRAME), 'aac')).toBe(false);
+      expect(() => assertNotSpoofedFile(taggedBuffer(length, offset, ADTS_FRAME), 'aac', 'tag-only.aac')).toThrow(FileExtensionSpoofError);
+    });
+
+    it('accepts a file whose frame sync is the last two bytes, and refuses bytes of another kind there', () => {
+      expect(sniffMimeTypeFromMagicBytes(taggedBuffer(offset + 2, offset, ADTS_FRAME))).toBe('audio/aac');
+      expect(isFormatCompatibleWithMagicBytes(taggedBuffer(offset + 2, offset, ADTS_FRAME), 'aac')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(taggedBuffer(offset + 2, offset, NOT_A_FRAME), 'aac')).toBe(false);
+    });
+
+    it('refuses a tag that claims more bytes than the file holds', () => {
+      expect(isFormatCompatibleWithMagicBytes(taggedBuffer(OBJECT_HEADER_BYTES - 1, OBJECT_HEADER_BYTES + 500, ADTS_FRAME), 'aac')).toBe(false);
+    });
+  });
+
+  describe('a full header window, where the tag may run on past what can be read', () => {
+    const length = OBJECT_HEADER_BYTES;
+
+    it.each([length, length - 1, length + 1000])('accepts a tag that ends %i bytes into the file: the frame cannot be seen', (offset) => {
+      expect(isFormatCompatibleWithMagicBytes(taggedBuffer(length, offset, ADTS_FRAME), 'aac')).toBe(true);
+    });
+
+    it('reads the frame when both of its bytes are inside the window', () => {
+      expect(isFormatCompatibleWithMagicBytes(taggedBuffer(length, length - 2, ADTS_FRAME), 'aac')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(taggedBuffer(length, length - 2, NOT_A_FRAME), 'aac')).toBe(false);
+    });
+  });
+});
+
+describe('ADIF', () => {
+  it.each(['csv', 'txt', 'adi'])('does not turn a text file that opens with the word into AAC (.%s)', (ext) => {
+    const log = Buffer.from('ADIF Export from a station logger\n<EOH>\n<CALL:5>W1AW <EOR>\n');
+    expect(sniffMimeTypeFromMagicBytes(log)).toBeUndefined();
+    expect(isFormatCompatibleWithMagicBytes(log, ext)).toBe(true);
+  });
+
+  it.each(['aac', 'adts'])('accepts an ADIF header (ISO/IEC 13818-7 section 6.2.2) under .%s', (ext) => {
+    const adif = Buffer.concat([Buffer.from('ADIF'), Buffer.alloc(24)]);
+    expect(isFormatCompatibleWithMagicBytes(adif, ext)).toBe(true);
+  });
+});
+
+describe('gzip-only names', () => {
+  it.each(['zabw', 'svgz'])('refuse bytes that are not a gzip member under .%s', (ext) => {
+    const bytes = [
+      Buffer.from(HTML.padEnd(64), 'latin1'),
+      Buffer.from(ABIWORD, 'latin1'),
+      Buffer.from(SVG, 'latin1'),
+      Buffer.from('plain text that no signature names, long enough to be a file', 'latin1'),
+      Buffer.concat([Buffer.from('wOFF'), Buffer.alloc(60)]),
+    ];
+    for (const payload of bytes) {
+      expect(isFormatCompatibleWithMagicBytes(payload, ext)).toBe(false);
+      expect(() => assertNotSpoofedFile(payload, ext, `file.${ext}`)).toThrow(FileExtensionSpoofError);
+    }
+  });
+});
+
+describe('extensions that are names of Object.prototype', () => {
+  it.each(['constructor', '__proto__', 'hasownproperty', 'valueof'])('refuse a ZIP package and a gzip member named .%s', (ext) => {
+    const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(60)]);
+    expect(isFormatCompatibleWithMagicBytes(zip, ext)).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(gzip(SVG), ext)).toBe(false);
+  });
+});
+
+describe('executable and Parquet signatures win over an ISO base media box', () => {
+  const ftypAfter = (magic: readonly number[]): Buffer => {
+    const box = Buffer.alloc(24);
+    box.set(magic);
+    box.write('ftypisom', 4, 'latin1');
+    return box;
+  };
+
+  it.each([
+    ['a DOS or Windows program', [0x4d, 0x5a]],
+    ['a Parquet file', [0x50, 0x41, 0x52, 0x31]],
+  ])('refuses %s whose bytes 4 to 8 spell ftyp under .mp4', (_label, magic) => {
+    const bytes = ftypAfter(magic);
+    expect(() => assertNotSpoofedFile(bytes, 'mp4', 'clip.mp4')).toThrow(FileExtensionSpoofError);
+  });
+
+  it('keeps a plain ftyp box an MP4 file', () => {
+    expect(isFormatCompatibleWithMagicBytes(ftypAfter([0, 0, 0, 0x18]), 'mp4')).toBe(true);
   });
 });

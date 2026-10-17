@@ -10,6 +10,7 @@ import { asUnreadableDocument } from '../src/worker/office-suite-route';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { FORMAT_REGISTRY, getFormatByExtension } from '../src/lib/registry';
+import { requireRealworldSample } from './helpers/realworld-sample';
 import { assertReadableAsText } from '../src/lib/conversions/office/text-source-guard';
 import {
   OFFICE_SUITE_SOURCE_FORMATS,
@@ -292,5 +293,25 @@ describe('the guard that keeps binary bytes from being read as text', () => {
     expect(verdictOf(memo)).toBe('accepted');
     expect(verdictOf(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), memo]))).toMatch(/^Cannot extract plain text from binary\/compressed container/);
     expect(verdictOf(Buffer.from([0x50, 0x4b]))).toBe('accepted');
+  });
+});
+
+describe('Corel Presentations (.shw), which no office suite filter reads', () => {
+  const SHOW = 'office-testcorel.shw';
+
+  it.for(['pdf', 'pptx'])('refuses the real file for %s with a typed error that names the format, not with its bytes read as text', async (target, ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, SHOW);
+    const failure = await dispatchConversion(bytes, 'shw', target, {}, SHOW).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect((failure as Error).message).toMatch(/binary\/compressed container for format '\.shw'/);
+  });
+
+  it('packs the real file as it is for zip', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, SHOW);
+    const result = await dispatchConversion(bytes, 'shw', 'zip', {}, SHOW);
+    const archive = await JSZip.loadAsync(result.buffer);
+    const entries = Object.keys(archive.files);
+    expect(entries).toHaveLength(1);
+    expect(Buffer.from(await archive.files[entries[0]].async('uint8array')).equals(bytes)).toBe(true);
   });
 });

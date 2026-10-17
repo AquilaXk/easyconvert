@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { assertNotSpoofedFile, FileExtensionSpoofError, FORMAT_REGISTRY } from '../registry';
+import { OBJECT_HEADER_BYTES } from '../storage/object-header';
 
 /**
  * Asserts fail-closed that initial magic bytes of a file on disk match the declared format.
@@ -28,10 +29,9 @@ export function assertNotSpoofedFilePath(
   }
   const fd = fs.openSync(filePath, 'r');
   try {
-    const maxHeaderBytes = 64 * 1024; // 64 KiB
-    const headerBuf = Buffer.alloc(maxHeaderBytes);
-    const bytesRead = fs.readSync(fd, headerBuf, 0, maxHeaderBytes, 0);
-    const slice = bytesRead < maxHeaderBytes ? headerBuf.subarray(0, bytesRead) : headerBuf;
+    const headerBuf = Buffer.alloc(OBJECT_HEADER_BYTES);
+    const bytesRead = fs.readSync(fd, headerBuf, 0, OBJECT_HEADER_BYTES, 0);
+    const slice = bytesRead < OBJECT_HEADER_BYTES ? headerBuf.subarray(0, bytesRead) : headerBuf;
 
     let formatOrExt = declaredExtensionOrFormatId;
     if (formatOrExt.includes('/')) {
