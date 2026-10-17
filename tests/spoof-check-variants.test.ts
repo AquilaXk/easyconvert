@@ -67,9 +67,12 @@ describe('gunzipHead (the head of a gzip member without Node zlib)', () => {
 
   it('skips the optional header fields of RFC 1952 (extra, name, comment, header CRC)', () => {
     const body = zlib.deflateRawSync(Buffer.from(SVG));
-    const fields = Buffer.concat([Buffer.from([3, 0, 1, 2, 3]), Buffer.from('a.svg\0'), Buffer.from('note\0'), Buffer.from([0, 0])]);
     const header = Buffer.from([0x1f, 0x8b, 8, 0x04 | 0x08 | 0x10 | 0x02, 0, 0, 0, 0, 0, 3]);
-    expect(Buffer.from(gunzipHead(Buffer.concat([header, fields, body]), 1000) as Uint8Array).toString()).toBe(SVG);
+    const fields = Buffer.concat([Buffer.from([3, 0, 1, 2, 3]), Buffer.from('a.svg\0'), Buffer.from('note\0')]);
+    // FHCRC is the low 16 bits of the CRC-32 of every header byte before it (RFC 1952 section 2.3.1).
+    const headerCrc = Buffer.alloc(2);
+    headerCrc.writeUInt16LE(zlib.crc32(Buffer.concat([header, fields])) & 0xffff);
+    expect(Buffer.from(gunzipHead(Buffer.concat([header, fields, headerCrc, body]), 1000) as Uint8Array).toString()).toBe(SVG);
   });
 
   it('refuses a stream that is not valid deflate and a header that is not complete', () => {
@@ -133,14 +136,14 @@ describe('compressed AbiWord (.zabw) and compressed SVG (.svgz)', () => {
   });
 
   it.each([
-    ['a page that holds an <svg> element', HTML, 'svgz'],
-    ['a page', HTML, 'zabw'],
-    ['another XML document', OTHER_XML, 'zabw'],
-    ['another XML document', OTHER_XML, 'svgz'],
-    ['an SVG document', SVG, 'zabw'],
-    ['an AbiWord document', ABIWORD, 'svgz'],
-    ['plain text', 'hello', 'zabw'],
-  ])('refuses a gzip member of %s under .%s', (_label, text, ext) => {
+    { what: 'a page that holds an <svg> element', text: HTML, ext: 'svgz' },
+    { what: 'a page', text: HTML, ext: 'zabw' },
+    { what: 'another XML document', text: OTHER_XML, ext: 'zabw' },
+    { what: 'another XML document', text: OTHER_XML, ext: 'svgz' },
+    { what: 'an SVG document', text: SVG, ext: 'zabw' },
+    { what: 'an AbiWord document', text: ABIWORD, ext: 'svgz' },
+    { what: 'plain text', text: 'hello', ext: 'zabw' },
+  ])('refuses a gzip member of $what under .$ext', ({ text, ext }) => {
     const bytes = gzip(text);
     expect(isFormatCompatibleWithMagicBytes(bytes, ext)).toBe(false);
     expect(() => assertNotSpoofedFile(bytes, ext, `file.${ext}`)).toThrow(FileExtensionSpoofError);
