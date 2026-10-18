@@ -61,6 +61,11 @@ Certain format conversions require specialized external command-line utilities. 
 - **Process Isolation**: `cad-convert` (`native/cad-convert`, about 400 lines of our own C++) is built in the worker image and in CI against the unmodified Debian and Ubuntu Open CASCADE libraries, linked to them dynamically, and executed as a separate process in the process sandbox with no network access and limits on time, memory and output size. Nothing of Open CASCADE is bundled into the application, and none of its source is modified.
 - **Compliance**: The libraries are replaceable shared objects of the distribution, so the LGPL relinking requirement is met by the package manager (section 3); the image carries the package notices in `/licenses/libocct-*.copyright`. The test oracle `occt-import-js` (a WebAssembly build of the same kernel, LGPL 2.1) is a development dependency of the test suite only and is not part of any image or build output.
 
+### 2.9 FontForge (GPL-3.0-or-later)
+- **Role**: Reads PostScript Type 1 fonts (PFA and PFB) and writes them as OpenType fonts with CFF outlines, which the in-process font engine then converts to every target (PostScript Type 1 input).
+- **Process Isolation**: `fontforge` (the Debian and Ubuntu package `fontforge-nox`, without its graphical interface) is installed unmodified, started with a fixed script (`Open($1); Generate($2)`) and the font and result as file arguments, and executed as a separate process in the process sandbox with no network access and limits on time, memory and output size. Nothing links FontForge into the application, and none of its source is modified or incorporated. Data is exchanged through a scratch directory that is removed after each run.
+- **Compliance**: Running an unmodified, separate GPL executable keeps EasyConvert's own code outside the GPL. The image carries the package notices in `/licenses/fontforge-*.copyright` (section 3), and the source of the installed version is the distribution's source package, named by the version in `/licenses/tool-versions.txt`. A modified FontForge, or one linked into the application, would not be covered by this and needs a reviewed exception.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images

@@ -90,6 +90,8 @@ easyconvert/
 │       │   ├── data.ts              # CSV, TSV, JSON, JSONL, YAML, XML
 │       │   ├── document.ts          # PDFKit, Markdown, HTML, RTF, EPUB
 │       │   ├── font.ts              # TTF, OTF, WOFF, WOFF2, EOT, SVG Font
+│       │   ├── font-fontforge.ts    # PFA/PFB through the FontForge program (separate sandboxed process)
+│       │   ├── font-type1.ts        # PFA/PFB check, glyph count and rewrite for FontForge
 │       │   ├── hwp.ts               # Pure TS HWP 5.0 OLE2 CFBF parser & builder
 │       │   ├── image.ts             # Sharp, PostScript raster, RAW formats
 │       │   ├── media.ts             # Audio & video transcoding wrapper
