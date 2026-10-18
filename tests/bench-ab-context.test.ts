@@ -154,3 +154,66 @@ describe('the threshold of a row in the job path', () => {
     expect(logged.some((line) => line.includes('measured against the reference alone'))).toBe(true);
   });
 });
+
+describe('the confirmation of a failure in processes started for it', () => {
+  interface Started {
+    log: string[];
+    stops: string[];
+  }
+
+  /** A scripted version that can start another process of itself, whose every sample takes `freshMs`; the starts and the stops are recorded. */
+  function startable(name: 'head' | 'base', ms: number, freshMs: number, record: Started, options: { cannotStart?: boolean } = {}): AbRows {
+    return {
+      ...process(() => ms),
+      fresh: async (rowId) => {
+        record.log.push(`${name}:${rowId}`);
+        if (options.cannotStart) throw new AbHostError(`the ${name} process could not start`);
+        return { ...process(() => freshMs), stop: async () => void record.stops.push(name) };
+      },
+    };
+  }
+
+  it('does not confirm a head slow only in the processes of the first set', async () => {
+    const record: Started = { log: [], stops: [] };
+    const { ctx } = contextWith(startable('head', 130, 100, record), startable('base', 100, 100, record));
+    const timing = (await ctx.time(ROW, () => undefined, reference, 'light')) as AbTiming;
+    expect(timing.ab.headVsBaseUpper).toBeLessThan(1 / 1.1);
+    expect(timing.ab.confirmed.slower).toBe(false);
+    // One confirmation was enough to refuse it: both its processes were started for this row, head first, and ended.
+    expect(record.log).toEqual([`head:${ROW}`, `base:${ROW}`]);
+    expect([...record.stops].sort()).toEqual(['base', 'head']);
+  });
+
+  it('confirms a head that is slow in every process, and alternates which version starts first', async () => {
+    const record: Started = { log: [], stops: [] };
+    const { ctx } = contextWith(startable('head', 130, 130, record), startable('base', 100, 100, record));
+    const timing = (await ctx.time(ROW, () => undefined, reference, 'light')) as AbTiming;
+    expect(timing.ab.confirmed.slower).toBe(true);
+    expect(record.log).toEqual([`head:${ROW}`, `base:${ROW}`, `base:${ROW}`, `head:${ROW}`]);
+    expect(record.stops).toHaveLength(4);
+  });
+
+  it('ends the process that did start when the other cannot, and fails with the reason', async () => {
+    const record: Started = { log: [], stops: [] };
+    const { ctx } = contextWith(startable('head', 130, 130, record), startable('base', 100, 100, record, { cannotStart: true }));
+    await expect(ctx.time(ROW, () => undefined, reference, 'light')).rejects.toThrow('the base process could not start');
+    expect(record.stops).toEqual(['head']);
+  });
+
+  it('fails when the head started for the confirmation does not time its own row', async () => {
+    const record: Started = { log: [], stops: [] };
+    const refusing: AbRows = {
+      ...startable('head', 130, 130, record),
+      fresh: async () => ({ ...process(() => 100, { refuse: true }), stop: async () => void record.stops.push('head') }),
+    };
+    const { ctx } = contextWith(refusing, startable('base', 100, 100, record));
+    await expect(ctx.time(ROW, () => undefined, reference, 'light')).rejects.toThrow(AbHostError);
+    expect(record.stops).toEqual(['head', 'base']);
+  });
+
+  it('keeps no confirmation in other processes for a version that cannot start one: the second set is taken in the first processes', async () => {
+    const { ctx } = contextWith(process(() => 130), process(() => 100));
+    const timing = (await ctx.time(ROW, () => undefined, reference, 'light')) as AbTiming;
+    expect(timing.ab.confirmed.slower).toBe(true);
+  });
+});
