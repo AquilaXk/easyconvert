@@ -109,6 +109,8 @@ ENV NODE_ENV=production
 # The Open CASCADE libraries (STEP and IGES, see the cadconvert stage) are packaged with occt-misc, whose 55 MB of sample models and images
 # and 5 MB of resource files the program never reads (it converts all four targets of the 11 real samples with the directory removed, and
 # opens nothing under it); the dpkg exclusion keeps the directory out of the image and nothing else of the package.
+# fontforge-nox (FontForge without its graphical interface, GPL-3.0-or-later) reads PostScript Type 1 fonts as a separate sandboxed program; with
+# --no-install-recommends it adds ten packages, 37.7 MB installed (23.4 MB of it the Python runtime library it links).
 RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
     && echo 'path-exclude=/usr/share/opencascade/*' > /etc/dpkg/dpkg.cfg.d/opencascade-unused-files \
     && apt-get update \
@@ -161,6 +163,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         libocct-foundation-7.8 \
         fluidsynth \
         timgm6mb-soundfont \
+        fontforge-nox \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -f video && groupadd -r -f render \
@@ -210,6 +213,9 @@ RUN ! ldd /usr/local/bin/cad-convert | grep -q 'not found' \
 # The build fails if the program does not start or the link leads nowhere (docs/policy-decisions.md, "MIDI sources").
 RUN fluidsynth --version | grep -q 'FluidSynth runtime version' \
     && test -s /usr/share/sounds/sf2/default-GM.sf2
+
+# PostScript Type 1 reader (fontforge-nox, installed above): the build fails if the program does not start.
+RUN fontforge -lang=ff -c 'Print($version)' 2>/dev/null | grep -Eq '^[0-9]{8}$'
 
 # PDF/A validator (pinned release, checksum-verified); the PDF/A post-process refuses to run without it.
 COPY scripts/install-verapdf.sh /tmp/install-verapdf.sh

@@ -63,3 +63,4 @@ libocct-modeling-data-dev
 libocct-foundation-dev
 fluidsynth
 timgm6mb-soundfont
+fontforge-nox

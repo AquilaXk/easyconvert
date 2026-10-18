@@ -16,7 +16,7 @@ import {
 // A real soffice run includes the pool readiness probe, which takes several seconds on a loaded host.
 const REAL_SOFFICE_TIMEOUT_MS = 60_000;
 
-describe('Phase 3: Pre-warmed LibreOffice Daemon Pool Architecture', () => {
+describe('Pre-warmed LibreOffice worker pool', () => {
   const activePools: LibreOfficePoolManager[] = [];
 
   afterEach(async () => {

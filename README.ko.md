@@ -90,6 +90,8 @@ easyconvert/
 │       │   ├── data.ts              # CSV, TSV, JSON, JSONL, YAML, XML
 │       │   ├── document.ts          # PDFKit, Markdown, HTML, RTF, EPUB
 │       │   ├── font.ts              # TTF, OTF, WOFF, WOFF2, EOT, SVG Font
+│       │   ├── font-fontforge.ts    # FontForge 프로그램(별도 샌드박스 프로세스)을 통한 PFA/PFB 변환
+│       │   ├── font-type1.ts        # PFA/PFB 검사, 글리프 수 확인, FontForge용 재작성
 │       │   ├── hwp.ts               # 순수 TS HWP 5.0 OLE2 CFBF 파서 & 빌더
 │       │   ├── image.ts             # Sharp, PostScript 래스터, RAW 포맷
 │       │   ├── media.ts             # 오디오 및 비디오 트랜스코딩 래퍼

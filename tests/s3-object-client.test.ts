@@ -651,7 +651,9 @@ describe('S3ObjectClient against an independent SigV4-verifying S3 server', () =
       const good = client.presignGetUrl('sec/file.bin', PRESIGN_SECONDS);
       expect((await fetch(good.url)).status).toBe(HTTP_OK);
 
-      const tampered = good.url.replace(/X-Amz-Signature=[0-9a-f]{2}/, 'X-Amz-Signature=00');
+      // Flip the first hex digit: writing a fixed value leaves the URL unchanged whenever the signature already starts with it.
+      const tampered = good.url.replace(/X-Amz-Signature=([0-9a-f])/, (_, digit: string) => `X-Amz-Signature=${digit === '0' ? '1' : '0'}`);
+      expect(tampered).not.toBe(good.url);
       expect((await fetch(tampered)).status).toBe(HTTP_FORBIDDEN);
 
       const otherKey = good.url.replace('sec/file.bin', 'sec/other.bin');

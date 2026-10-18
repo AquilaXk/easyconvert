@@ -792,6 +792,19 @@ export class UnprocessableCadInputError extends ConversionFailedError {
   }
 }
 
+/**
+ * A font file whose container looks right but that cannot be converted: a Type 1 font with no outlines, or one that FontForge reads
+ * only in part. The file is intact enough to be read and the engine is installed, so the verdict is the file's: 422, not the 400 of a
+ * malformed container, and not an `EngineMissingError`, so the queue does not retry it on another worker.
+ */
+export class UnprocessableFontInputError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnprocessableFontInputError';
+  }
+}
+
 /** A DWG whose release code (`AC1009`, `AC1033`, ...) names a release the DWG reader does not decode reliably, or one that is newer than the reader knows. */
 export class UnsupportedDwgVersionError extends UnprocessableCadInputError {
   /** The six-character release code at the start of the file. */
@@ -801,6 +814,19 @@ export class UnsupportedDwgVersionError extends UnprocessableCadInputError {
     this.name = 'UnsupportedDwgVersionError';
     this.magic = magic;
   }
+}
+
+/**
+ * True for the failures that say "the file is intact but this engine cannot convert it" and answer HTTP 422 through `status`: an
+ * encrypted office document or PDF, an archive's password and method errors, a CAD file the readers refuse and a font that cannot be read.
+ */
+export function isUnprocessableInputError(error: unknown): error is ConversionFailedError & { readonly status: number } {
+  return (
+    error instanceof EncryptedOfficeDocumentError ||
+    error instanceof ArchiveInputUnprocessableError ||
+    error instanceof UnprocessableCadInputError ||
+    error instanceof UnprocessableFontInputError
+  );
 }
 
 export class EngineUnavailableError extends EngineMissingError {
@@ -1040,7 +1066,7 @@ export class PdfPermissionDeniedError extends EncryptedOfficeDocumentError {
   }
 }
 
-/** A compressed stream is malformed, truncated, or disagrees with the size its container declares. Maps to HTTP 400. */
+/** A compressed stream or a font container is malformed, truncated, or disagrees with the size it declares. Maps to HTTP 400. */
 export class CorruptStreamError extends ConversionFailedError {
   readonly status = 400;
   constructor(message: string) {

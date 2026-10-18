@@ -260,25 +260,24 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
   });
 
   describe('2. Resident UNO Socket Pool & Rolling Recycling', () => {
-    it('initializes with daemonMode and 150 jobs max per worker recycling threshold', () => {
+    it('initializes with the 150 jobs max per worker recycling threshold', () => {
       const pool = new LibreOfficePoolManager({
         maxWorkers: 2,
         enabled: true,
       });
       activePools.push(pool);
 
-      const stats = pool.getStats();
-      expect(stats.daemonMode).toBe(true);
-      expect(stats.maxJobsPerWorker).toBe(150);
+      expect(pool.getStats().maxJobsPerWorker).toBe(150);
     });
 
-    it('assigns isolated UNO named pipes and includes --accept argument in executor calls', async () => {
+    it('starts one-shot soffice runs without a UNO listener and with a profile per worker', async () => {
       const recordedCalls: Array<{ bin: string; args: string[] }> = [];
       const mockExecutor = vi.fn(async (bin: string, args: string[], opts?: any) => {
         recordedCalls.push({ bin, args });
         const cwd = opts?.cwd;
-        if (cwd && fs.existsSync(cwd)) {
-          fs.writeFileSync(path.join(cwd, 'input.pdf'), Buffer.from('%PDF-1.7 mock output'));
+        if (cwd && fs.existsSync(cwd) && args.includes('--convert-to')) {
+          const output = args.some((a) => a.endsWith('probe.txt')) ? 'probe.pdf' : 'input.pdf';
+          fs.writeFileSync(path.join(cwd, output), Buffer.from('%PDF-1.7 mock output'));
         }
         return {
           stdout: Buffer.from(''),
@@ -291,31 +290,46 @@ describe('Phase 4: Resident UNO Socket Pool & Dynamic Office Table Layout', () =
       });
 
       const pool = new LibreOfficePoolManager({
-        maxWorkers: 1,
-        minWorkers: 1,
+        maxWorkers: 2,
+        minWorkers: 2,
         sofficePath: '/usr/bin/soffice',
         enabled: true,
         executor: mockExecutor,
-        daemonMode: true,
+        readinessProbe: true,
       });
       activePools.push(pool);
 
       await pool.init();
+      const results = await Promise.all([
+        pool.convert(Buffer.from('doc content'), 'docx', 'pdf'),
+        pool.convert(Buffer.from('doc content'), 'docx', 'pdf'),
+      ]);
+      expect(results.every((result) => result !== null)).toBe(true);
 
-      // Pre-warm call: should include --accept=pipe,name=ec_<pid>_worker_<id>;urp;
-      expect(recordedCalls.length).toBeGreaterThanOrEqual(1);
-      const prewarm = recordedCalls[0];
-      expect(prewarm.args.some((a) => /^--accept=pipe,name=ec_\d+_worker_[0-9a-f]{8};urp;$/.test(a))).toBe(true);
+      // Pre-warm (--help), readiness probe and conversion are the three soffice call sites.
+      const prewarmCalls = recordedCalls.filter((call) => call.args.includes('--help'));
+      const probeCalls = recordedCalls.filter((call) => call.args.some((a) => a.endsWith('probe.txt')));
+      const convertCalls = recordedCalls.filter(
+        (call) => call.args.includes('--convert-to') && !probeCalls.includes(call)
+      );
+      expect(prewarmCalls).toHaveLength(2);
+      expect(probeCalls).toHaveLength(1);
+      expect(convertCalls).toHaveLength(2);
 
-      // Conversion call: should also include --accept=pipe...
-      const result = await pool.convert(Buffer.from('doc content'), 'docx', 'pdf');
-      expect(result).not.toBeNull();
+      // A listener keeps soffice alive after the conversion and raced its exit (cdr and docx hangs).
+      const listenerArg = /^-{1,2}accept\b|^(socket|pipe),/i;
+      for (const call of recordedCalls) {
+        expect(call.args.filter((a) => listenerArg.test(a))).toEqual([]);
+      }
 
-      expect(recordedCalls.length).toBeGreaterThanOrEqual(2);
-      const conv = recordedCalls[1];
-      expect(conv.args.some((a) => /^--accept=pipe,name=ec_\d+_worker_[0-9a-f]{8};urp;$/.test(a))).toBe(true);
-      expect(conv.args).toContain('--convert-to');
-      expect(conv.args[conv.args.indexOf('--convert-to') + 1]).toMatch(/^pdf:\w+_pdf_Export:\{/);
+      const convArgs = convertCalls[0].args;
+      expect(convArgs[convArgs.indexOf('--convert-to') + 1]).toMatch(/^pdf:\w+_pdf_Export:\{/);
+
+      const profiles = [...prewarmCalls, ...convertCalls].map((call) =>
+        call.args.find((a) => a.startsWith('-env:UserInstallation=file://'))
+      );
+      expect(profiles.every((profile) => profile !== undefined)).toBe(true);
+      expect(new Set(profiles).size).toBe(2);
     });
 
     it('triggers rolling recycling when a worker reaches maxJobsPerWorker threshold', async () => {

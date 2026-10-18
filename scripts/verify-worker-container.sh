@@ -11,7 +11,7 @@
 #   2. executing a file from /tmp fails with EACCES (noexec)
 #   3. the process holds no cap_sys_admin (kernel view; `capsh --print` too when it is installed)
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
-#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; LibreOffice with VERIFY_LIBREOFFICE=1)
+#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
@@ -238,6 +238,16 @@ if sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" fluidsynth -ni -q -r 44100 -T
   pass "fluidsynth rendered a MIDI note to a WAV inside the sandbox"
 else
   fail "fluidsynth did not render the MIDI file inside the sandbox: $(head -c 300 "$work_dir/fluidsynth.err" 2>/dev/null)"
+fi
+
+# FontForge reads PostScript Type 1 fonts: it writes a one-glyph Type 1 font (a PFB) itself, then reads that file and writes an OpenType font
+# with CFF outlines, the way the worker converts a PFB, and the result must carry the OpenType CFF signature 'OTTO'. Its home is the scratch directory.
+if HOME="$work_dir" sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" fontforge -lang=ff -c 'New(); Select(65); SetWidth(500); Generate($1)' "$work_dir/check.pfb" >/dev/null 2>"$work_dir/fontforge.err" \
+  && HOME="$work_dir" sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" fontforge -lang=ff -c 'Open($1); Generate($2)' "$work_dir/check.pfb" "$work_dir/check.otf" >/dev/null 2>>"$work_dir/fontforge.err" \
+  && [ "$(head -c 4 "$work_dir/check.otf")" = "OTTO" ]; then
+  pass "fontforge converted a Type 1 font to an OpenType font inside the sandbox"
+else
+  fail "fontforge did not convert a Type 1 font inside the sandbox: $(tail -c 300 "$work_dir/fontforge.err" 2>/dev/null)"
 fi
 
 if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then
