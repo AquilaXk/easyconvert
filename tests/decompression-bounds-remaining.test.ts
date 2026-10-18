@@ -52,20 +52,29 @@ const execFileAsync = promisify(execFile);
 const ROOT = path.resolve(__dirname, '..');
 const CHILD = path.join(__dirname, 'decompression-bomb-child.ts');
 
-/** The bound the issue sets for refusing a bomb. */
-const REFUSAL_MS = 500;
+/**
+ * Most bytes the inflaters may produce before a bomb is refused: the 64 MiB stream cap. Refusal is judged by the work
+ * done, not by the clock, so a loaded machine cannot fail it; inflating the whole 256 MiB bomb would show at once.
+ */
+const MAX_DECODED_BEFORE_REFUSAL_BYTES = 64 * MIB;
+/** JSZip's inflater hands out its output in chunks of up to 16 MiB, so an entry stopped early has still decoded one. */
+const MAX_DECODED_AFTER_ONE_CHUNK_BYTES = 32 * MIB;
+/** An entry refused from its header, or a part never opened, decodes none of itself; the package's small XML parts remain. */
+const MAX_DECODED_OF_OTHER_PARTS_BYTES = MIB;
+/** Decoded size of the cut-off stream that the salvage must read once. */
+const SALVAGE_STREAM_BYTES = 32 * MIB;
 /** Peak RSS a bounded decoder may add while it refuses a bomb; an unbounded one adds the whole bomb. */
 const MAX_RSS_GROWTH_BYTES = 100 * MIB;
 /** A parsed package part may be held up to its 128 MiB cap before the stream is stopped. */
 const XLSX_MAX_RSS_GROWTH_BYTES = 384 * MIB;
-/** One-process-per-scenario runs share the machine; two at a time keep the timings honest. */
+/** One-process-per-scenario runs share the machine; two at a time keep the peak RSS readings honest. */
 const CHILD_CONCURRENCY = 2;
 const CHILD_TIMEOUT_MS = 120_000;
 const SETUP_TIMEOUT_MS = 180_000;
 
 interface Outcome {
   error: { name: string; status?: number; message: string } | null;
-  elapsedMs: number;
+  decodedBytes: number;
   rssGrowthBytes: number;
   size: number | null;
   pictures: string[];
@@ -123,7 +132,7 @@ function outcomeOf(scenario: string, fixtureName: string, env: Record<string, st
 function expectBombRefused(outcome: Outcome): void {
   expect(outcome.error?.name).toBe('DecompressionLimitError');
   expect(outcome.error?.status).toBe(413);
-  expect(outcome.elapsedMs).toBeLessThan(REFUSAL_MS);
+  expect(outcome.decodedBytes).toBeLessThan(MAX_DECODED_BEFORE_REFUSAL_BYTES);
   expect(outcome.rssGrowthBytes).toBeLessThan(MAX_RSS_GROWTH_BYTES);
 }
 
@@ -136,7 +145,7 @@ beforeAll(async () => {
   fixture('repair-bomb.zip', localEntryOnly('zeros.bin', zeros));
   // 40 MiB of zeros in a ZIP of about 40 KB: under the 64 MiB per-entry cap, far over 100 times the archive.
   fixture('repair-ratio.zip', localEntryOnly('zeros.bin', await compressZeros(40 * MIB, 'rawDeflate')));
-  fixture('repair-cpu.zip', localEntryOnly('a.bin', await unterminatedDeflate(32 * MIB)));
+  fixture('repair-cpu.zip', localEntryOnly('a.bin', await unterminatedDeflate(SALVAGE_STREAM_BYTES)));
   // The central directory declares exactly the per-entry cap, so only the byte count of the running stream can stop it.
   fixture('xlsx-at-cap.xlsx', craftZip([{ name: 'xl/sharedStrings.xml', deflated: zeros, declaredSize: 128 * MIB }]));
   fixture('xlsx-honest.xlsx', craftZip([{ name: 'xl/sharedStrings.xml', deflated: zeros, declaredSize: BOMB_BYTES }]));
@@ -149,7 +158,7 @@ afterAll(() => {
   if (workDir) fs.rmSync(workDir, { recursive: true, force: true });
 });
 
-describe('gzip bombs are refused as typed 413 errors, fast and with bounded memory', () => {
+describe('gzip bombs are refused as typed 413 errors, with bounded work and memory', () => {
   it('gunzipStreamingWithLimits throws a DecompressionLimitError for a size or ratio bomb', async () => {
     expectBombRefused(await outcomeOf('gunzip', 'gzip-bomb.bin'));
   });
@@ -280,7 +289,8 @@ describe('ZIP repair salvage', () => {
     const outcome = await outcomeOf('repair', 'repair-cpu.zip', NO_ZIP_BINARY);
     expect(outcome.error).toBeNull();
     expect(outcome.size).toBeGreaterThan(1_000_000);
-    expect(outcome.elapsedMs).toBeLessThan(2000);
+    // One pass decodes the stream once; retrying every prefix would decode it many times over.
+    expect(outcome.decodedBytes).toBeLessThan(2 * SALVAGE_STREAM_BYTES);
   });
 
   it('returns the exact bytes of an ordinary entry', async () => {
@@ -304,7 +314,9 @@ describe('JSZip package readers inflate under a byte cap', () => {
     const outcome = await outcomeOf('xlsx', 'xlsx-at-cap.xlsx');
     expect(outcome.error?.name).toBe('DecompressionLimitError');
     expect(outcome.error?.status).toBe(413);
-    expect(outcome.elapsedMs).toBeLessThan(5000);
+    // The cap is 128 MiB: the entry is inflated up to it (so the counter sees JSZip work) and not a byte of the other 128 MiB.
+    expect(outcome.decodedBytes).toBeGreaterThanOrEqual(128 * MIB);
+    expect(outcome.decodedBytes).toBeLessThan(160 * MIB);
     // The 128 MiB of decoded bytes held when the cap is hit; inflating the whole bomb adds more than 600 MiB.
     expect(outcome.rssGrowthBytes).toBeLessThan(XLSX_MAX_RSS_GROWTH_BYTES);
   });
@@ -312,21 +324,21 @@ describe('JSZip package readers inflate under a byte cap', () => {
   it('refuses an XLSX that declares more than the cap before inflating a byte', async () => {
     const outcome = await outcomeOf('xlsx', 'xlsx-honest.xlsx');
     expect(outcome.error?.status).toBe(413);
-    expect(outcome.elapsedMs).toBeLessThan(REFUSAL_MS);
+    expect(outcome.decodedBytes).toBe(0);
   });
 
   it('answers 400 for an entry that decodes to more than its declared size', async () => {
     const outcome = await outcomeOf('xlsx', 'xlsx-lying.xlsx');
     expect(outcome.error?.name).toBe('CorruptStreamError');
     expect(outcome.error?.status).toBe(400);
-    expect(outcome.elapsedMs).toBeLessThan(REFUSAL_MS);
+    expect(outcome.decodedBytes).toBeLessThan(MAX_DECODED_AFTER_ONE_CHUNK_BYTES);
   });
 
   it('readPackageEntry stops at its limit however the central directory declares the size', async () => {
     const outcome = await outcomeOf('package-entry', 'package-at-cap.docx');
     expect(outcome.error?.name).toBe('DecompressionLimitError');
     expect(outcome.error?.status).toBe(413);
-    expect(outcome.elapsedMs).toBeLessThan(REFUSAL_MS);
+    expect(outcome.decodedBytes).toBeLessThan(MAX_DECODED_AFTER_ONE_CHUNK_BYTES);
     expect(outcome.rssGrowthBytes).toBeLessThan(MAX_RSS_GROWTH_BYTES);
   });
 
@@ -534,7 +546,7 @@ describe('embedded media: read once per part, only where it is drawn, under a pe
     expect(html.error?.name).toBe('DecompressionLimitError');
     expect(html.error?.status).toBe(413);
     expect(html.error?.message).toMatch(/decodes to more than the limit of \d+ bytes/);
-    expect(html.elapsedMs).toBeLessThan(REFUSAL_MS);
+    expect(html.decodedBytes).toBeLessThan(MAX_DECODED_OF_OTHER_PARTS_BYTES);
     expect(html.rssGrowthBytes).toBeLessThan(MAX_RSS_GROWTH_BYTES);
   });
 
