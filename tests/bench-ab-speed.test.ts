@@ -5,6 +5,7 @@ import {
   AB_DEFAULT_REGRESSION,
   AB_EXTRA_BUDGET_MS,
   AB_EXTRA_STEP_PAIRS,
+  AB_CONFIRM_PROCESS_PAIRS,
   AB_FAMILYWISE_ALPHA,
   AB_HEAVY_PAIRS,
   AB_LIGHT_PAIRS,
@@ -14,7 +15,7 @@ import {
   AB_REGRESSION_CAP,
   AB_ROW_REGRESSION,
 } from '../bench/ab-config';
-import { AB_ROW_ALPHA, abSpeedTiming, localSide, lowerBoundOfMedian, oneSidedRank, regressionDelta, type Side, slowdownLine, upperBoundOfMedian } from '../bench/ab-speed';
+import { AB_ROW_ALPHA, abSpeedTiming, type FreshPair, localSide, lowerBoundOfMedian, oneSidedRank, regressionDelta, type Side, slowdownLine, upperBoundOfMedian } from '../bench/ab-speed';
 import { SpeedSampleError } from '../bench/speed-parity';
 
 /**
@@ -298,5 +299,141 @@ describe('the confirmation of a failure by a second set of fresh pairs', () => {
     const timing = await abSpeedTiming(steady.head, steady.base, steady.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, confirm: false }, steady.now);
     expect(timing.ab.confirmed).toEqual({});
     expect(steady.counts.head).toBe(AB_LIGHT_PAIRS);
+  });
+});
+
+/**
+ * The pairs of a set share the two processes that time them, and a process has an offset of its own. These tests give a
+ * process an offset as a multiplier on every sample it takes, with a small deterministic spread around it (2 percent either
+ * way, the head's and the base's in opposite phase, so the pair ratios spread by 4 percent and the bound has noise to bound),
+ * and a clock that the samples advance.
+ */
+describe('the confirmation in processes started for it', () => {
+  const SPREAD = 0.02;
+  const BASE_MS = 100;
+  type Offsets = { head: number; base?: number };
+
+  /** A side whose samples are `ms` times the offset of its process, alternating by SPREAD above and below, starting `phase` (-1 or 1) from the middle. */
+  function timedSide(ms: number, offset: number, clock: { now: number }, phase: 1 | -1, log: string[], name: string): Side {
+    let taken = 0;
+    const take = async (): Promise<number> => {
+      log.push(name);
+      const spent = ms * offset * (1 + phase * SPREAD * (taken++ % 2 === 0 ? 1 : -1));
+      clock.now += spent;
+      return spent;
+    };
+    return { call: take, sample: take };
+  }
+
+  /** The first set's processes carry the offsets `first`; the processes started for confirmation number k carry `later(k)`. */
+  function scenario(first: Offsets, later: (index: number) => Offsets) {
+    const clock = { now: 0 };
+    const started: number[] = [];
+    const closed: number[] = [];
+    const calls: string[] = [];
+    const fresh = async (index: number): Promise<FreshPair> => {
+      started.push(index);
+      const offsets = later(index);
+      return {
+        head: timedSide(BASE_MS, offsets.head, clock, -1, calls, `fresh-head-${index}`),
+        base: timedSide(BASE_MS, offsets.base ?? 1, clock, 1, calls, `fresh-base-${index}`),
+        close: async () => {
+          closed.push(index);
+        },
+      };
+    };
+    return {
+      clock,
+      started,
+      closed,
+      calls,
+      fresh,
+      head: timedSide(BASE_MS, first.head, clock, -1, calls, 'head'),
+      base: timedSide(BASE_MS, first.base ?? 1, clock, 1, calls, 'base'),
+      reference: timedSide(BASE_MS, 1, clock, 1, calls, 'reference'),
+    };
+  }
+
+  const now = (run: { clock: { now: number } }) => (): number => run.clock.now;
+
+  it('does not confirm an offset of the processes of the first set: the head process is 30 percent slow, the processes started later are not', async () => {
+    const run = scenario({ head: 1.3 }, () => ({ head: 1 }));
+    const timing = await abSpeedTiming(run.head, run.base, run.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, fresh: run.fresh }, now(run));
+    // The first set is credibly slower, as a failure of the code would be.
+    expect(timing.ab.headVsBaseUpper).toBeLessThan(1 / 1.1);
+    expect(timing.ab.confirmed).toEqual({ slower: false, lost: false });
+    // The first confirmation did not show it, so no second one was started; its processes were ended.
+    expect(run.started).toEqual([0]);
+    expect(run.closed).toEqual([0]);
+  });
+
+  it('confirms the same offset when the confirmation shares the processes of the first set (what the rule did before)', async () => {
+    const sameProcess = scenario({ head: 1.3 }, () => ({ head: 1 }));
+    const timing = await abSpeedTiming(sameProcess.head, sameProcess.base, sameProcess.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0 }, now(sameProcess));
+    expect(timing.ab.confirmed).toEqual({ slower: true, lost: true });
+    expect(sameProcess.started).toEqual([]);
+  });
+
+  it('confirms a slowdown of 20 percent that every process has, with a head process offset of 3 percent either way in each of them', async () => {
+    const offsets = [0.97, 1.03];
+    const run = scenario({ head: 1.2 * 1.02 }, (index) => ({ head: 1.2 * offsets[index] }));
+    const timing = await abSpeedTiming(run.head, run.base, run.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, fresh: run.fresh }, now(run));
+    expect(timing.ab.confirmed).toEqual({ slower: true, lost: true });
+    expect(run.started).toEqual(Array.from({ length: AB_CONFIRM_PROCESS_PAIRS }, (_, index) => index));
+    expect(run.closed).toEqual(run.started);
+  });
+
+  it('confirms a slowdown of 15 percent, the smallest the gate is asked to catch beyond its 10 percent threshold', async () => {
+    const run = scenario({ head: 1.15 }, () => ({ head: 1.15 }));
+    const timing = await abSpeedTiming(run.head, run.base, run.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, fresh: run.fresh }, now(run));
+    expect(timing.ab.headVsBaseUpper).toBeLessThan(1 / 1.1);
+    expect(timing.ab.confirmed.slower).toBe(true);
+  });
+
+  it('needs every process pair to show it: a slowdown in the first set and the first confirmation, but not in the second, is not confirmed', async () => {
+    const run = scenario({ head: 1.3 }, (index) => ({ head: index === 0 ? 1.3 : 1 }));
+    const timing = await abSpeedTiming(run.head, run.base, run.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, fresh: run.fresh }, now(run));
+    expect(timing.ab.confirmed).toEqual({ slower: false, lost: false });
+    expect(run.started).toEqual([0, 1]);
+    expect(run.closed).toEqual([0, 1]);
+  });
+
+  it('holds each confirmation to as many pairs as the first set, and warms the new processes up before their pairs count', async () => {
+    const run = scenario({ head: 1.3 }, () => ({ head: 1.3 }));
+    await abSpeedTiming(run.head, run.base, run.reference, { pairs: AB_LIGHT_PAIRS, warmup: 2, fresh: run.fresh }, now(run));
+    for (const index of [0, 1]) {
+      const used = run.calls.filter((name) => name.endsWith(`-${index}`));
+      expect(used.filter((name) => name === `fresh-head-${index}`)).toHaveLength(2 + AB_LIGHT_PAIRS);
+      expect(used.filter((name) => name === `fresh-base-${index}`)).toHaveLength(2 + AB_LIGHT_PAIRS);
+      // Two warm-up rounds of one call of the head and one of the base, one after the other, before the first pair.
+      expect(used.slice(0, 4)).toEqual([`fresh-head-${index}`, `fresh-base-${index}`, `fresh-head-${index}`, `fresh-base-${index}`]);
+    }
+  });
+
+  it('charges the time of the pairs of every confirmation to the extra budget, and not the start of the processes', async () => {
+    const run = scenario({ head: 1.3 }, () => ({ head: 1.3 }));
+    const extra = { remainingMs: 1e9 };
+    await abSpeedTiming(run.head, run.base, run.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, extra, fresh: run.fresh }, now(run));
+    // Per set: AB_LIGHT_PAIRS pairs of the head (130 ms), the base (100 ms) and the reference (100 ms); the spread is symmetric over whole pairs.
+    expect(1e9 - extra.remainingMs).toBeCloseTo(AB_CONFIRM_PROCESS_PAIRS * AB_LIGHT_PAIRS * (130 + 100 + 100), 6);
+  });
+
+  it('ends the processes it started when a sample fails, and fails with that error', async () => {
+    const run = scenario({ head: 1.3 }, () => ({ head: 1.3 }));
+    const failing = async (index: number): Promise<FreshPair> => {
+      const pair = await run.fresh(index);
+      return { ...pair, base: { call: pair.base.call, sample: () => Promise.reject(new SpeedSampleError('the new base process died')) } };
+    };
+    await expect(abSpeedTiming(run.head, run.base, run.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, fresh: failing }, now(run))).rejects.toThrow('the new base process died');
+    expect(run.closed).toEqual([0]);
+  });
+
+  it('starts no process for a row the first pairs pass, nor when the confirmation is switched off', async () => {
+    const quiet = scenario({ head: 1 }, () => ({ head: 1.3 }));
+    const timing = await abSpeedTiming(quiet.head, quiet.base, quiet.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, fresh: quiet.fresh }, now(quiet));
+    expect(timing.ab.confirmed).toEqual({});
+    const off = scenario({ head: 1.3 }, () => ({ head: 1.3 }));
+    await abSpeedTiming(off.head, off.base, off.reference, { pairs: AB_LIGHT_PAIRS, warmup: 0, confirm: false, fresh: off.fresh }, now(off));
+    expect([quiet.started, off.started]).toEqual([[], []]);
   });
 });

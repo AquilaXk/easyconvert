@@ -108,6 +108,76 @@ describe('the base process', () => {
   }, 60_000);
 });
 
+describe('a process started for a confirmation', () => {
+  const alive = (pid: number | undefined): boolean => {
+    if (pid === undefined) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it('is another process of the same version, let through the rows already timed, and times the row asked for on its own', async () => {
+    const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
+    let fresh: AbHost | null = null;
+    try {
+      await host.row('compression/first/throughput');
+      host.next();
+      // The benchmark is at the third row; the new process starts from the beginning and is let through the first two.
+      fresh = await host.fresh('compression/third/throughput');
+      expect(fresh.pid).toBeDefined();
+      expect(fresh.pid).not.toBe(host.pid);
+      expect(await fresh.side().sample(2)).toBeGreaterThanOrEqual(1);
+      // The first process is untouched by it: still at its second row, and ends on its own request.
+      await host.row('compression/second/throughput');
+      host.next();
+      await host.row('compression/third/throughput');
+      expect(await host.side().sample(2)).toBeGreaterThanOrEqual(1);
+      host.next();
+    } finally {
+      await fresh?.stop();
+      await host.stop();
+    }
+  }, 60_000);
+
+  it('is ended with the first process kept: stopping it leaves the other running', async () => {
+    const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
+    try {
+      const fresh = await host.fresh('compression/first/throughput');
+      const pid = fresh.pid;
+      expect(alive(pid)).toBe(true);
+      await fresh.stop();
+      expect(alive(pid)).toBe(false);
+      expect(alive(host.pid)).toBe(true);
+      await host.row('compression/first/throughput');
+      expect(await host.side().call()).toBeGreaterThanOrEqual(7);
+      host.next();
+    } finally {
+      await host.stop();
+    }
+  }, 60_000);
+
+  it('fails for a row the version does not have, and leaves no process behind', async () => {
+    const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
+    try {
+      const before = spawnSync('pgrep', ['-fc', 'ab-child-stub'], { encoding: 'utf8' }).stdout.trim();
+      await expect(host.fresh('compression/fourth/throughput')).rejects.toThrow(BaseRowError);
+      // The process that was started is reaped a moment after its exit is reported.
+      let after = '';
+      for (let attempt = 0; attempt < 20; attempt++) {
+        after = spawnSync('pgrep', ['-fc', 'ab-child-stub'], { encoding: 'utf8' }).stdout.trim();
+        if (after === before) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(after).toBe(before);
+    } finally {
+      await host.stop();
+    }
+  }, 60_000);
+});
+
 describe('ending the base process', () => {
   const BUSY = path.join(__dirname, 'helpers', 'ab-busy-stub.ts');
   const alive = (pid: number | undefined): boolean => {

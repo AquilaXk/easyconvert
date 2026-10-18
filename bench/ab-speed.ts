@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import {
   AB_CONFIRM_ALPHA,
+  AB_CONFIRM_PROCESS_PAIRS,
   AB_DEFAULT_REGRESSION,
   AB_EXTRA_STEP_PAIRS,
   AB_FAMILYWISE_ALPHA,
@@ -27,6 +28,12 @@ import { coefficientOfVariation, mean, median, timed } from './stats';
  * 3rd ed., section 3.2), at the error rate alpha = AB_FAMILYWISE_ALPHA / AB_ROW_BUDGET, so that over a run of
  * AB_ROW_BUDGET rows the chance of any false failure is at most AB_FAMILYWISE_ALPHA (Bonferroni). With too few pairs
  * for that alpha the bound is infinite and the row cannot fail.
+ *
+ * The pairs are not independent of each other in one respect the bound cannot see: every pair of a set is timed in the
+ * same two processes, and a process has an offset of its own (compiled code, heap layout, the core it runs on) that moves
+ * all its samples the same way. A failure is therefore confirmed by pairs taken in head and base processes that are started
+ * for the confirmation (AB_CONFIRM_PROCESS_PAIRS of them, one after the other, the start order alternating): a slowdown of
+ * the code shows in every process, an offset of the two processes of the first set shows in none of the new ones.
  */
 
 /** Pairs the absolute interval against the reference is taken over (bench/speed-parity.ts is exact up to 64). */
@@ -120,6 +127,13 @@ export interface AbTiming extends AdaptiveTiming {
   baseMs: number[];
 }
 
+/** A head and a base in processes started for one confirmation; `close` ends them. */
+export interface FreshPair {
+  head: Side;
+  base: Side;
+  close: () => Promise<void>;
+}
+
 /** Measuring time the extra pairs and the confirmation sets of a shard may use together; once it is spent, the rows after stay at the fixed pairs. */
 export interface ExtraBudget {
   remainingMs: number;
@@ -139,9 +153,18 @@ export interface AbPlan {
   extra?: ExtraBudget;
   /** Take a second set of pairs to confirm a failure (the default); false for a test of the first set alone. */
   confirm?: boolean;
+  /**
+   * Starts the head and the base of confirmation number `index` (0, 1, ...) in processes of their own, the start order alternating
+   * with `index`. Without it the confirmation is a second set in the processes of the first, which an offset of those processes
+   * shifts as it shifts the first (a test with scripted sides; the job path always has it).
+   */
+  fresh?: (index: number) => Promise<FreshPair>;
 }
 
-const ORDERS: ReadonlyArray<readonly ('head' | 'base' | 'reference')[]> = [
+type SideName = 'head' | 'base' | 'reference';
+type Times = Record<SideName, number[]>;
+
+const ORDERS: ReadonlyArray<readonly SideName[]> = [
   ['head', 'base', 'reference'],
   ['reference', 'base', 'head'],
   ['base', 'head', 'reference'],
@@ -154,6 +177,78 @@ function standardDeviation(values: readonly number[]): number {
   if (values.length < 2) return 0;
   const average = mean(values);
   return Math.sqrt(values.reduce((sum, value) => sum + (value - average) ** 2, 0) / (values.length - 1));
+}
+
+const ratio = (numerator: readonly number[], denominator: readonly number[]): number[] => numerator.map((value, index) => value / denominator[index]);
+
+/** Times `count` more pairs of `sides` into `into`, the order of the pair continuing the rotation from the pairs already in `into`. */
+async function collectPairs(sides: Record<SideName, Side>, calls: Record<SideName, number>, count: number, into: Times): Promise<void> {
+  for (let n = 0; n < count; n++) {
+    const pair = into.head.length;
+    for (const side of ORDERS[pair % ORDERS.length]) into[side].push(await sides[side].sample(calls[side]));
+  }
+}
+
+/** The conditions a failure stands on: the head credibly slower than the base, and the head credibly below a reference the base was at. */
+interface Conditions {
+  slower: boolean;
+  lost: boolean;
+}
+
+interface ConfirmationInput {
+  sides: Record<SideName, Side>;
+  calls: Record<SideName, number>;
+  /** Pairs of the first set: each confirming set holds as many. */
+  count: number;
+  warmup: number;
+  plan: AbPlan;
+  now: () => number;
+  lines: { slower: number; parity: number };
+}
+
+/** One call of each side of `pair` per round, one after the other (only one of the processes works at any moment). */
+async function warmUp(pair: FreshPair, rounds: number): Promise<void> {
+  for (let round = 0; round < rounds; round++) {
+    await pair.head.call();
+    await pair.base.call();
+  }
+}
+
+/** Which of the conditions in `standing` the fresh pairs `again` show too, at AB_CONFIRM_ALPHA. */
+function shownAgain(again: Times, standing: Conditions, lines: ConfirmationInput['lines']): Conditions {
+  return {
+    slower: standing.slower && upperBoundOfMedian(ratio(again.base, again.head), AB_CONFIRM_ALPHA) < lines.slower,
+    lost: standing.lost && upperBoundOfMedian(ratio(again.reference, again.head), AB_CONFIRM_ALPHA) < lines.parity,
+  };
+}
+
+/**
+ * The conditions of a failure that fresh pairs show again. With `plan.fresh`, AB_CONFIRM_PROCESS_PAIRS sets are taken, each in a head
+ * and a base process started for it (the reference stays in this process), and a condition stands only when every set shows it: a
+ * slowdown of the code is in every process, an offset of one pair of processes is in that pair alone. Without it, one set is taken in
+ * the processes of the first. The time of the pairs counts against the extra budget; the start of the processes does not, since
+ * nothing is measured while they start.
+ */
+async function confirmFailure(input: ConfirmationInput, first: Conditions): Promise<Conditions> {
+  const { plan, now } = input;
+  let standing = first;
+  const rounds = plan.fresh ? AB_CONFIRM_PROCESS_PAIRS : 1;
+  for (let index = 0; index < rounds && (standing.slower || standing.lost); index++) {
+    const fresh = await plan.fresh?.(index);
+    try {
+      const sides = fresh ? { ...input.sides, head: fresh.head, base: fresh.base } : input.sides;
+      const start = now();
+      // A process just started is warmed up as the first ones were, before its pairs count.
+      if (fresh) await warmUp(fresh, input.warmup);
+      const again: Times = { head: [], base: [], reference: [] };
+      await collectPairs(sides, input.calls, input.count, again);
+      if (plan.extra) plan.extra.remainingMs -= now() - start;
+      standing = shownAgain(again, standing, input.lines);
+    } finally {
+      await fresh?.close();
+    }
+  }
+  return standing;
 }
 
 /**
@@ -178,14 +273,8 @@ export async function abSpeedTiming(head: Side, base: Side, reference: Side, pla
   const referenceCalls = calibrated(fastestReference);
   const calls = { head: oursCalls, base: oursCalls, reference: referenceCalls };
   const sides = { head, base, reference };
-  const times = { head: [] as number[], base: [] as number[], reference: [] as number[] };
-  const collect = async (count: number): Promise<void> => {
-    for (let n = 0; n < count; n++) {
-      const pair = times.head.length;
-      for (const side of ORDERS[pair % ORDERS.length]) times[side].push(await sides[side].sample(calls[side]));
-    }
-  };
-  const ratio = (numerator: number[], denominator: number[]): number[] => numerator.map((value, index) => value / denominator[index]);
+  const times: Times = { head: [], base: [], reference: [] };
+  const collect = (count: number): Promise<void> => collectPairs(sides, calls, count, times);
   await collect(plan.pairs);
   const slowerLine = 1 / (1 + delta);
   // Undecided: the pairs so far neither show the head slower than the threshold nor rule it out.
@@ -212,20 +301,13 @@ export async function abSpeedTiming(head: Side, base: Side, reference: Side, pla
   const slower = headVsBaseUpper < slowerLine;
   const lost = median(baseVsReference) >= parityLine && headVsReferenceUpper < parityLine;
   if ((slower || lost) && plan.confirm !== false) {
-    // Fresh pairs, taken after the first set: a burst of noise in the first is not in them. Their time counts against the extra budget.
-    const first = { head: times.head.length, base: times.base.length, reference: times.reference.length };
-    // As many as the first set holds, so that the second is as strong a test as the first.
-    const start = now();
-    await collect(first.head);
-    if (plan.extra) plan.extra.remainingMs -= now() - start;
-    const again = {
-      head: times.head.slice(first.head),
-      base: times.base.slice(first.base),
-      reference: times.reference.slice(first.reference),
-    };
-    if (slower) confirmed.slower = upperBoundOfMedian(ratio(again.base, again.head), AB_CONFIRM_ALPHA) < slowerLine;
-    if (lost) confirmed.lost = upperBoundOfMedian(ratio(again.reference, again.head), AB_CONFIRM_ALPHA) < parityLine;
-    for (const side of ['head', 'base', 'reference'] as const) times[side].length = first[side];
+    // Fresh pairs, taken after the first set and in processes started for them: a burst of noise in the first set, or an offset of its processes, is not in them. As many as the first set holds, so that the second is as strong a test as the first.
+    const standing = await confirmFailure(
+      { sides, calls, count: times.head.length, warmup: plan.warmup, plan, now, lines: { slower: slowerLine, parity: parityLine } },
+      { slower, lost }
+    );
+    if (slower) confirmed.slower = standing.slower;
+    if (lost) confirmed.lost = standing.lost;
   }
   // The absolute interval (the row's interval against the reference, for the gap entries) is the one of the first pairs: it is exact up to MAX_INTERVAL_PAIRS.
   const decision = decideSpeed(times.head.slice(0, ABSOLUTE_PAIRS), times.reference.slice(0, ABSOLUTE_PAIRS), { tolerance: plan.tolerance, confidence: plan.confidence });

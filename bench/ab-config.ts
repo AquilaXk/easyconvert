@@ -174,3 +174,10 @@ export const AB_EXTRA_BUDGET_MS = 4 * 60 * 1000;
  * one after the other, and a slowdown of the code does.
  */
 export const AB_CONFIRM_ALPHA = 0.01;
+/**
+ * The confirmation is taken in head and base processes that are started for it, so that it does not share the offset of
+ * the processes that took the first pairs (compiled code, heap layout, the core they run on: every sample of a process is
+ * moved the same way, and the sign-test bound counts those samples as independent). A failure stands only when each of
+ * this many fresh process pairs shows it, one after the other; a slowdown of the code is in every process.
+ */
+export const AB_CONFIRM_PROCESS_PAIRS = 2;
