@@ -21,7 +21,8 @@ vi.setConfig({ testTimeout: ENGINE_TEST_TIMEOUT_MS });
 /**
  * Issue #396: the pool sandboxes soffice in a fresh network namespace whose loopback interface is
  * down. A TCP UNO listener (`--accept=socket,host=127.0.0.1,...`) cannot bind there, so soffice
- * never exits and every pooled conversion waits for the full execution timeout.
+ * never exits and every pooled conversion waits for the full execution timeout. The pool now starts
+ * soffice without any UNO listener, so it needs no network interface at all.
  */
 
 const SAMPLE_DOCX = fs.readFileSync(path.resolve(__dirname, 'fixtures', 'sample.docx'));
@@ -97,7 +98,7 @@ describe.skipIf(skipWithoutTools('soffice', 'pdftotext', 'unshare') || !HAS_NET_
     );
 
     it(
-      'serves two concurrent jobs on separate workers without UNO pipe collisions',
+      'serves two concurrent jobs on separate workers with separate profiles',
       async () => {
         const pool = trackPool(
           new LibreOfficePoolManager({
@@ -124,10 +125,10 @@ describe.skipIf(skipWithoutTools('soffice', 'pdftotext', 'unshare') || !HAS_NET_
 );
 
 describe('LibreOffice pool readiness probe fails fast with a typed error', () => {
-  it('uses a network-free pipe for the UNO accept string', async () => {
-    const accepts: string[] = [];
+  it('starts soffice without any UNO listener, so no network interface is needed', async () => {
+    const calls: string[][] = [];
     const executor: SandboxedProcessRunner = async (_bin, args, options) => {
-      accepts.push(...args.filter((arg) => arg.startsWith('--accept=')));
+      calls.push(args);
       if (options?.cwd && args.includes('--convert-to')) {
         fs.writeFileSync(path.join(options.cwd, 'input.pdf'), Buffer.from('%PDF-1.7 stub'));
       }
@@ -139,11 +140,9 @@ describe('LibreOffice pool readiness probe fails fast with a typed error', () =>
     await pool.init();
     await pool.convert(Buffer.from('x'), 'docx', 'pdf');
 
-    expect(accepts.length).toBeGreaterThanOrEqual(2);
-    for (const accept of accepts) {
-      expect(accept).toMatch(/^--accept=pipe,name=[A-Za-z0-9_-]+;urp;$/);
-      expect(accept).not.toContain('socket');
-      expect(accept).not.toContain('127.0.0.1');
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    for (const args of calls) {
+      expect(args.filter((arg) => /^-{1,2}accept\b|^(socket|pipe),|127\.0\.0\.1/i.test(arg))).toEqual([]);
     }
   });
 
@@ -253,11 +252,11 @@ function isProbeCall(args: string[]): boolean {
 }
 
 describe('LibreOffice pool readiness probe lifecycle', () => {
-  it('passes its own network-free pipe accept string, unique per process, to the probe', async () => {
-    const probeAccepts: string[] = [];
+  it('runs the probe with its own throwaway profile and no UNO listener', async () => {
+    const probeArgs: string[][] = [];
     const executor: SandboxedProcessRunner = async (_bin, args, options) => {
       if (isProbeCall(args)) {
-        probeAccepts.push(...args.filter((arg) => arg.startsWith('--accept=')));
+        probeArgs.push(args);
         fs.writeFileSync(path.join(options!.cwd!, 'probe.pdf'), Buffer.from('%PDF-1.7 stub'));
       } else if (args.includes('--convert-to')) {
         fs.writeFileSync(path.join(options!.cwd!, 'input.pdf'), Buffer.from('%PDF-1.7 stub'));
@@ -266,17 +265,18 @@ describe('LibreOffice pool readiness probe lifecycle', () => {
     };
     await probePool(executor).convert(Buffer.from('x'), 'docx', 'pdf');
 
-    expect(probeAccepts).toHaveLength(1);
-    expect(probeAccepts[0]).toMatch(new RegExp(`^--accept=pipe,name=ec_probe_${process.pid}_[0-9a-f]{8};urp;$`));
+    expect(probeArgs).toHaveLength(1);
+    expect(probeArgs[0].filter((arg) => arg.startsWith('--accept'))).toEqual([]);
+    expect(probeArgs[0].some((arg) => arg.startsWith('-env:UserInstallation=file://'))).toBe(true);
   });
 
-  it('names worker pipes with the process id for cross-process uniqueness', async () => {
+  it('gives every worker its own profile directory', async () => {
     const pool = trackPool(
       new LibreOfficePoolManager({ sofficePath: '/usr/bin/soffice', executor: async () => okResult(), enabled: true })
     );
-    const worker = await pool.createWorker();
-    expect(worker.unoPipeName).toMatch(new RegExp(`^ec_${process.pid}_worker_[0-9a-f]{8}$`));
-    expect(worker.unoAccept).toBe(`pipe,name=${worker.unoPipeName};urp;`);
+    const [first, second] = [await pool.createWorker(), await pool.createWorker()];
+    expect(first.userProfileDir).not.toBe(second.userProfileDir);
+    expect(first.workDir).not.toBe(second.workDir);
   });
 
   describe('failure caching', () => {

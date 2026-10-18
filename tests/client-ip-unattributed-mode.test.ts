@@ -32,6 +32,9 @@ function anonymousRequest(headers: Record<string, string> = {}): NextRequest {
 
 describe('unattributed mode must not let one client degrade everyone else', () => {
   beforeEach(() => {
+    // Frozen clock: token buckets neither refill nor expire between the requests of one scenario.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-18T00:00:00.000Z'));
     redisKeyStore.resetStore();
     redisUserStore.resetStore();
     resetLoginRateLimiterStore();
@@ -40,6 +43,7 @@ describe('unattributed mode must not let one client degrade everyone else', () =
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllEnvs();
   });
 
