@@ -17,7 +17,7 @@ import { isSymbolFontName, mapSymbolFontCharacter } from './symbol-font-map';
 
 /** Text with at least one character no reader can show: control codes other than white space, U+FFFD, private-use characters. */
 // eslint-disable-next-line no-control-regex
-const UNMAPPED_CHARACTER = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F�-\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
+const UNMAPPED_CHARACTER = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\uFFFD\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/u;
 const PRIVATE_USE_BMP_START = 0xe000;
 const PRIVATE_USE_BMP_END = 0xf8ff;
 /** A control code that is the character code of a glyph of a simple font. */

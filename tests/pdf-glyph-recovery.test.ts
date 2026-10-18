@@ -15,8 +15,8 @@ const names = (entries: Record<number, string>): string[] => {
 
 describe('which characters stand for a glyph without a Unicode value', () => {
   it('flags control codes, the replacement character and private-use characters, and nothing else', () => {
-    for (const text of ['\u0001', '\u001f', '\u007f', '�', '', '', '\u{f0000}', '\u{10fffd}']) expect(hasUnmappedGlyphs(text), JSON.stringify(text)).toBe(true);
-    for (const text of ['A', ' ', '\t', '\n', '\r', 'é', '日本', ' ', ' ', 'ﬁ']) expect(hasUnmappedGlyphs(text), JSON.stringify(text)).toBe(false);
+    for (const text of ['\u0001', '\u001f', '\u007f', '\ufffd', '\ue000', '\uf8ff', '\u{f0000}', '\u{10fffd}']) expect(hasUnmappedGlyphs(text), JSON.stringify(text)).toBe(true);
+    for (const text of ['A', ' ', '\t', '\n', '\r', 'é', '日本', '\u00a0', '\u2028', 'ﬁ', '\u{1f600}', '\u{20000}', '\u{1d400}']) expect(hasUnmappedGlyphs(text), JSON.stringify(text)).toBe(false);
   });
 });
 
