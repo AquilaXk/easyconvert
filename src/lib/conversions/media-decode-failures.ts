@@ -12,11 +12,15 @@ import { UnprocessableMediaInputError, UnsupportedMediaCodecError } from '../typ
 const AAC_OBJECT_TYPE_NAMES: Readonly<Record<number, string>> = { 42: 'xHE-AAC (USAC)' };
 
 /** `Audio object type 42 is not implemented`: FFmpeg 6.1 stops at the first xHE-AAC packet it is asked to open. */
-const OBJECT_TYPE_NOT_IMPLEMENTED = /Audio object type (\d+) is not implemented/;
+const OBJECT_TYPE_NOT_IMPLEMENTED = /Audio object type (\d{1,6}) is not implemented/;
 /** `[dec:aac @ 0x...] Error submitting packet to decoder: Not yet implemented in FFmpeg`: FFmpeg 7.1 skips the packets of an xHE-AAC stream whose coding tools it lacks. */
-const DECODER_NOT_IMPLEMENTED = /\[dec:(\w+)[^\]]*\] Error (?:submitting|processing) packet(?: in| to) decoder: Not yet implemented in FFmpeg/;
+const DECODER_NOT_IMPLEMENTED = /\[dec:(\w{1,32})[^\]\n]{0,64}\] Error (?:submitting|processing) packet(?: in| to) decoder: Not yet implemented in FFmpeg/;
 /** `[aist#0:1/aac @ 0x...] Decode error rate 1 exceeds maximum 0.666667`: ffmpeg gives up on a stream of which most packets are invalid. */
-const DECODE_ERROR_RATE = /\[(a|v)ist#\d+:(\d+)\/(\w+) @[^\]]*\](?: \[dec:[^\]]*\])? Decode error rate [\d.]+ exceeds maximum/;
+const DECODE_ERROR_RATE = /\[(a|v)ist#\d{1,6}:(\d{1,6})\/(\w{1,32}) @[^\]\n]{0,64}\](?: \[dec:[^\]\n]{0,64}\])? Decode error rate [\d.]{1,32} exceeds maximum/;
+/*
+ * The log echoes the input's metadata tags, which the uploader writes. Every quantifier above stays within one line and has
+ * an upper bound, so a tag of repeated pattern starts costs linear time instead of a rescan to the end of the log per start.
+ */
 const FFMPEG_VERSION = /^ff(?:mpeg|probe) version (\S+)/m;
 const KIND_NAMES: Readonly<Record<string, string>> = { a: 'audio', v: 'video' };
 
