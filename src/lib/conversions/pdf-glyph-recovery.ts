@@ -1,4 +1,5 @@
 import { glyphNameToText } from './pdf-glyph-names';
+import { PdfTextGeometryError } from './pdf-text-types';
 import { isSymbolFontName, mapSymbolFontCharacter } from './symbol-font-map';
 
 /**
@@ -55,13 +56,26 @@ function fontNameOf(font: RecoverableFont | null): string {
   return typeof font?.name === 'string' ? font.name.replace(SUBSET_TAG, '') : '';
 }
 
-/** The text of a glyph that is the character code of a glyph of a simple font, read from the names of its encoding. */
-function textOfNamedGlyph(code: number, font: RecoverableFont): string | null {
-  if (font.composite === true) return null;
+/** The text of a code of a simple font, per font: a font has at most 256 codes, so its names are read at most 256 times. */
+const namedGlyphTexts = new WeakMap<RecoverableFont, Map<number, string | null>>();
+
+function readNamedGlyph(code: number, font: RecoverableFont): string | null {
   const name = font.differences?.[code] || font.defaultEncoding?.[code];
   if (typeof name !== 'string' || name === '') return null;
   const text = glyphNameToText(name, { dingbats: ZAPF_DINGBATS_FONT.test(fontNameOf(font)) });
   return text !== null && !hasUnmappedGlyphs(text) ? text : null;
+}
+
+/** The text of a glyph that is the character code of a glyph of a simple font, read from the names of its encoding. */
+function textOfNamedGlyph(code: number, font: RecoverableFont): string | null {
+  if (font.composite === true) return null;
+  let texts = namedGlyphTexts.get(font);
+  if (texts === undefined) {
+    texts = new Map();
+    namedGlyphTexts.set(font, texts);
+  }
+  if (!texts.has(code)) texts.set(code, readNamedGlyph(code, font));
+  return texts.get(code) ?? null;
 }
 
 function recoverGlyph(character: string, font: RecoverableFont | null): string | null {
@@ -74,18 +88,26 @@ function recoverGlyph(character: string, font: RecoverableFont | null): string |
   return codePoint < SINGLE_BYTE_CODES ? textOfNamedGlyph(codePoint, font) : null;
 }
 
-/** `text` with the glyphs that have a name in the font's encoding read, and the others left out and counted. */
-export function recoverUnmappedGlyphs(text: string, font: RecoverableFont | null): RecoveredText {
+/**
+ * `text` with the glyphs that have a name in the font's encoding read, and the others left out and counted.
+ *
+ * @param maxChars the most characters the result may hold; a ligature name can make a glyph several characters long.
+ * @throws PdfTextGeometryError (400) when the result grows past `maxChars`.
+ */
+export function recoverUnmappedGlyphs(text: string, font: RecoverableFont | null, maxChars = Number.POSITIVE_INFINITY): RecoveredText {
   let recovered = '';
   let unmapped = 0;
   for (const character of text) {
     if (!UNMAPPED_CHARACTER.test(character)) {
       recovered += character;
-      continue;
+    } else {
+      const mapped = recoverGlyph(character, font);
+      if (mapped === null) unmapped++;
+      else recovered += mapped;
     }
-    const mapped = recoverGlyph(character, font);
-    if (mapped === null) unmapped++;
-    else recovered += mapped;
+    if (recovered.length > maxChars) {
+      throw new PdfTextGeometryError(`The text read from glyph names has more than ${maxChars} characters.`);
+    }
   }
   return { text: recovered, unmapped };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
-import { PdfTextUnmappedError } from '../src/lib/conversions/pdf-text-types';
+import { PdfTextGeometryError, PdfTextUnmappedError } from '../src/lib/conversions/pdf-text-types';
 import { captureError } from './helpers/capture-error';
 import { extraObjectNumber, rawPdf, type RawPage } from './helpers/raw-pdf';
 import { hasControlCharacters } from './helpers/pdf-text-metrics';
@@ -70,4 +70,21 @@ describe('glyphs that no mapping covers', () => {
     expect((error as PdfTextUnmappedError).pages).toEqual([1, 2]);
     expect(error.message).toContain('OCR');
   });
+});
+
+describe('glyph names that make one glyph many characters', () => {
+  const ITEM_CHARACTERS = 1_048_576;
+  /** 64 letters joined by underscores: 127 characters, the longest name a PDF holds, and 64 characters of text. */
+  const LONGEST_LIGATURE = Array.from({ length: 64 }, () => 'f').join('_');
+
+  function pageWithLigatureNamed(name: string, glyphs: number): Buffer {
+    const font = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [1 /${name}] >> >>`;
+    return rawPdf([pageShowing('\\001'.repeat(glyphs), extraObjectNumber(1))], [font]);
+  }
+
+  it('is refused with the typed 400 of the page limit when the recovered text outgrows the page', async () => {
+    const error = await captureError(() => convert(pageWithLigatureNamed(LONGEST_LIGATURE, ITEM_CHARACTERS)));
+    expect(error).toBeInstanceOf(PdfTextGeometryError);
+    expect((error as PdfTextGeometryError).status).toBe(HTTP_BAD_REQUEST);
+  }, 120_000);
 });

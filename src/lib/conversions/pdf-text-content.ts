@@ -169,6 +169,10 @@ function describeFont(page: ContentPage, fontId: string, style: PageStyle | unde
   };
 }
 
+function pageCharactersError(pageNumber: number): PdfTextGeometryError {
+  return new PdfTextGeometryError(`PDF page ${pageNumber} has more than ${PDF_TEXT_MAX_CHARS_PER_PAGE} characters of text.`);
+}
+
 /** Throws when the page holds more items, or more text, than the limits allow. */
 function checkItemLimits(content: PageTextContent, pageNumber: number): void {
   if (content.items.length > PDF_TEXT_MAX_ITEMS_PER_PAGE) {
@@ -182,7 +186,7 @@ function checkItemLimits(content: PageTextContent, pageNumber: number): void {
     }
     characters += item.str.length;
     if (characters > PDF_TEXT_MAX_CHARS_PER_PAGE) {
-      throw new PdfTextGeometryError(`PDF page ${pageNumber} has more than ${PDF_TEXT_MAX_CHARS_PER_PAGE} characters of text.`);
+      throw pageCharactersError(pageNumber);
     }
   }
 }
@@ -227,6 +231,8 @@ function textItemsOf(
   checkItemLimits(content, pageNumber);
   const items: PdfContentItem[] = [];
   let unmapped = 0;
+  // A ligature name makes a glyph several characters long, so the page limit is read again over the recovered text.
+  let characters = 0;
   for (const candidate of content.items) {
     if (!isTextItem(candidate) || candidate.str.length === 0) continue;
     const style = content.styles[candidate.fontName];
@@ -234,9 +240,13 @@ function textItemsOf(
     const geometry = geometryOf(candidate, viewport, vertical);
     let text = normalizeSymbolBullets(candidate.str);
     if (hasUnmappedGlyphs(text)) {
-      const recovered = recoverUnmappedGlyphs(text, resolvedFont(page, candidate.fontName));
+      const recovered = recoverUnmappedGlyphs(text, resolvedFont(page, candidate.fontName), PDF_TEXT_MAX_CHARS_PER_PAGE - characters);
       text = recovered.text;
       unmapped += recovered.unmapped;
+    }
+    characters += text.length;
+    if (characters > PDF_TEXT_MAX_CHARS_PER_PAGE) {
+      throw pageCharactersError(pageNumber);
     }
     candidate.str = text;
     if (text.length === 0) continue;

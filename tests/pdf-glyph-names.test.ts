@@ -56,6 +56,31 @@ describe('the worked examples of the Adobe Glyph List specification', () => {
   });
 });
 
+describe('the length of a glyph name', () => {
+  /** ISO 32000-2 Annex C: a name holds at most 127 bytes. */
+  const MAX_NAME_LENGTH = 127;
+
+  it('maps a ligature name of 127 characters and nothing longer', () => {
+    const atLimit = Array.from({ length: 64 }, () => 'f').join('_');
+    expect(atLimit).toHaveLength(MAX_NAME_LENGTH);
+    expect(glyphNameToText(atLimit)).toBe('f'.repeat(64));
+    expect(glyphNameToText(`${atLimit}x`)).toBeNull();
+    expect(glyphNameToText(`${atLimit}_f`)).toBeNull();
+  });
+
+  it('maps a uni name of 127 characters, 31 code units, and not one more', () => {
+    const atLimit = `uni${'0041'.repeat(31)}`;
+    expect(atLimit).toHaveLength(MAX_NAME_LENGTH);
+    expect(glyphNameToText(atLimit)).toBe('A'.repeat(31));
+    expect(glyphNameToText(`${atLimit}0041`)).toBeNull();
+  });
+
+  it('maps no name of 100 KB, whatever it is made of', () => {
+    expect(glyphNameToText('f_'.repeat(50_000))).toBeNull();
+    expect(glyphNameToText(`uni${'0041'.repeat(25_000)}`)).toBeNull();
+  });
+});
+
 describe('the Zapf Dingbats names', () => {
   it('map for a Zapf Dingbats font only, because other fonts number their glyphs with the same names', () => {
     expect(glyphNameToText('a1')).toBeNull();

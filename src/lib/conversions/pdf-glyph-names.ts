@@ -7,7 +7,8 @@ import { ADOBE_GLYPH_LIST, ZAPF_DINGBATS_GLYPH_LIST } from './pdf-glyph-list';
  * `uniXXXX` name (one or more four-digit UTF-16 code units) or a `uXXXX` to `uXXXXXX` name (one scalar value).
  *
  * A glyph named like nothing the specification maps has no text: the result is `null`, never a guess. A ligature with
- * one component that maps to nothing is `null` as a whole, so a half-mapped ligature never reaches the text.
+ * one component that maps to nothing is `null` as a whole, so a half-mapped ligature never reaches the text. A name
+ * longer than 127 characters (the limit of ISO 32000-2 Annex C) maps to nothing.
  */
 
 const HEX_RADIX = 16;
@@ -20,6 +21,11 @@ const UNI_NAME = /^uni((?:[0-9A-F]{4})+)$/;
 /** `u` followed by four to six uppercase hexadecimal digits. */
 const U_NAME = /^u([0-9A-F]{4,6})$/;
 const UNI_GROUP = /[0-9A-F]{4}/g;
+/**
+ * The most characters a glyph name holds. ISO 32000-2 Annex C (implementation limits) caps a name at 127 bytes, and a
+ * Type 1 glyph name is held to the same bound. A longer name is no glyph name, so its work stays bounded by the cap.
+ */
+const MAX_GLYPH_NAME_LENGTH = 127;
 const MAX_CODE_POINT = 0x10ffff;
 const SURROGATES_START = 0xd800;
 const SURROGATES_END = 0xdfff;
@@ -56,7 +62,10 @@ function isScalarValue(codePoint: number): boolean {
 /** The text of a `uniXXXX...` name, or null when a code unit is a surrogate (the specification maps those to nothing). */
 function textOfUniName(groups: string): string | null {
   const units = (groups.match(UNI_GROUP) ?? []).map((hex) => Number.parseInt(hex, HEX_RADIX));
-  return units.every(isScalarValue) ? String.fromCharCode(...units) : null;
+  if (!units.every(isScalarValue)) return null;
+  let text = '';
+  for (const unit of units) text += String.fromCharCode(unit);
+  return text;
 }
 
 function textOfComponent(component: string, dingbats: boolean): string | null {
@@ -87,6 +96,7 @@ export interface GlyphNameOptions {
 
 /** The text the glyph name stands for, or null when no rule of the specification maps it. */
 export function glyphNameToText(glyphName: string, options: GlyphNameOptions = {}): string | null {
+  if (glyphName.length > MAX_GLYPH_NAME_LENGTH) return null;
   const base = glyphName.split('.', 1)[0];
   if (base === '') return null;
   let text = '';
