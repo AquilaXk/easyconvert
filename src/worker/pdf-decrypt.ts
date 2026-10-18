@@ -91,11 +91,12 @@ export function toPopplerDamageSignal(err: unknown, inProcessFallback: boolean |
 }
 
 /**
- * True for the signal of `toPopplerDamageSignal`: Poppler found the file damaged, which says nothing about the password,
- * so the in-process reader (it decrypts with the request's password itself) may read the file next.
+ * True when a native engine could not serve a request that carries a password, so the in-process engine must not run for it.
+ * The signal of `toPopplerDamageSignal` is the exception: Poppler found the file damaged, which says nothing about the
+ * password, and the in-process reader decrypts with the password itself before it reads or refuses the file.
  */
-export function isPopplerDamageSignal(err: unknown): boolean {
-  return err instanceof EngineUnavailableError && err.reason === POPPLER_DAMAGED_REASON;
+export function isUnservedPasswordRequest(unavailable: EngineUnavailableError | null | undefined): unavailable is EngineUnavailableError {
+  return unavailable instanceof EngineUnavailableError && unavailable.reason !== POPPLER_DAMAGED_REASON;
 }
 
 /**

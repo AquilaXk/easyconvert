@@ -786,14 +786,14 @@
     "file": "src/lib/conversions/document.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "convertDocument",
-    "count": 4
+    "count": 3
   },
   {
     "file": "src/lib/conversions/document.ts",
     "rule": "complexity",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 169
+    "maxValue": 167
   },
   {
     "file": "src/lib/conversions/document.ts",
@@ -807,7 +807,7 @@
     "rule": "max-lines-per-function",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 500
+    "maxValue": 494
   },
   {
     "file": "src/lib/conversions/docx-model.ts",

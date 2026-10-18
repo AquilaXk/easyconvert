@@ -31,7 +31,7 @@ import {
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
 import { PdfTextGeometryError } from './pdf-text-types';
-import { openPdfForReading } from './pdf-access';
+import { openPdfForEditing, openPdfForReading, type PdfAccess } from './pdf-access';
 import { assertPdfHeader, extractPdfDocument, readPdfDocument, type ExtractedPdfDocument, type ReadPdfResult } from './pdf-text-document';
 import type { DocumentModel } from './document-model/model';
 import { documentToHtml } from './document-model/html';
@@ -111,6 +111,35 @@ function structuredPdfResult(target: string, model: DocumentModel | null, baseNa
 /** The text of a PDF (its text layer, in reading order); see `extractPdfDocument` for the failures. */
 export async function extractTextFromPdf(pdfBuffer: Buffer): Promise<string> {
   return (await extractPdfDocument(pdfBuffer)).text;
+}
+
+function editAccessOf(options: ConversionOptions): PdfAccess {
+  return { password: options.password, confirmEditRights: options.confirmEditRights };
+}
+
+/**
+ * The PDF bytes the readers parse: a copy for reading, or, when OCR writes a PDF, a copy for editing. A searchable PDF is
+ * written from that copy, so it is an edit: the document opens as unlock opens it, with the owner password or
+ * `confirmEditRights`, before any page is recognized.
+ */
+function openPdfForConversion(inputBuffer: Buffer, tgt: string, options: ConversionOptions): Promise<Buffer> {
+  return tgt === 'pdf' && options.ocrEnabled
+    ? openPdfForEditing(inputBuffer, 'unlock', editAccessOf(options))
+    : openPdfForReading(inputBuffer, options.password, options.signal);
+}
+
+/** The PDF bytes a searchable PDF is written from: a scanned PDF is rebuilt without OCR having been requested, and the rebuild is an edit all the same. */
+async function openPdfForRebuild(inputBuffer: Buffer, openedBytes: Buffer, options: ConversionOptions): Promise<Buffer> {
+  return options.ocrEnabled ? openedBytes : openPdfForEditing(inputBuffer, 'unlock', editAccessOf(options));
+}
+
+async function synthesizeSearchablePdf(pdf: Buffer, pageOcrResults: Map<number, OcrResult>): Promise<Buffer> {
+  try {
+    return await createLosslessSandwichPdfFromPdf(pdf, pageOcrResults);
+  } catch (pdfErr) {
+    const reason = pdfErr instanceof Error && pdfErr.message ? pdfErr.message : 'Synthesis error';
+    throw new ConversionFailedError(`PDF OCR failed: Failed to synthesize lossless searchable PDF: ${reason}`);
+  }
 }
 
 export async function convertDocument(
@@ -214,7 +243,7 @@ export async function convertDocument(
     assertPdfHeader(inputBuffer);
     // The readers below parse the document themselves: an encrypted one is read from a copy that qpdf decrypted with the
     // request's password (the empty one when there is none). A result that is the PDF itself still returns `inputBuffer`.
-    const pdfBytes = await openPdfForReading(inputBuffer, options.password, options.signal);
+    const pdfBytes = await openPdfForConversion(inputBuffer, tgt, options);
     let ocrInfo: { text?: string; confidence?: number | null } = {};
     let lastOcrResult: OcrResult | null = null;
     const pageOcrResults = new Map<number, OcrResult>();
@@ -495,22 +524,16 @@ export async function convertDocument(
         }
 
         if (pageOcrResults.size > 0) {
-          try {
-            const searchablePdf = await createLosslessSandwichPdfFromPdf(pdfBytes, pageOcrResults);
-            return {
-              buffer: searchablePdf,
-              mimeType: 'application/pdf',
-              filename: `${baseName}.pdf`,
-              size: searchablePdf.length,
-              ocrExtractedText: ocrInfo.text,
-              ocrConfidence: ocrInfo.confidence,
-              ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
-            };
-          } catch (pdfErr: any) {
-            throw new ConversionFailedError(
-              `PDF OCR failed: Failed to synthesize lossless searchable PDF: ${pdfErr?.message || 'Synthesis error'}`
-            );
-          }
+          const searchablePdf = await synthesizeSearchablePdf(await openPdfForRebuild(inputBuffer, pdfBytes, options), pageOcrResults);
+          return {
+            buffer: searchablePdf,
+            mimeType: 'application/pdf',
+            filename: `${baseName}.pdf`,
+            size: searchablePdf.length,
+            ocrExtractedText: ocrInfo.text,
+            ocrConfidence: ocrInfo.confidence,
+            ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
+          };
         }
       }
       if (options.ocrEnabled || isScanned) {
