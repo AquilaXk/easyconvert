@@ -151,6 +151,17 @@ export async function openPdfForEditing(pdf: Buffer, operation: PdfEditOperation
 }
 
 /**
+ * `openPdfForEditing` for a route that rebuilds the document from its pages (a searchable PDF from OCR): a file whose
+ * cross-reference data cannot be read is returned as it is, as `openPdfForReading` does, so the rebuild repairs it or
+ * refuses it with its own error; pdf-lib refuses one that is still encrypted.
+ *
+ * @throws PdfPasswordRequiredError, PdfPermissionDeniedError (422) as `openPdfForEditing`.
+ */
+export async function openPdfForRebuilding(pdf: Buffer, operation: PdfEditOperation, access: PdfAccess = {}): Promise<Buffer> {
+  return isEncrypted(pdf) ? decryptWithAccessCheck(pdf, operation, access) : pdf;
+}
+
+/**
  * Loads an unencrypted PDF with pdf-lib. A file pdf-lib still finds encrypted, because its parser reads the trailer
  * differently from ours, is refused like any other encrypted input instead of being read as plain.
  */

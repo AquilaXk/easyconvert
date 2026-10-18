@@ -31,7 +31,7 @@ import {
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
 import { PdfTextGeometryError } from './pdf-text-types';
-import { openPdfForEditing, openPdfForReading, type PdfAccess } from './pdf-access';
+import { openPdfForRebuilding, openPdfForReading, type PdfAccess } from './pdf-access';
 import { assertPdfHeader, extractPdfDocument, readPdfDocument, type ExtractedPdfDocument, type ReadPdfResult } from './pdf-text-document';
 import type { DocumentModel } from './document-model/model';
 import { documentToHtml } from './document-model/html';
@@ -124,13 +124,13 @@ function editAccessOf(options: ConversionOptions): PdfAccess {
  */
 function openPdfForConversion(inputBuffer: Buffer, tgt: string, options: ConversionOptions): Promise<Buffer> {
   return tgt === 'pdf' && options.ocrEnabled
-    ? openPdfForEditing(inputBuffer, 'unlock', editAccessOf(options))
+    ? openPdfForRebuilding(inputBuffer, 'unlock', editAccessOf(options))
     : openPdfForReading(inputBuffer, options.password, options.signal);
 }
 
 /** The PDF bytes a searchable PDF is written from: a scanned PDF is rebuilt without OCR having been requested, and the rebuild is an edit all the same. */
 async function openPdfForRebuild(inputBuffer: Buffer, openedBytes: Buffer, options: ConversionOptions): Promise<Buffer> {
-  return options.ocrEnabled ? openedBytes : openPdfForEditing(inputBuffer, 'unlock', editAccessOf(options));
+  return options.ocrEnabled ? openedBytes : openPdfForRebuilding(inputBuffer, 'unlock', editAccessOf(options));
 }
 
 async function synthesizeSearchablePdf(pdf: Buffer, pageOcrResults: Map<number, OcrResult>): Promise<Buffer> {
