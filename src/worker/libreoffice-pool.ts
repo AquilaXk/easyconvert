@@ -81,9 +81,6 @@ export interface LibreOfficeWorker {
   jobCount: number;
   createdAt: number;
   lastUsedAt: number;
-  /** Name of the UNO named pipe (AF_UNIX) this worker's soffice listens on. */
-  unoPipeName: string;
-  unoAccept?: string;
 }
 
 export interface LibreOfficePoolOptions {
@@ -94,7 +91,6 @@ export interface LibreOfficePoolOptions {
   sofficePath?: string | null;
   enabled?: boolean;
   executor?: SandboxedProcessRunner;
-  daemonMode?: boolean;
   /**
    * Run a bounded end-to-end conversion once before the first job and throw EngineUnavailableError
    * when it fails. Defaults to true for the real sandboxed executor and false for injected runners.
@@ -111,7 +107,6 @@ export interface LibreOfficePoolStats {
   queueLength: number;
   totalJobsProcessed: number;
   maxJobsPerWorker?: number;
-  daemonMode?: boolean;
 }
 
 export class LibreOfficePoolTimeoutError extends Error {
@@ -213,7 +208,6 @@ export class LibreOfficePoolManager {
   private sofficePath: string | null;
   private enabled: boolean;
   private executor: SandboxedProcessRunner;
-  private daemonMode: boolean;
   private readinessProbe: boolean;
   private readinessCheck: { sofficePath: string; promise: Promise<void>; failedAt: number | null } | null = null;
 
@@ -229,7 +223,6 @@ export class LibreOfficePoolManager {
     this.sofficePath = options.sofficePath ?? null;
     this.enabled = options.enabled ?? (this.sofficePath !== null);
     this.executor = options.executor ?? executeSandboxedBinary;
-    this.daemonMode = options.daemonMode ?? true;
     this.readinessProbe = options.readinessProbe ?? this.executor === executeSandboxedBinary;
   }
 
@@ -280,10 +273,6 @@ export class LibreOfficePoolManager {
     const id = `worker-${crypto.randomUUID().slice(0, 8)}`;
     const userProfileDir = createWorkerSandboxDir(`libreoffice_profile_${id}_`);
     const workDir = createWorkerSandboxDir(`libreoffice_work_${id}_`);
-    // A named pipe needs no network interface, so it also works inside the sandbox's network
-    // namespace, where loopback is down and a TCP listener could never bind.
-    const unoPipeName = `ec_${process.pid}_${id.replace(/[^a-zA-Z0-9]/g, '_')}`;
-    const unoAccept = `pipe,name=${unoPipeName};urp;`;
 
     const worker: LibreOfficeWorker = {
       id,
@@ -293,8 +282,6 @@ export class LibreOfficePoolManager {
       jobCount: 0,
       createdAt: Date.now(),
       lastUsedAt: Date.now(),
-      unoPipeName,
-      unoAccept,
     };
 
     // Pre-warm user profile if binary is configured and exists or custom executor is set
@@ -306,11 +293,8 @@ export class LibreOfficePoolManager {
           '--nofirststartwizard',
           '--nologo',
           `-env:UserInstallation=file://${userProfileDir}`,
+          '--help',
         ];
-        if (this.daemonMode) {
-          warmArgs.push(`--accept=${unoAccept}`);
-        }
-        warmArgs.push('--help');
 
         await this.executor(
           this.sofficePath,
@@ -332,7 +316,7 @@ export class LibreOfficePoolManager {
   }
 
   /**
-   * Runs one bounded conversion with the exact daemon arguments and sandbox the jobs use, so a
+   * Runs one bounded conversion with the exact one-shot arguments and sandbox the jobs use, so a
    * broken listener or namespace surfaces as a typed error right away. The outcome is shared per
    * soffice binary: success is kept, a failure is kept for LIBREOFFICE_READINESS_FAILURE_TTL_MS so
    * a broken pool does not make every job re-pay the probe budget, then the next job probes again.
@@ -396,11 +380,12 @@ export class LibreOfficePoolManager {
         '--nofirststartwizard',
         '--nologo',
         `-env:UserInstallation=file://${profileDir}`,
+        '--convert-to',
+        'pdf',
+        '--outdir',
+        workDir,
+        inputPath,
       ];
-      if (this.daemonMode) {
-        args.push(`--accept=pipe,name=ec_probe_${process.pid}_${probeId};urp;`);
-      }
-      args.push('--convert-to', 'pdf', '--outdir', workDir, inputPath);
 
       fs.writeFileSync(inputPath, READINESS_PROBE_TEXT);
       try {
@@ -686,17 +671,12 @@ export class LibreOfficePoolManager {
         '--nofirststartwizard',
         '--nologo',
         `-env:UserInstallation=file://${worker.userProfileDir}`,
-      ];
-      if (this.daemonMode && worker.unoAccept) {
-        convertArgs.push(`--accept=${worker.unoAccept}`);
-      }
-      convertArgs.push(
         '--convert-to',
         resolveLibreOfficeFilter(tgt, src, options),
         '--outdir',
         jobSubdir,
-        inputPath
-      );
+        inputPath,
+      ];
 
       await this.executor(
         this.sofficePath,
@@ -798,7 +778,6 @@ export class LibreOfficePoolManager {
       queueLength: this.queue.length,
       totalJobsProcessed: this.totalJobsProcessed,
       maxJobsPerWorker: this.maxJobsPerWorker,
-      daemonMode: this.daemonMode,
     };
   }
 }

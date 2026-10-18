@@ -1184,3 +1184,22 @@ Compression
   - **Running speed parity on the pull request head as well**: another 12 minutes per push or per label, on a head that is out of date by merge time, for a number the queue measures again.
 - **Verified by**: `tests/ci-workflows.test.ts` (the three triggers and no label event; the pull request payload read only where a queue event has a stand-in; the change filter run against real git repositories for a pull request, a queue entry and a push; the `verify` gate; the SonarCloud step run against stand-ins of `curl` and `sleep`: a gate for this head passes, a verdict of an earlier head is waited out, `ERROR` fails with its conditions, a missing verdict fails at the timeout), `tests/ci-parity-workflow.test.ts` (the `verify` result matrix per event, the families step on a queue entry, the speed job's condition and base), `tests/ci-parity-policy.test.ts` (the pull request named by a queue ref; the labels read from GitHub; the exemption applied to a queue entry), `tests/container-ci-job.test.ts`, the workflow run of the pull request without speed parity and the queue run of the first pull request merged through the queue (its `verify` and `parity speed` jobs on the `gh-readonly-queue/main/...` ref, and the merge commit on `main`).
 - **Revisit when**: the queue's runs cost more runner time than the repository can spend (then group entries with a batch size above one, or let documentation-only entries skip the heavy jobs, which the change filter already does); GitHub reports SonarCloud on queue commits (then its check can be required again); or speed parity becomes cheap enough to run on the pull request too.
+
+## 48. One-shot office conversions without a UNO listener
+
+- **Status**: Implemented (flake rows of issue #692, epic #763), decided 2026-10-18 (QA request).
+- **Decision**:
+  - **Every pooled office-suite run is a one-shot `--convert-to` process and starts without a UNO listener.** The pre-warm run, the readiness probe and each conversion no longer pass `--accept`. The pool keeps one profile directory (`-env:UserInstallation`) and one work directory per worker, the 45 s stage limit, the 120 s ceiling and the sandbox options.
+  - The `daemonMode` option and statistic and the per-worker `unoPipeName` and `unoAccept` fields are removed, because only the listener used them.
+- **Why**:
+  - **The listener served no client.** The pool starts a new `soffice --convert-to` process for each job and reads the file it writes; no UNO client ever connects to the pipe. It was a leftover of the resident UNO socket pool design (#203). The same class of hang had already been fixed once for a TCP listener (#428), which cannot bind where loopback is down.
+  - **Measured on Linux (LibreOffice 24.2.7, 4 vCPU):** hung runs had complete output on disk, the main thread waiting on a futex and two threads waiting in `accept(2)` on the pipe listeners, so the listener shutdown races at exit. With the listener, CorelDRAW to PDF hung 9 times in 600 and 4 times in 600, and Word to PDF 4 times in 800. Without it: 0 in 600, 0 in 600 and 0 in 800.
+- **Trade-offs**:
+  - **A future UNO client needs its own design**: a separate long-lived process that owns the listener and its lifecycle, not a listener on the one-shot runs.
+  - Nothing is lost today: the pool never used the connection, so conversion output and latency are unchanged.
+- **Alternatives rejected**:
+  - **Repeating the conversion on a fresh worker after the timeout**: keeps the 45 s penalty on every hang and hides the cause.
+  - **Capping the number of listening processes**: with one daemon per test process the hang rate did not change (3 in 600).
+  - **Raising the stage limit or the test timeouts**: hides a stall and does not remove it.
+- **Verified by**: `tests/office-table-and-daemon-pool.test.ts` and `tests/libreoffice-pool-loopback-less-namespace.test.ts` (the pre-warm, the readiness probe and the conversion pass no `--accept`, `socket,` or `pipe,` argument, each worker keeps its own profile), and the Linux runs recorded in the pull request: the two CI test files repeated under four-way parallel load, and CorelDRAW to PDF under a four-way stress, both without a hang.
+- **Revisit when**: a feature needs a UNO client (then add a separate long-lived process that owns the listener), or the worker image moves to a LibreOffice whose listener exits cleanly and a measurement shows a use for it.
