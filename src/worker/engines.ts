@@ -66,6 +66,7 @@ import {
 } from '../lib/conversions/media';
 import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
+import { runFfmpegTranscode } from '../lib/conversions/media-ffmpeg-run';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import {
   executeSandboxedBinary,
@@ -576,13 +577,7 @@ export async function convertWithNativeFfmpeg(
       }
 
       const runFfmpegWith = (ffmpegArgs: string[], limitMs: number) =>
-        executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
-          cwd: tempDir,
-          timeoutMs: limitMs,
-          maxBuffer,
-          networkIsolated: true,
-          signal: options.signal,
-        });
+        runFfmpegTranscode(ffmpegBin, ffmpegArgs, { cwd: tempDir, timeoutMs: limitMs, maxBuffer, networkIsolated: true, signal: options.signal });
       const runFfmpeg = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
       // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
       const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });

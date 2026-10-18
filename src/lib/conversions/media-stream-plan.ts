@@ -9,22 +9,22 @@ import type { LayoutStream } from './mp4-layout';
 
 export type VideoContainer = 'mp4' | 'mov' | 'mkv' | 'webm' | 'avi';
 
-/** Subtitle codecs that store pictures, not text. A container that only holds text cannot carry them. */
-export const BITMAP_SUBTITLE_CODECS: ReadonlySet<string> = new Set(['hdmv_pgs_subtitle', 'dvd_subtitle', 'dvb_subtitle']);
+/** Subtitle codecs that store pictures, not text. A text subtitle encoder cannot take them, so a container carries them as they are or not at all. */
+export const BITMAP_SUBTITLE_CODECS: ReadonlySet<string> = new Set(['hdmv_pgs_subtitle', 'dvd_subtitle', 'dvb_subtitle', 'xsub']);
 
 export interface ContainerSubtitleCodecs {
   /** Output codec of a text subtitle stream (`copy` keeps the input codec). */
   text: string;
-  /** Output codec of a bitmap subtitle stream, or null when the container cannot carry one. */
-  bitmap: string | null;
+  /** Bitmap subtitle codecs the container carries by stream copy; a bitmap stream of any other codec is left out. */
+  bitmap: readonly string[];
 }
 
-/** Subtitle codecs per container. A container missing here (avi) carries no subtitle stream at all. */
+/** Subtitle codecs per container. A container missing here (avi) carries no subtitle stream at all. Matroska has codec ids for PGS, VobSub and DVB subtitles, not for XSUB. */
 export const SUBTITLE_CODEC_BY_CONTAINER: Readonly<Record<string, ContainerSubtitleCodecs>> = {
-  mp4: { text: 'mov_text', bitmap: null },
-  mov: { text: 'mov_text', bitmap: null },
-  webm: { text: 'webvtt', bitmap: null },
-  mkv: { text: 'copy', bitmap: 'copy' },
+  mp4: { text: 'mov_text', bitmap: [] },
+  mov: { text: 'mov_text', bitmap: [] },
+  webm: { text: 'webvtt', bitmap: [] },
+  mkv: { text: 'copy', bitmap: ['hdmv_pgs_subtitle', 'dvd_subtitle', 'dvb_subtitle'] },
 };
 
 /** Containers that carry attachment streams (fonts, cover files). */
@@ -81,18 +81,11 @@ function selectAudio(audio: readonly LayoutStream[], track: number | 'all' | und
   return [audio[track]];
 }
 
+/** The subtitle streams the container carries: every text stream, and the bitmap streams whose codec it carries by copy. */
 function carriableSubtitles(subtitles: readonly LayoutStream[], container: VideoContainer): LayoutStream[] {
   const codecs = Object.hasOwn(SUBTITLE_CODEC_BY_CONTAINER, container) ? SUBTITLE_CODEC_BY_CONTAINER[container] : undefined;
   if (!codecs) return [];
-  for (const stream of subtitles) {
-    if (BITMAP_SUBTITLE_CODECS.has(stream.codecName) && codecs.bitmap === null) {
-      throw new InvalidMediaOptionError(
-        `Subtitle stream #${stream.index} (${stream.codecName}) is a bitmap subtitle that ${container} cannot carry. ` +
-          'Set subtitles.mode to "burn" to render it into the picture, or convert to mkv.'
-      );
-    }
-  }
-  return [...subtitles];
+  return subtitles.filter((stream) => !BITMAP_SUBTITLE_CODECS.has(stream.codecName) || codecs.bitmap.includes(stream.codecName));
 }
 
 function droppedEntry(stream: LayoutStream, kind: DroppedStream['kind'], reason: DroppedStream['reason']): DroppedStream {
@@ -108,7 +101,7 @@ function droppedStreams(
   streams: readonly LayoutStream[],
   container: VideoContainer,
   video: LayoutStream | undefined,
-  hasSubtitleCodecs: boolean,
+  carriedSubtitles: readonly LayoutStream[],
   burnSubtitles: boolean,
   hasChapters: boolean
 ): DroppedStream[] {
@@ -120,7 +113,7 @@ function droppedStreams(
       dropped.push(droppedEntry(stream, 'video', 'additional_video_track'));
     } else if (stream.type === 'data') {
       dropped.push(droppedEntry(stream, 'data', 'stream_type_unsupported'));
-    } else if (stream.type === 'subtitle' && !burnSubtitles && !hasSubtitleCodecs) {
+    } else if (stream.type === 'subtitle' && !burnSubtitles && !carriedSubtitles.includes(stream)) {
       dropped.push(droppedEntry(stream, 'subtitle', 'container_unsupported'));
     } else if (stream.type === 'attachment' && !ATTACHMENT_CONTAINERS.has(container)) {
       dropped.push(droppedEntry(stream, 'attachment', 'container_unsupported'));
@@ -134,8 +127,9 @@ function droppedStreams(
 
 /**
  * Plans the streams of a video-container target: the first real video track, every audio track (or the
- * chosen one), every subtitle the container can carry, and attachments for mkv. A bitmap subtitle that a
- * text-only container cannot hold is rejected with the stream named, unless the caller burns it in.
+ * chosen one), every subtitle the container can carry, and attachments for mkv. A bitmap subtitle the container cannot
+ * carry as it is (every bitmap codec in mp4, mov and webm; XSUB everywhere) is left out and listed in `dropped`, never sent
+ * to a text subtitle encoder; a caller who wants it kept burns it into the picture.
  */
 export function planStreamMapping(input: StreamPlanInput): StreamMapPlan {
   const { streams, container } = input;
@@ -158,7 +152,7 @@ export function planStreamMapping(input: StreamPlanInput): StreamMapPlan {
     videoIndex: video?.index,
     subtitleCount: subtitles.length,
     subtitleCodec: subtitles.length > 0 && codecs ? codecs.text : undefined,
-    dropped: droppedStreams(streams, container, video, codecs !== undefined, input.burnSubtitles, input.hasChapters === true),
+    dropped: droppedStreams(streams, container, video, subtitles, input.burnSubtitles, input.hasChapters === true),
   };
 }
 

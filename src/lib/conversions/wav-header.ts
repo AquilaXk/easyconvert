@@ -27,6 +27,10 @@ export interface WavPcmInfo {
   sampleRate: number;
   channels: number;
   bitsPerSample: number;
+  /** Format tag of the samples: 1 for integer PCM, 3 for IEEE float (the sub-format of an extensible header). */
+  formatTag: number;
+  /** Byte offset of the first sample, just after the data chunk header. */
+  dataOffset: number;
   /** Bytes of sample data the data chunk declares (and the file holds). */
   dataBytes: number;
   durationSeconds: number;
@@ -44,7 +48,7 @@ export function parseWavPcmHeader(head: Uint8Array, fileSize: number): WavPcmInf
   const isWave = view.getUint32(8, false) === 0x57415645; // "WAVE"
   if (!isRiff || !isWave) return null;
 
-  let format: { sampleRate: number; channels: number; bitsPerSample: number; blockAlign: number } | null = null;
+  let format: { formatTag: number; sampleRate: number; channels: number; bitsPerSample: number; blockAlign: number } | null = null;
   let offset = RIFF_HEADER_BYTES;
   for (let chunk = 0; chunk < WAV_CHUNKS_MAX && offset + CHUNK_HEADER_BYTES <= head.length; chunk++) {
     const id = view.getUint32(offset, false);
@@ -60,6 +64,7 @@ export function parseWavPcmHeader(head: Uint8Array, fileSize: number): WavPcmInf
       }
       if (!isPcmTag(tag)) return null;
       format = {
+        formatTag: tag,
         channels: view.getUint16(body + 2, true),
         sampleRate: view.getUint32(body + 4, true),
         blockAlign: view.getUint16(body + 12, true),
@@ -70,12 +75,12 @@ export function parseWavPcmHeader(head: Uint8Array, fileSize: number): WavPcmInf
       if (format === null || size === 0 || size === UNKNOWN_DATA_SIZE) return null;
       // A data chunk that runs past the end of the file is sized by the file, which only the prober decides.
       if (body + size > fileSize) return null;
-      const { channels, sampleRate, bitsPerSample, blockAlign } = format;
+      const { formatTag, channels, sampleRate, bitsPerSample, blockAlign } = format;
       if (channels < 1 || channels > CHANNELS_MAX || sampleRate < 1 || bitsPerSample < BITS_PER_BYTE) return null;
       if (blockAlign !== channels * Math.ceil(bitsPerSample / BITS_PER_BYTE)) return null;
       const frames = Math.floor(size / blockAlign);
       if (frames < 1) return null;
-      return { sampleRate, channels, bitsPerSample, dataBytes: size, durationSeconds: frames / sampleRate };
+      return { sampleRate, channels, bitsPerSample, formatTag, dataOffset: body, dataBytes: size, durationSeconds: frames / sampleRate };
     }
     // Chunks are padded to an even size.
     offset = body + size + (size % 2);

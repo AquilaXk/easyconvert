@@ -84,7 +84,8 @@ export type ExternalOracleTool =
   | 'rpm2cpio'
   | 'cpio'
   | 'dpkg-deb'
-  | 'file';
+  | 'file'
+  | 'fluidsynth';
 
 export class OracleToolMissingError extends Error {
   public readonly isOracleSkip = true;

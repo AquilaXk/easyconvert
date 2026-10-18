@@ -24,16 +24,22 @@ interface WavCase {
   sampleRate: number;
   channels: number;
   bitsPerSample: number;
+  formatTag: number;
+  dataOffset: number;
   dataBytes: number;
 }
 
 function wavCase(name: string, spec: Parameters<typeof craftWav>[0]): WavCase {
+  const bytes = craftWav(spec);
   return {
     name,
-    bytes: craftWav(spec),
+    bytes,
     sampleRate: spec.sampleRate,
     channels: spec.channels,
     bitsPerSample: spec.bitsPerSample,
+    formatTag: spec.formatTag ?? 1,
+    // The first sample follows the first "data" chunk header, found by a plain byte search.
+    dataOffset: Buffer.from(bytes).indexOf('data', 12, 'latin1') + 8,
     dataBytes: spec.data.length,
   };
 }
@@ -71,12 +77,14 @@ function withTempFile<T>(bytes: Uint8Array, fn: (file: string) => T): T {
 }
 
 describe('WAVE header reader', () => {
-  it.each(CASES)('reads the format and the data size of $name', ({ bytes, sampleRate, channels, bitsPerSample, dataBytes }) => {
+  it.each(CASES)('reads the format and the data size of $name', ({ bytes, sampleRate, channels, bitsPerSample, formatTag, dataOffset, dataBytes }) => {
     const info = parseWavPcmHeader(bytes, bytes.length);
     expect(info).toEqual({
       sampleRate,
       channels,
       bitsPerSample,
+      formatTag,
+      dataOffset,
       dataBytes,
       durationSeconds: Math.floor(dataBytes / (channels * (bitsPerSample / 8))) / sampleRate,
     });

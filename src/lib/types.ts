@@ -1187,6 +1187,32 @@ export class MediaProbeError extends ConversionFailedError {
   }
 }
 
+/**
+ * A media input that is understood but that this worker cannot turn into the target: a MIDI file the synthesizer
+ * rejects or renders past its limit, an audio or video stream no packet of which decodes. Another worker would refuse
+ * the same file, so it is not an `EngineMissingError` and the queue does not retry it.
+ */
+export class UnprocessableMediaInputError extends ConversionFailedError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnprocessableMediaInputError';
+  }
+}
+
+/**
+ * A stream whose codec, or a coding tool of it, the installed FFmpeg has no decoder for. Converting it anyway would write a
+ * truncated or silent stream, so the conversion is refused and names the codec.
+ */
+export class UnsupportedMediaCodecError extends UnprocessableMediaInputError {
+  /** Name of the codec or coding tool, for example `xHE-AAC (USAC)`. */
+  readonly codec: string;
+  constructor(codec: string, message: string) {
+    super(message);
+    this.name = 'UnsupportedMediaCodecError';
+    this.codec = codec;
+  }
+}
+
 export type ArchiveCollisionPolicy = 'rename' | 'error' | 'overwrite';
 
 export interface ArchiveEntryMetadata {
