@@ -64,6 +64,10 @@ Usage limits
 15. [Usage is charged for successful conversions only](#15-usage-is-charged-for-successful-conversions-only)
 16. [Free and anonymous limits](#16-free-and-anonymous-limits)
 
+Delivery
+
+47. [Merging without the up-to-date requirement](#47-merging-without-the-up-to-date-requirement)
+
 Quality evidence
 
 17. [Parity gate: quality and speed against reference tools](#17-parity-gate-quality-and-speed-against-reference-tools)
@@ -1137,3 +1141,23 @@ Compression
   - **Rewriting the language tag of the document** before export: it changes the user's file.
 - **Verified by**: `tests/spreadsheet-page-images.test.ts` (the filter data of the first-page export and of the default export; a two-sheet workbook still a ZIP of both pages, each page equal in pixels to `pdftoppm` of the suite's own PDF; a 40,000-row sheet beyond the limit refused with a 413 that names the count, the limit and `multiPageOutput`, its first page and its pages 2 to 3 equal to the suite's pages, none blank; `govdocs1-005540.xls` and `office-spreadsheet-no_drawing_patriarch.xlsx` refused by name and their first pages equal to page 1 of the suite's PDF), `tests/office-comment-annotations.test.ts` (the filter data of the three applications; a Word document with an Uzbek Cyrillic comment, and the real attachments document, converted to PDF with no note annotation read by pdf-lib, and to PNG and JPEG pages the image library decodes, as many as the PDF has pages), `tests/libreoffice-pool-manager.test.ts` and `tests/pdf-export-options.test.ts` (the filter strings), and a run on Ubuntu 24.04 with LibreOffice 24.2 under `ORACLE_STRICT_MODE=1` (the same tests red on `main`: `exit 139` for the real document, a text annotation for the derived one).
 - **Revisit when**: a real document or presentation of thousands of pages fails the same way (then set `maxRenderedPages` for it too); the page chain gets page-parallel drawing (the rate behind 500 pages improves); a caller needs the comments in the PDF (then an option, default off); or the worker image moves to a LibreOffice whose PDF export defaults match its plain export.
+
+## 47. Merging without the up-to-date requirement
+
+- **Status**: Implemented (issue #797, epic #763), decided 2026-10-18 (QA decision). Applied to the `main` ruleset on 2026-10-18.
+- **Decision**: the `main` ruleset no longer requires a pull request to be up to date with `main` before it merges. The required checks stay `verify` and `SonarCloud Code Analysis`, on the pull request head. Speed parity still runs on the head once the `automerge` label is added, and `verify` still requires it for a changed conversion family.
+- **Why it is right in practice**:
+  - **The measured cost of the rule.** When one pull request merged, every other open one turned behind and had to merge `main` and run the whole pipeline again: about 19 minutes, quality parity 14 and speed parity 12. On 2026-10-18 #794 passed every check at 01:28, turned behind when #796 merged, and ran again; with three or four open pull requests, merges waited in series for about 20 minutes each. The runners were not the limit.
+  - **The usual answer, a merge queue, is not available here.** GitHub offers merge queues only to repositories owned by an organization. The ruleset update with a merge queue rule was refused (`422 Invalid rule 'merge_queue'`), and the queue workflow of #798 was reverted by #799.
+  - **Off is the platform default**, and most projects without a merge queue merge this way. They rely on the checks of the head and on the run after the merge.
+  - **This repository's pull requests rarely share files.** They are area-sized changes to separate conversion families, and a conflict in the text still blocks the merge.
+- **Benefits and trade-offs**:
+  - Merges no longer wait in series, and a merge does not cost every other pull request a full run.
+  - The cost: two pull requests that each pass alone can break `main` together, through a change that does not conflict in the text (a renamed export, a shared baseline count, a policy entry number). The push to `main` runs the tests, the conformance and integration suites, the container check and quality parity for the changed families, and the nightly run measures speed. A red `main` is then fixed first, before the next merge.
+  - Speed parity measures the head against its own base, not against the `main` it merges into. A speed regression that appears only in combination shows in the nightly run.
+- **Alternatives rejected**:
+  - **Keeping the rule**: about 20 minutes of waiting per merge in series, for a risk that the run after the merge catches.
+  - **Moving the repository to an organization to get the merge queue**: the repository URL, the SonarCloud binding, secrets and deploy hooks all change, for a saving the rule change already gives.
+  - **Running speed parity on the push to `main` too**: 12 more minutes per merge for a number the nightly run measures.
+- **Verified by**: the ruleset read back after the update (`strict_required_status_checks_policy: false`, `verify` and `SonarCloud Code Analysis` required), and the next merges, which no longer turn the open pull requests behind.
+- **Revisit when**: `main` breaks after a merge because of two pull requests that passed alone (then turn the rule back on for the change sets that touch shared files, or move to an organization for the merge queue); or the repository moves to an organization.
