@@ -118,7 +118,8 @@ export function isGzipFamilyCompatible(ext: string, buf: Uint8Array): boolean {
 
 /** Adobe Illustrator artwork: PDF-compatible files (the default since CS) open with `%PDF`; versions 3 to 8 are PostScript. */
 const ILLUSTRATOR_EXTENSION = 'ai';
-const POSTSCRIPT_EXTENSIONS: ReadonlySet<string> = new Set(['ps', 'eps']);
+/** PostScript programs by nature; a Type 1 font opens with `%!PS-AdobeFont` or `%!FontType1`, and its reader refuses a program that is no font. */
+const POSTSCRIPT_EXTENSIONS: ReadonlySet<string> = new Set(['ps', 'eps', 'pfa', 'pfb']);
 /** The Illustrator header comments and procedure sets sit in the PostScript prolog, near the start of the file. */
 const ILLUSTRATOR_PROLOG_BYTES = 8192;
 /** `%%Creator: Adobe Illustrator`, the `%AI<n>_...` format comments, or the `Adobe_Illustrator_AI<n>` procedure set. */
