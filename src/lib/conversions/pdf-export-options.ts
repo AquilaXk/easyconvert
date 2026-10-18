@@ -104,23 +104,28 @@ const PDF_EXPORT_PASS_THROUGH_JPEG_QUALITY = 100;
 const LIBREOFFICE_PDF_VERSION: Record<PdfAConformance, number> = { 'pdfa-1b': 1, 'pdfa-2b': 2, 'pdfa-3b': 3 };
 
 interface FilterDataEntry {
-  type: 'boolean' | 'long';
+  type: 'boolean' | 'long' | 'string';
   value: string;
 }
 
 const booleanEntry = (value: boolean): FilterDataEntry => ({ type: 'boolean', value: String(value) });
 const longEntry = (value: number): FilterDataEntry => ({ type: 'long', value: String(value) });
+const stringEntry = (value: string): FilterDataEntry => ({ type: 'string', value });
 
 /**
  * FilterData of the PDF export filters. By default the export keeps embedded JPEG streams byte for
- * byte (no downsampling, quality 100) and writes the heading outline; `imageDpi` and `jpegQuality`
- * opt into a compression profile, and a PDF/A request selects the PDF version in the same export.
+ * byte (no downsampling, quality 100), writes the heading outline and leaves the comments of the document out of the pages;
+ * the suite takes every property FilterData does not name from the export's own defaults, which turn comments into note
+ * annotations (its plain export writes none), so that one is named; `imageDpi` and `jpegQuality`
+ * opt into a compression profile, and a PDF/A request selects the PDF version in the same export. `pageRange` limits the
+ * export to those pages of the printed document (the office suite's range syntax, `1` or `2-4`); the worker sets it, never a request.
  */
-export function buildPdfExportFilterData(options: ConversionOptions): Record<string, FilterDataEntry> {
+export function buildPdfExportFilterData(options: ConversionOptions, pageRange?: string): Record<string, FilterDataEntry> {
   const data: Record<string, FilterDataEntry> = {
     ReduceImageResolution: booleanEntry(options.imageDpi !== undefined),
     Quality: longEntry(options.jpegQuality ?? PDF_EXPORT_PASS_THROUGH_JPEG_QUALITY),
     ExportBookmarks: booleanEntry(true),
+    ExportNotes: booleanEntry(false),
   };
   if (options.imageDpi !== undefined) {
     data.MaxImageResolution = longEntry(options.imageDpi);
@@ -131,6 +136,9 @@ export function buildPdfExportFilterData(options: ConversionOptions): Record<str
   const pdfa = directPdfAExportConformance(options);
   if (pdfa) {
     data.SelectPdfVersion = longEntry(LIBREOFFICE_PDF_VERSION[pdfa]);
+  }
+  if (pageRange !== undefined) {
+    data.PageRange = stringEntry(pageRange);
   }
   return data;
 }

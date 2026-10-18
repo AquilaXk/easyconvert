@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import { crc32 } from '../lib/conversions/crc32';
-import { ConversionFailedError, UnsupportedOptionError } from '../lib/types';
+import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../lib/types';
 import { executeSandboxedBinary, SandboxedBufferLimitError, type SandboxedExecutionOptions } from './sandbox';
 
 /**
@@ -193,6 +193,21 @@ export async function renderPngBatch(pdftoppm: string, tempDir: string, dpi: num
 export function selectsPages(options: { page?: unknown; pages?: unknown }): boolean {
   const named = (value: unknown) => value !== undefined && value !== null && !(typeof value === 'string' && value.trim() === '');
   return named(options.page) || named(options.pages);
+}
+
+/**
+ * The pages a render draws out of the selected ones: only the first when the request wants one page (`multiPageOutput: "first"`
+ * returns that page, so drawing the others is wasted work), and none beyond the worker's limit for the request (`maxRenderedPages`),
+ * which is refused with a 413 that names the ways to narrow the request.
+ */
+export function boundRenderedPages(selected: number[], options: { multiPageOutput?: string; maxRenderedPages?: number }): number[] {
+  const pages = options.multiPageOutput === 'first' ? selected.slice(0, 1) : selected;
+  if (options.maxRenderedPages !== undefined && pages.length > options.maxRenderedPages) {
+    throw new PayloadLimitError(
+      `The document prints ${pages.length} pages; at most ${options.maxRenderedPages} are rendered to images in one request. Select pages with "pages" (for example "1-10"), or set "multiPageOutput" to "first" for the first page.`
+    );
+  }
+  return pages;
 }
 
 /** Raster density of a PDF page image: the default and the range the API accepts. */

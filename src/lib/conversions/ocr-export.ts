@@ -283,7 +283,7 @@ function normalizePages(ocrInput: OcrResult | OcrResult[]): OcrPageResult[] {
 function assertWordGeometry(pages: OcrPageResult[]): void {
   for (const page of pages) {
     if (page.lineBlocks.length === 0 && page.text.trim() !== '') {
-      throw new OcrMarkupError(`${NEED_WORD_GEOMETRY}: page ${page.pageNumber} has text but no recognized lines.`);
+      throw new OcrMarkupError(`${NEED_WORD_GEOMETRY}: page ${page.pageNumber} has text but no recognized lines. Convert to txt, html or pdf to keep the text.`);
     }
   }
 }
