@@ -1353,6 +1353,14 @@ function wantsGeometry(job: PdfTextJob, explicit: Set<number> | null, pageNumber
   return textLayerCharCount(pageText) >= job.densityThreshold;
 }
 
+/** The text of a page's items, in item order, as the density analysis and the word geometry read it. */
+function textOfItems(items: unknown[]): string {
+  return items
+    .map((item) => (item as { str?: string }).str || '')
+    .join(' ')
+    .trim();
+}
+
 /** Reads the pages one after another: each page's text content and operator list are large, and their memory is released before the next. */
 async function readPages(
   pdfjs: PdfJs,
@@ -1369,13 +1377,14 @@ async function readPages(
     if (!needsPage(job, explicit, pageNumber)) continue;
     const page = await doc.getPage(pageNumber); // NOSONAR S9382 sequential: one page in memory at a time
     const content = await page.getTextContent({ includeMarkedContent: false }); // NOSONAR S9382 sequential
-    const pageText = content.items
-      .map((item) => (item as { str?: string }).str || '')
-      .join(' ')
-      .trim();
-    if (wantsContent(job, pageNumber)) {
+    const contentWanted = wantsContent(job, pageNumber);
+    if (contentWanted) {
       const readOperators = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
+      // Reading the content also replaces the glyphs of `content.items` that have no text, so the page text below is clean.
       result.content.push(await readPageContent(pdfjs.OPS, page, content, pageNumber, fonts, readOperators, images)); // NOSONAR S9382 sequential
+    }
+    const pageText = textOfItems(content.items);
+    if (contentWanted) {
       documentItems += content.items.length;
       documentChars += pageText.length;
       if (documentItems > PDF_TEXT_MAX_ITEMS_PER_DOCUMENT || documentChars > PDF_TEXT_MAX_CHARS_PER_DOCUMENT) {
@@ -1413,6 +1422,8 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       data: new Uint8Array(pdfBuffer),
       useSystemFonts: true,
       disableFontFace: true,
+      // The fonts keep their encoding and ToUnicode data, so a glyph pdfjs cannot map can be read from its glyph name.
+      fontExtraProperties: true,
       isEvalSupported: false,
       maxImageSize: PDF_TEXT_MAX_IMAGE_PIXELS,
       standardFontDataUrl: standardFontDataUrl(),

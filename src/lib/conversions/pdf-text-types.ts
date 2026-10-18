@@ -52,17 +52,25 @@ export class PdfTextGeometryError extends ConversionFailedError {
   }
 }
 
+/** Pages a message names. */
+const PAGE_NUMBERS_SHOWN = 10;
+
+/** `page 3` or `pages 3, 5, 8`: the first few page numbers, then an ellipsis. */
+export function pagesPhrase(pages: readonly number[]): string {
+  return `${pages.length === 1 ? 'page' : 'pages'} ${pages.slice(0, PAGE_NUMBERS_SHOWN).join(', ')}${pages.length > PAGE_NUMBERS_SHOWN ? ', ...' : ''}`;
+}
+
 /**
- * A page's text has glyphs the font gives no Unicode value for (replacement characters or control codes), so
- * reading it would hand out garbage. The request can enable OCR to read such pages instead (HTTP 400).
+ * No page of the document has text that reads: the glyphs the fonts give no Unicode value for (replacement characters,
+ * control codes, private-use characters) outnumber the glyphs that map, so reading the pages would hand out garbage or
+ * nothing. The request can enable OCR to read such pages instead (HTTP 400).
  */
 export class PdfTextUnmappedError extends ConversionFailedError {
   readonly status = 400;
   readonly pages: readonly number[];
   constructor(pages: readonly number[]) {
-    const shown = pages.slice(0, 10).join(', ');
     super(
-      `PDF page${pages.length === 1 ? '' : 's'} ${shown}${pages.length > 10 ? ', ...' : ''} use a font with no Unicode mapping, so the text cannot be read; enable OCR to recognize ${pages.length === 1 ? 'it' : 'them'}.`
+      `PDF ${pagesPhrase(pages)} use a font with no Unicode mapping, so the text cannot be read; enable OCR to recognize ${pages.length === 1 ? 'it' : 'them'}.`
     );
     this.name = 'PdfTextUnmappedError';
     this.pages = pages;
@@ -173,8 +181,11 @@ export interface PdfPageContent {
   items: PdfContentItem[];
   rules: PdfContentRule[];
   images: PdfContentImage[];
-  /** Items whose text holds replacement characters or control codes (glyphs no Unicode value was found for). */
-  unmappedItems: number;
+  /**
+   * Glyphs left out of the items because no Unicode value was found for them: no ToUnicode map, no name in the font's
+   * encoding that the Adobe Glyph List maps and, for a symbol font, no entry in its table.
+   */
+  unmappedGlyphs: number;
   /** The operator list was not read (too many items or operators): no rules, images or font names for the page. */
   operatorsSkipped: boolean;
   /** Rules beyond the per-page cap were dropped. */
