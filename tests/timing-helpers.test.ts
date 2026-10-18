@@ -18,149 +18,174 @@ import {
 } from './helpers/timing';
 
 /**
- * The timing helpers are the oracle for every complexity claim in the suite, so they are checked against
- * algorithms whose growth is known by construction: a loop of n steps, a loop of n * n steps, and work that
- * ignores its size argument.
+ * The timing helpers are the oracle for every complexity claim in the suite, so they are checked against work whose
+ * growth is known by construction. The classification is checked on a virtual clock: each run of the work advances
+ * the clock by a cost that is a fixed function of its input size, and no real time passes, so the verdict is exact
+ * on a runner of any speed and load. One case at the end times real loops (on the CPU clock) to show that the helpers
+ * work on real time as well.
  */
 
-const LINEAR_STEPS_PER_UNIT = 4000;
+/** Cost, in virtual milliseconds, of one run of work that is linear, quadratic or independent of its input size. */
+const LINEAR_MS_PER_UNIT = 0.01;
+const QUADRATIC_MS_PER_UNIT = 0.00001;
+const CONSTANT_MS = 10;
+/** A run this cheap lasts about 2 microseconds: far below one timer tick, so the helper has to repeat it. */
+const MICROSECOND_MS_PER_UNIT = 0.0004;
 const LINEAR_BASE = 2000;
 const QUADRATIC_BASE = 1500;
 const FAST_BASE = 5;
-const CONSTANT_STEPS = 20_000;
 const MODEST_CLAIM = 1000;
 const HUGE_CLAIM = 1_000_000;
-/**
- * A modest size whose quadratic run takes a fraction of a millisecond, the regime in which a fixed floor on the
- * baseline used to hide growth: 4x the size is 16x the work, and still under 10 ms.
- */
 const SHORT_QUADRATIC_MODEST = 600;
 const SHORT_LINEAR_MODEST = 100;
-/** Steps per claimed unit for a reader that trusts the claim and walks it. */
-const CLAIM_WALK_STEPS_PER_UNIT = 50;
+/** Cost per claimed unit of a reader that trusts the claim and walks it. */
+const CLAIM_WALK_MS_PER_UNIT = 0.01;
+const SHORT_QUADRATIC_MS_PER_UNIT = 0.00005;
+const SHORT_LINEAR_MS_PER_UNIT = 0.1;
 
-let sink = 0;
-
-function linearWork(n: number): void {
-  let sum = 0;
-  for (let i = 0; i < n * LINEAR_STEPS_PER_UNIT; i++) sum += i % 7;
-  sink += sum;
+/** A clock that moves only when work runs; `work(costOf)` is work that costs `costOf(size)` per run. */
+function virtualTime(): { clock: () => number; work: (costOf: (size: number) => number) => (size: number) => void } {
+  let now = 0;
+  return {
+    clock: () => now,
+    work: (costOf) => (size) => {
+      now += costOf(size);
+    },
+  };
 }
 
-function quadraticWork(n: number): void {
-  let sum = 0;
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) sum += (i ^ j) & 3;
-  }
-  sink += sum;
-}
-
-function constantWork(): void {
-  let sum = 0;
-  for (let i = 0; i < CONSTANT_STEPS; i++) sum += i % 5;
-  sink += sum;
-}
-
-function claimWalkingWork(claimed: number): void {
-  let sum = 0;
-  for (let i = 0; i < claimed * CLAIM_WALK_STEPS_PER_UNIT; i++) sum += i & 1;
-  sink += sum;
-}
+const linearCost = (size: number): number => size * LINEAR_MS_PER_UNIT;
+const quadraticCost = (size: number): number => size * size * QUADRATIC_MS_PER_UNIT;
 
 describe('timing helpers separate linear from super-linear growth', () => {
   it('accepts work whose time grows in proportion to the input', async () => {
-    const measurement = await expectLinearScaling('linear loop', linearWork, { baseSize: LINEAR_BASE });
-    expect(measurement.ratio).toBeGreaterThan(1);
-    expect(measurement.ratio).toBeLessThanOrEqual(SCALING_FACTOR * 2);
+    const time = virtualTime();
+    const measurement = await expectLinearScaling('linear loop', time.work(linearCost), { baseSize: LINEAR_BASE, clock: time.clock });
+    expect(measurement.ratio).toBeCloseTo(SCALING_FACTOR, 10);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('rejects quadratic work with a message that names the growth', async () => {
-    await expect(expectLinearScaling('quadratic loop', quadraticWork, { baseSize: QUADRATIC_BASE })).rejects.toThrow(
-      /quadratic loop: 4x the input took \d+\.\d+x as long/
-    );
+    const time = virtualTime();
+    await expect(
+      expectLinearScaling('quadratic loop', time.work(quadraticCost), { baseSize: QUADRATIC_BASE, clock: time.clock })
+    ).rejects.toThrow(/quadratic loop: 4x the input took 16\.00x as long/);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('times work that finishes in microseconds by repeating it, so a fast machine measures as well as a slow one', async () => {
-    // 5 units are 20,000 loop steps, tens of microseconds: far below one timer tick per run.
-    const measurement = await expectLinearScaling('microsecond loop', linearWork, { baseSize: FAST_BASE });
+    const time = virtualTime();
+    const measurement = await expectLinearScaling('microsecond loop', time.work((size) => size * MICROSECOND_MS_PER_UNIT), {
+      baseSize: FAST_BASE,
+      clock: time.clock,
+    });
     expect(measurement.smallMs).toBeLessThan(MIN_SAMPLE_MS);
     expect(measurement.smallSampleMs).toBeGreaterThanOrEqual(MIN_SAMPLE_MS);
-    expect(measurement.ratio).toBeGreaterThan(1);
+    expect(measurement.ratio).toBeCloseTo(SCALING_FACTOR, 10);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('refuses a comparison whose small run is too short to time', async () => {
-    await expect(expectLinearScaling('trivial loop', () => undefined, { baseSize: 1 })).rejects.toThrow(
+    const time = virtualTime();
+    await expect(expectLinearScaling('trivial loop', () => undefined, { baseSize: 1, clock: time.clock })).rejects.toThrow(
       /too short to time/
     );
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('keeps the best of the interleaved passes of each side', async () => {
+    // Call 0 of each side is the warm-up, which is not timed; the three passes cost 20, 10 and 30 ms against 100, 90 and 200 ms.
+    const SMALL_COSTS = [50, 20, 10, 30];
+    const LARGE_COSTS = [500, 100, 90, 200];
+    let now = 0;
+    let smallCalls = 0;
+    let largeCalls = 0;
     const measurement = await measureInterleaved(
-      () => linearWork(LINEAR_BASE),
-      () => linearWork(LINEAR_BASE * SCALING_FACTOR)
+      () => {
+        now += SMALL_COSTS[smallCalls++];
+      },
+      () => {
+        now += LARGE_COSTS[largeCalls++];
+      },
+      SMALL_COSTS.length - 1,
+      undefined,
+      () => now
     );
-    expect(measurement.smallMs).toBeGreaterThan(0);
-    expect(measurement.largeMs).toBeGreaterThan(measurement.smallMs);
-    expect(measurement.ratio).toBeCloseTo(measurement.largeMs / measurement.smallMs, 10);
+    expect(measurement.smallMs).toBe(10);
+    expect(measurement.largeMs).toBe(90);
+    expect(measurement.ratio).toBe(9);
   }, SCALING_TEST_TIMEOUT_MS);
 });
 
 describe('size-independence check', () => {
+  const constantCost = (): number => CONSTANT_MS;
+
   it('accepts a rejection that ignores the claimed size', async () => {
-    await expectSizeIndependent('constant work', constantWork, { modestSize: MODEST_CLAIM, hugeSize: HUGE_CLAIM });
+    const time = virtualTime();
+    const measurement = await expectSizeIndependent('constant work', time.work(constantCost), {
+      modestSize: MODEST_CLAIM,
+      hugeSize: HUGE_CLAIM,
+      clock: time.clock,
+    });
+    expect(measurement.ratio).toBe(1);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('rejects a reader whose work follows the claimed size', async () => {
+    const time = virtualTime();
     await expect(
-      expectSizeIndependent('claim walker', claimWalkingWork, { modestSize: MODEST_CLAIM, hugeSize: HUGE_CLAIM })
+      expectSizeIndependent('claim walker', time.work((claimed) => claimed * CLAIM_WALK_MS_PER_UNIT), {
+        modestSize: MODEST_CLAIM,
+        hugeSize: HUGE_CLAIM,
+        clock: time.clock,
+      })
     ).rejects.toThrow(/claim walker: the larger input took .* the work must not grow with the input/);
   }, SCALING_TEST_TIMEOUT_MS);
 
-  it('rejects quadratic work at 4x the input even when the modest run is a fraction of a millisecond', async () => {
+  it('rejects quadratic work at 4x the input even when the modest run is a fraction of a second', async () => {
+    const time = virtualTime();
     await expect(
-      expectSizeIndependent('short quadratic', quadraticWork, {
+      expectSizeIndependent('short quadratic', time.work((size) => size * size * SHORT_QUADRATIC_MS_PER_UNIT), {
         modestSize: SHORT_QUADRATIC_MODEST,
         hugeSize: SHORT_QUADRATIC_MODEST * SCALING_FACTOR,
+        clock: time.clock,
       })
     ).rejects.toThrow(/short quadratic: the larger input took .* the work must not grow with the input/);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('rejects linear work at 4x the input', async () => {
+    const time = virtualTime();
     await expect(
-      expectSizeIndependent('short linear', linearWork, {
+      expectSizeIndependent('short linear', time.work((size) => size * SHORT_LINEAR_MS_PER_UNIT), {
         modestSize: SHORT_LINEAR_MODEST,
         hugeSize: SHORT_LINEAR_MODEST * SCALING_FACTOR,
-        // CPU time: on a busy runner a preempted modest sample read as slow as the 4x one, and the growth went unseen.
-        clock: cpuClockMs,
+        clock: time.clock,
       })
     ).rejects.toThrow(/short linear: the larger input took .* the work must not grow with the input/);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('accepts constant work measured over the same sizes', async () => {
-    await expectSizeIndependent('short constant', constantWork, {
+    const time = virtualTime();
+    await expectSizeIndependent('short constant', time.work(constantCost), {
       modestSize: SHORT_QUADRATIC_MODEST,
       hugeSize: SHORT_QUADRATIC_MODEST * SCALING_FACTOR,
+      clock: time.clock,
     });
   }, SCALING_TEST_TIMEOUT_MS);
 });
 
 describe('reference comparison', () => {
+  const REFERENCE_MS = 6;
+
   it('rejects a candidate that does 16x the work of a sub-millisecond reference', async () => {
+    const time = virtualTime();
+    const reference = time.work(() => REFERENCE_MS);
+    const candidate = time.work(() => REFERENCE_MS * SCALING_FACTOR * SCALING_FACTOR);
     await expect(
-      expectNoSlowerThanReference(
-        'quadratic candidate',
-        () => quadraticWork(SHORT_QUADRATIC_MODEST),
-        () => quadraticWork(SHORT_QUADRATIC_MODEST * SCALING_FACTOR)
-      )
+      expectNoSlowerThanReference('quadratic candidate', () => reference(0), () => candidate(0), { clock: time.clock })
     ).rejects.toThrow(/quadratic candidate: the candidate took .* for the reference/);
   }, SCALING_TEST_TIMEOUT_MS);
 
   it('accepts a candidate that does the same work as the reference', async () => {
-    await expectNoSlowerThanReference(
-      'identical candidate',
-      () => quadraticWork(SHORT_QUADRATIC_MODEST),
-      () => quadraticWork(SHORT_QUADRATIC_MODEST)
-    );
+    const time = virtualTime();
+    const same = time.work(() => REFERENCE_MS);
+    const measurement = await expectNoSlowerThanReference('identical candidate', () => same(0), () => same(0), { clock: time.clock });
+    expect(measurement.ratio).toBe(1);
   }, SCALING_TEST_TIMEOUT_MS);
 });
 
@@ -334,6 +359,16 @@ describe('warm-up until the time of the work is steady', () => {
 });
 
 describe('the CPU clock', () => {
+  let sink = 0;
+
+  function quadraticLoop(n: number): void {
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) sum += (i ^ j) & 3;
+    }
+    sink += sum;
+  }
+
   const SLEEP_MS = 60;
   const BUSY_CPU_MS = 10;
 
@@ -343,13 +378,21 @@ describe('the CPU clock', () => {
     expect(cpuClockMs() - idleStart).toBeLessThan(SLEEP_MS / 2);
     // Moves: this loop ends only once the clock has been charged BUSY_CPU_MS, however long a busy runner takes to give them.
     const busyStart = cpuClockMs();
-    let sink = 0;
-    while (cpuClockMs() - busyStart < BUSY_CPU_MS) sink += 1;
-    expect(sink).toBeGreaterThan(0);
+    let spins = 0;
+    while (cpuClockMs() - busyStart < BUSY_CPU_MS) spins += 1;
+    expect(spins).toBeGreaterThan(0);
   });
 
+  // The one case on real time: 4x the input of a loop of n * n steps is 16x the work, twice the 8x bound, and the CPU clock
+  // does not charge the process for the time it waits for a core.
   it('still tells a linear loop from a quadratic one when it is the clock of the comparison', async () => {
-    const measurement = await measureInterleaved(() => quadraticWork(QUADRATIC_BASE), () => quadraticWork(QUADRATIC_BASE * SCALING_FACTOR), SCALING_PASSES, undefined, cpuClockMs);
+    const measurement = await measureInterleaved(
+      () => quadraticLoop(QUADRATIC_BASE),
+      () => quadraticLoop(QUADRATIC_BASE * SCALING_FACTOR),
+      SCALING_PASSES,
+      undefined,
+      cpuClockMs
+    );
     expect(measurement.ratio).toBeGreaterThan(SCALING_FACTOR * LINEAR_RATIO_SLACK);
   });
 });

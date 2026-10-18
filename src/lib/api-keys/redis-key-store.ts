@@ -986,6 +986,7 @@ export class RedisKeyStore extends KeyStore {
 
   public override resetStore() {
     this.reservations.clear();
+    this.tokenBuckets.clear();
     super.resetStore();
   }
 

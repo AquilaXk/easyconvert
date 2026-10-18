@@ -1,11 +1,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { installDecodeCounter } from './helpers/decode-counter';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 /**
- * Runs one decompression scenario in a fresh process and prints how it ended, how long the call took and how far the
- * process's peak RSS rose during it. The fixture is read from a file before the baseline is taken, so the peak that
+ * Runs one decompression scenario in a fresh process and prints how it ended, how many bytes the inflaters produced
+ * during the call and how far the process's peak RSS rose during it. The decoded bytes are the load-independent measure
+ * of the work done: a reader that refuses a bomb before inflating it decodes none, one that stops at its cap decodes
+ * about the cap. The fixture is read from a file before the baseline is taken, so the peak that
  * is measured belongs to the scenario alone: no earlier test in a shared worker can have raised it already. Modules
  * load inside the scenario, so a run pays only for what it uses.
  *
@@ -107,10 +110,11 @@ async function main(): Promise<void> {
   const [name, fixturePath] = process.argv.slice(2);
   const scenario = SCENARIOS[name];
   if (!scenario || !fixturePath) throw new Error(`usage: <scenario> <fixture file>; scenarios: ${Object.keys(SCENARIOS).join(', ')}`);
+  const decoded = installDecodeCounter();
   const fixture = fs.readFileSync(fixturePath);
   const run = await scenario(fixture);
   const rssBefore = process.resourceUsage().maxRSS * KIB;
-  const started = Date.now();
+  const decodedBefore = decoded.bytes();
   let error: { name: string; status?: number; message: string } | null = null;
   let size: number | null = null;
   let pictures: string[] = [];
@@ -129,9 +133,9 @@ async function main(): Promise<void> {
     const failure = caught as { name?: string; status?: number; message?: string };
     error = { name: String(failure.name), status: failure.status, message: String(failure.message).slice(0, 200) };
   }
-  const elapsedMs = Date.now() - started;
+  const decodedBytes = decoded.bytes() - decodedBefore;
   const rssGrowthBytes = process.resourceUsage().maxRSS * KIB - rssBefore;
-  process.stdout.write(`RESULT:${JSON.stringify({ error, elapsedMs, rssGrowthBytes, size, pictures })}\n`);
+  process.stdout.write(`RESULT:${JSON.stringify({ error, decodedBytes, rssGrowthBytes, size, pictures })}\n`);
   process.exit(0);
 }
 

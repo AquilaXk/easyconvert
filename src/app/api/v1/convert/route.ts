@@ -31,9 +31,7 @@ import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempoten
 import {
   ArchiveEntryCollisionError,
   ConversionFailedError,
-  ArchiveInputUnprocessableError,
-  EncryptedOfficeDocumentError,
-  UnprocessableCadInputError,
+  isUnprocessableInputError,
   EngineUnavailableError,
   PdfPostprocessError,
   WorkerOutputMissingError,
@@ -506,10 +504,10 @@ export async function POST(req: NextRequest) {
       // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
       return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri, undefined, undefined, rateLimitHeaders);
     }
-    if (err instanceof EncryptedOfficeDocumentError || err instanceof ArchiveInputUnprocessableError || err instanceof UnprocessableCadInputError) {
+    if (isUnprocessableInputError(err)) {
       // The file is intact but encrypted, password protected, DRM protected or coded with a method this engine does not
-      // decode (an archive's password and method errors included), or a DWG release or drawing the DWG reader refuses: 422, not the
-      // 400 of a malformed input.
+      // decode (an archive's password and method errors included), a DWG release or drawing the DWG reader refuses, or a font FontForge
+      // cannot read in full: 422, not the 400 of a malformed input.
       return createProblemDetailsResponse(err.status, err.message, instanceUri, undefined, undefined, rateLimitHeaders);
     }
     if (err instanceof WorkerOutputMissingError) {

@@ -9,6 +9,7 @@ import {
 } from '../types';
 import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bounded-inflate';
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
+import { isType1Format, type1FileToOpenType } from './font-fontforge';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
 import { readGlyfOutlines } from './font-glyf';
 import { WOFF2_KNOWN_TAGS, countWoff2Fonts, decodeUIntBase128, decodeWoff2Fonts, encodeUIntBase128, encodeWoff2Container, encodeWoff2ContainerAsync, type Woff2DecodedFont } from './font-woff2';
@@ -150,8 +151,8 @@ export async function convertFont(
     }
   }
 
-  // 1. Parse or synthesize canonical SFNT TrueType / OpenType font representation
-  const parsedFont = parseFontToSfnt(inputBuffer, src, baseName);
+  // 1. Parse or synthesize canonical SFNT TrueType / OpenType font representation (a Type 1 font is first read by FontForge into an OpenType font with the same outlines)
+  const parsedFont = isType1Format(src) ? decodeSfnt(await type1FileToOpenType(inputBuffer, options), baseName) : parseFontToSfnt(inputBuffer, src, baseName);
 
   // 2. Synthesize requested target format
   let outputBuffer: Buffer;
@@ -245,7 +246,7 @@ export function parseFontToSfnt(buffer: Buffer, format: string, defaultName: str
     return decodeSvgFont(buffer, defaultName);
   }
 
-  // Standard SFNT (TTF / OTF). DFONT and MacBinary containers are unwrapped above; PFA / PFB are not handled here.
+  // Standard SFNT (TTF / OTF). DFONT and MacBinary containers are unwrapped above; PFA / PFB are read by FontForge in convertFont before this point.
   if (looksLikeSfnt(buffer)) {
     return decodeSfnt(buffer, defaultName);
   }
@@ -275,7 +276,6 @@ export function decodeSfnt(buffer: Buffer, defaultName: string): ParsedFont {
 
   let offset = SFNT_HEADER_BYTES;
   for (let i = 0; i < numTables; i++) {
-
     const tag = buffer.toString('ascii', offset, offset + 4);
     const checkSum = buffer.readUInt32BE(offset + 4);
     const tableOffset = buffer.readUInt32BE(offset + 8);
