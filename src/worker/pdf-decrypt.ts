@@ -91,6 +91,14 @@ export function toPopplerDamageSignal(err: unknown, inProcessFallback: boolean |
 }
 
 /**
+ * True for the signal of `toPopplerDamageSignal`: Poppler found the file damaged, which says nothing about the password,
+ * so the in-process reader (it decrypts with the request's password itself) may read the file next.
+ */
+export function isPopplerDamageSignal(err: unknown): boolean {
+  return err instanceof EngineUnavailableError && err.reason === POPPLER_DAMAGED_REASON;
+}
+
+/**
  * True when a password was supplied but qpdf, the only component that can honour it, is missing.
  * No other engine can open the document, so callers must not fall back to one.
  */
