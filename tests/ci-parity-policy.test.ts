@@ -13,6 +13,7 @@ import {
   MAX_LINKED_ISSUES,
   ParityPolicyError,
   parseRunFile,
+  pullRequestNumber,
   readRunFile,
   renderExemptionComment,
   SECURITY_LABEL,
@@ -176,10 +177,22 @@ function fakeGithub(options: { issues?: Record<number, { pull_request?: unknown 
   const comments = options.comments ?? [];
   const open = options.openIssues ?? [];
   let nextIssue = 700;
+  let served: { number: number; title: string; body: string; labels: Array<{ name: string }> } | undefined;
   const github = {
     calls,
+    /** What GitHub holds for the pull request when the policy reads it, which may differ from the event payload. */
+    servePullRequest: (pull: { number: number; title: string; body: string; labels: string[] }) => {
+      served = { ...pull, labels: pull.labels.map((name) => ({ name })) };
+    },
     paginate: async (fn: (args: Record<string, unknown>) => unknown, args: Record<string, unknown>) => (await fn(args)) as unknown[],
     rest: {
+      pulls: {
+        get: async (args: { pull_number: number }) => {
+          calls.push({ method: 'pulls.get', args });
+          if (!served || served.number !== args.pull_number) throw Object.assign(new Error('Not Found'), { status: 404 });
+          return { data: served };
+        },
+      },
       issues: {
         get: async (args: { issue_number: number }) => {
           calls.push({ method: 'issues.get', args });
@@ -229,14 +242,16 @@ describe('applying the verdict in the workflow step', () => {
     runId: 4242,
     payload: { pull_request: { number, title: 'Fix a thing', body, labels: labels.map((name) => ({ name })) } },
   });
-  const applyWith = (github: ReturnType<typeof fakeGithub>, s: ReturnType<typeof setup>, labels: string[], body: string, scope = 'speed') =>
-    applyParityVerdict({ github, context: contextFor(labels, body), core: s.core, fs, runFilePath: s.file, scope });
+  const applyWith = (github: ReturnType<typeof fakeGithub>, s: ReturnType<typeof setup>, labels: string[], body: string, scope = 'speed') => {
+    github.servePullRequest({ number: 640, title: 'Fix a thing', body, labels });
+    return applyParityVerdict({ github, context: contextFor(labels, body), core: s.core, fs, runFilePath: s.file, scope });
+  };
 
   it('passes silently when nothing is below the reference', async () => {
     const s = setup([passing(SEVEN)]);
     const github = fakeGithub();
     expect(await applyWith(github, s, [], '')).toBe('pass');
-    expect(github.calls).toEqual([]);
+    expect(github.calls.filter((call) => call.method !== 'pulls.get')).toEqual([]);
     expect(s.messages.filter(([kind]) => kind === 'failed')).toEqual([]);
   });
 
@@ -245,7 +260,7 @@ describe('applying the verdict in the workflow step', () => {
     const github = fakeGithub({ issues: { 585: {} } });
     expect(await applyWith(github, s, ['bug'], 'Closes #585')).toBe('fail');
     expect(s.messages.find(([kind]) => kind === 'failed')?.[1]).toContain('1 row is below the reference tool');
-    expect(github.calls.filter((call) => call.method !== 'issues.get')).toEqual([]);
+    expect(github.calls.filter((call) => call.method !== 'issues.get' && call.method !== 'pulls.get')).toEqual([]);
   });
 
   it('fails the step when the verdict file is missing or unreadable', async () => {
@@ -294,7 +309,7 @@ describe('applying the verdict in the workflow step', () => {
     const s = setup([failing(XZ)], { exitCode: 1, baseline: { compared: 1, regressions: ['image/a/ssim: worse'] } });
     const github = fakeGithub({ issues: { 585: {} } });
     expect(await applyWith(github, s, ['security'], 'Closes #585')).toBe('fail');
-    expect(github.calls.filter((call) => call.method !== 'issues.get')).toEqual([]);
+    expect(github.calls.filter((call) => call.method !== 'issues.get' && call.method !== 'pulls.get')).toEqual([]);
     expect(s.messages.find(([kind]) => kind === 'failed')?.[1]).toContain('no label excuses a regression');
   });
 
@@ -412,6 +427,7 @@ describe('the exact requests of the security exemption', () => {
       runId: 4242,
       payload: { pull_request: { number: 640, title: 'Harden the reader', body, labels: labels.map((name) => ({ name })) } },
     };
+    github.servePullRequest({ number: 640, title: 'Harden the reader', body, labels });
     return applyParityVerdict({ github, context, core, fs, runFilePath: file, scope: 'speed' });
   }
 
@@ -419,6 +435,7 @@ describe('the exact requests of the security exemption', () => {
     const github = fakeGithub({ issues: { 585: {} } });
     expect(await apply(['security'], 'Closes #585', github)).toBe('exempt');
     expect(github.calls).toEqual([
+      { method: 'pulls.get', args: { ...OWNER_REPO, pull_number: 640 } },
       { method: 'issues.get', args: { ...OWNER_REPO, issue_number: 585 } },
       { method: 'issues.createLabel', args: { ...OWNER_REPO, name: 'parity-gap', color: 'fbca04', description: 'A family has rows below the reference tool' } },
       { method: 'issues.create', args: { ...OWNER_REPO, title: 'Parity gap: compression', labels: ['parity-gap'], body: expectedGapIssueBody } },
@@ -434,6 +451,7 @@ describe('the exact requests of the security exemption', () => {
     });
     expect(await apply(['security', 'bug'], 'Fixes #585', github)).toBe('exempt');
     expect(github.calls).toEqual([
+      { method: 'pulls.get', args: { ...OWNER_REPO, pull_number: 640 } },
       { method: 'issues.get', args: { ...OWNER_REPO, issue_number: 585 } },
       { method: 'issues.createLabel', args: { ...OWNER_REPO, name: 'parity-gap', color: 'fbca04', description: 'A family has rows below the reference tool' } },
       { method: 'issues.update', args: { ...OWNER_REPO, issue_number: 55, body: expectedGapIssueBody } },
@@ -444,6 +462,62 @@ describe('the exact requests of the security exemption', () => {
   it('does not even look an issue up for a pull request without the security label', async () => {
     const github = fakeGithub({ issues: { 585: {} } });
     expect(await apply(['bug', 'automerge'], 'Closes #585', github)).toBe('fail');
+    expect(github.calls).toEqual([{ method: 'pulls.get', args: { ...OWNER_REPO, pull_number: 640 } }]);
+  });
+
+  it('reads the labels from GitHub when it applies the verdict, not from the event payload a restarted run still holds', async () => {
+    const github = fakeGithub({ issues: { 585: {} } });
+    const file = path.join(dir, 'parity-verdict.json');
+    fs.writeFileSync(file, JSON.stringify(runFile([failing(XZ, 487)])));
+    const core = { info: () => undefined, warning: () => undefined, setFailed: () => undefined };
+    // The payload was recorded before the label was added; GitHub holds the label now.
+    const context = { repo: OWNER_REPO, serverUrl: 'https://github.com', runId: 4242, payload: { pull_request: { number: 640, title: 'Harden the reader', body: 'Closes #585', labels: [] } } };
+    github.servePullRequest({ number: 640, title: 'Harden the reader', body: 'Closes #585', labels: ['security'] });
+    expect(await applyParityVerdict({ github, context, core, fs, runFilePath: file, scope: 'speed' })).toBe('exempt');
+  });
+
+  it('applies the verdict of a merge queue entry to the pull request named by its queue ref', async () => {
+    const github = fakeGithub({ issues: { 585: {} } });
+    const file = path.join(dir, 'parity-verdict.json');
+    fs.writeFileSync(file, JSON.stringify(runFile([failing(XZ, 487), passing(SEVEN)])));
+    const core = { info: () => undefined, warning: () => undefined, setFailed: () => undefined };
+    const head = 'refs/heads/gh-readonly-queue/main/pr-640-' + 'a'.repeat(40);
+    const context = { repo: OWNER_REPO, serverUrl: 'https://github.com', runId: 4242, payload: { merge_group: { head_ref: head } } };
+    github.servePullRequest({ number: 640, title: 'Harden the reader', body: 'Closes #585', labels: ['security'] });
+    expect(await applyParityVerdict({ github, context, core, fs, runFilePath: file, scope: 'speed' })).toBe('exempt');
+    expect(github.calls[0]).toEqual({ method: 'pulls.get', args: { ...OWNER_REPO, pull_number: 640 } });
+    const comment = github.calls.find((call) => call.method === 'issues.createComment');
+    expect(comment?.args.issue_number).toBe(640);
+  });
+
+  it('refuses an event that names no pull request', async () => {
+    const github = fakeGithub();
+    const file = path.join(dir, 'parity-verdict.json');
+    fs.writeFileSync(file, JSON.stringify(runFile([passing(SEVEN)])));
+    const core = { info: () => undefined, warning: () => undefined, setFailed: () => undefined };
+    const context = { repo: OWNER_REPO, serverUrl: 'https://github.com', runId: 4242, payload: {} };
+    await expect(applyParityVerdict({ github, context, core, fs, runFilePath: file, scope: 'speed' })).rejects.toThrow('pull requests and merge queue entries only');
     expect(github.calls).toEqual([]);
+  });
+});
+
+describe('the pull request an event is about', () => {
+  const sha = 'b'.repeat(40);
+
+  it('is the pull request of a pull request event', () => {
+    expect(pullRequestNumber({ pull_request: { number: 12 } })).toBe(12);
+  });
+
+  it('is the pull request named by the queue ref of a merge group, whatever the base branch is called', () => {
+    expect(pullRequestNumber({ merge_group: { head_ref: `refs/heads/gh-readonly-queue/main/pr-797-${sha}` } })).toBe(797);
+    expect(pullRequestNumber({ merge_group: { head_ref: `refs/heads/gh-readonly-queue/release/2026/pr-5-${sha}` } })).toBe(5);
+  });
+
+  it('is nothing for a ref that is not a queue entry, or for an event of another kind', () => {
+    expect(pullRequestNumber({ merge_group: { head_ref: `refs/heads/feature/pr-797-${sha}` } })).toBeNull();
+    expect(pullRequestNumber({ merge_group: { head_ref: 'refs/heads/gh-readonly-queue/main/pr-797-abc' } })).toBeNull();
+    expect(pullRequestNumber({ merge_group: {} })).toBeNull();
+    expect(pullRequestNumber({})).toBeNull();
+    expect(pullRequestNumber(undefined)).toBeNull();
   });
 });

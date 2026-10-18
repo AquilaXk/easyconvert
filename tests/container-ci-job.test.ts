@@ -70,7 +70,7 @@ describe('container job in .github/workflows/ci.yml', () => {
   it('runs in parallel with the other jobs and is required by the verify aggregate', () => {
     expect(container.needs).toBeUndefined();
     expect(container['timeout-minutes']).toBeLessThanOrEqual(CONTAINER_JOB_MAX_MINUTES);
-    expect(workflow.jobs.verify.needs).toEqual(['changes', 'checks', 'tests', 'conformance', 'integration', 'container', 'parity-quality', 'parity-speed']);
+    expect(workflow.jobs.verify.needs).toEqual(['changes', 'checks', 'tests', 'conformance', 'integration', 'container', 'parity-quality', 'parity-speed', 'sonar-gate']);
     const verifyScript = workflow.jobs.verify.steps.map((step) => step.run ?? '').join('\n');
     expect(verifyScript).toContain('"$CONTAINER_RESULT" != success');
   });
@@ -207,8 +207,8 @@ describe('layer cache of the container job', () => {
   describe('on a push to main', () => {
     const changes = container.steps.find((step) => step.id === 'changes');
 
-    /** The container checks' decision for a push that changes `files`; the base is the commit before the push. */
-    function relevantAfterPush(files: string[]): string {
+    /** The container checks' decision for a push (or a queue entry) that changes `files`; the base is the commit before the push, or the commit the queue built the entry on. */
+    function relevantAfterPush(files: string[], event: 'push' | 'merge_group' = 'push'): string {
       const origin = mkdtempSync(path.join(tmpdir(), 'container-origin-'));
       const checkout = mkdtempSync(path.join(tmpdir(), 'container-checkout-'));
       temps.push(origin, checkout);
@@ -233,7 +233,7 @@ describe('layer cache of the container job', () => {
       run([...identity, 'commit', '-q', '-m', 'change', '--allow-empty'], checkout);
       const output = path.join(checkout, 'github-output.txt');
       writeFileSync(output, '');
-      const result = spawnSync('bash', ['-c', changes?.run ?? 'false'], { cwd: checkout, encoding: 'utf-8', env: { ...process.env, ...container.env, EVENT_NAME: 'push', PUSH_BEFORE_SHA: before, PR_BASE_SHA: '', GITHUB_OUTPUT: output, GIT_CONFIG_GLOBAL: '/dev/null' } });
+      const result = spawnSync('bash', ['-c', changes?.run ?? 'false'], { cwd: checkout, encoding: 'utf-8', env: { ...process.env, ...container.env, EVENT_NAME: event, PUSH_BEFORE_SHA: event === 'push' ? before : '', PR_BASE_SHA: event === 'push' ? '' : before, GITHUB_OUTPUT: output, GIT_CONFIG_GLOBAL: '/dev/null' } });
       expect(result.status, result.stderr).toBe(0);
       return readFileSync(output, 'utf-8').trim();
     }
@@ -245,6 +245,11 @@ describe('layer cache of the container job', () => {
 
     it.skipIf(skipUnless('git and bash', bash.status === 0 && git.status === 0))('skips the build for a push that changes neither', () => {
       expect(relevantAfterPush(['docs/guide.md'])).toBe('relevant=false');
+    });
+
+    it.skipIf(skipUnless('git and bash', bash.status === 0 && git.status === 0))('decides for a merge queue entry the same way, from the commit the queue built it on', () => {
+      expect(relevantAfterPush(['Dockerfile.worker'], 'merge_group')).toBe('relevant=true');
+      expect(relevantAfterPush(['docs/guide.md'], 'merge_group')).toBe('relevant=false');
     });
   });
 });

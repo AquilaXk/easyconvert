@@ -1,18 +1,16 @@
 name: Automerge Label
 
-# Turns the `automerge` label into GitHub auto-merge (squash). The `main`
-# ruleset still gates the merge: required checks must pass and every review
-# thread must be resolved. This workflow never checks out or runs PR code.
+# Turns the `automerge` label into GitHub auto-merge (squash). With the merge queue of `main`, enabling auto-merge
+# queues the pull request as soon as its required check (`verify`) is green on the pull request head and every review
+# thread is resolved; the queue then builds the entry on top of `main` and the entries ahead of it, runs `ci.yml` on that
+# commit (including speed parity for the changed conversion families) and merges it when that run passes. This workflow
+# never checks out or runs PR code.
 #
-# Note: a merge enabled with GITHUB_TOKEN does not trigger `push` workflows on
-# `main`; PR-level CI (`verify`) is the gate.
+# The label is the last step: it carries no CI verdict of its own and starts no CI run (ci.yml does not listen to label
+# events), so adding it to a pull request whose checks are green queues it at once.
 #
-# Speed parity gates the merge through `verify`, not through this workflow. Adding the `automerge` label also starts a
-# fresh CI run (ci.yml listens to `labeled`), whose `parity-speed` job is the last measurement before the merge, and a
-# commit pushed after the label starts another. While a conversion family is changed and the label is missing,
-# `verify` fails ("add the automerge label"), so auto-merge cannot fire early on a head that never had its speed
-# measured; once the label is on, `verify` stays pending until `parity-speed` has finished on the current head.
-# A PR that changes no conversion family needs no measurement and is merged as before.
+# The squash message below (title and body without tool attribution lines) is the one of a merge made outside the
+# queue; the queue builds its squash commit from the repository's squash message settings.
 
 on:
   pull_request_target:
