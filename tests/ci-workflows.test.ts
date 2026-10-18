@@ -75,16 +75,38 @@ function stepRun(workflow: Workflow, job: string, id: string): string {
 }
 
 describe('concurrency and triggers of ci.yml', () => {
-  it('keys the group on the pull request number and cancels only pull request runs', () => {
+  it('keys the group on the pull request number, or on the ref (one queue ref per queue entry), and cancels only pull request runs', () => {
     expect(ci.concurrency?.group).toBe('${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}');
+    // A merge group event carries no pull request, so its group is its own queue ref; only a pull request run is cancelled.
     expect(ci.concurrency?.['cancel-in-progress']).toBe("${{ github.event_name == 'pull_request' }}");
   });
 
-  it('runs on pushes to main only, so a pull request commit is not built twice', () => {
+  it('runs on pushes to main, on pull requests, and on merge queue entries, and nothing else', () => {
     expect(ci.on.push).toEqual({ branches: ['main'] });
-    // Labels decide two verdicts (the automerge label starts speed parity, the security label excuses parity), so a
-    // label change needs a fresh run; no other event type is added.
-    expect(ci.on.pull_request).toEqual({ branches: ['main'], types: ['opened', 'synchronize', 'reopened', 'labeled', 'unlabeled'] });
+    // A label change starts no run: no verdict is gated by a label any more (the security exemption reads the labels
+    // when the parity job applies its verdict), so adding the `automerge` label cannot restart a green pull request.
+    expect(ci.on.pull_request).toEqual({ branches: ['main'], types: ['opened', 'synchronize', 'reopened'] });
+    // `verify`, the required check, must report on the queue's commit, or the queue waits for it until the timeout.
+    expect(ci.on.merge_group).toEqual({ types: ['checks_requested'] });
+    expect(Object.keys(ci.on).sort()).toEqual(['merge_group', 'pull_request', 'push']);
+  });
+
+  it('does not read a label anywhere: the pull request jobs would break on a merge group event, which carries none', () => {
+    expect(ciText).not.toMatch(/pull_request\.labels|automerge/);
+  });
+
+  it('reads the pull request payload only where a merge group event has a stand-in, or in a job that runs on pull requests alone', () => {
+    let checked = 0;
+    for (const { job, step } of stepsOf(ci)) {
+      const text = JSON.stringify(step);
+      for (const expression of text.matchAll(/github\.event\.pull_request\.[\w.]+/g)) {
+        const standIn = text.includes(`${expression[0]} || github.event.merge_group`);
+        const pullRequestOnly = ci.jobs[job].if === "github.event_name == 'pull_request'";
+        expect(standIn || pullRequestOnly, `${job}: ${step.name ?? step.id} reads ${expression[0]} without a merge group stand-in`).toBe(true);
+        checked += 1;
+      }
+    }
+    expect(checked).toBeGreaterThan(5);
   });
 
   it('reads the repository and nothing else', () => {
@@ -429,9 +451,20 @@ describe('the documentation filter of ci.yml', () => {
     }
   });
 
-  it.skipIf(skipUnless('git and bash', available))('fails open: an empty diff and any event but a pull request run everything', () => {
+  it.skipIf(skipUnless('git and bash', available))('compares a merge queue entry with the commit the queue built it on, as it does a pull request', () => {
+    expect(verdict(['docs/guide.md'], 'merge_group')).toBe('code=false');
+    expect(verdict(['docs/guide.md', 'src/lib/registry.ts'], 'merge_group')).toBe('code=true');
+  });
+
+  it.skipIf(skipUnless('git and bash', available))('fails open: an empty diff and a push run everything', () => {
     expect(verdict([])).toBe('code=true');
+    expect(verdict([], 'merge_group')).toBe('code=true');
     expect(verdict(['docs/guide.md'], 'push')).toBe('code=true');
+  });
+
+  it('takes the comparison commit of a pull request from its base and of a merge queue entry from the base the queue built it on', () => {
+    const step = ci.jobs.changes.steps.find((candidate) => candidate.id === 'filter');
+    expect(step?.env?.PR_BASE_SHA).toBe('${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}');
   });
 });
 
@@ -440,8 +473,8 @@ describe('the verify gate of ci.yml', () => {
   const script = stepRun(ci, 'verify', 'Require every job to pass, or to be skipped for a documentation-only change');
 
   type JobName = 'changes' | 'checks' | 'tests' | 'conformance' | 'integration' | 'container';
-  /** A pull request that changes no conversion family: the parity jobs are skipped (quality) or say there is nothing to measure (speed). */
-  const NO_BENCH = { EVENT_NAME: 'pull_request', BENCH_CHANGED: 'false', HAS_AUTOMERGE_LABEL: 'false', PARITY_QUALITY_RESULT: 'skipped', PARITY_SPEED_RESULT: 'success' };
+  /** A pull request that changes no conversion family: no parity job runs, and the SonarCloud gate of the pull request passed. */
+  const NO_BENCH = { EVENT_NAME: 'pull_request', BENCH_CHANGED: 'false', PARITY_QUALITY_RESULT: 'skipped', PARITY_SPEED_RESULT: 'skipped', SONAR_GATE_RESULT: 'success' };
 
   function gate(code: string, results: Partial<Record<JobName, string>>, parity: Record<string, string> = NO_BENCH): number {
     const all = { changes: 'success', checks: 'success', tests: 'success', conformance: 'success', integration: 'success', container: 'success', ...results };
@@ -493,6 +526,111 @@ describe('the verify gate of ci.yml', () => {
   it.skipIf(skipUnless('bash', bash.status === 0))('fails when the change filter did not produce a verdict', () => {
     expect(gate('', {})).toBe(1);
     expect(gate('false', { ...skippedHeavy, changes: 'failure' })).toBe(1);
+  });
+});
+
+describe('the SonarCloud gate of ci.yml', () => {
+  const tools = ['bash', 'jq'].map((tool) => spawnSync(tool, ['--version'], { encoding: 'utf-8' }));
+  const available = tools.every((tool) => tool.status === 0);
+  const job = ci.jobs['sonar-gate'];
+  const step = job.steps[0];
+  const HEAD = 'a'.repeat(40);
+  const OLD_HEAD = 'b'.repeat(40);
+  const temps: string[] = [];
+
+  afterAll(() => {
+    for (const dir of temps) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const entry = (key: string, sha: string, status: string) => ({ key, commit: { sha }, status: { qualityGateStatus: status } });
+
+  /**
+   * Runs the polling step against stand-ins of `curl` (the n-th listing it is asked for, then the last one again; a
+   * null listing is a failed request) and of `sleep`; returns the exit status, the output and how many times it waited.
+   */
+  function poll(listings: Array<Array<ReturnType<typeof entry>> | null>, env: Record<string, string> = {}): { status: number; output: string; waits: number; requests: number } {
+    const dir = mkdtempSync(path.join(tmpdir(), 'sonar-gate-'));
+    temps.push(dir);
+    mkdirSync(path.join(dir, 'bin'));
+    listings.forEach((listing, index) => writeFileSync(path.join(dir, `listing-${index + 1}.json`), listing === null ? 'FAIL' : JSON.stringify({ pullRequests: listing })));
+    writeFileSync(path.join(dir, 'status.json'), JSON.stringify({ projectStatus: { status: 'ERROR', conditions: [{ status: 'OK', metricKey: 'new_coverage' }, { status: 'ERROR', metricKey: 'new_duplicated_lines_density', actualValue: '7.5', errorThreshold: '3' }] } }));
+    writeFileSync(
+      path.join(dir, 'bin', 'curl'),
+      `#!/bin/sh
+case "$*" in
+  *project_pull_requests/list*)
+    n=$(cat "${dir}/requests" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "${dir}/requests"
+    f="${dir}/listing-$n.json"; [ -f "$f" ] || f="${dir}/listing-${listings.length}.json"
+    if [ "$(cat "$f")" = FAIL ]; then exit 22; fi
+    cat "$f" ;;
+  *qualitygates/project_status*) cat "${dir}/status.json" ;;
+esac
+`,
+      { mode: 0o755 }
+    );
+    writeFileSync(path.join(dir, 'bin', 'sleep'), `#!/bin/sh
+echo "$1" >> "${dir}/waits"
+`, { mode: 0o755 });
+    const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', step.run ?? ''], {
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: `${path.join(dir, 'bin')}:${process.env.PATH ?? ''}`, ...step.env, PR_NUMBER: '797', HEAD_SHA: HEAD, ...env },
+    });
+    const count = (file: string): number => {
+      try {
+        return readFileSync(path.join(dir, file), 'utf-8').trim().split('\n').filter(Boolean).length;
+      } catch {
+        return 0;
+      }
+    };
+    return { status: result.status ?? -1, output: `${result.stdout}${result.stderr}`, waits: count('waits'), requests: Number(readFileSync(path.join(dir, 'requests'), 'utf-8').trim()) };
+  }
+  const only = it.skipIf(skipUnless('bash and jq', available));
+
+  it('runs on pull requests alone, reads the public API without a token, and waits for 15 minutes at most', () => {
+    expect(job.if).toBe("github.event_name == 'pull_request'");
+    expect(step.env).toMatchObject({ SONAR_API: 'https://sonarcloud.io/api', SONAR_PROJECT_KEY: 'AquilaXk_easyconvert', PR_NUMBER: '${{ github.event.pull_request.number }}', HEAD_SHA: '${{ github.event.pull_request.head.sha }}', TIMEOUT_SECONDS: '900', POLL_SECONDS: '30' });
+    expect(JSON.stringify(job)).not.toMatch(/secrets\.|SONAR_TOKEN/);
+    expect(job['timeout-minutes']).toBeGreaterThan(15);
+  });
+
+  only('passes when SonarCloud analysed this head and its gate is OK', () => {
+    const result = poll([[entry('796', OLD_HEAD, 'ERROR'), entry('797', HEAD, 'OK')]]);
+    expect(result.status).toBe(0);
+    expect(result.waits).toBe(0);
+    expect(result.output).toContain(`SonarCloud quality gate of ${HEAD}: OK`);
+  });
+
+  only('fails on an ERROR gate and prints the conditions that failed', () => {
+    const result = poll([[entry('797', HEAD, 'ERROR')]]);
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(`::error::SonarCloud quality gate of ${HEAD} failed`);
+    expect(result.output).toContain('failed condition: new_duplicated_lines_density is 7.5, limit 3');
+    expect(result.output).not.toContain('new_coverage');
+  });
+
+  only('waits for the analysis of this head: a verdict left by an earlier commit of the pull request does not count', () => {
+    const result = poll([[entry('797', OLD_HEAD, 'OK')], [entry('797', OLD_HEAD, 'OK')], [entry('797', HEAD, 'OK')]]);
+    expect(result.status).toBe(0);
+    expect(result.waits).toBe(2);
+    expect(result.requests).toBe(3);
+  });
+
+  only('waits while the gate is not computed, or the pull request is not listed yet, or the request failed', () => {
+    const result = poll([[], null, [entry('797', HEAD, 'NONE')], [entry('797', HEAD, 'OK')]]);
+    expect(result.status).toBe(0);
+    expect(result.waits).toBe(3);
+  });
+
+  only('does not take the verdict of another pull request for this head', () => {
+    const result = poll([[entry('796', HEAD, 'OK')]], { TIMEOUT_SECONDS: '0' });
+    expect(result.status).toBe(1);
+  });
+
+  only('fails when no verdict arrives within the timeout, saying so, and does not wait past it', () => {
+    const result = poll([[entry('797', OLD_HEAD, 'OK')]], { TIMEOUT_SECONDS: '0' });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(`::error::SonarCloud returned no quality gate for ${HEAD} within 0s`);
+    expect(result.waits).toBe(0);
   });
 });
 

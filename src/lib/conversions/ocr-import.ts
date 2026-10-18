@@ -58,8 +58,11 @@ interface Box {
   y1: number;
 }
 
+/** The smallest side `toBBox` gives a box; a box clamped to the page keeps this much of it on the page. */
+const MIN_BOX_SIDE_PX = 1;
+
 function toBBox(box: Box): OcrLineBlock['bbox'] {
-  return { x: box.x0, y: box.y0, width: Math.max(1, box.x1 - box.x0), height: Math.max(1, box.y1 - box.y0) };
+  return { x: box.x0, y: box.y0, width: Math.max(MIN_BOX_SIDE_PX, box.x1 - box.x0), height: Math.max(MIN_BOX_SIDE_PX, box.y1 - box.y0) };
 }
 
 function unionBoxes(boxes: Iterable<Box>): Box | null {
@@ -244,6 +247,15 @@ interface PageDraft {
   width: number;
   height: number;
   lines: OcrLineBlock[];
+  /** Text of a page with no geometry at all: it reads as text but has no size or positions. */
+  looseText?: string;
+}
+
+/** An hOCR page that carries no bbox of its own: its size is the extent of the boxes inside it. */
+interface UnmeasuredPage {
+  page: PageDraft;
+  extent: Box | null;
+  looseText: string[];
 }
 
 interface LineDraft {
@@ -301,6 +313,7 @@ class HocrReader implements MarkupHandler {
   language: string | undefined;
   private readonly kinds: Array<HocrKind | null> = [];
   private page: PageDraft | null = null;
+  private unmeasured: UnmeasuredPage | null = null;
   private block: OcrLayoutGroup | undefined;
   private paragraph: OcrLayoutGroup | undefined;
   private line: LineDraft | null = null;
@@ -312,13 +325,27 @@ class HocrReader implements MarkupHandler {
     this.kinds[depth] = kind;
     if (kind === 'page') {
       const box = readHocrProperties(attributes.title).bbox;
-      if (!box) throw new OcrMarkupError('An ocr_page has no bbox.');
-      assertAreaNotEmpty(box.x1 - box.x0, box.y1 - box.y0, 'An ocr_page');
-      this.page = { width: box.x1 - box.x0, height: box.y1 - box.y0, lines: [] };
+      if (box) assertAreaNotEmpty(box.x1 - box.x0, box.y1 - box.y0, 'An ocr_page');
+      this.page = { width: box ? box.x1 - box.x0 : 0, height: box ? box.y1 - box.y0 : 0, lines: [] };
+      this.unmeasured = box ? null : { page: this.page, extent: null, looseText: [] };
       this.pages.push(this.page);
       this.block = undefined;
       this.paragraph = undefined;
-    } else if (kind === 'area') {
+    } else if (this.unmeasured && kind) {
+      this.growExtent(this.unmeasured, attributes);
+      this.openInner(kind, attributes);
+    } else if (kind) {
+      this.openInner(kind, attributes);
+    }
+  }
+
+  private growExtent(pending: UnmeasuredPage, attributes: MarkupAttributes): void {
+    const box = readHocrProperties(attributes.title).bbox;
+    if (box) pending.extent = unionBoxes(pending.extent ? [pending.extent, box] : [box]);
+  }
+
+  private openInner(kind: Exclude<HocrKind, 'page'>, attributes: MarkupAttributes): void {
+    if (kind === 'area') {
       this.block = groupFromHocr(attributes);
       this.paragraph = undefined;
     } else if (kind === 'par') {
@@ -339,6 +366,7 @@ class HocrReader implements MarkupHandler {
   text(text: string): void {
     if (this.word) this.word.text.push(text);
     else if (this.line) this.line.text.push(text);
+    else if (this.unmeasured) this.unmeasured.looseText.push(text);
   }
 
   /** Adds the finished word to its line unless it has no text. */
@@ -375,8 +403,26 @@ class HocrReader implements MarkupHandler {
       this.block = undefined;
       this.paragraph = undefined;
     } else if (kind === 'page') {
+      this.measurePage();
       this.page = null;
     }
+  }
+
+  /**
+   * Gives a page without a bbox the extent of its descendants, anchored at the page origin like a bbox would be.
+   * A page with no box anywhere keeps only its text and a zero size: no size is made up for it.
+   */
+  private measurePage(): void {
+    const pending = this.unmeasured;
+    this.unmeasured = null;
+    if (!pending) return;
+    if (pending.extent === null) {
+      pending.page.looseText = collapseSpace(pending.looseText);
+      return;
+    }
+    assertAreaNotEmpty(pending.extent.x1, pending.extent.y1, 'An ocr_page measured from its contents');
+    pending.page.width = pending.extent.x1;
+    pending.page.height = pending.extent.y1;
   }
 }
 
@@ -385,9 +431,10 @@ function buildOcrPage(
   width: number,
   height: number,
   lineBlocks: OcrLineBlock[],
-  language: string | undefined
+  language: string | undefined,
+  looseText = ''
 ): OcrPageResult {
-  const pageLines = lineBlocks.map((b) => b.text).filter(Boolean);
+  const pageLines = lineBlocks.length > 0 ? lineBlocks.map((b) => b.text).filter(Boolean) : [looseText].filter(Boolean);
   let pageWordConfSum = 0;
   let pageWordCount = 0;
   for (const b of lineBlocks) {
@@ -453,7 +500,7 @@ export function parseHocr(hocrContent: string): OcrResult {
   readMarkup(hocrContent, reader, { html: true });
   if (reader.pages.length === 0) throw new OcrMarkupError('The hOCR document has no ocr_page.');
   const pages = reader.pages.map((page, index) =>
-    buildOcrPage(index + 1, page.width, page.height, page.lines, reader.language)
+    buildOcrPage(index + 1, page.width, page.height, page.lines, reader.language, page.looseText)
   );
   return assembleParsedOcrResult(pages);
 }
@@ -473,13 +520,32 @@ function altoCoordinate(attributes: MarkupAttributes, name: string): number | un
   return value === undefined ? undefined : coordinate(value, `ALTO ${name}`);
 }
 
-function altoBox(attributes: MarkupAttributes): Box | null {
-  const x = altoCoordinate(attributes, 'HPOS');
-  const y = altoCoordinate(attributes, 'VPOS');
+function altoPosition(attributes: MarkupAttributes, name: string): number | undefined {
+  const value = altoNumber(attributes, name);
+  return value === undefined ? undefined : offsetWithinBounds(value, `ALTO ${name}`);
+}
+
+function clamp(value: number, max: number): number {
+  return Math.min(Math.max(value, 0), max);
+}
+
+/**
+ * The box of an element, clamped to its page: scanners and OCR engines write a position a few pixels
+ * above or left of the page, or a box that runs past its edge. A position or size beyond the coordinate
+ * limit is still refused.
+ */
+function altoBox(attributes: MarkupAttributes, page: { width: number; height: number }): Box | null {
+  const x = altoPosition(attributes, 'HPOS');
+  const y = altoPosition(attributes, 'VPOS');
   const width = altoCoordinate(attributes, 'WIDTH');
   const height = altoCoordinate(attributes, 'HEIGHT');
   if (x === undefined || y === undefined || width === undefined || height === undefined) return null;
-  return { x0: x, y0: y, x1: x + width, y1: y + height };
+  return {
+    x0: clamp(x, page.width - MIN_BOX_SIDE_PX),
+    y0: clamp(y, page.height - MIN_BOX_SIDE_PX),
+    x1: clamp(x + width, page.width),
+    y1: clamp(y + height, page.height),
+  };
 }
 
 /** BASELINE is a polyline `x1,y1 x2,y2 ...`; older schema versions use a single y position. */
@@ -537,7 +603,7 @@ class AltoReader implements MarkupHandler {
       this.paragraph = this.groupFrom(attributes);
     } else if (name === 'TextLine' && this.page) {
       this.line = {
-        box: altoBox(attributes),
+        box: altoBox(attributes, this.page),
         baseline: attributes.BASELINE,
         words: [],
         block: this.block,
@@ -570,7 +636,7 @@ class AltoReader implements MarkupHandler {
 
   private groupFrom(attributes: MarkupAttributes): OcrLayoutGroup {
     const group: OcrLayoutGroup = {};
-    const box = altoBox(attributes);
+    const box = this.page ? altoBox(attributes, this.page) : null;
     if (box) group.bbox = toBBox(box);
     const language = attributes.LANG ?? attributes.language;
     if (language) group.language = language;
@@ -580,7 +646,7 @@ class AltoReader implements MarkupHandler {
   private readString(attributes: MarkupAttributes): void {
     const text = collapseSpace([attributes.CONTENT ?? '']);
     if (text === '' || !this.line) return;
-    const box = altoBox(attributes);
+    const box = this.page ? altoBox(attributes, this.page) : null;
     if (!box) throw new OcrMarkupError(`The ALTO String '${text}' has no HPOS, VPOS, WIDTH and HEIGHT.`);
     const word: OcrWord = { text, bbox: toBBox(box) };
     const wc = altoNumber(attributes, 'WC');
