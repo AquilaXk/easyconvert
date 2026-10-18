@@ -28,6 +28,7 @@ import {
 import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
 import { describeAudioProcessing, measureLoudnessStage } from './media-audio-run';
 import { describeDroppedStreams } from './media-dropped-streams';
+import { runFfmpegTranscode } from './media-ffmpeg-run';
 import { type FfprobePath, probeInput, resolveFfprobeBinary } from './media-ffprobe';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
 import { encodeFlacStreamAsync } from './flac-encoder';
@@ -36,6 +37,7 @@ import {
   resamplePlanarFloat,
   type ResampleOptions,
 } from './audio-resampler';
+import { isMidiSource, renderMidiToWav } from './midi-render';
 import { readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 import {
@@ -235,6 +237,11 @@ export async function convertMedia(
   const src = sourceFormat.toLowerCase();
   const tgt = targetFormat.toLowerCase();
 
+  // A MIDI file holds notes, not sound: the synthesizer renders it, and the rendered WAV goes through the audio pipeline.
+  if (isMidiSource(src)) {
+    return convertMedia(await renderMidiToWav(inputBuffer, options), 'wav', tgt, options, originalFilename);
+  }
+
   // Thumbnail extraction routing
   const isThumbnail = Boolean(options.thumbnail) || (['jpg', 'jpeg', 'png'].includes(tgt) && Boolean(options.thumbnail));
   if (isThumbnail) {
@@ -391,7 +398,7 @@ async function executeFfmpegTranscode(
     const durationSeconds = probeMediaDuration(inputPath, options, ffmpegBin);
     const timeoutMs = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
     const runFfmpegWith = (ffmpegArgs: string[], limitMs: number, cwd?: string) =>
-      executeSandboxedBinary(ffmpegBin, ffmpegArgs, {
+      runFfmpegTranscode(ffmpegBin, ffmpegArgs, {
         timeoutMs: limitMs,
         maxBuffer: 50 * 1024 * 1024,
         networkIsolated: true,
