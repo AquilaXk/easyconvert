@@ -18,6 +18,7 @@ import {
 } from '../../worker/sandbox';
 import { stageTimeoutMs, type JobDeadlined } from './job-time';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
+import { parseWavPcmHeader, type WavPcmInfo } from './wav-header';
 
 /**
  * MIDI sources. A Standard MIDI File holds notes, not sound, and FFmpeg has no reader for it, so the worker renders the
@@ -59,10 +60,6 @@ const SMF_MAGIC = 'MThd';
 const RIFF_MAGIC = 'RIFF';
 const RMID_FORM = 'RMID';
 const RIFF_FORM_OFFSET = 8;
-const WAV_HEADER_BYTES = 44;
-const WAV_DATA_SIZE_OFFSET = 40;
-const WAV_CHUNK_HEADER_BYTES = 8;
-const WAV_FORM_BYTES = 12;
 const WAV_FORMAT_PCM = 1;
 const BYTES_PER_SAMPLE = 2;
 const PCM16_FULL_SCALE = 32768;
@@ -130,19 +127,10 @@ function toRenderError(error: unknown, sandboxDir: string, timeoutMs: number): u
   return error;
 }
 
-/** Byte range of the sample data of a 16-bit PCM WAV, or null when the buffer is not one. */
-function pcm16DataRange(wav: Buffer): { start: number; end: number } | null {
-  if (wav.toString('latin1', 0, RIFF_MAGIC.length) !== RIFF_MAGIC || wav.toString('latin1', RIFF_FORM_OFFSET, WAV_FORM_BYTES) !== 'WAVE') return null;
-  let isPcm16 = false;
-  for (let offset = WAV_FORM_BYTES; offset + WAV_CHUNK_HEADER_BYTES <= wav.length; ) {
-    const id = wav.toString('latin1', offset, offset + 4);
-    const size = wav.readUInt32LE(offset + 4);
-    const body = offset + WAV_CHUNK_HEADER_BYTES;
-    if (id === 'fmt ') isPcm16 = wav.readUInt16LE(body) === WAV_FORMAT_PCM && wav.readUInt16LE(body + 14) === BYTES_PER_SAMPLE * 8;
-    if (id === 'data') return isPcm16 ? { start: body, end: Math.min(wav.length, body + size) } : null;
-    offset = body + size + (size % 2);
-  }
-  return null;
+/** The sample data of a 16-bit integer PCM WAV, or null for any other layout. */
+function pcm16Data(info: WavPcmInfo | null): { start: number; end: number } | null {
+  if (info === null || info.formatTag !== WAV_FORMAT_PCM || info.bitsPerSample !== BYTES_PER_SAMPLE * 8) return null;
+  return { start: info.dataOffset, end: info.dataOffset + info.dataBytes };
 }
 
 /**
@@ -151,7 +139,7 @@ function pcm16DataRange(wav: Buffer): { start: number; end: number } | null {
  * clips dense files. A file whose peak is already at or above -1 dBFS, a silent one and any other WAV layout are returned as they are.
  */
 export function normalizeWavPeak(wav: Buffer): Buffer {
-  const range = pcm16DataRange(wav);
+  const range = pcm16Data(parseWavPcmHeader(wav, wav.length));
   if (range === null) return wav;
   const samples = Math.floor((range.end - range.start) / BYTES_PER_SAMPLE);
   let peak = 0;
@@ -200,7 +188,8 @@ export async function renderMidiToWav(input: Buffer, options: MidiRenderOptions 
       throw new UnprocessableMediaInputError('The MIDI renderer wrote no sound: the file is not a MIDI file it can play.');
     }
     const wav = fs.readFileSync(outputPath);
-    if (wav.length <= WAV_HEADER_BYTES || wav.readUInt32LE(WAV_DATA_SIZE_OFFSET) === 0) {
+    // The header reader answers null for a data chunk without one whole sample frame, as for any layout it cannot read.
+    if (parseWavPcmHeader(wav, wav.length) === null) {
       throw new UnprocessableMediaInputError('The MIDI renderer wrote no sound from this file.');
     }
     return normalizeWavPeak(wav);

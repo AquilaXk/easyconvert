@@ -64,6 +64,20 @@ describe('normalizeWavPeak', () => {
     expect(normalizeWavPeak(text).equals(text)).toBe(true);
   });
 
+  it('finds the samples after a chunk that sits between the format and the data', () => {
+    const plain = wavOf([1000, -3000, 1500, 0]);
+    // A LIST chunk of 4 bytes after the 16-byte fmt chunk, as an encoder writes its metadata: the data moves by 12 bytes.
+    const list = Buffer.concat([Buffer.from('LIST', 'latin1'), Buffer.from([4, 0, 0, 0]), Buffer.from('INFO', 'latin1')]);
+    const fmtEnd = 36;
+    const input = Buffer.concat([plain.subarray(0, fmtEnd), list, plain.subarray(fmtEnd)]);
+    input.writeUInt32LE(input.length - 8, 4);
+    const output = normalizeWavPeak(input);
+    const dataStart = fmtEnd + list.length + 8;
+    const samples = Array.from({ length: 4 }, (_, i) => output.readInt16LE(dataStart + i * 2));
+    expect(samples).toEqual([9735, -TARGET_PEAK, 14602, 0]);
+    expect(output.subarray(0, dataStart)).toEqual(input.subarray(0, dataStart));
+  });
+
   it('never writes a sample above the target for any gain: a peak of 1 is scaled to 29204', () => {
     expect(samplesOf(normalizeWavPeak(wavOf([1, -1, 0, 1])))).toEqual([TARGET_PEAK, -TARGET_PEAK, 0, TARGET_PEAK]);
   });
