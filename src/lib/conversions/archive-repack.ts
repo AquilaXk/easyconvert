@@ -31,9 +31,10 @@ import {
   type ZipArchiveEntry,
 } from './archive-zip-reader';
 import { buildTarEntryHeaders, isZipBufferEncrypted, readTarEntries, type TarEntry } from './archive';
+import { NativeDeflateError, deflateRawWithLibdeflate, getLibdeflateGzipPath } from './archive-libdeflate';
 import { crc32 } from './crc32';
-import { deflateRawBlocks } from './deflate-blocks';
-import { ZipWriter, type ZipEntryInput } from './zip-writer';
+import { DEFLATE_BLOCK_BYTES, deflateRawBlocks } from './deflate-blocks';
+import { ZipWriter, type ZipDeflater, type ZipEntryInput } from './zip-writer';
 
 /**
  * Archive conversions served in process, from a tar to a ZIP or a gzip file and from a ZIP or a stored
@@ -44,9 +45,10 @@ import { ZipWriter, type ZipEntryInput } from './zip-writer';
  *
  * Every function returns null when it cannot answer for the request completely: an input too large for memory, an
  * archive it does not read (encrypted, an unsupported method, damaged records, a compressed RAR), one that breaks a
- * policy, an empty result. The caller then hands the request to the general pipeline, which re-reads the archive from the
- * start and reports whatever is wrong with its own typed errors. These routes only ever shorten a conversion that would
- * have succeeded; they never decide on a refusal.
+ * policy, an empty result, a payload past the in-process deflate bound while `libdeflate-gzip` is missing or fails. The
+ * caller then hands the request to the general pipeline, which re-reads the archive from the start and reports whatever
+ * is wrong with its own typed errors. These routes only ever shorten a conversion that would have succeeded; they never
+ * decide on a refusal.
  */
 
 export interface RepackRequest {
@@ -54,6 +56,8 @@ export interface RepackRequest {
   skipLinks?: boolean;
   collisionPolicy?: ArchiveCollisionPolicy;
   signal?: AbortSignal;
+  /** Longest one `libdeflate-gzip` run may take. */
+  timeoutMs?: number;
 }
 
 export interface PackRequest extends RepackRequest {
@@ -62,12 +66,20 @@ export interface PackRequest extends RepackRequest {
 }
 
 /**
- * Most bytes of file data a ZIP or gzip is packed from in process. Above it the 7-Zip route serves the request. The
- * platform's zlib hashes four bytes, so on binary data without long repeats it writes up to 3.6 percent more than gzip -6
- * (docs/policy-decisions.md, entry 30); the samples that show it are 5 MB and larger, and past a few megabytes the cost
- * of starting 7-Zip is small against its encode.
+ * Most bytes of file data a ZIP or gzip is deflated from in process. Above it the large entries are encoded by
+ * `libdeflate-gzip` (archive-libdeflate.ts), or by 7-Zip when that is not installed. The platform's zlib hashes four bytes, so
+ * on binary data without long repeats it writes up to 3.6 percent more than gzip -6 (docs/policy-decisions.md, entry 30);
+ * the samples that show it are 5 MB and larger, and past a few megabytes the cost of starting a process is small against
+ * its encode.
  */
 export const IN_PROCESS_DEFLATE_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Smallest entry that `libdeflate-gzip` encodes once the total is past {@link IN_PROCESS_DEFLATE_MAX_BYTES}: the size at
+ * which the in-process path already cuts an entry into parallel blocks (deflate-blocks.ts). Smaller entries stay in process,
+ * so a tree of many small files does not start a process each.
+ */
+const NATIVE_DEFLATE_MIN_ENTRY_BYTES = DEFLATE_BLOCK_BYTES;
 
 const STORED_LEVEL = 0;
 const UNIX_REGULAR_FILE = 0o100000;
@@ -134,28 +146,48 @@ function* zipEntriesOf(entries: readonly TarEntry[], level: number): Generator<Z
   }
 }
 
+/** Whether the request's payload is past the in-process bound, so that its deflate is `libdeflate-gzip`'s. */
+function needsNativeDeflate(level: number, dataBytes: number): boolean {
+  return level > STORED_LEVEL && dataBytes > IN_PROCESS_DEFLATE_MAX_BYTES;
+}
+
+/** Large entries to `libdeflate-gzip`, the rest through the in-process blocks. */
+function deflaterFor(request: RepackRequest): ZipDeflater {
+  return (data, level) =>
+    data.length >= NATIVE_DEFLATE_MIN_ENTRY_BYTES
+      ? deflateRawWithLibdeflate(data, level, { signal: request.signal, timeoutMs: request.timeoutMs })
+      : deflateRawBlocks(data, level);
+}
+
 /**
  * tar to ZIP: the members are deflated in parallel blocks by the platform's zlib (deflate-blocks.ts; stored at level 0, and entries that
- * are compressed already are stored), with their modes and times, folders ahead of their members.
+ * are compressed already are stored), with their modes and times, folders ahead of their members. When the file data is past
+ * {@link IN_PROCESS_DEFLATE_MAX_BYTES} the large entries are deflated by `libdeflate-gzip`, one process each.
  */
 export async function tarToZip(request: PackRequest): Promise<StreamedArchive | null> {
   const vetted = vetTarSource(request);
   if (vetted === null) return null;
   const entries = packableEntries(vetted.tar);
   if (entries.length === 0) return null;
-  if (request.compressionLevel > STORED_LEVEL && fileBytes(entries) > IN_PROCESS_DEFLATE_MAX_BYTES) return null;
+  const native = needsNativeDeflate(request.compressionLevel, fileBytes(entries));
+  if (native && getLibdeflateGzipPath() === null) return null;
   const segments: Uint8Array[] = [];
   const writer = new ZipWriter(
     (chunk) => {
       segments.push(chunk);
     },
-    { defaultLevel: request.compressionLevel, deflate: deflateRawBlocks }
+    { defaultLevel: request.compressionLevel, deflate: native ? deflaterFor(request) : deflateRawBlocks }
   );
-  for (const zipEntry of zipEntriesOf(entries, request.compressionLevel)) {
-    request.signal?.throwIfAborted();
-    await writer.addEntry(zipEntry);
+  try {
+    for (const zipEntry of zipEntriesOf(entries, request.compressionLevel)) {
+      request.signal?.throwIfAborted();
+      await writer.addEntry(zipEntry);
+    }
+    await writer.finish();
+  } catch (error) {
+    if (error instanceof NativeDeflateError) return null;
+    throw error;
   }
-  await writer.finish();
   return { segments, skippedLinks: vetted.skippedLinks };
 }
 
@@ -189,7 +221,8 @@ function gzipNameOf(filename: string): string | undefined {
 
 /**
  * tar to gzip. A gzip file holds one stream, so only a tar of exactly one regular file is answered here; the file is
- * deflated in parallel blocks by the platform's zlib and wrapped in a header that names it and carries its modification time (RFC 1952).
+ * deflated (in parallel blocks by the platform's zlib, or by `libdeflate-gzip` past {@link IN_PROCESS_DEFLATE_MAX_BYTES})
+ * and wrapped in a header that names it and carries its modification time (RFC 1952).
  */
 export async function tarToGzip(request: PackRequest): Promise<StreamedArchive | null> {
   const vetted = vetTarSource(request);
@@ -198,9 +231,17 @@ export async function tarToGzip(request: PackRequest): Promise<StreamedArchive |
   const [only] = entries;
   if (entries.length !== 1 || only.type !== 'file') return null;
   const data = only.buffer;
-  if (request.compressionLevel > STORED_LEVEL && data.length > IN_PROCESS_DEFLATE_MAX_BYTES) return null;
+  const native = needsNativeDeflate(request.compressionLevel, data.length);
+  if (native && getLibdeflateGzipPath() === null) return null;
   request.signal?.throwIfAborted();
-  const deflated = await deflateRawBlocks(data, request.compressionLevel);
+  const deflate = native ? deflaterFor(request) : deflateRawBlocks;
+  let deflated: Uint8Array;
+  try {
+    deflated = await deflate(data, request.compressionLevel);
+  } catch (error) {
+    if (error instanceof NativeDeflateError) return null;
+    throw error;
+  }
   const mtimeSeconds = Math.min(Math.max(Math.floor(only.mtime), 0), UINT32_MODULUS - 1);
   return {
     segments: [gzipHeader(request.compressionLevel, gzipNameOf(only.filename), mtimeSeconds), deflated, gzipTrailer(data)],

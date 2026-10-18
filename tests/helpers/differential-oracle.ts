@@ -42,6 +42,7 @@ export type ExternalOracleTool =
   | 'bzip2'
   | 'xz'
   | 'gzip'
+  | 'libdeflate-gzip'
   | 'zip'
   | 'unzip'
   | 'zipinfo'

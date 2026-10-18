@@ -63,7 +63,8 @@ import {
   type SevenZipListing,
   type SevenZipReadLimits,
 } from './sevenzip-reader';
-import { compressZstd, compressZstdAsync, decompressZstd, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
+import { compressZstd, decompressZstd, parseZstdFrameHeader, ZSTD_MAGIC_LE } from './zstd';
+import { compressZstdNative, decompressZstdNative } from './zstd-native';
 import {
   compressLzma,
   compressLzma2,
@@ -442,24 +443,24 @@ function* zipEntriesWithFolders(
   }
 }
 
+/** The pre-trained dictionary a `zstdDict` option names; any other truthy value selects the JSON and CSV one. */
+function zstdDictionaryOf(zstdDict: unknown): ReturnType<typeof getPretrainedDictionary> {
+  return typeof zstdDict === 'string' && (zstdDict === 'office' || zstdDict === 'data') ? getPretrainedDictionary(zstdDict) : DATA_DICTIONARY_JSON_CSV;
+}
+
 /**
  * Decodes a .zst / .tar.zst payload. An explicit `zstdDict` option selects a pre-trained dictionary;
- * otherwise a frame that names one of the built-in dictionary ids is decoded with that dictionary.
+ * otherwise a frame that names one of the built-in dictionary ids is decoded with that dictionary. Any other stream is
+ * decoded by libzstd (zstd-native.ts); the dictionary decoder stays in TypeScript.
  */
-function decodeZstdArchivePayload(payload: Buffer, zstdDict: unknown): Buffer {
-  if (zstdDict) {
-    const dict =
-      typeof zstdDict === 'string' && (zstdDict === 'office' || zstdDict === 'data')
-        ? getPretrainedDictionary(zstdDict)
-        : DATA_DICTIONARY_JSON_CSV;
-    return decompressWithZstdDict(payload, dict);
-  }
+async function decodeZstdArchivePayload(payload: Buffer, zstdDict: unknown, signal: AbortSignal | undefined): Promise<Buffer> {
+  if (zstdDict) return decompressWithZstdDict(payload, zstdDictionaryOf(zstdDict));
   if (payload.length >= ZSTD_MAGIC_LE.length + 1 && payload.subarray(0, ZSTD_MAGIC_LE.length).equals(ZSTD_MAGIC_LE)) {
     const { dictionaryId } = parseZstdFrameHeader(payload, 0);
     if (dictionaryId === ZSTD_DICT_MAGIC) return decompressWithZstdDict(payload, DATA_DICTIONARY_JSON_CSV);
     if (dictionaryId === ZSTD_OFFICE_DICT_MAGIC) return decompressWithZstdDict(payload, OFFICE_XML_DICTIONARY);
   }
-  return decompressZstd(payload);
+  return decompressZstdNative(payload, { signal });
 }
 
 /** Longest one unrar extraction may run. */
@@ -3797,7 +3798,7 @@ async function inspectArchiveEntries(
 
   if (archiveBuffer.length >= 4 && archiveBuffer.subarray(0, 4).equals(ZSTD_MAGIC_LE)) {
     try {
-      const decompressed = decompressZstd(archiveBuffer);
+      const decompressed = await decompressZstdNative(archiveBuffer);
       return inspectTarBuffer(decompressed, 'tar.zst');
     } catch (err) {
       // Typed decoder errors (bomb guard, malformed frame) already say what went wrong.
@@ -3981,7 +3982,7 @@ export async function convertArchive(
   } else if (src === 'zst' || src === 'zstd' || src === 'tar.zst') {
     let uncompressed: Buffer;
     try {
-      uncompressed = decodeZstdArchivePayload(effectiveBuffer, options.zstdDict);
+      uncompressed = await decodeZstdArchivePayload(effectiveBuffer, options.zstdDict, options.signal);
     } catch (err) {
       // Typed decoder errors (bomb guards, malformed frames) already say what went wrong.
       if (err instanceof ConversionFailedError) throw err;
@@ -4142,13 +4143,9 @@ export async function convertArchive(
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
     let zstdBuffer: Buffer;
     if (options.zstdDict) {
-      const dict =
-        typeof options.zstdDict === 'string' && (options.zstdDict === 'office' || options.zstdDict === 'data')
-          ? getPretrainedDictionary(options.zstdDict)
-          : DATA_DICTIONARY_JSON_CSV;
-      zstdBuffer = compressWithZstdDict(tarResult.buffer, dict);
+      zstdBuffer = compressWithZstdDict(tarResult.buffer, zstdDictionaryOf(options.zstdDict));
     } else {
-      zstdBuffer = await compressZstdAsync(tarResult.buffer);
+      zstdBuffer = await compressZstdNative(tarResult.buffer, { signal: options.signal });
     }
     result = {
       buffer: zstdBuffer,
@@ -4161,13 +4158,9 @@ export async function convertArchive(
     const rawToCompress = files.length === 1 ? files[0].buffer : effectiveBuffer;
     let zstdBuffer: Buffer;
     if (options.zstdDict) {
-      const dict =
-        typeof options.zstdDict === 'string' && (options.zstdDict === 'office' || options.zstdDict === 'data')
-          ? getPretrainedDictionary(options.zstdDict)
-          : DATA_DICTIONARY_JSON_CSV;
-      zstdBuffer = compressWithZstdDict(rawToCompress, dict);
+      zstdBuffer = compressWithZstdDict(rawToCompress, zstdDictionaryOf(options.zstdDict));
     } else {
-      zstdBuffer = await compressZstdAsync(rawToCompress);
+      zstdBuffer = await compressZstdNative(rawToCompress, { signal: options.signal });
     }
     result = {
       buffer: zstdBuffer,
