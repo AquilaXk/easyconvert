@@ -214,7 +214,7 @@ describe('numeric syntax', () => {
     ['a padded number', alto('WIDTH=" 10" HEIGHT="10"'), /decimal number/],
     ['a hexadecimal HPOS', alto('WIDTH="10" HEIGHT="10"', altoLine('HPOS="0x1" VPOS="0" WIDTH="1" HEIGHT="1"')), /decimal number/],
     ['an exponent WIDTH', alto('WIDTH="10" HEIGHT="10"', altoLine('HPOS="0" VPOS="0" WIDTH="1e3" HEIGHT="1"')), /decimal number/],
-    ['a negative VPOS', alto('WIDTH="10" HEIGHT="10"', altoLine('HPOS="0" VPOS="-1" WIDTH="1" HEIGHT="1"')), /outside 0\.\./],
+    ['a VPOS beyond the coordinate bound', alto('WIDTH="10" HEIGHT="10"', altoLine('HPOS="0" VPOS="-1000001" WIDTH="1" HEIGHT="1"')), /outside -1000000\.\./],
     ['a WC above 1', alto('WIDTH="10" HEIGHT="10"', altoLine('HPOS="0" VPOS="0" WIDTH="1" HEIGHT="1" WC="1.5"')), /outside 0\.\.1/],
     [
       'a BASELINE with an exponent',
