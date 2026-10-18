@@ -162,7 +162,7 @@
     },
     {
       "families": ["audio"],
-      "match": "^src/lib/conversions/(audio-[^/]*|flac-encoder|media-audio-[^/]*|wav-header)\\.ts$|^src/lib/conversions/wasm/(resampler-mac|wasm-assembler)\\.ts$"
+      "match": "^src/lib/conversions/(audio-[^/]*|flac-encoder|media-audio-[^/]*|midi-render|wav-header)\\.ts$|^src/lib/conversions/wasm/(resampler-mac|wasm-assembler)\\.ts$"
     },
     {
       "families": ["video"],
@@ -170,7 +170,7 @@
     },
     {
       "families": ["video", "audio"],
-      "match": "^src/lib/conversions/media-(dropped-streams|encoder-threads|ffmpeg-args|ffprobe|packaging|stream-plan)\\.ts$"
+      "match": "^src/lib/conversions/media-(decode-failures|dropped-streams|encoder-threads|ffmpeg-args|ffmpeg-run|ffprobe|packaging|stream-plan)\\.ts$"
     },
     {
       "families": ["ocr"],

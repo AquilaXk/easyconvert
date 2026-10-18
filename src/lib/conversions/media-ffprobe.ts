@@ -7,7 +7,9 @@ import {
   MediaProbeError,
   NoVideoStreamError,
   TooManyMediaStreamsError,
+  UnprocessableMediaInputError,
 } from '../types';
+import { explainProbeFailure } from './media-decode-failures';
 import { type LayoutStream, readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 
@@ -80,6 +82,14 @@ export function resolveFfprobeBinary(ffmpegBin?: string | null): FfprobePath {
   return found as FfprobePath;
 }
 
+/** The error for an input ffprobe could not open: the codec the build lacks when that is why, otherwise ffprobe's own report. */
+function probeFailure(ffprobe: FfprobePath, filePath: string, err: unknown): ConversionFailedError {
+  const unsupported = explainProbeFailure(ffprobe, filePath);
+  if (unsupported !== undefined) return unsupported;
+  const detail = err instanceof Error ? err.message : String(err);
+  return new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
+}
+
 function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): string {
   try {
     return execFileSync(ffprobe, ['-v', 'error', ...args, '-of', 'default=noprint_wrappers=1:nokey=1', filePath], {
@@ -89,8 +99,7 @@ function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): str
       .toString('utf-8')
       .trim();
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
+    throw probeFailure(ffprobe, filePath, err);
   }
 }
 
@@ -134,7 +143,9 @@ export function probeAudioSampleRate(filePath: string, ffprobe: FfprobePath, str
   }
   const parsed = Number.parseInt(out, 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new ConversionFailedError(`ffprobe reported an invalid audio sample rate: "${out}"`);
+    throw new UnprocessableMediaInputError(
+      `The audio stream a:${streamIndex} cannot be decoded: ffprobe could not read its sample rate ("${out}"), so its data is damaged or is not the codec it declares.`
+    );
   }
   return parsed;
 }
@@ -304,8 +315,7 @@ export function probeInput(filePath: string, ffprobe: FfprobePath): InputProbe {
       maxBuffer: MAX_FFPROBE_JSON_BYTES,
     });
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
+    throw probeFailure(ffprobe, filePath, err);
   }
   let parsed: { streams?: unknown; format?: { start_time?: unknown; duration?: unknown }; chapters?: unknown };
   try {
