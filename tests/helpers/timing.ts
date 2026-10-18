@@ -220,6 +220,8 @@ export interface ScalingOptions {
   passes?: number;
   /** Largest allowed largeMs / smallMs. Defaults to factor * LINEAR_RATIO_SLACK. */
   maxRatio?: number;
+  /** Clock the samples are read from; wall-clock time unless given. */
+  clock?: Clock;
 }
 
 /**
@@ -237,7 +239,8 @@ export async function expectLinearScaling<R = unknown>(
     () => run(options.baseSize),
     () => run(options.baseSize * factor),
     options.passes,
-    maxRatio
+    maxRatio,
+    options.clock
   );
   assertLinearRatio(label, measurement, factor, options.maxRatio);
   return measurement;
@@ -327,10 +330,10 @@ export async function expectNoSlowerThanReference<R = unknown>(
   label: string,
   reference: () => unknown,
   candidate: () => R | Promise<R>,
-  options: { maxRatio?: number; passes?: number } = {}
+  options: { maxRatio?: number; passes?: number; clock?: Clock } = {}
 ): Promise<ScalingMeasurement<R>> {
   const maxRatio = options.maxRatio ?? REFERENCE_RATIO_BOUND;
-  const measurement = await measureInterleaved(reference, candidate, options.passes, maxRatio);
+  const measurement = await measureInterleaved(reference, candidate, options.passes, maxRatio, options.clock);
   expect(
     measurement.ratio,
     `${label}: the candidate took ${measurement.largeMs.toFixed(2)} ms against ${measurement.smallMs.toFixed(2)} ms for the reference`
