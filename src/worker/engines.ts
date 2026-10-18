@@ -300,7 +300,7 @@ export function probeNativeEngines(): {
 }
 
 /**
- * Pre-warmed LibreOffice Daemon Worker Pool Instance.
+ * Shared pool of pre-warmed LibreOffice worker slots.
  */
 const sofficeResolvedPath = resolveBinary(BINARY_PATHS.soffice, process.env.SOFFICE_PATH);
 export const libreOfficePool = new LibreOfficePoolManager({
@@ -339,8 +339,8 @@ export function assertNotSpoofedFileVfs(
 
 /**
  * Converts an Office document using headless LibreOffice in an isolated sandbox.
- * Leverages the pre-warmed daemon pool with sub-200ms dispatch, auto-recycling,
- * and seamless fail-closed fallback to standalone sandbox execution.
+ * Runs it in a pre-warmed worker slot of the pool (own profile, recycled every N jobs),
+ * with a fail-closed fallback to standalone sandbox execution.
  */
 export async function convertWithHeadlessOffice(
   input: Buffer | WorkerVfsPayload,

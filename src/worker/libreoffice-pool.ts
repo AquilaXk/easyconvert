@@ -188,10 +188,9 @@ export function resolveLibreOfficeFilter(
 }
 
 /**
- * Pre-warmed LibreOffice Daemon Worker Pool Manager.
- * Maintains isolated background worker environments with dedicated user profiles,
- * FIFO queueing, auto-recycling (every N jobs) to prevent memory leaks,
- * and seamless fail-closed fallback.
+ * Pool of pre-warmed LibreOffice worker slots. Each slot keeps its own user profile and work
+ * directory; every job runs one short-lived sandboxed `soffice --convert-to` process in a slot.
+ * Jobs wait in a FIFO queue, a slot is recycled every N jobs, and failures are fail-closed.
  */
 export class LibreOfficePoolManager {
   private workers: LibreOfficeWorker[] = [];
@@ -249,7 +248,7 @@ export class LibreOfficePoolManager {
   }
 
   /**
-   * Initializes pool by pre-warming minimum worker daemons.
+   * Initializes the pool by pre-warming the profiles of the minimum number of worker slots.
    */
   public async init(): Promise<void> {
     if (!this.enabled || this.isShuttingDown) return;
@@ -260,7 +259,7 @@ export class LibreOfficePoolManager {
         const worker = await this.createWorker();
         this.workers.push(worker);
       } catch (err) {
-        console.warn('[LibreOfficePoolManager] Warning: failed to pre-warm initial daemon worker:', err);
+        console.warn('[LibreOfficePoolManager] Warning: failed to pre-warm initial worker:', err);
         break;
       }
     }
@@ -630,7 +629,7 @@ export class LibreOfficePoolManager {
   }
 
   /**
-   * Executes a document conversion job using a pre-warmed worker daemon from the pool.
+   * Runs one document conversion as a one-shot soffice process in a pre-warmed worker slot.
    */
   public async convert(
     input: Buffer | { inputPath?: string; outputPath?: string; inputBuffer?: Buffer },
