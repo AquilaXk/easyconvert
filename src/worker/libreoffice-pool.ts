@@ -317,7 +317,7 @@ export class LibreOfficePoolManager {
 
   /**
    * Runs one bounded conversion with the exact one-shot arguments and sandbox the jobs use, so a
-   * broken listener or namespace surfaces as a typed error right away. The outcome is shared per
+   * broken profile or sandbox namespace surfaces as a typed error right away. The outcome is shared per
    * soffice binary: success is kept, a failure is kept for LIBREOFFICE_READINESS_FAILURE_TTL_MS so
    * a broken pool does not make every job re-pay the probe budget, then the next job probes again.
    */
