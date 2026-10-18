@@ -2,16 +2,13 @@
 // this module turns it into the job's result:
 //
 //   pass    every evaluated row is at or above the reference tool, and no metric is worse than our own baseline;
-//   exempt  a pull request labelled `security` that links an issue (on a merge queue entry, the pull request the entry
-//           carries) is excused from the parity verdict only: the job posts one comment listing the rows below the
-//           reference with their gap issue, opens or updates one `parity-gap` issue per family, and succeeds;
+//   exempt  a pull request labelled `security` that links an issue is excused from the parity verdict only: the
+//           job posts one comment listing the rows below the reference with their gap issue, opens or updates one
+//           `parity-gap` issue per family, and succeeds;
 //   fail    anything else, including every regression against our own baseline, which no label excuses.
 //
 // The exemption never reaches tests, the anti-cheat guard, lint, build, the container or conformance: those are other
 // jobs that this module does not touch. It is called from actions/github-script, with the injected client.
-//
-// The pull request is read from GitHub when the verdict is applied, not taken from the event payload: a merge queue
-// event carries no pull request, and a run restarted after a label was added must see the label.
 
 /** Label that grants the exemption, and the label the per-family gap issues carry. */
 export const SECURITY_LABEL = 'security';
@@ -31,9 +28,6 @@ const EXIT_CODES = new Set([0, 1, 2, 3]);
 /** The label already exists (422) / the issue does not exist (404). */
 const STATUS_VALIDATION_FAILED = 422;
 const STATUS_NOT_FOUND = 404;
-/** A merge queue entry runs on `refs/heads/gh-readonly-queue/<base>/pr-<number>-<sha>`. */
-const QUEUE_REF_PREFIX = 'refs/heads/gh-readonly-queue/';
-const QUEUE_REF_PULL_REQUEST = /\/pr-(\d{1,9})-[0-9a-f]{40}$/;
 
 export class ParityPolicyError extends Error {
   constructor(message) {
@@ -55,15 +49,6 @@ export function linkedIssueNumbers(text) {
     if (found.length >= MAX_LINKED_ISSUES) break;
   }
   return found;
-}
-
-/** Number of the pull request an event is about: the pull request itself, or the one a merge queue entry carries; null for any other event. */
-export function pullRequestNumber(payload) {
-  if (payload?.pull_request) return payload.pull_request.number;
-  const queueRef = payload?.merge_group?.head_ref;
-  if (typeof queueRef !== 'string' || !queueRef.startsWith(QUEUE_REF_PREFIX)) return null;
-  const match = QUEUE_REF_PULL_REQUEST.exec(queueRef);
-  return match ? Number(match[1]) : null;
 }
 
 function fail(message) {
@@ -268,8 +253,8 @@ export async function verifyIssues(github, { owner, repo, numbers }) {
  */
 export async function applyParityVerdict({ github, context, core, fs, runFilePath, scope, requireStrict = true }) {
   const { owner, repo } = context.repo;
-  const number = pullRequestNumber(context.payload);
-  if (number === null) throw new ParityPolicyError('the parity policy runs on pull requests and merge queue entries only');
+  const pull = context.payload.pull_request;
+  if (!pull) throw new ParityPolicyError('the parity policy runs on pull requests only');
   let run;
   try {
     run = readRunFile(runFilePath, fs);
@@ -277,7 +262,6 @@ export async function applyParityVerdict({ github, context, core, fs, runFilePat
     core.setFailed(`no usable parity verdict: ${error instanceof Error ? error.message : String(error)}`);
     return 'fail';
   }
-  const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: number });
   const labels = (pull.labels ?? []).map((label) => label.name);
   const numbers = linkedIssueNumbers(`${pull.title ?? ''}\n${pull.body ?? ''}`);
   const verifiedIssues = labels.includes(SECURITY_LABEL) ? await verifyIssues(github, { owner, repo, numbers }) : [];
