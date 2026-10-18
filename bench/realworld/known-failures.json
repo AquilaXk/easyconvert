@@ -14,31 +14,10 @@
     "issue": 783
   },
   {
-    "pair": "pdf->txt",
-    "verdict": "crash",
-    "detail": "^SandboxedProcessError \\(exit 99\\): Syntax Error",
-    "file": "qpdf-issue-101.pdf",
-    "issue": 783
-  },
-  {
     "pair": "dng->pdf",
     "verdict": "crash",
     "detail": "^job server died \\(code null, signal SIGKILL\\)$",
     "file": "pix-google-pixel6pro.dng",
-    "issue": 783
-  },
-  {
-    "pair": "pdf->md",
-    "verdict": "bad-output",
-    "detail": "^empty output$",
-    "file": "pdfjs-empty_protected.pdf",
-    "issue": 783
-  },
-  {
-    "pair": "pdf->md",
-    "verdict": "bad-output",
-    "detail": "^empty output$",
-    "file": "qpdf-encrypted-with-images.pdf",
     "issue": 783
   }
 ]

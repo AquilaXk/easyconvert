@@ -1,6 +1,7 @@
 import { EncryptedPDFError, PDFDocument } from 'pdf-lib';
 import { decryptPdfToBuffer, readPdfAccess } from '../../worker/pdf-decrypt';
 import { PdfPasswordRequiredError, PdfPermissionDeniedError } from '../types';
+import { PdfStructureError } from './pdf-document';
 import { withQpdfInputFile } from './pdf-postprocess/qpdf-run';
 import { inspectPdfEncryption } from './pdf-encryption';
 
@@ -19,6 +20,10 @@ import { inspectPdfEncryption } from './pdf-encryption';
  *
  * The edited copy is written without encryption, so a confirmed edit also drops the owner's restrictions.
  * The password reaches qpdf through a 0600 file (see pdf-decrypt) and appears in no message, log or return value.
+ *
+ * Reading is a different gate: `openPdfForReading` below serves the converters that read a PDF in the process (text,
+ * Markdown, HTML, hOCR, ALTO, the Office targets, OCR). The owner's permission flags do not stop a conversion, which
+ * reads what any viewer shows, so only the open password matters there.
  */
 
 /** Longest qpdf may spend on one decrypt or inspection; a hostile document cannot hold a job beyond it. */
@@ -156,6 +161,35 @@ export async function loadPdfDocument(plain: Buffer): Promise<PDFDocument> {
     if (error instanceof EncryptedPDFError) {
       throw new PdfPasswordRequiredError(REQUIRED_MESSAGE);
     }
+    throw error;
+  }
+}
+
+/**
+ * The bytes of `pdf` as a PDF the in-process readers can parse. A file that is not encrypted is returned as it is. An
+ * encrypted one is decrypted by qpdf with `password`, or with the empty password when the request carries none: a file
+ * with no open password opens that way, whatever its owner restricts, and a file whose owner password is empty does
+ * too, as in every reader that takes the owner password for an open password. The plain copy is for reading only: a
+ * result that carries the document itself (a PDF returned as it came) still returns the original bytes.
+ *
+ * A file whose cross-reference data cannot be read is returned as it is: the readers repair what they can, and a
+ * document that needs a password still refuses there (they never read ciphertext as text).
+ *
+ * @throws PdfPasswordRequiredError (422) when the PDF needs an open password that the request lacks or got wrong.
+ * @throws EngineUnavailableError when the PDF is encrypted and qpdf is not installed.
+ */
+export async function openPdfForReading(pdf: Buffer, password?: string, signal?: AbortSignal): Promise<Buffer> {
+  if (!isEncrypted(pdf)) return pdf;
+  return withQpdfInputFile(pdf, ({ inputPath, dir }) =>
+    decryptPdfToBuffer({ inputPath, tempDir: dir, password: password ?? '', timeoutMs: PDF_ACCESS_TIMEOUT_MS, signal })
+  );
+}
+
+function isEncrypted(pdf: Buffer): boolean {
+  try {
+    return inspectPdfEncryption(pdf).encrypted;
+  } catch (error) {
+    if (error instanceof PdfStructureError) return false;
     throw error;
   }
 }
