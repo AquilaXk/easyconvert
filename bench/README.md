@@ -216,11 +216,11 @@ is sequential sampling: only a row still undecided at the first cap pays for it,
 row still undecided at the last cap is a failure of this absolute rule, which the nightly run and a run without a base
 (`--parity` without `--base-root`) apply to every row, and the pull request job applies to a row the base cannot run.
 
-**Pull requests: speed against the base of the change.** A fixed line cannot be both stable and sensitive for a row whose
+**Merge queue entries: speed against the base of the change.** A fixed line cannot be both stable and sensitive for a row whose
 true ratio sits near it (issue #700: a row at 0.98 straddles 0.97 at any cap, and an unchanged row fails by chance), so the
-`parity speed` jobs of a pull request judge the change by what it did to the row, as performance gates that compare with the
-base branch do. A job takes the first parent of the merge commit it tested as the base (not the event's base sha, which can be
-older), checks it out beside the head (`ab-base`) with its own dependencies (its own `npm ci` when its lock file differs,
+`parity speed` jobs of a merge queue entry judge the change by what it did to the row, as performance gates that compare with the
+base branch do. A job takes the first parent of the queue's commit it tested as the base (the entry ahead of it, or `main`; the event's
+base sha is only the fallback), checks it out beside the head (`ab-base`) with its own dependencies (its own `npm ci` when its lock file differs,
 cached by the lock file's hash; a change of a dependency is measured), and measures three sides in every pair, in a rotating
 order of the six permutations: the head and the base, each in a node process of its own started in its checkout
 (`bench/ab-host.ts`, `bench/ab-child.ts`: its tsconfig, its `node_modules`, `BENCH_PRODUCT_ROOT` pointing at it), and the
@@ -249,7 +249,7 @@ pairs are fixed, a whole number of cycles of the six orders so that every order 
 for video, OCR and office rows (ranks 4 and 2 at that error rate), no peeking.
 
 **Extra pairs and the time of the job.** The job is a matrix, one `parity speed (<family>)` shard per changed family, in
-parallel (`bench_families_json` of the `changes` job), so the wall time of a pull request is that of its slowest family and
+parallel (`bench_families_json` of the `changes` job), so the wall time of a queue entry is that of its slowest family and
 not the sum of all of them. A row whose first pairs leave it undecided (its lower bound under its slowdown line and its upper
 bound over it: it could still turn out slower than its threshold, or not) gets six more pairs at a time, up to
 `AB_MAX_PAIRS` = 240, while the extra measuring time of its shard (`AB_EXTRA_BUDGET_MS`, 4 minutes) lasts; the budget is one
@@ -427,7 +427,7 @@ that family; the harness, the gate, the map, the corpus, `scripts/ci-parity-*.mj
 `bench/baseline.json` and `bench/parity-gaps.json` map to the families of the rows whose entries changed against the base
 (`PR_BASE_SHA`; every family when the base cannot be read or a row names an unknown family).
 
-A known-gap entry a pull request adds or edits is checked against that pull request's own speed run: the `parity speed` job
+A known-gap entry a pull request adds or edits is checked against the speed run of its queue entry: the `parity speed` job
 passes the base's `bench/parity-gaps.json` as `--base-gaps`, and the recorded ratio and every new history point (which must
 carry the commit of a CI run) have to lie within the speed-ratio interval the job measured for the row, widened by
 `GAP_BACKING_LOG_MARGIN`. A made-up entry fails with `gap-not-backed`; an entry the base already holds is not rechecked. A shard checks the entries of the family of its `--family` argument only (`run.ts` parses the argument and is the change's own file, so the judge of the base receives the head's value; an empty list counts as every family, and neither the `families` field nor the rows of the report say which family a shard is); the shard of another family checks that family's entries, and a family that emitted no rows is refused as unmeasured. The `changes` job fails when a changed entry's family has no shard in the run (`scripts/ci-parity-shards.mjs`, reading the base's family map and gap file). A row
@@ -469,7 +469,7 @@ continuous benchmarking (`bench/speed-history.ts`):
 - `bench/parity-gaps.json` keeps, per tracked row, the median speed ratios of the latest `SPEED_HISTORY_MAX_POINTS` (10)
   CI runs as `history: [{ ratio, at }]`, oldest first, with `at` the run's report time. Only `bench:refresh-speed --write`
   writes it, and only from reports measured on the runner (the nightly `bench-speed-results` artifact or the
-  `parity-speed-results` artifact of a pull request); a laptop measurement cannot enter it, and refreshing the same
+  `parity-speed-results` artifact of a queue run); a laptop measurement cannot enter it, and refreshing the same
   report twice adds nothing.
 - With the n historical ratios r_i, take x_i = ln r_i (ratios combine multiplicatively), their mean m and sample standard
   deviation s. A new measurement is predicted, with 99 percent one-sided confidence (`SPEED_HISTORY_CONFIDENCE`), to be
@@ -506,10 +506,11 @@ conformance still run, and a metric worse than our own baseline still fails. The
 rows below the reference and their gap issue, and opens or updates one `parity-gap` issue per family.
 
 `ci.yml` wires this into `verify`: `parity-quality` runs on every push to a pull request that changes a conversion
-family; `parity-speed` runs when the `automerge` label is on (and again for a commit pushed after it). With a
-conversion family changed and no label, `parity-speed` is skipped and `verify` fails with "add the automerge label",
-so auto-merge cannot fire before speed parity ran on the current head. The nightly workflow runs the full parity
-benchmark on every family and case.
+family, and again on the merge queue's commit; `parity-speed` runs on the merge queue's commit only (the `merge_group`
+event), so it is the last gate before the merge and measures the code `main` will hold. A pull request does not run it,
+and `verify` fails a pull request on which it ran. No label is involved. A `security` label added after a parity job failed
+takes effect when that job is run again: the policy reads the labels from GitHub when it applies the verdict. The nightly
+workflow runs the full parity benchmark on every family and case.
 
 ## Refreshing recorded numbers from CI
 
@@ -517,7 +518,7 @@ Speed depends on the machine, so the speed ratios in `bench/baseline.json` and `
 per-part durations in `.github/ci/conformance-durations.json`, are recorded from a CI run and never from a laptop.
 
 **Speed ratios.** The nightly workflow's `bench-parity-speed` job measures every throughput row on the runner and keeps
-the report as the `bench-speed-results` artifact for 30 days (the `parity speed` job of a pull request keeps
+the report as the `bench-speed-results` artifact for 30 days (the `parity speed` job of a queue run keeps
 `parity-speed-results` for 7 days). The job summary also lists what a refresh would change. To refresh:
 
 ```sh

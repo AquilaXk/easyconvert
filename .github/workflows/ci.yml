@@ -1,8 +1,19 @@
 name: CI
 
-# A pull request runs once per commit: a newer push to the same pull request cancels the run in progress, and the
-# pushes to `main` queue instead (a merge must not be cancelled by the one after it). `push` is limited to `main`,
-# so a pull request commit is never built twice.
+# Pull requests merge through the merge queue of `main`. Each queue entry is built on top of `main` and the entries
+# ahead of it, so a merge never makes another open pull request "behind" and never forces it to run again.
+#
+# Events:
+#   - pull_request: every job except speed parity, on the head of the pull request, once per commit (a newer push
+#     cancels the run in progress). `verify` also requires the SonarCloud quality gate of that head (`sonar gate`).
+#     A label change starts no run: nothing here is gated by a label any more.
+#   - merge_group: the whole pipeline again on the queue's merge commit, and speed parity there for the changed
+#     families, so the timing run is the last gate before the merge. The group is checked against the commit the
+#     queue built it on, runs per queue ref and is never cancelled. SonarCloud does not report on queue commits; its
+#     verdict was already required on the pull request.
+#   - push to `main`: the whole pipeline on the merged commit; `push` is limited to `main`, so a pull request commit
+#     is never built twice.
+# `verify` is the one required check and is meaningful on every event; the ruleset requires it and nothing else.
 #
 # Wall time is set by the slowest job, so the work is split into jobs of about the same length:
 #   - the unit/integration files by recorded duration (scripts/ci-test-shards.mjs, .github/ci/test-durations.json),
@@ -10,19 +21,20 @@ name: CI
 # Timing-ratio suites (*.perf.test.ts) do not run here: they need a quiet machine and run nightly (nightly.yml).
 #
 # Reference parity: a conversion change merges only when it is at or above the reference tool in quality and speed.
-#   - parity-quality measures the changed families' quality rows on every push to the pull request;
-#   - parity-speed measures their speed rows once the `automerge` label is on (and again for a commit pushed after it),
-#     so the timing run is the last gate before the merge. Without the label, and with a conversion family changed, it
-#     is skipped, which `verify` reports as not yet satisfied: automerge cannot merge before speed parity has run on
-#     the current head.
-# The label-dependent verdicts need a fresh run when a label is added or removed, so those events trigger this workflow.
+#   - parity-quality measures the changed families' quality rows on the pull request and again on the queue commit;
+#   - parity-speed measures their speed rows on the queue commit only (about as long as quality, run in parallel with it),
+#     so it measures what main will become, not a head that has fallen behind.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
 
+# One group per pull request, and one per queue ref (unique per queue entry, so a queue run is never replaced by
+# another). Only a pull request run is cancelled by a newer push; a queue run or a push to main runs to the end.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -31,7 +43,7 @@ permissions:
   contents: read
 
 jobs:
-  # Decides whether the pull request changes anything but documentation. The heavy jobs wait for it and run only
+  # Decides whether the pull request (or the queue entry) changes anything but documentation. The heavy jobs wait for it and run only
   # when `code` is true; `verify` accepts their being skipped only when this job said so.
   changes:
     runs-on: ubuntu-latest
@@ -64,11 +76,12 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The commit the change is compared with: the base of the pull request, or the commit the queue built the entry on.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
-          # Fail open: anything but a comparable pull request runs the full suite.
+          # Fail open: anything but a comparable pull request or queue entry runs the full suite.
           code=true
-          if [ "$EVENT_NAME" = pull_request ] && [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
+          if [ "$EVENT_NAME" != push ] && [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
             changed="$(git diff --name-only "$PR_BASE_SHA" HEAD)"
             printf 'changed files:\n%s\n' "$changed"
             if [ -n "$changed" ]; then
@@ -85,19 +98,19 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code changed: $code"
 
-      # Which benchmark families the reference-parity jobs must measure. Only a pull request has them; the map is
-      # bench/family-map.json and the mapper needs no installed dependencies.
+      # Which benchmark families the reference-parity jobs must measure. Only a pull request and a queue entry have
+      # them; the map is bench/family-map.json and the mapper needs no installed dependencies.
       - name: Map changed paths to benchmark families
         id: families
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           ALL_BENCH_FAMILIES: image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector
         run: |
           families=""
           unmapped=""
-          if [ "$EVENT_NAME" = pull_request ]; then
+          if [ "$EVENT_NAME" != push ]; then
             if [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
               mapped="$(git diff --name-only "$PR_BASE_SHA" HEAD | node scripts/ci-parity-families.mjs)"
               printf '%s\n' "$mapped"
@@ -122,10 +135,10 @@ jobs:
       # The families come from the base's family map and gap file: the change cannot map its entries away from their shard.
       - name: Require a speed shard for every changed gap entry
         id: shards
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'push'
         shell: bash
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           FAMILIES: ${{ steps.families.outputs.families }}
         run: |
           if ! git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null; then
@@ -162,14 +175,15 @@ jobs:
         run: npm run guard:code-smells
 
       # --update --allow-growth in a change would pass the step above, so the baseline is also compared with the base
-      # branch's copy per file and rule (a rename passes). A push to main is skipped: its baseline was checked in the PR.
+      # copy per file and rule (a rename passes): the tip of the base branch for a pull request, the commit the queue
+      # built the entry on for a queue entry. A push to main is skipped: its baseline was checked before the merge.
       - name: Check the code-smell baseline does not grow against the base branch
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'push'
         env:
-          BASE_REF: ${{ github.base_ref || 'main' }}
+          BASE_COMMIT: ${{ github.event.merge_group.base_sha || github.base_ref || 'main' }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_REF"
-          git show "origin/$BASE_REF:.github/code-smell-baseline.json" > "$RUNNER_TEMP/base-code-smell-baseline.json" 2>/dev/null || rm -f "$RUNNER_TEMP/base-code-smell-baseline.json"
+          git fetch --no-tags --depth=1 origin "$BASE_COMMIT"
+          git show "FETCH_HEAD:.github/code-smell-baseline.json" > "$RUNNER_TEMP/base-code-smell-baseline.json" 2>/dev/null || rm -f "$RUNNER_TEMP/base-code-smell-baseline.json"
           npm run guard:code-smells -- --check-base "$RUNNER_TEMP/base-code-smell-baseline.json"
 
       # The licence gate runs only when the dependency set or the notices tooling changes: an unchanged
@@ -179,14 +193,14 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
           DEPENDENCY_PATHS: '^(package\.json|package-lock\.json|licenses\.allow\.json|THIRD_PARTY_NOTICES\.md|scripts/third-party-notices\.mjs)$'
         run: |
           # Fail open: when the base commit cannot be compared, run the gate.
           zero_sha=0000000000000000000000000000000000000000
           changed=true
-          if [ "$EVENT_NAME" = pull_request ]; then base="$PR_BASE_SHA"; else base="$PUSH_BEFORE_SHA"; fi
+          if [ "$EVENT_NAME" = push ]; then base="$PUSH_BEFORE_SHA"; else base="$PR_BASE_SHA"; fi
           if [ -n "$base" ] && [ "$base" != "$zero_sha" ] && git fetch --no-tags --depth=1 origin "$base"; then
             if ! git diff --name-only "$base" HEAD | grep -Eq "$DEPENDENCY_PATHS"; then
               changed=false
@@ -437,13 +451,13 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           # Fail open: when the base commit cannot be compared, run the checks.
           zero_sha=0000000000000000000000000000000000000000
           relevant=true
-          if [ "$EVENT_NAME" = pull_request ]; then base="$PR_BASE_SHA"; else base="$PUSH_BEFORE_SHA"; fi
+          if [ "$EVENT_NAME" = push ]; then base="$PUSH_BEFORE_SHA"; else base="$PR_BASE_SHA"; fi
           if [ -n "$base" ] && [ "$base" != "$zero_sha" ] && git fetch --no-tags --depth=1 origin "$base"; then
             changed="$(git diff --name-only "$base" HEAD)"
             printf 'changed files:\n%s\n' "$changed"
@@ -557,8 +571,9 @@ jobs:
   # Reference parity, quality half: the changed families' quality rows (BD-rate, CER, F1, size, SSIM/PSNR) against the
   # reference tools, on the quick subset of each family (QUICK_SUBSET in bench/config.ts). The reference side is
   # deterministic for fixed tool versions, so it is read from the cache the nightly run keeps; ours is measured here.
-  # Runs only when a conversion family changed. A `security` label with a linked issue excuses the parity verdict and
-  # nothing else (scripts/ci-parity-policy.mjs).
+  # Runs only when a conversion family changed, on the pull request and again on the queue commit. A `security` label
+  # with a linked issue excuses the parity verdict and nothing else (scripts/ci-parity-policy.mjs); the policy reads the
+  # labels when it runs, so a run restarted after the label was added sees it.
   parity-quality:
     name: parity quality
     needs: changes
@@ -623,7 +638,7 @@ jobs:
       - name: Read the gap file and the baseline of the base
         id: base
         env:
-          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
           parent="${parent:-$EVENT_BASE_SHA}"
@@ -677,23 +692,18 @@ jobs:
 
   # Reference parity, speed half: ours against the reference tool, interleaved in this job, for the changed families'
   # throughput rows, decided by a confidence interval of the speed ratio (bench/speed-parity.ts). Timing is never
-  # cached and never compared with a stored number. It runs once the `automerge` label is on, and again for a commit
-  # pushed after the label, so it is the last gate before the merge.
-  #   - nothing to measure (no conversion family changed): the job runs, says so, and succeeds;
-  #   - a conversion family changed and the label is on: the job measures;
-  #   - a conversion family changed and the label is off: the job is skipped, and `verify` fails until the label is
-  #     added, so automerge cannot merge before this job has run on the current head.
+  # cached and never compared with a stored number. It runs on the merge queue's commit only, so it is the last gate
+  # before the merge and measures the code main will hold, on top of the entries ahead of it. A pull request does not run
+  # it, and a change that touches no conversion family has nothing to measure, so the job is skipped.
   #
   # One shard per changed family, in parallel: the comparison with the base takes several times the time of the reference alone,
   # and the families are independent. Every shard judges its own rows at the per-row error rate of the whole benchmark
   # (bench/ab-config.ts: 0.01 over AB_ROW_BUDGET rows, more than the rows of all the families together) and has its own share of
-  # the extra pairs. A change with nothing to measure runs one shard that says so.
+  # the extra pairs. A change that only lacks bench rows for its family runs one shard that fails with the instruction to add them.
   parity-speed:
     name: parity speed (${{ matrix.family }})
     needs: changes
-    if: >-
-      github.event_name == 'pull_request' &&
-      (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))
+    if: github.event_name == 'merge_group' && needs.changes.outputs.bench_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -707,22 +717,16 @@ jobs:
 
     env:
       ORACLE_STRICT_MODE: "1"
-      BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
       BENCH_FAMILIES: ${{ matrix.family == 'none' && '' || matrix.family }}
       BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
-      # The pull request times the generated corpus only; the public sample sets are timed by the nightly run (bench/scope.ts).
+      # The queue run times the generated corpus only; the public sample sets are timed by the nightly run (bench/scope.ts).
       BENCH_CORPUS_TIER: pr
       # Timed with the heap bound the service runs with (docker-compose.yml): without it image encodes lease at most two threads
       # (src/lib/conversions/image-threads.ts), and the rows would time a configuration that is never deployed.
       MALLOC_ARENA_MAX: "2"
 
     steps:
-      - name: Say that there is nothing to measure
-        if: env.BENCH_CHANGED != 'true'
-        run: echo "speed parity runs when the automerge label is added; no conversion family changed, so there is nothing to measure"
-
       - name: Checkout repository
-        if: env.BENCH_CHANGED == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Require bench rows for every changed conversion family
@@ -734,18 +738,15 @@ jobs:
           exit 1
 
       - name: Setup Node.js
-        if: env.BENCH_CHANGED == 'true'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: 'npm'
 
       - name: Install dependencies
-        if: env.BENCH_CHANGED == 'true'
         run: npm ci --ignore-scripts
 
       - name: Install tools and start test services
-        if: env.BENCH_CHANGED == 'true'
         uses: ./.github/actions/ci-setup
 
       # The speed of this change is measured against its base in the same pairs (bench/ab-speed.ts). The base is the first
@@ -753,9 +754,8 @@ jobs:
       # checked out beside this tree, with its own dependencies, and measured by a process of its own.
       - name: Check out the base of the tested merge
         id: base
-        if: env.BENCH_CHANGED == 'true'
         env:
-          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         run: |
           parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
           parent="${parent:-$EVENT_BASE_SHA}"
@@ -767,7 +767,6 @@ jobs:
       # A change cannot loosen the gate that judges it: the speed verdict, its thresholds and the A/B machinery come from the
       # base (scripts/ci-parity-base-gate.mjs, run from the base's own copy). The base's gate must still fit this tree.
       - name: Use the gate of the base
-        if: env.BENCH_CHANGED == 'true'
         run: |
           if [ -f ab-base/scripts/ci-parity-base-gate.mjs ]; then
             node ab-base/scripts/ci-parity-base-gate.mjs ab-base
@@ -778,7 +777,6 @@ jobs:
 
       - name: Restore the dependencies of the base
         id: base-modules
-        if: env.BENCH_CHANGED == 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ab-base/node_modules
@@ -787,7 +785,6 @@ jobs:
       # The base runs on its own dependencies, so a change of a dependency shows in the comparison. An identical lock file
       # shares this tree's node_modules.
       - name: Install the dependencies of the base
-        if: env.BENCH_CHANGED == 'true'
         run: |
           if cmp -s package-lock.json ab-base/package-lock.json; then
             ln -s "$PWD/node_modules" ab-base/node_modules
@@ -796,7 +793,7 @@ jobs:
           fi
 
       - name: Save the dependencies of the base
-        if: env.BENCH_CHANGED == 'true' && steps.base-modules.outputs.cache-hit != 'true' && hashFiles('ab-base/package-lock.json') != hashFiles('package-lock.json')
+        if: steps.base-modules.outputs.cache-hit != 'true' && hashFiles('ab-base/package-lock.json') != hashFiles('package-lock.json')
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ab-base/node_modules
@@ -804,7 +801,6 @@ jobs:
 
       - name: Measure speed against the reference tools
         id: bench
-        if: env.BENCH_CHANGED == 'true'
         env:
           BENCH_BASE_ROOT: ab-base
         run: |
@@ -816,14 +812,14 @@ jobs:
           exit 0
 
       - name: Publish the parity table
-        if: always() && env.BENCH_CHANGED == 'true'
+        if: always()
         run: |
           if [ -f bench-results/parity-verdict.md ]; then
             { echo '### Reference parity: speed'; cat bench-results/parity-verdict.md; } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload the benchmark report
-        if: always() && env.BENCH_CHANGED == 'true'
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: parity-speed-results-${{ matrix.family }}
@@ -832,7 +828,6 @@ jobs:
           retention-days: 7
 
       - name: Apply the parity verdict and the security exemption
-        if: env.BENCH_CHANGED == 'true'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
@@ -846,13 +841,64 @@ jobs:
               scope: `speed-${process.env.BENCH_FAMILIES}`,
             });
 
-  # The required check. The heavy jobs may be skipped only when `changes` found documentation-only edits; any
-  # other skipped, cancelled or failed job fails the gate. The parity jobs follow the same rule with their own
-  # verdict: quality runs when a conversion family changed, and speed runs when nothing needs measuring or the
-  # `automerge` label is on; a skipped speed job with a conversion family changed is not yet satisfied.
+  # The SonarCloud quality gate of the pull request head, read from its public API (no token): SonarCloud analyses the
+  # pull request head and reports its verdict there, but it does not report on the commits of the merge queue, so its
+  # own check cannot be required by the ruleset. The gate of a commit that SonarCloud has not analysed yet is not
+  # computed, so the job waits for the analysis of this very head (a verdict left by an earlier commit of the pull
+  # request does not count), fails on ERROR, and fails when no verdict arrives within the timeout. A pull request that
+  # changes documentation only is analysed too (it has no new code, so its gate is OK). Queue entries and pushes to
+  # main skip it: the verdict was required on the pull request before it could enter the queue.
+  sonar-gate:
+    name: sonar gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Wait for the quality gate of the pull request head
+        shell: bash
+        env:
+          SONAR_API: https://sonarcloud.io/api
+          SONAR_PROJECT_KEY: AquilaXk_easyconvert
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TIMEOUT_SECONDS: '900'
+          POLL_SECONDS: '30'
+        run: |
+          deadline=$((SECONDS + TIMEOUT_SECONDS))
+          while true; do
+            status=""
+            if listing="$(curl --fail --silent --show-error --max-time 60 --get "$SONAR_API/project_pull_requests/list" --data-urlencode "project=$SONAR_PROJECT_KEY")"; then
+              status="$(printf '%s' "$listing" | jq -r --arg key "$PR_NUMBER" --arg sha "$HEAD_SHA" '[.pullRequests[]? | select(.key == $key and .commit.sha == $sha) | .status.qualityGateStatus][0] // ""')"
+            fi
+            case "$status" in
+              OK)
+                echo "SonarCloud quality gate of $HEAD_SHA: OK"
+                exit 0
+                ;;
+              ERROR)
+                echo "::error::SonarCloud quality gate of $HEAD_SHA failed"
+                curl --silent --max-time 60 --get "$SONAR_API/qualitygates/project_status" --data-urlencode "projectKey=$SONAR_PROJECT_KEY" --data-urlencode "pullRequest=$PR_NUMBER" \
+                  | jq -r '.projectStatus.conditions[]? | select(.status == "ERROR") | "failed condition: \(.metricKey) is \(.actualValue), limit \(.errorThreshold)"' || true
+                exit 1
+                ;;
+              *)
+                echo "no quality gate for $HEAD_SHA yet (status: ${status:-none})"
+                ;;
+            esac
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::SonarCloud returned no quality gate for $HEAD_SHA within ${TIMEOUT_SECONDS}s"
+              exit 1
+            fi
+            sleep "$POLL_SECONDS"
+          done
+
+  # The required check, meaningful on every event. The heavy jobs may be skipped only when `changes` found
+  # documentation-only edits; any other skipped, cancelled or failed job fails the gate. The parity jobs follow the
+  # same rule with their own verdict: quality runs when a conversion family changed, on a pull request and on a queue
+  # entry; speed runs on a queue entry that changed one; the SonarCloud gate runs on a pull request.
   verify:
     if: always()
-    needs: [changes, checks, tests, conformance, integration, container, parity-quality, parity-speed]
+    needs: [changes, checks, tests, conformance, integration, container, parity-quality, parity-speed, sonar-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -861,7 +907,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
           BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
-          HAS_AUTOMERGE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'automerge') }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           TESTS_RESULT: ${{ needs.tests.result }}
@@ -870,9 +915,10 @@ jobs:
           CONTAINER_RESULT: ${{ needs.container.result }}
           PARITY_QUALITY_RESULT: ${{ needs.parity-quality.result }}
           PARITY_SPEED_RESULT: ${{ needs.parity-speed.result }}
+          SONAR_GATE_RESULT: ${{ needs.sonar-gate.result }}
         run: |
-          echo "code changed: $CODE_CHANGED, conversion family changed: $BENCH_CHANGED, automerge label: $HAS_AUTOMERGE_LABEL"
-          echo "changes: $CHANGES_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT, parity speed: $PARITY_SPEED_RESULT"
+          echo "event: $EVENT_NAME, code changed: $CODE_CHANGED, conversion family changed: $BENCH_CHANGED"
+          echo "changes: $CHANGES_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT, parity speed: $PARITY_SPEED_RESULT, sonar gate: $SONAR_GATE_RESULT"
           failed=0
           if [ "$CHANGES_RESULT" != success ] || [ "$CONTAINER_RESULT" != success ]; then failed=1; fi
           # The expected result of the heavy jobs follows from the filter's verdict alone.
@@ -884,22 +930,17 @@ jobs:
           for result in "$CHECKS_RESULT" "$TESTS_RESULT" "$CONFORMANCE_RESULT" "$INTEGRATION_RESULT"; do
             if [ "$result" != "$expected" ]; then failed=1; fi
           done
-          # Parity quality runs on a pull request that changes a conversion family, and on nothing else.
+          # Parity quality runs on a pull request and on a queue entry that changes a conversion family, and on nothing
+          # else. Parity speed runs on a queue entry that changes one, never on a pull request.
           quality_expected=skipped
-          if [ "$EVENT_NAME" = pull_request ] && [ "$BENCH_CHANGED" = true ]; then quality_expected=success; fi
-          if [ "$PARITY_QUALITY_RESULT" != "$quality_expected" ]; then failed=1; fi
-          # Parity speed: success when nothing needs measuring or the label started the measurement. With a
-          # conversion family changed and no label the job is skipped, and that is not yet satisfied.
           speed_expected=skipped
-          if [ "$EVENT_NAME" = pull_request ]; then
-            if [ "$BENCH_CHANGED" != true ] || [ "$HAS_AUTOMERGE_LABEL" = true ]; then
-              speed_expected=success
-            else
-              echo "::error::speed parity has not run: add the automerge label to run it before the merge"
-              failed=1
-            fi
-          fi
+          sonar_expected=skipped
+          if [ "$EVENT_NAME" != push ] && [ "$BENCH_CHANGED" = true ]; then quality_expected=success; fi
+          if [ "$EVENT_NAME" = merge_group ] && [ "$BENCH_CHANGED" = true ]; then speed_expected=success; fi
+          if [ "$EVENT_NAME" = pull_request ]; then sonar_expected=success; fi
+          if [ "$PARITY_QUALITY_RESULT" != "$quality_expected" ]; then failed=1; fi
           if [ "$PARITY_SPEED_RESULT" != "$speed_expected" ]; then failed=1; fi
+          if [ "$SONAR_GATE_RESULT" != "$sonar_expected" ]; then failed=1; fi
           if [ "$failed" != 0 ]; then
             echo "::error::a required job did not finish as expected"
             exit 1

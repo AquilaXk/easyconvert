@@ -113,8 +113,9 @@ describe('the changes job', () => {
     const mapped = steps.findIndex((step) => step.id === 'families');
     const check = steps.findIndex((step) => step.id === 'shards');
     expect(check).toBeGreaterThan(mapped);
-    expect(steps[check].env).toMatchObject({ PR_BASE_SHA: '${{ github.event.pull_request.base.sha }}', FAMILIES: '${{ steps.families.outputs.families }}' });
+    expect(steps[check].env).toMatchObject({ PR_BASE_SHA: '${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}', FAMILIES: '${{ steps.families.outputs.families }}' });
     expect(steps[check].run).toContain('node scripts/ci-parity-shards.mjs "$FAMILIES"');
-    expect(steps[check].if).toContain("github.event_name == 'pull_request'");
+    // A pull request and a merge queue entry both name the speed shards their gap entries need; a push names none.
+    expect(steps[check].if).toBe("github.event_name != 'push'");
   });
 });

@@ -10,9 +10,9 @@ import { skipUnless } from './helpers/strict-skip';
 /**
  * Wiring of the reference-parity jobs, read from the YAML, and the two shell steps that decide what they do: the step
  * that maps changed paths to benchmark families (run against real git repositories) and the `verify` gate (run
- * against result sets). The rules are written out here: parity-quality runs when a conversion family changed;
- * parity-speed runs when the automerge label is on or nothing needs measuring; a skipped parity-speed with a conversion
- * family changed is not yet satisfied; nothing about speed is ever cached.
+ * against result sets). The rules are written out here: parity-quality runs when a conversion family changed, on a
+ * pull request and on a merge queue entry; parity-speed runs on a merge queue entry that changed one and never on a
+ * pull request; nothing about speed is ever cached.
  */
 
 interface Step {
@@ -62,13 +62,12 @@ const quality = ci.jobs['parity-quality'];
 const speed = ci.jobs['parity-speed'];
 
 describe('the trigger', () => {
-  it('re-runs the workflow when a label is added or removed, and on the events it already ran on', () => {
-    const types = (ci.on.pull_request as { types: string[] }).types;
-    expect(types).toEqual(expect.arrayContaining(['opened', 'synchronize', 'reopened', 'labeled', 'unlabeled']));
-    expect(types).toHaveLength(5);
+  it('runs on the commits of a pull request and on the entries of the merge queue, and not on a label change', () => {
+    expect((ci.on.pull_request as { types: string[] }).types).toEqual(['opened', 'synchronize', 'reopened']);
+    expect(ci.on.merge_group).toEqual({ types: ['checks_requested'] });
   });
 
-  it('cancels a superseded run, so a label added mid-run restarts the checks on the same head', () => {
+  it('cancels a superseded pull request run only: a queue entry run is never cancelled', () => {
     expect((ci as unknown as { concurrency: { 'cancel-in-progress': string } }).concurrency['cancel-in-progress']).toBe("${{ github.event_name == 'pull_request' }}");
   });
 });
@@ -91,7 +90,7 @@ describe('parity-quality', () => {
     expect(base.run).toContain("git cat-file -p HEAD | sed -n 's/^parent //p'");
     expect(base.run).toContain('git show "$parent:bench/parity-gaps.json" > ab-base-files/parity-gaps.json');
     expect(base.run).toContain('git show "$parent:bench/baseline.json" > ab-base-files/baseline.json');
-    expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+    expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}');
     expect(runOf(quality, 'bench')).toContain('--base-gaps ab-base-files/parity-gaps.json --base-baseline ab-base-files/baseline.json');
     // Read before the measurement, from git alone: no checkout of the base and no dependency of it.
     expect(quality.steps.findIndex((s) => s.id === 'base')).toBeLessThan(quality.steps.findIndex((s) => s.id === 'bench'));
@@ -142,26 +141,18 @@ describe('parity-quality', () => {
 });
 
 describe('parity-speed', () => {
-  it('runs on a pull request when the automerge label is on, or when nothing needs measuring', () => {
+  it('runs on a merge queue entry that changed a conversion family, and on nothing else', () => {
     expect(speed.needs).toBe('changes');
     const condition = String(speed.if).replace(/\s+/g, ' ').trim();
-    expect(condition).toBe("github.event_name == 'pull_request' && (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))");
-  });
-
-  it('says what it is waiting for when there is nothing to measure, and does no other work then', () => {
-    const say = stepNamed(speed, 'Say that there is nothing to measure');
-    expect(say.if).toBe("env.BENCH_CHANGED != 'true'");
-    expect(say.run).toContain('speed parity runs when the automerge label is added');
-    for (const step of speed.steps.filter((s) => s !== say && s.name !== 'Require bench rows for every changed conversion family')) {
-      expect(String(step.if), step.name).toMatch(/env\.BENCH_CHANGED == 'true'/);
-    }
+    expect(condition).toBe("github.event_name == 'merge_group' && needs.changes.outputs.bench_changed == 'true'");
   });
 
   it('measures the pull request against its base in the same pairs: the first parent of the tested merge, with its own dependencies', () => {
     const base = stepNamed(speed, 'base');
     expect(base.run).toContain("git cat-file -p HEAD | sed -n 's/^parent //p'");
     expect(base.run).toContain('git worktree add --detach ab-base "$parent"');
-    expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+    // The queue commit has the commit it was built on as its first parent; the event's base is the fallback.
+    expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.merge_group.base_sha }}');
     const install = stepNamed(speed, 'Install the dependencies of the base');
     expect(install.run).toContain('cmp -s package-lock.json ab-base/package-lock.json');
     expect(install.run).toContain('cd ab-base && npm ci --ignore-scripts');
@@ -171,9 +162,6 @@ describe('parity-speed', () => {
     expect(speed['timeout-minutes']).toBe(45);
     const order = ['base', 'Use the gate of the base', 'Restore the dependencies of the base', 'Install the dependencies of the base', 'bench'].map((name) => speed.steps.indexOf(stepNamed(speed, name)));
     expect(order).toEqual([...order].sort((a, b) => a - b));
-    for (const name of ['base', 'Use the gate of the base', 'Restore the dependencies of the base', 'Install the dependencies of the base', 'Save the dependencies of the base']) {
-      expect(String(stepNamed(speed, name).if), name).toMatch(/env\.BENCH_CHANGED == 'true'/);
-    }
   });
 
   it('runs one shard per changed family, each with the families of its own and the scope of its own comment', () => {
@@ -193,7 +181,7 @@ describe('parity-speed', () => {
 
   it('takes the speed verdict and its thresholds from the base, and checks that they fit the change, before it measures', () => {
     const gate = stepNamed(speed, 'Use the gate of the base');
-    expect(gate.if).toBe("env.BENCH_CHANGED == 'true'");
+    expect(gate.if).toBeUndefined();
     expect(gate.run).toContain('node ab-base/scripts/ci-parity-base-gate.mjs ab-base');
     expect(gate.run).toContain('node_modules/.bin/tsc --noEmit -p .');
     expect(gate.run).toContain('the gate of the base does not fit this change');
@@ -318,17 +306,18 @@ describe('the public benchmark samples in the workflows', () => {
 });
 
 describe('verify', () => {
-  it('waits for both parity jobs and runs whatever their result', () => {
-    expect([...(ci.jobs.verify.needs as string[])]).toEqual(expect.arrayContaining(['parity-quality', 'parity-speed']));
+  it('waits for both parity jobs and the SonarCloud gate, and runs whatever their result', () => {
+    expect([...(ci.jobs.verify.needs as string[])]).toEqual(expect.arrayContaining(['parity-quality', 'parity-speed', 'sonar-gate']));
     expect(ci.jobs.verify.if).toBe('always()');
   });
 
-  it('reads the label and the verdict of the change filter from the run itself', () => {
+  it('reads the event, the verdict of the change filter and every verdict from the run itself', () => {
     const env = stepNamed(ci.jobs.verify, 'Require every job to pass, or to be skipped for a documentation-only change').env;
-    expect(env?.HAS_AUTOMERGE_LABEL).toBe("${{ contains(github.event.pull_request.labels.*.name, 'automerge') }}");
+    expect(env?.EVENT_NAME).toBe('${{ github.event_name }}');
     expect(env?.BENCH_CHANGED).toBe('${{ needs.changes.outputs.bench_changed }}');
     expect(env?.PARITY_SPEED_RESULT).toBe('${{ needs.parity-speed.result }}');
     expect(env?.PARITY_QUALITY_RESULT).toBe('${{ needs.parity-quality.result }}');
+    expect(env?.SONAR_GATE_RESULT).toBe('${{ needs.sonar-gate.result }}');
   });
 });
 
@@ -337,77 +326,102 @@ describe('the verify gate with the parity jobs', () => {
   const script = runOf(ci.jobs.verify, 'Require every job to pass, or to be skipped for a documentation-only change');
 
   interface Situation {
-    event?: string;
+    event: 'pull_request' | 'merge_group' | 'push';
     code?: string;
     benchChanged: string;
-    label: boolean;
     quality: string;
     speed: string;
+    sonar: string;
     changes?: string;
   }
   function gate(situation: Situation): { status: number; output: string } {
+    const heavy = situation.code === 'false' ? 'skipped' : 'success';
     const result = spawnSync('bash', ['-c', script], {
       encoding: 'utf-8',
       env: {
         ...process.env,
-        EVENT_NAME: situation.event ?? 'pull_request',
+        EVENT_NAME: situation.event,
         CODE_CHANGED: situation.code ?? 'true',
         BENCH_CHANGED: situation.benchChanged,
-        HAS_AUTOMERGE_LABEL: String(situation.label),
         CHANGES_RESULT: situation.changes ?? 'success',
-        CHECKS_RESULT: situation.code === 'false' ? 'skipped' : 'success',
-        TESTS_RESULT: situation.code === 'false' ? 'skipped' : 'success',
-        CONFORMANCE_RESULT: situation.code === 'false' ? 'skipped' : 'success',
-        INTEGRATION_RESULT: situation.code === 'false' ? 'skipped' : 'success',
+        CHECKS_RESULT: heavy,
+        TESTS_RESULT: heavy,
+        CONFORMANCE_RESULT: heavy,
+        INTEGRATION_RESULT: heavy,
         CONTAINER_RESULT: 'success',
         PARITY_QUALITY_RESULT: situation.quality,
         PARITY_SPEED_RESULT: situation.speed,
+        SONAR_GATE_RESULT: situation.sonar,
       },
     });
     return { status: result.status ?? -1, output: `${result.stdout}${result.stderr}` };
   }
   const only = it.skipIf(skipUnless('bash', bash.status === 0));
+  const pullRequest = (over: Partial<Situation> = {}): Situation => ({ event: 'pull_request', benchChanged: 'false', quality: 'skipped', speed: 'skipped', sonar: 'success', ...over });
+  const queueEntry = (over: Partial<Situation> = {}): Situation => ({ event: 'merge_group', benchChanged: 'false', quality: 'skipped', speed: 'skipped', sonar: 'skipped', ...over });
 
-  only('passes a change that touches no conversion family: quality skipped, speed says there is nothing to measure', () => {
-    expect(gate({ benchChanged: 'false', label: false, quality: 'skipped', speed: 'success' }).status).toBe(0);
-    expect(gate({ benchChanged: 'false', label: true, quality: 'skipped', speed: 'success' }).status).toBe(0);
-    expect(gate({ code: 'false', benchChanged: 'false', label: false, quality: 'skipped', speed: 'success' }).status).toBe(0);
+  only('passes a pull request that touches no conversion family once the SonarCloud gate passed, with no label involved', () => {
+    expect(gate(pullRequest()).status).toBe(0);
+    expect(gate(pullRequest({ code: 'false' })).status).toBe(0);
   });
 
-  only('is not satisfied by a conversion change without the automerge label: speed parity has not run', () => {
-    const result = gate({ benchChanged: 'true', label: false, quality: 'success', speed: 'skipped' });
-    expect(result.status).toBe(1);
-    expect(result.output).toContain('::error::speed parity has not run: add the automerge label');
+  only('passes a conversion change on the pull request without speed parity: quality ran, speed is left to the queue', () => {
+    expect(gate(pullRequest({ benchChanged: 'true', quality: 'success' })).status).toBe(0);
   });
 
-  only('is not satisfied by a skipped speed job that claims success without the label either', () => {
-    expect(gate({ benchChanged: 'true', label: false, quality: 'success', speed: 'success' }).status).toBe(1);
+  only('fails a pull request that ran speed parity: it belongs to the queue commit alone', () => {
+    expect(gate(pullRequest({ benchChanged: 'true', quality: 'success', speed: 'success' })).status).toBe(1);
+    expect(gate(pullRequest({ speed: 'success' })).status).toBe(1);
   });
 
-  only('passes a conversion change with the label once both parity jobs succeeded', () => {
-    expect(gate({ benchChanged: 'true', label: true, quality: 'success', speed: 'success' }).status).toBe(0);
-  });
-
-  only('fails when a parity job failed, was cancelled, or was skipped where it had to run', () => {
-    for (const result of ['failure', 'cancelled', 'skipped']) {
-      expect(gate({ benchChanged: 'true', label: true, quality: 'success', speed: result }).status, `speed ${result}`).toBe(1);
-      expect(gate({ benchChanged: 'true', label: true, quality: result, speed: 'success' }).status, `quality ${result}`).toBe(1);
+  only('requires the SonarCloud gate on a pull request: failed, cancelled or skipped is not satisfied', () => {
+    for (const sonar of ['failure', 'cancelled', 'skipped']) {
+      expect(gate(pullRequest({ sonar })).status, sonar).toBe(1);
+      expect(gate(pullRequest({ code: 'false', sonar })).status, `docs only, ${sonar}`).toBe(1);
     }
-    expect(gate({ benchChanged: 'false', label: false, quality: 'skipped', speed: 'failure' }).status).toBe(1);
-    expect(gate({ benchChanged: 'false', label: false, quality: 'skipped', speed: 'skipped' }).status).toBe(1);
   });
 
-  only('fails when parity quality ran although no conversion family changed', () => {
-    expect(gate({ benchChanged: 'false', label: false, quality: 'success', speed: 'success' }).status).toBe(1);
+  only('requires quality on a pull request that changed a conversion family, and fails it when it ran without one', () => {
+    for (const quality of ['failure', 'cancelled', 'skipped']) {
+      expect(gate(pullRequest({ benchChanged: 'true', quality })).status, quality).toBe(1);
+    }
+    expect(gate(pullRequest({ quality: 'success' })).status).toBe(1);
   });
 
-  only('expects no parity job on a push to main, and fails if one ran', () => {
-    expect(gate({ event: 'push', benchChanged: 'false', label: false, quality: 'skipped', speed: 'skipped' }).status).toBe(0);
-    expect(gate({ event: 'push', benchChanged: 'false', label: false, quality: 'skipped', speed: 'success' }).status).toBe(1);
+  only('passes a queue entry that touches no conversion family without any parity job or SonarCloud gate', () => {
+    expect(gate(queueEntry()).status).toBe(0);
+    expect(gate(queueEntry({ code: 'false' })).status).toBe(0);
   });
 
-  only('fails when the change filter itself failed, whatever the parity jobs did', () => {
-    expect(gate({ changes: 'failure', benchChanged: '', label: true, quality: 'skipped', speed: 'skipped' }).status).toBe(1);
+  only('requires quality and speed parity on the queue commit of a conversion change', () => {
+    expect(gate(queueEntry({ benchChanged: 'true', quality: 'success', speed: 'success' })).status).toBe(0);
+    for (const result of ['failure', 'cancelled', 'skipped']) {
+      expect(gate(queueEntry({ benchChanged: 'true', quality: 'success', speed: result })).status, `speed ${result}`).toBe(1);
+      expect(gate(queueEntry({ benchChanged: 'true', quality: result, speed: 'success' })).status, `quality ${result}`).toBe(1);
+    }
+  });
+
+  only('is not satisfied by a queue entry that skipped speed parity for a conversion change', () => {
+    const result = gate(queueEntry({ benchChanged: 'true', quality: 'success', speed: 'skipped' }));
+    expect(result.status).toBe(1);
+    expect(result.output).toContain('a required job did not finish as expected');
+  });
+
+  only('fails a queue entry that ran a parity job or the SonarCloud gate although nothing called for one', () => {
+    expect(gate(queueEntry({ speed: 'success' })).status).toBe(1);
+    expect(gate(queueEntry({ quality: 'success' })).status).toBe(1);
+    expect(gate(queueEntry({ sonar: 'success' })).status).toBe(1);
+  });
+
+  only('expects no parity job and no SonarCloud gate on a push to main, and fails if one ran', () => {
+    expect(gate({ event: 'push', benchChanged: 'false', quality: 'skipped', speed: 'skipped', sonar: 'skipped' }).status).toBe(0);
+    expect(gate({ event: 'push', benchChanged: 'false', quality: 'skipped', speed: 'success', sonar: 'skipped' }).status).toBe(1);
+    expect(gate({ event: 'push', benchChanged: 'false', quality: 'skipped', speed: 'skipped', sonar: 'success' }).status).toBe(1);
+  });
+
+  only('fails when the change filter itself failed, whatever the other jobs did', () => {
+    expect(gate(pullRequest({ changes: 'failure', benchChanged: '' })).status).toBe(1);
+    expect(gate(queueEntry({ changes: 'failure', benchChanged: '' })).status).toBe(1);
   });
 });
 
@@ -486,6 +500,11 @@ describe('the step that maps changed paths to families', () => {
     expect(outputs(['src/lib/conversions/brand-new-engine.ts']).status).not.toBe(0);
   });
 
+  only('maps the changed paths of a merge queue entry the way it does those of a pull request', () => {
+    expect(outputs(['src/lib/conversions/zstd-encoder.ts'], { event: 'merge_group' }).outputs).toEqual({ families: 'compression', families_json: '["compression"]', unmapped: '', changed: 'true' });
+    expect(outputs(['docs/guide.md'], { event: 'merge_group' }).outputs).toEqual({ families: '', families_json: '[]', unmapped: '', changed: 'false' });
+  });
+
   only('fails open without a comparable base commit, and has nothing to say for a push', () => {
     expect(outputs(['README.md'], { baseSha: null }).outputs).toEqual({ families: 'image,video,audio,ocr,document,compression,pdf-ops,data,ebook,font,cad,raw,vector', families_json: '["image","video","audio","ocr","document","compression","pdf-ops","data","ebook","font","cad","raw","vector"]', unmapped: '', changed: 'true' });
     expect(outputs(['src/lib/conversions/zstd.ts'], { event: 'push' }).outputs).toEqual({ families: '', families_json: '[]', unmapped: '', changed: 'false' });
@@ -502,19 +521,19 @@ describe('the step that maps changed paths to families', () => {
 });
 
 describe('the automerge workflow', () => {
-  it('leaves the gate to verify: it never merges directly, only arms squash auto-merge', () => {
+  it('leaves the gate to the required check and the queue: it never merges directly, only arms squash auto-merge', () => {
     const merges = Object.values(automerge.jobs)
       .flatMap((job) => job.steps.map((step) => step.run ?? ''))
       .flatMap((run) => run.match(/gh pr merge.*/g) ?? []);
     expect(merges).toHaveLength(2);
     expect(merges.every((command) => /--auto|--disable-auto/.test(command))).toBe(true);
-    expect(automergeText).toContain('`verify` fails ("add the automerge label")');
   });
 
-  it('is armed by the same label that starts speed parity', () => {
+  it('is armed by the label, which no job of the CI workflow reads: adding it starts no run and gates no check', () => {
     const labelsIn = (condition: string): string[] => [...new Set([...condition.matchAll(/'(automerge|security)'/g)].map((match) => match[1]))];
     expect(labelsIn(String(automerge.jobs.enable.if))).toEqual(['automerge']);
-    expect(labelsIn(String(speed.if))).toEqual(['automerge']);
+    expect(labelsIn(JSON.stringify(ci))).toEqual([]);
+    expect((ci.on.pull_request as { types: string[] }).types).not.toEqual(expect.arrayContaining(['labeled']));
   });
 });
 
