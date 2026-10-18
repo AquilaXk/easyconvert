@@ -1,7 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import { AB_HEAVY_PAIRS, AB_LIGHT_PAIRS, AB_NIGHTLY_ONLY, AB_NIGHTLY_ONLY_PAIRS } from './ab-config';
 import { AbHostError, BaseRowError } from './ab-host';
-import { abSpeedTiming, type ExtraBudget, localSide, regressionDelta, type Side } from './ab-speed';
+import { abSpeedTiming, type ExtraBudget, type FreshPair, localSide, regressionDelta, type Side } from './ab-speed';
 import type { Injection, RowWeight } from './context';
 import { SPEED_MIN_SAMPLE_MS } from './speed-config';
 import { adaptiveSpeedTiming, HEAVY_SPEED_PLAN, LIGHT_SPEED_PLAN, type AdaptiveTiming } from './speed-parity';
@@ -22,6 +22,8 @@ export interface AbRows {
   row: (id: string) => Promise<void>;
   side: () => Side;
   next: () => void;
+  /** Another process of the same version, waiting at the row `rowId` (bench/ab-host.ts); a scripted process has none. */
+  fresh?: (rowId: string) => Promise<AbRows & { stop: () => Promise<void> }>;
 }
 
 export interface TimerInit {
@@ -55,6 +57,47 @@ function headRefused(error: unknown): never {
   throw error;
 }
 
+/** The head must run its own row: its refusal is an error of the benchmark, not a row without a base. */
+function guardedHead(side: Side): Side {
+  return {
+    call: () => side.call().catch(headRefused),
+    sample: (calls) => side.sample(calls).catch(headRefused),
+  };
+}
+
+type StartedRows = AbRows & { stop: () => Promise<void> };
+type Version = 'head' | 'base';
+
+/**
+ * The confirmation of a failure in processes started for it, when both versions can start one: the head and the base of
+ * confirmation `index`, the version that starts first alternating with `index` so that start-up favours neither. Nothing is
+ * left running when the second cannot start.
+ */
+function freshStarter(head: AbRows, base: AbRows, rowId: string): ((index: number) => Promise<FreshPair>) | undefined {
+  const startHead = head.fresh?.bind(head);
+  const startBase = base.fresh?.bind(base);
+  if (startHead === undefined || startBase === undefined) return undefined;
+  const starters = { head: startHead, base: startBase };
+  return async (index) => {
+    const order: readonly Version[] = index % 2 === 0 ? ['head', 'base'] : ['base', 'head'];
+    const started: Partial<Record<Version, StartedRows>> = {};
+    try {
+      for (const version of order) started[version] = await starters[version](rowId);
+    } catch (error) {
+      await Promise.all(Object.values(started).map((rows) => rows.stop()));
+      throw error;
+    }
+    const { head: freshHead, base: freshBase } = started as Record<Version, StartedRows>;
+    return {
+      head: guardedHead(freshHead.side()),
+      base: freshBase.side(),
+      close: async () => {
+        await Promise.all([freshHead.stop(), freshBase.stop()]);
+      },
+    };
+  };
+}
+
 export type RowTimer = (rowId: string, ours: () => Promise<void> | void, reference: () => Promise<void> | void, weight: RowWeight, oursRepeats?: number) => Promise<InterleavedTiming | AdaptiveTiming>;
 
 export function createTimer(init: TimerInit): RowTimer {
@@ -71,23 +114,19 @@ export function createTimer(init: TimerInit): RowTimer {
       await head.row(rowId).catch(headRefused);
       const plan = weight === 'heavy' ? HEAVY_SPEED_PLAN : LIGHT_SPEED_PLAN;
       const fixedPairs = weight === 'heavy' ? AB_HEAVY_PAIRS : AB_LIGHT_PAIRS;
-      const headSide = head.side();
-      // The head must run its own row: its refusal is an error of the benchmark, not a row without a base.
-      const guarded: Side = {
-        call: () => headSide.call().catch(headRefused),
-        sample: (calls) => headSide.sample(calls).catch(headRefused),
-      };
       try {
         await base.row(rowId);
-        const timing = await abSpeedTiming(guarded, base.side(), localSide(reference), {
+        const freshStart = freshStarter(head, base, rowId);
+        const timing = await abSpeedTiming(guardedHead(head.side()), base.side(), localSide(reference), {
           pairs: nightlyOnly ? AB_NIGHTLY_ONLY_PAIRS : fixedPairs,
           warmup: plan.warmup,
           oursRepeats,
           minSampleMs: plan.minSampleMs,
-          ...(nightlyOnly ? { confirm: false } : { extra }),
+          ...(nightlyOnly ? { confirm: false } : { extra, fresh: freshStart }),
           delta: regressionDelta(rowId, init.ab.regression),
         });
-        init.log(`A/B against the base, ${timing.runs} pairs (${timing.ab.extraPairs} extra), noise ${timing.ab.noise.toFixed(3)}: head ${timing.repeats.ours} call(s), reference ${timing.repeats.reference} call(s) per sample`);
+        const confirmation = Object.keys(timing.ab.confirmed).length === 0 ? '' : `; confirmation in ${freshStart ? 'new' : 'the same'} processes: ${JSON.stringify(timing.ab.confirmed)}`;
+        init.log(`A/B against the base, ${timing.runs} pairs (${timing.ab.extraPairs} extra), noise ${timing.ab.noise.toFixed(3)}: head ${timing.repeats.ours} call(s), reference ${timing.repeats.reference} call(s) per sample${confirmation}`);
         return timing;
       } catch (error) {
         if (!(error instanceof BaseRowError)) throw error;

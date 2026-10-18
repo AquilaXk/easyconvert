@@ -232,8 +232,8 @@ samples of a pair (this runner, this minute) cancels in the head-to-base ratio. 
 - the head is credibly more than `delta` slower than the base, `delta` being the row's own threshold from `AB_ROW_REGRESSION`
   (each with the noise that justifies it, none above the cap of 50 percent, `AB_REGRESSION_CAP`) and 10 percent
   (`AB_DEFAULT_REGRESSION`) for the rows that have none: the one-sided
-  upper confidence bound of the median of base time / head time is below `1 / (1 + delta)`, and a second set of fresh
-  pairs (as many as the first, taken after it) shows it too; or
+  upper confidence bound of the median of base time / head time is below `1 / (1 + delta)`, and fresh pairs (as many
+  as the first set, taken after it, in head and base processes started for the confirmation) show it too; or
 - the base was at the reference (median reference time / base time at least 0.97) and the head is credibly below it (that
   bound for reference time / head time under 0.97), confirmed the same way; or
 - the row is a tracked gap (`bench/parity-gaps.json`) and the level of its history (the median of its points, or the
@@ -243,8 +243,22 @@ samples of a pair (this runner, this minute) cancels in the head-to-base ratio. 
 
 The bound is the exact sign-test bound (the order statistic x(n + 1 - k), Conover section 3.2) at the error rate
 `AB_FAMILYWISE_ALPHA / AB_ROW_BUDGET` = 0.01 / 50 = 0.0002 per row (Bonferroni), so a run of up to 50 rows of unchanged
-code fails with a probability under 1 percent; the confirmation is taken at 0.01 and makes a failure need two independent
-sets, because noise comes in bursts of minutes on a shared runner and one set of pairs can be shifted by one. The first
+code fails with a probability under 1 percent; the confirmation is taken at 0.01 and makes a failure need independent
+sets, because noise comes in bursts of minutes on a shared runner and one set of pairs can be shifted by one.
+
+**The confirmation runs in new processes.** All pairs of a row are timed in the same two processes, and a process carries an
+offset of its own (what it timed before, its heap and compiled code, the core it runs on) that moves every sample of it the
+same way; the bound counts the pairs as independent and cannot see it. A confirmation in the same processes agrees with the
+first set because it shares the offset (the same commit as its own base failed the compression rows `bz2->tar` and `tar->tar.bz2` in 4 of 20 runs
+on the Linux testbed, every time confirmed). So the confirmation of a failing row starts `AB_CONFIRM_PROCESS_PAIRS` (2) new
+pairs of head and base processes, one pair after the other, the version that starts first alternating (`AbHost.fresh` in
+`bench/ab-host.ts`, `freshStarter` in `bench/speed-timing.ts`). A new process is let through the rows that were timed
+already (it prepares each one and times none), is warmed up as the first processes were, and then takes as many pairs as
+the first set, against the reference of the benchmark's process. The row fails only when every new pair shows the slowdown
+at the confirmation error rate, so an offset of the first two processes is in none of them and a slowdown of the code is in
+all. Nothing is measured while the processes start and replay the rows before, so that time is not charged to
+`AB_EXTRA_BUDGET_MS`; the time of the confirmation pairs is. The first pairs, the bound, the thresholds and the pair
+counts are as before (rationale and measurements: `docs/policy-decisions.md`, entry 17). The first
 pairs are fixed, a whole number of cycles of the six orders so that every order runs equally often: 24 for light rows and 18
 for video, OCR and office rows (ranks 4 and 2 at that error rate), no peeking.
 
