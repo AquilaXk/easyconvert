@@ -208,14 +208,40 @@ describe('stream mapping plan (pure)', () => {
     expect(() => planStreamMapping({ streams: library, container: 'mp4', audioTrack: 2, burnSubtitles: false })).toThrow(/Audio track 2/);
   });
 
-  it('rejects a bitmap subtitle for a text-only container, naming the stream, and copies it into mkv', () => {
+  it('leaves out a bitmap subtitle that the container cannot carry and lists it, copies the ones mkv has a codec id for, and burns it in on request', () => {
     const pgs = [stream(0, 'video', 'h264'), stream(1, 'subtitle', 'hdmv_pgs_subtitle')];
     for (const container of ['mp4', 'mov', 'webm'] as const) {
-      expect(() => planStreamMapping({ streams: pgs, container, burnSubtitles: false })).toThrow(InvalidMediaOptionError);
+      const plan = planStreamMapping({ streams: pgs, container, burnSubtitles: false });
+      expect(plan.maps, container).toEqual(['0:0']);
+      expect(plan.subtitleCount, container).toBe(0);
+      expect(plan.subtitleCodec, container).toBeUndefined();
+      expect(plan.dropped, container).toEqual([{ index: 1, kind: 'subtitle', codec: 'hdmv_pgs_subtitle', reason: 'container_unsupported' }]);
     }
-    expect(() => planStreamMapping({ streams: pgs, container: 'mp4', burnSubtitles: false })).toThrow(/stream #1 \(hdmv_pgs_subtitle\).*"burn"/);
-    expect(planStreamMapping({ streams: pgs, container: 'mkv', burnSubtitles: false }).maps).toEqual(['0:0', '0:1']);
-    expect(planStreamMapping({ streams: pgs, container: 'mp4', burnSubtitles: true }).maps).toEqual(['0:0']);
+    const toMkv = planStreamMapping({ streams: pgs, container: 'mkv', burnSubtitles: false });
+    expect(toMkv.maps).toEqual(['0:0', '0:1']);
+    expect(toMkv.subtitleCodec).toBe('copy');
+    expect(toMkv.dropped).toEqual([]);
+    const burned = planStreamMapping({ streams: pgs, container: 'mp4', burnSubtitles: true });
+    expect(burned.maps).toEqual(['0:0']);
+    expect(burned.dropped).toEqual([]);
+  });
+
+  it('keeps the text subtitles of a container and leaves out only its bitmap ones, and never carries XSUB', () => {
+    const mixed = [
+      stream(0, 'video', 'h264'),
+      stream(1, 'subtitle', 'subrip'),
+      stream(2, 'subtitle', 'dvd_subtitle'),
+      stream(3, 'subtitle', 'xsub'),
+      stream(4, 'subtitle', 'dvb_subtitle'),
+    ];
+    const toMp4 = planStreamMapping({ streams: mixed, container: 'mp4', burnSubtitles: false });
+    expect(toMp4.maps).toEqual(['0:0', '0:1']);
+    expect(toMp4.subtitleCodec).toBe('mov_text');
+    expect(toMp4.dropped.map((entry) => [entry.index, entry.codec])).toEqual([[2, 'dvd_subtitle'], [3, 'xsub'], [4, 'dvb_subtitle']]);
+    const toMkv = planStreamMapping({ streams: mixed, container: 'mkv', burnSubtitles: false });
+    expect(toMkv.maps).toEqual(['0:0', '0:1', '0:2', '0:4']);
+    expect(toMkv.dropped).toEqual([{ index: 3, kind: 'subtitle', codec: 'xsub', reason: 'container_unsupported' }]);
+    expect(planStreamMapping({ streams: mixed, container: 'avi', burnSubtitles: false }).dropped.map((entry) => entry.index)).toEqual([1, 2, 3, 4]);
   });
 
   it('skips cover art when choosing the video track', () => {
@@ -226,12 +252,12 @@ describe('stream mapping plan (pure)', () => {
   });
 
   it('names the bitmap codecs and the per-container subtitle codecs as constants', () => {
-    expect([...BITMAP_SUBTITLE_CODECS].sort()).toEqual(['dvb_subtitle', 'dvd_subtitle', 'hdmv_pgs_subtitle']);
+    expect([...BITMAP_SUBTITLE_CODECS].sort()).toEqual(['dvb_subtitle', 'dvd_subtitle', 'hdmv_pgs_subtitle', 'xsub']);
     expect(SUBTITLE_CODEC_BY_CONTAINER).toEqual({
-      mp4: { text: 'mov_text', bitmap: null },
-      mov: { text: 'mov_text', bitmap: null },
-      webm: { text: 'webvtt', bitmap: null },
-      mkv: { text: 'copy', bitmap: 'copy' },
+      mp4: { text: 'mov_text', bitmap: [] },
+      mov: { text: 'mov_text', bitmap: [] },
+      webm: { text: 'webvtt', bitmap: [] },
+      mkv: { text: 'copy', bitmap: ['hdmv_pgs_subtitle', 'dvd_subtitle', 'dvb_subtitle'] },
     });
   });
 });
@@ -474,19 +500,24 @@ describe('bitmap and burned-in subtitles', () => {
   }
 
   oracleTest(
-    'a PGS subtitle into mp4 without burn is a typed option error that names the stream',
+    'a PGS subtitle into mp4, mov and webm is left out and reported, and mkv carries it unchanged',
     ['ffmpeg', 'ffprobe'],
     async () => {
       await withWorkDirAsync(async (dir) => {
         const source = pgsMkv(dir);
         for (const target of ['mp4', 'mov', 'webm'] as const) {
-          const error = await convertMedia(source, 'mkv', target, {}, 'pgs.mkv').catch((e: unknown) => e);
-          expect(error, target).toBeInstanceOf(InvalidMediaOptionError);
-          expect((error as Error).message).toMatch(/Subtitle stream #1 \(hdmv_pgs_subtitle\) is a bitmap subtitle/);
+          const converted = await convertMedia(source, 'mkv', target, {}, 'pgs.mkv');
+          const probed = probeBytes(converted.buffer, target);
+          expect(streamsOf(probed, 'subtitle'), target).toEqual([]);
+          expect(streamsOf(probed, 'video').length, target).toBe(1);
+          expect(converted.metadata?.droppedStreams, target).toEqual([
+            { index: 1, kind: 'subtitle', codec: 'hdmv_pgs_subtitle', reason: 'container_unsupported' },
+          ]);
         }
         // mkv carries it unchanged.
         const kept = await convertMedia(source, 'mkv', 'mkv', {}, 'pgs.mkv');
         expect(streamsOf(probeBytes(kept.buffer, 'mkv'), 'subtitle').map((s) => s.codec_name)).toEqual(['hdmv_pgs_subtitle']);
+        expect(kept.metadata?.droppedStreams).toBeUndefined();
       });
     },
     ENCODE_TIMEOUT_MS
