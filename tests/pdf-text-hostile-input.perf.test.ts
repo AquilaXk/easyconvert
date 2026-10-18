@@ -100,7 +100,7 @@ describe('reading-order layout stays near-linear in the line count', () => {
       angled: false,
       vertical: false,
     }));
-    return { pageNumber: 1, width: 600, height: 800, items, rules: [], images: [], unmappedItems: 0, operatorsSkipped: false, rulesTruncated: false };
+    return { pageNumber: 1, width: 600, height: 800, items, rules: [], images: [], unmappedGlyphs: 0, operatorsSkipped: false, rulesTruncated: false };
   };
 
   it('lays out a long column of lines in near-linear time', async () => {

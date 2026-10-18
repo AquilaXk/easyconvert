@@ -80,7 +80,7 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
 import { boundRenderedPages, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, selectsPages, splitIntoBatches } from './poppler-ppm';
-import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
@@ -1176,7 +1176,7 @@ async function convertPdfToTextWithPoppler(
               signal: options.signal,
             });
           } catch (err) {
-            throw toPopplerPasswordError(err) ?? err;
+            throw toPopplerPasswordError(err) ?? toPopplerDamageSignal(err, options.inProcessFallback) ?? err;
           }
         }
       );
@@ -2644,7 +2644,7 @@ async function convertWithinImageSession(
     }
     throw new UnsupportedTargetError(`No native engine route converts ${src} to ${tgt}`);
   }
-  if (src === 'pdf' && options.password && lastUnavailable) {
+  if (src === 'pdf' && options.password && isUnservedPasswordRequest(lastUnavailable)) {
     // The in-process engine ignores PDF passwords, so it must not run for a request a native engine could not serve.
     throw lastUnavailable;
   }

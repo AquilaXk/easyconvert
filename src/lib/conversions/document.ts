@@ -31,7 +31,9 @@ import {
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
 import { PdfTextGeometryError } from './pdf-text-types';
+import { openPdfForRebuilding, openPdfForReading, type PdfAccess } from './pdf-access';
 import { assertPdfHeader, extractPdfDocument, readPdfDocument, type ExtractedPdfDocument, type ReadPdfResult } from './pdf-text-document';
+import type { DocumentModel } from './document-model/model';
 import { documentToHtml } from './document-model/html';
 import { documentToMarkdown } from './document-model/markdown';
 import { rethrowInputPixelLimit } from './image-input-limits';
@@ -82,9 +84,62 @@ export function extractTextFromTex(tex: string): string {
     .trim();
 }
 
+/**
+ * The structure a PDF is written from as HTML or Markdown: the model of its own text layer, or of its pictures when it is
+ * nothing but pictures and OCR recognized nothing (an empty page would lose them). Null when OCR recognized pages or
+ * the document has neither text nor pictures; the OCR boxes lay those out.
+ */
+function structuredPdfModel(pdf: ExtractedPdfDocument | null, text: string, recognizedPages: number): DocumentModel | null {
+  if (pdf === null || recognizedPages > 0) return null;
+  return text.trim() !== '' || pdf.model.images.length > 0 ? pdf.model : null;
+}
+
+/** HTML or Markdown written from the structure the layout analysis found (headings, lists, tables, columns), or null for another target. */
+function structuredPdfResult(target: string, model: DocumentModel | null, baseName: string): ConversionResult | null {
+  if (model === null) return null;
+  if (target === 'html') {
+    const buffer = Buffer.from(documentToHtml(model, baseName), 'utf-8');
+    return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
+  }
+  if (target === 'md') {
+    const buffer = Buffer.from(`${documentToMarkdown(model)}\n`, 'utf-8');
+    return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
+  }
+  return null;
+}
+
 /** The text of a PDF (its text layer, in reading order); see `extractPdfDocument` for the failures. */
 export async function extractTextFromPdf(pdfBuffer: Buffer): Promise<string> {
   return (await extractPdfDocument(pdfBuffer)).text;
+}
+
+function editAccessOf(options: ConversionOptions): PdfAccess {
+  return { password: options.password, confirmEditRights: options.confirmEditRights };
+}
+
+/**
+ * The PDF bytes the readers parse: a copy for reading, or, when OCR writes a PDF, a copy for editing. A searchable PDF is
+ * written from that copy, so it is an edit: the document opens as unlock opens it, with the owner password or
+ * `confirmEditRights`, before any page is recognized.
+ */
+function openPdfForConversion(inputBuffer: Buffer, tgt: string, options: ConversionOptions): Promise<Buffer> {
+  return tgt === 'pdf' && options.ocrEnabled
+    ? openPdfForRebuilding(inputBuffer, 'unlock', editAccessOf(options))
+    : openPdfForReading(inputBuffer, options.password, options.signal);
+}
+
+/** The PDF bytes a searchable PDF is written from: a scanned PDF is rebuilt without OCR having been requested, and the rebuild is an edit all the same. */
+async function openPdfForRebuild(inputBuffer: Buffer, openedBytes: Buffer, options: ConversionOptions): Promise<Buffer> {
+  return options.ocrEnabled ? openedBytes : openPdfForRebuilding(inputBuffer, 'unlock', editAccessOf(options));
+}
+
+async function synthesizeSearchablePdf(pdf: Buffer, pageOcrResults: Map<number, OcrResult>): Promise<Buffer> {
+  try {
+    return await createLosslessSandwichPdfFromPdf(pdf, pageOcrResults);
+  } catch (pdfErr) {
+    const reason = pdfErr instanceof Error && pdfErr.message ? pdfErr.message : 'Synthesis error';
+    throw new ConversionFailedError(`PDF OCR failed: Failed to synthesize lossless searchable PDF: ${reason}`);
+  }
 }
 
 export async function convertDocument(
@@ -186,19 +241,22 @@ export async function convertDocument(
   // PDF as source format
   if (src === 'pdf') {
     assertPdfHeader(inputBuffer);
+    // The readers below parse the document themselves: an encrypted one is read from a copy that qpdf decrypted with the
+    // request's password (the empty one when there is none). A result that is the PDF itself still returns `inputBuffer`.
+    const pdfBytes = await openPdfForConversion(inputBuffer, tgt, options);
     let ocrInfo: { text?: string; confidence?: number | null } = {};
     let lastOcrResult: OcrResult | null = null;
     const pageOcrResults = new Map<number, OcrResult>();
 
     // The text layer, its structure, the per-page density (Smart Multi-Page OCR) and, for hOCR and ALTO, the word
-    // geometry of pages that keep their own text come from one pass over the document. Fonts with no Unicode mapping
-    // are refused unless OCR is on, which then recognizes those pages.
+    // geometry of pages that keep their own text come from one pass over the document. Glyphs with no Unicode mapping
+    // are left out and reported; a document where no page reads is refused unless OCR is on, which then recognizes the pages.
     const ocrMode = options.ocrMode || 'skip_text';
     const densityThreshold = options.ocrDensityThreshold || 15;
     const geometryWanted = (tgt === 'hocr' || tgt === 'alto') && ocrMode !== 'force' && ocrMode !== 'redo';
     let read: ReadPdfResult | null = null;
     try {
-      read = await readPdfDocument(inputBuffer, {
+      read = await readPdfDocument(pdfBytes, {
         densityThreshold,
         geometry: geometryWanted ? 'text-pages' : 'none',
         onUnmapped: options.ocrEnabled ? 'omit' : 'throw',
@@ -224,7 +282,7 @@ export async function convertDocument(
       // The pages are recognized as displayed (rendered by Poppler), not read from the images they contain.
       let recognizedPages = new Map<number, OcrResult>();
       try {
-        recognizedPages = await recognizeRenderedPdfPages(inputBuffer, pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined, {
+        recognizedPages = await recognizeRenderedPdfPages(pdfBytes, pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined, {
           dpi: options.dpi,
           language: options.ocrLanguage,
           detectOrientation: options.ocrDetectOrientation,
@@ -378,17 +436,8 @@ export async function convertDocument(
 
     // Pages that keep their own text are written from the structure the layout analysis found (headings, lists,
     // tables, columns); the layout of recognized pages is that of the OCR boxes, below.
-    const structured = structuredPdf !== null && pageOcrResults.size === 0 && extractedText.trim() !== '' ? structuredPdf.model : null;
-
-    if (tgt === 'html' && structured) {
-      const buffer = Buffer.from(documentToHtml(structured, baseName), 'utf-8');
-      return { buffer, mimeType: 'text/html', filename: `${baseName}.html`, size: buffer.length };
-    }
-
-    if (tgt === 'md' && structured) {
-      const buffer = Buffer.from(`${documentToMarkdown(structured)}\n`, 'utf-8');
-      return { buffer, mimeType: 'text/markdown', filename: `${baseName}.md`, size: buffer.length };
-    }
+    const structuredResult = structuredPdfResult(tgt, structuredPdfModel(structuredPdf, extractedText, pageOcrResults.size), baseName);
+    if (structuredResult !== null) return structuredResult;
 
     if (tgt === 'html') {
       let bodyContent: string;
@@ -475,22 +524,16 @@ export async function convertDocument(
         }
 
         if (pageOcrResults.size > 0) {
-          try {
-            const searchablePdf = await createLosslessSandwichPdfFromPdf(inputBuffer, pageOcrResults);
-            return {
-              buffer: searchablePdf,
-              mimeType: 'application/pdf',
-              filename: `${baseName}.pdf`,
-              size: searchablePdf.length,
-              ocrExtractedText: ocrInfo.text,
-              ocrConfidence: ocrInfo.confidence,
-              ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
-            };
-          } catch (pdfErr: any) {
-            throw new ConversionFailedError(
-              `PDF OCR failed: Failed to synthesize lossless searchable PDF: ${pdfErr?.message || 'Synthesis error'}`
-            );
-          }
+          const searchablePdf = await synthesizeSearchablePdf(await openPdfForRebuild(inputBuffer, pdfBytes, options), pageOcrResults);
+          return {
+            buffer: searchablePdf,
+            mimeType: 'application/pdf',
+            filename: `${baseName}.pdf`,
+            size: searchablePdf.length,
+            ocrExtractedText: ocrInfo.text,
+            ocrConfidence: ocrInfo.confidence,
+            ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
+          };
         }
       }
       if (options.ocrEnabled || isScanned) {

@@ -493,7 +493,7 @@ describe('empty inputs in the manifest', () => {
     expect(() => parseManifest(file({ emptyInputReason: 'x' }))).toThrow(ManifestError);
   });
 
-  it('marks exactly the six corpus files that hold no content, each with the reason read from the file', () => {
+  it('marks exactly the eight corpus files that hold no content, each with the reason read from the file', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'realworld', 'manifest.json'), 'utf8')) as CorpusManifest;
     const marked = manifest.files.filter((f) => f.emptyInput === true).map((f) => f.id).sort();
     expect(marked).toEqual([
@@ -503,6 +503,8 @@ describe('empty inputs in the manifest', () => {
       'office-spreadsheet-47504.xlsx',
       'office-spreadsheet-60825.xlsx',
       'office-spreadsheet-template.xlsx',
+      'pdf-vera-pdfa1b-devicen.pdf',
+      'pdfjs-empty_protected.pdf',
     ]);
     for (const f of manifest.files.filter((candidate) => candidate.emptyInput === true)) expect(f.emptyInputReason?.length ?? 0).toBeGreaterThan(20);
   });

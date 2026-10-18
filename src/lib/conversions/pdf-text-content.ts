@@ -1,3 +1,4 @@
+import { hasUnmappedGlyphs, recoverUnmappedGlyphs, type RecoverableFont } from './pdf-glyph-recovery';
 import { ImageExtractor, type ImageSource } from './pdf-text-images';
 import {
   PDF_CONTENT_MAX_FONTS,
@@ -136,9 +137,6 @@ function isTextItem(candidate: unknown): candidate is TextItemLike {
 }
 
 const RTL_LETTER = /[\p{Script=Arabic}\p{Script=Hebrew}\p{Script=Syriac}\p{Script=Thaana}\p{Script=Nko}]/u;
-/** Replacement characters and control codes other than white space: glyphs no Unicode value was found for. */
-// eslint-disable-next-line no-control-regex
-const UNMAPPED_TEXT = /[�\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
 
 /** Maps the private-use bullets of the Symbol and Wingdings families to the characters they draw. */
 export function normalizeSymbolBullets(text: string): string {
@@ -171,6 +169,10 @@ function describeFont(page: ContentPage, fontId: string, style: PageStyle | unde
   };
 }
 
+function pageCharactersError(pageNumber: number): PdfTextGeometryError {
+  return new PdfTextGeometryError(`PDF page ${pageNumber} has more than ${PDF_TEXT_MAX_CHARS_PER_PAGE} characters of text.`);
+}
+
 /** Throws when the page holds more items, or more text, than the limits allow. */
 function checkItemLimits(content: PageTextContent, pageNumber: number): void {
   if (content.items.length > PDF_TEXT_MAX_ITEMS_PER_PAGE) {
@@ -184,7 +186,7 @@ function checkItemLimits(content: PageTextContent, pageNumber: number): void {
     }
     characters += item.str.length;
     if (characters > PDF_TEXT_MAX_CHARS_PER_PAGE) {
-      throw new PdfTextGeometryError(`PDF page ${pageNumber} has more than ${PDF_TEXT_MAX_CHARS_PER_PAGE} characters of text.`);
+      throw pageCharactersError(pageNumber);
     }
   }
 }
@@ -209,6 +211,16 @@ function geometryOf(item: TextItemLike, viewport: Viewport, vertical: boolean): 
   return { x: Math.min(x0, x1), baseline: y0, width: Math.hypot(x1 - x0, y1 - y0), angled };
 }
 
+/** The font pdfjs resolved for a font id; it is there once the operator list has been read (pdfjs resolves fonts while it runs). */
+function resolvedFont(page: ContentPage, fontId: string): RecoverableFont | null {
+  return page.commonObjs.has(fontId) ? (page.commonObjs.get(fontId) as RecoverableFont | null) : null;
+}
+
+/**
+ * The items of the page. The glyphs of an item that no Unicode value was found for are read from the names of the font's
+ * encoding where they have one and left out otherwise; `content.items` gets the same text, so the word geometry and the
+ * density analysis that read it afterwards see no glyph that is not text.
+ */
 function textItemsOf(
   page: ContentPage,
   content: PageTextContent,
@@ -219,13 +231,25 @@ function textItemsOf(
   checkItemLimits(content, pageNumber);
   const items: PdfContentItem[] = [];
   let unmapped = 0;
+  // A ligature name makes a glyph several characters long, so the page limit is read again over the recovered text.
+  let characters = 0;
   for (const candidate of content.items) {
     if (!isTextItem(candidate) || candidate.str.length === 0) continue;
     const style = content.styles[candidate.fontName];
     const vertical = style?.vertical === true || candidate.dir === 'ttb';
     const geometry = geometryOf(candidate, viewport, vertical);
-    const text = normalizeSymbolBullets(candidate.str);
-    if (UNMAPPED_TEXT.test(text)) unmapped++;
+    let text = normalizeSymbolBullets(candidate.str);
+    if (hasUnmappedGlyphs(text)) {
+      const recovered = recoverUnmappedGlyphs(text, resolvedFont(page, candidate.fontName), PDF_TEXT_MAX_CHARS_PER_PAGE - characters);
+      text = recovered.text;
+      unmapped += recovered.unmapped;
+    }
+    characters += text.length;
+    if (characters > PDF_TEXT_MAX_CHARS_PER_PAGE) {
+      throw pageCharactersError(pageNumber);
+    }
+    candidate.str = text;
+    if (text.length === 0) continue;
     const [a, b] = candidate.transform;
     items.push({
       text,
@@ -500,7 +524,7 @@ export async function readPageContent(
     items,
     rules: scan.rules,
     images: scan.images,
-    unmappedItems: unmapped,
+    unmappedGlyphs: unmapped,
     operatorsSkipped,
     rulesTruncated: scan.rulesTruncated,
   };

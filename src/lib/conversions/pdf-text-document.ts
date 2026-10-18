@@ -1,16 +1,19 @@
 import { CorruptStreamError, type PdfPageAnalysis } from '../types';
+import { reportConversionWarning } from './conversion-warnings';
 import type { DocumentModel } from './document-model/model';
 import { documentToText } from './document-model/text';
 import type { OcrResult } from './ocr-pdf-combiner';
 import { layoutPdfDocument } from './pdf-layout';
 import { runPdfTextJob } from './pdf-text-geometry';
-import { PdfTextUnmappedError, type PdfGeometryPages, type PdfPageContent, type PdfTextJobResult } from './pdf-text-types';
+import { PdfTextUnmappedError, pagesPhrase, type PdfGeometryPages, type PdfPageContent, type PdfTextJobResult } from './pdf-text-types';
 
 /**
  * The text and structure of a PDF read from its text layer: pdfjs `getTextContent()` per page in page-tree order
  * (in a worker thread with a deadline and memory cap, see pdf-text-host.ts), then the layout analysis in
- * pdf-layout. Fonts without a Unicode mapping are never emitted as text: a page that has such glyphs is refused with
- * PdfTextUnmappedError, or left out of the result when the caller recognizes it another way.
+ * pdf-layout. A glyph that no ToUnicode map, font encoding or symbol table gives text for is never emitted as text: it is
+ * left out, and the result reports how many (see pdf-glyph-recovery.ts). A page where such glyphs outnumber the ones that
+ * map is left out as a whole; the document is refused with PdfTextUnmappedError only when no page of it reads, or leaves
+ * those pages to the caller when it recognizes them another way.
  */
 
 /** `%PDF-` must appear within the first kilobyte (ISO 32000-2 section 7.5.2 allows leading bytes). */
@@ -19,8 +22,10 @@ const PDF_HEADER = '%PDF-';
 
 export interface ExtractPdfOptions {
   /**
-   * What to do with pages whose text has no Unicode mapping. `throw` (the default) refuses the document; `omit`
-   * drops their text and lists them in `unmappedPages`, for a caller that runs OCR on them.
+   * What to do when no page of the document reads because the glyphs without a Unicode mapping outnumber the others.
+   * `throw` (the default) refuses the document; `omit` drops the text of those pages and lists them in `unmappedPages`,
+   * for a caller that runs OCR on them. With `throw`, a document with other pages that read keeps them and reports
+   * the pages it left out.
    */
   onUnmapped?: 'throw' | 'omit';
   /** Read the files of the images too, so the structure carries them (needed for DOCX, HTML and Markdown output). */
@@ -31,7 +36,7 @@ export interface ExtractedPdfDocument {
   model: DocumentModel;
   /** The document's text in reading order. */
   text: string;
-  /** Pages whose text could not be mapped to Unicode and was left out (only with `onUnmapped: 'omit'`). */
+  /** Pages whose text could not be mapped to Unicode and was left out. */
   unmappedPages: number[];
   /** The positioned content, for callers that need geometry or rules. */
   pages: PdfPageContent[];
@@ -59,11 +64,39 @@ export function assertPdfHeader(pdf: Buffer): void {
   }
 }
 
-/** The document a text job read: the structure of its pages, minus pages whose fonts have no Unicode mapping. */
+const WHITE_SPACE = /\s/u;
+
+/** Characters of the page's text that are not white space. */
+function visibleGlyphsOf(page: PdfPageContent): number {
+  let glyphs = 0;
+  for (const item of page.items) for (const character of item.text) if (!WHITE_SPACE.test(character)) glyphs++;
+  return glyphs;
+}
+
+/** Tells the conversion what the text lacks: the glyphs left out of pages that read, and the pages left out as a whole. */
+function reportLeftOut(content: readonly PdfPageContent[], unreadable: ReadonlySet<number>, reportPages: boolean): void {
+  const partial = content.filter((page) => !unreadable.has(page.pageNumber) && page.unmappedGlyphs > 0);
+  const glyphs = partial.reduce((total, page) => total + page.unmappedGlyphs, 0);
+  if (glyphs > 0) {
+    const pages = partial.map((page) => page.pageNumber);
+    reportConversionWarning(`Left out ${glyphs} glyph${glyphs === 1 ? '' : 's'} that no font encoding maps to Unicode (${pagesPhrase(pages)}).`);
+  }
+  if (reportPages && unreadable.size > 0) {
+    reportConversionWarning(`Left out the text of ${pagesPhrase([...unreadable])}: more of its glyphs have no Unicode mapping than have one.`);
+  }
+}
+
+/**
+ * The document a text job read: the structure of its pages, minus the pages whose glyphs mostly have no Unicode mapping.
+ * @throws PdfTextUnmappedError when no page reads and `onUnmapped` is not `omit`.
+ */
 export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOptions = {}): ReadPdfResult {
-  const unmappedPages = job.content.filter((page) => page.unmappedItems > 0).map((page) => page.pageNumber);
-  if (unmappedPages.length > 0 && options.onUnmapped !== 'omit') throw new PdfTextUnmappedError(unmappedPages);
-  const unmapped = new Set(unmappedPages);
+  const omit = options.onUnmapped === 'omit';
+  const unmapped = new Set(job.content.filter((page) => page.unmappedGlyphs > visibleGlyphsOf(page)).map((page) => page.pageNumber));
+  const unmappedPages = [...unmapped];
+  const someTextReads = job.content.some((page) => !unmapped.has(page.pageNumber) && visibleGlyphsOf(page) > 0);
+  if (unmappedPages.length > 0 && !someTextReads && !omit) throw new PdfTextUnmappedError(unmappedPages);
+  reportLeftOut(job.content, unmapped, !omit);
   const pages = job.content.map((page) => (unmapped.has(page.pageNumber) ? { ...page, items: [], rules: [], images: [] } : page));
   const model = layoutPdfDocument(pages, job.fonts);
   const geometry = new Map([...job.geometry].filter(([pageNumber]) => !unmapped.has(pageNumber)));
@@ -80,7 +113,7 @@ export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOption
  * @throws EncryptedOfficeDocumentError (422) when the document needs a password.
  * @throws PayloadLimitError (413) when it has more than PDF_TEXT_MAX_PAGES pages.
  * @throws PdfTextGeometryError (400) when it is damaged, a page exceeds a limit or the deadline passes.
- * @throws PdfTextUnmappedError (400) when a page's fonts have no Unicode mapping (unless `onUnmapped` is `omit`).
+ * @throws PdfTextUnmappedError (400) when no page of the document reads for want of a Unicode mapping (unless `onUnmapped` is `omit`).
  * @throws EngineUnavailableError (503) when the extraction thread cannot run.
  */
 export async function readPdfDocument(pdf: Buffer, options: ReadPdfOptions = {}): Promise<ReadPdfResult> {

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ConversionFailedError, EngineUnavailableError, PdfPasswordRequiredError } from '../lib/types';
+import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
 import { launchSandboxedBinary } from '../lib/security/sandbox-launcher';
 import {
@@ -64,6 +65,38 @@ export function toPopplerPasswordError(err: unknown): ConversionFailedError | nu
     return new PdfPasswordRequiredError(PDF_PASSWORD_REJECTED_MESSAGE);
   }
   return null;
+}
+
+/**
+ * pdftotext ends with status 1 when it cannot open the document and with 99 when it finds no page in it, and prints
+ * these messages for a file whose structure is damaged beyond what it repairs. A signal, a timeout or any other status
+ * is a failure of the process, not a verdict on the file.
+ */
+const POPPLER_DAMAGED_EXIT_CODES: ReadonlySet<number | null> = new Set([1, 99]);
+const POPPLER_DAMAGED_PATTERN = /Syntax Error|Couldn't (?:read (?:xref table|page catalog)|find trailer)|Wrong page range given/;
+const POPPLER_DAMAGED_REASON = 'pdftotext could not find the page tree of the PDF';
+export const PDF_DAMAGED_MESSAGE = 'The PDF is damaged: Poppler cannot find its page tree, so its text cannot be read.';
+
+/**
+ * What a pdftotext failure on a damaged file means for the conversion. Poppler repairs fewer files than some readers
+ * do, so the in-process reader gets the file next: the failure is reported as an unavailable engine, which makes the
+ * worker fall back, and that reader refuses the file with a typed error when it cannot read it either. Where the
+ * in-process reader is not allowed the file is refused here, as a typed 400 that names the damage. Returns null for every
+ * other failure so callers keep their own handling.
+ */
+export function toPopplerDamageSignal(err: unknown, inProcessFallback: boolean | undefined): ConversionFailedError | EngineUnavailableError | null {
+  const damaged = err instanceof SandboxedProcessError && POPPLER_DAMAGED_EXIT_CODES.has(err.exitCode) && POPPLER_DAMAGED_PATTERN.test(err.stderr);
+  if (!damaged) return null;
+  return inProcessFallback === false ? new PdfStructureError(PDF_DAMAGED_MESSAGE) : new EngineUnavailableError('pdftotext', POPPLER_DAMAGED_REASON);
+}
+
+/**
+ * True when a native engine could not serve a request that carries a password, so the in-process engine must not run for it.
+ * The signal of `toPopplerDamageSignal` is the exception: Poppler found the file damaged, which says nothing about the
+ * password, and the in-process reader decrypts with the password itself before it reads or refuses the file.
+ */
+export function isUnservedPasswordRequest(unavailable: EngineUnavailableError | null | undefined): unavailable is EngineUnavailableError {
+  return unavailable instanceof EngineUnavailableError && unavailable.reason !== POPPLER_DAMAGED_REASON;
 }
 
 /**

@@ -3,6 +3,7 @@ import type { DocumentModel } from './document-model/model';
 import { plainTextModel } from './document-model/plain';
 import { evaluatePageOcrDecisions, recognizeRenderedPdfPages } from './ocr';
 import type { OcrResult } from './ocr-pdf-combiner';
+import { openPdfForReading } from './pdf-access';
 import { readPdfDocument } from './pdf-text-document';
 import { PdfTextGeometryError } from './pdf-text-types';
 
@@ -23,11 +24,14 @@ function ocrTextOf(results: Map<number, OcrResult>): string {
 
 /**
  * @param withImages carry the images of the pages in the result (a writer that places them needs this).
- * @throws PdfTextUnmappedError when a page's fonts have no Unicode mapping and OCR is off.
+ * @throws PdfTextUnmappedError when no page of the document reads for want of a Unicode mapping and OCR is off.
+ * @throws PdfPasswordRequiredError when the document needs an open password that the request lacks or got wrong.
  * @throws ConversionFailedError when the document has no text and OCR finds none.
  * @throws OcrEngineUnavailableError when a page needs OCR and no engine can render it.
  */
-export async function readPdfForOffice(inputBuffer: Buffer, options: ConversionOptions, withImages = false): Promise<DocumentModel> {
+export async function readPdfForOffice(source: Buffer, options: ConversionOptions, withImages = false): Promise<DocumentModel> {
+  // An encrypted document is read from a copy qpdf decrypted with the request's password, the empty one when there is none.
+  const inputBuffer = await openPdfForReading(source, options.password, options.signal);
   const densityThreshold = options.ocrDensityThreshold || DEFAULT_DENSITY_THRESHOLD;
   let read: Awaited<ReturnType<typeof readPdfDocument>> | null = null;
   try {

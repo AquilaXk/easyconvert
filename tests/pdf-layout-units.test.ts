@@ -38,7 +38,7 @@ function page(items: PdfContentItem[], rules: PdfContentRule[] = []): PdfPageCon
     items,
     rules,
     images: [],
-    unmappedItems: 0,
+    unmappedGlyphs: 0,
     operatorsSkipped: false,
     rulesTruncated: false,
   };
