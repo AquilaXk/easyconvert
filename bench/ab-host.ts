@@ -51,7 +51,8 @@ export class AbHost {
 
   private constructor(
     private readonly child: ChildProcess,
-    private readonly stopGraceMs: number
+    private readonly stopGraceMs: number,
+    private readonly options: AbHostOptions
   ) {
     child.on('message', (message) => this.deliver(message as ChildMessage));
     child.on('exit', (code, signal) => this.fail(`the base process ended (${signal ?? `exit ${code}`})`));
@@ -69,7 +70,7 @@ export class AbHost {
       env: { ...process.env, BENCH_PRODUCT_ROOT: options.root },
       stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
-    const host = new AbHost(child, options.stopGraceMs ?? STOP_GRACE_MS);
+    const host = new AbHost(child, options.stopGraceMs ?? STOP_GRACE_MS, options);
     try {
       const hello = await host.receive(options.helloTimeoutMs ?? HELLO_TIMEOUT_MS);
       if (hello.type !== 'hello') throw new AbHostError(`the process answered ${hello.type} instead of hello`);
@@ -137,6 +138,38 @@ export class AbHost {
       throw new BaseRowError(`the process does not time ${id} (it is at ${message.id})`);
     }
     this.open = true;
+  }
+
+  /**
+   * Like `row`, for a process that has not timed anything yet: the rows before `id` are rows the benchmark timed already, so the
+   * process is let go through them (it still prepares each one, as the benchmark does), and stops at `id`.
+   */
+  async skipTo(id: string): Promise<void> {
+    for (;;) {
+      try {
+        return await this.row(id);
+      } catch (error) {
+        // Only a row announced instead of `id` is passed; a process that ended, crashed or answered otherwise is not.
+        if (!(error instanceof BaseRowError) || this.pending === null) throw error;
+        this.pending = null;
+        this.send({ type: 'next' });
+      }
+    }
+  }
+
+  /**
+   * A new process for the same version, started as this one was and waiting at the row `id`. Its state (compiled code, heap,
+   * placement) is its own, not this one's, so what it times does not share an offset of this process.
+   */
+  async fresh(id: string): Promise<AbHost> {
+    const host = await AbHost.start(this.options);
+    try {
+      await host.skipTo(id);
+    } catch (error) {
+      await host.stop(true);
+      throw error;
+    }
+    return host;
   }
 
   /** The base as a side of a pair. */
