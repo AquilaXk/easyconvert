@@ -11,7 +11,7 @@
 #   2. executing a file from /tmp fails with EACCES (noexec)
 #   3. the process holds no cap_sys_admin (kernel view; `capsh --print` too when it is installed)
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
-#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; LibreOffice with VERIFY_LIBREOFFICE=1)
+#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; LibreOffice with VERIFY_LIBREOFFICE=1)
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -35,6 +35,7 @@ CONVERSION_TIMEOUT_SECONDS=120
 EXEC_DENIED_STATUS=126
 MARKER_TEXT="EasyConvertContainerCheck"
 STL_ONE_TRIANGLE_BYTES=134
+WAV_HEADER_BYTES=44
 
 failures=0
 work_dir=""
@@ -225,6 +226,17 @@ if sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" cad-convert --from step --to 
   pass "cad-convert meshed a STEP face to a one-triangle STL inside the sandbox"
 else
   fail "cad-convert did not convert the STEP file inside the sandbox: $(head -c 300 "$work_dir/cad-convert.err" 2>/dev/null)"
+fi
+
+# A Standard MIDI File of one note (middle C for a quarter note at 120 beats a minute): FluidSynth renders it to a WAV with the General MIDI
+# SoundFont that the Debian alternatives link default-GM.sf2 names, as the worker runs it (no audio driver, no shell, file output).
+printf 'MThd\0\0\0\6\0\0\0\1\1\340MTrk\0\0\0\24\0\377\121\3\7\241\40\0\220\74\144\203\140\200\74\0\0\377\57\0' > "$work_dir/input.mid"
+if sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" fluidsynth -ni -q -r 44100 -T wav -F "$work_dir/output.wav" /usr/share/sounds/sf2/default-GM.sf2 "$work_dir/input.mid" 2>"$work_dir/fluidsynth.err" \
+  && [ "$(head -c 4 "$work_dir/output.wav")" = "RIFF" ] \
+  && [ "$(wc -c < "$work_dir/output.wav")" -gt "$WAV_HEADER_BYTES" ]; then
+  pass "fluidsynth rendered a MIDI note to a WAV inside the sandbox"
+else
+  fail "fluidsynth did not render the MIDI file inside the sandbox: $(head -c 300 "$work_dir/fluidsynth.err" 2>/dev/null)"
 fi
 
 if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then
