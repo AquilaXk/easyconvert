@@ -121,10 +121,14 @@ describe('parseHocr', () => {
     expect(lines[2].words[0].confidence).toBeUndefined();
   });
 
+  it('reads a page with no bbox and no content as an empty page of no size', () => {
+    const parsed = parseHocr("<div class='ocr_page'/>");
+    expect(parsed.pages?.map((p) => [p.width, p.height, p.text])).toEqual([[0, 0, '']]);
+  });
+
   it('rejects documents without the geometry the structure needs, or that are not XML', () => {
     expect(() => parseHocr('')).toThrow(OcrMarkupError);
     expect(() => parseHocr('<html><body><p>no page</p></body></html>')).toThrow(/no ocr_page/);
-    expect(() => parseHocr("<div class='ocr_page'/>")).toThrow(/ocr_page has no bbox/);
     expect(() =>
       parseHocr(
         "<div class='ocr_page' title='bbox 0 0 10 10'><span class='ocr_line' title='bbox 0 0 5 5'><span class='ocrx_word'>x</span></span></div>"
