@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import sharp from 'sharp';
 import { afterAll, describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { withUprightExifOrientation } from '../src/lib/conversions/image-external-source';
@@ -11,10 +12,12 @@ import { magickReads } from './helpers/image-decoder-capabilities';
 import { decodeRgba, type DecodedRgba, maxSampleDifference } from './helpers/image-pixels';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless } from './helpers/strict-skip';
+import { psnrDb } from './helpers/zimg-oracle';
 
 /**
  * HEIC and HEIF pictures convert through libheif (#783: every HEVC-coded file failed with "bad seek", because the image
- * library's libheif is built without an HEVC decoder). The reference is libheif's own command-line decoder; the rotated
+ * library's libheif is built without an HEVC decoder; the message is the sequential read that follows the failed plugin
+ * load, so a file path and a buffer fail alike). The reference is libheif's own command-line decoder; the rotated
  * file is a 810-byte HEIC that libheif's encoder wrote from a picture whose left half is red and right half blue, with the EXIF
  * orientation 6 (rotate 90 degrees clockwise) that the encoder also turned into an `irot` property.
  */
@@ -25,11 +28,25 @@ const needsHeifDecoders = skipUnless('ImageMagick with a HEIC coder and libheif-
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'heif-decode-'));
 afterAll(() => fs.rmSync(workDir, { recursive: true, force: true }));
 const REAL_FILE_TIMEOUT_MS = 60_000;
-/** The picture libheif's own decoder writes, as a PNG. */
-function referenceDecode(file: string): Promise<DecodedRgba> {
+/** The PNG libheif's own decoder writes for the file. */
+function referencePng(file: string): Buffer {
   const output = path.join(workDir, `${path.basename(file)}.png`);
   execFileSync(heifConvert as string, [file, output], { stdio: 'pipe' });
-  return decodeRgba(fs.readFileSync(output));
+  return fs.readFileSync(output);
+}
+
+/** The picture libheif's own decoder writes. */
+function referenceDecode(file: string): Promise<DecodedRgba> {
+  return decodeRgba(referencePng(file));
+}
+
+/** Lowest PSNR (dB) of a lossy target against libheif's own decode over the colours on white; the least measured on a Linux run is 32.8 dB (the JPEG of the 128 x 128 picture). */
+const MIN_LOSSY_PSNR_DB = 30;
+
+/** The colours of a picture on a white background, which is how a target without transparency (JPEG) shows it and how the others are compared with it. */
+async function colourOnWhite(bytes: Buffer): Promise<{ width: number; height: number; data: Buffer }> {
+  const { data, info } = await sharp(bytes).flatten({ background: '#ffffff' }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  return { width: info.width, height: info.height, data };
 }
 
 /** Whether libheif's own decoder reads the file, which is what the installed libheif can do (version 1.19 added the layouts above). */
@@ -54,8 +71,11 @@ describe.skipIf(needsHeifDecoders)('HEIC and HEIF files', () => {
     const converted = await decodeRgba((await dispatchConversion(sample.bytes, format, 'png', {}, id)).buffer);
     expect([converted.width, converted.height]).toEqual([width, height]);
     expect(maxSampleDifference(converted, await referenceDecode(sample.path))).toBeLessThanOrEqual(1);
+    const reference = await colourOnWhite(referencePng(sample.path));
     for (const target of ['jpg', 'avif', 'gif']) {
-      expect((await decodeRgba((await dispatchConversion(sample.bytes, format, target, {}, id)).buffer)).width).toBe(width);
+      const lossy = await colourOnWhite((await dispatchConversion(sample.bytes, format, target, {}, id)).buffer);
+      expect([lossy.width, lossy.height], target).toEqual([width, height]);
+      expect(psnrDb(lossy.data, reference.data), target).toBeGreaterThanOrEqual(MIN_LOSSY_PSNR_DB);
     }
   });
 
