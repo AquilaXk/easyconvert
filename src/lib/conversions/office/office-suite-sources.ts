@@ -7,7 +7,7 @@
  * - Aliases: a template or slideshow whose bytes are those of a plain format (a Word template is a Word 97-2003
  *   document, an Excel template a workbook, a PowerPoint slideshow a presentation, an OpenDocument template an
  *   OpenDocument file with another mimetype). They are read by the reader of the plain format.
- * - Office-suite-only sources: formats with no in-process reader (Works, WordPerfect, OpenOffice.org 1.x, StarOffice,
+ * - Office-suite-only sources: formats with no in-process reader (Works, WordPerfect, Lotus Word Pro, OpenOffice.org 1.x, StarOffice,
  *   AbiWord, Quattro Pro, Numbers, Publisher, the Sony, Palm and RocketBook e-books, the Visio and CorelDRAW drawings, the Windows and Computer Graphics metafiles). Their bytes are never read as text;
  *   the office suite imports them and either writes the target itself or writes an interchange file that the in-process
  *   converter of that format turns into the target.
@@ -27,6 +27,7 @@ export const OFFICE_FORMAT_ALIAS: Readonly<Record<string, string>> = {
   pot: 'ppt',
   ott: 'odt',
   otp: 'odp',
+  ots: 'ods',
 };
 
 interface OfficeSuiteOnlySource {
@@ -43,6 +44,7 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
   sxw: { application: 'writer', interchange: 'docx' },
   wps: { application: 'writer', interchange: 'docx' },
   wpd: { application: 'writer', interchange: 'docx' },
+  lwp: { application: 'writer', interchange: 'docx' },
   lrf: { application: 'writer', interchange: 'docx' },
   pdb: { application: 'writer', interchange: 'docx' },
   rb: { application: 'writer', interchange: 'docx' },

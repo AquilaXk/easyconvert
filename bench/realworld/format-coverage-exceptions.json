@@ -424,7 +424,8 @@
       "reason": "WPS Presentation files are written only by Kingsoft Office; no collection searched holds one.",
       "searched": [
         "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits",
-        "web search for WPS Office sample files"
+        "web search for WPS Office sample files",
+        "GitHub code search for files with the .dps extension (every hit is another format: Minecraft data packs, DeepSec protocol files, particle editor and PostScript drawing files)"
       ]
     },
     "et": {
@@ -432,12 +433,6 @@
       "searched": [
         "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits",
         "web search for WPS Office sample files"
-      ]
-    },
-    "lwp": {
-      "reason": "No Lotus Word Pro file is published in any collection searched, including the LibreOffice import-filter test data.",
-      "searched": [
-        "file lists of LibreOffice core (writerperfect test data), Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits"
       ]
     },
     "hwpx": {

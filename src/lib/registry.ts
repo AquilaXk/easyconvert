@@ -674,7 +674,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.wordperfect',
     category: 'document',
     description: 'Corel WordPerfect legacy word processing document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt', 'doc', 'rtf', 'jpg', 'png'],
   },
   wps: {
     id: 'wps',
@@ -683,7 +683,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-works',
     category: 'document',
     description: 'Microsoft Works Word Processor document.',
-    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt'],
+    targetFormats: ['docx', 'pdf', 'txt', 'zip', 'html', 'md', 'odt', 'doc', 'rtf', 'jpg', 'png'],
   },
   rst: {
     id: 'rst',
@@ -1166,7 +1166,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-numbers-sffnumbers',
     category: 'spreadsheet',
     description: 'Apple iWork Numbers spreadsheet application file.',
-    targetFormats: ['xlsx', 'csv', 'zip', 'xls'],
+    targetFormats: ['xlsx', 'csv', 'zip', 'xls', 'pdf', 'jpg', 'png'],
   },
   sdc: {
     id: 'sdc',
@@ -1342,7 +1342,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-powerpoint',
     category: 'presentation',
     description: 'Legacy PowerPoint slideshow binary file.',
-    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp'],
+    targetFormats: ['pptx', 'pdf', 'zip', 'html', 'txt', 'odp', 'ppt', 'jpg', 'png'],
   },
   odp: {
     id: 'odp',
