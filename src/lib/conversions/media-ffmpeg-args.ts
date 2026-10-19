@@ -652,12 +652,33 @@ function assertMaxChannels(
   ffmpegBin?: string | null
 ): void {
   if (spec.maxChannels === undefined) return;
-  const channels = channelsToWrite(options, inputPath, ffmpegBin);
+  // A source wider than the encoder is mixed down by the target's own layout (see implicitDownmixFilter); without one it is refused.
+  const channels = spec.downmixLayout !== undefined ? requestedChannelCount(options) : channelsToWrite(options, inputPath, ffmpegBin);
   if (channels !== undefined && channels > spec.maxChannels) {
     throw new InvalidMediaOptionError(
       `The '${tgt}' target supports at most ${spec.maxChannels} audio channels, but ${channels} would be written; request fewer channels or a downmix.`
     );
   }
+}
+
+/**
+ * The filter that brings the selected input track down to the target's `downmixLayout`, when the caller named no channel count
+ * and the track holds more channels than the encoder codes (a 5.1 film track for WMA, which codes two); undefined when
+ * nothing needs mixing. A target with no downmix layout refuses such a track instead. The matrix is FFmpeg's ITU-R BS.775 mix
+ * (the centre and the surround channels 3 dB down, the LFE left out) with its normalisation stated: WMA takes floating-point
+ * samples, for which FFmpeg would otherwise leave the mix unnormalised, 7 dB louder than the same mix for the 16-bit encoders
+ * (MP3) and over full scale for loud content.
+ */
+function implicitDownmixFilter(
+  spec: AudioTargetSpec,
+  options: ConversionOptions,
+  inputPath: string,
+  ffmpegBin?: string | null
+): string | undefined {
+  if (spec.maxChannels === undefined || spec.downmixLayout === undefined || requestedChannelCount(options) !== undefined) return undefined;
+  const channels = channelsToWrite(options, inputPath, ffmpegBin);
+  if (channels === undefined || channels <= spec.maxChannels) return undefined;
+  return `aresample=ochl=${spec.downmixLayout}:rematrix_maxval=1.0`;
 }
 
 /**
@@ -898,6 +919,7 @@ export function buildFfmpegArguments(
   if (audioSpec && specEncoderInUse) {
     assertEncoderLimits(tgt, audioSpec, options, inputPath, ffmpegBin);
   }
+  const implicitDownmix = audioSpec && specEncoderInUse ? implicitDownmixFilter(audioSpec, options, inputPath, ffmpegBin) : undefined;
 
   // Stream mapping
   // The input is probed so every audio track, every subtitle the container can carry and (for mkv) the
@@ -1449,7 +1471,8 @@ export function buildFfmpegArguments(
     if (is71) {
       audioFilters.push('pan=stereo|FL=0.3204*FL+0.2265*FC+0.2265*BL+0.2265*SL|FR=0.3204*FR+0.2265*FC+0.2265*BR+0.2265*SR');
     } else {
-      audioFilters.push('pan=stereo|FL=0.4142*FL+0.2929*FC+0.2929*BL|FR=0.4142*FR+0.2929*FC+0.2929*BR');
+      // The surround pair is channels 4 and 5 of a 5.1 mix whether it sits at the back (AAC) or at the sides (AC-3, DTS); naming BL and BR would drop it from the latter.
+      audioFilters.push('pan=stereo|FL=0.4142*c0+0.2929*c2+0.2929*c4|FR=0.4142*c1+0.2929*c2+0.2929*c5');
     }
     audioFormatArgs.push('-ac', '2');
   } else if (options.audio?.channels) {
@@ -1460,6 +1483,8 @@ export function buildFfmpegArguments(
   } else if (options.audioChannels && ['mono', 'stereo', '5.1', '7.1'].includes(options.audioChannels)) {
     const chMap: Record<string, string> = { mono: '1', stereo: '2', '5.1': '6', '7.1': '8' };
     audioFormatArgs.push('-ac', chMap[options.audioChannels]);
+  } else if (implicitDownmix !== undefined) {
+    audioFilters.push(implicitDownmix);
   }
 
   // Audio sample rate
