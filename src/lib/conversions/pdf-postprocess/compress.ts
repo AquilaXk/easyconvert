@@ -8,11 +8,12 @@ import {
   type PdfOptimizeProfile,
 } from '../../types';
 import { SandboxedBufferLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../../security/process-sandbox';
+import { launchSandboxedBinary } from '../../security/sandbox-launcher';
 import { executeSandboxedBinary } from '../../../worker/sandbox';
 import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { getGhostscriptBinaryPath } from './gs-path';
-import { repairPageTree } from './page-tree';
+import { qpdfListsPages, repairPageTree } from './page-tree';
 import { QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace } from './qpdf-run';
 
 /**
@@ -101,7 +102,7 @@ function toGhostscriptError(error: unknown, dir: string): unknown {
   return new PdfPostprocessError(`Compression failed: Ghostscript could not process the document${reason}.`);
 }
 
-async function rewriteWithGhostscript(pdf: Buffer, preset: string, run: PdfCompressRun): Promise<Buffer> {
+async function rewriteWithGhostscript(pdf: Buffer, preset: string, run: PdfCompressRun, signal: AbortSignal | undefined): Promise<Buffer> {
   const gs = getGhostscriptBinaryPath();
   if (!gs) {
     throw new EngineUnavailableError('ghostscript', 'Ghostscript (gs) is not installed or not in PATH');
@@ -110,14 +111,16 @@ async function rewriteWithGhostscript(pdf: Buffer, preset: string, run: PdfCompr
     const outputPath = path.join(workspace.dir, GHOSTSCRIPT_OUTPUT_NAME);
     const timeoutMs = Math.min(GHOSTSCRIPT_DEFAULT_TIMEOUT_MS, run.remainingMs ?? GHOSTSCRIPT_DEFAULT_TIMEOUT_MS);
     try {
-      await executeSandboxedBinary(gs, [...GHOSTSCRIPT_FIXED_ARGS, `-dPDFSETTINGS=${preset}`, `-sOutputFile=${outputPath}`, workspace.inputPath], {
+      await launchSandboxedBinary(gs, [...GHOSTSCRIPT_FIXED_ARGS, `-dPDFSETTINGS=${preset}`, `-sOutputFile=${outputPath}`, workspace.inputPath], {
         cwd: workspace.dir,
         timeoutMs,
         maxBuffer: GHOSTSCRIPT_MAX_DIAGNOSTIC_BYTES,
         maxFileSize: GHOSTSCRIPT_MAX_OUTPUT_BYTES,
         memoryLimitMb: GHOSTSCRIPT_MEMORY_LIMIT_MB,
         networkIsolated: true,
-        signal: run.signal,
+        signal,
+        // Ghostscript writes the document to a file and prints diagnostics only.
+        expectedOutputBytes: 0,
       });
     } catch (error) {
       throw toGhostscriptError(error, workspace.dir);
@@ -131,10 +134,37 @@ async function rewriteWithGhostscript(pdf: Buffer, preset: string, run: PdfCompr
   });
 }
 
-async function rewriteLossless(pdf: Buffer): Promise<Buffer> {
+async function rewriteLossless(pdf: Buffer, signal?: AbortSignal): Promise<Buffer> {
   return withQpdfInputFile(pdf, (workspace) =>
-    runQpdfToBuffer(workspace, { args: [...LOSSLESS_QPDF_ARGS, workspace.inputPath, '-'], action: 'Compression' })
+    runQpdfToBuffer(workspace, { args: [...LOSSLESS_QPDF_ARGS, workspace.inputPath, '-'], action: 'Compression', signal })
   );
+}
+
+/** The rewrite the profile asks for, of `pdf`; `signal` stops it. */
+type Rewrite = (pdf: Buffer, signal: AbortSignal | undefined) => Promise<Buffer>;
+
+/**
+ * `rewrite` of `opened`, with the question whether qpdf can list its pages asked beside it. A document whose page tree
+ * loops is mended first (see page-tree): Ghostscript cannot walk such a tree and writes a blank page for what it cannot
+ * reach, and qpdf's lossless rewrite would keep the loop. Only such a document discards the first rewrite and rewrites
+ * the mended tree, so a healthy one waits for the rewrite alone: the question is a qpdf run of a few milliseconds beside a rewrite of tens.
+ */
+async function rewriteMendingPageTree(opened: Buffer, rewrite: Rewrite, run: PdfCompressRun): Promise<{ plain: Buffer; rewritten: Buffer }> {
+  const stop = new AbortController();
+  const rewriting = rewrite(opened, run.signal ? AbortSignal.any([run.signal, stop.signal]) : stop.signal);
+  // A rewrite that is stopped, or fails while the question is awaited, must not surface as an unhandled rejection.
+  rewriting.catch(() => undefined);
+  const listed = await qpdfListsPages(opened, run.signal).catch((error: unknown) => {
+    stop.abort();
+    throw error;
+  });
+  if (listed) return { plain: opened, rewritten: await rewriting };
+  const mended = await repairPageTree(opened, { knownLooping: true });
+  if (mended === opened) return { plain: opened, rewritten: await rewriting };
+  stop.abort();
+  // The stopped run has ended, and with it the files of its directory, before the next one starts.
+  await rewriting.catch(() => undefined);
+  return { plain: mended, rewritten: await rewrite(mended, run.signal) };
 }
 
 /** Whether `pdf` already passes `qpdf --check` without structural warnings or errors. */
@@ -172,9 +202,9 @@ export async function compressPdf(
     throw new PdfPostprocessError('PDF buffer is empty.');
   }
   assertPdfHeader(pdf);
-  const plain = await repairPageTree(await openPdfForEditing(pdf, 'compress', access));
   const preset = GHOSTSCRIPT_PRESETS[profile];
-  const rewritten = preset === undefined ? await rewriteLossless(plain) : await rewriteWithGhostscript(plain, preset, run);
+  const rewrite: Rewrite = preset === undefined ? rewriteLossless : (input, signal) => rewriteWithGhostscript(input, preset, run, signal);
+  const { plain, rewritten } = await rewriteMendingPageTree(await openPdfForEditing(pdf, 'compress', access), rewrite, run);
   if (rewritten.length < pdf.length) {
     return { buffer: rewritten, optimized: true };
   }

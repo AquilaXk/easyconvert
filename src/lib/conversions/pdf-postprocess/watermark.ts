@@ -9,7 +9,7 @@ import {
   type PDFImage,
 } from 'pdf-lib';
 import { assertEncodedImageWithinLimit } from '../image-input-limits';
-import { loadPdfDocument, openPdfForEditing, type PdfAccess } from '../pdf-access';
+import { loadPdfDocument, openPdfForEditing, PDF_LIB_OBJECTS_PER_TICK, type PdfAccess } from '../pdf-access';
 import { PARSER_LOOP_REFUSAL, withMendedPageTree } from './mend-page-tree';
 import { parsePageRanges } from '../page-range';
 import { faceCoversText, findFaceByFamily, type PdfFontFace } from '../pdf-fonts';
@@ -456,6 +456,6 @@ export async function applyPdfWatermark(
   // pdf-lib writes the font dictionary again at save because drawing text marks the font as modified, so the CMap is
   // attached last, to the dictionary that is written.
   if (asset.standardFont) await attachWinAnsiToUnicode(doc, asset.standardFont);
-  const modifiedBytes = await doc.save();
+  const modifiedBytes = await doc.save({ objectsPerTick: PDF_LIB_OBJECTS_PER_TICK });
   return Buffer.from(modifiedBytes);
 }
