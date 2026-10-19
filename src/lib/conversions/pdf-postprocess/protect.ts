@@ -4,7 +4,8 @@ import {
   PdfPostprocessError,
 } from '../../types';
 import { PDF_PASSWORD_UNSAFE_MESSAGE } from '../../../worker/pdf-decrypt';
-import { requireQpdfBinary, runQpdfToBuffer, withQpdfInputFile } from './qpdf-run';
+import { requireQpdfBinary, runQpdfToBuffer, withQpdfInputFile, type QpdfWorkspace } from './qpdf-run';
+import { pageTreeLoops } from './mend-page-tree';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { PdfStructureError } from '../pdf-document';
 import { repairPageTree } from './page-tree';
@@ -55,17 +56,13 @@ export async function protectPdf(
     throw err;
   }
 
-  // The tree is mended on the decrypted bytes, before they are encrypted again: no plain copy leaves this function.
-  plain = await repairPageTree(plain);
-
   const perms = options.permissions || {};
   const printPerm = perms.print ?? 'full';
   const modifyPerm = perms.modify ?? 'none';
   const extractPerm = perms.extract ? 'y' : 'n';
 
-  return withQpdfInputFile(plain, async (workspace) => {
-    // The argument file holds the passwords, so it goes to qpdf on standard input and never touches the disk.
-    const argumentFile = [
+  const encryptArguments = (inputPath: string): string =>
+    [
       '--encrypt',
       userPassword,
       ownerPassword,
@@ -74,19 +71,41 @@ export async function protectPdf(
       `--modify=${modifyPerm}`,
       `--extract=${extractPerm}`,
       '--',
-      workspace.inputPath,
+      inputPath,
       '-',
     ].join('\n');
+
+  const encrypt = async (workspace: QpdfWorkspace, signal?: AbortSignal): Promise<Buffer> => {
     try {
+      // The argument file holds the passwords, so it goes to qpdf on standard input and never touches the disk.
       return await runQpdfToBuffer(workspace, {
         args: ['@-'],
-        stdin: Buffer.from(argumentFile, 'utf8'),
+        stdin: Buffer.from(encryptArguments(workspace.inputPath), 'utf8'),
         action: 'PDF protection',
+        signal,
       });
     } catch (err) {
       // The command line and stderr hold sandbox paths: log them here, keep them out of the response.
       console.error('[protect] qpdf failed:', (err as Error)?.message ?? '');
       throw new PdfPostprocessError('PDF protection failed: qpdf could not encrypt the document.');
     }
+  };
+
+  // qpdf encrypts a looping page tree without reading the pages, so the tree is asked about beside the encryption: a
+  // document that is fine waits for one run. Only a loop discards the result and encrypts the mended bytes again, so
+  // the plain bytes go no further than the private directories of these runs.
+  const { protectedPdf, loops } = await withQpdfInputFile(plain, async (workspace) => {
+    const stop = new AbortController();
+    const [protectedPdf, loops] = await Promise.all([
+      encrypt(workspace, stop.signal).catch((error: unknown) => {
+        stop.abort();
+        throw error;
+      }),
+      pageTreeLoops(workspace, stop.signal),
+    ]);
+    return { protectedPdf, loops };
   });
+  if (!loops) return protectedPdf;
+  const mended = await repairPageTree(plain);
+  return mended === plain ? protectedPdf : withQpdfInputFile(mended, (workspace) => encrypt(workspace));
 }

@@ -276,6 +276,21 @@ describe.skipIf(toolsMissing)('watermark, protect, unlock and merge of a looping
     });
   }
 
+  it('protect of a healthy document writes the encryption that was asked for', async () => {
+    const healthy = await plainPdf([...HEALTHY_TEXTS]);
+    const out = await protectPdf(healthy, { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: 256 });
+    expect(qpdfEncryptionReport(out, USER_PASSWORD)).toMatchObject({ encrypted: true, R: 6, V: 5, userPasswordMatched: true });
+    expect(qpdfEncryptionReport(out, OWNER_PASSWORD).ownerPasswordMatched).toBe(true);
+    expect(qpdfCheckPasses(out, USER_PASSWORD)).toBe(true);
+    expect(pageTextsWith(out, USER_PASSWORD)).toEqual([...HEALTHY_TEXTS]);
+  });
+
+  it('protect of a looping file writes encrypted bytes only, with no plain copy of the document', async () => {
+    const out = await protectPdf(loopingThreePagePdf(), { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: 256 });
+    expect(containsEncryptKey(out)).toBe(true);
+    for (const text of PAGE_TEXTS) expect(out.includes(text)).toBe(false);
+  });
+
   it('merge of an encrypted looping file keeps its pages, and the result is not encrypted', async () => {
     const locked = qpdfEncrypt(loopingThreePagePdf(), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD });
     const out = await mergePdfBuffers([locked], { passwords: [USER_PASSWORD] });

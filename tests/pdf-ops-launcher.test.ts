@@ -149,7 +149,7 @@ describe.skipIf(toolsMissing)('PDF operations through the launcher', () => {
 
   it('protects with AES-256 and the requested rights, read back by qpdf under both passwords', async () => {
     const protectedPdf = await launched(async () => protectPdf(await source(), { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: 256 }));
-    // The probe that asks qpdf for the pages (a looping tree is mended before encryption), then the encryption: two programs.
+    // The encryption and, beside it, the question whether the page tree loops (a looping tree is mended and encrypted again): two programs.
     expect(protectedPdf.programs).toBe(2);
     const asUser = qpdfEncryptionReport(protectedPdf.value, USER_PASSWORD);
     expect(asUser.encrypted).toBe(true);

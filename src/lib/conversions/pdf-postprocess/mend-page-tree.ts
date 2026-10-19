@@ -1,5 +1,6 @@
 import { PdfPostprocessError } from '../../types';
 import { repairPageTree } from './page-tree';
+import { runQpdf, type QpdfWorkspace } from './qpdf-run';
 
 /** What qpdf prints when the page tree reaches one of its own nodes again. */
 const PAGE_TREE_LOOP_MESSAGE = 'Loop detected in /Pages structure';
@@ -35,5 +36,18 @@ export async function withMendedPageTree<T>(
     const mended = await repairPageTree(plain);
     if (mended === plain) throw error;
     return run(mended);
+  }
+}
+
+/**
+ * Whether qpdf refuses the pages of the document in `workspace` because their tree loops. Any other failure answers
+ * false: the steps that follow answer as they would without the question. Meant to run beside another qpdf run on the same file.
+ */
+export async function pageTreeLoops(workspace: QpdfWorkspace, signal?: AbortSignal): Promise<boolean> {
+  try {
+    await runQpdf(workspace, { args: ['--show-pages', workspace.inputPath], action: 'Reading the pages', signal });
+    return false;
+  } catch (error) {
+    return isQpdfLoopRefusal(error);
   }
 }
