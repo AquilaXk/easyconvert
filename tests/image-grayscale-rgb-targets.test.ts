@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
 import { decodeRgba, runConvert, sampleAt, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
 import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR } from './helpers/ffmpeg-exr';
+import { parsePostscriptRgb } from './helpers/postscript-samples';
 
 /**
  * Grayscale (1 channel) and grayscale+alpha (2 channel) sources must reach the RGB-only encoders (EPS/PS,
@@ -9,7 +10,7 @@ import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR } from './helpers/ffmpeg-exr';
  * following pixel and produces wrong colours and a wrong data length.
  *
  * Oracles: the fixtures are 8-bit gray PNGs written by ImageMagick (colour type byte checked in the PNG
- * header); EPS/PS is read with a hex parser, EXR with FFmpeg, JPEG/BMP with ImageMagick; the expected
+ * header); EPS/PS is read with the filter reader of tests/helpers/postscript-samples.ts, EXR with FFmpeg, JPEG/BMP with ImageMagick; the expected
  * values are the gray levels the fixture was drawn with.
  */
 
@@ -47,16 +48,6 @@ function buildGray(type: 'Grayscale' | 'GrayscaleAlpha'): Buffer {
   const expectedType = type === 'Grayscale' ? PNG_GRAY : PNG_GRAY_ALPHA;
   expect(png[PNG_COLOUR_TYPE_OFFSET], 'fixture PNG colour type').toBe(expectedType);
   return png;
-}
-
-function parsePostscriptRgb(postscript: Buffer): { width: number; height: number; rgb: Buffer } {
-  const text = postscript.toString('latin1');
-  const header = /^(\d+) (\d+) 8 \[/m.exec(text);
-  const dataStart = text.indexOf('colorimage\n');
-  const dataEnd = text.indexOf('>', dataStart);
-  if (!header || dataStart < 0 || dataEnd < 0) throw new Error('not an ASCIIHex colorimage PostScript file');
-  const hex = text.slice(dataStart + 'colorimage\n'.length, dataEnd).replace(/\s+/g, '');
-  return { width: Number(header[1]), height: Number(header[2]), rgb: Buffer.from(hex, 'hex') };
 }
 
 function expectGray(actual: readonly number[], level: number, label: string): void {
