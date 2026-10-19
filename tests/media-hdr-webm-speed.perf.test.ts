@@ -11,6 +11,8 @@ import { requireEncoders } from './helpers/ffmpeg-media-fixtures';
 import { decodeEveryStream, measureSsimPsnr, probeFile, recordMetric } from './helpers/ffmpeg-measure';
 import { oracleTest } from './helpers/oracle-test';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { skipUnless } from './helpers/strict-skip';
+import { HAS_ZSCALE } from './helpers/zimg-oracle';
 
 /**
  * The HDR10 clip of the real-world corpus (30 s, 1080p, 60 fps, HEVC Main 10) to WebM. At the good deadline the encode
@@ -42,7 +44,7 @@ function counted(file: string): number {
   return Number(out.trim());
 }
 
-describe('HDR10 video to WebM', () => {
+describe.skipIf(skipUnless('ffmpeg with zscale and lutrgb', HAS_ZSCALE))('HDR10 video to WebM', () => {
   oracleTest(
     'the real 1080p60 clip finishes inside half of the job limit, with all its frames, SDR tags and a picture close to the lossless tone-mapped one',
     ['ffmpeg', 'ffprobe'],
