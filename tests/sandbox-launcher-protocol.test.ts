@@ -27,7 +27,7 @@ describe('launcher frames', () => {
   });
 
   it('reads several frames that arrive in one chunk, and a frame without payload', () => {
-    const reply: LauncherReply = { type: 'ready' };
+    const reply: LauncherReply = { type: 'ready', netIsolated: false };
     const wire = Buffer.concat([...encodeFrame(reply), ...encodeFrame(request, Buffer.from('abc')), ...encodeFrame(reply)]);
     const frames = new FrameReader<LauncherRequest | LauncherReply>().push(wire);
     expect(frames.map((frame) => frame.header)).toEqual([reply, request, reply]);
@@ -36,7 +36,7 @@ describe('launcher frames', () => {
 
   it('joins payload given as several buffers without changing a byte', () => {
     const parts = [Buffer.from('out-'), Buffer.alloc(0), Buffer.from('err')];
-    const frames = new FrameReader<LauncherReply>().push(Buffer.concat(encodeFrame({ type: 'ready' }, ...parts)));
+    const frames = new FrameReader<LauncherReply>().push(Buffer.concat(encodeFrame({ type: 'ready', netIsolated: false }, ...parts)));
     expect(frames[0].payload.toString('utf8')).toBe('out-err');
   });
 
@@ -45,14 +45,14 @@ describe('launcher frames', () => {
     const prefix = Buffer.alloc(FRAME_PREFIX_BYTES);
     prefix.writeUInt32BE(header.length, 0);
     prefix.writeUInt32BE(5, 4);
-    const wire = Buffer.concat([prefix, header, Buffer.from('hello'), ...encodeFrame({ type: 'ready' })]);
+    const wire = Buffer.concat([prefix, header, Buffer.from('hello'), ...encodeFrame({ type: 'ready', netIsolated: false })]);
     for (const size of [1000, 65536, wire.length]) {
       const reader = new FrameReader<LauncherReply>();
       const frames = [];
       for (let at = 0; at < wire.length; at += size) frames.push(...reader.push(wire.subarray(at, at + size)));
       expect(frames).toHaveLength(2);
       expect(frames[0]).toEqual({ bad: true, id: 41, reason: 'frame header too long' });
-      expect(isBadFrame(frames[1]) ? null : frames[1].header).toEqual({ type: 'ready' });
+      expect(isBadFrame(frames[1]) ? null : frames[1].header).toEqual({ type: 'ready', netIsolated: false });
     }
   });
 
@@ -63,11 +63,11 @@ describe('launcher frames', () => {
     const unattributable = Buffer.from('nope');
     const prefix2 = Buffer.alloc(FRAME_PREFIX_BYTES);
     prefix2.writeUInt32BE(unattributable.length, 0);
-    const frames = new FrameReader<LauncherReply>().push(Buffer.concat([prefix, bad, prefix2, unattributable, ...encodeFrame({ type: 'ready' })]));
+    const frames = new FrameReader<LauncherReply>().push(Buffer.concat([prefix, bad, prefix2, unattributable, ...encodeFrame({ type: 'ready', netIsolated: false })]));
     expect(frames.map((frame) => (isBadFrame(frame) ? { id: frame.id, reason: frame.reason } : frame.header))).toEqual([
       { id: 9, reason: 'frame header is not JSON' },
       { id: undefined, reason: 'frame header is not JSON' },
-      { type: 'ready' },
+      { type: 'ready', netIsolated: false },
     ]);
   });
 

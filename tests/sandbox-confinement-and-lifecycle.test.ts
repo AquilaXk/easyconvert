@@ -7,6 +7,7 @@ import yaml from 'js-yaml';
 
 import {
   getPrlimitCapability,
+  getUnshareCapability,
   buildPrlimitArgs,
   resolveSandboxedCommand,
   executeSandboxedBinary,
@@ -200,6 +201,42 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       } else {
         expect(resolved.args).toEqual(['-version']);
       }
+    });
+
+    // skip-ok: the wrappers are Linux commands (unshare, prlimit); the command lines of other platforms are checked by the tests above.
+    describe.skipIf(process.platform !== 'linux')('a process that already sits in the namespaces its program needs', () => {
+      it('starts the program with no namespace wrapper, and does not refuse it under strict isolation where the host has no unshare', () => {
+        const resolved = resolveSandboxedCommand('/usr/bin/qpdf', ['--version'], {
+          networkIsolated: true,
+          networkIsolationInherited: true,
+          strictIsolation: true,
+        });
+        expect(resolved).toEqual({ binary: '/usr/bin/qpdf', args: ['--version'], wrapped: false });
+      });
+
+      it('keeps the rlimit wrapper, which the namespaces do not replace', () => {
+        const resolved = resolveSandboxedCommand('/usr/bin/qpdf', ['--version'], { networkIsolated: true, networkIsolationInherited: true, memoryLimitMb: 256 });
+        if (getPrlimitCapability().available) {
+          expect([resolved.binary, ...resolved.args]).toEqual([getPrlimitCapability().path, '--as=268435456', '--', '/usr/bin/qpdf', '--version']);
+        } else {
+          expect(resolved.wrapped).toBe(false);
+        }
+      });
+
+      it('still wraps the program when it asks for a namespace beyond the user and network ones', () => {
+        const cap = getUnshareCapability();
+        const resolved = resolveSandboxedCommand('/usr/bin/qpdf', ['--version'], {
+          networkIsolated: true,
+          networkIsolationInherited: true,
+          sandboxOptions: { pidNamespace: true },
+        });
+        if (cap.available) {
+          expect(resolved.binary).toBe(cap.path);
+          expect(resolved.args).toContain('-p');
+        } else {
+          expect(resolved.wrapped).toBe(false);
+        }
+      });
     });
 
     it('terminates full process group on execution timeout', async () => {

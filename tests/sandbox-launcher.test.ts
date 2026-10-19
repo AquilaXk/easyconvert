@@ -13,13 +13,14 @@ import {
   startSandboxLauncher,
   stopSandboxLauncher,
 } from '../src/lib/security/sandbox-launcher';
-import { encodeFrame, FrameReader, isBadFrame, type LauncherReply, type LauncherRequest } from '../src/lib/security/sandbox-launcher-protocol';
+import { encodeFrame, FrameReader, isBadFrame, PARENT_NETNS_ENV, type LauncherReply, type LauncherRequest } from '../src/lib/security/sandbox-launcher-protocol';
 import {
   SandboxedBufferLimitError,
   SandboxedProcessError,
   SandboxedTimeoutError,
 } from '../src/lib/security/process-sandbox';
 import { SandboxUnavailableError } from '../src/lib/types';
+import { skipUnless } from './helpers/strict-skip';
 
 /**
  * The launcher runs a sandboxed binary from a small helper process, so the fork that starts it does not copy the
@@ -31,6 +32,8 @@ const SH = '/bin/sh';
 
 /** Whether this host lets an unprivileged process create a user and network namespace, which is what the network isolation of a program needs. */
 const canIsolateNetwork = process.platform === 'linux' && spawnSync('unshare', ['-r', '-n', '--', 'true'], { stdio: 'ignore' }).status === 0;
+/** The tests of the helper that holds the namespace need the host to make one; under ORACLE_STRICT_MODE=1 (CI enables them) a host that cannot fails them by name. */
+const networkNamespaceMissing = skipUnless('unprivileged user and network namespaces (unshare -r -n)', canIsolateNetwork);
 
 /** These tests are about the helper, so they say the output is small: that is the case in which it pays. */
 const launch: typeof launchSandboxedBinary = (binary, args, options = {}) => launchSandboxedBinary(binary, args, { expectedOutputBytes: 0, ...options });
@@ -303,6 +306,16 @@ describe('sandbox launcher', () => {
     expect(launchPays(4096 * MIB, 5 * MIB)).toBe(true);
   });
 
+  it('counts the `unshare` a helper in a namespace of its own spares: it pays in a small process for a small output, not for a large one', () => {
+    const MIB = 1024 * 1024;
+    // The wrapper costs about 0.3 ms: a 20 KB output (0.05 ms to copy) is worth it in a worker below the baseline, a 1 MB one (2.5 ms) is not.
+    expect(launchPays(100 * MIB, 20 * 1024, true)).toBe(true);
+    expect(launchPays(112 * MIB, 100 * 1024, true)).toBe(true);
+    expect(launchPays(112 * MIB, MIB, true)).toBe(false);
+    // Without the wrapper to spare the same small process gains nothing.
+    expect(launchPays(100 * MIB, 20 * 1024, false)).toBe(false);
+  });
+
   it('counts the programs it started through the helper and those it started directly', async () => {
     const before = sandboxLauncherState();
     await launch(SH, shell('true'), { networkIsolated: false });
@@ -310,6 +323,112 @@ describe('sandbox launcher', () => {
     const after = sandboxLauncherState();
     expect(after.launched - before.launched).toBe(1);
     expect(after.direct - before.direct).toBe(1);
+  });
+
+  describe.skipIf(networkNamespaceMissing)('a helper in a network namespace of its own', () => {
+    /** The program prints its parent, the namespace it sits in, then the interfaces of that namespace. */
+    const PROBE = `echo $PPID; readlink /proc/self/ns/net; ${INTERFACES_SCRIPT}`;
+    const probe = async (options: Parameters<typeof launch>[2]): Promise<{ parent: number; namespace: string; interfaces: string[] }> => {
+      const [parent, namespace, ...interfaces] = (await launch(SH, shell(PROBE), options)).stdout.toString('utf8').split('\n').filter(Boolean);
+      return { parent: Number.parseInt(parent, 10), namespace, interfaces };
+    };
+
+    beforeAll(async () => {
+      expect(await startSandboxLauncher(true)).toBe(true);
+    }, 60_000);
+
+    it('starts a program that asks for network isolation from the helper that holds the namespace, with no second namespace made for it', async () => {
+      const helper = sandboxLauncherState(true);
+      const helperNamespace = fs.readlinkSync(`/proc/${helper.pid}/ns/net`);
+      const ran = await probe({ networkIsolated: true, strictIsolation: true });
+      expect(ran.parent).toBe(helper.pid);
+      // The namespace of the program is the helper's own (a wrapper of its own would have made another), and it is not the worker's.
+      expect(ran.namespace).toBe(helperNamespace);
+      expect(ran.namespace).not.toBe(fs.readlinkSync('/proc/self/ns/net'));
+      expect(ran.interfaces).toEqual(['lo']);
+    });
+
+    it('keeps a program that does not ask for isolation on the helper of the worker\'s own network', async () => {
+      const open = sandboxLauncherState(false);
+      const netns = sandboxLauncherState(true);
+      expect(open.pid).toBeDefined();
+      expect(open.pid).not.toBe(netns.pid);
+      const hostInterfaces = spawnSync(SH, shell(INTERFACES_SCRIPT), { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+      const ran = await probe({ networkIsolated: false });
+      expect(ran.parent).toBe(open.pid);
+      expect(ran.namespace).toBe(fs.readlinkSync('/proc/self/ns/net'));
+      expect(ran.interfaces).toEqual(hostInterfaces);
+    });
+
+    it('gives a program that asks for a namespace beyond the network one the wrapper of its own, under the helper of the worker\'s network', async () => {
+      const ran = await probe({ networkIsolated: true, strictIsolation: true, sandboxOptions: { mountNamespace: true } });
+      expect(ran.parent).toBe(sandboxLauncherState(false).pid);
+      expect(ran.namespace).not.toBe(fs.readlinkSync(`/proc/${sandboxLauncherState(true).pid}/ns/net`));
+      expect(ran.namespace).not.toBe(fs.readlinkSync('/proc/self/ns/net'));
+      expect(ran.interfaces).toEqual(['lo']);
+    });
+
+    it('fails the requests in flight when it dies, and runs the next program in a namespace of its own all the same', async () => {
+      const running = launch(SH, shell('sleep 30'), { networkIsolated: true, timeoutMs: 60_000 });
+      running.catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      process.kill(sandboxLauncherState(true).pid as number, 'SIGKILL');
+      await expect(running).rejects.toBeInstanceOf(SandboxedProcessError);
+      expect(sandboxLauncherState(true).ready).toBe(false);
+      const launchedBefore = sandboxLauncherState().launched;
+      const next = await probe({ networkIsolated: true, strictIsolation: true });
+      expect(next.interfaces).toEqual(['lo']);
+      expect(sandboxLauncherState().launched).toBe(launchedBefore);
+      stopSandboxLauncher();
+      expect(await startSandboxLauncher(true)).toBe(true);
+    });
+  });
+
+  describe('what the helper says about its own network namespace', () => {
+    /** Starts the helper as given, reads the `ready` it prints, and ends it. */
+    async function readyOf(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<boolean> {
+      const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'ignore'], cwd: process.cwd(), env });
+      const reader = new FrameReader<LauncherReply>();
+      const netIsolated = await new Promise<boolean>((resolve, reject) => {
+        child.once('error', reject);
+        child.stdout!.on('data', (chunk: Buffer) => {
+          for (const frame of reader.push(chunk)) if (!isBadFrame(frame) && frame.header.type === 'ready') resolve(frame.header.netIsolated);
+        });
+      });
+      const exited = new Promise((resolve) => child.once('exit', resolve));
+      child.stdin!.end();
+      await exited;
+      return netIsolated;
+    }
+
+    const entry = (): { binary: string; args: string[] } => {
+      const found = sandboxLauncherChildEntry();
+      expect(found).not.toBeNull();
+      return found!;
+    };
+    const ownNamespace = (): string => fs.readlinkSync('/proc/self/ns/net');
+
+    it('says it is not isolated when it was not told which namespace is the worker\'s', async () => {
+      const { binary, args } = entry();
+      expect(await readyOf(binary, args, { ...process.env, [PARENT_NETNS_ENV]: '' })).toBe(false);
+    });
+
+    it('says it is not isolated when it sits in the worker\'s own namespace', async () => {
+      const { binary, args } = entry();
+      expect(await readyOf(binary, args, { ...process.env, [PARENT_NETNS_ENV]: ownNamespace() })).toBe(false);
+    });
+
+    it.skipIf(networkNamespaceMissing)('says it is not isolated in a namespace of its own when it was not told the worker\'s', async () => {
+      const { binary, args } = entry();
+      const env = { ...process.env };
+      delete env[PARENT_NETNS_ENV];
+      expect(await readyOf('unshare', ['-r', '-n', '--', binary, ...args], env)).toBe(false);
+    });
+
+    it.skipIf(networkNamespaceMissing)('says it is isolated when it was started under unshare and told the namespace of the worker', async () => {
+      const { binary, args } = entry();
+      expect(await readyOf('unshare', ['-r', '-n', '--', binary, ...args], { ...process.env, [PARENT_NETNS_ENV]: ownNamespace() })).toBe(true);
+    });
   });
 
   describe('a helper that ends without its input closing', () => {

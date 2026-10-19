@@ -9,6 +9,11 @@ import type { SandboxedRlimitsOptions, UnshareIsolationOptions } from './process
  */
 
 export const FRAME_PREFIX_BYTES = 8;
+/**
+ * Set by the worker for a helper it starts under `unshare`: the network namespace the worker itself is in (the target of
+ * `/proc/self/ns/net`). The helper compares it with its own to learn that it sits in a namespace of its own.
+ */
+export const PARENT_NETNS_ENV = 'SANDBOX_LAUNCHER_PARENT_NETNS';
 /** A header is a few hundred bytes of JSON; one this long is not from the peer. */
 export const MAX_HEADER_BYTES = 1024 * 1024;
 
@@ -68,7 +73,11 @@ export function capStream(text: Buffer, head: number, tail: number): Buffer {
 }
 
 export type LauncherReply =
-  | { type: 'ready' }
+  | {
+      type: 'ready';
+      /** True when the helper checked that it runs in a network namespace of its own with no interface but the loopback, which its programs inherit. */
+      netIsolated: boolean;
+    }
   | {
       type: 'result';
       id: number;
