@@ -10,6 +10,7 @@ import {
 } from 'pdf-lib';
 import { assertEncodedImageWithinLimit } from '../image-input-limits';
 import { loadPdfDocument, openPdfForEditing, type PdfAccess } from '../pdf-access';
+import { PARSER_LOOP_REFUSAL, withMendedPageTree } from './mend-page-tree';
 import { parsePageRanges } from '../page-range';
 import { faceCoversText, findFaceByFamily, type PdfFontFace } from '../pdf-fonts';
 import { attachWinAnsiToUnicode } from '../pdf-winansi-tounicode';
@@ -255,18 +256,23 @@ async function loadAndPrepareDocument(
   // Encrypted input is decrypted (or refused with a typed 422) before pdf-lib sees a byte of it.
   const plain = await openPdfForEditing(pdfBuffer, 'watermark', access);
   try {
-    const doc = await loadPdfDocument(plain);
-    const pageCount = doc.getPageCount();
-    if (pageCount === 0) {
-      throw new PdfPostprocessError('PDF document contains 0 pages.');
-    }
-    return { doc, pageCount };
+    // A page tree that loops overflows the parser's stack; the document is read again from the mended tree.
+    return await withMendedPageTree(plain, readDocument, PARSER_LOOP_REFUSAL);
   } catch (err: any) {
     if (err instanceof PdfPostprocessError || err instanceof PdfPasswordRequiredError) {
       throw err;
     }
     throw new PdfPostprocessError(`Failed to parse PDF document for watermarking: ${err.message}`);
   }
+}
+
+async function readDocument(plain: Buffer): Promise<{ doc: PDFDocument; pageCount: number }> {
+  const doc = await loadPdfDocument(plain);
+  const pageCount = doc.getPageCount();
+  if (pageCount === 0) {
+    throw new PdfPostprocessError('PDF document contains 0 pages.');
+  }
+  return { doc, pageCount };
 }
 
 interface PreparedWatermarkAsset {

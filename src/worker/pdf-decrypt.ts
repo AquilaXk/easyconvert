@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ConversionFailedError, EngineUnavailableError, PdfPasswordRequiredError } from '../lib/types';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
+import { reportsPageTreeLoop } from '../lib/conversions/pdf-postprocess/page-tree-loop';
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
 import { launchSandboxedBinary } from '../lib/security/sandbox-launcher';
 import {
@@ -176,6 +177,25 @@ async function runQpdfWithPassword(
  * exists only in the pipe between this process and qpdf, with no file to create, protect and remove, and `args` end
  * in an output of `-` so qpdf prints the document instead of writing a file. The edit gate (pdf-access) uses it.
  */
+async function launchWithStdinPassword(
+  qpdf: string,
+  request: PdfDecryptRequest,
+  password: string,
+  args: string[],
+  maxOutputBytes: number,
+  expectedOutputBytes = 0
+): Promise<SandboxedExecutionResult> {
+  return launchSandboxedBinary(qpdf, ['--password-file=-', '--warning-exit-0', ...args], {
+    cwd: request.tempDir,
+    timeoutMs: request.timeoutMs,
+    maxBuffer: maxOutputBytes + QPDF_MAX_OUTPUT_BYTES,
+    networkIsolated: true,
+    stdin: Buffer.from(password, 'utf8'),
+    signal: request.signal,
+    expectedOutputBytes,
+  });
+}
+
 async function runQpdfWithStdinPassword(
   qpdf: string,
   request: PdfDecryptRequest,
@@ -185,17 +205,24 @@ async function runQpdfWithStdinPassword(
   expectedOutputBytes = 0
 ): Promise<SandboxedExecutionResult> {
   try {
-    return await launchSandboxedBinary(qpdf, ['--password-file=-', '--warning-exit-0', ...args], {
-      cwd: request.tempDir,
-      timeoutMs: request.timeoutMs,
-      maxBuffer: maxOutputBytes + QPDF_MAX_OUTPUT_BYTES,
-      networkIsolated: true,
-      stdin: Buffer.from(password, 'utf8'),
-      signal: request.signal,
-      expectedOutputBytes,
-    });
+    return await launchWithStdinPassword(qpdf, request, password, args, maxOutputBytes, expectedOutputBytes);
   } catch (err) {
     throw toDecryptError(err);
+  }
+}
+
+/**
+ * Whether qpdf, opening the PDF with `request.password`, refuses its pages because the page tree loops. It is meant to
+ * run beside the decryption of the same file: the caller waits for the slower of the two, but the question never fails the
+ * decryption, because every other outcome (a rejected password, a missing qpdf, an abort) answers false and the
+ * decryption reports it.
+ */
+export async function pdfPageTreeLoops(request: PdfDecryptRequest & { password: string }): Promise<boolean> {
+  try {
+    await launchWithStdinPassword(requireQpdf(request.password), request, request.password, ['--show-pages', path.resolve(request.inputPath)], QPDF_MIN_OUTPUT_BYTES);
+    return false;
+  } catch (err) {
+    return err instanceof SandboxedProcessError && reportsPageTreeLoop(err.stderr);
   }
 }
 
