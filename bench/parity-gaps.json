@@ -617,6 +617,22 @@
       "note": "class of one file (Canon R5 CR3): the same point as raw-canon-r5-raw.cr3->jpg/psnr",
       "recorded": 44.2972,
       "reference": 44.7351
+    },
+    {
+      "id": "image/clic-sergey-zolkin-21232.png->avif/bd_rate_psnr",
+      "issue": 641,
+      "ratio": null,
+      "note": "AVIF rate-distortion curve of a 1542 x 1028 photograph on the x86-64 CI runner: +1.50% bits at equal PSNR against the reference, allowance 1.5; the same curve measures +0.78% on arm64 and -0.34% on one encoder thread: the bytes of an AV1 encode depend on the thread count (the product leases 2, the reference runs on all cores) and on the CPU",
+      "recorded": 1.5011,
+      "reference": 0
+    },
+    {
+      "id": "image/clic-sergey-zolkin-21232.png->avif/bd_rate_ssim",
+      "issue": 641,
+      "ratio": null,
+      "note": "the same curve in SSIM: +1.60% on the x86-64 CI runner, +1.37% on arm64 (+0.18% on one encoder thread), allowance 1.5",
+      "recorded": 1.6045,
+      "reference": 0
     }
   ]
 }
