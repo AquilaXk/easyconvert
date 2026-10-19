@@ -70,8 +70,13 @@ export interface StreamPlanInput {
   hasChapters?: boolean;
 }
 
-function selectAudio(audio: readonly LayoutStream[], track: number | 'all' | undefined): LayoutStream[] {
-  if (track === undefined || track === 'all') return [...audio];
+/**
+ * The audio streams a conversion carries: every one, or the one chosen by index. An audio stream no packet of which decodes is
+ * left out of "every one" when the file has a picture to convert, and is kept when it is the whole content (the conversion is then
+ * refused, as it was) or when the caller chose it.
+ */
+function selectAudio(audio: readonly LayoutStream[], track: number | 'all' | undefined, hasPicture: boolean): LayoutStream[] {
+  if (track === undefined || track === 'all') return audio.filter((stream) => !hasPicture || stream.undecodable !== true);
   if (!Number.isInteger(track) || track < 0) {
     throw new InvalidMediaOptionError('Audio track index must be a non-negative integer.');
   }
@@ -96,18 +101,26 @@ function droppedEntry(stream: LayoutStream, kind: DroppedStream['kind'], reason:
   return entry;
 }
 
+/** What decides which streams of the input a target leaves out. */
+interface DropContext {
+  container: VideoContainer;
+  video: LayoutStream | undefined;
+  carriedAudio: readonly LayoutStream[];
+  carriedSubtitles: readonly LayoutStream[];
+  burnSubtitles: boolean;
+  hasChapters: boolean;
+  /** An audio stream is left out as undecodable only when the caller wanted every audio track. */
+  everyAudioWanted: boolean;
+}
+
 /** The streams no mapping of this target carries, in input order, with the reason each is left out. */
-function droppedStreams(
-  streams: readonly LayoutStream[],
-  container: VideoContainer,
-  video: LayoutStream | undefined,
-  carriedSubtitles: readonly LayoutStream[],
-  burnSubtitles: boolean,
-  hasChapters: boolean
-): DroppedStream[] {
+function droppedStreams(streams: readonly LayoutStream[], context: DropContext): DroppedStream[] {
+  const { container, video, carriedAudio, carriedSubtitles, burnSubtitles, hasChapters, everyAudioWanted } = context;
   const dropped: DroppedStream[] = [];
   for (const stream of streams) {
-    if (stream.type === 'video' && stream.attachedPicture) {
+    if (stream.type === 'audio' && stream.undecodable === true && everyAudioWanted && !carriedAudio.includes(stream)) {
+      dropped.push(droppedEntry(stream, 'audio', 'undecodable'));
+    } else if (stream.type === 'video' && stream.attachedPicture) {
       dropped.push(droppedEntry(stream, 'attached_picture', 'stream_type_unsupported'));
     } else if (stream.type === 'video' && stream !== video) {
       dropped.push(droppedEntry(stream, 'video', 'additional_video_track'));
@@ -129,12 +142,13 @@ function droppedStreams(
  * Plans the streams of a video-container target: the first real video track, every audio track (or the
  * chosen one), every subtitle the container can carry, and attachments for mkv. A bitmap subtitle the container cannot
  * carry as it is (every bitmap codec in mp4, mov and webm; XSUB everywhere) is left out and listed in `dropped`, never sent
- * to a text subtitle encoder; a caller who wants it kept burns it into the picture.
+ * to a text subtitle encoder; a caller who wants it kept burns it into the picture. An audio stream no packet of which decodes
+ * is left out the same way when there is a picture to convert (see selectAudio).
  */
 export function planStreamMapping(input: StreamPlanInput): StreamMapPlan {
   const { streams, container } = input;
   const video = firstVideoStream(streams);
-  const audio = selectAudio(streams.filter((s) => s.type === 'audio'), input.audioTrack);
+  const audio = selectAudio(streams.filter((s) => s.type === 'audio'), input.audioTrack, video !== undefined);
   const subtitles = input.burnSubtitles ? [] : carriableSubtitles(streams.filter((s) => s.type === 'subtitle'), container);
   const attachments = ATTACHMENT_CONTAINERS.has(container) ? streams.filter((s) => s.type === 'attachment') : [];
 
@@ -152,7 +166,15 @@ export function planStreamMapping(input: StreamPlanInput): StreamMapPlan {
     videoIndex: video?.index,
     subtitleCount: subtitles.length,
     subtitleCodec: subtitles.length > 0 && codecs ? codecs.text : undefined,
-    dropped: droppedStreams(streams, container, video, subtitles, input.burnSubtitles, input.hasChapters === true),
+    dropped: droppedStreams(streams, {
+      container,
+      video,
+      carriedAudio: audio,
+      carriedSubtitles: subtitles,
+      burnSubtitles: input.burnSubtitles,
+      hasChapters: input.hasChapters === true,
+      everyAudioWanted: input.audioTrack === undefined || input.audioTrack === 'all',
+    }),
   };
 }
 

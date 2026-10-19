@@ -158,7 +158,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       const afIdx = args.indexOf('-filter:a');
       expect(afIdx).toBeGreaterThan(0);
       const afVal = args[afIdx + 1];
-      expect(afVal).toContain('pan=stereo|FL=0.4142*FL+0.2929*FC+0.2929*BL|FR=0.4142*FR+0.2929*FC+0.2929*BR');
+      expect(afVal).toContain('pan=stereo|FL=0.4142*c0+0.2929*c2+0.2929*c4|FR=0.4142*c1+0.2929*c2+0.2929*c5');
 
       const acIdx = args.indexOf('-ac');
       expect(acIdx).toBeGreaterThan(0);
@@ -191,7 +191,7 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       expect(afIdx).toBeGreaterThan(0);
       const afVal = args[afIdx + 1];
       expect(afVal).toBe(
-        'aresample=async=1:first_pts=0,pan=stereo|FL=0.4142*FL+0.2929*FC+0.2929*BL|FR=0.4142*FR+0.2929*FC+0.2929*BR,volume=0.8'
+        'aresample=async=1:first_pts=0,pan=stereo|FL=0.4142*c0+0.2929*c2+0.2929*c4|FR=0.4142*c1+0.2929*c2+0.2929*c5,volume=0.8'
       );
       expect(args[args.indexOf('-ac') + 1]).toBe('2');
     });
