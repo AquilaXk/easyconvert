@@ -3,6 +3,7 @@ import JSZip from 'jszip';
 import { PayloadLimitError } from '../../types';
 import { resolveLanguage } from '../document-language';
 import { redrawAsPng } from '../image-to-png';
+import { uniqueAnchors } from './anchors';
 import { HtmlWriter, type HtmlRenderOptions } from './html';
 import type { Block, DocumentImage, DocumentModel, HeadingBlock, ImageFormat, NoteDefinition } from './model';
 import { IMAGE_EXTENSION, IMAGE_MIME, bodyBlocks, imagesById, notesOf, walkBlocks, walkRuns } from './support';
@@ -29,6 +30,9 @@ const XHTML_MEDIA_TYPE = 'application/xhtml+xml';
 /** Image types EPUB 3.3 lists as core media types; anything else is redrawn as PNG. */
 const EPUB_IMAGE_FORMATS: ReadonlySet<ImageFormat> = new Set(['png', 'jpeg', 'gif', 'svg']);
 const escapeXmlAttribute = escapeXmlText;
+const HEADING_ID_PREFIX = 'h-';
+/** Ids the writer makes up for headings (`h-1`) and note references (`footnote-1`, `footnote-1-ref`); no anchor of the source may take one. */
+const GENERATED_ID = /^(?:h-\d+|(?:footnote|endnote)-\d+(?:-ref)?)$/;
 
 const STYLESHEET = `body { font-family: serif; line-height: 1.5; margin: 1em; }
 h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.2em 0 0.5em; }
@@ -235,6 +239,7 @@ function accessibilityMetadata(model: DocumentModel, hasHeadings: boolean): stri
  * write one empty paragraph (policy 8); an unusable `language` is refused with a typed error.
  */
 export async function documentToEpub(model: DocumentModel, options: EpubWriteOptions): Promise<Buffer> {
+  uniqueAnchors(model, (name) => GENERATED_ID.test(name));
   const chapters = splitChapters(bodyBlocks(model));
   if (chapters.length === 0) chapters.push({ blocks: [], headingOffset: 0 });
   const language = resolveLanguage(model, options.language) ?? UNDETERMINED_LANGUAGE;
@@ -252,7 +257,7 @@ export async function documentToEpub(model: DocumentModel, options: EpubWriteOpt
       if (block.type !== 'heading') continue;
       local += 1;
       const text = blockHeadingText(block);
-      if (text !== '') entries.push({ level: block.level, text, chapter: chapterIndex, id: `h-${chapter.headingOffset + local}` });
+      if (text !== '') entries.push({ level: block.level, text, chapter: chapterIndex, id: `${HEADING_ID_PREFIX}${chapter.headingOffset + local}` });
     }
   });
   const hasHeadings = entries.length > 0;
@@ -288,7 +293,7 @@ export async function documentToEpub(model: DocumentModel, options: EpubWriteOpt
         if (target === undefined) return undefined;
         return target === index ? `#${name}` : `${chapterFile(target)}#${name}`;
       },
-      headingIdPrefix: 'h-',
+      headingIdPrefix: HEADING_ID_PREFIX,
     };
     const writer = new HtmlWriter(imageIndex, render);
     writer.headingCount = chapter.headingOffset;

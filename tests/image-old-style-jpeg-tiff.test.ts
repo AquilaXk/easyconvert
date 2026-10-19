@@ -1,20 +1,18 @@
-import { execFileSync } from 'node:child_process';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import sharp from 'sharp';
-import { afterAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { usesOldStyleJpeg } from '../src/lib/conversions/image-tiff-directories';
 import { findMagick, MAGICK_PATH_ENV } from '../src/lib/conversions/image-magick-cli';
-import { decodeRgba, maxSampleDifference } from './helpers/image-pixels';
+import { decodeRgba } from './helpers/image-pixels';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless } from './helpers/strict-skip';
+import { psnrDb } from './helpers/zimg-oracle';
 
 /**
  * A TIFF whose directory declares old-style JPEG compression (Compression = 6, TIFF 6.0 section 22) converts through
  * ImageMagick's libtiff, which is built with the decoder; the image library's libtiff is not (#783: "Old-style JPEG
  * compression support is not configured"). Which files take that route is decided from the directories, built here by hand.
+ * The real file is checked against the JPEG stream it carries (below), which a JPEG decoder reads without libtiff.
  */
 
 const TAG_COMPRESSION = 259;
@@ -106,35 +104,36 @@ describe('which TIFF files take the old-style JPEG route', () => {
 });
 
 const needsMagick = skipUnless('ImageMagick (magick or convert)', findMagick() !== null);
-const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ojpeg-tiff-'));
-afterAll(() => fs.rmSync(workDir, { recursive: true, force: true }));
 const WIDTH = 4160;
 const HEIGHT = 870;
 
-describe('a TIFF without old-style JPEG compression', () => {
-  it('is read by the image library and never reaches ImageMagick', async () => {
-    const tiff = await sharp({ create: { width: 4, height: 4, channels: 3, background: { r: 10, g: 200, b: 30 } } }).tiff().toBuffer();
-    const saved = process.env[MAGICK_PATH_ENV];
-    process.env[MAGICK_PATH_ENV] = '/nonexistent/magick';
-    try {
-      const converted = await decodeRgba((await dispatchConversion(tiff, 'tif', 'png', {}, 'plain.tif')).buffer);
-      expect(Array.from(converted.data.subarray(0, 4))).toEqual([10, 200, 30, 255]);
-    } finally {
-      if (saved === undefined) delete process.env[MAGICK_PATH_ENV];
-      else process.env[MAGICK_PATH_ENV] = saved;
-    }
-  });
-});
+/**
+ * Where the one strip of the real file lies: the directory says StripOffsets 768 and StripByteCounts 212992 (`tiffinfo`), and
+ * JpegInterchangeFormat 768 says the strip is a whole JFIF file (the TIFF 6.0 section 22 variant that keeps the tables in the stream).
+ */
+const STRIP_OFFSET = 768;
+const STRIP_BYTES = 212992;
+/** Lowest PSNR (dB) against the strip decoded as a JPEG file. PNG and TIFF carry the decode itself; the least measured on a Linux and a macOS run is 53.7 dB, the gap being the transform and upsampling of two JPEG decoders. */
+const MIN_DECODE_PSNR_DB = 50;
+/** The same for a target that encodes again; the least measured is 43.3 dB (AVIF). */
+const MIN_REENCODED_PSNR_DB = 40;
+const DECODE_TARGETS = ['png', 'tiff'];
 
 describe.skipIf(needsMagick)('a TIFF with old-style JPEG compression', () => {
-  it.for(['png', 'jpg', 'webp', 'tiff'])('converts to %s, the picture ImageMagick decodes', { timeout: 60_000 }, async (target, ctx) => {
+  it.for(['png', 'tiff', 'jpg', 'webp', 'avif', 'gif'])('converts to %s, the picture its JPEG stream decodes to', { timeout: 60_000 }, async (target, ctx) => {
     const sample = await requireRealworldSample(ctx, 'opf-old-style-jpeg-compression.tif');
     expect(usesOldStyleJpeg(sample.bytes)).toBe(true);
-    const converted = await decodeRgba((await dispatchConversion(sample.bytes, 'tif', target, {}, 'scan.tif')).buffer);
-    expect([converted.width, converted.height]).toEqual([WIDTH, HEIGHT]);
-    if (target !== 'png') return;
-    const reference = path.join(workDir, 'reference.png');
-    execFileSync(findMagick() as string, [sample.path, reference], { stdio: 'pipe' });
-    expect(maxSampleDifference(converted, await decodeRgba(fs.readFileSync(reference)))).toBe(0);
+    const stream = sample.bytes.subarray(STRIP_OFFSET, STRIP_OFFSET + STRIP_BYTES);
+    expect(stream.toString('latin1', 0, 4)).toBe('\xff\xd8\xff\xe0');
+    expect(await sharp(stream).metadata()).toMatchObject({ format: 'jpeg', width: WIDTH, height: HEIGHT });
+    const reference = (await sharp(stream).removeAlpha().raw().toBuffer({ resolveWithObject: true })).data;
+    const converted = await sharp((await dispatchConversion(sample.bytes, 'tif', target, {}, 'scan.tif')).buffer)
+      .flatten({ background: '#ffffff' })
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    expect([converted.info.width, converted.info.height]).toEqual([WIDTH, HEIGHT]);
+    const minimum = DECODE_TARGETS.includes(target) ? MIN_DECODE_PSNR_DB : MIN_REENCODED_PSNR_DB;
+    expect(psnrDb(converted.data, reference)).toBeGreaterThanOrEqual(minimum);
   });
 });
