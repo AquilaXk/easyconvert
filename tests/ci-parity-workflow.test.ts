@@ -176,6 +176,25 @@ describe('parity-speed', () => {
     }
   });
 
+  it('times the PDF text worker bundle the service runs, built for the head and for the base before any row is timed', () => {
+    expect(runOf(speed, 'Build the PDF text worker bundle')).toBe('npm run build:pdf-text-worker');
+    expect(runOf(speed, 'Build the PDF text worker bundle of the base')).toContain('(cd ab-base && npm run build:pdf-text-worker)');
+    for (const name of ['Build the PDF text worker bundle', 'Build the PDF text worker bundle of the base']) {
+      expect(String(stepNamed(speed, name).if), name).toMatch(/env\.BENCH_CHANGED == 'true'/);
+    }
+    const index = (name: string): number => speed.steps.indexOf(stepNamed(speed, name));
+    expect(index('Install dependencies')).toBeLessThan(index('Build the PDF text worker bundle'));
+    expect(index('Install the dependencies of the base')).toBeLessThan(index('Build the PDF text worker bundle of the base'));
+    expect(index('Build the PDF text worker bundle')).toBeLessThan(index('bench'));
+    expect(index('Build the PDF text worker bundle of the base')).toBeLessThan(index('bench'));
+  });
+
+  it('builds that bundle the way the worker image does: `build:worker` runs `build:pdf-text-worker`', () => {
+    const scripts = (JSON.parse(read('package.json')) as { scripts: Record<string, string> }).scripts;
+    expect(scripts['build:worker'].split(' && ').filter((command) => command === 'npm run build:pdf-text-worker')).toEqual(['npm run build:pdf-text-worker']);
+    expect(read('Dockerfile.worker').split('\n').filter((line) => line === 'RUN npm run build:worker')).toEqual(['RUN npm run build:worker']);
+  });
+
   it('runs one shard per changed family, each with the families of its own and the scope of its own comment', () => {
     const strategy = (speed as unknown as { strategy: { 'fail-fast': boolean; matrix: { family: string } } }).strategy;
     expect(strategy['fail-fast']).toBe(false);
@@ -515,6 +534,25 @@ describe('the automerge workflow', () => {
     const labelsIn = (condition: string): string[] => [...new Set([...condition.matchAll(/'(automerge|security)'/g)].map((match) => match[1]))];
     expect(labelsIn(String(automerge.jobs.enable.if))).toEqual(['automerge']);
     expect(labelsIn(String(speed.if))).toEqual(['automerge']);
+  });
+});
+
+describe('the PDF text worker bundle in the nightly speed jobs', () => {
+  it('is built before the speed rows are timed, for the commit under test and for the commit to compare with', () => {
+    const jobs: Array<[string, string]> = [
+      ['bench-parity-speed', 'Run the speed parity benchmark'],
+      ['bench-ab-speed', 'Measure the speed rows against that commit'],
+    ];
+    for (const [name, measure] of jobs) {
+      const job = nightly.jobs[name];
+      const build = job.steps.findIndex((step) => step.run === 'npm run build:pdf-text-worker');
+      expect(build, name).toBeGreaterThan(job.steps.findIndex((step) => step.run === 'npm ci --ignore-scripts'));
+      expect(build, name).toBeLessThan(job.steps.findIndex((step) => step.name === measure));
+    }
+    const compare = nightly.jobs['bench-ab-speed'];
+    const base = compare.steps.findIndex((step) => (step.run ?? '').includes('(cd ab-base && npm run build:pdf-text-worker)'));
+    expect(base).toBeGreaterThan(compare.steps.findIndex((step) => step.name === 'Check out the commit to compare with'));
+    expect(base).toBeLessThan(compare.steps.findIndex((step) => step.name === 'Measure the speed rows against that commit'));
   });
 });
 

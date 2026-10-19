@@ -163,6 +163,29 @@ describe('without a worker entry', () => {
   });
 });
 
+describe('the entry of the thread', () => {
+  const startedWith = async (existing: (candidate: string) => boolean): Promise<[unknown, { execArgv?: string[] }]> => {
+    const real = fs.existsSync.bind(fs);
+    vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => (String(candidate).includes('pdf-text-worker') ? existing(String(candidate)) : real(candidate)));
+    void failure(extractPdfTextLayerPages(pdf(), new Set([1])));
+    await startedThread();
+    const [entry, options] = fake.state.calls[0] as [unknown, { execArgv?: string[] }];
+    return [entry, options];
+  };
+
+  it('starts the bundle without the execArgv of its parent, so a loader of the parent does not load the bundle', async () => {
+    const [entry, options] = await startedWith((candidate) => candidate.endsWith('pdf-text-worker.js'));
+    expect(String(entry)).toMatch(/pdf-text-worker\.js$/);
+    expect(options.execArgv).toEqual([]);
+  });
+
+  it('starts the source through the loader it registers itself, with the execArgv of its parent', async () => {
+    const [entry, options] = await startedWith((candidate) => candidate.endsWith('pdf-text-worker.ts'));
+    expect(String(entry)).toContain('.register()');
+    expect(options).not.toHaveProperty('execArgv');
+  });
+});
+
 describe('density analysis', () => {
   it('reads the text density on the worker thread, under the same deadline', async () => {
     const pending = inspectPdfPagesTextDensity(pdf(), 15);

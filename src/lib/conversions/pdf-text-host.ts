@@ -127,7 +127,9 @@ function resolveWorkerEntry(): WorkerEntry {
 function startWorker(entry: WorkerEntry, warmUp: boolean): Worker {
   const options = { resourceLimits: { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB }, workerData: { warmUp } };
   try {
-    if (entry.kind === 'compiled') return new Worker(entry.file, options);
+    // The bundle needs no loader: a thread inherits its parent's `--import`, and under the TypeScript loader of a development or
+    // benchmark process the bundle's own modules would be loaded through it (450 ms to start instead of 125 ms).
+    if (entry.kind === 'compiled') return new Worker(entry.file, { ...options, execArgv: [] });
     return new Worker(entry.bootstrap, { eval: true, ...options });
   } catch (error) {
     throw new EngineUnavailableError(ENGINE_NAME, `the thread could not be started: ${error instanceof Error ? error.message : String(error)}`);

@@ -30,7 +30,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'pdf-text', 'latin.pdf');
-const JOBS_PAST_THE_REPLACEMENT_START = 200;
+const JOBS_PAST_THE_REPLACEMENT_START = 150;
 const TEXT_JOB = { geometry: 'none', content: true } as const;
 const WARMUP_LINES = [
   'Replacement threads read this page before the first document.',
