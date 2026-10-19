@@ -452,6 +452,22 @@ describe('output check', () => {
     expect(await check(await zipOf({ 'doc-1.eps': eps, 'doc-2.eps': eps }, 'DEFLATE'), 'eps', ZIP_MIME)).toBeNull();
   });
 
+  it('accepts the ZIP of page metafiles a multi-page drawing converts to, by the signature of each page', async () => {
+    // Header of a real Enhanced Metafile written for a page of a Visio drawing: record type 1, header size 88, " EMF" at offset 40.
+    const emf = Buffer.alloc(88);
+    emf.writeUInt32LE(1, 0);
+    emf.writeUInt32LE(88, 4);
+    emf.write(' EMF', 40, 'latin1');
+    // A placeable Windows Metafile starts with the key 0x9AC6CDD7.
+    const wmf = Buffer.alloc(40);
+    wmf.writeUInt32LE(0x9ac6cdd7, 0);
+    expect(await check(await zipOf({ 'doc-p001.emf': emf, 'doc-p002.emf': emf }, 'DEFLATE'), 'emf', ZIP_MIME)).toBeNull();
+    expect(await check(await zipOf({ 'doc-p001.wmf': wmf, 'doc-p002.wmf': wmf }, 'DEFLATE'), 'wmf', ZIP_MIME)).toBeNull();
+    expect(await check(await zipOf({ 'doc-p001.emf': emf, 'doc-p002.emf': Buffer.from('not a metafile') }, 'DEFLATE'), 'emf', ZIP_MIME)).toBe(
+      'page doc-p002.emf: output bytes do not match emf'
+    );
+  });
+
   it('accepts an empty output only for an input the corpus manifest marks as having no content, and for no other', async () => {
     const empty = Buffer.alloc(0);
     expect(await outputProblem(empty, 'csv', os.tmpdir(), { ...NO_READERS, emptyInput: true })).toBeNull();
