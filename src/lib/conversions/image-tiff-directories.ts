@@ -10,8 +10,10 @@ const IFD_COUNT_BYTES = 2;
 const IFD_ENTRY_BYTES = 12;
 const IFD_NEXT_BYTES = 4;
 const IFD_ENTRY_VALUE_OFFSET = 8;
-/** Directories read: far more than any real document has, so a loop of next-directory offsets ends. */
+/** Directories read: far more than any real document has. */
 const MAX_DIRECTORIES = 4096;
+/** Bytes a directory takes in a file: the count, the next offset and the 12-byte entries. */
+const directoryBytes = (count: number): number => IFD_COUNT_BYTES + count * IFD_ENTRY_BYTES + IFD_NEXT_BYTES;
 
 const TAG_COMPRESSION = 259;
 const COMPRESSION_OLD_STYLE_JPEG = 6;
@@ -33,7 +35,12 @@ const readUInt32 = (tiff: Buffer, at: number, little: boolean): number => (littl
 const entriesAt = (directory: TiffDirectory): number => directory.at + IFD_COUNT_BYTES;
 const nextAt = (directory: TiffDirectory): number => entriesAt(directory) + directory.count * IFD_ENTRY_BYTES;
 
-/** Reads the header and the chain of directories of `tiff`, or null when the bytes are not a classic TIFF. A directory that runs past the end of the file ends the chain. */
+/**
+ * Reads the header and the chain of directories of `tiff`, or null when the bytes are not a classic TIFF. A directory that runs
+ * past the end of the file ends the chain. So does a directory already read, and the one at which the directories read so far would
+ * take more bytes than the file has: directories of a real file do not overlap, and a chain of overlapping ones (a loop, or
+ * directories that start a few bytes apart and each claim 65535 entries) would otherwise be walked thousands of times.
+ */
 function readClassicTiff(tiff: Buffer): ClassicTiff | null {
   if (tiff.length < TIFF_HEADER_BYTES) return null;
   const order = tiff.toString('latin1', 0, 2);
@@ -41,10 +48,14 @@ function readClassicTiff(tiff: Buffer): ClassicTiff | null {
   const little = order === 'II';
   if (readUInt16(tiff, 2, little) !== TIFF_MAGIC) return null;
   const directories: TiffDirectory[] = [];
+  const offsets = new Set<number>();
+  let bytes = 0;
   let at = readUInt32(tiff, 4, little);
-  for (let seen = 0; seen < MAX_DIRECTORIES && at !== 0 && at + IFD_COUNT_BYTES <= tiff.length; seen += 1) {
+  while (at !== 0 && at + IFD_COUNT_BYTES <= tiff.length && directories.length < MAX_DIRECTORIES && !offsets.has(at)) {
     const directory = { at, count: readUInt16(tiff, at, little) };
-    if (nextAt(directory) + IFD_NEXT_BYTES > tiff.length) break;
+    bytes += directoryBytes(directory.count);
+    if (nextAt(directory) + IFD_NEXT_BYTES > tiff.length || bytes > tiff.length) break;
+    offsets.add(at);
     directories.push(directory);
     at = readUInt32(tiff, nextAt(directory), little);
   }
@@ -58,11 +69,20 @@ function readClassicTiff(tiff: Buffer): ClassicTiff | null {
 export function usesOldStyleJpeg(tiff: Buffer): boolean {
   const layout = readClassicTiff(tiff);
   if (layout === null) return false;
-  return layout.directories.some((directory) =>
-    entriesOf(tiff, directory).some(
-      (entry) => readUInt16(entry, 0, layout.little) === TAG_COMPRESSION && readUInt16(entry, IFD_ENTRY_VALUE_OFFSET, layout.little) === COMPRESSION_OLD_STYLE_JPEG
-    )
-  );
+  return layout.directories.some((directory) => {
+    for (let entry = entriesAt(directory); entry < nextAt(directory); entry += IFD_ENTRY_BYTES) {
+      if (readUInt16(tiff, entry, layout.little) === TAG_COMPRESSION && readUInt16(tiff, entry + IFD_ENTRY_VALUE_OFFSET, layout.little) === COMPRESSION_OLD_STYLE_JPEG) return true;
+    }
+    return false;
+  });
+}
+
+/** True when the tags of the directory rise from entry to entry, which needs no repair and allocates nothing. */
+function tagsAscend(tiff: Buffer, directory: TiffDirectory, little: boolean): boolean {
+  for (let entry = entriesAt(directory) + IFD_ENTRY_BYTES; entry < nextAt(directory); entry += IFD_ENTRY_BYTES) {
+    if (readUInt16(tiff, entry, little) <= readUInt16(tiff, entry - IFD_ENTRY_BYTES, little)) return false;
+  }
+  return true;
 }
 
 function entriesOf(tiff: Buffer, directory: TiffDirectory): Buffer[] {
@@ -96,6 +116,7 @@ export function withSortedTiffTags(tiff: Buffer): Buffer {
   if (layout === null) return tiff;
   let repaired: Buffer | null = null;
   for (const directory of layout.directories) {
+    if (tagsAscend(tiff, directory, layout.little)) continue;
     const entries = entriesOf(tiff, directory);
     const ordered = orderedEntries(entries, layout.little);
     if (ordered.length === entries.length && ordered.every((entry, index) => entry === entries[index])) continue;

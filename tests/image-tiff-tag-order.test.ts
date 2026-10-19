@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { withSortedTiffTags } from '../src/lib/conversions/image-tiff-directories';
+import { usesOldStyleJpeg, withSortedTiffTags } from '../src/lib/conversions/image-tiff-directories';
 import { decodeRgba } from './helpers/image-pixels';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
@@ -208,5 +208,81 @@ describe('withSortedTiffTags', () => {
     ['an empty buffer', Buffer.alloc(0)],
   ])('returns %s as they are', (_label, bytes) => {
     expect(withSortedTiffTags(bytes)).toBe(bytes);
+  });
+});
+
+/**
+ * Directory chains that revisit the same bytes. A directory may claim 65,535 entries (786,420 bytes), so a 790 kB file whose chain
+ * loops, or whose 1,024 directories start four bytes apart, would be walked in full thousands of times if the walk only counted
+ * directories (measured before the fix: 69 s for the repair and 14 s for the compression check on the loop, on the event loop).
+ */
+const MAX_ENTRIES = 65_535;
+const NEXT_DIRECTORY_OFFSET_AT = (directoryAt: number): number => directoryAt + COUNT_BYTES + MAX_ENTRIES * ENTRY_BYTES;
+const WALK_TIME_BOUND_MS = 1000;
+
+/** A little-endian classic TIFF whose directory at 8 has 65,535 entries with the tags 1, 2, 3, ... (in order, values 0) and whose next offset is `next`. */
+function loopingTiff(next: number): Buffer {
+  const tiff = Buffer.alloc(NEXT_DIRECTORY_OFFSET_AT(TIFF_HEADER_BYTES) + 4);
+  tiff.write('II', 0, 'ascii');
+  tiff.writeUInt16LE(42, 2);
+  tiff.writeUInt32LE(TIFF_HEADER_BYTES, 4);
+  tiff.writeUInt16LE(MAX_ENTRIES, TIFF_HEADER_BYTES);
+  for (let entry = 0; entry < MAX_ENTRIES; entry += 1) tiff.writeUInt16LE(entry + 1, TIFF_HEADER_BYTES + COUNT_BYTES + entry * ENTRY_BYTES);
+  tiff.writeUInt32LE(next, NEXT_DIRECTORY_OFFSET_AT(TIFF_HEADER_BYTES));
+  return tiff;
+}
+
+/**
+ * The same file with 1,024 directories at 8, 12, 16, ... each claiming 65,535 entries; the next offset of each lies in the entries of the
+ * others, so no offset repeats before the last. The counts sit at multiples of four and the tags of the first directory at two more, so
+ * the tags of the first directory still rise.
+ */
+function overlappingTiff(): Buffer {
+  const directories = 1024;
+  const tiff = Buffer.alloc(NEXT_DIRECTORY_OFFSET_AT(TIFF_HEADER_BYTES + 4 * (directories - 1)) + 4);
+  tiff.write('II', 0, 'ascii');
+  tiff.writeUInt16LE(42, 2);
+  tiff.writeUInt32LE(TIFF_HEADER_BYTES, 4);
+  for (let entry = 0; entry < MAX_ENTRIES; entry += 1) tiff.writeUInt16LE(entry + 1, TIFF_HEADER_BYTES + COUNT_BYTES + entry * ENTRY_BYTES);
+  for (let index = 0; index < directories; index += 1) {
+    const at = TIFF_HEADER_BYTES + 4 * index;
+    tiff.writeUInt16LE(MAX_ENTRIES, at);
+    tiff.writeUInt32LE(index + 1 < directories ? at + 4 : 0, NEXT_DIRECTORY_OFFSET_AT(at));
+  }
+  return tiff;
+}
+
+function milliseconds(run: () => unknown): number {
+  const start = performance.now();
+  run();
+  return performance.now() - start;
+}
+
+describe('a TIFF whose directories overlap', () => {
+  it.each([
+    ['a chain that loops back to its first directory', () => loopingTiff(TIFF_HEADER_BYTES)],
+    ['1,024 directories that start four bytes apart', overlappingTiff],
+  ])('is walked once, not once per directory it links to: %s', { timeout: 120_000 }, (_label, build) => {
+    const tiff = build();
+    let repaired: Buffer | undefined;
+    const repairMs = milliseconds(() => {
+      repaired = withSortedTiffTags(tiff);
+    });
+    let oldStyle: boolean | undefined;
+    const checkMs = milliseconds(() => {
+      oldStyle = usesOldStyleJpeg(tiff);
+    });
+    expect(repairMs).toBeLessThan(WALK_TIME_BOUND_MS);
+    expect(checkMs).toBeLessThan(WALK_TIME_BOUND_MS);
+    expect(repaired).toBe(tiff);
+    expect(oldStyle).toBe(false);
+  });
+
+  it('still finds old-style JPEG compression in the directory it reads first', () => {
+    const tiff = loopingTiff(TIFF_HEADER_BYTES);
+    const compressionAt = TIFF_HEADER_BYTES + COUNT_BYTES + (259 - 1) * ENTRY_BYTES;
+    expect(tiff.readUInt16LE(compressionAt)).toBe(259);
+    tiff.writeUInt16LE(6, compressionAt + 8);
+    expect(usesOldStyleJpeg(tiff)).toBe(true);
   });
 });

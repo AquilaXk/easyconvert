@@ -41,14 +41,13 @@ const RED_FIRST_FORMATS: ReadonlySet<number> = new Set([27, 28, 29]);
 /** DXGI_FORMAT values that store blue first, as A8R8G8B8 does: B8G8R8A8 UNORM, TYPELESS and UNORM_SRGB. */
 const BLUE_FIRST_FORMATS: ReadonlySet<number> = new Set([87, 90, 91]);
 
-/** The surface with red and blue exchanged in every pixel, which makes red-first bytes blue-first ones. */
-function withRedAndBlueExchanged(surface: Buffer): Buffer {
-  const exchanged = Buffer.from(surface);
-  for (let at = 0; at + RED_BYTE < exchanged.length; at += BYTES_PER_PIXEL) {
-    exchanged[at + BLUE_BYTE] = surface[at + RED_BYTE];
-    exchanged[at + RED_BYTE] = surface[at + BLUE_BYTE];
+/** Exchanges red and blue in every pixel of `buffer` from `start` on, in place. */
+function exchangeRedAndBlue(buffer: Buffer, start: number): void {
+  for (let at = start; at + RED_BYTE < buffer.length; at += BYTES_PER_PIXEL) {
+    const blue = buffer[at + BLUE_BYTE];
+    buffer[at + BLUE_BYTE] = buffer[at + RED_BYTE];
+    buffer[at + RED_BYTE] = blue;
   }
-  return exchanged;
 }
 
 /**
@@ -64,11 +63,14 @@ export function withLegacyDdsPixelFormat(dds: Buffer): Buffer {
   const format = dds.readUInt32LE(DXGI_FORMAT_AT);
   const redFirst = RED_FIRST_FORMATS.has(format);
   if ((!redFirst && !BLUE_FIRST_FORMATS.has(format)) || dds.readUInt32LE(RESOURCE_DIMENSION_AT) !== RESOURCE_DIMENSION_TEXTURE_2D) return dds;
-  const header = Buffer.from(dds.subarray(0, FILE_HEADER_BYTES));
-  header.writeUInt32LE(DDPF_RGB | DDPF_ALPHAPIXELS, PIXEL_FORMAT_FLAGS_AT);
-  header.fill(0, PIXEL_FORMAT_FOURCC_AT, PIXEL_FORMAT_FOURCC_AT + DX10_FOURCC.length);
-  header.writeUInt32LE(BITS_PER_PIXEL, PIXEL_FORMAT_BIT_COUNT_AT);
-  [MASK_RED, MASK_GREEN, MASK_BLUE, MASK_ALPHA].forEach((mask, index) => header.writeUInt32LE(mask, PIXEL_FORMAT_MASKS_AT + index * Uint32Array.BYTES_PER_ELEMENT));
-  const surface = dds.subarray(FILE_HEADER_BYTES + DX10_HEADER_BYTES);
-  return Buffer.concat([header, redFirst ? withRedAndBlueExchanged(surface) : surface]);
+  // One allocation holds the new header and the surface, so the file is copied once.
+  const legacy = Buffer.allocUnsafe(dds.length - DX10_HEADER_BYTES);
+  dds.copy(legacy, 0, 0, FILE_HEADER_BYTES);
+  dds.copy(legacy, FILE_HEADER_BYTES, FILE_HEADER_BYTES + DX10_HEADER_BYTES);
+  legacy.writeUInt32LE(DDPF_RGB | DDPF_ALPHAPIXELS, PIXEL_FORMAT_FLAGS_AT);
+  legacy.fill(0, PIXEL_FORMAT_FOURCC_AT, PIXEL_FORMAT_FOURCC_AT + DX10_FOURCC.length);
+  legacy.writeUInt32LE(BITS_PER_PIXEL, PIXEL_FORMAT_BIT_COUNT_AT);
+  [MASK_RED, MASK_GREEN, MASK_BLUE, MASK_ALPHA].forEach((mask, index) => legacy.writeUInt32LE(mask, PIXEL_FORMAT_MASKS_AT + index * Uint32Array.BYTES_PER_ELEMENT));
+  if (redFirst) exchangeRedAndBlue(legacy, FILE_HEADER_BYTES);
+  return legacy;
 }
