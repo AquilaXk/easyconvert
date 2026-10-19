@@ -145,8 +145,8 @@ function coversEveryPage(tokens: readonly string[], pages: number): boolean {
 }
 
 /** The number of pages qpdf counts in the document. */
-async function pageCountOf(workspace: QpdfWorkspace, action: string): Promise<number> {
-  const { stdout } = await runQpdf(workspace, { args: ['--show-npages', workspace.inputPath], action });
+async function pageCountOf(workspace: QpdfWorkspace, action: string, signal?: AbortSignal): Promise<number> {
+  const { stdout } = await runQpdf(workspace, { args: ['--show-npages', workspace.inputPath], action, signal });
   const text = stdout.toString('utf8').trim();
   if (!PAGE_COUNT_PATTERN.test(text)) throw new PdfPostprocessError(`${action} failed: qpdf did not report a page count.`);
   return Number.parseInt(text, 10);
@@ -171,9 +171,16 @@ export async function deletePdfPages(pdf: Buffer, spec: string, access: PdfAcces
   const plain = await editablePdf(pdf, 'delete', access);
   return withQpdfInputFile(plain, async (workspace) => {
     const action = 'Deleting the pages';
+    // Whichever run fails stops the other, which would otherwise read a file the failed job removes, for up to the run limit.
+    const stop = new AbortController();
+    const stopOnFailure = <T>(run: Promise<T>): Promise<T> =>
+      run.catch((error: unknown) => {
+        stop.abort();
+        throw error;
+      });
     const [result, pages] = await Promise.all([
-      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...selection, '-'], action }),
-      pageCountOf(workspace, action),
+      stopOnFailure(runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...selection, '-'], action, signal: stop.signal })),
+      stopOnFailure(pageCountOf(workspace, action, stop.signal)),
     ]);
     if (coversEveryPage(tokens, pages)) {
       throw new PdfPostprocessError('Deleting the pages failed: the specification names every page, and a PDF needs at least one.');

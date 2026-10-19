@@ -37,6 +37,13 @@ const REFERENCE = /^\d+ \d+ R$/;
 /** The version of the JSON format qpdf reads and writes here. */
 const JSON_VERSION = 2;
 const UPDATE_FILE = 'page-tree.json';
+/**
+ * Most bytes of the object export that are read. The export lists every object with its dictionary and is parsed whole, and
+ * packed object streams expand it far past the size of the file, so it has a limit of its own and not the output limit of a
+ * rewrite. Measured on the 43 PDFs of the pdf-ops corpus the export is 0.5 to 3.4 times the file (largest: 2.4 MB, from a
+ * 0.7 MB tagged form); 32 MiB is 13 times that largest export and holds the page-tree objects of a document of about 10 MB.
+ */
+const PAGE_TREE_EXPORT_LIMIT_BYTES = 32 * 1024 * 1024;
 /** Lists the objects of the document as JSON, without the data of their streams. */
 const EXPORT_ARGS: readonly string[] = [`--json=${JSON_VERSION}`, '--json-key=qpdf', '--json-stream-data=none'];
 
@@ -80,7 +87,8 @@ function placeNodes(objects: PdfJsonObjects, root: string, rootDictionary: JsonD
       kids.push(kid);
     }
     placed.push({ reference: next.reference, dictionary: next.dictionary, kids });
-    pending.push(...children.reverse());
+    // One push per child, last first: a spread of a long list passes its elements as arguments and overflows the stack.
+    for (let index = children.length - 1; index >= 0; index -= 1) pending.push(children[index]);
   }
   return placed;
 }
@@ -126,14 +134,22 @@ interface QpdfExport {
 }
 
 /**
- * `pdf` with its page tree mended (see the top of this file), or `pdf` itself when qpdf reads its pages or the tree has no
- * node to mend. The pages, their content and every other object stay as they are; qpdf writes the change.
+ * `pdf` with its page tree mended (see the top of this file), or `pdf` itself when qpdf reads its pages, the tree has no
+ * node to mend, or qpdf cannot describe the objects within `maxExportBytes`. The pages, their content and every other object stay as they are; qpdf writes the change.
  */
-export async function repairPageTree(pdf: Buffer): Promise<Buffer> {
+export async function repairPageTree(pdf: Buffer, options: { maxExportBytes?: number } = {}): Promise<Buffer> {
   return withQpdfWorkspace(pdf, async (workspace) => {
     if (await listsPages(workspace)) return pdf;
     const action = 'Mending the page tree';
-    const described = await runQpdf(workspace, { args: [...EXPORT_ARGS, workspace.inputPath], action, expectedOutputBytes: workspace.inputBytes });
+    const exportLimit = { ...workspace, maxOutputBytes: options.maxExportBytes ?? PAGE_TREE_EXPORT_LIMIT_BYTES };
+    let described: Awaited<ReturnType<typeof runQpdf>>;
+    try {
+      described = await runQpdf(exportLimit, { args: [...EXPORT_ARGS, workspace.inputPath], action, expectedOutputBytes: workspace.inputBytes });
+    } catch (error) {
+      // An export past its limit is not read: the document is left as it is, and the steps after this one answer as they would without it.
+      if (error instanceof PdfPostprocessError) return pdf;
+      throw error;
+    }
     const exported = (JSON.parse(described.stdout.toString('utf8')) as QpdfExport).qpdf;
     const mended = mendPageTree(exported[1]);
     if (mended.size === 0) return pdf;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { compressPdf } from '../src/lib/conversions/pdf-postprocess';
 import { mendPageTree, repairPageTree, type PdfJsonObject } from '../src/lib/conversions/pdf-postprocess/page-tree';
 import { buildPdf, type CraftObject } from './helpers/pdf-craft';
@@ -82,6 +82,23 @@ describe('mendPageTree', () => {
     expect(mendPageTree(objects).size).toBe(0);
   });
 
+  it('lists 200,000 kids of one node without exhausting the call stack, and keeps them in the order listed', () => {
+    const KIDS_OF_ROOT = 200_000;
+    const FIRST = 3;
+    const FIRST_PAGE = FIRST + KIDS_OF_ROOT;
+    const nodes: Record<number, { kids: unknown[]; count: number }> = {};
+    const rootKids: string[] = [];
+    for (let index = 0; index < KIDS_OF_ROOT; index += 1) {
+      nodes[FIRST + index] = { kids: [ref(FIRST_PAGE + index)], count: 1 };
+      rootKids.push(ref(FIRST + index));
+    }
+    // The root also lists itself, so it is the one node that changes.
+    nodes[ROOT] = { kids: [...rootKids, ref(ROOT)], count: KIDS_OF_ROOT };
+    const mended = mendPageTree(objectList(nodes, Array.from({ length: KIDS_OF_ROOT }, (_, index) => FIRST_PAGE + index)));
+    expect([...mended.keys()]).toEqual([`obj:${ref(ROOT)}`]);
+    expect(mended.get(`obj:${ref(ROOT)}`)).toMatchObject({ '/Kids': rootKids, '/Count': KIDS_OF_ROOT });
+  });
+
   it('visits a chain of 50,000 nodes that loops back once, without recursion, and changes only the node that closes it', () => {
     const LENGTH = 50_000;
     const FIRST = 3;
@@ -140,6 +157,26 @@ function ringPdf(nodes: number): Buffer {
   return buildPdf(objects, CATALOG).buffer;
 }
 
+/** A document of `nodes` page-tree nodes that each list all of them and one page of their own ("Mesh page N"). */
+function meshPdf(nodes: number): Buffer {
+  const FIRST_NODE = 10;
+  const FIRST_PAGE = FIRST_NODE + nodes;
+  const nodeRefs = Array.from({ length: nodes }, (_, index) => ref(FIRST_NODE + index));
+  const objects: CraftObject[] = [
+    { id: CATALOG, dict: `/Type /Catalog /Pages ${ref(ROOT)}` },
+    { id: ROOT, dict: `/Type /Pages /Kids [${nodeRefs.join(' ')}] /Count ${nodes}` },
+    { id: 5, stream: Buffer.from('BT /F1 12 Tf 20 100 Td (x) Tj ET') },
+    { id: 6, dict: '/Type /Font /Subtype /Type1 /BaseFont /Helvetica' },
+  ];
+  for (let index = 0; index < nodes; index += 1) {
+    objects.push({ id: FIRST_NODE + index, dict: `/Type /Pages /Parent ${ref(ROOT)} /Kids [${nodeRefs.join(' ')} ${ref(FIRST_PAGE + index)}] /Count 1` });
+    const contents = ref(FIRST_PAGE + nodes + index);
+    objects.push({ id: FIRST_PAGE + index, dict: `/Type /Page /Parent ${ref(FIRST_NODE + index)} /MediaBox [0 0 200 200] /Contents ${contents} /Resources << /Font << /F1 ${ref(6)} >> >>` });
+    objects.push({ id: FIRST_PAGE + nodes + index, stream: Buffer.from(`BT /F1 12 Tf 20 100 Td (Mesh page ${index + 1}) Tj ET`) });
+  }
+  return buildPdf(objects, CATALOG).buffer;
+}
+
 describe.skipIf(toolsMissing)('repairPageTree', () => {
   it('hands back the very bytes of a document qpdf reads', async () => {
     const clean = buildPdf(
@@ -167,28 +204,36 @@ describe.skipIf(toolsMissing)('repairPageTree', () => {
 
   it('mends 300 nodes that each list all 300: one node of the tree per page, in the order the root lists them', async () => {
     const NODES = 300;
-    const FIRST_NODE = 10;
-    const FIRST_PAGE = FIRST_NODE + NODES;
-    const nodeRefs = Array.from({ length: NODES }, (_, index) => ref(FIRST_NODE + index));
-    const objects: CraftObject[] = [
-      { id: CATALOG, dict: `/Type /Catalog /Pages ${ref(ROOT)}` },
-      { id: ROOT, dict: `/Type /Pages /Kids [${nodeRefs.join(' ')}] /Count ${NODES}` },
-      { id: 5, stream: Buffer.from('BT /F1 12 Tf 20 100 Td (x) Tj ET') },
-      { id: 6, dict: '/Type /Font /Subtype /Type1 /BaseFont /Helvetica' },
-    ];
-    for (let index = 0; index < NODES; index += 1) {
-      objects.push({ id: FIRST_NODE + index, dict: `/Type /Pages /Parent ${ref(ROOT)} /Kids [${nodeRefs.join(' ')} ${ref(FIRST_PAGE + index)}] /Count 1` });
-      const contents = ref(FIRST_PAGE + NODES + index);
-      objects.push({ id: FIRST_PAGE + index, dict: `/Type /Page /Parent ${ref(FIRST_NODE + index)} /MediaBox [0 0 200 200] /Contents ${contents} /Resources << /Font << /F1 ${ref(6)} >> >>` });
-      objects.push({ id: FIRST_PAGE + NODES + index, stream: Buffer.from(`BT /F1 12 Tf 20 100 Td (Mesh page ${index + 1}) Tj ET`) });
-    }
-    const mesh = buildPdf(objects, CATALOG).buffer;
+    const mesh = meshPdf(NODES);
     expect(qpdfCheckPasses(mesh), 'the fixture is damaged').toBe(false);
     const mended = await repairPageTree(mesh);
     expect(qpdfCheckPasses(mended)).toBe(true);
     expect(pdfinfoPages(mended)).toBe(NODES);
     const texts = pdftotext(mended).split('\f').slice(0, -1).map((page) => page.trim());
     expect(texts).toEqual(Array.from({ length: NODES }, (_, index) => `Mesh page ${index + 1}`));
+  });
+
+  it('reads the export of a document it mends: the JSON of the objects is parsed', async () => {
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      await repairPageTree(ringPdf(3));
+      expect(parse.mock.calls.filter(([text]) => typeof text === 'string' && text.includes('"qpdf"'))).toHaveLength(1);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('hands back the very bytes of a document whose object export passes the limit, and never parses the export', async () => {
+    // 400 nodes that list each other export about 2 MB of JSON; the limit is read on top of the 1 MiB qpdf may print besides.
+    const mesh = meshPdf(400);
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      const result = await repairPageTree(mesh, { maxExportBytes: 0 });
+      expect(Object.is(result, mesh), 'the very buffer comes back').toBe(true);
+      expect(parse.mock.calls.filter(([text]) => typeof text === 'string' && text.includes('"qpdf"'))).toHaveLength(0);
+    } finally {
+      parse.mockRestore();
+    }
   });
 
   it('lets compression of a ring return a document qpdf --check passes, on the lossless profile', async () => {
