@@ -1,29 +1,36 @@
 #!/usr/bin/env python3
 """Feeds mutated and random frames to qpdf-runner and reports any run that ends by a signal, hangs, or makes a sanitizer speak.
 
-  fuzz-frames.py <runner> <library> <runs> <seed>
+  fuzz-frames.py <runs> <seed>
 
-Build the runner with the sanitizers first, and give it the stand-in library of the tests (tests/helpers/qpdf-runner-probe.c, built with
-`cc -shared -fPIC`) so that no real PDF is needed:
-
-  cc -std=gnu11 -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined -o /tmp/qpdf-runner-asan native/qpdf-runner/qpdf-runner.c -ldl
+It builds the runner from native/qpdf-runner/qpdf-runner.c with AddressSanitizer and UBSan, and the stand-in library of the tests
+(tests/helpers/qpdf-runner-probe.c) so that no real PDF is needed, in a private directory of its own, and runs those two builds. Nothing
+that is run comes from the command line: the arguments are two numbers.
 
 Run it as an unprivileged user (the jobs then stop at their namespaces) and as root (they run). A frame the runner cannot read ends it with status 2;
 anything but status 0 or 2 is reported.
 """
-import os, random, struct, subprocess, sys, tempfile, time
-def executable(path):
-    """The absolute path of an existing file given on the command line, or exit: no shell runs it, and nothing else is accepted."""
-    full = os.path.realpath(path)
-    if not os.path.isfile(full):
-        sys.exit(f"not a file: {path}")
-    return full
-BIN, LIB = executable(sys.argv[1]), executable(sys.argv[2])
-N = int(sys.argv[3]); seed = int(sys.argv[4])
+import os, random, shutil, struct, subprocess, sys, tempfile, time
+HERE = os.path.dirname(os.path.abspath(__file__))
+COMPILER = "/usr/bin/cc"
+# The jobs, the builds and the files of this run live in a private directory, not in a shared one.
+WORK_DIR = tempfile.mkdtemp(prefix="qpdf-runner-fuzz-")
+BIN = os.path.join(WORK_DIR, "qpdf-runner-asan")
+LIB = os.path.join(WORK_DIR, "probe.so")
+WORK = WORK_DIR.encode()
+def build():
+    """The sanitizer build of the runner and the stand-in library; exits when a compile fails."""
+    sanitize = ["-std=gnu11", "-O1", "-g", "-fno-omit-frame-pointer", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]
+    runner = [COMPILER, *sanitize, "-o", BIN, os.path.join(HERE, "qpdf-runner.c"), "-ldl"]
+    probe = [COMPILER, "-shared", "-fPIC", "-o", LIB, os.path.join(HERE, "..", "..", "tests", "helpers", "qpdf-runner-probe.c")]
+    for command in (runner, probe):
+        if subprocess.run(command, check=False).returncode != 0:
+            shutil.rmtree(WORK_DIR)
+            sys.exit("the build failed")
+N = int(sys.argv[1]); seed = int(sys.argv[2])
 # A seeded, reproducible generator is what a fuzzer needs to replay a failing run; it makes no secret.
 rng = random.Random(seed)  # NOSONAR
-# The jobs work in a private directory of this run, not in a shared one.
-WORK = tempfile.mkdtemp(prefix="qpdf-runner-fuzz-").encode()
+build()
 def s(b): return struct.pack(">I", len(b)) + b
 def run_frame(i, cwd=WORK, argv=(b"qpdf", b"echo-stdin"), env=(b"A=1",), stdin=b"hello", t=2000, mx=100000, a=0, f=0, c=0):
     body = struct.pack(">IQQQI", t, mx, a, f, c) + s(cwd) + struct.pack(">I", len(argv)) + b"".join(s(x) for x in argv) + struct.pack(">I", len(env)) + b"".join(s(x) for x in env) + struct.pack(">I", len(stdin)) + stdin
@@ -50,5 +57,5 @@ for n in range(N):
     statuses[p.returncode] = statuses.get(p.returncode, 0) + 1
     if p.returncode not in (0, 2) or b"Sanitizer" in err or b"runtime error" in err:
         bad += 1; print("BAD", p.returncode, err[:300], data.hex()[:200])
-os.rmdir(WORK)
+shutil.rmtree(WORK_DIR)
 print("runs", N, "seed", seed, "statuses", statuses, "problems", bad, "seconds", round(time.time() - t0))
