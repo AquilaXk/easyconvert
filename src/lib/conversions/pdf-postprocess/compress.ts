@@ -12,6 +12,7 @@ import { executeSandboxedBinary } from '../../../worker/sandbox';
 import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { getGhostscriptBinaryPath } from './gs-path';
+import { repairPageTree } from './page-tree';
 import { QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace } from './qpdf-run';
 
 /**
@@ -25,7 +26,9 @@ import { QPDF_RUN_TIMEOUT_MS, runQpdfToBuffer, withQpdfInputFile, withQpdfWorksp
  *  - `archive` is lossless and needs no Ghostscript: qpdf re-deflates every stream at the highest level and packs the
  *    objects into object streams. No pixel and no glyph changes.
  *
- * An encrypted input goes through the same gate as every other PDF edit (see pdf-access).
+ * An encrypted input goes through the same gate as every other PDF edit (see pdf-access). A page tree that reaches one
+ * of its own nodes a second time is mended first (see page-tree): Ghostscript cannot walk such a tree and writes a blank
+ * page for what it cannot reach, and qpdf's lossless rewrite would keep the loop.
  */
 
 export const PDF_OPTIMIZE_PROFILES: readonly PdfOptimizeProfile[] = ['web', 'print', 'archive', 'max'];
@@ -169,13 +172,13 @@ export async function compressPdf(
     throw new PdfPostprocessError('PDF buffer is empty.');
   }
   assertPdfHeader(pdf);
-  const plain = await openPdfForEditing(pdf, 'compress', access);
+  const plain = await repairPageTree(await openPdfForEditing(pdf, 'compress', access));
   const preset = GHOSTSCRIPT_PRESETS[profile];
   const rewritten = preset === undefined ? await rewriteLossless(plain) : await rewriteWithGhostscript(plain, preset, run);
   if (rewritten.length < pdf.length) {
     return { buffer: rewritten, optimized: true };
   }
-  // When the profile gained nothing, return the input unchanged if it is already a clean PDF; if the input has
+  // When the profile gained nothing, return the input (with its page tree mended, if it needed that) if it is already a clean PDF; if the input has
   // damaged cross-references or streams that qpdf --check flags, fall back to the lossless qpdf rewrite so the
   // returned PDF is valid (and smaller when object streams pack a text-only document better than pdfwrite).
   if (await isCleanPdf(plain)) {
