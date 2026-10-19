@@ -263,6 +263,24 @@ describe('the tool setup', () => {
     expect(keys.some((key) => key.includes('verapdf') && key.includes('scripts/install-verapdf.sh'))).toBe(true);
   });
 
+  it('caches the Python wheels by image version and pin file, and installs from them without the network', () => {
+    const cache = setup.runs.steps.find((step) => step.name === 'Restore the cached Python wheels');
+    expect(cache?.uses?.startsWith('actions/cache@')).toBe(true);
+    expect(cache?.with?.path).toBe('${{ runner.temp }}/pip-wheels');
+    expect(cache?.with?.key).toBe(
+      "pip-wheels-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('.github/actions/ci-setup/pip-packages.txt') }}",
+    );
+    const install = setup.runs.steps.find((step) => step.name === 'Install the tools and start the S3 test server');
+    expect(install?.env?.PIP_WHEELS).toBe('${{ runner.temp }}/pip-wheels');
+    const script = read(path.join(ROOT, '.github', 'actions', 'ci-setup', 'install-tools.sh'));
+    const task = script.slice(script.indexOf('task_pip() {'), script.indexOf('task_apt() {'));
+    expect(task).toContain('python3 -m pip download --only-binary=:all: --dest "$pip_wheels" "${pins[@]}"');
+    expect(task).toContain('sudo python3 -m pip install --no-index --find-links "$pip_wheels" --break-system-packages --ignore-installed "${pins[@]}"');
+    expect(task, 'the download runs as the runner user, so the cache can save the directory').not.toMatch(/sudo python3 -m pip download/);
+    expect(task, 'no install path reaches the network').not.toContain('--no-cache-dir');
+    expect(task.match(/pip install/g)).toHaveLength(1);
+  });
+
   it('keeps the unprivileged user namespace step first', () => {
     const commands = (setup.runs.steps[0].run ?? '')
       .split('\n')

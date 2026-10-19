@@ -14,7 +14,7 @@
 # passed, long before the job timeout. Each part logs to its own file; the logs are printed in groups afterwards, a
 # failed or stopped part is printed in full outside a group, and a cancelled job prints them as well.
 #
-# Environment: ACTION_PATH, APT_DEBS, APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT and S3_TEST_SERVER (true or false). With
+# Environment: ACTION_PATH, APT_DEBS, PIP_WHEELS (the directory of the cached wheels), APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT and S3_TEST_SERVER (true or false). With
 # S3_TEST_SERVER=true also S3_IMAGE_CACHE_DIR and the STORAGE_TEST_S3_* variables of the job.
 #
 # Sourcing the file defines the functions and runs nothing, which is how the tests exercise the limits.
@@ -67,6 +67,7 @@ configure() {
   export verapdf_dir=/opt/verapdf
   export libredwg_cache_hit="${LIBREDWG_CACHE_HIT:-false}"
   export libredwg_dir=/opt/libredwg
+  export pip_wheels="${PIP_WHEELS:?PIP_WHEELS}"
   s3_test_server="${S3_TEST_SERVER-}"
   case "$s3_test_server" in
     false) ;;
@@ -99,14 +100,17 @@ select_tasks() {
   fi
 }
 
-# Python format oracles (columnar readers, PDF text extraction, Word, Excel, EPUB, OLE2 and DXF readers, mesh measurement): the tests run python3 -I, which ignores user
-# site-packages, so the pinned packages go to the system interpreter.
+# Python format oracles (columnar readers, PDF text extraction, Word, Excel, EPUB, OLE2 and DXF readers, mesh measurement), pinned in
+# pip-packages.txt, which is also the key of the wheel cache. The tests run python3 -I, which ignores user site-packages, so the
+# pinned packages go to the system interpreter.
 # --ignore-installed: the image ships an older distro PyMuPDF that pip cannot uninstall. Test-only; nothing ships.
-# scipy is pinned with trimesh: the distro scipy (built for NumPy 1) is also on the image, and with the NumPy 2 that pip installs here it
-# makes `import trimesh` fail with a binary-incompatibility error, so pip's own scipy has to shadow it.
 task_pip() {
-  sudo python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed pyarrow==25.0.1 duckdb==1.5.6 pymupdf==1.28.2 \
-    python-docx==1.2.0 openpyxl==3.1.5 ebooklib==0.20 olefile==0.47 xlrd==2.0.2 ezdxf==1.4.4 trimesh==5.1.1 scipy==1.18.1
+  local -a pins
+  mapfile -t pins < <(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$action_path/pip-packages.txt") || return 1
+  # The wheels are fetched as the runner user, so the directory stays savable by the cache action; with a restored cache this
+  # only reads the index metadata. The install then never touches the network.
+  python3 -m pip download --only-binary=:all: --dest "$pip_wheels" "${pins[@]}" || return 1
+  sudo python3 -m pip install --no-index --find-links "$pip_wheels" --break-system-packages --ignore-installed "${pins[@]}"
 }
 
 task_apt() {
