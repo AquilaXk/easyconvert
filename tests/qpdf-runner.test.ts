@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   encodeRun,
   launchQpdf,
@@ -11,6 +11,8 @@ import {
   QPDF_RUNNER_ENV,
   QPDF_RUNNER_LIB_ENV,
   QPDF_RUNNER_PATH_ENV,
+  ReplyReader,
+  RunnerDeclined,
   startQpdfRunner,
   stopQpdfRunner,
 } from '../src/lib/conversions/pdf-postprocess/qpdf-runner';
@@ -71,14 +73,50 @@ function childrenOf(pid: number): number[] {
   return out.split('\n').filter(Boolean).map(Number);
 }
 
+/** A request frame written field by field, with none of the checks `encodeRun` makes, for the refusals the runner must make on its own. */
+function rawRun(id: number, fields: { cwd?: string; argv?: string[]; env?: string[]; stdin?: Buffer }): Buffer {
+  const u32be = (value: number): Buffer => Buffer.from([value >>> 24, (value >>> 16) & 255, (value >>> 8) & 255, value & 255]);
+  const u64be = (value: number): Buffer => {
+    const out = Buffer.alloc(8);
+    out.writeBigUInt64BE(BigInt(value));
+    return out;
+  };
+  const str = (value: string): Buffer => Buffer.concat([u32be(Buffer.byteLength(value)), Buffer.from(value)]);
+  const argv = fields.argv ?? ['qpdf'];
+  const env = fields.env ?? [];
+  const stdin = fields.stdin ?? Buffer.alloc(0);
+  const body = Buffer.concat([
+    u32be(1000), // the time limit
+    u64be(1000), // the output limit
+    u64be(0), // the address-space limit
+    u64be(0), // the file-size limit
+    u32be(0), // the CPU limit
+    str(fields.cwd ?? '/tmp'),
+    u32be(argv.length),
+    ...argv.map(str),
+    u32be(env.length),
+    ...env.map(str),
+    u32be(stdin.length),
+    stdin,
+  ]);
+  const head = Buffer.alloc(9);
+  head.writeUInt32BE(5 + body.length, 0);
+  head.writeUInt8(1, 4);
+  head.writeUInt32BE(id, 5);
+  return Buffer.concat([head, body]);
+}
+
+/** Whether the process runs: a zombie, which only waits for its parent to read its status, does not. */
 const alive = (pid: number): boolean => {
   try {
-    process.kill(pid, 0);
-    return true;
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat[stat.lastIndexOf(')') + 2] !== 'Z';
   } catch {
     return false;
   }
 };
+
+const REQUEST = { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, cwd: '/tmp', argv: ['qpdf', 'echo-stdin'], env: ['A=1'], stdin: Buffer.alloc(0) };
 
 beforeAll(async () => {
   scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'qpdf-runner-test-'));
@@ -98,6 +136,71 @@ afterAll(() => {
   delete process.env[QPDF_RUNNER_PATH_ENV];
   delete process.env[QPDF_RUNNER_LIB_ENV];
   fs.rmSync(scratch, { recursive: true, force: true });
+});
+
+describe('the reader of the runner\'s replies', () => {
+  const replyFrame = (body: Buffer): Buffer => {
+    const head = Buffer.alloc(9);
+    head.writeUInt32BE(5 + body.length, 0);
+    head.writeUInt8(11, 4);
+    head.writeUInt32BE(7, 5);
+    return Buffer.concat([head, body]);
+  };
+
+  it('copies a large reply once, however small the chunks it arrives in', () => {
+    const body = Buffer.alloc(16 * 1024 * 1024);
+    for (let at = 0; at < body.length; at += 4099) body[at] = at & 0xff;
+    const wire = replyFrame(body);
+    const concat = vi.spyOn(Buffer, 'concat');
+    try {
+      const reader = new ReplyReader();
+      const replies = [];
+      for (let at = 0; at < wire.length; at += 64 * 1024) replies.push(...reader.push(wire.subarray(at, at + 64 * 1024)));
+      const copied = concat.mock.results.reduce((sum, result) => sum + (result.value as Buffer).length, 0);
+      expect(replies).toHaveLength(1);
+      expect(replies[0].body.equals(body)).toBe(true);
+      // The frame is joined once, when it is complete: not again for each of the 256 chunks.
+      expect(copied).toBeLessThanOrEqual(2 * wire.length);
+    } finally {
+      concat.mockRestore();
+    }
+  });
+
+  it('reads frames that arrive whole, several to a chunk, and split inside the length', () => {
+    const frames = [Buffer.from('one'), Buffer.alloc(0), Buffer.from('three')].map(replyFrame);
+    const wire = Buffer.concat(frames);
+    for (const size of [1, 2, 3, 7, wire.length]) {
+      const reader = new ReplyReader();
+      const bodies: string[] = [];
+      for (let at = 0; at < wire.length; at += size) bodies.push(...reader.push(wire.subarray(at, at + size)).map((reply) => reply.body.toString('utf8')));
+      expect(bodies, `chunks of ${size}`).toEqual(['one', '', 'three']);
+    }
+  });
+
+  it('refuses a length that no reply has', () => {
+    expect(() => new ReplyReader().push(Buffer.from([0xff, 0xff, 0xff, 0xff, 11, 0, 0, 0, 1]))).toThrow('impossible length');
+    expect(() => new ReplyReader().push(Buffer.from([0, 0, 0, 2, 11, 0, 0, 0, 1]))).toThrow('impossible length');
+  });
+});
+
+describe('the frames the host writes', () => {
+  it('are refused before they are sent when they are past what the runner takes, or hold a NUL', () => {
+    const declined = (change: Partial<typeof REQUEST>): void => expect(() => encodeRun(1, { ...REQUEST, ...change })).toThrow(RunnerDeclined);
+    declined({ argv: ['qpdf', 'a\0b'] });
+    declined({ cwd: '/tmp/a\0b' });
+    declined({ env: ['A=1\0B=2'] });
+    declined({ cwd: 'relative' });
+    declined({ argv: [] });
+    declined({ argv: ['qpdf', 'x'.repeat(64 * 1024 + 1)] });
+    declined({ argv: ['qpdf', 'é'.repeat(40_000)] }); // 80,000 bytes in 40,000 characters
+    declined({ argv: Array.from({ length: 4097 }, () => 'a') });
+    declined({ env: Array.from({ length: 4097 }, () => 'A=1') });
+    declined({ argv: Array.from({ length: 70 }, () => 'y'.repeat(60 * 1024)) }); // past the frame limit as a whole
+    declined({ stdin: Buffer.alloc(32 * 1024 + 1) });
+    declined({ maxOutput: 0 });
+    declined({ maxOutput: 2 * 1024 * 1024 * 1024 });
+    expect(() => encodeRun(1, { ...REQUEST, argv: ['qpdf', 'x'.repeat(64 * 1024)], stdin: Buffer.alloc(32 * 1024) })).not.toThrow();
+  });
 });
 
 describe.skipIf(compilerMissing)('the qpdf runner', () => {
@@ -254,6 +357,63 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       await expect(run(['facts'], { signal: AbortSignal.abort(new Error('already cancelled')) })).rejects.toThrow();
     });
 
+    describe('a job whose first process returned and whose descendant is still running', () => {
+      const pidOf = async (file: string): Promise<number> => {
+        await until(() => fs.existsSync(file) && fs.readFileSync(file, 'utf8').trim() !== '');
+        return Number(fs.readFileSync(file, 'utf8'));
+      };
+
+      it('ends at the time limit of the job, the descendant killed with it, and other jobs go on', async () => {
+        const pidFile = path.join(scratch, 'held-until-timeout.pid');
+        const bystander = run(['sleep', '1']);
+        const started = Date.now();
+        // The first process returns 0 at once; its descendant keeps the standard streams of the job open for 30 seconds.
+        const error = await run(['fork-sleep', pidFile, '30', 'hold'], { timeoutMs: 600 }).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(SandboxedTimeoutError);
+        expect(Date.now() - started).toBeLessThan(4000);
+        const descendant = await pidOf(pidFile);
+        await until(() => !alive(descendant), 3000);
+        expect((await bystander).stdout.toString('utf8')).toContain('sleeping');
+        expect((await run(['echo-stdin'], { stdin: Buffer.from('still serving') })).stdout.toString('utf8')).toBe('still serving');
+      }, 30_000);
+
+      it('is stopped by the caller too: the abort kills the descendant', async () => {
+        const pidFile = path.join(scratch, 'held-until-abort.pid');
+        const controller = new AbortController();
+        const running = run(['fork-sleep', pidFile, '30', 'hold'], { timeoutMs: 60_000, signal: controller.signal });
+        running.catch(() => undefined);
+        const descendant = await pidOf(pidFile);
+        await sleep(200); // the first process has returned by now, and the job has not ended
+        const started = Date.now();
+        controller.abort(new Error('job cancelled'));
+        await expect(running).rejects.toThrow('job cancelled');
+        expect(Date.now() - started).toBeLessThan(2000);
+        await until(() => !alive(descendant), 1000);
+      }, 30_000);
+
+      it('ends with the result of its first process once the streams stay open past the grace, and the descendant is killed', async () => {
+        const pidFile = path.join(scratch, 'held-past-grace.pid');
+        const started = Date.now();
+        const result = await run(['fork-sleep', pidFile, '30', 'hold'], { timeoutMs: 20_000 });
+        const waited = Date.now() - started;
+        expect(result.exitCode).toBe(0);
+        expect(waited).toBeGreaterThanOrEqual(900);
+        expect(waited).toBeLessThan(4000);
+        const descendant = await pidOf(pidFile);
+        await until(() => !alive(descendant), 3000);
+      }, 30_000);
+
+      it('ends with the result of its first process when the descendant has closed the streams, and the descendant is killed', async () => {
+        const pidFile = path.join(scratch, 'daemon.pid');
+        const started = Date.now();
+        const result = await run(['fork-sleep', pidFile, '30', 'daemon'], { timeoutMs: 20_000 });
+        expect(result.exitCode).toBe(0);
+        expect(Date.now() - started).toBeLessThan(4000);
+        const descendant = await pidOf(pidFile);
+        await until(() => !alive(descendant), 3000);
+      }, 30_000);
+    });
+
     it('serves jobs that overlap, each with its own output', async () => {
       const payloads = Array.from({ length: 40 }, (_, index) => Buffer.from(`job-${index}-${crypto.randomBytes(8).toString('hex')}`));
       const results = await Promise.all(payloads.map((payload) => run(['echo-stdin'], { stdin: payload })));
@@ -355,6 +515,38 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       expect(await usual()).toContain('qpdf version');
     });
 
+    it.skipIf(namespacesMissing)('declines a standard input the pipe of the job cannot hold, instead of waiting for room, and keeps serving', async () => {
+      // A host over its pipe budget gives a new pipe one page; a runner given pages of 4096 bytes is in that case.
+      const small = path.join(scratch, 'qpdf-runner-small-pipe');
+      fs.writeFileSync(small, `#!/bin/sh\nexec ${runnerBinary} --stdin-pipe-bytes 4096 "$@"\n`, { mode: 0o755 });
+      stopQpdfRunner();
+      process.env[QPDF_RUNNER_PATH_ENV] = small;
+      expect(await startQpdfRunner()).toBe(true);
+      const before = qpdfRunnerState();
+      const started = Date.now();
+      const declined = await run(['echo-stdin'], { stdin: Buffer.alloc(20_000, 's') }).catch((e: unknown) => e);
+      // The usual way runs the real qpdf with these arguments, which fails: the runner did not run the job, and did not wait.
+      expect(declined).toBeInstanceOf(SandboxedProcessError);
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect({ ran: qpdfRunnerState().ran - before.ran, fallbacks: qpdfRunnerState().fallbacks - before.fallbacks }).toEqual({ ran: 0, fallbacks: 1 });
+      expect((await run(['echo-stdin'], { stdin: Buffer.from('small enough') })).stdout.toString('utf8')).toBe('small enough');
+      expect(qpdfRunnerState().ran - before.ran).toBe(1);
+      stopQpdfRunner();
+      process.env[QPDF_RUNNER_PATH_ENV] = runnerBinary;
+    }, 30_000);
+
+    it('declines a job whose arguments hold a NUL or pass the limits, and the usual way answers', async () => {
+      process.env[QPDF_RUNNER_PATH_ENV] = runnerBinary;
+      stopQpdfRunner();
+      expect(await startQpdfRunner()).toBe(true);
+      const before = qpdfRunnerState();
+      const withNul = await run(['--version', 'a\0b']).catch((e: unknown) => e);
+      expect(withNul).toBeInstanceOf(Error); // the usual way's own error: spawn refuses a NUL, and the runner never saw it
+      const tooMany = await run(['--version', ...Array.from({ length: 5000 }, () => '--')]).catch((e: unknown) => e);
+      expect(tooMany).toBeInstanceOf(Error);
+      expect({ ran: qpdfRunnerState().ran - before.ran, fallbacks: qpdfRunnerState().fallbacks - before.fallbacks }).toEqual({ ran: 0, fallbacks: 2 });
+    });
+
     it.skipIf(namespacesMissing)('gives a job the filter the runner runs under, and no other', async () => {
       const filtered = path.join(scratch, 'qpdf-runner-filtered');
       fs.writeFileSync(filtered, `#!/bin/sh\nexec ${denyBinary} mincore ${runnerBinary} "$@"\n`, { mode: 0o755 });
@@ -395,11 +587,50 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       return head;
     };
 
-    it('ends with status 2 for a length that is too short or too long and for a type it does not know', async () => {
-      for (const bytes of [header(4, 1, 1), header(0xffffffff, 1, 1), header(5, 99, 1), header(MAX_FRAME_PLUS_ONE, 1, 1)]) {
+    /** The kinds of the RESULT frames in the bytes the runner wrote. */
+    const resultKinds = (output: Buffer): number[] => {
+      const kinds: number[] = [];
+      for (let at = 0; at < output.length; ) {
+        const length = output.readUInt32BE(at);
+        if (output.readUInt8(at + 4) === 11) kinds.push(output.readUInt32BE(at + 9));
+        at += 4 + length;
+      }
+      return kinds;
+    };
+    const malformed = (id: number): Buffer => rawRun(id, { cwd: 'relative' });
+
+    it('ends with status 2 for a length too short to hold a type and an id, the one case that leaves nothing to resynchronise on', async () => {
+      for (const bytes of [header(4, 1, 1), header(0, 1, 1)]) {
         const ended = await feed(bytes);
         expect({ status: ended.status, signal: ended.signal }).toEqual({ status: 2, signal: null });
       }
+    });
+
+    it('refuses a frame of a type it does not know, and a frame past its limit, and goes on with the frames after them', async () => {
+      const padding = (bytes: number): Buffer => Buffer.alloc(bytes);
+      const unknown = Buffer.concat([header(5, 99, 7)]);
+      const unknownWithBody = Buffer.concat([header(5 + 100, 98, 8), padding(100)]);
+      // A frame 5 MiB long, past the 4 MiB the runner reads, is skipped as it arrives and answered; the frame after it is served.
+      const oversized = Buffer.concat([header(5 * 1024 * 1024, 1, 9), padding(5 * 1024 * 1024 - 5)]);
+      const ended = await feed(Buffer.concat([unknown, unknownWithBody, oversized, malformed(10)]));
+      expect({ status: ended.status, signal: ended.signal }).toEqual({ status: 0, signal: null });
+      expect(resultKinds(ended.output)).toEqual([5, 5, 5, 5]);
+    });
+
+    it('refuses a length past the limit that is cut short by the end of the input, and ends quietly', async () => {
+      const ended = await feed(header(MAX_FRAME_PLUS_ONE, 1, 1));
+      expect({ status: ended.status, signal: ended.signal, kinds: resultKinds(ended.output) }).toEqual({ status: 0, signal: null, kinds: [5] });
+    });
+
+    it('refuses a standard input past its limit even when no bytes of it follow', async () => {
+      const frame = Buffer.concat(encodeRun(4, { ...REQUEST, argv: ['qpdf', 'echo-stdin'] }));
+      // The last four bytes of a request with no standard input are the length of the standard input.
+      const claimed = Buffer.from(frame);
+      claimed.writeUInt32BE(1 << 30, claimed.length - 4);
+      const justPast = Buffer.from(frame);
+      justPast.writeUInt32BE(32 * 1024 + 1, justPast.length - 4);
+      const ended = await feed(Buffer.concat([claimed, justPast]));
+      expect({ status: ended.status, signal: ended.signal, kinds: resultKinds(ended.output) }).toEqual({ status: 0, signal: null, kinds: [5, 5] });
     });
 
     it('ends quietly when its input closes in the middle of a frame or before any', async () => {
@@ -410,20 +641,8 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
     });
 
     it('answers a request it cannot take with a refusal, and never dies of one', async () => {
-      const relative = Buffer.concat(encodeRun(2, { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, cwd: 'relative', argv: ['qpdf'], env: [], stdin: Buffer.alloc(0) }));
-      const noArguments = Buffer.concat(encodeRun(3, { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, cwd: '/tmp', argv: [], env: [], stdin: Buffer.alloc(0) }));
-      const bigInput = Buffer.concat(encodeRun(4, { timeoutMs: 1000, maxOutput: 1000, limitAsBytes: 0, limitFsizeBytes: 0, limitCpuSeconds: 0, cwd: '/tmp', argv: ['qpdf'], env: [], stdin: Buffer.alloc(64 * 1024) }));
-      const ended = await feed(Buffer.concat([relative, noArguments, bigInput]));
-      expect({ status: ended.status, signal: ended.signal }).toEqual({ status: 0, signal: null });
-      // Three RESULT frames of kind 5 (rejected), in order.
-      const kinds: number[] = [];
-      for (let at = 0; at < ended.output.length; ) {
-        const length = ended.output.readUInt32BE(at);
-        const type = ended.output.readUInt8(at + 4);
-        if (type === 11) kinds.push(ended.output.readUInt32BE(at + 9));
-        at += 4 + length;
-      }
-      expect(kinds).toEqual([5, 5, 5]);
+      const ended = await feed(Buffer.concat([rawRun(2, { cwd: 'relative' }), rawRun(3, { argv: [] }), rawRun(4, { stdin: Buffer.alloc(64 * 1024) })]));
+      expect({ status: ended.status, signal: ended.signal, kinds: resultKinds(ended.output) }).toEqual({ status: 0, signal: null, kinds: [5, 5, 5] });
     });
 
     it('survives random bytes: it ends with status 0 or 2, never by a signal and never by hanging', async () => {

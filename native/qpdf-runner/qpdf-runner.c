@@ -18,7 +18,8 @@
 //   - the seccomp filter, the capabilities and the limits of this process, which the child inherits, plus no_new_privs, no core
 //     dump, and the address-space, file-size and CPU limits of the request;
 //   - its own session and process group, the environment of the request only, standard input from the request, standard output
-//     and error into pipes read here with a cap, a time limit, and death with this process (PR_SET_PDEATHSIG);
+//     and error into pipes read here with a cap, a time limit that covers everything the job started (its group is killed when the job
+//     ends, at its limit and on a cancel, while its first process is still unreaped), and death with this process (PR_SET_PDEATHSIG);
 //   - no memory of other jobs: the buffers that hold requests, outputs and the data in flight are mapped MADV_DONTFORK, the argument
 //     block of a job is wiped as soon as the child exists, and this process and every child are not dumpable, so a process of the
 //     same user cannot read them through /proc/<pid>/mem.
@@ -27,14 +28,21 @@
 //   host -> runner
 //     RUN    (1): u32 timeout_ms | u64 max_output | u64 limit_as | u64 limit_fsize | u32 limit_cpu | str cwd
 //                 | u32 argc | str argv[argc] | u32 envc | str env[envc] | u32 stdin_len | stdin bytes
-//                 (a limit of 0 is no limit; max_output caps standard output and error together)
+//                 (a limit of 0 is no limit, except max_output, which is 1 byte to 1 GiB and caps standard output and error together;
+//                 a request holds at most 4096 arguments and 4096 environment entries, no string past 64 KB, a frame of at most 4 MiB
+//                 and a standard input of at most 32 KB, which goes into the pipe before the fork without the runner waiting for room)
 //     CANCEL (2): the id of the job to kill
 //   runner -> host
 //     READY  (10): str library version | u32 pid of this process        (id 0)
 //     RESULT (11): u32 kind | i32 exit status (-1 if signalled) | i32 signal (0 if exited) | u32 stdout_len | u32 stderr_len
 //                  | stdout bytes | stderr bytes
 //   str is u32 length and the bytes. kind: 0 exited, 1 timeout, 2 output limit, 3 setup failed, 4 cancelled, 5 rejected.
-// The runner ends when standard input closes, taking the jobs with it. A frame it cannot read ends it with status 2.
+// A request it cannot take, a frame of a type it does not know and a frame past 4 MiB (dropped as it arrives) are answered `rejected` and the
+// frames after them are served; only a length that cannot hold the type and the id ends the runner (status 2), as it leaves nothing to find
+// the next frame by. The runner ends when standard input closes, taking the jobs with it.
+// A job ends when its first process has exited and the streams are closed; it is cut short by its time limit, a cancel or the output cap,
+// and one whose streams something it started keeps open is ended EXIT_GRACE_MS after the first process, with that process's result.
+// Whatever else the job started is killed with its group when the job ends.
 
 #define _GNU_SOURCE
 #include <dlfcn.h>
@@ -73,7 +81,8 @@ enum { SETUP_NAMESPACE = 1, SETUP_CHDIR = 2, SETUP_LIMITS = 3, SETUP_STREAMS = 4
 #define MAX_OUTPUT_BYTES (1ull << 30)
 #define MAX_ARGS 4096
 #define READ_CHUNK_BYTES (64u * 1024)
-#define PIPE_BYTES (256 * 1024)
+/* After the first process of a job has exited, the job gets this long to close its standard streams before they are closed for it. */
+#define EXIT_GRACE_MS 1000
 #define SETUP_EXIT_STATUS 125
 #define STATUS_FD 3
 #define LIBRARY_SONAMES_FIRST 34
@@ -243,8 +252,10 @@ typedef struct {
   uint32_t id;
   pid_t pid;
   int out_fd, err_fd, status_fd; /* -1 once closed */
-  bool exited;
-  int wstatus;
+  bool exited;        /* the first process has exited; it stays a zombie until the job is finished, so its id and group are not reused */
+  bool signalled;     /* it was ended by a signal */
+  int exit_status;    /* its exit status, or the signal that ended it */
+  int64_t exit_deadline_ms;
   Bytes out, err;
   uint64_t max_output;
   int64_t deadline_ms; /* 0 for none */
@@ -258,6 +269,7 @@ static Bytes reply_queue;   /* frames waiting to be written */
 static size_t reply_offset; /* how much of reply_queue went out */
 static Bytes read_scratch;  /* one chunk of a job's output on its way to a job buffer */
 static run_from_argv_fn run_from_argv;
+static int stdin_pipe_bytes; /* --stdin-pipe-bytes: the capacity given to the pipe of a job's standard input; the tests use it to be a host whose pipes are small */
 
 static void close_fd(int *fd) {
   if (*fd >= 0) close(*fd);
@@ -266,9 +278,9 @@ static void close_fd(int *fd) {
 
 static void kill_job(Job *j, int reason) {
   if (j->kill_reason == 0) j->kill_reason = reason;
-  /* Once the process is reaped its id may belong to another process: nothing is signalled then. */
-  if (j->exited) return;
-  /* The child leads a process group of its own once it has called setsid; until then only the process itself can be reached. */
+  /* The first process stays unreaped until the job is finished, so its id is its own and the group it leads can be signalled, whether or not
+     the process is still there: the descendants of a job that outlive it are reached by the same call. The group exists once the child has
+     called setsid; until then only the process itself can be reached. */
   kill(-j->pid, SIGKILL);
   kill(j->pid, SIGKILL);
 }
@@ -390,14 +402,18 @@ static void close_descriptors_from(int first) {
   for (int fd = first; fd < (max > 65536 ? 65536 : max); fd++) close(fd);
 }
 
+/* Where the child reports a setup failure: the descriptor it was given until it has moved it to STATUS_FD. */
+static int child_status_fd = -1;
+
 static void child_fail(int code) {
   uint8_t b = (uint8_t)code;
-  (void)!write(STATUS_FD, &b, 1);
+  (void)!write(child_status_fd, &b, 1);
   _exit(SETUP_EXIT_STATUS);
 }
 
 /* Runs in the forked child; never returns. `in_fd`, `out_fd`, `err_fd` and `status_fd` are the child's ends of the pipes. */
 static void run_child(const Request *r, int in_fd, int out_fd, int err_fd, int status_fd) {
+  child_status_fd = status_fd;
   sigset_t none;
   sigemptyset(&none);
   sigprocmask(SIG_SETMASK, &none, NULL);
@@ -412,6 +428,7 @@ static void run_child(const Request *r, int in_fd, int out_fd, int err_fd, int s
     keep[i] = moved;
   }
   if (dup2(keep[0], STDIN_FILENO) < 0 || dup2(keep[1], STDOUT_FILENO) < 0 || dup2(keep[2], STDERR_FILENO) < 0 || dup2(keep[3], STATUS_FD) < 0) child_fail(SETUP_STREAMS);
+  child_status_fd = STATUS_FD;
   close_descriptors_from(STATUS_FD + 1);
   if (!enter_namespaces()) child_fail(SETUP_NAMESPACE);
   prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
@@ -472,7 +489,9 @@ static bool parse_run(const uint8_t *body, size_t len, Request *r) {
   for (uint32_t i = 0; i < envc2; i++) r->envp[i] = take_string(&c, &arena);
   r->envp[envc2] = NULL;
   r->stdin_len = take_u32(&c);
-  r->stdin_bytes = r->stdin_len > MAX_STDIN_BYTES ? NULL : take(&c, r->stdin_len);
+  /* A claim past the limit is refused, whether or not the bytes it claims follow. */
+  if (r->stdin_len > MAX_STDIN_BYTES) return false;
+  r->stdin_bytes = take(&c, r->stdin_len);
   return !c.bad && c.left == 0 && r->cwd != NULL && r->cwd[0] == '/';
 }
 
@@ -485,11 +504,9 @@ static void release_request(Request *r) {
   memset(r, 0, sizeof *r);
 }
 
-static int make_pipe(int fds[2]) {
-  if (pipe2(fds, O_CLOEXEC) != 0) return -1;
-  fcntl(fds[0], F_SETPIPE_SZ, PIPE_BYTES);
-  return 0;
-}
+/* The pipes of a job are the size the system gives them: 256 KiB of pipe memory per job at most, 16 MiB at 64 jobs of the 64 MiB a user may hold
+   before new pipes shrink to one page. A larger size measured the same (50 MB of output in 49.7 to 51.4 ms with 64 or 256 KiB). */
+static int make_pipe(int fds[2]) { return pipe2(fds, O_CLOEXEC); }
 
 static void set_nonblocking(int fd) { fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK); }
 
@@ -527,8 +544,22 @@ static void start_job(uint32_t id, const uint8_t *body, size_t len) {
     reject(id, "no descriptors");
     return;
   }
-  /* The whole standard input fits in the pipe (MAX_STDIN_BYTES is below its size), so the write cannot block. */
-  if (r.stdin_len > 0) (void)!write(in_p[1], r.stdin_bytes, r.stdin_len);
+  if (stdin_pipe_bytes > 0) (void)fcntl(in_p[0], F_SETPIPE_SZ, stdin_pipe_bytes);
+  /* The standard input goes into the pipe before the fork, and this process never waits for room in it: a pipe the system made small (a
+     user over the budget for pipe memory gets one page) is asked for its capacity, the write does not block, and anything but the whole
+     input written is a refusal that makes the caller start the job another way. */
+  set_nonblocking(in_p[1]);
+  if (r.stdin_len > 0) {
+    int capacity = fcntl(in_p[1], F_GETPIPE_SZ);
+    ssize_t written = capacity >= (int)r.stdin_len ? write(in_p[1], r.stdin_bytes, r.stdin_len) : -1;
+    if (written != (ssize_t)r.stdin_len) {
+      int fds[8] = {in_p[0], in_p[1], out_p[0], out_p[1], err_p[0], err_p[1], st_p[0], st_p[1]};
+      for (int i = 0; i < 8; i++) close(fds[i]);
+      release_request(&r);
+      reject(id, "standard input does not fit its pipe");
+      return;
+    }
+  }
   close(in_p[1]);
   pid_t pid = fork();
   if (pid == 0) {
@@ -573,20 +604,37 @@ static void handle_frame(uint8_t type, uint32_t id, const uint8_t *body, size_t 
       if (jobs[i].used && jobs[i].id == id) kill_job(&jobs[i], KIND_CANCELLED);
     }
   } else {
-    die("unknown frame type");
+    reject(id, "unknown frame type");
   }
 }
 
-/* Parses every whole frame in control_in; the bytes of a frame are wiped as soon as it is handled. */
+static uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+
+/* Bytes of a frame past the limit that are still to come and are dropped as they arrive. */
+static uint64_t skip_remaining;
+
+/* Parses every whole frame in control_in; the bytes of a frame are wiped as soon as it is handled. A frame past the limit is answered
+   (its id is in the first nine bytes) and its bytes are dropped without being held, so the frames after it are read; only a length that
+   cannot hold the type and the id leaves nothing to find the next frame by. */
 static void parse_control(void) {
   size_t at = 0;
   while (control_in.len - at >= 4) {
     const uint8_t *h = control_in.data + at;
-    uint32_t length = ((uint32_t)h[0] << 24) | ((uint32_t)h[1] << 16) | ((uint32_t)h[2] << 8) | h[3];
-    if (length < 5 || length > MAX_FRAME_BYTES) die("frame length out of range");
-    if (control_in.len - at < 4 + (size_t)length) break;
-    uint32_t id = ((uint32_t)h[5] << 24) | ((uint32_t)h[6] << 16) | ((uint32_t)h[7] << 8) | h[8];
-    handle_frame(h[4], id, h + 9, length - 5);
+    uint32_t length = be32(h);
+    if (length < 5) die("frame length out of range");
+    size_t have = control_in.len - at;
+    if (length > MAX_FRAME_BYTES) {
+      if (have < 9) break;
+      reject(be32(h + 5), "frame past the limit");
+      uint64_t total = 4 + (uint64_t)length;
+      size_t dropped = have < total ? have : (size_t)total;
+      explicit_bzero(control_in.data + at, dropped);
+      at += dropped;
+      skip_remaining = total - dropped;
+      continue;
+    }
+    if (have < 4 + (size_t)length) break;
+    handle_frame(h[4], be32(h + 5), h + 9, length - 5);
     explicit_bzero(control_in.data + at, 4 + (size_t)length);
     at += 4 + (size_t)length;
   }
@@ -594,6 +642,19 @@ static void parse_control(void) {
     memmove(control_in.data, control_in.data + at, control_in.len - at);
     control_in.len -= at;
   }
+}
+
+/* Takes bytes the host wrote: the end of an oversized frame is dropped, the rest is parsed. */
+static void control_feed(const uint8_t *data, size_t n) {
+  if (skip_remaining > 0) {
+    size_t drop = n < skip_remaining ? n : (size_t)skip_remaining;
+    skip_remaining -= drop;
+    data += drop;
+    n -= drop;
+  }
+  if (n == 0) return;
+  bytes_append(&control_in, data, n);
+  parse_control();
 }
 
 /* ---------------------------------------------------------------------------------------------------------------------------
@@ -621,7 +682,11 @@ static void drain(Job *j, int *fd, Bytes *into) {
   }
 }
 
+/* Ends a job: whatever its first process left running is killed (a process that closed the streams and stayed would be an orphan of nobody),
+   the process is reaped, and the reply is queued. */
 static void finish_job(Job *j) {
+  kill(-j->pid, SIGKILL);
+  waitpid(j->pid, NULL, 0);
   uint8_t setup = 0;
   if (j->status_fd >= 0) {
     (void)!read(j->status_fd, &setup, 1);
@@ -634,38 +699,46 @@ static void finish_job(Job *j) {
     bytes_append(&code, &setup, 1);
     queue_result(j->id, KIND_SETUP, -1, 0, NULL, &code);
     bytes_release(&code);
-  } else if (WIFEXITED(j->wstatus)) {
-    queue_result(j->id, KIND_EXITED, WEXITSTATUS(j->wstatus), 0, &j->out, &j->err);
+  } else if (!j->signalled) {
+    queue_result(j->id, KIND_EXITED, j->exit_status, 0, &j->out, &j->err);
   } else {
-    queue_result(j->id, KIND_EXITED, -1, WIFSIGNALED(j->wstatus) ? WTERMSIG(j->wstatus) : 0, &j->out, &j->err);
+    queue_result(j->id, KIND_EXITED, -1, j->exit_status, &j->out, &j->err);
   }
   bytes_release(&j->out);
   bytes_release(&j->err);
   memset(j, 0, sizeof *j);
 }
 
-static void reap_children(void) {
-  int wstatus;
-  pid_t pid;
-  while ((pid = waitpid(-1, &wstatus, WNOHANG)) > 0) {
-    for (int i = 0; i < MAX_JOBS; i++) {
-      if (jobs[i].used && jobs[i].pid == pid) {
-        jobs[i].exited = true;
-        jobs[i].wstatus = wstatus;
-      }
+/* Notes the jobs whose first process has exited, and leaves the process unreaped (WNOWAIT): its id stays its own, so the group it leads can
+   be signalled until the job is finished. */
+static void poll_exits(void) {
+  for (int i = 0; i < MAX_JOBS; i++) {
+    Job *j = &jobs[i];
+    if (!j->used || j->exited) continue;
+    siginfo_t info;
+    memset(&info, 0, sizeof info);
+    if (waitid(P_PID, (id_t)j->pid, &info, WEXITED | WNOHANG | WNOWAIT) == 0 && info.si_pid == j->pid) {
+      j->exited = true;
+      j->signalled = info.si_code != CLD_EXITED;
+      j->exit_status = info.si_status;
+      j->exit_deadline_ms = now_ms() + EXIT_GRACE_MS;
     }
   }
 }
 
+/* The time limit, the grace after the first process, and the end of a job apply to every job that is not finished, whether or not its first
+   process is still there. */
 static void check_jobs(void) {
   int64_t now = now_ms();
   for (int i = 0; i < MAX_JOBS; i++) {
     Job *j = &jobs[i];
     if (!j->used) continue;
-    if (!j->exited && j->deadline_ms != 0 && now >= j->deadline_ms) kill_job(j, KIND_TIMEOUT);
-    if (j->exited && j->out_fd < 0 && j->err_fd < 0) finish_job(j);
-    else if (j->exited && j->kill_reason != 0) {
-      /* A killed job's pipes may be held open by something it started; they are not waited for. */
+    if (j->kill_reason == 0 && j->deadline_ms != 0 && now >= j->deadline_ms) kill_job(j, KIND_TIMEOUT);
+    if (!j->exited) continue;
+    bool streams_closed = j->out_fd < 0 && j->err_fd < 0;
+    bool grace_over = j->kill_reason == 0 && now >= j->exit_deadline_ms;
+    if (streams_closed || j->kill_reason != 0 || grace_over) {
+      /* The streams of a killed job, or of one that left a process holding them, are not waited for. */
       close_fd(&j->out_fd);
       close_fd(&j->err_fd);
       finish_job(j);
@@ -685,7 +758,11 @@ static void shutdown_runner(int status) {
 static int next_timeout_ms(void) {
   int64_t soonest = 0;
   for (int i = 0; i < MAX_JOBS; i++) {
-    if (jobs[i].used && !jobs[i].exited && jobs[i].deadline_ms != 0 && (soonest == 0 || jobs[i].deadline_ms < soonest)) soonest = jobs[i].deadline_ms;
+    const Job *j = &jobs[i];
+    if (!j->used || j->kill_reason != 0) continue;
+    int64_t due = j->deadline_ms;
+    if (j->exited && (due == 0 || j->exit_deadline_ms < due)) due = j->exit_deadline_ms;
+    if (due != 0 && (soonest == 0 || due < soonest)) soonest = due;
   }
   if (soonest == 0) return -1;
   int64_t wait = soonest - now_ms();
@@ -698,6 +775,7 @@ static void serve(int signal_fd) {
   struct pollfd fds[2 + 3 * MAX_JOBS];
   Job *owner[2 + 3 * MAX_JOBS];
   int *which[2 + 3 * MAX_JOBS];
+  bool exits_to_note = false;
   for (;;) {
     int n = 0;
     fds[n] = (struct pollfd){STDIN_FILENO, POLLIN, 0};
@@ -729,15 +807,15 @@ static void serve(int signal_fd) {
         struct signalfd_siginfo info;
         while (read(signal_fd, &info, sizeof info) == (ssize_t)sizeof info) {
           if (info.ssi_signo != SIGCHLD) shutdown_runner(0);
+          exits_to_note = true;
         }
       }
       if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
         ssize_t got = read(STDIN_FILENO, read_scratch.data, READ_CHUNK_BYTES);
         if (got == 0) shutdown_runner(0);
         if (got > 0) {
-          bytes_append(&control_in, read_scratch.data, (size_t)got);
+          control_feed(read_scratch.data, (size_t)got);
           explicit_bzero(read_scratch.data, (size_t)got);
-          parse_control();
         } else if (errno != EAGAIN && errno != EINTR) {
           shutdown_runner(0);
         }
@@ -750,7 +828,10 @@ static void serve(int signal_fd) {
         }
       }
     }
-    reap_children();
+    if (exits_to_note) {
+      poll_exits();
+      exits_to_note = false;
+    }
     check_jobs();
     if (!flush_replies()) shutdown_runner(0);
   }
@@ -824,8 +905,9 @@ int main(int argc, char **argv) {
     if (strcmp(argv[i], "--lib") == 0 && i + 1 < argc) library = argv[++i];
     else if (strcmp(argv[i], "--check") == 0) check_only = true;
     else if (strcmp(argv[i], "--self-test") == 0) self_testing = true;
+    else if (strcmp(argv[i], "--stdin-pipe-bytes") == 0 && i + 1 < argc) stdin_pipe_bytes = atoi(argv[++i]);
     else {
-      fputs("usage: qpdf-runner [--check | --self-test] [--lib <soname or path>]\n", stderr);
+      fputs("usage: qpdf-runner [--check | --self-test] [--lib <soname or path>] [--stdin-pipe-bytes <n>]\n", stderr);
       return 2;
     }
   }

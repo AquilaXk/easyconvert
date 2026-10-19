@@ -44,8 +44,14 @@ const KIND_SETUP = 3;
 const KIND_CANCELLED = 4;
 const KIND_REJECTED = 5;
 const FRAME_PREFIX_BYTES = 5;
-const MAX_FRAME_BYTES = 1 << 30;
+/** The longest reply the host reads: the output cap (1 GiB) and a few fixed fields. */
+const MAX_REPLY_BYTES = (1 << 30) + 1024;
+/** What the runner reads of a request (qpdf-runner.c): a frame, a string, the arguments, the environment and the standard input. */
+const MAX_REQUEST_FRAME_BYTES = 4 * 1024 * 1024;
+const MAX_STRING_BYTES = 64 * 1024;
+const MAX_ARGUMENTS = 4096;
 const MAX_STDIN_BYTES = 32 * 1024;
+const MAX_U32 = 0xffff_ffff;
 /** The most output the runner takes a job to print (the length of a reply is 32 bits). */
 const MAX_OUTPUT_BYTES = 1024 * 1024 * 1024;
 const BOOT_TIMEOUT_MS = 10_000;
@@ -66,6 +72,9 @@ export function qpdfRunnerEnabled(): boolean {
   return process.env[QPDF_RUNNER_ENV]?.trim().toLowerCase() !== 'off';
 }
 
+/** Raised for a job the runner could not take or could not isolate: the caller starts it the usual way. */
+export class RunnerDeclined extends Error {}
+
 // --- Frames ---------------------------------------------------------------------------------------------------------------
 
 function u32(value: number): Buffer {
@@ -78,11 +87,6 @@ function u64(value: number): Buffer {
   const out = Buffer.alloc(8);
   out.writeBigUInt64BE(BigInt(Math.max(0, Math.floor(value))));
   return out;
-}
-
-function text(value: string): Buffer[] {
-  const bytes = Buffer.from(value, 'utf8');
-  return [u32(bytes.length), bytes];
 }
 
 function frame(type: number, id: number, ...body: Buffer[]): Buffer[] {
@@ -106,23 +110,49 @@ interface RunRequest {
   stdin: Buffer;
 }
 
+/** A string as the runner reads it: its bytes, which hold no NUL (a C string would end there) and are not longer than it takes. */
+function text(value: string, what: string): Buffer[] {
+  if (value.includes('\0')) throw new RunnerDeclined(`${what} holds a NUL`);
+  const bytes = Buffer.from(value, 'utf8');
+  if (bytes.length > MAX_STRING_BYTES) throw new RunnerDeclined(`${what} is longer than ${MAX_STRING_BYTES} bytes`);
+  return [u32(bytes.length), bytes];
+}
+
+function assertWithin(value: number, most: number, what: string): void {
+  if (!Number.isFinite(value) || value < 0 || value > most) throw new RunnerDeclined(`${what} is out of range`);
+}
+
+/**
+ * The frame of a job. A job past what the runner takes (a frame, string, argument count or standard input past its limits, a NUL in a
+ * string, a working directory that is not absolute) is declined here, before anything is sent: the runner would refuse it, and a NUL
+ * would end a path early.
+ */
 export function encodeRun(id: number, request: RunRequest): Buffer[] {
-  return frame(
-    FRAME_RUN,
-    id,
+  assertWithin(request.timeoutMs, MAX_U32, 'the time limit');
+  assertWithin(request.limitCpuSeconds, MAX_U32, 'the CPU limit');
+  assertWithin(request.limitAsBytes, Number.MAX_SAFE_INTEGER, 'the address-space limit');
+  assertWithin(request.limitFsizeBytes, Number.MAX_SAFE_INTEGER, 'the file-size limit');
+  if (!(request.maxOutput >= 1 && request.maxOutput <= MAX_OUTPUT_BYTES)) throw new RunnerDeclined('the output limit is out of range');
+  if (!request.cwd.startsWith('/')) throw new RunnerDeclined('the working directory is not absolute');
+  if (request.argv.length === 0 || request.argv.length > MAX_ARGUMENTS) throw new RunnerDeclined('the number of arguments is out of range');
+  if (request.env.length > MAX_ARGUMENTS) throw new RunnerDeclined('the environment has too many entries');
+  if (request.stdin.length > MAX_STDIN_BYTES) throw new RunnerDeclined(`the standard input is longer than ${MAX_STDIN_BYTES} bytes`);
+  const body = [
     u32(request.timeoutMs),
     u64(request.maxOutput),
     u64(request.limitAsBytes),
     u64(request.limitFsizeBytes),
     u32(request.limitCpuSeconds),
-    ...text(request.cwd),
+    ...text(request.cwd, 'the working directory'),
     u32(request.argv.length),
-    ...request.argv.flatMap(text),
+    ...request.argv.flatMap((argument) => text(argument, 'an argument')),
     u32(request.env.length),
-    ...request.env.flatMap(text),
+    ...request.env.flatMap((entry) => text(entry, 'an environment entry')),
     u32(request.stdin.length),
-    request.stdin
-  );
+    request.stdin,
+  ];
+  if (FRAME_PREFIX_BYTES + body.reduce((sum, part) => sum + part.length, 0) > MAX_REQUEST_FRAME_BYTES) throw new RunnerDeclined('the request is longer than a frame');
+  return frame(FRAME_RUN, id, ...body);
 }
 
 interface Reply {
@@ -131,27 +161,48 @@ interface Reply {
   body: Buffer;
 }
 
-/** Cuts the bytes the runner writes into frames. */
-class ReplyReader {
+/**
+ * Cuts the bytes the runner writes into frames. A frame is joined once, when the last of its bytes has arrived: the length it needs is
+ * read from its first four bytes and the chunks wait until they add up to it, so a reply of 100 MB that comes in 64 KB reads is copied
+ * once and not once per read.
+ */
+export class ReplyReader {
   private chunks: Buffer[] = [];
   private total = 0;
+  /** The bytes of the frame being read, its length field included; 0 until that field has arrived. */
+  private needed = 0;
 
   push(chunk: Buffer): Reply[] {
     this.chunks.push(chunk);
     this.total += chunk.length;
     const replies: Reply[] = [];
     for (;;) {
-      if (this.total < 4) break;
+      if (this.needed === 0) {
+        if (this.total < 4) break;
+        const length = this.peekLength();
+        if (length < FRAME_PREFIX_BYTES || length > MAX_REPLY_BYTES) throw new Error('the runner sent a frame of an impossible length');
+        this.needed = 4 + length;
+      }
+      if (this.total < this.needed) break;
       const joined = this.join();
-      const length = joined.readUInt32BE(0);
-      if (length < FRAME_PREFIX_BYTES || length > MAX_FRAME_BYTES) throw new Error('the runner sent a frame of an impossible length');
-      if (joined.length < 4 + length) break;
-      replies.push({ type: joined.readUInt8(4), id: joined.readUInt32BE(5), body: joined.subarray(9, 4 + length) });
-      const rest = joined.subarray(4 + length);
+      replies.push({ type: joined.readUInt8(4), id: joined.readUInt32BE(5), body: joined.subarray(9, this.needed) });
+      const rest = joined.subarray(this.needed);
       this.chunks = rest.length > 0 ? [rest] : [];
       this.total = rest.length;
+      this.needed = 0;
     }
     return replies;
+  }
+
+  /** The length field, which may be split over the first chunks. */
+  private peekLength(): number {
+    let length = 0;
+    let read = 0;
+    for (const chunk of this.chunks) {
+      for (let at = 0; at < chunk.length && read < 4; at++, read++) length = length * 256 + chunk[at];
+      if (read === 4) break;
+    }
+    return length;
   }
 
   private join(): Buffer {
@@ -195,9 +246,6 @@ function processFailure(result: JobResult, options: LaunchedExecutionOptions): E
   else summary = stderrText || `Process exited with code ${result.exitStatus}`;
   return new SandboxedProcessError(summary, signal === null ? result.exitStatus : null, result.stderr.toString('utf8'), signal, result.stdout.toString('utf8'));
 }
-
-/** Raised for a job the runner could not take or could not isolate: the caller starts it the usual way. */
-class RunnerDeclined extends Error {}
 
 // --- The runner process ---------------------------------------------------------------------------------------------------
 
@@ -280,6 +328,8 @@ class RunnerHost {
         env: Object.entries(environment).flatMap(([key, value]) => (typeof value === 'string' ? [`${key}=${value}`] : [])),
         stdin: options.stdin ?? Buffer.alloc(0),
       };
+      // Declined here, before a timer or a pending entry exists, when the job is past what the runner takes.
+      const parts = encodeRun(id, request);
       const timer = setTimeout(() => {
         // The runner is silent past the time limit it was given: it is lost, and so is every job it holds.
         this.fail(id, new SandboxedTimeoutError(timeoutMs));
@@ -300,7 +350,7 @@ class RunnerHost {
       if (this.idleTimer) clearTimeout(this.idleTimer);
       this.idleTimer = null;
       this.setReferenced(true);
-      this.write(encodeRun(id, request));
+      this.write(parts);
     });
   }
 

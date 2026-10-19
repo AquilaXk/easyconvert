@@ -10,6 +10,7 @@
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static void print_file(const char *path) {
@@ -120,6 +121,26 @@ int qpdfjob_run_from_argv(const char *const argv[]) {
   }
   if (strcmp(probe, "unshare-again") == 0) {
     printf("unshare after setup: %s\n", syscall(SYS_unshare, 0x40000000) == 0 ? "allowed" : strerror(errno));
+    return 0;
+  }
+  if (strcmp(probe, "fork-sleep") == 0) {
+    /* fork-sleep <pidfile> <seconds> <hold|daemon>: leaves a descendant that sleeps and returns 0 at once. "hold" keeps the standard
+       streams of the job open; "daemon" closes them, so the job's pipes end while the descendant lives on. */
+    pid_t child = fork();
+    if (child == 0) {
+      if (argv[4] != NULL && strcmp(argv[4], "daemon") == 0) {
+        close(0);
+        close(1);
+        close(2);
+      }
+      sleep((unsigned)atoi(argv[3]));
+      _exit(0);
+    }
+    FILE *f = fopen(argv[2], "w");
+    if (f != NULL) {
+      fprintf(f, "%d\n", child);
+      fclose(f);
+    }
     return 0;
   }
   if (strcmp(probe, "mincore") == 0) {
