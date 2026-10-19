@@ -5,7 +5,7 @@ import { ConversionFailedError, EngineUnavailableError, PdfPasswordRequiredError
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { reportsPageTreeLoop } from '../lib/conversions/pdf-postprocess/page-tree-loop';
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
-import { launchSandboxedBinary } from '../lib/security/sandbox-launcher';
+import { launchQpdf } from '../lib/conversions/pdf-postprocess/qpdf-runner';
 import {
   SandboxedBufferLimitError,
   SandboxedProcessError,
@@ -154,7 +154,7 @@ async function runQpdfWithPassword(
   }, OUTPUT_WATCH_INTERVAL_MS);
   try {
     fs.writeFileSync(passwordFile, password, { mode: PRIVATE_FILE_MODE, flag: 'wx' });
-    return await launchSandboxedBinary(qpdf, buildArgs(passwordFile), {
+    return await launchQpdf(qpdf, buildArgs(passwordFile), {
       cwd: request.tempDir,
       timeoutMs: request.timeoutMs,
       maxBuffer: QPDF_MAX_OUTPUT_BYTES,
@@ -185,7 +185,7 @@ async function launchWithStdinPassword(
   maxOutputBytes: number,
   expectedOutputBytes = 0
 ): Promise<SandboxedExecutionResult> {
-  return launchSandboxedBinary(qpdf, ['--password-file=-', '--warning-exit-0', ...args], {
+  return launchQpdf(qpdf, ['--password-file=-', '--warning-exit-0', ...args], {
     cwd: request.tempDir,
     timeoutMs: request.timeoutMs,
     maxBuffer: maxOutputBytes + QPDF_MAX_OUTPUT_BYTES,

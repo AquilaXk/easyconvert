@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 120 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 122 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -254,6 +254,7 @@ Generate a secret with `openssl rand -hex 32`.
 
 | Variable | Type and rule | Default | Required in production | Process |
 | --- | --- | --- | --- | --- |
+| `QPDF_RUNNER` | one of `auto`, `off` (any case) | `auto` | no | web, worker |
 | `FFMPEG_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FFPROBE_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `AVIFENC_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -275,6 +276,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `DCRAW_EMU_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `DWG2DXF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `CAD_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `QPDF_RUNNER_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `FONTFORGE_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `RSVG_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `TESSERACT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -284,6 +286,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `FC_LIST_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `JAVA_HOME` | file or directory path | none | no | web, worker |
 
+- `QPDF_RUNNER`: Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.
 - `FFMPEG_PATH`: Path of the ffmpeg executable; searched in the standard locations when unset.
 - `FFPROBE_PATH`: Path of the ffprobe executable.
 - `AVIFENC_PATH`: Absolute path of the libavif `avifenc` executable that encodes AVIF; searched in the standard locations when unset. The image library encodes when the tool is not installed, is not an executable file or is older than libavif 1.0.0; a value that is not an absolute path is rejected at start-up.
@@ -305,6 +308,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `DCRAW_EMU_PATH`: Path of the LibRaw `dcraw_emu` executable.
 - `DWG2DXF_PATH`: Path of the LibreDWG `dwg2dxf` executable that reads a DWG drawing into a DXF; searched in the standard locations when unset. A DWG cannot be converted without it (HTTP 503).
 - `CAD_CONVERT_PATH`: Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).
+- `QPDF_RUNNER_PATH`: Path of the `qpdf-runner` executable (native/qpdf-runner) that runs the qpdf jobs of the PDF operations from a process that holds libqpdf already loaded; searched in the standard locations when unset. Without it, or when it cannot start a job, every job runs the `qpdf` program as before.
 - `FONTFORGE_PATH`: Path of the FontForge `fontforge` executable (fontforge-nox) that reads PostScript Type 1 fonts (PFA and PFB); searched in the standard locations when unset. A Type 1 font cannot be converted without it (HTTP 503).
 - `RSVG_CONVERT_PATH`: Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.
 - `TESSERACT_PATH`: Path of the `tesseract` executable.

@@ -481,6 +481,17 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'QPDF_RUNNER',
+    area: 'tools',
+    description:
+      'Whether the qpdf jobs of the PDF operations run in a child of `qpdf-runner` (native/qpdf-runner) that has libqpdf loaded already, each in a user and network namespace of its own, instead of starting the `qpdf` program. `auto` (the default) uses the runner when it is installed and starts, and starts the program otherwise (and for any job the runner declines or cannot isolate). `off` always starts the program.',
+    kind: { type: 'enum', values: ['auto', 'off'], caseInsensitive: true },
+    default: 'auto',
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'HTML_IMAGE_FETCH',
     area: 'security',
     description:
@@ -1343,6 +1354,7 @@ const SCHEMA_ENTRIES = [
   toolPath('DCRAW_EMU_PATH', 'Path of the LibRaw `dcraw_emu` executable.', BOTH),
   toolPath('DWG2DXF_PATH', 'Path of the LibreDWG `dwg2dxf` executable that reads a DWG drawing into a DXF; searched in the standard locations when unset. A DWG cannot be converted without it (HTTP 503).', BOTH),
   toolPath('CAD_CONVERT_PATH', 'Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).', BOTH),
+  toolPath('QPDF_RUNNER_PATH', 'Path of the `qpdf-runner` executable (native/qpdf-runner) that runs the qpdf jobs of the PDF operations from a process that holds libqpdf already loaded; searched in the standard locations when unset. Without it, or when it cannot start a job, every job runs the `qpdf` program as before.', BOTH),
   toolPath('FONTFORGE_PATH', 'Path of the FontForge `fontforge` executable (fontforge-nox) that reads PostScript Type 1 fonts (PFA and PFB); searched in the standard locations when unset. A Type 1 font cannot be converted without it (HTTP 503).', BOTH),
   toolPath('RSVG_CONVERT_PATH', 'Path of the librsvg `rsvg-convert` executable that writes an SVG as a vector PDF.', BOTH),
   toolPath('TESSERACT_PATH', 'Path of the `tesseract` executable.', BOTH),

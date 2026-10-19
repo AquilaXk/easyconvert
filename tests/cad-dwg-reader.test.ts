@@ -361,13 +361,64 @@ describe('a missing or failing reader never passes for a conversion', () => {
     });
   });
 
-  it('leaves no scratch directory behind', async () => {
-    const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert_worker_sandbox_')).length;
-    const reader = standIn('dwg2dxf', 'exit 1');
-    await withReader(reader, async () => {
-      await convertDwgToDxf(ANY_DWG, {}).catch(() => undefined);
+  describe('leaves no scratch directory behind once the call has settled', () => {
+    // The call is run with a temporary directory of its own, so that what other test files create in the shared one at the same time (the
+    // OCCT, font and MIDI conversions make scratch directories of the same kind) is not counted.
+    async function leftIn(privateTmp: string, run: () => Promise<unknown>): Promise<string[]> {
+      const previous = process.env.TMPDIR;
+      process.env.TMPDIR = privateTmp;
+      try {
+        await run().catch(() => undefined);
+      } finally {
+        if (previous === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = previous;
+      }
+      return fs.readdirSync(privateTmp);
+    }
+
+    it('after the reader fails, having worked in a directory of the temporary directory', async () => {
+      const where = path.join(tmpDir('dwg-where-'), 'cwd');
+      const reader = standIn('dwg2dxf', `pwd -P > '${where}'\nexit 1`);
+      const privateTmp = tmpDir('dwg-private-tmp-');
+      await withReader(reader, async () => {
+        expect(await leftIn(privateTmp, () => convertDwgToDxf(ANY_DWG, {}))).toEqual([]);
+      });
+      // The reader did work in a scratch directory of the private temporary directory, and it is gone.
+      const worked = fs.readFileSync(where, 'utf8').trim();
+      expect(path.dirname(worked)).toBe(fs.realpathSync(privateTmp));
+      expect(path.basename(worked)).toMatch(/^easyconvert_worker_sandbox_/);
+      expect(fs.existsSync(worked)).toBe(false);
     });
-    expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert_worker_sandbox_')).length).toBe(before);
+
+    it('after the reader overruns its time', async () => {
+      const reader = standIn('dwg2dxf', 'sleep 30');
+      await withReader(reader, async () => {
+        expect(await leftIn(tmpDir('dwg-private-tmp-'), () => convertDwgToDxf(ANY_DWG, { timeoutMs: 700 }))).toEqual([]);
+      });
+    });
+
+    it('after the job is cancelled', async () => {
+      const reader = standIn('dwg2dxf', 'sleep 30');
+      await withReader(reader, async () => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(new Error('cancelled')), 300);
+        expect(await leftIn(tmpDir('dwg-private-tmp-'), () => convertDwgToDxf(ANY_DWG, { signal: controller.signal }))).toEqual([]);
+      });
+    });
+
+    it('after the reader cannot be started', async () => {
+      const reader = path.join(tmpDir('dwg-notrunnable-'), 'dwg2dxf');
+      fs.writeFileSync(reader, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+      await withReader(reader, async () => {
+        expect(await leftIn(tmpDir('dwg-private-tmp-'), () => convertDwgToDxf(ANY_DWG, {}))).toEqual([]);
+      });
+    });
+
+    it('when there is no reader', async () => {
+      await withReader(undefined, async () => {
+        expect(await leftIn(tmpDir('dwg-private-tmp-'), () => convertDwgToDxf(ANY_DWG, {}))).toEqual([]);
+      });
+    });
   });
 });
 
