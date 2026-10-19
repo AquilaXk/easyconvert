@@ -1,4 +1,6 @@
 import { PayloadLimitError } from '../types';
+import { reportConversionWarning } from './conversion-warnings';
+import { OmittedContent, OmittedExternalImages } from './html-omitted-resources';
 import { assertEmbeddableImageWithinLimit } from './image-input-limits';
 import { parseHtmlTree, type HtmlElement, type HtmlNode } from './html-blocks';
 import { formatListNumber } from './docx-numbering';
@@ -27,7 +29,11 @@ const DEFAULT_LIST_START = 1;
 
 const HEADING_LEVELS: ReadonlyMap<string, number> = new Map([['h1', 1], ['h2', 2], ['h3', 3], ['h4', 4], ['h5', 5], ['h6', 6]]);
 const SKIPPED: ReadonlySet<string> = new Set(['head', 'script', 'style', 'template', 'noscript', 'title', 'meta', 'link', 'base']);
-const DROPPED_WITH_WARNING: ReadonlySet<string> = new Set(['svg', 'object', 'embed', 'iframe', 'video', 'audio', 'canvas']);
+/** Why an image is left out, as the sentence ends "Left out the image "...": <reason>." */
+const NOT_BASE64_REASON = 'only base64 data: images are read';
+const NOT_EMBEDDED_REASON = 'only images embedded in the page or its package are read';
+const UNSUPPORTED_FORMAT_REASON = 'it is not PNG, JPEG, GIF, BMP, TIFF or SVG';
+const DROPPED_WITH_WARNING: ReadonlySet<string> = new Set(['svg', 'object', 'embed', 'iframe', 'frameset', 'frame', 'video', 'audio', 'canvas']);
 const CONTAINERS: ReadonlySet<string> = new Set([
   'html', 'body', 'div', 'section', 'article', 'main', 'header', 'footer', 'aside', 'nav', 'figure', 'form', 'fieldset', 'center',
   'details', 'dl', 'dd', 'dt', 'hgroup',
@@ -162,6 +168,8 @@ class HtmlModelBuilder {
   private imageBytes = 0;
   private listId = 0;
   readonly checks: Buffer[] = [];
+  private readonly omittedImages = new OmittedExternalImages();
+  private readonly omittedContent = new OmittedContent();
 
   constructor(
     private readonly options: HtmlModelOptions,
@@ -170,6 +178,11 @@ class HtmlModelBuilder {
 
   private get warnings(): string[] {
     return this.context.warnings;
+  }
+
+  /** The lines for what was left out, worded as the PDF routes word it (see html-omitted-resources.ts). */
+  omissionWarnings(): string[] {
+    return [...this.omittedImages.warnings(), ...this.omittedContent.warnings()];
   }
 
   private countBlock(): void {
@@ -183,7 +196,7 @@ class HtmlModelBuilder {
     const uri = DATA_URI.exec(src);
     if (uri) {
       if (uri[2] === undefined) {
-        this.warnings.push('A data: image that is not base64 was left out.');
+        this.omittedImages.add(src, NOT_BASE64_REASON);
         return undefined;
       }
       data = Buffer.from(uri[3].replace(/\s+/g, ''), 'base64');
@@ -191,12 +204,12 @@ class HtmlModelBuilder {
       data = this.options.resolveImage?.(src);
     }
     if (!data || data.length === 0) {
-      this.warnings.push(`The image "${src.slice(0, 80)}" could not be loaded and was left out.`);
+      this.omittedImages.add(src, NOT_EMBEDDED_REASON);
       return undefined;
     }
     const format = sniffImageFormat(data);
     if (format === null) {
-      this.warnings.push(`The image "${src.slice(0, 80)}" is not PNG, JPEG, GIF, BMP, TIFF or SVG and was left out.`);
+      this.omittedImages.add(src, UNSUPPORTED_FORMAT_REASON);
       return undefined;
     }
     this.imageCount += 1;
@@ -258,7 +271,7 @@ class HtmlModelBuilder {
       }
       if (SKIPPED.has(node.tag)) continue;
       if (DROPPED_WITH_WARNING.has(node.tag)) {
-        this.warnings.push(`A <${node.tag}> element cannot be carried and was left out.`);
+        this.omittedContent.element(node.tag);
         continue;
       }
       if (node.tag === 'br') {
@@ -308,7 +321,7 @@ class HtmlModelBuilder {
     const tag = element.tag;
     if (SKIPPED.has(tag)) return;
     if (DROPPED_WITH_WARNING.has(tag)) {
-      this.warnings.push(`A <${tag}> element cannot be carried and was left out.`);
+      this.omittedContent.element(tag);
       return;
     }
     const level = HEADING_LEVELS.get(tag);
@@ -509,9 +522,12 @@ export async function htmlToDocumentModel(html: string, options: HtmlModelOption
   const tree = parseHtmlTree(html.replace(/^﻿/, ''));
   const context = options.context ?? new DocumentContext();
   const builder = new HtmlModelBuilder(options, context);
+  const firstWarning = context.warnings.length;
   const sink = new BlockSink(context);
   builder.blocks(tree.root.children, sink, 0, 0);
   for (const bytes of builder.checks) await assertEmbeddableImageWithinLimit(bytes);
+  context.warnings.push(...builder.omissionWarnings());
+  for (const line of context.warnings.slice(firstWarning)) reportConversionWarning(line);
   const root = findRoot(tree.root);
   const language = root?.attrs.get('lang') ?? root?.attrs.get('xml:lang');
   return assembleDocument({ sections: [{ columns: 1, blocks: sink.blocks }], context, language: language || undefined, title: tree.title || undefined });
