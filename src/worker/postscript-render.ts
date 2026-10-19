@@ -3,7 +3,8 @@ import path from 'node:path';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { ConversionFailedError } from '../lib/types';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
-import { compressPpmPage, PPM_PAGE_MAX_BYTES, ppmPageEnd, resolvePdfRasterDpi, selectsPages } from './poppler-ppm';
+import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
+import { compressPpmPage, exceedsPpmPageLimit, PPM_PAGE_MAX_BYTES, ppmPageEnd, resolvePdfRasterDpi, selectsPages } from './poppler-ppm';
 import { createConversionResult, handOffOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
 import { ghostscriptPdfArguments, ghostscriptRasterArguments, siblingGhostscript, skipsGarbageCollection } from './postscript-gs';
 import {
@@ -11,7 +12,6 @@ import {
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
   SandboxedProcessError,
-  type SandboxedExecutionOptions,
 } from './sandbox';
 
 /**
@@ -34,6 +34,9 @@ const EPS_CROP_FLAG = '-dEPSCrop';
 const PNG_TARGET = 'png';
 const PDF_TARGET = 'pdf';
 const TEMP_PREFIX = 'easyconvert-postscript-';
+const PPM_PAGE_FILE = 'page.ppm';
+/** The interpreter writes its result to a file in the job directory and prints nothing the worker has to copy, so the launcher has no output to move. */
+const NO_PIPED_OUTPUT_BYTES = 0;
 
 export interface PostScriptJob {
   input: Buffer | WorkerVfsPayload;
@@ -51,7 +54,7 @@ export interface PostScriptJob {
 /** What one run of the interpreter needs besides its arguments. */
 interface Run {
   tempDir: string;
-  limits: SandboxedExecutionOptions;
+  limits: LaunchedExecutionOptions;
   smallInput: boolean;
 }
 
@@ -100,7 +103,11 @@ async function writePdf(job: PostScriptJob, ghostscript: string | null, run: Run
   try {
     if (ghostscript) {
       await withGarbageCollectionFallback(run.smallInput, (noGarbageCollection) =>
-        executeSandboxedBinary(ghostscript, ghostscriptPdfArguments(isEps, inputPath, pdfPath, noGarbageCollection), { ...run.limits, cwd: run.tempDir })
+        launchSandboxedBinary(ghostscript, ghostscriptPdfArguments(isEps, inputPath, pdfPath, noGarbageCollection), {
+          ...run.limits,
+          cwd: run.tempDir,
+          expectedOutputBytes: NO_PIPED_OUTPUT_BYTES,
+        })
       );
     } else {
       const flags = isEps ? [...INTERPRETER_FLAGS, EPS_CROP_FLAG] : INTERPRETER_FLAGS;
@@ -115,31 +122,34 @@ async function writePdf(job: PostScriptJob, ghostscript: string | null, run: Run
 }
 
 /**
- * Draws an EPS figure as one PNG with a single interpreter run: the PPM page comes back through the pipe and the
+ * Draws an EPS figure as one PNG with a single interpreter run: the PPM page is written to the job directory and the
  * in-process PNG encoder compresses it (poppler-ppm.ts). Returns null when this route cannot give the answer the PDF
  * route would: the figure shows several pages, or its page is above the raw-size limit; the caller then takes the PDF route.
  */
-async function renderEpsToPng(job: PostScriptJob, ghostscript: string, limits: SandboxedExecutionOptions, smallInput: boolean): Promise<WorkerConversionResult | null> {
+async function renderEpsToPng(job: PostScriptJob, ghostscript: string, limits: LaunchedExecutionOptions, smallInput: boolean): Promise<WorkerConversionResult | null> {
   const { input, options } = job;
   const dpi = resolvePdfRasterDpi(options);
   const startTime = Date.now();
   const rendered = await withSandboxDir(TEMP_PREFIX, async (tempDir) => {
     const { inputPath } = resolveInputContext(input, EPS_SOURCE, tempDir);
+    const pagePath = path.join(tempDir, PPM_PAGE_FILE);
     try {
-      const run = await withGarbageCollectionFallback(smallInput, (noGarbageCollection) =>
-        executeSandboxedBinary(ghostscript, ghostscriptRasterArguments(true, dpi, inputPath, '-', noGarbageCollection), {
+      await withGarbageCollectionFallback(smallInput, (noGarbageCollection) =>
+        launchSandboxedBinary(ghostscript, ghostscriptRasterArguments(true, dpi, inputPath, pagePath, noGarbageCollection), {
           ...limits,
           cwd: tempDir,
-          maxBuffer: PPM_PAGE_MAX_BYTES,
-          maxFileSize: undefined,
+          maxFileSize: PPM_PAGE_MAX_BYTES,
+          expectedOutputBytes: NO_PIPED_OUTPUT_BYTES,
         })
       );
-      return run.stdout;
     } catch (err) {
       // A page above the raw-size limit is the PDF route's to draw.
       if (err instanceof SandboxedBufferLimitError) return null;
       throw toInterpreterError(err, EPS_SOURCE, tempDir);
     }
+    // A host without file-size limits lets the page grow past it: the size is checked before the page is read.
+    if (!fs.existsSync(pagePath) || exceedsPpmPageLimit(fs.statSync(pagePath).size)) return null;
+    return fs.readFileSync(pagePath);
   });
   if (rendered === null || rendered.length === 0 || ppmPageEnd(rendered) !== rendered.length) return null;
   const png = await compressPpmPage(rendered, dpi);
@@ -160,7 +170,7 @@ export async function convertPostScript(job: PostScriptJob): Promise<WorkerConve
   const startTime = Date.now();
   const timeoutMs = Math.min(stageTimeoutMs(options, DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS);
   const ghostscript = siblingGhostscript(job.interpreter);
-  const limits: SandboxedExecutionOptions = {
+  const limits: LaunchedExecutionOptions = {
     timeoutMs,
     maxBuffer: options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
     maxFileSize: MAX_OUTPUT_BYTES,
