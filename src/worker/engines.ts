@@ -77,6 +77,7 @@ import {
   SandboxedBufferLimitError,
 } from './sandbox';
 import { convertPostScript } from './postscript-render';
+import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
@@ -1894,17 +1895,11 @@ export async function convertWithNativeRaw(
 
 /** SVG drawings written as PDF: librsvg draws the vectors and the text, so the page stays a vector page. */
 const SVG_SOURCE = 'svg';
-const SVG_DEFAULT_TIMEOUT_MS = 60_000;
-const SVG_MAX_TIMEOUT_MS = 300_000;
-const SVG_MEMORY_LIMIT_MB = 2048;
-const SVG_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
-const SVG_MAX_STDERR_CHARS = 300;
 
 /**
- * Writes an SVG as a vector PDF with librsvg's `rsvg-convert` (an unmodified separate program, LGPL): paths stay paths and
- * text stays text, the way the standard SVG renderer writes it, instead of a raster picture inside a PDF page. The SVG
- * is sanitised first and the renderer runs in the sandbox without network. Returns null when the target is not PDF or
- * `rsvg-convert` is missing and the caller did not ask for an error.
+ * Writes an SVG as a vector PDF with librsvg's `rsvg-convert` (see svg-render.ts). The SVG is sanitised first and the renderer
+ * runs in the sandbox without network. Returns null when the target is not PDF or `rsvg-convert` is missing and the caller
+ * did not ask for an error.
  */
 export async function convertWithNativeSvg(
   input: Buffer | WorkerVfsPayload,
@@ -1923,38 +1918,8 @@ export async function convertWithNativeSvg(
     }
     return null;
   }
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
-  const startTime = Date.now();
-  const timeout = Math.min(stageTimeoutMs(options, SVG_DEFAULT_TIMEOUT_MS), SVG_MAX_TIMEOUT_MS);
   const svg = normalizeSvgForRendering(sanitizeSvgDocument(readRawInputBuffer(input).toString('utf-8')));
-
-  // The drawing goes in through the pipe and the PDF comes back through it: no job directory, no file copies. The
-  // renderer has no file to take a base location from, so nothing the drawing names is looked for beside it.
-  let rendered: Buffer;
-  try {
-    ({ stdout: rendered } = await executeSandboxedBinary(renderer, ['--format', 'pdf'], {
-      timeoutMs: timeout,
-      maxBuffer: Math.min(options.maxBufferBytes || SVG_MAX_OUTPUT_BYTES, SVG_MAX_OUTPUT_BYTES),
-      memoryLimitMb: SVG_MEMORY_LIMIT_MB,
-      networkIsolated: true,
-      signal: options.signal,
-      stdin: Buffer.from(svg, 'utf-8'),
-    }));
-  } catch (err) {
-    if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
-      throw new ConversionFailedError('The SVG renderer exceeded its output or memory limit on the drawing.');
-    }
-    if (err instanceof SandboxedProcessError) {
-      const detail = err.stderr.trim().slice(0, SVG_MAX_STDERR_CHARS);
-      throw new ConversionFailedError(`The SVG renderer rejected the drawing${detail ? `: ${detail}` : ''}`);
-    }
-    throw err;
-  }
-  if (rendered.length === 0) {
-    throw new ConversionFailedError('The SVG renderer wrote no page from the drawing.');
-  }
-  const persistedPath = writeOutputSegments([rendered], 'pdf', options, Buffer.isBuffer(input) ? undefined : input);
-  return createConversionResult(persistedPath, 'pdf', baseName, 'native-svg', Date.now() - startTime);
+  return renderSvgAsPdf({ svg, renderer, input, options, originalFilename });
 }
 
 /** PostScript sources: only an interpreter can draw them. */

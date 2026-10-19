@@ -12,8 +12,9 @@ import { SandboxedBufferLimitError, type SandboxedExecutionOptions } from '../sr
  * never lets a file grow past the limit, so the two ways a page can be too large cannot both be produced by a real run.
  */
 
-const { run } = vi.hoisted(() => ({ run: vi.fn() }));
+const { run, launch } = vi.hoisted(() => ({ run: vi.fn(), launch: vi.fn() }));
 vi.mock('../src/worker/sandbox', async (importOriginal) => ({ ...(await importOriginal<typeof import('../src/worker/sandbox')>()), executeSandboxedBinary: run }));
+vi.mock('../src/lib/security/sandbox-launcher', async (importOriginal) => ({ ...(await importOriginal<typeof import('../src/lib/security/sandbox-launcher')>()), launchSandboxedBinary: launch }));
 
 const PNG_MARK = 'png written by the stand-in for Poppler';
 const SANDBOX: SandboxedExecutionOptions = { timeoutMs: 1000 };
@@ -83,7 +84,8 @@ describe('the SVG renderer output limit', () => {
   const previous = process.env.RSVG_CONVERT_PATH;
   beforeEach(() => {
     process.env.RSVG_CONVERT_PATH = process.execPath;
-    run.mockResolvedValue({ stdout: Buffer.from('%PDF-1.4 stand-in') });
+    launch.mockReset();
+    launch.mockResolvedValue({ stdout: Buffer.from('%PDF-1.4 stand-in') });
   });
   afterEach(() => {
     if (previous === undefined) delete process.env.RSVG_CONVERT_PATH;
@@ -93,7 +95,7 @@ describe('the SVG renderer output limit', () => {
   const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>');
   const limitFor = async (maxBufferBytes?: number): Promise<number> => {
     await convertWithNativeSvg(svg, 'svg', 'pdf', maxBufferBytes === undefined ? {} : { maxBufferBytes }, 'a.svg');
-    return (run.mock.calls.at(-1)?.[2] as SandboxedExecutionOptions).maxBuffer as number;
+    return (launch.mock.calls.at(-1)?.[2] as SandboxedExecutionOptions).maxBuffer as number;
   };
 
   it('is the output limit when the request names none', async () => {
@@ -106,5 +108,12 @@ describe('the SVG renderer output limit', () => {
 
   it('never exceeds the output limit, whatever the request asks for', async () => {
     expect(await limitFor(SVG_OUTPUT_LIMIT * 4)).toBe(SVG_OUTPUT_LIMIT);
+  });
+
+  it('tells the launcher to expect a PDF about the size of the drawing plus the fonts it may embed, so that a small page is worth the helper', async () => {
+    await limitFor();
+    const { expectedOutputBytes } = launch.mock.calls.at(-1)?.[2] as { expectedOutputBytes: number };
+    expect(expectedOutputBytes).toBeGreaterThan(svg.length);
+    expect(expectedOutputBytes).toBeLessThanOrEqual(svg.length + 64 * 1024);
   });
 });
