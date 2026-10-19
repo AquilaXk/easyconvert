@@ -161,6 +161,16 @@ describe.skipIf(needsMagick)('files that cannot be decoded', () => {
     await expect(toPng(cut, 'pcx')).rejects.toMatchObject({ name: 'ConversionFailedError', message: 'Invalid image: the PCX picture could not be decoded' });
   });
 
+  it('refuses the PCX that Pillow also refuses, whose header gives 12 bytes per line for 88 eight-bit pixels', async (ctx) => {
+    // pil-01r_00.pcx is a file of Pillow's own test suite for reading past the end of a buffer. PCX header (ZSoft, version 5): bits per
+    // pixel at byte 3, the window at bytes 4 to 11, planes at byte 65 and bytes per line at bytes 66 and 67.
+    const sample = await requireRealworldSample(ctx, 'pil-01r_00.pcx');
+    const [bitsPerPixel, planes] = [sample.bytes[3], sample.bytes[65]];
+    const width = sample.bytes.readUInt16LE(8) - sample.bytes.readUInt16LE(4) + 1;
+    expect({ bitsPerPixel, planes, width, bytesPerLine: sample.bytes.readUInt16LE(66) }).toEqual({ bitsPerPixel: 8, planes: 1, width: 88, bytesPerLine: 12 });
+    await expect(dispatchConversion(sample.bytes, 'pcx', 'png', {}, 'pil-01r_00.pcx')).rejects.toMatchObject({ name: 'ConversionFailedError', message: 'Invalid image: the PCX picture could not be decoded' });
+  });
+
   it('refuses bytes that are not the declared format', async () => {
     await expect(toPng(Buffer.from('this is not a picture at all'), 'tga')).rejects.toMatchObject({ name: 'ConversionFailedError', message: 'Invalid image: the TGA picture could not be decoded' });
     await expect(toPng(Buffer.from('P6\n2 2\n255\nabc'), 'ppm')).rejects.toMatchObject({ name: 'ConversionFailedError', message: 'Invalid image: the PPM picture could not be decoded' });

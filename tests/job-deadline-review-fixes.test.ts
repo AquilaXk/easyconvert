@@ -21,6 +21,7 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { isProcessRunning } from './helpers/process-state';
 
 /**
  * Review findings on the job deadline: the engines keep their own stage limits (clamped to the time the job has
@@ -52,16 +53,6 @@ async function waitUntil(condition: () => boolean | Promise<boolean>, limitMs: n
     await pause(25);
   }
   return condition();
-}
-
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
 }
 
 function jobData(name: string, overrides: Partial<ConversionJobData> = {}): ConversionJobData {
@@ -251,7 +242,7 @@ describe('a job whose request options carry a signal is still stopped at its dea
     expect(seen[0].timeoutMs).toBeUndefined();
     expect(typeof seen[0][JOB_DEADLINE_AT as unknown as string]).toBe('number');
     expect(pids).toHaveLength(1);
-    expect(await waitUntil(() => pids[0].every((pid) => !isAlive(pid)), 4_000)).toBe(true);
+    expect(await waitUntil(() => pids[0].every((pid) => !isProcessRunning(pid)), 4_000)).toBe(true);
   }, 15_000);
 
   it('gives every engine call a job deadline and no timeoutMs', async () => {

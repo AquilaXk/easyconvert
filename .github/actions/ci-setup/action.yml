@@ -40,6 +40,16 @@ runs:
         path: ${{ runner.temp }}/apt-debs
         key: apt-debs-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('.github/actions/ci-setup/apt-packages.txt', '.github/actions/ci-setup/install-apt-tools.sh') }}
 
+    # The Python oracles are pinned in pip-packages.txt, so its hash is the key. The task downloads the pinned wheels
+    # into this directory as the runner user (a restored cache makes that a metadata-only request) and installs from it
+    # without the network, so a slow package index cannot stop the setup. A new image rebuilds the cache once.
+    - name: Restore the cached Python wheels
+      id: pip-cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/pip-wheels
+        key: pip-wheels-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('.github/actions/ci-setup/pip-packages.txt') }}
+
     # The veraPDF release is pinned in scripts/install-verapdf.sh, so its hash is the key. The directory must be
     # writable by the runner user for the cache to extract into it.
     - name: Prepare the veraPDF directory
@@ -89,6 +99,7 @@ runs:
       env:
         ACTION_PATH: ${{ github.action_path }}
         APT_DEBS: ${{ runner.temp }}/apt-debs
+        PIP_WHEELS: ${{ runner.temp }}/pip-wheels
         APT_CACHE_HIT: ${{ steps.apt-cache.outputs.cache-hit }}
         VERAPDF_CACHE_HIT: ${{ steps.verapdf-cache.outputs.cache-hit }}
         LIBREDWG_CACHE_HIT: ${{ steps.libredwg-cache.outputs.cache-hit }}

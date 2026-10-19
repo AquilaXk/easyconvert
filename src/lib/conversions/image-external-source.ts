@@ -2,8 +2,10 @@ import { crc32 } from './crc32';
 import { withUprightOrientation } from './image-orientation';
 import { ConversionFailedError, type ConversionOptions, type ConversionResult } from '../types';
 import { convertImage } from './image';
+import { withLegacyDdsPixelFormat } from './image-dds-header';
 import { decodeWithMagick, type MagickSource } from './image-magick-cli';
 import { decodeWithOpenJpeg } from './image-openjpeg-cli';
+import { usesOldStyleJpeg, withSortedTiffTags } from './image-tiff-directories';
 
 /**
  * Which still-image sources the image library cannot read itself, and which command-line decoder reads each. The
@@ -33,44 +35,6 @@ const OPENJPEG_FORMATS: ReadonlySet<string> = new Set(['jp2', 'j2k']);
 const HEIF_FORMATS: ReadonlySet<string> = new Set(['heic', 'heif']);
 const TIFF_FORMATS: ReadonlySet<string> = new Set(['tif', 'tiff']);
 const OLD_STYLE_JPEG_TIFF: MagickSource = { coder: 'tiff', label: 'TIFF', result: { kind: 'pages' }, tolerateWarnings: true };
-
-/** TIFF 6.0 (Adobe, 1992) header and directory layout, and the compression tag with its old-style JPEG value. */
-const TIFF_MAGIC = 42;
-const TIFF_HEADER_BYTES = 8;
-const IFD_COUNT_BYTES = 2;
-const IFD_ENTRY_BYTES = 12;
-const IFD_NEXT_BYTES = 4;
-const IFD_ENTRY_VALUE_OFFSET = 8;
-const TAG_COMPRESSION = 259;
-const COMPRESSION_OLD_STYLE_JPEG = 6;
-/** Directories read: far more than any real document has, so a loop of next-directory offsets ends. */
-const MAX_DIRECTORIES = 4096;
-
-/**
- * True when a directory of the TIFF declares old-style JPEG compression (Compression = 6, TIFF 6.0 section 22), which
- * libvips' libtiff is built without. Only classic TIFF is read; any other bytes answer false.
- */
-export function usesOldStyleJpeg(tiff: Buffer): boolean {
-  if (tiff.length < TIFF_HEADER_BYTES) return false;
-  const order = tiff.toString('latin1', 0, 2);
-  if (order !== 'II' && order !== 'MM') return false;
-  const little = order === 'II';
-  const u16 = (at: number): number => (little ? tiff.readUInt16LE(at) : tiff.readUInt16BE(at));
-  const u32 = (at: number): number => (little ? tiff.readUInt32LE(at) : tiff.readUInt32BE(at));
-  if (u16(2) !== TIFF_MAGIC) return false;
-  let directory = u32(4);
-  for (let seen = 0; seen < MAX_DIRECTORIES && directory !== 0 && directory + IFD_COUNT_BYTES <= tiff.length; seen += 1) {
-    const count = u16(directory);
-    const entries = directory + IFD_COUNT_BYTES;
-    const end = entries + count * IFD_ENTRY_BYTES;
-    if (end + IFD_NEXT_BYTES > tiff.length) return false;
-    for (let entry = entries; entry < end; entry += IFD_ENTRY_BYTES) {
-      if (u16(entry) === TAG_COMPRESSION && u16(entry + IFD_ENTRY_VALUE_OFFSET) === COMPRESSION_OLD_STYLE_JPEG) return true;
-    }
-    directory = u32(end);
-  }
-  return false;
-}
 
 /** GIMP XCF file header: `gimp xcf `, a four-character version, a NUL, then the canvas width and height as big-endian 32-bit values. */
 const XCF_MAGIC = 'gimp xcf ';
@@ -125,7 +89,7 @@ export async function decodeExternalImage(input: Buffer, format: string, signal?
   if (format === 'xcf') return decodeWithMagick(input, { coder: 'xcf', label: 'XCF', result: { kind: 'canvas', ...xcfCanvas(input) } }, signal);
   const magick = MAGICK_BY_FORMAT.get(format);
   if (magick !== undefined) {
-    const decoded = await decodeWithMagick(input, magick, signal);
+    const decoded = await decodeWithMagick(format === 'dds' ? withLegacyDdsPixelFormat(input) : input, magick, signal);
     return HEIF_FORMATS.has(format) ? { ...decoded, buffer: withUprightExifOrientation(decoded.buffer) } : decoded;
   }
   if (TIFF_FORMATS.has(format) && usesOldStyleJpeg(input)) return decodeWithMagick(input, OLD_STYLE_JPEG_TIFF, signal);
@@ -134,7 +98,8 @@ export async function decodeExternalImage(input: Buffer, format: string, signal?
 
 /**
  * Converts a still-image source: one the image library cannot read is decoded by its command-line decoder first and
- * converted as the PNG (or TIFF) that comes back; every other source is converted as it is.
+ * converted as the PNG (or TIFF) that comes back; every other source is converted as it is, a TIFF after its directories
+ * are put in order (see `withSortedTiffTags`).
  */
 export async function convertImageSource(
   input: Buffer,
@@ -143,7 +108,8 @@ export async function convertImageSource(
   originalFilename: string,
   sourceFormat: string
 ): Promise<ConversionResult> {
-  const external = await decodeExternalImage(input, sourceFormat, options.signal);
-  if (external === null) return convertImage(input, targetFormat, options, originalFilename, sourceFormat);
+  const readable = TIFF_FORMATS.has(sourceFormat) ? withSortedTiffTags(input) : input;
+  const external = await decodeExternalImage(readable, sourceFormat, options.signal);
+  if (external === null) return convertImage(readable, targetFormat, options, originalFilename, sourceFormat);
   return convertImage(external.buffer, targetFormat, options, originalFilename, external.format);
 }

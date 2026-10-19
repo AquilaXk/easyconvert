@@ -55,13 +55,27 @@ describe('Media Domain: Hardware Acceleration, Faststart MP4, and Bitstream Veri
     });
 
     it('caches probe results within TTL to prevent redundant subprocess spawns', () => {
-      const caps1 = probeHardwareAcceleration(null);
-      const caps2 = probeHardwareAcceleration(null);
-      expect(caps1.probedAt).toBe(caps2.probedAt);
+      // A stand-in ffmpeg that records each run, so the test counts spawns instead of comparing two clock readings: without
+      // a binary nothing is cached by design, and two calls then agree only when they land in the same millisecond.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hwaccel-cache-'));
+      const log = path.join(dir, 'runs.log');
+      const ffmpeg = path.join(dir, 'ffmpeg');
+      fs.writeFileSync(ffmpeg, `#!/bin/sh\necho "$*" >> '${log}'\n`, { mode: 0o755 });
+      const runs = (): number => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').length : 0);
+      try {
+        const caps1 = probeHardwareAcceleration(ffmpeg);
+        const afterFirst = runs();
+        expect(afterFirst).toBeGreaterThan(0);
+        const caps2 = probeHardwareAcceleration(ffmpeg);
+        expect(runs()).toBe(afterFirst);
+        expect(caps2).toBe(caps1);
 
-      resetHardwareAccelerationCache();
-      const caps3 = probeHardwareAcceleration(null);
-      expect(caps3).toBeDefined();
+        resetHardwareAccelerationCache();
+        probeHardwareAcceleration(ffmpeg);
+        expect(runs()).toBe(2 * afterFirst);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it('exposes hardwareAcceleration on probeNativeEngines diagnostics', () => {

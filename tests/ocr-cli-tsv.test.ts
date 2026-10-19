@@ -16,6 +16,7 @@ import { OcrEngineUnavailableError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath, OracleToolMissingError } from './helpers/differential-oracle';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
+import { isProcessRunning } from './helpers/process-state';
 
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'ocr');
 const GROUND_TRUTH = fs.readFileSync(path.join(FIXTURE_DIR, 'twocol.gt.txt'), 'utf-8');
@@ -256,16 +257,6 @@ describe('recognizeWithCli', () => {
       return file;
     }
 
-    /** A killed process whose parent is gone may linger as a zombie until init reaps it. */
-    function isRunning(pid: number): boolean {
-      try {
-        const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
-        return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
-      } catch {
-        return false;
-      }
-    }
-
     const image = Buffer.from('not-an-image');
     const common = { tessdataDir: '/tessdata', tesseractLang: 'eng', image };
 
@@ -282,7 +273,7 @@ describe('recognizeWithCli', () => {
       const grandchild = Number.parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
       expect(Number.isInteger(grandchild)).toBe(true);
       await new Promise((resolve) => setTimeout(resolve, PROCESS_REAP_WAIT_MS));
-      expect(isRunning(grandchild)).toBe(false);
+      expect(isProcessRunning(grandchild)).toBe(false);
     });
 
     it('reports a failing exit status without echoing CLI diagnostics to the client', async () => {
