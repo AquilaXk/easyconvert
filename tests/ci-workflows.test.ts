@@ -624,3 +624,19 @@ describe('the pinned 7-Zip the corpus and the speed rows run the product with', 
     expect((steps[archive].env as Record<string, string>).P7ZIP_PATH).toBe(`\${{ steps.${steps[install].id}.outputs.path }}`);
   });
 });
+
+describe('files of the base that a pull request job compares with', () => {
+  const MERGE_PARENT = `parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"`;
+
+  it('are read from the first parent of the tested merge, never from the base branch as it is now', () => {
+    const readers = stepsOf(ci).filter(({ step }) => /git show "[^"]*:/.test(step.run ?? ''));
+    expect(readers.map(({ step }) => step.name)).toEqual(
+      expect.arrayContaining(['Check the code-smell baseline does not grow against the base branch', 'Read the gap file and the baseline of the base'])
+    );
+    for (const { job, step } of readers) {
+      const script = step.run ?? '';
+      expect(script, `${job}: ${step.name}`).toContain(MERGE_PARENT);
+      expect(script, `${job}: ${step.name}`).not.toMatch(/git show "origin\//);
+    }
+  });
+});
