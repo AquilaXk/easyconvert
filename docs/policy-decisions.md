@@ -45,7 +45,7 @@ Media and documents
 27. [Ebook FB2/MathML text fidelity and PDF compression structural repair](#27-ebook-fb2mathml-text-fidelity-and-pdf-compression-structural-repair)
 49. [PDF text from fonts without a Unicode map, and PDFs with an empty open password](#49-pdf-text-from-fonts-without-a-unicode-map-and-pdfs-with-an-empty-open-password)
 46. [MIDI sources, bitmap subtitles in video containers, and streams the installed FFmpeg cannot decode](#46-midi-sources-bitmap-subtitles-in-video-containers-and-streams-the-installed-ffmpeg-cannot-decode)
-50. [HTML to PDF: what a page names that the PDF cannot carry](#50-html-to-pdf-what-a-page-names-that-the-pdf-cannot-carry)
+51. [HTML to PDF: what a page names that the PDF cannot carry](#51-html-to-pdf-what-a-page-names-that-the-pdf-cannot-carry)
 
 Engines
 
@@ -187,7 +187,7 @@ Compression
 
 ## 6. External images in HTML
 
-- **Status**: Implemented (#732); the LibreOffice route follows it for every image (#783). What else a page names is entry 50.
+- **Status**: Implemented (#732); the LibreOffice route follows it for every image (#783). What else a page names is entry 51.
 - **Decision**:
   - When converting an uploaded HTML page, images it references by public `http`/`https` URL are fetched and embedded, as a browser would show them.
   - The fetch runs in a separate child process with no secrets. That process accepts only public addresses on ports 80 and 443, and pins the resolved address.
@@ -195,7 +195,7 @@ Compression
   - The renderer itself stays without network access.
   - Images that fail stay out with a warning. `requireResources: true` turns a failure into 400 instead.
   - Deployments without internet set `HTML_IMAGE_FETCH=off`.
-  - The in-process renderer and the staging for LibreOffice use the same loader, so a page gets the same images, warnings and `requireResources` outcome on both. A reference to something that is not an image (a link, style sheet, script, frame) is not fetched on either route; entry 50 says what happens to it.
+  - The in-process renderer and the staging for LibreOffice use the same loader, so a page gets the same images, warnings and `requireResources` outcome on both. A reference to something that is not an image (a link, style sheet, script, frame) is not fetched on either route; entry 51 says what happens to it.
 - **Why**: users expect a converted page to look like the page in a browser. Leaving images out silently produces a visibly broken document. The guards make the fetch safe against server-side request forgery.
 - **Trade-offs**:
   - Conversion time depends on remote servers, within the caps.
@@ -1312,7 +1312,7 @@ Compression
 - **Verified by**: `tests/pdf-glyph-names.test.ts` (the worked examples of the Adobe Glyph List specification, and the vendored lists against the glyph tables of pdfjs); `tests/pdf-glyph-recovery.test.ts`; `tests/pdf-glyph-recovery-limits.test.ts` (the name parser is called once per code, and a recovered text past the limit is refused); `tests/pdf-text-unmapped-glyphs.test.ts` (hand-written PDFs: ligature names, left-out glyphs and their count, a page left out, a document that is still refused, a page that outgrows the limit through a ligature name); `tests/pdf-ocr-encrypted-edit-gate.test.ts` (OCR to PDF of owner-restricted files made by the qpdf command line); `tests/pdf-damaged-with-password.test.ts`; `tests/pdf-empty-password-open.test.ts` (files encrypted by the qpdf command line in four encryption variants, against the same files unencrypted); and `tests/pdf-text-real-samples.test.ts` on the real files, with the text, images and glyph counts that `pdftotext` and `pdfimages` report. The real-world gate no longer lists `qpdf-issue-101.pdf` to text, and `pdfjs-empty_protected.pdf` and `qpdf-encrypted-with-images.pdf` to Markdown, as known failures.
 - **Revisit when**: a sample shows simple or composite TrueType glyphs that the font's own tables would map in numbers that matter, a QA decision changes the share at which a page is left out, or pdfjs exposes the embedded font program (then reading its tables is a small change).
 
-## 50. HTML to PDF: what a page names that the PDF cannot carry
+## 51. HTML to PDF: what a page names that the PDF cannot carry
 
 - **Status**: Implemented (HTML to PDF rows of issue #783, epic #760), decided 2026-10-19 (QA request).
 - **Decision**:
