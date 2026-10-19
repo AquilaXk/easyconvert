@@ -23,6 +23,7 @@
     "bench:quality": "tsx bench/run.ts",
     "bench:quality:update-baseline": "tsx bench/run.ts --update-baseline",
     "bench:refresh-speed": "tsx bench/refresh-speed.ts",
+    "prefetch:test-samples": "tsx scripts/prefetch-test-samples.ts",
     "bench:realworld": "tsx bench/realworld/run.ts",
     "bench:regression": "tsx bench/realworld/regression/run.ts",
     "generate:corpus": "tsx scripts/generate-golden-corpus.ts",

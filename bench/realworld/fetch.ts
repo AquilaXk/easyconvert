@@ -4,6 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fetchBytes } from './http';
 import type { CorpusFile } from './manifest';
@@ -20,6 +21,9 @@ export class DigestMismatchError extends Error {
   }
 }
 
+/** Where the tests and the prefetch keep fetched corpus files; REALWORLD_CACHE overrides it. */
+export const testSampleCacheDirectory = (): string => process.env.REALWORLD_CACHE ?? path.join(os.homedir(), '.cache', 'easyconvert-realworld');
+
 export const sha256 = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex');
 
 /** The file's bytes from its origin, before any digest check. */
@@ -32,10 +36,17 @@ export async function download(file: CorpusFile): Promise<Buffer> {
   return inflateEntry({ name: origin.entry, method: origin.method, compressedSize: origin.compressedSize, size: file.size, localHeaderOffset: origin.offset }, data);
 }
 
+/** Path of the file in `cacheDir` when it is there and still matches the manifest digest; `undefined` when absent or stale. */
+export function findCached(file: CorpusFile, cacheDir: string): string | undefined {
+  const target = path.join(cacheDir, file.id);
+  return fs.existsSync(target) && sha256(fs.readFileSync(target)) === file.sha256 ? target : undefined;
+}
+
 /** Path of the verified file in `cacheDir`, fetching it when absent or stale. */
 export async function ensureCached(file: CorpusFile, cacheDir: string): Promise<string> {
+  const cached = findCached(file, cacheDir);
+  if (cached !== undefined) return cached;
   const target = path.join(cacheDir, file.id);
-  if (fs.existsSync(target) && sha256(fs.readFileSync(target)) === file.sha256) return target;
   const bytes = await download(file);
   const digest = sha256(bytes);
   if (digest !== file.sha256) throw new DigestMismatchError(`${file.id}: SHA-256 ${digest}, manifest says ${file.sha256}`);

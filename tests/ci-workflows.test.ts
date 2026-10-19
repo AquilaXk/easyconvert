@@ -157,6 +157,22 @@ describe('the pull request workflow', () => {
     expect([...(ci.jobs.verify.needs as string[])].sort()).toEqual([...others].sort());
     expect(ci.jobs.verify.if).toBe('always()');
   });
+
+  it('fetches the real-world test files, cached by manifest digest, before any step that runs vitest', () => {
+    const prefetch = 'npm run prefetch:test-samples';
+    const runsVitest = (step: Step): boolean => (step.run ?? '').includes('vitest run');
+    const jobsRunningVitest = Object.entries(ci.jobs).filter(([, job]) => job.steps.some(runsVitest));
+    expect(jobsRunningVitest.map(([name]) => name).sort()).toEqual(['conformance', 'integration', 'tests']);
+    for (const [name, job] of jobsRunningVitest) {
+      const prefetchAt = job.steps.findIndex((step) => step.run === prefetch);
+      expect(prefetchAt, `${name} prefetches`).toBeGreaterThan(-1);
+      expect(prefetchAt, `${name} prefetches before vitest`).toBeLessThan(job.steps.findIndex(runsVitest));
+      expect(job.steps[prefetchAt].env?.ORACLE_STRICT_MODE, `${name} prefetch is strict`).toBe('1');
+      const cache = job.steps.slice(0, prefetchAt).find((step) => String(step.uses).startsWith('actions/cache@'));
+      expect(cache?.with?.path, `${name} cache path`).toBe('~/.cache/easyconvert-realworld');
+      expect(cache?.with?.key, `${name} cache key`).toBe("test-samples-${{ hashFiles('bench/realworld/manifest.json') }}");
+    }
+  });
 });
 
 describe('the nightly workflow', () => {

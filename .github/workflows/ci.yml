@@ -246,6 +246,19 @@ jobs:
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
 
+      # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      - name: Restore the corpus cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/easyconvert-realworld
+          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          restore-keys: test-samples-
+
+      - name: Prefetch the corpus files the tests read
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npm run prefetch:test-samples
+
       # The planner leaves out the registry conformance gate (its own jobs) and the timing suites (nightly).
       - name: Run unit and integration tests
         env:
@@ -296,6 +309,19 @@ jobs:
 
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
+
+      # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      - name: Restore the corpus cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/easyconvert-realworld
+          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          restore-keys: test-samples-
+
+      - name: Prefetch the corpus files the tests read
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npm run prefetch:test-samples
 
       # Every advertised registry pair through a real engine run; each part covers a disjoint share of the
       # pairs (CONFORMANCE_PART), packed by recorded duration (.github/ci/conformance-durations.json), and part 1 also
@@ -362,6 +388,19 @@ jobs:
         uses: ./.github/actions/ci-setup
         with:
           s3-test-server: 'true'
+
+      # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      - name: Restore the corpus cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/easyconvert-realworld
+          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          restore-keys: test-samples-
+
+      - name: Prefetch the corpus files the tests read
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npm run prefetch:test-samples
 
       # The storage tests that need a server this repository did not write. They are not in the shards
       # (scripts/ci-test-shards.mjs), so this is the one job that starts the S3 test server; with
