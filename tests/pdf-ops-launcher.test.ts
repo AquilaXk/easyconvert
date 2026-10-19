@@ -94,7 +94,7 @@ async function launched<T>(operation: () => Promise<T>): Promise<{ value: T; pro
 describe.skipIf(toolsMissing)('PDF operations through the launcher', () => {
   beforeAll(async () => {
     vi.spyOn(process.memoryUsage, 'rss').mockReturnValue(LARGE_WORKER_BYTES);
-    expect(await startSandboxLauncher(true)).toBe(true);
+    expect(await startSandboxLauncher()).toBe(true);
   }, 60_000);
 
   afterAll(() => {

@@ -7,7 +7,6 @@ EasyConvert enforces strict air-gap isolation for untrusted transcoding and docu
 
 1. **Linux Network Namespace Isolation (`unshare -n`)**:
    - Isolates the worker child processes inside a dedicated loopback-only network namespace where no physical network interfaces exist.
-   - The PDF page operations start `qpdf` (and compression starts Ghostscript) from a launcher helper that is itself started under `unshare -r -n`: the programs of that helper share its one loopback-only namespace instead of each making their own (policy entry 57). The helper checks at start that it sits in such a namespace, and the worker uses it only then.
 
 2. **Docker Seccomp BPF Profile (`docker/seccomp-airgap.json`)**:
    - Filters system calls at the Linux kernel boundary using Berkley Packet Filters (BPF).

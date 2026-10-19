@@ -7,22 +7,18 @@ import { SandboxUnavailableError } from '../types';
 import {
   executeSandboxedBinary,
   getSanitizedEnvironment,
-  getUnshareCapability,
   killProcessGroup,
-  needsNamespacesBeyondNetwork,
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
   SandboxedProcessError,
   SandboxedTimeoutError,
   type SandboxedExecutionOptions,
   type SandboxedExecutionResult,
-  type UnshareIsolationOptions,
 } from './process-sandbox';
 import {
   encodeFrame,
   FrameReader,
   isBadFrame,
-  PARENT_NETNS_ENV,
   type LauncherErrorDetail,
   type LauncherReply,
   type LauncherRequest,
@@ -43,17 +39,9 @@ import {
  * before, so no request waits for a process to boot. A helper that dies fails the requests it held (the programs
  * it had started die with it) and the next request runs directly while a new helper starts.
  *
- * A program that asks for network isolation is started on a host the same way, but the isolation costs a process start
- * and a namespace per program when each is wrapped in its own `unshare`. So the programs that ask for it are served by a
- * second kind of helper that is itself started under `unshare -r -n`: it sits in a user and network namespace of its own,
- * proves that to itself when it boots (sandbox-launcher-child.ts), and its programs inherit the namespace instead of
- * creating another. A host that cannot create the namespaces has no such helper, and those programs keep the wrapper of
- * their own (or the refusal of strict isolation), as they do on the direct path.
- *
  * The helper is not free: a request and its reply cross two pipes, which adds wake-ups, and the output is copied once
- * more. So a program is started through it only when what it saves costs more than that: the saving grows with the
- * memory this process has mapped and, for an isolated helper, with the `unshare` it spares; the copy with the size of
- * the output (see launchPays).
+ * more. So a program is started through it only when the fork it saves costs more than that: the saving grows with the
+ * memory this process has mapped, the copy with the size of the output (see launchPays).
  *
  * `SANDBOX_LAUNCHER=off` turns the helper off.
  */
@@ -77,12 +65,6 @@ const CHILD_HEAP_MB = 128;
 const FORK_MS_PER_BYTE = 4.2e-9;
 const BASELINE_RESIDENT_BYTES = 112 * 1024 * 1024;
 const COPY_MS_PER_BYTE = 2.5e-6;
-/**
- * What the `unshare -r -n` in front of a program costs, in milliseconds: the start of `unshare`, the two namespaces and the
- * start of the program after it. It was 0.27 ms for a program that does nothing and 0.35 ms for qpdf, on the same VM.
- * The lower is used, so that the saving is never overstated.
- */
-const NETWORK_ISOLATION_WRAPPER_MS = 0.27;
 /** Wall-clock a reply may take beyond the run's own time limit before the helper is judged lost. */
 const REPLY_ALLOWANCE_MS = 10_000;
 /** After a cancel is sent, the helper has this long to say the program is dead before the caller is told anyway. */
@@ -200,20 +182,6 @@ function toError(detail: LauncherErrorDetail, payload: Buffer): Error {
 
 type Handle = { ref?: () => void; unref?: () => void } | null | undefined;
 
-/**
- * `open`: the helper starts programs as the worker would. `netns`: the helper itself runs in a user and network namespace of
- * its own (started under `unshare`), and so serves the programs that ask for network isolation without a wrapper each.
- */
-type HelperKind = 'open' | 'netns';
-
-const NETNS_LINK = '/proc/self/ns/net';
-
-/** The command that runs the helper under the `unshare` the host has shown it can use (the same arguments as the wrapper of a program). */
-function underUnshare(entry: ChildEntry): ChildEntry {
-  const capability = getUnshareCapability();
-  return { binary: capability.path, args: [...capability.args, '--', entry.binary, ...entry.args] };
-}
-
 /** One running helper. */
 class LauncherHost {
   readonly process: ChildProcess;
@@ -231,15 +199,11 @@ class LauncherHost {
   onEnd: () => void = () => undefined;
   onReady: () => void = () => undefined;
 
-  constructor(
-    entry: ChildEntry,
-    readonly kind: HelperKind
-  ) {
-    const command = kind === 'netns' ? underUnshare(entry) : entry;
+  constructor(entry: ChildEntry) {
     // Directly, without a shell, in its own process group, with the standard streams and the sanitized environment only.
-    this.process = spawn(command.binary, command.args, {
+    this.process = spawn(entry.binary, entry.args, {
       cwd: os.tmpdir(),
-      env: getSanitizedEnvironment(kind === 'netns' ? { [PARENT_NETNS_ENV]: fs.readlinkSync(NETNS_LINK) } : {}, false),
+      env: getSanitizedEnvironment({}, false),
       stdio: ['pipe', 'pipe', 'ignore'],
       shell: false,
       detached: true,
@@ -350,11 +314,6 @@ class LauncherHost {
       }
       const { header, payload } = frame;
       if (header.type === 'ready') {
-        // A helper started to hold the network isolation of its programs that cannot show it is no use: its programs would skip the wrapper for nothing.
-        if (this.kind === 'netns' && !header.netIsolated) {
-          this.stop(true);
-          return;
-        }
         this.ready = true;
         this.wasReady = true;
         if (this.pending.size === 0) {
@@ -410,106 +369,60 @@ class LauncherHost {
 
 const STOP_GRACE_MS = 2000;
 
-/** One kind of helper: the process that runs (or boots) and the pause after one that failed. */
-class HelperSlot {
-  host: LauncherHost | null = null;
-  private starting: Promise<boolean> | null = null;
-  private retryAfter = 0;
-
-  constructor(private readonly kind: HelperKind) {}
-
-  /** Starts the helper if there is none and resolves true once it is ready; false when it is turned off, missing or could not start. */
-  start(): Promise<boolean> {
-    if (!sandboxLauncherEnabled()) return Promise.resolve(false);
-    if (this.host?.ready) return Promise.resolve(true);
-    if (this.starting) return this.starting;
-    if (Date.now() < this.retryAfter) return Promise.resolve(false);
-    const entry = resolveChildEntry();
-    if (!entry) return Promise.resolve(false);
-    let created: LauncherHost;
-    try {
-      created = new LauncherHost(entry, this.kind);
-    } catch {
-      // The namespace of this process cannot be read (no /proc): no helper of this kind can be told from the worker.
-      this.retryAfter = Date.now() + RESTART_BACKOFF_MS;
-      return Promise.resolve(false);
-    }
-    this.host = created;
-    this.starting = new Promise<boolean>((resolve) => {
-      const boot = setTimeout(() => {
-        created.stop();
-        resolve(false);
-      }, BOOT_TIMEOUT_MS);
-      boot.unref();
-      created.onReady = () => {
-        clearTimeout(boot);
-        resolve(true);
-      };
-      created.onEnd = () => {
-        clearTimeout(boot);
-        if (this.host === created) this.host = null;
-        // A helper that never booted, or ended without being stopped (killed, out of memory, a protocol error), is not replaced at once.
-        if (!created.wasReady || !created.stoppedOnPurpose) this.retryAfter = Date.now() + RESTART_BACKOFF_MS;
-        resolve(false);
-      };
-    }).finally(() => {
-      this.starting = null;
-    });
-    return this.starting;
-  }
-
-  stop(): void {
-    this.retryAfter = 0;
-    const current = this.host;
-    this.host = null;
-    current?.stop();
-  }
-}
-
-const slots: Record<HelperKind, HelperSlot> = { open: new HelperSlot('open'), netns: new HelperSlot('netns') };
+let host: LauncherHost | null = null;
+let starting: Promise<boolean> | null = null;
+let retryAfter = 0;
 let launchedCount = 0;
 let directCount = 0;
 
-/** Whether this host lets the launcher create the user and network namespaces a helper of the `netns` kind sits in. */
-function canHoldNetworkNamespace(): boolean {
-  return process.platform === 'linux' && getUnshareCapability().available;
+/** Starts the helper if there is none and resolves true once it is ready; false when it is turned off, missing or could not start. */
+export function startSandboxLauncher(): Promise<boolean> {
+  if (!sandboxLauncherEnabled()) return Promise.resolve(false);
+  if (host?.ready) return Promise.resolve(true);
+  if (starting) return starting;
+  if (Date.now() < retryAfter) return Promise.resolve(false);
+  const entry = resolveChildEntry();
+  if (!entry) return Promise.resolve(false);
+  const created = new LauncherHost(entry);
+  host = created;
+  starting = new Promise<boolean>((resolve) => {
+    const boot = setTimeout(() => {
+      created.stop();
+      resolve(false);
+    }, BOOT_TIMEOUT_MS);
+    boot.unref();
+    created.onReady = () => {
+      clearTimeout(boot);
+      resolve(true);
+    };
+    created.onEnd = () => {
+      clearTimeout(boot);
+      if (host === created) host = null;
+      // A helper that never booted, or ended without being stopped (killed, out of memory, a protocol error), is not replaced at once.
+      if (!created.wasReady || !created.stoppedOnPurpose) retryAfter = Date.now() + RESTART_BACKOFF_MS;
+      resolve(false);
+    };
+  }).finally(() => {
+    starting = null;
+  });
+  return starting;
 }
 
-/**
- * The helper that serves a run: the `netns` kind for a run that asks for network isolation and needs no namespace beyond
- * the user and network ones, where the host can create them; the `open` kind otherwise, whose programs get the
- * isolation (or the refusal of strict isolation) from the wrapper of their own.
- */
-function slotFor(networkIsolated: boolean, sandboxOptions?: UnshareIsolationOptions): HelperSlot {
-  return networkIsolated && !needsNamespacesBeyondNetwork(sandboxOptions) && canHoldNetworkNamespace() ? slots.netns : slots.open;
-}
-
-/**
- * Starts the helper that serves programs which do (`networkIsolated`) or do not ask for network isolation, if there is
- * none, and resolves true once it is ready; false when it is turned off, missing or could not start.
- */
-export function startSandboxLauncher(networkIsolated = false): Promise<boolean> {
-  return slotFor(networkIsolated).start();
-}
-
-/** Ends the helpers and the programs they still run. */
+/** Ends the helper and the programs it still runs. */
 export function stopSandboxLauncher(): void {
-  for (const slot of Object.values(slots)) slot.stop();
+  retryAfter = 0;
+  const current = host;
+  host = null;
+  current?.stop();
 }
 
-/** The helper that serves programs which do (`networkIsolated`) or do not ask for network isolation; the counts are those of both. */
-export function sandboxLauncherState(networkIsolated = false): { ready: boolean; pid: number | undefined; launched: number; direct: number } {
-  const { host } = slotFor(networkIsolated);
+export function sandboxLauncherState(): { ready: boolean; pid: number | undefined; launched: number; direct: number } {
   return { ready: host?.ready === true, pid: host?.ready ? host.pid : undefined, launched: launchedCount, direct: directCount };
 }
 
-/**
- * Whether what the helper saves costs more than the helper does, for a process of this size and an output of this size:
- * the fork it spares (in proportion to `residentBytes`) and, when `sparesWrapper`, the `unshare` in front of the program.
- */
-export function launchPays(residentBytes: number, expectedOutputBytes: number, sparesWrapper = false): boolean {
-  const savedMs = (residentBytes - BASELINE_RESIDENT_BYTES) * FORK_MS_PER_BYTE + (sparesWrapper ? NETWORK_ISOLATION_WRAPPER_MS : 0);
-  return savedMs > expectedOutputBytes * COPY_MS_PER_BYTE;
+/** Whether the fork saved by the helper costs more than the helper does, for a process of this size and an output of this size. */
+export function launchPays(residentBytes: number, expectedOutputBytes: number): boolean {
+  return (residentBytes - BASELINE_RESIDENT_BYTES) * FORK_MS_PER_BYTE > expectedOutputBytes * COPY_MS_PER_BYTE;
 }
 
 /**
@@ -519,10 +432,9 @@ export function launchPays(residentBytes: number, expectedOutputBytes: number, s
 export function launchSandboxedBinary(binary: string, args: string[], options: LaunchedExecutionOptions = {}): Promise<SandboxedExecutionResult> {
   const maxBuffer = options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES;
   const { expectedOutputBytes = maxBuffer / DEFAULT_OUTPUT_SHARE, ...forwarded } = options;
-  const slot = slotFor(options.networkIsolated !== false, options.sandboxOptions);
-  const current = slot.host?.ready === true ? slot.host : null;
-  if (!current) void slot.start();
-  if (!current || options.signal?.aborted || !sandboxLauncherEnabled() || !launchPays(process.memoryUsage.rss(), expectedOutputBytes, current.kind === 'netns')) {
+  const current = host?.ready === true ? host : null;
+  if (!current) void startSandboxLauncher();
+  if (!current || options.signal?.aborted || !sandboxLauncherEnabled() || !launchPays(process.memoryUsage.rss(), expectedOutputBytes)) {
     directCount++;
     return executeSandboxedBinary(binary, args, forwarded);
   }

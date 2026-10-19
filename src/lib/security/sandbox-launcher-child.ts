@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import {
   executeSandboxedBinary,
   SandboxedBufferLimitError,
@@ -16,7 +15,6 @@ import {
   ERROR_STREAM_TAIL_BYTES,
   FrameReader,
   isBadFrame,
-  PARENT_NETNS_ENV,
   type LauncherErrorDetail,
   type LauncherReply,
   type LauncherRequest,
@@ -35,31 +33,6 @@ import {
  */
 
 const running = new Map<number, AbortController>();
-
-const SELF_NETNS_LINK = '/proc/self/ns/net';
-const NETWORK_INTERFACES_FILE = '/proc/net/dev';
-/** `/proc/net/dev` opens with two header lines, then one line per interface of the namespace of the reader. */
-const NETWORK_INTERFACES_HEADER_LINES = 2;
-const LOOPBACK = 'lo';
-
-/**
- * Whether this helper was started under `unshare` into a network namespace of its own: the namespace differs from the
- * worker's, and holds nothing but the loopback. Both are checked here rather than taken on the worker's word, because a
- * program that asks for network isolation skips its own `unshare` on the strength of the answer.
- */
-function inNetworkNamespaceOfItsOwn(): boolean {
-  const parentNamespace = process.env[PARENT_NETNS_ENV];
-  if (!parentNamespace) return false;
-  try {
-    if (fs.readlinkSync(SELF_NETNS_LINK) === parentNamespace) return false;
-    const interfaces = fs.readFileSync(NETWORK_INTERFACES_FILE, 'utf8').split('\n').slice(NETWORK_INTERFACES_HEADER_LINES).filter(Boolean);
-    return interfaces.length === 1 && interfaces[0].trim().startsWith(`${LOOPBACK}:`);
-  } catch {
-    return false;
-  }
-}
-
-const networkIsolated = inNetworkNamespaceOfItsOwn();
 
 interface Described {
   detail: LauncherErrorDetail;
@@ -104,7 +77,6 @@ async function run(request: Extract<LauncherRequest, { type: 'run' }>, stdin: Bu
   try {
     const result = await executeSandboxedBinary(request.binary, request.args, {
       ...request.options,
-      networkIsolationInherited: networkIsolated,
       stdin: request.hasStdin ? stdin : undefined,
       signal: controller.signal,
     });
@@ -152,7 +124,7 @@ function main(): void {
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, () => process.exit(0));
   process.on('uncaughtException', () => process.exit(1));
   process.on('unhandledRejection', () => process.exit(1));
-  send({ type: 'ready', netIsolated: networkIsolated });
+  send({ type: 'ready' });
 }
 
 main();

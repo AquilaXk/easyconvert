@@ -28,12 +28,6 @@ export interface SandboxedExecutionOptions {
   networkIsolated?: boolean;
   strictIsolation?: boolean;
   sandboxOptions?: UnshareIsolationOptions;
-  /**
-   * True when this process itself runs in a user and network namespace of its own, which the programs it starts inherit
-   * (the launcher helper, started under `unshare`): a program that asks for network isolation then has it without a second
-   * `unshare` in front of it, which would cost a process start and a namespace per program. The caller vouches for it.
-   */
-  networkIsolationInherited?: boolean;
   memoryLimitMb?: number;
   maxFileSize?: number;
   rlimits?: SandboxedRlimitsOptions;
@@ -462,53 +456,6 @@ export function generateSeccompBpfProfile(options?: { blockNetwork?: boolean }):
   };
 }
 
-/** Whether a run asks for a namespace beyond the user and network ones, which only an `unshare` of its own can give it. */
-export function needsNamespacesBeyondNetwork(sandboxOptions: UnshareIsolationOptions = {}): boolean {
-  return Boolean(sandboxOptions.mountNamespace || sandboxOptions.ipcNamespace || sandboxOptions.pidNamespace);
-}
-
-interface ResolvedCommand {
-  binary: string;
-  args: string[];
-  wrapped: boolean;
-}
-
-interface NetworkIsolationRequest {
-  networkIsolated: boolean;
-  sandboxOptions: UnshareIsolationOptions;
-  /** This process already sits in the user and network namespace its program needs (see `networkIsolationInherited`). */
-  inherited: boolean;
-  strict: boolean;
-}
-
-/**
- * `command` behind the `unshare` that gives it an empty network namespace. It stays as it is when no isolation is asked
- * for, when this process already sits in the namespace (and the program needs no other), and, unless isolation is strict,
- * when the host cannot make one.
- */
-function isolateNetwork(command: ResolvedCommand, request: NetworkIsolationRequest): ResolvedCommand {
-  if (!request.networkIsolated) return command;
-  if (process.platform !== 'linux') {
-    if (request.strict) {
-      throw new SandboxUnavailableError(
-        `Strict network isolation failed: OS platform "${process.platform}" does not support Linux network namespaces`
-      );
-    }
-    return command;
-  }
-  if (request.inherited && !needsNamespacesBeyondNetwork(request.sandboxOptions)) return command;
-  const cap = getUnshareCapability();
-  if (cap.available) {
-    const isolationArgs = buildUnshareIsolationArgs(cap, request.sandboxOptions);
-    return { binary: cap.path, args: [...isolationArgs, '--', command.binary, ...command.args], wrapped: true };
-  }
-  if (request.strict) {
-    // Typed for the API (503, retryable) and thrown before any spawn: no caller may run the tool unwrapped.
-    throw new SandboxUnavailableError('Strict network isolation failed: Linux unshare capability is unavailable');
-  }
-  return command;
-}
-
 /**
  * Resolves the final execution command, wrapping with unshare namespace isolation
  * when networkIsolated is requested and running on a supported Linux host with unshare capabilities.
@@ -521,17 +468,15 @@ export function resolveSandboxedCommand(
     | {
         networkIsolated?: boolean;
         sandboxOptions?: UnshareIsolationOptions;
-        networkIsolationInherited?: boolean;
         strictIsolation?: boolean;
         memoryLimitMb?: number;
         maxFileSize?: number;
         rlimits?: SandboxedRlimitsOptions;
       }
-): ResolvedCommand {
+): { binary: string; args: string[]; wrapped: boolean } {
   let networkIsolated = true;
   let sandboxOptions: UnshareIsolationOptions = {};
   let strictIsolation = process.env.STRICT_SANDBOX === 'true';
-  let networkIsolationInherited = false;
   let memoryLimitMb: number | undefined;
   let maxFileSize: number | undefined;
   let rlimits: SandboxedRlimitsOptions | undefined;
@@ -541,7 +486,6 @@ export function resolveSandboxedCommand(
   } else if (networkIsolatedOrOptions && typeof networkIsolatedOrOptions === 'object') {
     networkIsolated = networkIsolatedOrOptions.networkIsolated ?? true;
     sandboxOptions = networkIsolatedOrOptions.sandboxOptions ?? {};
-    networkIsolationInherited = networkIsolatedOrOptions.networkIsolationInherited ?? false;
     if (networkIsolatedOrOptions.strictIsolation !== undefined) {
       strictIsolation = networkIsolatedOrOptions.strictIsolation;
     }
@@ -582,10 +526,26 @@ export function resolveSandboxedCommand(
     }
   }
 
-  return isolateNetwork(
-    { binary: finalBinary, args: finalArgs, wrapped: isWrapped },
-    { networkIsolated, sandboxOptions, inherited: networkIsolationInherited, strict: strictIsolation }
-  );
+  if (process.platform === 'linux' && networkIsolated) {
+    const cap = getUnshareCapability();
+    if (cap.available) {
+      const isolationArgs = buildUnshareIsolationArgs(cap, sandboxOptions);
+      return {
+        binary: cap.path,
+        args: [...isolationArgs, '--', finalBinary, ...finalArgs],
+        wrapped: true,
+      };
+    } else if (strictIsolation) {
+      // Typed for the API (503, retryable) and thrown before any spawn: no caller may run the tool unwrapped.
+      throw new SandboxUnavailableError('Strict network isolation failed: Linux unshare capability is unavailable');
+    }
+  } else if (strictIsolation && networkIsolated && process.platform !== 'linux') {
+    throw new SandboxUnavailableError(
+      `Strict network isolation failed: OS platform "${process.platform}" does not support Linux network namespaces`
+    );
+  }
+
+  return { binary: finalBinary, args: finalArgs, wrapped: isWrapped };
 }
 
 /**
@@ -727,7 +687,6 @@ export async function executeSandboxedBinary(
     const resolvedCmd = resolveSandboxedCommand(binaryPath, args, {
       networkIsolated,
       sandboxOptions: options.sandboxOptions,
-      networkIsolationInherited: options.networkIsolationInherited,
       strictIsolation: options.strictIsolation,
       memoryLimitMb,
       maxFileSize,
