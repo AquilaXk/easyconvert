@@ -302,6 +302,10 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       expect(control.stdout.toString('utf8')).toMatch(/copies-of-needle: [1-9]/);
       const scan = await run(['scan-parts', first, second]);
       expect(scan.stdout.toString('utf8')).toBe('copies-of-needle: 0\n');
+      // A page the scan cannot read (a file cut short) is passed over without a signal: a signal would leave the registers of the scan, which
+      // hold the secret after a comparison, in a frame on the stack, and the scan would find that copy.
+      const pastBadPage = await run(['scan-parts-past-a-bad-page', first, second]);
+      expect(pastBadPage.stdout.toString('utf8')).toBe('copies-of-needle: 0\n');
       const sibling = await run(['read-mem-of', String(holderPid)]);
       expect(sibling.stdout.toString('utf8')).not.toContain('allowed');
       const runnerMemory = await run(['read-mem-of', String(state.pid)]);

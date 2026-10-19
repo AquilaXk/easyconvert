@@ -2,9 +2,7 @@
 // process it runs in, so a test can read what the runner gave the job instead of trusting the runner. argv[1] names the probe.
 #define _GNU_SOURCE
 #include <errno.h>
-#include <setjmp.h>
 #include <stddef.h>
-#include <signal.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,12 +33,16 @@ static void print_link(const char *path) {
   printf("%s -> %s\n", path, target);
 }
 
-/* The unit a scan reads at a time and skips when it cannot be read. */
+/* The unit a scan reads at a time. */
 #define SCAN_PAGE 4096UL
+#define COPY_CONTEXT 24
+
+/* A readable copy of the page being scanned, and of the n - 1 bytes after it. Its own bytes are another copy of whatever it holds, so the
+   scan leaves matches that lie in it out (they are reported where the bytes came from). */
+static char window[SCAN_PAGE + 255];
 
 /* Says where a copy was found: the mapping, the offset in it, and the bytes around the copy (not the copy itself), so that a failing
    run shows what holds it. */
-#define COPY_CONTEXT 24
 static void report_copy(const char *mapping, unsigned long lo, const char *at) {
   size_t before = (unsigned long)at - lo < COPY_CONTEXT ? (size_t)((unsigned long)at - lo) : COPY_CONTEXT;
   printf("copy in %.*s+0x%lx, bytes before:", (int)strcspn(mapping, "\n"), mapping, (unsigned long)at - lo);
@@ -48,48 +50,54 @@ static void report_copy(const char *mapping, unsigned long lo, const char *at) {
   printf("\n");
 }
 
-static sigjmp_buf scan_fault;
-
-static void on_scan_fault(int signo) {
-  (void)signo;
-  siglongjmp(scan_fault, 1);
+/* Copies `want` bytes of this process at `from` into `window` through a pipe: an address that cannot be read (a file cut short, a device)
+   makes the write fail, where reading it would end the job with a signal, and a signal would leave the registers of the scan (which hold
+   the needle after a comparison) in a frame on the stack, to be found there as a copy. Returns how many bytes were copied. */
+static size_t read_through(int channel[2], unsigned long from, size_t want) {
+  ssize_t put = write(channel[1], (const void *)from, want);
+  size_t have = 0;
+  while (put > 0 && have < (size_t)put) {
+    ssize_t got = read(channel[0], window + have, (size_t)put - have);
+    if (got <= 0) break;
+    have += (size_t)got;
+  }
+  return have;
 }
 
-/* Scans every readable mapping of this process for `needle`, leaving out the bytes of `needle` itself; prints the number of mappings that hold another. A page that cannot be read
-   (a file cut short, a device) is skipped, so that it does not end the job with a bus error. */
+/* Scans every readable mapping of this process for `needle`, leaving out the bytes of `needle` itself and of `window`; prints the number of
+   mappings that hold another. */
 static void scan_memory(const char *needle) {
   FILE *maps = fopen("/proc/self/maps", "r");
+  int channel[2];
   char line[512];
   int found = 0;
   size_t n = strlen(needle);
-  struct sigaction handler;
-  memset(&handler, 0, sizeof handler);
-  handler.sa_handler = on_scan_fault;
-  handler.sa_flags = SA_NODEFER;
-  sigemptyset(&handler.sa_mask);
-  sigaction(SIGBUS, &handler, NULL);
-  sigaction(SIGSEGV, &handler, NULL);
+  if (n == 0 || n > 256 || pipe(channel) != 0) {
+    puts("copies-of-needle: scan not possible");
+    return;
+  }
+  const unsigned long own = (unsigned long)window;
   while (maps != NULL && fgets(line, sizeof line, maps) != NULL) {
     unsigned long lo, hi;
     char perms[8];
     if (sscanf(line, "%lx-%lx %7s", &lo, &hi, perms) != 3 || perms[0] != 'r') continue;
     if (strstr(line, "[vvar]") != NULL || strstr(line, "[vsyscall]") != NULL) continue;
-    volatile int in_mapping = 0;
-    for (volatile unsigned long page = lo; page < hi && !in_mapping; page += SCAN_PAGE) {
-      if (sigsetjmp(scan_fault, 1) != 0) continue; /* the page could not be read: on to the next one */
-      const char *end = (const char *)(hi < page + SCAN_PAGE + n - 1 ? hi : page + SCAN_PAGE + n - 1);
-      for (const char *p = (const char *)page; p + n <= end; p++) {
-        /* The needle itself sits in this process (the argument); a match at the argument's own address does not count. */
-        if (memcmp(p, needle, n) == 0 && p != needle) {
-          in_mapping = 1;
-          report_copy(line, lo, p);
-          break;
-        }
+    int in_mapping = 0;
+    for (unsigned long page = lo; page < hi && !in_mapping; page += SCAN_PAGE) {
+      size_t have = read_through(channel, page, hi - page < SCAN_PAGE + n - 1 ? (size_t)(hi - page) : SCAN_PAGE + n - 1);
+      for (size_t i = 0; i + n <= have && i < SCAN_PAGE; i++) {
+        const unsigned long where = page + i;
+        if (memcmp(window + i, needle, n) != 0 || where == (unsigned long)needle || (where >= own && where < own + sizeof window)) continue;
+        in_mapping = 1;
+        report_copy(line, lo, (const char *)where);
+        break;
       }
     }
     found += in_mapping;
   }
   if (maps != NULL) fclose(maps);
+  close(channel[0]);
+  close(channel[1]);
   printf("copies-of-needle: %d\n", found);
 }
 
@@ -146,15 +154,20 @@ int qpdfjob_run_from_argv(const char *const argv[]) {
     sleep((unsigned)atoi(argv[3]));
     return 0;
   }
-  if (strcmp(probe, "scan-parts") == 0) {
+  if (strcmp(probe, "scan-parts") == 0 || strcmp(probe, "scan-parts-past-a-bad-page") == 0) {
     /* scan-parts <first> <second>: looks for the two joined. The whole is made here, in a buffer of this function, so that it is not in the
-       arguments of the job: the only copy that is not another job's or the runner's is this buffer, which the scan leaves out by its address. */
+       arguments of the job: the only copy that is not another job's or the runner's is this buffer, which the scan leaves out by its address.
+       The second form first maps a page of a file that has been cut short, which cannot be read: the scan goes past it. */
     char whole[256];
     size_t first = strlen(argv[2]), second = strlen(argv[3]);
     if (first + second >= sizeof whole) return 2;
     memcpy(whole, argv[2], first);
     memcpy(whole + first, argv[3], second);
     whole[first + second] = '\0';
+    if (strcmp(probe, "scan-parts-past-a-bad-page") == 0) {
+      int fd = open(".", O_RDWR | O_TMPFILE, 0600);
+      if (fd < 0 || ftruncate(fd, 4096) != 0 || mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0) == MAP_FAILED || ftruncate(fd, 0) != 0) return 2;
+    }
     scan_memory(whole);
     return 0;
   }
