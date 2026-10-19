@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ConversionFailedError, EngineUnavailableError, PdfPasswordRequiredError } from '../lib/types';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
-import { PAGE_TREE_LOOP_MESSAGE } from '../lib/conversions/pdf-postprocess/mend-page-tree';
+import { reportsPageTreeLoop } from '../lib/conversions/pdf-postprocess/page-tree-loop';
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
 import { launchSandboxedBinary } from '../lib/security/sandbox-launcher';
 import {
@@ -213,15 +213,16 @@ async function runQpdfWithStdinPassword(
 
 /**
  * Whether qpdf, opening the PDF with `request.password`, refuses its pages because the page tree loops. It is meant to
- * run beside the decryption of the same file, which it must not delay or fail: every other outcome (a rejected
- * password, a missing qpdf, an abort) answers false, and the decryption reports it.
+ * run beside the decryption of the same file: the caller waits for the slower of the two, but the question never fails the
+ * decryption, because every other outcome (a rejected password, a missing qpdf, an abort) answers false and the
+ * decryption reports it.
  */
 export async function pdfPageTreeLoops(request: PdfDecryptRequest & { password: string }): Promise<boolean> {
   try {
     await launchWithStdinPassword(requireQpdf(request.password), request, request.password, ['--show-pages', path.resolve(request.inputPath)], QPDF_MIN_OUTPUT_BYTES);
     return false;
   } catch (err) {
-    return err instanceof SandboxedProcessError && err.stderr.includes(PAGE_TREE_LOOP_MESSAGE);
+    return err instanceof SandboxedProcessError && reportsPageTreeLoop(err.stderr);
   }
 }
 

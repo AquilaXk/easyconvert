@@ -10,7 +10,7 @@ import {
 } from 'pdf-lib';
 import { assertEncodedImageWithinLimit } from '../image-input-limits';
 import { loadPdfDocument, openPdfForEditing, type PdfAccess } from '../pdf-access';
-import { isParserLoopRefusal, withMendedPageTree } from './mend-page-tree';
+import { PARSER_LOOP_REFUSAL, withMendedPageTree } from './mend-page-tree';
 import { parsePageRanges } from '../page-range';
 import { faceCoversText, findFaceByFamily, type PdfFontFace } from '../pdf-fonts';
 import { attachWinAnsiToUnicode } from '../pdf-winansi-tounicode';
@@ -257,7 +257,7 @@ async function loadAndPrepareDocument(
   const plain = await openPdfForEditing(pdfBuffer, 'watermark', access);
   try {
     // A page tree that loops overflows the parser's stack; the document is read again from the mended tree.
-    return await withMendedPageTree(plain, readDocument, isParserLoopRefusal);
+    return await withMendedPageTree(plain, readDocument, PARSER_LOOP_REFUSAL);
   } catch (err: any) {
     if (err instanceof PdfPostprocessError || err instanceof PdfPasswordRequiredError) {
       throw err;

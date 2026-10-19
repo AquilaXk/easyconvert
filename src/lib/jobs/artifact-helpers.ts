@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { PDFDocument } from 'pdf-lib';
 import { loadPdfDocument, openPdfForEditing } from '@/lib/conversions/pdf-access';
-import { isParserLoopRefusal, withMendedPageTree } from '@/lib/conversions/pdf-postprocess/mend-page-tree';
+import { PARSER_LOOP_REFUSAL, withMendedPageTree } from '@/lib/conversions/pdf-postprocess/mend-page-tree';
 import { inspectPdfEncryption } from '@/lib/conversions/pdf-encryption';
 import { getFormatByExtension } from '@/lib/registry';
 
@@ -77,7 +77,7 @@ export async function mergePdfBuffers(buffers: Buffer[], access: PdfMergeAccess 
       confirmEditRights: access.confirmEditRights,
     });
     // A page tree that loops overflows the parser's stack; the input is read again from the mended tree.
-    const doc = await withMendedPageTree(plain, readMergeInput, isParserLoopRefusal);
+    const doc = await withMendedPageTree(plain, readMergeInput, PARSER_LOOP_REFUSAL);
     const copiedPages = await mergedPdf.copyPages(doc, doc.getPageIndices());
     for (const page of copiedPages) {
       mergedPdf.addPage(page);

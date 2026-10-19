@@ -13,5 +13,5 @@ import { repairPageTree } from './page-tree';
  */
 export async function unlockPdf(pdfBuffer: Buffer, access: PdfAccess = {}): Promise<Buffer> {
   const { plain, pageTreeLoops } = await openPdfForUnlocking(pdfBuffer, access);
-  return pageTreeLoops ? repairPageTree(plain) : plain;
+  return pageTreeLoops ? repairPageTree(plain, { knownLooping: true }) : plain;
 }

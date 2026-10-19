@@ -134,12 +134,12 @@ interface QpdfExport {
 }
 
 /**
- * `pdf` with its page tree mended (see the top of this file), or `pdf` itself when qpdf reads its pages, the tree has no
+ * `pdf` with its page tree mended (see the top of this file), or `pdf` itself when qpdf reads its pages (unless `knownLooping` says a run of qpdf has just refused them), the tree has no
  * node to mend, or qpdf cannot describe the objects within `maxExportBytes`. The pages, their content and every other object stay as they are; qpdf writes the change.
  */
-export async function repairPageTree(pdf: Buffer, options: { maxExportBytes?: number } = {}): Promise<Buffer> {
+export async function repairPageTree(pdf: Buffer, options: { maxExportBytes?: number; knownLooping?: boolean } = {}): Promise<Buffer> {
   return withQpdfWorkspace(pdf, async (workspace) => {
-    if (await listsPages(workspace)) return pdf;
+    if (options.knownLooping !== true && (await listsPages(workspace))) return pdf;
     const action = 'Mending the page tree';
     const exportLimit = { ...workspace, maxOutputBytes: options.maxExportBytes ?? PAGE_TREE_EXPORT_LIMIT_BYTES };
     let described: Awaited<ReturnType<typeof runQpdf>>;

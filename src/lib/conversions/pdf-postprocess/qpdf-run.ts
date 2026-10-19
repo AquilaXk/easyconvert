@@ -11,6 +11,7 @@ import {
 } from '../../security/process-sandbox';
 import { launchSandboxedBinary } from '../../security/sandbox-launcher';
 import { getQpdfBinaryPath } from './qpdf-path';
+import { PAGE_TREE_LOOP_MESSAGE, reportsPageTreeLoop } from './page-tree-loop';
 
 /**
  * One qpdf run on a PDF held in memory, shared by the PDF page operations, protection and the edit gate.
@@ -107,7 +108,10 @@ export function toQpdfError(error: unknown, workspace: Pick<QpdfWorkspace, 'dir'
   if (outOfRange) {
     return new InvalidPageRangeError(`Page ${outOfRange[1]} is out of range: the document has fewer pages.`);
   }
-  const detail = error.stderr.replaceAll(workspace.inputPath, '<input>').replaceAll(workspace.dir, '<tmp>').trim().split('\n')[0]?.slice(0, MAX_DIAGNOSTIC_CHARS) ?? '';
+  // The first line is the diagnostic, except when it is a warning that came before a refusal of a loop in the page tree.
+  const detail = reportsPageTreeLoop(error.stderr)
+    ? PAGE_TREE_LOOP_MESSAGE
+    : (error.stderr.replaceAll(workspace.inputPath, '<input>').replaceAll(workspace.dir, '<tmp>').trim().split('\n')[0]?.slice(0, MAX_DIAGNOSTIC_CHARS) ?? '');
   const reason = detail ? ` (${detail})` : '';
   return new PdfPostprocessError(`${action} failed: qpdf could not process the document${reason}.`);
 }

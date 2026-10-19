@@ -4,7 +4,7 @@ import {
   PdfPostprocessError,
 } from '../../types';
 import { PDF_PASSWORD_UNSAFE_MESSAGE } from '../../../worker/pdf-decrypt';
-import { requireQpdfBinary, runQpdfToBuffer, withQpdfInputFile, type QpdfWorkspace } from './qpdf-run';
+import { requireQpdfBinary, runQpdfToBuffer, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
 import { pageTreeLoops } from './mend-page-tree';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { PdfStructureError } from '../pdf-document';
@@ -93,8 +93,8 @@ export async function protectPdf(
 
   // qpdf encrypts a looping page tree without reading the pages, so the tree is asked about beside the encryption: a
   // document that is fine waits for one run. Only a loop discards the result and encrypts the mended bytes again, so
-  // the plain bytes go no further than the private directories of these runs.
-  const { protectedPdf, loops } = await withQpdfInputFile(plain, async (workspace) => {
+  // the plain bytes go no further than the private (0700) directories of these runs.
+  const { protectedPdf, loops } = await withQpdfWorkspace(plain, async (workspace) => {
     const stop = new AbortController();
     const [protectedPdf, loops] = await Promise.all([
       encrypt(workspace, stop.signal).catch((error: unknown) => {
@@ -106,6 +106,6 @@ export async function protectPdf(
     return { protectedPdf, loops };
   });
   if (!loops) return protectedPdf;
-  const mended = await repairPageTree(plain);
-  return mended === plain ? protectedPdf : withQpdfInputFile(mended, (workspace) => encrypt(workspace));
+  const mended = await repairPageTree(plain, { knownLooping: true });
+  return mended === plain ? protectedPdf : withQpdfWorkspace(mended, (workspace) => encrypt(workspace));
 }
