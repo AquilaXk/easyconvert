@@ -28,7 +28,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/stora
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
-import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withSpreadsheetPageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -82,7 +82,7 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
 import { boundRenderedPages, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, selectsPages, splitIntoBatches } from './poppler-ppm';
-import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
@@ -1174,7 +1174,7 @@ async function convertPdfToTextWithPoppler(
               signal: options.signal,
             });
           } catch (err) {
-            throw toPopplerPasswordError(err) ?? toPopplerDamageSignal(err, options.inProcessFallback) ?? err;
+            throw toPopplerPasswordError(err) ?? toPopplerOutputLimitError(err) ?? toPopplerDamageSignal(err, options.inProcessFallback) ?? err;
           }
         }
       );
@@ -1416,7 +1416,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
     });
   } catch (err) {
     if (options.throwOnUnavailable) {
-      throw err;
+      throw toPopplerOutputLimitError(err) ?? err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
     rethrowSandboxUnavailable(err);
@@ -2389,14 +2389,14 @@ async function convertWithinImageSession(
   if (officeSuiteReadsInput(src, input) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
-      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withSpreadsheetPageBounds(src, nativeOptions), originalFilename);
+      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withOfficePageBounds(src, nativeOptions), originalFilename);
       if (intermediatePdf) {
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
           : intermediatePdf.buffer;
         const popplerRes = isPresentationHtml
           ? await convertPdfToHtml(intermediatePdf.buffer, nativeOptions, originalFilename, input, intermediatePdf.engineUsed)
-          : await convertPdfPagesWithNativeTools(popplerInput, tgt, withSpreadsheetPageBounds(src, nativeOptions), originalFilename);
+          : await convertPdfPagesWithNativeTools(popplerInput, tgt, withOfficePageBounds(src, nativeOptions), originalFilename);
         if (popplerRes) {
           return {
             ...popplerRes,

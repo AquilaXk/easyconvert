@@ -409,7 +409,7 @@ describe('the known gaps', () => {
   });
 
   // The families whose quality rows may be tracked as known gaps, with the issue that holds each: a new family or issue is a decision to take here.
-  const QUALITY_GAP_ISSUE_BY_FAMILY: Readonly<Record<string, number>> = { 'pdf-ops': 783, raw: 686 };
+  const QUALITY_GAP_ISSUE_BY_FAMILY: Readonly<Record<string, number>> = { image: 641, 'pdf-ops': 783, raw: 686 };
 
   it('ships a gap file whose every entry names an issue, and whose speed entries name a row the baseline records', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
@@ -420,6 +420,36 @@ describe('the known gaps', () => {
       // A quality row may be new and not baselined yet; the run refuses an entry whose row it did not produce (gap-row-missing).
       if (gap.ratio !== null) expect(gap.id in baseline.entries, gap.id).toBe(true);
     }
+  });
+
+  describe('the AVIF curve of the CLIC photograph the nightly run measured just past the allowance', () => {
+    // Values of nightly runs 39012667333, 39107567130, 39220124206 and 39316523318 (x86-64 CI runner): identical to the last digit in all four.
+    const CASE = 'image/clic-sergey-zolkin-21232.png->avif';
+    const CI_VALUES: Readonly<Record<string, number>> = { bd_rate_psnr: 1.5011455240068639, bd_rate_ssim: 1.6045206591174255 };
+    const curveRows = (scale = 1): BenchRow[] =>
+      Object.entries(CI_VALUES).map(([metric, value]) =>
+        row({ id: `${CASE}/${metric}`, direction: 'lower', kind: 'bdrate', ours: value * scale, reference: 0, tolerance: { abs: 1.5, rel: 0 } })
+      );
+    const shipped = (): GapFile => validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
+    const outcomes = (rows: BenchRow[], gaps: GapFile): Array<{ outcome: string; basis: string }> => rows.map((candidate) => outcomeOf(rows, candidate.id, gaps));
+
+    it('fails as a row below the reference when no entry tracks it', () => {
+      expect(outcomes(curveRows(), NO_GAPS)).toEqual([
+        { outcome: 'fail', basis: 'below-reference' },
+        { outcome: 'fail', basis: 'below-reference' },
+      ]);
+    });
+
+    it('is tracked at the value the CI runner measures, and fails once it gets worse than that by more than the allowance', () => {
+      expect(outcomes(curveRows(), shipped())).toEqual([
+        { outcome: 'pass', basis: 'tracked-quality-gap' },
+        { outcome: 'pass', basis: 'tracked-quality-gap' },
+      ]);
+      expect(outcomes(curveRows(2.1), shipped())).toEqual([
+        { outcome: 'fail', basis: 'tracked-worse-than-recorded' },
+        { outcome: 'fail', basis: 'tracked-worse-than-recorded' },
+      ]);
+    });
   });
 
   it('holds quality entries only for the families and issues the rollout allows, each with a record', () => {
@@ -438,7 +468,8 @@ describe('the known gaps', () => {
     const byIdOf = (id: string): number | undefined => shipped.gaps.find((g) => g.id === id)?.issue;
     const issuesOf = (prefix: string, speedRows: boolean): number[] =>
       [...new Set(shipped.gaps.filter((g) => g.id.startsWith(prefix) && g.id.endsWith('/throughput') === speedRows).map((g) => g.issue))];
-    expect(issuesOf('image/', false)).toEqual([]);
+    // The one image quality gap is the AVIF curve of a photograph whose bytes depend on the encoder thread count (641, entry 1 of the policy record).
+    expect(issuesOf('image/', false)).toEqual([641]);
     expect(issuesOf('image/', true)).toEqual([641]);
     // The HEVC encode row and the zstd encode row (497) reached parity on the CI runner with room to spare, so they are no longer known gaps.
     // The H.264 and VP9 rows of the clip and the Opus row sit at 0.99 with an interval that crosses 0.97 from run to run: they stay tracked.
