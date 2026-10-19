@@ -566,14 +566,14 @@ describe('encoder format limits are rejected before ffmpeg runs', () => {
     expect(argAfter(build('wma', { audio: { channels: 2, sampleRate: 44100 } }), '-ac')).toBe('2');
   });
 
-  oracleTest('rejects an 8-channel input for AC-3 and WMA unless it is downmixed', ['ffmpeg', 'ffprobe'], async () => {
+  oracleTest('an 8-channel input is refused by AC-3 (no single 7.1 to 5.1 mix) and mixed down to stereo by WMA, unless a channel count is requested', ['ffmpeg', 'ffprobe'], async () => {
     const source = sevenPointOne();
-    for (const id of ['ac3', 'wma']) {
-      expect(() => build(id, {}, source)).toThrow(InvalidMediaOptionError);
-      await expect(convertMedia(fs.readFileSync(source), 'wav', id, {}, 'wide')).rejects.toThrow(InvalidMediaOptionError);
-      const downmixed = await convertToFile(source, 'wav', id, { audio: { channels: 2 } });
-      expect(ffprobeStreams(downmixed)[0].channels).toBe(2);
-    }
+    expect(() => build('ac3', {}, source)).toThrow(InvalidMediaOptionError);
+    await expect(convertMedia(fs.readFileSync(source), 'wav', 'ac3', {}, 'wide')).rejects.toThrow(InvalidMediaOptionError);
+    expect(ffprobeStreams(await convertToFile(source, 'wav', 'ac3', { audio: { channels: 2 } }))[0].channels).toBe(2);
+    expect(() => build('wma', { audio: { channels: 8 } }, source)).toThrow(InvalidMediaOptionError);
+    expect(ffprobeStreams(await convertToFile(source, 'wav', 'wma', {}))[0].channels).toBe(2);
+    expect(ffprobeStreams(await convertToFile(source, 'wav', 'wma', { audio: { channels: 1 } }))[0].channels).toBe(1);
   }, TEST_TIMEOUT_MS);
 
   oracleTest('writes Opus at 48 kHz from a 44.1 kHz input and rejects an explicit 44.1 kHz request', ['ffmpeg', 'ffprobe'], async () => {

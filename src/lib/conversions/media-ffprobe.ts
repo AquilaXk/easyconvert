@@ -10,6 +10,7 @@ import {
   UnprocessableMediaInputError,
 } from '../types';
 import { explainProbeFailure } from './media-decode-failures';
+import { findUndecodableAudio } from './media-undecodable-audio';
 import { type LayoutStream, readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 
@@ -177,6 +178,8 @@ export interface InputStream {
   cropped?: boolean;
   /** Frames of a video stream when the file header counts them (the sample table of an MP4); not read from ffprobe. */
   frameCount?: number;
+  /** An audio stream that states no sample rate and of which none of the first packets decodes (see findUndecodableAudio). */
+  undecodable?: boolean;
 }
 
 interface RawStream {
@@ -188,6 +191,7 @@ interface RawStream {
   r_frame_rate?: unknown;
   avg_frame_rate?: unknown;
   bit_rate?: unknown;
+  sample_rate?: unknown;
   disposition?: { attached_pic?: unknown };
   tags?: { title?: unknown; language?: unknown };
   color_transfer?: unknown;
@@ -256,6 +260,19 @@ function toInputStream(raw: RawStream): InputStream {
     colorTransfer: typeof raw.color_transfer === 'string' && raw.color_transfer !== '' ? raw.color_transfer : undefined,
     ...(hasFrameCropping(raw) ? { cropped: true } : {}),
   };
+}
+
+/**
+ * Sets `undecodable` on the audio streams of `streams` that state no sample rate (ffprobe reads it from the first decoded frame
+ * and found none while it analysed the start of the file) and of which no packet decodes when the first ones are tried.
+ */
+function markUndecodableAudio(ffprobe: FfprobePath, filePath: string, streams: InputStream[], raw: readonly RawStream[]): void {
+  const suspects = streams.filter((stream, position) => stream.type === 'audio' && !(Number(raw[position].sample_rate) > 0));
+  if (suspects.length === 0) return;
+  const undecodable = findUndecodableAudio(ffprobe, filePath, suspects.map((stream) => stream.index));
+  for (const stream of suspects) {
+    if (undecodable.has(stream.index)) stream.undecodable = true;
+  }
 }
 
 export interface InputTimeline {
@@ -335,8 +352,11 @@ export function probeInput(filePath: string, ffprobe: FfprobePath): InputProbe {
   }
   const start = typeof parsed.format?.start_time === 'string' ? Number(parsed.format.start_time) : 0;
   const duration = typeof parsed.format?.duration === 'string' ? Number.parseFloat(parsed.format.duration) : Number.NaN;
+  const raw = parsed.streams as RawStream[];
+  const streams = raw.map(toInputStream);
+  markUndecodableAudio(ffprobe, filePath, streams, raw);
   const probe: InputProbe = {
-    streams: (parsed.streams as RawStream[]).map(toInputStream),
+    streams,
     timeline: {
       startTimeSec: Number.isFinite(start) ? start : 0,
       chapterCount: Array.isArray(parsed.chapters) ? parsed.chapters.length : 0,

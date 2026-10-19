@@ -12,7 +12,7 @@ import type { InputStream } from './media-ffprobe';
 /** The stream facts a mapping plan reads. */
 export type LayoutStream = Pick<
   InputStream,
-  'index' | 'type' | 'codecName' | 'attachedPicture' | 'title' | 'language' | 'colorTransfer' | 'width' | 'height' | 'cropped' | 'frameCount' | 'frameRate' | 'averageFrameRate'
+  'index' | 'type' | 'codecName' | 'attachedPicture' | 'title' | 'language' | 'colorTransfer' | 'width' | 'height' | 'cropped' | 'frameCount' | 'frameRate' | 'averageFrameRate' | 'undecodable'
 >;
 
 export interface Mp4Layout {

@@ -41,6 +41,11 @@ export interface AudioTargetSpec {
   readonly resampleUpwards?: boolean;
   /** Most channels the encoder accepts; checked against the request or, failing that, the input. */
   readonly maxChannels?: number;
+  /**
+   * Layout a source with more than `maxChannels` is mixed down to when the caller names no channel count. A target without
+   * one refuses such a source, because the right mix depends on the layout (7.1 to 5.1 has no single standard matrix).
+   */
+  readonly downmixLayout?: string;
 }
 
 const LOSSY_DEFAULT_BITRATE = '192k';
@@ -128,6 +133,7 @@ export const AUDIO_TARGET_SPECS: Readonly<Record<string, AudioTargetSpec>> = {
     userCodecs: [],
     maxSampleRate: WMA_MAX_SAMPLE_RATE_HZ,
     maxChannels: WMA_MAX_CHANNELS,
+    downmixLayout: 'stereo',
   },
   amr: {
     encoder: 'libopencore_amrnb',
