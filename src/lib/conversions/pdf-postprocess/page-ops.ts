@@ -15,6 +15,7 @@ import { createZipArchive } from '../archive';
 import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess, type PdfEditOperation } from '../pdf-access';
 import { validatePageRangeSyntax } from '../page-range';
+import { repairPageTree } from './page-tree';
 import { QPDF_COMPACT_OUTPUT_ARGS, runQpdf, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
 
 /**
@@ -100,6 +101,24 @@ async function editablePdf(pdf: Buffer, operation: PdfEditOperation, access: Pdf
   return openPdfForEditing(pdf, operation, access);
 }
 
+/** What qpdf prints when the page tree reaches one of its own nodes again. */
+const PAGE_TREE_LOOP_MESSAGE = 'Loop detected in /Pages structure';
+
+/**
+ * `run` on `plain`; when qpdf refuses the document because its page tree loops, `run` once more on the mended tree
+ * (see page-tree). A document qpdf reads costs nothing extra, and a loop that cannot be mended keeps qpdf's refusal.
+ */
+async function withMendedPageTree<T>(plain: Buffer, run: (pdf: Buffer) => Promise<T>): Promise<T> {
+  try {
+    return await run(plain);
+  } catch (error) {
+    if (!(error instanceof PdfPostprocessError) || !error.message.includes(PAGE_TREE_LOOP_MESSAGE)) throw error;
+    const mended = await repairPageTree(plain);
+    if (mended === plain) throw error;
+    return run(mended);
+  }
+}
+
 function pagesSelection(range: string): string[] {
   return ['--pages', '.', range, '--'];
 }
@@ -111,8 +130,10 @@ function pagesSelection(range: string): string[] {
 export async function extractPdfPages(pdf: Buffer, spec: string, access: PdfAccess = {}): Promise<Buffer> {
   const range = toQpdfRange(spec, 'pages');
   const plain = await editablePdf(pdf, 'extract', access);
-  return withQpdfInputFile(plain, (workspace) =>
-    runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action: 'Extracting the pages' })
+  return withMendedPageTree(plain, (pdf) =>
+    withQpdfInputFile(pdf, (workspace) =>
+      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action: 'Extracting the pages' })
+    )
   );
 }
 
@@ -169,7 +190,11 @@ export async function deletePdfPages(pdf: Buffer, spec: string, access: PdfAcces
   const tokens = tokensOf(assertPageSpec(spec, 'pages'));
   const selection = pagesSelection(['1-z', ...tokens.map((token) => `x${qpdfRangeOf(token)}`)].join(','));
   const plain = await editablePdf(pdf, 'delete', access);
-  return withQpdfInputFile(plain, async (workspace) => {
+  return withMendedPageTree(plain, (pdf) => deleteSelection(pdf, tokens, selection));
+}
+
+async function deleteSelection(pdf: Buffer, tokens: readonly string[], selection: readonly string[]): Promise<Buffer> {
+  return withQpdfInputFile(pdf, async (workspace) => {
     const action = 'Deleting the pages';
     // Whichever run fails stops the other, which would otherwise read a file the failed job removes, for up to the run limit.
     const stop = new AbortController();
@@ -213,8 +238,10 @@ export async function reorderPdfPages(pdf: Buffer, options: PdfReorderOptions, a
   // qpdf's `x` takes the pages it names out of the range group before it: the rest of the document, minus what was listed.
   const range = [...qpdfTokens, '1-z', ...qpdfTokens.map((token) => `x${token}`)].join(',');
   const plain = await editablePdf(pdf, 'reorder', access);
-  return withQpdfInputFile(plain, (workspace) =>
-    runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action: 'Reordering the pages' })
+  return withMendedPageTree(plain, (pdf) =>
+    withQpdfInputFile(pdf, (workspace) =>
+      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action: 'Reordering the pages' })
+    )
   );
 }
 
@@ -294,8 +321,10 @@ function rotationArgsOf(groups: readonly PdfRotation[]): string[] {
 export async function rotatePdfPages(pdf: Buffer, options: PdfRotateOptions, access: PdfAccess = {}): Promise<Buffer> {
   const args = rotationArgsOf(rotationGroups(options));
   const plain = await editablePdf(pdf, 'rotate', access);
-  return withQpdfInputFile(plain, (workspace) =>
-    runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, ...args, workspace.inputPath, '-'], action: 'Rotating the pages' })
+  return withMendedPageTree(plain, (pdf) =>
+    withQpdfInputFile(pdf, (workspace) =>
+      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, ...args, workspace.inputPath, '-'], action: 'Rotating the pages' })
+    )
   );
 }
 
@@ -413,7 +442,7 @@ export async function splitPdfPages(
   if (split.everyNPages !== undefined) splitEvery(split);
   const plain = await editablePdf(pdf, 'split', access);
   const budget = Math.max(SPLIT_MIN_OUTPUT_BYTES, plain.length * SPLIT_OUTPUT_SIZE_FACTOR);
-  const parts = await withQpdfWorkspace(plain, (workspace) => splitFiles(workspace, split, budget, plain.length));
+  const parts = await withMendedPageTree(plain, (pdf) => withQpdfWorkspace(pdf, (workspace) => splitFiles(workspace, split, budget, pdf.length)));
   if (parts.length === 0) {
     throw new PdfPostprocessError('Splitting the PDF failed: qpdf wrote no part.');
   }
