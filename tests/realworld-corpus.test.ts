@@ -9,11 +9,11 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fetchBytes, retryDelayMs } from '../bench/realworld/http';
 import { inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory, ZipRangeError } from '../bench/realworld/zip-range';
-import { ManifestError, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
+import { ManifestError, MANIFEST_PATH, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
 import { planJobs, shardJobs } from '../bench/realworld/plan';
 import { answeredStatus, crashDetail, exitSummary, isTypedRefusal } from '../bench/realworld/verdict';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
-import { evaluate, mergeShards, pairStats, readKnownFailures, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
+import { evaluate, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
 import { outputProblem } from '../bench/realworld/output-check';
 import { JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
@@ -237,6 +237,37 @@ describe('verdicts and gate', () => {
     expect(() => readKnownFailures(write([{ pair: '*', verdict: 'crash', detail: 'x' }]))).toThrow(/issue/);
     expect(() => readKnownFailures(write([{ pair: '*', verdict: 'ok', detail: 'x', issue: 1 }]))).toThrow(/not a failure/);
     expect(readKnownFailures().every((k) => k.issue > 0)).toBe(true);
+  });
+
+  it('explains a typed refusal of a named file by its reason without changing the gate, and leaves other refusals unexplained', () => {
+    const refused = (file: string, detail: string): JobRecord => ({ file, source: 'dds', target: 'png', verdict: 'refused', ms: 1, detail });
+    const explained = refused('texture.dds', 'ConversionFailedError: Invalid image: the DDS picture could not be decoded');
+    const otherFile = refused('other.dds', explained.detail as string);
+    const otherAnswer = refused('texture.dds', 'ConversionFailedError: Invalid image: it could not be decoded');
+    const converted: JobRecord = { ...explained, verdict: 'ok', detail: undefined };
+    const list = [{ file: 'texture.dds', detail: '^ConversionFailedError: Invalid image: the DDS picture could not be decoded$', reason: 'CI runner only: ImageMagick 6 has no BC7 reader.', issue: 783 }];
+    const jobs = [explained, otherFile, otherAnswer, converted];
+    const gate = evaluate(jobs, null, [], list);
+    expect(gate.knownRefusals).toEqual([{ job: explained, reason: 'CI runner only: ImageMagick 6 has no BC7 reader.' }]);
+    expect(gate.pass).toBe(evaluate(jobs, null).pass);
+    expect(renderMarkdown(jobs, gate)).toContain('| texture.dds | 1 | CI runner only: ImageMagick 6 has no BC7 reader. |');
+    expect(renderMarkdown(jobs, evaluate(jobs, null))).not.toContain('Known refusals');
+  });
+
+  it('accepts only known refusals that name their issue and their reason, for files the manifest has', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-refusals-'));
+    const write = (body: unknown): string => {
+      const file = path.join(dir, `${Math.random()}.json`);
+      fs.writeFileSync(file, JSON.stringify(body));
+      return file;
+    };
+    expect(() => readKnownRefusals(write([{ file: 'a', detail: 'x', reason: 'r' }]))).toThrow(/issue/);
+    expect(() => readKnownRefusals(write([{ file: 'a', detail: 'x', reason: ' ', issue: 1 }]))).toThrow(/reason/);
+    fs.rmSync(dir, { recursive: true, force: true });
+    const manifestFiles = new Set((JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8')) as { files: { id: string }[] }).files.map((file) => file.id));
+    const listed = readKnownRefusals();
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed.filter((entry) => !manifestFiles.has(entry.file))).toEqual([]);
   });
 
   it('renders the pair table, the untracked failures with escaped details, and the tracked ones by issue', () => {

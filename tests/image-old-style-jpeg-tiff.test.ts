@@ -5,7 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { usesOldStyleJpeg } from '../src/lib/conversions/image-external-source';
+import { usesOldStyleJpeg } from '../src/lib/conversions/image-tiff-directories';
 import { findMagick, MAGICK_PATH_ENV } from '../src/lib/conversions/image-magick-cli';
 import { decodeRgba, maxSampleDifference } from './helpers/image-pixels';
 import { requireRealworldSample } from './helpers/realworld-sample';

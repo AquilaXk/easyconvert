@@ -18,7 +18,7 @@ import { ArgumentError, commit, EXIT_ERROR, EXIT_GATE, EXIT_PASS, flag, positive
 import { judgeJobs } from './judge';
 import { readManifest } from './manifest';
 import { planJobs, shardJobs } from './plan';
-import { BASELINE_PATH, buildBaseline, evaluate, type JobRecord, mergeShards, readBaseline, readKnownFailures, readShard, renderMarkdown, REPORT_SCHEMA, type ShardReport } from './report';
+import { BASELINE_PATH, buildBaseline, evaluate, type JobRecord, mergeShards, readBaseline, readKnownFailures, readKnownRefusals, readShard, renderMarkdown, REPORT_SCHEMA, type ShardReport } from './report';
 
 const DEFAULT_PER_FILE = 3;
 const DEFAULT_DEADLINE_MS = 180_000;
@@ -69,7 +69,7 @@ function runMerge(args: string[]): number {
   const reports = args.filter((arg) => arg !== '--update-baseline');
   if (reports.length === 0) throw new ArgumentError('merge needs shard report files');
   const jobs = mergeShards(reports.map(readShard));
-  const gate = evaluate(jobs, readBaseline(), readKnownFailures());
+  const gate = evaluate(jobs, readBaseline(), readKnownFailures(), readKnownRefusals());
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'corpus.json'), JSON.stringify({ schema: REPORT_SCHEMA, gate, jobs }));
   const markdown = renderMarkdown(jobs, gate);

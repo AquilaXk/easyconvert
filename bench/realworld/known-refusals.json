@@ -1,0 +1,26 @@
+[
+  {
+    "file": "libheif-lightning_mini.heif",
+    "detail": "^ConversionFailedError: Invalid image: the HEIF picture could not be decoded$",
+    "reason": "CI runner only: its libheif 1.17 does not read the mif3 brand; libheif 1.19 in the worker image does, and the conversion there equals libheif's own decode (tests/image-heif-decode.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "libheif-uncompressed_comp_rgb_tiled_row_tile_align.heif",
+    "detail": "^ConversionFailedError: Invalid image: the HEIF picture could not be decoded$",
+    "reason": "CI runner only: its libheif 1.17 does not read uncompressed images with row-aligned tiles; libheif 1.19 in the worker image does, and the conversion there equals libheif's own decode (tests/image-heif-decode.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "pil-dxgi_format_bc7_unorm_srgb.dds",
+    "detail": "^ConversionFailedError: Invalid image: the DDS picture could not be decoded$",
+    "reason": "CI runner only: its ImageMagick 6 has no BC7 reader; ImageMagick 7.1 in the worker image decodes it to the pixels Pillow decodes (tests/image-dds-dx10.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "pil-01r_00.pcx",
+    "detail": "^ConversionFailedError: Invalid image: the PCX picture could not be decoded$",
+    "reason": "The file is damaged by design (a buffer-overrun test file of Pillow's: its header gives 12 bytes per line for 88 eight-bit pixels); Pillow, ImageMagick 6 and ImageMagick 7 refuse it too.",
+    "issue": 783
+  }
+]

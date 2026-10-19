@@ -8,6 +8,7 @@ import { FATAL_VERDICTS, VERDICT_ORDER, type Verdict } from './verdict';
 
 export const BASELINE_PATH = path.join(__dirname, 'baseline.json');
 export const KNOWN_FAILURES_PATH = path.join(__dirname, 'known-failures.json');
+export const KNOWN_REFUSALS_PATH = path.join(__dirname, 'known-refusals.json');
 export const REPORT_SCHEMA = 1;
 /** A pair's refusal rate may grow by this much (absolute) before the gate fails, to absorb a changed file mix. */
 export const REFUSAL_RATE_TOLERANCE = 0.02;
@@ -58,10 +59,27 @@ export interface KnownFailure {
   issue: number;
 }
 
+/**
+ * A typed refusal the report explains instead of leaving it among the unexplained ones: the file is refused by every reader
+ * available to the run (it is damaged), or by the tools of the CI runner alone while the worker image converts it. It does not change the
+ * gate: refusals are gated by their rate, and these still count in it.
+ */
+export interface KnownRefusal {
+  /** The corpus file. */
+  file: string;
+  /** Regular expression the job detail must match. */
+  detail: string;
+  /** Why the file is refused and where it converts, in a sentence. */
+  reason: string;
+  /** The open issue whose checklist tracks the row. */
+  issue: number;
+}
+
 export interface GateResult {
   pass: boolean;
   fatal: JobRecord[];
   known: { job: JobRecord; issue: number }[];
+  knownRefusals: { job: JobRecord; reason: string }[];
   refusalRegressions: { pair: string; baseline: number; now: number }[];
 }
 
@@ -115,6 +133,10 @@ export function knownIssue(job: JobRecord, known: readonly KnownFailure[]): numb
   return match === undefined ? null : match.issue;
 }
 
+export function knownRefusal(job: JobRecord, known: readonly KnownRefusal[]): KnownRefusal | null {
+  return known.find((k) => job.verdict === 'refused' && k.file === job.file && new RegExp(k.detail).test(job.detail ?? '')) ?? null;
+}
+
 function splitFatal(jobs: readonly JobRecord[], knownFailures: readonly KnownFailure[]): Pick<GateResult, 'fatal' | 'known'> {
   const fatal: JobRecord[] = [];
   const known: GateResult['known'] = [];
@@ -134,10 +156,22 @@ function refusalRegressionsOf(jobs: readonly JobRecord[], baseline: Baseline | n
     .map((stats) => ({ pair: stats.pair, baseline: baseline.refusalRate[stats.pair], now: stats.refusalRate }));
 }
 
-export function evaluate(jobs: readonly JobRecord[], baseline: Baseline | null, knownFailures: readonly KnownFailure[] = []): GateResult {
+function explainedRefusals(jobs: readonly JobRecord[], known: readonly KnownRefusal[]): GateResult['knownRefusals'] {
+  return jobs.flatMap((job) => {
+    const entry = knownRefusal(job, known);
+    return entry === null ? [] : [{ job, reason: entry.reason }];
+  });
+}
+
+export function evaluate(
+  jobs: readonly JobRecord[],
+  baseline: Baseline | null,
+  knownFailures: readonly KnownFailure[] = [],
+  knownRefusals: readonly KnownRefusal[] = []
+): GateResult {
   const { fatal, known } = splitFatal(jobs, knownFailures);
   const refusalRegressions = refusalRegressionsOf(jobs, baseline);
-  return { pass: fatal.length === 0 && refusalRegressions.length === 0, fatal, known, refusalRegressions };
+  return { pass: fatal.length === 0 && refusalRegressions.length === 0, fatal, known, knownRefusals: explainedRefusals(jobs, knownRefusals), refusalRegressions };
 }
 
 export function buildBaseline(jobs: readonly JobRecord[]): Baseline {
@@ -153,6 +187,17 @@ export function readKnownFailures(file = KNOWN_FAILURES_PATH): KnownFailure[] {
     if (!Number.isInteger(entry.issue) || entry.issue <= 0) throw new Error(`${file}: every known failure needs the issue that tracks it`);
     if (!FATAL_VERDICTS.has(entry.verdict)) throw new Error(`${file}: verdict ${entry.verdict} is not a failure`);
     // Compiling here refuses a malformed pattern when the list is read, not when the first job is matched.
+    entry.detail = new RegExp(entry.detail).source;
+  }
+  return list;
+}
+
+export function readKnownRefusals(file = KNOWN_REFUSALS_PATH): KnownRefusal[] {
+  if (!fs.existsSync(file)) return [];
+  const list = JSON.parse(fs.readFileSync(file, 'utf8')) as KnownRefusal[];
+  for (const entry of list) {
+    if (!Number.isInteger(entry.issue) || entry.issue <= 0) throw new Error(`${file}: every known refusal needs the issue that tracks it`);
+    if (entry.reason.trim() === '') throw new Error(`${file}: the known refusal of ${entry.file} needs its reason`);
     entry.detail = new RegExp(entry.detail).source;
   }
   return list;
@@ -191,6 +236,14 @@ function knownRows(known: GateResult['known']): string[] {
   return ['', '## Known failures (tracked, not gating)', '', '| Issue | Jobs |', '|---|---|', ...rows];
 }
 
+function knownRefusalRows(refusals: GateResult['knownRefusals']): string[] {
+  if (refusals.length === 0) return [];
+  const byFile = new Map<string, { jobs: number; reason: string }>();
+  for (const { job, reason } of refusals) byFile.set(job.file, { jobs: (byFile.get(job.file)?.jobs ?? 0) + 1, reason });
+  const rows = [...byFile.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([file, { jobs, reason }]) => `| ${cell(file)} | ${jobs} | ${cell(reason)} |`);
+  return ['', '## Known refusals (explained, not gating)', '', '| File | Jobs | Reason |', '|---|---|---|', ...rows];
+}
+
 function regressionRows(regressions: GateResult['refusalRegressions']): string[] {
   if (regressions.length === 0) return [];
   const rows = regressions.map((r) => `| ${r.pair} | ${r.baseline.toFixed(3)} | ${r.now.toFixed(3)} |`);
@@ -210,6 +263,7 @@ export function renderMarkdown(jobs: readonly JobRecord[], gate: GateResult, tit
     ...pairRows(jobs),
     ...fatalRows(gate.fatal),
     ...knownRows(gate.known),
+    ...knownRefusalRows(gate.knownRefusals),
     ...regressionRows(gate.refusalRegressions),
   ];
   return `${lines.join('\n')}\n`;
