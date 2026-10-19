@@ -70,6 +70,7 @@ Engines
 44. [Spreadsheet page images: a page limit per request, a one-page PDF export, and PDF export without comment annotations](#44-spreadsheet-page-images-a-page-limit-per-request-a-one-page-pdf-export-and-pdf-export-without-comment-annotations)
 45. [PostScript Type 1 fonts through FontForge: an OpenType intermediate, a checked container and a glyph count](#45-postscript-type-1-fonts-through-fontforge-an-opentype-intermediate-a-checked-container-and-a-glyph-count)
 48. [One-shot office conversions without a UNO listener](#48-one-shot-office-conversions-without-a-uno-listener)
+58. [PDF page operations: when a page count is needed, loop checks beside the rewrite, and the measured floor of the rows](#58-pdf-page-operations-when-a-page-count-is-needed-loop-checks-beside-the-rewrite-and-the-measured-floor-of-the-rows)
 
 Usage limits
 
@@ -96,6 +97,7 @@ Compression
 29. [Archive repacking in process: deflate engine, size bound and fail-over](#29-archive-repacking-in-process-deflate-engine-size-bound-and-fail-over)
 41. [Archive sources: package payloads, links, disk images, lzip and lzop](#41-archive-sources-package-payloads-links-disk-images-lzip-and-lzop)
 56. [Archive rows of the real-file run: stripped rpm payloads, alternate streams, named volumes and methods, lzip and lzop listings](#56-archive-rows-of-the-real-file-run-stripped-rpm-payloads-alternate-streams-named-volumes-and-methods-lzip-and-lzop-listings)
+59. [Pictures to PostScript: one document of every page, a page of its own size, compressed samples](#59-pictures-to-postscript-one-document-of-every-page-a-page-of-its-own-size-compressed-samples)
 
 ---
 
@@ -1566,6 +1568,7 @@ Compression
 - **Verified by**: `tests/html-implied-structure.test.ts` (nine derived pages and twelve pages of the corpus, each to Word, ODF and EPUB, with the words of parse5 for the page found in order in the words of the document read by saxes and parse5; the four pages with no text; EPUBCheck on the book of a frameset page), `tests/xml-unwritable-characters.test.ts` (every control code, a lone surrogate, U+FFFE and U+FFFF written to the three formats and every XML part of the package checked by xmllint; a line tabulation and a form feed keeping the words on either side apart; at most three warning lines; five pages of the corpus with U+001A, U+0000 and U+000C to the three formats; EPUBCheck on the book of the page with six U+0000; LibreOffice reading the Word and ODF documents of the page with U+001A), `tests/epub-structure.test.ts` (the writer given a document with no content), `tests/pdf-to-docx-structure.test.ts` (the Word writer given each kind of code point), and a run of the 450 pages to the 14 targets of an HTML page before (6264 converted, 36 refused) and after (6297 converted; the 3 PDF refusals of `govdocs1-000455` (nested tables, no office suite on the machine) and of two pages with `&` in a style sheet are the same, and no pair that converted before is refused). The 450 EPUB, Word and ODF files have every XML part well-formed (xmllint, 7156 parts), the EPUB books give EPUBCheck 5.4.0 no error that the old code did not also give (48 of the 450 books have errors, all duplicate `id` values or illegal fragment characters that the source pages carry; 43 of the 48 converted before with the same count, one with one more because the page now holds more, and 5 are pages that the writer refused before), and LibreOffice opened the Word and ODF files of the pages with control codes. `tests/html-reader-wrappers-and-anchors.test.ts` (parse5 words for pages with unknown wrappers and text in a table, to Word, ODF and EPUB; EPUBCheck, saxes and parse5 on the ids, bookmark names and links of derived pages; link targets; real pages of the corpus).
 - **Revisit when**: a page of the corpus loses its words to a tree-building rule not listed here (a misnested formatting element), the options of a drop-down list or the ids of divisions matter to a caller, or the Word and ODF writers carry page breaks for form feeds.
 
+
 ## 56. Archive rows of the real-file run: stripped rpm payloads, alternate streams, named volumes and methods, lzip and lzop listings
 
 - **Status**: Implemented (archive rows of issue #783, epic #760), decided 2026-10-19 (QA request in issue #783). Extends [41. Archive sources](#41-archive-sources-package-payloads-links-disk-images-lzip-and-lzop).
@@ -1626,3 +1629,81 @@ Compression
   - **Downmixing 7.1 to 5.1 for AC-3 the same way:** the mix of side and rear pairs has several conventions; the refusal names the limit and the request option that avoids it.
 - **Verified by**: `tests/media-opus-channel-layout.test.ts` (WAV files written by the test in 5.1(side), 5.0(side), quad(side) and 5.1, a tone to a channel, to `.opus` and to Ogg with Opus: ffprobe's codec, channel count and layout, the OpusHead read from the file's bytes against the table of the reference encoder, and, for 4 and 6 channels, the decoded tone of each channel by a separate ffmpeg; an AC-3 Matroska file to WebM; a file with a mono track beside a 5.1(side) track; `samples-00001-2.mts` to WebM), `tests/media-surround-downmix.test.ts` (the tones through WMA against the BS.775 gains within 1.5 dB and the other side's and the LFE tone more than 25 dB down; `samples-00001-2.mts` to WMA as stereo, as long as the source and decoded without error; the explicit BS.775 downmix of a 5.1(side) file within 0.2 dB of the gains; the explicit request for six channels refused with the limit named), `tests/media-audio-targets.test.ts` (8 channels refused by AC-3, written as stereo by WMA, and the explicit counts), `tests/media-audio-subtitles-thumbnails.test.ts` (the pan expression), and runs on Ubuntu 24.04 (FFmpeg 6.1.1) and with FFmpeg 7.1.5 under `ORACLE_STRICT_MODE=1` and on macOS (FFmpeg 9.0.2), red on `main` before the change.
 - **Revisit when**: a real file with a layout outside the three relabelled ones is refused; QA wants a multichannel default bitrate for Opus; AC-3 gets a stated mix for 7.1; FFmpeg's Opus encoder lists the side layouts (the restart then never triggers and the rule can go); or FFmpeg gains a WMA Professional encoder.
+
+## 58. PDF page operations: when a page count is needed, loop checks beside the rewrite, and the measured floor of the rows
+
+- **Status**: Implemented (issue #695, epic #759), decided 2026-10-20 (QA request). QA kept per-job network isolation and rejected a helper that holds one namespace for several programs (see the alternatives).
+- **Decision**:
+  - **Page deletion counts the pages of the document only for a specification that names page 1.** Any other specification leaves page 1 and so leaves a page, whatever the length of the document, so the second `qpdf --show-npages` run, which told an emptied document from a result, is not started. A specification that names page 1 (`1`, `1-3`, `-2`) is counted beside the edit as before and refused when it names every page.
+  - **Compression asks whether the page tree loops beside the rewrite, not before it.** The rewrite (Ghostscript, or qpdf for `archive`) and `qpdf --show-pages` start together; only a document qpdf cannot list discards the first rewrite, mends the tree (entry 53) and rewrites. Ghostscript starts from the launcher (entry 31) like `qpdf` does.
+  - **Watermark and merge give pdf-lib 500 objects between two yields to the event loop.** The defaults (100 objects read, 50 written) put a zero-delay timer, which Node holds for a millisecond, every few objects; the work between two yields is still a few milliseconds.
+  - **Every program that handles user bytes keeps a network and a user namespace of its own** (`unshare -r -n` in front of each run), as before. Nothing about the isolation changes.
+- **Why**:
+  - **Compression.** The check of the page tree before the rewrite was a qpdf run of 2.35 ms in front of a Ghostscript run of 56 ms; beside the rewrite, ours / reference rose from 0.92 to 0.97 to 0.98 in the parity bench.
+  - **Delete.** A second program costs 0.16 ms through the launcher (a `--show-npages` beside the edit: 2.77 against 2.61 ms) and 0.37 ms in the whole operation; in a loop of alternating single calls, skipping it took delete from 0.90 to 0.96 of the reference to 1.01. In the parity bench the row moves little (head against base 1.00 to 1.04): the wrapper below is most of its gap.
+  - **Watermark.** The save of the stamped document took 1.6 ms of the 2.2 ms of the operation, about 1.3 ms of it waiting for a zero-delay timer (the font and its character map put the document past 50 objects, and the profile of the process is 63 percent idle); the operation takes 0.9 ms now (2.1 to 2.3 ms before). Head against base in the parity bench: 2.1 to 2.2; ours / reference 1.24 to 1.27 before and 2.6 to 2.7 now. Merging ten three-page files went from 8.2 to 5.5 ms.
+  - **Where the other rows stand.** On the 4-core test VM (Ubuntu 24.04, Node 24.22, libuv 1.52.1) an extraction of a 20 KB, three-page PDF takes 2.3 to 2.5 ms, and the time goes to: the `unshare -r -n` in front of the program, 0.27 ms for a program that does nothing and 0.39 to 0.46 ms for `qpdf` (15 to 16 percent; 0.52 ms between the `execve` of `unshare` and the `execve` of `qpdf` in a trace); the fork of Node, a plain `clone(SIGCHLD)` that copies the page tables (`spawnSync` of `/bin/true` takes 0.35 ms at 44 MB resident, 0.84 at 160, 1.26 at 261 and 2.34 at 463, about 4.7 ms per gigabyte; libuv uses neither `vfork` nor `posix_spawn` on Linux, and no option of `spawn` changes the cost); and `qpdf` itself, whose start takes 1.26 ms of the 2.14 ms of an extraction (`qpdf --version`, which does nothing; it links 18 libraries, GnuTLS among them) against 0.85 ms of page work, which the reference command pays as well. The steps in the process are cheap by comparison: the header test and the encryption check 4.5 microseconds, a private directory with its input and its removal 14 to 42, the input file 12, the ZIP of three small parts 24, the resident size 2. The CI runner enables user namespaces, so its pdf-ops rows carry the wrapper: base ratios of 0.82 to 0.93 there, 0.73 to 0.96 on the test VM with the namespaces enabled.
+  - **Parity bench of the family, head against base** (user namespaces enabled, 24 interleaved pairs per row and run, three runs of the head and two of the base; the test VM is shared, so the ranges are wide): protect 0.98 to 1.01, decrypt 1.0, unlock 0.98 to 1.03, split 0.99 to 1.01, extract 0.98 to 0.99, delete 1.00 to 1.04, reorder 0.97 to 1.00, rotate 0.96 to 0.99, compress 1.06 to 1.07, watermark 2.1 to 2.2, merge 0.90 to 1.01. Ours / reference:
+
+    | Row | Base | Head |
+    |---|---|---|
+    | protect | 0.89 to 0.90 | 0.87 to 0.90 |
+    | decrypt | 0.91 to 0.93 | 0.88 to 1.02 |
+    | unlock | 0.92 to 0.96 | 0.85 to 0.95 |
+    | split | 0.82 to 0.94 | 0.77 to 0.80 |
+    | extract | 0.80 to 0.84 | 0.82 to 0.84 |
+    | delete | 0.73 to 0.79 | 0.78 to 0.81 |
+    | reorder | 0.79 to 0.83 | 0.76 to 0.82 |
+    | rotate | 0.79 to 0.83 | 0.78 to 0.82 |
+    | compress | 0.92 | 0.97 to 0.98 |
+    | watermark | 1.24 to 1.27 | 2.6 to 2.7 |
+
+  - **Output flags, measured on the extraction (time against ours, bytes):**
+
+    | Flags | Time | Bytes |
+    |---|---|---|
+    | `--object-streams=generate --compress-streams=y` (ours and the reference) | 1.00 | 17,680 |
+    | `--object-streams=preserve` or `disable` | 0.93 | 19,872 |
+    | `generate` with `--stream-data=preserve` or `--compress-streams=n` | 0.95 | 19,457 |
+    | `preserve` with `--stream-data=preserve`, or none of the flags | 0.93 to 0.94 | 19,872 |
+    | ours with `--deterministic-id` | 1.02 | 17,680 |
+    | ours with `--compression-level=1` | 1.00 | 17,742 |
+    | ours with `--recompress-flate` | 1.32 | 17,680 |
+
+    Packing the objects costs 0.18 ms (7 percent) and saves 11 percent of the bytes, and the bytes are a parity row of the same family.
+  - **Ruled out by measurement.** Output to standard output or to a file: 2.271 against 2.275 ms. AES-256 (revision 6) costs 3.0 ms in `qpdf` on this file (encryption 4.9 ms, decryption 5.4 ms, a copy 1.9 ms) and AES-128 0.1 ms; the build in the distribution has the GnuTLS provider only (`QPDF_CRYPTO_PROVIDER=native` is refused), and the reference command derives the same key.
+- **Trade-offs**:
+  - **The rows of split, extract, delete, reorder, rotate, protect, decrypt and unlock stay below the reference** (0.77 to 1.0 in the table above) with the isolation as it is: the wrapper, the fork and the start of `qpdf` are what the reference does not pay or pays once. They stay in `bench/parity-gaps.json` with issue #695 and no tolerance is changed.
+  - A deletion that names page 1 still runs a second program.
+- **Alternatives rejected**:
+  - **A launcher helper started under `unshare -r -n` that serves several programs from one namespace.** Measured: it removes the wrapper of each program and took head against base to 1.04 to 1.24 on these rows (ours / reference 0.85 to 0.96). QA rejected it: concurrent runs would share one loopback and one user namespace, and every program that handles user bytes keeps its own.
+  - **`vfork` or `posix_spawn` from the worker**: libuv offers neither on Linux (entry 31).
+  - **Skipping the loop check of protect and unlock.** The check cannot be dropped: `qpdf --encrypt` and `--decrypt` do not read the pages, and the encrypted copy cannot be read back without the password. A page-touching option that does not change the output does not exist; `--pages .` would rewrite the page tree of the document.
+  - **Incremental update for rotate and protect.** The `qpdf` command line has no incremental writer (its help names none; `--replace-input` rewrites the whole file), and an appended update would keep the unpacked objects and the content of removed pages (entry 31).
+  - **A page count read in process for deletion.** The packed object streams of a modern file hide `/Count`; reading them needs the inflater and a second page-tree walk next to `qpdf`'s own, to save a program in a case (a specification that names page 1) that is rare.
+  - **No object streams, a lower compression level, `--stream-data=preserve`**: faster by 0.1 to 0.2 ms, 10 to 12 percent more bytes (table above).
+- **Verified by**: `tests/pdf-ops-launcher.test.ts` (one program for a deletion that leaves page 1 and two for one that names it), `tests/pdf-delete-count-abort.test.ts`, `tests/pdf-page-ops.test.ts`, `tests/pdf-page-tree.test.ts` (compression of a ring on the Ghostscript profiles returns the page and its text, read by Poppler), `tests/pdf-compress.test.ts`, the quality rows of the `pdf-ops` family (`--quality-only`) and its speed rows against the base.
+- **Revisit when**: a program start that costs less than the wrapper and the fork is available (a native job runner that gives each job its own namespaces, or libuv starting programs with `vfork` or `posix_spawn` on Linux); the CI runner stops allowing user namespaces; a specification that names page 1 becomes the usual deletion.
+
+## 59. Pictures to PostScript: one document of every page, a page of its own size, compressed samples
+
+- **Status**: Implemented (picture rows of issue #783, epic #760), decided 2026-10-20 (QA request in issue #783: output that is wrong or refused although the input is fine).
+- **Decision**:
+  - **A picture converted to PostScript (`ps`) is a PostScript document whose pages are the pages of the source.** A multi-page TIFF or HEIF sequence (or the pages a request selects) is one file with `%%Pages: n`, one `%%Page` per page, and not a ZIP of one file per page. An EPS is one figure and stays one file per page in a ZIP.
+  - **Every page sets its size.** `<< /PageSize [w h] >> setpagedevice` with the size of the picture in points, one pixel to the point as the PDF writer sizes its pages; an EPS keeps its bounding box and calls no page device. Before, an interpreter drew the picture on its default page (612 x 792 points): a larger picture came out cut off, and the scan of the real-world corpus came out blank.
+  - **The samples are Flate-compressed ASCII85** (`LanguageLevel 3`), not hexadecimal: three bytes of RGB were six characters, so one 3,307 x 4,677 page weighed 94 MB.
+  - **The print density of the source is not applied** (a 400 dpi scan is a 3,307 x 4,677 point page, as in the PDF it converts to); see the trade-offs.
+  - **A Word template whose body is empty converts to XPS** (`lo-tdf120761_zorder.dot`): no change was needed. The in-process reader refuses the document ("holds no text": its words are in a header and a frame), the dispatcher retries it through the office suite's plain text, which holds them, and the XPS carries the one line. The sample is pinned for `xps` with the suite's own PDF as the oracle.
+- **Why**: the standard converters write one document of all pages for a multi-page TIFF (three pages, 11.8 MB for the corpus file; `tiff2ps` 3.9 MB), and a PostScript file is made to be printed as one job. A page device per page is what the structuring conventions ask for and what keeps a viewer or printer from guessing. The corpus file now converts to 175 KB, and each page drawn by the interpreter equals the page libtiff decodes, sample for sample.
+- **Trade-offs**:
+  - **Pages keep the picture's pixel count as their size in points**, so a high-density scan is a very large page (3,307 x 4,677 points for an A4 scan); viewers fit it to the window and a printer scales it. Reading the density (595 x 842 points for the scan, as `tiff2ps` writes it) is a different change: the PDF writer would have to follow it.
+  - **Level 3 interpreters only**: the Flate filter is Level 3 (1997). A Level 2 device cannot read the samples; a Level 2 file would be 5 to 6 times larger with run-length coding for photographs.
+  - A page is converted as one document and its page section is moved into the joined file, so every page is in memory twice at the end; the aggregate page pixel budget of the multi-page rules bounds it.
+  - Compression of a photograph costs about one second more for a 24 megapixel picture (2.5 s against 1.6 s) and halves the file (76 MB against 146 MB).
+- **Alternatives rejected**:
+  - **A ZIP of one PostScript file per page** (the previous output): a PostScript file is a document; the ZIP was declared as such and no consumer of the extension opens it.
+  - **Gray and one-bit samples for scans**: the compression already removes the cost (the three pages are 175 KB), and a second sample layout is a second code path to verify.
+  - **Passing the original CCITT data through** (what `tiff2ps` does for such a file): only for one compression and one photometric reading, and the page would no longer follow the resize, background and orientation options.
+  - **Reading the density now**: see the trade-offs.
+- **Verified by**: `tests/image-multipage-postscript.test.ts` (the three-page CCITT Group 4 scan of the corpus: the interpreter draws three pages of 3,307 x 4,677 points and every sample equals the page libtiff decodes, the pages differ from each other, the file is smaller than ImageMagick's; a request for pages 2 to 3; a picture larger than the default page, to `ps` and to `eps` drawn with the bounding box), `tests/image-tiff-tag-order.test.ts` (the two pages of the real TIFF in one document, the second equal to libtiff's decode; EPS still one file per page), `tests/image-postscript.test.ts` (ASCII85 against the specification's encoding, line length, every length of a short run, the refusals), and the existing EPS and PS pixel tests, which now read the Flate and ASCII85 filters with the reader of `tests/helpers/postscript-samples.ts`.
+- **Revisit when**: the PDF writer reads the print density of a picture (the PostScript page should follow it), a Level 2 consumer is reported, or a multi-page source with pages of unlike sizes needs a page device per size beyond what a document already holds.

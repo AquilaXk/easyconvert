@@ -3,7 +3,8 @@ import sharp, { type Metadata, type OutputInfo, type ResizeOptions, type Sharp }
 import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames, type FrameSelection, type PageResize } from './image-frames';
-import { encodeDecodedAnimation, joinPageTiffs, zipPageImages } from './image-frame-output';
+import { encodeDecodedAnimation, packagePageOutputs } from './image-frame-output';
+import { encodePostscript } from './image-postscript';
 import { assertAnimationBudget, assertOutputPixels, outputSideOf } from './image-limits';
 import { flattenColour, letterboxColour, OPAQUE_IMAGE_TARGETS, parseBackground } from './image-background';
 import { buildTiffOptions } from './image-tiff-options';
@@ -103,6 +104,9 @@ import {
   float32ToFloat16,
   float16ToFloat32,
 } from './raw-hdr';
+
+/** The PostScript writer lives in its own module; the office and vector routes take it from here with the other raster encoders. */
+export { encodePostscript };
 
 pinBaseImageThreads();
 
@@ -262,39 +266,6 @@ export function encodeIcns(pngBuffer: Buffer): Buffer {
   icnsHeader.writeUInt32BE(totalLength, 4);
 
   return Buffer.concat([icnsHeader, chunkHeader, pngBuffer]);
-}
-
-export function encodePostscript(
-  rgbBuffer: Buffer,
-  width: number,
-  height: number,
-  isEps: boolean
-): Buffer {
-  const hex = rgbBuffer.toString('hex');
-  const chunks: string[] = [];
-  for (let i = 0; i < hex.length; i += 72) {
-    chunks.push(hex.substring(i, i + 72));
-  }
-  const hexData = chunks.join('\n');
-
-  const ps = `%!PS-Adobe-3.0${isEps ? ' EPSF-3.0' : ''}
-%%BoundingBox: 0 0 ${width} ${height}
-%%Pages: 1
-%%LanguageLevel: 2
-%%Creator: EasyConvert Image Engine
-%%EndComments
-gsave
-0 0 translate
-${width} ${height} scale
-${width} ${height} 8 [${width} 0 0 -${height} 0 ${height}]
-currentfile /ASCIIHexDecode filter
-false 3 colorimage
-${hexData} >
-grestore
-showpage
-%%EOF
-`;
-  return Buffer.from(ps, 'utf-8');
 }
 
 /**
@@ -2059,27 +2030,7 @@ async function convertImage(
         originalFilename,
         sourceFormat
       );
-    if (selection.tiffPages) {
-      const joined = await joinPageTiffs(selection.tiffPages, convertPage);
-      return {
-        buffer: joined,
-        mimeType: 'image/tiff',
-        filename: `${baseName}.${outputExtensionOf(fmt)}`,
-        size: joined.length,
-        ...frameFields,
-      };
-    }
-    if (selection.zipPages) {
-      const zipped = await zipPageImages(selection.zipPages, convertPage, baseName, outputExtensionOf(fmt));
-      return {
-        buffer: zipped,
-        mimeType: 'application/zip',
-        filename: `${baseName}.zip`,
-        size: zipped.length,
-        ...frameFields,
-      };
-    }
-    return null;
+    return packagePageOutputs(selection, { target: fmt, baseName, extension: outputExtensionOf(fmt), frameFields }, convertPage);
   };
 
   try {
@@ -2648,7 +2599,7 @@ async function convertImage(
           .raw()
           .toBuffer({ resolveWithObject: true });
         assertRgbSamples(info, fmt);
-        outputBuffer = encodePostscript(rawRgb, info.width, info.height, fmt === 'eps');
+        outputBuffer = await encodePostscript(rawRgb, info.width, info.height, fmt === 'eps');
         mimeType = 'application/postscript';
         break;
       }

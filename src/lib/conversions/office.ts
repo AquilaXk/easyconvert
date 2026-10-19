@@ -10242,7 +10242,7 @@ async function rasterizePipeline(
     case 'eps':
     case 'ps': {
       const { data, info } = await pipeline.removeAlpha().raw().toBuffer({ resolveWithObject: true });
-      const buffer = encodePostscript(data, info.width, info.height, tgt === 'eps');
+      const buffer = await encodePostscript(data, info.width, info.height, tgt === 'eps');
       return { buffer, mimeType: 'application/postscript' };
     }
     case 'png':
