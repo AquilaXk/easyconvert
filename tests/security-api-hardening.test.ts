@@ -23,22 +23,11 @@ import { GET as jobByIdHandler } from '../src/app/api/v1/jobs/[id]/route';
 import { POST as convertHandler } from '../src/app/api/v1/convert/route';
 import { GET as openApiHandler } from '../src/app/api/openapi.json/route';
 import { killProcessGroup, executeSandboxedBinary } from '../src/lib/security/process-sandbox';
+import { isProcessRunning } from './helpers/process-state';
 
 /** How long a test waits for a killed process tree to disappear from the process table. */
 const PROCESS_EXIT_WAIT_MS = 10_000;
 const PROCESS_POLL_INTERVAL_MS = 20;
-
-/** A process is running when /proc knows it and it is not a zombie awaiting its parent's wait(). */
-function isRunning(pid: number): boolean {
-  let stat: string;
-  try {
-    stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8');
-  } catch {
-    return false;
-  }
-  // "pid (comm) S ...": the state letter follows the last closing parenthesis.
-  return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
-}
 
 async function waitUntil(condition: () => boolean): Promise<void> {
   const deadline = Date.now() + PROCESS_EXIT_WAIT_MS;
@@ -343,14 +332,14 @@ describe('Security, Developer API & Distributed Quota Hardening (Issue #178)', (
         leader.stdout.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim())));
       });
       expect(Number.isInteger(grandchildPid) && grandchildPid > 0).toBe(true);
-      expect(isRunning(grandchildPid)).toBe(true);
+      expect(isProcessRunning(grandchildPid)).toBe(true);
 
       const leaderEnd = new Promise<NodeJS.Signals | null>((resolve) => leader.once('exit', (_code, signal) => resolve(signal)));
       killProcessGroup(leader.pid);
 
       expect(await leaderEnd).toBe('SIGKILL');
-      await waitUntil(() => !isRunning(grandchildPid));
-      expect(isRunning(grandchildPid)).toBe(false);
+      await waitUntil(() => !isProcessRunning(grandchildPid));
+      expect(isProcessRunning(grandchildPid)).toBe(false);
     });
 
     it('killProcessGroup ignores an undefined, non-positive or unused PID', () => {
