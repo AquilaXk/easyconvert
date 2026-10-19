@@ -1586,19 +1586,19 @@ Compression
   - **Starting a program.** On the 4-core test VM (Ubuntu 24.04, Node 24.22, libuv 1.52.1), Node starts a program with `clone(SIGCHLD)`, a plain fork that copies the page tables: `spawnSync` of `/bin/true` takes 0.35 ms at 44 MB resident, 0.84 at 160, 1.26 at 261 and 2.34 at 463 (about 4.7 ms per gigabyte). libuv does not use `vfork` or `posix_spawn` on Linux, and Node offers no switch for it. A fork, a `vfork` and a `posix_spawn` of the same program from a small C program take 0.22, 0.20 and 0.20 ms, against 0.36 ms for Node from a 71 MB process; none of the options of `spawn` (detached, pipes, environment size, working directory) changes the cost.
   - **The wrapper was the largest overhead left.** `unshare -r -n` in front of a program costs 0.27 ms for `/bin/true` and 0.39 to 0.46 ms for the extraction of a 20 KB, three-page PDF with `qpdf` (an operation of 2.3 to 2.5 ms), 15 to 16 percent; in a trace of the system calls, the time from the `execve` of `unshare` to the `execve` of `qpdf` is 0.52 ms. Started in the helper of entry 31 the same operation takes 7 percent longer than the reference command at a worker of 85 MB (the helper is a second process: 0.08 to 0.14 ms for the two pipes and the extra wake-ups) and 5 percent less at 150 MB. The CI runner enables user namespaces, so its pdf-ops rows carried the wrapper: base ratios of 0.82 to 0.93 there, 0.75 to 0.95 on the testbed with the namespaces enabled.
   - **What is left is `qpdf` itself.** `qpdf --version`, which does nothing, takes 1.26 ms of the 2.14 ms of an extraction (a trivial program takes 0.15): it links 18 libraries, GnuTLS among them, and runs their initialisers; the page work is 0.85 ms. The reference command pays the same. The checks and steps in the process are cheap by comparison: the header test and the encryption check 4.5 microseconds, a private directory with its input and its removal 14 to 42, the input file 12, the ZIP of three small parts 24, the resident size 2.
-  - **The measured effect** (the parity bench of the family with the namespaces enabled, 24 interleaved pairs per row and run; the testbed is shared with other jobs, so the ranges widen with their load). Head against base, three runs of the head (a ratio above 1 is the head being faster): protect 1.06, decrypt 0.95 to 1.05, unlock 0.99 to 1.07, split 1.13 to 1.15, extract 1.14, delete 1.19 to 1.26, reorder 1.10 to 1.13, rotate 1.13 to 1.15, compress 1.06 to 1.07. Ours / reference, two runs of the base and three of the head:
+  - **The measured effect** (the parity bench of the family with the namespaces enabled, 24 interleaved pairs per row and run; the testbed is shared with other jobs, so the ranges widen with their load). Head against base, five runs of the head (a ratio above 1 is the head being faster): protect 1.04 to 1.07, decrypt 0.95 to 1.14, unlock 0.99 to 1.07, split 1.12 to 1.15, extract 1.14 to 1.15, delete 1.17 to 1.26, reorder 1.10 to 1.23, rotate 1.12 to 1.24, compress 1.06 to 1.08. Ours / reference, three runs of the base and five of the head:
 
     | Row | Base | Head |
     |---|---|---|
-    | protect | 0.88 to 0.92 | 0.935 to 0.94 |
-    | decrypt | 0.93 to 0.95 | 0.86 to 0.99 |
-    | unlock | 0.86 to 0.87 | 0.915 to 0.94 |
-    | split | 0.83 to 0.86 | 0.87 to 0.90 |
-    | extract | 0.84 | 0.925 to 0.94 |
-    | delete | 0.75 | 0.91 to 0.93 |
-    | reorder | 0.80 to 0.83 | 0.87 to 0.90 |
-    | rotate | 0.81 to 0.82 | 0.86 to 0.89 |
-    | compress | 0.92 to 0.93 | 0.97 to 0.99 |
+    | protect | 0.88 to 0.92 | 0.90 to 0.94 |
+    | decrypt | 0.93 to 0.95 | 0.84 to 0.99 |
+    | unlock | 0.86 to 0.88 | 0.85 to 0.94 |
+    | split | 0.82 to 0.86 | 0.87 to 0.92 |
+    | extract | 0.82 to 0.84 | 0.925 to 0.96 |
+    | delete | 0.75 to 0.76 | 0.91 to 0.94 |
+    | reorder | 0.77 to 0.83 | 0.87 to 0.93 |
+    | rotate | 0.74 to 0.82 | 0.86 to 0.91 |
+    | compress | 0.905 to 0.93 | 0.97 to 0.99 |
 
   - **A second program costs 0.16 ms through the helper** (a `--show-npages` beside the edit: 2.77 against 2.61 ms) and 0.37 ms in the whole operation: in a loop of alternating single calls, skipping it for a deletion that leaves page 1 took delete from 0.90 to 0.96 of the reference to 1.01.
   - **Compression.** The check of the page tree before the rewrite was a qpdf run of 2.35 ms in front of a Ghostscript run of 56 ms; beside the rewrite, ours / reference rose from 0.936 to 0.989.
@@ -1620,7 +1620,7 @@ Compression
 - **Trade-offs**:
   - **The programs of the helper share one namespace.** Before, each `qpdf` run had a network and a user namespace of its own; now the concurrent runs of a worker and the helper share one, which has the loopback and no other interface. A program that took over a `qpdf` through a hostile PDF could not reach the network, as before, but it could now bind a port on the shared loopback or an abstract socket that a concurrent run could see, and the helper runs as the root of its user namespace like the programs it starts (as each run did in its own). Nothing in `qpdf` or Ghostscript listens, no job's data crosses the loopback, and the seccomp profile of the worker container denies `ptrace` and `process_vm_readv` between them; `SANDBOX_LAUNCHER=off` restores one namespace per program for 0.4 ms each.
   - **The helper holds a user namespace for as long as it lives** (60 seconds without a request, as in entry 31).
-  - **The floor of the rows.** The helper is a second process: the program is started after two pipe wake-ups (0.08 to 0.14 ms), and the reference command is not. In a loop of alternating single calls the single-program operations measure 0.93 to 1.02 of the reference; the parity bench, which times about twenty back-to-back calls of one side, then of the other, measures the 0.87 to 0.94 above, so the rows are not at 1.0 there. They stay in `bench/parity-gaps.json` with issue #695 and no tolerance is changed. What stands between them and 1.0 is the start of `qpdf` itself, 1.26 ms of every run in the reference command and in ours (see the native job runner below).
+  - **The floor of the rows.** The helper is a second process: the program is started after two pipe wake-ups (0.08 to 0.14 ms), and the reference command is not. In a loop of alternating single calls the single-program operations measure 0.93 to 1.02 of the reference; the parity bench, which times about twenty back-to-back calls of one side, then of the other, measures the 0.85 to 0.96 above, so the rows are not at 1.0 there. They stay in `bench/parity-gaps.json` with issue #695 and no tolerance is changed. What stands between them and 1.0 is the start of `qpdf` itself, 1.26 ms of every run in the reference command and in ours (see the native job runner below).
 - **Alternatives rejected**:
   - **`vfork` or `posix_spawn` from the worker**: libuv offers neither on Linux (entry 31).
   - **A helper written in C, or a qpdf that stays loaded.** A small program that loads `libqpdf` once (`dlopen`) and forks a child that calls the library entry point of the command line (`qpdfjob_run_from_argv`, the same options) does the extraction in 2.8 to 3.4 ms against 6.0 to 6.3 ms for starting `qpdf`, measured together on a busy testbed, with the same 17,680 bytes: it removes the 1.26 ms start of `qpdf` and the start of the Node helper. It is a new native program in the worker image and the CI toolchain (as `cad-convert` is), with its own resource limits, time limit and output handling, so it needs a decision of its own (follow-up of issue #695). Not part of this change.
