@@ -1,4 +1,5 @@
 import { PayloadLimitError } from '../types';
+import { reportConversionWarning } from './conversion-warnings';
 import { assertEmbeddableImageWithinLimit } from './image-input-limits';
 import { parseHtmlTree, type HtmlElement, type HtmlNode } from './html-blocks';
 import { formatListNumber } from './docx-numbering';
@@ -27,7 +28,7 @@ const DEFAULT_LIST_START = 1;
 
 const HEADING_LEVELS: ReadonlyMap<string, number> = new Map([['h1', 1], ['h2', 2], ['h3', 3], ['h4', 4], ['h5', 5], ['h6', 6]]);
 const SKIPPED: ReadonlySet<string> = new Set(['head', 'script', 'style', 'template', 'noscript', 'title', 'meta', 'link', 'base']);
-const DROPPED_WITH_WARNING: ReadonlySet<string> = new Set(['svg', 'object', 'embed', 'iframe', 'video', 'audio', 'canvas']);
+const DROPPED_WITH_WARNING: ReadonlySet<string> = new Set(['svg', 'object', 'embed', 'iframe', 'frameset', 'frame', 'video', 'audio', 'canvas']);
 const CONTAINERS: ReadonlySet<string> = new Set([
   'html', 'body', 'div', 'section', 'article', 'main', 'header', 'footer', 'aside', 'nav', 'figure', 'form', 'fieldset', 'center',
   'details', 'dl', 'dd', 'dt', 'hgroup',
@@ -509,9 +510,11 @@ export async function htmlToDocumentModel(html: string, options: HtmlModelOption
   const tree = parseHtmlTree(html.replace(/^﻿/, ''));
   const context = options.context ?? new DocumentContext();
   const builder = new HtmlModelBuilder(options, context);
+  const firstWarning = context.warnings.length;
   const sink = new BlockSink(context);
   builder.blocks(tree.root.children, sink, 0, 0);
   for (const bytes of builder.checks) await assertEmbeddableImageWithinLimit(bytes);
+  for (const line of context.warnings.slice(firstWarning)) reportConversionWarning(line);
   const root = findRoot(tree.root);
   const language = root?.attrs.get('lang') ?? root?.attrs.get('xml:lang');
   return assembleDocument({ sections: [{ columns: 1, blocks: sink.blocks }], context, language: language || undefined, title: tree.title || undefined });
