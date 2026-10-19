@@ -9,12 +9,10 @@ import { explainFfmpegFailure, partialDecodeIn } from './media-decode-failures';
 /**
  * A failure of the encoder FFmpeg reports at the start of a run, with the change to the arguments that lets the same run
  * start. The log is the only report of these conditions, so a rule costs nothing for a conversion that does not meet one.
- * `adjust` answers undefined when the log gives it nothing to change. Each pattern below stays within one line and is
+ * A rule answers undefined when the log gives it nothing to change. Each pattern below stays within one line and is
  * bounded, as the log echoes the input's tags.
  */
-interface RetryRule {
-  adjust(args: readonly string[], log: string): string[] | undefined;
-}
+type RetryRule = (args: readonly string[], log: string) => string[] | undefined;
 
 /** Most times one transcode is started again: one per audio stream that needs a change, and the stream limit of a conversion bounds those. */
 const MAX_RESTARTS = 8;
@@ -62,7 +60,7 @@ function withOpusRearLayout(args: readonly string[], log: string): string[] | un
   return [...args.slice(0, -1), `-filter:a:${ordinal}`, chain, args[args.length - 1]];
 }
 
-const RETRY_RULES: readonly RetryRule[] = [{ adjust: withFlacBlockSize }, { adjust: withOpusRearLayout }];
+const RETRY_RULES: readonly RetryRule[] = [withFlacBlockSize, withOpusRearLayout];
 
 /**
  * Runs ffmpeg for a transcode in the sandbox. A run that fails because a stream cannot be decoded is reported as the typed
@@ -94,7 +92,7 @@ export async function runFfmpegTranscode(
 
 function firstAdjustment(args: readonly string[], log: string): string[] | undefined {
   for (const rule of RETRY_RULES) {
-    const adjusted = rule.adjust(args, log);
+    const adjusted = rule(args, log);
     if (adjusted !== undefined) return adjusted;
   }
   return undefined;

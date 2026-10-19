@@ -86,7 +86,7 @@ describe.skipIf(skip)('a WAV file of fewer than 17 samples', () => {
 
   it('is converted to flac by the worker engine too, with its sample kept', { timeout: CONVERSION_TIMEOUT_MS }, async () => {
     const input = samples(WORKER_LENGTH);
-    const result = await convertWithNativeFfmpeg(wav(input), 'wav', 'flac', { throwOnUnavailable: true }, 'in.wav');
+    const result = (await convertWithNativeFfmpeg(wav(input), 'wav', 'flac', { throwOnUnavailable: true }, 'in.wav'))!;
     const decoded = decodedOf(result.buffer, 'flac');
     expect(decoded.samplesPerChannel).toBe(WORKER_LENGTH);
     expect(decoded.pcm.equals(pcmBytes(input))).toBe(true);
@@ -98,7 +98,7 @@ describe.skipIf(skip)('a WAV file of fewer than 17 samples', () => {
       const result = await dispatchConversion(wav(samples(count)), 'wav', 'ogg', {}, 'in.wav');
       const streams = streamsOf(result.buffer, 'ogg');
       expect(streams.map((stream) => stream.codec_name)).toEqual(['vorbis']);
-      expect(Number(streams[0].duration_ts), 'the last Ogg page states the length of the input').toBe(count);
+      expect((streams[0] as { duration_ts?: number }).duration_ts, 'the last Ogg page states the length of the input').toBe(count);
       expect(decodedOf(result.buffer, 'ogg').samplesPerChannel).toBeGreaterThanOrEqual(count);
     }, CONVERSION_TIMEOUT_MS);
   }

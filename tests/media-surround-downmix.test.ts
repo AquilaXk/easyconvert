@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { describe, expect } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { InvalidMediaOptionError } from '../src/lib/types';
+import { InvalidMediaOptionError, type ConversionOptions } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { requireEncoders } from './helpers/ffmpeg-media-fixtures';
 import { ORACLE_DECODE_MAX_BYTES, probeFile, withMediaFile } from './helpers/ffmpeg-measure';
@@ -102,9 +102,14 @@ describe('a source with more channels than the target codes', () => {
     }
   }, CONVERSION_TIMEOUT_MS);
 
-  oracleTest('an explicit request for more channels than wma codes is still refused', ['ffmpeg', 'ffprobe'], async () => {
+  oracleTest('an explicit request for more channels than wma codes is still refused, with the limit named', ['ffmpeg', 'ffprobe'], async () => {
     const input = toneWav(LAYOUT_5_1_SIDE, SAMPLE_RATE, TONE_SECONDS, TONE_AMPLITUDE);
-    await expect(dispatchConversion(input, 'wav', 'wma', { audio: { channels: 6 } }, 'in.wav')).rejects.toBeInstanceOf(InvalidMediaOptionError);
-    await expect(dispatchConversion(input, 'wav', 'wma', { audioChannels: '5.1' }, 'in.wav')).rejects.toBeInstanceOf(InvalidMediaOptionError);
+    const refused = (options: ConversionOptions) => dispatchConversion(input, 'wav', 'wma', options, 'in.wav').catch((error: unknown) => error);
+    const requests: ConversionOptions[] = [{ audio: { channels: 6 } }, { audioChannels: '5.1' }];
+    for (const options of requests) {
+      const error = await refused(options);
+      expect(error).toBeInstanceOf(InvalidMediaOptionError);
+      expect((error as Error).message).toBe("The 'wma' target supports at most 2 audio channels, but 6 would be written; request fewer channels or a downmix.");
+    }
   }, CONVERSION_TIMEOUT_MS);
 });
