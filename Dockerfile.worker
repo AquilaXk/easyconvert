@@ -98,6 +98,21 @@ COPY native/cad-convert/ /src/cad-convert/
 RUN /src/cad-convert/build.sh /usr/local/bin/cad-convert
 
 # ==============================================================================
+# Stage 4b: qpdf job runner (qpdf-runner)
+# ==============================================================================
+# native/qpdf-runner is our own small C program (about 900 lines): it opens libqpdf of the runtime image with dlopen and runs each qpdf job
+# of the PDF operations in a forked child, each in a user and network namespace of its own, instead of starting the qpdf program (1.26 ms of
+# the 2.14 ms of an extraction are the start of qpdf). Nothing of qpdf is linked in, so it builds with a C compiler only. The worker falls
+# back to the qpdf program for any job the runner declines, and when the runner is not there.
+FROM ${NODE_IMAGE} AS qpdfrunner
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY native/qpdf-runner/ /src/qpdf-runner/
+RUN /src/qpdf-runner/build.sh /usr/local/bin/qpdf-runner
+
+# ==============================================================================
 # Stage 5: Hardened Runtime Container
 # ==============================================================================
 FROM ${NODE_IMAGE} AS runner
@@ -208,6 +223,11 @@ RUN dwg2dxf --version
 COPY --from=cadconvert /usr/local/bin/cad-convert /usr/local/bin/cad-convert
 RUN ! ldd /usr/local/bin/cad-convert | grep -q 'not found' \
     && cad-convert 2>&1 | grep -q 'usage: cad-convert'
+
+# qpdf job runner (built in the qpdfrunner stage). It opens the libqpdf that the qpdf package above installs; the build fails if the library
+# cannot be loaded or has no job entry (--check prints its version).
+COPY --from=qpdfrunner /usr/local/bin/qpdf-runner /usr/local/bin/qpdf-runner
+RUN qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
 
 # MIDI renderer: FluidSynth (LGPL, run unmodified as a separate sandboxed program) turns a Standard MIDI File into sound with the General MIDI
 # SoundFont of timgm6mb-soundfont (6 MB, GPL-2 data that the program only reads), which the Debian alternatives link default-GM.sf2 names.

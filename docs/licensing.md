@@ -71,6 +71,11 @@ Certain format conversions require specialized external command-line utilities. 
 - **Process Isolation**: `lbzip2` (the Debian and Ubuntu package `lbzip2`) is installed unmodified and executed as a separate process in the process sandbox with no network access and limits on time and output size, with the tar on standard input and the bzip2 stream on standard output. Nothing links lbzip2 into the application, and the application code does not incorporate or modify lbzip2 source. When the command is missing or fails, the 7-Zip route writes the same format.
 - **Compliance**: Running an unmodified, separate GPL executable keeps EasyConvert's own code outside the GPL. The image carries the package notice in `/licenses/lbzip2.copyright` (section 3), and the source of the installed version is the distribution's source package, named by the version in `/licenses/tool-versions.txt`. A modified lbzip2, or one linked into the application, would not be covered by this and needs a reviewed exception.
 
+### 2.11 qpdf and `qpdf-runner` (Apache-2.0)
+- **Role**: Runs the qpdf jobs of the PDF operations (split, extract, delete, reorder, rotate, protect, unlock, decrypt for the readers, the lossless compression and the repair of a page tree).
+- **Process Isolation**: `qpdf-runner` (`native/qpdf-runner`, about 900 lines of our own C) is built in the worker image and in CI with a C compiler only, and opens the unmodified `libqpdf` of the distribution package `qpdf` at run time with `dlopen`; nothing of qpdf is compiled or linked into it. It runs each job in a forked child, with a user and network namespace of its own, the resource limits and the time and output limits of the request, as the `qpdf` program ran under the process sandbox. The child calls `qpdfjob_run_from_argv`, the public C entry point of the command line, with the same arguments, so the result is the program's. When the runner is missing, or declines or cannot isolate a job, the `qpdf` program runs it as before.
+- **Compliance**: qpdf is Apache-2.0 (since version 11), a permissive licence: use through the public API needs only the notice, which the image carries in `/licenses/qpdf.copyright` (section 3). The runner is our own code; the library is a replaceable shared object of the distribution.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images

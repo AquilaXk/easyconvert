@@ -14,6 +14,7 @@
 #   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
+#   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -288,6 +289,20 @@ else
     pass "lbzip2 compressed and decompressed 4096 bytes inside the sandbox"
   else
     fail "lbzip2 did not round-trip inside the sandbox: $(head -c 300 "$work_dir/lbzip2.err" 2>/dev/null)"
+  fi
+fi
+
+# --- 8. qpdf-runner ------------------------------------------------------------------------------------
+# The PDF operations start qpdf jobs in children of qpdf-runner, each in the namespaces `unshare -r -n` makes; --self-test runs one real job the same
+# way (fork, unshare, the maps, the limits, libqpdf). When it cannot, the worker runs every job with the qpdf program instead, slower but the same.
+if ! command -v qpdf-runner >/dev/null 2>&1; then
+  fail "qpdf-runner is not installed: the PDF operations start the qpdf program for every job"
+else
+  runner_output="$(qpdf-runner --self-test 2>&1)"
+  if [ "$runner_output" = "self-test ok" ]; then
+    pass "qpdf-runner ran a job in a user and network namespace of its own"
+  else
+    fail "qpdf-runner could not run an isolated job: $(printf '%s' "$runner_output" | head -c 300)"
   fi
 fi
 
