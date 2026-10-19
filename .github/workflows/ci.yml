@@ -411,23 +411,17 @@ jobs:
         run: npx --no-install vitest run tests/s3-minio-integration.test.ts tests/s3-object-client.test.ts
 
       # The worker image ships only the pinned upstream 7-Zip build, so run the archive suites
-      # against that exact binary too. URL and digest mirror Dockerfile.worker (x64).
+      # against that exact binary too.
+      - name: Install the pinned upstream 7-Zip
+        id: seven-zip
+        uses: ./.github/actions/pinned-7zip
+
       - name: Run archive tests against pinned 7-Zip
         env:
           ORACLE_STRICT_MODE: "1"
-          SEVEN_ZIP_VERSION: "26.01"
-          SEVEN_ZIP_RELEASE: "2601"
-          SEVEN_ZIP_SHA256_X64: 8ea0fc8a135e7b848e80a4116fe22dff56c8c4518dde1f43cce67f4e340b437a
+          P7ZIP_PATH: ${{ steps.seven-zip.outputs.path }}
         run: |
-          SEVEN_ZIP_DIR="${RUNNER_TEMP}/seven-zip"
-          mkdir -p "${SEVEN_ZIP_DIR}"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
-            --output "${SEVEN_ZIP_DIR}/7zip.tar.xz" \
-            "https://github.com/ip7z/7zip/releases/download/${SEVEN_ZIP_VERSION}/7z${SEVEN_ZIP_RELEASE}-linux-x64.tar.xz"
-          echo "${SEVEN_ZIP_SHA256_X64}  ${SEVEN_ZIP_DIR}/7zip.tar.xz" | sha256sum --check --strict -
-          tar -xJf "${SEVEN_ZIP_DIR}/7zip.tar.xz" -C "${SEVEN_ZIP_DIR}" 7zzs
-          "${SEVEN_ZIP_DIR}/7zzs" i | grep -q ' Rar5 '
-          P7ZIP_PATH="${SEVEN_ZIP_DIR}/7zzs" npx --no-install vitest run \
+          npx --no-install vitest run \
             tests/*archive* tests/*7z* tests/*rar* tests/worker-seven-zip-packaging.test.ts
 
       # Kept separate from `npm test`: some suites assume no Redis is configured.
@@ -786,6 +780,14 @@ jobs:
       - name: Install tools and start test services
         if: env.BENCH_CHANGED == 'true'
         uses: ./.github/actions/ci-setup
+
+      # The product is timed with the 7-Zip build the worker image ships (its assembler LZMA decoder is what production
+      # runs); the reference rows keep the distribution's 7-Zip from PATH (bench/tools.ts), which P7ZIP_PATH does not touch.
+      - name: Install the pinned upstream 7-Zip
+        if: env.BENCH_CHANGED == 'true'
+        uses: ./.github/actions/pinned-7zip
+        with:
+          export-env: "true"
 
       # The speed of this change is measured against its base in the same pairs (bench/ab-speed.ts). The base is the first
       # parent of the merge commit this job tested, not the event's base sha, which can be older than the merge. It is
