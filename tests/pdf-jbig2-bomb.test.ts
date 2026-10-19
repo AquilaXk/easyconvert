@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { assertPdfJbig2WithinLimits, declaredJbig2Pages, jbig2DecodedBytes } from '../src/lib/conversions/pdf-jbig2-guard';
+import {
+  assertPdfJbig2WithinLimits,
+  declaredJbig2Pages,
+  jbig2DecodedBytes,
+  type Jbig2ScanStats,
+  MAX_JBIG2_NAMES_EXAMINED,
+} from '../src/lib/conversions/pdf-jbig2-guard';
 import { DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
 import { SandboxedBufferLimitError } from '../src/lib/security/process-sandbox';
 import { toPopplerOutputLimitError } from '../src/worker/pdf-decrypt';
@@ -185,6 +191,62 @@ describe('PDFs with JBIG2 streams', () => {
     expect(failure).toBeInstanceOf(DecompressionLimitError);
     expect((failure as DecompressionLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
     expect(performance.now() - started).toBeLessThan(REFUSAL_BUDGET_MS);
+  });
+});
+
+/**
+ * The search for JBIG2 streams runs on every PDF before a tool starts, so its work must grow with the size of the file and not
+ * with the square of the number of times the filter name occurs: a file made of the name alone (or of the name and the stream
+ * keyword, or of one-line objects) once took 2.7 s, 96 s and 1.3 s at 2 MB and hours at 100 MB. The work is judged by the bytes
+ * the search read and the names it examined, which the search reports; the time bound is coarse and only guards against a
+ * return of the quadratic search.
+ */
+describe('the search for JBIG2 streams in a file made of the filter name', () => {
+  const MIB = 1024 * 1024;
+  const SCAN_FACTOR = 4;
+  const COARSE_TIME_BOUND_MS = 3000;
+  const SHAPES: ReadonlyArray<readonly [string, string]> = [
+    ['the name alone', '/JBIG2Decode '],
+    ['the name before a stream keyword each time', '/JBIG2Decode stream\n'],
+    ['the name inside one-line objects', '1 0 obj /JBIG2Decode endobj '],
+  ];
+
+  function fileOf(unit: string, bytes: number): Buffer {
+    return Buffer.from(`%PDF-1.4\n${unit.repeat(Math.floor(bytes / unit.length))}`, 'latin1');
+  }
+
+  function search(file: Buffer): { pages: number; stats: Jbig2ScanStats; ms: number } {
+    const stats: Jbig2ScanStats = { namesExamined: 0, bytesScanned: 0 };
+    const started = performance.now();
+    const pages = [...declaredJbig2Pages(file, stats)].length;
+    return { pages, stats, ms: performance.now() - started };
+  }
+
+  it.each(SHAPES.flatMap(([label, unit]) => [2, 20].map((mib) => [label, mib, unit] as const)))(
+    'reads %s once and examines a bounded number of names in %i MB',
+    (_label, mib, unit) => {
+      const file = fileOf(unit, mib * MIB);
+      const { pages, stats, ms } = search(file);
+      expect(pages).toBe(0);
+      expect(stats.bytesScanned).toBeGreaterThan(0);
+      expect(stats.bytesScanned).toBeLessThanOrEqual(SCAN_FACTOR * file.length);
+      expect(stats.namesExamined).toBeLessThanOrEqual(MAX_JBIG2_NAMES_EXAMINED);
+      expect(ms).toBeLessThan(COARSE_TIME_BOUND_MS);
+    }
+  );
+
+  it('does the same work per byte for 20 MB as for 2 MB', () => {
+    const [, unit] = SHAPES[1];
+    const small = search(fileOf(unit, 2 * MIB));
+    const large = search(fileOf(unit, 20 * MIB));
+    expect(large.stats.bytesScanned / (20 * MIB)).toBeLessThanOrEqual((small.stats.bytesScanned / (2 * MIB)) * 1.1);
+  });
+
+  it('still finds a bomb that follows thousands of names which are not streams', () => {
+    const noise = '1 0 obj << /Note /JBIG2Decode >> endobj\n'.repeat(2000);
+    const bomb = pdfWithJbig2Content(BOMB_PAGE_INFORMATION).toString('latin1').replace('%PDF-1.7\n', '');
+    const file = Buffer.from(`%PDF-1.7\n${noise}${bomb}`, 'latin1');
+    expect([...declaredJbig2Pages(file)].map((page) => page.decodedBytes)).toEqual([BOMB_DECODED_BYTES]);
   });
 });
 

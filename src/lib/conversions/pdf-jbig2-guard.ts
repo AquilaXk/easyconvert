@@ -120,14 +120,55 @@ export function jbig2DecodedBytes(data: Buffer, start: number): number | null {
   return page === null ? null : decodedBytesOf(page);
 }
 
-interface Jbig2Stream {
-  objectNumber: number;
-  dataStart: number;
+/** Work of one search, for the tests: names looked at, and bytes the search moved over (keyword searches and dictionary text). */
+export interface Jbig2ScanStats {
+  namesExamined: number;
+  bytesScanned: number;
 }
+
+/**
+ * Names of the filter one search looks at. A file made of the name alone has one at every 12 bytes; the search is linear in the
+ * size of the file whatever their number, and past this many it stops: the stream limit of the tools (a 413, see
+ * `toPopplerOutputLimitError`) answers for the rest.
+ */
+export const MAX_JBIG2_NAMES_EXAMINED = 4096;
 
 /** True for a `stream` keyword at `at` that is not the end of `endstream`. */
 function isStreamKeyword(pdf: Buffer, at: number): boolean {
   return at === 0 || pdf[at - 1] !== CHAR_LOWER_D;
+}
+
+/**
+ * The next occurrence of a keyword at or after a position, for positions that only grow. The occurrence found is kept, so
+ * the names that precede it ask once, and a search that finds none is never repeated: each byte is read once per keyword.
+ */
+class ForwardKeywordSearch {
+  private found = -1;
+  private exhausted = false;
+
+  constructor(
+    private readonly pdf: Buffer,
+    private readonly keyword: Buffer,
+    private readonly stats: Jbig2ScanStats,
+    private readonly accepts: (at: number) => boolean = () => true
+  ) {}
+
+  /** Offset of the first occurrence at or after `from`, or -1 when there is none. */
+  nextAtOrAfter(from: number): number {
+    if (this.exhausted) return -1;
+    if (this.found >= from) return this.found;
+    let candidate = this.pdf.indexOf(this.keyword, from);
+    while (candidate >= 0 && !this.accepts(candidate)) candidate = this.pdf.indexOf(this.keyword, candidate + this.keyword.length);
+    this.stats.bytesScanned += (candidate < 0 ? this.pdf.length : candidate) - from;
+    this.exhausted = candidate < 0;
+    this.found = candidate;
+    return candidate;
+  }
+}
+
+interface Jbig2Stream {
+  objectNumber: number;
+  dataStart: number;
 }
 
 /** Start of the data after the `stream` keyword at `keywordAt` (one line feed, or a carriage return and a line feed). */
@@ -138,14 +179,14 @@ function streamDataStart(pdf: Buffer, keywordAt: number): number {
   return at;
 }
 
-/** The stream object whose dictionary names JBIG2Decode as its first filter at `nameAt`; null for the name anywhere else. */
-function jbig2StreamAround(pdf: Buffer, nameAt: number): Jbig2Stream | null {
-  let keywordAt = pdf.indexOf(STREAM_KEYWORD, nameAt);
-  while (keywordAt >= 0 && !isStreamKeyword(pdf, keywordAt)) keywordAt = pdf.indexOf(STREAM_KEYWORD, keywordAt + STREAM_KEYWORD.length);
-  if (keywordAt < 0) return null;
-  const objectEnd = pdf.indexOf(END_OBJECT_KEYWORD, nameAt);
-  if (objectEnd >= 0 && objectEnd < keywordAt) return null;
-  const dictionaryRegion = pdf.toString('latin1', Math.max(0, nameAt - DICTIONARY_LOOKBACK_BYTES), keywordAt);
+/**
+ * The stream object whose dictionary, written between `regionStart` and the `stream` keyword at `keywordAt`, names JBIG2Decode
+ * as its first filter. `regionStart` is never before the end of the dictionary text read for the stream before it, so the
+ * text read for all the streams of a file is no more than the file.
+ */
+function jbig2StreamIn(pdf: Buffer, nameAt: number, regionStart: number, keywordAt: number, stats: Jbig2ScanStats): Jbig2Stream | null {
+  const dictionaryRegion = pdf.toString('latin1', Math.max(nameAt - DICTIONARY_LOOKBACK_BYTES, regionStart), keywordAt);
+  stats.bytesScanned += dictionaryRegion.length;
   const headers = [...dictionaryRegion.matchAll(OBJECT_HEADER_PATTERN)];
   const header = headers[headers.length - 1];
   if (header === undefined || !FIRST_FILTER_PATTERN.test(dictionaryRegion.slice(header.index))) return null;
@@ -161,10 +202,32 @@ export interface DeclaredJbig2Page {
   decodedBytes: number;
 }
 
-/** The JBIG2 streams of `pdf` whose first filter is JBIG2Decode and whose page size is declared, in file order. */
-export function* declaredJbig2Pages(pdf: Buffer): Generator<DeclaredJbig2Page> {
-  for (let nameAt = pdf.indexOf(JBIG2_FILTER); nameAt >= 0; nameAt = pdf.indexOf(JBIG2_FILTER, nameAt + JBIG2_FILTER.length)) {
-    const stream = jbig2StreamAround(pdf, nameAt);
+/**
+ * The JBIG2 streams of `pdf` whose first filter is JBIG2Decode and whose page size is declared, in file order. One pass: the
+ * names are taken in order, the next `stream` and `endobj` keywords are searched forward from them and kept, a name before
+ * the keyword of a stream already looked at belongs to the same dictionary and is skipped, and a name in an object that ends
+ * before any stream (or after the last stream of the file) is not a stream filter.
+ */
+export function* declaredJbig2Pages(pdf: Buffer, stats: Jbig2ScanStats = { namesExamined: 0, bytesScanned: 0 }): Generator<DeclaredJbig2Page> {
+  const streams = new ForwardKeywordSearch(pdf, STREAM_KEYWORD, stats, (at) => isStreamKeyword(pdf, at));
+  const objectEnds = new ForwardKeywordSearch(pdf, END_OBJECT_KEYWORD, stats);
+  let resumeAt = 0;
+  let regionStart = 0;
+  while (stats.namesExamined < MAX_JBIG2_NAMES_EXAMINED) {
+    const nameAt = pdf.indexOf(JBIG2_FILTER, resumeAt);
+    if (nameAt < 0) return;
+    stats.bytesScanned += nameAt - resumeAt;
+    stats.namesExamined++;
+    const keywordAt = streams.nextAtOrAfter(nameAt);
+    if (keywordAt < 0) return;
+    const objectEnd = objectEnds.nextAtOrAfter(nameAt);
+    if (objectEnd >= 0 && objectEnd < keywordAt) {
+      resumeAt = objectEnd;
+      continue;
+    }
+    const stream = jbig2StreamIn(pdf, nameAt, regionStart, keywordAt, stats);
+    resumeAt = keywordAt;
+    regionStart = keywordAt;
     const page = stream === null ? null : jbig2PageAt(pdf, stream.dataStart);
     if (stream !== null && page !== null) {
       yield { objectNumber: stream.objectNumber, ...page, decodedBytes: decodedBytesOf(page) };
