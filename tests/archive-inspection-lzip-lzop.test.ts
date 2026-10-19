@@ -104,7 +104,7 @@ describe('inspecting a bomb or a damaged file', () => {
     try {
       const bomb = path.join(dir, 'zeros.bin');
       fs.writeFileSync(bomb, Buffer.alloc(40 * MIB));
-      execFileSync(requireOracleTool('lzip'), ['-9', '-k', bomb]);
+      execFileSync(requireOracleTool('lzip'), ['-0', '-k', bomb]);
       const archive = fs.readFileSync(`${bomb}.lz`);
       expect(archive.length * ARCHIVE_SECURITY_LIMITS.MAX_RATIO).toBeLessThan(40 * MIB);
       const failure = await inspectArchive(archive, { filename: 'zeros.bin.lz' }).catch((err: unknown) => err);

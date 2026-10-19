@@ -156,7 +156,7 @@ function lead(): Buffer {
 
 function strippedEntry(index: number, content: Buffer, offset: number): Buffer {
   const head = Buffer.from(`07070X${index.toString(16).padStart(8, '0')}`, 'latin1');
-  const parts = [Buffer.alloc(align(offset, 4) - offset), head];
+  const parts: Buffer[] = [Buffer.alloc(align(offset, 4) - offset), head];
   const afterHeader = align(offset, 4) + head.length;
   parts.push(Buffer.alloc(align(afterHeader, 4) - afterHeader), content);
   const afterContent = align(afterHeader, 4) + content.length;
