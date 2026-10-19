@@ -2,7 +2,6 @@ import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError } from '../types';
 import { scanCss } from './css-references';
 import {
-  asciiLowerCase,
   HTML_IMAGE_CAPS,
   MAX_DOCUMENT_IMAGE_PIXELS,
   MAX_IMAGE_PIXELS,
@@ -13,11 +12,13 @@ import {
 } from './html-blocks';
 import { loadExternalImages } from './html-image-loader';
 import {
+  asciiLowerCase,
+  isUndrawable,
+  NEVER_DRAWN_ELEMENTS,
   normalizeUrl,
   OmittedContent,
   OmittedExternalImages,
   stripControls,
-  trimUrl,
   type HtmlResourcePolicy,
 } from './html-omitted-resources';
 
@@ -55,19 +56,8 @@ const WRITTEN_ELEMENTS: ReadonlySet<string> = new Set([
 const WRITTEN_VOID_ELEMENTS: ReadonlySet<string> = new Set(['br', 'col', 'hr', 'img', 'wbr']);
 /** Elements that render nothing, dropped with their content: scripts, templates, fallbacks and head metadata. */
 const DROPPED_ELEMENTS: ReadonlySet<string> = new Set([
-  'script', 'noscript', 'template', 'noembed', 'noframes', 'source', 'track', 'link', 'meta', 'base', 'param',
-  'datalist', 'area', 'bgsound', 'title',
+  ...NEVER_DRAWN_ELEMENTS, 'source', 'track', 'link', 'meta', 'base', 'param', 'datalist', 'area', 'bgsound', 'title',
 ]);
-/** Elements whose content would be lost: refused, as the in-process renderer refuses them. */
-const UNRENDERED_ELEMENTS: ReadonlySet<string> = new Set([
-  'svg', 'canvas', 'video', 'audio', 'applet', 'frame', 'frameset', 'select', 'textarea',
-]);
-/** Frames, refused when they have a source or inline document. */
-const FRAME_ELEMENTS: ReadonlySet<string> = new Set(['iframe', 'portal']);
-const INPUT_ELEMENT = 'input';
-const HIDDEN_INPUT_TYPE = 'hidden';
-const EMBED_ELEMENT = 'embed';
-const OBJECT_ELEMENT = 'object';
 /** Raw-text elements whose content is written as escaped preformatted text. */
 const PREFORMATTED_TEXT_ELEMENTS: ReadonlySet<string> = new Set(['xmp']);
 const DOCUMENT_ELEMENT = 'html';
@@ -179,26 +169,6 @@ function checkedStyleSheet(element: HtmlElement, omitted: OmittedContent, images
   return checkedCss(css, STYLE_SHEET_HOLDER, omitted, images);
 }
 
-function hasValue(element: HtmlElement, name: string): boolean {
-  return trimUrl(element.attrs.get(name) ?? '').length > 0;
-}
-
-/** Whether an element has content of its own: a child element or text other than whitespace. */
-function hasContent(element: HtmlElement): boolean {
-  return element.children.some((child) => typeof child !== 'string' || child.trim().length > 0);
-}
-
-/** Whether staging would lose what the element draws: media, SVG, form controls, frames and objects with content. */
-function isUnrendered(element: HtmlElement): boolean {
-  const tag = element.tag;
-  if (UNRENDERED_ELEMENTS.has(tag)) return true;
-  if (tag === INPUT_ELEMENT) return asciiLowerCase(trimUrl(element.attrs.get('type') ?? '')) !== HIDDEN_INPUT_TYPE;
-  if (FRAME_ELEMENTS.has(tag)) return hasValue(element, 'src') || hasValue(element, 'srcdoc');
-  if (tag === EMBED_ELEMENT) return hasValue(element, 'src');
-  if (tag === OBJECT_ELEMENT) return hasValue(element, 'data') || hasContent(element);
-  return false;
-}
-
 /** The bytes and declared format of a checked image data: URI. */
 function imageData(url: string): { bytes: Buffer; format: string } {
   const match = IMAGE_DATA_URI.exec(url) as RegExpExecArray;
@@ -283,7 +253,7 @@ class StagedHtmlWriter {
       return;
     }
     const tag = node.tag;
-    if (isUnrendered(node)) {
+    if (isUndrawable(node)) {
       this.omitted.element(tag);
       return;
     }

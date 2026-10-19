@@ -97,10 +97,23 @@ const LAST_C0_OR_SPACE = 0x20;
 const DATA_URI_PREFIX = /^data:/i;
 const FRAGMENT_PREFIX = '#';
 const IMAGE_TAG = 'img';
+const INPUT_TAG = 'input';
+const HIDDEN_INPUT_TYPE = 'hidden';
+const EMBED_TAG = 'embed';
+const OBJECT_TAG = 'object';
 const PICTURE_TAG = 'picture';
 const SOURCE_TAG = 'source';
 const SRC_ATTRIBUTE = 'src';
 const SRCSET_ATTRIBUTE = 'srcset';
+
+/**
+ * Lowercases ASCII letters only. HTML tag and attribute names are ASCII-case-insensitive, and
+ * keeping every other character (such as U+0130, whose full lowercase form is two code units)
+ * keeps offsets into the lowercased copy valid for the original text.
+ */
+export function asciiLowerCase(text: string): string {
+  return text.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
+}
 
 export function stripControls(text: string): string {
   return text.replace(CONTROL_CHARACTERS_TO_STRIP, '');
@@ -183,6 +196,47 @@ function namesExternalImage(element: HtmlElement): boolean {
   });
 }
 
+/**
+ * Elements whose subtree no route draws and nobody reports: scripts, templates and fallbacks for what a page cannot run.
+ * Both renderers drop them (their own sets build on this one), so the image loader neither fetches nor warns about what
+ * is inside them.
+ */
+export const NEVER_DRAWN_ELEMENTS: ReadonlySet<string> = new Set(['script', 'noscript', 'template', 'noembed', 'noframes']);
+/** Elements no route draws, with their content: media, SVG, canvas, frames and form controls that have no text of their own. */
+const UNRENDERED_ELEMENTS: ReadonlySet<string> = new Set([
+  'svg', 'canvas', 'video', 'audio', 'applet', 'frame', 'frameset', 'select', 'textarea',
+]);
+/** Frames, left out when they have a source or inline document. */
+const FRAME_ELEMENTS: ReadonlySet<string> = new Set(['iframe', 'portal']);
+
+function hasAttributeValue(element: HtmlElement, name: string): boolean {
+  return trimUrl(element.attrs.get(name) ?? '').length > 0;
+}
+
+/** Whether an element has content of its own: a child element or text other than whitespace. */
+function hasContent(element: HtmlElement): boolean {
+  return element.children.some((child) => typeof child !== 'string' || child.trim().length > 0);
+}
+
+/**
+ * Whether the element is one a PDF cannot carry (media, SVG, canvas, form controls, frames, objects with content): both
+ * routes leave it out with its fallback content and report it by tag (see OmittedContent).
+ */
+export function isUndrawable(element: HtmlElement): boolean {
+  const tag = element.tag;
+  if (UNRENDERED_ELEMENTS.has(tag)) return true;
+  if (tag === INPUT_TAG) return asciiLowerCase(trimUrl(element.attrs.get('type') ?? '')) !== HIDDEN_INPUT_TYPE;
+  if (FRAME_ELEMENTS.has(tag)) return hasAttributeValue(element, 'src') || hasAttributeValue(element, 'srcdoc');
+  if (tag === EMBED_TAG) return hasAttributeValue(element, 'src');
+  if (tag === OBJECT_TAG) return hasAttributeValue(element, 'data') || hasContent(element);
+  return false;
+}
+
+/** Whether nothing inside the element is drawn on any route, so nothing inside it is loaded or reported. */
+export function isNeverDrawn(element: HtmlElement): boolean {
+  return NEVER_DRAWN_ELEMENTS.has(element.tag) || isUndrawable(element);
+}
+
 /** An image element the document names without embedding it, and where it sits. */
 export interface ExternalImage {
   readonly parent: HtmlElement;
@@ -200,6 +254,7 @@ export function findExternalImages(root: HtmlElement): ExternalImage[] {
   const visit = (parent: HtmlElement): void => {
     parent.children.forEach((child, index) => {
       if (typeof child === 'string') return;
+      if (isNeverDrawn(child)) return;
       const isImage = child.tag === IMAGE_TAG;
       const isPictureSource = child.tag === SOURCE_TAG && parent.tag === PICTURE_TAG;
       if ((isImage || isPictureSource) && namesExternalImage(child)) {
