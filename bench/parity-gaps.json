@@ -555,38 +555,6 @@
       ]
     },
     {
-      "id": "pdf-ops/pdf-pdfjs-Pages-tree-refs.pdf->compress/pdf_check_failures",
-      "issue": 783,
-      "ratio": null,
-      "note": "damaged page tree (a loop through the Pages references): the repaired PDF still has 1 check failure, the reference has none",
-      "recorded": 1,
-      "reference": 0
-    },
-    {
-      "id": "pdf-ops/pdf-qpdf-pages-loop.pdf->compress/pdf_check_failures",
-      "issue": 783,
-      "ratio": null,
-      "note": "damaged page tree (a Pages loop): the repaired PDF still has 1 check failure, the reference has none",
-      "recorded": 1,
-      "reference": 0
-    },
-    {
-      "id": "pdf-ops/class-damaged->compress/pdf_check_failures",
-      "issue": 783,
-      "ratio": null,
-      "note": "mean over the 5 damaged files: follows from the two page-tree rows above (2 of 5 files)",
-      "recorded": 0.4,
-      "reference": 0
-    },
-    {
-      "id": "pdf-ops/pdf-qpdf-form-errors.pdf->delete/bytes",
-      "issue": 783,
-      "ratio": null,
-      "note": "form with errors: the output is 960 bytes larger than the reference, past the 3% allowance of 776",
-      "recorded": 26830,
-      "reference": 25870
-    },
-    {
       "id": "raw/raw-samsung-s23.dng->jpg/converts",
       "issue": 686,
       "ratio": null,

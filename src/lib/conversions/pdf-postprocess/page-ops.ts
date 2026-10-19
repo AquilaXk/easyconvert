@@ -116,37 +116,6 @@ export async function extractPdfPages(pdf: Buffer, spec: string, access: PdfAcce
   );
 }
 
-/** A group larger than any document: `--split-pages` with it writes the selection as one file, and none when the selection is empty. */
-const WHOLE_DOCUMENT_GROUP = 100_000_000;
-const DELETE_OUTPUT_TEMPLATE = 'result-%d.pdf';
-
-/**
- * The document without the pages of `spec`.
- *
- * qpdf writes the pages that remain; written through `--split-pages` with a group larger than any document, it writes
- * nothing when no page remains, which tells an emptied document from a result without a second run to count pages.
- *
- * @throws InvalidPageRangeError for an invalid specification or a page the document does not have.
- * @throws PdfPostprocessError when the specification names every page: a PDF with no page is no result.
- */
-export async function deletePdfPages(pdf: Buffer, spec: string, access: PdfAccess = {}): Promise<Buffer> {
-  const excluded = tokensOf(assertPageSpec(spec, 'pages')).map((token) => `x${qpdfRangeOf(token)}`);
-  const selection = pagesSelection(['1-z', ...excluded].join(','));
-  const plain = await editablePdf(pdf, 'delete', access);
-  return withQpdfWorkspace(plain, async (workspace) => {
-    const action = 'Deleting the pages';
-    await runQpdf(workspace, {
-      args: [...QPDF_COMPACT_OUTPUT_ARGS, `--split-pages=${WHOLE_DOCUMENT_GROUP}`, workspace.inputPath, ...selection, DELETE_OUTPUT_TEMPLATE],
-      action,
-    });
-    const written = fs.readdirSync(workspace.dir).filter((name) => name.startsWith('result-'));
-    if (written.length !== 1) {
-      throw new PdfPostprocessError('Deleting the pages failed: the specification names every page, and a PDF needs at least one.');
-    }
-    return fs.readFileSync(path.join(workspace.dir, written[0]));
-  });
-}
-
 interface PageToken {
   start: number;
   /** Infinity for an open range (`4-`), which runs to the last page. */
@@ -163,6 +132,54 @@ function pageTokenOf(token: string): PageToken {
     start: start === '' ? 1 : Number.parseInt(pageNumberOf(start), 10),
     end: end === '' ? Number.POSITIVE_INFINITY : Number.parseInt(pageNumberOf(end), 10),
   };
+}
+
+/** Whether the ranges of `tokens` together cover pages 1 to `pages`. */
+function coversEveryPage(tokens: readonly string[], pages: number): boolean {
+  let covered = 0;
+  for (const range of tokens.map(pageTokenOf).sort((a, b) => a.start - b.start)) {
+    if (range.start > covered + 1) return false;
+    covered = Math.max(covered, range.end);
+  }
+  return covered >= pages;
+}
+
+/** The number of pages qpdf counts in the document. */
+async function pageCountOf(workspace: QpdfWorkspace, action: string): Promise<number> {
+  const { stdout } = await runQpdf(workspace, { args: ['--show-npages', workspace.inputPath], action });
+  const text = stdout.toString('utf8').trim();
+  if (!PAGE_COUNT_PATTERN.test(text)) throw new PdfPostprocessError(`${action} failed: qpdf did not report a page count.`);
+  return Number.parseInt(text, 10);
+}
+
+/**
+ * The document without the pages of `spec`.
+ *
+ * qpdf takes the pages out of the document itself (`--pages .`), as it does for the other page operations: the catalog
+ * and the form keep what belongs to the pages that stay, and the form fields and objects of the deleted pages go with
+ * them. (A selection written through `--split-pages` copies the pages into a new document instead, which drops the
+ * catalog entries of the document and copies a damaged form again for every field.) qpdf writes a document without
+ * pages when the selection is empty, so the page count is read beside the run and a specification that names every page
+ * is refused before its result is used.
+ *
+ * @throws InvalidPageRangeError for an invalid specification or a page the document does not have.
+ * @throws PdfPostprocessError when the specification names every page: a PDF with no page is no result.
+ */
+export async function deletePdfPages(pdf: Buffer, spec: string, access: PdfAccess = {}): Promise<Buffer> {
+  const tokens = tokensOf(assertPageSpec(spec, 'pages'));
+  const selection = pagesSelection(['1-z', ...tokens.map((token) => `x${qpdfRangeOf(token)}`)].join(','));
+  const plain = await editablePdf(pdf, 'delete', access);
+  return withQpdfInputFile(plain, async (workspace) => {
+    const action = 'Deleting the pages';
+    const [result, pages] = await Promise.all([
+      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...selection, '-'], action }),
+      pageCountOf(workspace, action),
+    ]);
+    if (coversEveryPage(tokens, pages)) {
+      throw new PdfPostprocessError('Deleting the pages failed: the specification names every page, and a PDF needs at least one.');
+    }
+    return result;
+  });
 }
 
 /** A page two listed tokens both name is listed twice, which is a copy of the page and no reordering. */
@@ -356,10 +373,7 @@ async function splitFiles(workspace: QpdfWorkspace, options: PdfSplitOptions, bu
   }
   const every = options.everyNPages === undefined ? 1 : splitEvery(options);
   if (inputBytes >= PAGE_COUNT_CHECK_MIN_BYTES) {
-    const { stdout } = await runQpdf(workspace, { args: [workspace.inputPath, '--show-npages'], action });
-    const text = stdout.toString('utf8').trim();
-    if (!PAGE_COUNT_PATTERN.test(text)) throw new PdfPostprocessError(`${action} failed: qpdf did not report a page count.`);
-    const pages = Number.parseInt(text, 10);
+    const pages = await pageCountOf(workspace, action);
     const parts = Math.ceil(pages / every);
     if (parts > MAX_SPLIT_PARTS) throw tooManyParts(`${pages} pages in parts of ${every} would write ${parts} parts`);
   }

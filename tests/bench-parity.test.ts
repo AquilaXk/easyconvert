@@ -470,8 +470,8 @@ describe('the known gaps', () => {
     // The decode row reached parity on the CI runner, so it is no longer a known gap.
     expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
     expect(issuesOf('pdf-ops/', true)).toEqual([695]);
-    // The damaged PDF files whose page tree loops, and the form with errors (783).
-    expect(issuesOf('pdf-ops/', false)).toEqual([783]);
+    // The damaged PDF files whose page tree loops and the form with errors reached parity (783, entry 53), so no PDF operation quality row is a known gap.
+    expect(issuesOf('pdf-ops/', false)).toEqual([]);
   });
 
   it('accepts a family name with a hyphen in a row id', () => {
