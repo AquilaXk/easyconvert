@@ -356,7 +356,6 @@ function fixedStyles(language: string | undefined): string {
  * Writes the document.
  * @throws UnsupportedOptionError when the language is not a BCP 47 tag.
  * @throws PayloadLimitError when the document carries more pictures than ODT_WRITER_MAX_IMAGES.
- * @throws InvalidXmlCharacterError when text holds a character XML 1.0 does not allow.
  */
 export async function documentToOdt(model: DocumentModel, options: OdtWriteOptions): Promise<Buffer> {
   const language = resolveLanguage(model, options.language);

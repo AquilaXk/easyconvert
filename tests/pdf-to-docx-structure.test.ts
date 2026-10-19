@@ -7,10 +7,9 @@ import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions/index';
 import { documentToDocx } from '../src/lib/conversions/document-model/docx';
 import { plainTextModel } from '../src/lib/conversions/document-model/plain';
-import { InvalidXmlCharacterError } from '../src/lib/conversions/document-model/xml-text';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
-import { captureError } from './helpers/capture-error';
+import { xmlWellFormed } from './helpers/xml-oracle';
 import { cer } from './helpers/pdf-text-metrics';
 import { readDocxStructure, type DocxStructure } from './helpers/docx-structure';
 import { aggregate, scoreStructure, type StructureTruth } from './helpers/structure-metrics';
@@ -206,15 +205,16 @@ describe('LibreOffice reads the result', () => {
 });
 
 describe('XML safety', () => {
-  for (const [label, text] of [
-    ['a control character', 'broken\u0001text'],
-    ['a lone surrogate', 'broken\ud800text'],
-    ['U+FFFE', 'broken￾text'],
+  // A code point XML 1.0 cannot carry is written without it, and the document is not refused (policy 55); tests/xml-unwritable-characters.test.ts holds the whole rule.
+  for (const [label, text, written] of [
+    ['a control character is dropped', 'broken\u0001text', 'brokentext'],
+    ['a lone surrogate becomes U+FFFD', 'broken\ud800text', 'broken\ufffdtext'],
+    ['U+FFFE becomes U+FFFD', 'broken\ufffetext', 'broken\ufffdtext'],
   ] as const) {
-    it(`refuses ${label} instead of writing it`, async () => {
-      const error = await captureError(() => documentToDocx(plainTextModel(text)));
-      expect(error).toBeInstanceOf(InvalidXmlCharacterError);
-      expect((error as InvalidXmlCharacterError).status).toBe(400);
+    it(`writes well-formed XML when ${label}`, async () => {
+      const document = await part(await documentToDocx(plainTextModel(text)), 'word/document.xml');
+      expect(xmlWellFormed(document).ok).toBe(true);
+      expect(/<w:t xml:space="preserve">(.*?)<\/w:t>/.exec(document)?.[1]).toBe(written);
     });
   }
 

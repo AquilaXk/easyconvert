@@ -46,6 +46,10 @@ const SURROGATE_FIRST = 0xd800;
 const SURROGATE_LAST = 0xdfff;
 const DEFAULT_LIST_START = 1;
 const STYLE_ELEMENT = 'style';
+const HEAD_ELEMENT = 'head';
+const COLUMN_GROUP_ELEMENT = 'colgroup';
+const COLUMN_ELEMENT = 'col';
+const FORM_ELEMENT = 'form';
 const TITLE_ELEMENT = 'title';
 /** Raw-text elements whose content is kept as text: textarea decodes character references, xmp does not. */
 const TEXTAREA_ELEMENT = 'textarea';
@@ -79,6 +83,14 @@ const PARAGRAPH_CLOSERS: ReadonlySet<string> = new Set([
 ]);
 /** Elements that stop the search for an open <p> to close. */
 const PARAGRAPH_SCOPE: ReadonlySet<string> = new Set(['table', 'td', 'th', 'caption', 'button', 'object', 'template']);
+/** Elements that belong in a document head: any other start tag, or text, ends an unclosed `<head>` (HTML, "in head" insertion mode). */
+const HEAD_CONTENT_ELEMENTS: ReadonlySet<string> = new Set([
+  'base', 'basefont', 'bgsound', 'link', 'meta', 'noframes', 'noscript', 'script', 'style', 'template', 'title',
+]);
+/** Elements a document has once: a second start tag is ignored and its content joins the first. */
+const SINGLE_ELEMENTS: ReadonlySet<string> = new Set(['html', 'head', 'body']);
+/** Elements that make a start tag `table` end the table that is open, when the table has no open cell. */
+const TABLE_CONTEXT: ReadonlySet<string> = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr']);
 const PARAGRAPH: ReadonlySet<string> = new Set(['p']);
 const LIST_ITEM: ReadonlySet<string> = new Set(['li']);
 const DEFINITION_ITEMS: ReadonlySet<string> = new Set(['dt', 'dd']);
@@ -86,6 +98,8 @@ const DEFINITION_LIST: ReadonlySet<string> = new Set(['dl']);
 const TABLE: ReadonlySet<string> = new Set(['table']);
 const TABLE_ROW: ReadonlySet<string> = new Set(['tr']);
 const TABLE_ROW_SCOPE: ReadonlySet<string> = new Set(['table', 'thead', 'tbody', 'tfoot']);
+/** Elements a row goes in: a cell directly in one of them is in a row HTML makes. */
+const ROW_PARENTS: ReadonlySet<string> = new Set(['table', 'thead', 'tbody', 'tfoot']);
 const TABLE_CELL_SCOPE: ReadonlySet<string> = new Set(['tr', 'table']);
 const OPTION: ReadonlySet<string> = new Set(['option']);
 const SELECT: ReadonlySet<string> = new Set(['select']);
@@ -117,6 +131,7 @@ const BASE64_BODY = /^[A-Za-z0-9+/]*={0,2}$/;
 const SPACE_CHARACTER = ' ';
 const LINE_BREAK = '\n';
 const HTML_WHITESPACE = /[ \t\n\f\r]+/g;
+const NON_WHITESPACE = /[^ \t\n\f\r]/;
 const TAG_NAME_END = /[\s/>]/;
 const ATTRIBUTE_NAME_END = /[\s/>=]/;
 const UNQUOTED_VALUE_END = /[\s>]/;
@@ -218,13 +233,16 @@ class HtmlTreeBuilder {
   readonly root: HtmlElement = { tag: '#root', attrs: new Map(), children: [] };
   private readonly stack: HtmlElement[] = [this.root];
   title?: string;
+  private readonly singles = new Set<string>();
 
   private get current(): HtmlElement {
     return this.stack[this.stack.length - 1];
   }
 
   text(value: string): void {
-    if (value.length > 0) this.current.children.push(decodeHtmlCharacterReferences(value));
+    if (value.length === 0) return;
+    if (this.current.tag === HEAD_ELEMENT && NON_WHITESPACE.test(value)) this.stack.pop();
+    this.current.children.push(decodeHtmlCharacterReferences(value));
   }
 
   /** Pops up to and including the nearest open element named in `tags`, unless a boundary comes first. */
@@ -239,25 +257,44 @@ class HtmlTreeBuilder {
     }
   }
 
+  /** Whether `tag` is the second start tag of an element a document has once; such a tag is ignored and its content joins the first. */
+  private repeatsSingleElement(tag: string): boolean {
+    if (!SINGLE_ELEMENTS.has(tag)) return false;
+    if (this.singles.has(tag)) return true;
+    this.singles.add(tag);
+    return false;
+  }
+
   /** Whether a start tag `tag` here would be foreign content. */
   isForeign(tag: string): boolean {
     return FOREIGN_ROOTS.has(tag) || this.current.foreign === true;
   }
 
   start(tag: string, attrs: Map<string, string>, selfClosing = false): void {
+    if (this.repeatsSingleElement(tag)) return;
+    if (this.current.tag === HEAD_ELEMENT && !HEAD_CONTENT_ELEMENTS.has(tag)) this.stack.pop();
+    if (this.current.tag === COLUMN_GROUP_ELEMENT && tag !== COLUMN_ELEMENT) this.stack.pop();
+    if (tag === 'table' && TABLE_CONTEXT.has(this.current.tag)) this.closeOpen(TABLE);
     if (PARAGRAPH_CLOSERS.has(tag)) this.closeOpen(PARAGRAPH, PARAGRAPH_SCOPE);
     if (HEADING_ELEMENTS.has(tag) && HEADING_ELEMENTS.has(this.current.tag)) this.stack.pop();
     if (tag === 'li') this.closeOpen(LIST_ITEM, LIST_ELEMENTS);
     if (DEFINITION_ITEMS.has(tag)) this.closeOpen(DEFINITION_ITEMS, DEFINITION_LIST);
     if (TABLE_SECTION_ELEMENTS.has(tag)) this.closeOpen(TABLE_SECTION_ELEMENTS, TABLE);
     if (tag === 'tr') this.closeOpen(TABLE_ROW, TABLE_ROW_SCOPE);
-    if (TABLE_CELL_ELEMENTS.has(tag)) this.closeOpen(TABLE_CELL_ELEMENTS, TABLE_CELL_SCOPE);
+    if (TABLE_CELL_ELEMENTS.has(tag)) {
+      this.closeOpen(TABLE_CELL_ELEMENTS, TABLE_CELL_SCOPE);
+      // A cell whose row is not open (its `<tr>` is missing or was closed early) gets a row, as HTML makes one.
+      if (ROW_PARENTS.has(this.current.tag)) this.start('tr', new Map());
+    }
     if (tag === 'option') this.closeOpen(OPTION, SELECT);
 
     const foreign = this.isForeign(tag);
     const element: HtmlElement = { tag, attrs, children: [], foreign };
+    const holdsRows = TABLE_CONTEXT.has(this.current.tag);
     this.current.children.push(element);
     if (VOID_ELEMENTS.has(tag) || (selfClosing && foreign)) return;
+    // A form that starts between the rows of a table holds nothing: the rows after it are the table's own, as HTML reads it.
+    if (tag === FORM_ELEMENT && holdsRows) return;
     if (this.stack.length >= MAX_NESTING_DEPTH) {
       throw new ConversionFailedError(`HTML nests elements deeper than ${MAX_NESTING_DEPTH} levels`);
     }

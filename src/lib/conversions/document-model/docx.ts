@@ -632,7 +632,6 @@ function documentLists(model: DocumentModel): ListBlock[] {
 
 /**
  * Writes the document as a DOCX package.
- * @throws InvalidXmlCharacterError when text holds a character XML 1.0 does not allow.
  * @throws PayloadLimitError when the document carries more pictures than DOCX_WRITER_MAX_IMAGES.
  * @throws UnsupportedOptionError when the requested language is not a BCP 47 tag.
  */
