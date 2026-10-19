@@ -6,7 +6,8 @@ import { ConversionFailedError } from '../types';
  * `image-set()`, `-webkit-image-set()` and `cross-fade()` at any depth, and `@import`.
  *
  * Readers disagree on CSS escapes, control characters and line breaks, so control characters are
- * removed first, line breaks become spaces, and any backslash, unterminated string or non-ASCII
+ * removed first, line breaks become spaces, and any backslash outside a comment (inside one it is
+ * no escape, and the comment is replaced by a space), unterminated string or non-ASCII
  * character outside a quoted string (some readers skip default-ignorable and separator characters,
  * so `u<U+200B>rl(` still reads as url( to them) is refused;
  * comments and `<!--`/`-->` markers become spaces in the returned text, so what LibreOffice reads
@@ -83,6 +84,10 @@ function lowerAscii(text: string): string {
   return text.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
 }
 
+function refuseEscape(): never {
+  throw new ConversionFailedError('HTML CSS with a backslash escape is not supported; CSS readers disagree on escapes');
+}
+
 function refuseMarkup(): never {
   throw new ConversionFailedError('HTML CSS may not contain "<" outside a <!-- --> marker');
 }
@@ -148,6 +153,7 @@ class CssScanner {
     const start = this.i;
     while (this.i < css.length && css[this.i] !== quote) {
       if (css[this.i] === MARKUP_OPEN) refuseMarkup();
+      if (css[this.i] === BACKSLASH) refuseEscape();
       this.i++;
     }
     if (this.i >= css.length) throw new ConversionFailedError('HTML CSS has an unterminated string');
@@ -165,6 +171,7 @@ class CssScanner {
     while (this.i < css.length && css[this.i] !== ')' && !isWhitespace(css[this.i])) {
       const ch = css[this.i];
       if (ch === MARKUP_OPEN) refuseMarkup();
+      if (ch === BACKSLASH) refuseEscape();
       if (isNonAscii(ch)) refuseNonAscii();
       if (ch === '"' || ch === "'" || ch === '(') throw new ConversionFailedError('HTML CSS has a malformed url()');
       this.i++;
@@ -190,6 +197,7 @@ class CssScanner {
       return { kind: 'close', value: ch };
     }
     if (ch === MARKUP_OPEN) refuseMarkup();
+    if (ch === BACKSLASH) refuseEscape();
     if (isNonAscii(ch)) refuseNonAscii();
     if (ch === '@' && startsIdentifier(css, this.i + 1)) {
       this.i++;
@@ -212,15 +220,12 @@ class CssScanner {
 }
 
 /**
- * Scans CSS for the resources it would load. Throws ConversionFailedError for a backslash, a
+ * Scans CSS for the resources it would load. Throws ConversionFailedError for a backslash outside a comment, a
  * stray "<" or a malformed url(); returns the checked text and the first URL `isAllowedUrl`
  * rejects (an `@import` is always reported, whatever it names).
  */
 export function scanCss(source: string, isAllowedUrl: (url: string) => boolean): CssScan {
   const css = source.replace(CONTROL_CHARACTERS, '').replace(LINE_BREAKS, ' ');
-  if (css.includes(BACKSLASH)) {
-    throw new ConversionFailedError('HTML CSS with a backslash escape is not supported; CSS readers disagree on escapes');
-  }
   const scanner = new CssScanner(css);
   /** Closing characters of the open groups and functions, and whether each is a URL function. */
   const groups: Array<{ closer: string; url: boolean }> = [];

@@ -25,6 +25,7 @@ import {
   type ExternalOracleTool,
 } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
+import { withCapturingSoffice } from './helpers/html-pdf-oracle';
 import { synthesizeHwp5CompoundCorpus } from './helpers/corpus-synthesizer';
 
 /**
@@ -1037,42 +1038,46 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     expectStructuredLayout(result.buffer);
   }, 60_000);
 
-  it('refuses HTML that references external resources before LibreOffice could fetch them', async () => {
-    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-marker-')), 'invoked');
-    const recordingSoffice = failingSoffice(`touch '${marker}'; exit 3`);
+  it('leaves out a frame and a style sheet by address, so LibreOffice is handed neither and fetches nothing', async () => {
     for (const html of [
       '<p>frame</p><iframe src="http://192.0.2.2:18765/"></iframe>',
       '<link rel="stylesheet" href="http://192.0.2.2:18765/s.css"><p>styled</p>',
     ]) {
-      const { error } = await settle(
-        withEnvValue('SOFFICE_PATH', recordingSoffice, () => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'remote.html'))
-      );
-      expect({ html, name: (error as Error)?.name, invoked: fs.existsSync(marker) }).toEqual({ html, name: 'ConversionFailedError', invoked: false });
-      expect((error as Error).message).toMatch(/external reference/);
+      const handed = await withCapturingSoffice(() => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'remote.html'));
+      expect({ html, handed: /192\.0\.2\.2|<iframe|<link/.test(handed), paragraph: /<p>(?:frame|styled)<\/p>/.test(handed) }).toEqual({
+        html,
+        handed: false,
+        paragraph: true,
+      });
     }
   });
 
-  it('refuses CSS url(), @import, image-set and background references before LibreOffice could load them', async () => {
-    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-css-marker-')), 'invoked');
-    const recordingSoffice = failingSoffice(`touch '${marker}'; exit 3`);
-    const external = (reference: string): string => `"${reference}" is an external reference`;
-    const cases: Array<[string, string]> = [
-      ['<p style="background:url(file:///etc/hosts)">attribute</p>', external('file:///etc/hosts')],
-      ['<style>@import "http://192.0.2.2:18765/a.css";</style><p>import</p>', external('http://192.0.2.2:18765/a.css')],
-      // Any backslash is refused: CSS readers disagree on escapes such as \75 (u).
-      ['<p style="background:\\75 rl(file:///etc/hosts)">escaped</p>', 'backslash escape is not supported'],
-      ['<style>p { background : /* note */ URL( \'file:///etc/hosts\' ) }</style><p>quoted</p>', external('file:///etc/hosts')],
-      ['<style>@import/* note */url(http://192.0.2.2:18765/b.css);</style><p>import url</p>', external('http://192.0.2.2:18765/b.css')],
-      ['<style>p { background: image-set("file:///etc/hosts" 1x) }</style><p>image-set</p>', external('file:///etc/hosts')],
-      ['<table><tr><td background="file:///etc/hosts">cell</td></tr></table>', external('file:///etc/hosts')],
+  it('leaves out CSS url(), @import, image-set and background references, so LibreOffice is handed none of them', async () => {
+    const cases: Array<[string, RegExp]> = [
+      ['<p style="background:url(file:///etc/hosts)">attribute</p>', /file:|etc\/hosts|style=/],
+      ['<style>@import "http://192.0.2.2:18765/a.css";</style><p>import</p>', /192\.0\.2\.2|@import|<style/],
+      ['<style>p { background : /* note */ URL( \'file:///etc/hosts\' ) }</style><p>quoted</p>', /file:|etc\/hosts|URL|<style/],
+      ['<style>@import/* note */url(http://192.0.2.2:18765/b.css);</style><p>import url</p>', /192\.0\.2\.2|@import|<style/],
+      ['<style>p { background: image-set("file:///etc/hosts" 1x) }</style><p>pictures</p>', /file:|etc\/hosts|image-set|<style/],
+      ['<table><tr><td background="file:///etc/hosts">cell</td></tr></table>', /file:|etc\/hosts|background/],
     ];
-    for (const [html, message] of cases) {
-      const { error } = await settle(
-        withEnvValue('SOFFICE_PATH', recordingSoffice, () => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'css.html'))
-      );
-      expect({ html, name: (error as Error)?.name, invoked: fs.existsSync(marker) }).toEqual({ html, name: 'ConversionFailedError', invoked: false });
-      expect((error as Error).message).toContain(message);
+    for (const [html, reference] of cases) {
+      const handed = await withCapturingSoffice(() => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'css.html'));
+      expect({ html, reference: reference.exec(handed)?.[0] ?? null }).toEqual({ html, reference: null });
     }
+  });
+
+  it('still refuses any backslash in CSS outside a comment, before LibreOffice could read an escaped url()', async () => {
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-css-marker-')), 'invoked');
+    // CSS readers disagree on escapes such as \75 (u).
+    const html = '<p style="background:\\75 rl(file:///etc/hosts)">escaped</p>';
+    const { error } = await settle(
+      withEnvValue('SOFFICE_PATH', failingSoffice(`touch '${marker}'; exit 3`), () =>
+        executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'css.html')
+      )
+    );
+    expect({ name: (error as Error)?.name, invoked: fs.existsSync(marker) }).toEqual({ name: 'ConversionFailedError', invoked: false });
+    expect((error as Error).message).toContain('backslash escape is not supported');
   });
 
   oracleTest('still sends HTML whose CSS uses only embedded image data to LibreOffice', ['pdftotext'], async () => {
@@ -1091,9 +1096,7 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     });
   });
 
-  it('refuses every URL attribute outside the allowlist, inline SVG included, before LibreOffice could load it', async () => {
-    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-url-marker-')), 'invoked');
-    const recordingSoffice = failingSoffice(`touch '${marker}'; exit 3`);
+  it('writes no URL attribute outside the allowlist for LibreOffice, inline SVG included', async () => {
     const cases: Array<[string, string]> = [
       ['<p>svg image</p><svg><image href="file:///tmp/local.png" width="10" height="10"/></svg>', 'file:///tmp/local.png'],
       ['<p>svg xlink</p><svg><image xlink:href="http://192.0.2.2:18765/a.png"/></svg>', 'http://192.0.2.2:18765/a.png'],
@@ -1108,16 +1111,13 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
       ['<blockquote cite="http://192.0.2.2:18765/q">quote</blockquote>', 'http://192.0.2.2:18765/q'],
       ['<script src="http://192.0.2.2:18765/s.js"></script><p>script</p>', 'http://192.0.2.2:18765/s.js'],
       ['<p><a href="file:///etc/hosts">local link</a></p>', 'file:///etc/hosts'],
-      ['<p><a href="java\tscript:alert(1)">script link</a></p>', 'java\tscript:alert(1)'],
+      ['<p><a href="java\tscript:alert(1)">script link</a></p>', 'alert(1)'],
       ['<p><a href="https://example.com/" ping="http://192.0.2.2:18765/ping">ping</a></p>', 'http://192.0.2.2:18765/ping'],
       ['<meta http-equiv="refresh" content="0; url=file:///etc/hosts"><p>refresh</p>', 'file:///etc/hosts'],
     ];
     for (const [html, reference] of cases) {
-      const { error } = await settle(
-        withEnvValue('SOFFICE_PATH', recordingSoffice, () => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'urls.html'))
-      );
-      expect({ html, name: (error as Error)?.name, invoked: fs.existsSync(marker) }).toEqual({ html, name: 'ConversionFailedError', invoked: false });
-      expect((error as Error).message).toContain(`"${reference}" is an external reference`);
+      const handed = await withCapturingSoffice(() => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'urls.html'));
+      expect({ html, handedTheReference: handed.includes(reference) }).toEqual({ html, handedTheReference: false });
     }
   });
 
@@ -1137,18 +1137,13 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
       text: 'jump web plain mail self Target',
     });
 
-    // Inline SVG that refers only to its own fragments and data: images passes the reference check (no 400),
-    // but no engine draws inline SVG, so it is refused as unavailable before LibreOffice runs instead of being dropped.
-    const svgMarker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'soffice-svg-allowed-')), 'invoked');
+    // Inline SVG that refers only to its own fragments and data: images is left out whole: no engine draws it, and
+    // LibreOffice is handed the rest of the page.
     const svg =
       `<p>shapes</p><svg xmlns:xlink="http://www.w3.org/1999/xlink"><defs><rect id="r" width="4" height="4" fill="url(#g)"/></defs>` +
       `<use href="#r"/><use xlink:href="#r"/><image href="${png}" width="2" height="2"/></svg>`;
-    const { error } = await settle(
-      withEnvValue('SOFFICE_PATH', failingSoffice(`touch '${svgMarker}'; exit 3`), () =>
-        executeWorkerConversion(Buffer.from(svg, 'utf-8'), 'html', 'pdf', {}, 'shapes.html')
-      )
-    );
-    expect({ invoked: fs.existsSync(svgMarker), name: (error as Error)?.name }).toEqual({ invoked: false, name: 'EngineUnavailableError' });
+    const handed = await withCapturingSoffice(() => executeWorkerConversion(Buffer.from(svg, 'utf-8'), 'html', 'pdf', {}, 'shapes.html'));
+    expect({ svg: /<svg|<use|<image|<defs/.test(handed), paragraph: handed.includes('<p>shapes</p>') }).toEqual({ svg: false, paragraph: true });
   });
 
   oracleTest('shapes complex-script text in-process when LibreOffice fails on it', ['pdftotext'], async () => {

@@ -1,5 +1,5 @@
 import sharp, { type Metadata } from 'sharp';
-import { ConversionFailedError, EngineUnavailableError } from '../types';
+import { ConversionFailedError } from '../types';
 import { scanCss } from './css-references';
 import {
   asciiLowerCase,
@@ -14,8 +14,8 @@ import {
 import { loadExternalImages } from './html-image-loader';
 import {
   normalizeUrl,
+  OmittedContent,
   OmittedExternalImages,
-  srcsetUrls,
   stripControls,
   trimUrl,
   type HtmlResourcePolicy,
@@ -26,18 +26,21 @@ import {
  * checked instead of raw bytes it may parse differently (control characters inside names, comment
  * and raw-text edge cases, CSS escapes). Only allowlisted elements and attributes are written;
  * comments, doctypes, processing instructions and CDATA never are; every text node and attribute
- * value is escaped. Any URL that leaves the document is refused with a typed 400 first: on every
- * element (inline SVG included) URL attributes must be data: URIs or `#fragment`s, image sources
- * must be base64 PNG, JPEG or GIF data that decodes, and only `<a href>` may link to http, https
- * or mailto. The exception is an `<img>` that is not embedded: it is fetched and embedded first (see
- * html-image-loader.ts), and one that cannot be loaded is left out of the staged document and reported, unless the
- * caller requires every resource. Content LibreOffice would not draw here (embedded media, frames with content, SVG,
- * form controls) is refused with EngineUnavailableError rather than dropped; only elements that
- * render nothing (scripts, templates, fallbacks, head metadata) are left out silently.
+ * value is escaped. What the written document can reach is limited to three places, each checked
+ * as it is written: an `<a href>` (http, https, mailto or a `#fragment`), an `<img src>` (base64 PNG,
+ * JPEG or GIF data that decodes) and CSS (embedded raster images and fragments only).
+ *
+ * A reference to anything else is left out and reported, never fetched and never refused: a link
+ * that is relative, javascript:, file: or ftp:, a style sheet, a background picture, and CSS that
+ * names a file or an import. The same goes for content LibreOffice would not draw here (embedded
+ * media, frames, SVG, form controls, objects), which is left out with its fallback content. Both are reported in
+ * two warnings (see OmittedContent). Data that claims to be an image or a style sheet but is not
+ * valid is still a 400, and so is CSS the scanner cannot vouch for (escapes, a stray "<", non-ASCII
+ * outside strings). An `<img>` that is not embedded is fetched and embedded first (see html-image-loader.ts),
+ * and one that cannot be loaded is left out and reported, unless the caller requires every resource.
+ * Elements that render nothing (scripts, templates, fallbacks, head metadata) are left out silently.
  */
 
-/** C0 controls other than tab, line feed, form feed and carriage return, and DEL. */
-const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000e-\u001f\u007f]/g;
 const BYTE_ORDER_MARK = /^﻿/;
 
 /** Elements written with their tag; any other element is unwrapped (only its content is written) or dropped. */
@@ -78,49 +81,23 @@ const WRITTEN_ATTRIBUTES: ReadonlySet<string> = new Set([
   'start', 'summary', 'text', 'title', 'type', 'valign', 'value', 'vlink', 'vspace', 'width',
 ]);
 
-/**
- * Attributes whose value is a URL the document may load, submit to or navigate to. Namespaced
- * `*:href` (SVG `xlink:href` under any prefix) counts too.
- */
-const URL_ATTRIBUTES: ReadonlySet<string> = new Set([
-  'src', 'srcset', 'imagesrcset', 'href', 'background', 'poster', 'data', 'codebase', 'action', 'formaction', 'cite',
-  'longdesc', 'lowsrc', 'dynsrc', 'manifest', 'ping', 'archive', 'classid', 'profile', 'usemap', 'icon',
-]);
-/** URL attributes holding a srcset (comma-separated candidates with descriptors). */
-const SRCSET_ATTRIBUTES: ReadonlySet<string> = new Set(['srcset', 'imagesrcset']);
-/** URL attributes holding a whitespace-separated list of URLs. */
-const URL_LIST_ATTRIBUTES: ReadonlySet<string> = new Set(['ping', 'archive', 'profile']);
-/** Attributes that name an image on any element. */
-const IMAGE_ATTRIBUTES: ReadonlySet<string> = new Set(['srcset', 'imagesrcset', 'lowsrc', 'dynsrc', 'poster', 'background']);
-/** Elements whose src or href names an image: HTML images and image inputs, SVG image and feImage. */
-const IMAGE_ELEMENTS: ReadonlySet<string> = new Set(['img', 'input', 'image', 'feimage']);
-/** SVG presentation attributes whose value may be a CSS `url()` paint, filter, mask, marker or cursor reference. */
-const PRESENTATION_URL_ATTRIBUTES: ReadonlySet<string> = new Set([
-  'fill', 'stroke', 'filter', 'clip-path', 'mask', 'marker-start', 'marker-mid', 'marker-end', 'cursor',
-]);
-/** SVG animation elements, which write their to/from/by/values into the attribute they target. */
-const ANIMATION_ELEMENTS: ReadonlySet<string> = new Set(['set', 'animate', 'animatetransform', 'animatemotion']);
-const ANIMATION_VALUE_ATTRIBUTES = ['to', 'from', 'by', 'values'] as const;
-const ANIMATION_VALUE_SEPARATOR = ';';
 const ANCHOR_ELEMENT = 'a';
+const LINK_ELEMENT = 'link';
 const HREF_ATTRIBUTE = 'href';
 const SRC_ATTRIBUTE = 'src';
-const SRCSET_ATTRIBUTE = 'srcset';
+const BACKGROUND_ATTRIBUTE = 'background';
 const IMAGE_ELEMENT = 'img';
-const NAMESPACED_HREF_SUFFIX = ':href';
-const META_ELEMENT = 'meta';
-const REFRESH_PRAGMA = 'refresh';
-/** The delay and optional `url=` label before the target of a `<meta http-equiv="refresh">`. */
-const REFRESH_TARGET_PREFIX = /^[\s\d.]*[;,]?\s*(?:url\s*=\s*)?/i;
-const QUOTE_CHARACTERS = /^['"]|['"]$/g;
 const STYLE_ATTRIBUTE = 'style';
+const STYLESHEET_RELATION = 'stylesheet';
+/** What a warning says held a reference that was left out. */
+const ANCHOR_HOLDER = '<a href>';
+const LINK_HOLDER = '<link href>';
+const STYLE_SHEET_HOLDER = 'style sheet';
+const STYLE_ATTRIBUTE_HOLDER = 'style attribute';
 const DATA_URI_PREFIX = /^data:/i;
 const FRAGMENT_PREFIX = '#';
 /** Schemes an `<a href>` may link to outside the document; LibreOffice keeps them as links and loads nothing. */
 const ANCHOR_SCHEME = /^(?:https?|mailto):/i;
-/** Tab and newlines, which URL parsers drop from anywhere inside a URL. */
-const URL_IGNORED_CHARACTERS = /[\t\n\r]/g;
-const URL_LIST_SEPARATOR = /[ \t\n\f\r]+/;
 const ASCII_WHITESPACE = /[ \t\n\f\r]+/g;
 
 /** Image data: base64 PNG, JPEG or GIF; the decoded bytes must start with that format's signature. */
@@ -135,33 +112,8 @@ const IMAGE_SIGNATURES: ReadonlyMap<string, readonly Buffer[]> = new Map([
 ]);
 const MAX_REFERENCE_PREVIEW = 80;
 
-type UrlKind = 'anchor' | 'image' | 'other';
-
 function escapeHtml(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
-function isUrlAttribute(name: string): boolean {
-  return URL_ATTRIBUTES.has(name) || name.endsWith(NAMESPACED_HREF_SUFFIX);
-}
-
-function isHrefAttribute(name: string): boolean {
-  return name === HREF_ATTRIBUTE || name.endsWith(NAMESPACED_HREF_SUFFIX);
-}
-
-/** URLs an attribute names: each srcset candidate, each entry of a URL list, or the single URL. */
-function attributeUrls(name: string, value: string): string[] {
-  const cleaned = stripControls(value);
-  if (SRCSET_ATTRIBUTES.has(name)) return srcsetUrls(cleaned);
-  if (URL_LIST_ATTRIBUTES.has(name)) return cleaned.split(URL_LIST_SEPARATOR).filter((url) => url.length > 0);
-  return [cleaned];
-}
-
-function urlKind(tag: string, name: string): UrlKind {
-  if (tag === ANCHOR_ELEMENT && isHrefAttribute(name)) return 'anchor';
-  if (IMAGE_ATTRIBUTES.has(name)) return 'image';
-  if (IMAGE_ELEMENTS.has(tag) && (name === SRC_ATTRIBUTE || isHrefAttribute(name))) return 'image';
-  return 'other';
 }
 
 /** Base64 PNG, JPEG or GIF data whose decoded bytes start with the declared format's signature. */
@@ -175,20 +127,17 @@ function isEmbeddedRasterImage(url: string): boolean {
   return signatures.some((signature) => head.subarray(0, signature.length).equals(signature));
 }
 
-/** Whether a normalized URL is allowed: empty (the document itself) or a fragment, then by kind. */
-function isAllowedUrl(url: string, kind: UrlKind): boolean {
-  if (url.length === 0) return true;
-  if (kind === 'image') return isEmbeddedRasterImage(url);
-  if (url.startsWith(FRAGMENT_PREFIX)) return true;
-  return kind === 'anchor' ? ANCHOR_SCHEME.test(url) : DATA_URI_PREFIX.test(url);
+/** Whether an `<a href>` target stays a link: the document itself, a fragment, or an http, https or mailto address. */
+function isAllowedAnchor(url: string): boolean {
+  return url.startsWith(FRAGMENT_PREFIX) || ANCHOR_SCHEME.test(url);
 }
 
 /** CSS may name fragments (SVG paint servers) and embedded raster images only; the images are collected. */
-function isAllowedCssUrl(url: string, images?: Set<string>): boolean {
+function isAllowedCssUrl(url: string, images: Set<string>): boolean {
   const normalized = normalizeUrl(url);
   if (normalized.length === 0 || normalized.startsWith(FRAGMENT_PREFIX)) return true;
   if (!isEmbeddedRasterImage(normalized)) return false;
-  images?.add(normalized);
+  images.add(normalized);
   return true;
 }
 
@@ -196,29 +145,26 @@ function preview(reference: string): string {
   return reference.length > MAX_REFERENCE_PREVIEW ? `${reference.slice(0, MAX_REFERENCE_PREVIEW)}…` : reference;
 }
 
-/** The typed 400 for a reference that is not allowed. */
+/** The typed 400 for image data that is not embedded base64 PNG, JPEG or GIF. */
 function refusal(reference: string): ConversionFailedError {
-  const normalized = reference.replace(URL_IGNORED_CHARACTERS, '');
-  if (DATA_URI_PREFIX.test(normalized) || normalized.startsWith(FRAGMENT_PREFIX)) {
-    return new ConversionFailedError(`HTML image "${preview(reference)}" is not embedded base64 PNG, JPEG or GIF data`);
-  }
-  return new ConversionFailedError(
-    `HTML resource "${preview(reference)}" is an external reference; external resources are not fetched, so embed it as a data: URI ` +
-      '(only <a href> may link to http, https or mailto)'
-  );
+  return new ConversionFailedError(`HTML image "${preview(reference)}" is not embedded base64 PNG, JPEG or GIF data`);
 }
 
-function assertUrlsAllowed(urls: readonly string[], kind: UrlKind): void {
-  for (const url of urls) {
-    const reported = trimUrl(url);
-    if (!isAllowedUrl(reported.replace(URL_IGNORED_CHARACTERS, ''), kind)) throw refusal(reported);
+/**
+ * Checks CSS and returns the text that was checked, collecting the images it embeds. CSS that names a reference to
+ * somewhere else (a file, an import, a picture by address) is not passed on: it is left out, reported as held by
+ * `holder`, and null is returned. CSS that names a data: URI that is no embedded raster image is refused, as is
+ * CSS the scanner cannot vouch for (it throws).
+ */
+function checkedCss(css: string, holder: string, omitted: OmittedContent, images: Set<string>): string | null {
+  const embedded = new Set<string>();
+  const scan = scanCss(css, (url) => isAllowedCssUrl(url, embedded));
+  if (scan.reference !== null) {
+    if (DATA_URI_PREFIX.test(normalizeUrl(scan.reference))) throw refusal(scan.reference);
+    omitted.reference(holder, scan.reference);
+    return null;
   }
-}
-
-/** Checks CSS and returns the text that was checked, collecting the images it embeds. */
-function checkedCss(css: string, images?: Set<string>): string {
-  const scan = scanCss(css, (url) => isAllowedCssUrl(url, images));
-  if (scan.reference !== null) throw refusal(scan.reference);
+  for (const url of embedded) images.add(url);
   return scan.css;
 }
 
@@ -226,11 +172,11 @@ function textContent(element: HtmlElement): string {
   return element.children.filter((child): child is string => typeof child === 'string').join('');
 }
 
-/** A `<style>` element's CSS, checked. Character references are refused: readers disagree on decoding them there. */
-function checkedStyleSheet(element: HtmlElement, images?: Set<string>): string {
+/** A `<style>` element's CSS, checked, or null when it is left out. Character references are refused: readers disagree on decoding them there. */
+function checkedStyleSheet(element: HtmlElement, omitted: OmittedContent, images: Set<string>): string | null {
   const css = stripControls(textContent(element));
   if (css.includes('&')) throw new ConversionFailedError('HTML style sheets may not contain "&" (character references)');
-  return checkedCss(css, images);
+  return checkedCss(css, STYLE_SHEET_HOLDER, omitted, images);
 }
 
 function hasValue(element: HtmlElement, name: string): boolean {
@@ -251,13 +197,6 @@ function isUnrendered(element: HtmlElement): boolean {
   if (tag === EMBED_ELEMENT) return hasValue(element, 'src');
   if (tag === OBJECT_ELEMENT) return hasValue(element, 'data') || hasContent(element);
   return false;
-}
-
-function unrendered(tag: string): EngineUnavailableError {
-  return new EngineUnavailableError(
-    'soffice',
-    `HTML <${tag}> cannot be drawn on the native LibreOffice route; embedded media, frames, SVG and form controls are not converted`
-  );
 }
 
 /** The bytes and declared format of a checked image data: URI. */
@@ -305,60 +244,18 @@ async function verifyEmbeddedImages(urls: ReadonlySet<string>): Promise<void> {
   }
 }
 
-/** The target of `<meta http-equiv="refresh" content="5; url=...">`, or null for any other element. */
-function refreshTarget(element: HtmlElement): string | null {
-  if (element.tag !== META_ELEMENT) return null;
-  if (asciiLowerCase(trimUrl(element.attrs.get('http-equiv') ?? '')) !== REFRESH_PRAGMA) return null;
-  const content = stripControls(element.attrs.get('content') ?? '');
-  return trimUrl(content.replace(REFRESH_TARGET_PREFIX, '')).replace(QUOTE_CHARACTERS, '');
-}
-
-/** Refuses a URL an SVG animation would write into a URL or presentation attribute. */
-function assertAnimationAllowed(element: HtmlElement): void {
-  const target = asciiLowerCase(trimUrl(element.attrs.get('attributename') ?? ''));
-  const writesUrl = isUrlAttribute(target);
-  if (!writesUrl && !PRESENTATION_URL_ATTRIBUTES.has(target)) return;
-  for (const attribute of ANIMATION_VALUE_ATTRIBUTES) {
-    for (const value of (element.attrs.get(attribute) ?? '').split(ANIMATION_VALUE_SEPARATOR)) {
-      if (writesUrl) assertUrlsAllowed(attributeUrls(target, value), 'other');
-      else checkedCss(value);
-    }
-  }
-}
-
-/** Refuses any reference an element makes to something outside the document. */
-function assertElementStaysInDocument(element: HtmlElement): void {
-  for (const [name, value] of element.attrs) {
-    if (isUrlAttribute(name)) assertUrlsAllowed(attributeUrls(name, value), urlKind(element.tag, name));
-    else if (name === STYLE_ATTRIBUTE || PRESENTATION_URL_ATTRIBUTES.has(name)) checkedCss(value);
-  }
-  const refresh = refreshTarget(element);
-  if (refresh !== null) assertUrlsAllowed([refresh], 'other');
-  if (ANIMATION_ELEMENTS.has(element.tag)) assertAnimationAllowed(element);
-  if (element.tag === STYLE_ELEMENT) checkedStyleSheet(element);
-}
-
-/** The staged document and one warning per external image that was left out of it. */
+/** The staged document and the warnings for what was left out of it: images one by one, then elements and references. */
 export interface StagedHtml {
   html: string;
   warnings: string[];
-}
-
-/** Checks every element of the tree, written or not, so a refused reference is a 400 wherever it is. */
-function assertTreeStaysInDocument(root: HtmlElement): void {
-  const pending: HtmlNode[] = [...root.children];
-  while (pending.length > 0) {
-    const node = pending.pop() as HtmlNode;
-    if (typeof node === 'string') continue;
-    assertElementStaysInDocument(node);
-    for (const child of node.children) pending.push(child);
-  }
 }
 
 /** Writes the allowlisted part of a checked tree as escaped HTML. */
 class StagedHtmlWriter {
   /** The image data: URIs the written document embeds. */
   readonly images = new Set<string>();
+  /** The elements and references left out of the written document. */
+  readonly omitted = new OmittedContent();
   private readonly body: string[] = [];
   private readonly styles: string[] = [];
   private documentAttributes: string | undefined;
@@ -386,10 +283,17 @@ class StagedHtmlWriter {
       return;
     }
     const tag = node.tag;
-    if (isUnrendered(node)) throw unrendered(tag);
-    if (DROPPED_ELEMENTS.has(tag)) return;
+    if (isUnrendered(node)) {
+      this.omitted.element(tag);
+      return;
+    }
+    if (DROPPED_ELEMENTS.has(tag)) {
+      this.reportStylesheetLink(node);
+      return;
+    }
     if (tag === STYLE_ELEMENT) {
-      this.styles.push(checkedStyleSheet(node, this.images));
+      const css = checkedStyleSheet(node, this.omitted, this.images);
+      if (css !== null) this.styles.push(css);
       return;
     }
     if (PREFORMATTED_TEXT_ELEMENTS.has(tag)) {
@@ -408,6 +312,14 @@ class StagedHtmlWriter {
     this.body.push(`</${tag}>`);
   }
 
+  /** A `<link rel="stylesheet">` is dropped like the rest of the head, but its style sheet is a loss worth reporting. */
+  private reportStylesheetLink(element: HtmlElement): void {
+    if (element.tag !== LINK_ELEMENT) return;
+    const relations = asciiLowerCase(element.attrs.get('rel') ?? '').split(ASCII_WHITESPACE);
+    const href = normalizeUrl(element.attrs.get(HREF_ATTRIBUTE) ?? '');
+    if (relations.includes(STYLESHEET_RELATION) && href.length > 0) this.omitted.reference(LINK_HOLDER, href);
+  }
+
   private attributes(element: HtmlElement): string {
     let written = '';
     for (const [name, value] of element.attrs) {
@@ -419,34 +331,52 @@ class StagedHtmlWriter {
 
   /** The value written for an attribute, or null when it is not written. */
   private attributeValue(element: HtmlElement, name: string, value: string): string | null {
-    if (name === STYLE_ATTRIBUTE) return checkedCss(value, this.images);
-    const linksOut = name === HREF_ATTRIBUTE && element.tag === ANCHOR_ELEMENT;
-    const embedsImage = name === SRC_ATTRIBUTE && element.tag === IMAGE_ELEMENT;
-    if (linksOut || embedsImage) {
-      const url = normalizeUrl(value);
-      if (url.length === 0) return null;
-      const kind: UrlKind = linksOut ? 'anchor' : 'image';
-      if (!isAllowedUrl(url, kind)) throw refusal(url);
-      if (embedsImage) this.images.add(url);
-      return url;
+    if (name === STYLE_ATTRIBUTE) return checkedCss(value, STYLE_ATTRIBUTE_HOLDER, this.omitted, this.images);
+    if (name === HREF_ATTRIBUTE && element.tag === ANCHOR_ELEMENT) return this.anchorTarget(value);
+    if (name === SRC_ATTRIBUTE && element.tag === IMAGE_ELEMENT) return this.embeddedImage(value);
+    if (name === BACKGROUND_ATTRIBUTE) {
+      this.reportBackground(value);
+      return null;
     }
     return WRITTEN_ATTRIBUTES.has(name) ? stripControls(value) : null;
+  }
+
+  /** The target of a link that stays one, or null for a link to anywhere else, which is left out and reported. */
+  private anchorTarget(value: string): string | null {
+    const url = normalizeUrl(value);
+    if (url.length === 0) return null;
+    if (isAllowedAnchor(url)) return url;
+    this.omitted.reference(ANCHOR_HOLDER, url);
+    return null;
+  }
+
+  private embeddedImage(value: string): string | null {
+    const url = normalizeUrl(value);
+    if (url.length === 0) return null;
+    if (!isEmbeddedRasterImage(url)) throw refusal(url);
+    this.images.add(url);
+    return url;
+  }
+
+  private reportBackground(value: string): void {
+    const url = normalizeUrl(value);
+    if (url.length > 0) this.omitted.reference(BACKGROUND_ATTRIBUTE, url);
   }
 }
 
 /**
  * Checks HTML bound for LibreOffice and rebuilds it from the parsed tree as UTF-8 HTML. Throws
- * ConversionFailedError (400) for any reference outside the document, for CSS that is not allowed
- * (escapes, imports, non-ASCII outside strings, a stray "<"), for images that do not decode and
- * for documents nested too deeply; EngineUnavailableError for content it would have to drop.
+ * ConversionFailedError (400) for image data that does not decode or is no PNG, JPEG or GIF, for CSS that is not
+ * allowed (escapes, non-ASCII outside strings, a stray "<", a data: URI that is no image) and for documents nested
+ * too deeply. Everything else the document names or embeds that the PDF cannot carry is left out and reported in
+ * `warnings`.
  */
 export async function stageHtmlForNativeEngine(html: string, policy: HtmlResourcePolicy = {}): Promise<StagedHtml> {
   const document = parseHtmlTree(stripControls(html.replace(BYTE_ORDER_MARK, '')));
   const omitted = new OmittedExternalImages();
   await loadExternalImages(document.root, policy, omitted, HTML_IMAGE_CAPS);
-  assertTreeStaysInDocument(document.root);
   const writer = new StagedHtmlWriter(document.title);
   const staged = writer.write(document.root);
   await verifyEmbeddedImages(writer.images);
-  return { html: staged, warnings: omitted.warnings() };
+  return { html: staged, warnings: [...omitted.warnings(), ...writer.omitted.warnings()] };
 }
