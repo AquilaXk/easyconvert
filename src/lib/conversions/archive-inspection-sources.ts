@@ -11,6 +11,13 @@ import type { ArchiveInspectResponse } from '../types';
 /** What the per-format inspectors return; `inspectArchive` adds the extractability report. */
 export type InspectionBody = Omit<ArchiveInspectResponse, 'extractable' | 'unextractableReasons'>;
 
+/**
+ * The most a lzip or lzop file may decode to for a listing. Inspection runs in the web process, which a conversion does
+ * not, and holds the whole payload in memory; a listing of a file that unpacks to more says it is too large (the same
+ * answer as any other size cap), and the conversion route is the place for such a file.
+ */
+export const MAX_INSPECTED_PAYLOAD_BYTES = 64 * 1024 * 1024;
+
 const ZIP_MAGIC = [0x50, 0x4b];
 const ZIP_RECORD_KINDS = new Set([0x03, 0x05, 0x07]);
 const SEVEN_ZIP_MAGIC = [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c];
@@ -45,7 +52,7 @@ function lzStreamName(filename: string | undefined): string {
 }
 
 /**
- * Lists a lzip or lzop file within the same size and ratio caps the conversion applies to it. A tar inside is listed by
+ * Lists a lzip or lzop file within the ratio cap of the conversion and the size cap {@link MAX_INSPECTED_PAYLOAD_BYTES}. A tar inside is listed by
  * `inspectTar`; any other payload is one entry named like the upload, with its size and CRC-32.
  */
 export function inspectLzSource(
@@ -55,7 +62,7 @@ export function inspectLzSource(
   limits: ArchiveExtractionLimits,
   inspectTar: (tar: Buffer, format: string) => InspectionBody
 ): InspectionBody {
-  const unpacked = unpackWrapperSource(source, buffer, limits);
+  const unpacked = unpackWrapperSource(source, buffer, { ...limits, MAX_UNCOMPRESSED_SIZE: Math.min(limits.MAX_UNCOMPRESSED_SIZE, MAX_INSPECTED_PAYLOAD_BYTES) });
   if (unpacked.isTar) return inspectTar(unpacked.payload, `tar.${source}`);
   const size = unpacked.payload.length;
   return {

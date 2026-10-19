@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
-import { separateAlternateStreams } from '../src/lib/conversions/archive-alternate-streams';
+import { separateAlternateStreams, withExtractionNotes } from '../src/lib/conversions/archive-alternate-streams';
 import { assertSafeArchiveListing, parse7zTechnicalListing } from '../src/lib/conversions/archive-extraction-safety';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -67,11 +67,55 @@ describe('the listing property that marks an alternate stream', () => {
     expect(() => vet('Path = A:com.apple.provenance\nSize = 11\n')).toThrow(expect.objectContaining({ reason: 'absolute-path' }));
   });
 
-  it('does not let a stream carry a traversal name or a size past the caps into the extraction', () => {
-    const hostile = 'Path = A/a:../../evil\nSize = 999999999999\nAlternate Stream = +\n';
-    const split = separateAlternateStreams(parse7zTechnicalListing(hostile));
+  it('does not count the size or the name of a stream against the caps', () => {
+    const split = separateAlternateStreams(parse7zTechnicalListing('Path = A/a:evil.\u202etxt\nSize = 999999999999\nAlternate Stream = +\n'));
     expect(split.entries).toEqual([]);
     expect(split.alternateStreams).toBe(1);
+  });
+});
+
+describe('the property is believed only for a name that has the shape of a stream', () => {
+  const vet = (text: string) => separateAlternateStreams(parse7zTechnicalListing(text));
+
+  it('keeps an entry with the flag and no colon in its last segment, so it is vetted like any other', () => {
+    for (const forged of ['plain.txt', 'dir/plain.txt', 'a:dir/plain.txt', 'a:\\dir\\plain.txt', '../../escape.txt', '/etc/passwd']) {
+      const split = vet(`Path = ${forged}\nSize = 4\nAlternate Stream = +\n`);
+      expect(split.entries.map((entry) => entry.path), forged).toEqual([forged]);
+      expect(split.alternateStreams, forged).toBe(0);
+    }
+    expect(() => assertSafeArchiveListing(vet('Path = ../../escape.txt\nSize = 4\nAlternate Stream = +\n').entries, 1000, ARCHIVE_SECURITY_LIMITS)).toThrow(
+      expect.objectContaining({ reason: 'path-traversal' })
+    );
+  });
+
+  it('drops an entry with the flag and a colon in its last segment, whatever comes before', () => {
+    for (const stream of ['f:attr', 'dir/f:attr', 'A:com.apple.provenance', 'dir\\f:attr:$DATA']) {
+      const split = vet(`Path = ${stream}\nSize = 4\nAlternate Stream = +\n`);
+      expect(split.entries, stream).toEqual([]);
+      expect(split.alternateStreams, stream).toBe(1);
+    }
+  });
+});
+
+describe('the warning for alternate streams is added to the warnings a result already has', () => {
+  it('appends after them and keeps the rest of the metadata', () => {
+    const result = withExtractionNotes({ metadata: { warnings: ['an image was left out'], engine: 'x' } }, { skippedLinks: [], alternateStreams: 2 });
+    expect(result.metadata).toEqual({
+      engine: 'x',
+      warnings: ['an image was left out', '2 alternate streams (extended attributes and resource forks of the files) were left out.'],
+    });
+  });
+
+  it('starts the list when there is none, and changes nothing when no stream was left out', () => {
+    expect(withExtractionNotes({}, { skippedLinks: [], alternateStreams: 1 }).metadata).toEqual({
+      warnings: ['1 alternate stream (extended attributes and resource forks of the files) was left out.'],
+    });
+    const untouched = { metadata: { warnings: ['kept'] } };
+    expect(withExtractionNotes(untouched, { skippedLinks: [], alternateStreams: 0 })).toEqual(untouched);
+  });
+
+  it('reports the skipped links beside the warnings', () => {
+    expect(withExtractionNotes({}, { skippedLinks: ['a/link'], alternateStreams: 0 })).toEqual({ skippedLinks: ['a/link'] });
   });
 });
 

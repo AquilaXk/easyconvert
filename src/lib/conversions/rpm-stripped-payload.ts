@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { UnreadableArchiveError } from './archive-extraction-safety';
 import { printableEntryName } from './archive-refusal-reasons';
-import { RPM_FILE_GHOST, type RpmFile } from './rpm-header';
+import { RPM_FILE_GHOST, rpmFilePath, type RpmFile } from './rpm-header';
 
 /**
  * Writes the payload of an rpm that uses stripped cpio headers as the ordinary cpio (`newc`) the rest of the package route
@@ -60,7 +60,7 @@ function damaged(what: string): UnreadableArchiveError {
 const alignUp = (position: number): number => Math.ceil(position / ALIGNMENT) * ALIGNMENT;
 const typeOf = (file: RpmFile): number => file.mode & S_IFMT;
 /** The path of a file for a message: it comes from an untrusted header, so control characters and length are dealt with. */
-const named = (file: RpmFile): string => printableEntryName(file.path.toString('utf8'));
+const named = (file: RpmFile): string => printableEntryName(rpmFilePath(file).toString('utf8'));
 const hex = (value: number): string => value.toString(16).toUpperCase().padStart(HEX_FIELD_BYTES, '0');
 
 /** The regular files that share a device and a nonzero inode, as lists of indexes in ascending order; singletons are not sets. */
@@ -208,7 +208,7 @@ export function strippedPayloadToCpio(request: StrippedPayloadRequest): void {
         nlink: set === undefined ? 1 : set.length,
         mtime: file.mtime,
         size,
-        name: Buffer.concat([Buffer.from('.'), file.path]),
+        name: Buffer.concat([Buffer.from('.'), file.dir, file.base]),
       });
       if (isLink) writer.write(file.linkTarget);
       else copyContent(reader, writer, entry);

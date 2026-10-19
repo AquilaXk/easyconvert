@@ -134,34 +134,61 @@ function verifyChecksum(expected: { crc: boolean; value: number } | null, data: 
   if (actual !== expected.value) throw corrupt(`the ${what} checksum does not match`);
 }
 
+interface LzopBlockHeader {
+  uncompressedLength: number;
+  compressedLength: number;
+  decompressedChecksum: { crc: boolean; value: number } | null;
+  compressedChecksum: { crc: boolean; value: number } | null;
+}
+
+/** Reads the next block's lengths and checksums, not its data; null at the end mark. */
+function readBlockHeader(reader: Reader, flags: number): LzopBlockHeader | null {
+  const uncompressedLength = reader.u32();
+  if (uncompressedLength === 0) return null;
+  if (uncompressedLength > MAX_BLOCK_BYTES) throw corrupt('a block is larger than the format allows');
+  return { uncompressedLength, ...readBlockFields(reader, flags, uncompressedLength) };
+}
+
+function readBlockFields(reader: Reader, flags: number, uncompressedLength: number): Omit<LzopBlockHeader, 'uncompressedLength'> {
+  const compressedLength = reader.u32();
+  if (compressedLength === 0 || compressedLength > uncompressedLength) throw corrupt('a block has an invalid compressed length');
+  const decompressedChecksum = declaredChecksum(flags, FLAG_ADLER32_DECOMPRESSED, FLAG_CRC32_DECOMPRESSED, reader);
+  const stored = compressedLength === uncompressedLength;
+  const compressedChecksum = stored ? null : declaredChecksum(flags, FLAG_ADLER32_COMPRESSED, FLAG_CRC32_COMPRESSED, reader);
+  return { compressedLength, decompressedChecksum, compressedChecksum };
+}
+
 /**
  * Decodes an lzop file. The result never exceeds `maxOutputBytes`; a file that would decode past it is refused with a
- * {@link DecompressionLimitError} before the offending block is decoded.
+ * {@link DecompressionLimitError} before the offending block's data is read, let alone decoded. The block headers are
+ * read once to add up the size, the output buffer is allocated once at that size, and each block is decoded into it, so
+ * the payload exists once (plus the block being decoded), not twice.
  */
 export function decompressLzop(input: Uint8Array, maxOutputBytes: number): Buffer {
   const reader = new Reader(input);
   const flags = readHeader(reader, input);
-  const blocks: Buffer[] = [];
+  const bodyStart = reader.pos;
   let total = 0;
-  for (;;) {
-    const uncompressedLength = reader.u32();
-    if (uncompressedLength === 0) break;
-    if (uncompressedLength > MAX_BLOCK_BYTES) throw corrupt('a block is larger than the format allows');
-    total += uncompressedLength;
+  for (let block = readBlockHeader(reader, flags); block !== null; block = readBlockHeader(reader, flags)) {
+    total += block.uncompressedLength;
     if (total > maxOutputBytes) {
       throw new DecompressionLimitError(`Archive bomb detected: LZO output exceeds the limit of ${maxOutputBytes} bytes`);
     }
-    const compressedLength = reader.u32();
-    if (compressedLength === 0 || compressedLength > uncompressedLength) throw corrupt('a block has an invalid compressed length');
-    const decompressedChecksum = declaredChecksum(flags, FLAG_ADLER32_DECOMPRESSED, FLAG_CRC32_DECOMPRESSED, reader);
-    const stored = compressedLength === uncompressedLength;
-    const compressedChecksum = stored ? null : declaredChecksum(flags, FLAG_ADLER32_COMPRESSED, FLAG_CRC32_COMPRESSED, reader);
-    const compressed = reader.take(compressedLength);
-    verifyChecksum(compressedChecksum, compressed, 'compressed block');
-    const block = stored ? compressed : decompressLzo1xBlock(compressed, uncompressedLength);
-    verifyChecksum(decompressedChecksum, block, 'decompressed block');
-    blocks.push(Buffer.from(block.buffer, block.byteOffset, block.byteLength));
+    reader.take(block.compressedLength);
   }
   if (reader.remaining > 0) throw corrupt('data follows the end of the file');
-  return Buffer.concat(blocks, total);
+
+  const output = Buffer.allocUnsafe(total);
+  let written = 0;
+  reader.pos = bodyStart;
+  for (let block = readBlockHeader(reader, flags); block !== null; block = readBlockHeader(reader, flags)) {
+    const compressed = reader.take(block.compressedLength);
+    const stored = block.compressedLength === block.uncompressedLength;
+    verifyChecksum(block.compressedChecksum, compressed, 'compressed block');
+    const data = stored ? compressed : decompressLzo1xBlock(compressed, block.uncompressedLength);
+    verifyChecksum(block.decompressedChecksum, data, 'decompressed block');
+    output.set(data, written);
+    written += data.length;
+  }
+  return output;
 }

@@ -62,8 +62,13 @@ const TAG_LONGFILESIZES = 5008;
 export const RPM_FILE_GHOST = 1 << 6;
 
 export interface RpmFile {
-  /** Absolute path as the package installs it (`/usr/bin/x`), as bytes: names are not necessarily UTF-8. */
-  path: Buffer;
+  /**
+   * The directory (it ends in a slash) and the base name that make up the absolute path the package installs (`/usr/bin/`
+   * and `x`), as bytes: names are not necessarily UTF-8. They are views of the header data and are joined one path at a
+   * time by {@link rpmFilePath}, never all at once: a header may name one long directory for every one of its files.
+   */
+  dir: Buffer;
+  base: Buffer;
   mode: number;
   size: number;
   mtime: number;
@@ -74,6 +79,9 @@ export interface RpmFile {
   /** The target of a symbolic link (empty for anything else). */
   linkTarget: Buffer;
 }
+
+/** The absolute path of a file, joined when it is needed. */
+export const rpmFilePath = (file: Pick<RpmFile, 'dir' | 'base'>): Buffer => Buffer.concat([file.dir, file.base]);
 
 export interface RpmPackage {
   /** Byte offset of the payload (the end of the metadata header). */
@@ -191,8 +199,8 @@ function sameLength(count: number, values: readonly unknown[], what: string): vo
   if (values.length !== count) throw damaged(`${what} does not list one value per file`);
 }
 
-/** The path of each file: its directory (which ends in a slash) followed by its base name. */
-function pathsOf(blob: HeaderBlob, limits: ArchiveExtractionLimits): Buffer[] {
+/** The directory (which ends in a slash) and the base name of each file; no path is joined here (see {@link RpmFile}). */
+function pathPartsOf(blob: HeaderBlob, limits: ArchiveExtractionLimits): Array<Pick<RpmFile, 'dir' | 'base'>> {
   // A package that installs no files has no list of names at all (rpm reads that as zero files).
   const baseNames = stringArray(blob, TAG_BASENAMES, 'the list of base names', limits.MAX_FILES);
   if (baseNames === undefined) return [];
@@ -204,12 +212,12 @@ function pathsOf(blob: HeaderBlob, limits: ArchiveExtractionLimits): Buffer[] {
     if (dir === undefined) throw damaged('a directory index points outside the list of directory names');
     if (dir.length === 0 || dir[0] !== 0x2f) throw damaged('a directory name is not an absolute path');
     if (dir.length + base.length > MAX_RPM_PATH_BYTES) throw damaged(`a path is longer than ${MAX_RPM_PATH_BYTES} bytes`);
-    return Buffer.concat([dir, base]);
+    return { dir, base };
   });
 }
 
 function fileTable(blob: HeaderBlob, limits: ArchiveExtractionLimits): RpmFile[] {
-  const paths = pathsOf(blob, limits);
+  const paths = pathPartsOf(blob, limits);
   if (paths.length === 0) return [];
   const count = paths.length;
   const max = limits.MAX_FILES;
@@ -237,8 +245,8 @@ function fileTable(blob: HeaderBlob, limits: ArchiveExtractionLimits): RpmFile[]
   ] as const) {
     if (values !== undefined) sameLength(count, values, what);
   }
-  return paths.map((path, i) => ({
-    path,
+  return paths.map((parts, i) => ({
+    ...parts,
     mode: modes[i],
     size: fileSizes[i],
     mtime: times[i],

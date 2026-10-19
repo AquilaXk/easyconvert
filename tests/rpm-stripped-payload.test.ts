@@ -6,7 +6,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
-import { readRpmPackage, MAX_RPM_HEADER_DATA_BYTES, MAX_RPM_HEADER_ENTRIES } from '../src/lib/conversions/rpm-header';
+import { readRpmPackage, rpmFilePath, MAX_RPM_HEADER_DATA_BYTES, MAX_RPM_HEADER_ENTRIES } from '../src/lib/conversions/rpm-header';
 import { strippedPayloadToCpio } from '../src/lib/conversions/rpm-stripped-payload';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -101,7 +101,7 @@ describe('the published rpm 6 package with a stripped payload', () => {
     try {
       const pkg = readRpmPackage(file, ARCHIVE_SECURITY_LIMITS);
       const table = pkg.files();
-      expect(table.map((entry) => [entry.path.toString(), entry.mode.toString(8), entry.size, (entry.flags & 64) !== 0])).toEqual([
+      expect(table.map((entry) => [rpmFilePath(entry).toString(), entry.mode.toString(8), entry.size, (entry.flags & 64) !== 0])).toEqual([
         ['/dir', '40755', 0, false],
         ['/dir/a-hardlink', '100644', 7, false],
         ['/dir/b-empty', '100644', 0, false],
@@ -517,13 +517,68 @@ describe('a damaged header or payload is a typed refusal that says what is wrong
   });
 });
 
+describe('a header that names one long directory for every file does not grow with the number of files', () => {
+  const FILE_COUNT = ARCHIVE_SECURITY_LIMITS.MAX_FILES;
+  const DIRECTORY_BYTES = 4000;
+  /** 50,000 ghosts under one 4,001-byte directory: the paths joined would be 200 MB, the package under 3 MB. */
+  const ghosts = (): RpmTestFile[] =>
+    Array.from({ length: FILE_COUNT }, (_unused, i) => ({ path: `/${'d'.repeat(DIRECTORY_BYTES)}/g${i}`, mode: S_REG, ghost: true }));
+
+  function withPackage<T>(rpm: Buffer, run: (file: string, dir: string) => T): T {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rpm-many-ghosts-'));
+    try {
+      const file = path.join(dir, 'ghosts.rpm');
+      fs.writeFileSync(file, rpm);
+      return run(file, dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('the file table keeps the one directory name of the header and joins no path', () => {
+    const rpm = buildStrippedRpm(ghosts());
+    expect(rpm.length).toBeLessThan(4 * MIB);
+    withPackage(rpm, (file) => {
+      const table = readRpmPackage(file, ARCHIVE_SECURITY_LIMITS).files();
+      expect(table).toHaveLength(FILE_COUNT);
+      expect(table[0].dir.length).toBe(DIRECTORY_BYTES + 2);
+      expect(table[FILE_COUNT - 1].base.toString()).toBe(`g${FILE_COUNT - 1}`);
+      // One buffer for the directory, shared by every row: a joined path per row would be 50,000 copies of it.
+      expect(table.every((row) => row.dir === table[0].dir)).toBe(true);
+      expect(rpmFilePath(table[7]).toString()).toBe(`/${'d'.repeat(DIRECTORY_BYTES)}/g7`);
+    });
+  });
+
+  it('writes and charges nothing for the ghosts: the payload holds the trailer only', () => {
+    withPackage(buildStrippedRpm(ghosts()), (file, dir) => {
+      const files = readRpmPackage(file, ARCHIVE_SECURITY_LIMITS).files();
+      const source = path.join(dir, 'payload');
+      fs.writeFileSync(source, buildStrippedPayload(ghosts()));
+      let charged = 0;
+      strippedPayloadToCpio({ files, source, output: path.join(dir, 'out.cpio'), charge: (bytes) => (charged += bytes) });
+      expect(charged).toBe(fs.statSync(path.join(dir, 'out.cpio')).size);
+      expect(charged).toBeLessThan(200);
+    });
+  });
+
+  oracleTest(
+    'the package converts to an empty archive',
+    ['7z', 'tar'],
+    async () => {
+      const output = await readArchiveTree((await convert(buildStrippedRpm(ghosts()))).buffer, 'zip');
+      expect([...output.files.keys(), ...output.links.keys()]).toEqual([]);
+    },
+    ENGINE_TIMEOUT_MS
+  );
+});
+
 describe('a path from the header is made printable before it is put in a message', () => {
   it('replaces control characters and cuts a long name', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stripped-message-'));
     try {
       const source = path.join(dir, 'payload');
       fs.writeFileSync(source, trailer(0));
-      const file = (name: string) => ({ path: Buffer.from(name), mode: S_REG, size: 0, mtime: 0, flags: 0, inode: 0, device: 0, linkTarget: Buffer.alloc(0) });
+      const file = (name: string) => ({ dir: Buffer.from(name.slice(0, name.lastIndexOf('/') + 1)), base: Buffer.from(name.slice(name.lastIndexOf('/') + 1)), mode: S_REG, size: 0, mtime: 0, flags: 0, inode: 0, device: 0, linkTarget: Buffer.alloc(0) });
       const failure = (name: string): Error => {
         try {
           strippedPayloadToCpio({ files: [file(name)], source, output: path.join(dir, 'out.cpio'), charge: () => {} });
@@ -545,7 +600,8 @@ describe('the stripped payload converter writes only as much as its budget allow
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stripped-budget-'));
     try {
       const files = Array.from({ length: 200 }, (_unused, i) => ({
-        path: Buffer.from(`/${'x'.repeat(1000)}/${i}`),
+        dir: Buffer.from(`/${'x'.repeat(1000)}/`),
+        base: Buffer.from(String(i)),
         mode: S_REG,
         size: 0,
         mtime: 0,

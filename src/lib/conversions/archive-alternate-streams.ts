@@ -16,14 +16,22 @@ export interface ArchiveListing {
   alternateStreams: number;
 }
 
+const PATH_SEPARATOR = /[\\/]/;
+
+/** A stream is named `<file>:<stream>`, so the property is believed only for a path with a colon after its last separator. */
+function isAlternateStream(entry: ListedArchiveEntry): boolean {
+  return entry.alternateStream === true && (entry.path.split(PATH_SEPARATOR).pop() ?? '').includes(':');
+}
+
 /**
  * Takes the alternate data streams out of a listing and counts them. A stream is told by the listing's own property and
- * never by its name: `A:attr` is a stream when 7-Zip says so and a drive path when it is a plain entry. Streams are not
- * extracted, so their names and sizes cannot reach the disk and are not vetted or counted against the entry, size and
- * ratio caps; every other entry is vetted exactly as before.
+ * not by its name alone: `A:attr` is a stream when 7-Zip says so and a drive path when it is a plain entry. The property
+ * is believed only for a name that has the shape of a stream (a colon in its last segment), so a forged flag on a plain
+ * name leaves the entry vetted as any other. Streams are not extracted, so their names and sizes cannot reach the disk
+ * and are not vetted or counted against the entry, size and ratio caps; every other entry is vetted exactly as before.
  */
 export function separateAlternateStreams(listing: ListedArchiveEntry[]): ArchiveListing {
-  const entries = listing.filter((entry) => entry.alternateStream !== true);
+  const entries = listing.filter((entry) => !isAlternateStream(entry));
   return { entries, alternateStreams: listing.length - entries.length };
 }
 
@@ -40,11 +48,21 @@ export interface ExtractionFindings {
   alternateStreams: number;
 }
 
-/** `result` with what the extraction left out reported: the skipped links, and one warning that counts the alternate streams. */
+/** The warnings a result already carries, if it carries any. */
+function warningsOf(metadata: Record<string, unknown> | undefined): unknown[] {
+  const warnings = metadata?.warnings;
+  return Array.isArray(warnings) ? warnings : [];
+}
+
+/**
+ * `result` with what the extraction left out reported: the skipped links, and one warning that counts the alternate
+ * streams, added after the warnings the result already has.
+ */
 export function withExtractionNotes<T extends { skippedLinks?: string[]; metadata?: Record<string, unknown> }>(result: T, findings: ExtractionFindings): T {
+  const warning = alternateStreamsWarning(findings.alternateStreams);
   return {
     ...result,
     ...(findings.skippedLinks.length > 0 ? { skippedLinks: findings.skippedLinks } : {}),
-    ...(findings.alternateStreams > 0 ? { metadata: { ...result.metadata, warnings: [alternateStreamsWarning(findings.alternateStreams)] } } : {}),
+    ...(findings.alternateStreams > 0 ? { metadata: { ...result.metadata, warnings: [...warningsOf(result.metadata), warning] } } : {}),
   };
 }
