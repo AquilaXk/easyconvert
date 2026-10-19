@@ -4,15 +4,19 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  applyPdfWatermark,
   deletePdfPages,
   extractPdfPages,
+  protectPdf,
   reorderPdfPages,
   rotatePdfPages,
   splitPdfPages,
+  unlockPdf,
 } from '../src/lib/conversions/pdf-postprocess';
+import { mergePdfBuffers } from '../src/lib/jobs/artifact-helpers';
 import { requireBenchSample } from './helpers/bench-sample';
 import { requireOracleTool } from './helpers/differential-oracle';
-import { pdfinfoPages, pdftotext, qpdfCheckPasses, withTempDir } from './helpers/encrypted-pdf-fixtures';
+import { AES_256, containsEncryptKey, pdfinfoPages, pdftotext, plainPdf, qpdfCheckPasses, qpdfEncrypt, qpdfEncryptionReport, withTempDir } from './helpers/encrypted-pdf-fixtures';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -186,4 +190,97 @@ describe.skipIf(toolsMissing)('page operations on the public PDFs whose page tre
       });
     });
   }
+});
+
+const WATERMARK = 'STAMPED';
+const USER_PASSWORD = 'open-sesame-1';
+const OWNER_PASSWORD = 'owner-secret-1';
+const HEALTHY_TEXTS = ['Delta healthy one', 'Echo healthy two'] as const;
+
+/** `pageTexts` with the open password of the file. */
+const pageTextsWith = (pdf: Buffer, password: string): string[] =>
+  pdftotext(pdf, password).split(FORM_FEED).slice(0, -1).map((page) => page.trim());
+
+interface LoopingFile {
+  source: Buffer;
+  pages: number;
+  texts: string[];
+}
+
+/**
+ * The remaining operations on the same three looping files: the document keeps its pages and text, and the result is
+ * read by `qpdf --check`, Poppler and `qpdf --json`, tools that share no code with the product.
+ */
+describe.skipIf(toolsMissing)('watermark, protect, unlock and merge of a looping page tree', () => {
+  const sources: Array<{ name: string; load: (ctx: Parameters<typeof requireBenchSample>[0]) => Promise<LoopingFile> }> = [
+    {
+      name: 'the hand-built file of three pages',
+      load: async () => ({ source: loopingThreePagePdf(), pages: 3, texts: [...PAGE_TEXTS] }),
+    },
+    ...[PAGES_LOOP, PAGES_TREE_REFS].map((id) => ({
+      name: id,
+      load: async (ctx: Parameters<typeof requireBenchSample>[0]): Promise<LoopingFile> => {
+        const source = await requireBenchSample(ctx, id);
+        expect(qpdfCheckPasses(source), 'the sample is the damaged file').toBe(false);
+        expect(leafPages(source)).toBe(1);
+        return { source, pages: 1, texts: [pageTexts(source)[0]] };
+      },
+    })),
+  ];
+
+  for (const { name, load } of sources) {
+    describe(name, () => {
+      it('watermark draws the text on every page and keeps the page text', async (ctx) => {
+        const { source, pages, texts } = await load(ctx);
+        const out = await applyPdfWatermark(source, { type: 'text', text: WATERMARK, rotation: 0 });
+        expectIntact(out, pages);
+        const marked = pageTexts(out);
+        expect(marked).toHaveLength(pages);
+        marked.forEach((page, index) => {
+          expect(page).toContain(WATERMARK);
+          expect(page).toContain(texts[index]);
+        });
+      });
+
+      it('protect writes the encryption that was asked for and keeps the pages', async (ctx) => {
+        const { source, pages, texts } = await load(ctx);
+        const out = await protectPdf(source, { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: 256 });
+        const report = qpdfEncryptionReport(out, USER_PASSWORD);
+        expect(report).toMatchObject({ encrypted: true, R: 6, V: 5, userPasswordMatched: true });
+        expect(qpdfCheckPasses(out, USER_PASSWORD)).toBe(true);
+        expect(qpdfCheckPasses(out), 'the open password is needed').toBe(false);
+        expect(pdfinfoPages(out, USER_PASSWORD)).toBe(pages);
+        expect(pageTextsWith(out, USER_PASSWORD)).toEqual(texts);
+      });
+
+      it('unlock writes a plain document that passes the check', async (ctx) => {
+        const { source, pages, texts } = await load(ctx);
+        const locked = qpdfEncrypt(source, { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD });
+        expect(containsEncryptKey(locked)).toBe(true);
+        const out = await unlockPdf(locked, { password: USER_PASSWORD });
+        expect(containsEncryptKey(out)).toBe(false);
+        expectIntact(out, pages);
+        expect(pageTexts(out)).toEqual(texts);
+      });
+
+      it('merge keeps every page of the looping file and of a healthy one, in order', async (ctx) => {
+        const { source, pages, texts } = await load(ctx);
+        const healthy = await plainPdf([...HEALTHY_TEXTS]);
+        const loopFirst = await mergePdfBuffers([source, healthy]);
+        expectIntact(loopFirst, pages + HEALTHY_TEXTS.length);
+        expect(pageTexts(loopFirst)).toEqual([...texts, ...HEALTHY_TEXTS]);
+        const loopLast = await mergePdfBuffers([healthy, source]);
+        expectIntact(loopLast, pages + HEALTHY_TEXTS.length);
+        expect(pageTexts(loopLast)).toEqual([...HEALTHY_TEXTS, ...texts]);
+      });
+    });
+  }
+
+  it('merge of an encrypted looping file keeps its pages, and the result is not encrypted', async () => {
+    const locked = qpdfEncrypt(loopingThreePagePdf(), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD });
+    const out = await mergePdfBuffers([locked], { passwords: [USER_PASSWORD] });
+    expect(containsEncryptKey(out)).toBe(false);
+    expectIntact(out, 3);
+    expect(pageTexts(out)).toEqual([...PAGE_TEXTS]);
+  });
 });

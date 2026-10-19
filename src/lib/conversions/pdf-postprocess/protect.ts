@@ -7,6 +7,7 @@ import { PDF_PASSWORD_UNSAFE_MESSAGE } from '../../../worker/pdf-decrypt';
 import { requireQpdfBinary, runQpdfToBuffer, withQpdfInputFile } from './qpdf-run';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { PdfStructureError } from '../pdf-document';
+import { repairPageTree } from './page-tree';
 
 export { getQpdfBinaryPath } from './qpdf-path';
 
@@ -53,6 +54,9 @@ export async function protectPdf(
     if (err instanceof PdfStructureError) throw new PdfPostprocessError(`PDF protection failed: ${err.message}`);
     throw err;
   }
+
+  // The tree is mended on the decrypted bytes, before they are encrypted again: no plain copy leaves this function.
+  plain = await repairPageTree(plain);
 
   const perms = options.permissions || {};
   const printPerm = perms.print ?? 'full';

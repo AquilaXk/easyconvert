@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { PDFDocument } from 'pdf-lib';
 import { loadPdfDocument, openPdfForEditing } from '@/lib/conversions/pdf-access';
+import { isParserLoopRefusal, withMendedPageTree } from '@/lib/conversions/pdf-postprocess/mend-page-tree';
 import { inspectPdfEncryption } from '@/lib/conversions/pdf-encryption';
 import { getFormatByExtension } from '@/lib/registry';
 
@@ -53,6 +54,13 @@ export interface PdfMergeAccess {
   confirmEditRights?: boolean;
 }
 
+/** The input as a document whose pages can be listed; the parser meets a page tree that loops while it lists them. */
+async function readMergeInput(plain: Buffer): Promise<PDFDocument> {
+  const doc = await loadPdfDocument(plain);
+  doc.getPageIndices();
+  return doc;
+}
+
 /**
  * Merges multiple PDF buffers into a single PDF buffer using pdf-lib.
  *
@@ -68,7 +76,8 @@ export async function mergePdfBuffers(buffers: Buffer[], access: PdfMergeAccess 
       password: access.passwords?.[index] ?? undefined,
       confirmEditRights: access.confirmEditRights,
     });
-    const doc = await loadPdfDocument(plain);
+    // A page tree that loops overflows the parser's stack; the input is read again from the mended tree.
+    const doc = await withMendedPageTree(plain, readMergeInput, isParserLoopRefusal);
     const copiedPages = await mergedPdf.copyPages(doc, doc.getPageIndices());
     for (const page of copiedPages) {
       mergedPdf.addPage(page);

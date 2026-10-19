@@ -149,7 +149,8 @@ describe.skipIf(toolsMissing)('PDF operations through the launcher', () => {
 
   it('protects with AES-256 and the requested rights, read back by qpdf under both passwords', async () => {
     const protectedPdf = await launched(async () => protectPdf(await source(), { userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, keyLength: 256 }));
-    expect(protectedPdf.programs).toBe(1);
+    // The probe that asks qpdf for the pages (a looping tree is mended before encryption), then the encryption: two programs.
+    expect(protectedPdf.programs).toBe(2);
     const asUser = qpdfEncryptionReport(protectedPdf.value, USER_PASSWORD);
     expect(asUser.encrypted).toBe(true);
     expect(asUser.R).toBe(AES_256.revision);
@@ -163,10 +164,11 @@ describe.skipIf(toolsMissing)('PDF operations through the launcher', () => {
     expect(pdfinfoPages(protectedPdf.value, USER_PASSWORD)).toBe(PAGE_TEXTS.length);
   });
 
-  it('unlocks a restricted file with its user password once the rights are confirmed, through one launched program', async () => {
+  it('unlocks a restricted file with its user password once the rights are confirmed, through the launched programs', async () => {
     const locked = qpdfEncrypt(await source(), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, modify: 'none' });
     const unlocked = await launched(() => unlockPdf(locked, { password: USER_PASSWORD, confirmEditRights: true }));
-    expect(unlocked.programs).toBe(1);
+    // The decryption, then the probe that asks qpdf for the pages (a looping tree is mended on the decrypted bytes): two programs.
+    expect(unlocked.programs).toBe(2);
     expect(containsEncryptKey(unlocked.value)).toBe(false);
     expect(qpdfEncryptionReport(unlocked.value).encrypted).toBe(false);
     expect(pageTexts(unlocked.value)).toEqual([...PAGE_TEXTS]);
