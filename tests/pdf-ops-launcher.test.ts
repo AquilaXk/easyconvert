@@ -167,7 +167,7 @@ describe.skipIf(toolsMissing)('PDF operations through the launcher', () => {
   it('unlocks a restricted file with its user password once the rights are confirmed, through the launched programs', async () => {
     const locked = qpdfEncrypt(await source(), { variant: AES_256, userPassword: USER_PASSWORD, ownerPassword: OWNER_PASSWORD, modify: 'none' });
     const unlocked = await launched(() => unlockPdf(locked, { password: USER_PASSWORD, confirmEditRights: true }));
-    // The decryption, then the probe that asks qpdf for the pages (a looping tree is mended on the decrypted bytes): two programs.
+    // The decryption and, beside it, the question whether the page tree loops (a looping tree is mended on the decrypted bytes): two programs.
     expect(unlocked.programs).toBe(2);
     expect(containsEncryptKey(unlocked.value)).toBe(false);
     expect(qpdfEncryptionReport(unlocked.value).encrypted).toBe(false);

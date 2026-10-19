@@ -3,7 +3,7 @@ import { repairPageTree } from './page-tree';
 import { runQpdf, type QpdfWorkspace } from './qpdf-run';
 
 /** What qpdf prints when the page tree reaches one of its own nodes again. */
-const PAGE_TREE_LOOP_MESSAGE = 'Loop detected in /Pages structure';
+export const PAGE_TREE_LOOP_MESSAGE = 'Loop detected in /Pages structure';
 
 /** Whether `error` is qpdf's refusal of a page tree that loops. */
 export function isQpdfLoopRefusal(error: unknown): boolean {

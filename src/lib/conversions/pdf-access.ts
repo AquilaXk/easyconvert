@@ -1,5 +1,5 @@
 import { EncryptedPDFError, PDFDocument } from 'pdf-lib';
-import { decryptPdfToBuffer, readPdfAccess } from '../../worker/pdf-decrypt';
+import { decryptPdfToBuffer, pdfPageTreeLoops, readPdfAccess } from '../../worker/pdf-decrypt';
 import { PdfPasswordRequiredError, PdfPermissionDeniedError } from '../types';
 import { PdfStructureError } from './pdf-document';
 import { withQpdfInputFile } from './pdf-postprocess/qpdf-run';
@@ -104,36 +104,46 @@ function forbiddenRights(operation: PdfEditOperation, capabilities: Readonly<Rec
     .map((group) => group.map((right) => RIGHT_LABELS[right] ?? right).join(' or '));
 }
 
-async function decryptWithAccessCheck(pdf: Buffer, operation: PdfEditOperation, access: PdfAccess): Promise<Buffer> {
+/** A decrypted PDF, and whether qpdf refused its pages because the page tree loops (asked only when the caller wants to know). */
+interface DecryptedPdf {
+  plain: Buffer;
+  pageTreeLoops: boolean;
+}
+
+async function decryptWithAccessCheck(pdf: Buffer, operation: PdfEditOperation, access: PdfAccess, askPageTree = false): Promise<DecryptedPdf> {
   return withQpdfInputFile(pdf, async ({ inputPath, dir }) => {
     const request = { inputPath, tempDir: dir, password: access.password ?? '', timeoutMs: PDF_ACCESS_TIMEOUT_MS };
 
     // The plain bytes are printed by qpdf on standard output, so no decrypted copy is written to disk. A confirmed
     // edit needs no verdict: the confirmation lifts every restriction, and a wrong password still fails the
     // decryption. Only an unconfirmed request asks qpdf which rights the password grants, and it asks beside the
-    // decryption: the two read the same file, so the check costs no wall time.
-    if (access.confirmEditRights === true) return decryptPdfToBuffer(request);
-    const stopDecrypting = new AbortController();
-    const decrypting = decryptPdfToBuffer({ ...request, signal: stopDecrypting.signal });
+    // decryption: the two read the same file, so the check costs no wall time. The question whether the page tree
+    // loops is asked beside them for the same reason, and never delays or fails them.
+    const stop = new AbortController();
+    const decrypting = decryptPdfToBuffer({ ...request, signal: stop.signal });
+    const looping = askPageTree ? pdfPageTreeLoops({ ...request, signal: stop.signal }) : Promise.resolve(false);
     // A decryption that fails while the verdict is awaited must not surface as an unhandled rejection.
     decrypting.catch(() => undefined);
-    let verdict: Awaited<ReturnType<typeof readPdfAccess>>;
     try {
-      verdict = await readPdfAccess(request);
+      if (access.confirmEditRights !== true) await assertEditAllowed(request, operation);
+      const [plain, pageTreeLoops] = await Promise.all([decrypting, looping]);
+      return { plain, pageTreeLoops };
     } catch (error) {
-      stopDecrypting.abort();
+      stop.abort();
       throw error;
     }
-    const forbidden = forbiddenRights(operation, verdict.capabilities);
-    if (forbidden.length > 0 && !verdict.ownerPasswordMatched) {
-      stopDecrypting.abort();
-      throw new PdfPermissionDeniedError(
-        `The PDF's permissions forbid ${forbidden.join(' and ')}, which the ${OPERATION_VERBS[operation]} needs. ` +
-          'Set confirmEditRights to true to confirm that you may edit this document, or supply its owner password as the password.'
-      );
-    }
-    return decrypting;
   });
+}
+
+async function assertEditAllowed(request: Parameters<typeof readPdfAccess>[0], operation: PdfEditOperation): Promise<void> {
+  const verdict = await readPdfAccess(request);
+  const forbidden = forbiddenRights(operation, verdict.capabilities);
+  if (forbidden.length > 0 && !verdict.ownerPasswordMatched) {
+    throw new PdfPermissionDeniedError(
+      `The PDF's permissions forbid ${forbidden.join(' and ')}, which the ${OPERATION_VERBS[operation]} needs. ` +
+        'Set confirmEditRights to true to confirm that you may edit this document, or supply its owner password as the password.'
+    );
+  }
 }
 
 /**
@@ -147,7 +157,17 @@ async function decryptWithAccessCheck(pdf: Buffer, operation: PdfEditOperation, 
  */
 export async function openPdfForEditing(pdf: Buffer, operation: PdfEditOperation, access: PdfAccess = {}): Promise<Buffer> {
   if (!inspectPdfEncryption(pdf).encrypted) return pdf;
-  return decryptWithAccessCheck(pdf, operation, access);
+  return (await decryptWithAccessCheck(pdf, operation, access)).plain;
+}
+
+/**
+ * `openPdfForEditing` for a caller that returns the decrypted document itself, and so must mend a page tree that loops
+ * (see pdf-postprocess/page-tree): `pageTreeLoops` says whether qpdf refused the pages of the encrypted file, asked beside
+ * the decryption. An unencrypted PDF is returned as it is, with no question asked.
+ */
+export async function openPdfForUnlocking(pdf: Buffer, access: PdfAccess = {}): Promise<DecryptedPdf> {
+  if (!inspectPdfEncryption(pdf).encrypted) return { plain: pdf, pageTreeLoops: false };
+  return decryptWithAccessCheck(pdf, 'unlock', access, true);
 }
 
 /**
@@ -158,7 +178,7 @@ export async function openPdfForEditing(pdf: Buffer, operation: PdfEditOperation
  * @throws PdfPasswordRequiredError, PdfPermissionDeniedError (422) as `openPdfForEditing`.
  */
 export async function openPdfForRebuilding(pdf: Buffer, operation: PdfEditOperation, access: PdfAccess = {}): Promise<Buffer> {
-  return isEncrypted(pdf) ? decryptWithAccessCheck(pdf, operation, access) : pdf;
+  return isEncrypted(pdf) ? (await decryptWithAccessCheck(pdf, operation, access)).plain : pdf;
 }
 
 /**
