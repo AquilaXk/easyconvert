@@ -13,6 +13,7 @@ import {
 import { crc32 } from './crc32';
 import { assertInputPixels } from './image-input-limits';
 import { OCR_DEFAULT_DPI, OCR_MAX_DPI, OCR_MIN_RENDER_DPI } from './ocr-dpi';
+import { assertPdfJbig2WithinLimits } from './pdf-jbig2-guard';
 import { readPdfPageFrames, renderedSizePixels, type PdfPageFrame, type RenderedPdfPage } from './pdf-page-geometry';
 import { assertPdfImagesWithinLimit } from './pdf-rasterizer';
 
@@ -198,6 +199,7 @@ export async function openPdfPageRenderer(
   pages: ReadonlySet<number> | undefined,
   requestedDpi: number | undefined
 ): Promise<PdfPageRenderer> {
+  assertPdfJbig2WithinLimits(pdf);
   const plan = await planPageRender(pdf, pages, requestedDpi);
   const pdftoppm = findPdftoppm();
   if (!pdftoppm) {

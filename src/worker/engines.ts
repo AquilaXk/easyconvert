@@ -82,7 +82,7 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
 import { boundRenderedPages, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, selectsPages, splitIntoBatches } from './poppler-ppm';
-import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
@@ -1174,7 +1174,7 @@ async function convertPdfToTextWithPoppler(
               signal: options.signal,
             });
           } catch (err) {
-            throw toPopplerPasswordError(err) ?? toPopplerDamageSignal(err, options.inProcessFallback) ?? err;
+            throw toPopplerPasswordError(err) ?? toPopplerOutputLimitError(err) ?? toPopplerDamageSignal(err, options.inProcessFallback) ?? err;
           }
         }
       );
@@ -1416,7 +1416,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
     });
   } catch (err) {
     if (options.throwOnUnavailable) {
-      throw err;
+      throw toPopplerOutputLimitError(err) ?? err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
     rethrowSandboxUnavailable(err);

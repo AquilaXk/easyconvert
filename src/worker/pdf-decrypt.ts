@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ConversionFailedError, EngineUnavailableError, PdfPasswordRequiredError } from '../lib/types';
+import { ConversionFailedError, EngineUnavailableError, PayloadLimitError, PdfPasswordRequiredError } from '../lib/types';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
+import { assertPdfJbig2WithinLimits } from '../lib/conversions/pdf-jbig2-guard';
 import { reportsPageTreeLoop } from '../lib/conversions/pdf-postprocess/page-tree-loop';
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
 import { launchQpdf } from '../lib/conversions/pdf-postprocess/qpdf-runner';
@@ -89,6 +90,18 @@ export function toPopplerDamageSignal(err: unknown, inProcessFallback: boolean |
   const damaged = err instanceof SandboxedProcessError && POPPLER_DAMAGED_EXIT_CODES.has(err.exitCode) && POPPLER_DAMAGED_PATTERN.test(err.stderr);
   if (!damaged) return null;
   return inProcessFallback === false ? new PdfStructureError(PDF_DAMAGED_MESSAGE) : new EngineUnavailableError('pdftotext', POPPLER_DAMAGED_REASON);
+}
+
+/**
+ * What a Poppler run that printed past the sandbox's output limit means. The tools write their result to files, so the
+ * output is diagnostics, and a run that prints without end is one that reads a stream which decodes to far more than a page
+ * holds (a content stream that expands to gigabytes is read as operators, and each is reported). That is an input over its
+ * limits, a 413 like every other decoded-size limit, not a failure of the process. Returns null for every other failure.
+ */
+export function toPopplerOutputLimitError(err: unknown): PayloadLimitError | null {
+  return err instanceof SandboxedBufferLimitError
+    ? new PayloadLimitError('Poppler printed more diagnostics than the limit allows: a stream of the PDF decodes to far more data than a page can hold, or the file is damaged.')
+    : null;
 }
 
 /**
@@ -330,7 +343,8 @@ function parseAccessVerdict(json: string): PdfAccessVerdict {
 }
 
 /**
- * Runs `operation` with a path Poppler can read without a password.
+ * Runs `operation` with a path Poppler can read without a password, once the PDF is known not to hold a stream that
+ * Poppler would decode to more than a stream may (a JBIG2 page of 100,000 x 100,000 pixels, see pdf-jbig2-guard.ts).
  *
  * Without a password that is the input itself. With a password it is a decrypted copy in
  * `tempDir`, created through qpdf; the copy and the password file are removed when the operation
@@ -338,15 +352,20 @@ function parseAccessVerdict(json: string): PdfAccessVerdict {
  *
  * @throws ConversionFailedError when the password is wrong, unsafe, or the PDF cannot be decrypted.
  * @throws EngineUnavailableError when a password is supplied but qpdf is not installed.
+ * @throws DecompressionLimitError (413) when a JBIG2 stream of the readable PDF declares a page past the limit.
  */
 export async function withDecryptedPdf<T>(
   request: PdfDecryptRequest,
   operation: (readablePdfPath: string) => Promise<T>
 ): Promise<T> {
+  const guarded = (readablePdfPath: string): Promise<T> => {
+    assertPdfJbig2WithinLimits(fs.readFileSync(readablePdfPath));
+    return operation(readablePdfPath);
+  };
   if (!request.password) {
-    return operation(request.inputPath);
+    return guarded(request.inputPath);
   }
-  return withQpdfDecryptedPdf({ ...request, password: request.password }, operation);
+  return withQpdfDecryptedPdf({ ...request, password: request.password }, guarded);
 }
 
 /**

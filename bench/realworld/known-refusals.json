@@ -34,5 +34,11 @@
     "detail": "^UnreadableArchiveError: Could not read the archive: it is the first part of a multi-volume set and the next volume, .+\\.r00, is not part of the upload; upload all parts together as one archive\\.$",
     "reason": "The file is the first volume of a RAR set (old numbering): the data of vols/bigfile.txt continues in rarfile-rar3-old.r00 and .r01, which the source project publishes as separate files that the corpus does not hold, so no reader can convert the one volume. The refusal names the missing volume (policy 56).",
     "issue": 783
+  },
+  {
+    "file": "pdf-pdfjs-bomb_giant.pdf",
+    "detail": "^DecompressionLimitError: PDF stream of object \\d+ is a JBIG2 page of 100000 x 100000 pixels that decodes to 1250000000 bytes;",
+    "reason": "The file is a decompression bomb by design (three JBIG2 content streams that each declare a 100,000 x 100,000 pixel page, 1.25 GB decoded); the native route refuses it from the page size in the first bytes of the stream, in milliseconds (policy 61).",
+    "issue": 783
   }
 ]
