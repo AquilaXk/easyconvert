@@ -3,14 +3,15 @@ import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfBlock, PdfRasterImage, PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
 import { loadExternalImages, type ImageCaps } from './html-image-loader';
-import { OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
+import { asciiLowerCase, isUndrawable, NEVER_DRAWN_ELEMENTS, OmittedContent, OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
 
 /**
  * Parses HTML into the PDF block model: headings, paragraphs, lists, tables, links, preformatted
- * text, quotes, rules and embedded (data: URI) PNG/JPEG images. Content the in-process renderer
- * cannot draw is refused with a typed error instead of being dropped. The one exception is an image
- * that is not embedded: it is fetched and embedded first (see html-image-loader.ts), and one that cannot
- * be loaded is left out and reported (see HtmlResourcePolicy) unless the caller requires every resource.
+ * text, quotes, rules and embedded (data: URI) PNG/JPEG images. Elements a PDF cannot carry (form controls,
+ * frames, SVG, media; see isUndrawable) are left out and reported, as the LibreOffice route does; other content
+ * the in-process renderer cannot draw is refused with a typed error. An image that is not embedded is fetched and
+ * embedded first (see html-image-loader.ts), and one that cannot be loaded is left out and reported (see
+ * HtmlResourcePolicy) unless the caller requires every resource.
  */
 
 export interface HtmlElement {
@@ -68,13 +69,9 @@ const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
   'script', 'style', 'title', 'textarea', 'xmp', 'iframe', 'noembed', 'noframes',
 ]);
 /** Elements that are never displayed. */
-const HIDDEN_ELEMENTS: ReadonlySet<string> = new Set([
-  'head', 'script', 'style', 'template', 'noembed', 'noframes', 'meta', 'link', 'base', 'title', 'noscript',
-]);
-/** Embedded or interactive content the in-process renderer cannot draw. */
-const UNSUPPORTED_ELEMENTS: ReadonlySet<string> = new Set([
-  'svg', 'math', 'canvas', 'video', 'audio', 'iframe', 'object', 'embed', 'select', 'textarea', 'xmp',
-]);
+const HIDDEN_ELEMENTS: ReadonlySet<string> = new Set([...NEVER_DRAWN_ELEMENTS, 'head', 'style', 'meta', 'link', 'base', 'title']);
+/** Content the in-process renderer cannot draw and has no fallback for: it refuses the page (what it can leave out is in isUndrawable). */
+const UNSUPPORTED_ELEMENTS: ReadonlySet<string> = new Set(['math', 'xmp']);
 /** Opening any of these closes an open <p>. */
 const PARAGRAPH_CLOSERS: ReadonlySet<string> = new Set([
   'address', 'article', 'aside', 'blockquote', 'center', 'details', 'dialog', 'dir', 'div', 'dl', 'dd', 'dt',
@@ -386,15 +383,6 @@ function commentEnd(html: string, from: number): number {
   return html.length;
 }
 
-/**
- * Lowercases ASCII letters only. HTML tag and attribute names are ASCII-case-insensitive, and
- * keeping every other character (such as U+0130, whose full lowercase form is two code units)
- * keeps offsets into the lowercased copy valid for the original text.
- */
-export function asciiLowerCase(text: string): string {
-  return text.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
-}
-
 /** Index of the end tag `</tag` (followed by whitespace, '/' or '>') at or after `from`, or -1. */
 function findRawTextEnd(lowerHtml: string, tag: string, from: number): number {
   const needle = `</${tag}`;
@@ -529,15 +517,22 @@ interface PendingImage {
 
 class HtmlBlockBuilder {
   readonly images: PendingImage[] = [];
+  /** The elements left out of the page, reported as the LibreOffice route reports them. */
+  readonly omitted = new OmittedContent();
 
 
   private isBlock(node: HtmlNode): node is HtmlElement {
     return typeof node !== 'string' && BLOCK_ELEMENTS.has(node.tag);
   }
 
-  private assertDrawable(node: HtmlElement): void {
+  /** Whether the node is left out with a warning; throws for content that can be neither drawn nor left out. */
+  private leavesOut(node: HtmlElement): boolean {
+    if (isUndrawable(node)) {
+      this.omitted.element(node.tag);
+      return true;
+    }
     if (UNSUPPORTED_ELEMENTS.has(node.tag)) throw unsupported(`<${node.tag}>`);
-    if (node.tag === 'input' && (node.attrs.get('type') ?? '').toLowerCase() !== 'hidden') throw unsupported('<input>');
+    return false;
   }
 
   /** Collects a node's inline content; block elements inside inline content start on a new line. */
@@ -547,7 +542,7 @@ class HtmlBlockBuilder {
       return;
     }
     if (isHidden(node)) return;
-    this.assertDrawable(node);
+    if (this.leavesOut(node)) return;
     if (node.tag === 'br') {
       context.segments.push({ text: '\n', link });
       return;
@@ -920,7 +915,7 @@ export async function prepareEmbeddedImage(bytes: Buffer, label: string): Promis
 
 /**
  * Parses HTML into PDF blocks. Throws EngineUnavailableError('soffice') for content only the native
- * engine draws (embedded media, form fields, SVG, MathML, non-PNG/JPEG images) and
+ * engine draws (MathML, non-PNG/JPEG images, nested tables) and
  * ConversionFailedError for embedded images that cannot be decoded, and for external images that cannot
  * be loaded when the policy requires every resource.
  */
@@ -931,5 +926,5 @@ export async function parseHtmlToPdfBlocks(html: string, policy: HtmlResourcePol
   const builder = new HtmlBlockBuilder();
   const blocks = builder.blocks(tree.root.children);
   await verifyImages(builder.images);
-  return { title: tree.title || undefined, blocks, warnings: omitted.warnings() };
+  return { title: tree.title || undefined, blocks, warnings: [...omitted.warnings(), ...builder.omitted.warnings()] };
 }

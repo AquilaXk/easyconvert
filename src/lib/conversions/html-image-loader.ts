@@ -3,6 +3,7 @@ import { ConversionFailedError } from '../types';
 import type { HtmlElement } from './html-blocks';
 import {
   findExternalImages,
+  isNeverDrawn,
   normalizeUrl,
   OmittedExternalImages,
   quoted,
@@ -93,7 +94,7 @@ function requestedUrl(element: HtmlElement): string {
 function countEmbeddedImages(element: HtmlElement): number {
   let count = 0;
   for (const child of element.children) {
-    if (typeof child === 'string') continue;
+    if (typeof child === 'string' || isNeverDrawn(child)) continue;
     if (child.tag === IMAGE_TAG && DATA_URI_PREFIX.test(normalizeUrl(child.attrs.get(SRC_ATTRIBUTE) ?? ''))) count++;
     count += countEmbeddedImages(child);
   }
