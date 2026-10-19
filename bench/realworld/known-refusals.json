@@ -26,7 +26,7 @@
   {
     "file": "kaitai-small.wav",
     "detail": "^EmptyAudioInputError: The audio file holds no audio samples",
-    "reason": "The file is a 44-byte WAV header whose data chunk holds no sample; an AAC file (ADTS) is a run of frames with no header, so zero frames are zero bytes and nothing a reader can open. FFmpeg writes the same empty file.",
+    "reason": "The file is a 44-byte WAV header whose data chunk holds no sample. For .aac (ADTS, a run of frames with no header) zero frames are zero bytes; for .m4a, .mp3, .opus and .ogg FFmpeg writes a few hundred bytes that ffprobe and ffmpeg cannot open. Only FLAC and WAV hold a stream of zero frames as a readable file.",
     "issue": 783
   }
 ]

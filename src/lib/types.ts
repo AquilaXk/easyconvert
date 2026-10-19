@@ -1201,14 +1201,15 @@ export class UnprocessableMediaInputError extends ConversionFailedError {
 }
 
 /**
- * An audio file with a header and no samples (a WAV whose data chunk is empty), converted to a target format that has no file
- * header of its own: ADTS is a run of frames, so zero frames are zero bytes and nothing a reader can recognise. The file is
- * intact and the request understood, so the routes answer 422 (through `status`); another worker would refuse it too.
+ * An audio file with a header and no samples (a WAV whose data chunk is empty), converted to a target whose files an encoder
+ * cannot write without a frame: ADTS is a run of frames (zero frames are zero bytes), and an empty `.m4a`, `.mp3`, `.opus` or
+ * `.ogg` is a few bytes of container no reader opens. The file is intact and the request understood, so the routes answer
+ * 422 (through `status`); another worker would refuse it too.
  */
 export class EmptyAudioInputError extends UnprocessableMediaInputError {
   readonly status = 422;
   constructor(target: string) {
-    super(`The audio file holds no audio samples, so there is nothing to write as a .${target} file (a .${target} file is a run of audio frames with no header of its own).`);
+    super(`The audio file holds no audio samples, so there is nothing to write as a .${target} file that a player or reader can open.`);
     this.name = 'EmptyAudioInputError';
   }
 }
