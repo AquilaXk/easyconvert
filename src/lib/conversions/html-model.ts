@@ -381,13 +381,22 @@ class HtmlModelBuilder {
     const start = ordered ? (Number.parseInt(element.attrs.get('start') ?? '', DECIMAL_RADIX) || DEFAULT_LIST_START) : DEFAULT_LIST_START;
     const format = ORDERED_TYPES.get(element.attrs.get('type') ?? '1') ?? 'decimal';
     let number = start;
+    // Text and elements between the items are not items, but they are on the page: they are read as ordinary blocks, in place.
+    let between: HtmlNode[] = [];
+    const flushBetween = (): void => {
+      if (between.length > 0) this.blocks(between, out, listDepth, tableDepth);
+      between = [];
+    };
     for (const child of element.children) {
-      if (typeof child === 'string') continue;
+      if (typeof child === 'string' || (child.tag !== 'li' && !LISTS.has(child.tag))) {
+        between.push(child);
+        continue;
+      }
+      flushBetween();
       if (LISTS.has(child.tag)) {
         this.list(child, out, listDepth + 1, tableDepth);
         continue;
       }
-      if (child.tag !== 'li') continue;
       const content = out.nested();
       this.blocks(child.children, content, listDepth + 1, tableDepth);
       const first = content.blocks[0];
@@ -408,6 +417,7 @@ class HtmlModelBuilder {
       }
       number += 1;
     }
+    flushBetween();
   }
 
   private flatten(element: HtmlElement, out: BlockSink): void {

@@ -12,6 +12,7 @@ import { textRun } from '../src/lib/conversions/document-model/support';
 import { ConversionFailedError, EncryptedOfficeDocumentError, PayloadLimitError, UnsupportedOptionError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { runEpubcheck } from './helpers/epubcheck';
+import { elementsOf, inspectEpub } from './helpers/epub-inspect';
 import { xmlWellFormed, xpathCount, xpathString } from './helpers/xml-oracle';
 import { pythonModuleAvailable, runPythonHelper } from './helpers/python-oracle';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -186,10 +187,11 @@ describe('writer limits and degenerate documents', () => {
   const paragraph = (text: string): Block => ({ type: 'paragraph', runs: [textRun(text)], rtl: false, align: 'left' });
   const documentOf = (blocks: Block[], title?: string): DocumentModel => ({ ...blankDocument([{ columns: 1, blocks }]), title });
 
-  it('refuses a document without content', async () => {
-    const failure = await documentToEpub(documentOf([]), { title: 'x' }).then(() => undefined, (err: unknown) => err);
-    expect(failure).toBeInstanceOf(ConversionFailedError);
-    expect((failure as Error).message).toBe('The document has no content to put in an EPUB.');
+  it('writes a document without content as a book of one empty content document, as the Word and ODF writers write an empty paragraph (policy 8)', async () => {
+    const book = await inspectEpub(await documentToEpub(documentOf([]), { title: 'x' }));
+    expect(book.chapters.map((chapter) => chapter.path)).toEqual(['chapter1.xhtml']);
+    expect(elementsOf(book.chapters[0].html, new Set(['body']))[0].text).toBe('');
+    expect(elementsOf(book.navigation, new Set(['a'])).map((link) => [link.text, link.attrs.get('href')])).toEqual([['x', 'chapter1.xhtml']]);
   });
 
   it('refuses a book that would hold more content documents than the limit, without hanging', async () => {
