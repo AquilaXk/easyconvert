@@ -70,7 +70,7 @@ Engines
 45. [PostScript Type 1 fonts through FontForge: an OpenType intermediate, a checked container and a glyph count](#45-postscript-type-1-fonts-through-fontforge-an-opentype-intermediate-a-checked-container-and-a-glyph-count)
 48. [One-shot office conversions without a UNO listener](#48-one-shot-office-conversions-without-a-uno-listener)
 58. [PDF page operations: when a page count is needed, loop checks beside the rewrite, and the measured floor of the rows](#58-pdf-page-operations-when-a-page-count-is-needed-loop-checks-beside-the-rewrite-and-the-measured-floor-of-the-rows)
-59. [qpdf jobs from a runner that holds libqpdf loaded, each in namespaces of its own](#59-qpdf-jobs-from-a-runner-that-holds-libqpdf-loaded-each-in-namespaces-of-its-own)
+60. [qpdf jobs from a runner that holds libqpdf loaded, each in namespaces of its own](#60-qpdf-jobs-from-a-runner-that-holds-libqpdf-loaded-each-in-namespaces-of-its-own)
 
 Usage limits
 
@@ -1672,7 +1672,7 @@ Compression
 - **Verified by**: `tests/pdf-ops-launcher.test.ts` (one program for a deletion that leaves page 1 and two for one that names it), `tests/pdf-delete-count-abort.test.ts`, `tests/pdf-page-ops.test.ts`, `tests/pdf-page-tree.test.ts` (compression of a ring on the Ghostscript profiles returns the page and its text, read by Poppler), `tests/pdf-compress.test.ts`, the quality rows of the `pdf-ops` family (`--quality-only`) and its speed rows against the base.
 - **Revisit when**: a program start that costs less than the wrapper and the fork is available (a native job runner that gives each job its own namespaces, or libuv starting programs with `vfork` or `posix_spawn` on Linux); the CI runner stops allowing user namespaces; a specification that names page 1 becomes the usual deletion.
 
-## 59. qpdf jobs from a runner that holds libqpdf loaded, each in namespaces of its own
+## 60. qpdf jobs from a runner that holds libqpdf loaded, each in namespaces of its own
 
 - **Status**: Implemented (issue #695, epic #759), decided 2026-10-20 (QA approval). It follows entry 58, which records the rows before it.
 - **Decision**:

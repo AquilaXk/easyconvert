@@ -2,7 +2,7 @@
 
 Runs the qpdf jobs of the PDF operations from a process that holds `libqpdf` already loaded, instead of starting the `qpdf` program for each
 job. The start of `qpdf` (the dynamic linker and the initialisers of its libraries) is 1.26 ms of the 2.14 ms of an extraction; a job in a forked
-child of the runner takes 0.8 ms of work and about 0.4 ms around it. Policy entry 59 has the measurements and the decision.
+child of the runner takes 0.8 ms of work and about 0.4 ms around it. Policy entry 60 has the measurements and the decision.
 
 - `qpdf-runner.c`: the program (C, no dependency beyond libc and `libdl`). The header comment holds the frame format and the list of what each job
   gets and what it does not share with any other job.
