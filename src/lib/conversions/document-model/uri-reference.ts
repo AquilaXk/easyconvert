@@ -12,10 +12,16 @@ const STRAY_PERCENT = /%(?![0-9A-Fa-f]{2})/g;
 const AUTHORITY_PREFIX = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*/;
 const WEB_SCHEME = /^(?:https?|ftp):/i;
 
+/** UTF-8 escapes of U+FFFD, written for a lone surrogate, which has no UTF-8 form (policy 55 writes U+FFFD for it in text). */
+const REPLACEMENT_CHARACTER_ESCAPE = '%EF%BF%BD';
+const LONE_SURROGATE = /^[\uD800-\uDFFF]$/;
+
 function encodeIllegalCharacters(text: string): string {
   let encoded = '';
   for (const character of text.replace(STRAY_PERCENT, '%25')) {
-    encoded += URI_CHARACTER_OUTSIDE_HOST.test(character) ? character : encodeURIComponent(character);
+    if (URI_CHARACTER_OUTSIDE_HOST.test(character)) encoded += character;
+    else if (LONE_SURROGATE.test(character)) encoded += REPLACEMENT_CHARACTER_ESCAPE;
+    else encoded += encodeURIComponent(character);
   }
   return encoded;
 }

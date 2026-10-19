@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
+import { fragmentReference, uriReference } from '../src/lib/conversions/document-model/uri-reference';
 import { docxAnchors, epubAnchors, odtAnchors } from './helpers/anchor-targets';
 import { docxWords, epubWords, odtWords, pageWords, wordsNotKept } from './helpers/document-words';
 import { elementsOf, inspectEpub } from './helpers/epub-inspect';
@@ -86,6 +87,12 @@ describe('link targets a URI may not carry', () => {
       'literal http://[::1]:8080/p',
     ]);
     expect(chapter).toContain('host');
+  });
+
+  it('writes a lone surrogate, which has no UTF-8 form, as the escape of U+FFFD instead of failing', () => {
+    expect(uriReference('http://example.gov/a\ud800b')).toBe('http://example.gov/a%EF%BF%BDb');
+    expect(fragmentReference('x\udc00y')).toBe('#x%EF%BF%BDy');
+    expect(uriReference('http://example.gov/\u{1f600}')).toBe('http://example.gov/%F0%9F%98%80');
   });
 
   oracleTest('the EPUB passes EPUBCheck with no error and no warning', ['epubcheck'], async () => {
