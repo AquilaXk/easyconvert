@@ -1,0 +1,534 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  detectSandboxEnvironment,
+  getSanitizedEnvironment,
+  SandboxedBufferLimitError,
+  SandboxedMemoryLimitError,
+  SandboxedProcessError,
+  SandboxedTimeoutError,
+  type SandboxedExecutionResult,
+} from '../../security/process-sandbox';
+import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../../security/sandbox-launcher';
+import { resolveBinaryPath } from './utils';
+
+/**
+ * qpdf jobs from a process that holds libqpdf already loaded (native/qpdf-runner).
+ *
+ * Starting the qpdf program costs more than a small page operation: 1.26 ms of the 2.14 ms of an extraction are the dynamic
+ * linker and the initialisers of its libraries. The runner loads libqpdf once and forks a child per job that calls the library
+ * entry point of the command line with the same arguments, so the output, the messages on standard error and the exit status
+ * are the program's. Every child makes a user namespace and a network namespace of its own before it reads a byte of the
+ * document, and shares nothing with another job (see the header of native/qpdf-runner/qpdf-runner.c).
+ *
+ * The runner is an addition, never a requirement. A job goes through it only when it is up and the job is one it can take; in
+ * every other case, and whenever the runner cannot start the job or says it cannot isolate it, the job is started the way it always
+ * was (launchSandboxedBinary), with the same sandbox and the same typed errors. `QPDF_RUNNER=off` turns the runner off.
+ */
+
+export const QPDF_RUNNER_ENV = 'QPDF_RUNNER';
+export const QPDF_RUNNER_PATH_ENV = 'QPDF_RUNNER_PATH';
+/** The library the runner loads, for a host that keeps libqpdf out of the standard places (and for the tests, which load a stand-in). */
+export const QPDF_RUNNER_LIB_ENV = 'QPDF_RUNNER_LIB';
+
+const RUNNER_CANDIDATES = ['/usr/local/bin/qpdf-runner', '/usr/bin/qpdf-runner'];
+const FRAME_RUN = 1;
+const FRAME_CANCEL = 2;
+const FRAME_READY = 10;
+const FRAME_RESULT = 11;
+const KIND_EXITED = 0;
+const KIND_TIMEOUT = 1;
+const KIND_OUTPUT_LIMIT = 2;
+const KIND_SETUP = 3;
+const KIND_CANCELLED = 4;
+const KIND_REJECTED = 5;
+const FRAME_PREFIX_BYTES = 5;
+const MAX_FRAME_BYTES = 1 << 30;
+const MAX_STDIN_BYTES = 32 * 1024;
+/** The most output the runner takes a job to print (the length of a reply is 32 bits). */
+const MAX_OUTPUT_BYTES = 1024 * 1024 * 1024;
+const BOOT_TIMEOUT_MS = 10_000;
+const RESTART_BACKOFF_MS = 30_000;
+const IDLE_MS = 60_000;
+const REPLY_ALLOWANCE_MS = 10_000;
+const CANCEL_ALLOWANCE_MS = 2000;
+const STOP_GRACE_MS = 2000;
+const DEFAULT_RUN_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
+const BYTES_PER_MB = 1024 * 1024;
+const SIGKILL = 9;
+const SIGSEGV = 11;
+const SIGXFSZ = 25;
+const SIGNAL_NAMES: Readonly<Record<number, NodeJS.Signals>> = { [SIGKILL]: 'SIGKILL', [SIGSEGV]: 'SIGSEGV', [SIGXFSZ]: 'SIGXFSZ', 6: 'SIGABRT', 15: 'SIGTERM', 24: 'SIGXCPU' };
+
+export function qpdfRunnerEnabled(): boolean {
+  return process.env[QPDF_RUNNER_ENV]?.trim().toLowerCase() !== 'off';
+}
+
+// --- Frames ---------------------------------------------------------------------------------------------------------------
+
+function u32(value: number): Buffer {
+  const out = Buffer.alloc(4);
+  out.writeUInt32BE(value >>> 0);
+  return out;
+}
+
+function u64(value: number): Buffer {
+  const out = Buffer.alloc(8);
+  out.writeBigUInt64BE(BigInt(Math.max(0, Math.floor(value))));
+  return out;
+}
+
+function text(value: string): Buffer[] {
+  const bytes = Buffer.from(value, 'utf8');
+  return [u32(bytes.length), bytes];
+}
+
+function frame(type: number, id: number, ...body: Buffer[]): Buffer[] {
+  const length = FRAME_PREFIX_BYTES + body.reduce((sum, part) => sum + part.length, 0);
+  const head = Buffer.alloc(9);
+  head.writeUInt32BE(length, 0);
+  head.writeUInt8(type, 4);
+  head.writeUInt32BE(id, 5);
+  return [head, ...body.filter((part) => part.length > 0)];
+}
+
+interface RunRequest {
+  timeoutMs: number;
+  maxOutput: number;
+  limitAsBytes: number;
+  limitFsizeBytes: number;
+  limitCpuSeconds: number;
+  cwd: string;
+  argv: string[];
+  env: string[];
+  stdin: Buffer;
+}
+
+export function encodeRun(id: number, request: RunRequest): Buffer[] {
+  return frame(
+    FRAME_RUN,
+    id,
+    u32(request.timeoutMs),
+    u64(request.maxOutput),
+    u64(request.limitAsBytes),
+    u64(request.limitFsizeBytes),
+    u32(request.limitCpuSeconds),
+    ...text(request.cwd),
+    u32(request.argv.length),
+    ...request.argv.flatMap(text),
+    u32(request.env.length),
+    ...request.env.flatMap(text),
+    u32(request.stdin.length),
+    request.stdin
+  );
+}
+
+interface Reply {
+  type: number;
+  id: number;
+  body: Buffer;
+}
+
+/** Cuts the bytes the runner writes into frames. */
+class ReplyReader {
+  private chunks: Buffer[] = [];
+  private total = 0;
+
+  push(chunk: Buffer): Reply[] {
+    this.chunks.push(chunk);
+    this.total += chunk.length;
+    const replies: Reply[] = [];
+    for (;;) {
+      if (this.total < 4) break;
+      const joined = this.join();
+      const length = joined.readUInt32BE(0);
+      if (length < FRAME_PREFIX_BYTES || length > MAX_FRAME_BYTES) throw new Error('the runner sent a frame of an impossible length');
+      if (joined.length < 4 + length) break;
+      replies.push({ type: joined.readUInt8(4), id: joined.readUInt32BE(5), body: joined.subarray(9, 4 + length) });
+      const rest = joined.subarray(4 + length);
+      this.chunks = rest.length > 0 ? [rest] : [];
+      this.total = rest.length;
+    }
+    return replies;
+  }
+
+  private join(): Buffer {
+    if (this.chunks.length > 1) this.chunks = [Buffer.concat(this.chunks, this.total)];
+    return this.chunks[0];
+  }
+}
+
+interface JobResult {
+  kind: number;
+  exitStatus: number;
+  signal: number;
+  stdout: Buffer;
+  stderr: Buffer;
+}
+
+function decodeResult(body: Buffer): JobResult {
+  const stdoutBytes = body.readUInt32BE(12);
+  const stderrBytes = body.readUInt32BE(16);
+  if (body.length !== 20 + stdoutBytes + stderrBytes) throw new Error('the runner sent a result of the wrong size');
+  return {
+    kind: body.readUInt32BE(0),
+    exitStatus: body.readInt32BE(4),
+    signal: body.readInt32BE(8),
+    stdout: body.subarray(20, 20 + stdoutBytes),
+    stderr: body.subarray(20 + stdoutBytes),
+  };
+}
+
+// --- Errors ---------------------------------------------------------------------------------------------------------------
+
+/** The failure of a program that ran and did not succeed, as executeSandboxedBinary reports it. */
+function processFailure(result: JobResult, options: LaunchedExecutionOptions): Error {
+  const signal = result.signal === 0 ? null : (SIGNAL_NAMES[result.signal] ?? (`SIG${result.signal}` as NodeJS.Signals));
+  const memoryLimitMb = options.memoryLimitMb ?? (options.rlimits?.asBytes ? Math.round(options.rlimits.asBytes / BYTES_PER_MB) : undefined);
+  if ((result.signal === SIGKILL || result.signal === SIGSEGV) && memoryLimitMb && memoryLimitMb > 0) return new SandboxedMemoryLimitError(memoryLimitMb);
+  if (result.signal === SIGXFSZ) return new SandboxedBufferLimitError(options.maxFileSize || options.rlimits?.fsizeBytes || options.maxBuffer || DEFAULT_MAX_BUFFER_BYTES);
+  const stderrText = result.stderr.toString('utf8').trim();
+  let summary: string;
+  if (signal !== null) summary = stderrText ? `Process terminated by signal ${signal}: ${stderrText}` : `Process terminated by signal ${signal}`;
+  else summary = stderrText || `Process exited with code ${result.exitStatus}`;
+  return new SandboxedProcessError(summary, signal === null ? result.exitStatus : null, result.stderr.toString('utf8'), signal, result.stdout.toString('utf8'));
+}
+
+/** Raised for a job the runner could not take or could not isolate: the caller starts it the usual way. */
+class RunnerDeclined extends Error {}
+
+// --- The runner process ---------------------------------------------------------------------------------------------------
+
+interface Pending {
+  options: LaunchedExecutionOptions;
+  startedAt: number;
+  resolve(result: SandboxedExecutionResult): void;
+  reject(error: unknown): void;
+  timer: NodeJS.Timeout;
+  detach(): void;
+  aborted?: { reason: unknown; timer: NodeJS.Timeout };
+}
+
+type Handle = { ref?: () => void; unref?: () => void } | null | undefined;
+
+class RunnerHost {
+  readonly process: ChildProcess;
+  private readonly pending = new Map<number, Pending>();
+  private readonly reader = new ReplyReader();
+  private nextId = 1;
+  private idleTimer: NodeJS.Timeout | null = null;
+  private referenced = true;
+  ready = false;
+  wasReady = false;
+  stoppedOnPurpose = false;
+  ended = false;
+  version = '';
+  onEnd: () => void = () => undefined;
+  onReady: () => void = () => undefined;
+
+  constructor(binary: string) {
+    const library = process.env[QPDF_RUNNER_LIB_ENV]?.trim();
+    // Directly, without a shell, in its own process group, with the standard streams and the sanitized environment only.
+    this.process = spawn(binary, library ? ['--lib', library] : [], {
+      cwd: os.tmpdir(),
+      env: getSanitizedEnvironment({}, false),
+      stdio: ['pipe', 'pipe', 'ignore'],
+      shell: false,
+      detached: true,
+    });
+    this.process.stdin?.on('error', () => undefined);
+    this.process.stdout?.on('data', (chunk: Buffer) => this.onData(chunk));
+    this.process.once('exit', () => this.end('the runner ended'));
+    this.process.once('error', () => this.end('the runner could not be started'));
+  }
+
+  get pid(): number | undefined {
+    return this.process.pid;
+  }
+
+  private setReferenced(on: boolean): void {
+    if (on === this.referenced) return;
+    this.referenced = on;
+    const handles: Handle[] = [this.process, this.process.stdout as Handle, this.process.stdin as Handle];
+    for (const handle of handles) {
+      if (on) handle?.ref?.();
+      else handle?.unref?.();
+    }
+  }
+
+  private armIdle(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => this.stop(), IDLE_MS);
+    this.idleTimer.unref();
+  }
+
+  run(binary: string, args: string[], options: LaunchedExecutionOptions): Promise<SandboxedExecutionResult> {
+    return new Promise<SandboxedExecutionResult>((resolve, reject) => {
+      const id = this.nextId++;
+      const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+      const environment = getSanitizedEnvironment(options.env ?? {}, true);
+      const request: RunRequest = {
+        timeoutMs,
+        maxOutput: options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES,
+        limitAsBytes: options.rlimits?.asBytes ?? (options.memoryLimitMb ? options.memoryLimitMb * BYTES_PER_MB : 0),
+        limitFsizeBytes: options.rlimits?.fsizeBytes ?? options.maxFileSize ?? 0,
+        limitCpuSeconds: options.rlimits?.cpuSeconds ?? 0,
+        cwd: options.cwd ?? os.tmpdir(),
+        argv: [path.basename(binary), ...args],
+        env: Object.entries(environment).flatMap(([key, value]) => (typeof value === 'string' ? [`${key}=${value}`] : [])),
+        stdin: options.stdin ?? Buffer.alloc(0),
+      };
+      const timer = setTimeout(() => {
+        // The runner is silent past the time limit it was given: it is lost, and so is every job it holds.
+        this.fail(id, new SandboxedTimeoutError(timeoutMs));
+        this.stop(true);
+      }, timeoutMs + REPLY_ALLOWANCE_MS);
+      // On abort the runner is asked to kill the job and the caller hears of it when the runner says it is dead, so that what a
+      // caller's `finally` removes is not removed under a live program, as on the direct path.
+      const signal = options.signal;
+      const onAbort = (): void => {
+        const pending = this.pending.get(id);
+        if (!pending || pending.aborted) return;
+        const reason = signal?.reason ?? new Error('The operation was aborted');
+        pending.aborted = { reason, timer: setTimeout(() => this.fail(id, reason), CANCEL_ALLOWANCE_MS) };
+        this.write(frame(FRAME_CANCEL, id));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.pending.set(id, { options, startedAt: Date.now(), resolve, reject, timer, detach: () => signal?.removeEventListener('abort', onAbort) });
+      if (this.idleTimer) clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+      this.setReferenced(true);
+      this.write(encodeRun(id, request));
+    });
+  }
+
+  private write(parts: Buffer[]): void {
+    if (this.ended) return;
+    const stream = this.process.stdin;
+    if (!stream) return;
+    stream.cork();
+    for (const part of parts) stream.write(part);
+    stream.uncork();
+  }
+
+  private settle(id: number): Pending | undefined {
+    const pending = this.pending.get(id);
+    if (!pending) return undefined;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    if (pending.aborted) clearTimeout(pending.aborted.timer);
+    pending.detach();
+    if (this.pending.size === 0 && !this.ended) {
+      this.setReferenced(false);
+      this.armIdle();
+    }
+    return pending;
+  }
+
+  private fail(id: number, error: unknown): void {
+    this.settle(id)?.reject(error);
+  }
+
+  private onData(chunk: Buffer): void {
+    let replies: Reply[];
+    try {
+      replies = this.reader.push(chunk);
+    } catch {
+      this.stop(true);
+      return;
+    }
+    for (const reply of replies) {
+      try {
+        this.handle(reply);
+      } catch {
+        // A reply that cannot be read leaves nothing to trust.
+        this.stop(true);
+        return;
+      }
+    }
+  }
+
+  private handle(reply: Reply): void {
+    if (reply.type === FRAME_READY) {
+      const length = reply.body.readUInt32BE(0);
+      this.version = reply.body.toString('utf8', 4, 4 + length);
+      this.ready = true;
+      this.wasReady = true;
+      if (this.pending.size === 0) {
+        this.setReferenced(false);
+        this.armIdle();
+      }
+      this.onReady();
+      return;
+    }
+    if (reply.type !== FRAME_RESULT) throw new Error('the runner sent an unknown frame');
+    const pending = this.pending.get(reply.id);
+    if (!pending) return;
+    if (pending.aborted) {
+      this.fail(reply.id, pending.aborted.reason);
+      return;
+    }
+    const result = decodeResult(reply.body);
+    this.settle(reply.id);
+    this.complete(pending, result);
+  }
+
+  private complete(pending: Pending, result: JobResult): void {
+    const { options } = pending;
+    switch (result.kind) {
+      case KIND_EXITED:
+        if (result.exitStatus === 0 && result.signal === 0) {
+          const sandbox = detectSandboxEnvironment();
+          pending.resolve({
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: 0,
+            durationMs: Date.now() - pending.startedAt,
+            sandboxed: sandbox.sandboxType !== 'host',
+            sandboxType: sandbox.sandboxType,
+          });
+        } else {
+          pending.reject(processFailure(result, options));
+        }
+        return;
+      case KIND_TIMEOUT:
+        pending.reject(new SandboxedTimeoutError(options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS));
+        return;
+      case KIND_OUTPUT_LIMIT:
+        pending.reject(new SandboxedBufferLimitError(options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES));
+        return;
+      case KIND_CANCELLED:
+        pending.reject(new Error('The operation was aborted'));
+        return;
+      case KIND_SETUP:
+      case KIND_REJECTED:
+      default:
+        pending.reject(new RunnerDeclined(result.stderr.toString('utf8') || `setup failed (${result.kind})`));
+    }
+  }
+
+  private end(reason: string): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.ready = false;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    // A job the runner held died with it (its children die with their parent): the caller starts it the usual way.
+    for (const id of [...this.pending.keys()]) {
+      this.fail(id, this.pending.get(id)?.aborted?.reason ?? new RunnerDeclined(reason));
+    }
+    this.onEnd();
+  }
+
+  /** Ends the runner: closing its input makes it kill its jobs and go, and it is killed if it does not. */
+  stop(abnormal = false): void {
+    this.stoppedOnPurpose = !abnormal;
+    try {
+      this.process.stdin?.end();
+    } catch {
+      // already closed
+    }
+    this.end('the runner was stopped');
+    const stopped = this.process;
+    setTimeout(() => {
+      if (stopped.exitCode === null && stopped.signalCode === null && stopped.pid) {
+        try {
+          process.kill(-stopped.pid, 'SIGKILL');
+        } catch {
+          // gone
+        }
+      }
+    }, STOP_GRACE_MS).unref();
+  }
+}
+
+let host: RunnerHost | null = null;
+let starting: Promise<boolean> | null = null;
+let retryAfter = 0;
+let ranCount = 0;
+let fallbackCount = 0;
+
+/** The runner program: the path in the environment, else the standard places; null when there is none. */
+function runnerBinary(): string | null {
+  return resolveBinaryPath(QPDF_RUNNER_PATH_ENV, RUNNER_CANDIDATES, 'qpdf-runner');
+}
+
+/** Starts the runner if there is none and resolves true once it is ready; false when it is off, missing or could not start. */
+export function startQpdfRunner(): Promise<boolean> {
+  if (!qpdfRunnerEnabled()) return Promise.resolve(false);
+  if (host?.ready) return Promise.resolve(true);
+  if (starting) return starting;
+  if (Date.now() < retryAfter) return Promise.resolve(false);
+  const binary = runnerBinary();
+  if (!binary) return Promise.resolve(false);
+  const created = new RunnerHost(binary);
+  host = created;
+  starting = new Promise<boolean>((resolve) => {
+    const boot = setTimeout(() => {
+      created.stop();
+      resolve(false);
+    }, BOOT_TIMEOUT_MS);
+    boot.unref();
+    created.onReady = () => {
+      clearTimeout(boot);
+      resolve(true);
+    };
+    created.onEnd = () => {
+      clearTimeout(boot);
+      if (host === created) host = null;
+      // A runner that never booted (no library, no program), or ended without being stopped, is not replaced at once.
+      if (!created.wasReady || !created.stoppedOnPurpose) retryAfter = Date.now() + RESTART_BACKOFF_MS;
+      resolve(false);
+    };
+  }).finally(() => {
+    starting = null;
+  });
+  return starting;
+}
+
+/** Ends the runner and the jobs it still runs. */
+export function stopQpdfRunner(): void {
+  retryAfter = 0;
+  const current = host;
+  host = null;
+  current?.stop();
+}
+
+export function qpdfRunnerState(): { ready: boolean; pid: number | undefined; version: string; ran: number; fallbacks: number } {
+  return { ready: host?.ready === true, pid: host?.ready ? host.pid : undefined, version: host?.version ?? '', ran: ranCount, fallbacks: fallbackCount };
+}
+
+/** Whether the runner can take this job: qpdf itself, isolated, with the limits and the standard input it knows. */
+function runnerCanTake(binary: string, options: LaunchedExecutionOptions): boolean {
+  if (path.basename(binary) !== 'qpdf') return false;
+  if (options.networkIsolated === false || options.sandboxOptions !== undefined || options.rlimits?.nproc !== undefined) return false;
+  if (options.signal?.aborted) return false;
+  return (options.stdin?.length ?? 0) <= MAX_STDIN_BYTES && (options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES) <= MAX_OUTPUT_BYTES;
+}
+
+/**
+ * Like launchSandboxedBinary for a qpdf run, started by the runner when it is up and takes the job. The result and the errors are
+ * those of the usual way, which also starts the job whenever the runner declines it or cannot isolate it.
+ */
+export async function launchQpdf(binary: string, args: string[], options: LaunchedExecutionOptions = {}): Promise<SandboxedExecutionResult> {
+  const current = host?.ready === true ? host : null;
+  if (!current) void startQpdfRunner();
+  if (!current || !qpdfRunnerEnabled() || !runnerCanTake(binary, options)) {
+    fallbackCount++;
+    return launchSandboxedBinary(binary, args, options);
+  }
+  try {
+    const result = await current.run(binary, args, options);
+    ranCount++;
+    return result;
+  } catch (error) {
+    if (!(error instanceof RunnerDeclined)) {
+      // The job ran and failed (or was stopped): that is its outcome, the same as the usual way's.
+      ranCount++;
+      throw error;
+    }
+    fallbackCount++;
+    return launchSandboxedBinary(binary, args, options);
+  }
+}
