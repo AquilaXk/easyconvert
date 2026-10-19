@@ -5058,7 +5058,7 @@
         "rel": 0.01
       },
       "ours": 0.3751614357441815,
-      "delta": -0.002166902737247456,
+      "delta": 0.00199457330486541,
       "ratio": null
     },
     "compression/class-compressed.tar->7z/compression_ratio": {
@@ -5948,7 +5948,7 @@
         "rel": 0.01
       },
       "ours": 0.3589803531712315,
-      "delta": -0.0022955856719812373,
+      "delta": 0.002066634283786506,
       "ratio": null
     },
     "compression/silesia-mozilla.tar->zst/lossless_exact": {
@@ -19177,8 +19177,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.3583857350271464,
-      "delta": -2.3583857350271464,
+      "ours": -0.21284200452592605,
+      "delta": -0.21284200452592605,
       "ratio": null
     },
     "image/clic-zugr-108.png->avif/bd_rate_ssim": {
@@ -19477,8 +19477,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -2.966972966322712,
-      "delta": -2.966972966322712,
+      "ours": -0.3600627854332794,
+      "delta": -0.3600627854332794,
       "ratio": null
     },
     "image/kodim02.png->avif/bd_rate_ssim": {
@@ -23757,7 +23757,7 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 57.138171,
+      "ours": 56.610584,
       "delta": 0,
       "ratio": null
     },
@@ -24587,8 +24587,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -11.05134309413186,
-      "delta": -11.05134309413186,
+      "ours": -8.854976639874323,
+      "delta": -8.854976639874323,
       "ratio": null
     },
     "image/wm-lineart-chart.png->jpg/bd_rate_ssim": {
@@ -24597,8 +24597,8 @@
         "abs": 1.5,
         "rel": 0
       },
-      "ours": -31.6903539516439,
-      "delta": -31.6903539516439,
+      "ours": -30.0601723671458,
+      "delta": -30.0601723671458,
       "ratio": null
     },
     "image/wm-lineart-chart.png->jpg/bytes": {
@@ -37597,8 +37597,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 41.4447335,
-      "delta": -0.2351979999999969,
+      "ours": 40.783545000000004,
+      "delta": -0.1616679999999988,
       "ratio": null
     },
     "raw/class-nikon->jpg/ssim": {
@@ -39117,8 +39117,8 @@
         "abs": 0.3,
         "rel": 0
       },
-      "ours": 43.371146,
-      "delta": -0.3647709999999975,
+      "ours": 41.497242,
+      "delta": -0.13424400000000247,
       "ratio": null
     },
     "raw/raw-nikon-d70.nef->jpg/ssim": {

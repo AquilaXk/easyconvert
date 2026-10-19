@@ -185,6 +185,8 @@ BD-rate into a skip.
 summary). Pixel and sample metrics are deterministic for fixed versions; a different `cwebp`, `avifenc`, ffmpeg or
 libvpx build can move them, so refresh the baseline in the same change that moves the toolchain.
 
+The numbers also depend on the CPU architecture: the reference AVIF encoder writes different bytes on arm64 and on x86-64, and the Zstandard command line is the runner's, not a laptop's. A baseline entry therefore comes from the nightly run on the CI runner (x86-64 Linux), never from a laptop or a Linux VM on Apple silicon. To re-record rows that a nightly run reports as `REGRESSION` while the code under test did not change, delete those entries from `bench/baseline.json` and add them again from the nightly report with `npm run bench:quality -- --baseline-from-report <report.json>` (the `bench-quality-results-<group>` artifact of the run).
+
 ## Reference parity
 
 A conversion change merges only when it is at or above the reference tool in both quality and speed. `--parity` runs
