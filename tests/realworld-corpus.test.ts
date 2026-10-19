@@ -7,6 +7,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import sharp from 'sharp';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { describeFetchFailure } from '../bench/http-retry';
 import { fetchBytes, retryDelayMs } from '../bench/realworld/http';
 import { inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory, ZipRangeError } from '../bench/realworld/zip-range';
 import { ManifestError, MANIFEST_PATH, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
@@ -451,6 +452,22 @@ describe('output check', () => {
     expect(await check(await zipOf({ 'doc-1.eps': eps, 'doc-2.eps': eps }, 'DEFLATE'), 'eps', ZIP_MIME)).toBeNull();
   });
 
+  it('accepts the ZIP of page metafiles a multi-page drawing converts to, by the signature of each page', async () => {
+    // Header of a real Enhanced Metafile written for a page of a Visio drawing: record type 1, header size 88, " EMF" at offset 40.
+    const emf = Buffer.alloc(88);
+    emf.writeUInt32LE(1, 0);
+    emf.writeUInt32LE(88, 4);
+    emf.write(' EMF', 40, 'latin1');
+    // A placeable Windows Metafile starts with the key 0x9AC6CDD7.
+    const wmf = Buffer.alloc(40);
+    wmf.writeUInt32LE(0x9ac6cdd7, 0);
+    expect(await check(await zipOf({ 'doc-p001.emf': emf, 'doc-p002.emf': emf }, 'DEFLATE'), 'emf', ZIP_MIME)).toBeNull();
+    expect(await check(await zipOf({ 'doc-p001.wmf': wmf, 'doc-p002.wmf': wmf }, 'DEFLATE'), 'wmf', ZIP_MIME)).toBeNull();
+    expect(await check(await zipOf({ 'doc-p001.emf': emf, 'doc-p002.emf': Buffer.from('not a metafile') }, 'DEFLATE'), 'emf', ZIP_MIME)).toBe(
+      'page doc-p002.emf: output bytes do not match emf'
+    );
+  });
+
   it('accepts an empty output only for an input the corpus manifest marks as having no content, and for no other', async () => {
     const empty = Buffer.alloc(0);
     expect(await outputProblem(empty, 'csv', os.tmpdir(), { ...NO_READERS, emptyInput: true })).toBeNull();
@@ -579,4 +596,17 @@ describe('a real-world download from a host that limits its rate', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 20_000);
+});
+
+describe('what a failed download reports', () => {
+  it('names the reason fetch keeps in its cause, so a log tells an unreachable host from a refusing one', () => {
+    const cause = Object.assign(new Error('connect ETIMEDOUT 95.216.19.17:443'), { code: 'ETIMEDOUT' });
+    expect(describeFetchFailure(new TypeError('fetch failed', { cause }))).toBe('fetch failed (ETIMEDOUT: connect ETIMEDOUT 95.216.19.17:443)');
+  });
+
+  it('names a cause without an error code by its message, and leaves an error with no cause as it is', () => {
+    expect(describeFetchFailure(new TypeError('fetch failed', { cause: new Error('bad port') }))).toBe('fetch failed (bad port)');
+    expect(describeFetchFailure(new Error('HTTP 404, expected 200'))).toBe('HTTP 404, expected 200');
+    expect(describeFetchFailure('plain text')).toBe('plain text');
+  });
 });

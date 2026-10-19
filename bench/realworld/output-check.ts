@@ -1,5 +1,5 @@
 /**
- * Whether a converted output is a readable file of the target type. A page-oriented target (an image, SVG, EPS or DXF) of a
+ * Whether a converted output is a readable file of the target type. A page-oriented target (an image, SVG, EPS, DXF, EMF or WMF) of a
  * document with several pages is delivered as a ZIP of one file per page, declared as `application/zip`; that archive is
  * accepted when it is a well-formed ZIP whose entries are all readable files of the target type.
  */
@@ -12,7 +12,7 @@ import { isFormatCompatibleWithMagicBytes } from '../../src/lib/registry';
 const VALIDATOR_TIMEOUT_MS = 60_000;
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico']);
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
-const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'dxf']);
+const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'dxf', 'emf', 'wmf']);
 const ZIP_MIME_TYPE = 'application/zip';
 const PACKAGE_PARTS: Readonly<Record<string, string>> = {
   docx: '[Content_Types].xml',
