@@ -28,7 +28,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/stora
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
-import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withSpreadsheetPageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -2389,14 +2389,14 @@ async function convertWithinImageSession(
   if (officeSuiteReadsInput(src, input) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
-      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withSpreadsheetPageBounds(src, nativeOptions), originalFilename);
+      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withOfficePageBounds(src, nativeOptions), originalFilename);
       if (intermediatePdf) {
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
           : intermediatePdf.buffer;
         const popplerRes = isPresentationHtml
           ? await convertPdfToHtml(intermediatePdf.buffer, nativeOptions, originalFilename, input, intermediatePdf.engineUsed)
-          : await convertPdfPagesWithNativeTools(popplerInput, tgt, withSpreadsheetPageBounds(src, nativeOptions), originalFilename);
+          : await convertPdfPagesWithNativeTools(popplerInput, tgt, withOfficePageBounds(src, nativeOptions), originalFilename);
         if (popplerRes) {
           return {
             ...popplerRes,

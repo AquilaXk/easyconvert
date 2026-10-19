@@ -40,5 +40,11 @@
     "detail": "^DecompressionLimitError: PDF stream of object \\d+ is a JBIG2 page of 100000 x 100000 pixels that decodes to 1250000000 bytes;",
     "reason": "The file is a decompression bomb by design (three JBIG2 content streams that each declare a 100,000 x 100,000 pixel page, 1.25 GB decoded); the native route refuses it from the page size in the first bytes of the stream, in milliseconds (policy 61).",
     "issue": 783
+  },
+  {
+    "file": "govdocs1-010383.rtf",
+    "detail": "^PayloadLimitError: The document prints \\d+ pages; at most 500 are rendered to images in one request\\.",
+    "reason": "The report prints 4,181 to 4,874 pages (LibreOffice 24.2, by platform): drawing them as JPEG or PNG takes more than the job time limit on the shared runner and packs half a gigabyte, so the request is refused with the page count and the ways out (pages, or multiPageOutput first); every other target of the file converts (policy 44).",
+    "issue": 783
   }
 ]

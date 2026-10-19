@@ -1,26 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import JSZip from 'jszip';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { PayloadLimitError } from '../src/lib/types';
-import { SPREADSHEET_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
+import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
-import { withSpreadsheetPageBounds } from '../src/worker/office-suite-route';
-import { requireOracleTool } from './helpers/differential-oracle';
-import { decodeRgba, maxSampleDifference, type DecodedRgba } from './helpers/image-pixels';
+import { withOfficePageBounds } from '../src/worker/office-suite-route';
 import { oracleTest } from './helpers/oracle-test';
 import { flatOds } from './helpers/office-pair-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { sofficeConvert } from './helpers/soffice-office';
+import { expectSamePixels, pagesOfZip, pdfPageCount, referencePages, suitePdf } from './helpers/suite-page-images';
 
 /**
  * A spreadsheet that becomes page images is printed by the office suite and rasterised page by page. The pages of a real
  * worksheet are an artefact of its used range: nightly real-file run 39012667333 found workbooks of 900 to 4,600 printed
  * pages (PDF export 3 to 7 s, then about 50 ms and 0.5 MB a page), so the request spent minutes drawing pages and passed the
- * 180 s deadline on a shared runner. A request now renders at most `SPREADSHEET_IMAGE_MAX_PAGES` pages and refuses a larger sheet with a 413
+ * 180 s deadline on a shared runner. A request now renders at most `OFFICE_PAGE_IMAGE_MAX_PAGES` pages and refuses a larger sheet with a 413
  * that names the limit and the two ways out (`pages`, `multiPageOutput: "first"`). Readers other than the converter judge
  * the output: the office suite's own PDF of the same file, whose pages `pdftoppm` draws at the density the product uses, and
  * `pdfinfo` for the page counts.
@@ -28,7 +24,6 @@ import { sofficeConvert } from './helpers/soffice-office';
 
 const TEST_TIMEOUT_MS = 600_000;
 const TOOLS = ['soffice', 'pdfinfo', 'pdftoppm'] as const;
-const RENDER_DPI = '150';
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 /** Rows that print on more pages than the limit with room to spare (about 50 rows fit on a page). */
 const ROWS_BEYOND_THE_LIMIT = 40_000;
@@ -37,69 +32,12 @@ const BENCH_WORKBOOK_PAGES = 2;
 /** Real worksheets whose printed ranges the nightly run found beyond any deadline (digests pinned by bench/realworld/manifest.json). */
 const REAL_WORKSHEETS = ['govdocs1-005540.xls', 'office-spreadsheet-no_drawing_patriarch.xlsx'] as const;
 
-function withTempDir<T>(run: (dir: string) => T): T {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sheet-pages-'));
-  try {
-    return run(dir);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-/** The pages of `pdf` as the page chain draws them: `pdftoppm -png` at the product's density, `first` to `last` inclusive. */
-function referencePages(pdf: Buffer, first: number, last: number): Buffer[] {
-  return withTempDir((dir) => {
-    fs.writeFileSync(path.join(dir, 'in.pdf'), pdf);
-    execFileSync(requireOracleTool('pdftoppm'), ['-r', RENDER_DPI, '-png', '-f', String(first), '-l', String(last), path.join(dir, 'in.pdf'), path.join(dir, 'page')]);
-    return fs
-      .readdirSync(dir)
-      .filter((name) => name.startsWith('page-'))
-      .sort((a, b) => a.localeCompare(b))
-      .map((name) => fs.readFileSync(path.join(dir, name)));
-  });
-}
-
-function pdfPageCount(pdf: Buffer): number {
-  return withTempDir((dir) => {
-    fs.writeFileSync(path.join(dir, 'in.pdf'), pdf);
-    const info = execFileSync(requireOracleTool('pdfinfo'), [path.join(dir, 'in.pdf')], { encoding: 'utf-8' });
-    return Number(/^Pages:\s+(\d+)/m.exec(info)?.[1]);
-  });
-}
-
-/** The office suite's own PDF of a spreadsheet: the truth for the page count and for the pixels of every page. */
-function suitePdf(sheet: Buffer, extension: string): Buffer {
-  return sofficeConvert(sheet, extension, 'pdf', 'pdf');
-}
-
 let longSheetBytes: Buffer | undefined;
 
 /** An OpenDocument spreadsheet of one column pair, written by the office suite from flat XML, that prints on more pages than the limit. */
 function longSheet(): Buffer {
   longSheetBytes ??= sofficeConvert(flatOds(Array.from({ length: ROWS_BEYOND_THE_LIMIT }, (_, row) => [`row ${row + 1}`, `${row + 1}`])), 'fods', 'ods', 'ods');
   return longSheetBytes;
-}
-
-async function expectSamePixels(actual: Buffer, expected: Buffer, label: string): Promise<void> {
-  const [got, want] = await Promise.all([decodeRgba(actual), decodeRgba(expected)]);
-  expect({ label, width: got.width, height: got.height }).toEqual({ label, width: want.width, height: want.height });
-  expect({ label, difference: maxSampleDifference(got, want) }).toEqual({ label, difference: 0 });
-  expect(inkedSamples(got), `${label} is not a blank page`).toBeGreaterThan(0);
-}
-
-/** Samples of a picture that are not white: a blank page has none. */
-function inkedSamples(picture: DecodedRgba): number {
-  let inked = 0;
-  for (let i = 0; i < picture.data.length; i += 4) {
-    if (picture.data[i] !== 255 || picture.data[i + 1] !== 255 || picture.data[i + 2] !== 255) inked += 1;
-  }
-  return inked;
-}
-
-async function pagesOfZip(zipBytes: Buffer): Promise<Buffer[]> {
-  const zip = await JSZip.loadAsync(zipBytes);
-  const names = Object.keys(zip.files).filter((name) => !zip.files[name].dir).sort((a, b) => a.localeCompare(b));
-  return Promise.all(names.map((name) => zip.files[name].async('nodebuffer')));
 }
 
 describe('the PDF export of a spreadsheet that becomes the first page image', () => {
@@ -112,14 +50,12 @@ describe('the PDF export of a spreadsheet that becomes the first page image', ()
   });
 
   it('is asked for by the spreadsheet bounds only for the first page of a request without a page selection', () => {
-    expect(withSpreadsheetPageBounds('xlsx', { multiPageOutput: 'first' })).toMatchObject({
+    expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' })).toMatchObject({
       pdfExportPageRange: '1',
-      maxRenderedPages: SPREADSHEET_IMAGE_MAX_PAGES,
+      maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES,
     });
-    expect(withSpreadsheetPageBounds('ods', { multiPageOutput: 'first', pages: '2-3' }).pdfExportPageRange).toBeUndefined();
-    expect(withSpreadsheetPageBounds('xls', {})).toMatchObject({ pdfExportPageRange: undefined, maxRenderedPages: SPREADSHEET_IMAGE_MAX_PAGES });
-    const documentOptions = { multiPageOutput: 'first' as const };
-    expect(withSpreadsheetPageBounds('docx', documentOptions)).toBe(documentOptions);
+    expect(withOfficePageBounds('ods', { multiPageOutput: 'first', pages: '2-3' }).pdfExportPageRange).toBeUndefined();
+    expect(withOfficePageBounds('xls', {})).toMatchObject({ pdfExportPageRange: undefined, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES });
   });
 });
 
@@ -145,13 +81,13 @@ describe('a spreadsheet to page images', () => {
     async () => {
       const sheet = longSheet();
       const printedPages = pdfPageCount(suitePdf(sheet, 'ods'));
-      expect(printedPages).toBeGreaterThan(SPREADSHEET_IMAGE_MAX_PAGES);
+      expect(printedPages).toBeGreaterThan(OFFICE_PAGE_IMAGE_MAX_PAGES);
       const refusal = await dispatchConversion(sheet, 'ods', 'png', {}, 'long.ods').catch((error: unknown) => error);
       expect(refusal).toBeInstanceOf(PayloadLimitError);
       expect((refusal as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
       const message = (refusal as PayloadLimitError).message;
       expect(message).toContain(`${printedPages} pages`);
-      expect(message).toContain(`at most ${SPREADSHEET_IMAGE_MAX_PAGES}`);
+      expect(message).toContain(`at most ${OFFICE_PAGE_IMAGE_MAX_PAGES}`);
       expect(message).toContain('multiPageOutput');
     },
     TEST_TIMEOUT_MS
@@ -184,7 +120,7 @@ describe('a spreadsheet to page images', () => {
         async (ctx) => {
           const sample = await requireRealworldSample(ctx, id);
           const suite = suitePdf(sample.bytes, sample.format);
-          expect(pdfPageCount(suite)).toBeGreaterThan(SPREADSHEET_IMAGE_MAX_PAGES);
+          expect(pdfPageCount(suite)).toBeGreaterThan(OFFICE_PAGE_IMAGE_MAX_PAGES);
           const refusal = await dispatchConversion(sample.bytes, sample.format, 'png', {}, id).catch((error: unknown) => error);
           expect(refusal).toBeInstanceOf(PayloadLimitError);
           const first = await dispatchConversion(sample.bytes, sample.format, 'png', { multiPageOutput: 'first' }, id);
