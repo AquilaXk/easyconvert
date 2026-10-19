@@ -624,6 +624,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   ods: ['jpg', 'png'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
   pdf: ['jpg', 'png', 'svg', 'tiff'],
+  pps: ['ppt'],
   ppt: ['jpg', 'odp', 'png'],
   ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
   pptx: ['jpg', 'png', 'ppt'],
@@ -643,8 +644,9 @@ function isOfficeSuiteOnlyPair(source: string, target: string): boolean {
 }
 
 function isNativeEnginePair(source: string, target: string): boolean {
-  // A template or slide show is converted as the format it is a layout of (pps as ppt).
-  return (NATIVE_ENGINE_PAIRS[officeReadingFormat(source)]?.includes(target) ?? false) || isOfficeSuiteOnlyPair(source, target);
+  // A template or slide show is converted as the format it is a layout of (pps as ppt), unless the pair is listed under its own name (pps to ppt).
+  const listed = [source, officeReadingFormat(source)].some((key) => NATIVE_ENGINE_PAIRS[key]?.includes(target));
+  return listed || isOfficeSuiteOnlyPair(source, target);
 }
 
 type PairOutcome = 'routed' | 'unrouted' | 'inconclusive' | 'native';
@@ -985,7 +987,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     md: ['doc', 'jpg', 'png', 'rst', 'rtf', 'tex'],
     mobi: ['docx', 'rtf'],
     msg: ['eml'],
-    numbers: ['doc', 'jpg', 'pdf', 'png', 'ppt', 'tsv'],
+    numbers: ['doc', 'ppt', 'tsv'],
     odp: ['eps', 'md', 'swf'],
     odt: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pdb', 'xps'],
     oxps: ['docx', 'pdf'],
@@ -995,7 +997,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     png: ['svg'],
     pot: ['emf', 'jpg', 'png', 'ppt', 'xps'],
     potx: ['emf', 'jpg', 'odp', 'png', 'ppt', 'xps'],
-    pps: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
+    pps: ['eps', 'md', 'swf'],
     ppsx: ['eps', 'jpg', 'md', 'png', 'ppt', 'swf'],
     ppt: ['emf', 'eps', 'md', 'swf', 'xps'],
     pptm: ['emf', 'eps', 'html', 'jpg', 'md', 'odp', 'pdf', 'png', 'ppt', 'pptx', 'swf', 'txt', 'xps'],
@@ -1020,8 +1022,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     wk1: ['tsv'],
     wks: ['tsv'],
     wmf: ['dxf', 'emf', 'wmf'],
-    wpd: ['doc', 'jpg', 'png', 'rtf'],
-    wps: ['doc', 'jpg', 'png', 'rtf'],
     xls: ['xps'],
     xlsm: ['jpg', 'json', 'png'],
     xlsx: ['numbers', 'xps'],
@@ -1523,7 +1523,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     pdf: 'sample.pdf',
   };
   /** Sources without a fixture, converted from a seed by the LibreOffice CLI itself. */
-  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', odp: 'pptx', odd: 'odg' };
+  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', pps: 'pptx', odp: 'pptx', odd: 'odg' };
   /** The extension LibreOffice writes for a derived source: a drawing template is its .otg export, read back as .odd. */
   const LIBREOFFICE_EXTENSION: Readonly<Record<string, string>> = { odd: 'otg' };
 
