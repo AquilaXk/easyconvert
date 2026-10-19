@@ -171,7 +171,7 @@ describe('PR #499 review blockers', () => {
       const listing = 'Size = 6\nPacked Size = 64\nMethod = LZMA2:23 CRC64\n';
 
       expect(parse7zTechnicalListing(listing, { payloadName: 'input' })).toEqual([
-        { path: 'input', isDirectory: false, sizeBytes: 6, linkKind: null, isSpecial: false, wrapperPayload: true },
+        { path: 'input', isDirectory: false, sizeBytes: 6, linkKind: null, isSpecial: false, wrapperPayload: true, method: 'LZMA2:23 CRC64' },
       ]);
       expect(reasonOf(() => parse7zTechnicalListing(listing))).toBe('malformed-listing');
       expect(reasonOf(() => parse7zTechnicalListing('Size = 1\n\nSize = 2\n', { payloadName: 'input' }))).toBe(

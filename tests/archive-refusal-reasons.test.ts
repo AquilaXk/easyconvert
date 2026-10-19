@@ -41,7 +41,7 @@ describe('the refusals that name the limit of the file', () => {
       const failure = await failureOf(firstVolume, 'rar', 'part1.rar');
       expect(failure).toMatchObject({ name: 'UnreadableArchiveError' });
       expect(failure.message).toBe(
-        'Could not read the archive: it is the first part of a multi-volume set and the other parts are not part of the upload; upload all parts together as one archive.'
+        'Could not read the archive: it is the first part of a multi-volume set and the next volume, part1.r00, is not part of the upload; upload all parts together as one archive.'
       );
     },
     ENGINE_TIMEOUT_MS

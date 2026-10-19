@@ -14,6 +14,8 @@ import {
   type ContainedExtractionRequest,
   type ContainedTree,
 } from './archive-extraction-safety';
+import { readRpmPackage, type RpmPackage } from './rpm-header';
+import { strippedPayloadToCpio } from './rpm-stripped-payload';
 
 /**
  * The files of a software package are its payload, not the compressed stream that carries it.
@@ -24,6 +26,11 @@ import {
  * the archive it is, through the same listing, vetting and extraction as any other source. A layer 7-Zip leaves
  * compressed is decompressed first: with 7-Zip when it is gzip, bzip2 or xz, in process when it is Zstandard (modern
  * Fedora and Debian packages), within the archive's size and ratio caps.
+ *
+ * A payload of stripped cpio headers (rpm 4.12 and later: `07070X` and a file index, with the names, modes and sizes in the
+ * package header) is listed as empty by 7-Zip. Its own bytes are taken from the package, decompressed like any other
+ * payload, and rewritten as an ordinary cpio from the header's file table (rpm-header.ts, rpm-stripped-payload.ts), which
+ * then goes through the same listing, vetting and extraction.
  *
  * Every layer is vetted before anything is written: names, links, special files, entry count and the size and ratio caps
  * (the ratio is always measured against the package the caller uploaded, never against an inner layer).
@@ -40,6 +47,7 @@ export const LINK_TOLERANT_SOURCES: ReadonlySet<string> = new Set([...PACKAGE_SO
 
 const FIRST_BLOCK_BYTES = 512;
 const CPIO_MAGICS = new Set(['070701', '070702', '070707']);
+const STRIPPED_CPIO_MAGIC = '07070X';
 const CPIO_MAGIC_BYTES = 6;
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
 const GZIP_MAGIC = Buffer.from([0x1f, 0x8b]);
@@ -53,7 +61,9 @@ const ZSTD_PAYLOAD_NAME = 'payload.zstd-decoded';
 
 type ArchiveKind = 'cpio' | 'tar';
 type CompressionKind = 'zstd' | 'gzip' | 'bzip2' | 'xz';
-type PayloadKind = ArchiveKind | CompressionKind;
+/** A cpio of stripped headers, which names nothing and is rewritten as a cpio before it is read. */
+type StrippedKind = 'stripped';
+type PayloadKind = ArchiveKind | StrippedKind | CompressionKind;
 
 const COMPRESSION_MAGICS: ReadonlyArray<readonly [CompressionKind, Buffer]> = [
   ['zstd', ZSTD_MAGIC],
@@ -63,7 +73,7 @@ const COMPRESSION_MAGICS: ReadonlyArray<readonly [CompressionKind, Buffer]> = [
 ];
 
 /** 7-Zip's `-t` switch for the layers it decompresses, and for the archives in the payload. */
-const SEVEN_ZIP_TYPE_FLAGS: Readonly<Record<Exclude<PayloadKind, 'zstd'>, string>> = {
+const SEVEN_ZIP_TYPE_FLAGS: Readonly<Record<Exclude<PayloadKind, 'zstd' | StrippedKind>, string>> = {
   cpio: '-tcpio',
   tar: '-ttar',
   gzip: '-tgzip',
@@ -90,7 +100,9 @@ function readFirstBlock(file: string): Buffer {
 /** What an extracted payload stream is, from its first bytes; null when it is none of the payloads packages carry. */
 function sniffPayload(file: string): PayloadKind | null {
   const head = readFirstBlock(file);
-  if (CPIO_MAGICS.has(head.toString('latin1', 0, CPIO_MAGIC_BYTES))) return 'cpio';
+  const magic = head.toString('latin1', 0, CPIO_MAGIC_BYTES);
+  if (CPIO_MAGICS.has(magic)) return 'cpio';
+  if (magic === STRIPPED_CPIO_MAGIC) return 'stripped';
   // A tar header carries a checksum of itself, so it is told apart before the short magic numbers of the compressors.
   if (hasTarHeaderChecksum(file)) return 'tar';
   const compression = COMPRESSION_MAGICS.find(([, magic]) => head.length >= magic.length && head.subarray(0, magic.length).equals(magic));
@@ -224,16 +236,29 @@ interface PayloadStage {
   bytes: number;
 }
 
+/** The cpio, tar or stripped cpio at the bottom of the compression layers. */
+interface PayloadArchive {
+  file: string;
+  kind: ArchiveKind | StrippedKind;
+  disposable: string;
+  bytes: number;
+}
+
+/** An archive 7-Zip reads: a {@link PayloadArchive} that is not stripped. */
+type ReadableArchive = PayloadArchive & { kind: ArchiveKind };
+
 /**
  * Follows the compression layers of a payload stream down to the cpio or tar it carries. At most
  * MAX_COMPRESSION_LAYERS layers are decompressed; a stream that is still compressed after the last of them is refused
  * without a further decode. Each layer is removed as soon as the layer inside it exists.
  * Returns null when the stream is not a payload at all; throws when a layer cannot be read.
  */
-async function openPayloadLayers(run: PackageRun, first: PayloadStage, workDir: string, keepFirst: boolean): Promise<{ file: string; kind: ArchiveKind; disposable: string; bytes: number } | null> {
+async function openPayloadLayers(run: PackageRun, first: PayloadStage, workDir: string, keepFirst: boolean): Promise<PayloadArchive | null> {
   let current = first;
   for (let decoded = 0; ; decoded++) {
-    if (current.kind === 'cpio' || current.kind === 'tar') return { file: current.file, kind: current.kind, disposable: current.disposable, bytes: current.bytes };
+    if (current.kind === 'cpio' || current.kind === 'tar' || current.kind === 'stripped') {
+      return { file: current.file, kind: current.kind, disposable: current.disposable, bytes: current.bytes };
+    }
     if (current.kind === null || decoded === MAX_COMPRESSION_LAYERS) return null;
     const layerDir = path.join(workDir, `layer-${decoded}`);
     const next =
@@ -267,6 +292,50 @@ async function listedPayload(request: ContainedExtractionRequest, outer: Contain
 const NOT_AN_ARCHIVE_PAYLOAD =
   'Could not read the package: its payload is not a cpio or tar archive, or is compressed with a method that is not supported.';
 
+const RPM_OWN_PAYLOAD_NAME = 'payload.rpm-bytes';
+const STRIPPED_CPIO_NAME = 'payload.rewritten.cpio';
+const COPY_CHUNK_BYTES = 64 * 1024;
+
+/** Copies `source` from `offset` to its end into `target`, in pieces, and returns the number of bytes copied. */
+function copyTail(source: string, offset: number, target: string): number {
+  const input = fs.openSync(source, 'r');
+  const output = fs.openSync(target, 'w');
+  try {
+    const chunk = Buffer.alloc(COPY_CHUNK_BYTES);
+    let position = offset;
+    for (let read = fs.readSync(input, chunk, 0, chunk.length, position); read > 0; read = fs.readSync(input, chunk, 0, chunk.length, position)) {
+      fs.writeSync(output, chunk, 0, read);
+      position += read;
+    }
+    return position - offset;
+  } finally {
+    fs.closeSync(input);
+    fs.closeSync(output);
+  }
+}
+
+/**
+ * The bytes of an rpm's own payload, for a package 7-Zip lists as empty: the payload follows the package header, so it is
+ * the rest of the file (never larger than the upload, whose size the run has already charged for).
+ */
+function ownPayloadStage(run: PackageRun, request: ContainedExtractionRequest, payloadDir: string): { stage: PayloadStage; package: RpmPackage } {
+  const pkg = readRpmPackage(request.archivePath, run.limits);
+  fs.mkdirSync(payloadDir);
+  const file = path.join(payloadDir, RPM_OWN_PAYLOAD_NAME);
+  const bytes = copyTail(request.archivePath, pkg.payloadOffset, file);
+  run.charge(bytes);
+  return { stage: { file, kind: sniffPayload(file), disposable: file, bytes }, package: pkg };
+}
+
+/** Rewrites a stripped payload as an ordinary cpio from the file table of the package header; the stripped stream is removed. */
+function rewriteStrippedPayload(run: PackageRun, request: ContainedExtractionRequest, archive: PayloadArchive, payloadDir: string, known: RpmPackage | undefined): ReadableArchive {
+  const files = (known ?? readRpmPackage(request.archivePath, run.limits)).files();
+  const output = path.join(payloadDir, STRIPPED_CPIO_NAME);
+  strippedPayloadToCpio({ files, source: archive.file, output, charge: (bytes) => run.charge(bytes) });
+  if (archive.disposable !== request.extractDir) run.release(archive.disposable, archive.bytes);
+  return { file: output, kind: 'cpio', disposable: output, bytes: fs.statSync(output).size };
+}
+
 /**
  * Extracts the payload files of an rpm or deb into `request.extractDir` (or a sibling directory when the payload is a
  * layer inside the package). Throws a typed error for anything unsafe, oversized or unreadable; what the package writes
@@ -278,21 +347,28 @@ export async function extractPackagePayload(request: ContainedExtractionRequest,
   const outer = await extractArchiveContained(run.step({ includePatterns: undefined, allowInternalHardLinks: true }));
   run.charge(outer.totalBytes);
   const stream = payloadFile(outer);
-  if (stream === null) {
+  const payloadDir = `${request.extractDir}-payload`;
+  // 7-Zip lists an rpm with no entry at all when it cannot read its payload as a cpio, which is what stripped headers are.
+  const listsNothing = stream === null && format === 'rpm' && outer.entryCount === 0;
+  if (stream === null && !listsNothing) {
     // A deb is only ever its members: without a `data.tar` there is no payload to convert.
     if (format === 'deb') throw new UnreadableArchiveError(NOT_AN_ARCHIVE_PAYLOAD);
     return listedPayload(request, outer, run);
   }
 
-  const payloadDir = `${request.extractDir}-payload`;
-  fs.mkdirSync(payloadDir);
-  const firstKind = sniffPayload(stream);
-  const archive = firstKind === null ? null : await openPayloadLayers(run, { file: stream, kind: firstKind, disposable: request.extractDir, bytes: outer.totalBytes }, payloadDir, format === 'rpm');
-  if (archive === null) {
+  const own = listsNothing ? ownPayloadStage(run, request, payloadDir) : undefined;
+  if (own === undefined) fs.mkdirSync(payloadDir);
+  const first: PayloadStage | null =
+    own?.stage ?? (stream === null ? null : { file: stream, kind: sniffPayload(stream), disposable: request.extractDir, bytes: outer.totalBytes });
+  // A package of one file that merely looks compressed is converted from it, so only an rpm's own extraction is kept.
+  const opened = first === null || first.kind === null ? null : await openPayloadLayers(run, first, payloadDir, format === 'rpm' && own === undefined);
+  if (opened === null) {
     // An rpm whose one file is not a payload is a package of that file; a deb has nothing else to be.
     if (format === 'deb') throw new UnreadableArchiveError(NOT_AN_ARCHIVE_PAYLOAD);
     return listedPayload(request, outer, run);
   }
+  if (opened.kind === 'stripped' && format === 'deb') throw new UnreadableArchiveError(NOT_AN_ARCHIVE_PAYLOAD);
+  const archive: ReadableArchive = opened.kind === 'stripped' ? rewriteStrippedPayload(run, request, opened, payloadDir, own?.package) : { ...opened, kind: opened.kind };
 
   if (archive.disposable !== request.extractDir && fs.existsSync(request.extractDir)) run.release(request.extractDir, outer.totalBytes);
   const filesDir = path.join(payloadDir, 'files');

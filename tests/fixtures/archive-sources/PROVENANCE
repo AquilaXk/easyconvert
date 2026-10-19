@@ -67,6 +67,11 @@ links.dmg                  hdiutil (macOS 27, Apple disk utility)        hdiutil
                                                                          (src holds hello.txt, dir/nested.txt, dir/data.bin, `ln -s hello.txt link.txt`, `ln -s /Applications Applications`,
                                                                          `ln -s ../hello.txt dir/up-link.txt`; the disk utility tagged each file with the extended attribute
                                                                          com.apple.provenance, which 7-Zip lists as `<file>:com.apple.provenance`)
+streams.dmg                hdiutil (macOS 27, Apple disk utility)        hdiutil create -srcfolder src -format UDZO -fs HFS+ -volname A streams.dmg
+                                                                         (src holds `a` = "alpha\n" with `xattr -w attr value a`, and `dir/b.txt` = "beta\n" with
+                                                                         `xattr -w user.note hello dir/b.txt`; the disk utility also tagged the volume, `a`, `dir` and
+                                                                         `b.txt` with com.apple.provenance: 6 alternate streams, as 7-Zip's summary counts, one of them
+                                                                         `A:com.apple.provenance`, a stream named like a drive path; tests/archive-alternate-streams.test.ts)
 long.txt.lzo               lzop 1.04 (LZO library 2.10)                  lzop -1 -c long.txt > long.txt.lzo
 long-best-crc32.txt.lzo    lzop 1.04                                     lzop -9 --crc32 -c long.txt > long-best-crc32.txt.lzo
 long-nochecksum.txt.lzo    lzop 1.04                                     lzop -1 -F -c long.txt > long-nochecksum.txt.lzo

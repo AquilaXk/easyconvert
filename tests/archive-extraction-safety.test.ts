@@ -99,10 +99,11 @@ describe('parse7zTechnicalListing against the real 7z CLI', () => {
 
     const entries = parse7zTechnicalListing(list7z(zip));
 
+    // The entries were written stored, which is how 7-Zip names the method of each (it names it for messages only).
     expect(entries).toEqual([
-      { path: 'docs', isDirectory: true, sizeBytes: 0, linkKind: null, isSpecial: false },
-      { path: 'docs/a.txt', isDirectory: false, sizeBytes: 5, linkKind: null, isSpecial: false },
-      { path: 'link', isDirectory: false, sizeBytes: 10, linkKind: 'symlink', isSpecial: false },
+      { path: 'docs', isDirectory: true, sizeBytes: 0, linkKind: null, isSpecial: false, method: 'Store' },
+      { path: 'docs/a.txt', isDirectory: false, sizeBytes: 5, linkKind: null, isSpecial: false, method: 'Store' },
+      { path: 'link', isDirectory: false, sizeBytes: 10, linkKind: 'symlink', isSpecial: false, method: 'Store' },
     ]);
   });
 

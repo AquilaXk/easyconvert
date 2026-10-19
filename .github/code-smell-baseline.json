@@ -572,7 +572,7 @@
     "rule": "complexity",
     "function": "convertWithNative7z",
     "count": 1,
-    "maxValue": 67
+    "maxValue": 66
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -580,13 +580,6 @@
     "function": "extractRarArchive",
     "count": 1,
     "maxValue": 48
-  },
-  {
-    "file": "src/lib/conversions/archive.ts",
-    "rule": "complexity",
-    "function": "inspectArchiveEntries",
-    "count": 1,
-    "maxValue": 45
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -628,7 +621,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4227
+    "maxValue": 4209
   },
   {
     "file": "src/lib/conversions/archive.ts",

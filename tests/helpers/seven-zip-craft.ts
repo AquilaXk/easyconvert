@@ -102,8 +102,16 @@ function defaultAttributes(member: CraftedMember, isDirectory: boolean): number 
   return unixAttributes(S_IFREG | 0o644, ATTRIBUTE_ARCHIVE);
 }
 
+export interface CraftOptions {
+  /**
+   * The one-byte id of the coder every data stream names (the Copy coder, 0x00, by default). The bytes are still stored
+   * as they are, so an id 7-Zip does not know makes an archive whose method cannot be decoded.
+   */
+  codecId?: number;
+}
+
 /** A complete 7z archive holding the members, in order. */
-export function craftSevenZip(members: CraftedMember[]): Buffer {
+export function craftSevenZip(members: CraftedMember[], options: CraftOptions = {}): Buffer {
   const streams = members.filter((member) => member.data !== undefined || member.declaredSize !== undefined);
   const packed = Buffer.concat(streams.map((member) => member.data ?? Buffer.alloc(0)));
 
@@ -114,7 +122,7 @@ export function craftSevenZip(members: CraftedMember[]): Buffer {
     parts.push(...streams.map((member) => number7z((member.data ?? Buffer.alloc(0)).length)), Buffer.from([ID.END]));
     parts.push(Buffer.from([ID.UNPACK_INFO, ID.FOLDER]), number7z(streams.length), Buffer.from([0]));
     for (let index = 0; index < streams.length; index++) {
-      parts.push(number7z(1), Buffer.from([COPY_CODER_FLAGS, COPY_CODEC_ID]));
+      parts.push(number7z(1), Buffer.from([COPY_CODER_FLAGS, options.codecId ?? COPY_CODEC_ID]));
     }
     parts.push(Buffer.from([ID.CODERS_UNPACK_SIZE]));
     parts.push(...streams.map((member) => number7z(member.declaredSize ?? (member.data as Buffer).length)));

@@ -52,7 +52,7 @@ describe('formats only the office suite reads, without the office suite', () => 
   });
 
   it('lists the formats the registry advertises with a source the in-process engine cannot read', () => {
-    expect(sources.sort()).toEqual(['cdr', 'cgm', 'emf', 'lrf', 'numbers', 'pdb', 'pub', 'qpw', 'rb', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
+    expect(sources.sort()).toEqual(['cdr', 'cgm', 'emf', 'lrf', 'lwp', 'numbers', 'pdb', 'pub', 'qpw', 'rb', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
   });
 });
 
@@ -84,6 +84,26 @@ describe('templates and slide shows are read as the format they are a layout of'
     const slideShow = buildPptBinary({ slides: [{ shapes: [{ chars: 'Opening slide title' }] }] });
     const converted = await convertFile(slideShow, 'pps', 'txt', {}, 'show.pps');
     expect(converted.buffer.toString('utf-8').trim()).toBe('Opening slide title');
+  });
+});
+
+describe('an OpenDocument spreadsheet template without the office suite', () => {
+  const TEMPLATE = 'lo-calc.ots';
+
+  /** The text of the cells as the package itself holds them: the `text:p` elements of its content.xml, read without the converter. */
+  async function cellTextOf(spreadsheet: Buffer): Promise<string[]> {
+    const content = await (await JSZip.loadAsync(spreadsheet)).files['content.xml'].async('string');
+    return [...content.matchAll(/<text:p>([^<]*)<\/text:p>/g)].map((match) => match[1]);
+  }
+
+  it('is read as the spreadsheet it is a layout of: the cells of the real template reach CSV and the cells of the spreadsheet kept for ods', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, TEMPLATE);
+    const cells = await cellTextOf(bytes);
+    expect(cells).toEqual(['Calc template’s first cell']);
+    const csv = await withMissingBinary('SOFFICE_PATH', () => dispatchConversion(bytes, 'ots', 'csv', {}, TEMPLATE));
+    expect(csv.buffer.toString('utf-8').trimEnd()).toBe(cells[0]);
+    const spreadsheet = await withMissingBinary('SOFFICE_PATH', () => dispatchConversion(bytes, 'ots', 'ods', {}, TEMPLATE));
+    expect(await cellTextOf(spreadsheet.buffer)).toEqual(cells);
   });
 });
 
@@ -124,6 +144,8 @@ describe('how the office suite reaches the targets it does not write', () => {
   it.each([
     ['wps', 'html', 'docx'],
     ['wpd', 'md', 'docx'],
+    ['lwp', 'html', 'docx'],
+    ['lwp', 'md', 'docx'],
     ['lrf', 'epub', 'docx'],
     ['lrf', 'azw3', 'txt'],
     ['pdb', 'mobi', 'txt'],
@@ -146,6 +168,7 @@ describe('how the office suite reaches the targets it does not write', () => {
 
   it.each([
     ['wps', 'txt', true],
+    ['lwp', 'txt', true],
     ['lrf', 'txt', true],
     ['sxw', 'txt', true],
     ['numbers', 'txt', false],
@@ -181,6 +204,7 @@ describe('how the office suite reaches the targets it does not write', () => {
 
   it.each([
     ['wps', 'writer'],
+    ['lwp', 'writer'],
     ['numbers', 'calc'],
     ['sxi', 'impress'],
     ['pub', 'draw'],
@@ -195,6 +219,7 @@ describe('how the office suite reaches the targets it does not write', () => {
     ['pps', 'impress'],
     ['ott', 'writer'],
     ['otp', 'impress'],
+    ['ots', 'calc'],
   ])('.%s is imported by the %s application', (source, application) => {
     expect(officeSuiteApplication(source)).toBe(application);
   });
@@ -249,15 +274,27 @@ describe('the dispatcher without the office suite', () => {
   /** A compound file header (Works) and an empty ZIP package (OpenOffice.org 1.x and Numbers): enough to pass the signature check. */
   const COMPOUND_FILE = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504)]);
   const ZIP_PACKAGE = Buffer.from([0x50, 0x4b, 0x05, 0x06, ...new Array<number>(18).fill(0)]);
+  const LOTUS_WORD_PRO_HEADER = Buffer.concat([Buffer.from('WordPro\0'), Buffer.alloc(504)]);
 
   it.each([
     ['wps', 'docx', COMPOUND_FILE],
     ['wps', 'html', COMPOUND_FILE],
     ['wps', 'txt', COMPOUND_FILE],
+    ['lwp', 'docx', LOTUS_WORD_PRO_HEADER],
+    ['lwp', 'pdf', LOTUS_WORD_PRO_HEADER],
     ['sxw', 'odt', ZIP_PACKAGE],
     ['numbers', 'csv', ZIP_PACKAGE],
   ])('.%s to .%s is an unavailable-engine answer (503), never a conversion of the bytes', async (source, target, bytes) => {
     const run = withMissingBinary('SOFFICE_PATH', () => dispatchConversion(bytes, source, target, {}, `sample.${source}`));
+    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
+  });
+});
+
+describe('a PowerPoint slide show written as a PowerPoint 97-2003 file without the office suite', () => {
+  it('is an unavailable-engine answer (503): only the office suite writes the binary format', async () => {
+    const slideShow = buildPptBinary({ slides: [{ shapes: [{ chars: 'Opening slide title' }] }] });
+    const run = withMissingBinary('SOFFICE_PATH', () => dispatchConversion(slideShow, 'pps', 'ppt', {}, 'show.pps'));
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toMatchObject({ engineName: 'soffice' });
   });

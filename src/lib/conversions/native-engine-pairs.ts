@@ -18,6 +18,7 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'odt->doc', 'odt->jpg', 'odt->png', 'odt->rtf',
   'pdf->svg',
   'ps->avif', 'ps->bmp', 'ps->dxf', 'ps->eps', 'ps->gif', 'ps->jpg', 'ps->pdf', 'ps->png', 'ps->ps', 'ps->svg', 'ps->tiff', 'ps->webp',
+  'pps->ppt',
   'ppt->jpg', 'ppt->odp', 'ppt->png',
   'pptx->jpg', 'pptx->png', 'pptx->ppt',
   'rtf->doc', 'rtf->jpg', 'rtf->png',

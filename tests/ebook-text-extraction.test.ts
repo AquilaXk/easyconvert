@@ -6,10 +6,11 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { generateFb2FromText } from '../src/lib/conversions/office';
-import { ConversionFailedError } from '../src/lib/types';
+import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { EncryptedOfficeDocumentError } from '../src/lib/conversions/office/legacy-office-errors';
 import { readMobiText } from '../src/lib/conversions/office/mobi-reader';
 import { pmlToText } from '../src/lib/conversions/office/pml-reader';
+import { withMissingBinary } from './helpers/native-tools';
 import { htmlToText } from '../src/lib/conversions/office/html-text';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -410,10 +411,10 @@ describe('other e-book containers', () => {
     await expect(run).rejects.toThrow(message);
   });
 
-  it('refuses an lwp or pub file without text instead of inventing a document', async () => {
-    const run = convertFile(Buffer.from('   \n'), 'lwp', 'docx', {}, 'blank.lwp');
-    await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-    await expect(run).rejects.toThrow('The .lwp file holds no text.');
+  it('leaves an lwp file to the office suite instead of reading its bytes as text', async () => {
+    const run = withMissingBinary('SOFFICE_PATH', () => convertFile(Buffer.from('   \n'), 'lwp', 'docx', {}, 'blank.lwp'));
+    await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(run).rejects.toThrow('.lwp files are imported by LibreOffice; the in-process engine has no reader for them.');
   });
 });
 
