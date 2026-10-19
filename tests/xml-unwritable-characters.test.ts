@@ -16,8 +16,9 @@ import { xmlWellFormed, xpathString } from './helpers/xml-oracle';
 
 /**
  * Text with a code point XML 1.0 cannot carry is written without it, and the document is not refused (policy 55):
- * a control code (U+0000 to U+001F other than tab, line feed and carriage return) is dropped, and a lone surrogate,
- * U+FFFE or U+FFFF becomes U+FFFD with one warning per distinct code point. Before, the Word, ODF and EPUB writers
+ * a line tabulation or form feed becomes a line feed, any other control code (U+0000 to U+001F other than tab, line
+ * feed and carriage return) is dropped, and a lone surrogate, U+FFFE or U+FFFF becomes U+FFFD, reported in one line
+ * for all lone surrogates and one each for U+FFFE and U+FFFF. Before, the Word, ODF and EPUB writers
  * refused the document: three saved pages of the real-world sample (govdocs1) hold U+001A at the end of the file (a DOS
  * end-of-file mark), one holds six U+0000 and two hold U+000C, and each of them converted to PDF, Markdown and text.
  *
@@ -32,7 +33,7 @@ const WRITERS = {
 } as const;
 const TARGETS = ['docx', 'odt', 'epub'] as const;
 const XML_PART = /\.(xml|xhtml|opf|ncx|rels)$/;
-const C0_CONTROLS_XML_FORBIDDEN = [...Array.from({ length: 9 }, (_, code) => code), 0x0b, 0x0c, ...Array.from({ length: 18 }, (_, offset) => 0x0e + offset)];
+const C0_CONTROLS_DROPPED = [...Array.from({ length: 9 }, (_, code) => code), ...Array.from({ length: 18 }, (_, offset) => 0x0e + offset)];
 
 async function malformedParts(archive: Buffer): Promise<string[]> {
   const zip = await JSZip.loadAsync(archive);
@@ -51,12 +52,18 @@ function resultOf(buffer: Buffer): ConversionResult {
 describe('writers given text with code points XML 1.0 cannot carry', () => {
   for (const target of TARGETS) {
     it(`drops every control code and writes a well-formed ${target}`, async () => {
-      const controls = C0_CONTROLS_XML_FORBIDDEN.map((code) => String.fromCharCode(code)).join('');
+      const controls = C0_CONTROLS_DROPPED.map((code) => String.fromCharCode(code)).join('');
       const archive = await WRITERS[target](`before${controls}after\n\nsecond${String.fromCharCode(0x1a)}paragraph`);
       expect(await malformedParts(archive)).toEqual([]);
       const read = { docx: docxWords, odt: odtWords, epub: epubWords }[target];
       expect(await read(archive)).toContain('beforeafter');
       expect(await read(archive)).toContain('secondparagraph');
+    });
+
+    it(`writes a line tabulation and a form feed in the ${target} as line breaks that keep the words apart`, async () => {
+      const archive = await WRITERS[target]('end of page.\fNext page\vline');
+      expect(await malformedParts(archive)).toEqual([]);
+      expect(await { docx: docxWords, odt: odtWords, epub: epubWords }[target](archive)).toEqual(['end', 'of', 'page', 'Next', 'page', 'line']);
     });
 
     it(`keeps tab, line feed and carriage return in the ${target}`, async () => {
@@ -65,15 +72,14 @@ describe('writers given text with code points XML 1.0 cannot carry', () => {
       expect(await { docx: docxWords, odt: odtWords, epub: epubWords }[target](archive)).toEqual(['one', 'two', 'three']);
     });
 
-    it(`replaces a lone surrogate, U+FFFE and U+FFFF in the ${target} with U+FFFD and reports each distinct one once`, async () => {
-      const text = 'a\ud800b \ud800 c￾d￾￿e\udc00f';
+    it(`replaces lone surrogates, U+FFFE and U+FFFF in the ${target} with U+FFFD in at most three warning lines`, async () => {
+      const text = 'a\ud800b \udbff \ud800 c￾d￾￿e\udc00f';
       const result = await withConversionWarnings(async () => resultOf(await WRITERS[target](text)));
       expect(await malformedParts(result.buffer)).toEqual([]);
       expect(result.metadata?.warnings).toEqual([
-        'Replaced U+D800 with U+FFFD: XML 1.0 cannot carry this code point (a lone surrogate or a noncharacter).',
+        'Replaced a lone surrogate with U+FFFD: XML 1.0 cannot carry this code point (a lone surrogate or a noncharacter).',
         'Replaced U+FFFE with U+FFFD: XML 1.0 cannot carry this code point (a lone surrogate or a noncharacter).',
         'Replaced U+FFFF with U+FFFD: XML 1.0 cannot carry this code point (a lone surrogate or a noncharacter).',
-        'Replaced U+DC00 with U+FFFD: XML 1.0 cannot carry this code point (a lone surrogate or a noncharacter).',
       ]);
     });
   }
