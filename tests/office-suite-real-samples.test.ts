@@ -63,7 +63,7 @@ interface SampleCase {
 }
 
 const SAMPLES: readonly SampleCase[] = [
-  { id: 'lo-tdf120761_zorder.dot', extension: 'dot', targets: ['docx', 'odt', 'pdf', 'txt'], phrases: ['blah blah blah'] },
+  { id: 'lo-tdf120761_zorder.dot', extension: 'dot', targets: ['docx', 'odt', 'pdf', 'txt', 'xps'], phrases: ['blah blah blah'] },
   {
     id: 'govdocs1-000003.doc',
     extension: 'dot',

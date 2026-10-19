@@ -3,13 +3,14 @@ import { convertImage } from '../src/lib/conversions/image';
 import { captureError } from './helpers/capture-error';
 import { decodeRgba, runConvert, sampleAt, SKIP_WITHOUT_MAGICK, type DecodedRgba, type Rgb } from './helpers/imagemagick';
 import { decodeExrWithFfmpeg, HAS_FFMPEG_EXR } from './helpers/ffmpeg-exr';
+import { parsePostscriptRgb } from './helpers/postscript-samples';
 
 /**
  * Transparent pixels must be flattened onto white (or the requested `background`) for targets that cannot
  * hold alpha, and `fit: 'contain'` must letterbox opaque targets with that colour, never with black.
  *
  * Oracles: the RGBA source is written by ImageMagick; JPEG/BMP/UltraHDR output is decoded with ImageMagick,
- * EPS/PS output with the hex parser below (PostScript Level 2 `colorimage` with ASCIIHexDecode), and EXR
+ * EPS/PS output with the filter reader of tests/helpers/postscript-samples.ts (`colorimage` with ASCII85Decode and FlateDecode), and EXR
  * output with FFmpeg's `exr` decoder.
  */
 
@@ -26,7 +27,6 @@ const COLOUR_TOLERANCE = 8;
 const OPAQUE = 255;
 const TRANSPARENT = 0;
 const RGB_CHANNELS = 3;
-const HEX_DIGITS_PER_BYTE = 2;
 /** Linear-light tolerance for EXR samples (sRGB 8-bit input, half-float storage). */
 const LINEAR_TOLERANCE = 0.03;
 const STRICT = process.env.ORACLE_STRICT_MODE === '1';
@@ -66,19 +66,6 @@ function topLeft(image: DecodedRgba): readonly number[] {
 
 function bottomRight(image: DecodedRgba): readonly number[] {
   return sampleAt(image, image.width - 1, image.height - 1);
-}
-
-/** Decodes the RGB bytes of a PostScript Level 2 `colorimage` with an ASCIIHexDecode data source. */
-function parsePostscriptRgb(postscript: Buffer): { width: number; height: number; rgb: Buffer } {
-  const text = postscript.toString('latin1');
-  const header = /^(\d+) (\d+) 8 \[/m.exec(text);
-  const dataStart = text.indexOf('colorimage\n');
-  const dataEnd = text.indexOf('>', dataStart);
-  if (!header || dataStart < 0 || dataEnd < 0) throw new Error('not an ASCIIHex colorimage PostScript file');
-  const hex = text.slice(dataStart + 'colorimage\n'.length, dataEnd).replace(/\s+/g, '');
-  const rgb = Buffer.from(hex, 'hex');
-  expect(hex.length, 'hex digits').toBe(rgb.length * HEX_DIGITS_PER_BYTE);
-  return { width: Number(header[1]), height: Number(header[2]), rgb };
 }
 
 function rgbAt(parsed: { width: number; rgb: Buffer }, x: number, y: number): number[] {

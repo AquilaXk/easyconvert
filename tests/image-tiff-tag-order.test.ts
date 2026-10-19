@@ -4,7 +4,10 @@ import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { usesOldStyleJpeg, withSortedTiffTags } from '../src/lib/conversions/image-tiff-directories';
+import { differingSamples, renderPostscriptPages, rgbOfRgba } from './helpers/ghostscript-pages';
 import { decodeRgba } from './helpers/image-pixels';
+import { decodeRgba as decodeTiffPage } from './helpers/imagemagick';
+import { oracleTest } from './helpers/oracle-test';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
@@ -15,7 +18,7 @@ import { requireRealworldSample } from './helpers/realworld-sample';
  * dropped before the file is read; the warning level stays where it is, so every other warning, and every error, still refuses.
  *
  * The expected pixels of the real file are the ones Pillow 11.1.0 decodes from its two pages (`Image.seek(n)`, `python3 -I`, Debian 13).
- * A TIFF of several pages converts to a ZIP with one image per page.
+ * A TIFF of several pages converts to a ZIP with one image per page, and to one document of its pages for PostScript.
  */
 
 const PSALM = 'wc-psalm-44.tiff';
@@ -128,12 +131,24 @@ describe('the real TIFF whose first directory repeats a tag', () => {
     ['jpg', 'JPEG', 0xffd8],
     ['ico', 'ICO', 0x0000],
     ['odd', 'ZIP', 0x504b],
-    ['ps', 'PS', 0x2521],
+    ['eps', 'EPS', 0x2521],
   ] as const)('converts both pages to %s', { timeout: 60_000 }, async ([target, , signature], ctx) => {
     const sample = await requireRealworldSample(ctx, PSALM);
     const pages = await pagesOf((await dispatchConversion(sample.bytes, 'tiff', target, {}, PSALM)).buffer);
     expect([...pages.keys()]).toEqual([`wc-psalm-44-p001.${target}`, `wc-psalm-44-p002.${target}`]);
     expect([...pages.values()].map((page) => page.readUInt16BE(0))).toEqual([signature, signature]);
+  });
+
+  oracleTest('converts both pages to one ps document: two pages of the size of the pictures, the second with the colours libtiff decodes', ['gs'], async (ctx) => {
+    const sample = await requireRealworldSample(ctx, PSALM);
+    const document = (await dispatchConversion(sample.bytes, 'tiff', 'ps', {}, PSALM)).buffer;
+    const pages = renderPostscriptPages(document);
+    expect(pages.map((page) => [page.width, page.height])).toEqual([
+      [PSALM_FIRST_PAGE.width, PSALM_FIRST_PAGE.height],
+      [PSALM_SECOND_PAGE.width, PSALM_SECOND_PAGE.height],
+    ]);
+    // Page 2 has no profile, so its samples are the raw decode.
+    expect(differingSamples(pages[1], rgbOfRgba(decodeTiffPage(sample.bytes, 'tiff', 1).data))).toBe(0);
   });
 
   it('is still refused when it is cut inside its pixel data', { timeout: 60_000 }, async (ctx) => {

@@ -25,6 +25,7 @@ import { resolvePageLimit, resolvePageSelection, type TierPageCapped } from './p
  *                                      animation, that default image); `page` selects another frame.
  *  - Multi-page document sources (TIFF, HEIF image sequences):
  *      tiff target                  -> one multi-page TIFF with every page (or the selected pages);
+ *      ps target                    -> one PostScript document with every page (or the selected pages);
  *      any other target             -> one image per page in a ZIP (`<name>-p001.<ext>`, the naming the
  *                                      PDF page renderer uses); a single selected page is a plain image.
  *  - `page` and `pages` select pages; when both are given they must agree. `multiPageOutput: 'first'`

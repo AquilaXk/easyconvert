@@ -96,6 +96,7 @@ Compression
 29. [Archive repacking in process: deflate engine, size bound and fail-over](#29-archive-repacking-in-process-deflate-engine-size-bound-and-fail-over)
 41. [Archive sources: package payloads, links, disk images, lzip and lzop](#41-archive-sources-package-payloads-links-disk-images-lzip-and-lzop)
 56. [Archive rows of the real-file run: stripped rpm payloads, alternate streams, named volumes and methods, lzip and lzop listings](#56-archive-rows-of-the-real-file-run-stripped-rpm-payloads-alternate-streams-named-volumes-and-methods-lzip-and-lzop-listings)
+59. [Pictures to PostScript: one document of every page, a page of its own size, compressed samples](#59-pictures-to-postscript-one-document-of-every-page-a-page-of-its-own-size-compressed-samples)
 
 ---
 
@@ -1670,3 +1671,26 @@ Compression
   - **No object streams, a lower compression level, `--stream-data=preserve`**: faster by 0.1 to 0.2 ms, 10 to 12 percent more bytes (table above).
 - **Verified by**: `tests/pdf-ops-launcher.test.ts` (one program for a deletion that leaves page 1 and two for one that names it), `tests/pdf-delete-count-abort.test.ts`, `tests/pdf-page-ops.test.ts`, `tests/pdf-page-tree.test.ts` (compression of a ring on the Ghostscript profiles returns the page and its text, read by Poppler), `tests/pdf-compress.test.ts`, the quality rows of the `pdf-ops` family (`--quality-only`) and its speed rows against the base.
 - **Revisit when**: a program start that costs less than the wrapper and the fork is available (a native job runner that gives each job its own namespaces, or libuv starting programs with `vfork` or `posix_spawn` on Linux); the CI runner stops allowing user namespaces; a specification that names page 1 becomes the usual deletion.
+
+## 59. Pictures to PostScript: one document of every page, a page of its own size, compressed samples
+
+- **Status**: Implemented (picture rows of issue #783, epic #760), decided 2026-10-20 (QA request in issue #783: output that is wrong or refused although the input is fine).
+- **Decision**:
+  - **A picture converted to PostScript (`ps`) is a PostScript document whose pages are the pages of the source.** A multi-page TIFF or HEIF sequence (or the pages a request selects) is one file with `%%Pages: n`, one `%%Page` per page, and not a ZIP of one file per page. An EPS is one figure and stays one file per page in a ZIP.
+  - **Every page sets its size.** `<< /PageSize [w h] >> setpagedevice` with the size of the picture in points, one pixel to the point as the PDF writer sizes its pages; an EPS keeps its bounding box and calls no page device. Before, an interpreter drew the picture on its default page (612 x 792 points): a larger picture came out cut off, and the scan of the real-world corpus came out blank.
+  - **The samples are Flate-compressed ASCII85** (`LanguageLevel 3`), not hexadecimal: three bytes of RGB were six characters, so one 3,307 x 4,677 page weighed 94 MB.
+  - **The print density of the source is not applied** (a 400 dpi scan is a 3,307 x 4,677 point page, as in the PDF it converts to); see the trade-offs.
+  - **A Word template whose body is empty converts to XPS** (`lo-tdf120761_zorder.dot`): no change was needed. The in-process reader refuses the document ("holds no text": its words are in a header and a frame), the dispatcher retries it through the office suite's plain text, which holds them, and the XPS carries the one line. The sample is pinned for `xps` with the suite's own PDF as the oracle.
+- **Why**: the standard converters write one document of all pages for a multi-page TIFF (three pages, 11.8 MB for the corpus file; `tiff2ps` 3.9 MB), and a PostScript file is made to be printed as one job. A page device per page is what the structuring conventions ask for and what keeps a viewer or printer from guessing. The corpus file now converts to 175 KB, and each page drawn by the interpreter equals the page libtiff decodes, sample for sample.
+- **Trade-offs**:
+  - **Pages keep the picture's pixel count as their size in points**, so a high-density scan is a very large page (3,307 x 4,677 points for an A4 scan); viewers fit it to the window and a printer scales it. Reading the density (595 x 842 points for the scan, as `tiff2ps` writes it) is a different change: the PDF writer would have to follow it.
+  - **Level 3 interpreters only**: the Flate filter is Level 3 (1997). A Level 2 device cannot read the samples; a Level 2 file would be 5 to 6 times larger with run-length coding for photographs.
+  - A page is converted as one document and its page section is moved into the joined file, so every page is in memory twice at the end; the aggregate page pixel budget of the multi-page rules bounds it.
+  - Compression of a photograph costs about one second more for a 24 megapixel picture (2.5 s against 1.6 s) and halves the file (76 MB against 146 MB).
+- **Alternatives rejected**:
+  - **A ZIP of one PostScript file per page** (the previous output): a PostScript file is a document; the ZIP was declared as such and no consumer of the extension opens it.
+  - **Gray and one-bit samples for scans**: the compression already removes the cost (the three pages are 175 KB), and a second sample layout is a second code path to verify.
+  - **Passing the original CCITT data through** (what `tiff2ps` does for such a file): only for one compression and one photometric reading, and the page would no longer follow the resize, background and orientation options.
+  - **Reading the density now**: see the trade-offs.
+- **Verified by**: `tests/image-multipage-postscript.test.ts` (the three-page CCITT Group 4 scan of the corpus: the interpreter draws three pages of 3,307 x 4,677 points and every sample equals the page libtiff decodes, the pages differ from each other, the file is smaller than ImageMagick's; a request for pages 2 to 3; a picture larger than the default page, to `ps` and to `eps` drawn with the bounding box), `tests/image-tiff-tag-order.test.ts` (the two pages of the real TIFF in one document, the second equal to libtiff's decode; EPS still one file per page), `tests/image-postscript.test.ts` (ASCII85 against the specification's encoding, line length, every length of a short run, the refusals), and the existing EPS and PS pixel tests, which now read the Flate and ASCII85 filters with the reader of `tests/helpers/postscript-samples.ts`.
+- **Revisit when**: the PDF writer reads the print density of a picture (the PostScript page should follow it), a Level 2 consumer is reported, or a multi-page source with pages of unlike sizes needs a page device per size beyond what a document already holds.

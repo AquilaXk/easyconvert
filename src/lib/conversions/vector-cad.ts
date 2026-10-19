@@ -497,7 +497,7 @@ async function convertSvgSource(
         .removeAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
-      outputBuffer = encodePostscript(rawRgb, info.width, info.height, tgt === 'eps');
+      outputBuffer = await encodePostscript(rawRgb, info.width, info.height, tgt === 'eps');
       mimeType = 'application/postscript';
       break;
     }
