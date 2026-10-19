@@ -13,6 +13,7 @@ import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { ConversionFailedError } from '../src/lib/types';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { isProcessRunning } from './helpers/process-state';
 
 /**
  * A job that never ends is stopped at its deadline: the attempt's signal fires, the sandboxed process group is
@@ -46,16 +47,6 @@ async function waitUntil(condition: () => boolean, limitMs: number): Promise<boo
 }
 
 /** True while the operating system still has a process with this id. */
-function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
-    throw error;
-  }
-}
-
 function jobData(name: string, overrides: Partial<ConversionJobData> = {}): ConversionJobData {
   const input = Buffer.from('a,b\n1,2\n', 'utf-8');
   return {
@@ -159,8 +150,8 @@ describe('a job that never ends', () => {
 
     const [info] = (await nextEvent(fake.startedEvent, 'started')) as [Started];
     // The oracle works: both processes of the group are alive while the job runs.
-    expect(isAlive(info.shellPid)).toBe(true);
-    expect(isAlive(info.sleeperPid)).toBe(true);
+    expect(isProcessRunning(info.shellPid)).toBe(true);
+    expect(isProcessRunning(info.sleeperPid)).toBe(true);
     expect(fs.existsSync(info.dir)).toBe(true);
 
     const [failedJob, err] = (await failed) as [{ id: string }, unknown];
@@ -169,7 +160,7 @@ describe('a job that never ends', () => {
     expect(err).toBeInstanceOf(JobTimeoutError);
     expect((err as JobTimeoutError).timeoutMs).toBe(DEADLINE_MS);
 
-    expect(await waitUntil(() => !isAlive(info.shellPid) && !isAlive(info.sleeperPid), JOB_FAIL_BOUND_MS)).toBe(true);
+    expect(await waitUntil(() => !isProcessRunning(info.shellPid) && !isProcessRunning(info.sleeperPid), JOB_FAIL_BOUND_MS)).toBe(true);
     expect(await waitUntil(() => !fs.existsSync(info.dir), JOB_FAIL_BOUND_MS)).toBe(true);
 
     const final = await queue.getJob(job.id);
