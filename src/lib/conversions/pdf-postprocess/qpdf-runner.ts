@@ -1,6 +1,6 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { HelperHost, HelperSlot, type PendingJob } from '../../security/helper-process';
 import {
   detectSandboxEnvironment,
   getSanitizedEnvironment,
@@ -55,11 +55,6 @@ const MAX_U32 = 0xffff_ffff;
 /** The most output the runner takes a job to print (the length of a reply is 32 bits). */
 const MAX_OUTPUT_BYTES = 1024 * 1024 * 1024;
 const BOOT_TIMEOUT_MS = 10_000;
-const RESTART_BACKOFF_MS = 30_000;
-const IDLE_MS = 60_000;
-const REPLY_ALLOWANCE_MS = 10_000;
-const CANCEL_ALLOWANCE_MS = 2000;
-const STOP_GRACE_MS = 2000;
 const DEFAULT_RUN_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 const BYTES_PER_MB = 1024 * 1024;
@@ -249,72 +244,25 @@ function processFailure(result: JobResult, options: LaunchedExecutionOptions): E
 
 // --- The runner process ---------------------------------------------------------------------------------------------------
 
-interface Pending {
+/** What the runner job holds beyond the common parts: the options its errors are worded from, and when it started. */
+interface RunnerJob {
   options: LaunchedExecutionOptions;
   startedAt: number;
-  resolve(result: SandboxedExecutionResult): void;
-  reject(error: unknown): void;
-  timer: NodeJS.Timeout;
-  detach(): void;
-  aborted?: { reason: unknown; timer: NodeJS.Timeout };
 }
 
-type Handle = { ref?: () => void; unref?: () => void } | null | undefined;
-
-class RunnerHost {
-  readonly process: ChildProcess;
-  private readonly pending = new Map<number, Pending>();
+class RunnerHost extends HelperHost<RunnerJob> {
   private readonly reader = new ReplyReader();
-  private nextId = 1;
-  private idleTimer: NodeJS.Timeout | null = null;
-  private referenced = true;
-  ready = false;
-  wasReady = false;
-  stoppedOnPurpose = false;
-  ended = false;
   version = '';
-  onEnd: () => void = () => undefined;
-  onReady: () => void = () => undefined;
 
   constructor(binary: string) {
     const library = process.env[QPDF_RUNNER_LIB_ENV]?.trim();
-    // Directly, without a shell, in its own process group, with the standard streams and the sanitized environment only.
-    this.process = spawn(binary, library ? ['--lib', library] : [], {
-      cwd: os.tmpdir(),
-      env: getSanitizedEnvironment({}, false),
-      stdio: ['pipe', 'pipe', 'ignore'],
-      shell: false,
-      detached: true,
-    });
-    this.process.stdin?.on('error', () => undefined);
-    this.process.stdout?.on('data', (chunk: Buffer) => this.onData(chunk));
-    this.process.once('exit', () => this.end('the runner ended'));
-    this.process.once('error', () => this.end('the runner could not be started'));
-  }
-
-  get pid(): number | undefined {
-    return this.process.pid;
-  }
-
-  private setReferenced(on: boolean): void {
-    if (on === this.referenced) return;
-    this.referenced = on;
-    const handles: Handle[] = [this.process, this.process.stdout as Handle, this.process.stdin as Handle];
-    for (const handle of handles) {
-      if (on) handle?.ref?.();
-      else handle?.unref?.();
-    }
-  }
-
-  private armIdle(): void {
-    if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => this.stop(), IDLE_MS);
-    this.idleTimer.unref();
+    // A job the runner held died with it: the caller starts it the usual way.
+    super({ binary, args: library ? ['--lib', library] : [] }, 'the runner', (reason) => new RunnerDeclined(reason));
   }
 
   run(binary: string, args: string[], options: LaunchedExecutionOptions): Promise<SandboxedExecutionResult> {
     return new Promise<SandboxedExecutionResult>((resolve, reject) => {
-      const id = this.nextId++;
+      const id = this.allocateId();
       const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
       const environment = getSanitizedEnvironment(options.env ?? {}, true);
       const request: RunRequest = {
@@ -330,58 +278,12 @@ class RunnerHost {
       };
       // Declined here, before a timer or a pending entry exists, when the job is past what the runner takes.
       const parts = encodeRun(id, request);
-      const timer = setTimeout(() => {
-        // The runner is silent past the time limit it was given: it is lost, and so is every job it holds.
-        this.fail(id, new SandboxedTimeoutError(timeoutMs));
-        this.stop(true);
-      }, timeoutMs + REPLY_ALLOWANCE_MS);
-      // On abort the runner is asked to kill the job and the caller hears of it when the runner says it is dead, so that what a
-      // caller's `finally` removes is not removed under a live program, as on the direct path.
-      const signal = options.signal;
-      const onAbort = (): void => {
-        const pending = this.pending.get(id);
-        if (!pending || pending.aborted) return;
-        const reason = signal?.reason ?? new Error('The operation was aborted');
-        pending.aborted = { reason, timer: setTimeout(() => this.fail(id, reason), CANCEL_ALLOWANCE_MS) };
-        this.write(frame(FRAME_CANCEL, id));
-      };
-      signal?.addEventListener('abort', onAbort, { once: true });
-      this.pending.set(id, { options, startedAt: Date.now(), resolve, reject, timer, detach: () => signal?.removeEventListener('abort', onAbort) });
-      if (this.idleTimer) clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-      this.setReferenced(true);
+      this.enroll({ id, timeoutMs, signal: options.signal, cancel: () => this.write(frame(FRAME_CANCEL, id)), resolve, reject, extra: { options, startedAt: Date.now() } });
       this.write(parts);
     });
   }
 
-  private write(parts: Buffer[]): void {
-    if (this.ended) return;
-    const stream = this.process.stdin;
-    if (!stream) return;
-    stream.cork();
-    for (const part of parts) stream.write(part);
-    stream.uncork();
-  }
-
-  private settle(id: number): Pending | undefined {
-    const pending = this.pending.get(id);
-    if (!pending) return undefined;
-    this.pending.delete(id);
-    clearTimeout(pending.timer);
-    if (pending.aborted) clearTimeout(pending.aborted.timer);
-    pending.detach();
-    if (this.pending.size === 0 && !this.ended) {
-      this.setReferenced(false);
-      this.armIdle();
-    }
-    return pending;
-  }
-
-  private fail(id: number, error: unknown): void {
-    this.settle(id)?.reject(error);
-  }
-
-  private onData(chunk: Buffer): void {
+  protected onData(chunk: Buffer): void {
     let replies: Reply[];
     try {
       replies = this.reader.push(chunk);
@@ -404,13 +306,7 @@ class RunnerHost {
     if (reply.type === FRAME_READY) {
       const length = reply.body.readUInt32BE(0);
       this.version = reply.body.toString('utf8', 4, 4 + length);
-      this.ready = true;
-      this.wasReady = true;
-      if (this.pending.size === 0) {
-        this.setReferenced(false);
-        this.armIdle();
-      }
-      this.onReady();
+      this.markReady();
       return;
     }
     if (reply.type !== FRAME_RESULT) throw new Error('the runner sent an unknown frame');
@@ -425,7 +321,7 @@ class RunnerHost {
     this.complete(pending, result);
   }
 
-  private complete(pending: Pending, result: JobResult): void {
+  private complete(pending: PendingJob<RunnerJob>, result: JobResult): void {
     const { options } = pending;
     switch (result.kind) {
       case KIND_EXITED:
@@ -458,44 +354,8 @@ class RunnerHost {
         pending.reject(new RunnerDeclined(result.stderr.toString('utf8') || `setup failed (${result.kind})`));
     }
   }
-
-  private end(reason: string): void {
-    if (this.ended) return;
-    this.ended = true;
-    this.ready = false;
-    if (this.idleTimer) clearTimeout(this.idleTimer);
-    // A job the runner held died with it (its children die with their parent): the caller starts it the usual way.
-    for (const id of [...this.pending.keys()]) {
-      this.fail(id, this.pending.get(id)?.aborted?.reason ?? new RunnerDeclined(reason));
-    }
-    this.onEnd();
-  }
-
-  /** Ends the runner: closing its input makes it kill its jobs and go, and it is killed if it does not. */
-  stop(abnormal = false): void {
-    this.stoppedOnPurpose = !abnormal;
-    try {
-      this.process.stdin?.end();
-    } catch {
-      // already closed
-    }
-    this.end('the runner was stopped');
-    const stopped = this.process;
-    setTimeout(() => {
-      if (stopped.exitCode === null && stopped.signalCode === null && stopped.pid) {
-        try {
-          process.kill(-stopped.pid, 'SIGKILL');
-        } catch {
-          // gone
-        }
-      }
-    }, STOP_GRACE_MS).unref();
-  }
 }
 
-let host: RunnerHost | null = null;
-let starting: Promise<boolean> | null = null;
-let retryAfter = 0;
 let ranCount = 0;
 let fallbackCount = 0;
 
@@ -504,49 +364,29 @@ function runnerBinary(): string | null {
   return resolveBinaryPath(QPDF_RUNNER_PATH_ENV, RUNNER_CANDIDATES, 'qpdf-runner');
 }
 
+// A runner that never booted (no library, no program), or ended without being stopped, is not replaced at once.
+const slot = new HelperSlot<RunnerHost>(
+  qpdfRunnerEnabled,
+  () => {
+    const binary = runnerBinary();
+    return binary ? new RunnerHost(binary) : null;
+  },
+  BOOT_TIMEOUT_MS
+);
+
 /** Starts the runner if there is none and resolves true once it is ready; false when it is off, missing or could not start. */
 export function startQpdfRunner(): Promise<boolean> {
-  if (!qpdfRunnerEnabled()) return Promise.resolve(false);
-  if (host?.ready) return Promise.resolve(true);
-  if (starting) return starting;
-  if (Date.now() < retryAfter) return Promise.resolve(false);
-  const binary = runnerBinary();
-  if (!binary) return Promise.resolve(false);
-  const created = new RunnerHost(binary);
-  host = created;
-  starting = new Promise<boolean>((resolve) => {
-    const boot = setTimeout(() => {
-      created.stop();
-      resolve(false);
-    }, BOOT_TIMEOUT_MS);
-    boot.unref();
-    created.onReady = () => {
-      clearTimeout(boot);
-      resolve(true);
-    };
-    created.onEnd = () => {
-      clearTimeout(boot);
-      if (host === created) host = null;
-      // A runner that never booted (no library, no program), or ended without being stopped, is not replaced at once.
-      if (!created.wasReady || !created.stoppedOnPurpose) retryAfter = Date.now() + RESTART_BACKOFF_MS;
-      resolve(false);
-    };
-  }).finally(() => {
-    starting = null;
-  });
-  return starting;
+  return slot.start();
 }
 
 /** Ends the runner and the jobs it still runs. */
 export function stopQpdfRunner(): void {
-  retryAfter = 0;
-  const current = host;
-  host = null;
-  current?.stop();
+  slot.stop();
 }
 
 export function qpdfRunnerState(): { ready: boolean; pid: number | undefined; version: string; ran: number; fallbacks: number } {
-  return { ready: host?.ready === true, pid: host?.ready ? host.pid : undefined, version: host?.version ?? '', ran: ranCount, fallbacks: fallbackCount };
+  const ready = slot.ready;
+  return { ready: ready !== null, pid: ready?.pid, version: slot.current?.version ?? '', ran: ranCount, fallbacks: fallbackCount };
 }
 
 /** Whether the runner can take this job: qpdf itself, isolated, with the limits and the standard input it knows. */
@@ -562,8 +402,8 @@ function runnerCanTake(binary: string, options: LaunchedExecutionOptions): boole
  * those of the usual way, which also starts the job whenever the runner declines it or cannot isolate it.
  */
 export async function launchQpdf(binary: string, args: string[], options: LaunchedExecutionOptions = {}): Promise<SandboxedExecutionResult> {
-  const current = host?.ready === true ? host : null;
-  if (!current) void startQpdfRunner();
+  const current = slot.ready;
+  if (!current) void slot.start();
   if (!current || !qpdfRunnerEnabled() || !runnerCanTake(binary, options)) {
     fallbackCount++;
     return launchSandboxedBinary(binary, args, options);

@@ -1,13 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import os from 'node:os';
 import path from 'node:path';
 import { SandboxUnavailableError } from '../types';
+import { HelperHost, HelperSlot } from './helper-process';
 import {
   executeSandboxedBinary,
-  getSanitizedEnvironment,
-  killProcessGroup,
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
   SandboxedProcessError,
@@ -65,20 +62,12 @@ const CHILD_HEAP_MB = 128;
 const FORK_MS_PER_BYTE = 4.2e-9;
 const BASELINE_RESIDENT_BYTES = 112 * 1024 * 1024;
 const COPY_MS_PER_BYTE = 2.5e-6;
-/** Wall-clock a reply may take beyond the run's own time limit before the helper is judged lost. */
-const REPLY_ALLOWANCE_MS = 10_000;
-/** After a cancel is sent, the helper has this long to say the program is dead before the caller is told anyway. */
-const CANCEL_ALLOWANCE_MS = 2000;
 const DEFAULT_RUN_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BUFFER_BYTES = 50 * 1024 * 1024;
 /** Without a hint the output is taken to be a quarter of the limit (the callers size the limit as a multiple of the input). */
 const DEFAULT_OUTPUT_SHARE = 4;
-/** A helper that has served nothing for this long ends; the next request starts one. */
-const IDLE_MS = 60_000;
 /** Longest the helper may take to boot and say it is ready. */
 const BOOT_TIMEOUT_MS = 30_000;
-/** After a helper that never booted, or ended by itself, programs run directly for this long before another is tried. */
-const RESTART_BACKOFF_MS = 30_000;
 
 export type LaunchedExecutionOptions = Pick<
   SandboxedExecutionOptions,
@@ -146,15 +135,6 @@ function resolveChildEntry(): ChildEntry | null {
   return childEntry;
 }
 
-interface Pending {
-  resolve(result: SandboxedExecutionResult): void;
-  reject(error: unknown): void;
-  timer: NodeJS.Timeout;
-  detach(): void;
-  /** Set once the caller aborted: the request then ends with this reason, whatever the helper answers. */
-  aborted?: { reason: unknown; timer: NodeJS.Timeout };
-}
-
 function toError(detail: LauncherErrorDetail, payload: Buffer): Error {
   switch (detail.kind) {
     case 'process': {
@@ -180,121 +160,30 @@ function toError(detail: LauncherErrorDetail, payload: Buffer): Error {
   }
 }
 
-type Handle = { ref?: () => void; unref?: () => void } | null | undefined;
-
 /** One running helper. */
-class LauncherHost {
-  readonly process: ChildProcess;
-  private readonly pending = new Map<number, Pending>();
+class LauncherHost extends HelperHost {
   private readonly reader = new FrameReader<LauncherReply>();
-  private nextId = 1;
-  private idleTimer: NodeJS.Timeout | null = null;
-  private referenced = true;
-  ended = false;
-  ready = false;
-  /** Whether it ever said so: a helper that ended before that did not boot. */
-  wasReady = false;
-  /** Whether this process ended it (idle, stop, boot timeout) rather than the helper ending by itself. */
-  stoppedOnPurpose = false;
-  onEnd: () => void = () => undefined;
-  onReady: () => void = () => undefined;
 
   constructor(entry: ChildEntry) {
-    // Directly, without a shell, in its own process group, with the standard streams and the sanitized environment only.
-    this.process = spawn(entry.binary, entry.args, {
-      cwd: os.tmpdir(),
-      env: getSanitizedEnvironment({}, false),
-      stdio: ['pipe', 'pipe', 'ignore'],
-      shell: false,
-      detached: true,
-    });
-    // Referenced while it boots, so that a caller waiting for it keeps this process alive; it is let go once it is ready and idle.
-    this.process.stdin?.on('error', () => undefined);
-    this.process.stdout?.on('data', (chunk: Buffer) => this.onData(chunk));
-    this.process.once('exit', () => this.end('the launcher ended'));
-    this.process.once('error', () => this.end('the launcher could not be started'));
-  }
-
-  get pid(): number | undefined {
-    return this.process.pid;
-  }
-
-  /** While requests are open the helper keeps this process alive; with none it does not. */
-  private setReferenced(on: boolean): void {
-    if (on === this.referenced) return;
-    this.referenced = on;
-    const handles: Handle[] = [this.process, this.process.stdout as Handle, this.process.stdin as Handle];
-    for (const handle of handles) {
-      if (on) handle?.ref?.();
-      else handle?.unref?.();
-    }
-  }
-
-  private armIdle(): void {
-    if (this.idleTimer) clearTimeout(this.idleTimer);
-    this.idleTimer = setTimeout(() => this.stop(), IDLE_MS);
-    this.idleTimer.unref();
+    super(entry, 'the launcher', (reason) => new SandboxedProcessError(`Sandboxed execution error: ${reason}`, null, reason));
   }
 
   run(binary: string, args: string[], options: LaunchedExecutionOptions): Promise<SandboxedExecutionResult> {
     return new Promise<SandboxedExecutionResult>((resolve, reject) => {
-      const id = this.nextId++;
+      const id = this.allocateId();
       const { stdin, signal, ...rest } = options;
       const runOptions: LaunchedRunOptions = { ...rest, strictIsolation: options.strictIsolation ?? process.env.STRICT_SANDBOX === 'true' };
       const request: LauncherRequest = { type: 'run', id, binary, args, hasStdin: Boolean(stdin), options: runOptions };
-      const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
-      const timer = setTimeout(() => {
-        // The helper is silent past the time limit it was given: it is lost, and so is every request it holds.
-        this.fail(id, new SandboxedTimeoutError(timeoutMs));
-        this.stop(true);
-      }, timeoutMs + REPLY_ALLOWANCE_MS);
-      // On abort the helper is asked to kill the program and the caller hears of it when the helper says it is dead, so
-      // that what a caller's `finally` removes (a decrypted copy, a password file) is not removed under a live program,
-      // as on the direct path. A helper that does not answer in time is not waited for longer.
-      const onAbort = (): void => {
-        const pending = this.pending.get(id);
-        if (!pending || pending.aborted) return;
-        const reason = signal?.reason ?? new Error('The operation was aborted');
-        pending.aborted = { reason, timer: setTimeout(() => this.fail(id, reason), CANCEL_ALLOWANCE_MS) };
-        this.send({ type: 'cancel', id });
-      };
-      signal?.addEventListener('abort', onAbort, { once: true });
-      this.pending.set(id, { resolve, reject, timer, detach: () => signal?.removeEventListener('abort', onAbort) });
-      if (this.idleTimer) clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-      this.setReferenced(true);
+      this.enroll({ id, timeoutMs: options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, cancel: () => this.send({ type: 'cancel', id }), resolve, reject, extra: {} });
       this.send(request, stdin ?? undefined);
     });
   }
 
   private send(header: LauncherRequest, payload?: Buffer): void {
-    if (this.ended) return;
-    const stream = this.process.stdin;
-    if (!stream) return;
-    stream.cork();
-    for (const part of encodeFrame(header, ...(payload ? [payload] : []))) stream.write(part);
-    stream.uncork();
+    this.write(encodeFrame(header, ...(payload ? [payload] : [])));
   }
 
-  private settle(id: number): Pending | undefined {
-    const pending = this.pending.get(id);
-    if (!pending) return undefined;
-    this.pending.delete(id);
-    clearTimeout(pending.timer);
-    if (pending.aborted) clearTimeout(pending.aborted.timer);
-    pending.detach();
-    if (this.pending.size === 0 && !this.ended) {
-      this.setReferenced(false);
-      this.armIdle();
-    }
-    return pending;
-  }
-
-  private fail(id: number, error: unknown): void {
-    this.settle(id)?.reject(error);
-  }
-
-  private onData(chunk: Buffer): void {
+  protected onData(chunk: Buffer): void {
     let frames;
     try {
       frames = this.reader.push(chunk);
@@ -314,13 +203,7 @@ class LauncherHost {
       }
       const { header, payload } = frame;
       if (header.type === 'ready') {
-        this.ready = true;
-        this.wasReady = true;
-        if (this.pending.size === 0) {
-          this.setReferenced(false);
-          this.armIdle();
-        }
-        this.onReady();
+        this.markReady();
       } else if (this.pending.get(header.id)?.aborted) {
         // Answered after the caller aborted (the program ended on its own, or was killed): the caller aborted.
         this.fail(header.id, this.pending.get(header.id)?.aborted?.reason);
@@ -338,86 +221,32 @@ class LauncherHost {
       }
     }
   }
-
-  private end(reason: string): void {
-    if (this.ended) return;
-    this.ended = true;
-    this.ready = false;
-    if (this.idleTimer) clearTimeout(this.idleTimer);
-    for (const id of [...this.pending.keys()]) {
-      this.fail(id, this.pending.get(id)?.aborted?.reason ?? new SandboxedProcessError(`Sandboxed execution error: ${reason}`, null, reason));
-    }
-    this.onEnd();
-  }
-
-  /** Ends the helper: closing its input makes it close its programs, and it is killed if it does not go. */
-  stop(abnormal = false): void {
-    this.stoppedOnPurpose = !abnormal;
-    try {
-      this.process.stdin?.end();
-    } catch {
-      // already closed
-    }
-    this.end('the launcher was stopped');
-    // Its input is closed first so that it can end the programs it started; the kill follows once it had the chance.
-    const stopped = this.process;
-    setTimeout(() => {
-      if (stopped.exitCode === null && stopped.signalCode === null) killProcessGroup(stopped.pid, 'SIGKILL');
-    }, STOP_GRACE_MS).unref();
-  }
 }
 
-const STOP_GRACE_MS = 2000;
-
-let host: LauncherHost | null = null;
-let starting: Promise<boolean> | null = null;
-let retryAfter = 0;
+const slot = new HelperSlot<LauncherHost>(
+  sandboxLauncherEnabled,
+  () => {
+    const entry = resolveChildEntry();
+    return entry ? new LauncherHost(entry) : null;
+  },
+  BOOT_TIMEOUT_MS
+);
 let launchedCount = 0;
 let directCount = 0;
 
 /** Starts the helper if there is none and resolves true once it is ready; false when it is turned off, missing or could not start. */
 export function startSandboxLauncher(): Promise<boolean> {
-  if (!sandboxLauncherEnabled()) return Promise.resolve(false);
-  if (host?.ready) return Promise.resolve(true);
-  if (starting) return starting;
-  if (Date.now() < retryAfter) return Promise.resolve(false);
-  const entry = resolveChildEntry();
-  if (!entry) return Promise.resolve(false);
-  const created = new LauncherHost(entry);
-  host = created;
-  starting = new Promise<boolean>((resolve) => {
-    const boot = setTimeout(() => {
-      created.stop();
-      resolve(false);
-    }, BOOT_TIMEOUT_MS);
-    boot.unref();
-    created.onReady = () => {
-      clearTimeout(boot);
-      resolve(true);
-    };
-    created.onEnd = () => {
-      clearTimeout(boot);
-      if (host === created) host = null;
-      // A helper that never booted, or ended without being stopped (killed, out of memory, a protocol error), is not replaced at once.
-      if (!created.wasReady || !created.stoppedOnPurpose) retryAfter = Date.now() + RESTART_BACKOFF_MS;
-      resolve(false);
-    };
-  }).finally(() => {
-    starting = null;
-  });
-  return starting;
+  return slot.start();
 }
 
 /** Ends the helper and the programs it still runs. */
 export function stopSandboxLauncher(): void {
-  retryAfter = 0;
-  const current = host;
-  host = null;
-  current?.stop();
+  slot.stop();
 }
 
 export function sandboxLauncherState(): { ready: boolean; pid: number | undefined; launched: number; direct: number } {
-  return { ready: host?.ready === true, pid: host?.ready ? host.pid : undefined, launched: launchedCount, direct: directCount };
+  const ready = slot.ready;
+  return { ready: ready !== null, pid: ready?.pid, launched: launchedCount, direct: directCount };
 }
 
 /** Whether the fork saved by the helper costs more than the helper does, for a process of this size and an output of this size. */
@@ -432,8 +261,8 @@ export function launchPays(residentBytes: number, expectedOutputBytes: number): 
 export function launchSandboxedBinary(binary: string, args: string[], options: LaunchedExecutionOptions = {}): Promise<SandboxedExecutionResult> {
   const maxBuffer = options.maxBuffer ?? DEFAULT_MAX_BUFFER_BYTES;
   const { expectedOutputBytes = maxBuffer / DEFAULT_OUTPUT_SHARE, ...forwarded } = options;
-  const current = host?.ready === true ? host : null;
-  if (!current) void startSandboxLauncher();
+  const current = slot.ready;
+  if (!current) void slot.start();
   if (!current || options.signal?.aborted || !sandboxLauncherEnabled() || !launchPays(process.memoryUsage.rss(), expectedOutputBytes)) {
     directCount++;
     return executeSandboxedBinary(binary, args, forwarded);
