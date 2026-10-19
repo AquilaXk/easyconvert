@@ -26,6 +26,13 @@ import {
  * soon as a job overruns its deadline, runs it out of memory or kills it, so a hostile document never leaves a
  * damaged thread behind. An idle thread does not keep the process alive.
  *
+ * A new thread costs the job that waits for it its start-up (loading pdfjs, then a cold engine: about 200 ms against
+ * 5 ms for a document), which is a spike once in RECYCLE_AFTER_JOBS jobs. A thread that nears its retirement therefore
+ * starts its replacement ahead (REPLACEMENT_LEAD_JOBS jobs before): the replacement reads a fixed page of this
+ * repository once (pdf-text-warmup.ts), which loads pdfjs and its font data, and only then joins the pool; the old thread
+ * is retired when the replacement is ready, or after RECYCLE_LIMIT_JOBS jobs. The replacement has read no user document,
+ * so retiring the old thread still ends everything a document left in it; only the delay of starting a thread is hidden.
+ *
  * Failures are typed by whose fault they are. A document that overruns the deadline, exhausts the thread's memory or
  * is rejected by the reader is a PdfTextGeometryError (400), or the typed error the thread names (an encrypted
  * document, a document with too many pages). A thread that cannot be started, dies on its own, or has no entry is
@@ -44,6 +51,10 @@ const TSX_REGISTER_SPECIFIER = ['tsx', 'cjs', 'api'].join('/');
 const MAX_POOL = 4;
 /** A thread that has read this many documents is replaced, which bounds what a leak in the reader can accumulate. */
 const RECYCLE_AFTER_JOBS = 100;
+/** The replacement of a thread is started this many jobs before the thread is due, to be warm when it is. */
+const REPLACEMENT_LEAD_JOBS = 20;
+/** A thread whose replacement is still starting at RECYCLE_AFTER_JOBS reads on, but never beyond this many documents. */
+const RECYCLE_LIMIT_JOBS = 2 * RECYCLE_AFTER_JOBS;
 /** A thread idle this long is stopped. */
 const IDLE_MS = 15_000;
 
@@ -67,6 +78,8 @@ interface PooledThread {
   active: ActiveJob | null;
   jobs: number;
   idleTimer: NodeJS.Timeout | null;
+  /** The thread started to take over from this one; it has read no user document. */
+  replacement: PooledThread | null;
 }
 
 interface QueuedJob {
@@ -111,11 +124,11 @@ function resolveWorkerEntry(): WorkerEntry {
   );
 }
 
-function startWorker(entry: WorkerEntry): Worker {
-  const resourceLimits = { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB };
+function startWorker(entry: WorkerEntry, warmUp: boolean): Worker {
+  const options = { resourceLimits: { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB }, workerData: { warmUp } };
   try {
-    if (entry.kind === 'compiled') return new Worker(entry.file, { resourceLimits });
-    return new Worker(entry.bootstrap, { eval: true, resourceLimits });
+    if (entry.kind === 'compiled') return new Worker(entry.file, options);
+    return new Worker(entry.bootstrap, { eval: true, ...options });
   } catch (error) {
     throw new EngineUnavailableError(ENGINE_NAME, `the thread could not be started: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -129,12 +142,15 @@ function threadFailure(error: Error & { code?: string }): Error {
 
 const threads = new Set<PooledThread>();
 const idleThreads: PooledThread[] = [];
+/** Replacements that are still warming up: they take no job, and do not count against the pool limit. */
+const warming = new Set<PooledThread>();
 const queue: QueuedJob[] = [];
 
 function retire(thread: PooledThread): void {
   if (thread.idleTimer) clearTimeout(thread.idleTimer);
   thread.idleTimer = null;
   threads.delete(thread);
+  warming.delete(thread);
   const at = idleThreads.indexOf(thread);
   if (at >= 0) idleThreads.splice(at, 1);
   void thread.worker.terminate();
@@ -148,23 +164,54 @@ function settle(thread: PooledThread, action: (job: ActiveJob) => void): void {
   action(job);
 }
 
+/** An idle thread must not keep the process alive, and is stopped after IDLE_MS without a job. */
+function markIdle(thread: PooledThread): void {
+  thread.worker.unref?.();
+  thread.idleTimer = setTimeout(() => retire(thread), IDLE_MS);
+  thread.idleTimer.unref?.();
+}
+
+/** Whether the replacement of `thread` is still starting, so that retiring the thread now would leave the next job a cold start. */
+function awaitsReplacement(thread: PooledThread): boolean {
+  const replacement = thread.replacement;
+  return replacement !== null && threads.has(replacement) && warming.has(replacement);
+}
+
+/** Starts the thread that takes over from `thread`, unless one is on its way. A thread that cannot start is reported by the job that needs it. */
+function startReplacement(thread: PooledThread): void {
+  if (thread.replacement && threads.has(thread.replacement)) return;
+  try {
+    thread.replacement = createThread(true);
+  } catch {
+    thread.replacement = null;
+  }
+}
+
 function release(thread: PooledThread): void {
   thread.jobs++;
-  if (thread.jobs >= RECYCLE_AFTER_JOBS) {
+  if (thread.jobs >= RECYCLE_AFTER_JOBS - REPLACEMENT_LEAD_JOBS) startReplacement(thread);
+  const due = thread.jobs >= RECYCLE_LIMIT_JOBS || (thread.jobs >= RECYCLE_AFTER_JOBS && !awaitsReplacement(thread));
+  if (due) {
     retire(thread);
   } else {
-    // An idle thread must not keep the process alive.
-    thread.worker.unref?.();
-    thread.idleTimer = setTimeout(() => retire(thread), IDLE_MS);
-    thread.idleTimer.unref?.();
+    markIdle(thread);
     idleThreads.push(thread);
   }
   startQueued();
 }
 
-function createThread(): PooledThread {
-  const worker = startWorker(resolveWorkerEntry());
-  const thread: PooledThread = { worker, active: null, jobs: 0, idleTimer: null };
+/** A warm replacement joins the pool behind the idle threads, so the thread it replaces keeps the jobs until it is retired. */
+function joinPool(thread: PooledThread): void {
+  if (!threads.has(thread)) return;
+  warming.delete(thread);
+  markIdle(thread);
+  idleThreads.unshift(thread);
+  startQueued();
+}
+
+function createThread(replacement = false): PooledThread {
+  const worker = startWorker(resolveWorkerEntry(), replacement);
+  const thread: PooledThread = { worker, active: null, jobs: 0, idleTimer: null, replacement: null };
   worker.once('error', (error: Error & { code?: string }) => {
     const failure = threadFailure(error);
     retire(thread);
@@ -177,6 +224,11 @@ function createThread(): PooledThread {
     startQueued();
   });
   threads.add(thread);
+  if (replacement) {
+    warming.add(thread);
+    worker.unref?.();
+    worker.once('message', () => joinPool(thread));
+  }
   return thread;
 }
 
@@ -205,7 +257,7 @@ function dispatch(thread: PooledThread, queued: QueuedJob): void {
 function startQueued(): void {
   while (queue.length > 0) {
     let thread = idleThreads.pop();
-    if (!thread && threads.size < poolLimit()) {
+    if (!thread && threads.size - warming.size < poolLimit()) {
       const next = queue[0];
       try {
         thread = createThread();

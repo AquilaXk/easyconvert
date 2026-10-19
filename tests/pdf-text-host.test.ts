@@ -22,7 +22,10 @@ const fake = vi.hoisted(() => {
       return this;
     }
     emit(event: string, ...args: unknown[]): void {
-      for (const handler of this.handlers.get(event) ?? []) handler(...args);
+      // `once`: a handler runs for the first event only.
+      const handlers = this.handlers.get(event) ?? [];
+      this.handlers.delete(event);
+      for (const handler of handlers) handler(...args);
     }
     postMessage(message: unknown): void {
       this.posted.push(message);
@@ -49,7 +52,7 @@ vi.mock('node:worker_threads', async (importOriginal) => {
 });
 
 import { convertFile } from '../src/lib/conversions/index';
-import { shutdownPdfTextThreads } from '../src/lib/conversions/pdf-text-host';
+import { runPdfTextJobInThread, shutdownPdfTextThreads } from '../src/lib/conversions/pdf-text-host';
 import { inspectPdfPagesTextDensity } from '../src/lib/conversions/ocr';
 import { extractPdfTextLayerPages, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-geometry';
 import { EngineUnavailableError } from '../src/lib/types';
@@ -187,5 +190,102 @@ describe('density analysis', () => {
     expect(err).toBeInstanceOf(PdfTextGeometryError);
     expect((err as PdfTextGeometryError).status).toBe(400);
     expect((err as Error).message).toBe('PDF text geometry could not be read: damaged');
+  });
+});
+
+/**
+ * A thread that nears its retirement starts its replacement ahead, so the job after the retirement does not wait for a
+ * thread to start (about 200 ms against 5 ms for a document): the old thread is retired when the replacement has said it
+ * is ready, and the replacement takes no job before that.
+ */
+describe('replacing a thread that has read many documents', () => {
+  type Thread = InstanceType<typeof fake.FakeWorker>;
+  const REPLACEMENT_STARTS_AFTER_JOBS = 80;
+  const RETIRED_AFTER_JOBS = 100;
+  const RETIRED_AT_LATEST_AFTER_JOBS = 200;
+  const reply = { ok: true, result: { analyses: [], geometry: new Map(), content: [], fonts: [] } };
+  const textJob = { geometry: 'none', content: true } as const;
+
+  /** Reads `count` documents on `thread`, answering each one. */
+  async function readDocuments(thread: Thread, count: number): Promise<void> {
+    for (let read = 0; read < count; read++) {
+      const pending = runPdfTextJobInThread(pdf(), textJob);
+      thread.emit('message', reply);
+      await pending;
+    }
+  }
+
+  const warmUpOf = (thread: Thread): unknown => (fake.state.calls[fake.state.instances.indexOf(thread)][1] as { workerData: { warmUp: boolean } }).workerData.warmUp;
+
+  /** The first thread, with the documents it must read before the replacement starts already read. */
+  async function oldThreadNearingRetirement(): Promise<Thread> {
+    const first = runPdfTextJobInThread(pdf(), textJob);
+    const old = await startedThread();
+    old.emit('message', reply);
+    await first;
+    await readDocuments(old, REPLACEMENT_STARTS_AFTER_JOBS - 2);
+    expect(fake.state.instances).toHaveLength(1);
+    return old;
+  }
+
+  it('starts the replacement as a warm-up thread once the old thread has read most of its documents', async () => {
+    const old = await oldThreadNearingRetirement();
+    await readDocuments(old, 1);
+    expect(fake.state.instances).toHaveLength(2);
+    expect(warmUpOf(old)).toBe(false);
+    expect(warmUpOf(fake.state.instances[1])).toBe(true);
+    expect(old.terminated).toBe(false);
+  });
+
+  it('gives a replacement that is still warming no document, and keeps the old thread until it is ready', async () => {
+    const old = await oldThreadNearingRetirement();
+    await readDocuments(old, RETIRED_AFTER_JOBS - REPLACEMENT_STARTS_AFTER_JOBS + 2);
+    const replacement = fake.state.instances[1];
+    expect(old.terminated).toBe(false);
+    expect(replacement.posted).toHaveLength(0);
+    await readDocuments(old, 1);
+    expect(old.posted).toHaveLength(RETIRED_AFTER_JOBS + 2);
+    expect(replacement.posted).toHaveLength(0);
+  });
+
+  it('retires the old thread when the replacement is ready, and gives the next document to the replacement', async () => {
+    const old = await oldThreadNearingRetirement();
+    await readDocuments(old, RETIRED_AFTER_JOBS - REPLACEMENT_STARTS_AFTER_JOBS + 2);
+    const replacement = fake.state.instances[1];
+    replacement.emit('message', { ready: true });
+    await readDocuments(old, 1);
+    expect(old.terminated).toBe(true);
+    const pending = runPdfTextJobInThread(pdf(), textJob);
+    expect(replacement.posted).toHaveLength(1);
+    replacement.emit('message', reply);
+    await pending;
+    expect(fake.state.instances).toHaveLength(2);
+  });
+
+  it('retires the old thread at its limit when the replacement never gets ready', async () => {
+    const old = await oldThreadNearingRetirement();
+    await readDocuments(old, RETIRED_AT_LATEST_AFTER_JOBS - REPLACEMENT_STARTS_AFTER_JOBS + 1);
+    expect(old.terminated).toBe(true);
+    expect(old.posted).toHaveLength(RETIRED_AT_LATEST_AFTER_JOBS);
+  });
+
+  it('retires the old thread after its limit when no replacement could be started', async () => {
+    const old = await oldThreadNearingRetirement();
+    fake.state.construct = () => {
+      throw new Error('resource exhausted');
+    };
+    await readDocuments(old, RETIRED_AFTER_JOBS - REPLACEMENT_STARTS_AFTER_JOBS + 1);
+    expect(old.terminated).toBe(true);
+    expect(old.posted).toHaveLength(RETIRED_AFTER_JOBS);
+    expect(fake.state.instances).toHaveLength(1);
+  });
+
+  it('does not count a warming replacement against the pool, and stops it with the pool', async () => {
+    const old = await oldThreadNearingRetirement();
+    await readDocuments(old, 1);
+    const replacement = fake.state.instances[1];
+    shutdownPdfTextThreads();
+    expect(replacement.terminated).toBe(true);
+    expect(old.terminated).toBe(true);
   });
 });
