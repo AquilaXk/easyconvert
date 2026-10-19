@@ -1,0 +1,15 @@
+# Python format oracles of the CI tool setup (install-tools.sh, task_pip), one pin per line. The hash of this file is
+# the key of the wheel cache.
+# scipy is pinned with trimesh: the distro scipy (built for NumPy 1) is also on the image, and with the NumPy 2 that pip
+# installs here it makes `import trimesh` fail with a binary-incompatibility error, so pip's own scipy has to shadow it.
+pyarrow==25.0.1
+duckdb==1.5.6
+pymupdf==1.28.2
+python-docx==1.2.0
+openpyxl==3.1.5
+ebooklib==0.20
+olefile==0.47
+xlrd==2.0.2
+ezdxf==1.4.4
+trimesh==5.1.1
+scipy==1.18.1
