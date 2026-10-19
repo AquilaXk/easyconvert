@@ -455,6 +455,7 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   pot: () => buildPptBinary({ slides: [{ shapes: [{ chars: 'Probe slide title' }, { chars: 'First probe bullet' }] }] }),
   ott: () => withOpenDocumentMimetype('odt', 'application/vnd.oasis.opendocument.text-template'),
   otp: () => withOpenDocumentMimetype('odp', 'application/vnd.oasis.opendocument.presentation-template'),
+  ots: () => withOpenDocumentMimetype('ods', 'application/vnd.oasis.opendocument.spreadsheet-template'),
   // The OpenXPS writer of the product is what makes a probe package; the reader takes both XPS variants by their parts.
   oxps: () => requireDerived('xps'),
   rtf: () => Buffer.from('{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Times New Roman;}}Probe heading\\par First probe paragraph.\\par}', 'latin1'),
@@ -545,7 +546,7 @@ async function wrapFontSeed(target: 'woff' | 'woff2' | 'eot'): Promise<Buffer> {
 }
 
 /** An OpenDocument template: the package of the plain format with the mimetype of the template. */
-async function withOpenDocumentMimetype(plain: 'odt' | 'odp', mimetype: string): Promise<Buffer> {
+async function withOpenDocumentMimetype(plain: 'odt' | 'odp' | 'ods', mimetype: string): Promise<Buffer> {
   const zip = await JSZip.loadAsync(await requireDerived(plain));
   zip.file('mimetype', mimetype, { compression: 'STORE' });
   return zip.generateAsync({ type: 'nodebuffer' });
