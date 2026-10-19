@@ -23,7 +23,18 @@ const SECONDS = 1;
 const CRF = 26;
 const PSNR_TOLERANCE_DB = 0.1;
 const SSIM_TOLERANCE = 0.001;
-const BYTES_TOLERANCE = 0.01;
+/** x264 wrote the same bytes at its own and at sixteen threads in every run measured (one byte apart in 214,896), so its row stays tight. */
+const X264_BYTES_TOLERANCE = 0.01;
+/**
+ * x265 does not promise the same bytes at two frame-thread counts: now and then, more often on a loaded host, one frame
+ * of a clip is written with another type or QP (4 s clip at six threads: 7 of 1920 runs differed; 2 s: 3 of 640; 8 s: 1 of 960;
+ * a 1 s run on a CI runner came out 10% larger). How far one such frame moves the size or the PSNR falls with the length of the
+ * clip: the largest gap to the reference at two threads was +14.6% and +0.6 dB at 2 s, +2.7% and -0.10 dB at 4 s, and
+ * +0.26% and -0.02 dB at 8 s. At eight seconds five percent keeps a margin of three over the 1.4% the 4 s worst case halves
+ * to, and stays under the 10% by which one step of CRF changes the size, so a drifted quality target still fails.
+ */
+const COMPARISON_SECONDS = 8;
+const X265_BYTES_TOLERANCE = 0.05;
 
 describe('the thread count asked of each software encoder', () => {
   it.each([
@@ -76,9 +87,10 @@ describe('the thread count asked of each software encoder', () => {
   });
 });
 
-/** A 320x240 clip made once for every test that needs a real input. */
+/** A 320x240 clip made once for every test that needs a real input, and a longer one for the pictures compared against the reference encoder. */
 let workDir: string;
 let source: string;
+let comparisonSource: string;
 
 function tool(): string {
   const found = getOracleToolPath('ffmpeg');
@@ -86,10 +98,10 @@ function tool(): string {
   return found;
 }
 
-function makeSource(): void {
-  if (fs.existsSync(source)) return;
+function makeSource(file: string = source, seconds: number = SECONDS): void {
+  if (fs.existsSync(file)) return;
   requireEncoders('libx264');
-  execFileSync(tool(), ['-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=size=${SIZE}:rate=24:duration=${SECONDS}`, '-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', source], {
+  execFileSync(tool(), ['-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc2=size=${SIZE}:rate=24:duration=${seconds}`, '-c:v', 'libx264', '-crf', '12', '-pix_fmt', 'yuv420p', file], {
     stdio: ['ignore', 'ignore', 'pipe'],
   });
 }
@@ -97,6 +109,7 @@ function makeSource(): void {
 beforeAll(() => {
   workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'media-threads-'));
   source = path.join(workDir, 'source.mp4');
+  comparisonSource = path.join(workDir, 'comparison-source.mp4');
 });
 afterAll(() => {
   fs.rmSync(workDir, { recursive: true, force: true });
@@ -206,9 +219,9 @@ describe('the threads the encoders really start', () => {
     vi.restoreAllMocks();
   });
 
-  /** Our arguments for `source`, run at info level so the encoder reports the thread counts it started. */
-  function ourRun(codec: 'h264' | 'hevc', output: string): string {
-    const args = buildFfmpegArguments(source, output, 'mp4', 'mp4', { disableHwaccel: true, video: { codec, rateControl: { mode: 'crf', crf: CRF } } }, tool());
+  /** Our arguments for `input`, run at info level so the encoder reports the thread counts it started. */
+  function ourRun(codec: 'h264' | 'hevc', output: string, input: string = source): string {
+    const args = buildFfmpegArguments(input, output, 'mp4', 'mp4', { disableHwaccel: true, video: { codec, rateControl: { mode: 'crf', crf: CRF } } }, tool());
     const run = spawnSync(tool(), ['-hide_banner', '-nostdin', '-loglevel', 'info', ...args], { encoding: 'utf8' });
     if (run.status !== 0) throw new Error(run.stderr);
     return run.stderr;
@@ -230,19 +243,28 @@ describe('the threads the encoders really start', () => {
     TEST_TIMEOUT_MS
   );
 
+  /** The decoded pictures of `ours` must be no worse against `input` than the reference's, and its size within `bytesTolerance`. */
+  function expectPictureAndSizeOf(ours: string, reference: string, input: string, bytesTolerance: number): void {
+    const oursQuality = measureSsimPsnr(tool(), ours, input);
+    const referenceQuality = measureSsimPsnr(tool(), reference, input);
+    expect(oursQuality.psnr).toBeGreaterThanOrEqual(referenceQuality.psnr - PSNR_TOLERANCE_DB);
+    expect(oursQuality.ssim).toBeGreaterThanOrEqual(referenceQuality.ssim - SSIM_TOLERANCE);
+    expect(Math.abs(fs.statSync(ours).size - fs.statSync(reference).size) / fs.statSync(reference).size).toBeLessThan(bytesTolerance);
+  }
+
   oracleTest(
     'x265 at six frame threads gives the picture quality and size of the two it starts on a host of four cores',
     ['ffmpeg'],
     () => {
       requireEncoders('libx265');
-      makeSource();
+      makeSource(comparisonSource, COMPARISON_SECONDS);
       vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
       const ours = path.join(workDir, 'threads-ours.mp4');
-      ourRun('hevc', ours);
+      ourRun('hevc', ours, comparisonSource);
       const reference = path.join(workDir, 'threads-ref.mp4');
       execFileSync(
         tool(),
-        ['-v', 'error', '-y', '-i', source, '-c:v', 'libx265', '-preset', 'medium', '-x265-params', 'log-level=error', '-threads', '2', '-crf', String(CRF), '-pix_fmt', 'yuv420p', '-an', reference],
+        ['-v', 'error', '-y', '-i', comparisonSource, '-c:v', 'libx265', '-preset', 'medium', '-x265-params', 'log-level=error', '-threads', '2', '-crf', String(CRF), '-pix_fmt', 'yuv420p', '-an', reference],
         { stdio: ['ignore', 'ignore', 'pipe'] }
       );
       const framesOf = (file: string): number =>
@@ -250,41 +272,34 @@ describe('the threads the encoders really start', () => {
           .split('\n')
           .filter((line) => line !== '' && !line.startsWith('#')).length;
       expect(framesOf(ours)).toBe(framesOf(reference));
-      expect(framesOf(ours)).toBeGreaterThanOrEqual(SECONDS * 24);
-      // Not frame for frame: x265 does not promise the same bytes at two frame-thread counts, and on a busy runner one frame in
-      // twenty-four was written differently (the md5 of the decoded frames then differs in that frame alone). The pictures are
-      // judged against the source, the way the other encoder rows of this file are, and must not be worse than the reference's.
-      const oursQuality = measureSsimPsnr(tool(), ours, source);
-      const referenceQuality = measureSsimPsnr(tool(), reference, source);
-      expect(oursQuality.psnr).toBeGreaterThanOrEqual(referenceQuality.psnr - PSNR_TOLERANCE_DB);
-      expect(oursQuality.ssim).toBeGreaterThanOrEqual(referenceQuality.ssim - SSIM_TOLERANCE);
-      expect(Math.abs(fs.statSync(ours).size - fs.statSync(reference).size) / fs.statSync(reference).size).toBeLessThan(BYTES_TOLERANCE);
+      expect(framesOf(ours)).toBeGreaterThanOrEqual(COMPARISON_SECONDS * 24);
+      // Not frame for frame: x265 does not promise the same bytes at two frame-thread counts, and on a busy host one frame in a
+      // clip is now and then written with another type or QP (the md5 of the decoded frames then differs in that frame alone).
+      // The clip is long enough that such a frame moves the size by a fraction of X265_BYTES_TOLERANCE, and the pictures are
+      // judged against the source, the way the other encoder rows of this file are.
+      expectPictureAndSizeOf(ours, reference, comparisonSource, X265_BYTES_TOLERANCE);
     },
     TEST_TIMEOUT_MS
   );
 
   for (const row of [
-    { codec: 'h264' as const, reference: ['-c:v', 'libx264', '-preset', 'medium'] },
-    { codec: 'hevc' as const, reference: ['-c:v', 'libx265', '-preset', 'medium', '-x265-params', 'log-level=error'] },
+    { codec: 'h264' as const, reference: ['-c:v', 'libx264', '-preset', 'medium'], bytesTolerance: X264_BYTES_TOLERANCE },
+    { codec: 'hevc' as const, reference: ['-c:v', 'libx265', '-preset', 'medium', '-x265-params', 'log-level=error'], bytesTolerance: X265_BYTES_TOLERANCE },
   ]) {
     oracleTest(
       `${row.codec}: the picture and size are the reference encoder's at its own thread defaults`,
       ['ffmpeg', 'ffprobe'],
       () => {
         requireEncoders('libx264', 'libx265');
-        makeSource();
+        makeSource(comparisonSource, COMPARISON_SECONDS);
         vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
         const ours = path.join(workDir, `quality-${row.codec}.mp4`);
-        ourRun(row.codec, ours);
+        ourRun(row.codec, ours, comparisonSource);
         const reference = path.join(workDir, `quality-ref-${row.codec}.mp4`);
-        execFileSync(tool(), ['-v', 'error', '-y', '-i', source, ...row.reference, '-crf', String(CRF), '-pix_fmt', 'yuv420p', '-an', reference], {
+        execFileSync(tool(), ['-v', 'error', '-y', '-i', comparisonSource, ...row.reference, '-crf', String(CRF), '-pix_fmt', 'yuv420p', '-an', reference], {
           stdio: ['ignore', 'ignore', 'pipe'],
         });
-        const oursQuality = measureSsimPsnr(tool(), ours, source);
-        const referenceQuality = measureSsimPsnr(tool(), reference, source);
-        expect(oursQuality.psnr).toBeGreaterThanOrEqual(referenceQuality.psnr - PSNR_TOLERANCE_DB);
-        expect(oursQuality.ssim).toBeGreaterThanOrEqual(referenceQuality.ssim - SSIM_TOLERANCE);
-        expect(Math.abs(fs.statSync(ours).size - fs.statSync(reference).size) / fs.statSync(reference).size).toBeLessThan(BYTES_TOLERANCE);
+        expectPictureAndSizeOf(ours, reference, comparisonSource, row.bytesTolerance);
       },
       TEST_TIMEOUT_MS
     );
