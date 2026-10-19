@@ -58,6 +58,19 @@ jobs:
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
 
+      # Timing suites read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      - name: Restore the corpus cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/easyconvert-realworld
+          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          restore-keys: test-samples-
+
+      - name: Prefetch the corpus files the tests read
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npm run prefetch:test-samples
+
       - name: Run performance suites
         env:
           ORACLE_STRICT_MODE: "1"

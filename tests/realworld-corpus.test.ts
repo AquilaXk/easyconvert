@@ -7,6 +7,7 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import sharp from 'sharp';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { describeFetchFailure } from '../bench/http-retry';
 import { fetchBytes, retryDelayMs } from '../bench/realworld/http';
 import { inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory, ZipRangeError } from '../bench/realworld/zip-range';
 import { ManifestError, MANIFEST_PATH, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
@@ -579,4 +580,17 @@ describe('a real-world download from a host that limits its rate', () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   }, 20_000);
+});
+
+describe('what a failed download reports', () => {
+  it('names the reason fetch keeps in its cause, so a log tells an unreachable host from a refusing one', () => {
+    const cause = Object.assign(new Error('connect ETIMEDOUT 95.216.19.17:443'), { code: 'ETIMEDOUT' });
+    expect(describeFetchFailure(new TypeError('fetch failed', { cause }))).toBe('fetch failed (ETIMEDOUT: connect ETIMEDOUT 95.216.19.17:443)');
+  });
+
+  it('names a cause without an error code by its message, and leaves an error with no cause as it is', () => {
+    expect(describeFetchFailure(new TypeError('fetch failed', { cause: new Error('bad port') }))).toBe('fetch failed (bad port)');
+    expect(describeFetchFailure(new Error('HTTP 404, expected 200'))).toBe('HTTP 404, expected 200');
+    expect(describeFetchFailure('plain text')).toBe('plain text');
+  });
 });

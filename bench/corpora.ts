@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { REMOTE_CACHE_DIR, REMOTE_MANIFEST_PATH } from './config';
 import { BenchArgumentError, BenchError } from './errors';
-import { isBusyHostStatus, retryDelayMs } from './http-retry';
+import { describeFetchFailure, isBusyHostStatus, retryDelayMs } from './http-retry';
 import { EOCD_SEARCH_BYTES, inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory } from './realworld/zip-range';
 
 export const REMOTE_MANIFEST_SCHEMA = 1;
@@ -350,7 +350,7 @@ export async function httpBytes(url: string, range: [number, number] | null, max
       if (tryNumber < retries) await sleep(error instanceof CorpusBusyHostError ? retryDelayMs(tryNumber, error.status, error.retryAfter) : retryDelayMs(tryNumber, null, null));
     }
   }
-  throw new CorpusFetchError(`${url}: failed after ${retries + 1} attempts: ${last instanceof Error ? last.message : String(last)}`);
+  throw new CorpusFetchError(`${url}: failed after ${retries + 1} attempts: ${describeFetchFailure(last)}`);
 }
 
 /** The redirect targets the sample's set allows besides its own domain. */

@@ -28,3 +28,16 @@ export function retryDelayMs(tryNumber: number, status: number | null, retryAfte
   if (status === HTTP_TOO_MANY_REQUESTS) return Math.max(ordinary, RATE_LIMIT_DEFAULT_WAIT_MS);
   return ordinary;
 }
+
+/**
+ * What a failed request says about itself. `fetch` reports every network failure (DNS, refused or reset connection, timeout,
+ * unreachable address) as `TypeError: fetch failed` and keeps the reason in `cause`; a log that drops it cannot tell a host that
+ * is down from a runner that cannot reach it.
+ */
+export function describeFetchFailure(error: unknown): string {
+  const summary = error instanceof Error ? error.message : String(error);
+  const cause = error instanceof Error ? error.cause : undefined;
+  if (!(cause instanceof Error)) return summary;
+  const code = (cause as NodeJS.ErrnoException).code;
+  return `${summary} (${code === undefined ? cause.message : `${code}: ${cause.message}`})`;
+}
