@@ -1,6 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 
+/** By absolute path, not a PATH lookup: `/bin/ps` on macOS and the BSDs, where /proc is absent. */
+const PS_BINARY = '/bin/ps';
+
 /**
  * Whether a process still runs. A killed process stays in the process table as a zombie until its parent (or init, for
  * an orphan) calls wait(), and `kill(pid, 0)` succeeds on a zombie; on a loaded runner the reaping can lag by seconds, so a
@@ -32,7 +35,7 @@ function isRunningOnProc(pid: number): boolean {
 
 function psState(pid: number): string {
   try {
-    return execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf-8' }).trim();
+    return execFileSync(PS_BINARY, ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf-8' }).trim();
   } catch {
     return '';
   }
