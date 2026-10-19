@@ -37,7 +37,8 @@ import {
   VideoGeometry,
 } from './media-ffprobe';
 import { DEFAULT_TONE_MAP, TONE_MAP_MODES } from './hdr-tonemap';
-import { softwareEncoderThreads } from './media-encoder-threads';
+import { pictureOf, softwareEncoderThreads } from './media-encoder-threads';
+import { type Vp9Deadline, vp9DeadlineOfInput, vp9SpeedArgs } from './media-vp9-effort';
 import type { LayoutStream } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
@@ -462,8 +463,6 @@ export const X26X_DEFAULT_PRESET = 'medium';
 /** SVT-AV1 preset: 0 is the slowest and best, 13 the fastest; 8 keeps near real-time speed with good quality. */
 export const SVT_AV1_DEFAULT_PRESET = 8;
 export const SVT_AV1_PRESET_RANGE = { min: 0, max: 13 } as const;
-/** libvpx-vp9 speed settings: row multithreading, the "good" deadline, cpu-used 2 and four tile columns (log2 = 2). */
-export const VP9_SPEED_ARGS: readonly string[] = ['-row-mt', '1', '-deadline', 'good', '-cpu-used', '2', '-tile-columns', '2'];
 /** Buffer of a capped-CRF encode over its peak rate: two seconds of video at the cap. */
 const CAPPED_CRF_BUFSIZE_FACTOR = 2;
 /** Deinterlace only the frames flagged interlaced, one progressive frame per field. */
@@ -520,8 +519,8 @@ function cappedCrfArgs(rateControl: VideoRateControl | undefined): string[] {
 }
 
 /** libvpx-vp9 encoder and its speed settings; constant quality unless a bitrate follows. */
-function vp9Args(rateControl: VideoRateControl | undefined): string[] {
-  const args = ['-c:v', 'libvpx-vp9', ...VP9_SPEED_ARGS];
+function vp9Args(rateControl: VideoRateControl | undefined, deadline: Vp9Deadline): string[] {
+  const args = ['-c:v', 'libvpx-vp9', ...vp9SpeedArgs(deadline)];
   if (rateControl?.mode === 'crf') {
     // With a cap this is constrained quality: the quality target plus a ceiling on the bitrate.
     const cap = crfCapKbps(rateControl);
@@ -1133,10 +1132,8 @@ export function buildFfmpegArguments(
     // The picture the encoder receives when no filter below changes its size; undefined when one may.
     const sizeUntouched = !videoOpts?.crop && !videoOpts?.scale && !aspect && !options.videoResolution && !burnBitmapStream;
     const sourcePicture = inputLayout ? firstVideoStream(inputLayout.streams) : undefined;
-    const unscaledPicture =
-      sizeUntouched && sourcePicture?.width !== undefined && sourcePicture.height !== undefined
-        ? { width: sourcePicture.width, height: sourcePicture.height }
-        : undefined;
+    const unscaledPicture = sizeUntouched ? pictureOf(sourcePicture) : undefined;
+    const vp9Deadline = vp9DeadlineOfInput({ codec, picture: unscaledPicture, layout: inputLayout, twoPass, rateRequested: hasRequestedFrameRate(options) });
 
     // 6. Strict Filter Graph Construction
     // Sequence: bwdif -> crop -> transpose -> scale -> fps -> subtitles (burn) -> even parity correction -> format
@@ -1315,7 +1312,7 @@ export function buildFfmpegArguments(
           }
         }
       } else if (codec === 'vp9') {
-        outputArgs.push(...vp9Args(rateControl));
+        outputArgs.push(...vp9Args(rateControl, vp9Deadline));
       } else if (codec === 'av1') {
         assertSvtAv1Available(ffmpegBin);
         outputArgs.push(...svtAv1Args(rateControl, videoOpts?.preset, videoOpts?.profile));
@@ -1351,7 +1348,7 @@ export function buildFfmpegArguments(
         assertSvtAv1Available(ffmpegBin);
         outputArgs.push(...svtAv1Args(rateControl, videoOpts?.preset, videoOpts?.profile));
       } else {
-        outputArgs.push(...vp9Args(rateControl));
+        outputArgs.push(...vp9Args(rateControl, vp9Deadline));
       }
       outputArgs.push(...bitrateControlArgs(rateControl, options, codec));
     } else if (tgt === 'avi') {

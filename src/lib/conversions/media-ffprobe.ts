@@ -175,6 +175,8 @@ export interface InputStream {
   colorTransfer?: string;
   /** True when the container or stream cuts the shown picture out of the stored one (frame cropping, clean aperture). */
   cropped?: boolean;
+  /** Frames of a video stream when the file header counts them (the sample table of an MP4); not read from ffprobe. */
+  frameCount?: number;
 }
 
 interface RawStream {
@@ -353,6 +355,8 @@ export interface StreamLayout {
   streams: LayoutStream[];
   /** Present when the input has chapters: how many, and where the container's timeline starts (negative for an encoder-delay audio track). */
   chapters?: { count: number; startTimeSec: number };
+  /** Container duration in seconds, when the file states a positive one. */
+  durationSec?: number;
 }
 
 /**
@@ -364,11 +368,12 @@ export function probeStreamLayout(filePath: string, ffprobe: FfprobePath): Strea
   const identity = fileIdentity(filePath);
   if (identity === undefined || !probeCache.has(identity)) {
     const header = readMp4Layout(filePath);
-    if (header !== null) return { streams: header.streams };
+    if (header !== null) return { streams: header.streams, durationSec: header.durationSec };
   }
   const probe = probeInput(filePath, ffprobe);
   const { chapterCount, startTimeSec } = probe.timeline;
-  return chapterCount > 0 ? { streams: probe.streams, chapters: { count: chapterCount, startTimeSec } } : { streams: probe.streams };
+  const layout: StreamLayout = { streams: probe.streams, durationSec: probe.durationSec };
+  return chapterCount > 0 ? { ...layout, chapters: { count: chapterCount, startTimeSec } } : layout;
 }
 
 /** Transfer characteristic of the first video stream in `layout` (e.g. `bt709`, `smpte2084`), or '' when it states none. */

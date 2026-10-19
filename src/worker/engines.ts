@@ -66,6 +66,7 @@ import {
 } from '../lib/conversions/media';
 import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
+import { assertOutputWritten } from '../lib/conversions/media-empty-output';
 import { runFfmpegTranscode } from '../lib/conversions/media-ffmpeg-run';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import {
@@ -609,9 +610,7 @@ export async function convertWithNativeFfmpeg(
         }
       }
 
-      if (!fs.existsSync(tempOutputPath)) {
-        throw new Error(`FFmpeg execution completed without producing expected output file "${tempOutputPath}"`);
-      }
+      assertOutputWritten(tempOutputPath, inputPath, ffmpegBin, src, tgt);
 
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
       const persistedPath = handOffOutput(tempOutputPath, tgt, options, vfsPayload);

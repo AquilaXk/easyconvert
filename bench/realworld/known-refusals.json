@@ -22,5 +22,11 @@
     "detail": "^ConversionFailedError: Invalid image: the PCX picture could not be decoded$",
     "reason": "The file is damaged by design (a buffer-overrun test file of Pillow's: its header gives 12 bytes per line for 88 eight-bit pixels); Pillow, ImageMagick 6 and ImageMagick 7 refuse it too.",
     "issue": 783
+  },
+  {
+    "file": "kaitai-small.wav",
+    "detail": "^EmptyAudioInputError: The audio file holds no audio samples",
+    "reason": "The file is a 44-byte WAV header whose data chunk holds no sample; an AAC file (ADTS) is a run of frames with no header, so zero frames are zero bytes and nothing a reader can open. FFmpeg writes the same empty file.",
+    "issue": 783
   }
 ]

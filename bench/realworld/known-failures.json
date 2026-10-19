@@ -1,19 +1,5 @@
 [
   {
-    "pair": "wav->aac",
-    "verdict": "bad-output",
-    "detail": "^empty output$",
-    "file": "kaitai-small.wav",
-    "issue": 783
-  },
-  {
-    "pair": "mp4->webm",
-    "verdict": "crash",
-    "detail": "^SandboxedTimeoutError: Process execution timed out after \\d+ms$",
-    "file": "jellyfin-1080p-hevc-hdr10-3m.mp4",
-    "issue": 783
-  },
-  {
     "pair": "dng->pdf",
     "verdict": "crash",
     "detail": "^job server died \\(code null, signal SIGKILL\\)$",

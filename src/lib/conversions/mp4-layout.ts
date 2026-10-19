@@ -12,7 +12,7 @@ import type { InputStream } from './media-ffprobe';
 /** The stream facts a mapping plan reads. */
 export type LayoutStream = Pick<
   InputStream,
-  'index' | 'type' | 'codecName' | 'attachedPicture' | 'title' | 'language' | 'colorTransfer' | 'width' | 'height' | 'cropped'
+  'index' | 'type' | 'codecName' | 'attachedPicture' | 'title' | 'language' | 'colorTransfer' | 'width' | 'height' | 'cropped' | 'frameCount' | 'frameRate' | 'averageFrameRate'
 >;
 
 export interface Mp4Layout {
@@ -417,8 +417,8 @@ function packedLanguage(code: number): string | undefined {
   return String.fromCharCode(...letters);
 }
 
-/** Sample tables every track of a readable file has: times, sizes, chunk map and chunk offsets with at least one sample. */
-function assertSampleTables(buf: Buffer, stbl: Box[]): void {
+/** Sample tables every track of a readable file has: times, sizes, chunk map and chunk offsets with at least one sample. Answers the sample count. */
+function readSampleTables(buf: Buffer, stbl: Box[]): number {
   const stts = mustHave(child(stbl, 'stts'));
   need(stts.body, 8, stts.end);
   const entries = buf.readUInt32BE(stts.body + 4);
@@ -437,6 +437,7 @@ function assertSampleTables(buf: Buffer, stbl: Box[]): void {
   const offsets = child(stbl, 'stco') ?? mustHave(child(stbl, 'co64'));
   need(offsets.body, 8, offsets.end);
   if (buf.readUInt32BE(offsets.body + 4) === 0) unsupported();
+  return samples;
 }
 
 function readTrack(buf: Buffer, trak: Box, index: number): LayoutStream {
@@ -462,7 +463,7 @@ function readTrack(buf: Buffer, trak: Box, index: number): LayoutStream {
   const minf = boxesIn(buf, minfBox.body, minfBox.end);
   const stblBox = mustHave(child(minf, 'stbl'));
   const stbl = boxesIn(buf, stblBox.body, stblBox.end);
-  assertSampleTables(buf, stbl);
+  const sampleCount = readSampleTables(buf, stbl);
 
   const stsd = mustHave(child(stbl, 'stsd'));
   need(stsd.body, 16, stsd.end);
@@ -485,6 +486,7 @@ function readTrack(buf: Buffer, trak: Box, index: number): LayoutStream {
     ...(facts.colorTransfer === undefined ? {} : { colorTransfer: facts.colorTransfer }),
     ...(facts.width === undefined ? {} : { width: facts.width, height: facts.height }),
     ...(facts.cropped === true ? { cropped: true } : {}),
+    ...(facts.type === 'video' ? { frameCount: sampleCount } : {}),
   };
 }
 
