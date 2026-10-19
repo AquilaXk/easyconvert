@@ -66,6 +66,11 @@ Certain format conversions require specialized external command-line utilities. 
 - **Process Isolation**: `fontforge` (the Debian and Ubuntu package `fontforge-nox`, without its graphical interface) is installed unmodified, started with a fixed script (`Open($1); Generate($2)`) and the font and result as file arguments, and executed as a separate process in the process sandbox with no network access and limits on time, memory and output size. Nothing links FontForge into the application, and none of its source is modified or incorporated. Data is exchanged through a scratch directory that is removed after each run.
 - **Compliance**: Running an unmodified, separate GPL executable keeps EasyConvert's own code outside the GPL. The image carries the package notices in `/licenses/fontforge-*.copyright` (section 3), and the source of the installed version is the distribution's source package, named by the version in `/licenses/tool-versions.txt`. A modified FontForge, or one linked into the application, would not be covered by this and needs a reviewed exception.
 
+### 2.10 lbzip2 (GPL-3.0-or-later)
+- **Role**: Writes the bzip2 stream of a `tar.bz2`, `tbz2` or `tbz` target when the tar is at most two bzip2 blocks long (1.8 MB at the default level); larger tarballs are written by 7-Zip.
+- **Process Isolation**: `lbzip2` (the Debian and Ubuntu package `lbzip2`) is installed unmodified and executed as a separate process in the process sandbox with no network access and limits on time and output size, with the tar on standard input and the bzip2 stream on standard output. Nothing links lbzip2 into the application, and the application code does not incorporate or modify lbzip2 source. When the command is missing or fails, the 7-Zip route writes the same format.
+- **Compliance**: Running an unmodified, separate GPL executable keeps EasyConvert's own code outside the GPL. The image carries the package notice in `/licenses/lbzip2.copyright` (section 3), and the source of the installed version is the distribution's source package, named by the version in `/licenses/tool-versions.txt`. A modified lbzip2, or one linked into the application, would not be covered by this and needs a reviewed exception.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images
@@ -84,7 +89,7 @@ Under the terms of the GNU Lesser General Public License (LGPLv3, Section 4), wh
 
 ### Copyright Notices Inside the Worker Container
 - The worker Docker image (`Dockerfile.worker`) preserves all Debian package copyright and license texts at `/licenses/`:
-  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, `libavif` (the `avifenc` AVIF encoder), `imagemagick`, `libheif`, `libde265`, `openjpeg` (picture decoders), `p7zip`, `libocct-*` (the Open CASCADE libraries behind STEP and IGES), `libdeflate-tools` (the `libdeflate-gzip` deflate encoder for ZIP and gzip payloads past 4 MiB, MIT, run as a separate sandboxed process), and `libredwg` (the DWG reader, with `/licenses/libredwg.SOURCE` naming the release archive it was built from).
+  - `/licenses/*.copyright` contains upstream notices for `ffmpeg`, `poppler-utils`, `libreoffice`, `tesseract-ocr`, `qpdf`, `libraw`, `libavif` (the `avifenc` AVIF encoder), `imagemagick`, `libheif`, `libde265`, `openjpeg` (picture decoders), `p7zip`, `libocct-*` (the Open CASCADE libraries behind STEP and IGES), `libdeflate-tools` (the `libdeflate-gzip` deflate encoder for ZIP and gzip payloads past 4 MiB, MIT, run as a separate sandboxed process), `lbzip2` (the bzip2 encoder for tar.bz2 targets of up to two blocks, GPL-3.0-or-later, run as a separate sandboxed process), and `libredwg` (the DWG reader, with `/licenses/libredwg.SOURCE` naming the release archive it was built from).
   - `/licenses/THIRD_PARTY_NOTICES.md` contains the complete production npm package notices.
   - `/licenses/tool-versions.txt` lists the version of every Debian package in the image and of the Node.js runtime. The image is built on Debian 13 (trixie) with Node.js 24 LTS (see the policy decision "Base image and Node.js LTS").
 

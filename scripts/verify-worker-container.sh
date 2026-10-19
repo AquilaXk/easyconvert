@@ -13,6 +13,7 @@
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
 #   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
+#   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -273,6 +274,20 @@ else
     pass "libdeflate-gzip compressed and decompressed 4096 bytes inside the sandbox"
   else
     fail "libdeflate-gzip did not round-trip inside the sandbox: $(head -c 300 "$work_dir/libdeflate.err" 2>/dev/null)"
+  fi
+fi
+
+# --- 7. lbzip2 -----------------------------------------------------------------------------------------
+# The archive conversions run it as `lbzip2 -c -N -n T` with the tar on stdin; without it they fall back to 7-Zip, slower on small tarballs.
+if ! command -v lbzip2 >/dev/null 2>&1; then
+  fail "lbzip2 is not installed (package lbzip2): tar.bz2 targets of up to two blocks fall back to the slower 7-Zip route"
+else
+  bzip2_input="$(head -c 4096 /dev/zero | tr '\0' 'x')"
+  bzip2_output="$(printf '%s' "$bzip2_input" | sandboxed lbzip2 -c -9 -n 2 2>"$work_dir/lbzip2.err" | sandboxed lbzip2 -d -c 2>>"$work_dir/lbzip2.err")"
+  if [ "$bzip2_output" = "$bzip2_input" ]; then
+    pass "lbzip2 compressed and decompressed 4096 bytes inside the sandbox"
+  else
+    fail "lbzip2 did not round-trip inside the sandbox: $(head -c 300 "$work_dir/lbzip2.err" 2>/dev/null)"
   fi
 fi
 

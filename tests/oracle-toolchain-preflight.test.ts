@@ -27,6 +27,7 @@ const ORACLE_BINARIES: { name: string; tool: ExternalOracleTool }[] = [
   { name: 'zstd', tool: 'zstd' },
   { name: 'libdeflate-tools (libdeflate-gzip)', tool: 'libdeflate-gzip' },
   { name: 'bzip2', tool: 'bzip2' },
+  { name: 'lbzip2', tool: 'lbzip2' },
   { name: 'xz', tool: 'xz' },
   { name: 'unrar', tool: 'unrar' },
   { name: 'lzop', tool: 'lzop' },
