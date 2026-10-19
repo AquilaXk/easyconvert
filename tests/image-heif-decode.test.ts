@@ -32,6 +32,16 @@ function referenceDecode(file: string): Promise<DecodedRgba> {
   return decodeRgba(fs.readFileSync(output));
 }
 
+/** Whether libheif's own decoder reads the file, which is what the installed libheif can do (version 1.19 added the layouts above). */
+function libheifReads(file: string): boolean {
+  try {
+    execFileSync(heifConvert as string, [file, path.join(workDir, `${path.basename(file)}.probe.png`)], { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe.skipIf(needsHeifDecoders)('HEIC and HEIF files', () => {
   it.for([
     ['libheif-rainbow-451x461.heic', 'heic', 451, 461],
@@ -47,6 +57,34 @@ describe.skipIf(needsHeifDecoders)('HEIC and HEIF files', () => {
     for (const target of ['jpg', 'avif', 'gif']) {
       expect((await decodeRgba((await dispatchConversion(sample.bytes, format, target, {}, id)).buffer)).width).toBe(width);
     }
+  });
+
+  // Files that need libheif 1.19 (the `mif3` brand, uncompressed images with row-aligned tiles; the worker image's Debian 13 has it,
+  // the CI runner's Ubuntu 24.04 has 1.17). Where libheif's own decoder reads the file the conversion has to give the same picture;
+  // where it cannot, the conversion has to refuse it with the typed answer and never invent one. Each run exercises one of the two.
+  const NEWER_LIBHEIF_SAMPLES = [
+    ['libheif-lightning_mini.heif', 256, 256, ['jpg', 'webp']],
+    ['libheif-uncompressed_comp_rgb_tiled_row_tile_align.heif', 30, 20, ['avif']],
+  ] as const;
+
+  it.for(NEWER_LIBHEIF_SAMPLES)('converts %s to the picture libheif decodes when libheif reads the file', { timeout: REAL_FILE_TIMEOUT_MS }, async ([id, width, height, targets], ctx) => {
+    const sample = await requireRealworldSample(ctx, id);
+    // skip-ok: the refusal test below runs where libheif cannot read the file, so exactly one of the two runs on any machine
+    if (!libheifReads(sample.path)) ctx.skip();
+    const converted = await decodeRgba((await dispatchConversion(sample.bytes, 'heif', 'png', {}, id)).buffer);
+    expect([converted.width, converted.height]).toEqual([width, height]);
+    expect(maxSampleDifference(converted, await referenceDecode(sample.path))).toBeLessThanOrEqual(1);
+    for (const target of targets) {
+      expect((await decodeRgba((await dispatchConversion(sample.bytes, 'heif', target, {}, id)).buffer)).width).toBe(width);
+    }
+    expect((await dispatchConversion(sample.bytes, 'heif', 'pdf', {}, id)).buffer.toString('latin1', 0, 5)).toBe('%PDF-');
+  });
+
+  it.for(NEWER_LIBHEIF_SAMPLES)('refuses %s with the typed answer when libheif cannot read the file', { timeout: REAL_FILE_TIMEOUT_MS }, async ([id], ctx) => {
+    const sample = await requireRealworldSample(ctx, id);
+    // skip-ok: the conversion test above runs where libheif reads the file, so exactly one of the two runs on any machine
+    if (libheifReads(sample.path)) ctx.skip();
+    await expect(dispatchConversion(sample.bytes, 'heif', 'png', {}, id)).rejects.toMatchObject({ name: 'ConversionFailedError', message: 'Invalid image: the HEIF picture could not be decoded' });
   });
 
   it('keeps the transparency of a picture with an alpha plane', async (ctx) => {
