@@ -957,17 +957,24 @@ describe('HTML to PDF keeps document structure', () => {
     expect((error as Error).message).toMatch(/"logo\.png" is an external reference/);
   });
 
-  it('refuses embedded media the in-process renderer cannot draw when LibreOffice is absent', async () => {
-    const html = '<p>Clip below</p><video src="data:video/mp4;base64,AAAAIGZ0eXBpc29t"></video>';
+  oracleTest('leaves out embedded media the in-process renderer cannot draw when LibreOffice is absent, with a warning', ['pdftotext'], async () => {
+    const html = '<p>Clip below</p><video src="data:video/mp4;base64,AAAAIGZ0eXBpc29t"></video><p>After the clip</p>';
+    const result = await withMissingBinary('SOFFICE_PATH', () => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'media.html'));
+    expect(normalizeText(pdfText(result.buffer))).toBe('Clip below After the clip');
+    expect(result.metadata?.warnings).toEqual(['Left out elements that cannot be drawn (1): <video> x 1.']);
+  });
+
+  it('refuses MathML the in-process renderer cannot draw when LibreOffice is absent', async () => {
+    const html = '<p>Formula below</p><math><mi>x</mi></math>';
     const error = await withMissingBinary('SOFFICE_PATH', () =>
-      executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'media.html')
+      executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'math.html')
     ).then(
       () => null,
       (err: unknown) => err
     );
     expect(error).toBeInstanceOf(EngineUnavailableError);
     expect((error as EngineUnavailableError).engineName).toBe('soffice');
-    expect((error as Error).message).toContain('<video>');
+    expect((error as Error).message).toContain('<math>');
   });
 });
 
