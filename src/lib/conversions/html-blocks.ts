@@ -88,6 +88,12 @@ const HEAD_CONTENT_ELEMENTS: ReadonlySet<string> = new Set([
 const SINGLE_ELEMENTS: ReadonlySet<string> = new Set(['html', 'head', 'body']);
 /** Elements that make a start tag `table` end the table that is open, when the table has no open cell. */
 const TABLE_CONTEXT: ReadonlySet<string> = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr']);
+/** What a table holds directly; any other start tag or text there is foster-parented to just before the table (HTML, "in table" insertion mode). */
+const TABLE_CONTENT: ReadonlySet<string> = new Set([
+  'caption', 'colgroup', 'col', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'style', 'script', 'template', FORM_ELEMENT,
+]);
+/** Elements that open table structure: the start tag of one ends the elements foster-parented out of the table, and a cell or caption keeps its content. */
+const TABLE_STRUCTURE: ReadonlySet<string> = new Set(['caption', 'colgroup', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th']);
 const PARAGRAPH: ReadonlySet<string> = new Set(['p']);
 const LIST_ITEM: ReadonlySet<string> = new Set(['li']);
 const DEFINITION_ITEMS: ReadonlySet<string> = new Set(['dt', 'dd']);
@@ -238,8 +244,47 @@ class HtmlTreeBuilder {
 
   text(value: string): void {
     if (value.length === 0) return;
-    if (this.current.tag === HEAD_ELEMENT && NON_WHITESPACE.test(value)) this.stack.pop();
-    this.current.children.push(decodeHtmlCharacterReferences(value));
+    const hasContent = NON_WHITESPACE.test(value);
+    if (this.current.tag === HEAD_ELEMENT && hasContent) this.stack.pop();
+    this.append(decodeHtmlCharacterReferences(value), !hasContent);
+  }
+
+  /**
+   * Adds `node` to the open element, or, when the open element is part of a table (not a cell) and `node` is not table
+   * content, just before that table, as HTML does ("foster parenting"): text in a table reads as text before it.
+   */
+  private append(node: HtmlNode, belongsInTable: boolean): void {
+    const table = belongsInTable ? -1 : this.openTableIndex();
+    if (table < 0) {
+      this.current.children.push(node);
+      return;
+    }
+    const siblings = this.stack[table - 1].children;
+    siblings.splice(siblings.lastIndexOf(this.stack[table]), 0, node);
+  }
+
+  /** The stack index of the innermost table when the open element is part of it and not a cell; -1 otherwise. */
+  private openTableIndex(): number {
+    if (!TABLE_CONTEXT.has(this.current.tag)) return -1;
+    for (let i = this.stack.length - 1; i > 0; i--) {
+      if (this.stack[i].tag === 'table') return i;
+    }
+    return -1;
+  }
+
+  /**
+   * Closes the elements that were foster-parented out of an open table or row and are still open, before the table takes
+   * a row or a cell ("clear the stack back to a table context"): the content of a cell is not theirs.
+   */
+  private closeFosteredElements(): void {
+    for (let i = this.stack.length - 1; i > 0; i--) {
+      const tag = this.stack[i].tag;
+      if (TABLE_CONTEXT.has(tag)) {
+        this.stack.length = i + 1;
+        return;
+      }
+      if (TABLE_STRUCTURE.has(tag)) return;
+    }
   }
 
   /** Pops up to and including the nearest open element named in `tags`, unless a boundary comes first. */
@@ -271,6 +316,7 @@ class HtmlTreeBuilder {
     if (this.repeatsSingleElement(tag)) return;
     if (this.current.tag === HEAD_ELEMENT && !HEAD_CONTENT_ELEMENTS.has(tag)) this.stack.pop();
     if (this.current.tag === COLUMN_GROUP_ELEMENT && tag !== COLUMN_ELEMENT) this.stack.pop();
+    if (TABLE_STRUCTURE.has(tag)) this.closeFosteredElements();
     if (tag === 'table' && TABLE_CONTEXT.has(this.current.tag)) this.closeOpen(TABLE);
     if (PARAGRAPH_CLOSERS.has(tag)) this.closeOpen(PARAGRAPH, PARAGRAPH_SCOPE);
     if (HEADING_ELEMENTS.has(tag) && HEADING_ELEMENTS.has(this.current.tag)) this.stack.pop();
@@ -288,7 +334,7 @@ class HtmlTreeBuilder {
     const foreign = this.isForeign(tag);
     const element: HtmlElement = { tag, attrs, children: [], foreign };
     const holdsRows = TABLE_CONTEXT.has(this.current.tag);
-    this.current.children.push(element);
+    this.append(element, TABLE_CONTENT.has(tag));
     if (VOID_ELEMENTS.has(tag) || (selfClosing && foreign)) return;
     // A form that starts between the rows of a table holds nothing: the rows after it are the table's own, as HTML reads it.
     if (tag === FORM_ELEMENT && holdsRows) return;
