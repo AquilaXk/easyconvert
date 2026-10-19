@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { PDFDocument } from 'pdf-lib';
-import { loadPdfDocument, openPdfForEditing } from '@/lib/conversions/pdf-access';
+import { loadPdfDocument, openPdfForEditing, PDF_LIB_OBJECTS_PER_TICK } from '@/lib/conversions/pdf-access';
 import { PARSER_LOOP_REFUSAL, withMendedPageTree } from '@/lib/conversions/pdf-postprocess/mend-page-tree';
 import { inspectPdfEncryption } from '@/lib/conversions/pdf-encryption';
 import { getFormatByExtension } from '@/lib/registry';
@@ -83,6 +83,6 @@ export async function mergePdfBuffers(buffers: Buffer[], access: PdfMergeAccess 
       mergedPdf.addPage(page);
     }
   }
-  const mergedBytes = await mergedPdf.save();
+  const mergedBytes = await mergedPdf.save({ objectsPerTick: PDF_LIB_OBJECTS_PER_TICK });
   return Buffer.from(mergedBytes);
 }

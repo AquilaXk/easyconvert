@@ -3,7 +3,8 @@ import { compressPdf } from '../src/lib/conversions/pdf-postprocess';
 import { mendPageTree, repairPageTree, type PdfJsonObject } from '../src/lib/conversions/pdf-postprocess/page-tree';
 import { buildPdf, type CraftObject } from './helpers/pdf-craft';
 import { pdfinfoPages, pdftotext, qpdfCheckPasses } from './helpers/encrypted-pdf-fixtures';
-import { skipWithoutTools } from './helpers/strict-skip';
+import { getGhostscriptBinaryPath } from '../src/lib/conversions/pdf-postprocess/gs-path';
+import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 
 /**
  * Mending a page tree that reaches one of its nodes a second time (#783). The walk is checked on object lists written by
@@ -138,6 +139,7 @@ describe('mendPageTree', () => {
 });
 
 const toolsMissing = skipWithoutTools('qpdf', 'pdftotext', 'pdfinfo');
+const ghostscriptMissing = skipUnless('Ghostscript (gs)', getGhostscriptBinaryPath() !== null);
 const PAGE_TEXT = 'Ring page text';
 const PAGE_ID = 4;
 
@@ -240,5 +242,15 @@ describe.skipIf(toolsMissing)('repairPageTree', () => {
     const { buffer } = await compressPdf(ringPdf(3), { profile: 'archive' });
     expect(qpdfCheckPasses(buffer)).toBe(true);
     expect(pdftotext(buffer).trim()).toBe(PAGE_TEXT);
+  });
+
+  // Ghostscript walks the ring without reaching the page and writes a blank one: the text is the oracle that its first run was discarded for the mended tree.
+  it.skipIf(ghostscriptMissing)('lets compression of a ring return the page and its text, on the Ghostscript profiles', async () => {
+    for (const profile of ['web', 'print', 'max'] as const) {
+      const { buffer } = await compressPdf(ringPdf(3), { profile });
+      expect(qpdfCheckPasses(buffer), profile).toBe(true);
+      expect(pdfinfoPages(buffer), profile).toBe(1);
+      expect(pdftotext(buffer).trim(), profile).toBe(PAGE_TEXT);
+    }
   });
 });

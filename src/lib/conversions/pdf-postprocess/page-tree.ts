@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PdfPostprocessError } from '../../types';
-import { runQpdf, runQpdfToBuffer, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
+import { runQpdf, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
 
 /**
  * Mending a page tree that reaches one of its own nodes a second time.
@@ -119,14 +119,19 @@ export function mendPageTree(objects: PdfJsonObjects): Map<string, JsonDictionar
 }
 
 /** Whether qpdf can list the pages of the document; it cannot when the page tree loops. */
-async function listsPages(workspace: QpdfWorkspace): Promise<boolean> {
+async function listsPages(workspace: QpdfWorkspace, signal?: AbortSignal): Promise<boolean> {
   try {
-    await runQpdf(workspace, { args: ['--show-pages', workspace.inputPath], action: 'Reading the pages' });
+    await runQpdf(workspace, { args: ['--show-pages', workspace.inputPath], action: 'Reading the pages', signal });
     return true;
   } catch (error) {
     if (error instanceof PdfPostprocessError) return false;
     throw error;
   }
+}
+
+/** Whether qpdf lists the pages of `pdf`; false when it refuses them: a page tree that loops, or a document too damaged to read. */
+export function qpdfListsPages(pdf: Buffer, signal?: AbortSignal): Promise<boolean> {
+  return withQpdfInputFile(pdf, (workspace) => listsPages(workspace, signal));
 }
 
 interface QpdfExport {

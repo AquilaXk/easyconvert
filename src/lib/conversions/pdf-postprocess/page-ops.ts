@@ -162,8 +162,9 @@ async function pageCountOf(workspace: QpdfWorkspace, action: string, signal?: Ab
  * and the form keep what belongs to the pages that stay, and the form fields and objects of the deleted pages go with
  * them. (A selection written through `--split-pages` copies the pages into a new document instead, which drops the
  * catalog entries of the document and copies a damaged form again for every field.) qpdf writes a document without
- * pages when the selection is empty, so the page count is read beside the run and a specification that names every page
- * is refused before its result is used.
+ * pages when the selection is empty, so a specification that could name every page is refused before its result is
+ * used: the page count is read beside the run. Only a specification that names page 1 can do that. One that leaves it
+ * leaves a page, whatever the length of the document, and is not counted.
  *
  * @throws InvalidPageRangeError for an invalid specification or a page the document does not have.
  * @throws PdfPostprocessError when the specification names every page: a PDF with no page is no result.
@@ -175,9 +176,17 @@ export async function deletePdfPages(pdf: Buffer, spec: string, access: PdfAcces
   return withMendedPageTree(plain, (pdf) => deleteSelection(pdf, tokens, selection));
 }
 
+/** Whether a range of `tokens` includes page 1, the one page every document that has a page has. */
+function namesFirstPage(tokens: readonly string[]): boolean {
+  return tokens.map(pageTokenOf).some((range) => Math.min(range.start, range.end) <= 1);
+}
+
 async function deleteSelection(pdf: Buffer, tokens: readonly string[], selection: readonly string[]): Promise<Buffer> {
   return withQpdfInputFile(pdf, async (workspace) => {
     const action = 'Deleting the pages';
+    if (!namesFirstPage(tokens)) {
+      return runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...selection, '-'], action });
+    }
     // Whichever run fails stops the other, which would otherwise read a file the failed job removes, for up to the run limit.
     const stop = new AbortController();
     const stopOnFailure = <T>(run: Promise<T>): Promise<T> =>
