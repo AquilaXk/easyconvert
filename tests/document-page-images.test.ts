@@ -6,7 +6,6 @@ import { PayloadLimitError } from '../src/lib/types';
 import { OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS, withOfficePageBounds } from '../src/worker/office-suite-route';
 import type { WorkerEngineOptions } from '../src/worker/worker-types';
 import { oracleTest } from './helpers/oracle-test';
-import { requireRealworldSample } from './helpers/realworld-sample';
 import { flatOdp, flatOdt, sofficeConvert } from './helpers/soffice-office';
 import { expectSamePixels, pagesOfZip, pdfPageCount, referencePages, suitePdf } from './helpers/suite-page-images';
 
@@ -17,7 +16,9 @@ import { expectSamePixels, pagesOfZip, pdfPageCount, referencePages, suitePdf } 
  * packed 505 to 595 MB of JPEG pages (63 s on a quiet machine, 82 s on the Linux testbed) and passed the 180 s deadline on a
  * shared runner, although the same file converts to every other target in under a second. A request now renders at most
  * `OFFICE_PAGE_IMAGE_MAX_PAGES` pages whatever the source application and refuses a longer document with a 413 that names
- * the limit and the ways out. The oracles are not the converter: the office suite's own PDF of the same file, whose pages `pdftoppm`
+ * the limit and the ways out. The real file itself is judged by `document-page-images.perf.test.ts` (nightly: the layout of 4,874 pages
+ * is 30 to 100 s of CPU, which starves the timing suites that share a shard); here the same refusals are checked on documents made for
+ * the test. The oracles are not the converter: the office suite's own PDF of the same file, whose pages `pdftoppm`
  * draws at the density the product uses, and `pdfinfo` for the page counts.
  */
 
@@ -28,7 +29,6 @@ const HTTP_PAYLOAD_TOO_LARGE = 413;
 const LINES_BEYOND_THE_LIMIT = 40_000;
 /** Slides beyond the limit: one page each. */
 const SLIDES_BEYOND_THE_LIMIT = OFFICE_PAGE_IMAGE_MAX_PAGES + 20;
-const LONG_DOCUMENT_ID = 'govdocs1-010383.rtf';
 const IMAGE_TARGETS = ['jpg', 'png'] as const;
 
 let longTextBytes: Buffer | undefined;
@@ -39,6 +39,7 @@ function longText(): Buffer {
   return longTextBytes;
 }
 
+/** The refusal a conversion ends with, which must be the 413 `PayloadLimitError` of the page limit. */
 async function refusalOf(input: Buffer, source: string, target: string, name: string): Promise<PayloadLimitError> {
   const refusal = await dispatchConversion(input, source, target, {}, name).catch((error: unknown) => error);
   expect(refusal).toBeInstanceOf(PayloadLimitError);
@@ -122,25 +123,6 @@ describe('a document to page images', () => {
       const refusal = await refusalOf(presentation, 'odp', 'png', 'long.odp');
       expect(refusal.status).toBe(HTTP_PAYLOAD_TOO_LARGE);
       expect(refusal.message).toContain(`${SLIDES_BEYOND_THE_LIMIT} pages`);
-    },
-    TEST_TIMEOUT_MS
-  );
-
-  oracleTest(
-    `${LONG_DOCUMENT_ID} of the nightly corpus is refused by name to JPEG and PNG, and its first page is the suite's page 1`,
-    [...TOOLS],
-    async (ctx) => {
-      const sample = await requireRealworldSample(ctx, LONG_DOCUMENT_ID);
-      const suite = suitePdf(sample.bytes, sample.format);
-      const printedPages = pdfPageCount(suite);
-      expect(printedPages).toBeGreaterThan(OFFICE_PAGE_IMAGE_MAX_PAGES);
-      for (const target of IMAGE_TARGETS) {
-        const refusal = await refusalOf(sample.bytes, sample.format, target, LONG_DOCUMENT_ID);
-        expect(refusal.message).toContain(`${printedPages} pages`);
-        expect(refusal.message).toContain(`at most ${OFFICE_PAGE_IMAGE_MAX_PAGES}`);
-      }
-      const first = await dispatchConversion(sample.bytes, sample.format, 'png', { multiPageOutput: 'first' }, LONG_DOCUMENT_ID);
-      await expectSamePixels(first.buffer, referencePages(suite, 1, 1)[0], `${LONG_DOCUMENT_ID} page 1`);
     },
     TEST_TIMEOUT_MS
   );
