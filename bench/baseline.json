@@ -26127,8 +26127,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 44888,
-      "delta": -3594.3333333333358,
+      "ours": 48482.333333333336,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/class-broken->delete/converts": {
@@ -26907,8 +26907,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 550142.3333333334,
-      "delta": -56490.66666666663,
+      "ours": 606633,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/class-forms->delete/converts": {
@@ -29167,8 +29167,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 25771,
-      "delta": -2161,
+      "ours": 27932,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000009.pdf->delete/converts": {
@@ -29587,8 +29587,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 13654,
-      "delta": -3851,
+      "ours": 17505,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000012.pdf->delete/converts": {
@@ -31337,8 +31337,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 448649,
-      "delta": -154524,
+      "ours": 603173,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/pdf-gov-000314.pdf->delete/converts": {
@@ -33707,8 +33707,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 95239,
-      "delta": -4771,
+      "ours": 100010,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-basicapi.pdf->delete/converts": {
@@ -35027,8 +35027,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 117806,
-      "delta": -5386,
+      "ours": 123192,
+      "delta": 0,
       "ratio": null
     },
     "pdf-ops/pdf-pdfjs-form-test.pdf->delete/converts": {
