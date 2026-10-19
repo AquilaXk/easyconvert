@@ -14,6 +14,7 @@ const fake = vi.hoisted(() => {
     readonly posted: unknown[] = [];
     constructor(...args: unknown[]) {
       state.calls.push(args);
+      state.events.push('worker');
       if (state.construct) state.construct();
       state.instances.push(this);
     }
@@ -42,6 +43,8 @@ const fake = vi.hoisted(() => {
     instances: [] as FakeWorker[],
     construct: null as (() => void) | null,
     calls: [] as unknown[][],
+    /** What the host did, in order: the V8 flags it set and the threads it started. */
+    events: [] as string[],
   };
   return { FakeWorker, state };
 });
@@ -49,6 +52,11 @@ const fake = vi.hoisted(() => {
 vi.mock('node:worker_threads', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:worker_threads')>();
   return { ...actual, Worker: fake.FakeWorker };
+});
+
+vi.mock('node:v8', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:v8')>();
+  return { ...actual, setFlagsFromString: (flags: string) => void fake.state.events.push(`flag ${flags}`) };
 });
 
 import { convertFile } from '../src/lib/conversions/index';
@@ -88,6 +96,7 @@ async function startedThread(): Promise<InstanceType<typeof fake.FakeWorker>> {
 beforeEach(() => {
   fake.state.instances = [];
   fake.state.calls = [];
+  fake.state.events = [];
   fake.state.construct = null;
 });
 
@@ -183,6 +192,16 @@ describe('the entry of the thread', () => {
     const [entry, options] = await startedWith((candidate) => candidate.endsWith('pdf-text-worker.ts'));
     expect(String(entry)).toContain('.register()');
     expect(options).not.toHaveProperty('execArgv');
+  });
+});
+
+describe('the heap of a new thread', () => {
+  it('starts with an old-generation threshold of 128 MB, set before the thread is made, and keeps the heap limit', async () => {
+    void failure(extractPdfTextLayerPages(pdf(), new Set([1])));
+    await startedThread();
+    expect(fake.state.events).toEqual(['flag --initial-old-space-size=128', 'worker']);
+    const options = fake.state.calls[0][1] as { resourceLimits: { maxOldGenerationSizeMb: number } };
+    expect(options.resourceLimits.maxOldGenerationSizeMb).toBe(1024);
   });
 });
 

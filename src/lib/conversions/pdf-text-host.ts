@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setFlagsFromString } from 'node:v8';
 import { createRequire } from 'node:module';
 import { Worker } from 'node:worker_threads';
 import { EngineUnavailableError } from '../types';
@@ -42,6 +43,13 @@ import {
 /** V8 heap ceiling of an extraction thread. */
 const THREAD_HEAP_LIMIT_MB = 1024;
 const THREAD_YOUNG_LIMIT_MB = 64;
+/**
+ * Size of the old generation at which a new thread first collects it. V8 derives that from the thread's heap limit, and a
+ * thread of 1 GB collected the old generation every 23 documents (13 full collections in 300 documents against 3 with the limit
+ * at 4 GB), which made a document 15 percent slower. The flag is read when a thread's heap is made, so it is set before each
+ * start; it is a threshold, not a limit, and applies to every thread started after it. The heap limit above is unchanged.
+ */
+const THREAD_INITIAL_OLD_SPACE_FLAG = '--initial-old-space-size=128';
 const WORKER_FILE = 'pdf-text-worker';
 /** Name the unavailable-engine error carries. */
 const ENGINE_NAME = 'pdf-text-thread';
@@ -125,6 +133,7 @@ function resolveWorkerEntry(): WorkerEntry {
 }
 
 function startWorker(entry: WorkerEntry, warmUp: boolean): Worker {
+  setFlagsFromString(THREAD_INITIAL_OLD_SPACE_FLAG);
   const options = { resourceLimits: { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB }, workerData: { warmUp } };
   try {
     // The bundle needs no loader: a thread inherits its parent's `--import`, and under the TypeScript loader of a development or
