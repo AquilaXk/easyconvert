@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <setjmp.h>
+#include <stddef.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -36,6 +37,16 @@ static void print_link(const char *path) {
 
 /* The unit a scan reads at a time and skips when it cannot be read. */
 #define SCAN_PAGE 4096UL
+
+/* Says where a copy was found: the mapping, the offset in it, and the bytes around the copy (not the copy itself), so that a failing
+   run shows what holds it. */
+#define COPY_CONTEXT 24
+static void report_copy(const char *mapping, unsigned long lo, const char *at) {
+  size_t before = (unsigned long)at - lo < COPY_CONTEXT ? (size_t)((unsigned long)at - lo) : COPY_CONTEXT;
+  printf("copy in %.*s+0x%lx, bytes before:", (int)strcspn(mapping, "\n"), mapping, (unsigned long)at - lo);
+  for (size_t i = before; i > 0; i--) printf(" %02x", (unsigned char)at[-(ptrdiff_t)i]);
+  printf("\n");
+}
 
 static sigjmp_buf scan_fault;
 
@@ -71,6 +82,7 @@ static void scan_memory(const char *needle) {
         /* The needle itself sits in this process (the argument); a match at the argument's own address does not count. */
         if (memcmp(p, needle, n) == 0 && p != needle) {
           in_mapping = 1;
+          report_copy(line, lo, p);
           break;
         }
       }
