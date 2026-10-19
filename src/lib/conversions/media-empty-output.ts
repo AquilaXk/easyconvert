@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { EmptyAudioInputError } from '../types';
-import { type FfprobePath, resolveFfprobeBinary } from './media-ffprobe';
+import { FFPROBE_TIMEOUT_MS, type FfprobePath, resolveFfprobeBinary } from './media-ffprobe';
 
 /**
  * Why an FFmpeg run wrote zero bytes. A target format without a file header (ADTS, the `.aac` target) holds one frame
@@ -9,25 +9,31 @@ import { type FfprobePath, resolveFfprobeBinary } from './media-ffprobe';
  * by name. Any other cause keeps the plain error of an empty output.
  */
 
-const PROBE_TIMEOUT_MS = 30_000;
 const PROBE_KILL_SIGNAL = 'SIGKILL';
 const PROBE_MAX_BYTES = 64 * 1024;
+/** `%+#1` reads from the start up to one packet, so a probe costs the same for a 1 KB file and a 500 MB one. */
+const READ_FIRST_PACKET = '%+#1';
 
-/** Shape of the ffprobe stream list: a stream without a packet has no packet count at all. */
-interface PacketCounts {
-  streams?: Array<{ nb_read_packets?: unknown }>;
+/** Shape of the ffprobe report: the audio streams, and the packets read from the start of the file. */
+interface FirstPacketReport {
+  streams?: unknown[];
+  packets?: unknown[];
 }
 
-/** Audio packets of all audio streams of the file, or undefined when ffprobe cannot count them. */
-function audioPacketCount(filePath: string, ffprobe: FfprobePath): number | undefined {
+/**
+ * Audio packets ffprobe reads from the start of the file, at most one, or undefined when the file has no audio stream
+ * or ffprobe cannot read it. Zero means an audio stream with no packet in it.
+ */
+export function audioPacketsAtStart(filePath: string, ffprobe: FfprobePath): number | undefined {
   try {
     const out = execFileSync(
       ffprobe,
-      ['-v', 'error', '-count_packets', '-select_streams', 'a', '-show_entries', 'stream=nb_read_packets', '-of', 'json', filePath],
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS, killSignal: PROBE_KILL_SIGNAL, maxBuffer: PROBE_MAX_BYTES },
+      ['-v', 'error', '-select_streams', 'a', '-read_intervals', READ_FIRST_PACKET, '-show_entries', 'stream=index:packet=stream_index', '-of', 'json', filePath],
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: FFPROBE_TIMEOUT_MS, killSignal: PROBE_KILL_SIGNAL, maxBuffer: PROBE_MAX_BYTES },
     );
-    const counts = (JSON.parse(out) as PacketCounts).streams ?? [];
-    return counts.reduce((sum, stream) => sum + Number(stream.nb_read_packets ?? 0), 0);
+    const report = JSON.parse(out) as FirstPacketReport;
+    if ((report.streams ?? []).length === 0) return undefined;
+    return (report.packets ?? []).length;
   } catch {
     return undefined;
   }
@@ -35,7 +41,7 @@ function audioPacketCount(filePath: string, ffprobe: FfprobePath): number | unde
 
 /** The error for a run that wrote no bytes: the named refusal when the input holds an audio stream with no packet. */
 export function emptyOutputError(inputPath: string, ffmpegBin: string, src: string, tgt: string): Error {
-  if (audioPacketCount(inputPath, resolveFfprobeBinary(ffmpegBin)) === 0) return new EmptyAudioInputError(tgt);
+  if (audioPacketsAtStart(inputPath, resolveFfprobeBinary(ffmpegBin)) === 0) return new EmptyAudioInputError(tgt);
   return new Error(`FFmpeg output is empty (0 bytes) for ${src} -> ${tgt}`);
 }
 

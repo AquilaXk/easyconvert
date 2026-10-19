@@ -1,6 +1,7 @@
 import { type PictureSize } from './media-encoder-threads';
 import { type StreamLayout, firstVideoStream } from './media-ffprobe';
-import { computeMediaTimeoutMs } from './media-job-limit';
+import { type JobDeadlined, stageTimeoutMs } from './job-time';
+import { DEFAULT_MEDIA_TIER_MAX_MS, computeMediaTimeoutMs } from './media-job-limit';
 
 /**
  * How hard libvpx-vp9 works on a job. The "good" deadline at cpu-used 2 is the encoder setting the project documents
@@ -12,6 +13,8 @@ import { computeMediaTimeoutMs } from './media-job-limit';
  * cores: a worker runs several jobs at once, and the nightly real-file run puts three on a four-core runner.
  */
 
+type StageLimited = { timeoutMs?: number } & JobDeadlined;
+
 export type Vp9Deadline = 'good' | 'realtime';
 
 export interface Vp9Workload {
@@ -21,6 +24,8 @@ export interface Vp9Workload {
   frames: number;
   /** Length of the input in seconds, which sets the media time limit. */
   durationSec: number;
+  /** The ceiling of the media time limit for this job: its own stage limit, which the run is killed at. */
+  tierMaxMs: number;
 }
 
 /**
@@ -39,7 +44,7 @@ const MS_PER_SECOND = 1000;
 export function vp9DeadlineFor(workload: Vp9Workload): Vp9Deadline {
   const megapixels = (workload.width * workload.height * workload.frames) / PIXELS_PER_MEGAPIXEL;
   const estimatedSeconds = megapixels / GOOD_MEGAPIXELS_PER_CPU_SECOND / ASSUMED_CORES_PER_JOB;
-  const allowedSeconds = (computeMediaTimeoutMs(workload.durationSec) / MS_PER_SECOND) * ENCODE_SHARE_OF_LIMIT;
+  const allowedSeconds = (computeMediaTimeoutMs(workload.durationSec, workload.tierMaxMs) / MS_PER_SECOND) * ENCODE_SHARE_OF_LIMIT;
   return estimatedSeconds > allowedSeconds ? 'realtime' : 'good';
 }
 
@@ -63,6 +68,8 @@ export interface Vp9DeadlineRequest {
   twoPass: boolean;
   /** The request names a frame rate, so the encoder does not receive the source's own. */
   rateRequested: boolean;
+  /** The job's options, which hold its stage limit (`timeoutMs`, the job deadline): the run is killed at that limit. */
+  options: StageLimited;
 }
 
 /**
@@ -78,5 +85,5 @@ export function vp9DeadlineOfInput(request: Vp9DeadlineRequest): Vp9Deadline {
   if (source === undefined || durationSec === undefined) return 'good';
   const rate = source.averageFrameRate ?? source.frameRate;
   const frames = source.frameCount ?? (rate === undefined ? undefined : (rate.num / rate.den) * durationSec);
-  return frames === undefined ? 'good' : vp9DeadlineFor({ ...picture, frames, durationSec });
+  return frames === undefined ? 'good' : vp9DeadlineFor({ ...picture, frames, durationSec, tierMaxMs: stageTimeoutMs(request.options, DEFAULT_MEDIA_TIER_MAX_MS) });
 }

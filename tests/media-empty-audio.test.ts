@@ -1,7 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertWithNativeFfmpeg } from '../src/worker/engines';
+import { audioPacketsAtStart, emptyOutputError } from '../src/lib/conversions/media-empty-output';
+import { resolveFfprobeBinary } from '../src/lib/conversions/media-ffprobe';
 import { EmptyAudioInputError, UnprocessableMediaInputError, isUnprocessableInputError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { decodeAudioStream, probeFile, withMediaFile } from './helpers/ffmpeg-measure';
@@ -151,5 +156,54 @@ describe.skipIf(skip)('a WAV file with samples', () => {
     const outcome = await outcomeOf(wav(new Int16Array([1000])), 'aac');
     expect(outcome).toHaveProperty('buffer');
     expect(audioPackets((outcome as { buffer: Buffer }).buffer, 'aac')).toBeGreaterThan(0);
+  });
+});
+
+describe.skipIf(skip)('the probe that tells an empty input from another cause of an empty output', () => {
+  const LONG_SECONDS = 120;
+  /** More audio packets than a probe that reads the start could return: a 120 s stereo file holds thousands. */
+  const MANY_PACKETS = 1000;
+  let workDir: string;
+  let ffprobe: ReturnType<typeof resolveFfprobeBinary>;
+
+  beforeAll(() => {
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'empty-audio-probe-'));
+    ffprobe = resolveFfprobeBinary(requireOracleTool('ffmpeg'));
+  });
+  afterAll(() => {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  });
+
+  function generate(name: string, args: string[]): string {
+    const out = path.join(workDir, name);
+    const run = spawnSync(requireOracleTool('ffmpeg'), ['-v', 'error', '-y', ...args, out], { encoding: 'utf8' });
+    expect(run.status, run.stderr).toBe(0);
+    return out;
+  }
+
+  it('gives the plain empty-output error, not the named refusal, for a file with no audio stream', () => {
+    const videoOnly = generate('video-only.mkv', ['-f', 'lavfi', '-i', 'color=c=black:size=64x64:rate=5:duration=1', '-c:v', 'ffv1']);
+    expect(audioPacketsAtStart(videoOnly, ffprobe)).toBeUndefined();
+    const error = emptyOutputError(videoOnly, requireOracleTool('ffmpeg'), 'mkv', 'aac');
+    expect(error).not.toBeInstanceOf(EmptyAudioInputError);
+    expect(error.message).toBe('FFmpeg output is empty (0 bytes) for mkv -> aac');
+  });
+
+  it('reads one packet of a long file: ffprobe counts thousands in it, the probe stops at the first', () => {
+    const long = generate('long.wav', ['-f', 'lavfi', '-i', `sine=frequency=440:sample_rate=44100:duration=${LONG_SECONDS}`, '-ac', '2', '-c:a', 'pcm_s16le']);
+    const counted = spawnSync(
+      requireOracleTool('ffprobe'),
+      ['-v', 'error', '-count_packets', '-select_streams', 'a', '-show_entries', 'stream=nb_read_packets', '-of', 'csv=p=0', long],
+      { encoding: 'utf8' }
+    );
+    expect(Number(counted.stdout.trim())).toBeGreaterThan(MANY_PACKETS);
+    expect(audioPacketsAtStart(long, ffprobe)).toBe(1);
+    expect(emptyOutputError(long, requireOracleTool('ffmpeg'), 'wav', 'aac')).not.toBeInstanceOf(EmptyAudioInputError);
+  });
+
+  it('reports zero packets for an audio stream with none', () => {
+    const emptyFile = path.join(workDir, 'empty.wav');
+    fs.writeFileSync(emptyFile, wav(new Int16Array(0)));
+    expect(audioPacketsAtStart(emptyFile, ffprobe)).toBe(0);
   });
 });

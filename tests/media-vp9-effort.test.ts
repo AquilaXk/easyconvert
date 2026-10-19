@@ -9,7 +9,8 @@ import { vp9DeadlineFor } from '../src/lib/conversions/media-vp9-effort';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { requireEncoders } from './helpers/ffmpeg-media-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
-import { skipWithoutTools } from './helpers/strict-skip';
+import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
+import { HAS_ZSCALE } from './helpers/zimg-oracle';
 
 /**
  * How hard libvpx-vp9 works on a job. A job whose frames do not fit the media time limit at the good deadline (whose
@@ -24,6 +25,8 @@ const FHD = { width: 1920, height: 1080 };
 const UHD = { width: 3840, height: 2160 };
 const HD = { width: 1280, height: 720 };
 const SD = { width: 854, height: 480 };
+/** The media time limit ceiling of a job without a tier or stage override. */
+const DEFAULT_TIER_MAX_MS = 180_000;
 const HDR_CLIP = 'jellyfin-1080p-hevc-hdr10-3m.mp4';
 const HDR_CLIP_FRAMES = 1797;
 const HDR_CLIP_SECONDS = 29.95;
@@ -43,18 +46,35 @@ describe('the deadline for a workload', () => {
   for (const row of cases) {
     it(`${row.name} is encoded with the ${row.expected} deadline`, () => {
       const frames = row.fps * row.seconds;
-      expect(vp9DeadlineFor({ width: row.width, height: row.height, frames, durationSec: row.seconds })).toBe(row.expected);
+      expect(vp9DeadlineFor({ width: row.width, height: row.height, frames, durationSec: row.seconds, tierMaxMs: DEFAULT_TIER_MAX_MS })).toBe(row.expected);
     });
   }
 
   it('the HDR10 clip of the corpus (1,797 frames of 1080p in 29.95 s) is encoded with the realtime deadline', () => {
-    expect(vp9DeadlineFor({ ...FHD, frames: HDR_CLIP_FRAMES, durationSec: HDR_CLIP_SECONDS })).toBe('realtime');
+    expect(vp9DeadlineFor({ ...FHD, frames: HDR_CLIP_FRAMES, durationSec: HDR_CLIP_SECONDS, tierMaxMs: DEFAULT_TIER_MAX_MS })).toBe('realtime');
+  });
+
+  // 30 s of 1080p at 30 fps is 900 frames of 2,073,600 pixels: 1,866.24 megapixels, which at 15 megapixels per CPU
+  // second on two cores is 62.208 s. The job's limit is min(ceiling, 3 x 30 + 60 = 150 s) and half of it is the allowance.
+  const stageClip = { ...FHD, frames: 900, durationSec: 30 };
+
+  it('a 30 s 1080p clip fits half of its 150 s limit (75 s allowance against 62.208 s) and keeps the good deadline', () => {
+    expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: DEFAULT_TIER_MAX_MS })).toBe('good');
+  });
+
+  it('the same clip under a 100 s stage limit has a 50 s allowance against 62.208 s and takes the realtime deadline', () => {
+    expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: 100_000 })).toBe('realtime');
+  });
+
+  it('the allowance is exactly half of the stage limit: 62.208 s fits a limit of 124.416 s but not one of 124.4 s', () => {
+    expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: 124_416 })).toBe('good');
+    expect(vp9DeadlineFor({ ...stageClip, tierMaxMs: 124_400 })).toBe('realtime');
   });
 
   it('more frames of the same picture never return to the good deadline', () => {
     let seenRealtime = false;
     for (let seconds = 1; seconds <= 1200; seconds += 1) {
-      const deadline = vp9DeadlineFor({ ...FHD, frames: 30 * seconds, durationSec: seconds });
+      const deadline = vp9DeadlineFor({ ...FHD, frames: 30 * seconds, durationSec: seconds, tierMaxMs: DEFAULT_TIER_MAX_MS });
       if (deadline === 'realtime') seenRealtime = true;
       expect(seenRealtime && deadline === 'good', `${seconds} s`).toBe(false);
     }
@@ -102,6 +122,12 @@ describe.skipIf(skip)('the arguments of a VP9 encode', () => {
     expect(flagValue(short, '-cpu-used')).toBe('2');
   });
 
+  it('size the deadline against the stage limit of the job: a 30 s 1080p30 clip is good by default and realtime under a 100 s limit', { timeout: FIXTURE_TIMEOUT_MS }, () => {
+    const input = blackMp4('fhd30-30s-stage.mp4', '1920x1080', 30, 30);
+    expect(flagValue(webmArgs(input), '-deadline')).toBe('good');
+    expect(flagValue(webmArgs(input, { timeoutMs: 100_000 }), '-deadline')).toBe('realtime');
+  });
+
   it('decide the same for VP9 in an MP4 or Matroska file', { timeout: FIXTURE_TIMEOUT_MS }, () => {
     const input = blackMp4('fhd60-30s-b.mp4', '1920x1080', 60, 30);
     for (const target of ['mp4', 'mkv']) {
@@ -145,11 +171,15 @@ describe.skipIf(skip)('the arguments of a VP9 encode', () => {
     expect(layout.durationSec).toBeCloseTo(5, 1);
   });
 
-  it('give the HDR10 clip of the corpus the realtime deadline: the clip that ran into the 150 s limit', { timeout: FIXTURE_TIMEOUT_MS }, async (ctx) => {
-    const sample = await requireRealworldSample(ctx, HDR_CLIP);
-    const args = webmArgs(sample.path);
-    expect(flagValue(args, '-deadline')).toBe('realtime');
-    expect(flagValue(args, '-cpu-used')).toBe('5');
-    expect(flagValue(args, '-pix_fmt')).toBe('yuv420p');
-  });
+  it.skipIf(skipUnless('ffmpeg with zscale and lutrgb', HAS_ZSCALE))(
+    'give the HDR10 clip of the corpus the realtime deadline: the clip that ran into the 150 s limit',
+    { timeout: FIXTURE_TIMEOUT_MS },
+    async (ctx) => {
+      const sample = await requireRealworldSample(ctx, HDR_CLIP);
+      const args = webmArgs(sample.path);
+      expect(flagValue(args, '-deadline')).toBe('realtime');
+      expect(flagValue(args, '-cpu-used')).toBe('5');
+      expect(flagValue(args, '-pix_fmt')).toBe('yuv420p');
+    }
+  );
 });

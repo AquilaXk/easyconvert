@@ -45,7 +45,7 @@ function getInternalFfprobe(): string | null {
 /** Path of an ffprobe binary. Branded so an ffmpeg path cannot be passed by mistake. */
 export type FfprobePath = string & { readonly __brand: 'FfprobePath' };
 
-const FFPROBE_TIMEOUT_MS = 10_000;
+export const FFPROBE_TIMEOUT_MS = 10_000;
 /** The JSON of a 64-stream file with long tags stays far below this; a larger report is not a media file. */
 const MAX_FFPROBE_JSON_BYTES = 4 * 1024 * 1024;
 /** Most streams one conversion maps. Probing and `-map` lists grow with the stream count, so it is bounded. */

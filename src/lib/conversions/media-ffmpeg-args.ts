@@ -1133,7 +1133,7 @@ export function buildFfmpegArguments(
     const sizeUntouched = !videoOpts?.crop && !videoOpts?.scale && !aspect && !options.videoResolution && !burnBitmapStream;
     const sourcePicture = inputLayout ? firstVideoStream(inputLayout.streams) : undefined;
     const unscaledPicture = sizeUntouched ? pictureOf(sourcePicture) : undefined;
-    const vp9Deadline = vp9DeadlineOfInput({ codec, picture: unscaledPicture, layout: inputLayout, twoPass, rateRequested: hasRequestedFrameRate(options) });
+    const vp9Deadline = vp9DeadlineOfInput({ codec, picture: unscaledPicture, layout: inputLayout, twoPass, rateRequested: hasRequestedFrameRate(options), options });
 
     // 6. Strict Filter Graph Construction
     // Sequence: bwdif -> crop -> transpose -> scale -> fps -> subtitles (burn) -> even parity correction -> format
