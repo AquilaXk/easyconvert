@@ -208,7 +208,9 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
     const build = spawnSync(path.join(process.cwd(), 'native', 'qpdf-runner', 'build.sh'), [path.join(scratch, 'second')], { encoding: 'utf8' });
     expect({ status: build.status, output: build.stderr + build.stdout }).toEqual({ status: 0, output: '' });
     const printed = spawnSync(runnerBinary, ['--check', '--lib', probeLibrary], { encoding: 'utf8' });
-    expect({ status: printed.status, out: printed.stdout }).toEqual({ status: 0, out: 'probe\n' });
+    // The stand-in reports its own namespaces after its name, and the check runs in those of this process.
+    const ownNamespaces = `user=${fs.readlinkSync('/proc/self/ns/user')} net=${fs.readlinkSync('/proc/self/ns/net')}`;
+    expect({ status: printed.status, out: printed.stdout }).toEqual({ status: 0, out: `probe ${ownNamespaces}\n` });
   });
 
   it('refuses to start with no library, a library with no job entry, and an argument it does not know', () => {
@@ -227,11 +229,14 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
 
     it('gives every job a user namespace and a network namespace of its own, with the loopback alone', async () => {
       const state = qpdfRunnerState();
-      expect(state.version).toBe('probe');
+      // The stand-in library reports the namespaces of the runner itself in its version: the test cannot read /proc/<runner>/ns, which only
+      // a process allowed to trace the runner can (an unprivileged one is not: the runner does not allow it).
+      expect(state.version).toMatch(/^probe user=user:\[\d+\] net=net:\[\d+\]$/);
+      const runnerNamespaces = /^probe user=(\S+) net=(\S+)$/.exec(state.version)!;
       const namespaceOf = (output: Buffer, kind: 'user' | 'net'): string => new RegExp(`/proc/self/ns/${kind} -> (\\S+)`).exec(output.toString('utf8'))![1];
       const parents = {
-        user: [fs.readlinkSync('/proc/self/ns/user'), fs.readlinkSync(`/proc/${state.pid}/ns/user`)],
-        net: [fs.readlinkSync('/proc/self/ns/net'), fs.readlinkSync(`/proc/${state.pid}/ns/net`)],
+        user: [fs.readlinkSync('/proc/self/ns/user'), runnerNamespaces[1]],
+        net: [fs.readlinkSync('/proc/self/ns/net'), runnerNamespaces[2]],
       };
       const results = await Promise.all([run(['facts']), run(['facts']), run(['facts'])]);
       for (const kind of ['user', 'net'] as const) {

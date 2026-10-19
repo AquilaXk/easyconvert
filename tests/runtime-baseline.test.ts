@@ -26,8 +26,10 @@ describe('Dockerfile.worker base image', () => {
     expect(dockerfile.indexOf('ARG NODE_IMAGE=')).toBeLessThan(dockerfile.indexOf('FROM '));
   });
 
-  it('builds every stage from that single pinned image', () => {
-    expect(stages.map((stage) => stage.baseImage)).toEqual(['${NODE_IMAGE}', '${NODE_IMAGE}', '${NODE_IMAGE}', '${NODE_IMAGE}', '${NODE_IMAGE}']);
+  it('builds every stage from that single pinned image, the qpdf job runner stage included', () => {
+    // Six stages: builder, sevenzip, libredwg, cadconvert, qpdfrunner (compiles the runner against the libc of the runtime image) and runner.
+    expect(stages.map((stage) => stage.name)).toEqual(['builder', 'sevenzip', 'libredwg', 'cadconvert', 'qpdfrunner', 'runner']);
+    expect(stages.map((stage) => stage.baseImage)).toEqual(Array(6).fill('${NODE_IMAGE}'));
   });
 
   it('names no Debian 12 release or Node.js 20 base image any more', () => {

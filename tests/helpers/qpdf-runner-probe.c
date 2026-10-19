@@ -2,6 +2,8 @@
 // process it runs in, so a test can read what the runner gave the job instead of trusting the runner. argv[1] names the probe.
 #define _GNU_SOURCE
 #include <errno.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,24 +34,48 @@ static void print_link(const char *path) {
   printf("%s -> %s\n", path, target);
 }
 
-/* Scans every readable mapping of this process for `needle`; prints the number of mappings that hold it. */
+/* The unit a scan reads at a time and skips when it cannot be read. */
+#define SCAN_PAGE 4096UL
+
+static sigjmp_buf scan_fault;
+
+static void on_scan_fault(int signo) {
+  (void)signo;
+  siglongjmp(scan_fault, 1);
+}
+
+/* Scans every readable mapping of this process for `needle`; prints the number of mappings that hold it. A page that cannot be read
+   (a file cut short, a device) is skipped, so that it does not end the job with a bus error. */
 static void scan_memory(const char *needle) {
   FILE *maps = fopen("/proc/self/maps", "r");
   char line[512];
   int found = 0;
   size_t n = strlen(needle);
+  struct sigaction handler;
+  memset(&handler, 0, sizeof handler);
+  handler.sa_handler = on_scan_fault;
+  handler.sa_flags = SA_NODEFER;
+  sigemptyset(&handler.sa_mask);
+  sigaction(SIGBUS, &handler, NULL);
+  sigaction(SIGSEGV, &handler, NULL);
   while (maps != NULL && fgets(line, sizeof line, maps) != NULL) {
     unsigned long lo, hi;
     char perms[8];
     if (sscanf(line, "%lx-%lx %7s", &lo, &hi, perms) != 3 || perms[0] != 'r') continue;
     if (strstr(line, "[vvar]") != NULL || strstr(line, "[vsyscall]") != NULL) continue;
-    for (const char *p = (const char *)lo; p + n <= (const char *)hi; p++) {
-      /* The needle itself sits in this process (the argument); a match at the argument's own address does not count. */
-      if (memcmp(p, needle, n) == 0 && p != needle) {
-        found++;
-        break;
+    volatile int in_mapping = 0;
+    for (volatile unsigned long page = lo; page < hi && !in_mapping; page += SCAN_PAGE) {
+      if (sigsetjmp(scan_fault, 1) != 0) continue; /* the page could not be read: on to the next one */
+      const char *end = (const char *)(hi < page + SCAN_PAGE + n - 1 ? hi : page + SCAN_PAGE + n - 1);
+      for (const char *p = (const char *)page; p + n <= end; p++) {
+        /* The needle itself sits in this process (the argument); a match at the argument's own address does not count. */
+        if (memcmp(p, needle, n) == 0 && p != needle) {
+          in_mapping = 1;
+          break;
+        }
       }
     }
+    found += in_mapping;
   }
   if (maps != NULL) fclose(maps);
   printf("copies-of-needle: %d\n", found);
@@ -177,4 +203,18 @@ int qpdfjob_run_from_argv(const char *const argv[]) {
   return 2;
 }
 
-const char *qpdf_get_qpdf_version(void) { return "probe"; }
+/* The version the runner reports is "probe" and the namespaces of the runner itself, read when the runner loads this library, so that a
+   test can compare them with those of the jobs without reading /proc/<runner>/ns, which a process that is not allowed to trace the runner
+   cannot. */
+static char version[256] = "probe";
+
+__attribute__((constructor)) static void describe_runner(void) {
+  char user[64] = "?", net[64] = "?";
+  ssize_t n = readlink("/proc/self/ns/user", user, sizeof user - 1);
+  if (n > 0) user[n] = '\0';
+  n = readlink("/proc/self/ns/net", net, sizeof net - 1);
+  if (n > 0) net[n] = '\0';
+  snprintf(version, sizeof version, "probe user=%s net=%s", user, net);
+}
+
+const char *qpdf_get_qpdf_version(void) { return version; }
