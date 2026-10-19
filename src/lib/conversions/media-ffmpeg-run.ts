@@ -38,8 +38,9 @@ const OPUS_FAILED_OUTPUT = /\[aost#0:(\d{1,3})\/libopus @/;
 /** `Stream #0:1 -> #0:1 (ac3 (native) -> opus (libopus))`: the output stream index of every stream FFmpeg encodes with libopus. */
 const OPUS_OUTPUT_MAPPINGS = /-> #0:(\d{1,3}) \([^\n]{0,160}\(libopus\)\)/g;
 
+/** A rule whose change is already in `args` does not apply again: a second identical failure is passed on, not retried. */
 function withFlacBlockSize(args: readonly string[], log: string): string[] | undefined {
-  if (!FLAC_SHORT_STREAM.test(log)) return undefined;
+  if (!FLAC_SHORT_STREAM.test(log) || args.includes('-frame_size:a')) return undefined;
   return [...args.slice(0, -1), '-frame_size:a', String(FLAC_NOMINAL_BLOCK_SAMPLES), args[args.length - 1]];
 }
 
@@ -53,7 +54,7 @@ function withOpusRearLayout(args: readonly string[], log: string): string[] | un
   const failed = OPUS_FAILED_OUTPUT.exec(log)?.[1];
   if (layout === undefined || failed === undefined || !Object.hasOwn(OPUS_REAR_LAYOUT_OF, layout)) return undefined;
   const ordinal = [...log.matchAll(OPUS_OUTPUT_MAPPINGS)].map((mapping) => mapping[1]).indexOf(failed);
-  if (ordinal === -1) return undefined;
+  if (ordinal === -1 || args.includes(`-filter:a:${ordinal}`)) return undefined;
   const filter = `channelmap=channel_layout=${OPUS_REAR_LAYOUT_OF[layout]}`;
   const common = args.indexOf('-filter:a');
   const chain = common === -1 ? filter : `${args[common + 1]},${filter}`;
@@ -90,7 +91,8 @@ export async function runFfmpegTranscode(
   return result;
 }
 
-function firstAdjustment(args: readonly string[], log: string): string[] | undefined {
+/** The arguments of the next attempt for a failed run, or undefined when no rule applies (exported for its test). */
+export function firstAdjustment(args: readonly string[], log: string): string[] | undefined {
   for (const rule of RETRY_RULES) {
     const adjusted = rule(args, log);
     if (adjusted !== undefined) return adjusted;
