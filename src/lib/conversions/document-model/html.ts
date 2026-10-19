@@ -1,6 +1,7 @@
 import { escapeXmlText } from './xml-text';
 import type { Block, DocumentImage, DocumentModel, Inline, ListBlock, NoteDefinition, TableBlock, TableCellBlock } from './model';
 import { IMAGE_MIME, bodyBlocks, cellBlocks, imagesById } from './support';
+import { fragmentReference, uriReference } from './uri-reference';
 
 /**
  * HTML of the document with its structure: `h1` to `h6`, `p`, nested `ul`/`ol` with their start values and types,
@@ -47,8 +48,9 @@ export class HtmlWriter {
   }
 
   private href(target: string): string | undefined {
-    if (target.startsWith('#') && this.options.anchorHref) return this.options.anchorHref(target.slice(1));
-    return target;
+    if (!target.startsWith('#')) return uriReference(target);
+    if (this.options.anchorHref) return this.options.anchorHref(target.slice(1));
+    return fragmentReference(target.slice(1));
   }
 
   private noteId(kind: string, id: string): string {

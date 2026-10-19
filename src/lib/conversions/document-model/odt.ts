@@ -5,6 +5,7 @@ import { resolveLanguage } from '../document-language';
 import { MAX_HEADING_LEVEL, MAX_LIST_LEVELS } from './model';
 import type { Block, DocumentImage, DocumentModel, ImageFormat, Inline, ListBlock, NoteDefinition, TableBlock } from './model';
 import { IMAGE_EXTENSION, IMAGE_MIME, bodyBlocks, cellBlocks, imagesById, walkBlocks, walkRuns } from './support';
+import { uniqueAnchors } from './anchors';
 import { escapeXmlText } from './xml-text';
 
 /**
@@ -358,6 +359,7 @@ function fixedStyles(language: string | undefined): string {
  * @throws PayloadLimitError when the document carries more pictures than ODT_WRITER_MAX_IMAGES.
  */
 export async function documentToOdt(model: DocumentModel, options: OdtWriteOptions): Promise<Buffer> {
+  uniqueAnchors(model);
   const language = resolveLanguage(model, options.language);
   const title = (model.title ?? options.title).trim() || options.title;
   const anchors = new Set<string>();
