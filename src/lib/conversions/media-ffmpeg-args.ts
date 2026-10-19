@@ -13,6 +13,7 @@ import {
   MediaPackagingFormat,
   VideoRateControl,
 } from '../types';
+import { assertChannelLimits, planAudioChannels } from './media-audio-channels';
 import {
   assertEncoderAvailable,
   AudioTargetSpec,
@@ -596,19 +597,6 @@ function hasRequestedFrameRate(options: ConversionOptions): boolean {
   return options.video?.fps !== undefined || options.videoFps !== undefined;
 }
 
-const CHANNELS_BY_LAYOUT_NAME: Readonly<Record<string, number>> = { mono: 1, stereo: 2, '5.1': 6, '7.1': 8 };
-const DOWNMIX_CHANNELS = 2;
-
-/** Channel count the caller asked for, in the same precedence the encoder arguments use. */
-function requestedChannelCount(options: ConversionOptions): number | undefined {
-  if (options.audio?.downmix === 'itu-r-bs775') return DOWNMIX_CHANNELS;
-  if (options.audio?.channels) return options.audio.channels;
-  if (options.audioChannels && Object.hasOwn(CHANNELS_BY_LAYOUT_NAME, options.audioChannels)) {
-    return CHANNELS_BY_LAYOUT_NAME[options.audioChannels];
-  }
-  return undefined;
-}
-
 function assertSampleRateLimits(tgt: string, spec: AudioTargetSpec, sampleRate: number | undefined): void {
   if (sampleRate === undefined) return;
   if (spec.fixedSampleRate !== undefined && sampleRate !== spec.fixedSampleRate) {
@@ -628,38 +616,6 @@ function assertSampleRateLimits(tgt: string, spec: AudioTargetSpec, sampleRate: 
   }
 }
 
-function assertFixedChannels(tgt: string, spec: AudioTargetSpec, channels: number | undefined): void {
-  if (spec.fixedChannels !== undefined && channels !== undefined && channels !== spec.fixedChannels) {
-    throw new InvalidMediaOptionError(
-      `The '${tgt}' target only supports ${spec.fixedChannels} audio channel(s), but ${channels} were requested.`
-    );
-  }
-}
-
-/** Requested channel count, or the selected input track's own count when the caller set none. */
-function channelsToWrite(options: ConversionOptions, inputPath: string, ffmpegBin?: string | null): number | undefined {
-  const requested = requestedChannelCount(options);
-  if (requested !== undefined || !fs.existsSync(inputPath)) return requested;
-  const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
-  return probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin), track);
-}
-
-function assertMaxChannels(
-  tgt: string,
-  spec: AudioTargetSpec,
-  options: ConversionOptions,
-  inputPath: string,
-  ffmpegBin?: string | null
-): void {
-  if (spec.maxChannels === undefined) return;
-  const channels = channelsToWrite(options, inputPath, ffmpegBin);
-  if (channels !== undefined && channels > spec.maxChannels) {
-    throw new InvalidMediaOptionError(
-      `The '${tgt}' target supports at most ${spec.maxChannels} audio channels, but ${channels} would be written; request fewer channels or a downmix.`
-    );
-  }
-}
-
 /**
  * Rejects a sample rate or channel count that the target's encoder cannot honour, before ffmpeg
  * runs. The limits describe the target's own encoder, so they apply unless the caller swaps the codec.
@@ -672,8 +628,7 @@ function assertEncoderLimits(
   ffmpegBin?: string | null
 ): void {
   assertSampleRateLimits(tgt, spec, options.audio?.sampleRate ?? options.audioSampleRate);
-  assertFixedChannels(tgt, spec, requestedChannelCount(options));
-  assertMaxChannels(tgt, spec, options, inputPath, ffmpegBin);
+  assertChannelLimits(tgt, spec, options, inputPath, ffmpegBin);
 }
 
 /**
@@ -1439,28 +1394,9 @@ export function buildFfmpegArguments(
     // The audio is re-encoded: start it at zero and fill or trim leading gaps so it stays in step with the picture.
     audioFilters.push(AUDIO_SYNC_FILTER);
   }
-  if (audioSpec?.fixedChannels !== undefined) {
-    audioFormatArgs.push('-ac', String(audioSpec.fixedChannels));
-  } else if (options.audio?.downmix === 'itu-r-bs775') {
-    const is71 =
-      options.audio.channels === 8 ||
-      options.audioChannels === '7.1' ||
-      (fs.existsSync(inputPath) && probeAudioChannels(inputPath, resolveFfprobeBinary(ffmpegBin)) === 8);
-    if (is71) {
-      audioFilters.push('pan=stereo|FL=0.3204*FL+0.2265*FC+0.2265*BL+0.2265*SL|FR=0.3204*FR+0.2265*FC+0.2265*BR+0.2265*SR');
-    } else {
-      audioFilters.push('pan=stereo|FL=0.4142*FL+0.2929*FC+0.2929*BL|FR=0.4142*FR+0.2929*FC+0.2929*BR');
-    }
-    audioFormatArgs.push('-ac', '2');
-  } else if (options.audio?.channels) {
-    if (![1, 2, 6, 8].includes(options.audio.channels)) {
-      throw new InvalidMediaOptionError(`Invalid audio channels: ${options.audio.channels}. Allowed: 1, 2, 6, 8.`);
-    }
-    audioFormatArgs.push('-ac', String(options.audio.channels));
-  } else if (options.audioChannels && ['mono', 'stereo', '5.1', '7.1'].includes(options.audioChannels)) {
-    const chMap: Record<string, string> = { mono: '1', stereo: '2', '5.1': '6', '7.1': '8' };
-    audioFormatArgs.push('-ac', chMap[options.audioChannels]);
-  }
+  const channelPlan = planAudioChannels(audioSpec, specEncoderInUse, options, inputPath, ffmpegBin);
+  audioFilters.push(...channelPlan.filters);
+  audioFormatArgs.push(...channelPlan.args);
 
   // Audio sample rate
   if (audioSpec?.fixedSampleRate !== undefined) {

@@ -208,6 +208,36 @@ describe('stream mapping plan (pure)', () => {
     expect(() => planStreamMapping({ streams: library, container: 'mp4', audioTrack: 2, burnSubtitles: false })).toThrow(/Audio track 2/);
   });
 
+  it('leaves out an audio stream no packet of which decodes and lists it, and keeps the audio that decodes', () => {
+    const streams = [
+      stream(0, 'video', 'h264'),
+      stream(1, 'audio', 'aac'),
+      stream(2, 'audio', 'aac', { undecodable: true, language: 'eng', title: 'Commentary' }),
+    ];
+    for (const container of ['mp4', 'mov', 'mkv', 'webm', 'avi'] as const) {
+      const plan = planStreamMapping({ streams, container, burnSubtitles: false });
+      expect(plan.maps, container).toEqual(['0:0', '0:1']);
+      expect(plan.audioMaps, container).toEqual(['0:1']);
+      expect(plan.dropped, container).toEqual([{ index: 2, kind: 'audio', codec: 'aac', language: 'eng', title: 'Commentary', reason: 'undecodable' }]);
+    }
+    const onlyBad = planStreamMapping({ streams: [stream(0, 'video', 'h264'), stream(1, 'audio', 'aac', { undecodable: true })], container: 'mp4', burnSubtitles: false });
+    expect(onlyBad.maps).toEqual(['0:0']);
+    expect(onlyBad.audioMaps).toEqual([]);
+    expect(onlyBad.dropped).toEqual([{ index: 1, kind: 'audio', codec: 'aac', reason: 'undecodable' }]);
+  });
+
+  it('keeps an undecodable audio stream when it is what was asked for or all the file holds, so that the conversion is refused and not emptied', () => {
+    const bad = stream(1, 'audio', 'aac', { undecodable: true });
+    const chosen = planStreamMapping({ streams: [stream(0, 'video', 'h264'), bad], container: 'mp4', audioTrack: 0, burnSubtitles: false });
+    expect(chosen.maps).toEqual(['0:0', '0:1']);
+    expect(chosen.dropped).toEqual([]);
+    const noPicture = planStreamMapping({ streams: [bad], container: 'mp4', burnSubtitles: false });
+    expect(noPicture.maps).toEqual(['0:1']);
+    expect(noPicture.dropped).toEqual([]);
+    const coverOnly = planStreamMapping({ streams: [stream(0, 'video', 'mjpeg', { attachedPicture: true }), bad], container: 'mp4', burnSubtitles: false });
+    expect(coverOnly.maps).toContain('0:1');
+  });
+
   it('leaves out a bitmap subtitle that the container cannot carry and lists it, copies the ones mkv has a codec id for, and burns it in on request', () => {
     const pgs = [stream(0, 'video', 'h264'), stream(1, 'subtitle', 'hdmv_pgs_subtitle')];
     for (const container of ['mp4', 'mov', 'webm'] as const) {

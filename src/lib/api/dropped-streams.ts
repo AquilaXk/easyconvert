@@ -15,6 +15,7 @@ export const MAX_DROPPED_TEXT_CHARS = 100;
 
 export const DROPPED_STREAM_KINDS: readonly DroppedStreamKind[] = [
   'video',
+  'audio',
   'subtitle',
   'attachment',
   'data',
@@ -25,6 +26,7 @@ export const DROPPED_STREAM_REASONS: readonly DroppedStreamReason[] = [
   'container_unsupported',
   'stream_type_unsupported',
   'additional_video_track',
+  'undecodable',
 ];
 
 const KIND_SET: ReadonlySet<string> = new Set(DROPPED_STREAM_KINDS);
