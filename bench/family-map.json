@@ -166,11 +166,11 @@
     },
     {
       "families": ["video"],
-      "match": "^src/lib/conversions/(media|media-encoder|media-decoder|media-two-pass|media-hdr|mp4-layout)\\.ts$"
+      "match": "^src/lib/conversions/(media|media-encoder|media-decoder|media-two-pass|media-hdr|media-vp9-effort|mp4-layout)\\.ts$"
     },
     {
       "families": ["video", "audio"],
-      "match": "^src/lib/conversions/media-(decode-failures|dropped-streams|encoder-threads|ffmpeg-args|ffmpeg-run|ffprobe|packaging|stream-plan)\\.ts$"
+      "match": "^src/lib/conversions/media-(decode-failures|dropped-streams|empty-output|encoder-threads|ffmpeg-args|ffmpeg-run|ffprobe|job-limit|packaging|stream-plan)\\.ts$"
     },
     {
       "families": ["ocr"],

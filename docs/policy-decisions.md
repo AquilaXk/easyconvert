@@ -48,6 +48,7 @@ Media and documents
 51. [HTML to PDF: what a page names that the PDF cannot carry](#51-html-to-pdf-what-a-page-names-that-the-pdf-cannot-carry)
 52. [Picture rows left by the real-file run: DX10 DDS surfaces, TIFF directories out of order, libheif and ImageMagick limits of the CI runner](#52-picture-rows-left-by-the-real-file-run-dx10-dds-surfaces-tiff-directories-out-of-order-libheif-and-imagemagick-limits-of-the-ci-runner)
 53. [PDF page trees that loop, and page deletion inside the document](#53-pdf-page-trees-that-loop-and-page-deletion-inside-the-document)
+54. [VP9 for jobs too big for the media time limit, and audio files with no samples](#54-vp9-for-jobs-too-big-for-the-media-time-limit-and-audio-files-with-no-samples)
 55. [HTML pages left open, code points XML cannot carry, and books with no content](#55-html-pages-left-open-code-points-xml-cannot-carry-and-books-with-no-content)
 
 Engines
@@ -1444,6 +1445,56 @@ Compression
   - **Dropping a deleted page's form fields in the product**: the PDF tool already removes the fields and widgets of the pages it drops when the selection is made inside the document.
 - **Verified by**: `tests/pdf-ops-damaged-samples.test.ts` (the three public files, read back by `qpdf --check`, Poppler's text and page count, and the object graph of `qpdf --json`, against the same selection written by the `qpdf` command line); `tests/pdf-page-tree.test.ts` (object lists worked out on paper, loops of one, three and 50 nodes, a mesh of 300 nodes, a 50,000-node chain, a layered tree with 20^10 paths); `tests/pdf-page-ops.test.ts`; and the `pdf-ops` parity rows `pdf-qpdf-pages-loop.pdf->compress`, `pdf-pdfjs-Pages-tree-refs.pdf->compress` and `pdf-qpdf-form-errors.pdf->delete`.
 - **Revisit when**: the page operations other than compress are asked to open a looping file, or the PDF page tool mends a looping tree itself.
+
+## 54. VP9 for jobs too big for the media time limit, and audio files with no samples
+
+- **Status**: Implemented (issue #783, media rows), decided 2026-10-19 (QA request in issue #783: a real file converts, or is refused with a typed answer that names a real limit of the file; found by the nightly real-file run).
+- **Decision**:
+  - **VP9 keeps the documented encoder setting (good deadline, cpu-used 2, row multithreading, four tile columns) for every job that fits the media time limit, and uses the realtime deadline at cpu-used 5 (same threading) for a job that does not.** A job is estimated as its frames times its picture size, divided by 15 megapixels per CPU second (measured for the whole conversion, tone mapping and decoding of a 10-bit source included) and by two cores. When that time is more than half of the job's own stage limit (`3 x seconds + 60`, at most the stage limit, which is 180 s unless the job or the server sets a shorter one), the realtime deadline is used. The constant-quality value (CRF 30 by default) does not change. The rule applies to VP9 in WebM, MP4 and Matroska, when the picture reaches the encoder at the source's own size and frame rate; a request that scales, crops or changes the frame rate, a two-pass encode (it needs the good deadline) and a source whose frame count or length is not stated keep the good deadline.
+  - **The frame count of a plain MP4 is read from its movie header** (the sample table of the video track), so planning still costs no prober process; other inputs take the frame rate and length from the one probe the conversion already makes.
+  - **HDR10 video to WebM stays tone mapped to SDR (8-bit BT.709).** Keeping the HDR picture means VP9 profile 2 with 10-bit samples and PQ, BT.2020 tags; it is not offered (see below).
+  - **An audio file without samples is refused for `.aac` with a typed 422 (`EmptyAudioInputError`): "The audio file holds no audio samples, so there is nothing to write as a .aac file".** The check runs only when FFmpeg wrote zero bytes, and then reads at most one packet from the start of the input's audio streams with ffprobe (the input has to hold an audio stream at all); an empty output from an input that has packets stays the plain error it was. Both engines (in-process and worker) use the same check. WAV and FLAC targets, which hold a stream of zero frames as a file readers open, are not changed.
+- **Why**:
+  - **The good deadline does not get cheaper with cpu-used.** On the 30 s, 1080p, 60 fps HDR10 clip of the corpus (1,797 frames) encoded from tone-mapped lossless frames on four cores (Ubuntu 24.04 VM, FFmpeg 6.1.1 with libvpx-vp9, CRF 30):
+
+    | Deadline, cpu-used | Wall s | CPU s | File MB | SSIM | PSNR dB |
+    |---|---|---|---|---|---|
+    | good 2 (documented) | 61.8 | 208.8 | 20.7 | 0.9968 | 47.9 |
+    | good 3 | 58.0 | 187.0 | 21.3 | 0.9966 | 47.7 |
+    | good 4 | 55.7 | 179.9 | 21.4 | 0.9966 | 47.5 |
+    | good 5 | 64.1 | 182.5 | 21.3 | not measured | not measured |
+    | realtime 3 | 79.9 | 263.9 | 19.9 | 0.9967 | 47.7 |
+    | realtime 4 | 31.7 | 98.7 | 26.7 | 0.9967 | 47.8 |
+    | **realtime 5 (chosen)** | **16.9** | **55.4** | **26.3** | **0.9959** | **47.3** |
+    | realtime 6 | 14.8 | 47.6 | 29.4 | 0.9958 | 47.2 |
+    | realtime 8 | 12.7 | 39.6 | 34.0 | 0.9953 | 46.9 |
+
+    The encoder's own search stays at its full cost at every good-deadline speed, so a higher cpu-used buys at most 10 percent; the realtime deadline at 5 costs a quarter of the CPU. The auto-alt-ref, lag-in-frames and temporal-dependency switches of a one-pass constant-quality encode write files of the same size to the byte, with the same scores, at the same cost (measured), and frame-parallel only changes how the file can be decoded.
+  - **The whole conversion, before and after** (the clip as the real-file run converts it, default options; the limit is 150 s):
+
+    | Run | Before (good 2) | After (realtime 5) |
+    |---|---|---|
+    | one job on four idle cores | 79.2 to 80.6 s, 20.7 MB, SSIM 0.9968 | 27.5 to 29.3 s, 26.3 MB, SSIM 0.9959 |
+    | three jobs at once on four cores (the nightly shard) | all three stop at the 150 s limit (`SandboxedTimeoutError`) | 67.9, 70.5 and 70.6 s |
+
+    All 1,797 frames, 1920x1080, `yuv420p`, BT.709 tags (tv range) and a full decode without error are the same before and after.
+  - **Why the quality is comparable.** At the same CRF the realtime encode scores 0.0009 lower SSIM and 0.6 dB lower PSNR against the lossless tone-mapped frames (both above 47 dB, where the difference is not visible) and writes a file 27 percent larger. The size is the price; the picture is what the constant quality asked for. CRF is not raised to claw the size back, because that would lower the picture of the jobs that are already the largest.
+  - **Why a rule on the job and not a new default.** The good deadline at cpu-used 2 is the setting the project documents and compares with the reference encoder (the video parity rows use the same arguments), and every short clip fits the limit with it; a faster default would give up compression on all of them for the sake of the few that do not fit. The estimate uses two cores because a worker runs several jobs at once and the nightly run puts three on a four-core runner, which is how the clip timed out although it takes 80 s alone.
+  - **Why HDR is not kept in WebM.** The VP9 authors' HDR encoding guidance is profile 2, `yuv420p10le`, PQ transfer (16), BT.2020 primaries (9) and matrix (9), limited range, with about 25 to 30 percent more bitrate than SDR; FFmpeg cannot write mastering-display and content-light metadata into WebM (it only passes metadata that is already there; the guidance adds it with a separate Matroska tool). The same clip kept in HDR at the good deadline took 174.5 s and 326 CPU seconds on the idle VM, which is past the 150 s limit by itself, and scored SSIM 0.980 against the HDR source. Tone mapping to SDR was already the behaviour (the BT.2390 curve by default, `toneMap` in the request) and finishes inside the limit.
+  - **Why `.aac` refuses and not writes an empty file.** An AAC file (ADTS, ISO/IEC 14496-3) is a series of frames that each carry their own header; it has no file header, so zero frames are zero bytes. FFmpeg writes 0 bytes for the empty WAV with the ADTS muxer and with `-c:a aac`, `file` calls the result "empty", and ffprobe and ffmpeg refuse it ("End of file"). An empty output is not a file of the target type, and the cause is the input, which the refusal names.
+- **Trade-offs**:
+  - **A job past the estimate gets a file about a quarter larger** than the good deadline would write at the same CRF, in exchange for finishing: 150 s limit, 27.5 s alone.
+  - **The estimate is a model.** It was measured on one clip and one machine class (arm64 VM, FFmpeg 6.1.1); a host that is faster or has more free cores than two will switch some jobs to realtime that would have fitted (the cost is the size above), and a slower one can still time out for a job just under the line. The numbers are constants in `media-vp9-effort.ts`.
+  - **Requests that scale, crop or change the rate are not estimated.** A 4K source scaled to 1080p keeps the good deadline although its decoding and scaling are the size of the source.
+  - **The other lossy audio targets are not covered.** FFmpeg writes a file for the empty WAV to `.m4a` (258 bytes, no stream), `.mp3` (227 bytes), `.opus` and `.ogg`, and ffprobe does not open any of them; they pass the corpus run's structure checks and are listed as a leftover row of issue #783.
+- **Alternatives rejected**:
+  - **cpu-used 3 to 5 at the good deadline for everything**: saves 10 percent at most (table), and moves the parity rows away from the documented setting.
+  - **A bigger time limit**: the tier ceiling is 180 s; the clip needs 80 s alone and 180 s or more with two other jobs, so the ceiling would have to rise past what a request may hold a worker for.
+  - **Splitting the tone mapping and the encode into two processes**: saves the 16 s of filtering at most (FFmpeg 6.1 runs filters and encoder in one thread) and adds a pipe and a second process to every HDR job.
+  - **AV1 (SVT-AV1) for long jobs**: much faster at the same quality, but it changes the codec of the output; the caller asked for VP9 by taking the WebM default.
+  - **An empty `.aac` file**: see above. **An `.m4a` with an empty track instead**: another format than the one asked for.
+- **Verified by**: `tests/media-vp9-effort.test.ts` (the deadline for nine workloads with the sizes the measurements were taken at, the monotone rule, the arguments of a built 1080p60 clip at 3 s and 30 s for WebM, MP4 and Matroska, the requests that keep the good deadline including both passes of a two-pass encode, the frame count of a plain MP4 against ffprobe's packet count, and the real HDR10 clip), `tests/media-hdr-webm-speed.perf.test.ts` (nightly; the real clip converted by the default route inside half of the limit, with ffprobe's frame count equal to the source's 1,797, the SDR tags, a full decode and SSIM 0.99 or more against the lossless tone-mapped frames), `tests/media-empty-audio.test.ts` (a WAV with an empty data chunk and the corpus file `kaitai-small.wav`, shown empty by the RIFF layout and by ffprobe, refused for `.aac` by both engines with status 422 and the message, still converted to FLAC and WAV and read back, and a WAV of one sample or one second converted to a decodable AAC of the right length), the Linux run described above, and the video and audio parity rows.
+- **Revisit when**: the worker host has far more cores than the two assumed, or the time limit changes; a faster VP9 setting is found that keeps the file size (re-run the table); QA wants HDR kept in WebM (the limit then has to allow the 10-bit encode, 175 s on four cores for this clip); or the empty `.m4a`, `.mp3`, `.opus` and `.ogg` outputs are decided.
 
 ## 55. HTML pages left open, code points XML cannot carry, and books with no content
 

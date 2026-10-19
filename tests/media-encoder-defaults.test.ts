@@ -15,11 +15,11 @@ import {
   buildLoudnessMeasureArguments,
   resetHardwareAccelerationCache,
   SVT_AV1_DEFAULT_PRESET,
-  VP9_SPEED_ARGS,
   X26X_DEFAULT_PRESET,
   X26X_PRESETS,
   type LoudnessStage,
 } from '../src/lib/conversions/media-ffmpeg-args';
+import { VP9_SPEED_ARGS } from '../src/lib/conversions/media-vp9-effort';
 import {
   LOUDNORM_DEFAULTS,
   LOUDNESS_PRESETS,

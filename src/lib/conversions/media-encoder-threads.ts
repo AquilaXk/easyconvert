@@ -36,6 +36,11 @@ export interface PictureSize {
   height: number;
 }
 
+/** The stored size of a stream, or undefined when it states none. */
+export function pictureOf(stream: { width?: number; height?: number } | undefined): PictureSize | undefined {
+  return stream?.width !== undefined && stream.height !== undefined ? { width: stream.width, height: stream.height } : undefined;
+}
+
 /** Threads x264 starts for a picture of `height` lines on a host with `cores` cores when it is not told a count. */
 function x264OwnThreads(cores: number, height: number): number {
   const hostThreads = Math.floor((cores * X264_THREADS_PER_CORE_NUMERATOR) / X264_THREADS_PER_CORE_DENOMINATOR);

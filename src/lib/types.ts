@@ -818,14 +818,15 @@ export class UnsupportedDwgVersionError extends UnprocessableCadInputError {
 
 /**
  * True for the failures that say "the file is intact but this engine cannot convert it" and answer HTTP 422 through `status`: an
- * encrypted office document or PDF, an archive's password and method errors, a CAD file the readers refuse and a font that cannot be read.
+ * encrypted office document or PDF, an archive's password and method errors, a CAD file the readers refuse, a font that cannot be read and an audio file with no samples.
  */
 export function isUnprocessableInputError(error: unknown): error is ConversionFailedError & { readonly status: number } {
   return (
     error instanceof EncryptedOfficeDocumentError ||
     error instanceof ArchiveInputUnprocessableError ||
     error instanceof UnprocessableCadInputError ||
-    error instanceof UnprocessableFontInputError
+    error instanceof UnprocessableFontInputError ||
+    error instanceof EmptyAudioInputError
   );
 }
 
@@ -1196,6 +1197,19 @@ export class UnprocessableMediaInputError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'UnprocessableMediaInputError';
+  }
+}
+
+/**
+ * An audio file with a header and no samples (a WAV whose data chunk is empty), converted to a target format that has no file
+ * header of its own: ADTS is a run of frames, so zero frames are zero bytes and nothing a reader can recognise. The file is
+ * intact and the request understood, so the routes answer 422 (through `status`); another worker would refuse it too.
+ */
+export class EmptyAudioInputError extends UnprocessableMediaInputError {
+  readonly status = 422;
+  constructor(target: string) {
+    super(`The audio file holds no audio samples, so there is nothing to write as a .${target} file (a .${target} file is a run of audio frames with no header of its own).`);
+    this.name = 'EmptyAudioInputError';
   }
 }
 
