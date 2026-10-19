@@ -55,7 +55,7 @@ static void on_scan_fault(int signo) {
   siglongjmp(scan_fault, 1);
 }
 
-/* Scans every readable mapping of this process for `needle`; prints the number of mappings that hold it. A page that cannot be read
+/* Scans every readable mapping of this process for `needle`, leaving out the bytes of `needle` itself; prints the number of mappings that hold another. A page that cannot be read
    (a file cut short, a device) is skipped, so that it does not end the job with a bus error. */
 static void scan_memory(const char *needle) {
   FILE *maps = fopen("/proc/self/maps", "r");
@@ -146,8 +146,16 @@ int qpdfjob_run_from_argv(const char *const argv[]) {
     sleep((unsigned)atoi(argv[3]));
     return 0;
   }
-  if (strcmp(probe, "scan") == 0) {
-    scan_memory(argv[2]);
+  if (strcmp(probe, "scan-parts") == 0) {
+    /* scan-parts <first> <second>: looks for the two joined. The whole is made here, in a buffer of this function, so that it is not in the
+       arguments of the job: the only copy that is not another job's or the runner's is this buffer, which the scan leaves out by its address. */
+    char whole[256];
+    size_t first = strlen(argv[2]), second = strlen(argv[3]);
+    if (first + second >= sizeof whole) return 2;
+    memcpy(whole, argv[2], first);
+    memcpy(whole + first, argv[3], second);
+    whole[first + second] = '\0';
+    scan_memory(whole);
     return 0;
   }
   if (strcmp(probe, "read-mem-of") == 0) {

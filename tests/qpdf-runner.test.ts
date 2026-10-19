@@ -294,12 +294,14 @@ describe.skipIf(compilerMissing)('the qpdf runner', () => {
       const holder = run(['hold-secret', secret, '2']);
       await until(() => childrenOf(state.pid!).length > 0);
       const [holderPid] = childrenOf(state.pid!);
-      // A control: the scanner finds a string that is in the job's own environment as well as in its argument.
-      const control = await run(['scan', secret], { env: { OWN_COPY: secret } });
+      // The scanning job is given the secret in two halves and joins them in a buffer of its own, which the scan leaves out by its address: no
+      // part of the job's arguments, environment or inherited memory holds the whole, so any other copy it finds is memory of the holder, of
+      // another job or of the runner. A control: with the whole secret in the job's own environment the scan finds that copy.
+      const [first, second] = [secret.slice(0, 7), secret.slice(7)];
+      const control = await run(['scan-parts', first, second], { env: { OWN_COPY: secret } });
       expect(control.stdout.toString('utf8')).toMatch(/copies-of-needle: [1-9]/);
-      // Without the environment copy the argument is the only one the scanning job has: the holder's output and the frames of the runner are not in it.
-      const scan = await run(['scan', secret]);
-      expect(scan.stdout.toString('utf8')).toContain('copies-of-needle: 0');
+      const scan = await run(['scan-parts', first, second]);
+      expect(scan.stdout.toString('utf8')).toBe('copies-of-needle: 0\n');
       const sibling = await run(['read-mem-of', String(holderPid)]);
       expect(sibling.stdout.toString('utf8')).not.toContain('allowed');
       const runnerMemory = await run(['read-mem-of', String(state.pid)]);
