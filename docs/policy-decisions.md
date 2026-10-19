@@ -1375,6 +1375,7 @@ Compression
   - **One warning per reference**: a page with 100 links would drown the others; entry 9 caps warnings at 50 lines plus a count.
 - **Verified by**: `tests/html-pdf-external-resources.test.ts` (real pages of the corpus and pages derived from them, through real LibreOffice, read by `pdftotext`, `pdfinfo`, `pdfimages` and the link annotations of the PDF; the renderer's input with `file:`, relative-traversal, `javascript:`, protocol-relative and `data:` links, pictures and style sheets; a private-address image; `HTML_IMAGE_FETCH=off`; `requireResources`); `tests/html-native-staging.test.ts` (the bypass matrix still ends in a refusal or a document without the reference, the CSS refusals above, the elements left out); `tests/html-external-images*.test.ts`; and the real-world gate, where the 97 HTML pages to PDF were 15 converted and 82 refused and are now 96 or 97 converted (above). The 15 pages that converted before are staged byte for byte as they were.
 - **Revisit when**: callers ask for the controls of a form to be drawn, for style sheets by address, or for links resolved against a base; or the in-process renderer is the route most pages take.
+
 ## 52. Picture rows left by the real-file run: DX10 DDS surfaces, TIFF directories out of order, libheif and ImageMagick limits of the CI runner
 
 - **Status**: Implemented (issue #783, image rows), decided 2026-10-19 (QA request in issue #783: a real file converts, or is refused with a typed answer that names a real limit of the file; found by the nightly real-file run 39107567130).
