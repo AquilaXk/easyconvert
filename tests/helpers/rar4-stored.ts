@@ -25,6 +25,10 @@ export interface StoredRarOptions {
    * volume follows. The other volumes are not written.
    */
   firstVolume?: boolean;
+  /** With `firstVolume`: the main header carries the new-numbering flag, so the next volume is named `<name>.part2.rar`, not `<name>.r00`. */
+  newNumbering?: boolean;
+  /** The "unpack version" and method bytes of every file header (29 and 0x30, stored, by default). */
+  unpack?: { version: number; method: number };
 }
 
 const MARKER = Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]);
@@ -37,6 +41,8 @@ const FLAG_LONG_BLOCK = 0x8000;
 const FLAG_END_NO_NEXT_VOLUME = 0x4000;
 /** Main header flag: the archive is one volume of a set. */
 const FLAG_MAIN_VOLUME = 0x0001;
+/** Main header flag: the volumes are numbered `.part1.rar`, `.part2.rar`, ... */
+const FLAG_MAIN_NEW_NUMBERING = 0x0010;
 /** File header flag: the entry continues in the next volume. */
 const FLAG_SPLIT_AFTER = 0x0002;
 /** End-of-archive flag: another volume follows. */
@@ -120,7 +126,7 @@ function encryptEntry(data: Buffer, password: string): Buffer {
 export function buildStoredRar4(entries: readonly StoredRarEntry[], options: StoredRarOptions = {}): Buffer {
   const main = Buffer.alloc(MAIN_HEADER_BYTES);
   main.writeUInt8(HEAD_MAIN, 2);
-  main.writeUInt16LE(options.firstVolume ? FLAG_MAIN_VOLUME : 0, 3);
+  main.writeUInt16LE((options.firstVolume ? FLAG_MAIN_VOLUME : 0) | (options.newNumbering ? FLAG_MAIN_NEW_NUMBERING : 0), 3);
   main.writeUInt16LE(MAIN_HEADER_BYTES, 5);
   const blocks: Buffer[] = [MARKER, sealHeader(main)];
 
@@ -139,8 +145,8 @@ export function buildStoredRar4(entries: readonly StoredRarEntry[], options: Sto
     header.writeUInt8(HOST_OS_UNIX, 15);
     header.writeUInt32LE(crc32(entry.data), 16);
     header.writeUInt32LE(DOS_TIME >>> 0, 20);
-    header.writeUInt8(UNPACK_VERSION_2_9, 24);
-    header.writeUInt8(METHOD_STORE, 25);
+    header.writeUInt8(options.unpack?.version ?? UNPACK_VERSION_2_9, 24);
+    header.writeUInt8(options.unpack?.method ?? METHOD_STORE, 25);
     header.writeUInt16LE(name.length, 26);
     header.writeUInt32LE(UNIX_REGULAR_FILE_MODE, 28);
     name.copy(header, FILE_HEADER_FIXED_BYTES);

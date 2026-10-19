@@ -28,5 +28,11 @@
     "detail": "^EmptyAudioInputError: The audio file holds no audio samples",
     "reason": "The file is a 44-byte WAV header whose data chunk holds no sample. For .aac (ADTS, a run of frames with no header) zero frames are zero bytes; for .m4a, .mp3, .opus and .ogg FFmpeg writes a few hundred bytes that ffprobe and ffmpeg cannot open. Only FLAC and WAV hold a stream of zero frames as a readable file.",
     "issue": 783
+  },
+  {
+    "file": "rarfile-rar3-old.rar",
+    "detail": "^UnreadableArchiveError: Could not read the archive: it is the first part of a multi-volume set and the next volume, .+\\.r00, is not part of the upload; upload all parts together as one archive\\.$",
+    "reason": "The file is the first volume of a RAR set (old numbering): the data of vols/bigfile.txt continues in rarfile-rar3-old.r00 and .r01, which the source project publishes as separate files that the corpus does not hold, so no reader can convert the one volume. The refusal names the missing volume (policy 56).",
+    "issue": 783
   }
 ]

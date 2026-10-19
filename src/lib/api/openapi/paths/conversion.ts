@@ -31,7 +31,7 @@ export const conversionPaths = {
     post: {
       summary: 'Inspect Archive Metadata',
       description:
-        'Inspects archive structure, entry metadata, and encryption status without extracting uncompressed contents. Supports ZIP, 7z, TAR, RAR, and compressed TAR variants.',
+        'Inspects archive structure, entry metadata, and encryption status without extracting uncompressed contents. Supports ZIP, 7z, TAR, RAR, lzip, lzop, and compressed TAR variants.',
       operationId: 'inspectArchiveV1',
       security: requireScope('convert:write'),
       requestBody: {
