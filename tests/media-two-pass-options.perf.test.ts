@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,6 +31,14 @@ import { ConversionFailedError, InvalidMediaOptionError } from '../src/lib/types
 const ENCODE_TIMEOUT_MS = 240_000;
 const SOURCE = '/nonexistent/in.mp4';
 const OUT = '/tmp/out.mp4';
+
+// A temporary directory of its own: the other files of a run make pass directories of the same kind in the shared one at the same
+// time, and the checks for what a job leaves behind must see only what these tests start.
+const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'two-pass-options-tmp-'));
+process.env.TMPDIR = privateTmp;
+afterAll(() => {
+  fs.rmSync(privateTmp, { recursive: true, force: true });
+});
 
 function ffmpeg(): string {
   return requireOracleTool('ffmpeg');
