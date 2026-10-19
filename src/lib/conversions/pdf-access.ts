@@ -182,12 +182,20 @@ export async function openPdfForRebuilding(pdf: Buffer, operation: PdfEditOperat
 }
 
 /**
+ * Objects pdf-lib reads or writes between two yields to the event loop. A yield is a timer of no delay, which Node holds
+ * for a millisecond, and pdf-lib yields every 100 objects it reads and every 50 it writes by default: a document of a
+ * hundred objects waits a millisecond or two, as long as it takes to read and write it. At 500 objects a stretch of work
+ * of a few milliseconds still goes between two yields, and a document of up to 500 objects does not wait at all.
+ */
+export const PDF_LIB_OBJECTS_PER_TICK = 500;
+
+/**
  * Loads an unencrypted PDF with pdf-lib. A file pdf-lib still finds encrypted, because its parser reads the trailer
  * differently from ours, is refused like any other encrypted input instead of being read as plain.
  */
 export async function loadPdfDocument(plain: Buffer): Promise<PDFDocument> {
   try {
-    return await PDFDocument.load(plain);
+    return await PDFDocument.load(plain, { parseSpeed: PDF_LIB_OBJECTS_PER_TICK });
   } catch (error) {
     if (error instanceof EncryptedPDFError) {
       throw new PdfPasswordRequiredError(REQUIRED_MESSAGE);

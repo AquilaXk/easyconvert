@@ -115,9 +115,9 @@ describe.skipIf(toolsMissing)('PDF operations through the launcher', () => {
     expect(reordered.programs).toBe(1);
     expect(pageTexts(reordered.value)).toEqual([PAGE_TEXTS[4], PAGE_TEXTS[0], PAGE_TEXTS[1], PAGE_TEXTS[2], PAGE_TEXTS[3]]);
 
-    // Delete runs the edit and, beside it, the page count that tells an emptied document from a result: two programs.
+    // A deletion that leaves page 1 leaves a page: it is the edit alone, one program.
     const deleted = await launched(() => deletePdfPages(pdf, '2,4'));
-    expect(deleted.programs).toBe(2);
+    expect(deleted.programs).toBe(1);
     expect(qpdfCheckPasses(deleted.value)).toBe(true);
     expect(pageTexts(deleted.value)).toEqual([PAGE_TEXTS[0], PAGE_TEXTS[2], PAGE_TEXTS[4]]);
   });
@@ -141,7 +141,7 @@ describe.skipIf(toolsMissing)('PDF operations through the launcher', () => {
     }
     expect(texts).toEqual([[PAGE_TEXTS[0]], [PAGE_TEXTS[1], PAGE_TEXTS[2]], [PAGE_TEXTS[4]]]);
 
-    // Delete counts the pages beside the edit, and the helper started both programs.
+    // A deletion that names page 1 runs the edit and, beside it, the page count that tells an emptied document from a result: two programs, both started by the helper.
     const deleted = await launched(async () => deletePdfPages(await source(), '1'));
     expect(deleted.programs).toBe(2);
     expect(pageTexts(deleted.value)).toEqual(PAGE_TEXTS.slice(1));
