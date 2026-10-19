@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import JSZip from 'jszip';
-import { ConversionFailedError, PayloadLimitError } from '../../types';
+import { PayloadLimitError } from '../../types';
 import { resolveLanguage } from '../document-language';
 import { redrawAsPng } from '../image-to-png';
 import { HtmlWriter, type HtmlRenderOptions } from './html';
@@ -230,10 +230,13 @@ function accessibilityMetadata(model: DocumentModel, hasHeadings: boolean): stri
   ];
 }
 
-/** Writes the book. A document with no content, or an unusable `language`, is refused with a typed error. */
+/**
+ * Writes the book. A document with no content becomes a book of one empty content document, as the Word and ODF writers
+ * write one empty paragraph (policy 8); an unusable `language` is refused with a typed error.
+ */
 export async function documentToEpub(model: DocumentModel, options: EpubWriteOptions): Promise<Buffer> {
   const chapters = splitChapters(bodyBlocks(model));
-  if (chapters.length === 0) throw new ConversionFailedError('The document has no content to put in an EPUB.');
+  if (chapters.length === 0) chapters.push({ blocks: [], headingOffset: 0 });
   const language = resolveLanguage(model, options.language) ?? UNDETERMINED_LANGUAGE;
   const title = (model.title ?? options.title).trim() || options.title;
   const bookId = `urn:uuid:${crypto.randomUUID()}`;
