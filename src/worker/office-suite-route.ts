@@ -70,14 +70,25 @@ export function interchangeNeeded(src: string, tgt: string, madeWithoutInterchan
 const FIRST_PAGE_RANGE = '1';
 
 /**
+ * Limit of each stage of the page chain (the suite's PDF, the page count, the drawing of the pages) when the request names none. The stages
+ * default to 45 s, which is the 99.9th percentile of the corpus runs and is right for a document of a few pages; but the layout of a
+ * long document alone takes 31 s on an idle 4-core machine for the 4,874 pages of `govdocs1-010383.rtf`, 41 s next to 4 busy loops and
+ * more than 45 s next to 8, so the stage ended with a time-limit error (422) before the page count was known and the request could not
+ * be refused with the 413 that names it. 120 s is the ceiling the stages already have; the job deadline still holds each stage to the
+ * time the job has left, which is what ends a runaway.
+ */
+export const OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS = 120_000;
+
+/**
  * The options of a document that becomes page images (the office suite writes the PDF, Poppler draws the pages): a request
- * renders at most `OFFICE_PAGE_IMAGE_MAX_PAGES` pages whatever application opens the source. A spreadsheet that asks for the first
+ * renders at most `OFFICE_PAGE_IMAGE_MAX_PAGES` pages whatever application opens the source, and each stage may run for
+ * `OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS` unless the server set another limit. A spreadsheet that asks for the first
  * page (`multiPageOutput: "first"`, no page selection) also has the suite print that page only, which skips the layout and the
  * PDF of every other page; a text document or a presentation is laid out whole before any page is written, so that cut gains
  * nothing there. The limits are set here, over whatever the request carried.
  */
 export function withOfficePageBounds(src: string, options: WorkerEngineOptions): WorkerEngineOptions {
-  const bounded = { ...options, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES };
+  const bounded = { ...options, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES, timeoutMs: options.timeoutMs ?? OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS };
   if (officeSuiteApplication(src) !== 'calc') return bounded;
   const firstPageOnly = options.multiPageOutput === 'first' && !selectsPages(options);
   return { ...bounded, pdfExportPageRange: firstPageOnly ? FIRST_PAGE_RANGE : undefined };

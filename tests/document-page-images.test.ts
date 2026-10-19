@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { JOB_DEADLINE_AT, type JobDeadlined, stageTimeoutMs } from '../src/lib/conversions/job-time';
 import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../src/lib/conversions/page-range';
 import { PayloadLimitError } from '../src/lib/types';
-import { withOfficePageBounds } from '../src/worker/office-suite-route';
+import { OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS, withOfficePageBounds } from '../src/worker/office-suite-route';
+import type { WorkerEngineOptions } from '../src/worker/worker-types';
 import { oracleTest } from './helpers/oracle-test';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { flatOdp, flatOdt, sofficeConvert } from './helpers/soffice-office';
@@ -50,6 +52,18 @@ describe('the page bounds of a request that becomes page images', () => {
     }
     expect(withOfficePageBounds('docx', { multiPageOutput: 'first' }).pdfExportPageRange).toBeUndefined();
     expect(withOfficePageBounds('xlsx', { multiPageOutput: 'first' }).pdfExportPageRange).toBe('1');
+  });
+
+  it('give each stage of the chain the time a long document needs, held to what the job has left and to a limit the server set', () => {
+    const now = Date.now();
+    const DEFAULT_STAGE_MS = 45_000;
+    const STAGE_LIMIT_MS = 120_000;
+    expect(OFFICE_PAGE_CHAIN_STAGE_TIMEOUT_MS).toBe(STAGE_LIMIT_MS);
+    expect(stageTimeoutMs(withOfficePageBounds('rtf', {}), DEFAULT_STAGE_MS, now)).toBe(STAGE_LIMIT_MS);
+    const remaining = 50_000;
+    const nearDeadline: WorkerEngineOptions & JobDeadlined = { [JOB_DEADLINE_AT]: now + remaining };
+    expect(stageTimeoutMs(withOfficePageBounds('rtf', nearDeadline), DEFAULT_STAGE_MS, now)).toBe(remaining);
+    expect(stageTimeoutMs(withOfficePageBounds('rtf', { timeoutMs: 30_000 }), DEFAULT_STAGE_MS, now)).toBe(30_000);
   });
 
   it('keep the other options of the request', () => {
