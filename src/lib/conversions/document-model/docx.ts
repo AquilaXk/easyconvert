@@ -3,6 +3,7 @@ import sharp from 'sharp';
 import { PayloadLimitError } from '../../types';
 import { resolveLanguage } from '../document-language';
 import { redrawAsPng } from '../image-to-png';
+import { uniqueAnchors } from './anchors';
 import { escapeXmlText } from './xml-text';
 import type {
   Block,
@@ -636,6 +637,7 @@ function documentLists(model: DocumentModel): ListBlock[] {
  * @throws UnsupportedOptionError when the requested language is not a BCP 47 tag.
  */
 export async function documentToDocx(model: DocumentModel, options: DocxWriteOptions = {}): Promise<Buffer> {
+  uniqueAnchors(model);
   // Word proofs by the language the document or the request names; text is not guessed at here.
   const language = options.language !== undefined || model.language ? resolveLanguage(model, options.language) : undefined;
   const title = (model.title ?? options.title)?.trim();

@@ -48,6 +48,8 @@ const CODE: ReadonlySet<string> = new Set(['code', 'kbd', 'samp', 'tt']);
 const INLINE_BLOCK_BREAKERS: ReadonlySet<string> = new Set([
   ...HEADING_LEVELS.keys(), ...PARAGRAPHS, ...CONTAINERS, ...LISTS, 'table', 'pre', 'blockquote', 'hr', 'li', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot',
 ]);
+/** Attributes that make an element a link target; the copies of an element split around blocks do not repeat them. */
+const ANCHOR_ATTRIBUTES: readonly string[] = ['id', 'name'];
 const ORDERED_TYPES: ReadonlyMap<string, string> = new Map([['1', 'decimal'], ['a', 'lowerLetter'], ['A', 'upperLetter'], ['i', 'lowerRoman'], ['I', 'upperRoman']]);
 const DATA_URI = /^data:([^,]*?)(;base64)?,(.*)$/is;
 const COLOR_HEX = /^#([0-9a-f]{6})$/i;
@@ -170,6 +172,7 @@ class HtmlModelBuilder {
   readonly checks: Buffer[] = [];
   private readonly omittedImages = new OmittedExternalImages();
   private readonly omittedContent = new OmittedContent();
+  private readonly holdsBlockMemo = new Map<HtmlElement, boolean>();
 
   constructor(
     private readonly options: HtmlModelOptions,
@@ -183,6 +186,70 @@ class HtmlModelBuilder {
   /** The lines for what was left out, worded as the PDF routes word it (see html-omitted-resources.ts). */
   omissionWarnings(): string[] {
     return [...this.omittedImages.warnings(), ...this.omittedContent.warnings()];
+  }
+
+  /** Whether `node` is an element laid out inline (not a block, not left out, not an image or a break). */
+  private isInline(node: HtmlNode): node is HtmlElement {
+    return typeof node !== 'string' && !INLINE_BLOCK_BREAKERS.has(node.tag) && !SKIPPED.has(node.tag) && !DROPPED_WITH_WARNING.has(node.tag);
+  }
+
+  /** Whether an inline element holds a block-level element, directly or inside other inline elements. */
+  private holdsBlock(element: HtmlElement): boolean {
+    let held = this.holdsBlockMemo.get(element);
+    if (held === undefined) {
+      held = element.children.some((child) => typeof child !== 'string' && (INLINE_BLOCK_BREAKERS.has(child.tag) || (this.isInline(child) && this.holdsBlock(child))));
+      this.holdsBlockMemo.set(element, held);
+    }
+    return held;
+  }
+
+  /** `nodes` with each inline element that holds blocks replaced by the flow it lays out as (see `splitAroundBlocks`). */
+  private flowOf(nodes: readonly HtmlNode[]): HtmlNode[] {
+    return nodes.flatMap((node) => (this.isInline(node) && this.holdsBlock(node) ? this.splitAroundBlocks(node) : [node]));
+  }
+
+  /**
+   * The flow an inline element with blocks inside lays out as (CSS: a block inside an inline splits it): the inline
+   * content around each block stays inline and the blocks stay blocks, so an unknown wrapper such as `<noindex>` around
+   * divisions, lists or tables reads as those blocks, not as one paragraph. Every piece of inline content is in a copy of
+   * the element, so its formatting and link carry over to the blocks; the element's id (or an anchor's name) goes to the start of the first piece.
+   */
+  private splitAroundBlocks(element: HtmlElement): HtmlNode[] {
+    const pieces = this.wrapPieces(element, element.children);
+    return ANCHOR_ATTRIBUTES.some((name) => element.attrs.has(name)) ? this.anchoredAtStart(pieces, element) : pieces;
+  }
+
+  /** `pieces` with the anchor of `element` at the start of the first inline piece, found through the first blocks. */
+  private anchoredAtStart(pieces: readonly HtmlNode[], element: HtmlElement): HtmlNode[] {
+    const [first, ...rest] = pieces;
+    if (first === undefined || typeof first === 'string') return [{ ...element, children: [] }, ...pieces];
+    if (INLINE_BLOCK_BREAKERS.has(first.tag)) return [{ ...first, children: this.anchoredAtStart(first.children, element) }, ...rest];
+    return [{ ...first, attrs: element.attrs }, ...rest];
+  }
+
+  /** `children` with each run of inline content in a copy of `wrapper` and the blocks between the runs kept, their content wrapped the same way. */
+  private wrapPieces(wrapper: HtmlElement, children: readonly HtmlNode[]): HtmlNode[] {
+    const pieces: HtmlNode[] = [];
+    let run: HtmlNode[] = [];
+    const flush = (): void => {
+      if (run.length > 0) pieces.push({ ...wrapper, attrs: new Map([...wrapper.attrs].filter(([name]) => !ANCHOR_ATTRIBUTES.includes(name))), children: run });
+      run = [];
+    };
+    for (const child of children) {
+      if (typeof child === 'string') {
+        run.push(child);
+      } else if (INLINE_BLOCK_BREAKERS.has(child.tag)) {
+        flush();
+        pieces.push({ ...child, children: this.wrapPieces(wrapper, child.children) });
+      } else if (this.isInline(child) && this.holdsBlock(child)) {
+        flush();
+        pieces.push(...this.wrapPieces(wrapper, this.splitAroundBlocks(child)));
+      } else {
+        run.push(child);
+      }
+    }
+    flush();
+    return pieces;
   }
 
   private countBlock(): void {
@@ -306,7 +373,7 @@ class HtmlModelBuilder {
       if (run.length > 0) this.paragraphFrom(run, out);
       run = [];
     };
-    for (const node of nodes) {
+    for (const node of this.flowOf(nodes)) {
       if (typeof node === 'string' || !(INLINE_BLOCK_BREAKERS.has(node.tag) || SKIPPED.has(node.tag) || DROPPED_WITH_WARNING.has(node.tag))) {
         run.push(node);
         continue;
