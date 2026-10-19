@@ -432,15 +432,16 @@ export interface ConversionQueueItem {
 }
 
 /** What a stream a conversion left out was. `chapters` is the chapter list, which has no stream index. */
-export type DroppedStreamKind = 'video' | 'subtitle' | 'attachment' | 'data' | 'attached_picture' | 'chapters';
+export type DroppedStreamKind = 'video' | 'audio' | 'subtitle' | 'attachment' | 'data' | 'attached_picture' | 'chapters';
 
 /**
  * Why a stream was left out:
  * - `container_unsupported`: the target container cannot carry it (subtitles in avi, attachments outside mkv).
  * - `stream_type_unsupported`: no conversion to a video container carries this kind of stream (data, cover art).
  * - `additional_video_track`: a video container output holds one video track; only the first was kept.
+ * - `undecodable`: no packet of an audio stream can be decoded, so the video was converted without it.
  */
-export type DroppedStreamReason = 'container_unsupported' | 'stream_type_unsupported' | 'additional_video_track';
+export type DroppedStreamReason = 'container_unsupported' | 'stream_type_unsupported' | 'additional_video_track' | 'undecodable';
 
 /** A stream of the input that the output does not contain. The conversion itself succeeded. */
 export interface DroppedStream {

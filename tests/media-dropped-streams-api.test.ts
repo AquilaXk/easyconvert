@@ -16,6 +16,7 @@ import {
 } from '../src/lib/api/dropped-streams';
 import { oracleTest } from './helpers/oracle-test';
 import { expectedDrop, libraryMkv, probeBuffer, withFixtureDirAsync } from './helpers/dropped-stream-fixtures';
+import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
  * A conversion that leaves a stream out says so on every surface that reports its result: the v1 convert JSON
@@ -136,6 +137,38 @@ describe('POST /api/v1/convert reports dropped streams', () => {
   );
 });
 
+describe('POST /api/v1/convert reports an audio stream that cannot be decoded', () => {
+  const UNDECODABLE = { index: 1, kind: 'audio', codec: 'aac', reason: 'undecodable' };
+
+  oracleTest(
+    'converts the video of a Blu-ray transport stream and lists its audio stream in the JSON and in the raw header',
+    ['ffmpeg', 'ffprobe'],
+    async (ctx) => {
+      const sample = await requireRealworldSample(ctx, 'ffs-01200.m2ts');
+      const request = (headers: Record<string, string>) => {
+        const form = new FormData();
+        form.append('file', new Blob([new Uint8Array(sample.bytes)]), 'ffs-01200.m2ts');
+        form.append('targetFormat', 'mp4');
+        return new NextRequest(`${BASE_URL}/api/v1/convert`, { method: 'POST', headers: { Authorization: `Bearer ${secretKey}`, ...headers }, body: form });
+      };
+      const json = await v1ConvertPost(request({}));
+      expect(json.status).toBe(HTTP_OK);
+      expect((await json.json()).droppedStreams).toEqual([UNDECODABLE]);
+
+      const raw = await v1ConvertPost(request({ Accept: 'application/octet-stream' }));
+      expect(raw.status).toBe(HTTP_OK);
+      expect(raw.headers.get(DROPPED_STREAMS_HEADER)).toBe('audio#1:undecodable');
+      expect(probeBuffer(Buffer.from(await raw.arrayBuffer()), 'mp4').streams.map((s) => s.codec_type)).toEqual(['video']);
+    },
+    ENCODE_TIMEOUT_MS
+  );
+
+  it('is part of the public lists: the kind audio and the reason undecodable survive the validation of a stored result', () => {
+    expect(droppedStreamsFields({ droppedStreams: [UNDECODABLE] })).toEqual({ droppedStreams: [UNDECODABLE] });
+    expect(droppedStreamsHeaders({ droppedStreams: [UNDECODABLE] })).toEqual({ [DROPPED_STREAMS_HEADER]: 'audio#1:undecodable' });
+  });
+});
+
 describe('GET /api/v1/jobs/{id} reports dropped streams', () => {
   oracleTest(
     'carries the list in the job view and in its result',
@@ -208,8 +241,8 @@ describe('OpenAPI document', () => {
     expect(response.type).toBe('array');
     expect(response.maxItems).toBe(MAX_DROPPED_STREAMS);
     expect(response.items.required).toEqual(['kind', 'reason']);
-    expect(response.items.properties.reason.enum).toEqual(['container_unsupported', 'stream_type_unsupported', 'additional_video_track']);
-    expect(response.items.properties.kind.enum).toEqual(['video', 'subtitle', 'attachment', 'data', 'attached_picture', 'chapters']);
+    expect(response.items.properties.reason.enum).toEqual(['container_unsupported', 'stream_type_unsupported', 'additional_video_track', 'undecodable']);
+    expect(response.items.properties.kind.enum).toEqual(['video', 'audio', 'subtitle', 'attachment', 'data', 'attached_picture', 'chapters']);
 
     const job = spec.components.schemas.JobResource.properties;
     expect(job.droppedStreams.type).toBe('array');

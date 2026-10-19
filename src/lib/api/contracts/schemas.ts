@@ -1285,7 +1285,7 @@ export const DroppedStreamsProperties = {
     type: 'array',
     maxItems: MAX_DROPPED_STREAMS,
     description:
-      'Streams of the input that the output does not contain, for example the subtitle tracks of an mkv converted to avi. The conversion succeeded; this lists what it could not carry. Present only when something was left out. Audio tracks `audio.track` did not choose and subtitles burned into the picture are not listed.',
+      'Streams of the input that the output does not contain, for example the subtitle tracks of an mkv converted to avi. The conversion succeeded; this lists what it could not carry. Present only when something was left out. Audio tracks `audio.track` did not choose and subtitles burned into the picture are not listed. An audio stream with no decodable packet is listed only when the file has a picture to convert; a conversion to an audio target is refused instead.',
     items: {
       type: 'object',
       required: ['kind', 'reason'],
@@ -1304,7 +1304,7 @@ export const DroppedStreamsProperties = {
           type: 'string',
           enum: [...DROPPED_STREAM_REASONS],
           description:
-            '`container_unsupported`: the target container cannot carry this stream. `stream_type_unsupported`: no video-container output carries this kind of stream (data, cover art). `additional_video_track`: only the first video track is kept.',
+            '`container_unsupported`: the target container cannot carry this stream. `stream_type_unsupported`: no video-container output carries this kind of stream (data, cover art). `additional_video_track`: only the first video track is kept. `undecodable`: no packet of this audio stream can be decoded, so the video was converted without it.',
         },
       },
     },
