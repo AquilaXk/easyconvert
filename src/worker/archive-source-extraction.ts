@@ -10,6 +10,8 @@ export interface ExtractArchiveParams {
   tempDir: string;
   timeout: number;
   maxBuffer: number;
+  /** The name the caller gave the archive; a refusal that asks for the next volume of a set names it by this. */
+  archiveName?: string;
   options?: WorkerEngineOptions;
 }
 
@@ -24,6 +26,8 @@ const COMPRESSED_STREAM_FORMATS = new Set([
 export interface SourceExtraction {
   entryCount: number;
   skippedLinks: string[];
+  /** Alternate streams of the source (HFS+ attributes) that were not extracted. */
+  alternateStreams: number;
   /** The directory holding the files to pack, when it is not the one the caller prepared (a package's payload). */
   root?: string;
   /** An empty tree is a valid result (a package that installs no files), not a failure to read. */
@@ -36,7 +40,7 @@ export interface SourceExtraction {
  * never returns a partial result. A package (rpm, deb) is extracted to the files it installs.
  */
 export async function extractSourceArchive(params: ExtractArchiveParams, src: string): Promise<SourceExtraction> {
-  const { p7zBin, inputPath, extractDir, tempDir, timeout, maxBuffer, options } = params;
+  const { p7zBin, inputPath, extractDir, tempDir, timeout, maxBuffer, archiveName, options } = params;
 
   if (options?.archiveParts && options.archiveParts.length > 0) {
     // Multi-volume input is stitched to one seekable file so it is listed like any other archive.
@@ -48,7 +52,7 @@ export async function extractSourceArchive(params: ExtractArchiveParams, src: st
       collisionPolicy: options.collisionPolicy,
       signal: options.signal,
     });
-    return { entryCount: spanned.entryCount, skippedLinks: spanned.skippedLinks };
+    return { entryCount: spanned.entryCount, skippedLinks: spanned.skippedLinks, alternateStreams: spanned.alternateStreams };
   }
 
   const includePatterns = options?.entries && options.entries.length > 0 ? options.entries : undefined;
@@ -61,6 +65,7 @@ export async function extractSourceArchive(params: ExtractArchiveParams, src: st
     maxBuffer,
     limits: ARCHIVE_SECURITY_LIMITS,
     label: 'archive',
+    archiveName,
     password: options?.password,
     includePatterns,
     // Packages and disk images carry symbolic links as a matter of course; unless the caller decides, the links are left
@@ -72,8 +77,9 @@ export async function extractSourceArchive(params: ExtractArchiveParams, src: st
   };
   if (PACKAGE_SOURCES.has(src)) {
     const payload = await extractPackagePayload(request, src === 'deb' ? 'deb' : 'rpm');
-    return { entryCount: payload.tree.entryCount, skippedLinks: payload.tree.skippedLinks, root: payload.root, mayBeEmpty: true };
+    const { entryCount, skippedLinks, alternateStreams } = payload.tree;
+    return { entryCount, skippedLinks, alternateStreams, root: payload.root, mayBeEmpty: true };
   }
   const tree = await extractArchiveContained(request);
-  return { entryCount: tree.entryCount, skippedLinks: tree.skippedLinks };
+  return { entryCount: tree.entryCount, skippedLinks: tree.skippedLinks, alternateStreams: tree.alternateStreams };
 }

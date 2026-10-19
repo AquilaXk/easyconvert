@@ -183,12 +183,10 @@ describe('a disk image converts to the files on its volume', () => {
       for (const target of TARGETS) {
         const result = await dispatchConversion(fixture('links.dmg'), 'dmg', target, {}, 'links.dmg');
         const output = await readArchiveTree(result.buffer, target);
-        // The macOS disk utility that wrote the image tagged each file with a provenance attribute; 7-Zip hands out
-        // such an HFS+ attribute as a file named `<file>:<attribute>`, which are the only other entries.
-        const streams = [...output.files.keys()].filter((name) => name.includes(':'));
-        for (const name of streams) output.files.delete(name);
+        // The macOS disk utility that wrote the image tagged the volume, the directory and every file with a provenance
+        // attribute (8 alternate streams in all, as 7-Zip's own summary counts); they are not files and are left out.
         expect(fileDigests(output.files), target).toEqual(digestsOf(volume));
-        expect(streams.every((name) => name.endsWith(':com.apple.provenance')), target).toBe(true);
+        expect(result.metadata?.warnings, target).toEqual(['8 alternate streams (extended attributes and resource forks of the files) were left out.']);
         expect([...output.links.keys()], target).toEqual([]);
         expect([...(result.skippedLinks ?? [])].sort(), target).toEqual(['PROBE/Applications', 'PROBE/dir/up-link.txt', 'PROBE/link.txt']);
       }
@@ -318,7 +316,8 @@ describe('the payload of a package is vetted before anything is extracted', () =
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
-// An rpm whose payload uses the stripped cpio headers (rpm 4.12 and later) lists no files in any reader but rpm itself.
+// An rpm whose payload uses the stripped cpio headers (rpm 4.12 and later) lists no files in any reader but rpm itself;
+// the names come from the package header (tests/rpm-stripped-payload.test.ts converts real and written packages).
 // ---------------------------------------------------------------------------------------------------------------------
 
 const RPM_LEAD_BYTES = 96;
@@ -348,11 +347,11 @@ function buildRpm(payload: Buffer): Buffer {
 }
 
 describe('an rpm 7-Zip cannot list', () => {
-  oracleTest('a payload of stripped cpio headers is refused as unreadable, not converted to an empty archive', ['7z'], async () => {
+  oracleTest('a payload of stripped cpio headers that its header lists no file for is refused as unreadable, not converted to an empty archive', ['7z'], async () => {
     const stripped = Buffer.concat([Buffer.from('07070X00000000\0\0'), Buffer.from('07070X00000001\0\0hello\n\0\0'), newcEntry('TRAILER!!!', 0)]);
     const failure = await dispatchConversion(buildRpm(stripped), 'rpm', 'zip', {}, 'stripped.rpm').catch((err: unknown) => err);
     expect(failure).toMatchObject({ name: 'UnreadableArchiveError' });
-    expect((failure as Error).message).toMatch(/payload holds no entries/);
+    expect((failure as Error).message).toBe('Could not read the package: its payload is damaged (an entry names a file the package does not list).');
   }, ENGINE_TIMEOUT_MS);
 
   oracleTest('a plain cpio payload of an rpm converts to its files', ['7z', 'tar'], async () => {

@@ -95,6 +95,7 @@ import {
 } from './raw-decoded-tiff';
 import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
+import { withExtractionNotes } from '../lib/conversions/archive-alternate-streams';
 import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
 import { extractSourceArchive } from './archive-source-extraction';
 import { rarToTar, tarToBzip2, tarToGzip, tarToZip, zipToTar } from '../lib/conversions/archive-repack';
@@ -957,6 +958,7 @@ export async function convertWithNative7z(
     let extractDir = path.join(tempDir, 'extracted');
     let entryCount: number;
     let skippedLinks: string[] = [];
+    let alternateStreams = 0;
     let mayBeEmpty = false;
     if (staged) {
       extractDir = staged.stagingDir;
@@ -977,12 +979,14 @@ export async function convertWithNative7z(
             tempDir,
             timeout,
             maxBuffer,
+            archiveName: originalFilename,
             options,
           },
           src
         );
         entryCount = extraction.entryCount;
         skippedLinks = extraction.skippedLinks;
+        alternateStreams = extraction.alternateStreams;
         extractDir = extraction.root ?? extractDir;
         mayBeEmpty = extraction.mayBeEmpty === true;
       } else {
@@ -1023,11 +1027,7 @@ export async function convertWithNative7z(
 
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
 
-    const result = createConversionResult(persistedPath, tgt, baseName, 'native-7z', Date.now() - startTime);
-    if (skippedLinks.length > 0) {
-      result.skippedLinks = skippedLinks;
-    }
-    return result;
+    return withExtractionNotes(createConversionResult(persistedPath, tgt, baseName, 'native-7z', Date.now() - startTime), { skippedLinks, alternateStreams });
   });
 }
 

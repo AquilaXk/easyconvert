@@ -44,7 +44,9 @@ import {
   unpackedBytesCap,
 } from './archive-extraction-safety';
 import { compressBzip2Async, decompressBzip2 } from './bzip2';
+import { withExtractionNotes } from './archive-alternate-streams';
 import { isWrapperSource, unpackWrapperSource } from './archive-wrapper-sources';
+import { inspectLzSource, isRarArchive, isSevenZipArchive, isZipArchive, sniffLzSource, type InspectionBody } from './archive-inspection-sources';
 import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { crc32 } from './crc32';
@@ -2251,6 +2253,7 @@ export function convertWithNative7z(
     fs.mkdirSync(extractDir, { recursive: true });
 
     let skippedLinks: string[] = [];
+    let alternateStreams = 0;
     let entryCount: number;
     if (supportedExtract.has(src)) {
       // List, vet, extract and re-verify; unsafe or oversized archives throw before anything is packaged.
@@ -2263,12 +2266,14 @@ export function convertWithNative7z(
         maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
         limits: ARCHIVE_SECURITY_LIMITS,
         label: `${src.toUpperCase()} archive`,
+        archiveName: originalFilename,
         password: options.password,
         skipLinks: options.skipLinks,
         collisionPolicy: options.collisionPolicy,
       };
       let tree = extractArchiveContainedSync(outerRequest);
       skippedLinks = tree.skippedLinks;
+      alternateStreams = tree.alternateStreams;
 
       // A compressed tarball (tar.gz, tar.bz2, tar.xz, tgz, ...) unpacks to one intermediate .tar, which is
       // listed, vetted and extracted as its own layer; its ratio is measured against the original upload.
@@ -2362,13 +2367,8 @@ export function convertWithNative7z(
     else if (tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz') mime = 'application/x-bzip-compressed-tar';
     else if (tgt === 'tar.xz' || tgt === 'txz') mime = 'application/x-xz-compressed-tar';
 
-    return {
-      buffer: outputBuffer,
-      mimeType: mime,
-      filename: `${baseName}.${tgt}`,
-      size: outputBuffer.length,
-      ...(skippedLinks.length > 0 ? { skippedLinks } : {}),
-    };
+    const converted: ConversionResult = { buffer: outputBuffer, mimeType: mime, filename: `${baseName}.${tgt}`, size: outputBuffer.length };
+    return withExtractionNotes(converted, { skippedLinks, alternateStreams });
   } catch (err) {
     // A host that cannot sandbox 7-Zip refuses the request: the in-process engines are not a substitute for it.
     rethrowSandboxUnavailable(err);
@@ -2408,6 +2408,7 @@ export async function extractWithSpannedStream7z(
   /** Number of files and directories extracted. */
   entryCount: number;
   skippedLinks: string[];
+  alternateStreams: number;
 }> {
   const p7zBin = get7zBinaryPath();
   if (!p7zBin) {
@@ -2446,6 +2447,7 @@ export async function extractWithSpannedStream7z(
       baseFilename: metadata.baseFilename,
       entryCount: tree.entryCount,
       skippedLinks: tree.skippedLinks,
+      alternateStreams: tree.alternateStreams,
     };
   } finally {
     try {
@@ -3219,9 +3221,6 @@ export async function repairZipArchive(
   return await createZipBuffer(zipEntriesWithFolders(salvagedFiles, ZIP_DEFAULT_LEVEL));
 }
 
-/** What the per-format inspectors return; `inspectArchive` adds the extractability report. */
-type InspectionBody = Omit<ArchiveInspectResponse, 'extractable' | 'unextractableReasons'>;
-
 const UNIX_FILE_TYPE_MASK = 0o170000;
 const UNIX_SYMLINK_TYPE = 0o120000;
 const ZIP_UNIX_HOST = 3;
@@ -3741,38 +3740,17 @@ async function inspectArchiveEntries(
   }
 
   // 1. ZIP
-  if (
-    archiveBuffer.length >= 4 &&
-    archiveBuffer[0] === 0x50 &&
-    archiveBuffer[1] === 0x4b &&
-    (archiveBuffer[2] === 0x03 || archiveBuffer[2] === 0x05 || archiveBuffer[2] === 0x07)
-  ) {
+  if (isZipArchive(archiveBuffer)) {
     return inspectZipBuffer(archiveBuffer);
   }
 
   // 2. 7z
-  if (
-    archiveBuffer.length >= 6 &&
-    archiveBuffer[0] === 0x37 &&
-    archiveBuffer[1] === 0x7a &&
-    archiveBuffer[2] === 0xbc &&
-    archiveBuffer[3] === 0xaf &&
-    archiveBuffer[4] === 0x27 &&
-    archiveBuffer[5] === 0x1c
-  ) {
+  if (isSevenZipArchive(archiveBuffer)) {
     return await inspect7zBuffer(archiveBuffer, options.password);
   }
 
   // 3. RAR
-  if (
-    archiveBuffer.length >= 7 &&
-    archiveBuffer[0] === 0x52 &&
-    archiveBuffer[1] === 0x61 &&
-    archiveBuffer[2] === 0x72 &&
-    archiveBuffer[3] === 0x21 &&
-    archiveBuffer[4] === 0x1a &&
-    archiveBuffer[5] === 0x07
-  ) {
+  if (isRarArchive(archiveBuffer)) {
     return await inspectRarBuffer(archiveBuffer, options.password);
   }
 
@@ -3807,7 +3785,11 @@ async function inspectArchiveEntries(
     }
   }
 
-  // 5. TAR
+  // 5. lzip and lzop, which 7-Zip does not open: a tar is listed by its members, any other payload is the one file it holds
+  const lzSource = sniffLzSource(archiveBuffer);
+  if (lzSource !== null) return inspectLzSource(archiveBuffer, lzSource, options.filename, ARCHIVE_SECURITY_LIMITS, inspectTarBuffer);
+
+  // 6. TAR
   if (archiveBuffer.length >= 512) {
     const magic = archiveBuffer.toString('ascii', 257, 262);
     if (magic.startsWith('ustar') || options.filename?.endsWith('.tar')) {

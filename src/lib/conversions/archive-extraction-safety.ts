@@ -7,6 +7,7 @@ import {
   ConversionFailedError,
   EngineUnavailableError,
   InvalidArchivePasswordError,
+  UnsupportedArchiveMethodError,
   type ArchiveCollisionPolicy,
 } from '../types';
 import {
@@ -16,7 +17,9 @@ import {
   SandboxedBufferLimitError,
   SandboxedProcessError,
 } from '../security/process-sandbox';
-import { damagedEntryMessage, diskImageMessage, multiVolumeMessage } from './archive-refusal-reasons';
+import { hasTarHeaderChecksum, hasTarMagic } from './archive-tar-detect';
+import { LIST_ALTERNATE_STREAMS, SKIP_ALTERNATE_STREAMS, separateAlternateStreams, type ArchiveListing } from './archive-alternate-streams';
+import { damagedEntryMessage, diskImageMessage, multiVolumeMessage, nextVolumeName, unsupportedMethodMessage } from './archive-refusal-reasons';
 import {
   archiveFailureStderr,
   assertArchivePasswordSafe,
@@ -26,6 +29,7 @@ import {
 } from './archive-password';
 
 export { assertArchivePasswordSafe };
+export { hasTarHeaderChecksum, hasTarMagic, hasTarMagicBlock, isTarHeaderBlock } from './archive-tar-detect';
 
 /**
  * Contained extraction of untrusted archives through the 7-Zip CLI.
@@ -92,6 +96,13 @@ export interface ListedArchiveEntry {
   splitBefore?: boolean;
   /** The single stream of a wrapper format (gz, bz2, xz, ...), whose size 7-Zip may not state. */
   wrapperPayload?: boolean;
+  /** How 7-Zip names the compression of the entry (the listing's `Method`), for messages only. */
+  method?: string;
+  /**
+   * An alternate data stream of a file (an HFS+ attribute or resource fork, an NTFS stream), which 7-Zip lists as an item of
+   * its own named `<file>:<stream>` (the listing's `Alternate Stream`).
+   */
+  alternateStream?: boolean;
 }
 
 export interface ExtractedFile {
@@ -108,6 +119,8 @@ export interface ContainedTree {
   totalBytes: number;
   /** Link entries left out of the extraction because the caller opted in with `skipLinks`. */
   skippedLinks: string[];
+  /** Alternate data streams the listing held; they are never extracted (see {@link separateAlternateStreams}). */
+  alternateStreams: number;
 }
 
 /** The archive is damaged or in a format 7-Zip cannot read (as opposed to a policy violation). */
@@ -354,6 +367,7 @@ function buildListedEntry(fields: Map<string, string>, payloadName?: string): Li
 
   const linkTarget = linkKind === 'symlink' ? symbolicTarget : hardTarget;
   const rawSize = fields.get('Size') ?? '';
+  const method = fields.get('Method') ?? '';
   return {
     path: entryPath,
     isDirectory: classification.isDirectory,
@@ -363,6 +377,8 @@ function buildListedEntry(fields: Map<string, string>, payloadName?: string): Li
     isSpecial: classification.isSpecial,
     ...(fields.get('Split After') === '+' ? { splitAfter: true } : {}),
     ...(fields.get('Split Before') === '+' ? { splitBefore: true } : {}),
+    ...(fields.get('Alternate Stream') === '+' ? { alternateStream: true } : {}),
+    ...(method === '' ? {} : { method }),
     ...(fields.has('Path') ? {} : { wrapperPayload: true }),
   };
 }
@@ -807,7 +823,7 @@ export function assertExtractionContained(
   for (const shared of sharedFiles) normalizeExtractedMode(shared.abs, shared.mode, OWNER_FILE_ACCESS);
   assertWithinSizeAndRatio(totalBytes, archiveBytes, limits);
   files.sort((x, y) => (x.relPath < y.relPath ? -1 : 1));
-  return { files, entryCount, totalBytes, skippedLinks: [] };
+  return { files, entryCount, totalBytes, skippedLinks: [], alternateStreams: 0 };
 }
 
 /** Counts one more name for the inode of `file`; the key is read as a bigint so two inodes never share a key by rounding. */
@@ -890,6 +906,8 @@ export interface ContainedExtractionRequest {
   limits: ArchiveExtractionLimits;
   /** Names the archive in error messages, e.g. `ZIP archive`. */
   label: string;
+  /** The name the caller gave the archive, when known; a message names the next volume of a set by it. */
+  archiveName?: string;
   password?: string;
   /** A 7z `-t<type>` switch for archives whose type cannot be detected from the file. */
   typeFlag?: string;
@@ -1003,6 +1021,15 @@ function classifyRunFailure(err: unknown): RunFailure | null {
   return null;
 }
 
+/** What the messages of a refusal can say about the archive beyond the tool's own output. */
+export interface ArchiveFailureContext {
+  archivePath: string;
+  /** The name the caller gave the archive. */
+  archiveName?: string;
+  /** The vetted listing, for the entry an extraction failed on. */
+  listing?: ListedArchiveEntry[];
+}
+
 /**
  * Maps a failed 7z run to a typed error. Policy errors pass through; infrastructure failures
  * (timeouts, aborts, memory limits) keep their own types so callers can tell them apart.
@@ -1012,7 +1039,8 @@ export function toArchiveFailure(
   label: string,
   phase: 'list' | 'extract',
   limits: ArchiveExtractionLimits,
-  hasPassword: boolean
+  hasPassword: boolean,
+  context?: ArchiveFailureContext
 ): unknown {
   // The collision error carries a numeric `status` like a child-process failure, so match it explicitly.
   if (err instanceof ConversionFailedError || err instanceof ArchiveEntryCollisionError) {
@@ -1033,10 +1061,12 @@ export function toArchiveFailure(
       ? new InvalidArchivePasswordError(`Invalid password for encrypted ${label}.`)
       : new ArchivePasswordRequiredError(`The ${label} is password protected. A password is required to extract.`);
   }
-  const missingVolume = phase === 'list' ? multiVolumeRefusal(err) : null;
+  const missingVolume = phase === 'list' ? multiVolumeRefusal(err, context) : null;
   if (missingVolume !== null) return missingVolume;
   const damaged = damagedEntryMessage(stderr);
   if (damaged !== null) return new UnreadableArchiveError(damaged);
+  const unsupported = unsupportedMethodMessage(stderr, context?.listing ?? []);
+  if (unsupported !== null) return new UnsupportedArchiveMethodError(unsupported);
   return new UnopenableArchiveError(
     `Could not read the archive: 7-Zip rejected the ${label} as malformed or unsupported (exit code ${failure.exitCode ?? 'unknown'}).`
   );
@@ -1054,7 +1084,7 @@ function listArgs(request: ContainedExtractionRequest, target: ListTarget, exclu
   const pw = passwordArgs({ ...request, password: target.password });
   const include = (target.includePatterns ?? []).map((pattern) => `-i!${pattern}`);
   return {
-    args: ['l', '-slt', '-ba', ...(target.typeFlag ? [target.typeFlag] : []), ...pw.args, ...include, ...exclude, target.archivePath],
+    args: ['l', '-slt', '-ba', LIST_ALTERNATE_STREAMS, ...(target.typeFlag ? [target.typeFlag] : []), ...pw.args, ...include, ...exclude, target.archivePath],
     stdin: pw.stdin,
   };
 }
@@ -1065,6 +1095,7 @@ function extractArgs(request: ContainedExtractionRequest, exclude: string[]): { 
     args: [
       'x',
       '-y',
+      SKIP_ALTERNATE_STREAMS,
       ...typeArgs(request),
       ...pw.args,
       `-o${request.extractDir}`,
@@ -1085,7 +1116,7 @@ function requestTarget(request: ContainedExtractionRequest): ListTarget {
   };
 }
 
-async function listArchive(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): Promise<ListedArchiveEntry[]> {
+async function listArchive(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): Promise<ArchiveListing> {
   const { args, stdin } = listArgs(request, target, exclude);
   const result = await executeSandboxedBinary(request.p7zBin, args, {
     cwd: request.cwd,
@@ -1099,9 +1130,9 @@ async function listArchive(request: ContainedExtractionRequest, target: ListTarg
 }
 
 /** Parses a listing; with `allowInternalHardLinks` the hard links between entries of the archive count as the files they are. */
-function readListing(request: ContainedExtractionRequest, stdout: string, archivePath: string): ListedArchiveEntry[] {
-  const entries = parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdout), { payloadName: wrapperPayloadName(archivePath) });
-  return request.allowInternalHardLinks ? acceptInternalHardLinks(entries) : entries;
+function readListing(request: ContainedExtractionRequest, stdout: string, archivePath: string): ArchiveListing {
+  const listing = separateAlternateStreams(parse7zTechnicalListing(stripSevenZipPasswordPrompt(stdout), { payloadName: wrapperPayloadName(archivePath) }));
+  return request.allowInternalHardLinks ? { ...listing, entries: acceptInternalHardLinks(listing.entries) } : listing;
 }
 
 /**
@@ -1119,7 +1150,7 @@ function runSevenZipSync(
   return execFileSync(binary, args, { ...rest, stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
-function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): ListedArchiveEntry[] {
+function listArchiveSync(request: ContainedExtractionRequest, target: ListTarget, exclude: string[]): ArchiveListing {
   const { args, stdin } = listArgs(request, target, exclude);
   const resolved = resolveSandboxedCommand(request.p7zBin, args, { networkIsolated: true });
   const stdout = runSevenZipSync(resolved.binary, resolved.args, {
@@ -1140,11 +1171,13 @@ function excludeArgsFor(skippedLinks: string[]): string[] {
  * 7-Zip exits non-zero when the next volume of a set is missing, but it prints the listing first. That listing, read as any
  * other, tells which part of the set this is; one that cannot be read (forged lines, for instance) leaves the generic answer.
  */
-function multiVolumeRefusal(err: unknown): UnreadableArchiveError | null {
+function multiVolumeRefusal(err: unknown, context: ArchiveFailureContext | undefined): UnreadableArchiveError | null {
   const printed = (err as { stdout?: unknown } | null)?.stdout;
   if (typeof printed !== 'string' && !Buffer.isBuffer(printed)) return null;
   try {
-    const message = multiVolumeMessage(parse7zTechnicalListing(stripSevenZipPasswordPrompt(printed.toString())));
+    const message = multiVolumeMessage(parse7zTechnicalListing(stripSevenZipPasswordPrompt(printed.toString())), () =>
+      context === undefined ? null : nextVolumeName(context.archivePath, context.archiveName)
+    );
     return message === null ? null : new UnreadableArchiveError(message);
   } catch {
     return null;
@@ -1164,92 +1197,17 @@ function vetListing(
   listing: ListedArchiveEntry[],
   ratioBytes: number
 ): ListingVerdict {
-  const incomplete = multiVolumeMessage(listing);
+  const incomplete = multiVolumeMessage(listing, () => nextVolumeName(request.archivePath, request.archiveName));
   if (incomplete !== null) throw new UnreadableArchiveError(incomplete);
   return assertSafeArchiveListing(listing, ratioBytes, request.limits, { skipLinks: request.skipLinks });
 }
 
-function withSkippedLinks(tree: ContainedTree, skippedLinks: string[]): ContainedTree {
-  return { ...tree, skippedLinks };
+function failureContext(request: ContainedExtractionRequest, listing?: ListedArchiveEntry[]): ArchiveFailureContext {
+  return { archivePath: request.archivePath, archiveName: request.archiveName, listing };
 }
 
-const TAR_MAGIC_OFFSET = 257;
-const TAR_MAGIC = 'ustar';
-const TAR_HEADER_BYTES = 512;
-
-/** POSIX and GNU tars carry `ustar` in their first header; compression wrappers do not rename the inner file reliably. */
-export function hasTarMagic(filePath: string): boolean {
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const header = Buffer.alloc(TAR_HEADER_BYTES);
-    const read = fs.readSync(fd, header, 0, TAR_HEADER_BYTES, 0);
-    return read === TAR_HEADER_BYTES && header.toString('latin1', TAR_MAGIC_OFFSET, TAR_MAGIC_OFFSET + TAR_MAGIC.length) === TAR_MAGIC;
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-const TAR_CHECKSUM_OFFSET = 148;
-const TAR_CHECKSUM_BYTES = 8;
-const TAR_OCTAL_RADIX = 8;
-const SPACE = 0x20;
-const NUL = 0;
-const ASCII_ZERO = 0x30;
-const ASCII_SEVEN = 0x37;
-const SIGN_BIT = 0x80;
-const BYTE_RANGE = 0x100;
-
-/**
- * Whether a 512-byte block is a tar header: the checksum field holds an octal number equal to the sum of the block's
- * bytes with that field read as spaces (the POSIX rule, summed as unsigned or as signed bytes). This is the test 7-Zip
- * applies before it opens a file as a tar, so data that fails it cannot be listed as one, and a v7 tar without the
- * `ustar` magic passes it. A short block, an all-zero block and anything else is not a tar header.
- */
-export function isTarHeaderBlock(header: Uint8Array): boolean {
-  if (header.length < TAR_HEADER_BYTES) return false;
-  let stored = 0;
-  let digits = 0;
-  let at = TAR_CHECKSUM_OFFSET;
-  const fieldEnd = TAR_CHECKSUM_OFFSET + TAR_CHECKSUM_BYTES;
-  while (at < fieldEnd && (header[at] === SPACE || header[at] === NUL)) at++;
-  while (at < fieldEnd && header[at] >= ASCII_ZERO && header[at] <= ASCII_SEVEN) {
-    stored = stored * TAR_OCTAL_RADIX + (header[at] - ASCII_ZERO);
-    digits++;
-    at++;
-  }
-  if (digits === 0) return false;
-  let unsigned = 0;
-  let signed = 0;
-  for (let i = 0; i < TAR_HEADER_BYTES; i++) {
-    const inField = i >= TAR_CHECKSUM_OFFSET && i < fieldEnd;
-    const byte = inField ? SPACE : header[i];
-    unsigned += byte;
-    signed += byte >= SIGN_BIT ? byte - BYTE_RANGE : byte;
-  }
-  return stored === unsigned || stored === signed;
-}
-
-/** Whether a 512-byte block carries the POSIX or GNU `ustar` magic. */
-export function hasTarMagicBlock(header: Uint8Array): boolean {
-  if (header.length < TAR_HEADER_BYTES) return false;
-  for (let i = 0; i < TAR_MAGIC.length; i++) {
-    if (header[TAR_MAGIC_OFFSET + i] !== TAR_MAGIC.charCodeAt(i)) return false;
-  }
-  return true;
-}
-
-/** Whether the first 512-byte block of `filePath` is a tar header (see {@link isTarHeaderBlock}); a missing or short file is not. */
-export function hasTarHeaderChecksum(filePath: string): boolean {
-  let fd: number | null = null;
-  try {
-    fd = fs.openSync(filePath, 'r');
-    const header = Buffer.alloc(TAR_HEADER_BYTES);
-    return fs.readSync(fd, header, 0, TAR_HEADER_BYTES, 0) === TAR_HEADER_BYTES && isTarHeaderBlock(header);
-  } catch {
-    return false;
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
-  }
+function withListingFindings(tree: ContainedTree, findings: Pick<ContainedTree, 'skippedLinks' | 'alternateStreams'>): ContainedTree {
+  return { ...tree, ...findings };
 }
 
 /**
@@ -1266,7 +1224,7 @@ async function vetNestedTar(request: ContainedExtractionRequest, tree: Contained
   try {
     const inner = await listArchive(request, { archivePath: candidate.absPath, typeFlag: '-ttar' }, []);
     // The inner tar is repackaged as a whole, so its links cannot be skipped selectively.
-    assertSafeArchiveListing(inner, ratioBytes, request.limits);
+    assertSafeArchiveListing(inner.entries, ratioBytes, request.limits);
   } catch (err) {
     const failure = toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
     if (failure instanceof UnreadableArchiveError && !isTar) return;
@@ -1284,18 +1242,22 @@ export async function extractArchiveContained(request: ContainedExtractionReques
   const archiveBytes = fs.statSync(request.archivePath).size;
   const ratioBytes = request.ratioBaseBytes ?? archiveBytes;
   let skippedLinks: string[] = [];
+  let alternateStreams = 0;
+  let listing: ListedArchiveEntry[] = [];
   let exclude: string[] = [];
 
   try {
-    const listing = await listArchive(request, requestTarget(request), []);
+    const listed = await listArchive(request, requestTarget(request), []);
+    listing = listed.entries;
+    alternateStreams = listed.alternateStreams;
     skippedLinks = vetListing(request, listing, ratioBytes).skippedLinks;
     if (skippedLinks.length > 0) {
       exclude = excludeArgsFor(skippedLinks);
-      assertExclusionExact(listing, await listArchive(request, requestTarget(request), exclude));
+      assertExclusionExact(listing, (await listArchive(request, requestTarget(request), exclude)).entries);
     }
     assertCollisionPolicy(listing, request.collisionPolicy);
   } catch (err) {
-    throw refineListFailure(toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password)), request);
+    throw refineListFailure(toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password), failureContext(request)), request);
   }
 
   try {
@@ -1311,12 +1273,12 @@ export async function extractArchiveContained(request: ContainedExtractionReques
       signal: request.signal,
     });
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password));
+    throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password), failureContext(request, listing));
   }
 
-  const tree = withSkippedLinks(
+  const tree = withListingFindings(
     assertExtractionContained(request.extractDir, ratioBytes, request.limits, { allowInternalHardLinks: request.allowInternalHardLinks }),
-    skippedLinks
+    { skippedLinks, alternateStreams }
   );
 
   if (request.validateNestedTar) {
@@ -1331,18 +1293,22 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
   const archiveBytes = fs.statSync(request.archivePath).size;
   const ratioBytes = request.ratioBaseBytes ?? archiveBytes;
   let skippedLinks: string[] = [];
+  let alternateStreams = 0;
+  let listing: ListedArchiveEntry[] = [];
   let exclude: string[] = [];
 
   try {
-    const listing = listArchiveSync(request, requestTarget(request), []);
+    const listed = listArchiveSync(request, requestTarget(request), []);
+    listing = listed.entries;
+    alternateStreams = listed.alternateStreams;
     skippedLinks = vetListing(request, listing, ratioBytes).skippedLinks;
     if (skippedLinks.length > 0) {
       exclude = excludeArgsFor(skippedLinks);
-      assertExclusionExact(listing, listArchiveSync(request, requestTarget(request), exclude));
+      assertExclusionExact(listing, listArchiveSync(request, requestTarget(request), exclude).entries);
     }
     assertCollisionPolicy(listing, request.collisionPolicy);
   } catch (err) {
-    throw refineListFailure(toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password)), request);
+    throw refineListFailure(toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password), failureContext(request)), request);
   }
 
   try {
@@ -1359,12 +1325,12 @@ export function extractArchiveContainedSync(request: ContainedExtractionRequest)
       input: stdin,
     });
   } catch (err) {
-    throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password));
+    throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password), failureContext(request, listing));
   }
 
-  return withSkippedLinks(
+  return withListingFindings(
     assertExtractionContained(request.extractDir, ratioBytes, request.limits, { allowInternalHardLinks: request.allowInternalHardLinks }),
-    skippedLinks
+    { skippedLinks, alternateStreams }
   );
 }
 
