@@ -28,7 +28,7 @@ import {
 import { capLadderToSource, packagingBudgetSeconds } from './media-packaging';
 import { describeAudioProcessing, measureLoudnessStage } from './media-audio-run';
 import { describeDroppedStreams } from './media-dropped-streams';
-import { emptyOutputError } from './media-empty-output';
+import { outputSizeError } from './media-empty-output';
 import { DEFAULT_MEDIA_TIER_MAX_MS, computeMediaTimeoutMs } from './media-job-limit';
 import { runFfmpegTranscode } from './media-ffmpeg-run';
 import { type FfprobePath, probeInput, resolveFfprobeBinary } from './media-ffprobe';
@@ -436,9 +436,8 @@ async function executeFfmpegTranscode(
     }
 
     const outputBuffer = fs.readFileSync(outputPath);
-    if (outputBuffer.length === 0) {
-      throw emptyOutputError(inputPath, ffmpegBin, src, tgt);
-    }
+    const outputFailure = outputSizeError(outputBuffer.length, inputPath, ffmpegBin, src, tgt);
+    if (outputFailure) throw outputFailure;
     return {
       buffer: outputBuffer,
       mimeType: getMimeTypeForMedia(tgt),

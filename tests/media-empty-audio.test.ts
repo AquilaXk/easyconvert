@@ -8,7 +8,9 @@ import { convertWithNativeFfmpeg } from '../src/worker/engines';
 import { audioPacketsAtStart, emptyOutputError } from '../src/lib/conversions/media-empty-output';
 import { resolveFfprobeBinary } from '../src/lib/conversions/media-ffprobe';
 import { EmptyAudioInputError, UnprocessableMediaInputError, isUnprocessableInputError } from '../src/lib/types';
+import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
+import { requireEncoders } from './helpers/ffmpeg-media-fixtures';
 import { decodeAudioStream, probeFile, withMediaFile } from './helpers/ffmpeg-measure';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -17,8 +19,10 @@ import { skipWithoutTools } from './helpers/strict-skip';
  * A WAV file whose data chunk is empty has a header and no audio. ADTS, the file format of a `.aac` target, is a run of
  * frames that each carry their own header (ISO/IEC 14496-3, subpart 1, annex 1.A.2) and has no file header, so zero frames
  * are zero bytes: nothing a reader can recognise as AAC. The conversion is therefore refused with an answer that names
- * the real limit of the file. Containers that carry a stream of zero frames (MP4, MP3, FLAC) keep converting such a file
- * to a readable, empty file. The oracles are ffprobe's packet counts and RIFF layout read here, not the converter's own.
+ * the real limit of the file. The same holds for `.m4a`, `.mp3`, `.opus` and `.ogg`: FFmpeg writes a few hundred bytes (no
+ * stream, no audio frame, or headers only) that ffprobe and ffmpeg cannot open. FLAC and WAV hold a stream of zero frames
+ * as a file readers open, so they keep converting. The oracles are ffprobe's packet counts and RIFF layout read here, not
+ * the converter's own.
  */
 
 const skip = skipWithoutTools('ffmpeg', 'ffprobe');
@@ -31,6 +35,10 @@ const DURATION_TOLERANCE_SECONDS = 0.3;
 const RIFF_HEADER_BYTES = 44;
 const DATA_SIZE_OFFSET = 40;
 const SAMPLE_FILE = 'kaitai-small.wav';
+/** Targets whose FFmpeg output for an empty WAV is a few hundred bytes that no reader opens. */
+const HEADER_ONLY_TARGETS = ['m4a', 'mp3', 'opus', 'ogg'] as const;
+/** The FFmpeg encoder behind each of them, which a conversion needs (the Mac build has no Vorbis encoder). */
+const ENCODER_OF: Record<(typeof HEADER_ONLY_TARGETS)[number], string> = { m4a: 'aac', mp3: 'libmp3lame', opus: 'libopus', ogg: 'libvorbis' };
 
 /** A mono 16-bit PCM WAV laid out as the RIFF/WAVE format describes it, around `samples`. */
 function wav(samples: Int16Array): Buffer {
@@ -125,6 +133,33 @@ describe.skipIf(skip)('a WAV file with a header and no samples', () => {
     expect((outcome as EmptyAudioInputError).message).toMatch(/holds no audio samples/);
   });
 
+  for (const target of HEADER_ONLY_TARGETS) {
+    oracleTest(`is refused for ${target} (HTTP 422) and never written as a file ffprobe cannot open`, ['ffmpeg', 'ffprobe'], async () => {
+      requireEncoders(ENCODER_OF[target]);
+      const outcome = await outcomeOf(empty, target);
+      if (Buffer.isBuffer((outcome as { buffer?: Buffer }).buffer)) {
+        const bytes = (outcome as { buffer: Buffer }).buffer;
+        const streams = withMediaFile(bytes, target, (file) => probeFile(requireOracleTool('ffprobe'), file).streams);
+        expect(streams.map((stream) => stream.codec_type)).toEqual(['audio']);
+        return;
+      }
+      expect(outcome).toBeInstanceOf(EmptyAudioInputError);
+      expect((outcome as EmptyAudioInputError).status).toBe(422);
+      expect((outcome as EmptyAudioInputError).message).toMatch(/holds no audio samples/);
+      expect((outcome as EmptyAudioInputError).message).toContain(`.${target}`);
+    }, CONVERSION_TIMEOUT_MS);
+
+    oracleTest(`is refused for ${target} by the worker engine too`, ['ffmpeg', 'ffprobe'], async () => {
+      requireEncoders(ENCODER_OF[target]);
+      const outcome = await convertWithNativeFfmpeg(empty, 'wav', target, { throwOnUnavailable: true }, 'in.wav').then(
+        (result) => result,
+        (error: unknown) => error
+      );
+      expect(outcome).toBeInstanceOf(EmptyAudioInputError);
+      expect((outcome as EmptyAudioInputError).status).toBe(422);
+    }, CONVERSION_TIMEOUT_MS);
+  }
+
   for (const [target, codec] of [
     ['flac', 'flac'],
     ['wav', 'pcm_s16le'],
@@ -151,6 +186,18 @@ describe.skipIf(skip)('a WAV file with samples', () => {
     const decoded = withMediaFile(bytes, 'aac', (file) => decodeAudioStream(requireOracleTool('ffmpeg'), file, SAMPLE_RATE, 1));
     expect(Math.abs(decoded.samplesPerChannel / SAMPLE_RATE - TONE_SECONDS)).toBeLessThanOrEqual(DURATION_TOLERANCE_SECONDS);
   });
+
+  for (const target of HEADER_ONLY_TARGETS) {
+    oracleTest(`still converts to ${target}: the file has an audio stream, a packet and decodes`, ['ffmpeg', 'ffprobe'], async () => {
+      requireEncoders(ENCODER_OF[target]);
+      const outcome = await outcomeOf(wav(tone()), target);
+      expect(outcome).toHaveProperty('buffer');
+      const bytes = (outcome as { buffer: Buffer }).buffer;
+      expect(audioPackets(bytes, target)).toBeGreaterThan(0);
+      const decoded = withMediaFile(bytes, target, (file) => decodeAudioStream(requireOracleTool('ffmpeg'), file, SAMPLE_RATE, 1));
+      expect(Math.abs(decoded.samplesPerChannel / SAMPLE_RATE - TONE_SECONDS)).toBeLessThanOrEqual(DURATION_TOLERANCE_SECONDS);
+    }, CONVERSION_TIMEOUT_MS);
+  }
 
   it('one sample is enough to convert', { timeout: CONVERSION_TIMEOUT_MS }, async () => {
     const outcome = await outcomeOf(wav(new Int16Array([1000])), 'aac');
