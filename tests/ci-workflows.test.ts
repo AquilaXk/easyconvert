@@ -545,38 +545,64 @@ describe('the automerge workflow', () => {
   );
 });
 
-describe('the 7-Zip the real-world corpus is judged with', () => {
-  const PINNED_STEP = 'Install the pinned upstream 7-Zip';
-  const pinnedEnv = (workflow: Workflow, job: string): Record<string, string> => {
-    const step = workflow.jobs[job].steps.find((candidate) => candidate.name === PINNED_STEP);
-    if (!step) throw new Error(`no step ${PINNED_STEP} in ${job}`);
-    return step.env as Record<string, string>;
+describe('the pinned 7-Zip the corpus and the speed rows run the product with', () => {
+  const PINNED_ACTION = './.github/actions/pinned-7zip';
+  const actionText = read(path.join(ROOT, '.github', 'actions', 'pinned-7zip', 'action.yml'));
+  const action = parse(actionText) as { inputs: Record<string, { default?: string }>; runs: { steps: Step[] } };
+  const actionStep = action.runs.steps[0];
+  const dockerArg = (name: string): string => {
+    const match = new RegExp(`^ARG ${name}=(\\S+)$`, 'm').exec(read(path.join(ROOT, 'Dockerfile.worker')));
+    if (!match) throw new Error(`Dockerfile.worker has no ARG ${name}`);
+    return match[1];
+  };
+  const pinnedStepIndex = (workflow: Workflow, job: string): number => {
+    const index = workflow.jobs[job].steps.findIndex((step) => step.uses === PINNED_ACTION);
+    if (index < 0) throw new Error(`no step uses ${PINNED_ACTION} in ${job}`);
+    return index;
   };
 
-  it('is the pinned upstream build of the worker image (it has the RAR decoders the distribution package lacks), not the distribution package', () => {
-    const fromCi = pinnedEnvFromAnyCiJob();
-    const fromNightly = pinnedEnv(nightly, 'realworld');
+  it('is the build the worker image ships (it has the RAR decoders the distribution package lacks): same version and digest as Dockerfile.worker', () => {
+    const env = actionStep.env as Record<string, string>;
     for (const key of ['SEVEN_ZIP_VERSION', 'SEVEN_ZIP_RELEASE', 'SEVEN_ZIP_SHA256_X64']) {
-      expect(fromNightly[key], key).toBe(fromCi[key]);
+      expect(env[key], key).toBe(dockerArg(key));
     }
   });
 
-  it('is installed before the corpus runs, verified against its digest, and handed to the worker through P7ZIP_PATH', () => {
-    const steps = nightly.jobs.realworld.steps;
-    const install = steps.findIndex((candidate) => candidate.name === PINNED_STEP);
-    const run = steps.findIndex((candidate) => candidate.name === 'Run the corpus shard');
-    expect(install).toBeGreaterThan(-1);
-    expect(install).toBeLessThan(run);
-    const script = stepRun(nightly, 'realworld', PINNED_STEP);
+  it('is verified against its digest and its RAR decoder, and exports P7ZIP_PATH only when asked', () => {
+    const script = actionStep.run ?? '';
     expect(script).toContain('sha256sum --check --strict');
-    expect(script).toContain('P7ZIP_PATH=');
-    expect(script).toContain('GITHUB_ENV');
+    expect(script).toContain("grep -q ' Rar5 '");
+    expect(script).toMatch(/if \[ "\$\{EXPORT_ENV\}" = "true" \]; then echo "P7ZIP_PATH=.*" >> "\$\{GITHUB_ENV\}"; fi/);
+    expect(action.inputs['export-env'].default).toBe('false');
+    for (const { step } of stepsOf(ci)) expect(step.env ?? {}, step.name).not.toHaveProperty('SEVEN_ZIP_SHA256_X64');
+    for (const { step } of stepsOf(nightly)) expect(step.env ?? {}, step.name).not.toHaveProperty('SEVEN_ZIP_SHA256_X64');
   });
 
-  function pinnedEnvFromAnyCiJob(): Record<string, string> {
-    for (const { step } of stepsOf(ci)) {
-      if (step.env && 'SEVEN_ZIP_SHA256_X64' in step.env) return step.env as Record<string, string>;
+  it('is installed and exported before the corpus runs and before every speed row is timed', () => {
+    const jobs: Array<[Workflow, string, string]> = [
+      [nightly, 'realworld', 'Run the corpus shard'],
+      [nightly, 'bench-parity-speed', 'Run the speed parity benchmark'],
+      [nightly, 'bench-ab-speed', 'Measure the speed rows against that commit'],
+    ];
+    for (const [workflow, job, runName] of jobs) {
+      const install = pinnedStepIndex(workflow, job);
+      expect(workflow.jobs[job].steps[install].with?.['export-env'], job).toBe('true');
+      expect(install, job).toBeLessThan(workflow.jobs[job].steps.findIndex((step) => step.name === runName));
     }
-    throw new Error('ci.yml has no step with the pinned 7-Zip digest');
-  }
+    const prSpeed = ci.jobs['parity-speed'];
+    const install = pinnedStepIndex(ci, 'parity-speed');
+    expect(prSpeed.steps[install].with?.['export-env']).toBe('true');
+    const firstBench = prSpeed.steps.findIndex((step) => (step.run ?? '').includes('bench:quality -- --parity --speed-only'));
+    expect(firstBench).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(firstBench);
+  });
+
+  it('runs the archive suites of the integration job with that build through P7ZIP_PATH only for that step', () => {
+    const steps = ci.jobs.integration.steps;
+    const install = pinnedStepIndex(ci, 'integration');
+    const archive = steps.findIndex((step) => step.name === 'Run archive tests against pinned 7-Zip');
+    expect(install).toBeLessThan(archive);
+    expect(steps[install].with?.['export-env'] ?? 'false').toBe('false');
+    expect((steps[archive].env as Record<string, string>).P7ZIP_PATH).toBe(`\${{ steps.${steps[install].id}.outputs.path }}`);
+  });
 });

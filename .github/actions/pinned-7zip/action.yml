@@ -1,0 +1,39 @@
+name: Install the pinned upstream 7-Zip
+description: >-
+  Downloads the 7-Zip build the worker image ships (x64), checks its digest and its RAR decoder, and gives its path. The
+  distribution's 7-Zip package stays installed as the reference tool; only P7ZIP_PATH points the product at this build.
+  Version and digest mirror Dockerfile.worker: bump both together.
+
+inputs:
+  export-env:
+    description: Also export P7ZIP_PATH to the rest of the job ("true"), so every later step runs the product with this build.
+    required: false
+    default: "false"
+
+outputs:
+  path:
+    description: Path of the static 7zzs binary.
+    value: ${{ steps.install.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Download and check the pinned 7-Zip
+      id: install
+      shell: bash
+      env:
+        SEVEN_ZIP_VERSION: "26.01"
+        SEVEN_ZIP_RELEASE: "2601"
+        SEVEN_ZIP_SHA256_X64: 8ea0fc8a135e7b848e80a4116fe22dff56c8c4518dde1f43cce67f4e340b437a
+        EXPORT_ENV: ${{ inputs.export-env }}
+      run: |
+        SEVEN_ZIP_DIR="${RUNNER_TEMP}/seven-zip"
+        mkdir -p "${SEVEN_ZIP_DIR}"
+        curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+          --output "${SEVEN_ZIP_DIR}/7zip.tar.xz" \
+          "https://github.com/ip7z/7zip/releases/download/${SEVEN_ZIP_VERSION}/7z${SEVEN_ZIP_RELEASE}-linux-x64.tar.xz"
+        echo "${SEVEN_ZIP_SHA256_X64}  ${SEVEN_ZIP_DIR}/7zip.tar.xz" | sha256sum --check --strict -
+        tar -xJf "${SEVEN_ZIP_DIR}/7zip.tar.xz" -C "${SEVEN_ZIP_DIR}" 7zzs
+        "${SEVEN_ZIP_DIR}/7zzs" i | grep -q ' Rar5 '
+        echo "path=${SEVEN_ZIP_DIR}/7zzs" >> "${GITHUB_OUTPUT}"
+        if [ "${EXPORT_ENV}" = "true" ]; then echo "P7ZIP_PATH=${SEVEN_ZIP_DIR}/7zzs" >> "${GITHUB_ENV}"; fi

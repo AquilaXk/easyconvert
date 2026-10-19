@@ -10,7 +10,8 @@ import { hasTarMagicBlock, isTarHeaderBlock } from './archive-extraction-safety'
  *  - 7z to tar streams the members out of 7-Zip in file-table order and writes them into the tar as they arrive;
  *  - tar to 7z reads the tar in process and hands 7-Zip a staging tree it can compress at once;
  *  - tar to ZIP and to gzip are packed in process from the vetted tar, and ZIP and stored RAR to tar are read in
- *    process (archive-repack.ts).
+ *    process (archive-repack.ts);
+ *  - tar to bzip2 reads the tar in process and pipes the vetted tar to one `lbzip2` call (archive-lbzip2.ts).
  *
  * Both engines (the native worker route and the in-process converter) read these tables, so a format never ends up
  * treated as a tarball by one engine and as a plain stream by the other.
@@ -48,7 +49,11 @@ export type NativeArchiveRoute =
   | { kind: 'zip-to-tar' }
   | { kind: 'rar-to-tar' }
   | { kind: 'tar-to-zip' }
-  | { kind: 'tar-to-gzip' };
+  | { kind: 'tar-to-gzip' }
+  | { kind: 'tar-to-bzip2' };
+
+/** Registry names of a bzip2-compressed tar as a target. */
+const BZIP2_TARBALL_TARGETS: ReadonlySet<string> = new Set(['tar.bz2', 'tbz2', 'tbz']);
 
 /** The request fields that decide whether a route applies. */
 export interface ArchiveRouteRequest {
@@ -81,6 +86,7 @@ export function planNativeArchiveRoute(src: string, tgt: string, request: Archiv
   if (tgt === '7z') return { kind: 'tar-to-seven-zip' };
   if (tgt === 'zip') return { kind: 'tar-to-zip' };
   if (tgt === 'gz' || tgt === 'gzip') return { kind: 'tar-to-gzip' };
+  if (BZIP2_TARBALL_TARGETS.has(tgt)) return { kind: 'tar-to-bzip2' };
   return null;
 }
 

@@ -96,7 +96,7 @@ import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
 import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
 import { extractSourceArchive } from './archive-source-extraction';
-import { rarToTar, tarToGzip, tarToZip, zipToTar } from '../lib/conversions/archive-repack';
+import { rarToTar, tarToBzip2, tarToGzip, tarToZip, zipToTar } from '../lib/conversions/archive-repack';
 import {
   sevenZipToTar,
   stageTarForSevenZip,
@@ -878,6 +878,8 @@ async function runStreamingRoute(
       return tarToZip(packing);
     case 'tar-to-gzip':
       return tarToGzip(packing);
+    case 'tar-to-bzip2':
+      return tarToBzip2(packing);
   }
 }
 
@@ -897,10 +899,6 @@ export async function convertWithNative7z(
   // Refused before any tool runs; the pack steps read the same validated value.
   const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
 
-  const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
-  const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
-  const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
-  assertArchivePasswordSafe(options.password);
   if (options.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
