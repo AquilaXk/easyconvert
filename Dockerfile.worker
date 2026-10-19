@@ -105,7 +105,7 @@ FROM ${NODE_IMAGE} AS runner
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
-# 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip comes from the pinned stage; libdeflate-tools is the deflate encoder for ZIP and gzip payloads past 4 MiB), and CJK Font Packages
+# 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip comes from the pinned stage; libdeflate-tools is the deflate encoder for ZIP and gzip payloads past 4 MiB; lbzip2 is the bzip2 encoder for tarballs of up to two blocks), and CJK Font Packages
 # The Open CASCADE libraries (STEP and IGES, see the cadconvert stage) are packaged with occt-misc, whose 55 MB of sample models and images
 # and 5 MB of resource files the program never reads (it converts all four targets of the 11 real samples with the directory removed, and
 # opens nothing under it); the dpkg exclusion keeps the directory out of the image and nothing else of the package.
@@ -156,6 +156,7 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         default-jre-headless \
         unzip \
         libdeflate-tools \
+        lbzip2 \
         libocct-data-exchange-7.8 \
         libocct-ocaf-7.8 \
         libocct-modeling-algorithms-7.8 \

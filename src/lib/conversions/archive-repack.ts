@@ -17,6 +17,7 @@ import {
   lastEntryPerPath,
   loadSource,
   pushFileMember,
+  sourceBytes,
   tarFromEntries,
   vetTarSource,
   type ArchiveSource,
@@ -31,6 +32,7 @@ import {
   type ZipArchiveEntry,
 } from './archive-zip-reader';
 import { buildTarEntryHeaders, isZipBufferEncrypted, readTarEntries, type TarEntry } from './archive';
+import { NativeBzip2Error, bzip2WithLbzip2, getLbzip2Path, lbzip2MaxInputBytes } from './archive-lbzip2';
 import { NativeDeflateError, deflateRawWithLibdeflate, getLibdeflateGzipPath } from './archive-libdeflate';
 import { crc32 } from './crc32';
 import { DEFLATE_BLOCK_BYTES, deflateRawBlocks } from './deflate-blocks';
@@ -247,6 +249,32 @@ export async function tarToGzip(request: PackRequest): Promise<StreamedArchive |
     segments: [gzipHeader(request.compressionLevel, gzipNameOf(only.filename), mtimeSeconds), deflated, gzipTrailer(data)],
     skippedLinks: vetted.skippedLinks,
   };
+}
+
+/**
+ * tar to tar.bz2 for a tar of up to `LBZIP2_MAX_BLOCKS` bzip2 blocks (see archive-lbzip2.ts). The vetted entries are written
+ * again as a canonical tar (links left out under `skipLinks`) and piped to `lbzip2` as they are, without joining them into one
+ * buffer. Nothing is answered for a larger tar, when `lbzip2` is missing or when it fails (the 7-Zip route then serves the
+ * request), and an abort stops the process group and is rethrown.
+ */
+export async function tarToBzip2(request: PackRequest): Promise<StreamedArchive | null> {
+  if (sourceBytes(request.source) > lbzip2MaxInputBytes(request.compressionLevel)) return null;
+  const vetted = vetTarSource(request);
+  if (vetted === null) return null;
+  if (getLbzip2Path() === null) return null;
+  const tar = tarFromEntries(readTarEntries(vetted.tar, { ignoreLinks: true }));
+  request.signal?.throwIfAborted();
+  try {
+    const stream = await bzip2WithLbzip2(tar, byteLengthOf(tar), request.compressionLevel, { signal: request.signal, timeoutMs: request.timeoutMs });
+    return { segments: [stream], skippedLinks: vetted.skippedLinks };
+  } catch (error) {
+    if (error instanceof NativeBzip2Error) return null;
+    throw error;
+  }
+}
+
+function byteLengthOf(segments: readonly Uint8Array[]): number {
+  return segments.reduce((total, segment) => total + segment.length, 0);
 }
 
 function listedFrom(entry: { filename: string; isDirectory: boolean; sizeBytes: number; linkKind?: 'symlink' }): ListedArchiveEntry {
