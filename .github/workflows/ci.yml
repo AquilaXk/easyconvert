@@ -163,13 +163,17 @@ jobs:
 
       # --update --allow-growth in a change would pass the step above, so the baseline is also compared with the base
       # branch's copy per file and rule (a rename passes). A push to main is skipped: its baseline was checked in the PR.
+      # The base is the first parent of the merge commit this job tested, not the branch as it is now: a pull request
+      # merged in between can lower the base baseline, and the older merge would then be judged against it.
       - name: Check the code-smell baseline does not grow against the base branch
         if: github.event_name == 'pull_request'
         env:
-          BASE_REF: ${{ github.base_ref || 'main' }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          git fetch --no-tags --depth=1 origin "$BASE_REF"
-          git show "origin/$BASE_REF:.github/code-smell-baseline.json" > "$RUNNER_TEMP/base-code-smell-baseline.json" 2>/dev/null || rm -f "$RUNNER_TEMP/base-code-smell-baseline.json"
+          parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
+          parent="${parent:-$EVENT_BASE_SHA}"
+          git fetch --no-tags --depth=1 origin "$parent"
+          git show "$parent:.github/code-smell-baseline.json" > "$RUNNER_TEMP/base-code-smell-baseline.json" 2>/dev/null || rm -f "$RUNNER_TEMP/base-code-smell-baseline.json"
           npm run guard:code-smells -- --check-base "$RUNNER_TEMP/base-code-smell-baseline.json"
 
       # The licence gate runs only when the dependency set or the notices tooling changes: an unchanged
@@ -246,6 +250,19 @@ jobs:
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
 
+      # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      - name: Restore the corpus cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/easyconvert-realworld
+          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          restore-keys: test-samples-
+
+      - name: Prefetch the corpus files the tests read
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npm run prefetch:test-samples
+
       # The planner leaves out the registry conformance gate (its own jobs) and the timing suites (nightly).
       - name: Run unit and integration tests
         env:
@@ -296,6 +313,19 @@ jobs:
 
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
+
+      # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      - name: Restore the corpus cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/easyconvert-realworld
+          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          restore-keys: test-samples-
+
+      - name: Prefetch the corpus files the tests read
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npm run prefetch:test-samples
 
       # Every advertised registry pair through a real engine run; each part covers a disjoint share of the
       # pairs (CONFORMANCE_PART), packed by recorded duration (.github/ci/conformance-durations.json), and part 1 also
@@ -362,6 +392,19 @@ jobs:
         uses: ./.github/actions/ci-setup
         with:
           s3-test-server: 'true'
+
+      # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
+      - name: Restore the corpus cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/easyconvert-realworld
+          key: test-samples-${{ hashFiles('bench/realworld/manifest.json') }}
+          restore-keys: test-samples-
+
+      - name: Prefetch the corpus files the tests read
+        env:
+          ORACLE_STRICT_MODE: "1"
+        run: npm run prefetch:test-samples
 
       # The storage tests that need a server this repository did not write. They are not in the shards
       # (scripts/ci-test-shards.mjs), so this is the one job that starts the S3 test server; with

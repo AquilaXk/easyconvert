@@ -45,6 +45,7 @@ Media and documents
 27. [Ebook FB2/MathML text fidelity and PDF compression structural repair](#27-ebook-fb2mathml-text-fidelity-and-pdf-compression-structural-repair)
 49. [PDF text from fonts without a Unicode map, and PDFs with an empty open password](#49-pdf-text-from-fonts-without-a-unicode-map-and-pdfs-with-an-empty-open-password)
 46. [MIDI sources, bitmap subtitles in video containers, and streams the installed FFmpeg cannot decode](#46-midi-sources-bitmap-subtitles-in-video-containers-and-streams-the-installed-ffmpeg-cannot-decode)
+51. [HTML to PDF: what a page names that the PDF cannot carry](#51-html-to-pdf-what-a-page-names-that-the-pdf-cannot-carry)
 
 Engines
 
@@ -186,7 +187,7 @@ Compression
 
 ## 6. External images in HTML
 
-- **Status**: Implemented (#732).
+- **Status**: Implemented (#732); the LibreOffice route follows it for every image (#783). What else a page names is entry 51.
 - **Decision**:
   - When converting an uploaded HTML page, images it references by public `http`/`https` URL are fetched and embedded, as a browser would show them.
   - The fetch runs in a separate child process with no secrets. That process accepts only public addresses on ports 80 and 443, and pins the resolved address.
@@ -194,6 +195,7 @@ Compression
   - The renderer itself stays without network access.
   - Images that fail stay out with a warning. `requireResources: true` turns a failure into 400 instead.
   - Deployments without internet set `HTML_IMAGE_FETCH=off`.
+  - The in-process renderer and the staging for LibreOffice use the same loader, so a page gets the same images, warnings and `requireResources` outcome on both. A reference to something that is not an image (a link, style sheet, script, frame) is not fetched on either route; entry 51 says what happens to it.
 - **Why**: users expect a converted page to look like the page in a browser. Leaving images out silently produces a visibly broken document. The guards make the fetch safe against server-side request forgery.
 - **Trade-offs**:
   - Conversion time depends on remote servers, within the caps.
@@ -202,7 +204,7 @@ Compression
 - **Alternatives rejected**:
   - **Leaving every external image out with a warning** (the earlier behaviour): safe, but the output is visibly worse than users get elsewhere.
   - **Letting the renderer fetch directly**: it would give a full browser engine network access next to the job's secrets.
-- **Verified by**: `tests/html-image-fetch*.test.ts`, `tests/public-address.test.ts`, and the end-to-end tests with an independent PDF image reader.
+- **Verified by**: `tests/html-image-fetch*.test.ts`, `tests/public-address.test.ts`, the end-to-end tests with an independent PDF image reader, and `tests/html-pdf-external-resources.test.ts` (a fetched image next to dropped links on the LibreOffice route, a private-address image, `HTML_IMAGE_FETCH=off`, `requireResources`).
 - **Revisit when**: user demand appears for stylesheets, fonts or other ports.
 
 ## 7. Characters without a Unicode counterpart
@@ -1344,6 +1346,35 @@ Compression
 - **Verified by**: `tests/archive-native-bzip2.test.ts` (the output read by `bzip2 -t`, `bzip2 -d`, `7z t` and `tar`, entry SHA-256, modes and times against the source, size against `bzip2 -9` within the 1 % allowance, the `lbzip2` command line for every product level read from a recording wrapper, the block count by `bzip2 -tvv`, the bound by level, no 7-Zip call on the route, fail-over when the command is missing, fails, or writes a stream with another block size or no stream, abort stops the process, traversal, link, `skipLinks`, collision and entry-count refusals with their typed errors), `tests/oracle-toolchain-preflight.test.ts`, `scripts/verify-worker-container.sh` (check 7), and the `compression` speed parity rows (`mixed.tar->tar.bz2`, `silesia-xml.tar->tar.bz2`, `silesia-ooffice.tar->tar.bz2`).
 - **Revisit when**: the compression ratio allowance changes or lbzip2 matches `bzip2 -9`'s block layout on run-heavy data (raise the bound, to every size); the CI runner rows still fall below 1.0 with the pinned 7-Zip (then profile on x64, where the nightly `xml` xz row was 24 ms behind); `unshare` gets cheaper or a persistent sandbox is adopted (the start is then the first thing left to remove from the xz and 7z rows); or `lbzip2` stops being available for the worker's base image (return the small tarballs to 7-Zip).
 
+## 51. HTML to PDF: what a page names that the PDF cannot carry
+
+- **Status**: Implemented (HTML to PDF rows of issue #783, epic #760), decided 2026-10-19 (QA request).
+- **Decision**:
+  - **A page is converted, not refused, for what it names and the PDF cannot carry.** The staging for LibreOffice writes only three kinds of reference, each checked as it is written: an `<a href>` that is `http`, `https`, `mailto` or a `#fragment`; an `<img src>` that is base64 PNG, JPEG or GIF data that decodes (after the loader of entry 6 has embedded the images the page names); and CSS that names embedded raster images or fragments only. Nothing else is written, so nothing else can reach the renderer, and nothing is fetched for it.
+  - **Links that go elsewhere lose their target and keep their text.** A relative link, a `javascript:`, `file:`, `ftp:` or protocol-relative one, and a `data:` link is not a link in the PDF. A relative link has no document to be relative to, and a `file:` link in a PDF would point into the reader's disk.
+  - **Style sheets, backgrounds and CSS pictures that name a file or an address are left out.** That is a `<link rel="stylesheet">`, a `background` attribute, and a `<style>` element or `style` attribute with a `url()` or `@import` that is not an embedded raster image: the element or attribute is not written at all, because the part of the CSS that is safe cannot be told from the rest without a full CSS parser. Scripts, icons, `<base>`, `<meta>` and form targets render nothing and are dropped without a warning, as before.
+  - **Content LibreOffice would not draw here is left out whole.** That is SVG, canvas, video, audio, form controls (`input` other than hidden, `select`, `textarea`), frames and framesets with a source, objects, embeds and applets, each with its fallback content. A page that is only a frameset becomes a valid one-page PDF without text.
+  - **Two warnings report it, after the image warnings of entry 6.** `Left out elements that cannot be drawn (N): <input> x 31, <select> x 2.` counts the elements by tag. `Left out references that are not loaded or followed (N): "other.html" (<a href>), "style.css" (<link href>), ...` names each distinct reference and where the page held it, up to 10, then `and K more`.
+  - **`requireResources` is about images only.** A page with a link, style sheet or form that the PDF cannot carry is converted with the warnings, with or without it; an image that cannot be loaded is still a 400.
+  - **Data that claims to be something it is not is still a 400**: image data that does not decode or is no PNG, JPEG or GIF (in `<img>` and in CSS), CSS with a `data:` URI that is no image, and CSS that cannot be vouched for (escapes outside comments, `<`, characters outside ASCII and strings, a character reference in a style sheet). A backslash inside a CSS comment is no escape (the comment is replaced by a space before LibreOffice sees it), so a sheet with the comment form of the "backslash hack" is read like any other.
+- **Why**:
+  - **A saved page almost always names something it cannot have.** Of the 97 HTML pages of the real-world sample that go to PDF, 82 were refused, each for the first thing it named, and the same pages converted to Word, ODF, Markdown and the ebook formats. Measured by what the 97 pages hold (a page holds several): 73 a link that is not kept, 48 a style sheet by address, 42 a script by address, 37 a form control, 20 a background picture, 19 an image-map link, 10 CSS with a picture or import by address, 4 an object, embed or applet, 2 a frameset. After the change all 97 convert on macOS with image loading on and off, and 96 on Linux with LibreOffice 24.2: the one page that is left (an API reference of 145 tables) sends LibreOffice's HTML layout into a loop at a page break, with or without this staging (the original file does it too), the worker stops it at its timeout, and the in-process renderer, which cannot draw nested tables, answers 503.
+  - **Converters that print a page do not stop for a resource they cannot fetch.** A browser prints a page whose style sheet or script is missing, and an office suite opens a page with broken links; the page is shown without what is missing. A refusal that quotes the first reference blocks the user without telling them that the page can be converted without it.
+  - **A warning tells the caller what the PDF lacks**, as entry 9 asks, in the two kinds of loss a reader can act on: elements that are not drawn and references that are not followed.
+  - **The renderer's input stays the checked tree.** Making the checks part of the write (and not a pass over the whole tree before it) removes the refusals for references in elements that are not written anyway (scripts, templates, SVG, frames), and leaves the three places a reference can reach unchanged.
+- **Trade-offs**:
+  - **A form is not drawn.** The labels and text around the controls stay; the controls and their values do not. The other HTML targets do not draw them either.
+  - **A sheet or style attribute with one reference loses all its rules.** Dropping a whole `<style>` element for one `background: url(...)` is a visible loss on a page that is styled by it. The alternative needs a CSS parser that can cut one declaration out, which is a change of its own, and a half-checked sheet is the risk the checks exist to avoid.
+  - **Relative links die.** The page's own address is not known, so they cannot be resolved; a page that sets an absolute `<base href>` still has its relative images loaded (entry 6), but its relative links are left out.
+  - **The in-process renderer is unchanged.** It is used when LibreOffice is absent or an orientation is requested, and it still refuses form controls, frames and SVG with a 503.
+- **Alternatives rejected**:
+  - **Keeping the 400** (the previous behaviour): it made 85% of the sampled pages unconvertible to PDF for references that could not have been followed anyway.
+  - **Fetching style sheets, scripts or frames**: gives a full browser engine's attack surface to a document converter, for styles that LibreOffice reads only in part. Entry 6's revisit condition stays.
+  - **Resolving relative links against the document's `<base>`**: a link in a PDF that points to a remote site chosen by the page, only because of a `<base>`, adds a second place that chooses a link target for little gain.
+  - **Writing form controls as LibreOffice form fields**: an interactive field in a PDF is a different document, and the controls do not carry values a reader can use.
+  - **One warning per reference**: a page with 100 links would drown the others; entry 9 caps warnings at 50 lines plus a count.
+- **Verified by**: `tests/html-pdf-external-resources.test.ts` (real pages of the corpus and pages derived from them, through real LibreOffice, read by `pdftotext`, `pdfinfo`, `pdfimages` and the link annotations of the PDF; the renderer's input with `file:`, relative-traversal, `javascript:`, protocol-relative and `data:` links, pictures and style sheets; a private-address image; `HTML_IMAGE_FETCH=off`; `requireResources`); `tests/html-native-staging.test.ts` (the bypass matrix still ends in a refusal or a document without the reference, the CSS refusals above, the elements left out); `tests/html-external-images*.test.ts`; and the real-world gate, where the 97 HTML pages to PDF were 15 converted and 82 refused and are now 96 or 97 converted (above). The 15 pages that converted before are staged byte for byte as they were.
+- **Revisit when**: callers ask for the controls of a form to be drawn, for style sheets by address, or for links resolved against a base; or the in-process renderer is the route most pages take.
 ## 52. Picture rows left by the real-file run: DX10 DDS surfaces, TIFF directories out of order, libheif and ImageMagick limits of the CI runner
 
 - **Status**: Implemented (issue #783, image rows), decided 2026-10-19 (QA request in issue #783: a real file converts, or is refused with a typed answer that names a real limit of the file; found by the nightly real-file run 39107567130).

@@ -11,6 +11,8 @@ const MAX_REFERENCE_CHARS = 120;
 /** Most omissions listed one by one; the rest are counted in a final warning. */
 export const MAX_REPORTED_OMISSIONS = 50;
 const CONTROL_CHARACTERS = /\p{Cc}/gu;
+/** Most references one warning names one by one; the rest are counted. */
+export const MAX_NAMED_REFERENCES = 10;
 
 export interface HtmlResourcePolicy {
   /** Refuse a document with an image that cannot be loaded (400) instead of leaving the image out. */
@@ -44,6 +46,46 @@ export class OmittedExternalImages {
     const unlisted = this.total - this.listed.length;
     if (unlisted > 0) lines.push(`Left out ${unlisted} more external images that could not be loaded.`);
     return lines;
+  }
+}
+
+/**
+ * The elements and references the staging for LibreOffice leaves out of a document, other than images (those are
+ * OmittedExternalImages). Nothing named here is fetched: an element is not written, and a reference is dropped from
+ * the link, style sheet, style attribute or background that held it. Two warnings report them, one for the elements
+ * (counted by tag) and one for the references (each distinct one named, up to MAX_NAMED_REFERENCES).
+ */
+export class OmittedContent {
+  private readonly elements = new Map<string, number>();
+  private readonly references = new Map<string, string>();
+
+  element(tag: string): void {
+    this.elements.set(tag, (this.elements.get(tag) ?? 0) + 1);
+  }
+
+  /** A reference that was dropped, and where the document held it (`<a href>`, `background`, `style sheet`, ...). */
+  reference(holder: string, reference: string): void {
+    this.references.set(`${holder}\u0000${reference}`, `"${quoted(reference)}" (${holder})`);
+  }
+
+  /** The warning for the elements, then the one for the references; none for what was not met. */
+  warnings(): string[] {
+    return [this.elementsWarning(), this.referencesWarning()].filter((line): line is string => line !== null);
+  }
+
+  private elementsWarning(): string | null {
+    if (this.elements.size === 0) return null;
+    const total = [...this.elements.values()].reduce((sum, count) => sum + count, 0);
+    const listing = [...this.elements].map(([tag, count]) => `<${tag}> x ${count}`).join(', ');
+    return `Left out elements that cannot be drawn (${total}): ${listing}.`;
+  }
+
+  private referencesWarning(): string | null {
+    if (this.references.size === 0) return null;
+    const named = [...this.references.values()].slice(0, MAX_NAMED_REFERENCES);
+    const unnamed = this.references.size - named.length;
+    const rest = unnamed > 0 ? `, and ${unnamed} more` : '';
+    return `Left out references that are not loaded or followed (${this.references.size}): ${named.join(', ')}${rest}.`;
   }
 }
 

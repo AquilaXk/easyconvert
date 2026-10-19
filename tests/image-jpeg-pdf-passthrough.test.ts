@@ -30,6 +30,11 @@ const RENDER_EDGE_SHAVE = 2;
 const INVERTING_DECODE = '/Decode [ 1 0 1 0 1 0 1 0 ]';
 const CMYK_MAX_DELTA_E = 10;
 const CMYK_CONTROL_MIN_DELTA_E = 30;
+/**
+ * Each test runs ImageMagick, pdfimages, pdfinfo and pdftoppm as separate processes (the CMYK test eight of them, 1.2 to 1.6 s
+ * on a developer machine), so the 5 s default for in-process unit tests is too tight on a loaded CI runner.
+ */
+const TOOL_TEST_TIMEOUT_MS = 60_000;
 
 let work: string;
 const tool = (name: 'pdfimages' | 'pdfinfo' | 'pdftoppm' | 'qpdf'): string => requireOracleTool(name as never);
@@ -93,7 +98,7 @@ afterAll(() => {
   rmSync(work, { recursive: true, force: true });
 });
 
-describe.skipIf(skipWithoutTools('pdfimages', 'pdfinfo', 'qpdf') || SKIP_WITHOUT_MAGICK)('JPEG goes into the PDF byte for byte', () => {
+describe.skipIf(skipWithoutTools('pdfimages', 'pdfinfo', 'qpdf') || SKIP_WITHOUT_MAGICK)('JPEG goes into the PDF byte for byte', { timeout: TOOL_TEST_TIMEOUT_MS }, () => {
   it('baseline JPEG: pdfimages extracts an identical stream (MD5) and the PDF is at most 1.05 x the JPEG + 2 KB', async () => {
     const jpeg = readFileSync(CORPUS);
     const { file, bytes } = await toPdf(jpeg);

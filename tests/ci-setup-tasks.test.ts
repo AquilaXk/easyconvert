@@ -59,6 +59,7 @@ function runSourced(snippet: string, env: Record<string, string> = {}, extraPath
       SCRIPT_UNDER_TEST: SCRIPT,
       ACTION_PATH: ACTION_DIR,
       APT_DEBS: '/nonexistent/apt-debs',
+      PIP_WHEELS: '/nonexistent/pip-wheels',
       // The messages of bash itself are asserted, so they must not be translated.
       LC_ALL: 'C',
       ...env,

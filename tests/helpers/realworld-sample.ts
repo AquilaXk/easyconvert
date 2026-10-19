@@ -1,7 +1,5 @@
-import os from 'node:os';
-import path from 'node:path';
 import fs from 'node:fs';
-import { ensureCached } from '../../bench/realworld/fetch';
+import { ensureCached, findCached, testSampleCacheDirectory } from '../../bench/realworld/fetch';
 import { MANIFEST_PATH, type CorpusFile } from '../../bench/realworld/manifest';
 import { isStrictMode } from './strict-skip';
 
@@ -10,9 +8,13 @@ import { isStrictMode } from './strict-skip';
  * committed: `ensureCached` fetches a file from the host that publishes it and checks it against the digest the manifest
  * pins, so a test reads the same bytes everywhere. Where a file cannot be fetched a run that is not strict skips the
  * test; under ORACLE_STRICT_MODE=1 it fails, so CI cannot pass without having read the file.
+ *
+ * A test must not wait on a download (the test timeout is seconds, a host may take minutes), so CI fetches every file the
+ * tests name before the run (`npm run prefetch:test-samples`, scripts/prefetch-test-samples.ts). Under strict mode a file
+ * that step did not leave in the cache fails at once and names that step; a run that is not strict fetches on demand.
  */
 
-const CACHE_DIRECTORY = process.env.REALWORLD_CACHE ?? path.join(os.homedir(), '.cache', 'easyconvert-realworld');
+const CACHE_DIRECTORY = testSampleCacheDirectory();
 
 let corpusFiles: Map<string, CorpusFile> | undefined;
 
@@ -36,6 +38,9 @@ interface SkippableContext {
 /** Path of the cached sample `id` and its bytes; see the module comment for what a missing file does. */
 export async function requireRealworldSample(ctx: SkippableContext, id: string): Promise<{ bytes: Buffer; path: string; format: string }> {
   const file = corpusFile(id);
+  if (isStrictMode() && findCached(file, CACHE_DIRECTORY) === undefined) {
+    throw new Error(`real-world sample ${id} is not in ${CACHE_DIRECTORY}; run \`npm run prefetch:test-samples\` before the tests`);
+  }
   try {
     const cached = await ensureCached(file, CACHE_DIRECTORY);
     return { bytes: fs.readFileSync(cached), path: cached, format: file.format };

@@ -183,12 +183,17 @@ describe('HTML staged for the native engine with images that are not embedded', 
     ]);
   });
 
-  it('keeps embedded images and still refuses every other reference outside the document', async () => {
+  it('keeps embedded images and leaves out a style sheet and a CSS picture by address, naming both', async () => {
     const staged = await stageHtmlForNativeEngine(`<p>text</p><img src="${await embeddedPngDataUri()}">`);
     expect(staged.html).toContain('<img');
     expect(staged.warnings).toEqual([]);
-    await expect(stageHtmlForNativeEngine('<p>text</p><link rel="stylesheet" href="http://192.0.2.2:18765/s.css">')).rejects.toBeInstanceOf(ConversionFailedError);
-    await expect(stageHtmlForNativeEngine('<p style="background:url(http://192.0.2.2:18765/b.png)">text</p>')).rejects.toBeInstanceOf(ConversionFailedError);
+    const left = await stageHtmlForNativeEngine(
+      '<p style="background:url(http://192.0.2.2:18765/b.png)">text</p><link rel="stylesheet" href="http://192.0.2.2:18765/s.css">'
+    );
+    expect(left.html).not.toMatch(/192\.0\.2\.2|<link|style=/);
+    expect(left.warnings).toEqual([
+      'Left out references that are not loaded or followed (2): "http://192.0.2.2:18765/b.png" (style attribute), "http://192.0.2.2:18765/s.css" (<link href>).',
+    ]);
   });
 
   it('refuses the external image when every resource is required', async () => {

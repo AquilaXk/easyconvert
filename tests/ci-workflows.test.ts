@@ -157,6 +157,22 @@ describe('the pull request workflow', () => {
     expect([...(ci.jobs.verify.needs as string[])].sort()).toEqual([...others].sort());
     expect(ci.jobs.verify.if).toBe('always()');
   });
+
+  it('fetches the real-world test files, cached by manifest digest, before any step that runs vitest', () => {
+    const prefetch = 'npm run prefetch:test-samples';
+    const runsVitest = (step: Step): boolean => (step.run ?? '').includes('vitest run');
+    const jobsRunningVitest = Object.entries(ci.jobs).filter(([, job]) => job.steps.some(runsVitest));
+    expect(jobsRunningVitest.map(([name]) => name).sort()).toEqual(['conformance', 'integration', 'tests']);
+    for (const [name, job] of jobsRunningVitest) {
+      const prefetchAt = job.steps.findIndex((step) => step.run === prefetch);
+      expect(prefetchAt, `${name} prefetches`).toBeGreaterThan(-1);
+      expect(prefetchAt, `${name} prefetches before vitest`).toBeLessThan(job.steps.findIndex(runsVitest));
+      expect(job.steps[prefetchAt].env?.ORACLE_STRICT_MODE, `${name} prefetch is strict`).toBe('1');
+      const cache = job.steps.slice(0, prefetchAt).find((step) => String(step.uses).startsWith('actions/cache@'));
+      expect(cache?.with?.path, `${name} cache path`).toBe('~/.cache/easyconvert-realworld');
+      expect(cache?.with?.key, `${name} cache key`).toBe("test-samples-${{ hashFiles('bench/realworld/manifest.json') }}");
+    }
+  });
 });
 
 describe('the nightly workflow', () => {
@@ -261,6 +277,24 @@ describe('the tool setup', () => {
     const keys = caches.map((step) => String(step.with?.key));
     expect(keys.some((key) => key.includes('apt-debs') && key.includes('steps.image.outputs.version') && key.includes('apt-packages.txt'))).toBe(true);
     expect(keys.some((key) => key.includes('verapdf') && key.includes('scripts/install-verapdf.sh'))).toBe(true);
+  });
+
+  it('caches the Python wheels by image version and pin file, and installs from them without the network', () => {
+    const cache = setup.runs.steps.find((step) => step.name === 'Restore the cached Python wheels');
+    expect(cache?.uses?.startsWith('actions/cache@')).toBe(true);
+    expect(cache?.with?.path).toBe('${{ runner.temp }}/pip-wheels');
+    expect(cache?.with?.key).toBe(
+      "pip-wheels-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('.github/actions/ci-setup/pip-packages.txt') }}",
+    );
+    const install = setup.runs.steps.find((step) => step.name === 'Install the tools and start the S3 test server');
+    expect(install?.env?.PIP_WHEELS).toBe('${{ runner.temp }}/pip-wheels');
+    const script = read(path.join(ROOT, '.github', 'actions', 'ci-setup', 'install-tools.sh'));
+    const task = script.slice(script.indexOf('task_pip() {'), script.indexOf('task_apt() {'));
+    expect(task).toContain('python3 -m pip download --only-binary=:all: --dest "$pip_wheels" "${pins[@]}"');
+    expect(task).toContain('sudo python3 -m pip install --no-index --find-links "$pip_wheels" --break-system-packages --ignore-installed "${pins[@]}"');
+    expect(task, 'the download runs as the runner user, so the cache can save the directory').not.toMatch(/sudo python3 -m pip download/);
+    expect(task, 'no install path reaches the network').not.toContain('--no-cache-dir');
+    expect(task.match(/pip install/g)).toHaveLength(1);
   });
 
   it('keeps the unprivileged user namespace step first', () => {
@@ -604,5 +638,21 @@ describe('the pinned 7-Zip the corpus and the speed rows run the product with', 
     expect(install).toBeLessThan(archive);
     expect(steps[install].with?.['export-env'] ?? 'false').toBe('false');
     expect((steps[archive].env as Record<string, string>).P7ZIP_PATH).toBe(`\${{ steps.${steps[install].id}.outputs.path }}`);
+  });
+});
+
+describe('files of the base that a pull request job compares with', () => {
+  const MERGE_PARENT = `parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"`;
+
+  it('are read from the first parent of the tested merge, never from the base branch as it is now', () => {
+    const readers = stepsOf(ci).filter(({ step }) => /git show "[^"]*:/.test(step.run ?? ''));
+    expect(readers.map(({ step }) => step.name)).toEqual(
+      expect.arrayContaining(['Check the code-smell baseline does not grow against the base branch', 'Read the gap file and the baseline of the base'])
+    );
+    for (const { job, step } of readers) {
+      const script = step.run ?? '';
+      expect(script, `${job}: ${step.name}`).toContain(MERGE_PARENT);
+      expect(script, `${job}: ${step.name}`).not.toMatch(/git show "origin\//);
+    }
   });
 });

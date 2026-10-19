@@ -435,11 +435,17 @@ describe('HTML_IMAGE_FETCH=off', () => {
   });
 });
 
-describe('references other than images keep their handling', () => {
-  it('still refuses CSS url(), stylesheets and frames, and fetches nothing for them', async () => {
-    await expect(stageHtmlForNativeEngine(`<p style="background:url(${at('/photo.png')})">x</p>`)).rejects.toBeInstanceOf(ConversionFailedError);
-    await expect(stageHtmlForNativeEngine(`<link rel="stylesheet" href="${at('/photo.png')}">`)).rejects.toBeInstanceOf(ConversionFailedError);
-    await expect(stageHtmlForNativeEngine(`<iframe src="${at('/photo.png')}"></iframe>`)).rejects.toBeTruthy();
+describe('references other than images', () => {
+  it('are left out and reported, never fetched', async () => {
+    const reference = at('/photo.png');
+    const staged = await stageHtmlForNativeEngine(
+      `<p style="background:url(${reference})">x</p><link rel="stylesheet" href="${reference}"><iframe src="${reference}"></iframe>`
+    );
+    expect(staged.html).not.toMatch(/images\.test|url\(|<link|<iframe/);
+    expect(staged.warnings).toEqual([
+      'Left out elements that cannot be drawn (1): <iframe> x 1.',
+      `Left out references that are not loaded or followed (2): "${reference}" (style attribute), "${reference}" (<link href>).`,
+    ]);
     expect(server.requests).toHaveLength(0);
   });
 });

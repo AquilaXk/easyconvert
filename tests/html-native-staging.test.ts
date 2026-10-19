@@ -4,13 +4,13 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import sharp from 'sharp';
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFString } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions/index';
 import { stageHtmlForNativeEngine } from '../src/lib/conversions/html-native-staging';
 import { markdownToSafeHtml } from '../src/lib/conversions/markdown-pdf';
 import { executeWorkerConversion, libreOfficePool } from '../src/worker/engines';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool, type ExternalOracleTool } from './helpers/differential-oracle';
+import { pdfLinkTargets as linkTargets } from './helpers/html-pdf-oracle';
 
 /**
  * HTML bound for LibreOffice is rebuilt from the parsed tree instead of being passed on as raw
@@ -49,22 +49,6 @@ function embeddedImageCount(pdf: Buffer): number {
 
 function normalizedText(pdf: Buffer): string {
   return poppler('pdftotext', ['-q'], pdf).replace(/\s+/g, ' ').trim();
-}
-
-/** URI actions of every link annotation, read with pdf-lib. */
-async function linkTargets(pdfBytes: Buffer): Promise<string[]> {
-  const pdf = await PDFDocument.load(pdfBytes);
-  const uris: string[] = [];
-  for (const page of pdf.getPages()) {
-    const annots = page.node.lookupMaybe(PDFName.of('Annots'), PDFArray);
-    if (!annots) continue;
-    for (let i = 0; i < annots.size(); i++) {
-      const action = annots.lookup(i, PDFDict).lookupMaybe(PDFName.of('A'), PDFDict);
-      const uri = action?.lookupMaybe(PDFName.of('URI'), PDFString);
-      if (uri) uris.push(uri.decodeText());
-    }
-  }
-  return uris;
 }
 
 function settle<T>(promise: Promise<T>): Promise<{ value?: T; error?: unknown }> {
@@ -290,9 +274,6 @@ describe('HTML bound for LibreOffice is rebuilt from the parsed tree', () => {
 
 describe('CSS checks before LibreOffice', () => {
   const refused: Array<[string, string]> = [
-    ['an empty group inside image-set()', `<p style="background-image:image-set((), 'file:///etc/hosts' 1x)">group</p>`],
-    ['a string inside image()', `<p style="background-image:image('file:///etc/hosts')">image</p>`],
-    ['a string inside cross-fade()', `<p style="background-image:cross-fade(url(#a), 'http://192.0.2.2:18765/x.png', 50%)">fade</p>`],
     ['any backslash', '<p style="font-family:\\66 oo">escape</p>'],
     ['an SVG data: background', '<p style="background:url(data:image/svg+xml;base64,PHN2Zy8+)">svg</p>'],
     ['an import of embedded CSS', '<style>@import url("data:text/css;base64,cCB7IGNvbG9yOiByZWQgfQ==");</style><p>import</p>'],
@@ -304,6 +285,52 @@ describe('CSS checks before LibreOffice', () => {
       const soffice = recordingSoffice();
       const { error } = await withSoffice(soffice.binary, () => convertHtml(html));
       expect({ name: (error as Error)?.name, invoked: soffice.invoked() }).toEqual({ name: 'ConversionFailedError', invoked: false });
+    });
+  }
+
+  // A backslash inside a comment is no escape (CSS Syntax 4.3.2); the comment is replaced by a space, so LibreOffice never reads it.
+  it('keeps a style sheet whose backslash sits in a comment, such as the "commented backslash hack"', async () => {
+    const staged = await stageHtmlForNativeEngine(
+      '<style>\r\n/* Commented Backslash Hack\r\n   hides rule from IE5-Mac \\*/\r\n#header a {float:none;}\r\n/* End hack */ p { color: #224488 }</style><p>t</p>'
+    );
+    expect(staged.html).toBe(
+      '<html><head><meta charset="utf-8"><style>     #header a {float:none;}    p { color: #224488 }</style></head><body><p>t</p></body></html>'
+    );
+    expect(staged.html).not.toContain('\\');
+  });
+
+  const backslashOutsideComments: Array<[string, string]> = [
+    ['in a quoted string', '<style>/* c */ p { content: "a\\"b" }</style><p>t</p>'],
+    ['in an unquoted url()', '<style>p { background: url(img\\.png) }</style><p>t</p>'],
+    ['starting a token after a comment', '<style>/* \\ */ p { font-family: \\66 oo }</style><p>t</p>'],
+    ['at the end after a comment', '<style>p { color: red } /* c */ \\</style><p>t</p>'],
+    ['in a style attribute next to a comment', '<p style="/* c */ font-family:\\66 oo">t</p>'],
+  ];
+  for (const [name, html] of backslashOutsideComments) {
+    it(`still refuses a backslash ${name}`, async () => {
+      const { error } = await settle(stageHtmlForNativeEngine(html));
+      expect({ name: errorOutcome(error).name, escape: /backslash escape/.test(errorOutcome(error).message) }).toEqual({
+        name: 'ConversionFailedError',
+        escape: true,
+      });
+    });
+  }
+
+  // CSS that names a file or an address is not refused: it is left out and reported, so LibreOffice never reads it.
+  const leftOut: Array<[string, string, string]> = [
+    ['an empty group inside image-set()', `<p style="background-image:image-set((), 'file:///etc/hosts' 1x)">group</p>`, 'file:///etc/hosts'],
+    ['a string inside image()', `<p style="background-image:image('file:///etc/hosts')">image</p>`, 'file:///etc/hosts'],
+    [
+      'a string inside cross-fade()',
+      `<p style="background-image:cross-fade(url(#a), 'http://192.0.2.2:18765/x.png', 50%)">fade</p>`,
+      'http://192.0.2.2:18765/x.png',
+    ],
+  ];
+  for (const [name, html, reference] of leftOut) {
+    it(`leaves out ${name} and hands LibreOffice no style`, async () => {
+      const staged = await stageHtmlForNativeEngine(html);
+      expect(staged.html).not.toMatch(/style=|file:|192\.0\.2\.2|image-set|cross-fade/);
+      expect(staged.warnings).toEqual([`Left out references that are not loaded or followed (1): "${reference}" (style attribute).`]);
     });
   }
 });
@@ -344,15 +371,10 @@ describe('stageHtmlForNativeEngine', () => {
     expect(staged).toBe(`${STAGED_PREFIX}<p>before</p><p>after</p>${STAGED_SUFFIX}`);
   });
 
-  it('refuses an inline SVG with 300 self-closed paths as unsupported, not as nested too deeply', async () => {
-    const soffice = recordingSoffice();
-    const html = `<p>before</p><svg>${'<path d="M0 0"/>'.repeat(300)}</svg><p>after</p>`;
-    const { error } = await withSoffice(soffice.binary, () => convertHtml(html));
-    expect({ name: (error as Error)?.name, nesting: /nests/.test(errorOutcome(error).message), invoked: soffice.invoked() }).toEqual({
-      name: 'EngineUnavailableError',
-      nesting: false,
-      invoked: false,
-    });
+  it('leaves out an inline SVG with 300 self-closed paths as one element, not as nested too deeply', async () => {
+    const staged = await stageHtmlForNativeEngine(`<p>before</p><svg>${'<path d="M0 0"/>'.repeat(300)}</svg><p>after</p>`);
+    expect(staged.html).toBe(`${STAGED_PREFIX}<p>before</p><p>after</p>${STAGED_SUFFIX}`);
+    expect(staged.warnings).toEqual(['Left out elements that cannot be drawn (1): <svg> x 1.']);
   });
 
   it('keeps web, mail and fragment links, and PNG, JPEG and GIF data images', async () => {
@@ -372,28 +394,40 @@ describe('stageHtmlForNativeEngine', () => {
 });
 
 describe('elements no engine renders', () => {
-  it('refuses media, frames with content, SVG and form controls with EngineUnavailableError', async () => {
-    const documents = [
-      '<p>t</p><svg><rect width="4" height="4"/></svg>',
-      '<p>t</p><video src="data:video/mp4;base64,AAAA"></video>',
-      '<p>t</p><audio src="data:audio/mpeg;base64,AAAA"></audio>',
-      '<p>t</p><canvas width="4" height="4"></canvas>',
-      '<p>t</p><iframe srcdoc="&lt;p&gt;inner&lt;/p&gt;"></iframe>',
-      '<p>t</p><object data="data:text/plain;base64,aGk="></object>',
-      '<p>t</p><object><p>fallback</p></object>',
-      '<p>t</p><embed src="data:text/plain;base64,aGk=">',
-      '<p>t</p><select><option>a</option></select>',
-      '<p>t</p><textarea>typed</textarea>',
-      '<p>t</p><input type="text" value="typed">',
-      '<frameset><frame src="data:text/html,x"></frameset>',
+  it('leaves out media, frames with content, SVG, objects and form controls and reports each by tag', async () => {
+    const documents: Array<[string, string]> = [
+      ['<p>t</p><svg><rect width="4" height="4"/></svg>', 'svg'],
+      ['<p>t</p><video src="data:video/mp4;base64,AAAA">fallback</video>', 'video'],
+      ['<p>t</p><audio src="data:audio/mpeg;base64,AAAA"></audio>', 'audio'],
+      ['<p>t</p><canvas width="4" height="4"></canvas>', 'canvas'],
+      ['<p>t</p><iframe srcdoc="&lt;p&gt;inner&lt;/p&gt;"></iframe>', 'iframe'],
+      ['<p>t</p><object data="data:text/plain;base64,aGk="></object>', 'object'],
+      ['<p>t</p><object><p>fallback</p></object>', 'object'],
+      ['<p>t</p><embed src="data:text/plain;base64,aGk=">', 'embed'],
+      ['<p>t</p><select><option>a</option></select>', 'select'],
+      ['<p>t</p><textarea>typed</textarea>', 'textarea'],
+      ['<p>t</p><input type="text" value="typed">', 'input'],
+      ['<p>t</p><applet code="A.class">fallback</applet>', 'applet'],
     ];
     const outcomes = await Promise.all(
-      documents.map(async (html) => {
-        const { error } = await settle(stage(html));
-        return { html, name: errorOutcome(error).name, engine: (error as { engineName?: string } | undefined)?.engineName };
+      documents.map(async ([html, tag]) => {
+        const staged = await stageHtmlForNativeEngine(html);
+        return { tag, html: staged.html, warnings: staged.warnings };
       })
     );
-    expect(outcomes).toEqual(documents.map((html) => ({ html, name: 'EngineUnavailableError', engine: 'soffice' })));
+    expect(outcomes).toEqual(
+      documents.map(([, tag]) => ({
+        tag,
+        html: `${STAGED_PREFIX}<p>t</p>${STAGED_SUFFIX}`,
+        warnings: [`Left out elements that cannot be drawn (1): <${tag}> x 1.`],
+      }))
+    );
+  });
+
+  it('leaves out a frameset with its frames, writing an empty page', async () => {
+    const staged = await stageHtmlForNativeEngine('<frameset><frame src="data:text/html,x"></frameset>');
+    expect(staged.html).toBe(`${STAGED_PREFIX}${STAGED_SUFFIX}`);
+    expect(staged.warnings).toEqual(['Left out elements that cannot be drawn (1): <frameset> x 1.']);
   });
 
   it('drops only elements that render nothing', async () => {
