@@ -793,6 +793,12 @@ jobs:
         if: env.BENCH_CHANGED == 'true'
         run: npm ci --ignore-scripts
 
+      # The service runs the PDF text thread from the bundle `npm run build` makes (Dockerfile.worker, `build:worker`); without it the
+      # thread runs the TypeScript source through tsx, which transpiles every module at every thread start. Time what is deployed.
+      - name: Build the PDF text worker bundle
+        if: env.BENCH_CHANGED == 'true'
+        run: npm run build:pdf-text-worker
+
       - name: Install tools and start test services
         if: env.BENCH_CHANGED == 'true'
         uses: ./.github/actions/ci-setup
@@ -858,6 +864,14 @@ jobs:
         with:
           path: ab-base/node_modules
           key: ab-base-modules-${{ runner.os }}-${{ hashFiles('ab-base/package-lock.json') }}
+
+      # The base is timed the same way. A base from before the bundle existed has no such script and stays on its source.
+      - name: Build the PDF text worker bundle of the base
+        if: env.BENCH_CHANGED == 'true'
+        run: |
+          if grep -q '"build:pdf-text-worker"' ab-base/package.json; then
+            (cd ab-base && npm run build:pdf-text-worker)
+          fi
 
       - name: Measure speed against the reference tools
         id: bench
