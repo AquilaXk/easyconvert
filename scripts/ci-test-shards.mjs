@@ -119,17 +119,32 @@ export function planShards(files, durations, count, baseLoads = []) {
   return shards;
 }
 
-/** Merges the per-file wall time of vitest JSON reports into the duration table. */
-export function mergeReports(durations, reports) {
+/**
+ * The file of `testFiles` that the absolute path `reported` names, or undefined. A report written on the CI runner holds
+ * the runner's checkout path, not this one, so a file is recognised by its repository-relative path at the end.
+ */
+function reportedTestFile(reported, testFiles) {
+  const posix = reported.split(path.sep).join('/');
+  return testFiles.find((file) => posix === file || posix.endsWith(`/${file}`));
+}
+
+/**
+ * Merges the per-file wall time of vitest JSON reports into the duration table, for the files of `testFiles`. Throws when
+ * no report names one of them, since an update that matched nothing would leave the table silently unchanged.
+ */
+export function mergeReports(durations, reports, testFiles) {
   const merged = { ...durations };
+  let matched = 0;
   for (const report of reports) {
     for (const result of report.testResults ?? []) {
-      const relative = path.relative(ROOT, result.name).split(path.sep).join('/');
-      if (!relative.startsWith(`${TESTS_DIR}/`) || typeof result.startTime !== 'number' || typeof result.endTime !== 'number') continue;
+      const file = typeof result.name === 'string' ? reportedTestFile(result.name, testFiles) : undefined;
+      if (file === undefined || typeof result.startTime !== 'number' || typeof result.endTime !== 'number') continue;
       const seconds = Math.round(((result.endTime - result.startTime) / MS_PER_SECOND) * DURATION_DECIMALS) / DURATION_DECIMALS;
-      merged[relative] = Math.max(0, seconds);
+      merged[file] = Math.max(0, seconds);
+      matched += 1;
     }
   }
+  if (matched === 0) throw new ShardPlanError(`no report names one of the ${testFiles.length} sharded test files`);
   return Object.fromEntries(Object.entries(merged).sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 
@@ -138,7 +153,8 @@ function main(argv) {
   if (first === '--update') {
     if (rest.length === 0) throw new ShardPlanError('--update needs at least one vitest JSON report');
     const reports = rest.map((file) => JSON.parse(readFileSync(file, 'utf8')));
-    const merged = dropUnshardedEntries(mergeReports(loadDurations(), reports), listShardedTests());
+    const files = listShardedTests();
+    const merged = dropUnshardedEntries(mergeReports(loadDurations(), reports, files), files);
     writeFileSync(DURATIONS_FILE, `${JSON.stringify(merged, null, 2)}\n`);
     return;
   }
