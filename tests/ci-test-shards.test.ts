@@ -2,7 +2,16 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { MAX_SHARDS, ShardPlanError, listShardedTests, loadDurations, mergeReports, planShards } from '../scripts/ci-test-shards.mjs';
+import {
+  MAX_SHARDS,
+  ShardPlanError,
+  dropUnshardedEntries,
+  listShardedTests,
+  loadDurations,
+  mergeReports,
+  planShards,
+  unrecordedFiles,
+} from '../scripts/ci-test-shards.mjs';
 
 /**
  * The shard planner decides which CI job runs which test file, so a file it drops is a file CI never runs. Its
@@ -102,6 +111,37 @@ describe('files without a recorded duration', () => {
   it('weigh one second each when nothing is recorded at all', () => {
     const shards = planShards(['tests/a.test.ts', 'tests/b.test.ts', 'tests/c.test.ts'], {}, 3);
     expect(shards.map((shard) => shard.load)).toEqual([1, 1, 1]);
+  });
+});
+
+describe('how complete the duration table is', () => {
+  /** Files that may wait for the next refresh from the CI reports before the plan is judged stale. */
+  const MAX_UNRECORDED_SHARE = 0.05;
+
+  it('lists the files that have no entry', () => {
+    expect(unrecordedFiles(['tests/a.test.ts', 'tests/b.test.ts'], { 'tests/a.test.ts': 3 })).toEqual(['tests/b.test.ts']);
+  });
+
+  it('covers nearly every sharded file, so that the median stands for few of them', () => {
+    const missing = unrecordedFiles(FILES, DURATIONS);
+    expect(
+      missing.length,
+      `${missing.length} of ${FILES.length} sharded files have no recorded duration and are planned at the median, which unbalances the shards; ` +
+        'download the test-report-* artifacts of a recent main run and run `node scripts/ci-test-shards.mjs --update <reports>`:\n' +
+        missing.join('\n')
+    ).toBeLessThanOrEqual(Math.floor(FILES.length * MAX_UNRECORDED_SHARE));
+  });
+
+  it('drops the entries of files the job no longer runs when the table is updated', () => {
+    const table = { 'tests/a.test.ts': 3, 'tests/gone.test.ts': 9 };
+    expect(dropUnshardedEntries(table, ['tests/a.test.ts', 'tests/b.test.ts'])).toEqual({ 'tests/a.test.ts': 3 });
+  });
+});
+
+describe('the reports of the tests job', () => {
+  it('are written as JSON and uploaded by every shard, so that the table can be refreshed from real CI numbers', () => {
+    expect(ci).toMatch(/--reporter=json --outputFile\.json="\$TEST_REPORT"/);
+    expect(ci).toMatch(/name: test-report-\$\{\{ matrix\.shard \}\}/);
   });
 });
 

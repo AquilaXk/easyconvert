@@ -10,7 +10,14 @@
 //   node scripts/ci-test-shards.mjs --update <report>... merges vitest JSON reports (--reporter=json) into the table
 //
 // Durations live in .github/ci/test-durations.json (seconds per file). A file without an entry is planned with the
-// median duration, so a new test file is spread like an average one until the table is refreshed.
+// median duration, so a new test file is spread like an average one until the table is refreshed. Every shard of the
+// `tests` job uploads its JSON report as the artifact `test-report-<shard>`; the table is refreshed from the reports of
+// one main run:
+//
+//   gh run download <run id> --pattern 'test-report-*' --dir <dir>
+//   node scripts/ci-test-shards.mjs --update <dir>/test-report-*/*.json
+//
+// An update also drops the entries of files the job no longer runs (deleted or moved out of the shards).
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +45,17 @@ const DURATION_DECIMALS = 10;
 const FALLBACK_SECONDS = 1;
 
 export class ShardPlanError extends Error {}
+
+/** The sharded files that have no entry in the table: each is planned at the median, whatever it really takes. */
+export function unrecordedFiles(files, durations) {
+  return files.filter((file) => !(file in durations));
+}
+
+/** The table without the entries of files the sharded job does not run (deleted, renamed or moved out of the shards). */
+export function dropUnshardedEntries(durations, files) {
+  const sharded = new Set(files);
+  return Object.fromEntries(Object.entries(durations).filter(([file]) => sharded.has(file)));
+}
 
 /** Test files the sharded job runs, as repository-relative POSIX paths, sorted. */
 export function listShardedTests(root = ROOT) {
@@ -120,7 +138,8 @@ function main(argv) {
   if (first === '--update') {
     if (rest.length === 0) throw new ShardPlanError('--update needs at least one vitest JSON report');
     const reports = rest.map((file) => JSON.parse(readFileSync(file, 'utf8')));
-    writeFileSync(DURATIONS_FILE, `${JSON.stringify(mergeReports(loadDurations(), reports), null, 2)}\n`);
+    const merged = dropUnshardedEntries(mergeReports(loadDurations(), reports), listShardedTests());
+    writeFileSync(DURATIONS_FILE, `${JSON.stringify(merged, null, 2)}\n`);
     return;
   }
   const files = listShardedTests();
@@ -128,6 +147,7 @@ function main(argv) {
   if (first === '--summary') {
     const shards = planShards(files, durations, Number(rest[0]));
     shards.forEach((shard, index) => console.log(`shard ${index + 1}: ${shard.files.length} files, ${shard.load.toFixed(1)} s`));
+    console.log(`${unrecordedFiles(files, durations).length} of ${files.length} files have no recorded duration`);
     return;
   }
   const index = Number(first);
