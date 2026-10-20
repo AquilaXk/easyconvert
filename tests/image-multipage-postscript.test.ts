@@ -8,16 +8,19 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
  * A multi-page TIFF converted to PostScript is one PostScript document of every page, each page drawn at the size of its
- * picture (one pixel to the point, as the PDF writer sizes its pages) and written compactly. The corpus file is a three-page
- * CCITT Group 4 scan of 3307 x 4677 pixels (a word on each page). The oracles are libtiff through ImageMagick, which decodes
- * each page of the source, and Ghostscript, which draws the document that comes back: every page must come back sample for
- * sample.
+ * picture (pixels x 72 / dpi points, one pixel to the point when it states no resolution, as the PDF writer sizes its pages) and
+ * written compactly. The corpus file is a three-page CCITT Group 4 scan of 3307 x 4677 pixels at 400 dpi (a word on each page).
+ * The oracles are libtiff through ImageMagick, which decodes each page of the source, and Ghostscript, which draws the document
+ * that comes back at the density of the scan: every page must come back sample for sample.
  */
 
 const SAMPLE = 'pil-g4-multi.tiff';
 const SAMPLE_PAGES = 3;
 const SAMPLE_WIDTH = 3307;
 const SAMPLE_HEIGHT = 4677;
+/** The density the scan states, at which the interpreter draws one pixel of the scan to one pixel of its page. */
+const SAMPLE_DPI = 400;
+const SAMPLE_RENDER = [`-r${SAMPLE_DPI}`];
 const CONVERSION_TIMEOUT_MS = 180_000;
 const RGB_CHANNELS = 3;
 /** The size of the PostScript ImageMagick writes for the same file (all three pages, hex samples): the output must not be larger. */
@@ -40,7 +43,7 @@ describe('a multi-page TIFF converted to PostScript', () => {
       expect(result.buffer.subarray(0, 14).toString('latin1')).toBe('%!PS-Adobe-3.0');
       expect(result.buffer.length).toBeLessThan(MAGICK_DOCUMENT_BYTES);
 
-      const drawn = renderPostscriptPages(result.buffer);
+      const drawn = renderPostscriptPages(result.buffer, SAMPLE_RENDER);
       expect(drawn).toHaveLength(SAMPLE_PAGES);
       const inked: number[] = [];
       for (let page = 0; page < SAMPLE_PAGES; page += 1) {
@@ -62,7 +65,7 @@ describe('a multi-page TIFF converted to PostScript', () => {
     async (ctx) => {
       const { bytes } = await requireRealworldSample(ctx, SAMPLE);
       const result = await convertImage(bytes, 'ps', { pages: '2-3' }, SAMPLE, 'tiff');
-      const drawn = renderPostscriptPages(result.buffer);
+      const drawn = renderPostscriptPages(result.buffer, SAMPLE_RENDER);
       expect(drawn).toHaveLength(2);
       expect(differingSamples(drawn[0], rgbOfRgba(decodeRgba(bytes, 'tiff', 1).data)), 'first page is page 2').toBe(0);
       expect(differingSamples(drawn[1], rgbOfRgba(decodeRgba(bytes, 'tiff', 2).data)), 'second page is page 3').toBe(0);
