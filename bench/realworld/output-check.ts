@@ -10,9 +10,9 @@ import JSZip from 'jszip';
 import { isFormatCompatibleWithMagicBytes } from '../../src/lib/registry';
 
 const VALIDATOR_TIMEOUT_MS = 60_000;
-const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico']);
+const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico', 'psd']);
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
-const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'dxf', 'emf', 'wmf']);
+export const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'odd', 'dxf', 'emf', 'wmf']);
 const ZIP_MIME_TYPE = 'application/zip';
 const PACKAGE_PARTS: Readonly<Record<string, string>> = {
   docx: '[Content_Types].xml',

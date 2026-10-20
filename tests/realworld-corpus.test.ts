@@ -16,10 +16,14 @@ import { answeredStatus, crashDetail, exitSummary, isTypedRefusal } from '../ben
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { evaluate, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
-import { outputProblem } from '../bench/realworld/output-check';
+import { outputProblem, PAGE_TARGETS } from '../bench/realworld/output-check';
 import { JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
 import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { getAvailableTargetFormats } from '../src/lib/registry';
 import { captureError } from './helpers/capture-error';
+import { getOracleToolPath } from './helpers/differential-oracle';
+import { runConvert } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
 import { authorWithReferenceSuite } from './helpers/office-pair-fixtures';
 
@@ -483,6 +487,30 @@ describe('output check', () => {
     expect(await check(mixed, 'png', ZIP_MIME)).toBe('page doc-2.png: output bytes do not match png');
     expect(await check(Buffer.from('plain text, no archive'), 'png', ZIP_MIME)).toBe('png page archive is not a readable ZIP');
     expect(await check(Buffer.alloc(0), 'png', ZIP_MIME)).toBe('empty output');
+  });
+
+  describe('against what the converter delivers page by page', () => {
+    /** Two 8 x 8 pages, red and blue, written by ImageMagick. */
+    const twoPageTiff = (): Buffer => runConvert(['(', '-size', '8x8', 'xc:red', ')', '(', '-size', '8x8', 'xc:blue', ')', 'tif:-']);
+
+    oracleTest('names every target a multi-page TIFF is split into a ZIP of pages for', ['identify'], async () => {
+      const source = twoPageTiff();
+      const split: string[] = [];
+      for (const { id } of getAvailableTargetFormats('tiff')) {
+        // The ZIP target holds the file itself, not its pages.
+        if (id !== 'zip' && (await dispatchConversion(source, 'tiff', id, {}, 'pages.tiff')).mimeType === ZIP_MIME) split.push(id);
+      }
+      expect(split).toContain('psd');
+      expect(split.filter((id) => !PAGE_TARGETS.has(id))).toEqual([]);
+    }, POOL_TEST_TIMEOUT_MS);
+
+    oracleTest('reads each page of a PSD archive with ImageMagick, and refuses a page it cannot read', ['identify'], async () => {
+      const identify = getOracleToolPath('identify') ?? '';
+      const archive = (await dispatchConversion(twoPageTiff(), 'tiff', 'psd', {}, 'pages.tiff')).buffer;
+      expect(await outputProblem(archive, 'psd', os.tmpdir(), { pdfinfo: '', identify, mimeType: ZIP_MIME })).toBeNull();
+      const signatureOnly = await zipOf({ 'pages-p001.psd': Buffer.from('8BPS\u0000\u0001', 'latin1') }, 'DEFLATE');
+      expect(await outputProblem(signatureOnly, 'psd', os.tmpdir(), { pdfinfo: '', identify, mimeType: ZIP_MIME })).toMatch(/^page pages-p001\.psd: reference reader refused the output/);
+    }, POOL_TEST_TIMEOUT_MS);
   });
 
   it('does not take a ZIP for a target that is not delivered page by page', async () => {
