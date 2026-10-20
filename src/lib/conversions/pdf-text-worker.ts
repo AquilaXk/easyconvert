@@ -4,29 +4,15 @@
  * result or the message and kind of the typed error. Jobs run one at a time on a thread.
  *
  * A thread started as the replacement of one about to be retired is told so (`workerData.warmUp`): it reads the fixed
- * document of pdf-text-warmup.ts several times, which loads pdfjs and its font data and warms the reader's code, then loads the image reader when `workerData.images`
- * (the document has no image to load it for) and reports `{ ready: true }`; the host gives it user documents only after that.
+ * page of pdf-text-warmup.ts once, which loads pdfjs and its font data, then loads the image reader when `workerData.images`
+ * (the page has no image to load it for) and reports `{ ready: true }`; the host gives it user documents only after that.
  */
-import * as nodeModule from 'node:module';
 import { parentPort, workerData } from 'node:worker_threads';
 import { ConversionFailedError } from '../types';
 import { analyzePdfPagesInProcess } from './pdf-text-geometry';
 import { pdfTextFailureKindOf, type PdfTextJob } from './pdf-text-types';
 import { preloadImageReader } from './pdf-text-images';
-import { WARMUP_READS, warmupPdf } from './pdf-text-warmup';
-
-interface ThreadStart {
-  warmUp?: boolean;
-  images?: boolean;
-  /** Where the threads of this bundle keep the V8 code cache of pdfjs and its worker module (see pdf-text-host.ts); none for a thread that runs the source. */
-  compileCacheDir?: string | null;
-}
-
-const start = workerData as ThreadStart | null;
-// The next thread compiles neither module (about a quarter of a start-up). The installed type definitions predate
-// `enableCompileCache` (Node 22.8; the engines field requires 24). It returns a status instead of throwing: a directory that
-// cannot be written leaves the thread without the cache.
-if (start?.compileCacheDir) (nodeModule as typeof nodeModule & { enableCompileCache(directory: string): unknown }).enableCompileCache(start.compileCacheDir);
+import { warmupPdf } from './pdf-text-warmup';
 
 /** The job the host sends for a text conversion; the warm-up runs the same code. */
 const WARMUP_JOB: PdfTextJob = { geometry: 'none', content: true };
@@ -53,10 +39,10 @@ parentPort?.on('message', (request: Request) => {
 });
 
 async function warmUp(images: boolean): Promise<void> {
-  const pdf = Buffer.from(warmupPdf());
-  for (let read = 0; read < WARMUP_READS; read++) await analyzePdfPagesInProcess(pdf, WARMUP_JOB);
+  await analyzePdfPagesInProcess(Buffer.from(warmupPdf()), WARMUP_JOB);
   if (images) await preloadImageReader();
   parentPort?.postMessage({ ready: true });
 }
 
+const start = workerData as { warmUp?: boolean; images?: boolean } | null;
 if (start?.warmUp === true) void warmUp(start.images === true);

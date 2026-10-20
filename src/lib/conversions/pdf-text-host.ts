@@ -29,16 +29,13 @@ import {
  *
  * A new thread costs the job that waits for it its start-up (loading pdfjs, then a cold engine: about 200 ms against
  * 5 ms for a document), which is a spike once in RECYCLE_AFTER_JOBS jobs. A thread that nears its retirement therefore
- * starts its replacement ahead (REPLACEMENT_LEAD_JOBS jobs before): the replacement reads a fixed document of this
- * repository several times (pdf-text-warmup.ts), which loads pdfjs and its font data and runs the reader's code until it is no
- * longer cold (a thread's first 20 documents took 1.5 to 3 times what a later one does), and only then joins the pool; the old thread
+ * starts its replacement ahead (REPLACEMENT_LEAD_JOBS jobs before): the replacement reads a fixed page of this
+ * repository once (pdf-text-warmup.ts), which loads pdfjs and its font data, and only then joins the pool; the old thread
  * is retired when the replacement is ready, or after RECYCLE_LIMIT_JOBS jobs. The replacement has read no user document,
  * so retiring the old thread still ends everything a document left in it; only the delay of starting a thread is hidden.
  *
  * What a thread loads at start-up is kept short, because the replacement's start competes with the thread that reads: the image
- * reader's pdf-lib (27 ms) is loaded by the first page with images, or by the replacement of a thread that
- * read one, and pdfjs and its worker module are read from a V8 code cache that the earlier threads left beside the bundle, in a
- * directory only the service writes (CODE_CACHE_DIR; a thread that runs the source has none).
+ * reader's pdf-lib (27 ms) is loaded by the first page with images, or by the replacement of a thread that read one.
  *
  * Failures are typed by whose fault they are. A document that overruns the deadline, exhausts the thread's memory or
  * is rejected by the reader is a PdfTextGeometryError (400), or the typed error the thread names (an encrypted
@@ -70,8 +67,6 @@ function releaseInitialOldSpace(): void {
   if (--startsAwaitingOnline === 0) setFlagsFromString(DEFAULT_INITIAL_OLD_SPACE_FLAG);
 }
 const WORKER_FILE = 'pdf-text-worker';
-/** Directory beside the bundle in which its threads keep the V8 code cache of pdfjs. */
-const CODE_CACHE_DIR = '.pdf-text-code-cache';
 /** Name the unavailable-engine error carries. */
 const ENGINE_NAME = 'pdf-text-thread';
 /** Built at run time so the Next.js bundler does not follow it: only the source-mode thread needs tsx. */
@@ -81,7 +76,7 @@ const MAX_POOL = 4;
 /** A thread that has read this many documents is replaced, which bounds what a leak in the reader can accumulate. */
 const RECYCLE_AFTER_JOBS = 100;
 /** The replacement of a thread is started this many jobs before the thread is due, to be warm when it is. */
-const REPLACEMENT_LEAD_JOBS = 40;
+const REPLACEMENT_LEAD_JOBS = 20;
 /** A thread whose replacement is still starting at RECYCLE_AFTER_JOBS reads on, but never beyond this many documents. */
 const RECYCLE_LIMIT_JOBS = 2 * RECYCLE_AFTER_JOBS;
 /** A thread idle this long is stopped. */
@@ -167,10 +162,9 @@ function releaseWhenHeapExists(worker: Worker): void {
 }
 
 function startWorker(entry: WorkerEntry, warmUp: boolean, images: boolean): Worker {
-  const compileCacheDir = entry.kind === 'compiled' ? path.join(path.dirname(entry.file), CODE_CACHE_DIR) : null;
   const options = {
     resourceLimits: { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB },
-    workerData: { warmUp, images, compileCacheDir },
+    workerData: { warmUp, images },
   };
   holdInitialOldSpace();
   let worker: Worker;

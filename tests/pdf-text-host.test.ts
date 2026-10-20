@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import os from 'node:os';
-import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -177,18 +176,13 @@ describe('without a worker entry', () => {
   });
 });
 
-interface ThreadOptions {
-  execArgv?: string[];
-  workerData: { compileCacheDir: string | null };
-}
-
 describe('the entry of the thread', () => {
-  const startedWith = async (existing: (candidate: string) => boolean): Promise<[unknown, ThreadOptions]> => {
+  const startedWith = async (existing: (candidate: string) => boolean): Promise<[unknown, { execArgv?: string[] }]> => {
     const real = fs.existsSync.bind(fs);
     vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => (String(candidate).includes('pdf-text-worker') ? existing(String(candidate)) : real(candidate)));
     void failure(extractPdfTextLayerPages(pdf(), new Set([1])));
     await startedThread();
-    const [entry, options] = fake.state.calls[0] as [unknown, ThreadOptions];
+    const [entry, options] = fake.state.calls[0] as [unknown, { execArgv?: string[] }];
     return [entry, options];
   };
 
@@ -202,16 +196,6 @@ describe('the entry of the thread', () => {
     const [entry, options] = await startedWith((candidate) => candidate.endsWith('pdf-text-worker.ts'));
     expect(String(entry)).toContain('.register()');
     expect(options).not.toHaveProperty('execArgv');
-  });
-
-  it('keeps the code cache of the bundle in a directory beside it', async () => {
-    const [entry, options] = await startedWith((candidate) => candidate.endsWith('pdf-text-worker.js'));
-    expect(options.workerData.compileCacheDir).toBe(path.join(path.dirname(String(entry)), '.pdf-text-code-cache'));
-  });
-
-  it('gives a thread that runs the source no code cache', async () => {
-    const [, options] = await startedWith((candidate) => candidate.endsWith('pdf-text-worker.ts'));
-    expect(options.workerData.compileCacheDir).toBeNull();
   });
 });
 
@@ -301,7 +285,7 @@ describe('density analysis', () => {
  */
 describe('replacing a thread that has read many documents', () => {
   type Thread = InstanceType<typeof fake.FakeWorker>;
-  const REPLACEMENT_STARTS_AFTER_JOBS = 60;
+  const REPLACEMENT_STARTS_AFTER_JOBS = 80;
   const RETIRED_AFTER_JOBS = 100;
   const RETIRED_AT_LATEST_AFTER_JOBS = 200;
   const reply = { ok: true, result: { analyses: [], geometry: new Map(), content: [], fonts: [] } };

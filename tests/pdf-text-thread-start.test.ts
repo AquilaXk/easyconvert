@@ -1,15 +1,13 @@
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import os from 'node:os';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 /**
- * What a new text thread loads and keeps (see pdf-text-worker.ts). A thread is made again every 100 documents, and its start-up
- * is the one cost of a document that is not the reading: pdf-lib (27 ms), which only the image reader uses, is loaded by a thread
- * that reads a document with images, and pdfjs is compiled once and read from a code cache by the next thread. Both are
- * observed on real threads: the first through the modules a thread has loaded, the second through the files the threads leave.
+ * What a new text thread loads (see pdf-text-worker.ts). A thread is made again every 100 documents, and its start-up is the one
+ * cost of a document that is not the reading: pdf-lib (27 ms), which only the image reader uses, is loaded by the first page with
+ * images, and by a replacement that is told to expect them. Observed on real threads, through the modules a thread has loaded.
  */
 
 const SRC = path.join(__dirname, '..', 'src', 'lib', 'conversions');
@@ -35,7 +33,7 @@ const pdfLibLoaded = () => Object.keys(require.cache).some((file) => /node_modul
 
 const START_AS_SOURCE = (tsx: string, entry: string): string => `require(${JSON.stringify(tsx)}).register(); require(${JSON.stringify(entry)});`;
 
-/** The thread entry, with its `ready` message stamped with whether pdf-lib is loaded and which code cache directory the thread uses when it is sent. */
+/** The thread entry, with its `ready` message stamped with whether pdf-lib is loaded when it is sent. */
 const START_AND_REPORT_AT_READY = (tsx: string, entry: string): string => `
 const { parentPort } = require('node:worker_threads');
 const post = parentPort.postMessage.bind(parentPort);
@@ -45,16 +43,10 @@ parentPort.postMessage = (message) =>
       ? {
           ...message,
           pdfLib: Object.keys(require.cache).some((file) => /node_modules[\\\\/]pdf-lib[\\\\/]/.test(file)),
-          cacheDir: require('node:module').getCompileCacheDir() ?? null,
         }
       : message
   );
 ${START_AS_SOURCE(tsx, entry)}`;
-
-const cleanups: Array<() => void> = [];
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0)) cleanup();
-});
 
 function onceMessage<T>(worker: Worker): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -84,32 +76,5 @@ describe('a replacement thread', () => {
     const ready = await onceMessage<{ ready: boolean; pdfLib: boolean }>(worker);
     await worker.terminate();
     expect(ready).toMatchObject({ ready: true, pdfLib });
-  });
-});
-
-describe('the code cache of a text thread', () => {
-  async function readyReport(compileCacheDir: string | null): Promise<{ cacheDir: string | null }> {
-    const worker = new Worker(START_AND_REPORT_AT_READY(TSX_API, path.join(SRC, 'pdf-text-worker.ts')), {
-      eval: true,
-      workerData: { warmUp: true, images: false, compileCacheDir },
-      env: { ...process.env, NODE_COMPILE_CACHE: '' },
-    });
-    const report = await onceMessage<{ cacheDir: string | null }>(worker);
-    await worker.terminate();
-    return report;
-  }
-
-  it('uses the directory it is given, and leaves the compiled pdfjs there for the next thread', async () => {
-    const cacheDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-text-cache-')), 'code-cache');
-    cleanups.push(() => fs.rmSync(path.dirname(cacheDir), { recursive: true, force: true }));
-    const report = await readyReport(cacheDir);
-    // Node keeps the entries of one version of itself in a directory of its own below the one it is given.
-    expect(fs.realpathSync(path.dirname(report.cacheDir ?? ''))).toBe(fs.realpathSync(cacheDir));
-    const cached = fs.existsSync(cacheDir) ? fs.readdirSync(cacheDir, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()) : [];
-    expect(cached.length).toBeGreaterThan(0);
-  });
-
-  it('uses no code cache when it is given no directory', async () => {
-    expect(await readyReport(null)).toMatchObject({ cacheDir: null });
   });
 });
