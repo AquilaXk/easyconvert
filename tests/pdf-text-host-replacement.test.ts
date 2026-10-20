@@ -30,7 +30,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'pdf-text', 'latin.pdf');
-const JOBS_PAST_THE_REPLACEMENT_START = 150;
+const LAST_DOCUMENT_OF_THE_FIRST_THREAD = 200;
 const TEXT_JOB = { geometry: 'none', content: true } as const;
 const WARMUP_LINES = [
   'Replacement threads read this page before the first document.',
@@ -70,7 +70,9 @@ describe('text threads on real worker threads', () => {
     const pdf = fs.readFileSync(FIXTURE);
     const first = textOf((await runPdfTextJobInThread(pdf, TEXT_JOB)).content);
     expect(first.length).toBeGreaterThan(0);
-    for (let read = 1; read < JOBS_PAST_THE_REPLACEMENT_START; read++) {
+    // Read until the first thread is retired (at 100 documents once the replacement is ready, at 200 at the latest), however long the
+    // replacement takes to start on this machine.
+    for (let read = 1; read < LAST_DOCUMENT_OF_THE_FIRST_THREAD && started.workers[0].worker.threadId !== -1; read++) {
       expect(textOf((await runPdfTextJobInThread(pdf, TEXT_JOB)).content)).toBe(first);
     }
     expect(started.workers.map((entry) => entry.workerData)).toEqual([{ warmUp: false }, { warmUp: true }]);

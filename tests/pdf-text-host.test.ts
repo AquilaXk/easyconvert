@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
@@ -35,6 +36,8 @@ const fake = vi.hoisted(() => {
     unref(): void {}
     terminate(): Promise<number> {
       this.terminated = true;
+      // A stopped thread ends with an `exit` event, a moment later.
+      queueMicrotask(() => this.emit('exit', 1));
       return Promise.resolve(0);
     }
   }
@@ -196,12 +199,51 @@ describe('the entry of the thread', () => {
 });
 
 describe('the heap of a new thread', () => {
+  const SET = 'flag --initial-old-space-size=128';
+  const RESTORED = 'flag --initial-old-space-size=0';
+
   it('starts with an old-generation threshold of 128 MB, set before the thread is made, and keeps the heap limit', async () => {
     void failure(extractPdfTextLayerPages(pdf(), new Set([1])));
     await startedThread();
-    expect(fake.state.events).toEqual(['flag --initial-old-space-size=128', 'worker']);
+    expect(fake.state.events).toEqual([SET, 'worker']);
     const options = fake.state.calls[0][1] as { resourceLimits: { maxOldGenerationSizeMb: number } };
     expect(options.resourceLimits.maxOldGenerationSizeMb).toBe(1024);
+  });
+
+  it('gives the default threshold back once the thread is online, so threads of other modules do not inherit it', async () => {
+    void failure(extractPdfTextLayerPages(pdf(), new Set([1])));
+    const thread = await startedThread();
+    thread.emit('online');
+    expect(fake.state.events).toEqual([SET, 'worker', RESTORED]);
+    thread.emit('exit', 0);
+    expect(fake.state.events).toEqual([SET, 'worker', RESTORED]);
+  });
+
+  it('gives it back when the thread fails before it is online, and when it cannot be made', async () => {
+    void failure(extractPdfTextLayerPages(pdf(), new Set([1])));
+    (await startedThread()).emit('error', Object.assign(new Error('segmentation fault'), { code: 'ERR_WORKER_UNSERIALIZABLE_ERROR' }));
+    expect(fake.state.events).toEqual([SET, 'worker', RESTORED]);
+    fake.state.events = [];
+    fake.state.construct = () => {
+      throw new Error('resource exhausted');
+    };
+    await failure(extractPdfTextLayerPages(pdf(), new Set([1])));
+    // The stand-in records the start before it fails, as a real constructor that throws has begun to make the thread.
+    expect(fake.state.events).toEqual([SET, 'worker', RESTORED]);
+  });
+
+  it('keeps the threshold while any thread is still starting, and gives it back once for the last one', async () => {
+    vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+    const first = runPdfTextJobInThread(pdf(), { geometry: 'none', content: true });
+    const second = runPdfTextJobInThread(pdf(), { geometry: 'none', content: true });
+    void failure(first);
+    void failure(second);
+    const [one, two] = fake.state.instances;
+    expect(fake.state.events).toEqual([SET, 'worker', 'worker']);
+    one.emit('online');
+    expect(fake.state.events).toEqual([SET, 'worker', 'worker']);
+    two.emit('online');
+    expect(fake.state.events).toEqual([SET, 'worker', 'worker', RESTORED]);
   });
 });
 

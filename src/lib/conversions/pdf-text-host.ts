@@ -46,10 +46,23 @@ const THREAD_YOUNG_LIMIT_MB = 64;
 /**
  * Size of the old generation at which a new thread first collects it. V8 derives that from the thread's heap limit, and a
  * thread of 1 GB collected the old generation every 23 documents (13 full collections in 300 documents against 3 with the limit
- * at 4 GB), which made a document 15 percent slower. The flag is read when a thread's heap is made, so it is set before each
- * start; it is a threshold, not a limit, and applies to every thread started after it. The heap limit above is unchanged.
+ * at 4 GB), which made a document 15 percent slower. The flag is read when a thread's heap is made and is process-wide, so it is
+ * set from before a text thread is created until that thread is online (its heap exists) and then set back to 0, which gives the
+ * size V8 computes. A thread of another module started after that has the default; one started while a text thread is starting
+ * (a few milliseconds) shares the threshold, which is harmless. It is a threshold, not a limit; the heap limit above is unchanged.
  */
 const THREAD_INITIAL_OLD_SPACE_FLAG = '--initial-old-space-size=128';
+const DEFAULT_INITIAL_OLD_SPACE_FLAG = '--initial-old-space-size=0';
+/** Text threads that are created and not yet online; the threshold stays set while there is one. */
+let startsAwaitingOnline = 0;
+
+function holdInitialOldSpace(): void {
+  if (startsAwaitingOnline++ === 0) setFlagsFromString(THREAD_INITIAL_OLD_SPACE_FLAG);
+}
+
+function releaseInitialOldSpace(): void {
+  if (--startsAwaitingOnline === 0) setFlagsFromString(DEFAULT_INITIAL_OLD_SPACE_FLAG);
+}
 const WORKER_FILE = 'pdf-text-worker';
 /** Name the unavailable-engine error carries. */
 const ENGINE_NAME = 'pdf-text-thread';
@@ -132,17 +145,31 @@ function resolveWorkerEntry(): WorkerEntry {
   );
 }
 
+/** Gives the threshold back when the thread's heap exists (it is online) or it never will be (it failed or ended). */
+function releaseWhenHeapExists(worker: Worker): void {
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    releaseInitialOldSpace();
+  };
+  for (const event of ['online', 'error', 'exit'] as const) worker.once(event, release);
+}
+
 function startWorker(entry: WorkerEntry, warmUp: boolean): Worker {
-  setFlagsFromString(THREAD_INITIAL_OLD_SPACE_FLAG);
   const options = { resourceLimits: { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB }, workerData: { warmUp } };
+  holdInitialOldSpace();
+  let worker: Worker;
   try {
     // The bundle needs no loader: a thread inherits its parent's `--import`, and under the TypeScript loader of a development or
     // benchmark process the bundle's own modules would be loaded through it (450 ms to start instead of 125 ms).
-    if (entry.kind === 'compiled') return new Worker(entry.file, { ...options, execArgv: [] });
-    return new Worker(entry.bootstrap, { eval: true, ...options });
+    worker = entry.kind === 'compiled' ? new Worker(entry.file, { ...options, execArgv: [] }) : new Worker(entry.bootstrap, { eval: true, ...options });
   } catch (error) {
+    releaseInitialOldSpace();
     throw new EngineUnavailableError(ENGINE_NAME, `the thread could not be started: ${error instanceof Error ? error.message : String(error)}`);
   }
+  releaseWhenHeapExists(worker);
+  return worker;
 }
 
 /** The error for a failure the thread reported through its `error` event. */
