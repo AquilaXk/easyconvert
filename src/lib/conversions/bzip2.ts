@@ -9,6 +9,7 @@
 import { CorruptStreamError, DecompressionLimitError } from '../types';
 import { copyYielding, CPU_POOL_MIN_BYTES, getCpuPool, yieldToEventLoop } from '../workers/cpu-pool';
 import { burrowsWheelerTransform, BwtWorkspace } from './bzip2-bwt';
+import { computeBzBlockCrc } from './bzip2-crc';
 
 // ---------------------------------------------------------------------------------------------
 // Constants
@@ -35,9 +36,6 @@ const BZ_HUFFMAN_ITERATIONS = 4;
 const BZ_INITIAL_UNUSED_COST = 15;
 const BZ_PEEK_BITS = 20;
 const BZ_ORIG_PTR_BITS = 24;
-const BZ_CRC_POLY = 0x04c11db7;
-const BZ_CRC_INIT = 0xffffffff;
-const BZ_CRC_TOP_BIT = 0x80000000;
 const BZ_CRC_ROTATE_SHIFT = 31;
 const HALF_WORD_MASK = 0xffff;
 /** Symbol counts below which the encoder uses 2, 3, 4 and 5 coding tables (6 above), as the reference does. */
@@ -72,25 +70,10 @@ function bzError(message: string): CorruptStreamError {
 }
 
 // ---------------------------------------------------------------------------------------------
-// CRC-32 (MSB-first, polynomial 0x04C11DB7)
+// CRC-32 (MSB-first, polynomial 0x04C11DB7): see bzip2-crc.ts
 // ---------------------------------------------------------------------------------------------
 
-const BZ_CRC_TABLE = new Uint32Array(BZ_ALPHABET);
-for (let i = 0; i < BZ_ALPHABET; i++) {
-  let c = i << 24;
-  for (let j = 0; j < 8; j++) {
-    c = (c & BZ_CRC_TOP_BIT) ? ((c << 1) ^ BZ_CRC_POLY) : (c << 1);
-  }
-  BZ_CRC_TABLE[i] = c >>> 0;
-}
-
-export function computeBzBlockCrc(buf: Uint8Array): number {
-  let crc = BZ_CRC_INIT;
-  for (let i = 0; i < buf.length; i++) {
-    crc = ((crc << 8) ^ BZ_CRC_TABLE[((crc >>> 24) ^ buf[i]) & BZ_BYTE_MASK]) >>> 0;
-  }
-  return (crc ^ BZ_CRC_INIT) >>> 0;
-}
+export { computeBzBlockCrc };
 
 function combineCrc(combined: number, blockCrc: number): number {
   return (((combined << 1) | (combined >>> BZ_CRC_ROTATE_SHIFT)) ^ blockCrc) >>> 0;
