@@ -1,10 +1,12 @@
 import { promisify } from 'node:util';
 import { deflate } from 'node:zlib';
 import { ConversionFailedError } from '../types';
+import { DEFAULT_PRINT_DENSITY, pageSizePoints, withinPageLimit, type PrintDensity } from './image-print-density';
 
 /**
- * PostScript (and EPS) writer for a raster picture. A page is one picture, one pixel to the point, as the PDF writer sizes
- * its pages. The samples go in as a FlateDecode stream in ASCII85 (PostScript Language Reference, LanguageLevel 3: the filters
+ * PostScript (and EPS) writer for a raster picture. A page is one picture at its stored print size, as the PDF writer sizes its
+ * pages (pixels x 72 / dpi points on each axis, one pixel to the point when the picture states no resolution; see
+ * image-print-density.ts). The samples go in as a FlateDecode stream in ASCII85 (PostScript Language Reference, LanguageLevel 3: the filters
  * of a data source, Adobe Technical Note 5603 for the structuring comments): a hexadecimal copy of the raw samples was 6
  * bytes to the pixel, so a scan of 3,307 x 4,677 pixels weighed 94 MB.
  *
@@ -71,16 +73,31 @@ function documentHead(isEps: boolean, pages: number, width: number, height: numb
 `;
 }
 
-/** One picture of RGB samples as a single-page PostScript document, or as an EPS. */
-export async function encodePostscript(rgb: Buffer, width: number, height: number, isEps: boolean): Promise<Buffer> {
+/** Decimals kept of a size in points: finer than any device resolves, and a whole size is written without any. */
+const POINT_DECIMALS = 4;
+
+/** A size in points as PostScript text: a whole number as it is, any other rounded to `POINT_DECIMALS`. */
+const pointsText = (points: number): string => String(Number(points.toFixed(POINT_DECIMALS)));
+
+/** The whole number of points a bounding box needs to hold `points` (a bounding box is integral, DSC 3.0). */
+const boxPoints = (points: number): number => Math.ceil(Number(points.toFixed(POINT_DECIMALS)));
+
+/**
+ * One picture of RGB samples as a single-page PostScript document, or as an EPS. The page is the picture at `density`, in points; the
+ * samples are the picture's own, drawn over the whole page. A page that would be over 14,400 points a side is scaled evenly to that.
+ */
+export async function encodePostscript(rgb: Buffer, width: number, height: number, isEps: boolean, density: PrintDensity = DEFAULT_PRINT_DENSITY): Promise<Buffer> {
   if (rgb.length !== width * height * RGB_CHANNELS) {
     throw new ConversionFailedError(`The picture holds ${rgb.length} sample bytes, not the ${width * height * RGB_CHANNELS} of ${width} x ${height} pixels`);
   }
   const samples = encodeAscii85(await deflateAsync(rgb));
-  const setup = isEps ? '' : `${PAGE_OPEN}%%PageBoundingBox: 0 0 ${width} ${height}\n<< /PageSize [${width} ${height}] >> setpagedevice\n`;
-  const before = `${documentHead(isEps, 1, width, height)}${setup}gsave
+  const page = withinPageLimit(pageSizePoints(width, height, density));
+  const [pageWidth, pageHeight] = [pointsText(page.width), pointsText(page.height)];
+  const [boxWidth, boxHeight] = [boxPoints(page.width), boxPoints(page.height)];
+  const setup = isEps ? '' : `${PAGE_OPEN}%%PageBoundingBox: 0 0 ${boxWidth} ${boxHeight}\n<< /PageSize [${pageWidth} ${pageHeight}] >> setpagedevice\n`;
+  const before = `${documentHead(isEps, 1, boxWidth, boxHeight)}${setup}gsave
 0 0 translate
-${width} ${height} scale
+${pageWidth} ${pageHeight} scale
 ${width} ${height} 8 [${width} 0 0 -${height} 0 ${height}]
 currentfile /ASCII85Decode filter /FlateDecode filter
 false 3 colorimage

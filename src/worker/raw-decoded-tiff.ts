@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { RawDecodeError } from '../lib/types';
+import { withoutAbsoluteResolution } from '../lib/conversions/image-tiff-directories';
 import { RAW_DECODE_MAX_PIXELS } from '../lib/conversions/raw-formats';
 
 const TIFF_HEADER_READ_BYTES = 8192;
@@ -123,4 +124,12 @@ export function assertCompleteDecodedImage(filePath: string, layout: DecodedTiff
   if (fs.statSync(filePath).size < layout.dataOffset + layout.height * layout.rowBytes) {
     throw invalid('the pixel data is shorter than its header declares');
   }
+}
+
+/**
+ * The TIFF the decoder wrote, as the conversion reads it: with no absolute resolution. The decoder writes 300 dpi into every file whatever the
+ * camera says, a constant of the decoder and not the print size of the picture.
+ */
+export function readDecodedRawImage(decodedPath: string): Buffer {
+  return withoutAbsoluteResolution(fs.readFileSync(decodedPath));
 }

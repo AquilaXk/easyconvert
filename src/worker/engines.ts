@@ -88,11 +88,8 @@ import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
 import { normalizeSvgForRendering } from '../lib/conversions/svg-geometry';
 import {
-  RAW_DECODE_MAX_OUTPUT_BYTES,
-  assertCompleteDecodedImage,
-  assertWithinPixelCap,
-  hasRepeatedTail,
-  readDecodedTiffLayout,
+  RAW_DECODE_MAX_OUTPUT_BYTES, assertCompleteDecodedImage, assertWithinPixelCap,
+  hasRepeatedTail, readDecodedRawImage, readDecodedTiffLayout,
 } from './raw-decoded-tiff';
 import { SEVEN_ZIP_BINARY_CANDIDATES } from '../lib/conversions/archive';
 import { sanitizeLeafFilename } from '../lib/conversions/archive-extraction-safety';
@@ -1885,7 +1882,7 @@ export async function convertWithNativeRaw(
       throw new RawDecodeError(`The .${src} file is truncated: the decoded image ends in repeated filler rows`);
     }
 
-    const converted = await convertImage(fs.readFileSync(decodedPath), tgt, options, originalFilename, 'tiff');
+    const converted = await convertImage(readDecodedRawImage(decodedPath), tgt, options, originalFilename, 'tiff');
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
     fs.writeFileSync(tempOutputPath, converted.buffer);
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, Buffer.isBuffer(input) ? undefined : input);
