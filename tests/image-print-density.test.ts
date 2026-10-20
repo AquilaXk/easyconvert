@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { differingSamples, renderPostscriptPages, rgbOfRgba } from './helpers/ghostscript-pages';
 import { decodeRgba, runConvert } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
+import { pdfPageSizes, postscriptInkSizes } from './helpers/page-sizes';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
@@ -214,13 +215,6 @@ function expectedPoints(dpi: Dpi, width = WIDTH, height = HEIGHT): readonly [num
   return [(width * POINTS_PER_INCH) / dpi[0], (height * POINTS_PER_INCH) / dpi[1]];
 }
 
-/** The size of every page of a PDF, by Poppler. */
-function pdfPageSizes(pdf: Buffer): Array<[number, number]> {
-  const file = write(`measured-${Math.random().toString(36).slice(2)}.pdf`, pdf);
-  const text = execFileSync(requireOracleTool('pdfinfo'), ['-f', '1', '-l', '99', file], { encoding: 'utf-8' });
-  return [...text.matchAll(/^Page\s+\d+ size:\s+([\d.]+) x ([\d.]+) pts/gm)].map((match) => [Number(match[1]), Number(match[2])]);
-}
-
 /** The pixel size of every image in a PDF, by Poppler. */
 function pdfImageSizes(pdf: Buffer): Array<[number, number]> {
   const file = write(`images-${Math.random().toString(36).slice(2)}.pdf`, pdf);
@@ -229,13 +223,6 @@ function pdfImageSizes(pdf: Buffer): Array<[number, number]> {
     const cells = row.trim().split(/\s+/);
     return [Number(cells[3]), Number(cells[4])];
   });
-}
-
-/** The box of the ink every page of a PostScript program draws (Ghostscript's bbox device), as [width, height] from the origin. */
-function inkBoxes(program: Buffer): Array<[number, number]> {
-  const file = write(`ink-${Math.random().toString(36).slice(2)}.ps`, program);
-  const run = spawnSync(requireOracleTool('gs'), ['-q', '-dBATCH', '-dNOPAUSE', '-dSAFER', '-sDEVICE=bbox', file], { encoding: 'utf-8' });
-  return [...run.stderr.matchAll(/^%%HiResBoundingBox: ([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+)$/gm)].map((match) => [Number(match[3]) - Number(match[1]), Number(match[4]) - Number(match[2])]);
 }
 
 /** The page sizes a PostScript document sets up: what Ghostscript's 72 dpi device makes of each page. */
@@ -261,9 +248,9 @@ function expectBoxes(actual: Array<[number, number]>, expected: ReadonlyArray<re
 async function pageSizesOf(bytes: Buffer, extension: string, target: Target, options = {}): Promise<{ sizes: Array<[number, number]>; output: Buffer }> {
   const result = await convertImage(bytes, target, options, `picture.${extension}`, extension);
   if (target === 'pdf') return { sizes: pdfPageSizes(result.buffer), output: result.buffer };
-  if (target === 'ps') return { sizes: inkBoxes(result.buffer), output: result.buffer };
+  if (target === 'ps') return { sizes: postscriptInkSizes(result.buffer), output: result.buffer };
   const files = result.mimeType === 'application/zip' ? await epsFiles(result.buffer) : [result.buffer];
-  return { sizes: files.flatMap((file) => inkBoxes(file)), output: result.buffer };
+  return { sizes: files.flatMap((file) => postscriptInkSizes(file)), output: result.buffer };
 }
 
 describe('the page of a picture follows its stored resolution', () => {
@@ -337,7 +324,7 @@ describe('the page of a picture follows its stored resolution', () => {
       const extracted = fs.readFileSync(path.join(work, 'pixels-000.png'));
       expect(decodeRgba(extracted, 'png').data.equals(decodeRgba(bytes, 'tif').data)).toBe(true);
       // The image covers the whole page: the ink of the page is the page.
-      expectBoxes(inkBoxes(result.buffer), [expectedPoints([200, 100])], DEVICE_PAGE_TOLERANCE_POINTS);
+      expectBoxes(postscriptInkSizes(result.buffer), [expectedPoints([200, 100])], DEVICE_PAGE_TOLERANCE_POINTS);
     },
     CONVERSION_TIMEOUT_MS
   );

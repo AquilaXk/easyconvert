@@ -17,6 +17,10 @@ const directoryBytes = (count: number): number => IFD_COUNT_BYTES + count * IFD_
 
 const TAG_COMPRESSION = 259;
 const COMPRESSION_OLD_STYLE_JPEG = 6;
+const TAG_RESOLUTION_UNIT = 296;
+const TYPE_SHORT = 3;
+/** TIFF 6.0 section 8: ResolutionUnit 1 is "no absolute unit of measurement": the resolutions are a ratio only. */
+const RESOLUTION_UNIT_NONE = 1;
 
 interface TiffDirectory {
   /** Offset of the entry count. */
@@ -66,6 +70,27 @@ function readClassicTiff(tiff: Buffer): ClassicTiff | null {
 export function tiffDirectoryOffsets(tiff: Buffer): { little: boolean; offsets: number[] } | null {
   const layout = readClassicTiff(tiff);
   return layout === null ? null : { little: layout.little, offsets: layout.directories.map((directory) => directory.at) };
+}
+
+/**
+ * `tiff` with the ResolutionUnit of every directory set to 1, no absolute unit (TIFF 6.0 section 8), so that the resolutions it holds are no print size; or `tiff`
+ * itself when no directory has the tag as a SHORT or all say 1 already. Used on the TIFF a RAW decoder writes, whose 300 dpi is a constant of the decoder.
+ * Bytes that are not a classic TIFF are not touched.
+ */
+export function withoutAbsoluteResolution(tiff: Buffer): Buffer {
+  const layout = readClassicTiff(tiff);
+  if (layout === null) return tiff;
+  let changed: Buffer | null = null;
+  for (const directory of layout.directories) {
+    for (let entry = entriesAt(directory); entry < nextAt(directory); entry += IFD_ENTRY_BYTES) {
+      const isUnit = readUInt16(tiff, entry, layout.little) === TAG_RESOLUTION_UNIT && readUInt16(tiff, entry + 2, layout.little) === TYPE_SHORT;
+      if (!isUnit || readUInt16(tiff, entry + IFD_ENTRY_VALUE_OFFSET, layout.little) === RESOLUTION_UNIT_NONE) continue;
+      changed ??= Buffer.from(tiff);
+      if (layout.little) changed.writeUInt16LE(RESOLUTION_UNIT_NONE, entry + IFD_ENTRY_VALUE_OFFSET);
+      else changed.writeUInt16BE(RESOLUTION_UNIT_NONE, entry + IFD_ENTRY_VALUE_OFFSET);
+    }
+  }
+  return changed ?? tiff;
 }
 
 /**

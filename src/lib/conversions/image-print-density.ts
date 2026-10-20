@@ -208,17 +208,19 @@ export function uprightDensity(density: PrintDensity, orientation: number | unde
 
 /**
  * The density of the page `input.page` (0-based, 0 without one) of `source`, for the picture as it is shown (the Exif orientation applied),
- * or one pixel to the point when the source states none.
+ * or one pixel to the point when the source states none. `statesDensity` false is a source whose resolution is not a print size, which
+ * is read as stating none: a camera RAW file (see below).
  */
-export async function pictureDensity(source: Buffer, input: SharpOptions = {}): Promise<PrintDensity> {
+export async function pictureDensity(source: Buffer, input: SharpOptions = {}, statesDensity = true): Promise<PrintDensity> {
+  if (!statesDensity) return DEFAULT_PRINT_DENSITY;
   const header = await openLimitedSharp(source, input).metadata();
   const stored = storedDensity(source, input.page ?? 0, header.exif);
   return uprightDensity(stored ?? DEFAULT_PRINT_DENSITY, header.orientation);
 }
 
 /** The density of the frame or page a selection reads, or one pixel to the point for a source that was not read through a selection (a decoded bitmap, a RAW sensor). */
-export async function selectionDensity(selection: Pick<FrameSelection, 'source' | 'input'> | undefined): Promise<PrintDensity> {
-  return selection === undefined ? DEFAULT_PRINT_DENSITY : pictureDensity(selection.source, selection.input);
+export async function selectionDensity(selection: Pick<FrameSelection, 'source' | 'input'> | undefined, statesDensity = true): Promise<PrintDensity> {
+  return selection === undefined ? DEFAULT_PRINT_DENSITY : pictureDensity(selection.source, selection.input, statesDensity);
 }
 
 /** The page a picture of `width` x `height` pixels is at its stored density, in points. */

@@ -1916,7 +1916,7 @@ async function convertImage(
     if (RAW_CAMERA_FORMATS.has(src)) {
       // Camera files are not readable as a picture: decode to PNG first, then place that on the page.
       const decoded = await convertImageReleasingEncoder(inputBuffer, 'png', options, originalFilename, src);
-      return convertImageToPdf(decoded.buffer, options, baseName, 'png');
+      return convertImageToPdf(decoded.buffer, options, baseName, 'png', false);
     }
     return convertImageToPdf(inputBuffer, options, baseName, src);
   }
@@ -2600,7 +2600,7 @@ async function convertImage(
           .raw()
           .toBuffer({ resolveWithObject: true });
         assertRgbSamples(info, fmt);
-        outputBuffer = await encodePostscript(rawRgb, info.width, info.height, fmt === 'eps', await selectionDensity(frameSelection));
+        outputBuffer = await encodePostscript(rawRgb, info.width, info.height, fmt === 'eps', await selectionDensity(frameSelection, !isRawInput));
         mimeType = 'application/postscript';
         break;
       }
@@ -2661,7 +2661,7 @@ async function convertImage(
 async function decodePdfPages(
   activeBuffer: Buffer,
   options: ConversionOptions,
-  sourceFormat: string | undefined
+  sourceFormat: string | undefined, statesDensity: boolean
 ): Promise<{ pages: PdfPageImage[]; sourceFrameCount?: number; frameUsed?: number }> {
   const toPage = async (pipeline: Sharp, density: PrintDensity = DEFAULT_PRINT_DENSITY): Promise<PdfPageImage> => {
     const { data, info } = await pipeline.rotate().png().toBuffer({ resolveWithObject: true });
@@ -2685,12 +2685,12 @@ async function decodePdfPages(
     for (const page of selection.zipPages) {
       const pageInput = { page: page - 1 };
       await assertEncodedImageWithinLimit(activeBuffer, undefined, pageInput);
-      pages.push(await toPage(openLimitedSharp(activeBuffer, pageInput), await pictureDensity(activeBuffer, pageInput)));
+      pages.push(await toPage(openLimitedSharp(activeBuffer, pageInput), await pictureDensity(activeBuffer, pageInput, statesDensity)));
     }
     return { pages, ...frameFields };
   }
   await assertEncodedImageWithinLimit(selection.source, undefined, selection.input);
-  return { pages: [await toPage(openLimitedSharp(selection.source, selection.input), await pictureDensity(selection.source, selection.input))], ...frameFields };
+  return { pages: [await toPage(openLimitedSharp(selection.source, selection.input), await pictureDensity(selection.source, selection.input, statesDensity))], ...frameFields };
 }
 
 /** True when the file starts with the JPEG start-of-image marker and a following marker. */
@@ -2731,7 +2731,7 @@ async function convertImageToPdf(
   inputBuffer: Buffer,
   options: ConversionOptions,
   baseName: string,
-  sourceFormat?: string
+  sourceFormat?: string, statesDensity = true
 ): Promise<ConversionResult> {
   let activeBuffer = inputBuffer;
   if (sourceFormat === 'svg' || isSvg(activeBuffer)) {
@@ -2746,7 +2746,7 @@ async function convertImageToPdf(
 
   let decodedPages: Awaited<ReturnType<typeof decodePdfPages>>;
   try {
-    decodedPages = await decodePdfPages(activeBuffer, options, sourceFormat);
+    decodedPages = await decodePdfPages(activeBuffer, options, sourceFormat, statesDensity);
   } catch (err: unknown) {
     throw toImageFailure(err, 'pdf');
   }

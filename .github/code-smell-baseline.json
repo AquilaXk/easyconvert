@@ -2847,7 +2847,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2685
+    "maxValue": 2682
   },
   {
     "file": "src/worker/engines.ts",

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { withoutAbsoluteResolution } from '../src/lib/conversions/image-tiff-directories';
 import { DEFAULT_PRINT_DENSITY, jfifDensity, pageSizePoints, storedDensity, uprightDensity, withinPageLimit } from '../src/lib/conversions/image-print-density';
 
 /**
@@ -235,5 +236,25 @@ describe('the page that follows from a density', () => {
   it('is scaled evenly to 14,400 points on its longer side and left as it is below that', () => {
     expect(withinPageLimit({ width: 28_800, height: 14_400 })).toEqual({ width: 14_400, height: 7_200 });
     expect(withinPageLimit({ width: 600, height: 800 })).toEqual({ width: 600, height: 800 });
+  });
+});
+
+describe('a TIFF made to state no absolute resolution', () => {
+  it.each([true, false])('keeps its bytes but the unit of each directory, which becomes 1 (little endian: %s)', (little) => {
+    const document = tiff([resolution([300, 1], [300, 1], 2), resolution([100, 1], [50, 1], 3)], little);
+    const rewritten = withoutAbsoluteResolution(document);
+    expect([storedDensity(document, 0), storedDensity(document, 1)]).toEqual([{ x: 300, y: 300 }, { x: 100 * CM_PER_INCH, y: 50 * CM_PER_INCH }]);
+    expect([storedDensity(rewritten, 0), storedDensity(rewritten, 1)]).toEqual([null, null]);
+    const differing = [...document.keys()].filter((at) => document[at] !== rewritten[at]);
+    expect(differing).toHaveLength(2);
+  });
+
+  it('is the same object when there is nothing to change, and for bytes that are not a TIFF', () => {
+    const unitless = tiff([resolution([300, 1], [300, 1])]);
+    const none = tiff([resolution([300, 1], [300, 1], 1)]);
+    expect(withoutAbsoluteResolution(unitless)).toBe(unitless);
+    expect(withoutAbsoluteResolution(none)).toBe(none);
+    const notTiff = Buffer.from('GIF89a......');
+    expect(withoutAbsoluteResolution(notTiff)).toBe(notTiff);
   });
 });
