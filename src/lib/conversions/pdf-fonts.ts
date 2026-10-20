@@ -5,7 +5,7 @@ import { reportConversionWarning } from './conversion-warnings';
 import { hasComplexTextScript } from './ctl';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 import { ShapingBudget } from './text-shaping/limits';
-import { layoutShapedText, type LayoutAlign, type TextLayout } from './text-shaping/paragraph-layout';
+import { layoutShapedText, type LayoutAlign, type LayoutLine, type TextLayout } from './text-shaping/paragraph-layout';
 import { loadTextShaper } from './text-shaping/shape';
 import { ShapedTextDrawer } from './text-shaping/shaped-text-drawer';
 
@@ -713,6 +713,11 @@ export function preferredUnicodeFontPath(customFontPath?: string): string | null
   return orderedFaces(customFontPath)[0]?.path ?? null;
 }
 
+/** Height one shaped line takes with `lineGap` below it, in points. */
+export function shapedLineHeight(line: LayoutLine, lineGap: number): number {
+  return line.ascent + line.descent + line.gap + lineGap;
+}
+
 /** Text options this writer accepts; `continued` and `link` are managed per run. */
 export type PdfWriterTextOptions = Omit<PDFKit.Mixins.TextOptions, 'continued'>;
 
@@ -872,12 +877,35 @@ export class PdfUnicodeTextWriter {
     });
   }
 
+  private drawer(): ShapedTextDrawer {
+    this.shapedDrawer ??= new ShapedTextDrawer(this.doc, (face) => this.useFace(face));
+    return this.shapedDrawer;
+  }
+
+  /** The lines `content` breaks into at `width` points, each with its height, for drawing a few at a time (see drawLines). */
+  layoutLines(content: string | readonly PdfTextSegment[], width: number): LayoutLine[] {
+    return this.shapedLayout(content, width).lines;
+  }
+
+  /**
+   * Draws `lines` one under the other with their left edge at `x`, the first from `y` and `lineGap` between them, never
+   * starting a new page. Returns the y below the last line.
+   */
+  drawLines(lines: readonly LayoutLine[], x: number, y: number, lineGap: number): number {
+    const drawer = this.drawer();
+    let top = y;
+    for (const line of lines) {
+      drawer.drawLine(line, x, top, { underline: false });
+      top += shapedLineHeight(line, lineGap);
+    }
+    return top;
+  }
+
   private writeShaped(content: string | readonly PdfTextSegment[], options: PdfWriterTextOptions, x?: number, y?: number): void {
     const left = x ?? this.doc.x;
     let top = y ?? this.doc.y;
     const layout = this.shapedLayout(content, this.lineWidth(options, x), options.align as LayoutAlign | undefined);
-    const drawer = this.shapedDrawer ?? new ShapedTextDrawer(this.doc, (face) => this.useFace(face));
-    this.shapedDrawer = drawer;
+    const drawer = this.drawer();
     const lineGap = options.lineGap ?? 0;
     for (const line of layout.lines) {
       const height = line.ascent + line.descent + line.gap;

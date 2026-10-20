@@ -1,6 +1,8 @@
 import PDFDocument from 'pdfkit';
-import { ConversionFailedError, EngineUnavailableError } from '../types';
+import { ConversionFailedError } from '../types';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, type PdfTextSegment } from './pdf-fonts';
+import { layoutTable, type Flow, type TableContext } from './pdf-table';
+import { PX_TO_PT } from './pdf-table-metrics';
 
 /**
  * Structured document model drawn by the in-process PDF writers (HTML, Markdown, plain text and
@@ -20,14 +22,22 @@ export type PdfBlock =
 
 /**
  * A table cell and the number of columns it spans. A cell that merges downward states `rowSpan`, and each grid position
- * it covers in the rows below is listed as a `covered` cell (no content, no border of its own).
+ * it covers in the rows below is listed as a `covered` cell (no content, no border of its own). A cell that holds more
+ * than text lists its content as `parts` (and leaves `content` empty).
  */
 export interface PdfTableCell {
   readonly content: PdfTextSegment[];
   readonly span: number;
   readonly rowSpan?: number;
   readonly covered?: boolean;
+  readonly parts?: readonly PdfCellPart[];
 }
+
+/** One piece of a cell's content, drawn one under the other: text, a picture, or a table of its own. */
+export type PdfCellPart =
+  | { readonly kind: 'text'; readonly content: PdfTextSegment[] }
+  | { readonly kind: 'image'; readonly image: PdfRasterImage }
+  | { readonly kind: 'table'; readonly rows: PdfTableCell[][] };
 
 /** A decoded-and-verified PNG or JPEG image with its pixel size. */
 export interface PdfRasterImage {
@@ -59,7 +69,6 @@ export interface PdfBlockDocumentOptions {
 const PAGE_SIZE = 'A4';
 const PAGE_MARGIN = 50;
 const BODY_FONT_SIZE = 11;
-const TABLE_FONT_SIZE = 10;
 const PREFORMATTED_FONT_SIZE = 10;
 /** Font sizes for h1 to h6. */
 const HEADING_FONT_SIZES: readonly number[] = [20, 16, 14, 12, 11, 11];
@@ -86,15 +95,10 @@ const MARKER_CHARACTER_WIDTH = 6.5;
 const MARKER_GAP = 8;
 const QUOTE_INDENT = 18;
 const BULLET_MARKER = '•';
-const TABLE_CELL_PADDING = 4;
-const TABLE_BORDER_WIDTH = 0.5;
-const MIN_TABLE_COLUMN_WIDTH = 24;
 /** Narrowest text column left after list and quote indentation. */
 const MIN_TEXT_WIDTH = 72;
 const RULE_SPACING = 6;
 const RULE_WIDTH = 0.75;
-/** CSS pixel to PDF point (96 px per inch, 72 pt per inch). */
-const PX_TO_PT = 0.75;
 
 class PdfBlockRenderer {
   constructor(
@@ -210,83 +214,24 @@ class PdfBlockRenderer {
   }
 
   private renderTable(rows: readonly PdfTableCell[][], indent: number): void {
-    const columnCount = rows.reduce((widest, row) => Math.max(widest, row.reduce((sum, cell) => sum + cell.span, 0)), 0);
-    if (columnCount === 0) return;
-    const tableWidth = this.textWidth(indent);
-    const columnWidth = tableWidth / columnCount;
-    if (columnWidth < MIN_TABLE_COLUMN_WIDTH) {
-      throw new EngineUnavailableError(
-        'soffice',
-        `a table with ${columnCount} columns does not fit the page width; the in-process PDF renderer needs columns of at least ${MIN_TABLE_COLUMN_WIDTH}pt`
-      );
-    }
+    if (rows.every((row) => row.length === 0)) return;
+    const context: TableContext = { doc: this.doc, writer: this.writer, lineGap: this.spacing.lineGap, measured: new WeakMap() };
     const x0 = this.left + indent;
-    this.doc.fontSize(TABLE_FONT_SIZE);
-    const minRowHeight = this.doc.currentLineHeight(true) + TABLE_CELL_PADDING * 2;
-
-    // Where every cell sits, and how tall its text needs the cell to be.
-    interface PlacedCell {
-      readonly cell: PdfTableCell;
-      readonly x: number;
-      readonly width: number;
-      readonly rowSpan: number;
-      readonly needed: number;
-    }
-    const placedRows: PlacedCell[][] = rows.map((row) => {
-      let column = 0;
-      return row.map((cell) => {
-        const span = Math.min(cell.span, columnCount - column);
-        const width = span * columnWidth;
-        const x = x0 + column * columnWidth;
-        column += span;
-        const hasContent = !cell.covered && this.hasText(cell.content);
-        const textHeight = hasContent ? this.writer.heightOf(cell.content, { width: width - TABLE_CELL_PADDING * 2, lineGap: this.spacing.lineGap }) : 0;
-        return { cell, x, width, rowSpan: Math.max(1, cell.rowSpan ?? 1), needed: hasContent ? textHeight + TABLE_CELL_PADDING * 2 : 0 };
-      });
-    });
-    const heights = placedRows.map((row) => row.reduce((tallest, placed) => (placed.rowSpan === 1 ? Math.max(tallest, placed.needed) : tallest), minRowHeight));
-    // A cell that merges downward grows its last row when its text is taller than the rows it spans.
-    placedRows.forEach((row, rowIndex) => {
-      for (const placed of row) {
-        if (placed.rowSpan === 1) continue;
-        const last = Math.min(rowIndex + placed.rowSpan, heights.length) - 1;
-        const spanned = heights.slice(rowIndex, last + 1).reduce((sum, height) => sum + height, 0);
-        if (spanned < placed.needed) heights[last] += placed.needed - spanned;
-      }
-    });
     const pageHeight = this.bottom - this.top;
-    if (heights.some((height) => height > pageHeight)) {
-      throw new EngineUnavailableError('soffice', 'a table row is taller than a page; the in-process PDF renderer cannot split table cells across pages');
-    }
-
-    placedRows.forEach((row, rowIndex) => {
-      // Rows that a merged cell starting here spans stay on the page with it.
-      const groupHeight = row.reduce((tallest, placed) => {
-        const last = Math.min(rowIndex + placed.rowSpan, heights.length) - 1;
-        return Math.max(tallest, heights.slice(rowIndex, last + 1).reduce((sum, height) => sum + height, 0));
-      }, heights[rowIndex]);
-      if (this.doc.y + groupHeight > this.bottom) this.doc.addPage();
-      const y = this.doc.y;
-      this.doc.fontSize(TABLE_FONT_SIZE);
-      this.doc.lineWidth(TABLE_BORDER_WIDTH);
-      let drawnTo = x0;
-      for (const { cell, x, width, rowSpan } of row) {
-        drawnTo = x + width;
-        if (cell.covered) continue;
-        const last = Math.min(rowIndex + rowSpan, heights.length) - 1;
-        const height = heights.slice(rowIndex, last + 1).reduce((sum, rowHeight) => sum + rowHeight, 0);
-        if (this.hasText(cell.content)) {
-          this.doc.fontSize(TABLE_FONT_SIZE);
-          this.writer.write(cell.content, { width: width - TABLE_CELL_PADDING * 2, lineGap: this.spacing.lineGap }, x + TABLE_CELL_PADDING, y + TABLE_CELL_PADDING);
-        }
-        this.doc.rect(x, y, width, height).stroke();
-      }
-      for (let empty = Math.round((drawnTo - x0) / columnWidth); empty < columnCount; empty++) {
-        this.doc.rect(x0 + empty * columnWidth, y, columnWidth, heights[rowIndex]).stroke();
-      }
+    let flow: Flow | undefined = layoutTable(context, rows, { width: this.textWidth(indent), fresh: pageHeight, depth: 0 });
+    while (flow) {
+      const startY = this.doc.y;
+      const drawn = flow.draw(x0, startY, this.bottom - startY);
       this.doc.x = this.left;
-      this.doc.y = y + heights[rowIndex];
-    });
+      this.doc.y = drawn.end;
+      if (!drawn.rest) break;
+      // Nothing placed at the top of a fresh page would repeat on every page.
+      if (startY <= this.top && drawn.end <= startY) {
+        throw new ConversionFailedError('A table row cannot be placed on a page: nothing of it fits the page height');
+      }
+      flow = drawn.rest;
+      this.doc.addPage();
+    }
     this.doc.fontSize(BODY_FONT_SIZE);
     this.doc.moveDown(this.spacing.blockGapLines);
   }
