@@ -30,8 +30,8 @@ interface ClassicTiff {
   directories: TiffDirectory[];
 }
 
-const readUInt16 = (tiff: Buffer, at: number, little: boolean): number => (little ? tiff.readUInt16LE(at) : tiff.readUInt16BE(at));
-const readUInt32 = (tiff: Buffer, at: number, little: boolean): number => (little ? tiff.readUInt32LE(at) : tiff.readUInt32BE(at));
+export const readUInt16 = (tiff: Buffer, at: number, little: boolean): number => (little ? tiff.readUInt16LE(at) : tiff.readUInt16BE(at));
+export const readUInt32 = (tiff: Buffer, at: number, little: boolean): number => (little ? tiff.readUInt32LE(at) : tiff.readUInt32BE(at));
 const entriesAt = (directory: TiffDirectory): number => directory.at + IFD_COUNT_BYTES;
 const nextAt = (directory: TiffDirectory): number => entriesAt(directory) + directory.count * IFD_ENTRY_BYTES;
 
@@ -60,6 +60,12 @@ function readClassicTiff(tiff: Buffer): ClassicTiff | null {
     at = readUInt32(tiff, nextAt(directory), little);
   }
   return { little, directories };
+}
+
+/** The byte order of a classic TIFF and the offset of the entry count of each of its directories, in page order; null when the bytes are not a classic TIFF. */
+export function tiffDirectoryOffsets(tiff: Buffer): { little: boolean; offsets: number[] } | null {
+  const layout = readClassicTiff(tiff);
+  return layout === null ? null : { little: layout.little, offsets: layout.directories.map((directory) => directory.at) };
 }
 
 /**

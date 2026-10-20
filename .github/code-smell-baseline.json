@@ -1013,7 +1013,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2814
+    "maxValue": 2778
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1834,7 +1834,7 @@
     "rule": "complexity",
     "function": "planJpegPassthrough",
     "count": 1,
-    "maxValue": 60
+    "maxValue": 54
   },
   {
     "file": "src/lib/conversions/pdf-layout/lists.ts",

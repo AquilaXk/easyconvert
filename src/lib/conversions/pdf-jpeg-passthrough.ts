@@ -11,6 +11,7 @@ import {
 } from 'pdf-lib';
 import { ConversionFailedError } from '../types';
 import { assertInputPixels } from './image-input-limits';
+import { DEFAULT_PRINT_DENSITY, jfifDensity, tiffBlockDensity, withinPdfPageLimit, type PrintDensity } from './image-print-density';
 
 /**
  * JPEG into PDF without re-encoding: the file's bytes become the stream of an image XObject with
@@ -21,8 +22,9 @@ import { assertInputPixels } from './image-input-limits';
  * The colour space follows the component count (DeviceGray, DeviceRGB, DeviceCMYK); an embedded ICC profile of
  * the matching colour model becomes `/ICCBased`; a CMYK JPEG that carries the Adobe APP14 marker stores its
  * samples inverted (Photoshop convention), which `/Decode [1 0 1 0 1 0 1 0]` undoes. The page is the size the
- * picture says it is (pixels and density, 72 per inch when it says nothing), and an EXIF orientation is a
- * transformation matrix on the picture, never a re-encode (EXIF 2.32 / CIPA DC-008, tag 0x0112).
+ * picture says it is (pixels and density, 72 per inch when it says nothing; the density is read as
+ * image-print-density.ts reads it, JFIF before Exif), and an EXIF orientation is a transformation matrix on the
+ * picture, never a re-encode (EXIF 2.32 / CIPA DC-008, tag 0x0112).
  */
 
 const SOI = 0xd8;
@@ -57,23 +59,11 @@ const ICC_PROFILE_COMPONENTS: Readonly<Record<string, number>> = { 'RGB ': 3, GR
 const ADOBE_TAG = 'Adobe';
 const ADOBE_MIN_BYTES = 12;
 const POINTS_PER_INCH = 72;
-/** Largest page side the common readers accept (ISO 32000-1 Annex C.2: 14400 units). */
-const PDF_MAX_PAGE_POINTS = 14_400;
-const CM_PER_INCH = 2.54;
-const DEFAULT_DENSITY_DPI = 72;
-/** EXIF: the tags this reads, in IFD0. */
+/** EXIF: the tag this reads, in IFD0. */
 const EXIF_TAG_ORIENTATION = 0x0112;
-const EXIF_TAG_X_RESOLUTION = 0x011a;
-const EXIF_TAG_Y_RESOLUTION = 0x011b;
-const EXIF_TAG_RESOLUTION_UNIT = 0x0128;
 const EXIF_TYPE_SHORT = 3;
-const EXIF_TYPE_RATIONAL = 5;
 const MAX_IFD_ENTRIES = 1024;
 const IFD_ENTRY_BYTES = 12;
-const EXIF_UNIT_INCH = 2;
-const EXIF_UNIT_CM = 3;
-const JFIF_UNIT_INCH = 1;
-const JFIF_UNIT_CM = 2;
 
 export type JpegOrientation = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 
@@ -97,10 +87,8 @@ export function planJpegPassthrough(data: Buffer): JpegPdfPlan | null {
   let height = 0;
   let components = 0;
   let adobe = false;
-  let dpiX = DEFAULT_DENSITY_DPI;
-  let dpiY = DEFAULT_DENSITY_DPI;
-  let exifDensity: { x: number; y: number } | null = null;
-  let jfifDensity: { x: number; y: number } | null = null;
+  let exifDensity: PrintDensity | null = null;
+  let jfif: PrintDensity | null = null;
   let orientation: JpegOrientation = 1;
   const iccChunks = new Map<number, Buffer>();
   let iccCount = 0;
@@ -135,15 +123,11 @@ export function planJpegPassthrough(data: Buffer): JpegPdfPlan | null {
       // A frame of another coding process (lossless, hierarchical, arithmetic): not readable by a PDF.
       return null;
     } else if (marker === APP0 && body.length >= 14 && body.toString('latin1', 0, 5) === 'JFIF\0') {
-      const unit = body[7];
-      const xd = body.readUInt16BE(8);
-      const yd = body.readUInt16BE(10);
-      if (xd > 0 && yd > 0 && unit === JFIF_UNIT_INCH) jfifDensity = { x: xd, y: yd };
-      if (xd > 0 && yd > 0 && unit === JFIF_UNIT_CM) jfifDensity = { x: xd * CM_PER_INCH, y: yd * CM_PER_INCH };
+      jfif = jfifDensity(body);
     } else if (marker === APP1 && body.length > 6 && body.toString('latin1', 0, 6) === 'Exif\0\0') {
-      const exif = readExif(body.subarray(6));
-      if (exif.orientation) orientation = exif.orientation;
-      if (exif.density) exifDensity = exif.density;
+      const exifBlock = body.subarray(6);
+      orientation = readExifOrientation(exifBlock) ?? orientation;
+      exifDensity = tiffBlockDensity(exifBlock) ?? exifDensity;
     } else if (marker === APP2 && body.length >= ICC_CHUNK_HEADER_BYTES && body.subarray(0, ICC_TAG.length).equals(ICC_TAG)) {
       const sequence = body[ICC_TAG.length];
       const count = body[ICC_TAG.length + 1];
@@ -157,19 +141,15 @@ export function planJpegPassthrough(data: Buffer): JpegPdfPlan | null {
     offset += length;
   }
   if (!sawFrame || width < 1 || height < 1 || !SUPPORTED_COMPONENTS.has(components) || components < MIN_COMPONENTS) return null;
-  const density = exifDensity ?? jfifDensity;
-  if (density) {
-    dpiX = density.x;
-    dpiY = density.y;
-  }
+  const density = jfif ?? exifDensity ?? DEFAULT_PRINT_DENSITY;
   return {
     width,
     height,
     components: components as 1 | 3 | 4,
     adobe,
     icc: assembleProfile(iccChunks, iccCount, components),
-    dpiX,
-    dpiY,
+    dpiX: density.x,
+    dpiY: density.y,
     orientation,
   };
 }
@@ -195,49 +175,25 @@ function assembleProfile(chunks: Map<number, Buffer>, count: number, components:
   return ICC_PROFILE_COMPONENTS[model] === components ? profile : undefined;
 }
 
-interface ExifFields {
-  orientation?: JpegOrientation;
-  density?: { x: number; y: number };
-}
-
-/** The orientation and resolution of IFD0 of an EXIF block (a TIFF header and directories), bounds-checked. */
-function readExif(tiff: Buffer): ExifFields {
-  if (tiff.length < 8) return {};
+/** The orientation (1 to 8) in IFD0 of an EXIF block (a TIFF header and directories), bounds-checked; undefined when it holds none. */
+function readExifOrientation(tiff: Buffer): JpegOrientation | undefined {
+  if (tiff.length < 8) return undefined;
   const littleEndian = tiff.toString('latin1', 0, 2) === 'II';
-  if (!littleEndian && tiff.toString('latin1', 0, 2) !== 'MM') return {};
+  if (!littleEndian && tiff.toString('latin1', 0, 2) !== 'MM') return undefined;
   const u16 = (at: number): number => (littleEndian ? tiff.readUInt16LE(at) : tiff.readUInt16BE(at));
   const u32 = (at: number): number => (littleEndian ? tiff.readUInt32LE(at) : tiff.readUInt32BE(at));
-  if (u16(2) !== 42) return {};
+  if (u16(2) !== 42) return undefined;
   const ifd = u32(4);
-  if (ifd + 2 > tiff.length) return {};
+  if (ifd + 2 > tiff.length) return undefined;
   const entries = u16(ifd);
-  if (entries > MAX_IFD_ENTRIES || ifd + 2 + entries * IFD_ENTRY_BYTES > tiff.length) return {};
-  let orientation: number | undefined;
-  let resolution: { x?: number; y?: number } = {};
-  let unit = EXIF_UNIT_INCH;
+  if (entries > MAX_IFD_ENTRIES || ifd + 2 + entries * IFD_ENTRY_BYTES > tiff.length) return undefined;
   for (let i = 0; i < entries; i += 1) {
     const at = ifd + 2 + i * IFD_ENTRY_BYTES;
-    const tag = u16(at);
-    const type = u16(at + 2);
-    if (tag === EXIF_TAG_ORIENTATION && type === EXIF_TYPE_SHORT) orientation = u16(at + 8);
-    else if (tag === EXIF_TAG_RESOLUTION_UNIT && type === EXIF_TYPE_SHORT) unit = u16(at + 8);
-    else if ((tag === EXIF_TAG_X_RESOLUTION || tag === EXIF_TAG_Y_RESOLUTION) && type === EXIF_TYPE_RATIONAL) {
-      const valueAt = u32(at + 8);
-      if (valueAt + 8 <= tiff.length) {
-        const denominator = u32(valueAt + 4);
-        const value = denominator === 0 ? 0 : u32(valueAt) / denominator;
-        if (tag === EXIF_TAG_X_RESOLUTION) resolution = { ...resolution, x: value };
-        else resolution = { ...resolution, y: value };
-      }
-    }
+    if (u16(at) !== EXIF_TAG_ORIENTATION || u16(at + 2) !== EXIF_TYPE_SHORT) continue;
+    const orientation = u16(at + 8);
+    return orientation >= 1 && orientation <= 8 ? (orientation as JpegOrientation) : undefined;
   }
-  const fields: ExifFields = {};
-  if (orientation !== undefined && orientation >= 1 && orientation <= 8) fields.orientation = orientation as JpegOrientation;
-  const scale = unit === EXIF_UNIT_CM ? CM_PER_INCH : 1;
-  if (resolution.x && resolution.y && (unit === EXIF_UNIT_INCH || unit === EXIF_UNIT_CM)) {
-    fields.density = { x: resolution.x * scale, y: resolution.y * scale };
-  }
-  return fields;
+  return undefined;
 }
 
 /** Size of the picture on the page, in points, after the orientation is applied. */
@@ -301,10 +257,8 @@ export async function buildJpegPdf(data: Buffer, plan: JpegPdfPlan, options: Jpe
   if (plan.components === 4 && plan.adobe) dictionary.Decode = doc.context.obj([1, 0, 1, 0, 1, 0, 1, 0]);
   const image: PDFRef = doc.context.register(doc.context.stream(data, dictionary as Parameters<typeof doc.context.stream>[1]));
 
-  let picture = pictureSizePoints(plan);
   // Readers handle pages up to 14400 points (200 inches) a side; a larger picture is scaled down to fit.
-  const shrink = Math.min(1, PDF_MAX_PAGE_POINTS / Math.max(picture.width, picture.height));
-  picture = { width: picture.width * shrink, height: picture.height * shrink };
+  const picture = withinPdfPageLimit(pictureSizePoints(plan));
   let page = { width: picture.width, height: picture.height };
   if (options.orientation === 'landscape' && page.width < page.height) page = { width: page.height, height: page.width };
   if (options.orientation === 'portrait' && page.width > page.height) page = { width: page.height, height: page.width };
