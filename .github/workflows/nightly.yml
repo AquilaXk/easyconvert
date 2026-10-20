@@ -288,6 +288,11 @@ jobs:
         with:
           families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
 
+      # The service runs the PDF text thread from the bundle `npm run build` makes (Dockerfile.worker); time what is deployed, not
+      # the TypeScript source through tsx.
+      - name: Build the PDF text worker bundle
+        run: npm run build:pdf-text-worker
+
       - name: Run the speed parity benchmark
         env:
           ORACLE_STRICT_MODE: "1"
@@ -380,6 +385,17 @@ jobs:
           if cmp -s package-lock.json ab-base/package-lock.json; then ln -s "$PWD/node_modules" ab-base/node_modules; else (cd ab-base && npm ci --ignore-scripts --no-audit --no-fund); fi
         env:
           AB_BASE_REF: ${{ inputs.ab_base_ref }}
+
+      # The service runs the PDF text thread from the bundle `npm run build` makes (Dockerfile.worker); time what is deployed, not
+      # the TypeScript source through tsx.
+      - name: Build the PDF text worker bundle
+        run: npm run build:pdf-text-worker
+
+      - name: Build the PDF text worker bundle of the commit to compare with
+        run: |
+          if grep -q '"build:pdf-text-worker"' ab-base/package.json; then
+            (cd ab-base && npm run build:pdf-text-worker)
+          fi
 
       - name: Measure the speed rows against that commit
         env:
