@@ -81,7 +81,7 @@ import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
-import { boundRenderedPages, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, selectsPages, splitIntoBatches } from './poppler-ppm';
+import { boundRenderedPages, DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
@@ -1457,32 +1457,24 @@ async function renderPdfToImageWithPoppler(
       const throughPage = ppmBatchPages(dpi);
       const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
       const prefix = path.join(tempDir, 'page');
-      const done = renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix));
+      const done = renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, 1, throughPage, inputPath, prefix), { start: 1, end: throughPage });
       return { throughPage, done };
     },
     renderPages: async (tempDir, inputPath, requestedPages, early) => {
       const intervals = groupConsecutiveRanges(requestedPages);
       const prefix = path.join(tempDir, 'page');
       const sandbox = { cwd: tempDir, timeoutMs: timeout, maxBuffer, networkIsolated: true, signal: options.signal };
-      if (tgt === PNG_FORMAT) {
-        const dpi = resolvePdfRasterDpi(options);
-        await early?.done;
-        const rendered = early?.throughPage ?? 0;
-        for (const interval of intervals) {
-          for (const batch of splitIntoBatches(Math.max(interval.start, rendered + 1), interval.end, ppmBatchPages(dpi))) {
-            await renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, buildPdftoppmArgs(tgt, options, batch.start, batch.end, inputPath, prefix));
-          }
-        }
-        return;
-      }
-      let step: Promise<any> = Promise.resolve();
-      for (const interval of intervals) {
-        step = step.then(() => {
-          const args = buildPdftoppmArgs(tgt, options, interval.start, interval.end, inputPath, prefix);
-          return executeSandboxedBinary(pdftoppmBin, args, sandbox);
-        });
-      }
-      await step;
+      // Poppler draws on one thread, so the batches of pages run side by side (the early batch counted among them).
+      const isPng = tgt === PNG_FORMAT;
+      const dpi = resolvePdfRasterDpi(options);
+      const batchPages = isPng ? ppmBatchPages(dpi) : DIRECT_RENDER_BATCH_PAGES;
+      const drawnEarly = early?.throughPage ?? 0;
+      const batches = intervals.flatMap((interval) => splitIntoBatches(Math.max(interval.start, drawnEarly + 1), interval.end, batchPages));
+      const draw = (batch: PageBatch): Promise<void> => {
+        const args = buildPdftoppmArgs(tgt, options, batch.start, batch.end, inputPath, prefix);
+        return isPng ? renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, args, batch) : executeSandboxedBinary(pdftoppmBin, args, sandbox).then(() => undefined);
+      };
+      await runBounded(batches.map((batch) => () => draw(batch)), pageRenderProcesses(), early?.done);
     },
   });
 }
