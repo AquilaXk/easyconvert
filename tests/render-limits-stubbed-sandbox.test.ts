@@ -19,6 +19,8 @@ vi.mock('../src/lib/security/sandbox-launcher', async (importOriginal) => ({ ...
 const PNG_MARK = 'png written by the stand-in for Poppler';
 const SANDBOX: SandboxedExecutionOptions = { timeoutMs: 1000 };
 const DPI = 72;
+/** The pages the stand-in draws: page 1 only, as the arguments above ask. */
+const ONE_PAGE = { start: 1, end: 1 };
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 const SVG_OUTPUT_LIMIT = 512 * 1024 * 1024;
 
@@ -46,7 +48,7 @@ describe('a page too large to hold in memory is drawn again by Poppler as a PNG'
       }
       return { stdout: Buffer.alloc(0) };
     });
-    await renderPngBatch('pdftoppm', dir, DPI, SANDBOX, ['-r', '72', '-png', 'in.pdf', 'page']);
+    await renderPngBatch('pdftoppm', dir, DPI, SANDBOX, ['-r', '72', '-png', '-f', '1', '-l', '1', 'in.pdf', 'page'], ONE_PAGE);
     expect(run.mock.calls.map(([, args]) => asksForPng(args as string[]))).toEqual([false, true]);
     expect(fs.readdirSync(dir).sort()).toEqual(['page-1.png']);
     expect(fs.readFileSync(path.join(dir, 'page-1.png'), 'utf8')).toBe(PNG_MARK);
@@ -61,7 +63,7 @@ describe('a page too large to hold in memory is drawn again by Poppler as a PNG'
       fs.writeFileSync(path.join(dir, 'page-1.ppm'), 'cut off');
       throw new SandboxedBufferLimitError(PPM_PAGE_MAX_BYTES);
     });
-    await renderPngBatch('pdftoppm', dir, DPI, SANDBOX, ['-r', '72', '-png', 'in.pdf', 'page']);
+    await renderPngBatch('pdftoppm', dir, DPI, SANDBOX, ['-r', '72', '-png', '-f', '1', '-l', '1', 'in.pdf', 'page'], ONE_PAGE);
     expect(run.mock.calls.map(([, args]) => asksForPng(args as string[]))).toEqual([false, true]);
     expect(fs.readdirSync(dir)).toEqual(['page-1.png']);
   });
@@ -71,7 +73,7 @@ describe('a page too large to hold in memory is drawn again by Poppler as a PNG'
       fs.writeFileSync(path.join(dir, 'page-1.ppm'), smallPage());
       return { stdout: Buffer.alloc(0) };
     });
-    await renderPngBatch('pdftoppm', dir, DPI, SANDBOX, ['-r', '72', '-png', 'in.pdf', 'page']);
+    await renderPngBatch('pdftoppm', dir, DPI, SANDBOX, ['-r', '72', '-png', '-f', '1', '-l', '1', 'in.pdf', 'page'], ONE_PAGE);
     expect(run).toHaveBeenCalledTimes(1);
     expect(asksForPng(run.mock.calls[0][1] as string[])).toBe(false);
     expect(run.mock.calls[0][2]).toMatchObject({ maxFileSize: PPM_PAGE_MAX_BYTES });
