@@ -54,6 +54,15 @@ const WRITTEN_ELEMENTS: ReadonlySet<string> = new Set([
   'td', 'tfoot', 'th', 'thead', 'time', 'tr', 'tt', 'u', 'ul', 'var', 'wbr',
 ]);
 const WRITTEN_VOID_ELEMENTS: ReadonlySet<string> = new Set(['br', 'col', 'hr', 'img', 'wbr']);
+/**
+ * Written elements whose `id` LibreOffice does not make a link target (measured on 24.2 and 26.8: it does for paragraphs,
+ * headings, lists, items, tables, rows, cells, preformatted text, rules, pictures and inline elements). Each is given a
+ * named anchor at its start, which LibreOffice does make one.
+ */
+const ELEMENTS_WITHOUT_TARGET: ReadonlySet<string> = new Set([
+  'article', 'aside', 'caption', 'center', 'details', 'div', 'fieldset', 'figcaption', 'figure', 'footer', 'header', 'hgroup',
+  'label', 'legend', 'main', 'nav', 'section', 'summary',
+]);
 /** Elements that render nothing, dropped with their content: scripts, templates, fallbacks and head metadata. */
 const DROPPED_ELEMENTS: ReadonlySet<string> = new Set([
   ...NEVER_DRAWN_ELEMENTS, 'source', 'track', 'link', 'meta', 'base', 'param', 'datalist', 'area', 'bgsound', 'title',
@@ -74,6 +83,7 @@ const WRITTEN_ATTRIBUTES: ReadonlySet<string> = new Set([
 const ANCHOR_ELEMENT = 'a';
 const LINK_ELEMENT = 'link';
 const HREF_ATTRIBUTE = 'href';
+const ID_ATTRIBUTE = 'id';
 const SRC_ATTRIBUTE = 'src';
 const BACKGROUND_ATTRIBUTE = 'background';
 const IMAGE_ELEMENT = 'img';
@@ -273,13 +283,21 @@ class StagedHtmlWriter {
     if (tag === DOCUMENT_ELEMENT && this.documentAttributes === undefined) this.documentAttributes = this.attributes(node);
     if (tag === BODY_ELEMENT && this.bodyAttributes === undefined) this.bodyAttributes = this.attributes(node);
     if (!WRITTEN_ELEMENTS.has(tag)) {
+      if (tag !== DOCUMENT_ELEMENT && tag !== BODY_ELEMENT) this.targetAtStart(node);
       this.children(node.children);
       return;
     }
     this.body.push(`<${tag}${this.attributes(node)}>`);
     if (WRITTEN_VOID_ELEMENTS.has(tag)) return;
+    if (ELEMENTS_WITHOUT_TARGET.has(tag)) this.targetAtStart(node);
     this.children(node.children);
     this.body.push(`</${tag}>`);
+  }
+
+  /** The link target of an element that is not written with its `id`, or is written with one LibreOffice ignores: a named anchor, written where the element starts. */
+  private targetAtStart(element: HtmlElement): void {
+    const id = stripControls(element.attrs.get(ID_ATTRIBUTE) ?? '');
+    if (id !== '') this.body.push(`<a name="${escapeHtml(id)}"></a>`);
   }
 
   /** A `<link rel="stylesheet">` is dropped like the rest of the head, but its style sheet is a loss worth reporting. */

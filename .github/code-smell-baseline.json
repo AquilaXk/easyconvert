@@ -693,13 +693,6 @@
     "maxValue": 42
   },
   {
-    "file": "src/lib/conversions/bzip2-bwt.ts",
-    "rule": "complexity",
-    "function": "induceSort",
-    "count": 1,
-    "maxValue": 33
-  },
-  {
     "file": "src/lib/conversions/bzip2.ts",
     "rule": "complexity",
     "function": "encodeBlock",
