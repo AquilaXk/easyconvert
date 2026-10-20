@@ -263,16 +263,28 @@ jobs:
           ORACLE_STRICT_MODE: "1"
         run: npm run prefetch:test-samples
 
-      # The planner leaves out the registry conformance gate (its own jobs) and the timing suites (nightly).
+      # The planner leaves out the registry conformance gate (its own jobs) and the timing suites (nightly). The JSON report
+      # holds the wall time of every file; the upload below keeps it, so the plan's duration table is refreshed from real CI
+      # numbers with `node scripts/ci-test-shards.mjs --update <reports>` (the reports of the shards of one run).
       - name: Run unit and integration tests
         env:
           ORACLE_STRICT_MODE: "1"
           SHARD: ${{ matrix.shard }}
           SHARD_COUNT: ${{ strategy.job-total }}
+          TEST_REPORT: ${{ runner.temp }}/test-report-${{ matrix.shard }}.json
         run: |
           mapfile -t files < <(node scripts/ci-test-shards.mjs "$SHARD" "$SHARD_COUNT")
           echo "shard $SHARD/$SHARD_COUNT: ${#files[@]} files"
-          npx --no-install vitest run "${files[@]}"
+          npx --no-install vitest run "${files[@]}" --reporter=default --reporter=json --outputFile.json="$TEST_REPORT"
+
+      - name: Upload the per-file durations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-report-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-report-${{ matrix.shard }}.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   conformance:
     name: conformance (${{ matrix.part }}/${{ strategy.job-total }})

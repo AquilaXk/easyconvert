@@ -21,6 +21,8 @@ const TOOLS = ['7z', 'python3'] as const;
 const TEST_TIMEOUT_MS = 120_000;
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
+/** Where the engine puts the result files it hands back to the caller, below the temporary directory. */
+const OUTPUT_DIRECTORY = 'easyconvert-vfs';
 const SYMLINK_ATTRIBUTES = unixAttributes(S_IFLNK | 0o777, 0x20);
 
 let workDir = '';
@@ -219,9 +221,22 @@ describe('a 7z archive read from a file', () => {
     [...TOOLS],
     async () => {
       const { original } = twinArchives();
-      const before = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-') && name.endsWith('.7z'));
-      await convertWithNative7z({ inputPath: original }, '7z', 'tar', {}, 'input.7z');
-      expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-') && name.endsWith('.7z'))).toEqual(before);
+      // The conversion runs with a temporary directory of its own: other test files make archive copies of the same kind in the
+      // shared one at the same time, so listing that directory before and after would count their files.
+      const privateTmp = fs.mkdtempSync(path.join(workDir, 'private-tmp-'));
+      const previous = process.env.TMPDIR;
+      process.env.TMPDIR = privateTmp;
+      try {
+        await convertWithNative7z({ inputPath: original }, '7z', 'tar', {}, 'input.7z');
+      } finally {
+        if (previous === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = previous;
+      }
+      // 7-Zip was handed a copy of the archive in that directory, and nothing of it or of the work around it is left; the
+      // result file the caller collects lives in the output directory.
+      const copies = new Set(spy.calls().flat().filter((argument) => path.dirname(argument) === privateTmp && argument.endsWith('.7z')));
+      expect(copies.size).toBe(1);
+      expect(fs.readdirSync(privateTmp).filter((name) => name !== OUTPUT_DIRECTORY)).toEqual([]);
     },
     TEST_TIMEOUT_MS
   );

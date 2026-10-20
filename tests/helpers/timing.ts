@@ -22,14 +22,13 @@ export const SCALING_TEST_TIMEOUT_MS = 60_000;
 /** Interleaved passes per comparison; the best pass of each side is kept. */
 export const SCALING_PASSES = 3;
 /**
- * A ratio that lands just over its bound after SCALING_PASSES passes may be load rather than growth: a busy shard can
- * slow every large sample of a short run. Such a comparison takes more passes, up to this many in all. Noise only ever
- * adds time to a sample, so the best of more passes can only move toward the true ratio: work that really grows faster
- * than the bound stays over it however many passes are taken.
+ * A ratio that lands over its bound after SCALING_PASSES passes may be load rather than growth: a busy shard can slow every
+ * large sample of a short run (a ratio of 13 against a bound of 8 was read on work that grows linearly). Such a comparison
+ * takes more passes, up to this many in all, whatever the ratio is. Noise only ever adds time to a sample, so the best of more
+ * passes can only move toward the true ratio: work that really grows faster than the bound stays over it however many passes
+ * are taken.
  */
 export const MAX_SCALING_PASSES = 12;
-/** Extra passes are taken only for a ratio up to this multiple of the bound; a clearly super-linear one is refused at once. */
-export const EXTRA_PASS_RATIO_MARGIN = 1.5;
 /** Extra passes stop once a comparison has used this much time, so that a slow case cannot run into the test timeout. */
 export const EXTRA_PASS_BUDGET_MS = 20_000;
 /** The input grows by this factor between the small and the large run. */
@@ -210,7 +209,7 @@ export async function measureInterleaved<R = unknown>(
 /** Whether a comparison that has finished `pass` passes with this ratio should take another one (see MAX_SCALING_PASSES). */
 function wantsExtraPass(pass: number, ratio: number, elapsedMs: number, acceptRatio: number | undefined): boolean {
   if (acceptRatio === undefined || pass >= MAX_SCALING_PASSES || elapsedMs >= EXTRA_PASS_BUDGET_MS) return false;
-  return ratio > acceptRatio && ratio <= acceptRatio * EXTRA_PASS_RATIO_MARGIN;
+  return ratio > acceptRatio;
 }
 
 export interface ScalingOptions {

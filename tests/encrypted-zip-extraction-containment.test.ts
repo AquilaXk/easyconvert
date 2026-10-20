@@ -8,8 +8,11 @@ import { oracleTest } from './helpers/oracle-test';
 import { resolveStdinPasswordSevenZip, type StdinPasswordSevenZip } from './helpers/stdin-password-7z';
 import {
   buildEncryptedZip,
+  buildManyEntriesZipCryptoZip,
   createHostileWorkspace,
+  list7zEntryPaths,
   patchZipEntryName,
+  read7zEntryText,
   type HostileWorkspace,
 } from './helpers/hostile-archives';
 
@@ -190,12 +193,10 @@ describe('encrypted ZIP extraction containment (#458)', () => {
   });
 
   oracleTest('rejects an archive holding more entries than the file-count cap', [...TOOLS], async () => {
-    const zipPath = path.join(ws.fixturesDir, 'many.zip');
-    buildEncryptedZip(zipPath, path.join(ws.fixturesDir, 'stage-many'), {
-      password: PASSWORD,
-      manyFiles: OVER_CAP_ENTRY_COUNT,
-      cipher: 'ZipCrypto',
-    });
+    const zipPath = buildManyEntriesZipCryptoZip(path.join(ws.fixturesDir, 'many.zip'), OVER_CAP_ENTRY_COUNT, PASSWORD);
+    // The fixture is read by 7-Zip: it lists every entry and decrypts one with the password, so the cap is what stops the extraction.
+    expect(list7zEntryPaths(zipPath)).toHaveLength(OVER_CAP_ENTRY_COUNT);
+    expect(read7zEntryText(zipPath, 'f00000.txt', PASSWORD)).toBe('x');
     const before = ws.snapshot();
 
     const error = await rejection(extract(zipPath));
