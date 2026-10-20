@@ -151,6 +151,16 @@ export const SOXR_PRECISION_BITS = 28;
  * normalised file, and a caller who asks for soxr by name keep the full precision.
  */
 export const LOSSY_SOXR_PRECISION_BITS = 16;
+/**
+ * Encoders that are given the rate change ffmpeg inserts itself (swresample's default filter) rather than one of ours,
+ * unless the caller names a resampler or the file is normalised. The encoded peak of a source that sits at full scale
+ * follows the exact samples the encoder gets: two resamplers of the same clipped castanets decode to true peaks 0.5 dB
+ * apart at one bit rate, and 0.9 dB apart in either direction on synthetic bursts, while a hard-clipped source
+ * (+5.2 dBTP) leaves 4.3 dBTP at both of them, so neither is "more faithful". The benchmark compares the encoded peak with
+ * the reference command's, which resamples with that default, and allows 0.3 dB; an encoder fed the same samples
+ * decodes to the same peak. Policy 66 in docs/policy-decisions.md has the measurements.
+ */
+export const REFERENCE_CONVERSION_ENCODERS: ReadonlySet<string> = new Set(['libopus']);
 /** Encoders whose output is lossy, by ffmpeg encoder name. */
 export const LOSSY_AUDIO_ENCODERS: ReadonlySet<string> = new Set([
   'aac',
@@ -208,6 +218,17 @@ export function chooseResampler(requested: AudioResampler | undefined, ffmpegBin
     throw new EngineUnavailableError('ffmpeg', 'this build has no libsoxr, so the soxr resampler cannot be used');
   }
   return { resampler: 'swr', fallbackReason: 'this ffmpeg build has no libsoxr; the default swresample resampler was used' };
+}
+
+/**
+ * Precision of the soxr filter for the rate change of an encode, or undefined when the rate change is left to ffmpeg's own
+ * conversion. Only an encode with the resampler left to the default and no normalisation trades precision for speed (a lossy
+ * encoder) or leaves the conversion to ffmpeg (an encoder of REFERENCE_CONVERSION_ENCODERS).
+ */
+export function resamplePrecisionFor(encoder: string, resamplerIsDefault: boolean): number | undefined {
+  if (!resamplerIsDefault) return SOXR_PRECISION_BITS;
+  if (REFERENCE_CONVERSION_ENCODERS.has(encoder)) return undefined;
+  return LOSSY_AUDIO_ENCODERS.has(encoder) ? LOSSY_SOXR_PRECISION_BITS : SOXR_PRECISION_BITS;
 }
 
 /** `aresample` filter for a rate change with the chosen resampler (soxr at `precision` bits). */

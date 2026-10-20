@@ -1,6 +1,5 @@
 import zlib from 'node:zlib';
 import sharp, { type Metadata, type OutputInfo, type ResizeOptions, type Sharp } from 'sharp';
-import PDFDocument from 'pdfkit';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError, UnsupportedRawCompressionError, InvalidRawSensorError, RawEngineRequiredError } from '../types';
 import { selectFrames, type FrameSelection, type PageResize } from './image-frames';
 import { encodeDecodedAnimation, packagePageOutputs } from './image-frame-output';
@@ -66,6 +65,8 @@ import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
 import { normalizeSvgBufferForRendering } from './svg-geometry';
 import { DirectAvifSlot, startDirectAvifOn } from './image-avif-direct';
 import { metadataOf, withHeader } from './image-metadata';
+import { assemblePicturePdf, type PdfPageImage } from './image-pdf-pages';
+import { DEFAULT_PRINT_DENSITY, pictureDensity, selectionDensity, type PrintDensity } from './image-print-density';
 import { decodePlainPngForTarget, type DecodedForTarget } from './image-decoded-source';
 import { hasSrgbPrimaries, isSrgbProfile, srgb16LutsFromProfile } from './icc-srgb';
 import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
@@ -1915,7 +1916,7 @@ async function convertImage(
     if (RAW_CAMERA_FORMATS.has(src)) {
       // Camera files are not readable as a picture: decode to PNG first, then place that on the page.
       const decoded = await convertImageReleasingEncoder(inputBuffer, 'png', options, originalFilename, src);
-      return convertImageToPdf(decoded.buffer, options, baseName, 'png');
+      return convertImageToPdf(decoded.buffer, options, baseName, 'png', false);
     }
     return convertImageToPdf(inputBuffer, options, baseName, src);
   }
@@ -2599,7 +2600,7 @@ async function convertImage(
           .raw()
           .toBuffer({ resolveWithObject: true });
         assertRgbSamples(info, fmt);
-        outputBuffer = await encodePostscript(rawRgb, info.width, info.height, fmt === 'eps');
+        outputBuffer = await encodePostscript(rawRgb, info.width, info.height, fmt === 'eps', await selectionDensity(frameSelection, !isRawInput));
         mimeType = 'application/postscript';
         break;
       }
@@ -2656,22 +2657,15 @@ async function convertImage(
   };
 }
 
-/** One PDF page: the oriented picture as PNG plus its pixel size. */
-interface PdfPageImage {
-  png: Buffer;
-  width: number;
-  height: number;
-}
-
 /** Decodes the pages a PDF is built from: BMP/ICO payloads directly, anything else through the frame rules. */
 async function decodePdfPages(
   activeBuffer: Buffer,
   options: ConversionOptions,
-  sourceFormat: string | undefined
+  sourceFormat: string | undefined, statesDensity: boolean
 ): Promise<{ pages: PdfPageImage[]; sourceFrameCount?: number; frameUsed?: number }> {
-  const toPage = async (pipeline: Sharp): Promise<PdfPageImage> => {
+  const toPage = async (pipeline: Sharp, density: PrintDensity = DEFAULT_PRINT_DENSITY): Promise<PdfPageImage> => {
     const { data, info } = await pipeline.rotate().png().toBuffer({ resolveWithObject: true });
-    return { png: data, width: info.width, height: info.height };
+    return { png: data, width: info.width, height: info.height, density };
   };
 
   if (sourceFormat === 'bmp' || activeBuffer.subarray(0, 2).toString('ascii') === 'BM') {
@@ -2691,12 +2685,12 @@ async function decodePdfPages(
     for (const page of selection.zipPages) {
       const pageInput = { page: page - 1 };
       await assertEncodedImageWithinLimit(activeBuffer, undefined, pageInput);
-      pages.push(await toPage(openLimitedSharp(activeBuffer, pageInput)));
+      pages.push(await toPage(openLimitedSharp(activeBuffer, pageInput), await pictureDensity(activeBuffer, pageInput, statesDensity)));
     }
     return { pages, ...frameFields };
   }
   await assertEncodedImageWithinLimit(selection.source, undefined, selection.input);
-  return { pages: [await toPage(openLimitedSharp(selection.source, selection.input))], ...frameFields };
+  return { pages: [await toPage(openLimitedSharp(selection.source, selection.input), await pictureDensity(selection.source, selection.input, statesDensity))], ...frameFields };
 }
 
 /** True when the file starts with the JPEG start-of-image marker and a following marker. */
@@ -2737,7 +2731,7 @@ async function convertImageToPdf(
   inputBuffer: Buffer,
   options: ConversionOptions,
   baseName: string,
-  sourceFormat?: string
+  sourceFormat?: string, statesDensity = true
 ): Promise<ConversionResult> {
   let activeBuffer = inputBuffer;
   if (sourceFormat === 'svg' || isSvg(activeBuffer)) {
@@ -2752,7 +2746,7 @@ async function convertImageToPdf(
 
   let decodedPages: Awaited<ReturnType<typeof decodePdfPages>>;
   try {
-    decodedPages = await decodePdfPages(activeBuffer, options, sourceFormat);
+    decodedPages = await decodePdfPages(activeBuffer, options, sourceFormat, statesDensity);
   } catch (err: unknown) {
     throw toImageFailure(err, 'pdf');
   }
@@ -2779,36 +2773,6 @@ async function convertImageToPdf(
     };
   }
 
-  return new Promise((resolve, reject) => {
-    const pageSize = (page: PdfPageImage): [number, number] => {
-      const isLandscape = options.orientation === 'landscape' || (page.width > page.height && !options.orientation);
-      // The size is already [width, height] in the final orientation, so no layout swap is applied.
-      return isLandscape ? [Math.max(page.width, page.height), Math.min(page.width, page.height)] : [page.width, page.height];
-    };
-    const doc = new PDFDocument({ size: pageSize(pages[0]), margin: 0 });
-
-    const chunks: Buffer[] = [];
-    doc.on('data', (chunk) => chunks.push(chunk));
-    doc.on('end', () => {
-      const buffer = Buffer.concat(chunks);
-      resolve({
-        buffer,
-        mimeType: 'application/pdf',
-        filename: `${baseName}.pdf`,
-        size: buffer.length,
-        ...frameFields,
-      });
-    });
-    doc.on('error', (err) => reject(err));
-
-    pages.forEach((page, index) => {
-      if (index > 0) doc.addPage({ size: pageSize(page), margin: 0 });
-      doc.image(page.png, 0, 0, {
-        fit: [doc.page.width, doc.page.height],
-        align: 'center',
-        valign: 'center',
-      });
-    });
-    doc.end();
-  });
+  const buffer = await assemblePicturePdf(pages, options.orientation);
+  return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length, ...frameFields };
 }

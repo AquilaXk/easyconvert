@@ -45,15 +45,13 @@ import { readWavPcmInfo } from './wav-header';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
   chooseResampler,
-  LOSSY_AUDIO_ENCODERS,
-  LOSSY_SOXR_PRECISION_BITS,
   LoudnessMeasurement,
   loudnormApplyFilter,
   loudnormMeasureFilter,
   resampleFilter,
+  resamplePrecisionFor,
   resolveDither,
   resolveLoudnessTarget,
-  SOXR_PRECISION_BITS,
 } from './media-audio-quality';
 import {
   BITMAP_SUBTITLE_CODECS,
@@ -1467,10 +1465,9 @@ export function buildFfmpegArguments(
   const finalRate = requestedRate ?? loudnessRate;
   const dither = resolveDither(options.audio?.dither, resolvedAudioCodec);
   const resampler = chooseResampler(options.audio?.resampler, ffmpegBin);
-  if (finalRate !== undefined && (resampler.resampler === 'soxr' || dither !== undefined || loudnessRate !== undefined)) {
-    // Only an encode that nothing else rests on, with soxr left to the default, trades precision for speed.
-    const trimmed = LOSSY_AUDIO_ENCODERS.has(resolvedAudioCodec) && loudnessRate === undefined && options.audio?.resampler === undefined;
-    audioFilters.push(resampleFilter(finalRate, resampler, dither, trimmed ? LOSSY_SOXR_PRECISION_BITS : SOXR_PRECISION_BITS));
+  const precision = resamplePrecisionFor(resolvedAudioCodec, loudnessRate === undefined && options.audio?.resampler === undefined);
+  if (precision !== undefined && finalRate !== undefined && (resampler.resampler === 'soxr' || dither !== undefined || loudnessRate !== undefined)) {
+    audioFilters.push(resampleFilter(finalRate, resampler, dither, precision));
   } else if (dither !== undefined) {
     audioFilters.push(`aresample=dither_method=${dither}`);
   }

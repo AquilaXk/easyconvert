@@ -1006,7 +1006,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2814
+    "maxValue": 2778
   },
   {
     "file": "src/lib/conversions/image.ts",
@@ -1132,7 +1132,7 @@
     "rule": "complexity",
     "function": "buildFfmpegArguments",
     "count": 1,
-    "maxValue": 363
+    "maxValue": 362
   },
   {
     "file": "src/lib/conversions/media-ffmpeg-args.ts",
@@ -1146,7 +1146,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1788
+    "maxValue": 1785
   },
   {
     "file": "src/lib/conversions/media-ffmpeg-args.ts",
@@ -1827,7 +1827,7 @@
     "rule": "complexity",
     "function": "planJpegPassthrough",
     "count": 1,
-    "maxValue": 60
+    "maxValue": 54
   },
   {
     "file": "src/lib/conversions/pdf-layout/lists.ts",
@@ -2840,7 +2840,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2677
+    "maxValue": 2674
   },
   {
     "file": "src/worker/engines.ts",
