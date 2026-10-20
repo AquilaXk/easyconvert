@@ -17,12 +17,13 @@ export const TIER_MAX_PAGES: Record<string, number> = {
 };
 
 /**
- * Most pages of a spreadsheet one request renders to page images. The printed pages of a worksheet follow its used range, so a
- * request cannot predict them: real workbooks print 900 to 5,200 pages. The office suite writes their PDF in 3 to 7 s, but the
- * pages cost about 50 ms and 0.5 MB each (4 vCPU), so one request ran to minutes and half a gigabyte, past the job deadline when
- * the runner is shared. 500 pages is the limit the other multi-page chains of the worker use (OCR, re-encoded rasters).
+ * Most pages of an office document (a workbook, a text document or a presentation) one request renders to page images. The printed
+ * pages follow the content, so a request cannot predict them: real workbooks print 900 to 5,200 pages and a real 8 MB report
+ * 4,181 to 4,874. The office suite writes their PDF in 3 to 32 s, but the pages cost about 50 ms and 0.5 MB each (4 vCPU), so
+ * one request ran to minutes and half a gigabyte, past the job deadline when the runner is shared. 500 pages is the limit the
+ * other multi-page chains of the worker use (OCR, re-encoded rasters).
  */
-export const SPREADSHEET_IMAGE_MAX_PAGES = 500;
+export const OFFICE_PAGE_IMAGE_MAX_PAGES = 500;
 
 function parseIntegerPage(val: string, label: string): number {
   const num = Number.parseInt(val, 10);

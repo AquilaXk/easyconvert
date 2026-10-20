@@ -9,8 +9,8 @@ import {
   SandboxedTimeoutError,
   type SandboxedExecutionResult,
 } from '../../security/process-sandbox';
-import { launchSandboxedBinary } from '../../security/sandbox-launcher';
 import { getQpdfBinaryPath } from './qpdf-path';
+import { launchQpdf } from './qpdf-runner';
 import { PAGE_TREE_LOOP_MESSAGE, reportsPageTreeLoop } from './page-tree-loop';
 
 /**
@@ -132,7 +132,7 @@ export interface QpdfInvocation {
 /** Runs qpdf in the workspace and returns what it prints; `--warning-exit-0` is added, as a recovered document is a result. */
 export async function runQpdf(workspace: QpdfWorkspace, invocation: QpdfInvocation): Promise<SandboxedExecutionResult> {
   try {
-    return await launchSandboxedBinary(workspace.qpdf, ['--warning-exit-0', ...invocation.args], {
+    return await launchQpdf(workspace.qpdf, ['--warning-exit-0', ...invocation.args], {
       cwd: invocation.cwd ?? workspace.dir,
       timeoutMs: QPDF_RUN_TIMEOUT_MS,
       maxBuffer: workspace.maxOutputBytes + QPDF_STDERR_SLACK_BYTES,

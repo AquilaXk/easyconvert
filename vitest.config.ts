@@ -20,6 +20,8 @@ export default defineConfig({
       OCI_NAMESPACE: 'axvym6vk8g7i',
       STORAGE_SIGNING_SECRET: 'test-secure-storage-signing-secret',
       S3_SIGNING_SECRET: 'test-secure-s3-signing-secret',
+      // The tests that count or record the programs a PDF operation starts see the qpdf program; tests/qpdf-runner*.test.ts turn the runner on.
+      QPDF_RUNNER: 'off',
     },
     include: ['tests/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/.worktrees/**', '**/.claude/worktrees/**', 'ab-base/**'],

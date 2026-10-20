@@ -202,6 +202,18 @@ describe('the nightly workflow', () => {
     expect(licences?.run).toBe(guarded('licenses:check', 'package.json has no licenses:check script yet'));
   });
 
+  it('fetches the real-world test files, cached by manifest digest, before the timing suites read them', () => {
+    const steps = nightly.jobs.perf.steps;
+    const vitestAt = steps.findIndex((step) => (step.run ?? '').includes('vitest run'));
+    const prefetchAt = steps.findIndex((step) => step.run === 'npm run prefetch:test-samples');
+    expect(prefetchAt, 'perf prefetches').toBeGreaterThan(-1);
+    expect(prefetchAt, 'perf prefetches before vitest').toBeLessThan(vitestAt);
+    expect(steps[prefetchAt].env?.ORACLE_STRICT_MODE, 'perf prefetch is strict').toBe('1');
+    const cache = steps.slice(0, prefetchAt).find((step) => String(step.uses).startsWith('actions/cache@'));
+    expect(cache?.with?.path).toBe('~/.cache/easyconvert-realworld');
+    expect(cache?.with?.key).toBe("test-samples-${{ hashFiles('bench/realworld/manifest.json') }}");
+  });
+
   it('opens or updates one nightly-regression issue when a job fails, through the workflow it shares with the regression corpus run', () => {
     const report = nightly.jobs.report;
     expect([...(report.needs as string[])].sort()).toEqual(['bench', 'bench-parity-quality', 'bench-parity-speed', 'licenses', 'perf', 'realworld', 'realworld-gate']);

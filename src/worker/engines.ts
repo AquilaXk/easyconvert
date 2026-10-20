@@ -28,7 +28,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/stora
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
-import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withSpreadsheetPageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -77,11 +77,12 @@ import {
   SandboxedBufferLimitError,
 } from './sandbox';
 import { convertPostScript } from './postscript-render';
+import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
 import { boundRenderedPages, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, selectsPages, splitIntoBatches } from './poppler-ppm';
-import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
+import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
 import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
@@ -1173,7 +1174,7 @@ async function convertPdfToTextWithPoppler(
               signal: options.signal,
             });
           } catch (err) {
-            throw toPopplerPasswordError(err) ?? toPopplerDamageSignal(err, options.inProcessFallback) ?? err;
+            throw toPopplerPasswordError(err) ?? toPopplerOutputLimitError(err) ?? toPopplerDamageSignal(err, options.inProcessFallback) ?? err;
           }
         }
       );
@@ -1415,7 +1416,7 @@ async function executePopplerRender(params: PopplerRenderParams): Promise<Worker
     });
   } catch (err) {
     if (options.throwOnUnavailable) {
-      throw err;
+      throw toPopplerOutputLimitError(err) ?? err;
     }
     // A missing sandbox is not a missing tool: it is never reported as "nothing converted".
     rethrowSandboxUnavailable(err);
@@ -1894,17 +1895,11 @@ export async function convertWithNativeRaw(
 
 /** SVG drawings written as PDF: librsvg draws the vectors and the text, so the page stays a vector page. */
 const SVG_SOURCE = 'svg';
-const SVG_DEFAULT_TIMEOUT_MS = 60_000;
-const SVG_MAX_TIMEOUT_MS = 300_000;
-const SVG_MEMORY_LIMIT_MB = 2048;
-const SVG_MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
-const SVG_MAX_STDERR_CHARS = 300;
 
 /**
- * Writes an SVG as a vector PDF with librsvg's `rsvg-convert` (an unmodified separate program, LGPL): paths stay paths and
- * text stays text, the way the standard SVG renderer writes it, instead of a raster picture inside a PDF page. The SVG
- * is sanitised first and the renderer runs in the sandbox without network. Returns null when the target is not PDF or
- * `rsvg-convert` is missing and the caller did not ask for an error.
+ * Writes an SVG as a vector PDF with librsvg's `rsvg-convert` (see svg-render.ts). The SVG is sanitised first and the renderer
+ * runs in the sandbox without network. Returns null when the target is not PDF or `rsvg-convert` is missing and the caller
+ * did not ask for an error.
  */
 export async function convertWithNativeSvg(
   input: Buffer | WorkerVfsPayload,
@@ -1923,38 +1918,8 @@ export async function convertWithNativeSvg(
     }
     return null;
   }
-  const baseName = originalFilename ? originalFilename.replace(/\.[^/.]+$/, '') : 'converted';
-  const startTime = Date.now();
-  const timeout = Math.min(stageTimeoutMs(options, SVG_DEFAULT_TIMEOUT_MS), SVG_MAX_TIMEOUT_MS);
   const svg = normalizeSvgForRendering(sanitizeSvgDocument(readRawInputBuffer(input).toString('utf-8')));
-
-  // The drawing goes in through the pipe and the PDF comes back through it: no job directory, no file copies. The
-  // renderer has no file to take a base location from, so nothing the drawing names is looked for beside it.
-  let rendered: Buffer;
-  try {
-    ({ stdout: rendered } = await executeSandboxedBinary(renderer, ['--format', 'pdf'], {
-      timeoutMs: timeout,
-      maxBuffer: Math.min(options.maxBufferBytes || SVG_MAX_OUTPUT_BYTES, SVG_MAX_OUTPUT_BYTES),
-      memoryLimitMb: SVG_MEMORY_LIMIT_MB,
-      networkIsolated: true,
-      signal: options.signal,
-      stdin: Buffer.from(svg, 'utf-8'),
-    }));
-  } catch (err) {
-    if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
-      throw new ConversionFailedError('The SVG renderer exceeded its output or memory limit on the drawing.');
-    }
-    if (err instanceof SandboxedProcessError) {
-      const detail = err.stderr.trim().slice(0, SVG_MAX_STDERR_CHARS);
-      throw new ConversionFailedError(`The SVG renderer rejected the drawing${detail ? `: ${detail}` : ''}`);
-    }
-    throw err;
-  }
-  if (rendered.length === 0) {
-    throw new ConversionFailedError('The SVG renderer wrote no page from the drawing.');
-  }
-  const persistedPath = writeOutputSegments([rendered], 'pdf', options, Buffer.isBuffer(input) ? undefined : input);
-  return createConversionResult(persistedPath, 'pdf', baseName, 'native-svg', Date.now() - startTime);
+  return renderSvgAsPdf({ svg, renderer, input, options, originalFilename });
 }
 
 /** PostScript sources: only an interpreter can draw them. */
@@ -2424,14 +2389,14 @@ async function convertWithinImageSession(
   if (officeSuiteReadsInput(src, input) && (isPdfChainTarget(tgt) || isPresentationHtml)) {
     let intermediatePdf: WorkerConversionResult | null = null;
     try {
-      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withSpreadsheetPageBounds(src, nativeOptions), originalFilename);
+      intermediatePdf = await convertWithHeadlessOffice(input, src, 'pdf', withOfficePageBounds(src, nativeOptions), originalFilename);
       if (intermediatePdf) {
         const popplerInput = intermediatePdf.filePath
           ? { inputPath: intermediatePdf.filePath }
           : intermediatePdf.buffer;
         const popplerRes = isPresentationHtml
           ? await convertPdfToHtml(intermediatePdf.buffer, nativeOptions, originalFilename, input, intermediatePdf.engineUsed)
-          : await convertPdfPagesWithNativeTools(popplerInput, tgt, withSpreadsheetPageBounds(src, nativeOptions), originalFilename);
+          : await convertPdfPagesWithNativeTools(popplerInput, tgt, withOfficePageBounds(src, nativeOptions), originalFilename);
         if (popplerRes) {
           return {
             ...popplerRes,

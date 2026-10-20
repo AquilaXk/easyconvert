@@ -124,6 +124,10 @@ task_apt() {
   local usage
   usage="$(cad-convert 2>&1 || true)"
   [[ "$usage" == *'usage: cad-convert'* ]] || { echo "cad-convert does not start" >&2; return 1; }
+  # The qpdf job runner (native/qpdf-runner) opens the libqpdf of the packages above; it builds with the C compiler of the runner image.
+  # --check loads the library and prints its version, which is the sign that the runner can serve the PDF operations.
+  sudo "$action_path/../../../native/qpdf-runner/build.sh" /usr/local/bin/qpdf-runner || return 1
+  qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "qpdf-runner does not load libqpdf" >&2; return 1; }
 }
 
 # PDF/A results are refused unless veraPDF validates them.

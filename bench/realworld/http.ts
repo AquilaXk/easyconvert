@@ -4,7 +4,7 @@
  */
 import net from 'node:net';
 import { EnvHttpProxyAgent, setGlobalDispatcher } from 'undici';
-import { isBusyHostStatus, retryDelayMs } from '../http-retry';
+import { describeFetchFailure, isBusyHostStatus, retryDelayMs } from '../http-retry';
 
 const RETRIES = 6;
 const HTTP_OK = 200;
@@ -74,7 +74,7 @@ async function withRetries<T>(url: string, run: () => Promise<T>): Promise<T> {
       if (tryNumber < RETRIES) await sleep(error instanceof BusyHostError ? retryDelayMs(tryNumber, error.status, error.retryAfter) : retryDelayMs(tryNumber, null, null));
     }
   }
-  throw new FetchError(`${url}: failed after ${RETRIES + 1} attempts: ${String(lastError)}`);
+  throw new FetchError(`${url}: failed after ${RETRIES + 1} attempts: ${describeFetchFailure(lastError)}`);
 }
 
 /** The body of `url`, or of bytes [start, end] of it, retried with exponential backoff on network and server errors. */
