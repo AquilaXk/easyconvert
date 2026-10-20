@@ -52,7 +52,7 @@ Media and documents
 55. [HTML pages left open, code points XML cannot carry, and books with no content](#55-html-pages-left-open-code-points-xml-cannot-carry-and-books-with-no-content)
 57. [Surround layouts: Opus channel mapping, a stereo mix for WMA, and the BS.775 mix of 5.1(side)](#57-surround-layouts-opus-channel-mapping-a-stereo-mix-for-wma-and-the-bs775-mix-of-51side)
 61. [PDF streams that declare more than a stream may decode: JBIG2 pages, and Poppler output past its limit](#61-pdf-streams-that-declare-more-than-a-stream-may-decode-jbig2-pages-and-poppler-output-past-its-limit)
-62. [Flaky unit tests of the shard run: event-loop budgets, scaling ratios, temporary directories, big fixtures and the shard plan](#62-flaky-unit-tests-of-the-shard-run-event-loop-budgets-scaling-ratios-temporary-directories-big-fixtures-and-the-shard-plan)
+63. [Flaky unit tests of the shard run: event-loop budgets, scaling ratios, temporary directories, big fixtures and the shard plan](#63-flaky-unit-tests-of-the-shard-run-event-loop-budgets-scaling-ratios-temporary-directories-big-fixtures-and-the-shard-plan)
 
 Engines
 
@@ -1786,7 +1786,7 @@ Compression
 - **Verified by**: `tests/pdf-jbig2-bomb.test.ts` (the page size read from the header bytes of the real file, 100,000 x 100,000, against T.88 and the arithmetic of the row; a scanned A4 page and a page behind a segment before it; PDFs made of a 30-byte stream refused for text and page images within 5 s; the real file; the hex-wrapped form ending in the typed output limit; files of 2 and 20 MB made of the filter name, alone or with a stream keyword or an object each time, read in a bounded number of bytes and names). Of the 1,260 PDFs in the corpus cache, 9 name JBIG2; the guard refuses only the bomb, reads the pages of seven scans (0.3 to 1.1 MB decoded each) and finds no size in the one that is encrypted.
 - **Revisit when**: the size of a JBIG2 page is judged with the other limits of a request in one place (page area times pages), a wrapper filter must be read by the guard, or Poppler gets a decode limit of its own.
 
-## 62. Flaky unit tests of the shard run: event-loop budgets, scaling ratios, temporary directories, big fixtures and the shard plan
+## 63. Flaky unit tests of the shard run: event-loop budgets, scaling ratios, temporary directories, big fixtures and the shard plan
 
 - **Status**: Implemented (flake rows of issue #692, epic #763), decided 2026-10-20 (QA request).
 - **Decision**:
