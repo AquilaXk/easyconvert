@@ -1,6 +1,6 @@
 import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
-import type { PdfBlock, PdfRasterImage, PdfTableCell } from './pdf-blocks';
+import type { PdfBlock, PdfCellPart, PdfRasterImage, PdfTableCell } from './pdf-blocks';
 import type { PdfTextSegment } from './pdf-fonts';
 import { loadExternalImages, type ImageCaps } from './html-image-loader';
 import { asciiLowerCase, isUndrawable, NEVER_DRAWN_ELEMENTS, OmittedContent, OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
@@ -59,6 +59,10 @@ const XMP_ELEMENT = 'xmp';
 const FOREIGN_ROOTS: ReadonlySet<string> = new Set(['svg', 'math']);
 /** Largest colspan honoured, as in HTML (larger values are clamped). */
 const MAX_COLUMN_SPAN = 1000;
+/** Largest rowspan honoured, as in HTML; `rowspan="0"` spans every row left. */
+const MAX_ROW_SPAN = 65_534;
+/** Widest table grid the renderer places merged cells in; a row with more columns than this has none of them fit a page anyway. */
+const MAX_GRID_COLUMNS = 1000;
 const COMMENT_OPEN = '<!--';
 
 const VOID_ELEMENTS: ReadonlySet<string> = new Set([
@@ -71,12 +75,12 @@ const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
 /** Elements that are never displayed. */
 const HIDDEN_ELEMENTS: ReadonlySet<string> = new Set([...NEVER_DRAWN_ELEMENTS, 'head', 'style', 'meta', 'link', 'base', 'title']);
 /** Content the in-process renderer cannot draw and has no fallback for: it refuses the page (what it can leave out is in isUndrawable). */
-const UNSUPPORTED_ELEMENTS: ReadonlySet<string> = new Set(['math', 'xmp']);
+const UNSUPPORTED_ELEMENTS: ReadonlySet<string> = new Set(['math']);
 /** Opening any of these closes an open <p>. */
 const PARAGRAPH_CLOSERS: ReadonlySet<string> = new Set([
   'address', 'article', 'aside', 'blockquote', 'center', 'details', 'dialog', 'dir', 'div', 'dl', 'dd', 'dt',
   'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup',
-  'hr', 'li', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'section', 'summary', 'table', 'ul',
+  'hr', 'li', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'section', 'summary', 'table', 'ul', 'xmp',
 ]);
 /** Elements that stop the search for an open <p> to close. */
 const PARAGRAPH_SCOPE: ReadonlySet<string> = new Set(['table', 'td', 'th', 'caption', 'button', 'object', 'template']);
@@ -111,13 +115,13 @@ const TABLE_SECTION_ELEMENTS: ReadonlySet<string> = new Set(['thead', 'tbody', '
 const TABLE_CELL_ELEMENTS: ReadonlySet<string> = new Set(['td', 'th']);
 const TABLE_COLUMN_ELEMENTS: ReadonlySet<string> = new Set(['colgroup', 'col']);
 const LIST_ELEMENTS: ReadonlySet<string> = new Set(['ul', 'ol', 'menu', 'dir']);
-const PREFORMATTED_ELEMENTS: ReadonlySet<string> = new Set(['pre', 'listing', 'plaintext']);
+const PREFORMATTED_ELEMENTS: ReadonlySet<string> = new Set(['pre', 'listing', 'plaintext', XMP_ELEMENT]);
 /** Elements laid out as blocks (their content starts on a new line). */
 const BLOCK_ELEMENTS: ReadonlySet<string> = new Set([
   'html', 'body', 'address', 'article', 'aside', 'center', 'details', 'dialog', 'div', 'dl', 'dd', 'dt', 'fieldset',
   'figcaption', 'figure', 'footer', 'form', 'header', 'hgroup', 'legend', 'main', 'nav', 'section', 'summary',
   'caption', 'p', 'table', 'blockquote', 'hr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol',
-  'menu', 'dir', 'pre', 'listing', 'plaintext',
+  'menu', 'dir', 'pre', 'listing', 'plaintext', 'xmp',
 ]);
 const ALLOWED_IMAGE_FORMATS: ReadonlySet<string> = new Set(['png', 'jpeg']);
 /** Largest embedded image, in pixels, the in-process renderer decodes. */
@@ -532,6 +536,52 @@ function columnSpan(cell: HtmlElement): number {
   return Math.min(span, MAX_COLUMN_SPAN);
 }
 
+/** The rowspan of a table cell: a whole number from 1 to MAX_ROW_SPAN, 1 when absent or invalid, and MAX_ROW_SPAN for 0 (down to the last row). */
+function rowSpanOf(cell: HtmlElement): number {
+  const span = Number.parseInt(cell.attrs.get('rowspan') ?? '', DECIMAL_RADIX);
+  if (!Number.isFinite(span) || span < 0) return 1;
+  return span === 0 ? MAX_ROW_SPAN : Math.min(span, MAX_ROW_SPAN);
+}
+
+const COVERED_CELL: PdfTableCell = { content: [], span: 1, covered: true };
+const EMPTY_CELL: PdfTableCell = { content: [], span: 1 };
+
+/**
+ * Places the cells of the rows in the table grid as HTML does: a cell that merges downward covers its columns in the
+ * rows below, so the cells of those rows start after it. The covered positions are listed as covered cells (no border of
+ * their own), and a merge is cut at the last row. Rows are returned unchanged when no cell merges downward.
+ */
+function coverMergedRows(rows: PdfTableCell[][]): PdfTableCell[][] {
+  if (!rows.some((row) => row.some((cell) => (cell.rowSpan ?? 1) > 1))) return rows;
+  // Per column, the rows below the current one that a cell above still covers.
+  const rowsLeft: number[] = [];
+  return rows.map((row, rowIndex) => {
+    const placed: PdfTableCell[] = [];
+    const merges: Array<{ column: number; span: number; rows: number }> = [];
+    let column = 0;
+    const coverFrom = (limit: number): void => {
+      while (column < limit) {
+        placed.push((rowsLeft[column] ?? 0) > 0 ? COVERED_CELL : EMPTY_CELL);
+        column++;
+      }
+    };
+    for (const cell of row) {
+      while ((rowsLeft[column] ?? 0) > 0) coverFrom(column + 1);
+      if (column + cell.span > MAX_GRID_COLUMNS) throw unsupported(`tables with more than ${MAX_GRID_COLUMNS} columns`);
+      const rowSpan = Math.min(cell.rowSpan ?? 1, rows.length - rowIndex);
+      if (rowSpan > 1) merges.push({ column, span: cell.span, rows: rowSpan - 1 });
+      placed.push(rowSpan === (cell.rowSpan ?? 1) ? cell : { ...cell, rowSpan });
+      column += cell.span;
+    }
+    coverFrom(rowsLeft.reduce((last, left, index) => (left > 0 ? index + 1 : last), column));
+    for (let index = 0; index < rowsLeft.length; index++) rowsLeft[index] = Math.max(0, (rowsLeft[index] ?? 0) - 1);
+    for (const merge of merges) {
+      for (let index = merge.column; index < merge.column + merge.span; index++) rowsLeft[index] = merge.rows;
+    }
+    return placed;
+  });
+}
+
 /** Whether the element is never displayed: hidden elements, the hidden attribute, or display: none. */
 function isHidden(node: HtmlElement): boolean {
   return HIDDEN_ELEMENTS.has(node.tag) || node.attrs.has('hidden') || DISPLAY_NONE.test(node.attrs.get('style') ?? '');
@@ -752,14 +802,14 @@ class HtmlBlockBuilder {
       }
     };
     visit(node);
-    return rows.length > 0 ? [...before, { kind: 'table', rows }] : before;
+    return rows.length > 0 ? [...before, { kind: 'table', rows: coverMergedRows(rows) }] : before;
   }
 
   private row(tr: HtmlElement, before: PdfBlock[]): PdfTableCell[] {
     const cells: PdfTableCell[] = [];
     for (const child of tr.children) {
       if (typeof child !== 'string' && TABLE_CELL_ELEMENTS.has(child.tag)) {
-        cells.push({ content: this.cellContent(child), span: columnSpan(child) });
+        cells.push(this.cell(child));
       } else if (typeof child !== 'string' || child.trim().length > 0) {
         appendAll(before, this.blocks([child]));
       }
@@ -767,12 +817,25 @@ class HtmlBlockBuilder {
     return cells;
   }
 
-  /** A table cell's content as one text flow; nested blocks are separated by line breaks. */
-  private cellContent(cell: HtmlElement): PdfTextSegment[] {
-    const segments: PdfTextSegment[] = [];
+  /**
+   * A table cell. Text, lists and quotes are one text flow with line breaks between the blocks; a cell that also holds
+   * a table or a picture lists its text, pictures and tables in order.
+   */
+  private cell(element: HtmlElement): PdfTableCell {
+    const parts: PdfCellPart[] = [];
+    let segments: PdfTextSegment[] = [];
+    const flushText = (): void => {
+      if (segments.length > 0) parts.push({ kind: 'text', content: segments });
+      segments = [];
+    };
     const append = (blocks: readonly PdfBlock[]): void => {
       for (const block of blocks) {
         if (block.kind === 'rule') continue;
+        if (block.kind === 'table' || block.kind === 'image') {
+          flushText();
+          parts.push(block);
+          continue;
+        }
         if (segments.length > 0) segments.push({ text: '\n' });
         if (block.kind === 'paragraph' || block.kind === 'heading') {
           appendAll(segments, block.content);
@@ -782,13 +845,17 @@ class HtmlBlockBuilder {
           block.items.forEach((item) => append(item));
         } else if (block.kind === 'quote') {
           append(block.blocks);
-        } else {
-          throw unsupported(block.kind === 'table' ? 'tables nested in table cells' : '<img> inside table cells');
         }
       }
     };
-    append(this.blocks(cell.children));
-    return segments;
+    append(this.blocks(element.children));
+    flushText();
+    const rowSpan = rowSpanOf(element);
+    const shape = { span: columnSpan(element), ...(rowSpan > 1 ? { rowSpan } : {}) };
+    const [only] = parts;
+    if (parts.length === 0) return { content: [], ...shape };
+    if (parts.length === 1 && only.kind === 'text') return { content: only.content, ...shape };
+    return { content: [], ...shape, parts };
   }
 
   /** The image block of an `<img>`. External images are already out of the tree (see parseHtmlToPdfBlocks). */
@@ -961,7 +1028,7 @@ export async function prepareEmbeddedImage(bytes: Buffer, label: string): Promis
 
 /**
  * Parses HTML into PDF blocks. Throws EngineUnavailableError('soffice') for content only the native
- * engine draws (MathML, non-PNG/JPEG images, nested tables) and
+ * engine draws (MathML, non-PNG/JPEG images, tables nested too deep) and
  * ConversionFailedError for embedded images that cannot be decoded, and for external images that cannot
  * be loaded when the policy requires every resource.
  */

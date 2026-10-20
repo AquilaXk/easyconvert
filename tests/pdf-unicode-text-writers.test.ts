@@ -622,17 +622,17 @@ describe('In-process PDF layout limits', () => {
     expect(withoutWhitespace(pdfText(result.buffer)).replace(/•/g, '')).toBe('DeepListTextDeepQuoteText');
   });
 
-  it('hands tables wider or taller than a page to LibreOffice with EngineUnavailableError', async () => {
+  it('hands a table with more columns than the page has room for to LibreOffice with EngineUnavailableError', async () => {
     const wideRow = `<tr>${Array.from({ length: 30 }, (_, i) => `<td>c${i}</td>`).join('')}</tr>`;
-    const tallCell = Array.from({ length: 6000 }, (_, i) => `word${i}`).join(' ');
-    for (const [label, html] of [
-      ['wide', `<table>${wideRow}</table>`],
-      ['tall', `<table><tr><td>${tallCell}</td><td>x</td></tr></table>`],
-    ]) {
-      const { error } = await settle(convertFile(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, `${label}.html`));
-      expect({ label, name: (error as Error)?.name }).toEqual({ label, name: 'EngineUnavailableError' });
-      expect((error as EngineUnavailableError).engineName).toBe('soffice');
-    }
+    const { error } = await settle(convertFile(Buffer.from(`<table>${wideRow}</table>`, 'utf-8'), 'html', 'pdf', {}, 'wide.html'));
+    expect((error as Error)?.name).toBe('EngineUnavailableError');
+    expect((error as EngineUnavailableError).engineName).toBe('soffice');
+  });
+
+  oracleTest('continues a table cell taller than a page on the next pages with every word of it', ['pdftotext', 'pdfinfo'], async () => {
+    const words = Array.from({ length: 6000 }, (_, i) => `word${i}`);
+    const result = await convertFile(Buffer.from(`<table><tr><td>${words.join(' ')}</td><td>x</td></tr></table>`, 'utf-8'), 'html', 'pdf', {}, 'tall.html');
+    expect(pdfText(result.buffer).split(/\s+/).filter((word) => word.startsWith('word'))).toEqual(words);
   });
 
   oracleTest('lets a colspan cell use the width of the columns it spans', ['pdftotext'], async () => {
