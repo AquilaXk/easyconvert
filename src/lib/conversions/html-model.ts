@@ -50,6 +50,7 @@ const INLINE_BLOCK_BREAKERS: ReadonlySet<string> = new Set([
 ]);
 /** Attributes that make an element a link target; the copies of an element split around blocks do not repeat them. */
 const ANCHOR_ATTRIBUTES: readonly string[] = ['id', 'name'];
+const ANCHOR_ELEMENT = 'a';
 const ORDERED_TYPES: ReadonlyMap<string, string> = new Map([['1', 'decimal'], ['a', 'lowerLetter'], ['A', 'upperLetter'], ['i', 'lowerRoman'], ['I', 'upperRoman']]);
 const DATA_URI = /^data:([^,]*?)(;base64)?,(.*)$/is;
 const COLOR_HEX = /^#([0-9a-f]{6})$/i;
@@ -78,6 +79,12 @@ interface Format {
   subscript?: boolean;
   href?: string;
   color?: string;
+}
+
+/** A table row and the row groups that open before it, which hold targets of their own. */
+interface TableRow {
+  element: HtmlElement;
+  openedGroups: HtmlElement[];
 }
 
 interface OpenCell {
@@ -173,10 +180,16 @@ class HtmlModelBuilder {
   private readonly omittedImages = new OmittedExternalImages();
   private readonly omittedContent = new OmittedContent();
   private readonly holdsBlockMemo = new Map<HtmlElement, boolean>();
+  /** Names of link targets read before a block that can hold them, in document order (see `anchorBlockStart`). */
+  private readonly pendingAnchors: string[] = [];
+  /** The runs of the last block that holds text, where the targets still waiting at the end of the document go. */
+  private lastRuns: Inline[] | undefined;
 
   constructor(
     private readonly options: HtmlModelOptions,
-    readonly context: DocumentContext
+    readonly context: DocumentContext,
+    /** Every `id` of the document: an `a` named like one of them is not what a fragment finds. */
+    private readonly documentIds: ReadonlySet<string>
   ) {}
 
   private get warnings(): string[] {
@@ -216,7 +229,7 @@ class HtmlModelBuilder {
    */
   private splitAroundBlocks(element: HtmlElement): HtmlNode[] {
     const pieces = this.wrapPieces(element, element.children);
-    return ANCHOR_ATTRIBUTES.some((name) => element.attrs.has(name)) ? this.anchoredAtStart(pieces, element) : pieces;
+    return this.anchorsOf(element).length === 0 ? pieces : this.anchoredAtStart(pieces, element);
   }
 
   /** `pieces` with the anchor of `element` at the start of the first inline piece, found through the first blocks. */
@@ -250,6 +263,65 @@ class HtmlModelBuilder {
     }
     flush();
     return pieces;
+  }
+
+  /**
+   * The names `element` is a link target by (HTML Living Standard, "the indicated part of the document"): its `id`, and
+   * for an `a` its `name` unless an element has that `id`. Every element is a target, not only those read as blocks.
+   */
+  private anchorsOf(element: HtmlElement): string[] {
+    const names: string[] = [];
+    const id = element.attrs.get('id');
+    if (id) names.push(id);
+    const name = element.tag === ANCHOR_ELEMENT ? element.attrs.get('name') : undefined;
+    if (name && name !== id && !this.documentIds.has(name)) names.push(name);
+    return names;
+  }
+
+  /**
+   * Makes the target of `element` the start of the next block that holds text. A container has no run of its own, so
+   * its id goes to the first block it produces, in front of the ids of the containers inside it; an element with no
+   * text (an empty division, a rule, preformatted text) hands its id to the block after it.
+   */
+  private anchorBlockStart(element: HtmlElement): void {
+    this.pendingAnchors.push(...this.anchorsOf(element));
+  }
+
+  /** Waits for the next block to hold the targets that stood in `runs`, whose block has nowhere to put them. */
+  private keepAnchors(runs: readonly Inline[]): void {
+    for (const run of runs) {
+      if (run.anchor !== undefined) this.pendingAnchors.push(run.anchor);
+    }
+  }
+
+  /** The runs of a block ready to be written, led by the targets waiting for a block; none when the runs hold no text, picture or note. */
+  private takeRuns(runs: Inline[]): Inline[] {
+    const finished = finishInlines(runs);
+    if (finished.length === 0) {
+      this.keepAnchors(runs);
+      return finished;
+    }
+    this.lastRuns = [...this.pendingAnchors.splice(0).map(anchorRun), ...finished];
+    return this.lastRuns;
+  }
+
+  /** Adds a block that holds no runs (preformatted text, a rule), led by a paragraph of the targets waiting for a block when there are any. */
+  private runlessBlock(out: BlockSink, add: () => void): void {
+    if (this.pendingAnchors.length > 0) {
+      this.countBlock();
+      out.paragraph(this.pendingAnchors.splice(0).map(anchorRun));
+    }
+    this.countBlock();
+    add();
+    this.lastRuns = undefined;
+  }
+
+  /** The targets still waiting when the document ends are at its end: after the last text, or in a paragraph of their own after a block with none. */
+  anchorEndOfDocument(out: BlockSink): void {
+    if (this.pendingAnchors.length === 0 || out.blocks.length === 0) return;
+    const anchors = this.pendingAnchors.splice(0).map(anchorRun);
+    if (this.lastRuns) this.lastRuns.push(...anchors);
+    else out.paragraph(anchors);
   }
 
   private countBlock(): void {
@@ -337,6 +409,7 @@ class HtmlModelBuilder {
         continue;
       }
       if (SKIPPED.has(node.tag)) continue;
+      for (const name of this.anchorsOf(node)) out.push(anchorRun(name));
       if (DROPPED_WITH_WARNING.has(node.tag)) {
         this.omittedContent.element(node.tag);
         continue;
@@ -350,17 +423,14 @@ class HtmlModelBuilder {
         if (image) out.push(image);
         continue;
       }
-      const id = node.attrs.get('id') ?? (node.tag === 'a' ? node.attrs.get('name') : undefined);
-      if (id) out.push(anchorRun(id));
       this.inlines(node.children, this.formatOf(node, format), out, preformatted);
     }
   }
 
-  private paragraphFrom(nodes: readonly HtmlNode[], out: BlockSink, anchorId?: string): void {
+  private paragraphFrom(nodes: readonly HtmlNode[], out: BlockSink): void {
     const runs: Inline[] = [];
-    if (anchorId) runs.push(anchorRun(anchorId));
     this.inlines(nodes, {}, runs);
-    const finished = finishInlines(runs);
+    const finished = this.takeRuns(runs);
     if (finished.length === 0) return;
     this.countBlock();
     out.paragraph(finished);
@@ -387,6 +457,7 @@ class HtmlModelBuilder {
   private block(element: HtmlElement, out: BlockSink, listDepth: number, tableDepth: number): void {
     const tag = element.tag;
     if (SKIPPED.has(tag)) return;
+    this.anchorBlockStart(element);
     if (DROPPED_WITH_WARNING.has(tag)) {
       this.omittedContent.element(tag);
       return;
@@ -394,10 +465,8 @@ class HtmlModelBuilder {
     const level = HEADING_LEVELS.get(tag);
     if (level !== undefined) {
       const runs: Inline[] = [];
-      const id = element.attrs.get('id');
-      if (id) runs.push(anchorRun(id));
       this.inlines(element.children, {}, runs);
-      const finished = finishInlines(runs);
+      const finished = this.takeRuns(runs);
       if (finished.length > 0) {
         this.countBlock();
         out.heading(level, finished);
@@ -405,7 +474,7 @@ class HtmlModelBuilder {
       return;
     }
     if (PARAGRAPHS.has(tag)) {
-      this.paragraphFrom(element.children, out, element.attrs.get('id'));
+      this.paragraphFrom(element.children, out);
       return;
     }
     if (LISTS.has(tag)) {
@@ -419,11 +488,9 @@ class HtmlModelBuilder {
       case 'pre': {
         const runs: Inline[] = [];
         this.inlines(element.children, {}, runs, true);
+        this.keepAnchors(runs);
         const text = runs.map(preformattedText).join('').replace(/^\n/, '');
-        if (text.trim() !== '') {
-          this.countBlock();
-          out.code(text.replace(/\n$/, ''));
-        }
+        if (text.trim() !== '') this.runlessBlock(out, () => out.code(text.replace(/\n$/, '')));
         return;
       }
       case 'blockquote': {
@@ -436,8 +503,7 @@ class HtmlModelBuilder {
         return;
       }
       case 'hr':
-        this.countBlock();
-        out.rule();
+        this.runlessBlock(out, () => out.rule());
         return;
       default:
         break;
@@ -473,6 +539,7 @@ class HtmlModelBuilder {
         continue;
       }
       flushBetween();
+      this.anchorBlockStart(child);
       if (LISTS.has(child.tag)) {
         this.list(child, out, listDepth + 1, tableDepth);
         continue;
@@ -480,7 +547,6 @@ class HtmlModelBuilder {
       const content = out.nested();
       this.blocks(child.children, content, listDepth + 1, tableDepth);
       const first = content.blocks[0];
-      const id = child.attrs.get('id');
       if (first && first.type === 'paragraph') {
         const marker = ordered ? `${formatListNumber(number, format)}.` : BULLETS[level % BULLETS.length];
         out.listItem({
@@ -489,7 +555,7 @@ class HtmlModelBuilder {
           ...listFormatOf(ordered, ordered ? format : 'bullet', marker),
           value: number,
           marker,
-          runs: id ? [anchorRun(id), ...first.runs] : first.runs,
+          runs: first.runs,
         });
         out.appendAll(content.blocks.slice(1));
       } else {
@@ -504,7 +570,7 @@ class HtmlModelBuilder {
     this.warnings.push(`Tables nested deeper than ${HTML_MODEL_MAX_TABLE_DEPTH} levels were flattened to text.`);
     const runs: Inline[] = [];
     this.inlines(element.children, {}, runs);
-    const finished = finishInlines(runs);
+    const finished = this.takeRuns(runs);
     if (finished.length > 0) {
       this.countBlock();
       out.paragraph(finished);
@@ -516,29 +582,35 @@ class HtmlModelBuilder {
       this.flatten(element, out);
       return;
     }
-    const rows: HtmlElement[] = [];
+    const rows: TableRow[] = [];
     const inHead = new Set<HtmlElement>();
-    const caption: HtmlNode[] = [];
+    const captions: HtmlElement[] = [];
+    let openedGroups: HtmlElement[] = [];
     const collect = (parent: HtmlElement, head: boolean): void => {
       for (const child of parent.children) {
         if (typeof child === 'string') continue;
         if (child.tag === 'tr') {
-          rows.push(child);
+          rows.push({ element: child, openedGroups });
+          openedGroups = [];
           if (head) inHead.add(child);
         } else if (child.tag === 'thead' || child.tag === 'tbody' || child.tag === 'tfoot') {
+          openedGroups.push(child);
           collect(child, child.tag === 'thead');
         } else if (child.tag === 'caption') {
-          caption.push(...child.children);
+          captions.push(child);
         }
       }
     };
     collect(element, false);
-    if (caption.length > 0) this.paragraphFrom(caption, out);
+    for (const caption of captions) this.anchorBlockStart(caption);
+    this.paragraphFrom(captions.flatMap((caption) => caption.children), out);
 
     const draftRows: TableDraftCell[][] = [];
     const covering = new Map<number, OpenCell>();
     let columnCount = 0;
-    for (const tr of rows) {
+    for (const { element: tr, openedGroups: groups } of rows) {
+      for (const group of groups) this.anchorBlockStart(group);
+      this.anchorBlockStart(tr);
       const cells: TableDraftCell[] = [];
       let column = 0;
       const skipCovered = (): void => {
@@ -555,6 +627,7 @@ class HtmlModelBuilder {
         const colSpan = positiveInt(td.attrs.get('colspan'), MAX_COLUMN_SPAN);
         const rowSpan = positiveInt(td.attrs.get('rowspan'), MAX_ROW_SPAN);
         const content = out.nested();
+        this.anchorBlockStart(td);
         this.blocks(td.children, content, listDepth, tableDepth + 1);
         const background = styleProperties(td.attrs.get('style')).get('background-color');
         const cell: TableDraftCell = { blocks: content.blocks, colSpan, rowSpan, header: td.tag === 'th', shading: background ? parseColor(background) : undefined };
@@ -575,6 +648,7 @@ class HtmlModelBuilder {
         draftRows.push(cells);
       }
     }
+    for (const group of openedGroups) this.anchorBlockStart(group);
     if (draftRows.length === 0) return;
     this.countBlock();
     out.table({ rows: draftRows, columnCount });
@@ -588,16 +662,31 @@ class HtmlModelBuilder {
 export async function htmlToDocumentModel(html: string, options: HtmlModelOptions = {}): Promise<DocumentModel> {
   const tree = parseHtmlTree(html.replace(/^﻿/, ''));
   const context = options.context ?? new DocumentContext();
-  const builder = new HtmlModelBuilder(options, context);
+  const builder = new HtmlModelBuilder(options, context, idsOf(tree.root));
   const firstWarning = context.warnings.length;
   const sink = new BlockSink(context);
   builder.blocks(tree.root.children, sink, 0, 0);
+  builder.anchorEndOfDocument(sink);
   for (const bytes of builder.checks) await assertEmbeddableImageWithinLimit(bytes);
   context.warnings.push(...builder.omissionWarnings());
   for (const line of context.warnings.slice(firstWarning)) reportConversionWarning(line);
   const root = findRoot(tree.root);
   const language = root?.attrs.get('lang') ?? root?.attrs.get('xml:lang');
   return assembleDocument({ sections: [{ columns: 1, blocks: sink.blocks }], context, language: language || undefined, title: tree.title || undefined });
+}
+
+/** The `id` of every element under `root`. */
+function idsOf(root: HtmlElement): Set<string> {
+  const ids = new Set<string>();
+  const pending: HtmlElement[] = [root];
+  for (let element = pending.pop(); element !== undefined; element = pending.pop()) {
+    const id = element.attrs.get('id');
+    if (id) ids.add(id);
+    for (const child of element.children) {
+      if (typeof child !== 'string') pending.push(child);
+    }
+  }
+  return ids;
 }
 
 function findRoot(node: HtmlElement): HtmlElement | undefined {
