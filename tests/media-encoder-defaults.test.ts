@@ -237,7 +237,7 @@ describe('resampler and dither (arguments)', () => {
     }
   });
 
-  it('keeps soxr at 28 bits of precision wherever the output is lossless or the caller asks for soxr, and trims it for a lossy encoder', () => {
+  it('keeps soxr at 28 bits of precision wherever the output is lossless or the caller asks for soxr, trims it for a lossy encoder, and leaves libopus to the conversion ffmpeg inserts', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-soxr-precision-'));
     try {
       const withSoxr = path.join(dir, 'ffmpeg-soxr');
@@ -246,10 +246,17 @@ describe('resampler and dither (arguments)', () => {
       const filterOf = (target: string, audio: object, source = 'wav'): string =>
         after(buildFfmpegArguments(SOURCE, `/tmp/out.${target}`, source, target, { disableHwaccel: true, audio } as never, withSoxr), '-filter:a');
 
-      // Lossy encoders: libopus (a 44.1 kHz source is brought to 48 kHz), the AAC and MP3 encoders, Vorbis.
-      for (const target of ['opus', 'aac', 'm4a', 'mp3', 'ogg', 'weba']) {
+      // Lossy encoders other than libopus: the AAC and MP3 encoders, Vorbis.
+      for (const target of ['aac', 'm4a', 'mp3', 'ogg']) {
         expect(filterOf(target, { sampleRate: 48000 }), target).toBe('aresample=48000:resampler=soxr:precision=16');
       }
+      // libopus (a 44.1 kHz source is brought to 48 kHz) gets no filter of ours: ffmpeg's own conversion feeds it what the reference command feeds it.
+      for (const target of ['opus', 'weba']) {
+        const args = buildFfmpegArguments(SOURCE, `/tmp/out.${target}`, 'wav', target, { disableHwaccel: true, audio: { sampleRate: 48000 } } as never, withSoxr);
+        expect(args, target).not.toContain('-filter:a');
+        expect(after(args, '-ar'), target).toBe('48000');
+      }
+      expect(filterOf('webm', { sampleRate: 48000 }, 'mp4')).toBe('aresample=async=1:first_pts=0');
       // Lossless and PCM outputs keep the full precision, as does an explicit request for soxr.
       for (const target of ['flac', 'wav', 'aiff', 'alac']) {
         expect(filterOf(target, { sampleRate: 48000 }), target).toContain('resampler=soxr:precision=28');
