@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  EXTRA_PASS_RATIO_MARGIN,
   expectLinearScaling,
   expectNoHangOnInput,
   expectNoSlowerThanReference,
@@ -194,8 +193,10 @@ describe('extra passes on a loaded runner', () => {
   const SMALL_COST_MS = 10;
   const LINEAR_COST_MS = SMALL_COST_MS * SCALING_FACTOR;
   const QUADRATIC_COST_MS = SMALL_COST_MS * SCALING_FACTOR * SCALING_FACTOR;
-  /** Linear work slowed 2.5x reads as 10x: over the 8x bound, inside the margin that earns extra passes. */
+  /** Linear work slowed 2.5x reads as 10x: over the 8x bound. */
   const LOADED_LINEAR_COST_MS = LINEAR_COST_MS * 2.5;
+  /** Linear work slowed 3.3x reads as 13.2x, as the table-of-contents case of the MOBI reader did on a loaded runner. */
+  const FAR_OVER_LINEAR_COST_MS = LINEAR_COST_MS * 3.3;
   /** The warm-up run and the first SCALING_PASSES passes of the large side. */
   const LOADED_LARGE_RUNS = SCALING_PASSES + 1;
   const LINEAR_BOUND = SCALING_FACTOR * LINEAR_RATIO_SLACK;
@@ -252,14 +253,23 @@ describe('extra passes on a loaded runner', () => {
     expect(largeRuns).toBe(MAX_SCALING_PASSES + 1);
   });
 
-  it('refuses quadratic work after the first passes without retrying it', async () => {
+  it('takes more passes when load put a linear run far over its bound, and then accepts it', async () => {
+    const measurement = await measureWith(
+      (run) => (run <= LOADED_LARGE_RUNS ? FAR_OVER_LINEAR_COST_MS : LINEAR_COST_MS),
+      LINEAR_BOUND
+    );
+    expect(measurement.ratio).toBeCloseTo(SCALING_FACTOR, 10);
+  });
+
+  it('refuses quadratic work on every pass, however many passes it takes', async () => {
     let largeRuns = 0;
     const measurement = await measureWith(() => {
       largeRuns++;
       return QUADRATIC_COST_MS;
     }, LINEAR_BOUND);
-    expect(measurement.ratio).toBeGreaterThan(LINEAR_BOUND * EXTRA_PASS_RATIO_MARGIN);
-    expect(largeRuns).toBe(SCALING_PASSES + 1);
+    expect(measurement.ratio).toBeCloseTo(SCALING_FACTOR * SCALING_FACTOR, 10);
+    expect(measurement.ratio).toBeGreaterThan(LINEAR_BOUND);
+    expect(largeRuns).toBe(MAX_SCALING_PASSES + 1);
   });
 });
 
