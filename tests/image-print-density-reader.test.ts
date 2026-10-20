@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PRINT_DENSITY, jfifDensity, pageSizePoints, storedDensity, uprightDensity, withinPdfPageLimit } from '../src/lib/conversions/image-print-density';
+import { DEFAULT_PRINT_DENSITY, jfifDensity, pageSizePoints, storedDensity, uprightDensity, withinPageLimit } from '../src/lib/conversions/image-print-density';
 
 /**
  * The header reader of the resolution a picture states, on bytes laid out by hand from the format definitions (TIFF 6.0 section 2
@@ -233,7 +233,7 @@ describe('the page that follows from a density', () => {
   });
 
   it('is scaled evenly to 14,400 points on its longer side and left as it is below that', () => {
-    expect(withinPdfPageLimit({ width: 28_800, height: 14_400 })).toEqual({ width: 14_400, height: 7_200 });
-    expect(withinPdfPageLimit({ width: 600, height: 800 })).toEqual({ width: 600, height: 800 });
+    expect(withinPageLimit({ width: 28_800, height: 14_400 })).toEqual({ width: 14_400, height: 7_200 });
+    expect(withinPageLimit({ width: 600, height: 800 })).toEqual({ width: 600, height: 800 });
   });
 });

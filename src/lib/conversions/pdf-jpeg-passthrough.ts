@@ -11,7 +11,7 @@ import {
 } from 'pdf-lib';
 import { ConversionFailedError } from '../types';
 import { assertInputPixels } from './image-input-limits';
-import { DEFAULT_PRINT_DENSITY, jfifDensity, tiffBlockDensity, withinPdfPageLimit, type PrintDensity } from './image-print-density';
+import { DEFAULT_PRINT_DENSITY, jfifDensity, tiffBlockDensity, withinPageLimit, type PrintDensity } from './image-print-density';
 
 /**
  * JPEG into PDF without re-encoding: the file's bytes become the stream of an image XObject with
@@ -258,7 +258,7 @@ export async function buildJpegPdf(data: Buffer, plan: JpegPdfPlan, options: Jpe
   const image: PDFRef = doc.context.register(doc.context.stream(data, dictionary as Parameters<typeof doc.context.stream>[1]));
 
   // Readers handle pages up to 14400 points (200 inches) a side; a larger picture is scaled down to fit.
-  const picture = withinPdfPageLimit(pictureSizePoints(plan));
+  const picture = withinPageLimit(pictureSizePoints(plan));
   let page = { width: picture.width, height: picture.height };
   if (options.orientation === 'landscape' && page.width < page.height) page = { width: page.height, height: page.width };
   if (options.orientation === 'portrait' && page.width > page.height) page = { width: page.height, height: page.width };

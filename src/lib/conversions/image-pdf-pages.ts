@@ -1,6 +1,6 @@
 import PDFDocument from 'pdfkit';
 import type { ConversionOptions } from '../types';
-import { pageSizePoints, withinPdfPageLimit, type PageSize, type PrintDensity } from './image-print-density';
+import { pageSizePoints, withinPageLimit, type PageSize, type PrintDensity } from './image-print-density';
 
 /**
  * A PDF with one picture to the page. A page is the picture at its stored print size (pixels x 72 / dpi on each axis, see
@@ -24,7 +24,7 @@ interface PagePlacement {
 }
 
 function placementOf(image: PdfPageImage, orientation: ConversionOptions['orientation']): PagePlacement {
-  const size = withinPdfPageLimit(pageSizePoints(image.width, image.height, image.density));
+  const size = withinPageLimit(pageSizePoints(image.width, image.height, image.density));
   const isLandscape = orientation === 'landscape' || (size.width > size.height && !orientation);
   // The size is already [width, height] in the final orientation, so no layout swap is applied.
   const page = isLandscape ? { width: Math.max(size.width, size.height), height: Math.min(size.width, size.height) } : size;

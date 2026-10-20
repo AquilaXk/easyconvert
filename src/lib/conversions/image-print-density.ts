@@ -36,8 +36,8 @@ export interface PageSize {
 }
 
 export const POINTS_PER_INCH = 72;
-/** Largest page side the common readers accept (ISO 32000-1 Annex C.2: 14400 units). */
-export const PDF_MAX_PAGE_POINTS = 14_400;
+/** Largest page side the common PDF readers accept (ISO 32000-1 Annex C.2: 14400 units); PostScript and EPS pages are held to it too. */
+export const MAX_PAGE_POINTS = 14_400;
 export const DEFAULT_PRINT_DENSITY: PrintDensity = { x: POINTS_PER_INCH, y: POINTS_PER_INCH };
 
 const CM_PER_INCH = 2.54;
@@ -226,8 +226,8 @@ export function pageSizePoints(width: number, height: number, density: PrintDens
   return { width: (width * POINTS_PER_INCH) / density.x, height: (height * POINTS_PER_INCH) / density.y };
 }
 
-/** `size` scaled evenly so that no side is over what the common PDF readers accept (a smaller page is left as it is). */
-export function withinPdfPageLimit(size: PageSize): PageSize {
-  const shrink = Math.min(1, PDF_MAX_PAGE_POINTS / Math.max(size.width, size.height));
+/** `size` scaled evenly so that no side is over what the common PDF readers accept, for a PDF, PostScript or EPS page alike (a smaller page is left as it is). */
+export function withinPageLimit(size: PageSize): PageSize {
+  const shrink = Math.min(1, MAX_PAGE_POINTS / Math.max(size.width, size.height));
   return { width: size.width * shrink, height: size.height * shrink };
 }

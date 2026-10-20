@@ -1,7 +1,7 @@
 import { promisify } from 'node:util';
 import { deflate } from 'node:zlib';
 import { ConversionFailedError } from '../types';
-import { DEFAULT_PRINT_DENSITY, pageSizePoints, type PrintDensity } from './image-print-density';
+import { DEFAULT_PRINT_DENSITY, pageSizePoints, withinPageLimit, type PrintDensity } from './image-print-density';
 
 /**
  * PostScript (and EPS) writer for a raster picture. A page is one picture at its stored print size, as the PDF writer sizes its
@@ -84,14 +84,14 @@ const boxPoints = (points: number): number => Math.ceil(Number(points.toFixed(PO
 
 /**
  * One picture of RGB samples as a single-page PostScript document, or as an EPS. The page is the picture at `density`, in points; the
- * samples are the picture's own, drawn over the whole page.
+ * samples are the picture's own, drawn over the whole page. A page that would be over 14,400 points a side is scaled evenly to that.
  */
 export async function encodePostscript(rgb: Buffer, width: number, height: number, isEps: boolean, density: PrintDensity = DEFAULT_PRINT_DENSITY): Promise<Buffer> {
   if (rgb.length !== width * height * RGB_CHANNELS) {
     throw new ConversionFailedError(`The picture holds ${rgb.length} sample bytes, not the ${width * height * RGB_CHANNELS} of ${width} x ${height} pixels`);
   }
   const samples = encodeAscii85(await deflateAsync(rgb));
-  const page = pageSizePoints(width, height, density);
+  const page = withinPageLimit(pageSizePoints(width, height, density));
   const [pageWidth, pageHeight] = [pointsText(page.width), pointsText(page.height)];
   const [boxWidth, boxHeight] = [boxPoints(page.width), boxPoints(page.height)];
   const setup = isEps ? '' : `${PAGE_OPEN}%%PageBoundingBox: 0 0 ${boxWidth} ${boxHeight}\n<< /PageSize [${pageWidth} ${pageHeight}] >> setpagedevice\n`;

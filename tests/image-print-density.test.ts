@@ -386,6 +386,27 @@ describe('the page of a picture follows its stored resolution', () => {
   );
 });
 
+describe('a density that would make a page longer than the readers accept', () => {
+  const LOW_DENSITY_DPI = 0.1;
+
+  for (const target of ['ps', 'eps'] as const) {
+    oracleTest(
+      `a ${LOW_DENSITY_DPI} dpi TIFF is a page of at most 14,400 points to ${target}, scaled evenly`,
+      [...TOOLS],
+      async () => {
+        const bytes = runConvert(['-size', '2000x1000', 'gradient:red-blue', '-depth', '8', '-units', INCH, '-density', String(LOW_DENSITY_DPI), 'tif:-']);
+        const file = write('low-density.tif', bytes);
+        expect(execFileSync(requireOracleTool('tiffinfo'), [file], { encoding: 'utf-8' })).toContain(`Resolution: ${LOW_DENSITY_DPI}, ${LOW_DENSITY_DPI} pixels/inch`);
+        const { sizes, output } = await pageSizesOf(bytes, 'tif', target);
+        expectBoxes(sizes, [[MAX_PDF_SIDE_POINTS, MAX_PDF_SIDE_POINTS / 2]], PAGE_TOLERANCE_POINTS);
+        const box = /^%%BoundingBox: 0 0 (\d+) (\d+)$/m.exec(output.toString('latin1'));
+        expect([Number(box?.[1]), Number(box?.[2])]).toEqual([MAX_PDF_SIDE_POINTS, MAX_PDF_SIDE_POINTS / 2]);
+      },
+      CONVERSION_TIMEOUT_MS
+    );
+  }
+});
+
 describe('each page of a multi-page source follows its own resolution', () => {
   /** Two pages, 800 x 400 pixels at 200 dpi and 400 x 800 pixels at 100 x 50 dpi. */
   function twoDensities(): Buffer {
