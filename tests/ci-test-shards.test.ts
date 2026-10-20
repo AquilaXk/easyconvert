@@ -181,7 +181,25 @@ describe('the duration table', () => {
         { name: path.join(ROOT, 'tests', 'unfinished.test.ts') },
       ],
     };
-    const merged = mergeReports({ 'tests/kept.test.ts': 4, 'tests/x.test.ts': 99 }, [report]);
+    const merged = mergeReports({ 'tests/kept.test.ts': 4, 'tests/x.test.ts': 99 }, [report], ['tests/x.test.ts', 'tests/unfinished.test.ts']);
     expect(merged).toEqual({ 'tests/kept.test.ts': 4, 'tests/x.test.ts': 2.5 });
+  });
+
+  it('reads the reports of the CI runner, whose checkout lies at another path than this one', () => {
+    const runnerRoot = '/home/runner/work/easyconvert/easyconvert';
+    const report = {
+      testResults: [
+        { name: `${runnerRoot}/tests/x.test.ts`, startTime: 1_000, endTime: 3_450 },
+        { name: `${runnerRoot}/tests/nested/y.test.ts`, startTime: 0, endTime: 1_200 },
+        { name: `${runnerRoot}/tests/gone.test.ts`, startTime: 0, endTime: 9_000 },
+      ],
+    };
+    const merged = mergeReports({ 'tests/x.test.ts': 99 }, [report], ['tests/x.test.ts', 'tests/nested/y.test.ts']);
+    expect(merged).toEqual({ 'tests/nested/y.test.ts': 1.2, 'tests/x.test.ts': 2.5 });
+  });
+
+  it('refuses an update in which no report names a known test file, rather than leaving the table as it was', () => {
+    const report = { testResults: [{ name: '/elsewhere/src/a.ts', startTime: 0, endTime: 1_000 }] };
+    expect(() => mergeReports({}, [report], ['tests/x.test.ts'])).toThrow(ShardPlanError);
   });
 });
