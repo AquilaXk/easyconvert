@@ -163,6 +163,47 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
         z.writestr('f%05d.txt' % i, 'x')
 `;
 
+const PY_MANY_ENTRIES_ZIPCRYPTO_ZIP = `
+import struct, sys, zlib
+out, count, password = sys.argv[1], int(sys.argv[2]), sys.argv[3].encode()
+# The traditional ZIP cipher (PKWARE APPNOTE 6.1), written out so that no file has to be staged for each entry.
+TABLE = []
+for i in range(256):
+    c = i
+    for _ in range(8):
+        c = (c >> 1) ^ 0xEDB88320 if c & 1 else c >> 1
+    TABLE.append(c)
+def update(keys, byte):
+    keys[0] = (keys[0] >> 8) ^ TABLE[(keys[0] ^ byte) & 0xFF]
+    keys[1] = ((keys[1] + (keys[0] & 0xFF)) * 134775813 + 1) & 0xFFFFFFFF
+    keys[2] = (keys[2] >> 8) ^ TABLE[(keys[2] ^ (keys[1] >> 24)) & 0xFF]
+keyed = [0x12345678, 0x23456789, 0x34567890]
+for byte in password:
+    update(keyed, byte)
+def encrypt(plain):
+    keys = list(keyed)
+    cipher = bytearray()
+    for byte in plain:
+        t = (keys[2] | 2) & 0xFFFF
+        cipher.append(byte ^ (((t * (t ^ 1)) >> 8) & 0xFF))
+        update(keys, byte)
+    return bytes(cipher)
+DOS_DATE = (1 << 5) | 1
+CONTENT = b'x'
+CRC = zlib.crc32(CONTENT)
+# Every encrypted entry opens with 11 fixed bytes and a check byte (the high byte of the CRC).
+PAYLOAD = encrypt(b'ZipCryptoHd' + bytes([CRC >> 24]) + CONTENT)
+body = bytearray()
+directory = bytearray()
+for i in range(count):
+    name = ('f%05d.txt' % i).encode()
+    directory += struct.pack('<I6H3I5H2I', 0x02014B50, 0x031E, 20, 1, 0, 0, DOS_DATE, CRC, len(PAYLOAD), len(CONTENT), len(name), 0, 0, 0, 0, 0o100644 << 16, len(body)) + name
+    body += struct.pack('<I5H3I2H', 0x04034B50, 20, 1, 0, 0, DOS_DATE, CRC, len(PAYLOAD), len(CONTENT), len(name), 0) + name + PAYLOAD
+end = struct.pack('<I4H2IH', 0x06054B50, 0, 0, count, count, len(directory), len(body), 0)
+with open(out, 'wb') as f:
+    f.write(body + directory + end)
+`;
+
 const PY_COMPRESS_FILE = `
 import sys, gzip, bz2, lzma
 out, data = sys.argv[1], sys.argv[2].encode()
@@ -239,6 +280,16 @@ export function buildManyEntriesZip(outPath: string, count: number): string {
 }
 
 /**
+ * A ZIP of `count` one-byte files named f00000.txt, f00001.txt, ..., each encrypted with ZipCrypto under `password`. It
+ * is written in one pass: staging a file per entry for 7-Zip to pack costs tens of thousands of file creations and
+ * removals, which a loaded runner needs longer than a test hook may take.
+ */
+export function buildManyEntriesZipCryptoZip(outPath: string, count: number, password: string): string {
+  runPython(PY_MANY_ENTRIES_ZIPCRYPTO_ZIP, [outPath, String(count), password]);
+  return outPath;
+}
+
+/**
  * A 7z archive built by 7-Zip itself from a staged directory. The staged files are created with
  * `ln -s` semantics (fs.symlinkSync) and stored as links through `-snl`.
  */
@@ -270,8 +321,6 @@ export interface EncryptedZipSpec {
   zeroFileMib?: number;
   /** Extra one-byte files named f00000.txt, f00001.txt, ... */
   manyFiles?: number;
-  /** ZipCrypto is far cheaper per entry than AES, which matters for tens of thousands of entries. */
-  cipher?: 'AES256' | 'ZipCrypto';
 }
 
 /** An AES-256 encrypted ZIP built by 7-Zip from a staged directory. */
@@ -298,7 +347,7 @@ export function buildEncryptedZip(outPath: string, stageDir: string, spec: Encry
     members.push(name);
   }
   run7z(
-    ['a', '-tzip', '-snl', '-mx=1', `-mem=${spec.cipher ?? 'AES256'}`, `${AES_PASSWORD_SWITCH_PREFIX}${spec.password}`, '-y', outPath, ...members],
+    ['a', '-tzip', '-snl', '-mx=1', '-mem=AES256', `${AES_PASSWORD_SWITCH_PREFIX}${spec.password}`, '-y', outPath, ...members],
     stageDir
   );
   return outPath;
@@ -329,6 +378,15 @@ export function patchZipEntryName(zipPath: string, placeholder: string, replacem
     throw new Error(`Placeholder ${placeholder} not found in ${zipPath}`);
   }
   fs.writeFileSync(zipPath, original);
+}
+
+/** Decrypts one entry with the real 7-Zip CLI and returns its content as text (independent oracle). */
+export function read7zEntryText(archivePath: string, entryName: string, password: string): string {
+  return execFileSync(requireTool('7z'), ['e', '-so', '-y', `${AES_PASSWORD_SWITCH_PREFIX}${password}`, archivePath, entryName], {
+    encoding: 'utf-8',
+    stdio: 'pipe',
+    timeout: BUILD_TIMEOUT_MS,
+  });
 }
 
 /** Lists an archive with the real 7-Zip CLI and returns each entry's path (independent oracle). */
