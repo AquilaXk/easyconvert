@@ -114,21 +114,34 @@ function glyphCountOf(bytes: Bytes): number | null {
   return bytes.u16(maxp.start + MAXP_GLYPH_COUNT_OFFSET);
 }
 
-function readFormat4(bytes: Bytes, at: number, table: Span, mapping: Mapping): boolean {
+/** Whether the format 4 subtable at `at` is whole: its arrays fit, its segments rise, and every glyph array a segment names lies in the table. */
+function fitsFormat4(bytes: Bytes, at: number, table: Span): boolean {
   if (!bytes.fits(at, FORMAT4_HEADER_BYTES, table.start, table.end)) return false;
   const segments = bytes.u16(at + 6) / 2;
   const ends = at + FORMAT4_HEADER_BYTES;
-  const starts = ends + segments * 2 + 2;
-  const deltas = starts + segments * 2;
-  const rangeOffsets = deltas + segments * 2;
   if (!Number.isInteger(segments) || segments === 0 || !bytes.fits(ends, segments * 8 + 2, table.start, table.end)) return false;
+  const starts = ends + segments * 2 + 2;
+  const rangeOffsets = starts + segments * 4;
   let previousEnd = -1;
   for (let segment = 0; segment < segments; segment++) {
     const start = bytes.u16(starts + segment * 2);
     const end = bytes.u16(ends + segment * 2);
     if (start > end || start <= previousEnd) return false;
     previousEnd = end;
+    const rangeOffsetAt = rangeOffsets + segment * 2;
+    const rangeOffset = bytes.u16(rangeOffsetAt);
+    // Glyph ids rise with the code, so the last one is the furthest.
+    if (rangeOffset !== 0 && !bytes.fits(rangeOffsetAt + rangeOffset + (end - start) * 2, 2, table.start, table.end)) return false;
   }
+  return true;
+}
+
+function fillFormat4(bytes: Bytes, at: number, mapping: Mapping): void {
+  const segments = bytes.u16(at + 6) / 2;
+  const ends = at + FORMAT4_HEADER_BYTES;
+  const starts = ends + segments * 2 + 2;
+  const deltas = starts + segments * 2;
+  const rangeOffsets = deltas + segments * 2;
   for (let segment = 0; segment < segments; segment++) {
     const start = bytes.u16(starts + segment * 2);
     const end = bytes.u16(ends + segment * 2);
@@ -140,25 +153,26 @@ function readFormat4(bytes: Bytes, at: number, table: Span, mapping: Mapping): b
         mapping.add(code, (code + delta) & 0xffff);
         continue;
       }
-      const glyphAt = rangeOffsetAt + rangeOffset + (code - start) * 2;
-      if (!bytes.fits(glyphAt, 2, table.start, table.end)) return false;
-      const glyph = bytes.u16(glyphAt);
+      const glyph = bytes.u16(rangeOffsetAt + rangeOffset + (code - start) * 2);
       if (glyph !== 0) mapping.add(code, (glyph + delta) & 0xffff);
     }
   }
-  return true;
 }
 
-function readFormat6(bytes: Bytes, at: number, table: Span, mapping: Mapping): boolean {
+function fitsFormat6(bytes: Bytes, at: number, table: Span): boolean {
   if (!bytes.fits(at, FORMAT6_HEADER_BYTES, table.start, table.end)) return false;
   const first = bytes.u16(at + 6);
   const count = bytes.u16(at + 8);
-  if (first + count > BMP_SIZE || !bytes.fits(at + FORMAT6_HEADER_BYTES, count * 2, table.start, table.end)) return false;
-  for (let index = 0; index < count; index++) mapping.add(first + index, bytes.u16(at + FORMAT6_HEADER_BYTES + index * 2));
-  return true;
+  return first + count <= BMP_SIZE && bytes.fits(at + FORMAT6_HEADER_BYTES, count * 2, table.start, table.end);
 }
 
-function readFormat12(bytes: Bytes, at: number, table: Span, mapping: Mapping): boolean {
+function fillFormat6(bytes: Bytes, at: number, mapping: Mapping): void {
+  const first = bytes.u16(at + 6);
+  const count = bytes.u16(at + 8);
+  for (let index = 0; index < count; index++) mapping.add(first + index, bytes.u16(at + FORMAT6_HEADER_BYTES + index * 2));
+}
+
+function fitsFormat12(bytes: Bytes, at: number, table: Span): boolean {
   if (!bytes.fits(at, FORMAT12_HEADER_BYTES, table.start, table.end)) return false;
   const groups = bytes.u32(at + 12);
   const first = at + FORMAT12_HEADER_BYTES;
@@ -170,6 +184,12 @@ function readFormat12(bytes: Bytes, at: number, table: Span, mapping: Mapping): 
     if (start > end || end > MAX_CODE_POINT || start <= previousEnd) return false;
     previousEnd = end;
   }
+  return true;
+}
+
+function fillFormat12(bytes: Bytes, at: number, mapping: Mapping): void {
+  const groups = bytes.u32(at + 12);
+  const first = at + FORMAT12_HEADER_BYTES;
   for (let group = 0; group < groups; group++) {
     const start = bytes.u32(first + group * FORMAT12_GROUP_BYTES);
     const end = bytes.u32(first + group * FORMAT12_GROUP_BYTES + 4);
@@ -178,34 +198,44 @@ function readFormat12(bytes: Bytes, at: number, table: Span, mapping: Mapping): 
     const last = Math.min(end, start + Math.max(0, mapping.glyphCount - 1 - startGlyph));
     for (let code = start; code <= last; code++) mapping.add(code, startGlyph + (code - start));
   }
-  return true;
 }
 
-const SUBTABLE_READERS: Record<number, (bytes: Bytes, at: number, table: Span, mapping: Mapping) => boolean> = {
-  4: readFormat4,
-  6: readFormat6,
-  12: readFormat12,
+interface SubtableReader {
+  /** Whether the subtable at `at` is whole: everything it names lies within the cmap table, in the order the format requires. */
+  fits(bytes: Bytes, at: number, table: Span): boolean;
+  /** Collects the pairs of a subtable that `fits`, without failing. */
+  fill(bytes: Bytes, at: number, mapping: Mapping): void;
+}
+
+const SUBTABLE_READERS: Record<number, SubtableReader> = {
+  4: { fits: fitsFormat4, fill: fillFormat4 },
+  6: { fits: fitsFormat6, fill: fillFormat6 },
+  12: { fits: fitsFormat12, fill: fillFormat12 },
 };
 
 function isUnicodeEncoding(platform: number, encoding: number): boolean {
   return platform === PLATFORM_UNICODE || (platform === PLATFORM_WINDOWS && (encoding === WINDOWS_UNICODE_BMP || encoding === WINDOWS_UNICODE_FULL));
 }
 
-/** Offsets of the Unicode subtables, best format first; null when the encoding records do not fit the table. */
+/**
+ * Offsets of the Unicode subtables to try, best format first: the first subtable the records name for each format. Records
+ * that name the same subtable, or another one of a format already named, add nothing. Null when the encoding records do
+ * not fit the table.
+ */
 function unicodeSubtables(bytes: Bytes, cmap: Span): number[] | null {
   if (!bytes.fits(cmap.start, CMAP_HEADER_BYTES, cmap.start, cmap.end)) return null;
   const records = bytes.u16(cmap.start + 2);
   if (!bytes.fits(cmap.start + CMAP_HEADER_BYTES, records * ENCODING_RECORD_BYTES, cmap.start, cmap.end)) return null;
-  const found: Array<{ at: number; rank: number }> = [];
+  const firstOfFormat = new Map<number, number>();
   for (let index = 0; index < records; index++) {
     const record = cmap.start + CMAP_HEADER_BYTES + index * ENCODING_RECORD_BYTES;
     if (!isUnicodeEncoding(bytes.u16(record), bytes.u16(record + 2))) continue;
     const at = cmap.start + bytes.u32(record + 4);
     if (!bytes.fits(at, 2, cmap.start, cmap.end)) continue;
-    const rank = FORMAT_PREFERENCE.indexOf(bytes.u16(at));
-    if (rank >= 0) found.push({ at, rank });
+    const format = bytes.u16(at);
+    if (FORMAT_PREFERENCE.includes(format) && !firstOfFormat.has(format)) firstOfFormat.set(format, at);
   }
-  return found.sort((a, b) => a.rank - b.rank).map((subtable) => subtable.at);
+  return FORMAT_PREFERENCE.flatMap((format) => firstOfFormat.get(format) ?? []);
 }
 
 /** The Unicode cmap of the TrueType program `font`, or null when it has none that reads. */
@@ -215,8 +245,11 @@ export function readUnicodeCmap(font: Uint8Array): UnicodeCmap | null {
   const cmap = tableSpan(bytes, 'cmap');
   if (glyphCount === null || glyphCount === 0 || cmap === null) return null;
   for (const at of unicodeSubtables(bytes, cmap) ?? []) {
+    const reader = SUBTABLE_READERS[bytes.u16(at)];
+    if (!reader.fits(bytes, at, cmap)) continue;
     const mapping = new Mapping(glyphCount);
-    if (SUBTABLE_READERS[bytes.u16(at)](bytes, at, cmap, mapping)) return mapping;
+    reader.fill(bytes, at, mapping);
+    return mapping;
   }
   return null;
 }

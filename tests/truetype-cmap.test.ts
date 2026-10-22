@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readUnicodeCmap } from '../src/lib/conversions/truetype-cmap';
+import { FALLBACK_GLYPH, repeatedRecordsFont } from './helpers/hostile-cmap-font';
 
 /**
  * The Unicode cmap of an embedded TrueType program, read from untrusted bytes. The real font is the DejaVu Sans subset of
@@ -181,5 +182,40 @@ describe('hostile font tables', () => {
 
   it('reads nothing from format 12 groups that overlap', () => {
     expect(readUnicodeCmap(sfnt([['maxp', maxp(10)], ['cmap', cmap(format12([[0x41, 0x50, 1], [0x45, 0x46, 2]]), 10)]]))).toBeNull();
+  });
+});
+
+describe('encoding records that repeat one unreadable subtable', () => {
+  const RECORDS = 0xffff;
+  const BOUND_MS = 200;
+
+  it('reads nothing from 65,535 records that name one format 4 subtable only its last segment makes unreadable, within a few milliseconds', () => {
+    const { value, ms } = timed(() => readUnicodeCmap(repeatedRecordsFont(RECORDS)));
+    expect(value).toBeNull();
+    expect(ms).toBeLessThan(BOUND_MS);
+  });
+
+  it('reads the readable subtable behind such records, within a few milliseconds', () => {
+    const { value, ms } = timed(() => readUnicodeCmap(repeatedRecordsFont(RECORDS - 1, true)));
+    expect(String.fromCodePoint(value?.codePointOfGlyph[FALLBACK_GLYPH] ?? 0)).toBe('a');
+    expect(value?.glyphOfBmpCodePoint[0x61]).toBe(FALLBACK_GLYPH);
+    expect(ms).toBeLessThan(BOUND_MS);
+  });
+
+  it('reads a format 4 subtable whose glyph array lies within the table', () => {
+    const subtable = [
+      ...u16(4), ...u16(14 + 2 * 8 + 2 + 4), ...u16(0), ...u16(4), ...u16(0), ...u16(0), ...u16(0),
+      ...u16(0x42), ...u16(0xffff), ...u16(0), ...u16(0x41), ...u16(0xffff), ...u16(0), ...u16(1), ...u16(4), ...u16(0), ...u16(5), ...u16(6),
+    ];
+    const table = readUnicodeCmap(sfnt([['maxp', maxp(10)], ['cmap', cmap(subtable)]]));
+    expect(String.fromCodePoint(table?.codePointOfGlyph[5] ?? 0)).toBe('A');
+  });
+
+  it('reads nothing from a format 4 subtable whose glyph array runs past the table', () => {
+    const subtable = [
+      ...u16(4), ...u16(14 + 2 * 8 + 2), ...u16(0), ...u16(4), ...u16(0), ...u16(0), ...u16(0),
+      ...u16(0x42), ...u16(0xffff), ...u16(0), ...u16(0x41), ...u16(0xffff), ...u16(0), ...u16(1), ...u16(4), ...u16(0),
+    ];
+    expect(readUnicodeCmap(sfnt([['maxp', maxp(10)], ['cmap', cmap(subtable)]]))).toBeNull();
   });
 });
