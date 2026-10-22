@@ -13,7 +13,9 @@ import { requireRealworldSample } from './helpers/realworld-sample';
  *   - a `nowrap` cell followed by a cell that starts with a table: the suite sizes that table by its longest line, and the
  *     cell and the cells after it run past the right edge of the page;
  *   - a table wider than the page (a fixed `width` above 718 px, the width from the left margin to the page edge): its right
- *     part is past the page edge, where nothing is drawn;
+ *     part is past the page edge, where nothing is drawn. A floating table (`align="left"` or `"right"`) is moved left by
+ *     the suite until it ends on the page, so for it the bound is the width of the page (794 px), and a narrower one keeps its
+ *     width: the suite does not split it across pages, and narrowing it cuts more of it off at the foot of the page;
  *   - a `div` or `center` with an `id`: the suite makes a section of it, and a table row that holds a section, or a section
  *     that holds tables, is cut off at the end of the page it starts on.
  * The oracles are parse5 (the words the page holds, and the staged page) and Poppler (`pdftotext -bbox`: the words of the PDF
@@ -156,6 +158,30 @@ describe('a table wider than the page', () => {
       ' width="1e3"',
     ]);
   });
+
+  it('writes a floating table at its own width up to the width of the page, and a wider one at the width of the page', async () => {
+    const tables = [
+      ['left', '765'],
+      ['Right', '794'],
+      [' left ', '795'],
+      ['right', '900'],
+      ['center', '765'],
+    ];
+    const staged = await stageHtmlForNativeEngine(
+      page(tables.map(([align, width]) => `<table align="${align}" width="${width}"><tr><td>x</td></tr></table>`).join(''))
+    );
+    expect([...staged.html.matchAll(/<table align="[^"]*" width="([^"]*)">/g)].map((match) => match[1])).toEqual(['765', '794', '794', '794', '718']);
+  });
+
+  oracleTest(
+    'keeps the words of a floating table wider than the page on the page',
+    TOOLS,
+    async () => {
+      const html = page(`<table width="900" align="left" border="1"><tr><td align="right">${longLine('float')}</td></tr></table>`);
+      expect(losses(html, await toPdf(html))).toEqual(NO_LOSS);
+    },
+    LIBREOFFICE_TIMEOUT_MS
+  );
 });
 
 describe('a division with an id', () => {
@@ -256,4 +282,23 @@ describe('a real page of the public corpus', () => {
       LIBREOFFICE_TIMEOUT_MS
     );
   }
+
+  // 001401: two floating (align="left") tables 765 px wide. The suite moves them left to end on the page, and does not split a
+  // floating table across pages, so written narrower the article column grows taller and loses its last line at the foot of
+  // page 2. The rest of the article is lost either way, past that foot.
+  oracleTest(
+    'govdocs1-001401 keeps the last line of the article of a floating table and every word on the page',
+    TOOLS,
+    async (ctx) => {
+      const id = 'govdocs1-001401.html';
+      const { bytes } = await requireRealworldSample(ctx, id);
+      const words = pdfWordBoxes((await executeWorkerConversion(bytes, 'html', 'pdf', {}, id)).buffer);
+      const lastLine = ['gateway', 'North', 'South'];
+      expect({ missing: lastLine.filter((word) => !words.some((box) => box.text === word)), outsidePage: wordsOutsidePage(words) }).toEqual({
+        missing: [],
+        outsidePage: [],
+      });
+    },
+    LIBREOFFICE_TIMEOUT_MS
+  );
 });
