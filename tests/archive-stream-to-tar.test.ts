@@ -11,6 +11,7 @@ import { jsonRecords, runBytes, zipfText } from './helpers/archive-corpus';
 import { oracleTest } from './helpers/oracle-test';
 import { buildTarWithEntries } from './helpers/hostile-archives';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
+import { isProcessRunning as isRunning } from './helpers/process-state';
 
 /**
  * Converting a compressed tar (or a compressed single file) to tar is stream decompression. A payload that is a tar is
@@ -88,15 +89,6 @@ function tarNames(tar: Buffer, label: string): string[] {
   const file = path.join(workDir, `names-${label}.tar`);
   fs.writeFileSync(file, tar);
   return execFileSync('tar', ['-tf', file], { encoding: 'utf8' }).split('\n').filter((line) => line !== '');
-}
-
-function isRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
-  }
 }
 
 /** Returns when the process no longer exists; it waits on that fact, not on a fixed delay. */

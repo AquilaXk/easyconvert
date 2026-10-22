@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { waitUntilStopped } from './helpers/process-state';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -27,6 +28,7 @@ const NEEDS = 'bash 4 or newer, GNU timeout and sha256sum';
 /** Longest a limit test may take: the sleeping task is cut after 2 s, so anything near its 30 s sleep is a failure. */
 const FAST_FAIL_BUDGET_MS = 15_000;
 const SLEEP_PAST_LIMIT_SECONDS = 31;
+const CHILD_STOP_BOUND_MS = 10_000;
 const MAX_TASK_LIMIT_SECONDS = 600;
 const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'libredwg', 'raw'];
 
@@ -85,18 +87,17 @@ describe('the bound on every setup task', () => {
     expect(outcome.stdout).not.toContain('never reached');
   });
 
-  it.skipIf(skipUnless(NEEDS, canRunSetup))('stops the processes the task started as well, not only the task shell', () => {
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('stops the processes the task started as well, not only the task shell', async () => {
     const pidFile = path.join(scratch(), 'child.pid');
-    const outcome = runSourced(`
+    runSourced(`
       task_slow() { sleep ${SLEEP_PAST_LIMIT_SECONDS} & echo $! > "$PID_FILE"; wait; }
       export -f task_slow
       tasks=(slow)
       task_limit_seconds[slow]=2
       run_tasks > /dev/null
-      if kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then echo CHILD_SURVIVED; fi
     `, { PID_FILE: pidFile });
-    expect(outcome.stdout).not.toContain('CHILD_SURVIVED');
     expect(existsSync(pidFile)).toBe(true);
+    expect(await waitUntilStopped(Number(readFileSync(pidFile, 'utf-8')), CHILD_STOP_BOUND_MS)).toBe(true);
   });
 
   it.skipIf(skipUnless(NEEDS, canRunSetup))('lets the other tasks finish and shows their logs when one task fails', () => {

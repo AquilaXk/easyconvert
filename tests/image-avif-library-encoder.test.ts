@@ -13,6 +13,7 @@ import { injectExifOrientation } from './helpers/exif-orientation';
 import { lineArt16, interface16 } from './helpers/graphic-parity';
 import { runConvert } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
+import { isProcessRunning as isRunning } from './helpers/process-state';
 
 /**
  * AVIF through the reference AVIF library's command-line encoder. Oracles: `avifdec --info` (bit depth, chroma
@@ -145,16 +146,6 @@ async function waitFor(condition: () => boolean, timeoutMs = 10_000): Promise<vo
     if (Date.now() > deadline) throw new Error('condition not met in time');
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-}
-
-function isRunning(pid: number): boolean {
-  let running = true;
-  try {
-    process.kill(pid, 0);
-  } catch (err) {
-    running = (err as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
-  return running;
 }
 
 /** True once no process has `pid` (polled for up to `graceMs`). */

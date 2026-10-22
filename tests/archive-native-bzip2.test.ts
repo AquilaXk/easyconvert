@@ -11,6 +11,7 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { buildManyEntriesTar, buildTarWithEntries, createHostileWorkspace, type HostileWorkspace } from './helpers/hostile-archives';
 import { oracleTest } from './helpers/oracle-test';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
+import { isProcessRunning } from './helpers/process-state';
 
 /**
  * tar to tar.bz2 is written by `lbzip2` run as one sandboxed process on the vetted tar, not by 7-Zip. The outputs are read
@@ -334,16 +335,10 @@ describe('tar to tar.bz2 by lbzip2', () => {
       expect(Date.now() - aborted).toBeLessThan(PROCESS_EXIT_WAIT_MS);
       const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
       const deadline = Date.now() + PROCESS_EXIT_WAIT_MS;
-      let alive = true;
-      while (alive && Date.now() < deadline) {
-        try {
-          process.kill(pid, 0);
-          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-        } catch {
-          alive = false;
-        }
+      while (isProcessRunning(pid) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
       }
-      expect(alive, 'the lbzip2 process was left running').toBe(false);
+      expect(isProcessRunning(pid), 'the lbzip2 process was left running').toBe(false);
     },
     TEST_TIMEOUT_MS
   );
