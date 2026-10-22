@@ -4,13 +4,14 @@
  * result or the message and kind of the typed error. Jobs run one at a time on a thread.
  *
  * A thread started as the replacement of one about to be retired is told so (`workerData.warmUp`): it reads the fixed
- * page of pdf-text-warmup.ts once, which loads pdfjs and its font data, then reports `{ ready: true }`; the host gives
- * it user documents only after that.
+ * page of pdf-text-warmup.ts once, which loads pdfjs and its font data, then loads the image reader when `workerData.images`
+ * (the page has no image to load it for) and reports `{ ready: true }`; the host gives it user documents only after that.
  */
 import { parentPort, workerData } from 'node:worker_threads';
 import { ConversionFailedError } from '../types';
 import { analyzePdfPagesInProcess } from './pdf-text-geometry';
 import { pdfTextFailureKindOf, type PdfTextJob } from './pdf-text-types';
+import { preloadImageReader } from './pdf-text-images';
 import { warmupPdf } from './pdf-text-warmup';
 
 /** The job the host sends for a text conversion; the warm-up runs the same code. */
@@ -37,9 +38,11 @@ parentPort?.on('message', (request: Request) => {
   void run(request);
 });
 
-async function warmUp(): Promise<void> {
+async function warmUp(images: boolean): Promise<void> {
   await analyzePdfPagesInProcess(Buffer.from(warmupPdf()), WARMUP_JOB);
+  if (images) await preloadImageReader();
   parentPort?.postMessage({ ready: true });
 }
 
-if ((workerData as { warmUp?: boolean } | null)?.warmUp === true) void warmUp();
+const start = workerData as { warmUp?: boolean; images?: boolean } | null;
+if (start?.warmUp === true) void warmUp(start.images === true);

@@ -75,7 +75,10 @@ describe('text threads on real worker threads', () => {
     for (let read = 1; read < LAST_DOCUMENT_OF_THE_FIRST_THREAD && started.workers[0].worker.threadId !== -1; read++) {
       expect(textOf((await runPdfTextJobInThread(pdf, TEXT_JOB)).content)).toBe(first);
     }
-    expect(started.workers.map((entry) => entry.workerData)).toEqual([{ warmUp: false }, { warmUp: true }]);
+    expect(started.workers.map((entry) => entry.workerData)).toEqual([
+      { warmUp: false, images: false },
+      { warmUp: true, images: false },
+    ]);
     await vi.waitFor(() => expect(started.workers[0].worker.threadId).toBe(-1));
     expect(started.workers[1].worker.threadId).toBeGreaterThan(0);
   });

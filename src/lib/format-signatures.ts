@@ -266,11 +266,37 @@ const VISIO_STREAM_NAME: readonly number[] = [...'VisioDocument'].flatMap((char)
 /** CorelDRAW (libcdr `CDRDocument::isSupported`): a RIFF file whose form type starts with CDR, or an X4 and later ZIP package holding one of these entries. */
 const CDR_RIFF_FORM_PREFIXES: ReadonlySet<string> = new Set(['CDR', 'cdr']);
 const CDR_PACKAGE_ENTRIES: ReadonlySet<string> = new Set(['content/riffData.cdr', 'content/root.dat']);
-/** The folders a CorelDRAW package keeps its parts in: the first entry of one that continues past the bytes read. */
+/** The folders a CorelDRAW package keeps its parts in: the first entry of one that continues past the entries or bytes read. */
 const CDR_PACKAGE_FOLDERS = ['content/', 'metadata/', 'color/'];
 const ZIP_LOCAL_HEADER = 0x04034b50;
 const ZIP_LOCAL_HEADER_BYTES = 30;
 const ZIP_DATA_DESCRIPTOR_FLAG = 0x08;
+/** The data descriptor (APPNOTE 4.3.9) with the signature that writers have adopted: signature, crc-32, compressed size, uncompressed size. */
+const ZIP_DATA_DESCRIPTOR = 0x08074b50;
+const ZIP_DATA_DESCRIPTOR_BYTES = 16;
+const ZIP_DATA_DESCRIPTOR_SIZE_OFFSET = 8;
+/** `P`, the first byte of every ZIP record signature. */
+const ZIP_SIGNATURE_FIRST_BYTE = 0x50;
+
+/** How far a walk of a ZIP's local file headers reads: at most `entries` headers, inside the first `bytes` bytes. */
+interface ZipWalkLimits {
+  entries: number;
+  bytes: number;
+}
+/**
+ * The type check reads the first entries of the header window: the packages put their marking entries first (a handful of
+ * headers), and this keeps a ZIP of thousands of entries as cheap as one of a few.
+ */
+const ZIP_SNIFF_LIMITS: ZipWalkLimits = { entries: 64, bytes: HEADER_WINDOW_BYTES };
+/**
+ * The CorelDRAW check reads the first 1024 entries inside the first 16 MiB. A package keeps one data entry per page before
+ * `content/root.dat` (in the 14-entry sample it is the 6th, after its single page), so a document of a few hundred pages puts the
+ * marking entry past the 64 entries of the type check. 1024 leaves room for such a document and ends the walk of a ZIP of tens
+ * of thousands of entries after that many headers. The 16 MiB bound keeps the one scan that costs by the byte, for the data
+ * descriptor of an entry it sizes, to about 45 ms (141 ms for 64 MiB); a package whose marking entry lies beyond it is read as a
+ * walk that did not end.
+ */
+const CDR_PACKAGE_LIMITS: ZipWalkLimits = { entries: 1024, bytes: 16 * 1024 * 1024 };
 
 /** A view of the bytes for little- and big-endian reads; the registry runs in the browser and the edge engines, so no Node Buffer. */
 function dataView(buf: Uint8Array): DataView {
@@ -311,27 +337,129 @@ function isVisio(buf: Uint8Array): boolean {
   return includesBytes(buf, VISIO_STREAM_NAME) || buf.length === HEADER_WINDOW_BYTES;
 }
 
-/** The entries a ZIP names in its local file headers, in order, until the bytes end, a header cannot be skipped or the headers end. */
-function zipLocalEntryNames(buf: Uint8Array): { names: string[]; complete: boolean } {
-  const view = dataView(buf);
-  const names: string[] = [];
+/** One entry of a ZIP, as its local file header (APPNOTE 4.3.7) gives it. */
+interface ZipLocalEntry {
+  name: string;
+  /** The compression method; 0 is stored. */
+  method: number;
+  /** Where the entry's data starts. */
+  dataOffset: number;
+  /** The size of the data; undefined when a data descriptor (bit 3) sizes it and no descriptor lies inside the bytes. */
+  storedLength: number | undefined;
+}
+
+/**
+ * Where the data descriptor of the entry whose data starts at `dataOffset` begins (APPNOTE 4.3.9): a descriptor with the
+ * signature whose compressed size is the distance from the start of the data. Bytes of the data that spell the signature are
+ * passed over unless their next fields also say that size. Undefined when no such descriptor lies inside `head`.
+ */
+function findDataDescriptor(head: Uint8Array, view: DataView, dataOffset: number): number | undefined {
+  for (let at = dataOffset; at + ZIP_DATA_DESCRIPTOR_BYTES <= head.length; at++) {
+    if (head[at] === ZIP_SIGNATURE_FIRST_BYTE && view.getUint32(at, true) === ZIP_DATA_DESCRIPTOR && view.getUint32(at + ZIP_DATA_DESCRIPTOR_SIZE_OFFSET, true) === at - dataOffset) return at;
+  }
+  return undefined;
+}
+
+/**
+ * The entries a ZIP names in its local file headers, in order, from the start of the bytes. The walk reads at most the first
+ * `limits.entries` entries inside the first `limits.bytes` bytes, so that its cost does not grow with the file, and stops where the
+ * headers end, where a header cannot be skipped (its data is sized by a descriptor that is not found, or runs past the bytes) or
+ * where the bytes end. `complete` is true only when the entries are all of them: the next record is not a local file header.
+ */
+function readZipLocalEntries(buf: Uint8Array, limits: ZipWalkLimits): { entries: ZipLocalEntry[]; complete: boolean } {
+  const head = buf.subarray(0, Math.min(buf.length, limits.bytes));
+  const view = dataView(head);
+  const entries: ZipLocalEntry[] = [];
   let offset = 0;
-  while (offset + ZIP_LOCAL_HEADER_BYTES <= buf.length && view.getUint32(offset, true) === ZIP_LOCAL_HEADER) {
+  while (offset + ZIP_LOCAL_HEADER_BYTES <= head.length && view.getUint32(offset, true) === ZIP_LOCAL_HEADER) {
+    if (entries.length === limits.entries) return { entries, complete: false };
     const nameLength = view.getUint16(offset + 26, true);
     const extraLength = view.getUint16(offset + 28, true);
-    const storedLength = view.getUint32(offset + 18, true);
-    if (offset + ZIP_LOCAL_HEADER_BYTES + nameLength > buf.length) return { names, complete: false };
-    names.push(UTF8.decode(buf.subarray(offset + ZIP_LOCAL_HEADER_BYTES, offset + ZIP_LOCAL_HEADER_BYTES + nameLength)));
-    const sizeKnown = (view.getUint16(offset + 6, true) & ZIP_DATA_DESCRIPTOR_FLAG) === 0 || storedLength > 0;
-    if (!sizeKnown) return { names, complete: false };
-    offset += ZIP_LOCAL_HEADER_BYTES + nameLength + extraLength + storedLength;
+    const nameOffset = offset + ZIP_LOCAL_HEADER_BYTES;
+    if (nameOffset + nameLength > head.length) return { entries, complete: false };
+    const dataOffset = nameOffset + nameLength + extraLength;
+    const sizedByDescriptor = (view.getUint16(offset + 6, true) & ZIP_DATA_DESCRIPTOR_FLAG) !== 0;
+    let storedLength: number | undefined = view.getUint32(offset + 18, true);
+    let trailerLength = 0;
+    if (sizedByDescriptor) {
+      const descriptorAt = findDataDescriptor(head, view, dataOffset);
+      storedLength = descriptorAt === undefined ? undefined : descriptorAt - dataOffset;
+      trailerLength = ZIP_DATA_DESCRIPTOR_BYTES;
+    }
+    entries.push({ name: UTF8.decode(head.subarray(nameOffset, nameOffset + nameLength)), method: view.getUint16(offset + 8, true), dataOffset, storedLength });
+    if (storedLength === undefined) return { entries, complete: false };
+    offset = dataOffset + storedLength + trailerLength;
   }
-  return { names, complete: offset + ZIP_LOCAL_HEADER_BYTES <= buf.length };
+  return { entries, complete: offset + ZIP_LOCAL_HEADER_BYTES <= head.length };
+}
+
+const ZIP_MIME = 'application/zip';
+const HWPX_MIME = 'application/hwp+zip';
+const MIMETYPE_ENTRY = 'mimetype';
+/** The longest media type read from the `mimetype` entry; the registered ones are well under it. */
+const MAX_MEDIA_TYPE_BYTES = 256;
+
+/**
+ * The packages whose first entry `mimetype` holds their media type (EPUB OCF 3.3 section 4.3.3; OpenDocument 1.3 part 2 section
+ * 3.3; HWPX has the same layout). A media type is a family's when it equals it or continues with `-`, the way the OpenDocument
+ * templates, masters and web variants do (`text-template`).
+ */
+const MEDIA_TYPE_PACKAGES: readonly string[] = [
+  'application/epub+zip',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+  HWPX_MIME,
+];
+
+/**
+ * The Office Open XML packages by the folder of their main part (ECMA-376 part 2 / ISO/IEC 29500-2: the main part is the target
+ * of the `officeDocument` relationship in `_rels/.rels`, and these folders are where the three applications keep it).
+ */
+const OOXML_PACKAGE_FOLDERS: ReadonlyArray<readonly [folder: string, mime: string]> = [
+  ['word/', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['xl/', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ['ppt/', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+];
+/** HWPX keeps its body in `Contents/section0.xml` and further sections (KS X 6101). */
+const HWPX_SECTION_PREFIX = 'Contents/section';
+
+/** The media type text of a stored `mimetype` entry of `head`, or undefined when it cannot be read from the bytes: compressed, longer than a media type, or past the end. */
+function storedMediaType(head: Uint8Array, entry: ZipLocalEntry): string | undefined {
+  if (entry.method !== 0 || entry.storedLength === undefined || entry.storedLength > MAX_MEDIA_TYPE_BYTES) return undefined;
+  const end = entry.dataOffset + entry.storedLength;
+  return end <= head.length ? LATIN1.decode(head.subarray(entry.dataOffset, end)).trim() : undefined;
+}
+
+function packageOfMediaType(mediaType: string): string | undefined {
+  return MEDIA_TYPE_PACKAGES.find((family) => mediaType === family || mediaType.startsWith(`${family}-`));
+}
+
+/**
+ * The type of a ZIP file, decided by what the container says and never by bytes inside an entry's data: the media type in a
+ * first entry named `mimetype`, else the first entry under the main-part folder of an Office Open XML package, else a
+ * `Contents/section` entry (HWPX), else plain ZIP. A package whose marking entries lie past the entries and bytes read
+ * is plain ZIP, which every ZIP name accepts. Libmagic reads the same things: the `mimetype` entry first in the file, and the
+ * names of the first entries (its rule follows the `PK\3\4` headers); Apache Tika reads the entry named `mimetype` and the
+ * entry names of the package.
+ */
+export function sniffZipPackage(buf: Uint8Array): string {
+  const head = buf.subarray(0, HEADER_WINDOW_BYTES);
+  const { entries } = readZipLocalEntries(head, ZIP_SNIFF_LIMITS);
+  const first = entries[0];
+  const declared = first?.name === MIMETYPE_ENTRY ? packageOfMediaType(storedMediaType(head, first) ?? '') : undefined;
+  if (declared !== undefined) return declared;
+  for (const { name } of entries) {
+    const ooxml = OOXML_PACKAGE_FOLDERS.find(([folder]) => name.startsWith(folder));
+    if (ooxml !== undefined) return ooxml[1];
+  }
+  return entries.some(({ name }) => name.startsWith(HWPX_SECTION_PREFIX)) ? HWPX_MIME : ZIP_MIME;
 }
 
 function isCorelDraw(buf: Uint8Array): boolean {
   if (buf.length >= 12 && LATIN1.decode(buf.subarray(0, 4)) === 'RIFF') return CDR_RIFF_FORM_PREFIXES.has(LATIN1.decode(buf.subarray(8, 11)));
-  const { names, complete } = zipLocalEntryNames(buf);
+  const { entries, complete } = readZipLocalEntries(buf, CDR_PACKAGE_LIMITS);
+  const names = entries.map((entry) => entry.name);
   if (names.some((name) => CDR_PACKAGE_ENTRIES.has(name))) return true;
   return !complete && names.length > 0 && CDR_PACKAGE_FOLDERS.some((folder) => names[0].startsWith(folder));
 }

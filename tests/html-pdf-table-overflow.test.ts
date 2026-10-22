@@ -9,7 +9,7 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
  * Words of a page must stay on the page the office suite draws them on. Three layouts of table pages made it lose them, each
- * measured on LibreOffice 24.2 and each fixed in the page the suite is handed (docs/policy-decisions.md entry 68):
+ * measured on LibreOffice 24.2 and each fixed in the page the suite is handed (docs/policy-decisions.md entry 69):
  *   - a `nowrap` cell followed by a cell that starts with a table: the suite sizes that table by its longest line, and the
  *     cell and the cells after it run past the right edge of the page;
  *   - a table wider than the page (a fixed `width` above 718 px, the width from the left margin to the page edge): its right

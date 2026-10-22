@@ -1,5 +1,5 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
-import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, sniffAacContainer, sniffFixedSignature, startsWithBytes } from './format-signatures';
+import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
   // ==========================================
@@ -3040,33 +3040,7 @@ export function sniffMimeTypeFromMagicBytes(buffer: Buffer | Uint8Array): string
       (buf[2] === 0x05 && buf[3] === 0x06) ||
       (buf[2] === 0x07 && buf[3] === 0x08)
     ) {
-      const scanLimit = Math.min(buf.length, 4096);
-      const headerSnippet = buf.toString('binary', 0, scanLimit);
-      if (headerSnippet.includes('word/') || headerSnippet.includes('word/document.xml')) {
-        return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-      }
-      if (headerSnippet.includes('xl/') || headerSnippet.includes('xl/workbook.xml')) {
-        return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-      }
-      if (headerSnippet.includes('ppt/') || headerSnippet.includes('ppt/presentation.xml')) {
-        return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-      }
-      if (headerSnippet.includes('mimetypeapplication/epub+zip')) {
-        return 'application/epub+zip';
-      }
-      if (headerSnippet.includes('mimetypeapplication/vnd.oasis.opendocument.text')) {
-        return 'application/vnd.oasis.opendocument.text';
-      }
-      if (headerSnippet.includes('mimetypeapplication/vnd.oasis.opendocument.spreadsheet')) {
-        return 'application/vnd.oasis.opendocument.spreadsheet';
-      }
-      if (headerSnippet.includes('mimetypeapplication/vnd.oasis.opendocument.presentation')) {
-        return 'application/vnd.oasis.opendocument.presentation';
-      }
-      if (headerSnippet.includes('Contents/section') || headerSnippet.includes('application/hwp+zip')) {
-        return 'application/hwp+zip';
-      }
-      return 'application/zip';
+      return sniffZipPackage(buf);
     }
   }
 

@@ -1,7 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import { assertNotSpoofedFile, FileExtensionSpoofError, isFormatCompatibleWithMagicBytes } from '../src/lib/registry';
 import { HEADER_WINDOW_BYTES } from '../src/lib/format-signatures';
+import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
  * The drawings the office suite imports (Visio, CorelDRAW, EMF, WMF, CGM) must open with the signature of their own format
@@ -111,6 +114,56 @@ describe('what each format opens with', () => {
     expect(isFormatCompatibleWithMagicBytes(header('content/data/Bitmaps.dat'), 'cdr')).toBe(true);
     expect(isFormatCompatibleWithMagicBytes(header('word/document.xml'), 'cdr')).toBe(false);
     expect(isFormatCompatibleWithMagicBytes(header('[Content_Types].xml'), 'cdr')).toBe(false);
+  });
+});
+
+describe('a CorelDRAW ZIP package, however many entries come before its marking entry', () => {
+  const PACKAGES = path.join(__dirname, 'fixtures', 'zip-packages');
+  const read = (name: string): Buffer => fs.readFileSync(path.join(PACKAGES, name));
+  const localHeader = (name: string): Buffer => {
+    const bytes = Buffer.alloc(30);
+    bytes.writeUInt32LE(0x04034b50, 0);
+    bytes.writeUInt16LE(Buffer.byteLength(name), 26);
+    return Buffer.concat([bytes, Buffer.from(name)]);
+  };
+  const tinyEntries = (names: readonly string[]): Buffer => Buffer.concat(names.map(localHeader));
+  const filler = (count: number): string[] => Array.from({ length: count }, (_, index) => `other/f${index}.txt`);
+
+  it('passes when the marking entry is the 101st and the first entry is elsewhere', () => {
+    expect(isFormatCompatibleWithMagicBytes(read('cdr-marker-after-100-entries.cdr'), 'cdr')).toBe(true);
+  });
+
+  it('is refused when 100 entries in a CorelDRAW folder end the file with no marking entry', () => {
+    expect(isFormatCompatibleWithMagicBytes(read('cdr-100-entries-no-marker.cdr'), 'cdr')).toBe(false);
+  });
+
+  for (const id of ['office-pb-poi.cdr', 'lo-fdo65220-2.cdr']) {
+    it(`passes for the CorelDRAW file ${id}`, async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, id);
+      expect(isFormatCompatibleWithMagicBytes(bytes, 'cdr')).toBe(true);
+      expect(isFormatCompatibleWithMagicBytes(bytes.subarray(0, HEADER_WINDOW_BYTES), 'cdr')).toBe(true);
+    });
+  }
+
+  it('finds the marking entry after a large entry, within the first 16 MiB', () => {
+    const afterEntry = (megabytes: number): Buffer => {
+      const header = localHeader('other/big.bin');
+      header.writeUInt32LE(megabytes * 1024 * 1024, 18);
+      return Buffer.concat([header, Buffer.alloc(megabytes * 1024 * 1024), localHeader('content/root.dat')]);
+    };
+    expect(isFormatCompatibleWithMagicBytes(afterEntry(8), 'cdr')).toBe(true);
+    expect(isFormatCompatibleWithMagicBytes(afterEntry(17), 'cdr')).toBe(false);
+  });
+
+  it('reads thousands of tiny entries in bounded time, and takes a long package that starts in a CorelDRAW folder as unread', () => {
+    const many = (first: string): Buffer => tinyEntries([first, ...filler(20_000), 'content/root.dat']);
+    const startsElsewhere = many('other/first.txt');
+    const startsInFolder = many('content/first.dat');
+    const started = performance.now();
+    expect(isFormatCompatibleWithMagicBytes(startsElsewhere, 'cdr')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(startsInFolder, 'cdr')).toBe(true);
+    for (let run = 0; run < 50; run++) isFormatCompatibleWithMagicBytes(startsElsewhere, 'cdr');
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });
 
