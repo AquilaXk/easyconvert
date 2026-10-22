@@ -13,6 +13,7 @@ import { getOracleToolPath, type ExternalOracleTool } from './helpers/differenti
 import { decodeRgba } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
 import { skipUnless } from './helpers/strict-skip';
+import { isProcessRunning as isAlive } from './helpers/process-state';
 
 /**
  * Issue #450: a PDF password must never appear in the argument vector of any spawned process,
@@ -678,15 +679,6 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
         await new Promise((resolve) => setTimeout(resolve, STUB_POLL_MS));
       }
       throw new Error('stub qpdf never started');
-    }
-
-    function isAlive(pid: number): boolean {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
     }
 
     async function expectProcessGone(pid: number): Promise<void> {

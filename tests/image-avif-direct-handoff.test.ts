@@ -15,6 +15,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { interface16, lineArt16 } from './helpers/graphic-parity';
 import { oracleTest } from './helpers/oracle-test';
 import { withChunksAfterHeader } from './helpers/png-chunks';
+import { isProcessRunning as isRunning } from './helpers/process-state';
 
 /**
  * A plain 16-bit or grey PNG goes to the AVIF encoder as the file it arrived in, while the picture is still being decoded
@@ -456,12 +457,8 @@ describe('the encoder reads the source file', () => {
           const deadline = Date.now() + 5000;
           let alive = true;
           while (alive && Date.now() < deadline) {
-            try {
-              process.kill(pid, 0);
-              await new Promise((resolve) => setTimeout(resolve, 50));
-            } catch {
-              alive = false;
-            }
+            alive = isRunning(pid);
+            if (alive) await new Promise((resolve) => setTimeout(resolve, 50));
           }
           expect(alive).toBe(false);
         }
@@ -500,15 +497,6 @@ describe('the run in a slot', () => {
     while (!condition()) {
       if (Date.now() > deadline) throw new Error('condition not met in time');
       await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
-
-  function isRunning(pid: number): boolean {
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
     }
   }
 
@@ -626,12 +614,8 @@ describe('startAvifWithCli', () => {
       const gone = Date.now() + 5000;
       let alive = true;
       while (alive && Date.now() < gone) {
-        try {
-          process.kill(pid, 0);
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        } catch {
-          alive = false;
-        }
+        alive = isRunning(pid);
+        if (alive) await new Promise((resolve) => setTimeout(resolve, 50));
       }
       expect(alive).toBe(false);
     } finally {

@@ -59,6 +59,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
+      # Entry numbers and the contents of docs/policy-decisions.md are written by hand in many pull requests at once. The
+      # check needs no install and runs here, not in `checks`, because a pull request that changes documentation only
+      # skips `checks` and is the one most likely to edit the policy document.
+      - name: Check the numbering of docs/policy-decisions.md
+        run: node scripts/guard-policy-decisions.mjs
+
       - name: Decide whether code changed
         id: filter
         shell: bash

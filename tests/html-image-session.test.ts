@@ -12,6 +12,7 @@ import {
   runWithImageFetchSession,
 } from '../src/lib/conversions/html-image-fetch';
 import { solidPng, startImageServer, type ImageServer } from './helpers/image-server';
+import { isProcessRunning as isRunning } from './helpers/process-state';
 
 /**
  * The session that drives the fetcher child process: the child's environment, the per-job caps, the job's abort
@@ -97,15 +98,6 @@ describe('a fetch runs in the child process', () => {
     expect((await refusal(new ImageFetchSession().fetch('http://nowhere.test/a.png'))).message).toBe('the host could not be resolved');
   });
 });
-
-function isRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 async function until(condition: () => boolean, what: string): Promise<void> {
   const limit = Date.now() + 10_000;

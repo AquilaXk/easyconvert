@@ -10,6 +10,7 @@ import { SeededRandom, jsonRecords, sha256Hex, zipfText } from './helpers/archiv
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
+import { isProcessRunning } from './helpers/process-state';
 
 /**
  * tar to ZIP and tar to gzip past the in-process deflate bound are encoded by `libdeflate-gzip` run as one process per large
@@ -272,16 +273,10 @@ describe('tar to ZIP past the in-process bound', () => {
       expect(Date.now() - aborted).toBeLessThan(PROCESS_EXIT_WAIT_MS);
       const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
       const deadline = Date.now() + PROCESS_EXIT_WAIT_MS;
-      let alive = true;
-      while (alive && Date.now() < deadline) {
-        try {
-          process.kill(pid, 0);
-          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-        } catch {
-          alive = false;
-        }
+      while (isProcessRunning(pid) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
       }
-      expect(alive, 'the libdeflate process was left running').toBe(false);
+      expect(isProcessRunning(pid), 'the libdeflate process was left running').toBe(false);
     },
     TEST_TIMEOUT_MS
   );
