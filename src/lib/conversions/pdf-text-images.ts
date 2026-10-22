@@ -1,4 +1,4 @@
-import { PDFArray, PDFDict, PDFDocument, PDFName, PDFNumber, PDFRawStream, PDFStream, decodePDFRawStream } from 'pdf-lib';
+import type { PDFDict, PDFDocument, PDFStream } from 'pdf-lib';
 import { PayloadLimitError } from '../types';
 import { assertInputPixels } from './image-input-limits';
 import { pdfjsImageToPng } from './pdf-rasterizer';
@@ -7,6 +7,9 @@ import {
   PDF_CONTENT_MAX_PAGE_STREAM_BYTES,
   type PdfContentImage,
 } from './pdf-text-types';
+
+/** pdf-lib takes 27 ms to load, so a thread loads it for its first page with images and not when it starts (see pdf-text-host.ts). sharp, 11 ms, still loads with the module through image-input-limits. */
+type PdfLib = typeof import('pdf-lib');
 
 /**
  * The files of the images a page places: the PDF's own JPEG stream, byte for byte, when the image is a plain JPEG
@@ -38,12 +41,12 @@ interface JpegCandidate {
   jpeg: Uint8Array | null;
 }
 
-function nameOf(value: unknown): string | undefined {
-  return value instanceof PDFName ? value.decodeText() : undefined;
+function nameOf(lib: PdfLib, value: unknown): string | undefined {
+  return value instanceof lib.PDFName ? value.decodeText() : undefined;
 }
 
-function numberOf(value: unknown): number | undefined {
-  return value instanceof PDFNumber ? value.asNumber() : undefined;
+function numberOf(lib: PdfLib, value: unknown): number | undefined {
+  return value instanceof lib.PDFNumber ? value.asNumber() : undefined;
 }
 
 /** Components of a baseline or progressive JPEG, or 0 for anything else (CMYK data needs more than 3). */
@@ -67,34 +70,35 @@ function jpegComponents(bytes: Uint8Array): number {
   return components === 1 || components === 3 ? components : 0;
 }
 
-function decodedStream(stream: PDFStream, limit: { left: number }): Uint8Array | null {
-  if (!(stream instanceof PDFRawStream)) return null;
-  const bytes = decodePDFRawStream(stream).decode();
+function decodedStream(lib: PdfLib, stream: PDFStream, limit: { left: number }): Uint8Array | null {
+  if (!(stream instanceof lib.PDFRawStream)) return null;
+  const bytes = lib.decodePDFRawStream(stream).decode();
   limit.left -= bytes.length;
   return limit.left < 0 ? null : bytes;
 }
 
-function filterIsOnlyDct(dict: PDFDict): boolean {
-  const filter = dict.lookup(PDFName.of('Filter'));
-  if (filter instanceof PDFName) return filter.decodeText() === 'DCTDecode';
-  if (filter instanceof PDFArray && filter.size() === 1) return nameOf(filter.lookup(0)) === 'DCTDecode';
+function filterIsOnlyDct(lib: PdfLib, dict: PDFDict): boolean {
+  const filter = dict.lookup(lib.PDFName.of('Filter'));
+  if (filter instanceof lib.PDFName) return filter.decodeText() === 'DCTDecode';
+  if (filter instanceof lib.PDFArray && filter.size() === 1) return nameOf(lib, filter.lookup(0)) === 'DCTDecode';
   return false;
 }
 
-function candidateOf(stream: PDFStream): JpegCandidate | null {
+function candidateOf(lib: PdfLib, stream: PDFStream): JpegCandidate | null {
+  const { PDFName } = lib;
   const dict = stream.dict;
-  const pixelWidth = numberOf(dict.lookup(PDFName.of('Width')));
-  const pixelHeight = numberOf(dict.lookup(PDFName.of('Height')));
+  const pixelWidth = numberOf(lib, dict.lookup(PDFName.of('Width')));
+  const pixelHeight = numberOf(lib, dict.lookup(PDFName.of('Height')));
   if (pixelWidth === undefined || pixelHeight === undefined) return null;
   const plain =
-    filterIsOnlyDct(dict) &&
-    GRAY_OR_RGB.has(nameOf(dict.lookup(PDFName.of('ColorSpace'))) ?? '') &&
-    numberOf(dict.lookup(PDFName.of('BitsPerComponent'))) === BITS_PER_COMPONENT &&
+    filterIsOnlyDct(lib, dict) &&
+    GRAY_OR_RGB.has(nameOf(lib, dict.lookup(PDFName.of('ColorSpace'))) ?? '') &&
+    numberOf(lib, dict.lookup(PDFName.of('BitsPerComponent'))) === BITS_PER_COMPONENT &&
     !dict.has(PDFName.of('SMask')) &&
     !dict.has(PDFName.of('Mask')) &&
     !dict.has(PDFName.of('Decode')) &&
     !dict.has(PDFName.of('ImageMask'));
-  if (!plain || !(stream instanceof PDFRawStream)) return { pixelWidth, pixelHeight, jpeg: null };
+  if (!plain || !(stream instanceof lib.PDFRawStream)) return { pixelWidth, pixelHeight, jpeg: null };
   const bytes = stream.getContents();
   return { pixelWidth, pixelHeight, jpeg: jpegComponents(bytes) > 0 ? bytes : null };
 }
@@ -105,10 +109,10 @@ class JpegCatalog {
 
   constructor(private readonly bytes: Uint8Array) {}
 
-  private async open(): Promise<PDFDocument | null> {
+  private async open(lib: PdfLib): Promise<PDFDocument | null> {
     if (this.document === undefined) {
       try {
-        this.document = await PDFDocument.load(this.bytes, { ignoreEncryption: false, throwOnInvalidObject: false, updateMetadata: false });
+        this.document = await lib.PDFDocument.load(this.bytes, { ignoreEncryption: false, throwOnInvalidObject: false, updateMetadata: false });
       } catch {
         this.document = null;
       }
@@ -118,7 +122,9 @@ class JpegCatalog {
 
   /** The image XObjects the page's own content draws, in drawing order; null when they cannot be read. */
   async imagesOfPage(pageIndex: number): Promise<JpegCandidate[] | null> {
-    const document = await this.open();
+    const lib = await import('pdf-lib');
+    const { PDFArray, PDFDict, PDFName, PDFStream } = lib;
+    const document = await this.open(lib);
     if (!document || pageIndex >= document.getPageCount()) return null;
     const leaf = document.getPage(pageIndex).node;
     const resources = leaf.Resources();
@@ -137,7 +143,7 @@ class JpegCatalog {
     const limit = { left: PDF_CONTENT_MAX_PAGE_STREAM_BYTES };
     let text = '';
     for (const stream of streams) {
-      const bytes = decodedStream(stream, limit);
+      const bytes = decodedStream(lib, stream, limit);
       if (bytes === null) return null;
       text += `${Buffer.from(bytes).toString('latin1')}\n`;
     }
@@ -146,8 +152,8 @@ class JpegCatalog {
       const name = match[1].replace(NAME_ESCAPE, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
       const target = xobjects.lookup(PDFName.of(name));
       if (!(target instanceof PDFStream)) continue;
-      if (nameOf(target.dict.lookup(PDFName.of('Subtype'))) !== 'Image') continue;
-      const candidate = candidateOf(target);
+      if (nameOf(lib, target.dict.lookup(PDFName.of('Subtype'))) !== 'Image') continue;
+      const candidate = candidateOf(lib, target);
       if (candidate === null) return null;
       candidates.push(candidate);
     }
@@ -164,6 +170,11 @@ export interface ImageSource {
 interface ObjectStore {
   has(id: string): boolean;
   get(id: string): unknown;
+}
+
+/** Loads what reading images needs (pdf-lib), for a thread that is about to read documents with images. */
+export async function preloadImageReader(): Promise<void> {
+  await import('pdf-lib');
 }
 
 /** Attaches the files of the images a document places, within a byte budget for the whole document. */

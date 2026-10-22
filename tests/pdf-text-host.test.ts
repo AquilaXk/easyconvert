@@ -64,6 +64,7 @@ vi.mock('node:v8', async (importOriginal) => {
 
 import { convertFile } from '../src/lib/conversions/index';
 import { runPdfTextJobInThread, shutdownPdfTextThreads } from '../src/lib/conversions/pdf-text-host';
+import type { PdfTextJob } from '../src/lib/conversions/pdf-text-types';
 import { inspectPdfPagesTextDensity } from '../src/lib/conversions/ocr';
 import { extractPdfTextLayerPages, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-geometry';
 import { EngineUnavailableError } from '../src/lib/types';
@@ -289,17 +290,20 @@ describe('replacing a thread that has read many documents', () => {
   const RETIRED_AT_LATEST_AFTER_JOBS = 200;
   const reply = { ok: true, result: { analyses: [], geometry: new Map(), content: [], fonts: [] } };
   const textJob = { geometry: 'none', content: true } as const;
+  const imageJob = { geometry: 'none', content: true, images: true } as const;
 
   /** Reads `count` documents on `thread`, answering each one. */
-  async function readDocuments(thread: Thread, count: number): Promise<void> {
+  async function readDocuments(thread: Thread, count: number, job: PdfTextJob = textJob): Promise<void> {
     for (let read = 0; read < count; read++) {
-      const pending = runPdfTextJobInThread(pdf(), textJob);
+      const pending = runPdfTextJobInThread(pdf(), job);
       thread.emit('message', reply);
       await pending;
     }
   }
 
-  const warmUpOf = (thread: Thread): unknown => (fake.state.calls[fake.state.instances.indexOf(thread)][1] as { workerData: { warmUp: boolean } }).workerData.warmUp;
+  const workerDataOf = (thread: Thread): { warmUp: boolean; images: boolean } =>
+    (fake.state.calls[fake.state.instances.indexOf(thread)][1] as { workerData: { warmUp: boolean; images: boolean } }).workerData;
+  const warmUpOf = (thread: Thread): boolean => workerDataOf(thread).warmUp;
 
   /** The first thread, with the documents it must read before the replacement starts already read. */
   async function oldThreadNearingRetirement(): Promise<Thread> {
@@ -319,6 +323,23 @@ describe('replacing a thread that has read many documents', () => {
     expect(warmUpOf(old)).toBe(false);
     expect(warmUpOf(fake.state.instances[1])).toBe(true);
     expect(old.terminated).toBe(false);
+  });
+
+  it('does not have the replacement load the image reader when the old thread has read no document that asks for images', async () => {
+    const old = await oldThreadNearingRetirement();
+    await readDocuments(old, 1);
+    expect(workerDataOf(fake.state.instances[1])).toMatchObject({ warmUp: true, images: false });
+  });
+
+  it('has the replacement load the image reader when the old thread has read a document that asks for images', async () => {
+    const first = runPdfTextJobInThread(pdf(), imageJob);
+    const old = await startedThread();
+    old.emit('message', reply);
+    await first;
+    await readDocuments(old, REPLACEMENT_STARTS_AFTER_JOBS - 1);
+    expect(fake.state.instances).toHaveLength(2);
+    expect(workerDataOf(old).images).toBe(false);
+    expect(workerDataOf(fake.state.instances[1])).toMatchObject({ warmUp: true, images: true });
   });
 
   it('gives a replacement that is still warming no document, and keeps the old thread until it is ready', async () => {

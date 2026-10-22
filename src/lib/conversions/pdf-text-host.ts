@@ -34,6 +34,9 @@ import {
  * is retired when the replacement is ready, or after RECYCLE_LIMIT_JOBS jobs. The replacement has read no user document,
  * so retiring the old thread still ends everything a document left in it; only the delay of starting a thread is hidden.
  *
+ * What a thread loads at start-up is kept short, because the replacement's start competes with the thread that reads: the image
+ * reader's pdf-lib (27 ms) is loaded by the first page with images, or by the replacement of a thread that read one.
+ *
  * Failures are typed by whose fault they are. A document that overruns the deadline, exhausts the thread's memory or
  * is rejected by the reader is a PdfTextGeometryError (400), or the typed error the thread names (an encrypted
  * document, a document with too many pages). A thread that cannot be started, dies on its own, or has no entry is
@@ -101,6 +104,8 @@ interface PooledThread {
   idleTimer: NodeJS.Timeout | null;
   /** The thread started to take over from this one; it has read no user document. */
   replacement: PooledThread | null;
+  /** Whether the thread has read a document that asks for images, so that its replacement loads the image reader too. */
+  readImages: boolean;
 }
 
 interface QueuedJob {
@@ -156,8 +161,11 @@ function releaseWhenHeapExists(worker: Worker): void {
   for (const event of ['online', 'error', 'exit'] as const) worker.once(event, release);
 }
 
-function startWorker(entry: WorkerEntry, warmUp: boolean): Worker {
-  const options = { resourceLimits: { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB }, workerData: { warmUp } };
+function startWorker(entry: WorkerEntry, warmUp: boolean, images: boolean): Worker {
+  const options = {
+    resourceLimits: { maxOldGenerationSizeMb: THREAD_HEAP_LIMIT_MB, maxYoungGenerationSizeMb: THREAD_YOUNG_LIMIT_MB },
+    workerData: { warmUp, images },
+  };
   holdInitialOldSpace();
   let worker: Worker;
   try {
@@ -219,7 +227,7 @@ function awaitsReplacement(thread: PooledThread): boolean {
 function startReplacement(thread: PooledThread): void {
   if (thread.replacement && threads.has(thread.replacement)) return;
   try {
-    thread.replacement = createThread(true);
+    thread.replacement = createThread(true, thread.readImages);
   } catch {
     thread.replacement = null;
   }
@@ -247,9 +255,9 @@ function joinPool(thread: PooledThread): void {
   startQueued();
 }
 
-function createThread(replacement = false): PooledThread {
-  const worker = startWorker(resolveWorkerEntry(), replacement);
-  const thread: PooledThread = { worker, active: null, jobs: 0, idleTimer: null, replacement: null };
+function createThread(replacement = false, loadImageReader = false): PooledThread {
+  const worker = startWorker(resolveWorkerEntry(), replacement, loadImageReader);
+  const thread: PooledThread = { worker, active: null, jobs: 0, idleTimer: null, replacement: null, readImages: false };
   worker.once('error', (error: Error & { code?: string }) => {
     const failure = threadFailure(error);
     retire(thread);
@@ -280,6 +288,7 @@ function dispatch(thread: PooledThread, queued: QueuedJob): void {
     startQueued();
   }, deadlineMs);
   thread.active = { resolve: queued.resolve, reject: queued.reject, timer };
+  if (queued.job.images === true) thread.readImages = true;
   thread.worker.ref?.();
   thread.worker.once('message', (reply: WorkerReply) => {
     settle(thread, (job) => {
