@@ -63,6 +63,38 @@ const ELEMENTS_WITHOUT_TARGET: ReadonlySet<string> = new Set([
   'article', 'aside', 'caption', 'center', 'details', 'div', 'fieldset', 'figcaption', 'figure', 'footer', 'header', 'hgroup',
   'label', 'legend', 'main', 'nav', 'section', 'summary',
 ]);
+/**
+ * Elements the office suite reads as a text section when they have an `id`. A table row that holds a section, and a section that
+ * holds tables, are not split across pages like other rows: what does not fit on the page they start on is cut off and never
+ * drawn (measured on 24.2). So the `id` of one inside a table cell, or around a table, is not written, unless a style
+ * sheet names it (`#menu { ... }`, which the suite applies by `id` only). The named anchor of ELEMENTS_WITHOUT_TARGET stays the
+ * link target, and a section that is neither in a table nor holds one is written as before.
+ */
+const SECTION_ELEMENTS: ReadonlySet<string> = new Set(['center', 'div']);
+const TABLE_CELL_ELEMENTS: ReadonlySet<string> = new Set(['td', 'th']);
+const TABLE_ROW_ELEMENT = 'tr';
+const TABLE_ELEMENT = 'table';
+const NOWRAP_ATTRIBUTE = 'nowrap';
+const WIDTH_ATTRIBUTE = 'width';
+/**
+ * Width from the left margin to the right edge of the page the office suite sets an HTML page on (A4, 794 px wide at 96 dpi,
+ * less the 2 cm left margin of 76 px). The suite does not narrow a table with a fixed `width` (it limits only a percentage to
+ * 100): the table runs over the right margin, and whatever lies past the page edge, from this width on, is not drawn. A fixed
+ * table width counts as the minimum width of the cell the table is in, so a table inside a cell widens the tables around it
+ * the same way. A table that is wider is written at this width; a narrower one, which still ends on the page, is left as it is.
+ */
+const PAGE_EDGE_WIDTH_PX = 718;
+/**
+ * Width of the whole A4 page (794 px at 96 dpi). The suite moves a floating table (`align="left"` or `"right"`) left, past the
+ * left margin if it must, until it ends on the page (measured on 24.2), so a floating table loses words only from this width
+ * on. It is written at this width when it is wider, and left as it is otherwise: the suite does not split a floating table
+ * across pages, so narrowing one only makes it taller and cuts more of it off at the foot of the page.
+ */
+const PAGE_WIDTH_PX = 794;
+const ALIGN_ATTRIBUTE = 'align';
+const FLOATING_ALIGNMENTS: ReadonlySet<string> = new Set(['left', 'right']);
+const FIXED_WIDTH = /^[ \t\n\f\r]*(\d+)(?:px)?[ \t\n\f\r]*$/i;
+const CSS_IDENTIFIER_CHARACTER = /[\w-]/;
 /** Elements that render nothing, dropped with their content: scripts, templates, fallbacks and head metadata. */
 const DROPPED_ELEMENTS: ReadonlySet<string> = new Set([
   ...NEVER_DRAWN_ELEMENTS, 'source', 'track', 'link', 'meta', 'base', 'param', 'datalist', 'area', 'bgsound', 'title',
@@ -230,6 +262,67 @@ export interface StagedHtml {
   warnings: string[];
 }
 
+/** Whether the written content of `element` starts with a table: nothing but white space, left-out elements and unwrapped elements before it. */
+function startsWithTable(element: HtmlElement): boolean {
+  for (const child of element.children) {
+    if (typeof child === 'string') {
+      if (child.replace(ASCII_WHITESPACE, '') === '') continue;
+      return false;
+    }
+    if (child.tag === TABLE_ELEMENT) return true;
+    if (isUndrawable(child) || DROPPED_ELEMENTS.has(child.tag) || child.tag === STYLE_ELEMENT) continue;
+    if (WRITTEN_ELEMENTS.has(child.tag)) return false;
+    if (startsWithTable(child)) return true;
+  }
+  return false;
+}
+
+/**
+ * The cells of a row that have `nowrap` and are followed by a cell that starts with a table. The office suite then sizes
+ * that table by its widest line instead of the space the row has, so a long line pushes the cell and the cells after it past
+ * the right edge of the page, where nothing is drawn (measured on 24.2; a cell that does not start with a table, or
+ * a cell before the nowrap one, is not affected). Their `nowrap` is not written.
+ */
+function cellsBeforeTables(row: HtmlElement): HtmlElement[] {
+  const cells = row.children.filter((child): child is HtmlElement => typeof child !== 'string' && TABLE_CELL_ELEMENTS.has(child.tag));
+  return cells.filter((cell, index) => cell.attrs.has(NOWRAP_ATTRIBUTE) && index + 1 < cells.length && startsWithTable(cells[index + 1]));
+}
+
+/** Whether a table is anywhere under `element`. */
+function holdsTable(element: HtmlElement): boolean {
+  return element.children.some((child) => typeof child !== 'string' && (child.tag === TABLE_ELEMENT || holdsTable(child)));
+}
+
+/** The text of every `<style>` element under `element`. */
+function styleSheetsText(element: HtmlElement): string {
+  return element.children
+    .map((child) => {
+      if (typeof child === 'string') return '';
+      return child.tag === STYLE_ELEMENT ? textContent(child) : styleSheetsText(child);
+    })
+    .join('\n');
+}
+
+/** Whether CSS holds an id selector for `id` (`#id`, not followed by more of an identifier). */
+function namesId(css: string, id: string): boolean {
+  const selector = `#${id}`;
+  for (let at = css.indexOf(selector); at >= 0; at = css.indexOf(selector, at + 1)) {
+    if (!CSS_IDENTIFIER_CHARACTER.test(css.charAt(at + selector.length))) return true;
+  }
+  return false;
+}
+
+/**
+ * A table's `width` as it is written: a fixed width past the right edge of the page becomes the width up to the edge, which
+ * for a floating table is the width of the page (see PAGE_WIDTH_PX).
+ */
+function fitTableWidth(table: HtmlElement, value: string): string {
+  const fixed = FIXED_WIDTH.exec(value);
+  const alignment = asciiLowerCase((table.attrs.get(ALIGN_ATTRIBUTE) ?? '').replace(ASCII_WHITESPACE, ''));
+  const edge = FLOATING_ALIGNMENTS.has(alignment) ? PAGE_WIDTH_PX : PAGE_EDGE_WIDTH_PX;
+  return fixed !== null && Number(fixed[1]) > edge ? String(edge) : value;
+}
+
 /** Writes the allowlisted part of a checked tree as escaped HTML. */
 class StagedHtmlWriter {
   /** The image data: URIs the written document embeds. */
@@ -240,10 +333,17 @@ class StagedHtmlWriter {
   private readonly styles: string[] = [];
   private documentAttributes: string | undefined;
   private bodyAttributes: string | undefined;
+  /** How many table cells the element being written is inside. */
+  private cellDepth = 0;
+  /** The text of every style sheet of the page: ids it names keep their `id` (see SECTION_ELEMENTS). */
+  private styleText = '';
+  /** Cells whose `nowrap` is not written, see cellsBeforeTables. */
+  private readonly releasedNowrap = new WeakSet<HtmlElement>();
 
   constructor(private readonly title: string | undefined) {}
 
   write(root: HtmlElement): string {
+    this.styleText = styleSheetsText(root);
     this.children(root.children);
     const title = this.title ? `<title>${escapeHtml(stripControls(this.title))}</title>` : '';
     const styles = this.styles.map((css) => `<style>${css}</style>`).join('');
@@ -287,10 +387,14 @@ class StagedHtmlWriter {
       this.children(node.children);
       return;
     }
+    if (tag === TABLE_ROW_ELEMENT) for (const cell of cellsBeforeTables(node)) this.releasedNowrap.add(cell);
     this.body.push(`<${tag}${this.attributes(node)}>`);
     if (WRITTEN_VOID_ELEMENTS.has(tag)) return;
     if (ELEMENTS_WITHOUT_TARGET.has(tag)) this.targetAtStart(node);
+    const isCell = TABLE_CELL_ELEMENTS.has(tag);
+    if (isCell) this.cellDepth += 1;
     this.children(node.children);
+    if (isCell) this.cellDepth -= 1;
     this.body.push(`</${tag}>`);
   }
 
@@ -326,7 +430,16 @@ class StagedHtmlWriter {
       this.reportBackground(value);
       return null;
     }
+    if (name === ID_ATTRIBUTE && this.isLeftOutAsSection(element, value)) return null;
+    if (name === NOWRAP_ATTRIBUTE && this.releasedNowrap.has(element)) return null;
+    if (name === WIDTH_ATTRIBUTE && element.tag === TABLE_ELEMENT) return fitTableWidth(element, stripControls(value));
     return WRITTEN_ATTRIBUTES.has(name) ? stripControls(value) : null;
+  }
+
+  /** Whether the `id` of a section the office suite would not split across pages is not written (see SECTION_ELEMENTS). */
+  private isLeftOutAsSection(element: HtmlElement, id: string): boolean {
+    if (!SECTION_ELEMENTS.has(element.tag) || namesId(this.styleText, id)) return false;
+    return this.cellDepth > 0 || holdsTable(element);
   }
 
   /** The target of a link that stays one, or null for a link to anywhere else, which is left out and reported. */
