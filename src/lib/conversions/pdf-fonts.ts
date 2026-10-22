@@ -625,7 +625,7 @@ export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFon
   let carried: PdfAnchor[] = [];
   for (const segment of segments) {
     const text = replaceNonFontableCharacters(toDrawableText(segment.text));
-    // The anchors in the drawable text of the segment, nearest the start first.
+    // Offsets of the text of the segment moved to its drawable text; the anchors and jumps keep the order the segment lists them.
     const offset = (at: number): number => (at === 0 ? 0 : replaceNonFontableCharacters(toDrawableText(segment.text.slice(0, at))).length);
     const marks = (segment.anchors ?? []).map(({ name, at }) => ({ name, at: offset(at) }));
     const jumps = (segment.jumps ?? []).map(({ name, from, to }) => ({ name, from: offset(from), to: offset(to) }));
