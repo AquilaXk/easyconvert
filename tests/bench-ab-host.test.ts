@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { AbHost, AbHostError, BaseRowError } from '../bench/ab-host';
+import { isProcessRunning } from './helpers/process-state';
 
 /**
  * The process that measures the base of a change, started for real in a checkout of its own with `tsx`: it times what
@@ -109,15 +110,7 @@ describe('the base process', () => {
 });
 
 describe('a process started for a confirmation', () => {
-  const alive = (pid: number | undefined): boolean => {
-    if (pid === undefined) return false;
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  };
+  const alive = (pid: number | undefined): boolean => pid !== undefined && isProcessRunning(pid);
 
   it('is another process of the same version, let through the rows already timed, and times the row asked for on its own', async () => {
     const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: STUB });
@@ -180,15 +173,7 @@ describe('a process started for a confirmation', () => {
 
 describe('ending the base process', () => {
   const BUSY = path.join(__dirname, 'helpers', 'ab-busy-stub.ts');
-  const alive = (pid: number | undefined): boolean => {
-    if (pid === undefined) return false;
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  };
+  const alive = (pid: number | undefined): boolean => pid !== undefined && isProcessRunning(pid);
 
   it('kills a process that is busy and cannot read the request to end, so nothing keeps loading the runner', async () => {
     const host = await AbHost.start({ root: work, families: ['compression'], quick: false, script: BUSY, stopGraceMs: 300 });

@@ -40,3 +40,13 @@ function psState(pid: number): string {
     return '';
   }
 }
+
+/** Whether the process is stopped within `limitMs`: a signalled process takes a moment to die and, as an orphan, to be reaped. */
+export async function waitUntilStopped(pid: number, limitMs: number, pollMs = 25): Promise<boolean> {
+  const deadline = Date.now() + limitMs;
+  while (isProcessRunning(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  return true;
+}

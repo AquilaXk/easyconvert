@@ -20,6 +20,7 @@ import {
   SandboxedTimeoutError,
 } from '../src/lib/security/process-sandbox';
 import { SandboxUnavailableError } from '../src/lib/types';
+import { isProcessRunning } from './helpers/process-state';
 
 /**
  * The launcher runs a sandboxed binary from a small helper process, so the fork that starts it does not copy the
@@ -260,7 +261,7 @@ describe('sandbox launcher', () => {
     const pid = sandboxLauncherState().pid as number;
     stopSandboxLauncher();
     await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(() => process.kill(pid, 0)).toThrow();
+    expect(isProcessRunning(pid)).toBe(false);
     const { spawnSync } = await import('node:child_process');
     expect(spawnSync('/usr/bin/pgrep', ['-f', marker]).status).toBe(1);
   });
