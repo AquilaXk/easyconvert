@@ -19,7 +19,7 @@ export interface PdfLinkTarget {
   after: string;
 }
 
-interface Word {
+export interface Word {
   page: number;
   xMin: number;
   yMin: number;
@@ -49,8 +49,8 @@ const HTML_ENTITIES: ReadonlyArray<[RegExp, string]> = [
   [/&amp;/g, '&'],
 ];
 
-function wordsOf(pdfPath: string): { words: Word[]; heights: number[] } {
-  const listing = execFileSync(requireOracleTool('pdftotext'), ['-bbox', pdfPath, '-'], { encoding: 'utf-8' });
+export function wordsOf(pdfPath: string): { words: Word[]; heights: number[] } {
+  const listing = execFileSync(requireOracleTool('pdftotext'), ['-bbox', pdfPath, '-'], { encoding: 'utf-8', maxBuffer: 256 * 1024 * 1024 });
   const words: Word[] = [];
   const heights: number[] = [];
   for (const line of listing.split('\n')) {

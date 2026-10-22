@@ -2,7 +2,9 @@ import { EngineUnavailableError, type ConversionOptions } from '../../types';
 import { redrawAsPng } from '../image-to-png';
 import { MAX_DOCUMENT_IMAGE_PIXELS, MAX_IMAGES_PER_DOCUMENT, prepareEmbeddedImage } from '../html-blocks';
 import { PDF_DOCUMENT_SPACING, renderPdfBlocks, type PdfBlock, type PdfPageGeometry, type PdfRasterImage, type PdfTableCell } from '../pdf-blocks';
+import { anchorsAt, anchorsOf } from '../pdf-destinations';
 import type { PdfTextSegment } from '../pdf-fonts';
+import { uniqueAnchors } from './anchors';
 import type { Block, DocumentImage, DocumentModel, Inline, ListBlock, NoteDefinition, TableBlock } from './model';
 import { cellBlocks, imagesById, walkRuns } from './support';
 import { blockText, listMarkers } from './text';
@@ -11,12 +13,15 @@ import { blockText, listMarkers } from './text';
  * Draws the document model with the in-process PDF writer: headings with their numbers, list items with the markers
  * the document shows ("1.", "a.", "III)"), tables with merged cells, links, pictures (a JPEG goes in byte for byte),
  * page and section breaks, footnotes below the block that cites them and endnotes on a last page. Text is drawn in
- * the regular face of an installed font that covers it; bold and italic are not drawn.
+ * the regular face of an installed font that covers it; bold and italic are not drawn. Every anchor of the document is a
+ * named destination, and a link to one is a link annotation over each line of its text (a link to a name no anchor has is
+ * text).
  */
 
 const PX_PER_POINT = 4 / 3;
 const TAB_AS_SPACES = '    ';
 const LINK_SCHEME = /^(?:https?|mailto):/i;
+const FRAGMENT_MARK = '#';
 const PAGE_BREAK_SECTIONS: ReadonlySet<string> = new Set(['nextPage', 'oddPage', 'evenPage']);
 const SINGLE_CHAR_HEAVY_RATIO = 0.65;
 const MIN_SINGLE_CHAR_TOKENS = 2;
@@ -75,14 +80,20 @@ class PdfBlockBuilder {
     const widenSpaces = needsWiderTokenSpaces(runs);
     const segments: PdfTextSegment[] = [];
     for (const run of runs) {
-      if (run.image || run.anchor !== undefined) continue;
+      if (run.image) continue;
+      if (run.anchor !== undefined) {
+        segments.push({ text: '', anchors: anchorsAt([run.anchor]) });
+        continue;
+      }
       if (run.note) {
         segments.push({ text: run.note.label, superscript: true });
         continue;
       }
       const link = run.href !== undefined && LINK_SCHEME.test(run.href) ? run.href : undefined;
       const expanded = run.text.replace(/\t/g, TAB_AS_SPACES);
-      segments.push({ text: widenSpaces ? expanded.replace(/ /g, '  ') : expanded, link });
+      const text = widenSpaces ? expanded.replace(/ /g, '  ') : expanded;
+      const jumps = run.href?.startsWith(FRAGMENT_MARK) ? [{ name: run.href.slice(FRAGMENT_MARK.length), from: 0, to: text.length }] : undefined;
+      segments.push({ text, link, ...(jumps ? { jumps } : {}) });
     }
     return segments;
   }
@@ -93,7 +104,9 @@ class PdfBlockBuilder {
     let pending: Inline[] = [];
     const flush = (): void => {
       const content = this.segments(pending);
+      const names = anchorsOf(content);
       if (content.some((segment) => segment.text.trim() !== '')) blocks.push(make(content));
+      else if (names.length > 0) blocks.push({ kind: 'anchor', names });
       pending = [];
     };
     for (const run of runs) {
@@ -111,12 +124,18 @@ class PdfBlockBuilder {
 
   private cellContent(blocks: readonly Block[]): PdfTextSegment[] {
     const content: PdfTextSegment[] = [];
+    // Destinations of the blocks that show nothing, which stand at the start of the next block that shows text.
+    let waiting: PdfTextSegment[] = [];
     for (const block of blocks) {
       const segments: PdfTextSegment[] = block.type === 'heading' || block.type === 'paragraph' ? this.segments(block.runs) : [{ text: blockText(block) }];
-      if (segments.every((segment) => segment.text.trim() === '')) continue;
+      if (segments.every((segment) => segment.text.trim() === '')) {
+        waiting.push(...segments.filter((segment) => segment.anchors));
+        continue;
+      }
       if (content.length > 0) content.push({ text: '\n' });
-      content.push(...segments);
+      content.push(...waiting.splice(0), ...segments);
     }
+    content.push(...waiting);
     return content;
   }
 
@@ -247,6 +266,7 @@ function pageGeometryOf(model: DocumentModel): PdfPageGeometry | undefined {
 
 /** Renders the model to a PDF. */
 export async function documentToPdf(model: DocumentModel, options: ConversionOptions, title: string): Promise<Buffer> {
+  uniqueAnchors(model);
   const documentTitle = model.title ?? title;
   const builder = new PdfBlockBuilder(imagesById(model));
   const blocks: PdfBlock[] = [];

@@ -1,7 +1,10 @@
 import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfBlock, PdfCellPart, PdfRasterImage, PdfTableCell } from './pdf-blocks';
-import type { PdfTextSegment } from './pdf-fonts';
+import { anchorsAt, anchorsOf } from './pdf-destinations';
+import type { PdfAnchor, PdfJump, PdfTextSegment } from './pdf-fonts';
+import { AnchorNames } from './document-model/anchors';
+import { anchorNamesOf, documentIds } from './html-anchors';
 import { loadExternalImages, type ImageCaps } from './html-image-loader';
 import { asciiLowerCase, isUndrawable, NEVER_DRAWN_ELEMENTS, OmittedContent, OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
 
@@ -133,6 +136,7 @@ const DISPLAY_NONE = /(?:^|;)\s*display\s*:\s*none\s*(?:!\s*important\s*)?(?:;|$
 const NON_URI_CHARACTER = /[^\x21-\x7e]/gu;
 /** Link targets kept as PDF link annotations; other targets keep their text without a link. */
 const LINK_SCHEMES = /^(?:https?|mailto):/i;
+const FRAGMENT_MARK = '#';
 const DATA_URI = /^data:([^,]*),(.*)$/is;
 const BASE64_BODY = /^[A-Za-z0-9+/]*={0,2}$/;
 const SPACE_CHARACTER = ' ';
@@ -611,10 +615,58 @@ interface PendingImage {
   readonly bytes: Buffer;
 }
 
+/** Where the anchors of a page stand and what the links to them are called: the names of each element that is a link target, and the unique name a fragment finds. */
+interface PageAnchors {
+  readonly of: ReadonlyMap<HtmlElement, readonly string[]>;
+  readonly names: AnchorNames;
+}
+
+/**
+ * Names the anchors of the elements that are drawn, in document order, as the writers of the other formats name theirs
+ * (see document-model/anchors.ts). An element that is not drawn (hidden, left out) is no target.
+ */
+function pageAnchors(root: HtmlElement): PageAnchors {
+  const ids = documentIds(root);
+  const names = new AnchorNames();
+  const of = new Map<HtmlElement, readonly string[]>();
+  const pending: HtmlNode[] = [root];
+  while (pending.length > 0) {
+    const node = pending.pop() as HtmlNode;
+    if (typeof node === 'string' || isHidden(node) || isUndrawable(node)) continue;
+    const sources = anchorNamesOf(node, ids);
+    if (sources.length > 0) of.set(node, sources.map((source) => names.claim(source)));
+    for (let index = node.children.length - 1; index >= 0; index -= 1) pending.push(node.children[index]);
+  }
+  return { of, names };
+}
+
 class HtmlBlockBuilder {
   readonly images: PendingImage[] = [];
   /** The elements left out of the page, reported as the LibreOffice route reports them. */
   readonly omitted = new OmittedContent();
+
+  constructor(private readonly anchors: PageAnchors) {}
+
+  /** The unique names the element is a link target by. */
+  private anchorNames(element: HtmlElement): readonly string[] {
+    return this.anchors.of.get(element) ?? [];
+  }
+
+  /** The block that names the destinations of `element`, to stand where the next block that draws something starts. */
+  private anchorBlocks(element: HtmlElement): PdfBlock[] {
+    const names = this.anchorNames(element);
+    return names.length > 0 ? [{ kind: 'anchor', names }] : [];
+  }
+
+  /** What a link to `href` goes to: a web or mail address, or an anchor of the page (none when no anchor has the fragment). */
+  private linkTarget(href: string): LinkTarget | undefined {
+    if (href.startsWith(FRAGMENT_MARK)) {
+      const jump = this.anchors.names.find(href.slice(FRAGMENT_MARK.length));
+      return jump === undefined ? undefined : { jump };
+    }
+    const url = LINK_SCHEMES.test(href) ? encodeLinkTarget(href) : undefined;
+    return url === undefined ? undefined : { url };
+  }
 
 
   private isBlock(node: HtmlNode): node is HtmlElement {
@@ -632,15 +684,17 @@ class HtmlBlockBuilder {
   }
 
   /** Collects a node's inline content; block elements inside inline content start on a new line. */
-  private inline(node: HtmlNode, link: string | undefined, context: InlineContext, preserve: boolean): void {
+  private inline(node: HtmlNode, link: LinkTarget | undefined, context: InlineContext, preserve: boolean): void {
     if (typeof node === 'string') {
-      context.segments.push({ text: preserve ? node : node.replace(HTML_WHITESPACE, ' '), link });
+      context.segments.push(linkedSegment(preserve ? node : node.replace(HTML_WHITESPACE, ' '), link));
       return;
     }
     if (isHidden(node)) return;
     if (this.leavesOut(node)) return;
+    const anchors = this.anchors.of.get(node);
+    if (anchors) context.segments.push({ text: '', anchors: anchorsAt(anchors) });
     if (node.tag === 'br') {
-      context.segments.push({ text: '\n', link });
+      context.segments.push(linkedSegment('\n', link));
       return;
     }
     if (node.tag === 'img') {
@@ -648,7 +702,7 @@ class HtmlBlockBuilder {
       return;
     }
     const href = node.tag === 'a' ? node.attrs.get('href')?.trim() : undefined;
-    const childLink = href && LINK_SCHEMES.test(href) ? encodeLinkTarget(href) ?? link : link;
+    const childLink = (href ? this.linkTarget(href) : undefined) ?? link;
     const childPreserve = preserve || PREFORMATTED_ELEMENTS.has(node.tag);
     const block = this.isBlock(node);
     if (block) context.segments.push({ text: '\n' });
@@ -661,50 +715,67 @@ class HtmlBlockBuilder {
 
   /**
    * Joins segments that share a link, drops collapsible spaces next to line breaks and at the
-   * ends, and drops leading and trailing line breaks, in one linear pass.
+   * ends, and drops leading and trailing line breaks, in one linear pass. An anchor stays where it stood, and so does a
+   * stretch that links to an anchor: they are offsets in the text of the piece, which a change of either does not cut.
    */
   private tidy(segments: readonly PdfTextSegment[]): PdfTextSegment[] {
     const tidied: PdfTextSegment[] = [];
     let text = '';
     let link: string | undefined;
-    const emit = (piece: string, pieceLink: string | undefined): void => {
+    let anchors: PdfAnchor[] = [];
+    let jumps: PdfJump[] = [];
+    let waiting: string[] = [];
+    const close = (): void => {
+      if (text) tidied.push({ text, link, ...(anchors.length > 0 ? { anchors } : {}), ...(jumps.length > 0 ? { jumps } : {}) });
+      text = '';
+      anchors = [];
+      jumps = [];
+    };
+    const emit = (piece: string, pieceLink: string | undefined, jump: string | undefined, takesAnchors = false): void => {
       if (pieceLink !== link) {
-        if (text) tidied.push({ text, link });
-        text = '';
+        close();
         link = pieceLink;
+      }
+      if (takesAnchors) {
+        anchors.push(...waiting.map((name) => ({ name, at: text.length })));
+        waiting = [];
+      }
+      if (jump !== undefined) {
+        const last = jumps[jumps.length - 1];
+        if (last?.name === jump && last.to === text.length) jumps[jumps.length - 1] = { ...last, to: text.length + piece.length };
+        else jumps.push({ name: jump, from: text.length, to: text.length + piece.length });
       }
       text += piece;
     };
     let started = false;
     let pendingBreaks = '';
-    let pendingSpaceLink: string | undefined;
-    let pendingSpace = false;
+    let pendingSpace: { link: string | undefined; jump: string | undefined } | undefined;
     for (const segment of segments) {
+      if (segment.anchors) waiting.push(...segment.anchors.map((anchor) => anchor.name));
+      const jump = segment.jumps?.[0]?.name;
       for (const ch of segment.text) {
         if (ch === SPACE_CHARACTER) {
-          if (started && !pendingBreaks && !pendingSpace) {
-            pendingSpace = true;
-            pendingSpaceLink = segment.link;
-          }
+          if (started && !pendingBreaks && !pendingSpace) pendingSpace = { link: segment.link, jump };
           continue;
         }
         if (ch === LINE_BREAK) {
-          pendingSpace = false;
+          pendingSpace = undefined;
           if (started) pendingBreaks += LINE_BREAK;
           continue;
         }
         if (pendingBreaks) {
-          emit(pendingBreaks, undefined);
+          emit(pendingBreaks, undefined, undefined);
         } else if (pendingSpace) {
-          emit(SPACE_CHARACTER, pendingSpaceLink);
+          emit(SPACE_CHARACTER, pendingSpace.link, pendingSpace.jump);
         }
         pendingBreaks = '';
-        pendingSpace = false;
-        emit(ch, segment.link);
+        pendingSpace = undefined;
+        emit(ch, segment.link, jump, waiting.length > 0);
         started = true;
       }
     }
-    if (text) tidied.push({ text, link });
+    close();
+    if (waiting.length > 0) tidied.push({ text: '', anchors: anchorsAt(waiting) });
     return tidied;
   }
 
@@ -729,6 +800,7 @@ class HtmlBlockBuilder {
     for (const node of nodes) {
       if (this.isBlock(node) && !isHidden(node)) {
         flush();
+        appendAll(blocks, this.anchorBlocks(node));
         appendAll(blocks, this.block(node));
       } else {
         pendingInline.push(node);
@@ -746,7 +818,7 @@ class HtmlBlockBuilder {
       return [...heading, ...images.flatMap((image) => this.imageBlocks(image))];
     }
     if (PREFORMATTED_ELEMENTS.has(node.tag)) return this.preformatted(node);
-    if (LIST_ELEMENTS.has(node.tag)) return [this.list(node)];
+    if (LIST_ELEMENTS.has(node.tag)) return this.list(node);
     if (node.tag === 'table') return this.table(node);
     if (node.tag === 'blockquote') return [{ kind: 'quote', blocks: this.blocks(node.children) }];
     if (node.tag === 'hr') return [{ kind: 'rule' }];
@@ -759,57 +831,69 @@ class HtmlBlockBuilder {
     if (context.images.length > 0) throw unsupported('<img> inside <pre>');
     // A line break right after <pre> is not part of the content.
     const text = context.segments.map((segment) => segment.text).join('').replace(/^\r?\n/, '');
-    return text.length > 0 ? [{ kind: 'preformatted', text }] : [];
+    // The text is drawn as one piece: the targets inside it are at its start.
+    const names = anchorsOf(context.segments);
+    return [...(names.length > 0 ? [{ kind: 'anchor' as const, names }] : []), ...(text.length > 0 ? [{ kind: 'preformatted' as const, text }] : [])];
   }
 
-  private list(node: HtmlElement): PdfBlock {
+  /** The list, and after it the destinations of items that draw nothing when no item follows them. */
+  private list(node: HtmlElement): PdfBlock[] {
     const start = Number.parseInt(node.attrs.get('start') ?? '', DECIMAL_RADIX);
     const items: PdfBlock[][] = [];
+    // An item that draws nothing is no item (it gets no number), and its destinations lead the next item.
+    const waiting: PdfBlock[] = [];
+    const add = (blocks: PdfBlock[]): void => {
+      if (blocks.every(isDestinationOnly)) waiting.push(...blocks);
+      else items.push([...waiting.splice(0), ...blocks]);
+    };
     let loose: HtmlNode[] = [];
     for (const child of node.children) {
       if (typeof child !== 'string' && child.tag === 'li') {
-        if (loose.length > 0) items.push(this.blocks(loose));
+        if (loose.length > 0) add(this.blocks(loose));
         loose = [];
-        if (!isHidden(child)) items.push(this.blocks(child.children));
+        if (!isHidden(child)) add([...this.anchorBlocks(child), ...this.blocks(child.children)]);
       } else if (typeof child !== 'string' || child.trim().length > 0) {
         loose.push(child);
       }
     }
-    if (loose.length > 0) items.push(this.blocks(loose));
-    return {
-      kind: 'list',
-      ordered: node.tag === 'ol',
-      start: Number.isFinite(start) ? start : DEFAULT_LIST_START,
-      items: items.filter((item) => item.length > 0),
-    };
+    if (loose.length > 0) add(this.blocks(loose));
+    return [{ kind: 'list', ordered: node.tag === 'ol', start: Number.isFinite(start) ? start : DEFAULT_LIST_START, items }, ...waiting];
   }
 
   /** Rows of the table; content placed directly in the table is drawn before it, as browsers do. */
   private table(node: HtmlElement): PdfBlock[] {
     const before: PdfBlock[] = [];
     const rows: PdfTableCell[][] = [];
+    // The targets of row groups and rows go to the start of the next row that has a cell.
+    const rowAnchors: string[] = [];
     const visit = (element: HtmlElement): void => {
       for (const child of element.children) {
         if (typeof child === 'string') {
           if (child.trim().length > 0) appendAll(before, this.blocks([child]));
         } else if (TABLE_SECTION_ELEMENTS.has(child.tag)) {
+          rowAnchors.push(...this.anchorNames(child));
           visit(child);
         } else if (child.tag === 'tr') {
-          if (!isHidden(child)) rows.push(this.row(child, before));
+          if (isHidden(child)) continue;
+          rowAnchors.push(...this.anchorNames(child));
+          const cells = this.row(child, before);
+          if (cells.length > 0) cells[0] = withLeadingAnchors(cells[0], rowAnchors.splice(0));
+          rows.push(cells);
         } else if (!TABLE_COLUMN_ELEMENTS.has(child.tag)) {
-          appendAll(before, this.blocks(child.tag === 'caption' ? child.children : [child]));
+          appendAll(before, child.tag === 'caption' ? [...this.anchorBlocks(child), ...this.blocks(child.children)] : this.blocks([child]));
         }
       }
     };
     visit(node);
-    return rows.length > 0 ? [...before, { kind: 'table', rows: coverMergedRows(rows) }] : before;
+    if (rows.length === 0) return before;
+    return [...before, { kind: 'table', rows: coverMergedRows(rows) }, ...(rowAnchors.length > 0 ? [{ kind: 'anchor' as const, names: rowAnchors }] : [])];
   }
 
   private row(tr: HtmlElement, before: PdfBlock[]): PdfTableCell[] {
     const cells: PdfTableCell[] = [];
     for (const child of tr.children) {
       if (typeof child !== 'string' && TABLE_CELL_ELEMENTS.has(child.tag)) {
-        cells.push(this.cell(child));
+        cells.push(withLeadingAnchors(this.cell(child), this.anchorNames(child)));
       } else if (typeof child !== 'string' || child.trim().length > 0) {
         appendAll(before, this.blocks([child]));
       }
@@ -828,27 +912,43 @@ class HtmlBlockBuilder {
       if (segments.length > 0) parts.push({ kind: 'text', content: segments });
       segments = [];
     };
+    // Whether text is waiting in `segments`: the blocks after it start on a new line.
+    let shown = false;
+    // Destinations that stand before the next block with text, which go after the line feed that starts it.
+    let waiting: string[] = [];
     const append = (blocks: readonly PdfBlock[]): void => {
       for (const block of blocks) {
         if (block.kind === 'rule') continue;
         if (block.kind === 'table' || block.kind === 'image') {
+          if (waiting.length > 0) segments.push({ text: '', anchors: anchorsAt(waiting.splice(0)) });
           flushText();
+          shown = false;
           parts.push(block);
           continue;
         }
-        if (segments.length > 0) segments.push({ text: '\n' });
-        if (block.kind === 'paragraph' || block.kind === 'heading') {
-          appendAll(segments, block.content);
-        } else if (block.kind === 'preformatted') {
-          segments.push({ text: block.text });
-        } else if (block.kind === 'list') {
-          block.items.forEach((item) => append(item));
-        } else if (block.kind === 'quote') {
-          append(block.blocks);
+        if (block.kind === 'anchor') {
+          waiting.push(...block.names);
+          continue;
+        }
+        if (block.kind === 'list' || block.kind === 'quote') {
+          if (shown) segments.push({ text: '\n' });
+          if (block.kind === 'list') block.items.forEach((item) => append(item));
+          else append(block.blocks);
+          continue;
+        }
+        const content = textSegmentsOf(block);
+        if (content.some((segment) => segment.text !== '')) {
+          if (shown) segments.push({ text: '\n' });
+          shown = true;
+          if (waiting.length > 0) segments.push({ text: '', anchors: anchorsAt(waiting.splice(0)) });
+          appendAll(segments, content);
+        } else {
+          waiting.push(...anchorsOf(content));
         }
       }
     };
     append(this.blocks(element.children));
+    if (waiting.length > 0) segments.push({ text: '', anchors: anchorsAt(waiting) });
     flushText();
     const rowSpan = rowSpanOf(element);
     const shape = { span: columnSpan(element), ...(rowSpan > 1 ? { rowSpan } : {}) };
@@ -870,6 +970,34 @@ class HtmlBlockBuilder {
     this.images.push({ block, bytes: decodeImageSource(src) });
     return block;
   }
+}
+
+/** Where a link goes: to a URL, or to the anchor `jump` of the page. */
+type LinkTarget = { readonly url: string } | { readonly jump: string };
+
+/** A segment of `text` that links to `target`: a URL is the link of the segment, an anchor of the page a stretch of its text. */
+function linkedSegment(text: string, target: LinkTarget | undefined): PdfTextSegment {
+  if (target === undefined) return { text };
+  return 'url' in target ? { text, link: target.url } : { text, jumps: [{ name: target.jump, from: 0, to: text.length }] };
+}
+
+/** The text a block holds as segments: its content, or its text, or none. */
+function textSegmentsOf(block: PdfBlock): readonly PdfTextSegment[] {
+  if (block.kind === 'preformatted') return [{ text: block.text }];
+  return block.kind === 'paragraph' || block.kind === 'heading' ? block.content : [];
+}
+
+/** Whether a block draws nothing and only names destinations. */
+function isDestinationOnly(block: PdfBlock): boolean {
+  if (block.kind === 'anchor') return true;
+  return (block.kind === 'paragraph' || block.kind === 'heading') && block.content.every((segment) => segment.text === '');
+}
+
+/** `cell` with the destinations `names` at the start of its content. */
+function withLeadingAnchors(cell: PdfTableCell, names: readonly string[]): PdfTableCell {
+  if (names.length === 0) return cell;
+  const lead: PdfTextSegment = { text: '', anchors: anchorsAt(names) };
+  return cell.parts ? { ...cell, parts: [{ kind: 'text', content: [lead] }, ...cell.parts] } : { ...cell, content: [lead, ...cell.content] };
 }
 
 /** JPEG markers: start of image, and the frame types a PDF DCTDecode filter reads (baseline, extended, progressive). */
@@ -1036,7 +1164,7 @@ export async function parseHtmlToPdfBlocks(html: string, policy: HtmlResourcePol
   const tree = parseHtmlTree(html.replace(/^﻿/, ''));
   const omitted = new OmittedExternalImages();
   await loadExternalImages(tree.root, policy, omitted, HTML_IMAGE_CAPS);
-  const builder = new HtmlBlockBuilder();
+  const builder = new HtmlBlockBuilder(pageAnchors(tree.root));
   const blocks = builder.blocks(tree.root.children);
   await verifyImages(builder.images);
   return { title: tree.title || undefined, blocks, warnings: [...omitted.warnings(), ...builder.omitted.warnings()] };

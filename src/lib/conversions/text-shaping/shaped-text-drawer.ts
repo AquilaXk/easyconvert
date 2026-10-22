@@ -1,3 +1,4 @@
+import { linkToDestination, type PdfDestinations } from '../pdf-destinations';
 import type { PdfFontFace } from '../pdf-fonts';
 import type { LayoutLine, LayoutPiece } from './paragraph-layout';
 
@@ -135,7 +136,8 @@ export interface DrawOptions {
 export class ShapedTextDrawer {
   constructor(
     private readonly doc: PDFKit.PDFDocument,
-    private readonly useFace: (face: PdfFontFace) => void
+    private readonly useFace: (face: PdfFontFace) => void,
+    private readonly destinations: PdfDestinations
   ) {}
 
   /** Draws one piece with its left edge at x and its baseline at `baseline` (page coordinates, y down). */
@@ -164,13 +166,18 @@ export class ShapedTextDrawer {
     }
   }
 
-  /** Draws a line whose box starts at (left, top); returns nothing, the caller advances the cursor. */
+  /** Draws a line whose box starts at (left, top), with the destinations that stand on it at the top left; the caller advances the cursor. */
   drawLine(line: LayoutLine, left: number, top: number, options: DrawOptions): void {
+    if (line.anchors) this.destinations.place(line.anchors, left, top);
     const baseline = top + line.ascent;
     let x = left + line.x;
     for (const piece of line.pieces) {
       this.drawPiece(piece, x, baseline, options);
       x += piece.width;
+    }
+    const fontSize = (this.doc as unknown as PdfkitDocumentInternals)._fontSize;
+    for (const jump of line.jumps ?? []) {
+      linkToDestination(this.doc, { x: left + line.x + jump.x, y: top, width: jump.width, height: line.ascent + line.descent }, jump.name, fontSize);
     }
   }
 }

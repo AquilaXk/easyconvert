@@ -5,9 +5,10 @@ import { reportConversionWarning } from './conversion-warnings';
 import { hasComplexTextScript } from './ctl';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 import { ShapingBudget } from './text-shaping/limits';
-import { layoutShapedText, type LayoutAlign, type LayoutLine, type TextLayout } from './text-shaping/paragraph-layout';
+import { layoutShapedText, type LayoutAlign, type LayoutLine, type LayoutSegment, type TextLayout } from './text-shaping/paragraph-layout';
 import { loadTextShaper } from './text-shaping/shape';
 import { ShapedTextDrawer } from './text-shaping/shaped-text-drawer';
+import { PdfDestinations, anchorsOf, linkToDestination } from './pdf-destinations';
 
 /**
  * Unicode font coverage for the in-process PDF writers (pdfkit).
@@ -175,13 +176,40 @@ export interface PdfFontRun {
   readonly face: PdfFontFace;
   readonly link?: string;
   readonly superscript?: boolean;
+  /** The destinations in the run, at offsets of its text. */
+  readonly anchors?: readonly PdfAnchor[];
+  /** The stretches of the run's text that link to destinations of the document. */
+  readonly jumps?: readonly PdfJump[];
 }
 
-/** A piece of text, optionally a hyperlink or a superscript (a note mark), which is drawn smaller than the text it follows. */
+/**
+ * A piece of text, optionally a hyperlink to a URL or a superscript (a note mark), which is drawn smaller than the text it
+ * follows. A link to a destination of the document is not a link of the segment but a stretch of its text (`jumps`):
+ * the text next to it stays in one run with it, as it would without the link.
+ */
 export interface PdfTextSegment {
   readonly text: string;
   readonly link?: string;
   readonly superscript?: boolean;
+  /**
+   * Destinations that stand in the segment's text. A segment with no text only carries them: they go to the text after
+   * it, or to the last text when none follows.
+   */
+  readonly anchors?: readonly PdfAnchor[];
+  readonly jumps?: readonly PdfJump[];
+}
+
+/** A link to the destination `name` of the document (see pdf-destinations.ts) from the characters [`from`, `to`) of a segment's text. */
+export interface PdfJump {
+  readonly name: string;
+  readonly from: number;
+  readonly to: number;
+}
+
+/** A destination at a character offset of a segment's text (0: its start). */
+export interface PdfAnchor {
+  readonly name: string;
+  readonly at: number;
 }
 
 /** Size of a superscript run relative to the text around it. */
@@ -577,9 +605,11 @@ function withSupportedSelectors(text: string, face: PdfFontFace): string {
   return out;
 }
 
-function pushRun(runs: PdfFontRun[], text: string, face: PdfFontFace, segment: PdfTextSegment): void {
+function pushRun(runs: PdfFontRun[], text: string, face: PdfFontFace, segment: PdfTextSegment, marks: Pick<PdfFontRun, 'anchors' | 'jumps'>): boolean {
   const kept = withSupportedSelectors(text, face);
-  if (kept) runs.push({ text: kept, face, link: segment.link, ...(segment.superscript ? { superscript: true } : {}) });
+  if (!kept) return false;
+  runs.push({ text: kept, face, link: segment.link, ...(segment.superscript ? { superscript: true } : {}), ...marks });
+  return true;
 }
 
 /**
@@ -587,15 +617,36 @@ function pushRun(runs: PdfFontRun[], text: string, face: PdfFontFace, segment: P
  * covers is a single run; otherwise each character takes the current run's face when it covers
  * the character, else the first face that does. A code point no font can render becomes U+FFFD (and is reported
  * as a warning); EngineUnavailableError is thrown at the first character no installed font covers.
+ * A run holds the anchors that stand in its text, at offsets of it; those of a segment with no drawable text, or whose
+ * text gives no run, go to the start of the next run, and those with no run after them to the end of the last one.
  */
 export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFontPath?: PdfPreferredFont): PdfFontRun[] {
   const runs: PdfFontRun[] = [];
+  let carried: PdfAnchor[] = [];
   for (const segment of segments) {
     const text = replaceNonFontableCharacters(toDrawableText(segment.text));
-    if (text.length === 0) continue;
+    // The anchors in the drawable text of the segment, nearest the start first.
+    const offset = (at: number): number => (at === 0 ? 0 : replaceNonFontableCharacters(toDrawableText(segment.text.slice(0, at))).length);
+    const marks = (segment.anchors ?? []).map(({ name, at }) => ({ name, at: offset(at) }));
+    const jumps = (segment.jumps ?? []).map(({ name, from, to }) => ({ name, from: offset(from), to: offset(to) }));
+    let consumed = 0;
+    // Adds a run for the next `piece` of the text; the anchors that stand in it, or past the end of the text when `last`, go in the run.
+    const add = (piece: string, face: PdfFontFace, last: boolean): void => {
+      const end = consumed + piece.length;
+      const anchors = [...carried, ...marks.filter((mark) => mark.at >= consumed && (mark.at < end || last)).map((mark) => ({ name: mark.name, at: mark.at - consumed }))];
+      const linked = jumps.filter((jump) => jump.from < end && jump.to > consumed).map((jump) => ({ name: jump.name, from: Math.max(jump.from, consumed) - consumed, to: Math.min(jump.to, end) - consumed }));
+      const held = { ...(anchors.length > 0 ? { anchors } : {}), ...(linked.length > 0 ? { jumps: linked } : {}) };
+      if (pushRun(runs, piece, face, segment, held)) carried = [];
+      else carried = anchors.map((anchor) => ({ name: anchor.name, at: 0 }));
+      consumed = end;
+    };
+    if (text.length === 0) {
+      carried.push(...marks.map(({ name }) => ({ name, at: 0 })));
+      continue;
+    }
     const single = singleCoveringFace(glyphCodePoints(text), customFontPath);
     if (single) {
-      pushRun(runs, text, single, segment);
+      add(text, single, true);
       continue;
     }
     let current: PdfFontFace | null = null;
@@ -608,12 +659,14 @@ export function splitIntoFontRuns(segments: readonly PdfTextSegment[], customFon
       }
       const face = faceFor(cp, customFontPath);
       if (!face) throw uncoveredError(cp);
-      if (current && buffer) pushRun(runs, buffer, current, segment);
+      if (current && buffer) add(buffer, current, false);
       buffer = current ? ch : buffer + ch;
       current = face;
     }
-    if (current && buffer) pushRun(runs, buffer, current, segment);
+    if (current && buffer) add(buffer, current, true);
   }
+  const last = runs[runs.length - 1];
+  if (carried.length > 0 && last) runs[runs.length - 1] = { ...last, anchors: [...(last.anchors ?? []), ...carried.map(({ name }) => ({ name, at: last.text.length }))] };
   return runs;
 }
 
@@ -718,6 +771,12 @@ export function shapedLineHeight(line: LayoutLine, lineGap: number): number {
   return line.ascent + line.descent + line.gap + lineGap;
 }
 
+/** The parts of pdfkit's text layout that its type definitions lack: setting text with the callback that receives each line. */
+interface PdfkitText {
+  _text(text: string, x: number | PDFKit.Mixins.TextOptions, y: number | undefined, options: PDFKit.Mixins.TextOptions | undefined, lineCallback: (text: string, options: unknown, wrapper: unknown) => void): void;
+  _line(text: string, options: unknown, wrapper: unknown): void;
+}
+
 /** Text options this writer accepts; `continued` and `link` are managed per run. */
 export type PdfWriterTextOptions = Omit<PDFKit.Mixins.TextOptions, 'continued'>;
 
@@ -729,11 +788,15 @@ export class PdfUnicodeTextWriter {
   /** Glyphs shaped for this document, against SHAPE_MAX_GLYPHS_PER_DOCUMENT. */
   private readonly shapingBudget = new ShapingBudget();
   private shapedDrawer: ShapedTextDrawer | null = null;
+  /** The named destinations of the document and the links that go to them. */
+  readonly destinations: PdfDestinations;
 
   constructor(
     private readonly doc: PDFKit.PDFDocument,
     private readonly customFontPath?: PdfPreferredFont
-  ) {}
+  ) {
+    this.destinations = new PdfDestinations(doc);
+  }
 
   /** Selects a face in the document, embedding it on first use. */
   useFace(face: PdfFontFace): void {
@@ -756,9 +819,15 @@ export class PdfUnicodeTextWriter {
     return primary.id;
   }
 
+  /** The segments of `content`, with a link to a destination the document does not have left as plain text. */
+  private segmentsOf(content: string | readonly PdfTextSegment[]): readonly PdfTextSegment[] {
+    if (typeof content === 'string') return [{ text: content }];
+    if (content.every((segment) => segment.jumps?.every((jump) => this.destinations.has(jump.name)) ?? true)) return content;
+    return content.map((segment) => ({ ...segment, jumps: segment.jumps?.filter((jump) => this.destinations.has(jump.name)) }));
+  }
+
   runs(content: string | readonly PdfTextSegment[]): PdfFontRun[] {
-    const segments = typeof content === 'string' ? [{ text: content }] : content;
-    return splitIntoFontRuns(segments, this.customFontPath);
+    return splitIntoFontRuns(this.segmentsOf(content), this.customFontPath);
   }
 
   /** Width lines wrap at for these options, or 0 when the text is not wrapped. */
@@ -858,14 +927,23 @@ export class PdfUnicodeTextWriter {
     return (this.doc as unknown as { _fontSize: number })._fontSize;
   }
 
+  /** The segment as text for the shaping engine, with the offsets of its anchors and jumps moved to the shapable text, which may be shorter or longer. */
+  private shapable(segment: PdfTextSegment): LayoutSegment {
+    const text = (source: string): string => replaceNonFontableCharacters(toShapableText(source));
+    const offset = (at: number): number => (at === 0 ? 0 : text(segment.text.slice(0, at)).length);
+    return {
+      text: text(segment.text),
+      link: segment.link,
+      anchors: segment.anchors?.map(({ name, at }) => ({ name, at: offset(at) })),
+      jumps: segment.jumps?.map(({ name, from, to }) => ({ name, from: offset(from), to: offset(to) })),
+    };
+  }
+
   /** Shapes and breaks the content into lines of at most `width` points (0: one line per paragraph). */
   private shapedLayout(content: string | readonly PdfTextSegment[], width: number, align?: LayoutAlign): TextLayout {
     const primary = orderedFaces(this.customFontPath)[0];
     if (!primary) throw uncoveredError(SPACE);
-    const segments = (typeof content === 'string' ? [{ text: content }] : content).map((segment) => ({
-      text: replaceNonFontableCharacters(toShapableText(segment.text)),
-      link: segment.link,
-    }));
+    const segments = this.segmentsOf(content).map((segment) => this.shapable(segment));
     return layoutShapedText({
       segments,
       fontSize: this.currentFontSize(),
@@ -878,7 +956,7 @@ export class PdfUnicodeTextWriter {
   }
 
   private drawer(): ShapedTextDrawer {
-    this.shapedDrawer ??= new ShapedTextDrawer(this.doc, (face) => this.useFace(face));
+    this.shapedDrawer ??= new ShapedTextDrawer(this.doc, (face) => this.useFace(face), this.destinations);
     return this.shapedDrawer;
   }
 
@@ -924,22 +1002,73 @@ export class PdfUnicodeTextWriter {
   private layoutRuns(content: string | readonly PdfTextSegment[], lineWidth: number): PdfFontRun[] {
     return this.runs(content).map((run) => {
       this.useFace(run.face);
-      return { ...run, text: this.breakLongTokens(run.text, lineWidth) };
+      const text = this.breakLongTokens(run.text, lineWidth);
+      if (text === run.text) return { ...run, text };
+      // The breaks added to the text move the offsets after them.
+      const moved = (at: number): number => this.breakLongTokens(run.text.slice(0, at), lineWidth).length;
+      return {
+        ...run,
+        text,
+        ...(run.anchors ? { anchors: run.anchors.map(({ name, at }) => ({ name, at: moved(at) })) } : {}),
+        ...(run.jumps ? { jumps: run.jumps.map(({ name, from, to }) => ({ name, from: moved(from), to: moved(to) })) } : {}),
+      };
     });
   }
 
+  /** Puts the anchors of `content` that no run carries (the text has nothing to draw them at) at the start of the text. */
+  private placeUnattached(content: string | readonly PdfTextSegment[], runs: readonly PdfFontRun[], left: number, top: number): void {
+    const names = typeof content === 'string' ? [] : anchorsOf(content);
+    if (names.length === 0) return;
+    const attached = new Set(runs.flatMap((run) => run.anchors?.map((anchor) => anchor.name) ?? []));
+    this.destinations.place(names.filter((name) => !attached.has(name)), left, top);
+  }
+
   /**
-   * Writes text at (x, y) or at the current position, switching fonts between runs. Links are
-   * drawn underlined with a link annotation.
+   * Links the stretches of the run's text that fall in the line pdfkit is about to set at the current position (the
+   * characters [from, to) of the text): a go-to annotation over each stretch, and the underline a link has.
    */
-  write(content: string | readonly PdfTextSegment[], options: PdfWriterTextOptions = {}, x?: number, y?: number): void {
-    if (this.needsShaping(content)) {
-      this.writeShaped(content, options, x, y);
-      return;
+  private markJumps(run: PdfFontRun, line: { from: number; to: number }): void {
+    for (const jump of run.jumps ?? []) {
+      const from = Math.max(jump.from, line.from);
+      const to = Math.min(jump.to, line.to);
+      if (from >= to) continue;
+      const x = this.doc.x + this.doc.widthOfString(run.text.slice(line.from, from));
+      const width = this.doc.widthOfString(run.text.slice(from, to));
+      linkToDestination(this.doc, { x, y: this.doc.y, width, height: this.doc.currentLineHeight() }, jump.name, this.currentFontSize());
     }
-    const runs = this.layoutRuns(content, this.lineWidth(options, x));
+  }
+
+  /**
+   * Draws the runs as continued text. Each anchor is put at the line pdfkit sets the text it stands in on, found as
+   * pdfkit hands the lines over: the first line that ends after the anchor's offset in the text of its run.
+   */
+  private drawRuns(runs: readonly PdfFontRun[], options: PdfWriterTextOptions, where: { x?: number; y?: number; left: number }): void {
     const baseSize = this.currentFontSize();
+    const pdfkit = this.doc as unknown as PdfkitText;
+    let current = runs[0];
+    let consumed = 0;
+    let waiting: PdfAnchor[] = [];
+    let lastTop = where.y ?? this.doc.y;
+    // pdfkit takes the callback of the first run for the lines of every run that continues it.
+    const line = (text: string, lineOptions: unknown, wrapper: unknown): void => {
+      if (text !== '') {
+        const found = current.text.indexOf(text, consumed);
+        consumed = (found < 0 ? consumed : found) + text.length;
+        lastTop = this.doc.y;
+        const due = waiting.filter((anchor) => anchor.at < consumed);
+        if (due.length > 0) {
+          waiting = waiting.filter((anchor) => anchor.at >= consumed);
+          this.destinations.place(due.map((anchor) => anchor.name), where.left, this.doc.y);
+        }
+        this.markJumps(current, { from: consumed - text.length, to: consumed });
+      }
+      pdfkit._line(text, lineOptions, wrapper);
+    };
     runs.forEach((run, index) => {
+      current = run;
+      consumed = 0;
+      // What no line of the last run took stands at the start of this one.
+      waiting = [...waiting.map(({ name }) => ({ name, at: 0 })), ...(run.anchors ?? [])];
       this.useFace(run.face);
       this.doc.fontSize(run.superscript ? baseSize * SUPERSCRIPT_SCALE : baseSize);
       const runOptions: PDFKit.Mixins.TextOptions = {
@@ -950,13 +1079,27 @@ export class PdfUnicodeTextWriter {
         ...(run.superscript ? { baseline: 'alphabetic' as const } : {}),
         continued: index < runs.length - 1,
       };
-      if (index === 0 && x !== undefined && y !== undefined) {
-        this.doc.text(run.text, x, y, runOptions);
-      } else {
-        this.doc.text(run.text, runOptions);
-      }
+      if (index === 0 && where.x !== undefined && where.y !== undefined) pdfkit._text(run.text, where.x, where.y, runOptions, line);
+      else pdfkit._text(run.text, runOptions, undefined, undefined, line);
     });
+    this.destinations.place(waiting.map((anchor) => anchor.name), where.left, lastTop);
     this.doc.fontSize(baseSize);
+  }
+
+  /**
+   * Writes text at (x, y) or at the current position, switching fonts between runs. Links are
+   * drawn underlined with a link annotation, and the anchors in the content become named destinations at the
+   * line they land on.
+   */
+  write(content: string | readonly PdfTextSegment[], options: PdfWriterTextOptions = {}, x?: number, y?: number): void {
+    if (this.needsShaping(content)) {
+      this.writeShaped(content, options, x, y);
+      return;
+    }
+    const runs = this.layoutRuns(content, this.lineWidth(options, x));
+    const left = x ?? this.doc.x;
+    this.placeUnattached(content, runs, left, y ?? this.doc.y);
+    this.drawRuns(runs, options, { x, y, left });
   }
 
   /**
