@@ -392,12 +392,12 @@ describe('job deadline by size', () => {
     const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
     const pool = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, heapMb: HEAP_MB, env });
     try {
-      const [given, notGiven] = await pool.runAll([
-        { path: good, name: 'good.png', format: 'png', target: 'bmp', deadlineMs: JOB_DEADLINE_MS },
+      const [notGiven, given] = await pool.runAll([
         { path: good, name: 'good.png', format: 'png', target: 'bmp' },
+        { path: good, name: 'good.png', format: 'png', target: 'bmp', deadlineMs: JOB_DEADLINE_MS },
       ]);
-      expect(given.verdict).toBe('ok');
       expect(notGiven.verdict).toBe('hang');
+      expect(given.verdict).toBe('ok');
     } finally {
       pool.stop();
       fs.rmSync(dir, { recursive: true, force: true });

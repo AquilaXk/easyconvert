@@ -1,5 +1,8 @@
 import { it, type TestContext } from 'vitest';
+import { boundTestsForCliWork } from './cli-test-timeout';
 import { ExternalOracleTool, getOracleToolPath, OracleToolMissingError } from './differential-oracle';
+
+boundTestsForCliWork();
 
 export type OracleTestFn = (ctx: TestContext) => void | Promise<void>;
 

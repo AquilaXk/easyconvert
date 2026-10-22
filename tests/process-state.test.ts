@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { isProcessRunning } from './helpers/process-state';
+import { isProcessRunning, waitUntilStopped } from './helpers/process-state';
 
 const SETTLE_MS = 300;
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -17,9 +17,7 @@ function answersSignal(pid: number): boolean {
 
 describe('whether a process is running', () => {
   it('counts a zombie as stopped although it still answers a signal, and a live process as running', async () => {
-    // The shell starts `sleep 0` in the background, prints its pid and execs into a sleep that never calls wait(), so the
-    // finished `sleep 0` stays a zombie until the long sleep exits.
-    const parent = spawn('/bin/sh', ['-c', 'sleep 0 & echo $!; exec sleep 5'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const parent = spawn('/bin/sh', ['-c', 'sleep 0 & echo $!; exec cat'], { stdio: ['pipe', 'pipe', 'ignore'] });
     try {
       const zombie = await new Promise<number>((resolve) => parent.stdout.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim()))));
       await pause(SETTLE_MS);
@@ -37,5 +35,19 @@ describe('whether a process is running', () => {
     await new Promise((resolve) => child.once('exit', resolve));
     await pause(SETTLE_MS);
     expect(isProcessRunning(pid)).toBe(false);
+  });
+});
+
+describe('waiting for a process to stop', () => {
+  it('reports a process that keeps running as not stopped once the limit passes, and a killed one as stopped', async () => {
+    const child = spawn('/bin/sh', ['-c', 'exec cat'], { stdio: ['pipe', 'ignore', 'ignore'] });
+    const pid = child.pid as number;
+    try {
+      expect(await waitUntilStopped(pid, 200)).toBe(false);
+      child.kill('SIGKILL');
+      expect(await waitUntilStopped(pid, 10_000)).toBe(true);
+    } finally {
+      child.kill('SIGKILL');
+    }
   });
 });
