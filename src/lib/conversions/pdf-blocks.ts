@@ -1,6 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { ConversionFailedError } from '../types';
-import { anchorsAt, anchorsOf } from './pdf-destinations';
+import { WaitingDestinations, anchorsAt, anchorsOf } from './pdf-destinations';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, type PdfAnchor, type PdfTextSegment } from './pdf-fonts';
 import { layoutTable, type Flow, type TableContext } from './pdf-table';
 import { PX_TO_PT } from './pdf-table-metrics';
@@ -108,7 +108,7 @@ const RULE_WIDTH = 0.75;
 
 class PdfBlockRenderer {
   /** Names of destinations that wait for the next thing drawn (see the `anchor` block). */
-  private waiting: string[] = [];
+  private readonly waiting = new WaitingDestinations<string>();
 
   constructor(
     private readonly doc: PDFKit.PDFDocument,
@@ -156,12 +156,13 @@ class PdfBlockRenderer {
   }
 
   private placeWaiting(left: number, top: number): void {
-    if (this.waiting.length > 0) this.writer.destinations.place(this.waiting.splice(0), left, top);
+    this.writer.destinations.place(this.waiting.release(), left, top);
   }
 
   /** `content` led by the destinations that wait for a block, which stand at the first line drawn. */
   private withWaiting(content: readonly PdfTextSegment[]): readonly PdfTextSegment[] {
-    return this.waiting.length > 0 ? [{ text: '', anchors: anchorsAt(this.waiting.splice(0)) }, ...content] : content;
+    const names = this.waiting.release();
+    return names.length > 0 ? [{ text: '', anchors: anchorsAt(names) }, ...content] : content;
   }
 
   private renderBlock(block: PdfBlock, indent: number, gapLines: number): void {
@@ -195,7 +196,7 @@ class PdfBlockRenderer {
         this.doc.addPage();
         return;
       case 'anchor':
-        this.waiting.push(...block.names);
+        this.waiting.hold(block.names);
         return;
     }
   }
@@ -206,7 +207,7 @@ class PdfBlockRenderer {
 
   private renderHeading(level: number, content: readonly PdfTextSegment[], indent: number): void {
     if (!this.hasText(content)) {
-      this.waiting.push(...anchorsOf(content));
+      this.waiting.hold(anchorsOf(content));
       return;
     }
     const size = HEADING_FONT_SIZES[Math.min(Math.max(level, 1), HEADING_FONT_SIZES.length) - 1];
@@ -217,7 +218,7 @@ class PdfBlockRenderer {
 
   private renderText(content: readonly PdfTextSegment[], size: number, indent: number, gapLines: number): void {
     if (!this.hasText(content)) {
-      this.waiting.push(...anchorsOf(content));
+      this.waiting.hold(anchorsOf(content));
       return;
     }
     this.doc.fontSize(size);

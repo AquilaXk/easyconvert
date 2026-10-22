@@ -1,7 +1,7 @@
 import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfBlock, PdfCellPart, PdfRasterImage, PdfTableCell } from './pdf-blocks';
-import { anchorsAt, anchorsOf } from './pdf-destinations';
+import { WaitingDestinations, anchorsAt, anchorsOf } from './pdf-destinations';
 import type { PdfAnchor, PdfJump, PdfTextSegment } from './pdf-fonts';
 import { AnchorNames } from './document-model/anchors';
 import { anchorNamesOf, documentIds } from './html-anchors';
@@ -849,10 +849,10 @@ class HtmlBlockBuilder {
     const start = Number.parseInt(node.attrs.get('start') ?? '', DECIMAL_RADIX);
     const items: PdfBlock[][] = [];
     // An item that draws nothing is no item (it gets no number), and its destinations lead the next item.
-    const waiting: PdfBlock[] = [];
+    const waiting = new WaitingDestinations<PdfBlock>();
     const add = (blocks: PdfBlock[]): void => {
-      if (blocks.every(isDestinationOnly)) waiting.push(...blocks);
-      else items.push([...waiting.splice(0), ...blocks]);
+      if (blocks.every(isDestinationOnly)) waiting.hold(blocks);
+      else items.push([...waiting.release(), ...blocks]);
     };
     let loose: HtmlNode[] = [];
     for (const child of node.children) {
@@ -865,7 +865,7 @@ class HtmlBlockBuilder {
       }
     }
     if (loose.length > 0) add(this.blocks(loose));
-    return [{ kind: 'list', ordered: node.tag === 'ol', start: Number.isFinite(start) ? start : DEFAULT_LIST_START, items }, ...waiting];
+    return [{ kind: 'list', ordered: node.tag === 'ol', start: Number.isFinite(start) ? start : DEFAULT_LIST_START, items }, ...waiting.release()];
   }
 
   /** Rows of the table; content placed directly in the table is drawn before it, as browsers do. */
@@ -923,19 +923,23 @@ class HtmlBlockBuilder {
     // Whether text is waiting in `segments`: the blocks after it start on a new line.
     let shown = false;
     // Destinations that stand before the next block with text, which go after the line feed that starts it.
-    let waiting: string[] = [];
+    const waiting = new WaitingDestinations<string>();
+    const placeWaiting = (): void => {
+      const names = waiting.release();
+      if (names.length > 0) segments.push({ text: '', anchors: anchorsAt(names) });
+    };
     const append = (blocks: readonly PdfBlock[]): void => {
       for (const block of blocks) {
         if (block.kind === 'rule') continue;
         if (block.kind === 'table' || block.kind === 'image') {
-          if (waiting.length > 0) segments.push({ text: '', anchors: anchorsAt(waiting.splice(0)) });
+          placeWaiting();
           flushText();
           shown = false;
           parts.push(block);
           continue;
         }
         if (block.kind === 'anchor') {
-          waiting.push(...block.names);
+          waiting.hold(block.names);
           continue;
         }
         if (block.kind === 'list' || block.kind === 'quote') {
@@ -948,15 +952,15 @@ class HtmlBlockBuilder {
         if (content.some((segment) => segment.text !== '')) {
           if (shown) segments.push({ text: '\n' });
           shown = true;
-          if (waiting.length > 0) segments.push({ text: '', anchors: anchorsAt(waiting.splice(0)) });
+          placeWaiting();
           appendAll(segments, content);
         } else {
-          waiting.push(...anchorsOf(content));
+          waiting.hold(anchorsOf(content));
         }
       }
     };
     append(this.blocks(element.children));
-    if (waiting.length > 0) segments.push({ text: '', anchors: anchorsAt(waiting) });
+    placeWaiting();
     flushText();
     const rowSpan = rowSpanOf(element);
     const shape = { span: columnSpan(element), ...(rowSpan > 1 ? { rowSpan } : {}) };

@@ -2,7 +2,7 @@ import { EngineUnavailableError, type ConversionOptions } from '../../types';
 import { redrawAsPng } from '../image-to-png';
 import { MAX_DOCUMENT_IMAGE_PIXELS, MAX_IMAGES_PER_DOCUMENT, prepareEmbeddedImage } from '../html-blocks';
 import { PDF_DOCUMENT_SPACING, renderPdfBlocks, type PdfBlock, type PdfPageGeometry, type PdfRasterImage, type PdfTableCell } from '../pdf-blocks';
-import { anchorsAt, anchorsOf } from '../pdf-destinations';
+import { WaitingDestinations, anchorsAt, anchorsOf } from '../pdf-destinations';
 import type { PdfTextSegment } from '../pdf-fonts';
 import { uniqueAnchors } from './anchors';
 import type { Block, DocumentImage, DocumentModel, Inline, ListBlock, NoteDefinition, TableBlock } from './model';
@@ -125,17 +125,17 @@ class PdfBlockBuilder {
   private cellContent(blocks: readonly Block[]): PdfTextSegment[] {
     const content: PdfTextSegment[] = [];
     // Destinations of the blocks that show nothing, which stand at the start of the next block that shows text.
-    let waiting: PdfTextSegment[] = [];
+    const waiting = new WaitingDestinations<PdfTextSegment>();
     for (const block of blocks) {
       const segments: PdfTextSegment[] = block.type === 'heading' || block.type === 'paragraph' ? this.segments(block.runs) : [{ text: blockText(block) }];
       if (segments.every((segment) => segment.text.trim() === '')) {
-        waiting.push(...segments.filter((segment) => segment.anchors));
+        waiting.hold(segments.filter((segment) => segment.anchors));
         continue;
       }
       if (content.length > 0) content.push({ text: '\n' });
-      content.push(...waiting.splice(0), ...segments);
+      content.push(...waiting.release(), ...segments);
     }
-    content.push(...waiting);
+    content.push(...waiting.release());
     return content;
   }
 

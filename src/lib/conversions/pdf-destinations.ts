@@ -27,6 +27,24 @@ export function anchorsAt(names: readonly string[]): PdfAnchor[] {
   return names.map((name) => ({ name, at: 0 }));
 }
 
+/**
+ * The destinations of items that show nothing (an empty heading, a list item with no text) wait for the next item that
+ * shows text, which they lead, so that a link lands on text. What still waits at the end stands where the content ends.
+ */
+export class WaitingDestinations<T> {
+  private held: T[] = [];
+
+  /** Holds `items` for the next item that shows text. */
+  hold(items: readonly T[]): void {
+    this.held.push(...items);
+  }
+
+  /** Takes what is held: the items to put before the item that shows text, or after the last one at the end. */
+  release(): T[] {
+    return this.held.splice(0);
+  }
+}
+
 /** The text string of a name as the PDF stores it: US-ASCII, or UTF-16BE with a byte order mark (ISO 32000-1, 7.9.2.2). */
 function storedBytes(name: string): Buffer {
   for (let index = 0; index < name.length; index += 1) {
