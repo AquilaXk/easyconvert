@@ -26,6 +26,7 @@ Image output
 2. [JPEG chroma and encoder tools](#2-jpeg-chroma-and-encoder-tools)
 22. [Image metadata and alpha](#22-image-metadata-and-alpha)
 25. [16-bit sRGB tone-curve mapping and RAW development parity](#25-16-bit-srgb-tone-curve-mapping-and-raw-development-parity)
+36. [Image encoding fixed costs: AVIF from the source file, a wider decode-once route, one header read, JPEG on two threads, 16-bit tones for JPEG](#36-image-encoding-fixed-costs-avif-from-the-source-file-a-wider-decode-once-route-one-header-read-jpeg-on-two-threads-16-bit-tones-for-jpeg)
 
 Media and documents
 
@@ -43,8 +44,9 @@ Media and documents
 23. [Embedded SVG images, physical units and child clip paths](#23-embedded-svg-images-physical-units-and-child-clip-paths)
 24. [WOFF/WOFF2 font compression and colour bitmap fonts](#24-woffwoff2-font-compression-and-colour-bitmap-fonts)
 27. [Ebook FB2/MathML text fidelity and PDF compression structural repair](#27-ebook-fb2mathml-text-fidelity-and-pdf-compression-structural-repair)
-49. [PDF text from fonts without a Unicode map, and PDFs with an empty open password](#49-pdf-text-from-fonts-without-a-unicode-map-and-pdfs-with-an-empty-open-password)
+33. [OCR page preparation: leased image threads and a bounded skew sample](#33-ocr-page-preparation-leased-image-threads-and-a-bounded-skew-sample)
 46. [MIDI sources, bitmap subtitles in video containers, and streams the installed FFmpeg cannot decode](#46-midi-sources-bitmap-subtitles-in-video-containers-and-streams-the-installed-ffmpeg-cannot-decode)
+49. [PDF text from fonts without a Unicode map, and PDFs with an empty open password](#49-pdf-text-from-fonts-without-a-unicode-map-and-pdfs-with-an-empty-open-password)
 51. [HTML to PDF: what a page names that the PDF cannot carry](#51-html-to-pdf-what-a-page-names-that-the-pdf-cannot-carry)
 52. [Picture rows left by the real-file run: DX10 DDS surfaces, TIFF directories out of order, libheif and ImageMagick limits of the CI runner](#52-picture-rows-left-by-the-real-file-run-dx10-dds-surfaces-tiff-directories-out-of-order-libheif-and-imagemagick-limits-of-the-ci-runner)
 53. [PDF page trees that loop, and page deletion inside the document](#53-pdf-page-trees-that-loop-and-page-deletion-inside-the-document)
@@ -85,6 +87,7 @@ Usage limits
 
 Delivery
 
+32. [Code smell ratchet](#32-code-smell-ratchet)
 47. [Merging without the up-to-date requirement](#47-merging-without-the-up-to-date-requirement)
 
 Quality evidence
@@ -95,13 +98,14 @@ Quality evidence
 
 Tabular data
 
-26. [Tabular data fidelity and Parquet encodings](#26-tabular-data-fidelity-and-parquet-encodings)
+26. [Tabular data fidelity, Parquet encodings, and columnar fast paths](#26-tabular-data-fidelity-parquet-encodings-and-columnar-fast-paths)
 
 Compression
 
 28. [Zstandard level 3 match finder and literal cost floor](#28-zstandard-level-3-match-finder-and-literal-cost-floor)
-29. [Archive repacking in process: deflate engine, size bound and fail-over](#29-archive-repacking-in-process-deflate-engine-size-bound-and-fail-over)
+30. [Archive repacking in process: deflate engine, size bound and fail-over](#30-archive-repacking-in-process-deflate-engine-size-bound-and-fail-over)
 41. [Archive sources: package payloads, links, disk images, lzip and lzop](#41-archive-sources-package-payloads-links-disk-images-lzip-and-lzop)
+50. [tar to tar.bz2 by lbzip2 for small tarballs, and the measured floor of the xz, 7z and tar to 7z rows](#50-tar-to-tarbz2-by-lbzip2-for-small-tarballs-and-the-measured-floor-of-the-xz-7z-and-tar-to-7z-rows)
 56. [Archive rows of the real-file run: stripped rpm payloads, alternate streams, named volumes and methods, lzip and lzop listings](#56-archive-rows-of-the-real-file-run-stripped-rpm-payloads-alternate-streams-named-volumes-and-methods-lzip-and-lzop-listings)
 59. [Pictures to PostScript: one document of every page, a page of its own size, compressed samples](#59-pictures-to-postscript-one-document-of-every-page-a-page-of-its-own-size-compressed-samples)
 64. [The bzip2 block sort: induced sorting with the suffix type in the array entries, and the bound the nightly run holds](#64-the-bzip2-block-sort-induced-sorting-with-the-suffix-type-in-the-array-entries-and-the-bound-the-nightly-run-holds)
@@ -1880,19 +1884,26 @@ Compression
 
 ## 63. Flaky unit tests of the shard run: event-loop budgets, scaling ratios, temporary directories, big fixtures and the shard plan
 
-- **Status**: Implemented (flake rows of issue #692, epic #763), decided 2026-10-20 (QA request).
+- **Status**: Implemented (flake rows of issue #692, epic #763), decided 2026-10-20 (QA request); limits for programs, liveness checks and the numbering guard added 2026-10-23 (QA request).
 - **Decision**:
   - **The event-loop budget cases measure CPU time of the loop thread, not the lateness of a timer.** A timer fires every 5 ms and the case records how much CPU time the thread used since the previous tick (`process.threadCpuUsage()`); the largest value is the longest stretch of work the loop did without turning. The bound is unchanged (`EVENT_LOOP_BLOCK_BUDGET_MS` plus one tick), the synchronous controls still have to exceed it.
   - **A scaling comparison takes extra passes whenever its ratio is over the bound** (up to `MAX_SCALING_PASSES` in all, inside the same time budget). Before, a ratio above 1.5 times the bound was refused after the first three passes as clearly super-linear.
   - **A test that lists a temporary directory before and after a conversion runs the conversion with a `TMPDIR` of its own.** The archive-copy check of the 7z route and the pass-directory checks of the two-pass media tests did not; the RAW decode test already did.
   - **The over-cap encrypted ZIP is written in one pass by a script that implements the traditional ZIP cipher**, not staged as 50,001 files for 7-Zip to pack. 7-Zip lists every entry and decrypts one, so the fixture is still read by an independent tool.
   - **The shard plan records durations from real runs.** Every `tests` shard writes a JSON report and uploads it as `test-report-<shard>`; `scripts/ci-test-shards.mjs --update` merges the reports, drops the entries of files that are no longer sharded, and a test fails when more than 5% of the sharded files have no entry.
+  - **A test file that declares an oracle case has a default limit of 60 s** (`tests/helpers/cli-test-timeout.ts`, applied by `tests/helpers/oracle-test.ts` while the file's imports load). It covers the oracle cases and the plain cases around them, which reach the same programs through helpers. A limit the file sets itself afterwards, or a case names, replaces it. The limit stays finite, so a program that hangs still fails the case.
+  - **Liveness of a process is asked of `isProcessRunning` / `waitUntilStopped`, never of a signal of 0.** A signal of 0 succeeds on a zombie. `tests/process-liveness-checks.test.ts` fails on `process.kill(pid, 0)` and `kill -0` in the test sources; 13 call sites in 10 files moved to the helper.
+  - **A fixture does not outlive a timer the test races.** The process-state zombie fixture ends when its stdin closes, not after 5 s. The case of the job pool that needs a child too slow for a 1 ms deadline puts that job first, on a child that has converted nothing.
+  - **The numbering of this document is checked on every pull request** by `scripts/guard-policy-decisions.mjs` (`npm run guard:policy-decisions`, a step of the `changes` job, which documentation-only pull requests also run): no two headings with one number, every heading has a row in the contents and every row a heading, no number twice in the contents, a row's title and link equal its heading's, rows in numeric order within a group. The committed document had 11 faults when the check was written (five entries without a row, a row for 29 that named entry 30, a stale title for 26, rows 49 and 46 out of order, a number twice).
 - **Why**:
   - **Timer lateness measures the host.** On a 4-vCPU Linux machine with the thread pinned to two cores that 24 busy loops also used, the level-19 zstd case of the budget file failed 3 times in 8 (118.1, 107.7 and 130.9 ms against 105; the failure on the runner read 112.3), and 3 of 3 under 40 busy loops on one core (259.7, 156.4 and 251.8 ms). The same case through the CPU-time measure passed 30 of 30 under the first load, and 3 of 3 under the second. On the laptop the loop thread held the loop for 0.3 to 6.4 ms in every encode case; the synchronous encoders held it for 430 to 496 ms.
   - **A ratio of 13.09 (0.5 ms -> 7.0 ms) was final.** Work that grows linearly read 13x on a loaded runner; the helper refused anything above 12 (1.5 times 8) at once, so the best of three passes could not recover. The reader's work on 100 KB is 0.4 ms. The failure did not reproduce here: the old test passed 80 of 80 runs (8 busy loops; the 30 heaviest files running beside it), and about 100 measurements of the CPU-time ratio never passed 7.3. The cause of the inflated passes is therefore not known; the fix does not depend on it. Quadratic work stays over the bound on every pass (a reader made quadratic on purpose read 20.3x after the 12 passes), and the replay of the 13.2x case on a virtual clock fails without the change.
   - **Listings of a shared directory race.** A noise process that creates and removes `easyconvert-*.7z` or `easyconvert_pass_*` entries in the shared directory made the old checks fail 5 times in 5; with a private `TMPDIR` the same checks passed 30 of 30.
   - **The fixture's cost grew with its entry count.** Staging 50,001 files, packing them, rejecting the archive and removing the files took 8.6 s on an Apple-silicon laptop (staging 3.3, packing 2.0, extraction refusal 0.3, the `afterEach` removal 2.9) and 2 s on the test VM; on the CI runner the test took 24 s and its hook passed 10 s. The one-pass fixture takes 0.5 s on the VM and the hook removes one file.
   - **A flat second per unrecorded file unbalanced the shards.** 191 of 849 files (22%) had no entry; the six jobs of the last main run took 4:48 to 8:26. Weighed by their time on a machine of the runner's size, the heaviest shard is 1.19 times the mean (1.31 with the old table).
+  - **The zombie fixture and the child-survival case were not reproduced.** 200 runs of the old fixture (100 idle, 100 beside 48 busy processes) and 92 runs of the child-survival check (12 as the test, 80 straight from a shell, 40 of them beside 48 busy processes) all passed. What is shown is the clock: with a 6 s stall of the test process, the old fixture's parent and zombie were both gone and the new one's both remained. The child-survival check is changed because its method (`kill -0`) cannot tell a zombie from a survivor, the failure main CI showed for the same method in #809.
+  - **The peak-memory row is not changed.** The same 2000x2000 x 6 frame animation to GIF added 493.5 to 548.4 MiB over 10 runs on the test VM (mean 516; one run beside 16 busy processes included), against the 576 MiB bound; the runner measured 578.25 once. The spread of 55 MiB on one input is the allocator's, so the bound's margin of 64 MiB over the 512 MiB budget is thin, but nothing measured on a runner shows where it should be.
+  - **Cases that start programs are slower than an idle measurement says by the factor of the host's load.** The zstd case of levels 1 to 19 (76 compressions) takes 1.2 s on the 4-vCPU test VM, 4.0 and 5.8 s beside 16 busy processes, and 16.7 s (twice) beside 48; it timed out at 5.35 to 5.41 s on the runner three times. The first EPUB case runs 13 xmllint processes and takes 66 ms on the VM (62 to 66 in 3 runs), 326 to 370 ms beside 16 busy processes, 865 to 974 ms beside 48 and 3.49 and 3.57 s beside 160; the runner's 5.5 s is 83 times the idle figure, which is a runner far busier than the 4 vCPUs of the test VM. Of 2,506 oracle cases run once, 1,579 named a limit and 927 did not; re-timed alone (12-core laptop, 2 workers, load 4.3), the slowest without one took 3.3 s (a presentation to PNG through the office suite), then 2.4, 2.3 and 2.2 s, so a third to two thirds of the default on an idle machine.
 - **Trade-offs**:
   - **CPU time of the loop thread does not see a block that is not CPU time**: a thread that blocks on a lock or on a synchronous read for 200 ms and uses no CPU is not caught. The routed encoders compute, and none of the cases waits on a lock.
   - **A failing scaling comparison takes up to 12 passes**, a few seconds more for a real regression, bounded by the existing 20 s budget.
@@ -1904,8 +1915,11 @@ Compression
   - **Retrying a failed test**: the failure is the information; a retry of a wall-clock comparison passes whenever the host is quieter than the first time.
   - **Running the timing files alone in a second pass of each shard**: 46 files use the timing helpers or the loop monitor (about 350 s of recorded time), a second pass would add about a minute to every shard, and the files that failed did so on a ratio or a delay that the changes above no longer read from the host. Spreading them one per shard was weighed too: the plan already puts the files of 20 s or more in different shards (2 to 6 per shard before, 2 to 4 now), and what a timing file competes with is the other test processes of its own shard, which a plan across shards cannot change.
   - **Time-stamping the tests in the log to refresh the table**: the default reporter prints no per-file time for a passing file; only the JSON report has it.
-- **Verified by**: `tests/event-loop-budget.test.ts` (13 cases; the old and the new measure side by side under load), `tests/timing-helpers.test.ts` (the 13.2x replay and the quadratic case on a virtual clock), `tests/archive-seven-zip-hostile-members.test.ts` and `tests/media-two-pass-options.perf.test.ts` (run with a noise process in the shared directory, 30 of 30), `tests/encrypted-zip-extraction-containment.test.ts` (30 of 30 on the laptop; 7-Zip lists 50,001 entries and decrypts the first) and `tests/ci-test-shards.test.ts` (the share of unrecorded files, the update that drops entries, the report step of `ci.yml`).
-- **Revisit when**: a run of the `tests` job fails on the loop-thread measure (then the work is on the loop), the reports of a main run are available (replace the estimates with `--update`), the share of unrecorded files passes 5% again, or a test file needs a wall-clock bound that a CPU-time measure cannot express.
+  - **A default limit for every test file** (`testTimeout` in the project configuration): 44 helpers start programs, so the default would be right for them, but it would also loosen 5 s to 60 s for the pure-computation files whose cases have no measured reason for it. Files that import an oracle helper without `oracleTest` (51 of them) are not covered; they are the next place to look if a plain case of such a file times out.
+  - **Fewer xmllint runs in the EPUB case** (one query for all labels): it removes 10 of 13 runs, but the next case that queries a document in a loop would time out the same way; the limit covers the class.
+  - **Waiting for the zombie's parent in the process-state fixture**: the parent is `sh` replaced by `cat`; no wait is needed once nothing on a timer decides whether the fixture exists.
+- **Verified by**: `tests/oracle-test-timeout.test.ts` (an oracle case and a plain case in an oracle file get a limit of 30 to 120 s, and a limit named on a case is kept), `tests/process-liveness-checks.test.ts`, `tests/process-state.test.ts` (including `waitUntilStopped`), `tests/policy-decisions-numbering.test.ts` (each fault on a copy of the document, the command line, the CI step), `tests/event-loop-budget.test.ts` (13 cases; the old and the new measure side by side under load), `tests/timing-helpers.test.ts` (the 13.2x replay and the quadratic case on a virtual clock), `tests/archive-seven-zip-hostile-members.test.ts` and `tests/media-two-pass-options.perf.test.ts` (run with a noise process in the shared directory, 30 of 30), `tests/encrypted-zip-extraction-containment.test.ts` (30 of 30 on the laptop; 7-Zip lists 50,001 entries and decrypts the first) and `tests/ci-test-shards.test.ts` (the share of unrecorded files, the update that drops entries, the report step of `ci.yml`).
+- **Revisit when**: a plain case of a file without `oracleTest` times out at 5 s while it starts programs (then a project-wide default is due), the allocator's spread on the runner is measured and the margin of the peak-memory case is set from it, a run of the `tests` job fails on the loop-thread measure (then the work is on the loop), the reports of a main run are available (replace the estimates with `--update`), the share of unrecorded files passes 5% again, or a test file needs a wall-clock bound that a CPU-time measure cannot express.
 
 ## 64. The bzip2 block sort: induced sorting with the suffix type in the array entries, and the bound the nightly run holds
 
