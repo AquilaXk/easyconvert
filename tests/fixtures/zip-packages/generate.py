@@ -110,3 +110,9 @@ with tempfile.TemporaryDirectory() as work:
         # The media type is the first entry, stored; the rest is compressed (the layout the container specification asks for).
         subprocess.run(["zip", "-q", "-0"] + ([flags] if flags else []) + [out, "mimetype"], cwd=work, check=True)
         subprocess.run(["zip", "-q", "-9", "-r"] + ([flags] if flags else []) + [out, "META-INF", "chapter1.xhtml"], cwd=work, check=True)
+
+# CorelDRAW X4 and later packages (libcdr `CDRDocument::isSupported` looks for `content/riffData.cdr` or `content/root.dat`),
+# complete ZIP files with a central directory. 100 filler entries come before the marker or have no marker at all.
+FILLER = [("other/f%d.txt" % index, "x", STORED, None) for index in range(100)]
+write_zip("cdr-marker-after-100-entries.cdr", FILLER + [("content/root.dat", "root", STORED, None)])
+write_zip("cdr-100-entries-no-marker.cdr", [("content/f%d.dat" % index, "x", STORED, None) for index in range(100)])

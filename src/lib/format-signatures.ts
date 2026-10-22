@@ -266,7 +266,7 @@ const VISIO_STREAM_NAME: readonly number[] = [...'VisioDocument'].flatMap((char)
 /** CorelDRAW (libcdr `CDRDocument::isSupported`): a RIFF file whose form type starts with CDR, or an X4 and later ZIP package holding one of these entries. */
 const CDR_RIFF_FORM_PREFIXES: ReadonlySet<string> = new Set(['CDR', 'cdr']);
 const CDR_PACKAGE_ENTRIES: ReadonlySet<string> = new Set(['content/riffData.cdr', 'content/root.dat']);
-/** The folders a CorelDRAW package keeps its parts in: the first entry of one that continues past the bytes read. */
+/** The folders a CorelDRAW package keeps its parts in: the first entry of one that continues past the entries or bytes read. */
 const CDR_PACKAGE_FOLDERS = ['content/', 'metadata/', 'color/'];
 const ZIP_LOCAL_HEADER = 0x04034b50;
 const ZIP_LOCAL_HEADER_BYTES = 30;
@@ -277,8 +277,26 @@ const ZIP_DATA_DESCRIPTOR_BYTES = 16;
 const ZIP_DATA_DESCRIPTOR_SIZE_OFFSET = 8;
 /** `P`, the first byte of every ZIP record signature. */
 const ZIP_SIGNATURE_FIRST_BYTE = 0x50;
-/** Entries read from the start of a ZIP: the packages put their marking entries first (a handful of headers); this keeps a ZIP of thousands of entries as cheap as one of a few. */
-const ZIP_MAX_SCANNED_ENTRIES = 64;
+
+/** How far a walk of a ZIP's local file headers reads: at most `entries` headers, inside the first `bytes` bytes. */
+interface ZipWalkLimits {
+  entries: number;
+  bytes: number;
+}
+/**
+ * The type check reads the first entries of the header window: the packages put their marking entries first (a handful of
+ * headers), and this keeps a ZIP of thousands of entries as cheap as one of a few.
+ */
+const ZIP_SNIFF_LIMITS: ZipWalkLimits = { entries: 64, bytes: HEADER_WINDOW_BYTES };
+/**
+ * The CorelDRAW check reads the first 1024 entries inside the first 16 MiB. A package keeps one data entry per page before
+ * `content/root.dat` (in the 14-entry sample it is the 6th, after its single page), so a document of a few hundred pages puts the
+ * marking entry past the 64 entries of the type check. 1024 leaves room for such a document and ends the walk of a ZIP of tens
+ * of thousands of entries after that many headers. The 16 MiB bound keeps the one scan that costs by the byte, for the data
+ * descriptor of an entry it sizes, to about 45 ms (141 ms for 64 MiB); a package whose marking entry lies beyond it is read as a
+ * walk that did not end.
+ */
+const CDR_PACKAGE_LIMITS: ZipWalkLimits = { entries: 1024, bytes: 16 * 1024 * 1024 };
 
 /** A view of the bytes for little- and big-endian reads; the registry runs in the browser and the edge engines, so no Node Buffer. */
 function dataView(buf: Uint8Array): DataView {
@@ -344,17 +362,17 @@ function findDataDescriptor(head: Uint8Array, view: DataView, dataOffset: number
 
 /**
  * The entries a ZIP names in its local file headers, in order, from the start of the bytes. The walk reads at most the first
- * `ZIP_MAX_SCANNED_ENTRIES` entries inside the header window, so that its cost does not grow with the file, and stops where the
+ * `limits.entries` entries inside the first `limits.bytes` bytes, so that its cost does not grow with the file, and stops where the
  * headers end, where a header cannot be skipped (its data is sized by a descriptor that is not found, or runs past the bytes) or
  * where the bytes end. `complete` is true only when the entries are all of them: the next record is not a local file header.
  */
-function readZipLocalEntries(buf: Uint8Array): { entries: ZipLocalEntry[]; complete: boolean } {
-  const head = buf.subarray(0, Math.min(buf.length, HEADER_WINDOW_BYTES));
+function readZipLocalEntries(buf: Uint8Array, limits: ZipWalkLimits): { entries: ZipLocalEntry[]; complete: boolean } {
+  const head = buf.subarray(0, Math.min(buf.length, limits.bytes));
   const view = dataView(head);
   const entries: ZipLocalEntry[] = [];
   let offset = 0;
   while (offset + ZIP_LOCAL_HEADER_BYTES <= head.length && view.getUint32(offset, true) === ZIP_LOCAL_HEADER) {
-    if (entries.length === ZIP_MAX_SCANNED_ENTRIES) return { entries, complete: false };
+    if (entries.length === limits.entries) return { entries, complete: false };
     const nameLength = view.getUint16(offset + 26, true);
     const extraLength = view.getUint16(offset + 28, true);
     const nameOffset = offset + ZIP_LOCAL_HEADER_BYTES;
@@ -427,7 +445,7 @@ function packageOfMediaType(mediaType: string): string | undefined {
  */
 export function sniffZipPackage(buf: Uint8Array): string {
   const head = buf.subarray(0, HEADER_WINDOW_BYTES);
-  const { entries } = readZipLocalEntries(head);
+  const { entries } = readZipLocalEntries(head, ZIP_SNIFF_LIMITS);
   const first = entries[0];
   const declared = first?.name === MIMETYPE_ENTRY ? packageOfMediaType(storedMediaType(head, first) ?? '') : undefined;
   if (declared !== undefined) return declared;
@@ -440,7 +458,7 @@ export function sniffZipPackage(buf: Uint8Array): string {
 
 function isCorelDraw(buf: Uint8Array): boolean {
   if (buf.length >= 12 && LATIN1.decode(buf.subarray(0, 4)) === 'RIFF') return CDR_RIFF_FORM_PREFIXES.has(LATIN1.decode(buf.subarray(8, 11)));
-  const { entries, complete } = readZipLocalEntries(buf);
+  const { entries, complete } = readZipLocalEntries(buf, CDR_PACKAGE_LIMITS);
   const names = entries.map((entry) => entry.name);
   if (names.some((name) => CDR_PACKAGE_ENTRIES.has(name))) return true;
   return !complete && names.length > 0 && CDR_PACKAGE_FOLDERS.some((folder) => names[0].startsWith(folder));
