@@ -2,7 +2,6 @@ import { it, type TestContext } from 'vitest';
 import { boundTestsForCliWork } from './cli-test-timeout';
 import { ExternalOracleTool, getOracleToolPath, OracleToolMissingError } from './differential-oracle';
 
-// A file with an oracle case drives external programs, in the oracle cases and in the plain cases around them.
 boundTestsForCliWork();
 
 export type OracleTestFn = (ctx: TestContext) => void | Promise<void>;

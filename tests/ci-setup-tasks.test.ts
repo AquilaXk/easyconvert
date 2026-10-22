@@ -97,8 +97,6 @@ describe('the bound on every setup task', () => {
       run_tasks > /dev/null
     `, { PID_FILE: pidFile });
     expect(existsSync(pidFile)).toBe(true);
-    // Checked from here, not by `kill -0` in the script: that succeeds on a zombie, and the orphaned sleep stays one until
-    // init reaps it. The bound is far under the sleep's own 31 s, so a sleep nobody stopped still fails the case.
     expect(await waitUntilStopped(Number(readFileSync(pidFile, 'utf-8')), CHILD_STOP_BOUND_MS)).toBe(true);
   });
 

@@ -2,17 +2,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-/**
- * A signal of 0 succeeds on a zombie: a process that was killed stays in the process table until its parent, or init
- * for an orphan, reaps it, and on a loaded runner that takes seconds. `process.kill(pid, 0)` and `kill -0` therefore
- * report a dead process as running, which failed main CI more than once (#692). Tests ask
- * `isProcessRunning` / `waitUntilStopped` of `tests/helpers/process-state.ts`, which count a zombie as stopped.
- */
-
 const TESTS = __dirname;
 const SELF = path.relative(TESTS, __filename);
 const LIVENESS_PROBE = /process\.kill\(\s*(?!process\.pid\b)[^,()]+,\s*0\s*\)|\bkill\s+-0\b/;
-/** Files that probe on purpose: the helper itself, its test of a zombie, and a script that asks whether a pid is visible at all. */
 const PROBES_ON_PURPOSE = new Set(['helpers/process-state.ts', 'process-state.test.ts', 'sandbox-isolation.test.ts']);
 
 function sourceFiles(dir: string): string[] {

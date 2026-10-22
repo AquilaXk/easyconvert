@@ -17,10 +17,6 @@ function answersSignal(pid: number): boolean {
 
 describe('whether a process is running', () => {
   it('counts a zombie as stopped although it still answers a signal, and a live process as running', async () => {
-    // The shell starts `sleep 0` in the background, prints its pid and execs into `cat`, which never calls wait(), so the
-    // finished `sleep 0` stays a zombie until `cat` exits. `cat` ends when its stdin closes (the kill below, or the test
-    // process dying), not on a timer: with `sleep 5` a stall of 5 s in the test process, which a busy CI shard has, let the
-    // parent exit and init reap the zombie before the assertions ran.
     const parent = spawn('/bin/sh', ['-c', 'sleep 0 & echo $!; exec cat'], { stdio: ['pipe', 'pipe', 'ignore'] });
     try {
       const zombie = await new Promise<number>((resolve) => parent.stdout.once('data', (chunk: Buffer) => resolve(Number(chunk.toString().trim()))));

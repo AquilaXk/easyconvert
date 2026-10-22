@@ -5,12 +5,6 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { policyNumberingFaults } from '../scripts/guard-policy-decisions.mjs';
 
-/**
- * docs/policy-decisions.md is edited by hand in many pull requests at once, and two of them took the same entry
- * number several times in one week. The guard reads the document and lists the numbering faults; CI runs it on every
- * pull request, including those that change documentation only.
- */
-
 const ROOT = path.resolve(__dirname, '..');
 const GUARD = path.join(ROOT, 'scripts', 'guard-policy-decisions.mjs');
 const POLICY = readFileSync(path.join(ROOT, 'docs', 'policy-decisions.md'), 'utf-8');
@@ -21,7 +15,6 @@ afterAll(() => {
   for (const dir of temps) rmSync(dir, { recursive: true, force: true });
 });
 
-/** The document with `from` replaced by `to` exactly once; a fixture that no longer matches fails here, not silently. */
 function edited(from: string, to: string): string {
   expect(POLICY.split(from).length - 1, `"${from}" appears once in the document`).toBe(1);
   return POLICY.replace(from, to);

@@ -2,22 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/**
- * Numbering guard for docs/policy-decisions.md.
- *
- * Two pull requests that each add the next entry take the same number, and the table of contents is edited by hand, so
- * the file kept drifting: duplicate numbers, a heading with no row, a row for an entry that moved, rows out of order.
- * This check reads the file and lists every such fault; it runs in CI on every pull request (including the ones that
- * change documentation only) and as `npm run guard:policy-decisions`.
- *
- * Faults:
- *   - two `## N.` headings with the same number;
- *   - a heading with no row in the contents, or a row with no heading;
- *   - the same number in two rows of the contents;
- *   - a row whose title or link differs from its heading (a collision resolved by renumbering one side only);
- *   - rows out of numeric order within a group of the contents.
- */
-
+// Checks the numbering of docs/policy-decisions.md: headings, contents rows and their order.
 const DEFAULT_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs', 'policy-decisions.md');
 const HEADING = /^## (\d+)\. (.+)$/;
 const CONTENTS_START = /^## Contents\s*$/;
@@ -42,7 +27,6 @@ function readHeadings(lines) {
   return headings;
 }
 
-/** Rows of the contents with the group each belongs to (a group starts at a non-list, non-empty line). */
 function readRows(lines) {
   const start = lines.findIndex((text) => CONTENTS_START.test(text));
   if (start === -1) return { rows: [], found: false };

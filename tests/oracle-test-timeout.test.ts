@@ -1,14 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { oracleTest } from './helpers/oracle-test';
 
-/**
- * A case that drives external programs spends its time waiting for processes to be scheduled, so a runner that is busy
- * with other test files stretches it far past what an idle machine measures (an EPUB case of 66 ms took 3.5 s with 160
- * busy processes on 4 vCPUs; the CI runs of #692 lost the zstd and EPUB cases to the 5 s default). Cases and files that
- * reach an oracle program therefore carry a bound sized for that work, and the bound is still finite so a hung program
- * fails the case.
- */
-
 const CLI_WORK_BOUND_MS = 30_000;
 const HANG_BOUND_MS = 120_000;
 const VITEST_DEFAULT_MS = 5_000;
