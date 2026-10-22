@@ -128,6 +128,8 @@ interface StreamSpan {
 
 interface PdfObjectEntry {
   num: number;
+  /** Generation number of the definition (0 for an object inside an object stream, section 7.5.7). */
+  gen: number;
   /** Text the object lives in: the file, or the decoded text of the object stream that holds it. */
   source: string;
   start: number;
@@ -135,6 +137,35 @@ interface PdfObjectEntry {
   /** Position of the definition in the file; the later definition of an object number wins (section 7.5.6). */
   seq: number;
   stream?: StreamSpan;
+}
+
+/** A Type0 font dictionary (section 9.7.6) as the file defines it, with what a text reader needs of its descendant CIDFont. */
+export interface CompositeFontDictionary {
+  objectNumber: number;
+  generation: number;
+  /** The text of the dictionary (`<< ... >>`) as the file, or the object stream that holds it, writes it. */
+  text: string;
+  hasToUnicode: boolean;
+  /** The /Encoding name (Identity-H or a predefined CMap), or null for an embedded CMap stream. */
+  encoding: string | null;
+  /** /Subtype of the descendant CIDFont (CIDFontType0 or CIDFontType2). */
+  descendant: string | null;
+  /** /Registry and /Ordering of the descendant's /CIDSystemInfo, as written (a hex string keeps its digits). */
+  registry: string | null;
+  ordering: string | null;
+  /** The descendant's /CIDToGIDMap: `identity` when absent or /Identity, the decoded stream, or null when unreadable. */
+  cidToGidMap(): 'identity' | Buffer | null;
+  /** The decoded /FontFile2 of the descendant's font descriptor, or null when there is none or it cannot be decoded. */
+  trueTypeProgram(): Buffer | null;
+}
+
+/** What an incremental update of the file (section 7.5.6) refers back to. */
+export interface PdfUpdateBase {
+  root: { num: number; gen: number };
+  /** The first object number no definition of the file uses. */
+  nextObjectNumber: number;
+  /** Byte offset of the file's last cross-reference section, as its last `startxref` gives it. */
+  previousXref: number;
 }
 
 interface PageNode {
@@ -397,6 +428,8 @@ function upperBound(values: number[], target: number): number {
   return low;
 }
 
+/** The offset after the file's last `startxref` keyword. */
+const STARTXREF = /^startxref\s+(\d{1,15})/;
 /** Names of the `Do` operators in a content stream, in drawing order. */
 const DO_OPERATOR = /\/([^\s/<>[\](){}%]+)\s+Do(?![A-Za-z0-9*'"])/g;
 
@@ -447,7 +480,7 @@ export class PdfDocument {
   }
 
   /** Reads "<num> <gen> " in front of an `obj` keyword at `objAt`. */
-  private objectHeaderBefore(objAt: number): number | null {
+  private objectHeaderBefore(objAt: number): { num: number; gen: number } | null {
     const src = this.text;
     const floor = Math.max(0, objAt - MAX_OBJECT_HEADER_LOOKBACK);
     let i = objAt - 1;
@@ -456,12 +489,13 @@ export class PdfDocument {
     const genEnd = i;
     while (i >= floor && isDigit(src.charCodeAt(i))) i--;
     if (i === genEnd || genEnd - i > MAX_GENERATION_DIGITS) return null;
+    const gen = Number(src.slice(i + 1, genEnd + 1));
     if (i < floor || !isWhite(src.charCodeAt(i))) return null;
     while (i >= floor && isWhite(src.charCodeAt(i))) i--;
     const numEnd = i;
     while (i >= floor && isDigit(src.charCodeAt(i))) i--;
     if (i === numEnd || numEnd - i > MAX_OBJECT_NUMBER_DIGITS) return null;
-    return Number(src.slice(i + 1, numEnd + 1));
+    return { num: Number(src.slice(i + 1, numEnd + 1)), gen };
   }
 
   private noteTrailer(dict: PdfDict): void {
@@ -489,22 +523,22 @@ export class PdfDocument {
         continue;
       }
 
-      const num = this.objectHeaderBefore(objAt);
+      const header = this.objectHeaderBefore(objAt);
       const afterKeyword = objAt + 3;
-      if (num === null || isRegular(src.charCodeAt(afterKeyword))) {
+      if (header === null || isRegular(src.charCodeAt(afterKeyword))) {
         pos = afterKeyword;
         continue;
       }
-      pos = this.scanObject(num, objAt, afterKeyword);
+      pos = this.scanObject(header, objAt, afterKeyword);
     }
   }
 
   /** Registers the object whose body starts at `bodyFrom` and returns where scanning resumes. */
-  private scanObject(num: number, seq: number, bodyFrom: number): number {
+  private scanObject({ num, gen }: { num: number; gen: number }, seq: number, bodyFrom: number): number {
     const src = this.text;
     const start = skipWhite(src, bodyFrom);
     const valueEnd = skipValue(src, start);
-    const entry: PdfObjectEntry = { num, source: src, start, end: valueEnd, seq };
+    const entry: PdfObjectEntry = { num, gen, source: src, start, end: valueEnd, seq };
 
     const afterValue = skipWhite(src, valueEnd);
     const startsDict = src.charCodeAt(start) === CHAR_LESS && src.charCodeAt(start + 1) === CHAR_LESS;
@@ -580,7 +614,7 @@ export class PdfDocument {
         // An entry ends where the next higher offset begins, so entries never overlap and one pass covers them all.
         const next = offsets[upperBound(offsets, start)] ?? decoded.length;
         const end = Math.min(next, start + MAX_PDF_OBJSTM_ENTRY_BYTES);
-        this.register({ num: member.num, source: decoded, start, end, seq: holder.seq });
+        this.register({ num: member.num, gen: 0, source: decoded, start, end, seq: holder.seq });
       }
     }
   }
@@ -939,6 +973,87 @@ export class PdfDocument {
       const content = this.decodeStream(entry);
       if (content !== null) visit(content);
     }
+  }
+
+  /**
+   * The Type0 font dictionaries that the resources of the pages, and of the form XObjects those resources name, refer
+   * to by reference, each once and at most `limit`. Streams they lead to are decoded on demand within `budget`; one that
+   * does not decode reads as null. Encrypted files and files without page structure have none.
+   */
+  compositeFonts(limit: number, budget: InflateBudget): CompositeFontDictionary[] {
+    const pages = this.encrypted ? null : this.pages();
+    if (pages === null) return [];
+    const fonts = new Map<number, CompositeFontDictionary>();
+    const visited = new Set<PdfDict>();
+    const visit = (resources: PdfValue, depth: number): void => {
+      const dict = this.resolveDict(resources);
+      if (!dict || visited.has(dict) || fonts.size >= limit) return;
+      visited.add(dict);
+      for (const reference of this.resolveDict(dict.entries.get('Font'))?.entries.values() ?? []) {
+        if (fonts.size >= limit || !isRef(reference) || fonts.has(reference.num)) continue;
+        const font = this.compositeFont(reference.num, budget);
+        if (font) fonts.set(reference.num, font);
+      }
+      if (depth >= MAX_PDF_FORM_DEPTH) return;
+      for (const reference of this.resolveDict(dict.entries.get('XObject'))?.entries.values() ?? []) {
+        const form = this.entryOf(reference)?.stream?.dict;
+        if (form && isName(form.entries.get('Subtype'), 'Form')) visit(form.entries.get('Resources') ?? null, depth + 1);
+      }
+    };
+    for (const page of pages) visit(page.resources, 0);
+    return [...fonts.values()];
+  }
+
+  private compositeFont(num: number, budget: InflateBudget): CompositeFontDictionary | null {
+    const entry = this.index.get(num);
+    const dict = this.resolveDict({ kind: 'ref', num });
+    if (!entry || entry.stream || !dict || !isName(dict.entries.get('Subtype'), 'Type0')) return null;
+    const descendants = this.resolve(dict.entries.get('DescendantFonts'));
+    const descendant = this.resolveDict(isArray(descendants) ? descendants.items[0] : undefined);
+    const system = this.resolveDict(descendant?.entries.get('CIDSystemInfo'));
+    const descriptor = this.resolveDict(descendant?.entries.get('FontDescriptor'));
+    const encoding = this.resolve(dict.entries.get('Encoding'));
+    const subtype = descendant?.entries.get('Subtype');
+    const text = (key: string): string | null => {
+      const value = this.resolve(system?.entries.get(key));
+      return value !== null && typeof value === 'object' && value.kind === 'string' ? value.value : null;
+    };
+    const decoded = (value: PdfValue | undefined): Buffer | null => {
+      const stream = this.entryOf(value);
+      if (!stream || this.isImage(stream)) return null;
+      try {
+        const content = this.decodeStream(stream, budget, false);
+        return content === null ? null : Buffer.from(content, 'latin1');
+      } catch {
+        return null;
+      }
+    };
+    return {
+      objectNumber: num,
+      generation: entry.gen,
+      text: entry.source.slice(entry.start, entry.end),
+      hasToUnicode: dict.entries.has('ToUnicode'),
+      encoding: isName(encoding) ? encoding.value : null,
+      descendant: isName(subtype) ? subtype.value : null,
+      registry: text('Registry'),
+      ordering: text('Ordering'),
+      cidToGidMap: () => {
+        const map = descendant?.entries.get('CIDToGIDMap');
+        if (map === undefined || isName(this.resolve(map), 'Identity')) return 'identity';
+        return decoded(map);
+      },
+      trueTypeProgram: () => decoded(descriptor?.entries.get('FontFile2')),
+    };
+  }
+
+  /** The root, the next free object number and the last cross-reference offset, or null when the file names no root or `startxref`. */
+  updateBase(): PdfUpdateBase | null {
+    const root = this.rootRef ? this.index.get(this.rootRef.num) : undefined;
+    const startxref = STARTXREF.exec(this.text.slice(this.text.lastIndexOf('startxref')));
+    if (!root || !startxref || this.encrypted) return null;
+    let highest = 0;
+    for (const num of this.index.keys()) highest = Math.max(highest, num);
+    return { root: { num: root.num, gen: root.gen }, nextObjectNumber: highest + 1, previousXref: Number(startxref[1]) };
   }
 
   /** Reads every stream in file order for a file with no page structure, each pass on its own budget. */

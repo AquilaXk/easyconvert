@@ -20,18 +20,29 @@ function wordsOf(text: string): string[] {
 
 /** F1 of the word multisets of the hypothesis against the reference. */
 export function wordF1(reference: string, hypothesis: string): number {
-  const ref = wordsOf(reference);
-  const hyp = wordsOf(hypothesis);
-  if (ref.length === 0) throw new RangeError('word F1 needs a reference with at least one word');
+  return multisetF1(wordsOf(reference), wordsOf(hypothesis));
+}
+
+/**
+ * F1 of the multisets of characters other than white space: the measure for text without spaces between words (Chinese,
+ * Japanese), where the word split of wordF1 turns whole lines into words.
+ */
+export function characterF1(reference: string, hypothesis: string): number {
+  const charactersOf = (text: string) => [...normalizeOcrText(text)].filter((character) => !/\s/u.test(character));
+  return multisetF1(charactersOf(reference), charactersOf(hypothesis));
+}
+
+function multisetF1(ref: string[], hyp: string[]): number {
+  if (ref.length === 0) throw new RangeError('F1 needs a reference with at least one item');
   if (hyp.length === 0) return 0;
   const available = new Map<string, number>();
-  for (const word of ref) available.set(word, (available.get(word) ?? 0) + 1);
+  for (const item of ref) available.set(item, (available.get(item) ?? 0) + 1);
   let matched = 0;
-  for (const word of hyp) {
-    const left = available.get(word) ?? 0;
+  for (const item of hyp) {
+    const left = available.get(item) ?? 0;
     if (left > 0) {
       matched++;
-      available.set(word, left - 1);
+      available.set(item, left - 1);
     }
   }
   if (matched === 0) return 0;
