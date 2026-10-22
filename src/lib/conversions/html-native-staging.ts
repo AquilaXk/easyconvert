@@ -84,6 +84,15 @@ const WIDTH_ATTRIBUTE = 'width';
  * the same way. A table that is wider is written at this width; a narrower one, which still ends on the page, is left as it is.
  */
 const PAGE_EDGE_WIDTH_PX = 718;
+/**
+ * Width of the whole A4 page (794 px at 96 dpi). The suite moves a floating table (`align="left"` or `"right"`) left, past the
+ * left margin if it must, until it ends on the page (measured on 24.2), so a floating table loses words only from this width
+ * on. It is written at this width when it is wider, and left as it is otherwise: the suite does not split a floating table
+ * across pages, so narrowing one only makes it taller and cuts more of it off at the foot of the page.
+ */
+const PAGE_WIDTH_PX = 794;
+const ALIGN_ATTRIBUTE = 'align';
+const FLOATING_ALIGNMENTS: ReadonlySet<string> = new Set(['left', 'right']);
 const FIXED_WIDTH = /^[ \t\n\f\r]*(\d+)(?:px)?[ \t\n\f\r]*$/i;
 const CSS_IDENTIFIER_CHARACTER = /[\w-]/;
 /** Elements that render nothing, dropped with their content: scripts, templates, fallbacks and head metadata. */
@@ -303,10 +312,15 @@ function namesId(css: string, id: string): boolean {
   return false;
 }
 
-/** A table's `width` as it is written: a fixed width past the right edge of the page becomes the width up to the edge. */
-function fitTableWidth(value: string): string {
+/**
+ * A table's `width` as it is written: a fixed width past the right edge of the page becomes the width up to the edge, which
+ * for a floating table is the width of the page (see PAGE_WIDTH_PX).
+ */
+function fitTableWidth(table: HtmlElement, value: string): string {
   const fixed = FIXED_WIDTH.exec(value);
-  return fixed !== null && Number(fixed[1]) > PAGE_EDGE_WIDTH_PX ? String(PAGE_EDGE_WIDTH_PX) : value;
+  const alignment = asciiLowerCase((table.attrs.get(ALIGN_ATTRIBUTE) ?? '').replace(ASCII_WHITESPACE, ''));
+  const edge = FLOATING_ALIGNMENTS.has(alignment) ? PAGE_WIDTH_PX : PAGE_EDGE_WIDTH_PX;
+  return fixed !== null && Number(fixed[1]) > edge ? String(edge) : value;
 }
 
 /** Writes the allowlisted part of a checked tree as escaped HTML. */
@@ -418,7 +432,7 @@ class StagedHtmlWriter {
     }
     if (name === ID_ATTRIBUTE && this.isLeftOutAsSection(element, value)) return null;
     if (name === NOWRAP_ATTRIBUTE && this.releasedNowrap.has(element)) return null;
-    if (name === WIDTH_ATTRIBUTE && element.tag === TABLE_ELEMENT) return fitTableWidth(stripControls(value));
+    if (name === WIDTH_ATTRIBUTE && element.tag === TABLE_ELEMENT) return fitTableWidth(element, stripControls(value));
     return WRITTEN_ATTRIBUTES.has(name) ? stripControls(value) : null;
   }
 
