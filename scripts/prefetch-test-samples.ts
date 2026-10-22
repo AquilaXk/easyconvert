@@ -1,12 +1,13 @@
 /**
- * Fetches every real-world corpus file that the tests name into the corpus cache before the run, so no test waits on a
+ * Fetches every real-world or regression corpus file that the tests name into the corpus cache before the run, so no test waits on a
  * download inside its own timeout. The files are found, not listed: a manifest id that occurs as a quoted string in a
  * file under tests/ is a sample some test reads. Under ORACLE_STRICT_MODE=1 (CI) a file that cannot be fetched fails the run.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureCached, findCached, mapLimit, testSampleCacheDirectory } from '../bench/realworld/fetch';
-import { MANIFEST_PATH, type CorpusFile } from '../bench/realworld/manifest';
+import type { CorpusFile } from '../bench/realworld/manifest';
+import { readTestSampleFiles } from '../bench/realworld/test-samples';
 
 const TESTS_DIRECTORY = path.resolve(__dirname, '..', 'tests');
 const FETCH_CONCURRENCY = 6;
@@ -33,7 +34,7 @@ export function findTestSampleIds(manifestIds: readonly string[], testsDirectory
 }
 
 async function main(): Promise<number> {
-  const files = (JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8')) as { files: CorpusFile[] }).files;
+  const files = readTestSampleFiles();
   const byId = new Map(files.map((file) => [file.id, file]));
   const ids = findTestSampleIds(files.map((file) => file.id), TESTS_DIRECTORY);
   const cacheDirectory = testSampleCacheDirectory();

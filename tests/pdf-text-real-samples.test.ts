@@ -16,7 +16,8 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
- * The PDF text rows of #783 on the real files of the corpus (bench/realworld/manifest.json): fonts without a Unicode map,
+ * The PDF text rows of #783 on the real files of the corpus (bench/realworld/manifest.json, and for the two cc- files
+ * bench/realworld/regression-manifest.json, which holds them): fonts without a Unicode map,
  * PDFs that open with the empty password, and PDFs that no reader can open. Poppler (`pdftotext`, `pdfimages`) is the
  * independent reader: it reads the same bytes, and the expected strings are ones its output holds (one test, where Poppler
  * leaves the glyphs out, says what it compares with instead).
