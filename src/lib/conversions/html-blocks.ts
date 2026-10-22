@@ -829,11 +829,19 @@ class HtmlBlockBuilder {
     const context: InlineContext = { segments: [], images: [] };
     for (const child of node.children) this.inline(child, undefined, context, true);
     if (context.images.length > 0) throw unsupported('<img> inside <pre>');
+    const anchors: PdfAnchor[] = [];
+    let joined = '';
+    for (const segment of context.segments) {
+      for (const anchor of segment.anchors ?? []) anchors.push({ name: anchor.name, at: joined.length + anchor.at });
+      joined += segment.text;
+    }
     // A line break right after <pre> is not part of the content.
-    const text = context.segments.map((segment) => segment.text).join('').replace(/^\r?\n/, '');
-    // The text is drawn as one piece: the targets inside it are at its start.
-    const names = anchorsOf(context.segments);
-    return [...(names.length > 0 ? [{ kind: 'anchor' as const, names }] : []), ...(text.length > 0 ? [{ kind: 'preformatted' as const, text }] : [])];
+    const leading = /^\r?\n/.exec(joined)?.[0].length ?? 0;
+    const text = joined.slice(leading);
+    const inside = anchors.map(({ name, at }) => ({ name, at: Math.max(0, at - leading) }));
+    // Without text the targets wait for the next block.
+    if (text.length === 0) return inside.length > 0 ? [{ kind: 'anchor', names: inside.map((anchor) => anchor.name) }] : [];
+    return [{ kind: 'preformatted', text, ...(inside.length > 0 ? { anchors: inside } : {}) }];
   }
 
   /** The list, and after it the destinations of items that draw nothing when no item follows them. */
@@ -983,7 +991,7 @@ function linkedSegment(text: string, target: LinkTarget | undefined): PdfTextSeg
 
 /** The text a block holds as segments: its content, or its text, or none. */
 function textSegmentsOf(block: PdfBlock): readonly PdfTextSegment[] {
-  if (block.kind === 'preformatted') return [{ text: block.text }];
+  if (block.kind === 'preformatted') return [{ text: block.text, anchors: block.anchors }];
   return block.kind === 'paragraph' || block.kind === 'heading' ? block.content : [];
 }
 

@@ -116,7 +116,7 @@ const cases: Case[] = [
   { label: 'a list item', html: page(['i'], `${filler}<ul><li>Beta</li><li id="i">Alpha</li></ul>`), onLaterPage: true },
   {
     label: 'a preformatted block, a rule and an element inside the preformatted text',
-    html: page(['code', 'rule', 'mid'], `${filler}<pre id="code">Alpha one</pre><hr id="rule"><pre>Beta <span id="mid">two</span></pre>`),
+    html: page(['code', 'rule', 'mid'], `${filler}<pre id="code">Alpha one</pre><hr id="rule"><pre>Beta one\nBeta two\n<span id="mid">Gamma</span> three\nDelta four</pre>`),
     onLaterPage: true,
   },
   {

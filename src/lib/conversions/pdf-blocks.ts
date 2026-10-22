@@ -1,7 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { ConversionFailedError } from '../types';
 import { anchorsAt, anchorsOf } from './pdf-destinations';
-import { PdfUnicodeTextWriter, loadFontCoverageIndex, type PdfTextSegment } from './pdf-fonts';
+import { PdfUnicodeTextWriter, loadFontCoverageIndex, type PdfAnchor, type PdfTextSegment } from './pdf-fonts';
 import { layoutTable, type Flow, type TableContext } from './pdf-table';
 import { PX_TO_PT } from './pdf-table-metrics';
 
@@ -17,7 +17,7 @@ import { PX_TO_PT } from './pdf-table-metrics';
 export type PdfBlock =
   | { kind: 'heading'; level: number; content: PdfTextSegment[] }
   | { kind: 'paragraph'; content: PdfTextSegment[] }
-  | { kind: 'preformatted'; text: string }
+  | { kind: 'preformatted'; text: string; anchors?: readonly PdfAnchor[] }
   | { kind: 'list'; ordered: boolean; start: number; items: PdfBlock[][]; markers?: readonly string[] }
   | { kind: 'table'; rows: PdfTableCell[][] }
   | { kind: 'image'; image: PdfRasterImage }
@@ -173,7 +173,7 @@ class PdfBlockRenderer {
         this.renderText(block.content, BODY_FONT_SIZE, indent, gapLines);
         return;
       case 'preformatted':
-        this.renderText([{ text: block.text }], PREFORMATTED_FONT_SIZE, indent, gapLines);
+        this.renderText([{ text: block.text, anchors: block.anchors }], PREFORMATTED_FONT_SIZE, indent, gapLines);
         return;
       case 'list':
         this.renderList(block.ordered, block.start, block.items, indent, block.markers);
@@ -323,6 +323,9 @@ function declaredAnchors(blocks: readonly PdfBlock[], names: Set<string> = new S
       case 'heading':
       case 'paragraph':
         addContent(block.content);
+        break;
+      case 'preformatted':
+        block.anchors?.forEach((anchor) => names.add(anchor.name));
         break;
       case 'list':
         block.items.forEach((item) => declaredAnchors(item, names));
