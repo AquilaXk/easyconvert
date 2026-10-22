@@ -7,6 +7,7 @@ import { convertFile } from '../src/lib/conversions/index';
 import { withFontProgramToUnicode } from '../src/lib/conversions/pdf-font-tounicode';
 import { assertPdfStreamsWithinLimits } from '../src/lib/conversions/pdf-stream-guard';
 import { requireOracleTool } from './helpers/differential-oracle';
+import { repeatedRecordsFont, sharedProgramPdf } from './helpers/hostile-cmap-font';
 import { hasControlCharacters } from './helpers/pdf-text-metrics';
 import { extraObjectNumber, rawPdf } from './helpers/raw-pdf';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -195,5 +196,48 @@ describe('font programs that give no text', () => {
   it('reads the document as before when the cmap claims more encoding records than it holds', async () => {
     const hostile = await textOf(compositeFontPdf({ cids: SENTENCE_GLYPHS, program: withClaimedCmapRecords(FONT_PROGRAM) }));
     expect(hostile).toBe(await textOf(compositeFontPdf({ cids: SENTENCE_GLYPHS, program: null })));
+  });
+});
+
+describe('many fonts that share one font program', () => {
+  const SHARING_FONTS = 64;
+  const BOUND_MS = 1_000;
+  const readable = (pdf: Buffer) => withFontProgramToUnicode(pdf, assertPdfStreamsWithinLimits(pdf));
+  const timed = <T>(read: () => T): { value: T; ms: number } => {
+    const started = performance.now();
+    const value = read();
+    return { value, ms: performance.now() - started };
+  };
+
+  it('are read within a second when the program repeats one unreadable cmap subtable, and the file is passed on as it is', () => {
+    const pdf = sharedProgramPdf(SHARING_FONTS, repeatedRecordsFont(0xffff));
+    const { value, ms } = timed(() => readable(pdf));
+    expect(value).toBe(pdf);
+    expect(ms).toBeLessThan(BOUND_MS);
+  });
+
+  it('each get the text of the readable subtable behind such records, within a second', () => {
+    const pdf = sharedProgramPdf(SHARING_FONTS, repeatedRecordsFont(0xfffe, true));
+    const { value, ms } = timed(() => readable(pdf));
+    expect(value.subarray(0, pdf.length).equals(pdf)).toBe(true);
+    expect(value.toString('latin1').split('<0007> <0061>').length - 1).toBe(SHARING_FONTS);
+    expect(ms).toBeLessThan(BOUND_MS);
+  });
+
+  it('each get their text from a program of 40 MiB, which the document budget of 64 MiB allows once', () => {
+    const program = Buffer.concat([repeatedRecordsFont(0xfffe, true), Buffer.alloc(40 * 1024 * 1024)]);
+    const updated = readable(sharedProgramPdf(SHARING_FONTS, program));
+    expect(updated.toString('latin1').split('<0007> <0061>').length - 1).toBe(SHARING_FONTS);
+  });
+
+  it('cost no more to read as a stream that inflates past the cap than as one font, and the file is passed on as it is', () => {
+    const bomb = Buffer.alloc(70 * 1024 * 1024);
+    const one = sharedProgramPdf(1, bomb);
+    const many = sharedProgramPdf(SHARING_FONTS, bomb);
+    const single = timed(() => readable(one));
+    const shared = timed(() => readable(many));
+    expect(single.value).toBe(one);
+    expect(shared.value).toBe(many);
+    expect(shared.ms).toBeLessThan(single.ms * 4 + 150);
   });
 });

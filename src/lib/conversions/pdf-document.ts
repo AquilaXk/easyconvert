@@ -1,4 +1,4 @@
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, DecompressionLimitError } from '../types';
 import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bounded-inflate';
 import {
   PREDICTOR_PNG_MAX,
@@ -977,13 +977,16 @@ export class PdfDocument {
 
   /**
    * The Type0 font dictionaries that the resources of the pages, and of the form XObjects those resources name, refer
-   * to by reference, each once and at most `limit`. Streams they lead to are decoded on demand within `budget`; one that
-   * does not decode reads as null. Encrypted files and files without page structure have none.
+   * to by reference, each once and at most `limit`. Streams they lead to are decoded on demand within `budget`, each stream
+   * once however many fonts name it; one that does not decode reads as null, and one that inflates past a limit throws a
+   * DecompressionLimitError, so that no later font pays for the same stream again. Encrypted files and files without page
+   * structure have none.
    */
   compositeFonts(limit: number, budget: InflateBudget): CompositeFontDictionary[] {
     const pages = this.encrypted ? null : this.pages();
     if (pages === null) return [];
     const fonts = new Map<number, CompositeFontDictionary>();
+    const streams = new Map<number, Buffer | null>();
     const visited = new Set<PdfDict>();
     const visit = (resources: PdfValue, depth: number): void => {
       const dict = this.resolveDict(resources);
@@ -991,7 +994,7 @@ export class PdfDocument {
       visited.add(dict);
       for (const reference of this.resolveDict(dict.entries.get('Font'))?.entries.values() ?? []) {
         if (fonts.size >= limit || !isRef(reference) || fonts.has(reference.num)) continue;
-        const font = this.compositeFont(reference.num, budget);
+        const font = this.compositeFont(reference.num, budget, streams);
         if (font) fonts.set(reference.num, font);
       }
       if (depth >= MAX_PDF_FORM_DEPTH) return;
@@ -1004,7 +1007,7 @@ export class PdfDocument {
     return [...fonts.values()];
   }
 
-  private compositeFont(num: number, budget: InflateBudget): CompositeFontDictionary | null {
+  private compositeFont(num: number, budget: InflateBudget, streams: Map<number, Buffer | null>): CompositeFontDictionary | null {
     const entry = this.index.get(num);
     const dict = this.resolveDict({ kind: 'ref', num });
     if (!entry || entry.stream || !dict || !isName(dict.entries.get('Subtype'), 'Type0')) return null;
@@ -1021,12 +1024,17 @@ export class PdfDocument {
     const decoded = (value: PdfValue | undefined): Buffer | null => {
       const stream = this.entryOf(value);
       if (!stream || this.isImage(stream)) return null;
+      const known = streams.get(stream.num);
+      if (known !== undefined) return known;
+      let bytes: Buffer | null = null;
       try {
         const content = this.decodeStream(stream, budget, false);
-        return content === null ? null : Buffer.from(content, 'latin1');
-      } catch {
-        return null;
+        bytes = content === null ? null : Buffer.from(content, 'latin1');
+      } catch (error) {
+        if (error instanceof DecompressionLimitError) throw error;
       }
+      streams.set(stream.num, bytes);
+      return bytes;
     };
     return {
       objectNumber: num,

@@ -1,7 +1,7 @@
 import { ConversionFailedError } from '../types';
 import { InflateBudget } from './bounded-inflate';
 import type { CompositeFontDictionary, PdfDocument, PdfUpdateBase } from './pdf-document';
-import { readUnicodeCmap } from './truetype-cmap';
+import { type UnicodeCmap, readUnicodeCmap } from './truetype-cmap';
 
 /**
  * The text of composite fonts that carry no /ToUnicode map, read from the TrueType program they embed.
@@ -65,13 +65,21 @@ function readsFromProgram(font: CompositeFontDictionary): boolean {
   );
 }
 
+/** The cmaps read so far, by program: fonts that share a program (the same bytes object) read it once. */
+type CmapsByProgram = Map<Buffer, UnicodeCmap | null>;
+
+function cmapOf(program: Buffer, known: CmapsByProgram): UnicodeCmap | null {
+  if (!known.has(program)) known.set(program, readUnicodeCmap(program));
+  return known.get(program) ?? null;
+}
+
 /** The CIDs of the font whose text the program's cmap gives and the CID itself does not. */
-function cidTexts(font: CompositeFontDictionary): CidText[] {
+function cidTexts(font: CompositeFontDictionary, known: CmapsByProgram): CidText[] {
   if (!readsFromProgram(font)) return [];
   const cidToGid = font.cidToGidMap();
   if (cidToGid === null) return [];
   const program = font.trueTypeProgram();
-  const cmap = program === null ? null : readUnicodeCmap(program);
+  const cmap = program === null ? null : cmapOf(program, known);
   if (cmap === null) return [];
   const glyphCount = cmap.codePointOfGlyph.length;
   const cids = cidToGid === 'identity' ? glyphCount : Math.min(CID_COUNT, Math.floor(cidToGid.length / 2));
@@ -86,9 +94,10 @@ function cidTexts(font: CompositeFontDictionary): CidText[] {
 
 function fontMaps(fonts: CompositeFontDictionary[]): FontMap[] {
   const maps: FontMap[] = [];
+  const known: CmapsByProgram = new Map();
   let mapped = 0;
   for (const font of fonts) {
-    const entries = cidTexts(font);
+    const entries = cidTexts(font, known);
     if (entries.length === 0 || mapped + entries.length > MAX_MAPPED_CIDS) continue;
     mapped += entries.length;
     maps.push({ font, entries });
@@ -156,7 +165,8 @@ function incrementalUpdate(fileLength: number, base: PdfUpdateBase, maps: FontMa
 
 /**
  * `pdf` with a /ToUnicode map added to every composite font whose TrueType program gives text its CIDs lack; the same
- * bytes when there is none. A font whose program, map or tables do not read is left as it is.
+ * bytes when there is none. A font whose program, map or tables do not read is left as it is. A stream that inflates past
+ * a limit ends the pass: the file is then passed on as it is, so a limit is met once and never papered over for some fonts.
  */
 export function withFontProgramToUnicode(pdf: Buffer, document: PdfDocument): Buffer {
   try {
