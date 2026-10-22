@@ -2672,14 +2672,14 @@
     "rule": "complexity",
     "function": "sniffMimeTypeFromMagicBytes",
     "count": 1,
-    "maxValue": 66
+    "maxValue": 54
   },
   {
     "file": "src/lib/registry.ts",
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3338
+    "maxValue": 3312
   },
   {
     "file": "src/lib/security/memory-shredder.ts",
