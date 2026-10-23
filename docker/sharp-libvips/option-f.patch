@@ -1,0 +1,30 @@
+--- a/build/posix.sh
++++ b/build/posix.sh
+@@ -201,15 +201,15 @@
+ $CURL https://github.com/mozilla/mozjpeg/commit/f90668e0e4fb79c81e1f24a0ccc0e2090af761bf.patch | patch -p1
+ # Use libjpeg-turbo behaviour by default
+ sed -i'.bak' 's/JCP_MAX_COMPRESSION/JCP_FASTEST/' jcapimin.c
+-cmake -G"Unix Makefiles" \
+-  -DCMAKE_TOOLCHAIN_FILE=${ROOT}/Toolchain.cmake -DCMAKE_INSTALL_PREFIX=${TARGET} -DCMAKE_INSTALL_LIBDIR:PATH=lib -DCMAKE_BUILD_TYPE=MinSizeRel \
++CFLAGS="${CFLAGS} -O3" cmake -G"Unix Makefiles" \
++  -DCMAKE_TOOLCHAIN_FILE=${ROOT}/Toolchain.cmake -DCMAKE_INSTALL_PREFIX=${TARGET} -DCMAKE_INSTALL_LIBDIR:PATH=lib -DCMAKE_BUILD_TYPE=Release \
+   -DBUILD_SHARED_LIBS=FALSE -DWITH_JPEG8=1 -DWITH_TURBOJPEG=FALSE -DPNG_SUPPORTED=FALSE
+ make install/strip
+ 
+ mkdir ${DEPS}/png
+ $CURL https://github.com/pnggroup/libpng/archive/v${VERSION_PNG}.tar.gz | tar xzC ${DEPS}/png --strip-components=1
+ cd ${DEPS}/png
+-./configure --host=${CHOST} --prefix=${TARGET} --enable-static --disable-shared --disable-dependency-tracking \
++CFLAGS="${CFLAGS} -O3" ./configure --host=${CHOST} --prefix=${TARGET} --enable-static --disable-shared --disable-dependency-tracking \
+   --disable-tools --without-binconfigs --disable-unversioned-libpng-config
+ make install-strip dist_man_MANS=
+ 
+@@ -222,7 +222,7 @@
+ mkdir ${DEPS}/webp
+ $CURL https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-${VERSION_WEBP}.tar.gz | tar xzC ${DEPS}/webp --strip-components=1
+ cd ${DEPS}/webp
+-./configure --host=${CHOST} --prefix=${TARGET} --enable-static --disable-shared --disable-dependency-tracking \
++CFLAGS="${CFLAGS} -O3" ./configure --host=${CHOST} --prefix=${TARGET} --enable-static --disable-shared --disable-dependency-tracking \
+   --enable-libwebpmux --enable-libwebpdemux ${WITHOUT_NEON:+--disable-neon}
+ make install-strip bin_PROGRAMS= noinst_PROGRAMS= man_MANS=
+ 

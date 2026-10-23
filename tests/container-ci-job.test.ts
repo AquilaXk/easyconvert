@@ -23,7 +23,7 @@ interface WorkflowStep {
 }
 
 interface WorkflowJob {
-  needs?: string[];
+  needs?: string | string[];
   permissions?: Record<string, string>;
   env?: Record<string, string>;
   steps: WorkflowStep[];
@@ -67,10 +67,10 @@ describe('container job in .github/workflows/ci.yml', () => {
   const pathPattern = new RegExp(container.env?.CONTAINER_PATHS ?? '$^');
   const changeStep = container.steps.find((step) => step.id === 'changes');
 
-  it('runs in parallel with the other jobs and is required by the verify aggregate', () => {
-    expect(container.needs).toBeUndefined();
+  it('runs in parallel with the other jobs, after the libvips build it copies, and is required by the verify aggregate', () => {
+    expect(container.needs).toBe('sharp-libvips');
     expect(container['timeout-minutes']).toBeLessThanOrEqual(CONTAINER_JOB_MAX_MINUTES);
-    expect(workflow.jobs.verify.needs).toEqual(['changes', 'checks', 'tests', 'conformance', 'integration', 'container', 'parity-quality', 'parity-speed']);
+    expect(workflow.jobs.verify.needs).toEqual(['changes', 'sharp-libvips', 'checks', 'tests', 'conformance', 'integration', 'container', 'parity-quality', 'parity-speed']);
     const verifyScript = workflow.jobs.verify.steps.map((step) => step.run ?? '').join('\n');
     expect(verifyScript).toContain('"$CONTAINER_RESULT" != success');
   });
@@ -91,6 +91,9 @@ describe('container job in .github/workflows/ci.yml', () => {
       'Set up Docker Buildx',
       'Log in to the container registry',
       'Find the layer cache',
+      'Compute the cache key of the libvips build',
+      'Restore the libvips build',
+      'Check the libvips build',
       'Build the worker image',
       'Start Redis',
       'Verify the hardened worker container',

@@ -1,0 +1,52 @@
+name: sharp libvips
+
+# The libvips-cpp.so the worker image ships (the sharplibvips stage of Dockerfile.worker, docs/policy-decisions.md entry 84),
+# built once per cache key for the CI jobs that convert pictures, so they test and time that library and not the copy the npm
+# package installs. The jobs that need it restore it with ./.github/actions/sharp-libvips.
+#
+# The key (docker/sharp-libvips/cache-key.sh) covers everything the stage is built from. A key that is in the cache costs a
+# lookup; a key that is not is built here, about 18 minutes on a runner, and saved:
+#   - on main, by the first run after the change that moved the key; every pull request then restores it from main's scope;
+#   - on a pull request that changes the stage, in that pull request's own scope, so its own jobs test the library it builds
+#     and no other pull request waits for it or reads it.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Compute the cache key of the build
+        id: key
+        run: echo "key=$(bash docker/sharp-libvips/cache-key.sh .)" >> "$GITHUB_OUTPUT"
+
+      - name: Look the build up in the cache
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/sharp-libvips
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
+
+      - name: Build the sharplibvips stage of the worker image
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: docker buildx build --file Dockerfile.worker --target sharplibvips --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/sharp-libvips" .
+
+      - name: Check the build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash docker/sharp-libvips/check-build-output.sh "$RUNNER_TEMP/sharp-libvips"
+
+      - name: Save the build
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/sharp-libvips
+          key: ${{ steps.key.outputs.key }}

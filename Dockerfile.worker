@@ -113,6 +113,27 @@ COPY native/qpdf-runner/ /src/qpdf-runner/
 RUN /src/qpdf-runner/build.sh /usr/local/bin/qpdf-runner
 
 # ==============================================================================
+# Stage 4c: sharp's libvips (libvips-cpp.so) with the codecs built for speed
+# ==============================================================================
+# sharp loads libvips from its @img/sharp-libvips-linux-<arch> package, which the upstream sharp-libvips release builds with
+# libwebp, mozjpeg and libpng at -Os. This stage runs that release's own build, at its commit and in its own build container
+# (Rocky Linux 8, pinned here by the digest of its multi-architecture index), with those three at -O3: the outputs are
+# byte-identical and WebP and JPEG encodes are 6 to 31% faster (docs/policy-decisions.md, entry 84). The scripts, the patches
+# and the pins are in docker/sharp-libvips/. Every source the build script downloads with curl is pinned by SHA-256 and the
+# toolchain downloads by digest or version, Meson may use only the subprojects its tarballs unpack, and git answers only local
+# queries; the entry says what that does not cover. The runtime stage takes only libvips-cpp.so and its digest file from this stage, and
+# fails the build unless sharp loads that file and is still the release it was built for.
+FROM rockylinux/rockylinux:8-ubi-init@sha256:ae0813ccb1bb83f4e0220acdd1539f52831517de334368e960824db7e37ee210 AS sharplibvips-build
+
+COPY docker/sharp-libvips/env.sh docker/sharp-libvips/toolchain.sh docker/sharp-libvips/requirements.txt /src/sharp-libvips/
+RUN bash /src/sharp-libvips/toolchain.sh
+COPY docker/sharp-libvips/build.sh docker/sharp-libvips/fetch-pinned.sh docker/sharp-libvips/git-local-only.sh docker/sharp-libvips/sources.sha256 docker/sharp-libvips/option-f.patch docker/sharp-libvips/pinned-notices.patch /src/sharp-libvips/
+RUN bash /src/sharp-libvips/build.sh /out
+
+FROM scratch AS sharplibvips
+COPY --from=sharplibvips-build /out/ /
+
+# ==============================================================================
 # Stage 5: Hardened Runtime Container
 # ==============================================================================
 FROM ${NODE_IMAGE} AS runner
@@ -248,6 +269,12 @@ WORKDIR /app
 COPY --from=builder --chown=easyconvert:easyconvert /app/node_modules ./node_modules
 COPY --from=builder --chown=easyconvert:easyconvert /app/package*.json ./
 COPY --from=builder --chown=easyconvert:easyconvert /app/dist ./dist
+# sharp's libvips from the sharplibvips stage, over the copy of its npm package. The stage is mounted whole, so the build fails
+# unless it holds exactly the library and its digest file, as the CI build of it does (docker/sharp-libvips/check-build-output.sh);
+# check-sharp.sh then fails it unless sharp loads that library. The ownership is set with the rest of /app below.
+RUN --mount=type=bind,from=sharplibvips,target=/mnt/sharplibvips \
+    --mount=type=bind,source=docker/sharp-libvips,target=/mnt/sharp-libvips \
+    bash /mnt/sharp-libvips/use-libvips.sh /app /mnt/sharplibvips
 COPY --chown=easyconvert:easyconvert scripts/worker-healthcheck.js ./scripts/worker-healthcheck.js
 
 # 3. Create strictly permissioned scratch directories
