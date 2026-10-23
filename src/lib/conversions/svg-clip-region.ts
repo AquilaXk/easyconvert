@@ -17,8 +17,10 @@ import { PAGE_CLIP_TOLERANCE_PIXELS, type ClipNode } from './svg-page-clip';
  * d="..."/></clipPath>` (src/cairo-svg-surface.c master, lines 1007 to 1011 and 3870 to 3874); cairo is LGPL/MPL, so only its
  * behaviour is followed.
  * The distance of a point outside is its distance to the nearest edge (closest point on a segment: Ericson, Real-Time
- * Collision Detection, section 5.1.2), which is the distance to the region because the nearest point of a region is on its
- * boundary and every boundary point is on an edge.
+ * Collision Detection, section 5.1.2). That is its distance to the region when every edge borders the region: the winding count
+ * on the two sides of an edge differs by one, so one side is inside, unless another edge of the same shape lies on it. Such
+ * edges (a spike of no width, a path drawn twice under evenodd) may border nothing, so a clip with them is refused; a polygon
+ * whose points are all on one line fills nothing and adds nothing to any count, so it is left out.
  *
  * The limits are this reader's own (neither reference has any): MAX_ACTIVE_CLIPS clips under one element, MAX_CLIP_EDGES edges
  * in one clip, MAX_CLIP_WORK edge tests in a document, on top of the document's vertex budget, which the clip shapes are
@@ -92,14 +94,46 @@ interface ClipRegion {
   convex: boolean;
 }
 
-function shoelaceArea(polygon: readonly Point[]): number {
-  let twice = 0;
-  for (let i = 0; i < polygon.length; i++) {
-    const a = polygon[i];
-    const b = polygon[(i + 1) % polygon.length];
-    twice += a.x * b.y - b.x * a.y;
+/** A polygon whose points are all on one line, which adds nothing to the winding count of any point off that line. */
+function fillsNothing(polygon: readonly Point[]): boolean {
+  if (polygon.length < 3) return true;
+  const [a, b] = polygon;
+  return polygon.every((p) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) === 0);
+}
+
+/** The edges of closed polygons as `ax, ay, bx, by` runs. */
+function edgeRuns(polygons: readonly (readonly Point[])[]): Float64Array {
+  const edges = new Float64Array(polygons.reduce((total, polygon) => total + polygon.length, 0) * 4);
+  let at = 0;
+  for (const polygon of polygons) {
+    polygon.forEach((a, i) => {
+      const b = polygon[(i + 1) % polygon.length];
+      edges.set([a.x, a.y, b.x, b.y], at);
+      at += 4;
+    });
   }
-  return twice / 2;
+  return edges;
+}
+
+/** Whether the edges at runs `i` and `j` are on one line and share a piece of it longer than a point. */
+function overlap(edges: Float64Array, i: number, j: number): boolean {
+  const [ax, ay, dx, dy] = [edges[i], edges[i + 1], edges[i + 2] - edges[i], edges[i + 3] - edges[i + 1]];
+  const cross = (x: number, y: number): number => dx * (y - ay) - dy * (x - ax);
+  if (cross(edges[j], edges[j + 1]) !== 0 || cross(edges[j + 2], edges[j + 3]) !== 0) return false;
+  const along = (x: number, y: number): number => (x - ax) * dx + (y - ay) * dy;
+  const [s, t] = [along(edges[j], edges[j + 1]), along(edges[j + 2], edges[j + 3])];
+  return Math.min(Math.max(s, t), dx * dx + dy * dy) > Math.max(Math.min(s, t), 0);
+}
+
+/** Whether two edges of the polygons of one shape lie on one another; every pair is tested and charged to the work. */
+function hasOverlappingEdges(polygons: readonly (readonly Point[])[], work: ClipWork): boolean {
+  const edges = edgeRuns(polygons);
+  const count = edges.length / 4;
+  work.charge((count * (count - 1)) / 2);
+  for (let i = 0; i < edges.length; i += 4) {
+    for (let j = i + 4; j < edges.length; j += 4) if (overlap(edges, i, j)) return true;
+  }
+  return false;
 }
 
 /** A polygon without its closing repeat of the first point and without consecutive equal points. */
@@ -149,23 +183,12 @@ function multiply(m1: AffineMatrix, m2: AffineMatrix): AffineMatrix {
   ];
 }
 
-/** The device-space region of a clip under `ctm`; a polygon with no area (a line, a point) fills nothing and is left out. */
+/** The device-space region of a clip under `ctm`; a polygon that a singular `ctm` puts on one line fills nothing and is left out. */
 function deviceRegion(definition: ClipDefinition, ctm: AffineMatrix): ClipRegion {
   const shapes: DeviceShape[] = [];
   for (const shape of definition.shapes) {
-    const polygons = shape.polygons.map((polygon) => simplePolygon(polygon.map((p) => transformPoint(ctm, p)))).filter((polygon) => polygon.length >= 3 && shoelaceArea(polygon) !== 0);
-    const count = polygons.reduce((total, polygon) => total + polygon.length, 0);
-    if (count === 0) continue;
-    const edges = new Float64Array(count * 4);
-    let at = 0;
-    for (const polygon of polygons) {
-      polygon.forEach((a, i) => {
-        const b = polygon[(i + 1) % polygon.length];
-        edges.set([a.x, a.y, b.x, b.y], at);
-        at += 4;
-      });
-    }
-    shapes.push({ rule: shape.rule, edges });
+    const polygons = shape.polygons.map((polygon) => simplePolygon(polygon.map((p) => transformPoint(ctm, p)))).filter((polygon) => !fillsNothing(polygon));
+    if (polygons.length > 0) shapes.push({ rule: shape.rule, edges: edgeRuns(polygons) });
   }
   const convex = shapes.length === 1 && definition.shapes.length === 1 && definition.shapes[0].polygons.length === 1 && isConvexPolygon(simplePolygon(definition.shapes[0].polygons[0]));
   return { shapes, edgeCount: shapes.reduce((total, shape) => total + shape.edges.length / 4, 0), convex };
@@ -366,9 +389,10 @@ export class ActiveClips {
       const outline = outlineOf(shape);
       if (outline === null) continue;
       const toClipSpace = multiply(clipTransform, transformOf(shape.attrs.get('transform') ?? ''));
-      const polygons = outline.map((subpath) => simplePolygon(subpath.map((p) => transformPoint(toClipSpace, p))));
+      const polygons = outline.map((subpath) => simplePolygon(subpath.map((p) => transformPoint(toClipSpace, p)))).filter((polygon) => !fillsNothing(polygon));
       edges += polygons.reduce((total, polygon) => total + polygon.length, 0);
       if (edges > MAX_CLIP_EDGES) throw clipRefusal(value, `it has more than ${MAX_CLIP_EDGES} edges`);
+      if (hasOverlappingEdges(polygons, this.work)) throw clipRefusal(value, 'two edges of a shape in it lie on one another, so an edge may border nothing');
       const rule = (declared.get('clip-rule') ?? clipDeclared.get('clip-rule')) === 'evenodd' ? 'evenodd' : 'nonzero';
       shapes.push({ rule, polygons });
     }

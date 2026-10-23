@@ -113,8 +113,10 @@ describe('a clip of any other shape', () => {
   });
 
   it('measures the farthest point of a piece of a segment outside the clip, not only its middle', () => {
-    const frameWithNeedle = 'M 0 0 H 200 V 100 H 0 Z M 20 10 H 180 V 90 H 20 Z M 99 10 H 101 L 100 49.5 Z';
-    expect(refusal(clipped(pathClip(frameWithNeedle, 'evenodd'), stroke('M 10 50 L 190 50')))).toMatch(/reaches 40 pixels past it/);
+    const frame = 'M 0 0 H 200 V 100 H 0 Z M 20 10 H 180 V 90 H 20 Z';
+    const across = stroke('M 10 50 L 190 50');
+    expect(refusal(clipped(pathClip(`${frame} M 99 10 H 101 L 100 49.5 Z`, 'evenodd'), across)), 'needle on the edge of the hole').toMatch(CLIP_REFUSAL);
+    expect(refusal(clipped(pathClip(`${frame} M 99 10.5 H 101 L 100 49.5 Z`, 'evenodd'), across)), 'needle in the hole').toMatch(/reaches 40 pixels past it/);
     expect(dxfOf(clipped(pathClip(L_SHAPE), stroke('M 39 41.5 L 41.5 39'))).entities, 'a corner cut by 0.35 pixels').toHaveLength(1);
   });
 
