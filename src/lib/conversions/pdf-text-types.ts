@@ -35,6 +35,8 @@ export const PDF_CONTENT_MAX_OPERATORS_PER_PAGE = 2_000_000;
 export const PDF_CONTENT_MAX_RULES_PER_PAGE = 20_000;
 /** Image placements one page may report. */
 export const PDF_CONTENT_MAX_IMAGES_PER_PAGE = 256;
+/** Picture placements a document may return, counted per placement as the Markdown and HTML output repeat a picture at each; more is refused with a 413. */
+export const PDF_CONTENT_MAX_PICTURES = 32_768;
 /** Bytes of image files a document may return; more is refused with a 413. */
 export const PDF_CONTENT_MAX_IMAGE_BYTES = 128 * 1024 * 1024;
 /** Decoded content stream bytes of one page read to line up its images with their PDF streams. */

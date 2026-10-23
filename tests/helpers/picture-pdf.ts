@@ -13,6 +13,9 @@ const MEDIA_BOX = '[0 0 600 800]';
 const GRID_COLUMNS = 100;
 const GRID_STEP = 5;
 const PLACEMENT_SIZE = 2;
+const FIRST_PICTURE_OBJECT = 4;
+/** A page of pictures alone is read by OCR, which lays the pictures out itself; a line of text keeps it on the text layer. */
+const TEXT_LINE = 'BT /F1 14 Tf 20 760 Td (Quarterly figures of the regional offices.) Tj ET';
 
 function assemble(objects: Buffer[]): Buffer {
   const parts: Buffer[] = [Buffer.from('%PDF-1.7\n')];
@@ -39,25 +42,29 @@ function pictureObject(dimension: number, shade: number): Buffer {
 }
 
 function placements(draws: number): Buffer {
-  const operators = Array.from({ length: draws }, (_, draw) => {
+  const operators = [TEXT_LINE].concat(Array.from({ length: draws }, (_, draw) => {
     const x = (draw % GRID_COLUMNS) * GRID_STEP;
     const y = Math.floor(draw / GRID_COLUMNS) * GRID_STEP;
     return `q ${PLACEMENT_SIZE} 0 0 ${PLACEMENT_SIZE} ${x} ${y} cm /Im0 Do Q`;
-  });
+  }));
   return deflateSync(Buffer.from(operators.join('\n')));
 }
 
 /** A PDF whose pages place the same picture again and again; its size stays a few KiB however many placements it holds. */
 export function picturePdf({ pages, drawsPerPage, dimension, sharedPicture }: PicturePdfSpec): Buffer {
-  const kids = Array.from({ length: pages }, (_, page) => `${3 + (sharedPicture ? 1 : pages) + page * 2} 0 R`).join(' ');
-  const objects: Buffer[] = [Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'), Buffer.from(`<< /Type /Pages /Kids [${kids}] /Count ${pages} >>`)];
+  const kids = Array.from({ length: pages }, (_, page) => `${FIRST_PICTURE_OBJECT + (sharedPicture ? 1 : pages) + page * 2} 0 R`).join(' ');
+  const objects: Buffer[] = [
+    Buffer.from('<< /Type /Catalog /Pages 2 0 R >>'),
+    Buffer.from(`<< /Type /Pages /Kids [${kids}] /Count ${pages} >>`),
+    Buffer.from('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'),
+  ];
   const content = placements(drawsPerPage);
   const pictures = sharedPicture ? [pictureObject(dimension, 90)] : Array.from({ length: pages }, (_, page) => pictureObject(dimension, (page % 250) + 1));
   objects.push(...pictures);
   for (let page = 0; page < pages; page++) {
-    const picture = 3 + (sharedPicture ? 0 : page);
-    const contentNumber = 3 + pictures.length + page * 2 + 1;
-    objects.push(Buffer.from(`<< /Type /Page /Parent 2 0 R /MediaBox ${MEDIA_BOX} /Resources << /XObject << /Im0 ${picture} 0 R >> >> /Contents ${contentNumber} 0 R >>`));
+    const picture = FIRST_PICTURE_OBJECT + (sharedPicture ? 0 : page);
+    const contentNumber = FIRST_PICTURE_OBJECT + pictures.length + page * 2 + 1;
+    objects.push(Buffer.from(`<< /Type /Page /Parent 2 0 R /MediaBox ${MEDIA_BOX} /Resources << /Font << /F1 3 0 R >> /XObject << /Im0 ${picture} 0 R >> >> /Contents ${contentNumber} 0 R >>`));
     objects.push(stream('/Filter /FlateDecode', content));
   }
   return assemble(objects);
