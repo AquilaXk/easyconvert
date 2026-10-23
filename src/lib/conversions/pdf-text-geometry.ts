@@ -1372,7 +1372,8 @@ async function readPages(
     if (contentWanted) {
       const readOperators = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
       // Reading the content also replaces the glyphs of `content.items` that have no text, so the page text below is clean.
-      result.content.push(await readPageContent(pdfjs.OPS, page, content, pageNumber, fonts, readOperators, images)); // NOSONAR S9382 sequential
+      const reading = { readOperators, imageExtractor: images, unmappedMark: job.unmappedGlyphText ?? '' };
+      result.content.push(await readPageContent(pdfjs.OPS, page, content, pageNumber, fonts, reading)); // NOSONAR S9382 sequential
     }
     const pageText = textOfItems(content.items);
     if (contentWanted) {

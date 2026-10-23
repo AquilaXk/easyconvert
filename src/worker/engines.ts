@@ -80,7 +80,7 @@ import { convertPostScript } from './postscript-render';
 import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
-import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
+import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments } from './worker-output';
 import { boundRenderedPages, DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
@@ -1275,14 +1275,8 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
     const selected = resolvedFiles[0];
     const tempOutputPath = path.join(tempDir, selected.file);
     const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
-
-    return createConversionResult(
-      persistedPath,
-      tgt,
-      baseName,
-      'native-poppler',
-      Date.now() - startTime
-    );
+    const result = createConversionResult(persistedPath, tgt, baseName, 'native-poppler', Date.now() - startTime);
+    return withPageNumbers(result, singleFile ? requestedPages : [selected.pageNum]);
   }
 
   // Multi-page bundle: package into ZIP with standard formatted names: <baseName>-p001.<tgt>
@@ -1305,14 +1299,8 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
   fs.writeFileSync(zipOutputPath, zipBuffer);
 
   const persistedPath = preserveOutput(zipOutputPath, 'zip', options, vfsPayload);
-
-  return createConversionResult(
-    persistedPath,
-    'zip',
-    baseName,
-    'native-poppler',
-    Date.now() - startTime
-  );
+  const result = createConversionResult(persistedPath, 'zip', baseName, 'native-poppler', Date.now() - startTime);
+  return withPageNumbers(result, resolvedFiles.map((item) => item.pageNum));
 }
 
 interface PopplerRenderParams {
@@ -1676,7 +1664,10 @@ async function convertPdfToEncodedRaster(
   );
 }
 
-/** PDF pages to DXF, EMF or WMF: pdftocairo draws each page as SVG geometry and the writer of the target (`svg-page-encoders.ts`) turns the geometry into the format. */
+/**
+ * PDF pages to DXF, EMF or WMF: pdftocairo draws each page as SVG geometry and the writer of the target (`svg-page-encoders.ts`)
+ * turns the geometry into the format, reading the PDF's text layer for a page whose bitmap-font characters DXF writes as text.
+ */
 async function convertPdfToSvgPageFormat(
   input: Buffer | WorkerVfsPayload,
   tgt: string,
@@ -1686,7 +1677,7 @@ async function convertPdfToSvgPageFormat(
 ): Promise<WorkerConversionResult | null> {
   const rendered = await convertWithNativePoppler(input, 'pdf', SVG_FORMAT, intermediateOptions(options), originalFilename);
   if (!rendered) return null;
-  return reencodeRenderedPages(rendered, SVG_FORMAT, tgt, async (page) => svgPageEncoder(tgt)(page), context);
+  return reencodeRenderedPages(rendered, SVG_FORMAT, tgt, svgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input)), context);
 }
 
 /** True when the pages are consecutive, in order: the only selection one PostScript file can hold. */

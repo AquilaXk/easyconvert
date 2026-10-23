@@ -214,7 +214,7 @@
     },
     {
       "families": ["cad"],
-      "match": "^src/lib/conversions/(cad-[^/]*|vector-cad|vector-dxf)\\.ts$|^native/cad-convert/"
+      "match": "^src/lib/conversions/(bitmap-glyph-text|cad-[^/]*|vector-cad|vector-dxf)\\.ts$|^native/cad-convert/"
     },
     {
       "families": ["font"],

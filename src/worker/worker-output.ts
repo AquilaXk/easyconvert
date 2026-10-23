@@ -125,6 +125,20 @@ export function writeOutputSegments(
   return finalPath;
 }
 
+/** The pages each rendered result holds, kept beside the result so that they never reach a client with it. */
+const renderedPageNumbers = new WeakMap<WorkerConversionResult, readonly number[]>();
+
+/** The result, recording which pages its files hold (one file, or the ZIP entries in page order). */
+export function withPageNumbers(result: WorkerConversionResult, pageNumbers: readonly number[]): WorkerConversionResult {
+  renderedPageNumbers.set(result, [...pageNumbers]);
+  return result;
+}
+
+/** The pages a rendered result holds (see `withPageNumbers`), or none when they were not recorded. */
+export function pageNumbersOf(result: WorkerConversionResult): readonly number[] {
+  return renderedPageNumbers.get(result) ?? [];
+}
+
 /**
  * Creates lazy zero-heap WorkerConversionResult supporting 2GB+ payloads without heap overflow.
  */

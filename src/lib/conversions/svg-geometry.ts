@@ -1,7 +1,7 @@
 import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-nurbs';
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
-import { assertNotBitmapGlyph } from './svg-bitmap-glyph';
+import { BitmapGlyphs } from './svg-bitmap-glyph';
 import { createPageClipCheck } from './svg-page-clip';
 
 export { parseCssColor, resolvePaint } from './svg-paint';
@@ -1220,6 +1220,7 @@ interface RenderState {
   ids: Map<string, SvgNode>;
   /** ids of the <use> targets currently being instantiated, for cycle detection. */
   useChain: string[];
+  bitmapGlyphs: BitmapGlyphs;
   renderedNodes: number;
   vertices: VertexBudget;
   /** User-space geometry per element, reused by every <use> copy. */
@@ -1351,8 +1352,8 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   assertNeutralPaintProperties(declared);
   assertValidPaintDeclarations(declared);
   if (declared.get('display') === 'none') return;
-  assertNotBitmapGlyph(node, state.ids);
   const ctx = deriveContext(parent, node.attrs, declared);
+  if (state.bitmapGlyphs.take(node, state.ids, parent.ctm, ctx.ctm)) return;
   assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm));
   if (kind === 'shape') {
     emitShape(node, ctx, state);
@@ -1364,13 +1365,12 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
 }
 
 /**
- * Parses SVG XML into geometry elements with flattened polylines in device
- * (viewport) coordinates, honouring the style cascade, inheritance from
- * container elements and transforms. Rendered content that cannot be
- * represented (text, images, clipping, ...) throws instead of being dropped; a clip that is one rectangle covering the
- * whole page clips nothing and is the one exception.
+ * Parses SVG XML into geometry elements with flattened polylines in device (viewport) coordinates, honouring the style cascade,
+ * inheritance from container elements and transforms. Rendered content that cannot be represented (text, images, clipping, ...)
+ * throws instead of being dropped; a clip that is one rectangle covering the whole page clips nothing and is the one exception,
+ * and the characters of a bitmap font go to `bitmapGlyphs` when it sets them aside (svg-bitmap-glyph.ts).
  */
-export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument {
+export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new BitmapGlyphs()): ParsedSvgVectorDocument {
   if (svgContent.length > MAX_SVG_INPUT_CHARS) {
     throw new CadGeometryUnavailableError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
   }
@@ -1388,7 +1388,7 @@ export function parseSvgGeometries(svgContent: string): ParsedSvgVectorDocument 
   const ids = new Map<string, SvgNode>();
   const vertices = new VertexBudget();
   const clipsNothing = createPageClipCheck(ids, viewport, (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null);
-  const state: RenderState = { elements: [], ids, useChain: [], renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, clipsNothing };
+  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, clipsNothing };
   indexIds(root, state.ids);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };

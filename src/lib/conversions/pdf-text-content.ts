@@ -218,15 +218,16 @@ function resolvedFont(page: ContentPage, fontId: string): RecoverableFont | null
 
 /**
  * The items of the page. The glyphs of an item that no Unicode value was found for are read from the names of the font's
- * encoding where they have one and left out otherwise; `content.items` gets the same text, so the word geometry and the
- * density analysis that read it afterwards see no glyph that is not text.
+ * encoding where they have one and left out (or written as `unmappedMark`) otherwise; `content.items` gets the same text, so
+ * the word geometry and the density analysis that read it afterwards see no glyph that is not text.
  */
 function textItemsOf(
   page: ContentPage,
   content: PageTextContent,
   viewport: Viewport,
   fonts: FontTable,
-  pageNumber: number
+  pageNumber: number,
+  unmappedMark: string
 ): { items: PdfContentItem[]; unmapped: number } {
   checkItemLimits(content, pageNumber);
   const items: PdfContentItem[] = [];
@@ -240,7 +241,7 @@ function textItemsOf(
     const geometry = geometryOf(candidate, viewport, vertical);
     let text = normalizeSymbolBullets(candidate.str);
     if (hasUnmappedGlyphs(text)) {
-      const recovered = recoverUnmappedGlyphs(text, resolvedFont(page, candidate.fontName), PDF_TEXT_MAX_CHARS_PER_PAGE - characters);
+      const recovered = recoverUnmappedGlyphs(text, resolvedFont(page, candidate.fontName), PDF_TEXT_MAX_CHARS_PER_PAGE - characters, unmappedMark);
       text = recovered.text;
       unmapped += recovered.unmapped;
     }
@@ -493,6 +494,14 @@ function scanOperators(list: OperatorListLike, ops: Record<string, number>, view
   return { rules: collector.rules, images, sources, rulesTruncated: collector.truncated };
 }
 
+/** How one page's content is read: whether its operator list is walked, where its images go, what an unmapped glyph becomes. */
+export interface PageContentReading {
+  readOperators: boolean;
+  imageExtractor: ImageExtractor | null;
+  /** The text a glyph without a Unicode value becomes; empty leaves it out. */
+  unmappedMark: string;
+}
+
 /**
  * Reads one page: its positioned text and, when the operator list is affordable, its fonts, ruling lines and images.
  * @throws PdfTextGeometryError when the page exceeds the item or text limits.
@@ -503,8 +512,7 @@ export async function readPageContent(
   content: PageTextContent,
   pageNumber: number,
   fonts: FontTable,
-  readOperators: boolean,
-  imageExtractor: ImageExtractor | null
+  { readOperators, imageExtractor, unmappedMark }: PageContentReading
 ): Promise<PdfPageContent> {
   const viewport = page.getViewport({ scale: 1 });
   let scan: OperatorScan = { rules: [], images: [], sources: [], rulesTruncated: false };
@@ -516,7 +524,7 @@ export async function readPageContent(
   }
   if (imageExtractor) await imageExtractor.attach(pageNumber - 1, page.objs, scan.images, scan.sources);
   // Fonts are described after the operator list is read: pdfjs resolves their names while it runs.
-  const { items, unmapped } = textItemsOf(page, content, viewport, fonts, pageNumber);
+  const { items, unmapped } = textItemsOf(page, content, viewport, fonts, pageNumber, unmappedMark);
   return {
     pageNumber,
     width: viewport.width,
