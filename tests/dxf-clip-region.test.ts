@@ -180,6 +180,11 @@ describe('a clip of any other shape', () => {
     expect(refused).toMatch(/curve/);
   });
 
+  it('leaves out a hidden curve, which adds nothing to the region, instead of refusing the clip for it', () => {
+    const clip = clipOf('<circle cx="100" cy="50" r="40" display="none"/><rect x="40" y="20" width="120" height="60"/>');
+    expect(dxfOf(clipped(clip, stroke('M 60 30 L 140 30'))).entities).toHaveLength(1);
+  });
+
   it('is refused when a curve of it is flattened past a point under the scale of the clipped element', () => {
     const k = 0.5523;
     const circle = (cx: number, cy: number, r: number): string =>
