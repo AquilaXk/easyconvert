@@ -15,6 +15,10 @@ import { shapeRun, type ShapedGlyph } from './shape';
 export interface LayoutSegment {
   readonly text: string;
   readonly link?: string;
+  /** Destinations that stand in the text, at an offset of it (at its end when it has none). */
+  readonly anchors?: ReadonlyArray<{ readonly name: string; readonly at: number }>;
+  /** Stretches of the text, by offsets of it, that link to destinations of the document. */
+  readonly jumps?: ReadonlyArray<{ readonly name: string; readonly from: number; readonly to: number }>;
 }
 
 /** A partition of `text` into stretches that one face draws. */
@@ -61,6 +65,10 @@ export interface LayoutLine {
   readonly ascent: number;
   readonly descent: number;
   readonly gap: number;
+  /** Names of the destinations that stand on this line. */
+  readonly anchors?: readonly string[];
+  /** The stretches of the line that link to destinations: the destination, the distance from the first piece, and the width. */
+  readonly jumps?: ReadonlyArray<{ readonly name: string; readonly x: number; readonly width: number }>;
 }
 
 export interface TextLayout {
@@ -250,20 +258,20 @@ function faceMetrics(face: PdfFontFace, fontSize: number): { ascent: number; des
 function buildLine(
   paragraph: string,
   pieces: readonly ShapedPiece[],
-  start: number,
-  end: number,
+  [start, end]: readonly [number, number],
   request: LayoutRequest,
-  baseLevel: number,
-  lastLine: boolean
+  { baseLevel, lastLine, jumps }: { baseLevel: number; lastLine: boolean; jumps: readonly Jump[] }
 ): LayoutLine {
   const contentEnd = trimTrailingSpaces(paragraph, start, end);
   const logical: LayoutPiece[] = [];
+  // Where in the paragraph the text of each piece starts.
+  const origins = new Map<LayoutPiece, number>();
   for (const piece of pieces) {
     const from = Math.max(start, piece.start);
     const to = Math.min(contentEnd, piece.end);
     if (from >= to) continue;
     const glyphs = glyphSlice(piece, from, to).map((glyph) => ({ ...glyph, cluster: glyph.cluster - (from - piece.start) }));
-    logical.push({
+    const made: LayoutPiece = {
       face: piece.face,
       unitsPerEm: piece.unitsPerEm,
       level: piece.level,
@@ -272,7 +280,9 @@ function buildLine(
       glyphs,
       link: piece.link,
       width: pieceWidth(glyphs, piece.unitsPerEm, request.fontSize),
-    });
+    };
+    logical.push(made);
+    origins.set(made, from);
   }
   const ordered = visualOrder(logical.map((piece) => piece.level)).map((index) => logical[index]);
   let width = ordered.reduce((sum, piece) => sum + piece.width, 0);
@@ -295,7 +305,40 @@ function buildLine(
     if (align === 'right') x = request.width - width;
     else if (align === 'center') x = (request.width - width) / 2;
   }
-  return { pieces: ordered, width, x, ascent, descent, gap };
+  const links = jumpExtents(ordered, origins, jumps, request.fontSize);
+  return { pieces: ordered, width, x, ascent, descent, gap, ...(links.length > 0 ? { jumps: links } : {}) };
+}
+
+/**
+ * Where the stretches that link to destinations lie on a line of display-ordered pieces, from the first piece: the glyphs
+ * of a stretch are those whose cluster starts in it, and the glyphs of a right-to-left piece come in reverse order.
+ * Stretches that touch (a link over two faces) are one.
+ */
+function jumpExtents(ordered: readonly LayoutPiece[], origins: ReadonlyMap<LayoutPiece, number>, jumps: readonly Jump[], fontSize: number): Array<{ name: string; x: number; width: number }> {
+  const extents: Array<{ name: string; x: number; width: number }> = [];
+  let pieceX = 0;
+  for (const piece of ordered) {
+    const from = origins.get(piece) ?? 0;
+    const to = from + piece.text.length;
+    for (const jump of jumps) {
+      if (jump.from >= to || jump.to <= from) continue;
+      const first = Math.max(jump.from, from) - from;
+      const last = Math.min(jump.to, to) - from;
+      let before = 0;
+      let within = 0;
+      for (const glyph of piece.glyphs) {
+        const advance = (glyph.advance * fontSize) / piece.unitsPerEm;
+        if (glyph.cluster >= first && glyph.cluster < last) within += advance;
+        else if (within === 0) before += advance;
+      }
+      if (within === 0) continue;
+      const previous = extents[extents.length - 1];
+      if (previous?.name === jump.name && Math.abs(previous.x + previous.width - (pieceX + before)) < WIDTH_TOLERANCE) previous.width += within;
+      else extents.push({ name: jump.name, x: pieceX + before, width: within });
+    }
+    pieceX += piece.width;
+  }
+  return extents;
 }
 
 /** Spreads `extra` points over the spaces of the line; returns the line's new width. */
@@ -324,8 +367,12 @@ export function layoutShapedText(request: LayoutRequest): TextLayout {
   // Concatenate and split into paragraphs while keeping each character's segment (link) membership.
   const lines: LayoutLine[] = [];
   const owners: Array<{ end: number; link?: string }> = [];
+  const marks = new AnchorMarks();
+  const jumps: Jump[] = [];
   let full = '';
   for (const segment of request.segments) {
+    for (const anchor of segment.anchors ?? []) marks.add(full.length + anchor.at, [anchor.name]);
+    for (const jump of segment.jumps ?? []) jumps.push({ name: jump.name, from: full.length + jump.from, to: full.length + jump.to });
     full += segment.text;
     owners.push({ end: full.length, link: segment.link });
   }
@@ -333,29 +380,71 @@ export function layoutShapedText(request: LayoutRequest): TextLayout {
   while (paragraphStart <= full.length) {
     const lineFeed = full.indexOf(LINE_FEED, paragraphStart);
     const paragraphEnd = lineFeed < 0 ? full.length : lineFeed;
-    lines.push(...layoutParagraph(full.slice(paragraphStart, paragraphEnd), paragraphStart, owners, request));
+    lines.push(...layoutParagraph(full.slice(paragraphStart, paragraphEnd), paragraphStart, owners, request, { marks, jumps }));
     paragraphStart = paragraphEnd + 1;
     if (lineFeed < 0) break;
   }
   return { lines };
 }
 
+/** The destinations of a text by the offset they stand at, taken off in order as the lines that hold them are made. */
+class AnchorMarks {
+  private readonly marks: Array<{ offset: number; names: readonly string[] }> = [];
+  private next = 0;
+
+  add(offset: number, names: readonly string[]): void {
+    this.marks.push({ offset, names });
+  }
+
+  /** The names at offsets before `limit` that no earlier line took (those at `limit` too for the last line of a paragraph). */
+  takeBefore(limit: number, inclusive: boolean): readonly string[] | undefined {
+    const names: string[] = [];
+    while (this.next < this.marks.length && (inclusive ? this.marks[this.next].offset <= limit : this.marks[this.next].offset < limit)) {
+      names.push(...this.marks[this.next].names);
+      this.next += 1;
+    }
+    return names.length > 0 ? names : undefined;
+  }
+}
+
+function withAnchors(line: LayoutLine, anchors: readonly string[] | undefined): LayoutLine {
+  return anchors ? { ...line, anchors } : line;
+}
+
+/** A stretch of the text of the whole layout, by offsets of it, that links to a destination. */
+interface Jump {
+  readonly name: string;
+  readonly from: number;
+  readonly to: number;
+}
+
+/** What the text carries that is not text: where the destinations stand and which stretches are links. */
+interface Marks {
+  readonly marks: AnchorMarks;
+  readonly jumps: readonly Jump[];
+}
+
 function layoutParagraph(
   paragraph: string,
   paragraphStart: number,
   owners: ReadonlyArray<{ end: number; link?: string }>,
-  request: LayoutRequest
+  request: LayoutRequest,
+  { marks, jumps }: Marks
 ): LayoutLine[] {
   if (paragraph.length === 0) {
     const metrics = faceMetrics(request.blankLineFace, request.fontSize);
-    return [{ pieces: [], width: 0, x: 0, ascent: metrics.ascent, descent: metrics.descent, gap: metrics.gap }];
+    const blank = { pieces: [], width: 0, x: 0, ascent: metrics.ascent, descent: metrics.descent, gap: metrics.gap };
+    return [withAnchors(blank, marks.takeBefore(paragraphStart, true))];
   }
   const links = owners.map((owner) => ({ end: owner.end - paragraphStart, link: owner.link })).filter((entry) => entry.end > 0);
   const { runs, baseLevel } = itemizeParagraph(paragraph);
   const pieces = shapePiecesOf(paragraph, runs, links, request);
   const metrics = measureParagraph(paragraph.length, pieces, request.fontSize);
   const boundaries = breakLines(paragraph, metrics, request.width);
-  return boundaries.map(([start, end], index) =>
-    buildLine(paragraph, pieces, start, end, request, baseLevel, index === boundaries.length - 1)
-  );
+  return boundaries.map(([start, end], index) => {
+    const lastLine = index === boundaries.length - 1;
+    const anchors = marks.takeBefore(paragraphStart + (lastLine ? paragraph.length : end), lastLine);
+    const here = jumps.filter((jump) => jump.from < paragraphStart + end && jump.to > paragraphStart + start).map((jump) => ({ ...jump, from: jump.from - paragraphStart, to: jump.to - paragraphStart }));
+    return withAnchors(buildLine(paragraph, pieces, [start, end], request, { baseLevel, lastLine, jumps: here }), anchors);
+  });
 }

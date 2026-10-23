@@ -1,5 +1,6 @@
 import { ConversionFailedError, EngineUnavailableError } from '../types';
 import type { PdfCellPart, PdfRasterImage, PdfTableCell } from './pdf-blocks';
+import { anchorsOf } from './pdf-destinations';
 import { shapedLineHeight, type PdfTextSegment, type PdfUnicodeTextWriter } from './pdf-fonts';
 import {
   MIN_TABLE_COLUMN_WIDTH,
@@ -95,6 +96,21 @@ class TextFlow implements Flow {
       count++;
     }
     return count;
+  }
+}
+
+/** Destinations with no text to stand at: they are put at the top left of the room they are given, which they take none of. */
+class AnchorFlow implements Flow {
+  readonly height = 0;
+
+  constructor(
+    private readonly context: TableContext,
+    private readonly names: readonly string[]
+  ) {}
+
+  draw(x: number, y: number): FlowDrawn {
+    this.context.writer.destinations.place(this.names, x, y);
+    return { end: y };
   }
 }
 
@@ -417,10 +433,17 @@ function hasText(content: readonly PdfTextSegment[]): boolean {
   return content.some((segment) => segment.text.trim().length > 0);
 }
 
+/** The flow of text: its lines when it shows any, else its destinations alone, else nothing. */
+function textFlows(context: TableContext, content: readonly PdfTextSegment[], width: number, fresh: number): Flow[] {
+  if (hasText(content)) return [new TextFlow(context, content, width, fresh)];
+  const names = anchorsOf(content);
+  return names.length > 0 ? [new AnchorFlow(context, names)] : [];
+}
+
 /** The flow of one cell's content at `width`, or undefined when the cell shows nothing. */
 function cellFlow(context: TableContext, cell: PdfTableCell, width: number, inner: { fresh: number; depth: number }): Flow | undefined {
   if (cell.covered) return undefined;
-  if (!cell.parts) return hasText(cell.content) ? new TextFlow(context, cell.content, width, inner.fresh) : undefined;
+  if (!cell.parts) return textFlows(context, cell.content, width, inner.fresh)[0];
   const flows = cell.parts.flatMap((part) => partFlow(context, part, width, inner));
   return flows.length > 0 ? new StackFlow(flows) : undefined;
 }
@@ -428,7 +451,7 @@ function cellFlow(context: TableContext, cell: PdfTableCell, width: number, inne
 function partFlow(context: TableContext, part: PdfCellPart, width: number, inner: { fresh: number; depth: number }): Flow[] {
   switch (part.kind) {
     case 'text':
-      return hasText(part.content) ? [new TextFlow(context, part.content, width, inner.fresh)] : [];
+      return textFlows(context, part.content, width, inner.fresh);
     case 'image':
       return [new ImageFlow(context, part.image, width, inner.fresh)];
     case 'table': {
@@ -470,7 +493,7 @@ const rowSpanOf = (placement: Placement): number => Math.max(1, placement.cell.r
 
 /** Row heights: the tallest single-row cell; a cell that merges downward grows its last row when it is taller than the rows it spans. */
 function rowHeightsOf(placed: readonly Placement[][], minRowHeight: number): number[] {
-  const needed = (placement: Placement): number => (placement.flow ? placement.flow.height + TABLE_CELL_PADDING * 2 : 0);
+  const needed = (placement: Placement): number => (placement.flow && placement.flow.height > 0 ? placement.flow.height + TABLE_CELL_PADDING * 2 : 0);
   const heights = placed.map((row) => row.reduce((tallest, placement) => (rowSpanOf(placement) === 1 ? Math.max(tallest, needed(placement)) : tallest), minRowHeight));
   placed.forEach((row, rowIndex) => {
     for (const placement of row) {

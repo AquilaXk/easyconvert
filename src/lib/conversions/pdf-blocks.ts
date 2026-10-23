@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { ConversionFailedError } from '../types';
-import { PdfUnicodeTextWriter, loadFontCoverageIndex, type PdfTextSegment } from './pdf-fonts';
+import { WaitingDestinations, anchorsAt, anchorsOf } from './pdf-destinations';
+import { PdfUnicodeTextWriter, loadFontCoverageIndex, type PdfAnchor, type PdfTextSegment } from './pdf-fonts';
 import { layoutTable, type Flow, type TableContext } from './pdf-table';
 import { PX_TO_PT } from './pdf-table-metrics';
 
@@ -8,17 +9,22 @@ import { PX_TO_PT } from './pdf-table-metrics';
  * Structured document model drawn by the in-process PDF writers (HTML, Markdown, plain text and
  * HWP to PDF). Each block is drawn with fonts that cover its text; nothing is added that is not
  * document content.
+ *
+ * Links inside the document: a segment's `anchors` name destinations at the start of its text, an `anchor` block names
+ * destinations for the next block that draws something (an empty division, an empty paragraph), and a segment's link
+ * `#name` goes to one (see pdf-destinations.ts). A link to a name that no block states is drawn as plain text.
  */
 export type PdfBlock =
   | { kind: 'heading'; level: number; content: PdfTextSegment[] }
   | { kind: 'paragraph'; content: PdfTextSegment[] }
-  | { kind: 'preformatted'; text: string }
+  | { kind: 'preformatted'; text: string; anchors?: readonly PdfAnchor[] }
   | { kind: 'list'; ordered: boolean; start: number; items: PdfBlock[][]; markers?: readonly string[] }
   | { kind: 'table'; rows: PdfTableCell[][] }
   | { kind: 'image'; image: PdfRasterImage }
   | { kind: 'quote'; blocks: PdfBlock[] }
   | { kind: 'rule' }
-  | { kind: 'pageBreak' };
+  | { kind: 'pageBreak' }
+  | { kind: 'anchor'; names: readonly string[] };
 
 /**
  * A table cell and the number of columns it spans. A cell that merges downward states `rowSpan`, and each grid position
@@ -101,6 +107,9 @@ const RULE_SPACING = 6;
 const RULE_WIDTH = 0.75;
 
 class PdfBlockRenderer {
+  /** Names of destinations that wait for the next thing drawn (see the `anchor` block). */
+  private readonly waiting = new WaitingDestinations<string>();
+
   constructor(
     private readonly doc: PDFKit.PDFDocument,
     private readonly writer: PdfUnicodeTextWriter,
@@ -140,6 +149,22 @@ class PdfBlockRenderer {
     }
   }
 
+  /** Draws the document; the destinations still waiting at its end stand where the content ends. */
+  renderDocument(blocks: readonly PdfBlock[]): void {
+    this.render(blocks);
+    this.placeWaiting(this.left, Math.min(this.doc.y, this.bottom));
+  }
+
+  private placeWaiting(left: number, top: number): void {
+    this.writer.destinations.place(this.waiting.release(), left, top);
+  }
+
+  /** `content` led by the destinations that wait for a block, which stand at the first line drawn. */
+  private withWaiting(content: readonly PdfTextSegment[]): readonly PdfTextSegment[] {
+    const names = this.waiting.release();
+    return names.length > 0 ? [{ text: '', anchors: anchorsAt(names) }, ...content] : content;
+  }
+
   private renderBlock(block: PdfBlock, indent: number, gapLines: number): void {
     switch (block.kind) {
       case 'heading':
@@ -149,7 +174,7 @@ class PdfBlockRenderer {
         this.renderText(block.content, BODY_FONT_SIZE, indent, gapLines);
         return;
       case 'preformatted':
-        this.renderText([{ text: block.text }], PREFORMATTED_FONT_SIZE, indent, gapLines);
+        this.renderText([{ text: block.text, anchors: block.anchors }], PREFORMATTED_FONT_SIZE, indent, gapLines);
         return;
       case 'list':
         this.renderList(block.ordered, block.start, block.items, indent, block.markers);
@@ -170,6 +195,9 @@ class PdfBlockRenderer {
       case 'pageBreak':
         this.doc.addPage();
         return;
+      case 'anchor':
+        this.waiting.hold(block.names);
+        return;
     }
   }
 
@@ -178,7 +206,10 @@ class PdfBlockRenderer {
   }
 
   private renderHeading(level: number, content: readonly PdfTextSegment[], indent: number): void {
-    if (!this.hasText(content)) return;
+    if (!this.hasText(content)) {
+      this.waiting.hold(anchorsOf(content));
+      return;
+    }
     const size = HEADING_FONT_SIZES[Math.min(Math.max(level, 1), HEADING_FONT_SIZES.length) - 1];
     this.doc.fontSize(size);
     if (this.doc.y > this.top) this.doc.moveDown(this.spacing.headingTopGapLines);
@@ -186,9 +217,12 @@ class PdfBlockRenderer {
   }
 
   private renderText(content: readonly PdfTextSegment[], size: number, indent: number, gapLines: number): void {
-    if (!this.hasText(content)) return;
+    if (!this.hasText(content)) {
+      this.waiting.hold(anchorsOf(content));
+      return;
+    }
     this.doc.fontSize(size);
-    this.writer.write(content, { width: this.textWidth(indent), lineGap: this.spacing.lineGap }, this.left + indent, this.doc.y);
+    this.writer.write(this.withWaiting(content), { width: this.textWidth(indent), lineGap: this.spacing.lineGap }, this.left + indent, this.doc.y);
     this.doc.x = this.left;
     this.doc.moveDown(gapLines);
   }
@@ -207,6 +241,8 @@ class PdfBlockRenderer {
       this.writer.write(marker, { lineBreak: false }, this.left + indent, top);
       this.doc.y = top;
       this.render(item, itemIndent, this.spacing.listItemGapLines);
+      // An item with no text of its own has its destinations at its marker.
+      this.placeWaiting(this.left + indent, top);
       if (this.doc.page === page) this.doc.y = Math.max(this.doc.y, top + lineHeight);
       this.doc.x = this.left;
     });
@@ -222,6 +258,7 @@ class PdfBlockRenderer {
     while (flow) {
       const startY = this.doc.y;
       const drawn = flow.draw(x0, startY, this.bottom - startY);
+      if (drawn.end > startY) this.placeWaiting(x0, startY);
       this.doc.x = this.left;
       this.doc.y = drawn.end;
       if (!drawn.rest) break;
@@ -244,6 +281,7 @@ class PdfBlockRenderer {
     const height = naturalHeight * scale;
     if (this.doc.y + height > this.bottom) this.doc.addPage();
     const y = this.doc.y;
+    this.placeWaiting(this.left + indent, y);
     try {
       this.doc.image(image.data, this.left + indent, y, { width, height });
     } catch (err) {
@@ -264,6 +302,44 @@ class PdfBlockRenderer {
       .stroke();
     this.doc.y = y + RULE_SPACING;
   }
+}
+
+/** Every name a block of the document states as a destination, to tell a link to one from a link to nothing. */
+function declaredAnchors(blocks: readonly PdfBlock[], names: Set<string> = new Set()): Set<string> {
+  const addContent = (content: readonly PdfTextSegment[]): void => anchorsOf(content).forEach((name) => names.add(name));
+  const addRows = (rows: readonly PdfTableCell[][]): void => {
+    for (const cell of rows.flat()) {
+      addContent(cell.content);
+      for (const part of cell.parts ?? []) {
+        if (part.kind === 'text') addContent(part.content);
+        else if (part.kind === 'table') addRows(part.rows);
+      }
+    }
+  };
+  for (const block of blocks) {
+    switch (block.kind) {
+      case 'anchor':
+        block.names.forEach((name) => names.add(name));
+        break;
+      case 'heading':
+      case 'paragraph':
+        addContent(block.content);
+        break;
+      case 'preformatted':
+        block.anchors?.forEach((anchor) => names.add(anchor.name));
+        break;
+      case 'list':
+        block.items.forEach((item) => declaredAnchors(item, names));
+        break;
+      case 'quote':
+        declaredAnchors(block.blocks, names);
+        break;
+      case 'table':
+        addRows(block.rows);
+        break;
+    }
+  }
+  return names;
 }
 
 /** pdfkit options for the page size and margins: the document's own geometry when it states one, otherwise A4. */
@@ -298,7 +374,9 @@ export async function renderPdfBlocks(blocks: readonly PdfBlock[], options: PdfB
 
     try {
       const writer = new PdfUnicodeTextWriter(doc, options.customFontPath);
-      new PdfBlockRenderer(doc, writer, options.spacing).render(blocks);
+      writer.destinations.declare(declaredAnchors(blocks));
+      new PdfBlockRenderer(doc, writer, options.spacing).renderDocument(blocks);
+      writer.destinations.finish();
     } catch (err) {
       reject(err);
       return;

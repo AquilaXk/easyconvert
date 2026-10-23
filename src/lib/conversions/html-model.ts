@@ -2,6 +2,7 @@ import { PayloadLimitError } from '../types';
 import { reportConversionWarning } from './conversion-warnings';
 import { OmittedContent, OmittedExternalImages } from './html-omitted-resources';
 import { assertEmbeddableImageWithinLimit } from './image-input-limits';
+import { anchorNamesOf, documentIds } from './html-anchors';
 import { parseHtmlTree, type HtmlElement, type HtmlNode } from './html-blocks';
 import { formatListNumber } from './docx-numbering';
 import { BlockSink, DocumentContext, assembleDocument, listFormatOf, type TableDraftCell } from './document-model/build';
@@ -50,7 +51,6 @@ const INLINE_BLOCK_BREAKERS: ReadonlySet<string> = new Set([
 ]);
 /** Attributes that make an element a link target; the copies of an element split around blocks do not repeat them. */
 const ANCHOR_ATTRIBUTES: readonly string[] = ['id', 'name'];
-const ANCHOR_ELEMENT = 'a';
 const ORDERED_TYPES: ReadonlyMap<string, string> = new Map([['1', 'decimal'], ['a', 'lowerLetter'], ['A', 'upperLetter'], ['i', 'lowerRoman'], ['I', 'upperRoman']]);
 const DATA_URI = /^data:([^,]*?)(;base64)?,(.*)$/is;
 const COLOR_HEX = /^#([0-9a-f]{6})$/i;
@@ -265,17 +265,9 @@ class HtmlModelBuilder {
     return pieces;
   }
 
-  /**
-   * The names `element` is a link target by (HTML Living Standard, "the indicated part of the document"): its `id`, and
-   * for an `a` its `name` unless an element has that `id`. Every element is a target, not only those read as blocks.
-   */
+  /** The names `element` is a link target by (see html-anchors.ts). */
   private anchorsOf(element: HtmlElement): string[] {
-    const names: string[] = [];
-    const id = element.attrs.get('id');
-    if (id) names.push(id);
-    const name = element.tag === ANCHOR_ELEMENT ? element.attrs.get('name') : undefined;
-    if (name && name !== id && !this.documentIds.has(name)) names.push(name);
-    return names;
+    return anchorNamesOf(element, this.documentIds);
   }
 
   /**
@@ -662,7 +654,7 @@ class HtmlModelBuilder {
 export async function htmlToDocumentModel(html: string, options: HtmlModelOptions = {}): Promise<DocumentModel> {
   const tree = parseHtmlTree(html.replace(/^﻿/, ''));
   const context = options.context ?? new DocumentContext();
-  const builder = new HtmlModelBuilder(options, context, idsOf(tree.root));
+  const builder = new HtmlModelBuilder(options, context, documentIds(tree.root));
   const firstWarning = context.warnings.length;
   const sink = new BlockSink(context);
   builder.blocks(tree.root.children, sink, 0, 0);
@@ -673,20 +665,6 @@ export async function htmlToDocumentModel(html: string, options: HtmlModelOption
   const root = findRoot(tree.root);
   const language = root?.attrs.get('lang') ?? root?.attrs.get('xml:lang');
   return assembleDocument({ sections: [{ columns: 1, blocks: sink.blocks }], context, language: language || undefined, title: tree.title || undefined });
-}
-
-/** The `id` of every element under `root`. */
-function idsOf(root: HtmlElement): Set<string> {
-  const ids = new Set<string>();
-  const pending: HtmlElement[] = [root];
-  for (let element = pending.pop(); element !== undefined; element = pending.pop()) {
-    const id = element.attrs.get('id');
-    if (id) ids.add(id);
-    for (const child of element.children) {
-      if (typeof child !== 'string') pending.push(child);
-    }
-  }
-  return ids;
 }
 
 function findRoot(node: HtmlElement): HtmlElement | undefined {
