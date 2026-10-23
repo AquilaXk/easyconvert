@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
-import { MAX_PDF_ANNOTATIONS_PER_PAGE, MAX_PDF_FORM_DEPTH, PdfStructureError } from '../src/lib/conversions/pdf-document';
+import { MAX_PDF_ANNOTATIONS, MAX_PDF_APPEARANCE_STATES, MAX_PDF_CONTENT_STREAMS, MAX_PDF_FORM_DEPTH, PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { PDF_CONTENT_MAX_STATE_DEPTH, PDF_TEXT_MAX_ITEM_CHARS, PDF_TEXT_MAX_ITEMS_PER_DOCUMENT, PDF_TEXT_MAX_ITEMS_PER_PAGE, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-types';
 import { DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
 import { type CraftObject, buildPdf, flate, HELVETICA_FONT } from './helpers/pdf-craft';
@@ -39,22 +39,34 @@ async function attempt(pdf: Buffer): Promise<Settled<unknown>> {
 
 const textOf = async (pdf: Buffer): Promise<string> => (await convertFile(pdf, 'pdf', 'txt', {}, 'hostile.pdf')).buffer.toString('utf8');
 
+/** A one-page document: `page` and `pages` are further entries of the page and of its /Pages node, `objects` further objects. */
+function pageTree(objects: CraftObject[], { page = '', pages = '' }: { page?: string; pages?: string } = {}): Buffer {
+  return buildPdf(
+    [
+      { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+      { id: 2, dict: `/Type /Pages /Kids [3 0 R] /Count 1 ${pages}` },
+      { id: 3, dict: `/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R ${FONT_RESOURCES} ${page}` },
+      { id: 4, dict: '/Filter /FlateDecode', stream: flate('') },
+      { id: 5, raw: HELVETICA_FONT },
+      ...objects,
+    ],
+    1
+  ).buffer;
+}
+
+/** Push button widgets with object numbers from `first`, each drawing the appearance `appearanceId`. */
+function widgets(count: number, appearanceId: number, first = FIRST_ANNOTATION): CraftObject[] {
+  return Array.from({ length: count }, (_, i) => ({
+    id: first + i,
+    dict: `/Type /Annot /Subtype /Widget /FT /Btn /Ff 65536 /T (f${i}) /Rect [72 600 272 620] /AP << /N ${appearanceId} 0 R >>`,
+  }));
+}
+
+const references = (count: number, first = FIRST_ANNOTATION): string => Array.from({ length: count }, (_, i) => `${first + i} 0 R`).join(' ');
+
 /** A page whose annotations (object numbers from FIRST_ANNOTATION) all draw the form `appearance`; `extra` are further objects. */
 function pageWithAnnotations(count: number, appearance: Omit<CraftObject, 'id'>, extra: CraftObject[] = []): Buffer {
-  const annotations = Array.from({ length: count }, (_, i) => `${FIRST_ANNOTATION + i} 0 R`).join(' ');
-  const objects: CraftObject[] = [
-    { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
-    { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
-    { id: 3, dict: `/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R ${FONT_RESOURCES} /Annots [${annotations}]` },
-    { id: 4, dict: '/Filter /FlateDecode', stream: flate('') },
-    { id: 5, raw: HELVETICA_FONT },
-    { id: SHARED_APPEARANCE, ...appearance },
-    ...extra,
-  ];
-  for (let i = 0; i < count; i++) {
-    objects.push({ id: FIRST_ANNOTATION + i, dict: `/Type /Annot /Subtype /Widget /FT /Btn /Ff 65536 /T (f${i}) /Rect [72 600 272 620] /AP << /N ${SHARED_APPEARANCE} 0 R >>` });
-  }
-  return buildPdf(objects, 1).buffer;
+  return pageTree([{ id: SHARED_APPEARANCE, ...appearance }, ...extra, ...widgets(count, SHARED_APPEARANCE)], { page: `/Annots [${references(count)}]` });
 }
 
 const showing = (content: string): Omit<CraftObject, 'id'> => ({ dict: `${FORM} ${FONT_RESOURCES}`, stream: Buffer.from(content, 'latin1') });
@@ -67,9 +79,9 @@ async function refusal(label: string, pdf: Buffer): Promise<unknown> {
 
 describe('annotations are counted', () => {
   it('refuses a page with more annotations than the cap before pdf.js builds any of their operator lists', async () => {
-    const error = await refusal('annotations past the cap', pageWithAnnotations(MAX_PDF_ANNOTATIONS_PER_PAGE + 1, showing('BT /F1 12 Tf 2 5 Td (a) Tj ET')));
+    const error = await refusal('annotations past the cap', pageWithAnnotations(MAX_PDF_ANNOTATIONS + 1, showing('BT /F1 12 Tf 2 5 Td (a) Tj ET')));
     expect(error).toBeInstanceOf(PdfStructureError);
-    expect((error as Error).message).toBe(`PDF page lists more than ${MAX_PDF_ANNOTATIONS_PER_PAGE} annotations.`);
+    expect((error as Error).message).toBe(`PDF lists more than ${MAX_PDF_ANNOTATIONS} annotations.`);
   });
 
   it('reads many annotations that share one appearance, which draw the same text once', async () => {
@@ -163,5 +175,167 @@ describe('annotation text counts against the text limits', () => {
     expect(error).toBeInstanceOf(PayloadLimitError);
     expect((error as PayloadLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
     expect((error as Error).message).toMatch(/document limit of 500000 text items/);
+  });
+});
+
+/**
+ * The guard sees the annotations pdf.js reads. pdf.js takes /Annots as an inheritable property (`Page.annotations`, through
+ * `getInheritableProperty`: the page's own, else the nearest one up its /Parent chain), draws whichever state stream /AS
+ * names without looking at its /Subtype (`Annotation.setAppearance`), builds an annotation for every entry of /Annots,
+ * repeated or not.
+ */
+const REFUSAL_BOUND_MS = 15_000;
+const RSS_BOUND_MB = 512;
+const RSS_SAMPLE_MS = 20;
+const BYTES_PER_MB = 1e6;
+const WIDGET = 7;
+const APPEARANCE = 8;
+const OFF_TREE_PAGES = 9;
+const REPEATED_REFERENCES = 3000;
+const STATES_OF_THE_PROBE = 100 * 1000;
+const STATE_SHARERS = 4000;
+const PAGES_SHARING_ANNOTATIONS = 3;
+
+let bombBytes: Buffer | null = null;
+/** 128 MiB of spaces after a run of text, deflated once for the file. */
+const bomb = (): Buffer => (bombBytes ??= flate(Buffer.concat([Buffer.from('BT /F1 12 Tf 2 5 Td (bomb) Tj ET '), Buffer.alloc(128 * MIB, 0x20)])));
+const bombAppearance = (subtype = 'Form'): Omit<CraftObject, 'id'> => ({
+  dict: `/Type /XObject /Subtype /${subtype} /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /BBox [0 0 200 20] ${FONT_RESOURCES} /Filter /FlateDecode`,
+  stream: bomb(),
+});
+const widget = (appearance: string): CraftObject => ({
+  id: WIDGET,
+  dict: `/Type /Annot /Subtype /Widget /FT /Btn /T (w) /F 4 /AS /Yes /Rect [72 600 272 620] /AP << /N ${appearance} >>`,
+});
+
+const textJob = (pdf: Buffer): Promise<unknown> => convertFile(pdf, 'pdf', 'txt', {}, 'hostile.pdf');
+
+/** Runs a job that must be refused; the refusal comes within REFUSAL_BOUND_MS and the process grows by less than RSS_BOUND_MB. */
+async function boundedRefusal(label: string, run: (pdf: Buffer) => Promise<unknown>, pdf: Buffer): Promise<unknown> {
+  const before = process.memoryUsage().rss;
+  let peak = before;
+  const sampler = setInterval(() => {
+    peak = Math.max(peak, process.memoryUsage().rss);
+  }, RSS_SAMPLE_MS);
+  const started = performance.now();
+  const settled = await run(pdf).then(
+    () => ({ ok: true as const }),
+    (error: unknown) => ({ ok: false as const, error })
+  );
+  clearInterval(sampler);
+  const elapsed = performance.now() - started;
+  const grownMb = (Math.max(peak, process.memoryUsage().rss) - before) / BYTES_PER_MB;
+  if (settled.ok) throw new Error(`${label} was accepted`);
+  expect(elapsed, `${label}: milliseconds to the refusal`).toBeLessThan(REFUSAL_BOUND_MS);
+  expect(grownMb, `${label}: MB the process grew by`).toBeLessThan(RSS_BOUND_MB);
+  return settled.error;
+}
+
+function expectStructureRefusal(error: unknown, message: string): void {
+  expect(error).toBeInstanceOf(PdfStructureError);
+  expect((error as Error).message).toBe(message);
+}
+
+function expectBombRefusal(error: unknown): void {
+  expect(error).toBeInstanceOf(DecompressionLimitError);
+  expect((error as DecompressionLimitError).status).toBe(HTTP_PAYLOAD_TOO_LARGE);
+}
+
+describe('every state stream an annotation names is decoded under the budgets', () => {
+  it('refuses a check box state that is a Flate bomb marked as an image, with a typed 413', async () => {
+    const pdf = pageTree([widget(`<< /Yes ${APPEARANCE} 0 R >>`), { id: APPEARANCE, ...bombAppearance('Image') }], { page: `/Annots [${WIDGET} 0 R]` });
+    expectBombRefusal(await boundedRefusal('image-marked state bomb', textJob, pdf));
+  });
+});
+
+describe('/Annots is read as pdf.js reads it, inherited up the /Parent chain', () => {
+  const small = showing('BT /F1 12 Tf 2 5 Td (inherited) Tj ET');
+
+  it('reads the text of an annotation listed only on the /Pages node, as pdf.js does', async () => {
+    const pdf = pageTree([widget(`${APPEARANCE} 0 R`), { id: APPEARANCE, ...small }], { pages: `/Annots [${WIDGET} 0 R]` });
+    expect(await textOf(pdf)).toBe('inherited');
+  });
+
+  it('refuses an appearance bomb on an annotation listed only on the /Pages node, with a typed 413', async () => {
+    const pdf = pageTree([widget(`${APPEARANCE} 0 R`), { id: APPEARANCE, ...bombAppearance() }], { pages: `/Annots [${WIDGET} 0 R]` });
+    expectBombRefusal(await boundedRefusal('inherited appearance bomb', textJob, pdf));
+  });
+
+  it('refuses an appearance bomb listed on a /Parent that is not in the page tree, with a typed 413', async () => {
+    const pdf = pageTree(
+      [widget(`${APPEARANCE} 0 R`), { id: APPEARANCE, ...bombAppearance() }, { id: OFF_TREE_PAGES, dict: `/Type /Pages /Annots [${WIDGET} 0 R]` }],
+      { page: `/Parent ${OFF_TREE_PAGES} 0 R` }
+    );
+    expectBombRefusal(await boundedRefusal('appearance bomb on an off-tree parent', textJob, pdf));
+  });
+
+  it('counts the annotations a /Pages node lists against the cap', async () => {
+    const count = MAX_PDF_ANNOTATIONS + 1;
+    const pdf = pageTree([{ id: SHARED_APPEARANCE, ...small }, ...widgets(count, SHARED_APPEARANCE)], { pages: `/Annots [${references(count)}]` });
+    expectStructureRefusal(await boundedRefusal('inherited annotations past the cap', textJob, pdf), `PDF lists more than ${MAX_PDF_ANNOTATIONS} annotations.`);
+  });
+});
+
+describe('annotation entries are bounded as they are collected', () => {
+  const repeated = (times: number, annotation: CraftObject, extra: CraftObject[] = []): Buffer =>
+    pageTree([annotation, ...extra], { page: `/Annots [${Array.from({ length: times }, () => `${annotation.id} 0 R`).join(' ')}]` });
+
+  it('refuses a page that lists one annotation twice', async () => {
+    const pdf = repeated(2, widget(`${APPEARANCE} 0 R`), [{ id: APPEARANCE, ...showing('BT /F1 12 Tf 2 5 Td (twice) Tj ET') }]);
+    expectStructureRefusal(await boundedRefusal('an annotation listed twice', textJob, pdf), `PDF page lists annotation ${WIDGET} more than once.`);
+  });
+
+  it('refuses 3,000 references to one widget with 100,000 states before it collects them', async () => {
+    const states = Array.from({ length: STATES_OF_THE_PROBE }, (_, i) => `/s${i} ${APPEARANCE} 0 R`).join(' ');
+    const pdf = repeated(REPEATED_REFERENCES, widget(`<< ${states} >>`), [{ id: APPEARANCE, ...showing('q Q') }]);
+    expectStructureRefusal(await boundedRefusal('repeated widget with many states', textJob, pdf), `PDF page lists annotation ${WIDGET} more than once.`);
+  });
+
+  it('reads an annotation with as many appearance states as the cap allows', async () => {
+    const states = Array.from({ length: MAX_PDF_APPEARANCE_STATES - 1 }, (_, i) => `/s${i} ${APPEARANCE} 0 R`).join(' ');
+    const pdf = pageTree([widget(`<< ${states} /Yes ${APPEARANCE} 0 R >>`), { id: APPEARANCE, ...showing('BT /F1 12 Tf 2 5 Td (checked) Tj ET') }], {
+      page: `/Annots [${WIDGET} 0 R]`,
+    });
+    expect(await textOf(pdf)).toBe('checked');
+  });
+
+  it('refuses an annotation with more appearance states than the cap', async () => {
+    const states = Array.from({ length: MAX_PDF_APPEARANCE_STATES + 1 }, (_, i) => `/s${i} ${APPEARANCE} 0 R`).join(' ');
+    const pdf = pageTree([widget(`<< ${states} >>`), { id: APPEARANCE, ...showing('q Q') }], { page: `/Annots [${WIDGET} 0 R]` });
+    const error = await boundedRefusal('states past the cap', textJob, pdf);
+    expectStructureRefusal(error, `PDF annotation has more than ${MAX_PDF_APPEARANCE_STATES} appearance states.`);
+  });
+
+  it('counts each state stream as it is collected against the content-stream cap', async () => {
+    const states = Array.from({ length: MAX_PDF_APPEARANCE_STATES }, (_, i) => `/s${i} ${APPEARANCE} 0 R`).join(' ');
+    const sharers = Array.from({ length: STATE_SHARERS }, (_, i) => ({
+      id: FIRST_ANNOTATION + i,
+      dict: `/Type /Annot /Subtype /Widget /FT /Btn /T (c${i}) /Rect [0 0 10 10] /AP << /N ${OFF_TREE_PAGES} 0 R >>`,
+    }));
+    expect(STATE_SHARERS * MAX_PDF_APPEARANCE_STATES).toBeGreaterThan(MAX_PDF_CONTENT_STREAMS);
+    const pdf = pageTree([{ id: APPEARANCE, ...showing('q Q') }, { id: OFF_TREE_PAGES, raw: `<< ${states} >>` }, ...sharers], {
+      page: `/Annots [${references(STATE_SHARERS)}]`,
+    });
+    const error = await boundedRefusal('state streams past the content-stream cap', textJob, pdf);
+    expectStructureRefusal(error, `PDF draws more than ${MAX_PDF_CONTENT_STREAMS} content streams.`);
+  });
+});
+
+describe('the annotations of a document are counted together', () => {
+  it('refuses pages that share one list of annotations once their sum passes the cap', async () => {
+    const perPage = Math.ceil((MAX_PDF_ANNOTATIONS + 1) / PAGES_SHARING_ANNOTATIONS);
+    const pageIds = Array.from({ length: PAGES_SHARING_ANNOTATIONS }, (_, i) => 10 + i);
+    const objects: CraftObject[] = [
+      { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+      { id: 2, dict: `/Type /Pages /Count ${pageIds.length} /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}]` },
+      { id: 5, raw: HELVETICA_FONT },
+      { id: SHARED_APPEARANCE, ...showing('BT /F1 12 Tf 2 5 Td (shared) Tj ET') },
+      { id: APPEARANCE, raw: `[${references(perPage)}]` },
+      ...pageIds.map((id) => ({ id, dict: `/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ${FONT_RESOURCES} /Annots ${APPEARANCE} 0 R` })),
+      ...widgets(perPage, SHARED_APPEARANCE),
+    ];
+    expect(perPage).toBeLessThan(MAX_PDF_ANNOTATIONS);
+    const error = await boundedRefusal('annotations of the document past the cap', textJob, buildPdf(objects, 1).buffer);
+    expectStructureRefusal(error, `PDF lists more than ${MAX_PDF_ANNOTATIONS} annotations.`);
   });
 });

@@ -41,11 +41,17 @@ export const MAX_PDF_FORM_INVOCATIONS = 100 * 1000;
 /** Content streams (page and form) one document may have decoded. */
 export const MAX_PDF_CONTENT_STREAMS = 200 * 1000;
 /**
- * Annotations one page may list. Neither pdf.js nor Poppler caps them; the reader's thread (a 1 GiB heap) builds the operator
- * lists of about 60,000 annotations of one page in 2.2 s and runs out of memory at 100,000, so the cap is set below that
- * and a page past it is refused before pdf.js reads any appearance.
+ * Annotations the pages of one document may list together, counted per listing. Neither pdf.js nor Poppler caps them, and
+ * pdf.js keeps what it built for each page's annotations until the document closes: in the reader's thread (a 1 GiB heap)
+ * 100,000 widgets that draw a caption were read and 150,000 ran it out of memory, whether on one page or spread over
+ * pages, so the cap is half of what was read. The most any of the 1,256 real-world PDFs lists is 891.
  */
-export const MAX_PDF_ANNOTATIONS_PER_PAGE = 50 * 1000;
+export const MAX_PDF_ANNOTATIONS = 50 * 1000;
+/**
+ * States one annotation's normal appearance may have (ISO 32000-1 section 12.5.5). A check box or a radio button has two,
+ * Off and its on state, and no real-world PDF has more; pdf.js draws at most three of them (/AS, the on state, Off).
+ */
+export const MAX_PDF_APPEARANCE_STATES = 64;
 /** Nesting of arrays and dictionaries inside one object. */
 export const MAX_PDF_PARSE_DEPTH = 32;
 /** Longest chain of indirect references followed to reach a direct value. */
@@ -482,6 +488,7 @@ export class PdfDocument {
   private pageList: PageNode[] | null | undefined;
   private objectCount = 0;
   private contentStreamCount = 0;
+  private annotationCount = 0;
   private formInvocations = 0;
 
   /**
@@ -922,11 +929,25 @@ export class PdfDocument {
 
   /**
    * Calls `visit` with the text of every content stream a page draws, in page-tree order: each page's
-   * /Contents, followed by the form XObjects its resources name and the content invokes. A file with no
+   * /Contents, followed by the form XObjects its resources name and the content invokes, then the normal appearances
+   * of the annotations it lists and the forms they invoke. A file with no
    * page structure (no trailer root, catalog or page object) is read stream by stream instead, still
    * bounded, with image streams left alone. Encrypted files yield nothing.
    */
   contentStreams(visit: (content: string) => void): void {
+    this.visitPageStreams(visit, true);
+  }
+
+  /**
+   * Calls `visit` with the text of every annotation appearance stream the pages draw and the forms they invoke, under the
+   * same budgets as `contentStreams`, for a reader that takes the page content as it is but builds the annotations. A file
+   * with no page structure is read stream by stream, as there.
+   */
+  annotationAppearanceStreams(visit: (content: string) => void): void {
+    this.visitPageStreams(visit, false);
+  }
+
+  private visitPageStreams(visit: (content: string) => void, withPageContent: boolean): void {
     if (this.encrypted) return;
     const pages = this.pages();
     if (pages === null) {
@@ -935,7 +956,7 @@ export class PdfDocument {
     }
     const activeForms = new Set<number>();
     for (const page of pages) {
-      for (const entry of this.pageContentEntries(page.dict)) {
+      for (const entry of withPageContent ? this.pageContentEntries(page.dict) : []) {
         this.countContentStream();
         const content = this.decodeStream(entry);
         if (content === null) continue;
@@ -971,31 +992,65 @@ export class PdfDocument {
   }
 
   /**
-   * The normal appearance streams of the annotations a page lists (ISO 32000-1 section 12.5.5): the stream /AP /N names, or
-   * each stream of the states dictionary it names instead. pdf.js builds the operator list of every annotation it may draw
-   * and Poppler draws them all, so each is decoded under the budgets of the page content.
-   * @throws PdfStructureError when the page lists more than MAX_PDF_ANNOTATIONS_PER_PAGE annotations.
+   * The normal appearance streams of the annotations a page lists (ISO 32000-1 section 12.5.5), one at a time so that each
+   * is counted as it is drawn: the stream /AP /N names, or every stream of the states dictionary it names instead, whatever
+   * their /Subtype, since pdf.js draws the one /AS names as it is (`Annotation.setAppearance`). pdf.js builds an annotation
+   * for every entry of /Annots, so the entries count against MAX_PDF_ANNOTATIONS for the document, and an annotation listed
+   * twice, which a real page never does, is refused rather than built twice.
+   * @throws PdfStructureError past MAX_PDF_ANNOTATIONS or MAX_PDF_APPEARANCE_STATES, or for an annotation listed twice.
    */
-  private annotationAppearanceEntries(page: PdfDict): PdfObjectEntry[] {
-    const annotations = this.resolve(page.entries.get('Annots'));
-    if (!isArray(annotations)) return [];
-    if (annotations.items.length > MAX_PDF_ANNOTATIONS_PER_PAGE) {
-      throw new PdfStructureError(`PDF page lists more than ${MAX_PDF_ANNOTATIONS_PER_PAGE} annotations.`);
-    }
-    const entries: PdfObjectEntry[] = [];
+  private *annotationAppearanceEntries(page: PdfDict): Generator<PdfObjectEntry> {
+    const annotations = this.resolve(this.pageAnnotations(page));
+    if (!isArray(annotations)) return;
+    this.annotationCount += annotations.items.length;
+    if (this.annotationCount > MAX_PDF_ANNOTATIONS) throw new PdfStructureError(`PDF lists more than ${MAX_PDF_ANNOTATIONS} annotations.`);
+    const listed = new Set<number>();
     for (const item of annotations.items) {
-      const normal = this.resolveDict(this.resolveDict(item)?.entries.get('AP'))?.entries.get('N');
-      const stream = this.entryOf(normal);
-      if (stream) {
-        entries.push(stream);
-        continue;
-      }
-      for (const state of this.resolveDict(normal)?.entries.values() ?? []) {
-        const entry = this.entryOf(state);
-        if (entry && !this.isImage(entry)) entries.push(entry);
-      }
+      if (!isRef(item)) continue;
+      if (listed.has(item.num)) throw new PdfStructureError(`PDF page lists annotation ${item.num} more than once.`);
+      listed.add(item.num);
     }
-    return entries;
+    for (const item of annotations.items) yield* this.normalAppearances(item);
+  }
+
+  private *normalAppearances(annotation: PdfValue): Generator<PdfObjectEntry> {
+    const normal = this.resolveDict(this.resolveDict(annotation)?.entries.get('AP'))?.entries.get('N');
+    const stream = this.entryOf(normal);
+    if (stream) {
+      yield stream;
+      return;
+    }
+    const states = this.resolveDict(normal)?.entries;
+    if (!states) return;
+    if (states.size > MAX_PDF_APPEARANCE_STATES) {
+      throw new PdfStructureError(`PDF annotation has more than ${MAX_PDF_APPEARANCE_STATES} appearance states.`);
+    }
+    for (const state of states.values()) {
+      const entry = this.entryOf(state);
+      if (entry) yield entry;
+    }
+  }
+
+  /**
+   * /Annots as pdf.js reads it (`Page.annotations` through `getInheritableProperty`): the page's own, else that of the
+   * nearest node up its /Parent chain, which stops where it would visit a node again.
+   * @throws PdfStructureError when the chain is longer than a page tree may be deep.
+   */
+  private pageAnnotations(page: PdfDict): PdfValue | undefined {
+    const visited = new Set<number>();
+    let node: PdfDict | null = page;
+    for (let depth = 0; node !== null; depth++) {
+      const annotations = node.entries.get('Annots');
+      if (annotations !== undefined) return annotations;
+      const parent = node.entries.get('Parent');
+      if (isRef(parent)) {
+        if (visited.has(parent.num)) return undefined;
+        visited.add(parent.num);
+      }
+      if (depth >= MAX_PDF_PAGE_TREE_DEPTH) throw new PdfStructureError('PDF page tree is nested too deeply.');
+      node = this.resolveDict(parent);
+    }
+    return undefined;
   }
 
   private pageContentEntries(page: PdfDict): PdfObjectEntry[] {

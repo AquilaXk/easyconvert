@@ -69,7 +69,7 @@ export function buildPdf(objects: CraftObject[], rootId: number): CraftedPdf {
     chunks.push(rendered);
     offset += rendered.length;
   }
-  const size = Math.max(...objects.map((o) => o.id)) + 1;
+  const size = objects.reduce((highest, o) => Math.max(highest, o.id), 0) + 1;
   const xrefOffset = offset;
   const free = '0000000000 65535 f ';
   const xref = `xref\n0 1\n${free}\n${renderXref(entries)}\n`;
@@ -89,7 +89,7 @@ export function appendRevision(base: CraftedPdf, objects: CraftObject[], rootId:
     chunks.push(rendered);
     offset += rendered.length;
   }
-  const size = Math.max(base.size, ...objects.map((o) => o.id + 1));
+  const size = objects.reduce((highest, o) => Math.max(highest, o.id + 1), base.size);
   const xrefOffset = offset;
   const xref = `xref\n${renderXref(entries)}\n`;
   const trailer = `trailer\n<< /Size ${size} /Root ${rootId} 0 R /Prev ${base.xrefOffset} >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
