@@ -167,6 +167,46 @@ function noisy16(): Promise<Buffer> {
   return sharp(samples, { raw: { width: SIDE, height: SIDE, channels: 3 } }).toColourspace('rgb16').png().toBuffer();
 }
 
+/** An 8-bit colour graphic: a red field, a blue band, a translucent band and a transparent corner, in large flat areas (a few hundred bytes as a PNG). */
+function graphic8(channels: 3 | 4): Promise<Buffer> {
+  const width = 160;
+  const height = 120;
+  const pixels = Buffer.alloc(width * height * channels);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const at = (y * width + x) * channels;
+      const blueBand = y >= 40 && y < 60;
+      pixels[at] = blueBand ? 20 : 200;
+      pixels[at + 1] = blueBand ? 60 : 30;
+      pixels[at + 2] = blueBand ? 220 : 40;
+      if (channels === 4) pixels[at + 3] = y >= 80 && y < 100 ? 128 : x >= 120 && y < 30 ? 0 : 255;
+    }
+  }
+  return sharp(pixels, { raw: { width, height, channels } }).png().toBuffer();
+}
+
+/** A smooth 8-bit ramp: a photograph by its content (no two neighbours alike) that deflates to a fraction of a byte per pixel. */
+function ramp8(): Promise<Buffer> {
+  const width = 256;
+  const height = 64;
+  const pixels = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) pixels.fill(x, (y * width + x) * 3, (y * width + x) * 3 + 3);
+  return sharp(pixels, { raw: { width, height, channels: 3 } }).png().toBuffer();
+}
+
+/** 8-bit colour noise (xorshift32): a photograph by its content that deflates to several bytes per pixel. */
+function noisy8(): Promise<Buffer> {
+  const pixels = Buffer.alloc(SIDE * SIDE * 3);
+  let state = 2463534242;
+  for (let i = 0; i < pixels.length; i += 1) {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    pixels[i] = (state >>> 0) & 0xff;
+  }
+  return sharp(pixels, { raw: { width: SIDE, height: SIDE, channels: 3 } }).png().toBuffer();
+}
+
 describe('the encoder reads the source file', () => {
   oracleTest(
     'a 16-bit grey picture reaches the encoder byte for byte, and the AVIF is what the encoder writes for that file',
@@ -274,6 +314,86 @@ describe('the encoder reads the source file', () => {
       60_000
     );
   });
+
+  describe.each([
+    ['with transparency', 4],
+    ['without an alpha channel', 3],
+  ] as const)('a colour graphic of 8 bits %s', (_name, channels) => {
+    oracleTest(
+      'reaches the encoder byte for byte, and gives the bytes of the regular route that decodes the pixels',
+      ['avifenc', 'avifdec'],
+      async () => {
+        const wrapper = copyingWrapper(`graphic8-${channels}`);
+        process.env.AVIFENC_PATH = wrapper.script;
+        const source = await graphic8(channels);
+        const out = await convertImage(source, 'avif', { quality: 70 }, 'g.png', 'png');
+        expect(out.metadata).toMatchObject({ avifEncoder: 'library-cli' });
+        expect(readFileSync(wrapper.input).equals(source)).toBe(true);
+        expect(runsOf(wrapper), 'the run started before the class was known is the one that wrote the file').toBe(1);
+        const args = readFileSync(wrapper.args, 'utf-8').trim().split('\n');
+        expect(args.slice(0, 6)).toEqual(['-d', '8', '-y', '420', '-q', '70']);
+        expect(args).not.toContain('-a');
+        expect(out.buffer.equals(encoderOnSource(wrapper.args, source, `graphic8-${channels}`))).toBe(true);
+        // A text chunk keeps the picture on the regular route: decoded, written as a stored PNG, then read by the encoder.
+        const regular = copyingWrapper(`graphic8-${channels}-regular`);
+        process.env.AVIFENC_PATH = regular.script;
+        const viaPixels = await convertImage(withChunksAfterHeader(source, [chunk('tEXt', Buffer.from('Comment\0hello'))]), 'avif', { quality: 70 }, 'g.png', 'png');
+        expect(readFileSync(regular.input).equals(source)).toBe(false);
+        expect(out.buffer.equals(viaPixels.buffer)).toBe(true);
+      },
+      60_000
+    );
+  });
+
+  oracleTest(
+    'a colour graphic of 8 bits on which every pixel is opaque gives the AVIF of the same samples without the alpha plane, as the regular route does',
+    ['avifenc', 'avifdec'],
+    async () => {
+      const wrapper = copyingWrapper('opaque8');
+      process.env.AVIFENC_PATH = wrapper.script;
+      const { data, info } = await sharp(await graphic8(3)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      const source = await sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toBuffer();
+      const alphaFree = await graphic8(3);
+      const out = await convertImage(source, 'avif', { quality: 60 }, 'opaque.png', 'png');
+      expect(readFileSync(wrapper.input).equals(source), 'the encoder was given the source file').toBe(true);
+      expect(execFileSync(requireOracleTool('avifdec'), ['--info', writeOut('opaque8.avif', out.buffer)], { encoding: 'utf-8' })).not.toMatch(/Alpha\s*:\s*Present/i);
+      expect(out.buffer.equals(encoderOnSource(wrapper.args, alphaFree, 'opaque8'))).toBe(true);
+    },
+    60_000
+  );
+
+  oracleTest(
+    'a colour picture of 8 bits that deflates small but is a photograph by its content is encoded by the image library, and the run started on the guess is stopped',
+    ['avifenc', 'avifdec'],
+    async () => {
+      const source = await ramp8();
+      expect(source.length / (256 * 64), 'the guess says graphic').toBeLessThan(1);
+      const guessed = copyingWrapper('ramp8');
+      process.env.AVIFENC_PATH = guessed.script;
+      const out = await convertImage(source, 'avif', { quality: 60 }, 'ramp.png', 'png');
+      expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
+      const unguessed = copyingWrapper('ramp8-regular');
+      process.env.AVIFENC_PATH = unguessed.script;
+      const viaPixels = await convertImage(withChunksAfterHeader(source, [chunk('tEXt', Buffer.from('Comment\0hello'))]), 'avif', { quality: 60 }, 'ramp.png', 'png');
+      expect(viaPixels.metadata).toMatchObject({ avifEncoder: 'image-library' });
+      expect(runsOf(unguessed)).toBe(0);
+      expect(out.buffer.equals(viaPixels.buffer)).toBe(true);
+    },
+    60_000
+  );
+
+  oracleTest(
+    'a colour photograph of 8 bits that deflates to several bytes per pixel never starts the command-line encoder',
+    ['avifenc', 'avifdec'],
+    async () => {
+      const wrapper = copyingWrapper('noisy8');
+      process.env.AVIFENC_PATH = wrapper.script;
+      const out = await convertImage(await noisy8(), 'avif', { quality: 60 }, 'noise.png', 'png');
+      expect(out.metadata).toMatchObject({ avifEncoder: 'image-library' });
+      expect(runsOf(wrapper)).toBe(0);
+    },
+    60_000
+  );
 
   oracleTest(
     'a continuous-tone 16-bit picture is encoded with the photograph tuning, from the same source file',
@@ -549,13 +669,30 @@ describe('the run in a slot', () => {
     await expect(slot.abandon()).resolves.toBeUndefined();
   });
 
-  it('does not start a run for a colour picture of 8 bits, whose encoder depends on its content', async () => {
-    const tool = sleepingTool('never-started');
+  it('starts a run for a colour picture of 8 bits only when the size of its file suggests a graphic', async () => {
+    const tool = sleepingTool('guess-sleeper');
     process.env.AVIFENC_PATH = tool.script;
-    const colour8 = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#336699' } }).png().toBuffer();
-    expect(await DirectAvif.start(colour8, await sharp(colour8).metadata(), OPTIONS)).toBeNull();
+    const photograph = await noisy8();
+    expect(await DirectAvif.start(photograph, await sharp(photograph).metadata(), OPTIONS), 'several bytes per pixel').toBeNull();
     expect(existsSync(tool.pidFile)).toBe(false);
-  });
+    const graphic = await graphic8(4);
+    const direct = await DirectAvif.start(graphic, await sharp(graphic).metadata(), OPTIONS);
+    expect(direct, 'a fraction of a byte per pixel').not.toBeNull();
+    await waitFor(() => existsSync(tool.pidFile));
+    await direct?.abandon();
+  }, 30_000);
+
+  it('stops the run and hands the picture back when the class of a colour picture of 8 bits turns out to be a photograph', async () => {
+    const tool = sleepingTool('photo8-sleeper');
+    process.env.AVIFENC_PATH = tool.script;
+    const graphic = await graphic8(3);
+    const direct = await DirectAvif.start(graphic, await sharp(graphic).metadata(), OPTIONS);
+    expect(direct).not.toBeNull();
+    await waitFor(() => existsSync(tool.pidFile));
+    const pid = Number(readFileSync(tool.pidFile, 'utf-8'));
+    expect(await direct?.finish('photo')).toBeNull();
+    await waitFor(() => !isRunning(pid));
+  }, 30_000);
 
   it('starts a run for a picture at the pixel budget of the command-line encoder and for none above it', async () => {
     const tool = sleepingTool('budget-sleeper');

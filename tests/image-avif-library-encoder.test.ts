@@ -5,7 +5,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
-import { AVIFENC_MAX_THREADS, AVIFENC_PROBE_RETRY_MS, avifencArguments, encodeAvifWithCli, findAvifenc, type AvifCliRequest } from '../src/lib/conversions/avif-cli';
+import { AVIFENC_MAX_THREADS, AVIFENC_PROBE_RETRY_MS, AVIFENC_SYNC_IO_MAX_BYTES, avifencArguments, encodeAvifWithCli, findAvifenc, type AvifCliRequest } from '../src/lib/conversions/avif-cli';
 import { avifEffortFor, avifSpeedFor } from '../src/lib/conversions/image-encoder-defaults';
 import { ConversionFailedError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -720,6 +720,28 @@ describe('encoder run lifecycle', () => {
       expect(jobDirs(tmp)).toEqual([]);
     });
   }, 60_000);
+
+  describe.each([
+    ['at the synchronous limit', AVIFENC_SYNC_IO_MAX_BYTES],
+    ['above the synchronous limit', AVIFENC_SYNC_IO_MAX_BYTES + 1],
+  ])('a picture file and an output %s', (_name, size) => {
+    it('reaches the tool byte for byte, comes back byte for byte, and leaves no working directory', async () => {
+      await withPrivateTmpdir(async (tmp) => {
+        const seen = path.join(workDir, `size-${size}-input.bin`);
+        const valid = await validAvif();
+        const output = Buffer.concat([valid, Buffer.alloc(size - valid.length, 0x5a)]);
+        const outputSource = writeIn(`size-${size}-output.avif`, output);
+        const tool = failingTool(`size-${size}`, `for last; do :; done\ndir=$(dirname "$last")\ncp "$dir/in.png" '${seen}'\ncp '${outputSource}' "$last"`);
+        // Large enough that the output bound (width x height x 8 bytes) admits an output of this size.
+        const side = Math.ceil(Math.sqrt(size / 4));
+        const picture = Buffer.alloc(size, 0xa5);
+        const encoded = await encodeAvifWithCli(tool.script, { ...(await request()), png: picture, width: side, height: side });
+        expect(encoded.equals(output)).toBe(true);
+        expect(readFileSync(seen).equals(picture)).toBe(true);
+        expect(jobDirs(tmp)).toEqual([]);
+      });
+    }, 60_000);
+  });
 
   it('passes the arguments through only for a whole-number quality from 0 to 100', async () => {
     const base = await request();

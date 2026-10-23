@@ -1,10 +1,10 @@
 import type { Metadata } from 'sharp';
 import type { ConversionOptions } from '../types';
 import { rethrowSandboxUnavailable } from '../security/process-sandbox';
-import { AvifEncoderFailedError, type AvifCliRequest, type AvifCliRun, findAvifenc, startAvifWithCli } from './avif-cli';
+import { AVIF_ENCODER_LIBRARY_CLI, AvifEncoderFailedError, type AvifCliRequest, type AvifCliRun, findAvifenc, startAvifWithCli } from './avif-cli';
 import type { ContentClass } from './image-content';
 import { SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
-import { AVIF_CLI_MAX_PIXELS, avifPolicyFor, avifSourceBitsOf, type AvifPolicy } from './image-encoder-defaults';
+import { AVIF_CLI_MAX_PIXELS, avifEncoderFor, avifPolicyFor, avifSourceBitsOf, type AvifPolicy } from './image-encoder-defaults';
 
 /**
  * A PNG that reaches the AVIF command-line encoder as the file it arrived in.
@@ -17,12 +17,20 @@ import { AVIF_CLI_MAX_PIXELS, avifPolicyFor, avifSourceBitsOf, type AvifPolicy }
  * the decode instead of following it. When the class turns out to need another tuning the run is replaced by one with the
  * policy of the class, on the same file.
  *
+ * A colour picture of 8 bits is the encoder's only when its content is a graphic (a photograph goes to the image library), and the
+ * class is not known before the decode. It is started on the guess the size of the file gives (`guessedClass`), and only when the
+ * guess says graphic: a graphic written as a PNG deflates to a fraction of a byte per pixel, a photograph to several. When the
+ * class turns out to be a photograph the run is stopped and the image library encodes the decoded pixels, as it would have
+ * without the guess. On a 699 x 560 graphic with transparency the encoder starts 5 ms earlier, the time the decode and the class
+ * took, and reads a 59 kB file where it read a 1.5 MB stored copy of the pixels.
+ *
  * Only a file whose chunks the encoder turns into nothing but pixels and the metadata the regular route writes too qualifies
  * (`directSourceOf`), so the encoder writes the very file it would write for the re-encoded samples. The colour description chunks
  * (a profile, which `isPlainPng` has found to describe sRGB, gamma, chromaticities) are ignored by the encoder when it is told to
  * (`--ignore-icc`, which skips all of them: measured with a weird gamma and chromaticities, the AVIF is the one of the picture without
  * the chunks), exactly as the decoded pixels written out again carry none. A file the encoder cannot read is encoded from the
- * decoded pixels as before.
+ * decoded pixels as before. A fully opaque alpha plane needs no check: the encoder leaves it out when it writes the file
+ * (libavif `src/write.c`, `avifImageIsOpaque` before the alpha payload), as the regular route drops it before the encode.
  */
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -114,6 +122,8 @@ interface DirectAvifSource {
   /** Bits per sample the policy's bit depth follows. */
   sourceBits: number;
   grey: boolean;
+  /** The picture has more than 8 bits per sample. */
+  deep: boolean;
   ignoresColourChunks: boolean;
 }
 
@@ -128,13 +138,14 @@ export class DirectAvif {
 
   private policyFor(content: ContentClass): AvifPolicy {
     const { width, height, sourceBits, grey } = this.source;
-    return avifPolicyFor(this.options.quality, content, width * height, sourceBits, grey, 'library-cli');
+    return avifPolicyFor(this.options.quality, content, width * height, sourceBits, grey, AVIF_ENCODER_LIBRARY_CLI);
   }
 
   /**
-   * Starts the encoder on `png` when the picture described by `meta` is one the command-line encoder takes whatever its content,
-   * the file qualifies and the options leave its pixels as they are (the caller checks that); null otherwise. The policy it starts
-   * with is the one of the class the size of the file suggests (`guessedClass`).
+   * Starts the encoder on `png` when the picture described by `meta` is one the command-line encoder takes whatever its content
+   * (grey, or more than 8 bits per sample) or one it takes when the size of the file suggests a graphic, the file qualifies and the
+   * options leave its pixels as they are (the caller checks that); null otherwise. The policy it starts with is the one of the class the
+   * size of the file suggests (`guessedClass`).
    */
   static async start(png: Buffer, meta: Metadata, options: ConversionOptions): Promise<DirectAvif | null> {
     const { width, height } = meta;
@@ -142,20 +153,28 @@ export class DirectAvif {
     const deep = meta.depth === SHARP_SIXTEEN_BIT_DEPTH;
     const grey = meta.space === 'b-w' || meta.space === 'grey16';
     const chunks = directSourceOf(png);
-    if (!(deep || grey) || chunks === null) return null;
+    if (chunks === null) return null;
+    const guess = guessedClass(png, width * height);
+    if (!(deep || grey) && guess !== 'graphic') return null;
     const avifenc = await findAvifenc();
     if (avifenc === null) return null;
-    const source = { avifenc, png, width, height, grey, ignoresColourChunks: chunks.ignoresColourChunks, sourceBits: avifSourceBitsOf(deep, meta.bitsPerSample) };
-    const started = avifPolicyFor(options.quality, guessedClass(png, width * height), width * height, source.sourceBits, grey, 'library-cli');
+    const source = { avifenc, png, width, height, grey, deep, ignoresColourChunks: chunks.ignoresColourChunks, sourceBits: avifSourceBitsOf(deep, meta.bitsPerSample) };
+    const started = avifPolicyFor(options.quality, guess, width * height, source.sourceBits, grey, AVIF_ENCODER_LIBRARY_CLI);
     return new DirectAvif(source, options, started, startAvifWithCli(avifenc, requestFor(source, started, options)));
   }
 
   /**
    * The AVIF for the content class: the run in progress when its policy is the class's, else a run of the class's policy on the
-   * same file. Null when the encoder failed on the file, in which case the caller encodes the decoded pixels; every other failure
-   * (a timeout, a memory limit, an abort) is thrown, as the run on the decoded pixels would meet it too.
+   * same file. Null when the encoder failed on the file, or when the class belongs to the image library (a photograph of 8 bits, whose
+   * run was a guess): the caller then encodes the decoded pixels. Every other failure (a timeout, a memory limit, an abort) is
+   * thrown, as the run on the decoded pixels would meet it too.
    */
   async finish(content: ContentClass): Promise<Buffer | null> {
+    const { width, height, grey, deep } = this.source;
+    if (avifEncoderFor(content, grey, width * height, true, deep) !== AVIF_ENCODER_LIBRARY_CLI) {
+      await this.run.cancel();
+      return null;
+    }
     const policy = this.policyFor(content);
     if (!samePolicy(policy, this.started)) {
       await this.run.cancel();
