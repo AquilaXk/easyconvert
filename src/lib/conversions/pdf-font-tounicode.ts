@@ -60,7 +60,6 @@ function hasRegisteredCollection(font: CompositeFontDictionary): boolean {
 function lacksTextMap(font: CompositeFontDictionary): boolean {
   return (
     !font.hasToUnicode &&
-    font.text.startsWith('<<') &&
     font.encoding !== null &&
     IDENTITY_ENCODINGS.has(font.encoding) &&
     !hasRegisteredCollection(font)
