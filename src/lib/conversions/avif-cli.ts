@@ -66,10 +66,11 @@ const AVIFENC_CLEANUP_RETRY_DELAY_MS = 50;
 /**
  * Largest picture file (and largest encoder output) handled with synchronous file calls. The image library's decode keeps the
  * libuv pool busy while this runs, so each asynchronous call (create the directory, write the picture, read the output, remove
- * the directory) waits for a pool thread behind it: 1.1 ms of hand-over and 0.8 ms of read-back and removal for a 1.1 MB PNG
- * and a 12 kB AVIF, 0.07 ms with synchronous calls (arm64 Linux VM, 4 vCPU, medians of 30 pairs: the row went from 0.892 to 0.932
- * of the reference encoder). A copy of this size takes under a millisecond of page-cache work; a larger file keeps the asynchronous
- * calls so that a big picture never holds the event loop.
+ * the directory) waits for a pool thread behind it. For a 1.1 MB PNG and a 12 kB AVIF the hand-over took 1.1 ms and the read-back
+ * and removal 0.8 ms with asynchronous calls, 0.7 ms and 0.2 ms with synchronous ones (arm64 Linux VM, 4 vCPU), and the conversion
+ * went from 37.3 ms to 35.7 ms against 33.2 ms for the reference encoder (median of 30 interleaved triples). A copy of this size
+ * is page-cache work of under a millisecond; a larger file keeps the asynchronous calls so that a big picture never holds the
+ * event loop.
  */
 export const AVIFENC_SYNC_IO_MAX_BYTES = 4 * 1024 * 1024;
 const BYTES_PER_MB = 1024 * 1024;
