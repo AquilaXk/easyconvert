@@ -50,6 +50,8 @@ const MAX_REPORTED_DECIMALS = 2;
 const FULL_TURN = 2 * Math.PI;
 const TURN_EPSILON = 1e-6;
 
+type FillRule = 'nonzero' | 'evenodd';
+
 /** What the reader gives this module: the element index, the flattened outline of a shape and the style of an element. */
 export interface ClipReader {
   ids: ReadonlyMap<string, ClipNode>;
@@ -57,8 +59,28 @@ export interface ClipReader {
   outlineOf: (shape: ClipNode) => Point[][] | null;
   /** The declared properties of an element (attributes, `style` and stylesheet), `clip-rule`, `display` and `visibility` among them. */
   declaredOf: (node: ClipNode) => ReadonlyMap<string, string>;
+  /** The element an element is a child of; undefined for the root. */
+  parentOf: (node: ClipNode) => ClipNode | undefined;
   transformOf: (value: string) => AffineMatrix;
 }
+
+/** The two inherited properties a clip shape is read by, as computed for one element. */
+interface InheritedClipStyle {
+  rule: FillRule;
+  hidden: boolean;
+}
+
+const INITIAL_CLIP_STYLE: InheritedClipStyle = { rule: 'nonzero', hidden: false };
+/** The keywords of `clip-rule` and `visibility`; `inherit` and any other value are not among them, so the parent's value holds. */
+const CLIP_RULE_KEYWORDS: ReadonlyMap<string, FillRule> = new Map([
+  ['nonzero', 'nonzero'],
+  ['evenodd', 'evenodd'],
+]);
+const VISIBILITY_HIDES: ReadonlyMap<string, boolean> = new Map([
+  ['visible', false],
+  ['hidden', true],
+  ['collapse', true],
+]);
 
 /** Counts the edge tests of a document and fails as soon as the cap is crossed. */
 export class ClipWork {
@@ -73,8 +95,6 @@ export class ClipWork {
     }
   }
 }
-
-type FillRule = 'nonzero' | 'evenodd';
 
 /** The shapes of a clip as closed polygons in the user space of the clipped element. */
 interface ClipDefinition {
@@ -318,6 +338,7 @@ interface ActiveClip {
 export class ActiveClips {
   private readonly stack: ActiveClip[] = [];
   private readonly definitions = new Map<string, ClipDefinition>();
+  private readonly inherited = new Map<ClipNode, InheritedClipStyle>();
 
   constructor(
     private readonly reader: ClipReader,
@@ -385,7 +406,8 @@ export class ActiveClips {
       if (!CLIP_SHAPE_ELEMENTS.has(shape.name)) throw clipRefusal(value, `it holds <${shape.name}>, which is not a shape this reader measures`);
       const declared = declaredOf(shape);
       if (hasClipOfItsOwn(shape, declared)) throw clipRefusal(value, 'a shape of the <clipPath> has a clip-path of its own');
-      if (declared.get('display') === 'none' || ['hidden', 'collapse'].includes(declared.get('visibility') ?? '')) continue;
+      const style = this.inheritedOf(shape);
+      if (declared.get('display') === 'none' || style.hidden) continue;
       const outline = outlineOf(shape);
       if (outline === null) continue;
       const toClipSpace = multiply(clipTransform, transformOf(shape.attrs.get('transform') ?? ''));
@@ -393,9 +415,25 @@ export class ActiveClips {
       edges += polygons.reduce((total, polygon) => total + polygon.length, 0);
       if (edges > MAX_CLIP_EDGES) throw clipRefusal(value, `it has more than ${MAX_CLIP_EDGES} edges`);
       if (hasOverlappingEdges(polygons, this.work)) throw clipRefusal(value, 'two edges of a shape in it lie on one another, so an edge may border nothing');
-      const rule = (declared.get('clip-rule') ?? clipDeclared.get('clip-rule')) === 'evenodd' ? 'evenodd' : 'nonzero';
-      shapes.push({ rule, polygons });
+      shapes.push({ rule: style.rule, polygons });
     }
     return { shapes };
+  }
+
+  /**
+   * `clip-rule` and `visibility` of an element: its own keyword, else its parent's value, else the initial one. Both are
+   * inherited properties, and a clip shape inherits from the ancestors of its `<clipPath>`, not from the element the clip is on
+   * (SVG 1.1 section 14.3.5). Each element is computed once, so a deep tree costs one pass.
+   */
+  private inheritedOf(node: ClipNode): InheritedClipStyle {
+    const known = this.inherited.get(node);
+    if (known !== undefined) return known;
+    const parent = this.reader.parentOf(node);
+    const base = parent === undefined ? INITIAL_CLIP_STYLE : this.inheritedOf(parent);
+    const declared = this.reader.declaredOf(node);
+    const keyword = (name: string): string => declared.get(name)?.trim().toLowerCase() ?? '';
+    const style = { rule: CLIP_RULE_KEYWORDS.get(keyword('clip-rule')) ?? base.rule, hidden: VISIBILITY_HIDES.get(keyword('visibility')) ?? base.hidden };
+    this.inherited.set(node, style);
+    return style;
   }
 }

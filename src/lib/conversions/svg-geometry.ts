@@ -3,7 +3,7 @@ import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
 import { BitmapGlyphs, glyphBox } from './svg-bitmap-glyph';
 import { ActiveClips } from './svg-clip-region';
-import { createPageClipCheck } from './svg-page-clip';
+import { createPageClipCheck, type ClipNode } from './svg-page-clip';
 import { CHAR_SLASH, MAX_SVG_INPUT_CHARS, XML_NAME_PATTERN, endOfMarkup, endOfTag, malformedXml, scanXmlTags, skipNonElementMarkup } from './svg-xml';
 import { NEUTRAL_ONLY_PROPERTY_NAMES, SVG_NUMBER_PATTERN, assertNeutralPaintProperties, devicePattern, parseDashArray, type SvgPenMode } from './svg-pen';
 
@@ -1100,10 +1100,13 @@ interface RenderState {
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
 const MAX_RENDERED_NODES = 100000;
 
-function indexIds(node: SvgNode, ids: Map<string, SvgNode>): void {
+function indexIds(node: SvgNode, ids: Map<string, SvgNode>, parents: Map<ClipNode, SvgNode>): void {
   const id = node.attrs.get('id');
   if (id !== undefined && !ids.has(id)) ids.set(id, node);
-  for (const child of node.children) indexIds(child, ids);
+  for (const child of node.children) {
+    parents.set(child, node);
+    indexIds(child, ids, parents);
+  }
 }
 
 /**
@@ -1261,6 +1264,7 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
   assertNoUnsupportedReferences(root.attrs);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared, pens);
   const ids = new Map<string, SvgNode>();
+  const parents = new Map<ClipNode, SvgNode>();
   const vertices = new VertexBudget();
   const clipsNothing = createPageClipCheck(ids, viewport, (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null);
   const clips =
@@ -1269,11 +1273,12 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
           ids,
           outlineOf: (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null,
           declaredOf: (node) => declaredProperties(node.attrs, node.name, sheet),
+          parentOf: (node) => parents.get(node),
           transformOf: (value) => (value.trim() === '' ? IDENTITY_MATRIX : parseSvgTransform(value)),
         })
       : null;
   const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, clipsNothing, clips };
-  indexIds(root, state.ids);
+  indexIds(root, state.ids, parents);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };
 }
