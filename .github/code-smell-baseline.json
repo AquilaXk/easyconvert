@@ -2658,7 +2658,7 @@
     "rule": "complexity",
     "function": "isFormatCompatibleWithMagicBytes",
     "count": 1,
-    "maxValue": 86
+    "maxValue": 83
   },
   {
     "file": "src/lib/registry.ts",

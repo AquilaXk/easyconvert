@@ -1,5 +1,5 @@
 import { ConversionFailedError, DecompressionLimitError } from '../types';
-import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bounded-inflate';
+import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflatePdfFlate } from './bounded-inflate';
 import {
   PREDICTOR_PNG_MAX,
   PREDICTOR_PNG_MIN,
@@ -440,6 +440,8 @@ export class PdfDocument {
   private readonly text: string;
   private readonly index = new Map<number, PdfObjectEntry>();
   private readonly objectStreams: PdfObjectEntry[] = [];
+  /** Streams whose /Length is an object the scan had not reached yet; see `applyLaterLengths`. */
+  private readonly laterLengths: PdfObjectEntry[] = [];
   private readonly objectStreamTexts: string[] = [];
   private readonly parsed = new Map<number, PdfValue>();
   private readonly structureBudget = new InflateBudget(MAX_PDF_STRUCTURE_PARSE_BYTES);
@@ -461,6 +463,7 @@ export class PdfDocument {
   ) {
     this.text = buffer.toString('latin1');
     this.scan();
+    this.applyLaterLengths();
     this.expandObjectStreams();
     // Anything resolved while the index was still growing may have seen a missing or older object.
     this.parsed.clear();
@@ -552,16 +555,9 @@ export class PdfDocument {
     if (src.charCodeAt(rawStart) === CHAR_CR && src.charCodeAt(rawStart + 1) === CHAR_LF) rawStart += 2;
     else if (src.charCodeAt(rawStart) === CHAR_LF || src.charCodeAt(rawStart) === CHAR_CR) rawStart += 1;
 
-    let rawEnd = -1;
-    let resume = -1;
     const length = this.directLength(dict);
-    if (length !== null && rawStart + length <= src.length) {
-      const marker = skipWhite(src, rawStart + length);
-      if (src.startsWith(ENDSTREAM, marker)) {
-        rawEnd = rawStart + length;
-        resume = marker + ENDSTREAM.length;
-      }
-    }
+    let rawEnd = this.endAtLength(num, rawStart, length);
+    let resume = rawEnd === -1 ? -1 : skipWhite(src, rawEnd) + ENDSTREAM.length;
     if (rawEnd === -1) {
       const marker = src.indexOf(ENDSTREAM, rawStart);
       if (marker === -1) throw new PdfStructureError(`PDF stream of object ${num} is not terminated by endstream.`);
@@ -573,10 +569,40 @@ export class PdfDocument {
 
     entry.stream = { dict, rawStart, rawEnd };
     this.register(entry);
+    if (length === null && isRef(dict.entries.get('Length'))) this.laterLengths.push(entry);
 
     if (isName(dict.entries.get('Type'), 'ObjStm')) this.objectStreams.push(entry);
     if (isName(dict.entries.get('Type'), 'XRef')) this.noteTrailer(dict);
     return resume;
+  }
+
+  /**
+   * End of the data of stream `num` when `length` bytes from `rawStart` are followed by `endstream`, or -1 when they are
+   * not: PDFBox `COSParser.validateStreamLength` (3.0.5, lines 1077-1112, Apache-2.0) checks the same before it trusts
+   * /Length. The white space skipped on the way is charged to the structure budget: neither PDFBox nor pdf.js bounds it,
+   * and lengths that all end in one long run of white space would otherwise cost the run once per stream.
+   */
+  private endAtLength(num: number, rawStart: number, length: number | null): number {
+    if (length === null || rawStart + length > this.text.length) return -1;
+    const dataEnd = rawStart + length;
+    const marker = skipWhite(this.text, dataEnd);
+    this.structureBudget.charge(marker - dataEnd, `PDF stream of object ${num}`);
+    return this.text.startsWith(ENDSTREAM, marker) ? dataEnd : -1;
+  }
+
+  /**
+   * Gives the streams whose /Length is an object written after them the end that object states, now that every object of
+   * the file is indexed. pdf.js (`Parser.makeStream`, 6.3.289 src/core/parser.js line 740, which fetches /Length) and
+   * PDFBox (`COSParser.parseCOSStream`, 3.0.5, lines 914-931) resolve the length before they search for `endstream`; the
+   * search alone drops a line end in front of `endstream` that may be the last byte of the data. A length that `endstream`
+   * does not follow keeps the searched end.
+   */
+  private applyLaterLengths(): void {
+    for (const entry of this.laterLengths) {
+      const stream = entry.stream as StreamSpan;
+      const end = this.endAtLength(entry.num, stream.rawStart, this.directLength(stream.dict));
+      if (end !== -1) stream.rawEnd = end;
+    }
   }
 
   private directLength(dict: PdfDict): number | null {
@@ -688,6 +714,9 @@ export class PdfDocument {
       }
     }
     let data = this.buffer.subarray(stream.rawStart, stream.rawEnd);
+    // pdf.js Parser.makeFilter (src/core/parser.js, v6.3.289, lines 842-845): a stream with no data reads as empty,
+    // whatever its filters.
+    if (data.length === 0) return '';
     if (stages.length === 0) {
       budget.charge(data.length, label);
       return data.toString('latin1');
@@ -698,7 +727,7 @@ export class PdfDocument {
       } else if (ASCII85_FILTERS.has(stage.name)) {
         data = decodeAscii85(data, label, budget);
       } else {
-        data = inflateBounded(data, { label, format: 'zlib', budget });
+        data = inflatePdfFlate(data, { label, budget });
         let predictor: PredictorParams | null = null;
         try {
           predictor = this.predictorParams(stage.parms, label);

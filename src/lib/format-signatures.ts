@@ -237,6 +237,34 @@ const FIXED_SIGNATURES: readonly { mime: string; prefix: readonly number[] }[] =
   { mime: 'application/x-dosexec', prefix: [0x4d, 0x5a] },
 ];
 
+/**
+ * How far into a file the PDF readers look for the `%PDF-` header: pdf.js 6.3.289 `checkHeader` (src/core/document.js lines
+ * 943-997 and 1125-1153, `find` with `limit = 1024`), Poppler 25.10 `PDFDoc::checkHeader` (poppler/PDFDoc.cc lines 119-121,
+ * 348-388), qpdf 12.4.2 `Objects::parse` (libqpdf/QPDF_objects.cc lines 224-227) and shared-mime-info 2.4
+ * (data/freedesktop.org.xml.in line 228, `offset="0:1024"`) all read the first 1,024 bytes, so files with a MacBinary header
+ * or a line break in front of the header open in every one of them.
+ */
+const PDF_HEADER_SEARCH_BYTES = 1024;
+const PDF_HEADER = '%PDF-';
+
+/** Whether all of `%PDF-` lies in the first 1,024 bytes, as pdf.js `find` requires. */
+export function hasPdfHeader(buf: Uint8Array): boolean {
+  return LATIN1.decode(buf.subarray(0, PDF_HEADER_SEARCH_BYTES)).includes(PDF_HEADER);
+}
+
+/** Images whose readers accept nothing but their signature at the first byte. */
+const SIGNATURE_FIRST_IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(['png', 'gif', 'webp']);
+
+/**
+ * Whether a file whose first bytes match no signature must be refused under the name `ext`: always as a PNG, GIF or WebP
+ * image, and as a PDF unless its header lies in the first 1,024 bytes. Bytes that are the signature of another kind never
+ * reach this test, so a file of that kind stays refused under a .pdf name.
+ */
+export function refusedWithoutSignature(ext: string, buf: Uint8Array): boolean {
+  if (ext === 'pdf') return !hasPdfHeader(buf);
+  return SIGNATURE_FIRST_IMAGE_EXTENSIONS.has(ext);
+}
+
 /** The MIME type of the first fixed signature the buffer opens with; undefined when it opens with none. */
 export function sniffFixedSignature(buf: Uint8Array): string | undefined {
   return FIXED_SIGNATURES.find(({ prefix }) => startsWithBytes(buf, prefix))?.mime;

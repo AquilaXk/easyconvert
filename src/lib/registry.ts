@@ -1,5 +1,5 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
-import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
+import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes } from './format-signatures';
 
 export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
   // ==========================================
@@ -3190,7 +3190,7 @@ export function isFormatCompatibleWithMagicBytes(
     const buf = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
     // Strict binary formats that MUST have valid magic if buffer >= 8 bytes
     if (buf.length >= 8) {
-      if (cleanExt === 'pdf' || cleanExt === 'png' || cleanExt === 'gif' || cleanExt === 'webp') {
+      if (refusedWithoutSignature(cleanExt, buf)) {
         return false;
       }
       if ((cleanExt === 'jpg' || cleanExt === 'jpeg') && (buf[0] !== 0xff || buf[1] !== 0xd8)) {

@@ -108,6 +108,36 @@ export function inflateBounded(data: Buffer, options: InflateOptions): Buffer {
   return output;
 }
 
+/** RFC 1950 2.2: CMF (method and window) and FLG (check bits, preset dictionary flag, level). */
+const ZLIB_HEADER_BYTES = 2;
+const ZLIB_METHOD_MASK = 0x0f;
+const ZLIB_METHOD_DEFLATE = 8;
+const ZLIB_HEADER_CHECK_DIVISOR = 31;
+const ZLIB_PRESET_DICTIONARY = 0x20;
+
+/**
+ * Inflates the data of a PDF FlateDecode stream as the PDF readers do. The zlib header is checked as pdf.js
+ * `FlateStream` checks it (src/core/flate_stream.js, v6.3.289, lines 133-148, Apache-2.0): deflate method, check bits,
+ * no preset dictionary. The deflate data after it is inflated without its Adler-32 checksum, which pdf.js never reads,
+ * PDFBox 3.0.5 skips (`FlateFilterDecoderStream.java` lines 46-59, `new Inflater(true)` after the two header bytes,
+ * Apache-2.0), and qpdf 12.4.2 (`Pl_Flate.cc` lines 170-176, "incorrect data check") and MuPDF 1.26.10 (`filter-flate.c`
+ * lines 85-89, behaviour only) ignore when it is wrong. A stream cut short or broken inside the deflate data is still a
+ * CorruptStreamError, and the caps and budget are those of inflateBounded.
+ */
+export function inflatePdfFlate(data: Buffer, options: { label: string; budget?: InflateBudget }): Buffer {
+  const [cmf, flg] = data;
+  const header = (cmf << 8) + flg;
+  if (
+    data.length < ZLIB_HEADER_BYTES ||
+    (cmf & ZLIB_METHOD_MASK) !== ZLIB_METHOD_DEFLATE ||
+    header % ZLIB_HEADER_CHECK_DIVISOR !== 0 ||
+    (flg & ZLIB_PRESET_DICTIONARY) !== 0
+  ) {
+    throw new CorruptStreamError(`${options.label} is not a valid compressed stream: invalid zlib header`);
+  }
+  return inflateBounded(data.subarray(ZLIB_HEADER_BYTES), { ...options, format: 'raw' });
+}
+
 export interface InflateSalvageOptions {
   /** What is being decoded, for error messages. */
   label: string;
