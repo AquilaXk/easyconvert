@@ -63,7 +63,7 @@ describe('a rectangular clip', () => {
   });
 
   it('measures the distance to the region, not to the sides: a vertex off a corner by one pixel each way is 1.41 pixels away', () => {
-    expect(dxfOf(clipped(pathClip(BOX), stroke('M 60 30 L 151.5 30'))).entities).toHaveLength(0 + 1);
+    expect(dxfOf(clipped(pathClip(BOX), stroke('M 60 30 L 151.2 30'))).entities).toHaveLength(1);
     expect(refusal(clipped(pathClip(BOX), stroke('M 60 30 L 151 81'))), 'corner').toMatch(/reaches 1\.41 pixels past it/);
   });
 
@@ -167,7 +167,7 @@ describe('clips inside one another', () => {
 
   it(`are at most ${MAX_ACTIVE_CLIPS} deep`, () => {
     const depth = (n: number): string =>
-      svgOf(`<defs>${pathClip('M 0 0 L 200 0 L 200 100 L 0 100 Z')}</defs>${'<g clip-path="url(#c)">'.repeat(n)}${stroke('M 10 10 L 20 10')}${'</g>'.repeat(n)}`);
+      svgOf(`<defs>${pathClip('M 0 0 L 190 0 L 190 100 L 0 100 Z')}</defs>${'<g clip-path="url(#c)">'.repeat(n)}${stroke('M 10 10 L 20 10')}${'</g>'.repeat(n)}`);
     expect(dxfOf(depth(MAX_ACTIVE_CLIPS)).entities).toHaveLength(1);
     expect(refusal(depth(MAX_ACTIVE_CLIPS + 1))).toMatch(/nested more than/);
   });

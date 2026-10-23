@@ -1,7 +1,8 @@
 import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-nurbs';
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
-import { BitmapGlyphs } from './svg-bitmap-glyph';
+import { BitmapGlyphs, type BitmapGlyphMark } from './svg-bitmap-glyph';
+import { ActiveClips } from './svg-clip-region';
 import { createPageClipCheck } from './svg-page-clip';
 import { NEUTRAL_ONLY_PROPERTY_NAMES, SVG_NUMBER_PATTERN, assertNeutralPaintProperties, devicePattern, parseDashArray, type SvgPenMode } from './svg-pen';
 
@@ -785,7 +786,7 @@ function compareRules(a: CssRule, b: CssRule): number {
  */
 function declaredProperties(attrs: Map<string, string>, name = '', sheet: CssRule[] = []): Map<string, string> {
   const declared = new Map<string, string>();
-  for (const prop of [...Object.keys(INHERITED_PROPERTIES), ...NEUTRAL_ONLY_PROPERTY_NAMES, 'display']) {
+  for (const prop of [...Object.keys(INHERITED_PROPERTIES), ...NEUTRAL_ONLY_PROPERTY_NAMES, 'display', 'clip-rule']) {
     const v = attrs.get(prop);
     if (v !== undefined && v.trim() !== '') declared.set(prop, v.trim());
   }
@@ -1166,7 +1167,7 @@ function buildSvgTree(svgContent: string): SvgNode | null {
 /** Containers rendered as groups. */
 const GROUP_ELEMENTS = new Set(['g', 'a']);
 
-/** Decides whether a `clip-path` value clips nothing and can be dropped. */
+/** Decides whether a `clip-path` value is one the reader handles: a clip that clips nothing, or one it measures (svg-clip-region.ts). */
 type ClipPathAllowance = (value: string) => boolean;
 
 function assertNoUnsupportedReferences(attrs: Map<string, string>, clipsNothing?: ClipPathAllowance): void {
@@ -1199,6 +1200,8 @@ interface RenderState {
   pens: SvgPenMode;
   /** Whether a `clip-path` value, on an element drawn under the matrix, is a clip that covers the page and clips nothing. */
   clipsNothing: (value: string, ctm: AffineMatrix) => boolean;
+  /** The other clips of a centre-line reader, measured against what is drawn under them; null where every such clip is refused. */
+  clips: ActiveClips | null;
 }
 
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
@@ -1271,6 +1274,7 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
       return d;
     })
   );
+  state.clips?.assertWithin(deviceSubpaths);
   const lengthScale = matrixLengthScale(ctx.ctm);
   requireFinite(strokeWidth * lengthScale, `<${node.name}> device stroke width`);
   const stroke = strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null;
@@ -1325,8 +1329,12 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   assertValidPaintDeclarations(declared);
   if (declared.get('display') === 'none') return;
   const ctx = deriveContext(parent, node.attrs, declared, state.pens);
-  if (state.bitmapGlyphs.take(node, state.ids, parent.ctm, ctx.ctm)) return;
-  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm));
+  if (state.bitmapGlyphs.take(node, state.ids, parent.ctm, ctx.ctm)) {
+    state.clips?.assertWithin(glyphBox(state.bitmapGlyphs.marks[state.bitmapGlyphs.marks.length - 1]));
+    return;
+  }
+  let opensClip = false;
+  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm) || (opensClip = state.clips?.enter(value, ctx.ctm) ?? false));
   if (kind === 'shape') {
     emitShape(node, ctx, state);
   } else if (kind === 'use') {
@@ -1334,6 +1342,13 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   } else {
     renderChildren(node, ctx, state);
   }
+  if (opensClip) state.clips?.leave();
+}
+
+/** The corners of the extent of a bitmap glyph and its origin, which a clip over the glyph must not hide (the DXF writer writes the character there as text). */
+function glyphBox(mark: BitmapGlyphMark): { x: number; y: number }[][] {
+  const { left, right, top, bottom } = mark;
+  return [[{ x: left, y: top }, { x: right, y: top }, { x: right, y: bottom }, { x: left, y: bottom }, { x: mark.x, y: mark.y }]];
 }
 
 /**
@@ -1361,7 +1376,16 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
   const ids = new Map<string, SvgNode>();
   const vertices = new VertexBudget();
   const clipsNothing = createPageClipCheck(ids, viewport, (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null);
-  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, clipsNothing };
+  const clips =
+    pens === 'centre-line'
+      ? new ActiveClips({
+          ids,
+          outlineOf: (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null,
+          declaredOf: (node) => declaredProperties(node.attrs, node.name, sheet),
+          transformOf: (value) => (value.trim() === '' ? IDENTITY_MATRIX : parseSvgTransform(value)),
+        })
+      : null;
+  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, clipsNothing, clips };
   indexIds(root, state.ids);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };

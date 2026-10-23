@@ -79,8 +79,8 @@
   },
   {
     "file": "govdocs1-001048.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported\\.$",
-    "reason": "The geometry of the other 14 pages is read, dashed and skewed strokes included (policy 78), but page 11 clips two drawn paths to a rectangle that is not the page and one of them reaches 13.2 pixels past it, so dropping the clip would draw what the clip hides (policy 42; tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported: a drawn path reaches [0-9.]+ pixels past it, more than the [0-9.]+ pixels \\(one point\\) a clip may hide\\.$",
+    "reason": "The geometry of the other 14 pages is read, dashed and skewed strokes included (policy 78), but page 11 clips two drawn paths to a rectangle that is not the page and the farthest vertex of one is 13.2 points past it. The clip is dropped when nothing it hides is more than one point outside it (policy 78), so this page stays refused (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
@@ -103,8 +103,8 @@
   },
   {
     "file": "govdocs1-006137.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported\\.$",
-    "reason": "The geometry of the other 50 pages is read, skewed and dashed strokes included (policy 78), but 16 pages clip their drawings to a region that is not the page. Measured on the boxes of the SVG paths (policy 78), 9 of the 16 hold every clipped path inside its clip, 6 reach at most 1.14 pixels past it and page 43 reaches 19.4, and a rule that drops a clip hiding nothing is not part of the clip policy (policy 42; tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported: a drawn path reaches [0-9.]+ pixels past it, more than the [0-9.]+ pixels \\(one point\\) a clip may hide\\.$",
+    "reason": "The geometry of the other 50 pages is read, skewed and dashed strokes included (policy 78), and the clips of 12 of the 16 pages that clip their drawing to a region that is not the page hide at most 0.76 point and are dropped (policy 78). Pages 20, 50 and 60 reach 1.15, 1.21 and 1.28 points past their clip, and page 43 reaches 19.4, past the one point a dropped clip may hide, so the file stays refused (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   }
 ]
