@@ -181,7 +181,7 @@ describe.skipIf(toolsMissing)('PDFs that open with the empty password (real file
 });
 
 describe.skipIf(toolsMissing)('pages with nothing to read (real files)', () => {
-  for (const id of ['pdfjs-empty_protected.pdf', 'pdf-vera-pdfa1b-devicen.pdf']) {
+  for (const id of ['pdfjs-empty_protected.pdf', 'pdf-vera-pdfa1b-devicen.pdf', 'pdf-pdfjs-issue17333.pdf']) {
     it(`${id}: has no text and no picture for the reference readers, so an empty Markdown file is right`, async (ctx) => {
       const { bytes } = await requireRealworldSample(ctx, id);
       expect(pdftotext(bytes).trim()).toBe('');
