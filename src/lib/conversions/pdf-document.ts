@@ -1,5 +1,6 @@
 import { ConversionFailedError, DecompressionLimitError } from '../types';
 import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bounded-inflate';
+import { CidWidthReader } from './pdf-cid-widths';
 import {
   PREDICTOR_PNG_MAX,
   PREDICTOR_PNG_MIN,
@@ -150,6 +151,10 @@ export interface CompositeFontDictionary {
   encoding: string | null;
   /** /Subtype of the descendant CIDFont (CIDFontType0 or CIDFontType2). */
   descendant: string | null;
+  /** /BaseFont of the descendant CIDFont as written, a subset tag included. */
+  descendantName: string | null;
+  /** The program the font descriptor embeds: a /FontFile2, a /FontFile3 of subtype CIDFontType0C, or null for none or another. */
+  program: 'truetype' | 'cid-cff' | null;
   /** /Registry and /Ordering of the descendant's /CIDSystemInfo, as written (a hex string keeps its digits). */
   registry: string | null;
   ordering: string | null;
@@ -157,6 +162,8 @@ export interface CompositeFontDictionary {
   cidToGidMap(): 'identity' | Buffer | null;
   /** The decoded /FontFile2 of the descendant's font descriptor, or null when there is none or it cannot be decoded. */
   trueTypeProgram(): Buffer | null;
+  /** The widths the descendant's /W gives the CIDs from `first` to `last` (section 9.7.4.3), read as pdfjs reads them and on the step budget of the call that gave the font; none once it is spent. */
+  cidWidths(first: number, last: number): Map<number, number>;
 }
 
 /** What an incremental update of the file (section 7.5.6) refers back to. */
@@ -979,14 +986,15 @@ export class PdfDocument {
    * The Type0 font dictionaries that the resources of the pages, and of the form XObjects those resources name, refer
    * to by reference, each once and at most `limit`. Streams they lead to are decoded on demand within `budget`, each stream
    * once however many fonts name it; one that does not decode reads as null, and one that inflates past a limit throws a
-   * DecompressionLimitError, so that no later font pays for the same stream again. Encrypted files and files without page
-   * structure have none.
+   * DecompressionLimitError, so that no later font pays for the same stream again. The /W arrays of the fonts are read on
+   * one step budget (pdf-cid-widths.ts). Encrypted files and files without page structure have none.
    */
   compositeFonts(limit: number, budget: InflateBudget): CompositeFontDictionary[] {
     const pages = this.encrypted ? null : this.pages();
     if (pages === null) return [];
     const fonts = new Map<number, CompositeFontDictionary>();
     const streams = new Map<number, Buffer | null>();
+    const widthReader = new CidWidthReader((value) => this.resolve(value));
     const visited = new Set<PdfDict>();
     const visit = (resources: PdfValue, depth: number): void => {
       const dict = this.resolveDict(resources);
@@ -994,7 +1002,7 @@ export class PdfDocument {
       visited.add(dict);
       for (const reference of this.resolveDict(dict.entries.get('Font'))?.entries.values() ?? []) {
         if (fonts.size >= limit || !isRef(reference) || fonts.has(reference.num)) continue;
-        const font = this.compositeFont(reference.num, budget, streams);
+        const font = this.compositeFont(reference.num, budget, streams, widthReader);
         if (font) fonts.set(reference.num, font);
       }
       if (depth >= MAX_PDF_FORM_DEPTH) return;
@@ -1007,7 +1015,12 @@ export class PdfDocument {
     return [...fonts.values()];
   }
 
-  private compositeFont(num: number, budget: InflateBudget, streams: Map<number, Buffer | null>): CompositeFontDictionary | null {
+  private compositeFont(
+    num: number,
+    budget: InflateBudget,
+    streams: Map<number, Buffer | null>,
+    widthReader: CidWidthReader
+  ): CompositeFontDictionary | null {
     const entry = this.index.get(num);
     const dict = this.resolveDict({ kind: 'ref', num });
     if (!entry || entry.stream || !dict || !isName(dict.entries.get('Subtype'), 'Type0')) return null;
@@ -1036,6 +1049,7 @@ export class PdfDocument {
       streams.set(stream.num, bytes);
       return bytes;
     };
+    const name = this.resolve(descendant?.entries.get('BaseFont'));
     return {
       objectNumber: num,
       generation: entry.gen,
@@ -1043,6 +1057,8 @@ export class PdfDocument {
       hasToUnicode: dict.entries.has('ToUnicode'),
       encoding: isName(encoding) ? encoding.value : null,
       descendant: isName(subtype) ? subtype.value : null,
+      descendantName: isName(name) ? name.value : null,
+      program: this.fontProgramKind(descriptor),
       registry: text('Registry'),
       ordering: text('Ordering'),
       cidToGidMap: () => {
@@ -1051,7 +1067,15 @@ export class PdfDocument {
         return decoded(map);
       },
       trueTypeProgram: () => decoded(descriptor?.entries.get('FontFile2')),
+      cidWidths: (first, last) => widthReader.read(descendant?.entries.get('W'), first, last),
     };
+  }
+
+  /** The program a font descriptor embeds: /FontFile2, /FontFile3 of subtype CIDFontType0C, or null for none or another. */
+  private fontProgramKind(descriptor: PdfDict | null): CompositeFontDictionary['program'] {
+    if (descriptor?.entries.has('FontFile2')) return 'truetype';
+    const fontFile3 = this.entryOf(descriptor?.entries.get('FontFile3'))?.stream?.dict;
+    return fontFile3 && isName(fontFile3.entries.get('Subtype'), 'CIDFontType0C') ? 'cid-cff' : null;
   }
 
   /** The root, the next free object number and the last cross-reference offset, or null when the file names no root or `startxref`. */
