@@ -1508,7 +1508,7 @@
     "rule": "complexity",
     "function": "readBiff8Worksheets",
     "count": 1,
-    "maxValue": 62
+    "maxValue": 44
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1641,7 +1641,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 10315
+    "maxValue": 10274
   },
   {
     "file": "src/lib/conversions/office.ts",

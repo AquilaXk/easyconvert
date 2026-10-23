@@ -46,5 +46,23 @@
     "detail": "^PayloadLimitError: The document prints \\d+ pages; at most 500 are rendered to images in one request\\.",
     "reason": "The report prints 4,181 to 4,874 pages (LibreOffice 24.2, by platform): drawing them as JPEG or PNG takes more than the job time limit on the shared runner and packs half a gigabyte, so the request is refused with the page count and the ways out (pages, or multiPageOutput first); every other target of the file converts (policy 44).",
     "issue": 783
+  },
+  {
+    "file": "govdocs1-007750.xls",
+    "detail": "^ConversionFailedError: Corrupt XLS: Workbook stream not found in CFBF container$",
+    "reason": "The file went through a text-mode transfer (every LF byte has an inserted CR, 68,946 of them), which shifted the compound file's sector tables and directory, so it holds no readable stream; xlrd refuses it too and LibreOffice imports the bytes as text. With the inserted CRs taken out it is a BIFF8 workbook that converts to the cells xlrd reads (tests/xls-damaged-real-files.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "govdocs1-007751.xls",
+    "detail": "^ConversionFailedError: Corrupt XLS: Workbook stream not found in CFBF container$",
+    "reason": "The file went through a text-mode transfer (every LF byte has an inserted CR, 1,803 of them), which shifted the compound file's sector tables and directory, so it holds no readable stream; xlrd refuses it too and LibreOffice imports the bytes as text. With the inserted CRs taken out it is a BIFF7 Book workbook that converts to the cells xlrd reads (tests/xls-damaged-real-files.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "govdocs1-008063.xls",
+    "detail": "^ConversionFailedError: Corrupt XLS: Workbook stream not found in CFBF container$",
+    "reason": "The file is cut off at 1.5 MiB while its header places the first FAT sector at sector 7953 (63 FAT sectors are listed, none is in the file), so the compound file has no readable stream; xlrd refuses it too and LibreOffice imports the bytes as text (tests/xls-damaged-real-files.test.ts).",
+    "issue": 783
   }
 ]
