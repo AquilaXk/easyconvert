@@ -2019,7 +2019,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1678
+    "maxValue": 1674
   },
   {
     "file": "src/lib/conversions/vector-cad.ts",

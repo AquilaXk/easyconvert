@@ -1,6 +1,7 @@
 import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-nurbs';
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
+import { assertNotBitmapGlyph } from './svg-bitmap-glyph';
 import { createPageClipCheck } from './svg-page-clip';
 
 export { parseCssColor, resolvePaint } from './svg-paint';
@@ -1196,12 +1197,6 @@ function buildSvgTree(svgContent: string): SvgNode | null {
 /** Containers rendered as groups. */
 const GROUP_ELEMENTS = new Set(['g', 'a']);
 
-/** Rendered SVG content the metafile encoders cannot represent. */
-function unsupportedElementError(name: string): UnsupportedOptionError {
-  return new UnsupportedOptionError(`SVG element <${name}> is not supported by metafile encoders.`);
-}
-
-
 /** Decides whether a `clip-path` value clips nothing and can be dropped. */
 type ClipPathAllowance = (value: string) => boolean;
 
@@ -1343,7 +1338,7 @@ function classifyElement(node: SvgNode): RenderedKind | null {
   if (SHAPE_ELEMENTS.has(node.name)) return 'shape';
   if (node.name === 'use') return 'use';
   if (GROUP_ELEMENTS.has(node.name)) return 'group';
-  throw unsupportedElementError(node.name);
+  throw new UnsupportedOptionError(`SVG element <${node.name}> is not supported by metafile encoders.`);
 }
 
 function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderState): void {
@@ -1356,6 +1351,7 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   assertNeutralPaintProperties(declared);
   assertValidPaintDeclarations(declared);
   if (declared.get('display') === 'none') return;
+  assertNotBitmapGlyph(node, state.ids);
   const ctx = deriveContext(parent, node.attrs, declared);
   assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm));
   if (kind === 'shape') {
