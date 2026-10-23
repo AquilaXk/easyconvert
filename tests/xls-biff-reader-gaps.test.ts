@@ -1,6 +1,9 @@
+import os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { buildCompoundFile } from './helpers/cfb-craft';
+import { outputProblem } from '../bench/realworld/output-check';
+import { readTestSampleFiles } from '../bench/realworld/test-samples';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
@@ -66,6 +69,15 @@ describe('real workbooks whose sheets hold no cell value', () => {
         const { bytes } = await requireRealworldSample(ctx, id);
         expect(await convertText(bytes, 'csv', id)).toBe('');
         expect(await convertText(bytes, 'tsv', id)).toBe('');
+      });
+
+      it('is marked in the corpus manifest as holding no content, so the real-world gate accepts the empty CSV and TSV', async (ctx) => {
+        const { bytes } = await requireRealworldSample(ctx, id);
+        const marked = readTestSampleFiles().find((file) => file.id === id)?.emptyInput === true;
+        for (const target of ['csv', 'tsv']) {
+          const output = (await dispatchConversion(bytes, 'xls', target, {}, id)).buffer;
+          expect(await outputProblem(output, target, os.tmpdir(), { pdfinfo: '', identify: '', emptyInput: marked })).toBeNull();
+        }
       });
 
       it('converts to an empty JSON list', async (ctx) => {
