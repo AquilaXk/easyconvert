@@ -112,6 +112,12 @@ describe('a clip of any other shape', () => {
     expect(refusal(clipped(pathClip(L_SHAPE), stroke('M 30 70 L 90 30')))).toMatch(CLIP_REFUSAL);
   });
 
+  it('measures the farthest point of a piece of a segment outside the clip, not only its middle', () => {
+    const frameWithNeedle = 'M 0 0 H 200 V 100 H 0 Z M 20 10 H 180 V 90 H 20 Z M 99 10 H 101 L 100 49.5 Z';
+    expect(refusal(clipped(pathClip(frameWithNeedle, 'evenodd'), stroke('M 10 50 L 190 50')))).toMatch(/reaches 40 pixels past it/);
+    expect(dxfOf(clipped(pathClip(L_SHAPE), stroke('M 39 41.5 L 41.5 39'))).entities, 'a corner cut by 0.35 pixels').toHaveLength(1);
+  });
+
   it('follows clip-rule: a hole drawn the same way is filled by nonzero and empty for evenodd', () => {
     const holed = 'M 0 0 L 100 0 L 100 80 L 0 80 Z M 30 20 L 70 20 L 70 60 L 30 60 Z';
     expect(dxfOf(clipped(pathClip(holed, 'nonzero'), stroke('M 50 40 L 51 41'))).entities).toHaveLength(1);
