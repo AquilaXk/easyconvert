@@ -60,7 +60,7 @@ Media and documents
 67. [Page images of a document: batches of pages drawn by up to four Poppler processes at once](#67-page-images-of-a-document-batches-of-pages-drawn-by-up-to-four-poppler-processes-at-once)
 68. [ZIP packages: the type comes from the container, never from bytes inside an entry](#68-zip-packages-the-type-comes-from-the-container-never-from-bytes-inside-an-entry)
 69. [HTML tables the office suite draws past the page: nowrap before a nested table, widths beyond the page edge and sections around tables](#69-html-tables-the-office-suite-draws-past-the-page-nowrap-before-a-nested-table-widths-beyond-the-page-edge-and-sections-around-tables)
-70. [Legacy Excel files with a destroyed compound file: read both stream names, refuse the rest, list the real ones as explained](#70-legacy-excel-files-with-a-destroyed-compound-file-read-both-stream-names-refuse-the-rest-list-the-real-ones-as-explained)
+71. [Legacy Excel files with a destroyed compound file: read both stream names, refuse the rest, list the real ones as explained](#71-legacy-excel-files-with-a-destroyed-compound-file-read-both-stream-names-refuse-the-rest-list-the-real-ones-as-explained)
 
 Engines
 
@@ -2188,7 +2188,7 @@ Compression
 - **Verified by**: `tests/html-pdf-table-overflow.test.ts` (red before the change, 12 of 13 tests; the 13th pins that a division's `id` is still a link target): six synthetic pages (a `nowrap` cell before a table, two `nowrap` cells with percentage widths, a table of 800 px, a table of 750 px in a cell, and a `div` and a `center` with an `id` in a row above 120 rows), each converted by the office suite with parse5 reading the page and `pdftotext -bbox` reading the PDF (no word outside the page box, no letter or digit of the page missing); the staged HTML for each rule (which cells keep `nowrap`, which widths change, which ids stay, which anchors stay); and three real pages of the corpus (`govdocs1-001742`, `-000209`, `-001413`) with the same oracles. For the floating tables, red before the change: the staged widths of floating tables (765 px kept, 794 px and above written at 794 px, a centered one at 718 px), and `govdocs1-001401`, whose PDF must hold the last line of its article and no word outside the page. A floating table of 900 px keeps every word on the page. The corpus run and the parity run above were made on the VM (Ubuntu 24.04, LibreOffice 24.2.7, Poppler 24.02).
 - **Revisit when**: a page of the corpus still loses words to a floated table or to fixed cell widths that add up beyond the page (`govdocs1-000458`, whose centered row of fixed cells spills past both edges), a table of 719 px or more is judged better left as written, the suite's HTML import limits a pixel width itself, or the conversion takes a page size for HTML.
 
-## 70. Legacy Excel files with a destroyed compound file: read both stream names, refuse the rest, list the real ones as explained
+## 71. Legacy Excel files with a destroyed compound file: read both stream names, refuse the rest, list the real ones as explained
 
 - **Status**: Implemented (this change). No change to the reader; the three real files that the nightly run refused are listed as explained refusals (`bench/realworld/known-refusals.json`, issue #783).
 - **Decision**: the XLS reader keeps what it does and the files that no reader can open stay refused:
