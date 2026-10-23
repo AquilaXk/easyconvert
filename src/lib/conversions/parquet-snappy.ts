@@ -142,19 +142,28 @@ function load32(a: Uint8Array, i: number): number {
   return a[i] | (a[i + 1] << BYTE_BITS) | (a[i + 2] << (2 * BYTE_BITS)) | (a[i + 3] << (3 * BYTE_BITS));
 }
 
-function matchLength(a: Uint8Array, s1: number, s2: number, limit: number): number {
+/** Length of the common prefix of `s1` and `s2` (s1 < s2), reading `s2` up to `limit`: four bytes at a time, as FindMatchLength does with eight. */
+function matchLength(view: DataView, a: Uint8Array, s1: number, s2: number, limit: number): number {
   let n = 0;
+  while (s2 + n + 4 <= limit) {
+    const difference = view.getUint32(s1 + n, true) ^ view.getUint32(s2 + n, true);
+    if (difference !== 0) return n + ((31 - Math.clz32(difference & -difference)) >> 3);
+    n += 4;
+  }
   while (s2 + n < limit && a[s1 + n] === a[s2 + n]) n++;
   return n;
 }
 
+/** Offsets into the fragment, as the reference's `uint16_t` table holds them. */
+const SHARED_HASH_TABLE = new Uint16Array(1 << SNAPPY_MAX_HASH_TABLE_BITS);
+
 function compressFragment(
   src: Uint8Array,
+  view: DataView,
   fragStart: number,
   fragLen: number,
   out: Uint8Array,
-  opStart: number,
-  table: Int32Array
+  opStart: number
 ): number {
   let op = opStart;
   const fragEnd = fragStart + fragLen;
@@ -165,12 +174,13 @@ function compressFragment(
   let tableBits = SNAPPY_MIN_HASH_TABLE_BITS;
   while (tableBits < SNAPPY_MAX_HASH_TABLE_BITS && 1 << tableBits < fragLen) tableBits++;
   const shift = 32 - tableBits;
+  const table = SHARED_HASH_TABLE;
   table.fill(0, 0, 1 << tableBits);
 
   const ipLimit = fragEnd - SNAPPY_INPUT_MARGIN_BYTES;
   let nextEmit = fragStart;
   let ip = fragStart + 1;
-  let nextWord = load32(src, ip);
+  let nextWord = view.getUint32(ip, true);
   let nextHash = Math.imul(nextWord, SNAPPY_HASH_MULTIPLIER) >>> shift;
 
   for (;;) {
@@ -188,11 +198,11 @@ function compressFragment(
       if (nextIp > ipLimit) {
         return nextEmit < fragEnd ? emitLiteral(out, op, src, nextEmit, fragEnd - nextEmit) : op;
       }
-      nextWord = load32(src, nextIp);
+      nextWord = view.getUint32(nextIp, true);
       nextHash = Math.imul(nextWord, SNAPPY_HASH_MULTIPLIER) >>> shift;
       candidate = fragStart + table[hash];
       table[hash] = ip - fragStart;
-      found = curWord === load32(src, candidate);
+      found = curWord === view.getUint32(candidate, true);
     }
 
     op = emitLiteral(out, op, src, nextEmit, ip - nextEmit);
@@ -201,28 +211,27 @@ function compressFragment(
     let matching = true;
     while (matching) {
       const base = ip;
-      const matched = SNAPPY_MIN_MATCH_BYTES + matchLength(src, candidate + SNAPPY_MIN_MATCH_BYTES, ip + SNAPPY_MIN_MATCH_BYTES, fragEnd);
+      const matched = SNAPPY_MIN_MATCH_BYTES + matchLength(view, src, candidate + SNAPPY_MIN_MATCH_BYTES, ip + SNAPPY_MIN_MATCH_BYTES, fragEnd);
       ip += matched;
       op = emitCopy(out, op, base - candidate, matched);
       nextEmit = ip;
       if (ip >= ipLimit) {
         return nextEmit < fragEnd ? emitLiteral(out, op, src, nextEmit, fragEnd - nextEmit) : op;
       }
-      const prevHash = Math.imul(load32(src, ip - 1), SNAPPY_HASH_MULTIPLIER) >>> shift;
+      const prevHash = Math.imul(view.getUint32(ip - 1, true), SNAPPY_HASH_MULTIPLIER) >>> shift;
       table[prevHash] = ip - 1 - fragStart;
-      const curWord = load32(src, ip);
+      const curWord = view.getUint32(ip, true);
       const curHash = Math.imul(curWord, SNAPPY_HASH_MULTIPLIER) >>> shift;
       candidate = fragStart + table[curHash];
       table[curHash] = ip - fragStart;
-      matching = curWord === load32(src, candidate);
+      matching = curWord === view.getUint32(candidate, true);
     }
     ip++;
-    nextWord = load32(src, ip);
+    nextWord = view.getUint32(ip, true);
     nextHash = Math.imul(nextWord, SNAPPY_HASH_MULTIPLIER) >>> shift;
   }
 }
 
-const SHARED_HASH_TABLE = new Int32Array(1 << SNAPPY_MAX_HASH_TABLE_BITS);
 let sharedCompressScratch = Buffer.allocUnsafe(SNAPPY_FRAGMENT_BYTES * 2);
 
 /**
@@ -235,9 +244,10 @@ export function compressSnappy(input: Uint8Array): Buffer {
   }
   const scratch = sharedCompressScratch;
   let op = writeVarint32(scratch, 0, input.length);
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
   for (let offset = 0; offset < input.length; offset += SNAPPY_FRAGMENT_BYTES) {
     const fragLen = Math.min(SNAPPY_FRAGMENT_BYTES, input.length - offset);
-    op = compressFragment(input, offset, fragLen, scratch, op, SHARED_HASH_TABLE);
+    op = compressFragment(input, view, offset, fragLen, scratch, op);
   }
   const out = Buffer.allocUnsafe(op);
   scratch.copy(out, 0, 0, op);

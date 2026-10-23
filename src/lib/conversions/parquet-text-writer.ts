@@ -84,17 +84,17 @@ function sameBytes(data: Uint8Array, a: number, b: number, length: number): bool
   return true;
 }
 
-/** Orders two byte ranges lexicographically as unsigned bytes. */
-function compareRanges(data: Uint8Array, a: number, aLength: number, b: number, bLength: number): number {
+/** Orders two byte ranges lexicographically as unsigned bytes, four bytes at a time (a big-endian word orders like its bytes). */
+function compareRanges(view: DataView, a: number, aLength: number, b: number, bLength: number): number {
   const shared = aLength < bLength ? aLength : bLength;
   let i = 0;
   for (; i + 3 < shared; i += 4) {
-    const wa = ((data[a + i] << 24) | (data[a + i + 1] << 16) | (data[a + i + 2] << 8) | data[a + i + 3]) >>> 0;
-    const wb = ((data[b + i] << 24) | (data[b + i + 1] << 16) | (data[b + i + 2] << 8) | data[b + i + 3]) >>> 0;
+    const wa = view.getUint32(a + i);
+    const wb = view.getUint32(b + i);
     if (wa !== wb) return wa < wb ? -1 : 1;
   }
   for (; i < shared; i++) {
-    const difference = data[a + i] - data[b + i];
+    const difference = view.getUint8(a + i) - view.getUint8(b + i);
     if (difference !== 0) return difference;
   }
   return aLength - bLength;
@@ -153,7 +153,7 @@ function buildDictionary(
   maxDictionaryBytes: number,
   scratch: GroupScratch
 ): TextDictionary | null {
-  const { data, rows, starts, lengths } = chunk;
+  const { data, view, rows, starts, lengths } = chunk;
   const { table, entryHash, entryStart, entryLength, entryWord0, entryWord1, entrySlot, indices } = scratch;
   let slots = MIN_HASH_SLOTS;
   while (slots < rows * 2) slots *= 2;
@@ -176,16 +176,16 @@ function buildDictionary(
     let hash = FNV_OFFSET;
     if (length >= 4) {
       const end = start + length;
-      w0 = data[start] | (data[start + 1] << 8) | (data[start + 2] << 16) | (data[start + 3] << 24);
-      w1 = data[end - 4] | (data[end - 3] << 8) | (data[end - 2] << 16) | (data[end - 1] << 24);
+      w0 = view.getInt32(start, true);
+      w1 = view.getInt32(end - 4, true);
       let h = Math.imul(w0 ^ length, FNV_PRIME);
       h = Math.imul(h ^ w1, FNV_PRIME);
       if (length > 8) {
-        const w2 = data[end - 8] | (data[end - 7] << 8) | (data[end - 6] << 16) | (data[end - 5] << 24);
+        const w2 = view.getInt32(end - 8, true);
         h = Math.imul(h ^ w2, FNV_PRIME);
         if (length > 16) {
           const mid = start + (length >> 1);
-          const wMid = data[mid] | (data[mid + 1] << 8) | (data[mid + 2] << 16) | (data[mid + 3] << 24);
+          const wMid = view.getInt32(mid, true);
           h = Math.imul(h ^ wMid, FNV_PRIME);
         }
       }
@@ -262,16 +262,146 @@ function buildDictionary(
   return { entries, bitWidth, body };
 }
 
-/** Entries up to this long are copied byte by byte. */
+/** Entries up to this long are copied inline (by words where the input allows it), which beats a native call. */
 const SHORT_COPY_BYTES = 24;
+const WORD_BYTES = 4;
+/** A word copy of a value whose length is not a multiple of four writes and reads up to this many bytes past it. */
+const WORD_COPY_OVERRUN_BYTES = WORD_BYTES - 1;
 
-function statisticsOf(data: Buffer, minAt: number, minLength: number, maxAt: number, maxLength: number): ChunkStatistics {
+/** Where the smallest and largest value of a page lie in the input bytes; `minAt` is -1 for a page without values. */
+interface ValueBounds {
+  minAt: number;
+  minLength: number;
+  maxAt: number;
+  maxLength: number;
+}
+
+function statisticsOf(data: Buffer, { minAt, minLength, maxAt, maxLength }: ValueBounds): ChunkStatistics {
   if (minLength > PARQUET_STATS_MAX_BYTES || maxLength > PARQUET_STATS_MAX_BYTES) return { nullCount: 0, min: null, max: null };
   return {
     nullCount: 0,
     min: Buffer.from(data.subarray(minAt, minAt + minLength)),
     max: Buffer.from(data.subarray(maxAt, maxAt + maxLength)),
   };
+}
+
+/** Widens `bounds` to hold the value at `at`. */
+function includeValue(view: DataView, bounds: ValueBounds, at: number, length: number): void {
+  if (bounds.minAt < 0) {
+    bounds.minAt = bounds.maxAt = at;
+    bounds.minLength = bounds.maxLength = length;
+    return;
+  }
+  if (compareRanges(view, at, length, bounds.minAt, bounds.minLength) < 0) {
+    bounds.minAt = at;
+    bounds.minLength = length;
+  }
+  if (compareRanges(view, at, length, bounds.maxAt, bounds.maxLength) > 0) {
+    bounds.maxAt = at;
+    bounds.maxLength = length;
+  }
+}
+
+/**
+ * Writes the body of a dictionary-encoded data page after its definition levels: the index bit width and the RLE-coded
+ * indices of the page. A page that holds the whole chunk (`seen` is null) takes its bounds from every dictionary entry;
+ * a page of several only compares the distinct entries it uses.
+ */
+function writeDictionaryPage(
+  chunk: CellChunk,
+  dictionary: TextDictionary,
+  scratch: GroupScratch,
+  page: Page,
+  seen: Uint8Array | null,
+  sink: ByteSink
+): ValueBounds {
+  const { view } = chunk;
+  const bounds: ValueBounds = { minAt: -1, minLength: 0, maxAt: -1, maxLength: 0 };
+  sink.writeByte(dictionary.bitWidth);
+  encodeRleHybrid(sink, scratch.indices.subarray(page.rowStart, page.rowEnd), page.rowEnd - page.rowStart, dictionary.bitWidth);
+  if (seen === null) {
+    for (let index = 0; index < dictionary.entries; index++) {
+      includeValue(view, bounds, scratch.entryStart[index], scratch.entryLength[index]);
+    }
+    return bounds;
+  }
+  seen.fill(0);
+  for (let r = page.rowStart; r < page.rowEnd; r++) {
+    const index = scratch.indices[r];
+    if (seen[index] === 1) continue;
+    seen[index] = 1;
+    includeValue(view, bounds, scratch.entryStart[index], scratch.entryLength[index]);
+  }
+  return bounds;
+}
+
+/**
+ * Writes the body of a PLAIN data page after its definition levels: a length prefix and the bytes of every value, short
+ * values a word at a time. `chunkPlainBytes` is the PLAIN size of the whole chunk when the page holds all of it, and null
+ * when the page has to measure its own rows.
+ */
+function writePlainPage(
+  chunk: CellChunk,
+  width: number,
+  column: number,
+  page: Page,
+  chunkPlainBytes: number | null,
+  sink: ByteSink
+): ValueBounds {
+  const { data, view, starts, lengths } = chunk;
+  let pagePlainBytes = chunkPlainBytes ?? (page.rowEnd - page.rowStart) * BYTE_ARRAY_LENGTH_PREFIX_BYTES;
+  if (chunkPlainBytes === null) {
+    for (let r = page.rowStart, cell = page.rowStart * width + column; r < page.rowEnd; r++, cell += width) {
+      pagePlainBytes += lengths[cell];
+    }
+  }
+  // Short values are copied a word at a time, which can write up to three bytes past the end of a value.
+  sink.ensure(pagePlainBytes + WORD_COPY_OVERRUN_BYTES);
+  const sinkView = sink.rawView();
+  const sinkBytes = sink.rawBuffer();
+  const wordCopyEnd = data.length - WORD_COPY_OVERRUN_BYTES;
+  let writePos = sink.length;
+  let minAt = -1;
+  let minLength = 0;
+  let maxAt = -1;
+  let maxLength = 0;
+  let minPrefix = -1;
+  let maxPrefix = -1;
+  for (let r = page.rowStart, cell = page.rowStart * width + column; r < page.rowEnd; r++, cell += width) {
+    const at = starts[cell];
+    const length = lengths[cell];
+    sinkView.setUint32(writePos, length, true);
+    writePos += BYTE_ARRAY_LENGTH_PREFIX_BYTES;
+    if (length > SHORT_COPY_BYTES) {
+      data.copy(sinkBytes, writePos, at, at + length);
+    } else if (at + length <= wordCopyEnd) {
+      for (let i = 0; i < length; i += WORD_BYTES) sinkView.setInt32(writePos + i, view.getInt32(at + i, true), true);
+    } else {
+      for (let i = 0; i < length; i++) sinkBytes[writePos + i] = data[at + i];
+    }
+    writePos += length;
+    // The first two bytes of the value as one sortable integer; -1 for an empty value, which sorts before the rest.
+    let prefix = -1;
+    if (length > 0) prefix = (data[at] << 9) | (length > 1 ? data[at + 1] + 1 : 0);
+    if (minAt < 0) {
+      minAt = maxAt = at;
+      minLength = maxLength = length;
+      minPrefix = maxPrefix = prefix;
+      continue;
+    }
+    if (prefix < minPrefix || (prefix === minPrefix && length > 1 && compareRanges(view, at, length, minAt, minLength) < 0)) {
+      minAt = at;
+      minLength = length;
+      minPrefix = prefix;
+    }
+    if (prefix > maxPrefix || (prefix === maxPrefix && length > 1 && compareRanges(view, at, length, maxAt, maxLength) > 0)) {
+      maxAt = at;
+      maxLength = length;
+      maxPrefix = prefix;
+    }
+  }
+  sink.length = writePos;
+  return { minAt, minLength, maxAt, maxLength };
 }
 
 interface Page {
@@ -415,106 +545,10 @@ function encodeTextColumnChunk(
     const pageRows = page.rowEnd - page.rowStart;
     sink.reset();
     writeAllOnesDefinitionLevels(sink, pageRows);
-
-    let minAt = -1;
-    let minLength = 0;
-    let maxAt = -1;
-    let maxLength = 0;
-    if (dictionary) {
-      sink.writeByte(dictionary.bitWidth);
-      encodeRleHybrid(sink, scratch.indices.subarray(page.rowStart, page.rowEnd), pageRows, dictionary.bitWidth);
-      if (singlePage) {
-        for (let index = 0; index < dictionary.entries; index++) {
-          const at = scratch.entryStart[index];
-          const length = scratch.entryLength[index];
-          if (minAt < 0) {
-            minAt = maxAt = at;
-            minLength = maxLength = length;
-            continue;
-          }
-          if (compareRanges(data, at, length, minAt, minLength) < 0) {
-            minAt = at;
-            minLength = length;
-          }
-          if (compareRanges(data, at, length, maxAt, maxLength) > 0) {
-            maxAt = at;
-            maxLength = length;
-          }
-        }
-      } else {
-        // Only the distinct entries of the page need comparing.
-        (seen as Uint8Array).fill(0);
-        for (let r = page.rowStart; r < page.rowEnd; r++) {
-          const index = scratch.indices[r];
-          if ((seen as Uint8Array)[index] === 1) continue;
-          (seen as Uint8Array)[index] = 1;
-          const at = scratch.entryStart[index];
-          const length = scratch.entryLength[index];
-          if (minAt < 0) {
-            minAt = maxAt = at;
-            minLength = maxLength = length;
-            continue;
-          }
-          if (compareRanges(data, at, length, minAt, minLength) < 0) {
-            minAt = at;
-            minLength = length;
-          }
-          if (compareRanges(data, at, length, maxAt, maxLength) > 0) {
-            maxAt = at;
-            maxLength = length;
-          }
-        }
-      }
-    } else {
-      let pagePlainBytes = plainBytes;
-      if (!singlePage) {
-        pagePlainBytes = pageRows * BYTE_ARRAY_LENGTH_PREFIX_BYTES;
-        for (let r = page.rowStart, cell = page.rowStart * width + column; r < page.rowEnd; r++, cell += width) {
-          pagePlainBytes += lengths[cell];
-        }
-      }
-      sink.ensure(pagePlainBytes);
-      const sinkBytes = sink.rawBuffer();
-      let writePos = sink.length;
-      let minPrefix = -1;
-      let maxPrefix = -1;
-      for (let r = page.rowStart, cell = page.rowStart * width + column; r < page.rowEnd; r++, cell += width) {
-        const at = starts[cell];
-        const length = lengths[cell];
-        sinkBytes[writePos] = length;
-        sinkBytes[writePos + 1] = length >>> 8;
-        sinkBytes[writePos + 2] = length >>> 16;
-        sinkBytes[writePos + 3] = length >>> 24;
-        writePos += BYTE_ARRAY_LENGTH_PREFIX_BYTES;
-        if (length <= SHORT_COPY_BYTES) {
-          for (let i = 0; i < length; i++) sinkBytes[writePos + i] = data[at + i];
-        } else {
-          data.copy(sinkBytes, writePos, at, at + length);
-        }
-        writePos += length;
-        // The first two bytes of the value as one sortable integer; -1 for an empty value, which sorts before the rest.
-        let prefix = -1;
-        if (length > 0) prefix = (data[at] << 9) | (length > 1 ? data[at + 1] + 1 : 0);
-        if (minAt < 0) {
-          minAt = maxAt = at;
-          minLength = maxLength = length;
-          minPrefix = maxPrefix = prefix;
-          continue;
-        }
-        if (prefix < minPrefix || (prefix === minPrefix && length > 1 && compareRanges(data, at, length, minAt, minLength) < 0)) {
-          minAt = at;
-          minLength = length;
-          minPrefix = prefix;
-        }
-        if (prefix > maxPrefix || (prefix === maxPrefix && length > 1 && compareRanges(data, at, length, maxAt, maxLength) > 0)) {
-          maxAt = at;
-          maxLength = length;
-          maxPrefix = prefix;
-        }
-      }
-      sink.length = writePos;
-    }
-    const pageStatistics = statisticsOf(data, minAt, minLength, maxAt, maxLength);
+    const bounds = dictionary
+      ? writeDictionaryPage(chunk, dictionary, scratch, page, seen, sink)
+      : writePlainPage(chunk, width, column, page, singlePage ? plainBytes : null, sink);
+    const pageStatistics = statisticsOf(data, bounds);
     if (singlePage) wholeStatistics = pageStatistics;
     rawPages.push({
       body: singlePage ? sink.toBuffer() : Buffer.from(sink.toBuffer()),
@@ -567,24 +601,10 @@ function encodeTextColumnChunk(
 }
 
 function wholeChunkStatistics(chunk: CellChunk, width: number, column: number): ChunkStatistics {
-  const { data, rows, starts, lengths } = chunk;
-  let minAt = starts[column];
-  let minLength = lengths[column];
-  let maxAt = minAt;
-  let maxLength = minLength;
-  for (let r = 1, cell = width + column; r < rows; r++, cell += width) {
-    const at = starts[cell];
-    const length = lengths[cell];
-    if (compareRanges(data, at, length, minAt, minLength) < 0) {
-      minAt = at;
-      minLength = length;
-    }
-    if (compareRanges(data, at, length, maxAt, maxLength) > 0) {
-      maxAt = at;
-      maxLength = length;
-    }
-  }
-  return statisticsOf(data, minAt, minLength, maxAt, maxLength);
+  const { data, view, rows, starts, lengths } = chunk;
+  const bounds: ValueBounds = { minAt: -1, minLength: 0, maxAt: -1, maxLength: 0 };
+  for (let r = 0, cell = column; r < rows; r++, cell += width) includeValue(view, bounds, starts[cell], lengths[cell]);
+  return statisticsOf(data, bounds);
 }
 
 const sharedPageSink = new ByteSink(PARQUET_DATA_PAGE_TARGET_BYTES);
