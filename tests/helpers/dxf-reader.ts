@@ -186,3 +186,22 @@ export function readDxf(text: string): DxfDocument {
       .map((record) => ({ name: record.find((p) => p.code === 2)?.value ?? '', font: record.find((p) => p.code === 3)?.value ?? '' })),
   };
 }
+
+/** The entities that draw geometry: the records `withoutGeometry` drops, which carry almost all the bytes of a drawing page. */
+const GEOMETRY_RECORDS: ReadonlySet<string> = new Set(['LINE', 'POLYLINE', 'VERTEX', 'SEQEND']);
+
+/**
+ * The DXF text without its LINE and POLYLINE (with VERTEX and SEQEND) records: header, tables, TEXT entities and the end of the
+ * file stay. A page that draws its text as outlines holds hundreds of thousands of vertices, and an independent reader that
+ * audits the file parses every one of them; this keeps what a check of the TEXT entities and their styles needs.
+ */
+export function withoutGeometry(dxf: string): string {
+  const lines = dxf.split(/\r?\n/);
+  const kept: string[] = [];
+  let dropping = false;
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    if (Number(lines[i]) === 0) dropping = GEOMETRY_RECORDS.has(lines[i + 1].trim());
+    if (!dropping) kept.push(lines[i], lines[i + 1]);
+  }
+  return `${kept.join('\n')}\n`;
+}

@@ -4,7 +4,7 @@ import { knownRefusal, readKnownRefusals } from '../bench/realworld/report';
 import { defaultResolver, EZDXF_PSEUDO_TOOL } from '../bench/tools';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { extractFontsWithExternalPdffonts, extractTextWithExternalPdftotext, getOracleToolPath } from './helpers/differential-oracle';
-import { readDxf, type DxfDocument } from './helpers/dxf-reader';
+import { readDxf, withoutGeometry, type DxfDocument } from './helpers/dxf-reader';
 import { oracleTest } from './helpers/oracle-test';
 import { pdfWords, type PdfWord } from './helpers/pdftotext-bbox';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -154,20 +154,33 @@ function dxfUnitsPerPoint(pdfPath: string): number {
   return /<svg\b[^>]*\swidth="[\d.]+pt"/.test(svg) ? 96 / 72 : 1;
 }
 
-/** What ezdxf reads from a DXF file: the audit's errors and the TEXT entities it finds. */
+/**
+ * What ezdxf reads from DXF files, all in one interpreter: per file, the audit's errors and the TEXT entities it finds. ezdxf
+ * parses every vertex of a file into entity objects (1.5 s for an 8 MB page, 7,000 polylines of glyph outlines), so a
+ * document of such pages is audited from `withoutGeometry` copies.
+ */
 const EZDXF_AUDIT = `
 import json, sys, ezdxf
-document = ezdxf.readfile(sys.argv[1])
-auditor = document.audit()
-print(json.dumps({"errors": len(auditor.errors), "texts": len(document.modelspace().query("TEXT"))}))
+reports = []
+for path in sys.argv[1:]:
+    document = ezdxf.readfile(path)
+    auditor = document.audit()
+    reports.append({"errors": len(auditor.errors), "texts": len(document.modelspace().query("TEXT"))})
+print(json.dumps(reports))
 `;
 
-function ezdxfAudit(python: string, dxf: string): { errors: number; texts: number } {
+/** A page of at most this many characters is audited whole; a larger one (outline-font text is polylines) without its geometry. */
+const AUDIT_WHOLE_PAGE_CHARACTERS = 1 << 20;
+
+function ezdxfAudit(python: string, pages: readonly string[]): { errors: number; texts: number }[] {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-dxf-text-'));
   try {
-    const file = path.join(directory, 'page.dxf');
-    fs.writeFileSync(file, dxf);
-    return JSON.parse(execFileSync(python, ['-I', '-c', EZDXF_AUDIT, file], { encoding: 'utf-8' })) as { errors: number; texts: number };
+    const files = pages.map((dxf, index) => {
+      const file = path.join(directory, `page-${index}.dxf`);
+      fs.writeFileSync(file, dxf);
+      return file;
+    });
+    return JSON.parse(execFileSync(python, ['-I', '-c', EZDXF_AUDIT, ...files], { encoding: 'utf-8' })) as { errors: number; texts: number }[];
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -213,11 +226,12 @@ describe('PostScript files that draw their text with bitmap fonts', () => {
       'writes pages that ezdxf audits without errors',
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, id);
-        for (const page of await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', {}, id))) {
-          const audit = ezdxfAudit(PYTHON_WITH_EZDXF as string, page);
-          expect(audit.errors).toBe(0);
-          expect(audit.texts).toBe(readDxf(page).texts.length);
-        }
+        const pages = await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', {}, id));
+        const audited = pages.map((page) => (page.length <= AUDIT_WHOLE_PAGE_CHARACTERS ? page : withoutGeometry(page)));
+        expect(audited.every((page) => page.length <= AUDIT_WHOLE_PAGE_CHARACTERS)).toBe(true);
+        const reports = ezdxfAudit(PYTHON_WITH_EZDXF as string, audited);
+        expect(reports.map((report) => report.errors)).toEqual(pages.map(() => 0));
+        expect(reports.map((report) => report.texts)).toEqual(pages.map((page) => readDxf(page).texts.length));
       },
       SAMPLE_TIMEOUT_MS
     );

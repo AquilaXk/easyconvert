@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PdfContentItem } from '../src/lib/conversions/pdf-text-types';
 import { encodeSvgPageToDxf, encodeSvgPageToDxfWithText } from '../src/lib/conversions/vector-dxf';
 import { recoverUnmappedGlyphs } from '../src/lib/conversions/pdf-glyph-recovery';
-import { readDxf, type DxfTextRecord } from './helpers/dxf-reader';
+import { readDxf, withoutGeometry, type DxfTextRecord } from './helpers/dxf-reader';
 
 /**
  * A page set in a bitmap font (dvips Type 3 fonts of 1-bit pictures) reaches the DXF writer as the SVG Poppler draws with
@@ -146,6 +146,20 @@ describe('bitmap-font characters written as DXF TEXT', () => {
   it('keeps a glyph that has no Unicode value as #, the mark pstoedit writes for a character it cannot map', () => {
     expect(recoverUnmappedGlyphs('a\u0001b�c', null, Number.POSITIVE_INFINITY, '#')).toEqual({ text: 'a#b#c', unmapped: 2 });
     expect(recoverUnmappedGlyphs('a\u0001b', null)).toEqual({ text: 'ab', unmapped: 1 });
+  });
+});
+
+describe('the copy of a page that an independent reader audits for its text', () => {
+  it('drops the LINE and POLYLINE records with their vertices and keeps the header, the styles and every TEXT', async () => {
+    const glyphLine = '<path fill="none" stroke="rgb(0%, 0%, 0%)" d="M 10 10 L 50 10"/>';
+    const outline = '<path fill="rgb(0%, 0%, 0%)" d="M 20 200 L 30 200 L 30 210 L 20 210 Z"/>';
+    const text = (await encodeSvgPageToDxfWithText(Buffer.from(page(DEFS, `${RULE}${glyphLine}${outline}${LINE}`)), layer(LINE_ITEMS))).toString('utf-8');
+    const whole = readDxf(text);
+    expect(whole.entities.length).toBeGreaterThan(1);
+    const stripped = withoutGeometry(text);
+    expect(stripped).not.toMatch(/^(LINE|POLYLINE|VERTEX|SEQEND)$/m);
+    expect(stripped.length).toBeLessThan(text.length);
+    expect(readDxf(stripped)).toEqual({ ...whole, entities: [] });
   });
 });
 
