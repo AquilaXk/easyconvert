@@ -1,3 +1,4 @@
+import { hasPdfHeader } from '../format-signatures';
 import { CorruptStreamError, type PdfPageAnalysis } from '../types';
 import { reportConversionWarning } from './conversion-warnings';
 import type { DocumentModel } from './document-model/model';
@@ -15,10 +16,6 @@ import { PdfTextUnmappedError, pagesPhrase, type PdfGeometryPages, type PdfPageC
  * map is left out as a whole; the document is refused with PdfTextUnmappedError only when no page of it reads, or leaves
  * those pages to the caller when it recognizes them another way.
  */
-
-/** `%PDF-` must appear within the first kilobyte (ISO 32000-2 section 7.5.2 allows leading bytes). */
-const HEADER_SEARCH_BYTES = 1024;
-const PDF_HEADER = '%PDF-';
 
 export interface ExtractPdfOptions {
   /**
@@ -59,7 +56,7 @@ export interface ReadPdfResult {
 }
 
 export function assertPdfHeader(pdf: Buffer): void {
-  if (!pdf.subarray(0, HEADER_SEARCH_BYTES).includes(PDF_HEADER)) {
+  if (!hasPdfHeader(pdf)) {
     throw new CorruptStreamError('Invalid PDF document: missing %PDF- header');
   }
 }

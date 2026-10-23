@@ -19,6 +19,7 @@ import {
   executeSandboxedBinary,
   SandboxedProcessError,
 } from '../../security/process-sandbox';
+import { pdfFromHeader } from '../../format-signatures';
 import { resolveBinaryPath } from './utils';
 import { DEFAULT_PDFA_CONFORMANCE, buildPdfExportFilterData } from '../pdf-export-options';
 
@@ -281,7 +282,8 @@ export async function convertToPdfA(
   const outputPdf = path.join(outDir, 'source.pdf');
 
   try {
-    fs.writeFileSync(inputPdf, pdfBuffer);
+    // The converter picks its import filter by the first bytes, so it gets the file from the %PDF- header on.
+    fs.writeFileSync(inputPdf, pdfFromHeader(pdfBuffer));
 
     // LibreOffice opens a PDF in Draw, so the Draw PDF export filter applies.
     // The default image settings keep JPEG streams byte for byte, as in the Office export.
