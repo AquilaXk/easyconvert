@@ -24,8 +24,8 @@ import { PAGE_CLIP_TOLERANCE_PIXELS, type ClipNode } from './svg-page-clip';
  *
  * The limits are this reader's own (neither reference has any): MAX_ACTIVE_CLIPS clips under one element, MAX_CLIP_EDGES edges
  * in one clip, MAX_CLIP_WORK edge tests in a document, on top of the document's vertex budget, which the clip shapes are
- * charged to once per clip. A clip that cannot be measured exactly (a bounding-box unit, a clip on the clip, text, a picture or
- * a group as its shape) stays refused.
+ * charged to once per clip. A clip that cannot be measured exactly (a bounding-box unit, a clip on the clip, a curve, text, a
+ * picture or a group as its shape) stays refused.
  */
 
 export const MAX_ACTIVE_CLIPS = 8;
@@ -43,8 +43,24 @@ interface Point {
   y: number;
 }
 
-/** The elements whose fill is a clip shape this reader measures (`text`, `use` and groups are not exact). */
-const CLIP_SHAPE_ELEMENTS = new Set(['path', 'rect', 'circle', 'ellipse', 'polygon']);
+/** The path commands that draw a curve: arcs, cubic and quadratic Béziers, smooth or not. */
+const CURVE_COMMAND_PATTERN = /[AaCcQqSsTt]/;
+const hasRadius = (attrs: ReadonlyMap<string, string>): boolean => ['rx', 'ry'].some((name) => attrs.has(name) && Number.parseFloat(attrs.get(name) ?? '') !== 0);
+
+/**
+ * The elements whose fill is a clip shape this reader measures, each with whether an element draws straight edges only. A curve
+ * is measured on its flattened outline, which is off the curve by more than the path reader's 0.25 user units (its Bézier test
+ * stops at 8 halvings and reads the distance to the chord's line, arcs take steps of a sixteenth of a turn, circles 36 sides),
+ * times the scale of the clipped element; so a clip with a curve stays refused. Poppler writes every clip with straight edges.
+ * `text`, `use` and groups are not exact either.
+ */
+const CLIP_SHAPE_IS_STRAIGHT: ReadonlyMap<string, (attrs: ReadonlyMap<string, string>) => boolean> = new Map([
+  ['path', (attrs) => !CURVE_COMMAND_PATTERN.test(attrs.get('d') ?? '')],
+  ['rect', (attrs) => !hasRadius(attrs)],
+  ['polygon', () => true],
+  ['circle', () => false],
+  ['ellipse', () => false],
+]);
 const CLIP_URL_PATTERN = /^url\(\s*#([^)\s"']+)\s*\)$/;
 const MAX_REPORTED_DECIMALS = 2;
 const FULL_TURN = 2 * Math.PI;
@@ -403,7 +419,9 @@ export class ActiveClips {
     const shapes: ClipDefinition['shapes'] = [];
     let edges = 0;
     for (const shape of clip.children) {
-      if (!CLIP_SHAPE_ELEMENTS.has(shape.name)) throw clipRefusal(value, `it holds <${shape.name}>, which is not a shape this reader measures`);
+      const isStraight = CLIP_SHAPE_IS_STRAIGHT.get(shape.name);
+      if (isStraight === undefined) throw clipRefusal(value, `it holds <${shape.name}>, which is not a shape this reader measures`);
+      if (!isStraight(shape.attrs)) throw clipRefusal(value, `its <${shape.name}> draws a curve, which is measured only on its flattened outline`);
       const declared = declaredOf(shape);
       if (hasClipOfItsOwn(shape, declared)) throw clipRefusal(value, 'a shape of the <clipPath> has a clip-path of its own');
       const style = this.inheritedOf(shape);
