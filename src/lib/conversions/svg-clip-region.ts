@@ -289,15 +289,24 @@ export class ActiveClips {
     this.stack.pop();
   }
 
-  /** Refuses the shape when a vertex of it is more than the tolerance outside any clip it is drawn under. */
+  /**
+   * Refuses the shape when it reaches past a clip it is drawn under: by more than the tolerance under one clip, by anything
+   * under more than one. A point a little outside each of two clips can be far outside their intersection, which can even be
+   * empty, and the intersection is not measured, so under nested clips the shape must be inside each.
+   */
   assertWithin(subpaths: readonly (readonly Point[])[]): void {
+    const nested = this.stack.length > 1;
+    const tolerance = nested ? 0 : this.tolerance;
     for (const { value, region } of this.stack) {
       const farthest = farthestOutside(region, subpaths, this.work);
-      if (!(farthest <= this.tolerance)) {
-        const how = Number.isFinite(farthest) ? `a drawn path reaches ${formatPixels(farthest)} pixels past it, more than the ${formatPixels(this.tolerance)} pixels (one point) a clip may hide` : 'it hides everything under it';
-        throw clipRefusal(value, how);
-      }
+      if (!(farthest <= tolerance)) throw clipRefusal(value, this.reach(farthest, nested));
     }
+  }
+
+  private reach(farthest: number, nested: boolean): string {
+    if (!Number.isFinite(farthest)) return 'it hides everything under it';
+    const past = `a drawn path reaches ${formatPixels(farthest)} pixels past it`;
+    return nested ? `${past}, and a path under more than one clip must be inside each of them` : `${past}, more than the ${formatPixels(this.tolerance)} pixels (one point) a clip may hide`;
   }
 
   private definitionOf(id: string, value: string): ClipDefinition {
