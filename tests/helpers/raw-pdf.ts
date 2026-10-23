@@ -29,6 +29,11 @@ function pageObjectNumber(index: number): number {
  * order; see `extraObjectNumber`).
  */
 export function rawPdf(pages: RawPage[], extraObjects: string[] = []): Buffer {
+  return assemble(rawPdfObjects(pages, extraObjects));
+}
+
+/** The bodies of the objects `rawPdf` writes, object 1 first, for a test that stores some of them another way. */
+export function rawPdfObjects(pages: RawPage[], extraObjects: string[] = []): string[] {
   const objects: string[] = [];
   const kids = pages.map((_, index) => `${pageObjectNumber(index)} 0 R`).join(' ');
   objects.push(
@@ -45,7 +50,7 @@ export function rawPdf(pages: RawPage[], extraObjects: string[] = []): Buffer {
     );
   });
   objects.push(...extraObjects);
-  return assemble(objects);
+  return objects;
 }
 
 /** Number of the first extra object for a document of `pageCount` pages. */

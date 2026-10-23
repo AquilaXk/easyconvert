@@ -138,6 +138,7 @@ interface PdfObjectEntry {
   gen: number;
   /** Text the object lives in: the file, or the decoded text of the object stream that holds it. */
   source: string;
+  /** Position of the object's first token: white space and comments in front of it are not part of it. */
   start: number;
   end: number;
   /** Position of the definition in the file; the later definition of an object number wins (section 7.5.6). */
@@ -212,15 +213,18 @@ function isDigit(code: number): boolean {
   return code >= CHAR_0 && code <= CHAR_9;
 }
 
-export function skipWhite(src: string, from: number): number {
+/**
+ * The first position at or after `from` that is not white space or a comment (section 7.2.3: a comment runs from `%` to the
+ * end of the line), or `limit` when the text up to there holds nothing else: a comment with no line end ends at `limit`.
+ */
+export function skipWhite(src: string, from: number, limit = src.length): number {
   let pos = from;
-  while (pos < src.length) {
+  while (pos < limit) {
     const code = src.charCodeAt(pos);
     if (isWhite(code)) {
       pos++;
     } else if (code === CHAR_PERCENT) {
-      // % starts a comment that runs to the end of the line
-      while (pos < src.length && src.charCodeAt(pos) !== CHAR_LF && src.charCodeAt(pos) !== CHAR_CR) pos++;
+      while (pos < limit && src.charCodeAt(pos) !== CHAR_LF && src.charCodeAt(pos) !== CHAR_CR) pos++;
     } else {
       break;
     }
@@ -428,16 +432,25 @@ function readObjectStreamHeader(decoded: string, first: number, count: number): 
   return members;
 }
 
-/** Index of the first element of the sorted `values` that is greater than `target`. */
-function upperBound(values: number[], target: number): number {
-  let low = 0;
-  let high = values.length;
-  while (low < high) {
-    const mid = (low + high) >>> 1;
-    if (values[mid] <= target) low = mid + 1;
-    else high = mid;
-  }
-  return low;
+/** Where an object stored in an object stream begins and ends in the decoded text of the stream. */
+interface MemberSpan {
+  start: number;
+  end: number;
+}
+
+/**
+ * The span of the object stored at each of `offsets` (distinct, ascending, inside `decoded`). An object ends where the next
+ * higher offset begins, so spans never overlap and one pass covers them all, and it begins at its first token: the white
+ * space and comments in front of it are skipped as the lexer of pdf.js (`Lexer.getObj`) and the tokenizers of qpdf and PDFBox
+ * skip them, inside the span only, so that a comment with no line end ends with its object.
+ */
+function memberSpans(decoded: string, offsets: number[]): Map<number, MemberSpan> {
+  const spans = new Map<number, MemberSpan>();
+  offsets.forEach((offset, index) => {
+    const end = Math.min(offsets[index + 1] ?? decoded.length, offset + MAX_PDF_OBJSTM_ENTRY_BYTES);
+    spans.set(offset, { start: skipWhite(decoded, offset, end), end });
+  });
+  return spans;
 }
 
 /** The offset after the file's last `startxref` keyword. */
@@ -647,14 +660,11 @@ export class PdfDocument {
         throw new PdfStructureError(`PDF object stream has a /First of ${first} that its ${count} entries cannot need.`);
       }
       const members = readObjectStreamHeader(decoded, first, count);
-      const offsets = [...new Set(members.map((member) => first + member.offset))].sort((a, b) => a - b);
+      const offsets = [...new Set(members.map((member) => first + member.offset))].filter((offset) => offset < decoded.length).sort((a, b) => a - b);
+      const spans = memberSpans(decoded, offsets);
       for (const member of members) {
-        const start = first + member.offset;
-        if (start >= decoded.length) continue;
-        // An entry ends where the next higher offset begins, so entries never overlap and one pass covers them all.
-        const next = offsets[upperBound(offsets, start)] ?? decoded.length;
-        const end = Math.min(next, start + MAX_PDF_OBJSTM_ENTRY_BYTES);
-        this.register({ num: member.num, gen: 0, source: decoded, start, end, seq: holder.seq });
+        const span = spans.get(first + member.offset);
+        if (span !== undefined) this.register({ num: member.num, gen: 0, source: decoded, ...span, seq: holder.seq });
       }
     }
   }
