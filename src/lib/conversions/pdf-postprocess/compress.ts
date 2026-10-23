@@ -10,6 +10,7 @@ import {
 import { SandboxedBufferLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../../security/process-sandbox';
 import { launchSandboxedBinary } from '../../security/sandbox-launcher';
 import { executeSandboxedBinary } from '../../../worker/sandbox';
+import { pdfFromHeader } from '../../format-signatures';
 import { assertPdfHeader } from '../pdf-text-document';
 import { openPdfForEditing, type PdfAccess } from '../pdf-access';
 import { getGhostscriptBinaryPath } from './gs-path';
@@ -43,7 +44,9 @@ const GHOSTSCRIPT_PRESETS: Readonly<Partial<Record<PdfOptimizeProfile, string>>>
 };
 /** PDF 1.6 lets pdfwrite pack objects into object streams, which a 1.4 file cannot. */
 const GHOSTSCRIPT_COMPATIBILITY_LEVEL = '1.6';
+/** `-P-` keeps the working directory, which holds the input, out of the library search first, as the `ps2pdf` scripts (`ps2pdfwr`) pass it. */
 const GHOSTSCRIPT_FIXED_ARGS: readonly string[] = [
+  '-P-',
   '-q',
   '-dNOPAUSE',
   '-dBATCH',
@@ -107,7 +110,8 @@ async function rewriteWithGhostscript(pdf: Buffer, preset: string, run: PdfCompr
   if (!gs) {
     throw new EngineUnavailableError('ghostscript', 'Ghostscript (gs) is not installed or not in PATH');
   }
-  return withQpdfWorkspace(pdf, async (workspace) => {
+  // Ghostscript runs a file as PostScript or as PDF by its first bytes and does not look for the header, so it gets the file from the header on.
+  return withQpdfWorkspace(pdfFromHeader(pdf), async (workspace) => {
     const outputPath = path.join(workspace.dir, GHOSTSCRIPT_OUTPUT_NAME);
     const timeoutMs = Math.min(GHOSTSCRIPT_DEFAULT_TIMEOUT_MS, run.remainingMs ?? GHOSTSCRIPT_DEFAULT_TIMEOUT_MS);
     try {

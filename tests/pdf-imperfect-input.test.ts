@@ -302,11 +302,15 @@ describe.skipIf(toolsMissing)('stream extents and Flate data the references read
   });
 });
 
-/** Streams, and the bytes of white space their lengths all end in (halfway in): unbounded, the checks would skip 3,000 x 1 MiB. */
+/** Streams, and the bytes of white space their lengths all end in (halfway in): checked without a bound, the lookahead would skip 3,000 x 1 MiB. */
 const RUN_STREAMS = 3000;
 const RUN_BYTES = 2 * MIB;
-/** Hang guard only: the structure budget stops the checks after 128 MiB of white space, in milliseconds. */
+/** Hang guard only: with the lookahead bounded, indexing the file takes milliseconds. */
 const RUN_HANG_GUARD_MS = 5000;
+/** Streams of the NUL-run file, the bytes of data each holds, and the streams of the small file whose content is read back (the guard and the reader each decode every stream). */
+const NUL_STREAMS = 40;
+const NUL_STREAM_BYTES = 4 * MIB;
+const NUL_STREAMS_READ_BACK = 4;
 
 /** A file of RUN_STREAMS tiny streams whose /Length (direct, or an object written after them) ends inside one long run of spaces. */
 function lengthsIntoOneWhiteRun(later: boolean): Buffer {
@@ -323,15 +327,60 @@ function lengthsIntoOneWhiteRun(later: boolean): Buffer {
   return Buffer.from(`%PDF-1.4\n${streams.join('')}${' '.repeat(RUN_BYTES)}${lengthObjects}trailer\n<< /Root 1 0 R >>\n%%EOF\n`, 'latin1');
 }
 
+/** `count` content streams with a direct /Length of 1 that each hold `q `, a run of NULs (PDF white space) and ` Q`. */
+function wrongLengthsBeforeNulRuns(count: number): Buffer {
+  const data = Buffer.concat([Buffer.from('q '), Buffer.alloc(NUL_STREAM_BYTES, 0), Buffer.from(' Q')]);
+  const objects = Array.from({ length: count }, (_, i) =>
+    Buffer.concat([Buffer.from(`${10 + i} 0 obj\n<< /Length 1 >>\nstream\n`), data, Buffer.from('\nendstream\nendobj\n')])
+  );
+  const refs = Array.from({ length: count }, (_, i) => `${10 + i} 0 R`).join(' ');
+  const head = `%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents [${refs}] >>\nendobj\n`;
+  return Buffer.concat([Buffer.from(head), ...objects, Buffer.from('trailer\n<< /Root 1 0 R >>\n%%EOF\n')]);
+}
+
 describe('stream length checks on hostile input', () => {
   for (const later of [false, true]) {
-    it(`refuses (413) a file whose ${later ? 'later' : 'direct'} /Length values all end in one long run of white space, at the structure budget`, async () => {
+    it(`reads, in milliseconds, a file whose ${later ? 'later' : 'direct'} /Length values all end in one long run of white space`, async () => {
+      const bytes = lengthsIntoOneWhiteRun(later);
       const started = Date.now();
-      const error = await captureError(async () => decodedStreams(lengthsIntoOneWhiteRun(later)));
-      expectStatus(error, DecompressionLimitError, HTTP_PAYLOAD_TOO_LARGE);
+      expect(() => decodedStreams(bytes)).not.toThrow();
       expect(Date.now() - started).toBeLessThan(RUN_HANG_GUARD_MS);
     });
   }
+
+  it('passes the guard, in milliseconds, for a file whose wrong /Length is followed by megabytes of NUL bytes in every one of its streams', () => {
+    const bytes = wrongLengthsBeforeNulRuns(NUL_STREAMS);
+    const started = Date.now();
+    expect(() => assertPdfStreamsWithinLimits(bytes)).not.toThrow();
+    expect(Date.now() - started).toBeLessThan(RUN_HANG_GUARD_MS);
+  });
+
+  it('reads the whole data of a stream whose wrong /Length is followed by megabytes of NUL bytes, as it was read before the lookahead was bounded', () => {
+    const contents = decodedStreams(wrongLengthsBeforeNulRuns(NUL_STREAMS_READ_BACK));
+    expect(contents.map((content) => content.length)).toEqual(Array(NUL_STREAMS_READ_BACK).fill(NUL_STREAM_BYTES + 4));
+    for (const content of contents) {
+      expect(content.startsWith('q ')).toBe(true);
+      expect(content.endsWith(' Q')).toBe(true);
+    }
+  });
+});
+
+describe('the white space between a stream length and endstream', () => {
+  const DATA = 'BT /F1 12 Tf (x) Tj ET';
+  const streamFile = (gap: string): Buffer =>
+    Buffer.from(
+      `%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R >>\nendobj\n4 0 obj\n<< /Length ${DATA.length} >>\nstream\n${DATA}${gap}endstream\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n`,
+      'latin1'
+    );
+
+  it('ends the data at the length when a CR LF, the longest line end, or sixteen spaces separate them', () => {
+    expect(decodedStreams(streamFile('\r\n'))).toEqual([DATA]);
+    expect(decodedStreams(streamFile(' '.repeat(16)))).toEqual([DATA]);
+  });
+
+  it('searches for endstream, and drops one line end, when more than sixteen bytes of white space separate them', () => {
+    expect(decodedStreams(streamFile(`${' '.repeat(17)}\n`))).toEqual([`${DATA}${' '.repeat(17)}`]);
+  });
 });
 
 describe('Flate defences that stay', () => {

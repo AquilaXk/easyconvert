@@ -73,6 +73,11 @@ const MAX_OBJECT_HEADER_LOOKBACK = 40;
 const MAX_OBJECT_NUMBER_DIGITS = 10;
 const MAX_GENERATION_DIGITS = 5;
 const ENDSTREAM = 'endstream';
+/**
+ * White space allowed between the data a /Length names and `endstream`: a line end is one or two bytes, and the longest gap
+ * in the 120,114 streams with a direct, correct /Length of the 1,264 cached real-world PDFs is 2 bytes (policy 73).
+ */
+const MAX_WHITE_BEFORE_ENDSTREAM = 16;
 const STREAM_KEYWORD = 'stream';
 
 const CHAR_NUL = 0;
@@ -563,7 +568,7 @@ export class PdfDocument {
     else if (src.charCodeAt(rawStart) === CHAR_LF || src.charCodeAt(rawStart) === CHAR_CR) rawStart += 1;
 
     const length = this.directLength(dict);
-    let rawEnd = this.endAtLength(num, rawStart, length);
+    let rawEnd = this.endAtLength(rawStart, length);
     let resume = rawEnd === -1 ? -1 : skipWhite(src, rawEnd) + ENDSTREAM.length;
     if (rawEnd === -1) {
       const marker = src.indexOf(ENDSTREAM, rawStart);
@@ -586,14 +591,16 @@ export class PdfDocument {
   /**
    * End of the data of stream `num` when `length` bytes from `rawStart` are followed by `endstream`, or -1 when they are
    * not: PDFBox `COSParser.validateStreamLength` (3.0.5, lines 1077-1112, Apache-2.0) checks the same before it trusts
-   * /Length. The white space skipped on the way is charged to the structure budget: neither PDFBox nor pdf.js bounds it,
-   * and lengths that all end in one long run of white space would otherwise cost the run once per stream.
+   * /Length. Only `MAX_WHITE_BEFORE_ENDSTREAM` bytes of white space may lie between them. PDFBox (`skipSpaces`, lines
+   * 1286-1310), pdf.js (`makeStream`) and qpdf (`QPDF_objects.cc` line 1366) do not bound that run, so lengths that all
+   * end in one long run of white space would cost the run once per stream; this bound is ours (policy 73).
    */
-  private endAtLength(num: number, rawStart: number, length: number | null): number {
+  private endAtLength(rawStart: number, length: number | null): number {
     if (length === null || rawStart + length > this.text.length) return -1;
     const dataEnd = rawStart + length;
-    const marker = skipWhite(this.text, dataEnd);
-    this.structureBudget.charge(marker - dataEnd, `PDF stream of object ${num}`);
+    const limit = Math.min(this.text.length, dataEnd + MAX_WHITE_BEFORE_ENDSTREAM);
+    let marker = dataEnd;
+    while (marker < limit && isWhite(this.text.charCodeAt(marker))) marker++;
     return this.text.startsWith(ENDSTREAM, marker) ? dataEnd : -1;
   }
 
@@ -607,7 +614,7 @@ export class PdfDocument {
   private applyLaterLengths(): void {
     for (const entry of this.laterLengths) {
       const stream = entry.stream as StreamSpan;
-      const end = this.endAtLength(entry.num, stream.rawStart, this.directLength(stream.dict));
+      const end = this.endAtLength(stream.rawStart, this.directLength(stream.dict));
       if (end !== -1) stream.rawEnd = end;
     }
   }

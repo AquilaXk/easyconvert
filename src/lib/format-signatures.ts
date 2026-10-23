@@ -247,18 +247,38 @@ const FIXED_SIGNATURES: readonly { mime: string; prefix: readonly number[] }[] =
 const PDF_HEADER_SEARCH_BYTES = 1024;
 const PDF_HEADER = '%PDF-';
 
+/** Where `%PDF-` starts when all of it lies in the first 1,024 bytes, as pdf.js `find` requires; -1 when it does not. */
+function pdfHeaderOffset(buf: Uint8Array): number {
+  return LATIN1.decode(buf.subarray(0, PDF_HEADER_SEARCH_BYTES)).indexOf(PDF_HEADER);
+}
+
 /** Whether all of `%PDF-` lies in the first 1,024 bytes, as pdf.js `find` requires. */
 export function hasPdfHeader(buf: Uint8Array): boolean {
-  return LATIN1.decode(buf.subarray(0, PDF_HEADER_SEARCH_BYTES)).includes(PDF_HEADER);
+  return pdfHeaderOffset(buf) >= 0;
+}
+
+/**
+ * `pdf` from its `%PDF-` header on, as a view of the same memory, or `pdf` itself when the header is at byte 0 or lies
+ * outside the first 1,024 bytes. pdf.js (`moveStart` after `checkHeader`) and qpdf take the header as the start of the
+ * file and count cross-reference offsets from it, so a tool that does not search for the header itself is handed these
+ * bytes. Ghostscript and LibreOffice decide what a file is from its first bytes: a file that opens with `\n%!PS` is a
+ * PostScript program to Ghostscript and a PDF to qpdf and Poppler.
+ */
+export function pdfFromHeader(pdf: Buffer): Buffer {
+  const offset = pdfHeaderOffset(pdf);
+  return offset > 0 ? pdf.subarray(offset) : pdf;
 }
 
 /** Images whose readers accept nothing but their signature at the first byte. */
 const SIGNATURE_FIRST_IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(['png', 'gif', 'webp']);
 
 /**
- * Whether a file whose first bytes match no signature must be refused under the name `ext`: always as a PNG, GIF or WebP
- * image, and as a PDF unless its header lies in the first 1,024 bytes. Bytes that are the signature of another kind never
- * reach this test, so a file of that kind stays refused under a .pdf name.
+ * Whether a file whose first bytes the registry sniffs as no kind must be refused under the name `ext`: always as a PNG,
+ * GIF or WebP image, and as a PDF unless its header lies in the first 1,024 bytes. A file of a sniffed kind never reaches
+ * this test; the registry compares that kind with the extension, and a kind it has no comparison for (a font, for one)
+ * passes under any name, as before this test existed. What passes here as a PDF is every file that carries `%PDF-` in its
+ * first kilobyte, whatever else it is (a PostScript program behind a line break, an HTML page), so a tool that decides
+ * what a file is from its first bytes must be handed `pdfFromHeader` of it, not the upload.
  */
 export function refusedWithoutSignature(ext: string, buf: Uint8Array): boolean {
   if (ext === 'pdf') return !hasPdfHeader(buf);
