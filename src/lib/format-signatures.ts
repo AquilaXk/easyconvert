@@ -264,9 +264,9 @@ export function hasPdfHeader(buf: Uint8Array): boolean {
  * bytes. Ghostscript and LibreOffice decide what a file is from its first bytes: a file that opens with `\n%!PS` is a
  * PostScript program to Ghostscript and a PDF to qpdf and Poppler.
  */
-export function pdfFromHeader(pdf: Buffer): Buffer {
+export function pdfFromHeader<T extends Uint8Array>(pdf: T): T {
   const offset = pdfHeaderOffset(pdf);
-  return offset > 0 ? pdf.subarray(offset) : pdf;
+  return offset > 0 ? (pdf.subarray(offset) as T) : pdf;
 }
 
 /** Images whose readers accept nothing but their signature at the first byte. */
