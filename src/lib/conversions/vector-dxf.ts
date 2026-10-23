@@ -114,9 +114,9 @@ function dxfTextValue(text: string): string {
     else if (code >= FIRST_PRINTABLE && code <= LAST_PRINTABLE) value += character;
     else if (isEscapedAsCodePoint(code)) value += `\\U+${code.toString(16).toUpperCase().padStart(4, '0')}`;
     else value += UNMAPPABLE_CHARACTER;
-  }
-  if (value.length > DXF_TEXT_MAX_CHARS) {
-    throw new ConversionFailedError(`The page cannot be written as DXF: a run of bitmap-font text is longer than the ${DXF_TEXT_MAX_CHARS} characters a TEXT entity holds.`);
+    if (value.length > DXF_TEXT_MAX_CHARS) {
+      throw new ConversionFailedError(`The page cannot be written as DXF: a run of bitmap-font text is longer than the ${DXF_TEXT_MAX_CHARS} characters a TEXT entity holds.`);
+    }
   }
   return value;
 }

@@ -42,7 +42,8 @@ export interface PlacedText {
 
 /**
  * How far, in points, a glyph origin may lie from a run's baseline and advance and still belong to it. Poppler's SVG prints
- * positions with six decimals and the PDF reader computes them in doubles; on the twelve real files the two never differ.
+ * positions with six decimals and the PDF reader computes them in doubles; on the twelve real files they differ by 0.0012 pt
+ * at most.
  */
 const ORIGIN_TOLERANCE_PT = 0.01;
 /** The page sizes of the SVG and of the text layer give one scale for both axes, to within this ratio. */
