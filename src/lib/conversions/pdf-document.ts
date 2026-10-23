@@ -1,4 +1,4 @@
-import { ConversionFailedError, DecompressionLimitError } from '../types';
+import { ConversionFailedError, CorruptStreamError, DecompressionLimitError } from '../types';
 import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflatePdfFlate } from './bounded-inflate';
 import { CidWidthReader } from './pdf-cid-widths';
 import {
@@ -40,6 +40,12 @@ export const MAX_PDF_FORM_DEPTH = 16;
 export const MAX_PDF_FORM_INVOCATIONS = 100 * 1000;
 /** Content streams (page and form) one document may have decoded. */
 export const MAX_PDF_CONTENT_STREAMS = 200 * 1000;
+/**
+ * Annotations one page may list. Neither pdf.js nor Poppler caps them; the reader's thread (a 1 GiB heap) builds the operator
+ * lists of about 60,000 annotations of one page in 2.2 s and runs out of memory at 100,000, so the cap is set below that
+ * and a page past it is refused before pdf.js reads any appearance.
+ */
+export const MAX_PDF_ANNOTATIONS_PER_PAGE = 50 * 1000;
 /** Nesting of arrays and dictionaries inside one object. */
 export const MAX_PDF_PARSE_DEPTH = 32;
 /** Longest chain of indirect references followed to reach a direct value. */
@@ -471,6 +477,7 @@ export class PdfDocument {
   private readonly parsed = new Map<number, PdfValue>();
   private readonly structureBudget = new InflateBudget(MAX_PDF_STRUCTURE_PARSE_BYTES);
   private readonly formCache = new Map<number, string | null>();
+  private readonly damagedAppearances = new Set<number>();
   private rootRef: PdfRef | null = null;
   private pageList: PageNode[] | null | undefined;
   private objectCount = 0;
@@ -935,7 +942,60 @@ export class PdfDocument {
         visit(content);
         this.drawForms(content, page.resources, 0, activeForms, visit);
       }
+      for (const entry of this.annotationAppearanceEntries(page.dict)) {
+        const content = this.appearanceContent(entry);
+        if (content === null) continue;
+        visit(content);
+        this.drawForms(content, (entry.stream as StreamSpan).dict.entries.get('Resources') ?? null, 0, activeForms, visit);
+      }
     }
+  }
+
+  /**
+   * Decoded appearance stream; null when its data is damaged. pdf.js leaves out an annotation whose appearance fails to
+   * read ("ignoring annotation data", src/core/document.js `getOperatorList`) and draws the rest, so a damaged
+   * appearance is no reason to refuse the page. A stream past a limit is still refused.
+   */
+  private appearanceContent(entry: PdfObjectEntry): string | null {
+    if (this.damagedAppearances.has(entry.num)) {
+      this.countContentStream();
+      return null;
+    }
+    try {
+      return this.formContent(entry);
+    } catch (error) {
+      if (!(error instanceof CorruptStreamError)) throw error;
+      this.damagedAppearances.add(entry.num);
+      return null;
+    }
+  }
+
+  /**
+   * The normal appearance streams of the annotations a page lists (ISO 32000-1 section 12.5.5): the stream /AP /N names, or
+   * each stream of the states dictionary it names instead. pdf.js builds the operator list of every annotation it may draw
+   * and Poppler draws them all, so each is decoded under the budgets of the page content.
+   * @throws PdfStructureError when the page lists more than MAX_PDF_ANNOTATIONS_PER_PAGE annotations.
+   */
+  private annotationAppearanceEntries(page: PdfDict): PdfObjectEntry[] {
+    const annotations = this.resolve(page.entries.get('Annots'));
+    if (!isArray(annotations)) return [];
+    if (annotations.items.length > MAX_PDF_ANNOTATIONS_PER_PAGE) {
+      throw new PdfStructureError(`PDF page lists more than ${MAX_PDF_ANNOTATIONS_PER_PAGE} annotations.`);
+    }
+    const entries: PdfObjectEntry[] = [];
+    for (const item of annotations.items) {
+      const normal = this.resolveDict(this.resolveDict(item)?.entries.get('AP'))?.entries.get('N');
+      const stream = this.entryOf(normal);
+      if (stream) {
+        entries.push(stream);
+        continue;
+      }
+      for (const state of this.resolveDict(normal)?.entries.values() ?? []) {
+        const entry = this.entryOf(state);
+        if (entry && !this.isImage(entry)) entries.push(entry);
+      }
+    }
+    return entries;
   }
 
   private pageContentEntries(page: PdfDict): PdfObjectEntry[] {
