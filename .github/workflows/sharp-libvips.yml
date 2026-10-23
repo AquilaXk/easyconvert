@@ -1,6 +1,6 @@
 name: sharp libvips
 
-# The libvips-cpp.so the worker image ships (the sharplibvips stage of Dockerfile.worker, docs/policy-decisions.md entry 81),
+# The libvips-cpp.so the worker image ships (the sharplibvips stage of Dockerfile.worker, docs/policy-decisions.md entry 84),
 # built once per cache key for the CI jobs that convert pictures, so they test and time that library and not the copy the npm
 # package installs. The jobs that need it restore it with ./.github/actions/sharp-libvips.
 #

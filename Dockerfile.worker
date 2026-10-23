@@ -118,7 +118,7 @@ RUN /src/qpdf-runner/build.sh /usr/local/bin/qpdf-runner
 # sharp loads libvips from its @img/sharp-libvips-linux-<arch> package, which the upstream sharp-libvips release builds with
 # libwebp, mozjpeg and libpng at -Os. This stage runs that release's own build, at its commit and in its own build container
 # (Rocky Linux 8, pinned here by the digest of its multi-architecture index), with those three at -O3: the outputs are
-# byte-identical and WebP and JPEG encodes are 6 to 31% faster (docs/policy-decisions.md, entry 81). The scripts, the patches
+# byte-identical and WebP and JPEG encodes are 6 to 31% faster (docs/policy-decisions.md, entry 84). The scripts, the patches
 # and every pin, down to the SHA-256 of each source the build downloads, are in docker/sharp-libvips/. The runtime stage copies
 # only libvips-cpp.so over the package's copy, and fails the build unless sharp loads it and is still the release it was built for.
 FROM rockylinux/rockylinux:8-ubi-init@sha256:ae0813ccb1bb83f4e0220acdd1539f52831517de334368e960824db7e37ee210 AS sharplibvips-build

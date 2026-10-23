@@ -1,0 +1,5 @@
+fixtures.json
+Source:   https://raw.githubusercontent.com/Flet/github-slugger/master/test/fixtures.json (the test vectors of github-slugger 2.0.0, ISC licence, Copyright (c) 2015 Dan Flettre; the expected slugs are the ids GitHub gives the headings)
+Fetched:  2026-10-24
+SHA-256:  26e59aec9fb3adee7a56445049ef2d537126b28581802903b529d2556778b248
+Content:  78 headings in order, unmodified. A slug given before is numbered, so the list is read with one HeadingSlugs. Used as the independent expected-id oracle in tests/github-slug.test.ts.

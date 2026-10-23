@@ -138,7 +138,7 @@ describe('Conversion Engine Integration Tests', () => {
       expect(result.filename).toBe('sample.html');
 
       const html = result.buffer.toString('utf-8');
-      expect(html).toContain('<h1>EasyConvert</h1>');
+      expect(html).toContain('<h1 id="easyconvert">EasyConvert</h1>');
       expect(html).toContain('<strong>Universal</strong>');
       expect(html).toContain('<code>lavender</code>');
     });

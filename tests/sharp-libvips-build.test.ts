@@ -8,7 +8,7 @@ import { parse } from 'yaml';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
- * The libvips build of the worker image (docs/policy-decisions.md, entry 81): the download check the upstream build runs
+ * The libvips build of the worker image (docs/policy-decisions.md, entry 84): the download check the upstream build runs
  * under, the cache key CI builds it by, how a speed comparison gives its base its own library, and the jobs that use the
  * build. The scripts run against files written here; the rules are written out from the entry, not read from the files.
  */

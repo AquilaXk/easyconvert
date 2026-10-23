@@ -29,7 +29,7 @@ describe('Dockerfile.worker base image', () => {
   it('builds every stage from that single pinned image, the qpdf job runner stage included, except the build of sharp libvips', () => {
     // Six stages: builder, sevenzip, libredwg, cadconvert, qpdfrunner (compiles the runner against the libc of the runtime image) and runner.
     // sharp's libvips is built in the upstream build container of its own release, pinned by digest, and only its library is copied
-    // out (docs/policy-decisions.md, entry 81); the library needs glibc 2.28, which the runtime image has.
+    // out (docs/policy-decisions.md, entry 84); the library needs glibc 2.28, which the runtime image has.
     const node = stages.filter((stage) => !stage.name.startsWith('sharplibvips'));
     expect(node.map((stage) => stage.name)).toEqual(['builder', 'sevenzip', 'libredwg', 'cadconvert', 'qpdfrunner', 'runner']);
     expect(node.map((stage) => stage.baseImage)).toEqual(Array(6).fill('${NODE_IMAGE}'));

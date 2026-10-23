@@ -1,5 +1,5 @@
 # Pins and environment of the sharp libvips build (the sharplibvips-build stage of Dockerfile.worker), sourced by the scripts
-# of this directory (docs/policy-decisions.md, entry 81).
+# of this directory (docs/policy-decisions.md, entry 84).
 #
 # The build is the upstream sharp-libvips release that the @img/sharp-libvips-linux-* package of package-lock.json is made
 # from, at that release's commit. A sharp upgrade that brings another release fails check-sharp.sh until these pins move

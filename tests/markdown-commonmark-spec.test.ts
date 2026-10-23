@@ -15,6 +15,8 @@ import { findDangerousConstructs, normalizeHtmlFragment } from './helpers/html-d
  * security-driven ways:
  *  - 72 examples expect raw HTML to be passed through, but the converter escapes it;
  *  - 4 examples are autolinks with schemes outside the http/https/mailto/tel allowlist, left as text.
+ * The renderer also gives each heading an `id` (the id of github-slug.ts, as markdown-it-anchor does), which CommonMark does not
+ * define; the ids are taken off before the comparison, and tests/markdown-heading-ids.test.ts checks them.
  * Every divergent example is listed below and must still fail to match the spec (so the list cannot
  * go stale) while satisfying the justification predicate for its category.
  */
@@ -45,8 +47,10 @@ const NON_ALLOWLISTED_AUTOLINK = new Set([596, 598, 599, 601]);
 // In the sections that matter most for documents, only examples that embed literal tags in text may diverge.
 const MAX_DIVERGENT_SHARE_IN_HEADLINE_SECTIONS = 0.1;
 
+const HEADING_ID = /(<h[1-6]) id="[^"]*"/g;
+
 function render(example: SpecExample): string {
-  return renderMarkdownFragment(example.markdown);
+  return renderMarkdownFragment(example.markdown).replace(HEADING_ID, '$1');
 }
 
 function matchesSpec(example: SpecExample): boolean {

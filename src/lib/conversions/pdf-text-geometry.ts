@@ -1199,6 +1199,8 @@ interface PdfJsPage {
   getOperatorList(): Promise<OperatorList>;
   getAnnotations(options: { intent: string }): Promise<Array<{ subtype?: unknown }>>;
   objs: { has(id: string): boolean; get(id: string): unknown };
+  /** Drops what pdf.js keeps for the page (its operator lists and `objs`); the document's `commonObjs` stay. */
+  cleanup(): boolean;
 }
 
 interface PdfJsDocument {
@@ -1355,7 +1357,12 @@ function textOfItems(items: unknown[]): string {
     .trim();
 }
 
-/** Reads the pages one after another: each page's text content and operator list are large, and their memory is released before the next. */
+/**
+ * Reads the pages one after another: each page's text content and operator list are large, and their memory is released before the next.
+ * pdf.js keeps the pixels it decoded for a page in `page.objs`, typed arrays outside the V8 heap and so outside the thread's heap limit,
+ * until `page.cleanup()` clears them (src/display/api.js, PDFPageProxy.#tryCleanup), as its viewer does when a page leaves the screen. A
+ * picture a later page shares is decoded again into the document's `commonObjs`, which cleanup leaves alone together with the fonts.
+ */
 async function readPages(
   pdfjs: PdfJs,
   doc: PdfJsDocument,
@@ -1396,6 +1403,7 @@ async function readPages(
     if (wantsGeometry(job, explicit, pageNumber, pageText)) {
       result.geometry.set(pageNumber, await readPage(pdfjs, page, content, pageNumber)); // NOSONAR S9382 sequential
     }
+    page.cleanup();
   }
 }
 
