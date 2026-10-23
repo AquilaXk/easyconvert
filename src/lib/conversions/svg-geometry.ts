@@ -3,9 +3,12 @@ import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
 import { BitmapGlyphs } from './svg-bitmap-glyph';
 import { createPageClipCheck } from './svg-page-clip';
+import { NEUTRAL_ONLY_PROPERTY_NAMES, SVG_NUMBER_PATTERN, assertNeutralPaintProperties, devicePattern, parseDashArray, type SvgPenMode } from './svg-pen';
 
 export { parseCssColor, resolvePaint } from './svg-paint';
 export type { RgbColor } from './svg-paint';
+
+export type { SvgPenMode } from './svg-pen';
 
 export type SvgFillRule = 'nonzero' | 'evenodd';
 
@@ -25,6 +28,8 @@ export interface SvgGeometryElement {
   strokeLinejoin: SvgLinejoin;
   /** SVG stroke-miterlimit (ratio of miter length to stroke width, at least 1). */
   strokeMiterlimit: number;
+  /** The dash pattern of the stroke in device units, dash and gap in turn from a dash; null for a solid line (always, unless the pens are read as `centre-line`). */
+  strokeDash: readonly number[] | null;
 }
 
 export interface ParsedSvgVectorDocument {
@@ -544,6 +549,8 @@ interface StyleContext {
   strokeLinecap: string;
   strokeLinejoin: string;
   strokeMiterlimit: string;
+  /** The `stroke-dasharray` in user units (an even number of lengths), null for a solid line; read only in `centre-line` mode. */
+  dashArray: readonly number[] | null;
   ctm: AffineMatrix;
 }
 
@@ -557,11 +564,12 @@ const INITIAL_STYLE: StyleContext = {
   strokeLinecap: 'butt',
   strokeLinejoin: 'miter',
   strokeMiterlimit: '4',
+  dashArray: null,
   ctm: IDENTITY_MATRIX,
 };
 
 /** Inherited presentation properties handled by the encoders, keyed by CSS name. */
-const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm'>> = {
+const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm' | 'dashArray'>> = {
   fill: 'fill',
   stroke: 'stroke',
   'stroke-width': 'strokeWidth',
@@ -572,45 +580,6 @@ const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm'>> = {
   'stroke-linejoin': 'strokeLinejoin',
   'stroke-miterlimit': 'strokeMiterlimit',
 };
-
-/**
- * Properties that change painted pixels but are only representable at their
- * neutral value; anything else throws (metafile brushes and pens are opaque,
- * solid and painted fill-then-stroke).
- */
-const NEUTRAL_ONLY_PROPERTIES: Record<string, (value: string) => boolean> = {
-  opacity: isOpaque,
-  'fill-opacity': isOpaque,
-  'stroke-opacity': isOpaque,
-  'stroke-dasharray': (v) => v === 'none',
-  'paint-order': (v) => v === 'normal' || v === 'fill' || v === 'fill stroke' || v === 'fill stroke markers',
-  'vector-effect': (v) => v === 'none',
-  'mix-blend-mode': (v) => v === 'normal',
-  'stroke-miterlimit': (v) => SVG_NUMBER_PATTERN.test(v) && Number(v) >= 1,
-  'stroke-linecap': (v) => SVG_LINECAPS.has(v),
-  'stroke-linejoin': (v) => SVG_LINEJOINS.has(v),
-};
-
-const SVG_LINECAPS = new Set(['butt', 'round', 'square']);
-const SVG_LINEJOINS = new Set(['miter', 'round', 'bevel']);
-
-function isOpaque(value: string): boolean {
-  const v = value.trim();
-  const isPercent = v.endsWith('%');
-  const body = isPercent ? v.slice(0, -1) : v;
-  if (!SVG_NUMBER_PATTERN.test(body)) return false;
-  return Number(body) >= (isPercent ? 100 : 1);
-}
-
-function assertNeutralPaintProperties(declared: Map<string, string>): void {
-  for (const [prop, isNeutral] of Object.entries(NEUTRAL_ONLY_PROPERTIES)) {
-    const raw = declared.get(prop);
-    if (raw === undefined || raw.trim().toLowerCase() === 'inherit') continue;
-    if (!isNeutral(raw.trim().toLowerCase().replace(/\s+/g, ' '))) {
-      throw new UnsupportedOptionError(`SVG ${prop} "${raw.trim()}" is not supported by metafile encoders.`);
-    }
-  }
-}
 
 /** Elements whose content is never rendered directly. */
 const NON_RENDERED_ELEMENTS = new Set([
@@ -816,7 +785,7 @@ function compareRules(a: CssRule, b: CssRule): number {
  */
 function declaredProperties(attrs: Map<string, string>, name = '', sheet: CssRule[] = []): Map<string, string> {
   const declared = new Map<string, string>();
-  for (const prop of [...Object.keys(INHERITED_PROPERTIES), ...Object.keys(NEUTRAL_ONLY_PROPERTIES), 'display']) {
+  for (const prop of [...Object.keys(INHERITED_PROPERTIES), ...NEUTRAL_ONLY_PROPERTY_NAMES, 'display']) {
     const v = attrs.get(prop);
     if (v !== undefined && v.trim() !== '') declared.set(prop, v.trim());
   }
@@ -839,12 +808,14 @@ function declaredProperties(attrs: Map<string, string>, name = '', sheet: CssRul
   return declared;
 }
 
-function deriveContext(parent: StyleContext, attrs: Map<string, string>, declared: Map<string, string>): StyleContext {
+function deriveContext(parent: StyleContext, attrs: Map<string, string>, declared: Map<string, string>, pens: SvgPenMode): StyleContext {
   const ctx: StyleContext = { ...parent };
   for (const [cssName, key] of Object.entries(INHERITED_PROPERTIES)) {
     const v = declared.get(cssName);
     if (v !== undefined && v !== 'inherit') ctx[key] = v;
   }
+  const dashArray = declared.get('stroke-dasharray');
+  if (pens === 'centre-line' && dashArray !== undefined && dashArray.toLowerCase() !== 'inherit') ctx.dashArray = parseDashArray(dashArray);
   const transform = attrs.get('transform');
   if (transform !== undefined && transform.trim() !== '') {
     ctx.ctm = multiplyMatrix(parent.ctm, parseSvgTransform(transform));
@@ -866,8 +837,6 @@ export function requireFinite(value: number, what: string): number {
   return value;
 }
 
-/** SVG/CSS <number> grammar: no hex, no Infinity/NaN, no empty strings. */
-const SVG_NUMBER_PATTERN = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/;
 const NUMBER_LIST_TOKEN_PATTERN = /[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
 const LIST_SEPARATOR_PATTERN = /^[\s,]+$/;
 
@@ -1227,6 +1196,7 @@ interface RenderState {
   shapeCache: Map<SvgNode, UserShape | null>;
   sheet: CssRule[];
   depth: number;
+  pens: SvgPenMode;
   /** Whether a `clip-path` value, on an element drawn under the matrix, is a clip that covers the page and clips nothing. */
   clipsNothing: (value: string, ctm: AffineMatrix) => boolean;
 }
@@ -1301,9 +1271,10 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
       return d;
     })
   );
-  requireFinite(strokeWidth * matrixLengthScale(ctx.ctm), `<${node.name}> device stroke width`);
+  const lengthScale = matrixLengthScale(ctx.ctm);
+  requireFinite(strokeWidth * lengthScale, `<${node.name}> device stroke width`);
   const stroke = strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null;
-  if (stroke && !isUniformScale(ctx.ctm)) {
+  if (stroke && state.pens === 'metafile' && !isUniformScale(ctx.ctm)) {
     throw new UnsupportedOptionError(
       `Stroked SVG <${node.name}> under a non-uniform scale or skew is not supported: a metafile pen has one width.`
     );
@@ -1315,10 +1286,11 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     fill: resolvePaint(ctx.fill, ctx.color, 'fill'),
     fillRule: ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero',
     stroke,
-    strokeWidth: strokeWidth * matrixLengthScale(ctx.ctm),
+    strokeWidth: strokeWidth * lengthScale,
     strokeLinecap: ctx.strokeLinecap.trim() as SvgLinecap,
     strokeLinejoin: ctx.strokeLinejoin.trim() as SvgLinejoin,
     strokeMiterlimit: parseSvgNumber(ctx.strokeMiterlimit, 'stroke-miterlimit'),
+    strokeDash: stroke && ctx.dashArray && lengthScale > 0 ? devicePattern(ctx.dashArray, lengthScale, ctx.strokeLinecap.trim() !== 'butt') : null,
   });
 }
 
@@ -1349,10 +1321,10 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
     throw new CadGeometryUnavailableError(`SVG expands to more than ${MAX_RENDERED_NODES} rendered elements.`);
   }
   const declared = declaredProperties(node.attrs, node.name, state.sheet);
-  assertNeutralPaintProperties(declared);
+  assertNeutralPaintProperties(declared, state.pens);
   assertValidPaintDeclarations(declared);
   if (declared.get('display') === 'none') return;
-  const ctx = deriveContext(parent, node.attrs, declared);
+  const ctx = deriveContext(parent, node.attrs, declared, state.pens);
   if (state.bitmapGlyphs.take(node, state.ids, parent.ctm, ctx.ctm)) return;
   assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm));
   if (kind === 'shape') {
@@ -1368,9 +1340,10 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
  * Parses SVG XML into geometry elements with flattened polylines in device (viewport) coordinates, honouring the style cascade,
  * inheritance from container elements and transforms. Rendered content that cannot be represented (text, images, clipping, ...)
  * throws instead of being dropped; a clip that is one rectangle covering the whole page clips nothing and is the one exception,
- * and the characters of a bitmap font go to `bitmapGlyphs` when it sets them aside (svg-bitmap-glyph.ts).
+ * and the characters of a bitmap font go to `bitmapGlyphs` when it sets them aside (svg-bitmap-glyph.ts). `pens` says what
+ * the target does with the pen attributes it cannot paint (svg-pen.ts): by default they are refused.
  */
-export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new BitmapGlyphs()): ParsedSvgVectorDocument {
+export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new BitmapGlyphs(), pens: SvgPenMode = 'metafile'): ParsedSvgVectorDocument {
   if (svgContent.length > MAX_SVG_INPUT_CHARS) {
     throw new CadGeometryUnavailableError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
   }
@@ -1381,14 +1354,14 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
   const viewport = resolveViewport(root.attrs);
   const sheet = extractStylesheets(svgContent);
   const declared = declaredProperties(root.attrs, root.name, sheet);
-  assertNeutralPaintProperties(declared);
+  assertNeutralPaintProperties(declared, pens);
   assertValidPaintDeclarations(declared);
   assertNoUnsupportedReferences(root.attrs);
-  const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
+  const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared, pens);
   const ids = new Map<string, SvgNode>();
   const vertices = new VertexBudget();
   const clipsNothing = createPageClipCheck(ids, viewport, (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null);
-  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, clipsNothing };
+  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, clipsNothing };
   indexIds(root, state.ids);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };

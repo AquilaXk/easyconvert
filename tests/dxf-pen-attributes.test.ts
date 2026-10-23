@@ -1,7 +1,13 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { defaultResolver, EZDXF_PSEUDO_TOOL } from '../bench/tools';
 import { MAX_DASH_VALUES } from '../src/lib/conversions/svg-pen';
 import { encodeSvgPageToDxf, MAX_DASH_LINETYPES } from '../src/lib/conversions/vector-dxf';
 import { readDxf, type DxfDocument } from './helpers/dxf-reader';
+import { skipUnless } from './helpers/strict-skip';
 
 /**
  * Pen attributes the DXF writer cannot hold. It writes the centre line of every stroke as LINE and POLYLINE entities, and a
@@ -34,6 +40,28 @@ const refusal = (body: string): string => {
   }
 };
 
+const PYTHON_WITH_EZDXF = defaultResolver()(EZDXF_PSEUDO_TOOL);
+
+/** What ezdxf reads of a file, one line of JSON: the audit's errors, and for each entity its linetype and that linetype's compiled pattern (dash, gap, ...; empty for a solid line). */
+const EZDXF_READ = `
+import json, sys, ezdxf
+document = ezdxf.readfile(sys.argv[1])
+auditor = document.audit()
+entities = [[e.dxftype(), e.dxf.linetype, list(document.linetypes.get(e.dxf.linetype).pattern_tags.compile()) if e.dxf.linetype in document.linetypes else None] for e in document.modelspace()]
+print(json.dumps({"errors": len(auditor.errors), "entities": entities}))
+`;
+
+function ezdxfRead(dxf: string): { errors: number; entities: [string, string, number[] | null][] } {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dxf-pen-'));
+  try {
+    const file = path.join(directory, 'page.dxf');
+    fs.writeFileSync(file, dxf);
+    return JSON.parse(execFileSync(PYTHON_WITH_EZDXF as string, ['-I', '-c', EZDXF_READ, file], { encoding: 'utf-8' }));
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 /** The linetypes the page defines besides CONTINUOUS, which every writer output holds. */
 const dashTypes = (dxf: DxfDocument) => dxf.linetypes.filter((type) => type.name !== 'CONTINUOUS');
 
@@ -47,6 +75,17 @@ describe('stroke-dasharray', () => {
     expect(dxf.entities).toHaveLength(1);
     expect(dxf.entities[0].type).toBe('LINE');
     expect(dxf.entities[0].linetype).toBe(type.name);
+  });
+
+  it.skipIf(skipUnless('python3 and ezdxf', PYTHON_WITH_EZDXF !== null))('is read back by ezdxf as the same dashes, and audits without errors', () => {
+    const body = `${stroked('stroke-dasharray="6 2"')}${stroked('stroke-dasharray="4 2 1 2"', 'M 10 20 L 60 20 L 60 50 Z')}${stroked('', 'M 10 60 L 110 60')}`;
+    const read = ezdxfRead(encodeSvgPageToDxf(Buffer.from(page(body))).toString('utf-8'));
+    expect(read.errors).toBe(0);
+    expect(read.entities.map(([type, , pattern]) => [type, pattern])).toEqual([
+      ['LINE', [6, 2]],
+      ['POLYLINE', [4, 2, 1, 2]],
+      ['LINE', []],
+    ]);
   });
 
   it('keeps the solid line type for strokes without a pattern', () => {
