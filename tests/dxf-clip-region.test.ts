@@ -160,6 +160,17 @@ describe('clips inside one another', () => {
     expect(refusal(nested(outer, inner, stroke('M 40 10 L 90 10')))).toMatch(/clip-path "url\(#b\)" is not supported: .*reaches 10 pixels/);
   });
 
+  it('hold to their intersection: under two clips nothing may be outside either, since the distance to an intersection has no bound', () => {
+    const below = 'M 0 0 L 200 0 L 200 50 L 0 50 Z';
+    const above = 'M 0 50.8 L 200 50.8 L 200 100 L 0 100 Z';
+    const between = stroke('M 10 50.4 L 190 50.4');
+    expect(dxfOf(svgOf(`<defs>${pathClip(below)}</defs><g clip-path="url(#c)">${between}</g>`)).entities, 'one clip').toHaveLength(1);
+    expect(refusal(nested(below, above, between))).toMatch(/clip-path "url\(#a\)" is not supported: a drawn path reaches 0\.4 pixels past it, and a path under more than one clip must be inside each/);
+    const outer = 'M 0 0 L 100 0 L 100 100 L 0 100 Z';
+    const inner = 'M 50 0 L 200 0 L 200 100 L 50 100 Z';
+    expect(refusal(nested(outer, inner, stroke('M 60 10 L 100.5 10')))).toMatch(/url\(#a\)" is not supported: a drawn path reaches 0\.5 pixels/);
+  });
+
   it('end with their element: what is drawn after the group is not clipped', () => {
     const svg = svgOf(`<defs>${pathClip(BOX)}</defs><g clip-path="url(#c)">${stroke('M 60 30 L 140 30')}</g>${stroke('M 10 90 L 190 90')}`);
     expect(dxfOf(svg).entities).toHaveLength(2);
