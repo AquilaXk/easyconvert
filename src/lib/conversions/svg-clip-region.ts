@@ -423,11 +423,11 @@ export class ActiveClips {
     for (const shape of clip.children) {
       const isStraight = CLIP_SHAPE_IS_STRAIGHT.get(shape.name);
       if (isStraight === undefined) throw clipRefusal(value, `it holds <${excerpt(shape.name)}>, which is not a shape this reader measures`);
-      if (!isStraight(shape.attrs)) throw clipRefusal(value, `its <${shape.name}> draws a curve, which is measured only on its flattened outline`);
       const declared = declaredOf(shape);
       if (hasClipOfItsOwn(shape, declared)) throw clipRefusal(value, 'a shape of the <clipPath> has a clip-path of its own');
       const style = this.inheritedOf(shape);
       if (declared.get('display') === 'none' || style.hidden) continue;
+      if (!isStraight(shape.attrs)) throw clipRefusal(value, `its <${shape.name}> draws a curve, which is measured only on its flattened outline`);
       const outline = outlineOf(shape);
       if (outline === null) continue;
       const toClipSpace = multiply(clipTransform, transformOf(shape.attrs.get('transform') ?? ''));
