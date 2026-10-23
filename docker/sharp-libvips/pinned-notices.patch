@@ -1,0 +1,11 @@
+--- a/build/posix.sh
++++ b/build/posix.sh
+@@ -481,7 +481,7 @@
+ }" >versions.json
+ 
+ # Add third-party notices
+-$CURL -O https://raw.githubusercontent.com/lovell/sharp-libvips/main/THIRD-PARTY-NOTICES.md
++cp ${PACKAGE}/THIRD-PARTY-NOTICES.md .
+ 
+ # Create the tarball
+ ls -al lib
