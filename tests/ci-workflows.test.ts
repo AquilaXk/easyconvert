@@ -146,8 +146,10 @@ describe('the pull request workflow', () => {
   });
 
   it('gives the heavy jobs a dependency on the change filter and gates them on its verdict', () => {
+    for (const name of ['checks', 'integration']) expect(ci.jobs[name].needs, name).toBe('changes');
+    // The suites that convert pictures also wait for the libvips build of the worker image.
+    for (const name of ['tests', 'conformance']) expect(ci.jobs[name].needs, name).toEqual(['changes', 'sharp-libvips']);
     for (const name of ['checks', 'tests', 'conformance', 'integration']) {
-      expect(ci.jobs[name].needs, name).toBe('changes');
       expect(ci.jobs[name].if, name).toBe("needs.changes.outputs.code == 'true'");
     }
   });
@@ -161,7 +163,8 @@ describe('the pull request workflow', () => {
   it('fetches the real-world test files, cached by manifest digest, before any step that runs vitest', () => {
     const prefetch = 'npm run prefetch:test-samples';
     const runsVitest = (step: Step): boolean => (step.run ?? '').includes('vitest run');
-    const jobsRunningVitest = Object.entries(ci.jobs).filter(([, job]) => job.steps.some(runsVitest));
+    // A job that calls a workflow has no steps of its own.
+    const jobsRunningVitest = Object.entries(ci.jobs).filter(([, job]) => (job.steps ?? []).some(runsVitest));
     expect(jobsRunningVitest.map(([name]) => name).sort()).toEqual(['conformance', 'integration', 'tests']);
     for (const [name, job] of jobsRunningVitest) {
       const prefetchAt = job.steps.findIndex((step) => step.run === prefetch);
@@ -216,7 +219,7 @@ describe('the nightly workflow', () => {
 
   it('opens or updates one nightly-regression issue when a job fails, through the workflow it shares with the regression corpus run', () => {
     const report = nightly.jobs.report;
-    expect([...(report.needs as string[])].sort()).toEqual(['bench', 'bench-parity-quality', 'bench-parity-speed', 'licenses', 'perf', 'realworld', 'realworld-gate']);
+    expect([...(report.needs as string[])].sort()).toEqual(['bench', 'bench-parity-quality', 'bench-parity-speed', 'licenses', 'perf', 'realworld', 'realworld-gate', 'sharp-libvips']);
     expect(report.if).toBe("always() && contains(needs.*.result, 'failure')");
     expect(report.permissions).toEqual({ actions: 'read', contents: 'read', issues: 'write' });
     expect(report.uses).toBe('./.github/workflows/report-failure.yml');
@@ -485,12 +488,12 @@ describe('the verify gate of ci.yml', () => {
   const bash = spawnSync('bash', ['--version'], { encoding: 'utf-8' });
   const script = stepRun(ci, 'verify', 'Require every job to pass, or to be skipped for a documentation-only change');
 
-  type JobName = 'changes' | 'checks' | 'tests' | 'conformance' | 'integration' | 'container';
+  type JobName = 'changes' | 'sharp-libvips' | 'checks' | 'tests' | 'conformance' | 'integration' | 'container';
   /** A pull request that changes no conversion family: the parity jobs are skipped (quality) or say there is nothing to measure (speed). */
   const NO_BENCH = { EVENT_NAME: 'pull_request', BENCH_CHANGED: 'false', HAS_AUTOMERGE_LABEL: 'false', PARITY_QUALITY_RESULT: 'skipped', PARITY_SPEED_RESULT: 'success' };
 
   function gate(code: string, results: Partial<Record<JobName, string>>, parity: Record<string, string> = NO_BENCH): number {
-    const all = { changes: 'success', checks: 'success', tests: 'success', conformance: 'success', integration: 'success', container: 'success', ...results };
+    const all = { changes: 'success', 'sharp-libvips': 'success', checks: 'success', tests: 'success', conformance: 'success', integration: 'success', container: 'success', ...results };
     const result = spawnSync('bash', ['-c', script], {
       encoding: 'utf-8',
       env: {
@@ -498,6 +501,7 @@ describe('the verify gate of ci.yml', () => {
         ...parity,
         CODE_CHANGED: code,
         CHANGES_RESULT: all.changes,
+        SHARP_LIBVIPS_RESULT: all['sharp-libvips'],
         CHECKS_RESULT: all.checks,
         TESTS_RESULT: all.tests,
         CONFORMANCE_RESULT: all.conformance,
@@ -529,11 +533,12 @@ describe('the verify gate of ci.yml', () => {
 
   it.skipIf(skipUnless('bash', bash.status === 0))('fails on any failed or cancelled job', () => {
     for (const result of ['failure', 'cancelled']) {
-      for (const job of ['checks', 'tests', 'conformance', 'integration', 'container', 'changes'] as const) {
+      for (const job of ['checks', 'tests', 'conformance', 'integration', 'container', 'changes', 'sharp-libvips'] as const) {
         expect(gate('true', { [job]: result }), `${job} ${result}`).toBe(1);
       }
     }
     expect(gate('false', { ...skippedHeavy, container: 'failure' })).toBe(1);
+    expect(gate('false', { ...skippedHeavy, 'sharp-libvips': 'failure' })).toBe(1);
   });
 
   it.skipIf(skipUnless('bash', bash.status === 0))('fails when the change filter did not produce a verdict', () => {

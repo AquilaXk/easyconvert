@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/(cad-convert|qpdf-runner)/",
+  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/(cad-convert|qpdf-runner)/|^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$",
   "families": {
     "image": { "bench": "image" },
     "video": { "bench": "video" },
@@ -137,6 +137,10 @@
       "match": "^src/lib/security/process-sandbox\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/"
     },
     {
+      "families": ["*"],
+      "match": "^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$"
+    },
+    {
       "families": ["image", "vector"],
       "match": "^src/lib/security/svg-sanitizer\\.ts$"
     },
@@ -190,7 +194,7 @@
     },
     {
       "families": ["document"],
-      "match": "^src/lib/conversions/(document|document-language|document-targets|docx-[^/]*|epub-reader|office|markdown|markdown-pdf|html-[^/]*|package-access|zip-entry-reader|source-model|text-input|text-wrap|css-references|ctl|symbol-font-map|public-address|hwp[^/]*|cfbf-writer|xml-tree|native-engine-pairs|ooxml-variants|output-check)\\.ts$|^src/lib/conversions/(office|document-model)/|^src/worker/(libreoffice-pool|office-suite-route)\\.ts$"
+      "match": "^src/lib/conversions/(document|document-language|document-targets|docx-[^/]*|epub-reader|office|markdown|markdown-pdf|github-slug|html-[^/]*|package-access|zip-entry-reader|source-model|text-input|text-wrap|css-references|ctl|symbol-font-map|public-address|hwp[^/]*|cfbf-writer|xml-tree|native-engine-pairs|ooxml-variants|output-check)\\.ts$|^src/lib/conversions/(office|document-model)/|^src/worker/(libreoffice-pool|office-suite-route)\\.ts$"
     },
     {
       "families": ["document"],

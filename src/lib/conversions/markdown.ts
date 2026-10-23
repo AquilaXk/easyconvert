@@ -1,6 +1,7 @@
 import MarkdownIt from 'markdown-it';
 import type Token from 'markdown-it/lib/token.mjs';
 import { ConversionFailedError } from '../types';
+import { HeadingSlugs } from './github-slug';
 
 /**
  * Markdown to HTML rendering.
@@ -89,15 +90,17 @@ function classifyUrl(url: string, kind: UrlKind): boolean {
   return LINK_SCHEMES.has(scheme);
 }
 
+const HEADING_ATTRIBUTES: ReadonlySet<string> = new Set(['id']);
+
 /** Attribute allowlist per element; elements not listed here must not appear in the token stream. */
 const ALLOWED_ATTRIBUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['p', new Set<string>()],
-  ['h1', new Set<string>()],
-  ['h2', new Set<string>()],
-  ['h3', new Set<string>()],
-  ['h4', new Set<string>()],
-  ['h5', new Set<string>()],
-  ['h6', new Set<string>()],
+  ['h1', HEADING_ATTRIBUTES],
+  ['h2', HEADING_ATTRIBUTES],
+  ['h3', HEADING_ATTRIBUTES],
+  ['h4', HEADING_ATTRIBUTES],
+  ['h5', HEADING_ATTRIBUTES],
+  ['h6', HEADING_ATTRIBUTES],
   ['blockquote', new Set<string>()],
   ['ul', new Set<string>()],
   ['ol', new Set(['start'])],
@@ -219,6 +222,23 @@ export function applyTokenPolicy(tokens: Token[]): void {
   walkPolicy(tokens, { tokenCount: 0, attributeChars: 0, urlVerdicts: new Map() });
 }
 
+const HEADING_TITLE_TOKENS: ReadonlySet<string> = new Set(['text', 'code_inline']);
+
+/**
+ * Gives each heading the id a Markdown view on a code host gives it (see github-slug.ts). The title is read as
+ * markdown-it-anchor's `getTokensText` reads it, from the `text` and `code_inline` tokens of the heading's inline content, and
+ * the ids are numbered in document order. A heading whose slug is empty gets no id of its own, and the next one is numbered.
+ */
+function addHeadingIds(tokens: Token[]): void {
+  const slugs = new HeadingSlugs();
+  tokens.forEach((token, index) => {
+    if (token.type !== 'heading_open') return;
+    const title = (tokens[index + 1]?.children ?? []).filter((child) => HEADING_TITLE_TOKENS.has(child.type)).map((child) => child.content).join('');
+    const slug = slugs.slug(title);
+    if (slug !== '') token.attrSet('id', slug);
+  });
+}
+
 function createParser(): MarkdownIt {
   const parser = new MarkdownIt('commonmark', {
     html: false,
@@ -241,6 +261,10 @@ function createParser(): MarkdownIt {
       );
     }
     return false;
+  });
+  parser.core.ruler.push('easyconvert_heading_ids', (state) => {
+    addHeadingIds(state.tokens);
+    return true;
   });
   parser.core.ruler.push('easyconvert_token_policy', (state) => {
     applyTokenPolicy(state.tokens);

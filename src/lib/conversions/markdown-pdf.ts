@@ -1,3 +1,5 @@
+import { HeadingSlugs } from './github-slug';
+
 /**
  * Markdown to HTML for the PDF routes (in-process renderer and LibreOffice staging).
  *
@@ -5,7 +7,8 @@
  * are recognised once and each is emitted as escaped HTML, so no pattern ever runs over generated
  * markup. Raw HTML and text such as `List<String>` or `a<b` stay literal. Links keep only http,
  * https and mailto targets, and images only embedded PNG/JPEG data URIs (as on the HTML route);
- * anything else keeps its text without a link or image, so nothing is fetched or opened.
+ * anything else keeps its text without a link or image, so nothing is fetched or opened. A link to `#id` stays, and each
+ * heading carries the id GitHub gives it (see github-slug.ts), so the link goes to the heading as it does in a Markdown view.
  * Block parsing is line by line and every scan is bounded, so the work is linear in the input.
  */
 
@@ -17,8 +20,8 @@ const LIST_ITEM = /^\s{0,3}([-*+]|\d{1,9}[.)])\s+(.*)$/;
 const ORDERED_MARKER = /^\d/;
 const DECIMAL_RADIX = 10;
 const TABLE_DELIMITER_CELL = /^:?-+:?$/;
-/** Link targets kept: web and mail addresses. */
-const LINK_TARGET = /^(?:https?:|mailto:)/i;
+/** Link targets kept: web and mail addresses, and a place in the document (`#id`). */
+const LINK_TARGET = /^(?:https?:|mailto:|#(?=.))/i;
 /** Image sources kept: embedded PNG or JPEG data. */
 const IMAGE_SOURCE = /^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/i;
 /** Asterisk emphasis that opens and closes next to non-space characters; `2 * 3 * 4` stays literal. */
@@ -120,6 +123,13 @@ function headingText(trimmed: string, level: number): string {
   return text;
 }
 
+const HTML_TAG = /<[^>]*>/g;
+
+/** The text of rendered inline HTML, as a browser's `textContent` reads it: the tags gone, the four escapes this renderer writes undone. */
+function textContentOf(html: string): string {
+  return html.replace(HTML_TAG, '').replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
 function tableCells(line: string): string[] {
   let row = line.trim();
   if (row.startsWith('|')) row = row.slice(1);
@@ -147,6 +157,7 @@ export function markdownToSafeHtml(markdown: string, title: string): string {
   const out: string[] = [];
   let paragraph: string[] = [];
   let list: { ordered: boolean; start: number; items: string[] } | null = null;
+  const headingSlugs = new HeadingSlugs();
 
   const flushParagraph = (): void => {
     if (paragraph.length > 0) out.push(`<p>${renderInline(paragraph.join('\n'))}</p>`);
@@ -182,7 +193,9 @@ export function markdownToSafeHtml(markdown: string, title: string): string {
     if (level > 0) {
       flushParagraph();
       flushList();
-      out.push(`<h${level}>${renderInline(headingText(trimmed, level))}</h${level}>`);
+      const heading = renderInline(headingText(trimmed, level));
+      const slug = headingSlugs.slug(textContentOf(heading));
+      out.push(`<h${level}${slug === '' ? '' : ` id="${escapeHtml(slug)}"`}>${heading}</h${level}>`);
       continue;
     }
     if (trimmed.startsWith('|') && isTableDelimiter(lines[i + 1])) {

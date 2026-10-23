@@ -173,9 +173,9 @@ export const runImage: FamilyRunner = async (ctx) => {
 
       const oursQuality = (quality: number): number =>
         ctx.injection === 'webp-quality' && target === 'webp' ? Math.round(quality * INJECTED_WEBP_QUALITY_SHARE) : quality;
-      const oursEncode = async (quality: number): Promise<Buffer> => {
+      const oursEncode = async (quality: number, source: Buffer = input): Promise<Buffer> => {
         try {
-          const out = await convertWithProject(input, sample.format, target, { quality: oursQuality(quality) }, sample.file);
+          const out = await convertWithProject(source, sample.format, target, { quality: oursQuality(quality) }, sample.file);
           if (ctx.injection !== 'webp-reencode' || target !== 'webp') return out.buffer;
           return (await convertWithProject(out.buffer, 'webp', 'webp', { quality }, sample.file)).buffer;
         } catch (error) {
@@ -262,16 +262,25 @@ export const runImage: FamilyRunner = async (ctx) => {
       }
 
       if (ctx.speed && (sample.remote === null || PUBLIC_SPEED_SAMPLES.image.includes(sample.file))) {
+        /**
+         * Both sides of a timing read the same bytes. The reference cannot be given a PNG source as it is (it would apply the
+         * file's gAMA chunk, see bench/png-metadata.ts), so ours is timed on the file the reference reads, the decoded pixels with
+         * the metadata blocks: the original can be larger and slower to decode (wm-alpha-graph.png is 58,819 bytes, that file
+         * 44,013). A JPEG source needs no such file, so both read the original; its decoded PNG is only what the quality rows score
+         * against. The quality rows still encode ours from the original.
+         */
+        const timedInput = sample.format === 'png' ? referenceInput : sourcePath;
+        const timedBytes = timedInput === sourcePath ? input : fs.readFileSync(timedInput);
         const timingOut = path.join(ctx.work, `timing-${path.basename(sourcePng)}.${target}`);
         const timing = await ctx.time(
           speedRowId('image', caseName),
           async () => {
-            await oursEncode(HEADLINE_QUALITY);
+            await oursEncode(HEADLINE_QUALITY, timedBytes);
           },
-          () => referenceEncode(target, plan.paths[refTool], referenceInput, HEADLINE_QUALITY, timingOut, sample.bitDepth, grey),
+          () => referenceEncode(target, plan.paths[refTool], timedInput, HEADLINE_QUALITY, timingOut, sample.bitDepth, grey),
           'light'
         );
-        rows.push(throughputRow('image', caseName, input.length, timing, tool));
+        rows.push(throughputRow('image', caseName, timedBytes.length, timing, tool));
       }
     }
   }

@@ -218,7 +218,7 @@ jobs:
   # The unit and integration suites, in shards of about equal recorded duration.
   tests:
     name: tests (${{ matrix.shard }}/${{ strategy.job-total }})
-    needs: changes
+    needs: [changes, sharp-libvips]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -252,6 +252,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      # The library the worker image ships (Dockerfile.worker, stage 4c), not the copy of the npm package.
+      - name: Use the libvips of the worker image
+        uses: ./.github/actions/sharp-libvips
 
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
@@ -294,7 +298,7 @@ jobs:
 
   conformance:
     name: conformance (${{ matrix.part }}/${{ strategy.job-total }})
-    needs: changes
+    needs: [changes, sharp-libvips]
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -328,6 +332,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      # The library the worker image ships (Dockerfile.worker, stage 4c), not the copy of the npm package.
+      - name: Use the libvips of the worker image
+        uses: ./.github/actions/sharp-libvips
 
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
@@ -471,6 +479,7 @@ jobs:
   # read it anonymously, which works for pull requests from forks too once the package is public. A cache that is not there
   # (the first run, a private package) is a build without cache, not a failure.
   container:
+    needs: sharp-libvips
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -550,12 +559,33 @@ jobs:
             echo "layer cache: none at $ref (not written yet, or the package is private): building without it"
           fi
 
+      # The sharplibvips stage is the build the sharp-libvips job made from the same stage and keeps in the cache, so the image
+      # is not built a second time for it; the runtime stage copies and checks it as in any other build.
+      - name: Compute the cache key of the libvips build
+        id: libvips-key
+        if: steps.changes.outputs.relevant == 'true'
+        run: echo "key=$(bash docker/sharp-libvips/cache-key.sh .)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the libvips build
+        if: steps.changes.outputs.relevant == 'true'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/sharp-libvips
+          key: ${{ steps.libvips-key.outputs.key }}
+          fail-on-cache-miss: true
+
+      # A cache entry is trusted by its key, so the build context is checked before the image build mounts it.
+      - name: Check the libvips build
+        if: steps.changes.outputs.relevant == 'true'
+        run: bash docker/sharp-libvips/check-build-output.sh "$RUNNER_TEMP/sharp-libvips"
+
       - name: Build the worker image
         if: steps.changes.outputs.relevant == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: Dockerfile.worker
+          build-contexts: sharplibvips=${{ runner.temp }}/sharp-libvips
           load: true
           tags: ${{ env.WORKER_IMAGE }}
           cache-from: ${{ steps.layer-cache.outputs.found == 'true' && format('type=registry,ref={0}', steps.layer-cache.outputs.ref) || '' }}
@@ -616,7 +646,7 @@ jobs:
   # nothing else (scripts/ci-parity-policy.mjs).
   parity-quality:
     name: parity quality
-    needs: changes
+    needs: [changes, sharp-libvips]
     if: needs.changes.outputs.bench_changed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -652,6 +682,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      # The library the worker image ships (Dockerfile.worker, stage 4c), not the copy of the npm package.
+      - name: Use the libvips of the worker image
+        uses: ./.github/actions/sharp-libvips
 
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
@@ -745,7 +779,7 @@ jobs:
   # the extra pairs. A change with nothing to measure runs one shard that says so.
   parity-speed:
     name: parity speed (${{ matrix.family }})
-    needs: changes
+    needs: [changes, sharp-libvips]
     if: >-
       github.event_name == 'pull_request' &&
       (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))
@@ -853,16 +887,14 @@ jobs:
           path: ab-base/node_modules
           key: ab-base-modules-${{ runner.os }}-${{ hashFiles('ab-base/package-lock.json') }}
 
-      # The base runs on its own dependencies, so a change of a dependency shows in the comparison. An identical lock file
-      # shares this tree's node_modules.
+      # The base runs on its own dependencies and its own libvips, so a change of either shows in the comparison
+      # (scripts/ab-base-dependencies.sh says when it shares this tree's node_modules and when it gets a copy or its own install).
       - name: Install the dependencies of the base
+        id: base-install
         if: env.BENCH_CHANGED == 'true'
-        run: |
-          if cmp -s package-lock.json ab-base/package-lock.json; then
-            ln -s "$PWD/node_modules" ab-base/node_modules
-          elif [ "${{ steps.base-modules.outputs.cache-hit }}" != "true" ]; then
-            (cd ab-base && npm ci --ignore-scripts --no-audit --no-fund)
-          fi
+        env:
+          RESTORED: ${{ steps.base-modules.outputs.cache-hit == 'true' }}
+        run: bash scripts/ab-base-dependencies.sh "$RESTORED" >> "$GITHUB_OUTPUT"
 
       - name: Save the dependencies of the base
         if: env.BENCH_CHANGED == 'true' && steps.base-modules.outputs.cache-hit != 'true' && hashFiles('ab-base/package-lock.json') != hashFiles('package-lock.json')
@@ -870,6 +902,17 @@ jobs:
         with:
           path: ab-base/node_modules
           key: ab-base-modules-${{ runner.os }}-${{ hashFiles('ab-base/package-lock.json') }}
+
+      # Each side is timed with the library its worker image ships: after the save above, so the cache keeps the npm package's.
+      - name: Use the libvips of the worker image
+        if: env.BENCH_CHANGED == 'true'
+        uses: ./.github/actions/sharp-libvips
+
+      - name: Use the libvips of the base's worker image
+        if: env.BENCH_CHANGED == 'true' && steps.base-install.outputs.own-libvips == 'true'
+        uses: ./.github/actions/sharp-libvips
+        with:
+          root: ab-base
 
       # The base is timed the same way. A base from before the bundle existed has no such script and stays on its source.
       - name: Build the PDF text worker bundle of the base
@@ -923,13 +966,18 @@ jobs:
               scope: `speed-${process.env.BENCH_FAMILIES}`,
             });
 
+  # The libvips the worker image ships, built when its cache key is not in the cache (.github/workflows/sharp-libvips.yml). It
+  # runs on every event: a key in the cache costs a lookup, and the jobs that convert pictures wait for it.
+  sharp-libvips:
+    uses: ./.github/workflows/sharp-libvips.yml
+
   # The required check. The heavy jobs may be skipped only when `changes` found documentation-only edits; any
   # other skipped, cancelled or failed job fails the gate. The parity jobs follow the same rule with their own
   # verdict: quality runs when a conversion family changed, and speed runs when nothing needs measuring or the
   # `automerge` label is on; a skipped speed job with a conversion family changed is not yet satisfied.
   verify:
     if: always()
-    needs: [changes, checks, tests, conformance, integration, container, parity-quality, parity-speed]
+    needs: [changes, sharp-libvips, checks, tests, conformance, integration, container, parity-quality, parity-speed]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -940,6 +988,7 @@ jobs:
           BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
           HAS_AUTOMERGE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'automerge') }}
           CHANGES_RESULT: ${{ needs.changes.result }}
+          SHARP_LIBVIPS_RESULT: ${{ needs.sharp-libvips.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           TESTS_RESULT: ${{ needs.tests.result }}
           CONFORMANCE_RESULT: ${{ needs.conformance.result }}
@@ -949,9 +998,9 @@ jobs:
           PARITY_SPEED_RESULT: ${{ needs.parity-speed.result }}
         run: |
           echo "code changed: $CODE_CHANGED, conversion family changed: $BENCH_CHANGED, automerge label: $HAS_AUTOMERGE_LABEL"
-          echo "changes: $CHANGES_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT, parity speed: $PARITY_SPEED_RESULT"
+          echo "changes: $CHANGES_RESULT, sharp-libvips: $SHARP_LIBVIPS_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT, parity speed: $PARITY_SPEED_RESULT"
           failed=0
-          if [ "$CHANGES_RESULT" != success ] || [ "$CONTAINER_RESULT" != success ]; then failed=1; fi
+          if [ "$CHANGES_RESULT" != success ] || [ "$SHARP_LIBVIPS_RESULT" != success ] || [ "$CONTAINER_RESULT" != success ]; then failed=1; fi
           # The expected result of the heavy jobs follows from the filter's verdict alone.
           case "$CODE_CHANGED" in
             true) expected=success ;;
