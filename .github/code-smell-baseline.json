@@ -758,7 +758,7 @@
     "file": "src/lib/conversions/delimited-bytes.ts",
     "rule": "max-depth",
     "function": "readCells",
-    "count": 2,
+    "count": 1,
     "maxValue": 6
   },
   {
@@ -1787,13 +1787,6 @@
     "function": "decodeEncodedValues",
     "count": 1,
     "maxValue": 7
-  },
-  {
-    "file": "src/lib/conversions/parquet-text-writer.ts",
-    "rule": "complexity",
-    "function": "encodeTextColumnChunk",
-    "count": 1,
-    "maxValue": 49
   },
   {
     "file": "src/lib/conversions/parquet-text-writer.ts",

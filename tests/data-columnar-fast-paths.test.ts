@@ -13,6 +13,7 @@ import { ChunkedOutput } from '../src/lib/conversions/chunked-output';
 import { parseDelimitedRecords } from '../src/lib/conversions/delimited-detect';
 import { convertData } from '../src/lib/conversions/data';
 import { decodeParquet, encodeParquet, type ParquetWriteOptions } from '../src/lib/conversions/parquet';
+import { PARQUET_MAX_COLUMNS, PARQUET_MAX_ROWS } from '../src/lib/conversions/parquet-format';
 import { parseJsonLossless, stringifyJsonLossless } from '../src/lib/conversions/data-json';
 import { DataEncodingError, DataLimitExceededError, DataParseError, DataRepresentationError } from '../src/lib/types';
 
@@ -440,6 +441,88 @@ describe('JSON Lines to delimited text, direct route', () => {
   }
 });
 
+
+describe('cell scan across word boundaries', () => {
+  /** Characters the four-byte scan has to tell apart: the ones just below and above its threshold, a delimiter look-alike, and multi-byte text. */
+  const ALPHABET = ['a', 'Z', '7', ' ', '!', '#', '~', '\u007f', '\u0001', '\u001f', 'é', '李', '😀', '.', "'", '|'];
+
+  function randomCell(random: () => number, longest: number): string {
+    const length = Math.floor(random() * (longest + 1));
+    let cell = '';
+    for (let i = 0; i < length; i++) cell += ALPHABET[Math.floor(random() * ALPHABET.length)];
+    return cell;
+  }
+
+  function randomTable(seed: number, columns: number, rows: number, longest: number): string[][] {
+    const random = mulberry32(seed);
+    return [
+      Array.from({ length: columns }, (_, c) => `h${c}`),
+      ...Array.from({ length: rows }, () => Array.from({ length: columns }, () => randomCell(random, longest))),
+    ];
+  }
+
+  for (const delimiter of [',', ';', '\t']) {
+    for (const newline of ['\n', '\r\n']) {
+      for (const trailing of [true, false]) {
+        const name = `delimiter ${JSON.stringify(delimiter)}, ${JSON.stringify(newline)} line breaks, ${trailing ? 'with' : 'without'} a final line break`;
+        it(`reads cells of every length up to 14 bytes as the general reader does: ${name}`, () => {
+          for (let seed = 1; seed <= 12; seed++) {
+            const rows = randomTable(seed * 31, 2 + (seed % 5), 40, 14);
+            const text = csvText(rows, { delimiter, newline, trailing });
+            const actual = direct(text, {}, delimiter);
+            expect(actual, `seed ${seed}`).not.toBeNull();
+            expect((actual as Buffer).equals(generalParquet(text, delimiter)), `seed ${seed}`).toBe(true);
+          }
+        });
+      }
+    }
+  }
+
+  it('copies a last value that ends the input, of every length up to nine bytes, without reading or writing past it', () => {
+    for (let lastLength = 0; lastLength <= 9; lastLength++) {
+      const text = `a,b\n1,${'abcdefghi'.slice(0, lastLength)}\n2,${'z'.repeat(lastLength)}`;
+      const actual = direct(text);
+      expect(actual, `last value of ${lastLength} bytes`).not.toBeNull();
+      expect((actual as Buffer).equals(generalParquet(text, ',')), `last value of ${lastLength} bytes`).toBe(true);
+    }
+  });
+
+  it('keeps a value that ends a Buffer view of a larger allocation', () => {
+    const text = 'a,b\n1,xy\n2,zw';
+    const padded = Buffer.concat([Buffer.alloc(7, 0x41), Buffer.from(text), Buffer.alloc(9, 0x42)]);
+    const view = padded.subarray(7, 7 + Buffer.byteLength(text));
+    const actual = delimitedToParquet(view, 'csv', {});
+    expect(actual).not.toBeNull();
+    expect((actual as Buffer).equals(generalParquet(text, ','))).toBe(true);
+  });
+});
+
+describe('hostile delimited tables are declined at the Parquet limits', () => {
+  it('accepts a header of the most columns a Parquet file holds and declines one more', () => {
+    const table = (columns: number): Buffer => Buffer.from(`${Array.from({ length: columns }, (_, c) => `c${c}`).join(',')}\n${'1,'.repeat(columns - 1)}1\n`);
+    expect(delimitedToParquet(table(PARQUET_MAX_COLUMNS), 'csv', {})).not.toBeNull();
+    expect(delimitedToParquet(table(PARQUET_MAX_COLUMNS + 1), 'csv', {})).toBeNull();
+  });
+
+  it('declines a record wider than the header without reading past the cell slots', () => {
+    const wide = Buffer.from(`a,b\n1,2\n${'x,'.repeat(5000)}x\n`);
+    expect(delimitedToParquet(wide, 'csv', {})).toBeNull();
+    expect(() => DelimitedByteScanner.open(wide, ',', true).nextChunk(10, 1 << 20)).toThrow(DelimitedBytesUnsupported);
+  });
+
+  it('declines more rows than a Parquet file holds, reading them one row group at a time', () => {
+    const rows = PARQUET_MAX_ROWS + 1;
+    const input = Buffer.concat([Buffer.from('a,b\n'), Buffer.from('1,2\n'.repeat(rows))]);
+    expect(delimitedToParquet(input, 'csv', {})).toBeNull();
+    expect(chunkScratchLength()).toBeLessThanOrEqual(4096 * 16);
+  }, 60_000);
+
+  it('declines a table of many cells and rows that stays under the row limit but over the cell limit', () => {
+    const rowCount = 5_000_000;
+    const input = Buffer.concat([Buffer.from('a,b,c,d,e\n'), Buffer.from('1,2,3,4,5\n'.repeat(rowCount))]);
+    expect(delimitedToParquet(input, 'csv', {})).toBeNull();
+  }, 60_000);
+});
 
 describe('scratch space of the delimited text to Parquet route', () => {
   it('returns to its initial size after a large conversion and after a failed one', () => {

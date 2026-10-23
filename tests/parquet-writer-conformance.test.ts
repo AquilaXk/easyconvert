@@ -437,6 +437,35 @@ describe('Parquet writer conformance (issue 526)', () => {
       }
     });
 
+    /** Inputs whose matches and literals fall on either side of every threshold of the matcher (margin, literal and copy lengths, fragment size). */
+    const boundaryPayloads = (): [string, Buffer][] => {
+      const patterned = (length: number, period: number): Buffer => Buffer.from(Array.from({ length }, (_, i) => 97 + (i % period)));
+      const lengths = [14, 15, 16, 17, 31, 60, 61, 64, 65, 66, 67, 68, 69, 128, 2047, 2048, 2049, 65_535, 65_536, 65_537, 131_072, 131_073];
+      return lengths.flatMap((length): [string, Buffer][] => [
+        [`${length} bytes of a 7-byte period`, patterned(length, 7)],
+        [`${length} bytes of a 61-byte period`, patterned(length, 61)],
+        [`${length} random bytes`, Buffer.from(Array.from({ length }, () => Math.floor(rand() * 256)))],
+      ]);
+    };
+
+    it('round-trips inputs on both sides of every matcher threshold, whatever the offset of the input in its allocation', () => {
+      for (const [label, payload] of boundaryPayloads()) {
+        for (const offset of [0, 1, 3]) {
+          const padded = Buffer.concat([Buffer.alloc(offset, 0x5a), payload, Buffer.alloc(5, 0x5a)]);
+          const view = padded.subarray(offset, offset + payload.length);
+          expect(decompressSnappy(compressSnappy(view)).equals(payload), `${label} at offset ${offset}`).toBe(true);
+        }
+      }
+    });
+
+    oracleTest('pyarrow decompresses inputs on both sides of every matcher threshold', ['python3'], () => {
+      for (const [label, payload] of boundaryPayloads()) {
+        const padded = Buffer.concat([Buffer.alloc(3, 0x5a), payload]);
+        const view = padded.subarray(3);
+        expect(pyarrowSnappyDecompress(compressSnappy(view), view.length).equals(payload), label).toBe(true);
+      }
+    });
+
     it('rejects a block whose declared size exceeds the caller bound before allocating', () => {
       const hostile = Buffer.from([0xff, 0xff, 0xff, 0xff, 0x0f, 0x00]);
       expect(() => decompressRawSnappyBlock(hostile, 1024)).toThrow(ParquetFormatError);

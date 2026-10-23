@@ -37,8 +37,6 @@ const FOUR_BYTE_LEAD = 0xf0;
 const INITIAL_CHUNK_ROWS = 4096;
 /** Cell offsets are 32-bit. */
 const MAX_INPUT_BYTES = 0x7fff_fff0;
-/** Highest byte value that needs a look in the unquoted cell scan: control characters, space, `!` and the quote. */
-const SPECIAL_BYTE_LIMIT = QUOTE;
 const BYTES_PER_LENGTH_PREFIX = 4;
 
 type LineBreakStyle = 'lf' | 'crlf';
@@ -46,12 +44,18 @@ type LineBreakStyle = 'lf' | 'crlf';
 export interface CellChunk {
   /** The bytes the offsets point into (a private copy once a cell with doubled quotes was collapsed). */
   data: Buffer;
+  /** A view of `data` for multi-byte loads, which are one instruction where four indexed byte reads are not. */
+  view: DataView;
   /** Records held. */
   rows: number;
   /** Row-major: the cell of row r and column c is at index r * width + c. */
   starts: Int32Array;
   /** Byte length of each cell, after a quoted cell's doubled quotes are collapsed. */
   lengths: Int32Array;
+}
+
+function viewOf(data: Buffer): DataView {
+  return new DataView(data.buffer, data.byteOffset, data.byteLength);
 }
 
 function unsupported(reason: string): never {
@@ -192,6 +196,9 @@ export class DelimitedByteScanner {
   private pos: number;
   private owned = false;
   private pending: { starts: Int32Array; lengths: Int32Array; bytes: number } | null = null;
+  private view: DataView;
+  /** Bytes of the cells of the record {@link readCells} read last. */
+  private recordBytes = 0;
 
   private constructor(
     data: Buffer,
@@ -200,6 +207,7 @@ export class DelimitedByteScanner {
     pos: number
   ) {
     this.data = data;
+    this.view = viewOf(data);
     this.pos = pos;
   }
 
@@ -237,21 +245,38 @@ export class DelimitedByteScanner {
   /**
    * Reads the next non-blank record into `starts`/`lengths` at `base` and returns its width, or -1 at the end of the
    * input. The record must be exactly `limit` cells wide, unless `atMost` is set (the header: any width up to `limit`).
+   * {@link recordBytes} is left holding the bytes of its cells.
    */
   private readCells(starts: Int32Array, lengths: Int32Array, base: number, limit: number, atMost = false): number {
     let data = this.data;
     const size = data.length;
     const delimiter = this.delimiter;
+    // The scan reads four bytes at a time with the zero-byte tests of "Bit Twiddling Hacks" (`haszero(v)` and
+    // `hasless(x, n)`): a word gets a high bit at every byte below 0x23 (control characters, space, `!` and the quote) or
+    // equal to the delimiter, and the lowest of those bits is exact. The constants are literals of this function because the
+    // optimizer folds a literal into the arithmetic, and reads a module-level constant as a loaded Number.
+    const byteOnes = 0x01010101;
+    const lowByteBias = 0x23232323;
+    const byteHighBits = 0x80808080 | 0;
+    const delimiterWord = delimiter * byteOnes;
+    const lastWordStart = size - 4;
+    let pos = this.pos;
     for (;;) {
-      if (this.pos >= size) return -1;
+      if (pos >= size) {
+        this.pos = pos;
+        return -1;
+      }
       let column = 0;
+      let bytes = 0;
       for (;;) {
-        let cellStart = this.pos;
-        let cellEnd: number;
+        const cellStart = pos;
+        let valueStart = cellStart;
+        let valueEnd: number;
+        // The byte that ends the cell (a delimiter, a line break), or -1 at the end of the input.
+        let ender: number;
         let next: number;
         if (cellStart < size && data[cellStart] === QUOTE) {
-          cellStart++;
-          let scan = cellStart;
+          let scan = cellStart + 1;
           let escaped = false;
           for (;;) {
             while (scan < size && data[scan] !== QUOTE) scan++;
@@ -263,49 +288,64 @@ export class DelimitedByteScanner {
             }
             break;
           }
-          cellEnd = escaped ? this.collapseQuotes(cellStart, scan) : scan;
+          valueStart++;
+          valueEnd = escaped ? this.collapseQuotes(valueStart, scan) : scan;
           data = this.data;
           next = scan + 1;
+          ender = next < size ? data[next] : -1;
         } else {
+          const view = this.view;
           let scan = cellStart;
-          while (scan < size) {
-            const byte = data[scan];
-            if (byte <= SPECIAL_BYTE_LIMIT || byte === delimiter) {
-              if (byte === delimiter || byte === LINE_FEED || byte === CARRIAGE_RETURN) break;
-              if (byte === QUOTE) return unsupported('a quote inside an unquoted cell');
+          for (;;) {
+            while (scan <= lastWordStart) {
+              const word = view.getInt32(scan, true);
+              const xored = word ^ delimiterWord;
+              const flagged = (((word - lowByteBias) & ~word) | ((xored - byteOnes) & ~xored)) & byteHighBits;
+              if (flagged !== 0) {
+                scan += (31 - Math.clz32(flagged & -flagged)) >> 3; // bits below the lowest flag, as bytes
+                break;
+              }
+              scan += 4;
             }
+            if (scan >= size) {
+              ender = -1;
+              break;
+            }
+            ender = data[scan];
+            if (ender === delimiter || ender === LINE_FEED || ender === CARRIAGE_RETURN) break;
+            if (ender === QUOTE) return unsupported('a quote inside an unquoted cell');
             scan++;
           }
-          cellEnd = scan;
+          valueEnd = scan;
           next = scan;
         }
 
-        // What ends the cell: a delimiter, a line break, or the end of the input.
-        const byte = next < size ? data[next] : -1;
-        let rowEnds = true;
-        if (byte === delimiter) {
-          rowEnds = false;
-          this.pos = next + 1;
-        } else if (byte === -1) {
-          this.pos = size;
-        } else if (byte === LINE_FEED && this.style !== 'crlf') {
+        if (column >= limit) return unsupported('a record wider than the header');
+        starts[base + column] = valueStart;
+        lengths[base + column] = valueEnd - valueStart;
+        bytes += valueEnd - valueStart;
+        column++;
+        if (ender === delimiter) {
+          pos = next + 1;
+          continue;
+        }
+        if (ender === -1) {
+          pos = size;
+        } else if (ender === LINE_FEED && this.style !== 'crlf') {
           this.style = 'lf';
-          this.pos = next + 1;
-        } else if (byte === CARRIAGE_RETURN && this.style !== 'lf' && data[next + 1] === LINE_FEED) {
+          pos = next + 1;
+        } else if (ender === CARRIAGE_RETURN && this.style !== 'lf' && data[next + 1] === LINE_FEED) {
           this.style = 'crlf';
-          this.pos = next + 2;
+          pos = next + 2;
         } else {
           return unsupported('a line break outside the file line-break style, or text after a closing quote');
         }
-
-        if (column >= limit) return unsupported('a record wider than the header');
-        starts[base + column] = cellStart;
-        lengths[base + column] = cellEnd - cellStart;
-        column++;
-        if (rowEnds) break;
+        break;
       }
-      if (column === 1 && lengths[base] === 0) continue; // a blank line: the general reader skips it
+      if (column === 1 && bytes === 0) continue; // a blank line: the general reader skips it
+      this.pos = pos;
       if (!atMost && column !== limit) return unsupported('a record narrower than the header');
+      this.recordBytes = bytes;
       return column;
     }
   }
@@ -314,6 +354,7 @@ export class DelimitedByteScanner {
   private collapseQuotes(start: number, end: number): number {
     if (!this.owned) {
       this.data = Buffer.from(this.data);
+      this.view = viewOf(this.data);
       this.owned = true;
     }
     const data = this.data;
@@ -360,8 +401,7 @@ export class DelimitedByteScanner {
       }
       const base = rows * width;
       if (this.readCells(starts, lengths, base, width) < 0) break;
-      let rowBytes = width * BYTES_PER_LENGTH_PREFIX;
-      for (let c = 0; c < width; c++) rowBytes += lengths[base + c];
+      const rowBytes = this.recordBytes + width * BYTES_PER_LENGTH_PREFIX;
       if (rows > 0 && bytes + rowBytes > maxBytes) {
         this.pending = {
           starts: starts.slice(base, base + width),
@@ -374,6 +414,6 @@ export class DelimitedByteScanner {
       bytes += rowBytes;
     }
     if (rows === 0) return null;
-    return { data: this.data, rows, starts, lengths };
+    return { data: this.data, view: this.view, rows, starts, lengths };
   }
 }

@@ -147,6 +147,11 @@ export class ByteSink {
     return this.bytes;
   }
 
+  /** Direct access to the underlying bytes as a view for word writes, after calling ensure(). */
+  rawView(): DataView {
+    return this.view;
+  }
+
   /** Returns a view of the written bytes (valid until the next write or reset). */
   toBuffer(): Buffer {
     return this.bytes.subarray(0, this.length);
