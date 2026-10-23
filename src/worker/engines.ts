@@ -81,7 +81,7 @@ import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
 import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
-import { boundRenderedPages, DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
+import { boundRenderedPages, DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
 import { inspectPdfEncryption } from '../lib/conversions/pdf-encryption';
@@ -1062,7 +1062,7 @@ async function countPagesOfReadablePdf(
   const pdfinfoBin = resolveBinary(BINARY_PATHS.pdfinfo, process.env.PDFINFO_PATH);
   if (pdfinfoBin) {
     try {
-      const res = await executeSandboxedBinary(pdfinfoBin, [inputPath], {
+      const res = await runPdfinfo(pdfinfoBin, [inputPath], {
         cwd: tempDir,
         timeoutMs,
         maxBuffer: 10 * 1024 * 1024,
@@ -1469,7 +1469,7 @@ async function renderPdfToImageWithPoppler(
       const batches = intervals.flatMap((interval) => splitIntoBatches(Math.max(interval.start, drawnEarly + 1), interval.end, batchPages));
       const draw = (batch: PageBatch): Promise<void> => {
         const args = buildPdftoppmArgs(tgt, options, batch.start, batch.end, inputPath, prefix);
-        return isPng ? renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, args, batch) : executeSandboxedBinary(pdftoppmBin, args, sandbox).then(() => undefined);
+        return isPng ? renderPngBatch(pdftoppmBin, tempDir, dpi, sandbox, args, batch) : runPdftoppm(pdftoppmBin, args, sandbox);
       };
       await runBounded(batches.map((batch) => () => draw(batch)), pageRenderProcesses(), early?.done);
     },

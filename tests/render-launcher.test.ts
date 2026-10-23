@@ -5,13 +5,14 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { sandboxLauncherState, startSandboxLauncher, stopSandboxLauncher } from '../src/lib/security/sandbox-launcher';
+import { PdfStructureError } from '../src/lib/conversions/pdf-document';
 import { ConversionFailedError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { decodeRgba } from './helpers/imagemagick';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 
 /**
- * SVG and PostScript renders when the program is started through the launcher helper (src/lib/security/sandbox-launcher.ts),
+ * SVG, PostScript and PDF page renders when the program is started through the launcher helper (src/lib/security/sandbox-launcher.ts),
  * which is what a worker of a few hundred megabytes does. The process reports a large resident size, as such a worker has,
  * so that the helper is judged worth it. Each test checks that the helper started the program (the count of launched
  * programs rises), and the results are read back by tools that share no code with the product: Poppler for the PDF text
@@ -44,6 +45,7 @@ const EPS = [
 ].join('\n');
 
 const toolsMissing = skipWithoutTools('rsvg-convert', 'gs', 'ps2pdf', 'pdfinfo', 'pdftotext', 'identify');
+const pageToolsMissing = skipWithoutTools('gs', 'pdfinfo', 'pdftoppm', 'identify');
 
 function inTempDir<T>(run: (dir: string) => T): T {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'render-launcher-'));
@@ -85,7 +87,8 @@ async function launched<T>(operation: () => Promise<T>): Promise<{ value: T; pro
   return { value, programs: sandboxLauncherState().launched - before };
 }
 
-describe.skipIf(toolsMissing || noNamespaces)('SVG and PostScript renders through the launcher', () => {
+/** Makes the suite a worker of a gigabyte with its launcher helper running, and puts both back afterwards. */
+function useLauncherOfLargeWorker(): void {
   beforeAll(async () => {
     vi.spyOn(process.memoryUsage, 'rss').mockReturnValue(LARGE_WORKER_BYTES);
     expect(await startSandboxLauncher()).toBe(true);
@@ -95,6 +98,10 @@ describe.skipIf(toolsMissing || noNamespaces)('SVG and PostScript renders throug
     vi.restoreAllMocks();
     stopSandboxLauncher();
   });
+}
+
+describe.skipIf(toolsMissing || noNamespaces)('SVG and PostScript renders through the launcher', () => {
+  useLauncherOfLargeWorker();
 
   it('svg -> pdf: the helper starts the renderer once, and the page is the drawing with its text', async () => {
     const { value, programs } = await launched(() => dispatchConversion(Buffer.from(SVG), 'svg', 'pdf', {}, 'art.svg'));
@@ -147,5 +154,43 @@ describe.skipIf(toolsMissing || noNamespaces)('SVG and PostScript renders throug
     const run = dispatchConversion(Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\n(', 'latin1'), 'eps', 'png', { dpi: DPI }, 'broken.eps');
     await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
     await expect(run).rejects.toThrow(/PostScript interpreter rejected the \.eps file/);
+  }, NATIVE_TIMEOUT_MS);
+});
+
+/** The page `pdftoppm -png` writes at `dpi`, the picture the reference command gives. */
+function referencePage(pdf: Buffer, dpi: number): Buffer {
+  return inTempDir((dir) => {
+    fs.writeFileSync(path.join(dir, 'in.pdf'), pdf);
+    execFileSync(requireOracleTool('pdftoppm'), ['-png', '-singlefile', '-f', '1', '-l', '1', '-r', String(dpi), path.join(dir, 'in.pdf'), path.join(dir, 'ref')]);
+    return fs.readFileSync(path.join(dir, 'ref.png'));
+  });
+}
+
+describe.skipIf(pageToolsMissing)('PDF page images through the launcher', () => {
+  const PAGE_DPI = 72;
+  const pagePdf = (): Buffer =>
+    inTempDir((dir) => {
+      fs.writeFileSync(path.join(dir, 'in.eps'), EPS);
+      execFileSync(requireOracleTool('gs'), ['-q', '-dBATCH', '-dNOPAUSE', '-dSAFER', '-dEPSCrop', '-sDEVICE=pdfwrite', `-sOutputFile=${path.join(dir, 'page.pdf')}`, path.join(dir, 'in.eps')]);
+      return fs.readFileSync(path.join(dir, 'page.pdf'));
+    });
+
+  useLauncherOfLargeWorker();
+
+  it('pdf -> png: the helper starts the rasteriser and the page counter once each, and the pixels are the ones pdftoppm -png writes', async () => {
+    const pdf = pagePdf();
+    const { value, programs } = await launched(() => dispatchConversion(pdf, 'pdf', 'png', { dpi: PAGE_DPI }, 'page.pdf'));
+    expect(programs).toBe(2);
+    expect(value.mimeType).toBe('image/png');
+    const ours = decodeRgba(value.buffer, 'png');
+    const theirs = decodeRgba(referencePage(pdf, PAGE_DPI), 'png');
+    expect([ours.width, ours.height]).toEqual([theirs.width, theirs.height]);
+    expect(ours.data.equals(theirs.data)).toBe(true);
+  }, NATIVE_TIMEOUT_MS);
+
+  it('pdf -> png: a file Poppler cannot open is still the typed error of the page counter', async () => {
+    const run = dispatchConversion(Buffer.from('%PDF-1.4\nnot a document'), 'pdf', 'png', { dpi: PAGE_DPI }, 'broken.pdf');
+    await expect(run).rejects.toBeInstanceOf(PdfStructureError);
+    await expect(run).rejects.toThrow(/Unable to determine PDF page count/);
   }, NATIVE_TIMEOUT_MS);
 });
