@@ -150,6 +150,10 @@ export interface CompositeFontDictionary {
   encoding: string | null;
   /** /Subtype of the descendant CIDFont (CIDFontType0 or CIDFontType2). */
   descendant: string | null;
+  /** /BaseFont of the descendant CIDFont as written, a subset tag included. */
+  descendantName: string | null;
+  /** The program the font descriptor embeds: a /FontFile2, a /FontFile3 of subtype CIDFontType0C, or null for none or another. */
+  program: 'truetype' | 'cid-cff' | null;
   /** /Registry and /Ordering of the descendant's /CIDSystemInfo, as written (a hex string keeps its digits). */
   registry: string | null;
   ordering: string | null;
@@ -157,6 +161,8 @@ export interface CompositeFontDictionary {
   cidToGidMap(): 'identity' | Buffer | null;
   /** The decoded /FontFile2 of the descendant's font descriptor, or null when there is none or it cannot be decoded. */
   trueTypeProgram(): Buffer | null;
+  /** The widths the descendant's /W gives the CIDs from `first` to `last` (section 9.7.4.3), read as pdfjs reads them. */
+  cidWidths(first: number, last: number): Map<number, number>;
 }
 
 /** What an incremental update of the file (section 7.5.6) refers back to. */
@@ -1036,6 +1042,7 @@ export class PdfDocument {
       streams.set(stream.num, bytes);
       return bytes;
     };
+    const name = this.resolve(descendant?.entries.get('BaseFont'));
     return {
       objectNumber: num,
       generation: entry.gen,
@@ -1043,6 +1050,8 @@ export class PdfDocument {
       hasToUnicode: dict.entries.has('ToUnicode'),
       encoding: isName(encoding) ? encoding.value : null,
       descendant: isName(subtype) ? subtype.value : null,
+      descendantName: isName(name) ? name.value : null,
+      program: this.fontProgramKind(descriptor),
       registry: text('Registry'),
       ordering: text('Ordering'),
       cidToGidMap: () => {
@@ -1051,7 +1060,51 @@ export class PdfDocument {
         return decoded(map);
       },
       trueTypeProgram: () => decoded(descriptor?.entries.get('FontFile2')),
+      cidWidths: (first, last) => this.cidWidths(descendant?.entries.get('W'), first, last),
     };
+  }
+
+  /** The program a font descriptor embeds: /FontFile2, /FontFile3 of subtype CIDFontType0C, or null for none or another. */
+  private fontProgramKind(descriptor: PdfDict | null): CompositeFontDictionary['program'] {
+    if (descriptor?.entries.has('FontFile2')) return 'truetype';
+    const fontFile3 = this.entryOf(descriptor?.entries.get('FontFile3'))?.stream?.dict;
+    return fontFile3 && isName(fontFile3.entries.get('Subtype'), 'CIDFontType0C') ? 'cid-cff' : null;
+  }
+
+  /**
+   * The widths of /W for the CIDs from `first` to `last`, by the rules pdfjs reads /W with (`extractWidths`, evaluator.js):
+   * a start that is no integer ends the array, a width that is no number is skipped, and a later entry for a CID wins. A
+   * range `c1 c2 w` is clipped to the CIDs asked for and filled at once, so a range costs the same however many CIDs it
+   * spans, and the whole read costs one pass over the array.
+   */
+  private cidWidths(value: PdfValue | undefined, first: number, last: number): Map<number, number> {
+    const slots = new Float64Array(last - first + 1).fill(Number.NaN);
+    const array = this.resolve(value);
+    const items = isArray(array) ? array.items : [];
+    for (let i = 0; i + 1 < items.length; i += 2) {
+      let start = this.resolve(items[i]);
+      if (typeof start !== 'number' || !Number.isInteger(start)) break;
+      const next = this.resolve(items[i + 1]);
+      if (isArray(next)) {
+        for (const item of next.items) {
+          if (start > last) break;
+          const width = this.resolve(item);
+          if (typeof width === 'number' && start >= first) slots[start - first] = width;
+          start++;
+        }
+      } else if (typeof next === 'number' && Number.isInteger(next)) {
+        const width = this.resolve(items[i + 2]);
+        i++;
+        if (typeof width === 'number' && start <= last && next >= first) slots.fill(width, Math.max(start, first) - first, Math.min(next, last) - first + 1);
+      } else {
+        break;
+      }
+    }
+    const widths = new Map<number, number>();
+    slots.forEach((width, index) => {
+      if (!Number.isNaN(width)) widths.set(first + index, width);
+    });
+    return widths;
   }
 
   /** The root, the next free object number and the last cross-reference offset, or null when the file names no root or `startxref`. */

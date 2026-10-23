@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { readUnicodeCmap } from '../src/lib/conversions/truetype-cmap';
+import { readAdvanceWidths, readUnicodeCmap, sfntTableTags } from '../src/lib/conversions/truetype-cmap';
 import { FALLBACK_GLYPH, repeatedRecordsFont } from './helpers/hostile-cmap-font';
 
 /**
@@ -217,5 +217,45 @@ describe('encoding records that repeat one unreadable subtable', () => {
       ...u16(0x42), ...u16(0xffff), ...u16(0), ...u16(0x41), ...u16(0xffff), ...u16(0), ...u16(1), ...u16(4), ...u16(0),
     ];
     expect(readUnicodeCmap(sfnt([['maxp', maxp(10)], ['cmap', cmap(subtable)]]))).toBeNull();
+  });
+});
+
+/** A `head` table whose units per em are `unitsPerEm`, and an `hhea` table that names `metrics` long metrics. */
+function head(unitsPerEm: number): number[] {
+  return [...new Array(18).fill(0), ...u16(unitsPerEm), ...new Array(34).fill(0)];
+}
+
+function hhea(metrics: number): number[] {
+  return [...new Array(34).fill(0), ...u16(metrics)];
+}
+
+function hmtx(advances: number[]): number[] {
+  return advances.flatMap((advance) => [...u16(advance), ...u16(0)]);
+}
+
+describe('the advance widths and the table tags of a program', () => {
+  it('reads the advance widths fontTools reads, as a share of the em', () => {
+    const advances = readAdvanceWidths(FONT_PROGRAM);
+    // fontTools: unitsPerEm 2048; space (glyph 1) 651, F (0x27) 1178 and a (0x42) 1255 units.
+    expect(advances?.[0x01]).toBeCloseTo(651 / 2048, 12);
+    expect(advances?.[0x27]).toBeCloseTo(1178 / 2048, 12);
+    expect(advances?.[0x42]).toBeCloseTo(1255 / 2048, 12);
+  });
+
+  it('gives the glyphs past the last long metric its advance', () => {
+    const font = sfnt([['maxp', maxp(3)], ['head', head(1000)], ['hhea', hhea(1)], ['hmtx', hmtx([500])]]);
+    expect([...(readAdvanceWidths(font) ?? [])]).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  it('reads no widths when the em has no units, or `hmtx` holds fewer metrics than `hhea` names', () => {
+    expect(readAdvanceWidths(sfnt([['maxp', maxp(2)], ['head', head(0)], ['hhea', hhea(1)], ['hmtx', hmtx([500])]]))).toBeNull();
+    expect(readAdvanceWidths(sfnt([['maxp', maxp(2)], ['head', head(1000)], ['hhea', hhea(0xffff)], ['hmtx', hmtx([500])]]))).toBeNull();
+  });
+
+  it('names the tables of the directory, and none when the directory claims more records than the bytes hold', () => {
+    expect(sfntTableTags(FONT_PROGRAM)).toEqual(new Set(['GDEF', 'GPOS', 'GSUB', 'MATH', 'OS/2', 'cmap', 'gasp', 'glyf', 'head', 'hhea', 'hmtx', 'loca', 'maxp', 'name', 'post']));
+    const claimed = Buffer.from(FONT_PROGRAM.subarray(0, 64));
+    claimed.writeUInt16BE(0xffff, 4);
+    expect(sfntTableTags(claimed)).toBeNull();
   });
 });

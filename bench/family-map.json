@@ -194,7 +194,7 @@
     },
     {
       "families": ["document"],
-      "match": "^src/lib/conversions/(pdf-text-[^/]*|pdf-winansi-tounicode|pdf-office|pdf-blocks|pdf-fonts|pdf-font-tounicode|truetype-cmap)\\.ts$|^src/lib/conversions/(pdf-layout|text-shaping)/"
+      "match": "^src/lib/conversions/(pdf-text-[^/]*|pdf-winansi-tounicode|pdf-office|pdf-blocks|pdf-fonts|pdf-font-tounicode|truetype-cmap|standard-font-glyph-order|pdfjs-data)\\.ts$|^src/lib/conversions/(pdf-layout|text-shaping)/"
     },
     {
       "families": ["pdf-ops"],
