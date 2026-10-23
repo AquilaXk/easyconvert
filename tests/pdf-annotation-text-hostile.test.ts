@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
+import { inspectPdfPagesTextDensity } from '../src/lib/conversions/ocr';
 import { MAX_PDF_ANNOTATIONS, MAX_PDF_APPEARANCE_STATES, MAX_PDF_CONTENT_STREAMS, MAX_PDF_FORM_DEPTH, PdfStructureError } from '../src/lib/conversions/pdf-document';
+import { runPdfTextJob } from '../src/lib/conversions/pdf-text-geometry';
 import { PDF_CONTENT_MAX_STATE_DEPTH, PDF_TEXT_MAX_ITEM_CHARS, PDF_TEXT_MAX_ITEMS_PER_DOCUMENT, PDF_TEXT_MAX_ITEMS_PER_PAGE, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-types';
-import { DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
+import { DecompressionLimitError, PayloadLimitError, type PdfPageAnalysis } from '../src/lib/types';
 import { type CraftObject, buildPdf, flate, HELVETICA_FONT } from './helpers/pdf-craft';
 import { expectNoHangOnInput, type Settled } from './helpers/timing';
 
@@ -182,17 +184,20 @@ describe('annotation text counts against the text limits', () => {
  * The guard sees the annotations pdf.js reads. pdf.js takes /Annots as an inheritable property (`Page.annotations`, through
  * `getInheritableProperty`: the page's own, else the nearest one up its /Parent chain), draws whichever state stream /AS
  * names without looking at its /Subtype (`Annotation.setAppearance`), builds an annotation for every entry of /Annots,
- * repeated or not.
+ * repeated or not, and builds them for every job that reads the page, the density test of OCR included.
  */
 const REFUSAL_BOUND_MS = 15_000;
 const RSS_BOUND_MB = 512;
 const RSS_SAMPLE_MS = 20;
 const BYTES_PER_MB = 1e6;
+const DENSITY_THRESHOLD = 15;
 const WIDGET = 7;
 const APPEARANCE = 8;
 const OFF_TREE_PAGES = 9;
 const REPEATED_REFERENCES = 3000;
 const STATES_OF_THE_PROBE = 100 * 1000;
+const HIGHLIGHT_REFERENCES = 20;
+const HIGHLIGHT_QUADS = 50 * 1000;
 const STATE_SHARERS = 4000;
 const PAGES_SHARING_ANNOTATIONS = 3;
 
@@ -209,6 +214,8 @@ const widget = (appearance: string): CraftObject => ({
 });
 
 const textJob = (pdf: Buffer): Promise<unknown> => convertFile(pdf, 'pdf', 'txt', {}, 'hostile.pdf');
+const densityJob = (pdf: Buffer): Promise<unknown> => inspectPdfPagesTextDensity(pdf, DENSITY_THRESHOLD);
+const geometryJob = (pdf: Buffer): Promise<unknown> => runPdfTextJob(pdf, { geometry: [1] });
 
 /** Runs a job that must be refused; the refusal comes within REFUSAL_BOUND_MS and the process grows by less than RSS_BOUND_MB. */
 async function boundedRefusal(label: string, run: (pdf: Buffer) => Promise<unknown>, pdf: Buffer): Promise<unknown> {
@@ -291,6 +298,13 @@ describe('annotation entries are bounded as they are collected', () => {
     expectStructureRefusal(await boundedRefusal('repeated widget with many states', textJob, pdf), `PDF page lists annotation ${WIDGET} more than once.`);
   });
 
+  it('refuses 20 references to one highlight of 50,000 quadrilaterals in the density test of OCR', async () => {
+    const quads = Array.from({ length: HIGHLIGHT_QUADS }, () => '10 20 30 20 10 10 30 10').join(' ');
+    const highlight = { id: WIDGET, dict: `/Type /Annot /Subtype /Highlight /F 4 /C [1 1 0] /Rect [0 0 600 700] /QuadPoints [${quads}]` };
+    const error = await boundedRefusal('repeated highlight', densityJob, repeated(HIGHLIGHT_REFERENCES, highlight));
+    expectStructureRefusal(error, `PDF page lists annotation ${WIDGET} more than once.`);
+  });
+
   it('reads an annotation with as many appearance states as the cap allows', async () => {
     const states = Array.from({ length: MAX_PDF_APPEARANCE_STATES - 1 }, (_, i) => `/s${i} ${APPEARANCE} 0 R`).join(' ');
     const pdf = pageTree([widget(`<< ${states} /Yes ${APPEARANCE} 0 R >>`), { id: APPEARANCE, ...showing('BT /F1 12 Tf 2 5 Td (checked) Tj ET') }], {
@@ -318,6 +332,28 @@ describe('annotation entries are bounded as they are collected', () => {
     });
     const error = await boundedRefusal('state streams past the content-stream cap', textJob, pdf);
     expectStructureRefusal(error, `PDF draws more than ${MAX_PDF_CONTENT_STREAMS} content streams.`);
+  });
+});
+
+describe('jobs that do not read the page content still guard the annotations they read', () => {
+  const bombPage = (): Buffer => pageWithAnnotations(1, bombAppearance());
+
+  it('refuses an appearance bomb in the density test of OCR, with a typed 413', async () => {
+    expectBombRefusal(await boundedRefusal('appearance bomb, density', densityJob, bombPage()));
+  });
+
+  it('refuses an appearance bomb in a word-geometry job, with a typed 413', async () => {
+    expectBombRefusal(await boundedRefusal('appearance bomb, geometry', geometryJob, bombPage()));
+  });
+
+  it('refuses annotations past the cap in the density test of OCR', async () => {
+    const pdf = pageWithAnnotations(MAX_PDF_ANNOTATIONS + 1, showing('BT /F1 12 Tf 2 5 Td (a) Tj ET'));
+    expectStructureRefusal(await boundedRefusal('annotations past the cap, density', densityJob, pdf), `PDF lists more than ${MAX_PDF_ANNOTATIONS} annotations.`);
+  });
+
+  it('still reads the caption of a widget in the density test of OCR', async () => {
+    const [analysis] = await densityJob(pageWithAnnotations(1, showing('BT /F1 12 Tf 2 5 Td (a caption long enough for the density test) Tj ET'))) as PdfPageAnalysis[];
+    expect(analysis.hasTextLayer).toBe(true);
   });
 });
 
