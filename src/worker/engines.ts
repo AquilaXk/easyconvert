@@ -1668,7 +1668,7 @@ async function convertPdfToSvgPageFormat(
 ): Promise<WorkerConversionResult | null> {
   const rendered = await convertWithNativePoppler(input, 'pdf', SVG_FORMAT, intermediateOptions(options), originalFilename);
   if (!rendered) return null;
-  return reencodeRenderedPages(rendered, SVG_FORMAT, tgt, svgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input)), context);
+  return reencodeRenderedPages(rendered, SVG_FORMAT, tgt, svgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input), options), context);
 }
 
 /** True when the pages are consecutive, in order: the only selection one PostScript file can hold. */

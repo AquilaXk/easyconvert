@@ -6,11 +6,13 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import JSZip from 'jszip';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { ConversionFailedError, EngineUnavailableError, UnsupportedOptionError } from '../src/lib/types';
-import { executeWorkerConversion, getPdfPageCount } from '../src/worker/engines';
+import { convertPdfPagesWithNativeTools, executeWorkerConversion, getPdfPageCount } from '../src/worker/engines';
 import { withDecryptedPdf } from '../src/worker/pdf-decrypt';
 import { SandboxedTimeoutError } from '../src/worker/sandbox';
 import { getOracleToolPath, type ExternalOracleTool } from './helpers/differential-oracle';
 import { decodeRgba } from './helpers/imagemagick';
+import { BITMAP_FONT_TEXT, bitmapFontPdf } from './helpers/bitmap-font-pdf';
+import { readDxf } from './helpers/dxf-reader';
 import { oracleTest } from './helpers/oracle-test';
 import { skipUnless } from './helpers/strict-skip';
 import { isProcessRunning as isAlive } from './helpers/process-state';
@@ -340,6 +342,23 @@ describe('PDF password is never passed on the command line (issue #450)', () => 
       expect(svg.startsWith('<?xml')).toBe(true);
       expect(widthOf(svg)).toBe(PAGE_WIDTH_PT.toString());
       expect(widthOf(svg)).toBe(widthOf(fs.readFileSync(oracleSvg, 'utf-8')));
+    }, TEST_TIMEOUT_MS);
+
+    oracleTest('writes the bitmap-font text of a protected PDF to DXF with the password absent from argv', REQUIRED_TOOLS, async () => {
+      const dir = makeWorkDir('easyconvert-pdfpw-bitmap-');
+      const plainPath = path.join(dir, 'bitmap.pdf');
+      const encryptedPath = path.join(dir, 'bitmap-encrypted.pdf');
+      fs.writeFileSync(plainPath, bitmapFontPdf());
+      execFileSync(tool('qpdf'), ['--encrypt', USER_PASSWORD, OWNER_PASSWORD, KEY_LENGTH_BITS, '--', plainPath, encryptedPath]);
+      const { outcome, calls } = await recordSpawns(() =>
+        convertPdfPagesWithNativeTools(fs.readFileSync(encryptedPath), 'dxf', { password: USER_PASSWORD, throwOnUnavailable: true }, 'secret.pdf')
+      );
+      const result = fulfilled(outcome);
+      trackOutput(result ?? {});
+
+      expect(passwordLeaks(calls, USER_PASSWORD, OWNER_PASSWORD)).toEqual([]);
+      expect(binariesSpawned(calls).has('qpdf')).toBe(true);
+      expect(readDxf(result!.buffer.toString('utf-8')).texts.map((text) => text.value)).toEqual([BITMAP_FONT_TEXT]);
     }, TEST_TIMEOUT_MS);
 
     oracleTest('extracts the exact pdftotext content of a protected PDF with the password absent from argv', REQUIRED_TOOLS, async () => {
