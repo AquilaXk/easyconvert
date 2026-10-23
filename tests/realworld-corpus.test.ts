@@ -569,15 +569,46 @@ describe('empty inputs in the manifest', () => {
     expect(() => parseManifest(file({ emptyInputReason: 'x' }))).toThrow(ManifestError);
   });
 
-  it('marks exactly the eight corpus files that hold no content, each with the reason read from the file', () => {
+  it('marks exactly the 39 corpus files that hold no content, each with the reason read from the file', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'realworld', 'manifest.json'), 'utf8')) as CorpusManifest;
     const marked = manifest.files.filter((f) => f.emptyInput === true).map((f) => f.id).sort();
     expect(marked).toEqual([
       'govdocs1-001782.html',
       'office-document-51921-word-crash067.docx',
       'office-document-issue_51265_1.docx',
+      'office-spreadsheet-24207.xls',
+      'office-spreadsheet-29675.xls',
+      'office-spreadsheet-37376.xls',
+      'office-spreadsheet-37684-1.xls',
+      'office-spreadsheet-39234.xls',
+      'office-spreadsheet-39512.xls',
+      'office-spreadsheet-42844.xls',
+      'office-spreadsheet-44643.xls',
+      'office-spreadsheet-45565.xls',
+      'office-spreadsheet-47034.xls',
       'office-spreadsheet-47504.xlsx',
+      'office-spreadsheet-49237.xls',
+      'office-spreadsheet-51675.xls',
+      'office-spreadsheet-53972.xls',
+      'office-spreadsheet-54500.xls',
+      'office-spreadsheet-55341_cellstyleborder.xls',
+      'office-spreadsheet-55668.xls',
+      'office-spreadsheet-57456.xls',
+      'office-spreadsheet-60273.xls',
       'office-spreadsheet-60825.xlsx',
+      'office-spreadsheet-blankworkbook.xls',
+      'office-spreadsheet-colwidth.xls',
+      'office-spreadsheet-dbcsheader.xls',
+      'office-spreadsheet-dg-text.xls',
+      'office-spreadsheet-drawingcontinue.xls',
+      'office-spreadsheet-drawings.xls',
+      'office-spreadsheet-empty.xls',
+      'office-spreadsheet-ex42564-21503.xls',
+      'office-spreadsheet-noheaderfooter47244.xls',
+      'office-spreadsheet-sheetwithdrawing.xls',
+      'office-spreadsheet-simplewithimages-mac.xls',
+      'office-spreadsheet-simplewithimages.xls',
+      'office-spreadsheet-solvercontainerafterspgr.xls',
       'office-spreadsheet-template.xlsx',
       'pdf-vera-pdfa1b-devicen.pdf',
       'pdfjs-empty_protected.pdf',
