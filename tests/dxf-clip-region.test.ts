@@ -279,6 +279,14 @@ describe('hostile clips', () => {
     expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
   });
 
+  it('a clip and a drawing past a billion device pixels are refused, where their distance would be NaN', () => {
+    const huge = clipOf('<rect x="10" y="10" width="1e200" height="1e200"/>');
+    const { result, ms } = timed(clipped(huge, stroke('M -1e150 1e150 L -1e150 1.5e150')));
+    expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path .*1000000000 device pixels/);
+    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expect(refusal(clipped(pathClip(BOX), stroke('M 60 30 L 2e9 30')))).not.toBe('converted');
+  });
+
   it('a clipped element under a transform that overflows is refused', () => {
     expect(refusal(clipped(pathClip(BOX), stroke('M 60 30 L 140 30'), 'transform="scale(1e308)"'))).not.toBe('converted');
   });

@@ -216,6 +216,18 @@ describe('stroke-dasharray', () => {
       expect(refusal(`<g transform="scale(1e300)">${stroked('stroke-dasharray="1e300 1"')}</g>`)).not.toBe('converted');
     });
 
+    it('refuses a pattern whose length is past the numbers a DXF holds, without writing Infinity or an exponent', () => {
+      const result = refusal(stroked('stroke-dasharray="1e308 1e308"'));
+      expect(result).toMatch(/^CadGeometryUnavailableError: /);
+      expect(result).not.toMatch(/Infinity|e\+/);
+    });
+
+    it('refuses a coordinate that is not written as a plain decimal', () => {
+      const result = refusal(stroked('', 'M 1e22 10 L 1e22 20'));
+      expect(result).toMatch(/^CadGeometryUnavailableError: /);
+      expect(result).not.toMatch(/e\+/);
+    });
+
     it('writes a pattern too small to see as a solid line', () => {
       expect(dashTypes(dxfOf(stroked('stroke-dasharray="1e-300 1e-300"')))).toHaveLength(0);
       expect(dashTypes(dxfOf(stroked('stroke-dasharray="1e-9 1e-9"')))).toHaveLength(0);
