@@ -1,8 +1,9 @@
 import { UNMAPPABLE_CHARACTER, type PdfPageText } from '../lib/conversions/bitmap-glyph-text';
+import { openPdfForReading } from '../lib/conversions/pdf-access';
 import { runPdfTextJob } from '../lib/conversions/pdf-text-geometry';
 import { encodeSvgPageToDxfWithText } from '../lib/conversions/vector-dxf';
 import { encodeEmf, encodeWmf } from '../lib/conversions/vector-metafile';
-import { ConversionFailedError } from '../lib/types';
+import { ConversionFailedError, type ConversionOptions } from '../lib/types';
 import { pageNumbersOf } from './worker-output';
 import type { WorkerConversionResult } from './worker-types';
 
@@ -29,16 +30,22 @@ export function isSvgPageTarget(target: string): boolean {
   return Object.hasOwn(SVG_PAGE_ENCODERS, target);
 }
 
+/** What opens the PDF of a request: the text layer is read in the process, and the password never reaches it. */
+type PdfAccess = Pick<ConversionOptions, 'password' | 'signal'>;
+
 /**
  * The text layers of the rendered pages of a PDF, read in one job the first time a page needs its own, with every glyph that
- * has no Unicode value kept in its place as the unmappable-character mark.
+ * has no Unicode value kept in its place as the unmappable-character mark. Poppler drew the pages from a decrypted copy that
+ * is gone by now, so a request with a password gets the plain bytes as every in-process reader of a PDF does
+ * (`openPdfForReading`): the reader is given neither the password nor the encrypted input.
  */
-function textLayersOf(readPdf: () => Buffer | undefined, pages: readonly number[]): (page: number) => Promise<PdfPageText> {
+function textLayersOf(readPdf: () => Buffer | undefined, pages: readonly number[], access: PdfAccess): (page: number) => Promise<PdfPageText> {
   let layers: Promise<Map<number, PdfPageText>> | undefined;
   return async (page) => {
     layers ??= (async () => {
-      const pdf = readPdf();
-      if (!pdf) throw new ConversionFailedError('The PDF text layer cannot be read: the PDF is not available to the page writer.');
+      const stored = readPdf();
+      if (!stored) throw new ConversionFailedError('The PDF text layer cannot be read: the PDF is not available to the page writer.');
+      const pdf = access.password ? await openPdfForReading(stored, access.password, access.signal) : stored;
       const result = await runPdfTextJob(pdf, { geometry: 'none', content: pages, unmappedGlyphText: UNMAPPABLE_CHARACTER });
       return new Map(result.content.map((content) => [content.pageNumber, content]));
     })();
@@ -50,12 +57,12 @@ function textLayersOf(readPdf: () => Buffer | undefined, pages: readonly number[
 
 /**
  * The writer of an SVG page target (see `isSvgPageTarget`) for the pages Poppler rendered from a PDF: called with each page
- * and its entry name, it writes the page, reading the PDF (`readPdf`) only for a page that needs its text layer.
+ * and its entry name, it writes the page, reading the PDF (`readPdf`, opened with the password of `access`) only for a page that needs its text layer.
  */
-export function svgPageEncoder(target: string, rendered: WorkerConversionResult, readPdf: () => Buffer | undefined): (svg: Buffer, entryName: string) => Promise<Buffer> {
+export function svgPageEncoder(target: string, rendered: WorkerConversionResult, readPdf: () => Buffer | undefined, access: PdfAccess = {}): (svg: Buffer, entryName: string) => Promise<Buffer> {
   const encode = SVG_PAGE_ENCODERS[target];
   const pages = pageNumbersOf(rendered);
-  const textLayers = textLayersOf(readPdf, pages);
+  const textLayers = textLayersOf(readPdf, pages, access);
   const zipped = rendered.filename.endsWith('.zip');
   return async (svg, entryName) => {
     const page = zipped ? Number(PAGE_ENTRY_NUMBER.exec(entryName)?.[1]) : pages[0];
