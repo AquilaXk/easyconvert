@@ -1,11 +1,17 @@
 import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-nurbs';
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
-import { BitmapGlyphs } from './svg-bitmap-glyph';
-import { createPageClipCheck } from './svg-page-clip';
+import { BitmapGlyphs, glyphBox } from './svg-bitmap-glyph';
+import { ActiveClips } from './svg-clip-region';
+import { createPageClipCheck, type ClipNode } from './svg-page-clip';
+import { CHAR_SLASH, MAX_SVG_INPUT_CHARS, XML_NAME_PATTERN, endOfMarkup, endOfTag, malformedXml, scanXmlTags, skipNonElementMarkup } from './svg-xml';
+import { NEUTRAL_ONLY_PROPERTY_NAMES, SVG_NUMBER_PATTERN, assertNeutralPaintProperties, devicePattern, parseDashArray, type SvgPenMode } from './svg-pen';
 
 export { parseCssColor, resolvePaint } from './svg-paint';
 export type { RgbColor } from './svg-paint';
+
+export type { SvgPenMode } from './svg-pen';
+export { MAX_SVG_INPUT_CHARS } from './svg-xml';
 
 export type SvgFillRule = 'nonzero' | 'evenodd';
 
@@ -25,6 +31,8 @@ export interface SvgGeometryElement {
   strokeLinejoin: SvgLinejoin;
   /** SVG stroke-miterlimit (ratio of miter length to stroke width, at least 1). */
   strokeMiterlimit: number;
+  /** The dash pattern of the stroke in device units, dash and gap in turn from a dash; null for a solid line (always, unless the pens are read as `centre-line`). */
+  strokeDash: readonly number[] | null;
 }
 
 export interface ParsedSvgVectorDocument {
@@ -422,115 +430,6 @@ export function parseSvgTransform(value: string): AffineMatrix {
 }
 
 // ============================================================================
-// Minimal XML tag scanner
-// ============================================================================
-
-interface XmlTag {
-  name: string;
-  attrs: Map<string, string>;
-  closing: boolean;
-  selfClosing: boolean;
-}
-
-const XML_NAME_PATTERN = /[A-Za-z_][\w:.-]*/y;
-const XML_ATTR_PATTERN = /([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/g;
-const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
-
-const MAX_CODE_POINT = 0x10ffff;
-
-function decodeXmlEntities(value: string): string {
-  return value.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (whole, ent: string) => {
-    if (ent.startsWith('#')) {
-      const code = ent.startsWith('#x') ? Number.parseInt(ent.slice(2), 16) : Number.parseInt(ent.slice(1), 10);
-      if (Number.isNaN(code) || code < 0 || code > MAX_CODE_POINT) {
-        throw new CadGeometryUnavailableError(`Invalid XML character reference "${whole}".`);
-      }
-      return String.fromCodePoint(code);
-    }
-    return XML_ENTITIES[ent] ?? whole;
-  });
-}
-
-/** Largest SVG text (and decompressed SVGZ payload) the parser accepts. */
-export const MAX_SVG_INPUT_CHARS = 5 * 1024 * 1024;
-
-function malformedXml(reason: string): CadGeometryUnavailableError {
-  return new CadGeometryUnavailableError(`Malformed SVG: ${reason}.`);
-}
-
-/** Index just past the end of a markup declaration, or throws when it is never terminated. */
-function endOfMarkup(xml: string, from: number, terminator: string, what: string): number {
-  const end = xml.indexOf(terminator, from);
-  if (end < 0) throw malformedXml(`unterminated ${what}`);
-  return end + terminator.length;
-}
-
-const CHAR_GT = 0x3e;
-const CHAR_DQUOTE = 0x22;
-const CHAR_SQUOTE = 0x27;
-const CHAR_SLASH = 0x2f;
-
-/** Index of the `>` that closes the tag whose attribute text starts at `from`; quoted values may contain `>`. */
-function endOfTag(xml: string, from: number): number {
-  let i = from;
-  while (i < xml.length) {
-    const c = xml.charCodeAt(i);
-    if (c === CHAR_GT) return i;
-    if (c === CHAR_DQUOTE || c === CHAR_SQUOTE) {
-      const close = xml.indexOf(c === CHAR_DQUOTE ? '"' : "'", i + 1);
-      if (close < 0) throw malformedXml('unterminated attribute value');
-      i = close + 1;
-    } else {
-      i++;
-    }
-  }
-  throw malformedXml('unterminated tag');
-}
-
-/** Position after a comment, CDATA section, processing instruction or declaration starting at `lt`; -1 for an element. */
-function skipNonElementMarkup(xml: string, lt: number): number {
-  if (xml.startsWith('<!--', lt)) return endOfMarkup(xml, lt + 4, '-->', 'comment');
-  if (xml.startsWith('<![CDATA[', lt)) return endOfMarkup(xml, lt + 9, ']]>', 'CDATA section');
-  if (xml.startsWith('<?', lt)) return endOfMarkup(xml, lt + 2, '?>', 'processing instruction');
-  if (xml.startsWith('<!', lt)) return endOfMarkup(xml, lt + 2, '>', 'declaration');
-  return -1;
-}
-
-/** Single-pass, linear-time tokenizer; every scan advances past the text it consumed. */
-function* scanXmlTags(xml: string): Generator<XmlTag> {
-  let pos = 0;
-  while (pos < xml.length) {
-    const lt = xml.indexOf('<', pos);
-    if (lt < 0) return;
-    const after = skipNonElementMarkup(xml, lt);
-    if (after >= 0) {
-      pos = after;
-      continue;
-    }
-    const closing = xml.charCodeAt(lt + 1) === CHAR_SLASH;
-    const nameStart = closing ? lt + 2 : lt + 1;
-    XML_NAME_PATTERN.lastIndex = nameStart;
-    const nameMatch = XML_NAME_PATTERN.exec(xml);
-    if (!nameMatch) {
-      pos = lt + 1; // a bare "<" in character data
-      continue;
-    }
-    const name = nameMatch[0];
-    const attrStart = nameStart + name.length;
-    const tagEnd = endOfTag(xml, attrStart);
-    let attrText = xml.substring(attrStart, tagEnd).trimEnd();
-    const selfClosing = attrText.endsWith('/');
-    if (selfClosing) attrText = attrText.slice(0, -1);
-    const attrs = new Map<string, string>();
-    for (const a of attrText.matchAll(XML_ATTR_PATTERN)) {
-      attrs.set(a[1], decodeXmlEntities(a[2] ?? a[3] ?? ''));
-    }
-    pos = tagEnd + 1;
-    yield { name: name.replace(/^svg:/, ''), attrs, closing, selfClosing };
-  }
-}
-
-// ============================================================================
 // Style cascade (presentation attributes < style attribute, with inheritance)
 // ============================================================================
 
@@ -544,6 +443,8 @@ interface StyleContext {
   strokeLinecap: string;
   strokeLinejoin: string;
   strokeMiterlimit: string;
+  /** The `stroke-dasharray` in user units (an even number of lengths), null for a solid line; read only in `centre-line` mode. */
+  dashArray: readonly number[] | null;
   ctm: AffineMatrix;
 }
 
@@ -557,11 +458,12 @@ const INITIAL_STYLE: StyleContext = {
   strokeLinecap: 'butt',
   strokeLinejoin: 'miter',
   strokeMiterlimit: '4',
+  dashArray: null,
   ctm: IDENTITY_MATRIX,
 };
 
 /** Inherited presentation properties handled by the encoders, keyed by CSS name. */
-const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm'>> = {
+const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm' | 'dashArray'>> = {
   fill: 'fill',
   stroke: 'stroke',
   'stroke-width': 'strokeWidth',
@@ -572,45 +474,6 @@ const INHERITED_PROPERTIES: Record<string, keyof Omit<StyleContext, 'ctm'>> = {
   'stroke-linejoin': 'strokeLinejoin',
   'stroke-miterlimit': 'strokeMiterlimit',
 };
-
-/**
- * Properties that change painted pixels but are only representable at their
- * neutral value; anything else throws (metafile brushes and pens are opaque,
- * solid and painted fill-then-stroke).
- */
-const NEUTRAL_ONLY_PROPERTIES: Record<string, (value: string) => boolean> = {
-  opacity: isOpaque,
-  'fill-opacity': isOpaque,
-  'stroke-opacity': isOpaque,
-  'stroke-dasharray': (v) => v === 'none',
-  'paint-order': (v) => v === 'normal' || v === 'fill' || v === 'fill stroke' || v === 'fill stroke markers',
-  'vector-effect': (v) => v === 'none',
-  'mix-blend-mode': (v) => v === 'normal',
-  'stroke-miterlimit': (v) => SVG_NUMBER_PATTERN.test(v) && Number(v) >= 1,
-  'stroke-linecap': (v) => SVG_LINECAPS.has(v),
-  'stroke-linejoin': (v) => SVG_LINEJOINS.has(v),
-};
-
-const SVG_LINECAPS = new Set(['butt', 'round', 'square']);
-const SVG_LINEJOINS = new Set(['miter', 'round', 'bevel']);
-
-function isOpaque(value: string): boolean {
-  const v = value.trim();
-  const isPercent = v.endsWith('%');
-  const body = isPercent ? v.slice(0, -1) : v;
-  if (!SVG_NUMBER_PATTERN.test(body)) return false;
-  return Number(body) >= (isPercent ? 100 : 1);
-}
-
-function assertNeutralPaintProperties(declared: Map<string, string>): void {
-  for (const [prop, isNeutral] of Object.entries(NEUTRAL_ONLY_PROPERTIES)) {
-    const raw = declared.get(prop);
-    if (raw === undefined || raw.trim().toLowerCase() === 'inherit') continue;
-    if (!isNeutral(raw.trim().toLowerCase().replace(/\s+/g, ' '))) {
-      throw new UnsupportedOptionError(`SVG ${prop} "${raw.trim()}" is not supported by metafile encoders.`);
-    }
-  }
-}
 
 /** Elements whose content is never rendered directly. */
 const NON_RENDERED_ELEMENTS = new Set([
@@ -816,7 +679,7 @@ function compareRules(a: CssRule, b: CssRule): number {
  */
 function declaredProperties(attrs: Map<string, string>, name = '', sheet: CssRule[] = []): Map<string, string> {
   const declared = new Map<string, string>();
-  for (const prop of [...Object.keys(INHERITED_PROPERTIES), ...Object.keys(NEUTRAL_ONLY_PROPERTIES), 'display']) {
+  for (const prop of [...Object.keys(INHERITED_PROPERTIES), ...NEUTRAL_ONLY_PROPERTY_NAMES, 'display', 'clip-rule']) {
     const v = attrs.get(prop);
     if (v !== undefined && v.trim() !== '') declared.set(prop, v.trim());
   }
@@ -839,12 +702,14 @@ function declaredProperties(attrs: Map<string, string>, name = '', sheet: CssRul
   return declared;
 }
 
-function deriveContext(parent: StyleContext, attrs: Map<string, string>, declared: Map<string, string>): StyleContext {
+function deriveContext(parent: StyleContext, attrs: Map<string, string>, declared: Map<string, string>, pens: SvgPenMode): StyleContext {
   const ctx: StyleContext = { ...parent };
   for (const [cssName, key] of Object.entries(INHERITED_PROPERTIES)) {
     const v = declared.get(cssName);
     if (v !== undefined && v !== 'inherit') ctx[key] = v;
   }
+  const dashArray = declared.get('stroke-dasharray');
+  if (pens === 'centre-line' && dashArray !== undefined && dashArray.toLowerCase() !== 'inherit') ctx.dashArray = parseDashArray(dashArray);
   const transform = attrs.get('transform');
   if (transform !== undefined && transform.trim() !== '') {
     ctx.ctm = multiplyMatrix(parent.ctm, parseSvgTransform(transform));
@@ -866,8 +731,6 @@ export function requireFinite(value: number, what: string): number {
   return value;
 }
 
-/** SVG/CSS <number> grammar: no hex, no Infinity/NaN, no empty strings. */
-const SVG_NUMBER_PATTERN = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$/;
 const NUMBER_LIST_TOKEN_PATTERN = /[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
 const LIST_SEPARATOR_PATTERN = /^[\s,]+$/;
 
@@ -878,17 +741,6 @@ export function parseSvgNumber(text: string, what: string): number {
     throw new CadGeometryUnavailableError(`SVG ${what} "${text}" is not a valid number.`);
   }
   return requireFinite(Number(t), `${what} "${text}"`);
-}
-
-/** Parses a whitespace/comma separated number list (signs may also separate, as in "10-5"). */
-function parseNumberList(value: string, what: string): number[] {
-  const out: number[] = [];
-  for (const m of value.matchAll(NUMBER_LIST_TOKEN_PATTERN)) {
-    const tok = m[0];
-    if (LIST_SEPARATOR_PATTERN.test(tok)) continue;
-    out.push(parseSvgNumber(tok, what));
-  }
-  return out;
 }
 
 function numberAttr(attrs: Map<string, string>, name: string): number {
@@ -1197,7 +1049,7 @@ function buildSvgTree(svgContent: string): SvgNode | null {
 /** Containers rendered as groups. */
 const GROUP_ELEMENTS = new Set(['g', 'a']);
 
-/** Decides whether a `clip-path` value clips nothing and can be dropped. */
+/** Decides whether a `clip-path` value is one the reader handles: a clip that clips nothing, or one it measures (svg-clip-region.ts). */
 type ClipPathAllowance = (value: string) => boolean;
 
 function assertNoUnsupportedReferences(attrs: Map<string, string>, clipsNothing?: ClipPathAllowance): void {
@@ -1227,17 +1079,23 @@ interface RenderState {
   shapeCache: Map<SvgNode, UserShape | null>;
   sheet: CssRule[];
   depth: number;
+  pens: SvgPenMode;
   /** Whether a `clip-path` value, on an element drawn under the matrix, is a clip that covers the page and clips nothing. */
   clipsNothing: (value: string, ctm: AffineMatrix) => boolean;
+  /** The other clips of a centre-line reader, measured against what is drawn under them; null where every such clip is refused. */
+  clips: ActiveClips | null;
 }
 
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
 const MAX_RENDERED_NODES = 100000;
 
-function indexIds(node: SvgNode, ids: Map<string, SvgNode>): void {
+function indexIds(node: SvgNode, ids: Map<string, SvgNode>, parents: Map<ClipNode, SvgNode>): void {
   const id = node.attrs.get('id');
   if (id !== undefined && !ids.has(id)) ids.set(id, node);
-  for (const child of node.children) indexIds(child, ids);
+  for (const child of node.children) {
+    parents.set(child, node);
+    indexIds(child, ids, parents);
+  }
 }
 
 /**
@@ -1301,9 +1159,11 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
       return d;
     })
   );
-  requireFinite(strokeWidth * matrixLengthScale(ctx.ctm), `<${node.name}> device stroke width`);
+  state.clips?.assertWithin(deviceSubpaths);
+  const lengthScale = matrixLengthScale(ctx.ctm);
+  requireFinite(strokeWidth * lengthScale, `<${node.name}> device stroke width`);
   const stroke = strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null;
-  if (stroke && !isUniformScale(ctx.ctm)) {
+  if (stroke && state.pens === 'metafile' && !isUniformScale(ctx.ctm)) {
     throw new UnsupportedOptionError(
       `Stroked SVG <${node.name}> under a non-uniform scale or skew is not supported: a metafile pen has one width.`
     );
@@ -1315,10 +1175,11 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     fill: resolvePaint(ctx.fill, ctx.color, 'fill'),
     fillRule: ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero',
     stroke,
-    strokeWidth: strokeWidth * matrixLengthScale(ctx.ctm),
+    strokeWidth: strokeWidth * lengthScale,
     strokeLinecap: ctx.strokeLinecap.trim() as SvgLinecap,
     strokeLinejoin: ctx.strokeLinejoin.trim() as SvgLinejoin,
     strokeMiterlimit: parseSvgNumber(ctx.strokeMiterlimit, 'stroke-miterlimit'),
+    strokeDash: stroke && ctx.dashArray && lengthScale > 0 ? devicePattern(ctx.dashArray, lengthScale, ctx.strokeLinecap.trim() !== 'butt') : null,
   });
 }
 
@@ -1349,12 +1210,16 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
     throw new CadGeometryUnavailableError(`SVG expands to more than ${MAX_RENDERED_NODES} rendered elements.`);
   }
   const declared = declaredProperties(node.attrs, node.name, state.sheet);
-  assertNeutralPaintProperties(declared);
+  assertNeutralPaintProperties(declared, state.pens);
   assertValidPaintDeclarations(declared);
   if (declared.get('display') === 'none') return;
-  const ctx = deriveContext(parent, node.attrs, declared);
-  if (state.bitmapGlyphs.take(node, state.ids, parent.ctm, ctx.ctm)) return;
-  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm));
+  const ctx = deriveContext(parent, node.attrs, declared, state.pens);
+  if (state.bitmapGlyphs.take(node, state.ids, parent.ctm, ctx.ctm)) {
+    state.clips?.assertWithin(glyphBox(state.bitmapGlyphs.marks[state.bitmapGlyphs.marks.length - 1]));
+    return;
+  }
+  let opensClip = false;
+  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm) || (opensClip = state.clips?.enter(value, ctx.ctm) ?? false));
   if (kind === 'shape') {
     emitShape(node, ctx, state);
   } else if (kind === 'use') {
@@ -1362,15 +1227,17 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   } else {
     renderChildren(node, ctx, state);
   }
+  if (opensClip) state.clips?.leave();
 }
 
 /**
  * Parses SVG XML into geometry elements with flattened polylines in device (viewport) coordinates, honouring the style cascade,
  * inheritance from container elements and transforms. Rendered content that cannot be represented (text, images, clipping, ...)
- * throws instead of being dropped; a clip that is one rectangle covering the whole page clips nothing and is the one exception,
- * and the characters of a bitmap font go to `bitmapGlyphs` when it sets them aside (svg-bitmap-glyph.ts).
+ * throws instead of being dropped, but a clip over the whole page, and in `centre-line` mode a clip that hides at most a point
+ * (svg-clip-region.ts). Bitmap-font characters go to `bitmapGlyphs` when it sets them aside (svg-bitmap-glyph.ts); `pens` says
+ * what the target does with the pen attributes it cannot paint (svg-pen.ts): by default they are refused.
  */
-export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new BitmapGlyphs()): ParsedSvgVectorDocument {
+export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new BitmapGlyphs(), pens: SvgPenMode = 'metafile'): ParsedSvgVectorDocument {
   if (svgContent.length > MAX_SVG_INPUT_CHARS) {
     throw new CadGeometryUnavailableError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
   }
@@ -1381,15 +1248,26 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
   const viewport = resolveViewport(root.attrs);
   const sheet = extractStylesheets(svgContent);
   const declared = declaredProperties(root.attrs, root.name, sheet);
-  assertNeutralPaintProperties(declared);
+  assertNeutralPaintProperties(declared, pens);
   assertValidPaintDeclarations(declared);
   assertNoUnsupportedReferences(root.attrs);
-  const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared);
+  const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared, pens);
   const ids = new Map<string, SvgNode>();
+  const parents = new Map<ClipNode, SvgNode>();
   const vertices = new VertexBudget();
   const clipsNothing = createPageClipCheck(ids, viewport, (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null);
-  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, clipsNothing };
-  indexIds(root, state.ids);
+  const clips =
+    pens === 'centre-line'
+      ? new ActiveClips({
+          ids,
+          outlineOf: (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null,
+          declaredOf: (node) => declaredProperties(node.attrs, node.name, sheet),
+          parentOf: (node) => parents.get(node),
+          transformOf: (value) => (value.trim() === '' ? IDENTITY_MATRIX : parseSvgTransform(value)),
+        })
+      : null;
+  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, clipsNothing, clips };
+  indexIds(root, state.ids, parents);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, elements: state.elements };
 }

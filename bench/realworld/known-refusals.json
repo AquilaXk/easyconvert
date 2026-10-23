@@ -78,57 +78,33 @@
     "issue": 783
   },
   {
-    "file": "govdocs1-000730.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: Stroked SVG <path> under a non-uniform scale or skew is not supported: a metafile pen has one width\\.$",
-    "reason": "The bitmap-font text of page 1 is written as TEXT (policy 74), but page 2 strokes a path under a non-uniform scale, whose pen width changes with direction and which an R12 polyline of one width does not hold (tests/postscript-real-file-refusals.test.ts).",
-    "issue": 783
-  },
-  {
     "file": "govdocs1-001048.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: Stroked SVG <path> under a non-uniform scale or skew is not supported: a metafile pen has one width\\.$",
-    "reason": "The bitmap-font text of the other 13 pages is written as TEXT (policy 74), but page 3 strokes a path under a non-uniform scale and page 11 a dashed line, which the DXF writer does not hold (tests/postscript-real-file-refusals.test.ts).",
-    "issue": 783
-  },
-  {
-    "file": "govdocs1-002433.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
-    "reason": "The bitmap-font text of the other 4 pages is written as TEXT (policy 74), but page 3 draws a dashed line, and the DXF writer writes no line types (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported: a drawn path reaches [0-9.]+ pixels past it, more than the [0-9.]+ pixels \\(one point\\) a clip may hide\\.$",
+    "reason": "The geometry of the other 14 pages is read, dashed and skewed strokes included (policy 79), but page 11 clips two drawn paths to a rectangle that is not the page and the farthest vertex of one is 13.2 points past it. The clip is dropped when nothing it hides is more than one point outside it (policy 79), so this page stays refused (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-002956.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
-    "reason": "Most text is outline fonts and the few bitmap-font characters of 19 pages are written as TEXT (policy 74), but pages 22, 26 and 33 draw dashed lines and 7 pages stroke paths under a non-uniform scale, which the DXF writer does not hold; page 28 would stay refused too, as the PDF text layer reads 13 of its 13 bitmap glyphs as spaces (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: the PDF text layer has no text for most of its bitmap-font characters \\(drawn as pictures\\)\\.$",
+    "reason": "Every page but one is written, dashed and skewed strokes included (policy 79); page 28 draws 13 bitmap-font characters and the PDF text layer reads all 13 as spaces, so there is no text to write for them (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-003229.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
-    "reason": "The bitmap-font text of the other 15 pages is written as TEXT (policy 74), but pages 13, 16 and 19 draw dashed lines, which the DXF writer does not hold, and the SVG Poppler draws for pages 17 and 18 is larger than the 5 MiB the geometry reader reads (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^CadGeometryUnavailableError: SVG input exceeds the 5242880-character limit\\.$",
+    "reason": "The geometry of the other 18 pages is read, dashed lines included (policy 79); the SVG Poppler draws for pages 17 and 18 is 8.1 and 7.1 MB, larger than the 5 MiB the geometry reader reads, which stays (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-004087.ps",
     "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG element <image> is not supported\\.$",
-    "reason": "Most text is outline fonts and the bitmap-font characters of pages 1 and 4 are written as TEXT (policy 74), but pages 2 and 3 hold pictures, which a DXF does not drop without a word (policy 42), and page 5 draws a dashed line (tests/postscript-real-file-refusals.test.ts).",
-    "issue": 783
-  },
-  {
-    "file": "govdocs1-005434.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
-    "reason": "The bitmap-font text of the other 18 pages is written as TEXT (policy 74), but pages 12 to 15 draw dashed lines, which the DXF writer does not hold (tests/postscript-real-file-refusals.test.ts).",
+    "reason": "Most text is outline fonts and the bitmap-font characters of pages 1 and 4 are written as TEXT (policy 77), and the dashed line of page 5 is a line type (policy 79), but pages 2 and 3 hold pictures, which a DXF does not drop without a word (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-006137.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: Stroked SVG <path> under a non-uniform scale or skew is not supported: a metafile pen has one width\\.$",
-    "reason": "The bitmap-font text of the other 45 pages is written as TEXT (policy 74), but 7 pages stroke paths under a non-uniform scale, 13 pages clip their drawings to a region that is not the page and page 21 draws a dashed line, which the DXF writer does not hold (tests/postscript-real-file-refusals.test.ts).",
-    "issue": 783
-  },
-  {
-    "file": "govdocs1-006955.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
-    "reason": "The bitmap-font text of pages 1, 4 and 6 is written as TEXT (policy 74), but pages 2, 3, 5 and 7 draw dashed lines and page 8 strokes a path under a non-uniform scale, which the DXF writer does not hold (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported: a drawn path reaches [0-9.]+ pixels past it, more than the [0-9.]+ pixels \\(one point\\) a clip may hide\\.$",
+    "reason": "The geometry of the other 50 pages is read, skewed and dashed strokes included (policy 79), and the clips of 12 of the 16 pages that clip their drawing to a region that is not the page hide at most 0.76 point with either Poppler release and are dropped (policy 79). Pages 20, 50 and 60 sit near the one point a dropped clip may hide: they reach 1.15, 1.21 and 1.28 points with Poppler 26 and are refused, and 0.86, 0.90 and 0.96 with Poppler 24 and are written. Page 43 reaches 19.4 points with Poppler 26 and 14.6 with Poppler 24, so the file stays refused with both (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   }
 ]

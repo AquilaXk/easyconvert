@@ -27,7 +27,7 @@ describe('svgToDxf', () => {
   it('writes a line at its position with Y pointing up', () => {
     const { entities } = readDxf(svgToDxf(wrap('<line x1="10" y1="10" x2="100" y2="100" />')));
     expect(entities).toEqual<DxfEntityRecord[]>([
-      { type: 'LINE', layer: '0', closed: false, points: [{ x: 10, y: up(10), z: 0 }, { x: 100, y: up(100), z: 0 }] },
+      { type: 'LINE', layer: '0', closed: false, linetype: 'BYLAYER', linetypeGenerated: false, points: [{ x: 10, y: up(10), z: 0 }, { x: 100, y: up(100), z: 0 }] },
     ]);
   });
 
