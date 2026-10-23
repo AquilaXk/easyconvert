@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import Papa from 'papaparse';
-import iconv from 'iconv-lite';
 import { parse as parseToml, stringify as stringifyToml, TomlError } from 'smol-toml';
 import {
   Document as YamlDocument,
@@ -45,7 +44,9 @@ import { assertToml10Syntax } from './data-toml';
 import { assertConversionOptionsObject } from './options-guard';
 import { delimitedToParquet, jsonLinesToDelimited, parquetToDelimited, parquetToJson } from './data-fast-paths';
 import { DELIMITED_RECORD_SEPARATOR, FORMULA_TRIGGER, UTF8_BOM_CHAR, writesBomByDefault } from './delimited-rules';
-import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter, parseDelimitedRecords } from './delimited-detect';
+import { DELIMITER_CANDIDATES, detectDelimiter, nominalDelimiter, parseDelimitedRecords, raggedRowWarnings } from './delimited-detect';
+import { reportConversionWarning } from './conversion-warnings';
+import { LEGACY_TABLES, MIN_LEGACY_EVIDENCE_CHARS, decodeWithTable } from './legacy-tables';
 
 export { encodeParquet, decodeParquet };
 
@@ -69,25 +70,6 @@ const UTF16_NUL_LANE_MIN_SHARE = 0.5;
 /** Share of code units whose other byte may be NUL before the NUL pattern stops looking like UTF-16. */
 const UTF16_OTHER_LANE_MAX_SHARE = 0.05;
 const ASCII_LIMIT = 0x80;
-const REPLACEMENT_CHARACTER = 0xfffd;
-
-/**
- * iconv-lite decoding tables for WHATWG legacy encodings that Node's TextDecoder gets wrong
- * without throwing in fatal mode: its "euc-kr" lacks the CP949 extension rows and turns their
- * lead bytes into C1 controls, its "gbk" drops some valid sequences, its "big5" drops HKSCS
- * characters, and its "windows-1252" (also the decoder of the latin1 and iso-8859-1 labels)
- * decodes 0x80-0x9F as ISO-8859-1 C1 controls instead of curly quotes, dashes and the euro sign.
- * iconv-lite's tables match glibc iconv for every sequence used here; Windows-1252's five
- * unassigned bytes are rejected rather than read as C1 controls.
- */
-const LEGACY_TABLES: ReadonlyMap<string, string> = new Map([
-  ['euc-kr', 'cp949'],
-  ['shift_jis', 'cp932'],
-  ['gbk', 'gb18030'],
-  ['gb18030', 'gb18030'],
-  ['big5', 'big5hkscs'],
-  ['windows-1252', 'cp1252'],
-]);
 
 /** One block of a double-byte code space: a lead byte range by its trail byte ranges. */
 interface DoubleByteBlock {
@@ -181,17 +163,9 @@ const SINGLE_BYTE_CONTROL = /[\x00-\x08\x0B\x0C\x0E-\x1F]/;
 const PRIVATE_USE = /[-]/;
 /** Minimum share of non-ASCII characters that must fall in a candidate's standard set. */
 const LEGACY_REPERTOIRE_MIN_SHARE = 0.5;
-/** Non-ASCII characters a legacy guess needs before it is trusted; fewer cannot tell the encodings apart. */
-const MIN_LEGACY_EVIDENCE_CHARS = 4;
 const DETECTED_ENCODINGS_LABEL = 'UTF-8, UTF-16, EUC-KR/CP949, Shift_JIS, GBK, Big5 and Windows-1252';
 
 const legacyRepertoireCache = new Map<readonly DoubleByteBlock[], ReadonlySet<number>>();
-
-/** Decodes with an iconv-lite table; null when any sequence is invalid (the table emits U+FFFD for it). */
-function decodeWithTable(bytes: Uint8Array, table: string): string | null {
-  const text = iconv.decode(bytes, table, { stripBOM: false });
-  return text.includes(String.fromCodePoint(REPLACEMENT_CHARACTER)) ? null : text;
-}
 
 /** Code points of a set of double-byte blocks, decoded once per block list. */
 function legacyRepertoire(table: string, blocks: readonly DoubleByteBlock[]): ReadonlySet<number> {
@@ -407,12 +381,14 @@ function assertDataOptions(options: unknown): asserts options is ConversionOptio
 
 /**
  * Decodes and parses delimited text with a header record (parseDelimitedRecords, shared with the
- * browser paths); any parse error fails closed.
+ * browser paths); a quote error fails closed, and records of another width than the header are
+ * evened out and reported in the warnings of the conversion.
  */
 function parseDelimitedTable(inputBuffer: Buffer, src: string, options: ConversionOptions): DelimitedTable {
   const text = decodeDelimitedText(inputBuffer, options.encoding);
   const delimiter = resolveDelimiter(text, src, options.delimiter);
-  const { fields, records } = parseDelimitedRecords(text, delimiter, src);
+  const { fields, records, ragged } = parseDelimitedRecords(text, delimiter, src);
+  for (const line of raggedRowWarnings(ragged, src)) reportConversionWarning(line);
   return { fields, records, text, delimiter };
 }
 

@@ -229,10 +229,11 @@ describe('CSV delimiter detection', () => {
     const records = await csvToRecords(fixture('semicolon.csv'), 'semicolon.csv', { delimiter: ';' });
     expect(records.map((r) => r.produit)).toEqual(['pomme', 'poire', 'cerise']);
 
-    // Forcing the wrong delimiter must not silently produce a reshaped table.
-    const err = await rejection(csvToRecords(fixture('semicolon.csv'), 'semicolon.csv', { delimiter: ',' }));
-    expect(err).toBeInstanceOf(DataParseError);
-    expect((err as DataParseError).row).toBe(2);
+    // Forcing the wrong delimiter reshapes the table, and the conversion says so: the header is one column, the records have two.
+    const forced = await convertFile(fixture('semicolon.csv'), 'csv', 'json', { delimiter: ',' }, 'semicolon.csv');
+    const reshaped = JSON.parse(forced.buffer.toString('utf-8')) as CsvRecord[];
+    expect(Object.keys(reshaped[0])).toEqual(['produit;prix;quantité', 'Unnamed: 1']);
+    expect(forced.metadata?.warnings).toEqual(['CSV: 3 rows have more fields than the header (the first is row 2); 1 column was added, named Unnamed: 1.']);
   });
 
   it('keeps the tab delimiter for TSV input', async () => {
@@ -242,17 +243,23 @@ describe('CSV delimiter detection', () => {
 });
 
 describe('CSV parse errors fail closed', () => {
-  it('reports a record with too many fields with its row number', async () => {
-    const err = await rejection(csvToRecords(Buffer.from('a,b\r\n1,2\r\n3,4,5\r\n6,7\r\n'), 'extra.csv'));
-    expect(err).toBeInstanceOf(DataParseError);
-    expect((err as DataParseError).row).toBe(3);
-    expect(err.message).toMatch(/row 3/);
+  it('widens the table for a record with too many fields and names its row', async () => {
+    const result = await convertFile(Buffer.from('a,b\r\n1,2\r\n3,4,5\r\n6,7\r\n'), 'csv', 'json', {}, 'extra.csv');
+    expect(JSON.parse(result.buffer.toString('utf-8'))).toEqual([
+      { a: '1', b: '2', 'Unnamed: 2': '' },
+      { a: '3', b: '4', 'Unnamed: 2': '5' },
+      { a: '6', b: '7', 'Unnamed: 2': '' },
+    ]);
+    expect(result.metadata?.warnings).toEqual([
+      'CSV: 1 row has more fields than the header (the first is row 3); 1 column was added, named Unnamed: 2.',
+      'CSV: 2 rows have fewer fields than the widest row (the first is row 2); their missing cells are empty.',
+    ]);
   });
 
-  it('reports a record with too few fields with its row number', async () => {
-    const err = await rejection(csvToRecords(Buffer.from('a,b,c\n1,2,3\n4,5,6\n7,8\n'), 'short.csv'));
-    expect(err).toBeInstanceOf(DataParseError);
-    expect((err as DataParseError).row).toBe(4);
+  it('fills a record with too few fields and names its row', async () => {
+    const result = await convertFile(Buffer.from('a,b,c\n1,2,3\n4,5,6\n7,8\n'), 'csv', 'json', {}, 'short.csv');
+    expect((JSON.parse(result.buffer.toString('utf-8')) as CsvRecord[])[2]).toEqual({ a: '7', b: '8', c: '' });
+    expect(result.metadata?.warnings).toEqual(['CSV: 1 row has fewer fields than the widest row (the first is row 4); its missing cells are empty.']);
   });
 
   it('reports an unterminated quoted field with its row and line number', async () => {

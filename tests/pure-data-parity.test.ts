@@ -63,10 +63,18 @@ describe('pure data CSV/TSV parsing matches the server', () => {
     ]);
   });
 
-  it('raises the server error for field-count and quote problems even when other rows parse', async () => {
+  it('reads records of another width than the header as the server does', async () => {
     for (const [input, src] of [
       ['a,b\r\n1,2\r\n3,4,5\r\n6,7\r\n', 'csv'],
       ['a,b,c\n1,2,3\n\n7,8\n', 'csv'],
+      ['a\tb\n1\n\n2\t3\t4\n', 'tsv'],
+    ] as const) {
+      expect(convertPureData(input, src, 'json').text).toBe(await serverJson(input, src));
+    }
+  });
+
+  it('raises the server error for quote problems even when other rows parse', async () => {
+    for (const [input, src] of [
       ['a,b\n1,2\n"x"y,1\n', 'csv'],
       ['a\tb\n1\t2\n3\t"open\n', 'tsv'],
     ] as const) {
