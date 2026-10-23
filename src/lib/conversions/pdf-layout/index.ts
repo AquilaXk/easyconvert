@@ -353,12 +353,18 @@ export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont
   const imageIds = new Counter();
   const layouts = pages.map((page, index) => layoutPage(page, fonts, flows, index * COLUMN_FLOW_BASE * 1000));
   const documentImages: DocumentImage[] = [];
+  // Placements of one picture share its bytes (pdf-text-images.ts), so they share one entry, as DocumentContext.addImage does by content
+  // for the other readers: Word, ODF and EPUB then write the picture once however many times the pages paint it.
+  const entryOfFile = new Map<Uint8Array, DocumentImage>();
   layouts.forEach((layout) => {
     // Images that came with their file become blocks; a placement without one (not asked for, too large) has nothing to write.
     const decoded = layout.page.images.map((image): DocumentImage | undefined => {
       if (!image.data || !image.format) return undefined;
+      const known = entryOfFile.get(image.data);
+      if (known) return known;
       const entry: DocumentImage = { id: imageIds.next(), format: image.format, data: image.data, pixelWidth: image.pixelWidth, pixelHeight: image.pixelHeight };
       documentImages.push(entry);
+      entryOfFile.set(image.data, entry);
       return entry;
     });
     placeImages(layout, decoded);

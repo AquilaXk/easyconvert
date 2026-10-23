@@ -5,6 +5,7 @@ import { pdfjsImageToPng } from './pdf-rasterizer';
 import {
   PDF_CONTENT_MAX_IMAGE_BYTES,
   PDF_CONTENT_MAX_PAGE_STREAM_BYTES,
+  PDF_CONTENT_MAX_PICTURES,
   type PdfContentImage,
 } from './pdf-text-types';
 
@@ -167,9 +168,33 @@ export interface ImageSource {
   inline?: unknown;
 }
 
-interface ObjectStore {
+/** pdf.js's `PDFObjects`: `get(id)` reads a delivered object, `get(id, callback)` calls back once it is delivered. */
+interface ObjectPool {
   has(id: string): boolean;
-  get(id: string): unknown;
+  get(id: string, callback?: (data: unknown) => void): unknown;
+}
+
+/** The two object tables of a pdf.js page: its own, and the one shared by the pages of the document. */
+export interface PagePools {
+  objs: ObjectPool;
+  commonObjs: ObjectPool;
+}
+
+/** pdf.js keeps a picture that several pages paint in the shared table, under an id that starts with this (src/display/canvas.js, executeOperatorList). */
+const COMMON_ID_PREFIX = 'g_';
+
+/**
+ * A decoded picture as pdf.js delivers it. The worker decodes a picture in a task of its own and posts it to the page
+ * after the operator list has resolved, so it may not be there yet when the list is read. pdf.js's own renderer waits for
+ * it at the list's `dependency` operator (`objsPool.get(id, callback)`) and so does this. A picture that cannot be decoded
+ * arrives as null, so the wait always ends; a document that never delivers one runs into the thread's deadline.
+ */
+function deliveredPicture(pools: PagePools, id: string): Promise<unknown> {
+  const pool = id.startsWith(COMMON_ID_PREFIX) ? pools.commonObjs : pools.objs;
+  if (pool.has(id)) return Promise.resolve(pool.get(id));
+  return new Promise((resolve) => {
+    pool.get(id, resolve);
+  });
 }
 
 /** Loads what reading images needs (pdf-lib), for a thread that is about to read documents with images. */
@@ -177,10 +202,26 @@ export async function preloadImageReader(): Promise<void> {
   await import('pdf-lib');
 }
 
-/** Attaches the files of the images a document places, within a byte budget for the whole document. */
+/** The file of a picture: the PDF's own JPEG stream, or a PNG of the pixels pdf.js decoded. */
+interface PictureFile {
+  data: Uint8Array;
+  format: 'jpeg' | 'png';
+}
+
+/**
+ * Attaches the files of the images a document places, within a byte budget and a placement count for the whole document.
+ *
+ * A picture is encoded once per pdf.js object id and every placement of it shares those bytes, as pdf.js decodes it once per
+ * object for all the draws of a page and once for all the pages that paint it (`LocalImageCache` and `GlobalImageCache`, pdf.worker.mjs
+ * lines 31918 and 32044). The budgets still count every placement: Markdown and HTML write one data URI per placement, as Poppler's
+ * `pdftohtml` writes one image file per draw (HtmlOutputDev.cc, `createImageFileName`) and `pdfimages` one per draw (ImageOutputDev.cc,
+ * `++imgNum`), neither of which has a limit. A document that places more pictures than the limit is refused with a 413.
+ */
 export class ImageExtractor {
   private readonly catalog: JpegCatalog;
   private bytesLeft = PDF_CONTENT_MAX_IMAGE_BYTES;
+  private placementsLeft = PDF_CONTENT_MAX_PICTURES;
+  private readonly encoded = new Map<string, Promise<PictureFile | null>>();
 
   constructor(pdf: Uint8Array) {
     this.catalog = new JpegCatalog(pdf);
@@ -189,9 +230,30 @@ export class ImageExtractor {
   private take(bytes: number): void {
     this.bytesLeft -= bytes;
     if (this.bytesLeft < 0) throw new PayloadLimitError(`The images of the PDF are more than ${PDF_CONTENT_MAX_IMAGE_BYTES} bytes.`);
+    this.placementsLeft -= 1;
+    if (this.placementsLeft < 0) throw new PayloadLimitError(`The PDF places more than ${PDF_CONTENT_MAX_PICTURES} pictures.`);
   }
 
-  async attach(pageIndex: number, objs: ObjectStore, images: PdfContentImage[], sources: ImageSource[]): Promise<void> {
+  private async encodePicture(decoded: unknown, image: PdfContentImage): Promise<PictureFile | null> {
+    assertInputPixels(image.pixelWidth, image.pixelHeight);
+    const png = await pdfjsImageToPng(decoded);
+    return png ? { data: new Uint8Array(png.png), format: 'png' } : null;
+  }
+
+  /** The file of the picture a placement paints, or null when pdf.js could not decode it. An object id is encoded once. */
+  private pictureOf(source: ImageSource, pools: PagePools, image: PdfContentImage): Promise<PictureFile | null> | null {
+    if (source.inline !== undefined) return this.encodePicture(source.inline, image);
+    if (source.objId === undefined) return null;
+    const { objId } = source;
+    let picture = this.encoded.get(objId);
+    if (picture === undefined) {
+      picture = deliveredPicture(pools, objId).then((decoded) => (decoded === undefined ? null : this.encodePicture(decoded, image)));
+      this.encoded.set(objId, picture);
+    }
+    return picture;
+  }
+
+  async attach(pageIndex: number, pools: PagePools, images: PdfContentImage[], sources: ImageSource[]): Promise<void> {
     if (images.length === 0) return;
     const candidates = await this.catalog.imagesOfPage(pageIndex);
     const aligned =
@@ -200,21 +262,11 @@ export class ImageExtractor {
       candidates.every((candidate, index) => candidate.pixelWidth === images[index].pixelWidth && candidate.pixelHeight === images[index].pixelHeight);
     for (const [index, image] of images.entries()) {
       const passthrough = aligned ? candidates[index].jpeg : null;
-      if (passthrough) {
-        this.take(passthrough.length);
-        image.data = passthrough;
-        image.format = 'jpeg';
-        continue;
-      }
-      const source = sources[index];
-      const decoded = source.inline ?? (source.objId !== undefined && objs.has(source.objId) ? objs.get(source.objId) : undefined);
-      if (decoded === undefined) continue;
-      assertInputPixels(image.pixelWidth, image.pixelHeight);
-      const png = await pdfjsImageToPng(decoded);
-      if (!png) continue;
-      this.take(png.png.length);
-      image.data = new Uint8Array(png.png);
-      image.format = 'png';
+      const file: PictureFile | null = passthrough ? { data: passthrough, format: 'jpeg' } : await this.pictureOf(sources[index], pools, image);
+      if (file === null) continue;
+      this.take(file.data.length);
+      image.data = file.data;
+      image.format = file.format;
     }
   }
 }

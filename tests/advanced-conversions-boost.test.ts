@@ -324,7 +324,7 @@ The voyage was recorded.`;
       expect(ncx).toContain('<navLabel><text>Galaxy Guide</text></navLabel><content src="chapter1.xhtml#h-1"/>');
 
       const chapterXml = await zipEntryText(zip, 'OEBPS/chapter1.xhtml');
-      expect(chapterXml).toContain('<h1 id="h-1">Galaxy Guide</h1>');
+      expect(chapterXml).toContain('<h1 id="h-1"><a id="galaxy-guide"></a>Galaxy Guide</h1>');
       expect(chapterXml).toContain('<thead><tr><th>Item</th><th>Essential</th></tr></thead>');
       expect(chapterXml).toContain('<td>Towel</td><td>Yes</td>');
     });
