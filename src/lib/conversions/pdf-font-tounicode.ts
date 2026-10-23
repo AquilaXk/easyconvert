@@ -1,7 +1,8 @@
 import { ConversionFailedError } from '../types';
 import { InflateBudget } from './bounded-inflate';
 import type { CompositeFontDictionary, PdfDocument, PdfUpdateBase } from './pdf-document';
-import { type UnicodeCmap, readUnicodeCmap } from './truetype-cmap';
+import { type CidText, standardOrderTexts } from './standard-font-glyph-order';
+import { type UnicodeCmap, readUnicodeCmap, sfntTableTags } from './truetype-cmap';
 
 /**
  * The text of composite fonts that carry no /ToUnicode map, read from the TrueType program they embed.
@@ -11,7 +12,10 @@ import { type UnicodeCmap, readUnicodeCmap } from './truetype-cmap';
  * gives no source. pdfjs then writes the CID itself as the character, which is wrong text for a font whose CIDs are glyph
  * ids, as the Identity-H fonts of CAD plot drivers are. For such a font (Identity-H or Identity-V, CIDFontType2,
  * no /ToUnicode, no registered collection) the CID leads to a glyph through the /CIDToGIDMap, and the program's own
- * Unicode `cmap` names the character of that glyph (truetype-cmap.ts).
+ * Unicode `cmap` names the character of that glyph (truetype-cmap.ts). A program that names no glyph at all (TrueType
+ * without `cmap` and `post`, or a CID-keyed CFF program of a CIDFontType0 font) leaves the font's name: an Arial or Times
+ * New Roman font whose /W widths are those of that font at glyph id = CID reads through that font's glyph order
+ * (standard-font-glyph-order.ts).
  *
  * The map reaches pdfjs the way the standard defines it: the copy of the file that the text thread reads gets an
  * incremental update (section 7.5.6) that gives each such font a /ToUnicode stream. pdfjs then builds its text, spacing
@@ -24,6 +28,7 @@ const IDENTITY_ENCODINGS = new Set(['Identity-H', 'Identity-V']);
 const REGISTERED_REGISTRY = 'Adobe';
 const REGISTERED_ORDERINGS = new Set(['GB1', 'CNS1', 'Japan1', 'Korea1']);
 const TRUETYPE_CIDFONT = 'CIDFontType2';
+const CFF_CIDFONT = 'CIDFontType0';
 /** Most composite fonts of one document whose programs are read. */
 const MAX_FONTS = 64;
 /** Decoded bytes of font programs and CIDToGIDMap streams read for one document. */
@@ -35,9 +40,6 @@ const CID_COUNT = 0x10000;
 /** Entries of one bfchar block (the CMap specification allows at most 100). */
 const BFCHAR_BLOCK = 100;
 const HEX_STRING = /^(?:[0-9A-Fa-f]{2}|\s)+$/;
-
-/** A CID and the code point of its glyph. */
-type CidText = [cid: number, codePoint: number];
 
 interface FontMap {
   font: CompositeFontDictionary;
@@ -54,33 +56,39 @@ function hasRegisteredCollection(font: CompositeFontDictionary): boolean {
   return stringForms(font.registry).includes(REGISTERED_REGISTRY) && stringForms(font.ordering).some((ordering) => REGISTERED_ORDERINGS.has(ordering));
 }
 
-function readsFromProgram(font: CompositeFontDictionary): boolean {
+/** An Identity font with neither a /ToUnicode map nor a registered collection: pdfjs gives the CID itself as its text. */
+function lacksTextMap(font: CompositeFontDictionary): boolean {
   return (
     !font.hasToUnicode &&
     font.text.startsWith('<<') &&
     font.encoding !== null &&
     IDENTITY_ENCODINGS.has(font.encoding) &&
-    font.descendant === TRUETYPE_CIDFONT &&
     !hasRegisteredCollection(font)
   );
 }
 
-/** The cmaps read so far, by program: fonts that share a program (the same bytes object) read it once. */
-type CmapsByProgram = Map<Buffer, UnicodeCmap | null>;
-
-function cmapOf(program: Buffer, known: CmapsByProgram): UnicodeCmap | null {
-  if (!known.has(program)) known.set(program, readUnicodeCmap(program));
-  return known.get(program) ?? null;
+/** What a TrueType program says of its glyphs: its Unicode cmap, and whether it names none at all (no `cmap`, no `post`). */
+interface ProgramText {
+  cmap: UnicodeCmap | null;
+  namesNoGlyph: boolean;
 }
 
-/** The CIDs of the font whose text the program's cmap gives and the CID itself does not. */
-function cidTexts(font: CompositeFontDictionary, known: CmapsByProgram): CidText[] {
-  if (!readsFromProgram(font)) return [];
-  const cidToGid = font.cidToGidMap();
-  if (cidToGid === null) return [];
-  const program = font.trueTypeProgram();
-  const cmap = program === null ? null : cmapOf(program, known);
-  if (cmap === null) return [];
+/** What the programs read so far say, by program: fonts that share a program (the same bytes object) read it once. */
+type TextsByProgram = Map<Buffer, ProgramText>;
+
+function programTextOf(program: Buffer, known: TextsByProgram): ProgramText {
+  let text = known.get(program);
+  if (text === undefined) {
+    const cmap = readUnicodeCmap(program);
+    const tags = cmap === null ? sfntTableTags(program) : null;
+    text = { cmap, namesNoGlyph: tags !== null && !tags.has('cmap') && !tags.has('post') };
+    known.set(program, text);
+  }
+  return text;
+}
+
+/** The CIDs whose text the program's cmap gives and the CID itself does not. */
+function cmapTexts(cmap: UnicodeCmap, cidToGid: 'identity' | Buffer): CidText[] {
   const glyphCount = cmap.codePointOfGlyph.length;
   const cids = cidToGid === 'identity' ? glyphCount : Math.min(CID_COUNT, Math.floor(cidToGid.length / 2));
   const entries: CidText[] = [];
@@ -92,9 +100,26 @@ function cidTexts(font: CompositeFontDictionary, known: CmapsByProgram): CidText
   return entries;
 }
 
+/**
+ * The text of the font's CIDs: from the cmap of its TrueType program, or, when the program names no glyph (a TrueType
+ * program without `cmap` and `post` whose CIDs are its glyph ids, or a CID-keyed CFF program), from the glyph order of the
+ * Arial or Times New Roman font its name and widths show it to be (standard-font-glyph-order.ts).
+ */
+function cidTexts(font: CompositeFontDictionary, known: TextsByProgram): CidText[] {
+  if (!lacksTextMap(font)) return [];
+  if (font.descendant === CFF_CIDFONT) return font.program === 'cid-cff' ? standardOrderTexts(font.descendantName, font.cidWidths) : [];
+  if (font.descendant !== TRUETYPE_CIDFONT) return [];
+  const cidToGid = font.cidToGidMap();
+  const program = cidToGid === null ? null : font.trueTypeProgram();
+  if (cidToGid === null || program === null) return [];
+  const { cmap, namesNoGlyph } = programTextOf(program, known);
+  if (cmap !== null) return cmapTexts(cmap, cidToGid);
+  return namesNoGlyph && cidToGid === 'identity' ? standardOrderTexts(font.descendantName, font.cidWidths) : [];
+}
+
 function fontMaps(fonts: CompositeFontDictionary[]): FontMap[] {
   const maps: FontMap[] = [];
-  const known: CmapsByProgram = new Map();
+  const known: TextsByProgram = new Map();
   let mapped = 0;
   for (const font of fonts) {
     const entries = cidTexts(font, known);

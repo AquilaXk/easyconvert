@@ -1,6 +1,4 @@
 import './pdfjs-node-compat';
-import path from 'node:path';
-import { createRequire } from 'node:module';
 import { ConversionFailedError, type PdfPageAnalysis } from '../types';
 import type { OcrBaseline, OcrLayoutGroup, OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
 import { runPdfTextJobInThread } from './pdf-text-host';
@@ -8,6 +6,7 @@ import { FontTable, readPageContent } from './pdf-text-content';
 import { ImageExtractor } from './pdf-text-images';
 import { withFontProgramToUnicode } from './pdf-font-tounicode';
 import { assertPdfStreamsWithinLimits } from './pdf-stream-guard';
+import { pdfjsDataUrl } from './pdfjs-data';
 import {
   PDF_TEXT_MAX_PAGES,
   PDF_TEXT_MAX_ITEMS_PER_DOCUMENT,
@@ -1285,16 +1284,6 @@ async function readPage(pdfjs: PdfJs, page: PdfJsPage, content: PageContent, pag
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-/** A data folder of pdfjs-dist (`standard_fonts`, `cmaps`), as the path pdfjs reads its files from in Node. */
-function pdfjsDataUrl(folder: string): string | undefined {
-  try {
-    const manifest = createRequire(path.join(process.cwd(), 'package.json')).resolve('pdfjs-dist/package.json');
-    return `${path.join(path.dirname(manifest), folder)}${path.sep}`;
-  } catch {
-    return undefined;
-  }
 }
 
 /** Text-layer density of one page: its characters and words without white space, against the threshold. */

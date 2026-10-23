@@ -1,7 +1,7 @@
 /**
  * The Unicode `cmap` of a TrueType program (OpenType specification, chapters `cmap` and `maxp`), read from untrusted
- * bytes: the program a PDF embeds for a composite font. Only what a text reader needs is read: the glyph count, and one
- * Unicode subtable in format 4, 6 or 12.
+ * bytes: the program a PDF embeds for a composite font. Only what a text reader needs is read: the glyph count, one
+ * Unicode subtable in format 4, 6 or 12, the tags of the tables, and the advance widths (`hmtx`).
  *
  * Every offset and count is checked against the bytes it points into before it is followed, so the work is bounded by the
  * size of the program: a table outside the bytes, encoding records that do not fit the table, segments or groups out of
@@ -22,6 +22,9 @@ const TABLE_RECORD_BYTES = 16;
 const CMAP_HEADER_BYTES = 4;
 const ENCODING_RECORD_BYTES = 8;
 const MAXP_GLYPH_COUNT_OFFSET = 4;
+const HEAD_UNITS_PER_EM_OFFSET = 18;
+const HHEA_METRIC_COUNT_OFFSET = 34;
+const HMTX_METRIC_BYTES = 4;
 const BMP_SIZE = 0x10000;
 const MAX_CODE_POINT = 0x10ffff;
 const FORMAT4_HEADER_BYTES = 14;
@@ -236,6 +239,39 @@ function unicodeSubtables(bytes: Bytes, cmap: Span): number[] | null {
     if (FORMAT_PREFERENCE.includes(format) && !firstOfFormat.has(format)) firstOfFormat.set(format, at);
   }
   return FORMAT_PREFERENCE.flatMap((format) => firstOfFormat.get(format) ?? []);
+}
+
+/** The tags of the tables the program's table directory names, or null when the directory does not fit the bytes. */
+export function sfntTableTags(font: Uint8Array): Set<string> | null {
+  const bytes = new Bytes(font);
+  if (!bytes.fits(0, SFNT_HEADER_BYTES)) return null;
+  const count = bytes.u16(4);
+  if (!bytes.fits(SFNT_HEADER_BYTES, count * TABLE_RECORD_BYTES)) return null;
+  const tags = new Set<string>();
+  for (let index = 0; index < count; index++) tags.add(bytes.tag(SFNT_HEADER_BYTES + index * TABLE_RECORD_BYTES));
+  return tags;
+}
+
+/**
+ * The advance width of each glyph as a share of the em (OpenType `head` unitsPerEm, `hhea` numberOfHMetrics, `hmtx`; a
+ * glyph past the last metric takes its advance), or null when those tables do not read.
+ */
+export function readAdvanceWidths(font: Uint8Array): Float64Array | null {
+  const bytes = new Bytes(font);
+  const glyphCount = glyphCountOf(bytes);
+  const head = tableSpan(bytes, 'head');
+  const hhea = tableSpan(bytes, 'hhea');
+  const hmtx = tableSpan(bytes, 'hmtx');
+  if (!glyphCount || !head || !hhea || !hmtx || !bytes.fits(head.start + HEAD_UNITS_PER_EM_OFFSET, 2, head.start, head.end)) return null;
+  if (!bytes.fits(hhea.start + HHEA_METRIC_COUNT_OFFSET, 2, hhea.start, hhea.end)) return null;
+  const unitsPerEm = bytes.u16(head.start + HEAD_UNITS_PER_EM_OFFSET);
+  const metrics = Math.min(bytes.u16(hhea.start + HHEA_METRIC_COUNT_OFFSET), glyphCount);
+  if (unitsPerEm === 0 || metrics === 0 || !bytes.fits(hmtx.start, metrics * HMTX_METRIC_BYTES, hmtx.start, hmtx.end)) return null;
+  const advances = new Float64Array(glyphCount);
+  for (let glyph = 0; glyph < glyphCount; glyph++) {
+    advances[glyph] = bytes.u16(hmtx.start + Math.min(glyph, metrics - 1) * HMTX_METRIC_BYTES) / unitsPerEm;
+  }
+  return advances;
 }
 
 /** The Unicode cmap of the TrueType program `font`, or null when it has none that reads. */

@@ -10,6 +10,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { repeatedRecordsFont, sharedProgramPdf } from './helpers/hostile-cmap-font';
 import { hasControlCharacters } from './helpers/pdf-text-metrics';
 import { extraObjectNumber, rawPdf } from './helpers/raw-pdf';
+import { withoutTables } from './helpers/sfnt-tables';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -69,17 +70,6 @@ function compositeFontPdf({ cids, program = FONT_PROGRAM, cidToGid, ordering = {
   ];
   const content = `BT /F2 14 Tf 20 100 Td <${hex(cids)}> Tj ET`;
   return rawPdf([{ width: 400, height: 200, content, fonts: `/F2 ${type0} 0 R` }], objects);
-}
-
-/** A copy of the font program whose table directory names the table `tag` something else, so readers do not find it. */
-function withoutTable(program: Buffer, tag: string): Buffer {
-  const copy = Buffer.from(program);
-  const tables = copy.readUInt16BE(4);
-  for (let index = 0; index < tables; index++) {
-    const record = 12 + index * 16;
-    if (copy.toString('latin1', record, record + 4) === tag) copy.write('zzzz', record, 'latin1');
-  }
-  return copy;
 }
 
 /** A copy of the font program whose cmap claims 65,535 encoding records, far more than its bytes hold. */
@@ -187,7 +177,7 @@ describe('the bytes the text reader reads', () => {
 
 describe('font programs that give no text', () => {
   it('reads the document as before when the program has no cmap', async () => {
-    const withoutCmap = await textOf(compositeFontPdf({ cids: SENTENCE_GLYPHS, program: withoutTable(FONT_PROGRAM, 'cmap') }));
+    const withoutCmap = await textOf(compositeFontPdf({ cids: SENTENCE_GLYPHS, program: withoutTables(FONT_PROGRAM, 'cmap') }));
     const withoutProgram = await textOf(compositeFontPdf({ cids: SENTENCE_GLYPHS, program: null }));
     expect(withoutCmap).toBe(withoutProgram);
     expect(hasControlCharacters(withoutCmap)).toBe(false);
