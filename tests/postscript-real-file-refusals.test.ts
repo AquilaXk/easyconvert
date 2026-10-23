@@ -1,9 +1,14 @@
+import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
 import { knownRefusal, readKnownRefusals } from '../bench/realworld/report';
+import { defaultResolver, EZDXF_PSEUDO_TOOL } from '../bench/tools';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { extractFontsWithExternalPdffonts, extractTextWithExternalPdftotext } from './helpers/differential-oracle';
+import { extractFontsWithExternalPdffonts, extractTextWithExternalPdftotext, getOracleToolPath } from './helpers/differential-oracle';
+import { readDxf, type DxfDocument } from './helpers/dxf-reader';
 import { oracleTest } from './helpers/oracle-test';
+import { pdfWords, type PdfWord } from './helpers/pdftotext-bbox';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { skipUnless } from './helpers/strict-skip';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,53 +18,232 @@ import path from 'node:path';
  * The PostScript files of the real-world corpus (#783) that the nightly run refused, in two groups.
  *
  * Bitmap fonts. Twelve files are dvips or word-processor output whose text is a Type 3 font of 1-bit pictures. Poppler draws a
- * character of such a font as a rectangle painted through a mask that holds the glyph picture, and a DXF holds no bitmaps, so the
- * page cannot be written without losing the text. The refusal names the bitmap glyph (it used to say `SVG mask "url(#mask-0)"`).
- * Both reference writers leave the pictures out (Inkscape's dxf_outlines.py reads only paths, rectangles, lines, circles and
- * ellipses; pstoedit's DXF drivers are declared `noimage`), and pstoedit alone stands a stock font in for the bitmap font as TEXT.
+ * character of such a font as a rectangle painted through a mask that holds the glyph picture, and a DXF holds no bitmaps. The
+ * DXF writer puts the characters back as TEXT in a stock font, as pstoedit does by default, from the PDF's text layer: every
+ * page of three files converts, and the other nine are refused for something else their pages draw (dash patterns, strokes
+ * under a skew, clip paths, pictures, pages past the SVG size limit), each listed in known-refusals.json.
  *
  * Ghostscript. Two files stop the only open-source PostScript interpreter on a value that is legal in an interpreter that is
  * not Ghostscript, in every release from 10.02.1 to the development branch; no argument changes it, and safe mode is not involved.
  */
 
-const BITMAP_GLYPH_REFUSAL = /^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \(a character of a bitmap font, drawn as a picture\) is not supported\.$/;
+const BITMAP_GLYPH_REFUSAL = /SVG bitmap glyph|bitmap font/;
 const MIN_TEXT_CHARACTERS = 100;
 const SAMPLE_TIMEOUT_MS = 180_000;
+/**
+ * Lowest share of Poppler's words of a page set only in Type 3 fonts that the TEXT entities on their baseline hold, and lowest
+ * share of TEXT entities on any page whose characters Poppler reads there (both measured at 1.0 on the three files).
+ */
+const MIN_WORD_RECALL = 0.95;
+const MIN_TEXT_AGREEMENT = 0.95;
 
-const BITMAP_FONT_FILES = [
-  'govdocs1-000097.ps',
+/** Every page converts: the bitmap-font text is TEXT and the rest of the page is geometry DXF holds. */
+const TEXT_CONVERTED_FILES = ['govdocs1-000097.ps', 'govdocs1-000773.ps', 'govdocs1-006007.ps'] as const;
+
+/** The bitmap-font text is written, but a page also draws something DXF does not hold (known-refusals.json says what). */
+const REFUSED_FOR_OTHER_CONTENT = [
   'govdocs1-000730.ps',
-  'govdocs1-000773.ps',
   'govdocs1-001048.ps',
   'govdocs1-002433.ps',
   'govdocs1-002956.ps',
   'govdocs1-003229.ps',
   'govdocs1-004087.ps',
   'govdocs1-005434.ps',
-  'govdocs1-006007.ps',
   'govdocs1-006137.ps',
   'govdocs1-006955.ps',
 ] as const;
+
+const BITMAP_FONT_FILES = [...TEXT_CONVERTED_FILES, ...REFUSED_FOR_OTHER_CONTENT] as const;
 
 function describeRefusal(error: unknown): string {
   return `${(error as Error).name}: ${(error as Error).message}`;
 }
 
+/** The DXF pages of a conversion: one file, or the ZIP of per-page files in page order. */
+async function dxfPages(result: { buffer: Buffer; filename: string }): Promise<string[]> {
+  if (!result.filename.endsWith('.zip')) return [result.buffer.toString('utf-8')];
+  const zip = await JSZip.loadAsync(result.buffer);
+  const names = Object.keys(zip.files).filter((name) => name.endsWith('.dxf')).sort((a, b) => a.localeCompare(b));
+  return Promise.all(names.map((name) => zip.files[name].async('string')));
+}
+
+/** A TEXT string as a DXF reader shows it: `%%%` is a percent sign, `^ ` a caret, `\U+XXXX` a character (ezdxf tools/text.py, lldxf/encoding.py). */
+function decodeTextValue(value: string): string {
+  return value
+    .replace(/\\U\+([0-9A-Fa-f]{4})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/%%%/g, '%')
+    .replace(/\^ /g, '^');
+}
+
+/** Characters a reader writes for a glyph without a Unicode value; the DXF writer writes `#` for such a glyph. */
+// eslint-disable-next-line no-control-regex
+const UNMAPPED_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\uFFFD\uE000-\uF8FF]/gu;
+/**
+ * Where Poppler's word box puts the baseline of a Type 3 font, which has no metrics: Poppler gives such a font an ascent of
+ * 0.95 em and a descent of 0.35 em, so the baseline is 0.95 / 1.3 of the way down the box (on govdocs1-000097.ps, page 1,
+ * "Status" spans 62.4802 to 91.6002 and its baseline is 83.7602).
+ */
+const TYPE3_BASELINE_FRACTION = 0.95 / 1.3;
+/** A TEXT entity stands on a word's baseline when it is this share of the word's box height away from it, or nearer. */
+const BASELINE_MATCH_FRACTION = 0.1;
+
+interface PlacedTextOnPage {
+  value: string;
+  x0: number;
+  x1: number;
+  baseline: number;
+}
+
+/** The TEXT entities of a DXF page in points from the top left, as Poppler gives its words. */
+function textsOnPage(dxf: DxfDocument, pageHeight: number, unitsPerPoint: number): PlacedTextOnPage[] {
+  return dxf.texts.map((text) => ({
+    value: decodeTextValue(text.value),
+    x0: text.insert.x / unitsPerPoint,
+    x1: (text.alignment?.x ?? text.insert.x) / unitsPerPoint,
+    baseline: pageHeight - text.insert.y / unitsPerPoint,
+  }));
+}
+
+function onBaselineOf(word: PdfWord, text: PlacedTextOnPage): boolean {
+  const height = word.yMax - word.yMin;
+  const baseline = word.yMin + TYPE3_BASELINE_FRACTION * height;
+  return Math.abs(text.baseline - baseline) <= BASELINE_MATCH_FRACTION * height && text.x1 > word.xMin && text.x0 < word.xMax;
+}
+
+const squeezed = (text: string): string => text.replace(/\s/g, '');
+
+/** The share of Poppler's words that the TEXT entities on the word's baseline, read left to right, hold. */
+function wordRecall(texts: readonly PlacedTextOnPage[], words: readonly PdfWord[]): number {
+  const found = words.filter((word) => {
+    const under = texts.filter((text) => onBaselineOf(word, text)).sort((a, b) => a.x0 - b.x0);
+    return squeezed(under.map((text) => text.value).join('')).includes(squeezed(word.text.replace(UNMAPPED_CHARACTERS, '#')));
+  });
+  return words.length === 0 ? 1 : found.length / words.length;
+}
+
+/** The share of TEXT entities whose characters (but the `#` marks) Poppler reads in the words on their baseline. */
+function textAgreement(texts: readonly PlacedTextOnPage[], words: readonly PdfWord[]): number {
+  const checked = texts.filter((text) => squeezed(text.value.replaceAll('#', '')) !== '');
+  const agreeing = checked.filter((text) => {
+    const over = words.filter((word) => onBaselineOf(word, text)).sort((a, b) => a.xMin - b.xMin);
+    return squeezed(over.map((word) => word.text).join('').replace(UNMAPPED_CHARACTERS, '')).includes(squeezed(text.value.replaceAll('#', '')));
+  });
+  return checked.length === 0 ? 1 : agreeing.length / checked.length;
+}
+
+/** Whether every font of the page is a Type 3 font, so that every word of it is bitmap-font text. */
+function setOnlyInType3Fonts(pdfPath: string, page: number): boolean {
+  const listing = execFileSync(getOracleToolPath('pdffonts') as string, ['-f', String(page), '-l', String(page), pdfPath], { encoding: 'utf-8' });
+  const types = listing
+    .split(/\r?\n/)
+    .slice(2)
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      const parts = line.trim().split(/\s+/);
+      return parts.slice(1, parts.length - 6).join(' ');
+    });
+  return types.length > 0 && types.every((type) => type === 'Type 3');
+}
+
+/**
+ * DXF units per point. The DXF is written in SVG pixels: Poppler 24 writes the page size of its SVG without a unit (a pixel
+ * is a point), Poppler 26 in `pt` (a point is 4/3 pixel), so the factor is read from the SVG of the same PDF.
+ */
+function dxfUnitsPerPoint(pdfPath: string): number {
+  const svg = execFileSync(getOracleToolPath('pdftocairo') as string, ['-svg', '-f', '1', '-l', '1', pdfPath, '-'], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 });
+  return /<svg\b[^>]*\swidth="[\d.]+pt"/.test(svg) ? 96 / 72 : 1;
+}
+
+/** What ezdxf reads from a DXF file: the audit's errors and the TEXT entities it finds. */
+const EZDXF_AUDIT = `
+import json, sys, ezdxf
+document = ezdxf.readfile(sys.argv[1])
+auditor = document.audit()
+print(json.dumps({"errors": len(auditor.errors), "texts": len(document.modelspace().query("TEXT"))}))
+`;
+
+function ezdxfAudit(python: string, dxf: string): { errors: number; texts: number } {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-dxf-text-'));
+  try {
+    const file = path.join(directory, 'page.dxf');
+    fs.writeFileSync(file, dxf);
+    return JSON.parse(execFileSync(python, ['-I', '-c', EZDXF_AUDIT, file], { encoding: 'utf-8' })) as { errors: number; texts: number };
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+const PYTHON_WITH_EZDXF = defaultResolver()(EZDXF_PSEUDO_TOOL);
+
 describe('PostScript files that draw their text with bitmap fonts', () => {
-  describe.each(BITMAP_FONT_FILES)('%s', (id) => {
+  describe.each(TEXT_CONVERTED_FILES)('%s', (id) => {
     oracleTest(
-      'is refused for DXF with the bitmap glyph named as the reason',
-      ['ps2pdf', 'pdftocairo'],
+      'converts every page to DXF, with the bitmap-font text as TEXT entities where Poppler reads the words',
+      ['ps2pdf', 'pdftocairo', 'pdftotext', 'pdffonts'],
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, id);
-        const refusal = await dispatchConversion(bytes, 'ps', 'dxf', {}, id).catch((error: unknown) => describeRefusal(error));
-        expect(refusal).toMatch(BITMAP_GLYPH_REFUSAL);
+        const pdf = (await dispatchConversion(bytes, 'ps', 'pdf', {}, id)).buffer;
+        const pages = await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', {}, id));
+        const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-dxf-words-'));
+        try {
+          const pdfPath = path.join(directory, 'doc.pdf');
+          fs.writeFileSync(pdfPath, pdf);
+          const popplerPages = pdfWords(pdfPath);
+          const unitsPerPoint = dxfUnitsPerPoint(pdfPath);
+          expect(pages).toHaveLength(popplerPages.length);
+          pages.forEach((page, index) => {
+            const dxf = readDxf(page);
+            const { height, words } = popplerPages[index];
+            const texts = textsOnPage(dxf, height, unitsPerPoint);
+            expect(dxf.texts.length, `page ${index + 1}`).toBeGreaterThan(0);
+            expect(dxf.styles, `page ${index + 1}`).toEqual([{ name: 'STANDARD', font: 'txt' }]);
+            expect(textAgreement(texts, words), `page ${index + 1}`).toBeGreaterThanOrEqual(MIN_TEXT_AGREEMENT);
+            if (setOnlyInType3Fonts(pdfPath, index + 1)) {
+              expect(wordRecall(texts, words), `page ${index + 1}`).toBeGreaterThanOrEqual(MIN_WORD_RECALL);
+            }
+          });
+        } finally {
+          fs.rmSync(directory, { recursive: true, force: true });
+        }
       },
       SAMPLE_TIMEOUT_MS
     );
 
+    it.skipIf(skipUnless('python3 and ezdxf', PYTHON_WITH_EZDXF !== null))(
+      'writes pages that ezdxf audits without errors',
+      async (ctx) => {
+        const { bytes } = await requireRealworldSample(ctx, id);
+        for (const page of await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', {}, id))) {
+          const audit = ezdxfAudit(PYTHON_WITH_EZDXF as string, page);
+          expect(audit.errors).toBe(0);
+          expect(audit.texts).toBe(readDxf(page).texts.length);
+        }
+      },
+      SAMPLE_TIMEOUT_MS
+    );
+  });
+
+  describe.each(REFUSED_FOR_OTHER_CONTENT)('%s', (id) => {
     oracleTest(
-      'converts to PDF, whose Type 3 fonts hold the text a DXF would lose',
+      'is refused for DXF for what else its pages draw, not for the bitmap-font text',
+      ['ps2pdf', 'pdftocairo'],
+      async (ctx) => {
+        const { bytes } = await requireRealworldSample(ctx, id);
+        const refusal = await dispatchConversion(bytes, 'ps', 'dxf', {}, id).then(
+          () => 'converted',
+          (error: unknown) => describeRefusal(error)
+        );
+        expect(refusal).not.toMatch(BITMAP_GLYPH_REFUSAL);
+        const job = { file: id, source: 'ps', target: 'dxf', verdict: 'refused', ms: 0, detail: refusal } as const;
+        expect(knownRefusal(job, readKnownRefusals()), refusal).not.toBeNull();
+      },
+      SAMPLE_TIMEOUT_MS
+    );
+  });
+
+  describe.each(BITMAP_FONT_FILES)('%s', (id) => {
+    oracleTest(
+      'converts to PDF, whose Type 3 fonts hold the text the DXF writes as TEXT',
       ['ps2pdf', 'pdffonts', 'pdftotext'],
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, id);
@@ -160,12 +344,11 @@ describe('the nightly gate lists these refusals as explained', () => {
   const refusals: Record<string, string[]> = {
     'govdocs1-002500.ps': ['ConversionFailedError: The PostScript interpreter rejected the .ps file: Error: /invalidaccess in --put--\nOperand stack:'],
     'govdocs1-006458.ps': ['ConversionFailedError: The PostScript interpreter rejected the .ps file: Error: /limitcheck in --setcolorspace--\nOperand stack:'],
-    ...Object.fromEntries(BITMAP_FONT_FILES.map((id) => [id, ['ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph (a character of a bitmap font, drawn as a picture) is not supported.']])),
   };
 
   it.each(Object.entries(refusals))('%s', (file, details) => {
     for (const detail of details) {
-      const job = { file, source: 'ps', target: file === 'govdocs1-002500.ps' || file === 'govdocs1-006458.ps' ? 'pdf' : 'dxf', verdict: 'refused', ms: 0, detail } as const;
+      const job = { file, source: 'ps', target: 'pdf', verdict: 'refused', ms: 0, detail } as const;
       expect(knownRefusal(job, explained), `${file} has a known refusal that matches its error`).not.toBeNull();
     }
   });

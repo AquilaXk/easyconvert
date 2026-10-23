@@ -118,6 +118,8 @@ export interface PdfTextJob {
   content?: boolean | readonly number[];
   /** With `content`: also return the pixels of the images (the PDF's own JPEG data, or a PNG of the decoded pixels). */
   images?: boolean;
+  /** With `content`: the text a glyph the fonts give no Unicode value for becomes, in its place; without it the glyph is left out. */
+  unmappedGlyphText?: string;
 }
 
 /** One font of a document, as the layout needs it. */

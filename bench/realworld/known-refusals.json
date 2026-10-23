@@ -78,75 +78,57 @@
     "issue": 783
   },
   {
-    "file": "govdocs1-000097.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Every character is a glyph of one of 8 Type 3 bitmap fonts on page one (dvips output); Poppler draws each as a picture and a DXF holds no bitmaps, so the pages would be written without their text. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
-    "issue": 783
-  },
-  {
     "file": "govdocs1-000730.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Every character is a glyph of one of 8 Type 3 bitmap fonts on page one; Poppler draws each as a picture and a DXF holds no bitmaps, so the pages would be written without their text. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
-    "issue": 783
-  },
-  {
-    "file": "govdocs1-000773.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Most pages are set in outline fonts, but 2 glyphs on page one and all of page 24 are glyphs of a Type 3 bitmap font; Poppler draws each as a picture and a DXF holds no bitmaps, so leaving them out would drop that text without a word. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: Stroked SVG <path> under a non-uniform scale or skew is not supported: a metafile pen has one width\\.$",
+    "reason": "The bitmap-font text of page 1 is written as TEXT (policy 74), but page 2 strokes a path under a non-uniform scale, whose pen width changes with direction and which an R12 polyline of one width does not hold (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-001048.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Every character is a glyph of one of 5 Type 3 bitmap fonts on page one; Poppler draws each as a picture and a DXF holds no bitmaps, so the pages would be written without their text. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: Stroked SVG <path> under a non-uniform scale or skew is not supported: a metafile pen has one width\\.$",
+    "reason": "The bitmap-font text of the other 13 pages is written as TEXT (policy 74), but page 3 strokes a path under a non-uniform scale and page 11 a dashed line, which the DXF writer does not hold (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-002433.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Every character is a glyph of one of 15 Type 3 bitmap fonts on page one; Poppler draws each as a picture and a DXF holds no bitmaps, so the pages would be written without their text. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
+    "reason": "The bitmap-font text of the other 4 pages is written as TEXT (policy 74), but page 3 draws a dashed line, and the DXF writer writes no line types (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-002956.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Most text is outline fonts, but 6 Type 3 bitmap fonts on page one draw their characters as pictures that a DXF cannot hold; leaving them out would drop those characters without a word. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
+    "reason": "Most text is outline fonts and the few bitmap-font characters of 19 pages are written as TEXT (policy 74), but pages 22, 26 and 33 draw dashed lines and 7 pages stroke paths under a non-uniform scale, which the DXF writer does not hold; page 28 would stay refused too, as the PDF text layer reads 13 of its 13 bitmap glyphs as spaces (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-003229.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Every character is a glyph of one of 7 Type 3 bitmap fonts on page one; Poppler draws each as a picture and a DXF holds no bitmaps, so the pages would be written without their text. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
+    "reason": "The bitmap-font text of the other 15 pages is written as TEXT (policy 74), but pages 13, 16 and 19 draw dashed lines, which the DXF writer does not hold, and the SVG Poppler draws for pages 17 and 18 is larger than the 5 MiB the geometry reader reads (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-004087.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Most text is outline fonts, but 3 Type 3 bitmap fonts on page one draw their characters as pictures that a DXF cannot hold, and two pages also hold pictures; leaving them out would drop that content without a word. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG element <image> is not supported\\.$",
+    "reason": "Most text is outline fonts and the bitmap-font characters of pages 1 and 4 are written as TEXT (policy 74), but pages 2 and 3 hold pictures, which a DXF does not drop without a word (policy 42), and page 5 draws a dashed line (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-005434.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Every character is a glyph of one of 2 Type 3 bitmap fonts on page one; Poppler draws each as a picture and a DXF holds no bitmaps, so the pages would be written without their text. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
-    "issue": 783
-  },
-  {
-    "file": "govdocs1-006007.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Every character is a glyph of one of 6 Type 3 bitmap fonts on page one, and the 4 pages hold nothing else; Poppler draws each as a picture and a DXF holds no bitmaps, so the pages would be empty. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
+    "reason": "The bitmap-font text of the other 18 pages is written as TEXT (policy 74), but pages 12 to 15 draw dashed lines, which the DXF writer does not hold (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-006137.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Every character is a glyph of one of 5 Type 3 bitmap fonts on page one; Poppler draws each as a picture and a DXF holds no bitmaps, so the pages would be written without their text. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: Stroked SVG <path> under a non-uniform scale or skew is not supported: a metafile pen has one width\\.$",
+    "reason": "The bitmap-font text of the other 45 pages is written as TEXT (policy 74), but 7 pages stroke paths under a non-uniform scale, 13 pages clip their drawings to a region that is not the page and page 21 draws a dashed line, which the DXF writer does not hold (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-006955.ps",
-    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG bitmap glyph \\(a character of a bitmap font, drawn as a picture\\) is not supported\\.$",
-    "reason": "Every character is a glyph of one of 7 Type 3 bitmap fonts on page one; Poppler draws each as a picture and a DXF holds no bitmaps, so the pages would be written without their text. pstoedit stands a stock font in for a bitmap font as TEXT; this converter does not (tests/postscript-real-file-refusals.test.ts).",
+    "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG stroke-dasharray \"[^\"]+\" is not supported\\.$",
+    "reason": "The bitmap-font text of pages 1, 4 and 6 is written as TEXT (policy 74), but pages 2, 3, 5 and 7 draw dashed lines and page 8 strokes a path under a non-uniform scale, which the DXF writer does not hold (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   }
 ]

@@ -13,7 +13,8 @@ import { isSymbolFontName, mapSymbolFontCharacter } from './symbol-font-map';
  *  - for the Symbol, Wingdings and Webdings families, the symbol-font tables of the office readers (symbol-font-map.ts)
  *    for the private-use character U+F000 + code that their fonts keep their glyphs at.
  *
- * A glyph neither source maps has no text: it is left out and counted, never replaced by a guess.
+ * A glyph neither source maps has no text: it is left out and counted, never replaced by a guess. A caller that has to keep
+ * every glyph in its place (the DXF writer replaces each glyph picture of a bitmap font with text) asks for a mark instead.
  */
 
 /** Text with at least one character no reader can show: control codes other than white space, U+FFFD, private-use characters. */
@@ -39,7 +40,7 @@ export interface RecoverableFont {
 
 export interface RecoveredText {
   text: string;
-  /** Characters that had no text and were left out. */
+  /** Characters that had no text and were left out, or written as the mark. */
   unmapped: number;
 }
 
@@ -89,12 +90,13 @@ function recoverGlyph(character: string, font: RecoverableFont | null): string |
 }
 
 /**
- * `text` with the glyphs that have a name in the font's encoding read, and the others left out and counted.
+ * `text` with the glyphs that have a name in the font's encoding read, and the others left out (or written as `unmappedMark`)
+ * and counted.
  *
  * @param maxChars the most characters the result may hold; a ligature name can make a glyph several characters long.
  * @throws PdfTextGeometryError (400) when the result grows past `maxChars`.
  */
-export function recoverUnmappedGlyphs(text: string, font: RecoverableFont | null, maxChars = Number.POSITIVE_INFINITY): RecoveredText {
+export function recoverUnmappedGlyphs(text: string, font: RecoverableFont | null, maxChars = Number.POSITIVE_INFINITY, unmappedMark = ''): RecoveredText {
   let recovered = '';
   let unmapped = 0;
   for (const character of text) {
@@ -103,7 +105,7 @@ export function recoverUnmappedGlyphs(text: string, font: RecoverableFont | null
     } else {
       const mapped = recoverGlyph(character, font);
       if (mapped === null) unmapped++;
-      else recovered += mapped;
+      recovered += mapped ?? unmappedMark;
     }
     if (recovered.length > maxChars) {
       throw new PdfTextGeometryError(`The text read from glyph names has more than ${maxChars} characters.`);

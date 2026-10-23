@@ -1,7 +1,8 @@
 /**
  * Hand-written DXF group-code reader for tests. It follows the file layout of the DXF reference (a stream of
  * group-code and value line pairs, SECTION and ENDSEC markers, an EOF record) and knows only the entities
- * the PostScript routes write: LINE, and POLYLINE with VERTEX and SEQEND. It never touches the writer under test.
+ * the PostScript routes write: LINE, POLYLINE with VERTEX and SEQEND, and TEXT with the STYLE table entry it names. It never
+ * touches the writer under test.
  */
 
 export interface DxfPoint {
@@ -19,12 +20,39 @@ export interface DxfEntityRecord {
   closed: boolean;
 }
 
+/** A TEXT entity (DXF reference, TEXT group codes): the string as stored, its height and its placement. */
+export interface DxfTextRecord {
+  layer: string;
+  /** Group 1, exactly as written (special codes and \\U+ escapes are not decoded). */
+  value: string;
+  /** Group 40. */
+  height: number;
+  /** Group 7; STANDARD when absent. */
+  style: string;
+  /** Group 72; 0 (left) when absent, 5 is Fit. */
+  horizontalAlignment: number;
+  /** Groups 10, 20, 30. */
+  insert: DxfPoint;
+  /** Groups 11, 21, 31; absent for left-aligned text. */
+  alignment?: DxfPoint;
+}
+
+/** A STYLE table entry: its name (group 2) and primary font file (group 3). */
+export interface DxfTextStyle {
+  name: string;
+  font: string;
+}
+
 export interface DxfDocument {
   version: string;
   extMin: DxfPoint;
   extMax: DxfPoint;
   entities: DxfEntityRecord[];
+  texts: DxfTextRecord[];
+  styles: DxfTextStyle[];
 }
+
+const DEFAULT_TEXT_STYLE = 'STANDARD';
 
 const POLYLINE_CLOSED_FLAG = 1;
 
@@ -44,6 +72,22 @@ function readPairs(text: string): GroupPair[] {
     pairs.push({ code, value: lines[i + 1].trim() });
   }
   return pairs;
+}
+
+function readText(record: GroupPair[], layer: string): DxfTextRecord {
+  const value = (code: number): string | undefined => record.find((p) => p.code === code)?.value;
+  const text = value(1);
+  if (text === undefined) throw new Error('DXF TEXT has no group 1');
+  const horizontalAlignment = Number(value(72) ?? 0);
+  return {
+    layer,
+    value: text,
+    height: Number(value(40)),
+    style: value(7) ?? DEFAULT_TEXT_STYLE,
+    horizontalAlignment,
+    insert: readPoint(record, 10),
+    alignment: horizontalAlignment === 0 ? undefined : readPoint(record, 11),
+  };
 }
 
 function readPoint(group: GroupPair[], xCode: number): DxfPoint {
@@ -106,6 +150,7 @@ export function readDxf(text: string): DxfDocument {
   if (!entityRecords) throw new Error('DXF has no ENTITIES section');
 
   const entities: DxfEntityRecord[] = [];
+  const texts: DxfTextRecord[] = [];
   let polyline: DxfEntityRecord | null = null;
   for (const record of entityRecords) {
     const type = record[0].value;
@@ -118,6 +163,8 @@ export function readDxf(text: string): DxfDocument {
     } else if (type === 'VERTEX') {
       if (!polyline) throw new Error('DXF VERTEX outside a POLYLINE');
       polyline.points.push(readPoint(record, 10));
+    } else if (type === 'TEXT') {
+      texts.push(readText(record, layer));
     } else if (type === 'SEQEND') {
       if (!polyline) throw new Error('DXF SEQEND without a POLYLINE');
       entities.push(polyline);
@@ -133,5 +180,9 @@ export function readDxf(text: string): DxfDocument {
     extMin: readPoint(variable('$EXTMIN'), 10),
     extMax: readPoint(variable('$EXTMAX'), 10),
     entities,
+    texts,
+    styles: (sections.get('TABLES') ?? [])
+      .filter((record) => record[0].value === 'STYLE')
+      .map((record) => ({ name: record.find((p) => p.code === 2)?.value ?? '', font: record.find((p) => p.code === 3)?.value ?? '' })),
   };
 }
