@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import { ensureCached, findCached, testSampleCacheDirectory } from '../../bench/realworld/fetch';
-import { MANIFEST_PATH, type CorpusFile } from '../../bench/realworld/manifest';
+import type { CorpusFile } from '../../bench/realworld/manifest';
+import { readTestSampleFiles } from '../../bench/realworld/test-samples';
 import { isStrictMode } from './strict-skip';
 
 /**
- * The real files of the real-world corpus (bench/realworld/manifest.json) that a test converts. They are never
+ * The real files of the real-world corpus (bench/realworld/manifest.json) and of the regression corpus
+ * (bench/realworld/regression-manifest.json) that a test converts. They are never
  * committed: `ensureCached` fetches a file from the host that publishes it and checks it against the digest the manifest
  * pins, so a test reads the same bytes everywhere. Where a file cannot be fetched a run that is not strict skips the
  * test; under ORACLE_STRICT_MODE=1 it fails, so CI cannot pass without having read the file.
@@ -19,9 +21,9 @@ const CACHE_DIRECTORY = testSampleCacheDirectory();
 let corpusFiles: Map<string, CorpusFile> | undefined;
 
 function corpusFile(id: string): CorpusFile {
-  corpusFiles ??= new Map((JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8')) as { files: CorpusFile[] }).files.map((file) => [file.id, file]));
+  corpusFiles ??= new Map(readTestSampleFiles().map((file) => [file.id, file]));
   const found = corpusFiles.get(id);
-  if (found === undefined) throw new Error(`no real-world sample ${id} in the corpus manifest`);
+  if (found === undefined) throw new Error(`no sample ${id} in the real-world or the regression corpus manifest`);
   return found;
 }
 

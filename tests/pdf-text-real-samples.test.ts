@@ -11,20 +11,24 @@ import { PdfTextUnmappedError } from '../src/lib/conversions/pdf-text-types';
 import { ConversionFailedError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { captureError } from './helpers/capture-error';
-import { hasControlCharacters, wordF1 } from './helpers/pdf-text-metrics';
+import { characterF1, hasControlCharacters, wordF1 } from './helpers/pdf-text-metrics';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
- * The PDF text rows of #783 on the real files of the corpus (bench/realworld/manifest.json): fonts without a Unicode map,
+ * The PDF text rows of #783 on the real files of the corpus (bench/realworld/manifest.json, and for the two cc- files
+ * bench/realworld/regression-manifest.json, which holds them): fonts without a Unicode map,
  * PDFs that open with the empty password, and PDFs that no reader can open. Poppler (`pdftotext`, `pdfimages`) is the
- * independent reader: it reads the same bytes, and the expected strings are ones its output holds.
+ * independent reader: it reads the same bytes, and the expected strings are ones its output holds (one test, where Poppler
+ * leaves the glyphs out, says what it compares with instead).
  */
 
 const toolsMissing = skipWithoutTools('pdftotext', 'pdfimages');
 const CONVERSION_TIMEOUT_MS = 120_000;
 /** Words of the converted text that the reference reader's text may lack, and the reverse (headers, ligature spelling, glyphs left out). */
 const MIN_WORD_F1 = 0.97;
+/** Japanese text: the characters of the two readers, compared as multisets because the language puts no spaces between words. */
+const MIN_CHARACTER_F1 = 0.95;
 /** A 117-page book with math and figures: the reading orders of the two readers differ more than for plain prose. */
 const MIN_BOOK_WORD_F1 = 0.93;
 const HTTP_BAD_REQUEST = 400;
@@ -123,6 +127,27 @@ describe.skipIf(toolsMissing)('fonts without a Unicode map (real files)', () => 
     const shown = named.split(', ').filter((page) => page !== '...').map(Number);
     expect(shown.length).toBe(10);
     for (const page of shown) expect(referencePages.has(page), `pdftotext prints glyphs without text on page ${page}`).toBe(true);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('cc-6200417.pdf: reads the composite TrueType fonts of a CAD plot, which have no ToUnicode map, through their programs', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'cc-6200417.pdf');
+    const result = await textOf(bytes);
+    const text = result.buffer.toString('utf8');
+    // Poppler leaves out every glyph of the plot's unknown character collection, so the strings are the ones the page shows
+    // when it is drawn (pdftoppm): titles, a floor area and room names set in those fonts.
+    for (const shown of ['SCHEMAT ZAGOSPODAROWANIA DZIAŁKI', 'pow. użytkowa 54,86', 'Przedpokój', 'Aranżacja lokalu przedstawiona na rzucie jest przykładowa.']) {
+      expect(text).toContain(shown);
+    }
+    expect(hasControlCharacters(text)).toBe(false);
+    expect(result.metadata?.warnings).toBeUndefined();
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('cc-6800345.pdf: reads Japanese text set in fonts with a predefined CJK CMap and no embedded program', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'cc-6800345.pdf');
+    const text = (await textOf(bytes)).buffer.toString('utf8');
+    const reference = pdftotext(bytes);
+    expect(text).toContain('窪田製薬ホールディングス株式会社');
+    expect(characterF1(reference, text)).toBeGreaterThanOrEqual(MIN_CHARACTER_F1);
   }, CONVERSION_TIMEOUT_MS);
 
   it('pdf-pdfjs-issue17333.pdf: is still refused when no glyph of the document maps', async (ctx) => {

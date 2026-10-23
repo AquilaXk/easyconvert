@@ -13,8 +13,9 @@ import { PDF_CONTENT_MAX_STATE_DEPTH } from './pdf-text-types';
  * Content streams are also scanned for graphics-state nesting (`q`): pdfjs copies the state at every `q`, so a stream
  * of tens of thousands of unclosed `q` operators costs it quadratic time. Real documents nest a few dozen levels.
  * @throws CorruptStreamError (400) when a stream's compressed data is malformed.
+ * @returns the document read, so the caller can read more of it without indexing the file again.
  */
-export function assertPdfStreamsWithinLimits(pdf: Buffer): void {
+export function assertPdfStreamsWithinLimits(pdf: Buffer): PdfDocument {
   const document = new PdfDocument(pdf, undefined, true);
   document.contentStreams((content) => {
     if (graphicsStateDepth(content, PDF_CONTENT_MAX_STATE_DEPTH) > PDF_CONTENT_MAX_STATE_DEPTH) {
@@ -22,6 +23,7 @@ export function assertPdfStreamsWithinLimits(pdf: Buffer): void {
     }
   });
   document.toUnicodeStreams(() => undefined);
+  return document;
 }
 
 const WHITESPACE = new Set([0x00, 0x09, 0x0a, 0x0c, 0x0d, 0x20]);
