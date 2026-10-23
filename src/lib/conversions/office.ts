@@ -35,6 +35,7 @@ import { readDocText } from './office/doc-reader';
 import { readRtfText } from './office/rtf-reader';
 import { readXpsText } from './office/xps-reader';
 import { readBiffCharts } from './office/biff-chart';
+import { decodeRk, readBiffCellRecord, type BiffCellContext } from './office/biff-cell-records';
 import { readPptSlides } from './office/ppt-reader';
 import { readMobiText } from './office/mobi-reader';
 import { readPmlText } from './office/pml-reader';
@@ -8925,24 +8926,7 @@ const BIFF_RECORD_EOF = 0x000a;
 /** Record ids of the BOF that starts a BIFF stream: BIFF8 and BIFF5, BIFF4, BIFF3, BIFF2. */
 const BIFF_BOF_RECORDS: ReadonlySet<number> = new Set([0x0809, 0x0409, 0x0209, 0x0009]);
 
-/**
- * Decodes a 32-bit BIFF RK number into its floating point or integer value
- */
-export function decodeRk(rk: number): number {
-  const is100 = (rk & 0x01) !== 0;
-  const isInt = (rk & 0x02) !== 0;
-  let val: number;
-  if (isInt) {
-    val = rk >> 2;
-  } else {
-    const buf = Buffer.alloc(8);
-    buf.writeUInt32LE(0, 0);
-    // `& ~3` yields a signed 32-bit value, negative when the sign bit of the double is set; the high word is unsigned.
-    buf.writeUInt32LE((rk & ~3) >>> 0, 4);
-    val = buf.readDoubleLE(0);
-  }
-  return is100 ? val / 100 : val;
-}
+export { decodeRk };
 
 /** Bytes of the SST record before its first string: the total and the unique string counts ([MS-XLS] 2.4.265). */
 /** BOF version word of a BIFF8 stream. */
@@ -9102,6 +9086,8 @@ function denseXlsSheet(rows: string[][]): XlsSheet {
 const XLS_TEXT_CHUNK_CHARS = 1 << 20;
 
 interface XlsTextLayout {
+  /** The whole text of a sheet without a row. */
+  readonly empty: string;
   readonly head: string;
   readonly rowSeparator: string;
   readonly tail: string;
@@ -9133,7 +9119,7 @@ function encodeXlsSheetText(sheet: XlsSheet, layout: XlsTextLayout, target: stri
     if (pendingChars >= XLS_TEXT_CHUNK_CHARS) flush();
   };
 
-  write(layout.head);
+  write(sheet.rowCount === 0 ? layout.empty : layout.head);
   let previousCells: readonly string[] | undefined;
   let previousText = '';
   for (let index = 0; index < sheet.rowCount; index++) {
@@ -9146,12 +9132,13 @@ function encodeXlsSheetText(sheet: XlsSheet, layout: XlsTextLayout, target: stri
     if (index > 0) write(layout.rowSeparator);
     write(previousText);
   }
-  write(layout.tail);
+  if (sheet.rowCount > 0) write(layout.tail);
   flush();
   return Buffer.concat(chunks, encodedBytes);
 }
 
 const delimitedLayout = (delimiter: string): XlsTextLayout => ({
+  empty: '',
   head: '',
   rowSeparator: '\n',
   tail: '',
@@ -9160,6 +9147,7 @@ const delimitedLayout = (delimiter: string): XlsTextLayout => ({
 
 /** The layout of `JSON.stringify(rows, null, 2)` for an array of non-empty rows of strings. */
 const JSON_ROWS_LAYOUT: XlsTextLayout = {
+  empty: '[]',
   head: '[\n',
   rowSeparator: ',\n',
   tail: '\n]',
@@ -9183,7 +9171,14 @@ const BIFF_COLUMN_WIDTH_UNITS_PER_CHARACTER = 256;
 /** Points a column of one character is drawn at, as for the columns of an XLSX sheet. */
 const POINTS_PER_COLUMN_CHARACTER = 7.5;
 const BIFF_SUBSTREAM_GLOBALS = 0x0005;
-const BIFF_SUBSTREAM_WORKSHEET = 0x0010;
+/**
+ * The BOF substream types that are not worksheets: Visual Basic module, chart, macro sheet ([MS-XLS] 2.4.21) and the BIFF4
+ * workspace. Any other type is read as a worksheet, as the office suite's Excel import does for a type it does not know
+ * (`ImportExcel::Bof5`, `sc/source/filter/excel/impop.cxx`).
+ */
+const BIFF_NON_WORKSHEET_SUBSTREAMS: ReadonlySet<number> = new Set([0x0006, 0x0020, 0x0040, 0x0100]);
+/** The first byte of a formula result that is a string, kept in the STRING record after the FORMULA record. */
+const BIFF_FORMULA_RESULT_STRING = 0;
 /** A BOF of BIFF2 to BIFF4 states no substream type before its type word; the stream is one worksheet. */
 const BIFF_BOF_TYPE_OFFSET = 2;
 
@@ -9234,7 +9229,8 @@ function readBiff8Worksheets(stream: Buffer): BiffWorksheet[] {
   /** What each open substream is: a worksheet, or anything else (globals, chart, macro sheet, VB module). */
   const substreams: Array<'worksheet' | 'globals' | 'other'> = [];
   let implicitWorksheet: BiffWorksheet | undefined;
-  let lastFormulaCell: { r: number; c: number; sheet: BiffWorksheet } | null = null;
+  /** The formula cell whose string result the STRING record after it carries. */
+  let lastFormulaCell: { r: number; c: number } | null = null;
 
   /** The worksheet that cells are written to now; undefined inside a chart or macro substream. */
   const activeWorksheet = (): BiffWorksheet | undefined => {
@@ -9247,6 +9243,19 @@ function readBiff8Worksheets(stream: Buffer): BiffWorksheet[] {
     }
     return implicitWorksheet;
   };
+
+  const setCell = (r: number, c: number, val: string): void => {
+    if (c > BIFF_MAX_COLUMN_INDEX) {
+      throw new LegacyOfficeFormatError(`Corrupt XLS: a cell lies in column ${c}, past the last column (${BIFF_MAX_COLUMN_INDEX}) of a BIFF sheet.`);
+    }
+    const sheet = activeWorksheet();
+    if (sheet === undefined) return;
+    if (!sheet.cells.has(r)) sheet.cells.set(r, new Map());
+    sheet.cells.get(r)!.set(c, val);
+    if (r > sheet.maxRow) sheet.maxRow = r;
+    if (c > sheet.maxCol) sheet.maxCol = c;
+  };
+  const cellContext: BiffCellContext = { hasTextFlags, sst };
 
   let pos = 0;
   while (pos + 4 <= stream.length) {
@@ -9263,7 +9272,7 @@ function readBiff8Worksheets(stream: Buffer): BiffWorksheet[] {
       lastFormulaCell = null;
       if (type === BIFF_SUBSTREAM_GLOBALS) {
         substreams.push('globals');
-      } else if (type === undefined || type === BIFF_SUBSTREAM_WORKSHEET) {
+      } else if (type === undefined || !BIFF_NON_WORKSHEET_SUBSTREAMS.has(type)) {
         // A worksheet takes the name of its BOUNDSHEET: matched by position, else by order.
         const name = namesByPosition.get(recordStart) ?? namesInOrder[worksheetsStarted];
         worksheetsStarted++;
@@ -9319,96 +9328,18 @@ function readBiff8Worksheets(stream: Buffer): BiffWorksheet[] {
       sst.push(...readBiff8SharedStrings(sstChunks));
     }
 
-    const setCell = (r: number, c: number, val: string) => {
-      if (c > BIFF_MAX_COLUMN_INDEX) {
-        throw new LegacyOfficeFormatError(`Corrupt XLS: a cell lies in column ${c}, past the last column (${BIFF_MAX_COLUMN_INDEX}) of a BIFF sheet.`);
-      }
-      const sheet = activeWorksheet();
-      if (sheet === undefined) return;
-      if (!sheet.cells.has(r)) sheet.cells.set(r, new Map());
-      sheet.cells.get(r)!.set(c, val);
-      if (r > sheet.maxRow) sheet.maxRow = r;
-      if (c > sheet.maxCol) sheet.maxCol = c;
-    };
-
-    // 0x00FD: LABELSST
-    if (recId === 0x00FD && data.length >= 10) {
-      const r = data.readUInt16LE(0);
-      const c = data.readUInt16LE(2);
-      const sstIdx = data.readUInt32LE(6);
-      setCell(r, c, sst[sstIdx] ?? '');
-    }
-
-    // 0x0204: LABEL
-    else if (recId === 0x0204 && data.length >= 8) {
-      const r = data.readUInt16LE(0);
-      const c = data.readUInt16LE(2);
-      const len = data.readUInt16LE(6);
-      if (!hasTextFlags) {
-        setCell(r, c, data.toString('latin1', 8, Math.min(data.length, 8 + len)));
-      } else if (data.length >= 9) {
-        const flags = data.readUInt8(8);
-        const isUnicode = (flags & 0x01) !== 0;
-        let str = '';
-        if (isUnicode) {
-          const byteLen = len * 2;
-          str = data.toString('utf16le', 9, Math.min(data.length, 9 + byteLen));
-        } else {
-          str = data.toString('latin1', 9, Math.min(data.length, 9 + len));
-        }
-        setCell(r, c, str);
-      }
-    }
-
-    // 0x00D6: RSTRING (BIFF5)
-    else if (recId === 0x00D6 && data.length >= 8) {
-      const r = data.readUInt16LE(0);
-      const c = data.readUInt16LE(2);
-      const len = data.readUInt16LE(6);
-      const str = data.toString('latin1', 8, Math.min(data.length, 8 + len));
-      setCell(r, c, str);
-    }
-
-    // 0x0203: NUMBER
-    else if (recId === 0x0203 && data.length >= 14) {
-      const r = data.readUInt16LE(0);
-      const c = data.readUInt16LE(2);
-      const num = data.readDoubleLE(6);
-      setCell(r, c, String(num));
-    }
-
-    // 0x027E: RK
-    else if (recId === 0x027E && data.length >= 10) {
-      const r = data.readUInt16LE(0);
-      const c = data.readUInt16LE(2);
-      const rk = data.readUInt32LE(6);
-      setCell(r, c, String(decodeRk(rk)));
-    }
-
-    // 0x00BD: MULRK
-    else if (recId === 0x00BD && data.length >= 6) {
-      const r = data.readUInt16LE(0);
-      const colFirst = data.readUInt16LE(2);
-      const colLast = data.readUInt16LE(data.length - 2);
-      let c = colFirst;
-      let off = 4;
-      while (c <= colLast && off + 6 <= data.length) {
-        const rk = data.readUInt32LE(off + 2);
-        setCell(r, c, String(decodeRk(rk)));
-        off += 6;
-        c++;
-      }
-    }
+    if (readBiffCellRecord(recId, data, cellContext, setCell)) continue;
 
     // 0x0006: FORMULA
-    else if (recId === 0x0006 && data.length >= 14) {
+    if (recId === 0x0006 && data.length >= 14) {
       const r = data.readUInt16LE(0);
       const c = data.readUInt16LE(2);
-      const formulaSheet = activeWorksheet();
-      lastFormulaCell = formulaSheet === undefined ? null : { r, c, sheet: formulaSheet };
+      lastFormulaCell = null;
       if (data[12] === 0xff && data[13] === 0xff) {
+        // A result of 0xFFFF in its last two bytes is no number: its first byte says what it is (xlrd `sheet.py` 929-996).
         const fType = data[6];
-        if (fType === 1) setCell(r, c, data[8] === 1 ? 'TRUE' : 'FALSE');
+        if (fType === BIFF_FORMULA_RESULT_STRING) lastFormulaCell = { r, c };
+        else if (fType === 1) setCell(r, c, data[8] === 1 ? 'TRUE' : 'FALSE');
         else if (fType === 2) setCell(r, c, '#ERR!');
       } else {
         const num = data.readDoubleLE(6);
@@ -9416,7 +9347,7 @@ function readBiff8Worksheets(stream: Buffer): BiffWorksheet[] {
       }
     }
 
-    // 0x0207: STRING
+    // 0x0207: STRING, the cached result of the string formula before it
     else if (recId === 0x0207 && lastFormulaCell && data.length >= 3) {
       const len = data.readUInt16LE(0);
       const flags = hasTextFlags ? data.readUInt8(2) : 0;
@@ -9428,9 +9359,7 @@ function readBiff8Worksheets(stream: Buffer): BiffWorksheet[] {
       } else {
         str = data.toString('latin1', textStart, Math.min(data.length, textStart + len));
       }
-      const owner = lastFormulaCell.sheet;
-      if (!owner.cells.has(lastFormulaCell.r)) owner.cells.set(lastFormulaCell.r, new Map());
-      owner.cells.get(lastFormulaCell.r)!.set(lastFormulaCell.c, str);
+      setCell(lastFormulaCell.r, lastFormulaCell.c, str);
       lastFormulaCell = null;
     }
   }
@@ -9482,6 +9411,41 @@ function mergedSheetOf(worksheets: readonly BiffWorksheet[]): XlsSheet {
   return sheetOfCells(cells, maxCol);
 }
 
+/**
+ * True when the stream is a BIFF workbook that ends where it should: it starts with a BOF and every substream it opens is closed
+ * by its EOF. xlrd reads a sheet record by record up to its EOF and fails on a stream that ends before it (`sheet.py`, `read`;
+ * `book.py`, `get_record_parts`); bytes after the last EOF are not read. The records are only walked, no cell is decoded.
+ */
+function biffStreamIsComplete(stream: Buffer): boolean {
+  if (stream.length < 4 || !BIFF_BOF_RECORDS.has(stream.readUInt16LE(0))) return false;
+  let openSubstreams = 0;
+  let pos = 0;
+  while (pos + 4 <= stream.length) {
+    const recId = stream.readUInt16LE(pos);
+    const next = pos + 4 + stream.readUInt16LE(pos + 2);
+    if (next > stream.length) break;
+    if (BIFF_BOF_RECORDS.has(recId)) openSubstreams++;
+    else if (recId === BIFF_RECORD_EOF) {
+      if (openSubstreams === 0) return false;
+      openSubstreams--;
+    }
+    pos = next;
+  }
+  return openSubstreams === 0;
+}
+
+/**
+ * A BIFF stream whose sheets hold no cell is a workbook without data and converts to the empty output of each target, when it is a
+ * whole workbook. One that is cut short or starts with something else is damaged, and is refused rather than answered with nothing.
+ */
+function assertCellsOrCompleteWorkbook(stream: Buffer, worksheets: readonly BiffWorksheet[]): void {
+  if (mergedSheetOf(worksheets).rowCount === 0 && !biffStreamIsComplete(stream)) {
+    throw new ConversionFailedError(
+      'Corrupt XLS: The BIFF stream holds no cell records and is not a complete workbook (it lacks a BOF at its start or an EOF, or a record is cut short).'
+    );
+  }
+}
+
 /** The workbook stream of a CFBF container: the BIFF8 `Workbook` of an Excel 97-2003 or Kingsoft file, or else the `Book` of an older one. */
 function selectWorkbookStream(cfbf: CfbfContainer): Buffer | undefined {
   // A file saved by Excel 97 or later for old readers keeps a BIFF5 `Book` next to the BIFF8 `Workbook`; the newer one wins.
@@ -9502,9 +9466,7 @@ function readCfbfWorkbookSheets(inputBuffer: Buffer): BiffWorksheet[] {
     throw new ConversionFailedError('Corrupt XLS: Workbook stream not found in CFBF container');
   }
   const worksheets = readBiff8Worksheets(workbookStream);
-  if (mergedSheetOf(worksheets).rowCount === 0) {
-    throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in BIFF stream');
-  }
+  assertCellsOrCompleteWorkbook(workbookStream, worksheets);
   return worksheets;
 }
 
@@ -9595,10 +9557,8 @@ export async function convertXlsSource(
     (inputBuffer.readUInt16LE(0) === 0x0809 || inputBuffer.readUInt16LE(0) === 0x0409)
   ) {
     worksheets = readBiff8Worksheets(inputBuffer);
+    assertCellsOrCompleteWorkbook(inputBuffer, worksheets);
     sheet = mergedSheetOf(worksheets);
-    if (sheet.rowCount === 0) {
-      throw new ConversionFailedError('Corrupt XLS: No spreadsheet cell records found in raw BIFF stream');
-    }
   }
   // 3. XML Spreadsheet 2003 (<Row><Cell><Data ...>)
   else {
@@ -9627,10 +9587,9 @@ export async function convertXlsSource(
       }
     }
     sheet = denseXlsSheet(rows);
-  }
-
-  if (sheet.rowCount === 0) {
-    throw new ConversionFailedError('Failed to parse XLS spreadsheet: invalid or empty content');
+    if (sheet.rowCount === 0) {
+      throw new ConversionFailedError('Failed to parse XLS spreadsheet: invalid or empty content');
+    }
   }
 
   if (tgt === 'csv') {
