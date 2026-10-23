@@ -19,9 +19,10 @@ import path from 'node:path';
  *
  * Bitmap fonts. Twelve files are dvips or word-processor output whose text is a Type 3 font of 1-bit pictures. Poppler draws a
  * character of such a font as a rectangle painted through a mask that holds the glyph picture, and a DXF holds no bitmaps. The
- * DXF writer puts the characters back as TEXT in a stock font, as pstoedit does by default, from the PDF's text layer: every
- * page of three files converts, and the other nine are refused for something else their pages draw (dash patterns, strokes
- * under a skew, clip paths, pictures, pages past the SVG size limit), each listed in known-refusals.json.
+ * DXF writer puts the characters back as TEXT in a stock font, as pstoedit does by default, from the PDF's text layer, and
+ * reads the pen attributes a DXF cannot hold (dash arrays become line types, strokes under a skew are their centre lines,
+ * opacity is dropped): every page of seven files converts, and the other five are refused for something else their pages
+ * draw (clip paths, pictures, pages past the SVG size limit, a text layer without text), each listed in known-refusals.json.
  *
  * Ghostscript. Two files stop the only open-source PostScript interpreter on a value that is legal in an interpreter that is
  * not Ghostscript, in every release from 10.02.1 to the development branch; no argument changes it, and safe mode is not involved.
@@ -38,20 +39,50 @@ const MIN_WORD_RECALL = 0.95;
 const MIN_TEXT_AGREEMENT = 0.95;
 
 /** Every page converts: the bitmap-font text is TEXT and the rest of the page is geometry DXF holds. */
-const TEXT_CONVERTED_FILES = ['govdocs1-000097.ps', 'govdocs1-000773.ps', 'govdocs1-006007.ps'] as const;
+const TEXT_CONVERTED_FILES = [
+  'govdocs1-000097.ps',
+  'govdocs1-000730.ps',
+  'govdocs1-000773.ps',
+  'govdocs1-002433.ps',
+  'govdocs1-005434.ps',
+  'govdocs1-006007.ps',
+  'govdocs1-006955.ps',
+] as const;
+
+/** The pages (from 1) of each converted file that draw dashed lines, which the writer draws with a line type of the dash array. */
+const DASHED_PAGES: Readonly<Record<string, readonly number[]>> = {
+  'govdocs1-002433.ps': [3],
+  'govdocs1-005434.ps': [12, 13, 14, 15],
+  'govdocs1-006955.ps': [2, 3, 5, 7, 8],
+};
 
 /** The bitmap-font text is written, but a page also draws something DXF does not hold (known-refusals.json says what). */
 const REFUSED_FOR_OTHER_CONTENT = [
-  'govdocs1-000730.ps',
   'govdocs1-001048.ps',
-  'govdocs1-002433.ps',
   'govdocs1-002956.ps',
   'govdocs1-003229.ps',
   'govdocs1-004087.ps',
-  'govdocs1-005434.ps',
   'govdocs1-006137.ps',
-  'govdocs1-006955.ps',
 ] as const;
+
+/**
+ * The pages (from 1) of the refused files that clip their drawing to a region that is not the page. A clip is dropped when
+ * the farthest vertex it hides is at most one point outside it (policy 79), and the reader measures the SVG that Poppler
+ * draws, which differs between releases: page 20 of `006137` reaches 1.145 pt with Poppler 26 and 0.858 pt with Poppler 24,
+ * page 43 reaches 19.43 and 14.57. So the pages are told apart by how far they sit from the one-point line, not by one
+ * release's numbers.
+ *
+ * `written` hide at most 0.76 pt with both releases. `nearLimit` sit between 0.85 and 1.3 pt with one release or the other,
+ * and either result is right as long as it follows the rule. `farPast` reach far past the clip with both releases; the
+ * number is the least reach in points that is certain on every release, so these pages are refused everywhere.
+ */
+const CLIPPED_PAGES: Readonly<Record<string, { written: readonly number[]; nearLimit: readonly number[]; farPast: Readonly<Record<number, number>> }>> = {
+  'govdocs1-006137.ps': { written: [21, 30, 32, 35, 36, 46, 49, 52, 53, 56, 57, 62], nearLimit: [20, 50, 60], farPast: { 43: 10 } },
+  'govdocs1-001048.ps': { written: [], nearLimit: [], farPast: { 11: 5 } },
+};
+
+/** Device pixels (96 to the inch) in a point (72 to the inch): the unit of the reach in a clip refusal. */
+const PIXELS_PER_POINT = 96 / 72;
 
 const BITMAP_FONT_FILES = [...TEXT_CONVERTED_FILES, ...REFUSED_FOR_OTHER_CONTENT] as const;
 
@@ -165,14 +196,22 @@ reports = []
 for path in sys.argv[1:]:
     document = ezdxf.readfile(path)
     auditor = document.audit()
-    reports.append({"errors": len(auditor.errors), "texts": len(document.modelspace().query("TEXT"))})
+    modelspace = document.modelspace()
+    unknown = sum(1 for entity in modelspace if entity.dxf.hasattr("linetype") and entity.dxf.linetype not in document.linetypes)
+    reports.append({"errors": len(auditor.errors), "texts": len(modelspace.query("TEXT")), "unknownLinetypes": unknown})
 print(json.dumps(reports))
 `;
 
 /** A page of at most this many characters is audited whole; a larger one (outline-font text is polylines) without its geometry. */
 const AUDIT_WHOLE_PAGE_CHARACTERS = 1 << 20;
 
-function ezdxfAudit(python: string, pages: readonly string[]): { errors: number; texts: number }[] {
+interface EzdxfReport {
+  errors: number;
+  texts: number;
+  unknownLinetypes: number;
+}
+
+function ezdxfAudit(python: string, pages: readonly string[]): EzdxfReport[] {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-dxf-text-'));
   try {
     const files = pages.map((dxf, index) => {
@@ -180,7 +219,7 @@ function ezdxfAudit(python: string, pages: readonly string[]): { errors: number;
       fs.writeFileSync(file, dxf);
       return file;
     });
-    return JSON.parse(execFileSync(python, ['-I', '-c', EZDXF_AUDIT, ...files], { encoding: 'utf-8' })) as { errors: number; texts: number }[];
+    return JSON.parse(execFileSync(python, ['-I', '-c', EZDXF_AUDIT, ...files], { encoding: 'utf-8' })) as EzdxfReport[];
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -232,6 +271,24 @@ describe('PostScript files that draw their text with bitmap fonts', () => {
         const reports = ezdxfAudit(PYTHON_WITH_EZDXF as string, audited);
         expect(reports.map((report) => report.errors)).toEqual(pages.map(() => 0));
         expect(reports.map((report) => report.texts)).toEqual(pages.map((page) => readDxf(page).texts.length));
+        expect(reports.map((report) => report.unknownLinetypes)).toEqual(pages.map(() => 0));
+      },
+      SAMPLE_TIMEOUT_MS
+    );
+
+    oracleTest(
+      'draws dash arrays as line types: the pages that have dashed lines name a defined line type, the others none',
+      ['ps2pdf', 'pdftocairo'],
+      async (ctx) => {
+        const { bytes } = await requireRealworldSample(ctx, id);
+        const pages = (await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', {}, id))).map(readDxf);
+        const dashedPages = pages.flatMap((dxf, index) => (dxf.entities.some((entity) => entity.linetype !== 'BYLAYER') ? [index + 1] : []));
+        expect(dashedPages).toEqual(DASHED_PAGES[id] ?? []);
+        for (const dxf of pages) {
+          const defined = new Set(dxf.linetypes.map((type) => type.name));
+          expect(dxf.entities.every((entity) => entity.linetype === 'BYLAYER' || defined.has(entity.linetype))).toBe(true);
+          expect(dxf.linetypes.every((type) => type.name === 'CONTINUOUS' || (type.elements.length >= 2 && type.elements.length % 2 === 0 && type.elements[0] >= 0))).toBe(true);
+        }
       },
       SAMPLE_TIMEOUT_MS
     );
@@ -250,6 +307,56 @@ describe('PostScript files that draw their text with bitmap fonts', () => {
         expect(refusal).not.toMatch(BITMAP_GLYPH_REFUSAL);
         const job = { file: id, source: 'ps', target: 'dxf', verdict: 'refused', ms: 0, detail: refusal } as const;
         expect(knownRefusal(job, readKnownRefusals()), refusal).not.toBeNull();
+      },
+      SAMPLE_TIMEOUT_MS
+    );
+  });
+
+  const pagesOf = (pages: readonly number[]): { pages: string } => ({ pages: pages.join(',') });
+
+  const expectAuditedDxf = (pages: readonly string[]): void => {
+    expect(pages.every((page) => readDxf(page).entities.length > 0)).toBe(true);
+    if (PYTHON_WITH_EZDXF !== null) {
+      const audited = pages.map((page) => (page.length <= AUDIT_WHOLE_PAGE_CHARACTERS ? page : withoutGeometry(page)));
+      expect(ezdxfAudit(PYTHON_WITH_EZDXF, audited).map((report) => report.errors)).toEqual(pages.map(() => 0));
+    }
+  };
+
+  describe.each(Object.entries(CLIPPED_PAGES).filter(([, { written }]) => written.length > 0))('%s', (id, { written }) => {
+    oracleTest(
+      'writes the pages whose clips hide nothing, which ezdxf audits without errors, and drops those clips',
+      ['ps2pdf', 'pdftocairo'],
+      async (ctx) => {
+        const { bytes } = await requireRealworldSample(ctx, id);
+        const pages = await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', pagesOf(written) as never, id));
+        expect(pages).toHaveLength(written.length);
+        expectAuditedDxf(pages);
+      },
+      SAMPLE_TIMEOUT_MS
+    );
+  });
+
+  describe.each(Object.entries(CLIPPED_PAGES).filter(([, { nearLimit, farPast }]) => nearLimit.length + Object.keys(farPast).length > 0))('%s', (id, { nearLimit, farPast }) => {
+    oracleTest(
+      'refuses a page whose clip hides more than a point, with the distance, and writes one whose clip hides no more',
+      ['ps2pdf', 'pdftocairo'],
+      async (ctx) => {
+        const { bytes } = await requireRealworldSample(ctx, id);
+        for (const page of [...nearLimit, ...Object.keys(farPast).map(Number)]) {
+          const refusal = await dispatchConversion(bytes, 'ps', 'dxf', pagesOf([page]) as never, id).then(
+            async (result) => {
+              expect(nearLimit, `page ${page} reaches far past its clip and was written`).toContain(page);
+              expectAuditedDxf(await dxfPages(result));
+              return null;
+            },
+            (error: unknown) => describeRefusal(error)
+          );
+          if (refusal === null) continue;
+          const reach = /clip-path "[^"]+" is not supported: a drawn path reaches ([\d.]+) pixels past it/.exec(refusal)?.[1];
+          expect(reach, `page ${page}: ${refusal}`).toBeDefined();
+          expect(Number(reach) / PIXELS_PER_POINT, `page ${page}`).toBeGreaterThan(1);
+          expect(Number(reach) / PIXELS_PER_POINT, `page ${page}`).toBeGreaterThanOrEqual(farPast[page] ?? 0);
+        }
       },
       SAMPLE_TIMEOUT_MS
     );

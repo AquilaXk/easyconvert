@@ -30,7 +30,7 @@ const CLIP_URL_PATTERN = /^url\(\s*#([^)\s"']+)\s*\)$/;
 const RECTANGLE_CORNERS = 4;
 const CORNER_EPSILON = 1e-6;
 /** Attributes that change what a clip or its shape clips, or how: any of them makes the clip a real one. */
-const CLIP_EFFECT_ATTRIBUTES = ['transform', 'clip-path', 'clipPathUnits', 'style', 'class'];
+const CLIP_EFFECT_ATTRIBUTES = ['transform', 'clip-path', 'clipPathUnits', 'style', 'class', 'display', 'visibility'];
 
 /** The only child of a plain `<clipPath>` when it is a short `<path>` or a `<rect>`; no attribute of either may change the clip. */
 function plainClipShape(clip: ClipNode | undefined): ClipNode | null {

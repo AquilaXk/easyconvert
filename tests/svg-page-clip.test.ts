@@ -112,9 +112,10 @@ describe('a clip path that clips something stays refused', () => {
     refused('', clippedGroup('c'));
   });
 
-  it('is refused by the DXF writer with the reason', () => {
-    expect(() => encodeSvgPageToDxf(Buffer.from(page(pathClip('c', 'M 10 10 L 150 10 L 150 90 L 10 90 Z'), clippedGroup('c'))))).toThrow(
-      /The page cannot be written as DXF: SVG clip-path "url\(#c\)" is not supported\./
+  it('is refused by the DXF writer with the reason when it hides more than a point of the drawing (tests/dxf-clip-region.test.ts)', () => {
+    const hidden = '<path d="M 20 20 L 190 20 L 190 60 L 20 60 Z" fill="red"/>';
+    expect(() => encodeSvgPageToDxf(Buffer.from(page(pathClip('c', 'M 10 10 L 150 10 L 150 90 L 10 90 Z'), clippedGroup('c'), hidden)))).toThrow(
+      /The page cannot be written as DXF: SVG clip-path "url\(#c\)" is not supported: a drawn path reaches 40 pixels past it/
     );
   });
 });

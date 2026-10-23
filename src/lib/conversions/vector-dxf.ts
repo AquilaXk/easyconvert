@@ -9,6 +9,9 @@ import { parseSvgGeometries, type ParsedSvgVectorDocument } from './svg-geometry
  * handles or subclass markers, so every DXF reader opens it. One DXF unit is one SVG user unit, which for a
  * page rendered from PDF or PostScript is one PostScript point; the Y axis points up as in PostScript.
  *
+ * A stroke is written as its centre line: width, paint and opacity are not written, and a dash array is an LTYPE entry that the
+ * stroke's entities name (svg-pen.ts says what the geometry reader does with each pen attribute, policy 79).
+ *
  * The characters of a bitmap font, which Poppler draws as pictures, are written as TEXT in the STANDARD style (font `txt`,
  * AutoCAD's default) from the PDF's text layer (bitmap-glyph-text.ts): each run left-aligned on its baseline and fitted to its
  * advance width (alignment 5, Fit: ezdxf entities/text.py `set_placement`), the field layout ezdxf writes for an R12 TEXT.
@@ -18,6 +21,12 @@ const DXF_VERSION = 'AC1009';
 const DXF_COORDINATE_DECIMALS = 6;
 const DXF_LAYER = '0';
 const DXF_LINETYPE = 'CONTINUOUS';
+/** The most dash line types one document defines (this writer's own bound, so that a hostile page cannot grow the LTYPE table without end). */
+export const MAX_DASH_LINETYPES = 256;
+/** Bit 128 of the POLYLINE flags (group 70): the line type pattern runs on across the vertices, where it would start again at each (ezdxf lldxf/const.py `POLYLINE_GENERATE_LINETYPE_PATTERN`). */
+const DXF_POLYLINE_PATTERN_GENERATED = 128;
+const DXF_DASH_LINETYPE_PREFIX = 'DASH';
+const DXF_DASH_DESCRIPTION = 'Dash pattern of the source drawing';
 /** AutoCAD Color Index 7: white on a dark background, black on a light one. */
 const DXF_ACI_WHITE = 7;
 /** Bit 1 of the POLYLINE flags (group 70): the polyline is closed. */
@@ -63,18 +72,31 @@ function pair(code: number, value: string | number): string {
   return `${String(code).padStart(DXF_CODE_WIDTH, ' ')}\n${value}`;
 }
 
+/** A DXF number as this writer writes it; `toFixed` writes 1e21 and above with an exponent, and Infinity and NaN as words. */
+const PLAIN_DECIMAL_PATTERN = new RegExp(`^-?\\d+\\.\\d{${DXF_COORDINATE_DECIMALS}}$`);
+
 function coordinate(value: number): string {
-  return value.toFixed(DXF_COORDINATE_DECIMALS);
+  const text = value.toFixed(DXF_COORDINATE_DECIMALS);
+  if (!PLAIN_DECIMAL_PATTERN.test(text)) {
+    throw new CadGeometryUnavailableError('The page cannot be written as DXF: a coordinate or a dash length is too large to write as a plain decimal number.');
+  }
+  return text;
 }
 
 function samePoint(a: Point, b: Point): boolean {
   return Math.abs(a.x - b.x) <= CLOSURE_EPSILON && Math.abs(a.y - b.y) <= CLOSURE_EPSILON;
 }
 
-function lineEntity(a: Point, b: Point): string {
+/** The linetype of an entity (group 6) when it is not the layer's: absent for a solid line. */
+function linetypePair(linetype: string | null): string[] {
+  return linetype === null ? [] : [pair(6, linetype)];
+}
+
+function lineEntity(a: Point, b: Point, linetype: string | null): string {
   return [
     pair(0, 'LINE'),
     pair(8, DXF_LAYER),
+    ...linetypePair(linetype),
     pair(10, coordinate(a.x)),
     pair(20, coordinate(a.y)),
     pair(30, coordinate(0)),
@@ -84,15 +106,17 @@ function lineEntity(a: Point, b: Point): string {
   ].join('\n');
 }
 
-function polylineEntity(points: Point[], closed: boolean): string {
+function polylineEntity(points: Point[], closed: boolean, linetype: string | null): string {
+  const flags = (closed ? DXF_POLYLINE_CLOSED : 0) | (linetype === null ? 0 : DXF_POLYLINE_PATTERN_GENERATED);
   const lines = [
     pair(0, 'POLYLINE'),
     pair(8, DXF_LAYER),
+    ...linetypePair(linetype),
     pair(66, 1),
     pair(10, coordinate(0)),
     pair(20, coordinate(0)),
     pair(30, coordinate(0)),
-    pair(70, closed ? DXF_POLYLINE_CLOSED : 0),
+    pair(70, flags),
   ];
   for (const p of points) {
     lines.push(pair(0, 'VERTEX'), pair(8, DXF_LAYER), pair(10, coordinate(p.x)), pair(20, coordinate(p.y)), pair(30, coordinate(0)));
@@ -175,7 +199,7 @@ function readSvgPage(svg: Buffer, bitmapGlyphs: BitmapGlyphs): ParsedSvgVectorDo
   if (!SVG_ROOT_PATTERN.test(text)) {
     throw new CadGeometryUnavailableError('DXF encoding failed: input is not an SVG document.');
   }
-  return refusingUnsupported(() => parseSvgGeometries(text, bitmapGlyphs));
+  return refusingUnsupported(() => parseSvgGeometries(text, bitmapGlyphs, 'centre-line'));
 }
 
 /** The page geometry of an SVG document as DXF text; fails closed when the page draws no vector geometry or a bitmap glyph. */
@@ -203,8 +227,43 @@ function finitePlacements(texts: readonly PlacedText[]): readonly PlacedText[] {
   return texts;
 }
 
+/** The dash line types of a document: one LTYPE per distinct pattern, named in order of first use (ezdxf entities/ltype.py writes an R12 LTYPE as groups 2, 70, 3, 72, 73, 40 and one 49 per element). */
+class DashLinetypes {
+  private readonly names = new Map<string, string>();
+  readonly definitions: string[] = [];
+
+  /** The name of the line type that draws `pattern` (dash and gap lengths in turn), or null when its length is too small for the written precision to hold. */
+  nameOf(pattern: readonly number[]): string | null {
+    const lengths = pattern.map((length) => Number(coordinate(length)));
+    if (lengths.reduce((total, length) => total + length, 0) === 0) return null;
+    const elements = lengths.map((length, index) => coordinate(index % 2 === 0 ? length : -length));
+    const key = elements.join(' ');
+    const known = this.names.get(key);
+    if (known !== undefined) return known;
+    if (this.names.size >= MAX_DASH_LINETYPES) {
+      throw new ConversionFailedError(`The page cannot be written as DXF: it draws more than ${MAX_DASH_LINETYPES} different dash patterns.`);
+    }
+    const name = `${DXF_DASH_LINETYPE_PREFIX}${this.names.size + 1}`;
+    this.names.set(key, name);
+    this.definitions.push(
+      [
+        pair(0, 'LTYPE'),
+        pair(2, name),
+        pair(70, 0),
+        pair(3, DXF_DASH_DESCRIPTION),
+        pair(72, 65),
+        pair(73, elements.length),
+        pair(40, coordinate(lengths.reduce((total, length) => total + length, 0))),
+        ...elements.map((element) => pair(49, element)),
+      ].join('\n')
+    );
+    return name;
+  }
+}
+
 function writeDxf(parsed: ParsedSvgVectorDocument, texts: readonly PlacedText[]): Buffer {
   const entities: string[] = [];
+  const dashes = new DashLinetypes();
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -222,7 +281,8 @@ function writeDxf(parsed: ParsedSvgVectorDocument, texts: readonly PlacedText[])
         maxX = Math.max(maxX, p.x);
         maxY = Math.max(maxY, p.y);
       }
-      entities.push(vertices.length === 2 && !closed ? lineEntity(vertices[0], vertices[1]) : polylineEntity(vertices, closed));
+      const linetype = element.strokeDash ? dashes.nameOf(element.strokeDash) : null;
+      entities.push(vertices.length === 2 && !closed ? lineEntity(vertices[0], vertices[1], linetype) : polylineEntity(vertices, closed, linetype));
     }
   }
   for (const text of texts) {
@@ -258,7 +318,7 @@ function writeDxf(parsed: ParsedSvgVectorDocument, texts: readonly PlacedText[])
       pair(2, 'TABLES'),
       pair(0, 'TABLE'),
       pair(2, 'LTYPE'),
-      pair(70, 1),
+      pair(70, 1 + dashes.definitions.length),
       pair(0, 'LTYPE'),
       pair(2, DXF_LINETYPE),
       pair(70, 0),
@@ -266,6 +326,7 @@ function writeDxf(parsed: ParsedSvgVectorDocument, texts: readonly PlacedText[])
       pair(72, 65),
       pair(73, 0),
       pair(40, coordinate(0)),
+      ...dashes.definitions,
       pair(0, 'ENDTAB'),
       pair(0, 'TABLE'),
       pair(2, 'LAYER'),
