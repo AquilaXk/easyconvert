@@ -2,10 +2,11 @@ import './pdfjs-node-compat';
 import { ConversionFailedError, type PdfPageAnalysis } from '../types';
 import type { OcrBaseline, OcrLayoutGroup, OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combiner';
 import { runPdfTextJobInThread } from './pdf-text-host';
+import { appendAnnotationText } from './pdf-annotation-text';
 import { FontTable, readPageContent } from './pdf-text-content';
 import { ImageExtractor } from './pdf-text-images';
 import { withFontProgramToUnicode } from './pdf-font-tounicode';
-import { assertPdfStreamsWithinLimits } from './pdf-stream-guard';
+import { assertPdfAnnotationStreamsWithinLimits, assertPdfStreamsWithinLimits } from './pdf-stream-guard';
 import { pdfjsDataUrl } from './pdfjs-data';
 import {
   PDF_TEXT_MAX_PAGES,
@@ -1196,6 +1197,7 @@ interface PdfJsPage {
   getTextContent(options?: { includeMarkedContent?: boolean }): Promise<PageContent>;
   commonObjs: { has(id: string): boolean; get(id: string): unknown };
   getOperatorList(): Promise<OperatorList>;
+  getAnnotations(options: { intent: string }): Promise<Array<{ subtype?: unknown }>>;
   objs: { has(id: string): boolean; get(id: string): unknown };
 }
 
@@ -1211,6 +1213,7 @@ interface PdfJsLoadingTask {
 
 interface PdfJs {
   OPS: Record<string, number>;
+  normalizeUnicode(text: string): string;
   getDocument(options: Record<string, unknown>): PdfJsLoadingTask;
 }
 
@@ -1368,9 +1371,12 @@ async function readPages(
     if (!needsPage(job, explicit, pageNumber)) continue;
     const page = await doc.getPage(pageNumber); // NOSONAR S9382 sequential: one page in memory at a time
     const content = await page.getTextContent({ includeMarkedContent: false }); // NOSONAR S9382 sequential
+    const readOperators = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
     const contentWanted = wantsContent(job, pageNumber);
+    // The text of annotation appearances follows the page's own items; a page too busy for its operator list loses it.
+    // A job for the content reads the operator list anyway; the others only read it for a page with annotations.
+    if (readOperators) await appendAnnotationText(pdfjs, page, content, { operatorListIsRead: contentWanted }); // NOSONAR S9382 sequential
     if (contentWanted) {
-      const readOperators = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
       // Reading the content also replaces the glyphs of `content.items` that have no text, so the page text below is clean.
       const reading = { readOperators, imageExtractor: images, unmappedMark: job.unmappedGlyphText ?? '' };
       result.content.push(await readPageContent(pdfjs.OPS, page, content, pageNumber, fonts, reading)); // NOSONAR S9382 sequential
@@ -1409,8 +1415,11 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
   try {
     const bytes = Buffer.from(pdfBuffer.buffer, pdfBuffer.byteOffset, pdfBuffer.byteLength);
     // The streams the text depends on are decoded under byte budgets first: pdfjs would inflate a bomb to its end. The
-    // composite fonts without a ToUnicode map then get one from their font program (pdf-font-tounicode.ts).
-    const readable = contentWanted ? withFontProgramToUnicode(bytes, assertPdfStreamsWithinLimits(bytes)) : bytes;
+    // composite fonts without a ToUnicode map then get one from their font program (pdf-font-tounicode.ts). Every job reads
+    // the annotations of its pages (readPages), so one that does not want the content still has their streams checked.
+    let readable = bytes;
+    if (contentWanted) readable = withFontProgramToUnicode(bytes, assertPdfStreamsWithinLimits(bytes));
+    else assertPdfAnnotationStreamsWithinLimits(bytes);
     const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as PdfJs;
     task = pdfjs.getDocument({
       data: new Uint8Array(readable),

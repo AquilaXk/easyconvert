@@ -17,13 +17,24 @@ import { PDF_CONTENT_MAX_STATE_DEPTH } from './pdf-text-types';
  */
 export function assertPdfStreamsWithinLimits(pdf: Buffer): PdfDocument {
   const document = new PdfDocument(pdf, undefined, true);
-  document.contentStreams((content) => {
-    if (graphicsStateDepth(content, PDF_CONTENT_MAX_STATE_DEPTH) > PDF_CONTENT_MAX_STATE_DEPTH) {
-      throw new PdfStructureError(`A content stream nests the graphics state deeper than ${PDF_CONTENT_MAX_STATE_DEPTH} levels`);
-    }
-  });
+  document.contentStreams(assertStateDepthWithinLimit);
   document.toUnicodeStreams(() => undefined);
   return document;
+}
+
+/**
+ * The part of `assertPdfStreamsWithinLimits` for a job that reads the page content as pdfjs gives it but has pdfjs build
+ * the annotations: the annotation count, and every appearance stream and the forms it draws, under the same budgets.
+ * @throws the errors of `assertPdfStreamsWithinLimits`.
+ */
+export function assertPdfAnnotationStreamsWithinLimits(pdf: Buffer): void {
+  new PdfDocument(pdf, undefined, true).annotationAppearanceStreams(assertStateDepthWithinLimit);
+}
+
+function assertStateDepthWithinLimit(content: string): void {
+  if (graphicsStateDepth(content, PDF_CONTENT_MAX_STATE_DEPTH) > PDF_CONTENT_MAX_STATE_DEPTH) {
+    throw new PdfStructureError(`A content stream nests the graphics state deeper than ${PDF_CONTENT_MAX_STATE_DEPTH} levels`);
+  }
 }
 
 const WHITESPACE = new Set([0x00, 0x09, 0x0a, 0x0c, 0x0d, 0x20]);
