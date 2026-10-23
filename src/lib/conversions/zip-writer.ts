@@ -525,6 +525,34 @@ function deflateRaw(data: Uint8Array, level: number): Promise<Buffer> {
   });
 }
 
+/**
+ * Entries of one archive that is deflated while it is written: the entry being written and the next
+ * {@link ZIP_DEFLATE_AHEAD_ENTRIES} are on the thread pool at the same time (libuv runs four jobs at once by default), so the
+ * archive costs about its longest entries rather than their sum. Each entry is one zlib call, so its bytes do not depend on the
+ * number of cores. A job nobody asks for (the archive failed first) is not left as an unhandled rejection.
+ */
+const ZIP_DEFLATE_AHEAD_ENTRIES = 4;
+
+function deflaterRunningAhead(sources: readonly Uint8Array[]): ZipDeflater {
+  const positions = new Map<Uint8Array, number>();
+  sources.forEach((source, index) => positions.set(source, index));
+  const running = new Map<number, Promise<Uint8Array>>();
+  const start = (index: number, level: number): void => {
+    if (index >= sources.length || running.has(index)) return;
+    const job = deflateRaw(sources[index], level);
+    job.catch(() => undefined);
+    running.set(index, job);
+  };
+  return (data, level) => {
+    const index = positions.get(data);
+    if (index === undefined) return deflateRaw(data, level);
+    for (let next = index; next <= index + ZIP_DEFLATE_AHEAD_ENTRIES; next++) start(next, level);
+    const job = running.get(index) as Promise<Uint8Array>;
+    running.delete(index);
+    return job;
+  };
+}
+
 /** Both sync and async iterables become one async iterator, so a source is consumed the same way either way. */
 function toAsyncIterator(source: Iterable<Uint8Array> | AsyncIterable<Uint8Array>): AsyncIterator<Uint8Array> {
   if (Symbol.asyncIterator in source) return (source as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
@@ -556,10 +584,17 @@ export async function writeZipFile(
   options: ZipWriterOptions = {}
 ): Promise<void> {
   const out = createWriteStream(filePath);
+  // A file that cannot be opened or written makes the stream emit 'error' whether or not a write is pending; with no
+  // listener at that moment the event is an uncaught exception, so the first failure is kept here and thrown by the writes.
+  let failure: Error | undefined;
+  out.on('error', (error) => {
+    failure ??= error;
+  });
   const writer = new ZipWriter(
     (chunk) =>
       new Promise<void>((resolve, reject) => {
-        out.write(chunk, (error) => (error ? reject(error) : resolve()));
+        if (failure) reject(failure);
+        else out.write(chunk, (error) => (error ? reject(error) : resolve()));
       }),
     options
   );
@@ -567,11 +602,43 @@ export async function writeZipFile(
     for await (const entry of entries) await writer.addEntry(entry);
     await writer.finish();
     await new Promise<void>((resolve, reject) => {
-      out.once('error', reject);
-      out.end(() => resolve());
+      if (failure) reject(failure);
+      else out.end((error?: Error | null) => (error ? reject(error) : resolve()));
     });
   } catch (error) {
     out.destroy();
     throw error;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Archives of several files that are all deflated (page images, streaming segments)
+// ---------------------------------------------------------------------------
+
+/** One file of a multi-file output: its name in the archive and its bytes. */
+export interface ZipFile {
+  name: string;
+  data: Uint8Array;
+}
+
+function deflatedArchive(files: readonly ZipFile[]): { entries: ZipEntryInput[]; options: ZipWriterOptions } {
+  return {
+    entries: files.map((file) => ({ name: file.name, data: file.data, method: 'deflate' })),
+    options: { deflate: deflaterRunningAhead(files.map((file) => file.data)) },
+  };
+}
+
+/**
+ * Every file deflated at {@link ZIP_DEFAULT_LEVEL}, in the order given, whatever its name says (a page image is deflated too,
+ * and stored only when deflate does not shrink it), written into one Buffer.
+ */
+export async function createDeflatedZipBuffer(files: readonly ZipFile[]): Promise<Buffer> {
+  const { entries, options } = deflatedArchive(files);
+  return createZipBuffer(entries, options);
+}
+
+/** The same archive streamed into a file, so no copy of it is held in memory. */
+export async function writeDeflatedZipFile(filePath: string, files: readonly ZipFile[]): Promise<void> {
+  const { entries, options } = deflatedArchive(files);
+  await writeZipFile(filePath, entries, options);
 }
