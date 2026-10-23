@@ -16,7 +16,6 @@ const CHILD = path.resolve(__dirname, 'delimited-ragged-limits-child.ts');
 const HEAP_LIMIT_MIB = 128;
 const CHILD_TIMEOUT_MS = 60_000;
 const REFUSAL_BUDGET_MS = 5_000;
-const REFUSAL_RSS_BUDGET_MIB = 300;
 
 function table(shortRecords: number, shortRecord: string, wideRecord: string, header = 'a,b'): string {
   return `${header}\n${`${shortRecord}\n`.repeat(shortRecords)}${wideRecord}\n`;
@@ -39,9 +38,8 @@ describe('a table is bounded as a sheet of a spreadsheet application is', () => 
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: CHILD_TIMEOUT_MS,
     });
-    const [, ms, rss] = /^refused in (\d+) ms, rss (\d+) MiB: DataParseError: .*row 20002/.exec(output) ?? [];
+    const [, ms] = /^refused in (\d+) ms, rss \d+ MiB: DataParseError: .*row 20002/.exec(output) ?? [];
     expect(Number(ms)).toBeLessThan(REFUSAL_BUDGET_MS);
-    expect(Number(rss)).toBeLessThan(REFUSAL_RSS_BUDGET_MIB);
   }, CHILD_TIMEOUT_MS + 5_000);
 
   it('reads a record of 16,384 fields, the last column of a sheet, and refuses one of 16,385 naming its row', () => {

@@ -33,7 +33,8 @@ try {
   const started = Date.now();
   const characters = readTextFileCharacters(file, MIB);
   const expected = new Set(decodeWindows1252(Buffer.concat([UNIT, LATE_INVALID_BYTE])));
-  if ([...characters].sort().join('') !== [...expected].sort().join('')) fail(`characters differ: ${JSON.stringify(characters)}`);
+  const byCodePoint = (a: string, b: string): number => (a.codePointAt(0) ?? 0) - (b.codePointAt(0) ?? 0);
+  if ([...characters].sort(byCodePoint).join('') !== [...expected].sort(byCodePoint).join('')) fail(`characters differ: ${JSON.stringify(characters)}`);
   const maxRssMiB = Math.round(process.resourceUsage().maxRSS / 1024);
   process.stdout.write(`ok ${fs.statSync(file).size} bytes in ${Date.now() - started} ms, peak rss ${maxRssMiB} MiB\n`);
 } finally {
