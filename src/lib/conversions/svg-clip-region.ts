@@ -11,10 +11,11 @@ import { PAGE_CLIP_TOLERANCE_PIXELS, type ClipNode } from './svg-page-clip';
  *
  * The region of a clip is the union of the shapes of its `<clipPath>` (SVG 1.1 section 14.3.5), each filled by its own
  * `clip-rule`, in the user space of the clipped element; a point is inside by the winding count of the edges to its left that
- * cairo's `_cairo_path_fixed_in_fill` keeps (src/cairo-path-in-fill.c: half-open in y, nonzero is a count other than zero,
- * evenodd an odd count, a point on an edge is inside). Poppler's SVG comes from cairo's SVG surface, which writes a clip as
- * `<clipPath id="clip-N"><path clip-rule="..." d="..."/></clipPath>` (src/cairo-svg-surface.c, `_cairo_svg_surface_emit_...`
- * writes `<clipPath id=\"clip-%d\">` and `<path clip-rule=\"%s\"`); cairo is LGPL/MPL, so only its behaviour is followed.
+ * cairo's `_cairo_path_fixed_in_fill` keeps (src/cairo-path-in-fill.c master, `_cairo_in_fill_add_edge` lines 100 to 148: half-open in y;
+ * `_cairo_path_fixed_in_fill` lines 255 to 298: nonzero is a count other than zero, evenodd an odd count, a point on an edge is
+ * inside). Poppler's SVG comes from cairo's SVG surface, which writes a clip as `<clipPath id="clip-N"><path clip-rule="..."
+ * d="..."/></clipPath>` (src/cairo-svg-surface.c master, lines 1007 to 1011 and 3870 to 3874); cairo is LGPL/MPL, so only its
+ * behaviour is followed.
  * The distance of a point outside is its distance to the nearest edge (closest point on a segment: Ericson, Real-Time
  * Collision Detection, section 5.1.2), which is the distance to the region because the nearest point of a region is on its
  * boundary and every boundary point is on an edge.
@@ -71,7 +72,6 @@ type FillRule = 'nonzero' | 'evenodd';
 /** The shapes of a clip as closed polygons in the user space of the clipped element. */
 interface ClipDefinition {
   shapes: { rule: FillRule; polygons: Point[][] }[];
-  edges: number;
 }
 
 /** One shape in device space: the edges as `ax, ay, bx, by` runs. */
@@ -326,6 +326,6 @@ export class ActiveClips {
       const rule = (declared.get('clip-rule') ?? clipDeclared.get('clip-rule')) === 'evenodd' ? 'evenodd' : 'nonzero';
       shapes.push({ rule, polygons });
     }
-    return { shapes, edges };
+    return { shapes };
   }
 }

@@ -1241,9 +1241,9 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
 /**
  * Parses SVG XML into geometry elements with flattened polylines in device (viewport) coordinates, honouring the style cascade,
  * inheritance from container elements and transforms. Rendered content that cannot be represented (text, images, clipping, ...)
- * throws instead of being dropped; a clip that is one rectangle covering the whole page clips nothing and is the one exception,
- * and the characters of a bitmap font go to `bitmapGlyphs` when it sets them aside (svg-bitmap-glyph.ts). `pens` says what
- * the target does with the pen attributes it cannot paint (svg-pen.ts): by default they are refused.
+ * throws instead of being dropped, but a clip over the whole page, and in `centre-line` mode a clip that hides at most a point
+ * (svg-clip-region.ts). Bitmap-font characters go to `bitmapGlyphs` when it sets them aside (svg-bitmap-glyph.ts); `pens` says
+ * what the target does with the pen attributes it cannot paint (svg-pen.ts): by default they are refused.
  */
 export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new BitmapGlyphs(), pens: SvgPenMode = 'metafile'): ParsedSvgVectorDocument {
   if (svgContent.length > MAX_SVG_INPUT_CHARS) {
