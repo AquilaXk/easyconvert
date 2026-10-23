@@ -1,4 +1,3 @@
-import JSZip from 'jszip';
 import sharp, { type ResizeOptions } from 'sharp';
 import { assembleAnimation, type AnimationEncodeOptions, type FrameSource, type RawFrame } from './image-animation';
 import type { DecodedAnimation, FrameSelection } from './image-frames';
@@ -6,12 +5,12 @@ import { assertAnimationBudget, COMPOSED_MEMORY, RGBA_BYTES_PER_PIXEL } from './
 import { joinPostscriptPages } from './image-postscript';
 import { joinTiffPages } from './image-tiff-merge';
 import { pageEntryName } from './page-range';
+import { createDeflatedZipBuffer } from './zip-writer';
 import type { ConversionResult } from '../types';
 import { resizedDimensions } from './image-input-limits';
 
 /** Output assembly for multi-frame sources: decoded animations, per-page ZIP packages, multi-page TIFFs and multi-page PostScript. */
 
-const ZIP_COMPRESSION_LEVEL = 6;
 const FIRST_FRAME_INDEX = 0;
 
 async function resizeFrame(frame: RawFrame, resize: ResizeOptions): Promise<RawFrame> {
@@ -68,14 +67,8 @@ export async function zipPageImages(
   extension: string
 ): Promise<Buffer> {
   const outputs = await convertEachPage(pages, convertPage);
-  const zip = new JSZip();
   const lastPage = pages[pages.length - 1];
-  outputs.forEach((output, index) => zip.file(pageEntryName(baseName, pages[index], lastPage, extension), output));
-  return zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: ZIP_COMPRESSION_LEVEL },
-  });
+  return createDeflatedZipBuffer(outputs.map((output, index) => ({ name: pageEntryName(baseName, pages[index], lastPage, extension), data: output })));
 }
 
 /** Converts each requested page to a TIFF with `convertPage` and joins them into one multi-page TIFF. */

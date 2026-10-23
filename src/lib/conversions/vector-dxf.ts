@@ -10,7 +10,7 @@ import { parseSvgGeometries, type ParsedSvgVectorDocument } from './svg-geometry
  * page rendered from PDF or PostScript is one PostScript point; the Y axis points up as in PostScript.
  *
  * A stroke is written as its centre line: width, paint and opacity are not written, and a dash array is an LTYPE entry that the
- * stroke's entities name (svg-pen.ts says what the geometry reader does with each pen attribute, policy 78).
+ * stroke's entities name (svg-pen.ts says what the geometry reader does with each pen attribute, policy 79).
  *
  * The characters of a bitmap font, which Poppler draws as pictures, are written as TEXT in the STANDARD style (font `txt`,
  * AutoCAD's default) from the PDF's text layer (bitmap-glyph-text.ts): each run left-aligned on its baseline and fitted to its

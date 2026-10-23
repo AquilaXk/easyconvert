@@ -80,31 +80,31 @@
   {
     "file": "govdocs1-001048.ps",
     "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported: a drawn path reaches [0-9.]+ pixels past it, more than the [0-9.]+ pixels \\(one point\\) a clip may hide\\.$",
-    "reason": "The geometry of the other 14 pages is read, dashed and skewed strokes included (policy 78), but page 11 clips two drawn paths to a rectangle that is not the page and the farthest vertex of one is 13.2 points past it. The clip is dropped when nothing it hides is more than one point outside it (policy 78), so this page stays refused (policy 42; tests/postscript-real-file-refusals.test.ts).",
+    "reason": "The geometry of the other 14 pages is read, dashed and skewed strokes included (policy 79), but page 11 clips two drawn paths to a rectangle that is not the page and the farthest vertex of one is 13.2 points past it. The clip is dropped when nothing it hides is more than one point outside it (policy 79), so this page stays refused (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-002956.ps",
     "detail": "^ConversionFailedError: The page cannot be written as DXF: the PDF text layer has no text for most of its bitmap-font characters \\(drawn as pictures\\)\\.$",
-    "reason": "Every page but one is written, dashed and skewed strokes included (policy 78); page 28 draws 13 bitmap-font characters and the PDF text layer reads all 13 as spaces, so there is no text to write for them (tests/postscript-real-file-refusals.test.ts).",
+    "reason": "Every page but one is written, dashed and skewed strokes included (policy 79); page 28 draws 13 bitmap-font characters and the PDF text layer reads all 13 as spaces, so there is no text to write for them (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-003229.ps",
     "detail": "^CadGeometryUnavailableError: SVG input exceeds the 5242880-character limit\\.$",
-    "reason": "The geometry of the other 18 pages is read, dashed lines included (policy 78); the SVG Poppler draws for pages 17 and 18 is 8.1 and 7.1 MB, larger than the 5 MiB the geometry reader reads, which stays (tests/postscript-real-file-refusals.test.ts).",
+    "reason": "The geometry of the other 18 pages is read, dashed lines included (policy 79); the SVG Poppler draws for pages 17 and 18 is 8.1 and 7.1 MB, larger than the 5 MiB the geometry reader reads, which stays (tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-004087.ps",
     "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG element <image> is not supported\\.$",
-    "reason": "Most text is outline fonts and the bitmap-font characters of pages 1 and 4 are written as TEXT (policy 77), and the dashed line of page 5 is a line type (policy 78), but pages 2 and 3 hold pictures, which a DXF does not drop without a word (policy 42; tests/postscript-real-file-refusals.test.ts).",
+    "reason": "Most text is outline fonts and the bitmap-font characters of pages 1 and 4 are written as TEXT (policy 77), and the dashed line of page 5 is a line type (policy 79), but pages 2 and 3 hold pictures, which a DXF does not drop without a word (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   },
   {
     "file": "govdocs1-006137.ps",
     "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported: a drawn path reaches [0-9.]+ pixels past it, more than the [0-9.]+ pixels \\(one point\\) a clip may hide\\.$",
-    "reason": "The geometry of the other 50 pages is read, skewed and dashed strokes included (policy 78), and the clips of 12 of the 16 pages that clip their drawing to a region that is not the page hide at most 0.76 point and are dropped (policy 78). Pages 20, 50 and 60 reach 1.15, 1.21 and 1.28 points past their clip, and page 43 reaches 19.4, past the one point a dropped clip may hide, so the file stays refused (policy 42; tests/postscript-real-file-refusals.test.ts).",
+    "reason": "The geometry of the other 50 pages is read, skewed and dashed strokes included (policy 79), and the clips of 12 of the 16 pages that clip their drawing to a region that is not the page hide at most 0.76 point and are dropped (policy 79). Pages 20, 50 and 60 reach 1.15, 1.21 and 1.28 points past their clip, and page 43 reaches 19.4, past the one point a dropped clip may hide, so the file stays refused (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   }
 ]

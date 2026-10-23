@@ -9,7 +9,7 @@ import { readDxf, type DxfDocument } from './helpers/dxf-reader';
 /**
  * A clip path that is not the page. The geometry readers refuse it, because dropping it draws what it hides; the DXF writer
  * (which writes the centre lines of the drawing and holds no clip) drops it when nothing it hides is more than one point
- * outside it, measured on the flattened device-space vertices against the clip region (policy 78).
+ * outside it, measured on the flattened device-space vertices against the clip region (policy 79).
  */
 
 const PAGE_WIDTH = 200;

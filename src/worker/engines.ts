@@ -97,6 +97,7 @@ import { withExtractionNotes } from '../lib/conversions/archive-alternate-stream
 import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
 import { extractSourceArchive } from './archive-source-extraction';
 import { rarToTar, tarToBzip2, tarToGzip, tarToZip, zipToTar } from '../lib/conversions/archive-repack';
+import { writeDeflatedZipFile, type ZipFile } from '../lib/conversions/zip-writer';
 import {
   sevenZipToTar,
   stageTarForSevenZip,
@@ -542,25 +543,16 @@ export async function convertWithNativeFfmpeg(
           throw new Error(`FFmpeg packaging failed: no files produced in ${outputDir}`);
         }
 
-        const zip = new JSZip();
         const parts: { filename: string; buffer: Buffer }[] = [];
         for (const f of outputFiles) {
           const p = path.join(outputDir, f);
           if (fs.statSync(p).isFile()) {
-            const buf = fs.readFileSync(p);
-            zip.file(f, buf);
-            parts.push({ filename: f, buffer: buf });
+            parts.push({ filename: f, buffer: fs.readFileSync(p) });
           }
         }
 
-        const zipBuffer = await zip.generateAsync({
-          type: 'nodebuffer',
-          compression: 'DEFLATE',
-          compressionOptions: { level: 6 },
-        });
-
         const tempZipPath = path.join(tempDir, `${baseName}-${packaging.format}.zip`);
-        fs.writeFileSync(tempZipPath, zipBuffer);
+        await writeDeflatedZipFile(tempZipPath, parts.map((part) => ({ name: part.filename, data: part.buffer })));
 
         const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
         const persistedPath = preserveOutput(tempZipPath, 'zip', options, vfsPayload);
@@ -1280,23 +1272,14 @@ async function finalizeMultiPageOutput(params: FinalizeMultiPageParams): Promise
   }
 
   // Multi-page bundle: package into ZIP with standard formatted names: <baseName>-p001.<tgt>
-  const zip = new JSZip();
   const maxPage = requestedPages.at(-1) ?? 1;
-
-  for (const item of resolvedFiles) {
-    const entryName = pageEntryName(baseName, item.pageNum, maxPage, tgt);
-    const fileBytes = fs.readFileSync(path.join(tempDir, item.file));
-    zip.file(entryName, fileBytes);
-  }
-
-  const zipBuffer = await zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 6 },
-  });
+  const pageFiles = resolvedFiles.map((item) => ({
+    name: pageEntryName(baseName, item.pageNum, maxPage, tgt),
+    data: fs.readFileSync(path.join(tempDir, item.file)),
+  }));
 
   const zipOutputPath = path.join(tempDir, `${baseName}.zip`);
-  fs.writeFileSync(zipOutputPath, zipBuffer);
+  await writeDeflatedZipFile(zipOutputPath, pageFiles);
 
   const persistedPath = preserveOutput(zipOutputPath, 'zip', options, vfsPayload);
   const result = createConversionResult(persistedPath, 'zip', baseName, 'native-poppler', Date.now() - startTime);
@@ -1586,9 +1569,18 @@ interface ChainOutputContext {
 
 /** Writes a chain's final bytes where the request asked for them, like every other engine does. */
 async function persistChainOutput(buffer: Buffer, extension: string, context: ChainOutputContext): Promise<WorkerConversionResult> {
+  return persistChainFile(extension, context, (outputPath) => fs.writeFileSync(outputPath, buffer));
+}
+
+/** Like {@link persistChainOutput} for a result that `write` puts into the file itself, so it is never held as one buffer. */
+async function persistChainFile(
+  extension: string,
+  context: ChainOutputContext,
+  write: (outputPath: string) => void | Promise<void>
+): Promise<WorkerConversionResult> {
   return withSandboxDir('easyconvert-chain-', async (tempDir) => {
     const outputPath = path.join(tempDir, `output.${extension}`);
-    fs.writeFileSync(outputPath, buffer);
+    await write(outputPath);
     const vfsPayload = Buffer.isBuffer(context.input) ? undefined : context.input;
     const persistedPath = preserveOutput(outputPath, extension, context.options, vfsPayload);
     return createConversionResult(persistedPath, extension, context.baseName, context.engine, Date.now() - context.startTime);
@@ -1619,15 +1611,14 @@ async function reencodeRenderedPages(
         `The document has ${entryNames.length} pages; at most ${CHAINED_PAGE_ENCODE_MAX_PAGES} can be converted to .${targetExtension} in one request. Select a page range.`
       );
     }
-    const encoded = new JSZip();
+    const encoded: ZipFile[] = [];
     const renderedSuffix = `.${renderedExtension}`;
     for (const entryName of entryNames) {
       const stem = entryName.endsWith(renderedSuffix) ? entryName.slice(0, -renderedSuffix.length) : entryName;
       const page = await pages.files[entryName].async('nodebuffer');
-      encoded.file(`${stem}.${targetExtension}`, await encode(page, entryName));
+      encoded.push({ name: `${stem}.${targetExtension}`, data: await encode(page, entryName) });
     }
-    const zipBuffer = await encoded.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-    return await persistChainOutput(zipBuffer, 'zip', context);
+    return await persistChainFile('zip', context, (outputPath) => writeDeflatedZipFile(outputPath, encoded));
   } finally {
     // The intermediate pages are an implementation detail of this chain: never leave them on disk.
     discardPersistedOutput(rendered.filePath, context.input, context.options);

@@ -67,7 +67,7 @@ const REFUSED_FOR_OTHER_CONTENT = [
 
 /**
  * The pages (from 1) of the refused files that clip their drawing to a region that is not the page. The clip is dropped when
- * the farthest vertex it hides is at most one point outside it (policy 78); `refused` lists the others with the distance of
+ * the farthest vertex it hides is at most one point outside it (policy 79); `refused` lists the others with the distance of
  * their farthest vertex in points, measured on the page's SVG (the reach in the message is the first vertex past one point).
  */
 const CLIPPED_PAGES: Readonly<Record<string, { converted: readonly number[]; refused: Readonly<Record<number, number>> }>> = {

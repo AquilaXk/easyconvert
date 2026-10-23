@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import JSZip from 'jszip';
+import { createDeflatedZipBuffer } from './zip-writer';
 import {
   ConversionOptions,
   ConversionResult,
@@ -575,7 +575,6 @@ export async function packageHlsDashMedia(
       throw new ConversionFailedError(`Packaging failed: expected manifest "${expectedManifest}" was not produced.`);
     }
 
-    const zip = new JSZip();
     const parts: { filename: string; buffer: Buffer }[] = [];
 
     // Sort files deterministically with manifest first
@@ -588,17 +587,11 @@ export async function packageHlsDashMedia(
     for (const file of outputFiles) {
       const filePath = path.join(outputDir, file);
       if (fs.statSync(filePath).isFile()) {
-        const fileBuf = fs.readFileSync(filePath);
-        zip.file(file, fileBuf);
-        parts.push({ filename: file, buffer: fileBuf });
+        parts.push({ filename: file, buffer: fs.readFileSync(filePath) });
       }
     }
 
-    const zipBuffer = await zip.generateAsync({
-      type: 'nodebuffer',
-      compression: 'DEFLATE',
-      compressionOptions: { level: 6 },
-    });
+    const zipBuffer = await createDeflatedZipBuffer(parts.map((part) => ({ name: part.filename, data: part.buffer })));
 
     return {
       buffer: zipBuffer,

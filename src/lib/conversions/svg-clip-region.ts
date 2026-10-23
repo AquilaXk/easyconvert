@@ -7,7 +7,7 @@ import { PAGE_CLIP_TOLERANCE_PIXELS, type ClipNode } from './svg-page-clip';
  * dropping the clip draws nothing the clip hides (policy 42). Both reference exporters drop every clip (Inkscape's
  * dxf_outlines.py `process_shape` reads none); this reader keeps the part of the refusal that guards against visible loss: a
  * non-page `clip-path` is dropped when no vertex of what it clips is more than PAGE_CLIP_TOLERANCE_PIXELS (one point of the
- * page) outside its region, measured on the flattened device-space geometry the writer writes (policy 78).
+ * page) outside its region, measured on the flattened device-space geometry the writer writes (policy 79).
  *
  * The region of a clip is the union of the shapes of its `<clipPath>` (SVG 1.1 section 14.3.5), each filled by its own
  * `clip-rule`, in the user space of the clipped element; a point is inside by the winding count of the edges to its left that
