@@ -1132,21 +1132,21 @@
     "rule": "complexity",
     "function": "buildFfmpegArguments",
     "count": 1,
-    "maxValue": 362
+    "maxValue": 360
   },
   {
     "file": "src/lib/conversions/media-ffmpeg-args.ts",
     "rule": "max-lines-per-function",
     "function": "buildFfmpegArguments",
     "count": 1,
-    "maxValue": 650
+    "maxValue": 649
   },
   {
     "file": "src/lib/conversions/media-ffmpeg-args.ts",
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1785
+    "maxValue": 1777
   },
   {
     "file": "src/lib/conversions/media-ffmpeg-args.ts",

@@ -173,25 +173,42 @@ export const LOSSY_AUDIO_ENCODERS: ReadonlySet<string> = new Set([
 ]);
 const SOXR_FEATURE_FLAG = '--enable-libsoxr';
 const FFMPEG_VERSION_TIMEOUT_MS = 3000;
-const soxrCache = new Map<string, boolean>();
+const FFMPEG_VERSION_LINE = /^ffmpeg version n?(\d+)\.(\d+)/m;
 
-/** True when the ffmpeg build was configured with libsoxr. The probe runs once per binary. */
-export function ffmpegHasSoxr(ffmpegBin: string): boolean {
-  const cached = soxrCache.get(ffmpegBin);
+export interface FfmpegBuildFacts {
+  soxr: boolean;
+  /** Release number from the first line of `-version`; undefined for a development build (`N-123-g...`) or an unreadable answer. */
+  version: { major: number; minor: number } | undefined;
+}
+
+const buildCache = new Map<string, FfmpegBuildFacts>();
+
+/** What `ffmpeg -version` says about the build. The probe runs once per binary. */
+export function probeFfmpegBuild(ffmpegBin: string): FfmpegBuildFacts {
+  const cached = buildCache.get(ffmpegBin);
   if (cached !== undefined) return cached;
-  let present = false;
+  let facts: FfmpegBuildFacts = { soxr: false, version: undefined };
   try {
     const out = execFileSync(ffmpegBin, ['-hide_banner', '-version'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: FFMPEG_VERSION_TIMEOUT_MS,
     });
-    present = out.includes(SOXR_FEATURE_FLAG);
+    const release = FFMPEG_VERSION_LINE.exec(out);
+    facts = {
+      soxr: out.includes(SOXR_FEATURE_FLAG),
+      version: release ? { major: Number(release[1]), minor: Number(release[2]) } : undefined,
+    };
   } catch {
-    present = false;
+    // An unrunnable binary has neither feature; the answer is kept for the binary's lifetime like any other.
   }
-  soxrCache.set(ffmpegBin, present);
-  return present;
+  buildCache.set(ffmpegBin, facts);
+  return facts;
+}
+
+/** True when the ffmpeg build was configured with libsoxr. */
+export function ffmpegHasSoxr(ffmpegBin: string): boolean {
+  return probeFfmpegBuild(ffmpegBin).soxr;
 }
 
 export interface ResamplerChoice {
