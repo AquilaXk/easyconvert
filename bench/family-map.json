@@ -162,7 +162,7 @@
     },
     {
       "families": ["audio"],
-      "match": "^src/lib/conversions/(audio-[^/]*|flac-encoder|media-audio-[^/]*|midi-render|wav-header)\\.ts$|^src/lib/conversions/wasm/(resampler-mac|wasm-assembler)\\.ts$"
+      "match": "^src/lib/conversions/(audio-[^/]*|flac-encoder|media-audio-[^/]*|media-wav-input|midi-render|wav-header)\\.ts$|^src/lib/conversions/wasm/(resampler-mac|wasm-assembler)\\.ts$"
     },
     {
       "families": ["video"],

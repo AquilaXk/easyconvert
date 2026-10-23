@@ -41,7 +41,7 @@ import { DEFAULT_TONE_MAP, TONE_MAP_MODES } from './hdr-tonemap';
 import { pictureOf, softwareEncoderThreads } from './media-encoder-threads';
 import { type Vp9Deadline, vp9DeadlineOfInput, vp9SpeedArgs } from './media-vp9-effort';
 import type { LayoutStream } from './mp4-layout';
-import { readWavPcmInfo } from './wav-header';
+import { addWavPacketSize, readWavInputFacts } from './media-wav-input';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
   chooseResampler,
@@ -106,13 +106,6 @@ export function escapeFfmpegFilterPath(filePath: string): string {
     .replace(/:/g, '\\:')
     .replace(/'/g, "'\\\\''");
 }
-
-/**
- * Bytes ffmpeg may read to analyse an input whose header already states its audio format (the smallest value it
- * accepts). Its default analysis reads and decodes up to 5 s of the file before the encoder starts; for an
- * uncompressed WAVE that only repeats what the header says, so it is skipped and the encoder sees the same samples.
- */
-const HEADER_DESCRIBED_PROBE_BYTES = 32;
 
 /** Decimals of the input start offset passed to ffmpeg: microseconds, the precision of its timeline. */
 const CHAPTER_OFFSET_DECIMALS = 6;
@@ -780,9 +773,7 @@ export function buildFfmpegArguments(
   if (options.trim?.end) {
     inputArgs.push('-to', options.trim.end);
   }
-  if (isAudioOnlyTarget(tgt) && readWavPcmInfo(inputPath) !== null) {
-    inputArgs.push('-probesize', String(HEADER_DESCRIBED_PROBE_BYTES));
-  }
+  const wav = readWavInputFacts(tgt, inputPath, inputArgs);
   inputArgs.push('-i', inputPath);
 
   if (options.subtitles?.mode === 'soft') {
@@ -1483,6 +1474,7 @@ export function buildFfmpegArguments(
     outputArgs.push('-movflags', '+faststart');
   }
 
+  addWavPacketSize(inputArgs, wav, options, outputArgs, ffmpegBin);
   return [...globalArgs, ...inputArgs, ...outputArgs, outputPath];
 }
 
