@@ -18,6 +18,8 @@ const DXF_VERSION = 'AC1009';
 const DXF_COORDINATE_DECIMALS = 6;
 const DXF_LAYER = '0';
 const DXF_LINETYPE = 'CONTINUOUS';
+/** The most dash line types one document defines. */
+export const MAX_DASH_LINETYPES = 256;
 /** AutoCAD Color Index 7: white on a dark background, black on a light one. */
 const DXF_ACI_WHITE = 7;
 /** Bit 1 of the POLYLINE flags (group 70): the polyline is closed. */

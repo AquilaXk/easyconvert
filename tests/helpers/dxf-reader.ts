@@ -18,6 +18,17 @@ export interface DxfEntityRecord {
   points: DxfPoint[];
   /** POLYLINE flag bit 1 (closed); always false for a LINE. */
   closed: boolean;
+  /** Group 6: the linetype name; BYLAYER when absent. */
+  linetype: string;
+  /** POLYLINE flag bit 128: the linetype pattern runs on across the vertices; always false for a LINE. */
+  linetypeGenerated: boolean;
+}
+
+/** An LTYPE table entry: its name (group 2), the pattern length (group 40) and the dash elements (groups 49, dash above zero, gap below). */
+export interface DxfLinetype {
+  name: string;
+  patternLength: number;
+  elements: number[];
 }
 
 /** A TEXT entity (DXF reference, TEXT group codes): the string as stored, its height and its placement. */
@@ -50,11 +61,14 @@ export interface DxfDocument {
   entities: DxfEntityRecord[];
   texts: DxfTextRecord[];
   styles: DxfTextStyle[];
+  linetypes: DxfLinetype[];
 }
 
 const DEFAULT_TEXT_STYLE = 'STANDARD';
 
 const POLYLINE_CLOSED_FLAG = 1;
+const POLYLINE_GENERATE_LINETYPE_FLAG = 128;
+const DEFAULT_LINETYPE = 'BYLAYER';
 
 interface GroupPair {
   code: number;
@@ -155,11 +169,19 @@ export function readDxf(text: string): DxfDocument {
   for (const record of entityRecords) {
     const type = record[0].value;
     const layer = record.find((p) => p.code === 8)?.value ?? '';
+    const linetype = record.find((p) => p.code === 6)?.value ?? DEFAULT_LINETYPE;
     if (type === 'LINE') {
-      entities.push({ type: 'LINE', layer, points: [readPoint(record, 10), readPoint(record, 11)], closed: false });
+      entities.push({ type: 'LINE', layer, points: [readPoint(record, 10), readPoint(record, 11)], closed: false, linetype, linetypeGenerated: false });
     } else if (type === 'POLYLINE') {
       const flags = Number(record.find((p) => p.code === 70)?.value ?? 0);
-      polyline = { type: 'POLYLINE', layer, points: [], closed: (flags & POLYLINE_CLOSED_FLAG) !== 0 };
+      polyline = {
+        type: 'POLYLINE',
+        layer,
+        points: [],
+        closed: (flags & POLYLINE_CLOSED_FLAG) !== 0,
+        linetype,
+        linetypeGenerated: (flags & POLYLINE_GENERATE_LINETYPE_FLAG) !== 0,
+      };
     } else if (type === 'VERTEX') {
       if (!polyline) throw new Error('DXF VERTEX outside a POLYLINE');
       polyline.points.push(readPoint(record, 10));
@@ -184,6 +206,13 @@ export function readDxf(text: string): DxfDocument {
     styles: (sections.get('TABLES') ?? [])
       .filter((record) => record[0].value === 'STYLE')
       .map((record) => ({ name: record.find((p) => p.code === 2)?.value ?? '', font: record.find((p) => p.code === 3)?.value ?? '' })),
+    linetypes: (sections.get('TABLES') ?? [])
+      .filter((record) => record[0].value === 'LTYPE')
+      .map((record) => ({
+        name: record.find((p) => p.code === 2)?.value ?? '',
+        patternLength: Number(record.find((p) => p.code === 40)?.value),
+        elements: record.filter((p) => p.code === 49).map((p) => Number(p.value)),
+      })),
   };
 }
 
