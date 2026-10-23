@@ -53,7 +53,8 @@ const DROPPED_IN_CENTRE_LINE: ReadonlySet<string> = new Set(['opacity', 'fill-op
 
 export const NEUTRAL_ONLY_PROPERTY_NAMES: readonly string[] = Object.keys(NEUTRAL_ONLY_PROPERTIES);
 
-function excerpt(value: string): string {
+/** The start of a value for a message, so that a refusal of a value of megabytes stays short. */
+export function excerpt(value: string): string {
   return value.length > VALUE_EXCERPT_CHARACTERS ? `${value.slice(0, VALUE_EXCERPT_CHARACTERS)}...` : value;
 }
 

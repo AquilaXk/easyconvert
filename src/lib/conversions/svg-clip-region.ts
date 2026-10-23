@@ -1,6 +1,7 @@
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import type { AffineMatrix } from './svg-geometry';
 import { PAGE_CLIP_TOLERANCE_PIXELS, type ClipNode } from './svg-page-clip';
+import { excerpt } from './svg-pen';
 
 /**
  * The clip a writer that holds no clip may drop. A DXF has no clipping, so a page that clips its drawing is refused unless
@@ -112,9 +113,10 @@ export class ClipWork {
   }
 }
 
-/** The shapes of a clip as closed polygons in the user space of the clipped element. */
+/** The shapes of a clip as closed polygons in the user space of the clipped element, and the number of their points. */
 interface ClipDefinition {
   shapes: { rule: FillRule; polygons: Point[][] }[];
+  pointCount: number;
 }
 
 /** One shape in device space: the edges as `ax, ay, bx, by` runs. */
@@ -338,7 +340,7 @@ function formatPixels(value: number): string {
 
 /** The refusal of a clip: the same words as for any clip the reader cannot drop, and why this one is not. */
 function clipRefusal(value: string, reason: string): UnsupportedOptionError {
-  return new UnsupportedOptionError(`SVG clip-path "${value}" is not supported: ${reason}.`);
+  return new UnsupportedOptionError(`SVG clip-path "${excerpt(value)}" is not supported: ${reason}.`);
 }
 
 interface ActiveClip {
@@ -367,9 +369,9 @@ export class ActiveClips {
     const id = CLIP_URL_PATTERN.exec(value)?.[1];
     if (id === undefined) throw clipRefusal(value, 'it is not a reference to a <clipPath>');
     if (this.stack.length >= MAX_ACTIVE_CLIPS) throw clipRefusal(value, `clips are nested more than ${MAX_ACTIVE_CLIPS} deep`);
-    const region = deviceRegion(this.definitionOf(id, value), ctm);
-    this.work.charge(region.edgeCount);
-    this.stack.push({ value, region });
+    const definition = this.definitionOf(id, value);
+    this.work.charge(definition.pointCount);
+    this.stack.push({ value, region: deviceRegion(definition, ctm) });
     return true;
   }
 
@@ -408,19 +410,19 @@ export class ActiveClips {
   private readDefinition(id: string, value: string): ClipDefinition {
     const { ids, declaredOf, outlineOf, transformOf } = this.reader;
     const clip = ids.get(id);
-    if (clip === undefined) throw clipRefusal(value, `no element has the id "${id}"`);
-    if (clip.name !== 'clipPath') throw clipRefusal(value, `#${id} is not a <clipPath>`);
+    if (clip === undefined) throw clipRefusal(value, `no element has the id "${excerpt(id)}"`);
+    if (clip.name !== 'clipPath') throw clipRefusal(value, `#${excerpt(id)} is not a <clipPath>`);
     const hasClipOfItsOwn = (node: ClipNode, declared: ReadonlyMap<string, string>): boolean => node.attrs.has('clip-path') || declared.has('clip-path');
     const clipDeclared = declaredOf(clip);
     if (hasClipOfItsOwn(clip, clipDeclared)) throw clipRefusal(value, 'the <clipPath> has a clip-path of its own');
     const units = clip.attrs.get('clipPathUnits');
-    if (units !== undefined && units.trim() !== 'userSpaceOnUse') throw clipRefusal(value, `clipPathUnits="${units}" is relative to the box of the clipped element, which is not exact on flattened geometry (only userSpaceOnUse is measured)`);
+    if (units !== undefined && units.trim() !== 'userSpaceOnUse') throw clipRefusal(value, `clipPathUnits="${excerpt(units)}" is relative to the box of the clipped element, which is not exact on flattened geometry (only userSpaceOnUse is measured)`);
     const clipTransform = transformOf(clip.attrs.get('transform') ?? '');
     const shapes: ClipDefinition['shapes'] = [];
     let edges = 0;
     for (const shape of clip.children) {
       const isStraight = CLIP_SHAPE_IS_STRAIGHT.get(shape.name);
-      if (isStraight === undefined) throw clipRefusal(value, `it holds <${shape.name}>, which is not a shape this reader measures`);
+      if (isStraight === undefined) throw clipRefusal(value, `it holds <${excerpt(shape.name)}>, which is not a shape this reader measures`);
       if (!isStraight(shape.attrs)) throw clipRefusal(value, `its <${shape.name}> draws a curve, which is measured only on its flattened outline`);
       const declared = declaredOf(shape);
       if (hasClipOfItsOwn(shape, declared)) throw clipRefusal(value, 'a shape of the <clipPath> has a clip-path of its own');
@@ -435,7 +437,7 @@ export class ActiveClips {
       if (hasOverlappingEdges(polygons, this.work)) throw clipRefusal(value, 'two edges of a shape in it lie on one another, so an edge may border nothing');
       shapes.push({ rule: style.rule, polygons });
     }
-    return { shapes };
+    return { shapes, pointCount: edges };
   }
 
   /**

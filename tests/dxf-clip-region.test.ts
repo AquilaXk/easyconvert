@@ -339,7 +339,7 @@ describe('hostile clips', () => {
     const long = 'x'.repeat(100_000);
     for (const svg of [svgOf(`<g clip-path="url(#${long})">${stroke('M 60 30 L 140 30')}</g>`), clipped(clipOf('<rect x="40" y="20" width="120" height="60"/>', `clipPathUnits="${long}"`), stroke('M 60 30 L 140 30'))]) {
       const result = refusal(svg);
-      expect(result).toMatch(/^ConversionFailedError: The page cannot be written as DXF: SVG clip-path "url\(#(c|x{35}\.\.\.)" is not supported: /);
+      expect(result).toMatch(/^ConversionFailedError: The page cannot be written as DXF: SVG clip-path "url\(#(c\)|x{35}\.\.\.)" is not supported: /);
       expect(result.length).toBeLessThan(400);
     }
   });
