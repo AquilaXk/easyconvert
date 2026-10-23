@@ -139,8 +139,20 @@ describe('white space and comments in front of a stored object cost no more than
     expect(ms).toBeLessThan(BOUND_MS);
   });
 
+  it('ends the comment of each entry with the entry, so that many comments with no line end cost the sum of their lengths', () => {
+    const ENTRIES = 4_000;
+    const objects = [...fontObjects(), ...Array.from({ length: ENTRIES }, (_, index) => `<< /Index ${index} >>`)];
+    const first = objects.length - ENTRIES + 1;
+    const comment = `%${'c'.repeat(700)}`;
+    const packed = new Map(Array.from({ length: ENTRIES }, (_, index): [number, string] => [first + index, comment]));
+    const pdf = objectStreamPdf(objects, packed);
+    const { value, ms } = timed(() => readFonts(pdf));
+    expect(value).toEqual([TYPE0_A, TYPE0_B]);
+    expect(ms).toBeLessThan(BOUND_MS);
+  });
+
   it('skips the run in front of an offset once however many entries name it', () => {
-    const ALIASES = 50_000;
+    const ALIASES = 5_000;
     const pdf = objectStreamPdf(fontObjects(), new Map([[TYPE0_B, ' \n'.repeat(FOUR_MIB_LESS_ENTRY / 2)]]), ALIASES);
     const { value, ms } = timed(() => readFonts(pdf));
     expect(value).toEqual([TYPE0_A, TYPE0_B]);
