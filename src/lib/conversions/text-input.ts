@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import chardet from 'chardet';
 import { ConversionFailedError } from '../types';
 import { reportConversionWarning } from './conversion-warnings';
-import { LEGACY_TABLES, MIN_LEGACY_EVIDENCE_CHARS, decodeWithTable } from './legacy-tables';
+import { LEGACY_TABLES, MIN_LEGACY_EVIDENCE_CHARS, createTableDecoder } from './legacy-tables';
 import { decodeWindows1252 } from './office/windows-1252';
 
 /**
@@ -73,19 +73,25 @@ function hasByteOrderMark(buffer: Uint8Array): boolean {
 }
 
 /** The bytes the detector reads: from just before the first non-ASCII byte, as chardetng does, for at most TEXT_DETECTION_BYTES. */
-function detectionWindow(buffer: Uint8Array): { start: number; end: number } {
-  let firstNonAscii = buffer.findIndex((byte) => byte >= FIRST_NON_ASCII_BYTE);
-  if (firstNonAscii < 0) firstNonAscii = buffer.length;
+function detectionWindowAround(firstNonAscii: number, length: number): { start: number; end: number } {
   const start = Math.max(0, firstNonAscii - LEADING_CONTEXT_BYTES);
-  return { start, end: Math.min(buffer.length, start + TEXT_DETECTION_BYTES) };
+  return { start, end: Math.min(length, start + TEXT_DETECTION_BYTES) };
 }
 
-/** Refuses bytes that libmagic's `text_chars` table says never occur in text: C0 controls other than TEXT_CONTROL_BYTES, and DEL. */
-function assertLooksLikeText(bytes: Uint8Array): void {
+function detectionWindow(buffer: Uint8Array): { start: number; end: number } {
+  const firstNonAscii = buffer.findIndex((byte) => byte >= FIRST_NON_ASCII_BYTE);
+  return detectionWindowAround(firstNonAscii < 0 ? buffer.length : firstNonAscii, buffer.length);
+}
+
+/**
+ * Refuses bytes that libmagic's `text_chars` table says never occur in text: C0 controls other than TEXT_CONTROL_BYTES, and DEL.
+ * `firstOffset` is the offset of `bytes` in the file, which the message names.
+ */
+function assertLooksLikeText(bytes: Uint8Array, firstOffset = 0): void {
   const offset = bytes.findIndex((byte) => (byte < FIRST_PRINTABLE_ASCII_BYTE && !TEXT_CONTROL_BYTES.has(byte)) || byte === DELETE_BYTE);
   if (offset >= 0) {
     const hex = bytes[offset].toString(16).padStart(2, '0');
-    throw new ConversionFailedError(`The input is not text: the byte 0x${hex} at offset ${offset} is a control character that text does not use`);
+    throw new ConversionFailedError(`The input is not text: the byte 0x${hex} at offset ${firstOffset + offset} is a control character that text does not use`);
   }
 }
 
@@ -107,16 +113,37 @@ function detectLegacyEncoding(sample: Uint8Array): string {
   return standardEncodingName(best.name) ?? WINDOWS_1252;
 }
 
-/** `bytes` read as `encoding`, or null when they are not valid in it. Windows-1252 decodes every byte, as the standard does. */
-function decodeAs(bytes: Uint8Array, encoding: string): string | null {
-  if (encoding === WINDOWS_1252) return decodeWindows1252(bytes);
+/**
+ * A decoder for chunks of text in `encoding`: a call with bytes gives their text and a call with none ends the text; a result is
+ * null when the bytes are not valid in the encoding. Windows-1252 decodes every byte, as the standard does.
+ */
+type LegacyDecoder = (chunk?: Uint8Array) => string | null;
+
+function createLegacyDecoder(encoding: string): LegacyDecoder {
+  if (encoding === WINDOWS_1252) return (chunk) => (chunk ? decodeWindows1252(chunk) : '');
   const table = LEGACY_TABLES.get(encoding);
-  if (table !== undefined) return decodeWithTable(bytes, table);
+  if (table !== undefined) return createTableDecoder(table);
+  let decoder: TextDecoder;
   try {
-    return new TextDecoder(encoding, { fatal: true }).decode(bytes);
+    decoder = new TextDecoder(encoding, { fatal: true });
   } catch {
-    return null;
+    return () => null;
   }
+  return (chunk) => {
+    try {
+      return chunk ? decoder.decode(chunk, { stream: true }) : decoder.decode();
+    } catch {
+      return null;
+    }
+  };
+}
+
+/** `bytes` read as `encoding`, or null when they are not valid in it. */
+function decodeAs(bytes: Uint8Array, encoding: string): string | null {
+  const decode = createLegacyDecoder(encoding);
+  const text = decode(bytes);
+  const rest = decode();
+  return text === null || rest === null ? null : text + rest;
 }
 
 function decodeLegacyText(buffer: Uint8Array): string {
@@ -143,37 +170,126 @@ export function decodeTextInput(buffer: Buffer): string {
   return decodeLegacyText(buffer);
 }
 
-/** The characters of a Unicode text file, read and strictly decoded in chunks, whatever the size. */
-function distinctCharactersOfUnicodeFile(filePath: string, chunkBytes: number): string {
-  const seen = new Set<number>();
+/** Calls `visit` with each chunk of `chunkBytes` of the file, in order, until it returns false. */
+function visitChunks(fd: number, chunkBytes: number, visit: (bytes: Uint8Array, offset: number) => boolean | void): void {
   const chunk = Buffer.alloc(chunkBytes);
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    let bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
-    const decode = createTextInputDecoder(chunk.subarray(0, bytesRead));
-    while (bytesRead > 0) {
-      for (const ch of decode(chunk.subarray(0, bytesRead))) seen.add(ch.codePointAt(0) as number);
-      bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
-    }
-    for (const ch of decode()) seen.add(ch.codePointAt(0) as number);
-  } finally {
-    fs.closeSync(fd);
+  let offset = 0;
+  for (;;) {
+    const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, offset);
+    if (bytesRead === 0 || visit(chunk.subarray(0, bytesRead), offset) === false) return;
+    offset += bytesRead;
   }
+}
+
+function addCodePoints(seen: Set<number>, text: string): void {
+  for (const ch of text) seen.add(ch.codePointAt(0) as number);
+}
+
+function joinCodePoints(seen: ReadonlySet<number>): string {
   let text = '';
   for (const codePoint of seen) text += String.fromCodePoint(codePoint);
   return text;
 }
 
+/** The characters of a Unicode text file, read and strictly decoded in chunks, whatever the size. */
+function distinctCharactersOfUnicodeFile(filePath: string, chunkBytes: number): string {
+  const seen = new Set<number>();
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    let decode: ((chunk?: Uint8Array) => string) | undefined;
+    visitChunks(fd, chunkBytes, (bytes) => {
+      decode ??= createTextInputDecoder(bytes);
+      addCodePoints(seen, decode(bytes));
+    });
+    if (decode !== undefined) addCodePoints(seen, decode());
+  } finally {
+    fs.closeSync(fd);
+  }
+  return joinCodePoints(seen);
+}
+
+/** The sample the detector reads, found without holding the file: the same window as detectionWindow gives for its bytes. */
+function legacyDetectionWindow(fd: number, size: number, chunkBytes: number): { start: number; end: number } {
+  let firstNonAscii = size;
+  visitChunks(fd, chunkBytes, (bytes, offset) => {
+    const index = bytes.findIndex((byte) => byte >= FIRST_NON_ASCII_BYTE);
+    if (index < 0) return true;
+    firstNonAscii = offset + index;
+    return false;
+  });
+  return detectionWindowAround(firstNonAscii, size);
+}
+
+function assertFileLooksLikeText(fd: number, end: number, chunkBytes: number): void {
+  visitChunks(fd, chunkBytes, (bytes, offset) => {
+    assertLooksLikeText(bytes.subarray(0, end - offset), offset);
+    return offset + bytes.length < end;
+  });
+}
+
+/** The distinct characters of the file read as `encoding`, in chunks; `valid` is false from the first chunk the encoding rejects. */
+function scanLegacyFile(fd: number, chunkBytes: number, encoding: string): { seen: Set<number>; valid: boolean } {
+  const seen = new Set<number>();
+  const decode = createLegacyDecoder(encoding);
+  let valid = true;
+  visitChunks(fd, chunkBytes, (bytes) => {
+    const text = decode(bytes);
+    valid = text !== null;
+    if (text !== null) addCodePoints(seen, text);
+    return valid;
+  });
+  const rest = valid ? decode() : null;
+  if (rest !== null) addCodePoints(seen, rest);
+  return { seen, valid: valid && rest !== null };
+}
+
 /**
- * The characters of a text file, for deciding how it is drawn. A Unicode file is scanned in chunks of `chunkBytes`, whatever
- * its size, and gives its distinct characters; a file that is not valid UTF-8 is legacy text and is read whole, as the
- * conversion reads it (decodeTextInput), so both see the same encoding.
+ * The characters of a file that is not valid Unicode, read as decodeLegacyText reads its bytes: the encoding comes from the same
+ * sample and the same rules, and the file is read in chunks twice at most (once more as Windows-1252 when it is not valid in
+ * the detected encoding), so the result and the warning are those of the whole read.
+ */
+function distinctCharactersOfLegacyFile(filePath: string, chunkBytes: number): string {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const { start, end } = legacyDetectionWindow(fd, size, chunkBytes);
+    assertFileLooksLikeText(fd, end, chunkBytes);
+    const sample = Buffer.alloc(end - start);
+    fs.readSync(fd, sample, 0, sample.length, start);
+    const detected = detectLegacyEncoding(sample);
+    let encoding = detected;
+    let scan = scanLegacyFile(fd, chunkBytes, detected);
+    if (!scan.valid) {
+      encoding = WINDOWS_1252;
+      scan = scanLegacyFile(fd, chunkBytes, WINDOWS_1252);
+    }
+    reportConversionWarning(`Text input is not valid UTF-8; it was read as ${encoding}.`);
+    return joinCodePoints(scan.seen);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function fileHasByteOrderMark(filePath: string): boolean {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const head = Buffer.alloc(UTF8_BOM.length);
+    return hasByteOrderMark(head.subarray(0, fs.readSync(fd, head, 0, head.length, 0)));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * The characters of a text file, for deciding how it is drawn. The file is read in chunks of `chunkBytes`, whatever its size, and
+ * gives its distinct characters, in the encoding the conversion reads it in (decodeTextInput): Unicode as its byte order mark or
+ * its valid UTF-8 says, otherwise legacy text, so both see the same encoding.
  */
 export function readTextFileCharacters(filePath: string, chunkBytes: number): string {
   try {
     return distinctCharactersOfUnicodeFile(filePath, chunkBytes);
   } catch (error) {
-    if (!(error instanceof InvalidUnicodeTextError)) throw error;
+    if (!(error instanceof InvalidUnicodeTextError) || fileHasByteOrderMark(filePath)) throw error;
   }
-  return decodeTextInput(fs.readFileSync(filePath));
+  return distinctCharactersOfLegacyFile(filePath, chunkBytes);
 }

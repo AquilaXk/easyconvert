@@ -146,6 +146,12 @@ const UNNAMED_COLUMN_PREFIX = 'Unnamed: ';
 export interface RaggedRows {
   headerWidth: number;
   width: number;
+  /** The first row that has `width` fields. */
+  widestRow: number;
+  /** Records that are not blank lines, the header included. */
+  records: number;
+  /** Fields of all those records, before any padding. */
+  cells: number;
   /** Data records with more fields than the header. */
   longerThanHeader: RowTally | null;
   /** Data records with fewer fields than the widest record. */
@@ -166,11 +172,19 @@ function countRow(tally: RowTally | null, row: number): RowTally {
 function tallyRaggedRows(data: readonly (readonly string[])[]): RaggedRows | null {
   let headerWidth = -1;
   let width = 0;
-  for (const fields of data) {
-    if (isBlankRow(fields)) continue;
+  let widestRow = 0;
+  let records = 0;
+  let cells = 0;
+  data.forEach((fields, index) => {
+    if (isBlankRow(fields)) return;
     if (headerWidth < 0) headerWidth = fields.length;
-    width = Math.max(width, fields.length);
-  }
+    if (fields.length > width) {
+      width = fields.length;
+      widestRow = index + 1;
+    }
+    records++;
+    cells += fields.length;
+  });
   if (headerWidth < 0) return null;
   let longer: RowTally | null = null;
   let shorter: RowTally | null = null;
@@ -186,7 +200,77 @@ function tallyRaggedRows(data: readonly (readonly string[])[]): RaggedRows | nul
     if (fields.length > headerWidth) longer = countRow(longer, row);
     if (fields.length < width) shorter = countRow(shorter, row);
   }
-  return width === headerWidth && shorter === null ? null : { headerWidth, width, longerThanHeader: longer, shorterThanWidest: shorter };
+  if (width === headerWidth && shorter === null) return null;
+  return { headerWidth, width, widestRow, records, cells, longerThanHeader: longer, shorterThanWidest: shorter };
+}
+
+/**
+ * Most columns a ragged table may be padded to: the 16,384 (XFD) columns of a sheet in Excel ("Excel specifications and limits",
+ * Microsoft) and in LibreOffice Calc (MAXCOLCOUNT = 16 * 1024, sc/inc/address.hxx), the applications whose text import widens the
+ * sheet to the widest line.
+ */
+export const DELIMITED_MAX_COLUMNS = 16_384;
+/** Most records a ragged table may hold: the 1,048,576 rows of a sheet (Excel; MAXROWCOUNT = 1024 * 1024, sc/inc/address.hxx). */
+export const DELIMITED_MAX_RECORDS = 1_048_576;
+/** Longest field, in characters, of a ragged table: Python's `csv.field_size_limit` default of 128 * 1024 (Modules/_csv.c, `field_limit`). */
+export const DELIMITED_MAX_FIELD_CHARS = 131_072;
+/** Cells a ragged table may be padded to however few the file holds: PDF_TABLE_MAX_CELLS, the most the table writer draws; about 75 MB of heap. */
+const RAGGED_FREE_CELLS = 1_000_000;
+/**
+ * Times the cells a file holds that padding may make of them, as a YAML document may expand to a multiple of its values
+ * (YAML_EXPANSION_FACTOR in data.ts) with a floor of its own.
+ */
+const RAGGED_EXPANSION_FACTOR = 4;
+
+function raggedRefusal(src: string, row: number, problem: string): DataParseError {
+  return new DataParseError(`Failed to parse ${src.toUpperCase()}: row ${row} ${problem}`, { row });
+}
+
+/** The row of the first field of `data` longer than the limit, with its length, or null. */
+function firstOverlongField(data: readonly (readonly string[])[]): { row: number; length: number } | null {
+  for (let index = 0; index < data.length; index++) {
+    for (const field of data[index]) {
+      if (field.length > DELIMITED_MAX_FIELD_CHARS) return { row: index + 1, length: field.length };
+    }
+  }
+  return null;
+}
+
+/** The row of the first record past the limit; records are the lines that are not blank. */
+function firstRowPastRecordLimit(data: readonly (readonly string[])[]): number {
+  let records = 0;
+  for (let index = 0; index < data.length; index++) {
+    if (!isBlankRow(data[index]) && ++records > DELIMITED_MAX_RECORDS) return index + 1;
+  }
+  return data.length;
+}
+
+/**
+ * Refuses a ragged table that is larger than the readers it follows hold, naming the row. The limits bound what this reading
+ * newly accepts; a table whose records all have the header's width is read as before. Every record is padded to the widest one,
+ * so a single wide record costs width times rows: 400 million cells (about 30 GB of heap) from an 80 KB file with 20,000 rows and
+ * one record of 20,000 fields.
+ */
+function assertRaggedTableFits(ragged: RaggedRows, data: readonly (readonly string[])[], src: string): void {
+  if (ragged.width > DELIMITED_MAX_COLUMNS) {
+    throw raggedRefusal(src, ragged.widestRow, `has ${ragged.width} fields; a table is limited to ${DELIMITED_MAX_COLUMNS} columns, as a sheet of a spreadsheet application is.`);
+  }
+  if (ragged.records > DELIMITED_MAX_RECORDS) {
+    throw raggedRefusal(src, firstRowPastRecordLimit(data), `is record ${DELIMITED_MAX_RECORDS + 1}; a table is limited to ${DELIMITED_MAX_RECORDS} rows, as a sheet of a spreadsheet application is.`);
+  }
+  const padded = ragged.width * ragged.records;
+  if (padded > RAGGED_FREE_CELLS && padded > RAGGED_EXPANSION_FACTOR * ragged.cells) {
+    throw raggedRefusal(
+      src,
+      ragged.widestRow,
+      `has ${ragged.width} fields, and padding the other ${ragged.records - 1} rows to it would make ${padded} cells from ${ragged.cells}; ` +
+        `a ragged table may hold up to ${RAGGED_EXPANSION_FACTOR} times its cells.`
+    );
+  }
+  const overlong = firstOverlongField(data);
+  if (overlong !== null) {
+    throw raggedRefusal(src, overlong.row, `has a field of ${overlong.length} characters; a field is limited to ${DELIMITED_MAX_FIELD_CHARS} characters.`);
+  }
 }
 
 function rowsPhrase(count: number, firstRow: number, one: string, many: string): string {
@@ -252,7 +336,10 @@ export function parseDelimitedRecords(text: string, delimiter: string, src: stri
   const ragged = tallyRaggedRows(parsed.data);
   const rows = parsed.data.filter((row) => !isBlankRow(row));
   if (rows.length === 0) return { fields: [], records: [], ragged };
-  if (ragged !== null) evenOutRows(rows, ragged);
+  if (ragged !== null) {
+    assertRaggedTableFits(ragged, parsed.data, src);
+    evenOutRows(rows, ragged);
+  }
   const fields = renameDuplicateHeaders(rows[0]);
   const needsSetOwn = fields.some((f) => f === '__proto__' || (f.charCodeAt(0) >= 0x30 && f.charCodeAt(0) <= 0x39));
   const records = rows.slice(1).map((row) => {

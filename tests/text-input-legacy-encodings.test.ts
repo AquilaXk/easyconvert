@@ -3,9 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
+import chardet from 'chardet';
+import { describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
-import { decodeTextInput, readTextFileCharacters } from '../src/lib/conversions/text-input';
+import { withConversionWarnings } from '../src/lib/conversions/conversion-warnings';
+import { TEXT_DETECTION_BYTES, decodeTextInput, readTextFileCharacters } from '../src/lib/conversions/text-input';
+import type { ConversionResult } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -155,12 +158,133 @@ describe('the characters of a text file scanned for the route of a PDF', () => {
     expect([...characters].sort()).toEqual([...new Set(text)].sort());
   });
 
-  it('reads a Shift_JIS file whole, so the route sees the Japanese letters the conversion draws', () => {
-    expect(withFile(SHIFT_JIS, (file) => readTextFileCharacters(file, 4))).toBe(decodeTextInput(SHIFT_JIS));
-  });
-
   it('refuses a binary file as the conversion does', () => {
     const png = Buffer.from('89504e470d0a1a0a0000000d49484452000001000000010008060000005c72a866', 'hex');
     expect(() => withFile(png, (file) => readTextFileCharacters(file, 4))).toThrow(/not text/);
   });
+});
+
+async function withWarnings<T>(run: () => T): Promise<{ value: T; warnings: string[] }> {
+  let value!: T;
+  const result = await withConversionWarnings(async () => {
+    value = run();
+    return { buffer: Buffer.alloc(0), size: 0 } as unknown as ConversionResult;
+  });
+  return { value, warnings: (result.metadata?.warnings as string[] | undefined) ?? [] };
+}
+
+const sortedCharacters = (text: string): number[] => [...new Set(text)].map((ch) => ch.codePointAt(0) as number).sort((a, b) => a - b);
+
+function writeTemp(bytes: Buffer): { file: string; remove: () => void } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'text-scan-'));
+  const file = path.join(dir, 'in.txt');
+  fs.writeFileSync(file, bytes);
+  return { file, remove: () => fs.rmSync(dir, { recursive: true, force: true }) };
+}
+
+describe('the scan of a file in chunks reads the text the conversion reads', () => {
+  const lateInvalidUtf8 = Buffer.concat([Buffer.from('héllo wörld 日本語 « ok »\n'.repeat(3000), 'utf-8'), Buffer.from([0xe9])]);
+  const nonAsciiAfterTheSample = Buffer.concat([Buffer.from('plain ascii line\n'.repeat(5000)), SHIFT_JIS, SHIFT_JIS]);
+  const controlBeyondTheSample = Buffer.concat([Buffer.from('caf'), Buffer.from([0xe9]), Buffer.from(' '.repeat(TEXT_DETECTION_BYTES + 100)), Buffer.from([0x00])]);
+  const SAMPLES: ReadonlyArray<readonly [what: string, bytes: Buffer]> = [
+    ['Shift_JIS text', SHIFT_JIS],
+    ['EUC-KR text', EUC_KR],
+    ['GBK text', GBK],
+    ['Windows-1252 quotes', CP1252_QUOTES],
+    ['Latin-1 accents', LATIN1_ACCENTS],
+    ['UTF-8 text with an invalid byte at the end', lateInvalidUtf8],
+    ['ASCII for 85 KB and then Shift_JIS', nonAsciiAfterTheSample],
+    ['a control byte past the 64 KiB sample', controlBeyondTheSample],
+  ];
+  const CHUNK_BYTES = [3, 4, 61, 4096, 1024 * 1024];
+
+  it.for(SAMPLES)('gives the characters and the warning of the whole read for %s, whatever the chunk', async ([, bytes]) => {
+    const whole = await withWarnings(() => decodeTextInput(bytes));
+    const sample = writeTemp(bytes);
+    try {
+      for (const chunkBytes of CHUNK_BYTES) {
+        const chunked = await withWarnings(() => readTextFileCharacters(sample.file, chunkBytes));
+        expect(sortedCharacters(chunked.value), `chunks of ${chunkBytes} bytes`).toEqual(sortedCharacters(whole.value));
+        expect(chunked.warnings, `chunks of ${chunkBytes} bytes`).toEqual(whole.warnings);
+      }
+    } finally {
+      sample.remove();
+    }
+  });
+
+  it('falls back to Windows-1252 for the whole file when a late byte breaks the detected encoding, as the whole read does', async () => {
+    const sample = writeTemp(lateInvalidUtf8);
+    try {
+      const chunked = await withWarnings(() => readTextFileCharacters(sample.file, 4096));
+      expect(chunked.warnings).toEqual([NOT_UTF8_WARNING('windows-1252')]);
+      expect(chunked.value).toContain('Ã©');
+    } finally {
+      sample.remove();
+    }
+  });
+
+  it.for([
+    ['a control byte inside the sample', Buffer.concat([LATIN1_ACCENTS, Buffer.from([0x00]), LATIN1_ACCENTS])],
+    ['a control byte before the first non-ASCII byte', Buffer.concat([Buffer.from('ab\x03cd'), LATIN1_ACCENTS])],
+  ] as const)('refuses %s at the same offset as the whole read', ([, bytes]) => {
+    const expected = (() => {
+      try {
+        decodeTextInput(bytes);
+      } catch (error) {
+        return (error as Error).message;
+      }
+      throw new Error('the whole read accepted the bytes');
+    })();
+    const sample = writeTemp(bytes);
+    try {
+      expect(() => readTextFileCharacters(sample.file, 4)).toThrow(expected);
+    } finally {
+      sample.remove();
+    }
+  });
+
+  it.for([
+    ['UTF-16 with a lone surrogate', Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from([0x00, 0xd8, 0x41, 0x00])])],
+    ['UTF-8 with a byte order mark and an invalid byte', Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('ab'), Buffer.from([0xe9])])],
+  ] as const)('refuses %s as the whole read does, without trying another encoding', ([, bytes]) => {
+    const sample = writeTemp(bytes);
+    try {
+      expect(() => decodeTextInput(bytes)).toThrow(/not valid/);
+      expect(() => readTextFileCharacters(sample.file, 4)).toThrow(/not valid/);
+    } finally {
+      sample.remove();
+    }
+  });
+
+  it('gives the character detector at most the 64 KiB sample of a file of 3 MB', () => {
+    const bytes = Buffer.concat(Array.from({ length: 3 * 1024 * 1024 / SHIFT_JIS.length }, () => SHIFT_JIS));
+    const sample = writeTemp(bytes);
+    const analyse = vi.spyOn(chardet, 'analyse');
+    try {
+      readTextFileCharacters(sample.file, 1024 * 1024);
+      expect(analyse).toHaveBeenCalledTimes(1);
+      expect((analyse.mock.calls[0][0] as Uint8Array).length).toBe(TEXT_DETECTION_BYTES);
+    } finally {
+      analyse.mockRestore();
+      sample.remove();
+    }
+  });
+});
+
+describe('a text file of 64 MiB that is valid UTF-8 up to its last byte', () => {
+  const CHILD = path.resolve(__dirname, 'text-input-memory-child.ts');
+  const HEAP_LIMIT_MIB = 64;
+  const RSS_BUDGET_MIB = 260;
+  const CHILD_TIMEOUT_MS = 180_000;
+
+  it(`is scanned as Windows-1252 inside a ${HEAP_LIMIT_MIB} MiB heap and a bounded resident set`, () => {
+    const output = execFileSync(process.execPath, [`--max-old-space-size=${HEAP_LIMIT_MIB}`, '--import', 'tsx', CHILD], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: CHILD_TIMEOUT_MS,
+    });
+    const [, rss] = /^ok \d+ bytes in \d+ ms, peak rss (\d+) MiB/.exec(output) ?? [];
+    expect(Number(rss)).toBeGreaterThan(0);
+    expect(Number(rss)).toBeLessThan(RSS_BUDGET_MIB);
+  }, CHILD_TIMEOUT_MS + 5_000);
 });

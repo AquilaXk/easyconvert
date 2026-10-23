@@ -25,6 +25,7 @@ import {
   writesBomByDefault,
 } from '../../conversions/delimited-rules';
 import {
+  DELIMITED_MAX_COLUMNS,
   DELIMITER_CANDIDATES,
   LINE_BREAK_GUESS_WINDOW_CHARS,
   detectDelimiter,
@@ -207,7 +208,10 @@ export function createDelimitedStreamTransformer(
       // The header is already written; a wider table needs the server, which reads the whole file.
       throw mismatchError(`Too many fields: expected ${headerFieldCount} fields but parsed ${fields.length}`, rawRows);
     } else {
-      // A short record is filled out with empty cells, as the server does.
+      // A short record is filled out with empty cells, as the server does, up to the columns of a sheet.
+      if (written.length < headerFieldCount && headerFieldCount > DELIMITED_MAX_COLUMNS) {
+        throw mismatchError(`Too few fields: expected ${headerFieldCount} fields, more than the ${DELIMITED_MAX_COLUMNS} columns of a table, but parsed ${fields.length}`, rawRows);
+      }
       while (written.length < headerFieldCount) written.push('');
     }
     if (wroteRecord) {

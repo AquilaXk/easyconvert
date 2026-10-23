@@ -373,6 +373,18 @@ describe('streamed CSV <-> TSV fails closed', () => {
     expect(pythonRows(padded, ',')).toEqual([['a', 'b', 'c'], ['1', '2', ''], ['4', '', '']]);
   });
 
+  it('fills a short record under a header of 16,384 columns, the width of a sheet, and refuses one under a wider header', async () => {
+    const header = (columns: number): string => `${Array.from({ length: columns }, (_, index) => `c${index}`).join(',')}\n`;
+    const filled = await convertStreamed(`${header(16_384)}1,2\n`, 'csv', 'tsv');
+    expect(filled.toString('utf-8').split('\r\n')[1]).toBe(`1\t2${'\t'.repeat(16_382)}`);
+    const refused = await rejection(convertStreamed(`${header(16_385)}1,2\n`, 'csv', 'tsv'));
+    expect(refused).toBeInstanceOf(DataParseError);
+    expect((refused as DataParseError).row).toBe(2);
+    expect(refused.message).toBe('Failed to parse CSV: Too few fields: expected 16385 fields, more than the 16384 columns of a table, but parsed 2 (row 2).');
+    const uniform = await convertStreamed(`${header(16_385)}${Array.from({ length: 16_385 }, () => 'x').join(',')}\n`, 'csv', 'tsv');
+    expect(uniform.toString('utf-8').split('\r\n')[1].split('\t')).toHaveLength(16_385);
+  });
+
   it('reports unterminated quotes with their row', async () => {
 
     const open = await rejection(convertStreamed('a,b\n"x,1\n', 'csv', 'tsv'));

@@ -23,8 +23,23 @@ export const LEGACY_TABLES: ReadonlyMap<string, string> = new Map([
   ['windows-1252', 'cp1252'],
 ]);
 
-/** Decodes with an iconv-lite table; null when any sequence is invalid (the table emits U+FFFD for it). */
+/**
+ * A decoder for chunks of text in an iconv-lite table: a call with bytes gives the text of the chunk (a sequence cut at its end
+ * is carried over to the next call) and a call with none ends the text. A result is null when a sequence is invalid (the table
+ * emits U+FFFD for it).
+ */
+export function createTableDecoder(table: string): (chunk?: Uint8Array) => string | null {
+  const decoder = iconv.getDecoder(table, { stripBOM: false });
+  return (chunk?: Uint8Array): string | null => {
+    const text = (chunk ? decoder.write(chunk as Buffer) : decoder.end()) ?? '';
+    return text.includes(String.fromCodePoint(REPLACEMENT_CHARACTER)) ? null : text;
+  };
+}
+
+/** Decodes with an iconv-lite table; null when any sequence is invalid. */
 export function decodeWithTable(bytes: Uint8Array, table: string): string | null {
-  const text = iconv.decode(bytes, table, { stripBOM: false });
-  return text.includes(String.fromCodePoint(REPLACEMENT_CHARACTER)) ? null : text;
+  const decode = createTableDecoder(table);
+  const text = decode(bytes);
+  const rest = decode();
+  return text === null || rest === null ? null : text + rest;
 }
