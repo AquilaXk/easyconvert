@@ -2819,7 +2819,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2644
+    "maxValue": 2635
   },
   {
     "file": "src/worker/engines.ts",
