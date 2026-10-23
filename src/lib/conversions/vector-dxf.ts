@@ -72,8 +72,15 @@ function pair(code: number, value: string | number): string {
   return `${String(code).padStart(DXF_CODE_WIDTH, ' ')}\n${value}`;
 }
 
+/** A DXF number as this writer writes it; `toFixed` writes 1e21 and above with an exponent, and Infinity and NaN as words. */
+const PLAIN_DECIMAL_PATTERN = new RegExp(`^-?\\d+\\.\\d{${DXF_COORDINATE_DECIMALS}}$`);
+
 function coordinate(value: number): string {
-  return value.toFixed(DXF_COORDINATE_DECIMALS);
+  const text = value.toFixed(DXF_COORDINATE_DECIMALS);
+  if (!PLAIN_DECIMAL_PATTERN.test(text)) {
+    throw new CadGeometryUnavailableError('The page cannot be written as DXF: a coordinate or a dash length is too large to write as a plain decimal number.');
+  }
+  return text;
 }
 
 function samePoint(a: Point, b: Point): boolean {

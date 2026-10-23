@@ -29,6 +29,12 @@ import { PAGE_CLIP_TOLERANCE_PIXELS, type ClipNode } from './svg-page-clip';
 export const MAX_ACTIVE_CLIPS = 8;
 export const MAX_CLIP_EDGES = 1024;
 export const MAX_CLIP_WORK = 1 << 26;
+/**
+ * The largest coordinate of a clip or of what is drawn under it, in device pixels. The largest page a PDF reader accepts is
+ * 14,400 points a side (ISO 32000-1 Annex C.2, `MAX_PAGE_POINTS`), 19,200 pixels; this is 50,000 times that, and keeps the
+ * squared distances below 1e19, where a coordinate past 1e154 would overflow them to Infinity and their difference to NaN.
+ */
+export const MAX_CLIP_COORDINATE = 1e9;
 
 interface Point {
   x: number;
@@ -124,12 +130,14 @@ function isConvexPolygon(polygon: readonly Point[]): boolean {
   return Math.abs(Math.abs(turning) - FULL_TURN) < TURN_EPSILON;
 }
 
-function finitePoint(p: Point): Point {
-  if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) throw new CadGeometryUnavailableError('SVG clip-path has a coordinate that is not a finite number on the page.');
+function pointOnPage(p: Point): Point {
+  if (!(Math.abs(p.x) <= MAX_CLIP_COORDINATE && Math.abs(p.y) <= MAX_CLIP_COORDINATE)) {
+    throw new CadGeometryUnavailableError(`SVG clip-path measures a coordinate that is not a finite number within ${MAX_CLIP_COORDINATE} device pixels.`);
+  }
   return p;
 }
 
-const transformPoint = (m: AffineMatrix, p: Point): Point => finitePoint({ x: m[0] * p.x + m[2] * p.y + m[4], y: m[1] * p.x + m[3] * p.y + m[5] });
+const transformPoint = (m: AffineMatrix, p: Point): Point => pointOnPage({ x: m[0] * p.x + m[2] * p.y + m[4], y: m[1] * p.x + m[3] * p.y + m[5] });
 
 function multiply(m1: AffineMatrix, m2: AffineMatrix): AffineMatrix {
   return [
@@ -219,6 +227,7 @@ function farthestOutside(region: ClipRegion, subpaths: readonly (readonly Point[
   for (const subpath of subpaths) {
     work.charge(subpath.length * region.edgeCount);
     for (let i = 0; i < subpath.length; i++) {
+      pointOnPage(subpath[i]);
       farthest = Math.max(farthest, distanceOutside(region, subpath[i].x, subpath[i].y));
       if (region.convex || i === 0) continue;
       const [p, q] = [subpath[i - 1], subpath[i]];
@@ -284,7 +293,7 @@ export class ActiveClips {
   assertWithin(subpaths: readonly (readonly Point[])[]): void {
     for (const { value, region } of this.stack) {
       const farthest = farthestOutside(region, subpaths, this.work);
-      if (farthest > this.tolerance) {
+      if (!(farthest <= this.tolerance)) {
         const how = Number.isFinite(farthest) ? `a drawn path reaches ${formatPixels(farthest)} pixels past it, more than the ${formatPixels(this.tolerance)} pixels (one point) a clip may hide` : 'it hides everything under it';
         throw clipRefusal(value, how);
       }
