@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { defaultResolver, EZDXF_PSEUDO_TOOL } from '../bench/tools';
-import { MAX_DASH_VALUES } from '../src/lib/conversions/svg-pen';
+import { MAX_DASH_ARRAY_CHARACTERS, MAX_DASH_VALUES } from '../src/lib/conversions/svg-pen';
 import { encodeSvgPageToDxf, MAX_DASH_LINETYPES } from '../src/lib/conversions/vector-dxf';
 import { readDxf, type DxfDocument } from './helpers/dxf-reader';
 import { skipUnless } from './helpers/strict-skip';
@@ -178,20 +178,20 @@ describe('stroke-dasharray', () => {
       expect(Date.now() - started).toBeLessThan(HOSTILE_BUDGET_MS);
     });
 
-    it('reads a pattern padded with millions of separators once and quickly', () => {
+    it(`reads a value of ${MAX_DASH_ARRAY_CHARACTERS} characters and refuses a longer one before reading it`, () => {
+      expect(MAX_DASH_ARRAY_CHARACTERS).toBe(1024);
+      const padded = (length: number): string => `4${' '.repeat(length - 2)}2`;
+      expect(dashTypes(dxfOf(stroked(`stroke-dasharray="${padded(MAX_DASH_ARRAY_CHARACTERS)}"`)))[0].elements).toEqual([4, -2]);
+      expect(refusal(stroked(`stroke-dasharray="${padded(MAX_DASH_ARRAY_CHARACTERS + 1)}"`))).toMatch(/ConversionFailedError: The page cannot be written as DXF: .*longer than 1024 characters/);
       const started = Date.now();
-      const dxf = dxfOf(stroked(`stroke-dasharray="4${' '.repeat(4_000_000)}2"`));
-      expect(dashTypes(dxf)[0].elements).toEqual([4, -2]);
+      expect(refusal(stroked(`stroke-dasharray="${padded(4_000_000)}"`))).toMatch(/longer than 1024 characters/);
       expect(Date.now() - started).toBeLessThan(HOSTILE_BUDGET_MS);
     });
 
-    it('reads a huge array declared on a group once for every shape below it', () => {
-      const hugeButValid = `${'1 '.repeat(5)}${' '.repeat(2_000_000)}1`;
-      const shapes = Array.from({ length: 2000 }, (_, k) => stroked('', `M 10 ${(k % 90) + 5} L 110 ${(k % 90) + 5}`)).join('');
+    it('refuses a value of megabytes on a shape used thousands of times at its first use', () => {
+      const uses = Array.from({ length: 2000 }, (_, k) => `<use href="#d" y="${k % 90}"/>`).join('');
       const started = Date.now();
-      const dxf = dxfOf(`<g stroke-dasharray="${hugeButValid}">${shapes}</g>`);
-      expect(dxf.entities).toHaveLength(2000);
-      expect(dashTypes(dxf)).toHaveLength(1);
+      expect(refusal(`<defs>${stroked(`id="d" stroke-dasharray="4${' '.repeat(3_000_000)}2"`)}</defs>${uses}`)).toMatch(/longer than 1024 characters/);
       expect(Date.now() - started).toBeLessThan(HOSTILE_BUDGET_MS);
     });
 
