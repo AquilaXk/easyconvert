@@ -38,7 +38,7 @@ import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
 import { isSvgPageTarget, svgPageEncoder } from './svg-page-encoders';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { decodeHtmlInput } from '../lib/conversions/html-encoding';
-import { createTextInputDecoder, decodeTextInput } from '../lib/conversions/text-input';
+import { decodeTextInput, readTextFileCharacters } from '../lib/conversions/text-input';
 import { markdownToSafeHtml } from '../lib/conversions/markdown-pdf';
 import { runWithImageFetchSession } from '../lib/conversions/html-image-fetch';
 import { stageHtmlForNativeEngine } from '../lib/conversions/html-native-staging';
@@ -2082,27 +2082,6 @@ interface TextPdfRoute {
   readonly stagedWarnings?: readonly string[];
 }
 
-/** Every distinct character of a text file, read and strictly decoded in chunks, whatever the size. */
-function distinctCharactersOfFile(filePath: string): string {
-  const seen = new Set<number>();
-  const chunk = Buffer.alloc(TEXT_SCAN_CHUNK_BYTES);
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    let bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
-    const decode = createTextInputDecoder(chunk.subarray(0, bytesRead));
-    while (bytesRead > 0) {
-      for (const ch of decode(chunk.subarray(0, bytesRead))) seen.add(ch.codePointAt(0) as number);
-      bytesRead = fs.readSync(fd, chunk, 0, chunk.length, null);
-    }
-    for (const ch of decode()) seen.add(ch.codePointAt(0) as number);
-  } finally {
-    fs.closeSync(fd);
-  }
-  let text = '';
-  for (const codePoint of seen) text += String.fromCodePoint(codePoint);
-  return text;
-}
-
 /** The text whose scripts decide the PDF route: the file's characters, or the HWP document text. */
 function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): string {
   if (src === 'hwp') {
@@ -2112,7 +2091,7 @@ function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): strin
   if (HTML_SOURCES.has(src)) return decodeHtmlInput(readRawInputBuffer(input));
   const filePath = !Buffer.isBuffer(input) && !input.inputBuffer ? input.inputPath : undefined;
   if (STREAMED_TEXT_SOURCES.has(src) && filePath && fs.existsSync(filePath)) {
-    return distinctCharactersOfFile(filePath);
+    return readTextFileCharacters(filePath, TEXT_SCAN_CHUNK_BYTES);
   }
   const raw = readRawInputBuffer(input);
   return decodeTextInput(raw);

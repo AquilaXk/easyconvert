@@ -5,8 +5,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
-import { decodeTextInput } from '../src/lib/conversions/text-input';
-import { executeWorkerConversion } from '../src/worker/engines';
+import { decodeTextInput, readTextFileCharacters } from '../src/lib/conversions/text-input';
 import { oracleTest } from './helpers/oracle-test';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -87,9 +86,14 @@ describe('text bytes of a single-byte encoding', () => {
     expect(decodeTextInput(Buffer.from('a\x81\x8d\x8f\x90\x9db é', 'latin1'))).toBe('a\u0081\u008d\u008f\u0090\u009db é');
   });
 
-  it('reads a Markdown file the same way as a text file', async () => {
-    const result = await executeWorkerConversion(Buffer.concat([Buffer.from('# T\n\n'), LATIN1_ACCENTS]), 'md', 'html', {}, 'latin1.md');
-    expect(result.buffer.toString('utf-8')).toContain('Café déjà vu');
+  oracleTest('reads a Markdown file the same way as a text file', ['pdftotext'], async () => {
+    const result = await convertFile(Buffer.concat([Buffer.from('# T\n\n'), LATIN1_ACCENTS]), 'md', 'pdf', {}, 'latin1.md');
+    expect(result.metadata?.warnings).toEqual([NOT_UTF8_WARNING('windows-1252')]);
+    expect(pdfWords(result.buffer).trim()).toBe('T Café déjà vu, naïve façade, über Straße. Señor Müller aß Käse.');
+  });
+
+  it('reads a text with too few non-ASCII bytes to tell the encoding as Windows-1252', () => {
+    expect(decodeTextInput(Buffer.from('a\té\f', 'latin1'))).toBe('a\té\f');
   });
 });
 
@@ -130,5 +134,33 @@ describe('text that was never refused', () => {
     expect(decodeTextInput(Buffer.from('Café “quoted”', 'utf-8'))).toBe('Café “quoted”');
     expect(decodeTextInput(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('Café', 'utf16le')]))).toBe('Café');
     expect(decodeTextInput(Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from('Café', 'utf16le').swap16()]))).toBe('Café');
+  });
+});
+
+describe('the characters of a text file scanned for the route of a PDF', () => {
+  function withFile<T>(bytes: Buffer, scan: (file: string) => T): T {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'text-scan-'));
+    try {
+      const file = path.join(dir, 'in.txt');
+      fs.writeFileSync(file, bytes);
+      return scan(file);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('gives the distinct characters of a UTF-8 file read in chunks that cut its characters', () => {
+    const text = 'ab日本語日本語ab';
+    const characters = withFile(Buffer.from(text, 'utf-8'), (file) => readTextFileCharacters(file, 4));
+    expect([...characters].sort()).toEqual([...new Set(text)].sort());
+  });
+
+  it('reads a Shift_JIS file whole, so the route sees the Japanese letters the conversion draws', () => {
+    expect(withFile(SHIFT_JIS, (file) => readTextFileCharacters(file, 4))).toBe(decodeTextInput(SHIFT_JIS));
+  });
+
+  it('refuses a binary file as the conversion does', () => {
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452000001000000010008060000005c72a866', 'hex');
+    expect(() => withFile(png, (file) => readTextFileCharacters(file, 4))).toThrow(/not text/);
   });
 });

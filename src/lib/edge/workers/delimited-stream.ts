@@ -7,8 +7,9 @@
  * renamed the same way. Writes under the server's delimited-output rules
  * (src/lib/conversions/delimited-rules.ts): RFC 4180 parsing and quoting, formula cells prefixed
  * with ' unless they are numeric literals, a UTF-8 BOM by default for CSV only, the `bom` and
- * `escapeFormulas` options, CRLF between records, blank lines skipped and every record checked
- * against the header's field count.
+ * `escapeFormulas` options, CRLF between records and blank lines skipped. A record with fewer
+ * fields than the header is filled out with empty cells; one with more fields is refused, because
+ * the header has been written by then (the server widens the table instead).
  *
  * Input must be UTF-8 (a leading BOM is dropped): it is decoded strictly, so a file in another
  * encoding fails with a DataEncodingError asking for the `encoding` option, which the tier
@@ -202,9 +203,12 @@ export function createDelimitedStreamTransformer(
     if (headerFieldCount === null) {
       headerFieldCount = fields.length;
       written = renameDuplicateHeaders(fields);
-    } else if (fields.length !== headerFieldCount) {
-      const amount = fields.length > headerFieldCount ? 'many' : 'few';
-      throw mismatchError(`Too ${amount} fields: expected ${headerFieldCount} fields but parsed ${fields.length}`, rawRows);
+    } else if (fields.length > headerFieldCount) {
+      // The header is already written; a wider table needs the server, which reads the whole file.
+      throw mismatchError(`Too many fields: expected ${headerFieldCount} fields but parsed ${fields.length}`, rawRows);
+    } else {
+      // A short record is filled out with empty cells, as the server does.
+      while (written.length < headerFieldCount) written.push('');
     }
     if (wroteRecord) {
       out.push(DELIMITED_RECORD_SEPARATOR);

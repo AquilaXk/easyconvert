@@ -134,49 +134,125 @@ function isBlankRow(row: readonly string[]): boolean {
   return row.length === 1 && row[0] === '';
 }
 
-/** The first record whose field count differs from the header's, numbered over every line like quote errors. */
-function firstFieldMismatch(rows: readonly string[][], src: string): DataParseError | null {
-  let width: number | null = null;
-  for (let index = 0; index < rows.length; index++) {
-    const row = rows[index];
-    if (isBlankRow(row)) continue;
-    if (width === null) {
-      width = row.length;
-    } else if (row.length !== width) {
-      const amount = row.length > width ? 'many' : 'few';
-      const rowNumber = index + 1;
-      return new DataParseError(
-        `Failed to parse ${src.toUpperCase()}: Too ${amount} fields: expected ${width} fields but parsed ${row.length} (row ${rowNumber}).`,
-        { row: rowNumber }
-      );
-    }
+/** Name of a column the header does not cover, as pandas names a header cell without a name (`Unnamed: <index>`). */
+const UNNAMED_COLUMN_PREFIX = 'Unnamed: ';
+
+/**
+ * Records whose field count differs from the table's. A table is as wide as its widest record (LibreOffice's text import widens
+ * the sheet to the widest line; pandas' tokenizer pads a short record with empty fields, Python's `csv.DictReader` fills it with
+ * `restval`); the header names the columns it covers and the rest are `Unnamed: <index>`. Rows are numbered over every line,
+ * blank ones included, like quote errors.
+ */
+export interface RaggedRows {
+  headerWidth: number;
+  width: number;
+  /** Data records with more fields than the header. */
+  longerThanHeader: RowTally | null;
+  /** Data records with fewer fields than the widest record. */
+  shorterThanWidest: RowTally | null;
+}
+
+/** How many records have a trait, and the row of the first. */
+interface RowTally {
+  count: number;
+  firstRow: number;
+}
+
+function countRow(tally: RowTally | null, row: number): RowTally {
+  return { count: (tally?.count ?? 0) + 1, firstRow: tally?.firstRow ?? row };
+}
+
+/** Counts how the records of `data` (blank lines included) differ in width; null when they all have the header's width. */
+function tallyRaggedRows(data: readonly (readonly string[])[]): RaggedRows | null {
+  let headerWidth = -1;
+  let width = 0;
+  for (const fields of data) {
+    if (isBlankRow(fields)) continue;
+    if (headerWidth < 0) headerWidth = fields.length;
+    width = Math.max(width, fields.length);
   }
-  return null;
+  if (headerWidth < 0) return null;
+  let longer: RowTally | null = null;
+  let shorter: RowTally | null = null;
+  let headerSeen = false;
+  for (let index = 0; index < data.length; index++) {
+    const fields = data[index];
+    if (isBlankRow(fields)) continue;
+    if (!headerSeen) {
+      headerSeen = true;
+      continue;
+    }
+    const row = index + 1;
+    if (fields.length > headerWidth) longer = countRow(longer, row);
+    if (fields.length < width) shorter = countRow(shorter, row);
+  }
+  return width === headerWidth && shorter === null ? null : { headerWidth, width, longerThanHeader: longer, shorterThanWidest: shorter };
+}
+
+function rowsPhrase(count: number, firstRow: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? `row ${one}` : `rows ${many}`} (the first is row ${firstRow})`;
+}
+
+/** One line per kind of deviation, for `metadata.warnings` of the conversion. */
+export function raggedRowWarnings(ragged: RaggedRows | null, src: string): string[] {
+  if (ragged === null) return [];
+  const label = src.toUpperCase();
+  const lines: string[] = [];
+  const { longerThanHeader, shorterThanWidest, headerWidth, width } = ragged;
+  if (longerThanHeader) {
+    const added = width - headerWidth;
+    const first = `${UNNAMED_COLUMN_PREFIX}${headerWidth}`;
+    const names = added === 1 ? first : `${first} to ${UNNAMED_COLUMN_PREFIX}${width - 1}`;
+    lines.push(
+      `${label}: ${rowsPhrase(longerThanHeader.count, longerThanHeader.firstRow, 'has more fields than the header', 'have more fields than the header')}; ` +
+        `${added} ${added === 1 ? 'column was' : 'columns were'} added, named ${names}.`
+    );
+  }
+  if (shorterThanWidest) {
+    const { count, firstRow } = shorterThanWidest;
+    lines.push(
+      `${label}: ${rowsPhrase(count, firstRow, 'has fewer fields than the widest row', 'have fewer fields than the widest row')}; ` +
+        `${count === 1 ? 'its' : 'their'} missing cells are empty.`
+    );
+  }
+  return lines;
 }
 
 export interface DelimitedRecords {
   fields: string[];
   records: DataObject[];
+  /** How the records differ in width, when they do; the table is then as wide as the widest record. */
+  ragged: RaggedRows | null;
+}
+
+/** Widens the header with `Unnamed: <index>` names and fills every short record with empty fields, in place. */
+function evenOutRows(rows: string[][], ragged: RaggedRows): void {
+  const header = rows[0];
+  for (let index = header.length; index < ragged.width; index++) header.push(`${UNNAMED_COLUMN_PREFIX}${index}`);
+  for (const row of rows) {
+    while (row.length < ragged.width) row.push('');
+  }
 }
 
 /**
  * Parses decoded delimited text with a header record. Rows are read as arrays on the line break
  * guessLineBreak picks (as the browser stream does) and keyed with own properties, so a column
  * named __proto__ or constructor keeps its values; duplicate header names are renamed (a, a_1,
- * ...) and blank lines skipped. Any quote or field-count problem throws the DataParseError with
- * the lowest row (a quote error first on a tie).
+ * ...) and blank lines skipped. A record with fewer fields than the widest is filled out with
+ * empty cells and one with more widens the table (see RaggedRows); any quote problem throws the
+ * DataParseError with the lowest row.
  */
 export function parseDelimitedRecords(text: string, delimiter: string, src: string): DelimitedRecords {
   const parsed = Papa.parse<string[]>(text, { skipEmptyLines: false, delimiter, newline: guessLineBreak(text) });
-  const errors = parsed.errors.map((error) => quoteParseError(error, text, src));
-  const mismatch = firstFieldMismatch(parsed.data, src);
-  if (mismatch) errors.push(mismatch);
-  if (errors.length > 0) {
+  if (parsed.errors.length > 0) {
+    const errors = parsed.errors.map((error) => quoteParseError(error, text, src));
     errors.sort((a, b) => (a.row ?? Number.MAX_SAFE_INTEGER) - (b.row ?? Number.MAX_SAFE_INTEGER));
     throw errors[0];
   }
+  const ragged = tallyRaggedRows(parsed.data);
   const rows = parsed.data.filter((row) => !isBlankRow(row));
-  if (rows.length === 0) return { fields: [], records: [] };
+  if (rows.length === 0) return { fields: [], records: [], ragged };
+  if (ragged !== null) evenOutRows(rows, ragged);
   const fields = renameDuplicateHeaders(rows[0]);
   const needsSetOwn = fields.some((f) => f === '__proto__' || (f.charCodeAt(0) >= 0x30 && f.charCodeAt(0) <= 0x39));
   const records = rows.slice(1).map((row) => {
@@ -188,5 +264,5 @@ export function parseDelimitedRecords(text: string, delimiter: string, src: stri
     }
     return record;
   });
-  return { fields, records };
+  return { fields, records, ragged };
 }

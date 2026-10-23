@@ -2833,7 +2833,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2674
+    "maxValue": 2653
   },
   {
     "file": "src/worker/engines.ts",

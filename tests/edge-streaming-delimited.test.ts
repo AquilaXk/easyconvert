@@ -237,8 +237,6 @@ describe('streamed CSV <-> TSV matches the server parser', () => {
   it('reports malformed input with the same error, row and line as the server', async () => {
     const malformed = [
       'a,b\n\n"x,1\n',
-      'a,b\n1,2\n\n3,4,5\n',
-      'a,b,c\n\n\n1,2\n',
       'a,b\n"x"y,1\n',
       'a,b\n1,"open\nstill open',
       'a,b\n1,"done"  ',
@@ -357,14 +355,25 @@ describe('streamed CSV <-> TSV fails closed', () => {
     expect(await rejection(convertStreamed(truncated, 'csv', 'tsv'))).toBeInstanceOf(DataEncodingError);
   });
 
-  it('reports ragged records and unterminated quotes with their row', async () => {
+  it('refuses a record wider than the header, which is already written, with its row', async () => {
     const ragged = await rejection(convertStreamed('a,b\r\n1,2\r\n3,4,5\r\n', 'csv', 'tsv'));
     expect(ragged).toBeInstanceOf(DataParseError);
     expect((ragged as DataParseError).row).toBe(3);
     expect(ragged.message).toBe('Failed to parse CSV: Too many fields: expected 2 fields but parsed 3 (row 3).');
+  });
 
-    const short = await rejection(convertStreamed('a\tb\tc\n1\t2\n', 'tsv', 'csv'));
-    expect(short.message).toBe('Failed to parse TSV: Too few fields: expected 3 fields but parsed 2 (row 2).');
+  it('fills a short record exactly as the server does, at every cut point', async () => {
+    const ragged = 'a,b,c\n\n\n1,2\n4\n';
+    const server = await expectServerParity(ragged, 'csv', 'tsv', everyCut(Buffer.byteLength(ragged)));
+    expect(server.toString('utf-8')).toBe('a\tb\tc\r\n1\t2\t\r\n4\t\t');
+  });
+
+  oracleTest('fills a record shorter than the header with empty cells, as the server does', ['python3'], async () => {
+    const padded = await convertStreamed('a\tb\tc\n1\t2\n4\n', 'tsv', 'csv');
+    expect(pythonRows(padded, ',')).toEqual([['a', 'b', 'c'], ['1', '2', ''], ['4', '', '']]);
+  });
+
+  it('reports unterminated quotes with their row', async () => {
 
     const open = await rejection(convertStreamed('a,b\n"x,1\n', 'csv', 'tsv'));
     expect(open).toBeInstanceOf(DataParseError);

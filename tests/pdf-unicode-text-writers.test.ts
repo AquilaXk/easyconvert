@@ -1201,12 +1201,14 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     }
   });
 
-  it('rejects Latin-1 Markdown with a typed 400 on both the in-process and worker routes', async () => {
-    const bytes = Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from('\n')]);
-    const direct = await settle(convertFile(bytes, 'md', 'pdf', {}, 'latin1.md'));
-    const routed = await settle(withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () => executeWorkerConversion(bytes, 'md', 'pdf', {}, 'latin1.md')));
-    expect({ direct: (direct.error as Error)?.name, routed: (routed.error as Error)?.name }).toEqual({ direct: 'ConversionFailedError', routed: 'ConversionFailedError' });
-    expect((routed.error as Error).message).toMatch(/UTF-8/);
+  oracleTest('reads Latin-1 Markdown as Windows-1252 on both the in-process and worker routes, and says so', ['pdftotext'], async () => {
+    const bytes = Buffer.concat([Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from(' au lait\n')]);
+    const direct = await convertFile(bytes, 'md', 'pdf', {}, 'latin1.md');
+    const routed = await withEnvValue('SOFFICE_PATH', failingSoffice('exit 3'), () => executeWorkerConversion(bytes, 'md', 'pdf', {}, 'latin1.md'));
+    for (const result of [direct, routed]) {
+      expect(normalizeText(pdfText(result.buffer))).toBe('café au lait');
+      expect(result.metadata?.warnings).toEqual(['Text input is not valid UTF-8; it was read as windows-1252.']);
+    }
   });
 
   oracleTest('reads Latin-1 HTML as its declared encoding on both the in-process and worker routes', ['pdftotext'], async () => {
@@ -1223,10 +1225,14 @@ describe('LibreOffice failures, page orientation and text encodings', () => {
     expect(normalizeText(pdfText(result.buffer))).toBe('hello café');
   });
 
-  it('rejects text that is not valid UTF-8 and has no UTF-16 byte order mark', async () => {
-    const eucKr = Buffer.from('C7D1B1B9BEEE20B9AEBCAD', 'hex');
-    const { error } = await settle(convertFile(eucKr, 'txt', 'pdf', {}, 'euc-kr.txt'));
-    expect((error as Error)?.name).toBe('ConversionFailedError');
-    expect((error as Error).message).toMatch(/UTF-8/);
+  it('rejects text whose byte order mark declares an encoding the bytes break', async () => {
+    const brokenUtf8 = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('caf'), Buffer.from([0xe9]), Buffer.from(' au lait')]);
+    const utf8 = await settle(convertFile(brokenUtf8, 'txt', 'pdf', {}, 'broken-utf8.txt'));
+    expect((utf8.error as Error)?.name).toBe('InvalidUnicodeTextError');
+    expect((utf8.error as Error).message).toMatch(/UTF-8/);
+    const cutUtf16 = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('ab', 'utf16le'), Buffer.from([0x63])]);
+    const utf16 = await settle(convertFile(cutUtf16, 'txt', 'pdf', {}, 'cut-utf16.txt'));
+    expect((utf16.error as Error)?.name).toBe('InvalidUnicodeTextError');
+    expect((utf16.error as Error).message).toMatch(/UTF-16LE/);
   });
 });
