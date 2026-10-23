@@ -4,7 +4,8 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { crc32 } from '../lib/conversions/crc32';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../lib/types';
-import { executeSandboxedBinary, SandboxedBufferLimitError, type SandboxedExecutionOptions } from './sandbox';
+import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
+import { SandboxedBufferLimitError, type SandboxedExecutionResult } from './sandbox';
 
 /**
  * PNG pages from Poppler without Poppler's PNG writer.
@@ -181,6 +182,22 @@ export async function encodePpmPageAsPng(ppmPath: string, pngPath: string, dpi: 
   fs.rmSync(ppmPath, { force: true });
 }
 
+/** `pdftoppm` writes its pages to files in the job directory and prints nothing, so the launcher has no output to move back. */
+const NO_PIPED_OUTPUT_BYTES = 0;
+
+/** Runs `pdftoppm` in the sandbox, from the launcher helper when the fork it saves costs more than the helper does (sandbox-launcher.ts). */
+export async function runPdftoppm(pdftoppm: string, args: readonly string[], sandbox: LaunchedExecutionOptions): Promise<void> {
+  await launchSandboxedBinary(pdftoppm, [...args], { ...sandbox, expectedOutputBytes: NO_PIPED_OUTPUT_BYTES });
+}
+
+/** What `pdfinfo` prints for a document: its fields, a few hundred bytes. */
+const PDFINFO_OUTPUT_BYTES = 4096;
+
+/** Runs `pdfinfo` in the sandbox, from the launcher helper when that pays; its output is the page count and the fields of the document. */
+export function runPdfinfo(pdfinfo: string, args: readonly string[], sandbox: LaunchedExecutionOptions): Promise<SandboxedExecutionResult> {
+  return launchSandboxedBinary(pdfinfo, [...args], { ...sandbox, expectedOutputBytes: PDFINFO_OUTPUT_BYTES });
+}
+
 /** The `pdftoppm` arguments of a PNG request, as the same request for PPM pages (the program's default output). */
 function asRawPages(pngArguments: readonly string[]): string[] {
   return pngArguments.filter((argument) => argument !== '-png');
@@ -202,7 +219,7 @@ export async function renderPngBatch(
   pdftoppm: string,
   tempDir: string,
   dpi: number,
-  sandbox: SandboxedExecutionOptions,
+  sandbox: LaunchedExecutionOptions,
   pngArguments: readonly string[],
   batch: PageBatch
 ): Promise<void> {
@@ -212,7 +229,7 @@ export async function renderPngBatch(
   };
   let fitsInMemory = true;
   try {
-    await executeSandboxedBinary(pdftoppm, asRawPages(pngArguments), { ...sandbox, maxFileSize: PPM_PAGE_MAX_BYTES });
+    await runPdftoppm(pdftoppm, asRawPages(pngArguments), { ...sandbox, maxFileSize: PPM_PAGE_MAX_BYTES });
   } catch (err) {
     if (!(err instanceof SandboxedBufferLimitError)) throw err;
     fitsInMemory = false;
@@ -221,7 +238,7 @@ export async function renderPngBatch(
   if (fitsInMemory && rawPages.some((name) => exceedsPpmPageLimit(fs.statSync(path.join(tempDir, name)).size))) fitsInMemory = false;
   if (!fitsInMemory) {
     for (const name of rawPages) fs.rmSync(path.join(tempDir, name), { force: true });
-    await executeSandboxedBinary(pdftoppm, [...pngArguments], sandbox);
+    await runPdftoppm(pdftoppm, pngArguments, sandbox);
     return;
   }
   await Promise.all(rawPages.map((name) => encodePpmPageAsPng(path.join(tempDir, name), path.join(tempDir, name.replace(/\.ppm$/, '.png')), dpi)));

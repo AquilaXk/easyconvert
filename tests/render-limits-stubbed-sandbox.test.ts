@@ -4,20 +4,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { PPM_PAGE_MAX_BYTES, renderPngBatch } from '../src/worker/poppler-ppm';
 import { convertWithNativeSvg } from '../src/worker/engines';
+import { type LaunchedExecutionOptions } from '../src/lib/security/sandbox-launcher';
 import { SandboxedBufferLimitError, type SandboxedExecutionOptions } from '../src/worker/sandbox';
 
 /**
- * The limits of the page and SVG routes, driven with a stand-in for the sandboxed process runner so that each branch is
+ * The limits of the page and SVG routes, driven with a stand-in for the launcher of sandboxed programs so that each branch is
  * reached on every platform: a host without `prlimit` never stops a program at the file-size limit, and one with it
  * never lets a file grow past the limit, so the two ways a page can be too large cannot both be produced by a real run.
  */
 
-const { run, launch } = vi.hoisted(() => ({ run: vi.fn(), launch: vi.fn() }));
-vi.mock('../src/worker/sandbox', async (importOriginal) => ({ ...(await importOriginal<typeof import('../src/worker/sandbox')>()), executeSandboxedBinary: run }));
+const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
 vi.mock('../src/lib/security/sandbox-launcher', async (importOriginal) => ({ ...(await importOriginal<typeof import('../src/lib/security/sandbox-launcher')>()), launchSandboxedBinary: launch }));
 
 const PNG_MARK = 'png written by the stand-in for Poppler';
-const SANDBOX: SandboxedExecutionOptions = { timeoutMs: 1000 };
+const SANDBOX: LaunchedExecutionOptions = { timeoutMs: 1000 };
 const DPI = 72;
 /** The pages the stand-in draws: page 1 only, as the arguments above ask. */
 const ONE_PAGE = { start: 1, end: 1 };
@@ -26,7 +26,7 @@ const SVG_OUTPUT_LIMIT = 512 * 1024 * 1024;
 
 let dir: string;
 beforeEach(() => {
-  run.mockReset();
+  launch.mockReset();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'render-limits-'));
 });
 afterEach(() => {
@@ -40,7 +40,7 @@ const smallPage = (): Buffer => Buffer.concat([Buffer.from('P6\n2 1\n255\n', 'la
 
 describe('a page too large to hold in memory is drawn again by Poppler as a PNG', () => {
   it('when the page file grew past the limit without the process being stopped (a host without prlimit)', async () => {
-    run.mockImplementation(async (_binary: string, args: string[]) => {
+    launch.mockImplementation(async (_binary: string, args: string[]) => {
       if (asksForPng(args)) fs.writeFileSync(path.join(dir, 'page-1.png'), PNG_MARK);
       else {
         fs.writeFileSync(path.join(dir, 'page-1.ppm'), '');
@@ -49,13 +49,13 @@ describe('a page too large to hold in memory is drawn again by Poppler as a PNG'
       return { stdout: Buffer.alloc(0) };
     });
     await renderPngBatch('pdftoppm', dir, DPI, SANDBOX, ['-r', '72', '-png', '-f', '1', '-l', '1', 'in.pdf', 'page'], ONE_PAGE);
-    expect(run.mock.calls.map(([, args]) => asksForPng(args as string[]))).toEqual([false, true]);
+    expect(launch.mock.calls.map(([, args]) => asksForPng(args as string[]))).toEqual([false, true]);
     expect(fs.readdirSync(dir).sort()).toEqual(['page-1.png']);
     expect(fs.readFileSync(path.join(dir, 'page-1.png'), 'utf8')).toBe(PNG_MARK);
   });
 
   it('when the process was stopped at the file-size limit', async () => {
-    run.mockImplementation(async (_binary: string, args: string[]) => {
+    launch.mockImplementation(async (_binary: string, args: string[]) => {
       if (asksForPng(args)) {
         fs.writeFileSync(path.join(dir, 'page-1.png'), PNG_MARK);
         return { stdout: Buffer.alloc(0) };
@@ -64,19 +64,19 @@ describe('a page too large to hold in memory is drawn again by Poppler as a PNG'
       throw new SandboxedBufferLimitError(PPM_PAGE_MAX_BYTES);
     });
     await renderPngBatch('pdftoppm', dir, DPI, SANDBOX, ['-r', '72', '-png', '-f', '1', '-l', '1', 'in.pdf', 'page'], ONE_PAGE);
-    expect(run.mock.calls.map(([, args]) => asksForPng(args as string[]))).toEqual([false, true]);
+    expect(launch.mock.calls.map(([, args]) => asksForPng(args as string[]))).toEqual([false, true]);
     expect(fs.readdirSync(dir)).toEqual(['page-1.png']);
   });
 
   it('and a page within the limit is compressed in process, with one program run', async () => {
-    run.mockImplementation(async () => {
+    launch.mockImplementation(async () => {
       fs.writeFileSync(path.join(dir, 'page-1.ppm'), smallPage());
       return { stdout: Buffer.alloc(0) };
     });
     await renderPngBatch('pdftoppm', dir, DPI, SANDBOX, ['-r', '72', '-png', '-f', '1', '-l', '1', 'in.pdf', 'page'], ONE_PAGE);
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(asksForPng(run.mock.calls[0][1] as string[])).toBe(false);
-    expect(run.mock.calls[0][2]).toMatchObject({ maxFileSize: PPM_PAGE_MAX_BYTES });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(asksForPng(launch.mock.calls[0][1] as string[])).toBe(false);
+    expect(launch.mock.calls[0][2]).toMatchObject({ maxFileSize: PPM_PAGE_MAX_BYTES, expectedOutputBytes: 0 });
     expect(fs.readdirSync(dir)).toEqual(['page-1.png']);
     expect(fs.readFileSync(path.join(dir, 'page-1.png')).subarray(0, 4).equals(PNG_SIGNATURE)).toBe(true);
   });
