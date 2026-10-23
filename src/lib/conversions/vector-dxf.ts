@@ -192,7 +192,15 @@ export async function encodeSvgPageToDxfWithText(svg: Buffer, readText: () => Pr
   const parsed = readSvgPage(svg, bitmapGlyphs);
   if (bitmapGlyphs.marks.length === 0) return writeDxf(parsed, []);
   const page = await readText();
-  return writeDxf(parsed, refusingUnsupported(() => placeBitmapGlyphText(bitmapGlyphs.marks, page, parsed.width, parsed.height)));
+  return writeDxf(parsed, refusingUnsupported(() => finitePlacements(placeBitmapGlyphText(bitmapGlyphs.marks, page, parsed.width, parsed.height))));
+}
+
+/** The placed texts, refused when one has a position or size that is not a finite number (a Type 3 font of zero widths gives a run of infinite width). */
+function finitePlacements(texts: readonly PlacedText[]): readonly PlacedText[] {
+  if (!texts.every((text) => [text.x, text.baseline, text.width, text.height].every(Number.isFinite))) {
+    throw new UnsupportedOptionError('bitmap-font text with a position or size that is not a finite number is not supported.');
+  }
+  return texts;
 }
 
 function writeDxf(parsed: ParsedSvgVectorDocument, texts: readonly PlacedText[]): Buffer {

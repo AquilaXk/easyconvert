@@ -176,6 +176,14 @@ describe('bitmap-font pages that stay refused for DXF', () => {
 });
 
 describe('hostile bitmap-font pages', () => {
+  it('refuses a run whose width is not finite instead of writing it, as a Type 3 font with zero widths gives', async () => {
+    const page1 = page(DEFS, LINE);
+    const infinite = [item('Hi', 72, 90, Number.POSITIVE_INFINITY), ...LINE_ITEMS.slice(1)];
+    await expect(encodeSvgPageToDxfWithText(Buffer.from(page1), layer(infinite))).rejects.toThrow(
+      /^The page cannot be written as DXF: bitmap-font text with a position or size that is not a finite number is not supported\.$/
+    );
+  });
+
   const MANY_PICTURES = 30_000;
   const pictures = (count: number): string => Array.from({ length: count }, () => '<use xlink:href="#source-0"/>').join('');
 
