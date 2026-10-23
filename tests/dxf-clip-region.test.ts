@@ -326,6 +326,24 @@ describe('hostile clips', () => {
     expect(performance.now() - start).toBeLessThan(HOSTILE_BUDGET_MS * 2);
   });
 
+  it('a clip placed under an element is charged for every point it moves, also where a singular matrix leaves it no edge', () => {
+    const ring = Array.from({ length: MAX_CLIP_EDGES - 1 }, (_, i) => `L ${100 + 90 * Math.cos(i * 0.006)} ${50 + 40 * Math.sin(i * 0.006)}`).join(' ');
+    const placements = '<g clip-path="url(#c)"></g>'.repeat(80_000);
+    const svg = svgOf(`<defs>${pathClip(`M 100 0 ${ring} Z`)}</defs><g transform="matrix(1 0 0 0 0 0)">${placements}</g>${stroke('M 10 90 L 190 90')}`);
+    const { result, ms } = timed(svg);
+    expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path work exceeds/);
+    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+  });
+
+  it('a refusal quotes at most 40 characters of a value', () => {
+    const long = 'x'.repeat(100_000);
+    for (const svg of [svgOf(`<g clip-path="url(#${long})">${stroke('M 60 30 L 140 30')}</g>`), clipped(clipOf('<rect x="40" y="20" width="120" height="60"/>', `clipPathUnits="${long}"`), stroke('M 60 30 L 140 30'))]) {
+      const result = refusal(svg);
+      expect(result).toMatch(/^ConversionFailedError: The page cannot be written as DXF: SVG clip-path "url\(#(c|x{35}\.\.\.)" is not supported: /);
+      expect(result.length).toBeLessThan(400);
+    }
+  });
+
   it('a clip of the most edges against the most vertices stops at the work limit', () => {
     const clip = pathClip(`M 100 0 ${Array.from({ length: MAX_CLIP_EDGES - 1 }, (_, i) => `L ${100 + 90 * Math.cos(i * 0.006)} ${50 + 40 * Math.sin(i * 0.006)}`).join(' ')} Z`);
     const line = `M 100 50${' L 100 51 L 101 51'.repeat(500)}`;
