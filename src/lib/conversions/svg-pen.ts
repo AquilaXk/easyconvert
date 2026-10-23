@@ -22,6 +22,13 @@ export const SVG_NUMBER_PATTERN = /^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)
  */
 export const MAX_DASH_VALUES = 12;
 
+/**
+ * The longest `stroke-dasharray` value read, in characters. This reader's own bound (neither reference has one): twelve lengths
+ * of 17 significant digits, an exponent and separators fit in a few hundred, and a value is read again for every element that
+ * declares it or a `<use>` of one, so a value of megabytes would cost its length each time.
+ */
+export const MAX_DASH_ARRAY_CHARACTERS = 1024;
+
 const SVG_LINECAPS = new Set(['butt', 'round', 'square']);
 const SVG_LINEJOINS = new Set(['miter', 'round', 'bevel']);
 const VALUE_EXCERPT_CHARACTERS = 40;
@@ -78,10 +85,7 @@ function dashRefusal(value: string, reason: string): UnsupportedOptionError {
   return new UnsupportedOptionError(`SVG stroke-dasharray "${excerpt(value)}" ${reason}.`);
 }
 
-/**
- * The entries of a dash array: numbers separated by whitespace, a comma or both. One pass that stops at the first entry past
- * the limit, so an array of a million lengths costs a few characters, and so does a value padded with millions of separators.
- */
+/** The entries of a dash array: numbers separated by whitespace, a comma or both, in one pass that stops at the first entry past the limit. */
 function dashEntries(value: string): string[] {
   const entries: string[] = [];
   const end = value.length;
@@ -113,6 +117,7 @@ function dashEntries(value: string): string[] {
  * lengths than a line type holds are refused.
  */
 export function parseDashArray(value: string): readonly number[] | null {
+  if (value.length > MAX_DASH_ARRAY_CHARACTERS) throw dashRefusal(value, `is longer than ${MAX_DASH_ARRAY_CHARACTERS} characters`);
   const text = value.trim();
   if (text.toLowerCase() === 'none') return null;
   const lengths = dashEntries(text).map((entry) => {

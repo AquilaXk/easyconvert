@@ -171,10 +171,10 @@ describe('stroke-dasharray', () => {
       expect(refusal(stroked(`stroke-dasharray="${list(MAX_DASH_VALUES / 2 + 1)}"`))).toMatch(/ConversionFailedError: The page cannot be written as DXF: .*at most 12/);
     });
 
-    it('refuses an array of a million lengths inside the budget, without reading them all', () => {
+    it('refuses an array of a million lengths inside the budget, without reading them', () => {
       const started = Date.now();
       const result = refusal(stroked(`stroke-dasharray="${'1 '.repeat(1_000_000)}"`));
-      expect(result).toMatch(/ConversionFailedError: The page cannot be written as DXF: .*at most 12/);
+      expect(result).toMatch(/ConversionFailedError: The page cannot be written as DXF: .*longer than 1024 characters/);
       expect(Date.now() - started).toBeLessThan(HOSTILE_BUDGET_MS);
     });
 
