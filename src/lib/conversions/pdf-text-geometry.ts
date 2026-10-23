@@ -6,6 +6,7 @@ import type { OcrBaseline, OcrLayoutGroup, OcrLineBlock, OcrResult, OcrWord } fr
 import { runPdfTextJobInThread } from './pdf-text-host';
 import { FontTable, readPageContent } from './pdf-text-content';
 import { ImageExtractor } from './pdf-text-images';
+import { withFontProgramToUnicode } from './pdf-font-tounicode';
 import { assertPdfStreamsWithinLimits } from './pdf-stream-guard';
 import {
   PDF_TEXT_MAX_PAGES,
@@ -1286,10 +1287,11 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function standardFontDataUrl(): string | undefined {
+/** A data folder of pdfjs-dist (`standard_fonts`, `cmaps`), as the path pdfjs reads its files from in Node. */
+function pdfjsDataUrl(folder: string): string | undefined {
   try {
     const manifest = createRequire(path.join(process.cwd(), 'package.json')).resolve('pdfjs-dist/package.json');
-    return `${path.join(path.dirname(manifest), 'standard_fonts')}${path.sep}`;
+    return `${path.join(path.dirname(manifest), folder)}${path.sep}`;
   } catch {
     return undefined;
   }
@@ -1415,18 +1417,23 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
   const fonts = new FontTable();
   let task: PdfJsLoadingTask | undefined;
   try {
-    // The streams the text depends on are decoded under byte budgets first: pdfjs would inflate a bomb to its end.
-    if (contentWanted) assertPdfStreamsWithinLimits(Buffer.from(pdfBuffer.buffer, pdfBuffer.byteOffset, pdfBuffer.byteLength));
+    const bytes = Buffer.from(pdfBuffer.buffer, pdfBuffer.byteOffset, pdfBuffer.byteLength);
+    // The streams the text depends on are decoded under byte budgets first: pdfjs would inflate a bomb to its end. The
+    // composite fonts without a ToUnicode map then get one from their font program (pdf-font-tounicode.ts).
+    const readable = contentWanted ? withFontProgramToUnicode(bytes, assertPdfStreamsWithinLimits(bytes)) : bytes;
     const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as PdfJs;
     task = pdfjs.getDocument({
-      data: new Uint8Array(pdfBuffer),
+      data: new Uint8Array(readable),
       useSystemFonts: true,
       disableFontFace: true,
       // The fonts keep their encoding and ToUnicode data, so a glyph pdfjs cannot map can be read from its glyph name.
       fontExtraProperties: true,
       isEvalSupported: false,
       maxImageSize: PDF_TEXT_MAX_IMAGE_PIXELS,
-      standardFontDataUrl: standardFontDataUrl(),
+      standardFontDataUrl: pdfjsDataUrl('standard_fonts'),
+      // The predefined CMaps: the codes of a CJK font and the Unicode values of a registered character collection.
+      cMapUrl: pdfjsDataUrl('cmaps'),
+      cMapPacked: true,
       verbosity: 0,
     });
     const doc = await task.promise;

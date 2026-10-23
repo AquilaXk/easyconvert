@@ -55,3 +55,14 @@ describe('a strict run with a sample the prefetch did not leave in the cache', (
     expect(network).not.toHaveBeenCalled();
   });
 });
+
+describe('the files a test may name as a sample', () => {
+  it('hold the files of both corpora under ids that no two files share', async () => {
+    const { readTestSampleFiles } = await import('../bench/realworld/test-samples');
+    const files = readTestSampleFiles();
+    const ids = files.map((file) => file.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(files.find((file) => file.id === 'cc-6200417.pdf')?.format).toBe('pdf');
+    expect(ids).toContain('pdf-pdfjs-issue17333.pdf');
+  });
+});
