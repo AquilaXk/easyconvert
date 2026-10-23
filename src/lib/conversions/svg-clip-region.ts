@@ -47,7 +47,6 @@ const CLIP_URL_PATTERN = /^url\(\s*#([^)\s"']+)\s*\)$/;
 const MAX_REPORTED_DECIMALS = 2;
 const FULL_TURN = 2 * Math.PI;
 const TURN_EPSILON = 1e-6;
-const CROSSING_EPSILON = 1e-9;
 
 /** What the reader gives this module: the element index, the flattened outline of a shape and the style of an element. */
 export interface ClipReader {
@@ -211,35 +210,64 @@ function crossings(region: ClipRegion, p: Point, q: Point): number[] {
       const [px, py] = [edges[i] - p.x, edges[i + 1] - p.y];
       const t = (px * sy - py * sx) / denominator;
       const u = (px * ry - py * rx) / denominator;
-      if (t > CROSSING_EPSILON && t < 1 - CROSSING_EPSILON && u >= 0 && u <= 1) found.push(t);
+      if (t > 0 && t < 1 && u >= 0 && u <= 1) found.push(t);
     }
   }
   return found.sort((a, b) => a - b);
 }
 
+/** A piece of a segment between parameters `a` and `b`, with the distances outside the region of its two ends. */
+type Piece = [a: number, distanceA: number, b: number, distanceB: number];
+
 /**
- * The most any vertex of `subpaths` is outside the region (0 when all are inside). Against a region that is not one convex
- * polygon the middle of every piece of a segment between its crossings of the region's edges is measured too, since a segment
- * between two vertices inside can leave the region between them. Each vertex is tested once, for `edgeCount` edge tests.
+ * The most a piece of the segment from `p` to `q` that crosses no edge of the region is outside it, or the first distance past
+ * `tolerance`. No edge crosses the piece, so it is inside or outside as a whole, and its middle says which. The distance to
+ * a region changes by at most the distance moved, so on a piece of length L with ends at d0 and d1 no point is farther than
+ * (d0 + d1 + L) / 2; a piece is halved, each middle measured and charged to the work, until that bound is within the tolerance.
  */
-function farthestOutside(region: ClipRegion, subpaths: readonly (readonly Point[])[], work: ClipWork): number {
+function farthestOnPiece(region: ClipRegion, p: Point, q: Point, piece: Piece, tolerance: number, work: ClipWork): number {
+  const length = Math.hypot(q.x - p.x, q.y - p.y);
+  const pending: Piece[] = [piece];
+  let farthest = 0;
+  while (pending.length > 0) {
+    const [a, distanceA, b, distanceB] = pending.pop() as Piece;
+    if ((distanceA + distanceB + (b - a) * length) / 2 <= tolerance) continue;
+    work.charge(region.edgeCount);
+    const middle = (a + b) / 2;
+    const distance = distanceOutside(region, p.x + middle * (q.x - p.x), p.y + middle * (q.y - p.y));
+    farthest = Math.max(farthest, distance);
+    if (distance === 0) continue;
+    if (!(distance <= tolerance)) return farthest;
+    pending.push([a, distanceA, middle, distance], [middle, distance, b, distanceB]);
+  }
+  return farthest;
+}
+
+/**
+ * The most any point of `subpaths` is outside the region (0 when all are inside), measured on its vertices and, against a
+ * region that is not one convex polygon, on each piece of a segment between its crossings of the region's edges. Against a
+ * convex region the distance along a segment is convex, so the vertices hold its largest value. A crossing is on an edge,
+ * and every edge borders the region (`deviceRegion`), so a crossing is at distance 0.
+ */
+function farthestOutside(region: ClipRegion, subpaths: readonly (readonly Point[])[], tolerance: number, work: ClipWork): number {
   let farthest = 0;
   for (const subpath of subpaths) {
     work.charge(subpath.length * region.edgeCount);
+    let previous = 0;
     for (let i = 0; i < subpath.length; i++) {
       pointOnPage(subpath[i]);
-      farthest = Math.max(farthest, distanceOutside(region, subpath[i].x, subpath[i].y));
-      if (region.convex || i === 0) continue;
-      const [p, q] = [subpath[i - 1], subpath[i]];
-      work.charge(region.edgeCount);
-      const cuts = crossings(region, p, q);
-      if (cuts.length === 0) continue;
-      work.charge((cuts.length + 1) * region.edgeCount);
-      const bounds = [0, ...cuts, 1];
-      for (let k = 1; k < bounds.length; k++) {
-        const t = (bounds[k - 1] + bounds[k]) / 2;
-        farthest = Math.max(farthest, distanceOutside(region, p.x + t * (q.x - p.x), p.y + t * (q.y - p.y)));
+      const distance = distanceOutside(region, subpath[i].x, subpath[i].y);
+      farthest = Math.max(farthest, distance);
+      if (!region.convex && i > 0) {
+        const [p, q] = [subpath[i - 1], subpath[i]];
+        work.charge(region.edgeCount);
+        const cuts = [0, ...crossings(region, p, q), 1];
+        for (let k = 1; k < cuts.length; k++) {
+          const piece: Piece = [cuts[k - 1], k === 1 ? previous : 0, cuts[k], k === cuts.length - 1 ? distance : 0];
+          farthest = Math.max(farthest, farthestOnPiece(region, p, q, piece, tolerance, work));
+        }
       }
+      previous = distance;
     }
   }
   return farthest;
@@ -298,7 +326,7 @@ export class ActiveClips {
     const nested = this.stack.length > 1;
     const tolerance = nested ? 0 : this.tolerance;
     for (const { value, region } of this.stack) {
-      const farthest = farthestOutside(region, subpaths, this.work);
+      const farthest = farthestOutside(region, subpaths, tolerance, this.work);
       if (!(farthest <= tolerance)) throw clipRefusal(value, this.reach(farthest, nested));
     }
   }
