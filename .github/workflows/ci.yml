@@ -574,6 +574,11 @@ jobs:
           key: ${{ steps.libvips-key.outputs.key }}
           fail-on-cache-miss: true
 
+      # A cache entry is trusted by its key, so the build context is checked before the image build mounts it.
+      - name: Check the libvips build
+        if: steps.changes.outputs.relevant == 'true'
+        run: bash docker/sharp-libvips/check-build-output.sh "$RUNNER_TEMP/sharp-libvips"
+
       - name: Build the worker image
         if: steps.changes.outputs.relevant == 'true'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2

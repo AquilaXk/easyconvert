@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -59,11 +59,12 @@ describe('fetch-pinned.sh, the curl of the upstream build', () => {
   const PINNED_BYTES = 'the pinned archive\n';
 
   /** Runs the wrapper with a stand-in downloader that writes `served` for any URL, as curl --output would. */
-  function fetch(args: string[], served: string): { status: number; stdout: string; refusals: string; log: string } {
+  function fetch(args: string[], served: string): { status: number; stdout: string; refusals: string; log: string; downloaderArgs: string[] } {
     const dir = tempDir('fetch-pinned-');
     const downloader = path.join(dir, 'downloader');
     writeFileSync(path.join(dir, 'body'), served);
-    writeFileSync(downloader, `#!/bin/sh\nwhile [ "$#" -gt 1 ]; do if [ "$1" = --output ]; then cp "${dir}/body" "$2"; fi; shift; done\n`);
+    writeFileSync(path.join(dir, 'args'), '');
+    writeFileSync(downloader, `#!/bin/sh\nprintf '%s\\n' "$@" > "${dir}/args"\nwhile [ "$#" -gt 1 ]; do if [ "$1" = --output ]; then cp "${dir}/body" "$2"; fi; shift; done\n`);
     chmodSync(downloader, 0o755);
     writeFileSync(path.join(dir, 'sources.sha256'), `# a comment\n${sha256(PINNED_BYTES)}  ${PINNED}\n`);
     writeFileSync(path.join(dir, 'refused'), '');
@@ -78,7 +79,13 @@ describe('fetch-pinned.sh, the curl of the upstream build', () => {
         SHARP_LIBVIPS_SERVED: path.join(dir, 'served'),
       },
     });
-    return { status: result.status ?? -1, stdout: result.stdout, refusals: readFileSync(path.join(dir, 'refused'), 'utf-8'), log: readFileSync(path.join(dir, 'served'), 'utf-8') };
+    return {
+      status: result.status ?? -1,
+      stdout: result.stdout,
+      refusals: readFileSync(path.join(dir, 'refused'), 'utf-8'),
+      log: readFileSync(path.join(dir, 'served'), 'utf-8'),
+      downloaderArgs: readFileSync(path.join(dir, 'args'), 'utf-8').split('\n'),
+    };
   }
   const upstreamArgs = (url: string): string[] => ['--silent', '--location', '--retry', '3', '--retry-max-time', '30', url];
 
@@ -88,6 +95,13 @@ describe('fetch-pinned.sh, the curl of the upstream build', () => {
     expect(result.stdout).toBe(PINNED_BYTES);
     expect(result.refusals).toBe('');
     expect(result.log).toBe(`${PINNED}\n`);
+  });
+
+  withBash('downloads over HTTPS only, and follows redirects only to HTTPS', () => {
+    const { downloaderArgs } = fetch(upstreamArgs(PINNED), PINNED_BYTES);
+    const value = (flag: string): string | undefined => downloaderArgs[downloaderArgs.indexOf(flag) + 1];
+    expect(value('--proto')).toBe('=https');
+    expect(value('--proto-redir')).toBe('=https');
   });
 
   withBash('refuses bytes that do not have the pinned SHA-256, writes none of them, and records the refusal', () => {
@@ -111,6 +125,241 @@ describe('fetch-pinned.sh, the curl of the upstream build', () => {
       expect(result.status, args.join(' ')).not.toBe(0);
       expect(result.refusals, args.join(' ')).not.toBe('');
     }
+  });
+});
+
+/** `uname` that answers for the platform of the process, so env.sh picks the settings the scripts below run with. */
+function platformStub(): string {
+  const bin = tempDir('uname-');
+  writeFileSync(path.join(bin, 'uname'), `#!/bin/sh\necho ${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}\n`);
+  chmodSync(path.join(bin, 'uname'), 0o755);
+  return bin;
+}
+const NPM_ARCH = process.arch === 'arm64' ? 'arm64' : 'x64';
+const VIPS_VERSION = /^VIPS_VERSION=(\S+)$/m.exec(read('docker', 'sharp-libvips', 'env.sh'))?.[1] ?? '';
+const LIBRARY = `libvips-cpp.so.${VIPS_VERSION}`;
+
+describe('the downloads the build does not make through curl', () => {
+  withBash('env.sh keeps Meson from downloading wraps: every `meson setup` of posix.sh runs with ${MESON}', () => {
+    const result = spawnSync('bash', ['-c', `source "${path.join(BUILD_DIR, 'env.sh')}" && export_compiler_settings && printf '%s' "$MESON"`], {
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: `${platformStub()}:${process.env.PATH ?? ''}` },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.split(' ')).toContain('--wrap-mode=nodownload');
+    expect(result.stdout.split(' ')).toContain('--cross-file=/root/meson.ini');
+  });
+
+  /** Runs git-local-only.sh with a stand-in for the real git that records what it was asked. */
+  function git(args: string[]): { status: number; refusals: string; reached: string } {
+    const dir = tempDir('git-local-only-');
+    const real = path.join(dir, 'real-git');
+    writeFileSync(real, `#!/bin/sh\nprintf '%s\\n' "$*" > "${dir}/reached"\n`);
+    chmodSync(real, 0o755);
+    writeFileSync(path.join(dir, 'refused'), '');
+    writeFileSync(path.join(dir, 'reached'), '');
+    const result = spawnSync('bash', [path.join(BUILD_DIR, 'git-local-only.sh'), ...args], {
+      encoding: 'utf-8',
+      env: { ...process.env, SHARP_LIBVIPS_REAL_GIT: real, SHARP_LIBVIPS_REFUSALS: path.join(dir, 'refused') },
+    });
+    return { status: result.status ?? -1, refusals: readFileSync(path.join(dir, 'refused'), 'utf-8'), reached: readFileSync(path.join(dir, 'reached'), 'utf-8').trim() };
+  }
+
+  withBash.each([
+    ['clone', ['clone', '--depth', '1', 'https://gitlab.gnome.org/GNOME/gvdb.git']],
+    ['fetch', ['fetch', 'origin', 'main']],
+    ['submodule update', ['submodule', 'update', '--init']],
+    ['ls-remote', ['ls-remote', 'https://example.org/repo.git']],
+    ['a clone behind the git-dir option', ['--git-dir=/deps/aom/.git', 'clone', 'https://example.org/repo.git']],
+    ['a clone that follows describe in the arguments', ['clone', 'describe']],
+    ['no subcommand', []],
+  ])('git-local-only.sh refuses %s, and records it for the check build.sh makes after the script', (_what, args) => {
+    const result = git(args);
+    expect(result.status).not.toBe(0);
+    expect(result.reached).toBe('');
+    expect(result.refusals).toBe(`git ${args.join(' ')}\n`);
+  });
+
+  withBash.each([
+    ['the version probe of CMake', ['--version']],
+    ['the version of libxml2', ['describe']],
+    ['the version of aom', ['--git-dir=/deps/aom/.git', 'describe', '--match=v[0-9]*']],
+  ])('git-local-only.sh passes %s to the real git, as a query that reads no network', (_what, args) => {
+    const result = git(args);
+    expect(result.status).toBe(0);
+    expect(result.reached).toBe(args.join(' '));
+    expect(result.refusals).toBe('');
+  });
+
+  it('is installed by build.sh as the git of the script, beside the curl, and copied into the stage by Dockerfile.worker', () => {
+    const build = read('docker', 'sharp-libvips', 'build.sh');
+    expect(build).toContain('install -m 0755 "$here/git-local-only.sh" "$fetches/git"');
+    expect(build).toContain('PATH="$fetches:$PATH" bash build/posix.sh');
+    expect(dockerfile).toMatch(/^COPY docker\/sharp-libvips\/build\.sh [^\n]* docker\/sharp-libvips\/git-local-only\.sh /m);
+  });
+});
+
+describe('check-build-output.sh, the one check of what the sharplibvips stage hands over', () => {
+  const BYTES = 'the rebuilt library\n';
+
+  /** A build output of the stage: the library and its digest file, changed by `mutate`. */
+  function output(mutate: (dir: string) => void = () => undefined): string {
+    const dir = tempDir('build-output-');
+    writeFileSync(path.join(dir, LIBRARY), BYTES);
+    writeFileSync(path.join(dir, `${LIBRARY}.sha256`), `${sha256(BYTES)}  ${LIBRARY}\n`);
+    mutate(dir);
+    return dir;
+  }
+  function check(dir: string): { status: number; stdout: string; stderr: string } {
+    const result = spawnSync('bash', [path.join(BUILD_DIR, 'check-build-output.sh'), dir], {
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: `${platformStub()}:${process.env.PATH ?? ''}` },
+    });
+    return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
+  }
+
+  withBash('passes the library and its digest file alone, and prints the digest', () => {
+    const result = check(output());
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(sha256(BYTES));
+  });
+
+  withBash.each([
+    ['a file beside them, such as a swapped addon', (dir: string) => writeFileSync(path.join(dir, 'sharp-linux-x64.node'), 'addon')],
+    ['a directory of files, as node_modules is laid out', (dir: string) => {
+      mkdirSync(path.join(dir, 'node_modules', 'sharp-linux-x64'), { recursive: true });
+      writeFileSync(path.join(dir, 'node_modules', 'sharp-linux-x64', 'sharp.node'), 'addon');
+    }],
+    ['a hidden file', (dir: string) => writeFileSync(path.join(dir, '.extra'), 'x')],
+    ['a symlink beside them', (dir: string) => symlinkSync('/etc/passwd', path.join(dir, 'passwd'))],
+  ])('fails for %s', (_what, mutate) => {
+    const result = check(output(mutate));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('nothing else');
+  });
+
+  withBash('fails when the library is a symlink, even to a file with the digest', () => {
+    const elsewhere = path.join(tempDir('build-output-target-'), 'real');
+    writeFileSync(elsewhere, BYTES);
+    const result = check(output((dir) => {
+      rmSync(path.join(dir, LIBRARY));
+      symlinkSync(elsewhere, path.join(dir, LIBRARY));
+    }));
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('is not a regular file');
+  });
+
+  withBash('fails when the digest file is a symlink, when the library is not the one it describes, and when either is missing', () => {
+    const digestFile = path.join(tempDir('build-output-target-'), 'real');
+    writeFileSync(digestFile, `${sha256(BYTES)}  ${LIBRARY}\n`);
+    const linked = check(output((dir) => {
+      rmSync(path.join(dir, `${LIBRARY}.sha256`));
+      symlinkSync(digestFile, path.join(dir, `${LIBRARY}.sha256`));
+    }));
+    expect(linked.status).not.toBe(0);
+    expect(linked.stderr).toContain('is not a regular file');
+    expect(check(output((dir) => writeFileSync(path.join(dir, LIBRARY), 'a swapped library\n'))).status).not.toBe(0);
+    expect(check(output((dir) => rmSync(path.join(dir, `${LIBRARY}.sha256`)))).status).not.toBe(0);
+    expect(check(output((dir) => rmSync(path.join(dir, LIBRARY)))).status).not.toBe(0);
+  });
+
+  it('is the check of the cache restore in the container job and of the build that fills the cache, and is run by use-libvips.sh and by the image', () => {
+    const script = 'docker/sharp-libvips/check-build-output.sh';
+    expect(ci.jobs.container.steps.find((step) => step.name === 'Check the libvips build')?.run).toContain(script);
+    expect(reusable.jobs.build.steps.find((step) => step.name === 'Check the build')?.run).toContain(script);
+    const names = (job: Job): string[] => job.steps.map((step) => step.name ?? '');
+    const container = names(ci.jobs.container);
+    expect(container.indexOf('Check the libvips build')).toBeGreaterThan(container.indexOf('Restore the libvips build'));
+    expect(container.indexOf('Check the libvips build')).toBeLessThan(container.indexOf('Build the worker image'));
+    const saveAt = reusable.jobs.build.steps.findIndex((step) => step.uses?.startsWith('actions/cache/save@'));
+    expect(reusable.jobs.build.steps.findIndex((step) => step.name === 'Check the build')).toBeLessThan(saveAt);
+    expect(read('docker', 'sharp-libvips', 'use-libvips.sh')).toContain('check-build-output.sh');
+  });
+});
+
+describe('use-libvips.sh and check-sharp.sh, the library that is installed and the one that is loaded', () => {
+  const BYTES = 'the rebuilt library\n';
+
+  /** An app root with the npm package's library, and a build output of the stage. */
+  function layout(): { root: string; build: string; library: string; bin: string } {
+    const dir = tempDir('use-libvips-');
+    const root = path.join(dir, 'app');
+    const build = path.join(dir, 'build');
+    const library = path.join(root, 'node_modules', '@img', `sharp-libvips-linux-${NPM_ARCH}`, 'lib', LIBRARY);
+    mkdirSync(path.dirname(library), { recursive: true });
+    writeFileSync(library, 'the library of the npm package\n');
+    mkdirSync(build);
+    writeFileSync(path.join(build, LIBRARY), BYTES);
+    writeFileSync(path.join(build, `${LIBRARY}.sha256`), `${sha256(BYTES)}  ${LIBRARY}\n`);
+    const bin = path.join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(path.join(bin, 'uname'), `#!/bin/sh\necho ${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}\n`);
+    writeFileSync(path.join(bin, 'node'), `#!/bin/sh\nprintf '%s' "$EXPECTED_SHA256" > "${dir}/expected"\n`);
+    for (const name of ['uname', 'node']) chmodSync(path.join(bin, name), 0o755);
+    return { root, build, library, bin };
+  }
+  function use(setup: { root: string; build: string; bin: string }): { status: number; stderr: string } {
+    const result = spawnSync('bash', [path.join(BUILD_DIR, 'use-libvips.sh'), setup.root, setup.build], {
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: `${setup.bin}:${process.env.PATH ?? ''}` },
+    });
+    return { status: result.status ?? -1, stderr: result.stderr };
+  }
+
+  withBash('puts the built library over the npm package one and hands the digest of the build to check-sharp.sh', () => {
+    const setup = layout();
+    const result = use(setup);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(setup.library, 'utf-8')).toBe(BYTES);
+    expect(readFileSync(path.join(path.dirname(setup.root), 'expected'), 'utf-8')).toBe(sha256(BYTES));
+    expect(use(setup).status).toBe(0);
+    expect(readFileSync(setup.library, 'utf-8')).toBe(BYTES);
+  });
+
+  withBash('leaves node_modules as the npm package installed it when the build output holds anything else', () => {
+    const setup = layout();
+    writeFileSync(path.join(setup.build, 'sharp-linux-x64.node'), 'addon');
+    expect(use(setup).status).not.toBe(0);
+    expect(readFileSync(setup.library, 'utf-8')).toBe('the library of the npm package\n');
+    expect(existsSync(path.join(path.dirname(setup.root), 'expected'))).toBe(false);
+  });
+
+  const procMaps = existsSync('/proc/self/maps');
+  const withProc = it.skipIf(skipUnless('/proc/self/maps, which check-sharp.sh reads', procMaps));
+
+  /** An app root whose sharp is a stand-in that encodes a WebP, with the library the package installed. */
+  function app(libraryBytes: string): string {
+    const root = tempDir('check-sharp-');
+    const release = /^SHARP_LIBVIPS_VERSION=(\S+)$/m.exec(read('docker', 'sharp-libvips', 'env.sh'))?.[1] ?? '';
+    const name = `@img/sharp-libvips-linux-${process.arch}`;
+    mkdirSync(path.join(root, 'node_modules', name, 'lib'), { recursive: true });
+    mkdirSync(path.join(root, 'node_modules', 'sharp'), { recursive: true });
+    writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({ packages: { [`node_modules/${name}`]: { version: release } } }));
+    writeFileSync(path.join(root, 'node_modules', name, 'package.json'), JSON.stringify({ version: release }));
+    writeFileSync(path.join(root, 'node_modules', name, 'lib', LIBRARY), libraryBytes);
+    writeFileSync(path.join(root, 'node_modules', 'sharp', 'package.json'), JSON.stringify({ name: 'sharp', version: '0.0.0', main: 'index.js' }));
+    writeFileSync(
+      path.join(root, 'node_modules', 'sharp', 'index.js'),
+      `const webp = Buffer.from('RIFF\\0\\0\\0\\0WEBP');
+       const sharp = () => ({ webp() { return this; }, toBuffer: () => Promise.resolve(webp) });
+       sharp.versions = { vips: '${VIPS_VERSION}' };
+       module.exports = sharp;`
+    );
+    return root;
+  }
+  function checkSharp(root: string, expected?: string): string {
+    const result = spawnSync('bash', [path.join(BUILD_DIR, 'check-sharp.sh'), root, ...(expected === undefined ? [] : [expected])], {
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: `${platformStub()}:${process.env.PATH ?? ''}` },
+    });
+    return result.stderr;
+  }
+
+  withProc('check-sharp.sh fails when the library it loads is not the one that was built', () => {
+    const root = app(BYTES);
+    expect(checkSharp(root, sha256('another library\n'))).toContain(`the build of the sharplibvips stage has ${sha256('another library\n')}`);
+    expect(checkSharp(root, sha256(BYTES))).not.toContain('the build of the sharplibvips stage has');
+    expect(checkSharp(root)).not.toContain('the build of the sharplibvips stage has');
   });
 });
 
@@ -297,8 +546,9 @@ describe('the CI build of the stage', () => {
   it('is the stage the worker image copies from, built in the pinned build container', () => {
     expect(dockerfile).toMatch(/^FROM rockylinux\/rockylinux:8-ubi-init@sha256:[0-9a-f]{64} AS sharplibvips-build$/m);
     expect(dockerfile).toContain('FROM scratch AS sharplibvips\nCOPY --from=sharplibvips-build /out/ /\n');
-    const copy = dockerfile.indexOf('COPY --from=sharplibvips --chown=easyconvert:easyconvert /node_modules/ ./node_modules/');
-    expect(copy).toBeGreaterThan(dockerfile.indexOf('COPY --from=builder --chown=easyconvert:easyconvert /app/node_modules ./node_modules'));
-    expect(dockerfile.indexOf('check-sharp.sh /app', copy)).toBeGreaterThan(copy);
+    const use = dockerfile.indexOf('RUN --mount=type=bind,from=sharplibvips,target=/mnt/sharplibvips');
+    expect(use).toBeGreaterThan(dockerfile.indexOf('COPY --from=builder --chown=easyconvert:easyconvert /app/node_modules ./node_modules'));
+    expect(dockerfile.indexOf('bash /mnt/sharp-libvips/use-libvips.sh /app /mnt/sharplibvips', use)).toBeGreaterThan(use);
+    expect(dockerfile).not.toMatch(/COPY --from=sharplibvips /);
   });
 });

@@ -9,7 +9,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 source "$here/env.sh"
 
 fetch() {
-  curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 --output "$2" "$1"
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 --output "$2" "$1"
   echo "$3  $2" | sha256sum --check --strict -
 }
 

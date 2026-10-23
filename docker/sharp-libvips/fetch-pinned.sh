@@ -38,7 +38,7 @@ expected="$(awk -v url="$url" '$1 !~ /^#/ && $2 == url { print $1 }' "$SHARP_LIB
 
 download="$(mktemp)"
 trap 'rm -f "$download"' EXIT
-"$real_curl" --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 --retry-max-time 30 --output "$download" "$url" ||
+"$real_curl" --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 --retry-max-time 30 --output "$download" "$url" ||
   refuse "download failed: $url"
 actual="$(sha256sum "$download" | cut -d ' ' -f 1)"
 [ "$actual" = "$expected" ] || refuse "SHA-256 of $url is $actual, sources.sha256 pins $expected"

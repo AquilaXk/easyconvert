@@ -93,6 +93,7 @@ describe('container job in .github/workflows/ci.yml', () => {
       'Find the layer cache',
       'Compute the cache key of the libvips build',
       'Restore the libvips build',
+      'Check the libvips build',
       'Build the worker image',
       'Start Redis',
       'Verify the hardened worker container',

@@ -40,6 +40,10 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: docker buildx build --file Dockerfile.worker --target sharplibvips --platform linux/amd64 --output "type=local,dest=$RUNNER_TEMP/sharp-libvips" .
 
+      - name: Check the build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash docker/sharp-libvips/check-build-output.sh "$RUNNER_TEMP/sharp-libvips"
+
       - name: Save the build
         if: steps.cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

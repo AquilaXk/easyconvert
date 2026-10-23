@@ -59,5 +59,9 @@ export_compiler_settings() {
   export PLATFORM
   export FLAGS="$PLATFORM_FLAGS"
   export RUSTFLAGS="-Zlocation-detail=none -Zfmt-debug=none"
-  export MESON="--cross-file=/root/meson.ini"
+  # posix.sh runs every `meson setup` with ${MESON}. The wrap files of the tarballs it unpacks (pango's wrap-git files for glib,
+  # harfbuzz, cairo, fribidi and fontconfig, with a branch as the revision) would clone from the network when a dependency is
+  # missing; nodownload lets a wrap use only a subproject that is already unpacked, as glib's own gvdb is, and fails otherwise.
+  # git-local-only.sh is the second layer: a wrap-git file would find a git that does not clone.
+  export MESON="--cross-file=/root/meson.ini --wrap-mode=nodownload"
 }

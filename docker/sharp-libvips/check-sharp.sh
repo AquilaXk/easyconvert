@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# usage: check-sharp.sh <app root>
+# usage: check-sharp.sh <app root> [<expected SHA-256 of the library>]
 # Fails unless the sharp installed under <app root> runs on the libvips this directory builds. The lock file and the installed
 # @img/sharp-libvips-linux-<arch> package must be the release env.sh pins (a sharp upgrade that brings another release must
 # move the pins with it, or a new addon would run on the old library), and a node process started there must encode a
-# WebP with libvips VIPS_VERSION mapped from that package's lib directory and from nowhere else.
+# WebP with libvips VIPS_VERSION mapped from that package's lib directory and from nowhere else. With the digest of the build
+# of the sharplibvips stage, the mapped file must have it, so the library that is loaded is the one that was built.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 source "$here/env.sh"
 cd "$1"
 
-SHARP_LIBVIPS_VERSION="$SHARP_LIBVIPS_VERSION" VIPS_VERSION="$VIPS_VERSION" node - << 'EOF'
+SHARP_LIBVIPS_VERSION="$SHARP_LIBVIPS_VERSION" VIPS_VERSION="$VIPS_VERSION" EXPECTED_SHA256="${2:-}" node - << 'EOF'
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const { SHARP_LIBVIPS_VERSION: release, VIPS_VERSION: vips } = process.env;
+const { SHARP_LIBVIPS_VERSION: release, VIPS_VERSION: vips, EXPECTED_SHA256: expected } = process.env;
 const name = `@img/sharp-libvips-linux-${process.arch}`;
 const failures = [];
 const locked = JSON.parse(fs.readFileSync('package-lock.json', 'utf8')).packages?.[`node_modules/${name}`]?.version;
@@ -34,6 +35,7 @@ sharp({ create: { width: 8, height: 8, channels: 3, background: '#808080' } })
     if (sharp.versions.vips !== vips) failures.push(`sharp reports libvips ${sharp.versions.vips}, not ${vips}`);
     if (webp.toString('latin1', 0, 4) !== 'RIFF' || webp.toString('latin1', 8, 12) !== 'WEBP') failures.push('the encode did not return a WebP file');
     const digest = crypto.createHash('sha256').update(fs.readFileSync(library)).digest('hex');
+    if (expected && digest !== expected) failures.push(`${library} has SHA-256 ${digest}, the build of the sharplibvips stage has ${expected}`);
     console.log(`sharp ${JSON.parse(fs.readFileSync(path.join('node_modules', 'sharp', 'package.json'), 'utf8')).version} on libvips ${sharp.versions.vips}: ${library} (sha256 ${digest}), a ${webp.length}-byte WebP`);
     for (const failure of failures) console.error(failure);
     process.exit(failures.length === 0 ? 0 : 1);
