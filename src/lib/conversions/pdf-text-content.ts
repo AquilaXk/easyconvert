@@ -101,8 +101,8 @@ export interface OperatorListLike {
 export interface ContentPage {
   getViewport(options: { scale: number }): Viewport;
   getOperatorList(): Promise<OperatorListLike>;
-  commonObjs: { has(id: string): boolean; get(id: string): unknown };
-  objs: { has(id: string): boolean; get(id: string): unknown };
+  commonObjs: { has(id: string): boolean; get(id: string, callback?: (data: unknown) => void): unknown };
+  objs: { has(id: string): boolean; get(id: string, callback?: (data: unknown) => void): unknown };
 }
 
 /** Per-document table of fonts; items refer to entries by index. */
@@ -522,7 +522,7 @@ export async function readPageContent(
     if (list.fnArray.length > PDF_CONTENT_MAX_OPERATORS_PER_PAGE) operatorsSkipped = true;
     else scan = scanOperators(list, ops, viewport);
   }
-  if (imageExtractor) await imageExtractor.attach(pageNumber - 1, page.objs, scan.images, scan.sources);
+  if (imageExtractor) await imageExtractor.attach(pageNumber - 1, page, scan.images, scan.sources);
   // Fonts are described after the operator list is read: pdfjs resolves their names while it runs.
   const { items, unmapped } = textItemsOf(page, content, viewport, fonts, pageNumber, unmappedMark);
   return {
