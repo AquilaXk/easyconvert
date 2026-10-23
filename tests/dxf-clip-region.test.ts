@@ -161,14 +161,33 @@ describe('a clip of any other shape', () => {
     expect(refusal(clipped(two, stroke('M 10 10 L 75 10')))).toMatch(/reaches 25 pixels past it/);
   });
 
+  it('can be a polygon', () => {
+    const triangle = clipOf('<polygon points="60,10 140,10 100,90"/>');
+    expect(dxfOf(clipped(triangle, stroke('M 100 20 L 100 89'))).entities).toHaveLength(1);
+    expect(refusal(clipped(triangle, stroke('M 100 20 L 100 93')))).toMatch(CLIP_REFUSAL);
+  });
+
   it.each([
-    ['circle', '<circle cx="100" cy="50" r="40"/>', 'M 100 50 L 141 50', 'M 100 50 L 143 50'],
-    ['ellipse', '<ellipse cx="100" cy="50" rx="40" ry="20"/>', 'M 100 50 L 141 50', 'M 100 50 L 143 50'],
-    ['polygon', '<polygon points="60,10 140,10 100,90"/>', 'M 100 20 L 100 89', 'M 100 20 L 100 93'],
-    ['rounded rect', '<rect x="60" y="10" width="80" height="80" rx="20"/>', 'M 100 20 L 100 90', 'M 100 20 L 100 95'],
-  ])('can be a %s', (_name, shape, inside, outside) => {
-    expect(dxfOf(clipped(clipOf(shape), stroke(inside))).entities).toHaveLength(1);
-    expect(refusal(clipped(clipOf(shape), stroke(outside)))).toMatch(CLIP_REFUSAL);
+    ['a circle', '<circle cx="100" cy="50" r="40"/>'],
+    ['an ellipse', '<ellipse cx="100" cy="50" rx="40" ry="20"/>'],
+    ['a rounded rect', '<rect x="60" y="10" width="80" height="80" rx="20"/>'],
+    ['a path of cubic curves', '<path d="M 60 50 C 60 0 140 0 140 50 C 140 100 60 100 60 50 Z"/>'],
+    ['a path of quadratic curves', '<path d="M 60 50 Q 100 -30 140 50 Q 100 130 60 50 Z"/>'],
+    ['a path of arcs', '<path d="M 60 50 A 40 40 0 1 1 140 50 A 40 40 0 1 1 60 50 Z"/>'],
+  ])('is refused when it is %s, whose flattened outline is off the curve by an error the region would not hold', (_name, shape) => {
+    const refused = refusal(clipped(clipOf(shape), stroke('M 100 45 L 101 45')));
+    expect(refused).toMatch(CLIP_REFUSAL);
+    expect(refused).toMatch(/curve/);
+  });
+
+  it('is refused when a curve of it is flattened past a point under the scale of the clipped element', () => {
+    const k = 0.5523;
+    const circle = (cx: number, cy: number, r: number): string =>
+      `M ${cx + r} ${cy} C ${cx + r} ${cy + k * r} ${cx + k * r} ${cy + r} ${cx} ${cy + r} C ${cx - k * r} ${cy + r} ${cx - r} ${cy + k * r} ${cx - r} ${cy} ` +
+      `C ${cx - r} ${cy - k * r} ${cx - k * r} ${cy - r} ${cx} ${cy - r} C ${cx + k * r} ${cy - r} ${cx + r} ${cy - k * r} ${cx + r} ${cy} Z`;
+    const frameWithRoundHole = pathClip(`M 0 0 L 10 0 L 10 5 L 0 5 Z ${circle(5, 2.5, 2)}`, 'evenodd');
+    const inTheHoleOnAChord = stroke('M 6.7071 3.2071 L 6.7739 3.2348');
+    expect(refusal(clipped(frameWithRoundHole, inTheHoleOnAChord, 'transform="scale(20)"')), 'hidden by 3 pixels, measured inside').toMatch(CLIP_REFUSAL);
   });
 });
 
