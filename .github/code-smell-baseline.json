@@ -2012,7 +2012,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1647
+    "maxValue": 1558
   },
   {
     "file": "src/lib/conversions/vector-cad.ts",

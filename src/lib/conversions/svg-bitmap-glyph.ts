@@ -76,6 +76,12 @@ function extent(node: BitmapGlyphNode, ctm: AffineMatrix): Pick<BitmapGlyphMark,
   return { left: Math.min(...xs), right: Math.max(...xs), top: Math.min(...ys), bottom: Math.max(...ys) };
 }
 
+/** The corners of the extent of a glyph and its origin: the points a clip over the glyph must not hide, since the DXF writer writes the character there as text. */
+export function glyphBox(mark: BitmapGlyphMark): { x: number; y: number }[][] {
+  const { left, right, top, bottom } = mark;
+  return [[{ x: left, y: top }, { x: right, y: top }, { x: right, y: bottom }, { x: left, y: bottom }, { x: mark.x, y: mark.y }]];
+}
+
 /**
  * The bitmap glyphs of one document: a new instance per document refuses them, one made with `setAside` records them (the DXF
  * writer reads `marks` and writes the characters again as text). Which `<rect>` is a glyph is decided once per element (a glyph
