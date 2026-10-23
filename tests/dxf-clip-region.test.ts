@@ -224,6 +224,18 @@ describe('a clip that cannot be computed exactly', () => {
     }
   });
 
+  it('is refused when two of its edges lie on one another, since such an edge may border nothing and the nearest edge is not then the region', () => {
+    const spike = 'M 0 0 H 200 V 50 H 120 V 95 V 50 H 0 Z';
+    expect(refusal(clipped(pathClip(spike), stroke('M 120.5 60 L 120.5 90'))), 'zero-width spike').toMatch(CLIP_REFUSAL);
+    const doubled = `${BOX} ${BOX}`;
+    expect(refusal(clipped(pathClip(doubled, 'evenodd'), stroke('M 60 21 L 140 21'))), 'a path drawn twice under evenodd').toMatch(CLIP_REFUSAL);
+  });
+
+  it('keeps a polygon of no area that still fills: a bow tie under nonzero cuts its reversed half out of a rectangle', () => {
+    const rectangleAndBowTie = 'M 0 0 L 200 0 L 200 100 L 0 100 Z M 60 30 L 140 70 L 140 30 L 60 70 Z';
+    expect(refusal(clipped(pathClip(rectangleAndBowTie), stroke('M 65 50 L 135 50')))).toMatch(CLIP_REFUSAL);
+  });
+
   it('hides nothing when nothing is drawn under it', () => {
     const svg = svgOf(`<defs>${clipOf('')}</defs><g clip-path="url(#c)"></g>${stroke('M 10 90 L 190 90')}`);
     expect(dxfOf(svg).entities).toHaveLength(1);
