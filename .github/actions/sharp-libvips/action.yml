@@ -1,0 +1,35 @@
+name: Use the libvips of the worker image
+description: >-
+  Restores the CI build of the sharplibvips stage of Dockerfile.worker for a checkout (the key comes from that checkout's own
+  docker/sharp-libvips/cache-key.sh) and puts its libvips-cpp.so over the copy the npm package installed there, as the worker
+  image does. The job must need the sharp-libvips job (.github/workflows/sharp-libvips.yml), which builds a missing key; a key
+  that is still missing fails the step instead of leaving the npm package's library in place.
+
+inputs:
+  root:
+    description: The checkout whose node_modules gets the library, with its own docker/sharp-libvips scripts.
+    required: false
+    default: "."
+
+runs:
+  using: composite
+  steps:
+    - name: Compute the cache key of the checkout
+      id: key
+      shell: bash
+      env:
+        ROOT: ${{ inputs.root }}
+      run: echo "key=$(bash "$ROOT/docker/sharp-libvips/cache-key.sh" "$ROOT")" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the build
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/sharp-libvips
+        key: ${{ steps.key.outputs.key }}
+        fail-on-cache-miss: true
+
+    - name: Put the library into node_modules and check that sharp loads it
+      shell: bash
+      env:
+        ROOT: ${{ inputs.root }}
+      run: bash "$ROOT/docker/sharp-libvips/use-libvips.sh" "$ROOT" "$RUNNER_TEMP/sharp-libvips"

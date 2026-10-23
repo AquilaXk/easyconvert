@@ -74,8 +74,8 @@ describe('the trigger', () => {
 });
 
 describe('parity-quality', () => {
-  it('waits for the change filter and runs only when a conversion family changed', () => {
-    expect(quality.needs).toBe('changes');
+  it('waits for the change filter and the libvips build, and runs only when a conversion family changed', () => {
+    expect(quality.needs).toEqual(['changes', 'sharp-libvips']);
     expect(quality.if).toBe("needs.changes.outputs.bench_changed == 'true'");
   });
 
@@ -143,7 +143,7 @@ describe('parity-quality', () => {
 
 describe('parity-speed', () => {
   it('runs on a pull request when the automerge label is on, or when nothing needs measuring', () => {
-    expect(speed.needs).toBe('changes');
+    expect(speed.needs).toEqual(['changes', 'sharp-libvips']);
     const condition = String(speed.if).replace(/\s+/g, ' ').trim();
     expect(condition).toBe("github.event_name == 'pull_request' && (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))");
   });
@@ -163,8 +163,10 @@ describe('parity-speed', () => {
     expect(base.run).toContain('git worktree add --detach ab-base "$parent"');
     expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
     const install = stepNamed(speed, 'Install the dependencies of the base');
-    expect(install.run).toContain('cmp -s package-lock.json ab-base/package-lock.json');
-    expect(install.run).toContain('cd ab-base && npm ci --ignore-scripts');
+    expect(install.run).toContain('bash scripts/ab-base-dependencies.sh');
+    const dependencies = read('scripts', 'ab-base-dependencies.sh');
+    expect(dependencies).toContain('cmp -s package-lock.json ab-base/package-lock.json');
+    expect(dependencies).toContain('cd ab-base && npm ci --ignore-scripts');
     const restore = speed.steps.find((step) => step.uses?.startsWith('actions/cache/restore@'));
     expect(String(restore?.with?.key)).toContain("hashFiles('ab-base/package-lock.json')");
     expect(stepNamed(speed, 'bench').env?.BENCH_BASE_ROOT).toBe('ab-base');
@@ -374,6 +376,7 @@ describe('the verify gate with the parity jobs', () => {
         BENCH_CHANGED: situation.benchChanged,
         HAS_AUTOMERGE_LABEL: String(situation.label),
         CHANGES_RESULT: situation.changes ?? 'success',
+        SHARP_LIBVIPS_RESULT: 'success',
         CHECKS_RESULT: situation.code === 'false' ? 'skipped' : 'success',
         TESTS_RESULT: situation.code === 'false' ? 'skipped' : 'success',
         CONFORMANCE_RESULT: situation.code === 'false' ? 'skipped' : 'success',
@@ -626,7 +629,7 @@ describe('the nightly run', () => {
     const ab = nightly.jobs['bench-ab-speed'];
     expect(ab.if).toBe("inputs.ab_base_ref != ''");
     expect((ab as unknown as { strategy: { matrix: { family: string[] } } }).strategy.matrix.family).toEqual(['image', 'video', 'audio', 'ocr', 'document', 'compression', 'pdf-ops', 'data', 'ebook', 'font', 'cad', 'raw', 'vector']);
-    expect(stepNamed(ab, 'Check out the commit to compare with').run).toContain('cd ab-base && npm ci --ignore-scripts');
+    expect(stepNamed(ab, 'Check out the commit to compare with').run).toContain('bash scripts/ab-base-dependencies.sh false');
     const measure = stepNamed(ab, 'Measure the speed rows against that commit');
     expect(measure.env).toMatchObject({ ORACLE_STRICT_MODE: '1', BENCH_BASE_ROOT: 'ab-base', FAMILY: '${{ matrix.family }}' });
     expect(measure.run).toContain('--parity --speed-only --family "$FAMILY"');
