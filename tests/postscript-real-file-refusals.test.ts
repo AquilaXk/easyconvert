@@ -66,13 +66,19 @@ const REFUSED_FOR_OTHER_CONTENT = [
 ] as const;
 
 /**
- * The pages (from 1) of the refused files that clip their drawing to a region that is not the page. The clip is dropped when
- * the farthest vertex it hides is at most one point outside it (policy 79); `refused` lists the others with the distance of
- * their farthest vertex in points, measured on the page's SVG (the reach in the message is the first vertex past one point).
+ * The pages (from 1) of the refused files that clip their drawing to a region that is not the page. A clip is dropped when
+ * the farthest vertex it hides is at most one point outside it (policy 79), and the reader measures the SVG that Poppler
+ * draws, which differs between releases: page 20 of `006137` reaches 1.145 pt with Poppler 26 and 0.858 pt with Poppler 24,
+ * page 43 reaches 19.43 and 14.57. So the pages are told apart by how far they sit from the one-point line, not by one
+ * release's numbers.
+ *
+ * `written` hide at most 0.76 pt with both releases. `nearLimit` sit between 0.85 and 1.3 pt with one release or the other,
+ * and either result is right as long as it follows the rule. `farPast` reach far past the clip with both releases; the
+ * number is the least reach in points that is certain on every release, so these pages are refused everywhere.
  */
-const CLIPPED_PAGES: Readonly<Record<string, { converted: readonly number[]; refused: Readonly<Record<number, number>> }>> = {
-  'govdocs1-006137.ps': { converted: [21, 30, 32, 35, 36, 46, 49, 52, 53, 56, 57, 62], refused: { 20: 1.145, 43: 19.43, 50: 1.205, 60: 1.275 } },
-  'govdocs1-001048.ps': { converted: [], refused: { 11: 13.18 } },
+const CLIPPED_PAGES: Readonly<Record<string, { written: readonly number[]; nearLimit: readonly number[]; farPast: Readonly<Record<number, number>> }>> = {
+  'govdocs1-006137.ps': { written: [21, 30, 32, 35, 36, 46, 49, 52, 53, 56, 57, 62], nearLimit: [20, 50, 60], farPast: { 43: 10 } },
+  'govdocs1-001048.ps': { written: [], nearLimit: [], farPast: { 11: 5 } },
 };
 
 /** Device pixels (96 to the inch) in a point (72 to the inch): the unit of the reach in a clip refusal. */
@@ -308,39 +314,48 @@ describe('PostScript files that draw their text with bitmap fonts', () => {
 
   const pagesOf = (pages: readonly number[]): { pages: string } => ({ pages: pages.join(',') });
 
-  describe.each(Object.entries(CLIPPED_PAGES).filter(([, { converted }]) => converted.length > 0))('%s', (id, { converted }) => {
+  const expectAuditedDxf = (pages: readonly string[]): void => {
+    expect(pages.every((page) => readDxf(page).entities.length > 0)).toBe(true);
+    if (PYTHON_WITH_EZDXF !== null) {
+      const audited = pages.map((page) => (page.length <= AUDIT_WHOLE_PAGE_CHARACTERS ? page : withoutGeometry(page)));
+      expect(ezdxfAudit(PYTHON_WITH_EZDXF, audited).map((report) => report.errors)).toEqual(pages.map(() => 0));
+    }
+  };
+
+  describe.each(Object.entries(CLIPPED_PAGES).filter(([, { written }]) => written.length > 0))('%s', (id, { written }) => {
     oracleTest(
       'writes the pages whose clips hide nothing, which ezdxf audits without errors, and drops those clips',
       ['ps2pdf', 'pdftocairo'],
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, id);
-        const pages = await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', pagesOf(converted) as never, id));
-        expect(pages).toHaveLength(converted.length);
-        expect(pages.every((page) => readDxf(page).entities.length > 0)).toBe(true);
-        if (PYTHON_WITH_EZDXF !== null) {
-          const audited = pages.map((page) => (page.length <= AUDIT_WHOLE_PAGE_CHARACTERS ? page : withoutGeometry(page)));
-          expect(ezdxfAudit(PYTHON_WITH_EZDXF, audited).map((report) => report.errors)).toEqual(pages.map(() => 0));
-        }
+        const pages = await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', pagesOf(written) as never, id));
+        expect(pages).toHaveLength(written.length);
+        expectAuditedDxf(pages);
       },
       SAMPLE_TIMEOUT_MS
     );
   });
 
-  describe.each(Object.entries(CLIPPED_PAGES))('%s', (id, { refused }) => {
+  describe.each(Object.entries(CLIPPED_PAGES).filter(([, { nearLimit, farPast }]) => nearLimit.length + Object.keys(farPast).length > 0))('%s', (id, { nearLimit, farPast }) => {
     oracleTest(
-      'refuses each page whose clip hides more than a point, with the distance',
+      'refuses a page whose clip hides more than a point, with the distance, and writes one whose clip hides no more',
       ['ps2pdf', 'pdftocairo'],
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, id);
-        for (const [page, points] of Object.entries(refused)) {
-          const refusal = await dispatchConversion(bytes, 'ps', 'dxf', pagesOf([Number(page)]) as never, id).then(
-            () => 'converted',
+        for (const page of [...nearLimit, ...Object.keys(farPast).map(Number)]) {
+          const refusal = await dispatchConversion(bytes, 'ps', 'dxf', pagesOf([page]) as never, id).then(
+            async (result) => {
+              expect(nearLimit, `page ${page} reaches far past its clip and was written`).toContain(page);
+              expectAuditedDxf(await dxfPages(result));
+              return null;
+            },
             (error: unknown) => describeRefusal(error)
           );
+          if (refusal === null) continue;
           const reach = /clip-path "[^"]+" is not supported: a drawn path reaches ([\d.]+) pixels past it/.exec(refusal)?.[1];
           expect(reach, `page ${page}: ${refusal}`).toBeDefined();
           expect(Number(reach) / PIXELS_PER_POINT, `page ${page}`).toBeGreaterThan(1);
-          expect(Number(reach) / PIXELS_PER_POINT, `page ${page}`).toBeLessThanOrEqual(points + 0.01);
+          expect(Number(reach) / PIXELS_PER_POINT, `page ${page}`).toBeGreaterThanOrEqual(farPast[page] ?? 0);
         }
       },
       SAMPLE_TIMEOUT_MS

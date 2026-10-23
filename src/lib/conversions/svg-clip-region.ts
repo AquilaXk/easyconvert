@@ -31,7 +31,8 @@ import { excerpt } from './svg-pen';
 
 export const MAX_ACTIVE_CLIPS = 8;
 export const MAX_CLIP_EDGES = 1024;
-export const MAX_CLIP_WORK = 1 << 26;
+/** 3.5 times the most any real page needed (policy 79 gives the measurement); a hostile page that spends all of it costs well under a second. */
+export const MAX_CLIP_WORK = 1 << 23;
 /**
  * The largest coordinate of a clip or of what is drawn under it, in device pixels. The largest page a PDF reader accepts is
  * 14,400 points a side (ISO 32000-1 Annex C.2, `MAX_PAGE_POINTS`), 19,200 pixels; this is 50,000 times that, and keeps the

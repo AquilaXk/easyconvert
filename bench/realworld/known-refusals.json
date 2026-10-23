@@ -104,7 +104,7 @@
   {
     "file": "govdocs1-006137.ps",
     "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported: a drawn path reaches [0-9.]+ pixels past it, more than the [0-9.]+ pixels \\(one point\\) a clip may hide\\.$",
-    "reason": "The geometry of the other 50 pages is read, skewed and dashed strokes included (policy 79), and the clips of 12 of the 16 pages that clip their drawing to a region that is not the page hide at most 0.76 point and are dropped (policy 79). Pages 20, 50 and 60 reach 1.15, 1.21 and 1.28 points past their clip, and page 43 reaches 19.4, past the one point a dropped clip may hide, so the file stays refused (policy 42; tests/postscript-real-file-refusals.test.ts).",
+    "reason": "The geometry of the other 50 pages is read, skewed and dashed strokes included (policy 79), and the clips of 12 of the 16 pages that clip their drawing to a region that is not the page hide at most 0.76 point with either Poppler release and are dropped (policy 79). Pages 20, 50 and 60 sit near the one point a dropped clip may hide: they reach 1.15, 1.21 and 1.28 points with Poppler 26 and are refused, and 0.86, 0.90 and 0.96 with Poppler 24 and are written. Page 43 reaches 19.4 points with Poppler 26 and 14.6 with Poppler 24, so the file stays refused with both (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
   }
 ]

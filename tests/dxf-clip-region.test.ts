@@ -358,6 +358,16 @@ describe('hostile clips', () => {
     expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
   });
 
+  it('a page with as many edge tests as the heaviest real page needed is written, not stopped at the work limit', () => {
+    const notched = Array.from({ length: 134 }, (_, i) => {
+      const [radiusX, radiusY] = i % 2 === 0 ? [90, 40] : [40, 15];
+      const angle = (i * 2 * Math.PI) / 134;
+      return `${100 + radiusX * Math.sin(angle)} ${50 - radiusY * Math.cos(angle)}`;
+    });
+    const dxf = dxfOf(clipped(pathClip(`M ${notched.join(' L ')} Z`), stroke(`M 100 50${' L 100 51 L 101 51'.repeat(4500)}`)));
+    expect(dxf.entities).toHaveLength(1);
+  });
+
   it.each([
     ['a NaN coordinate', pathClip('M NaN 0 L 10 0 L 10 10 Z')],
     ['an Infinity coordinate', pathClip('M Infinity 0 L 10 0 L 10 10 Z')],
