@@ -698,7 +698,7 @@ class HtmlBlockBuilder {
       return;
     }
     if (node.tag === 'img') {
-      context.images.push(node);
+      this.inlineImage(node, link, context);
       return;
     }
     const href = node.tag === 'a' ? node.attrs.get('href')?.trim() : undefined;
@@ -970,11 +970,23 @@ class HtmlBlockBuilder {
     return { content: [], ...shape, parts };
   }
 
-  /** The image block of an `<img>`. External images are already out of the tree (see parseHtmlToPdfBlocks). */
+  /**
+   * An `<img>` with a source becomes an image block after the text. One with no `src`, or an empty one, has a broken request
+   * (HTML Living Standard, "update the image data": a selected source of null), so it represents the text of its `alt`, which
+   * is drawn in line, or nothing when there is none (rendering, "Embedded content").
+   */
+  private inlineImage(node: HtmlElement, link: LinkTarget | undefined, context: InlineContext): void {
+    if (node.attrs.get('src')) {
+      context.images.push(node);
+      return;
+    }
+    const alt = node.attrs.get('alt');
+    if (alt) context.segments.push(linkedSegment(alt.replace(HTML_WHITESPACE, ' '), link));
+  }
+
+  /** The image block of an `<img>` that has a source. External images are already out of the tree (see parseHtmlToPdfBlocks). */
   private imageBlocks(node: HtmlElement): PdfBlock[] {
-    const src = node.attrs.get('src');
-    if (!src) throw new ConversionFailedError('HTML <img> has no src attribute');
-    return [this.image(node, src)];
+    return [this.image(node, node.attrs.get('src') ?? '')];
   }
 
   private image(node: HtmlElement, src: string): PdfBlock {
