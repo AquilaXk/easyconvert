@@ -743,17 +743,6 @@ export function parseSvgNumber(text: string, what: string): number {
   return requireFinite(Number(t), `${what} "${text}"`);
 }
 
-/** Parses a whitespace/comma separated number list (signs may also separate, as in "10-5"). */
-function parseNumberList(value: string, what: string): number[] {
-  const out: number[] = [];
-  for (const m of value.matchAll(NUMBER_LIST_TOKEN_PATTERN)) {
-    const tok = m[0];
-    if (LIST_SEPARATOR_PATTERN.test(tok)) continue;
-    out.push(parseSvgNumber(tok, what));
-  }
-  return out;
-}
-
 function numberAttr(attrs: Map<string, string>, name: string): number {
   const v = attrs.get(name);
   if (v === undefined) return 0;
