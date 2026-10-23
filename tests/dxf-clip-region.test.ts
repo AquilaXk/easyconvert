@@ -136,6 +136,25 @@ describe('a clip of any other shape', () => {
     expect(dxfOf(clipped(clipOf(`<path d="${holed}"/>`), inHole)).entities).toHaveLength(1);
   });
 
+  it('inherits clip-rule from the ancestors of the <clipPath> and through inherit, not from the clipped element', () => {
+    const holed = 'M 0 0 L 100 0 L 100 80 L 0 80 Z M 30 20 L 70 20 L 70 60 L 30 60 Z';
+    const inHole = stroke('M 50 40 L 51 41');
+    const plain = clipOf(`<path d="${holed}"/>`);
+    expect(refusal(clipped(plain, inHole).replace('<svg ', '<svg clip-rule="evenodd" ')), 'evenodd on the root').toMatch(CLIP_REFUSAL);
+    expect(refusal(svgOf(`<defs clip-rule="evenodd">${plain}</defs><g clip-path="url(#c)">${inHole}</g>`)), 'evenodd on <defs>').toMatch(CLIP_REFUSAL);
+    expect(refusal(clipped(clipOf(`<path clip-rule="inherit" d="${holed}"/>`, 'clip-rule="evenodd"'), inHole)), 'inherit').toMatch(CLIP_REFUSAL);
+    expect(dxfOf(clipped(clipOf(`<path clip-rule="nonzero" d="${holed}"/>`, 'clip-rule="evenodd"'), inHole)).entities, 'its own value first').toHaveLength(1);
+    expect(dxfOf(clipped(plain, inHole, 'clip-rule="evenodd"')).entities, 'the clipped element').toHaveLength(1);
+  });
+
+  it('inherits a hidden visibility from the ancestors of the <clipPath> and through inherit, unless a shape is visible again', () => {
+    const rect = (attributes = ''): string => `<rect x="40" y="20" width="120" height="60" ${attributes}/>`;
+    const drawn = stroke('M 60 30 L 140 30');
+    expect(refusal(svgOf(`<defs visibility="hidden">${clipOf(rect())}</defs><g clip-path="url(#c)">${drawn}</g>`)), 'hidden <defs>').toMatch(/hides everything/);
+    expect(refusal(clipped(clipOf(rect('visibility="inherit"'), 'visibility="hidden"'), drawn)), 'inherit').toMatch(/hides everything/);
+    expect(dxfOf(svgOf(`<defs visibility="hidden">${clipOf(rect('visibility="visible"'))}</defs><g clip-path="url(#c)">${drawn}</g>`)).entities, 'visible again').toHaveLength(1);
+  });
+
   it('is the union of its shapes', () => {
     const two = clipOf('<rect x="0" y="0" width="50" height="100"/><rect x="100" y="0" width="50" height="100"/>');
     expect(dxfOf(clipped(two, `${stroke('M 10 10 L 40 10')}${stroke('M 110 10 L 140 10')}`)).entities).toHaveLength(2);
