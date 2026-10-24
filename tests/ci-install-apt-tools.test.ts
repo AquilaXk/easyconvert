@@ -162,7 +162,7 @@ describe('the committed package list and scripts', () => {
 
   it('starts every part of the setup in the background and fails the step when any part failed', () => {
     const script = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
-    expect(script).toContain('tasks=(apt pip verapdf epubcheck calibre libredwg raw)');
+    expect(script).toContain('tasks=(apt pip verapdf epubcheck calibre libredwg ghostxps raw)');
     expect(script).toContain('tasks+=(s3)');
     expect(script).toContain('run_bounded "$task" > "$task_logs/$task.log" 2>&1 &');
     expect(script).toContain('failed+=("$task")');

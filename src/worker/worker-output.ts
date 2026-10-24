@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { cleanupDirectoryTree } from '../lib/conversions/archive-extraction-safety';
 import { getFormatByExtension } from '../lib/registry';
+import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { readPersistedOutput } from './persisted-output';
 import type { ConversionResult } from '../lib/types';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
@@ -26,6 +27,23 @@ export async function withSandboxDir<T>(
   } finally {
     cleanupDirectoryTree(tempDir);
   }
+}
+
+/** Reads the whole input into memory, within the in-memory payload limit. */
+export function readRawInputBuffer(input: Buffer | WorkerVfsPayload): Buffer {
+  if (Buffer.isBuffer(input)) return input;
+  if (input.inputBuffer) return input.inputBuffer;
+  if (input.inputPath && fs.existsSync(input.inputPath)) {
+    const size = fs.statSync(input.inputPath).size;
+    if (size > getMaxInMemoryBytes()) {
+      throw new PayloadTooLargeForMemoryError(
+        `Payload size (${size} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
+        { size, limit: getMaxInMemoryBytes() }
+      );
+    }
+    return fs.readFileSync(input.inputPath);
+  }
+  throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
 }
 
 /**

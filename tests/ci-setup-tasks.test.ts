@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -30,7 +31,7 @@ const FAST_FAIL_BUDGET_MS = 15_000;
 const SLEEP_PAST_LIMIT_SECONDS = 31;
 const CHILD_STOP_BOUND_MS = 10_000;
 const MAX_TASK_LIMIT_SECONDS = 600;
-const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'libredwg', 'raw'];
+const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'libredwg', 'ghostxps', 'raw'];
 
 const temps: string[] = [];
 afterAll(() => {
@@ -386,5 +387,106 @@ exit 0
     expect(signed[0]).toContain('/signature-check');
     expect(signed[1]).toContain('test-id:test-secret');
     expect(signed[1]).toContain('/test-bucket');
+  });
+});
+
+describe('the XPS renderer task', () => {
+  const STUB_SUDO = `#!/bin/sh
+echo "sudo $*" >> "$STUB_LOG"
+if [ "$1" = ln ]; then exit 0; fi
+exec "$@"
+`;
+  const STUB_GXPS = `#!/bin/sh
+echo "gxps $*" >> "$STUB_LOG"
+echo 10.08.0
+`;
+  /** The install script of the repository, replaced by one that records that it ran and writes a program in place of the build. */
+  const STUB_INSTALL = `#!/bin/sh
+echo "build $*" >> "$STUB_LOG"
+mkdir -p "$1/bin"
+printf 'built program' > "$1/bin/gxps"
+chmod 755 "$1/bin/gxps"
+`;
+
+  interface Setup {
+    dir: string;
+    cacheDir: string;
+    work: string;
+    bin: string;
+    log: string;
+  }
+
+  function setup(): Setup {
+    const dir = scratch();
+    const work = path.join(dir, 'work');
+    const bin = path.join(dir, 'bin');
+    const cacheDir = path.join(dir, 'ghostxps');
+    mkdirSync(path.join(work, 'scripts'), { recursive: true });
+    mkdirSync(bin);
+    mkdirSync(path.join(cacheDir, 'bin'), { recursive: true });
+    for (const [file, body] of [[path.join(bin, 'sudo'), STUB_SUDO], [path.join(bin, 'gxps'), STUB_GXPS], [path.join(work, 'scripts', 'install-ghostxps.sh'), STUB_INSTALL]] as const) {
+      writeFileSync(file, body);
+      chmodSync(file, 0o755);
+    }
+    return { dir, cacheDir, work, bin, log: path.join(dir, 'calls.log') };
+  }
+
+  function runTask(stub: Setup, cacheHit: boolean): Outcome & { calls: string[] } {
+    writeFileSync(stub.log, '', { flag: 'a' });
+    const outcome = runSourced(`configure; ghostxps_dir="$GHOSTXPS_DIR"; cd "$WORK"; task_ghostxps`, {
+      S3_TEST_SERVER: 'false',
+      GHOSTXPS_CACHE_HIT: String(cacheHit),
+      GHOSTXPS_DIR: stub.cacheDir,
+      WORK: stub.work,
+      STUB_LOG: stub.log,
+    }, stub.bin);
+    return { ...outcome, calls: readFileSync(stub.log, 'utf-8').split('\n').filter(Boolean) };
+  }
+
+  const digestOf = (file: string): string => createHash('sha256').update(readFileSync(file)).digest('hex');
+
+  /** What a cached build holds: the program and the digest that the build wrote beside it. */
+  function cacheABuild(stub: Setup): void {
+    const outcome = runTask(stub, false);
+    expect(outcome.status, outcome.stderr + outcome.stdout).toBe(0);
+    writeFileSync(stub.log, '');
+  }
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('builds the program and writes its SHA-256 beside it when nothing is cached', () => {
+    const stub = setup();
+    const outcome = runTask(stub, false);
+    expect(outcome.status, outcome.stderr + outcome.stdout).toBe(0);
+    expect(outcome.calls.filter((call) => call.startsWith('build '))).toEqual([`build ${stub.cacheDir}`]);
+    expect(readFileSync(path.join(stub.cacheDir, 'gxps.sha256'), 'utf-8')).toBe(`${digestOf(path.join(stub.cacheDir, 'bin', 'gxps'))}  ${path.join(stub.cacheDir, 'bin', 'gxps')}\n`);
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('uses the cached program without building it when its digest is the one written at the build', () => {
+    const stub = setup();
+    cacheABuild(stub);
+    const outcome = runTask(stub, true);
+    expect(outcome.status, outcome.stderr + outcome.stdout).toBe(0);
+    expect(outcome.calls.filter((call) => call.startsWith('build '))).toEqual([]);
+    expect(outcome.calls).toContain('gxps -v');
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('builds the program again when the cached one is not the one that was built', () => {
+    const stub = setup();
+    cacheABuild(stub);
+    writeFileSync(path.join(stub.cacheDir, 'bin', 'gxps'), 'replaced program', { mode: 0o755 });
+    const outcome = runTask(stub, true);
+    expect(outcome.status, outcome.stderr + outcome.stdout).toBe(0);
+    expect(outcome.stdout).toContain('does not match its recorded digest');
+    expect(outcome.calls.filter((call) => call.startsWith('build '))).toEqual([`build ${stub.cacheDir}`]);
+    expect(readFileSync(path.join(stub.cacheDir, 'gxps.sha256'), 'utf-8')).toContain(digestOf(path.join(stub.cacheDir, 'bin', 'gxps')));
+    expect(readFileSync(path.join(stub.cacheDir, 'bin', 'gxps'), 'utf-8')).toBe('built program');
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('builds the program again when the cache holds it without a digest', () => {
+    const stub = setup();
+    writeFileSync(path.join(stub.cacheDir, 'bin', 'gxps'), 'older cache entry', { mode: 0o755 });
+    const outcome = runTask(stub, true);
+    expect(outcome.status, outcome.stderr + outcome.stdout).toBe(0);
+    expect(outcome.calls.filter((call) => call.startsWith('build '))).toEqual([`build ${stub.cacheDir}`]);
+    expect(existsSync(path.join(stub.cacheDir, 'gxps.sha256'))).toBe(true);
   });
 });
