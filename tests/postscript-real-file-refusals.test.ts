@@ -57,34 +57,20 @@ const DASHED_PAGES: Readonly<Record<string, readonly number[]>> = {
 };
 
 /** The bitmap-font text is written, but a page also draws something DXF does not hold (known-refusals.json says what). */
-const REFUSED_FOR_OTHER_CONTENT = [
-  'govdocs1-001048.ps',
-  'govdocs1-002956.ps',
-  'govdocs1-003229.ps',
-  'govdocs1-004087.ps',
-  'govdocs1-006137.ps',
-] as const;
+const REFUSED_FOR_OTHER_CONTENT = ['govdocs1-002956.ps', 'govdocs1-003229.ps', 'govdocs1-004087.ps'] as const;
 
 /**
- * The pages (from 1) of the refused files that clip their drawing to a region that is not the page. A clip is dropped when
- * the farthest vertex it hides is at most one point outside it (policy 79), and the reader measures the SVG that Poppler
- * draws, which differs between releases: page 20 of `006137` reaches 1.145 pt with Poppler 26 and 0.858 pt with Poppler 24,
- * page 43 reaches 19.43 and 14.57. So the pages are told apart by how far they sit from the one-point line, not by one
- * release's numbers.
- *
- * `written` hide at most 0.76 pt with both releases. `nearLimit` sit between 0.85 and 1.3 pt with one release or the other,
- * and either result is right as long as it follows the rule. `farPast` reach far past the clip with both releases; the
- * number is the least reach in points that is certain on every release, so these pages are refused everywhere.
+ * Files whose pages clip their drawing to a rectangle that is not the page. A clip that hides at most a point is dropped
+ * (policy 79) and one that hides more cuts the drawing at its edges: page 11 of `001048` reaches 13.2 points past its clip,
+ * and pages 20, 43, 50 and 60 of `006137` reach 1.15 to 19.4 points with Poppler 26 (0.86 to 14.6 with Poppler 24), and
+ * all were refused before the cut. The pages with a clip are listed; every other page has none.
  */
-const CLIPPED_PAGES: Readonly<Record<string, { written: readonly number[]; nearLimit: readonly number[]; farPast: Readonly<Record<number, number>> }>> = {
-  'govdocs1-006137.ps': { written: [21, 30, 32, 35, 36, 46, 49, 52, 53, 56, 57, 62], nearLimit: [20, 50, 60], farPast: { 43: 10 } },
-  'govdocs1-001048.ps': { written: [], nearLimit: [], farPast: { 11: 5 } },
+const CLIPPED_FILES: Readonly<Record<string, readonly number[]>> = {
+  'govdocs1-001048.ps': [11],
+  'govdocs1-006137.ps': [20, 21, 30, 32, 35, 36, 43, 46, 49, 50, 52, 53, 56, 57, 60, 62],
 };
 
-/** Device pixels (96 to the inch) in a point (72 to the inch): the unit of the reach in a clip refusal. */
-const PIXELS_PER_POINT = 96 / 72;
-
-const BITMAP_FONT_FILES = [...TEXT_CONVERTED_FILES, ...REFUSED_FOR_OTHER_CONTENT] as const;
+const BITMAP_FONT_FILES = [...TEXT_CONVERTED_FILES, ...REFUSED_FOR_OTHER_CONTENT, ...Object.keys(CLIPPED_FILES)];
 
 function describeRefusal(error: unknown): string {
   return `${(error as Error).name}: ${(error as Error).message}`;
@@ -302,50 +288,19 @@ describe('PostScript files that draw their text with bitmap fonts', () => {
     );
   });
 
-  const pagesOf = (pages: readonly number[]): { pages: string } => ({ pages: pages.join(',') });
-
-  const expectAuditedDxf = (pages: readonly string[]): void => {
-    expect(pages.every((page) => readDxf(page).entities.length > 0)).toBe(true);
-    if (PYTHON_WITH_EZDXF !== null) {
-      const audited = pages.map((page) => (page.length <= AUDIT_WHOLE_PAGE_CHARACTERS ? page : withoutGeometry(page)));
-      expect(ezdxfAudit(PYTHON_WITH_EZDXF, audited).map((report) => report.errors)).toEqual(pages.map(() => 0));
-    }
-  };
-
-  describe.each(Object.entries(CLIPPED_PAGES).filter(([, { written }]) => written.length > 0))('%s', (id, { written }) => {
+  describe.each(Object.entries(CLIPPED_FILES))('%s', (id, clippedPages) => {
     oracleTest(
-      'writes the pages whose clips hide nothing, which ezdxf audits without errors, and drops those clips',
+      'converts every page, the pages with a clip among them, to a DXF that ezdxf audits without errors',
       ['ps2pdf', 'pdftocairo'],
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, id);
-        const pages = await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', pagesOf(written) as never, id));
-        expect(pages).toHaveLength(written.length);
-        expectAuditedDxf(pages);
-      },
-      SAMPLE_TIMEOUT_MS
-    );
-  });
-
-  describe.each(Object.entries(CLIPPED_PAGES).filter(([, { nearLimit, farPast }]) => nearLimit.length + Object.keys(farPast).length > 0))('%s', (id, { nearLimit, farPast }) => {
-    oracleTest(
-      'refuses a page whose clip hides more than a point, with the distance, and writes one whose clip hides no more',
-      ['ps2pdf', 'pdftocairo'],
-      async (ctx) => {
-        const { bytes } = await requireRealworldSample(ctx, id);
-        for (const page of [...nearLimit, ...Object.keys(farPast).map(Number)]) {
-          const refusal = await dispatchConversion(bytes, 'ps', 'dxf', pagesOf([page]) as never, id).then(
-            async (result) => {
-              expect(nearLimit, `page ${page} reaches far past its clip and was written`).toContain(page);
-              expectAuditedDxf(await dxfPages(result));
-              return null;
-            },
-            (error: unknown) => describeRefusal(error)
-          );
-          if (refusal === null) continue;
-          const reach = /clip-path "[^"]+" is not supported: a drawn path reaches ([\d.]+) pixels past it/.exec(refusal)?.[1];
-          expect(reach, `page ${page}: ${refusal}`).toBeDefined();
-          expect(Number(reach) / PIXELS_PER_POINT, `page ${page}`).toBeGreaterThan(1);
-          expect(Number(reach) / PIXELS_PER_POINT, `page ${page}`).toBeGreaterThanOrEqual(farPast[page] ?? 0);
+        const pdf = (await dispatchConversion(bytes, 'ps', 'pdf', {}, id)).buffer;
+        const pages = await dxfPages(await dispatchConversion(bytes, 'ps', 'dxf', {}, id));
+        expect(pages).toHaveLength(pageCount(pdf));
+        expect(clippedPages.filter((page) => readDxf(pages[page - 1]).entities.length === 0)).toEqual([]);
+        if (PYTHON_WITH_EZDXF !== null) {
+          const audited = pages.map((page) => (page.length <= AUDIT_WHOLE_PAGE_CHARACTERS ? page : withoutGeometry(page)));
+          expect(ezdxfAudit(PYTHON_WITH_EZDXF, audited).map((report) => report.errors)).toEqual(pages.map(() => 0));
         }
       },
       SAMPLE_TIMEOUT_MS
