@@ -8,7 +8,7 @@
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
 #   calibre   the ebook converter the ebook benchmark compares against, from its release archive checked against a pinned SHA-256
 #   libredwg the DWG reader (dwg2dxf), built from its release archive checked against a pinned SHA-256, or the cached build
-#   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build
+#   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build when its digest still matches
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
 # Every part runs under `timeout` with its own limit, so a part that hangs fails the step by name once its limit has
@@ -188,14 +188,19 @@ task_libredwg() {
 }
 
 # XPS input is drawn by GhostXPS's `gxps` (GhostPDL, AGPL-3.0-or-later, an unmodified separate program), built from the pinned release
-# archive in scripts/install-ghostxps.sh, which checks the SHA-256 before anything in it runs. The build is cached by the hash of that script.
+# archive in scripts/install-ghostxps.sh, which checks the SHA-256 before anything in it runs. The build is cached by the hash of that
+# script, with the SHA-256 of the program beside it: a restored program is used only when it still has the digest written at the build,
+# and is built again otherwise (a cache entry that does not match what was built is not run).
 task_ghostxps() {
-  if [ "$ghostxps_cache_hit" = true ] && [ -x "$ghostxps_dir/bin/gxps" ]; then
+  local digest_file="$ghostxps_dir/gxps.sha256"
+  if [ "$ghostxps_cache_hit" = true ] && [ -x "$ghostxps_dir/bin/gxps" ] && sha256sum --check --strict --status "$digest_file" 2> /dev/null; then
     sudo ln -sf "$ghostxps_dir/bin/gxps" /usr/local/bin/gxps
     gxps -v
-  else
-    sudo scripts/install-ghostxps.sh "$ghostxps_dir"
+    return
   fi
+  if [ "$ghostxps_cache_hit" = true ]; then echo "the cached gxps does not match its recorded digest; building it again"; fi
+  sudo scripts/install-ghostxps.sh "$ghostxps_dir"
+  sha256sum "$ghostxps_dir/bin/gxps" | sudo tee "$digest_file" > /dev/null
 }
 
 # Pulls the pinned image, trying a bounded number of times: anonymous registry pulls are rate limited.
