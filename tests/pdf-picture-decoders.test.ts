@@ -181,6 +181,13 @@ describe('pictures that pdf.js decodes with its WebAssembly modules', () => {
     }
   });
 
+  it('decodes none of them for a job that does not ask for pictures, whose output has no use for them', async () => {
+    const pdf = picturesPdf([ccittPicture(), jbig2Picture(), jpxPicture()]);
+    const result = await analyzePdfPagesInProcess(pdf, { geometry: 'none', content: true });
+    expect(result.content[0].items.map((item) => item.text).join('')).toBe('Pictures');
+    expect(result.content[0].images).toEqual([]);
+  });
+
   it('writes all three into Markdown through the text thread', async () => {
     const markdown = (await convertFile(picturesPdf([ccittPicture(), jbig2Picture(), jpxPicture()]), 'pdf', 'md', {}, 'decoders.pdf')).buffer.toString('utf8');
     expect(markdownPictureSizes(markdown)).toEqual(['64x32', '64x32', '16x16']);
