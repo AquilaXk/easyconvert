@@ -172,12 +172,17 @@ describe('the AVIF encode of the image library', () => {
 
   it.skipIf(skipUnless(WORKER_LIBRARY, process.platform === 'linux'))('writes the same file for a photograph on two threads and on eight: the encoder makes one tile whatever the lease', async () => {
     const source = await picture(false, TILED_WIDTH, TILED_HEIGHT);
+    const previous = sharp.concurrency();
     const encodeOn = async (threads: number): Promise<Buffer> => {
       process.env[IMAGE_THREADS_ENV] = String(threads);
-      const { data, asked } = await encodeAsked(source);
-      expect(asked[0]).toBe(threads);
-      vi.restoreAllMocks();
-      return data;
+      try {
+        const { data, asked } = await encodeAsked(source);
+        expect(asked[0]).toBe(threads);
+        return data;
+      } finally {
+        vi.restoreAllMocks();
+        sharp.concurrency(previous);
+      }
     };
     const two = await encodeOn(IMAGE_UNBOUNDED_HEAP_THREADS);
     expect((await encodeOn(IMAGE_MAX_THREADS)).equals(two)).toBe(true);
