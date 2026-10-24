@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PDFDocument, rgb } from 'pdf-lib';
 import { pdfFirstPageHasInk } from '../src/worker/pdf-ink';
+import { runPdftoppm } from '../src/worker/poppler-ppm';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { skipWithoutTools } from './helpers/strict-skip';
 
@@ -8,6 +9,11 @@ import { skipWithoutTools } from './helpers/strict-skip';
  * Whether the first page of a PDF holds anything but paper, judged by drawing it with Poppler (`pdftoppm`) at 72 dpi and looking
  * for a pixel that is not white. The PDFs are written here with pdf-lib, so what each page draws is known from the drawing calls.
  */
+
+vi.mock('../src/worker/poppler-ppm', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../src/worker/poppler-ppm')>();
+  return { ...original, runPdftoppm: vi.fn(original.runPdftoppm) };
+});
 
 const haveRenderer = !skipWithoutTools('pdftoppm');
 const NATIVE_TIMEOUT_MS = 60_000;
@@ -42,5 +48,12 @@ describe.skipIf(!haveRenderer)('the ink of the first page of a PDF', () => {
 
   it('is not guessed for a file that is no PDF: the failure of the renderer stands', async () => {
     await expect(hasInk(Buffer.from('not a pdf at all'))).rejects.toThrow(/Couldn't find trailer dictionary/);
+  }, NATIVE_TIMEOUT_MS);
+
+  it('draws under a cap on the renderer\'s memory, because the page bitmap is allocated before any output limit applies', async () => {
+    vi.mocked(runPdftoppm).mockClear();
+    await hasInk(await pdfOf(() => undefined));
+    const [, , limits] = vi.mocked(runPdftoppm).mock.calls[0];
+    expect(limits).toMatchObject({ memoryLimitMb: 2048, networkIsolated: true });
   }, NATIVE_TIMEOUT_MS);
 });
