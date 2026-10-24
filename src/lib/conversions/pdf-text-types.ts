@@ -155,6 +155,8 @@ export interface PdfContentItem {
   angled: boolean;
   /** Text of a vertical writing mode font. */
   vertical: boolean;
+  /** Drawn by an annotation's appearance stream (pdf-annotation-text.ts), not by the page's content. */
+  annotation?: true;
 }
 
 /** An axis-aligned ruling line (a stroked segment or a thin filled rectangle), in page-viewport points. */
