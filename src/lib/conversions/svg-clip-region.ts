@@ -502,7 +502,8 @@ export class ActiveClips {
    */
   assertWithin(subpaths: readonly (readonly Point[])[]): void {
     const nested = this.stack.length > 1;
-    for (const { value, farthest } of this.reaching(subpaths)) throw clipRefusal(value, this.reach(farthest, nested));
+    const [first] = this.reaching(subpaths);
+    if (first) throw clipRefusal(first.value, this.reach(first.farthest, nested));
   }
 
   /**

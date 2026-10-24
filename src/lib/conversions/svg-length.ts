@@ -22,14 +22,14 @@ export const ABSOLUTE_LENGTH_UNITS: Record<string, number> = {
   pt: CSS_PX_PER_INCH / 72,
   pc: CSS_PX_PER_INCH / 6,
 };
-const LENGTH_PATTERN = /^\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*$/;
+const LENGTH_PATTERN = /^([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)$/;
 
 /**
  * Parses an SVG length in user units (px). Absolute units convert at 96 DPI;
  * relative units (%, em, ex, ...) and malformed values throw.
  */
 export function parseLength(value: string, what: string): number {
-  const m = LENGTH_PATTERN.exec(value);
+  const m = LENGTH_PATTERN.exec(value.trim());
   const factor = m ? ABSOLUTE_LENGTH_UNITS[m[2].toLowerCase()] : undefined;
   if (!m || factor === undefined) {
     throw new CadGeometryUnavailableError(`SVG ${what} "${value}" is not an absolute length (px, in, cm, mm, pt, pc).`);
@@ -39,6 +39,6 @@ export function parseLength(value: string, what: string): number {
 
 /** CSS pixels in the unit the root's width, else height, names: 1 when neither names one, or it is a percentage. */
 export function rootUnitPx(attrs: Map<string, string>): number {
-  const units = ['width', 'height'].map((name) => LENGTH_PATTERN.exec(attrs.get(name) ?? '')?.[2].toLowerCase() ?? '');
+  const units = ['width', 'height'].map((name) => LENGTH_PATTERN.exec((attrs.get(name) ?? '').trim())?.[2].toLowerCase() ?? '');
   return ABSOLUTE_LENGTH_UNITS[units.find((unit) => unit !== '') ?? ''] ?? 1;
 }
