@@ -8,7 +8,7 @@ import type { ConversionResult } from '../../src/lib/types';
 export async function objFiles(result: Pick<ConversionResult, 'buffer' | 'mimeType'>): Promise<{ obj: Buffer; mtl: Buffer | null; names: string[] }> {
   if (result.mimeType !== 'application/zip') return { obj: result.buffer, mtl: null, names: [] };
   const zip = await JSZip.loadAsync(result.buffer);
-  const names = Object.keys(zip.files).sort();
+  const names = Object.keys(zip.files).sort((a, b) => a.localeCompare(b));
   const objName = names.find((name) => name.endsWith('.obj'));
   const mtlName = names.find((name) => name.endsWith('.mtl'));
   if (objName === undefined) throw new Error(`the ZIP holds no OBJ: ${names.join(', ')}`);
