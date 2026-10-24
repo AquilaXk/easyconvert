@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { cleanupDirectoryTree } from '../lib/conversions/archive-extraction-safety';
 import { getFormatByExtension } from '../lib/registry';
 import { readPersistedOutput } from './persisted-output';
+import type { ConversionResult } from '../lib/types';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 
 /**
@@ -66,6 +67,40 @@ function resolveOutputPath(targetFormat: string, options?: WorkerEngineOptions, 
     } catch {}
   }
   return path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${targetFormat}`);
+}
+
+/**
+ * Where the in-process engine's output is written: the destination the request named, a file of the worker's own naming when the
+ * heap must stay empty (`zeroHeap`), and otherwise nowhere, as the output stays in memory.
+ */
+export function inProcessOutputPath(targetFormat: string, options: WorkerEngineOptions, vfsPayload?: WorkerVfsPayload): string | undefined {
+  const named = vfsPayload?.outputPath || (options as { outputPath?: string }).outputPath;
+  return named || (options.zeroHeap ? resolveOutputPath(targetFormat, options, vfsPayload) : undefined);
+}
+
+/** Why a conversion left the native engines for the in-process one, and the engines it passed on the way. */
+interface InProcessFallback {
+  reason?: string;
+  chain: readonly string[];
+}
+
+/** The in-process engine's result as the worker hands it out, written to `outputPath` when there is one. */
+export function internalFallbackResult(
+  internalRes: ConversionResult,
+  outputPath: string | undefined,
+  startTime: number,
+  fallback: InProcessFallback
+): WorkerConversionResult {
+  if (outputPath) fs.writeFileSync(outputPath, internalRes.buffer);
+  return {
+    ...internalRes,
+    ...(outputPath ? { filePath: outputPath } : {}),
+    engineUsed: 'internal-fallback',
+    executionTimeMs: Date.now() - startTime,
+    metadata: { ...internalRes.metadata, ...(fallback.reason ? { fallbackReason: fallback.reason } : {}) },
+    fallbackReason: fallback.reason,
+    fallbackChain: fallback.chain.length > 0 ? [...fallback.chain] : undefined,
+  };
 }
 
 export function preserveOutput(

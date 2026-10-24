@@ -8,6 +8,7 @@ import { pdfFacts } from './helpers/corpus-facts';
 import { oracleTest } from './helpers/oracle-test';
 import { pdfWithWords } from './helpers/page-edge-pdf';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { skipUnless } from './helpers/strict-skip';
 
 /**
  * When the PDF the office suite draws for an HTML page has words past the edge of its page, the in-process renderer's PDF is
@@ -44,6 +45,8 @@ afterAll(() => shutdownPdfTextThreads());
 /** A page with `beyond` ending 27 pt past the right edge, and a page of the same words all inside. */
 const pdfWithWordPastEdge = (): Promise<Buffer> =>
   pdfWithWords([{ size: A4, words: [{ text: 'alpha', right: 120, baseline: 700 }, { text: 'beyond', right: A4[0] + 27, baseline: 680 }] }]);
+/** Pages enough that no read of them, however warm the thread, ends within a millisecond. */
+const MANY_PAGES = 300;
 const pdfWithinPage = (): Promise<Buffer> =>
   pdfWithWords([{ size: A4, words: [{ text: 'alpha', right: 120, baseline: 700 }, { text: 'inside', right: 300, baseline: 680 }] }]);
 
@@ -62,7 +65,7 @@ describe('an office suite PDF with a word past the page edge', () => {
     const result = await convertWithOfficePdf(HTML, office);
     expect(result.engineUsed).toBe('internal-fallback');
     expect(result.buffer.equals(office)).toBe(false);
-    expect(result.fallbackReason).toMatch(/1 word on 1 page is past the edge of its page/);
+    expect(result.fallbackReason).toMatch(/1 word past the page edge on page 1/);
     expect(result.fallbackChain).toEqual([expect.stringContaining('native-soffice')]);
     // Poppler reads the PDF that was handed out: no word box leaves its page, and no letter or digit of the page is missing.
     expect(wordsOutsidePage(pdfWordBoxes(result.buffer))).toEqual([]);
@@ -79,7 +82,10 @@ describe('an office suite PDF with a word past the page edge', () => {
 
   it('is kept when the check runs out of its time', async () => {
     process.env[PDF_TEXT_DEADLINE_ENV] = '1';
-    const office = await pdfWithWordPastEdge();
+    const office = await pdfWithWords([
+      { size: A4, words: [{ text: 'beyond', right: A4[0] + 27, baseline: 680 }] },
+      ...Array.from({ length: MANY_PAGES }, () => ({ size: A4, words: [{ text: 'page', right: 300, baseline: 700 }] })),
+    ]);
     const result = await convertWithOfficePdf(HTML, office);
     expect(result.engineUsed).toMatch(OFFICE_SUITE_ENGINE);
     expect(result.buffer.equals(office)).toBe(true);
@@ -124,7 +130,8 @@ describe('a real page of the public corpus that the office suite draws past the 
       async (ctx) => {
         const { bytes } = await requireRealworldSample(ctx, id);
         const office = await executeWorkerConversion(bytes, 'html', 'pdf', { inProcessFallback: false }, id);
-        if (wordsOutsidePage(pdfWordBoxes(office.buffer)).length === 0) ctx.skip();
+        const drawsWordPastEdge = wordsOutsidePage(pdfWordBoxes(office.buffer)).length > 0;
+        if (skipUnless(`an office suite that draws a word of ${id} past the page edge`, drawsWordPastEdge)) ctx.skip();
         const result = await executeWorkerConversion(bytes, 'html', 'pdf', {}, id);
         expect({ engine: result.engineUsed, outside: wordsOutsidePage(pdfWordBoxes(result.buffer)) }).toEqual({ engine: 'internal-fallback', outside: [] });
       },

@@ -281,7 +281,7 @@ function createThread(replacement = false, loadImageReader = false): PooledThrea
 function dispatch(thread: PooledThread, queued: QueuedJob): void {
   if (thread.idleTimer) clearTimeout(thread.idleTimer);
   thread.idleTimer = null;
-  const deadlineMs = pdfTextDeadlineMs();
+  const deadlineMs = Math.min(pdfTextDeadlineMs(), queued.job.deadlineMs ?? Infinity);
   const timer = setTimeout(() => {
     retire(thread);
     settle(thread, (job) => job.reject(new PdfTextGeometryError(`PDF text extraction exceeded its ${deadlineMs} ms limit.`)));

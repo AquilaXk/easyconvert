@@ -113,6 +113,8 @@ export function pdfTextFailureKindOf(error: unknown): PdfTextFailureKind {
 export type PdfGeometryPages = readonly number[] | 'text-pages' | 'none';
 
 export interface PdfTextJob {
+  /** When set, the job's wall-clock limit in milliseconds, if that is less than the host's (`PDF_TEXT_DEADLINE_MS`). */
+  deadlineMs?: number;
   /** When set, every page is analyzed for text-layer density and the analyses are returned. */
   densityThreshold?: number;
   geometry: PdfGeometryPages;
