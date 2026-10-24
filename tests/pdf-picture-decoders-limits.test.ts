@@ -57,6 +57,10 @@ const J2K_RGBA_2048 = Buffer.from(
     'gICAgICAgICAgICAgICAgP/Z',
   'base64'
 );
+const J2K_RGB_16 = Buffer.from(
+  '/0//UQAvAAAAAAAQAAAAEAAAAAAAAAAAAAAAEAAAABAAAAAAAAAAAAADBwEBBwEBBwEB/1IADAAAAAEBAQQEAAH/XAAHQEBISFD/ZAAlAAFDcmVhdGVkIGJ5IE9wZW5KUEVHIHZlcnNpb24gMi41LjT/kAAKAAAAAAA0AAH/k8B0QBQAXKHB8gsUAFyifbaQAAMJCMHyCxFQVKJ9tpAAAwkIgICA/9k=',
+  'base64'
+);
 /** ImageMagick's Group 4 coding of a 64 x 32 page with a black rectangle (see pdf-picture-decoders.test.ts). */
 const G4_RECTANGLE = Buffer.from('ff3306bfffffffff8fff001001', 'hex');
 const BILEVEL_WIDTH = 64;
@@ -401,6 +405,19 @@ describe('the cost of the guard itself', () => {
       ];
       const { pictures } = await readInThread(buildPdf(objects, 1).buffer);
       expect(sizes(pictures)).toEqual(Array(SHARED).fill('64x32'));
+    },
+    JOB_TIMEOUT_MS
+  );
+});
+
+describe('the cost of the guard itself, without wrappers', () => {
+  it(
+    'reads JPEG 2000 streams of 65 MiB stored as they are without charging them to the budget of the wrappers',
+    async () => {
+      const PICTURES = 65;
+      const padded = Buffer.concat([J2K_RGB_16, Buffer.alloc(MIB - J2K_RGB_16.length)]);
+      const { pictures } = await readInThread(picturesPdf(Array.from({ length: PICTURES }, () => rgbJpx(16, padded, '/JPXDecode'))));
+      expect(sizes(pictures)).toEqual(Array(PICTURES).fill('16x16'));
     },
     JOB_TIMEOUT_MS
   );

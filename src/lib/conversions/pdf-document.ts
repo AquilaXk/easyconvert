@@ -840,15 +840,22 @@ export class PdfDocument {
       generation: entry.gen,
       dict,
       filters,
-      dataBefore: (index, budget) => (this.encrypted ? null : this.decodeStages(entry, filters.slice(0, index), budget, false)),
+      dataBefore: (index, budget) => this.filteredData(entry, filters.slice(0, index), budget),
     };
   }
 
   /** The decoded data of the stream `value` refers to, or null when it is no stream, the file is encrypted, or a filter is not one this reader decodes. */
   streamData(value: PdfValue | undefined, budget: InflateBudget): Buffer | null {
     const entry = this.entryOf(value);
-    if (!entry || this.encrypted) return null;
-    return this.decodeStages(entry, this.filterChain((entry.stream as StreamSpan).dict), budget, false);
+    return entry ? this.filteredData(entry, this.filterChain((entry.stream as StreamSpan).dict), budget) : null;
+  }
+
+  /** A stream's data through `stages`: the file's own bytes when there are none (not charged, nothing is decoded), else decoded within `budget`. */
+  private filteredData(entry: PdfObjectEntry, stages: PdfFilterStage[], budget: InflateBudget): Buffer | null {
+    if (this.encrypted) return null;
+    const stream = entry.stream as StreamSpan;
+    if (stages.length === 0) return this.buffer.subarray(stream.rawStart, stream.rawEnd);
+    return this.decodeStages(entry, stages, budget, false);
   }
 
   /** Filter names of a stream in decoding order, each with its /DecodeParms dictionary. */
