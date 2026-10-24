@@ -77,6 +77,8 @@ const MATCH_STEPS_MIN = 4096;
 const MATCH_STEPS_PER_PAGE = 50_000_000;
 /** PDF glyph widths are in thousandths of an em. */
 const GLYPH_UNITS_PER_EM = 1000;
+/** pdf.js `maxImageSize` under which every picture is larger than the budget. */
+const NO_PICTURE_PIXELS = 0;
 /** Weight of a gap pdfjs turned into a space, in em. */
 const SYNTHETIC_SPACE_EM = 0.25;
 /** Largest rise over run (about 1.7 degrees) at which an item still counts as horizontal. */
@@ -1436,7 +1438,8 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       // The fonts keep their encoding and ToUnicode data, so a glyph pdfjs cannot map can be read from its glyph name.
       fontExtraProperties: true,
       isEvalSupported: false,
-      maxImageSize: PDF_TEXT_MAX_IMAGE_PIXELS,
+      // A job that writes no pictures has pdf.js skip every one before decoding it, as it skips one past this budget (buildPaintImageXObject).
+      maxImageSize: job.images === true ? PDF_TEXT_MAX_IMAGE_PIXELS : NO_PICTURE_PIXELS,
       standardFontDataUrl: pdfjsDataUrl('standard_fonts'),
       // The predefined CMaps: the codes of a CJK font and the Unicode values of a registered character collection.
       cMapUrl: pdfjsDataUrl('cmaps'),
