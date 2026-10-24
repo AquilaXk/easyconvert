@@ -94,6 +94,13 @@ export interface GlyphNameOptions {
   dingbats?: boolean;
 }
 
+const DINGBATS_FONT = /dingbats/i;
+
+/** Whether a font of this name names its glyphs as the Zapf Dingbats font does (`a1` to `a206`), so its names read through that list. */
+export function isDingbatsFontName(fontName: string): boolean {
+  return DINGBATS_FONT.test(fontName);
+}
+
 /** The text the glyph name stands for, or null when no rule of the specification maps it. */
 export function glyphNameToText(glyphName: string, options: GlyphNameOptions = {}): string | null {
   if (glyphName.length > MAX_GLYPH_NAME_LENGTH) return null;

@@ -1,4 +1,4 @@
-import { glyphNameToText } from './pdf-glyph-names';
+import { glyphNameToText, isDingbatsFontName } from './pdf-glyph-names';
 import { PdfTextGeometryError } from './pdf-text-types';
 import { isSymbolFontName, mapSymbolFontCharacter } from './symbol-font-map';
 
@@ -31,7 +31,6 @@ const PRIVATE_USE_BMP_END = 0xf8ff;
 /** A control code that is the character code of a glyph of a simple font. */
 const SINGLE_BYTE_CODES = 0x100;
 const SUBSET_TAG = /^[A-Z]{6}\+/;
-const ZAPF_DINGBATS_FONT = /dingbats/i;
 const NOTDEF_CODE = 0;
 const NOTDEF_NAME = '.notdef';
 const TYPE3_FONT = 'Type3';
@@ -89,7 +88,7 @@ function readNamedGlyph(code: number, font: RecoverableFont): string | null {
   if (isNotdefCode(code, font)) return '';
   const name = glyphNameAt(code, font);
   if (name === null) return null;
-  const text = glyphNameToText(name, { dingbats: ZAPF_DINGBATS_FONT.test(fontNameOf(font)) });
+  const text = glyphNameToText(name, { dingbats: isDingbatsFontName(fontNameOf(font)) });
   return text !== null && !hasUnmappedGlyphs(text) ? text : null;
 }
 
