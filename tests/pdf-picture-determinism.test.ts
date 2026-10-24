@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { deflateSync } from 'node:zlib';
+import { afterAll, describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions/index';
+import { shutdownPdfTextThreads } from '../src/lib/conversions/pdf-text-host';
 import { ImageExtractor } from '../src/lib/conversions/pdf-text-images';
-import type { PdfContentImage } from '../src/lib/conversions/pdf-text-types';
+import { PDF_TEXT_DEADLINE_ENV, type PdfContentImage } from '../src/lib/conversions/pdf-text-types';
 import { startBusyThreads } from './helpers/busy-threads';
+import { buildPdf } from './helpers/pdf-craft';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
@@ -126,4 +129,95 @@ describe('Markdown and HTML from a PDF carry the same pictures on every run', ()
       await stopLoad();
     }
   }, 120_000);
+});
+
+/**
+ * The text thread stays up between documents, and pdf.js keeps the decoders of CCITT and JBIG2 pictures for the whole thread
+ * (`WasmImage`, `pdf.worker.mjs` of pdfjs-dist 6.3.289): a document that is closed while pdf.js still decodes one of its pictures
+ * sets the decoder up again through the closed document, which never answers, and every later picture of that kind on the thread
+ * waits for it until the thread's deadline. Page 1 paints a CCITT stencil mask, which pdf.js decodes while it builds the operator
+ * list; page 2 paints a gray picture whose /Mask is CCITT-encoded, which it decodes after the list has resolved.
+ */
+const THREAD_REUSE_ROUNDS = 6;
+const THREAD_REUSE_DEADLINE_MS = 10_000;
+const MASKED_PICTURE_SIZE = 64;
+
+function pdfWithLateCcittMask(): Buffer {
+  const text = 'BT /F1 14 Tf 20 760 Td (Quarterly figures of the regional offices.) Tj ET\n';
+  const ccitt = (size: number) =>
+    `/Type /XObject /Subtype /Image /Width ${size} /Height ${size} /ImageMask true /BitsPerComponent 1 /Filter /CCITTFaxDecode /DecodeParms << /K -1 /Columns ${size} /Rows ${size} >>`;
+  // End of facsimile block alone: a picture with no black run.
+  const eofb = Buffer.from([0x00, 0x10, 0x01]);
+  const size = MASKED_PICTURE_SIZE;
+  return buildPdf(
+    [
+      { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+      { id: 2, dict: '/Type /Pages /Kids [3 0 R 8 0 R] /Count 2' },
+      { id: 3, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 4 0 R >> /XObject << /Im0 5 0 R >> >> /Contents 6 0 R' },
+      { id: 4, dict: '/Type /Font /Subtype /Type1 /BaseFont /Helvetica' },
+      { id: 5, dict: ccitt(8), stream: eofb },
+      { id: 6, stream: Buffer.from(`${text}q 100 0 0 100 50 300 cm /Im0 Do Q`) },
+      { id: 7, dict: ccitt(size), stream: eofb },
+      { id: 8, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 9 0 R >> >> /Contents 10 0 R' },
+      {
+        id: 9,
+        dict: `/Type /XObject /Subtype /Image /Width ${size} /Height ${size} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Mask 7 0 R`,
+        stream: deflateSync(Buffer.alloc(size * size, 120)),
+      },
+      { id: 10, stream: Buffer.from(`${text}q 300 0 0 300 50 300 cm /Im1 Do Q`) },
+    ],
+    1
+  ).buffer;
+}
+
+/** A conversion's outcome: the byte length of its result, or the class of its error. */
+async function outcome(bytes: Buffer, target: string): Promise<string> {
+  try {
+    return `${target} ${(await convertFile(bytes, 'pdf', target, {}, 'document.pdf')).buffer.length}`;
+  } catch (error) {
+    return `${target} ${(error as Error).constructor.name}`;
+  }
+}
+
+/** The outcome of each target converted on a thread of its own. */
+async function outcomesOnFreshThreads(bytes: Buffer, targets: readonly string[]): Promise<Map<string, string>> {
+  const results = new Map<string, string>();
+  for (const target of targets) {
+    shutdownPdfTextThreads();
+    results.set(target, await outcome(bytes, target));
+  }
+  shutdownPdfTextThreads();
+  return results;
+}
+
+/** The outcomes of the conversions run one after another, on the one thread a sequence of jobs reuses. */
+async function outcomesInSequence(bytes: Buffer, targets: readonly string[]): Promise<string[]> {
+  const results: string[] = [];
+  for (const target of targets) results.push(await outcome(bytes, target));
+  return results;
+}
+
+describe('a document read after another on the same text thread', () => {
+  const deadlineBefore = process.env[PDF_TEXT_DEADLINE_ENV];
+  afterAll(() => {
+    if (deadlineBefore === undefined) delete process.env[PDF_TEXT_DEADLINE_ENV];
+    else process.env[PDF_TEXT_DEADLINE_ENV] = deadlineBefore;
+    shutdownPdfTextThreads();
+  });
+
+  it('converts after a text conversion that ended while pdf.js still decoded a CCITT mask', async () => {
+    process.env[PDF_TEXT_DEADLINE_ENV] = String(THREAD_REUSE_DEADLINE_MS);
+    const bytes = pdfWithLateCcittMask();
+    const targets = Array.from({ length: THREAD_REUSE_ROUNDS }, () => ['txt', 'md']).flat();
+    const alone = await outcomesOnFreshThreads(bytes, ['txt', 'md']);
+    expect(await outcomesInSequence(bytes, targets)).toEqual(targets.map((target) => alone.get(target)));
+  }, 180_000);
+
+  it('gd-026598.pdf to Markdown and HTML after its text holds the pictures it holds on a fresh thread', async (ctx) => {
+    const sample = await requireRealworldSample(ctx, 'gd-026598.pdf');
+    process.env[PDF_TEXT_DEADLINE_ENV] = String(THREAD_REUSE_DEADLINE_MS);
+    const targets = Array.from({ length: 3 }, () => ['txt', 'md', 'txt', 'html']).flat();
+    const alone = await outcomesOnFreshThreads(sample.bytes, ['txt', 'md', 'html']);
+    expect(await outcomesInSequence(sample.bytes, targets)).toEqual(targets.map((target) => alone.get(target)));
+  }, 180_000);
 });
