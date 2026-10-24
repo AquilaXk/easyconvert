@@ -437,6 +437,14 @@ function cutArea(region: ConvexRegion, ring: readonly Point[]): Point[] {
 /** What a cut keeps of a shape: the pieces of its lines inside the region, or the part of its filled area inside it. */
 export type ClipCut = 'lines' | 'area';
 
+/** What `cutElement` reads of an element: its device-space subpaths and whether it paints a fill and a stroke. */
+interface CutElement {
+  subpaths: Point[][];
+  fillable: boolean;
+  fill: unknown;
+  stroke: unknown;
+}
+
 function formatPixels(value: number): string {
   return String(Number(value.toFixed(MAX_REPORTED_DECIMALS)));
 }
@@ -461,11 +469,15 @@ export class ActiveClips {
   private readonly definitions = new Map<string, ClipDefinition>();
   private readonly inherited = new Map<ClipNode, InheritedClipStyle>();
 
+  private readonly tolerance: number;
+
   constructor(
     private readonly reader: ClipReader,
-    private readonly work: ClipWork = new ClipWork(),
-    private readonly tolerance: number = PAGE_CLIP_TOLERANCE_PIXELS
-  ) {}
+    pens: SvgPenMode,
+    private readonly work: ClipWork = new ClipWork()
+  ) {
+    this.tolerance = CLIP_TOLERANCE_PIXELS[pens];
+  }
 
   /** Opens the clip named by a `clip-path` value for an element drawn under `ctm`; refuses a clip it cannot measure. */
   enter(value: string, ctm: AffineMatrix): true {
@@ -512,6 +524,26 @@ export class ActiveClips {
       this.work.charge(pieces.reduce((total, piece) => total + piece.length, 0) * region.vertices.length);
       return kind === 'lines' ? pieces.flatMap((line) => cutLines(region, line)) : pieces.map((ring) => cutArea(region, ring)).filter((ring) => ring.length > 0);
     }, subpaths.map((subpath) => [...subpath]));
+  }
+
+  /**
+   * An element cut at the regions that hide part of it. A DXF writes every path as its line, so each path is cut as lines; a
+   * metafile paints the fill and the stroke, so the fill is cut as an area and the stroke as lines, one element each where the
+   * shape has both. The vertices the cut adds are charged to `vertices`, the document's budget.
+   */
+  cutElement<T extends CutElement>(element: T, regions: readonly ConvexRegion[], pens: SvgPenMode, vertices: { charge: (count: number) => void }): T[] {
+    const lines = (): Point[][] => this.cut(regions, element.subpaths, 'lines');
+    const pieces: T[] =
+      pens === 'centre-line'
+        ? [{ ...element, subpaths: lines() }]
+        : [
+            ...(element.fillable && element.fill !== null ? [{ ...element, stroke: null, subpaths: this.cut(regions, element.subpaths, 'area') }] : []),
+            ...(element.stroke !== null ? [{ ...element, fill: null, subpaths: lines() }] : []),
+          ];
+    const drawn = pieces.filter((piece) => piece.subpaths.length > 0);
+    const vertexCount = (subpaths: readonly (readonly Point[])[]): number => subpaths.reduce((total, subpath) => total + subpath.length, 0);
+    vertices.charge(Math.max(0, drawn.reduce((total, piece) => total + vertexCount(piece.subpaths), 0) - vertexCount(element.subpaths)));
+    return drawn;
   }
 
   private reaching(subpaths: readonly (readonly Point[])[]): (ActiveClip & { farthest: number })[] {

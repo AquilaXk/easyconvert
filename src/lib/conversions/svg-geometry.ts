@@ -2,7 +2,8 @@ import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
 import { BitmapGlyphs, glyphBox } from './svg-bitmap-glyph';
-import { ActiveClips, CLIP_TOLERANCE_PIXELS, type ConvexRegion } from './svg-clip-region';
+import { ActiveClips } from './svg-clip-region';
+import { ABSOLUTE_LENGTH_UNITS, parseLength, requireFinite, rootUnitPx } from './svg-length';
 import { createPageClipCheck, type ClipNode } from './svg-page-clip';
 import { CHAR_SLASH, MAX_SVG_INPUT_CHARS, XML_NAME_PATTERN, endOfMarkup, endOfTag, malformedXml, scanXmlTags, skipNonElementMarkup } from './svg-xml';
 import { NEUTRAL_ONLY_PROPERTY_NAMES, SVG_NUMBER_PATTERN, assertNeutralPaintProperties, devicePattern, parseDashArray, type SvgPenMode } from './svg-pen';
@@ -38,7 +39,7 @@ export interface SvgGeometryElement {
 export interface ParsedSvgVectorDocument {
   width: number;
   height: number;
-  /** CSS pixels in one unit of the root's width (else height) attribute; 1 when it names none, or a percentage. */
+  /** CSS pixels in a unit of the root's width, else height, attribute: the unit a DXF is written in (vector-dxf.ts). */
   unitPx: number;
   elements: SvgGeometryElement[];
 }
@@ -725,14 +726,6 @@ function deriveContext(parent: StyleContext, attrs: Map<string, string>, declare
 
 const ELLIPSE_SEGMENTS = 36;
 
-/** Throws unless the value is a finite number; NaN or overflow would yield dummy geometry. */
-export function requireFinite(value: number, what: string): number {
-  if (!Number.isFinite(value)) {
-    throw new CadGeometryUnavailableError(`SVG ${what} is not a finite number.`);
-  }
-  return value;
-}
-
 const NUMBER_LIST_TOKEN_PATTERN = /[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
 const LIST_SEPARATOR_PATTERN = /^[\s,]+$/;
 
@@ -896,7 +889,6 @@ function matrixLengthScale(m: AffineMatrix): number {
 interface Viewport {
   width: number;
   height: number;
-  unitPx: number;
   matrix: AffineMatrix;
 }
 
@@ -912,33 +904,6 @@ function parseViewBox(value: string | undefined): [number, number, number, numbe
   return [parts[0], parts[1], parts[2], parts[3]];
 }
 
-/** CSS absolute length units in CSS pixels (CSS Values 4: 1in = 96px). */
-const CSS_PX_PER_INCH = 96;
-const ABSOLUTE_LENGTH_UNITS: Record<string, number> = {
-  '': 1,
-  px: 1,
-  in: CSS_PX_PER_INCH,
-  cm: CSS_PX_PER_INCH / 2.54,
-  mm: CSS_PX_PER_INCH / 25.4,
-  q: CSS_PX_PER_INCH / 101.6,
-  pt: CSS_PX_PER_INCH / 72,
-  pc: CSS_PX_PER_INCH / 6,
-};
-const LENGTH_PATTERN = /^\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*$/;
-
-/**
- * Parses an SVG length in user units (px). Absolute units convert at 96 DPI;
- * relative units (%, em, ex, ...) and malformed values throw.
- */
-function parseLength(value: string, what: string): number {
-  const m = LENGTH_PATTERN.exec(value);
-  const factor = m ? ABSOLUTE_LENGTH_UNITS[m[2].toLowerCase()] : undefined;
-  if (!m || factor === undefined) {
-    throw new CadGeometryUnavailableError(`SVG ${what} "${value}" is not an absolute length (px, in, cm, mm, pt, pc).`);
-  }
-  return requireFinite(Number.parseFloat(m[1]) * factor, `${what} "${value}"`);
-}
-
 /**
  * Root width/height: an absolute length, or a percentage that resolves
  * against the viewBox (returns null) when one is present.
@@ -951,12 +916,6 @@ function parseRootLength(value: string | undefined, name: string, hasViewBox: bo
     throw new CadGeometryUnavailableError(`SVG root ${name} "${value}" must be positive.`);
   }
   return px;
-}
-
-/** CSS pixels in the unit of a root width or height: 1 for a value without a unit, a percentage or none. */
-function rootUnitPx(value: string | undefined): number | undefined {
-  const unit = value === undefined ? undefined : LENGTH_PATTERN.exec(value)?.[2].toLowerCase();
-  return unit === undefined || unit === '' ? undefined : ABSOLUTE_LENGTH_UNITS[unit];
 }
 
 const ALIGN_FACTORS: Record<string, number> = { min: 0, mid: 0.5, max: 1 };
@@ -997,12 +956,11 @@ function resolveViewport(attrs: Map<string, string>): Viewport {
   const vb = parseViewBox(attrs.get('viewBox'));
   const lengthW = parseRootLength(attrs.get('width'), 'width', vb !== null);
   const lengthH = parseRootLength(attrs.get('height'), 'height', vb !== null);
-  const unitPx = rootUnitPx(attrs.get('width')) ?? rootUnitPx(attrs.get('height')) ?? 1;
 
   if (!vb) {
     const width = lengthW ?? DEFAULT_VIEWPORT_WIDTH;
     const height = lengthH ?? DEFAULT_VIEWPORT_HEIGHT;
-    return { width, height, unitPx, matrix: IDENTITY_MATRIX };
+    return { width, height, matrix: IDENTITY_MATRIX };
   }
 
   const vbAspect = vb[2] / vb[3];
@@ -1010,7 +968,7 @@ function resolveViewport(attrs: Map<string, string>): Viewport {
   let height = lengthH ?? vb[3];
   if (lengthW !== null && lengthH === null) height = lengthW / vbAspect;
   if (lengthH !== null && lengthW === null) width = lengthH * vbAspect;
-  return { width, height, unitPx, matrix: viewBoxMatrix(vb, width, height, attrs.get('preserveAspectRatio')) };
+  return { width, height, matrix: viewBoxMatrix(vb, width, height, attrs.get('preserveAspectRatio')) };
 }
 
 // ============================================================================
@@ -1191,30 +1149,7 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     strokeMiterlimit: parseSvgNumber(ctx.strokeMiterlimit, 'stroke-miterlimit'),
     strokeDash: stroke && ctx.dashArray && lengthScale > 0 ? devicePattern(ctx.dashArray, lengthScale, ctx.strokeLinecap.trim() !== 'butt') : null,
   };
-  if (hiding.length === 0) state.elements.push(element);
-  else state.elements.push(...cutElement(element, hiding, state));
-}
-
-/**
- * An element cut at the clips that hide part of it (svg-clip-region.ts). A DXF writes every path as its line, so each path
- * is cut as lines; a metafile paints the fill and the stroke, so the fill is cut as an area and the stroke as lines, one
- * element each where the shape has both. The vertices the cut adds are charged to the document's budget.
- */
-type Point = { x: number; y: number };
-
-function cutElement(element: SvgGeometryElement, hiding: readonly ConvexRegion[], state: RenderState): SvgGeometryElement[] {
-  const lines = (): Point[][] => state.clips.cut(hiding, element.subpaths, 'lines');
-  const pieces: SvgGeometryElement[] =
-    state.pens === 'centre-line'
-      ? [{ ...element, subpaths: lines() }]
-      : [
-          ...(element.fillable && element.fill !== null ? [{ ...element, stroke: null, subpaths: state.clips.cut(hiding, element.subpaths, 'area') }] : []),
-          ...(element.stroke !== null ? [{ ...element, fill: null, subpaths: lines() }] : []),
-        ];
-  const drawn = pieces.filter((piece) => piece.subpaths.length > 0);
-  const vertexCount = (subpaths: readonly (readonly Point[])[]): number => subpaths.reduce((total, subpath) => total + subpath.length, 0);
-  state.vertices.charge(Math.max(0, drawn.reduce((total, piece) => total + vertexCount(piece.subpaths), 0) - vertexCount(element.subpaths)));
-  return drawn;
+  state.elements.push(...(hiding.length === 0 ? [element] : state.clips.cutElement(element, hiding, state.pens, state.vertices)));
 }
 
 function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): void {
@@ -1266,9 +1201,10 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
 
 /**
  * Parses SVG XML into geometry elements with flattened polylines in device (viewport) coordinates, honouring the style cascade,
- * inheritance from container elements and transforms. Rendered content that cannot be represented (text, images, clipping, ...)
- * throws instead of being dropped, but a clip over the whole page, and in `centre-line` mode a clip that hides at most a point
- * (svg-clip-region.ts). Bitmap-font characters go to `bitmapGlyphs` when it sets them aside (svg-bitmap-glyph.ts); `pens` says
+ * inheritance from container elements and transforms. Content that cannot be represented (text, images, ...) throws instead of
+ * being dropped; a clip is dropped where it covers the page or hides at most the tolerance of the pens, and else cuts the
+ * drawing when it is one convex polygon (svg-clip-region.ts). Bitmap-font characters go to `bitmapGlyphs` when it sets them
+ * aside (svg-bitmap-glyph.ts); `pens` says
  * what the target does with the pen attributes it cannot paint (svg-pen.ts): by default they are refused.
  */
 export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new BitmapGlyphs(), pens: SvgPenMode = 'metafile'): ParsedSvgVectorDocument {
@@ -1298,13 +1234,12 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
       parentOf: (node) => parents.get(node),
       transformOf: (value) => (value.trim() === '' ? IDENTITY_MATRIX : parseSvgTransform(value)),
     },
-    undefined,
-    CLIP_TOLERANCE_PIXELS[pens]
+    pens
   );
   const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, clipsNothing, clips };
   indexIds(root, state.ids, parents);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
-  return { width: viewport.width, height: viewport.height, unitPx: viewport.unitPx, elements: state.elements };
+  return { width: viewport.width, height: viewport.height, unitPx: rootUnitPx(root.attrs), elements: state.elements };
 }
 
 // ============================================================================
