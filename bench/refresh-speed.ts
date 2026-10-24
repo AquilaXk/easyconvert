@@ -179,7 +179,7 @@ export function planSpeedRefresh(reports: ReadonlyArray<{ label: string; report:
         : gap.note;
     return { ...gap, ratio: after, note, history };
   });
-  return { baseline: next, gaps: { schemaVersion: gaps.schemaVersion, gaps: nextGaps }, baselineChanges, gapChanges, historyChanges, restarted, nowAtParity, leftUnstable, notInReports };
+  return { baseline: next, gaps: { ...gaps, gaps: nextGaps }, baselineChanges, gapChanges, historyChanges, restarted, nowAtParity, leftUnstable, notInReports };
 }
 
 export interface Reseed {
@@ -198,7 +198,7 @@ export function reseedGapHistories(gaps: GapFile): Reseed {
     restarted.push({ id: gap.id, dropped: gap.history.length - kept.length, points: kept.length });
     return { ...gap, history: kept };
   });
-  return { gaps: { schemaVersion: gaps.schemaVersion, gaps: next }, restarted };
+  return { gaps: { ...gaps, gaps: next }, restarted };
 }
 
 /** `<file>` for a report, or every `*.json` in a directory except the verdict file a parity run leaves beside it. */

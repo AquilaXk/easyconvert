@@ -379,6 +379,11 @@ describe('re-seeding the histories that are on file', () => {
     expect(result.restarted).toEqual([{ id: 'image/lineart.png->avif/throughput', dropped: 3, points: 1 }]);
   });
 
+  it('carries the acknowledged slowdowns of the file through unchanged', () => {
+    const ack = { id: 'image/photo-a.jpg->avif/throughput', issue: 880, pr: 881, reason: 'one AV1 tile per image' };
+    expect(reseedGapHistories({ ...gapsFile(), acceptedSlowdowns: [ack] }).gaps.acceptedSlowdowns).toEqual([ack]);
+  });
+
   describe('through the command', () => {
     let dir: string;
     beforeEach(() => {
