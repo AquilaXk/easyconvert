@@ -81,6 +81,8 @@ export function linkToDestination(doc: PDFKit.PDFDocument, box: LinkBox, name: s
 /** The parts of pdfkit this module uses that its type definitions lack: recording a destination, and the catalog they go to. */
 interface PdfkitDestinations {
   addNamedDestination(name: string, ...position: unknown[]): void;
+  /** The transformation from the coordinates content is drawn in to the page's, the flip to a top-left origin included. */
+  _ctm: readonly number[];
   _root: { data: { Names: { data: { Dests: { get(key: string): unknown[] | undefined } | { Names: unknown[] } } } } };
 }
 
@@ -110,7 +112,13 @@ export class PdfDestinations {
     for (const name of names) {
       if (!this.places.has(name)) this.places.set(name, key);
     }
-    (this.doc as unknown as PdfkitDestinations).addNamedDestination(key, XYZ, left, top, null);
+    // pdfkit takes the point from the top of the page and does not apply the transformation that a shrunk page is drawn
+    // with (pdf-blocks.ts), so the point is put through it here: pdfkit then stores `y` itself.
+    const pdfkit = this.doc as unknown as PdfkitDestinations;
+    const [a, b, c, d, e, f] = pdfkit._ctm;
+    const x = a * left + c * top + e;
+    const y = b * left + d * top + f;
+    pdfkit.addNamedDestination(key, XYZ, x, this.doc.page.height - y, null);
   }
 
   /** Writes the name tree. Call it once, after the last page is drawn and before the document ends. */

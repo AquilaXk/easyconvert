@@ -622,8 +622,8 @@ describe('In-process PDF layout limits', () => {
     expect(withoutWhitespace(pdfText(result.buffer)).replace(/•/g, '')).toBe('DeepListTextDeepQuoteText');
   });
 
-  it('hands a table with more columns than the page has room for to LibreOffice with EngineUnavailableError', async () => {
-    const wideRow = `<tr>${Array.from({ length: 30 }, (_, i) => `<td>c${i}</td>`).join('')}</tr>`;
+  it('hands a table with more columns than a page shrunk 1.5 times has room for to LibreOffice with EngineUnavailableError', async () => {
+    const wideRow = `<tr>${Array.from({ length: 40 }, (_, i) => `<td>c${i}</td>`).join('')}</tr>`;
     const { error } = await settle(convertFile(Buffer.from(`<table>${wideRow}</table>`, 'utf-8'), 'html', 'pdf', {}, 'wide.html'));
     expect((error as Error)?.name).toBe('EngineUnavailableError');
     expect((error as EngineUnavailableError).engineName).toBe('soffice');
@@ -964,17 +964,10 @@ describe('HTML to PDF keeps document structure', () => {
     expect(result.metadata?.warnings).toEqual(['Left out elements that cannot be drawn (1): <video> x 1.']);
   });
 
-  it('refuses MathML the in-process renderer cannot draw when LibreOffice is absent', async () => {
-    const html = '<p>Formula below</p><math><mi>x</mi></math>';
-    const error = await withMissingBinary('SOFFICE_PATH', () =>
-      executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'math.html')
-    ).then(
-      () => null,
-      (err: unknown) => err
-    );
-    expect(error).toBeInstanceOf(EngineUnavailableError);
-    expect((error as EngineUnavailableError).engineName).toBe('soffice');
-    expect((error as Error).message).toContain('<math>');
+  oracleTest('draws MathML as its text when LibreOffice is absent', ['pdftotext'], async () => {
+    const html = '<p>Formula below</p><math><mi>x</mi><mo>=</mo><mn>1</mn></math>';
+    const result = await withMissingBinary('SOFFICE_PATH', () => executeWorkerConversion(Buffer.from(html, 'utf-8'), 'html', 'pdf', {}, 'math.html'));
+    expect(normalizeText(pdfText(result.buffer))).toBe('Formula below x=1');
   });
 });
 

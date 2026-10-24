@@ -1,16 +1,17 @@
 import sharp, { type Metadata } from 'sharp';
 import { ConversionFailedError, EngineUnavailableError } from '../types';
-import type { PdfBlock, PdfCellPart, PdfRasterImage, PdfTableCell } from './pdf-blocks';
+import type { PdfBlock, PdfCellPart, PdfLength, PdfRasterImage, PdfTableAlign, PdfTableCell, PdfTableSizing } from './pdf-blocks';
 import { WaitingDestinations, anchorsAt, anchorsOf } from './pdf-destinations';
 import type { PdfAnchor, PdfJump, PdfTextSegment } from './pdf-fonts';
 import { AnchorNames } from './document-model/anchors';
 import { anchorNamesOf, documentIds } from './html-anchors';
 import { loadExternalImages, type ImageCaps } from './html-image-loader';
+import { PX_TO_PT } from './pdf-table-metrics';
 import { asciiLowerCase, isUndrawable, NEVER_DRAWN_ELEMENTS, OmittedContent, OmittedExternalImages, type HtmlResourcePolicy } from './html-omitted-resources';
 
 /**
  * Parses HTML into the PDF block model: headings, paragraphs, lists, tables, links, preformatted
- * text, quotes, rules and embedded (data: URI) PNG/JPEG images. Elements a PDF cannot carry (form controls,
+ * text, quotes, rules, MathML as its text and embedded (data: URI) PNG/JPEG images. Elements a PDF cannot carry (form controls,
  * frames, SVG, media; see isUndrawable) are left out and reported, as the LibreOffice route does; other content
  * the in-process renderer cannot draw is refused with a typed error. An image that is not embedded is fetched and
  * embedded first (see html-image-loader.ts), and one that cannot be loaded is left out and reported (see
@@ -77,8 +78,32 @@ const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
 ]);
 /** Elements that are never displayed. */
 const HIDDEN_ELEMENTS: ReadonlySet<string> = new Set([...NEVER_DRAWN_ELEMENTS, 'head', 'style', 'meta', 'link', 'base', 'title']);
-/** Content the in-process renderer cannot draw and has no fallback for: it refuses the page (what it can leave out is in isUndrawable). */
-const UNSUPPORTED_ELEMENTS: ReadonlySet<string> = new Set(['math']);
+/**
+ * MathML is drawn as the text a formula shows, in line, or on a line of its own for `display="block"`. What the MathML
+ * Core user agent style sheet does not show is left out: every child element of `semantics` and `maction` after the first
+ * (`display: none`) and the content of `mphantom` (`visibility: hidden`). Only token elements show text: white space
+ * between the elements of a formula is not drawn.
+ */
+const MATH_ROOT = 'math';
+const MATH_FIRST_CHILD_ONLY: ReadonlySet<string> = new Set(['semantics', 'maction']);
+const MATH_PHANTOM = 'mphantom';
+const MATH_TOKENS: ReadonlySet<string> = new Set(['mi', 'mn', 'mo', 'ms', 'mtext']);
+const BLOCK_DISPLAY = 'block';
+/** A value of the `width` attribute of a table (HTML, "rules for parsing dimension values"): pixels, or a percentage with `%`. */
+const DIMENSION_VALUE = /^[\t\n\f\r ]*(\d+(?:\.\d+)?)(%)?/;
+/** The CSS `width` of an inline style in pixels, points or percent; it wins over the attribute, as CSS over a presentational hint. */
+const STYLE_WIDTH = /(?:^|;)\s*width\s*:\s*(\d+(?:\.\d+)?)(px|pt|%)\s*(?:!\s*important\s*)?(?:;|$)/i;
+const PIXELS = 'px';
+const POINTS = 'pt';
+const PERCENT = '%';
+/** The side a table's `align` attribute puts it on (HTML rendering, tables: `center` is `margin-inline: auto`, `left` and `right` float). */
+const TABLE_ALIGN: ReadonlyMap<string, PdfTableAlign> = new Map([
+  ['left', 'left'],
+  ['center', 'center'],
+  ['right', 'right'],
+]);
+/** The side a `div` with an `align` attribute aligns the tables inside it to (HTML rendering, flow content: "align descendants"). */
+const DIV_ALIGN: ReadonlyMap<string, PdfTableAlign> = new Map([...TABLE_ALIGN, ['middle', 'center']]);
 /** Opening any of these closes an open <p>. */
 const PARAGRAPH_CLOSERS: ReadonlySet<string> = new Set([
   'address', 'article', 'aside', 'blockquote', 'center', 'details', 'dialog', 'dir', 'div', 'dl', 'dd', 'dt',
@@ -547,6 +572,62 @@ function rowSpanOf(cell: HtmlElement): number {
   return span === 0 ? MAX_ROW_SPAN : Math.min(span, MAX_ROW_SPAN);
 }
 
+function lengthOf(value: number, unit: string): PdfLength | undefined {
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  if (unit === PERCENT) return { unit: 'percent', value };
+  return { unit: 'pt', value: unit === POINTS ? value : value * PX_TO_PT };
+}
+
+/** The width a table states: its inline style, or else its `width` attribute (zero is ignored). */
+function statedWidth(table: HtmlElement): PdfLength | undefined {
+  const style = STYLE_WIDTH.exec(table.attrs.get('style') ?? '');
+  if (style) return lengthOf(Number(style[1]), asciiLowerCase(style[2]));
+  const dimension = DIMENSION_VALUE.exec(table.attrs.get('width') ?? '');
+  return dimension ? lengthOf(Number(dimension[1]), dimension[2] ?? PIXELS) : undefined;
+}
+
+/** How wide and on which side a table is drawn: the width it states, else as wide as its content, and its `align`. */
+function tableSizing(table: HtmlElement): PdfTableSizing {
+  const width = statedWidth(table);
+  const align = TABLE_ALIGN.get(asciiLowerCase(table.attrs.get('align')?.trim() ?? ''));
+  return { width: width ?? 'auto', ...(align ? { align } : {}) };
+}
+
+/** The side a `center` element, or a `div` with an `align` attribute, aligns the tables inside it to. */
+function descendantAlignment(element: HtmlElement): PdfTableAlign | undefined {
+  if (element.tag === 'center') return 'center';
+  return element.tag === 'div' ? DIV_ALIGN.get(asciiLowerCase(element.attrs.get('align')?.trim() ?? '')) : undefined;
+}
+
+/**
+ * `blocks` with every table that has no side yet put on `side`, in lists and quotes too. The innermost aligning element
+ * wins, as HTML asks, so a side already set stays. Tables inside table cells keep theirs: a table resets `text-align` in
+ * quirks mode, the mode of the legacy pages that align with `center`.
+ */
+function alignTables(blocks: readonly PdfBlock[], side: PdfTableAlign): PdfBlock[] {
+  return blocks.map((block): PdfBlock => {
+    switch (block.kind) {
+      case 'table':
+        return !block.sizing || block.sizing.align ? block : { ...block, sizing: { ...block.sizing, align: side } };
+      case 'list':
+        return { ...block, items: block.items.map((item) => alignTables(item, side)) };
+      case 'quote':
+        return { ...block, blocks: alignTables(block.blocks, side) };
+      default:
+        return block;
+    }
+  });
+}
+
+/** The children of `element` a reader sees: all of them in HTML, and in MathML those MATH_FIRST_CHILD_ONLY and MATH_PHANTOM leave. */
+function shownChildren(element: HtmlElement): readonly HtmlNode[] {
+  if (!element.foreign) return element.children;
+  if (element.tag === MATH_PHANTOM) return [];
+  if (MATH_FIRST_CHILD_ONLY.has(element.tag)) return element.children.filter((child) => typeof child !== 'string').slice(0, 1);
+  if (MATH_TOKENS.has(element.tag)) return element.children;
+  return element.children.filter((child) => typeof child !== 'string' || child.trim().length > 0);
+}
+
 const COVERED_CELL: PdfTableCell = { content: [], span: 1, covered: true };
 const EMPTY_CELL: PdfTableCell = { content: [], span: 1 };
 
@@ -670,17 +751,15 @@ class HtmlBlockBuilder {
 
 
   private isBlock(node: HtmlNode): node is HtmlElement {
-    return typeof node !== 'string' && BLOCK_ELEMENTS.has(node.tag);
+    if (typeof node === 'string') return false;
+    return BLOCK_ELEMENTS.has(node.tag) || (node.tag === MATH_ROOT && asciiLowerCase(node.attrs.get('display')?.trim() ?? '') === BLOCK_DISPLAY);
   }
 
-  /** Whether the node is left out with a warning; throws for content that can be neither drawn nor left out. */
+  /** Whether the node is left out with a warning. */
   private leavesOut(node: HtmlElement): boolean {
-    if (isUndrawable(node)) {
-      this.omitted.element(node.tag);
-      return true;
-    }
-    if (UNSUPPORTED_ELEMENTS.has(node.tag)) throw unsupported(`<${node.tag}>`);
-    return false;
+    if (!isUndrawable(node)) return false;
+    this.omitted.element(node.tag);
+    return true;
   }
 
   /** Collects a node's inline content; block elements inside inline content start on a new line. */
@@ -706,7 +785,7 @@ class HtmlBlockBuilder {
     const childPreserve = preserve || PREFORMATTED_ELEMENTS.has(node.tag);
     const block = this.isBlock(node);
     if (block) context.segments.push({ text: '\n' });
-    for (const child of node.children) this.inline(child, childLink, context, childPreserve);
+    for (const child of shownChildren(node)) this.inline(child, childLink, context, childPreserve);
     if (block) context.segments.push({ text: '\n' });
     // Table parts met inside inline content keep their cells apart: a space after a cell, a line break after a row.
     if (TABLE_CELL_ELEMENTS.has(node.tag)) context.segments.push({ text: ' ' });
@@ -822,7 +901,9 @@ class HtmlBlockBuilder {
     if (node.tag === 'table') return this.table(node);
     if (node.tag === 'blockquote') return [{ kind: 'quote', blocks: this.blocks(node.children) }];
     if (node.tag === 'hr') return [{ kind: 'rule' }];
-    return this.blocks(node.children);
+    const side = descendantAlignment(node);
+    const inner = this.blocks(shownChildren(node));
+    return side ? alignTables(inner, side) : inner;
   }
 
   private preformatted(node: HtmlElement): PdfBlock[] {
@@ -894,7 +975,11 @@ class HtmlBlockBuilder {
     };
     visit(node);
     if (rows.length === 0) return before;
-    return [...before, { kind: 'table', rows: coverMergedRows(rows) }, ...(rowAnchors.length > 0 ? [{ kind: 'anchor' as const, names: rowAnchors }] : [])];
+    return [
+      ...before,
+      { kind: 'table', rows: coverMergedRows(rows), sizing: tableSizing(node) },
+      ...(rowAnchors.length > 0 ? [{ kind: 'anchor' as const, names: rowAnchors }] : []),
+    ];
   }
 
   private row(tr: HtmlElement, before: PdfBlock[]): PdfTableCell[] {
@@ -1180,7 +1265,7 @@ export async function prepareEmbeddedImage(bytes: Buffer, label: string): Promis
 
 /**
  * Parses HTML into PDF blocks. Throws EngineUnavailableError('soffice') for content only the native
- * engine draws (MathML, non-PNG/JPEG images, tables nested too deep) and
+ * engine draws (non-PNG/JPEG images, images in preformatted text, grids of too many merged columns) and
  * ConversionFailedError for embedded images that cannot be decoded, and for external images that cannot
  * be loaded when the policy requires every resource.
  */

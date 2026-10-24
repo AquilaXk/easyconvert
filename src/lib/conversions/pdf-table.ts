@@ -1,5 +1,5 @@
 import { ConversionFailedError, EngineUnavailableError } from '../types';
-import type { PdfCellPart, PdfRasterImage, PdfTableCell } from './pdf-blocks';
+import type { PdfCellPart, PdfRasterImage, PdfTableAlign, PdfTableCell, PdfTableSizing } from './pdf-blocks';
 import { anchorsOf } from './pdf-destinations';
 import { shapedLineHeight, type PdfTextSegment, type PdfUnicodeTextWriter } from './pdf-fonts';
 import {
@@ -8,14 +8,17 @@ import {
   TABLE_FONT_SIZE,
   PX_TO_PT,
   automaticColumnWidths,
+  columnCount,
   measureTable,
+  usedTableWidth,
   type MeasureContext,
 } from './pdf-table-metrics';
 import type { LayoutLine } from './text-shaping/paragraph-layout';
 
 /**
  * Tables for the in-process PDF writers: cells that hold text, pictures and tables of their own, and rows that continue on
- * the next page. Columns are equal, except in a table that holds a table or sits in one (see pdf-table-metrics.ts).
+ * the next page. Column widths follow the content (see pdf-table-metrics.ts); an HTML table is as wide as its content or as
+ * it states, placed on the side it is aligned to, and a table of another writer fills the width it is given.
  *
  * A cell's content is a flow: it is measured at the cell's width when the table is laid out, and drawn into a window of
  * height it is given, returning what did not fit. A row is moved to the next page whole when it fits a page (CSS
@@ -27,7 +30,7 @@ import type { LayoutLine } from './text-shaping/paragraph-layout';
 const TABLE_BORDER_WIDTH = 0.5;
 /** Deepest table inside tables the renderer lays out. Each level costs 8 pt of width (cell padding), so 32 levels leave 486 pt of the 742 pt text width of a landscape page. */
 export const MAX_TABLE_DEPTH = 32;
-/** Slack for comparing heights that were summed in a different order. */
+/** Slack for comparing heights or widths that were summed, or scaled, in a different order. */
 const EPSILON = 1e-6;
 
 /** What a table needs from the document it is drawn in. */
@@ -350,7 +353,7 @@ export class TableFlow implements Flow {
       const remaining = limit - end;
       const fits = progress === undefined && rows.height <= remaining + EPSILON;
       if (!fits && (!mustSplit || remaining < minSplitRoom)) return { end, rest: new TableFlow(this.layout, index, progress) };
-      const drawn = rows.draw(context, x, end, progress ?? rows.start(), fits ? rows.height : remaining);
+      const drawn = rows.draw(context, x + this.layout.offset, end, progress ?? rows.start(), fits ? rows.height : remaining);
       end = drawn.end;
       if (drawn.next) return { end, rest: new TableFlow(this.layout, index, drawn.next) };
       progress = undefined;
@@ -370,7 +373,9 @@ export class TableLayout {
     /** Room a flow has at the top of a fresh page, in points: a group taller than this is cut. */
     readonly fresh: number,
     /** Least room worth starting a cut group in: one line of a cell. */
-    readonly minSplitRoom: number
+    readonly minSplitRoom: number,
+    /** How far right of the left edge of the width it was given the table starts. */
+    readonly offset: number
   ) {
     const heights = new Array<number>(groups.length + 1).fill(0);
     for (let index = groups.length - 1; index >= 0; index--) heights[index] = heights[index + 1] + groups[index].height;
@@ -398,35 +403,43 @@ function sizedGrid(widths: readonly number[]): Grid {
   return { count: widths.length, left: (column) => edges[column], widthOf: (column, span) => edges[column + span] - edges[column] };
 }
 
-function columnCount(rows: readonly PdfTableCell[][]): number {
-  return rows.reduce((widest, row) => Math.max(widest, row.reduce((sum, cell) => sum + cell.span, 0)), 0);
-}
-
 /** Whether a table holds a table in one of its cells. */
 function holdsTable(rows: readonly PdfTableCell[][]): boolean {
   return rows.some((row) => row.some((cell) => cell.parts?.some((part) => part.kind === 'table')));
 }
 
-/** The grid of a table in `width` points; refuses a table whose content cannot be set in that width. */
-function gridOf(context: TableContext, rows: readonly PdfTableCell[][], size: { width: number; depth: number }): Grid {
+/** Where in the width it is given a table of each alignment starts: the share of the room the table leaves that is left of it. */
+const ALIGN_SHARE: Readonly<Record<PdfTableAlign, number>> = { left: 0, center: 0.5, right: 1 };
+
+/**
+ * The grid of a table given `width` points, and how far right of the left edge of that width it starts; refuses a table
+ * whose content cannot be set in that width.
+ */
+function gridOf(
+  context: TableContext,
+  rows: readonly PdfTableCell[][],
+  size: { width: number; depth: number },
+  sizing: PdfTableSizing | undefined
+): { grid: Grid; offset: number } {
   const count = columnCount(rows);
   const where = size.depth === 0 ? 'the page width' : 'the width of the cell that holds it';
-  if (size.width / count < MIN_TABLE_COLUMN_WIDTH) {
+  if (size.width + EPSILON < count * MIN_TABLE_COLUMN_WIDTH) {
     throw new EngineUnavailableError(
       'soffice',
       `a table with ${count} columns does not fit ${where}; the in-process PDF renderer needs columns of at least ${MIN_TABLE_COLUMN_WIDTH}pt`
     );
   }
-  if (size.depth === 0 && !holdsTable(rows)) return equalGrid(count, size.width);
+  if (!sizing && size.depth === 0 && !holdsTable(rows)) return { grid: equalGrid(count, size.width), offset: 0 };
   context.doc.fontSize(TABLE_FONT_SIZE);
   const measure = measureTable(context, rows);
-  if (size.width < measure.least) {
+  if (size.width + EPSILON < measure.least) {
     throw new EngineUnavailableError(
       'soffice',
       `a table with ${count} columns and the tables inside it need ${Math.ceil(measure.least)}pt but ${where} is ${Math.floor(size.width)}pt; the in-process PDF renderer needs columns of at least ${MIN_TABLE_COLUMN_WIDTH}pt`
     );
   }
-  return sizedGrid(automaticColumnWidths(measure, size.width));
+  const width = sizing ? usedTableWidth(measure, sizing, size.width) : size.width;
+  return { grid: sizedGrid(automaticColumnWidths(measure, width)), offset: (size.width - width) * ALIGN_SHARE[sizing?.align ?? 'left'] };
 }
 
 function hasText(content: readonly PdfTextSegment[]): boolean {
@@ -455,7 +468,7 @@ function partFlow(context: TableContext, part: PdfCellPart, width: number, inner
     case 'image':
       return [new ImageFlow(context, part.image, width, inner.fresh)];
     case 'table': {
-      const table = layoutTable(context, part.rows, { width, fresh: inner.fresh, depth: inner.depth + 1 });
+      const table = layoutTable(context, part.rows, { width, fresh: inner.fresh, depth: inner.depth + 1 }, part.sizing);
       return table ? [table] : [];
     }
   }
@@ -550,7 +563,12 @@ function buildGroup(placed: readonly Placement[][], heights: readonly number[], 
  * Lays the rows out in `width` points. `fresh` is the room a table has at the top of a fresh page. Undefined when no
  * row has a cell. Refuses columns narrower than 24 pt, and tables nested more than MAX_TABLE_DEPTH deep.
  */
-export function layoutTable(context: TableContext, rows: readonly PdfTableCell[][], size: { width: number; fresh: number; depth: number }): TableFlow | undefined {
+export function layoutTable(
+  context: TableContext,
+  rows: readonly PdfTableCell[][],
+  size: { width: number; fresh: number; depth: number },
+  sizing?: PdfTableSizing
+): TableFlow | undefined {
   if (size.depth > MAX_TABLE_DEPTH) {
     throw new EngineUnavailableError(
       'soffice',
@@ -558,7 +576,7 @@ export function layoutTable(context: TableContext, rows: readonly PdfTableCell[]
     );
   }
   if (columnCount(rows) === 0) return undefined;
-  const grid = gridOf(context, rows, size);
+  const { grid, offset } = gridOf(context, rows, size, sizing);
   context.doc.fontSize(TABLE_FONT_SIZE);
   const minRowHeight = context.doc.currentLineHeight(true) + TABLE_CELL_PADDING * 2;
   const placed = placeRows(context, rows, grid, { fresh: size.fresh - TABLE_CELL_PADDING * 2, depth: size.depth });
@@ -569,5 +587,5 @@ export function layoutTable(context: TableContext, rows: readonly PdfTableCell[]
     groups.push(buildGroup(placed, heights, { first, last }, grid));
     first = last + 1;
   }
-  return new TableFlow(new TableLayout(context, groups, size.fresh, minRowHeight));
+  return new TableFlow(new TableLayout(context, groups, size.fresh, minRowHeight, offset));
 }
