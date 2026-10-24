@@ -78,6 +78,35 @@ describe('svgToDxf', () => {
     expect(Math.max(...points.map((point) => up(point.y)))).toBeCloseTo(17.5, 1);
   });
 
+  describe('the unit of the root width, which Inkscape writes its DXF in (dxf_outlines.py, inkex inkscape_scale)', () => {
+    const page = (width: string, height: string, viewBox: string, body: string): string =>
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="${viewBox}">${body}</svg>`;
+    const pointsOf = (svg: string): number[][] => readDxf(svgToDxf(svg)).entities.flatMap((entity) => entity.points.map(({ x, y }) => [x, y]));
+    const dashed = '<line x1="10" y1="20" x2="110" y2="20" stroke="#000" stroke-dasharray="6 3"/>';
+
+    it('writes a page Poppler 26 sizes in points and the same page Poppler 24 sizes without a unit at the same coordinates', () => {
+      const line = '<line x1="10" y1="20" x2="30" y2="40" stroke="#000"/>';
+      const expected = [
+        [10, 80],
+        [30, 60],
+      ];
+      expect(pointsOf(page('200pt', '100pt', '0 0 200 100', line)), 'width in pt').toEqual(expected);
+      expect(pointsOf(page('200', '100', '0 0 200 100', line)), 'width without a unit').toEqual(expected);
+    });
+
+    it('scales the user units to that unit: a viewBox twice the millimetres of the width writes half its numbers', () => {
+      expect(pointsOf(page('100mm', '50mm', '0 0 200 100', '<line x1="10" y1="20" x2="30" y2="40" stroke="#000"/>'))).toEqual([
+        [5, 40],
+        [15, 30],
+      ]);
+    });
+
+    it('writes a dash pattern in that unit', () => {
+      const { linetypes } = readDxf(svgToDxf(page('200pt', '100pt', '0 0 200 100', dashed)));
+      expect(linetypes.map((linetype) => [linetype.patternLength, linetype.elements])).toContainEqual([9, [6, -3]]);
+    });
+  });
+
   it('refuses a drawing without geometry instead of inventing a line', () => {
     for (const empty of [wrap(''), wrap('<rect width="0" height="0" />')]) {
       expect(() => svgToDxf(empty)).toThrow(ConversionFailedError);

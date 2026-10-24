@@ -61,7 +61,10 @@ const A4_POINTS = { width: 595.28, height: 841.89 };
 const CGM_PAGE_POINTS = { width: 793.7, height: 446.46 };
 const PAGE_TARGETS = ['pdf', 'png', 'svg', 'eps', 'ps'] as const;
 const METAFILE_PAGE_TARGETS = [...PAGE_TARGETS, 'jpg'] as const;
-/** Visio drawings are the one source whose pages the DXF writer and the metafile encoders can write (the others hold pictures or clip regions). */
+/**
+ * The registry offers DXF, EMF and WMF for Visio drawings only. The pages of the other samples hold pictures, or clip regions
+ * that the writers now cut at (sine_wave.emf and the CGM files), which the registry does not offer yet.
+ */
 const VISIO_TARGETS = [...PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
 const NO_PHRASE: readonly string[] = [];
 /** The DXF extents may differ from the inked pixels by this many points: a stroke has a width the outline does not. */
@@ -125,8 +128,10 @@ const SAMPLES: readonly SampleCase[] = [
   { id: 'tika-testwmf.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 117, height: 72.75 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'alike' },
   { id: 'lo-binary_corvette.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
   { id: 'lo-circles.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 14, pagePhrases: [], inkscape: 'none' },
-  // The file's 13 axis labels share one spot on the page: the office suite's CGM import (24.2 and 26.8 alike) places every
-  // RESTRICTED TEXT element at one point, so the text check below reads the characters, not the order an extractor lists them in.
+  // The file's axis labels share one spot on the page, so the text check below reads the characters, not the order an
+  // extractor lists them in. The office suite's CGM import (24.2 and 26.8 alike) places a label of vertical alignment HALF at
+  // its x coordinate in y (filter/source/graphicfilter/icgm/actimpr.cxx, `DrawText`, `case TAV_HALF`), so the seven y-axis
+  // labels, which share one x, share one y; set to TOP in a copy of the file they land 59.5 pt apart (policy 99).
   { id: 'tika-plotutils-bin-cgm-v3.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
 ];
 
@@ -295,16 +300,6 @@ interface DxfFacts {
   entities: number;
   min: [number, number];
   max: [number, number];
-}
-
-/**
- * DXF units per point. The DXF is written in SVG pixels: Poppler 24 writes the page size of its SVG without a unit
- * (a pixel is a point), Poppler 26 in `pt` (a point is 4/3 pixel), so the factor is read from the SVG of the same PDF.
- */
-const SVG_PIXELS_PER_POINT = 96 / 72;
-function dxfUnitsPerPoint(pdf: Buffer): number {
-  const svg = withFile(pdf, 'pdf', (file) => runTool('pdftocairo', ['-svg', '-f', '1', '-l', '1', file, '-']));
-  return /<svg\b[^>]*\swidth="[\d.]+pt"/.test(svg) ? SVG_PIXELS_PER_POINT : 1;
 }
 
 /** What ezdxf reads from a DXF file: audit errors, entity count and the extents of the drawing. */
@@ -595,19 +590,17 @@ describe.skipIf(toolsMissing)('real Visio, CorelDRAW, EMF, WMF and CGM files', (
   );
 });
 
-/** The DXF reads without audit errors, holds entities, and its extents lie in the page and hold every inked pixel of the PDF page. */
+/** The DXF (in points) reads without audit errors, holds entities, and its extents lie in the page and hold every inked pixel of the PDF page. */
 async function expectDxfHoldsTheInk(dxf: Buffer, pdf: Buffer, label: string): Promise<void> {
-  const unit = dxfUnitsPerPoint(pdf);
   const facts = ezdxfFacts(dxf);
   const ink = await inkBoxOfPdf(pdf);
-  const tolerance = DXF_EXTENT_TOLERANCE_POINTS * unit;
-  for (const side of ['minX', 'minY', 'maxX', 'maxY'] as const) ink[side] *= unit;
+  const tolerance = DXF_EXTENT_TOLERANCE_POINTS;
   expect({ label, errors: facts.errors }).toEqual({ label, errors: 0 });
   expect(facts.entities, `${label} entities`).toBeGreaterThan(0);
   const holdsInk = facts.min[0] <= ink.minX + tolerance && facts.min[1] <= ink.minY + tolerance && facts.max[0] >= ink.maxX - tolerance && facts.max[1] >= ink.maxY - tolerance;
   expect({ label, holdsInk, extents: [...facts.min, ...facts.max], ink: [ink.minX, ink.minY, ink.maxX, ink.maxY] }).toMatchObject({ label, holdsInk: true });
   const page = pdfPages(pdf).sizes[0];
-  const [width, height] = [page.width * unit, page.height * unit];
+  const { width, height } = page;
   expect(facts.min[0], `${label} left edge`).toBeGreaterThanOrEqual(-tolerance);
   expect(facts.min[1], `${label} bottom edge`).toBeGreaterThanOrEqual(-tolerance);
   expect(facts.max[0], `${label} right edge`).toBeLessThanOrEqual(width + tolerance);
