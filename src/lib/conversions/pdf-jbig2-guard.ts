@@ -48,7 +48,7 @@ const SEGMENT_NUMBER_ONE_BYTE_MAX = 256;
 const SEGMENT_NUMBER_TWO_BYTE_MAX = 65536;
 const DATA_LENGTH_BYTES = 4;
 
-interface SegmentHeader {
+export interface SegmentHeader {
   type: number;
   dataStart: number;
   dataLength: number;
@@ -67,7 +67,7 @@ function referredNumberBytes(segmentNumber: number): number {
 }
 
 /** The segment header at `at`, or null when the bytes are no header or run past the buffer. */
-function segmentHeaderAt(data: Buffer, at: number): SegmentHeader | null {
+export function segmentHeaderAt(data: Buffer, at: number): SegmentHeader | null {
   if (at + REFERRED_COUNT_OFFSET + 1 > data.length) return null;
   const segmentNumber = data.readUInt32BE(at);
   const flags = data[at + SEGMENT_FLAGS_OFFSET];

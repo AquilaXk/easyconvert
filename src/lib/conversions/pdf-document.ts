@@ -206,6 +206,26 @@ export interface PdfUpdateBase {
   previousXref: number;
 }
 
+/** Called with the text of a content stream and the index of the page that draws it (null for a file without page structure). */
+export type ContentVisitor = (content: string, pageIndex: number | null) => void;
+
+/** One filter of a stream's chain, with its /DecodeParms dictionary. */
+export interface PdfFilterStage {
+  name: string;
+  parms: PdfDict | null;
+}
+
+/** An image XObject stream, for a reader of the data its filters decode. */
+export interface PdfImageStream {
+  objectNumber: number;
+  generation: number;
+  dict: PdfDict;
+  /** Filters in decoding order. */
+  filters: PdfFilterStage[];
+  /** The data the filter at `index` reads: the stream's data decoded through the filters before it, or null when one of them is not one this reader decodes. */
+  dataBefore(index: number, budget: InflateBudget): Buffer | null;
+}
+
 interface PageNode {
   dict: PdfDict;
   resources: PdfValue;
@@ -505,6 +525,8 @@ export class PdfDocument {
   private contentStreamCount = 0;
   private annotationCount = 0;
   private formInvocations = 0;
+  /** Image XObjects each page draws, by object number, recorded while its content streams are read. */
+  private paintedImages: Array<Set<number>> = [];
 
   /**
    * @param skipUndecodable leave streams alone that use a filter or predictor this reader does not decode, instead of
@@ -756,10 +778,13 @@ export class PdfDocument {
    */
   private decodeStream(entry: PdfObjectEntry, budget: InflateBudget = this.budget, required = true): string | null {
     const stream = entry.stream as StreamSpan;
-    const label = `PDF stream of object ${entry.num}`;
-    const stages = this.filterChain(stream.dict);
-    const strict = required && !this.skipUndecodable;
+    const data = this.decodeStages(entry, this.filterChain(stream.dict), budget, required && !this.skipUndecodable);
+    return data === null ? null : data.toString('latin1');
+  }
 
+  private decodeStages(entry: PdfObjectEntry, stages: PdfFilterStage[], budget: InflateBudget, strict: boolean): Buffer | null {
+    const stream = entry.stream as StreamSpan;
+    const label = `PDF stream of object ${entry.num}`;
     for (const stage of stages) {
       if (!DECODABLE_FILTERS.has(stage.name)) {
         if (!strict) return null;
@@ -769,10 +794,10 @@ export class PdfDocument {
     let data = this.buffer.subarray(stream.rawStart, stream.rawEnd);
     // pdf.js Parser.makeFilter (src/core/parser.js, v6.3.289, lines 842-845): a stream with no data reads as empty,
     // whatever its filters.
-    if (data.length === 0) return '';
+    if (data.length === 0) return data;
     if (stages.length === 0) {
       budget.charge(data.length, label);
-      return data.toString('latin1');
+      return data;
     }
     for (const stage of stages) {
       if (ASCII_HEX_FILTERS.has(stage.name)) {
@@ -791,11 +816,43 @@ export class PdfDocument {
         if (predictor) data = undoPredictor(data, predictor, label);
       }
     }
-    return data.toString('latin1');
+    return data;
+  }
+
+  /** A value with its references followed; null for a missing object or a chain longer than MAX_PDF_REFERENCE_CHAIN. */
+  resolved(value: PdfValue | undefined): PdfValue {
+    return this.resolve(value);
+  }
+
+  /** Object numbers of the image XObject streams the file defines (the latest definition of each number). */
+  imageStreamNumbers(): number[] {
+    return [...this.index.values()].filter((entry) => this.isImage(entry)).map((entry) => entry.num);
+  }
+
+  /** The image XObject stream `value` refers to, or null when it refers to none. */
+  imageStream(value: PdfValue | undefined): PdfImageStream | null {
+    const entry = this.entryOf(value);
+    if (!entry || !this.isImage(entry)) return null;
+    const dict = (entry.stream as StreamSpan).dict;
+    const filters = this.filterChain(dict);
+    return {
+      objectNumber: entry.num,
+      generation: entry.gen,
+      dict,
+      filters,
+      dataBefore: (index, budget) => (this.encrypted ? null : this.decodeStages(entry, filters.slice(0, index), budget, false)),
+    };
+  }
+
+  /** The decoded data of the stream `value` refers to, or null when it is no stream, the file is encrypted, or a filter is not one this reader decodes. */
+  streamData(value: PdfValue | undefined, budget: InflateBudget): Buffer | null {
+    const entry = this.entryOf(value);
+    if (!entry || this.encrypted) return null;
+    return this.decodeStages(entry, this.filterChain((entry.stream as StreamSpan).dict), budget, false);
   }
 
   /** Filter names of a stream in decoding order, each with its /DecodeParms dictionary. */
-  private filterChain(dict: PdfDict): Array<{ name: string; parms: PdfDict | null }> {
+  private filterChain(dict: PdfDict): PdfFilterStage[] {
     const filters = this.resolve(dict.entries.get('Filter'));
     const names: string[] = [];
     if (isName(filters)) names.push(filters.value);
@@ -949,7 +1006,7 @@ export class PdfDocument {
    * page structure (no trailer root, catalog or page object) is read stream by stream instead, still
    * bounded, with image streams left alone. Encrypted files yield nothing.
    */
-  contentStreams(visit: (content: string) => void): void {
+  contentStreams(visit: ContentVisitor): void {
     this.visitPageStreams(visit, true);
   }
 
@@ -958,11 +1015,21 @@ export class PdfDocument {
    * same budgets as `contentStreams`, for a reader that takes the page content as it is but builds the annotations. A file
    * with no page structure is read stream by stream, as there.
    */
-  annotationAppearanceStreams(visit: (content: string) => void): void {
+  annotationAppearanceStreams(visit: ContentVisitor): void {
     this.visitPageStreams(visit, false);
   }
 
-  private visitPageStreams(visit: (content: string) => void, withPageContent: boolean): void {
+  /**
+   * The image XObjects each page draws with `Do`, in its content, the forms it invokes and its annotation appearances, by object
+   * number, as recorded by the last `contentStreams` or `annotationAppearanceStreams` call; empty for an encrypted file or one
+   * without page structure.
+   */
+  paintedImageObjects(): ReadonlyArray<ReadonlySet<number>> {
+    return this.paintedImages;
+  }
+
+  private visitPageStreams(visit: ContentVisitor, withPageContent: boolean): void {
+    this.paintedImages = [];
     if (this.encrypted) return;
     const pages = this.pages();
     if (pages === null) {
@@ -970,21 +1037,24 @@ export class PdfDocument {
       return;
     }
     const activeForms = new Set<number>();
-    for (const page of pages) {
+    pages.forEach((page, pageIndex) => {
+      const painted = new Set<number>();
+      this.paintedImages.push(painted);
+      const visitPage = (content: string): void => visit(content, pageIndex);
       for (const entry of withPageContent ? this.pageContentEntries(page.dict) : []) {
         this.countContentStream();
         const content = this.decodeStream(entry);
         if (content === null) continue;
-        visit(content);
-        this.drawForms(content, page.resources, 0, activeForms, visit);
+        visitPage(content);
+        this.drawForms(content, page.resources, 0, activeForms, visitPage, painted);
       }
       for (const entry of this.annotationAppearanceEntries(page.dict)) {
         const content = this.appearanceContent(entry);
         if (content === null) continue;
-        visit(content);
-        this.drawForms(content, (entry.stream as StreamSpan).dict.entries.get('Resources') ?? null, 0, activeForms, visit);
+        visitPage(content);
+        this.drawForms(content, (entry.stream as StreamSpan).dict.entries.get('Resources') ?? null, 0, activeForms, visitPage, painted);
       }
-    }
+    });
   }
 
   /**
@@ -1088,7 +1158,8 @@ export class PdfDocument {
     resources: PdfValue,
     depth: number,
     active: Set<number>,
-    visit: (content: string) => void
+    visit: (content: string) => void,
+    painted: Set<number>
   ): void {
     if (!content.includes('Do')) return;
     const xobjects = this.resolveDict(this.resolveDict(resources)?.entries.get('XObject'));
@@ -1100,6 +1171,7 @@ export class PdfDocument {
       const reference = xobjects.entries.get(decodeNameEscapes(match[1]));
       const entry = this.entryOf(reference);
       if (!entry || !isRef(reference)) continue;
+      if (this.isImage(entry)) painted.add(entry.num);
       if (!isName(entry.stream?.dict.entries.get('Subtype'), 'Form')) continue;
 
       this.formInvocations++;
@@ -1114,7 +1186,7 @@ export class PdfDocument {
       visit(formText);
       const formResources = (entry.stream as StreamSpan).dict.entries.get('Resources');
       active.add(entry.num);
-      this.drawForms(formText, formResources === undefined ? resources : formResources, depth + 1, active, visit);
+      this.drawForms(formText, formResources === undefined ? resources : formResources, depth + 1, active, visit, painted);
       active.delete(entry.num);
     }
   }
@@ -1304,7 +1376,7 @@ export class PdfDocument {
   }
 
   /** Reads every stream in file order for a file with no page structure, each pass on its own budget. */
-  private visitLooseStreams(visit: (content: string) => void): void {
+  private visitLooseStreams(visit: ContentVisitor): void {
     const passBudget = new InflateBudget();
     const entries = [...this.index.values()]
       .filter((entry) => entry.stream !== undefined && !this.isImage(entry))
@@ -1314,7 +1386,7 @@ export class PdfDocument {
       if (isName(type, 'XRef') || isName(type, 'ObjStm')) continue;
       this.countContentStream();
       const content = this.decodeStream(entry, passBudget, false);
-      if (content !== null) visit(content);
+      if (content !== null) visit(content, null);
     }
   }
 }

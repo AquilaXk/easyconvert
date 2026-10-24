@@ -5,8 +5,8 @@ import { runPdfTextJobInThread } from './pdf-text-host';
 import { appendAnnotationText } from './pdf-annotation-text';
 import { FontTable, readPageContent } from './pdf-text-content';
 import { ImageExtractor, awaitOperatorListDependencies } from './pdf-text-images';
-import { withFontProgramToUnicode } from './pdf-font-tounicode';
-import { assertPdfAnnotationStreamsWithinLimits, assertPdfStreamsWithinLimits } from './pdf-stream-guard';
+import { pdfjsReadableBytes } from './pdf-reader-input';
+import { CappedDecoderDataFactory } from './pdf-wasm-memory';
 import { pdfjsDataUrl } from './pdfjs-data';
 import {
   PDF_TEXT_MAX_PAGES,
@@ -1439,12 +1439,7 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
   let task: PdfJsLoadingTask | undefined;
   try {
     const bytes = Buffer.from(pdfBuffer.buffer, pdfBuffer.byteOffset, pdfBuffer.byteLength);
-    // The streams the text depends on are decoded under byte budgets first: pdfjs would inflate a bomb to its end. The
-    // composite fonts without a ToUnicode map then get one from their font program (pdf-font-tounicode.ts). Every job reads
-    // the annotations of its pages (readPages), so one that does not want the content still has their streams checked.
-    let readable = bytes;
-    if (contentWanted) readable = withFontProgramToUnicode(bytes, assertPdfStreamsWithinLimits(bytes));
-    else assertPdfAnnotationStreamsWithinLimits(bytes);
+    const readable = pdfjsReadableBytes(bytes, { content: contentWanted, pictures: job.images === true });
     const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as PdfJs;
     task = pdfjs.getDocument({
       data: new Uint8Array(readable),
@@ -1459,6 +1454,7 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       cMapUrl: pdfjsDataUrl('cmaps'),
       cMapPacked: true,
       wasmUrl: pdfjsDataUrl('wasm'),
+      BinaryDataFactory: CappedDecoderDataFactory,
       verbosity: 0,
     });
     const doc = await task.promise;

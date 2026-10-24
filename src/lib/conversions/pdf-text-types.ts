@@ -25,6 +25,8 @@ export const PDF_TEXT_DEADLINE_ENV = 'EASYCONVERT_PDF_TEXT_DEADLINE_MS';
 export const PDF_TEXT_MAX_IMAGE_PIXELS = 50_000_000;
 /** The `maxImageSize` of a job that writes no pictures: pdf.js skips every picture larger than it before decoding, so none is decoded. */
 export const PDF_TEXT_NO_IMAGE_PIXELS = 0;
+/** Memory one WebAssembly picture decoder (JBIG2 and CCITT, or JPEG 2000) may grow to in a thread; see pdf-wasm-memory.ts. */
+export const PDF_WASM_DECODER_MAX_BYTES = 256 * 1024 * 1024;
 /** Pages a document may have for its text content to be read; a larger document is refused with 413. */
 export const PDF_TEXT_MAX_PAGES = 2_000;
 /** Text items a whole document may have; with the per-page cap alone, a few thousand pages could still hold hundreds of millions. */

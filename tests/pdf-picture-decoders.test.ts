@@ -215,8 +215,7 @@ describe('hostile pictures for the WebAssembly decoders', () => {
   });
 
   it('leaves out a JPEG 2000 picture whose size marker declares 60000 x 60000 pixels it does not hold', async () => {
-    const [picture] = await bounded(picturesPdf([jpxPicture(jpxDeclaring(ABSURD_JPX_SIDE))]));
-    expect(picture.data).toBeUndefined();
+    expect(await bounded(picturesPdf([jpxPicture(jpxDeclaring(ABSURD_JPX_SIDE))]))).toEqual([]);
   });
 
   it('decodes a 12000 x 12000 JPEG 2000 picture of 1,178 bytes behind a 16 x 16 dictionary at a reduced size within the pixel limit', async () => {
