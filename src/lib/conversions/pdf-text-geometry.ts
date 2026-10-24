@@ -13,6 +13,7 @@ import {
   PDF_TEXT_MAX_ITEMS_PER_DOCUMENT,
   PDF_TEXT_MAX_CHARS_PER_DOCUMENT,
   PDF_TEXT_MAX_IMAGE_PIXELS,
+  PDF_TEXT_NO_IMAGE_PIXELS,
   PDF_TEXT_MAX_CHARS_PER_PAGE,
   PDF_TEXT_MAX_ITEM_CHARS,
   PDF_TEXT_MAX_ITEMS_PER_PAGE,
@@ -77,8 +78,6 @@ const MATCH_STEPS_MIN = 4096;
 const MATCH_STEPS_PER_PAGE = 50_000_000;
 /** PDF glyph widths are in thousandths of an em. */
 const GLYPH_UNITS_PER_EM = 1000;
-/** pdf.js `maxImageSize` under which every picture is larger than the budget. */
-const NO_PICTURE_PIXELS = 0;
 /** Weight of a gap pdfjs turned into a space, in em. */
 const SYNTHETIC_SPACE_EM = 0.25;
 /** Largest rise over run (about 1.7 degrees) at which an item still counts as horizontal. */
@@ -1454,13 +1453,11 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       // The fonts keep their encoding and ToUnicode data, so a glyph pdfjs cannot map can be read from its glyph name.
       fontExtraProperties: true,
       isEvalSupported: false,
-      // A job that writes no pictures has pdf.js skip every one before decoding it, as it skips one past this budget (buildPaintImageXObject).
-      maxImageSize: job.images === true ? PDF_TEXT_MAX_IMAGE_PIXELS : NO_PICTURE_PIXELS,
+      maxImageSize: job.images === true ? PDF_TEXT_MAX_IMAGE_PIXELS : PDF_TEXT_NO_IMAGE_PIXELS,
       standardFontDataUrl: pdfjsDataUrl('standard_fonts'),
       // The predefined CMaps: the codes of a CJK font and the Unicode values of a registered character collection.
       cMapUrl: pdfjsDataUrl('cmaps'),
       cMapPacked: true,
-      // The decoders of CCITT, JBIG2 and JPEG 2000 pictures (src/core/wasm_image.js); without them those pictures are null.
       wasmUrl: pdfjsDataUrl('wasm'),
       verbosity: 0,
     });

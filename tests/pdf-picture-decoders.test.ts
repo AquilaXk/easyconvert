@@ -109,7 +109,7 @@ function jpxPicture(stream = JPX_GRADIENT): Picture {
 }
 
 /** The JPEG 2000 gradient with a size marker (SIZ, ISO 15444-1 A.5.1) that declares `side` x `side` pixels. */
-function jpxDeclaring(side: number): Buffer {
+function jpxDeclaring(side: number): Buffer<ArrayBuffer> {
   const stream = Buffer.from(JPX_GRADIENT);
   const siz = stream.indexOf(Buffer.from([0xff, 0x51]));
   stream.writeUInt32BE(side, siz + 6);

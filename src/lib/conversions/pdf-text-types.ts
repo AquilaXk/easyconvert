@@ -23,6 +23,8 @@ export const PDF_TEXT_DEADLINE_ENV = 'EASYCONVERT_PDF_TEXT_DEADLINE_MS';
 
 /** Pixels of an image pdfjs decodes; larger images are skipped by the reader instead of being decoded. */
 export const PDF_TEXT_MAX_IMAGE_PIXELS = 50_000_000;
+/** The `maxImageSize` of a job that writes no pictures: pdf.js skips every picture larger than it before decoding, so none is decoded. */
+export const PDF_TEXT_NO_IMAGE_PIXELS = 0;
 /** Pages a document may have for its text content to be read; a larger document is refused with 413. */
 export const PDF_TEXT_MAX_PAGES = 2_000;
 /** Text items a whole document may have; with the per-page cap alone, a few thousand pages could still hold hundreds of millions. */
