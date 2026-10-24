@@ -44,6 +44,7 @@ const ORACLE_BINARIES: { name: string; tool: ExternalOracleTool }[] = [
   { name: 'poppler-utils (pdftops)', tool: 'pdftops' },
   { name: 'qpdf', tool: 'qpdf' },
   { name: 'ghostscript (ps2pdf)', tool: 'ps2pdf' },
+  { name: 'ghostxps (gxps)', tool: 'gxps' },
   { name: 'librsvg (rsvg-convert)', tool: 'rsvg-convert' },
   { name: 'inkscape', tool: 'inkscape' },
   { name: 'libredwg (dwg2dxf)', tool: 'dwg2dxf' },

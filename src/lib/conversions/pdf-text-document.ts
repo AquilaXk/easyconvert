@@ -70,31 +70,51 @@ function visibleGlyphsOf(page: PdfPageContent): number {
   return glyphs;
 }
 
-/** Tells the conversion what the text lacks: the glyphs left out of pages that read, and the pages left out as a whole. */
-function reportLeftOut(content: readonly PdfPageContent[], unreadable: ReadonlySet<number>, reportPages: boolean): void {
+const LEFT_OUT_REASON = 'more of its glyphs have no Unicode mapping than have one.';
+
+/**
+ * Tells the conversion what the text lacks: the glyphs left out of pages that read, and the pages whose own text is left
+ * out, naming those that keep the text of their annotations.
+ */
+function reportLeftOut(content: readonly PdfPageContent[], kept: readonly PdfPageContent[], unreadable: ReadonlySet<number>, reportPages: boolean): void {
   const partial = content.filter((page) => !unreadable.has(page.pageNumber) && page.unmappedGlyphs > 0);
   const glyphs = partial.reduce((total, page) => total + page.unmappedGlyphs, 0);
   if (glyphs > 0) {
     const pages = partial.map((page) => page.pageNumber);
     reportConversionWarning(`Left out ${glyphs} glyph${glyphs === 1 ? '' : 's'} that no font encoding maps to Unicode (${pagesPhrase(pages)}).`);
   }
-  if (reportPages && unreadable.size > 0) {
-    reportConversionWarning(`Left out the text of ${pagesPhrase([...unreadable])}: more of its glyphs have no Unicode mapping than have one.`);
+  if (!reportPages || unreadable.size === 0) return;
+  const withAnnotations = new Set(kept.filter((page) => unreadable.has(page.pageNumber) && page.items.length > 0).map((page) => page.pageNumber));
+  const without = [...unreadable].filter((pageNumber) => !withAnnotations.has(pageNumber));
+  if (without.length > 0) reportConversionWarning(`Left out the text of ${pagesPhrase(without)}: ${LEFT_OUT_REASON}`);
+  if (withAnnotations.size > 0) {
+    const their = withAnnotations.size === 1 ? 'its' : 'their';
+    reportConversionWarning(`Left out the page text of ${pagesPhrase([...withAnnotations])} and kept the text of ${their} annotations: ${LEFT_OUT_REASON}`);
   }
 }
 
 /**
- * The document a text job read: the structure of its pages, minus the pages whose glyphs mostly have no Unicode mapping.
- * @throws PdfTextUnmappedError when no page reads and `onUnmapped` is not `omit`.
+ * A page whose glyphs mostly have no Unicode mapping, without its own text. The text of its annotations stays unless OCR
+ * reads the page: their appearances set it in fonts of their own, and Poppler prints it (`Page::displaySlice` draws every
+ * annotation, poppler/Page.cc). A page handed to OCR is recognized as drawn, annotations included, so it keeps nothing.
+ */
+function withoutPageText(page: PdfPageContent, keepAnnotations: boolean): PdfPageContent {
+  return { ...page, items: keepAnnotations ? page.items.filter((item) => item.annotation === true) : [], rules: [], images: [] };
+}
+
+/**
+ * The document a text job read: the structure of its pages, minus the text of the pages whose glyphs mostly have no
+ * Unicode mapping.
+ * @throws PdfTextUnmappedError when no page has text left and `onUnmapped` is not `omit`.
  */
 export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOptions = {}): ReadPdfResult {
   const omit = options.onUnmapped === 'omit';
   const unmapped = new Set(job.content.filter((page) => page.unmappedGlyphs > visibleGlyphsOf(page)).map((page) => page.pageNumber));
   const unmappedPages = [...unmapped];
-  const someTextReads = job.content.some((page) => !unmapped.has(page.pageNumber) && visibleGlyphsOf(page) > 0);
+  const pages = job.content.map((page) => (unmapped.has(page.pageNumber) ? withoutPageText(page, !omit) : page));
+  const someTextReads = pages.some((page) => visibleGlyphsOf(page) > 0);
   if (unmappedPages.length > 0 && !someTextReads && !omit) throw new PdfTextUnmappedError(unmappedPages);
-  reportLeftOut(job.content, unmapped, !omit);
-  const pages = job.content.map((page) => (unmapped.has(page.pageNumber) ? { ...page, items: [], rules: [], images: [] } : page));
+  reportLeftOut(job.content, pages, unmapped, !omit);
   const model = layoutPdfDocument(pages, job.fonts);
   const geometry = new Map([...job.geometry].filter(([pageNumber]) => !unmapped.has(pageNumber)));
   const analyses: PdfPageAnalysis[] = job.analyses.map((analysis) =>

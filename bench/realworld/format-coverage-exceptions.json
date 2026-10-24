@@ -425,7 +425,9 @@
       "searched": [
         "file lists of LibreOffice core, Apache POI, Tika and the Open Preservation Foundation format corpus at pinned commits",
         "web search for WPS Office sample files",
-        "GitHub code search for files with the .dps extension (every hit is another format: Minecraft data packs, DeepSec protocol files, particle editor and PostScript drawing files)"
+        "GitHub code search for files with the .dps extension (every hit is another format: Minecraft data packs, DeepSec protocol files, particle editor and PostScript drawing files)",
+        "2026-10-25: GitHub code search again, past the 1,000-result cap by excluding the repositories that fill it (151 hits left), by size (over 30,000 bytes: 102 hits), and by path (test, sample, testdata, slide, ppt, wps), plus the same extension inside LibreOffice core, Apache POI, Tika, the Open Preservation Foundation format corpus and the LibreOffice test-files repository (0 hits in each); every hit is another format (treebank annotations, Bruker NMR parameters, eCognition workspaces, Windows diskpart scripts, Faust and ProVerif sources, PostScript drawings)",
+        "web search for sample .dps downloads with a licence (format guides and converter pages only; the sample-deck pages of the file-format vendors cover ppt, pptx and odp)"
       ]
     },
     "et": {

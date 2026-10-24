@@ -29,6 +29,8 @@ export interface AnnotationTextItem {
   height: number;
   fontName: string;
   hasEOL: false;
+  /** Drawn by an annotation's appearance, not by the page's content stream. */
+  annotation: true;
 }
 
 export interface OperatorListLike {
@@ -94,8 +96,15 @@ export interface AnnotationWalk {
   normalize(text: string): string;
 }
 
-function isMatrix(args: unknown): args is Matrix {
-  return Array.isArray(args) && args.length === MATRIX_VALUES && args.every((value) => typeof value === 'number' && Number.isFinite(value));
+/**
+ * A matrix operand as pdf.js 6.3.289 puts it in the operator list: six numbers for `cm` and an annotation's placement, and a
+ * Float32Array for `Tm` and a form's /Matrix (src/core/evaluator.js `getOperatorList` and `buildFormXObject`; canvas.js
+ * `setTextMatrix(opIdx, matrix)` and `paintFormXObjectBegin(opIdx, matrix, bbox)` read them so).
+ */
+function matrixOf(operand: unknown): Matrix | null {
+  if (!Array.isArray(operand) && !(operand instanceof Float32Array)) return null;
+  const values: unknown[] = Array.from(operand);
+  return values.length === MATRIX_VALUES && values.every((value) => typeof value === 'number' && Number.isFinite(value)) ? (values as Matrix) : null;
 }
 
 /** `m` applied first, then `n` (the concatenation order of ISO 32000-1 section 8.3.4). */
@@ -155,11 +164,11 @@ class AnnotationReader {
     const { ops } = this.walk;
     if (fn === ops.beginAnnotation) {
       // pdfjs draws an annotation under the box-to-rectangle matrix and then the appearance's own matrix (canvas.js beginAnnotation).
-      const placement = args?.[2];
-      const own = args?.[3];
+      const placement = matrixOf(args?.[2]);
+      const own = matrixOf(args?.[3]);
       let ctm = IDENTITY;
-      if (isMatrix(placement)) ctm = multiply(placement, ctm);
-      if (isMatrix(own)) ctm = multiply(own, ctm);
+      if (placement !== null) ctm = multiply(placement, ctm);
+      if (own !== null) ctm = multiply(own, ctm);
       this.state = AnnotationReader.freshState(ctm);
       this.saved.length = 0;
       this.inside = true;
@@ -175,12 +184,13 @@ class AnnotationReader {
     const state = this.state;
     if (fn === ops.save || fn === ops.paintFormXObjectBegin) {
       if (this.saved.length < PDF_CONTENT_MAX_STATE_DEPTH) this.saved.push({ ...state });
-      const matrix = fn === ops.paintFormXObjectBegin ? args?.[0] : undefined;
-      if (isMatrix(matrix)) state.ctm = multiply(matrix, state.ctm);
+      const matrix = fn === ops.paintFormXObjectBegin ? matrixOf(args?.[0]) : null;
+      if (matrix !== null) state.ctm = multiply(matrix, state.ctm);
     } else if (fn === ops.restore || fn === ops.paintFormXObjectEnd) {
       this.state = this.saved.pop() ?? state;
     } else if (fn === ops.transform) {
-      if (isMatrix(args)) state.ctm = multiply(args, state.ctm);
+      const matrix = matrixOf(args);
+      if (matrix !== null) state.ctm = multiply(matrix, state.ctm);
     } else if (fn === ops.beginText) {
       state.tm = IDENTITY;
       state.tlm = IDENTITY;
@@ -219,9 +229,10 @@ class AnnotationReader {
     } else if (fn === ops.nextLine) {
       this.carriageReturn();
     } else if (fn === ops.setTextMatrix) {
-      if (isMatrix(args)) {
-        state.tm = args;
-        state.tlm = args;
+      const matrix = matrixOf(args?.[0]);
+      if (matrix !== null) {
+        state.tm = matrix;
+        state.tlm = matrix;
       }
     } else if (fn === ops.showText) {
       this.show(args?.[0]);
@@ -299,6 +310,7 @@ class AnnotationReader {
       height: Math.hypot(run.transform[2], run.transform[3]),
       fontName: this.state.fontId,
       hasEOL: false,
+      annotation: true,
     });
   }
 }

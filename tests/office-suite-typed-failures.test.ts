@@ -11,6 +11,9 @@ import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { FORMAT_REGISTRY, getFormatByExtension } from '../src/lib/registry';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
+import { sofficeConvert } from './helpers/soffice-convert';
+import { skipWithoutTools } from './helpers/strict-skip';
 import { assertReadableAsText } from '../src/lib/conversions/office/text-source-guard';
 import {
   OFFICE_SUITE_SOURCE_FORMATS,
@@ -52,7 +55,7 @@ describe('formats only the office suite reads, without the office suite', () => 
   });
 
   it('lists the formats the registry advertises with a source the in-process engine cannot read', () => {
-    expect(sources.sort()).toEqual(['cdr', 'cgm', 'emf', 'lrf', 'lwp', 'numbers', 'pdb', 'pub', 'qpw', 'rb', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
+    expect(sources.sort()).toEqual(['cdr', 'cgm', 'emf', 'lrf', 'lwp', 'numbers', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
   });
 });
 
@@ -117,18 +120,12 @@ describe('an office suite that stops on a document', () => {
     );
   });
 
-  it('names a missing import filter for a format that only some builds import, and a damaged file for any other', () => {
+  it('names a damaged file for a format whose file the suite could not load or wrote nothing for', () => {
     const cannotLoad = new SandboxedProcessError('SandboxedProcessError (exit 1): Error: source file could not be loaded', 1, 'Error: source file could not be loaded');
-    expect((asUnreadableDocument(cannotLoad, 'rb') as Error).message).toBe(
-      'LibreOffice could not read the .rb file: it is damaged, or the LibreOffice of this worker has no import filter for RB files.'
-    );
     expect((asUnreadableDocument(cannotLoad, 'wps') as Error).message).toBe(
       'LibreOffice could not read the .wps file: it is damaged, encrypted or not a valid WPS document.'
     );
     const wroteNothing = new Error('LibreOffice execution completed without producing expected output file for target format "txt"');
-    expect((asUnreadableDocument(wroteNothing, 'rb') as Error).message).toBe(
-      'LibreOffice could not read the .rb file: it is damaged, or the LibreOffice of this worker has no import filter for RB files.'
-    );
     expect((asUnreadableDocument(wroteNothing, 'sxw') as Error).message).toBe(
       'LibreOffice could not read the .sxw file: it is damaged or not a valid SXW document.'
     );
@@ -140,6 +137,67 @@ describe('an office suite that stops on a document', () => {
   });
 });
 
+const layoutCrashToolsMissing = skipWithoutTools('soffice', 'pdftotext');
+const LAYOUT_CRASH_SAMPLE = 'gd-579820.doc';
+const LAYOUT_CRASH_TIMEOUT_MS = 300_000;
+const MIN_WORD_LENGTH = 4;
+/** Share of the words of the printed document that an output may lack (page headers, footers and numbers are laid out differently). */
+const MAX_MISSING_WORD_SHARE = 0.05;
+
+function wordsOf(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((word) => word.length >= MIN_WORD_LENGTH)
+  );
+}
+
+/**
+ * The word report of the regression corpus whose text layout aborted LibreOffice 24.2 (Ubuntu 24.04) and converts with the 25.2 of the worker
+ * image (Debian 13). Which of the two a machine has is read from the installed suite itself: a separate `soffice` run prints the file, and the
+ * conversion has to give what that run gives.
+ */
+describe.skipIf(layoutCrashToolsMissing)('a Word report whose text layout stopped LibreOffice 24.2', () => {
+  it(
+    'is converted with the words the installed suite prints where the suite reads it, and refused with the typed answer where the suite stops on it',
+    async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, LAYOUT_CRASH_SAMPLE);
+      const printed = (() => {
+        try {
+          return sofficeConvert(bytes, LAYOUT_CRASH_SAMPLE, 'pdf', (output) => extractTextWithExternalPdftotext(output.read()) ?? '');
+        } catch {
+          return undefined;
+        }
+      })();
+      if (printed === undefined) {
+        await expect(dispatchConversion(bytes, 'doc', 'docx', {}, LAYOUT_CRASH_SAMPLE)).rejects.toMatchObject({
+          name: 'ConversionFailedError',
+          message: 'LibreOffice stopped while reading the .doc file: the office suite fails on the content of this document, so it cannot be converted.',
+        });
+        return;
+      }
+      const reference = wordsOf(printed);
+      expect(reference.size).toBeGreaterThan(1000);
+      const docx = await JSZip.loadAsync((await dispatchConversion(bytes, 'doc', 'docx', {}, LAYOUT_CRASH_SAMPLE)).buffer);
+      const documentText = (await docx.files['word/document.xml'].async('string')).replace(/<[^>]*>/g, ' ');
+      const pdf = (await dispatchConversion(bytes, 'doc', 'pdf', {}, LAYOUT_CRASH_SAMPLE)).buffer;
+      const pages = await JSZip.loadAsync((await dispatchConversion(bytes, 'doc', 'png', {}, LAYOUT_CRASH_SAMPLE)).buffer);
+      const pageCount = printed.split('\f').length - 1;
+      expect(Object.keys(pages.files), 'one picture for every page the suite prints').toHaveLength(pageCount);
+      for (const [target, text] of [
+        ['docx', documentText],
+        ['pdf', extractTextWithExternalPdftotext(pdf) ?? ''],
+      ] as const) {
+        const have = wordsOf(text);
+        const missing = [...reference].filter((word) => !have.has(word));
+        expect({ target, withinLimit: missing.length <= reference.size * MAX_MISSING_WORD_SHARE, missing: missing.slice(0, 10) }).toMatchObject({ target, withinLimit: true });
+      }
+    },
+    LAYOUT_CRASH_TIMEOUT_MS
+  );
+});
+
 describe('how the office suite reaches the targets it does not write', () => {
   it.each([
     ['wps', 'html', 'docx'],
@@ -149,8 +207,6 @@ describe('how the office suite reaches the targets it does not write', () => {
     ['lrf', 'epub', 'docx'],
     ['lrf', 'azw3', 'txt'],
     ['pdb', 'mobi', 'txt'],
-    ['rb', 'oeb', 'txt'],
-    ['rb', 'lrf', 'txt'],
     ['pdb', 'epub', 'docx'],
     ['numbers', 'csv', 'xlsx'],
     ['sxw', 'html', 'docx'],

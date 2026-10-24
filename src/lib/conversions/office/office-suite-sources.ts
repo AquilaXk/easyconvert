@@ -8,7 +8,7 @@
  *   document, an Excel template a workbook, a PowerPoint slideshow a presentation, an OpenDocument template an
  *   OpenDocument file with another mimetype). They are read by the reader of the plain format.
  * - Office-suite-only sources: formats with no in-process reader (Works, WordPerfect, Lotus Word Pro, OpenOffice.org 1.x, StarOffice,
- *   AbiWord, Quattro Pro, Numbers, Publisher, the Sony, Palm and RocketBook e-books, the Visio and CorelDRAW drawings, the Windows and Computer Graphics metafiles). Their bytes are never read as text;
+ *   AbiWord, Quattro Pro, Numbers, Publisher, the Sony and Palm e-books, the Visio and CorelDRAW drawings, the Windows and Computer Graphics metafiles). Their bytes are never read as text;
  *   the office suite imports them and either writes the target itself or writes an interchange file that the in-process
  *   converter of that format turns into the target.
  */
@@ -47,7 +47,6 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
   lwp: { application: 'writer', interchange: 'docx' },
   lrf: { application: 'writer', interchange: 'docx' },
   pdb: { application: 'writer', interchange: 'docx' },
-  rb: { application: 'writer', interchange: 'docx' },
   numbers: { application: 'calc', interchange: 'xlsx' },
   sxi: { application: 'impress', interchange: 'pptx' },
   sxd: { application: 'draw' },
@@ -68,7 +67,7 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
 /** Targets the in-process engine writes from plain text only: the Palm family, the Sony and Open eBook formats, XPS and the Hangul formats. */
 export const TEXT_ONLY_TARGETS: ReadonlySet<string> = new Set(['azw3', 'mobi', 'lrf', 'oeb', 'pdb', 'xps', 'hwp', 'hwpx']);
 /** Sources of the ebook readers of the office suite: their targets written from text only are written from the text the suite exports. */
-const EBOOK_SOURCES: ReadonlySet<string> = new Set(['lrf', 'pdb', 'rb']);
+const EBOOK_SOURCES: ReadonlySet<string> = new Set(['lrf', 'pdb']);
 
 /**
  * The application of the office suite that opens each format it reads in its own right. A template or slide show is listed

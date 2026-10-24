@@ -3,7 +3,7 @@ import { EngineUnavailableError, UnsupportedTargetError } from '../types';
 /**
  * Pairs that only a native engine converts: the in-process engine has no code path for them.
  * LibreOffice converts between Office formats and, chained with Poppler, renders Office
- * documents to raster images; Poppler renders PDF to SVG. When the native engine is missing,
+ * documents to raster images; Poppler renders PDF to SVG; GhostXPS draws XPS documents. When the native engine is missing,
  * these pairs fail with EngineUnavailableError instead of falling back to the in-process engine.
  */
 const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
@@ -16,6 +16,7 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'odp->jpg', 'odp->png', 'odp->ppt',
   'ods->jpg', 'ods->png',
   'odt->doc', 'odt->jpg', 'odt->png', 'odt->rtf',
+  'oxps->avif', 'oxps->bmp', 'oxps->eps', 'oxps->gif', 'oxps->ico', 'oxps->jpg', 'oxps->pdf', 'oxps->png', 'oxps->ps', 'oxps->psd', 'oxps->svg', 'oxps->tiff', 'oxps->webp',
   'pdf->svg',
   'ps->avif', 'ps->bmp', 'ps->dxf', 'ps->eps', 'ps->gif', 'ps->jpg', 'ps->pdf', 'ps->png', 'ps->ps', 'ps->svg', 'ps->tiff', 'ps->webp',
   'pps->ppt',
@@ -24,6 +25,7 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'rtf->doc', 'rtf->jpg', 'rtf->png',
   'xls->jpg', 'xls->png',
   'xlsx->jpg', 'xlsx->png',
+  'xps->avif', 'xps->bmp', 'xps->eps', 'xps->gif', 'xps->ico', 'xps->jpg', 'xps->pdf', 'xps->png', 'xps->ps', 'xps->psd', 'xps->svg', 'xps->tiff', 'xps->webp',
 ]);
 
 function normalizeFormat(format: string): string {

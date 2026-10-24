@@ -78,6 +78,21 @@ COPY scripts/install-libredwg.sh /tmp/install-libredwg.sh
 RUN /tmp/install-libredwg.sh /opt/libredwg
 
 # ==============================================================================
+# Stage 3b: Pinned GhostXPS renderer (gxps)
+# ==============================================================================
+# XPS and OpenXPS input. GhostXPS is part of GhostPDL (AGPL-3.0-or-later) and is built here from the unmodified release archive,
+# pinned by SHA-256 in scripts/install-ghostxps.sh, with the copies of its libraries that ship in that archive, so the program needs
+# only the C library; the worker runs it as a separate sandboxed process and nothing links it into the application. Debian ships
+# no package of it. The stage fails the build if the program does not start.
+FROM ${NODE_IMAGE} AS ghostxps
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils build-essential \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-ghostxps.sh /tmp/install-ghostxps.sh
+RUN /tmp/install-ghostxps.sh /opt/ghostxps
+
+# ==============================================================================
 # Stage 4: Open CASCADE program (cad-convert)
 # ==============================================================================
 # STEP and IGES input and output. native/cad-convert is our own small program, built here against the unmodified Open CASCADE
@@ -238,6 +253,12 @@ COPY --from=libredwg /opt/libredwg/bin/dwg2dxf /usr/local/bin/dwg2dxf
 COPY --from=libredwg /opt/libredwg/share/doc/libredwg /usr/share/doc/libredwg
 RUN dwg2dxf --version
 
+# XPS renderer (pinned release built in the ghostxps stage). Its licence text goes to /usr/share/doc/ghostxps/copyright, which the
+# notices step below collects into /licenses with the system packages; the SOURCE file names the release archive it was built from.
+COPY --from=ghostxps /opt/ghostxps/bin/gxps /usr/local/bin/gxps
+COPY --from=ghostxps /opt/ghostxps/share/doc/ghostxps /usr/share/doc/ghostxps
+RUN gxps -v
+
 # STEP and IGES reader and writer (built in the cadconvert stage). It needs the Open CASCADE runtime libraries installed above and no
 # resource files; the build fails if one of them is missing or the program does not start. The libraries' licence texts are collected
 # into /licenses with the other system packages by the notices step below.
@@ -294,6 +315,7 @@ RUN mkdir -p /licenses \
     && if [ "$copied" -eq 0 ]; then echo "no copyright files found under /usr/share/doc" >&2; exit 1; fi
 COPY THIRD_PARTY_NOTICES.md /licenses/
 RUN cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE
+RUN cp /usr/share/doc/ghostxps/SOURCE /licenses/ghostxps.SOURCE
 # The versions this image was built with (every Debian package, and the Node.js runtime), kept next to the notices.
 RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; } > /licenses/tool-versions.txt
 RUN chmod -R a+rX /licenses

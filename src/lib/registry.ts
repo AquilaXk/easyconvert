@@ -783,7 +783,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/vnd.ms-xpsdocument',
     category: 'document',
     description: 'Microsoft XML Paper Specification fixed document format.',
-    targetFormats: ['txt', 'zip', 'html'],
+    targetFormats: ['pdf', 'txt', 'zip', 'html', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   },
   oxps: {
     id: 'oxps',
@@ -792,7 +792,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/oxps',
     category: 'document',
     description: 'Open XML Paper Specification standardized by ECMA-388.',
-    targetFormats: ['txt', 'zip'],
+    targetFormats: ['pdf', 'txt', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   },
   eml: {
     id: 'eml',
@@ -978,7 +978,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-rocketbook',
     category: 'ebook',
     description: 'NuvoMedia Rocket eBook historical electronic reader format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'txt', 'html', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   },
   snb: {
     id: 'snb',
