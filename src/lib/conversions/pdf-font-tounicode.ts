@@ -1,6 +1,8 @@
 import { ConversionFailedError } from '../types';
 import { InflateBudget } from './bounded-inflate';
-import type { CompositeFontDictionary, PdfDocument, PdfUpdateBase } from './pdf-document';
+import type { CompositeFontDictionary, PdfDocument, PdfUpdateBase, SimpleFontDictionary } from './pdf-document';
+import { numericGlyphNameTexts } from './pdf-numeric-glyph-names';
+import { PDF_CONTENT_MAX_FONTS } from './pdf-text-types';
 import { type CidText, standardOrderTexts } from './standard-font-glyph-order';
 import { type UnicodeCmap, readUnicodeCmap, sfntTableTags } from './truetype-cmap';
 
@@ -22,6 +24,9 @@ import { type UnicodeCmap, readUnicodeCmap, sfntTableTags } from './truetype-cma
  * and reading order from real characters, and every glyph the map does not cover reads exactly as before. A CID that
  * already is the code point the cmap maps to its glyph is left out of the map, so text that read right before is
  * unchanged. A file with no such font, or whose fonts give nothing, is passed on as the same bytes.
+ *
+ * A simple font without a /ToUnicode map whose /Differences glyph names are numbers gets a map of one-byte codes the same
+ * way, with the characters Poppler reads those names as (pdf-numeric-glyph-names.ts).
  */
 
 const IDENTITY_ENCODINGS = new Set(['Identity-H', 'Identity-V']);
@@ -41,9 +46,13 @@ const CID_COUNT = 0x10000;
 const BFCHAR_BLOCK = 100;
 const HEX_STRING = /^(?:[0-9A-Fa-f]{2}|\s)+$/;
 
+/** Bytes of a code: two for the Identity CMaps of composite fonts, one for a simple font (section 9.6.5). */
+type CodeBytes = 1 | 2;
+
 interface FontMap {
-  font: CompositeFontDictionary;
+  font: CompositeFontDictionary | SimpleFontDictionary;
   entries: CidText[];
+  codeBytes: CodeBytes;
 }
 
 /** The text of a string of the font dictionary: as written, and decoded when it is a hex string. */
@@ -116,16 +125,17 @@ function cidTexts(font: CompositeFontDictionary, known: TextsByProgram): CidText
   return namesNoGlyph && cidToGid === 'identity' ? standardOrderTexts(font.descendantName, font.cidWidths) : [];
 }
 
-function fontMaps(fonts: CompositeFontDictionary[]): FontMap[] {
+function fontMaps(fonts: CompositeFontDictionary[], simpleFonts: SimpleFontDictionary[]): FontMap[] {
   const maps: FontMap[] = [];
   const known: TextsByProgram = new Map();
   let mapped = 0;
-  for (const font of fonts) {
-    const entries = cidTexts(font, known);
-    if (entries.length === 0 || mapped + entries.length > MAX_MAPPED_CIDS) continue;
+  const add = (font: FontMap['font'], entries: CidText[], codeBytes: CodeBytes): void => {
+    if (entries.length === 0 || mapped + entries.length > MAX_MAPPED_CIDS) return;
     mapped += entries.length;
-    maps.push({ font, entries });
-  }
+    maps.push({ font, entries, codeBytes });
+  };
+  for (const font of fonts) add(font, cidTexts(font, known), 2);
+  for (const font of simpleFonts) add(font, font.hasToUnicode ? [] : numericGlyphNameTexts(font.differences), 1);
   return maps;
 }
 
@@ -141,8 +151,9 @@ function utf16Hex(codePoint: number): string {
   return digits;
 }
 
-/** A ToUnicode CMap (section 9.10.3) of two-byte codes that maps each CID to its code point. */
-function toUnicodeCMap(entries: CidText[]): string {
+/** A ToUnicode CMap (section 9.10.3) of codes of `codeBytes` bytes that maps each code to its code point. */
+function toUnicodeCMap(entries: CidText[], codeBytes: CodeBytes): string {
+  const digits = codeBytes * 2;
   const lines = [
     '/CIDInit /ProcSet findresource begin',
     '12 dict begin',
@@ -151,12 +162,12 @@ function toUnicodeCMap(entries: CidText[]): string {
     '/CMapName /Adobe-Identity-UCS def',
     '/CMapType 2 def',
     '1 begincodespacerange',
-    '<0000> <FFFF>',
+    `<${'0'.repeat(digits)}> <${'F'.repeat(digits)}>`,
     'endcodespacerange',
   ];
   for (let start = 0; start < entries.length; start += BFCHAR_BLOCK) {
     const block = entries.slice(start, start + BFCHAR_BLOCK);
-    lines.push(`${block.length} beginbfchar`, ...block.map(([cid, codePoint]) => `<${hex(cid, 4)}> <${utf16Hex(codePoint)}>`), 'endbfchar');
+    lines.push(`${block.length} beginbfchar`, ...block.map(([code, codePoint]) => `<${hex(code, digits)}> <${utf16Hex(codePoint)}>`), 'endbfchar');
   }
   lines.push('endcmap', 'CMapName currentdict /CMap defineresource pop', 'end', 'end');
   return lines.join('\n');
@@ -173,9 +184,9 @@ function incrementalUpdate(fileLength: number, base: PdfUpdateBase, maps: FontMa
     defined.push({ num, gen, at: fileLength + out.length });
     out += `${num} ${gen} obj\n${body}\nendobj\n`;
   };
-  maps.forEach(({ font, entries }, index) => {
+  maps.forEach(({ font, entries, codeBytes }, index) => {
     const streamNumber = base.nextObjectNumber + index;
-    const cmap = toUnicodeCMap(entries);
+    const cmap = toUnicodeCMap(entries, codeBytes);
     define(streamNumber, 0, `<< /Length ${cmap.length} >>\nstream\n${cmap}\nendstream`);
     define(font.objectNumber, font.generation, `<< /ToUnicode ${streamNumber} 0 R ${font.text.slice(2)}`);
   });
@@ -188,15 +199,15 @@ function incrementalUpdate(fileLength: number, base: PdfUpdateBase, maps: FontMa
 }
 
 /**
- * `pdf` with a /ToUnicode map added to every composite font whose TrueType program gives text its CIDs lack; the same
- * bytes when there is none. A font whose program, map or tables do not read is left as it is. A stream that inflates past
+ * `pdf` with a /ToUnicode map added to every composite font whose TrueType program gives text its CIDs lack, and to every
+ * simple font whose numeric glyph names give text; the same bytes when there is none. A font whose program, map or tables do not read is left as it is. A stream that inflates past
  * a limit ends the pass: the file is then passed on as it is, so a limit is met once and never papered over for some fonts.
  */
 export function withFontProgramToUnicode(pdf: Buffer, document: PdfDocument): Buffer {
   try {
     const base = document.updateBase();
     if (base === null) return pdf;
-    const maps = fontMaps(document.compositeFonts(MAX_FONTS, new InflateBudget(FONT_PROGRAM_BUDGET_BYTES)));
+    const maps = fontMaps(document.compositeFonts(MAX_FONTS, new InflateBudget(FONT_PROGRAM_BUDGET_BYTES)), document.simpleFonts(PDF_CONTENT_MAX_FONTS));
     return maps.length === 0 ? pdf : Buffer.concat([pdf, incrementalUpdate(pdf.length, base, maps)]);
   } catch (error) {
     if (error instanceof ConversionFailedError) return pdf;
