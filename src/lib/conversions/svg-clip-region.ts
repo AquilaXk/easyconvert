@@ -1,14 +1,16 @@
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import type { AffineMatrix } from './svg-geometry';
 import { PAGE_CLIP_TOLERANCE_PIXELS, type ClipNode } from './svg-page-clip';
-import { excerpt } from './svg-pen';
+import { excerpt, type SvgPenMode } from './svg-pen';
 
 /**
- * The clip a writer that holds no clip may drop. A DXF has no clipping, so a page that clips its drawing is refused unless
- * dropping the clip draws nothing the clip hides (policy 42). Both reference exporters drop every clip (Inkscape's
- * dxf_outlines.py `process_shape` reads none); this reader keeps the part of the refusal that guards against visible loss: a
- * non-page `clip-path` is dropped when no vertex of what it clips is more than PAGE_CLIP_TOLERANCE_PIXELS (one point of the
- * page) outside its region, measured on the flattened device-space geometry the writer writes (policy 79).
+ * The clips of the geometry readers, which write formats that hold no clip path. A non-page `clip-path` is measured against
+ * what is drawn under it on the flattened device-space geometry: it is dropped when no vertex of what it clips is more than
+ * the tolerance outside its region (PAGE_CLIP_TOLERANCE_PIXELS, one point of the page, for the DXF writer, policy 79; none for
+ * the metafile encoders, which paint what they draw). Past that, a clip whose region is one convex polygon cuts the drawing
+ * (`ActiveClips.cut`): the lines of a path keep their pieces inside the region (Cyrus and Beck, "Generalized two- and
+ * three-dimensional clipping", Computers & Graphics 3(1), 1978) and a filled area keeps its part inside it (Sutherland and
+ * Hodgman, "Reentrant polygon clipping", CACM 17(1), 1974). A clip of any other region that hides more is refused (policy 42).
  *
  * The region of a clip is the union of the shapes of its `<clipPath>` (SVG 1.1 section 14.3.5), each filled by its own
  * `clip-rule`, in the user space of the clipped element; a point is inside by the winding count of the edges to its left that
@@ -28,6 +30,9 @@ import { excerpt } from './svg-pen';
  * charged to once per clip. A clip that cannot be measured exactly (a bounding-box unit, a clip on the clip, a curve, text, a
  * picture or a group as its shape) stays refused.
  */
+
+/** How far outside a clip what it hides may lie before it is cut: one point for the centre lines of a DXF (policy 79), none for the metafile encoders, which paint what they draw. */
+export const CLIP_TOLERANCE_PIXELS: Readonly<Record<SvgPenMode, number>> = { 'centre-line': PAGE_CLIP_TOLERANCE_PIXELS, metafile: 0 };
 
 export const MAX_ACTIVE_CLIPS = 8;
 export const MAX_CLIP_EDGES = 1024;
@@ -126,11 +131,20 @@ interface DeviceShape {
   edges: Float64Array;
 }
 
+/** A convex polygon in device space, its vertices in order without a repeated first one, and the sign of its area. */
+export interface ConvexRegion {
+  vertices: readonly Point[];
+  orientation: number;
+}
+
 interface ClipRegion {
   shapes: DeviceShape[];
   edgeCount: number;
-  /** One convex polygon: a segment with both ends inside is inside, so only the vertices are measured. */
-  convex: boolean;
+  /**
+   * The region when it is one convex polygon, else null. A segment with both ends inside a convex region is inside, so only
+   * the vertices are measured, and only such a region cuts what it hides.
+   */
+  convex: ConvexRegion | null;
 }
 
 /** A polygon whose points are all on one line, which adds nothing to the winding count of any point off that line. */
@@ -222,14 +236,25 @@ function multiply(m1: AffineMatrix, m2: AffineMatrix): AffineMatrix {
   ];
 }
 
+/** Twice the signed area of a polygon (the shoelace formula). */
+function twiceSignedArea(polygon: readonly Point[]): number {
+  return polygon.reduce((total, a, i) => {
+    const b = polygon[(i + 1) % polygon.length];
+    return total + a.x * b.y - b.x * a.y;
+  }, 0);
+}
+
 /** The device-space region of a clip under `ctm`; a polygon that a singular `ctm` puts on one line fills nothing and is left out. */
 function deviceRegion(definition: ClipDefinition, ctm: AffineMatrix): ClipRegion {
   const shapes: DeviceShape[] = [];
+  const devicePolygons: Point[][] = [];
   for (const shape of definition.shapes) {
     const polygons = shape.polygons.map((polygon) => simplePolygon(polygon.map((p) => transformPoint(ctm, p)))).filter((polygon) => !fillsNothing(polygon));
     if (polygons.length > 0) shapes.push({ rule: shape.rule, edges: edgeRuns(polygons) });
+    devicePolygons.push(...polygons);
   }
-  const convex = shapes.length === 1 && definition.shapes.length === 1 && definition.shapes[0].polygons.length === 1 && isConvexPolygon(simplePolygon(definition.shapes[0].polygons[0]));
+  const isConvex = shapes.length === 1 && definition.shapes.length === 1 && definition.shapes[0].polygons.length === 1 && isConvexPolygon(simplePolygon(definition.shapes[0].polygons[0]));
+  const convex = isConvex ? { vertices: devicePolygons[0], orientation: Math.sign(twiceSignedArea(devicePolygons[0])) } : null;
   return { shapes, edgeCount: shapes.reduce((total, shape) => total + shape.edges.length / 4, 0), convex };
 }
 
@@ -320,7 +345,7 @@ function farthestOutside(region: ClipRegion, subpaths: readonly (readonly Point[
       pointOnPage(subpath[i]);
       const distance = distanceOutside(region, subpath[i].x, subpath[i].y);
       farthest = Math.max(farthest, distance);
-      if (!region.convex && i > 0) {
+      if (region.convex === null && i > 0) {
         const [p, q] = [subpath[i - 1], subpath[i]];
         work.charge(region.edgeCount);
         const cuts = [0, ...crossings(region, p, q), 1];
@@ -334,6 +359,83 @@ function farthestOutside(region: ClipRegion, subpaths: readonly (readonly Point[
   }
   return farthest;
 }
+
+/** How far inside the line of the region's edge from `a` to `b` a point is: at or above zero on the inner side. */
+function inside(region: ConvexRegion, a: Point, b: Point, p: Point): number {
+  return region.orientation * ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x));
+}
+
+const pointAt = (p: Point, q: Point, t: number): Point => ({ x: p.x + t * (q.x - p.x), y: p.y + t * (q.y - p.y) });
+
+/** The parameters between which the segment from `p` to `q` is inside the region (Cyrus and Beck), or null when no piece of it longer than a point is. */
+function insideSpan(region: ConvexRegion, p: Point, q: Point): [number, number] | null {
+  const { vertices } = region;
+  let [entering, leaving] = [0, 1];
+  for (let i = 0; i < vertices.length; i++) {
+    const [a, b] = [vertices[i], vertices[(i + 1) % vertices.length]];
+    const start = inside(region, a, b, p);
+    const change = inside(region, a, b, q) - start;
+    if (change === 0) {
+      if (start < 0) return null;
+    } else if (change > 0) {
+      entering = Math.max(entering, -start / change);
+    } else {
+      leaving = Math.min(leaving, -start / change);
+    }
+    if (entering >= leaving) return null;
+  }
+  return [entering, leaving];
+}
+
+/** The pieces of a polyline inside the region; a closed one (first point repeated last) that is cut keeps its pieces through the first point joined. */
+function cutLines(region: ConvexRegion, line: readonly Point[]): Point[][] {
+  const pieces: Point[][] = [];
+  let open: Point[] | null = null;
+  let cut = false;
+  for (let i = 1; i < line.length; i++) {
+    const [p, q] = [line[i - 1], line[i]];
+    const span = insideSpan(region, p, q);
+    if (span === null) {
+      [open, cut] = [null, true];
+      continue;
+    }
+    if (open === null || span[0] > 0) {
+      open = [span[0] > 0 ? pointAt(p, q, span[0]) : p];
+      pieces.push(open);
+    }
+    open.push(span[1] < 1 ? pointAt(p, q, span[1]) : q);
+    if (span[0] > 0 || span[1] < 1) cut = true;
+    if (span[1] < 1) open = null;
+  }
+  const closed = line.length > 2 && line[0].x === line[line.length - 1].x && line[0].y === line[line.length - 1].y;
+  const [first, last] = [pieces[0], pieces[pieces.length - 1]];
+  if (closed && cut && pieces.length > 1 && first[0] === line[0] && last[last.length - 1] === line[line.length - 1]) {
+    pieces[0] = [...last, ...first.slice(1)];
+    pieces.pop();
+  }
+  return pieces;
+}
+
+/** The part of a ring (closed implicitly) inside the region, closed by its first point repeated, or nothing (Sutherland and Hodgman). */
+function cutArea(region: ConvexRegion, ring: readonly Point[]): Point[] {
+  let kept = simplePolygon(ring);
+  const { vertices } = region;
+  for (let i = 0; i < vertices.length && kept.length > 0; i++) {
+    const [a, b] = [vertices[i], vertices[(i + 1) % vertices.length]];
+    const input = kept;
+    kept = [];
+    input.forEach((current, k) => {
+      const previous = input[(k + input.length - 1) % input.length];
+      const [here, before] = [inside(region, a, b, current), inside(region, a, b, previous)];
+      if ((here >= 0) !== (before >= 0)) kept.push(pointAt(previous, current, before / (before - here)));
+      if (here >= 0) kept.push(current);
+    });
+  }
+  return kept.length >= 3 ? [...kept, kept[0]] : [];
+}
+
+/** What a cut keeps of a shape: the pieces of its lines inside the region, or the part of its filled area inside it. */
+export type ClipCut = 'lines' | 'area';
 
 function formatPixels(value: number): string {
   return String(Number(value.toFixed(MAX_REPORTED_DECIMALS)));
@@ -381,23 +483,47 @@ export class ActiveClips {
   }
 
   /**
-   * Refuses the shape when it reaches past a clip it is drawn under: by more than the tolerance under one clip, by anything
-   * under more than one. A point a little outside each of two clips can be far outside their intersection, which can even be
-   * empty, and the intersection is not measured, so under nested clips the shape must be inside each.
+   * Refuses a shape that cannot be cut (the box of a bitmap-font character) when it reaches past a clip it is drawn under: by
+   * more than the tolerance under one clip, by anything under more than one. A point a little outside each of two clips can
+   * be far outside their intersection, which can even be empty, and the intersection is not measured, so under nested clips
+   * the shape must be inside each.
    */
   assertWithin(subpaths: readonly (readonly Point[])[]): void {
     const nested = this.stack.length > 1;
-    const tolerance = nested ? 0 : this.tolerance;
-    for (const { value, region } of this.stack) {
-      const farthest = farthestOutside(region, subpaths, tolerance, this.work);
-      if (!(farthest <= tolerance)) throw clipRefusal(value, this.reach(farthest, nested));
-    }
+    for (const { value, farthest } of this.reaching(subpaths)) throw clipRefusal(value, this.reach(farthest, nested));
+  }
+
+  /**
+   * The regions of the clips that hide more than the tolerance of a shape, outermost first (none when the shape is drawn as
+   * it is); refuses the shape when such a clip is not one convex polygon. Under nested clips the tolerance is none, as for
+   * `assertWithin`, and each clip that hides anything cuts, so the shape is cut to their intersection.
+   */
+  hiding(subpaths: readonly (readonly Point[])[]): readonly ConvexRegion[] {
+    const nested = this.stack.length > 1;
+    return this.reaching(subpaths).map(({ value, region, farthest }) => {
+      if (region.convex === null) throw clipRefusal(value, `${this.reach(farthest, nested)}, and only a clip of one convex polygon is cut`);
+      return region.convex;
+    });
+  }
+
+  /** The shape cut by the regions `hiding` gave, each charged to the work as its vertices times the region's edges. */
+  cut(regions: readonly ConvexRegion[], subpaths: readonly (readonly Point[])[], kind: ClipCut): Point[][] {
+    return regions.reduce<Point[][]>((pieces, region) => {
+      this.work.charge(pieces.reduce((total, piece) => total + piece.length, 0) * region.vertices.length);
+      return kind === 'lines' ? pieces.flatMap((line) => cutLines(region, line)) : pieces.map((ring) => cutArea(region, ring)).filter((ring) => ring.length > 0);
+    }, subpaths.map((subpath) => [...subpath]));
+  }
+
+  private reaching(subpaths: readonly (readonly Point[])[]): (ActiveClip & { farthest: number })[] {
+    const tolerance = this.stack.length > 1 ? 0 : this.tolerance;
+    return this.stack.map((clip) => ({ ...clip, farthest: farthestOutside(clip.region, subpaths, tolerance, this.work) })).filter(({ farthest }) => !(farthest <= tolerance));
   }
 
   private reach(farthest: number, nested: boolean): string {
     if (!Number.isFinite(farthest)) return 'it hides everything under it';
     const past = `a drawn path reaches ${formatPixels(farthest)} pixels past it`;
-    return nested ? `${past}, and a path under more than one clip must be inside each of them` : `${past}, more than the ${formatPixels(this.tolerance)} pixels (one point) a clip may hide`;
+    if (nested) return `${past}, and a path under more than one clip must be inside each of them`;
+    return this.tolerance > 0 ? `${past}, more than the ${formatPixels(this.tolerance)} pixels (one point) a clip may hide` : past;
   }
 
   private definitionOf(id: string, value: string): ClipDefinition {

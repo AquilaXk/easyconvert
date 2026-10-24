@@ -2,7 +2,7 @@ import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
 import { BitmapGlyphs, glyphBox } from './svg-bitmap-glyph';
-import { ActiveClips } from './svg-clip-region';
+import { ActiveClips, CLIP_TOLERANCE_PIXELS, type ConvexRegion } from './svg-clip-region';
 import { createPageClipCheck, type ClipNode } from './svg-page-clip';
 import { CHAR_SLASH, MAX_SVG_INPUT_CHARS, XML_NAME_PATTERN, endOfMarkup, endOfTag, malformedXml, scanXmlTags, skipNonElementMarkup } from './svg-xml';
 import { NEUTRAL_ONLY_PROPERTY_NAMES, SVG_NUMBER_PATTERN, assertNeutralPaintProperties, devicePattern, parseDashArray, type SvgPenMode } from './svg-pen';
@@ -1092,8 +1092,8 @@ interface RenderState {
   pens: SvgPenMode;
   /** Whether a `clip-path` value, on an element drawn under the matrix, is a clip that covers the page and clips nothing. */
   clipsNothing: (value: string, ctm: AffineMatrix) => boolean;
-  /** The other clips of a centre-line reader, measured against what is drawn under them; null where every such clip is refused. */
-  clips: ActiveClips | null;
+  /** The other clips, measured against what is drawn under them and cut where they hide more than the tolerance of the pens. */
+  clips: ActiveClips;
 }
 
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
@@ -1169,7 +1169,7 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
       return d;
     })
   );
-  state.clips?.assertWithin(deviceSubpaths);
+  const hiding = state.clips.hiding(deviceSubpaths);
   const lengthScale = matrixLengthScale(ctx.ctm);
   requireFinite(strokeWidth * lengthScale, `<${node.name}> device stroke width`);
   const stroke = strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null;
@@ -1178,7 +1178,7 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
       `Stroked SVG <${node.name}> under a non-uniform scale or skew is not supported: a metafile pen has one width.`
     );
   }
-  state.elements.push({
+  const element: SvgGeometryElement = {
     subpaths: deviceSubpaths,
     isClosed: shape.isClosed,
     fillable: node.name !== 'line',
@@ -1190,7 +1190,31 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     strokeLinejoin: ctx.strokeLinejoin.trim() as SvgLinejoin,
     strokeMiterlimit: parseSvgNumber(ctx.strokeMiterlimit, 'stroke-miterlimit'),
     strokeDash: stroke && ctx.dashArray && lengthScale > 0 ? devicePattern(ctx.dashArray, lengthScale, ctx.strokeLinecap.trim() !== 'butt') : null,
-  });
+  };
+  if (hiding.length === 0) state.elements.push(element);
+  else state.elements.push(...cutElement(element, hiding, state));
+}
+
+/**
+ * An element cut at the clips that hide part of it (svg-clip-region.ts). A DXF writes every path as its line, so each path
+ * is cut as lines; a metafile paints the fill and the stroke, so the fill is cut as an area and the stroke as lines, one
+ * element each where the shape has both. The vertices the cut adds are charged to the document's budget.
+ */
+type Point = { x: number; y: number };
+
+function cutElement(element: SvgGeometryElement, hiding: readonly ConvexRegion[], state: RenderState): SvgGeometryElement[] {
+  const lines = (): Point[][] => state.clips.cut(hiding, element.subpaths, 'lines');
+  const pieces: SvgGeometryElement[] =
+    state.pens === 'centre-line'
+      ? [{ ...element, subpaths: lines() }]
+      : [
+          ...(element.fillable && element.fill !== null ? [{ ...element, stroke: null, subpaths: state.clips.cut(hiding, element.subpaths, 'area') }] : []),
+          ...(element.stroke !== null ? [{ ...element, fill: null, subpaths: lines() }] : []),
+        ];
+  const drawn = pieces.filter((piece) => piece.subpaths.length > 0);
+  const vertexCount = (subpaths: readonly (readonly Point[])[]): number => subpaths.reduce((total, subpath) => total + subpath.length, 0);
+  state.vertices.charge(Math.max(0, drawn.reduce((total, piece) => total + vertexCount(piece.subpaths), 0) - vertexCount(element.subpaths)));
+  return drawn;
 }
 
 function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): void {
@@ -1225,11 +1249,11 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   if (declared.get('display') === 'none') return;
   const ctx = deriveContext(parent, node.attrs, declared, state.pens);
   if (state.bitmapGlyphs.take(node, state.ids, parent.ctm, ctx.ctm)) {
-    state.clips?.assertWithin(glyphBox(state.bitmapGlyphs.marks[state.bitmapGlyphs.marks.length - 1]));
+    state.clips.assertWithin(glyphBox(state.bitmapGlyphs.marks[state.bitmapGlyphs.marks.length - 1]));
     return;
   }
   let opensClip = false;
-  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm) || (opensClip = state.clips?.enter(value, ctx.ctm) ?? false));
+  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm) || (opensClip = state.clips.enter(value, ctx.ctm)));
   if (kind === 'shape') {
     emitShape(node, ctx, state);
   } else if (kind === 'use') {
@@ -1237,7 +1261,7 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   } else {
     renderChildren(node, ctx, state);
   }
-  if (opensClip) state.clips?.leave();
+  if (opensClip) state.clips.leave();
 }
 
 /**
@@ -1266,16 +1290,17 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
   const parents = new Map<ClipNode, SvgNode>();
   const vertices = new VertexBudget();
   const clipsNothing = createPageClipCheck(ids, viewport, (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null);
-  const clips =
-    pens === 'centre-line'
-      ? new ActiveClips({
-          ids,
-          outlineOf: (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null,
-          declaredOf: (node) => declaredProperties(node.attrs, node.name, sheet),
-          parentOf: (node) => parents.get(node),
-          transformOf: (value) => (value.trim() === '' ? IDENTITY_MATRIX : parseSvgTransform(value)),
-        })
-      : null;
+  const clips = new ActiveClips(
+    {
+      ids,
+      outlineOf: (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null,
+      declaredOf: (node) => declaredProperties(node.attrs, node.name, sheet),
+      parentOf: (node) => parents.get(node),
+      transformOf: (value) => (value.trim() === '' ? IDENTITY_MATRIX : parseSvgTransform(value)),
+    },
+    undefined,
+    CLIP_TOLERANCE_PIXELS[pens]
+  );
   const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, clipsNothing, clips };
   indexIds(root, state.ids, parents);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
