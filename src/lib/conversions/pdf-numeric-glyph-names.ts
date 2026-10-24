@@ -5,9 +5,12 @@ import { glyphNameToText } from './pdf-glyph-names';
  * 26.09, `Gfx8BitFont::Gfx8BitFont` lines 1228 to 1295, `parseNumericName` lines 865 to 909 and `testForNumericNames`
  * lines 913 to 943; GPL, followed for its behaviour only). A font is read this way only when every name of its
  * /Differences is a number after at most two letters (`G101`, `MT69`, `g110`) and every run of codes starts at 5 or below;
- * the number of a name that the Adobe Glyph List does not know is then its character. The numbers are decimal, or
- * hexadecimal when one of the font's unknown names is two hexadecimal digits with a letter digit last, or a letter and two
- * hexadecimal digits with a letter digit among them (`Cf`, `Ga5`).
+ * the number of a name that the Adobe Glyph List does not know (with the ZapfDingbats list for a font whose name ends in
+ * `ZapfDingbats`, line 1084) is then its character. The numbers are decimal, or hexadecimal when an unknown name is two
+ * hexadecimal digits with a letter digit last, or a letter and two hexadecimal digits with a letter digit among them (`Cf`,
+ * `Ga5`). Poppler makes that choice per font; it is made here for the document, because one producer names the glyphs of
+ * all its fonts the same way and a small subset may hold no letter digit: in `gd-915462.pdf` a font named `G46 G49 G47 G55
+ * G52 G45` ("FIGURE" in hexadecimal) sits beside fonts named `G4D` and `G2C`, and read per font it gives `.1/74-`.
  *
  * pdf.js reads such names by its own rules (`src/core/evaluator.js`, `_simpleFontToUnicode`: two hexadecimal digits after
  * `G`, four after `g`, two or three decimal digits after `C`), so it reads `G69` as `i` and leaves `G101` and `MT69` as
@@ -25,6 +28,7 @@ const MAX_RUN_START = 5;
 /** At most two letters precede the number of a decimal name. */
 const MAX_LETTERS = 2;
 const NOTDEF = '.notdef';
+const ZAPF_DINGBATS = 'ZapfDingbats';
 const FIRST_PRINTABLE = 0x20;
 const LAST_ASCII = 0x7e;
 const FIRST_LATIN1_PRINTABLE = 0xa0;
@@ -86,22 +90,38 @@ function namesByCode(differences: ReadonlyArray<number | string | null>): Map<nu
   return names;
 }
 
-/**
- * The code points of the codes whose glyph names are numbers, for a font whose every /Differences name is one; none for any
- * other font. A name the Adobe Glyph List maps keeps its text, as in Poppler and pdf.js.
- */
-export function numericGlyphNameTexts(differences: ReadonlyArray<number | string | null> | null): CodeText[] {
-  if (differences === null) return [];
-  const runsStartLow = differences.every((item) => typeof item !== 'number' || item <= MAX_RUN_START);
-  if (!runsStartLow || differences.some((item) => item === null)) return [];
-  const unknown = [...namesByCode(differences)].filter(([, name]) => name !== NOTDEF && glyphNameToText(name) === null);
-  const hex = unknown.some(([, name]) => looksHexadecimal(name));
+/** The /Differences and /BaseFont of a simple font, as the document gives them. */
+export interface NamedFont {
+  differences: ReadonlyArray<number | string | null> | null;
+  baseFont: string | null;
+}
+
+/** The names of the font's codes that neither the Adobe Glyph List nor, for a ZapfDingbats font, its list maps; none for a font Poppler does not read by numbers. */
+function unknownNames({ differences, baseFont }: NamedFont): Array<[code: number, name: string]> {
+  if (differences === null || differences.some((item) => item === null)) return [];
+  if (!differences.every((item) => typeof item !== 'number' || item <= MAX_RUN_START)) return [];
+  const dingbats = baseFont?.endsWith(ZAPF_DINGBATS) === true;
+  return [...namesByCode(differences)].filter(([, name]) => name !== NOTDEF && glyphNameToText(name, { dingbats }) === null);
+}
+
+function textsOf(differences: ReadonlyArray<number | string | null>, unknown: Array<[number, string]>, hex: boolean): CodeText[] {
   const names = differences.filter((item): item is string => typeof item === 'string');
-  if (names.some((name) => numericGlyphName(name, hex) === null)) return [];
+  if (unknown.length === 0 || names.some((name) => numericGlyphName(name, hex) === null)) return [];
   const texts: CodeText[] = [];
   for (const [code, name] of unknown) {
     const codePoint = numericGlyphName(name, hex);
     if (codePoint !== null && isOneByteCharacter(codePoint)) texts.push([code, codePoint]);
   }
   return texts;
+}
+
+/**
+ * For each font of the document, in order, the code points of the codes whose glyph names are numbers: none for a font
+ * whose /Differences hold a name that is not one. A name the Adobe Glyph List (or the ZapfDingbats list) maps keeps its
+ * text, as in Poppler and pdf.js.
+ */
+export function numericGlyphNameTexts(fonts: readonly NamedFont[]): CodeText[][] {
+  const unknown = fonts.map(unknownNames);
+  const hex = unknown.some((names) => names.some(([, name]) => looksHexadecimal(name)));
+  return fonts.map((font, index) => (font.differences === null ? [] : textsOf(font.differences, unknown[index], hex)));
 }

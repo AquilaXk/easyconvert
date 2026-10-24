@@ -191,6 +191,8 @@ export interface SimpleFontDictionary {
   /** The text of the dictionary (`<< ... >>`) as the file, or the object stream that holds it, writes it. */
   text: string;
   hasToUnicode: boolean;
+  /** /BaseFont as written, a subset tag included. */
+  baseFont: string | null;
   /** The items of the /Differences array of an /Encoding dictionary (section 9.6.5.1): integer codes and glyph names, null for any other item; null when there is no array. */
   differences: ReadonlyArray<number | string | null> | null;
 }
@@ -1211,11 +1213,13 @@ export class PdfDocument {
     const subtype = dict?.entries.get('Subtype');
     if (!entry || entry.stream || !dict || !isName(subtype) || !SIMPLE_FONT_SUBTYPES.has(subtype.value)) return null;
     const differences = this.resolve(this.resolveDict(dict.entries.get('Encoding'))?.entries.get('Differences'));
+    const baseFont = this.resolve(dict.entries.get('BaseFont'));
     return {
       objectNumber: num,
       generation: entry.gen,
       text: entry.source.slice(entry.start, entry.end),
       hasToUnicode: dict.entries.has('ToUnicode'),
+      baseFont: isName(baseFont) ? baseFont.value : null,
       differences: isArray(differences)
         ? differences.items.map((item) => {
             const value = this.resolve(item);

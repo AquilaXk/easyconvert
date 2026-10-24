@@ -135,7 +135,8 @@ function fontMaps(fonts: CompositeFontDictionary[], simpleFonts: SimpleFontDicti
     maps.push({ font, entries, codeBytes });
   };
   for (const font of fonts) add(font, cidTexts(font, known), 2);
-  for (const font of simpleFonts) add(font, font.hasToUnicode ? [] : numericGlyphNameTexts(font.differences), 1);
+  const numericTexts = numericGlyphNameTexts(simpleFonts);
+  simpleFonts.forEach((font, index) => add(font, font.hasToUnicode ? [] : numericTexts[index], 1));
   return maps;
 }
 
