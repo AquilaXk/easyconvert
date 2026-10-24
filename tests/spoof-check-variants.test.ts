@@ -8,6 +8,7 @@ import { FileExtensionSpoofError, isFormatCompatibleWithMagicBytes, sniffMimeTyp
 import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
 import { gunzipHead } from '../src/lib/security/gzipped-xml-root';
 import { OBJECT_HEADER_BYTES } from '../src/lib/storage/object-header';
+import { buildCompoundFile } from './helpers/cfb-craft';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless } from './helpers/strict-skip';
@@ -330,7 +331,15 @@ describe('DivX (.divx) and Xvid (.xvid) video', () => {
 });
 
 describe('compound-file documents (.sdw, .sdc, .sda, .shw, .qpw)', () => {
-  const compoundFile = (): Buffer => Buffer.concat([CFBF_MAGIC, Buffer.alloc(504)]);
+  const COREL_PRESENTATIONS_CLASS_ID = Buffer.from([0x62, 0xfe, 0x2e, 0x40, 0x99, 0x19, 0x1b, 0x10, 0x99, 0xae, 0x04, 0x02, 0x1c, 0x00, 0x70, 0x02]);
+  const NAMING_STREAMS: Readonly<Record<string, string>> = { sdw: 'StarWriterDocument', sdc: 'StarCalcDocument', sda: 'StarDrawDocument3', qpw: 'NativeContent_MAIN' };
+  /** A compound file of the kind `ext` as the engines tell it: the stream that names it, or for Corel Presentations the class ID of the root storage. */
+  const compoundFileOf = (ext: string): Buffer => {
+    const file = buildCompoundFile([{ name: NAMING_STREAMS[ext] ?? 'PerfectOffice_MAIN', data: Buffer.from('x') }]);
+    if (ext === 'shw') COREL_PRESENTATIONS_CLASS_ID.copy(file, (file.readUInt32LE(48) + 1) * 512 + 80);
+    return file;
+  };
+  const bareSignature = (): Buffer => Buffer.concat([CFBF_MAGIC, Buffer.alloc(504)]);
   const REAL_FILES: readonly (readonly [string, string])[] = [
     ['sdw', 'lo-sfxstandalonedocinfoobject.sdw'],
     ['sdw', 'lo-writer_3.1.sdw'],
@@ -358,8 +367,41 @@ describe('compound-file documents (.sdw, .sdc, .sda, .shw, .qpw)', () => {
     }
   });
 
-  it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('accepts the compound file signature under .%s', (ext) => {
-    expect(isFormatCompatibleWithMagicBytes(compoundFile(), ext)).toBe(true);
+  it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('accepts a compound file of its own kind under .%s', (ext) => {
+    expect(isFormatCompatibleWithMagicBytes(compoundFileOf(ext), ext)).toBe(true);
+    expect(() => assertNotSpoofedFile(compoundFileOf(ext), ext, `file.${ext}`)).not.toThrow();
+  });
+
+  it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('refuses the container signature with no directory under .%s', (ext) => {
+    expect(isFormatCompatibleWithMagicBytes(bareSignature(), ext)).toBe(false);
+    expect(() => assertNotSpoofedFile(bareSignature(), ext, `file.${ext}`)).toThrow(FileExtensionSpoofError);
+  });
+
+  it('refuses the compound file of each kind under the names of the other four', () => {
+    const kinds = ['sdw', 'sdc', 'sda', 'shw', 'qpw'];
+    for (const kind of kinds) {
+      for (const claimed of kinds.filter((candidate) => candidate !== kind)) {
+        expect(isFormatCompatibleWithMagicBytes(compoundFileOf(kind), claimed), `a .${kind} file named .${claimed}`).toBe(false);
+        expect(() => assertNotSpoofedFile(compoundFileOf(kind), claimed, `file.${claimed}`), `a .${kind} file named .${claimed}`).toThrow(FileExtensionSpoofError);
+      }
+    }
+  });
+
+  it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('refuses a Word document under .%s', (ext) => {
+    const word = buildCompoundFile([{ name: 'WordDocument', data: Buffer.from('x') }, { name: '1Table', data: Buffer.from('x') }]);
+    expect(isFormatCompatibleWithMagicBytes(word, ext)).toBe(false);
+  });
+
+  it('takes a file for what it is when only the start is given and the directory lies past it, and refuses a whole file with that fault', () => {
+    const header = (length: number): Buffer => {
+      const file = Buffer.alloc(length);
+      compoundFileOf('sdw').copy(file, 0, 0, 512);
+      file.writeUInt32LE(OBJECT_HEADER_BYTES / 512 + 40, 48);
+      return file;
+    };
+    expect(isFormatCompatibleWithMagicBytes(header(OBJECT_HEADER_BYTES), 'sdw')).toBe(true);
+    expect(isFormatCompatibleWithMagicBytes(header(OBJECT_HEADER_BYTES - 1), 'sdw')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(header(OBJECT_HEADER_BYTES + 1), 'sdw')).toBe(false);
   });
 
   it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('refuses programs, pages, pictures and archives under .%s', (ext) => {
@@ -370,9 +412,9 @@ describe('compound-file documents (.sdw, .sdc, .sda, .shw, .qpw)', () => {
   });
 
   it('keeps a compound file out of the names of formats that are not compound files', () => {
-    expect(isFormatCompatibleWithMagicBytes(compoundFile(), 'png')).toBe(false);
-    expect(isFormatCompatibleWithMagicBytes(compoundFile(), 'zabw')).toBe(false);
-    expect(isFormatCompatibleWithMagicBytes(compoundFile(), 'divx')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(compoundFileOf('sdw'), 'png')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(compoundFileOf('sdw'), 'zabw')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(compoundFileOf('sdw'), 'divx')).toBe(false);
   });
 });
 

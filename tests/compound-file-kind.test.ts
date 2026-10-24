@@ -1,0 +1,333 @@
+import { describe, expect, it } from 'vitest';
+import { parseCfbf, type CfbfContainer } from '../src/lib/conversions/hwp';
+import { compoundFileVerdict, readCompoundFileRoot } from '../src/lib/compound-file-kind';
+import { HEADER_WINDOW_BYTES } from '../src/lib/format-signatures';
+import { buildCompoundFile } from './helpers/cfb-craft';
+import { requireRealworldSample } from './helpers/realworld-sample';
+
+/**
+ * Which kind a compound file is, read from the class ID of the root storage and the names in the root directory, for the formats
+ * that exist only as compound files (#783). The rules are the ones the engines apply: libmagic `Magdir/ole2compounddocs` (class
+ * IDs of the StarOffice 3 to 5 documents and of Corel Presentations), LibreOffice `include/comphelper/classids.hxx`, Apache Tika
+ * `POIFSContainerDetector` (the stream names of StarCalc, StarWriter and StarDraw) and libwps `WPSHeader` (the Quattro Pro 9
+ * stream). The GUIDs below are typed from those files, not taken from the module under test.
+ */
+
+const KINDS = ['sdw', 'sdc', 'sda', 'shw', 'qpw'] as const;
+
+/** libmagic ole2compounddocs lines 642-652 and 660-713; LibreOffice classids.hxx lines 28-212. */
+const STAR_WRITER_30 = 'DC5C7E40-B35C-101B-9961-04021C007002';
+const STAR_WRITER_40 = '8B04E9B0-420E-11D0-A45E-00A0249D57B1';
+const STAR_WRITER_50 = 'C20CF9D1-85AE-11D1-AAB4-006097DA561A';
+const STAR_CALC_30 = '3F543FA0-B6A6-101B-9961-04021C007002';
+const STAR_CALC_40 = '6361D441-4235-11D0-89CB-008029E4B0B1';
+const STAR_CALC_50 = 'C6A5B861-85D6-11D1-89CB-008029E4B0B1';
+const STAR_DRAW_30 = 'AF10AAE0-B36D-101B-9961-04021C007002';
+const STAR_DRAW_50 = '2E8905A0-85BD-11D1-89D0-008029E4B0B1';
+const STAR_IMPRESS_40 = '012D3CC0-4216-11D0-89CB-008029E4B0B1';
+const STAR_IMPRESS_50 = '565C7221-85BC-11D1-89D0-008029E4B0B1';
+const COREL_PRESENTATIONS = '402EFE62-1999-101B-99AE-04021C007002';
+const WORDPERFECT_7_DOCUMENT = '519873FF-2DAD-0220-1937-0000929679CD';
+/** The root class ID of the Quattro Pro 9 sample, which no rule database lists. */
+const QUATTRO_PRO_9_SAMPLE = 'EB626F5C-12A9-4F24-A0FC-01B5C2534C35';
+/** Microsoft Excel 97-2003 (libmagic line 436 gives its bytes), a kind this check does not accept under any of the five names. */
+const EXCEL_97 = '00020820-0000-0000-C000-000000000046';
+
+/** The stream that names each kind (Tika `POIFSContainerDetector` lines 311-316, libwps `WPSHeader` line 220). */
+const NAMING_STREAM: Readonly<Record<string, string>> = {
+  sdw: 'StarWriterDocument',
+  sdc: 'StarCalcDocument',
+  sda: 'StarDrawDocument3',
+  qpw: 'NativeContent_MAIN',
+};
+
+const SECTOR = 512;
+const CLASS_ID_OFFSET = 80;
+const ENTRY_TYPE_OFFSET = 66;
+const FIRST_DIRECTORY_SECTOR_OFFSET = 48;
+
+function guidBytes(guid: string): Buffer {
+  const [d1, d2, d3, d4, d5] = guid.split('-');
+  const bytes = Buffer.alloc(16);
+  bytes.writeUInt32LE(parseInt(d1, 16), 0);
+  bytes.writeUInt16LE(parseInt(d2, 16), 4);
+  bytes.writeUInt16LE(parseInt(d3, 16), 6);
+  Buffer.from(d4 + d5, 'hex').copy(bytes, 8);
+  return bytes;
+}
+
+const rootEntryOffset = (file: Buffer): number => (file.readUInt32LE(FIRST_DIRECTORY_SECTOR_OFFSET) + 1) * SECTOR;
+
+/** A compound file with the given top-level stream names (a name with a slash puts the stream in a storage) and root class ID. */
+function compound(names: readonly string[], classId?: string): Buffer {
+  const file = buildCompoundFile(names.map((name) => ({ name, data: Buffer.from('x') })));
+  if (classId !== undefined) guidBytes(classId).copy(file, rootEntryOffset(file) + CLASS_ID_OFFSET);
+  return file;
+}
+
+describe('the real compound files of the five kinds', () => {
+  const REAL_FILES: readonly (readonly [(typeof KINDS)[number], string])[] = [
+    ['sdw', 'lo-sfxstandalonedocinfoobject.sdw'],
+    ['sdw', 'lo-writer_3.1.sdw'],
+    ['sdw', 'tika-teststaroffice-5.2-writer.sdw'],
+    ['sdc', 'lo-calc_3.1.sdc'],
+    ['sdc', 'tika-teststaroffice-5.2-calc.sdc'],
+    ['sda', 'lo-draw_3.1.sda'],
+    ['sda', 'tika-teststaroffice-5.2-draw.sda'],
+    ['shw', 'office-testcorel.shw'],
+    ['shw', 'tika-testcorel.shw'],
+    ['qpw', 'opf-testquattro.qpw'],
+  ];
+
+  it.for(REAL_FILES)('is a .%s file: %s, and none of the other four', async ([kind, id], ctx) => {
+    const sample = await requireRealworldSample(ctx, id);
+    for (const claimed of KINDS) {
+      expect(compoundFileVerdict(claimed, sample.bytes), `${id} claimed as .${claimed}`).toBe(claimed === kind ? 'match' : 'mismatch');
+    }
+  });
+
+  it.for(REAL_FILES)('lists the same root names as the full parser reads: %s', async ([, id], ctx) => {
+    const sample = await requireRealworldSample(ctx, id);
+    const root = readCompoundFileRoot(sample.bytes);
+    expect(root.status).toBe('read');
+    if (root.status !== 'read') return;
+    expect(root.complete).toBe(true);
+    expect([...root.names].sort()).toEqual(topLevelNames(parseCfbf(sample.bytes)).sort());
+  });
+
+  it.for([
+    ['lo-writer_3.1.sdw', STAR_WRITER_30],
+    ['lo-calc_3.1.sdc', STAR_CALC_30],
+    ['lo-draw_3.1.sda', STAR_DRAW_30],
+    ['tika-teststaroffice-5.2-writer.sdw', STAR_WRITER_50],
+    ['tika-teststaroffice-5.2-calc.sdc', STAR_CALC_50],
+    ['tika-teststaroffice-5.2-draw.sda', STAR_DRAW_50],
+    ['office-testcorel.shw', COREL_PRESENTATIONS],
+    ['opf-testquattro.qpw', QUATTRO_PRO_9_SAMPLE],
+  ] as const)('reads the class ID of %s as %s', async ([id, classId], ctx) => {
+    const sample = await requireRealworldSample(ctx, id);
+    const root = readCompoundFileRoot(sample.bytes);
+    expect(root.status === 'read' ? root.classId : undefined).toBe(classId);
+  });
+});
+
+/** The uppercase names of the entries under the root of a parsed container, following child and sibling links. */
+function topLevelNames(container: CfbfContainer): string[] {
+  const byId = new Map(container.directoryEntries.map((entry) => [entry.id, entry]));
+  const root = container.directoryEntries.find((entry) => entry.type === 5);
+  const names: string[] = [];
+  const pending = root ? [root.childId] : [];
+  while (pending.length > 0) {
+    const entry = byId.get(pending.pop() as number);
+    if (entry === undefined) continue;
+    names.push(entry.name.toUpperCase());
+    pending.push(entry.leftSiblingId, entry.rightSiblingId);
+  }
+  return names;
+}
+
+describe('a compound file told apart by the streams of its root directory', () => {
+  it.for(Object.entries(NAMING_STREAM))('is a .%s file when it holds %s, whatever its class ID', ([kind, stream]) => {
+    for (const classId of [undefined, QUATTRO_PRO_9_SAMPLE]) {
+      expect(compoundFileVerdict(kind, compound([stream, '\u0005SummaryInformation'], classId))).toBe('match');
+    }
+  });
+
+  it('reads the names without regard to case, as Tika compares them', () => {
+    expect(compoundFileVerdict('sdw', compound(['starwriterdocument']))).toBe('match');
+  });
+
+  it.for(Object.entries(NAMING_STREAM))('refuses the .%s stream under the names of the other kinds', ([kind, stream]) => {
+    const file = compound([stream]);
+    for (const claimed of KINDS.filter((candidate) => candidate !== kind)) {
+      expect(compoundFileVerdict(claimed, file), `${stream} claimed as .${claimed}`).toBe('mismatch');
+    }
+  });
+
+  it('takes a StarDraw document for the Draw and the Impress name alike, as its stream is one for both', () => {
+    expect(compoundFileVerdict('sda', compound([NAMING_STREAM.sda]))).toBe('match');
+  });
+
+  it('lets the Excel workbook stream decide first, as Tika checks it before the StarOffice names', () => {
+    expect(compoundFileVerdict('sdc', compound(['Workbook', NAMING_STREAM.sdc]))).toBe('mismatch');
+  });
+
+  it('refuses the streams of a Word, Excel or PowerPoint file and of a file with no known stream', () => {
+    for (const streams of [['WordDocument', '1Table'], ['Workbook'], ['PowerPoint Document'], ['VisioDocument'], ['Contents'], []]) {
+      for (const kind of KINDS) expect(compoundFileVerdict(kind, compound(streams, EXCEL_97)), `${streams.join()} as .${kind}`).toBe('mismatch');
+    }
+  });
+
+  it('looks at the names under the root only, so a stream inside another storage names nothing', () => {
+    const embedded = compound(['WordDocument', 'ObjectPool/StarWriterDocument']);
+    expect(compoundFileVerdict('sdw', embedded)).toBe('mismatch');
+  });
+});
+
+describe('a compound file told apart by the class ID of its root storage', () => {
+  it.for([
+    ['sdw', STAR_WRITER_30],
+    ['sdw', STAR_WRITER_40],
+    ['sdw', STAR_WRITER_50],
+    ['sdc', STAR_CALC_30],
+    ['sdc', STAR_CALC_40],
+    ['sdc', STAR_CALC_50],
+    ['sda', STAR_DRAW_30],
+    ['sda', STAR_DRAW_50],
+    ['shw', COREL_PRESENTATIONS],
+  ] as const)('is a .%s file with the class ID %s', ([kind, classId]) => {
+    expect(compoundFileVerdict(kind, compound(['\u0005SummaryInformation'], classId))).toBe('match');
+  });
+
+  it('refuses a class ID under the names of the other four kinds', () => {
+    const owners: readonly (readonly [string, string])[] = [['sdw', STAR_WRITER_50], ['sdc', STAR_CALC_50], ['sda', STAR_DRAW_50], ['shw', COREL_PRESENTATIONS]];
+    for (const [owner, classId] of owners) {
+      for (const claimed of KINDS.filter((kind) => kind !== owner)) {
+        expect(compoundFileVerdict(claimed, compound(['x'], classId)), `${classId} as .${claimed}`).toBe('mismatch');
+      }
+    }
+  });
+
+  it('takes the StarOffice 3 Draw class ID, which StarOffice 3 gives to Impress too, as a Draw file but not as Writer or Calc', () => {
+    const file = compound([], STAR_DRAW_30);
+    expect(compoundFileVerdict('sda', file)).toBe('match');
+    expect(compoundFileVerdict('sdw', file)).toBe('mismatch');
+    expect(compoundFileVerdict('sdc', file)).toBe('mismatch');
+  });
+
+  it('keeps the Impress class IDs out of .sda, since Impress is a presentation and its name is .sdd', () => {
+    expect(compoundFileVerdict('sda', compound([], STAR_IMPRESS_40))).toBe('mismatch');
+    expect(compoundFileVerdict('sda', compound([], STAR_IMPRESS_50))).toBe('mismatch');
+  });
+
+  it('refuses a wrong class ID even when the streams name the claimed kind', () => {
+    expect(compoundFileVerdict('sdw', compound([NAMING_STREAM.sdw], STAR_CALC_30))).toBe('mismatch');
+    expect(compoundFileVerdict('sdc', compound([NAMING_STREAM.sdc], STAR_WRITER_50))).toBe('mismatch');
+    expect(compoundFileVerdict('qpw', compound([NAMING_STREAM.qpw], WORDPERFECT_7_DOCUMENT))).toBe('mismatch');
+  });
+
+  it('refuses a correct class ID when the streams name another kind', () => {
+    expect(compoundFileVerdict('sdw', compound([NAMING_STREAM.sdc], STAR_WRITER_30))).toBe('mismatch');
+    expect(compoundFileVerdict('sdc', compound([NAMING_STREAM.sdw], STAR_CALC_50))).toBe('mismatch');
+  });
+
+  it('accepts a class ID that no database lists when the streams name the claimed kind, as Tika never reads the class ID', () => {
+    expect(compoundFileVerdict('qpw', compound([NAMING_STREAM.qpw], QUATTRO_PRO_9_SAMPLE))).toBe('match');
+    expect(compoundFileVerdict('sdw', compound([NAMING_STREAM.sdw], EXCEL_97))).toBe('match');
+  });
+
+  it('needs the class ID for Corel Presentations, whose streams no engine uses to name it', () => {
+    expect(compoundFileVerdict('shw', compound(['PerfectOffice_MAIN', 'SlideShow/Main']))).toBe('mismatch');
+    expect(compoundFileVerdict('shw', compound(['PerfectOffice_MAIN', 'SlideShow/Main'], COREL_PRESENTATIONS))).toBe('match');
+    expect(compoundFileVerdict('shw', compound(['PerfectOffice_MAIN'], WORDPERFECT_7_DOCUMENT))).toBe('mismatch');
+  });
+});
+
+describe('a compound file whose root cannot be read', () => {
+  const stub = (): Buffer => Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504)]);
+
+  it('is refused when the header names no directory, whatever the kind', () => {
+    for (const kind of KINDS) expect(compoundFileVerdict(kind, stub())).toBe('mismatch');
+  });
+
+  it('is refused when the first directory entry is not the root storage', () => {
+    for (const type of [0, 1, 2]) {
+      const file = compound([NAMING_STREAM.sdw], STAR_WRITER_50);
+      file.writeUInt8(type, rootEntryOffset(file) + ENTRY_TYPE_OFFSET);
+      expect(readCompoundFileRoot(file).status).toBe('malformed');
+      expect(compoundFileVerdict('sdw', file)).toBe('mismatch');
+    }
+  });
+
+  it('is refused when the sector shift is neither 9 nor 12', () => {
+    const file = compound([NAMING_STREAM.sdw]);
+    file.writeUInt16LE(10, 30);
+    expect(compoundFileVerdict('sdw', file)).toBe('mismatch');
+  });
+
+  it('is refused when the file is shorter than its header', () => {
+    expect(compoundFileVerdict('sdw', compound([NAMING_STREAM.sdw]).subarray(0, 400))).toBe('mismatch');
+  });
+
+  it('is refused when the directory chain returns to a sector it has read', () => {
+    const file = compound(Array.from({ length: 8 }, (_, index) => `Stream${index}`));
+    const fatSector = file.readUInt32LE(76);
+    file.writeUInt32LE(0, (fatSector + 1) * SECTOR + 4);
+    expect(readCompoundFileRoot(file).status).toBe('malformed');
+    expect(compoundFileVerdict('sdw', file)).toBe('mismatch');
+  });
+
+  it('is refused when the sibling links of the directory tree return to an entry', () => {
+    const file = compound([NAMING_STREAM.sdw, 'Other']);
+    const second = rootEntryOffset(file) + 128;
+    file.writeUInt32LE(1, second + 72);
+    expect(readCompoundFileRoot(file).status).toBe('malformed');
+    expect(compoundFileVerdict('sdw', file)).toBe('mismatch');
+  });
+
+  it('is refused when the directory declares more entries than the parser reads', () => {
+    const entries = 65_536 + 32;
+    const file = directoryOfEmptyEntries(entries);
+    const started = performance.now();
+    expect(compoundFileVerdict('sdw', file)).toBe('mismatch');
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  describe('because the directory lies past the bytes given', () => {
+    const SECTORS_IN_WINDOW = HEADER_WINDOW_BYTES / SECTOR;
+
+    /** The header of a Writer file that names its directory in sector `sector`, in a buffer of `length` bytes, with that directory copied there when it fits. */
+    function withDirectoryAt(sector: number, length: number): Buffer {
+      const source = compound([NAMING_STREAM.sdw], STAR_WRITER_50);
+      const file = Buffer.alloc(length);
+      source.copy(file, 0, 0, SECTOR);
+      file.writeUInt32LE(sector, FIRST_DIRECTORY_SECTOR_OFFSET);
+      file.writeUInt32LE(0, 44);
+      const directory = rootEntryOffset(source);
+      source.copy(file, (sector + 1) * SECTOR, directory, directory + SECTOR);
+      return file;
+    }
+
+    it('is unreadable, not wrong, when the buffer ends before the directory', () => {
+      for (const length of [HEADER_WINDOW_BYTES, SECTOR + 4, 3 * SECTOR]) {
+        const file = withDirectoryAt(SECTORS_IN_WINDOW + 40, length);
+        expect(readCompoundFileRoot(file).status).toBe('unreadable');
+        expect(compoundFileVerdict('sdw', file)).toBe('unreadable');
+      }
+    });
+
+    it('is read when the directory lies inside a buffer longer than the header window', () => {
+      const file = withDirectoryAt(SECTORS_IN_WINDOW + 40, HEADER_WINDOW_BYTES + 40_000);
+      expect(compoundFileVerdict('sdw', file)).toBe('match');
+      expect(compoundFileVerdict('sdc', file)).toBe('mismatch');
+    });
+  });
+});
+
+/** A version 4 compound file (4096-byte sectors) whose directory chain holds `entries` entries, all unused but the root. */
+function directoryOfEmptyEntries(entries: number): Buffer {
+  const sectorBytes = 4096;
+  const perSector = sectorBytes / 128;
+  const directorySectors = Math.ceil(entries / perSector);
+  const fatSectors = Math.ceil((directorySectors + 1) / (sectorBytes / 4));
+  const file = Buffer.alloc((1 + directorySectors + fatSectors) * sectorBytes);
+  file.set([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1], 0);
+  file.writeUInt16LE(4, 26);
+  file.writeUInt16LE(0xfffe, 28);
+  file.writeUInt16LE(12, 30);
+  file.writeUInt16LE(6, 32);
+  file.writeUInt32LE(fatSectors, 44);
+  file.writeUInt32LE(0, 48);
+  file.writeUInt32LE(0xfffffffe, 60);
+  file.writeUInt32LE(0xfffffffe, 68);
+  for (let index = 0; index < 109; index++) file.writeUInt32LE(index < fatSectors ? directorySectors + index : 0xffffffff, 76 + index * 4);
+  const rootName = Buffer.from('Root Entry', 'utf16le');
+  rootName.copy(file, sectorBytes);
+  file.writeUInt16LE(rootName.length + 2, sectorBytes + 64);
+  file.writeUInt8(5, sectorBytes + ENTRY_TYPE_OFFSET);
+  const fatStart = (1 + directorySectors) * sectorBytes;
+  for (let sector = 0; sector < directorySectors; sector++) {
+    file.writeUInt32LE(sector === directorySectors - 1 ? 0xfffffffe : sector + 1, fatStart + sector * 4);
+  }
+  return file;
+}

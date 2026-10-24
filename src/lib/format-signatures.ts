@@ -8,6 +8,7 @@
  * is the source of the byte pattern; where they disagree with the format specification, the specification decides.
  */
 
+import { compoundFileVerdict } from './compound-file-kind';
 
 /**
  * How many leading bytes of a file the spoof check reads (and the storage layer hands it): enough for every rule here. A
@@ -185,9 +186,9 @@ export function id3v2Payload(buf: Uint8Array): 'adts' | 'other' | 'beyond-window
 
 /**
  * Formats that exist only as OLE2 compound files (Compound File Binary Format, [MS-CFB]): StarWriter, StarCalc and StarDraw
- * documents, Corel Presentations shows and Quattro Pro 9 workbooks. shared-mime-info and Tika tell them apart by the CLSID of
- * the root storage, but that CLSID differs between versions of one format (StarOffice 3 to 5 write different ones) and the
- * root directory may lie past the header window, so the container signature is what the check can rely on.
+ * documents, Corel Presentations shows and Quattro Pro 9 workbooks. Their container signature is shared with every other
+ * compound file, so the check reads the class ID of the root storage and the names under it (`compound-file-kind`), which is
+ * how libmagic, LibreOffice and Tika tell them apart.
  */
 export const COMPOUND_FILE_ONLY_EXTENSIONS: ReadonlySet<string> = new Set(['sdw', 'sdc', 'sda', 'shw', 'qpw']);
 
@@ -292,11 +293,10 @@ export function sniffFixedSignature(buf: Uint8Array): string | undefined {
 
 /**
  * Whether `ext` names a format with no signature but its container's, and the bytes (sniffed as `sniffed`, undefined when
- * no signature matched) are not that container: a gzip member of XML (`.svgz`, `.zabw`) or a compound file (see above).
+ * no signature matched) are not that container: a gzip member of XML (`.svgz`, `.zabw`).
  */
 export function lacksOwnSignature(ext: string, sniffed: string | undefined): boolean {
-  if (isGzippedXmlExtension(ext)) return sniffed !== 'application/gzip';
-  return COMPOUND_FILE_ONLY_EXTENSIONS.has(ext) && sniffed === undefined;
+  return isGzippedXmlExtension(ext) && sniffed !== 'application/gzip';
 }
 
 /** EMF (MS-EMF 2.2.9): the header record is type 1, and its signature field holds ` EMF` at byte 40. */
@@ -512,6 +512,20 @@ function isCorelDraw(buf: Uint8Array): boolean {
   return !complete && names.length > 0 && CDR_PACKAGE_FOLDERS.some((folder) => names[0].startsWith(folder));
 }
 
+/**
+ * Whether the bytes are a compound file of the kind `ext` names. A directory that lies past the bytes read cannot be searched, so a
+ * file that fills the whole header window and names no kind in the part read is taken on its container signature, as a Visio file is.
+ */
+function isCompoundFileOfKind(ext: string, buf: Uint8Array): boolean {
+  if (!startsWithBytes(buf, CFBF_MAGIC)) return false;
+  const verdict = compoundFileVerdict(ext, buf);
+  return verdict === 'match' || (verdict === 'unreadable' && buf.length === HEADER_WINDOW_BYTES);
+}
+
+const COMPOUND_FILE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean>> = Object.fromEntries(
+  [...COMPOUND_FILE_ONLY_EXTENSIONS].map((ext) => [ext, (buf: Uint8Array) => isCompoundFileOfKind(ext, buf)])
+);
+
 /** The sources the office suite imports that open with a signature of their own, so that no other kind of file reaches the suite under their name. */
 const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean>> = {
   emf: isEmf,
@@ -519,6 +533,7 @@ const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean
   cgm: isCgm,
   vsd: isVisio,
   cdr: isCorelDraw,
+  ...COMPOUND_FILE_CHECKS,
 };
 
 /** Whether the bytes carry the signature of `ext`; undefined for a format whose signature is not checked here. */
