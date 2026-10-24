@@ -226,7 +226,7 @@ endsolid TestModel`;
   });
 
   it.skipIf(!haveCadConverter)('12. iges with only points and no surface geometry fails closed', async () => {
-    const iges = `S      1
+    const iges = `Points only                                                             S      1
 EasyConvert IGES 3D Model                                               G      1
 1H,,1H;,sample,,20260925.120000,1.0,1,1,1,,1.0,1,,,;                    G      2
      116       1       0       0       0       0       0       000010001D      1
@@ -235,9 +235,9 @@ EasyConvert IGES 3D Model                                               G      1
      116       0       1       1       0                               0D      4
      116       3       0       0       0       0       0       000010001D      5
      116       0       1       1       0                               0D      6
-116,10.0,20.0,30.0;                                                     1P      1
-116,40.0,50.0,60.0;                                                     1P      2
-116,70.0,80.0,90.0;                                                     1P      3
+116,10.0,20.0,30.0;                                                    1P      1
+116,40.0,50.0,60.0;                                                    1P      2
+116,70.0,80.0,90.0;                                                    1P      3
 S      1G      2D      6P      3                                        T      1
 `;
     const failure = await convertFile(Buffer.from(iges, 'utf-8'), 'iges', 'obj', {}, 'triangle.iges').catch((error: unknown) => error);

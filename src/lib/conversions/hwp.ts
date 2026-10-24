@@ -7,6 +7,7 @@ import { encodeBmp } from './image';
 import { buildOpenXpsPackage } from './openxps';
 import { renderHwpToSvg } from './hwp-render';
 import { buildCfbfContainer } from './cfbf-writer';
+import { CFBF_FIRST_RESERVED_SECTOR, CFBF_MAX_DIRECTORY_ENTRIES, CFBF_SECTOR_SHIFTS } from '../compound-file-kind';
 import { readHwpSections } from './hwp-reader';
 import { renderModelTarget } from './document-targets';
 import { BlockSink, DocumentContext, assembleDocument, type TableDraftCell } from './document-model/build';
@@ -112,12 +113,8 @@ export function isCfbfContainer(buffer: Buffer): boolean {
   return true;
 }
 
-/** Sector numbers from here up are markers (DIFAT, FAT, end of chain, free), not positions in the file (MS-CFB 2.1). */
-const CFBF_FIRST_RESERVED_SECTOR = 0xfffffffa;
 /** Sector size of version 3 compound files; version 4 files use 4096-byte sectors. */
 const CFBF_V3_SECTOR_SIZE = 512;
-/** The sector shifts of version 3 and 4 files; Apache POI HeaderBlock refuses any other ("Expected 2^9 or 2^12"). */
-const CFBF_SECTOR_SHIFTS: ReadonlySet<number> = new Set([9, 12]);
 /** The mini sector shift [MS-CFB] 2.2 requires (64-byte mini sectors). */
 const CFBF_MINI_SECTOR_SHIFT = 6;
 /** Directory entry id meaning "no entry" ([MS-CFB] 2.6.1). */
@@ -126,8 +123,6 @@ const CFBF_NO_STREAM = 0xffffffff;
 const CFBF_STORAGE_ENTRY = 1;
 const CFBF_STREAM_ENTRY = 2;
 const CFBF_ROOT_ENTRY = 5;
-/** Most directory entries (storages and streams) a compound file may declare before it is refused. */
-const CFBF_MAX_DIRECTORY_ENTRIES = 65_536;
 
 /**
  * Marks `sector` as read by chain `owner`, in the table of which chain read each sector. A sector read twice by one chain is a loop,

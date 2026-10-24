@@ -265,8 +265,11 @@ endsolid Cube`;
       expect(result.filename).toBe('surface.iges');
       const igesText = result.buffer.toString('utf-8');
       expect(igesText).toContain('S      1');
-      expect(igesText).toContain('502,');
-      expect(igesText).toContain('504,');
+      // The kernel writes the triangle as a trimmed plane (144 on 108) bounded by three lines (110) through a curve on surface (142, 102).
+      const directory = igesText.split(/\r?\n/).filter((line) => line[72] === 'D');
+      const types = directory.filter((_, index) => index % 2 === 0).map((line) => Number(line.slice(0, 8)));
+      expect([...new Set(types)].sort((a, b) => a - b)).toEqual([102, 108, 110, 142, 144]);
+      expect(types.filter((type) => type === 110)).toHaveLength(3);
     });
   });
 
