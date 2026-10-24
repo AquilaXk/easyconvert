@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { parseCfbf, type CfbfContainer } from '../src/lib/conversions/hwp';
-import { compoundFileVerdict, readCompoundFileRoot } from '../src/lib/compound-file-kind';
+import {
+  compoundFileVerdict,
+  compoundFileVerdictFrom,
+  compoundFileVerdictFromAsync,
+  readCompoundFileRoot,
+  readCompoundFileRootFrom,
+  type ByteSource,
+} from '../src/lib/compound-file-kind';
 import { HEADER_WINDOW_BYTES } from '../src/lib/format-signatures';
-import { buildCompoundFile } from './helpers/cfb-craft';
+import { buildCompoundFile, placeDirectory } from './helpers/cfb-craft';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
@@ -30,8 +37,18 @@ const COREL_PRESENTATIONS = '402EFE62-1999-101B-99AE-04021C007002';
 const WORDPERFECT_7_DOCUMENT = '519873FF-2DAD-0220-1937-0000929679CD';
 /** The root class ID of the Quattro Pro 9 sample, which no rule database lists. */
 const QUATTRO_PRO_9_SAMPLE = 'EB626F5C-12A9-4F24-A0FC-01B5C2534C35';
-/** Microsoft Excel 97-2003 (libmagic line 436 gives its bytes), a kind this check does not accept under any of the five names. */
+/** Microsoft Excel 97-2003 (libmagic `ole2compounddocs` line 329 gives its bytes), a kind this check does not accept under any of the five names. */
 const EXCEL_97 = '00020820-0000-0000-C000-000000000046';
+/** The root class IDs of Word, Excel and PowerPoint files (libmagic 5.41 `ole2compounddocs` lines 295, 300, 322, 329, 357, 408 and 415, typed from the bytes there). */
+const OFFICE_CLASS_IDS: readonly (readonly [string, string])[] = [
+  ['Word 6-95', '00020900-0000-0000-C000-000000000046'],
+  ['Word 97-2003', '00020906-0000-0000-C000-000000000046'],
+  ['Excel 5-95', '00020810-0000-0000-C000-000000000046'],
+  ['Excel 97-2003', EXCEL_97],
+  ['PowerPoint 4', '00044851-0000-0000-C000-000000000046'],
+  ['PowerPoint 95', 'EA7BAE70-FB3B-11CD-A903-00AA00510EA3'],
+  ['PowerPoint 97-2003', '64818D10-4F9B-11CF-86EA-00AA00B929E8'],
+];
 
 /** The stream that names each kind (Tika `POIFSContainerDetector` lines 311-316, libwps `WPSHeader` line 220). */
 const NAMING_STREAM: Readonly<Record<string, string>> = {
@@ -137,6 +154,13 @@ describe('a compound file told apart by the streams of its root directory', () =
     expect(compoundFileVerdict('sdw', compound(['starwriterdocument']))).toBe('match');
   });
 
+  it('folds the letters a to z only, so a long s or a dotless i does not spell a name as the office suite reads it', () => {
+    expect(compoundFileVerdict('sdc', compound(['\u017ftarcalcdocument']))).toBe('mismatch');
+    expect(compoundFileVerdict('sdc', compound(['StarCalcDocument']))).toBe('match');
+    expect(compoundFileVerdict('qpw', compound(['nativecontent_ma\u0131n']))).toBe('mismatch');
+    expect(compoundFileVerdict('qpw', compound(['nativecontent_main']))).toBe('match');
+  });
+
   it.for(Object.entries(NAMING_STREAM))('refuses the .%s stream under the names of the other kinds', ([kind, stream]) => {
     const file = compound([stream]);
     for (const claimed of KINDS.filter((candidate) => candidate !== kind)) {
@@ -213,7 +237,14 @@ describe('a compound file told apart by the class ID of its root storage', () =>
 
   it('accepts a class ID that no database lists when the streams name the claimed kind, as Tika never reads the class ID', () => {
     expect(compoundFileVerdict('qpw', compound([NAMING_STREAM.qpw], QUATTRO_PRO_9_SAMPLE))).toBe('match');
-    expect(compoundFileVerdict('sdw', compound([NAMING_STREAM.sdw], EXCEL_97))).toBe('match');
+    expect(compoundFileVerdict('sdw', compound([NAMING_STREAM.sdw], '12345678-1234-1234-1234-123456789ABC'))).toBe('match');
+  });
+
+  it.for(OFFICE_CLASS_IDS)('refuses the root class ID of a %s file under all five names, whatever streams it holds', ([, classId]) => {
+    for (const [kind, stream] of Object.entries(NAMING_STREAM)) {
+      expect(compoundFileVerdict(kind, compound([stream], classId)), `${classId} with ${stream} as .${kind}`).toBe('mismatch');
+    }
+    expect(compoundFileVerdict('shw', compound(['PerfectOffice_MAIN'], classId))).toBe('mismatch');
   });
 
   it('needs the class ID for Corel Presentations, whose streams no engine uses to name it', () => {
@@ -331,3 +362,124 @@ function directoryOfEmptyEntries(entries: number): Buffer {
   }
   return file;
 }
+
+/** A source over a buffer that counts the ranges it is asked for. */
+function countingSource(file: Buffer): { source: ByteSource; ranges: number[] } {
+  const ranges: number[] = [];
+  const source: ByteSource = (offset, length) => {
+    ranges.push(offset);
+    return file.subarray(offset, offset + length);
+  };
+  return { source, ranges };
+}
+
+/** A Word document renamed to a StarOffice name, the one whose directory a header read cannot reach. */
+const wordDocument = (): Buffer => compound(['WordDocument', '1Table'], OFFICE_CLASS_IDS[1][1]);
+const starWriterDocument = (): Buffer => compound([NAMING_STREAM.sdw, '\u0005SummaryInformation'], STAR_WRITER_50);
+const WINDOW_SECTORS = HEADER_WINDOW_BYTES / SECTOR;
+
+describe('a compound file whose directory lies past the first 64 KiB', () => {
+  it('is told apart by reading the directory where it lies, which the first 64 KiB cannot show', () => {
+    const word = placeDirectory(wordDocument(), { directorySectors: [WINDOW_SECTORS + 150] });
+    const writer = placeDirectory(starWriterDocument(), { directorySectors: [WINDOW_SECTORS + 150] });
+    expect(word.length).toBeGreaterThan(HEADER_WINDOW_BYTES);
+
+    expect(compoundFileVerdict('sdw', word.subarray(0, HEADER_WINDOW_BYTES))).toBe('unreadable');
+    expect(compoundFileVerdictFrom('sdw', countingSource(word).source)).toBe('mismatch');
+    expect(compoundFileVerdictFrom('sdw', countingSource(writer).source)).toBe('match');
+    expect(compoundFileVerdictFrom('sdc', countingSource(writer).source)).toBe('mismatch');
+    expect(compoundFileVerdict('sdw', word)).toBe('mismatch');
+    expect(compoundFileVerdict('sdw', writer)).toBe('match');
+  });
+
+  it('is read in blocks of 64 KiB, each once', () => {
+    const { source, ranges } = countingSource(placeDirectory(starWriterDocument(), { directorySectors: [WINDOW_SECTORS + 150] }));
+    expect(compoundFileVerdictFrom('sdw', source)).toBe('match');
+    expect(ranges.every((offset) => offset % HEADER_WINDOW_BYTES === 0)).toBe(true);
+    expect(new Set(ranges).size).toBe(ranges.length);
+  });
+
+  it('is unreadable, not wrong, when the source ends before the directory does', () => {
+    const file = placeDirectory(starWriterDocument(), { directorySectors: [WINDOW_SECTORS + 150] });
+    expect(compoundFileVerdictFrom('sdw', countingSource(file.subarray(0, (WINDOW_SECTORS + 100) * SECTOR)).source)).toBe('unreadable');
+  });
+
+  it('gives the same verdict through an asynchronous source', async () => {
+    const word = placeDirectory(wordDocument(), { directorySectors: [WINDOW_SECTORS + 150] });
+    const writer = placeDirectory(starWriterDocument(), { directorySectors: [WINDOW_SECTORS + 150] });
+    const over = (file: Buffer) => async (offset: number, length: number) => file.subarray(offset, offset + length);
+    expect(await compoundFileVerdictFromAsync('sdw', over(word))).toBe('mismatch');
+    expect(await compoundFileVerdictFromAsync('sdw', over(writer))).toBe('match');
+  });
+});
+
+describe('a header that cannot be a compound file', () => {
+  it.for([0xfffffffa, 0xfffffffb, 0xfffffffc, 0xfffffffd, 0xfffffffe, 0xffffffff])('is malformed when the first directory sector is the marker %d', (sector) => {
+    const file = compound([NAMING_STREAM.sdw], STAR_WRITER_50);
+    file.writeUInt32LE(sector, FIRST_DIRECTORY_SECTOR_OFFSET);
+    for (const given of [file, Buffer.concat([file, Buffer.alloc(HEADER_WINDOW_BYTES)]).subarray(0, HEADER_WINDOW_BYTES)]) {
+      expect(readCompoundFileRoot(given).status).toBe('malformed');
+      expect(compoundFileVerdict('sdw', given)).toBe('mismatch');
+    }
+  });
+});
+
+describe('a directory reached through the DIFAT chain', () => {
+  /** The directory fills two sectors (the root and four streams), and the stream that names the kind is the last, in the second. */
+  const twoSectorDirectory = (classId?: string): Buffer =>
+    compound([...Array.from({ length: 3 }, (_, index) => `Stream${index}`), NAMING_STREAM.sdw], classId);
+  /** The FAT index of a sector past the 109 slots of the header: sector 13,952 is the first of FAT sector 109. */
+  const PAST_HEADER_FAT = 109 * (SECTOR / 4);
+
+  it('is followed to the second directory sector that lies past FAT index 108', () => {
+    const file = placeDirectory(twoSectorDirectory(), { directorySectors: [PAST_HEADER_FAT + 5, PAST_HEADER_FAT + 6] });
+    expect(file.readUInt32LE(68)).toBeLessThan(0xfffffffa);
+    expect(compoundFileVerdict('sdw', file)).toBe('match');
+    expect(compoundFileVerdict('sdc', file)).toBe('mismatch');
+    expect(compoundFileVerdictFrom('sdw', countingSource(file).source)).toBe('match');
+    const root = readCompoundFileRoot(file);
+    expect(root.status === 'read' && root.complete).toBe(true);
+  });
+
+  it('is followed to a directory sector in the second DIFAT sector as well', () => {
+    const second = 109 * (SECTOR / 4) + 127 * (SECTOR / 4);
+    const file = placeDirectory(twoSectorDirectory(), { directorySectors: [second + 3, second + 4] });
+    expect(file.readUInt32LE(72)).toBe(2);
+    expect(compoundFileVerdict('sdw', file)).toBe('match');
+  });
+
+  it('is refused when the DIFAT chain returns to a sector it has read', () => {
+    const file = placeDirectory(twoSectorDirectory(), { directorySectors: [3, PAST_HEADER_FAT + 128], difatLoop: true });
+    expect(file.readUInt32LE(72)).toBeGreaterThan(0);
+    expect(readCompoundFileRoot(file).status).toBe('malformed');
+    expect(compoundFileVerdict('sdw', file)).toBe('mismatch');
+  });
+});
+
+describe('a directory spread over a large file', () => {
+  const FIRST_BLOCK_SECTORS = HEADER_WINDOW_BYTES / 4096;
+  /** `sectors` version 4 directory sectors, each in a block of its own. */
+  const spread = (sectors: number): Buffer =>
+    placeDirectory(starWriterDocument(), {
+      sectorBytes: 4096,
+      directorySectors: Array.from({ length: sectors }, (_, index) => index * FIRST_BLOCK_SECTORS),
+    });
+
+  it('is read when it fits the 256 blocks a read may fetch', () => {
+    const { source, ranges } = countingSource(spread(200));
+    expect(readCompoundFileRootFrom(source).status).toBe('read');
+    expect(ranges.length).toBeLessThanOrEqual(256 + 1);
+  });
+
+  it('is malformed when it needs more blocks, after no more than 256 fetches', () => {
+    const { source, ranges } = countingSource(spread(300));
+    expect(readCompoundFileRootFrom(source).status).toBe('malformed');
+    expect(ranges.length).toBeLessThanOrEqual(256 + 1);
+  });
+
+  it('is read in run-sized blocks, not sector by sector, when the 65,568 entries lie in one run', () => {
+    const { source, ranges } = countingSource(directoryOfEmptyEntries(65_536 + 32));
+    expect(readCompoundFileRootFrom(source).status).toBe('malformed');
+    expect(ranges.length).toBeLessThanOrEqual(130);
+  });
+});

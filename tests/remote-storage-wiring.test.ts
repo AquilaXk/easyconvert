@@ -6,6 +6,7 @@ import { RemoteStorageBackend } from '../src/lib/storage/remote-storage-backend'
 import { Queue } from '../src/lib/queue/bullmq-engine';
 import { nativeEngine, processNodeJob } from '../src/lib/queue/node-processor';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { buildCompoundFile, placeDirectory } from './helpers/cfb-craft';
 import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
 
 /**
@@ -466,6 +467,27 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       const reads = server.requests.filter((r) => r.method === 'GET' && r.key === fakeKey);
       expect(reads).toHaveLength(1);
       expect(reads[0].headers.range).toBe(`bytes=0-${PNG.length - 1}`);
+    });
+
+    it('rejects a Word document named .sdw whose directory lies past the first 64 KiB, by range reads inside the object', async () => {
+      const { storage, submit } = await loadJobApp();
+      const word = buildCompoundFile([{ name: 'WordDocument', data: Buffer.from('x') }, { name: '1Table', data: Buffer.from('x') }]);
+      const large = placeDirectory(word, { directorySectors: [300] });
+      const key = `uploads/${Date.now()}_renamed.sdw`;
+      await storage.storageProvider.saveObject(key, large, 'application/octet-stream', 'renamed.sdw', 3_600_000);
+      server.requests.length = 0;
+
+      const res = await submit(key, 'renamed.sdw');
+      expect(res.status).toBe(400);
+      expect((await res.json()).title).toBe('File Spoofing Detected');
+      const reads = server.requests.filter((r) => r.method === 'GET' && r.key === key);
+      expect(reads.length).toBeGreaterThan(1);
+      expect(reads.length).toBeLessThanOrEqual(3);
+      for (const read of reads) {
+        const [, start, end] = /^bytes=(\d+)-(\d+)$/.exec(read.headers.range ?? '') ?? [];
+        expect(Number(end), read.headers.range).toBeLessThan(large.length);
+        expect(Number(end) - Number(start) + 1, read.headers.range).toBeLessThanOrEqual(65_536);
+      }
     });
 
     it('answers a key that names no stored object with the not-found response', async () => {

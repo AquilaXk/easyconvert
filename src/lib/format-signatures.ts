@@ -513,8 +513,10 @@ function isCorelDraw(buf: Uint8Array): boolean {
 }
 
 /**
- * Whether the bytes are a compound file of the kind `ext` names. A directory that lies past the bytes read cannot be searched, so a
- * file that fills the whole header window and names no kind in the part read is taken on its container signature, as a Visio file is.
+ * Whether the bytes are a compound file of the kind `ext` names. A directory that lies past the bytes read cannot be searched by this
+ * check, so a buffer of exactly the header window that names no kind in the part read is taken on its container signature, as a
+ * Visio file is. The callers that hold a whole file on disk or in a store do not stop there: `security/file-guard` reads their
+ * directory sectors at their offsets, so for them only a verdict on the real root decides.
  */
 function isCompoundFileOfKind(ext: string, buf: Uint8Array): boolean {
   if (!startsWithBytes(buf, CFBF_MAGIC)) return false;

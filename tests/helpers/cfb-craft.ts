@@ -14,6 +14,8 @@ const FAT_ENTRIES_PER_SECTOR = SECTOR_SIZE / 4;
 const HEADER_FAT_SLOTS = 109;
 const ENDOFCHAIN = 0xfffffffe;
 const FATSECT = 0xfffffffd;
+const DIFSECT = 0xfffffffc;
+const FIRST_MARKER = 0xfffffffa;
 const NOSTREAM = 0xffffffff;
 const ENTRY_TYPE_STORAGE = 1;
 const ENTRY_TYPE_STREAM = 2;
@@ -153,4 +155,77 @@ export function buildCompoundFile(streams: CfbStream[]): Buffer {
   });
 
   return Buffer.concat([header, directory, miniFat, miniStream.length > 0 ? Buffer.concat([miniStream, Buffer.alloc(miniStreamSectors * SECTOR_SIZE - miniStream.length)]) : Buffer.alloc(0), ...dataChunks, fat]);
+}
+
+export interface PlacedDirectory {
+  /** The sector numbers the directory sectors are written at, in chain order; the directory of the source fills them from the first. */
+  directorySectors: readonly number[];
+  /** 512 (version 3, the default) or 4096 (version 4). */
+  sectorBytes?: 512 | 4096;
+  /** The DIFAT sector lists one FAT sector only and points to itself, with the header declaring one DIFAT sector more than there is, so a lookup past it walks the loop. */
+  difatLoop?: boolean;
+}
+
+/**
+ * A compound file whose directory is the directory of `source` (as `buildCompoundFile` wrote it, one run from sector 0) moved to the
+ * sector numbers asked for. Nothing else is in the file: the sectors between are empty, the FAT sectors follow the last directory
+ * sector, and a FAT that needs more than the 109 header slots is listed through DIFAT sectors ([MS-CFB] 2.2 and 2.5). The streams
+ * of `source` are not carried over, so only the directory (the class ID, the names, the tree) can be read from the result.
+ */
+export function placeDirectory(source: Buffer, options: PlacedDirectory): Buffer {
+  const sectorBytes = options.sectorBytes ?? SECTOR_SIZE;
+  const entriesPerSector = sectorBytes / 4;
+  const sourceFat = (source.readUInt32LE(76) + 1) * SECTOR_SIZE;
+  let sourceLength = 0;
+  for (let sector = source.readUInt32LE(48); sector < FIRST_MARKER; sector = source.readUInt32LE(sourceFat + sector * 4)) sourceLength++;
+  const directory = source.subarray(SECTOR_SIZE, SECTOR_SIZE + sourceLength * SECTOR_SIZE);
+
+  const placed = options.directorySectors;
+  const used = Math.max(...placed) + 1;
+  let fatSectors = 1;
+  const difatSectorsFor = (fat: number): number => (fat > HEADER_FAT_SLOTS ? Math.ceil((fat - HEADER_FAT_SLOTS) / (entriesPerSector - 1)) : 0);
+  while ((used + fatSectors + difatSectorsFor(fatSectors)) > fatSectors * entriesPerSector) fatSectors++;
+  const difatSectors = difatSectorsFor(fatSectors);
+  const firstFat = used;
+  const firstDifat = used + fatSectors;
+  const total = used + fatSectors + difatSectors;
+
+  const file = Buffer.alloc((total + 1) * sectorBytes);
+  source.copy(file, 0, 0, SECTOR_SIZE);
+  if (sectorBytes === 4096) {
+    file.writeUInt16LE(4, 26);
+    file.writeUInt16LE(12, 30);
+  }
+  file.writeUInt32LE(fatSectors, 44);
+  file.writeUInt32LE(placed[0], 48);
+  file.writeUInt32LE(ENDOFCHAIN, 60);
+  file.writeUInt32LE(0, 64);
+  file.writeUInt32LE(difatSectors > 0 ? firstDifat : ENDOFCHAIN, 68);
+  file.writeUInt32LE(options.difatLoop ? difatSectors + 1 : difatSectors, 72);
+  file.fill(0xff, 76, 76 + HEADER_FAT_SLOTS * 4);
+  for (let index = 0; index < Math.min(fatSectors, HEADER_FAT_SLOTS); index++) file.writeUInt32LE(firstFat + index, 76 + index * 4);
+
+  const fat = Buffer.alloc(fatSectors * sectorBytes, 0xff);
+  placed.forEach((sector, index) => fat.writeUInt32LE(index === placed.length - 1 ? ENDOFCHAIN : placed[index + 1], sector * 4));
+  for (let index = 0; index < fatSectors; index++) fat.writeUInt32LE(FATSECT, (firstFat + index) * 4);
+  for (let index = 0; index < difatSectors; index++) fat.writeUInt32LE(DIFSECT, (firstDifat + index) * 4);
+  fat.copy(file, (firstFat + 1) * sectorBytes);
+
+  for (let index = 0; index < difatSectors; index++) {
+    const at = (firstDifat + index + 1) * sectorBytes;
+    file.fill(0xff, at, at + sectorBytes);
+    const listed = options.difatLoop ? 1 : entriesPerSector - 1;
+    for (let slot = 0; slot < listed; slot++) {
+      const fatIndex = HEADER_FAT_SLOTS + index * (entriesPerSector - 1) + slot;
+      if (fatIndex < fatSectors) file.writeUInt32LE(firstFat + fatIndex, at + slot * 4);
+    }
+    const last = index === difatSectors - 1;
+    file.writeUInt32LE(options.difatLoop ? firstDifat + index : last ? ENDOFCHAIN : firstDifat + index + 1, at + (entriesPerSector - 1) * 4);
+  }
+
+  placed.forEach((sector, index) => {
+    const chunk = directory.subarray(index * sectorBytes, (index + 1) * sectorBytes);
+    chunk.copy(file, (sector + 1) * sectorBytes);
+  });
+  return file;
 }

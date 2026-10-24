@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import { assertNotSpoofedFile as assertSignatureMatches, FileExtensionSpoofError, FORMAT_REGISTRY } from '../registry';
 import { assertGzippedXmlRoot } from './gzipped-xml-root';
-import { OBJECT_HEADER_BYTES } from '../storage/object-header';
+import { OBJECT_HEADER_BYTES, readObjectRange } from '../storage/object-header';
+import type { IStorageBackend } from '../storage/oci-storage';
+import { compoundFileVerdictFrom, compoundFileVerdictFromAsync, type AsyncByteSource, type ByteSource, type CompoundFileVerdict } from '../compound-file-kind';
+import { COMPOUND_FILE_ONLY_EXTENSIONS } from '../format-signatures';
 
 /**
  * The server side spoof check of a buffer that holds the start of a file: the signature rules of the registry, then the root
@@ -14,8 +17,80 @@ export function assertNotSpoofedFile(buffer: Buffer | Uint8Array, declaredExtens
 }
 
 /**
+ * The extension to read a directory for, when the first 64 KiB of a file cannot show the directory of a compound-only format
+ * (`.sdw`, `.sdc`, `.sda`, `.shw`, `.qpw`) and the check must read the directory sectors where they lie in the file; undefined
+ * otherwise. A header shorter than the window is the whole file.
+ */
+function compoundExtensionToRead(header: Uint8Array, declaredExtension: string): string | undefined {
+  const ext = declaredExtension.toLowerCase().replace(/^\./, '').trim();
+  return header.length === OBJECT_HEADER_BYTES && COMPOUND_FILE_ONLY_EXTENSIONS.has(ext) ? ext : undefined;
+}
+
+/** The file is whole here, so a root that is not of the declared kind, or that its bytes end before, is refused. */
+function assertDirectoryVerdict(verdict: CompoundFileVerdict, ext: string, filename?: string): void {
+  if (verdict === 'match') return;
+  const nameStr = filename ? ` for file "${filename}"` : '';
+  throw new FileExtensionSpoofError(
+    `File spoofing rejected${nameStr}: the root of the compound file does not belong to declared format ".${ext}". Operation failed closed.`
+  );
+}
+
+/**
+ * The part of the spoof check for the compound-only formats that the first 64 KiB cannot decide: the directory of a larger file lies
+ * past them, so it is read from the open file at the offsets of its sectors (bounded as `compound-file-kind` bounds it). Call it
+ * after `assertNotSpoofedFile` has accepted `header`.
+ */
+function assertCompoundFileKindInFile(header: Uint8Array, declaredExtension: string, filename: string | undefined, fd: number): void {
+  const ext = compoundExtensionToRead(header, declaredExtension);
+  if (ext === undefined) return;
+  const source: ByteSource = (offset, length) => {
+    const bytes = Buffer.alloc(length);
+    return bytes.subarray(0, fs.readSync(fd, bytes, 0, length, offset));
+  };
+  assertDirectoryVerdict(compoundFileVerdictFrom(ext, source), ext, filename);
+}
+
+/**
+ * The same part of the spoof check for an object in a store (`stat` gave `size`), read by range requests. Every backend answers
+ * `openReadStream` with a range, and the remote client refuses a store that does not honour one, so there is no backend that keeps
+ * the window rule. Call it after `assertNotSpoofedFile` has accepted `header`.
+ */
+export async function assertCompoundFileKindInObject(
+  storage: Pick<IStorageBackend, 'openReadStream'>,
+  key: string,
+  size: number,
+  header: Uint8Array,
+  declaredExtension: string,
+  filename?: string
+): Promise<void> {
+  const ext = compoundExtensionToRead(header, declaredExtension);
+  if (ext === undefined) return;
+  const source: AsyncByteSource = async (offset, length) => {
+    if (offset >= size) return new Uint8Array(0);
+    const bytes = await readObjectRange(storage, key, offset, Math.min(length, size - offset));
+    if (!bytes) throw new Error('Stored object is unavailable. Operation failed closed.');
+    return bytes;
+  };
+  assertDirectoryVerdict(await compoundFileVerdictFromAsync(ext, source), ext, filename);
+}
+
+/** The whole spoof check of a stored object whose first 64 KiB are `header`: the signature rules, then the directory of a compound-only format read where it lies. */
+export async function assertNotSpoofedObject(
+  storage: Pick<IStorageBackend, 'openReadStream'>,
+  key: string,
+  size: number,
+  header: Uint8Array,
+  declaredExtension: string,
+  filename?: string
+): Promise<void> {
+  assertNotSpoofedFile(header, declaredExtension, filename);
+  await assertCompoundFileKindInObject(storage, key, size, header, declaredExtension, filename);
+}
+
+/**
  * Asserts fail-closed that initial magic bytes of a file on disk match the declared format.
- * Zero-heap: only reads up to 64 KiB (65,536 bytes) header bytes without loading large files into memory.
+ * Only reads up to 64 KiB (65,536 bytes) header bytes without loading large files into memory; for the compound-only formats it reads
+ * on, at most 256 blocks of 64 KiB, to the directory sectors that the header cannot show.
  */
 export function assertNotSpoofedFilePath(
   filePath: string,
@@ -55,6 +130,7 @@ export function assertNotSpoofedFilePath(
       }
     }
     assertNotSpoofedFile(slice, formatOrExt, filename);
+    assertCompoundFileKindInFile(slice, formatOrExt, filename, fd);
   } finally {
     fs.closeSync(fd);
   }
