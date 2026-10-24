@@ -414,7 +414,7 @@ describe('the known gaps', () => {
   it('ships a gap file whose every entry names an issue, and whose speed entries name a row the baseline records', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
-    expect(shipped.gaps.length).toBeGreaterThan(15);
+    expect(shipped.gaps.length).toBeGreaterThan(10);
     for (const gap of shipped.gaps) {
       expect(Number.isInteger(gap.issue) && gap.issue > 0, gap.id).toBe(true);
       // A quality row may be new and not baselined yet; the run refuses an entry whose row it did not produce (gap-row-missing).
@@ -452,6 +452,23 @@ describe('the known gaps', () => {
     });
   });
 
+  describe('the AVIF curve of a generated photograph under the heap bound the service runs with', () => {
+    const ID = 'image/photo-b.png->avif/bd_rate_ssim';
+    const shipped = (): GapFile => validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
+    const curve = (ours: number): BenchRow => row({ id: ID, direction: 'lower', kind: 'bdrate', ours, reference: 0, tolerance: { abs: 1.5, rel: 0 } });
+    const verdict = (ours: number, gaps: GapFile): { outcome: string; basis: string } => outcomeOf([curve(ours)], ID, gaps);
+
+    it('fails as a row below the reference when no entry tracks it, at the value four encoder threads give', () => {
+      expect(verdict(1.9922, NO_GAPS)).toEqual({ outcome: 'fail', basis: 'below-reference' });
+    });
+
+    it('is tracked at that value, passes at the value two threads give, and fails at the value eight threads give', () => {
+      expect(verdict(1.9922, shipped())).toEqual({ outcome: 'pass', basis: 'tracked-quality-gap' });
+      expect(verdict(0.70744, shipped())).toEqual({ outcome: 'pass', basis: 'tracked-now-at-parity' });
+      expect(verdict(3.4937, shipped())).toEqual({ outcome: 'fail', basis: 'tracked-worse-than-recorded' });
+    });
+  });
+
   it('holds quality entries only for the families and issues the rollout allows, each with a record', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     for (const gap of shipped.gaps.filter((candidate) => !candidate.id.endsWith('/throughput'))) {
@@ -472,36 +489,38 @@ describe('the known gaps', () => {
     expect(issuesOf('image/', false)).toEqual([641]);
     expect(issuesOf('image/', true)).toEqual([641]);
     // The HEVC encode row and the zstd encode row (497) reached parity on the CI runner with room to spare, so they are no longer known gaps.
-    // The H.264 and VP9 rows of the clip and the Opus row sit at 0.99 with an interval that crosses 0.97 from run to run: they stay tracked.
-    expect(issuesOf('audio/', true)).toEqual([642]);
+    // The H.264 row of the clip and the Opus row of the music file reached parity in the nightly run of 2026-10-24; the VP9 row of the clip stays tracked.
+    expect(issuesOf('audio/', true)).toEqual([]);
     expect(issuesOf('video/', true)).toEqual([643]);
+    expect(byIdOf('video/clip.mp4->h264/throughput')).toBeUndefined();
     expect(issuesOf('ocr/', true)).toEqual([644]);
-    // The document gap is the PDF text reader (672); the slide and sheet pages to PNG reached parity on the CI runner (735).
-    expect(issuesOf('document/', true)).toEqual([672]);
+    // The document gaps are gone: the PDF text reader reached parity (672), as the slide and sheet pages to PNG did (735).
+    expect(issuesOf('document/', true)).toEqual([]);
     // The RAW to GIF rows reached parity on the CI runner (686).
     expect(issuesOf('raw/', true)).toEqual([]);
     expect([byIdOf('raw/dng->gif/throughput'), byIdOf('raw/arw->gif/throughput')]).toEqual([undefined, undefined]);
-    expect(issuesOf('vector/', true)).toEqual([735]);
+    // The SVG to PDF and EPS to PNG rows reached parity in the nightly run of 2026-10-24 (735).
+    expect(issuesOf('vector/', true)).toEqual([]);
     expect(issuesOf('cad/', true)).toEqual([]);
     // The quality rows below the reference are tracked at a recorded value: the RAW files the product refuses or develops past the allowance (686).
     expect(issuesOf('raw/', false)).toEqual([686]);
     for (const family of ['vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
-    expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([685, 685, 685]);
-    expect(byId['compression/mixed.tar->zst/throughput']).toBeUndefined();
+    // Every compression row that is a known gap reached parity in the nightly run of 2026-10-24. The xz decode of the most compressible Silesia file is a row of a public sample, which no entry can track (tests/bench-public-unified.test.ts).
+    expect(issuesOf('compression/', true)).toEqual([]);
+    expect(Object.keys(byId).filter((id) => id.startsWith('compression/'))).toEqual([]);
     expect(byId['video/clip.mp4->hevc/throughput']).toBeUndefined();
     // The PostScript to PDF, Illustrator to PNG, slide and sheet page rows reached parity on the CI runner (735).
     for (const id of [
       'vector/shapes.eps->pdf/throughput',
       'vector/shapes.ai->png/throughput',
+      'vector/shapes.svg->pdf/throughput',
+      'vector/shapes.eps->png/throughput',
       'document/drawingml-shapes-presentation.pptx->png/throughput',
       'document/workbook.xlsx->png/throughput',
     ]) expect(byId[id]).toBeUndefined();
-    expect([byId['vector/shapes.svg->pdf/throughput'], byId['vector/shapes.eps->png/throughput']]).toEqual([735, 735]);
-    // The decode row reached parity on the CI runner, so it is no longer a known gap.
-    expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
-    expect(issuesOf('pdf-ops/', true)).toEqual([695]);
-    // The damaged PDF files whose page tree loops and the form with errors reached parity (783, entry 53), so no PDF operation quality row is a known gap.
+    // The PDF operation rows reached parity in the nightly run of 2026-10-24 (695, 783), and no PDF operation quality row is a known gap.
+    expect(issuesOf('pdf-ops/', true)).toEqual([]);
     expect(issuesOf('pdf-ops/', false)).toEqual([]);
   });
 
