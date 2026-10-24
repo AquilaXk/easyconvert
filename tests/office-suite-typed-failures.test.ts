@@ -52,7 +52,7 @@ describe('formats only the office suite reads, without the office suite', () => 
   });
 
   it('lists the formats the registry advertises with a source the in-process engine cannot read', () => {
-    expect(sources.sort()).toEqual(['cdr', 'cgm', 'emf', 'lrf', 'lwp', 'numbers', 'pdb', 'pub', 'qpw', 'rb', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
+    expect(sources.sort()).toEqual(['cdr', 'cgm', 'emf', 'lrf', 'lwp', 'numbers', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
   });
 });
 
@@ -117,18 +117,12 @@ describe('an office suite that stops on a document', () => {
     );
   });
 
-  it('names a missing import filter for a format that only some builds import, and a damaged file for any other', () => {
+  it('names a damaged file for a format whose file the suite could not load or wrote nothing for', () => {
     const cannotLoad = new SandboxedProcessError('SandboxedProcessError (exit 1): Error: source file could not be loaded', 1, 'Error: source file could not be loaded');
-    expect((asUnreadableDocument(cannotLoad, 'rb') as Error).message).toBe(
-      'LibreOffice could not read the .rb file: it is damaged, or the LibreOffice of this worker has no import filter for RB files.'
-    );
     expect((asUnreadableDocument(cannotLoad, 'wps') as Error).message).toBe(
       'LibreOffice could not read the .wps file: it is damaged, encrypted or not a valid WPS document.'
     );
     const wroteNothing = new Error('LibreOffice execution completed without producing expected output file for target format "txt"');
-    expect((asUnreadableDocument(wroteNothing, 'rb') as Error).message).toBe(
-      'LibreOffice could not read the .rb file: it is damaged, or the LibreOffice of this worker has no import filter for RB files.'
-    );
     expect((asUnreadableDocument(wroteNothing, 'sxw') as Error).message).toBe(
       'LibreOffice could not read the .sxw file: it is damaged or not a valid SXW document.'
     );
@@ -149,8 +143,6 @@ describe('how the office suite reaches the targets it does not write', () => {
     ['lrf', 'epub', 'docx'],
     ['lrf', 'azw3', 'txt'],
     ['pdb', 'mobi', 'txt'],
-    ['rb', 'oeb', 'txt'],
-    ['rb', 'lrf', 'txt'],
     ['pdb', 'epub', 'docx'],
     ['numbers', 'csv', 'xlsx'],
     ['sxw', 'html', 'docx'],

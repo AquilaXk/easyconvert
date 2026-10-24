@@ -26,7 +26,7 @@ function directoryOf(path: string): string {
 }
 
 /** The links of a content document that stay meaningful in one flat document: web and mail links, and bookmarks. */
-function mapEpubLink(href: string): string | undefined {
+export function mapBookLink(href: string): string | undefined {
   if (EXTERNAL_LINK.test(href)) return safeHref(href);
   const hash = href.indexOf('#');
   return hash >= 0 && hash < href.length - 1 ? `#${href.slice(hash + 1)}` : undefined;
@@ -65,7 +65,7 @@ export async function readEpubModel(input: Buffer): Promise<DocumentModel> {
       if (entry && entry.mediaType.startsWith('image/')) pictures.set(source, await book.read(path, 'EPUB image'));
     }
 
-    const chapter = await htmlToDocumentModel(html, { resolveImage: (src) => pictures.get(src), mapLink: mapEpubLink, context });
+    const chapter = await htmlToDocumentModel(html, { resolveImage: (src) => pictures.get(src), mapLink: mapBookLink, context });
     if (context.images.length > HTML_MODEL_MAX_IMAGES) throw new PayloadLimitError(`The EPUB embeds more than ${HTML_MODEL_MAX_IMAGES} images.`);
     const imageBytes = context.images.reduce((sum, image) => sum + image.data.length, 0);
     if (imageBytes > HTML_MODEL_MAX_IMAGE_BYTES) throw new PayloadLimitError(`The EPUB embeds more than ${HTML_MODEL_MAX_IMAGE_BYTES} bytes of images.`);
