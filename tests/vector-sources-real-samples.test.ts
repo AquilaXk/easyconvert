@@ -57,7 +57,10 @@ const A4_POINTS = { width: 595.28, height: 841.89 };
 const CGM_PAGE_POINTS = { width: 793.7, height: 446.46 };
 const PAGE_TARGETS = ['pdf', 'png', 'svg', 'eps', 'ps'] as const;
 const METAFILE_PAGE_TARGETS = [...PAGE_TARGETS, 'jpg'] as const;
-/** Visio drawings are the one source whose pages the DXF writer and the metafile encoders can write (the others hold pictures or clip regions). */
+/**
+ * The registry offers DXF, EMF and WMF for Visio drawings only. The pages of the other samples hold pictures, or clip regions
+ * that the writers now cut at (sine_wave.emf and the CGM files), which the registry does not offer yet.
+ */
 const VISIO_TARGETS = [...PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
 const NO_PHRASE: readonly string[] = [];
 /** The DXF extents may differ from the inked pixels by this many points: a stroke has a width the outline does not. */
@@ -114,8 +117,10 @@ const SAMPLES: readonly SampleCase[] = [
   { id: 'tika-testwmf.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'none' },
   { id: 'lo-binary_corvette.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
   { id: 'lo-circles.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 14, pagePhrases: [], inkscape: 'none' },
-  // The file's 13 axis labels share one spot on the page: the office suite's CGM import (24.2 and 26.8 alike) places every
-  // RESTRICTED TEXT element at one point, so the text check below reads the characters, not the order an extractor lists them in.
+  // The file's axis labels share one spot on the page, so the text check below reads the characters, not the order an
+  // extractor lists them in. The office suite's CGM import (24.2 and 26.8 alike) places a label of vertical alignment HALF at
+  // its x coordinate in y (filter/source/graphicfilter/icgm/actimpr.cxx, `DrawText`, `case TAV_HALF`), so the seven y-axis
+  // labels, which share one x, share one y; set to TOP in a copy of the file they land 59.5 pt apart (policy 99).
   { id: 'tika-plotutils-bin-cgm-v3.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
 ];
 
