@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -475,6 +475,57 @@ describe('the page a metafile is drawn on by the office suite', () => {
       expect(staged.inputPath).toBeUndefined();
       expect(lengthInPoints((await stagedDrawing(staged)).styles, 'fo:page-width')).toBeCloseTo(30 * POINTS_PER_MM, 2);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stores the picture part and deflates the XML parts, so a large metafile is not compressed in JavaScript', async () => {
+    const calls: RunCall[] = [];
+    await withMetafileFrame(recordingRun(calls))(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', {}, 'logo.emf');
+    const bytes = calls[0].input as Buffer;
+    const LOCAL_HEADER_BYTES = 30;
+    const METHOD_OFFSET = 8;
+    const method = (name: string): number => bytes.readUInt16LE(bytes.indexOf(name, 0, 'latin1') - LOCAL_HEADER_BYTES + METHOD_OFFSET);
+    const STORED = 0;
+    const DEFLATED = 8;
+    expect({ picture: method('Pictures/metafile.emf'), content: method('content.xml') }).toEqual({ picture: STORED, content: DEFLATED });
+  });
+
+  it('stops before and after it builds the package when the request is cancelled, and never runs the office suite then', async () => {
+    const aborted = new AbortController();
+    aborted.abort();
+    const before: RunCall[] = [];
+    await expect(withMetafileFrame(recordingRun(before))(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', { signal: aborted.signal }, 'logo.emf')).rejects.toBe(aborted.signal.reason);
+    expect(before).toHaveLength(0);
+
+    let checks = 0;
+    const cancelledWhileBuilding = {
+      throwIfAborted: () => {
+        if (++checks === 2) throw new Error('cancelled while the package was built');
+      },
+    } as unknown as AbortSignal;
+    const after: RunCall[] = [];
+    await expect(withMetafileFrame(recordingRun(after))(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', { signal: cancelledWhileBuilding }, 'logo.emf')).rejects.toThrow('cancelled while the package was built');
+    expect({ checks, runs: after.length }).toEqual({ checks: 2, runs: 0 });
+  });
+
+  it('reads no more of a file on disk than the header takes to find its page, and the whole file only once it has one', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'metafile-frame-'));
+    const readWhole = vi.spyOn(fs, 'readFileSync');
+    try {
+      const notAMetafile = path.join(dir, 'large.emf');
+      fs.writeFileSync(notAMetafile, Buffer.alloc(3 * 1024 * 1024, 0x41));
+      const metafile = path.join(dir, 'logo.emf');
+      fs.writeFileSync(metafile, THIRTY_BY_TWENTY_MM);
+      const calls: RunCall[] = [];
+      await withMetafileFrame(recordingRun(calls))({ inputPath: notAMetafile, outputPath: '/out/large.pdf' }, 'emf', 'pdf', {}, 'large.emf');
+      expect(readWhole.mock.calls.filter(([file]) => file === notAMetafile)).toHaveLength(0);
+      expect(calls[0]).toMatchObject({ src: 'emf', input: { inputPath: notAMetafile } });
+      await withMetafileFrame(recordingRun(calls))({ inputPath: metafile, outputPath: '/out/logo.pdf' }, 'emf', 'pdf', {}, 'logo.emf');
+      expect(readWhole.mock.calls.filter(([file]) => file === metafile)).toHaveLength(1);
+      expect(calls[1].src).toBe('odg');
+    } finally {
+      readWhole.mockRestore();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

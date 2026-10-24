@@ -11,6 +11,7 @@ import { getFormatByExtension } from '../src/lib/registry';
 import { CadGeometryUnavailableError, EngineUnavailableError } from '../src/lib/types';
 import { defaultResolver, EZDXF_PSEUDO_TOOL } from '../bench/tools';
 import { requireOracleTool } from './helpers/differential-oracle';
+import { emf, setWindowExtent, wmf } from './helpers/metafile-headers';
 import { sofficeConvert } from './helpers/soffice-convert';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
@@ -619,6 +620,42 @@ async function expectMetafileDrawsThePage(metafile: Buffer, target: string, pdfP
   await expectDrawnPicture(redrawn, label);
   expect(await ssim(redrawn, pdfPage), `${label} drawn again by the office suite`).toBeGreaterThan(MIN_METAFILE_REIMPORT_SSIM);
 }
+
+/**
+ * A metafile whose header the frame reader accepts and whose records are not records. The office suite loads these without a
+ * failure (LibreOffice 24.2.7 and 26.8: exit 0, a PDF with no ink), so the route before the page followed the header answered
+ * them with an empty A4 page and no refusal, and the route that follows the header answers with an empty page of the frame's size.
+ * Nothing the framed route does makes a refusal that the unframed route gave go away.
+ */
+const JUNK_RECORDS = Buffer.from(Array.from({ length: 4000 }, (_, index) => (index * 131 + 17) & 0xff));
+const JUNK_METAFILES: ReadonlyArray<{ name: string; extension: 'emf' | 'wmf'; bytes: Buffer; frame: Point }> = [
+  { name: 'an EMF header (88 bytes) and then bytes that are no records', extension: 'emf', bytes: Buffer.concat([emf({ frame: [0, 0, 2999, 1999] }).subarray(0, 88), JUNK_RECORDS]), frame: { width: 85.04, height: 56.69 } },
+  { name: 'an EMF header and nothing after it', extension: 'emf', bytes: emf({ frame: [0, 0, 2999, 1999] }).subarray(0, 88), frame: { width: 85.04, height: 56.69 } },
+  {
+    name: 'a placeable WMF header, a standard header and then bytes that are no records',
+    extension: 'wmf',
+    bytes: Buffer.concat([wmf({ placeable: { box: [0, 0, 1439, 719], inch: 1440 } }).subarray(0, 22 + 18), JUNK_RECORDS]),
+    frame: { width: 72, height: 36 },
+  },
+  {
+    name: 'a standard WMF header, a window extent and then bytes that are no records',
+    extension: 'wmf',
+    bytes: Buffer.concat([wmf({ records: [setWindowExtent(5103, 2159)] }).subarray(0, 18 + 10), JUNK_RECORDS]),
+    frame: { width: 255.2, height: 108 },
+  },
+];
+
+describe.skipIf(toolsMissing)('an EMF or WMF file whose header is valid and whose records are not', () => {
+  it.each(JUNK_METAFILES)('$name: the route answers with an empty page of the header\'s size, as the office suite answers the file itself', async ({ extension, bytes, frame }) => {
+    const unframed = sofficeConvert(bytes, `input.${extension}`, 'pdf', (output) => output.read());
+    const framed = (await dispatchConversion(bytes, extension, 'pdf', {}, `junk.${extension}`)).buffer;
+    const noInk = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    expect({ unframed: await inkBoxOfPdf(unframed), framed: await inkBoxOfPdf(framed) }).toEqual({ unframed: noInk, framed: noInk });
+    const pages = pdfPages(framed);
+    expect(pages.count).toBe(1);
+    expectClose(pages.sizes[0], frame, `junk.${extension} page`);
+  }, CONVERSION_TIMEOUT_MS);
+});
 
 describe.skipIf(toolsMissing || inkscapeMissing)('real files against Inkscape', () => {
   for (const sample of SAMPLES.filter((candidate) => candidate.inkscape !== 'none')) {

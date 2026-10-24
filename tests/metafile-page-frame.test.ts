@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { EMF_HEADER_BYTES, EMR_SETMAPMODE, META_EOF, META_SETWINDOWEXT, MM_ANISOTROPIC, emf, setWindowExtent, wmf, wmfRecord } from './helpers/metafile-headers';
 import {
+  MAX_METAFILE_PAGE_AREA_POINTS,
   MAX_METAFILE_PAGE_POINTS,
   MIN_METAFILE_PAGE_POINTS,
+  metafileLeadingBytes,
   readMetafilePage,
 } from '../src/lib/conversions/office/metafile-page-frame';
+import { PPM_PAGE_MAX_BYTES, resolvePdfRasterDpi } from '../src/worker/poppler-ppm';
 
 /**
  * The page of an EMF or WMF file: the frame its header declares, read the way the reference import filter reads it
@@ -13,6 +16,8 @@ import {
  */
 
 const POINTS_PER_MM = 72 / 25.4;
+const POINTS_PER_FRAME_UNIT = POINTS_PER_MM / 100;
+const MEBIBYTE = 1024 * 1024;
 
 describe('the page of an EMF file', () => {
   it('is the frame of its header, whose edges are both inside the frame, in points', () => {
@@ -148,18 +153,72 @@ describe('a header that does not give a page', () => {
     }
   });
 
-  it('is found in a time that does not grow with the records of a file that never gives a window extent', () => {
+  it('is not read past the first mebibyte of a WMF: a file that never gives a window extent there is left to the office suite, quickly', () => {
     const filler = wmfRecord(0x0103, [8]);
     const many = wmf({ records: [...Array.from({ length: 200_000 }, () => filler), wmfRecord(META_EOF, [])] });
+    expect(many.length).toBeGreaterThan(MEBIBYTE);
     const started = performance.now();
-    const page = readMetafilePage(many, 'wmf');
-    expect(page).toBeDefined();
+    expect(readMetafilePage(many, 'wmf')).toBeUndefined();
     expect(performance.now() - started).toBeLessThan(1000);
   });
 
-  it('keeps the bounds a PDF page may have: at least 3 points and at most 14400', () => {
+  it('reads a window extent whose record ends at the first mebibyte, and not one that ends two bytes after it', () => {
+    const standardHeaderBytes = 18;
+    const extentBytes = setWindowExtent(5103, 2159).length;
+    const atTheEnd = (extraBytes: number): Buffer => {
+      const fillerBytes = MEBIBYTE + extraBytes - standardHeaderBytes - extentBytes;
+      return wmf({ records: [wmfRecord(0x0103, new Array((fillerBytes - 6) / 2).fill(0)), setWindowExtent(5103, 2159), wmfRecord(META_EOF, [])] });
+    };
+    expect(readMetafilePage(atTheEnd(0), 'wmf')?.widthPt).toBeCloseTo((5104 / 1440) * 72, 6);
+    expect(readMetafilePage(atTheEnd(2), 'wmf')).toBeUndefined();
+  });
+
+  it('keeps the bounds a PDF page may have: at least 3 points and at most 14400 on a side', () => {
     expect({ min: MIN_METAFILE_PAGE_POINTS, max: MAX_METAFILE_PAGE_POINTS }).toEqual({ min: 3, max: 14400 });
     const smallest = emf({ frame: [0, 0, 105, 105] });
     expect(readMetafilePage(smallest, 'emf')?.widthPt).toBeCloseTo((1.06 * 72) / 25.4, 6);
+    const longestUnits = Math.floor(MAX_METAFILE_PAGE_POINTS / POINTS_PER_FRAME_UNIT);
+    expect(readMetafilePage(emf({ frame: [0, 0, longestUnits - 1, 199] }), 'emf')?.widthPt).toBeCloseTo(MAX_METAFILE_PAGE_POINTS, 1);
+    expect(readMetafilePage(emf({ frame: [0, 0, longestUnits, 199] }), 'emf')).toBeUndefined();
+  });
+
+  it('keeps the area the raster chain draws at its default resolution inside the bitmap limit of a page, which an A0 sheet fits', () => {
+    const defaultDpi = resolvePdfRasterDpi({});
+    expect((MAX_METAFILE_PAGE_AREA_POINTS * (defaultDpi / 72) ** 2 * 3) / PPM_PAGE_MAX_BYTES).toBeCloseTo(1, 9);
+    expect(readMetafilePage(emf({ frame: [0, 0, 84099, 118899] }), 'emf')?.heightPt).toBeCloseTo(1189 * POINTS_PER_MM, 6);
+  });
+
+  it('gives no page above that area: a square page of the most units that fit has one, and one unit more has none', () => {
+    const side = Math.floor(Math.sqrt(MAX_METAFILE_PAGE_AREA_POINTS) / POINTS_PER_FRAME_UNIT);
+    expect(readMetafilePage(emf({ frame: [0, 0, side - 1, side - 1] }), 'emf')?.widthPt).toBeCloseTo(side * POINTS_PER_FRAME_UNIT, 6);
+    expect(readMetafilePage(emf({ frame: [0, 0, side, side] }), 'emf')).toBeUndefined();
+    const sideInches = Math.floor(Math.sqrt(MAX_METAFILE_PAGE_AREA_POINTS));
+    const box = (units: number): { box: [number, number, number, number]; inch: number } => ({ box: [0, 0, units - 1, units - 1], inch: 72 });
+    expect(readMetafilePage(wmf({ placeable: box(sideInches) }), 'wmf')?.widthPt).toBe(sideInches);
+    expect(readMetafilePage(wmf({ placeable: box(sideInches + 1) }), 'wmf')).toBeUndefined();
+  });
+});
+
+describe('the bytes the reader looks at', () => {
+  const frame: [number, number, number, number] = [0, 0, 2999, 1999];
+
+  it('are the leading bytes of the file: the page of the file is the page of that prefix', () => {
+    const files: Array<[Buffer, 'emf' | 'wmf']> = [
+      [emf({ frame, description: 'Adobe Systems\0\0', nextRecord: { type: EMR_SETMAPMODE, mode: MM_ANISOTROPIC } }), 'emf'],
+      [wmf({ placeable: { box: [0, 0, 1439, 719], inch: 1440 } }), 'wmf'],
+      [wmf({ records: [setWindowExtent(5103, 2159), wmfRecord(META_EOF, [])] }), 'wmf'],
+    ];
+    for (const [file, format] of files) {
+      const padded = Buffer.concat([file, Buffer.alloc(2 * MEBIBYTE)]);
+      expect(readMetafilePage(padded.subarray(0, metafileLeadingBytes(format)), format)).toEqual(readMetafilePage(padded, format));
+      expect(readMetafilePage(padded, format)).toBeDefined();
+    }
+  });
+
+  it('end where the header does: an EMF header of 64 KiB gives a page and one of 64 KiB and 4 bytes does not', () => {
+    const limit = metafileLeadingBytes('emf');
+    expect(limit).toBe(64 * 1024);
+    expect(readMetafilePage(emf({ frame, size: limit }), 'emf')).toBeDefined();
+    expect(readMetafilePage(emf({ frame, size: limit + 4 }), 'emf')).toBeUndefined();
   });
 });

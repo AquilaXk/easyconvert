@@ -14,7 +14,9 @@
  *
  * What the reference leaves open is bounded here, and a header outside the bounds gives no page (the caller then keeps the
  * office suite's own page): the sizes a PDF page may have (PDF 32000-1 Annex C implementation limits, 3 to 14400 units), the
- * header sizes of the format, and the records of a WMF read once, each at least as long as a record header and inside the file.
+ * area the raster chain draws at its default resolution without leaving the page-bitmap limit, the header sizes of the format,
+ * and the records of a WMF read once, each at least as long as a record header and inside the first mebibyte of the file.
+ * Only the first bytes of a file are read (`metafileLeadingBytes`), so a caller holding the file on disk reads no more.
  */
 
 const POINTS_PER_INCH = 72;
@@ -22,6 +24,17 @@ const MM_PER_INCH = 25.4;
 /** The smallest and largest page a PDF reader is required to handle (PDF 32000-1 Annex C.2, "Page size": 3 to 14,400 units). */
 export const MIN_METAFILE_PAGE_POINTS = 3;
 export const MAX_METAFILE_PAGE_POINTS = 14_400;
+/**
+ * The most a page may cover, in square points: the page whose raw RGB bitmap at the default raster resolution (150 dpi,
+ * `resolvePdfRasterDpi`) is the largest the PNG route holds in memory (`PPM_PAGE_MAX_BYTES`, 128 MiB, `src/worker/poppler-ppm.ts`),
+ * which is 3,210 points on a side for a square page and holds an A0 sheet (2,384 by 3,370 points, 8.0 million of the 10.3 million).
+ * A header can name any size, and the JPEG and TIFF pages are drawn without a bound on their bitmap, so a larger page keeps the
+ * office suite's own A4 page, which has always fitted.
+ */
+const RASTER_PAGE_MAX_BYTES = 128 * 1024 * 1024;
+const RASTER_DEFAULT_DPI = 150;
+const RASTER_CHANNELS = 3;
+export const MAX_METAFILE_PAGE_AREA_POINTS = RASTER_PAGE_MAX_BYTES / RASTER_CHANNELS / (RASTER_DEFAULT_DPI / POINTS_PER_INCH) ** 2;
 
 export type MetafileFormat = 'emf' | 'wmf';
 
@@ -35,6 +48,8 @@ const EMR_SETMAPMODE = 17;
 const MM_ANISOTROPIC = 8;
 /** EMR_HEADER without a description ([MS-EMF] 2.2.9: Type, Size, Bounds, Frame, RecordSignature, Version, Bytes, Records, Handles, Reserved, nDescription, offDescription, nPalEntries, Device, Millimeters). */
 const EMF_HEADER_BYTES = 88;
+/** The reader looks at the header and the record after it; a real header is 88 bytes and its description (a producer's name) a few dozen, so a header larger than this has no page. */
+const EMF_LEADING_MAX_BYTES = 64 * 1024;
 const EMF_SIGNATURE_OFFSET = 40;
 const EMF_SIGNATURE = 0x464d4520;
 const EMF_FRAME_OFFSET = 24;
@@ -63,10 +78,17 @@ const WMF_FUNCTION_OFFSET = 4;
 const WMF_EOF_FUNCTION = 0x00;
 const WMF_SETWINDOWEXT_FUNCTION = 0x0c;
 const A4_LANDSCAPE_MM = { width: 297, height: 210 };
+/**
+ * The records of a WMF are read from the first mebibyte of the file: the reference reads them all, but the window extent is an
+ * early record of every file measured (the 3rd, 5th and 7th record, within the first 26 KiB, of the three real WMF files
+ * of the real-world corpus: lo-visio_import_source, lo-testroundrect and tika-testwmf), and a scan of the whole file would walk the
+ * 44 million six-byte records that 256 MiB can hold. A file whose records run past this give no page.
+ */
+const WMF_LEADING_MAX_BYTES = 1024 * 1024;
 
 function pageOf(widthPt: number, heightPt: number): MetafilePage | undefined {
   const inRange = (points: number): boolean => Number.isFinite(points) && points >= MIN_METAFILE_PAGE_POINTS && points <= MAX_METAFILE_PAGE_POINTS;
-  return inRange(widthPt) && inRange(heightPt) ? { widthPt, heightPt } : undefined;
+  return inRange(widthPt) && inRange(heightPt) && widthPt * heightPt <= MAX_METAFILE_PAGE_AREA_POINTS ? { widthPt, heightPt } : undefined;
 }
 
 /** Whether the record after the header of an Enhanced Metafile is the anisotropic map mode and its description names Adobe's producer. */
@@ -82,7 +104,8 @@ function isAdobeIllustratorFile(emf: Buffer, headerBytes: number): boolean {
   return emf.readUInt32LE(next) === EMR_SETMAPMODE && emf.readUInt32LE(next + 8) === MM_ANISOTROPIC;
 }
 
-function emfPage(emf: Buffer): MetafilePage | undefined {
+function emfPage(file: Buffer): MetafilePage | undefined {
+  const emf = file.subarray(0, EMF_LEADING_MAX_BYTES);
   if (emf.length < EMF_HEADER_BYTES || emf.readUInt32LE(0) !== EMR_HEADER || emf.readUInt32LE(EMF_SIGNATURE_OFFSET) !== EMF_SIGNATURE) return undefined;
   const headerBytes = emf.readUInt32LE(4);
   if (headerBytes < EMF_HEADER_BYTES || headerBytes % 4 !== 0 || headerBytes > emf.length) return undefined;
@@ -120,7 +143,8 @@ function firstWindowExtent(wmf: Buffer, offset: number, unitsPerInch: number): {
   }
 }
 
-function wmfPage(wmf: Buffer): MetafilePage | undefined {
+function wmfPage(file: Buffer): MetafilePage | undefined {
+  const wmf = file.subarray(0, WMF_LEADING_MAX_BYTES);
   const placeable = wmf.length >= 4 && wmf.readUInt32LE(0) === WMF_PLACEABLE_KEY;
   const headerAt = placeable ? WMF_PLACEABLE_BYTES : 0;
   if (headerAt + WMF_HEADER_BYTES > wmf.length || !WMF_METAFILE_TYPES.includes(wmf.readUInt16LE(headerAt))) return undefined;
@@ -135,6 +159,11 @@ function wmfPage(wmf: Buffer): MetafilePage | undefined {
   }
   const pointsPerUnit = POINTS_PER_INCH / unitsPerInch;
   return pageOf((right - left + 1) * pointsPerUnit, (bottom - top + 1) * pointsPerUnit);
+}
+
+/** How many leading bytes of a file of the format `readMetafilePage` reads: a caller that holds the file on disk needs no more to ask for its page. */
+export function metafileLeadingBytes(format: MetafileFormat): number {
+  return format === 'emf' ? EMF_LEADING_MAX_BYTES : WMF_LEADING_MAX_BYTES;
 }
 
 /** The page of the metafile in points, or undefined when its header does not declare one inside the bounds above. */

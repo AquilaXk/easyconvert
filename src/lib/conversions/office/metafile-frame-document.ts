@@ -10,7 +10,8 @@ import type { MetafileFormat, MetafilePage } from './metafile-page-frame';
  * The package is an OpenDocument Graphics file (ODF 1.3: part 3 for the package and its manifest; part 1 for the page layout
  * of a master page, `draw:page`, and a `draw:frame` that holds a `draw:image` whose picture is a package part and is drawn in the
  * frame's rectangle). The bytes of the metafile are stored as they are; nothing the file holds is written into the XML, whose
- * text is made of constants and numbers.
+ * text is made of constants and numbers. The picture part is stored, not deflated: the suite reads it back as it is, and deflating up to
+ * 256 MiB in JavaScript would cost seconds of CPU outside the stage timeout for a part that rarely shrinks.
  */
 
 const ODG_MIME = 'application/vnd.oasis.opendocument.graphics';
@@ -73,6 +74,6 @@ export async function metafileFrameDocument(metafile: Buffer, format: MetafileFo
   zip.file('META-INF/manifest.xml', manifestXml(picturePath, PICTURE_MIME[format]));
   zip.file('styles.xml', stylesXml(page));
   zip.file('content.xml', contentXml(page, picturePath));
-  zip.file(picturePath, metafile);
+  zip.file(picturePath, metafile, { compression: 'STORE' });
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
