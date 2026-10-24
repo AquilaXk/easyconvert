@@ -1,3 +1,4 @@
+import { printableEntryName } from '../archive-refusal-reasons';
 import { InflateBudget, inflateBounded } from '../bounded-inflate';
 import { ConversionFailedError, PayloadLimitError } from '../../types';
 import { HTML_MODEL_MAX_IMAGE_BYTES } from '../html-model';
@@ -39,6 +40,14 @@ const ENTRY_FLAGS_AT = NAME_BYTES + 8;
 const CHUNK_TABLE_HEAD_BYTES = 8;
 const CHUNK_SIZE_BYTES = 4;
 const PAGE_COUNT_BYTES = 4;
+/**
+ * No chunk can be shorter than the shortest zlib stream: the 2-byte header (RFC 1950 section 2.2), an empty final block of
+ * fixed codes, 10 bits padded to 2 bytes (RFC 1951 section 3.2.6), and the 4-byte Adler-32 (RFC 1950 section 2.2).
+ */
+const SHORTEST_ZLIB_STREAM_BYTES = 8;
+/** calibre's writer cuts the text in chunks of this many bytes (rb/writer.py lines 13, 99-101). */
+const WRITER_CHUNK_BYTES = 4096;
+const MAX_TEXT_BYTES = 256 * 1024 * 1024;
 
 const FLAG_PLAIN = 0;
 const FLAG_INFO = 2;
@@ -54,6 +63,8 @@ export interface RocketBookLimits {
   maxTextBytes: number;
   /** Bytes one chunk inflates to. The writer of the real files cuts text in 4096-byte chunks (calibre rb/writer.py line 13); 1 MiB is 256 times that. */
   maxChunkBytes: number;
+  /** Chunks of all pages together, each one inflate call: the text limit cut in the writer's 4096-byte chunks, 65,536. */
+  maxChunks: number;
   /** Bytes of all pictures together: the limit of the HTML model's embedded pictures. */
   maxImageBytes: number;
   /** Bytes of the info page that are read; the title and authors are lines of it. */
@@ -62,8 +73,9 @@ export interface RocketBookLimits {
 
 export const ROCKETBOOK_LIMITS: RocketBookLimits = {
   maxPages: 0xffff,
-  maxTextBytes: 256 * 1024 * 1024,
+  maxTextBytes: MAX_TEXT_BYTES,
   maxChunkBytes: 1024 * 1024,
+  maxChunks: Math.ceil(MAX_TEXT_BYTES / WRITER_CHUNK_BYTES),
   maxImageBytes: HTML_MODEL_MAX_IMAGE_BYTES,
   maxInfoBytes: 64 * 1024,
 };
@@ -111,7 +123,11 @@ const PERCENT_ESCAPE = /%([0-9a-f]{2})/gi;
 const UNDEFINED_WINDOWS_1252 = /[\u0081\u008d\u008f\u0090\u009d]/g;
 const REPLACEMENT_CHARACTER = '�';
 const LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/;
-const AUTHOR_SEPARATOR = /,?\s+(?:and|with)\s+/gi;
+/**
+ * calibre's `,?\s+(and|with)\s+` (metadata/__init__.py line 24) with the match started only where a run of white space
+ * starts: it finds the same separators, and a long run that no separator ends is scanned once instead of once per character.
+ */
+const AUTHOR_SEPARATOR = /,?(?<!\s)\s+(?:and|with)\s+/gi;
 const ESCAPED_AMPERSAND = '￿';
 
 /** The name of an entry: the bytes without the NUL padding, percent escapes decoded to bytes and read as UTF-8 (reader.py line 59, 94). */
@@ -122,6 +138,11 @@ function entryName(raw: Buffer): string {
   while (end > start && raw[end - 1] === 0) end -= 1;
   const unescaped = raw.subarray(start, end).toString('latin1').replace(PERCENT_ESCAPE, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)));
   return Buffer.from(unescaped, 'latin1').toString('utf-8');
+}
+
+/** How a message names a page: its stored name without control characters, which an untrusted file may put there. */
+function pageLabel(entry: Entry): string {
+  return `page ${printableEntryName(entry.name)}`;
 }
 
 function lookupName(source: string): string {
@@ -154,28 +175,55 @@ function readEntries(file: Buffer, limits: RocketBookLimits): { entries: Entry[]
 
 /** `[offset, offset + length)` as bytes of the file, or a format error when it leaves the file. */
 function within(file: Buffer, entry: Entry, length: number): Buffer {
-  if (entry.offset + length > file.length) throw new RocketBookFormatError(`page ${entry.name} lies outside the file`);
+  if (entry.offset + length > file.length) throw new RocketBookFormatError(`${pageLabel(entry)} lies outside the file`);
   return file.subarray(entry.offset, entry.offset + length);
 }
 
-/** The stored chunks of a deflated text page and the size of text it states (reader.py lines 82-87). */
-function chunkTable(file: Buffer, entry: Entry, limits: RocketBookLimits): { chunks: Buffer[]; statedText: number; storedBytes: number } {
+interface ChunkTable {
+  count: number;
+  statedText: number;
+  /** Bytes of the head, the sizes and the chunks: the page's extent in the file (rb/writer.py lines 45-47). */
+  storedBytes: number;
+}
+
+/**
+ * The chunk table of a deflated text page (reader.py lines 82-87), checked before any chunk is read: one chunk per piece of
+ * the stated text at most, no more chunks in the document than the limit, and no chunk shorter than a zlib stream.
+ */
+function chunkTable(file: Buffer, entry: Entry, limits: RocketBookLimits, chunksBefore: number): ChunkTable {
   const head = within(file, entry, CHUNK_TABLE_HEAD_BYTES);
   const count = head.readUInt32LE(0);
   const statedText = head.readUInt32LE(4);
-  if (statedText > limits.maxTextBytes) throw new PayloadLimitError(`The RocketBook page ${entry.name} states ${statedText} bytes of text, more than the limit of ${limits.maxTextBytes}.`);
-  const tableBytes = CHUNK_TABLE_HEAD_BYTES + count * CHUNK_SIZE_BYTES;
-  if (count > (file.length - entry.offset - CHUNK_TABLE_HEAD_BYTES) / CHUNK_SIZE_BYTES) throw new RocketBookFormatError(`page ${entry.name} lists ${count} chunks that do not fit in the file`);
-  const table = within(file, entry, tableBytes);
-  const chunks: Buffer[] = [];
-  let at = entry.offset + tableBytes;
+  const page = pageLabel(entry);
+  if (statedText > limits.maxTextBytes) throw new PayloadLimitError(`The RocketBook ${page} states ${statedText} bytes of text, more than the limit of ${limits.maxTextBytes}.`);
+  if (count > statedText) throw new RocketBookFormatError(`${page} lists ${count} chunks for ${statedText} bytes of text`);
+  if (chunksBefore + count > limits.maxChunks) throw new PayloadLimitError(`The RocketBook pages list more than ${limits.maxChunks} compressed chunks together.`);
+  const sizesAt = entry.offset + CHUNK_TABLE_HEAD_BYTES;
+  if (sizesAt + count * CHUNK_SIZE_BYTES > file.length) throw new RocketBookFormatError(`${page} lists ${count} chunks that do not fit in the file`);
+  let storedBytes = CHUNK_TABLE_HEAD_BYTES + count * CHUNK_SIZE_BYTES;
   for (let index = 0; index < count; index += 1) {
-    const size = table.readUInt32LE(CHUNK_TABLE_HEAD_BYTES + index * CHUNK_SIZE_BYTES);
-    if (at + size > file.length) throw new RocketBookFormatError(`a chunk of page ${entry.name} lies outside the file`);
-    chunks.push(file.subarray(at, at + size));
+    const size = file.readUInt32LE(sizesAt + index * CHUNK_SIZE_BYTES);
+    if (size < SHORTEST_ZLIB_STREAM_BYTES) throw new RocketBookFormatError(`a chunk of ${page} is shorter than the shortest zlib stream`);
+    storedBytes += size;
+  }
+  if (entry.offset + storedBytes > file.length) throw new RocketBookFormatError(`the chunks of ${page} lie outside the file`);
+  return { count, statedText, storedBytes };
+}
+
+/** The text of a deflated page, its chunks inflated in turn (reader.py lines 88-90); it must be the size the page states (rb/writer.py line 76). */
+function inflatePage(file: Buffer, entry: Entry, table: ChunkTable, limits: RocketBookLimits, budget: InflateBudget): Buffer {
+  const label = `RocketBook ${pageLabel(entry)}`;
+  const sizesAt = entry.offset + CHUNK_TABLE_HEAD_BYTES;
+  let at = sizesAt + table.count * CHUNK_SIZE_BYTES;
+  const parts: Buffer[] = [];
+  for (let index = 0; index < table.count; index += 1) {
+    const size = file.readUInt32LE(sizesAt + index * CHUNK_SIZE_BYTES);
+    parts.push(inflateBounded(file.subarray(at, at + size), { label, format: 'zlib', maxOutputLength: limits.maxChunkBytes, budget }));
     at += size;
   }
-  return { chunks, statedText, storedBytes: at - entry.offset };
+  const text = Buffer.concat(parts);
+  if (text.length !== table.statedText) throw new RocketBookFormatError(`${pageLabel(entry)} states ${table.statedText} bytes of text and its chunks hold ${text.length}`);
+  return text;
 }
 
 function decodeText(bytes: Buffer): string {
@@ -213,7 +261,7 @@ function assertDisjoint(extents: Extent[]): void {
 /** What the reader takes from one entry, found before any byte of it is inflated. */
 type Plan =
   | { kind: 'info'; entry: Entry }
-  | { kind: 'text'; entry: Entry; chunks: Buffer[] }
+  | { kind: 'text'; entry: Entry; table: ChunkTable }
   | { kind: 'plain-text'; entry: Entry }
   | { kind: 'picture'; entry: Entry };
 
@@ -221,10 +269,11 @@ function planOf(file: Buffer, entries: readonly Entry[], limits: RocketBookLimit
   const plan: Plan[] = [];
   let hasInfo = false;
   let imageBytes = 0;
+  let chunks = 0;
   for (const entry of entries) {
     const lower = entry.name.toLowerCase();
     const span = (length: number): void => {
-      extents.push({ start: entry.offset, end: entry.offset + length, name: entry.name });
+      extents.push({ start: entry.offset, end: entry.offset + length, name: pageLabel(entry) });
     };
     if (entry.flags === FLAG_INFO && !hasInfo) {
       hasInfo = true;
@@ -232,9 +281,10 @@ function planOf(file: Buffer, entries: readonly Entry[], limits: RocketBookLimit
       plan.push({ kind: 'info', entry });
     } else if (lower.endsWith('html') && !NOT_TEXT_FLAGS.has(entry.flags)) {
       if (entry.flags === FLAG_DEFLATED) {
-        const { chunks, storedBytes } = chunkTable(file, entry, limits);
-        span(storedBytes);
-        plan.push({ kind: 'text', entry, chunks });
+        const table = chunkTable(file, entry, limits, chunks);
+        chunks += table.count;
+        span(table.storedBytes);
+        plan.push({ kind: 'text', entry, table });
       } else {
         span(entry.size);
         plan.push({ kind: 'plain-text', entry });
@@ -266,14 +316,12 @@ export function readRocketBook(file: Buffer, limits: RocketBookLimits = ROCKETBO
   let metadata: { title?: string; authors: string[] } | undefined;
   for (const step of plan) {
     const { entry } = step;
-    const label = `RocketBook page ${entry.name}`;
     if (step.kind === 'info') {
       metadata = readInfo(within(file, entry, entry.size).subarray(0, limits.maxInfoBytes));
     } else if (step.kind === 'text') {
-      const text = step.chunks.map((chunk) => inflateBounded(chunk, { label, format: 'zlib', maxOutputLength: limits.maxChunkBytes, budget }));
-      pages.push({ name: entry.name, html: decodeText(Buffer.concat(text)) });
+      pages.push({ name: entry.name, html: decodeText(inflatePage(file, entry, step.table, limits, budget)) });
     } else if (step.kind === 'plain-text') {
-      budget.charge(entry.size, label);
+      budget.charge(entry.size, `RocketBook ${pageLabel(entry)}`);
       pages.push({ name: entry.name, html: decodeText(within(file, entry, entry.size)) });
     } else {
       images.set(entry.name, within(file, entry, entry.size));

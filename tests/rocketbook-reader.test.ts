@@ -7,6 +7,7 @@ import { ConversionFailedError, DecompressionLimitError, PayloadLimitError } fro
 import { isOfficeSuiteOnlySource } from '../src/lib/conversions/office/office-suite-sources';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { withMissingBinary } from './helpers/native-tools';
+import { expectNoHang, settle } from './helpers/timing';
 import {
   FLAG_ENCRYPTED,
   FLAG_PLAIN,
@@ -30,6 +31,8 @@ import {
 
 const ONE_PIXEL_PNG = greyPng(1);
 const PICTURE_PNG = greyPng(8);
+/** Each hostile input is refused in milliseconds once bounded; the guard fails work that grows with what the file claims. */
+const HOSTILE_GUARD_MS = 1_000;
 
 async function textOf(book: Buffer): Promise<string> {
   return (await convertFile(book, 'rb', 'txt', {}, 'book.rb')).buffer.toString('utf-8');
@@ -193,6 +196,36 @@ describe('a file that is not a readable RocketBook', () => {
     expect(() => readRocketBook(file, { ...ROCKETBOOK_LIMITS, maxImageBytes: 150 })).toThrow(PayloadLimitError);
   });
 
+  it('is refused when its chunks inflate to more or less text than the page states', () => {
+    const text = Buffer.from('<P>stated</P>');
+    const chunk = zlib.deflateSync(text);
+    for (const stated of [text.length - 1, text.length + 1]) {
+      const file = buildRocketBook([{ name: 'index.html', flags: 8, data: deflatedChunks([chunk], stated) }]);
+      expect(() => readRocketBook(file), `stated ${stated}`).toThrow(RocketBookFormatError);
+    }
+    expect(readRocketBook(buildRocketBook([{ name: 'index.html', flags: 8, data: deflatedChunks([chunk], text.length) }])).pages[0].html).toBe('<P>stated</P>');
+  });
+
+  it('is refused when a page lists more chunks than bytes of text it states', () => {
+    const chunk = zlib.deflateSync(Buffer.from('x'));
+    const file = buildRocketBook([{ name: 'index.html', flags: 8, data: deflatedChunks([chunk, chunk], 1) }]);
+    expect(() => readRocketBook(file)).toThrow(RocketBookFormatError);
+  });
+
+  it('is refused when a chunk is shorter than the smallest zlib stream', () => {
+    const shortest = zlib.deflateSync(Buffer.alloc(0));
+    expect(shortest).toHaveLength(8);
+    const file = buildRocketBook([{ name: 'index.html', flags: 8, data: deflatedChunks([zlib.deflateSync(Buffer.from('ab')), shortest.subarray(0, 7)], 2) }]);
+    expect(() => readRocketBook(file)).toThrow(RocketBookFormatError);
+  });
+
+  it('is refused when its pages list more chunks together than the limit, and read at the limit', () => {
+    const chunk = zlib.deflateSync(Buffer.from('x'));
+    const pages = [0, 1].map((index) => ({ name: `p${index}.html`, flags: 8, data: deflatedChunks([chunk, chunk], 2) }));
+    expect(() => readRocketBook(buildRocketBook(pages), { ...ROCKETBOOK_LIMITS, maxChunks: 3 })).toThrow(PayloadLimitError);
+    expect(readRocketBook(buildRocketBook(pages), { ...ROCKETBOOK_LIMITS, maxChunks: 4 }).pages.map((page) => page.html)).toEqual(['xx', 'xx']);
+  });
+
   it('ignores an info page that states no title and reads the first info page only', () => {
     const book = readRocketBook(
       buildRocketBook([infoPage(['TYPE=2', 'TITLE= ', 'AUTHOR=']), infoPage(['TITLE=Second']), htmlPage('index.html', '<P>x</P>')])
@@ -206,6 +239,68 @@ describe('a file that is not a readable RocketBook', () => {
     const book = readRocketBook(buildRocketBook([infoPage([long, 'AUTHOR=Late Author']), htmlPage('index.html', '<P>x</P>')]));
     expect(book.authors).toEqual([]);
     expect((book.title ?? '').length).toBeLessThanOrEqual(ROCKETBOOK_LIMITS.maxInfoBytes);
+  });
+
+  it('splits an author line of 64 KiB of white space in linear time', async () => {
+    const run = ' '.repeat(65_000);
+    const author = `AUTHOR=Ann${run}Lee with Bob`;
+    const book = await expectNoHang('white space author', () => readRocketBook(buildRocketBook([infoPage([author]), htmlPage('index.html', '<P>x</P>')])), HOSTILE_GUARD_MS);
+    expect(book.authors).toEqual([`Ann${run}Lee`, 'Bob']);
+  });
+
+  it('names a page in an error without the control characters of its stored name', () => {
+    const file = buildRocketBook([{ ...imagePage('bad%0D%0Aline%07.png', ONE_PIXEL_PNG), statedSize: 5000 }]);
+    const failure = settle(() => readRocketBook(file));
+    expect(failure.ok).toBe(false);
+    const message = (failure as { error: Error }).error.message;
+    expect(message).toContain('bad');
+    expect(message).not.toMatch(/[\u0000-\u001f\u007f]/);
+  });
+});
+
+describe('a hostile chunk table', () => {
+  const SHORTEST_ZLIB_STREAM = zlib.deflateSync(Buffer.alloc(0));
+
+  function failureOf(file: Buffer): Promise<unknown> {
+    return expectNoHang('hostile chunk table', () => settle(() => readRocketBook(file)), HOSTILE_GUARD_MS).then((settled) => (settled.ok ? undefined : settled.error));
+  }
+
+  it('is refused before any chunk is read when it lists four million chunks of no bytes', async () => {
+    const chunks = 4 * 1024 * 1024;
+    const page = Buffer.alloc(8 + 4 * chunks);
+    page.writeUInt32LE(chunks, 0);
+    page.writeUInt32LE(chunks, 4);
+    const overLimit = await failureOf(buildRocketBook([{ name: 'index.html', flags: 8, data: page }]));
+    const statesNoText = Buffer.from(page);
+    statesNoText.writeUInt32LE(0, 4);
+    const moreChunksThanText = await failureOf(buildRocketBook([{ name: 'index.html', flags: 8, data: statesNoText }]));
+    expect(overLimit).toBeInstanceOf(PayloadLimitError);
+    expect(moreChunksThanText).toBeInstanceOf(RocketBookFormatError);
+    expect([overLimit, moreChunksThanText].map((error) => (error as { status: number }).status)).toEqual([413, 400]);
+  });
+
+  it('is refused when 65,535 pages all point at one stored page of many chunks', async () => {
+    const stored = deflatedChunks(Array.from({ length: 64 }, () => zlib.deflateSync(Buffer.from('x'))), 64);
+    const tableEnd = 0x128 + 4 + 0xffff * 44;
+    const pages = Array.from({ length: 0xffff }, (_, index) => ({ name: `p${index}.html`, flags: 8, data: index === 0 ? stored : Buffer.alloc(0), statedOffset: tableEnd, statedSize: stored.length }));
+    const failure = await failureOf(buildRocketBook(pages));
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as Error).message).toBe(`The RocketBook pages list more than ${ROCKETBOOK_LIMITS.maxChunks} compressed chunks together.`);
+  });
+
+  it('is refused before any chunk is inflated when a page holds more of the smallest zlib streams than the limit', async () => {
+    const pageOf = (count: number) => buildRocketBook([{ name: 'index.html', flags: 8, data: deflatedChunks(Array.from({ length: count }, () => SHORTEST_ZLIB_STREAM), count) }]);
+    const overLimit = await failureOf(pageOf(ROCKETBOOK_LIMITS.maxChunks + 1));
+    const atLimit = await failureOf(pageOf(ROCKETBOOK_LIMITS.maxChunks));
+    expect(overLimit).toBeInstanceOf(PayloadLimitError);
+    expect([overLimit, atLimit].map((error) => (error as { status: number }).status)).toEqual([413, 400]);
+  });
+
+  it('is refused when a page of the smallest zlib streams inflates to none of the text it states', async () => {
+    const file = buildRocketBook([{ name: 'index.html', flags: 8, data: deflatedChunks(Array.from({ length: 1000 }, () => SHORTEST_ZLIB_STREAM), 1000) }]);
+    const failure = await failureOf(file);
+    expect(failure).toBeInstanceOf(RocketBookFormatError);
+    expect((failure as Error).message).toMatch(/states 1000 bytes of text and its chunks hold 0/);
   });
 });
 
