@@ -4,7 +4,7 @@ import { convertFile } from '../src/lib/conversions/index';
 import { analyzePdfPagesInProcess } from '../src/lib/conversions/pdf-text-geometry';
 import { PDF_CONTENT_MAX_IMAGES_PER_PAGE, type PdfContentImage } from '../src/lib/conversions/pdf-text-types';
 import { maxInputPixels } from '../src/lib/conversions/image-input-limits';
-import { buildPdf, type CraftObject } from './helpers/pdf-craft';
+import { HELVETICA_FONT, buildPdf, textContent, type CraftObject } from './helpers/pdf-craft';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
@@ -117,15 +117,16 @@ function jpxDeclaring(side: number): Buffer {
   return stream;
 }
 
-/** One page that draws each picture once, as its own image XObject, one below the other. */
+/** One page with a line of text (a page without text is recognized by OCR instead) that draws each picture once, as its own image XObject. */
 function picturesPdf(pictures: Picture[]): Buffer {
-  const draws = pictures.map((_, index) => `q 64 0 0 32 72 ${700 - (index % 20) * 34} cm /Im${index} Do Q`).join('\n');
+  const draws = textContent('Pictures', 740) + pictures.map((_, index) => `q 64 0 0 32 72 ${700 - (index % 20) * 34} cm /Im${index} Do Q`).join('\n');
   const names = pictures.map((_, index) => `/Im${index} ${10 + index} 0 R`).join(' ');
   const objects: CraftObject[] = [
     { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
     { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
-    { id: 3, dict: `/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /XObject << ${names} >> >>` },
+    { id: 3, dict: `/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> /XObject << ${names} >> >>` },
     { id: 4, stream: Buffer.from(draws, 'latin1') },
+    { id: 5, raw: HELVETICA_FONT },
     ...pictures.map((picture, index): CraftObject => ({ id: 10 + index, dict: `/Type /XObject /Subtype /Image ${picture.dict}`, stream: picture.stream })),
   ];
   return buildPdf(objects, 1).buffer;
