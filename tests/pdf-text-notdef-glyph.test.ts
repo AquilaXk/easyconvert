@@ -105,6 +105,16 @@ describe('code 0 that is not the .notdef glyph by the encoding is still a glyph 
     expect((error as PdfTextUnmappedError).pages).toEqual([1]);
   });
 
+  it('is counted in a Type 3 font, whose glyph procedures may draw anything at 0, and a page of it alone is refused', async () => {
+    const pdf = pageShowing('\\000\\000', (first) => [
+      `<< /Type /Font /Subtype /Type3 /FontBBox [0 0 750 750] /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /box ${first + 1} 0 R >> /Encoding << /Type /Encoding /Differences [1 /box] >> /FirstChar 0 /LastChar 1 /Widths [750 750] /Resources << >> >>`,
+      '<< /Length 37 >>\nstream\n750 0 0 0 750 750 d1 0 0 750 750 re f\nendstream',
+    ]);
+    const error = await captureError(() => extractPdfDocument(pdf));
+    expect(error).toBeInstanceOf(PdfTextUnmappedError);
+    expect((error as PdfTextUnmappedError).pages).toEqual([1]);
+  });
+
   it('leaves codes 1 to 31 counted: a standard encoding names none of them either, but a font may draw a glyph there', async () => {
     const pdf = pageShowing('\\001\\002\\003', (first) => dejaVuObjects(first, NONSYMBOLIC, `/Encoding ${WIN_ANSI}`));
     const error = await captureError(() => extractPdfDocument(pdf));
