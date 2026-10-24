@@ -73,6 +73,7 @@
 #include <gp_Trsf.hxx>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -203,12 +204,22 @@ void readIges(const std::string& path, Handle(TDocStd_Document)& doc) {
 // CASCADE 7.6.3). The worker applies the same number before it starts the program (cad-occt.ts, OCCT_MESH_MAX_TRIANGLES).
 constexpr std::uint32_t kMaxMeshTriangles = 50000;
 
+// The most vertices a mesh lists: three corners for every triangle that may be written, so a listed vertex that no triangle names
+// cannot size the arrays beyond what the triangles could use (cad-occt.ts, OCCT_MESH_MAX_VERTICES, is the same number).
+constexpr std::uint32_t kMaxMeshVertices = 3 * kMaxMeshTriangles;
+
 int countFaces(const TopoDS_Shape& shape);
 
 struct MeshData {
   std::vector<double> vertices;
   std::vector<std::uint32_t> triangles;
 };
+
+std::string formatLimit(double value) {
+  char text[32];
+  std::snprintf(text, sizeof text, "%g", value);
+  return text;
+}
 
 MeshData readMesh(const std::string& path) {
   std::ifstream in(path, std::ios::binary | std::ios::ate);
@@ -219,6 +230,7 @@ MeshData readMesh(const std::string& path) {
   if (size < sizeof counts || !in.read(reinterpret_cast<char*>(counts), sizeof counts)) fail(kExitUnreadable, "unreadable", "the mesh file is shorter than its header");
   const std::uint64_t vertexCount = counts[0], triangleCount = counts[1];
   if (triangleCount > kMaxMeshTriangles) fail(kExitFailed, "too-large", "the mesh has " + std::to_string(triangleCount) + " triangles; the most that is written is " + std::to_string(kMaxMeshTriangles));
+  if (vertexCount > kMaxMeshVertices) fail(kExitFailed, "too-large", "the mesh has " + std::to_string(vertexCount) + " vertices; the most that is written is " + std::to_string(kMaxMeshVertices));
   if (size != sizeof counts + vertexCount * 3 * sizeof(double) + triangleCount * 3 * sizeof(std::uint32_t)) fail(kExitUnreadable, "unreadable", "the mesh file is not the size its header gives");
   MeshData mesh;
   mesh.vertices.resize(vertexCount * 3);
@@ -228,6 +240,8 @@ MeshData readMesh(const std::string& path) {
   if (!in) fail(kExitUnreadable, "unreadable", "the mesh file could not be read");
   for (const double value : mesh.vertices) {
     if (!std::isfinite(value)) fail(kExitUnreadable, "unreadable", "the mesh holds a vertex that is not a finite number");
+    // Precision::Infinite() (2e100, Precision.hxx) is the kernel's own "no bound": a coordinate past it overflows the cross product of isOnALine to NaN.
+    if (std::fabs(value) > Precision::Infinite()) fail(kExitFailed, "too-large", "the mesh holds a coordinate beyond " + formatLimit(Precision::Infinite()));
   }
   for (const std::uint32_t index : mesh.triangles) {
     if (index >= vertexCount) fail(kExitUnreadable, "unreadable", "the mesh holds a triangle that names a vertex it does not list");
@@ -489,6 +503,11 @@ struct ObjTriangle {
 };
 
 // The path of the material file beside an OBJ: the OBJ's name with its extension replaced (as the kernel's OBJ writer names it, RWObj_CafWriter.cxx:160).
+// Whether a material name can stand in a `usemtl` line and a `newmtl` line as one word: a newline or a blank in it would end the line or split the name.
+bool isSafeMaterialName(const std::string& name) {
+  return !name.empty() && std::all_of(name.begin(), name.end(), [](unsigned char c) { return std::isalnum(c) || c == '.' || c == '_' || c == '-'; });
+}
+
 std::string materialPathOf(const std::string& objPath) {
   const std::size_t dot = objPath.find_last_of('.');
   const std::size_t slash = objPath.find_last_of('/');
@@ -523,6 +542,7 @@ void writeObj(const Handle(TDocStd_Document)& doc, const std::string& path, cons
       if (face.HasFaceColor()) {
         if (!materials) materials = std::make_unique<RWObj_ObjMaterialMap>(TCollection_AsciiString(materialPath.c_str()));
         const std::string name = materials->AddMaterial(face.FaceStyle()).ToCString();
+        if (!isSafeMaterialName(name)) fail(kExitFailed, "material", "a material name holds a character outside letters, digits, '.', '_' and '-'");
         const auto found = materialIndex.emplace(name, static_cast<int>(materialNames.size()));
         if (found.second) materialNames.push_back(name);
         material = found.first->second;

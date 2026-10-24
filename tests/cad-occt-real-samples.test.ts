@@ -496,6 +496,18 @@ describe.skipIf(!haveTools)('the mesh input of the program, which a damaged or h
     unreadable(meshFile(3, 1, [0, 0, 0, 1, Number.POSITIVE_INFINITY, 0, 0, 1, 0], [0, 1, 2]), 'not a finite number');
   });
 
+  it('refuses a coordinate beyond the kernel\'s infinite value (2e100) and more than 150,000 vertices, each with exit status 5', () => {
+    for (const value of [1e300, -2.5e100]) {
+      const result = run(meshFile(3, 1, [0, 0, 0, value, 0, 0, 0, 1, 0], [0, 1, 2]));
+      expect(result.status, String(value)).toBe(5);
+      expect(result.stderr, String(value)).toContain('too-large: the mesh holds a coordinate beyond 2e+100');
+    }
+    expect(run(meshFile(3, 1, [0, 0, 0, 2e100, 0, 0, 0, 1, 0], [0, 1, 2])).stderr).not.toContain('coordinate beyond');
+    const tooMany = run(meshFile(150_001, 1, [], []));
+    expect(tooMany.status).toBe(5);
+    expect(tooMany.stderr).toContain('too-large: the mesh has 150001 vertices; the most that is written is 150000');
+  });
+
   it('allocates nothing for counts that the file does not hold, however large they are', () => {
     for (const [vertices, triangles] of [[0xffffffff, 1], [1, 0xffffffff], [0xffffffff, 0xffffffff], [0x80000000, 0]]) {
       const started = Date.now();

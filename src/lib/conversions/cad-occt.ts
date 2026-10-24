@@ -97,6 +97,12 @@ export interface OcctOutput {
  */
 export const OCCT_MESH_MAX_TRIANGLES = 50_000;
 
+/** The most vertices a mesh lists: three for every triangle that may be written (kMaxMeshVertices in cad-convert.cpp). */
+export const OCCT_MESH_MAX_VERTICES = 3 * OCCT_MESH_MAX_TRIANGLES;
+
+/** The kernel's own "no bound", Precision::Infinite() (Precision.hxx): a coordinate past it is refused (cad-convert.cpp does the same). */
+const OCCT_MAX_COORDINATE = 2e100;
+
 /** An indexed triangle mesh in millimetres, as the worker's STL and OBJ readers produce it. */
 export interface IndexedMesh {
   vertices: ReadonlyArray<readonly [number, number, number]>;
@@ -245,6 +251,25 @@ export async function convertCadWithOcct(input: Buffer, sourceFormat: string, ta
   return { buffer, mimeType: ZIP_MIME, archive: true };
 }
 
+/** Refuses a mesh whose vertices or face indices the program's input form cannot carry, so the file it reads is the mesh and not its wrapped numbers. */
+function assertMeshFitsProgram(mesh: IndexedMesh): void {
+  if (mesh.vertices.length > OCCT_MESH_MAX_VERTICES) {
+    throw new UnprocessableCadInputError(
+      `The mesh lists ${mesh.vertices.length.toLocaleString('en-US')} vertices; the IGES file takes at most ${OCCT_MESH_MAX_VERTICES.toLocaleString('en-US')}.`
+    );
+  }
+  for (const vertex of mesh.vertices) {
+    if (!vertex.every((value) => Math.abs(value) <= OCCT_MAX_COORDINATE)) {
+      throw new UnprocessableCadInputError('The mesh holds a coordinate that is not a number or is larger than 2e100 mm, the kernel\'s limit.');
+    }
+  }
+  for (const face of mesh.faces) {
+    if (!face.every((index) => Number.isInteger(index) && index >= 0 && index < mesh.vertices.length)) {
+      throw new UnprocessableCadInputError('The mesh holds a triangle that names a vertex it does not list.');
+    }
+  }
+}
+
 /**
  * Writes a mesh (an STL or OBJ source) as IGES through the kernel. The mesh is in millimetres, the unit of the IGES file. A mesh
  * with more triangles than OCCT_MESH_MAX_TRIANGLES is refused before the program starts, with its size and the limit named.
@@ -255,6 +280,7 @@ export async function convertMeshToIgesWithOcct(mesh: IndexedMesh, options: Occt
       `The mesh has ${mesh.faces.length.toLocaleString('en-US')} triangles; the IGES file takes at most ${OCCT_MESH_MAX_TRIANGLES.toLocaleString('en-US')}, because every triangle is a trimmed surface of its own.`
     );
   }
+  assertMeshFitsProgram(mesh);
   const { model } = await runKernel({ from: 'mesh', to: 'iges', input: meshFile(mesh), inputExtension: 'mesh', outputExtension: 'iges', unit: DEFAULT_OUTPUT_UNIT, options });
   return { buffer: model, mimeType: OCCT_CONVERTER_MIME.iges, archive: false };
 }

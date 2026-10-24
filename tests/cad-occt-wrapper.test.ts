@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import { convertCadWithOcct } from '../src/lib/conversions/cad-occt';
+import { convertCadWithOcct, convertMeshToIgesWithOcct, type IndexedMesh } from '../src/lib/conversions/cad-occt';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import JSZip from 'jszip';
 import { igesFile } from './helpers/iges-builder';
@@ -312,6 +312,40 @@ describe('an OBJ with colours comes as the ZIP of the OBJ and its material file'
       const zip = await JSZip.loadAsync(result.buffer);
       for (const name of Object.keys(zip.files)) expect(name).toMatch(/^[A-Za-z0-9._-]+$/);
       expect(Object.keys(zip.files).every((name) => !name.includes('/'))).toBe(true);
+    });
+  });
+});
+
+describe('a mesh the program cannot take is refused with a typed 422 before the program starts', () => {
+  const TRIANGLE: IndexedMesh = { vertices: [[0, 0, 0], [1, 0, 0], [0, 1, 0]], faces: [[0, 1, 2]] };
+  const withFaces = (faces: ReadonlyArray<readonly [number, number, number]>): IndexedMesh => ({ vertices: TRIANGLE.vertices, faces });
+
+  it('names a face index that is not an integer inside the vertex list', async () => {
+    await withProgram('/nonexistent/cad-convert', async () => {
+      for (const index of [5_000_000_000, 3, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+        const failure = await convertMeshToIgesWithOcct(withFaces([[0, 1, index]])).catch((error: unknown) => error);
+        expect(failure, String(index)).toBeInstanceOf(UnprocessableCadInputError);
+        expect((failure as Error).message, String(index)).toBe('The mesh holds a triangle that names a vertex it does not list.');
+      }
+    });
+  });
+
+  it('refuses a coordinate beyond the kernel\'s infinite value (2e100), however finite it is', async () => {
+    await withProgram('/nonexistent/cad-convert', async () => {
+      for (const value of [1e300, -2.5e100, Number.NaN]) {
+        const failure = await convertMeshToIgesWithOcct({ vertices: [[0, 0, 0], [value, 0, 0], [0, 1, 0]], faces: [[0, 1, 2]] }).catch((error: unknown) => error);
+        expect(failure, String(value)).toBeInstanceOf(UnprocessableCadInputError);
+        expect((failure as Error).message, String(value)).toBe("The mesh holds a coordinate that is not a number or is larger than 2e100 mm, the kernel's limit.");
+      }
+    });
+  });
+
+  it('refuses more than 150,000 vertices, listed or not', async () => {
+    await withProgram('/nonexistent/cad-convert', async () => {
+      const vertices = Array.from({ length: 150_001 }, (): readonly [number, number, number] => [0, 0, 0]);
+      const failure = await convertMeshToIgesWithOcct({ vertices, faces: [[0, 1, 2]] }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(UnprocessableCadInputError);
+      expect((failure as Error).message).toBe('The mesh lists 150,001 vertices; the IGES file takes at most 150,000.');
     });
   });
 });
