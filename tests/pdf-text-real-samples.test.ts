@@ -148,6 +148,34 @@ describe.skipIf(toolsMissing)('fonts without a Unicode map (real files)', () => 
     expect(text).toContain('窪田製薬ホールディングス株式会社');
     expect(characterF1(reference, text)).toBeGreaterThanOrEqual(MIN_CHARACTER_F1);
   }, CONVERSION_TIMEOUT_MS);
+
+  it('govdocs1-002457.pdf: reads the title set in a Futura whose glyph names are code-page numbers (G80 is "P"), as pdftotext does', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'govdocs1-002457.pdf');
+    const text = (await textOf(bytes)).buffer.toString('utf8');
+    expect(pdftotext(bytes)).toContain('PRIMARY ENERGY STORY: The Tale of Fern Fossil');
+    expect(text).toContain('PRIMARY ENERGY STORY: The Tale of Fern Fossil');
+    expect(hasControlCharacters(text)).toBe(false);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('gd-649126.pdf: reads the map pages labelled in a Helvetica whose glyph names are numbers (MT83 is "S"), as pdftotext does', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'gd-649126.pdf');
+    const result = await textOf(bytes);
+    const text = result.buffer.toString('utf8');
+    const labels = /SCALE IS APPROXIMATE/g;
+    expect(text.match(labels)?.length).toBe(pdftotext(bytes).match(labels)?.length);
+    expect(text).toContain('GROUNDWATER DIRECTION FLOW AND GRADIENT');
+    // MT151 numbers the en dash of the Windows code page, U+0097 as a code point: a control code, which pdftotext prints and the reader leaves out.
+    expect(result.metadata?.warnings).toEqual(['Left out 1 glyph that no font encoding maps to Unicode (page 59).']);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('govdocs1-000839.pdf: leaves out the MathematicalPi glyphs whose names number a catalogue, which pdftotext prints as CJK ideographs', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'govdocs1-000839.pdf');
+    const result = await textOf(bytes);
+    const text = result.buffer.toString('utf8');
+    expect(pdftotext(bytes)).toContain('共');
+    expect(text).not.toMatch(/[共兲兾⫹⫽⫺]/u);
+    expect(result.metadata?.warnings).toEqual(['Left out 928 glyphs that no font encoding maps to Unicode (pages 1, 2, 3, 4, 5, 6, 7, 8).']);
+  }, CONVERSION_TIMEOUT_MS);
 });
 
 describe.skipIf(toolsMissing)('PDFs that open with the empty password (real files)', () => {
