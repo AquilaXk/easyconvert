@@ -67,6 +67,17 @@ describe('the install script of the renderer', () => {
     expect(INSTALL).toContain('install -m 0755 bin/gxps');
   });
 
+  it('builds a position independent executable with a read-only relocation table and immediate binding, and fails the build when the program lacks one', () => {
+    expect(INSTALL).toMatch(/^hardening_cflags="[^"]*-fstack-protector-strong -fstack-clash-protection -fPIE"$/m);
+    expect(INSTALL).toMatch(/^hardening_ldflags="-Wl,-z,relro,-z,now -pie"$/m);
+    expect(INSTALL).toContain('CFLAGS="$hardening_cflags"');
+    expect(INSTALL).toContain('LDFLAGS="$hardening_ldflags"');
+    const build = INSTALL.indexOf('make -j"$jobs" gxps');
+    const checks = ['readelf -h bin/gxps', 'readelf -lW -d bin/gxps', "'Type:[[:space:]]*DYN'", 'GNU_RELRO', 'BIND_NOW'].map((check) => INSTALL.indexOf(check));
+    for (const position of checks) expect(position).toBeGreaterThan(build);
+    expect(Math.max(...checks)).toBeLessThan(INSTALL.indexOf('install -m 0755 bin/gxps'));
+  });
+
   it('names the archive it built from in a note that ships with the licence text', () => {
     expect(INSTALL).toMatch(/install -m 0644 LICENSE "\$INSTALL_DIR\/share\/doc\/ghostxps\/copyright"/);
     expect(INSTALL).toMatch(/printf '[^']*%s[^']*' "\$GHOSTPDL_VERSION" "\$GHOSTPDL_URL" "\$GHOSTPDL_SHA256" > "\$INSTALL_DIR\/share\/doc\/ghostxps\/SOURCE"/);

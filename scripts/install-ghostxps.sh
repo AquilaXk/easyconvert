@@ -33,6 +33,13 @@ source_dir="$work/ghostpdl-${GHOSTPDL_VERSION}"
 # the gxps program is made. The PostScript output devices (pdfwrite among them) are the only drivers: the worker asks
 # for PDF and draws the pages from it. Nothing that reaches outside the process is built: no X11, CUPS, GTK,
 # fontconfig, D-Bus, IJS or OCR.
+#
+# The program parses attacker-controlled bytes with decoders that ship in the archive (JPEG XR, libtiff, libpng, FreeType,
+# lcms2mt, Expat), so it is built as a position-independent executable (its load address differs on every run)
+# with the stack protector and stack clash probes, and linked with a read-only relocation table and immediate binding
+# (Debian hardening-wrapper flags: relro, bindnow, pie).
+hardening_cflags="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fstack-clash-protection -fPIE"
+hardening_ldflags="-Wl,-z,relro,-z,now -pie"
 cd "$source_dir"
 ./configure \
   --without-x \
@@ -47,10 +54,19 @@ cd "$source_dir"
   --without-pdf \
   --without-gpdl \
   --with-drivers=PS \
-  CFLAGS="-O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong" \
+  CFLAGS="$hardening_cflags" \
+  LDFLAGS="$hardening_ldflags" \
   > "$work/configure.log" 2>&1 || { tail -n 40 "$work/configure.log" >&2; exit 1; }
 jobs="$(nproc 2> /dev/null || echo 2)"
 make -j"$jobs" gxps > "$work/make.log" 2>&1 || { tail -n 40 "$work/make.log" >&2; exit 1; }
+
+# A build that lost a hardening property is a failed build: the program must be position independent (ELF type DYN), have a
+# read-only relocation table (GNU_RELRO) and bind every symbol at load time (BIND_NOW).
+elf_header="$(readelf -h bin/gxps)"
+elf_dynamic="$(readelf -lW -d bin/gxps)"
+grep -q 'Type:[[:space:]]*DYN' <<< "$elf_header" || { echo "gxps is not a position independent executable" >&2; exit 1; }
+grep -q 'GNU_RELRO' <<< "$elf_dynamic" || { echo "gxps has no read-only relocation segment" >&2; exit 1; }
+grep -Eq 'BIND_NOW|FLAGS_1.*NOW' <<< "$elf_dynamic" || { echo "gxps does not bind its symbols at load time" >&2; exit 1; }
 
 install -d "$INSTALL_DIR/bin" "$INSTALL_DIR/share/doc/ghostxps"
 install -m 0755 bin/gxps "$INSTALL_DIR/bin/gxps"
