@@ -2,6 +2,7 @@ import os from 'node:os';
 import sharp from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { convertImage } from '../src/lib/conversions/image';
+import { skipUnless } from './helpers/strict-skip';
 import '../src/lib/conversions/image';
 import { baseImageThreads, IMAGE_BASE_THREADS, IMAGE_MAX_THREADS, IMAGE_PIPELINE_THREADS, IMAGE_THREADS_ENV, IMAGE_UNBOUNDED_HEAP_THREADS, MALLOC_ARENA_ENV, imageThreadsFor, memoryLimitBytes, pipelineThreadsFor, withImageThreads, withPipelineThreads } from '../src/lib/conversions/image-threads';
 
@@ -125,20 +126,23 @@ describe('withImageThreads', () => {
 describe('the AVIF encode of the image library', () => {
   const SIDE = 64;
   const MULTIPLIER = 2654435761;
-  const picture = (flat: boolean): Promise<Buffer> => {
-    const raw = Buffer.alloc(SIDE * SIDE * 3);
+  const picture = (flat: boolean, width = SIDE, height = SIDE): Promise<Buffer> => {
+    const raw = Buffer.alloc(width * height * 3);
     for (let i = 0; i < raw.length; i += 1) raw[i] = flat ? (Math.floor(i / 3 / 8) % 2) * 200 : (Math.imul(i + 1, MULTIPLIER) >>> 24) & 0xff;
-    return sharp(raw, { raw: { width: SIDE, height: SIDE, channels: 3 } }).png().toBuffer();
+    return sharp(raw, { raw: { width, height, channels: 3 } }).png().toBuffer();
   };
   const savedPath = process.env.AVIFENC_PATH;
+  const savedThreads = process.env[IMAGE_THREADS_ENV];
   afterEach(() => {
     vi.restoreAllMocks();
     if (savedPath === undefined) delete process.env.AVIFENC_PATH;
     else process.env.AVIFENC_PATH = savedPath;
+    if (savedThreads === undefined) delete process.env[IMAGE_THREADS_ENV];
+    else process.env[IMAGE_THREADS_ENV] = savedThreads;
   });
 
-  /** Thread counts the image library was asked for during a conversion that the image library itself encodes. */
-  async function threadsAsked(source: Buffer): Promise<unknown[]> {
+  /** The file and the thread counts the image library was asked for during a conversion that the image library itself encodes. */
+  async function encodeAsked(source: Buffer): Promise<{ data: Buffer; asked: unknown[] }> {
     process.env.AVIFENC_PATH = '/nonexistent/avifenc';
     const asked: unknown[] = [];
     const concurrency = sharp.concurrency;
@@ -148,8 +152,9 @@ describe('the AVIF encode of the image library', () => {
     }) as typeof sharp.concurrency);
     const result = await convertImage(source, 'avif', { quality: 60 }, 'p.png', 'png');
     expect(result.metadata).toMatchObject({ avifEncoder: 'image-library' });
-    return asked;
+    return { data: result.buffer, asked };
   }
+  const threadsAsked = async (source: Buffer): Promise<unknown[]> => (await encodeAsked(source)).asked;
 
   it('runs a photograph on the leased threads and puts the previous count back', async () => {
     const before = sharp.concurrency();
@@ -158,6 +163,29 @@ describe('the AVIF encode of the image library', () => {
 
   it('keeps a graphic on the single thread it had: the tiles that threads bring moved an interface from -14.4% to +1.6% BD-rate in PSNR', async () => {
     expect(await threadsAsked(await picture(true))).toEqual([]);
+  });
+
+  /** 512 x 256 is eight 128 x 128 areas, so the encoder's automatic tiling would split it into one tile per thread up to 8. */
+  const TILED_WIDTH = 512;
+  const TILED_HEIGHT = 256;
+  const WORKER_LIBRARY = 'the libvips of the worker image (docker/sharp-libvips/use-libvips.sh), which CI installs on Linux';
+
+  it.skipIf(skipUnless(WORKER_LIBRARY, process.platform === 'linux'))('writes the same file for a photograph on two threads and on eight: the encoder makes one tile whatever the lease', async () => {
+    const source = await picture(false, TILED_WIDTH, TILED_HEIGHT);
+    const previous = sharp.concurrency();
+    const encodeOn = async (threads: number): Promise<Buffer> => {
+      process.env[IMAGE_THREADS_ENV] = String(threads);
+      try {
+        const { data, asked } = await encodeAsked(source);
+        expect(asked[0]).toBe(threads);
+        return data;
+      } finally {
+        vi.restoreAllMocks();
+        sharp.concurrency(previous);
+      }
+    };
+    const two = await encodeOn(IMAGE_UNBOUNDED_HEAP_THREADS);
+    expect((await encodeOn(IMAGE_MAX_THREADS)).equals(two)).toBe(true);
   });
 });
 
