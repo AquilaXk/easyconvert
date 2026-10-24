@@ -1203,18 +1203,11 @@ interface PdfJsPage {
   cleanup(): boolean;
 }
 
-/** A page whose operator list is read at most once, by whichever reader asks first, and is known afterwards. */
-interface ReadPage extends PdfJsPage {
-  /** The operator list if a reader asked for it, else null. */
-  operatorListRead(): Promise<OperatorList> | null;
-}
-
-function readOnce(page: PdfJsPage): ReadPage {
+/** The page with its operator list read at most once, by whichever reader asks first; `operatorListRead` gives it afterwards, or null. */
+function readOnce(page: PdfJsPage): PdfJsPage & { operatorListRead(): Promise<OperatorList> | null } {
   let list: Promise<OperatorList> | null = null;
   return {
-    view: page.view,
-    commonObjs: page.commonObjs,
-    objs: page.objs,
+    view: page.view, commonObjs: page.commonObjs, objs: page.objs,
     getViewport: (options) => page.getViewport(options),
     getTextContent: (options) => page.getTextContent(options),
     getAnnotations: (options) => page.getAnnotations(options),
@@ -1383,7 +1376,6 @@ function textOfItems(items: unknown[]): string {
  * pdf.js keeps the pixels it decoded for a page in `page.objs`, typed arrays outside the V8 heap and so outside the thread's heap limit,
  * until `page.cleanup()` clears them (src/display/api.js, PDFPageProxy.#tryCleanup), as its viewer does when a page leaves the screen. A
  * picture a later page shares is decoded again into the document's `commonObjs`, which cleanup leaves alone together with the fonts.
- * A page whose operator list was read is cleaned up once pdf.js has delivered what the list depends on (`awaitOperatorListDependencies`).
  */
 async function readPages(
   pdfjs: PdfJs,
