@@ -217,21 +217,21 @@ function gzipTrailer(data: Buffer): Buffer {
 
 /** The name the gzip header records: the file's own name when it is plain ASCII (the header's text is ISO 8859-1), else none. */
 function gzipNameOf(filename: string): string | undefined {
-  const leaf = filename.slice(filename.lastIndexOf('/') + 1);
-  return PRINTABLE_ASCII.test(leaf) ? leaf : undefined;
+  return PRINTABLE_ASCII.test(filename) ? filename : undefined;
 }
 
 /**
- * tar to gzip. A gzip file holds one stream, so only a tar of exactly one regular file is answered here; the file is
- * deflated (in parallel blocks by the platform's zlib, or by `libdeflate-gzip` past {@link IN_PROCESS_DEFLATE_MAX_BYTES})
- * and wrapped in a header that names it and carries its modification time (RFC 1952).
+ * tar to gzip. A gzip file holds one stream, so only a tar of exactly one regular file at its root is answered here, as
+ * `singleStreamPayload` decides it (a file inside a folder or several entries are a tar in the stream, written by the
+ * general pipeline under the `.tar.gz` name); the file is deflated (in parallel blocks by the platform's zlib, or by
+ * `libdeflate-gzip` past {@link IN_PROCESS_DEFLATE_MAX_BYTES}) and wrapped in a header that names it and carries its modification time (RFC 1952).
  */
 export async function tarToGzip(request: PackRequest): Promise<StreamedArchive | null> {
   const vetted = vetTarSource(request);
   if (vetted === null) return null;
   const entries = packableEntries(vetted.tar);
   const [only] = entries;
-  if (entries.length !== 1 || only.type !== 'file') return null;
+  if (entries.length !== 1 || only.type !== 'file' || only.filename.includes('/')) return null;
   const data = only.buffer;
   const native = needsNativeDeflate(request.compressionLevel, data.length);
   if (native && getLibdeflateGzipPath() === null) return null;
