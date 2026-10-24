@@ -27,8 +27,8 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
  * of one document), every entry checked against its CRC, and written again as a plain stored ZIP in the job directory:
  * the program sees only a package written here. The pages are counted the way GhostXPS finds them, under the page and
  * document limits of the XPS reader, before it starts: every page the documents list must be in the package, and the
- * images and colour profiles the pages name, counted again for every page that names them, stay within the document
- * budget of xps-resources.ts.
+ * images and colour profiles the pages name, counted again for every brush that names them, stay within the byte budget
+ * of xps-resources.ts and within the pixels that the run limit of the job lets the program decode.
  *
  * GhostXPS reports a document it could not draw on its error output and still exits with success, after writing a PDF of
  * the pages it reached (GhostPDL pcl/pl/plmain.c `pl_main_run_file_utf8`, "Warning interpreter exited with error code"),
@@ -99,6 +99,11 @@ async function readPackageEntries(input: Buffer): Promise<PackageEntry[]> {
   return entries;
 }
 
+/** The run limit of the job: its own stage limit, or the default, and never more than the ceiling. */
+function runTimeoutMs(options: WorkerEngineOptions): number {
+  return Math.min(stageTimeoutMs(options, DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS);
+}
+
 /** The typed error for a run that failed: its limits, or what the program printed about the file. */
 function toRendererError(err: unknown, src: string, tempDir: string): unknown {
   if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
@@ -124,7 +129,7 @@ async function writePdf(job: XpsJob, entries: readonly PackageEntry[], tempDir: 
   const pdfPath = path.join(tempDir, PDF_FILE);
   await writeZipFile(packagePath, entries.map(({ filename, buffer }) => ({ name: filename, data: buffer, method: 'store' as const })));
   const limits: LaunchedExecutionOptions = {
-    timeoutMs: Math.min(stageTimeoutMs(job.options, DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS),
+    timeoutMs: runTimeoutMs(job.options),
     maxBuffer: job.options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
     maxFileSize: MAX_OUTPUT_BYTES,
     memoryLimitMb: MEMORY_LIMIT_MB,
@@ -175,7 +180,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
       pageOptions
     );
   }
-  await requirePagesDrawable(pageParts, new Map(entries.map(({ filename, buffer }) => [partKey(filename), buffer])), options.signal);
+  await requirePagesDrawable(pageParts, new Map(entries.map(({ filename, buffer }) => [partKey(filename), buffer])), runTimeoutMs(options), options.signal);
 
   if (tgt === PDF_TARGET) {
     return withSandboxDir(TEMP_PREFIX, async (tempDir) => {

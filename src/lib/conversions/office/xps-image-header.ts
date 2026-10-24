@@ -88,7 +88,7 @@ export function jpegXrSize(bytes: Buffer): { width: number; height: number } {
 }
 
 /**
- * The pixels the renderer decodes for the image part `bytes` each time a page draws it: its width times its height, from the
+ * The pixels the renderer decodes for the image part `bytes` each time a brush draws it: its width times its height, from the
  * header. A part that is no image costs none. An image whose declared size is over the input pixel limit, or whose header cannot
  * be read, is refused (`InputPixelLimitError`, `ConversionFailedError`): the renderer would fail on it or allocate for it.
  */
