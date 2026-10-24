@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   encodeStep,
-  encodeIges,
   CadMesh3D,
 } from '../src/lib/conversions/vector-cad';
 import { convertFile } from '../src/lib/conversions';
-import { CadGeometryUnavailableError } from '../src/lib/types';
+import { CadGeometryUnavailableError, UnprocessableCadInputError } from '../src/lib/types';
 import { haveCadOracles as haveKernel } from './helpers/cad-kernel';
+import { igesEntityCounts, igesLengthUnitFlag } from './helpers/iges-entities';
 import { meshFacts } from './helpers/mesh-facts';
+import { oracleFacts } from './helpers/occt-oracle';
 
 /**
  * The STEP the encoder writes is read back by Open CASCADE (`cad-convert`, a reader this repository did not write) and judged by
@@ -301,155 +302,11 @@ function independentlyParseStepBRep(stepText: string): {
   };
 }
 
-/**
- * Independent ANSI/USPRO IGES 5.3 Parser for differential verification.
- * Built independently from the official IGES 5.3 standard specifications.
- */
-function independentlyParseIgesBRep(igesText: string): {
-  allLinesAre80Cols: boolean;
-  sCount: number;
-  gCount: number;
-  dCount: number;
-  pCount: number;
-  hasSolid186: boolean;
-  hasShell514: boolean;
-  vertices: [number, number, number][];
-  faces: [number, number, number][];
-} {
-  const lines = igesText.split('\n');
-  if (lines[lines.length - 1] === '') lines.pop(); // remove trailing newline
-
-  let allLinesAre80Cols = true;
-  let sCount = 0;
-  let gCount = 0;
-  let dCount = 0;
-  let pCount = 0;
-
-  const dLines: string[] = [];
-  const pLinesByDe = new Map<number, string[]>();
-  const pAllText: string[] = [];
-
-  for (const line of lines) {
-    if (line.length !== 80) {
-      allLinesAre80Cols = false;
-    }
-    const section = line[72];
-    if (section === 'S') sCount++;
-    else if (section === 'G') gCount++;
-    else if (section === 'D') {
-      dCount++;
-      dLines.push(line);
-    } else if (section === 'P') {
-      pCount++;
-      const deStr = line.substring(64, 72).trim();
-      const dePtr = Number.parseInt(deStr, 10);
-      const text = line.substring(0, 64);
-      pAllText.push(text);
-      if (!Number.isNaN(dePtr)) {
-        let arr = pLinesByDe.get(dePtr);
-        if (!arr) {
-          arr = [];
-          pLinesByDe.set(dePtr, arr);
-        }
-        arr.push(text);
-      }
-    }
-  }
-
-  const hasSolid186 = igesText.includes('186,') || dLines.some((l) => l.trim().startsWith('186'));
-  const hasShell514 = igesText.includes('514,') || dLines.some((l) => l.trim().startsWith('514'));
-
-  // Parse all records from joined P text
-  const fullP = pAllText.join('');
-  const records = fullP.split(';').map((r) => r.trim()).filter(Boolean);
-
-  let rawVertices: [number, number, number][] = [];
-  const rawEdges: [number, number][] = [];
-  const rawTriangles: [number, number, number][] = [];
-
-  for (const rec of records) {
-    const tokens = rec.split(',').map((t) => t.trim());
-    const entityType = Number.parseInt(tokens[0], 10);
-
-    if (entityType === 502) {
-      // 502, N, X1, Y1, Z1, ...
-      const nV = Number.parseInt(tokens[1], 10);
-      rawVertices = [];
-      for (let i = 0; i < nV; i++) {
-        rawVertices.push([
-          Number.parseFloat(tokens[2 + 3 * i]),
-          Number.parseFloat(tokens[3 + 3 * i]),
-          Number.parseFloat(tokens[4 + 3 * i]),
-        ]);
-      }
-    } else if (entityType === 504) {
-      // 504, N, CRV, V1, V2, ...
-      const nE = Number.parseInt(tokens[1], 10);
-      for (let i = 0; i < nE; i++) {
-        const v1 = Number.parseInt(tokens[2 + 3 * i + 1], 10) - 1;
-        const v2 = Number.parseInt(tokens[2 + 3 * i + 2], 10) - 1;
-        rawEdges.push([v1, v2]);
-      }
-    } else if (entityType === 508) {
-      // 508, TYPE, N, EDGE1_TYPE, EDGE1_INDEX, DIR, ISO, ...
-      const nEdges = Number.parseInt(tokens[2], 10);
-      const loopV: number[] = [];
-      for (let k = 0; k < nEdges; k++) {
-        const base = 3 + 4 * k;
-        const eIdx = Number.parseInt(tokens[base + 1], 10) - 1;
-        const dir = Number.parseInt(tokens[base + 2], 10);
-        if (eIdx >= 0 && eIdx < rawEdges.length) {
-          const edge = rawEdges[eIdx];
-          loopV.push(dir === 1 ? edge[0] : edge[1]);
-        }
-      }
-      if (loopV.length === 3) {
-        rawTriangles.push([loopV[0], loopV[1], loopV[2]]);
-      }
-    }
-  }
-
-  // Deduplicate vertices
-  const uniqueVertices: [number, number, number][] = [];
-  const keyToIdx = new Map<string, number>();
-  function getOrAdd(p: [number, number, number]): number {
-    const key = `${p[0].toFixed(5)},${p[1].toFixed(5)},${p[2].toFixed(5)}`;
-    const ex = keyToIdx.get(key);
-    if (ex !== undefined) return ex;
-    const idx = uniqueVertices.length;
-    uniqueVertices.push(p);
-    keyToIdx.set(key, idx);
-    return idx;
-  }
-
-  const faces: [number, number, number][] = [];
-  for (const [v0, v1, v2] of rawTriangles) {
-    if (rawVertices[v0] && rawVertices[v1] && rawVertices[v2]) {
-      const i0 = getOrAdd(rawVertices[v0]);
-      const i1 = getOrAdd(rawVertices[v1]);
-      const i2 = getOrAdd(rawVertices[v2]);
-      faces.push([i0, i1, i2]);
-    }
-  }
-
-  return {
-    allLinesAre80Cols,
-    sCount,
-    gCount,
-    dCount,
-    pCount,
-    hasSolid186,
-    hasShell514,
-    vertices: uniqueVertices,
-    faces,
-  };
-}
-
 // ============================================================================
 // Test Suite: WP-46b CAD STEP & IGES Genuine B-Rep Encoders
 // ============================================================================
 
-describe('WP-46b: CAD STEP (ISO 10303-21 AP214) and IGES 5.3 Genuine Encoders', () => {
+describe('WP-46b: CAD STEP (ISO 10303-21 AP214) encoder and mesh to IGES through the kernel', () => {
   describe('1. ISO 10303-21 STEP AP214 Genuine B-Rep Encoding', () => {
     it('encodes closed watertight 10mm cube to authentic AP214 FACETED_BREP representation', () => {
       const cubeMesh = createCubeMesh([0, 0, 0], 10);
@@ -544,73 +401,104 @@ describe('WP-46b: CAD STEP (ISO 10303-21 AP214) and IGES 5.3 Genuine Encoders', 
     });
   });
 
-  describe('2. ANSI/USPRO IGES 5.3 Genuine B-Rep Encoding', () => {
-    it('encodes closed watertight 10mm cube to strict 80-column IGES 5.3 B-Rep (Entities 502, 504, 508, 510, 190, 514, 186)', () => {
-      const cubeMesh = createCubeMesh([0, 0, 0], 10);
-      const igesText = encodeIges(cubeMesh);
+  describe('2. Mesh to IGES through the kernel', () => {
+    // The kernel's writer (Open CASCADE, through native/cad-convert) writes the IGES file; the file is judged by reading it back with
+    // the kernel's reader and with a separate WebAssembly build of it, and against numbers computed here from the mesh itself.
+    const objOf = (mesh: CadMesh3D): Buffer =>
+      Buffer.from([...mesh.vertices.map((v) => `v ${v.join(' ')}`), ...mesh.faces.map((f) => `f ${f.map((i) => i + 1).join(' ')}`)].join('\n'));
 
-      // Section markers in col 73
-      expect(igesText).toContain('S      1');
-      expect(igesText).toContain('G      1');
-      expect(igesText).toContain('D      1');
-      expect(igesText).toContain('P      1');
-      expect(igesText).toContain('T0000001');
+    const binaryStlOf = (mesh: CadMesh3D): Buffer => {
+      const stl = Buffer.alloc(84 + 50 * mesh.faces.length);
+      stl.writeUInt32LE(mesh.faces.length, 80);
+      mesh.faces.forEach((face, i) => {
+        face.forEach((index, corner) => mesh.vertices[index].forEach((value, axis) => stl.writeFloatLE(value, 84 + 50 * i + 12 + 12 * corner + 4 * axis)));
+      });
+      return stl;
+    };
 
-      // Independent Oracle Differential Verification
-      const parsed = independentlyParseIgesBRep(igesText);
+    const areaOf = (mesh: CadMesh3D): number =>
+      mesh.faces.reduce((sum, [a, b, c]) => {
+        const [p, q, r] = [mesh.vertices[a], mesh.vertices[b], mesh.vertices[c]];
+        const u = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+        const v = [r[0] - p[0], r[1] - p[1], r[2] - p[2]];
+        return sum + 0.5 * Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]);
+      }, 0);
 
-      // (a) Every single record line MUST be exactly 80 columns wide
-      expect(parsed.allLinesAre80Cols).toBe(true);
+    it.skipIf(!haveKernel)('writes the 10 mm cube from an OBJ as twelve trimmed planes the kernel reads back as a closed solid', async () => {
+      const cube = createCubeMesh([0, 0, 0], 10);
+      const result = await convertFile(objOf(cube), 'obj', 'iges', {}, 'cube.obj');
+      expect(result.mimeType).toBe('model/iges');
+      expect(result.filename).toBe('cube.iges');
+      const text = result.buffer.toString('latin1');
+      expect(igesEntityCounts(text).get(144)).toBe(12);
+      expect(igesLengthUnitFlag(text)).toBe(2);
 
-      // (b) Must contain Shell (514) and Manifold Solid B-Rep (186)
-      expect(parsed.hasShell514).toBe(true);
-      expect(parsed.hasSolid186).toBe(true);
+      const back = meshFacts((await convertFile(result.buffer, 'iges', 'stl', {}, 'cube.iges')).buffer, 'stl');
+      expect(back.triangles).toBe(12);
+      expect(back.area).toBeCloseTo(600, 3);
+      expect(back.min).toEqual([0, 0, 0]);
+      expect(back.max).toEqual([10, 10, 10]);
+      expect(back.watertight).toBe(true);
+      expect(back.windingConsistent).toBe(true);
+      expect(back.volume).toBeCloseTo(1000, 2);
 
-      // (c) Face count must equal 12 triangles
-      expect(parsed.faces.length).toBe(12);
-
-      // (d) Unique vertices count must equal 8
-      expect(parsed.vertices.length).toBe(8);
-
-      // (e) Bounding box error <= 1e-6
-      const bbox = calculateBoundingBox(parsed.vertices);
-      expect(bbox.min[0]).toBeCloseTo(0, 5);
-      expect(bbox.min[1]).toBeCloseTo(0, 5);
-      expect(bbox.min[2]).toBeCloseTo(0, 5);
-      expect(bbox.max[0]).toBeCloseTo(10, 5);
-      expect(bbox.max[1]).toBeCloseTo(10, 5);
-      expect(bbox.max[2]).toBeCloseTo(10, 5);
-
-      // (f) Volume must equal 1000.0 +- 1e-6
-      const volume = calculateMeshVolume(parsed.vertices, parsed.faces);
-      expect(volume).toBeCloseTo(1000.0, 4);
+      const separate = await oracleFacts(result.buffer, 'iges');
+      expect(separate.area).toBeCloseTo(600, 2);
+      expect(separate.max).toEqual([10, 10, 10]);
     });
 
-    it('encodes open non-watertight mesh as IGES Shell (514) without Solid (186)', () => {
-      const openMesh = createOpenSheetMesh();
-      const igesText = encodeIges(openMesh);
-
-      const parsed = independentlyParseIgesBRep(igesText);
-      expect(parsed.allLinesAre80Cols).toBe(true);
-      expect(parsed.hasShell514).toBe(true);
-      expect(parsed.hasSolid186).toBe(false);
-      expect(parsed.faces.length).toBe(2);
-      expect(parsed.vertices.length).toBe(4);
+    it.skipIf(!haveKernel)('writes the same cube from a binary STL, and an igs name keeps its extension', async () => {
+      const result = await convertFile(binaryStlOf(createCubeMesh([0, 0, 0], 10)), 'stl', 'igs', {}, 'cube.stl');
+      expect(result.filename).toBe('cube.igs');
+      const back = meshFacts((await convertFile(result.buffer, 'iges', 'stl', {}, 'cube.iges')).buffer, 'stl');
+      expect(back.triangles).toBe(12);
+      expect(back.volume).toBeCloseTo(1000, 2);
     });
 
-    it('fails closed with CadGeometryUnavailableError on empty mesh inputs', () => {
-      expect(() =>
-        encodeIges({ name: 'empty', vertices: [], faces: [], normals: [] })
-      ).toThrow(CadGeometryUnavailableError);
+    it.skipIf(!haveKernel)('writes an open sheet of two triangles and reads back its area and box', async () => {
+      const sheet = createOpenSheetMesh();
+      const result = await convertFile(objOf(sheet), 'obj', 'iges', {}, 'sheet.obj');
+      const back = meshFacts((await convertFile(result.buffer, 'iges', 'stl', {}, 'sheet.iges')).buffer, 'stl');
+      expect(back.triangles).toBe(2);
+      expect(back.area).toBeCloseTo(100, 4);
+      expect(back.max).toEqual([10, 10, 0]);
+      expect(back.watertight).toBe(false);
+    });
 
-      expect(() =>
-        encodeIges({
-          name: 'no_faces',
-          vertices: [[0, 0, 0], [1, 0, 0]],
-          faces: [],
-          normals: [],
-        })
-      ).toThrow(CadGeometryUnavailableError);
+    it.skipIf(!haveKernel)('writes a torus of 288 triangles with the area and volume of the mesh it came from', async () => {
+      const torus = createAnalyticalTorusMesh(10, 3, 12, 12);
+      const result = await convertFile(objOf(torus), 'obj', 'iges', {}, 'torus.obj');
+      const back = meshFacts((await convertFile(result.buffer, 'iges', 'stl', {}, 'torus.iges')).buffer, 'stl');
+      expect(back.triangles).toBe(torus.faces.length);
+      expect(back.area / areaOf(torus)).toBeCloseTo(1, 5);
+      // calculateMeshVolume is unsigned; the torus mesh of this file winds inward, as the mesh says, so the kernel's signed volume is negative.
+      expect(Math.abs(back.volume) / calculateMeshVolume(torus.vertices, torus.faces)).toBeCloseTo(1, 4);
+    });
+
+    it.skipIf(!haveKernel)('leaves out a triangle whose corners coincide, which is no face, and writes the others', async () => {
+      const cube = createCubeMesh([0, 0, 0], 10);
+      const withSliver: CadMesh3D = { ...cube, vertices: [...cube.vertices, [0, 0, 0]], faces: [...cube.faces, [0, 8, 0]] };
+      const result = await convertFile(objOf(withSliver), 'obj', 'iges', {}, 'cube.obj');
+      expect(igesEntityCounts(result.buffer.toString('latin1')).get(144)).toBe(12);
+    });
+
+    it.skipIf(!haveKernel)('refuses a mesh whose every triangle is no face, instead of writing an empty IGES file', async () => {
+      const flat: CadMesh3D = { name: 'flat', vertices: [[0, 0, 0], [1, 0, 0], [2, 0, 0]], faces: [[0, 1, 2]], normals: [] };
+      const failure = await convertFile(objOf(flat), 'obj', 'iges', {}, 'flat.obj').then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect((failure as UnprocessableCadInputError).status).toBe(422);
+      expect(failure?.message).toBe('The CAD converter could not convert this model: it exited with status 4 (no-shapes: the mesh holds no triangle that is a face).');
+    });
+
+    it('fails closed with CadGeometryUnavailableError on a mesh with no triangle', async () => {
+      const failure = await convertFile(Buffer.from('v 0 0 0\nv 1 0 0\nv 0 1 0\n'), 'obj', 'iges', {}, 'points.obj').then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure?.message).toMatch(/no faces|no vertices|no triangles|empty/i);
     });
   });
 
@@ -628,11 +516,7 @@ describe('WP-46b: CAD STEP (ISO 10303-21 AP214) and IGES 5.3 Genuine Encoders', 
       expect(facts.max).toEqual([10, 10, 10]);
     });
 
-    // The kernel's IGES reader stops with a segmentation fault on the file encodeIges writes for this cube, so the file is no valid
-    // IGES by the kernel's reading; the encoder's output is checked only by its own structure above (follow-up row of #783).
-    it.todo('reads the IGES 5.3 cube back in the independent kernel');
-
-    it('converts OBJ cube to STEP and IGES files via convertFile', async () => {
+    it('converts OBJ cube to a STEP file via convertFile', async () => {
       // 8 vertices, 12 triangles OBJ cube
       const objCube = `
 v 0 0 0
@@ -658,7 +542,6 @@ f 2 7 6
 `;
       const objBuffer = Buffer.from(objCube.trim(), 'utf-8');
 
-      // 1. OBJ -> STEP
       const stepRes = await convertFile(objBuffer, 'obj', 'step', {}, 'cube.obj');
       expect(stepRes.mimeType).toBe('model/step');
       expect(stepRes.filename).toBe('cube.step');
@@ -666,15 +549,6 @@ f 2 7 6
       expect(stepContent).toContain('ISO-10303-21;');
       expect(stepContent).toContain('AUTOMOTIVE_DESIGN');
       expect(stepContent).toContain('CLOSED_SHELL');
-
-      // 2. OBJ -> IGES
-      const igesRes = await convertFile(objBuffer, 'obj', 'iges', {}, 'cube.obj');
-      expect(igesRes.mimeType).toBe('model/iges');
-      expect(igesRes.filename).toBe('cube.iges');
-      const igesContent = igesRes.buffer.toString('utf-8');
-      expect(igesContent).toContain('S      1');
-      expect(igesContent).toContain('502,');
-      expect(igesContent).toContain('514,');
     });
 
     it.skipIf(!haveKernel)('reads the STEP the encoder wrote for the cube and writes the same 10 mm cube as OBJ', async () => {

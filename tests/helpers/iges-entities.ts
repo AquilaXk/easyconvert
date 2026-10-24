@@ -26,7 +26,7 @@ export function igesEntityCounts(text: string): Map<number, number> {
 }
 
 /** The parameters of the Global section: Hollerith strings (`nnHtext`) are read by their count. */
-function globalParameters(text: string): string[] {
+export function globalParameters(text: string): string[] {
   const global = recordsOf(text, 'G').join('');
   const delimiters = /^1H(.),1H(.),/.exec(global);
   const [parameterDelimiter, recordDelimiter] = delimiters === null ? [',', ';'] : [delimiters[1], delimiters[2]];

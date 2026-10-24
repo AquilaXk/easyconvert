@@ -2009,20 +2009,6 @@
     "maxValue": 1522
   },
   {
-    "file": "src/lib/conversions/vector-cad.ts",
-    "rule": "complexity",
-    "function": "encodeIges",
-    "count": 1,
-    "maxValue": 32
-  },
-  {
-    "file": "src/lib/conversions/vector-cad.ts",
-    "rule": "max-lines-per-function",
-    "function": "encodeIges",
-    "count": 1,
-    "maxValue": 273
-  },
-  {
     "file": "src/lib/conversions/wasm/resampler-mac.ts",
     "rule": "max-params",
     "function": "multiPeriodLoop",
