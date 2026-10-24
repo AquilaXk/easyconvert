@@ -3,7 +3,7 @@ import { DocumentContext, assembleDocument } from './document-model/build';
 import type { Block, DocumentModel } from './document-model/model';
 import { safeHref } from './document-model/support';
 import { EPUB_MAX_TEXT_CHARS, EPUB_TEXT_MEDIA_TYPES, openEpubPackage } from './epub-reader';
-import { HTML_MODEL_MAX_IMAGES, HTML_MODEL_MAX_IMAGE_BYTES, htmlToDocumentModel } from './html-model';
+import { htmlToDocumentModel } from './html-model';
 import { renderMarkdownFragment } from './markdown';
 import { decodeXmlBytes, resolvePackagePath } from './package-access';
 
@@ -42,6 +42,8 @@ export async function readEpubModel(input: Buffer): Promise<DocumentModel> {
   const blocks: Block[] = [];
   let language = book.language;
   let totalChars = 0;
+  /** Each picture is read once, so that every chapter that names it gives the HTML reader the same bytes. */
+  const picturesByPath = new Map<string, Buffer>();
   for (const item of book.spine) {
     if (!EPUB_TEXT_MEDIA_TYPES.has(item.mediaType) || item.properties.includes('nav')) continue;
     if (item.encrypted) throw new EncryptedOfficeDocumentError('The EPUB content is protected by DRM, so its text cannot be read.');
@@ -62,13 +64,16 @@ export async function readEpubModel(input: Buffer): Promise<DocumentModel> {
         continue;
       }
       const entry = book.items.get(path);
-      if (entry && entry.mediaType.startsWith('image/')) pictures.set(source, await book.read(path, 'EPUB image'));
+      if (!entry || !entry.mediaType.startsWith('image/')) continue;
+      let bytes = picturesByPath.get(path);
+      if (!bytes) {
+        bytes = await book.read(path, 'EPUB image');
+        picturesByPath.set(path, bytes);
+      }
+      pictures.set(source, bytes);
     }
 
     const chapter = await htmlToDocumentModel(html, { resolveImage: (src) => pictures.get(src), mapLink: mapBookLink, context });
-    if (context.images.length > HTML_MODEL_MAX_IMAGES) throw new PayloadLimitError(`The EPUB embeds more than ${HTML_MODEL_MAX_IMAGES} images.`);
-    const imageBytes = context.images.reduce((sum, image) => sum + image.data.length, 0);
-    if (imageBytes > HTML_MODEL_MAX_IMAGE_BYTES) throw new PayloadLimitError(`The EPUB embeds more than ${HTML_MODEL_MAX_IMAGE_BYTES} bytes of images.`);
     totalChars += html.length;
     if (totalChars > EPUB_MAX_TEXT_CHARS) throw new PayloadLimitError(`The EPUB text is longer than ${EPUB_MAX_TEXT_CHARS} characters.`);
     if (language === undefined && chapter.language !== undefined) language = chapter.language;

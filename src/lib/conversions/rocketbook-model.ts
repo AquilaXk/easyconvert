@@ -1,7 +1,7 @@
-import { ConversionFailedError, PayloadLimitError } from '../types';
+import { ConversionFailedError } from '../types';
 import { DocumentContext, assembleDocument } from './document-model/build';
 import type { Block, DocumentModel } from './document-model/model';
-import { HTML_MODEL_MAX_IMAGES, HTML_MODEL_MAX_IMAGE_BYTES, htmlToDocumentModel } from './html-model';
+import { htmlToDocumentModel } from './html-model';
 import { readRocketBook } from './office/rocketbook-reader';
 import { mapBookLink } from './source-model';
 
@@ -17,10 +17,6 @@ export async function readRocketBookModel(file: Buffer, fallbackTitle: string): 
   let language: string | undefined;
   for (const page of book.pages) {
     const chapter = await htmlToDocumentModel(page.html, { resolveImage: (src) => book.image(src), mapLink: mapBookLink, context });
-    if (context.images.length > HTML_MODEL_MAX_IMAGES) throw new PayloadLimitError(`The RocketBook embeds more than ${HTML_MODEL_MAX_IMAGES} images.`);
-    if (context.images.reduce((sum, image) => sum + image.data.length, 0) > HTML_MODEL_MAX_IMAGE_BYTES) {
-      throw new PayloadLimitError(`The RocketBook embeds more than ${HTML_MODEL_MAX_IMAGE_BYTES} bytes of images.`);
-    }
     language ??= chapter.language;
     blocks.push(...chapter.sections.flatMap((section) => section.blocks));
   }

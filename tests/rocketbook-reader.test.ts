@@ -6,6 +6,7 @@ import { ROCKETBOOK_LIMITS, RocketBookFormatError, readRocketBook } from '../src
 import { ConversionFailedError, DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
 import { isOfficeSuiteOnlySource } from '../src/lib/conversions/office/office-suite-sources';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
+import { readRocketBookModel } from '../src/lib/conversions/rocketbook-model';
 import { withMissingBinary } from './helpers/native-tools';
 import { expectNoHang, settle } from './helpers/timing';
 import {
@@ -33,6 +34,17 @@ const ONE_PIXEL_PNG = greyPng(1);
 const PICTURE_PNG = greyPng(8);
 /** Each hostile input is refused in milliseconds once bounded; the guard fails work that grows with what the file claims. */
 const HOSTILE_GUARD_MS = 1_000;
+const PNG_IHDR_END = 33;
+
+/** PICTURE_PNG made `bytes` long by a private ancillary chunk after its header, which decoders skip (PNG specification 5.4). */
+function paddedPng(bytes: number): Buffer {
+  const body = Buffer.concat([Buffer.from('paDd', 'latin1'), Buffer.alloc(bytes)]);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(bytes, 0);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(zlib.crc32(body), 0);
+  return Buffer.concat([PICTURE_PNG.subarray(0, PNG_IHDR_END), length, body, crc, PICTURE_PNG.subarray(PNG_IHDR_END)]);
+}
 
 async function textOf(book: Buffer): Promise<string> {
   return (await convertFile(book, 'rb', 'txt', {}, 'book.rb')).buffer.toString('utf-8');
@@ -392,6 +404,23 @@ describe('a RocketBook converted to the targets of the e-book pipeline', () => {
     const failure = await convertFile(repeated, 'rb', 'epub', {}, 'book.rb').catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(PayloadLimitError);
     expect((failure as Error).message).toBe('The document embeds more than 2000 images.');
+  });
+
+  it('is refused with a typed error when its pages together name one picture more often than the model embeds', async () => {
+    const page = (index: number) => htmlPage(`p${index}.html`, '<P><IMG SRC="0.png"></P>'.repeat(700));
+    const repeated = buildRocketBook([page(0), page(1), page(2), imagePage('0.png', PICTURE_PNG)]);
+    const failure = await expectNoHang('one picture on every page', () => convertFile(repeated, 'rb', 'epub', {}, 'book.rb').catch((error: unknown) => error));
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as Error).message).toBe('The document embeds more than 2000 images.');
+    expect((await readRocketBookModel(buildRocketBook([page(0), page(1), imagePage('0.png', PICTURE_PNG)]), 'book')).images).toHaveLength(1);
+  });
+
+  it('is refused with a typed error when its pages together name one picture for more bytes than the model embeds', async () => {
+    const picture = paddedPng(1024 * 1024);
+    const page = (index: number) => htmlPage(`p${index}.html`, '<P><IMG SRC="0.png"></P>'.repeat(150));
+    const failure = await convertFile(buildRocketBook([page(0), page(1), imagePage('0.png', picture)]), 'rb', 'epub', {}, 'book.rb').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as Error).message).toBe(`The document embeds more than ${256 * 1024 * 1024} bytes of images.`);
   });
 
   it('reads twenty thousand pages in table order', async () => {
