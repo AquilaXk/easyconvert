@@ -277,13 +277,10 @@ describe('simple fonts whose glyph names are numbers', () => {
     const [first, second] = [extraObjectNumber(1), extraObjectNumber(1) + 1];
     const font = (names: readonly string[]) => `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Differences [${differencesFrom(1, names)}] >> >>`;
     const pdf = rawPdf(
-      [{ width: 400, height: 200, content: 'BT /F2 14 Tf 20 100 Td (\\001\\002\\003\\004\\005\\006) Tj ET BT /F3 14 Tf 20 60 Td (\\001\\002) Tj ET', fonts: `/F2 ${first} 0 R /F3 ${second} 0 R` }],
-      [font(['G46', 'G49', 'G47', 'G55', 'G52', 'G45']), font(['G4D', 'G2C'])]
+      [{ width: 400, height: 200, content: 'BT /F2 14 Tf 20 100 Td (\\001\\002\\003\\004\\005\\006) Tj /F3 14 Tf (\\001\\002\\003) Tj ET', fonts: `/F2 ${first} 0 R /F3 ${second} 0 R` }],
+      [font(['G46', 'G49', 'G47', 'G55', 'G52', 'G45']), font(['G20', 'G4D', 'G2C'])]
     );
-    const text = await textOf(pdf);
-    expect(text).toContain('FIGURE');
-    expect(text).toContain('M,');
-    expect(text).not.toContain('.1/74-');
+    expect(await textOf(pdf)).toBe('FIGURE M,');
   });
 
   it('leave the font as it is when one of its names is not a number, as Poppler does', () => {
