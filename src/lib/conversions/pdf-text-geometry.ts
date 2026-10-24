@@ -1441,6 +1441,8 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       // The predefined CMaps: the codes of a CJK font and the Unicode values of a registered character collection.
       cMapUrl: pdfjsDataUrl('cmaps'),
       cMapPacked: true,
+      // The decoders of CCITT, JBIG2 and JPEG 2000 pictures (src/core/wasm_image.js); without them those pictures are null.
+      wasmUrl: pdfjsDataUrl('wasm'),
       verbosity: 0,
     });
     const doc = await task.promise;
