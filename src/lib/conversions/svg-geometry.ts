@@ -3,6 +3,7 @@ import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
 import { BitmapGlyphs, glyphBox } from './svg-bitmap-glyph';
 import { ActiveClips } from './svg-clip-region';
+import { ABSOLUTE_LENGTH_UNITS, parseLength, requireFinite, rootUnitPx } from './svg-length';
 import { createPageClipCheck, type ClipNode } from './svg-page-clip';
 import { CHAR_SLASH, MAX_SVG_INPUT_CHARS, XML_NAME_PATTERN, endOfMarkup, endOfTag, malformedXml, scanXmlTags, skipNonElementMarkup } from './svg-xml';
 import { NEUTRAL_ONLY_PROPERTY_NAMES, SVG_NUMBER_PATTERN, assertNeutralPaintProperties, devicePattern, parseDashArray, type SvgPenMode } from './svg-pen';
@@ -38,6 +39,8 @@ export interface SvgGeometryElement {
 export interface ParsedSvgVectorDocument {
   width: number;
   height: number;
+  /** CSS pixels in a unit of the root's width, else height, attribute: the unit a DXF is written in (vector-dxf.ts). */
+  unitPx: number;
   elements: SvgGeometryElement[];
 }
 
@@ -723,14 +726,6 @@ function deriveContext(parent: StyleContext, attrs: Map<string, string>, declare
 
 const ELLIPSE_SEGMENTS = 36;
 
-/** Throws unless the value is a finite number; NaN or overflow would yield dummy geometry. */
-export function requireFinite(value: number, what: string): number {
-  if (!Number.isFinite(value)) {
-    throw new CadGeometryUnavailableError(`SVG ${what} is not a finite number.`);
-  }
-  return value;
-}
-
 const NUMBER_LIST_TOKEN_PATTERN = /[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?|[\s,]+|[^]/g;
 const LIST_SEPARATOR_PATTERN = /^[\s,]+$/;
 
@@ -909,33 +904,6 @@ function parseViewBox(value: string | undefined): [number, number, number, numbe
   return [parts[0], parts[1], parts[2], parts[3]];
 }
 
-/** CSS absolute length units in CSS pixels (CSS Values 4: 1in = 96px). */
-const CSS_PX_PER_INCH = 96;
-const ABSOLUTE_LENGTH_UNITS: Record<string, number> = {
-  '': 1,
-  px: 1,
-  in: CSS_PX_PER_INCH,
-  cm: CSS_PX_PER_INCH / 2.54,
-  mm: CSS_PX_PER_INCH / 25.4,
-  q: CSS_PX_PER_INCH / 101.6,
-  pt: CSS_PX_PER_INCH / 72,
-  pc: CSS_PX_PER_INCH / 6,
-};
-const LENGTH_PATTERN = /^\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z%]*)\s*$/;
-
-/**
- * Parses an SVG length in user units (px). Absolute units convert at 96 DPI;
- * relative units (%, em, ex, ...) and malformed values throw.
- */
-function parseLength(value: string, what: string): number {
-  const m = LENGTH_PATTERN.exec(value);
-  const factor = m ? ABSOLUTE_LENGTH_UNITS[m[2].toLowerCase()] : undefined;
-  if (!m || factor === undefined) {
-    throw new CadGeometryUnavailableError(`SVG ${what} "${value}" is not an absolute length (px, in, cm, mm, pt, pc).`);
-  }
-  return requireFinite(Number.parseFloat(m[1]) * factor, `${what} "${value}"`);
-}
-
 /**
  * Root width/height: an absolute length, or a percentage that resolves
  * against the viewBox (returns null) when one is present.
@@ -1082,8 +1050,8 @@ interface RenderState {
   pens: SvgPenMode;
   /** Whether a `clip-path` value, on an element drawn under the matrix, is a clip that covers the page and clips nothing. */
   clipsNothing: (value: string, ctm: AffineMatrix) => boolean;
-  /** The other clips of a centre-line reader, measured against what is drawn under them; null where every such clip is refused. */
-  clips: ActiveClips | null;
+  /** The other clips, measured against what is drawn under them and cut where they hide more than the tolerance of the pens. */
+  clips: ActiveClips;
 }
 
 /** Upper bound on rendered nodes, so nested <use> fan-out cannot explode. */
@@ -1159,7 +1127,7 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
       return d;
     })
   );
-  state.clips?.assertWithin(deviceSubpaths);
+  const hiding = state.clips.hiding(deviceSubpaths);
   const lengthScale = matrixLengthScale(ctx.ctm);
   requireFinite(strokeWidth * lengthScale, `<${node.name}> device stroke width`);
   const stroke = strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null;
@@ -1168,7 +1136,7 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
       `Stroked SVG <${node.name}> under a non-uniform scale or skew is not supported: a metafile pen has one width.`
     );
   }
-  state.elements.push({
+  const element: SvgGeometryElement = {
     subpaths: deviceSubpaths,
     isClosed: shape.isClosed,
     fillable: node.name !== 'line',
@@ -1180,7 +1148,8 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     strokeLinejoin: ctx.strokeLinejoin.trim() as SvgLinejoin,
     strokeMiterlimit: parseSvgNumber(ctx.strokeMiterlimit, 'stroke-miterlimit'),
     strokeDash: stroke && ctx.dashArray && lengthScale > 0 ? devicePattern(ctx.dashArray, lengthScale, ctx.strokeLinecap.trim() !== 'butt') : null,
-  });
+  };
+  state.elements.push(...(hiding.length === 0 ? [element] : state.clips.cutElement(element, hiding, state.pens, state.vertices)));
 }
 
 function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): void {
@@ -1215,11 +1184,11 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   if (declared.get('display') === 'none') return;
   const ctx = deriveContext(parent, node.attrs, declared, state.pens);
   if (state.bitmapGlyphs.take(node, state.ids, parent.ctm, ctx.ctm)) {
-    state.clips?.assertWithin(glyphBox(state.bitmapGlyphs.marks[state.bitmapGlyphs.marks.length - 1]));
+    state.clips.assertWithin(glyphBox(state.bitmapGlyphs.marks[state.bitmapGlyphs.marks.length - 1]));
     return;
   }
   let opensClip = false;
-  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm) || (opensClip = state.clips?.enter(value, ctx.ctm) ?? false));
+  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm) || (opensClip = state.clips.enter(value, ctx.ctm)));
   if (kind === 'shape') {
     emitShape(node, ctx, state);
   } else if (kind === 'use') {
@@ -1227,14 +1196,15 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
   } else {
     renderChildren(node, ctx, state);
   }
-  if (opensClip) state.clips?.leave();
+  if (opensClip) state.clips.leave();
 }
 
 /**
  * Parses SVG XML into geometry elements with flattened polylines in device (viewport) coordinates, honouring the style cascade,
- * inheritance from container elements and transforms. Rendered content that cannot be represented (text, images, clipping, ...)
- * throws instead of being dropped, but a clip over the whole page, and in `centre-line` mode a clip that hides at most a point
- * (svg-clip-region.ts). Bitmap-font characters go to `bitmapGlyphs` when it sets them aside (svg-bitmap-glyph.ts); `pens` says
+ * inheritance from container elements and transforms. Content that cannot be represented (text, images, ...) throws instead of
+ * being dropped; a clip is dropped where it covers the page or hides at most the tolerance of the pens, and else cuts the
+ * drawing when it is one convex polygon (svg-clip-region.ts). Bitmap-font characters go to `bitmapGlyphs` when it sets them
+ * aside (svg-bitmap-glyph.ts); `pens` says
  * what the target does with the pen attributes it cannot paint (svg-pen.ts): by default they are refused.
  */
 export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new BitmapGlyphs(), pens: SvgPenMode = 'metafile'): ParsedSvgVectorDocument {
@@ -1243,7 +1213,7 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
   }
   const root = buildSvgTree(svgContent);
   if (!root) {
-    return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, elements: [] };
+    return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, unitPx: 1, elements: [] };
   }
   const viewport = resolveViewport(root.attrs);
   const sheet = extractStylesheets(svgContent);
@@ -1256,20 +1226,20 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
   const parents = new Map<ClipNode, SvgNode>();
   const vertices = new VertexBudget();
   const clipsNothing = createPageClipCheck(ids, viewport, (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null);
-  const clips =
-    pens === 'centre-line'
-      ? new ActiveClips({
-          ids,
-          outlineOf: (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null,
-          declaredOf: (node) => declaredProperties(node.attrs, node.name, sheet),
-          parentOf: (node) => parents.get(node),
-          transformOf: (value) => (value.trim() === '' ? IDENTITY_MATRIX : parseSvgTransform(value)),
-        })
-      : null;
+  const clips = new ActiveClips(
+    {
+      ids,
+      outlineOf: (shape) => shapeGeometry(shape.name, shape.attrs, vertices)?.subpaths ?? null,
+      declaredOf: (node) => declaredProperties(node.attrs, node.name, sheet),
+      parentOf: (node) => parents.get(node),
+      transformOf: (value) => (value.trim() === '' ? IDENTITY_MATRIX : parseSvgTransform(value)),
+    },
+    pens
+  );
   const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, clipsNothing, clips };
   indexIds(root, state.ids, parents);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
-  return { width: viewport.width, height: viewport.height, elements: state.elements };
+  return { width: viewport.width, height: viewport.height, unitPx: rootUnitPx(root.attrs), elements: state.elements };
 }
 
 // ============================================================================

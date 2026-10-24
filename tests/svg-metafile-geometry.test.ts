@@ -547,6 +547,71 @@ describe('SVG document model for metafile encoders', () => {
     });
   });
 
+  describe('clip paths that are not the page', () => {
+    const CLIP = '<defs><clipPath id="c"><path d="M 20 20 L 80 20 L 80 60 L 20 60 Z"/></clipPath></defs>';
+    const under = (drawn: string): string => `${CLIP}<g clip-path="url(#c)">${drawn}</g>`;
+
+    it('cut a filled shape to its part inside the region, in EMF and WMF', () => {
+      for (const shapes of [emfShapes(under('<rect x="10" y="30" width="50" height="50" fill="#ff0000"/>')), wmfShapes(under('<rect x="10" y="30" width="50" height="50" fill="#ff0000"/>'))]) {
+        const filled = filledShapes(shapes);
+        expect(filled.map((shape) => shape.brush)).toEqual([0xff0000]);
+        expect(new Set(corners(filled[0].rings[0]).map(String))).toEqual(new Set(['20,30', '60,30', '60,60', '20,60']));
+      }
+    });
+
+    it('cut a stroked line at the edge of the region', () => {
+      const lines = emfShapes(under('<line x1="10" y1="40" x2="90" y2="40" stroke="#0000ff" stroke-width="2"/>')).filter((shape) => shape.pen !== null);
+      expect(lines.map((shape) => [shape.kind, shape.pen?.color, shape.rings.map(corners)])).toEqual([['polyline', 0x0000ff, [[[20, 40], [80, 40]]]]]);
+    });
+
+    it('paint a shape with a fill and a stroke as its cut area without a pen and its cut outline as lines, so no stroke runs along the cut', () => {
+      const shapes = emfShapes(under('<rect x="10" y="30" width="50" height="50" fill="#ff0000" stroke="#00ff00"/>')).filter((shape) => shape.brush !== null || shape.pen !== null);
+      expect(shapes.map((shape) => [shape.kind, shape.brush, shape.pen?.color ?? null])).toEqual([
+        ['polygon', 0xff0000, null],
+        ['polyline', null, 0x00ff00],
+      ]);
+      // The outline enters the region on its top side at x = 20 and leaves it at y = 60 down its right side; the rest is outside.
+      expect(shapes[1].rings.map(corners)).toEqual([
+        [
+          [20, 30],
+          [60, 30],
+          [60, 60],
+        ],
+      ]);
+    });
+
+    it('draw a shape that the clip hides nothing of as it is', () => {
+      const shapes = filledShapes(emfShapes(under('<rect x="30" y="30" width="20" height="20" fill="#ff0000" stroke="#00ff00"/>')));
+      expect(shapes.map((shape) => [shape.pen?.color, corners(shape.rings[0])])).toEqual([[0x00ff00, [[30, 30], [50, 30], [50, 50], [30, 50]]]]);
+    });
+
+    it('draw nothing of a shape wholly outside the region', () => {
+      expect(filledShapes(emfShapes(under('<rect x="85" y="85" width="10" height="10" fill="#ff0000"/>') + '<rect x="0" y="0" width="5" height="5" fill="#0000ff"/>')).map((shape) => shape.brush)).toEqual([0x0000ff]);
+    });
+
+    it('refuse a region that is not one convex polygon when it hides part of the drawing, with the reason', () => {
+      const lShape = '<defs><clipPath id="c"><path d="M 0 0 L 100 0 L 100 40 L 40 40 L 40 80 L 0 80 Z"/></clipPath></defs>';
+      expect(() => encodeEmf(svgDoc(`${lShape}<g clip-path="url(#c)"><rect x="10" y="10" width="80" height="80" fill="#000"/></g>`))).toThrow(
+        /^SVG clip-path "url\(#c\)" is not supported: a drawn path reaches [\d.]+ pixels past it, and only a clip of one convex polygon is cut\.$/
+      );
+    });
+
+    it('cut a self-intersecting fill so that its winding count is kept inside the region and nothing is painted outside it', () => {
+      const bowTie = under('<path d="M 0 0 L 100 100 L 100 0 L 0 100 Z" fill="#000"/>');
+      const [shape] = filledShapes(emfShapes(bowTie));
+      const ring = shape.rings[0];
+      expect(ring.every((p) => p.x >= 20 && p.x <= 80 && p.y >= 20 && p.y <= 60)).toBe(true);
+      const winding = (x: number, y: number): number =>
+        ring.reduce((count, a, i) => {
+          const b = ring[(i + 1) % ring.length];
+          if ((a.y <= y) === (b.y <= y)) return count;
+          return a.x + ((y - a.y) * (b.x - a.x)) / (b.y - a.y) > x ? count + (b.y > a.y ? 1 : -1) : count;
+        }, 0);
+      // The bow tie fills the left and right triangles between its diagonals and leaves the top and bottom ones empty.
+      expect([winding(25, 40), winding(75, 40), winding(50, 25)].map((count) => count !== 0)).toEqual([true, true, false]);
+    });
+  });
+
   describe('<use> references', () => {
     const SQUARE_DEF = '<defs><rect id="sq" x="0" y="0" width="10" height="10"/></defs>';
 

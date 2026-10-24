@@ -111,14 +111,14 @@ describe('bitmap-font characters written as DXF TEXT', () => {
     expect(withText.equals(encodeSvgPageToDxf(svg))).toBe(true);
   });
 
-  it('places the text in the units of the drawing when Poppler writes the page size in points (4/3 of a pixel)', async () => {
-    const px = (points: number): number => round((points * 4) / 3);
-    const dxf = await written(page(DEFS, LINE, 'pt'), LINE_ITEMS);
-    expect(dxf.texts.map(placement)).toEqual([
-      ['Hi', px(72), px(PAGE_HEIGHT - 90), px(84), px(8), 5],
-      ['x', px(90), px(PAGE_HEIGHT - 90), px(95), px(8), 5],
-      ['ab', px(72), px(PAGE_HEIGHT - 120), px(84), px(7), 5],
-    ]);
+  it('places the text in points both when Poppler writes the page size in points and when it writes it without a unit', async () => {
+    const inPoints = [
+      ['Hi', 72, PAGE_HEIGHT - 90, 84, 8, 5],
+      ['x', 90, PAGE_HEIGHT - 90, 95, 8, 5],
+      ['ab', 72, PAGE_HEIGHT - 120, 84, 7, 5],
+    ];
+    expect((await written(page(DEFS, LINE, 'pt'), LINE_ITEMS)).texts.map(placement), 'pt').toEqual(inPoints);
+    expect((await written(page(DEFS, LINE), LINE_ITEMS)).texts.map(placement), 'no unit').toEqual(inPoints);
   });
 
   it('writes a page of nothing but bitmap-font text', async () => {
