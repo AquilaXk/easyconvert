@@ -49,16 +49,20 @@ export function pdfImageCount(pdf: Buffer): number {
 }
 
 /**
- * Runs `convert` while a stand-in for LibreOffice records the HTML document it is handed and answers with a blank PDF,
- * then returns that document: the one thing the renderer ever reads.
+ * Runs `convert` while a stand-in for LibreOffice records the HTML document it is handed and answers with `answer`, a
+ * blank PDF unless a test hands it another, then returns that document: the one thing the renderer ever reads.
  */
-export async function withCapturingSoffice(convert: () => Promise<unknown>): Promise<string> {
+export async function withCapturingSoffice(convert: () => Promise<unknown>, answer?: Buffer): Promise<string> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recording-soffice-'));
   const capture = path.join(dir, 'captured.html');
   const blank = path.join(dir, 'blank.pdf');
-  const pdf = await PDFDocument.create();
-  pdf.addPage([200, 200]);
-  fs.writeFileSync(blank, await pdf.save());
+  if (answer) {
+    fs.writeFileSync(blank, answer);
+  } else {
+    const pdf = await PDFDocument.create();
+    pdf.addPage([200, 200]);
+    fs.writeFileSync(blank, await pdf.save());
+  }
   const stub = path.join(dir, 'soffice');
   fs.writeFileSync(
     stub,
