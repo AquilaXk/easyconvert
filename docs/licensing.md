@@ -59,7 +59,7 @@ Certain format conversions require specialized external command-line utilities. 
 
 ### 2.8 Open CASCADE and `cad-convert` (LGPL 2.1 with the Open CASCADE exception)
 - **Role**: Reads STEP and IGES files and writes STEP, IGES, STL and OBJ from the boundary representation (STEP and IGES input and output).
-- **Process Isolation**: `cad-convert` (`native/cad-convert`, about 400 lines of our own C++) is built in the worker image and in CI against the unmodified Debian and Ubuntu Open CASCADE libraries, linked to them dynamically, and executed as a separate process in the process sandbox with no network access and limits on time, memory and output size. Nothing of Open CASCADE is bundled into the application, and none of its source is modified.
+- **Process Isolation**: `cad-convert` (`native/cad-convert`, about 680 lines of our own C++; it reads STEP and IGES, writes STEP, IGES, STL and OBJ with its MTL, and writes IGES from a triangle mesh) is built in the worker image and in CI against the unmodified Debian and Ubuntu Open CASCADE libraries, linked to them dynamically, and executed as a separate process in the process sandbox with no network access and limits on time, memory and output size. Nothing of Open CASCADE is bundled into the application, and none of its source is modified.
 - **Compliance**: The libraries are replaceable shared objects of the distribution, so the LGPL relinking requirement is met by the package manager (section 3); the image carries the package notices in `/licenses/libocct-*.copyright`. The test oracle `occt-import-js` (a WebAssembly build of the same kernel, LGPL 2.1) is a development dependency of the test suite only and is not part of any image or build output.
 
 ### 2.9 FontForge (GPL-3.0-or-later)
