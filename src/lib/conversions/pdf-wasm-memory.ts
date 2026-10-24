@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { PDF_WASM_DECODER_MAX_BYTES } from './pdf-text-types';
 
 /**
@@ -11,6 +12,15 @@ import { PDF_WASM_DECODER_MAX_BYTES } from './pdf-text-types';
  * that would grow past it gets no memory: the module's `emscripten_resize_heap` catches the failed `grow` and malloc returns
  * null (pdf.worker.mjs lines 15387-15411). OpenJPEG then reports an error, PDFium's JBIG2 code aborts, and either way the
  * decode throws and pdf.js gives the picture as null, as for any picture it cannot decode.
+ *
+ * When a module cannot be loaded (the file is unreadable, or its memory maximum cannot be lowered) pdf.js does not give up: its
+ * `#instantiateWasm` catches the error and imports `${wasmUrl}jbig2_nowasm_fallback.js` or `openjpeg_nowasm_fallback.js`, the
+ * JavaScript builds of the decoders, whose heap may grow to 2 GiB (`getJsModule` and `#instantiateWasm`, pdf.worker.mjs
+ * 15545-15575). No option turns that off (`useWasm: false` selects the same files). The factory reads the modules from the real
+ * folder itself, so the `wasmUrl` pdf.js is given can name a folder that does not exist (`cappedDecoderOptions`): the import
+ * then fails, pdf.js has no decoder and the picture is null. pdf.js reads `wasmUrl` itself for nothing else here: its ICC colour
+ * module is switched off when pdf.js does not fetch in the worker, as with any factory but its DOM one (`QCMS.setOptions`,
+ * pdf.worker.mjs 8514-8523; `getDocument`, pdf.mjs 22004).
  */
 
 const DECODER_FILES = new Set(['jbig2.wasm', 'openjpeg.wasm']);
@@ -71,6 +81,9 @@ export function withMemoryMaximum(module: Uint8Array, maxPages: number): Uint8Ar
   throw new Error('WebAssembly module defines no memory');
 }
 
+/** The folder, below the real decoder folder, that `cappedDecoderOptions` names as pdf.js's `wasmUrl`; it is never created. */
+const UNAVAILABLE_FOLDER = 'without-javascript-fallback';
+
 /** The `BinaryDataFactory` the text reader passes to pdf.js's `getDocument`. */
 export class CappedDecoderDataFactory {
   private readonly urls: Record<BinaryKind, string | null>;
@@ -91,4 +104,19 @@ export class CappedDecoderDataFactory {
     }
     return kind === 'wasmUrl' && DECODER_FILES.has(filename) ? withMemoryMaximum(bytes, PDF_WASM_DECODER_MAX_BYTES / WASM_PAGE_BYTES) : bytes;
   }
+}
+
+/**
+ * The `wasmUrl` and `BinaryDataFactory` options of `getDocument` for the decoder folder `wasmFolder` (with its trailing separator):
+ * the factory reads the folder, and pdf.js is given a `wasmUrl` below it that holds nothing, so that a module that fails to load
+ * has no JavaScript fallback to be replaced by.
+ */
+export function cappedDecoderOptions(wasmFolder: string | undefined): { wasmUrl: string | undefined; BinaryDataFactory: typeof CappedDecoderDataFactory } {
+  if (wasmFolder === undefined) return { wasmUrl: undefined, BinaryDataFactory: CappedDecoderDataFactory };
+  class FolderDecoderDataFactory extends CappedDecoderDataFactory {
+    constructor(urls: { cMapUrl?: string | null; standardFontDataUrl?: string | null }) {
+      super({ ...urls, wasmUrl: wasmFolder });
+    }
+  }
+  return { wasmUrl: `${wasmFolder}${UNAVAILABLE_FOLDER}${path.sep}`, BinaryDataFactory: FolderDecoderDataFactory };
 }

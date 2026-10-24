@@ -6,7 +6,7 @@ import { appendAnnotationText } from './pdf-annotation-text';
 import { FontTable, readPageContent } from './pdf-text-content';
 import { ImageExtractor, awaitOperatorListDependencies } from './pdf-text-images';
 import { pdfjsReadableBytes } from './pdf-reader-input';
-import { CappedDecoderDataFactory } from './pdf-wasm-memory';
+import { cappedDecoderOptions } from './pdf-wasm-memory';
 import { pdfjsDataUrl } from './pdfjs-data';
 import {
   PDF_TEXT_MAX_PAGES,
@@ -1453,8 +1453,7 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       // The predefined CMaps: the codes of a CJK font and the Unicode values of a registered character collection.
       cMapUrl: pdfjsDataUrl('cmaps'),
       cMapPacked: true,
-      wasmUrl: pdfjsDataUrl('wasm'),
-      BinaryDataFactory: CappedDecoderDataFactory,
+      ...cappedDecoderOptions(pdfjsDataUrl('wasm')),
       verbosity: 0,
     });
     const doc = await task.promise;
