@@ -8,13 +8,14 @@
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
 #   calibre   the ebook converter the ebook benchmark compares against, from its release archive checked against a pinned SHA-256
 #   libredwg the DWG reader (dwg2dxf), built from its release archive checked against a pinned SHA-256, or the cached build
+#   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
 # Every part runs under `timeout` with its own limit, so a part that hangs fails the step by name once its limit has
 # passed, long before the job timeout. Each part logs to its own file; the logs are printed in groups afterwards, a
 # failed or stopped part is printed in full outside a group, and a cancelled job prints them as well.
 #
-# Environment: ACTION_PATH, APT_DEBS, PIP_WHEELS (the directory of the cached wheels), APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT and S3_TEST_SERVER (true or false). With
+# Environment: ACTION_PATH, APT_DEBS, PIP_WHEELS (the directory of the cached wheels), APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT, GHOSTXPS_CACHE_HIT and S3_TEST_SERVER (true or false). With
 # S3_TEST_SERVER=true also S3_IMAGE_CACHE_DIR and the STORAGE_TEST_S3_* variables of the job.
 #
 # Sourcing the file defines the functions and runs nothing, which is how the tests exercise the limits.
@@ -53,6 +54,7 @@ declare -A task_limit_seconds=(
   [epubcheck]=120
   [calibre]=240
   [libredwg]=300
+  [ghostxps]=300
   [raw]=240
   [s3]=360
 )
@@ -67,6 +69,8 @@ configure() {
   export verapdf_dir=/opt/verapdf
   export libredwg_cache_hit="${LIBREDWG_CACHE_HIT:-false}"
   export libredwg_dir=/opt/libredwg
+  export ghostxps_cache_hit="${GHOSTXPS_CACHE_HIT:-false}"
+  export ghostxps_dir=/opt/ghostxps
   export pip_wheels="${PIP_WHEELS:?PIP_WHEELS}"
   s3_test_server="${S3_TEST_SERVER-}"
   case "$s3_test_server" in
@@ -94,7 +98,7 @@ configure() {
 
 # The tasks of this job; the S3 test server only when the job runs tests that read it.
 select_tasks() {
-  tasks=(apt pip verapdf epubcheck calibre libredwg raw)
+  tasks=(apt pip verapdf epubcheck calibre libredwg ghostxps raw)
   if [ "$s3_test_server" = true ]; then
     tasks+=(s3)
   fi
@@ -180,6 +184,17 @@ task_libredwg() {
     dwg2dxf --version
   else
     sudo scripts/install-libredwg.sh "$libredwg_dir"
+  fi
+}
+
+# XPS input is drawn by GhostXPS's `gxps` (GhostPDL, AGPL-3.0-or-later, an unmodified separate program), built from the pinned release
+# archive in scripts/install-ghostxps.sh, which checks the SHA-256 before anything in it runs. The build is cached by the hash of that script.
+task_ghostxps() {
+  if [ "$ghostxps_cache_hit" = true ] && [ -x "$ghostxps_dir/bin/gxps" ]; then
+    sudo ln -sf "$ghostxps_dir/bin/gxps" /usr/local/bin/gxps
+    gxps -v
+  else
+    sudo scripts/install-ghostxps.sh "$ghostxps_dir"
   fi
 }
 
@@ -271,7 +286,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_verapdf task_epubcheck task_calibre task_libredwg task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {

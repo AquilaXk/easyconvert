@@ -611,8 +611,8 @@ async function probeInputs(source: string): Promise<Buffer[]> {
  * Pairs with no in-process path that the dispatcher must route to a native engine: LibreOffice
  * for Office-to-Office targets, LibreOffice (or the PostScript interpreter) chained with Poppler for
  * page targets (pdftoppm images, the image encoders, pdftops, pdftocairo SVG and DXF), Poppler
- * pdftoppm for PDF pages to raster images, and Poppler pdftocairo for pdf->svg. Authored by
- * hand from the native tools' capabilities.
+ * pdftoppm for PDF pages to raster images, Poppler pdftocairo for pdf->svg, and GhostXPS chained with Poppler for
+ * XPS documents. Authored by hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   doc: ['jpg', 'png', 'rtf'],
@@ -624,6 +624,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   odp: ['jpg', 'png', 'ppt'],
   ods: ['jpg', 'png'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
+  oxps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   pdf: ['jpg', 'png', 'svg', 'tiff'],
   pps: ['ppt'],
   ppt: ['jpg', 'odp', 'png'],
@@ -632,6 +633,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   rtf: ['doc', 'jpg', 'png'],
   xls: ['jpg', 'png'],
   xlsx: ['jpg', 'png'],
+  xps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
 };
 
 /**
@@ -991,7 +993,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     numbers: ['doc', 'ppt', 'tsv'],
     odp: ['eps', 'md', 'swf'],
     odt: ['azw3', 'hwp', 'hwpx', 'lrf', 'mobi', 'oeb', 'pdb', 'xps'],
-    oxps: ['docx', 'pdf'],
+    oxps: ['docx', 'odd'],
     pages: ['doc', 'docx', 'epub', 'html', 'jpg', 'pdf', 'png', 'ppt', 'txt'],
     pdb: ['rtf'],
     pdf: ['avif', 'bmp', 'doc', 'dxf', 'emf', 'eps', 'gif', 'ico', 'odd', 'ppt', 'ps', 'psd', 'webp', 'wmf'],
@@ -1026,7 +1028,7 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     xls: ['xps'],
     xlsm: ['jpg', 'json', 'png'],
     xlsx: ['numbers', 'xps'],
-    xps: ['avif', 'bmp', 'docx', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
+    xps: ['docx', 'odd'],
     yaml: ['xml'],
     yml: ['xml'],
     zabw: ['doc', 'jpg', 'png', 'rtf'],
@@ -1469,6 +1471,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   const NO_AUTHORABLE_INPUT = new Set(['key']);
   /** PostScript sources need ps2pdf (Ghostscript), which is not part of the CI image; their real renders run where it is installed. */
   const POSTSCRIPT_SOURCES = new Set(['eps', 'ps']);
+  /** XPS sources are drawn by GhostXPS; their real renders are proven on real files by tests/xps-render.test.ts. */
+  const XPS_SOURCES = new Set(['xps', 'oxps']);
   const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
@@ -1496,7 +1500,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     targets.map((target) => [source, target] as [string, string])
   );
   const pairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
-  const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source);
+  const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source);
   const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && authorable(pair));
   const officeToImage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && IMAGE_TARGETS.has(pair[1]) && authorable(pair));
   const POSTSCRIPT_TARGETS = new Set(['eps', 'ps']);
@@ -1509,6 +1513,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
     if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
+    if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
     if (source !== PDF_SOURCE) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     if (target === SVG_TARGET) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
     return { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' };
@@ -1570,7 +1575,15 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (ODF_MIMETYPE[source]) return headerOnlyOdf(ODF_MIMETYPE[source]);
     if (source === 'key') return headerOnlyOdf('application/x-iwork-keynote-sffkey');
     if (POSTSCRIPT_SOURCES.has(source)) return Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\nshowpage\n', 'latin1');
+    if (XPS_SOURCES.has(source)) return emptyZipPackage();
     return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
+  }
+
+  /** A ZIP package that passes the magic-byte check of a ZIP-based source. */
+  function emptyZipPackage(): Promise<Buffer> {
+    const zip = new JSZip();
+    zip.file('[Content_Types].xml', '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>');
+    return zip.generateAsync({ type: 'nodebuffer' });
   }
 
   /** A one-page PostScript figure with a stroked path, a filled shape and a line, in a 200 x 100 box. */

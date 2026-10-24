@@ -30,7 +30,7 @@ const FAST_FAIL_BUDGET_MS = 15_000;
 const SLEEP_PAST_LIMIT_SECONDS = 31;
 const CHILD_STOP_BOUND_MS = 10_000;
 const MAX_TASK_LIMIT_SECONDS = 600;
-const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'libredwg', 'raw'];
+const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'libredwg', 'ghostxps', 'raw'];
 
 const temps: string[] = [];
 afterAll(() => {

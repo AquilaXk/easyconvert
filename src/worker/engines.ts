@@ -24,7 +24,7 @@ import {
   PayloadLimitError,
   PdfPasswordRequiredError,
 } from '../lib/types';
-import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
+import { getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
@@ -77,11 +77,12 @@ import {
   SandboxedProcessError,
   SandboxedBufferLimitError,
 } from './sandbox';
-import { convertPostScript } from './postscript-render';
+import { convertPostScript, type PostScriptJob } from './postscript-render';
+import { convertXps } from './xps-render';
 import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
-import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments } from './worker-output';
+import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments, readRawInputBuffer } from './worker-output';
 import { boundRenderedPages, DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
@@ -209,6 +210,7 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/usr/local/bin/ps2pdf',
     '/opt/homebrew/bin/ps2pdf',
   ],
+  gxps: [...(process.env.GXPS_PATH ? [process.env.GXPS_PATH] : []), '/usr/local/bin/gxps', '/usr/bin/gxps', '/opt/homebrew/bin/gxps'],
   tesseract: [
     ...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []),
     '/usr/bin/tesseract',
@@ -1887,32 +1889,46 @@ export async function convertWithNativeSvg(
   return renderSvgAsPdf({ svg, renderer, input, options, originalFilename });
 }
 
-/** PostScript sources: only an interpreter can draw them. */
-const POSTSCRIPT_SOURCES: ReadonlySet<string> = new Set(['eps', 'ps']);
+/** A program of the Ghostscript family that draws the pages of a source no other engine can: it writes a PDF. */
+interface FixedPageRoute {
+  sources: ReadonlySet<string>;
+  /** The engine label and the prefix of the fallback chain entry. */
+  label: string;
+  /** The key of the program in `BINARY_PATHS`; its path setting in the environment is `<BINARY>_PATH`. */
+  binary: string;
+  /** The program as the unavailable error names it. */
+  program: string;
+  render: (job: PostScriptJob) => Promise<WorkerConversionResult | null>;
+}
 /**
- * Renders PostScript (EPS, PS) with the interpreter (postscript-render.ts) and, for targets other than PDF and PNG, hands
- * the PDF to the native tools every PDF source uses (Poppler images and SVG, the encoded rasters, pdftops and the DXF
- * writer). Returns null when `ps2pdf` is missing and the caller did not ask for an error; with `throwOnUnavailable` a
- * missing interpreter is an EngineUnavailableError.
+ * PostScript (EPS, PS) goes through the interpreter (postscript-render.ts), XPS and OpenXPS through GhostXPS (xps-render.ts).
+ * Both hand the PDF, for targets other than PDF, to the native tools every PDF source uses (Poppler images and SVG, the
+ * encoded rasters, pdftops and the DXF writer).
  */
-export async function convertWithNativePostScript(
+const FIXED_PAGE_ROUTES: readonly FixedPageRoute[] = [
+  { sources: new Set(['eps', 'ps']), label: 'native-postscript', binary: 'ps2pdf', program: 'ps2pdf (Ghostscript)', render: convertPostScript },
+  { sources: new Set(['xps', 'oxps']), label: 'native-xps', binary: 'gxps', program: 'gxps (GhostXPS)', render: convertXps },
+];
+/**
+ * Draws a source of `route` and returns null when its program is missing and the caller did not ask for an error; with
+ * `throwOnUnavailable` a missing program is an EngineUnavailableError.
+ */
+async function convertWithFixedPageRoute(
+  route: FixedPageRoute,
   input: Buffer | WorkerVfsPayload,
-  sourceFormat: string,
-  targetFormat: string,
-  options: WorkerEngineOptions = {},
-  originalFilename = 'file'
+  src: string,
+  tgt: string,
+  options: WorkerEngineOptions,
+  originalFilename: string
 ): Promise<WorkerConversionResult | null> {
-  const src = validateFormat(sourceFormat);
-  const tgt = validateFormat(targetFormat);
-  if (!POSTSCRIPT_SOURCES.has(src)) return null;
-  const interpreter = resolveBinary(BINARY_PATHS.ps2pdf, process.env.PS2PDF_PATH);
+  const interpreter = resolveBinary(BINARY_PATHS[route.binary], process.env[`${route.binary.toUpperCase()}_PATH`]);
   if (!interpreter) {
     if (options.throwOnUnavailable) {
-      throw new EngineUnavailableError('ps2pdf', 'ps2pdf (Ghostscript) is not installed or not in PATH');
+      throw new EngineUnavailableError(route.binary, `${route.program} is not installed or not in PATH`);
     }
     return null;
   }
-  return convertPostScript({ input, src, tgt, options, originalFilename, interpreter, convertPdfPages: convertPdfPagesWithNativeTools });
+  return route.render({ input, src, tgt, options, originalFilename, interpreter, convertPdfPages: convertPdfPagesWithNativeTools });
 }
 
 /**
@@ -1920,23 +1936,6 @@ export async function convertWithNativePostScript(
  * real sensor data instead: Sigma X3F (Foveon) and Raspberry Pi frames (a JPEG followed by a "BRCM" Bayer dump).
  */
 const IN_PROCESS_RAW_SENSOR_FORMATS: ReadonlySet<string> = new Set(['x3f', 'raw']);
-
-/** Reads the whole input into memory, within the in-memory payload limit. */
-function readRawInputBuffer(input: Buffer | WorkerVfsPayload): Buffer {
-  if (Buffer.isBuffer(input)) return input;
-  if (input.inputBuffer) return input.inputBuffer;
-  if (input.inputPath && fs.existsSync(input.inputPath)) {
-    const size = fs.statSync(input.inputPath).size;
-    if (size > getMaxInMemoryBytes()) {
-      throw new PayloadTooLargeForMemoryError(
-        `Payload size (${size} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
-        { size, limit: getMaxInMemoryBytes() }
-      );
-    }
-    return fs.readFileSync(input.inputPath);
-  }
-  throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
-}
 
 /**
  * Decodes Sigma X3F and Raspberry Pi RAW frames in-process into 16-bit sRGB and encodes the requested
@@ -2441,20 +2440,16 @@ async function convertWithinImageSession(
     }
   }
 
-  // 1c'. PostScript sources: ps2pdf, then the native PDF tools for every page target.
-  if (POSTSCRIPT_SOURCES.has(src) && (tgt === 'pdf' || isPdfChainTarget(tgt))) {
+  // 1c'. PostScript and XPS sources: the program that draws them, then the native PDF tools for every page target.
+  const fixedPageRoute = FIXED_PAGE_ROUTES.find((route) => route.sources.has(src));
+  if (fixedPageRoute && (tgt === 'pdf' || isPdfChainTarget(tgt))) {
     try {
-      const psRes = await convertWithNativePostScript(input, src, tgt, nativeOptions, originalFilename);
-      if (psRes) {
-        return {
-          ...psRes,
-          fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-        };
-      }
+      const pageRes = await convertWithFixedPageRoute(fixedPageRoute, input, src, tgt, nativeOptions, originalFilename);
+      if (pageRes) return { ...pageRes, fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined };
     } catch (err) {
       rethrowSandboxUnavailable(err);
       if (err instanceof EngineUnavailableError) {
-        fallbackChain.push(`native-postscript: ${err.message}`);
+        fallbackChain.push(`${fixedPageRoute.label}: ${err.message}`);
         fallbackReason = err.message;
         lastUnavailable = err;
       } else {

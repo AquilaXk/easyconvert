@@ -24,7 +24,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'pdf->avif', 'pdf->bmp', 'pdf->doc', 'pdf->dxf', 'pdf->emf', 'pdf->eps', 'pdf->gif', 'pdf->ico', 'pdf->odd', 'pdf->ppt', 'pdf->ps', 'pdf->psd', 'pdf->webp', 'pdf->wmf',
   'rst->rtf',
   'txt->doc', 'txt->jpg', 'txt->png', 'txt->rtf', 'txt->tex',
-  'xps->avif', 'xps->bmp', 'xps->eps', 'xps->gif', 'xps->ico', 'xps->jpg', 'xps->odd', 'xps->pdf', 'xps->png', 'xps->ps', 'xps->psd', 'xps->svg', 'xps->tiff', 'xps->webp',
+  'xps->odd',
   'zabw->doc', 'zabw->jpg', 'zabw->png', 'zabw->rtf',
   'azw->rtf',
   'azw3->rtf',

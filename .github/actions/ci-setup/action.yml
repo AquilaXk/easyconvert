@@ -75,6 +75,18 @@ runs:
         path: /opt/libredwg
         key: libredwg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-libredwg.sh') }}
 
+    # The XPS renderer is built from the GhostPDL release archive pinned in scripts/install-ghostxps.sh, so its hash is the key.
+    - name: Prepare the XPS renderer directory
+      shell: bash
+      run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/ghostxps
+
+    - name: Restore the cached XPS renderer build
+      id: ghostxps-cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: /opt/ghostxps
+        key: ghostxps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-ghostxps.sh') }}
+
     - name: Restore RAW sample cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
@@ -103,6 +115,7 @@ runs:
         APT_CACHE_HIT: ${{ steps.apt-cache.outputs.cache-hit }}
         VERAPDF_CACHE_HIT: ${{ steps.verapdf-cache.outputs.cache-hit }}
         LIBREDWG_CACHE_HIT: ${{ steps.libredwg-cache.outputs.cache-hit }}
+        GHOSTXPS_CACHE_HIT: ${{ steps.ghostxps-cache.outputs.cache-hit }}
         S3_TEST_SERVER: ${{ inputs.s3-test-server }}
         S3_IMAGE_CACHE_DIR: ${{ runner.temp }}/s3-test-server-image
       run: bash "$ACTION_PATH/install-tools.sh"

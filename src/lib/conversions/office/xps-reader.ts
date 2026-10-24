@@ -176,12 +176,18 @@ function referencedParts(holder: string, root: XmlElement, referenceName: string
   });
 }
 
-async function fixedDocumentSequencePart(source: XpsPackage): Promise<string> {
+/** The fixed document sequences the package relationships name, in their order. */
+async function fixedDocumentSequenceParts(source: XpsPackage): Promise<string[]> {
   const relationships = await source.readXml(RELATIONSHIPS_PART, `${LABEL} package relationships`);
-  const fixed = childElements(relationships, 'Relationship').find((relationship) => relationship.attrs.get('Type')?.toLowerCase().endsWith(FIXED_REPRESENTATION_SUFFIX));
-  const target = fixed?.attrs.get('Target');
-  if (target === undefined) throw new ConversionFailedError(`The ${LABEL} package has no fixed document sequence: it is not an XPS document.`);
-  return resolvePackagePath('', target);
+  const targets = childElements(relationships, 'Relationship')
+    .filter((relationship) => relationship.attrs.get('Type')?.toLowerCase().endsWith(FIXED_REPRESENTATION_SUFFIX))
+    .flatMap((relationship) => relationship.attrs.get('Target') ?? []);
+  if (targets.length === 0) throw new ConversionFailedError(`The ${LABEL} package has no fixed document sequence: it is not an XPS document.`);
+  return targets.map((target) => resolvePackagePath('', target));
+}
+
+async function fixedDocumentSequencePart(source: XpsPackage): Promise<string> {
+  return (await fixedDocumentSequenceParts(source))[0];
 }
 
 /** Records that `part` is named, refusing a package that names it a second time: every part is read once, so a repeated name is not a way to make the reader work longer. */
@@ -217,6 +223,57 @@ export async function readXpsPages(input: Buffer, signal?: AbortSignal): Promise
   }
   if (pages.length === 0) throw new ConversionFailedError(`The ${LABEL} document has no pages.`);
   return pages;
+}
+
+/** Every element below `root`, at any depth, in document order. */
+function descendantsOf(root: XmlElement): XmlElement[] {
+  const found: XmlElement[] = [];
+  const pending = childElements(root).reverse();
+  while (pending.length > 0) {
+    const element = pending.pop() as XmlElement;
+    found.push(element);
+    for (const child of childElements(element).reverse()) pending.push(child);
+  }
+  return found;
+}
+
+/**
+ * The number of fixed pages GhostXPS draws from a package, found the way it finds them (GhostPDL xps/xpszip.c
+ * `xps_process_file`, xps/xpsdoc.c `xps_parse_metadata_imp`): every DocumentReference and PageContent element at any depth
+ * of the fixed document sequence and then of each fixed document in turn, a document named by a document joining the list.
+ * The reader's limits hold: at most 1,000 documents and 10,000 pages, every part named once (GhostXPS skips a repeated
+ * name; here it is refused, so a cycle of documents ends at once), one inflate budget for the parts read. A package that
+ * names more than one sequence is refused: GhostXPS draws the last one, and the count would be of another. The page
+ * parts themselves are not read.
+ */
+export async function countRenderedXpsPages(input: Buffer, signal?: AbortSignal): Promise<number> {
+  const source = new XpsPackage(await openPackage(input, LABEL), signal);
+  const sequences = await fixedDocumentSequenceParts(source);
+  if (sequences.length > 1) throw new CorruptStreamError(`The ${LABEL} package names ${sequences.length} fixed document sequences.`);
+  const metadataParts = [sequences[0]];
+  const namedParts = new Set(metadataParts);
+  const namedPages = new Set<string>();
+  for (let index = 0; index < metadataParts.length; index += 1) {
+    const part = metadataParts[index];
+    const root = await source.readXml(part, index === 0 ? `${LABEL} fixed document sequence` : `${LABEL} fixed document`);
+    for (const element of descendantsOf(root)) {
+      const reference = element.attrs.get('Source');
+      if (reference === undefined) continue;
+      const target = resolvePackagePath(directoryOf(part), reference);
+      if (element.local === 'DocumentReference') {
+        claimOnce(namedParts, target, 'fixed document');
+        metadataParts.push(target);
+        if (metadataParts.length - 1 > XPS_MAX_DOCUMENT_REFERENCES) {
+          throw new PayloadLimitError(`The ${LABEL} package names more than ${XPS_MAX_DOCUMENT_REFERENCES} documents.`);
+        }
+      } else if (element.local === 'PageContent') {
+        claimOnce(namedPages, target, 'fixed page');
+        if (namedPages.size > XPS_MAX_PAGES) throw new PayloadLimitError(`The ${LABEL} document has more than ${XPS_MAX_PAGES} pages.`);
+      }
+    }
+  }
+  if (namedPages.size === 0) throw new ConversionFailedError(`The ${LABEL} document has no pages.`);
+  return namedPages.size;
 }
 
 /** The text of an XPS or OpenXPS document: its pages one after another, a blank line between them. */
