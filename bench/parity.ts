@@ -1,7 +1,7 @@
 import { GAP_BACKING_LOG_MARGIN, GATE_EPSILON, PARITY_SCHEMA_VERSION, SPEED_GAP_FLOOR, SPEED_HISTORY_CONFIDENCE, SPEED_HISTORY_MIN_POINTS, SPEED_PARITY_TOLERANCE } from './speed-config';
 import { ParityInputError } from './errors';
 import { allowedWorsening, type Baseline, worsening } from './gate';
-import { describeGap, type GapEntry, type GapFile, gapIndex, isQualityGap, isSpeedRowId, type QualityGap } from './parity-gaps';
+import { type AcceptedSlowdown, describeAcceptedSlowdown, describeGap, type GapEntry, type GapFile, gapIndex, holdsAcceptedSlowdown, isQualityGap, isSpeedRowId, type QualityGap } from './parity-gaps';
 import type { BenchReport, BenchRow, Family } from './report';
 import { AB_NIGHTLY_ONLY, type AbNightlyOnly } from './ab-config';
 import { slowdownLine } from './ab-speed';
@@ -30,6 +30,13 @@ import { speedGapThreshold } from './speed-history';
  *    the entry to be updated (an entry that lags behind would let the row slide back to its old value later). A row that
  *    passes the normal rule is reported so the entry can be removed. An entry whose row a run is about but did not produce
  *    fails, as a baseline entry does.
+ *
+ * Acknowledged slowdowns: a change that makes a speed row slower than its base on purpose lists the row in the
+ * `acceptedSlowdowns` of bench/parity-gaps.json with an issue, the pull request and a reason, as a performance-alert
+ * triage marks an alert "acknowledged": a regression accepted as a trade-off and tied to a bug. It excuses
+ * `speed-slower-than-base` for that change only, and only while the head is not credibly below the reference. It is
+ * single-use: the base of a later change already holds it, so it excuses nothing and the run reports it for removal, as a
+ * tracked row at parity is reported (`tracked-now-at-parity`). docs/policy-decisions.md, entry 92.
  */
 
 export type ParityOutcome = 'pass' | 'fail' | 'not-evaluated';
@@ -51,6 +58,9 @@ export type ParityBasis =
   | 'tracked-better-than-recorded'
   | 'gap-row-missing'
   | 'speed-slower-than-base'
+  | 'speed-slowdown-acknowledged'
+  | 'acknowledgement-unused'
+  | 'acknowledgement-not-backed'
   | 'speed-lost-parity'
   | 'speed-not-slower-than-base'
   | 'speed-unchanged-below-reference'
@@ -333,9 +343,44 @@ function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: Bench
 }
 
 /**
+ * The acknowledgement of a speed row and what the run can tell about it: `new` when the base does not hold it (the change
+ * under test wrote it), `spent` when the base does (its change has merged), `unverifiable` when no gap file of the base was
+ * given, so a new entry cannot be told from a spent one. Only a `new` one excuses a slowdown.
+ */
+interface RowAcknowledgement {
+  entry: AcceptedSlowdown;
+  state: 'new' | 'spent' | 'unverifiable';
+}
+
+const ACKNOWLEDGEMENT_FILE = 'acceptedSlowdowns in bench/parity-gaps.json';
+
+/** A slowdown beyond the row's line that an acknowledgement is asked to excuse: it does so while the head is not credibly below the reference. */
+function judgeAcknowledgedSlowdown(ack: RowAcknowledgement, failure: Judgement, against: string, belowReferenceBound: number | null): Judgement {
+  const named = describeAcceptedSlowdown(ack.entry);
+  if (ack.state === 'spent') return { ...failure, detail: `${failure.detail}; the acknowledgement (${named}) is already in the base: it excused the change it was written for, once` };
+  if (ack.state === 'unverifiable') {
+    return { ...failure, detail: `${failure.detail}; the acknowledgement (${named}) cannot apply without --base-gaps: a new entry cannot be told from one already merged` };
+  }
+  const line = 1 - SPEED_PARITY_TOLERANCE;
+  if (belowReferenceBound !== null) {
+    return { ...failure, detail: `${failure.detail}; the acknowledgement (${named}) does not apply: the head is also credibly below the reference, its upper bound ${show(belowReferenceBound)} is below ${show(line)}` };
+  }
+  return { outcome: 'pass', basis: 'speed-slowdown-acknowledged', detail: `${against}; slower than its base beyond the row's line, acknowledged (${named}); not credibly below the reference`, worsening: null, allowance: null };
+}
+
+/** A passing verdict of a row whose acknowledgement was not needed: the entry is reported so that the next bench change removes it. */
+function flagUnusedAcknowledgement(row: BenchRow, ack: RowAcknowledgement, judged: Judgement): Judgement {
+  if (judged.outcome !== 'pass') return judged;
+  const named = describeAcceptedSlowdown(ack.entry);
+  const why = ack.state === 'spent' ? 'already in the base' : 'the head is not credibly slower than the base';
+  return { ...judged, basis: 'acknowledgement-unused', detail: `${judged.detail}; the acknowledgement (${named}) is not needed, ${why}: remove ${row.id} from ${ACKNOWLEDGEMENT_FILE}` };
+}
+
+/**
  * A speed row measured against the base of the change in the same pairs (bench/ab-speed.ts). It fails only on evidence:
  *  - the head is credibly slower than the base by more than the row's regression threshold (the one-sided upper bound of
- *    the median of base time / head time is below 1 / (1 + threshold)) and a second set of fresh pairs shows it too, or
+ *    the median of base time / head time is below 1 / (1 + threshold)) and a second set of fresh pairs shows it too, unless
+ *    an acknowledgement of this change names the row and the head is not credibly below the reference, or
  *  - the base was at or above the reference and the head is credibly below it (the upper bound of reference time /
  *    head time is below the pass line) and the second set shows it too, or
  *  - the row is a tracked gap and its median fell under what its history predicts (bench/parity-gaps.json): a change
@@ -343,7 +388,7 @@ function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: Bench
  * Otherwise the change did not make the row worse and it passes; a row below the reference that the base was already
  * below is the standing gap the nightly run reports (the absolute rule), not a failure of this change.
  */
-function judgeSpeed(row: BenchRow, gap: GapEntry | null, options: ParityOptions): Judgement {
+function judgeSpeed(row: BenchRow, gap: GapEntry | null, options: ParityOptions, ack: RowAcknowledgement | null): Judgement {
   const comparedWithBase = row.abPairs !== undefined || row.abFallback !== undefined;
   const nightly = (options.nightlyOnly ?? AB_NIGHTLY_ONLY)[row.id];
   if (nightly !== undefined && comparedWithBase) {
@@ -355,23 +400,29 @@ function judgeSpeed(row: BenchRow, gap: GapEntry | null, options: ParityOptions)
   const none = { worsening: null, allowance: null };
   const median = row.abMedian ?? row.ratio ?? 0;
   const against = `head against base ${show(median)} over ${row.abPairs} pairs`;
+  const headUpper = row.abHeadVsReferenceUpper;
+  // The upper bound of reference time / head time when it shows the head credibly below the reference (confirmed, as a lost parity is), else null.
+  const belowReferenceBound = headUpper !== undefined && headUpper < line && row.abLostConfirmed !== false ? headUpper : null;
   if (row.abUpper !== undefined && row.abUpper < slowerLine && row.abSlowerConfirmed !== false) {
-    return { outcome: 'fail', basis: 'speed-slower-than-base', detail: `${against}; the one-sided upper bound ${show(row.abUpper)} is below ${show(slowerLine)}: the change made the row more than ${show(100 * (1 / slowerLine - 1))}% slower than its base`, ...none };
+    const failure: Judgement = { outcome: 'fail', basis: 'speed-slower-than-base', detail: `${against}; the one-sided upper bound ${show(row.abUpper)} is below ${show(slowerLine)}: the change made the row more than ${show(100 * (1 / slowerLine - 1))}% slower than its base`, ...none };
+    return ack === null ? failure : judgeAcknowledgedSlowdown(ack, failure, against, belowReferenceBound);
   }
   const baseVersusReference = row.abBaseVsReferenceMedian ?? 0;
-  if (baseVersusReference >= line && row.abHeadVsReferenceUpper !== undefined && row.abHeadVsReferenceUpper < line && row.abLostConfirmed !== false) {
+  if (baseVersusReference >= line && belowReferenceBound !== null) {
     return {
       outcome: 'fail',
       basis: 'speed-lost-parity',
-      detail: `${against}; the base was at the reference (${show(baseVersusReference)}), the head is credibly below it: the upper bound ${show(row.abHeadVsReferenceUpper)} is below ${show(line)}`,
+      detail: `${against}; the base was at the reference (${show(baseVersusReference)}), the head is credibly below it: the upper bound ${show(belowReferenceBound)} is below ${show(line)}`,
       ...none,
     };
   }
   if (gap !== null) return judgeTrackedAgainstBase(row, gap, median);
   const bound = row.abUpper === undefined ? 'too few pairs for a bound' : `upper bound ${show(row.abUpper)}`;
-  if (row.speedVerdict === 'pass') return { outcome: 'pass', basis: 'speed-pass', detail: `${against} (${bound}); at the reference`, ...none };
-  if (baseVersusReference >= line) return { outcome: 'pass', basis: 'speed-not-slower-than-base', detail: `${against} (${bound}); not credibly below the reference`, ...none };
-  return { outcome: 'pass', basis: 'speed-unchanged-below-reference', detail: `${against} (${bound}); below the reference on the base as well (${show(baseVersusReference)}): the standing gap the nightly run reports`, ...none };
+  let settled: Judgement;
+  if (row.speedVerdict === 'pass') settled = { outcome: 'pass', basis: 'speed-pass', detail: `${against} (${bound}); at the reference`, ...none };
+  else if (baseVersusReference >= line) settled = { outcome: 'pass', basis: 'speed-not-slower-than-base', detail: `${against} (${bound}); not credibly below the reference`, ...none };
+  else settled = { outcome: 'pass', basis: 'speed-unchanged-below-reference', detail: `${against} (${bound}); below the reference on the base as well (${show(baseVersusReference)}): the standing gap the nightly run reports`, ...none };
+  return ack === null ? settled : flagUnusedAcknowledgement(row, ack, settled);
 }
 
 /** Why a new or changed quality entry excuses more than the base branch's baseline held the row to, or null when it does not. */
@@ -386,15 +437,46 @@ function qualityBackingFailure(gap: QualityGap, baseline: Baseline): string | nu
   return `the recorded value ${show(gap.recorded)} is worse than the baseline of the base branch ${show(entry.ours)} by ${show(behind)}, more than its allowance ${show(allowed)}: an entry cannot excuse what the baseline gate held the row to`;
 }
 
+/** Whether the row `id` is of a family this run is the shard of. A family that emitted no rows is still the shard's, so its entries are refused as unmeasured. */
+function shardFilter(options: ParityOptions): (id: string) => boolean {
+  const shardFamilies = options.families === undefined || options.families.length === 0 ? null : new Set<string>(options.families);
+  return (id) => shardFamilies === null || shardFamilies.has(id.split('/')[0]);
+}
+
+/**
+ * Fails the new acknowledgements (those the base does not hold) of a row of this shard that the run did not measure against
+ * the base: a typo or a row that is not timed here would excuse nothing and hide that. A row the run does not time at all
+ * (`timedByRun`: a public sample in a pull request's speed job) is left to the nightly run, as for a gap entry. Without the
+ * gap file of the base no entry can be told apart as new, and none applies (judgeAcknowledgedSlowdown).
+ */
+function markUnbackedAcknowledgements(verdicts: RowVerdict[], report: BenchReport, gaps: GapFile, options: ParityOptions): void {
+  const base = options.baseGaps;
+  if (base === undefined) return;
+  const inShard = shardFilter(options);
+  const measuredById = new Map(report.rows.map((row) => [row.id, row] as const));
+  for (const entry of gaps.acceptedSlowdowns ?? []) {
+    if (!inShard(entry.id) || holdsAcceptedSlowdown(base, entry) || !(options.timedByRun?.(entry.id) ?? true)) continue;
+    const row = measuredById.get(entry.id);
+    if (row !== undefined && row.status === 'measured' && row.kind === 'throughput' && row.abPairs !== undefined) continue;
+    const detail = `acknowledged-slowdown entry not backed by this run: this run did not measure ${entry.id} against the base (${describeAcceptedSlowdown(entry)})`;
+    const index = verdicts.findIndex((verdict) => verdict.id === entry.id);
+    if (index >= 0) {
+      verdicts[index] = { ...verdicts[index], outcome: 'fail', basis: 'acknowledgement-not-backed', detail: `${detail}; ${verdicts[index].detail}` };
+    } else {
+      const [family, caseName, metric] = entry.id.split('/');
+      verdicts.push({ id: entry.id, family: family as Family, case: caseName, metric, outcome: 'fail', basis: 'acknowledgement-not-backed', detail, worsening: null, allowance: null, gap: null });
+    }
+  }
+}
+
 /**
  * Fails the entries a change adds or edits that are not backed: speed entries by the speed rows of this run
  * (`options.baseGaps`), quality entries by the baseline of the base branch (`options.qualityBase`). An entry the base
  * already holds is not rechecked, and a shard checks the entries of its own families only; the shards of the others check theirs.
  */
 function markUnbackedGaps(verdicts: RowVerdict[], report: BenchReport, gaps: GapFile, options: ParityOptions): void {
-  // A family that emitted no rows is still the shard's, so its entries are refused as unmeasured.
-  const shardFamilies = options.families === undefined || options.families.length === 0 ? null : new Set<string>(options.families);
-  const inShard = (gap: GapEntry): boolean => shardFamilies === null || shardFamilies.has(gap.id.split('/')[0]);
+  const inFamilyShard = shardFilter(options);
+  const inShard = (gap: GapEntry): boolean => inFamilyShard(gap.id);
   const unbacked: Array<{ gap: GapEntry; failure: string }> = [];
   if (options.baseGaps) {
     const baseById = gapIndex(options.baseGaps);
@@ -435,6 +517,14 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
   const byCase = new Map<string, BenchRow[]>();
   for (const row of measured) byCase.set(caseKey(row), [...(byCase.get(caseKey(row)) ?? []), row]);
 
+  const acknowledgements = new Map((gaps.acceptedSlowdowns ?? []).map((entry) => [entry.id, entry] as const));
+  const acknowledgementOf = (id: string): RowAcknowledgement | null => {
+    const entry = acknowledgements.get(id);
+    if (entry === undefined) return null;
+    if (options.baseGaps === undefined) return { entry, state: 'unverifiable' };
+    return { entry, state: holdsAcceptedSlowdown(options.baseGaps, entry) ? 'spent' : 'new' };
+  };
+
   const base = (row: BenchRow): Pick<RowVerdict, 'id' | 'family' | 'case' | 'metric' | 'gap'> => ({
     id: row.id,
     family: row.family,
@@ -457,7 +547,7 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
       continue;
     }
     if (row.kind === 'throughput') {
-      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options) });
+      verdicts.push({ ...base(row), ...judgeSpeed(row, gapById.get(row.id) ?? null, options, acknowledgementOf(row.id)) });
       continue;
     }
     const normal = judgeQuality(row, byCase.get(caseKey(row)) ?? []);
@@ -468,6 +558,7 @@ export function evaluateParity(report: BenchReport, gaps: GapFile, options: Pari
   verdicts.push(...missingGapRows(gaps, new Set(verdicts.map((verdict) => verdict.id)), options.expectedRows));
 
   markUnbackedGaps(verdicts, report, gaps, options);
+  markUnbackedAcknowledgements(verdicts, report, gaps, options);
 
   const evaluated = verdicts.filter((row) => row.outcome !== 'not-evaluated');
   const summary: ParitySummary = {
@@ -491,13 +582,16 @@ export function failureLines(verdict: ParityVerdict): string[] {
 
 /** Plain-text table of every row's outcome, for the console. */
 /** The rows of each report section: failing, tracked below the reference, tracked and now at parity, and the rest. */
-function sections(verdict: ParityVerdict): { failing: RowVerdict[]; tracked: RowVerdict[]; nowAtParity: RowVerdict[]; passing: RowVerdict[]; skipped: RowVerdict[] } {
+function sections(verdict: ParityVerdict): { failing: RowVerdict[]; tracked: RowVerdict[]; nowAtParity: RowVerdict[]; acknowledged: RowVerdict[]; unused: RowVerdict[]; passing: RowVerdict[]; skipped: RowVerdict[] } {
   const rows = verdict.rows;
+  const listed = (row: RowVerdict): boolean => isTracked(row) || row.basis === 'tracked-now-at-parity' || row.basis === 'speed-slowdown-acknowledged' || row.basis === 'acknowledgement-unused';
   return {
     failing: rows.filter((row) => row.outcome === 'fail'),
     tracked: rows.filter(isTracked),
     nowAtParity: rows.filter((row) => row.basis === 'tracked-now-at-parity'),
-    passing: rows.filter((row) => row.outcome === 'pass' && !isTracked(row) && row.basis !== 'tracked-now-at-parity'),
+    acknowledged: rows.filter((row) => row.basis === 'speed-slowdown-acknowledged'),
+    unused: rows.filter((row) => row.basis === 'acknowledgement-unused'),
+    passing: rows.filter((row) => row.outcome === 'pass' && !listed(row)),
     skipped: rows.filter((row) => row.outcome === 'not-evaluated'),
   };
 }
@@ -507,9 +601,9 @@ function summaryLine(verdict: ParityVerdict): string {
   return `parity: ${verdict.verdict.toUpperCase()} (${summary.evaluated} rows evaluated: ${summary.fail} failing, ${summary.tracked} tracked below the reference, ${summary.nowAtParity} tracked and now at parity, ${summary.pass - summary.tracked - summary.nowAtParity} at or above the reference of which ${summary.withinAllowance} within the measurement allowance; ${summary.notEvaluated} not evaluated)`;
 }
 
-/** Plain-text report for the console, in sections: failing rows, tracked rows, rows now at parity, then the rest. */
+/** Plain-text report for the console, in sections: failing rows, tracked rows, rows now at parity, acknowledged slowdowns, entries to remove, then the rest. */
 export function renderParityText(verdict: ParityVerdict): string[] {
-  const { failing, tracked, nowAtParity, passing, skipped } = sections(verdict);
+  const { failing, tracked, nowAtParity, acknowledged, unused, passing, skipped } = sections(verdict);
   const lines = [summaryLine(verdict)];
   const section = (title: string, rows: RowVerdict[], mark: string): void => {
     if (rows.length === 0) return;
@@ -519,6 +613,8 @@ export function renderParityText(verdict: ParityVerdict): string[] {
   section('FAILING ROWS', failing, 'FAIL');
   section('TRACKED ROWS (below the reference, listed in bench/parity-gaps.json)', tracked, 'TRACK');
   section('NOW AT PARITY (remove from bench/parity-gaps.json)', nowAtParity, 'DONE');
+  section(`ACKNOWLEDGED SLOWDOWNS (slower than the base, not below the reference, listed in ${ACKNOWLEDGEMENT_FILE})`, acknowledged, 'ACK');
+  section(`ACKNOWLEDGEMENTS NOT NEEDED (remove from ${ACKNOWLEDGEMENT_FILE})`, unused, 'DONE');
   section('AT OR ABOVE THE REFERENCE', passing, 'PASS');
   section('NOT EVALUATED', skipped, 'SKIP');
   return lines;
@@ -526,7 +622,7 @@ export function renderParityText(verdict: ParityVerdict): string[] {
 
 /** Markdown for the job summary and the pull request comment, in the same sections. */
 export function renderParityMarkdown(verdict: ParityVerdict): string {
-  const { failing, tracked, nowAtParity, passing, skipped } = sections(verdict);
+  const { failing, tracked, nowAtParity, acknowledged, unused, passing, skipped } = sections(verdict);
   const cell = (text: string): string => text.replace(/\|/g, '\\|').replace(/\n/g, ' ');
   const lines = [`**Reference parity: ${verdict.verdict.toUpperCase()}**`, '', summaryLine(verdict).replace(/^parity: \S+ /, ''), ''];
   const table = (title: string, rows: RowVerdict[]): void => {
@@ -538,6 +634,8 @@ export function renderParityMarkdown(verdict: ParityVerdict): string {
   table('Failing rows', failing);
   table('Tracked rows: below the reference, listed in bench/parity-gaps.json', tracked);
   table('Now at parity: remove from bench/parity-gaps.json', nowAtParity);
+  table(`Acknowledged slowdowns: slower than the base, not below the reference, listed in ${ACKNOWLEDGEMENT_FILE}`, acknowledged);
+  table(`Acknowledgements not needed: remove from ${ACKNOWLEDGEMENT_FILE}`, unused);
   table('At or above the reference', passing);
   table('Not evaluated', skipped);
   return lines.join('\n');

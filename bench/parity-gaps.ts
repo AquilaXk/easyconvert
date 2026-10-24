@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { MAX_GAP_ENTRIES, MAX_JSON_BYTES, PARITY_SCHEMA_VERSION, SPEED_HISTORY_MAX_POINTS } from './speed-config';
+import { MAX_ACCEPTED_SLOWDOWNS, MAX_GAP_ENTRIES, MAX_JSON_BYTES, PARITY_SCHEMA_VERSION, SPEED_HISTORY_MAX_POINTS } from './speed-config';
 import { ReportSchemaError } from './errors';
 import type { SpeedHistoryPoint } from './speed-history';
 
@@ -42,9 +42,29 @@ export const isSpeedRowId = (id: string): boolean => id.endsWith(THROUGHPUT_SUFF
 export type QualityGap = GapEntry & { recorded: number; reference: number };
 export const isQualityGap = (gap: GapEntry | null): gap is QualityGap => gap !== null && gap.recorded !== undefined && gap.reference !== undefined;
 
+/**
+ * An intended slowdown against the base, acknowledged as a performance-alert triage marks an alert "acknowledged": the row
+ * got slower than its base on purpose, and the entry names the issue that records the trade-off. It excuses
+ * `speed-slower-than-base` for the change it was written for (`pr`) and only while the head is not credibly below the
+ * reference. Once that change has merged the base holds the entry and it excuses nothing; the run flags it so the next
+ * bench change removes it (bench/parity.ts, `acknowledgement-unused`).
+ */
+export interface AcceptedSlowdown {
+  /** Speed row id `<family>/<case>/throughput`. */
+  id: string;
+  /** The issue that records why the slowdown is accepted. */
+  issue: number;
+  /** The pull request the entry was written for. */
+  pr: number;
+  /** One line: what the row gets in return. */
+  reason: string;
+}
+
 export interface GapFile {
   schemaVersion: number;
   gaps: GapEntry[];
+  /** Absent when the file acknowledges nothing. */
+  acceptedSlowdowns?: AcceptedSlowdown[];
 }
 
 const ROW_ID_PATTERN = /^[a-z][a-z-]*\/[^/]+\/[a-z0-9_]+$/;
@@ -89,6 +109,37 @@ function validateRecord(entry: Record<string, unknown>, path: string, speedRow: 
   return record;
 }
 
+const ACCEPTED_FIELDS: ReadonlySet<string> = new Set(['id', 'issue', 'pr', 'reason']);
+
+function positiveInteger(entry: Record<string, unknown>, field: 'issue' | 'pr', path: string): number {
+  const value = entry[field];
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) throw new ReportSchemaError(`parity gaps: ${path}.${field} must be a positive integer`);
+  return value;
+}
+
+function validateAcceptedSlowdowns(value: unknown, gapIds: ReadonlySet<string>): AcceptedSlowdown[] {
+  if (!Array.isArray(value)) throw new ReportSchemaError('parity gaps: acceptedSlowdowns must be an array');
+  if (value.length > MAX_ACCEPTED_SLOWDOWNS) throw new ReportSchemaError(`parity gaps: acceptedSlowdowns holds at most ${MAX_ACCEPTED_SLOWDOWNS} entries; remove the ones whose change has merged`);
+  const seen = new Set<string>();
+  return (value as unknown[]).map((item, index): AcceptedSlowdown => {
+    const path = `acceptedSlowdowns[${index}]`;
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) throw new ReportSchemaError(`parity gaps: ${path} must be an object`);
+    const entry = item as Record<string, unknown>;
+    for (const field of Object.keys(entry)) {
+      if (!ACCEPTED_FIELDS.has(field)) throw new ReportSchemaError(`parity gaps: ${path}.${field} is not a field of an acknowledged slowdown`);
+    }
+    if (typeof entry.id !== 'string' || !ROW_ID_PATTERN.test(entry.id)) throw new ReportSchemaError(`parity gaps: ${path}.id must be <family>/<case>/<metric>`);
+    if (!isSpeedRowId(entry.id)) throw new ReportSchemaError(`parity gaps: ${path}.id ${entry.id} is not a speed row: only a speed row is judged against the base`);
+    if (seen.has(entry.id)) throw new ReportSchemaError(`parity gaps: ${entry.id} is listed twice in acceptedSlowdowns`);
+    seen.add(entry.id);
+    if (gapIds.has(entry.id)) throw new ReportSchemaError(`parity gaps: ${entry.id} is both a known gap and an acknowledged slowdown; a gap is a row below the reference, an acknowledged slowdown stays at it`);
+    const issue = positiveInteger(entry, 'issue', path);
+    const pr = positiveInteger(entry, 'pr', path);
+    if (typeof entry.reason !== 'string' || entry.reason.trim() === '' || /[\r\n]/.test(entry.reason)) throw new ReportSchemaError(`parity gaps: ${path}.reason must be a one-line string`);
+    return { id: entry.id, issue, pr, reason: entry.reason };
+  });
+}
+
 export function validateGaps(value: unknown): GapFile {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ReportSchemaError('parity gaps: must be an object');
   const obj = value as Record<string, unknown>;
@@ -121,7 +172,8 @@ export function validateGaps(value: unknown): GapFile {
     }
     return parsed;
   });
-  return { schemaVersion: PARITY_SCHEMA_VERSION, gaps };
+  if (obj.acceptedSlowdowns === undefined) return { schemaVersion: PARITY_SCHEMA_VERSION, gaps };
+  return { schemaVersion: PARITY_SCHEMA_VERSION, gaps, acceptedSlowdowns: validateAcceptedSlowdowns(obj.acceptedSlowdowns, seen) };
 }
 
 export function readGaps(file: string): GapFile {
@@ -133,6 +185,14 @@ export function readGaps(file: string): GapFile {
 export function gapIndex(file: GapFile): ReadonlyMap<string, GapEntry> {
   return new Map(file.gaps.map((gap) => [gap.id, gap] as const));
 }
+
+/** Whether `file` holds this acknowledgement: the same row, written for the same change. Rewording the reason does not make an entry new. */
+export function holdsAcceptedSlowdown(file: GapFile, entry: AcceptedSlowdown): boolean {
+  return (file.acceptedSlowdowns ?? []).some((other) => other.id === entry.id && other.pr === entry.pr);
+}
+
+/** How an acknowledgement reads in a message. */
+export const describeAcceptedSlowdown = (entry: AcceptedSlowdown): string => `issue #${entry.issue}, PR #${entry.pr}: ${entry.reason}`;
 
 /** How a gap reads in a message: the issue that tracks it, or the fact that none is filed. */
 export function describeGap(gap: GapEntry | undefined): string {
