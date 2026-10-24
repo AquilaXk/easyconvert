@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import type { MetafileFormat, MetafilePage } from '../metafile-page-frame';
+import type { MetafileFormat, MetafilePage } from './metafile-page-frame';
 
 /**
  * A drawing whose one page has the size of a metafile's frame and whose one picture is the metafile, filling the page. The

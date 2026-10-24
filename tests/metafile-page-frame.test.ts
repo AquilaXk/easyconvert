@@ -4,7 +4,7 @@ import {
   MAX_METAFILE_PAGE_POINTS,
   MIN_METAFILE_PAGE_POINTS,
   readMetafilePage,
-} from '../src/lib/conversions/metafile-page-frame';
+} from '../src/lib/conversions/office/metafile-page-frame';
 
 /**
  * The page of an EMF or WMF file: the frame its header declares, read the way the reference import filter reads it

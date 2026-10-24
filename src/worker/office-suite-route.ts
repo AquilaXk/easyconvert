@@ -16,7 +16,7 @@ import {
 } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
 import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-document';
-import { readMetafilePage, type MetafileFormat } from '../lib/conversions/metafile-page-frame';
+import { readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { selectsPages } from './poppler-ppm';
