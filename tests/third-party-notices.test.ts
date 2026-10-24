@@ -449,4 +449,12 @@ describe('worker image build context', () => {
     expect(excludedFromContext('README.md', rules)).toBe(true);
     expect(excludedFromContext('THIRD_PARTY_NOTICES.md', rules)).toBe(false);
   });
+
+  it('copies the licence texts of the pdf.js WebAssembly decoders into /licenses', () => {
+    const wasmFolder = node_path.join(REPO_ROOT, 'node_modules', 'pdfjs-dist', 'wasm');
+    const shipped = node_fs.readdirSync(wasmFolder).filter((name) => name.startsWith('LICENSE_'));
+    expect(shipped).toEqual(expect.arrayContaining(['LICENSE_JBIG2', 'LICENSE_OPENJPEG', 'LICENSE_PDFJS_JBIG2', 'LICENSE_PDFJS_OPENJPEG']));
+    const dockerfile = node_fs.readFileSync(node_path.join(REPO_ROOT, 'Dockerfile.worker'), 'utf8');
+    expect(dockerfile).toMatch(/^RUN mkdir -p \/licenses\/pdfjs-dist-wasm && cp \/app\/node_modules\/pdfjs-dist\/wasm\/LICENSE_\* \/licenses\/pdfjs-dist-wasm\/$/m);
+  });
 });
