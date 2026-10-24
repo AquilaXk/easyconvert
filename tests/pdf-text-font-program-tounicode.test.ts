@@ -291,6 +291,15 @@ describe('simple fonts whose glyph names are numbers', () => {
     expect(readable(pdf)).toBe(pdf);
   });
 
+  it('leave a dingbats font to the Zapf Dingbats names, whose a73 is a black square and not the letter I', () => {
+    const font = extraObjectNumber(1);
+    const pdf = rawPdf(
+      [{ width: 400, height: 200, content: 'BT /F2 14 Tf 20 100 Td (\\001) Tj ET', fonts: `/F2 ${font} 0 R` }],
+      ['<< /Type /Font /Subtype /Type1 /BaseFont /BPJOEH+ZapfDingbatsITC /Encoding << /Differences [1 /a73] >> >>']
+    );
+    expect(readable(pdf)).toBe(pdf);
+  });
+
   it('leave the font as it is when a run of its codes starts past code 5', () => {
     const pdf = simpleFontPdf(differencesFrom(6, ['G69', 'G110']), '\\006\\007');
     expect(readable(pdf)).toBe(pdf);

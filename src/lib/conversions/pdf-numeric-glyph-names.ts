@@ -1,12 +1,13 @@
-import { glyphNameToText } from './pdf-glyph-names';
+import { glyphNameToText, isDingbatsFontName } from './pdf-glyph-names';
 
 /**
  * The characters of a simple font whose /Differences glyph names are numbers, as Poppler reads them (`poppler/GfxFont.cc`
  * 26.09, `Gfx8BitFont::Gfx8BitFont` lines 1228 to 1295, `parseNumericName` lines 865 to 909 and `testForNumericNames`
  * lines 913 to 943; GPL, followed for its behaviour only). A font is read this way only when every name of its
  * /Differences is a number after at most two letters (`G101`, `MT69`, `g110`) and every run of codes starts at 5 or below;
- * the number of a name that the Adobe Glyph List does not know (with the ZapfDingbats list for a font whose name ends in
- * `ZapfDingbats`, line 1084) is then its character. The numbers are decimal, or hexadecimal when an unknown name is two
+ * the number of a name that the Adobe Glyph List does not know is then its character. A dingbats font reads its names
+ * through the ZapfDingbats list first, as the rest of the reader does (pdf-glyph-recovery.ts): Poppler does so only for a
+ * name that ends in `ZapfDingbats` (line 1084), and reads the `a73` of `ZapfDingbatsITC` as "I" where the list gives ■. The numbers are decimal, or hexadecimal when an unknown name is two
  * hexadecimal digits with a letter digit last, or a letter and two hexadecimal digits with a letter digit among them (`Cf`,
  * `Ga5`). Poppler makes that choice per font; it is made here for the document, because one producer names the glyphs of
  * all its fonts the same way and a small subset may hold no letter digit: in `gd-915462.pdf` a font named `G46 G49 G47 G55
@@ -28,7 +29,6 @@ const MAX_RUN_START = 5;
 /** At most two letters precede the number of a decimal name. */
 const MAX_LETTERS = 2;
 const NOTDEF = '.notdef';
-const ZAPF_DINGBATS = 'ZapfDingbats';
 const FIRST_PRINTABLE = 0x20;
 const LAST_ASCII = 0x7e;
 const FIRST_LATIN1_PRINTABLE = 0xa0;
@@ -100,7 +100,7 @@ export interface NamedFont {
 function unknownNames({ differences, baseFont }: NamedFont): Array<[code: number, name: string]> {
   if (differences === null || differences.some((item) => item === null)) return [];
   if (!differences.every((item) => typeof item !== 'number' || item <= MAX_RUN_START)) return [];
-  const dingbats = baseFont?.endsWith(ZAPF_DINGBATS) === true;
+  const dingbats = baseFont !== null && isDingbatsFontName(baseFont);
   return [...namesByCode(differences)].filter(([, name]) => name !== NOTDEF && glyphNameToText(name, { dingbats }) === null);
 }
 
