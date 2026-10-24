@@ -13,7 +13,7 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
- * XPS and OpenXPS documents drawn by GhostXPS (`gxps` of GhostPDL), the renderer of the reference service. The oracle of
+ * XPS and OpenXPS documents drawn by GhostXPS (`gxps` of GhostPDL). The oracle of
  * a PDF is read from the package itself, by a reader written here from ECMA-388 that shares no code with the product: the
  * pages that the fixed documents list, the size of each fixed page, and the characters of the `UnicodeString` of every
  * glyph run, in the order the page draws them. Poppler reads the PDF back (`pdfinfo`, `pdftotext -raw`, which keeps that
