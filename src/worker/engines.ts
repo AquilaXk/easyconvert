@@ -97,6 +97,7 @@ import { withExtractionNotes } from '../lib/conversions/archive-alternate-stream
 import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
 import { extractSourceArchive } from './archive-source-extraction';
 import { rarToTar, tarToBzip2, tarToGzip, tarToZip, zipToTar } from '../lib/conversions/archive-repack';
+import { tarCodecSwitchFor } from '../lib/conversions/archive-single-stream';
 import { writeDeflatedZipFile, type ZipFile } from '../lib/conversions/zip-writer';
 import {
   sevenZipToTar,
@@ -717,14 +718,12 @@ async function assertCreatedArchiveEncrypted(
 async function package7zArchive(params: Package7zArchiveParams): Promise<boolean> {
   const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options, compressionLevel } = params;
   const levelArgs = [`-mx=${compressionLevel}`];
-  const isTarGz = tgt === 'tar.gz' || tgt === 'tgz';
-  const isTarBz2 = tgt === 'tar.bz2' || tgt === 'tbz2' || tgt === 'tbz';
-  const isTarXz = tgt === 'tar.xz' || tgt === 'txz';
+  const tarCodecSwitch = tarCodecSwitchFor(tgt, extractDir);
   if (options?.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
 
-  if (isTarGz || isTarBz2 || isTarXz) {
+  if (tarCodecSwitch) {
     const tarPath = path.join(tempDir, 'archive.tar');
     await executeSandboxedBinary(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], {
       cwd: extractDir,
@@ -733,13 +732,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
       networkIsolated: true,
       signal: options?.signal,
     });
-    let subType = '-txz';
-    if (isTarGz) {
-      subType = '-tgzip';
-    } else if (isTarBz2) {
-      subType = '-tbzip2';
-    }
-    await executeSandboxedBinary(p7zBin, ['a', '-y', subType, ...levelArgs, tempOutputPath, tarPath], {
+    await executeSandboxedBinary(p7zBin, ['a', '-y', tarCodecSwitch, ...levelArgs, tempOutputPath, tarPath], {
       cwd: tempDir,
       timeoutMs: timeout,
       maxBuffer,
