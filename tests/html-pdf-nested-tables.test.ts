@@ -9,7 +9,7 @@ import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types'
 import { requireOracleTool } from './helpers/differential-oracle';
 import { pageWords } from './helpers/document-words';
 import { pdfFacts } from './helpers/corpus-facts';
-import { pdfWordBoxes, wordsOutsidePage } from './helpers/html-pdf-oracle';
+import { lostCharacters, pdfWordBoxes, wordsOutsidePage } from './helpers/html-pdf-oracle';
 import { pdfLinks } from './helpers/pdf-named-links';
 import { withMissingBinary } from './helpers/native-tools';
 import { oracleTest } from './helpers/oracle-test';
@@ -193,8 +193,8 @@ describe('the width of a table, and pages whose tables are wider than the paper'
     const word = wordAt(popplerWords(pdf), text);
     return word.y1 - word.y0;
   };
-  /** A row of `count` cells, each holding a word that names its column. */
-  const wideRow = (count: number): string => `<table><tr>${numbered(count, 'c').map((word) => `<td>${word}</td>`).join('')}</tr></table>`;
+  /** A row of `count` cells holding their column's number, narrower than the narrowest column, so each column is 24 pt. */
+  const wideRow = (count: number): string => `<table><tr>${Array.from({ length: count }, (_, index) => `<td>${index + 1}</td>`).join('')}</tr></table>`;
 
   oracleTest(
     'makes a table without a width as wide as its content, as browsers do, and one with a width as wide as it says',
@@ -238,10 +238,10 @@ describe('the width of a table, and pages whose tables are wider than the paper'
       const plain = await inProcess('<p>Reading size</p>');
       const shrunk = await inProcess(`<p>Reading size</p>${wideRow(25)}`);
       const boxes = pdfWordBoxes(shrunk.buffer);
-      expect({ outside: wordsOutsidePage(boxes), pageWidths: [...new Set(boxes.map((box) => box.pageWidth))], columns: boxes.filter((box) => /^c\d{3}$/.test(box.text)).length }).toEqual({
+      expect({ outside: wordsOutsidePage(boxes), pageWidths: [...new Set(boxes.map((box) => box.pageWidth))], columns: boxes.filter((box) => /^\d+$/.test(box.text)).map((box) => Number(box.text)) }).toEqual({
         outside: [],
         pageWidths: [Number(A4_WIDTH_PT.toFixed(6))],
-        columns: 25,
+        columns: Array.from({ length: 25 }, (_, index) => index + 1),
       });
       const scale = wordHeight(shrunk.buffer, 'Reading') / wordHeight(plain.buffer, 'Reading');
       expect(Math.abs(scale - TEXT_WIDTH_PT / (25 * MIN_COLUMN_PT))).toBeLessThan(0.01);
@@ -293,9 +293,9 @@ describe('the width of a table, and pages whose tables are wider than the paper'
     async (ctx) => {
       const { bytes } = await requireRealworldSample(ctx, 'govdocs1-001143.html');
       const result = await convertFile(bytes, 'html', 'pdf', { orientation: 'landscape' }, 'govdocs1-001143.html');
-      const boxes = pdfWordBoxes(result.buffer);
-      const shown = new Set(boxes.map((box) => box.text));
-      expect({ outside: wordsOutsidePage(boxes), missing: pageWords(bytes.toString('latin1')).filter((word) => !shown.has(word)) }).toEqual({ outside: [], missing: [] });
+      // A word in a column narrower than the word is broken, so the letters and digits are counted, not the words.
+      const pdfText = execFileSync(requireOracleTool('pdftotext'), ['-', '-'], { input: result.buffer, encoding: 'utf-8' });
+      expect({ outside: wordsOutsidePage(pdfWordBoxes(result.buffer)), lost: lostCharacters(pageWords(bytes.toString('latin1')).join(' '), pdfText) }).toEqual({ outside: [], lost: 0 });
     },
     60_000
   );

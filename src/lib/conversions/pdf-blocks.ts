@@ -1,9 +1,18 @@
 import PDFDocument from 'pdfkit';
-import { ConversionFailedError } from '../types';
+import { ConversionFailedError, EngineUnavailableError } from '../types';
 import { WaitingDestinations, anchorsAt, anchorsOf } from './pdf-destinations';
 import { PdfUnicodeTextWriter, loadFontCoverageIndex, type PdfAnchor, type PdfTextSegment } from './pdf-fonts';
 import { layoutTable, type Flow, type TableContext } from './pdf-table';
-import { PX_TO_PT } from './pdf-table-metrics';
+import {
+  MIN_TABLE_COLUMN_WIDTH,
+  PX_TO_PT,
+  TABLE_FONT_SIZE,
+  columnCount,
+  measureTable,
+  neededTableWidth,
+  type MeasureContext,
+  type TableMeasure,
+} from './pdf-table-metrics';
 
 /**
  * Structured document model drawn by the in-process PDF writers (HTML, Markdown, plain text and
@@ -19,7 +28,7 @@ export type PdfBlock =
   | { kind: 'paragraph'; content: PdfTextSegment[] }
   | { kind: 'preformatted'; text: string; anchors?: readonly PdfAnchor[] }
   | { kind: 'list'; ordered: boolean; start: number; items: PdfBlock[][]; markers?: readonly string[] }
-  | { kind: 'table'; rows: PdfTableCell[][] }
+  | { kind: 'table'; rows: PdfTableCell[][]; sizing?: PdfTableSizing }
   | { kind: 'image'; image: PdfRasterImage }
   | { kind: 'quote'; blocks: PdfBlock[] }
   | { kind: 'rule' }
@@ -43,7 +52,21 @@ export interface PdfTableCell {
 export type PdfCellPart =
   | { readonly kind: 'text'; readonly content: PdfTextSegment[] }
   | { readonly kind: 'image'; readonly image: PdfRasterImage }
-  | { readonly kind: 'table'; readonly rows: PdfTableCell[][] };
+  | { readonly kind: 'table'; readonly rows: PdfTableCell[][]; readonly sizing?: PdfTableSizing };
+
+/** A length in points, or a percentage of the width a table is given: the CSS `width` of an HTML table. */
+export type PdfLength = { readonly unit: 'pt'; readonly value: number } | { readonly unit: 'percent'; readonly value: number };
+
+export type PdfTableAlign = 'left' | 'center' | 'right';
+
+/**
+ * How an HTML table is sized and placed in the width it is given: as wide as its content asks (`auto`) or as wide as it
+ * states, and on which side (left when absent). A table without sizing (from a writer other than HTML) fills the width.
+ */
+export interface PdfTableSizing {
+  readonly width: PdfLength | 'auto';
+  readonly align?: PdfTableAlign;
+}
 
 /** A decoded-and-verified PNG or JPEG image with its pixel size. */
 export interface PdfRasterImage {
@@ -72,8 +95,15 @@ export interface PdfBlockDocumentOptions {
   customFontPath?: string;
 }
 
-const PAGE_SIZE = 'A4';
+/** A4 in points, portrait. */
+const A4_SIZE: readonly [number, number] = [595.28, 841.89];
 const PAGE_MARGIN = 50;
+/**
+ * The most a page is shrunk so that its widest table fits. A print engine lays a page out wider than the paper when its
+ * content overflows and scales every page down by the same factor, at most this much (Blink: the `printingMaximumShrinkFactor`
+ * setting, 1.5, read by `LocalFrameView::ForceLayoutForPagination` through `CalculateOverflowShrinkForPrinting`).
+ */
+const MAX_PAGE_SHRINK = 1.5;
 const BODY_FONT_SIZE = 11;
 const PREFORMATTED_FONT_SIZE = 10;
 /** Font sizes for h1 to h6. */
@@ -106,9 +136,16 @@ const MIN_TEXT_WIDTH = 72;
 const RULE_SPACING = 6;
 const RULE_WIDTH = 0.75;
 
+/** The width a list's items are indented by: the default marker column, or a wider one for long markers. */
+function markerColumnWidth(markers: readonly string[] | undefined): number {
+  return markers ? Math.max(LIST_MARKER_WIDTH, ...markers.map((marker) => marker.length * MARKER_CHARACTER_WIDTH + MARKER_GAP)) : LIST_MARKER_WIDTH;
+}
+
 class PdfBlockRenderer {
   /** Names of destinations that wait for the next thing drawn (see the `anchor` block). */
   private readonly waiting = new WaitingDestinations<string>();
+  /** The measures of the tables of the document, made once whether the page shrink or the layout asks first. */
+  private readonly measured = new WeakMap<readonly (readonly PdfTableCell[])[], TableMeasure>();
 
   constructor(
     private readonly doc: PDFKit.PDFDocument,
@@ -141,6 +178,44 @@ class PdfBlockRenderer {
       );
     }
     return width;
+  }
+
+  /**
+   * How many times wider than the text column the page has to be laid out for every table to fit: 1 when all fit, at most
+   * MAX_PAGE_SHRINK. Refuses a table whose columns do not fit even then. Call it before the first page.
+   */
+  pageShrink(blocks: readonly PdfBlock[], textColumn: number, indent = 0): number {
+    let shrink = 1;
+    for (const block of blocks) {
+      if (block.kind === 'table') shrink = Math.max(shrink, this.tableShrink(block, textColumn, indent));
+      else if (block.kind === 'quote') shrink = Math.max(shrink, this.pageShrink(block.blocks, textColumn, indent + QUOTE_INDENT));
+      else if (block.kind === 'list') {
+        for (const item of block.items) shrink = Math.max(shrink, this.pageShrink(item, textColumn, indent + markerColumnWidth(block.markers)));
+      }
+    }
+    return shrink;
+  }
+
+  private tableShrink(table: Extract<PdfBlock, { kind: 'table' }>, textColumn: number, indent: number): number {
+    if (table.rows.every((row) => row.length === 0)) return 1;
+    const shrinkFor = (width: number): number => (width + indent) / textColumn;
+    const count = columnCount(table.rows);
+    const refuse = (least: number): never => {
+      throw new EngineUnavailableError(
+        'soffice',
+        `a table with ${count} columns does not fit the page width: it needs ${Math.ceil(least)}pt of ${Math.floor(textColumn - indent)}pt, and a page is shrunk at most ${MAX_PAGE_SHRINK} times; the in-process PDF renderer needs columns of at least ${MIN_TABLE_COLUMN_WIDTH}pt`
+      );
+    };
+    // Every column takes at least the narrowest width, so a table of too many columns is refused before it is measured.
+    if (shrinkFor(count * MIN_TABLE_COLUMN_WIDTH) > MAX_PAGE_SHRINK) refuse(count * MIN_TABLE_COLUMN_WIDTH);
+    this.doc.fontSize(TABLE_FONT_SIZE);
+    const measure = measureTable(this.measureContext, table.rows);
+    if (shrinkFor(measure.least) > MAX_PAGE_SHRINK) refuse(measure.least);
+    return Math.min(MAX_PAGE_SHRINK, shrinkFor(neededTableWidth(measure, table.sizing)));
+  }
+
+  private get measureContext(): MeasureContext {
+    return { writer: this.writer, measured: this.measured };
   }
 
   render(blocks: readonly PdfBlock[], indent = 0, gapLines = this.spacing.blockGapLines): void {
@@ -180,7 +255,7 @@ class PdfBlockRenderer {
         this.renderList(block.ordered, block.start, block.items, indent, block.markers);
         return;
       case 'table':
-        this.renderTable(block.rows, indent);
+        this.renderTable(block, indent);
         return;
       case 'image':
         this.renderImage(block.image, indent);
@@ -228,8 +303,7 @@ class PdfBlockRenderer {
   }
 
   private renderList(ordered: boolean, start: number, items: readonly PdfBlock[][], indent: number, markers?: readonly string[]): void {
-    const markerWidth = markers ? Math.max(LIST_MARKER_WIDTH, ...markers.map((marker) => marker.length * MARKER_CHARACTER_WIDTH + MARKER_GAP)) : LIST_MARKER_WIDTH;
-    const itemIndent = indent + markerWidth;
+    const itemIndent = indent + markerColumnWidth(markers);
     this.textWidth(itemIndent);
     items.forEach((item, index) => {
       this.doc.fontSize(BODY_FONT_SIZE);
@@ -249,12 +323,12 @@ class PdfBlockRenderer {
     this.doc.moveDown(this.spacing.blockGapLines);
   }
 
-  private renderTable(rows: readonly PdfTableCell[][], indent: number): void {
-    if (rows.every((row) => row.length === 0)) return;
-    const context: TableContext = { doc: this.doc, writer: this.writer, lineGap: this.spacing.lineGap, measured: new WeakMap() };
+  private renderTable(table: Extract<PdfBlock, { kind: 'table' }>, indent: number): void {
+    if (table.rows.every((row) => row.length === 0)) return;
+    const context: TableContext = { doc: this.doc, writer: this.writer, lineGap: this.spacing.lineGap, measured: this.measured };
     const x0 = this.left + indent;
     const pageHeight = this.bottom - this.top;
-    let flow: Flow | undefined = layoutTable(context, rows, { width: this.textWidth(indent), fresh: pageHeight, depth: 0 });
+    let flow: Flow | undefined = layoutTable(context, table.rows, { width: this.textWidth(indent), fresh: pageHeight, depth: 0 }, table.sizing);
     while (flow) {
       const startY = this.doc.y;
       const drawn = flow.draw(x0, startY, this.bottom - startY);
@@ -342,21 +416,52 @@ function declaredAnchors(blocks: readonly PdfBlock[], names: Set<string> = new S
   return names;
 }
 
-/** pdfkit options for the page size and margins: the document's own geometry when it states one, otherwise A4. */
-function documentOptions(options: PdfBlockDocumentOptions): PDFKit.PDFDocumentOptions {
-  const info = options.title ? { Title: options.title } : {};
+/** A page in points: its size and its margins. */
+interface PageBox {
+  readonly width: number;
+  readonly height: number;
+  readonly margins: { readonly top: number; readonly right: number; readonly bottom: number; readonly left: number };
+}
+
+/** The page the document is drawn on: its own geometry when it states one, otherwise A4, turned for a landscape orientation. */
+function pageBox(options: PdfBlockDocumentOptions): PageBox {
   const landscape = options.orientation === 'landscape';
   const { page } = options;
   if (!page) {
-    return { size: PAGE_SIZE, layout: landscape ? 'landscape' : 'portrait', margin: PAGE_MARGIN, info };
+    const [width, height] = landscape ? [A4_SIZE[1], A4_SIZE[0]] : A4_SIZE;
+    return { width, height, margins: { top: PAGE_MARGIN, right: PAGE_MARGIN, bottom: PAGE_MARGIN, left: PAGE_MARGIN } };
   }
   const swap = landscape && page.widthPt < page.heightPt;
-  const size: [number, number] = swap ? [page.heightPt, page.widthPt] : [page.widthPt, page.heightPt];
   return {
-    size,
+    width: swap ? page.heightPt : page.widthPt,
+    height: swap ? page.widthPt : page.heightPt,
     margins: { top: page.marginTopPt, right: page.marginRightPt, bottom: page.marginBottomPt, left: page.marginLeftPt },
-    info,
   };
+}
+
+/** The part of pdfkit's page this module changes: the page dictionary, whose MediaBox states the size of the paper. */
+interface PdfkitPage {
+  readonly dictionary: { readonly data: { MediaBox: number[] } };
+}
+
+/**
+ * Starts the first page. A page shrunk `shrink` times is laid out on paper that many times larger, margins too, so that
+ * the layout sees a wider text column, and each page is drawn scaled down onto the real paper: its MediaBox is the paper
+ * and its content is scaled about the top left corner, as a print engine draws a page that overflows (see MAX_PAGE_SHRINK).
+ * Links follow the scale through pdfkit's transformation matrix, and destinations through pdf-destinations.ts.
+ */
+function startPages(doc: PDFKit.PDFDocument, box: PageBox, shrink: number): void {
+  const { margins } = box;
+  // pdfkit lays out every page it adds, its own included, with these options.
+  doc.options.size = [box.width * shrink, box.height * shrink];
+  doc.options.margins = { top: margins.top * shrink, right: margins.right * shrink, bottom: margins.bottom * shrink, left: margins.left * shrink };
+  if (shrink > 1) {
+    doc.on('pageAdded', () => {
+      (doc.page as unknown as PdfkitPage).dictionary.data.MediaBox = [0, 0, box.width, box.height];
+      doc.transform(1 / shrink, 0, 0, 1 / shrink, 0, box.height * shrink - box.height);
+    });
+  }
+  doc.addPage();
 }
 
 /**
@@ -366,7 +471,7 @@ function documentOptions(options: PdfBlockDocumentOptions): PDFKit.PDFDocumentOp
 export async function renderPdfBlocks(blocks: readonly PdfBlock[], options: PdfBlockDocumentOptions = {}): Promise<Buffer> {
   await loadFontCoverageIndex();
   return new Promise<Buffer>((resolve, reject) => {
-    const doc = new PDFDocument(documentOptions(options));
+    const doc = new PDFDocument({ autoFirstPage: false, info: options.title ? { Title: options.title } : {} });
     const chunks: Buffer[] = [];
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -375,7 +480,10 @@ export async function renderPdfBlocks(blocks: readonly PdfBlock[], options: PdfB
     try {
       const writer = new PdfUnicodeTextWriter(doc, options.customFontPath);
       writer.destinations.declare(declaredAnchors(blocks));
-      new PdfBlockRenderer(doc, writer, options.spacing).renderDocument(blocks);
+      const renderer = new PdfBlockRenderer(doc, writer, options.spacing);
+      const box = pageBox(options);
+      startPages(doc, box, renderer.pageShrink(blocks, box.width - box.margins.left - box.margins.right));
+      renderer.renderDocument(blocks);
       writer.destinations.finish();
     } catch (err) {
       reject(err);

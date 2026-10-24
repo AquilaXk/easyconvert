@@ -1,11 +1,11 @@
-import type { PdfCellPart, PdfTableCell } from './pdf-blocks';
+import type { PdfCellPart, PdfTableCell, PdfTableSizing } from './pdf-blocks';
 import type { PdfTextSegment, PdfUnicodeTextWriter } from './pdf-fonts';
 
 /**
- * Column widths of the tables the in-process PDF writers draw. A table that holds a table, and a table inside one, takes
- * its column widths from its content, as CSS 2.1 section 17.5.2.2 describes for automatic table layout: every column has
- * a minimum width (its widest word) and a maximum width (its longest line), and the width the table is given is shared
- * between them. Other tables have equal columns.
+ * Column widths of the tables the in-process PDF writers draw. An HTML table, and any table that holds a table or sits in
+ * one, takes its column widths from its content, as CSS 2.1 section 17.5.2.2 describes for automatic table layout: every
+ * column has a minimum width (its widest word) and a maximum width (its longest line), and the width the table takes is
+ * shared between them. A table of another writer that holds no table has equal columns.
  */
 
 /** Table text size and the space around a cell's content, in points. */
@@ -70,7 +70,8 @@ function partWidth(context: MeasureContext, part: PdfCellPart, words: Map<string
       return { least: 0, min: 0, max: Math.ceil(part.image.widthPx * PX_TO_PT) };
     case 'table': {
       const table = measureTable(context, part.rows);
-      return { least: table.least, min: table.min, max: table.max };
+      const stated = statedPoints(part.sizing);
+      return { least: table.least, min: Math.max(table.min, stated), max: Math.max(table.max, stated) };
     }
   }
 }
@@ -102,11 +103,16 @@ function raiseColumns(widths: number[], span: { from: number; to: number }, need
   }
 }
 
+/** The number of grid columns of a table: the most columns a row's cells cover. */
+export function columnCount(rows: readonly (readonly PdfTableCell[])[]): number {
+  return rows.reduce((widest, row) => Math.max(widest, row.reduce((sum, cell) => sum + cell.span, 0)), 0);
+}
+
 /** The column widths a table asks for, once per table. Cells that span columns widen the columns they cover. */
 export function measureTable(context: MeasureContext, rows: readonly (readonly PdfTableCell[])[]): TableMeasure {
   const known = context.measured.get(rows);
   if (known) return known;
-  const count = rows.reduce((widest, row) => Math.max(widest, row.reduce((sum, cell) => sum + cell.span, 0)), 0);
+  const count = columnCount(rows);
   const floor = (): number[] => new Array<number>(count).fill(MIN_TABLE_COLUMN_WIDTH);
   const leasts = floor();
   const mins = floor();
@@ -154,13 +160,43 @@ export function measureTable(context: MeasureContext, rows: readonly (readonly P
 }
 
 /**
+ * The length a table states in points, or 0 when it states none or a percentage, which counts as no width when the table
+ * is measured as content (WeasyPrint `layout/preferred.py`, `table_and_columns_preferred_widths`: a pixel width is the
+ * table's minimum and maximum unless its content asks for more, a percentage is treated as `auto`).
+ */
+export function statedPoints(sizing: PdfTableSizing | undefined): number {
+  return sizing !== undefined && sizing.width !== 'auto' && sizing.width.unit === 'pt' ? sizing.width.value : 0;
+}
+
+/**
+ * The width a table takes of the `width` it is given (CSS 2.1, 17.5.2.2; WeasyPrint `layout/table.py`,
+ * `auto_table_layout`): as wide as its content when it states no width, as wide as it states but no narrower than its
+ * minimum, and never wider than `width` (a page is shrunk before a table is wider than its text column, see pdf-blocks.ts).
+ */
+export function usedTableWidth(measure: TableMeasure, sizing: PdfTableSizing, width: number): number {
+  if (sizing.width === 'auto') return Math.min(width, measure.max);
+  const stated = sizing.width.unit === 'percent' ? (width * sizing.width.value) / 100 : sizing.width.value;
+  return Math.min(width, Math.max(stated, measure.min));
+}
+
+/**
+ * The width a table needs to be drawn at all: its least width, or the length it states when that is more. Its minimum
+ * (the widest words) is not needed: a word wider than its column is broken, as it is when the table fits the page.
+ */
+export function neededTableWidth(measure: TableMeasure, sizing: PdfTableSizing | undefined): number {
+  return Math.max(measure.least, statedPoints(sizing));
+}
+
+/**
  * The column widths of a table in `width` points (CSS 2.1, 17.5.2.2): the maximums when they fit, grown in proportion to fill
  * the width; otherwise the minimums plus a share of what is left, in proportion to how much more each column wants; and when
- * not even the minimums fit, the least widths plus a share of what is left. `width` is at least `measure.least`.
+ * not even the minimums fit, the least widths plus a share of what is left. `width` is at least `measure.least`, but for rounding.
  */
 export function automaticColumnWidths(measure: TableMeasure, width: number): number[] {
   const { columnLeasts: leasts, columnMins: mins, columnMaxs: maxs } = measure;
   if (width >= measure.max) return maxs.map((max) => max + ((width - measure.max) * max) / measure.max);
   if (width >= measure.min) return mins.map((min, column) => min + ((maxs[column] - min) * (width - measure.min)) / (measure.max - measure.min));
+  // A page shrunk to a table's least width gives it that width, give or take the rounding of the scale.
+  if (width <= measure.least) return [...leasts];
   return leasts.map((least, column) => least + ((mins[column] - least) * (width - measure.least)) / (measure.min - measure.least));
 }

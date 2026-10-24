@@ -622,8 +622,8 @@ describe('In-process PDF layout limits', () => {
     expect(withoutWhitespace(pdfText(result.buffer)).replace(/•/g, '')).toBe('DeepListTextDeepQuoteText');
   });
 
-  it('hands a table with more columns than the page has room for to LibreOffice with EngineUnavailableError', async () => {
-    const wideRow = `<tr>${Array.from({ length: 30 }, (_, i) => `<td>c${i}</td>`).join('')}</tr>`;
+  it('hands a table with more columns than a page shrunk 1.5 times has room for to LibreOffice with EngineUnavailableError', async () => {
+    const wideRow = `<tr>${Array.from({ length: 40 }, (_, i) => `<td>c${i}</td>`).join('')}</tr>`;
     const { error } = await settle(convertFile(Buffer.from(`<table>${wideRow}</table>`, 'utf-8'), 'html', 'pdf', {}, 'wide.html'));
     expect((error as Error)?.name).toBe('EngineUnavailableError');
     expect((error as EngineUnavailableError).engineName).toBe('soffice');

@@ -1103,9 +1103,9 @@ export class PdfUnicodeTextWriter {
   }
 
   /**
-   * Width of the widest line (text is not wrapped, only broken at newlines) and the tallest line
-   * height among the fonts that draw it, at the document's current font size. Each run is measured
-   * in the font that will draw it.
+   * Width of the widest line (text is not wrapped, only broken at newlines), the least width `write` draws the text in
+   * without wrapping it, and the tallest line height among the fonts that draw it, at the document's current font size.
+   * Each run is measured in the font that will draw it.
    */
   measure(content: string | readonly PdfTextSegment[]): { width: number; lineHeight: number } {
     if (this.needsShaping(content)) {
@@ -1121,12 +1121,15 @@ export class PdfUnicodeTextWriter {
     for (const run of this.runs(content)) {
       this.useFace(run.face);
       lineHeight = Math.max(lineHeight, this.doc.currentLineHeight(true));
-      run.text.split('\n').forEach((line, index) => {
+      const lines = run.text.split('\n');
+      lines.forEach((line, index) => {
         if (index > 0) {
           widest = Math.max(widest, lineWidth);
           lineWidth = 0;
         }
-        lineWidth += this.doc.widthOfString(line);
+        // pdfkit's line breaker measures a hard break with the word before it (LineWrapper.eachWord), so a line that a
+        // newline ends is drawn unwrapped only in a width that holds the newline's advance as well.
+        lineWidth += this.doc.widthOfString(index < lines.length - 1 ? `${line}\n` : line);
       });
     }
     return { width: Math.max(widest, lineWidth), lineHeight };
