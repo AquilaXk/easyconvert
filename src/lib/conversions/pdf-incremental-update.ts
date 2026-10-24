@@ -24,7 +24,8 @@ export function withIncrementalUpdate(pdf: Buffer, base: PdfUpdateBase, objects:
   const xrefAt = pdf.length + out.length;
   out += 'xref\n0 1\n0000000000 65535 f \n';
   for (const { num, gen, at } of defined.sort((a, b) => a.num - b.num)) out += `${num} 1\n${String(at).padStart(10, '0')} ${String(gen).padStart(5, '0')} n \n`;
-  const size = Math.max(base.nextObjectNumber, ...objects.map(({ num }) => num + 1));
+  let size = base.nextObjectNumber;
+  for (const { num } of objects) size = Math.max(size, num + 1);
   out += `trailer\n<< /Size ${size} /Root ${base.root.num} ${base.root.gen} R /Prev ${base.previousXref} >>\nstartxref\n${xrefAt}\n%%EOF\n`;
   return Buffer.concat([pdf, Buffer.from(out, 'latin1')]);
 }

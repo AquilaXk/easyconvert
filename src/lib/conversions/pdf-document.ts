@@ -80,6 +80,11 @@ const ASCII_HEX_FILTERS = new Set(['ASCIIHexDecode', 'AHx']);
 const ASCII85_FILTERS = new Set(['ASCII85Decode', 'A85']);
 const FLATE_FILTERS = new Set(['FlateDecode', 'Fl']);
 const DECODABLE_FILTERS = new Set([...ASCII_HEX_FILTERS, ...ASCII85_FILTERS, ...FLATE_FILTERS]);
+/** The filters pdf.js hands to its WebAssembly picture decoders, with their abbreviations (`Parser.makeFilter`, pdf.worker.mjs 17658-17675). */
+export const JPX_FILTERS: ReadonlySet<string> = new Set(['JPXDecode', 'JPX']);
+export const JBIG2_FILTERS: ReadonlySet<string> = new Set(['JBIG2Decode']);
+export const CCITT_FILTERS: ReadonlySet<string> = new Set(['CCITTFaxDecode', 'CCF']);
+const PICTURE_CODEC_FILTERS = new Set([...JPX_FILTERS, ...JBIG2_FILTERS, ...CCITT_FILTERS]);
 
 const MAX_OBJECT_HEADER_LOOKBACK = 40;
 const MAX_OBJECT_NUMBER_DIGITS = 10;
@@ -224,6 +229,27 @@ export interface PdfImageStream {
   filters: PdfFilterStage[];
   /** The data the filter at `index` reads: the stream's data decoded through the filters before it, or null when one of them is not one this reader decodes. */
   dataBefore(index: number, budget: InflateBudget): Buffer | null;
+}
+
+/**
+ * The filters of a stream in decoding order from its /Filter and /DecodeParms values, each with its parameter dictionary.
+ * `resolve` follows a reference; an inline image, which has none, passes a function that returns its argument.
+ */
+export function filterStages(filters: PdfValue, parms: PdfValue, resolve: (value: PdfValue | undefined) => PdfValue): PdfFilterStage[] {
+  const names: string[] = [];
+  if (isName(filters)) names.push(filters.value);
+  if (isArray(filters)) {
+    for (const item of filters.items) {
+      const name = resolve(item);
+      if (isName(name)) names.push(name.value);
+    }
+  }
+  const parmsOf = (index: number): PdfDict | null => {
+    const own = isArray(parms) ? parms.items[index] : parms;
+    const value = isArray(parms) || index === 0 ? resolve(own) : null;
+    return isDict(value) ? value : null;
+  };
+  return names.map((name, index) => ({ name, parms: parmsOf(index) }));
 }
 
 interface PageNode {
@@ -824,15 +850,19 @@ export class PdfDocument {
     return this.resolve(value);
   }
 
-  /** Object numbers of the image XObject streams the file defines (the latest definition of each number). */
+  /**
+   * Object numbers of the picture streams the file defines (the latest definition of each number): image XObjects, and any
+   * other stream that carries a picture codec filter, since pdf.js decodes an /SMask or /Mask stream as an image whatever its
+   * /Subtype (`PDFImage.buildImage`, pdf.worker.mjs 39485-39498).
+   */
   imageStreamNumbers(): number[] {
-    return [...this.index.values()].filter((entry) => this.isImage(entry)).map((entry) => entry.num);
+    return [...this.index.values()].filter((entry) => this.isPicture(entry)).map((entry) => entry.num);
   }
 
-  /** The image XObject stream `value` refers to, or null when it refers to none. */
+  /** The picture stream `value` refers to (an image XObject, or a stream with a picture codec filter), or null when it refers to none. */
   imageStream(value: PdfValue | undefined): PdfImageStream | null {
     const entry = this.entryOf(value);
-    if (!entry || !this.isImage(entry)) return null;
+    if (!entry || !this.isPicture(entry)) return null;
     const dict = (entry.stream as StreamSpan).dict;
     const filters = this.filterChain(dict);
     return {
@@ -858,22 +888,18 @@ export class PdfDocument {
     return this.decodeStages(entry, stages, budget, false);
   }
 
-  /** Filter names of a stream in decoding order, each with its /DecodeParms dictionary. */
+  /** `dict.get(key, abbreviation)` of pdf.js (`Dict.#getValue`, pdf.worker.mjs 6542-6549): the first key unless it is missing, then the second, with a reference followed. */
+  private entryValue(dict: PdfDict, key: string, abbreviation: string): PdfValue {
+    const value = dict.entries.get(key);
+    return this.resolve(value !== undefined ? value : dict.entries.get(abbreviation));
+  }
+
+  /**
+   * Filter names of a stream in decoding order, each with its /DecodeParms dictionary. /F and /DP come before /Filter and
+   * /DecodeParms, as pdf.js reads them in every stream, not only in inline images (`Parser.filter`, pdf.worker.mjs 17596-17598).
+   */
   private filterChain(dict: PdfDict): PdfFilterStage[] {
-    const filters = this.resolve(dict.entries.get('Filter'));
-    const names: string[] = [];
-    if (isName(filters)) names.push(filters.value);
-    if (isArray(filters)) {
-      for (const item of filters.items) {
-        const name = this.resolve(item);
-        if (isName(name)) names.push(name.value);
-      }
-    }
-    const parms = this.resolve(dict.entries.get('DecodeParms'));
-    return names.map((name, index) => ({
-      name,
-      parms: this.resolveDict(isArray(parms) ? parms.items[index] : index === 0 ? parms : null),
-    }));
+    return filterStages(this.entryValue(dict, 'F', 'Filter'), this.entryValue(dict, 'DP', 'DecodeParms'), (value) => this.resolve(value));
   }
 
   private predictorParams(parms: PdfDict | null, label: string): PredictorParams | null {
@@ -909,8 +935,18 @@ export class PdfDocument {
     return params;
   }
 
+  /** Whether the dictionary's /Subtype is `name`, a reference to a name included (`Dict.get` fetches it). */
+  private hasSubtype(dict: PdfDict | undefined, name: string): boolean {
+    return dict !== undefined && isName(this.resolve(dict.entries.get('Subtype')), name);
+  }
+
   private isImage(entry: PdfObjectEntry): boolean {
-    return isName(entry.stream?.dict.entries.get('Subtype'), 'Image');
+    return this.hasSubtype(entry.stream?.dict, 'Image');
+  }
+
+  /** An image XObject, or any stream that carries a filter pdf.js decodes with its picture decoders. */
+  private isPicture(entry: PdfObjectEntry): boolean {
+    return entry.stream !== undefined && (this.isImage(entry) || this.filterChain(entry.stream.dict).some(({ name }) => PICTURE_CODEC_FILTERS.has(name)));
   }
 
   private countContentStream(): void {
@@ -1179,7 +1215,7 @@ export class PdfDocument {
       const entry = this.entryOf(reference);
       if (!entry || !isRef(reference)) continue;
       if (this.isImage(entry)) painted.add(entry.num);
-      if (!isName(entry.stream?.dict.entries.get('Subtype'), 'Form')) continue;
+      if (!this.hasSubtype(entry.stream?.dict, 'Form')) continue;
 
       this.formInvocations++;
       if (this.formInvocations > MAX_PDF_FORM_INVOCATIONS) {
@@ -1279,7 +1315,7 @@ export class PdfDocument {
       if (depth >= MAX_PDF_FORM_DEPTH) return;
       for (const reference of this.resolveDict(dict.entries.get('XObject'))?.entries.values() ?? []) {
         const form = this.entryOf(reference)?.stream?.dict;
-        if (form && isName(form.entries.get('Subtype'), 'Form')) visit(form.entries.get('Resources') ?? null, depth + 1);
+        if (form && this.hasSubtype(form, 'Form')) visit(form.entries.get('Resources') ?? null, depth + 1);
       }
     };
     for (const page of pages) visit(page.resources, 0);

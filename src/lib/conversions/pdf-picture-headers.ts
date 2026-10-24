@@ -46,6 +46,12 @@ const BOX_EXTENDED_LENGTH = 1;
 const BOX_TO_END = 0;
 const BOX_EXTENDED_HEADER_BYTES = 16;
 const CODESTREAM_BOX = 'jp2c';
+/** Components OpenJPEG accepts in SIZ (`opj_j2k_read_SIZ`, j2k.c 2141 of OpenJPEG 8314119b: Csiz below 16385). */
+const OPENJPEG_MAX_COMPONENTS = 16_384;
+/** XRsiz and YRsiz are one byte each (ISO 15444-1 A.5.1). */
+const MAX_SUBSAMPLING = 255;
+/** Resolution levels OpenJPEG accepts in COD and COC (`opj_j2k_read_SPCod_SPCoc`, j2k.c 10972: numresolutions, one more than the levels, at most OPJ_J2K_MAXRLVLS = 33 of j2k.h 154). */
+const OPENJPEG_MAX_LEVELS = 32;
 
 /**
  * pdf.js reduces a JPEG 2000 picture before decoding it (`ImageResizer.getReducePowerForJPX`, pdf.worker.mjs 9217-9219 with
@@ -157,7 +163,10 @@ function codingStyle(data: Buffer, at: number, end: number, hasPrecincts: boolea
   return { levels, codeBlockWidth: data[at + 1] + CODE_BLOCK_EXPONENT_OFFSET, codeBlockHeight: data[at + 2] + CODE_BLOCK_EXPONENT_OFFSET, precincts };
 }
 
-/** The codestream OpenJPEG would decode from `data` (ISO 15444-1 A.5.1 SIZ, A.6.1 COD, A.6.2 COC), or null when it has none. */
+/**
+ * The codestream OpenJPEG would decode from `data` (ISO 15444-1 A.5.1 SIZ, A.6.1 COD, A.6.2 COC), or null when it has none or its
+ * main header is one OpenJPEG refuses: more components or levels than it accepts, or a marker that runs past the data.
+ */
 export function jpxCodestream(data: Buffer): JpxCodestream | null {
   const start = codestreamStart(data);
   if (start === null || start + 4 > data.length || data.readUInt16BE(start) !== MARKER_SOC || data.readUInt16BE(start + 2) !== MARKER_SIZ) return null;
@@ -165,7 +174,7 @@ export function jpxCodestream(data: Buffer): JpxCodestream | null {
   if (siz + SIZ_FIXED_BYTES > data.length) return null;
   const field = (index: number): number => data.readUInt32BE(siz + SIZ_DIMENSIONS_OFFSET + index * 4);
   const count = data.readUInt16BE(siz + SIZ_COMPONENTS_OFFSET);
-  if (siz + SIZ_FIXED_BYTES + count * SIZ_COMPONENT_BYTES > data.length) return null;
+  if (count === 0 || count > OPENJPEG_MAX_COMPONENTS || siz + SIZ_FIXED_BYTES + count * SIZ_COMPONENT_BYTES > data.length) return null;
   const [x1, y1, x0, y0, tileWidth, tileHeight, tileX0, tileY0] = [0, 1, 2, 3, 4, 5, 6, 7].map(field);
   if (tileWidth === 0 || tileHeight === 0 || x1 <= x0 || y1 <= y0) return null;
   const defaults: CodingStyle[] = [];
@@ -176,18 +185,20 @@ export function jpxCodestream(data: Buffer): JpxCodestream | null {
     if (marker === MARKER_SOT || marker === MARKER_EOC || data[at] !== MARKER_PREFIX) break;
     const end = at + MARKER_LENGTH_BYTES + data.readUInt16BE(at + MARKER_LENGTH_BYTES);
     const body = at + 4;
+    if (end > data.length) return null;
     if (marker === MARKER_COD) {
       const style = codingStyle(data, body + COD_STYLE_OFFSET, end, (data[body] & STYLE_HAS_PRECINCTS) !== 0);
       if (style) defaults[0] = style;
     } else if (marker === MARKER_COC) {
-      const wide = count >= ONE_BYTE_COMPONENT_LIMIT;
-      const component = wide ? data.readUInt16BE(body) : data[body];
-      const scoc = data[body + (wide ? 2 : 1)];
-      const style = codingStyle(data, body + (wide ? 3 : 2), end, (scoc & STYLE_HAS_PRECINCTS) !== 0);
+      const componentBytes = count >= ONE_BYTE_COMPONENT_LIMIT ? 2 : 1;
+      if (body + componentBytes + 1 > end) return null;
+      const component = componentBytes === 2 ? data.readUInt16BE(body) : data[body];
+      const style = codingStyle(data, body + componentBytes + 1, end, (data[body + componentBytes] & STYLE_HAS_PRECINCTS) !== 0);
       if (style) own.set(component, style);
     }
     at = end;
   }
+  if ([...defaults, ...own.values()].some(({ levels }) => levels > OPENJPEG_MAX_LEVELS)) return null;
   const fallback: CodingStyle = defaults[0] ?? { levels: 5, codeBlockWidth: 6, codeBlockHeight: 6, precincts: null };
   const components = Array.from({ length: count }, (_, index) => {
     const parameters = siz + SIZ_FIXED_BYTES + index * SIZ_COMPONENT_BYTES;
@@ -237,11 +248,18 @@ export function jpxDecoderBytes(codestream: JpxCodestream, reducePower: number):
   const tileSampleHeight = Math.min(tileHeight, height);
   let samples = 0;
   let structures = 0;
+  // Components share a coding style and a subsampling far more often than not, and up to 16,384 of them are allowed.
+  const structureBytes = new Map<CodingStyle, Map<number, number>>();
   for (const { dx, dy, style } of components) {
     const componentWidth = Math.ceil(x1 / dx) - Math.ceil(x0 / dx);
     const componentHeight = Math.ceil(y1 / dy) - Math.ceil(y0 / dy);
     samples += ceilShift(componentWidth, reducePower) * ceilShift(componentHeight, reducePower) * BYTES_PER_SAMPLE;
-    structures += tileStructureBytes(Math.ceil(tileSampleWidth / dx), Math.ceil(tileSampleHeight / dy), style);
+    const bySubsampling = structureBytes.get(style) ?? new Map<number, number>();
+    structureBytes.set(style, bySubsampling);
+    const subsampling = dx * (MAX_SUBSAMPLING + 1) + dy;
+    const bytes = bySubsampling.get(subsampling) ?? tileStructureBytes(Math.ceil(tileSampleWidth / dx), Math.ceil(tileSampleHeight / dy), style);
+    bySubsampling.set(subsampling, bytes);
+    structures += bytes;
   }
   const reducedFull = ceilShift(width, reducePower) * ceilShift(height, reducePower) * BYTES_PER_SAMPLE * components.length;
   const tileBuffer = tiles > 1 ? (reducedFull * tileSampleWidth * tileSampleHeight) / (width * height) : 0;
@@ -311,9 +329,40 @@ interface Jbig2Allocation {
   pixels: number;
 }
 
+/**
+ * Segments one walk reads at most. Neither PDFium nor pdf.js bounds the count (a segment ends where its data length says, and
+ * the loop of `CJBig2_Context::ProcessingParseSegmentData` runs to the end of the data); this bound is ours. A walk that
+ * reaches it is a lower bound of what the decoder would allocate: the decoder's own memory maximum (pdf-wasm-memory.ts) is what
+ * stops the rest. The 131 JBIG2 streams of the 1,269 cached real-world PDFs hold at most 12 segments.
+ */
+const MAX_JBIG2_SEGMENTS = 65_536;
+const FILE_HEADER_MAGIC = Buffer.from('974a42320d0a1a0a', 'hex');
+const FILE_HEADER_MIN_BYTES = 9;
+const FILE_HEADER_FLAGS_OFFSET = 8;
+const FILE_HEADER_UNKNOWN_PAGES = 0x02;
+const FILE_HEADER_WITH_PAGE_COUNT_BYTES = 13;
+const FILE_HEADER_WITHOUT_PAGE_COUNT_BYTES = 9;
+
+/**
+ * `bytes` without the file header of a standalone JBIG2 file (T.88 annex D.4), which pdf.js removes from the data and the globals
+ * before it hands them to the decoder (`Jbig2Stream.stripFileHeader`, pdf.worker.mjs 16009-16016). Only the segments follow it in
+ * the stream the decoder reads, so a walk of the file's own bytes would read the header as segments.
+ */
+function stripFileHeader(bytes: Buffer): Buffer {
+  if (bytes.length < FILE_HEADER_MIN_BYTES || !bytes.subarray(0, FILE_HEADER_MAGIC.length).equals(FILE_HEADER_MAGIC)) return bytes;
+  const headerBytes = (bytes[FILE_HEADER_FLAGS_OFFSET] & FILE_HEADER_UNKNOWN_PAGES) === 0 ? FILE_HEADER_WITH_PAGE_COUNT_BYTES : FILE_HEADER_WITHOUT_PAGE_COUNT_BYTES;
+  return bytes.subarray(headerBytes);
+}
+
+function emptyAllocation(): Jbig2Allocation {
+  return { kept: 0, largest: 0, grayLevels: 1, pixels: 0 };
+}
+
+/** Adds what the segments of `data` allocate to `allocation`. */
 function walkSegments(data: Buffer, allocation: Jbig2Allocation): void {
   let at = 0;
-  for (let header = segmentHeaderAt(data, at); header !== null; header = segmentHeaderAt(data, at)) {
+  let header = segmentHeaderAt(data, at);
+  for (let walked = 0; header !== null && walked < MAX_JBIG2_SEGMENTS; walked++, header = segmentHeaderAt(data, at)) {
     const { type, dataStart } = header;
     const end = header.dataLength === UNKNOWN_DATA_LENGTH ? data.length : Math.min(data.length, dataStart + header.dataLength);
     if (REGIONS.has(type) && dataStart + REGION_INFO_BYTES <= end) {
@@ -339,6 +388,20 @@ function walkSegments(data: Buffer, allocation: Jbig2Allocation): void {
   }
 }
 
+/** A JBIG2Globals stream read once: what its segments allocate, and the bytes the decoder is given. */
+export interface Jbig2Globals {
+  allocation: Readonly<Jbig2Allocation>;
+  bytes: number;
+}
+
+/** Reads the segments of a decoded JBIG2Globals stream, for every picture that names it. */
+export function readJbig2Globals(stream: Buffer): Jbig2Globals {
+  const globals = stripFileHeader(stream);
+  const allocation = emptyAllocation();
+  walkSegments(globals, allocation);
+  return { allocation, bytes: globals.length };
+}
+
 /** Bytes of a JBIG2 decode, and the pixels of the regions it decodes. */
 export interface Jbig2Cost {
   decoderBytes: number;
@@ -351,11 +414,11 @@ export interface Jbig2Cost {
  * immediate region's bitmap is freed once composed, an intermediate one is kept), pattern dictionaries, the minimum of every
  * symbol, and the coded bytes it copies in. A region may be larger than the page; PDFium allocates it all the same.
  */
-export function jbig2Cost(data: Buffer, globals: Buffer | null, width: number, height: number): Jbig2Cost {
-  const allocation: Jbig2Allocation = { kept: 0, largest: 0, grayLevels: 1, pixels: 0 };
-  if (globals !== null) walkSegments(globals, allocation);
+export function jbig2Cost(stream: Buffer, globals: Jbig2Globals | null, width: number, height: number): Jbig2Cost {
+  const data = stripFileHeader(stream);
+  const allocation: Jbig2Allocation = globals === null ? emptyAllocation() : { ...globals.allocation };
   walkSegments(data, allocation);
-  const coded = data.length + (globals?.length ?? 0);
+  const coded = data.length + (globals?.bytes ?? 0);
   return { decoderBytes: bitmapBytes(width, height) + allocation.kept + allocation.largest + coded, pixels: allocation.pixels };
 }
 
