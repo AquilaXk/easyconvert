@@ -1810,12 +1810,6 @@
     "maxValue": 37
   },
   {
-    "file": "src/lib/conversions/pdf-document.ts",
-    "rule": "no-nested-ternary",
-    "function": "filterChain",
-    "count": 1
-  },
-  {
     "file": "src/lib/conversions/pdf-jpeg-passthrough.ts",
     "rule": "complexity",
     "function": "planJpegPassthrough",

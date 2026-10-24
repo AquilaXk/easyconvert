@@ -1,6 +1,7 @@
 import { ConversionFailedError } from '../types';
 import { InflateBudget } from './bounded-inflate';
 import type { CompositeFontDictionary, PdfDocument, PdfUpdateBase, SimpleFontDictionary } from './pdf-document';
+import { type PdfObjectDefinition, withIncrementalUpdate } from './pdf-incremental-update';
 import { numericGlyphNameTexts } from './pdf-numeric-glyph-names';
 import { PDF_CONTENT_MAX_FONTS } from './pdf-text-types';
 import { type CidText, standardOrderTexts } from './standard-font-glyph-order';
@@ -174,29 +175,16 @@ function toUnicodeCMap(entries: CidText[], codeBytes: CodeBytes): string {
   return lines.join('\n');
 }
 
-/**
- * An incremental update that appends, for each font, a ToUnicode stream and the font dictionary again with that stream
- * named, followed by a cross-reference section for those objects and a trailer whose /Prev is the file's last section.
- */
-function incrementalUpdate(fileLength: number, base: PdfUpdateBase, maps: FontMap[]): Buffer {
-  let out = '\n';
-  const defined: Array<{ num: number; gen: number; at: number }> = [];
-  const define = (num: number, gen: number, body: string): void => {
-    defined.push({ num, gen, at: fileLength + out.length });
-    out += `${num} ${gen} obj\n${body}\nendobj\n`;
-  };
-  maps.forEach(({ font, entries, codeBytes }, index) => {
+/** For each font, a ToUnicode stream numbered from `base.nextObjectNumber` and the font dictionary again with that stream named. */
+function toUnicodeObjects(base: PdfUpdateBase, maps: FontMap[]): PdfObjectDefinition[] {
+  return maps.flatMap(({ font, entries, codeBytes }, index) => {
     const streamNumber = base.nextObjectNumber + index;
     const cmap = toUnicodeCMap(entries, codeBytes);
-    define(streamNumber, 0, `<< /Length ${cmap.length} >>\nstream\n${cmap}\nendstream`);
-    define(font.objectNumber, font.generation, `<< /ToUnicode ${streamNumber} 0 R ${font.text.slice(2)}`);
+    return [
+      { num: streamNumber, gen: 0, body: `<< /Length ${cmap.length} >>\nstream\n${cmap}\nendstream` },
+      { num: font.objectNumber, gen: font.generation, body: `<< /ToUnicode ${streamNumber} 0 R ${font.text.slice(2)}` },
+    ];
   });
-  const xrefAt = fileLength + out.length;
-  out += 'xref\n0 1\n0000000000 65535 f \n';
-  for (const { num, gen, at } of defined.sort((a, b) => a.num - b.num)) out += `${num} 1\n${String(at).padStart(10, '0')} ${String(gen).padStart(5, '0')} n \n`;
-  const root = `${base.root.num} ${base.root.gen} R`;
-  out += `trailer\n<< /Size ${base.nextObjectNumber + maps.length} /Root ${root} /Prev ${base.previousXref} >>\nstartxref\n${xrefAt}\n%%EOF\n`;
-  return Buffer.from(out, 'latin1');
 }
 
 /**
@@ -205,13 +193,16 @@ function incrementalUpdate(fileLength: number, base: PdfUpdateBase, maps: FontMa
  * a limit ends the pass: the file is then passed on as it is, so a limit is met once and never papered over for some fonts.
  */
 export function withFontProgramToUnicode(pdf: Buffer, document: PdfDocument): Buffer {
+  const base = document.updateBase();
+  return base === null ? pdf : withIncrementalUpdate(pdf, base, fontProgramToUnicodeObjects(document, base));
+}
+
+/** The objects of `withFontProgramToUnicode`'s update, for a caller that writes them with other objects in one update. */
+export function fontProgramToUnicodeObjects(document: PdfDocument, base: PdfUpdateBase): PdfObjectDefinition[] {
   try {
-    const base = document.updateBase();
-    if (base === null) return pdf;
-    const maps = fontMaps(document.compositeFonts(MAX_FONTS, new InflateBudget(FONT_PROGRAM_BUDGET_BYTES)), document.simpleFonts(PDF_CONTENT_MAX_FONTS));
-    return maps.length === 0 ? pdf : Buffer.concat([pdf, incrementalUpdate(pdf.length, base, maps)]);
+    return toUnicodeObjects(base, fontMaps(document.compositeFonts(MAX_FONTS, new InflateBudget(FONT_PROGRAM_BUDGET_BYTES)), document.simpleFonts(PDF_CONTENT_MAX_FONTS)));
   } catch (error) {
-    if (error instanceof ConversionFailedError) return pdf;
+    if (error instanceof ConversionFailedError) return [];
     throw error;
   }
 }

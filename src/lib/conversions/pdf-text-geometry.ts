@@ -5,14 +5,15 @@ import { runPdfTextJobInThread } from './pdf-text-host';
 import { appendAnnotationText } from './pdf-annotation-text';
 import { FontTable, readPageContent } from './pdf-text-content';
 import { ImageExtractor, awaitOperatorListDependencies } from './pdf-text-images';
-import { withFontProgramToUnicode } from './pdf-font-tounicode';
-import { assertPdfAnnotationStreamsWithinLimits, assertPdfStreamsWithinLimits } from './pdf-stream-guard';
+import { pdfjsReadableBytes } from './pdf-reader-input';
+import { cappedDecoderOptions } from './pdf-wasm-memory';
 import { pdfjsDataUrl } from './pdfjs-data';
 import {
   PDF_TEXT_MAX_PAGES,
   PDF_TEXT_MAX_ITEMS_PER_DOCUMENT,
   PDF_TEXT_MAX_CHARS_PER_DOCUMENT,
   PDF_TEXT_MAX_IMAGE_PIXELS,
+  PDF_TEXT_NO_IMAGE_PIXELS,
   PDF_TEXT_MAX_CHARS_PER_PAGE,
   PDF_TEXT_MAX_ITEM_CHARS,
   PDF_TEXT_MAX_ITEMS_PER_PAGE,
@@ -1438,12 +1439,7 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
   let task: PdfJsLoadingTask | undefined;
   try {
     const bytes = Buffer.from(pdfBuffer.buffer, pdfBuffer.byteOffset, pdfBuffer.byteLength);
-    // The streams the text depends on are decoded under byte budgets first: pdfjs would inflate a bomb to its end. The
-    // composite fonts without a ToUnicode map then get one from their font program (pdf-font-tounicode.ts). Every job reads
-    // the annotations of its pages (readPages), so one that does not want the content still has their streams checked.
-    let readable = bytes;
-    if (contentWanted) readable = withFontProgramToUnicode(bytes, assertPdfStreamsWithinLimits(bytes));
-    else assertPdfAnnotationStreamsWithinLimits(bytes);
+    const readable = pdfjsReadableBytes(bytes, { content: contentWanted, pictures: job.images === true });
     const pdfjs = (await import('pdfjs-dist/legacy/build/pdf.mjs')) as unknown as PdfJs;
     task = pdfjs.getDocument({
       data: new Uint8Array(readable),
@@ -1452,11 +1448,12 @@ export async function analyzePdfPagesInProcess(pdfBuffer: Buffer | Uint8Array, j
       // The fonts keep their encoding and ToUnicode data, so a glyph pdfjs cannot map can be read from its glyph name.
       fontExtraProperties: true,
       isEvalSupported: false,
-      maxImageSize: PDF_TEXT_MAX_IMAGE_PIXELS,
+      maxImageSize: job.images === true ? PDF_TEXT_MAX_IMAGE_PIXELS : PDF_TEXT_NO_IMAGE_PIXELS,
       standardFontDataUrl: pdfjsDataUrl('standard_fonts'),
       // The predefined CMaps: the codes of a CJK font and the Unicode values of a registered character collection.
       cMapUrl: pdfjsDataUrl('cmaps'),
       cMapPacked: true,
+      ...cappedDecoderOptions(pdfjsDataUrl('wasm')),
       verbosity: 0,
     });
     const doc = await task.promise;
