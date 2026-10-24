@@ -184,6 +184,19 @@ export interface CompositeFontDictionary {
   cidWidths(first: number, last: number): Map<number, number>;
 }
 
+/** A simple font dictionary (section 9.6: Type1, MMType1, TrueType or Type3) as the file defines it, with its encoding differences. */
+export interface SimpleFontDictionary {
+  objectNumber: number;
+  generation: number;
+  /** The text of the dictionary (`<< ... >>`) as the file, or the object stream that holds it, writes it. */
+  text: string;
+  hasToUnicode: boolean;
+  /** /BaseFont as written, a subset tag included. */
+  baseFont: string | null;
+  /** The items of the /Differences array of an /Encoding dictionary (section 9.6.5.1): integer codes and glyph names, null for any other item; null when there is no array. */
+  differences: ReadonlyArray<number | string | null> | null;
+}
+
 /** What an incremental update of the file (section 7.5.6) refers back to. */
 export interface PdfUpdateBase {
   root: { num: number; gen: number };
@@ -203,6 +216,8 @@ function isWhite(code: number): boolean {
     code === CHAR_SPACE || code === CHAR_LF || code === CHAR_CR || code === CHAR_TAB || code === CHAR_FF || code === CHAR_NUL
   );
 }
+
+const SIMPLE_FONT_SUBTYPES = new Set(['Type1', 'MMType1', 'TrueType', 'Type3']);
 
 const DELIMITER_CODES = new Set<number>([
   CHAR_LEFT_PAREN,
@@ -1151,19 +1166,35 @@ export class PdfDocument {
    * one step budget (pdf-cid-widths.ts). Encrypted files and files without page structure have none.
    */
   compositeFonts(limit: number, budget: InflateBudget): CompositeFontDictionary[] {
-    const pages = this.encrypted ? null : this.pages();
-    if (pages === null) return [];
-    const fonts = new Map<number, CompositeFontDictionary>();
     const streams = new Map<number, Buffer | null>();
     const widthReader = new CidWidthReader((value) => this.resolve(value));
+    return this.pageFonts(limit, (num) => this.compositeFont(num, budget, streams, widthReader));
+  }
+
+  /**
+   * The simple font dictionaries that the resources of the pages, and of the form XObjects those resources name, refer to by
+   * reference, each once and at most `limit`, read as `compositeFonts` reads its fonts. Encrypted files and files without
+   * page structure have none.
+   */
+  simpleFonts(limit: number): SimpleFontDictionary[] {
+    return this.pageFonts(limit, (num) => this.simpleFont(num));
+  }
+
+  /** The fonts `read` makes of the font references of the page resources and their forms, each object once and at most `limit`. */
+  private pageFonts<T>(limit: number, read: (num: number) => T | null): T[] {
+    const pages = this.encrypted ? null : this.pages();
+    if (pages === null) return [];
+    const fonts = new Map<number, T>();
+    const seen = new Set<number>();
     const visited = new Set<PdfDict>();
     const visit = (resources: PdfValue, depth: number): void => {
       const dict = this.resolveDict(resources);
       if (!dict || visited.has(dict) || fonts.size >= limit) return;
       visited.add(dict);
       for (const reference of this.resolveDict(dict.entries.get('Font'))?.entries.values() ?? []) {
-        if (fonts.size >= limit || !isRef(reference) || fonts.has(reference.num)) continue;
-        const font = this.compositeFont(reference.num, budget, streams, widthReader);
+        if (fonts.size >= limit || !isRef(reference) || seen.has(reference.num)) continue;
+        seen.add(reference.num);
+        const font = read(reference.num);
         if (font) fonts.set(reference.num, font);
       }
       if (depth >= MAX_PDF_FORM_DEPTH) return;
@@ -1174,6 +1205,29 @@ export class PdfDocument {
     };
     for (const page of pages) visit(page.resources, 0);
     return [...fonts.values()];
+  }
+
+  private simpleFont(num: number): SimpleFontDictionary | null {
+    const entry = this.index.get(num);
+    const dict = this.resolveDict({ kind: 'ref', num });
+    const subtype = dict?.entries.get('Subtype');
+    if (!entry || entry.stream || !dict || !isName(subtype) || !SIMPLE_FONT_SUBTYPES.has(subtype.value)) return null;
+    const differences = this.resolve(this.resolveDict(dict.entries.get('Encoding'))?.entries.get('Differences'));
+    const baseFont = this.resolve(dict.entries.get('BaseFont'));
+    return {
+      objectNumber: num,
+      generation: entry.gen,
+      text: entry.source.slice(entry.start, entry.end),
+      hasToUnicode: dict.entries.has('ToUnicode'),
+      baseFont: isName(baseFont) ? baseFont.value : null,
+      differences: isArray(differences)
+        ? differences.items.map((item) => {
+            const value = this.resolve(item);
+            if (typeof value === 'number') return Number.isInteger(value) ? value : null;
+            return isName(value) ? value.value : null;
+          })
+        : null,
+    };
   }
 
   private compositeFont(
