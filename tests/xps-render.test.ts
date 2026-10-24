@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import { crc32 } from 'node:zlib';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,10 +9,12 @@ import JSZip from 'jszip';
 import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { CorruptStreamError, DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
 import { countPagesOfReadablePdf } from '../src/worker/engines';
 import { convertXps, type XpsJob } from '../src/worker/xps-render';
 import { requireOracleTool } from './helpers/differential-oracle';
+import { JPEG_XR_WIDE_70000_BY_1 } from './helpers/jpegxr-samples';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -338,6 +341,13 @@ const BIG_PART_BYTES = 1024 * 1024;
 const REFERENCED_BYTES_BUDGET = 2 * 256 * 1024 * 1024;
 const PAGES_AT_BUDGET = REFERENCED_BYTES_BUDGET / BIG_PART_BYTES;
 
+/** Random bytes that start with a zero, so that no first bytes make them a JPEG, PNG, TIFF or JPEG XR file whose header the pixel budget reads. */
+function opaqueBytes(length: number): Buffer {
+  const bytes = crypto.randomBytes(length);
+  bytes[0] = 0;
+  return bytes;
+}
+
 describe('XPS documents that the renderer would draw short or decode again for every page', () => {
   const dirs: string[] = [];
   afterAll(() => {
@@ -362,12 +372,12 @@ describe('XPS documents that the renderer would draw short or decode again for e
   }
 
   /** Draws `xps` with `interpreter`; the sizes of the PDFs that the PDF tools are handed are added to `handedToPageTools`. */
-  async function convertWith(interpreter: string, xps: Buffer, tgt: string, handedToPageTools: number[] = []): Promise<Awaited<ReturnType<typeof convertXps>>> {
+  async function convertWith(interpreter: string, xps: Buffer, tgt: string, handedToPageTools: number[] = [], options: XpsJob['options'] = {}): Promise<Awaited<ReturnType<typeof convertXps>>> {
     const job: XpsJob = {
       input: xps,
       src: 'xps',
       tgt,
-      options: {},
+      options,
       originalFilename: 'stand-in.xps',
       interpreter,
       convertPdfPages: async (pdf) => {
@@ -422,7 +432,7 @@ describe('XPS documents that the renderer would draw short or decode again for e
   }, CONVERSION_TIMEOUT_MS);
 
   it(`counts a part again for every page that names it: ${PAGES_AT_BUDGET} pages of one ${BIG_PART_BYTES} byte image are at the budget and one more is over it`, async () => {
-    const shared = crypto.randomBytes(BIG_PART_BYTES);
+    const shared = opaqueBytes(BIG_PART_BYTES);
     const atBudget = await documentPackage(PAGES_AT_BUDGET, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: shared });
     const result = await convertWith(await standIn({ pdfPages: PAGES_AT_BUDGET }), atBudget, 'pdf');
     expect(result?.engineUsed).toBe('native-xps');
@@ -433,24 +443,229 @@ describe('XPS documents that the renderer would draw short or decode again for e
   }, CONVERSION_TIMEOUT_MS * 2);
 
   it('refuses ten thousand pages that share one large image before the renderer starts', async () => {
-    const xps = await documentPackage(10_000, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: crypto.randomBytes(BIG_PART_BYTES) });
+    const xps = await documentPackage(10_000, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: opaqueBytes(BIG_PART_BYTES) });
     const error = await refusalOf(convertWith('/nonexistent/gxps', xps, 'pdf'));
     expect(error).toBeInstanceOf(PayloadLimitError);
     expect(error.message).toMatch(/pages name more than \d+ bytes of images and colour profiles/);
   }, CONVERSION_TIMEOUT_MS * 2);
 
+  describe('images counted by their pixels as well as their bytes', () => {
+    /** What the pages of a document may name of image pixels between them, an image counted again for every brush that names it: the 120 seconds of the default run limit at the fastest measured rate, 23.4 million pixels a second. */
+    const PIXELS_PER_SECOND = 23_400_000;
+    const REFERENCED_PIXELS_BUDGET = 120 * PIXELS_PER_SECOND;
+    const MEGAPIXEL_SIDE = 1000;
+    const MEGAPIXEL = MEGAPIXEL_SIDE * MEGAPIXEL_SIDE;
+    const FOUR_MEGAPIXEL_SIDE = 2000;
+    const FOUR_MEGAPIXELS = FOUR_MEGAPIXEL_SIDE * FOUR_MEGAPIXEL_SIDE;
+    const BRUSHES_AT_PIXEL_BUDGET = REFERENCED_PIXELS_BUDGET / FOUR_MEGAPIXELS;
+
+    const MAX_PAGES = 10_000;
+
+    /** A picture of one colour of `side` x `side` pixels: a few kilobytes however many pixels it declares, so that the pages of a document may name it ten thousand times within the byte budget. */
+    function flatPicture(side: number, format: 'png' | 'jpeg'): Promise<Buffer> {
+      const picture = sharp({ create: { width: side, height: side, channels: 3, background: '#336699' } });
+      return (format === 'png' ? picture.png() : picture.jpeg()).toBuffer();
+    }
+
+    it(`counts the pixels of an image for every page that names it: ${BRUSHES_AT_PIXEL_BUDGET} pages of one 4 megapixel picture are at the budget and one more is over it`, async () => {
+      const picture = await flatPicture(FOUR_MEGAPIXEL_SIDE, 'png');
+      const atBudget = await documentPackage(BRUSHES_AT_PIXEL_BUDGET, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: picture });
+      const result = await convertWith(await standIn({ pdfPages: BRUSHES_AT_PIXEL_BUDGET }), atBudget, 'pdf');
+      expect(result?.engineUsed).toBe('native-xps');
+      const overBudget = await documentPackage(BRUSHES_AT_PIXEL_BUDGET + 1, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: picture });
+      const error = await refusalOf(convertWith('/nonexistent/gxps', overBudget, 'pdf'));
+      expect(error).toBeInstanceOf(PayloadLimitError);
+      expect(error.message).toMatch(new RegExp(`more than ${REFERENCED_PIXELS_BUDGET} pixels of images`));
+    }, CONVERSION_TIMEOUT_MS * 2);
+
+    it('refuses ten thousand pages that share one smooth 4 megapixel picture of a few kilobytes before the renderer starts', async () => {
+      const picture = await flatPicture(2000, 'jpeg');
+      expect(picture.length * MAX_PAGES, 'the byte budget lets these pages through').toBeLessThan(REFERENCED_BYTES_BUDGET);
+      const xps = await documentPackage(MAX_PAGES, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: picture });
+      const error = await refusalOf(convertWith('/nonexistent/gxps', xps, 'pdf'));
+      expect(error).toBeInstanceOf(PayloadLimitError);
+      expect(error.message).toMatch(/pages name more than \d+ pixels of images/);
+    }, CONVERSION_TIMEOUT_MS * 2);
+
+    it('refuses one page that names three thousand parts of a megapixel each (many references, one header read for each part)', async () => {
+      const picture = await flatPicture(MEGAPIXEL_SIDE, 'png');
+      const parts: Record<string, Buffer> = {};
+      const brushes: string[] = [];
+      for (let index = 0; index < 3000; index += 1) {
+        parts[`Resources/p${index}.png`] = picture;
+        brushes.push(`<ImageBrush ImageSource="/Resources/p${index}.png" Viewbox="0,0,10,10" ViewportUnits="Absolute" Viewport="0,0,10,10"/>`);
+      }
+      const page = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><Path Data="M 0,0 L 10,0 10,10 0,10 Z"><Path.Fill>${brushes.join('')}</Path.Fill></Path></FixedPage>`;
+      const xps = await documentPackage(1, () => page, parts);
+      const error = await refusalOf(convertWith('/nonexistent/gxps', xps, 'pdf'));
+      expect(error).toBeInstanceOf(PayloadLimitError);
+      expect(error.message).toMatch(new RegExp(`more than ${REFERENCED_PIXELS_BUDGET} pixels of images`));
+    }, CONVERSION_TIMEOUT_MS);
+
+    it('refuses an image that declares 60,000 x 60,000 pixels in a few dozen bytes, and a JPEG XR image that declares 4 billion', async () => {
+      const header = Buffer.alloc(13);
+      header.writeUInt32BE(60_000, 0);
+      header.writeUInt32BE(60_000, 4);
+      header[8] = 8;
+      header[9] = 2;
+      const chunk = (type: string, data: Buffer): Buffer => {
+        const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+        const length = Buffer.alloc(4);
+        length.writeUInt32BE(data.length);
+        const crc = Buffer.alloc(4);
+        crc.writeUInt32BE(crc32(body));
+        return Buffer.concat([length, body, crc]);
+      };
+      const bomb = Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), chunk('IHDR', header), chunk('IDAT', Buffer.from([0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01])), chunk('IEND', Buffer.alloc(0))]);
+      const pngError = await refusalOf(convertWith('/nonexistent/gxps', await documentPackage(1, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: bomb }), 'pdf'));
+      expect(pngError).toBeInstanceOf(InputPixelLimitError);
+      expect(pngError.message).toMatch(/declares 60000x60000 pixels \(3600000000 pixels\), over the input limit of 100000000 pixels/);
+      const wide = Buffer.from(JPEG_XR_WIDE_70000_BY_1);
+      wide.writeUInt32BE(3_999_999_999, wide.indexOf('WMPHOTO') + 12);
+      const jxrError = await refusalOf(convertWith('/nonexistent/gxps', await documentPackage(1, () => pageDrawing('/Resources/big.wdp'), { 'Resources/big.wdp': wide }), 'pdf'));
+      expect(jxrError).toBeInstanceOf(InputPixelLimitError);
+      expect(jxrError.message).toMatch(/declares 4000000000x1 pixels \(4000000000 pixels\), over the input limit of 100000000 pixels/);
+    }, CONVERSION_TIMEOUT_MS);
+
+    const XAML_NAMESPACE = 'http://schemas.microsoft.com/winfx/2006/xaml';
+    const IMAGE_PART = 'Resources/picture.png';
+
+    function brushOf(source: string): string {
+      return `<ImageBrush ImageSource="${source}" Viewbox="0,0,10,10" ViewportUnits="Absolute" Viewport="0,0,10,10"/>`;
+    }
+
+    function pageOfBrushes(count: number, source: string): string {
+      return `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><Path Data="M 0,0 L 10,0 10,10 0,10 Z"><Path.Fill>${brushOf(source).repeat(count)}</Path.Fill></Path></FixedPage>`;
+    }
+
+    /** A page that takes the entries of a dictionary and fills `uses` paths with the brush of the key `b`. */
+    function pageUsingKey(uses: number, resources: string): string {
+      const path = '<Path Data="M 0,0 L 10,0 10,10 0,10 Z" Fill="{StaticResource b}"/>';
+      return `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><FixedPage.Resources>${resources}</FixedPage.Resources>${path.repeat(uses)}</FixedPage>`;
+    }
+
+    function dictionaryOf(source: string): string {
+      return `<ResourceDictionary xmlns="${XPS_NAMESPACE}" xmlns:x="${XAML_NAMESPACE}"><ImageBrush x:Key="b" ImageSource="${source}"/></ResourceDictionary>`;
+    }
+
+    /** Whether a package of one page is handed to the renderer (a stand-in that writes a one page PDF) or refused for the pixels its pages name. */
+    async function drawnOrRefused(page: string, parts: Readonly<Record<string, string | Buffer>>, options: XpsJob['options'] = {}): Promise<'drawn' | 'refused'> {
+      const xps = await documentPackage(1, () => page, parts);
+      const outcome = await convertWith(await standIn({ pdfPages: 1 }), xps, 'pdf', [], options).then(
+        () => 'drawn' as const,
+        (error: unknown) => error
+      );
+      if (outcome === 'drawn') return outcome;
+      expect(outcome).toBeInstanceOf(PayloadLimitError);
+      expect((outcome as Error).message).toMatch(/pixels of images/);
+      return 'refused';
+    }
+
+    it(`charges an image for every brush that names it, also on one page: ${BRUSHES_AT_PIXEL_BUDGET} brushes of one 4 megapixel picture are at the budget and one more is over it`, async () => {
+      const parts = { [IMAGE_PART]: await flatPicture(FOUR_MEGAPIXEL_SIDE, 'png') };
+      expect(await drawnOrRefused(pageOfBrushes(BRUSHES_AT_PIXEL_BUDGET, `/${IMAGE_PART}`), parts)).toBe('drawn');
+      expect(await drawnOrRefused(pageOfBrushes(BRUSHES_AT_PIXEL_BUDGET + 1, `/${IMAGE_PART}`), parts)).toBe('refused');
+    }, CONVERSION_TIMEOUT_MS);
+
+    it('charges a brush of a dictionary, in a part or inline in the page, for every use of its key on the page', async () => {
+      const picture = await flatPicture(FOUR_MEGAPIXEL_SIDE, 'png');
+      const inline = (): string => `<ResourceDictionary>${dictionaryOf(`/${IMAGE_PART}`).replace(/^<ResourceDictionary[^>]*>/, '').replace('<ImageBrush', `<ImageBrush xmlns:x="${XAML_NAMESPACE}"`)}`;
+      const sources: Array<[string, string, Record<string, string | Buffer>]> = [
+        ['a dictionary part', '<ResourceDictionary Source="/Resources/shared.dict"/>', { [IMAGE_PART]: picture, 'Resources/shared.dict': dictionaryOf(`/${IMAGE_PART}`) }],
+        ['a dictionary in the page', inline(), { [IMAGE_PART]: picture }],
+      ];
+      for (const [name, resources, parts] of sources) {
+        expect({ name, outcome: await drawnOrRefused(pageUsingKey(BRUSHES_AT_PIXEL_BUDGET, resources), parts) }).toEqual({ name, outcome: 'drawn' });
+        expect({ name, outcome: await drawnOrRefused(pageUsingKey(BRUSHES_AT_PIXEL_BUDGET + 1, resources), parts) }).toEqual({ name, outcome: 'refused' });
+      }
+    }, CONVERSION_TIMEOUT_MS);
+
+    const CORRUPT_PNG = Buffer.concat([Buffer.from('\x89PNG\r\n\x1a\n', 'latin1'), Buffer.from('this is not a png chunk', 'latin1')]);
+
+    it('does not read an image that no brush names: an entry of a dictionary that nothing on the page uses', async () => {
+      const unused = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><FixedPage.Resources><ResourceDictionary Source="/Resources/shared.dict"/></FixedPage.Resources></FixedPage>`;
+      const parts = { [IMAGE_PART]: CORRUPT_PNG, 'Resources/shared.dict': dictionaryOf(`/${IMAGE_PART}`) };
+      expect(await drawnOrRefused(unused, parts)).toBe('drawn');
+    }, CONVERSION_TIMEOUT_MS);
+
+    it('refuses an image whose header cannot be read when a brush names it, directly or through a used key', async () => {
+      const parts = { [IMAGE_PART]: CORRUPT_PNG, 'Resources/shared.dict': dictionaryOf(`/${IMAGE_PART}`) };
+      const pages = [pageOfBrushes(1, `/${IMAGE_PART}`), pageUsingKey(1, '<ResourceDictionary Source="/Resources/shared.dict"/>')];
+      for (const page of pages) {
+        const xps = await documentPackage(1, () => page, parts);
+        const error = await refusalOf(convertWith(await standIn({ pdfPages: 1 }), xps, 'pdf'));
+        expect(error).not.toBeInstanceOf(PayloadLimitError);
+        expect(error.message).toMatch(/Invalid image: the header could not be decoded/);
+      }
+    }, CONVERSION_TIMEOUT_MS);
+
+    const PIECE_SPLIT_BYTES = 10;
+
+    /** The brush sources a name can take in GhostXPS, with the parts that make each one a part of the package, and whether the renderer draws the picture. */
+    function sourceCases(picture: Buffer): Array<{ name: string; source: string; parts: Record<string, Buffer>; drawn: boolean }> {
+      return [
+        { name: 'a space in the name', source: '/Resources/a b.png', parts: { 'Resources/a b.png': picture }, drawn: true },
+        { name: 'braces in the name', source: '/Resources/a{b}.png', parts: { 'Resources/a{b}.png': picture }, drawn: true },
+        { name: 'a percent sign in the name, which is not decoded', source: '/Resources/a%20b.png', parts: { 'Resources/a%20b.png': picture }, drawn: true },
+        { name: 'a percent-encoded name for a part named with a space, which the renderer does not find', source: '/Resources/a%20b.png', parts: { 'Resources/a b.png': picture }, drawn: false },
+        { name: 'a name with .. above the root, which stays at the root', source: '/../Resources/picture.png', parts: { [IMAGE_PART]: picture }, drawn: true },
+        { name: 'a colour converted bitmap and its profile', source: `{ColorConvertedBitmap /${IMAGE_PART} /Resources/profile.icc}`, parts: { [IMAGE_PART]: picture }, drawn: true },
+        { name: 'a colour converted bitmap whose image name holds a space, cut at the space', source: '{ColorConvertedBitmap /Resources/c d.png}', parts: { 'Resources/c d.png': picture }, drawn: false },
+        { name: 'a plain name with a space after a part of that name', source: '/Resources/e f.png', parts: { 'Resources/e.png': picture }, drawn: false },
+        {
+          name: 'a part held in pieces, the header split across them',
+          source: '/Resources/x.png',
+          parts: { 'Resources/x.png/[0].piece': picture.subarray(0, PIECE_SPLIT_BYTES), 'Resources/x.png/[1].last.piece': picture.subarray(PIECE_SPLIT_BYTES) },
+          drawn: true,
+        },
+        { name: 'pieces without the last one', source: '/Resources/x.png', parts: { 'Resources/x.png/[0].piece': picture.subarray(0, PIECE_SPLIT_BYTES), 'Resources/x.png/[1].piece': picture.subarray(PIECE_SPLIT_BYTES) }, drawn: false },
+      ];
+    }
+
+    it('reads a part name as GhostXPS does: it charges the pictures the renderer draws and none that it does not find', async () => {
+      const cases = sourceCases(await flatPicture(FOUR_MEGAPIXEL_SIDE, 'png'));
+      const outcomes: Record<string, string> = {};
+      for (const { name, source, parts } of cases) outcomes[name] = await drawnOrRefused(pageOfBrushes(BRUSHES_AT_PIXEL_BUDGET + 1, source), parts);
+      expect(outcomes).toEqual(Object.fromEntries(cases.map(({ name, drawn }) => [name, drawn ? 'refused' : 'drawn'])));
+    }, CONVERSION_TIMEOUT_MS * 2);
+
+    it('lets the run limit of the job decide the pixel budget: the default for a job with no limit, more for a raised limit, never more than the ceiling', async () => {
+      const parts = { [IMAGE_PART]: await flatPicture(FOUR_MEGAPIXEL_SIDE, 'png') };
+      const brushesAt = (seconds: number): number => (seconds * PIXELS_PER_SECOND) / FOUR_MEGAPIXELS;
+      const seconds = (limit: number): XpsJob['options'] => ({ timeoutMs: limit * 1000 });
+      const outcomes = {
+        defaultAtBudget: await drawnOrRefused(pageOfBrushes(brushesAt(120), `/${IMAGE_PART}`), parts),
+        defaultOver: await drawnOrRefused(pageOfBrushes(brushesAt(120) + 1, `/${IMAGE_PART}`), parts),
+        raisedAtBudget: await drawnOrRefused(pageOfBrushes(brushesAt(300), `/${IMAGE_PART}`), parts, seconds(300)),
+        raisedOver: await drawnOrRefused(pageOfBrushes(brushesAt(300) + 1, `/${IMAGE_PART}`), parts, seconds(300)),
+        shortOver: await drawnOrRefused(pageOfBrushes(brushesAt(30) + 1, `/${IMAGE_PART}`), parts, seconds(30)),
+        ceilingAtBudget: await drawnOrRefused(pageOfBrushes(brushesAt(600), `/${IMAGE_PART}`), parts, seconds(100_000)),
+        ceilingOver: await drawnOrRefused(pageOfBrushes(brushesAt(600) + 1, `/${IMAGE_PART}`), parts, seconds(100_000)),
+      };
+      expect(outcomes).toEqual({ defaultAtBudget: 'drawn', defaultOver: 'refused', raisedAtBudget: 'drawn', raisedOver: 'refused', shortOver: 'refused', ceilingAtBudget: 'drawn', ceilingOver: 'refused' });
+    }, CONVERSION_TIMEOUT_MS * 2);
+
+    it('counts a colour profile by its bytes only, however many pages name it', async () => {
+      const profile = Buffer.concat([Buffer.alloc(36), Buffer.from('acsp', 'latin1'), Buffer.alloc(1000)]);
+      const page = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><Path Data="M 0,0 L 10,0 10,10 0,10 Z" Fill="ContextColor /Resources/profile.icc 1,0.5,0.2"/></FixedPage>`;
+      const xps = await documentPackage(2000, () => page, { 'Resources/profile.icc': profile });
+      const result = await convertWith(await standIn({ pdfPages: 2000 }), xps, 'pdf');
+      expect(result?.engineUsed).toBe('native-xps');
+    }, CONVERSION_TIMEOUT_MS);
+  });
+
   it('counts a font once however many pages name it, as the renderer keeps a font after the first page that loads it', async () => {
     const pages = PAGES_AT_BUDGET * 3;
     const page = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><Glyphs FontUri="/Resources/font.ttf" FontRenderingEmSize="20" OriginX="10" OriginY="30" UnicodeString="x" Fill="#FF000000"/></FixedPage>`;
-    const xps = await documentPackage(pages, () => page, { 'Resources/font.ttf': crypto.randomBytes(BIG_PART_BYTES) });
+    const xps = await documentPackage(pages, () => page, { 'Resources/font.ttf': opaqueBytes(BIG_PART_BYTES) });
     const result = await convertWith(await standIn({ pdfPages: pages }), xps, 'pdf');
     expect(result?.engineUsed).toBe('native-xps');
   }, CONVERSION_TIMEOUT_MS * 2);
 
-  it('counts the images that a shared resource dictionary names for every page that names the dictionary', async () => {
+  it('counts the images that a shared resource dictionary names for every page that uses the key of one of its brushes', async () => {
     const dictionary = `<ResourceDictionary xmlns="${XPS_NAMESPACE}"><ImageBrush x:Key="b" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" ImageSource="/${BIG_PART}"/></ResourceDictionary>`;
-    const page = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><FixedPage.Resources><ResourceDictionary Source="/Resources/shared.dict"/></FixedPage.Resources></FixedPage>`;
-    const xps = await documentPackage(PAGES_AT_BUDGET + 1, () => page, { 'Resources/shared.dict': dictionary, [BIG_PART]: crypto.randomBytes(BIG_PART_BYTES) });
+    const page = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><FixedPage.Resources><ResourceDictionary Source="/Resources/shared.dict"/></FixedPage.Resources><Path Data="M 0,0 L 10,0 10,10 0,10 Z" Fill="{StaticResource b}"/></FixedPage>`;
+    const xps = await documentPackage(PAGES_AT_BUDGET + 1, () => page, { 'Resources/shared.dict': dictionary, [BIG_PART]: opaqueBytes(BIG_PART_BYTES) });
     const error = await refusalOf(convertWith('/nonexistent/gxps', xps, 'pdf'));
     expect(error).toBeInstanceOf(PayloadLimitError);
     expect(error.message).toMatch(new RegExp(`more than ${REFERENCED_BYTES_BUDGET} bytes of images and colour profiles`));

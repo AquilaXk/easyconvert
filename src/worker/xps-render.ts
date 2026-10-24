@@ -10,10 +10,10 @@ import { partKey, requirePagesDrawable } from '../lib/conversions/office/xps-res
 import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { writeZipFile } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
-import { ConversionFailedError, CorruptStreamError, PayloadLimitError } from '../lib/types';
+import { ConversionFailedError, CorruptStreamError } from '../lib/types';
 import { boundRenderedPages, selectsPages } from './poppler-ppm';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError } from './sandbox';
-import { createConversionResult, handOffOutput, readRawInputBuffer, withSandboxDir } from './worker-output';
+import { createConversionResult, drawnPdfTooLargeError, handOffOutput, MAX_DRAWN_PDF_BYTES_FOR_IMAGES, readRawInputBuffer, withSandboxDir } from './worker-output';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 
 /**
@@ -27,8 +27,8 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
  * of one document), every entry checked against its CRC, and written again as a plain stored ZIP in the job directory:
  * the program sees only a package written here. The pages are counted the way GhostXPS finds them, under the page and
  * document limits of the XPS reader, before it starts: every page the documents list must be in the package, and the
- * images and colour profiles the pages name, counted again for every page that names them, stay within the document
- * budget of xps-resources.ts.
+ * images and colour profiles the pages name, counted again for every brush that names them, stay within the byte budget
+ * of xps-resources.ts and within the pixels that the run limit of the job lets the program decode.
  *
  * GhostXPS reports a document it could not draw on its error output and still exits with success, after writing a PDF of
  * the pages it reached (GhostPDL pcl/pl/plmain.c `pl_main_run_file_utf8`, "Warning interpreter exited with error code"),
@@ -41,12 +41,6 @@ const MAX_TIMEOUT_MS = 600_000;
 /** The address space, output file size and output pipe limits of the PostScript interpreter, which does the same work. */
 const MEMORY_LIMIT_MB = 2048;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
-/**
- * The most bytes of drawn PDF that an image target reads into memory for the PDF tools, which take a buffer: half the
- * inflate budget of the package, whose parts are held at the same time (the output limit would add up to twice that budget
- * on top of them). A PDF target hands the file on by its path and is bound by MAX_OUTPUT_BYTES only.
- */
-const MAX_PDF_BYTES_READ_FOR_IMAGES = MAX_DOCUMENT_INFLATE_BYTES / 2;
 /** Run time and ceiling of counting the pages of the drawn PDF, as for the other Poppler tools. */
 const PAGE_COUNT_DEFAULT_TIMEOUT_MS = 45_000;
 const PAGE_COUNT_MAX_TIMEOUT_MS = 120_000;
@@ -105,6 +99,11 @@ async function readPackageEntries(input: Buffer): Promise<PackageEntry[]> {
   return entries;
 }
 
+/** The run limit of the job: its own stage limit, or the default, and never more than the ceiling. */
+function runTimeoutMs(options: WorkerEngineOptions): number {
+  return Math.min(stageTimeoutMs(options, DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS);
+}
+
 /** The typed error for a run that failed: its limits, or what the program printed about the file. */
 function toRendererError(err: unknown, src: string, tempDir: string): unknown {
   if (err instanceof SandboxedBufferLimitError || err instanceof SandboxedMemoryLimitError) {
@@ -130,7 +129,7 @@ async function writePdf(job: XpsJob, entries: readonly PackageEntry[], tempDir: 
   const pdfPath = path.join(tempDir, PDF_FILE);
   await writeZipFile(packagePath, entries.map(({ filename, buffer }) => ({ name: filename, data: buffer, method: 'store' as const })));
   const limits: LaunchedExecutionOptions = {
-    timeoutMs: Math.min(stageTimeoutMs(job.options, DEFAULT_TIMEOUT_MS), MAX_TIMEOUT_MS),
+    timeoutMs: runTimeoutMs(job.options),
     maxBuffer: job.options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
     maxFileSize: MAX_OUTPUT_BYTES,
     memoryLimitMb: MEMORY_LIMIT_MB,
@@ -149,7 +148,7 @@ async function writePdf(job: XpsJob, entries: readonly PackageEntry[], tempDir: 
   if (RENDERER_FAILURE_PATTERN.test(stderr)) throw rejected(job.src, stderr, tempDir);
   const size = fs.existsSync(pdfPath) ? fs.statSync(pdfPath).size : 0;
   if (size === 0) throw new ConversionFailedError(`GhostXPS drew no page from the .${job.src} file.`);
-  if (size > expected.maxBytes) throw new PayloadLimitError(`GhostXPS drew ${size} bytes of PDF from the .${job.src} file, more than the ${expected.maxBytes} bytes that can be taken further.`);
+  if (size > expected.maxBytes) throw drawnPdfTooLargeError('GhostXPS', job.src, size, expected.maxBytes);
   const pageTimeoutMs = Math.min(stageTimeoutMs(job.options, PAGE_COUNT_DEFAULT_TIMEOUT_MS), PAGE_COUNT_MAX_TIMEOUT_MS);
   const drawn = await job.countPdfPages(pdfPath, tempDir, pageTimeoutMs, job.options.signal);
   if (drawn !== expected.pageCount) {
@@ -181,7 +180,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
       pageOptions
     );
   }
-  requirePagesDrawable(pageParts, new Map(entries.map(({ filename, buffer }) => [partKey(filename), buffer])), options.signal);
+  await requirePagesDrawable(pageParts, new Map(entries.map(({ filename, buffer }) => [partKey(filename), buffer])), runTimeoutMs(options), options.signal);
 
   if (tgt === PDF_TARGET) {
     return withSandboxDir(TEMP_PREFIX, async (tempDir) => {
@@ -191,7 +190,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
     });
   }
   const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) =>
-    fs.readFileSync(await writePdf(job, entries, tempDir, { maxBytes: MAX_PDF_BYTES_READ_FOR_IMAGES, pageCount }))
+    fs.readFileSync(await writePdf(job, entries, tempDir, { maxBytes: MAX_DRAWN_PDF_BYTES_FOR_IMAGES, pageCount }))
   );
   return job.convertPdfPages(pdf, tgt, pageOptions, originalFilename);
 }
