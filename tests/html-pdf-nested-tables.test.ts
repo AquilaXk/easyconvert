@@ -276,6 +276,13 @@ describe('the width of a table, and pages whose tables are wider than the paper'
     }
   );
 
+  it('refuses a row of five thousand cells before it measures them, quickly', async () => {
+    const started = Date.now();
+    const refusal = await inProcess(wideRow(5000)).catch((error: unknown) => error);
+    expect((refusal as Error).message).toMatch(/a table with 5000 columns does not fit the page width: it needs 120000pt of 495pt/);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
   oracleTest(
     'answers absurd widths and spans in bounded time: a table of 99999999 px and one of 100000 %',
     TOOLS,
