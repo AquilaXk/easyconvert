@@ -199,6 +199,99 @@ describe('the downloads the build does not make through curl', () => {
   });
 });
 
+describe('the libwebp thread patch', () => {
+  const libvipsPatch = path.join(BUILD_DIR, 'libvips-webp-thread-level.patch');
+  const hookPatch = path.join(BUILD_DIR, 'webp-thread-level.patch');
+
+  /** The lines of webpsave.c (libvips 8.18.7, vips_foreign_save_webp_init_config) around the setting the patch adds. */
+  const WEBPSAVE_CONFIG = [
+    'static int',
+    'vips_foreign_save_webp_init_config(VipsForeignSaveWebp *webp)',
+    '{',
+    '\t/* Init WebP config.',
+    '\t */',
+    '\tWebPMemoryWriterInit(&webp->memory_writer);',
+    '\tif (!WebPConfigInit(&webp->config)) {',
+    '',
+    '\twebp->config.lossless = webp->lossless || webp->near_lossless;',
+    '\twebp->config.exact = webp->exact;',
+    '\twebp->config.alpha_quality = webp->alpha_q;',
+    '\twebp->config.method = webp->effort;',
+    '\twebp->config.target_size = webp->target_size;',
+    '\twebp->config.pass = webp->passes;',
+    '',
+    '\tif (webp->lossless)',
+    '\t\twebp->config.quality = webp->Q;',
+    '',
+  ].join('\n');
+  /** The lines of posix.sh (sharp-libvips ebb95f8) around the point where the libvips sources are patched. */
+  const POSIX_VIPS_STEP = [
+    'cd ${DEPS}/vips',
+    '# Use version number in SONAME',
+    '$CURL https://gist.githubusercontent.com/lovell/313a6901e9db1bf285f2a1f1180499e4/raw/3988223c7dfa4d22745d9392034b0117abef1446/libvips-cpp-soversion.patch | patch -p1',
+    '# Link libvips.so statically into libvips-cpp.so',
+    "sed -i'.bak' \"s/library('vips'/static_&/\" libvips/meson.build",
+    "sed -i'.bak' \"/version: library_version/{N;d;}\" libvips/meson.build",
+    '',
+  ].join('\n');
+
+  const webpsave = (dir: string): string => path.join(dir, 'vips', 'libvips', 'foreign', 'webpsave.c');
+
+  /** A directory with the libvips sources in `vips`, where posix.sh stands when it patches them. */
+  function workDir(): string {
+    const dir = tempDir('webp-thread-');
+    mkdirSync(path.join(dir, 'vips', 'libvips', 'foreign'), { recursive: true });
+    writeFileSync(webpsave(dir), WEBPSAVE_CONFIG);
+    writeFileSync(path.join(dir, 'vips', 'libvips', 'meson.build'), "library('vips'\nversion: library_version\n\n");
+    return dir;
+  }
+  const applyLibvipsPatch = (dir: string): number | null =>
+    spawnSync('patch', ['-p1', '--forward', '-i', libvipsPatch], { cwd: path.join(dir, 'vips'), encoding: 'utf-8' }).status;
+
+  withBash('sets thread_level once in the WebP config of webpsave.c, for a picture with an alpha band only', () => {
+    const dir = workDir();
+    expect(applyLibvipsPatch(dir)).toBe(0);
+    const patched = readFileSync(webpsave(dir), 'utf-8');
+    expect(patched.match(/config\.thread_level = 1;/g)).toHaveLength(1);
+    expect(patched).toContain('\tif (save->ready->Bands == 4)\n\t\twebp->config.thread_level = 1;');
+    expect(patched.indexOf('VipsForeignSave *save = (VipsForeignSave *) webp;')).toBeLessThan(patched.indexOf('WebPMemoryWriterInit'));
+    expect(patched.indexOf('config.pass = webp->passes;')).toBeLessThan(patched.indexOf('config.thread_level = 1;'));
+  });
+
+  withBash('fails on a webpsave.c that is not the one it was written for, so a moved source stops the build', () => {
+    const dir = workDir();
+    const file = webpsave(dir);
+    writeFileSync(file, readFileSync(file, 'utf-8').replace('webp->passes', 'webp->pass_count'));
+    expect(applyLibvipsPatch(dir)).not.toBe(0);
+  });
+
+  withBash('is applied by the line webp-thread-level.patch adds to posix.sh, which fails when the patch file is missing', () => {
+    const dir = workDir();
+    const script = path.join(dir, 'build', 'posix.sh');
+    mkdirSync(path.dirname(script), { recursive: true });
+    writeFileSync(script, POSIX_VIPS_STEP);
+    expect(spawnSync('patch', ['-p1', '--forward', '-i', hookPatch], { cwd: dir, encoding: 'utf-8' }).status).toBe(0);
+    const run = (patchFile: string) =>
+      spawnSync('bash', ['-c', `set -e; CURL=true; DEPS=${dir}; source ${script}`], {
+        cwd: dir,
+        encoding: 'utf-8',
+        env: { ...process.env, SHARP_LIBVIPS_WEBP_THREAD_PATCH: patchFile },
+      });
+    expect(run(path.join(dir, 'missing.patch')).status).not.toBe(0);
+    const applied = run(libvipsPatch);
+    expect(applied.status, applied.stderr).toBe(0);
+    expect(readFileSync(webpsave(dir), 'utf-8'), applied.stderr).toContain('config.thread_level = 1;');
+  });
+
+  it('is installed by build.sh, which names the libvips patch for posix.sh, and both files are copied into the stage by Dockerfile.worker', () => {
+    const build = read('docker', 'sharp-libvips', 'build.sh');
+    expect(build).toContain('patch -p1 --forward < "$here/webp-thread-level.patch"');
+    expect(build).toContain('export SHARP_LIBVIPS_WEBP_THREAD_PATCH="$here/libvips-webp-thread-level.patch"');
+    expect(readFileSync(hookPatch, 'utf-8')).toContain('"$SHARP_LIBVIPS_WEBP_THREAD_PATCH"');
+    expect(dockerfile).toMatch(/^COPY [^\n]* docker\/sharp-libvips\/webp-thread-level\.patch docker\/sharp-libvips\/libvips-webp-thread-level\.patch /m);
+  });
+});
+
 describe('check-build-output.sh, the one check of what the sharplibvips stage hands over', () => {
   const BYTES = 'the rebuilt library\n';
 

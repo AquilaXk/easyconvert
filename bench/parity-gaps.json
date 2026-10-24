@@ -111,24 +111,6 @@
       ]
     },
     {
-      "id": "image/lineart.png->webp/throughput",
-      "issue": 641,
-      "ratio": 0.9,
-      "note": "speed ratio 0.9 or below when recorded on the CI runner (previous record 0.91): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.9113,
-          "at": "2026-10-10T20:50:04.660Z",
-          "commit": "5c546b1e4ff88f5d7321464c63baf1a889a9ad99"
-        },
-        {
-          "ratio": 0.9032,
-          "at": "2026-10-15T08:12:52.765Z",
-          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
-        }
-      ]
-    },
-    {
       "id": "image/screenshot.png->avif/throughput",
       "issue": 641,
       "ratio": 0.95,
@@ -150,24 +132,6 @@
         },
         {
           "ratio": 0.9503,
-          "at": "2026-10-15T08:12:52.765Z",
-          "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
-        }
-      ]
-    },
-    {
-      "id": "image/screenshot.png->jpg/throughput",
-      "issue": 641,
-      "ratio": 0.82,
-      "note": "speed ratio 0.82 or below when recorded on the CI runner (previous record 0.94): ours is slower than the reference tool",
-      "history": [
-        {
-          "ratio": 0.9491,
-          "at": "2026-10-10T20:50:04.660Z",
-          "commit": "5c546b1e4ff88f5d7321464c63baf1a889a9ad99"
-        },
-        {
-          "ratio": 0.8261,
           "at": "2026-10-15T08:12:52.765Z",
           "commit": "0a5bdcb9b2f51dca3cea002f36903a2a63a70ff4"
         }

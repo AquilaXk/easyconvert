@@ -1,0 +1,21 @@
+--- a/libvips/foreign/webpsave.c
++++ b/libvips/foreign/webpsave.c
+@@ -607,6 +607,8 @@
+ static int
+ vips_foreign_save_webp_init_config(VipsForeignSaveWebp *webp)
+ {
++	VipsForeignSave *save = (VipsForeignSave *) webp;
++
+ 	/* Init WebP config.
+ 	 */
+ 	WebPMemoryWriterInit(&webp->memory_writer);
+@@ -631,6 +633,9 @@
+ 	webp->config.method = webp->effort;
+ 	webp->config.target_size = webp->target_size;
+ 	webp->config.pass = webp->passes;
++	/* With an alpha band, compress it on a second libwebp thread; the encoded bytes do not change. */
++	if (save->ready->Bands == 4)
++		webp->config.thread_level = 1;
+ 
+ 	if (webp->lossless)
+ 		webp->config.quality = webp->Q;
