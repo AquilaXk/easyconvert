@@ -74,7 +74,8 @@ describe('a real file with composite fonts whose ToUnicode maps lack codes', () 
   it('keeps the words of its paragraphs together, which the code characters of the big operators of cmex10 had broken', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'govdocs1-002384.pdf');
     const text = (await convertFile(bytes, 'pdf', 'txt', {}, 'govdocs1-002384.pdf')).buffer.toString('utf8');
-    expect(text).toContain('The δ function is used to simulate a point force at the tool tip. The chip area Ac is a function of the feed rate f');
+    const paragraph = text.split('\n').find((line) => line.startsWith('of the boring bar material, Kc is the specific cutting energy'));
+    expect(paragraph?.slice(-57)).toBe('the grooves overlap and can lead to regenerative effects.');
   });
 });
 
