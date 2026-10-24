@@ -8,7 +8,6 @@ import sharp from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { getFormatByExtension } from '../src/lib/registry';
 import { OFFICE_SUITE_SOURCE_FORMATS, isOfficeSuiteOnlySource } from '../src/lib/conversions/office/office-suite-sources';
-import { ConversionFailedError } from '../src/lib/types';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { defaultResolver } from '../bench/tools';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
@@ -20,7 +19,7 @@ import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
 
 /**
  * Real files of the formats the office suite reads and the in-process engine does not (Works, WordPerfect, Lotus Word Pro,
- * OpenOffice.org 1.x, Numbers, Publisher, StarOffice, AbiWord, Quattro Pro, the Sony, Palm and RocketBook e-books) or reads as another
+ * OpenOffice.org 1.x, Numbers, Publisher, StarOffice, AbiWord, Quattro Pro, the Sony and Palm e-books) or reads as another
  * format (Word, Excel and OpenDocument templates, PowerPoint slide shows). Until #783 these were handed to the in-process text extractor, which either refused the bytes with an
  * untyped error or, for some targets, returned the raw bytes read as text. Each file here is converted to every target the
  * registry advertises for it (a test below fails when one has no conversion). Two oracles read the result and neither is the
@@ -58,8 +57,6 @@ interface SampleCase {
    * by neither the office suite nor the converter.
    */
   phrasesInSourceBytes?: true;
-  /** The format has an import filter in some builds of the office suite only: a build without it must refuse with the typed answer, one with it need only write a file of the target. */
-  importFilterOptional?: true;
 }
 
 const SAMPLES: readonly SampleCase[] = [
@@ -176,14 +173,6 @@ const SAMPLES: readonly SampleCase[] = [
     targets: ['txt', 'pdf', 'epub', 'azw3', 'mobi', 'lrf', 'oeb', 'zip'],
     phrases: ['universal declaration of human rights', 'adopted and proclaimed by general assembly resolution'],
   },
-  {
-    id: 'opf-lorem-ipsum-090.rb',
-    extension: 'rb',
-    targets: ['epub', 'pdf', 'txt', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb', 'zip'],
-    // The RocketBook filter exists in LibreOffice 26.8 and not in 24.2 (CI), and 26.8 reads this file as binary noise, so no phrase of the book can be pinned.
-    phrases: [],
-    importFilterOptional: true,
-  },
 ];
 
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'bmp']);
@@ -245,7 +234,7 @@ function referenceWords(sample: Buffer, extension: string): Set<string> {
 }
 
 /** The e-book formats calibre also reads, which gives a second reference for their words. */
-const CALIBRE_EXTENSIONS: ReadonlySet<string> = new Set(['lrf', 'pdb', 'rb']);
+const CALIBRE_EXTENSIONS: ReadonlySet<string> = new Set(['lrf', 'pdb']);
 
 /** The text of an e-book as calibre reads it (`ebook-convert` to plain text), or undefined when the tool is not installed. */
 function calibreText(book: Buffer, extension: string): string | undefined {
@@ -412,35 +401,13 @@ function expectPhrases(phrases: readonly string[], text: string, label: string):
   expect({ label, missing: phrases.filter((phrase) => !normalized.includes(phrase)) }).toEqual({ label, missing: [] });
 }
 
-/**
- * The conversion of a format whose import filter only some builds of the office suite have: the archive of the file, a typed
- * refusal that says the filter is missing, or a file of the target (a build with the filter reads the file; its words are
- * not compared here because the filter of 26.8 reads this sample as noise).
- */
-async function expectRefusalOrFileOf(sample: Buffer, extension: string, target: string, id: string): Promise<void> {
-  const label = `${id} -> ${target}`;
-  const outcome = await dispatchConversion(sample, extension, target, {}, id).catch((error: unknown) => error);
-  if (outcome instanceof ConversionFailedError) {
-    expect(outcome.message, label).toMatch(/has no import filter/);
-  } else if (target === 'zip') {
-    await expectArchiveOfSource((outcome as { buffer: Buffer }).buffer, sample, label);
-  } else {
-    expect(path.extname((outcome as { filename: string }).filename), label).toBe(`.${target}`);
-    expect((outcome as { buffer: Buffer }).buffer.length, label).toBeGreaterThan(0);
-  }
-}
-
 describe.skipIf(toolsMissing)('real files of the formats the office suite reads', () => {
-  for (const { id, extension, targets, phrases, phrasesInSourceBytes, resaveAs, importFilterOptional } of SAMPLES) {
+  for (const { id, extension, targets, phrases, phrasesInSourceBytes, resaveAs } of SAMPLES) {
     it(
       `${id} as .${extension}: converts to ${targets.join(', ')} with the words the office suite shows`,
       async (ctx) => {
         const { bytes: original } = await requireRealworldSample(ctx, id);
         const sample = resaveAs === undefined ? original : sofficeConvert(original, id, resaveAs, (output) => output.read());
-        if (importFilterOptional) {
-          for (const target of targets) await expectRefusalOrFileOf(sample, extension, target, id);
-          return;
-        }
         const reference = referenceWords(sample, extension);
         const calibre = calibreWords(sample, extension);
         const printed = targets.some((target) => IMAGE_TARGETS.has(target)) ? printedPages(sample, extension) : undefined;
@@ -483,7 +450,7 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
  * refuses the LRF header and cannot open the OEB package), so for those two only the words in the bytes are checked.
  */
 describe.skipIf(toolsMissing || calibreMissing)('e-book outputs of the formats the office suite reads', () => {
-  for (const { id, extension, targets, phrases } of SAMPLES.filter((sample) => sample.importFilterOptional === undefined && sample.targets.some((target) => EBOOK_CONTAINER_TARGETS.has(target)))) {
+  for (const { id, extension, targets, phrases } of SAMPLES.filter((sample) => sample.targets.some((target) => EBOOK_CONTAINER_TARGETS.has(target)))) {
     for (const target of targets.filter((candidate) => EBOOK_CONTAINER_TARGETS.has(candidate))) {
       it(
         `${id} as .${extension}: the .${target} output holds the words of the book`,

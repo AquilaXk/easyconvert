@@ -21,6 +21,7 @@ import { OracleToolMissingError, getOracleToolPath } from './helpers/differentia
 import { withMissingBinary } from './helpers/native-tools';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { buildStoredRar4 } from './helpers/rar4-stored';
+import { simpleRocketBook } from './helpers/rocketbook-builder';
 import { compressLzw } from './helpers/unix-compress';
 import { readPiFrame, readX3fContainer } from './helpers/raw-container-oracle';
 import { buildDfont, buildMacBinary, buildTrueTypeFont } from './helpers/mac-font-containers';
@@ -442,6 +443,7 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   azw4: async () => buildAzw4([await textPdf(['Probe heading', 'First probe paragraph'])]),
   cbc: buildProbeCbc,
   fb2: () => Buffer.from(FB2_PROBE, 'utf-8'),
+  rb: () => simpleRocketBook('<HTML><BODY><H1>Probe heading</H1><P>First probe paragraph.</P></BODY></HTML>'),
   htmlz: () => buildProbeZip('index.html', '<html><head><title>Probe</title></head><body><h1>Probe heading</h1><p>First probe paragraph.</p></body></html>'),
   txtz: () => buildProbeZip('index.txt', 'Probe heading\n\nFirst probe paragraph.\n'),
   // Legacy Office sources are read through their own record structure, so the probes are hand-written
@@ -635,8 +637,8 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * Sources only the office suite imports (Works, WordPerfect, OpenOffice.org 1.x, Numbers, Publisher, the Sony, Palm and
- * RocketBook e-books) have no in-process reader, so every pair but the ZIP wrapper is the office suite's. Their conversions
+ * Sources only the office suite imports (Works, WordPerfect, OpenOffice.org 1.x, Numbers, Publisher, the Sony and Palm
+ * e-books) have no in-process reader, so every pair but the ZIP wrapper is the office suite's. Their conversions
  * are proven on real files by tests/office-suite-real-samples.test.ts and the missing-engine answer by
  * tests/office-suite-typed-failures.test.ts.
  */

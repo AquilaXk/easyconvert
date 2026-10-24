@@ -201,7 +201,7 @@ export async function convertOffice(
   }
 
   // 12.4 HTMLZ, TXTZ, PML, OEB (Ebooks)
-  if (['htmlz', 'txtz', 'pml', 'oeb'].includes(src)) {
+  if (['htmlz', 'txtz', 'pml', 'oeb', 'rb'].includes(src)) {
     return convertGenericEbookSource(inputBuffer, src, tgt, options, baseName);
   }
 
@@ -10114,13 +10114,8 @@ async function readGenericEbookText(input: Buffer, src: string): Promise<string>
   throw new ConversionFailedError(`Reading .${src} files is not supported.`);
 }
 
-async function convertGenericEbookSource(
-  inputBuffer: Buffer,
-  src: string,
-  tgt: string,
-  options: ConversionOptions,
-  baseName: string
-): Promise<ConversionResult> {
+async function convertGenericEbookSource(inputBuffer: Buffer, src: string, tgt: string, options: ConversionOptions, baseName: string): Promise<ConversionResult> {
+  if (src === 'rb') return (await import('./rocketbook-source')).convertRocketBookSource(inputBuffer, tgt, options, baseName, writeEbookTargetFromText);
   return writeEbookTargetFromText(await readGenericEbookText(inputBuffer, src), src, tgt, options, baseName);
 }
 

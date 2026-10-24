@@ -6,7 +6,7 @@ import { anchorNamesOf, documentIds } from './html-anchors';
 import { parseHtmlTree, type HtmlElement, type HtmlNode } from './html-blocks';
 import { formatListNumber } from './docx-numbering';
 import { BlockSink, DocumentContext, assembleDocument, listFormatOf, type TableDraftCell } from './document-model/build';
-import { MAX_LIST_LEVELS, type DocumentModel, type Inline } from './document-model/model';
+import { MAX_LIST_LEVELS, type DocumentModel, type ImageFormat, type Inline } from './document-model/model';
 import { anchorRun, imageRun, isTextRun, safeHref, sameRunFormat, sniffImageFormat, textRun } from './document-model/support';
 
 /**
@@ -65,8 +65,36 @@ export interface HtmlModelOptions {
   resolveImage?: (src: string) => Buffer | undefined;
   /** Maps a link target to the target the model keeps; undefined drops the link. Defaults to `safeHref`. */
   mapLink?: (href: string) => string | undefined;
-  /** Registers pictures and warnings in this context, so several documents (the chapters of a book) share one set. */
+  /**
+   * Registers pictures and warnings in this context, so several documents (the chapters of a book) share one set: their
+   * picture references count against the image limits together, and each picture is registered and checked once.
+   */
   context?: DocumentContext;
+}
+
+/**
+ * The pictures of the documents that share one context. Every reference counts against HTML_MODEL_MAX_IMAGES with the
+ * bytes it embeds against HTML_MODEL_MAX_IMAGE_BYTES, in one document as across the chapters of a book; the bytes behind
+ * a source are hashed, measured and checked once.
+ */
+class SharedPictures {
+  references = 0;
+  bytes = 0;
+  /** The bytes of each data: URI, decoded once. */
+  readonly dataUris = new Map<string, Buffer>();
+  /** The image id of the bytes a source gave, by identity: a resolver returns the same buffer for the same picture. */
+  readonly ids = new Map<Buffer, number>();
+}
+
+const sharedPictures = new WeakMap<DocumentContext, SharedPictures>();
+
+function sharedPicturesOf(context: DocumentContext): SharedPictures {
+  let pictures = sharedPictures.get(context);
+  if (!pictures) {
+    pictures = new SharedPictures();
+    sharedPictures.set(context, pictures);
+  }
+  return pictures;
 }
 
 interface Format {
@@ -173,9 +201,8 @@ function finishInlines(runs: Inline[]): Inline[] {
 
 class HtmlModelBuilder {
   private blockCount = 0;
-  private imageCount = 0;
-  private imageBytes = 0;
   private listId = 0;
+  private readonly pictures: SharedPictures;
   readonly checks: Buffer[] = [];
   private readonly omittedImages = new OmittedExternalImages();
   private readonly omittedContent = new OmittedContent();
@@ -190,7 +217,9 @@ class HtmlModelBuilder {
     readonly context: DocumentContext,
     /** Every `id` of the document: an `a` named like one of them is not what a fragment finds. */
     private readonly documentIds: ReadonlySet<string>
-  ) {}
+  ) {
+    this.pictures = sharedPicturesOf(context);
+  }
 
   private get warnings(): string[] {
     return this.context.warnings;
@@ -330,7 +359,11 @@ class HtmlModelBuilder {
         this.omittedImages.add(src, NOT_BASE64_REASON);
         return undefined;
       }
-      data = Buffer.from(uri[3].replace(/\s+/g, ''), 'base64');
+      data = this.pictures.dataUris.get(src);
+      if (!data) {
+        data = Buffer.from(uri[3].replace(/\s+/g, ''), 'base64');
+        this.pictures.dataUris.set(src, data);
+      }
     } else {
       data = this.options.resolveImage?.(src);
     }
@@ -343,20 +376,29 @@ class HtmlModelBuilder {
       this.omittedImages.add(src, UNSUPPORTED_FORMAT_REASON);
       return undefined;
     }
-    this.imageCount += 1;
-    this.imageBytes += data.length;
-    if (this.imageCount > HTML_MODEL_MAX_IMAGES) throw new PayloadLimitError(`The document embeds more than ${HTML_MODEL_MAX_IMAGES} images.`);
-    if (this.imageBytes > HTML_MODEL_MAX_IMAGE_BYTES) throw new PayloadLimitError(`The document embeds more than ${HTML_MODEL_MAX_IMAGE_BYTES} bytes of images.`);
-    this.checks.push(data);
+    this.pictures.references += 1;
+    this.pictures.bytes += data.length;
+    if (this.pictures.references > HTML_MODEL_MAX_IMAGES) throw new PayloadLimitError(`The document embeds more than ${HTML_MODEL_MAX_IMAGES} images.`);
+    if (this.pictures.bytes > HTML_MODEL_MAX_IMAGE_BYTES) throw new PayloadLimitError(`The document embeds more than ${HTML_MODEL_MAX_IMAGE_BYTES} bytes of images.`);
     const width = Number.parseFloat(element.attrs.get('width') ?? '');
     const height = Number.parseFloat(element.attrs.get('height') ?? '');
     const sized = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
     return imageRun({
-      imageId: this.context.addImage(data, format),
+      imageId: this.register(data, format),
       alt: element.attrs.get('alt') ?? '',
       widthPt: sized ? width * PT_PER_PX : undefined,
       heightPt: sized ? height * PT_PER_PX : undefined,
     });
+  }
+
+  /** The id of a picture, registered and queued for the size check the first time its bytes are seen. */
+  private register(data: Buffer, format: ImageFormat): number {
+    const known = this.pictures.ids.get(data);
+    if (known !== undefined) return known;
+    const id = this.context.addImage(data, format);
+    this.pictures.ids.set(data, id);
+    this.checks.push(data);
+    return id;
   }
 
   private formatOf(element: HtmlElement, format: Format): Format {
