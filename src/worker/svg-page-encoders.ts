@@ -10,7 +10,8 @@ import type { WorkerConversionResult } from './worker-types';
 /**
  * Targets written from the SVG page that Poppler draws for a page of a PDF: the in-process writers read its geometry and
  * write DXF entities or an EMF or WMF metafile. The registry offers them only for the sources whose pages these writers can
- * represent; a page with a picture or a clip region that is not the page is refused by the writer. The DXF writer also
+ * represent; a page with a picture, or with a clip region that is not one convex polygon and hides part of the drawing, is
+ * refused by the writer (a convex one cuts the drawing). The DXF writer also
  * writes the characters of a bitmap font, which Poppler draws as pictures, as text from the PDF's text layer.
  */
 

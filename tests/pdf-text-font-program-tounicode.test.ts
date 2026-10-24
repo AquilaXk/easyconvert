@@ -231,3 +231,124 @@ describe('many fonts that share one font program', () => {
     expect(shared.ms).toBeLessThan(single.ms * 4 + 150);
   });
 });
+
+/**
+ * Simple fonts without a /ToUnicode map whose /Differences glyph names are numbers, as printer drivers write them for the
+ * TrueType fonts they convert: `G69` is the character code 69 of the font's code page, "E". Poppler reads such a font's
+ * names as those numbers (`poppler/GfxFont.cc`, `testForNumericNames` and `parseNumericName`); pdf.js reads two hexadecimal
+ * digits after `G` (`G69` as "i") and leaves longer names as the code. The expected text is the word the codes spell.
+ */
+const ENERGY_AREA_DIFFERENCES = [
+  ...['G69', 'G110', 'G101', 'G114', 'G103', 'G121', 'G32'],
+  ...Array.from({ length: 24 }, (_, index) => `G${48 + (index % 10)}`),
+  ...['G65', 'G97'],
+];
+/** "Energy Area": codes 1 to 7 spell "Energy ", code 32 is G65 ("A"), code 4 G114 ("r"), code 3 G101 ("e"), code 33 G97 ("a"). */
+const ENERGY_AREA_CODES = '\\001\\002\\003\\004\\005\\006\\007\\040\\004\\003\\041';
+
+/** One page showing `codes` in a Helvetica with the /Differences given, after a line of plain Helvetica text when `line` is set. */
+function simpleFontPdf(differences: string, codes: string, line = ''): Buffer {
+  const font = extraObjectNumber(1);
+  const plain = line === '' ? '' : `BT /F1 14 Tf 20 150 Td (${line}) Tj ET\n`;
+  return rawPdf(
+    [{ width: 400, height: 200, content: `${plain}BT /F2 14 Tf 20 100 Td (${codes}) Tj ET`, fonts: `/F2 ${font} 0 R` }],
+    [`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding /Differences [${differences}] >> >>`]
+  );
+}
+
+const differencesFrom = (start: number, names: readonly string[]): string => `${start} ${names.map((name) => `/${name}`).join(' ')}`;
+
+describe('simple fonts whose glyph names are numbers', () => {
+  const readable = (pdf: Buffer) => withFontProgramToUnicode(pdf, assertPdfStreamsWithinLimits(pdf));
+
+  it('read each code as the character its glyph name numbers, at codes below and above 32', async () => {
+    expect(await textOf(simpleFontPdf(differencesFrom(1, ENERGY_AREA_DIFFERENCES), ENERGY_AREA_CODES))).toBe('Energy Area');
+  });
+
+  it('read decimal numbers after two letters', async () => {
+    expect(await textOf(simpleFontPdf(differencesFrom(1, ['MT83', 'MT67', 'MT65', 'MT76', 'MT69']), '\\001\\002\\003\\004\\005'))).toBe('SCALE');
+  });
+
+  it('read hexadecimal numbers when a name is a letter and two hexadecimal digits with a letter among them', async () => {
+    expect(await textOf(simpleFontPdf(differencesFrom(1, ['G4a', 'G6f', 'G62']), '\\001\\002\\003'))).toBe('Job');
+  });
+
+  it('read the hexadecimal names of a font with no letter digit as hexadecimal when another font of the document has them', async () => {
+    const [first, second] = [extraObjectNumber(1), extraObjectNumber(1) + 1];
+    const font = (names: readonly string[]) => `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Differences [${differencesFrom(1, names)}] >> >>`;
+    const pdf = rawPdf(
+      [{ width: 400, height: 200, content: 'BT /F2 14 Tf 20 100 Td (\\001\\002\\003\\004\\005\\006) Tj /F3 14 Tf (\\001\\002\\003) Tj ET', fonts: `/F2 ${first} 0 R /F3 ${second} 0 R` }],
+      [font(['G46', 'G49', 'G47', 'G55', 'G52', 'G45']), font(['G20', 'G4D', 'G2C'])]
+    );
+    expect(await textOf(pdf)).toBe('FIGURE M,');
+  });
+
+  it('leave the font as it is when one of its names is not a number, as Poppler does', () => {
+    const pdf = simpleFontPdf(differencesFrom(1, ['G69', 'G110', 'space']), '\\001\\002\\003');
+    expect(readable(pdf)).toBe(pdf);
+  });
+
+  it('leave a dingbats font to the Zapf Dingbats names, whose a73 is a black square and not the letter I', () => {
+    const font = extraObjectNumber(1);
+    const pdf = rawPdf(
+      [{ width: 400, height: 200, content: 'BT /F2 14 Tf 20 100 Td (\\001) Tj ET', fonts: `/F2 ${font} 0 R` }],
+      ['<< /Type /Font /Subtype /Type1 /BaseFont /BPJOEH+ZapfDingbatsITC /Encoding << /Differences [1 /a73] >> >>']
+    );
+    expect(readable(pdf)).toBe(pdf);
+  });
+
+  it('leave the font as it is when a run of its codes starts past code 5', () => {
+    const pdf = simpleFontPdf(differencesFrom(6, ['G69', 'G110']), '\\006\\007');
+    expect(readable(pdf)).toBe(pdf);
+  });
+
+  it('leave out the glyphs whose numbers are no character of a one-byte code page, where Poppler prints U+5171 and U+2AF9', async () => {
+    const result = await convert(simpleFontPdf(differencesFrom(1, ['H20849', 'H11001', 'G69']), '\\001\\002\\003', 'Formula of the plant'));
+    const text = result.buffer.toString('utf8').trim();
+    expect(text.split(/\s+/)).toEqual(['Formula', 'of', 'the', 'plant', 'E']);
+    expect(result.metadata?.warnings).toEqual(['Left out 2 glyphs that no font encoding maps to Unicode (page 1).']);
+  });
+
+  it('keep a font that has its own /ToUnicode map as the file maps it', () => {
+    const font = extraObjectNumber(1);
+    const pdf = rawPdf(
+      [{ width: 400, height: 200, content: 'BT /F2 14 Tf 20 100 Td (\\001) Tj ET', fonts: `/F2 ${font} 0 R` }],
+      [`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode ${font + 1} 0 R /Encoding << /Differences [1 /G69] >> >>`, stream('', Buffer.alloc(0))]
+    );
+    expect(readable(pdf)).toBe(pdf);
+  });
+});
+
+describe('hostile numeric glyph names', () => {
+  const BOUND_MS = 2_000;
+  const readable = (pdf: Buffer) => withFontProgramToUnicode(pdf, assertPdfStreamsWithinLimits(pdf));
+  const mapsIn = (pdf: Buffer, updated: Buffer): number => updated.subarray(pdf.length).toString('latin1').split('beginbfchar').length - 1;
+
+  it('read a /Differences of 200,000 names within the bound, as one map of at most 255 codes', () => {
+    const pdf = simpleFontPdf(differencesFrom(1, Array.from({ length: 200_000 }, () => 'G65')), '\\001');
+    const started = performance.now();
+    const updated = readable(pdf);
+    expect(performance.now() - started).toBeLessThan(BOUND_MS);
+    expect(updated.subarray(pdf.length).toString('latin1').match(/^<[0-9A-F]{2}> <0041>$/gm)).toHaveLength(255);
+  });
+
+  it('give a font that every page names one map', () => {
+    const font = extraObjectNumber(300);
+    const pages = Array.from({ length: 300 }, () => ({ width: 400, height: 200, content: 'BT /F2 14 Tf 20 100 Td (\\001) Tj ET', fonts: `/F2 ${font} 0 R` }));
+    const pdf = rawPdf(pages, ['<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Differences [1 /G69] >> >>']);
+    expect(mapsIn(pdf, readable(pdf))).toBe(1);
+  });
+
+  it('read at most the 4,096 fonts the reader reports of a page that names 5,001, within the bound', () => {
+    const count = 5_000;
+    const first = extraObjectNumber(1);
+    const names = Array.from({ length: count }, (_, index) => `/N${index} ${first + index} 0 R`).join(' ');
+    const fonts = Array.from({ length: count }, () => '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Differences [1 /G69 /G110] >> >>');
+    const pdf = rawPdf([{ width: 400, height: 200, content: 'BT /N0 14 Tf 20 100 Td (\\001\\002) Tj ET', fonts: names }], fonts);
+    const started = performance.now();
+    const updated = readable(pdf);
+    expect(performance.now() - started).toBeLessThan(BOUND_MS);
+    // The page's plain Helvetica (/F1) is the first of the 4,096 fonts read.
+    expect(mapsIn(pdf, updated)).toBe(4_095);
+  });
+});

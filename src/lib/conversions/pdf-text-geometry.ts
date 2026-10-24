@@ -4,7 +4,7 @@ import type { OcrBaseline, OcrLayoutGroup, OcrLineBlock, OcrResult, OcrWord } fr
 import { runPdfTextJobInThread } from './pdf-text-host';
 import { appendAnnotationText } from './pdf-annotation-text';
 import { FontTable, readPageContent } from './pdf-text-content';
-import { ImageExtractor } from './pdf-text-images';
+import { ImageExtractor, awaitOperatorListDependencies } from './pdf-text-images';
 import { withFontProgramToUnicode } from './pdf-font-tounicode';
 import { assertPdfAnnotationStreamsWithinLimits, assertPdfStreamsWithinLimits } from './pdf-stream-guard';
 import { pdfjsDataUrl } from './pdfjs-data';
@@ -1205,6 +1205,20 @@ interface PdfJsPage {
   cleanup(): boolean;
 }
 
+/** The page with its operator list read at most once, by whichever reader asks first; `operatorListRead` gives it afterwards, or null. */
+function readOnce(page: PdfJsPage): PdfJsPage & { operatorListRead(): Promise<OperatorList> | null } {
+  let list: Promise<OperatorList> | null = null;
+  return {
+    view: page.view, commonObjs: page.commonObjs, objs: page.objs,
+    getViewport: (options) => page.getViewport(options),
+    getTextContent: (options) => page.getTextContent(options),
+    getAnnotations: (options) => page.getAnnotations(options),
+    getOperatorList: () => (list ??= page.getOperatorList()),
+    cleanup: () => page.cleanup(),
+    operatorListRead: () => list,
+  };
+}
+
 interface PdfJsDocument {
   numPages: number;
   getPage(pageNumber: number): Promise<PdfJsPage>;
@@ -1378,7 +1392,7 @@ async function readPages(
   let documentChars = 0;
   for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
     if (!needsPage(job, explicit, pageNumber)) continue;
-    const page = await doc.getPage(pageNumber); // NOSONAR S9382 sequential: one page in memory at a time
+    const page = readOnce(await doc.getPage(pageNumber)); // NOSONAR S9382 sequential: one page in memory at a time
     const content = await page.getTextContent({ includeMarkedContent: false }); // NOSONAR S9382 sequential
     const readOperators = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
     const contentWanted = wantsContent(job, pageNumber);
@@ -1405,6 +1419,8 @@ async function readPages(
     if (wantsGeometry(job, explicit, pageNumber, pageText)) {
       result.geometry.set(pageNumber, await readPage(pdfjs, page, content, pageNumber)); // NOSONAR S9382 sequential
     }
+    const list = page.operatorListRead();
+    if (list !== null) await awaitOperatorListDependencies(page, await list, pdfjs.OPS.dependency); // NOSONAR S9382 sequential
     page.cleanup();
   }
 }

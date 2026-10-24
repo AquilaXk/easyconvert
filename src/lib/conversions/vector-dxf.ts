@@ -6,8 +6,10 @@ import { parseSvgGeometries, type ParsedSvgVectorDocument } from './svg-geometry
 /**
  * DXF writer for vector pages: the page drawn as SVG geometry (flattened curves in device coordinates, every
  * transform and glyph instance already applied) becomes AutoCAD R12 LINE and POLYLINE entities. R12 needs no
- * handles or subclass markers, so every DXF reader opens it. One DXF unit is one SVG user unit, which for a
- * page rendered from PDF or PostScript is one PostScript point; the Y axis points up as in PostScript.
+ * handles or subclass markers, so every DXF reader opens it. One DXF unit is one unit of the root's width attribute (a pixel
+ * when it names none), the unit Inkscape's DXF export writes in (share/extensions/dxf_outlines.py lines 395 to 402 and 430
+ * to 433: the user units times inkex's `inkscape_scale`). Poppler 26 sizes the page it draws from a PDF in `pt` and Poppler
+ * 24.02 in unitless pixels of one point each, so a page from PDF or PostScript is in points with either; the Y axis points up.
  *
  * A stroke is written as its centre line: width, paint and opacity are not written, and a dash array is an LTYPE entry that the
  * stroke's entities name (svg-pen.ts says what the geometry reader does with each pen attribute, policy 79).
@@ -261,7 +263,15 @@ class DashLinetypes {
   }
 }
 
-function writeDxf(parsed: ParsedSvgVectorDocument, texts: readonly PlacedText[]): Buffer {
+/** A placed text in DXF units, `scale` of them to a device pixel. */
+function scaledText(text: PlacedText, scale: number): PlacedText {
+  return { ...text, x: text.x * scale, baseline: text.baseline * scale, width: text.width * scale, height: text.height * scale };
+}
+
+function writeDxf(parsed: ParsedSvgVectorDocument, deviceTexts: readonly PlacedText[]): Buffer {
+  const scale = 1 / parsed.unitPx;
+  const pageHeight = parsed.height * scale;
+  const texts = deviceTexts.map((text) => scaledText(text, scale));
   const entities: string[] = [];
   const dashes = new DashLinetypes();
   let minX = Infinity;
@@ -271,7 +281,7 @@ function writeDxf(parsed: ParsedSvgVectorDocument, texts: readonly PlacedText[])
   for (const element of parsed.elements) {
     for (const subpath of element.subpaths) {
       // Device space has Y pointing down; DXF has it pointing up.
-      const points = subpath.map((p) => ({ x: p.x, y: parsed.height - p.y }));
+      const points = subpath.map((p) => ({ x: p.x * scale, y: pageHeight - p.y * scale }));
       if (points.length < 2) continue;
       const closed = points.length > 2 && samePoint(points[0], points[points.length - 1]);
       const vertices = closed ? points.slice(0, -1) : points;
@@ -281,17 +291,17 @@ function writeDxf(parsed: ParsedSvgVectorDocument, texts: readonly PlacedText[])
         maxX = Math.max(maxX, p.x);
         maxY = Math.max(maxY, p.y);
       }
-      const linetype = element.strokeDash ? dashes.nameOf(element.strokeDash) : null;
+      const linetype = element.strokeDash ? dashes.nameOf(element.strokeDash.map((length) => length * scale)) : null;
       entities.push(vertices.length === 2 && !closed ? lineEntity(vertices[0], vertices[1], linetype) : polylineEntity(vertices, closed, linetype));
     }
   }
   for (const text of texts) {
-    const baseline = parsed.height - text.baseline;
+    const baseline = pageHeight - text.baseline;
     minX = Math.min(minX, text.x);
     minY = Math.min(minY, baseline);
     maxX = Math.max(maxX, text.x + text.width);
     maxY = Math.max(maxY, baseline + text.height);
-    entities.push(textEntity(text, parsed.height));
+    entities.push(textEntity(text, pageHeight));
   }
   if (entities.length === 0) {
     throw new ConversionFailedError('The page draws no vector geometry, so there is nothing to write as DXF.');

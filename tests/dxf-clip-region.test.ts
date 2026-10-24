@@ -7,9 +7,10 @@ import { encodeSvgPageToDxf } from '../src/lib/conversions/vector-dxf';
 import { readDxf, type DxfDocument } from './helpers/dxf-reader';
 
 /**
- * A clip path that is not the page. The geometry readers refuse it, because dropping it draws what it hides; the DXF writer
- * (which writes the centre lines of the drawing and holds no clip) drops it when nothing it hides is more than one point
- * outside it, measured on the flattened device-space vertices against the clip region (policy 79).
+ * A clip path that is not the page. The DXF writer (which writes the centre lines of the drawing and holds no clip) drops it
+ * when nothing it hides is more than one point outside it, measured on the flattened device-space vertices against the clip
+ * region (policy 79). Past that, a clip of one convex polygon cuts the lines at its edges, and a clip of any other region is
+ * refused, because dropping it draws what it hides.
  */
 
 const PAGE_WIDTH = 200;
@@ -42,6 +43,11 @@ const refusal = (svg: string): string => {
 };
 
 const CLIP_REFUSAL = /^ConversionFailedError: The page cannot be written as DXF: SVG clip-path "url\(#c\)" is not supported: /;
+const NOT_CONVEX = /, and only a clip of one convex polygon is cut\.$/;
+
+/** The vertices of each entity, x and y rounded to 4 decimals. */
+const linesOf = (svg: string): number[][][] => dxfOf(svg).entities.map((entity) => entity.points.map((p) => [round(p.x), round(p.y)]));
+const round = (value: number): number => Math.round(value * 1e4) / 1e4;
 
 describe('a rectangular clip', () => {
   it('is dropped when everything it clips is inside', () => {
@@ -54,58 +60,117 @@ describe('a rectangular clip', () => {
     ]);
   });
 
-  it('is dropped when a vertex is within a point of it on the outside, and refused past that, with the distance', () => {
-    expect(dxfOf(clipped(pathClip(BOX), stroke('M 60 30 L 151 30'))).entities).toHaveLength(1);
+  it('is dropped when a vertex is within a point of it on the outside, and cuts the line at its edge past that', () => {
+    expect(linesOf(clipped(pathClip(BOX), stroke('M 60 30 L 151 30')))).toEqual([
+      [
+        [60, 70],
+        [151, 70],
+      ],
+    ]);
     expect(dxfOf(clipped(pathClip(BOX), stroke(`M 60 30 L ${150 + TOLERANCE - 0.01} 30`))).entities).toHaveLength(1);
-    const refused = refusal(clipped(pathClip(BOX), stroke('M 60 30 L 152 30')));
-    expect(refused).toMatch(CLIP_REFUSAL);
-    expect(refused).toMatch(/reaches 2 pixels past it/);
+    expect(linesOf(clipped(pathClip(BOX), stroke('M 60 30 L 152 30')))).toEqual([
+      [
+        [60, 70],
+        [150, 70],
+      ],
+    ]);
   });
 
-  it('measures the distance to the region, not to the sides: a vertex off a corner by one pixel each way is 1.41 pixels away', () => {
-    expect(dxfOf(clipped(pathClip(BOX), stroke('M 60 30 L 151.2 30'))).entities).toHaveLength(1);
-    expect(refusal(clipped(pathClip(BOX), stroke('M 60 30 L 151 81'))), 'corner').toMatch(/reaches 1\.41 pixels past it/);
+  it('measures the distance to the region, not to the sides, and cuts a line that leaves past a corner where it crosses the edge', () => {
+    expect(linesOf(clipped(pathClip(BOX), stroke('M 60 30 L 151.2 30')))).toEqual([
+      [
+        [60, 70],
+        [151.2, 70],
+      ],
+    ]);
+    // The line from (60, 30) to (151, 81) crosses y = 80 at x = 60 + 91 * 50 / 51.
+    expect(linesOf(clipped(pathClip(BOX), stroke('M 60 30 L 151 81')))).toEqual([
+      [
+        [60, 70],
+        [round(60 + (91 * 50) / 51), 20],
+      ],
+    ]);
   });
 
   it('applies to a clip on the shape itself and to a clip in a style', () => {
     expect(dxfOf(svgOf(`<defs>${pathClip(BOX)}</defs><path clip-path="url(#c)" fill="none" stroke="#000" d="M 60 30 L 140 30"/>`)).entities).toHaveLength(1);
-    expect(refusal(svgOf(`<defs>${pathClip(BOX)}</defs><path style="clip-path:url(#c)" fill="none" stroke="#000" d="M 60 30 L 190 30"/>`))).toMatch(CLIP_REFUSAL);
+    expect(linesOf(svgOf(`<defs>${pathClip(BOX)}</defs><path style="clip-path:url(#c)" fill="none" stroke="#000" d="M 60 30 L 190 30"/>`))).toEqual([
+      [
+        [60, 70],
+        [150, 70],
+      ],
+    ]);
   });
 
-  it('tests every vertex of a filled outline, and the corners of a curve that the flattening put on the curve', () => {
+  it('cuts a filled outline as its line, a closed outline joined through its first point, and a flattened curve', () => {
     expect(dxfOf(clipped(pathClip(BOX), '<rect x="60" y="30" width="80" height="40" fill="#f00"/>')).entities).toHaveLength(1);
-    expect(refusal(clipped(pathClip(BOX), '<rect x="60" y="30" width="95" height="40" fill="#f00"/>'))).toMatch(/reaches 5 pixels past it/);
-    expect(refusal(clipped(pathClip(BOX), stroke('M 60 30 C 100 -40 120 -40 140 30')))).toMatch(CLIP_REFUSAL);
+    expect(linesOf(clipped(pathClip(BOX), '<rect x="60" y="30" width="95" height="40" fill="#f00"/>'))).toEqual([
+      [
+        [150, 30],
+        [60, 30],
+        [60, 70],
+        [150, 70],
+      ],
+    ]);
+    const curve = linesOf(clipped(pathClip(BOX), stroke('M 60 30 C 100 -40 120 -40 140 30')));
+    expect(curve).toHaveLength(2);
+    expect(curve.flat().every(([x, y]) => x >= 50 && x <= 150 && y >= 20 && y <= 80)).toBe(true);
+    expect(curve.flatMap((line) => [line[0][1], line.at(-1)?.[1]])).toEqual([70, 80, 80, 70]);
   });
 
   it('is read in the user space of the clipped element: its transform scales the clip and the tolerance stays in device pixels', () => {
     const half = pathClip('M 25 10 L 75 10 L 75 40 L 25 40 Z');
-    expect(dxfOf(clipped(half, stroke('M 30 15 L 75.6 15'), 'transform="scale(2)"')).entities).toHaveLength(1);
-    expect(refusal(clipped(half, stroke('M 30 15 L 75.8 15'), 'transform="scale(2)"'))).toMatch(CLIP_REFUSAL);
+    expect(linesOf(clipped(half, stroke('M 30 15 L 75.6 15'), 'transform="scale(2)"'))).toEqual([
+      [
+        [60, 70],
+        [151.2, 70],
+      ],
+    ]);
+    expect(linesOf(clipped(half, stroke('M 30 15 L 75.8 15'), 'transform="scale(2)"'))).toEqual([
+      [
+        [60, 70],
+        [150, 70],
+      ],
+    ]);
   });
 
   it('is moved by a transform on the <clipPath> and on its shape', () => {
+    const atRightEdge = [
+      [
+        [60, 70],
+        [150, 70],
+      ],
+    ];
     const moved = clipOf(`<path d="M -50 20 L 50 20 L 50 80 L -50 80 Z" transform="translate(100 0)"/>`);
-    expect(dxfOf(clipped(moved, stroke('M 60 30 L 150 30'))).entities).toHaveLength(1);
-    expect(refusal(clipped(moved, stroke('M 60 30 L 155 30')))).toMatch(CLIP_REFUSAL);
+    expect(linesOf(clipped(moved, stroke('M 60 30 L 150 30')))).toEqual(atRightEdge);
+    expect(linesOf(clipped(moved, stroke('M 60 30 L 155 30')))).toEqual(atRightEdge);
     const outer = clipOf(`<rect x="-50" y="20" width="100" height="60"/>`, 'transform="translate(100 0)"');
-    expect(dxfOf(clipped(outer, stroke('M 60 30 L 150 30'))).entities).toHaveLength(1);
-    expect(refusal(clipped(outer, stroke('M 60 30 L 155 30')))).toMatch(CLIP_REFUSAL);
+    expect(linesOf(clipped(outer, stroke('M 60 30 L 150 30')))).toEqual(atRightEdge);
+    expect(linesOf(clipped(outer, stroke('M 60 30 L 155 30')))).toEqual(atRightEdge);
   });
 
-  it('is a rotated polygon in device space when its shape is rotated', () => {
+  it('is a rotated polygon in device space when its shape is rotated, and cuts at its slanted edge', () => {
     const diamond = clipOf(`<rect x="-20" y="-20" width="40" height="40" transform="translate(100 50) rotate(45)"/>`);
     expect(dxfOf(clipped(diamond, stroke('M 100 25 L 100 75 L 120 50'))).entities).toHaveLength(1);
-    expect(refusal(clipped(diamond, stroke('M 100 25 L 120 70')))).toMatch(/reaches 8\.28 pixels past it/);
+    const [[start, end], ...rest] = linesOf(clipped(diamond, stroke('M 100 25 L 120 70')));
+    expect(rest).toEqual([]);
+    expect(start).toEqual([100, 75]);
+    // The edge from (128.28, 50) to (100, 78.28) is x + y = 178.28 in SVG space; the line meets it at t = 0.7298.
+    const half = 20 * Math.SQRT2;
+    const t = (100 + half - 100 + 50 - 25) / (20 + 45);
+    expect(end).toEqual([round(100 + 20 * t), round(100 - (25 + 45 * t))]);
+    expect(Math.abs(end[0] - 100) + Math.abs(100 - end[1] - 50)).toBeCloseTo(half, 3);
   });
 });
 
 describe('a clip of any other shape', () => {
   const L_SHAPE = 'M 0 0 L 100 0 L 100 40 L 40 40 L 40 80 L 0 80 Z';
 
-  it('measures a vertex in the notch of a concave path to the nearest edge', () => {
+  it('measures a vertex in the notch of a concave path to the nearest edge, and refuses it past a point, since only a convex clip is cut', () => {
     expect(dxfOf(clipped(pathClip(L_SHAPE), stroke('M 10 10 L 90 10 L 90 30 L 30 30 L 30 70'))).entities).toHaveLength(1);
-    expect(refusal(clipped(pathClip(L_SHAPE), stroke('M 10 10 L 80 60')))).toMatch(/reaches 20 pixels past it/);
+    const refused = refusal(clipped(pathClip(L_SHAPE), stroke('M 10 10 L 80 60')));
+    expect(refused).toMatch(/reaches 20 pixels past it, more than the 1\.33 pixels \(one point\) a clip may hide/);
+    expect(refused).toMatch(NOT_CONVEX);
   });
 
   it('finds a segment that leaves a concave clip between two vertices inside it', () => {
@@ -161,10 +226,15 @@ describe('a clip of any other shape', () => {
     expect(refusal(clipped(two, stroke('M 10 10 L 75 10')))).toMatch(/reaches 25 pixels past it/);
   });
 
-  it('can be a polygon', () => {
+  it('can be a polygon, which cuts when it is convex', () => {
     const triangle = clipOf('<polygon points="60,10 140,10 100,90"/>');
     expect(dxfOf(clipped(triangle, stroke('M 100 20 L 100 89'))).entities).toHaveLength(1);
-    expect(refusal(clipped(triangle, stroke('M 100 20 L 100 93')))).toMatch(CLIP_REFUSAL);
+    expect(linesOf(clipped(triangle, stroke('M 100 20 L 100 93')))).toEqual([
+      [
+        [100, 80],
+        [100, 10],
+      ],
+    ]);
   });
 
   it.each([
@@ -203,23 +273,45 @@ describe('clips inside one another', () => {
         `<g clip-path="url(#a)"><g clip-path="url(#b)">${drawn}</g></g>`
     );
 
-  it('each hold: a vertex is tested against every clip it is under', () => {
+  it('each cut: a line is cut at every clip it reaches past', () => {
     const outer = 'M 0 0 L 100 0 L 100 100 L 0 100 Z';
     const inner = 'M 50 0 L 200 0 L 200 100 L 50 100 Z';
     expect(dxfOf(nested(outer, inner, stroke('M 60 10 L 99 10'))).entities).toHaveLength(1);
-    expect(refusal(nested(outer, inner, stroke('M 60 10 L 110 10')))).toMatch(/clip-path "url\(#a\)" is not supported: .*reaches 10 pixels/);
-    expect(refusal(nested(outer, inner, stroke('M 40 10 L 90 10')))).toMatch(/clip-path "url\(#b\)" is not supported: .*reaches 10 pixels/);
+    expect(linesOf(nested(outer, inner, stroke('M 60 10 L 110 10'))), 'past the outer').toEqual([
+      [
+        [60, 90],
+        [100, 90],
+      ],
+    ]);
+    expect(linesOf(nested(outer, inner, stroke('M 40 10 L 110 10'))), 'past both').toEqual([
+      [
+        [50, 90],
+        [100, 90],
+      ],
+    ]);
   });
 
-  it('hold to their intersection: under two clips nothing may be outside either, since the distance to an intersection has no bound', () => {
+  it('cut to their intersection with no tolerance, since the distance to an intersection has no bound', () => {
     const below = 'M 0 0 L 200 0 L 200 50 L 0 50 Z';
     const above = 'M 0 50.8 L 200 50.8 L 200 100 L 0 100 Z';
     const between = stroke('M 10 50.4 L 190 50.4');
     expect(dxfOf(svgOf(`<defs>${pathClip(below)}</defs><g clip-path="url(#c)">${between}</g>`)).entities, 'one clip').toHaveLength(1);
-    expect(refusal(nested(below, above, between))).toMatch(/clip-path "url\(#a\)" is not supported: a drawn path reaches 0\.4 pixels past it, and a path under more than one clip must be inside each/);
+    expect(refusal(nested(below, above, between)), 'an empty intersection hides the line').toMatch(/draws no vector geometry/);
     const outer = 'M 0 0 L 100 0 L 100 100 L 0 100 Z';
     const inner = 'M 50 0 L 200 0 L 200 100 L 50 100 Z';
-    expect(refusal(nested(outer, inner, stroke('M 60 10 L 100.5 10')))).toMatch(/url\(#a\)" is not supported: a drawn path reaches 0\.5 pixels/);
+    expect(linesOf(nested(outer, inner, stroke('M 60 10 L 100.5 10')))).toEqual([
+      [
+        [60, 90],
+        [100, 90],
+      ],
+    ]);
+  });
+
+  it('refuse a line that reaches past a nested clip that is not convex', () => {
+    const lShape = 'M 0 0 L 100 0 L 100 40 L 40 40 L 40 80 L 0 80 Z';
+    expect(refusal(nested('M 0 0 L 190 0 L 190 100 L 0 100 Z', lShape, stroke('M 10 10 L 80 60')))).toMatch(
+      /clip-path "url\(#b\)" is not supported: a drawn path reaches 20 pixels past it, and a path under more than one clip must be inside each of them, and only a clip of one convex polygon is cut\.$/
+    );
   });
 
   it('end with their element: what is drawn after the group is not clipped', () => {
@@ -258,9 +350,8 @@ describe('a clip that cannot be computed exactly', () => {
     expect(refusal(svgOf(`<g clip-path="inset(10px)">${drawn}</g>`))).toMatch(/clip-path "inset\(10px\)" is not supported/);
   });
 
-  it('stays refused for the root element and for the geometry readers of the metafile formats', () => {
+  it('stays refused for the root element', () => {
     expect(refusal(svgOf(`<defs>${pathClip(BOX)}</defs><g clip-path="url(#c)">${drawn}</g>`).replace('<svg ', '<svg clip-path="url(#c)" '))).toMatch(/clip-path/);
-    expect(() => parseSvgGeometries(clipped(pathClip(BOX), drawn))).toThrow(/clip-path "url\(#c\)" is not supported by metafile encoders/);
   });
 
   it('hides everything when it holds no shape, a hidden shape or a shape with no area', () => {
@@ -387,6 +478,42 @@ describe('hostile clips', () => {
     expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path .*1000000000 device pixels/);
     expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
     expect(refusal(clipped(pathClip(BOX), stroke('M 60 30 L 2e9 30')))).not.toBe('converted');
+  });
+
+  it('a line that crosses a cutting clip at every vertex is cut inside the time limit, and refused when its pieces pass the vertex limit', () => {
+    const zigzag = (count: number): string => stroke(`M 60 30${Array.from({ length: count }, (_, i) => ` L ${i % 2 === 0 ? 160 : 140} ${30 + (i % 40) / 1000}`).join('')}`);
+    const within = timed(clipped(pathClip(BOX), zigzag(150_000)));
+    expect(within.result).toBe('converted');
+    expect(within.ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expect(dxfOf(clipped(pathClip(BOX), zigzag(1001))).entities).toHaveLength(501);
+    const past = timed(clipped(pathClip(BOX), zigzag(400_000)));
+    expect(past.result).toMatch(/^CadGeometryUnavailableError: SVG expands to more than 500000 vertices/);
+    expect(past.ms).toBeLessThan(HOSTILE_BUDGET_MS);
+  });
+
+  it('a cut is charged to the work limit as its vertices times the edges of the clip', () => {
+    const ring = Array.from({ length: 1000 }, (_, i) => `${100 + 40 * Math.cos((i * 2 * Math.PI) / 1000)} ${50 + 40 * Math.sin((i * 2 * Math.PI) / 1000)}`);
+    const clip = pathClip(`M ${ring.join(' L ')} Z`);
+    const line = stroke(`M 100 50${' L 100 51 L 101 51'.repeat(2500)} L 190 50`);
+    const { result, ms } = timed(clipped(clip, line));
+    expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path work exceeds/);
+    expect(ms).toBeLessThan(HOSTILE_BUDGET_MS);
+    expect(refusal(clipped(clip, stroke('M 100 50 L 100 51 L 190 50')))).toBe('converted');
+  });
+
+  it(`${MAX_ACTIVE_CLIPS} nested clips that each cut leave the line inside all of them`, () => {
+    const ids = Array.from({ length: MAX_ACTIVE_CLIPS }, (_, i) => i);
+    const defs = ids.map((i) => `<clipPath id="n${i}"><rect x="${10 + i * 5}" y="0" width="${180 - i * 10}" height="100"/></clipPath>`).join('');
+    const opening = ids.map((i) => `<g clip-path="url(#n${i})">`).join('');
+    const svg = svgOf(`<defs>${defs}</defs>${opening}${stroke('M 0 50 L 200 50')}${'</g>'.repeat(MAX_ACTIVE_CLIPS)}`);
+    const start = performance.now();
+    expect(linesOf(svg)).toEqual([
+      [
+        [10 + (MAX_ACTIVE_CLIPS - 1) * 5, 50],
+        [190 - (MAX_ACTIVE_CLIPS - 1) * 5, 50],
+      ],
+    ]);
+    expect(performance.now() - start).toBeLessThan(HOSTILE_BUDGET_MS);
   });
 
   it('a clipped element under a transform that overflows is refused', () => {
