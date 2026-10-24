@@ -34,14 +34,21 @@ type Codec = 'gzip' | 'bzip2' | 'xz';
 interface SingleStreamTarget {
   target: string;
   codec: Codec;
+  /** The extension and MIME type of the same codec's tarball target, which a tar of several entries is named after. */
+  tarball: string;
+  tarballMime: string;
 }
 
+const GZIP_TARBALL = { tarball: 'tar.gz', tarballMime: 'application/gzip' };
+const BZIP2_TARBALL = { tarball: 'tar.bz2', tarballMime: 'application/x-bzip-compressed-tar' };
+const XZ_TARBALL = { tarball: 'tar.xz', tarballMime: 'application/x-xz-compressed-tar' };
+
 const SINGLE_STREAM_TARGETS: SingleStreamTarget[] = [
-  { target: 'gz', codec: 'gzip' },
-  { target: 'gzip', codec: 'gzip' },
-  { target: 'bz2', codec: 'bzip2' },
-  { target: 'bzip2', codec: 'bzip2' },
-  { target: 'xz', codec: 'xz' },
+  { target: 'gz', codec: 'gzip', ...GZIP_TARBALL },
+  { target: 'gzip', codec: 'gzip', ...GZIP_TARBALL },
+  { target: 'bz2', codec: 'bzip2', ...BZIP2_TARBALL },
+  { target: 'bzip2', codec: 'bzip2', ...BZIP2_TARBALL },
+  { target: 'xz', codec: 'xz', ...XZ_TARBALL },
 ];
 
 const FILES: Record<string, string> = {
@@ -151,10 +158,14 @@ function expectedHashes(files: Record<string, string>): Map<string, string> {
   return new Map(Object.entries(files).map(([name, text]) => [name, sha256Hex(Buffer.from(text))]));
 }
 
-async function viaWorker(input: Buffer, src: string, tgt: string, name: string, options = {}): Promise<Buffer> {
+async function workerResult(input: Buffer, src: string, tgt: string, name: string, options = {}) {
   const result = await convertWithNative7z(input, src, tgt, options, name);
   if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
-  return result.buffer as Buffer;
+  return result;
+}
+
+async function viaWorker(input: Buffer, src: string, tgt: string, name: string, options = {}): Promise<Buffer> {
+  return (await workerResult(input, src, tgt, name, options)).buffer as Buffer;
 }
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -182,14 +193,16 @@ afterAll(() => {
 });
 
 describe('an archive of several entries to a single-stream target, worker engine', () => {
-  for (const { target, codec } of SINGLE_STREAM_TARGETS) {
+  for (const { target, codec, tarball, tarballMime } of SINGLE_STREAM_TARGETS) {
     for (const format of SOURCE_FORMATS) {
       oracleTest(
         `${format} to ${target} is a ${codec} stream holding a tar of every entry`,
         [...TOOLS],
         async () => {
-          const output = await viaWorker(sourceOf(format), format, target, `several.${format}`);
-          const tar = decode(codec, output);
+          const result = await workerResult(sourceOf(format), format, target, `several.${format}`);
+          expect(result.filename).toBe(`several.${tarball}`);
+          expect(result.mimeType).toBe(tarballMime);
+          const tar = decode(codec, result.buffer as Buffer);
           expect(tarMembers(tar, `${format}-${target}`)).toEqual(['docs', 'docs/deep', 'docs/deep/records.csv', 'docs/guide.txt', EMPTY_DIRECTORY, 'readme.txt']);
           const unpacked = untar(tar, `${format}-${target}`);
           expect(filesUnder(unpacked)).toEqual(expectedHashes(FILES));
@@ -205,7 +218,7 @@ describe('an archive of several entries to a single-stream target, worker engine
     [...TOOLS],
     async () => {
       const output = await viaWorker(sourceOf('zip'), 'zip', 'gz', 'several.zip');
-      const file = path.join(workDir, 'as-written.gz');
+      const file = path.join(workDir, 'as-written.tar.gz');
       fs.writeFileSync(file, output);
       execFileSync(toolPath('gzip'), ['-t', file]);
       const listed = execFileSync(toolPath('tar'), ['-tzf', file], { encoding: 'utf8' });
@@ -223,8 +236,9 @@ describe('an archive of several entries to a single-stream target, worker engine
       buildTree(root, { 'only.txt': 'the only file\n'.repeat(200) });
       for (const format of SOURCE_FORMATS) {
         for (const { target, codec } of SINGLE_STREAM_TARGETS) {
-          const output = await viaWorker(pack(format, root, `only.${format}`, ['only.txt']), format, target, `only.${format}`);
-          expect(decode(codec, output).toString(), `${format} to ${target}`).toBe('the only file\n'.repeat(200));
+          const result = await workerResult(pack(format, root, `only.${format}`, ['only.txt']), format, target, `only.${format}`);
+          expect(decode(codec, result.buffer as Buffer).toString(), `${format} to ${target}`).toBe('the only file\n'.repeat(200));
+          expect(result.filename, `${format} to ${target}`).toBe(`only.${target}`);
         }
       }
     },
@@ -238,9 +252,24 @@ describe('an archive of several entries to a single-stream target, worker engine
       const root = path.join(workDir, 'nested-tree');
       buildTree(root, { 'folder/inner.txt': 'inner\n'.repeat(100) });
       for (const format of SOURCE_FORMATS) {
-        const output = await viaWorker(pack(format, root, `nested.${format}`, ['folder']), format, 'gz', `nested.${format}`);
-        expect(tarMembers(decode('gzip', output), `nested-${format}`), format).toEqual(['folder', 'folder/inner.txt']);
+        const result = await workerResult(pack(format, root, `nested.${format}`, ['folder']), format, 'gz', `nested.${format}`);
+        expect(result.filename, format).toBe('nested.tar.gz');
+        expect(tarMembers(decode('gzip', result.buffer as Buffer), `nested-${format}`), format).toEqual(['folder', 'folder/inner.txt']);
       }
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'a tar whose only entry is a file inside a folder is a tar in the gzip stream, named .tar.gz',
+    [...TOOLS],
+    async () => {
+      const root = path.join(workDir, 'bare-nested-tree');
+      buildTree(root, { 'folder/inner.txt': 'inner\n'.repeat(100) });
+      const result = await workerResult(pack('tar', root, 'bare-nested.tar', ['folder/inner.txt']), 'tar', 'gz', 'bare-nested.tar');
+      expect(result.filename).toBe('bare-nested.tar.gz');
+      expect(result.mimeType).toBe('application/gzip');
+      expect(tarMembers(decode('gzip', result.buffer as Buffer), 'bare-nested')).toEqual(['folder/inner.txt']);
     },
     TEST_TIMEOUT_MS
   );
@@ -259,7 +288,7 @@ describe('an archive of several entries to a single-stream target, worker engine
 });
 
 describe('an archive of several entries to a single-stream target, in-process engine', () => {
-  for (const { target, codec } of SINGLE_STREAM_TARGETS.filter((entry) => entry.target !== 'gzip' && entry.target !== 'bzip2')) {
+  for (const { target, codec, tarball, tarballMime } of SINGLE_STREAM_TARGETS.filter((entry) => entry.target !== 'gzip' && entry.target !== 'bzip2')) {
     for (const format of SOURCE_FORMATS) {
       oracleTest(
         `${format} to ${target} is a ${codec} stream holding a tar of every entry`,
@@ -269,7 +298,8 @@ describe('an archive of several entries to a single-stream target, in-process en
           const tar = decode(codec, result.buffer);
           const unpacked = untar(tar, `inproc-${format}-${target}`);
           expect(filesUnder(unpacked)).toEqual(expectedHashes(FILES));
-          expect(result.filename).toBe(`several.${target}`);
+          expect(result.filename).toBe(`several.${tarball}`);
+          expect(result.mimeType).toBe(tarballMime);
         },
         TEST_TIMEOUT_MS
       );
@@ -284,6 +314,8 @@ describe('an archive of several entries to a single-stream target, in-process en
       const decoded = spawnSync(toolPath('zstd'), ['-d', '-c'], { input: result.buffer, maxBuffer: 64 * MIB });
       expect(decoded.status).toBe(0);
       expect(filesUnder(untar(decoded.stdout, 'inproc-zst'))).toEqual(expectedHashes(FILES));
+      expect(result.filename).toBe('several.tar.zst');
+      expect(result.mimeType).toBe('application/x-zstd-compressed-tar');
     },
     TEST_TIMEOUT_MS
   );
@@ -296,6 +328,7 @@ describe('an archive of several entries to a single-stream target, in-process en
       buildTree(root, { 'only.txt': 'the only file\n'.repeat(200) });
       const result = await convertArchive(pack('zip', root, 'inproc-only.zip', ['only.txt']), 'zip', 'gz', {}, 'inproc-only.zip');
       expect(decode('gzip', result.buffer).toString()).toBe('the only file\n'.repeat(200));
+      expect(result.filename).toBe('inproc-only.zip.gz');
     },
     TEST_TIMEOUT_MS
   );
@@ -315,7 +348,9 @@ describe('the listing of the source decides the entries of the output (real file
       [...TOOLS],
       async (ctx) => {
         const sample = await requireRealworldSample(ctx, id);
-        const output = await viaWorker(sample.bytes, format, target, id);
+        const result = await workerResult(sample.bytes, format, target, id);
+        const output = result.buffer as Buffer;
+        expect(result.filename).toBe(`${id.replace(/\.[^.]+$/, '')}.tar.gz`);
         const file = path.join(workDir, `${id}.${target}`);
         fs.writeFileSync(file, output);
         execFileSync(toolPath('gzip'), ['-t', file]);
