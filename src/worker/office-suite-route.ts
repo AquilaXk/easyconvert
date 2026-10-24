@@ -1,8 +1,8 @@
 import fs from 'node:fs';
-import { ConversionFailedError, CorruptStreamError, EngineUnavailableError } from '../lib/types';
+import { ConversionFailedError, CorruptStreamError, EncryptedOfficeDocumentError, EngineUnavailableError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
 import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../lib/conversions/office/legacy-office-limits';
-import { assertPptNotEncrypted, repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
+import { repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
 import {
   CGM_ENCODING_PROBE_BYTES,
   OFFICE_SUITE_SOURCE_FORMATS,
@@ -147,14 +147,19 @@ function inputBytes(input: Buffer | WorkerVfsPayload): Buffer | undefined {
  * What follows the office suite's failure to load a PowerPoint 97-2003 presentation. An encrypted presentation is intact, so the
  * typed 422 for an encrypted document is thrown in place of the suite's "damaged" answer. A presentation whose persistIdSeed lies
  * below its persist directory (see `repairPptPersistIdSeed`) is returned with the seed corrected, to run the suite on again.
- * Undefined when the failure is another one and the presentation is neither.
+ * Undefined when the failure is another one, the presentation is neither, or the input cannot be read for either check, so that
+ * the suite's own error stands.
  */
 export function presentationRetryInput(input: Buffer | WorkerVfsPayload, src: string, err: unknown): Buffer | WorkerVfsPayload | undefined {
   if (officeReadingFormat(src) !== 'ppt' || asUnreadableDocument(err, src) === err) return undefined;
-  const bytes = inputBytes(input);
-  if (bytes === undefined) return undefined;
-  assertPptNotEncrypted(bytes);
-  const repaired = repairPptPersistIdSeed(bytes);
+  let repaired: Buffer | undefined;
+  try {
+    const bytes = inputBytes(input);
+    repaired = bytes && repairPptPersistIdSeed(bytes);
+  } catch (prepareError) {
+    if (prepareError instanceof EncryptedOfficeDocumentError) throw prepareError;
+    return undefined;
+  }
   if (repaired === undefined) return undefined;
   return Buffer.isBuffer(input) ? repaired : { outputPath: input.outputPath, inputBuffer: repaired };
 }

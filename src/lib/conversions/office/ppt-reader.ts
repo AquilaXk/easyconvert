@@ -1,7 +1,6 @@
 import { inflateSync } from 'node:zlib';
 import { ConversionFailedError } from '../../types';
-import { parseCfbf } from '../hwp';
-import { CheckedReader, readCfbStreams, requireCfbStream } from './cfb-streams';
+import { CheckedReader, readCfbContainer, readCfbStreams, requireCfbStream } from './cfb-streams';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
 import { isSymbolFontPrivateUse, mapSymbolFontCharacter, symbolReplacementWarning, undrawableSymbolWarning } from '../symbol-font-map';
@@ -542,41 +541,36 @@ export function readPptSlides(buffer: Buffer, warnings: string[] = [], canDraw?:
  * to be at least the largest persist id. LibreOffice sizes its persist table from the seed
  * (filter/source/msfilter/svdfppt.cxx, SdrPowerPointImport constructor: `m_nPersistPtrCnt = nMaxPersistWritten + 1`) and
  * refuses the file when a directory entry lies past it ("Not all entries of Persist-Directory read!"), while Apache POI
- * HSLF reads the directory and ignores the seed. Only the four bytes of the seed change, in a copy of the input.
+ * HSLF reads the directory and ignores the seed. Only the bytes of the seed change, in a copy of the input; each of its four
+ * bytes is found through the sector chain of the stream the directory tree reaches, as the seed may span two sectors. Throws the
+ * encrypted-document error when the presentation is encrypted: the Current User stream carries the encrypted header token
+ * ([MS-PPT] 2.3.2) or the newest UserEditAtom names an encryption session ([MS-PPT] 2.3.3).
  */
 export function repairPptPersistIdSeed(buffer: Buffer): Buffer | undefined {
   try {
-    const streams = readCfbStreams(buffer, LABEL);
-    const document = new CheckedReader(requireCfbStream(streams, DOCUMENT_STREAM, LABEL), LABEL);
-    const chain = readEditChain(new CheckedReader(requireCfbStream(streams, CURRENT_USER_STREAM, LABEL), LABEL), document);
+    const container = readCfbContainer(buffer, LABEL);
+    const documentBytes = requireCfbStream(container.paths, DOCUMENT_STREAM, LABEL);
+    const document = new CheckedReader(documentBytes, LABEL);
+    const chain = readEditChain(new CheckedReader(requireCfbStream(container.paths, CURRENT_USER_STREAM, LABEL), LABEL), document);
     const seedOffset = chain.newestEditOffset + USER_EDIT_PERSIST_ID_SEED_OFFSET;
     let largestPersistId = 0;
     for (const id of chain.persist.keys()) largestPersistId = Math.max(largestPersistId, id);
     if (document.u32(seedOffset) >= largestPersistId) return undefined;
-    const position = parseCfbf(buffer).streamByteOffset(DOCUMENT_STREAM, seedOffset);
-    if (position === undefined) return undefined;
+    const positions: number[] = [];
+    for (let byte = 0; byte < UINT32_BYTES; byte++) {
+      const position = container.streamByteOffset(DOCUMENT_STREAM, seedOffset + byte);
+      if (position === undefined || buffer[position] !== documentBytes[seedOffset + byte]) return undefined;
+      positions.push(position);
+    }
+    const seed = Buffer.alloc(UINT32_BYTES);
+    seed.writeUInt32LE(largestPersistId);
     const repaired = Buffer.from(buffer);
-    repaired.writeUInt32LE(largestPersistId, position);
+    positions.forEach((position, byte) => {
+      repaired[position] = seed[byte];
+    });
     return repaired;
   } catch (err) {
-    if (err instanceof ConversionFailedError) return undefined;
+    if (err instanceof ConversionFailedError && !(err instanceof EncryptedOfficeDocumentError)) return undefined;
     throw err;
-  }
-}
-
-/**
- * Throws the encrypted-document error when the presentation is encrypted: the Current User stream carries the encrypted header
- * token ([MS-PPT] 2.3.2) or the newest UserEditAtom names an encryption session ([MS-PPT] 2.3.3). Any other input, damaged or not,
- * returns without a verdict.
- */
-export function assertPptNotEncrypted(buffer: Buffer): void {
-  try {
-    const streams = readCfbStreams(buffer, LABEL);
-    readEditChain(
-      new CheckedReader(requireCfbStream(streams, CURRENT_USER_STREAM, LABEL), LABEL),
-      new CheckedReader(requireCfbStream(streams, DOCUMENT_STREAM, LABEL), LABEL)
-    );
-  } catch (err) {
-    if (err instanceof EncryptedOfficeDocumentError || !(err instanceof ConversionFailedError)) throw err;
   }
 }

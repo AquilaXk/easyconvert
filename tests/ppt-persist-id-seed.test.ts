@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { buildCfbfContainer } from '../src/lib/conversions/cfbf-writer';
 import { parseCfbf } from '../src/lib/conversions/hwp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { repairPptPersistIdSeed } from '../src/lib/conversions/office/ppt-reader';
+import { withPresentationRetry } from '../src/worker/office-suite-route';
+import type { WorkerConversionResult, WorkerVfsPayload } from '../src/worker/worker-types';
+import { NO_ENTRY, entryFields, entryId, moveChainSectorToEnd, moveMiniChainSectorToEnd, setEntry } from './helpers/cfbf-layout';
 import { oracleTest } from './helpers/oracle-test';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -23,6 +26,13 @@ const SEED_OFFSET_IN_EDIT_ATOM = 28;
 const HTTP_UNPROCESSABLE = 422;
 const PLAIN_TOKEN = 0xe391c05f;
 const ENCRYPTED_TOKEN = 0xf3d1c4df;
+const SECTOR_BYTES = 512;
+const MINI_SECTOR_BYTES = 64;
+const PERSIST_IDS = [1, 2, 3, 4, 5, 6];
+/** Persist ids up to 0xABCDE, so raising a seed of 1 to the largest changes three of its four bytes (01 00 00 00 to DE BC 0A 00). */
+const WIDE_PERSIST_IDS = [0xabcd9, 0xabcda, 0xabcdb, 0xabcdc, 0xabcdd, 0xabcde];
+const WIDE_LARGEST_ID = 0xabcde;
+const WIDE_SEED_BYTES_CHANGED = 3;
 
 interface CraftedEdit {
   seed: number;
@@ -30,39 +40,56 @@ interface CraftedEdit {
   persistIds: number[];
   /** Offset of the previous edit; the edit's own offset makes a loop. */
   lastEdit?: 'self' | 0;
+  /** Bytes before the persist directory, which move the edit and its seed. */
+  prefix?: number;
   padding?: number;
   token?: number;
 }
 
-/** A presentation with one persist directory and one UserEditAtom, written from [MS-PPT] 2.3.2, 2.3.3 and 2.3.4 with the compound file writer. */
-function craftPresentation(spec: CraftedEdit): { file: Buffer; editOffset: number } {
+/** The PowerPoint Document stream of one persist directory and one UserEditAtom ([MS-PPT] 2.3.3 and 2.3.4), and the offset of the edit. */
+function craftDocument(spec: CraftedEdit): { document: Buffer; editOffset: number } {
+  const prefix = spec.prefix ?? 0;
   const directory = Buffer.alloc(8 + 4 + spec.persistIds.length * 4);
   directory.writeUInt16LE(0x1772, 2);
   directory.writeUInt32LE(directory.length - 8, 4);
   directory.writeUInt32LE(((spec.persistIds.length << 20) | spec.persistIds[0]) >>> 0, 8);
-  const editOffset = directory.length;
+  const editOffset = prefix + directory.length;
   const edit = Buffer.alloc(8 + 28);
   edit.writeUInt16LE(0x0ff5, 2);
   edit.writeUInt32LE(28, 4);
   edit.writeUInt32LE(spec.lastEdit === 'self' ? editOffset : 0, 16);
-  edit.writeUInt32LE(0, 20);
+  edit.writeUInt32LE(prefix, 20);
   edit.writeUInt32LE(spec.persistIds[0], 24);
   edit.writeUInt32LE(spec.seed, SEED_OFFSET_IN_EDIT_ATOM);
-  const document = Buffer.concat([directory, edit, Buffer.alloc(spec.padding ?? 0)]);
+  return { document: Buffer.concat([Buffer.alloc(prefix), directory, edit, Buffer.alloc(spec.padding ?? 0)]), editOffset };
+}
+
+/** The Current User stream ([MS-PPT] 2.3.2) naming the edit at `editOffset`. */
+function craftCurrentUser(editOffset: number, token = PLAIN_TOKEN): Buffer {
   const current = Buffer.alloc(8 + 20);
   current.writeUInt16LE(0x0ff6, 2);
   current.writeUInt32LE(20, 4);
   current.writeUInt32LE(20, 8);
-  current.writeUInt32LE(spec.token ?? PLAIN_TOKEN, 12);
+  current.writeUInt32LE(token, 12);
   current.writeUInt32LE(editOffset, 16);
+  return current;
+}
+
+/** A presentation with one persist directory and one UserEditAtom, written from [MS-PPT] 2.3.2, 2.3.3 and 2.3.4 with the compound file writer. */
+function craftPresentation(spec: CraftedEdit): { file: Buffer; editOffset: number } {
+  const { document, editOffset } = craftDocument(spec);
   const file = buildCfbfContainer([
-    { name: 'Current User', data: current },
+    { name: 'Current User', data: craftCurrentUser(editOffset, spec.token) },
     { name: DOCUMENT_STREAM, data: document },
   ]);
   return { file, editOffset };
 }
 
 const seedOf = (file: Buffer, editOffset: number): number => parseCfbf(file).streams.get(DOCUMENT_STREAM)!.readUInt32LE(editOffset + SEED_OFFSET_IN_EDIT_ATOM);
+const changedBytes = (before: Buffer, after: Buffer): number => [...before.keys()].filter((index) => before[index] !== after[index]).length;
+/** The prefix that puts the seed of a document with `WIDE_PERSIST_IDS` at `seedOffset`: the edit follows the persist directory. */
+const prefixForSeedAt = (seedOffset: number): number => seedOffset - (8 + 4 + WIDE_PERSIST_IDS.length * 4) - SEED_OFFSET_IN_EDIT_ATOM;
+const documentStart = (file: Buffer): number => entryFields(file, entryId(file, DOCUMENT_STREAM)).start;
 
 describe('repairPptPersistIdSeed', () => {
   it('raises a seed below the largest persist id to that id in a stream held by the mini stream', () => {
@@ -78,8 +105,55 @@ describe('repairPptPersistIdSeed', () => {
     const { file, editOffset } = craftPresentation({ seed: 2, persistIds: [1, 2, 3, 4, 5, 6, 7], padding: 6000 });
     const repaired = repairPptPersistIdSeed(file)!;
     expect(seedOf(repaired, editOffset)).toBe(7);
-    const changed = [...file.keys()].filter((index) => file[index] !== repaired[index]);
-    expect(changed).toHaveLength(1);
+    expect(changedBytes(file, repaired)).toBe(1);
+  });
+
+  it('writes a seed that starts on the last byte of a mini sector into the next mini sector of the chain, which is not the next in the file', () => {
+    const { file, editOffset } = craftPresentation({ seed: 1, persistIds: WIDE_PERSIST_IDS, prefix: prefixForSeedAt(2 * MINI_SECTOR_BYTES - 1) });
+    const fragmented = moveMiniChainSectorToEnd(file, documentStart(file), 2);
+    expect(seedOf(fragmented, editOffset)).toBe(1);
+    const repaired = repairPptPersistIdSeed(fragmented)!;
+    expect(seedOf(repaired, editOffset)).toBe(WIDE_LARGEST_ID);
+    expect(changedBytes(fragmented, repaired)).toBe(WIDE_SEED_BYTES_CHANGED);
+  });
+
+  it.each([
+    ['the next sector of the chain lies elsewhere in the file', 2],
+    ['the sector it starts in is the last of the file', 1],
+  ])('writes a seed that starts on the last byte of a sector into the next sector of the chain where %s', (_, movedIndex) => {
+    const { file, editOffset } = craftPresentation({ seed: 1, persistIds: WIDE_PERSIST_IDS, prefix: prefixForSeedAt(2 * SECTOR_BYTES - 1), padding: 6000 });
+    const fragmented = moveChainSectorToEnd(file, documentStart(file), movedIndex);
+    expect(seedOf(fragmented, editOffset)).toBe(1);
+    const repaired = repairPptPersistIdSeed(fragmented)!;
+    expect(seedOf(repaired, editOffset)).toBe(WIDE_LARGEST_ID);
+    expect(changedBytes(fragmented, repaired)).toBe(WIDE_SEED_BYTES_CHANGED);
+  });
+
+  it('reads and patches the PowerPoint Document stream the directory tree reaches, not an unreachable entry of that name', () => {
+    const decoyName = 'PowerPoint DocumenX';
+    const withDecoy = (seed: number, decoySeed: number): { file: Buffer; editOffset: number } => {
+      const { document, editOffset } = craftDocument({ seed, persistIds: PERSIST_IDS });
+      const decoy = craftDocument({ seed: decoySeed, persistIds: PERSIST_IDS }).document;
+      const file = buildCfbfContainer([
+        { name: 'Current User', data: craftCurrentUser(editOffset) },
+        { name: DOCUMENT_STREAM, data: document },
+        { name: decoyName, data: decoy },
+      ]);
+      const documentId = entryId(file, DOCUMENT_STREAM);
+      const decoyId = entryId(file, decoyName);
+      expect(entryFields(file, documentId).right).toBe(decoyId);
+      setEntry(file, documentId, { right: NO_ENTRY });
+      setEntry(file, decoyId, { name: DOCUMENT_STREAM });
+      const container = parseCfbf(file);
+      expect(container.streams.get(DOCUMENT_STREAM)).toEqual(decoy);
+      expect(container.paths.get(DOCUMENT_STREAM)).toEqual(document);
+      return { file, editOffset };
+    };
+    expect(repairPptPersistIdSeed(withDecoy(6, 1).file)).toBeUndefined();
+    const { file, editOffset } = withDecoy(1, 6);
+    const repaired = repairPptPersistIdSeed(file)!;
+    expect(parseCfbf(repaired).paths.get(DOCUMENT_STREAM)!.readUInt32LE(editOffset + SEED_OFFSET_IN_EDIT_ATOM)).toBe(6);
+    expect(changedBytes(file, repaired)).toBe(1);
   });
 
   it('leaves a seed that already covers the directory alone', () => {
@@ -87,8 +161,8 @@ describe('repairPptPersistIdSeed', () => {
     expect(repairPptPersistIdSeed(craftPresentation({ seed: 9, persistIds: [1, 2, 3] }).file)).toBeUndefined();
   });
 
-  it('leaves an encrypted presentation alone', () => {
-    expect(repairPptPersistIdSeed(craftPresentation({ seed: 1, persistIds: [1, 2, 3], token: ENCRYPTED_TOKEN }).file)).toBeUndefined();
+  it('refuses an encrypted presentation as encrypted', () => {
+    expect(() => repairPptPersistIdSeed(craftPresentation({ seed: 1, persistIds: [1, 2, 3], token: ENCRYPTED_TOKEN }).file)).toThrow(EncryptedOfficeDocumentError);
   });
 
   it('gives up on an edit history that loops, and on bytes that are no compound file', () => {
@@ -96,6 +170,47 @@ describe('repairPptPersistIdSeed', () => {
     expect(repairPptPersistIdSeed(Buffer.from('not a compound file'))).toBeUndefined();
     const { file } = craftPresentation({ seed: 1, persistIds: [1, 2, 3] });
     expect(repairPptPersistIdSeed(file.subarray(0, 700))).toBeUndefined();
+  });
+});
+
+describe('the office suite run on a presentation it could not load', () => {
+  const suiteResult: WorkerConversionResult = { buffer: Buffer.from('%PDF'), mimeType: 'application/pdf', filename: 'out.pdf', size: 4, engineUsed: 'native-soffice-pool', executionTimeMs: 1 };
+  const notLoaded = (): Error => new Error('LibreOffice execution completed without producing expected output file');
+  /** A stand-in for the office suite that fails on its first run and converts on any later one. */
+  const suiteFailingOnce = (failure: Error) => {
+    const inputs: Array<Buffer | WorkerVfsPayload> = [];
+    const run = vi.fn(async (input: Buffer | WorkerVfsPayload) => {
+      inputs.push(input);
+      if (inputs.length === 1) throw failure;
+      return suiteResult;
+    });
+    return { run, inputs };
+  };
+
+  it('runs it once more on a copy with the seed raised', async () => {
+    const { file, editOffset } = craftPresentation({ seed: 3, persistIds: PERSIST_IDS });
+    const { run, inputs } = suiteFailingOnce(notLoaded());
+    await expect(withPresentationRetry(run)(file, 'ppt', 'pdf')).resolves.toBe(suiteResult);
+    expect(inputs).toHaveLength(2);
+    expect(seedOf(inputs[1] as Buffer, editOffset)).toBe(6);
+  });
+
+  it('answers an encrypted presentation as encrypted without running it again', async () => {
+    const { file } = craftPresentation({ seed: 3, persistIds: PERSIST_IDS, token: ENCRYPTED_TOKEN });
+    const { run } = suiteFailingOnce(notLoaded());
+    await expect(withPresentationRetry(run)(file, 'ppt', 'pdf')).rejects.toBeInstanceOf(EncryptedOfficeDocumentError);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['an input file that cannot be read', { inputPath: '/nonexistent/easyconvert/deck.ppt', outputPath: '/nonexistent/easyconvert/deck.pdf' }],
+    ['bytes that are no compound file', Buffer.from('not a compound file')],
+    ['a seed that already covers the directory', craftPresentation({ seed: 6, persistIds: PERSIST_IDS }).file],
+  ])('keeps the error of the suite for %s', async (_, input) => {
+    const failure = notLoaded();
+    const { run } = suiteFailingOnce(failure);
+    await expect(withPresentationRetry(run)(input, 'ppt', 'pdf')).rejects.toBe(failure);
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });
 
