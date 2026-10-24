@@ -49,7 +49,7 @@ async function colourOnWhite(bytes: Buffer): Promise<{ width: number; height: nu
   return { width: info.width, height: info.height, data };
 }
 
-/** Whether libheif's own decoder reads the file, which is what the installed libheif can do (version 1.19 added the layouts above). */
+/** Whether libheif's own decoder reads the file, which is what the installed libheif can do (version 1.19 added the layouts above; the worker image has 1.23.6). */
 function libheifReads(file: string): boolean {
   try {
     execFileSync(heifConvert as string, [file, path.join(workDir, `${path.basename(file)}.probe.png`)], { stdio: 'pipe' });
@@ -72,14 +72,14 @@ describe.skipIf(needsHeifDecoders)('HEIC and HEIF files', () => {
     expect([converted.width, converted.height]).toEqual([width, height]);
     expect(maxSampleDifference(converted, await referenceDecode(sample.path))).toBeLessThanOrEqual(1);
     const reference = await colourOnWhite(referencePng(sample.path));
-    for (const target of ['jpg', 'avif', 'gif']) {
+    for (const target of ['jpg', 'webp', 'avif', 'gif']) {
       const lossy = await colourOnWhite((await dispatchConversion(sample.bytes, format, target, {}, id)).buffer);
       expect([lossy.width, lossy.height], target).toEqual([width, height]);
       expect(psnrDb(lossy.data, reference.data), target).toBeGreaterThanOrEqual(MIN_LOSSY_PSNR_DB);
     }
   });
 
-  // Files that need libheif 1.19 (the `mif3` brand, uncompressed images with row-aligned tiles; the worker image's Debian 13 has it,
+  // Files that need libheif 1.19 (the `mif3` brand, uncompressed images with row-aligned tiles; the worker image's Debian 13 has 1.23.6,
   // the CI runner's Ubuntu 24.04 has 1.17). Where libheif's own decoder reads the file the conversion has to give the same picture;
   // where it cannot, the conversion has to refuse it with the typed answer and never invent one. Each run exercises one of the two.
   const NEWER_LIBHEIF_SAMPLES = [

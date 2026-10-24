@@ -2,13 +2,13 @@
   {
     "file": "libheif-lightning_mini.heif",
     "detail": "^ConversionFailedError: Invalid image: the HEIF picture could not be decoded$",
-    "reason": "CI runner only: its libheif 1.17 does not read the mif3 brand; libheif 1.19 in the worker image does, and the conversion there equals libheif's own decode (tests/image-heif-decode.test.ts).",
+    "reason": "CI runner only: its libheif 1.17 does not read the mif3 brand; libheif 1.23.6 in the worker image (Debian 13, measured) does, and the conversion there equals libheif's own decode to jpg, png and webp (tests/image-heif-decode.test.ts).",
     "issue": 783
   },
   {
     "file": "libheif-uncompressed_comp_rgb_tiled_row_tile_align.heif",
     "detail": "^ConversionFailedError: Invalid image: the HEIF picture could not be decoded$",
-    "reason": "CI runner only: its libheif 1.17 does not read uncompressed images with row-aligned tiles; libheif 1.19 in the worker image does, and the conversion there equals libheif's own decode (tests/image-heif-decode.test.ts).",
+    "reason": "CI runner only: its libheif 1.17 does not read uncompressed images with row-aligned tiles; libheif 1.23.6 in the worker image (Debian 13, measured) does, and the conversion there equals libheif's own decode to jpg, png and webp (tests/image-heif-decode.test.ts).",
     "issue": 783
   },
   {
