@@ -41,7 +41,8 @@ if compgen -G "$lib_dir/libTKDESTEP.*" > /dev/null; then
 else
   exchange_libs=(TKSTEP TKIGES TKXDESTEP TKXDEIGES)
 fi
-libs=(TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo TKTopAlgo TKMesh TKShHealing TKXSBase TKXCAF TKLCAF TKCDF TKCAF "${exchange_libs[@]}")
+# The OBJ writer (RWObj_CafWriter) is in TKRWMesh up to 7.7 and in TKDEOBJ from 7.8; a library that the installed version lacks is skipped below.
+libs=(TKernel TKMath TKG2d TKG3d TKGeomBase TKBRep TKGeomAlgo TKTopAlgo TKMesh TKShHealing TKXSBase TKXCAF TKLCAF TKCDF TKCAF TKRWMesh TKDEOBJ "${exchange_libs[@]}")
 link=()
 for lib in "${libs[@]}"; do
   if compgen -G "$lib_dir/lib$lib.*" > /dev/null; then link+=("-l$lib"); fi

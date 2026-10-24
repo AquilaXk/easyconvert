@@ -4,6 +4,8 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { convertCadWithOcct } from '../src/lib/conversions/cad-occt';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
+import JSZip from 'jszip';
+import { igesFile } from './helpers/iges-builder';
 import { CpuTaskTimeoutError, EngineMissingError, EngineUnavailableError, UnprocessableCadInputError } from '../src/lib/types';
 
 /**
@@ -224,6 +226,92 @@ describe('what the wrapper asks the converter for', () => {
         expect(result.mimeType, target).toBe(mimeType);
         expect(result.size).toBe(result.buffer.length);
       }
+    });
+  });
+});
+
+/** A binary STL of `triangles` triangles that share one vertex: the 80-byte header, the count and 50 bytes per facet. */
+function binaryStl(triangles: number): Buffer {
+  const stl = Buffer.alloc(84 + 50 * triangles);
+  stl.writeUInt32LE(triangles, 80);
+  for (let i = 0; i < triangles; i++) {
+    const at = 84 + 50 * i + 12;
+    [0, 0, 0, 1 + i, 0, 0, 0, 1 + i, 0].forEach((value, k) => stl.writeFloatLE(value, at + 4 * k));
+  }
+  return stl;
+}
+
+describe('an IGES file or a mesh that is refused before the program starts', () => {
+  const started = (): { program: string; marker: string } => {
+    const marker = path.join(tmpDir('cad-marker-'), 'started');
+    return { program: standIn(`touch ${marker}`), marker };
+  };
+
+  it('answers 422 for an IGES file whose Terminate line disagrees with its records, and never starts the program', async () => {
+    const { program, marker } = started();
+    const records = igesFile().toString('latin1').split('\r\n');
+    records.splice(records.length - 3, 1);
+    await withProgram(program, async () => {
+      const failure = await failureOf(() => convertVectorCad(Buffer.from(records.join('\r\n'), 'latin1'), 'igs', 'stl', {}, 'part.igs'));
+      expect(failure).toBeInstanceOf(UnprocessableCadInputError);
+      expect((failure as UnprocessableCadInputError).status).toBe(422);
+      expect(failure.message).toBe('The IGES file is cut off or damaged: its Terminate line counts 1 Parameter Data records, but the file holds 0.');
+    });
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('answers 422 naming the triangle count and the limit for a mesh of more than 50,000 triangles written as IGES, and never starts the program', async () => {
+    const { program, marker } = started();
+    await withProgram(program, async () => {
+      const failure = await failureOf(() => convertVectorCad(binaryStl(50_001), 'stl', 'iges', {}, 'big.stl'));
+      expect(failure).toBeInstanceOf(UnprocessableCadInputError);
+      expect(failure.message).toBe('The mesh has 50,001 triangles; the IGES file takes at most 50,000, because every triangle is a trimmed surface of its own.');
+    });
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('hands the program a mesh of exactly 50,000 triangles as its indexed triangle list', async () => {
+    const dir = tmpDir('cad-mesh-');
+    const copy = path.join(dir, 'mesh.bin');
+    const program = standIn(`cp "$7" ${copy}\nprintf 'ISO-10303-21;' > "$8"`);
+    await withProgram(program, async () => {
+      const result = await convertVectorCad(binaryStl(50_000), 'stl', 'igs', {}, 'edge.stl');
+      expect(result.filename).toBe('edge.igs');
+      expect(result.mimeType).toBe('model/iges');
+    });
+    const mesh = fs.readFileSync(copy);
+    const vertices = mesh.readUInt32LE(0);
+    const triangles = mesh.readUInt32LE(4);
+    expect(triangles).toBe(50_000);
+    expect(mesh.length).toBe(8 + 24 * vertices + 12 * triangles);
+    expect(mesh.readDoubleLE(8 + 24 * 1)).toBe(1);
+  });
+});
+
+describe('an OBJ with colours comes as the ZIP of the OBJ and its material file', () => {
+  /** A stand-in that writes an OBJ naming its material file, and the MTL beside it, as the real program does for a model with colours. */
+  const withColours = (): string =>
+    standIn(`stem="\${8%.obj}"\nprintf 'mtllib %s\\nv 0 0 0\\nv 1 0 0\\nv 0 1 0\\nusemtl mat_1\\nf 1 2 3\\n' "$(basename "$stem").mtl" > "$8"\nprintf 'newmtl mat_1\\nKd 1 0 0\\n' > "$stem.mtl"`);
+
+  it('names the ZIP by the request and both files by the request name with unsafe characters replaced', async () => {
+    await withProgram(withColours(), async () => {
+      const result = await convertVectorCad(STEP_BYTES, 'step', 'obj', {}, 'Müller part (1).step');
+      expect(result.mimeType).toBe('application/zip');
+      expect(result.filename).toBe('Müller part (1).zip');
+      expect(result.size).toBe(result.buffer.length);
+      const zip = await JSZip.loadAsync(result.buffer);
+      expect(Object.keys(zip.files).sort()).toEqual(['M_ller_part__1_.mtl', 'M_ller_part__1_.obj']);
+      expect(await zip.files['M_ller_part__1_.obj'].async('string')).toContain('mtllib M_ller_part__1_.mtl\n');
+      expect(await zip.files['M_ller_part__1_.mtl'].async('string')).toContain('Kd 1 0 0');
+    });
+  });
+
+  it('keeps a hostile request name inside the scratch directory', async () => {
+    await withProgram(withColours(), async () => {
+      const result = await convertVectorCad(STEP_BYTES, 'step', 'obj', {}, '../../etc/passwd\u0000.step');
+      const zip = await JSZip.loadAsync(result.buffer);
+      for (const name of Object.keys(zip.files)) expect(name).toMatch(/^[A-Za-z0-9._-]+$/);
+      expect(Object.keys(zip.files).every((name) => !name.includes('/'))).toBe(true);
     });
   });
 });
