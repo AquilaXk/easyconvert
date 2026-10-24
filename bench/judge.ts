@@ -73,7 +73,8 @@ export function judgeParity(report: BenchReport, options: JudgeOptions, out: (li
   const measuredFamilies = new Set<string>(options.families);
   // The rows this run is about, as the baseline gate counts them: a quality entry for one of them that the report lacks fails.
   const expectedRows = (id: string): boolean => measuredFamilies.has(id.split('/')[0]) && include(id, { ratio: null });
-  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps, families: options.families, expectedRows, qualityBase });
+  const timedByRun = (id: string): boolean => rowInScope(options.quick, id);
+  const parity = evaluateParity(report, readGaps(options.gapsPath), { baseGaps, timedByRun, families: options.families, expectedRows, qualityBase });
   for (const line of failureLines(parity)) out(line);
   for (const line of renderParityText(parity)) out(line);
 

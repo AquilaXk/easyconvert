@@ -112,7 +112,7 @@ and a timed row costs many pairs). A pull request's quality job (`--quick`) meas
 reference side is read from the cache the nightly run keeps. A pull request's speed job sets `BENCH_CORPUS_TIER=pr` and times the
 generated corpus only, as before, and so does the plain baseline run of the nightly workflow (its gate then looks for the generated
 corpus' baseline entries only; the parity jobs of the night measure and judge the public samples); a change that lands a speed gap on a public sample is found by the nightly run (the gate files
-that judge speed rows are the base's, `scripts/ci-parity-base-gate.mjs`, so the number of rows a pull request times stays as it was).
+that judge speed rows are the base's, `scripts/ci-parity-base-gate.mjs`, so the number of rows a pull request times stays as it was). A speed row of a public sample can be a known gap like any other: the nightly run judges it by the entry's history (the bound and the 65 percent floor of "The boundary of a tracked row" below), and a pull request that adds or edits the entry is checked for the form of the entry only (the issue, and a commit on every new history point, which only `bench:refresh-speed` writes from the `bench-speed-results` artifact of a nightly run), because its speed job does not time the row and cannot back the ratio. The nightly run times only the samples of `PUBLIC_SPEED_SAMPLES`, and `tests/bench-public-unified.test.ts` refuses an entry for a public sample outside it.
 
 ### Documents, PDF, ebooks, fonts, CAD, RAW, vector and data
 
@@ -141,9 +141,8 @@ family they belong to, and a sample may list companion files such as the referen
 `bench/corpora.ts` with its redirect and size guards, the one class-row pool `bench/class-rows.ts`, and the one quick list and speed list
 in `bench/config.ts` (`QUICK_PUBLIC_SUBSET`, `PUBLIC_SPEED_SAMPLES`). A sample the host does not deliver is skipped as a missing optional
 tool is, and fails the run under `ORACLE_STRICT_MODE=1`. The cases named in `QUICK_PUBLIC_SUBSET` run in the pull request quality job;
-the speed jobs of a pull request time the generated corpus only, so the public samples of these families have no known-gap entries
-(their speed gaps are tracked in the issues), and the nightly run measures the full sets and the throughput rows of the samples in
-`PUBLIC_SPEED_SAMPLES`.
+the speed jobs of a pull request time the generated corpus only, so the nightly run measures the full sets and the throughput rows of the
+samples in `PUBLIC_SPEED_SAMPLES`, and judges a known-gap entry of one of those rows by its history (above).
 
 The python libraries behind the oracles (ezdxf for the geometry of a drawing, olefile and xlrd for the text of the binary office formats) are
 pinned in `.github/actions/ci-setup/install-tools.sh`.

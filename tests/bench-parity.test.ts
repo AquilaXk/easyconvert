@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { PARITY_SCHEMA_VERSION, PARITY_VERDICT_FILE, SCHEMA_VERSION } from '../bench/config';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CORPUS_TIER_ENV, PARITY_SCHEMA_VERSION, PARITY_VERDICT_FILE, SCHEMA_VERSION } from '../bench/config';
 import { BenchArgumentError, ParityInputError, ReportSchemaError } from '../bench/errors';
 import { evaluateParity, failureLines, type ParityRunFile, renderParityMarkdown, renderParityText } from '../bench/parity';
 import type { Baseline } from '../bench/gate';
@@ -823,6 +823,7 @@ describe('a parity run on a saved report', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-parity-'));
   });
   afterEach(() => {
+    vi.unstubAllEnvs();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -962,6 +963,52 @@ describe('a parity run on a saved report', () => {
         baseGaps: [entry(0.45)],
       });
       expect(recorded.code).toBe(0);
+    });
+  });
+
+  describe('a speed row of a public sample', () => {
+    // wm-deep-dart.png is a sample of the remote manifest: the nightly run times it, and a pull request's speed job (BENCH_CORPUS_TIER=pr) does not.
+    const PUBLIC_ID = 'image/wm-deep-dart.png->avif/throughput';
+    const publicRow = (median: number): BenchRow[] => [
+      row({ id: PUBLIC_ID, direction: 'higher', kind: 'throughput', ours: 10 * median, reference: 10, ratio: median, runs: 9, speedVerdict: 'fail', ratioLow: median - 0.1, ratioHigh: median + 0.1, ratioMedian: median, tolerance: { abs: 0, rel: 0.35 } }),
+    ];
+    const entry = (ratio: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+      id: PUBLIC_ID,
+      issue: 641,
+      ratio,
+      note: 'AVIF speed',
+      history: FLAT_HISTORY(ratio).map((point) => ({ ...point, commit: 'b'.repeat(40) })),
+      ...extra,
+    });
+    const baseline = { [PUBLIC_ID]: { direction: 'higher', tolerance: { abs: 0, rel: 0.35 }, ours: null, delta: null, ratio: 0.5 } };
+
+    it('passes inside the bound of its history in the nightly run, which times it, and fails below the bound', async () => {
+      vi.stubEnv(CORPUS_TIER_ENV, 'full');
+      const inside = await run(publicRow(0.5), { baseline, gaps: [entry(0.5)] });
+      expect(inside.code).toBe(0);
+      expect(inside.verdict.parity.rows.find((candidate) => candidate.id === PUBLIC_ID)).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
+      const below = await run(publicRow(0.3), { baseline, gaps: [entry(0.5)] });
+      expect(below.code).toBe(3);
+      expect(below.lines.some((line) => line.startsWith('BELOW REFERENCE') && line.includes(PUBLIC_ID) && line.includes('got slower than its history'))).toBe(true);
+      const untracked = await run(publicRow(0.5), { baseline });
+      expect(untracked.verdict.parity.rows.find((candidate) => candidate.id === PUBLIC_ID)).toMatchObject({ outcome: 'fail', basis: 'speed-below-reference' });
+    });
+
+    it('is a new entry of a pull request that does not time the row: its form is checked, and the nightly run holds the numbers', async () => {
+      vi.stubEnv(CORPUS_TIER_ENV, 'pr');
+      const generated = rowsWith(-2, 0.96, 'pass');
+      expect((await run(generated, { baseline: baselineEntries(1.1), gaps: [entry(0.5)], baseGaps: [] })).code).toBe(0);
+      const withoutCommit = await run(generated, { baseline: baselineEntries(1.1), gaps: [entry(0.5, { history: FLAT_HISTORY(0.5) })], baseGaps: [] });
+      expect(withoutCommit.code).toBe(3);
+      expect(withoutCommit.lines.some((line) => line.includes('is new and has no commit'))).toBe(true);
+    });
+
+    it('still has to be backed by the run when the run times it', async () => {
+      vi.stubEnv(CORPUS_TIER_ENV, 'full');
+      const bypass = await run(publicRow(0.5), { baseline, gaps: [entry(0.1)], baseGaps: [] });
+      expect(bypass.code).toBe(3);
+      expect(bypass.lines.some((line) => line.includes('the recorded ratio 0.1 is outside'))).toBe(true);
+      expect((await run(publicRow(0.5), { baseline, gaps: [entry(0.45)], baseGaps: [] })).code).toBe(0);
     });
   });
 
