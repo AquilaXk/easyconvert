@@ -86,6 +86,10 @@ describe('parity-quality', () => {
     expect(runOf(quality, 'bench')).not.toContain('--speed-only');
   });
 
+  it('measures with the heap bound the service runs with, so a photograph is encoded on the threads the worker leases', () => {
+    expect(quality.env?.MALLOC_ARENA_MAX).toBe('2');
+  });
+
   it('backs the quality entries a change adds or edits with the gap file and the baseline of the first parent of the tested merge', () => {
     const base = stepNamed(quality, 'base');
     expect(base.run).toContain("git cat-file -p HEAD | sed -n 's/^parent //p'");
@@ -575,6 +579,10 @@ describe('the nightly run', () => {
       expect(step.run).not.toContain('--quick');
     }
     expect(s.run).not.toContain('--family');
+  });
+
+  it('measures quality with the heap bound the service runs with, as the speed jobs do', () => {
+    expect(stepNamed(quality, 'Run the quality parity benchmark').env?.MALLOC_ARENA_MAX).toBe('2');
   });
 
   describe('the quality half, sharded by family group', () => {
