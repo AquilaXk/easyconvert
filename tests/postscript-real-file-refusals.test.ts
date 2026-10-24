@@ -125,13 +125,13 @@ interface PlacedTextOnPage {
   baseline: number;
 }
 
-/** The TEXT entities of a DXF page in points from the top left, as Poppler gives its words. */
-function textsOnPage(dxf: DxfDocument, pageHeight: number, unitsPerPoint: number): PlacedTextOnPage[] {
+/** The TEXT entities of a DXF page (in points, from the bottom left) in points from the top left, as Poppler gives its words. */
+function textsOnPage(dxf: DxfDocument, pageHeight: number): PlacedTextOnPage[] {
   return dxf.texts.map((text) => ({
     value: decodeTextValue(text.value),
-    x0: text.insert.x / unitsPerPoint,
-    x1: (text.alignment?.x ?? text.insert.x) / unitsPerPoint,
-    baseline: pageHeight - text.insert.y / unitsPerPoint,
+    x0: text.insert.x,
+    x1: text.alignment?.x ?? text.insert.x,
+    baseline: pageHeight - text.insert.y,
   }));
 }
 
@@ -174,15 +174,6 @@ function setOnlyInType3Fonts(pdfPath: string, page: number): boolean {
       return parts.slice(1, parts.length - 6).join(' ');
     });
   return types.length > 0 && types.every((type) => type === 'Type 3');
-}
-
-/**
- * DXF units per point. The DXF is written in SVG pixels: Poppler 24 writes the page size of its SVG without a unit (a pixel
- * is a point), Poppler 26 in `pt` (a point is 4/3 pixel), so the factor is read from the SVG of the same PDF.
- */
-function dxfUnitsPerPoint(pdfPath: string): number {
-  const svg = execFileSync(getOracleToolPath('pdftocairo') as string, ['-svg', '-f', '1', '-l', '1', pdfPath, '-'], { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 });
-  return /<svg\b[^>]*\swidth="[\d.]+pt"/.test(svg) ? 96 / 72 : 1;
 }
 
 /**
@@ -241,12 +232,11 @@ describe('PostScript files that draw their text with bitmap fonts', () => {
           const pdfPath = path.join(directory, 'doc.pdf');
           fs.writeFileSync(pdfPath, pdf);
           const popplerPages = pdfWords(pdfPath);
-          const unitsPerPoint = dxfUnitsPerPoint(pdfPath);
           expect(pages).toHaveLength(popplerPages.length);
           pages.forEach((page, index) => {
             const dxf = readDxf(page);
             const { height, words } = popplerPages[index];
-            const texts = textsOnPage(dxf, height, unitsPerPoint);
+            const texts = textsOnPage(dxf, height);
             expect(dxf.texts.length, `page ${index + 1}`).toBeGreaterThan(0);
             expect(dxf.styles, `page ${index + 1}`).toEqual([{ name: 'STANDARD', font: 'txt' }]);
             expect(textAgreement(texts, words), `page ${index + 1}`).toBeGreaterThanOrEqual(MIN_TEXT_AGREEMENT);

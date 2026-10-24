@@ -38,6 +38,8 @@ export interface SvgGeometryElement {
 export interface ParsedSvgVectorDocument {
   width: number;
   height: number;
+  /** CSS pixels in one unit of the root's width (else height) attribute; 1 when it names none, or a percentage. */
+  unitPx: number;
   elements: SvgGeometryElement[];
 }
 
@@ -894,6 +896,7 @@ function matrixLengthScale(m: AffineMatrix): number {
 interface Viewport {
   width: number;
   height: number;
+  unitPx: number;
   matrix: AffineMatrix;
 }
 
@@ -950,6 +953,12 @@ function parseRootLength(value: string | undefined, name: string, hasViewBox: bo
   return px;
 }
 
+/** CSS pixels in the unit of a root width or height: 1 for a value without a unit, a percentage or none. */
+function rootUnitPx(value: string | undefined): number | undefined {
+  const unit = value === undefined ? undefined : LENGTH_PATTERN.exec(value)?.[2].toLowerCase();
+  return unit === undefined || unit === '' ? undefined : ABSOLUTE_LENGTH_UNITS[unit];
+}
+
 const ALIGN_FACTORS: Record<string, number> = { min: 0, mid: 0.5, max: 1 };
 
 /** Viewbox-to-viewport matrix per SVG 1.1 section 7.8 (preserveAspectRatio). */
@@ -988,11 +997,12 @@ function resolveViewport(attrs: Map<string, string>): Viewport {
   const vb = parseViewBox(attrs.get('viewBox'));
   const lengthW = parseRootLength(attrs.get('width'), 'width', vb !== null);
   const lengthH = parseRootLength(attrs.get('height'), 'height', vb !== null);
+  const unitPx = rootUnitPx(attrs.get('width')) ?? rootUnitPx(attrs.get('height')) ?? 1;
 
   if (!vb) {
     const width = lengthW ?? DEFAULT_VIEWPORT_WIDTH;
     const height = lengthH ?? DEFAULT_VIEWPORT_HEIGHT;
-    return { width, height, matrix: IDENTITY_MATRIX };
+    return { width, height, unitPx, matrix: IDENTITY_MATRIX };
   }
 
   const vbAspect = vb[2] / vb[3];
@@ -1000,7 +1010,7 @@ function resolveViewport(attrs: Map<string, string>): Viewport {
   let height = lengthH ?? vb[3];
   if (lengthW !== null && lengthH === null) height = lengthW / vbAspect;
   if (lengthH !== null && lengthW === null) width = lengthH * vbAspect;
-  return { width, height, matrix: viewBoxMatrix(vb, width, height, attrs.get('preserveAspectRatio')) };
+  return { width, height, unitPx, matrix: viewBoxMatrix(vb, width, height, attrs.get('preserveAspectRatio')) };
 }
 
 // ============================================================================
@@ -1243,7 +1253,7 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
   }
   const root = buildSvgTree(svgContent);
   if (!root) {
-    return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, elements: [] };
+    return { width: DEFAULT_VIEWPORT_WIDTH, height: DEFAULT_VIEWPORT_HEIGHT, unitPx: 1, elements: [] };
   }
   const viewport = resolveViewport(root.attrs);
   const sheet = extractStylesheets(svgContent);
@@ -1269,7 +1279,7 @@ export function parseSvgGeometries(svgContent: string, bitmapGlyphs = new Bitmap
   const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, clipsNothing, clips };
   indexIds(root, state.ids, parents);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
-  return { width: viewport.width, height: viewport.height, elements: state.elements };
+  return { width: viewport.width, height: viewport.height, unitPx: viewport.unitPx, elements: state.elements };
 }
 
 // ============================================================================

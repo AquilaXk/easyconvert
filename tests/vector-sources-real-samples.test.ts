@@ -281,16 +281,6 @@ interface DxfFacts {
   max: [number, number];
 }
 
-/**
- * DXF units per point. The DXF is written in SVG pixels: Poppler 24 writes the page size of its SVG without a unit
- * (a pixel is a point), Poppler 26 in `pt` (a point is 4/3 pixel), so the factor is read from the SVG of the same PDF.
- */
-const SVG_PIXELS_PER_POINT = 96 / 72;
-function dxfUnitsPerPoint(pdf: Buffer): number {
-  const svg = withFile(pdf, 'pdf', (file) => runTool('pdftocairo', ['-svg', '-f', '1', '-l', '1', file, '-']));
-  return /<svg\b[^>]*\swidth="[\d.]+pt"/.test(svg) ? SVG_PIXELS_PER_POINT : 1;
-}
-
 /** What ezdxf reads from a DXF file: audit errors, entity count and the extents of the drawing. */
 function ezdxfFacts(dxf: Buffer): DxfFacts {
   return withFile(dxf, 'dxf', (file) =>
@@ -577,19 +567,17 @@ describe.skipIf(toolsMissing)('real Visio, CorelDRAW, EMF, WMF and CGM files', (
   );
 });
 
-/** The DXF reads without audit errors, holds entities, and its extents lie in the page and hold every inked pixel of the PDF page. */
+/** The DXF (in points) reads without audit errors, holds entities, and its extents lie in the page and hold every inked pixel of the PDF page. */
 async function expectDxfHoldsTheInk(dxf: Buffer, pdf: Buffer, label: string): Promise<void> {
-  const unit = dxfUnitsPerPoint(pdf);
   const facts = ezdxfFacts(dxf);
   const ink = await inkBoxOfPdf(pdf);
-  const tolerance = DXF_EXTENT_TOLERANCE_POINTS * unit;
-  for (const side of ['minX', 'minY', 'maxX', 'maxY'] as const) ink[side] *= unit;
+  const tolerance = DXF_EXTENT_TOLERANCE_POINTS;
   expect({ label, errors: facts.errors }).toEqual({ label, errors: 0 });
   expect(facts.entities, `${label} entities`).toBeGreaterThan(0);
   const holdsInk = facts.min[0] <= ink.minX + tolerance && facts.min[1] <= ink.minY + tolerance && facts.max[0] >= ink.maxX - tolerance && facts.max[1] >= ink.maxY - tolerance;
   expect({ label, holdsInk, extents: [...facts.min, ...facts.max], ink: [ink.minX, ink.minY, ink.maxX, ink.maxY] }).toMatchObject({ label, holdsInk: true });
   const page = pdfPages(pdf).sizes[0];
-  const [width, height] = [page.width * unit, page.height * unit];
+  const { width, height } = page;
   expect(facts.min[0], `${label} left edge`).toBeGreaterThanOrEqual(-tolerance);
   expect(facts.min[1], `${label} bottom edge`).toBeGreaterThanOrEqual(-tolerance);
   expect(facts.max[0], `${label} right edge`).toBeLessThanOrEqual(width + tolerance);
