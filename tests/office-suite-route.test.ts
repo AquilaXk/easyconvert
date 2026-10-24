@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import JSZip from 'jszip';
 import {
   asUnreadableDocument,
   convertThroughInterchange,
@@ -9,9 +10,11 @@ import {
   officeSuiteReadsInput,
   officeSuiteWritesTarget,
   retryRefusedLegacyDocument,
+  withMetafileFrame,
   type OfficeSuiteRequest,
   type OfficeSuiteRouteDeps,
 } from '../src/worker/office-suite-route';
+import { emf, wmf } from './helpers/metafile-headers';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError, CorruptStreamError, EngineUnavailableError, SandboxUnavailableError } from '../src/lib/types';
 import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
@@ -381,5 +384,173 @@ describe('the export filter of the office suite for each source', () => {
     expect(resolveLibreOfficeFilter('txt', 'wps')).toBe('txt:Text (encoded):UTF8,LF,,,false');
     expect(resolveLibreOfficeFilter('docx', 'wps')).toBe('docx');
     expect(resolveLibreOfficeFilter('odd', 'odd')).toBe('otg');
+  });
+});
+
+describe('the page a metafile is drawn on by the office suite', () => {
+  type Run = Parameters<typeof withMetafileFrame>[0];
+  interface RunCall {
+    input: Buffer | WorkerVfsPayload;
+    src: string;
+    target: string;
+    options?: WorkerEngineOptions;
+    originalFilename?: string;
+  }
+
+  function recordingRun(calls: RunCall[], answer: WorkerConversionResult | null = result({ mimeType: 'application/pdf' })): Run {
+    return async (input, src, target, options, originalFilename) => {
+      calls.push({ input, src, target, options, originalFilename });
+      return answer;
+    };
+  }
+
+  const THIRTY_BY_TWENTY_MM = emf({ frame: [0, 0, 2999, 1999] });
+  const POINTS_PER_MM = 72 / 25.4;
+
+  async function stagedDrawing(staged: Buffer | WorkerVfsPayload): Promise<{ zip: JSZip; styles: string; content: string }> {
+    const bytes = Buffer.isBuffer(staged) ? staged : staged.inputBuffer!;
+    const zip = await JSZip.loadAsync(bytes);
+    return { zip, styles: await zip.file('styles.xml')!.async('string'), content: await zip.file('content.xml')!.async('string') };
+  }
+
+  function lengthInPoints(xml: string, attribute: string): number {
+    const match = new RegExp(`${attribute}="(-?[0-9.]+)pt"`).exec(xml);
+    expect(match, attribute).not.toBeNull();
+    return Number(match![1]);
+  }
+
+  it('is the frame of the EMF header: the office suite opens a drawing of that page that holds the file as it is', async () => {
+    const calls: RunCall[] = [];
+    const options = { timeoutMs: 5000 } as WorkerEngineOptions;
+    const answer = await withMetafileFrame(recordingRun(calls))(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', options, 'logo.emf');
+    expect(answer).toMatchObject({ mimeType: 'application/pdf' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ src: 'odg', target: 'pdf', options, originalFilename: 'logo.emf' });
+    const { zip, styles, content } = await stagedDrawing(calls[0].input);
+    expect(lengthInPoints(styles, 'fo:page-width')).toBeCloseTo(30 * POINTS_PER_MM, 2);
+    expect(lengthInPoints(styles, 'fo:page-height')).toBeCloseTo(20 * POINTS_PER_MM, 2);
+    expect(styles).toMatch(/fo:margin-top="0pt"[^>]*fo:margin-bottom="0pt"[^>]*fo:margin-left="0pt"[^>]*fo:margin-right="0pt"/);
+    expect(lengthInPoints(content, 'svg:width')).toBeCloseTo(30 * POINTS_PER_MM, 2);
+    expect(lengthInPoints(content, 'svg:height')).toBeCloseTo(20 * POINTS_PER_MM, 2);
+    expect(lengthInPoints(content, 'svg:x')).toBe(0);
+    expect(lengthInPoints(content, 'svg:y')).toBe(0);
+    const pictures = Object.keys(zip.files).filter((name) => name.startsWith('Pictures/') && !zip.files[name].dir);
+    expect(pictures).toHaveLength(1);
+    expect(pictures[0]).toMatch(/\.emf$/);
+    expect(await zip.file(pictures[0])!.async('nodebuffer')).toEqual(THIRTY_BY_TWENTY_MM);
+    expect(content).toContain(pictures[0]);
+  });
+
+  it('is the box of the WMF header over its unit', async () => {
+    const calls: RunCall[] = [];
+    const metafile = wmf({ placeable: { box: [0, 0, 1439, 719], inch: 1440 } });
+    await withMetafileFrame(recordingRun(calls))(metafile, 'wmf', 'pdf', {}, 'plan.wmf');
+    const { zip, styles } = await stagedDrawing(calls[0].input);
+    expect(lengthInPoints(styles, 'fo:page-width')).toBeCloseTo(72, 2);
+    expect(lengthInPoints(styles, 'fo:page-height')).toBeCloseTo(36, 2);
+    expect(Object.keys(zip.files).some((name) => /^Pictures\/[^/]+\.wmf$/.test(name))).toBe(true);
+  });
+
+  it('is written as an OpenDocument package, whose first entry is the stored media type', async () => {
+    const calls: RunCall[] = [];
+    await withMetafileFrame(recordingRun(calls))(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', {}, 'logo.emf');
+    const bytes = calls[0].input as Buffer;
+    expect(bytes.subarray(30, 38).toString('latin1')).toBe('mimetype');
+    expect(bytes.subarray(38, 38 + 'application/vnd.oasis.opendocument.graphics'.length).toString('latin1')).toBe('application/vnd.oasis.opendocument.graphics');
+    const { zip } = await stagedDrawing(bytes);
+    const manifest = await zip.file('META-INF/manifest.xml')!.async('string');
+    for (const part of ['content.xml', 'styles.xml']) expect(manifest).toContain(`manifest:full-path="${part}"`);
+  });
+
+  it('keeps the output path of a file that is not in memory, and reads the header from the file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'metafile-frame-'));
+    try {
+      const inputPath = path.join(dir, 'logo.emf');
+      fs.writeFileSync(inputPath, THIRTY_BY_TWENTY_MM);
+      const calls: RunCall[] = [];
+      await withMetafileFrame(recordingRun(calls))({ inputPath, outputPath: '/out/logo.pdf' }, 'emf', 'pdf', {}, 'logo.emf');
+      expect(calls[0].src).toBe('odg');
+      const staged = calls[0].input as WorkerVfsPayload;
+      expect(staged.outputPath).toBe('/out/logo.pdf');
+      expect(staged.inputPath).toBeUndefined();
+      expect(lengthInPoints((await stagedDrawing(staged)).styles, 'fo:page-width')).toBeCloseTo(30 * POINTS_PER_MM, 2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stores the picture part and deflates the XML parts, so a large metafile is not compressed in JavaScript', async () => {
+    const calls: RunCall[] = [];
+    await withMetafileFrame(recordingRun(calls))(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', {}, 'logo.emf');
+    const bytes = calls[0].input as Buffer;
+    const LOCAL_HEADER_BYTES = 30;
+    const METHOD_OFFSET = 8;
+    const method = (name: string): number => bytes.readUInt16LE(bytes.indexOf(name, 0, 'latin1') - LOCAL_HEADER_BYTES + METHOD_OFFSET);
+    const STORED = 0;
+    const DEFLATED = 8;
+    expect({ picture: method('Pictures/metafile.emf'), content: method('content.xml') }).toEqual({ picture: STORED, content: DEFLATED });
+  });
+
+  it('stops before and after it builds the package when the request is cancelled, and never runs the office suite then', async () => {
+    const aborted = new AbortController();
+    aborted.abort();
+    const before: RunCall[] = [];
+    await expect(withMetafileFrame(recordingRun(before))(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', { signal: aborted.signal }, 'logo.emf')).rejects.toBe(aborted.signal.reason);
+    expect(before).toHaveLength(0);
+
+    let checks = 0;
+    const cancelledWhileBuilding = {
+      throwIfAborted: () => {
+        if (++checks === 2) throw new Error('cancelled while the package was built');
+      },
+    } as unknown as AbortSignal;
+    const after: RunCall[] = [];
+    await expect(withMetafileFrame(recordingRun(after))(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', { signal: cancelledWhileBuilding }, 'logo.emf')).rejects.toThrow('cancelled while the package was built');
+    expect({ checks, runs: after.length }).toEqual({ checks: 2, runs: 0 });
+  });
+
+  it('reads no more of a file on disk than the header takes to find its page, and the whole file only once it has one', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'metafile-frame-'));
+    const readWhole = vi.spyOn(fs, 'readFileSync');
+    try {
+      const notAMetafile = path.join(dir, 'large.emf');
+      fs.writeFileSync(notAMetafile, Buffer.alloc(3 * 1024 * 1024, 0x41));
+      const metafile = path.join(dir, 'logo.emf');
+      fs.writeFileSync(metafile, THIRTY_BY_TWENTY_MM);
+      const calls: RunCall[] = [];
+      await withMetafileFrame(recordingRun(calls))({ inputPath: notAMetafile, outputPath: '/out/large.pdf' }, 'emf', 'pdf', {}, 'large.emf');
+      expect(readWhole.mock.calls.filter(([file]) => file === notAMetafile)).toHaveLength(0);
+      expect(calls[0]).toMatchObject({ src: 'emf', input: { inputPath: notAMetafile } });
+      await withMetafileFrame(recordingRun(calls))({ inputPath: metafile, outputPath: '/out/logo.pdf' }, 'emf', 'pdf', {}, 'logo.emf');
+      expect(readWhole.mock.calls.filter(([file]) => file === metafile)).toHaveLength(1);
+      expect(calls[1].src).toBe('odg');
+    } finally {
+      readWhole.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves everything the frame does not decide to the office suite: other sources, other targets, and a header with no usable frame', async () => {
+    const unusable = emf({ frame: [0, 0, 2147483647, 2147483647] });
+    const cases: Array<[Buffer, string, string]> = [
+      [THIRTY_BY_TWENTY_MM, 'emf', 'odg'],
+      [THIRTY_BY_TWENTY_MM, 'cgm', 'pdf'],
+      [Buffer.from('PK plain document'), 'docx', 'pdf'],
+      [unusable, 'emf', 'pdf'],
+      [Buffer.from('not a metafile, only text'), 'wmf', 'pdf'],
+    ];
+    for (const [input, src, target] of cases) {
+      const calls: RunCall[] = [];
+      await withMetafileFrame(recordingRun(calls))(input, src, target, {}, `file.${src}`);
+      expect({ src: calls[0].src, target: calls[0].target, sameInput: calls[0].input === input }).toEqual({ src, target, sameInput: true });
+    }
+  });
+
+  it('answers what the office suite answers: no output, and its failure', async () => {
+    expect(await withMetafileFrame(recordingRun([], null))(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', {}, 'logo.emf')).toBeNull();
+    const failing: Run = async () => {
+      throw new SandboxedProcessError('exit 1: source file could not be loaded', 1, 'source file could not be loaded');
+    };
+    await expect(withMetafileFrame(failing)(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', {}, 'logo.emf')).rejects.toThrow('source file could not be loaded');
   });
 });

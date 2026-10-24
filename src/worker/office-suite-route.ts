@@ -15,6 +15,8 @@ import {
   officeSuiteWritesText,
 } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
+import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-document';
+import { metafileLeadingBytes, readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { selectsPages } from './poppler-ppm';
@@ -168,6 +170,32 @@ export function withPresentationRetry(run: OfficeSuiteRun): OfficeSuiteRun {
   };
 }
 
+/** The metafile sources whose page the frame of the header decides, and the drawing format the office suite opens for them. */
+const METAFILE_FRAME_SOURCES: ReadonlySet<string> = new Set<MetafileFormat>(['emf', 'wmf']);
+const FRAME_DRAWING_FORMAT = 'odg';
+
+/**
+ * `run`, with a metafile written as PDF drawn on a page of the size of its header's frame. The office suite opens a metafile
+ * on an A4 page, centred, at the size it prefers or reduced to fit, while the reference import filter makes the page the
+ * frame (`metafile-page-frame.ts`). The picture is therefore handed over as a drawing of that page that holds it as it is
+ * (`metafile-frame-document.ts`). A file that is no metafile, or whose header declares no frame inside the bounds, goes to
+ * the office suite as it is, which then answers for it as before.
+ */
+export function withMetafileFrame(run: OfficeSuiteRun): OfficeSuiteRun {
+  return async (input, sourceFormat, targetFormat, options, originalFilename) => {
+    if (targetFormat !== 'pdf' || !METAFILE_FRAME_SOURCES.has(sourceFormat)) return run(input, sourceFormat, targetFormat, options, originalFilename);
+    const format = sourceFormat as MetafileFormat;
+    const page = readMetafilePage(leadingBytes(input, metafileLeadingBytes(format)), format);
+    const bytes = page && inputBytes(input);
+    if (!bytes || !page) return run(input, sourceFormat, targetFormat, options, originalFilename);
+    options?.signal?.throwIfAborted();
+    const drawing = await metafileFrameDocument(bytes, format, page);
+    options?.signal?.throwIfAborted();
+    const staged: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? drawing : { inputBuffer: drawing, outputPath: input.outputPath };
+    return run(staged, FRAME_DRAWING_FORMAT, targetFormat, options, originalFilename);
+  };
+}
+
 /** The worker functions the routes below run on, passed in so this module does not import the orchestrator that uses it. */
 export interface OfficeSuiteRouteDeps {
   /** One LibreOffice run: the source written as `target` (null when no output came). */
@@ -224,14 +252,14 @@ const WORD_5_MACINTOSH_SIGNATURE: readonly number[] = [0xfe, 0x37, 0x00, 0x23];
 const LEGACY_BINARY_SIGNATURES: ReadonlyArray<readonly number[]> = [OLE2_SIGNATURE, WORD_5_MACINTOSH_SIGNATURE];
 const LONGEST_SIGNATURE_BYTES = Math.max(CGM_ENCODING_PROBE_BYTES, ...LEGACY_BINARY_SIGNATURES.map((signature) => signature.length));
 
-/** The first bytes of the input, read without loading the file when it is not in memory. */
-function leadingBytes(input: Buffer | WorkerVfsPayload): Buffer {
-  if (Buffer.isBuffer(input)) return input.subarray(0, LONGEST_SIGNATURE_BYTES);
-  if (input.inputBuffer) return input.inputBuffer.subarray(0, LONGEST_SIGNATURE_BYTES);
+/** The first `count` bytes of the input (the longest signature by default), read without loading the file when it is not in memory. */
+function leadingBytes(input: Buffer | WorkerVfsPayload, count = LONGEST_SIGNATURE_BYTES): Buffer {
+  if (Buffer.isBuffer(input)) return input.subarray(0, count);
+  if (input.inputBuffer) return input.inputBuffer.subarray(0, count);
   if (input.inputPath === undefined) return Buffer.alloc(0);
   const descriptor = fs.openSync(input.inputPath, 'r');
   try {
-    const head = Buffer.alloc(LONGEST_SIGNATURE_BYTES);
+    const head = Buffer.alloc(Math.min(count, fs.fstatSync(descriptor).size));
     return head.subarray(0, fs.readSync(descriptor, head, 0, head.length, 0));
   } finally {
     fs.closeSync(descriptor);
