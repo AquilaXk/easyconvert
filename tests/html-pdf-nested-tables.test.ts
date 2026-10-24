@@ -276,6 +276,18 @@ describe('the width of a table, and pages whose tables are wider than the paper'
     }
   );
 
+  oracleTest(
+    'refuses a table of few columns whose nested table needs more than the largest shrink',
+    TOOLS,
+    async () => {
+      // Two columns pass the column floor (48 pt), but the table inside one of them needs 31 columns of 24 pt and their
+      // padding, more than 1.5 times the 495.28 pt text width.
+      const refusal = await inProcess(`<table><tr><td>${wideRow(31)}</td><td>outer</td></tr></table>`).catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(EngineUnavailableError);
+      expect((refusal as Error).message).toMatch(new RegExp(`a table with 2 columns does not fit the page width: it needs \\d+pt of 495pt, and a page is shrunk at most ${MAXIMUM_SHRINK} times`));
+    }
+  );
+
   it('refuses a row of five thousand cells before it measures them, quickly', async () => {
     const started = Date.now();
     const refusal = await inProcess(wideRow(5000)).catch((error: unknown) => error);
