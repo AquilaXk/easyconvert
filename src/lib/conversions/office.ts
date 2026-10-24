@@ -52,7 +52,7 @@ import { readDocxModel } from './docx-model';
 import { documentToEpub } from './document-model/epub';
 import { documentToOdt } from './document-model/odt';
 import { documentToText } from './document-model/text';
-import { docxBodyText } from './docx-body-text';
+import { docxBodyModel, docxBodyText } from './docx-body-text';
 import { plainTextModel } from './document-model/plain';
 import type { DocumentModel } from './document-model/model';
 import { renderModelTarget } from './document-targets';
@@ -772,8 +772,7 @@ async function convertDocxSource(
 
   // DOCX -> ODT
   if (tgt === 'odt') {
-    const text = paragraphs.map((p) => p.text).join('\n\n');
-    const odtBuffer = await generateOdtFromText(text, baseName);
+    const odtBuffer = await documentToOdt(docxBodyModel(paragraphs, elements), { title: baseName, language: options.language });
     return {
       buffer: odtBuffer,
       mimeType: 'application/vnd.oasis.opendocument.text',

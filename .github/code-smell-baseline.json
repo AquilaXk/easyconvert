@@ -1641,7 +1641,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 10265
+    "maxValue": 10264
   },
   {
     "file": "src/lib/conversions/office.ts",
