@@ -3,10 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { cleanupDirectoryTree } from '../lib/conversions/archive-extraction-safety';
+import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { getFormatByExtension } from '../lib/registry';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { readPersistedOutput } from './persisted-output';
-import type { ConversionResult } from '../lib/types';
+import { PayloadLimitError, type ConversionResult } from '../lib/types';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 
 /**
@@ -27,6 +28,25 @@ export async function withSandboxDir<T>(
   } finally {
     cleanupDirectoryTree(tempDir);
   }
+}
+
+/**
+ * The most bytes of drawn PDF that an image target reads into memory for the PDF tools, which take a buffer: half the
+ * inflate budget of a document, since the parts of the source (XPS) are held at the same time. A PDF target hands the file on
+ * by its path and is bound by the output limit of the program only.
+ */
+export const MAX_DRAWN_PDF_BYTES_FOR_IMAGES = MAX_DOCUMENT_INFLATE_BYTES / 2;
+
+/** The refusal for a PDF that `program` drew from a `src` file and that is larger than the `limit` bytes that can be taken further. */
+export function drawnPdfTooLargeError(program: string, src: string, size: number, limit: number): PayloadLimitError {
+  return new PayloadLimitError(`${program} drew ${size} bytes of PDF from the .${src} file, more than the ${limit} bytes that can be taken further.`);
+}
+
+/** The PDF a program drew, read whole for an image target; a file above MAX_DRAWN_PDF_BYTES_FOR_IMAGES is refused before it is read. */
+export function readDrawnPdfForImages(pdfPath: string, program: string, src: string): Buffer {
+  const size = fs.statSync(pdfPath).size;
+  if (size > MAX_DRAWN_PDF_BYTES_FOR_IMAGES) throw drawnPdfTooLargeError(program, src, size, MAX_DRAWN_PDF_BYTES_FOR_IMAGES);
+  return fs.readFileSync(pdfPath);
 }
 
 /** Reads the whole input into memory, within the in-memory payload limit. */

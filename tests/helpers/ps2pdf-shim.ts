@@ -53,3 +53,14 @@ export async function withPs2pdfShim<T>(pdf: Buffer, run: (flags: () => string[]
 export async function withRejectingPs2pdf<T>(stderr: string, run: () => Promise<T>): Promise<T> {
   return withShimEnvironment(() => `#!/bin/sh\necho "${stderr}" >&2\nexit 1\n`, () => run());
 }
+
+const MEBIBYTE = 1024 * 1024;
+
+/** Runs `run` with an interpreter that answers every file with a sparse file of `bytes` zero bytes, which takes no disk and never reads the input. */
+export async function withPs2pdfSparseOutput<T>(bytes: number, run: () => Promise<T>): Promise<T> {
+  const mebibytes = Math.ceil(bytes / MEBIBYTE);
+  return withShimEnvironment(
+    () => ['#!/bin/sh', 'for argument; do last="$argument"; done', `dd if=/dev/null of="$last" bs=${MEBIBYTE} seek=${mebibytes} count=0 2>/dev/null`, ''].join('\n'),
+    () => run()
+  );
+}

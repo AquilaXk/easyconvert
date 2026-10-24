@@ -10,10 +10,10 @@ import { partKey, requirePagesDrawable } from '../lib/conversions/office/xps-res
 import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { writeZipFile } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
-import { ConversionFailedError, CorruptStreamError, PayloadLimitError } from '../lib/types';
+import { ConversionFailedError, CorruptStreamError } from '../lib/types';
 import { boundRenderedPages, selectsPages } from './poppler-ppm';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError } from './sandbox';
-import { createConversionResult, handOffOutput, readRawInputBuffer, withSandboxDir } from './worker-output';
+import { createConversionResult, drawnPdfTooLargeError, handOffOutput, MAX_DRAWN_PDF_BYTES_FOR_IMAGES, readRawInputBuffer, withSandboxDir } from './worker-output';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 
 /**
@@ -41,12 +41,6 @@ const MAX_TIMEOUT_MS = 600_000;
 /** The address space, output file size and output pipe limits of the PostScript interpreter, which does the same work. */
 const MEMORY_LIMIT_MB = 2048;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
-/**
- * The most bytes of drawn PDF that an image target reads into memory for the PDF tools, which take a buffer: half the
- * inflate budget of the package, whose parts are held at the same time (the output limit would add up to twice that budget
- * on top of them). A PDF target hands the file on by its path and is bound by MAX_OUTPUT_BYTES only.
- */
-const MAX_PDF_BYTES_READ_FOR_IMAGES = MAX_DOCUMENT_INFLATE_BYTES / 2;
 /** Run time and ceiling of counting the pages of the drawn PDF, as for the other Poppler tools. */
 const PAGE_COUNT_DEFAULT_TIMEOUT_MS = 45_000;
 const PAGE_COUNT_MAX_TIMEOUT_MS = 120_000;
@@ -149,7 +143,7 @@ async function writePdf(job: XpsJob, entries: readonly PackageEntry[], tempDir: 
   if (RENDERER_FAILURE_PATTERN.test(stderr)) throw rejected(job.src, stderr, tempDir);
   const size = fs.existsSync(pdfPath) ? fs.statSync(pdfPath).size : 0;
   if (size === 0) throw new ConversionFailedError(`GhostXPS drew no page from the .${job.src} file.`);
-  if (size > expected.maxBytes) throw new PayloadLimitError(`GhostXPS drew ${size} bytes of PDF from the .${job.src} file, more than the ${expected.maxBytes} bytes that can be taken further.`);
+  if (size > expected.maxBytes) throw drawnPdfTooLargeError('GhostXPS', job.src, size, expected.maxBytes);
   const pageTimeoutMs = Math.min(stageTimeoutMs(job.options, PAGE_COUNT_DEFAULT_TIMEOUT_MS), PAGE_COUNT_MAX_TIMEOUT_MS);
   const drawn = await job.countPdfPages(pdfPath, tempDir, pageTimeoutMs, job.options.signal);
   if (drawn !== expected.pageCount) {
@@ -181,7 +175,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
       pageOptions
     );
   }
-  requirePagesDrawable(pageParts, new Map(entries.map(({ filename, buffer }) => [partKey(filename), buffer])), options.signal);
+  await requirePagesDrawable(pageParts, new Map(entries.map(({ filename, buffer }) => [partKey(filename), buffer])), options.signal);
 
   if (tgt === PDF_TARGET) {
     return withSandboxDir(TEMP_PREFIX, async (tempDir) => {
@@ -191,7 +185,7 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
     });
   }
   const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) =>
-    fs.readFileSync(await writePdf(job, entries, tempDir, { maxBytes: MAX_PDF_BYTES_READ_FOR_IMAGES, pageCount }))
+    fs.readFileSync(await writePdf(job, entries, tempDir, { maxBytes: MAX_DRAWN_PDF_BYTES_FOR_IMAGES, pageCount }))
   );
   return job.convertPdfPages(pdf, tgt, pageOptions, originalFilename);
 }

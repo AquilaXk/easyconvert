@@ -19,6 +19,7 @@ import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-
 import { metafileLeadingBytes, readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
+import { pdfFirstPageHasInk } from './pdf-ink';
 import { selectsPages } from './poppler-ppm';
 import { SandboxedProcessError, rethrowSandboxUnavailable } from './sandbox';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
@@ -193,6 +194,43 @@ export function withMetafileFrame(run: OfficeSuiteRun): OfficeSuiteRun {
     options?.signal?.throwIfAborted();
     const staged: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? drawing : { inputBuffer: drawing, outputPath: input.outputPath };
     return run(staged, FRAME_DRAWING_FORMAT, targetFormat, options, originalFilename);
+  };
+}
+
+/** Whether the first page of a PDF that a run wrote, drawn by the `pdftoppm` given, has anything on it but paper. */
+type PdfInkProbe = (pdf: WorkerConversionResult, pdftoppm: string, options: WorkerEngineOptions) => Promise<boolean>;
+
+/**
+ * `run`, with a metafile written as PDF refused when the page it drew holds no ink. The office suite loads an EMF or WMF whose
+ * header is valid and whose records are not records (or draw nothing) without a failure and writes a blank page, which the
+ * reference import filter does not do: Inkscape 1.4 stops at the first record that is not a record (`emf-inout.cpp`
+ * `myEnhMetaFileProc` lines 1680 to 1693 set `file_status` to 0, `Emf::open` lines 3588 to 3597 then opens no document; the same
+ * in `wmf-inout.cpp` lines 1703 to 1718 and 3167 to 3174) and writes no PDF. The page is looked at where the PDF is made, so the
+ * page chain behind PNG, JPEG and the other targets is held to it as well. A metafile is one page; a PDF with several pages is
+ * never judged by its first. `discardOutput` removes a PDF that is not handed on, and a worker without `pdftoppm` (what
+ * `resolvePdftoppm` finds) answers an unavailable engine rather than hand out a PDF it could not look at.
+ */
+export function withMetafileInk(
+  run: OfficeSuiteRun,
+  resolvePdftoppm: () => string | null,
+  discardOutput: OfficeSuiteRouteDeps['discardOutput'],
+  hasInk: PdfInkProbe = pdfFirstPageHasInk
+): OfficeSuiteRun {
+  return async (input, sourceFormat, targetFormat, options, originalFilename) => {
+    const written = await run(input, sourceFormat, targetFormat, options, originalFilename);
+    if (!written || targetFormat !== 'pdf' || !METAFILE_FRAME_SOURCES.has(sourceFormat)) return written;
+    let drawn = false;
+    try {
+      const pdftoppm = resolvePdftoppm();
+      if (!pdftoppm) throw new EngineUnavailableError('pdftoppm', 'pdftoppm binary is not installed or not in PATH');
+      drawn = await hasInk(written, pdftoppm, options ?? {});
+    } catch (err) {
+      discardOutput(written.filePath, input, options ?? {});
+      throw err;
+    }
+    if (drawn) return written;
+    discardOutput(written.filePath, input, options ?? {});
+    throw new ConversionFailedError(`The .${sourceFormat} file draws nothing: the office suite found no picture in it, so the PDF would be a blank page.`);
   };
 }
 

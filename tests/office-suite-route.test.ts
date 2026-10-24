@@ -11,6 +11,7 @@ import {
   officeSuiteWritesTarget,
   retryRefusedLegacyDocument,
   withMetafileFrame,
+  withMetafileInk,
   type OfficeSuiteRequest,
   type OfficeSuiteRouteDeps,
 } from '../src/worker/office-suite-route';
@@ -552,5 +553,69 @@ describe('the page a metafile is drawn on by the office suite', () => {
       throw new SandboxedProcessError('exit 1: source file could not be loaded', 1, 'source file could not be loaded');
     };
     await expect(withMetafileFrame(failing)(THIRTY_BY_TWENTY_MM, 'emf', 'pdf', {}, 'logo.emf')).rejects.toThrow('source file could not be loaded');
+  });
+});
+
+describe('a metafile that the office suite draws as a blank page', () => {
+  type Run = Parameters<typeof withMetafileInk>[0];
+  const PDF = result({ mimeType: 'application/pdf', filePath: '/tmp/drawn-metafile.pdf' });
+  const PDFTOPPM = '/usr/bin/pdftoppm';
+
+  function setUp(drawn: boolean | Error, answer: WorkerConversionResult | null = PDF, pdftoppm: string | null = PDFTOPPM) {
+    const probed: Array<{ pdf: WorkerConversionResult; pdftoppm: string }> = [];
+    const discarded: Array<string | undefined> = [];
+    const run: Run = async () => answer;
+    const wrapped = withMetafileInk(
+      run,
+      () => pdftoppm,
+      (filePath) => void discarded.push(filePath),
+      async (pdf, program) => {
+        probed.push({ pdf, pdftoppm: program });
+        if (drawn instanceof Error) throw drawn;
+        return drawn;
+      }
+    );
+    return { wrapped, probed, discarded };
+  }
+
+  it.each(['emf', 'wmf'])('refuses a .%s file whose PDF has no ink with a typed error and leaves no output behind', async (src) => {
+    const { wrapped, probed, discarded } = setUp(false);
+    const refusal = wrapped(Buffer.from('metafile'), src, 'pdf', {}, `junk.${src}`);
+    await expect(refusal).rejects.toBeInstanceOf(ConversionFailedError);
+    await expect(refusal).rejects.toThrow(new RegExp(`The \\.${src} file draws nothing`));
+    expect(probed).toEqual([{ pdf: PDF, pdftoppm: PDFTOPPM }]);
+    expect(discarded).toEqual([PDF.filePath]);
+  });
+
+  it('hands on the PDF of a metafile that draws something, unchanged', async () => {
+    const { wrapped, discarded } = setUp(true);
+    expect(await wrapped(Buffer.from('metafile'), 'emf', 'pdf', {}, 'logo.emf')).toBe(PDF);
+    expect(discarded).toEqual([]);
+  });
+
+  it('looks at nothing else: other sources, other targets and a run that wrote no output', async () => {
+    for (const [src, target] of [['docx', 'pdf'], ['cgm', 'pdf'], ['emf', 'odg'], ['wmf', 'png']] as const) {
+      const { wrapped, probed } = setUp(false);
+      expect(await wrapped(Buffer.from('x'), src, target, {}, `file.${src}`)).toBe(PDF);
+      expect(probed).toEqual([]);
+    }
+    const none = setUp(false, null);
+    expect(await none.wrapped(Buffer.from('x'), 'emf', 'pdf', {}, 'logo.emf')).toBeNull();
+    expect(none.probed).toEqual([]);
+  });
+
+  it('does not take a PDF it could not look at for a PDF with ink: the failure of the look stands and the output is discarded', async () => {
+    const { wrapped, discarded } = setUp(new SandboxedProcessError('exit 1: Syntax Error', 1, 'Syntax Error'));
+    await expect(wrapped(Buffer.from('x'), 'emf', 'pdf', {}, 'logo.emf')).rejects.toBeInstanceOf(SandboxedProcessError);
+    expect(discarded).toEqual([PDF.filePath]);
+  });
+
+  it('answers an unavailable engine, naming pdftoppm, when the worker has none, and looks at nothing', async () => {
+    const { wrapped, probed, discarded } = setUp(true, PDF, null);
+    const refusal = wrapped(Buffer.from('x'), 'emf', 'pdf', {}, 'logo.emf');
+    await expect(refusal).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(refusal).rejects.toMatchObject({ engineName: 'pdftoppm' });
+    expect(probed).toEqual([]);
+    expect(discarded).toEqual([PDF.filePath]);
   });
 });
