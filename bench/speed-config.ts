@@ -131,4 +131,10 @@ export const PARITY_SCHEMA_VERSION = 1;
 /** Gap entries a gaps file may hold. */
 export const MAX_GAP_ENTRIES = 500;
 
+/**
+ * Acknowledged slowdowns a gaps file may hold. An entry is single-use and is removed in the bench change after the one
+ * it was written for, so a handful are open at any time; the cap keeps a forgotten entry from accumulating unnoticed.
+ */
+export const MAX_ACCEPTED_SLOWDOWNS = 16;
+
 export const BYTES_PER_MB = 1_000_000;

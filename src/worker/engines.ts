@@ -99,7 +99,7 @@ import { withExtractionNotes } from '../lib/conversions/archive-alternate-stream
 import { planNativeArchiveRoute, type NativeArchiveRoute } from '../lib/conversions/archive-stream-route';
 import { extractSourceArchive } from './archive-source-extraction';
 import { rarToTar, tarToBzip2, tarToGzip, tarToZip, zipToTar } from '../lib/conversions/archive-repack';
-import { tarCodecSwitchFor } from '../lib/conversions/archive-single-stream';
+import { tarPlanFor } from '../lib/conversions/archive-single-stream';
 import { writeDeflatedZipFile, type ZipFile } from '../lib/conversions/zip-writer';
 import {
   sevenZipToTar,
@@ -718,15 +718,15 @@ async function assertCreatedArchiveEncrypted(
   assertListingShowsEncryption(format, outcome);
 }
 
-async function package7zArchive(params: Package7zArchiveParams): Promise<boolean> {
+async function package7zArchive(params: Package7zArchiveParams): Promise<string | null> {
   const { p7zBin, tgt, extractDir, tempDir, tempOutputPath, timeout, maxBuffer, options, compressionLevel } = params;
   const levelArgs = [`-mx=${compressionLevel}`];
-  const tarCodecSwitch = tarCodecSwitchFor(tgt, extractDir);
+  const tarPlan = tarPlanFor(tgt, extractDir);
   if (options?.password && tgt !== 'zip' && tgt !== '7z') {
     throw new UnsupportedOptionError(`Target archive format '${tgt}' does not support password encryption.`);
   }
 
-  if (tarCodecSwitch) {
+  if (tarPlan) {
     const tarPath = path.join(tempDir, 'archive.tar');
     await executeSandboxedBinary(p7zBin, ['a', '-y', '-ttar', tarPath, '.'], {
       cwd: extractDir,
@@ -735,18 +735,18 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
       networkIsolated: true,
       signal: options?.signal,
     });
-    await executeSandboxedBinary(p7zBin, ['a', '-y', tarCodecSwitch, ...levelArgs, tempOutputPath, tarPath], {
+    await executeSandboxedBinary(p7zBin, ['a', '-y', tarPlan.codecSwitch, ...levelArgs, tempOutputPath, tarPath], {
       cwd: tempDir,
       timeoutMs: timeout,
       maxBuffer,
       networkIsolated: true,
       signal: options?.signal,
     });
-    return true;
+    return tarPlan.outputFormat;
   }
 
   const archiveType = get7zArchiveType(tgt);
-  if (!archiveType) return false;
+  if (!archiveType) return null;
 
   if (options?.password && (tgt === 'zip' || tgt === '7z')) {
     assertEncryptedArchiveInputWithinLimits(walkArchiveTreePaths(extractDir));
@@ -779,7 +779,7 @@ async function package7zArchive(params: Package7zArchiveParams): Promise<boolean
       signal: options.signal,
     });
   }
-  return true;
+  return tgt;
 }
 
 /** Turns a failed `7z a` run into a typed error; other failures (timeouts, aborts) keep their own type. */
@@ -988,9 +988,9 @@ export async function convertWithNative7z(
     }
 
     const tempOutputPath = path.join(tempDir, `output.${tgt}`);
-    let packaged: boolean;
+    let packagedFormat: string | null;
     try {
-      packaged = await package7zArchive({
+      packagedFormat = await package7zArchive({
         p7zBin,
         tgt,
         extractDir,
@@ -1007,13 +1007,13 @@ export async function convertWithNative7z(
       // The staged directories keep the tar's modes while 7-Zip packs them; the sandbox removes them afterwards.
       staged?.release();
     }
-    if (!packaged || !fs.existsSync(tempOutputPath)) {
+    if (packagedFormat === null || !fs.existsSync(tempOutputPath)) {
       throw new ConversionFailedError('7-Zip packaging failed to produce output archive');
     }
 
-    const persistedPath = preserveOutput(tempOutputPath, tgt, options, vfsPayload);
+    const persistedPath = preserveOutput(tempOutputPath, packagedFormat, options, vfsPayload);
 
-    return withExtractionNotes(createConversionResult(persistedPath, tgt, baseName, 'native-7z', Date.now() - startTime), { skippedLinks, alternateStreams });
+    return withExtractionNotes(createConversionResult(persistedPath, packagedFormat, baseName, 'native-7z', Date.now() - startTime), { skippedLinks, alternateStreams });
   });
 }
 

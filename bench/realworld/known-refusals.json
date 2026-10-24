@@ -124,5 +124,11 @@
     "detail": "^ConversionFailedError: LibreOffice could not read the \\.ppt file: it is damaged(, encrypted)? or not a valid PPT document\\.$",
     "reason": "Damaged: the header and first bytes of a SlidePersistAtom are overwritten with the characters `\\E]\\E]]]]]]` (11 bytes differ from `office-slideshow-49648.ppt`, which converts), so the slide list no longer parses. LibreOffice 24.2 and 26.8 refuse it; Apache POI HSLF 5.4.0 reads its one slide and the two lines of text. The text is still read by the in-process reader (tests/ppt-persist-id-seed.test.ts).",
     "issue": 783
+  },
+  {
+    "file": "govdocs1-001630.ppt",
+    "detail": "^LegacyOfficeFormatError: PowerPoint presentation: the compound file is malformed \\(Corrupt CFBF container: the sector chain starting at sector 213 returns to sector 0\\.\\)\\.$",
+    "reason": "Damaged: the FAT chain of a stream returns to sector 0 (the chain from sector 213 reaches sector 0 again), so the compound file has no readable stream. Apache POI 5.4.0 refuses to open it (POIFSFileSystem: \"Potential loop detected - Block 0 was already claimed but was just requested again\"), LibreOffice 24.2.7 does not load it (\"source file could not be loaded\") and LibreOffice 26.8 opens the bytes as a text document, so no reader reads it as a presentation. The refusal names the loop (tests/ppt-cfb-sector-loop.test.ts).",
+    "issue": 783
   }
 ]
