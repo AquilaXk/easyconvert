@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClassRows } from '../bench/class-rows';
-import { CORPUS_TIER_ENV } from '../bench/config';
+import { CORPUS_TIER_ENV, PUBLIC_SPEED_SAMPLES } from '../bench/config';
 import { readRemoteManifest, remoteSamples, type RemoteFamily } from '../bench/corpora';
 import { bdRateRows } from '../bench/families/raw';
 import { validateGaps } from '../bench/parity-gaps';
@@ -36,11 +36,21 @@ describe('one sample system', () => {
 });
 
 describe('the known gaps', () => {
-  it('name only speed rows that the speed job of a pull request measures, since a gap entry for a row the run skips is not backed', () => {
+  // A generated row is timed by the speed job of a pull request; a public-sample row only by the nightly run, and only for the samples of PUBLIC_SPEED_SAMPLES.
+  const untimedRows = (ids: readonly string[]): string[] => {
     vi.stubEnv(CORPUS_TIER_ENV, 'pr');
+    return ids.filter((id) => {
+      if (rowInScope(false, id)) return false;
+      const [family, caseName] = id.split('/');
+      return !(PUBLIC_SPEED_SAMPLES[family] ?? []).some((sample) => caseName.startsWith(`${sample}->`) || caseName.startsWith(`${sample}.`));
+    });
+  };
+
+  it('name only speed rows that a run times, since an entry for a row no run times is never judged', () => {
     const gaps = validateGaps(JSON.parse(fs.readFileSync(path.join(ROOT, 'bench', 'parity-gaps.json'), 'utf8')));
-    const unmeasured = gaps.gaps.map((gap) => gap.id).filter((id) => id.endsWith('/throughput') && !rowInScope(false, id));
-    expect(unmeasured).toEqual([]);
+    expect(untimedRows(gaps.gaps.map((gap) => gap.id).filter((id) => id.endsWith('/throughput')))).toEqual([]);
+    expect(untimedRows(['image/lineart.png->avif/throughput', 'image/wm-deep-dart.png->avif/throughput', 'compression/silesia-xml.xz->tar/throughput'])).toEqual([]);
+    expect(untimedRows(['image/wm-screen-history.png->avif/throughput', 'image/kodim01.png->avif/throughput', 'compression/silesia-dickens.xz->tar/throughput'])).toEqual(['image/kodim01.png->avif/throughput', 'compression/silesia-dickens.xz->tar/throughput']);
   });
 });
 

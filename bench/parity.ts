@@ -275,6 +275,8 @@ export interface ParityOptions {
    * GAP_BACKING_LOG_MARGIN). The entries of the families it does not measure are left to the run that measures them.
    */
   baseGaps?: GapFile;
+  /** Whether this run times the speed row `id`; a row it does not time cannot back an entry (`baseGaps`). Without it every row counts as timed. */
+  timedByRun?: (id: string) => boolean;
   /**
    * The families this run is the shard of: the `--family` argument of the command. `bench/run.ts` parses it, which is the
    * change's own file and not a gate file, so the head decides what the base's judge receives; an empty list therefore
@@ -300,16 +302,25 @@ export interface ParityOptions {
 
 const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, issue: gap.issue, ratio: gap.ratio, note: gap.note, history: gap.history ?? [], recorded: gap.recorded, reference: gap.reference });
 
-/** Why a new or changed gap entry is not backed by the measured row, or null when it is. */
-function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: BenchRow | undefined): string | null {
-  if (row === undefined || row.status !== 'measured' || row.kind !== 'throughput') return `the entry is new or changed, but this run did not measure ${gap.id}`;
-  const centre = row.ratioMedian ?? row.ratio;
-  if (centre === null || centre === undefined) return 'the entry is new or changed, but the measured row has no speed ratio';
-  // A row measured against the base was timed from another process than the history, so its ratio is not the one the entry records; only the form of the entry can be checked then.
-  const comparable = row.abPairs === undefined;
-  const margin = Math.exp(GAP_BACKING_LOG_MARGIN);
-  const low = comparable ? (row.ratioLow ?? centre) / margin : 0;
-  const high = comparable ? (row.ratioHigh ?? centre) * margin : Number.POSITIVE_INFINITY;
+/**
+ * Why a new or changed gap entry is not backed by the measured row, or null when it is. A row the run does not time at all
+ * (`timed` false: a public sample in a pull request's speed job, which times the generated corpus only) cannot back the
+ * ratio, so only the form of the entry is checked, as for a row measured against the base; the nightly run times the row.
+ */
+function gapBackingFailure(gap: GapEntry, base: GapEntry | undefined, row: BenchRow | undefined, timed: boolean): string | null {
+  let low = 0;
+  let high = Number.POSITIVE_INFINITY;
+  if (timed) {
+    if (row === undefined || row.status !== 'measured' || row.kind !== 'throughput') return `the entry is new or changed, but this run did not measure ${gap.id}`;
+    const centre = row.ratioMedian ?? row.ratio;
+    if (centre === null || centre === undefined) return 'the entry is new or changed, but the measured row has no speed ratio';
+    // A row measured against the base was timed from another process than the history, so its ratio is not the one the entry records; only the form of the entry can be checked then.
+    if (row.abPairs === undefined) {
+      const margin = Math.exp(GAP_BACKING_LOG_MARGIN);
+      low = (row.ratioLow ?? centre) / margin;
+      high = (row.ratioHigh ?? centre) * margin;
+    }
+  }
   const range = `[${show(low)}, ${show(high)}]`;
   if (gap.ratio === null || gap.ratio < low || gap.ratio > high) return `the recorded ratio ${gap.ratio === null ? 'none' : show(gap.ratio)} is outside ${range}, the speed ratio interval this run measured for the row`;
   const known = new Set((base?.history ?? []).map((point) => JSON.stringify(point)));
@@ -391,7 +402,7 @@ function markUnbackedGaps(verdicts: RowVerdict[], report: BenchReport, gaps: Gap
     for (const gap of gaps.gaps) {
       const base = baseById.get(gap.id);
       if (!inShard(gap) || !isSpeedRowId(gap.id) || (base !== undefined && canonicalGap(base) === canonicalGap(gap))) continue;
-      const failure = gapBackingFailure(gap, base, measuredById.get(gap.id));
+      const failure = gapBackingFailure(gap, base, measuredById.get(gap.id), options.timedByRun?.(gap.id) ?? true);
       if (failure !== null) unbacked.push({ gap, failure });
     }
   }

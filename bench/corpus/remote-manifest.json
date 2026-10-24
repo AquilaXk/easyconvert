@@ -4349,10 +4349,10 @@
       "family": "ebook",
       "class": "novel",
       "set": "gutenberg",
-      "description": "Frankenstein, Project Gutenberg EPUB with images and a linked table of contents",
+      "description": "Frankenstein, Project Gutenberg EPUB with images and a linked table of contents, as the Internet Archive captured it on 2026-10-07 (the file on the Gutenberg host is rebuilt in place)",
       "origin": {
         "kind": "file",
-        "url": "https://www.gutenberg.org/cache/epub/84/pg84-images.epub"
+        "url": "https://web.archive.org/web/20261007052056id_/https://www.gutenberg.org/cache/epub/84/pg84-images.epub"
       },
       "licence": "LicenseRef-Project-Gutenberg",
       "meta": {
