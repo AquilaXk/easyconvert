@@ -7,7 +7,6 @@ import sharp from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertFile } from '../src/lib/conversions/index';
 import { PdfStructureError } from '../src/lib/conversions/pdf-document';
-import { PdfTextUnmappedError } from '../src/lib/conversions/pdf-text-types';
 import { ConversionFailedError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { captureError } from './helpers/capture-error';
@@ -149,13 +148,6 @@ describe.skipIf(toolsMissing)('fonts without a Unicode map (real files)', () => 
     expect(text).toContain('窪田製薬ホールディングス株式会社');
     expect(characterF1(reference, text)).toBeGreaterThanOrEqual(MIN_CHARACTER_F1);
   }, CONVERSION_TIMEOUT_MS);
-
-  it('pdf-pdfjs-issue17333.pdf: is still refused when no glyph of the document maps', async (ctx) => {
-    const { bytes } = await requireRealworldSample(ctx, 'pdf-pdfjs-issue17333.pdf');
-    const error = await captureError(() => textOf(bytes));
-    expect(error).toBeInstanceOf(PdfTextUnmappedError);
-    expect((error as PdfTextUnmappedError).pages).toEqual([1]);
-  }, CONVERSION_TIMEOUT_MS);
 });
 
 describe.skipIf(toolsMissing)('PDFs that open with the empty password (real files)', () => {
@@ -189,7 +181,7 @@ describe.skipIf(toolsMissing)('PDFs that open with the empty password (real file
 });
 
 describe.skipIf(toolsMissing)('pages with nothing to read (real files)', () => {
-  for (const id of ['pdfjs-empty_protected.pdf', 'pdf-vera-pdfa1b-devicen.pdf']) {
+  for (const id of ['pdfjs-empty_protected.pdf', 'pdf-vera-pdfa1b-devicen.pdf', 'pdf-pdfjs-issue17333.pdf']) {
     it(`${id}: has no text and no picture for the reference readers, so an empty Markdown file is right`, async (ctx) => {
       const { bytes } = await requireRealworldSample(ctx, id);
       expect(pdftotext(bytes).trim()).toBe('');

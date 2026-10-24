@@ -15,6 +15,12 @@ import { isSymbolFontName, mapSymbolFontCharacter } from './symbol-font-map';
  *
  * A glyph neither source maps has no text: it is left out and counted, never replaced by a guess. A caller that has to keep
  * every glyph in its place (the DXF writer replaces each glyph picture of a bitmap font with text) asks for a mark instead.
+ *
+ * Code 0 of a simple TrueType or Type 1 font that is not symbolic, where the encoding names no glyph, is the .notdef
+ * glyph: no standard encoding names a glyph at 0, so the code selects glyph 0 (pdf.js `src/core/fonts.js`, PR 21487 for
+ * issue 17333, where a symbol font draws a checkbox there). That glyph has no character in any reader (Poppler prints
+ * nothing, pdf.js the code, MuPDF U+FFFD), so it is left out without being counted: it is no text the reader failed to map.
+ * A symbolic font's built-in encoding, and the other codes, may draw any glyph, so they stay counted.
  */
 
 /** Text with at least one character no reader can show: control codes other than white space, U+FFFD, private-use characters. */
@@ -26,6 +32,9 @@ const PRIVATE_USE_BMP_END = 0xf8ff;
 const SINGLE_BYTE_CODES = 0x100;
 const SUBSET_TAG = /^[A-Z]{6}\+/;
 const ZAPF_DINGBATS_FONT = /dingbats/i;
+const NOTDEF_CODE = 0;
+const NOTDEF_NAME = '.notdef';
+const TYPE3_FONT = 'Type3';
 
 /** The slice of a pdfjs font object (read with `fontExtraProperties`) that names the glyphs of a simple font. */
 export interface RecoverableFont {
@@ -36,6 +45,10 @@ export interface RecoverableFont {
   differences?: ArrayLike<string | null | undefined>;
   /** The names of the base encoding (or the font's built-in encoding) at a character code. */
   defaultEncoding?: ArrayLike<string | null | undefined>;
+  /** The font descriptor's Symbolic flag as pdfjs reads it: the codes select glyphs by the font's built-in encoding. */
+  isSymbolicFont?: boolean;
+  /** The font type pdfjs gives (`TrueType`, `Type1`, `Type3`, ...). */
+  type?: string;
 }
 
 export interface RecoveredText {
@@ -60,9 +73,22 @@ function fontNameOf(font: RecoverableFont | null): string {
 /** The text of a code of a simple font, per font: a font has at most 256 codes, so its names are read at most 256 times. */
 const namedGlyphTexts = new WeakMap<RecoverableFont, Map<number, string | null>>();
 
-function readNamedGlyph(code: number, font: RecoverableFont): string | null {
+function glyphNameAt(code: number, font: RecoverableFont): string | null {
   const name = font.differences?.[code] || font.defaultEncoding?.[code];
-  if (typeof name !== 'string' || name === '') return null;
+  return typeof name === 'string' && name !== '' ? name : null;
+}
+
+/** Whether the code selects the .notdef glyph: code 0 of a nonsymbolic TrueType or Type 1 font with no glyph name there. */
+function isNotdefCode(code: number, font: RecoverableFont): boolean {
+  if (code !== NOTDEF_CODE || font.isSymbolicFont === true || font.type === TYPE3_FONT) return false;
+  const name = glyphNameAt(code, font);
+  return name === null || name === NOTDEF_NAME;
+}
+
+function readNamedGlyph(code: number, font: RecoverableFont): string | null {
+  if (isNotdefCode(code, font)) return '';
+  const name = glyphNameAt(code, font);
+  if (name === null) return null;
   const text = glyphNameToText(name, { dingbats: ZAPF_DINGBATS_FONT.test(fontNameOf(font)) });
   return text !== null && !hasUnmappedGlyphs(text) ? text : null;
 }
