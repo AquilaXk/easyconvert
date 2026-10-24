@@ -56,6 +56,64 @@
       ]
     },
     {
+      "id": "image/wm-deep-dart.png->avif/throughput",
+      "issue": 641,
+      "ratio": 0.94,
+      "note": "speed ratio 0.94 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 0.8697,
+          "at": "2026-10-18T07:52:51.754Z",
+          "commit": "a22ea8916f6b094dac349ad4649770bcf35aba0c"
+        },
+        {
+          "ratio": 0.8654,
+          "at": "2026-10-19T08:30:50.403Z",
+          "commit": "636fc043d1f9e5f9555ec2249433db1fa5bb7b19"
+        },
+        {
+          "ratio": 0.8923,
+          "at": "2026-10-19T20:36:33.688Z",
+          "commit": "b03d17066ec817d2906efd77932e17a1fd082104"
+        },
+        {
+          "ratio": 0.8489,
+          "at": "2026-10-19T23:56:34.282Z",
+          "commit": "7a7771797532a5753fb5db2e3459970eb6c421e1"
+        },
+        {
+          "ratio": 0.8604,
+          "at": "2026-10-20T07:16:24.910Z",
+          "commit": "d27c747718458eb65b85433c01592ca02389d95b"
+        },
+        {
+          "ratio": 0.8705,
+          "at": "2026-10-20T08:20:35.810Z",
+          "commit": "d27c747718458eb65b85433c01592ca02389d95b"
+        },
+        {
+          "ratio": 0.8527,
+          "at": "2026-10-21T08:20:01.587Z",
+          "commit": "d27c747718458eb65b85433c01592ca02389d95b"
+        },
+        {
+          "ratio": 0.8743,
+          "at": "2026-10-22T08:26:58.511Z",
+          "commit": "d27c747718458eb65b85433c01592ca02389d95b"
+        },
+        {
+          "ratio": 0.9043,
+          "at": "2026-10-23T08:21:19.268Z",
+          "commit": "bccfc85abf8ed8f463751808489abd528d1146eb"
+        },
+        {
+          "ratio": 0.9418,
+          "at": "2026-10-24T07:56:52.264Z",
+          "commit": "4c4b1dc3a0ea97eb2d43d8c3dbe81873285032cd"
+        }
+      ]
+    },
+    {
       "id": "ocr/scan.png->pdf/throughput",
       "issue": 644,
       "ratio": 0.68,
@@ -175,12 +233,47 @@
       "reference": 0
     },
     {
-      "id": "image/photo-b.png->avif/bd_rate_ssim",
-      "issue": 641,
-      "ratio": null,
-      "note": "AVIF rate-distortion curve of a generated photograph, in SSIM, under the heap bound the service runs with (MALLOC_ARENA_MAX=2, which lets the encoder lease the cores up to 8 threads): +1.99% bits at equal SSIM against the reference on the 4-core arm64 test VM, allowance 1.5. The same curve reads -0.47% on one encoder thread, +0.71% on two or three and +3.49% on eight, while the reference's file does not change with its thread count: libaom's automatic tiling (set_auto_tiles) cuts 1, 2, 4 and 8 tile columns for 1, 2 to 3, 4 to 7 and 8 threads, and tiles cost compression and give the speed (photo-b 1.38 of the reference at 4 threads). The baseline value (0.85%) was recorded at two threads on the CI runner. Policy entry 91.",
-      "recorded": 1.9922,
-      "reference": 0
+      "id": "compression/silesia-xml.xz->tar/throughput",
+      "issue": 685,
+      "ratio": 0.93,
+      "note": "speed ratio 0.93 or below when recorded on the CI runner: ours is slower than the reference tool",
+      "history": [
+        {
+          "ratio": 1.0051,
+          "at": "2026-10-19T08:30:50.403Z",
+          "commit": "636fc043d1f9e5f9555ec2249433db1fa5bb7b19"
+        },
+        {
+          "ratio": 0.9348,
+          "at": "2026-10-19T20:36:33.688Z",
+          "commit": "b03d17066ec817d2906efd77932e17a1fd082104"
+        },
+        {
+          "ratio": 0.997,
+          "at": "2026-10-19T23:56:34.282Z",
+          "commit": "7a7771797532a5753fb5db2e3459970eb6c421e1"
+        },
+        {
+          "ratio": 0.9503,
+          "at": "2026-10-20T07:16:24.910Z",
+          "commit": "d27c747718458eb65b85433c01592ca02389d95b"
+        },
+        {
+          "ratio": 0.728,
+          "at": "2026-10-20T08:20:35.810Z",
+          "commit": "d27c747718458eb65b85433c01592ca02389d95b"
+        },
+        {
+          "ratio": 1.0075,
+          "at": "2026-10-23T08:21:19.268Z",
+          "commit": "bccfc85abf8ed8f463751808489abd528d1146eb"
+        },
+        {
+          "ratio": 0.9347,
+          "at": "2026-10-24T07:56:52.264Z",
+          "commit": "4c4b1dc3a0ea97eb2d43d8c3dbe81873285032cd"
+        }
+      ]
     }
   ]
 }
