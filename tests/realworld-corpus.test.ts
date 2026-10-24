@@ -610,6 +610,7 @@ describe('empty inputs in the manifest', () => {
       'office-spreadsheet-simplewithimages.xls',
       'office-spreadsheet-solvercontainerafterspgr.xls',
       'office-spreadsheet-template.xlsx',
+      'pdf-pdfjs-issue17333.pdf',
       'pdf-vera-pdfa1b-devicen.pdf',
       'pdfjs-empty_protected.pdf',
     ]);
