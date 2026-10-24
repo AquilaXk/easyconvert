@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { convertFile } from '../src/lib/conversions/index';
 import { extractPdfDocument } from '../src/lib/conversions/pdf-text-document';
+import { PdfTextUnmappedError } from '../src/lib/conversions/pdf-text-types';
+import { captureError } from './helpers/capture-error';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { docxWords } from './helpers/document-words';
 import {
@@ -18,6 +21,7 @@ import {
   textFieldPdf,
   type AnnotationSpec,
 } from './helpers/pdf-annotation-craft';
+import { type CraftObject, buildPdf, flate, HELVETICA_FONT } from './helpers/pdf-craft';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
 
@@ -170,5 +174,116 @@ describe.skipIf(toolsMissing)('annotation appearance text against Poppler (hand-
     const pdf = damagedAppearancePdf('Survivor');
     expect(wordsOf(pdftotext(pdf))).toEqual(['survivor']);
     expect(wordsOf(await readerText(pdf))).toEqual(['survivor']);
+  });
+});
+
+/** A FreeText note: its rectangle on the page, and its appearance's box, matrix-free content and extra resources. */
+interface Note {
+  rect: readonly [number, number, number, number];
+  bbox: readonly [number, number, number, number];
+  content: string;
+  xobjects?: string;
+}
+
+const NOTE_FIRST_OBJECT = 10;
+/** A Helvetica whose /Differences name glyphs no list maps at codes 4 and 5, as in tests/pdf-text-unmapped-glyphs.test.ts. */
+const UNMAPPED_FONT = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [4 /ornamentone /ornamenttwo] >> >>';
+
+/** One page (font F1 Helvetica, F2 the unmapped font) that draws `pageContent` and carries `notes`; `extra` objects start at 900. */
+function notesPdf(pageContent: string, notes: readonly Note[], extra: CraftObject[] = []): Buffer {
+  const objects: CraftObject[] = [];
+  const references: string[] = [];
+  notes.forEach((note, index) => {
+    const annotation = NOTE_FIRST_OBJECT + index * 2;
+    const resources = `/Resources << /Font << /F1 5 0 R >> ${note.xobjects ?? ''} >>`;
+    objects.push({ id: annotation, dict: `/Type /Annot /Subtype /FreeText /F 4 /Rect [${note.rect.join(' ')}] /AP << /N ${annotation + 1} 0 R >>` });
+    objects.push({ id: annotation + 1, dict: `/Type /XObject /Subtype /Form /BBox [${note.bbox.join(' ')}] ${resources}`, stream: Buffer.from(note.content, 'latin1') });
+    references.push(`${annotation} 0 R`);
+  });
+  return buildPdf(
+    [
+      { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+      { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+      { id: 3, dict: `/Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Annots [${references.join(' ')}]` },
+      { id: 4, dict: '/Filter /FlateDecode', stream: flate(pageContent) },
+      { id: 5, raw: HELVETICA_FONT },
+      { id: 6, raw: UNMAPPED_FONT },
+      ...objects,
+      ...extra,
+    ],
+    1
+  ).buffer;
+}
+
+const BODY = 'BT /F1 12 Tf 72 700 Td (Body) Tj ET';
+
+describe.skipIf(toolsMissing)('where the text matrix and the forms of an appearance put its text, against Poppler', () => {
+  it('places text drawn after Tm where the matrix puts it: above the body text and below it', async () => {
+    // The appearance boxes are in page space, as office producers write them (cc-0400651.pdf), so the text matrix alone places the words.
+    const note = (y: number, word: string): Note => ({ rect: [72, y, 192, y + 20], bbox: [72, y, 192, y + 20], content: `BT /F1 12 Tf 1 0 0 1 74 ${y + 5} Tm (${word}) Tj ET` });
+    const pdf = notesPdf(BODY, [note(740, 'Above'), note(600, 'Below')]);
+    expect(wordsOf(pdftotext(pdf))).toEqual(['above', 'body', 'below']);
+    expect(wordsOf(await readerText(pdf))).toEqual(['above', 'body', 'below']);
+  });
+
+  it('applies the /Matrix of a form XObject the appearance draws', async () => {
+    // The note spans 560 to 760; its form lifts the word from 565 (below the body) to 745 (above it).
+    const lifted: Note = { rect: [72, 560, 192, 760], bbox: [0, 0, 120, 200], content: '/Fm1 Do', xobjects: '/XObject << /Fm1 900 0 R >>' };
+    const form: CraftObject = {
+      id: 900,
+      dict: '/Type /XObject /Subtype /Form /BBox [0 0 120 200] /Matrix [1 0 0 1 0 180] /Resources << /Font << /F1 5 0 R >> >>',
+      stream: Buffer.from('BT /F1 12 Tf 2 5 Td (Lifted) Tj ET', 'latin1'),
+    };
+    const pdf = notesPdf(BODY, [lifted], [form]);
+    expect(wordsOf(pdftotext(pdf))).toEqual(['lifted', 'body']);
+    expect(wordsOf(await readerText(pdf))).toEqual(['lifted', 'body']);
+  });
+});
+
+/** Twelve glyphs of the unmapped font: more than the eight letters of the note, so the page's own text is left out. */
+const UNMAPPED_PAGE = 'BT /F2 14 Tf 20 100 Td (\\004\\005\\004\\005\\004\\005\\004\\005\\004\\005\\004\\005) Tj ET';
+const keptNote = (y = 600, text = 'Kept note'): Note => ({ rect: [72, y, 192, y + 20], bbox: [0, 0, 120, 20], content: `BT /F1 12 Tf 2 5 Td (${text}) Tj ET` });
+const LEFT_OUT_KEPT = 'Left out the page text of page 1 and kept the text of its annotations: more of its glyphs have no Unicode mapping than have one.';
+
+describe.skipIf(toolsMissing)('annotation text on a page whose own glyphs mostly have no Unicode mapping', () => {
+  it('keeps the annotation text, as Poppler prints it, and leaves out the glyphs without a mapping, where the document was refused', async () => {
+    const pdf = notesPdf(UNMAPPED_PAGE, [keptNote()]);
+    expect(wordsOf(pdftotext(pdf))).toContain('kept');
+    const result = await convertFile(pdf, 'pdf', 'txt', {}, 'note.pdf');
+    expect(wordsOf(result.buffer.toString('utf8'))).toEqual(['kept', 'note']);
+    expect(result.metadata?.warnings).toEqual([LEFT_OUT_KEPT]);
+  });
+
+  it('hands the whole page to OCR when OCR may read it, so the annotation text is not read twice', async () => {
+    const read = await extractPdfDocument(notesPdf(UNMAPPED_PAGE, [keptNote()]), { onUnmapped: 'omit' });
+    expect(read.unmappedPages).toEqual([1]);
+    expect(read.text.trim()).toBe('');
+  });
+
+  it('still refuses a document whose only page has no annotation text and no glyph that maps', async () => {
+    const error = await captureError(() => extractPdfDocument(notesPdf(UNMAPPED_PAGE, [])));
+    expect(error).toBeInstanceOf(PdfTextUnmappedError);
+    expect((error as PdfTextUnmappedError).pages).toEqual([1]);
+  });
+
+  it('keeps the text of 10,000 notes on a page whose own 50,000 glyphs have no mapping, each note once', async () => {
+    const NOTES = 10_000;
+    const texts = Array.from({ length: NOTES }, (_, index) => `n${index}`);
+    const unmapped = `BT /F2 14 Tf 20 100 Td (${'\\004\\005'.repeat(25_000)}) Tj ET`;
+    const notes = texts.map((text, index) => keptNote(20 + (index % 700), text));
+    const started = performance.now();
+    const read = await extractPdfDocument(notesPdf(unmapped, notes));
+    expect(performance.now() - started).toBeLessThan(TEST_TIMEOUT_MS / 4);
+    expect(read.pages[0].items.map((item) => item.text).sort()).toEqual([...texts].sort());
+  });
+
+  it('cc-0400651.pdf: reads the free text notes in non-embedded JSGothic-Md (90ms-RKSJ-H, Adobe-Japan1) that Poppler prints', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'cc-0400651.pdf');
+    // Poppler also prints the 22 private-use characters the page's own MS PMincho subset maps to, which are no text.
+    const poppler = wordsOf(pdftotext(bytes));
+    expect(poppler).toEqual(['中止', '別途変更あり', '別途変更あり']);
+    const result = await convertFile(bytes, 'pdf', 'txt', {}, 'cc-0400651.pdf');
+    expect(wordsOf(result.buffer.toString('utf8'))).toEqual(poppler);
+    expect(result.metadata?.warnings).toEqual([LEFT_OUT_KEPT]);
   });
 });

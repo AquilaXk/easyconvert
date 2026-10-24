@@ -130,11 +130,24 @@ describe('annotation text items', () => {
     ]);
   });
 
-  it('applies the matrix of a form XObject drawn inside the appearance', () => {
-    const [item] = read(
-      annotation([[OPS.paintFormXObjectBegin, [[1, 0, 0, 1, 7, 0], [0, 0, 10, 10]]], [OPS.beginText], [OPS.setFont, ['f1', 10]], [OPS.showText, [glyphs('f')]], [OPS.paintFormXObjectEnd]], IDENTITY)
-    );
+  it('applies the matrix of a form XObject drawn inside the appearance, which pdf.js passes as a Float32Array', () => {
+    const form = [Float32Array.of(1, 0, 0, 1, 7, 0), Float32Array.of(0, 0, 10, 10)];
+    const [item] = read(annotation([[OPS.paintFormXObjectBegin, form], [OPS.beginText], [OPS.setFont, ['f1', 10]], [OPS.showText, [glyphs('f')]], [OPS.paintFormXObjectEnd]], IDENTITY));
     expect(item.transform[4]).toBe(7);
+  });
+
+  it('places a run at the text matrix Tm sets, which pdf.js passes as one Float32Array operand', () => {
+    const items = read(
+      annotation(
+        [[OPS.beginText], [OPS.setFont, ['f1', 10]], [OPS.setTextMatrix, [Float32Array.of(2, 0, 0, 2, 30, 40)]], [OPS.showText, [glyphs('tm')]], [OPS.moveText, [0, -10]], [OPS.showText, [glyphs('td')]]],
+        IDENTITY
+      )
+    );
+    // The line matrix is the text matrix: Td moves it by (0, -10) in text space, which the matrix doubles.
+    expect(items.map((item) => [item.str, item.transform])).toEqual([
+      ['tm', [20, 0, 0, 20, 30, 40]],
+      ['td', [20, 0, 0, 20, 30, 20]],
+    ]);
   });
 
   it('adds a space for a TJ gap of a fifth of an em and ends the item at a gap past six tenths', () => {
