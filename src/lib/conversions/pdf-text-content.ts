@@ -80,6 +80,8 @@ interface TextItemLike {
   width: number;
   height: number;
   fontName: string;
+  /** Set on the items the annotation walk adds (pdf-annotation-text.ts). */
+  annotation?: true;
 }
 
 interface PageStyle {
@@ -262,6 +264,7 @@ function textItemsOf(
       rtl: candidate.dir === 'rtl' || RTL_LETTER.test(text),
       angled: geometry.angled,
       vertical,
+      ...(candidate.annotation === true ? { annotation: true } : {}),
     });
   }
   return { items, unmapped };
