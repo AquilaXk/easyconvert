@@ -316,6 +316,8 @@ RUN mkdir -p /licenses \
 COPY THIRD_PARTY_NOTICES.md /licenses/
 RUN cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE
 RUN cp /usr/share/doc/ghostxps/SOURCE /licenses/ghostxps.SOURCE
+# The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.
+RUN mkdir -p /licenses/pdfjs-dist-wasm && cp /app/node_modules/pdfjs-dist/wasm/LICENSE_* /licenses/pdfjs-dist-wasm/
 # The versions this image was built with (every Debian package, and the Node.js runtime), kept next to the notices.
 RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; } > /licenses/tool-versions.txt
 RUN chmod -R a+rX /licenses

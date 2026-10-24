@@ -1,4 +1,4 @@
-import { PdfDocument, PdfStructureError } from './pdf-document';
+import { type ContentVisitor, PdfDocument, PdfStructureError } from './pdf-document';
 import { PDF_CONTENT_MAX_STATE_DEPTH } from './pdf-text-types';
 
 /**
@@ -13,11 +13,15 @@ import { PDF_CONTENT_MAX_STATE_DEPTH } from './pdf-text-types';
  * Content streams are also scanned for graphics-state nesting (`q`): pdfjs copies the state at every `q`, so a stream
  * of tens of thousands of unclosed `q` operators costs it quadratic time. Real documents nest a few dozen levels.
  * @throws CorruptStreamError (400) when a stream's compressed data is malformed.
+ * `visitContent`, when given, is called with each content stream as well, so a caller that reads them does not decode them again.
  * @returns the document read, so the caller can read more of it without indexing the file again.
  */
-export function assertPdfStreamsWithinLimits(pdf: Buffer): PdfDocument {
+export function assertPdfStreamsWithinLimits(pdf: Buffer, visitContent?: ContentVisitor): PdfDocument {
   const document = new PdfDocument(pdf, undefined, true);
-  document.contentStreams(assertStateDepthWithinLimit);
+  document.contentStreams((content, pageIndex) => {
+    assertStateDepthWithinLimit(content);
+    visitContent?.(content, pageIndex);
+  });
   document.toUnicodeStreams(() => undefined);
   return document;
 }
@@ -69,13 +73,12 @@ function skipInlineImage(content: string, start: number): number {
 }
 
 /**
- * Deepest nesting of q operators in a content stream, found with a single lexical pass: strings, hex strings, names,
- * comments and inline image data are skipped so that a `q` inside them does not count. Linear in the stream length;
- * the scan stops as soon as the depth passes `stopAbove`.
+ * Calls `onToken` with every regular token of a content stream (operators and numeric operands) and where it ends, in one
+ * lexical pass: strings, hex strings, names, comments and inline image data are skipped, so a token inside them does not count.
+ * For an `ID` operator the end given is that of its inline image data, up to a delimited EI. Linear in the stream length; the
+ * pass stops when `onToken` returns true.
  */
-export function graphicsStateDepth(content: string, stopAbove = Number.POSITIVE_INFINITY): number {
-  let depth = 0;
-  let deepest = 0;
+export function forEachContentToken(content: string, onToken: (token: string, start: number, end: number) => boolean | void): void {
   let index = 0;
   while (index < content.length) {
     const code = content.charCodeAt(index);
@@ -97,16 +100,27 @@ export function graphicsStateDepth(content: string, stopAbove = Number.POSITIVE_
       const start = index;
       while (index < content.length && !WHITESPACE.has(content.charCodeAt(index)) && !DELIMITERS.has(content.charCodeAt(index))) index++;
       const token = content.slice(start, index);
-      if (token === 'q') {
-        depth++;
-        deepest = Math.max(deepest, depth);
-        if (deepest > stopAbove) return deepest;
-      } else if (token === 'Q') {
-        depth = Math.max(0, depth - 1);
-      } else if (token === 'ID') {
-        index = skipInlineImage(content, index);
-      }
+      if (token === 'ID') index = skipInlineImage(content, index);
+      if (onToken(token, start, index) === true) return;
     }
   }
+}
+
+/**
+ * Deepest nesting of q operators in a content stream, found with `forEachContentToken`. Linear in the stream length; the scan
+ * stops as soon as the depth passes `stopAbove`.
+ */
+export function graphicsStateDepth(content: string, stopAbove = Number.POSITIVE_INFINITY): number {
+  let depth = 0;
+  let deepest = 0;
+  forEachContentToken(content, (token) => {
+    if (token === 'q') {
+      depth++;
+      deepest = Math.max(deepest, depth);
+      return deepest > stopAbove;
+    }
+    if (token === 'Q') depth = Math.max(0, depth - 1);
+    return false;
+  });
   return deepest;
 }
