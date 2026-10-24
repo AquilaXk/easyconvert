@@ -29,8 +29,10 @@ import { compareImages } from './helpers/vrt-engine';
  *   the binary encoding itself declares (class 0, element 3 of ISO 8632-3, counted by walking the file);
  * - the PNG, SVG, EPS and PostScript pages against the PDF page they were written from (SSIM; ghostscript draws the PostScript);
  * - Inkscape, which reads Visio and CorelDRAW files with the same libraries and writes a PDF of its own: every letter it
- *   shows is in the converter's PDF, and the pages look alike (SSIM of the first page). It reads some metafiles too, but
- *   puts them on a page cropped to the drawing, so only their letters are compared; it reads no CGM and two of the EMF files;
+ *   shows is in the converter's PDF, and the pages look alike (SSIM of the first page). It reads the metafiles too and makes
+ *   their page the frame of the header, as the converter does (docs/policy-decisions.md entry 100), so their pages have the same
+ *   size; it reads no CGM and crashes on two of the EMF files (`lo-sine_wave.emf`, `tika-testemf.emf`), whose page is the frame
+ *   worked out from the header by hand;
  * - for the DXF, ezdxf: the file reads without audit errors and its extents hold every inked pixel of the page;
  * - for the EMF and WMF written from a drawing, the office suite reading them back, which is the import filter of those
  *   formats and not the encoder that wrote them;
@@ -46,6 +48,8 @@ const ezdxfMissing = skipUnless('python3 and ezdxf', PYTHON_WITH_EZDXF !== null)
 const CONVERSION_TIMEOUT_MS = 600_000;
 const TOOL_TIMEOUT_MS = 120_000;
 const COMPARE_DPI = 50;
+/** The longest side, in pixels, of an A4 page at the comparison resolution: a smaller page is compared at a higher one, so that its SSIM is taken over as many pixels. */
+const COMPARE_LONG_SIDE_PIXELS = Math.ceil((841.89 * COMPARE_DPI) / 72);
 const POINT_TOLERANCE = 0.6;
 /** Lowest SSIM of a page against another renderer's page of the same file (measured 0.95 to 1.0 against Inkscape). */
 const MIN_RENDERER_SSIM = 0.9;
@@ -88,6 +92,10 @@ interface SampleCase {
   /** Pictures embedded in the first page, which pdfimages lists in the PDF (for an EMF or WMF also the bitmap records the file itself holds). */
   embeddedPictures?: number;
   inkscape: InkscapeReading;
+  /** Floor of the chain SSIM for a page whose renders differ more than `MIN_CHAIN_SSIM` allows, with the reason beside the sample. */
+  minChainSsim?: number;
+  /** Floor of the SSIM against Inkscape's page for a page that Inkscape draws differently, with the reason beside the sample. */
+  minRendererSsim?: number;
 }
 
 const SAMPLES: readonly SampleCase[] = [
@@ -106,12 +114,15 @@ const SAMPLES: readonly SampleCase[] = [
   },
   { id: 'office-pb-poi.cdr', extension: 'cdr', targets: PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [['powered by', 'apache']], embeddedPictures: 1, inkscape: 'letters' },
   { id: 'lo-fdo65220-2.cdr', extension: 'cdr', targets: PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [NO_PHRASE], inkscape: 'alike' },
-  { id: 'lo-computer_mail.emf', extension: 'emf', targets: METAFILE_PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [], embeddedPictures: 12, inkscape: 'none' },
-  { id: 'lo-sine_wave.emf', extension: 'emf', targets: METAFILE_PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [['10 20 30 40 50 60 70 80 90 100']], inkscape: 'none' },
-  { id: 'tika-testemf.emf', extension: 'emf', targets: METAFILE_PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'none' },
-  { id: 'lo-testroundrect.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
-  { id: 'lo-visio_import_source.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [['dgps rsxx2', 'each input output has individual dcdc converter']], inkscape: 'letters' },
-  { id: 'tika-testwmf.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: A4_POINTS, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'none' },
+  // Twelve gradient bitmaps under heavy outlines fill the page edge to edge: the renderers differ by a pixel along every edge and in the banding
+  // (measured 0.75 for the SVG and above 0.8 for the rest of the chain). Inkscape draws the envelope's body dark where every other renderer draws it white
+  // (measured 0.84 on a page that is otherwise the same: the page, the scale and the position of the drawing are those of Inkscape).
+  { id: 'lo-computer_mail.emf', extension: 'emf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 68.28, height: 71.26 }, pages: 1, pagePhrases: [], embeddedPictures: 12, inkscape: 'alike', minChainSsim: 0.7, minRendererSsim: 0.8 },
+  { id: 'lo-sine_wave.emf', extension: 'emf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 646.72, height: 529.03 }, pages: 1, pagePhrases: [['10 20 30 40 50 60 70 80 90 100']], inkscape: 'none' },
+  { id: 'tika-testemf.emf', extension: 'emf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 154.91, height: 95.98 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'none' },
+  { id: 'lo-testroundrect.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 90.23, height: 66.15 }, pages: 1, pagePhrases: [], inkscape: 'alike' },
+  { id: 'lo-visio_import_source.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 255.2, height: 106.45 }, pages: 1, pagePhrases: [['dgps rsxx2', 'each input output has individual dcdc converter']], inkscape: 'alike' },
+  { id: 'tika-testwmf.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 117, height: 72.75 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'alike' },
   { id: 'lo-binary_corvette.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
   { id: 'lo-circles.cgm', extension: 'cgm', targets: METAFILE_PAGE_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 14, pagePhrases: [], inkscape: 'none' },
   // The file's 13 axis labels share one spot on the page: the office suite's CGM import (24.2 and 26.8 alike) places every
@@ -166,19 +177,24 @@ function pdfPictureCount(pdf: Buffer): number {
   return listing.split('\n').filter((line) => /^\s*\d+\s+\d+\s+image\b/.test(line)).length;
 }
 
+/** The resolution a page is compared at: 50 dpi, or more for a page whose longest side is shorter than an A4 page's at 50 dpi. */
+function comparisonDpi(page: Point): number {
+  return Math.max(COMPARE_DPI, Math.ceil((COMPARE_LONG_SIDE_PIXELS * 72) / Math.max(page.width, page.height)));
+}
+
 /** The first page of a PDF as a PNG at the comparison resolution. */
-function firstPageOfPdf(pdf: Buffer): Buffer {
+function firstPageOfPdf(pdf: Buffer, dpi = COMPARE_DPI): Buffer {
   return withFile(pdf, 'pdf', (file, dir) => {
-    runTool('pdftoppm', ['-png', '-r', String(COMPARE_DPI), '-f', '1', '-l', '1', '-singlefile', file, path.join(dir, 'page')]);
+    runTool('pdftoppm', ['-png', '-r', String(dpi), '-f', '1', '-l', '1', '-singlefile', file, path.join(dir, 'page')]);
     return fs.readFileSync(path.join(dir, 'page.png'));
   });
 }
 
 /** The first page of a PostScript or EPS file as a PNG at the comparison resolution, drawn by ghostscript. */
-function firstPageOfPostScript(source: Buffer, extension: 'ps' | 'eps'): Buffer {
+function firstPageOfPostScript(source: Buffer, extension: 'ps' | 'eps', dpi = COMPARE_DPI): Buffer {
   return withFile(source, extension, (file, dir) => {
     const crop = extension === 'eps' ? ['-dEPSCrop'] : [];
-    runTool('gs', ['-q', '-dBATCH', '-dNOPAUSE', '-dSAFER', '-sDEVICE=png16m', `-r${COMPARE_DPI}`, ...crop, '-dFirstPage=1', '-dLastPage=1', `-sOutputFile=${path.join(dir, 'page.png')}`, file]);
+    runTool('gs', ['-q', '-dBATCH', '-dNOPAUSE', '-dSAFER', '-sDEVICE=png16m', `-r${dpi}`, ...crop, '-dFirstPage=1', '-dLastPage=1', `-sOutputFile=${path.join(dir, 'page.png')}`, file]);
     return fs.readFileSync(path.join(dir, 'page.png'));
   });
 }
@@ -524,7 +540,9 @@ describe.skipIf(toolsMissing)('real Visio, CorelDRAW, EMF, WMF and CGM files', (
         if (sample.extension === 'emf' || sample.extension === 'wmf') {
           expect(bitmapRecordCount(bytes, sample.extension), `${sample.id} bitmap records the file holds`).toBe(sample.embeddedPictures ?? 0);
         }
-        const pdfPage = firstPageOfPdf(pdf);
+        const dpi = comparisonDpi(pages.sizes[0]);
+        const minChainSsim = sample.minChainSsim ?? MIN_CHAIN_SSIM;
+        const pdfPage = firstPageOfPdf(pdf, dpi);
 
         let pngPages: Buffer[] = [];
         for (const target of sample.targets.filter((candidate) => candidate !== 'pdf' && candidate !== 'dxf')) {
@@ -534,16 +552,16 @@ describe.skipIf(toolsMissing)('real Visio, CorelDRAW, EMF, WMF and CGM files', (
           if (target === 'png' || target === 'jpg') {
             if (target === 'png') pngPages = outputs;
             for (const image of outputs) await expectDrawnPicture(image, label(target));
-            expect(await ssim(outputs[0], pdfPage), `${label(target)} against the PDF page`).toBeGreaterThan(MIN_CHAIN_SSIM);
+            expect(await ssim(outputs[0], pdfPage), `${label(target)} against the PDF page`).toBeGreaterThan(minChainSsim);
           } else if (target === 'svg') {
             expect(outputs[0].toString('utf-8'), label(target)).toMatch(/^<\?xml[^>]*\?>\s*<svg\b/);
-            const drawn = await sharp(outputs[0], { density: COMPARE_DPI }).png().toBuffer();
+            const drawn = await sharp(outputs[0], { density: dpi }).png().toBuffer();
             await expectDrawnPicture(drawn, label(target));
-            expect(await ssim(drawn, pdfPage), `${label(target)} against the PDF page`).toBeGreaterThan(MIN_CHAIN_SSIM);
+            expect(await ssim(drawn, pdfPage), `${label(target)} against the PDF page`).toBeGreaterThan(minChainSsim);
           } else if (target === 'eps' || target === 'ps') {
             const header = outputs[0].subarray(0, 40).toString('latin1');
             expect(header, label(target)).toMatch(target === 'eps' ? /^%!PS-Adobe-[\d.]+ EPSF-/ : /^%!PS-Adobe-/);
-            expect(await ssim(firstPageOfPostScript(outputs[0], target), pdfPage), `${label(target)} against the PDF page`).toBeGreaterThan(MIN_CHAIN_SSIM);
+            expect(await ssim(firstPageOfPostScript(outputs[0], target, dpi), pdfPage), `${label(target)} against the PDF page`).toBeGreaterThan(minChainSsim);
           } else if (target === 'emf' || target === 'wmf') {
             await expectMetafileDrawsThePage(outputs[0], target, pdfPage, label(target));
           } else {
@@ -622,7 +640,8 @@ describe.skipIf(toolsMissing || inkscapeMissing)('real files against Inkscape', 
         expect({ id: sample.id, lacking }).toEqual({ id: sample.id, lacking: [] });
         if (sample.inkscape === 'alike') {
           expectClose(pdfPages(pdf).sizes[0], pdfPages(reference).sizes[0], `${sample.id} first page size`);
-          expect(await ssim(firstPageOfPdf(pdf), firstPageOfPdf(reference)), `${sample.id} first page`).toBeGreaterThan(MIN_RENDERER_SSIM);
+          const dpi = comparisonDpi(pdfPages(pdf).sizes[0]);
+          expect(await ssim(firstPageOfPdf(pdf, dpi), firstPageOfPdf(reference, dpi)), `${sample.id} first page`).toBeGreaterThan(sample.minRendererSsim ?? MIN_RENDERER_SSIM);
         }
       },
       CONVERSION_TIMEOUT_MS

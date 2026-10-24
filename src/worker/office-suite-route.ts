@@ -15,6 +15,8 @@ import {
   officeSuiteWritesText,
 } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
+import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-document';
+import { readMetafilePage, type MetafileFormat } from '../lib/conversions/metafile-page-frame';
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { selectsPages } from './poppler-ppm';
@@ -165,6 +167,30 @@ export function withPresentationRetry(run: OfficeSuiteRun): OfficeSuiteRun {
       if (retry === undefined) throw err;
       return run(retry, sourceFormat, targetFormat, options, originalFilename);
     }
+  };
+}
+
+/** The metafile sources whose page the frame of the header decides, and the drawing format the office suite opens for them. */
+const METAFILE_FRAME_SOURCES: ReadonlySet<string> = new Set<MetafileFormat>(['emf', 'wmf']);
+const FRAME_DRAWING_FORMAT = 'odg';
+
+/**
+ * `run`, with a metafile written as PDF drawn on a page of the size of its header's frame. The office suite opens a metafile
+ * on an A4 page, centred, at the size it prefers or reduced to fit, while the reference import filter makes the page the
+ * frame (`metafile-page-frame.ts`). The picture is therefore handed over as a drawing of that page that holds it as it is
+ * (`metafile-frame-document.ts`). A file that is no metafile, or whose header declares no frame inside the bounds, goes to
+ * the office suite as it is, which then answers for it as before.
+ */
+export function withMetafileFrame(run: OfficeSuiteRun): OfficeSuiteRun {
+  return async (input, sourceFormat, targetFormat, options, originalFilename) => {
+    if (targetFormat !== 'pdf' || !METAFILE_FRAME_SOURCES.has(sourceFormat)) return run(input, sourceFormat, targetFormat, options, originalFilename);
+    const format = sourceFormat as MetafileFormat;
+    const bytes = inputBytes(input);
+    const page = bytes && readMetafilePage(bytes, format);
+    if (!bytes || !page) return run(input, sourceFormat, targetFormat, options, originalFilename);
+    const drawing = await metafileFrameDocument(bytes, format, page);
+    const staged: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? drawing : { inputBuffer: drawing, outputPath: input.outputPath };
+    return run(staged, FRAME_DRAWING_FORMAT, targetFormat, options, originalFilename);
   };
 }
 
