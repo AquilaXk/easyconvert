@@ -4090,12 +4090,12 @@ export async function convertArchive(
     };
   } else if (tgt === 'bz2' || tgt === 'bz') {
     // 3.1 Target BZ2
-    const { raw: rawToCompress, outputBase } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename }, createTarArchive);
+    const { raw: rawToCompress, filename, mimeType } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename, target: tgt, streamMimeType: 'application/x-bzip2' }, createTarArchive);
     const bz2Buffer = await compressBzip2Async(rawToCompress);
     result = {
       buffer: bz2Buffer,
-      mimeType: 'application/x-bzip2',
-      filename: `${outputBase}.${tgt}`,
+      mimeType,
+      filename,
       size: bz2Buffer.length,
     };
   } else if (tgt === '7z' || tgt === 'tar.7z') {
@@ -4111,12 +4111,12 @@ export async function convertArchive(
     result = createTarArchive(files, options, `${baseName}.tar`);
   } else if (tgt === 'gz') {
     // 7. Target GZ
-    const { raw: rawToCompress, outputBase } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename }, createTarArchive);
+    const { raw: rawToCompress, filename, mimeType } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename, target: tgt, streamMimeType: 'application/gzip' }, createTarArchive);
     const gzipped = zlib.gzipSync(rawToCompress, { level: resolveArchiveCompressionLevel(options.compressionLevel) });
     result = {
       buffer: gzipped,
-      mimeType: 'application/gzip',
-      filename: `${outputBase}.gz`,
+      mimeType,
+      filename,
       size: gzipped.length,
     };
   } else if (tgt === 'tar.zst') {
@@ -4136,7 +4136,7 @@ export async function convertArchive(
     };
   } else if (tgt === 'zst' || tgt === 'zstd') {
     // 7.2 Target ZST / ZSTD
-    const { raw: rawToCompress, outputBase } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename }, createTarArchive);
+    const { raw: rawToCompress, filename, mimeType } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename, target: tgt, streamMimeType: 'application/zstd' }, createTarArchive);
     let zstdBuffer: Buffer;
     if (options.zstdDict) {
       zstdBuffer = compressWithZstdDict(rawToCompress, zstdDictionaryOf(options.zstdDict));
@@ -4145,8 +4145,8 @@ export async function convertArchive(
     }
     result = {
       buffer: zstdBuffer,
-      mimeType: 'application/zstd',
-      filename: `${outputBase}.${tgt}`,
+      mimeType,
+      filename,
       size: zstdBuffer.length,
     };
   } else if (tgt === 'tar.xz' || tgt === 'txz') {
@@ -4161,12 +4161,12 @@ export async function convertArchive(
     };
   } else if (tgt === 'xz') {
     // 7.4 Target XZ
-    const { raw: rawToCompress, outputBase } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename }, createTarArchive);
+    const { raw: rawToCompress, filename, mimeType } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename, target: tgt, streamMimeType: 'application/x-xz' }, createTarArchive);
     const xzBuffer = await compressXzAsync(rawToCompress, options);
     result = {
       buffer: xzBuffer,
-      mimeType: 'application/x-xz',
-      filename: `${outputBase}.${tgt}`,
+      mimeType,
+      filename,
       size: xzBuffer.length,
     };
   } else if (tgt === 'zip') {

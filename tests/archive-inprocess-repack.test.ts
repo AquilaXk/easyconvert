@@ -279,7 +279,9 @@ describe('tar to gzip in process', () => {
       fixtureTar ??= buildFixtureTar();
       const result = await convertWithNative7z(fixtureTar, 'tar', 'gz', {}, 'fixture.tar');
       if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
-      const archive = writeOut('several.gz', result.buffer);
+      expect(result.filename).toBe('fixture.tar.gz');
+      expect(result.mimeType).toBe('application/gzip');
+      const archive = writeOut('several.tar.gz', result.buffer);
       execFileSync('gzip', ['-t', archive]);
       expect([...tarModes(execFileSync('gzip', ['-d', '-c', archive], { maxBuffer: 64 * MIB })).keys()].sort()).toEqual([...tarModes(fixtureTar).keys()].sort());
       expect(spy.calls().some((call) => call.includes('-ttar'))).toBe(true);
