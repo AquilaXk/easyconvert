@@ -9,6 +9,8 @@ import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types'
 import { requireOracleTool } from './helpers/differential-oracle';
 import { pageWords } from './helpers/document-words';
 import { pdfFacts } from './helpers/corpus-facts';
+import { pdfWordBoxes, wordsOutsidePage } from './helpers/html-pdf-oracle';
+import { pdfLinks } from './helpers/pdf-named-links';
 import { withMissingBinary } from './helpers/native-tools';
 import { oracleTest } from './helpers/oracle-test';
 import { pageRectangles } from './helpers/pdf-rectangles';
@@ -34,6 +36,9 @@ const POSITION_TOLERANCE_PT = 0.6;
 const GLYPH_BEARING_PT = 1.5;
 const LINE_HEIGHT_PT = 16;
 const MAX_TABLE_DEPTH = 32;
+/** The space between a cell's border and its text, and the narrowest column, in points. */
+const TABLE_PADDING_PT = 4;
+const MIN_COLUMN_PT = 24;
 
 /** Converts without the office suite, so the in-process renderer is the route. */
 const inProcess = (html: string, options: Record<string, unknown> = {}): ReturnType<typeof convertFile> =>
@@ -98,19 +103,15 @@ describe('tables inside table cells', () => {
   );
 
   oracleTest(
-    'gives a column of a table with a table inside it the width its content asks for',
+    'gives each column of a table, with or without a table inside it, the width its content asks for',
     TOOLS,
     async () => {
       const long = 'many words that fill the wide column of the table and run on '.repeat(6).trim();
       const nested = await inProcess(`<table><tr><td>ab</td><td><table><tr><td>${long}</td></tr></table></td></tr></table>`);
       const plain = await inProcess(`<table><tr><td>ab</td><td>${long}</td></tr></table>`);
       const textStart = (pdf: Buffer): number => wordAt(popplerWords(pdf), 'many').x0;
-      // Equal columns start the second column at half the text width, 50 + 495.28 / 2 + 4 pt.
-      const halfWay = PAGE_MARGIN + (A4_WIDTH_PT - 2 * PAGE_MARGIN) / 2;
-      expect({ plainStartsAtHalf: Math.abs(textStart(plain.buffer) - (halfWay + 4)) < GLYPH_BEARING_PT, nestedStartsAfterSmallColumn: textStart(nested.buffer) < PAGE_MARGIN + 60 }).toEqual({
-        plainStartsAtHalf: true,
-        nestedStartsAfterSmallColumn: true,
-      });
+      // The short column is as wide as `ab` and its padding; equal columns would start the long one at half the text width.
+      expect({ plain: textStart(plain.buffer) < PAGE_MARGIN + 60, nested: textStart(nested.buffer) < PAGE_MARGIN + 60 }).toEqual({ plain: true, nested: true });
     }
   );
 
@@ -180,6 +181,123 @@ describe('tables inside table cells', () => {
       const result = await inProcess('<p>before</p><xmp><b>kept</b> as text</xmp><p>after</p>');
       expect(pdfFacts(result.buffer).text).toBe('before <b>kept</b> as text after');
     }
+  );
+});
+
+describe('the width of a table, and pages whose tables are wider than the paper', () => {
+  const TEXT_WIDTH_PT = A4_WIDTH_PT - 2 * PAGE_MARGIN;
+  /** The most a print engine shrinks a page to fit its widest content (Blink's printingMaximumShrinkFactor). */
+  const MAXIMUM_SHRINK = 1.5;
+  /** Height of the box Poppler gives a word of `pdf`: the font size it is drawn at, times a constant of the font. */
+  const wordHeight = (pdf: Buffer, text: string): number => {
+    const word = wordAt(popplerWords(pdf), text);
+    return word.y1 - word.y0;
+  };
+  /** A row of `count` cells, each holding a word that names its column. */
+  const wideRow = (count: number): string => `<table><tr>${numbered(count, 'c').map((word) => `<td>${word}</td>`).join('')}</tr></table>`;
+
+  oracleTest(
+    'makes a table without a width as wide as its content, as browsers do, and one with a width as wide as it says',
+    TOOLS,
+    async () => {
+      const content = popplerWords((await inProcess('<table><tr><td>alpha</td><td>bravo</td></tr></table>')).buffer);
+      expect(wordAt(content, 'bravo').x1).toBeLessThan(PAGE_MARGIN + 80);
+      // Two columns that ask for the same width share what the table states: half of the text width, or of 200 px (150 pt).
+      const full = popplerWords((await inProcess('<table width="100%"><tr><td>same</td><td>same</td></tr></table>')).buffer);
+      expect(Math.abs(wordAt(full, 'same', 1).x0 - (PAGE_MARGIN + TEXT_WIDTH_PT / 2 + TABLE_PADDING_PT))).toBeLessThan(GLYPH_BEARING_PT);
+      const fixed = popplerWords((await inProcess('<table width="200"><tr><td>same</td><td>same</td></tr></table>')).buffer);
+      expect(Math.abs(wordAt(fixed, 'same', 1).x0 - (PAGE_MARGIN + 75 + TABLE_PADDING_PT))).toBeLessThan(GLYPH_BEARING_PT);
+    }
+  );
+
+  oracleTest(
+    'places a narrow table in the middle or at the right where its align attribute or an aligning ancestor puts it',
+    TOOLS,
+    async () => {
+      const words = popplerWords(
+        (
+          await inProcess(
+            '<table align="center"><tr><td>alpha</td></tr></table><center><table><tr><td>bravo</td></tr></table></center>' +
+              '<div align="right"><table><tr><td>charlie</td></tr></table></div><center><table align="left"><tr><td>delta</td></tr></table></center>'
+          )
+        ).buffer
+      );
+      const middle = (word: WordBox): number => (word.x0 + word.x1) / 2;
+      expect(Math.abs(middle(wordAt(words, 'alpha')) - A4_WIDTH_PT / 2)).toBeLessThan(GLYPH_BEARING_PT);
+      expect(Math.abs(middle(wordAt(words, 'bravo')) - A4_WIDTH_PT / 2)).toBeLessThan(GLYPH_BEARING_PT);
+      expect(Math.abs(wordAt(words, 'charlie').x1 - (RIGHT_EDGE - TABLE_PADDING_PT))).toBeLessThan(GLYPH_BEARING_PT);
+      expect(Math.abs(wordAt(words, 'delta').x0 - (PAGE_MARGIN + TABLE_PADDING_PT))).toBeLessThan(GLYPH_BEARING_PT);
+    }
+  );
+
+  oracleTest(
+    'shrinks a page whose table needs more than the text width, as print engines do, keeping every word on the page',
+    TOOLS,
+    async () => {
+      // 25 columns of at least 24 pt need 600 pt of a 495.28 pt text width: the page is drawn 600 / 495.28 times smaller.
+      const plain = await inProcess('<p>Reading size</p>');
+      const shrunk = await inProcess(`<p>Reading size</p>${wideRow(25)}`);
+      const boxes = pdfWordBoxes(shrunk.buffer);
+      expect({ outside: wordsOutsidePage(boxes), pageWidths: [...new Set(boxes.map((box) => box.pageWidth))], columns: boxes.filter((box) => /^c\d{3}$/.test(box.text)).length }).toEqual({
+        outside: [],
+        pageWidths: [Number(A4_WIDTH_PT.toFixed(6))],
+        columns: 25,
+      });
+      const scale = wordHeight(shrunk.buffer, 'Reading') / wordHeight(plain.buffer, 'Reading');
+      expect(Math.abs(scale - TEXT_WIDTH_PT / (25 * MIN_COLUMN_PT))).toBeLessThan(0.01);
+    }
+  );
+
+  oracleTest(
+    'shrinks a page to a table whose pixel width is wider than the text, and keeps links landing on their line',
+    TOOLS,
+    async () => {
+      // 900 px is 675 pt.
+      const plain = await inProcess('<p>Reading size</p>');
+      const shrunk = await inProcess(
+        `<p>Reading size <a href="#far">jump</a></p><table width="900"><tr><td>alpha</td><td>bravo</td></tr></table>${'<p>filler line</p>'.repeat(80)}<h2 id="far">Target heading</h2>`
+      );
+      expect(wordsOutsidePage(pdfWordBoxes(shrunk.buffer))).toEqual([]);
+      const scale = wordHeight(shrunk.buffer, 'Reading') / wordHeight(plain.buffer, 'Reading');
+      expect(Math.abs(scale - TEXT_WIDTH_PT / 675)).toBeLessThan(0.01);
+      const [link] = pdfLinks(shrunk.buffer);
+      expect({ text: link.text, line: link.line }).toEqual({ text: 'jump', line: ['Target', 'heading'] });
+    }
+  );
+
+  oracleTest(
+    'refuses a page that would have to shrink more than a print engine shrinks one, with the limit named',
+    TOOLS,
+    async () => {
+      // 40 columns need 960 pt: 1.94 times the text width.
+      const refusal = await inProcess(wideRow(40)).catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(EngineUnavailableError);
+      expect((refusal as Error).message).toMatch(new RegExp(`a table with 40 columns does not fit the page width: it needs 960pt of 495pt, and a page is shrunk at most ${MAXIMUM_SHRINK} times`));
+    }
+  );
+
+  oracleTest(
+    'answers absurd widths and spans in bounded time: a table of 99999999 px and one of 100000 %',
+    TOOLS,
+    async () => {
+      const started = Date.now();
+      const result = await inProcess('<table width="99999999"><tr><td>alpha</td></tr></table><table width="100000%"><tr><td>bravo</td></tr></table>');
+      expect({ outside: wordsOutsidePage(pdfWordBoxes(result.buffer)), text: pdfFacts(result.buffer).text }).toEqual({ outside: [], text: 'alpha bravo' });
+      expect(Date.now() - started).toBeLessThan(5_000);
+    }
+  );
+
+  oracleTest(
+    'converts govdocs1-001143 (four columns holding a 14-column table, 768 pt of 741 pt) in landscape with every word on the page',
+    TOOLS,
+    async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, 'govdocs1-001143.html');
+      const result = await convertFile(bytes, 'html', 'pdf', { orientation: 'landscape' }, 'govdocs1-001143.html');
+      const boxes = pdfWordBoxes(result.buffer);
+      const shown = new Set(boxes.map((box) => box.text));
+      expect({ outside: wordsOutsidePage(boxes), missing: pageWords(bytes.toString('latin1')).filter((word) => !shown.has(word)) }).toEqual({ outside: [], missing: [] });
+    },
+    60_000
   );
 });
 

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { convertFile } from '../src/lib/conversions/index';
 import { stageHtmlForNativeEngine } from '../src/lib/conversions/html-native-staging';
 import { overrideImageFetchRules } from '../src/lib/conversions/html-image-fetch';
-import { EngineUnavailableError } from '../src/lib/types';
+import { ConversionFailedError } from '../src/lib/types';
 import { pdfFacts } from './helpers/corpus-facts';
+import { requireOracleTool } from './helpers/differential-oracle';
 import { withMissingBinary } from './helpers/native-tools';
 import { oracleTest } from './helpers/oracle-test';
 import { solidPng, startImageServer, type ImageServer } from './helpers/image-server';
@@ -73,13 +75,36 @@ describe('the in-process renderer leaves out what it cannot draw', () => {
     }
   );
 
-  it('still refuses MathML with an error that names it', async () => {
-    const failure = await inProcess('<html><body><p>Before.</p><math><mi>x</mi></math></body></html>').catch((error: unknown) => error);
-    expect(failure).toBeInstanceOf(EngineUnavailableError);
-    expect((failure as Error).message).toBe(
-      "Engine 'soffice' is unavailable: HTML <math> cannot be drawn by the in-process PDF renderer; rendering it needs the native LibreOffice engine"
-    );
-  });
+  oracleTest(
+    'draws MathML as its text, in line or on a line of its own, without what a math renderer does not show',
+    TOOLS,
+    async () => {
+      const result = await inProcess(
+        '<html><body><p>Before <math><mi>x</mi><mo>+</mo><mn>1</mn></math> after.</p>' +
+          '<math display="block"><semantics><mrow><mi>y</mi><mo>=</mo><mn>2</mn></mrow><annotation encoding="application/x-tex">y = 2 tex</annotation></semantics></math>' +
+          '<p>Then <math><maction actiontype="toggle"><mi>shown</mi><mi>hidden</mi></maction><mphantom><mi>ghost</mi></mphantom></math> end.</p></body></html>'
+      );
+      const text = execFileSync(requireOracleTool('pdftotext'), ['-', '-'], { input: result.buffer, encoding: 'utf-8' });
+      expect({ lines: text.split('\n').map((line) => line.trim()).filter(Boolean), warnings: result.metadata?.warnings }).toEqual({
+        lines: ['Before x+1 after.', 'y=2', 'Then shown end.'],
+        warnings: undefined,
+      });
+    }
+  );
+
+  oracleTest(
+    'answers MathML nested hundreds of levels deep quickly, with a document or a typed refusal',
+    TOOLS,
+    async () => {
+      const started = Date.now();
+      const outcome = await inProcess(`<p>deep ${'<math><mrow>'.repeat(150)}<mi>z</mi>${'</mrow></math>'.repeat(150)}</p>`).then(
+        (result) => pdfFacts(result.buffer).text,
+        (error: unknown) => error
+      );
+      expect(outcome === 'deep z' || outcome instanceof ConversionFailedError).toBe(true);
+      expect(Date.now() - started).toBeLessThan(5_000);
+    }
+  );
 });
 
 describe('the image loader fetches nothing inside a subtree no route draws', () => {
