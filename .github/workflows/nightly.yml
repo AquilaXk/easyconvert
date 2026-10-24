@@ -235,6 +235,8 @@ jobs:
         env:
           ORACLE_STRICT_MODE: "1"
           BENCH_FAMILIES: ${{ matrix.families }}
+          # The heap bound the service runs with (docker-compose.yml); see the parity quality job in ci.yml.
+          MALLOC_ARENA_MAX: "2"
         run: npm run bench:quality -- --parity --quality-only --family "$BENCH_FAMILIES"
 
       # Saved even when the benchmark fails: a host that refuses a download one night (a rate limit, an outage) would otherwise

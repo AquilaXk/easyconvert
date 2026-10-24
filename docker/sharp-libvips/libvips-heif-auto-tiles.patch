@@ -1,0 +1,17 @@
+--- a/libvips/foreign/heifsave.c
++++ b/libvips/foreign/heifsave.c
+@@ -646,11 +646,11 @@
+ 	}
+ #endif /*HAVE_HEIF_ENCODER_PARAMETER_GET_VALID_INTEGER_VALUES*/
+ 
+-	/* Try to enable auto_tiles. This can make AVIF encoding a lot faster,
+-	 * with only a very small increase in file size.
++	/* Keep auto_tiles off, the encoder's default: libaom would make one tile
++	 * per thread, so the file would depend on the thread count.
+ 	 */
+ 	error = heif_encoder_set_parameter_boolean(heif->encoder,
+-		"auto-tiles", TRUE);
++		"auto-tiles", FALSE);
+ 	if (error.code &&
+ 		error.subcode != heif_suberror_Unsupported_parameter) {
+ 		vips__heif_error(&error);

@@ -292,6 +292,94 @@ describe('the libwebp thread patch', () => {
   });
 });
 
+describe('the AV1 auto-tiles patch', () => {
+  const libvipsPatch = path.join(BUILD_DIR, 'libvips-heif-auto-tiles.patch');
+  const hookPatch = path.join(BUILD_DIR, 'heif-auto-tiles.patch');
+
+  /** The lines of heifsave.c (libvips 8.18.7, lines 646 to 660) around the encoder's auto-tiles setting. */
+  const HEIFSAVE_TILES = [
+    '\t}',
+    '#endif /*HAVE_HEIF_ENCODER_PARAMETER_GET_VALID_INTEGER_VALUES*/',
+    '',
+    '\t/* Try to enable auto_tiles. This can make AVIF encoding a lot faster,',
+    '\t * with only a very small increase in file size.',
+    '\t */',
+    '\terror = heif_encoder_set_parameter_boolean(heif->encoder,',
+    '\t\t"auto-tiles", TRUE);',
+    '\tif (error.code &&',
+    '\t\terror.subcode != heif_suberror_Unsupported_parameter) {',
+    '\t\tvips__heif_error(&error);',
+    '',
+  ].join('\n');
+  /** The lines of posix.sh (sharp-libvips ebb95f8) once webp-thread-level.patch has added its line. */
+  const POSIX_VIPS_STEP = [
+    'cd ${DEPS}/vips',
+    '# Use version number in SONAME',
+    '$CURL https://gist.githubusercontent.com/lovell/313a6901e9db1bf285f2a1f1180499e4/raw/3988223c7dfa4d22745d9392034b0117abef1446/libvips-cpp-soversion.patch | patch -p1',
+    '# libwebp on a second thread (docker/sharp-libvips/libvips-webp-thread-level.patch)',
+    'patch -p1 < "$SHARP_LIBVIPS_WEBP_THREAD_PATCH"',
+    '# Link libvips.so statically into libvips-cpp.so',
+    "sed -i'.bak' \"s/library('vips'/static_&/\" libvips/meson.build",
+    "sed -i'.bak' \"/version: library_version/{N;d;}\" libvips/meson.build",
+    '',
+  ].join('\n');
+
+  const heifsave = (dir: string): string => path.join(dir, 'vips', 'libvips', 'foreign', 'heifsave.c');
+
+  /** A directory with the libvips sources in `vips`, where posix.sh stands when it patches them. */
+  function workDir(): string {
+    const dir = tempDir('heif-tiles-');
+    mkdirSync(path.join(dir, 'vips', 'libvips', 'foreign'), { recursive: true });
+    writeFileSync(heifsave(dir), HEIFSAVE_TILES);
+    writeFileSync(path.join(dir, 'vips', 'libvips', 'meson.build'), "library('vips'\nversion: library_version\n\n");
+    writeFileSync(path.join(dir, 'empty.patch'), '');
+    return dir;
+  }
+  const applyLibvipsPatch = (dir: string): number | null =>
+    spawnSync('patch', ['-p1', '--forward', '-i', libvipsPatch], { cwd: path.join(dir, 'vips'), encoding: 'utf-8' }).status;
+
+  withBash('turns the auto-tiles parameter of heifsave.c off, and sets nothing else', () => {
+    const dir = workDir();
+    expect(applyLibvipsPatch(dir)).toBe(0);
+    const code = (source: string): string[] => source.split('\n').filter((line) => !/^\t(\/\*| \*)/.test(line));
+    const patched = readFileSync(heifsave(dir), 'utf-8');
+    expect(code(patched)).toEqual(code(HEIFSAVE_TILES.replace('"auto-tiles", TRUE', '"auto-tiles", FALSE')));
+  });
+
+  withBash('fails on a heifsave.c that is not the one it was written for, so a moved source stops the build', () => {
+    const dir = workDir();
+    const file = heifsave(dir);
+    writeFileSync(file, readFileSync(file, 'utf-8').replace('"auto-tiles", TRUE', '"auto-tiles", vips_auto_tiles'));
+    expect(applyLibvipsPatch(dir)).not.toBe(0);
+  });
+
+  withBash('is applied by the line heif-auto-tiles.patch adds to posix.sh after the WebP one, which fails when the patch file is missing', () => {
+    const dir = workDir();
+    const script = path.join(dir, 'build', 'posix.sh');
+    mkdirSync(path.dirname(script), { recursive: true });
+    writeFileSync(script, POSIX_VIPS_STEP);
+    expect(spawnSync('patch', ['-p1', '--forward', '-i', hookPatch], { cwd: dir, encoding: 'utf-8' }).status).toBe(0);
+    const run = (patchFile: string) =>
+      spawnSync('bash', ['-c', `set -e; CURL=true; DEPS=${dir}; source ${script}`], {
+        cwd: dir,
+        encoding: 'utf-8',
+        env: { ...process.env, SHARP_LIBVIPS_WEBP_THREAD_PATCH: path.join(dir, 'empty.patch'), SHARP_LIBVIPS_HEIF_TILES_PATCH: patchFile },
+      });
+    expect(run(path.join(dir, 'missing.patch')).status).not.toBe(0);
+    const applied = run(libvipsPatch);
+    expect(applied.status, applied.stderr).toBe(0);
+    expect(readFileSync(heifsave(dir), 'utf-8'), applied.stderr).toContain('"auto-tiles", FALSE);');
+  });
+
+  it('is installed by build.sh after the WebP patch, which names the libvips patch for posix.sh, and both files are copied into the stage by Dockerfile.worker', () => {
+    const build = read('docker', 'sharp-libvips', 'build.sh');
+    expect(build).toContain('patch -p1 --forward < "$here/webp-thread-level.patch"\npatch -p1 --forward < "$here/heif-auto-tiles.patch"\n');
+    expect(build).toContain('export SHARP_LIBVIPS_HEIF_TILES_PATCH="$here/libvips-heif-auto-tiles.patch"');
+    expect(readFileSync(hookPatch, 'utf-8')).toContain('"$SHARP_LIBVIPS_HEIF_TILES_PATCH"');
+    expect(dockerfile).toMatch(/^COPY [^\n]* docker\/sharp-libvips\/heif-auto-tiles\.patch docker\/sharp-libvips\/libvips-heif-auto-tiles\.patch /m);
+  });
+});
+
 describe('check-build-output.sh, the one check of what the sharplibvips stage hands over', () => {
   const BYTES = 'the rebuilt library\n';
 
