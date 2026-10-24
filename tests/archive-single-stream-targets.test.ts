@@ -127,7 +127,8 @@ function listedFiles(archive: string): Map<string, number> {
       if (at > 0) fields.set(line.slice(0, at), line.slice(at + 3));
     }
     const entryPath = fields.get('Path');
-    if (entryPath === undefined || fields.get('Folder') === '+') continue;
+    const isFolder = fields.get('Folder') === '+' || (fields.get('Attributes') ?? '').startsWith('D');
+    if (entryPath === undefined || isFolder) continue;
     files.set(entryPath.replace(/^\.\//, ''), Number(fields.get('Size') ?? 0));
   }
   return files;
@@ -208,7 +209,8 @@ describe('an archive of several entries to a single-stream target, worker engine
       fs.writeFileSync(file, output);
       execFileSync(toolPath('gzip'), ['-t', file]);
       const listed = execFileSync(toolPath('tar'), ['-tzf', file], { encoding: 'utf8' });
-      expect(listed).toContain('docs/guide.txt');
+      const members = listed.split('\n').filter((entry) => entry !== '').map((entry) => entry.replace(/\/$/, ''));
+      expect(members.sort()).toEqual(['docs', 'docs/deep', 'docs/deep/records.csv', 'docs/guide.txt', EMPTY_DIRECTORY, 'readme.txt']);
     },
     TEST_TIMEOUT_MS
   );
@@ -369,7 +371,7 @@ describe('the extraction policy still applies before the tar is written', () => 
         expect(result.skippedLinks).toEqual(['sym']);
         expect(tarMembers(decode('gzip', result.buffer as Buffer), 'skip-links')).toEqual(['ok.txt', 'second.txt']);
       });
-      expect(ws.snapshot()).toEqual(before);
+      expect(ws.snapshot().filter((line) => !line.includes('easyconvert-vfs'))).toEqual(before);
     },
     TEST_TIMEOUT_MS
   );

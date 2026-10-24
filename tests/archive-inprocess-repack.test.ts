@@ -273,14 +273,16 @@ describe('tar to gzip in process', () => {
   );
 
   oracleTest(
-    'a tar of several members is not a single stream: 7-Zip is asked and refuses it, as before',
+    'a tar of several members is not a single stream: 7-Zip is asked for a tar of them and gzips it',
     [...TOOLS],
     async () => {
       fixtureTar ??= buildFixtureTar();
-      await expect(convertWithNative7z(fixtureTar, 'tar', 'gz', {}, 'fixture.tar')).rejects.toMatchObject({
-        name: 'ConversionFailedError',
-        message: expect.stringMatching(/7-Zip failed to create the gz archive/),
-      });
+      const result = await convertWithNative7z(fixtureTar, 'tar', 'gz', {}, 'fixture.tar');
+      if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
+      const archive = writeOut('several.gz', result.buffer);
+      execFileSync('gzip', ['-t', archive]);
+      expect([...tarModes(execFileSync('gzip', ['-d', '-c', archive], { maxBuffer: 64 * MIB })).keys()].sort()).toEqual([...tarModes(fixtureTar).keys()].sort());
+      expect(spy.calls().some((call) => call.includes('-ttar'))).toBe(true);
       expect(spy.calls().some((call) => call.includes('-tgzip'))).toBe(true);
     },
     TEST_TIMEOUT_MS
