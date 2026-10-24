@@ -334,14 +334,16 @@ async function hasDrawingAnnotation(page: AnnotatedPage): Promise<boolean> {
  * Adds the text of the page's annotation appearances to `content.items`, after the page's own items. The caller decides
  * whether the operator list is affordable. A caller that reads the operator list anyway says so (`operatorListIsRead`) and
  * the walk goes straight to it; for any other, a page with no annotation that could draw text reads none.
+ *
+ * @returns whether the page's operator list was read.
  */
 export async function appendAnnotationText(
   pdfjs: { OPS: Record<string, number>; normalizeUnicode(text: string): string },
   page: AnnotatedPage,
   content: { items: unknown[] },
   { operatorListIsRead }: { operatorListIsRead: boolean }
-): Promise<void> {
-  if (!operatorListIsRead && !(await hasDrawingAnnotation(page))) return;
+): Promise<boolean> {
+  if (!operatorListIsRead && !(await hasDrawingAnnotation(page))) return false;
   const list = await page.getOperatorList();
   const walk: AnnotationWalk = {
     ops: pdfjs.OPS,
@@ -350,4 +352,5 @@ export async function appendAnnotationText(
   };
   const room = PDF_TEXT_MAX_ITEMS_PER_PAGE + 1 - content.items.length;
   for (const item of annotationTextItems(list, walk, Math.max(room, 0))) content.items.push(item);
+  return true;
 }

@@ -2,6 +2,7 @@ import type { PDFDict, PDFDocument, PDFStream } from 'pdf-lib';
 import { PayloadLimitError } from '../types';
 import { assertInputPixels } from './image-input-limits';
 import { pdfjsImageToPng } from './pdf-rasterizer';
+import type { OperatorListLike } from './pdf-text-content';
 import {
   PDF_CONTENT_MAX_IMAGE_BYTES,
   PDF_CONTENT_MAX_PAGE_STREAM_BYTES,
@@ -195,6 +196,27 @@ function deliveredPicture(pools: PagePools, id: string): Promise<unknown> {
   return new Promise((resolve) => {
     pool.get(id, resolve);
   });
+}
+
+/**
+ * Waits until pdf.js has delivered every object the page's operator list depends on, as its renderer does before it draws:
+ * each id of a `dependency` operator is waited for in the page's table, or in the shared one for an id that starts with
+ * `g_` (src/display/canvas.js of pdf.js 6.3.289, `executeOperatorList`, lines 708 to 724). A page is cleaned up, and its
+ * document closed, only after this: pdf.js decodes a picture in a task that outlives the operator list, and its CCITT and
+ * JBIG2 decoder (`WasmImage`, shared by every document of the thread) sets itself up again through the document of a decode
+ * that is still running when that document is closed. The closed document never answers, so every later document on the
+ * thread would wait for that decoder until the thread's deadline. Every dependency arrives, as data or as null for a picture
+ * pdf.js cannot decode, so the wait ends.
+ */
+export async function awaitOperatorListDependencies(pools: PagePools, list: OperatorListLike, dependencyOperator: number): Promise<void> {
+  const waits: Promise<unknown>[] = [];
+  for (let index = 0; index < list.fnArray.length; index++) {
+    if (list.fnArray[index] !== dependencyOperator) continue;
+    for (const id of list.argsArray[index] ?? []) {
+      if (typeof id === 'string') waits.push(deliveredPicture(pools, id));
+    }
+  }
+  await Promise.all(waits);
 }
 
 /** Loads what reading images needs (pdf-lib), for a thread that is about to read documents with images. */

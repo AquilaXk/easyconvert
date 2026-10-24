@@ -4,7 +4,7 @@ import type { OcrBaseline, OcrLayoutGroup, OcrLineBlock, OcrResult, OcrWord } fr
 import { runPdfTextJobInThread } from './pdf-text-host';
 import { appendAnnotationText } from './pdf-annotation-text';
 import { FontTable, readPageContent } from './pdf-text-content';
-import { ImageExtractor } from './pdf-text-images';
+import { ImageExtractor, awaitOperatorListDependencies } from './pdf-text-images';
 import { withFontProgramToUnicode } from './pdf-font-tounicode';
 import { assertPdfAnnotationStreamsWithinLimits, assertPdfStreamsWithinLimits } from './pdf-stream-guard';
 import { pdfjsDataUrl } from './pdfjs-data';
@@ -1362,6 +1362,7 @@ function textOfItems(items: unknown[]): string {
  * pdf.js keeps the pixels it decoded for a page in `page.objs`, typed arrays outside the V8 heap and so outside the thread's heap limit,
  * until `page.cleanup()` clears them (src/display/api.js, PDFPageProxy.#tryCleanup), as its viewer does when a page leaves the screen. A
  * picture a later page shares is decoded again into the document's `commonObjs`, which cleanup leaves alone together with the fonts.
+ * A page whose operator list was read is cleaned up once pdf.js has delivered what the list depends on (`awaitOperatorListDependencies`).
  */
 async function readPages(
   pdfjs: PdfJs,
@@ -1382,7 +1383,7 @@ async function readPages(
     const contentWanted = wantsContent(job, pageNumber);
     // The text of annotation appearances follows the page's own items; a page too busy for its operator list loses it.
     // A job for the content reads the operator list anyway; the others only read it for a page with annotations.
-    if (readOperators) await appendAnnotationText(pdfjs, page, content, { operatorListIsRead: contentWanted }); // NOSONAR S9382 sequential
+    const annotationsRead = readOperators && (await appendAnnotationText(pdfjs, page, content, { operatorListIsRead: contentWanted })); // NOSONAR S9382 sequential
     if (contentWanted) {
       // Reading the content also replaces the glyphs of `content.items` that have no text, so the page text below is clean.
       const reading = { readOperators, imageExtractor: images, unmappedMark: job.unmappedGlyphText ?? '' };
@@ -1400,8 +1401,12 @@ async function readPages(
       }
     }
     if (job.densityThreshold !== undefined) result.analyses.push(densityAnalysis(page, pageNumber, pageText, job.densityThreshold));
-    if (wantsGeometry(job, explicit, pageNumber, pageText)) {
+    const geometryWanted = wantsGeometry(job, explicit, pageNumber, pageText);
+    if (geometryWanted) {
       result.geometry.set(pageNumber, await readPage(pdfjs, page, content, pageNumber)); // NOSONAR S9382 sequential
+    }
+    if (readOperators && (contentWanted || annotationsRead || geometryWanted)) {
+      await awaitOperatorListDependencies(page, await page.getOperatorList(), pdfjs.OPS.dependency); // NOSONAR S9382 sequential
     }
     page.cleanup();
   }
