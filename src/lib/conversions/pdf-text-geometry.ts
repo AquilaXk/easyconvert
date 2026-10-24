@@ -1203,6 +1203,27 @@ interface PdfJsPage {
   cleanup(): boolean;
 }
 
+/** A page whose operator list is read at most once, by whichever reader asks first, and is known afterwards. */
+interface ReadPage extends PdfJsPage {
+  /** The operator list if a reader asked for it, else null. */
+  operatorListRead(): Promise<OperatorList> | null;
+}
+
+function readOnce(page: PdfJsPage): ReadPage {
+  let list: Promise<OperatorList> | null = null;
+  return {
+    view: page.view,
+    commonObjs: page.commonObjs,
+    objs: page.objs,
+    getViewport: (options) => page.getViewport(options),
+    getTextContent: (options) => page.getTextContent(options),
+    getAnnotations: (options) => page.getAnnotations(options),
+    getOperatorList: () => (list ??= page.getOperatorList()),
+    cleanup: () => page.cleanup(),
+    operatorListRead: () => list,
+  };
+}
+
 interface PdfJsDocument {
   numPages: number;
   getPage(pageNumber: number): Promise<PdfJsPage>;
@@ -1377,13 +1398,13 @@ async function readPages(
   let documentChars = 0;
   for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber++) {
     if (!needsPage(job, explicit, pageNumber)) continue;
-    const page = await doc.getPage(pageNumber); // NOSONAR S9382 sequential: one page in memory at a time
+    const page = readOnce(await doc.getPage(pageNumber)); // NOSONAR S9382 sequential: one page in memory at a time
     const content = await page.getTextContent({ includeMarkedContent: false }); // NOSONAR S9382 sequential
     const readOperators = content.items.length <= PDF_TEXT_OPERATOR_LIST_MAX_ITEMS;
     const contentWanted = wantsContent(job, pageNumber);
     // The text of annotation appearances follows the page's own items; a page too busy for its operator list loses it.
     // A job for the content reads the operator list anyway; the others only read it for a page with annotations.
-    const annotationsRead = readOperators && (await appendAnnotationText(pdfjs, page, content, { operatorListIsRead: contentWanted })); // NOSONAR S9382 sequential
+    if (readOperators) await appendAnnotationText(pdfjs, page, content, { operatorListIsRead: contentWanted }); // NOSONAR S9382 sequential
     if (contentWanted) {
       // Reading the content also replaces the glyphs of `content.items` that have no text, so the page text below is clean.
       const reading = { readOperators, imageExtractor: images, unmappedMark: job.unmappedGlyphText ?? '' };
@@ -1401,13 +1422,11 @@ async function readPages(
       }
     }
     if (job.densityThreshold !== undefined) result.analyses.push(densityAnalysis(page, pageNumber, pageText, job.densityThreshold));
-    const geometryWanted = wantsGeometry(job, explicit, pageNumber, pageText);
-    if (geometryWanted) {
+    if (wantsGeometry(job, explicit, pageNumber, pageText)) {
       result.geometry.set(pageNumber, await readPage(pdfjs, page, content, pageNumber)); // NOSONAR S9382 sequential
     }
-    if (readOperators && (contentWanted || annotationsRead || geometryWanted)) {
-      await awaitOperatorListDependencies(page, await page.getOperatorList(), pdfjs.OPS.dependency); // NOSONAR S9382 sequential
-    }
+    const list = page.operatorListRead();
+    if (list !== null) await awaitOperatorListDependencies(page, await list, pdfjs.OPS.dependency); // NOSONAR S9382 sequential
     page.cleanup();
   }
 }
