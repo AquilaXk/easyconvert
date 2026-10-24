@@ -730,6 +730,42 @@ describe('the quality gaps', () => {
       expect(() => validateGaps({ schemaVersion: 1, gaps: [{ ...speedEntry, reference: 1 }] })).toThrow(/reference is only for quality rows/);
     });
 
+    describe('the acknowledged slowdowns', () => {
+      const ack = { id: 'image/photo-a.jpg->avif/throughput', issue: 880, pr: 881, reason: 'one AV1 tile per image, as the reference engine encodes it' };
+      const file = (accepted: unknown, gaps: unknown[] = []): unknown => ({ schemaVersion: 1, gaps, acceptedSlowdowns: accepted });
+
+      it('accepts an entry that names a speed row, an issue, the change it was written for and a reason, and a file without the section', () => {
+        expect(validateGaps(file([ack])).acceptedSlowdowns).toEqual([ack]);
+        expect(validateGaps({ schemaVersion: 1, gaps: [] }).acceptedSlowdowns ?? []).toEqual([]);
+      });
+
+      it.each<[string, unknown, RegExp, unknown[]?]>([
+        ['a section that is not an array', { ...ack }, /acceptedSlowdowns must be an array/],
+        ['an entry that is not an object', ['x'], /acceptedSlowdowns\[0\] must be an object/],
+        ['an id that is not a row id', [{ ...ack, id: 'photo' }], /acceptedSlowdowns\[0\]\.id must be <family>\/<case>\/<metric>/],
+        ['a quality row', [{ ...ack, id: 'image/photo-a.jpg->avif/ssim' }], /only a speed row/],
+        ['no issue', [{ ...ack, issue: undefined }], /issue must be a positive integer/],
+        ['an issue of zero', [{ ...ack, issue: 0 }], /issue must be a positive integer/],
+        ['no pull request', [{ ...ack, pr: undefined }], /pr must be a positive integer/],
+        ['a pull request that is not a number', [{ ...ack, pr: '881' }], /pr must be a positive integer/],
+        ['no reason', [{ ...ack, reason: undefined }], /reason must be a one-line string/],
+        ['an empty reason', [{ ...ack, reason: '' }], /reason must be a one-line string/],
+        ['a reason of several lines', [{ ...ack, reason: 'a\nb' }], /reason must be a one-line string/],
+        ['a field it does not know', [{ ...ack, until: '2026-12-01' }], /until is not a field/],
+        ['the same row twice', [ack, { ...ack, pr: 900 }], /listed twice/],
+        ['a row that is also a tracked gap', [ack], /both a known gap and an acknowledged slowdown/, [{ id: ack.id, issue: 641, ratio: 0.9, note: 'n' }]],
+      ])('rejects %s', (_name, accepted, message, gaps = []) => {
+        expect(() => validateGaps(file(accepted, gaps))).toThrow(message);
+        expect(() => validateGaps(file(accepted, gaps))).toThrow(ReportSchemaError);
+      });
+
+      it('holds at most 16 entries', () => {
+        const many = Array.from({ length: 17 }, (_, index) => ({ ...ack, id: `image/case-${index}.jpg->avif/throughput` }));
+        expect(() => validateGaps(file(many))).toThrow(/at most 16/);
+        expect(validateGaps(file(many.slice(0, 16))).acceptedSlowdowns).toHaveLength(16);
+      });
+    });
+
     it('describes a quality gap by its issue and note', () => {
       expect(describeGap(valid)).toBe('known gap, issue #783: n');
     });
@@ -830,12 +866,12 @@ describe('a parity run on a saved report', () => {
   ];
 
   /** Writes the report, baseline and gaps files, runs the command and returns the printed lines and the verdict file. */
-  async function run(rows: BenchRow[], options: { baseline?: Record<string, Entry>; baseBaseline?: Record<string, Entry> | null; flags?: string[]; gaps?: unknown[]; baseGaps?: unknown[]; families?: BenchReport['families']; shard?: string } = {}): Promise<{ code: number; lines: string[]; verdict: ParityRunFile }> {
+  async function run(rows: BenchRow[], options: { baseline?: Record<string, Entry>; baseBaseline?: Record<string, Entry> | null; flags?: string[]; gaps?: unknown[]; baseGaps?: unknown[]; accepted?: unknown[]; baseAccepted?: unknown[]; families?: BenchReport['families']; shard?: string } = {}): Promise<{ code: number; lines: string[]; verdict: ParityRunFile }> {
     const files = { report: path.join(dir, 'report.json'), baseline: path.join(dir, 'baseline.json'), gaps: path.join(dir, 'gaps.json'), baseGaps: path.join(dir, 'base-gaps.json'), baseBaseline: path.join(dir, 'base-baseline.json') };
     fs.writeFileSync(files.report, JSON.stringify(report(rows, options.families)));
     fs.writeFileSync(files.baseline, JSON.stringify({ schemaVersion: 1, entries: options.baseline ?? baselineEntries(1.1) }));
-    fs.writeFileSync(files.gaps, JSON.stringify({ schemaVersion: 1, gaps: options.gaps ?? [] }));
-    if (options.baseGaps) fs.writeFileSync(files.baseGaps, JSON.stringify({ schemaVersion: 1, gaps: options.baseGaps }));
+    fs.writeFileSync(files.gaps, JSON.stringify({ schemaVersion: 1, gaps: options.gaps ?? [], ...(options.accepted ? { acceptedSlowdowns: options.accepted } : {}) }));
+    if (options.baseGaps) fs.writeFileSync(files.baseGaps, JSON.stringify({ schemaVersion: 1, gaps: options.baseGaps, ...(options.baseAccepted ? { acceptedSlowdowns: options.baseAccepted } : {}) }));
     // The base's baseline travels with its gap file, as in the workflow; unless a test says otherwise it is the one the run uses.
     const baseBaseline = options.baseBaseline === null ? undefined : (options.baseBaseline ?? (options.baseGaps ? baselineEntries(1.1) : undefined));
     if (baseBaseline) fs.writeFileSync(files.baseBaseline, JSON.stringify({ schemaVersion: 1, entries: baseBaseline }));
@@ -993,6 +1029,123 @@ describe('a parity run on a saved report', () => {
       expect(bypass.code).toBe(3);
       expect(bypass.lines.some((line) => line.includes('the recorded ratio 0.1 is outside'))).toBe(true);
       expect((await run(publicRow(0.5), { baseline, gaps: [entry(0.45)], baseGaps: [] })).code).toBe(0);
+    });
+  });
+
+  describe('an acknowledged slowdown against the base', () => {
+    // The head of the AVIF tiles change is slower than its base on this row and stays above the reference.
+    const AB_ID = 'image/photo-a.jpg->avif/throughput';
+    const abBaseline = { [AB_ID]: { direction: 'higher', tolerance: { abs: 0, rel: 0.35 }, ours: null, delta: null, ratio: 1.1 } };
+    const abRow = (over: Partial<BenchRow> = {}): BenchRow =>
+      row({
+        id: AB_ID,
+        direction: 'higher',
+        kind: 'throughput',
+        ours: 11,
+        reference: 10,
+        ratio: 1.1,
+        runs: 24,
+        speedVerdict: 'pass',
+        ratioLow: 1.02,
+        ratioHigh: 1.2,
+        ratioMedian: 1.1,
+        tolerance: { abs: 0, rel: 0.35 },
+        abPairs: 24,
+        abMedian: 0.8,
+        abUpper: 0.85,
+        abSlowerConfirmed: true,
+        abHeadVsReferenceUpper: 1.1,
+        abBaseVsReferenceMedian: 1.4,
+        ...over,
+      });
+    const ack = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ id: AB_ID, issue: 880, pr: 881, reason: 'one AV1 tile per image, as the reference engine encodes it', ...over });
+    const judged = (row: BenchRow, options: Parameters<typeof run>[1] = {}): ReturnType<typeof run> =>
+      run([row], { baseline: abBaseline, baseGaps: [], flags: ['--speed-only'], ...options });
+    const rowOf = (verdict: ParityRunFile): ParityRunFile['parity']['rows'][number] => {
+      const found = verdict.parity.rows.find((candidate) => candidate.id === AB_ID);
+      if (!found) throw new Error('no verdict for the row');
+      return found;
+    };
+
+    it('fails a row that is slower than its base when nothing acknowledges it', async () => {
+      const { code, verdict } = await judged(abRow());
+      expect(code).toBe(3);
+      expect(rowOf(verdict)).toMatchObject({ outcome: 'fail', basis: 'speed-slower-than-base' });
+    });
+
+    it('passes the same row once an acknowledgement names it, while the head is still at the reference, and lists it', async () => {
+      const { code, lines, verdict } = await judged(abRow(), { accepted: [ack()] });
+      expect(code).toBe(0);
+      expect(rowOf(verdict)).toMatchObject({ outcome: 'pass', basis: 'speed-slowdown-acknowledged' });
+      expect(rowOf(verdict).detail).toContain('issue #880');
+      expect(rowOf(verdict).detail).toContain('PR #881');
+      expect(rowOf(verdict).detail).toContain('one AV1 tile per image');
+      expect(lines.some((line) => line.includes(`ACK ${AB_ID} [speed-slowdown-acknowledged]`))).toBe(true);
+    });
+
+    it('fails the acknowledged row exactly as before when the head is credibly below the reference', async () => {
+      const below = await judged(abRow({ abHeadVsReferenceUpper: 0.9 }), { accepted: [ack()] });
+      expect(below.code).toBe(3);
+      expect(rowOf(below.verdict)).toMatchObject({ outcome: 'fail', basis: 'speed-slower-than-base' });
+      const unconfirmed = await judged(abRow({ abHeadVsReferenceUpper: 0.9, abLostConfirmed: false }), { accepted: [ack()] });
+      expect(unconfirmed.code).toBe(0);
+    });
+
+    it('does not excuse a row it does not name', async () => {
+      const other = await judged(abRow(), { accepted: [ack({ id: 'image/photo-b.jpg->avif/throughput' })] });
+      expect(other.code).toBe(3);
+      expect(other.lines.some((line) => line.includes('image/photo-b.jpg->avif/throughput') && line.includes('this run did not measure'))).toBe(true);
+    });
+
+    it('applies only to the change that wrote it: an acknowledgement the base already holds excuses nothing', async () => {
+      const spent = await judged(abRow(), { accepted: [ack()], baseAccepted: [ack()] });
+      expect(spent.code).toBe(3);
+      expect(rowOf(spent.verdict)).toMatchObject({ outcome: 'fail', basis: 'speed-slower-than-base' });
+      expect(rowOf(spent.verdict).detail).toContain('already in the base');
+      // The same row acknowledged for another change is a new entry again.
+      expect((await judged(abRow(), { accepted: [ack({ pr: 900 })], baseAccepted: [ack()] })).code).toBe(0);
+      // Rewording the reason of the entry the base holds does not make it new.
+      expect((await judged(abRow(), { accepted: [ack({ reason: 'reworded' })], baseAccepted: [ack()] })).code).toBe(3);
+    });
+
+    it('applies to nothing without the gap file of the base to tell a new entry from a spent one', async () => {
+      const { code } = await run([abRow()], { baseline: abBaseline, accepted: [ack()], flags: ['--speed-only'] });
+      expect(code).toBe(3);
+    });
+
+    it('reports an acknowledgement the base holds, on a row that is no longer slower than its base, so the next bench change removes it', async () => {
+      const { code, lines, verdict } = await judged(abRow({ abMedian: 1, abUpper: 1.05 }), { accepted: [ack()], baseAccepted: [ack()] });
+      expect(code).toBe(0);
+      expect(rowOf(verdict)).toMatchObject({ outcome: 'pass', basis: 'acknowledgement-unused' });
+      expect(rowOf(verdict).detail).toContain(`remove ${AB_ID} from acceptedSlowdowns in bench/parity-gaps.json`);
+      expect(rowOf(verdict).detail).toContain('already in the base');
+      expect(lines.some((line) => line.includes(`DONE ${AB_ID} [acknowledgement-unused]`))).toBe(true);
+    });
+
+    it('reports a new acknowledgement the run did not need, and leaves the other bases of a row without one as they are', async () => {
+      const unneeded = await judged(abRow({ abMedian: 1, abUpper: 1.05 }), { accepted: [ack()] });
+      expect(unneeded.code).toBe(0);
+      expect(rowOf(unneeded.verdict).basis).toBe('acknowledgement-unused');
+      expect(rowOf(unneeded.verdict).detail).toContain('not credibly slower than the base');
+      expect(rowOf((await judged(abRow({ abMedian: 1, abUpper: 1.05 }))).verdict).basis).toBe('speed-pass');
+    });
+
+    it('keeps the failure of a row whose acknowledgement is stale when the row lost parity for another reason', async () => {
+      const lost = await judged(abRow({ abMedian: 1, abUpper: 1.05, abHeadVsReferenceUpper: 0.9, abBaseVsReferenceMedian: 1.4, speedVerdict: 'fail' }), { accepted: [ack()], baseAccepted: [ack()] });
+      expect(lost.code).toBe(3);
+      expect(rowOf(lost.verdict)).toMatchObject({ outcome: 'fail', basis: 'speed-lost-parity' });
+    });
+
+    it('refuses a new acknowledgement of a row this run did not measure against the base, and checks the shard of its own family only', async () => {
+      const missing = await run([], { baseline: {}, accepted: [ack()], baseGaps: [], flags: ['--speed-only'] });
+      expect(missing.code).toBe(3);
+      expect(missing.lines.some((line) => line.includes(`BELOW REFERENCE ${AB_ID}: acknowledged-slowdown entry not backed by this run: this run did not measure ${AB_ID} against the base`))).toBe(true);
+      const alone = await judged(abRow({ abPairs: undefined, abMedian: undefined, abUpper: undefined }), { accepted: [ack()] });
+      expect(alone.code).toBe(3);
+      expect(rowOf(alone.verdict)).toMatchObject({ outcome: 'fail', basis: 'acknowledgement-not-backed' });
+      // The base holds the entry, or the shard is another family's: the entry is not this run's to back.
+      expect((await run([], { baseline: {}, accepted: [ack()], baseAccepted: [ack()], baseGaps: [], flags: ['--speed-only'] })).code).toBe(0);
+      expect((await run([], { baseline: {}, accepted: [ack()], baseGaps: [], shard: 'pdf-ops', flags: ['--speed-only'] })).code).toBe(0);
     });
   });
 
