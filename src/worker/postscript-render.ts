@@ -5,7 +5,7 @@ import { ConversionFailedError } from '../lib/types';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { compressPpmPage, exceedsPpmPageLimit, PPM_PAGE_MAX_BYTES, ppmPageEnd, resolvePdfRasterDpi, selectsPages } from './poppler-ppm';
-import { createConversionResult, handOffOutput, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
+import { createConversionResult, handOffOutput, readDrawnPdfForImages, resolveInputContext, withSandboxDir, writeOutputSegments } from './worker-output';
 import { ghostscriptPdfArguments, ghostscriptRasterArguments, siblingGhostscript, skipsGarbageCollection } from './postscript-gs';
 import {
   executeSandboxedBinary,
@@ -200,7 +200,7 @@ export async function convertPostScript(job: PostScriptJob): Promise<WorkerConve
     const { inputPath } = resolveInputContext(input, src, tempDir);
     const pdfPath = path.join(tempDir, 'rendered.pdf');
     await writePdf(job, ghostscript, { tempDir, limits, smallInput }, inputPath, pdfPath);
-    return fs.readFileSync(pdfPath);
+    return readDrawnPdfForImages(pdfPath, 'The PostScript interpreter', src);
   });
   return job.convertPdfPages(pdf, tgt, options, originalFilename);
 }

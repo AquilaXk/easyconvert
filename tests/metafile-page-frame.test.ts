@@ -4,6 +4,7 @@ import {
   MAX_METAFILE_PAGE_AREA_POINTS,
   MAX_METAFILE_PAGE_POINTS,
   MIN_METAFILE_PAGE_POINTS,
+  isEmptyMetafile,
   metafileLeadingBytes,
   readMetafilePage,
 } from '../src/lib/conversions/office/metafile-page-frame';
@@ -220,5 +221,54 @@ describe('the bytes the reader looks at', () => {
     expect(limit).toBe(64 * 1024);
     expect(readMetafilePage(emf({ frame, size: limit }), 'emf')).toBeDefined();
     expect(readMetafilePage(emf({ frame, size: limit + 4 }), 'emf')).toBeUndefined();
+  });
+});
+
+describe('a metafile that is a header and its end record', () => {
+  const frame: [number, number, number, number] = [0, 0, 2999, 1999];
+  const emptyEmf = emf({ frame });
+  const emptyWmf = wmf({});
+
+  it('is empty when the header states two records and the size of the file, EMR_EOF follows it and ends the file', () => {
+    expect(isEmptyMetafile(emptyEmf, emptyEmf.length, 'emf')).toBe(true);
+    expect(isEmptyMetafile(emf({ frame, description: 'Producer\0' }), emf({ frame, description: 'Producer\0' }).length, 'emf')).toBe(true);
+  });
+
+  it('is not empty when the EMF header states another count or size, the record after it is not the end record or the end record is not the rest of the file', () => {
+    const withField = (offset: number, value: number): Buffer => {
+      const copy = Buffer.from(emptyEmf);
+      copy.writeUInt32LE(value, offset);
+      return copy;
+    };
+    const cases: Array<[string, Buffer]> = [
+      ['three records stated', withField(52, 3)],
+      ['one record stated', withField(52, 1)],
+      ['a size that is not the size of the file', withField(48, emptyEmf.length + 4)],
+      ['a record after the header that is not EMR_EOF', withField(88, 43)],
+      ['an end record of a size that is not the rest of the file', withField(92, 24)],
+      ['an end record shorter than an EMR_EOF', Buffer.from(emptyEmf.subarray(0, 88 + 12))],
+      ['a header only', Buffer.from(emptyEmf.subarray(0, 88))],
+      ['a record between the header and the end record', emf({ frame, nextRecord: { type: EMR_SETMAPMODE, mode: MM_ANISOTROPIC } })],
+    ];
+    for (const [name, file] of cases) expect(isEmptyMetafile(file, file.length, 'emf'), name).toBe(false);
+    expect(isEmptyMetafile(Buffer.alloc(200), 200, 'emf')).toBe(false);
+    expect(isEmptyMetafile(Buffer.alloc(0), 0, 'emf')).toBe(false);
+  });
+
+  it('is empty when the standard header of a WMF is followed directly by META_EOF', () => {
+    expect(isEmptyMetafile(emptyWmf, emptyWmf.length, 'wmf')).toBe(true);
+  });
+
+  it('is not empty when another record comes before the end record, the end record is cut short or the header is not a header', () => {
+    const cases: Array<[string, Buffer]> = [
+      ['a window extent first', wmf({ records: [setWindowExtent(5103, 2159), wmfRecord(META_EOF, [])] })],
+      ['an end record of four words', wmf({ records: [wmfRecord(META_EOF, [0])] })],
+      ['an end record cut short', Buffer.from(emptyWmf.subarray(0, emptyWmf.length - 2))],
+      ['a placeable header before the standard header, which the reference does not open', wmf({ placeable: { box: [0, 0, 1439, 719], inch: 1440 } })],
+      ['a header only', Buffer.from(emptyWmf.subarray(0, 18))],
+      ['no records', Buffer.alloc(0)],
+      ['a header of type 3', Buffer.concat([Buffer.from([3, 0]), emptyWmf.subarray(2)])],
+    ];
+    for (const [name, file] of cases) expect(isEmptyMetafile(file, file.length, 'wmf'), name).toBe(false);
   });
 });

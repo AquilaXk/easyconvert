@@ -7,11 +7,12 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
+import { ConversionFailedError, EngineUnavailableError, PayloadLimitError } from '../src/lib/types';
+import { convertPostScript, type PostScriptJob } from '../src/worker/postscript-render';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { withMissingBinary } from './helpers/native-tools';
-import { withPs2pdfShim, withRejectingPs2pdf } from './helpers/ps2pdf-shim';
+import { withPs2pdfShim, withPs2pdfSparseOutput, withRejectingPs2pdf } from './helpers/ps2pdf-shim';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -112,6 +113,52 @@ describe('PostScript route through the interpreter and Poppler', () => {
       const run = dispatchConversion(Buffer.from('%!PS\n(', 'latin1'), 'ps', 'pdf', {}, 'broken.ps');
       await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
       await expect(run).rejects.toThrow(/syntaxerror/);
+    });
+  }, NATIVE_TIMEOUT_MS);
+});
+
+describe('the PDF an image target reads into memory', () => {
+  const MEBIBYTE = 1024 * 1024;
+  const IMAGE_TARGET_READ_LIMIT_BYTES = 128 * MEBIBYTE;
+
+  /** Draws `EPS` as `tgt` with the interpreter on PATH; the sizes of the PDFs handed to the PDF tools are added to `handedOn`. */
+  function convertWith(tgt: string, handedOn: number[]): Promise<unknown> {
+    const job: PostScriptJob = {
+      input: Buffer.from(EPS, 'latin1'),
+      src: 'eps',
+      tgt,
+      options: {},
+      originalFilename: 'figure.eps',
+      interpreter: process.env.PS2PDF_PATH as string,
+      convertPdfPages: async (pdf) => {
+        handedOn.push(pdf.length);
+        return null;
+      },
+    };
+    return convertPostScript(job);
+  }
+
+  it('is refused above 128 MiB before it is read, with both sizes in the message', async () => {
+    await withPs2pdfSparseOutput(IMAGE_TARGET_READ_LIMIT_BYTES + MEBIBYTE, async () => {
+      const handedOn: number[] = [];
+      const run = convertWith('png', handedOn);
+      await expect(run).rejects.toBeInstanceOf(PayloadLimitError);
+      await expect(run).rejects.toThrow(/drew 135266304 bytes of PDF from the \.eps file, more than the 134217728 bytes that can be taken further/);
+      expect(handedOn).toEqual([]);
+    });
+  }, NATIVE_TIMEOUT_MS);
+
+  it('is read whole at the limit, and a PDF target hands a larger file on by its path', async () => {
+    await withPs2pdfSparseOutput(IMAGE_TARGET_READ_LIMIT_BYTES, async () => {
+      const handedOn: number[] = [];
+      await convertWith('png', handedOn);
+      expect(handedOn).toEqual([IMAGE_TARGET_READ_LIMIT_BYTES]);
+    });
+    await withPs2pdfSparseOutput(IMAGE_TARGET_READ_LIMIT_BYTES + MEBIBYTE, async () => {
+      const handedOn: number[] = [];
+      const result = (await convertWith('pdf', handedOn)) as { size: number };
+      expect(result.size).toBe(IMAGE_TARGET_READ_LIMIT_BYTES + MEBIBYTE);
+      expect(handedOn).toEqual([]);
     });
   }, NATIVE_TIMEOUT_MS);
 });

@@ -44,6 +44,7 @@ export interface MetafilePage {
 }
 
 const EMR_HEADER = 1;
+const EMR_EOF = 14;
 const EMR_SETMAPMODE = 17;
 const MM_ANISOTROPIC = 8;
 /** EMR_HEADER without a description ([MS-EMF] 2.2.9: Type, Size, Bounds, Frame, RecordSignature, Version, Bytes, Records, Handles, Reserved, nDescription, offDescription, nPalEntries, Device, Millimeters). */
@@ -53,6 +54,12 @@ const EMF_LEADING_MAX_BYTES = 64 * 1024;
 const EMF_SIGNATURE_OFFSET = 40;
 const EMF_SIGNATURE = 0x464d4520;
 const EMF_FRAME_OFFSET = 24;
+const EMF_BYTES_OFFSET = 48;
+const EMF_RECORDS_OFFSET = 52;
+/** EMR_EOF without palette entries ([MS-EMF] 2.2.4): Type, Size, nPalEntries, offPalEntries, SizeLast. */
+const EMF_EOF_RECORD_BYTES = 20;
+/** An EMF record is its type and its size, each four bytes, then the parameters. */
+const EMF_RECORD_HEADER_BYTES = 8;
 const EMF_DESCRIPTION_LENGTH_OFFSET = 60;
 const EMF_DESCRIPTION_OFFSET_OFFSET = 64;
 const EMF_SETMAPMODE_RECORD_BYTES = 12;
@@ -104,11 +111,18 @@ function isAdobeIllustratorFile(emf: Buffer, headerBytes: number): boolean {
   return emf.readUInt32LE(next) === EMR_SETMAPMODE && emf.readUInt32LE(next + 8) === MM_ANISOTROPIC;
 }
 
-function emfPage(file: Buffer): MetafilePage | undefined {
+/** The size of the header record of an EMF held in `file`, or undefined when `file` does not start with a header inside the bounds. */
+function emfHeaderBytes(file: Buffer): number | undefined {
   const emf = file.subarray(0, EMF_LEADING_MAX_BYTES);
   if (emf.length < EMF_HEADER_BYTES || emf.readUInt32LE(0) !== EMR_HEADER || emf.readUInt32LE(EMF_SIGNATURE_OFFSET) !== EMF_SIGNATURE) return undefined;
   const headerBytes = emf.readUInt32LE(4);
-  if (headerBytes < EMF_HEADER_BYTES || headerBytes % 4 !== 0 || headerBytes > emf.length) return undefined;
+  return headerBytes < EMF_HEADER_BYTES || headerBytes % 4 !== 0 || headerBytes > emf.length ? undefined : headerBytes;
+}
+
+function emfPage(file: Buffer): MetafilePage | undefined {
+  const headerBytes = emfHeaderBytes(file);
+  if (headerBytes === undefined) return undefined;
+  const emf = file.subarray(0, EMF_LEADING_MAX_BYTES);
   let width = emf.readInt32LE(EMF_FRAME_OFFSET + 8) - emf.readInt32LE(EMF_FRAME_OFFSET) + 1;
   let height = emf.readInt32LE(EMF_FRAME_OFFSET + 12) - emf.readInt32LE(EMF_FRAME_OFFSET + 4) + 1;
   if (isAdobeIllustratorFile(emf, headerBytes)) {
@@ -117,6 +131,17 @@ function emfPage(file: Buffer): MetafilePage | undefined {
   }
   const pointsPerUnit = POINTS_PER_INCH / MM_PER_INCH / EMF_FRAME_UNITS_PER_MM;
   return pageOf(width * pointsPerUnit, height * pointsPerUnit);
+}
+
+/** An EMF whose header states two records and the size of the file, and whose second record is EMR_EOF and the rest of the file. */
+function emfIsEmpty(file: Buffer, fileBytes: number): boolean {
+  const headerBytes = emfHeaderBytes(file);
+  if (headerBytes === undefined) return false;
+  const emf = file.subarray(0, EMF_LEADING_MAX_BYTES);
+  if (emf.readUInt32LE(EMF_RECORDS_OFFSET) !== 2 || emf.readUInt32LE(EMF_BYTES_OFFSET) !== fileBytes) return false;
+  const endBytes = fileBytes - headerBytes;
+  if (endBytes < EMF_EOF_RECORD_BYTES || headerBytes + EMF_RECORD_HEADER_BYTES > emf.length) return false;
+  return emf.readUInt32LE(headerBytes) === EMR_EOF && emf.readUInt32LE(headerBytes + 4) === endBytes;
 }
 
 /** The size in bytes of the record at `offset`, or 0 when it is shorter than a record or runs past the end (`U_WMRRECSAFE_get`). */
@@ -143,22 +168,38 @@ function firstWindowExtent(wmf: Buffer, offset: number, unitsPerInch: number): {
   }
 }
 
-function wmfPage(file: Buffer): MetafilePage | undefined {
-  const wmf = file.subarray(0, WMF_LEADING_MAX_BYTES);
+/** Where the records of a WMF held in `wmf` start, and the offset of its standard header; undefined when `wmf` has no header inside the bounds. */
+function wmfRecordsStart(wmf: Buffer): { headerAt: number; recordsAt: number } | undefined {
   const placeable = wmf.length >= 4 && wmf.readUInt32LE(0) === WMF_PLACEABLE_KEY;
   const headerAt = placeable ? WMF_PLACEABLE_BYTES : 0;
   if (headerAt + WMF_HEADER_BYTES > wmf.length || !WMF_METAFILE_TYPES.includes(wmf.readUInt16LE(headerAt))) return undefined;
   const headerBytes = wmf.readUInt16LE(headerAt + WMF_HEADER_SIZE_WORDS_OFFSET) * 2;
   if (headerBytes < WMF_HEADER_BYTES || headerAt + headerBytes > wmf.length) return undefined;
+  return { headerAt, recordsAt: headerAt + headerBytes };
+}
+
+function wmfPage(file: Buffer): MetafilePage | undefined {
+  const wmf = file.subarray(0, WMF_LEADING_MAX_BYTES);
+  const start = wmfRecordsStart(wmf);
+  if (start === undefined) return undefined;
+  const placeable = start.headerAt > 0;
   const unitsPerInch = (placeable ? wmf.readUInt16LE(WMF_INCH_OFFSET) : 0) || DEFAULT_WMF_UNITS_PER_INCH;
   let [left, top, right, bottom] = placeable ? [0, 2, 4, 6].map((at) => wmf.readInt16LE(WMF_BOX_OFFSET + at)) : [0, 0, 0, 0];
   if (right === 0 && left === 0) {
-    const extent = firstWindowExtent(wmf, headerAt + headerBytes, unitsPerInch);
+    const extent = firstWindowExtent(wmf, start.recordsAt, unitsPerInch);
     if (extent === undefined) return undefined;
     [left, top, right, bottom] = [0, 0, extent.width, extent.height];
   }
   const pointsPerUnit = POINTS_PER_INCH / unitsPerInch;
   return pageOf((right - left + 1) * pointsPerUnit, (bottom - top + 1) * pointsPerUnit);
+}
+
+/** A WMF with no placeable header whose standard header is followed directly by META_EOF, a record of three words. */
+function wmfIsEmpty(file: Buffer): boolean {
+  const wmf = file.subarray(0, WMF_LEADING_MAX_BYTES);
+  const start = wmfRecordsStart(wmf);
+  if (start === undefined || start.headerAt !== 0 || wmfRecordBytes(wmf, start.recordsAt) !== WMF_RECORD_HEADER_BYTES) return false;
+  return wmf.readUInt16LE(start.recordsAt + WMF_FUNCTION_OFFSET) === WMF_EOF_FUNCTION;
 }
 
 /** How many leading bytes of a file of the format `readMetafilePage` reads: a caller that holds the file on disk needs no more to ask for its page. */
@@ -169,4 +210,18 @@ export function metafileLeadingBytes(format: MetafileFormat): number {
 /** The page of the metafile in points, or undefined when its header does not declare one inside the bounds above. */
 export function readMetafilePage(metafile: Buffer, format: MetafileFormat): MetafilePage | undefined {
   return format === 'emf' ? emfPage(metafile) : wmfPage(metafile);
+}
+
+/**
+ * Whether a metafile of `fileBytes` bytes, of which `metafile` holds the first bytes (`metafileLeadingBytes`), draws nothing on
+ * purpose: its header is consistent and the only record after it is the end record. The reference import filter opens such a
+ * file and writes an empty page (Inkscape 1.4.4: a PDF of 992 bytes), and refuses only a file whose record walk fails
+ * (`emf-inout.cpp` 1680 to 1693 and 3588 to 3597, `wmf-inout.cpp` 1703 to 1718 and 3167 to 3174), so an empty file is not junk.
+ * An EMF must state two records and the size of the file, with EMR_EOF right after the header and ending the file; a WMF must have
+ * META_EOF right after its standard header and no placeable header: measured on Inkscape 1.4.4, a placeable WMF whose records
+ * hold neither a window origin and extent (a header and META_EOF, or one window extent and META_EOF) opens no document and writes
+ * no PDF, while the same file without the placeable header writes an empty A4 landscape page.
+ */
+export function isEmptyMetafile(metafile: Buffer, fileBytes: number, format: MetafileFormat): boolean {
+  return format === 'emf' ? emfIsEmpty(metafile, fileBytes) : wmfIsEmpty(metafile);
 }
