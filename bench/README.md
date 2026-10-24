@@ -242,6 +242,28 @@ samples of a pair (this runner, this minute) cancels in the head-to-base ratio. 
   rule of the nightly run applies to what the change did, so a change that walks a gap down by less than `delta` at a time
   still cannot do it run after run.
 
+**Acknowledging an intended slowdown.** A change that makes a speed row slower than its base on purpose (a trade for
+output that matches the reference, say) lists the row in the `acceptedSlowdowns` section of `bench/parity-gaps.json`:
+
+```json
+"acceptedSlowdowns": [
+  { "id": "image/photo-a.jpg->avif/throughput", "issue": 880, "pr": 881, "reason": "one AV1 tile per image, as the reference encodes it" }
+]
+```
+
+An entry names one speed row, the issue that records the trade-off, the pull request it was written for and a one-line
+reason (`validateGaps` in `bench/parity-gaps.ts` refuses anything else, a second entry for a row, a row that is also a
+tracked gap, and more than `MAX_ACCEPTED_SLOWDOWNS` (16) entries). It turns `speed-slower-than-base` into
+`speed-slowdown-acknowledged` (a pass, listed under ACKNOWLEDGED SLOWDOWNS) only while the head is not credibly below the
+reference: the same bound and confirmation as `speed-lost-parity`, without asking whether the base was at the reference. A
+head below the reference fails as before, and a row without an entry is judged as before. The entry is **single-use**: it
+applies only while the gap file of the base (`--base-gaps`) does not hold it (same row, same `pr`; rewording the reason does
+not make an entry new), so once the change has merged it excuses nothing, not even a later change that slows the row. A run
+reports such an entry, and a new one it did not need (the head is not credibly slower than the base), as
+`acknowledgement-unused` under ACKNOWLEDGEMENTS NOT NEEDED, a pass like `tracked-now-at-parity`: remove it in the next bench
+change. A new entry for a row of the shard that the run did not time against the base fails as `acknowledgement-not-backed`.
+Without `--base-gaps` no entry applies. Entry 92 of `docs/policy-decisions.md` records the rule.
+
 The bound is the exact sign-test bound (the order statistic x(n + 1 - k), Conover section 3.2) at the error rate
 `AB_FAMILYWISE_ALPHA / AB_ROW_BUDGET` = 0.01 / 50 = 0.0002 per row (Bonferroni), so a run of up to 50 rows of unchanged
 code fails with a probability under 1 percent; the confirmation is taken at 0.01 and makes a failure need independent
