@@ -6,6 +6,7 @@ import { repairPptPersistIdSeed } from '../src/lib/conversions/office/ppt-reader
 import { oracleTest } from './helpers/oracle-test';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { EncryptedOfficeDocumentError } from '../src/lib/types';
 
 /**
  * Two real PowerPoint 97-2003 files (Apache POI's `backgrounds.ppt` and `pictures.ppt`) give the office suite
@@ -130,4 +131,28 @@ describe('PowerPoint files with a persist id seed below the directory', () => {
     const run = dispatchConversion(bytes, 'ppt', 'pdf', {}, 'damaged.ppt');
     await expect(run).rejects.toThrow('LibreOffice could not read the .ppt file');
   }, CONVERSION_TIMEOUT_MS);
+});
+
+/**
+ * Encrypted PowerPoint files: Apache POI's HSLF throws EncryptedPowerPointFileException for each ("PowerPoint file is
+ * encrypted. The correct password needs to be set via Biff8EncryptionKey.setCurrentUserPassword()"), and their Current User
+ * stream carries the encrypted header token 0xf3d1c4df ([MS-PPT] 2.3.2). The file is intact, so the answer is the typed 422 for an
+ * encrypted document, not the 400 that says the file is damaged.
+ */
+const ENCRYPTED_SAMPLES = [
+  'govdocs1-002164.ppt',
+  'office-slideshow-ppt_with_png_encrypted.ppt',
+  'office-slideshow-password_protected-hello.ppt',
+  'office-slideshow-password_protected-56-hello.ppt',
+  'office-slideshow-password_protected-np-hello.ppt',
+];
+
+describe('Encrypted PowerPoint files', () => {
+  for (const id of ENCRYPTED_SAMPLES) {
+    oracleTest(`${id} is refused as encrypted`, ['soffice'], async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, id);
+      const failure = await dispatchConversion(bytes, 'ppt', 'pdf', {}, 'locked.ppt').catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EncryptedOfficeDocumentError);
+    }, CONVERSION_TIMEOUT_MS);
+  }
 });
