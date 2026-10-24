@@ -34,7 +34,6 @@ export function emf({ frame, description = '', nextRecord, size }: EmfOptions): 
   header.writeInt32LE(frame[3], 36);
   header.writeUInt32LE(EMF_SIGNATURE, 40);
   header.writeUInt32LE(0x10000, 44);
-  header.writeUInt32LE(headerSize, 48);
   header.writeUInt32LE(2, 52);
   header.writeUInt32LE(description.length, 60);
   header.writeUInt32LE(EMF_HEADER_BYTES, 64);
@@ -55,7 +54,9 @@ export function emf({ frame, description = '', nextRecord, size }: EmfOptions): 
   eof.writeUInt32LE(14, 0);
   eof.writeUInt32LE(20, 4);
   eof.writeUInt32LE(20, 16);
-  return Buffer.concat([header, ...records, eof]);
+  const file = Buffer.concat([header, ...records, eof]);
+  file.writeUInt32LE(file.length, 48);
+  return file;
 }
 
 export function wmfRecord(type: number, params: number[]): Buffer {

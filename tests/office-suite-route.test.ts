@@ -587,6 +587,36 @@ describe('a metafile that the office suite draws as a blank page', () => {
     expect(discarded).toEqual([PDF.filePath]);
   });
 
+  it.each([
+    ['emf', emf({ frame: [0, 0, 2999, 1999] })],
+    ['wmf', wmf({})],
+  ] as const)('hands on the PDF of a .%s file that is a header and its end record without a look, as the reference writes an empty page for it', async (src, bytes) => {
+    const { wrapped, probed, discarded } = setUp(false);
+    expect(await wrapped(bytes, src, 'pdf', {}, `empty.${src}`)).toBe(PDF);
+    expect(await wrapped({ inputBuffer: bytes, outputPath: '/tmp/out.pdf' }, src, 'pdf', {}, `empty.${src}`)).toBe(PDF);
+    expect(probed).toEqual([]);
+    expect(discarded).toEqual([]);
+  });
+
+  it('hands on the PDF of an empty .emf file held on disk, and refuses a file of the same header with junk after it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ink-empty-'));
+    try {
+      const empty = emf({ frame: [0, 0, 2999, 1999] });
+      const emptyPath = path.join(dir, 'empty.emf');
+      const junkPath = path.join(dir, 'junk.emf');
+      fs.writeFileSync(emptyPath, empty);
+      fs.writeFileSync(junkPath, Buffer.concat([empty.subarray(0, 88), Buffer.alloc(40, 0x5a)]));
+      const kept = setUp(false);
+      expect(await kept.wrapped({ inputPath: emptyPath, outputPath: '/tmp/out.pdf' }, 'emf', 'pdf', {}, 'empty.emf')).toBe(PDF);
+      expect(kept.probed).toEqual([]);
+      const refused = setUp(false);
+      await expect(refused.wrapped({ inputPath: junkPath, outputPath: '/tmp/out.pdf' }, 'emf', 'pdf', {}, 'junk.emf')).rejects.toBeInstanceOf(ConversionFailedError);
+      expect(refused.probed).toHaveLength(1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('hands on the PDF of a metafile that draws something, unchanged', async () => {
     const { wrapped, discarded } = setUp(true);
     expect(await wrapped(Buffer.from('metafile'), 'emf', 'pdf', {}, 'logo.emf')).toBe(PDF);

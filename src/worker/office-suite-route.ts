@@ -16,7 +16,7 @@ import {
 } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
 import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-document';
-import { metafileLeadingBytes, readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
+import { isEmptyMetafile, metafileLeadingBytes, readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { pdfFirstPageHasInk } from './pdf-ink';
@@ -200,15 +200,23 @@ export function withMetafileFrame(run: OfficeSuiteRun): OfficeSuiteRun {
 /** Whether the first page of a PDF that a run wrote, drawn by the `pdftoppm` given, has anything on it but paper. */
 type PdfInkProbe = (pdf: WorkerConversionResult, pdftoppm: string, options: WorkerEngineOptions) => Promise<boolean>;
 
+/** The size of an input in bytes, whether it is held in memory or in a file. */
+function inputSize(input: Buffer | WorkerVfsPayload): number {
+  if (Buffer.isBuffer(input)) return input.length;
+  if (input.inputBuffer) return input.inputBuffer.length;
+  return input.inputPath === undefined ? 0 : fs.statSync(input.inputPath).size;
+}
+
 /**
  * `run`, with a metafile written as PDF refused when the page it drew holds no ink. The office suite loads an EMF or WMF whose
  * header is valid and whose records are not records (or draw nothing) without a failure and writes a blank page, which the
  * reference import filter does not do: Inkscape 1.4 stops at the first record that is not a record (`emf-inout.cpp`
  * `myEnhMetaFileProc` lines 1680 to 1693 set `file_status` to 0, `Emf::open` lines 3588 to 3597 then opens no document; the same
- * in `wmf-inout.cpp` lines 1703 to 1718 and 3167 to 3174) and writes no PDF. The page is looked at where the PDF is made, so the
- * page chain behind PNG, JPEG and the other targets is held to it as well. A metafile is one page; a PDF with several pages is
- * never judged by its first. `discardOutput` removes a PDF that is not handed on, and a worker without `pdftoppm` (what
- * `resolvePdftoppm` finds) answers an unavailable engine rather than hand out a PDF it could not look at.
+ * in `wmf-inout.cpp` lines 1703 to 1718 and 3167 to 3174) and writes no PDF. A file that is a header and its end record is not
+ * junk: the reference opens it and writes an empty page, so it is handed on without a look (`isEmptyMetafile`). The page is looked
+ * at where the PDF is made, so the page chain behind PNG, JPEG and the other targets is held to it as well. A metafile is one page;
+ * a PDF with several pages is never judged by its first. `discardOutput` removes a PDF that is not handed on, and a worker without
+ * `pdftoppm` (what `resolvePdftoppm` finds) answers an unavailable engine rather than hand out a PDF it could not look at.
  */
 export function withMetafileInk(
   run: OfficeSuiteRun,
@@ -219,8 +227,10 @@ export function withMetafileInk(
   return async (input, sourceFormat, targetFormat, options, originalFilename) => {
     const written = await run(input, sourceFormat, targetFormat, options, originalFilename);
     if (!written || targetFormat !== 'pdf' || !METAFILE_FRAME_SOURCES.has(sourceFormat)) return written;
+    const format = sourceFormat as MetafileFormat;
     let drawn = false;
     try {
+      if (isEmptyMetafile(leadingBytes(input, metafileLeadingBytes(format)), inputSize(input), format)) return written;
       const pdftoppm = resolvePdftoppm();
       if (!pdftoppm) throw new EngineUnavailableError('pdftoppm', 'pdftoppm binary is not installed or not in PATH');
       drawn = await hasInk(written, pdftoppm, options ?? {});

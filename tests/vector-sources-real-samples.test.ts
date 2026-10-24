@@ -655,10 +655,15 @@ describe.skipIf(toolsMissing)('an EMF or WMF file whose header is valid and whos
     }
   }, CONVERSION_TIMEOUT_MS);
 
-  it('refuses a well-formed metafile of a header and its end record too, which draws nothing (Inkscape writes an empty page for it)', async () => {
-    const refusal = dispatchConversion(emf({ frame: [0, 0, 2999, 1999] }), 'emf', 'pdf', {}, 'empty.emf');
-    await expect(refusal).rejects.toBeInstanceOf(ConversionFailedError);
-    await expect(refusal).rejects.toThrow(/The \.emf file draws nothing/);
+  it.each([
+    { name: 'an EMF header and its end record', extension: 'emf' as const, bytes: emf({ frame: [0, 0, 2999, 1999] }), frame: { width: 85.04, height: 56.69 } },
+    { name: 'a standard WMF header and its end record', extension: 'wmf' as const, bytes: wmf({}), frame: { width: 841.89, height: 595.28 } },
+  ])('$name: the route answers with an empty page of the header\'s size, as the reference does', async ({ extension, bytes, frame }) => {
+    const pdf = (await dispatchConversion(bytes, extension, 'pdf', {}, `empty.${extension}`)).buffer;
+    expect(await inkBoxOfPdf(pdf)).toEqual(NO_INK);
+    const pages = pdfPages(pdf);
+    expect(pages.count).toBe(1);
+    expectClose(pages.sizes[0], frame, `empty.${extension} page`);
   }, CONVERSION_TIMEOUT_MS);
 
   it('still converts a real file, which draws', async (ctx) => {
@@ -673,8 +678,15 @@ describe.skipIf(toolsMissing || inkscapeMissing)('the reference import filter on
     expect(() => inkscapePdf(bytes, extension)).toThrow(/wrote no PDF/);
   }, CONVERSION_TIMEOUT_MS);
 
-  it('writes an empty page for a header and its end record, the one case in which the route refuses where the reference does not', async () => {
+  it('writes an empty page for a header and its end record, which the route hands on as an empty page too', async () => {
     expect(await inkBoxOfPdf(inkscapePdf(emf({ frame: [0, 0, 2999, 1999] }), 'emf'))).toEqual(NO_INK);
+    expect(await inkBoxOfPdf(inkscapePdf(wmf({}), 'wmf'))).toEqual(NO_INK);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('opens no document for a placeable WMF header and its end record, which the route refuses', async () => {
+    const placeable = wmf({ placeable: { box: [0, 0, 1439, 719], inch: 1440 } });
+    expect(() => inkscapePdf(placeable, 'wmf')).toThrow(/wrote no PDF/);
+    await expect(dispatchConversion(placeable, 'wmf', 'pdf', {}, 'empty.wmf')).rejects.toThrow(/The \.wmf file draws nothing/);
   }, CONVERSION_TIMEOUT_MS);
 });
 
