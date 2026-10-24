@@ -155,6 +155,19 @@ describe('worker thread failures', () => {
     expect((await startedThread()).terminated).toBe(true);
   });
 
+  it('ends a job at its own deadline when that is shorter than the limit of the host', async () => {
+    const err = await failure(runPdfTextJobInThread(pdf(), { geometry: [1], deadlineMs: SHORT_DEADLINE_MS }));
+    expect(err).toBeInstanceOf(PdfTextGeometryError);
+    expect((err as Error).message).toBe(`PDF text extraction exceeded its ${SHORT_DEADLINE_MS} ms limit.`);
+    expect((await startedThread()).terminated).toBe(true);
+  });
+
+  it('does not let a job lengthen the limit of the host', async () => {
+    process.env[DEADLINE_ENV] = String(SHORT_DEADLINE_MS);
+    const err = await failure(runPdfTextJobInThread(pdf(), { geometry: [1], deadlineMs: 600_000 }));
+    expect((err as Error).message).toBe(`PDF text extraction exceeded its ${SHORT_DEADLINE_MS} ms limit.`);
+  });
+
   it('keeps a document the reader rejects a typed 400', async () => {
     const pending = failure(extractPdfTextLayerPages(pdf(), new Set([1])));
     (await startedThread()).emit('message', { ok: false, message: 'PDF page 1 has more than 100000 text items.' });

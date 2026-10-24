@@ -2785,12 +2785,6 @@
   {
     "file": "src/worker/engines.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "convertWithinImageSession",
-    "count": 1
-  },
-  {
-    "file": "src/worker/engines.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "renderPages",
     "count": 1
   },
@@ -2799,21 +2793,21 @@
     "rule": "complexity",
     "function": "convertWithinImageSession",
     "count": 1,
-    "maxValue": 137
+    "maxValue": 126
   },
   {
     "file": "src/worker/engines.ts",
     "rule": "max-lines-per-function",
     "function": "convertWithinImageSession",
     "count": 1,
-    "maxValue": 345
+    "maxValue": 300
   },
   {
     "file": "src/worker/engines.ts",
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2628
+    "maxValue": 2616
   },
   {
     "file": "src/worker/engines.ts",

@@ -26,6 +26,7 @@ import {
 } from '../lib/types';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
+import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
 import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
@@ -80,7 +81,7 @@ import { convertPostScript } from './postscript-render';
 import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
-import { createConversionResult, getMimeType, handOffOutput, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments } from './worker-output';
+import { createConversionResult, getMimeType, handOffOutput, inProcessOutputPath, internalFallbackResult, preserveOutput, resolveInputContext, withPageNumbers, withSandboxDir, writeOutputSegments } from './worker-output';
 import { boundRenderedPages, DIRECT_RENDER_BATCH_PAGES, pageRenderProcesses, ppmBatchPages, renderPngBatch, resolvePdfRasterDpi, runBounded, runPdfinfo, runPdftoppm, selectsPages, splitIntoBatches, type PageBatch } from './poppler-ppm';
 import { PDF_PASSWORD_REJECTED_MESSAGE, isPasswordHandlingUnavailable, isUnservedPasswordRequest, toPopplerDamageSignal, toPopplerOutputLimitError, toPopplerPasswordError, withDecryptedPdf } from './pdf-decrypt';
 import { PdfStructureError } from '../lib/conversions/pdf-document';
@@ -2245,6 +2246,38 @@ async function convertWithOfficeSuiteRoutes(
   });
 }
 
+/**
+ * The PDF the in-process renderer draws for an HTML page, when the office suite's PDF has words past the edge of their page
+ * (docs/policy-decisions.md entry 90), and `null` when the office suite's PDF stays: no word is past an edge, the PDF could not be
+ * checked, the request needs the office suite (a PDF standard) or forbids the in-process engine, or the in-process renderer
+ * refuses the page. The office suite's output is discarded only once the other PDF exists.
+ */
+async function inProcessPdfInsteadOfOverflow(
+  officeRes: WorkerConversionResult,
+  request: { input: Buffer | WorkerVfsPayload; src: string; options: WorkerEngineOptions; originalFilename: string },
+  startTime: number
+): Promise<WorkerConversionResult | null> {
+  const { input, src, options, originalFilename } = request;
+  if (options.pdfStandard || options.inProcessFallback === false) return null;
+  const overflow = await wordsPastEdgeOfOfficePdf(officeRes);
+  if (overflow === null) return null;
+  options.signal?.throwIfAborted();
+  let rendered: ConversionResult;
+  try {
+    rendered = await convertFile(readRawInputBuffer(input), src, 'pdf', options, originalFilename);
+  } catch {
+    // An aborted job ends here; any other refusal leaves the office suite's PDF as it was.
+    options.signal?.throwIfAborted();
+    return null;
+  }
+  discardPersistedOutput(officeRes.filePath, input, options);
+  const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
+  return internalFallbackResult(rendered, inProcessOutputPath('pdf', options, vfsPayload), startTime, {
+    reason: overflow,
+    chain: [`native-soffice: ${overflow}`],
+  });
+}
+
 async function convertWithinImageSession(
   input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
@@ -2286,6 +2319,8 @@ async function convertWithinImageSession(
         ? await convertTextPdfWithHeadlessOffice(input, src, nativeOptions, originalFilename, textPdfRoute?.stagedHtml)
         : await convertWithHeadlessOffice(input, src, tgt, nativeOptions, originalFilename);
       if (officeRes) {
+        const inProcessPdf = isNativeTextPdf && HTML_SOURCES.has(src) ? await inProcessPdfInsteadOfOverflow(officeRes, { input, src, options, originalFilename }, startTime) : null;
+        if (inProcessPdf) return inProcessPdf;
         const stagedWarnings = isNativeTextPdf ? (textPdfRoute?.stagedWarnings ?? []) : [];
         return {
           ...officeRes,
@@ -2559,23 +2594,7 @@ async function convertWithinImageSession(
     );
   }
 
-  let inputBuffer: Buffer;
-  if (Buffer.isBuffer(input)) {
-    inputBuffer = input;
-  } else if (input.inputBuffer) {
-    inputBuffer = input.inputBuffer;
-  } else if (input.inputPath && fs.existsSync(input.inputPath)) {
-    const stat = fs.statSync(input.inputPath);
-    if (stat.size > getMaxInMemoryBytes()) {
-      throw new PayloadTooLargeForMemoryError(
-        `Payload size (${stat.size} bytes) exceeds in-memory buffer limit of ${getMaxInMemoryBytes()} bytes. Native worker required.`,
-        { size: stat.size, limit: getMaxInMemoryBytes() }
-      );
-    }
-    inputBuffer = fs.readFileSync(input.inputPath);
-  } else {
-    throw new Error('Worker conversion received invalid input payload: neither inputPath nor inputBuffer provided');
-  }
+  const inputBuffer = readRawInputBuffer(input);
   let internalRes: ConversionResult;
   try {
     // The in-process engine cannot be interrupted once it runs: it must not start for an aborted job.
@@ -2593,36 +2612,5 @@ async function convertWithinImageSession(
     throw err;
   }
   const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
-  const desiredOutput = vfsPayload?.outputPath || (options as any)?.outputPath;
-  let finalPath = desiredOutput;
-  if (!finalPath && options.zeroHeap) {
-    const vfsDir = path.join(os.tmpdir(), 'easyconvert-vfs');
-    if (!fs.existsSync(vfsDir)) {
-      try {
-        fs.mkdirSync(vfsDir, { recursive: true, mode: 0o700 });
-      } catch {}
-    }
-    finalPath = path.join(vfsDir, `easyconvert-out-${crypto.randomUUID()}.${tgt}`);
-  }
-  const fallbackMetadata: Record<string, unknown> = fallbackReason ? { fallbackReason } : {};
-  if (finalPath) {
-    fs.writeFileSync(finalPath, internalRes.buffer);
-    return {
-      ...internalRes,
-      filePath: finalPath,
-      engineUsed: 'internal-fallback',
-      executionTimeMs: Date.now() - startTime,
-      metadata: { ...internalRes.metadata, ...fallbackMetadata },
-      fallbackReason,
-      fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-    };
-  }
-  return {
-    ...internalRes,
-    engineUsed: 'internal-fallback',
-    executionTimeMs: Date.now() - startTime,
-    metadata: { ...internalRes.metadata, ...fallbackMetadata },
-    fallbackReason,
-    fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined,
-  };
+  return internalFallbackResult(internalRes, inProcessOutputPath(tgt, options, vfsPayload), startTime, { reason: fallbackReason, chain: fallbackChain });
 }
