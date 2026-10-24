@@ -14,7 +14,7 @@ import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { detectFormatFromFilename, getFormatByExtension, FileExtensionSpoofError } from '@/lib/registry';
-import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '@/lib/security/file-guard';
+import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError } from '@/lib/types';
 import {
   validateJobGraph,
@@ -528,7 +528,7 @@ export async function POST(req: NextRequest) {
           if (!header) {
             return await failWithRollback(400, 'Stored object is unavailable.', 'Storage File Missing');
           }
-          assertNotSpoofedFile(header, sourceDef.extension, originalFilename);
+          await assertNotSpoofedObject(s3Storage, storageKey, info.size, header, sourceDef.extension, originalFilename);
         } else {
           const stored = await s3Storage.getObject(storageKey);
           if (!stored) {

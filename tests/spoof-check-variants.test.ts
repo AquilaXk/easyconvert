@@ -1,13 +1,16 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import zlib from 'node:zlib';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { xmlRootElementName } from '../src/lib/format-signatures';
 import { FileExtensionSpoofError, isFormatCompatibleWithMagicBytes, sniffMimeTypeFromMagicBytes } from '../src/lib/registry';
-import { assertNotSpoofedFile, assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
+import { assertCompoundFileKindInObject, assertNotSpoofedFile, assertNotSpoofedFilePath } from '../src/lib/security/file-guard';
 import { gunzipHead } from '../src/lib/security/gzipped-xml-root';
 import { OBJECT_HEADER_BYTES } from '../src/lib/storage/object-header';
+import { buildCompoundFile, placeDirectory } from './helpers/cfb-craft';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless } from './helpers/strict-skip';
@@ -330,7 +333,15 @@ describe('DivX (.divx) and Xvid (.xvid) video', () => {
 });
 
 describe('compound-file documents (.sdw, .sdc, .sda, .shw, .qpw)', () => {
-  const compoundFile = (): Buffer => Buffer.concat([CFBF_MAGIC, Buffer.alloc(504)]);
+  const COREL_PRESENTATIONS_CLASS_ID = Buffer.from([0x62, 0xfe, 0x2e, 0x40, 0x99, 0x19, 0x1b, 0x10, 0x99, 0xae, 0x04, 0x02, 0x1c, 0x00, 0x70, 0x02]);
+  const NAMING_STREAMS: Readonly<Record<string, string>> = { sdw: 'StarWriterDocument', sdc: 'StarCalcDocument', sda: 'StarDrawDocument3', qpw: 'NativeContent_MAIN' };
+  /** A compound file of the kind `ext` as the engines tell it: the stream that names it, or for Corel Presentations the class ID of the root storage. */
+  const compoundFileOf = (ext: string): Buffer => {
+    const file = buildCompoundFile([{ name: NAMING_STREAMS[ext] ?? 'PerfectOffice_MAIN', data: Buffer.from('x') }]);
+    if (ext === 'shw') COREL_PRESENTATIONS_CLASS_ID.copy(file, (file.readUInt32LE(48) + 1) * 512 + 80);
+    return file;
+  };
+  const bareSignature = (): Buffer => Buffer.concat([CFBF_MAGIC, Buffer.alloc(504)]);
   const REAL_FILES: readonly (readonly [string, string])[] = [
     ['sdw', 'lo-sfxstandalonedocinfoobject.sdw'],
     ['sdw', 'lo-writer_3.1.sdw'],
@@ -358,8 +369,124 @@ describe('compound-file documents (.sdw, .sdc, .sda, .shw, .qpw)', () => {
     }
   });
 
-  it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('accepts the compound file signature under .%s', (ext) => {
-    expect(isFormatCompatibleWithMagicBytes(compoundFile(), ext)).toBe(true);
+  it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('accepts a compound file of its own kind under .%s', (ext) => {
+    expect(isFormatCompatibleWithMagicBytes(compoundFileOf(ext), ext)).toBe(true);
+    expect(() => assertNotSpoofedFile(compoundFileOf(ext), ext, `file.${ext}`)).not.toThrow();
+  });
+
+  it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('refuses the container signature with no directory under .%s', (ext) => {
+    expect(isFormatCompatibleWithMagicBytes(bareSignature(), ext)).toBe(false);
+    expect(() => assertNotSpoofedFile(bareSignature(), ext, `file.${ext}`)).toThrow(FileExtensionSpoofError);
+  });
+
+  it('refuses the compound file of each kind under the names of the other four', () => {
+    const kinds = ['sdw', 'sdc', 'sda', 'shw', 'qpw'];
+    for (const kind of kinds) {
+      for (const claimed of kinds.filter((candidate) => candidate !== kind)) {
+        expect(isFormatCompatibleWithMagicBytes(compoundFileOf(kind), claimed), `a .${kind} file named .${claimed}`).toBe(false);
+        expect(() => assertNotSpoofedFile(compoundFileOf(kind), claimed, `file.${claimed}`), `a .${kind} file named .${claimed}`).toThrow(FileExtensionSpoofError);
+      }
+    }
+  });
+
+  it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('refuses a Word document under .%s', (ext) => {
+    const word = buildCompoundFile([{ name: 'WordDocument', data: Buffer.from('x') }, { name: '1Table', data: Buffer.from('x') }]);
+    expect(isFormatCompatibleWithMagicBytes(word, ext)).toBe(false);
+  });
+
+  it('takes a file for what it is when only the start is given and the directory lies past it, and refuses a whole file with that fault', () => {
+    const header = (length: number): Buffer => {
+      const file = Buffer.alloc(length);
+      compoundFileOf('sdw').copy(file, 0, 0, 512);
+      file.writeUInt32LE(OBJECT_HEADER_BYTES / 512 + 40, 48);
+      return file;
+    };
+    expect(isFormatCompatibleWithMagicBytes(header(OBJECT_HEADER_BYTES), 'sdw')).toBe(true);
+    expect(isFormatCompatibleWithMagicBytes(header(OBJECT_HEADER_BYTES - 1), 'sdw')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(header(OBJECT_HEADER_BYTES + 1), 'sdw')).toBe(false);
+  });
+
+  it.each([0xfffffffa, 0xfffffffe, 0xffffffff])('refuses a header whose first directory sector is the marker %d, in a buffer of the whole header window too', (sector) => {
+    for (const length of [OBJECT_HEADER_BYTES - 1, OBJECT_HEADER_BYTES, OBJECT_HEADER_BYTES + 1]) {
+      const file = Buffer.alloc(length);
+      compoundFileOf('sdw').copy(file, 0, 0, 512);
+      file.writeUInt32LE(sector, 48);
+      expect(isFormatCompatibleWithMagicBytes(file, 'sdw'), `${length} bytes`).toBe(false);
+    }
+  });
+
+  describe('whose directory lies past the first 64 KiB', () => {
+    const SECTORS_IN_WINDOW = OBJECT_HEADER_BYTES / 512;
+    const WORD_97_CLASS_ID = Buffer.from([0x06, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46]);
+    const largeDocument = (kind: 'word' | 'writer'): Buffer => {
+      const small =
+        kind === 'word'
+          ? buildCompoundFile([{ name: 'WordDocument', data: Buffer.from('x') }, { name: '1Table', data: Buffer.from('x') }])
+          : compoundFileOf('sdw');
+      if (kind === 'word') WORD_97_CLASS_ID.copy(small, (small.readUInt32LE(48) + 1) * 512 + 80);
+      return placeDirectory(small, { directorySectors: [SECTORS_IN_WINDOW + 150] });
+    };
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'compound-directory-'));
+    afterAll(() => fs.rmSync(scratch, { recursive: true, force: true }));
+    const stored = (name: string, bytes: Buffer): string => {
+      const file = path.join(scratch, name);
+      fs.writeFileSync(file, bytes);
+      return file;
+    };
+
+    /** A store that serves ranges as the object store does: a range past the end of the object is an error. */
+    const store = (bytes: Buffer) => {
+      const requests: { start: number; end: number }[] = [];
+      return {
+        requests,
+        openReadStream: async (_key: string, range?: { start: number; end: number }) => {
+          if (!range || range.end >= bytes.length) throw new Error(`range ${range?.start}-${range?.end} is past the end`);
+          requests.push(range);
+          return Readable.from([bytes.subarray(range.start, range.end + 1)]);
+        },
+      };
+    };
+
+    it('is refused by path when it is a Word document named .sdw, and accepted when it is a StarWriter document', () => {
+      const word = stored('large-word.sdw', largeDocument('word'));
+      const writer = stored('large-writer.sdw', largeDocument('writer'));
+      expect(() => assertNotSpoofedFilePath(word, 'sdw', 'large-word.sdw')).toThrow(FileExtensionSpoofError);
+      expect(() => assertNotSpoofedFilePath(writer, 'sdw', 'large-writer.sdw')).not.toThrow();
+      expect(() => assertNotSpoofedFilePath(writer, 'sdc', 'large-writer.sdc')).toThrow(FileExtensionSpoofError);
+    });
+
+    it('is refused as a whole buffer, and its first 64 KiB alone are still taken on the container signature', () => {
+      const word = largeDocument('word');
+      expect(() => assertNotSpoofedFile(word, 'sdw', 'large-word.sdw')).toThrow(FileExtensionSpoofError);
+      expect(() => assertNotSpoofedFile(word.subarray(0, OBJECT_HEADER_BYTES), 'sdw', 'large-word.sdw')).not.toThrow();
+    });
+
+    it('is refused in a store by range requests that stay inside the object, and accepted when it is StarWriter', async () => {
+      for (const [kind, ext, accepted] of [['word', 'sdw', false], ['writer', 'sdw', true], ['writer', 'sdc', false]] as const) {
+        const bytes = largeDocument(kind);
+        const backend = store(bytes);
+        const check = assertCompoundFileKindInObject(backend, 'uploads/large', bytes.length, bytes.subarray(0, OBJECT_HEADER_BYTES), ext, `large.${ext}`);
+        if (accepted) await check;
+        else await expect(check).rejects.toBeInstanceOf(FileExtensionSpoofError);
+        expect(backend.requests.length, `${kind} as .${ext}`).toBeGreaterThan(0);
+        expect(backend.requests.length).toBeLessThanOrEqual(3);
+      }
+    });
+
+    it('is not read at all when the header is the whole file or the extension is not a compound-only one', async () => {
+      const backend = store(largeDocument('word'));
+      const whole = compoundFileOf('sdw');
+      await assertCompoundFileKindInObject(backend, 'uploads/small', whole.length, whole, 'sdw');
+      await assertCompoundFileKindInObject(backend, 'uploads/doc', 10_000_000, Buffer.alloc(OBJECT_HEADER_BYTES), 'doc');
+      expect(backend.requests).toHaveLength(0);
+    });
+
+    it('is refused by path when its first directory sector is the end-of-chain marker in a file of exactly 64 KiB', () => {
+      const file = Buffer.alloc(OBJECT_HEADER_BYTES);
+      compoundFileOf('sdw').copy(file, 0, 0, 512);
+      file.writeUInt32LE(0xfffffffe, 48);
+      expect(() => assertNotSpoofedFilePath(stored('end-of-chain.sdw', file), 'sdw', 'end-of-chain.sdw')).toThrow(FileExtensionSpoofError);
+    });
   });
 
   it.each(['sdw', 'sdc', 'sda', 'shw', 'qpw'])('refuses programs, pages, pictures and archives under .%s', (ext) => {
@@ -370,9 +497,9 @@ describe('compound-file documents (.sdw, .sdc, .sda, .shw, .qpw)', () => {
   });
 
   it('keeps a compound file out of the names of formats that are not compound files', () => {
-    expect(isFormatCompatibleWithMagicBytes(compoundFile(), 'png')).toBe(false);
-    expect(isFormatCompatibleWithMagicBytes(compoundFile(), 'zabw')).toBe(false);
-    expect(isFormatCompatibleWithMagicBytes(compoundFile(), 'divx')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(compoundFileOf('sdw'), 'png')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(compoundFileOf('sdw'), 'zabw')).toBe(false);
+    expect(isFormatCompatibleWithMagicBytes(compoundFileOf('sdw'), 'divx')).toBe(false);
   });
 });
 
