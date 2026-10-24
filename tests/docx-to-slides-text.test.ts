@@ -17,6 +17,7 @@ import { sofficeConvert } from './helpers/soffice-convert';
 const CONVERSION_TIMEOUT_MS = 240_000;
 const NO_TEXT_REFUSAL = 'There is no text to put on slides.';
 
+const CONTINUATION_SUFFIX = ' (Cont.)';
 const SLIDE_PART = /^ppt\/slides\/slide(\d+)\.xml$/;
 
 async function slideWords(pptx: Buffer): Promise<string[]> {
@@ -28,7 +29,10 @@ async function slideWords(pptx: Buffer): Promise<string[]> {
   const words: string[] = [];
   for (const slide of slides) {
     const xml = await zip.file(slide.name)!.async('string');
-    for (const match of xml.matchAll(/<a:t>([^<]*)<\/a:t>/g)) words.push(...match[1].split(/\s+/).filter(Boolean));
+    const lines = [...xml.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((match) => match[1]);
+    // The title of a slide that carries on the text of the one before it repeats that slide's title; it is not document text.
+    const body = lines[0]?.endsWith(CONTINUATION_SUFFIX) ? lines.slice(1) : lines;
+    for (const line of body) words.push(...line.split(/\s+/).filter(Boolean));
   }
   return words;
 }
@@ -44,6 +48,10 @@ function nestedTables(depth: number, text: string): string {
   for (let level = 0; level < depth; level += 1) nested = `<w:tbl><w:tblPr/><w:tblGrid/><w:tr><w:tc>${nested}<w:p/></w:tc></w:tr></w:tbl>`;
   return nested;
 }
+
+/** A drawing that is neither a picture nor a text box, which the document model leaves to the drawing-aware reader. */
+const DRAWN_SHAPE =
+  '<w:p><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="100" cy="100"/></wp:inline></w:drawing></w:r></w:p>';
 
 const toSlides = (docx: Buffer): Promise<Buffer> => dispatchConversion(docx, 'docx', 'pptx', {}, 'sample.docx').then((result) => result.buffer);
 
@@ -65,8 +73,7 @@ describe('DOCX to PPTX text', () => {
   });
 
   it('puts the cells of a table on slides when the document also draws a shape', async () => {
-    const shape = '<w:p><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="100" cy="100"/></wp:inline></w:drawing></w:r></w:p>';
-    const docx = await craftDocx({ body: shape + table(row('Drawn', 'beside', 'table')) });
+    const docx = await craftDocx({ body: DRAWN_SHAPE + table(row('Drawn', 'beside', 'table')) });
     expect(await slideWords(await toSlides(docx))).toEqual(['Drawn', 'beside', 'table']);
   });
 
