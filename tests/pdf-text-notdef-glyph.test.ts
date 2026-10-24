@@ -102,12 +102,14 @@ describe('code 0 that is not the .notdef glyph by the encoding is still a glyph 
     const pdf = pageShowing('\\000\\000', (first) => dejaVuObjects(first, SYMBOLIC, ''));
     const error = await captureError(() => extractPdfDocument(pdf));
     expect(error).toBeInstanceOf(PdfTextUnmappedError);
+    expect((error as PdfTextUnmappedError).pages).toEqual([1]);
   });
 
   it('leaves codes 1 to 31 counted: a standard encoding names none of them either, but a font may draw a glyph there', async () => {
     const pdf = pageShowing('\\001\\002\\003', (first) => dejaVuObjects(first, NONSYMBOLIC, `/Encoding ${WIN_ANSI}`));
     const error = await captureError(() => extractPdfDocument(pdf));
     expect(error).toBeInstanceOf(PdfTextUnmappedError);
+    expect((error as PdfTextUnmappedError).pages).toEqual([1]);
   });
 });
 
