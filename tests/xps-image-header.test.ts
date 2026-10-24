@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { crc32 } from 'node:zlib';
-import sharp from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { jpegXrSize, xpsImageFormat, xpsImagePixels } from '../src/lib/conversions/office/xps-image-header';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { ConversionFailedError } from '../src/lib/types';
@@ -33,7 +33,7 @@ function pngDeclaring(width: number, height: number): Buffer {
   return Buffer.concat([PNG_SIGNATURE, chunk('IHDR', header), chunk('IDAT', Buffer.from([0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01])), chunk('IEND', Buffer.alloc(0))]);
 }
 
-async function rawImage(width: number, height: number): Promise<sharp.Sharp> {
+async function rawImage(width: number, height: number): Promise<Sharp> {
   return sharp({ create: { width, height, channels: 3, background: '#808080' } });
 }
 
