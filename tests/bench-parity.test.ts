@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { PARITY_SCHEMA_VERSION, PARITY_VERDICT_FILE, SCHEMA_VERSION } from '../bench/config';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CORPUS_TIER_ENV, PARITY_SCHEMA_VERSION, PARITY_VERDICT_FILE, SCHEMA_VERSION } from '../bench/config';
 import { BenchArgumentError, ParityInputError, ReportSchemaError } from '../bench/errors';
 import { evaluateParity, failureLines, type ParityRunFile, renderParityMarkdown, renderParityText } from '../bench/parity';
 import type { Baseline } from '../bench/gate';
@@ -414,7 +414,7 @@ describe('the known gaps', () => {
   it('ships a gap file whose every entry names an issue, and whose speed entries name a row the baseline records', () => {
     const shipped = validateGaps(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'parity-gaps.json'), 'utf8')));
     const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'baseline.json'), 'utf8')) as { entries: Record<string, unknown> };
-    expect(shipped.gaps.length).toBeGreaterThan(15);
+    expect(shipped.gaps.length).toBeGreaterThan(10);
     for (const gap of shipped.gaps) {
       expect(Number.isInteger(gap.issue) && gap.issue > 0, gap.id).toBe(true);
       // A quality row may be new and not baselined yet; the run refuses an entry whose row it did not produce (gap-row-missing).
@@ -472,36 +472,39 @@ describe('the known gaps', () => {
     expect(issuesOf('image/', false)).toEqual([641]);
     expect(issuesOf('image/', true)).toEqual([641]);
     // The HEVC encode row and the zstd encode row (497) reached parity on the CI runner with room to spare, so they are no longer known gaps.
-    // The H.264 and VP9 rows of the clip and the Opus row sit at 0.99 with an interval that crosses 0.97 from run to run: they stay tracked.
-    expect(issuesOf('audio/', true)).toEqual([642]);
+    // The H.264 row of the clip and the Opus row of the music file reached parity in the nightly run of 2026-10-24; the VP9 row of the clip stays tracked.
+    expect(issuesOf('audio/', true)).toEqual([]);
     expect(issuesOf('video/', true)).toEqual([643]);
+    expect(byIdOf('video/clip.mp4->h264/throughput')).toBeUndefined();
     expect(issuesOf('ocr/', true)).toEqual([644]);
-    // The document gap is the PDF text reader (672); the slide and sheet pages to PNG reached parity on the CI runner (735).
-    expect(issuesOf('document/', true)).toEqual([672]);
+    // The document gaps are gone: the PDF text reader reached parity (672), as the slide and sheet pages to PNG did (735).
+    expect(issuesOf('document/', true)).toEqual([]);
     // The RAW to GIF rows reached parity on the CI runner (686).
     expect(issuesOf('raw/', true)).toEqual([]);
     expect([byIdOf('raw/dng->gif/throughput'), byIdOf('raw/arw->gif/throughput')]).toEqual([undefined, undefined]);
-    expect(issuesOf('vector/', true)).toEqual([735]);
+    // The SVG to PDF and EPS to PNG rows reached parity in the nightly run of 2026-10-24 (735).
+    expect(issuesOf('vector/', true)).toEqual([]);
     expect(issuesOf('cad/', true)).toEqual([]);
     // The quality rows below the reference are tracked at a recorded value: the RAW files the product refuses or develops past the allowance (686).
     expect(issuesOf('raw/', false)).toEqual([686]);
     for (const family of ['vector/', 'cad/']) expect(issuesOf(family, false)).toEqual([]);
     const byId = Object.fromEntries(shipped.gaps.map((g) => [g.id, g.issue]));
-    expect([byId['compression/mixed.7z->tar/throughput'], byId['compression/mixed.xz->tar/throughput'], byId['compression/mixed.tar->7z/throughput']]).toEqual([685, 685, 685]);
-    expect(byId['compression/mixed.tar->zst/throughput']).toBeUndefined();
+    // Every compression row that is a known gap reached parity in the nightly run of 2026-10-24, but the xz decode of the most compressible Silesia file, a row of a public sample that the nightly run times (685).
+    expect(issuesOf('compression/', true)).toEqual([685]);
+    expect(Object.keys(byId).filter((id) => id.startsWith('compression/'))).toEqual(['compression/silesia-xml.xz->tar/throughput']);
+    expect(byId['image/wm-deep-dart.png->avif/throughput']).toBe(641);
     expect(byId['video/clip.mp4->hevc/throughput']).toBeUndefined();
     // The PostScript to PDF, Illustrator to PNG, slide and sheet page rows reached parity on the CI runner (735).
     for (const id of [
       'vector/shapes.eps->pdf/throughput',
       'vector/shapes.ai->png/throughput',
+      'vector/shapes.svg->pdf/throughput',
+      'vector/shapes.eps->png/throughput',
       'document/drawingml-shapes-presentation.pptx->png/throughput',
       'document/workbook.xlsx->png/throughput',
     ]) expect(byId[id]).toBeUndefined();
-    expect([byId['vector/shapes.svg->pdf/throughput'], byId['vector/shapes.eps->png/throughput']]).toEqual([735, 735]);
-    // The decode row reached parity on the CI runner, so it is no longer a known gap.
-    expect(byId['compression/mixed.zst->tar/throughput']).toBeUndefined();
-    expect(issuesOf('pdf-ops/', true)).toEqual([695]);
-    // The damaged PDF files whose page tree loops and the form with errors reached parity (783, entry 53), so no PDF operation quality row is a known gap.
+    // The PDF operation rows reached parity in the nightly run of 2026-10-24 (695, 783), and no PDF operation quality row is a known gap.
+    expect(issuesOf('pdf-ops/', true)).toEqual([]);
     expect(issuesOf('pdf-ops/', false)).toEqual([]);
   });
 
@@ -804,6 +807,7 @@ describe('a parity run on a saved report', () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-parity-'));
   });
   afterEach(() => {
+    vi.unstubAllEnvs();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -943,6 +947,52 @@ describe('a parity run on a saved report', () => {
         baseGaps: [entry(0.45)],
       });
       expect(recorded.code).toBe(0);
+    });
+  });
+
+  describe('a speed row of a public sample', () => {
+    // wm-deep-dart.png is a sample of the remote manifest: the nightly run times it, and a pull request's speed job (BENCH_CORPUS_TIER=pr) does not.
+    const PUBLIC_ID = 'image/wm-deep-dart.png->avif/throughput';
+    const publicRow = (median: number): BenchRow[] => [
+      row({ id: PUBLIC_ID, direction: 'higher', kind: 'throughput', ours: 10 * median, reference: 10, ratio: median, runs: 9, speedVerdict: 'fail', ratioLow: median - 0.1, ratioHigh: median + 0.1, ratioMedian: median, tolerance: { abs: 0, rel: 0.35 } }),
+    ];
+    const entry = (ratio: number, extra: Record<string, unknown> = {}): Record<string, unknown> => ({
+      id: PUBLIC_ID,
+      issue: 641,
+      ratio,
+      note: 'AVIF speed',
+      history: FLAT_HISTORY(ratio).map((point) => ({ ...point, commit: 'b'.repeat(40) })),
+      ...extra,
+    });
+    const baseline = { [PUBLIC_ID]: { direction: 'higher', tolerance: { abs: 0, rel: 0.35 }, ours: null, delta: null, ratio: 0.5 } };
+
+    it('passes inside the bound of its history in the nightly run, which times it, and fails below the bound', async () => {
+      vi.stubEnv(CORPUS_TIER_ENV, 'full');
+      const inside = await run(publicRow(0.5), { baseline, gaps: [entry(0.5)] });
+      expect(inside.code).toBe(0);
+      expect(inside.verdict.parity.rows.find((candidate) => candidate.id === PUBLIC_ID)).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
+      const below = await run(publicRow(0.3), { baseline, gaps: [entry(0.5)] });
+      expect(below.code).toBe(3);
+      expect(below.lines.some((line) => line.startsWith('BELOW REFERENCE') && line.includes(PUBLIC_ID) && line.includes('got slower than its history'))).toBe(true);
+      const untracked = await run(publicRow(0.5), { baseline });
+      expect(untracked.verdict.parity.rows.find((candidate) => candidate.id === PUBLIC_ID)).toMatchObject({ outcome: 'fail', basis: 'speed-below-reference' });
+    });
+
+    it('is a new entry of a pull request that does not time the row: its form is checked, and the nightly run holds the numbers', async () => {
+      vi.stubEnv(CORPUS_TIER_ENV, 'pr');
+      const generated = rowsWith(-2, 0.96, 'pass');
+      expect((await run(generated, { baseline: baselineEntries(1.1), gaps: [entry(0.5)], baseGaps: [] })).code).toBe(0);
+      const withoutCommit = await run(generated, { baseline: baselineEntries(1.1), gaps: [entry(0.5, { history: FLAT_HISTORY(0.5) })], baseGaps: [] });
+      expect(withoutCommit.code).toBe(3);
+      expect(withoutCommit.lines.some((line) => line.includes('is new and has no commit'))).toBe(true);
+    });
+
+    it('still has to be backed by the run when the run times it', async () => {
+      vi.stubEnv(CORPUS_TIER_ENV, 'full');
+      const bypass = await run(publicRow(0.5), { baseline, gaps: [entry(0.1)], baseGaps: [] });
+      expect(bypass.code).toBe(3);
+      expect(bypass.lines.some((line) => line.includes('the recorded ratio 0.1 is outside'))).toBe(true);
+      expect((await run(publicRow(0.5), { baseline, gaps: [entry(0.45)], baseGaps: [] })).code).toBe(0);
     });
   });
 

@@ -9,6 +9,7 @@ import {
   SandboxedProcessError,
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
+import { launchSandboxedBinary } from '../security/sandbox-launcher';
 import { ConversionFailedError, EngineUnavailableError, PayloadLimitError } from '../types';
 import { isAvif } from './avif-colour';
 import { avifSpeedFor, type AvifBitdepth, type AvifEncoder, type AvifPlaneLayout } from './image-encoder-defaults';
@@ -52,6 +53,11 @@ export const AVIFENC_ADDRESS_SPACE_MB = 5120;
 export const AVIFENC_TIMEOUT_MS = 180_000;
 /** Diagnostics the encoder may print; more is runaway output. */
 const AVIFENC_MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
+/**
+ * What the encoder prints on a good run (a few lines of settings and sizes); the AVIF file goes to a path, not to the standard output. It is what the
+ * launcher helper has to copy back, so the helper is judged worth its round trip by the fork it saves alone (`launchPays`).
+ */
+const AVIFENC_EXPECTED_STDOUT_BYTES = 4 * 1024;
 /** The file written is at most this many bytes per pixel (four 12-bit planes, lossless, uncompressible) plus headers. */
 const AVIFENC_MAX_OUTPUT_BYTES_PER_PIXEL = 8;
 const AVIFENC_OUTPUT_OVERHEAD_BYTES = 64 * 1024;
@@ -417,7 +423,9 @@ export async function encodeAvifWithCli(avifenc: string, request: AvifCliRequest
       throw new ConversionFailedError('Cannot encode the image as .avif (the picture could not be handed to the encoder)');
     }
     try {
-      await executeSandboxedBinary(avifenc, args, {
+      // Started from the launcher helper when this process is large enough that the helper's start is cheaper than a fork of it (entry 91).
+      await launchSandboxedBinary(avifenc, args, {
+        expectedOutputBytes: AVIFENC_EXPECTED_STDOUT_BYTES,
         cwd: jobDir,
         timeoutMs,
         maxBuffer: AVIFENC_MAX_DIAGNOSTIC_BYTES,
