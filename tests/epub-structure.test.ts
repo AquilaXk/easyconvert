@@ -266,7 +266,7 @@ describe('EPUB input is read with its structure', () => {
 });
 
 describe('malformed EPUB containers fail closed', () => {
-  async function container(parts: Record<string, string>): Promise<Buffer> {
+  async function container(parts: Record<string, string | Buffer>): Promise<Buffer> {
     const zip = new JSZip();
     zip.file('mimetype', 'application/epub+zip');
     for (const [name, data] of Object.entries(parts)) zip.file(name, data);
@@ -276,7 +276,7 @@ describe('malformed EPUB containers fail closed', () => {
   const opf = (manifest: string, spine: string): string =>
     `<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>t</dc:title></metadata><manifest>${manifest}</manifest><spine>${spine}</spine></package>`;
 
-  async function failure(parts: Record<string, string>): Promise<Error> {
+  async function failure(parts: Record<string, string | Buffer>): Promise<Error> {
     const err = await readEpubModel(await container(parts)).then(() => undefined, (error: unknown) => error);
     return err as Error;
   }
@@ -320,6 +320,25 @@ describe('malformed EPUB containers fail closed', () => {
     });
     expect(err).toBeInstanceOf(EncryptedOfficeDocumentError);
     expect(err.message).toBe('The EPUB content is protected by DRM, so its text cannot be read.');
+  });
+
+  it('chapters that together name one picture more often than the model embeds', async () => {
+    const chapters = (count: number): Record<string, string | Buffer> => {
+      const parts: Record<string, string | Buffer> = { 'META-INF/container.xml': CONTAINER, 'OEBPS/p.png': Buffer.from(PNG_1X1, 'base64') };
+      const manifest = ['<item id="p" href="p.png" media-type="image/png"/>'];
+      const spine: string[] = [];
+      for (let index = 0; index < count; index += 1) {
+        parts[`OEBPS/c${index}.xhtml`] = `<html><body>${'<p><img src="p.png"/></p>'.repeat(700)}</body></html>`;
+        manifest.push(`<item id="c${index}" href="c${index}.xhtml" media-type="application/xhtml+xml"/>`);
+        spine.push(`<itemref idref="c${index}"/>`);
+      }
+      parts['OEBPS/content.opf'] = opf(manifest.join(''), spine.join(''));
+      return parts;
+    };
+    const err = await expectNoHang('one picture in every chapter', () => failure(chapters(3)));
+    expect(err).toBeInstanceOf(PayloadLimitError);
+    expect(err.message).toBe('The document embeds more than 2000 images.');
+    expect((await readEpubModel(await container(chapters(2)))).images).toHaveLength(1);
   });
 
   it('a spine longer than the limit is refused without being walked', async () => {

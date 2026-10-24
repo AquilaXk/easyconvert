@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Builds sharp's libvips-cpp.so with the upstream build (build/posix.sh of sharp-libvips at UPSTREAM_SHA, unpacked by
-# toolchain.sh into /packaging), changed by three patches:
+# toolchain.sh into /packaging), changed by four patches:
 #   option-f.patch        mozjpeg, libpng and libwebp at -O3 (posix.sh lines 204, 212 and 225) instead of the -Os default
 #                         of lines 44-46; aom and the other libraries keep the upstream flags;
 #   pinned-notices.patch  the notices file from the pinned archive instead of the upstream main branch;
 #   webp-thread-level.patch  one line in posix.sh that applies libvips-webp-thread-level.patch to the libvips sources, which sets
-#                         libwebp's thread_level for a picture with an alpha band (its alpha plane is compressed on a second thread) in webpsave.c.
+#                         libwebp's thread_level for a picture with an alpha band (its alpha plane is compressed on a second thread) in webpsave.c;
+#   heif-auto-tiles.patch  one line in posix.sh, after the line above, that applies libvips-heif-auto-tiles.patch, which leaves the AV1
+#                         encoder's auto-tiles off in heifsave.c (libheif's default), so an AVIF is one tile whatever the thread count.
 # Every source the script downloads with curl goes through fetch-pinned.sh, Meson may use only the subprojects its tarballs
 # unpack (--wrap-mode=nodownload in env.sh), and git-local-only.sh answers only the local queries of git. The library is written to
 # <out>/libvips-cpp.so.<VIPS_VERSION> with the digest file beside it, the two files use-libvips.sh and the worker image take
@@ -21,7 +23,9 @@ cd /packaging
 patch -p1 --forward < "$here/option-f.patch"
 patch -p1 --forward < "$here/pinned-notices.patch"
 patch -p1 --forward < "$here/webp-thread-level.patch"
+patch -p1 --forward < "$here/heif-auto-tiles.patch"
 export SHARP_LIBVIPS_WEBP_THREAD_PATCH="$here/libvips-webp-thread-level.patch"
+export SHARP_LIBVIPS_HEIF_TILES_PATCH="$here/libvips-heif-auto-tiles.patch"
 # The COPY lines of the upstream Dockerfile.
 cp "platforms/$PLATFORM/Toolchain.cmake" "platforms/$PLATFORM/meson.ini" /root/
 install -m 0755 "platforms/$PLATFORM/$PKGCONF_WRAPPER" /usr/bin/

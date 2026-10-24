@@ -978,7 +978,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-rocketbook',
     category: 'ebook',
     description: 'NuvoMedia Rocket eBook historical electronic reader format.',
-    targetFormats: ['epub', 'pdf', 'txt', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+    targetFormats: ['epub', 'pdf', 'txt', 'html', 'zip', 'rtf', 'azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   },
   snb: {
     id: 'snb',
