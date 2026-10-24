@@ -86,13 +86,14 @@ describe('DOCX to PPTX text', () => {
 
   it('flattens tables nested beyond the table depth limit and keeps their text', async () => {
     const docx = await craftDocx({ body: nestedTables(DOCX_MAX_TABLE_DEPTH * 2, 'Innermost') });
-    expect(await slideWords(await toSlides(docx))).toContain('Innermost');
+    expect(await slideWords(await toSlides(docx))).toEqual(['Innermost']);
   });
 
   it('refuses tables nested past the XML depth limit with a typed answer', async () => {
     const docx = await craftDocx({ body: nestedTables(3000, 'Innermost') });
     const failure = await toSlides(docx).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as Error).message).toMatch(/nests elements deeper than \d+ levels/);
   });
 
   it('writes every row of a table with tens of thousands of rows', async () => {

@@ -1,4 +1,6 @@
 import { inflateSync } from 'node:zlib';
+import { ConversionFailedError } from '../../types';
+import { parseCfbf } from '../hwp';
 import { CheckedReader, readCfbStreams, requireCfbStream } from './cfb-streams';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './legacy-office-errors';
 import { decodeWindows1252 } from './windows-1252';
@@ -77,6 +79,7 @@ const HEADER_TOKEN_ENCRYPTED = 0xf3d1c4df;
 const USER_EDIT_LAST_EDIT_OFFSET = 16;
 const USER_EDIT_PERSIST_DIRECTORY_OFFSET = 20;
 const USER_EDIT_DOC_PERSIST_ID_OFFSET = 24;
+const USER_EDIT_PERSIST_ID_SEED_OFFSET = 28;
 const USER_EDIT_ENCRYPT_SESSION_OFFSET = 36;
 const USER_EDIT_BASE_LENGTH = 28;
 const USER_EDIT_ENCRYPTED_LENGTH = 32;
@@ -174,6 +177,8 @@ interface EditChain {
   /** persistId -> byte offset in the PowerPoint Document stream; the newest definition wins. */
   persist: Map<number, number>;
   docPersistId: number;
+  /** Offset of the newest UserEditAtom, the one the Current User stream names. */
+  newestEditOffset: number;
 }
 
 function readPersistDirectory(reader: CheckedReader, offset: number, into: Map<number, number>): void {
@@ -214,7 +219,8 @@ function readEditChain(current: CheckedReader, document: CheckedReader): EditCha
   }
   const persist = new Map<number, number>();
   const seen = new Set<number>();
-  let editOffset = current.u32(CURRENT_USER_EDIT_OFFSET);
+  const newestEditOffset = current.u32(CURRENT_USER_EDIT_OFFSET);
+  let editOffset = newestEditOffset;
   let docPersistId = -1;
   for (let generation = 0; editOffset !== 0; generation++) {
     if (generation >= PPT_MAX_EDIT_CHAIN || seen.has(editOffset)) {
@@ -235,7 +241,7 @@ function readEditChain(current: CheckedReader, document: CheckedReader): EditCha
   if (docPersistId < 0) {
     throw new LegacyOfficeFormatError(`${LABEL}: the presentation has no edit record.`);
   }
-  return { persist, docPersistId };
+  return { persist, docPersistId, newestEditOffset };
 }
 
 function persistedRecord(reader: CheckedReader, chain: EditChain, persistId: number, expectedType: number, what: string): RecordHeader {
@@ -528,4 +534,49 @@ export function readPptSlides(buffer: Buffer, warnings: string[] = [], canDraw?:
   const unlisted = context.replacedTotal - context.replaced.size;
   if (unlisted > 0) warnings.push(`Replaced ${unlisted} more private-use characters with U+FFFD.`);
   return slides;
+}
+
+/**
+ * The file with the persistIdSeed of its newest UserEditAtom raised to the largest persist id of the persist directory,
+ * or undefined when the seed already covers the directory or the file cannot be walked. [MS-PPT] 2.3.3 requires the seed
+ * to be at least the largest persist id. LibreOffice sizes its persist table from the seed
+ * (filter/source/msfilter/svdfppt.cxx, SdrPowerPointImport constructor: `m_nPersistPtrCnt = nMaxPersistWritten + 1`) and
+ * refuses the file when a directory entry lies past it ("Not all entries of Persist-Directory read!"), while Apache POI
+ * HSLF reads the directory and ignores the seed. Only the four bytes of the seed change, in a copy of the input.
+ */
+export function repairPptPersistIdSeed(buffer: Buffer): Buffer | undefined {
+  try {
+    const streams = readCfbStreams(buffer, LABEL);
+    const document = new CheckedReader(requireCfbStream(streams, DOCUMENT_STREAM, LABEL), LABEL);
+    const chain = readEditChain(new CheckedReader(requireCfbStream(streams, CURRENT_USER_STREAM, LABEL), LABEL), document);
+    const seedOffset = chain.newestEditOffset + USER_EDIT_PERSIST_ID_SEED_OFFSET;
+    let largestPersistId = 0;
+    for (const id of chain.persist.keys()) largestPersistId = Math.max(largestPersistId, id);
+    if (document.u32(seedOffset) >= largestPersistId) return undefined;
+    const position = parseCfbf(buffer).streamByteOffset(DOCUMENT_STREAM, seedOffset);
+    if (position === undefined) return undefined;
+    const repaired = Buffer.from(buffer);
+    repaired.writeUInt32LE(largestPersistId, position);
+    return repaired;
+  } catch (err) {
+    if (err instanceof ConversionFailedError) return undefined;
+    throw err;
+  }
+}
+
+/**
+ * Throws the encrypted-document error when the presentation is encrypted: the Current User stream carries the encrypted header
+ * token ([MS-PPT] 2.3.2) or the newest UserEditAtom names an encryption session ([MS-PPT] 2.3.3). Any other input, damaged or not,
+ * returns without a verdict.
+ */
+export function assertPptNotEncrypted(buffer: Buffer): void {
+  try {
+    const streams = readCfbStreams(buffer, LABEL);
+    readEditChain(
+      new CheckedReader(requireCfbStream(streams, CURRENT_USER_STREAM, LABEL), LABEL),
+      new CheckedReader(requireCfbStream(streams, DOCUMENT_STREAM, LABEL), LABEL)
+    );
+  } catch (err) {
+    if (err instanceof EncryptedOfficeDocumentError || !(err instanceof ConversionFailedError)) throw err;
+  }
 }

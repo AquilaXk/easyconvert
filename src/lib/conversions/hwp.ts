@@ -96,6 +96,8 @@ export interface CfbfContainer {
   streams: Map<string, Buffer>;
   /** Streams by their full path from the root, such as `BodyText/Section0`. */
   paths: Map<string, Buffer>;
+  /** Position in the file of byte `offset` of the stream at `path`, or undefined when the stream or the byte is not there. */
+  streamByteOffset(path: string, offset: number): number | undefined;
 }
 
 /**
@@ -299,6 +301,7 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   // 6. Extract all streams into lookup maps, by leaf name (the root storage's streams first) and by full path from the root
   const streams = new Map<string, Buffer>();
   const paths = new Map<string, Buffer>();
+  const entriesByPath = new Map<string, CfbfDirectoryEntry>();
 
   /** Full path of every entry reachable from the root through the child / sibling links of the directory tree. */
   function resolveEntryPaths(): Map<number, string> {
@@ -349,12 +352,40 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
         // tree does not reach has no path and counts as the root's, as it did before.
         const inRootStorage = !entryPath?.includes('/');
         if (inRootStorage || !streams.has(entry.name)) streams.set(entry.name, streamData);
-        if (entryPath !== undefined) paths.set(entryPath, streamData);
+        if (entryPath !== undefined) {
+          paths.set(entryPath, streamData);
+          entriesByPath.set(entryPath, entry);
+        }
       }
     }
   }
 
   resolveStreamPaths();
+
+  /** Position in the file of byte `offset` of the sector chain that starts at `startSector` ([MS-CFB] 2.3: the FAT gives the next sector). */
+  function chainByteOffset(startSector: number, offset: number): number | undefined {
+    let sector = startSector;
+    for (let hops = Math.floor(offset / sectorSize); hops > 0; hops--) {
+      if (sector >= fat.length) return undefined;
+      sector = fat[sector];
+    }
+    if (sector >= CFBF_FIRST_RESERVED_SECTOR) return undefined;
+    const position = (sector + 1) * sectorSize + (offset % sectorSize);
+    return position < buffer.length ? position : undefined;
+  }
+
+  function streamByteOffset(path: string, offset: number): number | undefined {
+    const entry = entriesByPath.get(path);
+    if (entry === undefined || offset < 0 || offset >= entry.streamSize) return undefined;
+    if (entry.streamSize >= miniStreamCutoff) return chainByteOffset(entry.startingSector, offset);
+    let miniSector = entry.startingSector;
+    for (let hops = Math.floor(offset / miniSectorSize); hops > 0; hops--) {
+      if (miniSector >= miniFat.length) return undefined;
+      miniSector = miniFat[miniSector];
+    }
+    if (miniSector >= CFBF_FIRST_RESERVED_SECTOR || !rootEntry) return undefined;
+    return chainByteOffset(rootEntry.startingSector, miniSector * miniSectorSize + (offset % miniSectorSize));
+  }
 
   return {
     sectorSize,
@@ -362,6 +393,7 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
     directoryEntries,
     streams,
     paths,
+    streamByteOffset,
   };
 }
 

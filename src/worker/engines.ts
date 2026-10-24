@@ -28,7 +28,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../lib/stora
 import { convertFile, convertImage } from '../lib/conversions';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
-import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withOfficePageBounds, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -340,11 +340,10 @@ export function assertNotSpoofedFileVfs(
 }
 
 /**
- * Converts an Office document using headless LibreOffice in an isolated sandbox.
- * Runs it in a pre-warmed worker slot of the pool (own profile, recycled every N jobs),
- * with a fail-closed fallback to standalone sandbox execution.
+ * Converts an Office document using headless LibreOffice in an isolated sandbox. Runs it in a pre-warmed worker slot of the pool
+ * (own profile, recycled every N jobs), with a fail-closed fallback to standalone sandbox execution.
  */
-export async function convertWithHeadlessOffice(
+async function runHeadlessOffice(
   input: Buffer | WorkerVfsPayload,
   sourceFormat: string,
   targetFormat: string,
@@ -367,7 +366,7 @@ export async function convertWithHeadlessOffice(
   if (libreOfficePool.isEnabled()) {
     try {
       const poolResult = await libreOfficePool.convert(
-        input as any,
+        input,
         src,
         tgt,
         options,
@@ -449,6 +448,7 @@ export async function convertWithHeadlessOffice(
     return null;
   }
 }
+export const convertWithHeadlessOffice = withPresentationRetry(runHeadlessOffice);
 
 /**
  * Transcodes media using native FFmpeg with strict argument boundaries.

@@ -20,6 +20,7 @@ import { EncryptedOfficeDocumentError } from '../src/lib/types';
 const CONVERSION_TIMEOUT_MS = 300_000;
 const DOCUMENT_STREAM = 'PowerPoint Document';
 const SEED_OFFSET_IN_EDIT_ATOM = 28;
+const HTTP_UNPROCESSABLE = 422;
 const PLAIN_TOKEN = 0xe391c05f;
 const ENCRYPTED_TOKEN = 0xf3d1c4df;
 
@@ -125,12 +126,29 @@ describe('PowerPoint files with a persist id seed below the directory', () => {
     }, CONVERSION_TIMEOUT_MS);
   }
 
-  oracleTest('a presentation whose records are overwritten stays a typed refusal, as the office suite cannot read it', ['soffice'], async (ctx) => {
-    const { bytes } = await requireRealworldSample(ctx, 'office-slideshow-7ffe3cabb976ebc593dfe2f9461bdeac980a626c.ppt');
-    expect(repairPptPersistIdSeed(bytes)).toBeUndefined();
-    const run = dispatchConversion(bytes, 'ppt', 'pdf', {}, 'damaged.ppt');
-    await expect(run).rejects.toThrow('LibreOffice could not read the .ppt file');
-  }, CONVERSION_TIMEOUT_MS);
+});
+
+/**
+ * Three POI test files whose records are damaged. The office suite (24.2 and 26.8) refuses each; Apache POI's HSLF reads the one
+ * slide of each and the text pinned here (SlideShowExtractor.getText()), and so does the in-process reader. The seed is not their
+ * fault, so they stay refused for the targets the suite writes.
+ */
+const DAMAGED_SAMPLES: ReadonlyArray<{ id: string; text: string[] }> = [
+  { id: 'office-slideshow-2100a8d44da546f97ab7795c500a58bed6cb655d.ppt', text: ['This is a title, it\u2019s in black', 'This is the subtitle, in bold', 'This bit is blue and italic', 'This bit is red (normal)'] },
+  { id: 'office-slideshow-60f557c0a46bcb0068b1c3e15589dac383307bc8.ppt', text: ['TEST1', 'TEST2', 'TEST3', 'TEST4'] },
+  { id: 'office-slideshow-7ffe3cabb976ebc593dfe2f9461bdeac980a626c.ppt', text: ['Test {txtTot}', 'Another {txtTot}'] },
+];
+
+describe('PowerPoint files with damaged records', () => {
+  for (const sample of DAMAGED_SAMPLES) {
+    oracleTest(`${sample.id} stays a typed refusal for the office suite and its text is read in process`, ['soffice'], async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, sample.id);
+      expect(repairPptPersistIdSeed(bytes)).toBeUndefined();
+      await expect(dispatchConversion(bytes, 'ppt', 'pdf', {}, 'damaged.ppt')).rejects.toThrow('LibreOffice could not read the .ppt file');
+      const text = (await dispatchConversion(bytes, 'ppt', 'txt', {}, 'damaged.ppt')).buffer.toString('utf-8');
+      expect(text.split('\n').filter(Boolean)).toEqual(sample.text);
+    }, CONVERSION_TIMEOUT_MS);
+  }
 });
 
 /**
@@ -153,6 +171,7 @@ describe('Encrypted PowerPoint files', () => {
       const { bytes } = await requireRealworldSample(ctx, id);
       const failure = await dispatchConversion(bytes, 'ppt', 'pdf', {}, 'locked.ppt').catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(EncryptedOfficeDocumentError);
+      expect((failure as EncryptedOfficeDocumentError).status).toBe(HTTP_UNPROCESSABLE);
     }, CONVERSION_TIMEOUT_MS);
   }
 });

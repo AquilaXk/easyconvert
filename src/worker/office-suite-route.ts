@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import { ConversionFailedError, CorruptStreamError, EngineUnavailableError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
+import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../lib/conversions/office/legacy-office-limits';
+import { assertPptNotEncrypted, repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
 import {
   CGM_ENCODING_PROBE_BYTES,
   OFFICE_SUITE_SOURCE_FORMATS,
@@ -9,6 +11,7 @@ import {
   officeSuiteApplication,
   officeSuiteInterchange,
   officeSuiteReadsBytes,
+  officeReadingFormat,
   officeSuiteWritesText,
 } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY } from '../lib/conversions/ooxml-variants';
@@ -130,6 +133,45 @@ export function asUnreadableDocument(err: unknown, src: string): unknown {
     );
   }
   return err;
+}
+
+/** The bytes of an input, or undefined when it is a file larger than a legacy Office document may be. */
+function inputBytes(input: Buffer | WorkerVfsPayload): Buffer | undefined {
+  if (Buffer.isBuffer(input)) return input;
+  if (input.inputBuffer) return input.inputBuffer;
+  if (input.inputPath === undefined || fs.statSync(input.inputPath).size > LEGACY_OFFICE_MAX_INPUT_BYTES) return undefined;
+  return fs.readFileSync(input.inputPath);
+}
+
+/**
+ * What follows the office suite's failure to load a PowerPoint 97-2003 presentation. An encrypted presentation is intact, so the
+ * typed 422 for an encrypted document is thrown in place of the suite's "damaged" answer. A presentation whose persistIdSeed lies
+ * below its persist directory (see `repairPptPersistIdSeed`) is returned with the seed corrected, to run the suite on again.
+ * Undefined when the failure is another one and the presentation is neither.
+ */
+export function presentationRetryInput(input: Buffer | WorkerVfsPayload, src: string, err: unknown): Buffer | WorkerVfsPayload | undefined {
+  if (officeReadingFormat(src) !== 'ppt' || asUnreadableDocument(err, src) === err) return undefined;
+  const bytes = inputBytes(input);
+  if (bytes === undefined) return undefined;
+  assertPptNotEncrypted(bytes);
+  const repaired = repairPptPersistIdSeed(bytes);
+  if (repaired === undefined) return undefined;
+  return Buffer.isBuffer(input) ? repaired : { outputPath: input.outputPath, inputBuffer: repaired };
+}
+
+type OfficeSuiteRun = (input: Buffer | WorkerVfsPayload, sourceFormat: string, targetFormat: string, options?: WorkerEngineOptions, originalFilename?: string) => Promise<WorkerConversionResult | null>;
+
+/** `run`, and once more on the input `presentationRetryInput` returns when the office suite could not load a presentation. */
+export function withPresentationRetry(run: OfficeSuiteRun): OfficeSuiteRun {
+  return async (input, sourceFormat, targetFormat, options, originalFilename) => {
+    try {
+      return await run(input, sourceFormat, targetFormat, options, originalFilename);
+    } catch (err) {
+      const retry = presentationRetryInput(input, sourceFormat, err);
+      if (retry === undefined) throw err;
+      return run(retry, sourceFormat, targetFormat, options, originalFilename);
+    }
+  };
 }
 
 /** The worker functions the routes below run on, passed in so this module does not import the orchestrator that uses it. */
