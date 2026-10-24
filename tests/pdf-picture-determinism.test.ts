@@ -170,6 +170,31 @@ function pdfWithLateCcittMask(): Buffer {
   ).buffer;
 }
 
+const MANY_PICTURES = 5000;
+const PICTURES_PER_ROW = 250;
+
+/** One page with a line of text and `count` distinct 2 x 2 gray pictures, each its own image XObject: as many dependencies as pictures. */
+function pdfWithDistinctPictures(count: number): Buffer {
+  const firstPicture = 6;
+  const draws = Array.from({ length: count }, (_, index) => `q 2 0 0 2 ${(index % PICTURES_PER_ROW) * 2} ${Math.floor(index / PICTURES_PER_ROW) * 2} cm /Im${index} Do Q`);
+  const names = Array.from({ length: count }, (_, index) => `/Im${index} ${firstPicture + index} 0 R`).join(' ');
+  return buildPdf(
+    [
+      { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+      { id: 2, dict: '/Type /Pages /Kids [3 0 R] /Count 1' },
+      { id: 3, dict: `/Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 4 0 R >> /XObject << ${names} >> >> /Contents 5 0 R` },
+      { id: 4, dict: '/Type /Font /Subtype /Type1 /BaseFont /Helvetica' },
+      { id: 5, stream: Buffer.from(`BT /F1 14 Tf 20 760 Td (Quarterly figures of the regional offices.) Tj ET\n${draws.join('\n')}`) },
+      ...Array.from({ length: count }, (_, index) => ({
+        id: firstPicture + index,
+        dict: '/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode',
+        stream: deflateSync(Buffer.from([index & 0xff, (index >> 8) & 0xff, 7, 9])),
+      })),
+    ],
+    1
+  ).buffer;
+}
+
 /** A conversion's outcome: the byte length of its result, or the class of its error. */
 async function outcome(bytes: Buffer, target: string): Promise<string> {
   try {
@@ -209,6 +234,14 @@ describe('a document read after another on the same text thread', () => {
     process.env[PDF_TEXT_DEADLINE_ENV] = String(THREAD_REUSE_DEADLINE_MS);
     const bytes = pdfWithLateCcittMask();
     const targets = Array.from({ length: THREAD_REUSE_ROUNDS }, () => ['txt', 'md']).flat();
+    const alone = await outcomesOnFreshThreads(bytes, ['txt', 'md']);
+    expect(await outcomesInSequence(bytes, targets)).toEqual(targets.map((target) => alone.get(target)));
+  }, 180_000);
+
+  it('reads a page of 5,000 distinct pictures to text and then to Markdown on one thread as each reads on a thread of its own', async () => {
+    process.env[PDF_TEXT_DEADLINE_ENV] = String(THREAD_REUSE_DEADLINE_MS);
+    const bytes = pdfWithDistinctPictures(MANY_PICTURES);
+    const targets = ['txt', 'md', 'txt', 'md'];
     const alone = await outcomesOnFreshThreads(bytes, ['txt', 'md']);
     expect(await outcomesInSequence(bytes, targets)).toEqual(targets.map((target) => alone.get(target)));
   }, 180_000);
