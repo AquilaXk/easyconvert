@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
 import { withFontProgramToUnicode } from '../src/lib/conversions/pdf-font-tounicode';
 import { assertPdfStreamsWithinLimits } from '../src/lib/conversions/pdf-stream-guard';
+import { compositeFontPdf, FONT_PROGRAM, stream } from './helpers/composite-font-pdf';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { repeatedRecordsFont, sharedProgramPdf } from './helpers/hostile-cmap-font';
 import { hasControlCharacters } from './helpers/pdf-text-metrics';
@@ -21,7 +22,6 @@ import { skipWithoutTools } from './helpers/strict-skip';
  * is the sentence the content stream shows.
  */
 
-const FONT_PROGRAM = fs.readFileSync(path.join(__dirname, 'fixtures', 'woff2', 'dejavu-sans-latin.ttf'));
 const SENTENCE = 'Façade déjà vu, 42 hélas!';
 /** Glyph ids of SENTENCE in FONT_PROGRAM, as fontTools maps each character through the font's cmap. */
 const SENTENCE_GLYPHS = [
@@ -32,45 +32,6 @@ const OTHER_GLYPHS = [0x39, 0x5a, 0x5b, 0x5b, 0x58];
 /** Adobe-Japan1 CIDs of "Hello" (CID 1 is the space, and CIDs 1 to 95 follow ASCII from U+0020). */
 const JAPAN1_HELLO = [41, 70, 77, 77, 80];
 const CID_BASE = 0x200;
-
-interface CompositeFontOptions {
-  /** The CIDs the page shows. */
-  cids: number[];
-  program?: Buffer | null;
-  /** CID to glyph id pairs written as a /CIDToGIDMap stream; the map is /Identity when absent. */
-  cidToGid?: Map<number, number>;
-  ordering?: { registry: string; ordering: string };
-}
-
-function hex(values: number[]): string {
-  return values.map((value) => value.toString(16).padStart(4, '0')).join('');
-}
-
-function stream(dictionary: string, bytes: Buffer): string {
-  return `<< ${dictionary} /Length ${bytes.length} >>\nstream\n${bytes.toString('latin1')}\nendstream`;
-}
-
-function cidToGidStream(pairs: Map<number, number>): Buffer {
-  const map = Buffer.alloc((Math.max(...pairs.keys()) + 1) * 2);
-  for (const [cid, gid] of pairs) map.writeUInt16BE(gid, cid * 2);
-  return map;
-}
-
-/** One page showing `cids` in a Type0 font with an Identity-H encoding and no /ToUnicode. */
-function compositeFontPdf({ cids, program = FONT_PROGRAM, cidToGid, ordering = { registry: 'Adobe', ordering: 'Identity' } }: CompositeFontOptions): Buffer {
-  const type0 = extraObjectNumber(1);
-  const [descendant, descriptor, file, map] = [type0 + 1, type0 + 2, type0 + 3, type0 + 4];
-  const fontFile = program === null ? '' : `/FontFile2 ${file} 0 R`;
-  const objects = [
-    `<< /Type /Font /Subtype /Type0 /BaseFont /DejaVuSans /Encoding /Identity-H /DescendantFonts [${descendant} 0 R] >>`,
-    `<< /Type /Font /Subtype /CIDFontType2 /BaseFont /DejaVuSans /CIDSystemInfo << /Registry (${ordering.registry}) /Ordering (${ordering.ordering}) /Supplement 0 >> /FontDescriptor ${descriptor} 0 R /DW 600 /W [1 [318]] /CIDToGIDMap ${cidToGid ? `${map} 0 R` : '/Identity'} >>`,
-    `<< /Type /FontDescriptor /FontName /DejaVuSans /Flags 32 /FontBBox [-1021 -463 1793 1232] /ItalicAngle 0 /Ascent 928 /Descent -236 /CapHeight 729 /StemV 80 ${fontFile} >>`,
-    stream(`/Length1 ${program?.length ?? 0}`, program ?? Buffer.alloc(0)),
-    stream('', cidToGid ? cidToGidStream(cidToGid) : Buffer.alloc(0)),
-  ];
-  const content = `BT /F2 14 Tf 20 100 Td <${hex(cids)}> Tj ET`;
-  return rawPdf([{ width: 400, height: 200, content, fonts: `/F2 ${type0} 0 R` }], objects);
-}
 
 /** A copy of the font program whose cmap claims 65,535 encoding records, far more than its bytes hold. */
 function withClaimedCmapRecords(program: Buffer): Buffer {
