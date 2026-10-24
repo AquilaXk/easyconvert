@@ -1,9 +1,6 @@
-import { isCfbfContainer, parseCfbf } from '../hwp';
+import { isCfbfContainer, parseCfbf, type CfbfContainer } from '../hwp';
 import { LegacyOfficeFormatError } from './legacy-office-errors';
 import { LEGACY_OFFICE_MAX_INPUT_BYTES } from './legacy-office-limits';
-
-/** Most directory entries (storages and streams) a compound file may declare before it is refused. */
-export const CFB_MAX_DIRECTORY_ENTRIES = 65_536;
 
 // [MS-CFB] 2.2 header fields: byte order mark, major version and sector shifts.
 const CFB_MAJOR_VERSION_OFFSET = 26;
@@ -33,11 +30,10 @@ function assertCfbHeader(buffer: Buffer, label: string): void {
 }
 
 /**
- * Opens an OLE2 compound file ([MS-CFB]) and returns its streams by name. A file that is not a compound
- * file, has an inconsistent header, declares too many directory entries or cannot be walked throws a
- * LegacyOfficeFormatError; no failure escapes as an untyped error.
+ * Opens an OLE2 compound file ([MS-CFB]). A file that is not a compound file, has an inconsistent header, declares too many
+ * directory entries or cannot be walked throws a LegacyOfficeFormatError; no failure escapes as an untyped error.
  */
-export function readCfbStreams(buffer: Buffer, label: string): ReadonlyMap<string, Buffer> {
+export function readCfbContainer(buffer: Buffer, label: string): CfbfContainer {
   if (buffer.length > LEGACY_OFFICE_MAX_INPUT_BYTES) {
     throw new LegacyOfficeFormatError(`${label}: the file exceeds the ${LEGACY_OFFICE_MAX_INPUT_BYTES}-byte limit.`);
   }
@@ -46,16 +42,16 @@ export function readCfbStreams(buffer: Buffer, label: string): ReadonlyMap<strin
   }
   assertCfbHeader(buffer, label);
   try {
-    const container = parseCfbf(buffer);
-    if (container.directoryEntries.length > CFB_MAX_DIRECTORY_ENTRIES) {
-      throw new LegacyOfficeFormatError(`${label}: the compound file declares more than ${CFB_MAX_DIRECTORY_ENTRIES} directory entries.`);
-    }
-    return container.streams;
+    return parseCfbf(buffer);
   } catch (err) {
-    if (err instanceof LegacyOfficeFormatError) throw err;
     const reason = err instanceof Error ? err.message : String(err);
     throw new LegacyOfficeFormatError(`${label}: the compound file is malformed (${reason}).`);
   }
+}
+
+/** The streams of an OLE2 compound file by name, opened as `readCfbContainer` opens it. */
+export function readCfbStreams(buffer: Buffer, label: string): ReadonlyMap<string, Buffer> {
+  return readCfbContainer(buffer, label).streams;
 }
 
 /** Returns a named stream, or throws when the compound file does not hold it. */

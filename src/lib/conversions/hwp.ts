@@ -96,6 +96,8 @@ export interface CfbfContainer {
   streams: Map<string, Buffer>;
   /** Streams by their full path from the root, such as `BodyText/Section0`. */
   paths: Map<string, Buffer>;
+  /** Position in the file of byte `offset` of the stream at `path`, or undefined when the stream or the byte is not there. */
+  streamByteOffset(path: string, offset: number): number | undefined;
 }
 
 /**
@@ -114,11 +116,54 @@ export function isCfbfContainer(buffer: Buffer): boolean {
 const CFBF_FIRST_RESERVED_SECTOR = 0xfffffffa;
 /** Sector size of version 3 compound files; version 4 files use 4096-byte sectors. */
 const CFBF_V3_SECTOR_SIZE = 512;
+/** The sector shifts of version 3 and 4 files; Apache POI HeaderBlock refuses any other ("Expected 2^9 or 2^12"). */
+const CFBF_SECTOR_SHIFTS: ReadonlySet<number> = new Set([9, 12]);
+/** The mini sector shift [MS-CFB] 2.2 requires (64-byte mini sectors). */
+const CFBF_MINI_SECTOR_SHIFT = 6;
 /** Directory entry id meaning "no entry" ([MS-CFB] 2.6.1). */
 const CFBF_NO_STREAM = 0xffffffff;
 /** Directory entry type of a storage ([MS-CFB] 2.6.1). */
 const CFBF_STORAGE_ENTRY = 1;
 const CFBF_STREAM_ENTRY = 2;
+const CFBF_ROOT_ENTRY = 5;
+/** Most directory entries (storages and streams) a compound file may declare before it is refused. */
+const CFBF_MAX_DIRECTORY_ENTRIES = 65_536;
+
+/**
+ * Marks `sector` as read by chain `owner`, in the table of which chain read each sector. A sector read twice by one chain is a loop,
+ * and one read by two chains is shared; both are refused, so no file makes the parser copy a sector twice. This is the loop rule of
+ * Apache POI BlockStore.ChainLoopDetector (a block claimed twice), kept across chains as olefile `_check_duplicate_stream` keeps
+ * the first sectors of all streams, and applied to every sector of every chain.
+ */
+function claimChainSector(owners: Uint32Array, sector: number, owner: number, start: number, unit: 'sector' | 'mini sector'): void {
+  if (owners[sector] === owner) {
+    throw new CorruptStreamError(`Corrupt CFBF container: the ${unit} chain starting at ${unit} ${start} returns to ${unit} ${sector}.`);
+  }
+  if (owners[sector] !== 0) {
+    throw new CorruptStreamError(`Corrupt CFBF container: ${unit} ${sector} belongs to two chains.`);
+  }
+  owners[sector] = owner;
+}
+
+/**
+ * Refuses directory entries whose streams declare more bytes than the file can hold, before any stream is copied: the streams at
+ * or above the cutoff lie in the file's sectors, and the ones below it in the root entry's mini stream. The root entry's own size
+ * is not counted: its chain is read only as far as the file holds it, as before.
+ */
+function assertStreamSizesFit(entries: readonly CfbfDirectoryEntry[], miniStreamBytes: number, miniStreamCutoff: number, sectorBytes: number): void {
+  let regular = 0;
+  let mini = 0;
+  for (const entry of entries) {
+    if (entry.type !== CFBF_STREAM_ENTRY || entry.streamSize === 0) continue;
+    if (entry.streamSize < miniStreamCutoff) mini += entry.streamSize;
+    else regular += entry.streamSize;
+  }
+  if (regular > sectorBytes || mini > miniStreamBytes) {
+    throw new CorruptStreamError(
+      `Corrupt CFBF container: its streams declare ${regular} bytes in ${sectorBytes} bytes of sectors and ${mini} bytes in a ${miniStreamBytes}-byte mini stream.`
+    );
+  }
+}
 
 /**
  * Parses an authentic OLE2 CFBF container:
@@ -132,6 +177,9 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   // Header fields
   const sectorShift = buffer.readUInt16LE(30);
   const miniSectorShift = buffer.readUInt16LE(32);
+  if (!CFBF_SECTOR_SHIFTS.has(sectorShift)) {
+    throw new CorruptStreamError(`Corrupt CFBF container: sector shift ${sectorShift} is neither 9 nor 12.`);
+  }
   const sectorSize = 1 << sectorShift; // Typically 512
   const miniSectorSize = 1 << miniSectorShift; // Typically 64
 
@@ -143,32 +191,39 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   const firstDifatSector = buffer.readUInt32LE(68);
   const difatSectorCount = buffer.readUInt32LE(72);
 
-  // 1. Collect all FAT sector IDs from header (up to 109) and additional DIFAT sectors
+  // Sectors after the header, the last one possibly cut short (olefile `nb_sect`): no chain or table sector lies past them.
+  const sectorsInFile = Math.ceil(buffer.length / sectorSize) - 1;
+  const wholeSector = (sector: number): boolean => (sector + 2) * sectorSize <= buffer.length;
+
+  // 1. Collect all FAT sector IDs from header (up to 109) and additional DIFAT sectors. Each DIFAT and FAT sector is read once
+  // (Apache POI POIFSFileSystem.readCoreContents claims every FAT and XFAT block in one ChainLoopDetector), and the list ends at
+  // the first FAT sector past the file, so the FAT never outgrows the file.
+  const tableSectors = new Uint8Array(sectorsInFile);
   const fatSectorIds: number[] = [];
-  for (let i = 0; i < 109; i++) {
-    const sId = buffer.readUInt32LE(76 + i * 4);
-    if (sId < CFBF_FIRST_RESERVED_SECTOR && fatSectorIds.length < fatSectorCount) {
-      fatSectorIds.push(sId);
+  let fatListEnded = false;
+  const addFatSector = (sId: number): void => {
+    if (fatListEnded || sId >= CFBF_FIRST_RESERVED_SECTOR || fatSectorIds.length >= fatSectorCount) return;
+    if (!wholeSector(sId)) {
+      fatListEnded = true;
+      return;
     }
-  }
+    if (tableSectors[sId]) throw new CorruptStreamError(`Corrupt CFBF container: the FAT sector list names sector ${sId} twice.`);
+    tableSectors[sId] = 1;
+    fatSectorIds.push(sId);
+  };
+  for (let i = 0; i < 109; i++) addFatSector(buffer.readUInt32LE(76 + i * 4));
 
   let currDifatSector = firstDifatSector;
   let difatSectorsRead = 0;
-  const visitedDifat = new Set<number>();
   while (currDifatSector < CFBF_FIRST_RESERVED_SECTOR && difatSectorsRead < difatSectorCount) {
-    if (visitedDifat.has(currDifatSector)) {
+    if (!wholeSector(currDifatSector)) break;
+    if (tableSectors[currDifatSector]) {
       throw new CorruptStreamError(`Corrupt CFBF container: the DIFAT chain returns to sector ${currDifatSector}.`);
     }
-    visitedDifat.add(currDifatSector);
+    tableSectors[currDifatSector] = 1;
     const offset = (currDifatSector + 1) * sectorSize;
-    if (offset + sectorSize > buffer.length) break;
     const entriesInSector = (sectorSize / 4) - 1;
-    for (let i = 0; i < entriesInSector; i++) {
-      const sId = buffer.readUInt32LE(offset + i * 4);
-      if (sId < CFBF_FIRST_RESERVED_SECTOR && fatSectorIds.length < fatSectorCount) {
-        fatSectorIds.push(sId);
-      }
-    }
+    for (let i = 0; i < entriesInSector; i++) addFatSector(buffer.readUInt32LE(offset + i * 4));
     currDifatSector = buffer.readUInt32LE(offset + entriesInSector * 4);
     difatSectorsRead++;
   }
@@ -179,13 +234,16 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   const fat = new Uint32Array(totalFatEntries);
 
   for (let fIdx = 0; fIdx < fatSectorIds.length; fIdx++) {
-    const sId = fatSectorIds[fIdx];
-    const offset = (sId + 1) * sectorSize;
-    if (offset + sectorSize > buffer.length) break;
+    const offset = (fatSectorIds[fIdx] + 1) * sectorSize;
     for (let e = 0; e < fatEntriesPerSector; e++) {
       fat[fIdx * fatEntriesPerSector + e] = buffer.readUInt32LE(offset + e * 4);
     }
   }
+
+  // Which chain read each sector, and each mini sector: the directory, the mini FAT, the mini stream and every stream are chains.
+  const sectorOwners = new Uint32Array(sectorsInFile);
+  let miniSectorOwners = new Uint32Array(0);
+  let chainCount = 0;
 
   // Helper to read a sector chain from the main FAT
   function readSectorChain(startSector: number, maxBytes?: number): Buffer {
@@ -193,17 +251,12 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
     const chunks: Buffer[] = [];
     let curr = startSector;
     let bytesRead = 0;
-    const visited = new Set<number>();
+    const owner = ++chainCount;
 
     while (curr < CFBF_FIRST_RESERVED_SECTOR) {
-      if (visited.has(curr)) {
-        throw new CorruptStreamError(
-          `Corrupt CFBF container: the sector chain starting at sector ${startSector} returns to sector ${curr}.`
-        );
-      }
-      visited.add(curr);
       const offset = (curr + 1) * sectorSize;
       if (offset >= buffer.length) break;
+      claimChainSector(sectorOwners, curr, owner, startSector, 'sector');
       const len = Math.min(sectorSize, buffer.length - offset);
       chunks.push(Buffer.from(buffer.subarray(offset, offset + len)));
       bytesRead += len;
@@ -234,6 +287,9 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
     const leftSiblingId = dirBuffer.readUInt32LE(off + 68);
     const rightSiblingId = dirBuffer.readUInt32LE(off + 72);
     const childId = dirBuffer.readUInt32LE(off + 76);
+    if (directoryEntries.length === CFBF_MAX_DIRECTORY_ENTRIES) {
+      throw new CorruptStreamError(`Corrupt CFBF container: it declares more than ${CFBF_MAX_DIRECTORY_ENTRIES} directory entries.`);
+    }
     const startingSector = dirBuffer.readUInt32LE(off + 116);
     // Version 3 files (512-byte sectors) keep the size in the low 32 bits; the high half is not meaningful ([MS-CFB] 2.6.1).
     const streamSize = sectorSize === CFBF_V3_SECTOR_SIZE ? dirBuffer.readUInt32LE(off + 120) : Number(dirBuffer.readBigUInt64LE(off + 120));
@@ -250,6 +306,10 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
     });
   }
 
+  const rootEntry = directoryEntries.find((d) => d.type === CFBF_ROOT_ENTRY) || directoryEntries[0];
+  const hasMiniStream = rootEntry !== undefined && rootEntry.startingSector < CFBF_FIRST_RESERVED_SECTOR && rootEntry.streamSize > 0;
+  assertStreamSizesFit(directoryEntries, hasMiniStream ? rootEntry.streamSize : 0, miniStreamCutoff, sectorsInFile * sectorSize);
+
   // 4. Build MiniFAT table
   let miniFat: Uint32Array = new Uint32Array(0);
   if (miniFatSectorCount > 0 && firstMiniFatSector < CFBF_FIRST_RESERVED_SECTOR) {
@@ -261,10 +321,13 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   }
 
   // 5. MiniStream buffer (stored in Root Entry starting sector)
-  const rootEntry = directoryEntries.find((d) => d.type === 5) || directoryEntries[0];
   let miniStreamBuffer: Buffer = Buffer.alloc(0);
-  if (rootEntry && rootEntry.startingSector < CFBF_FIRST_RESERVED_SECTOR && rootEntry.streamSize > 0) {
+  if (hasMiniStream) {
+    if (miniSectorShift !== CFBF_MINI_SECTOR_SHIFT) {
+      throw new CorruptStreamError(`Corrupt CFBF container: mini sector shift ${miniSectorShift} is not ${CFBF_MINI_SECTOR_SHIFT}.`);
+    }
     miniStreamBuffer = Buffer.from(readSectorChain(rootEntry.startingSector, rootEntry.streamSize));
+    miniSectorOwners = new Uint32Array(Math.ceil(miniStreamBuffer.length / miniSectorSize));
   }
 
   // Helper to read mini sector chain
@@ -273,17 +336,12 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
     const chunks: Buffer[] = [];
     let curr = startMiniSector;
     let bytesRead = 0;
-    const visited = new Set<number>();
+    const owner = ++chainCount;
 
     while (curr < CFBF_FIRST_RESERVED_SECTOR) {
-      if (visited.has(curr)) {
-        throw new CorruptStreamError(
-          `Corrupt CFBF container: the mini sector chain starting at mini sector ${startMiniSector} returns to mini sector ${curr}.`
-        );
-      }
-      visited.add(curr);
       const offset = curr * miniSectorSize;
       if (offset >= miniStreamBuffer.length) break;
+      claimChainSector(miniSectorOwners, curr, owner, startMiniSector, 'mini sector');
       const len = Math.min(miniSectorSize, miniStreamBuffer.length - offset);
       chunks.push(Buffer.from(miniStreamBuffer.subarray(offset, offset + len)));
       bytesRead += len;
@@ -299,11 +357,12 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   // 6. Extract all streams into lookup maps, by leaf name (the root storage's streams first) and by full path from the root
   const streams = new Map<string, Buffer>();
   const paths = new Map<string, Buffer>();
+  const entriesByPath = new Map<string, CfbfDirectoryEntry>();
 
   /** Full path of every entry reachable from the root through the child / sibling links of the directory tree. */
   function resolveEntryPaths(): Map<number, string> {
     const resolved = new Map<number, string>();
-    const root = directoryEntries.find((d) => d.type === 5);
+    const root = directoryEntries.find((d) => d.type === CFBF_ROOT_ENTRY);
     if (!root) return resolved;
     const byId = new Map(directoryEntries.map((d) => [d.id, d]));
     const pending: { id: number; prefix: string }[] = [{ id: root.childId, prefix: '' }];
@@ -349,12 +408,40 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
         // tree does not reach has no path and counts as the root's, as it did before.
         const inRootStorage = !entryPath?.includes('/');
         if (inRootStorage || !streams.has(entry.name)) streams.set(entry.name, streamData);
-        if (entryPath !== undefined) paths.set(entryPath, streamData);
+        if (entryPath !== undefined) {
+          paths.set(entryPath, streamData);
+          entriesByPath.set(entryPath, entry);
+        }
       }
     }
   }
 
   resolveStreamPaths();
+
+  /** Position in the file of byte `offset` of the sector chain that starts at `startSector` ([MS-CFB] 2.3: the FAT gives the next sector). */
+  function chainByteOffset(startSector: number, offset: number): number | undefined {
+    let sector = startSector;
+    for (let hops = Math.floor(offset / sectorSize); hops > 0; hops--) {
+      if (sector >= fat.length) return undefined;
+      sector = fat[sector];
+    }
+    if (sector >= CFBF_FIRST_RESERVED_SECTOR) return undefined;
+    const position = (sector + 1) * sectorSize + (offset % sectorSize);
+    return position < buffer.length ? position : undefined;
+  }
+
+  function streamByteOffset(path: string, offset: number): number | undefined {
+    const entry = entriesByPath.get(path);
+    if (entry === undefined || offset < 0 || offset >= entry.streamSize) return undefined;
+    if (entry.streamSize >= miniStreamCutoff) return chainByteOffset(entry.startingSector, offset);
+    let miniSector = entry.startingSector;
+    for (let hops = Math.floor(offset / miniSectorSize); hops > 0; hops--) {
+      if (miniSector >= miniFat.length) return undefined;
+      miniSector = miniFat[miniSector];
+    }
+    if (miniSector >= CFBF_FIRST_RESERVED_SECTOR || !rootEntry) return undefined;
+    return chainByteOffset(rootEntry.startingSector, miniSector * miniSectorSize + (offset % miniSectorSize));
+  }
 
   return {
     sectorSize,
@@ -362,6 +449,7 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
     directoryEntries,
     streams,
     paths,
+    streamByteOffset,
   };
 }
 

@@ -52,6 +52,7 @@ import { readDocxModel } from './docx-model';
 import { documentToEpub } from './document-model/epub';
 import { documentToOdt } from './document-model/odt';
 import { documentToText } from './document-model/text';
+import { docxBodyText } from './docx-body-text';
 import { plainTextModel } from './document-model/plain';
 import type { DocumentModel } from './document-model/model';
 import { renderModelTarget } from './document-targets';
@@ -644,6 +645,16 @@ const MODEL_DOCX_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'md', 'p
 
 const convertModelTarget = renderModelTarget;
 
+async function docxTextToPptx(text: string, options: ConversionOptions, baseName: string): Promise<ConversionResult> {
+  const pptxBuffer = await generatePptxFromText(text, 'docx', options, baseName);
+  return {
+    buffer: pptxBuffer,
+    mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    filename: `${baseName}.pptx`,
+    size: pptxBuffer.length,
+  };
+}
+
 /**
  * DOCX Source Parser & Converter
  */
@@ -667,6 +678,9 @@ async function convertDocxSource(
   const read = await readDocxModel(zip);
   if (!read.drawsShapes && MODEL_DOCX_TARGETS.has(tgt)) {
     return convertModelTarget(read.model, tgt, options, baseName);
+  }
+  if (!read.drawsShapes && tgt === 'pptx') {
+    return docxTextToPptx(documentToText(read.model), options, baseName);
   }
 
   // Load chart relationships and parts if present
@@ -713,23 +727,7 @@ async function convertDocxSource(
 
   // DOCX -> TXT
   if (tgt === 'txt') {
-    const text = elements && elements.length > 0
-      ? elements
-          .map((el) => {
-            if (el.type === 'paragraph') return el.paragraph.text;
-            if (el.type === 'table') return el.table.rows.map((r) => r.join('\t')).join('\n');
-            if (el.type === 'drawing') {
-              if (el.chart) {
-                return `[Chart: ${el.chart.title || el.chart.type}] ${el.chart.categories.join(' ')} ${el.chart.series.map((s) => s.values.join(' ')).join(' ')}`;
-              }
-              return (el.shapes || []).map((s) => s.text).filter(Boolean).join(' ');
-            }
-            return '';
-          })
-          .filter(Boolean)
-          .join('\n\n')
-      : paragraphs.map((p) => p.text).join('\n\n');
-    const buffer = Buffer.from(text, 'utf-8');
+    const buffer = Buffer.from(docxBodyText(paragraphs, elements), 'utf-8');
     return { buffer, mimeType: 'text/plain', filename: `${baseName}.txt`, size: buffer.length };
   }
 
@@ -769,14 +767,7 @@ async function convertDocxSource(
 
   // DOCX -> PPTX
   if (tgt === 'pptx') {
-    const text = paragraphs.map((p) => p.text).join('\n\n');
-    const pptxBuffer = await generatePptxFromText(text, 'docx', options, baseName);
-    return {
-      buffer: pptxBuffer,
-      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      filename: `${baseName}.pptx`,
-      size: pptxBuffer.length,
-    };
+    return docxTextToPptx(docxBodyText(paragraphs, elements), options, baseName);
   }
 
   // DOCX -> ODT

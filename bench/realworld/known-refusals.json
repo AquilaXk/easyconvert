@@ -106,5 +106,23 @@
     "detail": "^ConversionFailedError: The page cannot be written as DXF: SVG clip-path \"[^\"]+\" is not supported: a drawn path reaches [0-9.]+ pixels past it, more than the [0-9.]+ pixels \\(one point\\) a clip may hide\\.$",
     "reason": "The geometry of the other 50 pages is read, skewed and dashed strokes included (policy 79), and the clips of 12 of the 16 pages that clip their drawing to a region that is not the page hide at most 0.76 point with either Poppler release and are dropped (policy 79). Pages 20, 50 and 60 sit near the one point a dropped clip may hide: they reach 1.15, 1.21 and 1.28 points with Poppler 26 and are refused, and 0.86, 0.90 and 0.96 with Poppler 24 and are written. Page 43 reaches 19.4 points with Poppler 26 and 14.6 with Poppler 24, so the file stays refused with both (policy 42; tests/postscript-real-file-refusals.test.ts).",
     "issue": 783
+  },
+  {
+    "file": "office-slideshow-2100a8d44da546f97ab7795c500a58bed6cb655d.ppt",
+    "detail": "^ConversionFailedError: LibreOffice could not read the \\.ppt file: it is damaged(, encrypted)? or not a valid PPT document\\.$",
+    "reason": "Damaged: its SlidePersistAtom refers to the persist id 131072 instead of 2 (two bytes swapped against the 9,728-byte `office-slideshow-single_coloured_page.ppt`, which converts), and no persist entry has that id. LibreOffice 24.2 and 26.8 refuse it and Apache POI HSLF 5.4.0 logs \"no core ID for reference ID 131072\" and skips the slide. The text is still read by the in-process reader (tests/ppt-persist-id-seed.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "office-slideshow-60f557c0a46bcb0068b1c3e15589dac383307bc8.ppt",
+    "detail": "^ConversionFailedError: LibreOffice could not read the \\.ppt file: it is damaged(, encrypted)? or not a valid PPT document\\.$",
+    "reason": "Damaged: the master slide's drawing is overwritten from byte 14,263 with a record whose type is 0xFFFF and whose length is 0xFFFFFFFF, which runs past its container (9,230 bytes differ from `office-slideshow-text-margins.ppt`, which converts). LibreOffice 24.2 and 26.8 refuse it; Apache POI HSLF 5.4.0 reads its one slide and the text TEST1 to TEST4. The text is still read by the in-process reader (tests/ppt-persist-id-seed.test.ts).",
+    "issue": 783
+  },
+  {
+    "file": "office-slideshow-7ffe3cabb976ebc593dfe2f9461bdeac980a626c.ppt",
+    "detail": "^ConversionFailedError: LibreOffice could not read the \\.ppt file: it is damaged(, encrypted)? or not a valid PPT document\\.$",
+    "reason": "Damaged: the header and first bytes of a SlidePersistAtom are overwritten with the characters `\\E]\\E]]]]]]` (11 bytes differ from `office-slideshow-49648.ppt`, which converts), so the slide list no longer parses. LibreOffice 24.2 and 26.8 refuse it; Apache POI HSLF 5.4.0 reads its one slide and the two lines of text. The text is still read by the in-process reader (tests/ppt-persist-id-seed.test.ts).",
+    "issue": 783
   }
 ]
