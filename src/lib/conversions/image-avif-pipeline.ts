@@ -88,8 +88,9 @@ async function encodeAvifFromPipeline(
   }
   const prepared = deep ? opaque.toColourspace(grey ? 'grey16' : 'rgb16') : opaque;
   const encode = (): Promise<Buffer> => prepared.avif(avifLibraryOptionsOf(policy)).toBuffer();
-  // With threads the encoder splits the picture into tiles, which costs a little compression: affordable on a photograph
-  // (BD-rate in PSNR -14.0% against the reference, -13.1% with threads), not on an interface, which went from -14.4% to +1.6%, past the allowance.
+  // A photograph is encoded on threads in one tile (the worker's libvips leaves the encoder's auto-tiles off), so its file is the same on any
+  // count from two up. An interface stays on one thread: when threads still split the picture into tiles it went from -14.4% to +1.6%
+  // BD-rate in PSNR, past the allowance, and it has not been measured on threads in one tile.
   return { buffer: content === 'photo' ? await withImageThreads(encode) : await encode(), encoder };
 }
 
