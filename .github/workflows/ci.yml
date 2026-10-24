@@ -659,6 +659,9 @@ jobs:
       ORACLE_STRICT_MODE: "1"
       BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
       BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
+      # Measured with the heap bound the service runs with (docker-compose.yml), so a photograph's AVIF is encoded on the threads
+      # the worker leases (src/lib/conversions/image-threads.ts), as in the speed jobs.
+      MALLOC_ARENA_MAX: "2"
 
     steps:
       - name: Checkout repository
