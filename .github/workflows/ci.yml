@@ -659,8 +659,6 @@ jobs:
       ORACLE_STRICT_MODE: "1"
       BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
       BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
-      # The heap bound the service runs with, as in the nightly quality jobs: it sets the threads of an AVIF encode of a photograph.
-      MALLOC_ARENA_MAX: "2"
 
     steps:
       - name: Checkout repository

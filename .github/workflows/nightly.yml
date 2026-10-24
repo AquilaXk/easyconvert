@@ -235,10 +235,6 @@ jobs:
         env:
           ORACLE_STRICT_MODE: "1"
           BENCH_FAMILIES: ${{ matrix.families }}
-          # The heap bound the service runs with (docker-compose.yml). It sets how many threads an AVIF encode of a photograph leases
-          # (src/lib/conversions/image-threads.ts), and the bytes of an AV1 encode depend on the thread count, so the quality rows
-          # are measured with the threads the service uses.
-          MALLOC_ARENA_MAX: "2"
         run: npm run bench:quality -- --parity --quality-only --family "$BENCH_FAMILIES"
 
       # Saved even when the benchmark fails: a host that refuses a download one night (a rate limit, an outage) would otherwise

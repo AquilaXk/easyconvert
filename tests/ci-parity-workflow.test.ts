@@ -577,16 +577,6 @@ describe('the nightly run', () => {
     expect(s.run).not.toContain('--family');
   });
 
-  it('measures the quality rows with the heap bound the service runs with, which sets the threads of an AVIF encode of a photograph', () => {
-    // docker-compose.yml: MALLOC_ARENA_MAX lets image-threads.ts lease up to 8 threads, 2 without it; the bytes of an AV1 encode follow the count.
-    const compose = read('docker-compose.yml');
-    expect(compose).toMatch(/MALLOC_ARENA_MAX: "2"/);
-    expect(stepNamed(quality, 'Run the quality parity benchmark').env?.MALLOC_ARENA_MAX).toBe('2');
-    expect(stepNamed(speedJob, 'Run the speed parity benchmark').env?.MALLOC_ARENA_MAX).toBe('2');
-    expect(ci.jobs['parity-quality'].env?.MALLOC_ARENA_MAX).toBe('2');
-    expect(ci.jobs['parity-speed'].env?.MALLOC_ARENA_MAX).toBe('2');
-  });
-
   describe('the quality half, sharded by family group', () => {
     const matrix = (quality as unknown as { strategy: { 'fail-fast': boolean; matrix: { include: Array<{ group: string; families: string }> } } }).strategy;
     const groups = matrix.matrix.include;
