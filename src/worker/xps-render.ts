@@ -5,11 +5,12 @@ import type { ArchiveExtractionLimits } from '../lib/conversions/archive-extract
 import { readZipDirectory, readZipEntries } from '../lib/conversions/archive-zip-reader';
 import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
-import { countRenderedXpsPages } from '../lib/conversions/office/xps-reader';
+import { renderedXpsPageParts } from '../lib/conversions/office/xps-reader';
+import { partKey, requirePagesDrawable } from '../lib/conversions/office/xps-resources';
 import { OFFICE_PAGE_IMAGE_MAX_PAGES } from '../lib/conversions/page-range';
 import { writeZipFile } from '../lib/conversions/zip-writer';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
-import { ConversionFailedError, CorruptStreamError } from '../lib/types';
+import { ConversionFailedError, CorruptStreamError, PayloadLimitError } from '../lib/types';
 import { boundRenderedPages, selectsPages } from './poppler-ppm';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError } from './sandbox';
 import { createConversionResult, handOffOutput, readRawInputBuffer, withSandboxDir } from './worker-output';
@@ -25,11 +26,14 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
  * of the conversion (the entry count and the compression ratio of `ARCHIVE_SECURITY_LIMITS`, the 256 MiB inflate budget
  * of one document), every entry checked against its CRC, and written again as a plain stored ZIP in the job directory:
  * the program sees only a package written here. The pages are counted the way GhostXPS finds them, under the page and
- * document limits of the XPS reader, before it starts.
+ * document limits of the XPS reader, before it starts: every page the documents list must be in the package, and the
+ * images and colour profiles the pages name, counted again for every page that names them, stay within the document
+ * budget of xps-resources.ts.
  *
  * GhostXPS reports a document it could not draw on its error output and still exits with success, after writing a PDF of
  * the pages it reached (GhostPDL pcl/pl/plmain.c `pl_main_run_file_utf8`, "Warning interpreter exited with error code"),
- * so that line is a failure here.
+ * so that line is a failure here. A PDF is also a failure unless it holds as many pages as the documents list, whatever
+ * the program printed, so a partial PDF is never handed out.
  */
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -37,6 +41,15 @@ const MAX_TIMEOUT_MS = 600_000;
 /** The address space, output file size and output pipe limits of the PostScript interpreter, which does the same work. */
 const MEMORY_LIMIT_MB = 2048;
 const MAX_OUTPUT_BYTES = 512 * 1024 * 1024;
+/**
+ * The most bytes of drawn PDF that an image target reads into memory for the PDF tools, which take a buffer: half the
+ * inflate budget of the package, whose parts are held at the same time (the output limit would add up to twice that budget
+ * on top of them). A PDF target hands the file on by its path and is bound by MAX_OUTPUT_BYTES only.
+ */
+const MAX_PDF_BYTES_READ_FOR_IMAGES = MAX_DOCUMENT_INFLATE_BYTES / 2;
+/** Run time and ceiling of counting the pages of the drawn PDF, as for the other Poppler tools. */
+const PAGE_COUNT_DEFAULT_TIMEOUT_MS = 45_000;
+const PAGE_COUNT_MAX_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_BUFFER_BYTES = 100 * 1024 * 1024;
 const MAX_STDERR_CHARS = 300;
 /** The program writes its result to a file in the job directory and prints nothing the worker has to copy. */
@@ -71,14 +84,21 @@ export interface XpsJob {
   interpreter: string;
   /** Hands a PDF to the native PDF tools (Poppler images and SVG, the encoded rasters, pdftops). */
   convertPdfPages: (pdf: Buffer, tgt: string, options: WorkerEngineOptions, originalFilename: string) => Promise<WorkerConversionResult | null>;
+  /** The number of pages of a PDF file, counted by the PDF tools without reading the file into memory. */
+  countPdfPages: (pdfPath: string, tempDir: string, timeoutMs: number, signal?: AbortSignal) => Promise<number>;
+}
+
+interface PackageEntry {
+  filename: string;
+  buffer: Buffer;
 }
 
 /** The entries of the package, inflated within the limits; a part named twice (XPS part names ignore case) is refused. */
-async function readPackageEntries(input: Buffer): Promise<{ filename: string; buffer: Buffer }[]> {
+async function readPackageEntries(input: Buffer): Promise<PackageEntry[]> {
   const entries = await readZipEntries(input, readZipDirectory(input, XPS_PACKAGE_LIMITS), { limits: XPS_PACKAGE_LIMITS });
   const names = new Set<string>();
   for (const { filename } of entries) {
-    const key = filename.toLowerCase();
+    const key = partKey(filename);
     if (names.has(key)) throw new CorruptStreamError(`The XPS package holds the part "${filename}" more than once.`);
     names.add(key);
   }
@@ -99,7 +119,13 @@ function rejected(src: string, stderr: string, tempDir: string): ConversionFaile
   return new ConversionFailedError(`GhostXPS could not draw the .${src} file${detail ? `: ${detail}` : ''}`);
 }
 
-async function writePdf(job: XpsJob, entries: readonly { filename: string; buffer: Buffer }[], tempDir: string): Promise<string> {
+/** What the PDF may be: the most bytes it may have and the number of pages the documents list. */
+interface PdfExpectation {
+  maxBytes: number;
+  pageCount: number;
+}
+
+async function writePdf(job: XpsJob, entries: readonly PackageEntry[], tempDir: string, expected: PdfExpectation): Promise<string> {
   const packagePath = path.join(tempDir, PACKAGE_FILE);
   const pdfPath = path.join(tempDir, PDF_FILE);
   await writeZipFile(packagePath, entries.map(({ filename, buffer }) => ({ name: filename, data: buffer, method: 'store' as const })));
@@ -121,8 +147,13 @@ async function writePdf(job: XpsJob, entries: readonly { filename: string; buffe
     throw toRendererError(err, job.src, tempDir);
   }
   if (RENDERER_FAILURE_PATTERN.test(stderr)) throw rejected(job.src, stderr, tempDir);
-  if (!fs.existsSync(pdfPath) || fs.statSync(pdfPath).size === 0) {
-    throw new ConversionFailedError(`GhostXPS drew no page from the .${job.src} file.`);
+  const size = fs.existsSync(pdfPath) ? fs.statSync(pdfPath).size : 0;
+  if (size === 0) throw new ConversionFailedError(`GhostXPS drew no page from the .${job.src} file.`);
+  if (size > expected.maxBytes) throw new PayloadLimitError(`GhostXPS drew ${size} bytes of PDF from the .${job.src} file, more than the ${expected.maxBytes} bytes that can be taken further.`);
+  const pageTimeoutMs = Math.min(stageTimeoutMs(job.options, PAGE_COUNT_DEFAULT_TIMEOUT_MS), PAGE_COUNT_MAX_TIMEOUT_MS);
+  const drawn = await job.countPdfPages(pdfPath, tempDir, pageTimeoutMs, job.options.signal);
+  if (drawn !== expected.pageCount) {
+    throw new ConversionFailedError(`GhostXPS drew ${drawn} of the ${expected.pageCount} pages that the .${job.src} file lists.`);
   }
   return pdfPath;
 }
@@ -141,7 +172,8 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
   const bytes = readRawInputBuffer(input);
   const startTime = Date.now();
   const entries = await readPackageEntries(bytes);
-  const pageCount = await countRenderedXpsPages(bytes, options.signal);
+  const pageParts = await renderedXpsPageParts(bytes, options.signal);
+  const pageCount = pageParts.length;
   const pageOptions: WorkerEngineOptions = { ...options, maxRenderedPages: OFFICE_PAGE_IMAGE_MAX_PAGES };
   if (tgt !== PDF_TARGET && !selectsPages(options)) {
     boundRenderedPages(
@@ -149,14 +181,17 @@ export async function convertXps(job: XpsJob): Promise<WorkerConversionResult | 
       pageOptions
     );
   }
+  requirePagesDrawable(pageParts, new Map(entries.map(({ filename, buffer }) => [partKey(filename), buffer])), options.signal);
 
   if (tgt === PDF_TARGET) {
     return withSandboxDir(TEMP_PREFIX, async (tempDir) => {
-      const pdfPath = await writePdf(job, entries, tempDir);
+      const pdfPath = await writePdf(job, entries, tempDir, { maxBytes: MAX_OUTPUT_BYTES, pageCount });
       const persistedPath = handOffOutput(pdfPath, PDF_TARGET, options, Buffer.isBuffer(input) ? undefined : input);
       return createConversionResult(persistedPath, PDF_TARGET, baseNameOf(job), 'native-xps', Date.now() - startTime);
     });
   }
-  const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) => fs.readFileSync(await writePdf(job, entries, tempDir)));
+  const pdf = await withSandboxDir(TEMP_PREFIX, async (tempDir) =>
+    fs.readFileSync(await writePdf(job, entries, tempDir, { maxBytes: MAX_PDF_BYTES_READ_FOR_IMAGES, pageCount }))
+  );
   return job.convertPdfPages(pdf, tgt, pageOptions, originalFilename);
 }

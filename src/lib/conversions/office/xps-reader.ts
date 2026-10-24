@@ -20,7 +20,7 @@ const RELATIONSHIPS_PART = '_rels/.rels';
  * Most bytes one package part may inflate to, the most bytes all parts of a package may inflate to together, and the most
  * documents, pages and glyph runs a package may hold. A part is read once, however many references name it.
  */
-const XPS_MAX_PART_BYTES = 64 * 1024 * 1024;
+export const XPS_MAX_PART_BYTES = 64 * 1024 * 1024;
 const XPS_MAX_DOCUMENT_REFERENCES = 1_000;
 const XPS_MAX_PAGES = 10_000;
 const XPS_MAX_GLYPH_RUNS = 5_000_000;
@@ -226,7 +226,7 @@ export async function readXpsPages(input: Buffer, signal?: AbortSignal): Promise
 }
 
 /** Every element below `root`, at any depth, in document order. */
-function descendantsOf(root: XmlElement): XmlElement[] {
+export function descendantsOf(root: XmlElement): XmlElement[] {
   const found: XmlElement[] = [];
   const pending = childElements(root).reverse();
   while (pending.length > 0) {
@@ -238,15 +238,15 @@ function descendantsOf(root: XmlElement): XmlElement[] {
 }
 
 /**
- * The number of fixed pages GhostXPS draws from a package, found the way it finds them (GhostPDL xps/xpszip.c
- * `xps_process_file`, xps/xpsdoc.c `xps_parse_metadata_imp`): every DocumentReference and PageContent element at any depth
- * of the fixed document sequence and then of each fixed document in turn, a document named by a document joining the list.
- * The reader's limits hold: at most 1,000 documents and 10,000 pages, every part named once (GhostXPS skips a repeated
- * name; here it is refused, so a cycle of documents ends at once), one inflate budget for the parts read. A package that
- * names more than one sequence is refused: GhostXPS draws the last one, and the count would be of another. The page
- * parts themselves are not read.
+ * The fixed page parts GhostXPS draws from a package, in the order the documents name them, found the way it finds them
+ * (GhostPDL xps/xpszip.c `xps_process_file`, xps/xpsdoc.c `xps_parse_metadata_imp`): every DocumentReference and PageContent
+ * element at any depth of the fixed document sequence and then of each fixed document in turn, a document named by a
+ * document joining the list. The reader's limits hold: at most 1,000 documents and 10,000 pages, every part named once
+ * (GhostXPS skips a repeated name; here it is refused, so a cycle of documents ends at once), one inflate budget for the
+ * parts read. A package that names more than one sequence is refused: GhostXPS draws the last one, and the list would be of
+ * another. The names are those the documents give, resolved to package paths; the page parts themselves are not read.
  */
-export async function countRenderedXpsPages(input: Buffer, signal?: AbortSignal): Promise<number> {
+export async function renderedXpsPageParts(input: Buffer, signal?: AbortSignal): Promise<string[]> {
   const source = new XpsPackage(await openPackage(input, LABEL), signal);
   const sequences = await fixedDocumentSequenceParts(source);
   if (sequences.length > 1) throw new CorruptStreamError(`The ${LABEL} package names ${sequences.length} fixed document sequences.`);
@@ -273,7 +273,7 @@ export async function countRenderedXpsPages(input: Buffer, signal?: AbortSignal)
     }
   }
   if (namedPages.size === 0) throw new ConversionFailedError(`The ${LABEL} document has no pages.`);
-  return namedPages.size;
+  return [...namedPages];
 }
 
 /** The text of an XPS or OpenXPS document: its pages one after another, a blank line between them. */

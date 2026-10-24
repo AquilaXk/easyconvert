@@ -1,12 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
+import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { CorruptStreamError, DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
+import { countPagesOfReadablePdf } from '../src/worker/engines';
+import { convertXps, type XpsJob } from '../src/worker/xps-render';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -289,8 +293,174 @@ describe.skipIf(!haveRenderer)('XPS packages that would make the renderer work w
     expect((await pageImages(first.buffer)).length).toBe(1);
   }, CONVERSION_TIMEOUT_MS);
 
-  it('refuses a page the renderer cannot read, although the renderer exits with success', async () => {
+  it('refuses a resource dictionary that names itself, which makes the renderer crash', async () => {
+    const page = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><FixedPage.Resources><ResourceDictionary Source="/Resources/loop.dict"/></FixedPage.Resources><Path Data="M 96,96 L 480,96 480,288 96,288 Z" Fill="{StaticResource a}"/></FixedPage>`;
+    const xps = await documentPackage(1, () => page, { 'Resources/loop.dict': `<ResourceDictionary xmlns="${XPS_NAMESPACE}" Source="/Resources/loop.dict"/>` });
+    const error = await refusalOf(dispatchConversion(xps, 'xps', 'pdf', {}, 'loop.xps'));
+    expect(error).toMatchObject({ name: 'ConversionFailedError' });
+    expect(error.message).toMatch(/GhostXPS (could not draw the|exceeded its output or memory limit on the) \.xps file/);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('refuses a page that is not well-formed XML, before the renderer starts', async () => {
     const xps = await packageOf({ 'FixedDocSeq.fdseq': sequenceOf('/Documents/1/FixedDoc.fdoc'), 'Documents/1/FixedDoc.fdoc': documentOf(pageNames(1)), 'Documents/1/Pages/1.fpage': `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816"` });
-    await expect(dispatchConversion(xps, 'xps', 'pdf', {}, 'broken.xps')).rejects.toMatchObject({ name: 'ConversionFailedError' });
+    const error = await refusalOf(dispatchConversion(xps, 'xps', 'pdf', {}, 'broken.xps'));
+    expect(error).toMatchObject({ name: 'DataParseError' });
+    expect(error.message).toMatch(/Documents\/1\/Pages\/1\.fpage is not well-formed XML/);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('refuses a page the renderer cannot read, although the renderer exits with success', async () => {
+    const foreignPage = `<FixedPage xmlns="http://example.com/not-xps" Width="816" Height="1056"/>`;
+    const xps = await packageOf({ 'FixedDocSeq.fdseq': sequenceOf('/Documents/1/FixedDoc.fdoc'), 'Documents/1/FixedDoc.fdoc': documentOf(pageNames(2)), 'Documents/1/Pages/1.fpage': DRAWN_PAGE, 'Documents/1/Pages/2.fpage': foreignPage });
+    const error = await refusalOf(dispatchConversion(xps, 'xps', 'pdf', {}, 'foreign.xps'));
+    expect(error).toMatchObject({ name: 'ConversionFailedError' });
+    expect(error.message).toMatch(/GhostXPS could not draw the \.xps file/);
+  }, CONVERSION_TIMEOUT_MS);
+});
+
+/** A page that draws one image, named by its part, as a Word print does for each picture on a page. */
+function pageDrawing(imagePart: string): string {
+  return `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><Path Data="M 0,0 L 100,0 100,100 0,100 Z"><Path.Fill><ImageBrush ImageSource="${imagePart}" Viewbox="0,0,10,10" ViewportUnits="Absolute" Viewport="0,0,100,100"/></Path.Fill></Path></FixedPage>`;
+}
+
+/** A package of `count` pages in one document, each page the value of `pageOf(name)`, besides the extra parts. */
+async function documentPackage(count: number, pageOf: (name: string) => string, extraParts: Readonly<Record<string, string | Buffer>> = {}): Promise<Buffer> {
+  const parts: Record<string, string | Buffer> = { 'FixedDocSeq.fdseq': sequenceOf('/Documents/1/FixedDoc.fdoc'), 'Documents/1/FixedDoc.fdoc': documentOf(pageNames(count)), ...extraParts };
+  for (const name of pageNames(count)) parts[`Documents/1/${name}`] = pageOf(name);
+  return packageOf(parts);
+}
+
+/** The part of a stand-in program's script that finds the file it is asked to write: GhostXPS gets it as `-sOutputFile=<path>`. */
+const FIND_OUTPUT_PATH = 'for argument in "$@"; do case "$argument" in -sOutputFile=*) out="${argument#-sOutputFile=}";; esac; done\n';
+
+const BIG_PART = 'Resources/big.jpg';
+const BIG_PART_BYTES = 1024 * 1024;
+/** What the pages of a document may name of images between them, a page's image counted again on every page: twice the 256 MiB inflate budget of a package. */
+const REFERENCED_BYTES_BUDGET = 2 * 256 * 1024 * 1024;
+const PAGES_AT_BUDGET = REFERENCED_BYTES_BUDGET / BIG_PART_BYTES;
+
+describe('XPS documents that the renderer would draw short or decode again for every page', () => {
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A program that writes a PDF of `pdfPages` pages, as GhostXPS does, or one of `sparseBytes` zero bytes; it never reads the package. */
+  async function standIn(outcome: { pdfPages: number } | { sparseBytes: number }): Promise<string> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xps-render-stand-in-'));
+    dirs.push(dir);
+    const script = path.join(dir, 'gxps');
+    if ('pdfPages' in outcome) {
+      const document = await PDFDocument.create();
+      for (let page = 0; page < outcome.pdfPages; page += 1) document.addPage([612, 792]);
+      fs.writeFileSync(path.join(dir, 'drawn.pdf'), await document.save());
+      fs.writeFileSync(script, `#!/bin/sh\n${FIND_OUTPUT_PATH}cp '${path.join(dir, 'drawn.pdf')}' "$out"\n`);
+    } else {
+      fs.writeFileSync(script, `#!/bin/sh\n${FIND_OUTPUT_PATH}dd if=/dev/null of="$out" bs=1048576 seek=${Math.ceil(outcome.sparseBytes / 1048576)} count=0 2>/dev/null\n`);
+    }
+    fs.chmodSync(script, 0o755);
+    return script;
+  }
+
+  /** Draws `xps` with `interpreter`; the sizes of the PDFs that the PDF tools are handed are added to `handedToPageTools`. */
+  async function convertWith(interpreter: string, xps: Buffer, tgt: string, handedToPageTools: number[] = []): Promise<Awaited<ReturnType<typeof convertXps>>> {
+    const job: XpsJob = {
+      input: xps,
+      src: 'xps',
+      tgt,
+      options: {},
+      originalFilename: 'stand-in.xps',
+      interpreter,
+      convertPdfPages: async (pdf) => {
+        handedToPageTools.push(pdf.length);
+        return null;
+      },
+      countPdfPages: countPagesOfReadablePdf,
+    };
+    return convertXps(job);
+  }
+
+  it('hands on a PDF with one page for every listed page, and for a part stored under another case than the document names it', async () => {
+    const parts: Record<string, string> = { 'FixedDocSeq.fdseq': sequenceOf('/Documents/1/FixedDoc.fdoc'), 'Documents/1/FixedDoc.fdoc': documentOf(pageNames(3)), 'documents/1/pages/1.FPAGE': DRAWN_PAGE, 'Documents/1/Pages/2.fpage': DRAWN_PAGE, 'Documents/1/Pages/3.fpage': DRAWN_PAGE };
+    const result = await convertWith(await standIn({ pdfPages: 3 }), await packageOf(parts), 'pdf');
+    expect(result?.engineUsed).toBe('native-xps');
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('refuses a document that lists a page the package does not hold, before the renderer starts', async () => {
+    const parts: Record<string, string> = { 'FixedDocSeq.fdseq': sequenceOf('/Documents/1/FixedDoc.fdoc'), 'Documents/1/FixedDoc.fdoc': documentOf(pageNames(3)), 'Documents/1/Pages/1.fpage': DRAWN_PAGE, 'Documents/1/Pages/3.fpage': DRAWN_PAGE };
+    const error = await refusalOf(convertWith('/nonexistent/gxps', await packageOf(parts), 'pdf'));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect(error.message).toMatch(/lists the fixed page "Documents\/1\/Pages\/2\.fpage", which is not in the package/);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('refuses a PDF with fewer pages than the documents list, whatever the renderer printed', async () => {
+    const xps = await documentPackage(3, () => DRAWN_PAGE);
+    const error = await refusalOf(convertWith(await standIn({ pdfPages: 2 }), xps, 'pdf'));
+    expect(error).toMatchObject({ name: 'ConversionFailedError' });
+    expect(error.message).toMatch(/drew 2 of the 3 pages that the \.xps file lists/);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('refuses a short PDF for a page image target too, before the PDF tools see it', async () => {
+    const xps = await documentPackage(3, () => DRAWN_PAGE);
+    const complete: number[] = [];
+    await convertWith(await standIn({ pdfPages: 3 }), xps, 'png', complete);
+    expect(complete).toHaveLength(1);
+    const short: number[] = [];
+    const error = await refusalOf(convertWith(await standIn({ pdfPages: 1 }), xps, 'png', short));
+    expect(error.message).toMatch(/drew 1 of the 3 pages/);
+    expect(short).toEqual([]);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('refuses a PDF above the size an image target reads into memory, and hands a smaller one on whole', async () => {
+    const xps = await documentPackage(1, () => DRAWN_PAGE);
+    const error = await refusalOf(convertWith(await standIn({ sparseBytes: 129 * 1024 * 1024 }), xps, 'png'));
+    expect(error).toBeInstanceOf(PayloadLimitError);
+    expect(error.message).toMatch(/drew 135266304 bytes of PDF from the \.xps file, more than the 134217728 bytes that can be taken further/);
+    const handedToPageTools: number[] = [];
+    await convertWith(await standIn({ pdfPages: 1 }), xps, 'png', handedToPageTools);
+    expect(handedToPageTools).toHaveLength(1);
+    expect(handedToPageTools[0]).toBeGreaterThan(0);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it(`counts a part again for every page that names it: ${PAGES_AT_BUDGET} pages of one ${BIG_PART_BYTES} byte image are at the budget and one more is over it`, async () => {
+    const shared = crypto.randomBytes(BIG_PART_BYTES);
+    const atBudget = await documentPackage(PAGES_AT_BUDGET, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: shared });
+    const result = await convertWith(await standIn({ pdfPages: PAGES_AT_BUDGET }), atBudget, 'pdf');
+    expect(result?.engineUsed).toBe('native-xps');
+    const overBudget = await documentPackage(PAGES_AT_BUDGET + 1, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: shared });
+    const error = await refusalOf(convertWith('/nonexistent/gxps', overBudget, 'pdf'));
+    expect(error).toBeInstanceOf(PayloadLimitError);
+    expect(error.message).toMatch(new RegExp(`more than ${REFERENCED_BYTES_BUDGET} bytes of images and colour profiles`));
+  }, CONVERSION_TIMEOUT_MS * 2);
+
+  it('refuses ten thousand pages that share one large image before the renderer starts', async () => {
+    const xps = await documentPackage(10_000, () => pageDrawing(`/${BIG_PART}`), { [BIG_PART]: crypto.randomBytes(BIG_PART_BYTES) });
+    const error = await refusalOf(convertWith('/nonexistent/gxps', xps, 'pdf'));
+    expect(error).toBeInstanceOf(PayloadLimitError);
+    expect(error.message).toMatch(/pages name more than \d+ bytes of images and colour profiles/);
+  }, CONVERSION_TIMEOUT_MS * 2);
+
+  it('counts a font once however many pages name it, as the renderer keeps a font after the first page that loads it', async () => {
+    const pages = PAGES_AT_BUDGET * 3;
+    const page = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><Glyphs FontUri="/Resources/font.ttf" FontRenderingEmSize="20" OriginX="10" OriginY="30" UnicodeString="x" Fill="#FF000000"/></FixedPage>`;
+    const xps = await documentPackage(pages, () => page, { 'Resources/font.ttf': crypto.randomBytes(BIG_PART_BYTES) });
+    const result = await convertWith(await standIn({ pdfPages: pages }), xps, 'pdf');
+    expect(result?.engineUsed).toBe('native-xps');
+  }, CONVERSION_TIMEOUT_MS * 2);
+
+  it('counts the images that a shared resource dictionary names for every page that names the dictionary', async () => {
+    const dictionary = `<ResourceDictionary xmlns="${XPS_NAMESPACE}"><ImageBrush x:Key="b" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" ImageSource="/${BIG_PART}"/></ResourceDictionary>`;
+    const page = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><FixedPage.Resources><ResourceDictionary Source="/Resources/shared.dict"/></FixedPage.Resources></FixedPage>`;
+    const xps = await documentPackage(PAGES_AT_BUDGET + 1, () => page, { 'Resources/shared.dict': dictionary, [BIG_PART]: crypto.randomBytes(BIG_PART_BYTES) });
+    const error = await refusalOf(convertWith('/nonexistent/gxps', xps, 'pdf'));
+    expect(error).toBeInstanceOf(PayloadLimitError);
+    expect(error.message).toMatch(new RegExp(`more than ${REFERENCED_BYTES_BUDGET} bytes of images and colour profiles`));
+  }, CONVERSION_TIMEOUT_MS * 2);
+
+  it('reads a resource dictionary that names itself once and ends', async () => {
+    const dictionary = `<ResourceDictionary xmlns="${XPS_NAMESPACE}" Source="/Resources/loop.dict"/>`;
+    const page = `<FixedPage xmlns="${XPS_NAMESPACE}" Width="816" Height="1056"><FixedPage.Resources><ResourceDictionary Source="/Resources/loop.dict"/></FixedPage.Resources></FixedPage>`;
+    const xps = await documentPackage(2, () => page, { 'Resources/loop.dict': dictionary });
+    const result = await convertWith(await standIn({ pdfPages: 2 }), xps, 'pdf');
+    expect(result?.engineUsed).toBe('native-xps');
   }, CONVERSION_TIMEOUT_MS);
 });

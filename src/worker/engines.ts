@@ -78,7 +78,7 @@ import {
   SandboxedBufferLimitError,
 } from './sandbox';
 import { convertPostScript, type PostScriptJob } from './postscript-render';
-import { convertXps } from './xps-render';
+import { convertXps, type XpsJob } from './xps-render';
 import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
@@ -1040,7 +1040,7 @@ export async function getPdfPageCount(
 }
 
 /** Page count of a PDF that Poppler can open without a password. */
-async function countPagesOfReadablePdf(
+export async function countPagesOfReadablePdf(
   inputPath: string,
   tempDir: string,
   timeoutMs: number,
@@ -1889,7 +1889,7 @@ export async function convertWithNativeSvg(
   return renderSvgAsPdf({ svg, renderer, input, options, originalFilename });
 }
 
-/** A program of the Ghostscript family that draws the pages of a source no other engine can: it writes a PDF. */
+/** A program of the Ghostscript family that draws the pages of a source no other engine can: it writes a PDF (the XPS route also counts its pages). */
 interface FixedPageRoute {
   sources: ReadonlySet<string>;
   /** The engine label and the prefix of the fallback chain entry. */
@@ -1898,7 +1898,7 @@ interface FixedPageRoute {
   binary: string;
   /** The program as the unavailable error names it. */
   program: string;
-  render: (job: PostScriptJob) => Promise<WorkerConversionResult | null>;
+  render: (job: PostScriptJob & Pick<XpsJob, 'countPdfPages'>) => Promise<WorkerConversionResult | null>;
 }
 /**
  * PostScript (EPS, PS) goes through the interpreter (postscript-render.ts), XPS and OpenXPS through GhostXPS (xps-render.ts).
@@ -1928,7 +1928,7 @@ async function convertWithFixedPageRoute(
     }
     return null;
   }
-  return route.render({ input, src, tgt, options, originalFilename, interpreter, convertPdfPages: convertPdfPagesWithNativeTools });
+  return route.render({ input, src, tgt, options, originalFilename, interpreter, convertPdfPages: convertPdfPagesWithNativeTools, countPdfPages: countPagesOfReadablePdf });
 }
 
 /**
