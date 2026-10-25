@@ -433,7 +433,7 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
     });
 
     describe('2.3 Archive Boundary & CRC-32 Oracle', () => {
-      it('verifies 100% CRC-32 match and file content roundtrip on multi-file archives', async () => {
+      it('returns every file of a multi-file ZIP with the bytes it was written with (a content round trip, no stored CRC-32 is read)', async () => {
         const file1Content = Buffer.from('Differential testnet text payload 1', 'utf-8');
         const file2Content = Buffer.from('Differential testnet text payload 2 - with more bytes', 'utf-8');
 
