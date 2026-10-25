@@ -13,7 +13,7 @@ import {
 import { enqueueGraphNodeJob } from '../src/lib/queue/graph/node-jobs';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { legacyJobTimeoutMs } from '../src/lib/queue/enqueue';
-import { JOB_DEADLINE_AT, bindJobLimits, clampToJobRemaining, remainingJobMs, stageTimeoutMs } from '../src/lib/conversions/job-time';
+import { JOB_DEADLINE_AT, bindJobLimits, clampToJobRemaining, remainingJobMs, stageTimeoutMs, stripEngineControls } from '../src/lib/conversions/job-time';
 import { TIER_PAGE_CAP, withTierPageCap } from '../src/lib/conversions/page-range';
 import type { ConversionEnginePort, EngineResult } from '../src/lib/queue/engine-port';
 import { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
@@ -180,6 +180,17 @@ describe('request options cannot supply the signal, a timeout or a deadline', ()
     const request = { signal: {}, timeoutMs: 5, quality: 1 };
     bindJobLimits(request, { signal: jobSignal });
     expect(request).toEqual({ signal: {}, timeoutMs: 5, quality: 1 });
+  });
+
+  it.each([
+    ['bindJobLimits', (options: object) => bindJobLimits(options, { signal: jobSignal })],
+    ['stripEngineControls', (options: object) => stripEngineControls(options)],
+  ])('%s never turns an own "__proto__" key into the prototype of its copy', (_name, copy) => {
+    const request = JSON.parse('{"__proto__":{"outputPath":"/tmp/elsewhere","timeoutMs":1},"quality":80}') as object;
+    const copied = copy(request) as Record<string, unknown>;
+    expect('outputPath' in copied).toBe(false);
+    expect(Object.getPrototypeOf(copied)).toBe(Object.prototype);
+    expect(copied.quality).toBe(80);
   });
 });
 

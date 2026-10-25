@@ -38,6 +38,7 @@ import {
   VideoGeometry,
 } from './media-ffprobe';
 import { DEFAULT_TONE_MAP, TONE_MAP_MODES } from './hdr-tonemap';
+import { escapeFfmpegFilterPath } from './media-filter-escape';
 import { pictureOf, softwareEncoderThreads } from './media-encoder-threads';
 import { type Vp9Deadline, vp9DeadlineOfInput, vp9SpeedArgs } from './media-vp9-effort';
 import type { LayoutStream } from './mp4-layout';
@@ -65,6 +66,7 @@ import {
   capLadderToSource,
   forcedKeyframeExpression,
   keyframeIntervalFrames,
+  packagingManifestName,
   resolveSegmentType,
   rungRateCaps,
   MIN_RUNG_BITRATE_K,
@@ -96,16 +98,6 @@ export const AUDIO_CODEC_MAP: Record<AudioCodec, string> = {
   vorbis: 'libvorbis',
   pcm_s16le: 'pcm_s16le',
 };
-
-/**
- * Escapes file paths for safe inclusion in FFmpeg filter graph strings (e.g. subtitles filter).
- */
-export function escapeFfmpegFilterPath(filePath: string): string {
-  return filePath
-    .replace(/\\/g, '/')
-    .replace(/:/g, '\\:')
-    .replace(/'/g, "'\\\\''");
-}
 
 /** Decimals of the input start offset passed to ffmpeg: microseconds, the precision of its timeline. */
 const CHAPTER_OFFSET_DECIMALS = 6;
@@ -778,7 +770,7 @@ export function buildFfmpegArguments(
 
   if (options.subtitles?.mode === 'soft') {
     if (!options.subtitles.input) {
-      throw new InvalidMediaOptionError("Subtitle 'soft' mode requires an input subtitle file path.");
+      throw new InvalidMediaOptionError("Subtitle 'soft' mode adds an external subtitle file, which a request cannot supply; burn a subtitle stream of the input with 'burn' and streamIndex instead.");
     }
     inputArgs.push('-i', options.subtitles.input);
   }
@@ -856,14 +848,14 @@ export function buildFfmpegArguments(
   const embeddedBurn = burnRequested && !options.subtitles?.input;
   let burnSubtitleStream: LayoutStream | undefined;
   if (embeddedBurn && !inputStreams) {
-    throw new InvalidMediaOptionError("Subtitle 'burn' mode requires an input subtitle file path.");
+    throw new InvalidMediaOptionError("Subtitle 'burn' mode needs a video input with a subtitle stream.");
   }
   if (embeddedBurn && inputStreams) {
     const subtitleStreams = inputStreams.filter((stream) => stream.type === 'subtitle');
     const wanted = options.subtitles?.streamIndex ?? 0;
     if (!Number.isInteger(wanted) || wanted < 0 || wanted >= subtitleStreams.length) {
       throw new InvalidMediaOptionError(
-        `Subtitle 'burn' mode needs an input subtitle file, or an input with subtitle stream ${wanted}; the input has ${subtitleStreams.length}.`
+        `Subtitle 'burn' mode needs an input with subtitle stream ${wanted}; the input has ${subtitleStreams.length}.`
       );
     }
     burnSubtitleStream = subtitleStreams[wanted];
@@ -1158,7 +1150,7 @@ export function buildFfmpegArguments(
       // An external file, or a text subtitle stream of the input itself (`si` counts subtitle streams).
       const source = options.subtitles?.input ?? inputPath;
       const stream = options.subtitles?.input ? '' : `:si=${options.subtitles?.streamIndex ?? 0}`;
-      videoFilters.push(`subtitles='${escapeFfmpegFilterPath(source)}'${stream}`);
+      videoFilters.push(`subtitles=filename=${escapeFfmpegFilterPath(source)}${stream}`);
     }
 
     // Stage 7: Even dimension normalization (ALWAYS LAST filter before format). A picture the header gives an even
@@ -1622,6 +1614,7 @@ export function buildHlsDashArguments(
       `Unsupported packaging format "${packaging.format}". Allowed: "hls", "dash".`
     );
   }
+  const manifestName = packagingManifestName(format, packaging.masterPlaylistName, outputDir);
 
   let segmentSeconds = DEFAULT_SEGMENT_SECONDS;
   if (packaging.segmentSeconds !== undefined) {
@@ -1722,7 +1715,6 @@ export function buildHlsDashArguments(
   }
 
   if (format === 'hls') {
-    const masterPlaylist = packaging.masterPlaylistName || 'master.m3u8';
     const varStreamMap = ladder
       .map((rung, i) => {
         const streamName = `${rung.height}p`;
@@ -1747,7 +1739,7 @@ export function buildHlsDashArguments(
       '-hls_time', String(segmentSeconds),
       '-hls_playlist_type', 'vod',
       '-hls_flags', 'independent_segments',
-      '-master_pl_name', masterPlaylist,
+      '-master_pl_name', manifestName,
       ...segmentArgs,
       '-var_stream_map', varStreamMap,
       path.join(outputDir, 'stream_%v.m3u8'),
@@ -1756,7 +1748,6 @@ export function buildHlsDashArguments(
     return [...globalArgs, ...inputArgs, ...streamArgs, ...hlsArgs];
   } else {
     // DASH
-    const manifestName = packaging.masterPlaylistName || 'manifest.mpd';
     const adaptationSets = hasAudio
       ? 'id=0,streams=v id=1,streams=a'
       : 'id=0,streams=v';
