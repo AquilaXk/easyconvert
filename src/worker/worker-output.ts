@@ -176,7 +176,25 @@ export function handOffOutput(
   return finalPath;
 }
 
-/** Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy. */
+/** The most buffers one `writev` takes: POSIX `IOV_MAX`, 1,024 on Linux and macOS. */
+const WRITEV_MAX_BUFFERS = 1024;
+
+/** Writes `pending` to the descriptor's position with `writev`, again for what a short write left, until none is left. */
+function writeVectored(fd: number, pending: Uint8Array[]): void {
+  let rest = pending;
+  while (rest.length > 0) {
+    let written = fs.writevSync(fd, rest);
+    let skipped = 0;
+    while (skipped < rest.length && written >= rest[skipped].byteLength) written -= rest[skipped++].byteLength;
+    rest = skipped < rest.length && written > 0 ? [rest[skipped].subarray(written), ...rest.slice(skipped + 1)] : rest.slice(skipped);
+  }
+}
+
+/**
+ * Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy. The
+ * ranges go out `WRITEV_MAX_BUFFERS` at a time, one `writev` for each batch (a tar of 2,000 members is 6,000 ranges), and a
+ * short write continues where it stopped.
+ */
 export function writeOutputSegments(
   segments: readonly Uint8Array[],
   targetFormat: string,
@@ -186,11 +204,8 @@ export function writeOutputSegments(
   const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
   const fd = fs.openSync(finalPath, 'w');
   try {
-    for (const segment of segments) {
-      let written = 0;
-      while (written < segment.length) {
-        written += fs.writeSync(fd, segment, written, segment.length - written);
-      }
+    for (let first = 0; first < segments.length; first += WRITEV_MAX_BUFFERS) {
+      writeVectored(fd, segments.slice(first, first + WRITEV_MAX_BUFFERS));
     }
   } finally {
     fs.closeSync(fd);
