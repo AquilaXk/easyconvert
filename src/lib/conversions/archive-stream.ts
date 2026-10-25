@@ -187,8 +187,9 @@ const TAR_RECORD_BYTES = 20 * TAR_BLOCK_BYTES;
 /**
  * `tarFromEntries` written over `unpacked` when every body is where the joined tar would put it. Two passes: the first
  * only checks, so `unpacked` is changed only when the second runs. The result is the tar cut out of `unpacked` while
- * what follows it is at most one record. A layout change or a longer tail returns the segments, which the caller joins
- * or writes out, so the bytes behind a small tar are not held.
+ * what follows it is at most one record. A longer tail returns one copy of the tar (never `unpacked` or the shared
+ * end-of-archive constant), so the bytes behind a small tar are not held. A layout change returns the segments, which
+ * the caller joins or writes out.
  */
 function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Array[] {
   const segments = tarFromEntries(entries);
@@ -201,7 +202,7 @@ function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Arra
     position += segment.length;
   }
   const slack = unpacked.length - position;
-  if (slack < 0 || slack > TAR_RECORD_BYTES) return segments;
+  if (slack < 0 || slack > TAR_RECORD_BYTES) return [Buffer.concat(segments)];
   position = 0;
   for (const segment of segments) {
     if (!isOldBody(segment)) unpacked.set(segment, position);

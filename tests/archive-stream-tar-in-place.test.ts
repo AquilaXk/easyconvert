@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readTarEntries } from '../src/lib/conversions/archive';
-import { streamToTar, tarFromEntries, type StreamRunOptions } from '../src/lib/conversions/archive-stream';
+import { memberNameFor, streamToTar, TAR_END_OF_ARCHIVE, tarFromEntries, wrapAsMember, type StreamRunOptions } from '../src/lib/conversions/archive-stream';
 import { convertWithNative7z } from '../src/worker/engines';
 import type { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
 import { getOracleToolPath } from './helpers/differential-oracle';
@@ -78,6 +78,11 @@ function expectBodiesToBeViewsOf(bodies: Uint8Array[], unpacked: Buffer): void {
   }
 }
 
+/** Whether the bytes of `source` lie within `unpacked`, so that writing them into it moves bytes that are already there. */
+function isWindowOf(source: Uint8Array, unpacked: Buffer): boolean {
+  return source.buffer === unpacked.buffer && source.byteOffset >= unpacked.byteOffset && source.byteOffset + source.length <= unpacked.byteOffset + unpacked.length;
+}
+
 /** A fresh pool slab, so that the copy and the headers written after it fit in it. */
 function startOfPoolSlab(): void {
   let probe = Buffer.allocUnsafe(1);
@@ -126,7 +131,7 @@ afterEach(() => {
 });
 
 describe('a tar that gzip, bzip2 or xz carries', () => {
-  it('has new headers written over the old ones when every entry keeps its place, and no body is written again', async () => {
+  it('has new headers written over the old ones when every entry keeps its place, and nothing taken from the unpacked bytes is written back into them', async () => {
     const tar = Buffer.concat([
       hostileTarMember({ name: 'a.txt', mode: 0o4755, magic: 'ustar ', version: ' \0', prefix: 'ignored' }, Buffer.from('first body')),
       hostileTarMember({ name: 'dir/', typeflag: '5' }),
@@ -139,14 +144,14 @@ describe('a tar that gzip, bzip2 or xz carries', () => {
     const writes = vi.spyOn(Object.getPrototypeOf(Uint8Array.prototype) as Uint8Array, 'set');
 
     const { unpacked, segments, bodiesBefore } = await viaGzip(tar);
+    const sources = writes.mock.calls.map(([source]) => source as Uint8Array);
 
     expectBodiesToBeViewsOf(bodiesBefore, unpacked);
     expect(segments).toHaveLength(1);
     expect(segments[0].buffer).toBe(unpacked.buffer);
     expect(Buffer.concat(segments).equals(expected)).toBe(true);
-    const written = writes.mock.calls.map(([source]) => (source as ArrayLike<number>).length);
-    expect(written.length).toBeGreaterThan(0);
-    expect(Math.max(...written)).toBeLessThan(BODY_BYTES);
+    expect(sources.length).toBeGreaterThan(0);
+    expect(sources.filter((source) => isWindowOf(source, unpacked))).toEqual([]);
   });
 
   it('writes zeros behind each body, whatever the old padding held', async () => {
@@ -270,7 +275,7 @@ describe('a tar that gzip, bzip2 or xz carries', () => {
     );
   });
 
-  it('gives the segments back when the tar ends before its end-of-archive blocks', async () => {
+  it('gives the expected tar, and leaves the unpacked bytes, when the tar ends before its end-of-archive blocks', async () => {
     const tar = hostileTarMember({ name: 'a.txt' }, Buffer.from('body'));
     expect(referenceTarFromCopy(tar).length).toBeGreaterThan(tar.length);
 
@@ -338,15 +343,33 @@ describe('the bytes that follow the end-of-archive blocks', () => {
     expect(Buffer.concat(segments).equals(expected)).toBe(true);
   });
 
-  it('are not kept in the result, and leave the unpacked bytes as they were, when they are more than one record', async () => {
+  it('are left out of the result, which is one copy outside the unpacked bytes that leaves them as they were, when they are more than one record', async () => {
     const tar = tarWithTrailingZeros(TAR_RECORD_BYTES + 1);
 
     const { unpacked, segments } = await viaGzip(tar);
 
     expect(unpacked.length - expected.length).toBe(TAR_RECORD_BYTES + 1);
-    expect(segments.length).toBeGreaterThan(1);
-    expect(Buffer.concat(segments).equals(expected)).toBe(true);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].buffer).not.toBe(unpacked.buffer);
+    expect(Buffer.from(segments[0]).equals(expected)).toBe(true);
     expect(unpacked.equals(tar)).toBe(true);
+  });
+
+  it.each([
+    ['a symbolic link that is left out', Buffer.concat([hostileTarMember({ name: 'link', typeflag: '2', linkname: 'a.txt' }), hostileTarEnd()]), SKIP_LINKS],
+    ['the current directory', Buffer.concat([hostileTarMember({ name: './', typeflag: '5' }), hostileTarEnd()]), {}],
+  ])('give a result that is not shared with later archives, when a tar of only %s has more than one record behind it', async (_name, entries, request) => {
+    const tar = Buffer.concat([entries, Buffer.alloc(TAR_RECORD_BYTES + 1)]);
+    const empty = referenceTarFromCopy(tar);
+    expect(empty.equals(TAR_END_OF_ARCHIVE)).toBe(true);
+
+    const { segments } = await viaGzip(tar, request);
+
+    expect(segments).toHaveLength(1);
+    expect(segments[0].buffer).not.toBe(TAR_END_OF_ARCHIVE.buffer);
+    expect(Buffer.from(segments[0]).equals(empty)).toBe(true);
+    segments[0].fill(0xff);
+    expect(TAR_END_OF_ARCHIVE.every((byte) => byte === 0)).toBe(true);
   });
 
   oracleTest(
@@ -366,16 +389,9 @@ describe('the bytes that follow the end-of-archive blocks', () => {
   );
 });
 
-describe('a tar that 7-Zip carries out of its sandbox', () => {
-  oracleTest('is rewritten inside the frame the sandbox collected the output in', ['7z', 'xz'], async () => {
-    const tar = Buffer.concat([
-      hostileTarMember({ name: 'a.txt', mode: 0o4755, magic: 'ustar ', version: ' \0' }, Buffer.from('first body')),
-      hostileTarMember({ name: 'b.bin' }, Buffer.alloc(1500, 7)),
-      hostileTarEnd(),
-    ]);
-    const expected = referenceTarFromCopy(tar);
-    const xz = execFileSync(getOracleToolPath('xz') as string, ['-c'], { input: tar });
-
+describe('a payload that 7-Zip carries out of its sandbox', () => {
+  async function throughSandbox(payload: Buffer): Promise<{ segments: Uint8Array[]; frame: Buffer; headroom: number; tailroom: number }> {
+    const xz = execFileSync(getOracleToolPath('xz') as string, ['-c'], { input: payload });
     sandboxFrames.runs.length = 0;
     const result = await streamToTar({
       compressor: 'xz',
@@ -384,18 +400,49 @@ describe('a tar that 7-Zip carries out of its sandbox', () => {
       originalFilename: 'sample.tar.xz',
       timeoutMs: 20_000,
     });
-
-    expect(result?.segments).toHaveLength(1);
-    const [segment] = result?.segments ?? [];
-    expect(segment.byteOffset).toBeGreaterThan(0);
-    expect(segment.buffer.byteLength).toBeGreaterThan(segment.byteOffset + segment.length);
-    expect(Buffer.from(segment).equals(expected)).toBe(true);
     expect(sandboxFrames.runs).toHaveLength(1);
     const [{ frame, headroom, tailroom }] = sandboxFrames.runs;
-    expect(segment.buffer).toBe(frame.buffer);
     expect(headroom).toBeGreaterThan(0);
     expect(tailroom).toBeGreaterThan(0);
+    return { segments: result?.segments ?? [], frame, headroom, tailroom };
+  }
+
+  oracleTest('that is a tar is rewritten inside the frame, and the rooms around it stay as they were', ['7z', 'xz'], async () => {
+    const tar = Buffer.concat([
+      hostileTarMember({ name: 'a.txt', mode: 0o4755, magic: 'ustar ', version: ' \0' }, Buffer.from('first body')),
+      hostileTarMember({ name: 'b.bin' }, Buffer.alloc(1500, 7)),
+      hostileTarEnd(),
+    ]);
+
+    const { segments, frame, headroom, tailroom } = await throughSandbox(tar);
+
+    expect(segments).toHaveLength(1);
+    const [segment] = segments;
+    expect(segment.byteOffset).toBeGreaterThan(0);
+    expect(segment.buffer.byteLength).toBeGreaterThan(segment.byteOffset + segment.length);
+    expect(Buffer.from(segment).equals(referenceTarFromCopy(tar))).toBe(true);
+    expect(segment.buffer).toBe(frame.buffer);
     expect(frame.subarray(0, headroom).every((byte) => byte === sandboxFrames.head)).toBe(true);
     expect(frame.subarray(frame.length - tailroom).every((byte) => byte === sandboxFrames.tail)).toBe(true);
+  });
+
+  oracleTest('that is not a tar is wrapped in the frame, with only the header and the zeros behind the body written into the rooms', ['7z', 'xz'], async () => {
+    const payload = Buffer.from('not a tar, only text\n'.repeat(60));
+    expect(payload.length % BLOCK).not.toBe(0);
+    const expected = Buffer.concat(wrapAsMember(memberNameFor('sample.tar.xz'), payload));
+
+    const { segments, frame, headroom, tailroom } = await throughSandbox(payload);
+
+    expect(segments).toHaveLength(1);
+    const [segment] = segments;
+    expect(segment.buffer).toBe(frame.buffer);
+    expect(segment.byteOffset).toBe(frame.byteOffset);
+    expect(Buffer.from(segment).equals(expected)).toBe(true);
+    const bodyEnd = headroom + payload.length;
+    expect(frame.subarray(0, headroom).equals(expected.subarray(0, headroom))).toBe(true);
+    expect(frame.subarray(headroom, bodyEnd).equals(payload)).toBe(true);
+    expect(frame.subarray(bodyEnd, expected.length).every((byte) => byte === 0)).toBe(true);
+    expect(frame.subarray(expected.length).every((byte) => byte === sandboxFrames.tail)).toBe(true);
+    expect(frame.length - bodyEnd).toBe(tailroom);
   });
 });
