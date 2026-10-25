@@ -14,9 +14,9 @@ import {
   LIMITS,
   MILLISECONDS_PER_SECOND,
   PERMISSION_BITS,
-  TAR_END_OF_ARCHIVE,
   lastEntryPerPath,
   loadSource,
+  pushEndOfArchive,
   pushFileMember,
   sourceBytes,
   tarFromEntries,
@@ -300,7 +300,7 @@ function tarFromMembers(members: readonly TarMember[]): Uint8Array[] {
       pushFileMember(segments, member.filename, member.data, member.mode ?? DEFAULT_FILE_MODE, mtime);
     }
   }
-  segments.push(TAR_END_OF_ARCHIVE);
+  pushEndOfArchive(segments);
   return segments;
 }
 

@@ -48,7 +48,7 @@ import { inflateChunkHint } from './archive-zip-reader';
 
 export const LIMITS = ARCHIVE_SECURITY_LIMITS;
 export const TAR_BLOCK_BYTES = 512;
-export const TAR_END_OF_ARCHIVE = Buffer.alloc(2 * TAR_BLOCK_BYTES);
+const TAR_END_OF_ARCHIVE_BYTES = 2 * TAR_BLOCK_BYTES;
 /** What 7-Zip may print to stderr on a run that succeeds; the stdout bound is exact and this is added on top. */
 const STDERR_ALLOWANCE_BYTES = 64 * 1024;
 export const DEFAULT_FILE_MODE = 0o644;
@@ -87,7 +87,10 @@ export interface StreamRunOptions {
   signal?: AbortSignal;
 }
 
-/** The converted tar, as the byte ranges to write in order. */
+/**
+ * The converted tar, as the byte ranges to write in order. A segment may be a view of the buffer the archive was unpacked
+ * into, so the caller writes the segments out or joins them, and keeps a segment as it is only when it is the only one.
+ */
 export interface StreamedArchive {
   segments: Uint8Array[];
   skippedLinks: string[];
@@ -117,9 +120,14 @@ function blockPadding(length: number): number {
   return (TAR_BLOCK_BYTES - (length % TAR_BLOCK_BYTES)) % TAR_BLOCK_BYTES;
 }
 
+/** Padding and end blocks are new zeros in every tar, never a shared buffer, because whoever holds a result may write to it. */
 export function pushPadding(segments: Uint8Array[], length: number): void {
   const padding = blockPadding(length);
-  if (padding > 0) segments.push(TAR_END_OF_ARCHIVE.subarray(0, padding));
+  if (padding > 0) segments.push(Buffer.alloc(padding));
+}
+
+export function pushEndOfArchive(segments: Uint8Array[]): void {
+  segments.push(Buffer.alloc(TAR_END_OF_ARCHIVE_BYTES));
 }
 
 export function memberNameFor(originalFilename: string): string {
@@ -131,7 +139,7 @@ export function memberNameFor(originalFilename: string): string {
 export function wrapAsMember(name: string, data: Buffer): Uint8Array[] {
   const segments: Uint8Array[] = [];
   pushFileMember(segments, name, data, DEFAULT_FILE_MODE, undefined);
-  segments.push(TAR_END_OF_ARCHIVE);
+  pushEndOfArchive(segments);
   return segments;
 }
 
@@ -174,7 +182,7 @@ export function tarFromEntries(entries: TarEntry[]): Uint8Array[] {
       throw new UnsafeArchiveError('special-entry', 'Archive contains a device, FIFO or socket entry.');
     }
   }
-  segments.push(TAR_END_OF_ARCHIVE);
+  pushEndOfArchive(segments);
   return segments;
 }
 
@@ -185,13 +193,11 @@ export function tarFromEntries(entries: TarEntry[]): Uint8Array[] {
 const TAR_RECORD_BYTES = 20 * TAR_BLOCK_BYTES;
 
 /**
- * `tarFromEntries` written over `unpacked` when every body is where the joined tar would put it. Two passes: the first
- * only checks, so `unpacked` is changed only when the second runs. The result is the tar cut out of `unpacked` while
- * what follows it is at most one record. A longer tail returns one copy of the tar (never `unpacked` or the shared
- * end-of-archive constant), so the bytes behind a small tar are not held. A layout change returns the segments, which
- * the caller joins or writes out.
+ * The segments of `tarFromEntries`, written over `unpacked` and returned as one view of it when every body is where the
+ * joined tar puts it and at most one record follows the tar. Otherwise the segments are returned as they are, and
+ * `unpacked` is not written, since the first pass only checks.
  */
-function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Array[] {
+function tarSegmentsOverUnpacked(unpacked: Buffer, entries: TarEntry[]): Uint8Array[] {
   const segments = tarFromEntries(entries);
   const start = unpacked.byteOffset;
   const end = start + unpacked.length;
@@ -202,7 +208,7 @@ function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Arra
     position += segment.length;
   }
   const slack = unpacked.length - position;
-  if (slack < 0 || slack > TAR_RECORD_BYTES) return [Buffer.concat(segments)];
+  if (slack < 0 || slack > TAR_RECORD_BYTES) return segments;
   position = 0;
   for (const segment of segments) {
     if (!isOldBody(segment)) unpacked.set(segment, position);
@@ -253,7 +259,7 @@ function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request: TarPol
 /** Vets the tar in `unpacked` and returns it written again, in `unpacked` itself when the layout allows; the caller gives `unpacked` up. */
 function consumeUnpackedAsVettedTar(unpacked: Buffer, archiveBytes: number, request: TarPolicyRequest): StreamedArchive {
   const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
-  return { segments: tarFromEntriesInPlace(unpacked, entries), skippedLinks };
+  return { segments: tarSegmentsOverUnpacked(unpacked, entries), skippedLinks };
 }
 
 /** The unpacked bytes are within the archive caps but would not fit the in-process budget: the disk pipeline serves the request. */
@@ -324,7 +330,7 @@ export async function streamToTar(request: StreamRunOptions & { compressor: Stre
       signal: request.signal,
       onLimit: () => (memoryBound < cap ? new ExceedsMemoryBudget() : unpackedBytesCapError(archiveBytes, LIMITS)),
       headroomBytes: memberHeaderBytes(memberName),
-      tailroomBytes: TAR_BLOCK_BYTES - 1 + TAR_END_OF_ARCHIVE.length,
+      tailroomBytes: TAR_BLOCK_BYTES - 1 + TAR_END_OF_ARCHIVE_BYTES,
     });
   } catch (err) {
     if (err instanceof ExceedsMemoryBudget) return null;
@@ -405,7 +411,7 @@ function wrapInPlace(output: SevenZipOutput, name: string): Uint8Array[] {
   if (output.frame === undefined || header.length !== output.headroomBytes) return wrapAsMember(name, data);
   const padding = blockPadding(data.length);
   const bodyEnd = output.headroomBytes + data.length;
-  const tarEnd = bodyEnd + padding + TAR_END_OF_ARCHIVE.length;
+  const tarEnd = bodyEnd + padding + TAR_END_OF_ARCHIVE_BYTES;
   output.frame.fill(0, bodyEnd, tarEnd);
   header.copy(output.frame, 0);
   return [output.frame.subarray(0, tarEnd)];
@@ -510,7 +516,7 @@ export async function sevenZipToTar(request: StreamRunOptions): Promise<Streamed
     segments.push(buildTarEntryHeaders({ filename: name, size: data.length, mode: unixModeOf(file.attributes) ?? DEFAULT_FILE_MODE, mtime }), data);
     pushPadding(segments, data.length);
   });
-  segments.push(TAR_END_OF_ARCHIVE);
+  pushEndOfArchive(segments);
   return { segments, skippedLinks };
 }
 

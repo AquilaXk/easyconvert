@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readTarEntries } from '../src/lib/conversions/archive';
-import { memberNameFor, streamToTar, TAR_END_OF_ARCHIVE, tarFromEntries, wrapAsMember, type StreamRunOptions } from '../src/lib/conversions/archive-stream';
+import { memberNameFor, streamToTar, tarFromEntries, wrapAsMember, type StreamRunOptions } from '../src/lib/conversions/archive-stream';
 import { classifyUnpacked } from '../src/lib/conversions/archive-stream-route';
 import { convertWithNative7z } from '../src/worker/engines';
 import type { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
@@ -348,33 +348,14 @@ describe('the bytes that follow the end-of-archive blocks', () => {
     expect(Buffer.concat(segments).equals(expected)).toBe(true);
   });
 
-  it('are left out of the result, which is one copy outside the unpacked bytes that leaves them as they were, when they are more than one record', async () => {
+  it('are left out of the result, and the unpacked bytes are not written, when they are more than one record', async () => {
     const tar = tarWithTrailingZeros(TAR_RECORD_BYTES + 1);
 
     const { unpacked, segments } = await viaGzip(tar);
 
     expect(unpacked.length - expected.length).toBe(TAR_RECORD_BYTES + 1);
-    expect(segments).toHaveLength(1);
-    expect(segments[0].buffer).not.toBe(unpacked.buffer);
-    expect(Buffer.from(segments[0]).equals(expected)).toBe(true);
+    expect(Buffer.concat(segments).equals(expected)).toBe(true);
     expect(unpacked.equals(tar)).toBe(true);
-  });
-
-  it.each([
-    ['a symbolic link that is left out', Buffer.concat([hostileTarMember({ name: 'link', typeflag: '2', linkname: 'a.txt' }), hostileTarEnd()]), SKIP_LINKS],
-    ['the current directory', Buffer.concat([hostileTarMember({ name: './', typeflag: '5' }), hostileTarEnd()]), {}],
-  ])('give a result that is not shared with later archives, when a tar of only %s has more than one record behind it', async (_name, entries, request) => {
-    const tar = Buffer.concat([entries, Buffer.alloc(TAR_RECORD_BYTES + 1)]);
-    const empty = referenceTarFromCopy(tar);
-    expect(empty.equals(TAR_END_OF_ARCHIVE)).toBe(true);
-
-    const { segments } = await viaGzip(tar, request);
-
-    expect(segments).toHaveLength(1);
-    expect(segments[0].buffer).not.toBe(TAR_END_OF_ARCHIVE.buffer);
-    expect(Buffer.from(segments[0]).equals(empty)).toBe(true);
-    segments[0].fill(0xff);
-    expect(TAR_END_OF_ARCHIVE.every((byte) => byte === 0)).toBe(true);
   });
 
   oracleTest(
