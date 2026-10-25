@@ -187,7 +187,8 @@ const TAR_RECORD_BYTES = 20 * TAR_BLOCK_BYTES;
 /**
  * `tarFromEntries` written over `unpacked` when every body is where the joined tar would put it. Two passes: the first
  * only checks, so `unpacked` is changed only when the second runs. The result is the tar cut out of `unpacked` while
- * what follows it is at most one record, and an exact copy of it otherwise, so the 30 MiB behind a small tar are not held.
+ * what follows it is at most one record. A layout change or a longer tail returns the segments, which the caller joins
+ * or writes out, so the bytes behind a small tar are not held.
  */
 function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Array[] {
   const segments = tarFromEntries(entries);
@@ -199,14 +200,14 @@ function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Arra
     if (isOldBody(segment) && segment.byteOffset !== start + position) return segments;
     position += segment.length;
   }
-  if (position > unpacked.length) return segments;
+  const slack = unpacked.length - position;
+  if (slack < 0 || slack > TAR_RECORD_BYTES) return segments;
   position = 0;
   for (const segment of segments) {
     if (!isOldBody(segment)) unpacked.set(segment, position);
     position += segment.length;
   }
-  const tar = unpacked.subarray(0, position);
-  return [unpacked.length - position <= TAR_RECORD_BYTES ? tar : Buffer.from(tar)];
+  return [unpacked.subarray(0, position)];
 }
 
 interface TarPolicyRequest {
