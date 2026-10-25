@@ -1,11 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { crc32 } from 'node:zlib';
 import { beforeAll, describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
-import { extractZipArchive, createZipArchive, crc32 } from '../src/lib/conversions/archive';
+import { extractZipArchive, createZipArchive } from '../src/lib/conversions/archive';
 import { decodeWoff2 } from '../src/lib/conversions/font';
 import { Woff2FormatError } from '../src/lib/conversions/font-woff2';
 import { CorruptStreamError } from '../src/lib/types';
