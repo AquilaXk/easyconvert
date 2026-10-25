@@ -174,7 +174,7 @@
     },
     {
       "families": ["video", "audio"],
-      "match": "^src/lib/conversions/media-(decode-failures|dropped-streams|empty-output|encoder-threads|ffmpeg-args|ffmpeg-run|ffprobe|job-limit|packaging|stream-plan|undecodable-audio)\\.ts$"
+      "match": "^src/lib/conversions/media-(decode-failures|dropped-streams|empty-output|encoder-threads|ffmpeg-args|ffmpeg-run|ffprobe|filter-escape|job-limit|packaging|stream-plan|undecodable-audio)\\.ts$"
     },
     {
       "families": ["ocr"],

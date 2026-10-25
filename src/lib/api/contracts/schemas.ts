@@ -7,6 +7,8 @@ import { DROPPED_STREAM_KINDS, DROPPED_STREAM_REASONS, MAX_DROPPED_STREAMS, MAX_
 import { MAX_CONVERSION_WARNING_CHARS, MAX_CONVERSION_WARNINGS } from '../conversion-warnings';
 import { MAX_FALLBACK_REASON_CHARS } from '../engine-trace';
 import { PIPELINE_OPERATIONS } from './enums';
+import { MANIFEST_EXTENSION_BY_FORMAT_SCHEMA, MASTER_PLAYLIST_NAME_SCHEMA, PACKAGING_FORMATS } from '@/lib/conversions/media-packaging';
+import { SERVER_ONLY_KEYWORD, SERVER_ONLY_OPTION_KEYS } from './server-only-options';
 
 /** One language code (letters, digits, `-` and `_`), then up to the per-request limit of further ones joined with `+`. */
 const OCR_LANGUAGE_PATTERN = `^[A-Za-z0-9_-]+(\\+[A-Za-z0-9_-]+){0,${OCR_MAX_LANGUAGES_PER_REQUEST - 1}}$`;
@@ -185,6 +187,7 @@ export const PdfOptimizeOptionsSchema = {
 export const ConversionOptionsSchema = {
   $id: 'https://easyconvert.local/schemas/conversion-options.json',
   type: 'object',
+  [SERVER_ONLY_KEYWORD]: SERVER_ONLY_OPTION_KEYS,
   properties: {
     // Image & visual options
     quality: {
@@ -780,21 +783,19 @@ export const ConversionOptionsSchema = {
     subtitles: {
       type: 'object',
       required: ['mode'],
-      description: 'Subtitle rendering and stream management options.',
+      description:
+        'Subtitle rendering and stream management options. Subtitles come from a stream of the input, chosen with `streamIndex`; an external subtitle file is not accepted, and `input` answers 400.',
+      [SERVER_ONLY_KEYWORD]: ['input'],
       properties: {
         mode: {
           type: 'string',
           enum: ['burn', 'soft', 'extract'],
           description: 'Subtitle operation mode: burn into video filter, soft embed in container, or extract stream.',
         },
-        input: {
-          type: 'string',
-          description: 'External subtitle source file path or identifier.',
-        },
         streamIndex: {
           type: 'integer',
           minimum: 0,
-          description: 'Subtitle stream index within source or external file.',
+          description: 'Subtitle stream index within the input, counted among its subtitle streams.',
         },
         format: {
           type: 'string',
@@ -836,7 +837,7 @@ export const ConversionOptionsSchema = {
       properties: {
         format: {
           type: 'string',
-          enum: ['hls', 'dash'],
+          enum: [...PACKAGING_FORMATS],
           description: 'Streaming delivery packaging format standard.',
         },
         segmentSeconds: {
@@ -870,10 +871,7 @@ export const ConversionOptionsSchema = {
           description:
             'Multi-bitrate encoding ladder rungs. Defaults to 1080p, 720p, 480p if omitted. Rungs taller than the source are dropped, a rung never asks for more bitrate than the source carries, and each rung peaks at 1.07x its bitrate.',
         },
-        masterPlaylistName: {
-          type: 'string',
-          description: 'Custom master playlist filename (e.g. master.m3u8 or manifest.mpd).',
-        },
+        masterPlaylistName: MASTER_PLAYLIST_NAME_SCHEMA,
         audioCodec: {
           type: 'string',
           enum: ['aac', 'opus'],
@@ -885,6 +883,7 @@ export const ConversionOptionsSchema = {
           description: 'Video codec for packaged streams.',
         },
       },
+      allOf: MANIFEST_EXTENSION_BY_FORMAT_SCHEMA,
     },
     videoResolution: {
       type: 'string',

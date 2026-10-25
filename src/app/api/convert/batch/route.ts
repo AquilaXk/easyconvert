@@ -25,11 +25,31 @@ import {
   createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
+import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
 // Maximum allowed payload for real-time zero-retention in-memory conversion
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+
+/**
+ * The options every file of the batch is converted with, from the multipart `options` field, or the 400 that refuses
+ * them: JSON that is not an object, or an object the options schema rejects (a server-only key among them).
+ */
+function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { options: ConversionOptions } | { problem: NextResponse } {
+  if (!optionsRaw) return { options: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(optionsRaw);
+  } catch {
+    return { problem: NextResponse.json({ success: false, error: 'Invalid JSON for options.' }, { status: 400 }) };
+  }
+  if (!isConversionOptionsObject(parsed)) {
+    return { problem: NextResponse.json({ success: false, error: 'The "options" field must be a JSON object.' }, { status: 400 }) };
+  }
+  const problem = legacyOptionsProblem(parsed, instanceUri);
+  return problem ? { problem } : { options: parsed };
+}
 
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
@@ -124,22 +144,14 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    let defaultOptions: ConversionOptions = {};
-    if (optionsRaw) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(optionsRaw);
-      } catch {
-        return NextResponse.json(
-          { success: false, error: 'Invalid JSON for options.' },
-          { status: 400 }
-        );
+    const parsedOptions = parseBatchOptions(optionsRaw, instanceUri);
+    if ('problem' in parsedOptions) {
+      if (reservationId) {
+        await rollbackQuota(reservationId);
       }
-      if (!isConversionOptionsObject(parsed)) {
-        return await failWithRollback(400, 'The "options" field must be a JSON object.');
-      }
-      defaultOptions = parsed;
+      return parsedOptions.problem;
     }
+    const defaultOptions = parsedOptions.options;
 
     const planned: Array<{ file: File; extension: string; targetFormat: string }> = [];
     for (const file of files) {
