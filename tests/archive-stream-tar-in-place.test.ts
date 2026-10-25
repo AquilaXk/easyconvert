@@ -84,6 +84,22 @@ function isWindowOf(source: Uint8Array, unpacked: Buffer): boolean {
   return source.buffer === unpacked.buffer && source.byteOffset >= unpacked.byteOffset && source.byteOffset + source.length <= unpacked.byteOffset + unpacked.length;
 }
 
+/**
+ * The bytes that `Uint8Array.prototype.set` and `Buffer.prototype.copy` wrote into `unpacked`: the length of each source of a
+ * `set` whose target is a window of it, and what each `copy` into a window of it returned. A body that went through a temporary
+ * and back is counted here even though the temporary is no window of `unpacked`.
+ */
+function bytesWrittenInto(unpacked: Buffer, writes: { mock: { calls: unknown[][]; contexts: unknown[] } }, copies: { mock: { calls: unknown[][]; results: { value: unknown }[] } }): number {
+  let total = 0;
+  writes.mock.calls.forEach(([source], index) => {
+    if (isWindowOf(writes.mock.contexts[index] as Uint8Array, unpacked)) total += (source as Uint8Array).length;
+  });
+  copies.mock.calls.forEach(([target], index) => {
+    if (isWindowOf(target as Uint8Array, unpacked)) total += copies.mock.results[index].value as number;
+  });
+  return total;
+}
+
 /** A fresh pool slab, so that the copy and the headers written after it fit in it. */
 function startOfPoolSlab(): void {
   let probe = Buffer.allocUnsafe(1);
@@ -161,7 +177,10 @@ describe('a tar that gzip, bzip2 or xz carries', () => {
     expect(sources.length).toBeGreaterThan(0);
     expect(sources.filter((source) => isWindowOf(source, unpacked))).toEqual([]);
     expect(copies.mock.contexts.filter((source) => isWindowOf(source as Uint8Array, unpacked))).toEqual([]);
-    expect(moves.mock.contexts.filter((target) => (target as Uint8Array).buffer === unpacked.buffer)).toEqual([]);
+    expect(moves.mock.contexts.filter((target) => isWindowOf(target as Uint8Array, unpacked))).toEqual([]);
+    const bodyBytes = bodiesBefore.reduce((total, body) => total + body.length, 0);
+    expect(bodyBytes).toBe('first body'.length + BODY_BYTES);
+    expect(bytesWrittenInto(unpacked, writes, copies)).toBe(expected.length - bodyBytes);
   });
 
   it('writes zeros behind each body, whatever the old padding held', async () => {
@@ -363,21 +382,17 @@ describe('the bytes that follow the end-of-archive blocks', () => {
     expect(unpacked.equals(tar)).toBe(true);
   });
 
-  oracleTest(
-    'do not keep 30 MiB in memory behind the worker result',
-    ['7z'],
-    async () => {
-      vi.stubEnv('P7ZIP_PATH', getOracleToolPath('7z') as string);
+  it('do not keep 30 MiB in memory behind the worker result', async () => {
+    // The gzip route runs no child process, so the path only has to name a file for the worker to accept the engine.
+    vi.stubEnv('P7ZIP_PATH', process.execPath);
 
-      const result = await convertWithNative7z(zlib.gzipSync(tarWithTrailingZeros(30 * MIB)), 'gz', 'tar', {}, 'sample.tar.gz');
+    const result = await convertWithNative7z(zlib.gzipSync(tarWithTrailingZeros(30 * MIB)), 'gz', 'tar', {}, 'sample.tar.gz');
 
-      expect(result?.engineUsed).toBe('native-7z');
-      expect(result?.buffer?.equals(expected)).toBe(true);
-      // streamedArchiveResult joins the uncut segments with Buffer.concat, which may slice the pool slab but never keeps the 30 MiB.
-      expect(result?.buffer?.buffer.byteLength).toBeLessThan(MIB);
-    },
-    60_000
-  );
+    expect(result?.engineUsed).toBe('native-7z');
+    expect(result?.buffer?.equals(expected)).toBe(true);
+    // streamedArchiveResult joins the uncut segments with Buffer.concat, which may slice the pool slab but never keeps the 30 MiB.
+    expect(result?.buffer?.buffer.byteLength).toBeLessThan(MIB);
+  }, 60_000);
 });
 
 describe('the segments of a converted tar', () => {

@@ -88,8 +88,14 @@ export interface StreamRunOptions {
 }
 
 /**
- * The converted tar, as the byte ranges to write in order. A segment may be a view of the buffer the archive was unpacked
- * into, so the caller writes the segments out or joins them, and keeps a segment as it is only when it is the only one.
+ * The converted tar, as the byte ranges to write in order.
+ *
+ * A segment may alias bytes the caller does not own: the archive it passed in (a stored ZIP or RAR member, a stored entry
+ * of a tar packed into a ZIP) or the buffer the archive was unpacked into. It never is a buffer that this module owns, so
+ * two results never share a range because of the module, and a write through one result changes neither a later result nor
+ * a constant. A segment is a range of its `segment.buffer`, which is read only together with the segment's `byteOffset`
+ * and `byteLength`, never as the whole `ArrayBuffer`. The caller writes the segments out or joins them, and keeps a segment
+ * as it is only when it is the only one; a caller that must write to a result or to the input copies first.
  */
 export interface StreamedArchive {
   segments: Uint8Array[];
@@ -280,7 +286,7 @@ export interface SevenZipRunOptions {
 }
 
 /** What 7-Zip wrote to stdout, and, when room was asked for, the buffer it sits in with that room around it. */
-interface SevenZipOutput {
+export interface SevenZipOutput {
   stdout: Buffer;
   frame?: Buffer;
   headroomBytes: number;
@@ -407,7 +413,7 @@ function memberHeaderBytes(name: string): number {
  * A tar around one member whose bytes already sit in a buffer with room before and after them: the header, the padding
  * and the end marker are written into that room. Falls back to a copying wrap when the room does not fit the header.
  */
-function wrapInPlace(output: SevenZipOutput, name: string): Uint8Array[] {
+export function wrapInPlace(output: SevenZipOutput, name: string): Uint8Array[] {
   const data = output.stdout;
   const header = buildTarEntryHeaders({ filename: name, size: data.length, directory: false, mode: DEFAULT_FILE_MODE, mtime: undefined });
   assertHeaderDeclaresSize(header, data.length);

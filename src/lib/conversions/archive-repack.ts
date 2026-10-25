@@ -51,6 +51,10 @@ import { ZipWriter, type ZipDeflater, type ZipEntryInput } from './zip-writer';
  * caller then hands the request to the general pipeline, which re-reads the archive from the start and reports whatever
  * is wrong with its own typed errors. These routes only ever shorten a conversion that would have succeeded; they never
  * decide on a refusal.
+ *
+ * The segments of a result follow the contract of `StreamedArchive` (archive-stream.ts): byte ranges that may alias the
+ * source (the stored member of a RAR, a stored entry of a tar packed into a ZIP, the bodies of a tar), never a buffer of this
+ * module, whose headers, padding and end blocks are new in every result.
  */
 
 export interface RepackRequest {
@@ -281,7 +285,7 @@ function listedFrom(entry: { filename: string; isDirectory: boolean; sizeBytes: 
   return { path: entry.filename, isDirectory: entry.isDirectory, sizeBytes: entry.sizeBytes, linkKind: entry.linkKind ?? null, isSpecial: false };
 }
 
-interface TarMember {
+export interface TarMember {
   filename: string;
   isDirectory: boolean;
   data: Buffer;
@@ -290,7 +294,7 @@ interface TarMember {
 }
 
 /** A tar written from members whose paths and sizes have passed the policy: canonical headers, the end blocks, no mode bits beyond rwx. */
-function tarFromMembers(members: readonly TarMember[]): Uint8Array[] {
+export function tarFromMembers(members: readonly TarMember[]): Uint8Array[] {
   const segments: Uint8Array[] = [];
   for (const member of lastEntryPerPath([...members])) {
     const mtime = member.mtimeMs === undefined ? undefined : new Date(member.mtimeMs);
