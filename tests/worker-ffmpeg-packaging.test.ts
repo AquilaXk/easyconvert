@@ -36,7 +36,6 @@ const CODEC_LIBRARIES: ReadonlyArray<{ dev: string; runtime: string; flag: strin
   { dev: 'libsoxr-dev', runtime: 'libsoxr0', flag: '--enable-libsoxr' },
   { dev: 'libzimg-dev', runtime: 'libzimg2', flag: '--enable-libzimg' },
   { dev: 'libass-dev', runtime: 'libass9', flag: '--enable-libass' },
-  { dev: 'libxml2-dev', runtime: 'libxml2', flag: '--enable-libxml2' },
   { dev: 'libva-dev', runtime: 'libva-drm2', flag: '--enable-vaapi' },
   { dev: 'libdrm-dev', runtime: 'libdrm2', flag: '--enable-libdrm' },
 ];
@@ -65,6 +64,13 @@ describe('the runner of the worker image', () => {
     expect(install).not.toMatch(/\blibavcodec/);
   });
 
+  it('records the FFmpeg version and source digest in the tool-versions manifest from the install script, not from a second copy', () => {
+    const manifest = instructions(runner, 'RUN').find((argument) => argument.includes('/licenses/tool-versions.txt')) ?? '';
+    expect(manifest).toMatch(/; cat \/usr\/share\/doc\/ffmpeg\/tool-version\.txt; \} > \/licenses\/tool-versions\.txt$/);
+    const line = INSTALL.match(/printf '([^']*)\\n' "\$FFMPEG_VERSION" "\$FFMPEG_SHA256" > "\$INSTALL_DIR\/share\/doc\/ffmpeg\/tool-version\.txt"/);
+    expect(line?.[1]).toBe('ffmpeg %s (source, sha256 %s)');
+  });
+
   it('copies the build, the licence text and the source note, finds the programs where the worker looks, and fails the build when they cannot start', () => {
     expect(instructions(runner, 'COPY').filter((argument) => argument.includes('--from=ffmpeg'))).toEqual([
       '--from=ffmpeg /opt/ffmpeg /opt/ffmpeg',
@@ -75,6 +81,7 @@ describe('the runner of the worker image', () => {
     expect(check).toContain('ln -s /opt/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe');
     expect(check).toContain("! ldd /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /opt/ffmpeg/lib/*.so.* | grep -q 'not found'");
     expect(check, '/usr/bin comes first in the worker search order, so a package copy would shadow the build').toContain('test ! -e /usr/bin/ffmpeg');
+    expect(check, 'the same holds for ffprobe, which the worker also looks for in /usr/bin first').toContain('test ! -e /usr/bin/ffprobe');
     expect(check).toContain('ffmpeg -version');
     expect(instructions(runner, 'RUN')).toContain('cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE');
   });
@@ -110,12 +117,15 @@ describe('the install script of FFmpeg', () => {
     for (const flag of ['--enable-gpl', '--disable-autodetect', '--disable-network', '--disable-ffplay', '--enable-indev=lavfi']) expect(INSTALL, flag).toContain(flag);
     const configure = INSTALL.slice(INSTALL.indexOf('./configure'), INSTALL.indexOf('make -j'));
     expect(configure).not.toMatch(/--enable-nonfree|--enable-version3|libfdk|--enable-libaom|--enable-gnutls|--enable-openssl/);
+    expect(configure, 'DASH input is not built: its demuxer probes by content and would read local segment files named by an upload').not.toContain('--enable-libxml2');
+    expect(DOCKERFILE).not.toMatch(/\blibxml2-dev\b/);
   });
 
-  it('builds position independent executables with a read-only relocation table and immediate binding, and fails the build when a program lacks one', () => {
+  it('builds position independent executables, and gives every program and shared library a read-only relocation table, immediate binding and a RUNPATH equal to the install lib directory, failing the build otherwise', () => {
     expect(INSTALL).toContain('--toolchain=hardened');
+    expect(INSTALL).toContain('"$INSTALL_DIR"/lib/*.so.*; do');
     const build = INSTALL.indexOf('make -j"$jobs"');
-    const checks = ['readelf -h "$INSTALL_DIR/bin/$program"', 'readelf -lW -d "$INSTALL_DIR/bin/$program"', "'Type:[[:space:]]*DYN'", 'GNU_RELRO', 'BIND_NOW'].map((check) => INSTALL.indexOf(check));
+    const checks = ['readelf -h "$INSTALL_DIR/bin/$program"', 'readelf -lW -d "$elf"', "'Type:[[:space:]]*DYN'", 'GNU_RELRO', 'BIND_NOW', "'(RPATH)'", 'Library runpath: [$INSTALL_DIR/lib]'].map((check) => INSTALL.indexOf(check));
     for (const position of checks) expect(position).toBeGreaterThan(build);
     expect(Math.max(...checks)).toBeLessThan(INSTALL.indexOf('install -d "$INSTALL_DIR/share/doc/ffmpeg"'));
   });

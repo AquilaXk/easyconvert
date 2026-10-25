@@ -124,7 +124,6 @@ RUN apt-get update \
         libsoxr-dev \
         libzimg-dev \
         libass-dev \
-        libxml2-dev \
         libva-dev \
         libdrm-dev \
         libffmpeg-nvenc-dev \
@@ -232,7 +231,6 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         libwebpmux3 \
         libx264-164 \
         libx265-215 \
-        libxml2 \
         libzimg2 \
         libdrm2 \
         libva-drm2 \
@@ -329,6 +327,7 @@ RUN ln -s /opt/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg \
     && ln -s /opt/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe \
     && ! ldd /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /opt/ffmpeg/lib/*.so.* | grep -q 'not found' \
     && test ! -e /usr/bin/ffmpeg \
+    && test ! -e /usr/bin/ffprobe \
     && ffmpeg -version | head -n 1 \
     && ffprobe -version | head -n 1
 
@@ -393,7 +392,7 @@ RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.
 RUN mkdir -p /licenses/pdfjs-dist-wasm && cp /app/node_modules/pdfjs-dist/wasm/LICENSE_* /licenses/pdfjs-dist-wasm/
 # The versions this image was built with (every Debian package, and the Node.js runtime), kept next to the notices.
-RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; } > /licenses/tool-versions.txt
+RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; cat /usr/share/doc/ffmpeg/tool-version.txt; } > /licenses/tool-versions.txt
 RUN chmod -R a+rX /licenses
 
 # 5. Drop to unprivileged non-root user (UID:GID 10001:10001)

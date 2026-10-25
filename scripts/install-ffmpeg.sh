@@ -27,7 +27,7 @@ INSTALL_DIR="${1:-/opt/ffmpeg}"
 REQUIRED_ENCODERS="libx264 libx265 libvpx-vp9 libsvtav1 libopus libvorbis libmp3lame libtheora libwebp_anim aac flac wmav2 ac3 mpeg4 prores_ks h264_vaapi hevc_vaapi h264_nvenc hevc_nvenc"
 REQUIRED_DECODERS="libdav1d aac hevc h264 vp9 av1 opus vorbis flac"
 REQUIRED_FILTERS="zscale subtitles bwdif scale fps aresample loudnorm"
-REQUIRED_BUILD_FLAGS="--enable-libsoxr --enable-libzimg --enable-libass --enable-libxml2"
+REQUIRED_BUILD_FLAGS="--enable-libsoxr --enable-libzimg --enable-libass"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -77,7 +77,6 @@ cd "$source_dir"
   --enable-libsoxr \
   --enable-libzimg \
   --enable-libass \
-  --enable-libxml2 \
   --enable-vaapi \
   --enable-libdrm \
   --enable-ffnvcodec \
@@ -89,14 +88,19 @@ make -j"$jobs" > "$work/make.log" 2>&1 || { tail -n 40 "$work/make.log" >&2; exi
 make install-progs install-libs > "$work/install.log" 2>&1 || { tail -n 40 "$work/install.log" >&2; exit 1; }
 rm -rf "$INSTALL_DIR/lib/pkgconfig"
 
-# A build that lost a hardening property is a failed build: each program must be position independent (ELF type DYN), have a
-# read-only relocation table (GNU_RELRO) and bind every symbol at load time (BIND_NOW).
+# A build that lost a hardening property is a failed build: each program must be position independent (ELF type DYN), and every
+# ELF, the programs and the libav* libraries that hold the demuxers and decoders alike, must have a read-only relocation table
+# (GNU_RELRO), bind every symbol at load time (BIND_NOW) and find the libraries through a RUNPATH equal to the install lib directory
+# (no RPATH, which the loader would search before LD_LIBRARY_PATH).
 for program in ffmpeg ffprobe; do
-  elf_header="$(readelf -h "$INSTALL_DIR/bin/$program")"
-  elf_dynamic="$(readelf -lW -d "$INSTALL_DIR/bin/$program")"
-  grep -q 'Type:[[:space:]]*DYN' <<< "$elf_header" || { echo "$program is not a position independent executable" >&2; exit 1; }
-  grep -q 'GNU_RELRO' <<< "$elf_dynamic" || { echo "$program has no read-only relocation segment" >&2; exit 1; }
-  grep -Eq 'BIND_NOW|FLAGS_1.*NOW' <<< "$elf_dynamic" || { echo "$program does not bind its symbols at load time" >&2; exit 1; }
+  grep -q 'Type:[[:space:]]*DYN' <<< "$(readelf -h "$INSTALL_DIR/bin/$program")" || { echo "$program is not a position independent executable" >&2; exit 1; }
+done
+for elf in "$INSTALL_DIR"/bin/ffmpeg "$INSTALL_DIR"/bin/ffprobe "$INSTALL_DIR"/lib/*.so.*; do
+  elf_dynamic="$(readelf -lW -d "$elf")"
+  grep -q 'GNU_RELRO' <<< "$elf_dynamic" || { echo "$elf has no read-only relocation segment" >&2; exit 1; }
+  grep -Eq 'BIND_NOW|FLAGS_1.*NOW' <<< "$elf_dynamic" || { echo "$elf does not bind its symbols at load time" >&2; exit 1; }
+  grep -q '(RPATH)' <<< "$elf_dynamic" && { echo "$elf has an RPATH" >&2; exit 1; }
+  grep -Fq "Library runpath: [$INSTALL_DIR/lib]" <<< "$elf_dynamic" || { echo "$elf has no RUNPATH equal to $INSTALL_DIR/lib" >&2; exit 1; }
 done
 
 ffmpeg_bin="$INSTALL_DIR/bin/ffmpeg"
@@ -123,6 +127,7 @@ install -d "$INSTALL_DIR/share/doc/ffmpeg"
 install -m 0644 COPYING.GPLv2 "$INSTALL_DIR/share/doc/ffmpeg/copyright"
 install -m 0644 LICENSE.md "$INSTALL_DIR/share/doc/ffmpeg/LICENSE.md"
 printf 'FFmpeg %s, unmodified, built from %s\nSHA-256 %s\n' "$FFMPEG_VERSION" "$FFMPEG_URL" "$FFMPEG_SHA256" > "$INSTALL_DIR/share/doc/ffmpeg/SOURCE"
+printf 'ffmpeg %s (source, sha256 %s)\n' "$FFMPEG_VERSION" "$FFMPEG_SHA256" > "$INSTALL_DIR/share/doc/ffmpeg/tool-version.txt"
 printf '%s\n' "$buildconf" > "$INSTALL_DIR/share/doc/ffmpeg/buildconf.txt"
 
 if [ "$(id -u)" -eq 0 ] && [ "$INSTALL_DIR" != "/usr/local" ]; then
