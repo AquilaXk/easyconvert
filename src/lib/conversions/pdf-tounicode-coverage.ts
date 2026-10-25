@@ -18,8 +18,8 @@
 const MAX_MAP_RANGE = 2 ** 24 - 1;
 /** The codes of a two-byte code space, which Identity-H selects. */
 const CODE_SPACE = 0x10000;
-/** A hex string, `[`, `]`, a comment, a literal string, or a word (name, number or operator). */
-const TOKEN = /<([0-9A-Fa-f\s]*)>|\[|\]|%[^\r\n]*|\([^)]*\)|[^\s<>[\]()%]+/g;
+/** A hex string, `[`, `]`, a comment, a literal string (to the end of the text when unterminated, as the lexer reads it, so the scan stays linear), or a word (name, number or operator). */
+const TOKEN = /<([0-9A-Fa-f\s]*)>|\[|\]|%[^\r\n]*|\([^)]*\)?|[^\s<>[\]()%]+/g;
 const USECMAP = 'usecmap';
 const END_CMAP = 'endcmap';
 const BLOCK_END = /^end/;

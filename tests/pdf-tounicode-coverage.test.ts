@@ -66,4 +66,11 @@ describe('the codes of a ToUnicode CMap that have text', () => {
     expect(read.covers(0xffff)).toBe(true);
     expect(performance.now() - started).toBeLessThan(2_000);
   });
+
+  it('read a map of a million unterminated literal strings in linear time, as the lexer reads one to the end', () => {
+    const started = performance.now();
+    const read = coverageOf(`beginbfchar\n<0003> <0041>\nendbfchar\n${'('.repeat(1_000_000)}`);
+    expect(read.covers(3)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
 });
