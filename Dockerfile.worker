@@ -93,6 +93,48 @@ COPY scripts/install-ghostxps.sh /tmp/install-ghostxps.sh
 RUN /tmp/install-ghostxps.sh /opt/ghostxps
 
 # ==============================================================================
+# Stage 3c: Pinned FFmpeg (ffmpeg, ffprobe)
+# ==============================================================================
+# Every audio and video conversion. FFmpeg is built here from its unmodified release archive, pinned by SHA-256 in
+# scripts/install-ffmpeg.sh, against the codec libraries of this Debian release (the development packages named below; the runtime
+# stage installs the same libraries). Debian 13 ships FFmpeg 7.1, which decodes only part of an xHE-AAC stream, and trixie-backports
+# holds no newer one. The build is GPL-2.0-or-later (libx264 and libx265) with no nonfree component, and the worker runs it as a
+# separate sandboxed process; nothing links it into the application. The stage fails the build if a hardening property, a codec or
+# a filter the conversions name is missing.
+FROM ${NODE_IMAGE} AS ffmpeg
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        xz-utils \
+        build-essential \
+        nasm \
+        pkg-config \
+        libx264-dev \
+        libx265-dev \
+        libvpx-dev \
+        libsvtav1enc-dev \
+        libdav1d-dev \
+        libopus-dev \
+        libmp3lame-dev \
+        libvorbis-dev \
+        libtheora-dev \
+        libwebp-dev \
+        libsoxr-dev \
+        libzimg-dev \
+        libass-dev \
+        libva-dev \
+        libdrm-dev \
+        libffmpeg-nvenc-dev \
+        zlib1g-dev \
+        libbz2-dev \
+        liblzma-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-ffmpeg.sh /tmp/install-ffmpeg.sh
+RUN /tmp/install-ffmpeg.sh /opt/ffmpeg
+
+# ==============================================================================
 # Stage 4: Open CASCADE program (cad-convert)
 # ==============================================================================
 # STEP and IGES input and output. native/cad-convert is our own small program, built here against the unmodified Open CASCADE
@@ -156,7 +198,7 @@ FROM ${NODE_IMAGE} AS runner
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
-# 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip comes from the pinned stage; libdeflate-tools is the deflate encoder for ZIP and gzip payloads past 4 MiB; lbzip2 is the bzip2 encoder for tarballs of up to two blocks), and CJK Font Packages
+# 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip and FFmpeg come from the pinned stages, FFmpeg with the runtime libraries of the codecs it was built against; libdeflate-tools is the deflate encoder for ZIP and gzip payloads past 4 MiB; lbzip2 is the bzip2 encoder for tarballs of up to two blocks), and CJK Font Packages
 # The Open CASCADE libraries (STEP and IGES, see the cadconvert stage) are packaged with occt-misc, whose 55 MB of sample models and images
 # and 5 MB of resource files the program never reads (it converts all four targets of the 11 real samples with the directory removed, and
 # opens nothing under it); the dpkg exclusion keeps the directory out of the image and nothing else of the package.
@@ -175,7 +217,22 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         libcap2-bin \
         ca-certificates \
         curl \
-        ffmpeg \
+        libass9 \
+        libdav1d7 \
+        libmp3lame0 \
+        libopus0 \
+        libsoxr0 \
+        libsvtav1enc2 \
+        libtheoradec1 \
+        libtheoraenc1 \
+        libvorbisenc2 \
+        libvpx9 \
+        libwebp7 \
+        libwebpmux3 \
+        libx264-164 \
+        libx265-215 \
+        libzimg2 \
+        libdrm2 \
         libva-drm2 \
         mesa-va-drivers \
         $EXTRA_PKGS \
@@ -259,6 +316,21 @@ COPY --from=ghostxps /opt/ghostxps/bin/gxps /usr/local/bin/gxps
 COPY --from=ghostxps /opt/ghostxps/share/doc/ghostxps /usr/share/doc/ghostxps
 RUN gxps -v
 
+# FFmpeg (pinned release built in the ffmpeg stage). It loads its own libav* libraries from /opt/ffmpeg/lib (RUNPATH) and the codec
+# libraries installed above, and is found by the worker as /usr/local/bin/ffmpeg and ffprobe; the distribution's ffmpeg package is not
+# installed, or /usr/bin/ffmpeg would come first. Its licence text goes to /usr/share/doc/ffmpeg/copyright, which the notices step
+# below collects into /licenses with the system packages; the SOURCE file names the release archive it was built from. The build fails
+# if a library is missing or the programs do not start.
+COPY --from=ffmpeg /opt/ffmpeg /opt/ffmpeg
+COPY --from=ffmpeg /opt/ffmpeg/share/doc/ffmpeg /usr/share/doc/ffmpeg
+RUN ln -s /opt/ffmpeg/bin/ffmpeg /usr/local/bin/ffmpeg \
+    && ln -s /opt/ffmpeg/bin/ffprobe /usr/local/bin/ffprobe \
+    && ! ldd /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe /opt/ffmpeg/lib/*.so.* | grep -q 'not found' \
+    && test ! -e /usr/bin/ffmpeg \
+    && test ! -e /usr/bin/ffprobe \
+    && ffmpeg -version | head -n 1 \
+    && ffprobe -version | head -n 1
+
 # STEP and IGES reader and writer (built in the cadconvert stage). It needs the Open CASCADE runtime libraries installed above and no
 # resource files; the build fails if one of them is missing or the program does not start. The libraries' licence texts are collected
 # into /licenses with the other system packages by the notices step below.
@@ -316,10 +388,11 @@ RUN mkdir -p /licenses \
 COPY THIRD_PARTY_NOTICES.md /licenses/
 RUN cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE
 RUN cp /usr/share/doc/ghostxps/SOURCE /licenses/ghostxps.SOURCE
+RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.
 RUN mkdir -p /licenses/pdfjs-dist-wasm && cp /app/node_modules/pdfjs-dist/wasm/LICENSE_* /licenses/pdfjs-dist-wasm/
 # The versions this image was built with (every Debian package, and the Node.js runtime), kept next to the notices.
-RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; } > /licenses/tool-versions.txt
+RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; cat /usr/share/doc/ffmpeg/tool-version.txt; } > /licenses/tool-versions.txt
 RUN chmod -R a+rX /licenses
 
 # 5. Drop to unprivileged non-root user (UID:GID 10001:10001)

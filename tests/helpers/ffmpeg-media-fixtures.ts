@@ -17,6 +17,19 @@ function requireFfmpeg(): string {
   return found;
 }
 
+let majorVersion: number | undefined;
+
+/** The major version of the ffmpeg that authors the fixtures (6 for 6.1.1, 9 for 9.0.2); throws when its banner names none. */
+export function ffmpegMajorVersion(): number {
+  if (majorVersion === undefined) {
+    const banner = execFileSync(requireFfmpeg(), ['-version'], { encoding: 'utf8' });
+    const found = /^ffmpeg version n?(\d+)\./.exec(banner)?.[1];
+    if (found === undefined) throw new Error(`the ffmpeg banner names no release: ${banner.split('\n')[0]}`);
+    majorVersion = Number(found);
+  }
+  return majorVersion;
+}
+
 const encoderCache = new Map<string, boolean>();
 
 /** Throws OracleToolMissingError (a skip locally, a failure under ORACLE_STRICT_MODE=1) when ffmpeg lacks an encoder. */

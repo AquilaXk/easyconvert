@@ -66,9 +66,12 @@ function expectSamplesMatchPackets(samples: DemuxedMediaSample[], packets: Ffpro
     expect(Math.abs(sample.timestampMicros - Math.round(Number(packet.pts_time) * MICROS))).toBeLessThanOrEqual(ONE_MICRO);
     expect(sample.isKeyFrame).toBe(packet.flags.startsWith('K'));
     if (packet.duration_time !== undefined) {
-      expect(Math.abs((sample.durationMicros ?? Number.NaN) - Math.round(Number(packet.duration_time) * MICROS))).toBeLessThanOrEqual(
-        ONE_MICRO
-      );
+      const referenceMicros = Math.round(Number(packet.duration_time) * MICROS);
+      const sampleMicros = sample.durationMicros ?? Number.NaN;
+      // FFmpeg 8 and later reports the last packet of a track at its full length where earlier builds cut it at the end of the
+      // track, which the demuxer does as well: a shorter last sample is the cut.
+      const cutAtTrackEnd = index === packets.length - 1 && sampleMicros > 0 && sampleMicros < referenceMicros;
+      if (!cutAtTrackEnd) expect(Math.abs(sampleMicros - referenceMicros)).toBeLessThanOrEqual(ONE_MICRO);
     }
   });
 }
@@ -295,11 +298,13 @@ describe('demuxMp4 against ffprobe -show_packets -show_streams', () => {
     const mp4 = new Uint8Array(h264AacMp4());
     const full = ffprobeFrameCount(Buffer.from(mp4), 'mp4');
     const elst = findPath(mp4, listBoxes(mp4), ['moov', 'trak', 'edts', 'elst'])[0];
-    // elst version 0: version/flags, entry_count, then (segment_duration, media_time, rate) per entry; the movie
-    // timescale is 1000, so 500 cuts the 2 s video track to its first half second
+    // elst version 0: version/flags, entry_count, then (segment_duration, media_time, rate) per entry, in the movie timescale
+    // of the mvhd box (1000 before FFmpeg 8, the track's rate after), so half a second of it cuts the 2 s video track to its first half second
+    const mvhd = findPath(mp4, listBoxes(mp4), ['moov', 'mvhd'])[0];
     const view = new DataView(mp4.buffer, mp4.byteOffset, mp4.byteLength);
+    const movieTimescale = view.getUint32(mvhd.payloadStart + 12);
     expect(view.getUint32(elst.payloadStart + 4)).toBe(1);
-    view.setUint32(elst.payloadStart + 8, 500);
+    view.setUint32(elst.payloadStart + 8, movieTimescale / 2);
 
     expect(ffprobeFrameCount(Buffer.from(mp4), 'mp4')).toBeLessThan(full / 2);
     expect(() => demuxMp4(toArrayBuffer(mp4))).toThrow(EdgeUnsupportedError);

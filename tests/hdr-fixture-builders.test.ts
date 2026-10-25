@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import { floatToHalfBits, halfBitsToFloat, writeOpenExr, writeRgbOpenExr } from './helpers/openexr-writer';
-import { decodeExrWithFfmpeg, probeExr, probeStill } from './helpers/ffmpeg-exr';
+import { decodeExrWithFfmpeg, HALF_EXR_PIX_FMTS, probeExr, probeStill } from './helpers/ffmpeg-exr';
 import { skipWithoutTools } from './helpers/strict-skip';
 import { parseUltraHdrStructure, readHdrgmAttribute } from './helpers/ultrahdr-builder';
 import {
@@ -45,7 +45,6 @@ const HALF_TABLE: readonly [number, number][] = [
 ];
 
 const TWO_BYTES = 2;
-const FFPROBE_FLOAT_PIX_FMT = 'gbrpf32le';
 
 describe('floatToHalfBits', () => {
   it.each(HALF_TABLE)('encodes %s as 0x%s bits', (value, bits) => {
@@ -105,7 +104,8 @@ describe('writeOpenExr', () => {
     const rgb = new Float32Array([0.5, 0.25, 4, 1, 0, 0.1, 0.0, 0.2, 0.3, 8, 8, 8]);
     const file = writeRgbOpenExr(rgb, 2, 2, 'half');
     const info = probeExr(file);
-    expect(info).toMatchObject({ codec: 'exr', width: 2, height: 2, pixFmt: FFPROBE_FLOAT_PIX_FMT });
+    expect(info).toMatchObject({ codec: 'exr', width: 2, height: 2 });
+    expect(HALF_EXR_PIX_FMTS).toContain(info.pixFmt);
     const decoded = decodeExrWithFfmpeg(file);
     const expected = Array.from(rgb, (v) => halfBitsToFloat(floatToHalfBits(v)));
     expect(Array.from(decoded.rgb)).toEqual(expected);
