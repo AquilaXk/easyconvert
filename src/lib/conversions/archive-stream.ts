@@ -178,28 +178,38 @@ export function tarFromEntries(entries: TarEntry[]): Uint8Array[] {
   return segments;
 }
 
-/** `tarFromEntries` written over `unpacked` when every entry keeps its place; it changes `unpacked` only then. */
+/**
+ * What GNU tar and Python's tarfile pad a tar to (20 blocks): the zeros after the end blocks of a tar the way those write
+ * it. The bytes `unpacked` has beyond the rewritten tar stay in place up to one record; more is attacker-sized slack.
+ */
+const TAR_RECORD_BYTES = 20 * TAR_BLOCK_BYTES;
+
+/**
+ * `tarFromEntries` written over `unpacked` when every body is where the joined tar would put it. Two passes: the first
+ * only checks, so `unpacked` is changed only when the second runs. The result is the tar cut out of `unpacked` while
+ * what follows it is at most one record, and an exact copy of it otherwise, so the 30 MiB behind a small tar are not held.
+ */
 function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Array[] {
   const segments = tarFromEntries(entries);
-  const rewritten: { at: number; bytes: Uint8Array }[] = [];
   const start = unpacked.byteOffset;
   const end = start + unpacked.length;
+  const isOldBody = (segment: Uint8Array): boolean => segment.buffer === unpacked.buffer && segment.byteOffset >= start && segment.byteOffset + segment.length <= end;
   let position = 0;
   for (const segment of segments) {
-    const inUnpacked = segment.buffer === unpacked.buffer && segment.byteOffset >= start && segment.byteOffset + segment.length <= end;
-    if (inUnpacked) {
-      if (segment.byteOffset !== start + position) return segments;
-    } else {
-      rewritten.push({ at: position, bytes: segment });
-    }
+    if (isOldBody(segment) && segment.byteOffset !== start + position) return segments;
     position += segment.length;
   }
   if (position > unpacked.length) return segments;
-  for (const { at, bytes } of rewritten) unpacked.set(bytes, at);
-  return [unpacked.subarray(0, position)];
+  position = 0;
+  for (const segment of segments) {
+    if (!isOldBody(segment)) unpacked.set(segment, position);
+    position += segment.length;
+  }
+  const tar = unpacked.subarray(0, position);
+  return [unpacked.length - position <= TAR_RECORD_BYTES ? tar : Buffer.from(tar)];
 }
 
-export interface TarPolicyRequest {
+interface TarPolicyRequest {
   skipLinks?: boolean;
   collisionPolicy?: ArchiveCollisionPolicy;
 }
@@ -217,7 +227,7 @@ function unreadableTarError(err: unknown): Error {
  * links under `skipLinks`, devices, entry and size caps, collisions). What the reader did not read (data after the
  * end-of-archive blocks, bytes a different reader would interpret differently) is not in the result.
  */
-export function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request: TarPolicyRequest): { entries: TarEntry[]; skippedLinks: string[] } {
+function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request: TarPolicyRequest): { entries: TarEntry[]; skippedLinks: string[] } {
   let listing: ListedArchiveEntry[];
   try {
     listing = listTarEntries(tar);
@@ -239,7 +249,7 @@ export function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request:
 }
 
 /** Vets the tar in `unpacked` and returns it written again, in `unpacked` itself when the layout allows; the caller gives `unpacked` up. */
-export function consumeUnpackedAsVettedTar(unpacked: Buffer, archiveBytes: number, request: TarPolicyRequest): StreamedArchive {
+function consumeUnpackedAsVettedTar(unpacked: Buffer, archiveBytes: number, request: TarPolicyRequest): StreamedArchive {
   const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
   return { segments: tarFromEntriesInPlace(unpacked, entries), skippedLinks };
 }

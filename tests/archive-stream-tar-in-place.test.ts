@@ -1,20 +1,25 @@
+import { execFileSync } from 'node:child_process';
 import zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readTarEntries } from '../src/lib/conversions/archive';
-import { consumeUnpackedAsVettedTar, streamToTar, tarFromEntries, type TarPolicyRequest } from '../src/lib/conversions/archive-stream';
+import { streamToTar, tarFromEntries, type StreamRunOptions } from '../src/lib/conversions/archive-stream';
+import { getOracleToolPath } from './helpers/differential-oracle';
 import { hostileTarEnd, hostileTarMember } from './helpers/hostile-tar';
+import { oracleTest } from './helpers/oracle-test';
 
 const BLOCK = 512;
 const GNU_LONG_NAME_BYTES = 505;
-const KEEP_LAST_DUPLICATE: TarPolicyRequest = { collisionPolicy: 'overwrite' };
+/** One record of GNU tar and Python's tarfile: the output is padded with zeros to a multiple of this. */
+const TAR_RECORD_BYTES = 20 * BLOCK;
+const MIB = 1024 * 1024;
+const FRAME_HEAD = 300;
+const FRAME_TAIL = 700;
+type Policy = Pick<StreamRunOptions, 'skipLinks' | 'collisionPolicy'>;
+const KEEP_LAST_DUPLICATE: Policy = { collisionPolicy: 'overwrite' };
+const SKIP_LINKS: Policy = { skipLinks: true };
 
 function referenceTarFromCopy(tar: Buffer): Buffer {
   return Buffer.concat(tarFromEntries(readTarEntries(Buffer.from(tar), { ignoreLinks: true })));
-}
-
-function consume(tar: Buffer, request: TarPolicyRequest = {}): { unpacked: Buffer; segments: Uint8Array[] } {
-  const unpacked = Buffer.from(tar);
-  return { unpacked, segments: consumeUnpackedAsVettedTar(unpacked, tar.length, request).segments };
 }
 
 function paxRecord(key: string, value: string): Buffer {
@@ -31,29 +36,70 @@ function gnuLongName(name: string): Buffer {
   return hostileTarMember({ name: '././@LongLink', typeflag: 'L' }, Buffer.from(`${name}\0`));
 }
 
-function expectLayoutChanged(tar: Buffer): void {
-  const expected = referenceTarFromCopy(tar);
-  const { unpacked, segments } = consume(tar, KEEP_LAST_DUPLICATE);
-
-  expect(segments.length).toBeGreaterThan(1);
-  expect(Buffer.concat(segments).equals(expected)).toBe(true);
-  expect(unpacked.equals(tar)).toBe(true);
+function fileBodies(buffer: Buffer): Uint8Array[] {
+  return readTarEntries(buffer, { ignoreLinks: true })
+    .filter((entry) => entry.type === 'file' && entry.buffer.length > 0)
+    .map((entry) => entry.buffer);
 }
 
-function pooledCopy(bytes: Buffer): Buffer {
+/** What the reader hands the rewrite: the bodies are windows onto the very buffer that will be written over. */
+function expectBodiesToBeViewsOf(bodies: Uint8Array[], unpacked: Buffer): void {
+  expect(bodies.length).toBeGreaterThan(0);
+  for (const body of bodies) {
+    expect(body.buffer).toBe(unpacked.buffer);
+    expect(body.byteOffset).toBeGreaterThanOrEqual(unpacked.byteOffset);
+    expect(body.byteOffset + body.length).toBeLessThanOrEqual(unpacked.byteOffset + unpacked.length);
+  }
+}
+
+/** A fresh pool slab, so that the copy and the headers written after it fit in it. */
+function startOfPoolSlab(): void {
   let probe = Buffer.allocUnsafe(1);
   for (let attempt = 0; probe.byteOffset !== 0 && attempt < Buffer.poolSize; attempt++) probe = Buffer.allocUnsafe(1);
-  const copy = Buffer.allocUnsafe(bytes.length);
-  bytes.copy(copy);
-  return copy;
+  expect(probe.byteOffset).toBe(0);
+}
+
+interface Routed {
+  segments: Uint8Array[];
+  /** The buffer the gzip route took over, as it is after the call. */
+  unpacked: Buffer;
+  /** The bodies the reader finds in that buffer before the call. */
+  bodiesBefore: Uint8Array[];
+}
+
+/**
+ * Runs `streamToTar` on a gzip of `tar`. `place` puts the decoded bytes in the buffer the route will consume
+ * (a pooled buffer, a window of a larger one); by default it is the buffer zlib returned.
+ */
+async function viaGzip(tar: Buffer, request: Policy = {}, place: (decoded: Buffer) => Buffer = (decoded) => decoded): Promise<Routed> {
+  const gunzip = zlib.gunzip;
+  let unpacked: Buffer = Buffer.alloc(0);
+  let bodiesBefore: Uint8Array[] = [];
+  vi.spyOn(zlib, 'gunzip').mockImplementation(((input: Buffer, options: object, callback: (error: Error | null, result: Buffer) => void) =>
+    gunzip(input, options, (error, result) => {
+      if (error) return callback(error, result);
+      unpacked = place(result);
+      bodiesBefore = fileBodies(unpacked);
+      return callback(null, unpacked);
+    })) as never);
+  const result = await streamToTar({ ...request, compressor: 'gzip', source: { buffer: zlib.gzipSync(tar) }, p7zBin: '', originalFilename: 'sample.tar.gz', timeoutMs: 10_000 });
+  return { segments: result?.segments ?? [], unpacked, bodiesBefore };
+}
+
+async function expectLayoutChanged(tar: Buffer, request: Policy = KEEP_LAST_DUPLICATE): Promise<void> {
+  const { unpacked, segments } = await viaGzip(tar, request);
+
+  expect(segments.length).toBeGreaterThan(1);
+  expect(Buffer.concat(segments).equals(referenceTarFromCopy(tar))).toBe(true);
+  expect(unpacked.equals(tar)).toBe(true);
 }
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('consumeUnpackedAsVettedTar', () => {
-  it('writes new headers over the old ones when every entry keeps its place, without a second copy of the bodies', () => {
+describe('a tar that gzip, bzip2 or xz carries', () => {
+  it('has new headers written over the old ones when every entry keeps its place, without a second copy of the bodies', async () => {
     const tar = Buffer.concat([
       hostileTarMember({ name: 'a.txt', mode: 0o4755, magic: 'ustar ', version: ' \0', prefix: 'ignored' }, Buffer.from('first body')),
       hostileTarMember({ name: 'dir/', typeflag: '5' }),
@@ -64,45 +110,53 @@ describe('consumeUnpackedAsVettedTar', () => {
     const expected = referenceTarFromCopy(tar);
     expect(expected.equals(tar)).toBe(false);
 
-    const { unpacked, segments } = consume(tar);
+    const { unpacked, segments, bodiesBefore } = await viaGzip(tar);
 
+    expectBodiesToBeViewsOf(bodiesBefore, unpacked);
     expect(segments).toHaveLength(1);
     expect(segments[0].buffer).toBe(unpacked.buffer);
     expect(Buffer.concat(segments).equals(expected)).toBe(true);
   });
 
-  it('keeps the fast path when the unpacked bytes sit in a pooled buffer that the rewritten headers share', () => {
+  it('keeps the fast path when the unpacked bytes sit in a pooled buffer that the rewritten headers share', async () => {
     const canonical = referenceTarFromCopy(
       Buffer.concat([gnuLongName('n'.repeat(130)), hostileTarMember({ name: 'short' }, Buffer.from('body')), hostileTarEnd()])
     );
-    const unpacked = pooledCopy(canonical);
+    startOfPoolSlab();
+
+    const { unpacked, segments, bodiesBefore } = await viaGzip(canonical, {}, (decoded) => {
+      const pooled = Buffer.allocUnsafe(decoded.length);
+      decoded.copy(pooled);
+      return pooled;
+    });
+
     expect(unpacked.buffer.byteLength).toBe(Buffer.poolSize);
-
-    const { segments } = consumeUnpackedAsVettedTar(unpacked, canonical.length, {});
-
+    expectBodiesToBeViewsOf(bodiesBefore, unpacked);
+    const generated = tarFromEntries(readTarEntries(unpacked, { ignoreLinks: true })).filter((segment) => !bodiesBefore.includes(segment));
+    expect(generated.some((segment) => segment.buffer === unpacked.buffer)).toBe(true);
     expect(segments).toHaveLength(1);
     expect(segments[0].buffer).toBe(unpacked.buffer);
     expect(Buffer.concat(segments).equals(canonical)).toBe(true);
   });
 
-  it('leaves out what follows the end-of-archive blocks', () => {
+  it('leaves out what follows the end-of-archive blocks', async () => {
     const tar = Buffer.concat([
       hostileTarMember({ name: 'a.txt' }, Buffer.from('visible')),
       hostileTarEnd(),
       hostileTarMember({ name: 'hidden.txt' }, Buffer.from('HIDDEN')),
       hostileTarEnd(),
     ]);
-    const expected = referenceTarFromCopy(tar);
 
-    const { segments } = consume(tar);
+    const { segments } = await viaGzip(tar);
 
-    expect(Buffer.concat(segments).equals(expected)).toBe(true);
-    expect(Buffer.concat(segments).includes('HIDDEN')).toBe(false);
-    expect(Buffer.concat(segments)).toHaveLength(BLOCK + BLOCK + 2 * BLOCK);
+    const joined = Buffer.concat(segments);
+    expect(joined.equals(referenceTarFromCopy(tar))).toBe(true);
+    expect(joined.includes('HIDDEN')).toBe(false);
+    expect(joined).toHaveLength(BLOCK + BLOCK + 2 * BLOCK);
   });
 
-  it('gives the segments back, and writes nothing over the unpacked bytes, when a repeated name drops an entry', () => {
-    expectLayoutChanged(
+  it('gives the segments back, and writes nothing over the unpacked bytes, when a repeated name drops an entry', async () => {
+    await expectLayoutChanged(
       Buffer.concat([
         hostileTarMember({ name: 'dup.txt' }, Buffer.from('first')),
         hostileTarMember({ name: 'keep.txt' }, Buffer.from('kept')),
@@ -112,24 +166,51 @@ describe('consumeUnpackedAsVettedTar', () => {
     );
   });
 
-  it('gives the segments back when links are left out', () => {
+  it('gives the segments back when a symbolic link is left out', async () => {
+    await expectLayoutChanged(
+      Buffer.concat([
+        hostileTarMember({ name: 'a.txt' }, Buffer.from('body')),
+        hostileTarMember({ name: 'link', typeflag: '2', linkname: 'a.txt' }),
+        hostileTarMember({ name: 'b.txt' }, Buffer.from('other')),
+        hostileTarEnd(),
+      ]),
+      SKIP_LINKS
+    );
+  });
+
+  it('gives the segments back when a hard link between two entries is left out, because every later body moves up a block', async () => {
+    await expectLayoutChanged(
+      Buffer.concat([
+        hostileTarMember({ name: 'a.txt' }, Buffer.from('body')),
+        hostileTarMember({ name: 'hard', typeflag: '1', linkname: 'a.txt' }),
+        hostileTarMember({ name: 'b.txt' }, Buffer.from('other')),
+        hostileTarEnd(),
+      ]),
+      SKIP_LINKS
+    );
+  });
+
+  it('keeps the fast path, and ends the tar early, when the hard link that is left out is the last entry', async () => {
     const tar = Buffer.concat([
-      hostileTarMember({ name: 'a.txt' }, Buffer.from('body')),
-      hostileTarMember({ name: 'link', typeflag: '2', linkname: 'a.txt' }),
+      hostileTarMember({ name: 'a.txt', magic: 'ustar ', version: ' \0' }, Buffer.from('body')),
       hostileTarMember({ name: 'b.txt' }, Buffer.from('other')),
+      hostileTarMember({ name: 'hard', typeflag: '1', linkname: 'a.txt' }),
       hostileTarEnd(),
     ]);
     const expected = referenceTarFromCopy(tar);
+    expect(expected.length).toBeLessThan(tar.length);
 
-    const { unpacked, segments } = consume(tar, { skipLinks: true });
+    const { unpacked, segments, bodiesBefore } = await viaGzip(tar, SKIP_LINKS);
 
-    expect(segments.length).toBeGreaterThan(1);
+    expectBodiesToBeViewsOf(bodiesBefore, unpacked);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].buffer).toBe(unpacked.buffer);
+    expect(segments[0].length).toBe(expected.length);
     expect(Buffer.concat(segments).equals(expected)).toBe(true);
-    expect(unpacked.equals(tar)).toBe(true);
   });
 
-  it('gives the segments back when an entry is dropped for a name that sanitises to nothing', () => {
-    expectLayoutChanged(
+  it('gives the segments back when an entry is dropped for a name that sanitises to nothing', async () => {
+    await expectLayoutChanged(
       Buffer.concat([
         hostileTarMember({ name: 'a.txt' }, Buffer.from('kept')),
         hostileTarMember({ name: '.' }, Buffer.alloc(1200, 9)),
@@ -139,19 +220,18 @@ describe('consumeUnpackedAsVettedTar', () => {
     );
   });
 
-  it('gives the segments back when the tar ends before its end-of-archive blocks', () => {
+  it('gives the segments back when the tar ends before its end-of-archive blocks', async () => {
     const tar = hostileTarMember({ name: 'a.txt' }, Buffer.from('body'));
-    const expected = referenceTarFromCopy(tar);
-    expect(expected.length).toBeGreaterThan(tar.length);
+    expect(referenceTarFromCopy(tar).length).toBeGreaterThan(tar.length);
 
-    const { unpacked, segments } = consume(tar);
+    const { unpacked, segments } = await viaGzip(tar);
 
-    expect(Buffer.concat(segments).equals(expected)).toBe(true);
+    expect(Buffer.concat(segments).equals(referenceTarFromCopy(tar))).toBe(true);
     expect(unpacked.equals(tar)).toBe(true);
   });
 
-  it('gives the segments back when a name over 100 characters grows the header block count', () => {
-    expectLayoutChanged(
+  it('gives the segments back when a name over 100 characters grows the header block count', async () => {
+    await expectLayoutChanged(
       Buffer.concat([
         hostileTarMember({ name: 'a.txt' }, Buffer.from('x')),
         gnuLongName('n'.repeat(GNU_LONG_NAME_BYTES)),
@@ -161,8 +241,8 @@ describe('consumeUnpackedAsVettedTar', () => {
     );
   });
 
-  it('gives the segments back when a pax extended header is dropped and every body shifts', () => {
-    expectLayoutChanged(
+  it('gives the segments back when a pax extended header is dropped and every body shifts', async () => {
+    await expectLayoutChanged(
       Buffer.concat([
         hostileTarMember({ name: 'pax', typeflag: 'x' }, paxRecord('mtime', '1600000000')),
         hostileTarMember({ name: 'a.txt' }, Buffer.from('first body')),
@@ -172,71 +252,83 @@ describe('consumeUnpackedAsVettedTar', () => {
     );
   });
 
-  it('writes into a view of a larger buffer at the view, not at the start of its memory', () => {
+  it('writes into a window of a larger buffer at the window, not at the start of its memory', async () => {
     const tar = Buffer.concat([hostileTarMember({ name: 'a.txt', magic: 'ustar ', version: ' \0' }, Buffer.from('body')), hostileTarEnd()]);
-    const expected = referenceTarFromCopy(tar);
-    const frame = Buffer.concat([Buffer.alloc(300, 0xaa), tar, Buffer.alloc(700, 0xbb)]);
-    const unpacked = frame.subarray(300, 300 + tar.length);
+    let frame = Buffer.alloc(0);
 
-    const { segments } = consumeUnpackedAsVettedTar(unpacked, tar.length, {});
+    const { segments, bodiesBefore, unpacked } = await viaGzip(tar, {}, (decoded) => {
+      frame = Buffer.concat([Buffer.alloc(FRAME_HEAD, 0xaa), decoded, Buffer.alloc(FRAME_TAIL, 0xbb)]);
+      return frame.subarray(FRAME_HEAD, FRAME_HEAD + decoded.length);
+    });
 
-    expect(Buffer.concat(segments).equals(expected)).toBe(true);
-    expect(frame.subarray(0, 300).every((byte) => byte === 0xaa)).toBe(true);
-    expect(frame.subarray(300 + tar.length).every((byte) => byte === 0xbb)).toBe(true);
+    expectBodiesToBeViewsOf(bodiesBefore, unpacked);
+    expect(Buffer.concat(segments).equals(referenceTarFromCopy(tar))).toBe(true);
+    expect(frame.subarray(0, FRAME_HEAD).every((byte) => byte === 0xaa)).toBe(true);
+    expect(frame.subarray(FRAME_HEAD + tar.length).every((byte) => byte === 0xbb)).toBe(true);
   });
 });
 
-describe('gzip to tar', () => {
-  function captureGunzip(): () => Buffer {
-    const gunzip = zlib.gunzip;
-    let decompressed: Buffer | undefined;
-    vi.spyOn(zlib, 'gunzip').mockImplementation(((input: Buffer, options: object, callback: (error: Error | null, result: Buffer) => void) =>
-      gunzip(input, options, (error, result) => {
-        decompressed = result;
-        callback(error, result);
-      })) as never);
-    return () => decompressed as Buffer;
+describe('the bytes that follow the end-of-archive blocks', () => {
+  const members = hostileTarMember({ name: 'a.txt', magic: 'ustar ', version: ' \0' }, Buffer.from('ab'));
+  const expected = referenceTarFromCopy(Buffer.concat([members, hostileTarEnd()]));
+
+  function tarWithTrailingZeros(count: number): Buffer {
+    return Buffer.concat([members, hostileTarEnd(), Buffer.alloc(count)]);
   }
 
-  function gzipToTar(tar: Buffer): Promise<{ segments: Uint8Array[] } | null> {
-    return streamToTar({
-      ...KEEP_LAST_DUPLICATE,
-      compressor: 'gzip',
-      source: { buffer: zlib.gzipSync(tar) },
-      p7zBin: '',
-      originalFilename: 'sample.tar.gz',
-      timeoutMs: 10_000,
-    });
-  }
+  it.each([
+    ['padding to one record, as GNU tar and Python write it', TAR_RECORD_BYTES - expected.length],
+    ['one record', TAR_RECORD_BYTES],
+  ])('stay in the unpacked buffer, which is cut after the end blocks, when they are %s', async (_name, count) => {
+    const { unpacked, segments } = await viaGzip(tarWithTrailingZeros(count));
 
-  it('returns the decompressed buffer itself, rewritten, for a tar that keeps its layout', async () => {
+    expect(unpacked.length - expected.length).toBe(count);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].buffer).toBe(unpacked.buffer);
+    expect(Buffer.concat(segments).equals(expected)).toBe(true);
+  });
+
+  it('are left behind in a copy when they are more than one record', async () => {
+    const { unpacked, segments } = await viaGzip(tarWithTrailingZeros(TAR_RECORD_BYTES + 1));
+
+    expect(unpacked.length - expected.length).toBe(TAR_RECORD_BYTES + 1);
+    expect(segments).toHaveLength(1);
+    expect(segments[0].buffer).not.toBe(unpacked.buffer);
+    expect(Buffer.concat(segments).equals(expected)).toBe(true);
+  });
+
+  it('do not keep 30 MiB in memory behind the result', async () => {
+    const { segments } = await viaGzip(tarWithTrailingZeros(30 * MIB));
+
+    expect(Buffer.concat(segments).equals(expected)).toBe(true);
+    expect(segments).toHaveLength(1);
+    // A copy under half a pool slab comes out of the shared pool, so that slab is the most it can hold.
+    expect(segments[0].buffer.byteLength).toBeLessThanOrEqual(Math.max(expected.length + TAR_RECORD_BYTES, Buffer.poolSize));
+  });
+});
+
+describe('a tar that 7-Zip carries out of its sandbox', () => {
+  oracleTest('is rewritten inside the frame the sandbox collected the output in', ['7z', 'xz'], async () => {
     const tar = Buffer.concat([
-      hostileTarMember({ name: 'a.txt', magic: 'ustar ', version: ' \0' }, Buffer.from('first body')),
+      hostileTarMember({ name: 'a.txt', mode: 0o4755, magic: 'ustar ', version: ' \0' }, Buffer.from('first body')),
       hostileTarMember({ name: 'b.bin' }, Buffer.alloc(1500, 7)),
       hostileTarEnd(),
     ]);
-    const decompressed = captureGunzip();
+    const expected = referenceTarFromCopy(tar);
+    const xz = execFileSync(getOracleToolPath('xz') as string, ['-c'], { input: tar });
 
-    const result = await gzipToTar(tar);
+    const result = await streamToTar({
+      compressor: 'xz',
+      source: { buffer: xz },
+      p7zBin: getOracleToolPath('7z') as string,
+      originalFilename: 'sample.tar.xz',
+      timeoutMs: 20_000,
+    });
 
     expect(result?.segments).toHaveLength(1);
-    expect(result?.segments[0].buffer).toBe(decompressed().buffer);
-    expect(Buffer.concat(result?.segments ?? []).equals(referenceTarFromCopy(tar))).toBe(true);
-  });
-
-  it('returns the joined segments, and leaves the decompressed buffer alone, for a tar whose layout changes', async () => {
-    const tar = Buffer.concat([
-      hostileTarMember({ name: 'dup.txt' }, Buffer.from('first')),
-      hostileTarMember({ name: 'keep.txt' }, Buffer.from('kept')),
-      hostileTarMember({ name: 'dup.txt' }, Buffer.from('second')),
-      hostileTarEnd(),
-    ]);
-    const decompressed = captureGunzip();
-
-    const result = await gzipToTar(tar);
-
-    expect(result?.segments.length).toBeGreaterThan(1);
-    expect(Buffer.concat(result?.segments ?? []).equals(referenceTarFromCopy(tar))).toBe(true);
-    expect(decompressed().equals(tar)).toBe(true);
+    const [segment] = result?.segments ?? [];
+    expect(segment.byteOffset).toBeGreaterThan(0);
+    expect(segment.buffer.byteLength).toBeGreaterThan(segment.byteOffset + segment.length);
+    expect(Buffer.from(segment).equals(expected)).toBe(true);
   });
 });
