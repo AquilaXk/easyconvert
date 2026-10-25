@@ -161,8 +161,9 @@ describe('the AVIF encode of the image library', () => {
     expect(await threadsAsked(await picture(false))).toEqual([imageThreadsFor(os.availableParallelism(), memoryLimitBytes()), before]);
   });
 
-  it('keeps a graphic on the single thread it had: the tiles that threads bring moved an interface from -14.4% to +1.6% BD-rate in PSNR', async () => {
-    expect(await threadsAsked(await picture(true))).toEqual([]);
+  it('runs a graphic on the leased threads too and puts the previous count back: the encoder makes one tile whatever the lease', async () => {
+    const before = sharp.concurrency();
+    expect(await threadsAsked(await picture(true))).toEqual([imageThreadsFor(os.availableParallelism(), memoryLimitBytes()), before]);
   });
 
   /** 512 x 256 is eight 128 x 128 areas, so the encoder's automatic tiling would split it into one tile per thread up to 8. */
@@ -170,22 +171,27 @@ describe('the AVIF encode of the image library', () => {
   const TILED_HEIGHT = 256;
   const WORKER_LIBRARY = 'the libvips of the worker image (docker/sharp-libvips/use-libvips.sh), which CI installs on Linux';
 
-  it.skipIf(skipUnless(WORKER_LIBRARY, process.platform === 'linux'))('writes the same file for a photograph on two threads and on eight: the encoder makes one tile whatever the lease', async () => {
-    const source = await picture(false, TILED_WIDTH, TILED_HEIGHT);
-    const previous = sharp.concurrency();
-    const encodeOn = async (threads: number): Promise<Buffer> => {
-      process.env[IMAGE_THREADS_ENV] = String(threads);
-      try {
-        const { data, asked } = await encodeAsked(source);
-        expect(asked[0]).toBe(threads);
-        return data;
-      } finally {
-        vi.restoreAllMocks();
-        sharp.concurrency(previous);
-      }
-    };
-    const two = await encodeOn(IMAGE_UNBOUNDED_HEAP_THREADS);
-    expect((await encodeOn(IMAGE_MAX_THREADS)).equals(two)).toBe(true);
+  describe.skipIf(skipUnless(WORKER_LIBRARY, process.platform === 'linux'))('on the worker library', () => {
+    it.each([
+      ['photograph', false],
+      ['graphic', true],
+    ])('writes the same file for a %s on two threads and on eight: the encoder makes one tile whatever the lease', async (_kind, flat) => {
+      const source = await picture(flat, TILED_WIDTH, TILED_HEIGHT);
+      const previous = sharp.concurrency();
+      const encodeOn = async (threads: number): Promise<Buffer> => {
+        process.env[IMAGE_THREADS_ENV] = String(threads);
+        try {
+          const { data, asked } = await encodeAsked(source);
+          expect(asked[0]).toBe(threads);
+          return data;
+        } finally {
+          vi.restoreAllMocks();
+          sharp.concurrency(previous);
+        }
+      };
+      const two = await encodeOn(IMAGE_UNBOUNDED_HEAP_THREADS);
+      expect((await encodeOn(IMAGE_MAX_THREADS)).equals(two)).toBe(true);
+    });
   });
 });
 

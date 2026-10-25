@@ -88,10 +88,9 @@ async function encodeAvifFromPipeline(
   }
   const prepared = deep ? opaque.toColourspace(grey ? 'grey16' : 'rgb16') : opaque;
   const encode = (): Promise<Buffer> => prepared.avif(avifLibraryOptionsOf(policy)).toBuffer();
-  // A photograph is encoded on threads in one tile (the worker's libvips leaves the encoder's auto-tiles off), so its file is the same on any
-  // count from two up. An interface stays on one thread: when threads still split the picture into tiles it went from -14.4% to +1.6%
-  // BD-rate in PSNR, past the allowance, and it has not been measured on threads in one tile.
-  return { buffer: content === 'photo' ? await withImageThreads(encode) : await encode(), encoder };
+  // The encoder makes one tile whatever the thread count (the worker's libvips leaves its auto-tiles off), so the file is the same on any
+  // count from two up, and every picture it encodes takes the lease.
+  return { buffer: await withImageThreads(encode), encoder };
 }
 
 /** What `encodeAvif` needs to write the AVIF of a pipeline. */

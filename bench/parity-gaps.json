@@ -276,18 +276,5 @@
       ]
     }
   ],
-  "acceptedSlowdowns": [
-    {
-      "id": "image/photo-a.jpg->avif/throughput",
-      "issue": 641,
-      "pr": 878,
-      "reason": "one-tile AV1 encode as the reference engine does: slower than the tile-parallel base, at or above the reference (entry 93)"
-    },
-    {
-      "id": "image/photo-b.png->avif/throughput",
-      "issue": 641,
-      "pr": 878,
-      "reason": "one-tile AV1 encode as the reference engine does: slower than the tile-parallel base, at or above the reference (entry 93)"
-    }
-  ]
+  "acceptedSlowdowns": []
 }

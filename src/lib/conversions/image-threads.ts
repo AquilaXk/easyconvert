@@ -11,7 +11,7 @@ import sharp from 'sharp';
  * of a 840 x 260 scan took 30 ms of preparation on the single thread and 22 ms on the two it leases (4-core and 2-core
  * Linux VM, medians of 30 runs), and the preparation holds only a few page-sized buffers.
  *
- * The threads are leased for the length of an AVIF encode of a photograph and of an OCR page preparation, and not set
+ * The threads are leased for the length of an AVIF encode in the image library and of an OCR page preparation, and not set
  * for the process: the same threads made the WebP encode of a 1024 x 640 interface 6 ms longer (27 ms to 33 ms) and gained nothing in JPEG, because the
  * thread pool of a picture this small costs more to start than it saves.
  *
@@ -30,7 +30,7 @@ export const IMAGE_THREADS_ENV = 'VIPS_CONCURRENCY';
  * leaves a wide margin: a 1 GB container leases 4 threads, a 512 MB one leases 2.
  */
 export const IMAGE_THREAD_MEMORY_BYTES = 256 * 1024 * 1024;
-/** Threads the image library runs on outside an AVIF encode of a photograph. */
+/** Threads the image library runs on outside an AVIF encode. */
 export const IMAGE_BASE_THREADS = 1;
 export const MALLOC_ARENA_ENV = 'MALLOC_ARENA_MAX';
 /**
@@ -53,7 +53,7 @@ export function baseImageThreads(env: Env = process.env): number {
 }
 
 /**
- * Threads for an AVIF encode of a photograph on `cores` cores under a memory limit of `memoryBytes`: the operator's
+ * Threads for an AVIF encode on `cores` cores under a memory limit of `memoryBytes`: the operator's
  * `VIPS_CONCURRENCY` when it is set, else the cores, at most `IMAGE_MAX_THREADS` (`IMAGE_UNBOUNDED_HEAP_THREADS` while the
  * heap is not bounded) and at most what the memory limit pays for.
  */
