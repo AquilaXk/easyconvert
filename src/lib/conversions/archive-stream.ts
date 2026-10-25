@@ -178,6 +178,30 @@ export function tarFromEntries(entries: TarEntry[]): Uint8Array[] {
   return segments;
 }
 
+/**
+ * `tarFromEntries` for entries that were read from `unpacked`. When every entry keeps its place (the usual tar: headers
+ * of the same length, bodies where they were) the new headers and padding are written over the old ones and the tar is
+ * `unpacked` itself, so the payload is not copied again to join the segments. A tar whose layout changes (a dropped
+ * duplicate or link, a longer header, a body shared by a hard link) is returned as the segments of `tarFromEntries`.
+ * Either way the bytes are exactly the segments joined.
+ */
+export function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Array[] {
+  const segments = tarFromEntries(entries);
+  const rewritten: { at: number; bytes: Uint8Array }[] = [];
+  let position = 0;
+  for (const segment of segments) {
+    if (segment.buffer === unpacked.buffer) {
+      if (segment.byteOffset !== unpacked.byteOffset + position) return segments;
+    } else {
+      rewritten.push({ at: position, bytes: segment });
+    }
+    position += segment.length;
+  }
+  if (position > unpacked.length) return segments;
+  for (const { at, bytes } of rewritten) unpacked.set(bytes, at);
+  return [unpacked.subarray(0, position)];
+}
+
 export interface TarPolicyRequest {
   skipLinks?: boolean;
   collisionPolicy?: ArchiveCollisionPolicy;
@@ -298,7 +322,7 @@ export async function streamToTar(request: StreamRunOptions & { compressor: Stre
     return { segments: wrapInPlace(output, memberName), skippedLinks: [] };
   }
   const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
-  return { segments: tarFromEntries(entries), skippedLinks };
+  return { segments: tarFromEntriesInPlace(unpacked, entries), skippedLinks };
 }
 
 const GZIP_TRAILER_BYTES = 8;
@@ -349,7 +373,7 @@ async function gzipToTar(request: StreamRunOptions, bounds: StreamBounds): Promi
     return { segments: wrapAsMember(memberNameFor(request.originalFilename), unpacked), skippedLinks: [] };
   }
   const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
-  return { segments: tarFromEntries(entries), skippedLinks };
+  return { segments: tarFromEntriesInPlace(unpacked, entries), skippedLinks };
 }
 
 /** Bytes of the header (with its extended header, if the name needs one) of a regular member of this name. */

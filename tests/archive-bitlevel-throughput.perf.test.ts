@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { crc32 } from '../src/lib/conversions/archive';
-import { crc32Slicing8 } from '../src/lib/conversions/crc32';
 import { LzmaRangeEncoder } from '../src/lib/conversions/lzma-encoder';
 import { expectNoSlowerThanReference } from './helpers/timing';
 
@@ -150,21 +149,6 @@ describe('CRC-32', () => {
       const expected = byteAtATime(data);
       await expectNoSlowerThanReference('crc32', () => byteAtATime(data), () => crc32(data), { maxRatio: 1 / 5 });
       expect(crc32(data)).toBe(expected);
-    },
-    TEST_TIMEOUT_MS
-  );
-
-  it.skipIf(SKIP_TIMING)(
-    'the table fallback alone is at least 1.5x faster than the byte-at-a-time loop on 4 MB',
-    async () => {
-      const data = pseudoRandomBytes(4 * MEGABYTE, 19);
-      // In archive-bitlevel-throughput.test.ts the correctness tests run crc32Slicing8 over many short views before this
-      // timing; alone, the function is timed cold and lands at about 1.4x. Repeat that warm-up so the ratio is the same.
-      const warmup = pseudoRandomBytes(300, 7);
-      for (let offset = 0; offset < 9; offset++) {
-        for (let length = 0; length < 70; length++) crc32Slicing8(warmup.subarray(offset, offset + length));
-      }
-      await expectNoSlowerThanReference('crc32 slicing-by-8', () => byteAtATime(data), () => crc32Slicing8(data), { maxRatio: 1 / 1.5 });
     },
     TEST_TIMEOUT_MS
   );
