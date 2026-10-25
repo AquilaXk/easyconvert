@@ -3,6 +3,7 @@ import zlib from 'node:zlib';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readTarEntries } from '../src/lib/conversions/archive';
 import { memberNameFor, streamToTar, TAR_END_OF_ARCHIVE, tarFromEntries, wrapAsMember, type StreamRunOptions } from '../src/lib/conversions/archive-stream';
+import { classifyUnpacked } from '../src/lib/conversions/archive-stream-route';
 import { convertWithNative7z } from '../src/worker/engines';
 import type { executeSandboxedBinary } from '../src/lib/security/process-sandbox';
 import { getOracleToolPath } from './helpers/differential-oracle';
@@ -106,15 +107,19 @@ async function viaGzip(tar: Buffer, request: Policy = {}, place: (decoded: Buffe
   const gunzip = zlib.gunzip;
   let unpacked: Buffer = Buffer.alloc(0);
   let bodiesBefore: Uint8Array[] = [];
-  vi.spyOn(zlib, 'gunzip').mockImplementation(((input: Buffer, options: object, callback: (error: Error | null, result: Buffer) => void) =>
+  const spy = vi.spyOn(zlib, 'gunzip').mockImplementation(((input: Buffer, options: object, callback: (error: Error | null, result: Buffer) => void) =>
     gunzip(input, options, (error, result) => {
       if (error) return callback(error, result);
       unpacked = place(result);
-      bodiesBefore = fileBodies(unpacked);
+      bodiesBefore = classifyUnpacked(unpacked) === 'plain' ? [] : fileBodies(unpacked);
       return callback(null, unpacked);
     })) as never);
-  const result = await streamToTar({ ...request, compressor: 'gzip', source: { buffer: zlib.gzipSync(tar) }, p7zBin: '', originalFilename: 'sample.tar.gz', timeoutMs: 10_000 });
-  return { segments: result?.segments ?? [], unpacked, bodiesBefore };
+  try {
+    const result = await streamToTar({ ...request, compressor: 'gzip', source: { buffer: zlib.gzipSync(tar) }, p7zBin: '', originalFilename: 'sample.tar.gz', timeoutMs: 10_000 });
+    return { segments: result?.segments ?? [], unpacked, bodiesBefore };
+  } finally {
+    spy.mockRestore();
+  }
 }
 
 async function expectLayoutChanged(tar: Buffer, request: Policy = KEEP_LAST_DUPLICATE): Promise<void> {
@@ -387,6 +392,54 @@ describe('the bytes that follow the end-of-archive blocks', () => {
     },
     60_000
   );
+});
+
+describe('the segments of a converted tar', () => {
+  interface Branch {
+    name: string;
+    tar: Buffer;
+    request: Policy;
+    /** Whether the result is the tar cut out of the unpacked buffer. */
+    cut: boolean;
+    /** Taken when the cases are collected, before any test writes to a result. */
+    expected: Buffer;
+  }
+  const branch = (name: string, tar: Buffer, request: Policy, cut: boolean): Branch => ({ name, tar, request, cut, expected: referenceTarFromCopy(tar) });
+  const inPlace = Buffer.concat([hostileTarMember({ name: 'a.txt', magic: 'ustar ', version: ' \0' }, Buffer.from('ab')), hostileTarEnd()]);
+  const longTail = Buffer.alloc(TAR_RECORD_BYTES + 1);
+  const dotOnly = hostileTarMember({ name: './', typeflag: '5' });
+  const linkOnly = hostileTarMember({ name: 'link', typeflag: '2', linkname: 'a.txt' });
+  const repeatedName = Buffer.concat([
+    hostileTarMember({ name: 'dup.txt' }, Buffer.from('first')),
+    hostileTarMember({ name: 'keep.txt' }, Buffer.from('kept')),
+    hostileTarMember({ name: 'dup.txt' }, Buffer.from('second')),
+    hostileTarEnd(),
+  ]);
+  const plain = Buffer.from('not a tar, only text\n'.repeat(30));
+  const branches: Branch[] = [
+    branch('every entry in place', inPlace, {}, true),
+    branch('a repeated name that changes the layout', repeatedName, KEEP_LAST_DUPLICATE, false),
+    branch('more than one record behind the end blocks', Buffer.concat([inPlace, longTail]), {}, false),
+    branch('no end blocks', hostileTarMember({ name: 'a.txt' }, Buffer.from('ab')), {}, false),
+    branch('only ./, with end blocks', Buffer.concat([dotOnly, hostileTarEnd()]), {}, true),
+    branch('only ./, with a long tail', Buffer.concat([dotOnly, hostileTarEnd(), longTail]), {}, false),
+    branch('only ./, without end blocks', dotOnly, {}, false),
+    branch('only a left-out link, with end blocks', Buffer.concat([linkOnly, hostileTarEnd()]), SKIP_LINKS, true),
+    branch('only a left-out link, with a long tail', Buffer.concat([linkOnly, hostileTarEnd(), longTail]), SKIP_LINKS, false),
+    branch('only a left-out link, without end blocks', linkOnly, SKIP_LINKS, false),
+    { name: 'a payload that is not a tar', tar: plain, request: {}, cut: false, expected: Buffer.concat(wrapAsMember(memberNameFor('sample.tar.gz'), plain)) },
+  ];
+
+  it.each(branches)('are not shared with a later conversion, for $name', async ({ tar, request, cut, expected }) => {
+    const first = await viaGzip(tar, request);
+    expect(first.segments.length === 1 && isWindowOf(first.segments[0], first.unpacked)).toBe(cut);
+    expect(Buffer.concat(first.segments).equals(expected)).toBe(true);
+    for (const segment of first.segments) segment.fill(0xff);
+
+    const second = await viaGzip(tar, request);
+
+    expect(Buffer.concat(second.segments).equals(expected)).toBe(true);
+  });
 });
 
 describe('a payload that 7-Zip carries out of its sandbox', () => {
