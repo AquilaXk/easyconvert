@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { Readable, type Writable } from 'node:stream';
 import type {
   ByteRange,
   CompletedPart,
@@ -14,8 +14,27 @@ import type {
   StoredObjectMetadata,
 } from './object-storage';
 import { StorageSigningSecretMissingError } from './errors';
+import { StorageInputError, StorageServiceError } from './adapters/adapter-interface';
 import { lazySingleton } from './lazy-singleton';
 import { isProductionRuntime, resolveLocalStorageDir, resolveSigningSecret } from './storage-config';
+import { resolveDeclaredFormat } from './declared-format';
+import { assertNotSpoofedFilePath } from '../security/file-guard';
+
+/** Part numbers run from 1 to 10,000 and one part holds at most 5 GiB, as in the S3 multipart limits. */
+export const MULTIPART_MAX_PARTS = 10_000;
+export const MULTIPART_MAX_PART_BYTES = 5 * 1024 * 1024 * 1024;
+/** The most one multipart upload may hold in all, and the cap of a session that declared no size. */
+export const MULTIPART_MAX_TOTAL_BYTES = 10 * 1024 * 1024 * 1024;
+
+const PROVIDER_NAME = 'local-fs';
+const UPLOAD_ID_RANDOM_BYTES = 12;
+/** Exactly the ids createMultipart generates: `up_<epoch ms>_<24 hex digits>`. */
+const UPLOAD_ID_PATTERN = /^up_\d{1,15}_[0-9a-f]{24}$/;
+const PART_FILE_PATTERN = /^part-(\d+)\.bin$/;
+const SESSION_FILE = 'session.json';
+const TEMP_NAME_RANDOM_BYTES = 6;
+/** Opens a file only when it does not exist yet, so two writers never share one temp file. */
+const EXCLUSIVE_CREATE = 'wx';
 
 export interface LocalFsStorageOptions {
   storageDir?: string;
@@ -34,13 +53,43 @@ interface StoredMetaFile {
   metadata?: Record<string, string>;
 }
 
-interface StoredSessionFile {
-  uploadId: string;
-  key: string;
-  partSize: number;
-  createdAt: number;
-  expiresAt: number;
-  metadata?: ObjectMetadata;
+/** Who started a multipart upload and the size they declared for it. */
+export interface DeclaredMultipartUpload {
+  ownerUserId: string;
+  totalSize: number;
+}
+
+export interface LocalMultipartSession extends MultipartSession, Partial<DeclaredMultipartUpload> {}
+
+function isLocalUploadId(value: unknown): value is string {
+  return typeof value === 'string' && UPLOAD_ID_PATTERN.test(value);
+}
+
+/** The bytes one part may hold: the S3 part maximum, within what the declared total leaves after the other parts. */
+export function multipartPartByteLimit(declaredTotalBytes: number, otherPartsBytes: number): number {
+  return Math.max(0, Math.min(MULTIPART_MAX_PART_BYTES, declaredTotalBytes - otherPartsBytes));
+}
+
+function noSuchUpload(): StorageServiceError {
+  return new StorageServiceError('Multipart upload session not found or expired', PROVIDER_NAME, {
+    statusCode: 404,
+    code: 'NoSuchUpload',
+    retryable: false,
+  });
+}
+
+function partTooLarge(limit: number): StorageServiceError {
+  return new StorageServiceError(`Part exceeds the ${limit} bytes this upload has left`, PROVIDER_NAME, {
+    statusCode: 400,
+    code: 'EntityTooLarge',
+    retryable: false,
+  });
+}
+
+function assertPartNumber(partNumber: number): void {
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > MULTIPART_MAX_PARTS) {
+    throw new StorageInputError(`Invalid part number ${partNumber}: it must be an integer from 1 to ${MULTIPART_MAX_PARTS}`, PROVIDER_NAME);
+  }
 }
 
 /**
@@ -111,6 +160,41 @@ export class LocalFsStorage implements IObjectStorage {
       metaPath: path.join(this.storageDir, `${hash}.meta.json`),
       binPath: path.join(this.storageDir, `${hash}.bin`),
     };
+  }
+
+  /** The directory of a session this store generated; any other id, or one that leaves the parts directory, is NoSuchUpload. */
+  private sessionDirFor(uploadId: string): string {
+    if (!isLocalUploadId(uploadId)) throw noSuchUpload();
+    const partsRoot = path.resolve(this.partsDir);
+    const sessionDir = path.resolve(partsRoot, uploadId);
+    if (path.dirname(sessionDir) !== partsRoot) throw noSuchUpload();
+    return sessionDir;
+  }
+
+  private async readSession(sessionDir: string): Promise<LocalMultipartSession | undefined> {
+    try {
+      return JSON.parse(await fs.promises.readFile(path.join(sessionDir, SESSION_FILE), 'utf-8'));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw err;
+    }
+  }
+
+  /** The stored session of `uploadId`, or undefined when the id is not one this store generated or names no session. */
+  async getMultipartSession(uploadId: unknown): Promise<LocalMultipartSession | undefined> {
+    if (!isLocalUploadId(uploadId)) return undefined;
+    return this.readSession(this.sessionDirFor(uploadId));
+  }
+
+  private async otherPartsBytes(sessionDir: string, partNumber: number): Promise<number> {
+    const sizes = await Promise.all(
+      (await fs.promises.readdir(sessionDir)).map(async (name) => {
+        const match = PART_FILE_PATTERN.exec(name);
+        if (!match || Number(match[1]) === partNumber) return 0;
+        return (await fs.promises.stat(path.join(sessionDir, name))).size;
+      })
+    );
+    return sizes.reduce((sum, size) => sum + size, 0);
   }
 
   private toNodeReadable(stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>): NodeJS.ReadableStream {
@@ -252,23 +336,28 @@ export class LocalFsStorage implements IObjectStorage {
     return deleted;
   }
 
-  async createMultipart(key: string, metadata?: ObjectMetadata): Promise<MultipartSession> {
+  async createMultipart(
+    key: string,
+    metadata?: ObjectMetadata,
+    declared?: DeclaredMultipartUpload
+  ): Promise<MultipartSession> {
     this.ensureDirectories();
-    const uploadId = `up_${Date.now()}_${crypto.randomBytes(12).toString('hex')}`;
-    const sessionDir = path.join(this.partsDir, uploadId);
+    const uploadId = `up_${Date.now()}_${crypto.randomBytes(UPLOAD_ID_RANDOM_BYTES).toString('hex')}`;
+    const sessionDir = this.sessionDirFor(uploadId);
     await fs.promises.mkdir(sessionDir, { recursive: true });
 
     const now = Date.now();
-    const session: MultipartSession = {
+    const session: LocalMultipartSession = {
       uploadId,
       key,
       partSize: 5 * 1024 * 1024,
       createdAt: now,
       expiresAt: now + (metadata?.ttlSeconds ?? 86400) * 1000,
       metadata,
+      ...declared,
     };
 
-    await fs.promises.writeFile(path.join(sessionDir, 'session.json'), JSON.stringify(session), 'utf-8');
+    await fs.promises.writeFile(path.join(sessionDir, SESSION_FILE), JSON.stringify(session), 'utf-8');
     return session;
   }
 
@@ -277,27 +366,41 @@ export class LocalFsStorage implements IObjectStorage {
     partNumber: number,
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>
   ): Promise<CompletedPart> {
-    const sessionDir = path.join(this.partsDir, uploadId);
-    if (!fs.existsSync(sessionDir)) {
-      throw new Error(`Multipart upload session "${uploadId}" not found or expired`);
-    }
+    const sessionDir = this.sessionDirFor(uploadId);
+    assertPartNumber(partNumber);
+    const session = await this.readSession(sessionDir);
+    if (!session) throw noSuchUpload();
+    const declaredTotal = session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES;
+    const limit = multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber));
 
     const partPath = path.join(sessionDir, `part-${partNumber}.bin`);
-    const tempPartPath = `${partPath}.tmp.${Date.now()}`;
+    const tempPartPath = `${partPath}.tmp.${Date.now()}.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
     const nodeReadable = this.toNodeReadable(stream);
     const hasher = crypto.createHash('sha256');
     let partSize = 0;
+    let limitExceeded = false;
 
     const passThrough = new (await import('node:stream')).PassThrough();
     passThrough.on('data', (chunk: Buffer) => {
-      hasher.update(chunk);
       partSize += chunk.length;
+      if (partSize > limit) {
+        limitExceeded = true;
+        passThrough.destroy(partTooLarge(limit));
+        return;
+      }
+      hasher.update(chunk);
     });
 
-    const writeStream = fs.createWriteStream(tempPartPath);
+    const writeStream = fs.createWriteStream(tempPartPath, { flags: EXCLUSIVE_CREATE });
     try {
       await pipeline(nodeReadable, passThrough, writeStream);
       fs.renameSync(tempPartPath, partPath);
+      // Parts that landed while this one streamed were not counted in `limit`, so check the sum again.
+      const remaining = multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber));
+      if (partSize > remaining) {
+        await fs.promises.rm(partPath, { force: true });
+        throw partTooLarge(remaining);
+      }
       const etag = `"${hasher.digest('hex')}"`;
       return {
         partNumber,
@@ -310,7 +413,7 @@ export class LocalFsStorage implements IObjectStorage {
           fs.unlinkSync(tempPartPath);
         } catch {}
       }
-      throw err;
+      throw limitExceeded ? partTooLarge(limit) : err;
     }
   }
 
@@ -320,6 +423,8 @@ export class LocalFsStorage implements IObjectStorage {
     partNumber: number,
     expiresInSeconds: number = 3600
   ): Promise<StoragePresignedUrlResult> {
+    this.sessionDirFor(uploadId);
+    assertPartNumber(partNumber);
     const expiresAt = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const stringToSign = `PUT\n${key}\n${uploadId}\n${partNumber}\n${expiresAt}`;
     const signature = crypto
@@ -340,6 +445,9 @@ export class LocalFsStorage implements IObjectStorage {
     if (!Array.isArray(parts) || parts.length === 0) {
       throw new Error('Multipart completion requires at least one part');
     }
+    if (parts.length > MULTIPART_MAX_PARTS) {
+      throw new StorageInputError(`Multipart completion takes at most ${MULTIPART_MAX_PARTS} parts`, PROVIDER_NAME);
+    }
 
     const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
     for (let i = 0; i < sorted.length; i++) {
@@ -352,23 +460,42 @@ export class LocalFsStorage implements IObjectStorage {
     return sorted;
   }
 
-  private appendPartStream(
-    partFile: string,
-    writeCombined: fs.WriteStream,
-    overallHasher: crypto.Hash
-  ): Promise<number> {
-    return new Promise<number>((resolve, reject) => {
-      let partBytes = 0;
-      const readPart = fs.createReadStream(partFile);
-      readPart.on('data', (chunk: Buffer | string) => {
-        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        overallHasher.update(buf);
-        partBytes += buf.length;
-      });
-      readPart.on('end', () => resolve(partBytes));
-      readPart.on('error', reject);
-      readPart.pipe(writeCombined, { end: false });
-    });
+  /** The bytes of the listed parts on disk, which must add up to the declared total when the session has one. */
+  private async assertPartsMatchDeclaredSize(
+    sessionDir: string,
+    sorted: CompletedPart[],
+    declaredTotal: number | undefined
+  ): Promise<void> {
+    const sizes = await Promise.all(
+      sorted.map(async ({ partNumber }) => {
+        try {
+          return (await fs.promises.stat(path.join(sessionDir, `part-${partNumber}.bin`))).size;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`Part file "${partNumber}" missing on disk`);
+          throw err;
+        }
+      })
+    );
+    const listedBytes = sizes.reduce((sum, size) => sum + size, 0);
+    if (declaredTotal !== undefined && listedBytes !== declaredTotal) {
+      throw new Error(`Listed parts add up to ${listedBytes} bytes, which does not match the declared size ${declaredTotal}`);
+    }
+  }
+
+  /** Streams the part files in order into `destination`, hashing them; settles with the byte count, or with the destination's error. */
+  private async assembleParts(partFiles: string[], destination: Writable, hasher: crypto.Hash): Promise<number> {
+    let bytes = 0;
+    async function* chunks(): AsyncGenerator<Buffer> {
+      for (const partFile of partFiles) {
+        for await (const chunk of fs.createReadStream(partFile)) {
+          hasher.update(chunk);
+          bytes += chunk.length;
+          yield chunk;
+        }
+      }
+    }
+    await pipeline(Readable.from(chunks()), destination);
+    return bytes;
   }
 
   async completeMultipart(
@@ -377,44 +504,35 @@ export class LocalFsStorage implements IObjectStorage {
     parts: CompletedPart[],
     expectedSize?: number
   ): Promise<StoredObjectMetadata> {
-    const sessionDir = path.join(this.partsDir, uploadId);
-    const sessionJsonPath = path.join(sessionDir, 'session.json');
-    if (!fs.existsSync(sessionJsonPath)) {
-      throw new Error(`Multipart session "${uploadId}" does not exist or has expired`);
-    }
-
-    const session: StoredSessionFile = JSON.parse(fs.readFileSync(sessionJsonPath, 'utf-8'));
+    const sessionDir = this.sessionDirFor(uploadId);
+    const session = await this.readSession(sessionDir);
+    if (!session) throw noSuchUpload();
     if (session.key !== key) {
       throw new Error(`Session key "${session.key}" does not match requested key "${key}"`);
     }
 
     const sorted = this.validateContiguousParts(parts);
+    await this.assertPartsMatchDeclaredSize(sessionDir, sorted, session.totalSize);
+    const filename = session.metadata?.filename || path.basename(key) || 'download.bin';
 
     const { metaPath, binPath } = this.getPathsForKey(key);
-    const tempCombined = `${binPath}.comb.${Date.now()}`;
-    const writeCombined = fs.createWriteStream(tempCombined);
+    const tempCombined = `${binPath}.comb.${Date.now()}.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
+    const writeCombined = fs.createWriteStream(tempCombined, { flags: EXCLUSIVE_CREATE });
     const overallHasher = crypto.createHash('sha256');
-    let totalBytes = 0;
+    let totalBytes: number;
 
     try {
-      for (const part of sorted) {
-        const partFile = path.join(sessionDir, `part-${part.partNumber}.bin`);
-        if (!fs.existsSync(partFile)) {
-          throw new Error(`Part file "${part.partNumber}" missing on disk`);
-        }
-        totalBytes += await this.appendPartStream(partFile, writeCombined, overallHasher);
-      }
-
-      await new Promise<void>((resolve, reject) => {
-        writeCombined.end((err?: Error | null) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
+      const partFiles = sorted.map(({ partNumber }) => path.join(sessionDir, `part-${partNumber}.bin`));
+      totalBytes = await this.assembleParts(partFiles, writeCombined, overallHasher);
 
       if (expectedSize !== undefined && totalBytes !== expectedSize) {
         throw new Error(`Assembled multipart size ${totalBytes} does not match expected size ${expectedSize}`);
       }
+      if (session.totalSize !== undefined && totalBytes !== session.totalSize) {
+        throw new Error(`Assembled multipart size ${totalBytes} does not match the declared size ${session.totalSize}`);
+      }
+
+      assertNotSpoofedFilePath(tempCombined, resolveDeclaredFormat(filename, session.metadata?.contentType), filename);
     } catch (err) {
       writeCombined.destroy();
       if (fs.existsSync(tempCombined)) fs.unlinkSync(tempCombined);
@@ -430,7 +548,7 @@ export class LocalFsStorage implements IObjectStorage {
       size: totalBytes,
       etag,
       mimeType: session.metadata?.contentType || 'application/octet-stream',
-      filename: session.metadata?.filename || path.basename(key) || 'download.bin',
+      filename,
       uploadedAt: now,
       expiresAt: session.expiresAt,
       metadata: session.metadata?.customMetadata,
@@ -447,7 +565,7 @@ export class LocalFsStorage implements IObjectStorage {
   }
 
   async abortMultipart(key: string, uploadId: string): Promise<boolean> {
-    const sessionDir = path.join(this.partsDir, uploadId);
+    const sessionDir = this.sessionDirFor(uploadId);
     if (!fs.existsSync(sessionDir)) return false;
 
     try {
@@ -486,6 +604,7 @@ export class LocalFsStorage implements IObjectStorage {
     if (Math.floor(Date.now() / 1000) > expiresAt) return false;
 
     const upperMethod = method.toUpperCase();
+    if (upperMethod === 'PUT' && !isLocalUploadId(uploadId)) return false;
     const stringToSign =
       upperMethod === 'PUT'
         ? `PUT\n${key}\n${uploadId || ''}\n${partNumber ?? ''}\n${expiresAt}`

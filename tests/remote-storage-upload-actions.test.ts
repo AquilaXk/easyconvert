@@ -193,10 +193,13 @@ describe('/api/v1/uploads multipart actions bind a session to its declared size'
         })
       );
     expect((await presign(1)).status).toBe(HTTP_OK);
-    for (const partNumber of [2, 0, 10_000]) {
+    for (const partNumber of [2, 10_000]) {
       const res = await presign(partNumber);
       expect(res.status).toBe(HTTP_BAD_REQUEST);
       expect((await res.json()).detail).toContain('declared');
     }
+    const zero = await presign(0);
+    expect(zero.status).toBe(HTTP_BAD_REQUEST);
+    expect((await zero.json()).detail).toContain('between 1 and 10000');
   });
 });

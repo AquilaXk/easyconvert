@@ -54,6 +54,13 @@ export class TusInvalidMetadataError extends Error {
   }
 }
 
+/** Exactly the ids createSession generates: `tus_<epoch ms>_<16 hex digits>`. */
+const TUS_ID_PATTERN = /^tus_\d{1,15}_[0-9a-f]{16}$/;
+
+function isTusId(id: string): boolean {
+  return TUS_ID_PATTERN.test(id);
+}
+
 export class TusNotFoundError extends Error {
   constructor(id: string) {
     super(`TUS upload session "${id}" not found or expired`);
@@ -430,7 +437,9 @@ export class TusEngine {
     }
   }
 
+  /** The files of a session this engine generated; any other id could name a path outside the TUS directory. */
   private getPaths(id: string): { infoPath: string; binPath: string } {
+    if (!isTusId(id)) throw new TusNotFoundError(id);
     return {
       infoPath: path.join(this.tusDir, `${id}.info`),
       binPath: path.join(this.tusDir, `${id}.bin`),
@@ -500,6 +509,7 @@ export class TusEngine {
   }
 
   async getSession(id: string): Promise<TusSession | null> {
+    if (!isTusId(id)) return null;
     const { infoPath, binPath } = this.getPaths(id);
     let session = await this.sessionStore.getSession(id);
 
@@ -649,6 +659,7 @@ export class TusEngine {
   }
 
   async terminateSession(id: string): Promise<boolean> {
+    if (!isTusId(id)) return false;
     return this.lockManager.runExclusive(id, async () => {
       const { infoPath, binPath } = this.getPaths(id);
       const storeDeleted = await this.sessionStore.deleteSession(id);
