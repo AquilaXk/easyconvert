@@ -178,20 +178,17 @@ export function tarFromEntries(entries: TarEntry[]): Uint8Array[] {
   return segments;
 }
 
-/**
- * `tarFromEntries` for entries that were read from `unpacked`. When every entry keeps its place (the usual tar: headers
- * of the same length, bodies where they were) the new headers and padding are written over the old ones and the tar is
- * `unpacked` itself, so the payload is not copied again to join the segments. A tar whose layout changes (a dropped
- * duplicate or link, a longer header, a body shared by a hard link) is returned as the segments of `tarFromEntries`.
- * Either way the bytes are exactly the segments joined.
- */
-export function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Array[] {
+/** `tarFromEntries` written over `unpacked` when every entry keeps its place; it changes `unpacked` only then. */
+function tarFromEntriesInPlace(unpacked: Buffer, entries: TarEntry[]): Uint8Array[] {
   const segments = tarFromEntries(entries);
   const rewritten: { at: number; bytes: Uint8Array }[] = [];
+  const start = unpacked.byteOffset;
+  const end = start + unpacked.length;
   let position = 0;
   for (const segment of segments) {
-    if (segment.buffer === unpacked.buffer) {
-      if (segment.byteOffset !== unpacked.byteOffset + position) return segments;
+    const inUnpacked = segment.buffer === unpacked.buffer && segment.byteOffset >= start && segment.byteOffset + segment.length <= end;
+    if (inUnpacked) {
+      if (segment.byteOffset !== start + position) return segments;
     } else {
       rewritten.push({ at: position, bytes: segment });
     }
@@ -239,6 +236,12 @@ export function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request:
   } catch (err) {
     throw unreadableTarError(err);
   }
+}
+
+/** Vets the tar in `unpacked` and returns it written again, in `unpacked` itself when the layout allows; the caller gives `unpacked` up. */
+export function consumeUnpackedAsVettedTar(unpacked: Buffer, archiveBytes: number, request: TarPolicyRequest): StreamedArchive {
+  const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
+  return { segments: tarFromEntriesInPlace(unpacked, entries), skippedLinks };
 }
 
 /** The unpacked bytes are within the archive caps but would not fit the in-process budget: the disk pipeline serves the request. */
@@ -321,8 +324,7 @@ export async function streamToTar(request: StreamRunOptions & { compressor: Stre
   if (classifyUnpacked(unpacked) === 'plain') {
     return { segments: wrapInPlace(output, memberName), skippedLinks: [] };
   }
-  const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
-  return { segments: tarFromEntriesInPlace(unpacked, entries), skippedLinks };
+  return consumeUnpackedAsVettedTar(unpacked, archiveBytes, request);
 }
 
 const GZIP_TRAILER_BYTES = 8;
@@ -372,8 +374,7 @@ async function gzipToTar(request: StreamRunOptions, bounds: StreamBounds): Promi
   if (classifyUnpacked(unpacked) === 'plain') {
     return { segments: wrapAsMember(memberNameFor(request.originalFilename), unpacked), skippedLinks: [] };
   }
-  const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
-  return { segments: tarFromEntriesInPlace(unpacked, entries), skippedLinks };
+  return consumeUnpackedAsVettedTar(unpacked, archiveBytes, request);
 }
 
 /** Bytes of the header (with its extended header, if the name needs one) of a regular member of this name. */
