@@ -58,7 +58,7 @@ function decodedFacts(bytes: Buffer, extension: string): { seconds: number; rmsD
 
 describe.skipIf(skip)('streams the installed FFmpeg cannot decode', () => {
   describe('an xHE-AAC clip of one second', () => {
-    for (const target of ['flac', 'wav', 'mp3', 'aac']) {
+    for (const target of ['flac', 'wav', 'mp3', 'aac', 'ogg', 'opus']) {
       it(`to ${target} is converted whole when this FFmpeg decodes it whole, and refused by name otherwise`, { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
         const sample = await requireRealworldSample(ctx, 'fate-xhe_target_level.m4a');
         const decodable = oracleDecodesFully(sample.path);

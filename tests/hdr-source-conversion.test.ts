@@ -3,7 +3,7 @@ import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
 import { decodeUltraHdrJpeg } from '../src/lib/conversions/raw-hdr';
 import { ConversionFailedError } from '../src/lib/types';
-import { decodeExrWithFfmpeg, probeExr } from './helpers/ffmpeg-exr';
+import { decodeExrWithFfmpeg, HALF_EXR_PIX_FMTS, probeExr } from './helpers/ffmpeg-exr';
 import { skipWithoutTools } from './helpers/strict-skip';
 import { floatToHalfBits, halfBitsToFloat } from './helpers/openexr-writer';
 import {
@@ -158,7 +158,9 @@ function expectToneOrdering(pixels: RasterPixels): void {
 }
 
 function expectHdrReconstruction(exrOutput: Buffer, meta: UltraHdrGainMapMetadata): void {
-  expect(probeExr(exrOutput)).toMatchObject({ codec: 'exr', width: HDR_IMAGE_WIDTH, height: HDR_IMAGE_HEIGHT, pixFmt: 'gbrpf32le' });
+  const probe = probeExr(exrOutput);
+  expect(probe).toMatchObject({ codec: 'exr', width: HDR_IMAGE_WIDTH, height: HDR_IMAGE_HEIGHT });
+  expect(HALF_EXR_PIX_FMTS).toContain(probe.pixFmt);
   const decoded = decodeExrWithFfmpeg(exrOutput);
   PATCHES.forEach((patch, index) => {
     const mean = patchCentreMean(decoded.rgb, 3, decoded.width, index);
@@ -201,7 +203,9 @@ describe('OpenEXR source conversions', () => {
   it.skipIf(SKIP_WITHOUT_FFMPEG_EXR)('exr -> exr is a 16-bit float OpenEXR whose decoded samples equal the half-quantised input', () => {
     const output = outputs.get('exr')!;
     expect(output.subarray(0, 4).equals(Buffer.from([0x76, 0x2f, 0x31, 0x01]))).toBe(true);
-    expect(probeExr(output)).toMatchObject({ codec: 'exr', width: HDR_IMAGE_WIDTH, height: HDR_IMAGE_HEIGHT, pixFmt: 'gbrpf32le' });
+    const probe = probeExr(output);
+    expect(probe).toMatchObject({ codec: 'exr', width: HDR_IMAGE_WIDTH, height: HDR_IMAGE_HEIGHT });
+    expect(HALF_EXR_PIX_FMTS).toContain(probe.pixFmt);
     const decoded = decodeExrWithFfmpeg(output);
     PATCHES.forEach((patch, index) => {
       const mean = patchCentreMean(decoded.rgb, 3, decoded.width, index);

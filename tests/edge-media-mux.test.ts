@@ -33,6 +33,7 @@ const TOLERANCE_SECONDS = 2e-6;
 const SOURCE_VIDEO = { width: 320, height: 240, fps: 25, seconds: 2 };
 /** One AAC-LC frame (ISO/IEC 14496-3): the encoder delay the output's edit list hides, in 44.1 kHz ticks and seconds. */
 const AAC_PRIMING_TICKS = 1024;
+const MILLIS_PER_SECOND = 1000;
 const AAC_PRIMING_SECONDS = AAC_PRIMING_TICKS / 44100;
 
 /** Packs `[value, width]` fields most significant bit first, padding the last byte with zeros. */
@@ -174,15 +175,23 @@ function readMdhdTimescale(bytes: Uint8Array, trak: IsoBox): number {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(mdhd.payloadStart + 12);
 }
 
-/** Entries of a track's elst: [segment_duration, media_time] pairs, or none when the track has no edit list. */
+/** The movie timescale of the mvhd box (ISO/IEC 14496-12 8.2.2, version 0): FFmpeg 8 and later writes the track's rate where earlier builds wrote 1000. */
+function readMovieTimescale(bytes: Uint8Array): number {
+  const moov = listBoxes(bytes).find((box) => box.type === 'moov') as IsoBox;
+  const mvhd = child(bytes, moov, 'mvhd');
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(mvhd.payloadStart + 12);
+}
+
+/** Entries of a track's elst: [segment_duration in milliseconds, media_time] pairs, or none when the track has no edit list. */
 function readElst(bytes: Uint8Array, trak: IsoBox): Array<[number, number]> {
   const edts = listBoxes(bytes, trak.payloadStart, trak.end).find((box) => box.type === 'edts');
   if (!edts) return [];
   const elst = child(bytes, edts, 'elst');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const movieTimescale = readMovieTimescale(bytes);
   const count = view.getUint32(elst.payloadStart + 4);
   return Array.from({ length: count }, (_, i) => [
-    view.getUint32(elst.payloadStart + 8 + i * 12),
+    Math.round((view.getUint32(elst.payloadStart + 8 + i * 12) * MILLIS_PER_SECOND) / movieTimescale),
     view.getInt32(elst.payloadStart + 8 + i * 12 + 4),
   ]);
 }
