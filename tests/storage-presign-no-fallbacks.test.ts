@@ -142,7 +142,7 @@ describe('Storage presign never invents credentials, hosts or secrets (#483)', (
       const local = new LocalFsStorage({ storageDir: dir });
       try {
         await expect(local.presignGet('k', 60)).rejects.toThrow(StorageSigningSecretMissingError);
-        await expect(local.presignPart('k', 'up_1', 1, 60)).rejects.toThrow(StorageSigningSecretMissingError);
+        await expect(local.presignPart('k', `up_1_${'0'.repeat(24)}`, 1, 60)).rejects.toThrow(StorageSigningSecretMissingError);
       } finally {
         local.stopGc();
         fs.rmSync(dir, { recursive: true, force: true });

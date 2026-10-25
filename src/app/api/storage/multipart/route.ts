@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { storageProvider } from '@/lib/storage';
+import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -21,6 +21,7 @@ const TIER_MAX_MULTIPART_BYTES: Record<UserTier | 'anonymous', number> = {
 };
 
 const MAX_MULTIPART_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
+const PRESIGN_UNSUPPORTED = 'Storage provider does not support presigned URLs or invalid type specified.';
 
 /** The session operations the multipart actions need; every shipped backend provides them. */
 type MultipartCapableStorage = IStorageBackend &
@@ -53,6 +54,53 @@ function presignInputProblem(key: unknown, expiresInSeconds: unknown): string | 
     return `"expiresInSeconds" must be an integer between ${PRESIGN_MIN_EXPIRES_SECONDS} and ${PRESIGN_MAX_EXPIRES_SECONDS}.`;
   }
   return undefined;
+}
+
+interface PresignUploadPartRequest {
+  key: string;
+  partNumber: unknown;
+  uploadId: unknown;
+  expiresInSeconds?: number;
+}
+
+/** A part upload URL for the caller's own session, signed only for that session's key. */
+async function presignUploadPart(
+  storage: MultipartCapableStorage,
+  { key, partNumber, uploadId, expiresInSeconds }: PresignUploadPartRequest,
+  userId: string,
+  instanceUri: string
+): Promise<Response> {
+  if (typeof uploadId !== 'string' || !uploadId || typeof partNumber !== 'number') {
+    return createProblemDetailsResponse(
+      400,
+      'Missing required "uploadId" or "partNumber" for presigned upload URL.',
+      instanceUri
+    );
+  }
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > MULTIPART_MAX_PARTS) {
+    return createProblemDetailsResponse(
+      400,
+      `Invalid "partNumber". Must be an integer between 1 and ${MULTIPART_MAX_PARTS}.`,
+      instanceUri
+    );
+  }
+  const session = await storage.getUploadSession(uploadId);
+  if (!session?.ownerUserId || session.ownerUserId !== userId) {
+    return createProblemDetailsResponse(404, STORAGE_OBJECT_NOT_FOUND, instanceUri);
+  }
+  if (key !== session.key) {
+    return createProblemDetailsResponse(400, 'Key does not belong to this multipart upload session.', instanceUri);
+  }
+  if (!storage.generatePresignedUploadUrl) {
+    return createProblemDetailsResponse(400, PRESIGN_UNSUPPORTED, instanceUri);
+  }
+  const presigned = await storage.generatePresignedUploadUrl(
+    key,
+    partNumber,
+    uploadId,
+    Math.min(expiresInSeconds ?? PART_URL_TTL_SECONDS, PART_URL_TTL_SECONDS)
+  );
+  return NextResponse.json({ success: true, ...presigned });
 }
 
 function sameEtag(a: string, b: string): boolean {
@@ -355,32 +403,7 @@ export async function POST(req: NextRequest) {
       }
 
       if (type === 'upload') {
-        if (!uploadId || typeof partNumber !== 'number') {
-          return createProblemDetailsResponse(
-            400,
-            'Missing required "uploadId" or "partNumber" for presigned upload URL.',
-            instanceUri
-          );
-        }
-
-        const sessionOwner = await storage.getUploadOwner(uploadId);
-        if (!sessionOwner || sessionOwner !== currentUser.id) {
-          return createProblemDetailsResponse(
-            404,
-            STORAGE_OBJECT_NOT_FOUND,
-            instanceUri
-          );
-        }
-
-        if (storage.generatePresignedUploadUrl) {
-          const presigned = await storage.generatePresignedUploadUrl(
-            key,
-            partNumber,
-            uploadId,
-            Math.min(expiresInSeconds ?? PART_URL_TTL_SECONDS, PART_URL_TTL_SECONDS)
-          );
-          return NextResponse.json({ success: true, ...presigned });
-        }
+        return await presignUploadPart(storage, { key, partNumber, uploadId, expiresInSeconds }, currentUser.id, instanceUri);
       } else if (type === 'download') {
         // A signed URL needs no further authentication, so it is issued only for a key the caller
         // provably owns: an unresolved owner (job record unreadable), an ownerless key and another
@@ -403,11 +426,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      return createProblemDetailsResponse(
-        400,
-        'Storage provider does not support presigned URLs or invalid type specified.',
-        instanceUri
-      );
+      return createProblemDetailsResponse(400, PRESIGN_UNSUPPORTED, instanceUri);
     }
 
     return createProblemDetailsResponse(

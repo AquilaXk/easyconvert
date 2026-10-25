@@ -183,7 +183,7 @@ describe('Phase 2-A: Async Stream-First Object Storage & Zero-Heap Local Filesys
 
     it('generates and verifies HMAC presigned URLs with timing-safe signature checking', async () => {
       const key = 'secure/presigned-doc.pdf';
-      const uploadId = 'up_98765';
+      const uploadId = `up_1700000000000_${'a'.repeat(24)}`;
       const partNumber = 1;
 
       const presigned = await localStorage.presignPart(key, uploadId, partNumber, 600);

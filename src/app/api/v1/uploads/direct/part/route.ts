@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { storageProvider } from '@/lib/storage';
+import { multipartPartByteLimit, storageProvider } from '@/lib/storage';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { verifySigV4QueryUrl } from '@/lib/storage/sigv4-presigner';
 
@@ -8,13 +8,19 @@ export const dynamic = 'force-dynamic';
 
 /** A backend that receives parts on this application and verifies the URLs it issued itself. */
 type PartReceivingStorage = IStorageBackend &
-  Required<Pick<IStorageBackend, 'getUploadSession' | 'getSigningSecret' | 'verifyPresignedSignature' | 'uploadPartStream'>>;
+  Required<
+    Pick<IStorageBackend, 'getUploadSession' | 'getUploadedParts' | 'getSigningSecret' | 'verifyPresignedSignature' | 'uploadPartStream'>
+  >;
 
 function receivesParts(storage: IStorageBackend): storage is PartReceivingStorage {
   return (
     storage.kind === 'local' &&
     Boolean(
-      storage.getUploadSession && storage.getSigningSecret && storage.verifyPresignedSignature && storage.uploadPartStream
+      storage.getUploadSession &&
+        storage.getUploadedParts &&
+        storage.getSigningSecret &&
+        storage.verifyPresignedSignature &&
+        storage.uploadPartStream
     )
   );
 }
@@ -152,7 +158,16 @@ export async function PUT(req: NextRequest) {
   }
 
   try {
-    const part = await storage.uploadPartStream(uploadId, partNumber, req.body);
+    // The part may hold what the declared total leaves after the other stored parts, and at most the S3 part maximum.
+    const otherPartsBytes = ((await storage.getUploadedParts(uploadId)) ?? [])
+      .filter((stored) => stored.partNumber !== partNumber)
+      .reduce((sum, stored) => sum + stored.size, 0);
+    const part = await storage.uploadPartStream(
+      uploadId,
+      partNumber,
+      req.body,
+      multipartPartByteLimit(session.totalSize, otherPartsBytes)
+    );
     const headers = new Headers();
     headers.set('ETag', part.etag);
     headers.set('Content-Type', 'application/json');
