@@ -120,10 +120,13 @@ function blockPadding(length: number): number {
   return (TAR_BLOCK_BYTES - (length % TAR_BLOCK_BYTES)) % TAR_BLOCK_BYTES;
 }
 
-/** Padding and end blocks are new zeros in every tar, never a shared buffer, because whoever holds a result may write to it. */
+/**
+ * Padding and end blocks are new zeros in every tar, never a shared buffer, because whoever holds a result may write to
+ * it. Padding is a zeroed slice of the allocation pool, since a new ArrayBuffer for each member shows on a tar of 2,000 members.
+ */
 export function pushPadding(segments: Uint8Array[], length: number): void {
   const padding = blockPadding(length);
-  if (padding > 0) segments.push(Buffer.alloc(padding));
+  if (padding > 0) segments.push(Buffer.allocUnsafe(padding).fill(0));
 }
 
 export function pushEndOfArchive(segments: Uint8Array[]): void {
