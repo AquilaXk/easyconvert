@@ -314,7 +314,7 @@ describe('POST /api/v1/uploads multipart actions on local storage', () => {
 });
 
 describe('POST /api/storage/multipart?action=presign on local storage', () => {
-  it('binds an upload part URL to the session key, not the key the client names', async () => {
+  it('refuses to sign an upload part URL for a key other than the session key', async () => {
     const route = await import('../src/app/api/storage/multipart/route');
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
@@ -335,9 +335,12 @@ describe('POST /api/storage/multipart?action=presign on local storage', () => {
     expect(init.status).toBe(HTTP_OK);
     const { uploadId, key } = await init.json();
 
-    const res = await call('presign', { type: 'upload', uploadId, partNumber: 1, key: 'conversions/someone-else/victim.pdf' });
-    expect(res.status).toBe(HTTP_OK);
-    const { url } = await res.json();
-    expect(new URL(url).searchParams.get('key')).toBe(key);
+    const foreign = await call('presign', { type: 'upload', uploadId, partNumber: 1, key: 'conversions/someone-else/victim.pdf' });
+    expect(foreign.status).toBe(HTTP_BAD_REQUEST);
+    expect((await foreign.json()).detail).toBe('Key does not belong to this multipart upload session.');
+
+    const own = await call('presign', { type: 'upload', uploadId, partNumber: 1, key });
+    expect(own.status).toBe(HTTP_OK);
+    expect(new URL((await own.json()).url).searchParams.get('key')).toBe(key);
   });
 });

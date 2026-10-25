@@ -96,14 +96,14 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 91
+    "maxValue": 85
   },
   {
     "file": "src/app/api/storage/multipart/route.ts",
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 322
+    "maxValue": 295
   },
   {
     "file": "src/app/api/v1/archives/inspect/route.ts",
@@ -175,14 +175,14 @@
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "POST",
-    "count": 3
+    "count": 2
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 44
+    "maxValue": 42
   },
   {
     "file": "src/app/api/v1/uploads/direct/complete/route.ts",
