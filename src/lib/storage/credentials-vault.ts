@@ -48,6 +48,8 @@ export interface SftpCredentials {
   password?: string;
   privateKey?: string;
   passphrase?: string;
+  /** A `known_hosts` line or a public key (ssh-ed25519, ecdsa-sha2-nistp256/384/521, ssh-rsa) the server must show; absent means trust on first use. */
+  hostKey?: string;
   basePath?: string;
 }
 

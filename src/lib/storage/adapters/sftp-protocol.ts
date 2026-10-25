@@ -23,6 +23,26 @@ const MAX_HOSTNAME_LENGTH = 253;
 
 export type SftpVerb = 'get' | 'put' | 'rm' | 'ls -l';
 
+/**
+ * `-b -` reads the batch from standard input and makes the client stop at the first failed command and
+ * exit 1 (`batchmode` is passed as `err_abort` to `parse_dispatch_command` at sftp.c:2344, a non-zero result
+ * ends the loop at sftp.c:2345 and `exit(err == 0 ? 0 : 1)` is sftp.c:2699; `-b` itself is sftp.c:2521-2531).
+ * Without it a failed `put`, `rm`, `get` or `ls` is only printed and the exit status stays 0.
+ */
+export const SFTP_BATCH_ARGS = ['-b', '-'] as const;
+
+/** Exit status of sftp.c:2699 when a command of the batch failed. A connection or authentication failure is 255 (`fatal`). */
+export const SFTP_COMMAND_FAILED_EXIT = 1;
+
+/** `fatal()` exits 255: no connection, a host key refused (sshconnect.c) or no authentication (sshconnect2.c:479, :542). */
+export const SFTP_CONNECTION_FAILED_EXIT = 255;
+
+/** The most a call keeps of the child's standard output and of its standard error; the child is stopped past it. */
+export const SFTP_MAX_OUTPUT_BYTES = 64 * 1024;
+
+/** The most of the client's standard error that goes into an error message. */
+export const SFTP_MAX_ERROR_TEXT = 512;
+
 export const SFTP_CHILD_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
 
 function hasForbiddenCharacter(value: string): boolean {
@@ -67,6 +87,37 @@ export function sftpCommandLine(verb: SftpVerb, ...args: string[]): string {
     throw new StorageInvalidKeyError(`An SFTP path is too long for one sftp command line (${MAX_LINE_BYTES} bytes)`, PROVIDER);
   }
   return line;
+}
+
+/** The client's own wording when a path is missing: `File "<p>" not found.` (sftp.c:664, :753) and `No such file or directory` from the server. */
+const NOT_FOUND_MESSAGE = /\bnot found\b|No such file/;
+
+/** Classifies the standard error of a command that already failed with exit 1. It is not read for any other exit. */
+export function isSftpNotFound(stderr: string): boolean {
+  return NOT_FOUND_MESSAGE.test(stderr);
+}
+
+export function truncateSftpErrorText(stderr: string): string {
+  const text = stderr.trim();
+  return text.length <= SFTP_MAX_ERROR_TEXT ? text : `${text.slice(0, SFTP_MAX_ERROR_TEXT)}...`;
+}
+
+/**
+ * `ls_file` (sftp-common.c:217) writes `"%s %3s %-*s %-*s %8llu %s %s"`: mode, link count (always `?` for a remote
+ * file, sftp-common.c:230), user, group, size, `%b %e %H:%M` or `%b %e  %Y`, name. The pattern is anchored to the whole line.
+ */
+const LS_LONG_LINE = /^[-dlcbps][-rwxsStTl]{9}\+?\s+(?:\?|\d+)\s+\S+\s+\S+\s+(\d+)\s+[A-Za-z]{3}\s+\d{1,2}\s+(?:\d{2}:\d{2}|\d{4})\s+\S/;
+
+/**
+ * The size from the output of one `ls -l`. With `-b` the client first echoes the command it runs (`sftp> ls -l "<path>"`,
+ * sftp.c:1573), and that line holds caller data, so only the lines after it are read. Undefined when no line is a listing.
+ */
+export function parseSftpListingSize(stdout: string): number | undefined {
+  const lines = stdout.split('\n');
+  const echo = lines.findIndex((line) => line.startsWith('sftp> ls -l '));
+  if (echo === -1) return undefined;
+  const match = lines.slice(echo + 1).map((line) => LS_LONG_LINE.exec(line)).find((m) => m !== null);
+  return match ? Number.parseInt(match[1], 10) : undefined;
 }
 
 export function sftpBatch(...lines: string[]): string {
@@ -146,4 +197,43 @@ export function assertSftpPort(port: number): number {
 /** What the child gets: no secret of the server process, and a HOME that is the call's own temporary directory. */
 export function sftpChildEnv(homeDir: string): NodeJS.ProcessEnv {
   return { PATH: SFTP_CHILD_PATH, HOME: homeDir, LANG: 'C.UTF-8' } as unknown as NodeJS.ProcessEnv;
+}
+
+/** Key types `peek_type_nid` in sshkey.c reads at the start of a known hosts line; the certificate and `sk-` forms are not pinned. */
+const PINNABLE_KEY_TYPES = new Set(['ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521']);
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+const MAX_HOST_KEY_BASE64 = 8192;
+const ASCII_LINE = /^[\t\x20-\x7e]+$/;
+
+/** The key type inside the base64 blob is a length-prefixed string at its start (`sshkey_fromb`), which `sshkey_read` requires to match the type on the line (sshkey.c:1314-1383). */
+function blobKeyType(base64: string): string | undefined {
+  const blob = Buffer.from(base64, 'base64');
+  if (blob.length < 4) return undefined;
+  const length = blob.readUInt32BE(0);
+  return length > 0 && length <= blob.length - 4 ? blob.subarray(4, 4 + length).toString('latin1') : undefined;
+}
+
+/**
+ * A credential's pinned host key, as a `known_hosts` line (`host type base64 [comment]`, the format `hostkeys_foreach_file`
+ * reads at hostfile.c:760-860) or a bare public key (`type base64 [comment]`), becomes the one line written to the
+ * call's own known hosts file. The host field is replaced by `*`: the file holds this one key and the call connects
+ * to one host, so the address and port forms (`[host]:2222`, an IP, a hash) never have to match. A marker such as
+ * `@cert-authority` and a fingerprint, which `ssh` cannot pin by itself, are refused.
+ */
+export function sftpKnownHostsLine(hostKey: string): string {
+  const invalid = (reason: string) => new StorageInputError(`The SFTP host key ${reason}`, PROVIDER);
+  if (typeof hostKey !== 'string' || !ASCII_LINE.test(hostKey.trim())) {
+    throw invalid('must be one line of printable ASCII: a known_hosts line or a public key');
+  }
+  const tokens = hostKey.trim().split(/\s+/);
+  const typeIndex = tokens.findIndex((token) => PINNABLE_KEY_TYPES.has(token));
+  if (typeIndex < 0 || typeIndex > 1 || tokens.length <= typeIndex + 1 || (typeIndex === 1 && tokens[0].startsWith('@'))) {
+    throw invalid('must be a known_hosts line or public key of type ssh-ed25519, ecdsa-sha2-nistp256/384/521 or ssh-rsa');
+  }
+  const type = tokens[typeIndex];
+  const base64 = tokens[typeIndex + 1];
+  if (!BASE64.test(base64) || base64.length > MAX_HOST_KEY_BASE64 || blobKeyType(base64) !== type) {
+    throw invalid('holds key data that is not a valid base64 key of the stated type');
+  }
+  return `* ${type} ${base64}\n`;
 }
