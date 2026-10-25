@@ -10,11 +10,9 @@
  *    - Decodes Constant, Verbatim, Fixed Linear Prediction (orders 0..4), and LPC subframes.
  *    - Unpacks unary Rice residuals (4-bit and 5-bit partitions).
  *    - Supports Independent, Left/Side, Right/Side, and Mid/Side channel decorrelation.
- * 3. MPEG-1 Audio Layer III (MP3):
- *    - ID3v2 metadata header stripping.
- *    - Frame synchronization (0xFFE0..0xFFFF).
- *    - Header parsing (bitrate, sample rate, padding, channel mode).
- *    - Pure IMDCT spectral reconstruction for authentic 16-bit PCM output.
+ *
+ * MP3, AAC and Ogg (Vorbis, Opus) have no in-process decoder: a source in one of them is refused with
+ * EngineUnavailableError('ffmpeg'), which the API answers with HTTP 503.
  */
 
 import { ConversionFailedError, EngineUnavailableError } from '../types';
@@ -40,7 +38,7 @@ const WAVE_FORMAT_PCM = 1;
 const WAVE_FORMAT_IEEE_FLOAT = 3;
 
 // ============================================================================
-// BitReader Helper for FLAC and MP3 Bitstream Parsing
+// BitReader Helper for FLAC Bitstream Parsing
 // ============================================================================
 
 export class BitReader {
@@ -669,280 +667,25 @@ export function decodeFlac(buffer: Buffer): DecodedAudio {
 }
 
 // ============================================================================
-// 3. MPEG-1 Audio Layer III (MP3) Decoder
-// ============================================================================
-
-const MPEG1_L3_BITRATES = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
-const MPEG1_SAMPLE_RATES = [44100, 48000, 32000];
-const MPEG2_L3_BITRATES = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
-const MPEG2_SAMPLE_RATES = [22050, 24000, 16000];
-const MPEG25_SAMPLE_RATES = [11025, 12000, 8000];
-
-/**
- * Computes 576-point Inverse MDCT (IMDCT) with sine window
- */
-function computeImdct576(mdct: Float64Array): Float64Array {
-  const N = 576;
-  const out = new Float64Array(2 * N);
-  const factor = Math.PI / N;
-
-  for (let n = 0; n < 2 * N; n++) {
-    let sum = 0.0;
-    const win = Math.sin((Math.PI / (2 * N)) * (n + 0.5));
-    for (let k = 0; k < N; k++) {
-      const angle = (n + 0.5 + N * 0.5) * (k + 0.5) * factor;
-      sum += mdct[k] * Math.cos(angle);
-    }
-    // Princen-Bradley normalized synthesis window
-    out[n] = (sum * 2.0 / N) * win;
-  }
-
-  return out;
-}
-
-/**
- * Decodes MPEG-1 Layer III (MP3) audio bitstreams into signed 16-bit PCM samples
- */
-export function decodeMp3(buffer: Buffer): DecodedAudio {
-  if (!buffer || buffer.length < 32) {
-    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-  }
-
-  let offset = 0;
-
-  // 1. Strip ID3v2 header if present
-  if (buffer.length >= 10 && buffer.toString('ascii', 0, 3) === 'ID3') {
-    const tagSize =
-      ((buffer[6] & 0x7f) << 21) |
-      ((buffer[7] & 0x7f) << 14) |
-      ((buffer[8] & 0x7f) << 7) |
-      (buffer[9] & 0x7f);
-    offset = 10 + tagSize;
-    if (buffer[5] & 0x10) offset += 10; // ID3v2 footer
-  }
-
-  let sampleRate = 44100;
-  let channels = 2;
-  const outSamples: number[] = [];
-  let frameCount = 0;
-
-  while (offset + 4 <= buffer.length) {
-    // Scan for MPEG sync word (11 bits set: 0xFF followed by 0xE0)
-    if (buffer[offset] !== 0xff || (buffer[offset + 1] & 0xe0) !== 0xe0) {
-      offset++;
-      continue;
-    }
-
-    const versionBits = (buffer[offset + 1] >> 3) & 3; // 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5
-    const layerBits = (buffer[offset + 1] >> 1) & 3; // 1 = Layer III
-    const protection = buffer[offset + 1] & 1; // 0 = CRC, 1 = no CRC
-    const bitrateIdx = (buffer[offset + 2] >> 4) & 0x0f;
-    const srIdx = (buffer[offset + 2] >> 2) & 3;
-    const padding = (buffer[offset + 2] >> 1) & 1;
-    const channelMode = (buffer[offset + 3] >> 6) & 3; // 3 = Mono, 0/1/2 = Stereo
-
-    // Skip invalid frame headers
-    if (layerBits !== 1 || bitrateIdx === 0 || bitrateIdx === 15 || srIdx === 3) {
-      offset++;
-      continue;
-    }
-
-    const isMpeg1 = versionBits === 3;
-    const isMpeg2 = versionBits === 2;
-    sampleRate = isMpeg1
-      ? MPEG1_SAMPLE_RATES[srIdx]
-      : isMpeg2
-      ? MPEG2_SAMPLE_RATES[srIdx]
-      : MPEG25_SAMPLE_RATES[srIdx];
-
-    const bitrateKbps = isMpeg1 ? MPEG1_L3_BITRATES[bitrateIdx] : MPEG2_L3_BITRATES[bitrateIdx];
-    channels = channelMode === 3 ? 1 : 2;
-
-    const frameLength = Math.floor(((isMpeg1 ? 144 : 72) * bitrateKbps * 1000) / sampleRate) + padding;
-    if (offset + frameLength > buffer.length) {
-      break;
-    }
-
-    // Decode audio payload from frame
-    const sideInfoSize = isMpeg1 ? (channels === 1 ? 17 : 32) : (channels === 1 ? 9 : 17);
-    const mainDataStart = offset + 4 + (protection === 0 ? 2 : 0) + sideInfoSize;
-
-    const mdctCoeffs = new Float64Array(576);
-    let bOff = mainDataStart;
-    const fEnd = offset + frameLength;
-
-    // Check if frame contains quantized MDCT spectral coefficients
-    if (bOff + 2 <= fEnd) {
-      const qStep = 0.05;
-      for (let k = 0; k < 576 && bOff + 1 < fEnd; k++) {
-        const qVal = buffer[bOff++];
-        const sign = buffer[bOff++] & 0x80;
-        const mag = Math.pow(qVal, 4.0 / 3.0) * qStep;
-        mdctCoeffs[k] = sign ? -mag : mag;
-      }
-
-      // Reconstruct 1152 PCM samples per frame using IMDCT
-      const reconstructed = computeImdct576(mdctCoeffs);
-      for (let i = 0; i < 1152; i++) {
-        const s = Math.max(-32768, Math.min(32767, Math.round(reconstructed[i] * 32768.0)));
-        for (let ch = 0; ch < channels; ch++) {
-          outSamples.push(s);
-        }
-      }
-    } else {
-      // Fallback: silence padding for truncated/empty frame
-      for (let i = 0; i < 1152 * channels; i++) {
-        outSamples.push(0);
-      }
-    }
-
-    frameCount++;
-    offset += frameLength;
-  }
-
-  if (frameCount === 0 || outSamples.length === 0) {
-    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-  }
-
-  const samples = new Int16Array(outSamples);
-  const duration = samples.length / (channels * sampleRate);
-  return { samples, sampleRate, channels, bitsPerSample: 16, duration };
-}
-
-// ============================================================================
-// 4. Advanced Audio Coding (AAC / ADTS): no in-process decoder
+// 3. MP3, AAC and Ogg (Vorbis, Opus): no in-process decoder
 // ============================================================================
 
 /**
- * AAC needs FFmpeg to decode. A faithful AAC LC decoder needs window switching, overlap-add, TNS,
- * PNS, intensity and mid/side stereo and the full ISO/IEC 14496-3 codebook set; none is implemented
- * here, so an AAC source fails closed (HTTP 503) before any bytes are read.
+ * These codecs need FFmpeg to decode. A faithful MP3 decoder needs side information, the bit reservoir, scalefactors,
+ * Huffman tables, stereo processing, the hybrid filterbank and the polyphase synthesis (ISO/IEC 11172-3); AAC LC needs
+ * window switching, overlap-add, TNS, PNS, intensity and mid/side stereo and the full ISO/IEC 14496-3 codebook set;
+ * Vorbis and Opus need their own codebooks and transforms. None is implemented here, so a source in one of them fails
+ * closed (HTTP 503) before any bytes are read.
  */
-function refuseAacWithoutFfmpeg(): never {
+function refuseWithoutFfmpeg(codec: string): never {
   throw new EngineUnavailableError(
     'ffmpeg',
-    'Native FFmpeg engine is required to decode AAC audio; there is no in-process AAC decoder (Fail-Closed).'
+    `Native FFmpeg engine is required to decode ${codec} audio; there is no in-process ${codec} decoder (Fail-Closed).`
   );
 }
 
 // ============================================================================
-// 5. Ogg Container (Vorbis & Opus) Audio Decoder
-// ============================================================================
-
-/**
- * Decodes RFC 3533 Ogg encapsulation stream containing Vorbis or Opus audio payloads
- */
-export function decodeOgg(buffer: Buffer): DecodedAudio {
-  if (!buffer || buffer.length < 28 || buffer.toString('ascii', 0, 4) !== 'OggS') {
-    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-  }
-
-  // Parse Ogg pages and reassemble packets
-  let offset = 0;
-  const packets: Buffer[] = [];
-  let currentPacketSegments: Buffer[] = [];
-
-  while (offset + 27 <= buffer.length) {
-    if (buffer.toString('ascii', offset, offset + 4) !== 'OggS') {
-      offset++;
-      continue;
-    }
-
-    const segCount = buffer[offset + 26];
-    if (offset + 27 + segCount > buffer.length) break;
-
-    const segTable = buffer.subarray(offset + 27, offset + 27 + segCount);
-    let pagePayloadLen = 0;
-    for (let i = 0; i < segCount; i++) pagePayloadLen += segTable[i];
-
-    const payloadStart = offset + 27 + segCount;
-    if (payloadStart + pagePayloadLen > buffer.length) break;
-
-    let segOffset = payloadStart;
-    for (let i = 0; i < segCount; i++) {
-      const segLen = segTable[i];
-      const segData = buffer.subarray(segOffset, segOffset + segLen);
-      currentPacketSegments.push(segData);
-      segOffset += segLen;
-
-      if (segLen < 255) {
-        // End of packet
-        packets.push(Buffer.concat(currentPacketSegments));
-        currentPacketSegments = [];
-      }
-    }
-
-    offset = payloadStart + pagePayloadLen;
-  }
-
-  if (currentPacketSegments.length > 0) {
-    packets.push(Buffer.concat(currentPacketSegments));
-  }
-
-  if (packets.length === 0) {
-    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-  }
-
-  // Check codec in packet 0
-  const p0 = packets[0];
-  let sampleRate: number;
-  let channels: number;
-  let isVorbis = false;
-  let isOpus = false;
-
-  if (p0.length >= 16 && p0[0] === 0x01 && p0.toString('ascii', 1, 7) === 'vorbis') {
-    isVorbis = true;
-    channels = p0[11] || 2;
-    sampleRate = p0.readUInt32LE(12) || 44100;
-  } else if (p0.length >= 19 && p0.toString('ascii', 0, 8) === 'OpusHead') {
-    isOpus = true;
-    channels = p0[9] || 2;
-    sampleRate = p0.readUInt32LE(12) || 48000;
-  } else {
-    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-  }
-
-  if (isOpus || isVorbis) {
-    const audioPackets = packets.slice(isVorbis ? 3 : 2);
-    if (audioPackets.length === 0 || (audioPackets.length === 1 && audioPackets[0].length <= 2)) {
-      return {
-        samples: new Int16Array(0),
-        sampleRate,
-        channels,
-        bitsPerSample: 16,
-        duration: 0,
-      };
-    }
-    throw new Error(
-      `Decoding compressed ${isOpus ? 'Opus' : 'Vorbis'} bitstreams requires native FFmpeg or WebCodecs AudioDecoder engine (Fail-Closed).`
-    );
-  }
-
-  const outSamples: number[] = [];
-
-  for (let pIdx = 1; pIdx < packets.length; pIdx++) {
-    const pkt = packets[pIdx];
-
-    // Fallback for uncompressed 16-bit PCM packet streams (OggPCM)
-    if (pkt.length >= 2) {
-      const sampleCount = Math.floor(pkt.length / 2);
-      for (let s = 0; s < sampleCount; s++) {
-        outSamples.push(pkt.readInt16LE(s * 2));
-      }
-    }
-  }
-
-  if (outSamples.length === 0) {
-    throw new ConversionFailedError(UNSUPPORTED_AUDIO_MESSAGE);
-  }
-
-  const samples = new Int16Array(outSamples);
-  const duration = samples.length / (channels * sampleRate);
-  return { samples, sampleRate, channels, bitsPerSample: 16, duration };
-}
-
-// ============================================================================
-// 6. Universal Audio Decoder Dispatcher
+// 4. Universal Audio Decoder Dispatcher
 // ============================================================================
 
 /**
@@ -959,16 +702,16 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
 
   // Explicit hint priority when container magic is ambiguous or wrapped
   if (hint === 'aac' || hint === 'adts' || hint === 'm4a') {
-    return refuseAacWithoutFfmpeg();
+    return refuseWithoutFfmpeg('AAC');
   }
   if (hint === 'ogg' || hint === 'oga' || hint === 'opus' || hint === 'vorbis') {
-    return decodeOgg(buffer);
+    return refuseWithoutFfmpeg('Ogg');
   }
   if (hint === 'flac') {
     return decodeFlac(buffer);
   }
   if (hint === 'mp3') {
-    return decodeMp3(buffer);
+    return refuseWithoutFfmpeg('MP3');
   }
   if (hint === 'wav' || hint === 'wave' || hint === 'aiff' || hint === 'aif' || hint === 'pcm') {
     return decodeWav(buffer);
@@ -993,7 +736,7 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
 
   // 3. Ogg (starts with OggS)
   if (buffer.length >= 4 && buffer.toString('ascii', 0, 4) === 'OggS') {
-    return decodeOgg(buffer);
+    return refuseWithoutFfmpeg('Ogg');
   }
 
   // 4. AAC ADTS (starts with 0xFF followed by 0xF0..0xFF with layer == 00)
@@ -1002,7 +745,7 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
     buffer[0] === 0xff &&
     (buffer[1] & 0xf6) === 0xf0
   ) {
-    return refuseAacWithoutFfmpeg();
+    return refuseWithoutFfmpeg('AAC');
   }
 
   // 5. MP3 (sync word 0xFFE0..0xFFFF, layer != 00)
@@ -1012,7 +755,7 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
     (buffer[1] & 0xe0) === 0xe0 &&
     (buffer[1] & 0x06) !== 0
   ) {
-    return decodeMp3(buffer);
+    return refuseWithoutFfmpeg('MP3');
   }
 
   // 6. Audio stream with ID3v2 header: inspect post-ID3 payload
@@ -1031,7 +774,7 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
         buffer[postId3] === 0xff &&
         (buffer[postId3 + 1] & 0xf6) === 0xf0
       ) {
-        return refuseAacWithoutFfmpeg();
+        return refuseWithoutFfmpeg('AAC');
       }
       if (
         buffer.length - postId3 >= 4 &&
@@ -1040,7 +783,7 @@ export function decodeAudioBuffer(buffer: Buffer, formatHint?: string): DecodedA
         return decodeFlac(buffer.subarray(postId3));
       }
     }
-    return decodeMp3(buffer);
+    return refuseWithoutFfmpeg('MP3');
   }
 
   // Unsupported formats (video containers like MP4, MKV, WebM or unknown codecs)

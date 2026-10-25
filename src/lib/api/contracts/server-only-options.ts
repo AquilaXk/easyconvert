@@ -8,7 +8,8 @@ export const SERVER_ONLY_REASON = 'server_only_option';
 
 /**
  * Option keys that only server code sets: where the worker reads its input or writes its output (the worker payload
- * fields), and the worker's own limits and routing. A request that carries one is refused, never silently stripped.
+ * fields), the worker's own limits and routing, and the switch that keeps a source away from FFmpeg. A request that
+ * carries one is refused, never silently stripped.
  */
 export const SERVER_ONLY_OPTION_KEYS = [
   'outputPath',
@@ -21,4 +22,5 @@ export const SERVER_ONLY_OPTION_KEYS = [
   'inProcessFallback',
   'pdfExportPageRange',
   'maxRenderedPages',
+  'disableNativeEngine',
 ] as const satisfies readonly (keyof WorkerEngineOptions | keyof WorkerVfsPayload)[];

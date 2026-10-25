@@ -46,7 +46,6 @@ import {
   decodeAudioBuffer,
   decodeWav,
   decodeFlac,
-  decodeMp3,
   DecodedAudio,
 } from './media-decoder';
 
@@ -290,9 +289,10 @@ export async function convertMedia(
     }
   }
 
-  // Without native FFmpeg only WAV and FLAC can be produced faithfully. Every other audio or
-  // video target fails closed with EngineUnavailableError (HTTP 503) before any decoding; there is
-  // no in-process fallback encoder and no opt-in that emits a synthesized stream.
+  // Without native FFmpeg only WAV and FLAC can be produced faithfully, and only from WAV, AIFF and FLAC sources.
+  // Every other audio or video target fails closed with EngineUnavailableError (HTTP 503) before any decoding, and
+  // so does an MP3, AAC or Ogg source (decodeAudioBuffer); there is no in-process fallback codec and no opt-in that
+  // emits a synthesized stream.
   if (!PURE_LOSSLESS_TARGETS.has(tgt)) {
     const cause = options.disableNativeEngine
       ? 'the native engine is disabled'
@@ -1213,6 +1213,5 @@ export {
   decodeAudioBuffer,
   decodeWav,
   decodeFlac,
-  decodeMp3,
   type DecodedAudio,
 };

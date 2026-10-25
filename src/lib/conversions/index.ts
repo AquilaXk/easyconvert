@@ -86,8 +86,6 @@ import {
   decodeAudioBuffer,
   decodeWav,
   decodeFlac,
-  decodeMp3,
-  decodeOgg,
   type DecodedAudio,
   BitReader,
 } from './media-decoder';
@@ -258,8 +256,6 @@ export {
   decodeAudioBuffer,
   decodeWav,
   decodeFlac,
-  decodeMp3,
-  decodeOgg,
   decompressLzma,
   decompressLzma2,
   compressLzma,

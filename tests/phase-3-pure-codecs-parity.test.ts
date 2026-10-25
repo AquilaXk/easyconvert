@@ -6,7 +6,6 @@ import {
   encodeOggContainer,
   convertMedia,
 } from '../src/lib/conversions/media';
-import { decodeOgg } from '../src/lib/conversions/media-decoder';
 import { EngineUnavailableError } from '../src/lib/types';
 import { adtsStream, silentRawDataBlock } from './helpers/media-lossy-oracle';
 
@@ -273,35 +272,15 @@ describe('Phase 3: Pure TypeScript Codecs Parity (RFC 7845 Ogg Bitstream)', () =
   // 5. Negative & Boundary Fuzzing (Fail-Closed)
   // ==========================================================================
   describe('5. Negative & Boundary Fuzzing (Fail-Closed)', () => {
-    it('handles 0-packet empty audio buffers gracefully without crashing and decodes to 0-length PCM', () => {
+    it('packages 0-packet empty audio buffers as header-only Opus and Vorbis streams', () => {
       const empty: Buffer[] = [];
       const opusOgg = encodeOpusContainer(empty, 48000, 2, 'Empty');
       expect(opusOgg.length).toBeGreaterThan(0);
       expect(opusOgg.toString('ascii', 0, 4)).toBe('OggS');
 
-      const decOpus = decodeOgg(opusOgg);
-      expect(decOpus.samples.length).toBe(0);
-      expect(decOpus.duration).toBe(0);
-      expect(decOpus.channels).toBe(2);
-
       const vorbisOgg = encodeOggContainer(empty, 44100, 2, 'Empty');
       expect(vorbisOgg.length).toBeGreaterThan(0);
       expect(vorbisOgg.toString('ascii', 0, 4)).toBe('OggS');
-
-      const decVorbis = decodeOgg(vorbisOgg);
-      expect(decVorbis.samples.length).toBe(0);
-      expect(decVorbis.duration).toBe(0);
-      expect(decVorbis.channels).toBe(2);
-    });
-
-    it('fails closed when decoding severely truncated or corrupt Ogg headers', () => {
-      const truncated = Buffer.from([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02]); // 'OggS' only 6 bytes
-      expect(() => decodeOgg(truncated)).toThrow(/Unsupported audio format/i);
-    });
-
-    it('fails closed on unknown container streams lacking OggS sync markers', () => {
-      const garbage = Buffer.from('RANDOM_CORRUPT_DATA_STRING_FOR_AUDIO_TESTING');
-      expect(() => decodeOgg(garbage)).toThrow(/Unsupported audio format/i);
     });
 
     it('rejects multi-channel audio (> 2 channels) and invalid channels with fail-closed errors', () => {

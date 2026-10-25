@@ -379,7 +379,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1654
+    "maxValue": 1650
   },
   {
     "file": "src/lib/api/contracts/validate.ts",
@@ -1103,29 +1103,9 @@
   {
     "file": "src/lib/conversions/media-decoder.ts",
     "rule": "complexity",
-    "function": "decodeMp3",
-    "count": 1,
-    "maxValue": 32
-  },
-  {
-    "file": "src/lib/conversions/media-decoder.ts",
-    "rule": "complexity",
-    "function": "decodeOgg",
-    "count": 1,
-    "maxValue": 33
-  },
-  {
-    "file": "src/lib/conversions/media-decoder.ts",
-    "rule": "complexity",
     "function": "decodeWav",
     "count": 1,
     "maxValue": 32
-  },
-  {
-    "file": "src/lib/conversions/media-decoder.ts",
-    "rule": "no-nested-ternary",
-    "function": "decodeMp3",
-    "count": 2
   },
   {
     "file": "src/lib/conversions/media-ffmpeg-args.ts",
