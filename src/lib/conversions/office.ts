@@ -3938,7 +3938,7 @@ async function generatePdfFromDocx(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', (err) => reject(err));
 
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc);
 
     const renderTable = (tbl: DocxTable) => {
       if (tbl.rows.length === 0) return;
@@ -5860,7 +5860,7 @@ async function generatePdfFromWorksheets(
         });
       }),
     })),
-    { title, orientation: isLandscape ? 'landscape' : 'portrait', customFontPath: (options as { fontPath?: string }).fontPath }
+    { title, orientation: isLandscape ? 'landscape' : 'portrait' }
   );
 }
 
@@ -6860,7 +6860,7 @@ async function convertPptxSource(
 
   // PPTX -> PDF
   if (tgt === 'pdf') {
-    const pdfBuffer = await generatePdfFromSlides(slides, options, baseName);
+    const pdfBuffer = await generatePdfFromSlides(slides, baseName);
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
 
@@ -6939,7 +6939,7 @@ async function convertOdpSource(
   }
 
   if (tgt === 'pdf') {
-    const pdfBuffer = await generatePdfFromSlides(slides, options, baseName);
+    const pdfBuffer = await generatePdfFromSlides(slides, baseName);
     return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
   }
 
@@ -7110,7 +7110,7 @@ async function convertPptSource(
   }
 
   if (tgt === 'pdf') {
-    const pdfBuffer = await generatePdfFromSlides(slides, options, baseName);
+    const pdfBuffer = await generatePdfFromSlides(slides, baseName);
     return withWarnings({ buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length });
   }
 
@@ -7298,7 +7298,6 @@ async function generatePdfFromSlides(
     height?: number;
     backgroundColor?: string;
   }>,
-  options: ConversionOptions,
   title: string
 ): Promise<Buffer> {
   return new Promise<Buffer>((resolve, reject) => {
@@ -7312,7 +7311,7 @@ async function generatePdfFromSlides(
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', (err) => reject(err));
 
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc);
 
     slides.forEach((slide, idx) => {
       const sWidth = slide.width || width;
@@ -7782,7 +7781,7 @@ async function convertMobiSource(
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', (err) => reject(err));
     });
-    const { hasUnicodeFont } = configurePdfKitFontFallback(doc, (options as any).fontPath);
+    const { hasUnicodeFont } = configurePdfKitFontFallback(doc);
     doc.fillColor('#1F2340').fontSize(18);
     renderSafePdfText(doc, baseName, hasUnicodeFont);
     doc.moveDown(1);

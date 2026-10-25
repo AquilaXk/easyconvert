@@ -284,6 +284,5 @@ export async function documentToPdf(model: DocumentModel, options: ConversionOpt
     title: documentTitle,
     page: pageGeometryOf(model),
     spacing: PDF_DOCUMENT_SPACING,
-    customFontPath: (options as { fontPath?: string }).fontPath,
   });
 }

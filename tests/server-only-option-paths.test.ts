@@ -233,6 +233,32 @@ describe('the options schema refuses every server-only key', () => {
   });
 });
 
+/**
+ * A read of an options key through a cast, `(options as any).key`, `(item.options as { key?: T })?.key` or
+ * `(opts as Record<string, unknown>)['key']`: the reads the schema and the server-only list cannot see.
+ */
+const CAST_OPTION_READ =
+  /\(\s*(?:[\w$]+(?:\?\.|\.))*(?:options|opts)[?!]?\s+as\s+[^()]*?\)\s*(?:(?:\?\.|\.)\s*([A-Za-z_$][\w$]*)|(?:\?\.)?\[\s*['"]([^'"]+)['"]\s*\])/g;
+
+/** Keys read through a cast that the schema does not declare and that name no file; each waits to be declared or removed. */
+const UNDECLARED_ROUTING_READS = ['brightnessDelta', 'grayscale', 'hwaccel', 'invert'];
+
+describe('every options key production code reads through a cast is public or server-only', () => {
+  it('names no other key, so the server-only list cannot go stale', () => {
+    const declared = new Set<string>([...Object.keys(ConversionOptionsSchema.properties), ...SERVER_ONLY_OPTION_KEYS]);
+    const src = path.resolve(__dirname, '..', 'src');
+    const undeclared = new Map<string, string[]>();
+    for (const file of fs.readdirSync(src, { recursive: true }).map(String)) {
+      if (!/\.tsx?$/.test(file)) continue;
+      for (const match of fs.readFileSync(path.join(src, file), 'utf8').matchAll(CAST_OPTION_READ)) {
+        const key = match[1] ?? match[2];
+        if (!declared.has(key)) undeclared.set(key, [...(undeclared.get(key) ?? []), file]);
+      }
+    }
+    expect([...undeclared.keys()].sort(), JSON.stringify(Object.fromEntries(undeclared))).toEqual(UNDECLARED_ROUTING_READS);
+  });
+});
+
 const PACKAGING_SOURCE: PackagingSource = {
   geometry: { fpsNum: 25, fpsDen: 1, width: 1920, height: 1080, durationSec: 60 },
   hasAudio: true,
