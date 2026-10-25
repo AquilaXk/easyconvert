@@ -115,9 +115,9 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Parts of an object-store upload go straight to the store, past this application's size
-  // limits, so the assembled object must be exactly the size that was declared.
-  if (storageProvider.kind === 'remote' && completedObject.size !== session.totalSize) {
+  // Parts can reach the store past this application's size limits, and parts stored side by side
+  // can add up to more than was declared, so the assembled object must be exactly the declared size.
+  if (completedObject.size !== session.totalSize) {
     const purged = await purgeAssembled(completedObject.key, instanceUri);
     if (purged) return purged;
     return createProblemDetailsResponse(

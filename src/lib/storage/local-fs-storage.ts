@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
+import { Readable, type Writable } from 'node:stream';
 import type {
   ByteRange,
   CompletedPart,
@@ -32,6 +32,9 @@ const UPLOAD_ID_RANDOM_BYTES = 12;
 const UPLOAD_ID_PATTERN = /^up_\d{1,15}_[0-9a-f]{24}$/;
 const PART_FILE_PATTERN = /^part-(\d+)\.bin$/;
 const SESSION_FILE = 'session.json';
+const TEMP_NAME_RANDOM_BYTES = 6;
+/** Opens a file only when it does not exist yet, so two writers never share one temp file. */
+const EXCLUSIVE_CREATE = 'wx';
 
 export interface LocalFsStorageOptions {
   storageDir?: string;
@@ -367,13 +370,11 @@ export class LocalFsStorage implements IObjectStorage {
     assertPartNumber(partNumber);
     const session = await this.readSession(sessionDir);
     if (!session) throw noSuchUpload();
-    const limit = multipartPartByteLimit(
-      session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES,
-      await this.otherPartsBytes(sessionDir, partNumber)
-    );
+    const declaredTotal = session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES;
+    const limit = multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber));
 
     const partPath = path.join(sessionDir, `part-${partNumber}.bin`);
-    const tempPartPath = `${partPath}.tmp.${Date.now()}`;
+    const tempPartPath = `${partPath}.tmp.${Date.now()}.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
     const nodeReadable = this.toNodeReadable(stream);
     const hasher = crypto.createHash('sha256');
     let partSize = 0;
@@ -390,10 +391,16 @@ export class LocalFsStorage implements IObjectStorage {
       hasher.update(chunk);
     });
 
-    const writeStream = fs.createWriteStream(tempPartPath);
+    const writeStream = fs.createWriteStream(tempPartPath, { flags: EXCLUSIVE_CREATE });
     try {
       await pipeline(nodeReadable, passThrough, writeStream);
       fs.renameSync(tempPartPath, partPath);
+      // Parts that landed while this one streamed were not counted in `limit`, so check the sum again.
+      const remaining = multipartPartByteLimit(declaredTotal, await this.otherPartsBytes(sessionDir, partNumber));
+      if (partSize > remaining) {
+        await fs.promises.rm(partPath, { force: true });
+        throw partTooLarge(remaining);
+      }
       const etag = `"${hasher.digest('hex')}"`;
       return {
         partNumber,
@@ -453,23 +460,42 @@ export class LocalFsStorage implements IObjectStorage {
     return sorted;
   }
 
-  private appendPartStream(
-    partFile: string,
-    writeCombined: fs.WriteStream,
-    overallHasher: crypto.Hash
-  ): Promise<number> {
-    return new Promise<number>((resolve, reject) => {
-      let partBytes = 0;
-      const readPart = fs.createReadStream(partFile);
-      readPart.on('data', (chunk: Buffer | string) => {
-        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        overallHasher.update(buf);
-        partBytes += buf.length;
-      });
-      readPart.on('end', () => resolve(partBytes));
-      readPart.on('error', reject);
-      readPart.pipe(writeCombined, { end: false });
-    });
+  /** The bytes of the listed parts on disk, which must add up to the declared total when the session has one. */
+  private async assertPartsMatchDeclaredSize(
+    sessionDir: string,
+    sorted: CompletedPart[],
+    declaredTotal: number | undefined
+  ): Promise<void> {
+    const sizes = await Promise.all(
+      sorted.map(async ({ partNumber }) => {
+        try {
+          return (await fs.promises.stat(path.join(sessionDir, `part-${partNumber}.bin`))).size;
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`Part file "${partNumber}" missing on disk`);
+          throw err;
+        }
+      })
+    );
+    const listedBytes = sizes.reduce((sum, size) => sum + size, 0);
+    if (declaredTotal !== undefined && listedBytes !== declaredTotal) {
+      throw new Error(`Listed parts add up to ${listedBytes} bytes, which does not match the declared size ${declaredTotal}`);
+    }
+  }
+
+  /** Streams the part files in order into `destination`, hashing them; settles with the byte count, or with the destination's error. */
+  private async assembleParts(partFiles: string[], destination: Writable, hasher: crypto.Hash): Promise<number> {
+    let bytes = 0;
+    async function* chunks(): AsyncGenerator<Buffer> {
+      for (const partFile of partFiles) {
+        for await (const chunk of fs.createReadStream(partFile)) {
+          hasher.update(chunk);
+          bytes += chunk.length;
+          yield chunk;
+        }
+      }
+    }
+    await pipeline(Readable.from(chunks()), destination);
+    return bytes;
   }
 
   async completeMultipart(
@@ -486,29 +512,18 @@ export class LocalFsStorage implements IObjectStorage {
     }
 
     const sorted = this.validateContiguousParts(parts);
+    await this.assertPartsMatchDeclaredSize(sessionDir, sorted, session.totalSize);
     const filename = session.metadata?.filename || path.basename(key) || 'download.bin';
 
     const { metaPath, binPath } = this.getPathsForKey(key);
-    const tempCombined = `${binPath}.comb.${Date.now()}`;
-    const writeCombined = fs.createWriteStream(tempCombined);
+    const tempCombined = `${binPath}.comb.${Date.now()}.${crypto.randomBytes(TEMP_NAME_RANDOM_BYTES).toString('hex')}`;
+    const writeCombined = fs.createWriteStream(tempCombined, { flags: EXCLUSIVE_CREATE });
     const overallHasher = crypto.createHash('sha256');
-    let totalBytes = 0;
+    let totalBytes: number;
 
     try {
-      for (const part of sorted) {
-        const partFile = path.join(sessionDir, `part-${part.partNumber}.bin`);
-        if (!fs.existsSync(partFile)) {
-          throw new Error(`Part file "${part.partNumber}" missing on disk`);
-        }
-        totalBytes += await this.appendPartStream(partFile, writeCombined, overallHasher);
-      }
-
-      await new Promise<void>((resolve, reject) => {
-        writeCombined.end((err?: Error | null) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
+      const partFiles = sorted.map(({ partNumber }) => path.join(sessionDir, `part-${partNumber}.bin`));
+      totalBytes = await this.assembleParts(partFiles, writeCombined, overallHasher);
 
       if (expectedSize !== undefined && totalBytes !== expectedSize) {
         throw new Error(`Assembled multipart size ${totalBytes} does not match expected size ${expectedSize}`);

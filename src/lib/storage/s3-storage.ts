@@ -233,7 +233,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       partSize += buf.length;
       if (maxPartBytes !== undefined && partSize > maxPartBytes) {
-        limitExceededMessage = `Part size exceeds maximum allowed part size of ${maxPartBytes} bytes (64 MiB).`;
+        limitExceededMessage = `Part size exceeds maximum allowed part size of ${maxPartBytes} bytes.`;
         outStream.destroy(new Error(limitExceededMessage));
         return;
       }

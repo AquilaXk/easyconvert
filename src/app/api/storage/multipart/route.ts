@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { storageProvider } from '@/lib/storage';
+import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -74,6 +74,13 @@ async function presignUploadPart(
     return createProblemDetailsResponse(
       400,
       'Missing required "uploadId" or "partNumber" for presigned upload URL.',
+      instanceUri
+    );
+  }
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > MULTIPART_MAX_PARTS) {
+    return createProblemDetailsResponse(
+      400,
+      `Invalid "partNumber". Must be an integer between 1 and ${MULTIPART_MAX_PARTS}.`,
       instanceUri
     );
   }

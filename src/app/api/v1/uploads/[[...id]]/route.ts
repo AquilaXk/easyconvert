@@ -367,8 +367,20 @@ function uploadActionErrorResponse(err: unknown, instanceUri: string): Response 
   }
   const storageProblem = storageErrorResponse(err, instanceUri);
   if (storageProblem) return storageProblem;
+  if (isSystemError(err)) {
+    // A session removed under a running request is a missing session, not a server fault.
+    if (err.code === 'ENOENT') return createProblemDetailsResponse(404, UPLOAD_SESSION_NOT_FOUND, instanceUri);
+    console.error(`[uploads] ${err.code} ${err.syscall}: ${err.message}`);
+    return createProblemDetailsResponse(500, 'Upload storage error', instanceUri, 'Internal Server Error');
+  }
   const message = err instanceof Error && err.message ? err.message : 'Error executing upload operation';
   return createProblemDetailsResponse(400, message, instanceUri);
+}
+
+/** An error from the operating system (it carries an errno code and syscall); its message names server paths. */
+function isSystemError(err: unknown): err is NodeJS.ErrnoException & { code: string; syscall: string } {
+  const { code, syscall } = (err ?? {}) as NodeJS.ErrnoException;
+  return err instanceof Error && typeof code === 'string' && typeof syscall === 'string';
 }
 
 export function OPTIONS() {
