@@ -1,4 +1,4 @@
-import { crc32 } from './crc32';
+import zlib from 'node:zlib';
 import type { ArchiveExtractionLimits } from './archive-extraction-safety';
 import { unpackWrapperSource } from './archive-wrapper-sources';
 import type { ArchiveInspectResponse } from '../types';
@@ -78,7 +78,7 @@ export function inspectLzSource(
         compressedSize: buffer.length,
         isEncrypted: false,
         isDirectory: false,
-        crc32: crc32(unpacked.payload).toString(16).padStart(8, '0'),
+        crc32: zlib.crc32(unpacked.payload).toString(16).padStart(8, '0'),
       },
     ],
   };

@@ -50,7 +50,6 @@ import { inspectLzSource, isRarArchive, isSevenZipArchive, isZipArchive, sniffLz
 import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { singleStreamPayload } from './archive-single-stream';
-import { crc32 } from './crc32';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
@@ -168,8 +167,6 @@ export {
   createZstdDictionaryTransformStream,
   type ZstdDictionaryStreamOptions,
 };
-
-export { crc32 };
 
 const PATH_SLASH_CHAR_CODE = 0x2f;
 
@@ -1938,7 +1935,7 @@ export function extractRarArchive(
         const fileBuf = Buffer.from(rarBuffer.subarray(dataOffset, dataOffset + packSize));
 
         // Verify CRC32
-        const computedCrc = crc32(fileBuf);
+        const computedCrc = zlib.crc32(fileBuf);
         if (computedCrc !== fileCrc) {
           throw new CorruptStreamError(`Corrupted RAR archive: CRC mismatch for ${filename} (expected 0x${fileCrc.toString(16)}, got 0x${computedCrc.toString(16)})`);
         }
@@ -2586,7 +2583,7 @@ function prepare7zArchive(
   let totalInputBytes = 0;
   for (const f of files) {
     unpackSizes.push(f.buffer.length);
-    crcs.push(crc32(f.buffer));
+    crcs.push(zlib.crc32(f.buffer));
     totalInputBytes += f.buffer.length;
   }
 
@@ -2596,7 +2593,7 @@ function prepare7zArchive(
   if (isSolid) {
     const solidBuffer = Buffer.concat(files.map(f => f.buffer));
     totalUnpackSize = solidBuffer.length;
-    solidCrc = crc32(solidBuffer);
+    solidCrc = zlib.crc32(solidBuffer);
     inputs = [solidBuffer];
   } else {
     inputs = files.map(f => f.buffer);
@@ -2880,7 +2877,7 @@ function assemble7zArchive(plan: SevenZipPlan, packed: SevenZipPackedStream[], a
 
   const nextHeaderOffset = packData.length;
   const nextHeaderSize = nhBuffer.length;
-  const nextHeaderCrc = crc32(nhBuffer);
+  const nextHeaderCrc = zlib.crc32(nhBuffer);
 
   const startHeader = Buffer.alloc(32);
   startHeader.write('7z\xBC\xAF\x27\x1C', 0, 6, 'binary');
@@ -2890,7 +2887,7 @@ function assemble7zArchive(plan: SevenZipPlan, packed: SevenZipPackedStream[], a
   startHeader.writeBigUInt64LE(BigInt(nextHeaderSize), 20);
   startHeader.writeUInt32LE(nextHeaderCrc, 28);
 
-  const shCrc = crc32(startHeader.subarray(12, 32));
+  const shCrc = zlib.crc32(startHeader.subarray(12, 32));
   startHeader.writeUInt32LE(shCrc, 8);
 
   const fullArchive = Buffer.concat([startHeader, packData, nhBuffer]);
@@ -3415,7 +3412,7 @@ function inspectTarBuffer(buffer: Buffer, format = 'tar'): InspectionBody {
       isEncrypted: false,
       isDirectory,
       modifiedAt: entry.mtime > 0 ? new Date(entry.mtime * 1000).toISOString() : undefined,
-      crc32: isFile ? crc32(entry.buffer).toString(16).padStart(8, '0') : undefined,
+      crc32: isFile ? zlib.crc32(entry.buffer).toString(16).padStart(8, '0') : undefined,
     });
     totalUncompressedBytes += size;
   }
@@ -3577,7 +3574,7 @@ async function inspect7zBuffer(
     compressedSize: f.buffer.length,
     isEncrypted: false,
     isDirectory: false,
-    crc32: crc32(f.buffer).toString(16).padStart(8, '0'),
+    crc32: zlib.crc32(f.buffer).toString(16).padStart(8, '0'),
   }));
 
   const totalUncompressedBytes = entries.reduce((acc, e) => acc + e.uncompressedSize, 0);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { crc32 } from '../src/lib/conversions/archive';
+import zlib from 'node:zlib';
 import { LzmaRangeEncoder } from '../src/lib/conversions/lzma-encoder';
 import { oracleTest } from './helpers/oracle-test';
 
@@ -43,7 +43,7 @@ describe('CRC-32', () => {
   ];
 
   it.each(VECTORS)('matches the published check value for %j', (text, expected) => {
-    expect(crc32(Buffer.from(text, 'latin1'))).toBe(expected);
+    expect(zlib.crc32(Buffer.from(text, 'latin1'))).toBe(expected);
   });
 
   it('equals the byte loop at every length and alignment around the 8-byte stride', () => {
@@ -51,7 +51,7 @@ describe('CRC-32', () => {
     for (let offset = 0; offset < 9; offset++) {
       for (let length = 0; length < 70; length++) {
         const view = data.subarray(offset, offset + length);
-        expect(crc32(view)).toBe(byteAtATime(view));
+        expect(zlib.crc32(view)).toBe(byteAtATime(view));
       }
     }
   });
@@ -60,7 +60,7 @@ describe('CRC-32', () => {
     const data = pseudoRandomBytes(10_000, 11);
     const whole = byteAtATime(data);
     for (const split of [0, 1, 7, 8, 9, 4096, 9999, 10_000]) {
-      expect(crc32(data.subarray(split), crc32(data.subarray(0, split)))).toBe(whole);
+      expect(zlib.crc32(data.subarray(split), zlib.crc32(data.subarray(0, split)))).toBe(whole);
     }
   });
 
@@ -70,7 +70,7 @@ describe('CRC-32', () => {
     const gz = execFileSync('gzip', ['-c', '-n'], { input: data, maxBuffer: 4 * MEGABYTE });
     const trailerCrc = gz.readUInt32LE(gz.length - 8);
     expect(gz.readUInt32LE(gz.length - 4)).toBe(data.length);
-    expect(crc32(data)).toBe(trailerCrc);
+    expect(zlib.crc32(data)).toBe(trailerCrc);
   });
 
 });

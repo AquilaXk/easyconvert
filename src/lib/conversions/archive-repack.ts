@@ -1,3 +1,4 @@
+import zlib from 'node:zlib';
 import { getMaxInMemoryBytes } from '../storage/errors';
 import type { ArchiveCollisionPolicy } from '../types';
 import {
@@ -34,7 +35,6 @@ import {
 import { buildTarEntryHeaders, isZipBufferEncrypted, readTarEntries, type TarEntry } from './archive';
 import { NativeBzip2Error, bzip2WithLbzip2, getLbzip2Path, lbzip2MaxInputBytes } from './archive-lbzip2';
 import { NativeDeflateError, deflateRawWithLibdeflate, getLibdeflateGzipPath } from './archive-libdeflate';
-import { crc32 } from './crc32';
 import { DEFLATE_BLOCK_BYTES, deflateRawBlocks } from './deflate-blocks';
 import { ZipWriter, type ZipDeflater, type ZipEntryInput } from './zip-writer';
 
@@ -210,7 +210,7 @@ function gzipHeader(level: number, name: string | undefined, mtimeSeconds: numbe
 
 function gzipTrailer(data: Buffer): Buffer {
   const trailer = Buffer.alloc(GZIP_TRAILER_BYTES);
-  trailer.writeUInt32LE(crc32(data), 0);
+  trailer.writeUInt32LE(zlib.crc32(data), 0);
   trailer.writeUInt32LE(data.length % UINT32_MODULUS, 4);
   return trailer;
 }

@@ -1,5 +1,5 @@
+import zlib from 'node:zlib';
 import { CorruptStreamError, DecompressionLimitError } from '../types';
-import { crc32 } from './crc32';
 import { LzmaDecoder } from './lzma-decoder';
 
 /**
@@ -110,7 +110,7 @@ export function decompressLzip(input: Buffer, maxOutputBytes: number): Buffer {
     const consumed = decoder.decode(input, member.start + HEADER_BYTES, streamEnd, member.dataSize + 1, true);
     if (decoder.outPos - outputStart !== member.dataSize) throw corrupt('a member decodes to a different size than its trailer states');
     if (consumed !== streamEnd) throw corrupt('a member has data between its stream and its trailer');
-    if (crc32(decoder.output.subarray(outputStart)) !== member.crc) throw corrupt('a member does not match its CRC-32');
+    if (zlib.crc32(decoder.output.subarray(outputStart)) !== member.crc) throw corrupt('a member does not match its CRC-32');
   }
   const output = decoder.output;
   return Buffer.from(output.buffer, output.byteOffset, output.byteLength);

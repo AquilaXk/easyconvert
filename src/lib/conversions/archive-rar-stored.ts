@@ -1,4 +1,4 @@
-import { crc32 } from './crc32';
+import zlib from 'node:zlib';
 
 /**
  * Reads a RAR 4.x archive whose entries are all stored (method 0x30): the bytes of an entry are in the file as they are, so
@@ -92,7 +92,7 @@ function readHeader(buffer: Buffer, at: number, minimum: number): { type: number
   const size = buffer.readUInt16LE(at + 5);
   if (size < minimum || at + size > buffer.length) return null;
   const expected = buffer.readUInt16LE(at);
-  if ((crc32(buffer.subarray(at + HEADER_CRC_SKIP, at + size)) & HEADER_CRC_MASK) !== expected) return null;
+  if ((zlib.crc32(buffer.subarray(at + HEADER_CRC_SKIP, at + size)) & HEADER_CRC_MASK) !== expected) return null;
   return { type: buffer[at + 2], flags: buffer.readUInt16LE(at + 3), size };
 }
 
@@ -132,7 +132,7 @@ export function readStoredRar4(buffer: Buffer, maxEntries: number): StoredRarEnt
     const dataEnd = dataStart + packed;
     if (dataEnd > buffer.length) return null;
     const data = buffer.subarray(dataStart, dataEnd);
-    if (crc32(data) !== expectedCrc) return null;
+    if (zlib.crc32(data) !== expectedCrc) return null;
 
     const unixHost = host === HOST_UNIX || host === HOST_MACOS;
     const unixType = unixHost ? attributes & UNIX_TYPE_MASK : 0;

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import zlib from 'node:zlib';
 import { CorruptStreamError, DecompressionLimitError, UnsupportedArchiveMethodError } from '../types';
 import {
   decodeArm,
@@ -10,7 +11,6 @@ import {
   decodeSparc,
   decodeX86,
 } from './archive-sevenzip-filters';
-import { crc32 } from './crc32';
 import { decodeLzma2At } from './lzma-decoder';
 
 /**
@@ -170,7 +170,7 @@ function checkSize(type: number): number {
 function verifyCheck(type: number, data: Uint8Array, stored: Uint8Array): void {
   if (type === CHECK_CRC32) {
     const expected = stored[0] | (stored[1] << 8) | (stored[2] << 16) | (stored[3] << 24);
-    if (crc32(data) !== expected >>> 0) throw xzError('payload CRC32 mismatch');
+    if (zlib.crc32(data) !== expected >>> 0) throw xzError('payload CRC32 mismatch');
   } else if (type === CHECK_CRC64) {
     const [low, high] = crc64(data);
     const storedLow = (stored[0] | (stored[1] << 8) | (stored[2] << 16) | (stored[3] << 24)) >>> 0;
@@ -189,7 +189,7 @@ function verifyCheck(type: number, data: Uint8Array, stored: Uint8Array): void {
 export function packXzStream(uncompressed: Uint8Array, lzma2: { buffer: Uint8Array; props: Uint8Array }): Buffer {
   const streamFlags = Uint8Array.of(0x00, CHECK_CRC32);
   const flagsCrc = Buffer.alloc(CRC_BYTES);
-  flagsCrc.writeUInt32LE(crc32(streamFlags), 0);
+  flagsCrc.writeUInt32LE(zlib.crc32(streamFlags), 0);
   const header = Buffer.concat([HEADER_MAGIC, streamFlags, flagsCrc]);
 
   // Block header: size byte, flags (one filter, no sizes), LZMA2 filter id, one property byte, padding, CRC-32.
@@ -201,25 +201,25 @@ export function packXzStream(uncompressed: Uint8Array, lzma2: { buffer: Uint8Arr
   blockHeaderNoCrc[1] = 0x00;
   Buffer.from(filterAndProps).copy(blockHeaderNoCrc, 2);
   const blockHeaderCrc = Buffer.alloc(CRC_BYTES);
-  blockHeaderCrc.writeUInt32LE(crc32(blockHeaderNoCrc), 0);
+  blockHeaderCrc.writeUInt32LE(zlib.crc32(blockHeaderNoCrc), 0);
   const blockHeader = Buffer.concat([blockHeaderNoCrc, blockHeaderCrc]);
 
   const padding = Buffer.alloc(pad4(lzma2.buffer.length));
   const check = Buffer.alloc(CRC_BYTES);
-  check.writeUInt32LE(crc32(uncompressed), 0);
+  check.writeUInt32LE(zlib.crc32(uncompressed), 0);
 
   const unpaddedSize = blockHeader.length + lzma2.buffer.length + CRC_BYTES;
   const indexBody = Buffer.from([INDEX_INDICATOR, ...encodeVarint(1), ...encodeVarint(unpaddedSize), ...encodeVarint(uncompressed.length)]);
   const indexNoCrc = Buffer.concat([indexBody, Buffer.alloc(pad4(indexBody.length))]);
   const indexCrc = Buffer.alloc(CRC_BYTES);
-  indexCrc.writeUInt32LE(crc32(indexNoCrc), 0);
+  indexCrc.writeUInt32LE(zlib.crc32(indexNoCrc), 0);
   const index = Buffer.concat([indexNoCrc, indexCrc]);
 
   const footerBody = Buffer.alloc(6);
   footerBody.writeUInt32LE(index.length / PADDING_UNIT - 1, 0);
   footerBody.set(streamFlags, 4);
   const footerCrc = Buffer.alloc(CRC_BYTES);
-  footerCrc.writeUInt32LE(crc32(footerBody), 0);
+  footerCrc.writeUInt32LE(zlib.crc32(footerBody), 0);
 
   return Buffer.concat([header, blockHeader, lzma2.buffer, padding, check, index, footerCrc, footerBody, FOOTER_MAGIC]);
 }
@@ -294,7 +294,7 @@ function parseBlockHeader(buf: Uint8Array, offset: number): BlockHeader {
   const size = (buf[offset] + 1) * PADDING_UNIT;
   if (size < BLOCK_HEADER_MIN_BYTES || offset + size > buf.length) throw xzError('truncated block header');
   const stored = (buf[offset + size - 4] | (buf[offset + size - 3] << 8) | (buf[offset + size - 2] << 16) | (buf[offset + size - 1] << 24)) >>> 0;
-  if (crc32(buf.subarray(offset, offset + size - CRC_BYTES)) !== stored) throw xzError('block header CRC mismatch');
+  if (zlib.crc32(buf.subarray(offset, offset + size - CRC_BYTES)) !== stored) throw xzError('block header CRC mismatch');
   const flags = buf[offset + 1];
   if ((flags & BLOCK_FLAGS_RESERVED_MASK) !== 0) throw xzError('reserved block header flags are set');
   const end = offset + size - CRC_BYTES;
@@ -356,7 +356,7 @@ interface IndexRecord {
 
 function parseIndex(buf: Uint8Array, offset: number, size: number): IndexRecord[] {
   const stored = (buf[offset + size - 4] | (buf[offset + size - 3] << 8) | (buf[offset + size - 2] << 16) | (buf[offset + size - 1] << 24)) >>> 0;
-  if (crc32(buf.subarray(offset, offset + size - CRC_BYTES)) !== stored) throw xzError('index CRC mismatch');
+  if (zlib.crc32(buf.subarray(offset, offset + size - CRC_BYTES)) !== stored) throw xzError('index CRC mismatch');
   const end = offset + size - CRC_BYTES;
   if (buf[offset] !== INDEX_INDICATOR) throw xzError('index indicator missing');
   const count = readVarint(buf, offset + 1, end);
@@ -396,7 +396,7 @@ export function unpackXzStream(buf: Uint8Array, maxOutput: number): Buffer {
     if (!sameBytes(buf.subarray(offset, offset + HEADER_MAGIC.length), HEADER_MAGIC)) throw xzError('magic number mismatch');
     const streamFlags = buf.subarray(offset + 6, offset + 6 + STREAM_FLAGS_BYTES);
     const flagsCrc = (buf[offset + 8] | (buf[offset + 9] << 8) | (buf[offset + 10] << 16) | (buf[offset + 11] << 24)) >>> 0;
-    if (crc32(streamFlags) !== flagsCrc) throw xzError('header CRC mismatch');
+    if (zlib.crc32(streamFlags) !== flagsCrc) throw xzError('header CRC mismatch');
     if (streamFlags[0] !== 0) throw xzError('reserved stream flags are set');
     const checkType = streamFlags[1];
     const checkBytes = checkSize(checkType);
@@ -448,7 +448,7 @@ export function unpackXzStream(buf: Uint8Array, maxOutput: number): Buffer {
     if (!sameBytes(buf.subarray(footer + 10, footer + 12), FOOTER_MAGIC)) throw xzError('footer magic mismatch');
     const footerBody = buf.subarray(footer + 4, footer + 10);
     const footerCrc = (buf[footer] | (buf[footer + 1] << 8) | (buf[footer + 2] << 16) | (buf[footer + 3] << 24)) >>> 0;
-    if (crc32(footerBody) !== footerCrc) throw xzError('footer CRC mismatch');
+    if (zlib.crc32(footerBody) !== footerCrc) throw xzError('footer CRC mismatch');
     if (footerBody[4] !== streamFlags[0] || footerBody[5] !== streamFlags[1]) throw xzError('stream flags mismatch between header and footer');
     const backwardSize = (footerBody[0] | (footerBody[1] << 8) | (footerBody[2] << 16) | (footerBody[3] << 24)) >>> 0;
     if ((backwardSize + 1) * PADDING_UNIT !== indexSize) throw xzError('backward size does not match the index');

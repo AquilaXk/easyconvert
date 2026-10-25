@@ -1,5 +1,5 @@
+import zlib from 'node:zlib';
 import { CorruptStreamError, DecompressionLimitError } from '../types';
-import { crc32 } from './crc32';
 import { decompressLzo1xBlock } from './lzo1x';
 
 /**
@@ -111,7 +111,7 @@ function readHeader(reader: Reader, input: Uint8Array): number {
   reader.take(reader.u8()); // original file name
   const headerBytes = input.subarray(checksumStart, reader.pos);
   const declared = reader.u32();
-  const actual = flags & FLAG_HEADER_CRC32 ? crc32(headerBytes) : adler32(headerBytes);
+  const actual = flags & FLAG_HEADER_CRC32 ? zlib.crc32(headerBytes) : adler32(headerBytes);
   if (actual !== declared) throw corrupt('the header checksum does not match');
   if (flags & FLAG_EXTRA_FIELD) {
     // No lzop release writes one; it is skipped (with its checksum word), not interpreted.
@@ -130,7 +130,7 @@ function declaredChecksum(flags: number, adlerFlag: number, crcFlag: number, rea
 
 function verifyChecksum(expected: { crc: boolean; value: number } | null, data: Uint8Array, what: string): void {
   if (expected === null) return;
-  const actual = expected.crc ? crc32(data) : adler32(data);
+  const actual = expected.crc ? zlib.crc32(data) : adler32(data);
   if (actual !== expected.value) throw corrupt(`the ${what} checksum does not match`);
 }
 
