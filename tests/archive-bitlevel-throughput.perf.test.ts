@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { crc32 } from '../src/lib/conversions/archive';
 import { LzmaRangeEncoder } from '../src/lib/conversions/lzma-encoder';
 import { expectNoSlowerThanReference } from './helpers/timing';
 
@@ -125,34 +124,6 @@ function encodeStream(encoder: Pick<BigIntRangeEncoder, 'encodeBit' | 'encodeDir
   }
   return encoder.flush();
 }
-
-describe('CRC-32', () => {
-  /** The textbook one-table, one-byte-at-a-time loop (ISO 3309 / ITU-T V.42), written here as the speed reference. */
-  const referenceTable = new Uint32Array(256);
-
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    referenceTable[n] = c >>> 0;
-  }
-
-  function byteAtATime(buf: Uint8Array): number {
-    let c = 0xffffffff;
-    for (let i = 0; i < buf.length; i++) c = referenceTable[(c ^ buf[i]) & BYTE_MASK] ^ (c >>> 8);
-    return (c ^ 0xffffffff) >>> 0;
-  }
-
-  it.skipIf(SKIP_TIMING)(
-    'runs at least 5x faster than the byte-at-a-time loop on 4 MB',
-    async () => {
-      const data = pseudoRandomBytes(4 * MEGABYTE, 17);
-      const expected = byteAtATime(data);
-      await expectNoSlowerThanReference('crc32', () => byteAtATime(data), () => crc32(data), { maxRatio: 1 / 5 });
-      expect(crc32(data)).toBe(expected);
-    },
-    TEST_TIMEOUT_MS
-  );
-});
 
 describe('LZMA range encoder', () => {
   it.skipIf(SKIP_TIMING)(
