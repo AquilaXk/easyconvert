@@ -15,31 +15,39 @@ import {
   StorageAdapterError,
 } from './adapter-interface';
 import { isPrivateOrRestrictedHost, isBlockedIp } from '../../security/ssrf';
+import {
+  assertSftpPort,
+  normalizeBasePath,
+  resolveRemotePath,
+  sftpBatch,
+  sftpChildEnv,
+  sftpCommandLine,
+  sftpDestination,
+} from './sftp-protocol';
 
 const streamPipeline = promisify(pipeline);
 
-function stripTrailingSlashes(s: string): string {
-  let end = s.length;
-  while (end > 0 && s.charCodeAt(end - 1) === 47) {
-    end--;
-  }
-  return s.slice(0, end);
-}
+/** A hung connection or a stalled transfer is killed after this long, so its key file and the process do not outlive the request. */
+const SFTP_COMMAND_TIMEOUT_MS = 15 * 60_000;
 
-function stripLeadingSlashes(s: string): string {
-  let start = 0;
-  while (start < s.length && s.charCodeAt(start) === 47) {
-    start++;
+function removeDirQuietly(dir: string): void {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // a directory that cannot be removed now is swept with the temp directory
   }
-  return s.slice(start);
 }
 
 export class SftpStorageAdapter implements IStorageAdapter {
   readonly providerName = 'sftp';
   private readonly port: number;
+  private readonly destination: string;
+  private readonly basePath: string;
 
   constructor(private readonly credentials: SftpCredentials) {
-    this.port = credentials.port || 22;
+    this.port = assertSftpPort(credentials.port ?? 22);
+    this.destination = sftpDestination(credentials.host, credentials.username);
+    this.basePath = normalizeBasePath(credentials.basePath);
   }
 
   private async assertSsrfSafe(): Promise<void> {
@@ -64,43 +72,26 @@ export class SftpStorageAdapter implements IStorageAdapter {
     }
   }
 
-  private resolveRemotePath(remotePath: string): string {
-    const clean = stripLeadingSlashes(remotePath);
-    if (this.credentials.basePath) {
-      const base = stripTrailingSlashes(this.credentials.basePath);
-      return `${base}/${clean}`;
-    }
-    return `/${clean}`;
-  }
-
   async downloadStream(remotePath: string): Promise<NodeJS.ReadableStream> {
     await this.assertSsrfSafe();
-    const resolved = this.resolveRemotePath(remotePath);
+    const resolved = resolveRemotePath(this.basePath, remotePath);
 
     // Spool download through safe temp file to guarantee zero Next.js heap buffering
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-sftp-down-'));
     const localTmp = path.join(tmpDir, 'downloaded.tmp');
 
-    const batchScript = `get "${resolved}" "${localTmp}"\nquit\n`;
-    await this.runSftpBatch(batchScript);
-
-    if (!fs.existsSync(localTmp)) {
-      try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
-        // ignore
+    try {
+      await this.runSftpBatch(sftpBatch(sftpCommandLine('get', resolved, localTmp)));
+      if (!fs.existsSync(localTmp)) {
+        throw new StorageNotFoundError(remotePath, this.providerName);
       }
-      throw new StorageNotFoundError(remotePath, this.providerName);
+    } catch (err) {
+      removeDirQuietly(tmpDir);
+      throw err;
     }
 
     const readStream = fs.createReadStream(localTmp);
-    readStream.on('close', () => {
-      try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
-        // ignore
-      }
-    });
+    readStream.on('close', () => removeDirQuietly(tmpDir));
 
     return readStream;
   }
@@ -111,12 +102,13 @@ export class SftpStorageAdapter implements IStorageAdapter {
     options?: { contentType?: string; size?: number }
   ): Promise<StorageAdapterMetadata> {
     await this.assertSsrfSafe();
-    const resolved = this.resolveRemotePath(remotePath);
+    const resolved = resolveRemotePath(this.basePath, remotePath);
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-sftp-up-'));
     const localTmp = path.join(tmpDir, 'upload.tmp');
 
     try {
+      const batchScript = sftpBatch(sftpCommandLine('put', localTmp, resolved));
       let nodeStream: NodeJS.ReadableStream;
       if ('getReader' in stream) {
         nodeStream = Readable.fromWeb(stream as import('node:stream/web').ReadableStream);
@@ -127,7 +119,6 @@ export class SftpStorageAdapter implements IStorageAdapter {
       await streamPipeline(nodeStream, fs.createWriteStream(localTmp));
       const stats = fs.statSync(localTmp);
 
-      const batchScript = `put "${localTmp}" "${resolved}"\nquit\n`;
       await this.runSftpBatch(batchScript);
 
       return {
@@ -136,19 +127,15 @@ export class SftpStorageAdapter implements IStorageAdapter {
         lastModified: new Date(),
       };
     } finally {
-      try {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      } catch {
-        // ignore
-      }
+      removeDirQuietly(tmpDir);
     }
   }
 
   async head(remotePath: string): Promise<StorageAdapterMetadata | null> {
     await this.assertSsrfSafe();
-    const resolved = this.resolveRemotePath(remotePath);
+    const resolved = resolveRemotePath(this.basePath, remotePath);
 
-    const batchScript = `ls -l "${resolved}"\nquit\n`;
+    const batchScript = sftpBatch(sftpCommandLine('ls -l', resolved));
     try {
       const output = await this.runSftpBatch(batchScript);
       if (!output || output.includes('not found') || output.includes('No such file')) {
@@ -169,9 +156,9 @@ export class SftpStorageAdapter implements IStorageAdapter {
 
   async delete(remotePath: string): Promise<boolean> {
     await this.assertSsrfSafe();
-    const resolved = this.resolveRemotePath(remotePath);
+    const resolved = resolveRemotePath(this.basePath, remotePath);
 
-    const batchScript = `rm "${resolved}"\nquit\n`;
+    const batchScript = sftpBatch(sftpCommandLine('rm', resolved));
     try {
       await this.runSftpBatch(batchScript);
       return true;
@@ -180,33 +167,44 @@ export class SftpStorageAdapter implements IStorageAdapter {
     }
   }
 
+  /**
+   * Runs one sftp session. The private key and the child's HOME live in a directory of this call
+   * (mkdtemp makes it 0700) that is removed on every way out: success, a failed exit, a spawn failure and
+   * a kill by the timeout.
+   */
   private async runSftpBatch(commands: string): Promise<string> {
+    const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-sftp-run-'));
+    try {
+      return await this.spawnSftp(this.buildArgs(workDir), commands, workDir);
+    } finally {
+      removeDirQuietly(workDir);
+    }
+  }
+
+  private buildArgs(workDir: string): string[] {
+    const args: string[] = [
+      '-o', 'BatchMode=yes',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', 'ConnectTimeout=10',
+      '-P', String(this.port),
+    ];
+    if (this.credentials.privateKey) {
+      const keyFile = path.join(workDir, 'identity');
+      fs.writeFileSync(keyFile, this.credentials.privateKey, { mode: 0o600, flag: 'wx' });
+      args.push('-i', keyFile);
+    }
+    args.push('--', this.destination);
+    return args;
+  }
+
+  private spawnSftp(args: string[], commands: string, workDir: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      const args: string[] = [
-        '-o', 'BatchMode=yes',
-        '-o', 'StrictHostKeyChecking=accept-new',
-        '-o', 'ConnectTimeout=10',
-        '-P', String(this.port),
-      ];
-
-      if (this.credentials.privateKey) {
-        const keyTmp = path.join(os.tmpdir(), `sftp-key-${Date.now()}.tmp`);
-        fs.writeFileSync(keyTmp, this.credentials.privateKey, { mode: 0o600 });
-        args.push('-i', keyTmp);
-      }
-
-      const destination = `${this.credentials.username}@${this.credentials.host}`;
-      args.push(destination);
-
-      const trustedPath = '/usr/bin:/bin:/usr/sbin:/sbin';
       const sftpBin = fs.existsSync('/usr/bin/sftp') ? '/usr/bin/sftp' : 'sftp';
       const child = spawn(sftpBin, args, {
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          PATH: trustedPath,
-        },
+        env: sftpChildEnv(workDir),
+        timeout: SFTP_COMMAND_TIMEOUT_MS,
       });
 
       let stdout = '';
@@ -218,12 +216,15 @@ export class SftpStorageAdapter implements IStorageAdapter {
       child.stderr.on('data', (d) => {
         stderr += d.toString();
       });
+      child.stdin.on('error', () => {
+        // a child that never started or already exited reports its failure through 'error' and 'close'
+      });
 
       child.on('error', (err) => {
         reject(new StorageAdapterError(`SFTP process failed to spawn: ${err.message}`, this.providerName, err));
       });
 
-      child.on('close', (code) => {
+      child.on('close', (code, signal) => {
         if (code === 0) {
           resolve(stdout);
         } else if (stderr.includes('Permission denied') || stderr.includes('Authentication failed')) {
@@ -231,7 +232,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
         } else if (stderr.includes('No such file') || stderr.includes('not found')) {
           reject(new StorageNotFoundError(commands, this.providerName));
         } else {
-          reject(new StorageAdapterError(`SFTP command exited with code ${code}: ${stderr}`, this.providerName));
+          reject(new StorageAdapterError(`SFTP command ended with ${code ?? signal}: ${stderr}`, this.providerName));
         }
       });
 
