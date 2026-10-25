@@ -31,7 +31,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 38
+    "maxValue": 37
   },
   {
     "file": "src/app/api/convert/route.ts",
@@ -379,13 +379,13 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1655
+    "maxValue": 1654
   },
   {
     "file": "src/lib/api/contracts/validate.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "validateOrProblem",
-    "count": 4
+    "count": 3
   },
   {
     "file": "src/lib/api/contracts/validate.ts",
@@ -1146,7 +1146,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1777
+    "maxValue": 1768
   },
   {
     "file": "src/lib/conversions/media-ffmpeg-args.ts",

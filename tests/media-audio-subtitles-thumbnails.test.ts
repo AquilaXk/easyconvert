@@ -6,10 +6,10 @@ import { execFileSync } from 'node:child_process';
 import {
   buildFfmpegArguments,
   AUDIO_CODEC_MAP,
-  escapeFfmpegFilterPath,
   probeAudioChannels,
   type FfprobePath,
 } from '../src/lib/conversions/media-ffmpeg-args';
+import { escapeFfmpegFilterPath } from '../src/lib/conversions/media-filter-escape';
 import {
   convertMedia,
   getFfmpegPath,
@@ -261,9 +261,9 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
 
   describe('5. Subtitles (Burn, Soft, Extract) Gate', () => {
     it('escapes subtitle file paths safely against FFmpeg filter syntax injection', () => {
-      const rawPath = 'C:\\media\\sub:title\'s_special.srt';
+      const rawPath = "/media/sub:title's,special.srt";
       const escaped = escapeFfmpegFilterPath(rawPath);
-      expect(escaped).toBe(String.raw`C\:/media/sub\:title'\\''s_special.srt`);
+      expect(escaped).toBe(String.raw`/media/sub\\:title\\\'s\,special.srt`);
     });
 
     it('burns subtitles by inserting subtitles filter prior to even dimension scale in videoFilters', () => {
@@ -278,10 +278,10 @@ describe('WP-44b: Media Audio Controls, ITU-R BS.775 Downmixing & Subtitles & Th
       const vfIdx = args.indexOf('-vf');
       expect(vfIdx).toBeGreaterThan(0);
       const vf = args[vfIdx + 1];
-      expect(vf).toContain("subtitles='/path/to/subs.srt'");
+      expect(vf).toContain('subtitles=filename=/path/to/subs.srt');
       expect(vf.endsWith('scale=trunc(iw/2)*2:trunc(ih/2)*2')).toBe(true);
       // subtitles filter must appear before even scale
-      const subPos = vf.indexOf("subtitles='/path/to/subs.srt'");
+      const subPos = vf.indexOf('subtitles=filename=/path/to/subs.srt');
       const scalePos = vf.indexOf('scale=trunc(iw/2)*2:trunc(ih/2)*2');
       expect(subPos).toBeLessThan(scalePos);
     });

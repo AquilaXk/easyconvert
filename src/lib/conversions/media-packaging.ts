@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { InvalidMediaOptionError, MediaLadderRung, MediaPackagingSegmentType } from '../types';
 import type { VideoGeometry } from './media-ffprobe';
 
@@ -32,6 +33,53 @@ export function resolveSegmentType(requested: unknown, format: 'hls' | 'dash'): 
     throw new InvalidMediaOptionError('MPEG-DASH packaging writes ISO BMFF segments; segmentType "ts" applies to HLS only.');
   }
   return requested as MediaPackagingSegmentType;
+}
+
+/*
+ * The name of the master playlist (HLS) or manifest (DASH) a request may choose: a bare file name in the packaging
+ * output directory. The request schema and the argument builder check it with the same rule.
+ */
+export const PACKAGING_FORMATS = ['hls', 'dash'] as const;
+export type PackagingFormat = (typeof PACKAGING_FORMATS)[number];
+
+const MAX_MANIFEST_NAME_CHARS = 128;
+
+/** Letters, digits, `.`, `_` and `-` only, so the name holds no directory separator and no character a shell or URL treats specially. */
+const PACKAGING_MANIFEST_NAME_PATTERN = `^[A-Za-z0-9._-]{1,${MAX_MANIFEST_NAME_CHARS}}$`;
+
+const PACKAGING_MANIFEST_EXTENSION: Record<PackagingFormat, string> = { hls: '.m3u8', dash: '.mpd' };
+
+const DEFAULT_MANIFEST_NAME: Record<PackagingFormat, string> = { hls: 'master.m3u8', dash: 'manifest.mpd' };
+
+/** Request schema of `packaging.masterPlaylistName`. */
+export const MASTER_PLAYLIST_NAME_SCHEMA = {
+  type: 'string',
+  pattern: PACKAGING_MANIFEST_NAME_PATTERN,
+  description: `File name of the master playlist (HLS, ending in .m3u8) or manifest (DASH, ending in .mpd): 1 to ${MAX_MANIFEST_NAME_CHARS} letters, digits, \`.\`, \`_\` and \`-\`, no directory.`,
+} as const;
+
+/** Request schema rules that tie the name's extension to `packaging.format`. */
+export const MANIFEST_EXTENSION_BY_FORMAT_SCHEMA = PACKAGING_FORMATS.map((format) => ({
+  if: { type: 'object', required: ['format'], properties: { format: { const: format } } },
+  then: { type: 'object', properties: { masterPlaylistName: { type: 'string', pattern: `\\${PACKAGING_MANIFEST_EXTENSION[format]}$` } } },
+}));
+
+const MANIFEST_NAME = new RegExp(PACKAGING_MANIFEST_NAME_PATTERN);
+
+/** The manifest file name of a packaging run: the requested one once it passes the rule, else the format's default. */
+export function packagingManifestName(format: PackagingFormat, requested: string | undefined, outputDir: string): string {
+  if (requested === undefined || requested === '') return DEFAULT_MANIFEST_NAME[format];
+  const extension = PACKAGING_MANIFEST_EXTENSION[format];
+  if (typeof requested !== 'string' || !MANIFEST_NAME.test(requested) || !requested.endsWith(extension)) {
+    throw new InvalidMediaOptionError(
+      `masterPlaylistName must be 1 to ${MAX_MANIFEST_NAME_CHARS} letters, digits, ".", "_" or "-" ending in "${extension}" for ${format}.`
+    );
+  }
+  const root = path.resolve(outputDir);
+  if (path.dirname(path.resolve(root, requested)) !== root) {
+    throw new InvalidMediaOptionError(`masterPlaylistName "${requested}" does not name a file in the packaging output directory.`);
+  }
+  return requested;
 }
 
 /**

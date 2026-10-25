@@ -1,5 +1,6 @@
 import Ajv2020 from 'ajv/dist/2020';
 import addFormats from 'ajv-formats';
+import type { SchemaValidateFunction } from 'ajv/dist/types';
 import { NextResponse } from 'next/server';
 import { createProblemDetailsResponse, ProblemDetails } from '../problem-details';
 import {
@@ -18,6 +19,7 @@ import {
   OcrLanguageEntrySchema,
   OcrLanguagesResponseSchema,
 } from './schemas';
+import { SERVER_ONLY_KEYWORD, SERVER_ONLY_REASON } from './server-only-options';
 
 export const ajv = new Ajv2020({
   strict: true,
@@ -40,6 +42,25 @@ ajv.addKeyword({
   error: {
     message: () => 'option_not_supported',
   },
+});
+
+// Refuses an object that carries a key only server code may set, naming each such key.
+const validateServerOnlyKeys: SchemaValidateFunction = (keys: readonly string[], data: Record<string, unknown>) => {
+  const present = keys.filter((key) => Object.hasOwn(data, key));
+  validateServerOnlyKeys.errors = present.map((key) => ({
+    keyword: SERVER_ONLY_KEYWORD,
+    message: SERVER_ONLY_REASON,
+    params: { serverOnlyProperty: key },
+  }));
+  return present.length === 0;
+};
+
+ajv.addKeyword({
+  keyword: SERVER_ONLY_KEYWORD,
+  type: 'object',
+  schemaType: 'array',
+  errors: true,
+  validate: validateServerOnlyKeys,
 });
 
 // Register SSOT schemas with Ajv
@@ -118,7 +139,8 @@ export function validateOrProblem<T = unknown>(
 
     let fieldPath = err.instancePath ? err.instancePath.replace(/^\//, '').replace(/\//g, '.') : '';
     const missingProp = (err.params as any)?.missingProperty;
-    const additionalProp = (err.params as any)?.additionalProperty;
+    const keyParams = err.params as { additionalProperty?: string; serverOnlyProperty?: string };
+    const additionalProp = keyParams.additionalProperty ?? keyParams.serverOnlyProperty;
 
     if (missingProp) {
       fieldPath = fieldPath ? `${fieldPath}.${missingProp}` : missingProp;
