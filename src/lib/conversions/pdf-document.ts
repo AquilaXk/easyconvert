@@ -185,6 +185,8 @@ export interface CompositeFontDictionary {
   cidToGidMap(): 'identity' | Buffer | null;
   /** The decoded /FontFile2 of the descendant's font descriptor, or null when there is none or it cannot be decoded. */
   trueTypeProgram(): Buffer | null;
+  /** The decoded /ToUnicode stream, or null when the font has none, names a predefined CMap instead, or the stream cannot be decoded. */
+  toUnicodeData(): Buffer | null;
   /** The widths the descendant's /W gives the CIDs from `first` to `last` (section 9.7.4.3), read as pdfjs reads them and on the step budget of the call that gave the font; none once it is spent. */
   cidWidths(first: number, last: number): Map<number, number>;
 }
@@ -1397,6 +1399,7 @@ export class PdfDocument {
         return decoded(map);
       },
       trueTypeProgram: () => decoded(descriptor?.entries.get('FontFile2')),
+      toUnicodeData: () => decoded(dict.entries.get('ToUnicode')),
       cidWidths: (first, last) => widthReader.read(descendant?.entries.get('W'), first, last),
     };
   }

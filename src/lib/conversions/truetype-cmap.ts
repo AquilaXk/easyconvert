@@ -241,6 +241,11 @@ function unicodeSubtables(bytes: Bytes, cmap: Span): number[] | null {
   return FORMAT_PREFERENCE.flatMap((format) => firstOfFormat.get(format) ?? []);
 }
 
+/** The glyph count of the program's `maxp` table, or null when the table does not read. */
+export function readGlyphCount(font: Uint8Array): number | null {
+  return glyphCountOf(new Bytes(font));
+}
+
 /** The tags of the tables the program's table directory names, or null when the directory does not fit the bytes. */
 export function sfntTableTags(font: Uint8Array): Set<string> | null {
   const bytes = new Bytes(font);

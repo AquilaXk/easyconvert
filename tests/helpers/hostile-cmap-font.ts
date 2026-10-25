@@ -79,13 +79,16 @@ export function repeatedRecordsFont(records: number, fallback = false): Buffer {
 }
 
 /**
- * A one-page PDF with `fontCount` Type0 fonts (Identity-H, no /ToUnicode) that share one CIDFontType2 descendant, hence one
- * /FontFile2 stream: `program` deflated.
+ * A one-page PDF with `fontCount` Type0 fonts (Identity-H) that share one CIDFontType2 descendant, hence one /FontFile2
+ * stream: `program` deflated. The fonts have no /ToUnicode, or all share the one stream `toUnicode` holds, or, when it is a
+ * function, each has a stream of its own with the text the function gives for its index.
  */
-export function sharedProgramPdf(fontCount: number, program: Buffer): Buffer {
+export function sharedProgramPdf(fontCount: number, program: Buffer, toUnicode?: string | ((index: number) => string)): Buffer {
   const compressed = zlib.deflateSync(program, { level: 9 });
   const first = extraObjectNumber(1);
   const [descendant, descriptor, file, firstType0] = [first, first + 1, first + 2, first + 3];
+  const firstMap = firstType0 + fontCount;
+  const mapText = (index: number): string => (typeof toUnicode === 'function' ? toUnicode(index) : (toUnicode as string));
   const objects = [
     `<< /Type /Font /Subtype /CIDFontType2 /BaseFont /X /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor ${descriptor} 0 R /CIDToGIDMap /Identity >>`,
     `<< /Type /FontDescriptor /FontName /X /Flags 32 /FontBBox [0 0 1 1] /FontFile2 ${file} 0 R >>`,
@@ -93,8 +96,15 @@ export function sharedProgramPdf(fontCount: number, program: Buffer): Buffer {
   ];
   let fonts = '';
   for (let index = 0; index < fontCount; index++) {
-    objects.push(`<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /DescendantFonts [${descendant} 0 R] >>`);
+    const mapObject = typeof toUnicode === 'function' ? firstMap + index : firstMap;
+    const toUnicodeEntry = toUnicode === undefined ? '' : `/ToUnicode ${mapObject} 0 R`;
+    objects.push(`<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /DescendantFonts [${descendant} 0 R] ${toUnicodeEntry} >>`);
     fonts += `/G${index} ${firstType0 + index} 0 R `;
+  }
+  const maps = toUnicode === undefined ? 0 : typeof toUnicode === 'function' ? fontCount : 1;
+  for (let index = 0; index < maps; index++) {
+    const text = mapText(index);
+    objects.push(`<< /Length ${text.length} >>\nstream\n${text}\nendstream`);
   }
   return rawPdf([{ width: 100, height: 100, content: 'BT /G0 12 Tf 10 10 Td <0007> Tj ET', fonts }], objects);
 }
