@@ -19,7 +19,6 @@ import {
   renderDrawingMlToSvg,
   decodeWav,
   decodeFlac,
-  decodeMp3,
   decodeAudioBuffer,
   encodeFlacStream,
   BitWriter,
@@ -35,6 +34,7 @@ import {
   withTempFile,
 } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { EngineUnavailableError } from '../src/lib/types';
 
 describe('Phase 2 SOTA Precision & Standards Testnet', () => {
   // ==========================================================================
@@ -668,7 +668,7 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
       }
     });
 
-    oracleTest('decodes an MP3 authored by the reference encoder to as many 16-bit samples as FFmpeg decodes', ['ffmpeg'], () => {
+    oracleTest('decodes an MP3 authored by the reference encoder through FFmpeg and refuses it in process', ['ffmpeg'], async () => {
       const sampleRate = 44100;
       const channels = 2;
       const source = wavFromSamples(chirpSamples(sampleRate, channels, 0.5), sampleRate, channels);
@@ -680,12 +680,18 @@ describe('Phase 2 SOTA Precision & Standards Testnet', () => {
         )
       );
 
-      const decoded = decodeMp3(mp3Buffer);
+      const converted = await convertFile(mp3Buffer, 'mp3', 'wav', {}, 'chirp.mp3');
+      const decoded = decodeWav(converted.buffer);
       const reference = decodeAudioWithFfmpeg(mp3Buffer, 'mp3', sampleRate, channels);
       expect(decoded.sampleRate).toBe(sampleRate);
       expect(decoded.channels).toBe(channels);
       expect(decoded.samples.length).toBe(reference.length);
       expect(decoded.samples.some((sample) => sample !== 0)).toBe(true);
+
+      expect(() => decodeAudioBuffer(mp3Buffer, 'mp3')).toThrow(EngineUnavailableError);
+      await expect(convertFile(mp3Buffer, 'mp3', 'wav', { disableNativeEngine: true }, 'chirp.mp3')).rejects.toThrow(
+        EngineUnavailableError
+      );
     });
 
     oracleTest('transcodes FLAC to MP3 and MP3 to WAV through the native engine', ['ffmpeg', 'ffprobe'], async () => {

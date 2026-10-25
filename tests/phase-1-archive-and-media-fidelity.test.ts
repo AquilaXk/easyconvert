@@ -11,7 +11,6 @@ import {
   convertArchive,
   convertMedia,
   decodeAudioBuffer,
-  decodeOgg,
   encodeOggContainer,
   detectFfmpegEnvironment,
   getUnrarBinaryPath,
@@ -219,15 +218,12 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
   // ==========================================================================
   // 3. Audio Decoders: ADTS AAC, Ogg Vorbis & Opus Fidelity
   // ==========================================================================
-  describe('3. In-Memory Pure TS Audio Decoders (Ogg; AAC needs FFmpeg)', () => {
-    it('decodes Ogg Vorbis containers and parses OggS pages with stream headers, and enforces Fail-Closed on raw PCM', async () => {
-      // 1. Verify decode of valid Ogg Vorbis container with empty stream
+  describe('3. Ogg packaging (the decoders for Ogg and AAC are FFmpeg)', () => {
+    it('writes Ogg Vorbis containers with OggS pages and stream headers, and enforces Fail-Closed without the native engine', async () => {
+      // 1. Verify a valid Ogg Vorbis container with an empty stream is written with its stream headers
       const emptyOgg = encodeOggContainer([], 44100, 2, 'audio');
       expect(emptyOgg.toString('ascii', 0, 4)).toBe('OggS');
-      const decodedOgg = decodeOgg(emptyOgg);
-      expect(decodedOgg.sampleRate).toBe(44100);
-      expect(decodedOgg.channels).toBe(2);
-      expect(decodedOgg.samples.length).toBe(0);
+      expect(emptyOgg.indexOf('vorbis')).toBeGreaterThan(0);
 
       // 2. Verify pure TS convertMedia fails closed for ogg without native FFmpeg
       const origWav = createTestWav(44100, 2, 0.25);
@@ -279,24 +275,6 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       const oggBuf = encodeOggContainer(packets, 44100, 2, 'multi');
       expect(oggBuf.length).toBeGreaterThan(500);
       expect(oggBuf.toString('ascii', 0, 4)).toBe('OggS');
-    });
-
-    it('fails closed safely on fuzzed short Vorbis identification packets (<16 bytes)', () => {
-      // Build Ogg page with packet 0 starting with \x01vorbis but only 10 bytes long
-      const shortHeader = Buffer.from([0x01, 0x76, 0x6f, 0x72, 0x62, 0x69, 0x73, 0x00, 0x00, 0x00]);
-      const ogg = Buffer.alloc(27 + 1 + shortHeader.length);
-      ogg.write('OggS', 0);
-      ogg[26] = 1;
-      ogg[27] = shortHeader.length;
-      shortHeader.copy(ogg, 28);
-
-      expect(() => decodeOgg(ogg)).toThrow(/Unsupported audio format/i);
-    });
-
-    it('fails closed on malformed audio payloads passed to decoders', () => {
-      const noise = Buffer.from('INVALID_AUDIO_DATA_FOR_DECODER_FUZZING');
-      expect(() => decodeOgg(noise)).toThrow(/Unsupported audio format/i);
-      expect(() => decodeAudioBuffer(noise, 'ogg')).toThrow(/Unsupported audio format/i);
     });
   });
 

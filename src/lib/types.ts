@@ -246,6 +246,7 @@ export interface ConversionOptions {
    */
   aspectRatio?: string | AspectRatioOptions;
   disableHwaccel?: boolean;
+  /** Server code and tests only (the options schema refuses it): convert in-process, as a host without FFmpeg does. */
   disableNativeEngine?: boolean;
   // Office & PDF export options
   pdfStandard?: 'pdfa' | 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';

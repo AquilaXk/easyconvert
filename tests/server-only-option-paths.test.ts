@@ -91,6 +91,16 @@ const routes: Array<{ name: string; status: number; prefix?: string; send: (opti
   },
 ];
 
+describe('a public request cannot switch FFmpeg off', () => {
+  for (const route of routes) {
+    it(`${route.name} refuses options.disableNativeEngine`, async () => {
+      const res = await route.send({ disableNativeEngine: true });
+      expect(res.status).toBe(route.status);
+      expect(await invalidParamNames(res)).toEqual([`${route.prefix ?? ''}disableNativeEngine`]);
+    });
+  }
+});
+
 describe('a public request cannot name where the server writes the result', () => {
   for (const route of routes) {
     it(`${route.name} refuses options.outputPath and writes no file there`, async () => {
@@ -209,8 +219,14 @@ describe('the options schema refuses every server-only key', () => {
     });
   }
 
-  it('still accepts the engine toggles, which route no path', () => {
-    expect(validateOrProblem(ConversionOptionsSchema, { useFfmpeg: true, disableNativeEngine: true, disableHwaccel: true }).ok).toBe(true);
+  it('still accepts the engine toggles a caller may set, which route no path', () => {
+    expect(validateOrProblem(ConversionOptionsSchema, { useFfmpeg: true, disableHwaccel: true }).ok).toBe(true);
+  });
+
+  it('refuses disableNativeEngine, the switch that keeps a source away from FFmpeg', () => {
+    const result = validateOrProblem(ConversionOptionsSchema, { disableNativeEngine: true });
+    expect(result.ok).toBe(false);
+    expect(result.problem?.invalidParams).toEqual([{ name: 'disableNativeEngine', reason: 'server_only_option' }]);
   });
 
   const subtitleSources = ['/etc/passwd', '../../secrets/subs.srt', 'uploads/another-user/subs.srt'];

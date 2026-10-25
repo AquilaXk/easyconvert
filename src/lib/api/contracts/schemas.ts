@@ -941,10 +941,6 @@ export const ConversionOptionsSchema = {
       type: 'boolean',
       description: 'Disable GPU hardware acceleration.',
     },
-    disableNativeEngine: {
-      type: 'boolean',
-      description: 'Bypass native system engine binaries.',
-    },
 
     // Office & PDF export options
     pdfStandard: {

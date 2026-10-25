@@ -6,7 +6,6 @@ import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {
   convertMedia,
   decodeAudioBuffer,
-  decodeOgg,
   encodeOpusContainer,
   encodeOggContainer,
   ARCHIVE_SECURITY_LIMITS,
