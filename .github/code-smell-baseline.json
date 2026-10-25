@@ -1286,12 +1286,6 @@
   {
     "file": "src/lib/conversions/office.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "convertMobiSource",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "convertXlsxSource",
     "count": 3
   },
@@ -1317,18 +1311,6 @@
     "file": "src/lib/conversions/office.ts",
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "flattenNumbers",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "generatePdfFromDocx",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "generatePdfFromSlides",
     "count": 1
   },
   {
@@ -1641,7 +1623,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 10259
+    "maxValue": 10258
   },
   {
     "file": "src/lib/conversions/office.ts",
