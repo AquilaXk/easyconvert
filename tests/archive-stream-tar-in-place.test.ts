@@ -146,7 +146,10 @@ describe('a tar that gzip, bzip2 or xz carries', () => {
     ]);
     const expected = referenceTarFromCopy(tar);
     expect(expected.equals(tar)).toBe(false);
-    const writes = vi.spyOn(Object.getPrototypeOf(Uint8Array.prototype) as Uint8Array, 'set');
+    const typedArray = Object.getPrototypeOf(Uint8Array.prototype) as Uint8Array;
+    const writes = vi.spyOn(typedArray, 'set');
+    const copies = vi.spyOn(Buffer.prototype, 'copy');
+    const moves = vi.spyOn(typedArray, 'copyWithin');
 
     const { unpacked, segments, bodiesBefore } = await viaGzip(tar);
     const sources = writes.mock.calls.map(([source]) => source as Uint8Array);
@@ -157,6 +160,8 @@ describe('a tar that gzip, bzip2 or xz carries', () => {
     expect(Buffer.concat(segments).equals(expected)).toBe(true);
     expect(sources.length).toBeGreaterThan(0);
     expect(sources.filter((source) => isWindowOf(source, unpacked))).toEqual([]);
+    expect(copies.mock.contexts.filter((source) => isWindowOf(source as Uint8Array, unpacked))).toEqual([]);
+    expect(moves.mock.contexts.filter((target) => (target as Uint8Array).buffer === unpacked.buffer)).toEqual([]);
   });
 
   it('writes zeros behind each body, whatever the old padding held', async () => {
@@ -368,7 +373,7 @@ describe('the bytes that follow the end-of-archive blocks', () => {
 
       expect(result?.engineUsed).toBe('native-7z');
       expect(result?.buffer?.equals(expected)).toBe(true);
-      // streamedArchiveResult joins the segments into a new buffer, so the result's backing store is its own, not the 30 MiB.
+      // streamedArchiveResult joins the uncut segments with Buffer.concat, which may slice the pool slab but never keeps the 30 MiB.
       expect(result?.buffer?.buffer.byteLength).toBeLessThan(MIB);
     },
     60_000
@@ -385,7 +390,13 @@ describe('the segments of a converted tar', () => {
     /** Taken when the cases are collected, before any test writes to a result. */
     expected: Buffer;
   }
-  const branch = (name: string, tar: Buffer, request: Policy, cut: boolean): Branch => ({ name, tar, request, cut, expected: referenceTarFromCopy(tar) });
+  const branch = (name: string, tar: Buffer, request: Policy, cut: boolean): Branch => ({
+    name,
+    tar,
+    request,
+    cut,
+    expected: referenceTarFromCopy(tar),
+  });
   const inPlace = Buffer.concat([hostileTarMember({ name: 'a.txt', magic: 'ustar ', version: ' \0' }, Buffer.from('ab')), hostileTarEnd()]);
   const longTail = Buffer.alloc(TAR_RECORD_BYTES + 1);
   const dotOnly = hostileTarMember({ name: './', typeflag: '5' });
@@ -408,7 +419,13 @@ describe('the segments of a converted tar', () => {
     branch('only a left-out link, with end blocks', Buffer.concat([linkOnly, hostileTarEnd()]), SKIP_LINKS, true),
     branch('only a left-out link, with a long tail', Buffer.concat([linkOnly, hostileTarEnd(), longTail]), SKIP_LINKS, false),
     branch('only a left-out link, without end blocks', linkOnly, SKIP_LINKS, false),
-    { name: 'a payload that is not a tar', tar: plain, request: {}, cut: false, expected: Buffer.concat(wrapAsMember(memberNameFor('sample.tar.gz'), plain)) },
+    {
+      name: 'a payload that is not a tar',
+      tar: plain,
+      request: {},
+      cut: false,
+      expected: Buffer.concat(wrapAsMember(memberNameFor('sample.tar.gz'), plain)),
+    },
   ];
 
   it.each(branches)('are not shared with a later conversion, for $name', async ({ tar, request, cut, expected }) => {
