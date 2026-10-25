@@ -11,21 +11,8 @@ import { expectNoSlowerThanReference } from './helpers/timing';
 // skip-ok: explicit opt-out (ARCHIVE_SKIP_TIMING=1) of the timing ratios on a slow shared runner, never set in CI.
 const SKIP_TIMING = process.env.ARCHIVE_SKIP_TIMING === '1';
 const TEST_TIMEOUT_MS = 120_000;
-const MEGABYTE = 1024 * 1024;
 const LCG_MULTIPLIER = 1664525;
 const LCG_INCREMENT = 1013904223;
-const BYTE_MASK = 0xff;
-
-/** Deterministic pseudo-random bytes (an LCG), so that every run measures the same input. */
-function pseudoRandomBytes(length: number, seed: number): Buffer {
-  const out = Buffer.alloc(length);
-  let state = seed >>> 0;
-  for (let i = 0; i < length; i++) {
-    state = (Math.imul(state, LCG_MULTIPLIER) + LCG_INCREMENT) >>> 0;
-    out[i] = (state >>> 24) & BYTE_MASK;
-  }
-  return out;
-}
 
 class BigIntRangeEncoder {
   private low = 0n;
