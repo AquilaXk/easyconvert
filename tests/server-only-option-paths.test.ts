@@ -75,33 +75,28 @@ async function invalidParamNames(res: Response): Promise<string[]> {
   return (body.invalidParams ?? []).map((param) => param.name);
 }
 
+/** Every route that takes conversion options; `prefix` is where the route names a key of the options in `invalidParams`. */
+const routes: Array<{ name: string; status: number; prefix?: string; send: (options: unknown) => Promise<Response> }> = [
+  { name: 'POST /api/convert/batch', status: LEGACY_REJECT, send: (options) => batchRoute(multipart('/api/convert/batch', csvForm('files', options))) },
+  { name: 'POST /api/convert', status: LEGACY_REJECT, send: (options) => convertRoute(multipart('/api/convert', csvForm('file', options))) },
+  { name: 'POST /api/queue/jobs', status: LEGACY_REJECT, send: (options) => queueJobsRoute(multipart('/api/queue/jobs', csvForm('file', options))) },
+  { name: 'POST /api/v1/convert', status: V1_REJECT, send: (options) => v1ConvertRoute(multipart('/api/v1/convert', csvForm('file', options))) },
+  { name: 'POST /api/v1/jobs (multipart)', status: V1_REJECT, send: (options) => v1JobsRoute(multipart('/api/v1/jobs', csvForm('file', options))) },
+  {
+    name: 'POST /api/v1/jobs (JSON options)',
+    status: V1_REJECT,
+    prefix: 'options.',
+    send: (options) =>
+      v1JobsRoute(jsonRequest('/api/v1/jobs', { filename: 'scores.csv', targetFormat: 'json', inputBufferBase64: Buffer.from(CSV_INPUT).toString('base64'), options })),
+  },
+];
+
 describe('a public request cannot name where the server writes the result', () => {
-  it('POST /api/convert/batch answers 400 for options.outputPath and writes no file there', async () => {
-    const res = await batchRoute(multipart('/api/convert/batch', csvForm('files', { outputPath: outsidePath })));
-    expect(res.status).toBe(LEGACY_REJECT);
-    expect(await invalidParamNames(res)).toEqual(['outputPath']);
-    expect(fs.existsSync(outsidePath)).toBe(false);
-  });
-
-  const routes: Array<{ name: string; status: number; param?: string; send: (options: unknown) => Promise<Response> }> = [
-    { name: 'POST /api/convert', status: LEGACY_REJECT, send: (options) => convertRoute(multipart('/api/convert', csvForm('file', options))) },
-    { name: 'POST /api/queue/jobs', status: LEGACY_REJECT, send: (options) => queueJobsRoute(multipart('/api/queue/jobs', csvForm('file', options))) },
-    { name: 'POST /api/v1/convert', status: V1_REJECT, send: (options) => v1ConvertRoute(multipart('/api/v1/convert', csvForm('file', options))) },
-    { name: 'POST /api/v1/jobs (multipart)', status: V1_REJECT, send: (options) => v1JobsRoute(multipart('/api/v1/jobs', csvForm('file', options))) },
-    {
-      name: 'POST /api/v1/jobs (JSON options)',
-      status: V1_REJECT,
-      param: 'options.outputPath',
-      send: (options) =>
-        v1JobsRoute(jsonRequest('/api/v1/jobs', { filename: 'scores.csv', targetFormat: 'json', inputBufferBase64: Buffer.from(CSV_INPUT).toString('base64'), options })),
-    },
-  ];
-
   for (const route of routes) {
     it(`${route.name} refuses options.outputPath and writes no file there`, async () => {
       const res = await route.send({ outputPath: outsidePath });
       expect(res.status).toBe(route.status);
-      expect(await invalidParamNames(res)).toEqual([route.param ?? 'outputPath']);
+      expect(await invalidParamNames(res)).toEqual([`${route.prefix ?? ''}outputPath`]);
       expect(fs.existsSync(outsidePath)).toBe(false);
     });
   }
@@ -131,6 +126,77 @@ describe('a public request cannot name where the server writes the result', () =
     );
     expect(graphRes.status).toBe(V1_REJECT);
     expect(await invalidParamNames(graphRes)).toContain('graph.nodes.out.options.inputPath');
+  });
+});
+
+/** Options as JSON.parse builds them from `{"__proto__": inner}`: an own key named `__proto__`, not a prototype. */
+function ownProtoOptions(inner: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(`{"__proto__":${JSON.stringify(inner)}}`) as Record<string, unknown>;
+}
+
+describe('a "__proto__" key cannot carry options past the boundary', () => {
+  for (const route of routes) {
+    it(`${route.name} refuses options whose own "__proto__" holds outputPath, and writes no file there`, async () => {
+      const res = await route.send(ownProtoOptions({ outputPath: outsidePath }));
+      expect(fs.existsSync(outsidePath)).toBe(false);
+      expect(res.status).toBe(route.status);
+      expect(await invalidParamNames(res)).toEqual([`${route.prefix ?? ''}__proto__`]);
+    });
+  }
+
+  it('POST /api/v1/jobs refuses a "__proto__" key in the options of a pipeline task and of a graph node', async () => {
+    const inline = Buffer.from(CSV_INPUT).toString('base64');
+    const tasksRes = await v1JobsRoute(
+      jsonRequest('/api/v1/jobs', {
+        filename: 'scores.csv',
+        targetFormat: 'json',
+        inputBufferBase64: inline,
+        tasks: [{ operation: 'convert', targetFormat: 'json', options: ownProtoOptions({ outputPath: outsidePath }) }],
+      })
+    );
+    expect(tasksRes.status).toBe(V1_REJECT);
+    expect(await invalidParamNames(tasksRes)).toEqual(['tasks.0.options.__proto__']);
+
+    const graphRes = await v1JobsRoute(
+      jsonRequest('/api/v1/jobs', {
+        graph: {
+          nodes: {
+            src: { op: 'import.upload', storageKey: 'uploads/other-user/scores.csv' },
+            out: { op: 'convert', input: 'src', targetFormat: 'json', options: ownProtoOptions({ inputPath: '/etc/passwd' }) },
+          },
+        },
+      })
+    );
+    expect(graphRes.status).toBe(V1_REJECT);
+    expect(await invalidParamNames(graphRes)).toEqual(['graph.nodes.out.options.__proto__']);
+    expect(fs.existsSync(outsidePath)).toBe(false);
+  });
+
+  it('refuses a "__proto__" key at any depth, naming where it sits', () => {
+    const lifted = validateOrProblem(ConversionOptionsSchema, ownProtoOptions({ subtitles: { mode: 'burn', input: '/etc/passwd' } }));
+    expect(lifted.problem?.invalidParams).toEqual([{ name: '__proto__', reason: 'prototype_key' }]);
+
+    const nested = JSON.parse('{"subtitles":{"mode":"burn","__proto__":{"input":"/etc/passwd"}},"extra":[{"__proto__":{}}]}');
+    expect(validateOrProblem(ConversionOptionsSchema, nested).problem?.invalidParams).toEqual([
+      { name: 'subtitles.__proto__', reason: 'prototype_key' },
+      { name: 'extra.0.__proto__', reason: 'prototype_key' },
+    ]);
+  });
+
+  it('refuses a "constructor" key that holds a "prototype", and accepts a "constructor" that is plain data', () => {
+    const poisoned = JSON.parse('{"metadata":{"constructor":{"prototype":{"outputPath":"/x"}}}}');
+    expect(validateOrProblem(ConversionOptionsSchema, poisoned).problem?.invalidParams).toEqual([
+      { name: 'metadata.constructor', reason: 'prototype_key' },
+    ]);
+    expect(validateOrProblem(ConversionOptionsSchema, JSON.parse('{"constructor":"x","note":{"constructor":null}}')).ok).toBe(true);
+  });
+
+  it('scans a nesting deeper than the call stack without overflowing it', () => {
+    const depth = 50_000;
+    const text = `${'{"a":'.repeat(depth)}{"__proto__":{}}${'}'.repeat(depth)}`;
+    const result = validateOrProblem(ConversionOptionsSchema, JSON.parse(text));
+    expect(result.ok).toBe(false);
+    expect(result.problem?.invalidParams?.[0]?.name.endsWith('a.a.__proto__')).toBe(true);
   });
 });
 

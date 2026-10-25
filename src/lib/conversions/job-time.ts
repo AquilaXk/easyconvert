@@ -45,12 +45,20 @@ export function stageTimeoutMs(options: ({ timeoutMs?: number } & JobDeadlined) 
   return clampToJobRemaining(options, options?.timeoutMs || defaultMs, now);
 }
 
+/**
+ * Sets `key` on `target` as an own data property. Plain assignment of a `__proto__` key (an own key of parsed JSON)
+ * would instead set the prototype of the copy, and every key under it would be inherited unchecked.
+ */
+function defineOwn(target: object, key: PropertyKey, value: unknown): void {
+  Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
+}
+
 /** Request options without the engine control keys (`signal`, `timeoutMs`, `deadline*`); the input is not changed. */
 export function stripEngineControls<T extends object>(options: T): T {
-  const kept: Record<PropertyKey, unknown> = {};
+  const kept = {};
   for (const key of Reflect.ownKeys(options)) {
     if (typeof key === 'string' && isControlKey(key)) continue;
-    kept[key] = (options as Record<PropertyKey, unknown>)[key];
+    defineOwn(kept, key, (options as Record<PropertyKey, unknown>)[key]);
   }
   return kept as T;
 }
@@ -72,7 +80,7 @@ export function bindJobLimits<T extends object>(
       if (key === SIGNAL_KEY && value instanceof AbortSignal) ownSignal = value;
       continue;
     }
-    bound[key] = value;
+    defineOwn(bound, key, value);
   }
   bound[SIGNAL_KEY] = ownSignal && ownSignal !== limits.signal ? AbortSignal.any([ownSignal, limits.signal]) : limits.signal;
   if (limits.deadlineAt !== undefined) bound[JOB_DEADLINE_AT] = limits.deadlineAt;
