@@ -22,24 +22,28 @@
  * Threat model: this check judges what the repository's own writers produce (writeObj, encodeObj and the ZIP that convertCadWithOcct builds with
  * createDeflatedZipBuffer). It does not judge uploads or archives made by an attacker; a guard against a shape the writers cannot produce is out of scope.
  *
- * Bounds on the text layer, so that reading a file costs no more than its size in lines, fields and tokens a message quotes. They are this check's own;
- * neither writer has a reference limit. They do not bound what a ZIP inflates to: the archive is the converter's own output.
- * - A line is at most MAX_LINE_BYTES, checked before the line is decoded. writeObj's longest line is under 100 bytes (a vertex of about 60 bytes, an
- *   mtllib of at most 75). encodeObj has no cap on the corners of a face nor on the `o` name; a corner is at most 23 bytes (`i//i` with two 10-digit
- *   indices and a blank), so 1 MiB holds a face of about 45,000 corners, and the faces of the 14 corpus models have 3 corners. The bound is far above
- *   any model a writer makes, and no line of a writer reaches it.
- * - A number, and each index of a face corner, is at most MAX_NUMBER_CHARS. The number pattern has one way to match each string, so it runs in time
- *   linear in the field, and the field length is checked first.
- * - An mtllib name is at most MAX_LIBRARY_NAME_CHARS: outputStem caps the stem at MAX_OUTPUT_NAME_CHARS (64, cad-occt.ts) and `.mtl` follows. No writer
- *   caps a material name (isSafeMaterialName only checks its characters), so a `usemtl` or `newmtl` name is held to MAX_NAME_CHARS, 255, the longest
- *   name a file system holds.
- * - At most MAX_MATERIALS distinct materials.
- * Every token that a refusal quotes is cut to MAX_SHOWN_CHARS code points with its control, format and line-separator characters replaced.
+ * Bounds on the text layer, so that reading a file costs no more than its size, in lines, fields and tokens a message quotes. Each is marked as taken
+ * from a writer or as this check's own; neither writer has a reference limit for the check's own. They do not bound what a ZIP inflates to: the
+ * archive is the converter's own output.
+ * - MAX_LINE_BYTES, 1 MiB, is the check's own. A line is checked before it is decoded. writeObj's longest line is under 100 bytes (a vertex of about 60
+ *   bytes, an mtllib of at most 75). encodeObj has no cap on the corners of a face nor on the `o` name; a corner is at most 23 bytes (`i//i` with two
+ *   10-digit indices and a blank), so 1 MiB holds a face of about 45,000 corners, and the faces of the 14 corpus models have 3 corners. No realistic
+ *   model reaches the bound.
+ * - MAX_NUMBER_CHARS, 64, is the check's own: the longest number, and the longest index of a face corner. The number pattern has one way to match each
+ *   string, so it runs in time linear in the field, and the field length is checked first.
+ * - MAX_LIBRARY_NAME_CHARS is derived from a writer: outputStem caps the stem at MAX_OUTPUT_NAME_CHARS (cad-occt.ts) and `.mtl` follows.
+ * - MAX_NAME_CHARS, 255, is the check's own, the longest name a file system holds. No writer caps a material name (isSafeMaterialName only checks its
+ *   characters), so a `usemtl` or `newmtl` name is held to it.
+ * - MAX_MATERIALS, 100,000, is the check's own: the most distinct materials in an OBJ or an MTL.
+ * - MAX_SHOWN_CHARS, 40, is the check's own: a token that a refusal quotes is cut to that many code points, with its control, format and line-separator
+ *   characters replaced.
  */
+
+import { MAX_OUTPUT_NAME_CHARS } from '../../src/lib/conversions/cad-occt';
 
 export type Point = readonly [number, number, number];
 export type Colour = readonly [number, number, number];
-type Statement = { keyword: string; fields: string[] };
+export type Statement = { keyword: string; fields: string[] };
 type CornerForm = 'v' | 'v//vn';
 type Resolved = { index: number } | { problem: string };
 type IndexKind = 'vertex' | 'normal';
@@ -51,12 +55,13 @@ const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 const NAME = /^[A-Za-z0-9._-]+$/;
 const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const NEWLINE = 0x0a;
-const MAX_LINE_BYTES = 1024 * 1024;
-const MAX_NUMBER_CHARS = 64;
-const MAX_LIBRARY_NAME_CHARS = 68;
-const MAX_NAME_CHARS = 255;
-const MAX_MATERIALS = 100_000;
-const MAX_SHOWN_CHARS = 40;
+const MTL_EXTENSION = '.mtl';
+export const MAX_LINE_BYTES = 1024 * 1024;
+export const MAX_NUMBER_CHARS = 64;
+export const MAX_LIBRARY_NAME_CHARS = MAX_OUTPUT_NAME_CHARS + MTL_EXTENSION.length;
+export const MAX_NAME_CHARS = 255;
+export const MAX_MATERIALS = 100_000;
+export const MAX_SHOWN_CHARS = 40;
 const NO_MATERIAL = -1;
 const DEFINED_ITEMS: Readonly<Record<IndexKind, string>> = { vertex: 'vertices', normal: 'normals' };
 
@@ -87,12 +92,12 @@ export function hasExtension(name: string, extension: 'obj' | 'mtl'): boolean {
   return name.toLowerCase().endsWith(`.${extension}`);
 }
 
-/** A token of the file as a refusal may quote it: cut to MAX_SHOWN_CHARS code points and without control, format or line-separator characters. */
-export function shown(token: string): string {
+/** A message as a refusal may quote it: cut to `limit` code points (MAX_SHOWN_CHARS for a token of the file) and without control, format or line-separator characters. */
+export function shown(token: string, limit: number = MAX_SHOWN_CHARS): string {
   let end = 0;
   let count = 0;
   for (const point of token) {
-    if (count === MAX_SHOWN_CHARS) return `${token.slice(0, end).replace(UNPRINTABLE, '?')}...`;
+    if (count === limit) return `${token.slice(0, end).replace(UNPRINTABLE, '?')}...`;
     end += point.length;
     count++;
   }
@@ -124,6 +129,12 @@ export function readStatements(buffer: Buffer, take: (statement: Statement) => s
 
 function isDecimal(field: string): boolean {
   return field.length <= MAX_NUMBER_CHARS && DECIMAL.test(field);
+}
+
+/** The three channels of a colour field list, or null when it is not three finite decimal numbers; the range of a channel is left to the caller. */
+export function parseColour(fields: readonly string[]): Colour | null {
+  if (!isNumbers(fields, 3, 3)) return null;
+  return [Number(fields[0]), Number(fields[1]), Number(fields[2])];
 }
 
 function isNumbers(fields: readonly string[], least: number, most: number): boolean {
@@ -267,8 +278,9 @@ function mtlStatementProblem(keyword: string, fields: readonly string[], current
   if (current === null) return `${keyword} comes before any newmtl`;
   if (given.has(keyword)) return `${keyword} is given twice for material ${shown(current)}`;
   if (MTL_COLOURS.has(keyword)) {
-    if (!isNumbers(fields, 3, 3)) return `${keyword} needs three numbers`;
-    return fields.every((field) => Number(field) >= 0 && Number(field) <= 1) ? null : `${keyword} ${shown(fields.join(' '))} has a channel outside 0 to 1`;
+    const colour = parseColour(fields);
+    if (colour === null) return `${keyword} needs three numbers`;
+    return colour.every((channel) => channel >= 0 && channel <= 1) ? null : `${keyword} ${shown(fields.join(' '))} has a channel outside 0 to 1`;
   }
   if (fields.length !== 1 || !isDecimal(fields[0])) return `${keyword} needs one number`;
   const value = Number(fields[0]);
@@ -296,7 +308,7 @@ export function readMtl(buffer: Buffer): MtlReading {
       given = new Set();
     } else if (current !== null) {
       given.add(keyword);
-      if (keyword === 'Kd') materials.set(current, [Number(fields[0]), Number(fields[1]), Number(fields[2])]);
+      if (keyword === 'Kd') materials.set(current, parseColour(fields));
     }
     return null;
   });

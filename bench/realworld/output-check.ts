@@ -12,6 +12,8 @@ import { isFormatCompatibleWithMagicBytes } from '../../src/lib/registry';
 import { hasExtension, readMtl, readObj, shown, type ObjScan } from './obj-mtl';
 
 const VALIDATOR_TIMEOUT_MS = 60_000;
+/** The most code points of a reference reader's message that a refusal quotes; cad-occt.ts bounds the converter's message the same way (MAX_DETAIL_CHARS). */
+const MAX_TOOL_MESSAGE_CHARS = 200;
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico', 'psd']);
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
 export const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'odd', 'dxf', 'emf', 'wmf']);
@@ -46,8 +48,11 @@ type ObjModel = { problem: string } | { reading: ObjScan };
 
 /** The files and the folders of a ZIP, or why `label` is not a readable ZIP. */
 async function archiveEntries(buffer: Buffer, label: string): Promise<ArchiveEntries> {
-  const zip = await JSZip.loadAsync(buffer).catch(() => null);
-  if (zip === null) return { problem: `${label} is not a readable ZIP` };
+  const zip = await JSZip.loadAsync(buffer, { checkCRC32: true }).catch(() => null);
+  if (zip === null) {
+    const structural = await JSZip.loadAsync(buffer).then(() => true, () => false);
+    return { problem: structural ? `${label} has an entry whose CRC-32 is wrong` : `${label} is not a readable ZIP` };
+  }
   const all = Object.values(zip.files);
   return { entries: all.filter((entry) => !entry.dir), folders: all.filter((entry) => entry.dir) };
 }
@@ -145,8 +150,15 @@ export async function outputProblem(buffer: Buffer, target: string, workDir: str
     if (target === 'pdf' && options.pdfinfo !== '') execFileSync(options.pdfinfo, [file], { stdio: 'pipe', timeout: VALIDATOR_TIMEOUT_MS });
     if (IMAGE_TARGETS.has(target) && options.identify !== '') execFileSync(options.identify, [file], { stdio: 'pipe', timeout: VALIDATOR_TIMEOUT_MS });
   } catch (error) {
-    const stderr = (error as { stderr?: Buffer }).stderr?.toString().trim().split('\n')[0] ?? String(error);
-    return `reference reader refused the output: ${shown(stderr)}`;
+    return `reference reader refused the output: ${shown(toolMessage(error), MAX_TOOL_MESSAGE_CHARS)}`;
   }
   return null;
+}
+
+/** What a failed reference reader said: the first line of its stderr, or the code of the error (ENOENT, ETIMEDOUT) when it said nothing. */
+function toolMessage(error: unknown): string {
+  const { stderr, code } = error as { stderr?: Buffer; code?: string };
+  const first = (stderr?.toString() ?? '').trim().split('\n')[0].trim();
+  if (first !== '') return first;
+  return code ?? String(error).slice(-MAX_TOOL_MESSAGE_CHARS);
 }

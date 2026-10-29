@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { hasExtension, readObj, readStatements, type Colour, type Point } from '../../bench/realworld/obj-mtl';
+import { hasExtension, parseColour, readObj, readStatements, type Colour, type Point } from '../../bench/realworld/obj-mtl';
 import type { ConversionResult } from '../../src/lib/types';
 
 /**
@@ -61,9 +61,9 @@ export function mtlMaterials(mtl: Buffer): ReadonlyMap<string, Colour | null> {
       current = fields[0];
       materials.set(current, null);
     } else if (keyword === 'Kd' && current !== null) {
-      const channels = fields.map(Number);
-      if (channels.length !== 3 || channels.some(Number.isNaN)) return 'Kd needs three numbers';
-      materials.set(current, [channels[0], channels[1], channels[2]]);
+      const colour = parseColour(fields);
+      if (colour === null) return 'Kd needs three numbers';
+      materials.set(current, colour);
     }
     return null;
   });
