@@ -176,24 +176,29 @@ export function handOffOutput(
   return finalPath;
 }
 
-/** The most buffers one `writev` takes: POSIX `IOV_MAX`, 1,024 on Linux and macOS. */
-const WRITEV_MAX_BUFFERS = 1024;
-
-/** Writes `pending` to the descriptor's position with `writev`, again for what a short write left, until none is left. */
-function writeVectored(fd: number, pending: Uint8Array[]): void {
+/**
+ * Writes `pending` to the descriptor's position with `writev`, and again for what a call left, until none is left. One
+ * call takes any number of buffers, since libuv splits the vector per system call (`IOV_MAX`). It can still return a
+ * total below the sum: when a later chunk of the vector fails, libuv returns the bytes of the chunks that finished, and
+ * the call that follows raises that failure.
+ */
+function writeVectored(fd: number, pending: readonly Uint8Array[]): void {
   let rest = pending;
   while (rest.length > 0) {
-    let written = fs.writevSync(fd, rest);
+    const total = fs.writevSync(fd, rest);
+    let written = total;
     let skipped = 0;
     while (skipped < rest.length && written >= rest[skipped].byteLength) written -= rest[skipped++].byteLength;
-    rest = skipped < rest.length && written > 0 ? [rest[skipped].subarray(written), ...rest.slice(skipped + 1)] : rest.slice(skipped);
+    const next = rest.slice(skipped);
+    if (total === 0 && next.length > 0) throw new Error('The output file accepted no bytes of the write.');
+    if (written > 0) next[0] = next[0].subarray(written);
+    rest = next;
   }
 }
 
 /**
- * Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy. The
- * ranges go out `WRITEV_MAX_BUFFERS` at a time, one `writev` for each batch (a tar of 2,000 members is 6,000 ranges), and a
- * short write continues where it stopped.
+ * Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy, in one
+ * `writev` for the whole list (a tar of 2,000 members is 6,001 ranges), and a short write continues where it stopped.
  */
 export function writeOutputSegments(
   segments: readonly Uint8Array[],
@@ -204,9 +209,7 @@ export function writeOutputSegments(
   const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
   const fd = fs.openSync(finalPath, 'w');
   try {
-    for (let first = 0; first < segments.length; first += WRITEV_MAX_BUFFERS) {
-      writeVectored(fd, segments.slice(first, first + WRITEV_MAX_BUFFERS));
-    }
+    writeVectored(fd, segments);
   } finally {
     fs.closeSync(fd);
   }

@@ -90,12 +90,13 @@ export interface StreamRunOptions {
 /**
  * The converted tar, as the byte ranges to write in order.
  *
- * A segment may alias bytes the caller does not own: the archive it passed in (a stored ZIP or RAR member, a stored entry
- * of a tar packed into a ZIP) or the buffer the archive was unpacked into. It never is a buffer that this module owns, so
- * two results never share a range because of the module, and a write through one result changes neither a later result nor
- * a constant. A segment is a range of its `segment.buffer`, which is read only together with the segment's `byteOffset`
- * and `byteLength`, never as the whole `ArrayBuffer`. The caller writes the segments out or joins them, and keeps a segment
- * as it is only when it is the only one; a caller that must write to a result or to the input copies first.
+ * The caller owns the input. A segment is a byte range that may view the input (a stored RAR member, an entry of a tar
+ * packed into a ZIP that the ZIP stores) or the bytes the archive was unpacked into, and never a buffer that a module owns. It is read
+ * only through its `byteOffset` and `byteLength`, never as the whole `segment.buffer`. A write through one result is visible
+ * in every other result that views the same input bytes, since two results of one input share its stored members. Padding
+ * and end blocks are fresh, disjoint slices (the padding from Node's shared allocation pool), so a write to them reaches no
+ * other result. The caller writes the segments out or joins them, keeps a segment as it is only when it is the only one,
+ * and copies before it writes to a result or to the input.
  */
 export interface StreamedArchive {
   segments: Uint8Array[];
@@ -127,8 +128,9 @@ function blockPadding(length: number): number {
 }
 
 /**
- * Padding and end blocks are new zeros in every tar, never a shared buffer, because whoever holds a result may write to
- * it. Padding is a zeroed slice of the allocation pool, since a new ArrayBuffer for each member shows on a tar of 2,000 members.
+ * Padding and end blocks are fresh zeros in every tar, each its own slice and disjoint from every other segment, because
+ * whoever holds a result may write to it. The end blocks are a new buffer; padding is a zeroed slice of Node's shared
+ * allocation pool, since a new ArrayBuffer for each member shows on a tar of 2,000 members.
  */
 export function pushPadding(segments: Uint8Array[], length: number): void {
   const padding = blockPadding(length);

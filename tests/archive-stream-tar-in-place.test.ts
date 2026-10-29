@@ -12,7 +12,7 @@ import { oracleTest } from './helpers/oracle-test';
 
 type SandboxRun = Awaited<ReturnType<typeof executeSandboxedBinary>>;
 
-const sandboxFrames = vi.hoisted(() => ({ head: 0xaa, tail: 0xbb, runs: [] as { frame: Buffer; headroom: number; tailroom: number }[] }));
+const sandboxFrames = vi.hoisted(() => ({ head: 0xaa, tail: 0xbb, started: 0, runs: [] as { frame: Buffer; headroom: number; tailroom: number }[] }));
 
 /** The sandbox runs for real; the rooms around the output it collects are then filled with marker bytes, so that a write into them shows. */
 vi.mock('../src/lib/security/process-sandbox', async (importOriginal) => {
@@ -20,6 +20,7 @@ vi.mock('../src/lib/security/process-sandbox', async (importOriginal) => {
   return {
     ...actual,
     executeSandboxedBinary: async (...args: Parameters<typeof executeSandboxedBinary>): Promise<SandboxRun> => {
+      sandboxFrames.started++;
       const run = await actual.executeSandboxedBinary(...args);
       const { stdoutHeadroomBytes: headroom = 0, stdoutTailroomBytes: tailroom = 0 } = args[2] ?? {};
       if (run.stdoutFrame !== undefined) {
@@ -100,6 +101,37 @@ function bytesWrittenInto(unpacked: Buffer, writes: { mock: { calls: unknown[][]
   return total;
 }
 
+interface ByteRange {
+  buffer: ArrayBufferLike;
+  start: number;
+  end: number;
+}
+
+function rangeOf(view: Uint8Array, offset = 0, length = view.length - offset): ByteRange {
+  return { buffer: view.buffer, start: view.byteOffset + offset, end: view.byteOffset + offset + Math.max(0, length) };
+}
+
+function overlap(a: ByteRange, b: ByteRange): boolean {
+  return a.buffer === b.buffer && a.start < b.end && b.start < a.end;
+}
+
+/** Where the observed `set`, `copy` and `copyWithin` calls wrote, whatever view of the memory they went through. */
+function writeTargets(
+  writes: { mock: { calls: unknown[][]; contexts: unknown[] } },
+  copies: { mock: { calls: unknown[][]; results: { value: unknown }[] } },
+  moves: { mock: { calls: unknown[][]; contexts: unknown[] } }
+): ByteRange[] {
+  const targets = writes.mock.calls.map(([source, offset], index) => rangeOf(writes.mock.contexts[index] as Uint8Array, (offset as number | undefined) ?? 0, (source as Uint8Array).length));
+  copies.mock.calls.forEach(([target, targetStart], index) => {
+    targets.push(rangeOf(target as Uint8Array, (targetStart as number | undefined) ?? 0, copies.mock.results[index].value as number));
+  });
+  moves.mock.calls.forEach(([target, start, end], index) => {
+    const view = moves.mock.contexts[index] as Uint8Array;
+    targets.push(rangeOf(view, target as number, Math.min(((end as number | undefined) ?? view.length) - (start as number), view.length - (target as number))));
+  });
+  return targets;
+}
+
 /** A fresh pool slab, so that the copy and the headers written after it fit in it. */
 function startOfPoolSlab(): void {
   let probe = Buffer.allocUnsafe(1);
@@ -177,7 +209,10 @@ describe('a tar that gzip, bzip2 or xz carries', () => {
     expect(sources.length).toBeGreaterThan(0);
     expect(sources.filter((source) => isWindowOf(source, unpacked))).toEqual([]);
     expect(copies.mock.contexts.filter((source) => isWindowOf(source as Uint8Array, unpacked))).toEqual([]);
-    expect(moves.mock.contexts.filter((target) => isWindowOf(target as Uint8Array, unpacked))).toEqual([]);
+    const bodyRanges = bodiesBefore.map((body) => rangeOf(body));
+    const targets = writeTargets(writes, copies, moves);
+    expect(targets.length).toBeGreaterThan(0);
+    expect(targets.filter((target) => bodyRanges.some((body) => overlap(target, body)))).toEqual([]);
     const bodyBytes = bodiesBefore.reduce((total, body) => total + body.length, 0);
     expect(bodyBytes).toBe('first body'.length + BODY_BYTES);
     expect(bytesWrittenInto(unpacked, writes, copies)).toBe(expected.length - bodyBytes);
@@ -383,12 +418,15 @@ describe('the bytes that follow the end-of-archive blocks', () => {
   });
 
   it('do not keep 30 MiB in memory behind the worker result', async () => {
-    // The gzip route runs no child process, so the path only has to name a file for the worker to accept the engine.
+    // The worker accepts the engine only when the path names a file, so a missing one cannot stand in; the gzip route
+    // runs no child process, which the count of sandbox runs shows.
     vi.stubEnv('P7ZIP_PATH', process.execPath);
+    sandboxFrames.started = 0;
 
     const result = await convertWithNative7z(zlib.gzipSync(tarWithTrailingZeros(30 * MIB)), 'gz', 'tar', {}, 'sample.tar.gz');
 
     expect(result?.engineUsed).toBe('native-7z');
+    expect(sandboxFrames.started).toBe(0);
     expect(result?.buffer?.equals(expected)).toBe(true);
     // streamedArchiveResult joins the uncut segments with Buffer.concat, which may slice the pool slab but never keeps the 30 MiB.
     expect(result?.buffer?.buffer.byteLength).toBeLessThan(MIB);

@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
+import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { readTarEntries } from '../src/lib/conversions/archive';
 import { tarFromMembers, rarToTar, tarToZip, zipToTar, type TarMember } from '../src/lib/conversions/archive-repack';
-import { LIMITS, sevenZipToTar, wrapInPlace, type SevenZipOutput } from '../src/lib/conversions/archive-stream';
+import { LIMITS, sevenZipToTar, streamToTar, wrapInPlace, type SevenZipOutput } from '../src/lib/conversions/archive-stream';
 import { readZipDirectory, readZipEntries } from '../src/lib/conversions/archive-zip-reader';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { hostileTarEnd, hostileTarMember } from './helpers/hostile-tar';
@@ -15,7 +17,7 @@ import { craftZip } from './helpers/zip-craft';
  * and converts again from a fresh copy of the same input; the second result must equal the first. A header, padding or end
  * block taken from a module-level buffer would carry the 0xff into the second result.
  *
- * The input is copied for each run on purpose: a stored ZIP, RAR or tar member may be a view of the input, which is the
+ * The input is copied for each run on purpose: a stored RAR member or a stored tar entry may be a view of the input, which is the
  * contract of `StreamedArchive` (byte ranges that may alias the input or the unpacked bytes, never a buffer of the module).
  */
 const BLOCK = 512;
@@ -51,9 +53,32 @@ function expectFiles(tar: Buffer, expected: Record<string, Buffer>): void {
   for (const [name, data] of Object.entries(expected)) expect(files.get(name)?.equals(data)).toBe(true);
 }
 
-/** The two end blocks of a tar are zeros, also when an earlier test wrote junk over a buffer that a writer wrongly kept. */
-function expectZeroEndBlocks(tar: Buffer): void {
-  expect(tar.subarray(tar.length - END_BLOCKS_BYTES).every((byte) => byte === 0)).toBe(true);
+/** Link, device, directory and FIFO headers: a size field there is not a body. */
+const NO_BODY_TYPEFLAGS = '123456';
+const SIZE_FIELD = { from: 124, to: 136 };
+const TYPEFLAG_OFFSET = 156;
+
+/**
+ * Walks the 512-byte headers of a tar and requires zeros from the end of each body to the next block boundary, and in
+ * the end blocks. The tar reader does not look at these bytes, so only this walk sees padding that holds something else.
+ */
+function expectZeroPadding(tar: Buffer): void {
+  let offset = 0;
+  let members = 0;
+  while (offset + BLOCK <= tar.length && !tar.subarray(offset, offset + BLOCK).every((byte) => byte === 0)) {
+    const header = tar.subarray(offset, offset + BLOCK);
+    const size = parseInt(header.toString('latin1', SIZE_FIELD.from, SIZE_FIELD.to).replace(/\0.*$/s, '').trim() || '0', 8);
+    const typeflag = String.fromCharCode(header[TYPEFLAG_OFFSET]);
+    const bodyBytes = NO_BODY_TYPEFLAGS.includes(typeflag) ? 0 : size;
+    const bodyEnd = offset + BLOCK + bodyBytes;
+    const blockEnd = offset + BLOCK + Math.ceil(bodyBytes / BLOCK) * BLOCK;
+    expect(tar.subarray(bodyEnd, blockEnd).every((byte) => byte === 0)).toBe(true);
+    offset = blockEnd;
+    members++;
+  }
+  expect(members).toBeGreaterThan(0);
+  expect(tar.length - offset).toBe(END_BLOCKS_BYTES);
+  expect(tar.subarray(offset).every((byte) => byte === 0)).toBe(true);
 }
 
 /** Converts, writes junk over the result, converts again, and returns both joined results taken before and after. */
@@ -82,7 +107,7 @@ describe('the tar writers of the repack routes', () => {
 
     expect(second.equals(first)).toBe(true);
     expectFiles(first, expectedFiles);
-    expectZeroEndBlocks(first);
+    expectZeroPadding(first);
   });
 
   it('tarFromMembers gives end blocks of their own to a tar of directories only', async () => {
@@ -90,7 +115,7 @@ describe('the tar writers of the repack routes', () => {
 
     expect(second.equals(first)).toBe(true);
     expect(first).toHaveLength(BLOCK + END_BLOCKS_BYTES);
-    expectZeroEndBlocks(first);
+    expectZeroPadding(first);
   });
 
   it('zipToTar, for stored and deflated entries', async () => {
@@ -105,7 +130,7 @@ describe('the tar writers of the repack routes', () => {
 
     expect(second.equals(first)).toBe(true);
     expectFiles(first, expectedFiles);
-    expectZeroEndBlocks(first);
+    expectZeroPadding(first);
   });
 
   it('rarToTar, for stored members', async () => {
@@ -119,7 +144,7 @@ describe('the tar writers of the repack routes', () => {
 
     expect(second.equals(first)).toBe(true);
     expectFiles(first, expectedFiles);
-    expectZeroEndBlocks(first);
+    expectZeroPadding(first);
   });
 
   it('tarToZip at level 0, whose stored entries are ranges of the tar it was given', async () => {
@@ -164,10 +189,130 @@ describe('the tar writers of the repack routes', () => {
 
       expect(second.equals(first)).toBe(true);
       expectFiles(first, expectedFiles);
-      expectZeroEndBlocks(first);
+      expectZeroPadding(first);
     },
     TEST_TIMEOUT_MS
   );
+});
+
+/**
+ * Two results of one input, both alive, and junk written over the first. A route that copies leaves the second equal to
+ * what it was; a route whose members are views of the input shows the junk in the second, which is the contract of
+ * `StreamedArchive` and not a fault of the writer.
+ */
+describe('two results of one input kept alive', () => {
+  type Convert = () => Promise<readonly Uint8Array[] | undefined> | readonly Uint8Array[] | undefined;
+
+  async function writeOverFirst(convert: Convert): Promise<{ before: Buffer; after: Buffer }> {
+    const first = await convert();
+    const second = await convert();
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    const before = Buffer.concat(second as readonly Uint8Array[]);
+    fillWithJunk(first as readonly Uint8Array[]);
+    return { before, after: Buffer.concat(second as readonly Uint8Array[]) };
+  }
+
+  const junkRun = Buffer.alloc(BETA.length, FILL_BYTE);
+  const zipOf = (method: number): Buffer =>
+    Buffer.from(
+      craftZip([
+        { name: 'docs/alpha.txt', data: ALPHA, method },
+        { name: 'beta.bin', data: BETA, method },
+        { name: 'gamma.bin', data: GAMMA, method },
+      ])
+    );
+  const tarOf = (): Buffer =>
+    Buffer.concat([
+      hostileTarMember({ name: 'docs/alpha.txt' }, ALPHA),
+      hostileTarMember({ name: 'beta.bin' }, BETA),
+      hostileTarMember({ name: 'gamma.bin' }, GAMMA),
+      hostileTarEnd(),
+    ]);
+
+  /** Members that deflate shrinks, so that no entry is stored for want of a gain. */
+  const compressibleTarOf = (): Buffer => Buffer.concat([hostileTarMember({ name: 'beta.bin' }, BETA), hostileTarMember({ name: 'gamma.bin' }, GAMMA), hostileTarEnd()]);
+  /** Bytes that deflate does not shrink. */
+  const NOISE = Buffer.concat(Array.from({ length: Math.ceil(BETA.length / 32) }, (_, index) => createHash('sha256').update(`noise ${index}`).digest())).subarray(0, BETA.length);
+
+  function expectUntouched({ before, after }: { before: Buffer; after: Buffer }): void {
+    expect(after.equals(before)).toBe(true);
+    expect(after.includes(junkRun)).toBe(false);
+  }
+
+  function expectMembersOverwritten({ before, after }: { before: Buffer; after: Buffer }, run = junkRun): void {
+    expect(before.includes(run)).toBe(false);
+    expect(after.includes(run)).toBe(true);
+    expect(after.equals(before)).toBe(false);
+  }
+
+  it('zipToTar of deflated entries leaves the second result as it was', async () => {
+    const zip = zipOf(8);
+    expectUntouched(await writeOverFirst(async () => (await zipToTar({ source: { buffer: zip } }))?.segments));
+  });
+
+  it('zipToTar of stored entries leaves the second result as it was, since the reader copies them', async () => {
+    const zip = zipOf(0);
+    expectUntouched(await writeOverFirst(async () => (await zipToTar({ source: { buffer: zip } }))?.segments));
+  });
+
+  it('tarToZip with deflated entries leaves the second result as it was', async () => {
+    const tar = compressibleTarOf();
+    expectUntouched(await writeOverFirst(async () => (await tarToZip({ source: { buffer: tar }, compressionLevel: 6 }))?.segments));
+  });
+
+  it('a gzip carrying a tar leaves the second result as it was', async () => {
+    const gzip = zlib.gzipSync(tarOf());
+    expectUntouched(
+      await writeOverFirst(
+        async () => (await streamToTar({ compressor: 'gzip', source: { buffer: gzip }, p7zBin: '', originalFilename: 'sample.tar.gz', timeoutMs: 10_000 }))?.segments
+      )
+    );
+  });
+
+  oracleTest(
+    'sevenZipToTar leaves the second result as it was',
+    ['7z'],
+    async () => {
+      const archive = Buffer.from(
+        craftSevenZip([
+          { name: 'docs/alpha.txt', data: ALPHA },
+          { name: 'beta.bin', data: BETA },
+          { name: 'gamma.bin', data: GAMMA },
+        ])
+      );
+      expectUntouched(
+        await writeOverFirst(
+          async () => (await sevenZipToTar({ p7zBin: getOracleToolPath('7z') as string, source: { buffer: archive }, originalFilename: 'sample.7z', timeoutMs: 20_000 }))?.segments
+        )
+      );
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  it('rarToTar shows the write in the second result, since its members are views of the RAR', async () => {
+    const rar = Buffer.from(
+      buildStoredRar4([
+        { name: 'docs/alpha.txt', data: ALPHA },
+        { name: 'beta.bin', data: BETA },
+        { name: 'gamma.bin', data: GAMMA },
+      ])
+    );
+    expectMembersOverwritten(await writeOverFirst(() => rarToTar({ source: { buffer: rar } })?.segments));
+  });
+
+  it('tarToZip at level 0 shows the write in the second result, since its stored entries are views of the tar', async () => {
+    const tar = tarOf();
+    expectMembersOverwritten(await writeOverFirst(async () => (await tarToZip({ source: { buffer: tar }, compressionLevel: 0 }))?.segments));
+  });
+
+  it('tarToZip with deflate shows the write in the second result for an entry that deflate does not shrink, which it stores as a view of the tar', async () => {
+    const tar = Buffer.concat([hostileTarMember({ name: 'noise.bin' }, NOISE), hostileTarEnd()]);
+    expectMembersOverwritten(
+      await writeOverFirst(async () => (await tarToZip({ source: { buffer: tar }, compressionLevel: 6 }))?.segments),
+      Buffer.alloc(NOISE.length, FILL_BYTE)
+    );
+  });
 });
 
 describe('wrapInPlace', () => {
@@ -188,8 +333,7 @@ describe('wrapInPlace', () => {
 
     expect(second.equals(first)).toBe(true);
     expectFiles(first, { member: ALPHA });
-    expectZeroEndBlocks(first);
+    expectZeroPadding(first);
     expect(first).toHaveLength(BLOCK + BLOCK + END_BLOCKS_BYTES);
-    expect(first.subarray(BLOCK + ALPHA.length).every((byte) => byte === 0)).toBe(true);
   });
 });
