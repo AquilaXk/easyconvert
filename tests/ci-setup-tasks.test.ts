@@ -529,7 +529,7 @@ describe('the benchmark Python module check', () => {
 describe('main stops at the first step that fails', () => {
   const STEPS = ['configure', 'select_tasks', 'run_tasks', 'verify_cad_tools', 'verify_bench_python_modules'];
 
-  /** `configure` and `select_tasks` end the process themselves with `exit 1`; these two return their status. */
+  /** `configure` ends the process itself with `exit 1` and `select_tasks` cannot fail; these two return their status. */
   it.skipIf(skipUnless(NEEDS, canRunSetup)).each(['run_tasks', 'verify_cad_tools'])('returns 1 and runs no later step when %s fails', (failing) => {
     const log = path.join(scratch(), 'steps.log');
     const stubs = STEPS.map((step) => `${step}() { echo ${step} >> "$STEP_LOG"; return ${step === failing ? 1 : 0}; }`).join('\n');
