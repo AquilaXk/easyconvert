@@ -23,15 +23,15 @@
  * createDeflatedZipBuffer). It does not judge uploads or archives made by an attacker; a guard against a shape the writers cannot produce is out of scope.
  *
  * Bounds on the text layer, so that reading a file costs no more than its size, in lines, fields and tokens a message quotes. Each is marked as taken
- * from a writer or as this check's own; neither writer has a reference limit for the check's own. They do not bound what a ZIP inflates to: the
+ * derived from a writer or as this check's own; a writer has no limit for the check's own. They do not bound what a ZIP inflates to: the
  * archive is the converter's own output.
  * - MAX_LINE_BYTES, 1 MiB, is the check's own. A line is checked before it is decoded. writeObj's longest line is under 100 bytes (a vertex of about 60
- *   bytes, an mtllib of at most 75). encodeObj has no cap on the corners of a face nor on the `o` name; a corner is at most 23 bytes (`i//i` with two
- *   10-digit indices and a blank), so 1 MiB holds a face of about 45,000 corners, and the faces of the 14 corpus models have 3 corners. No realistic
- *   model reaches the bound.
+ *   bytes, an mtllib of at most 75). encodeObj writes as many corners as its input face has, and its input type holds triangles, so no face it writes today has more than 3 corners;
+ *   it has no cap on the `o` name either. A corner is at most 23 bytes (`i//i` with two 10-digit indices and a blank), so 1 MiB holds a face of about
+ *   45,000 corners. The bound guards the reader's robustness, not a shape a writer emits, and the faces of the 14 corpus models have 3 corners.
  * - MAX_NUMBER_CHARS, 64, is the check's own: the longest number, and the longest index of a face corner. The number pattern has one way to match each
  *   string, so it runs in time linear in the field, and the field length is checked first.
- * - MAX_LIBRARY_NAME_CHARS is derived from a writer: outputStem caps the stem at MAX_OUTPUT_NAME_CHARS (cad-occt.ts) and `.mtl` follows.
+ * - MAX_LIBRARY_NAME_CHARS is derived from a writer: outputStem (cad-occt.ts) caps the stem at MAX_OUTPUT_NAME_CHARS (cad-output-name.ts, a module with no imports, so the check does not load the converter) and `.mtl` follows.
  * - MAX_NAME_CHARS, 255, is the check's own, the longest name a file system holds. No writer caps a material name (isSafeMaterialName only checks its
  *   characters), so a `usemtl` or `newmtl` name is held to it.
  * - MAX_MATERIALS, 100,000, is the check's own: the most distinct materials in an OBJ or an MTL.
@@ -39,11 +39,11 @@
  *   characters replaced.
  */
 
-import { MAX_OUTPUT_NAME_CHARS } from '../../src/lib/conversions/cad-occt';
+import { MAX_OUTPUT_NAME_CHARS } from '../../src/lib/conversions/cad-output-name';
 
 export type Point = readonly [number, number, number];
 export type Colour = readonly [number, number, number];
-export type Statement = { keyword: string; fields: string[] };
+type Statement = { keyword: string; fields: string[] };
 type CornerForm = 'v' | 'v//vn';
 type Resolved = { index: number } | { problem: string };
 type IndexKind = 'vertex' | 'normal';
@@ -271,8 +271,11 @@ export function readObj(buffer: Buffer, observer: ObjObserver = {}): ObjReading 
   return problem === null ? scanner.finish() : { ok: false, problem };
 }
 
-/** Why one statement of an MTL is not valid, or null; `current` is the material it belongs to (null before the first `newmtl`) and `given` its attributes so far. */
-function mtlStatementProblem(keyword: string, fields: readonly string[], current: string | null, given: ReadonlySet<string>): string | null {
+/**
+ * The reading of one statement of an MTL: a problem when it is not valid, the parsed colour when it is a colour (`Ka`, `Kd`, `Ks`) in range, and null for
+ * a valid `newmtl` or scalar. `current` is the material it belongs to (null before the first `newmtl`) and `given` its attributes so far.
+ */
+function mtlStatementReading(keyword: string, fields: readonly string[], current: string | null, given: ReadonlySet<string>): string | Colour | null {
   if (keyword === 'newmtl') return nameProblem(keyword, fields, MAX_NAME_CHARS);
   if (!MTL_COLOURS.has(keyword) && !MTL_SCALARS.has(keyword)) return `statement ${shown(keyword)} is not one the converter writes`;
   if (current === null) return `${keyword} comes before any newmtl`;
@@ -280,7 +283,7 @@ function mtlStatementProblem(keyword: string, fields: readonly string[], current
   if (MTL_COLOURS.has(keyword)) {
     const colour = parseColour(fields);
     if (colour === null) return `${keyword} needs three numbers`;
-    return colour.every((channel) => channel >= 0 && channel <= 1) ? null : `${keyword} ${shown(fields.join(' '))} has a channel outside 0 to 1`;
+    return colour.every((channel) => channel >= 0 && channel <= 1) ? colour : `${keyword} ${shown(fields.join(' '))} has a channel outside 0 to 1`;
   }
   if (fields.length !== 1 || !isDecimal(fields[0])) return `${keyword} needs one number`;
   const value = Number(fields[0]);
@@ -298,8 +301,8 @@ export function readMtl(buffer: Buffer): MtlReading {
   let current: string | null = null;
   let given = new Set<string>();
   const problem = readStatements(buffer, ({ keyword, fields }) => {
-    const statementProblem = mtlStatementProblem(keyword, fields, current, given);
-    if (statementProblem !== null) return statementProblem;
+    const reading = mtlStatementReading(keyword, fields, current, given);
+    if (typeof reading === 'string') return reading;
     if (keyword === 'newmtl') {
       current = fields[0];
       if (materials.has(current)) return `material ${shown(current)} is defined twice`;
@@ -308,7 +311,7 @@ export function readMtl(buffer: Buffer): MtlReading {
       given = new Set();
     } else if (current !== null) {
       given.add(keyword);
-      if (keyword === 'Kd') materials.set(current, parseColour(fields));
+      if (keyword === 'Kd') materials.set(current, reading);
     }
     return null;
   });

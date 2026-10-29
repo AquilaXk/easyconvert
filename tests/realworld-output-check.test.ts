@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import {
   MAX_LIBRARY_NAME_CHARS,
@@ -14,8 +14,9 @@ import {
   readObj,
   shown,
 } from '../bench/realworld/obj-mtl';
-import { outputProblem } from '../bench/realworld/output-check';
-import { MAX_OUTPUT_NAME_CHARS, convertCadWithOcct } from '../src/lib/conversions/cad-occt';
+import { MAX_TOOL_MESSAGE_CHARS, outputProblem } from '../bench/realworld/output-check';
+import { convertCadWithOcct } from '../src/lib/conversions/cad-occt';
+import { MAX_OUTPUT_NAME_CHARS } from '../src/lib/conversions/cad-output-name';
 import { createDeflatedZipBuffer } from '../src/lib/conversions/zip-writer';
 import { haveCadConverter } from './helpers/cad-kernel';
 import { mtlMaterials, objFiles, objMaterialAreas } from './helpers/cad-obj-output';
@@ -29,11 +30,13 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
-const WORK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-output-check-'));
-const MAX_TOOL_MESSAGE_CHARS = 200;
+const READER_TIMEOUT_MS = 1000;
 const LOCAL_HEADER = Buffer.from('PK\u0003\u0004', 'latin1');
 const CENTRAL_HEADER = Buffer.from('PK\u0001\u0002', 'latin1');
-const LOCAL_CRC_OFFSET = 14;
+const LOCAL_HEADER_BYTES = 30;
+const LOCAL_NAME_LENGTH_OFFSET = 26;
+const LOCAL_EXTRA_LENGTH_OFFSET = 28;
+const RESERVED_BLOCK_TYPE = 0x07;
 const CENTRAL_CRC_OFFSET = 16;
 const OBJ = Buffer.from('# model\nmtllib x.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Mat_1\nf 1 2 3\n');
 const MTL = Buffer.from(
@@ -41,6 +44,21 @@ const MTL = Buffer.from(
 );
 const PLAIN_OBJ = 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n';
 const TRIANGLE = 'v 0 0 0\nv 1 0 0\nv 0 1 0\n';
+
+/** A copy of the ZIP with the CRC-32 of each entry damaged in the central directory, the copy of it that JSZip checks. */
+function withCentralCrcDamaged(archive: Buffer): Buffer {
+  const damaged = Buffer.from(archive);
+  for (let at = damaged.indexOf(CENTRAL_HEADER); at !== -1; at = damaged.indexOf(CENTRAL_HEADER, at + 1)) damaged[at + CENTRAL_CRC_OFFSET] ^= 0xff;
+  return damaged;
+}
+
+/** A copy of the ZIP whose first deflated entry starts with the reserved block type, so the body does not inflate while every CRC-32 stays as written. */
+function withFirstBodyNotInflating(archive: Buffer): Buffer {
+  const damaged = Buffer.from(archive);
+  const at = damaged.indexOf(LOCAL_HEADER);
+  damaged[at + LOCAL_HEADER_BYTES + damaged.readUInt16LE(at + LOCAL_NAME_LENGTH_OFFSET) + damaged.readUInt16LE(at + LOCAL_EXTRA_LENGTH_OFFSET)] = RESERVED_BLOCK_TYPE;
+  return damaged;
+}
 
 /** The ZIP of `files` by JSZip; a name that ends in a slash becomes a folder entry. */
 async function zipOf(files: Record<string, Buffer | string>): Promise<Buffer> {
@@ -56,6 +74,12 @@ function check(buffer: Buffer, { mimeType, emptyInput }: { mimeType?: string; em
   return outputProblem(buffer, 'obj', WORK_DIR, { pdfinfo: '', identify: '', mimeType, emptyInput });
 }
 
+let WORK_DIR = '';
+
+beforeAll(() => {
+  WORK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-output-check-'));
+});
+
 afterAll(() => {
   fs.rmSync(WORK_DIR, { recursive: true, force: true });
 });
@@ -64,7 +88,7 @@ describe('a plain OBJ', () => {
   it.each([
     ['the form cad-convert writes for a model with no colour', '# Wavefront OBJ, coordinates in mm\nv 0 0 0\nv 1.5e-3 0 0\nv 0 -1 0\nf 1 2 3\nf -3 -2 -1\n'],
     ['the form the pure engine writes with normals', '# Wavefront OBJ\no model\n\nv 0 0 0\nv 1 0 0\nv 0 1 0\n\nvn 0 0 1\nvn 0 0 1\nvn 0 0 1\n\nf 1//1 2//2 3//3\n'],
-    ['a polygon of 2,000 corners, longer than 8 KiB (robustness: encodeObj writes triangles, but the OBJ format allows any polygon)', `v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nvn 0 0 1\nvn 0 0 1\nf ${'1//1 2//2 3//3 '.repeat(667).trim()}\n`],
+    ['a polygon of 2,001 corners, longer than 8 KiB (encodeObj writes as many corners as its input face has, and its input type holds triangles, so this guards robustness and not a shape it emits today)', `v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nvn 0 0 1\nvn 0 0 1\nf ${'1//1 2//2 3//3 '.repeat(667).trim()}\n`],
     ['a face index of MAX_NUMBER_CHARS characters', `${TRIANGLE}f 1 2 ${'0'.repeat(MAX_NUMBER_CHARS - 1)}3\n`],
     ['an o name of 20,000 characters, which encodeObj writes without a cap', `o ${'n'.repeat(20_000)}\n${PLAIN_OBJ}`],
     ['a quad, a vertex with a weight and Windows line ends', 'v 0 0 0 1\r\nv 1 0 0\r\nv 1 1 0\r\nv 0 1 0\r\nf 1 2 3 4\r\n'],
@@ -182,28 +206,73 @@ describe('an OBJ beyond the bounds of the check', () => {
   });
 });
 
-describe('a reference reader that refuses the output', () => {
+describe('a reference reader that fails', () => {
   const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
-  const readerPrinting = (name: string, message: string): string => {
+  const readerScript = (name: string, body: string): string => {
     const script = path.join(WORK_DIR, name);
-    fs.writeFileSync(script, `#!/bin/sh\nprintf '%s\\n' '${message}' >&2\nexit 1\n`, { mode: 0o755 });
+    fs.writeFileSync(script, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     return script;
   };
-  const problemOf = (identify: string) => outputProblem(PNG, 'png', WORK_DIR, { pdfinfo: '', identify });
+  const readerPrinting = (name: string, message: string): string => readerScript(name, `printf '%s\\n' '${message}' >&2\nexit 1`);
+  const problemOf = (identify: string, readerTimeoutMs?: number) => outputProblem(PNG, 'png', WORK_DIR, { pdfinfo: '', identify, readerTimeoutMs });
 
-  it('is quoted beyond the 40 characters of a token of the file, so the tail that names the cause survives', async () => {
+  it('is quoted beyond the length of a token of the file, so the tail that names the cause survives', async () => {
     const message = `identify: ${'a'.repeat(100)} @ error/png.c/ReadPNGImage/3962`;
     expect(message.length).toBeGreaterThan(MAX_SHOWN_CHARS);
-    expect(await problemOf(readerPrinting('long-reader', message))).toBe(`reference reader refused the output: ${message}`);
+    expect(await problemOf(readerPrinting('long-reader', message))).toBe(`reference reader refused the output: ${message} (exit 1)`);
   });
 
-  it('is cut at MAX_TOOL_MESSAGE_CHARS characters', async () => {
+  it('is cut at MAX_TOOL_MESSAGE_CHARS code points', async () => {
     const problem = await problemOf(readerPrinting('longer-reader', 'x'.repeat(MAX_TOOL_MESSAGE_CHARS * 2)));
-    expect(problem).toBe(`reference reader refused the output: ${'x'.repeat(MAX_TOOL_MESSAGE_CHARS)}...`);
+    expect(problem).toBe(`reference reader refused the output: ${'x'.repeat(MAX_TOOL_MESSAGE_CHARS)}... (exit 1)`);
+    const astral = await problemOf(readerPrinting('astral-reader', '\u{1F600}'.repeat(MAX_TOOL_MESSAGE_CHARS + 1)));
+    expect(astral).toBe(`reference reader refused the output: ${'\u{1F600}'.repeat(MAX_TOOL_MESSAGE_CHARS)}... (exit 1)`);
   });
 
-  it('names the error code when the reader is missing and prints nothing', async () => {
-    expect(await problemOf(path.join(WORK_DIR, 'no-such-reader'))).toBe('reference reader refused the output: ENOENT');
+  it('quotes the first line of stderr and the exit status, not the lines after it', async () => {
+    const reader = readerScript('multi-line-reader', "printf 'cannot read the image\\nsecond line is not the cause\\n' >&2\nexit 2");
+    expect(await problemOf(reader)).toBe('reference reader refused the output: cannot read the image (exit 2)');
+  });
+
+  it('skips a blank first line of stderr', async () => {
+    const reader = readerScript('blank-first-reader', "printf '\\n  \\nthe cause\\n' >&2\nexit 1");
+    expect(await problemOf(reader)).toBe('reference reader refused the output: the cause (exit 1)');
+  });
+
+  it('gives the exit status alone when the reader exits non-zero and prints nothing', async () => {
+    expect(await problemOf(readerScript('silent-reader', 'exit 3'))).toBe('reference reader refused the output: exit 3');
+  });
+
+  it('gives the signal when the reader is killed, with or without a line of stderr', async () => {
+    expect(await problemOf(readerScript('killed-reader', 'kill -KILL $$'))).toBe('reference reader refused the output: signal SIGKILL');
+    const noisy = readerScript('noisy-killed-reader', "printf 'decoding\\n' >&2\nkill -KILL $$");
+    expect(await problemOf(noisy)).toBe('reference reader refused the output: decoding (signal SIGKILL)');
+  });
+
+  it('says it timed out, with the first line of stderr when there is one', async () => {
+    expect(await problemOf(readerScript('sleeping-reader', 'exec sleep 30'), READER_TIMEOUT_MS)).toBe('reference reader timed out');
+    const noisy = readerScript('noisy-sleeping-reader', "printf 'still decoding\\n' >&2\nexec sleep 30");
+    expect(await problemOf(noisy, READER_TIMEOUT_MS)).toBe('reference reader timed out: still decoding');
+  });
+
+  it('says it did not run, with its path, when the reader is missing', async () => {
+    const missing = path.join(WORK_DIR, 'no-such-reader');
+    expect(await problemOf(missing)).toBe(`reference reader did not run: ${missing} not found`);
+  });
+});
+
+describe('a page archive', () => {
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
+  const archiveProblem = (archive: Buffer) => outputProblem(archive, 'png', WORK_DIR, { pdfinfo: '', identify: '', mimeType: ZIP_MIME });
+
+  it('is refused when the CRC-32 of a page is wrong', async () => {
+    const archive = await zipOf({ 'doc-1.png': PNG });
+    expect(await archiveProblem(archive)).toBeNull();
+    expect(await archiveProblem(withCentralCrcDamaged(archive))).toBe('png page archive has an entry whose CRC-32 is wrong');
+  });
+
+  it('is refused as not readable, and not as a wrong CRC-32, when a page does not inflate but its CRC-32 is intact', async () => {
+    expect(await archiveProblem(withFirstBodyNotInflating(await zipOf({ 'doc-1.png': PNG })))).toBe('png page archive is not a readable ZIP');
   });
 });
 
@@ -296,17 +365,18 @@ describe('an OBJ delivered as a ZIP', () => {
   });
 
   it('is refused when the CRC-32 of its entries is wrong, and accepted when it is right', async () => {
-    const files = [
+    const archive = await createDeflatedZipBuffer([
       { name: 'part.obj', data: Buffer.from(OBJ.toString().replace('x.mtl', 'part.mtl')) },
       { name: 'part.mtl', data: MTL },
-    ];
-    const archive = await createDeflatedZipBuffer(files);
+    ]);
     expect(await check(archive, { mimeType: ZIP_MIME })).toBeNull();
-    const damaged = Buffer.from(archive);
-    for (const [signature, offset] of [[LOCAL_HEADER, LOCAL_CRC_OFFSET], [CENTRAL_HEADER, CENTRAL_CRC_OFFSET]] as const) {
-      for (let at = damaged.indexOf(signature); at !== -1; at = damaged.indexOf(signature, at + 1)) damaged[at + offset] ^= 0xff;
-    }
-    expect(await check(damaged, { mimeType: ZIP_MIME })).toBe('obj archive has an entry whose CRC-32 is wrong');
+    expect(await check(withCentralCrcDamaged(archive), { mimeType: ZIP_MIME })).toBe('obj archive has an entry whose CRC-32 is wrong');
+  });
+
+  it('is refused as not readable, and not as a wrong CRC-32, when an entry body does not inflate but its CRC-32 is intact', async () => {
+    const archive = await zipOf({ 'x.obj': OBJ, 'x.mtl': MTL });
+    expect(await check(archive, { mimeType: ZIP_MIME })).toBeNull();
+    expect(await check(withFirstBodyNotInflating(archive), { mimeType: ZIP_MIME })).toBe('obj archive is not a readable ZIP');
   });
 
   it('is refused with an entry name cut to MAX_SHOWN_CHARS characters', async () => {

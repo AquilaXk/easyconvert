@@ -12,8 +12,9 @@ import { isFormatCompatibleWithMagicBytes } from '../../src/lib/registry';
 import { hasExtension, readMtl, readObj, shown, type ObjScan } from './obj-mtl';
 
 const VALIDATOR_TIMEOUT_MS = 60_000;
-/** The most code points of a reference reader's message that a refusal quotes; cad-occt.ts bounds the converter's message the same way (MAX_DETAIL_CHARS). */
-const MAX_TOOL_MESSAGE_CHARS = 200;
+/** The most code points that a refusal quotes of each part of a reference reader's message: its first line of stderr, its path, its signal. */
+export const MAX_TOOL_MESSAGE_CHARS = 200;
+const CRC_MISMATCH = /CRC32 mismatch/;
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico', 'psd']);
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
 export const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'odd', 'dxf', 'emf', 'wmf']);
@@ -41,6 +42,8 @@ export interface OutputCheckOptions {
    * conversion under test, which declares every blank text result empty, content or not.
    */
   emptyInput?: boolean;
+  /** How long a reference reader may run, in milliseconds; the default is VALIDATOR_TIMEOUT_MS. A test sets a short one. */
+  readerTimeoutMs?: number;
 }
 
 type ArchiveEntries = { entries: JSZip.JSZipObject[]; folders: JSZip.JSZipObject[] } | { problem: string };
@@ -48,10 +51,11 @@ type ObjModel = { problem: string } | { reading: ObjScan };
 
 /** The files and the folders of a ZIP, or why `label` is not a readable ZIP. */
 async function archiveEntries(buffer: Buffer, label: string): Promise<ArchiveEntries> {
-  const zip = await JSZip.loadAsync(buffer, { checkCRC32: true }).catch(() => null);
-  if (zip === null) {
-    const structural = await JSZip.loadAsync(buffer).then(() => true, () => false);
-    return { problem: structural ? `${label} has an entry whose CRC-32 is wrong` : `${label} is not a readable ZIP` };
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer, { checkCRC32: true });
+  } catch (error) {
+    return { problem: CRC_MISMATCH.test(String(error)) ? `${label} has an entry whose CRC-32 is wrong` : `${label} is not a readable ZIP` };
   }
   const all = Object.values(zip.files);
   return { entries: all.filter((entry) => !entry.dir), folders: all.filter((entry) => entry.dir) };
@@ -144,21 +148,42 @@ export async function outputProblem(buffer: Buffer, target: string, workDir: str
     const zip = await JSZip.loadAsync(buffer).catch(() => null);
     if (zip === null || zip.file(part) === null) return `${target} package has no ${part}`;
   }
+  const timeout = options.readerTimeoutMs ?? VALIDATOR_TIMEOUT_MS;
   const file = path.join(workDir, `out.${target}`);
   fs.writeFileSync(file, buffer);
   try {
-    if (target === 'pdf' && options.pdfinfo !== '') execFileSync(options.pdfinfo, [file], { stdio: 'pipe', timeout: VALIDATOR_TIMEOUT_MS });
-    if (IMAGE_TARGETS.has(target) && options.identify !== '') execFileSync(options.identify, [file], { stdio: 'pipe', timeout: VALIDATOR_TIMEOUT_MS });
+    if (target === 'pdf' && options.pdfinfo !== '') execFileSync(options.pdfinfo, [file], { stdio: 'pipe', timeout });
+    if (IMAGE_TARGETS.has(target) && options.identify !== '') execFileSync(options.identify, [file], { stdio: 'pipe', timeout });
   } catch (error) {
-    return `reference reader refused the output: ${shown(toolMessage(error), MAX_TOOL_MESSAGE_CHARS)}`;
+    return readerProblem(error);
   }
   return null;
 }
 
-/** What a failed reference reader said: the first line of its stderr, or the code of the error (ENOENT, ETIMEDOUT) when it said nothing. */
-function toolMessage(error: unknown): string {
-  const { stderr, code } = error as { stderr?: Buffer; code?: string };
-  const first = (stderr?.toString() ?? '').trim().split('\n')[0].trim();
-  if (first !== '') return first;
-  return code ?? String(error).slice(-MAX_TOOL_MESSAGE_CHARS);
+interface ReaderError {
+  code?: string;
+  path?: string;
+  stderr?: Buffer;
+  signal?: string | null;
+  status?: number | null;
+}
+
+/** The first non-empty line of what a reference reader printed to stderr, cut to MAX_TOOL_MESSAGE_CHARS code points; empty when it printed none. */
+function firstStderrLine(stderr: Buffer | undefined): string {
+  const line = (stderr?.toString() ?? '').split('\n').map((text) => text.trim()).find((text) => text !== '');
+  return line === undefined ? '' : shown(line, MAX_TOOL_MESSAGE_CHARS);
+}
+
+/** How the reference reader ended, in the order that tells most: it did not start, it timed out, a signal killed it, it exited with a status; its first line of stderr goes with the last three. */
+function readerProblem(error: unknown): string {
+  const { code, path: binary, stderr, signal, status } = error as ReaderError;
+  if (code === 'ENOENT') return `reference reader did not run: ${shown(binary ?? '', MAX_TOOL_MESSAGE_CHARS)} not found`;
+  const said = firstStderrLine(stderr);
+  if (code === 'ETIMEDOUT') return said === '' ? 'reference reader timed out' : `reference reader timed out: ${said}`;
+  let ending = '';
+  if (signal) ending = `signal ${shown(signal, MAX_TOOL_MESSAGE_CHARS)}`;
+  else if (typeof status === 'number') ending = `exit ${status}`;
+  if (said === '' && ending === '') return `reference reader refused the output: ${shown(String(error), MAX_TOOL_MESSAGE_CHARS)}`;
+  if (said === '') return `reference reader refused the output: ${ending}`;
+  return `reference reader refused the output: ${said}${ending === '' ? '' : ` (${ending})`}`;
 }

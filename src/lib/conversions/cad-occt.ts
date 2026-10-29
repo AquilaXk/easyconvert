@@ -17,6 +17,7 @@ import {
   rethrowSandboxUnavailable,
 } from '../../worker/sandbox';
 import { prepareIgesForKernel } from './cad-iges-preflight';
+import { MAX_OUTPUT_NAME_CHARS } from './cad-output-name';
 import { stageTimeoutMs, type JobDeadlined } from './job-time';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 import { createDeflatedZipBuffer } from './zip-writer';
@@ -58,7 +59,6 @@ const PROGRAM_MEMORY_LIMIT_MB = 2048;
 /** The largest output accepted. */
 const PROGRAM_MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 const PROGRAM_MAX_DIAGNOSTIC_BYTES = 1024 * 1024;
-export const MAX_OUTPUT_NAME_CHARS = 64;
 const DEFAULT_OUTPUT_STEM = 'output';
 const UNSAFE_NAME_CHARS = /[^A-Za-z0-9._-]/g;
 const MESH_HEADER_BYTES = 8;

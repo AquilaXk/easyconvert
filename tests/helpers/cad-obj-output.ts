@@ -49,8 +49,8 @@ export function objMaterialAreas(obj: Buffer): Map<string, number> {
 
 /**
  * The materials (`newmtl`) of an MTL file with their diffuse colour (`Kd`), null for a material that gives none. It looks only at `newmtl` and `Kd`, so a
- * test of a colour does not depend on the vocabulary and the ranges that the gate holds the writers to (readMtl); a `newmtl` with no name or a `Kd` that
- * is not three numbers throws.
+ * test of a colour does not depend on the vocabulary and the ranges that the gate holds the writers to (readMtl). It shares only the gate's number
+ * format, through parseColour; a `newmtl` with no name or a `Kd` that is not three numbers throws.
  */
 export function mtlMaterials(mtl: Buffer): ReadonlyMap<string, Colour | null> {
   const materials = new Map<string, Colour | null>();
