@@ -10,11 +10,13 @@ import JSZip from 'jszip';
 import { isFormatCompatibleWithMagicBytes } from '../../src/lib/registry';
 import {
   SandboxedBufferLimitError,
+  SandboxedMemoryLimitError,
   SandboxedProcessError,
   SandboxedTimeoutError,
   executeSandboxedBinary,
-  rethrowSandboxUnavailable,
+  getSanitizedEnvironment,
 } from '../../src/lib/security/process-sandbox';
+import { SandboxUnavailableError } from '../../src/lib/types';
 import { hasExtension, readMtl, readObj, shown, type ObjScan } from './obj-mtl';
 
 const VALIDATOR_TIMEOUT_MS = 60_000;
@@ -23,14 +25,13 @@ const READER_PREFIX = 'reference reader';
 export const MAX_TOOL_MESSAGE_CHARS = 200;
 /** The message JSZip throws when the CRC-32 of an entry differs from the one in the central directory. */
 const CRC_MISMATCH_MESSAGE = 'Corrupted zip : CRC32 mismatch';
-/**
- * What a status says when it is the one executeSandboxedBinary gives a reader that could not be started (spawnFailureError), and that a shell, or unshare
- * when it wraps the reader, gives a command it cannot find or execute.
- */
-const LAUNCH_FAILURES: ReadonlyMap<number, string> = new Map([
-  [127, 'not found'],
-  [126, 'not executable'],
+/** What a file system error code says about a reference reader that cannot be started; any other code is quoted as it is. */
+const LAUNCH_ERRORS: ReadonlyMap<string, string> = new Map([
+  ['ENOENT', 'not found'],
+  ['EACCES', 'not executable'],
 ]);
+/** The codes that mean one directory of PATH does not hold the name, as execvp reads them, so the search goes on. */
+const SEARCH_MISSES: ReadonlySet<string> = new Set(['ENOENT', 'ENOTDIR']);
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico', 'psd']);
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
 export const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'odd', 'dxf', 'emf', 'wmf']);
@@ -188,22 +189,67 @@ function readerFor(target: string, options: OutputCheckOptions): ReferenceReader
   return reader === undefined || reader.path === '' ? undefined : reader;
 }
 
+/** `did not run: <reason> <path>` for a reader that cannot be started, the reason being the file system error code in words when there is one. */
+function didNotRun(reader: ReferenceReader, reason: string): string {
+  return `${READER_PREFIX} ${reader.name} did not run: ${shown(LAUNCH_ERRORS.get(reason) ?? reason, MAX_TOOL_MESSAGE_CHARS)} ${shown(reader.path, MAX_TOOL_MESSAGE_CHARS)}`;
+}
+
+/** The error code of the first file system check that `file` fails to be a regular file this process may execute, or null when it passes them. */
+function launchErrorCode(file: string): string | null {
+  try {
+    if (!fs.statSync(file).isFile()) return 'EACCES';
+    fs.accessSync(file, fs.constants.X_OK);
+    return null;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code ?? (error as Error).message;
+  }
+}
+
+/**
+ * Where `reader` runs from, or why it cannot be started. A path with a separator is resolved against the working directory of the gate, as the reader itself
+ * runs in a scratch directory; a bare name is looked up in the directories of the PATH that the runner gives the reader, as execvp does, and the first
+ * regular executable file wins. The check is made here because the exit status of a reader says nothing about whether it was launched: a shell exits 126 or
+ * 127 for a command it cannot execute, and a reader that ran may exit with those statuses too.
+ */
+function locateReader(reader: ReferenceReader): { executable: string } | { problem: string } {
+  if (/[\\/]/.test(reader.path)) {
+    const file = path.resolve(reader.path);
+    const code = launchErrorCode(file);
+    return code === null ? { executable: file } : { problem: didNotRun(reader, code) };
+  }
+  let code = 'ENOENT';
+  for (const directory of (getSanitizedEnvironment({}, false).PATH ?? '').split(path.delimiter)) {
+    if (directory === '') continue;
+    const file = path.join(directory, reader.path);
+    const found = launchErrorCode(file);
+    if (found === null) return { executable: file };
+    if (!SEARCH_MISSES.has(found)) code = found;
+  }
+  return { problem: didNotRun(reader, code) };
+}
+
 /**
  * Runs a reference reader on `file` through executeSandboxedBinary, the runner every converter uses: the reader leads its own process group, the whole
  * group is killed at `timeoutMs`, and stdout and stderr together are held to the runner's default of 50 MB. The gate reads no stdout, and a many-frame
  * image makes `identify` print a line or two per frame, so the cap takes hundreds of thousands of frames to reach. Returns null when the reader exits 0
- * and otherwise why it refused; see readerProblem.
+ * and otherwise why it refused; see locateReader and readerProblem.
+ * The reader runs without the network wrapper (`networkIsolated: false`): the gate reads a local file that the repository's own writer produced, and the
+ * wrapper only adds a failure surface, since an `unshare` error would read as the reader's verdict.
  * A killed ImageMagick cannot remove its pixel cache, so that and TMPDIR point into a directory of its own under `workDir`, which this function removes
- * once the reader has ended. That removal is per run because a page archive reuses `workDir` for every page and some callers pass `os.tmpdir()`.
+ * when the runner has settled, which on a timeout or at the output cap can be before the killed process is reaped.
+ * That removal is per run because a page archive reuses `workDir` for every page and some callers pass `os.tmpdir()`.
  * A removal that fails is ignored and the directory is left to the removal of `workDir`. A failure of the gate's own file system calls is thrown.
  */
 async function runReader(reader: ReferenceReader, file: string, workDir: string, timeoutMs: number): Promise<string | null> {
+  const located = locateReader(reader);
+  if ('problem' in located) return located.problem;
   const scratch = path.resolve(fs.mkdtempSync(path.join(workDir, 'reader-')));
   try {
-    await executeSandboxedBinary(reader.path, [path.resolve(file)], {
+    await executeSandboxedBinary(located.executable, [path.resolve(file)], {
       timeoutMs,
       env: { MAGICK_TEMPORARY_PATH: scratch, TMPDIR: scratch },
       cwd: scratch,
+      networkIsolated: false,
     });
     return null;
   } catch (error) {
@@ -230,24 +276,23 @@ function firstStderrLine(stderr: string): string {
 }
 
 /**
- * Why the reference reader rejected the output, from what executeSandboxedBinary threw: it did not start, it timed out, it printed more than the runner
- * holds, a signal killed it, or it exited with a status; its first line of stderr goes with the last two. A sandbox that is unavailable is the host's
- * fault and is thrown, not judged. Any other error is the runner failing to start the reader (EMFILE, ENOTDIR), and says so with its code, or its message when it has none.
+ * Why the reference reader rejected the output, from what executeSandboxedBinary threw: it timed out, it printed more than the runner holds, it went past
+ * its memory limit, a signal killed it, or it exited with a status, whatever that status; its first line of stderr goes with the last two. A sandbox that is
+ * unavailable is the host's fault, not the converter's: it is thrown as a plain Error, which runJob books as a crash and not as a typed refusal. Any other
+ * error is the runner failing to start the reader after the gate found it executable (EMFILE), and says so with its code, or its message when it has none.
  */
 function readerProblem(error: unknown, reader: ReferenceReader): string {
   const prefix = `${READER_PREFIX} ${reader.name}`;
   if (error instanceof SandboxedTimeoutError) return `${prefix} timed out`;
   if (error instanceof SandboxedBufferLimitError) return `${prefix} printed more than ${error.limitBytes} bytes`;
+  if (error instanceof SandboxedMemoryLimitError) return `${prefix} went past the memory limit`;
   if (error instanceof SandboxedProcessError) {
-    const launch = error.signal === null && error.exitCode !== null ? LAUNCH_FAILURES.get(error.exitCode) : undefined;
-    if (launch !== undefined) return `${prefix} did not run: ${launch} ${shown(reader.path, MAX_TOOL_MESSAGE_CHARS)}`;
     const said = firstStderrLine(error.stderr);
     const ending = error.signal === null ? `exit ${error.exitCode}` : `signal ${shown(error.signal, MAX_TOOL_MESSAGE_CHARS)}`;
     const refusal = `${READER_PREFIX} refused the output by ${reader.name}`;
     return said === '' ? `${refusal}: ${ending}` : `${refusal}: ${said} (${ending})`;
   }
-  rethrowSandboxUnavailable(error);
+  if (error instanceof SandboxUnavailableError) throw new Error(`${prefix} cannot run: ${error.message}`, { cause: error });
   if (!(error instanceof Error)) throw error;
-  const code = (error as NodeJS.ErrnoException).code;
-  return `${prefix} did not run: ${shown(code ?? error.message, MAX_TOOL_MESSAGE_CHARS)} ${shown(reader.path, MAX_TOOL_MESSAGE_CHARS)}`;
+  return didNotRun(reader, (error as NodeJS.ErrnoException).code ?? error.message);
 }
