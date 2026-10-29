@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import sharp from 'sharp';
-import { crc32 } from '../lib/conversions/crc32';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../lib/types';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
 import { SandboxedBufferLimitError, type SandboxedExecutionResult } from './sandbox';
@@ -147,7 +147,7 @@ function withPixelDensity(png: Buffer, dpi: number): Buffer {
   chunk.writeUInt32BE(pixelsPerMetre(dpi), 8);
   chunk.writeUInt32BE(pixelsPerMetre(dpi), 12);
   chunk.writeUInt8(PNG_METRE_UNIT, 16);
-  chunk.writeUInt32BE(crc32(chunk.subarray(4, 4 + 4 + PNG_PHYS_DATA_BYTES)), 17);
+  chunk.writeUInt32BE(zlib.crc32(chunk.subarray(4, 4 + 4 + PNG_PHYS_DATA_BYTES)), 17);
   const encoderOwnsOne = png.toString('latin1', at + 4, at + 8) === 'pHYs';
   const after = encoderOwnsOne ? at + chunk.length : at;
   return Buffer.concat([png.subarray(0, at), chunk, png.subarray(after)]);

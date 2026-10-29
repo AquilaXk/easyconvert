@@ -2,7 +2,6 @@ import os from 'node:os';
 import zlib from 'node:zlib';
 import { ConversionFailedError } from '../types';
 import { getCpuPool, runCpuTask } from '../workers/cpu-pool';
-import { crc32 } from './crc32';
 
 /**
  * Parallel writer for 16-bit photographic PNGs (PNG Third Edition, W3C, sections 7 and 12.8).
@@ -261,7 +260,7 @@ function chunkOf(type: string, parts: Uint8Array[]): Uint8Array {
     out.set(part, at);
     at += part.length;
   }
-  view.setUint32(at, crc32(out.subarray(CHUNK_TYPE_OFFSET, at)));
+  view.setUint32(at, zlib.crc32(out.subarray(CHUNK_TYPE_OFFSET, at)));
   return out;
 }
 

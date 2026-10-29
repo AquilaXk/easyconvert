@@ -1,6 +1,6 @@
+import zlib from 'node:zlib';
 import { executeSandboxedBinary, rethrowSandboxUnavailable } from '../security/process-sandbox';
 import { CPU_POOL_TASK_TIMEOUT_MS } from '../workers/cpu-pool';
-import { crc32 } from './crc32';
 import { resolveBinaryPath } from './pdf-postprocess/utils';
 
 /**
@@ -82,7 +82,7 @@ function rawDeflateOfMember(member: Buffer, data: Uint8Array): Buffer {
   }
   const crc = member.readUInt32LE(member.length - GZIP_CRC_OFFSET_FROM_END);
   const size = member.readUInt32LE(member.length - GZIP_ISIZE_OFFSET_FROM_END);
-  if (size !== data.length % UINT32_MODULUS || crc !== crc32(data)) {
+  if (size !== data.length % UINT32_MODULUS || crc !== zlib.crc32(data)) {
     throw new NativeDeflateError('libdeflate-gzip wrote a gzip trailer that does not match its input.');
   }
   return member.subarray(GZIP_FIXED_HEADER_BYTES, member.length - GZIP_TRAILER_BYTES);

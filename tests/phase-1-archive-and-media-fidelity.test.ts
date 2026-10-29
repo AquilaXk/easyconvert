@@ -16,7 +16,6 @@ import {
   getUnrarBinaryPath,
   ARCHIVE_SECURITY_LIMITS,
   sanitizeArchivePath,
-  crc32,
   write7zVarint,
   read7zVarint,
 } from '../src/lib/conversions';

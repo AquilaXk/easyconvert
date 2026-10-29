@@ -48,7 +48,7 @@ import { inflateChunkHint } from './archive-zip-reader';
 
 export const LIMITS = ARCHIVE_SECURITY_LIMITS;
 export const TAR_BLOCK_BYTES = 512;
-export const TAR_END_OF_ARCHIVE = Buffer.alloc(2 * TAR_BLOCK_BYTES);
+const TAR_END_OF_ARCHIVE_BYTES = 2 * TAR_BLOCK_BYTES;
 /** What 7-Zip may print to stderr on a run that succeeds; the stdout bound is exact and this is added on top. */
 const STDERR_ALLOWANCE_BYTES = 64 * 1024;
 export const DEFAULT_FILE_MODE = 0o644;
@@ -87,7 +87,15 @@ export interface StreamRunOptions {
   signal?: AbortSignal;
 }
 
-/** The converted tar, as the byte ranges to write in order. */
+/**
+ * The converted tar, as byte ranges to write in order. Read each range by its offset and length, never through its whole
+ * `buffer`.
+ *
+ * A range is memory this call allocated, a view of this call's input (`source.buffer`, which the caller owns, or the buffer
+ * `loadSource` reads a `source.filePath` into), or a view of the bytes this call unpacked, including the frame a sandboxed
+ * child wrote them into. The module keeps no memory between calls, so two results share bytes only where both view the same
+ * input. Copy a result before writing to it, and do not change the input while a result that views it is in use.
+ */
 export interface StreamedArchive {
   segments: Uint8Array[];
   skippedLinks: string[];
@@ -117,9 +125,17 @@ function blockPadding(length: number): number {
   return (TAR_BLOCK_BYTES - (length % TAR_BLOCK_BYTES)) % TAR_BLOCK_BYTES;
 }
 
+/**
+ * Padding as a slice of Node's allocation pool, because a `Buffer.alloc` per member costs measurably more on large tars
+ * (policy entry 111). The slice is zeroed because an unzeroed pool slice would carry other allocations' bytes into the tar.
+ */
 export function pushPadding(segments: Uint8Array[], length: number): void {
   const padding = blockPadding(length);
-  if (padding > 0) segments.push(TAR_END_OF_ARCHIVE.subarray(0, padding));
+  if (padding > 0) segments.push(Buffer.allocUnsafe(padding).fill(0));
+}
+
+export function pushEndOfArchive(segments: Uint8Array[]): void {
+  segments.push(Buffer.alloc(TAR_END_OF_ARCHIVE_BYTES));
 }
 
 export function memberNameFor(originalFilename: string): string {
@@ -131,7 +147,7 @@ export function memberNameFor(originalFilename: string): string {
 export function wrapAsMember(name: string, data: Buffer): Uint8Array[] {
   const segments: Uint8Array[] = [];
   pushFileMember(segments, name, data, DEFAULT_FILE_MODE, undefined);
-  segments.push(TAR_END_OF_ARCHIVE);
+  pushEndOfArchive(segments);
   return segments;
 }
 
@@ -174,11 +190,42 @@ export function tarFromEntries(entries: TarEntry[]): Uint8Array[] {
       throw new UnsafeArchiveError('special-entry', 'Archive contains a device, FIFO or socket entry.');
     }
   }
-  segments.push(TAR_END_OF_ARCHIVE);
+  pushEndOfArchive(segments);
   return segments;
 }
 
-export interface TarPolicyRequest {
+/**
+ * What GNU tar and Python's tarfile pad a tar to (20 blocks): the zeros after the end blocks of a tar the way those write
+ * it. The bytes `unpacked` has beyond the rewritten tar stay in place up to one record; more is attacker-sized slack.
+ */
+const TAR_RECORD_BYTES = 20 * TAR_BLOCK_BYTES;
+
+/**
+ * The segments of `tarFromEntries`, written over `unpacked` and returned as one view of it when every body is where the
+ * joined tar puts it and at most one record follows the tar. Otherwise the segments are returned as they are, and
+ * `unpacked` is not written, since the first pass only checks.
+ */
+function tarSegmentsOverUnpacked(unpacked: Buffer, entries: TarEntry[]): Uint8Array[] {
+  const segments = tarFromEntries(entries);
+  const start = unpacked.byteOffset;
+  const end = start + unpacked.length;
+  const isOldBody = (segment: Uint8Array): boolean => segment.buffer === unpacked.buffer && segment.byteOffset >= start && segment.byteOffset + segment.length <= end;
+  let position = 0;
+  for (const segment of segments) {
+    if (isOldBody(segment) && segment.byteOffset !== start + position) return segments;
+    position += segment.length;
+  }
+  const slack = unpacked.length - position;
+  if (slack < 0 || slack > TAR_RECORD_BYTES) return segments;
+  position = 0;
+  for (const segment of segments) {
+    if (!isOldBody(segment)) unpacked.set(segment, position);
+    position += segment.length;
+  }
+  return [unpacked.subarray(0, position)];
+}
+
+interface TarPolicyRequest {
   skipLinks?: boolean;
   collisionPolicy?: ArchiveCollisionPolicy;
 }
@@ -196,7 +243,7 @@ function unreadableTarError(err: unknown): Error {
  * links under `skipLinks`, devices, entry and size caps, collisions). What the reader did not read (data after the
  * end-of-archive blocks, bytes a different reader would interpret differently) is not in the result.
  */
-export function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request: TarPolicyRequest): { entries: TarEntry[]; skippedLinks: string[] } {
+function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request: TarPolicyRequest): { entries: TarEntry[]; skippedLinks: string[] } {
   let listing: ListedArchiveEntry[];
   try {
     listing = listTarEntries(tar);
@@ -217,6 +264,12 @@ export function readVettedPayloadTar(tar: Buffer, archiveBytes: number, request:
   }
 }
 
+/** Vets the tar in `unpacked` and returns it written again, in `unpacked` itself when the layout allows; the caller gives `unpacked` up. */
+function consumeUnpackedAsVettedTar(unpacked: Buffer, archiveBytes: number, request: TarPolicyRequest): StreamedArchive {
+  const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
+  return { segments: tarSegmentsOverUnpacked(unpacked, entries), skippedLinks };
+}
+
 /** The unpacked bytes are within the archive caps but would not fit the in-process budget: the disk pipeline serves the request. */
 class ExceedsMemoryBudget extends Error {}
 
@@ -232,7 +285,7 @@ export interface SevenZipRunOptions {
 }
 
 /** What 7-Zip wrote to stdout, and, when room was asked for, the buffer it sits in with that room around it. */
-interface SevenZipOutput {
+export interface SevenZipOutput {
   stdout: Buffer;
   frame?: Buffer;
   headroomBytes: number;
@@ -285,7 +338,7 @@ export async function streamToTar(request: StreamRunOptions & { compressor: Stre
       signal: request.signal,
       onLimit: () => (memoryBound < cap ? new ExceedsMemoryBudget() : unpackedBytesCapError(archiveBytes, LIMITS)),
       headroomBytes: memberHeaderBytes(memberName),
-      tailroomBytes: TAR_BLOCK_BYTES - 1 + TAR_END_OF_ARCHIVE.length,
+      tailroomBytes: TAR_BLOCK_BYTES - 1 + TAR_END_OF_ARCHIVE_BYTES,
     });
   } catch (err) {
     if (err instanceof ExceedsMemoryBudget) return null;
@@ -297,8 +350,7 @@ export async function streamToTar(request: StreamRunOptions & { compressor: Stre
   if (classifyUnpacked(unpacked) === 'plain') {
     return { segments: wrapInPlace(output, memberName), skippedLinks: [] };
   }
-  const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
-  return { segments: tarFromEntries(entries), skippedLinks };
+  return consumeUnpackedAsVettedTar(unpacked, archiveBytes, request);
 }
 
 const GZIP_TRAILER_BYTES = 8;
@@ -348,8 +400,7 @@ async function gzipToTar(request: StreamRunOptions, bounds: StreamBounds): Promi
   if (classifyUnpacked(unpacked) === 'plain') {
     return { segments: wrapAsMember(memberNameFor(request.originalFilename), unpacked), skippedLinks: [] };
   }
-  const { entries, skippedLinks } = readVettedPayloadTar(unpacked, archiveBytes, request);
-  return { segments: tarFromEntries(entries), skippedLinks };
+  return consumeUnpackedAsVettedTar(unpacked, archiveBytes, request);
 }
 
 /** Bytes of the header (with its extended header, if the name needs one) of a regular member of this name. */
@@ -359,16 +410,17 @@ function memberHeaderBytes(name: string): number {
 
 /**
  * A tar around one member whose bytes already sit in a buffer with room before and after them: the header, the padding
- * and the end marker are written into that room. Falls back to a copying wrap when the room does not fit the header.
+ * and the end marker are written into that room. It falls back to `wrapAsMember`, and writes nothing into the frame, when
+ * there is no frame or when the room is not exactly the header's length.
  */
-function wrapInPlace(output: SevenZipOutput, name: string): Uint8Array[] {
+export function wrapInPlace(output: SevenZipOutput, name: string): Uint8Array[] {
   const data = output.stdout;
   const header = buildTarEntryHeaders({ filename: name, size: data.length, directory: false, mode: DEFAULT_FILE_MODE, mtime: undefined });
   assertHeaderDeclaresSize(header, data.length);
   if (output.frame === undefined || header.length !== output.headroomBytes) return wrapAsMember(name, data);
   const padding = blockPadding(data.length);
   const bodyEnd = output.headroomBytes + data.length;
-  const tarEnd = bodyEnd + padding + TAR_END_OF_ARCHIVE.length;
+  const tarEnd = bodyEnd + padding + TAR_END_OF_ARCHIVE_BYTES;
   output.frame.fill(0, bodyEnd, tarEnd);
   header.copy(output.frame, 0);
   return [output.frame.subarray(0, tarEnd)];
@@ -473,7 +525,7 @@ export async function sevenZipToTar(request: StreamRunOptions): Promise<Streamed
     segments.push(buildTarEntryHeaders({ filename: name, size: data.length, mode: unixModeOf(file.attributes) ?? DEFAULT_FILE_MODE, mtime }), data);
     pushPadding(segments, data.length);
   });
-  segments.push(TAR_END_OF_ARCHIVE);
+  pushEndOfArchive(segments);
   return { segments, skippedLinks };
 }
 

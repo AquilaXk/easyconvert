@@ -2,7 +2,6 @@ import { pipeline } from 'node:stream/promises';
 import { createWriteStream } from 'node:fs';
 import zlib from 'node:zlib';
 import { ConversionFailedError, PayloadLimitError, UnsupportedOptionError } from '../types';
-import { crc32 } from './crc32';
 
 /**
  * Streaming ZIP writer (PKWARE APPNOTE 6.3.10): local headers, optional data descriptors, ZIP64 extra fields and end
@@ -272,7 +271,7 @@ export class ZipWriter {
     wantedMethod: number,
     level: number
   ): Promise<void> {
-    const crc = crc32(data);
+    const crc = zlib.crc32(data);
     let method = wantedMethod;
     let payload: Uint8Array = data;
     if (method === METHOD_DEFLATE && data.length > 0) {
@@ -342,7 +341,7 @@ export class ZipWriter {
     }
     async function* checksum(input: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
       for await (const chunk of input) {
-        crc = crc32(chunk, crc);
+        crc = zlib.crc32(chunk, crc);
         size += chunk.length;
         yield chunk;
       }

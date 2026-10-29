@@ -13,7 +13,6 @@ import {
   type ArchiveExtractionLimits,
   type ListedArchiveEntry,
 } from './archive-extraction-safety';
-import { crc32 } from './crc32';
 
 /**
  * Reads a ZIP archive from its central directory (PKWARE APPNOTE 6.3.x) and fails closed. The central directory is
@@ -269,7 +268,7 @@ function zip64Field(fields: ExtraField[] | null, what: string): ExtraField {
 function unicodePathOf(buf: Buffer, fields: ExtraField[] | null, rawName: Buffer): string | null {
   const field = (fields ?? []).find((candidate) => candidate.id === EXTRA_UNICODE_PATH);
   if (!field || field.end - field.start < 5 || buf[field.start] !== 1) return null;
-  if (buf.readUInt32LE(field.start + 1) !== crc32(rawName)) return null;
+  if (buf.readUInt32LE(field.start + 1) !== zlib.crc32(rawName)) return null;
   return buf.toString('utf8', field.start + 5, field.end);
 }
 
@@ -642,7 +641,7 @@ export async function readZipEntries(
       continue;
     }
     const bytes = await inflateEntry(buf.subarray(data.start, data.end), entry);
-    if (crc32(bytes) !== entry.crc) throw malformed(`'${entry.name}' does not match its CRC-32`);
+    if (zlib.crc32(bytes) !== entry.crc) throw malformed(`'${entry.name}' does not match its CRC-32`);
     files.push({ filename, isDirectory, buffer: bytes, mode: unixPermissionsOf(entry), mtimeMs: modifiedMsOf(entry) });
   }
   return files;

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import sharp from 'sharp';
 import { ConversionFailedError, OcrEngineUnavailableError, PayloadLimitError, UnsupportedOptionError } from '../types';
 import {
@@ -10,7 +11,6 @@ import {
   SandboxedProcessError,
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
-import { crc32 } from './crc32';
 import { assertInputPixels } from './image-input-limits';
 import { OCR_DEFAULT_DPI, OCR_MAX_DPI, OCR_MIN_RENDER_DPI } from './ocr-dpi';
 import { assertPdfJbig2WithinLimits } from './pdf-jbig2-guard';
@@ -80,7 +80,7 @@ function withPngDensity(png: Buffer, dpi: number): Buffer {
   chunk.writeUInt32BE(pixelsPerMetre, 8);
   chunk.writeUInt32BE(pixelsPerMetre, 12);
   chunk[16] = PHYS_UNIT_METRE;
-  chunk.writeUInt32BE(crc32(chunk.subarray(4, 17)), 17);
+  chunk.writeUInt32BE(zlib.crc32(chunk.subarray(4, 17)), 17);
   const afterHeader = PNG_SIGNATURE_BYTES + PNG_IHDR_CHUNK_BYTES;
   const parts: Buffer[] = [png.subarray(0, afterHeader), chunk];
   let offset = afterHeader;
