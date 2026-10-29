@@ -30,7 +30,9 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
-const READER_TIMEOUT_MS = 1000;
+const READER_TIMEOUT_MS = 3000;
+const READER_OUTPUT_LIMIT_BYTES = 1024 * 1024;
+const KILL_GRACE_MS = 5000;
 const LOCAL_HEADER = Buffer.from('PK\u0003\u0004', 'latin1');
 const CENTRAL_HEADER = Buffer.from('PK\u0001\u0002', 'latin1');
 const LOCAL_HEADER_BYTES = 30;
@@ -219,45 +221,68 @@ describe('a reference reader that fails', () => {
   it('is quoted beyond the length of a token of the file, so the tail that names the cause survives', async () => {
     const message = `identify: ${'a'.repeat(100)} @ error/png.c/ReadPNGImage/3962`;
     expect(message.length).toBeGreaterThan(MAX_SHOWN_CHARS);
-    expect(await problemOf(readerPrinting('long-reader', message))).toBe(`reference reader refused the output: ${message} (exit 1)`);
+    expect(await problemOf(readerPrinting('long-reader', message))).toBe(`reference reader refused the output by identify: ${message} (exit 1)`);
   });
 
   it('is cut at MAX_TOOL_MESSAGE_CHARS code points', async () => {
     const problem = await problemOf(readerPrinting('longer-reader', 'x'.repeat(MAX_TOOL_MESSAGE_CHARS * 2)));
-    expect(problem).toBe(`reference reader refused the output: ${'x'.repeat(MAX_TOOL_MESSAGE_CHARS)}... (exit 1)`);
+    expect(problem).toBe(`reference reader refused the output by identify: ${'x'.repeat(MAX_TOOL_MESSAGE_CHARS)}... (exit 1)`);
     const astral = await problemOf(readerPrinting('astral-reader', '\u{1F600}'.repeat(MAX_TOOL_MESSAGE_CHARS + 1)));
-    expect(astral).toBe(`reference reader refused the output: ${'\u{1F600}'.repeat(MAX_TOOL_MESSAGE_CHARS)}... (exit 1)`);
+    expect(astral).toBe(`reference reader refused the output by identify: ${'\u{1F600}'.repeat(MAX_TOOL_MESSAGE_CHARS)}... (exit 1)`);
   });
 
   it('quotes the first line of stderr and the exit status, not the lines after it', async () => {
     const reader = readerScript('multi-line-reader', "printf 'cannot read the image\\nsecond line is not the cause\\n' >&2\nexit 2");
-    expect(await problemOf(reader)).toBe('reference reader refused the output: cannot read the image (exit 2)');
+    expect(await problemOf(reader)).toBe('reference reader refused the output by identify: cannot read the image (exit 2)');
   });
 
   it('skips a blank first line of stderr', async () => {
     const reader = readerScript('blank-first-reader', "printf '\\n  \\nthe cause\\n' >&2\nexit 1");
-    expect(await problemOf(reader)).toBe('reference reader refused the output: the cause (exit 1)');
+    expect(await problemOf(reader)).toBe('reference reader refused the output by identify: the cause (exit 1)');
   });
 
   it('gives the exit status alone when the reader exits non-zero and prints nothing', async () => {
-    expect(await problemOf(readerScript('silent-reader', 'exit 3'))).toBe('reference reader refused the output: exit 3');
+    expect(await problemOf(readerScript('silent-reader', 'exit 3'))).toBe('reference reader refused the output by identify: exit 3');
   });
 
   it('gives the signal when the reader is killed, with or without a line of stderr', async () => {
-    expect(await problemOf(readerScript('killed-reader', 'kill -KILL $$'))).toBe('reference reader refused the output: signal SIGKILL');
+    expect(await problemOf(readerScript('killed-reader', 'kill -KILL $$'))).toBe('reference reader refused the output by identify: signal SIGKILL');
     const noisy = readerScript('noisy-killed-reader', "printf 'decoding\\n' >&2\nkill -KILL $$");
-    expect(await problemOf(noisy)).toBe('reference reader refused the output: decoding (signal SIGKILL)');
+    expect(await problemOf(noisy)).toBe('reference reader refused the output by identify: decoding (signal SIGKILL)');
   });
 
   it('says it timed out, with the first line of stderr when there is one', async () => {
-    expect(await problemOf(readerScript('sleeping-reader', 'exec sleep 30'), READER_TIMEOUT_MS)).toBe('reference reader timed out');
+    expect(await problemOf(readerScript('sleeping-reader', 'exec sleep 30'), READER_TIMEOUT_MS)).toBe('reference reader identify timed out');
     const noisy = readerScript('noisy-sleeping-reader', "printf 'still decoding\\n' >&2\nexec sleep 30");
-    expect(await problemOf(noisy, READER_TIMEOUT_MS)).toBe('reference reader timed out: still decoding');
+    expect(await problemOf(noisy, READER_TIMEOUT_MS)).toBe('reference reader identify timed out: still decoding');
+  }, 4 * READER_TIMEOUT_MS);
+
+  it('accepts the output of a reader that prints more than 1 MiB to stdout and exits 0, as the gate never reads stdout', async () => {
+    const reader = readerScript('loud-stdout-reader', 'head -c 2097152 /dev/zero | tr "\\0" "x"\nexit 0');
+    expect(await problemOf(reader)).toBeNull();
+  });
+
+  it('says the reader printed too much to stderr when it passes 1 MiB there', async () => {
+    const reader = readerScript('loud-stderr-reader', 'head -c 2097152 /dev/zero | tr "\\0" "x" >&2\nexit 0');
+    expect(await problemOf(reader)).toBe(`reference reader identify printed more than ${READER_OUTPUT_LIMIT_BYTES} bytes to stderr`);
+  });
+
+  it('says the reader did not run, with the error code, when the file cannot be executed', async () => {
+    const plain = path.join(WORK_DIR, 'not-executable-reader');
+    fs.writeFileSync(plain, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+    expect(await problemOf(plain)).toBe(`reference reader identify did not run: EACCES ${plain}`);
+  });
+
+  it('ends a reader that ignores SIGTERM at the timeout', async () => {
+    const reader = readerScript('stubborn-reader', "trap '' TERM\nexec sleep 30");
+    const started = Date.now();
+    expect(await problemOf(reader, 500)).toBe('reference reader identify timed out');
+    expect(Date.now() - started).toBeLessThan(500 + KILL_GRACE_MS);
   });
 
   it('says it did not run, with its path, when the reader is missing', async () => {
     const missing = path.join(WORK_DIR, 'no-such-reader');
-    expect(await problemOf(missing)).toBe(`reference reader did not run: ${missing} not found`);
+    expect(await problemOf(missing)).toBe(`reference reader identify did not run: ENOENT ${missing}`);
   });
 });
 
@@ -265,7 +290,7 @@ describe('a page archive', () => {
   const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
   const archiveProblem = (archive: Buffer) => outputProblem(archive, 'png', WORK_DIR, { pdfinfo: '', identify: '', mimeType: ZIP_MIME });
 
-  it('is refused when the CRC-32 of a page is wrong', async () => {
+  it('is refused when the CRC-32 of a page is wrong in the central directory, the only copy checked', async () => {
     const archive = await zipOf({ 'doc-1.png': PNG });
     expect(await archiveProblem(archive)).toBeNull();
     expect(await archiveProblem(withCentralCrcDamaged(archive))).toBe('png page archive has an entry whose CRC-32 is wrong');
@@ -364,7 +389,7 @@ describe('an OBJ delivered as a ZIP', () => {
     expect(await check(refused, { mimeType: ZIP_MIME })).toMatch(/is not letters, digits/);
   });
 
-  it('is refused when the CRC-32 of its entries is wrong, and accepted when it is right', async () => {
+  it('is refused when the CRC-32 of its entries is wrong in the central directory, the only copy checked, and accepted when it is right', async () => {
     const archive = await createDeflatedZipBuffer([
       { name: 'part.obj', data: Buffer.from(OBJ.toString().replace('x.mtl', 'part.mtl')) },
       { name: 'part.mtl', data: MTL },
