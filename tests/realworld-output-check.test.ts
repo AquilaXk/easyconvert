@@ -1,5 +1,7 @@
+import os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
+import { readObj } from '../bench/realworld/obj-mtl';
 import { outputProblem } from '../bench/realworld/output-check';
 import { convertCadWithOcct } from '../src/lib/conversions/cad-occt';
 import { createDeflatedZipBuffer } from '../src/lib/conversions/zip-writer';
@@ -15,7 +17,8 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
-const NO_WORK_DIR = '';
+const WORK_DIR = os.tmpdir();
+const GENEROUS_TIME_GUARD_MS = 1_000;
 const OBJ = Buffer.from('# model\nmtllib x.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Mat_1\nf 1 2 3\n');
 const MTL = Buffer.from(
   '# Exported by Open CASCADE Technology [dev.opencascade.org]\nnewmtl Mat_1\nKa 0.200000 0.025000 0.025000\nKd 0.800000 0.100000 0.100000\nKs 0.000000 0.000000 0.000000\nNs 0.000000\nTr 0.500000\n'
@@ -34,14 +37,13 @@ async function zipOf(files: Record<string, Buffer | string>): Promise<Buffer> {
 }
 
 function check(buffer: Buffer, { mimeType, emptyInput }: { mimeType?: string; emptyInput?: boolean } = {}): Promise<string | null> {
-  return outputProblem(buffer, 'obj', NO_WORK_DIR, { pdfinfo: '', identify: '', mimeType, emptyInput });
+  return outputProblem(buffer, 'obj', WORK_DIR, { pdfinfo: '', identify: '', mimeType, emptyInput });
 }
 
 describe('a plain OBJ', () => {
   it.each([
     ['the form cad-convert writes for a model with no colour', '# Wavefront OBJ, coordinates in mm\nv 0 0 0\nv 1.5e-3 0 0\nv 0 -1 0\nf 1 2 3\nf -3 -2 -1\n'],
-    ['the form the kernel writes, with normals, texture coordinates and groups', 'g part\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nvt 0 0\nvt 1 0\nvt 0 1\nusemtl\nf 1/1/1 2/2/1 3/3/1\nf 1//1 2//1 3//1\nf 1/1 2/2 3/3\n'],
-    ['the form the pure engine writes', '# Wavefront OBJ\no model\n\nv 0 0 0\nv 1 0 0\nv 0 1 0\n\nvn 0 0 1\nvn 0 0 1\nvn 0 0 1\n\nf 1//1 2//2 3//3\n'],
+    ['the form the pure engine writes with normals', '# Wavefront OBJ\no model\n\nv 0 0 0\nv 1 0 0\nv 0 1 0\n\nvn 0 0 1\nvn 0 0 1\nvn 0 0 1\n\nf 1//1 2//2 3//3\n'],
     ['a quad, a vertex with a weight and Windows line ends', 'v 0 0 0 1\r\nv 1 0 0\r\nv 1 1 0\r\nv 0 1 0\r\nf 1 2 3 4\r\n'],
   ])('is accepted in %s', async (_name, text) => {
     expect(await check(Buffer.from(text))).toBeNull();
@@ -59,14 +61,27 @@ describe('a plain OBJ', () => {
     ['a face index that is not an integer', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 1.5\n', /unrecognised token 1\.5/],
     ['a face corner that is not a number', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 abc\n', /unrecognised token abc in corner abc/],
     ['corners written in different forms', TRIANGLE + 'vn 0 0 1\nf 1//1 2//1 3\n', /corner 3 is written as v, the first corner as v\/\/vn/],
-    ['a corner with a slash and no texture index', TRIANGLE + 'f 1/ 2/ 3/\n', /corner 1\/ has an empty index/],
-    ['a corner with a slash and no normal index', TRIANGLE + 'vt 0 0\nf 1/1/ 2/1/ 3/1/\n', /has an empty index/],
+    ['a corner with a slash and no texture index', TRIANGLE + 'f 1/ 2/ 3/\n', /corner 1\/ is not written as v or v\/\/vn/],
+    ['a corner with a slash and no normal index', TRIANGLE + 'vn 0 0 1\nf 1// 2// 3//\n', /corner 1\/\/ has an empty index/],
+    ['a corner with a texture index, which neither writer emits', TRIANGLE + 'f 1/1 2/2 3/3\n', /corner 1\/1 is not written as v or v\/\/vn/],
+    ['a corner with a texture and a normal index, which neither writer emits', TRIANGLE + 'vn 0 0 1\nf 1/1/1 2/2/1 3/3/1\n', /corner 1\/1\/1 is not written as v or v\/\/vn/],
+    ['a texture coordinate, which neither writer emits', TRIANGLE + 'vt 0 0\nf 1 2 3\n', /statement vt is not one the converter writes/],
+    ['a group, which neither writer emits', 'g part\n' + PLAIN_OBJ, /statement g is not one the converter writes/],
+    ['a bare usemtl, which neither writer emits', TRIANGLE + 'usemtl\nf 1 2 3\n', /usemtl needs exactly one name, not 0/],
     ['a normal index past the normals', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf 1//1 2//1 3//2\n', /normal index 2 is not within the 1 normals/],
     ['a face of two corners', 'v 0 0 0\nv 1 0 0\nf 1 2\n', /at least three corners/],
     ['a vertex that is not a number', 'v 0 0 nan\nv 1 0 0\nv 0 1 0\nf 1 2 3\n', /vertex needs three or four numbers/],
     ['a statement the writers do not emit', 'v 0 0 0\nv 1 0 0\nv 0 1 0\ncstype bspline\nf 1 2 3\n', /statement cstype is not one the converter writes/],
     ['an mtllib line, whose material file comes only in a ZIP', 'mtllib a.mtl\n' + PLAIN_OBJ, /names material file a\.mtl, which comes only in a ZIP/],
     ['a named usemtl, whose material file comes only in a ZIP', TRIANGLE + 'usemtl Mat_1\nf 1 2 3\n', /uses material Mat_1, whose material file comes only in a ZIP/],
+    ['a usemtl with two names', TRIANGLE + 'usemtl Mat_1 Mat_2\nf 1 2 3\n', /usemtl needs exactly one name, not 2/],
+    ['a usemtl with two names and a double space', TRIANGLE + 'usemtl A  B\nf 1 2 3\n', /usemtl needs exactly one name, not 2/],
+    ['an mtllib with two names', 'mtllib x.mtl y.mtl\n' + PLAIN_OBJ, /mtllib needs exactly one name, not 2/],
+    ['an mtllib with no name', 'mtllib\n' + PLAIN_OBJ, /mtllib needs exactly one name, not 0/],
+    ['a second mtllib line', 'mtllib x.mtl\nmtllib y.mtl\n' + PLAIN_OBJ, /line 2: a second mtllib line/],
+    ['a usemtl name with a slash', TRIANGLE + 'usemtl a/b\nf 1 2 3\n', /usemtl name a\/b is not letters, digits/],
+    ['an mtllib name with a slash', 'mtllib ../x.mtl\n' + PLAIN_OBJ, /mtllib name \.\.\/x\.mtl is not letters, digits/],
+    ['a usemtl name over 255 characters', TRIANGLE + `usemtl ${'m'.repeat(256)}\nf 1 2 3\n`, /usemtl name m{40}\.\.\. is not letters, digits/],
     ['the form cad-convert writes for a model with colours, which is a ZIP', OBJ.toString(), /names material file x\.mtl, which comes only in a ZIP/],
     ['an executable', '\u007fELF\u0002\u0001\u0001\u0000 binary', /not readable/],
   ])('is refused with %s', async (_name, text, reason) => {
@@ -84,6 +99,57 @@ describe('a plain OBJ', () => {
   });
 });
 
+describe('a hostile OBJ', () => {
+  const MIB = 1024 * 1024;
+
+  it('is refused at a digit run that no number pattern may backtrack over, in milliseconds', async () => {
+    for (const digits of [80_000, 5_000, 60]) {
+      const started = performance.now();
+      const problem = await check(Buffer.from(`v 0 0 ${'1'.repeat(digits)}x\nv 1 0 0\nv 0 1 0\nf 1 2 3\n`));
+      expect(problem).toMatch(/^obj is not readable, line 1: /);
+      expect(performance.now() - started).toBeLessThan(GENEROUS_TIME_GUARD_MS);
+    }
+  });
+
+  it('is refused at a number longer than a number may be, and a long number of the right form is refused, but a short one is read', async () => {
+    expect(await check(Buffer.from(`v 0 0 ${'1'.repeat(65)}\nv 1 0 0\nv 0 1 0\nf 1 2 3\n`))).toMatch(/line 1: a vertex needs three or four numbers/);
+    expect(await check(Buffer.from(`v 0 0 0.${'1'.repeat(40)}e-5\nv 1 0 0\nv 0 1 0\nf 1 2 3\n`))).toBeNull();
+  });
+
+  it.each([
+    ['a plain', (n: number) => Buffer.alloc(n, 'a')],
+    ['a spaced', (n: number) => Buffer.from(`v ${'1 '.repeat(n / 2)}`.slice(0, n))],
+  ])('is refused for %s line of 1 MiB before it is decoded, with a short message', async (_name, line) => {
+    const problem = await check(line(MIB));
+    expect(problem).toBe(`obj is not readable, line 1: ${MIB} bytes is over the 8192 byte line limit`);
+  });
+
+  it('is refused at the line number of a long line, and a line at the limit is read', async () => {
+    expect(await check(Buffer.from(`${PLAIN_OBJ}# ${'c'.repeat(8190)}\n`))).toBeNull();
+    expect(await check(Buffer.from(`${PLAIN_OBJ}# ${'c'.repeat(8191)}\n`))).toMatch(/line 5: 8193 bytes is over the 8192 byte line limit/);
+  });
+
+  it('is refused with a message that quotes at most 40 characters of a token and no control byte', async () => {
+    const keyword = await check(Buffer.from(`${'k'.repeat(3000)} 1\n`));
+    expect(keyword).toBe(`obj is not readable, line 1: statement ${'k'.repeat(40)}... is not one the converter writes`);
+    const zip = await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': MTL }));
+    expect(zip).toMatch(/^obj is not readable, line 1: statement PK/);
+    expect(zip).not.toMatch(/\p{Cc}/u);
+    expect(zip?.length).toBeLessThan(200);
+  });
+
+  it('is refused for more distinct materials than the writers can make, in the OBJ and in the MTL', async () => {
+    let usemtl = '';
+    let newmtl = '';
+    for (let i = 0; i <= 100_000; i++) {
+      usemtl += `usemtl m${i}\nf 1 2 3\n`;
+      newmtl += `newmtl m${i}\nKd 1 1 1\n`;
+    }
+    expect(await check(Buffer.from(TRIANGLE + usemtl))).toMatch(/the OBJ names more than 100000 materials/);
+    expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': newmtl }), { mimeType: ZIP_MIME })).toMatch(/the MTL defines more than 100000 materials/);
+  });
+});
+
 describe('an OBJ delivered as a ZIP', () => {
   it('is accepted when createDeflatedZipBuffer, the writer convertCadWithOcct builds its archive with, wrote it', async () => {
     const archive = await createDeflatedZipBuffer([
@@ -97,10 +163,10 @@ describe('an OBJ delivered as a ZIP', () => {
     expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': MTL }), { mimeType: ZIP_MIME })).toBeNull();
   });
 
-  it('is accepted when two materials each take faces, faces come before the first usemtl, and the file name holds a space', async () => {
-    const obj = `mtllib my model.mtl\n${TRIANGLE}v 1 1 0\nf 1 2 3\nusemtl Mat_1\nf 1 2 3\nusemtl Red paint\nf 2 4 3\nusemtl Mat_2\nf -4 -3 -1\n`;
-    const mtl = `${MTL}newmtl Red paint\nKd 1 0 0\nnewmtl Mat_2\nKd 0 1 0\nTr 0\nNs 1000\n`;
-    expect(await check(await zipOf({ 'my model.obj': obj, 'my model.mtl': mtl }), { mimeType: ZIP_MIME })).toBeNull();
+  it('is accepted when two materials each take faces and faces come before the first usemtl', async () => {
+    const obj = `mtllib my_model-1.mtl\n${TRIANGLE}v 1 1 0\nf 1 2 3\nusemtl Mat_1\nf 1 2 3\nusemtl Red.paint\nf 2 4 3\nusemtl Mat_2\nf -4 -3 -1\n`;
+    const mtl = `${MTL}newmtl Red.paint\nKd 1 0 0\nnewmtl Mat_2\nKd 0 1 0\nTr 0\nNs 1000\n`;
+    expect(await check(await zipOf({ 'my_model-1.obj': obj, 'my_model-1.mtl': mtl }), { mimeType: ZIP_MIME })).toBeNull();
   });
 
   it.each([
@@ -114,11 +180,21 @@ describe('an OBJ delivered as a ZIP', () => {
     ['a Ks channel below 0', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nKs -0.1 0 0\n' }, /Ks -0\.1 0 0 has a channel outside 0 to 1/],
     ['a Tr outside 0 to 1', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nTr 5\n' }, /Tr 5 is outside 0 to 1/],
     ['a negative Ns', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nNs -1\n' }, /Ns -1 is negative/],
-    ['an Ns that is not finite', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nNs 1e999\n' }, /Ns needs one number/],
+    ['an Ns that is not finite', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nNs 1e999\n' }, /Ns 1e999 is not a finite number/],
+    ['an Ns that is not a number', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nNs high\n' }, /Ns needs one number/],
+    ['a Kd given twice for one material', { 'x.obj': OBJ, 'x.mtl': `${MTL}Kd 0 0 1\n` }, /line 8: Kd is given twice for material Mat_1/],
+    ['a Ka given twice for one material', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKa 0 0 0\nKa 1 1 1\nKd 1 1 1\n' }, /Ka is given twice for material Mat_1/],
+    ['a Tr given twice for one material', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nTr 0\nTr 0.5\n' }, /Tr is given twice/],
+    ['a Ns given twice for one material', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nNs 0\nNs 5\n' }, /Ns is given twice/],
+    ['a newmtl with two names', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1 Mat_2\nKd 1 1 1\n' }, /newmtl needs exactly one name, not 2/],
+    ['a newmtl with no name', { 'x.obj': OBJ, 'x.mtl': 'newmtl\nKd 1 1 1\n' }, /newmtl needs exactly one name, not 0/],
+    ['a newmtl name with a slash', { 'x.obj': OBJ, 'x.mtl': 'newmtl a/b\nKd 1 1 1\n' }, /newmtl name a\/b is not letters, digits/],
     ['a usemtl that the MTL file does not define', { 'x.obj': OBJ, 'x.mtl': 'newmtl Other\nKd 1 1 1\n' }, /uses material Mat_1, which x\.mtl does not define/],
     ['an MTL file that no mtllib line names', { 'x.obj': OBJ.toString().replace('mtllib x.mtl\n', ''), 'x.mtl': MTL }, /x\.mtl is not named by an mtllib line/],
     ['an MTL file that the mtllib line names under another name', { 'x.obj': OBJ, 'y.mtl': MTL }, /names material file x\.mtl, which the archive lacks/],
-    ['an mtllib line that names a second file the archive lacks', { 'x.obj': OBJ.toString().replace('mtllib x.mtl', 'mtllib x.mtl y.mtl'), 'x.mtl': MTL }, /names material file x\.mtl y\.mtl, which the archive lacks/],
+    ['an mtllib line that names a second file', { 'x.obj': OBJ.toString().replace('mtllib x.mtl', 'mtllib x.mtl y.mtl'), 'x.mtl': MTL }, /mtllib needs exactly one name, not 2/],
+    ['a second mtllib line', { 'x.obj': OBJ.toString().replace('mtllib x.mtl', 'mtllib x.mtl\nmtllib x.mtl'), 'x.mtl': MTL }, /line 3: a second mtllib line/],
+    ['a usemtl with two names, whatever the MTL file defines', { 'x.obj': OBJ.toString().replace('usemtl Mat_1', 'usemtl A B'), 'x.mtl': 'newmtl A_B\nKd 1 1 1\n' }, /model x\.obj: obj is not readable, line 6: usemtl needs exactly one name, not 2/],
     ['a folder entry', { 'x.obj': OBJ, 'x.mtl': MTL, 'docs/': '' }, /holds the folder docs\//],
     ['no MTL file', { 'x.obj': OBJ }, /holds 0 \.mtl files, not one/],
     ['two MTL files', { 'x.obj': OBJ, 'x.mtl': MTL, 'y.mtl': MTL }, /holds 2 \.mtl files, not one/],
@@ -144,6 +220,22 @@ describe('an OBJ delivered as a ZIP', () => {
 
   it('is refused for a zero-byte OBJ entry even when the corpus marks the input as having no content', async () => {
     expect(await check(await zipOf({ 'x.obj': Buffer.alloc(0), 'x.mtl': MTL }), { mimeType: ZIP_MIME, emptyInput: true })).toBe('model x.obj: empty output');
+  });
+
+  it('is refused when an entry name is repeated, though JSZip would show one entry for the two', async () => {
+    const archive = await createDeflatedZipBuffer([
+      { name: 'x.obj', data: OBJ },
+      { name: 'x.obj', data: OBJ },
+      { name: 'x.mtl', data: MTL },
+    ]);
+    expect((await JSZip.loadAsync(archive)).file(/\.obj$/)).toHaveLength(1);
+    expect(await check(archive, { mimeType: ZIP_MIME })).toBe('obj archive declares 3 entries but holds 2 distinct names, so an entry name is repeated');
+  });
+
+  it('is refused with an entry name cut to 40 characters', async () => {
+    expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': MTL, [`${'n'.repeat(300)}.txt`]: 'hello' }), { mimeType: ZIP_MIME })).toBe(
+      `obj archive holds an unexpected entry ${'n'.repeat(40)}...`
+    );
   });
 
   it('is refused when the bytes are not a ZIP, and when the output is empty', async () => {
@@ -175,6 +267,23 @@ describe('the helpers that read an OBJ and an MTL file back in tests', () => {
 
   it('throw for an OBJ the gate refuses instead of reading it another way', () => {
     expect(() => objMaterialAreas(Buffer.from(`${TRIANGLE}f 1 2 4\n`))).toThrow(/vertex index 4/);
+  });
+
+  it('keep no vertex and no face in the reading the gate takes, only the materials', () => {
+    const reading = readObj(OBJ);
+    expect(reading).toEqual({ ok: true, mtllib: 'x.mtl', usedMaterials: ['Mat_1'], facedMaterials: new Set(['Mat_1']) });
+    expect(Object.keys(reading).sort()).toEqual(['facedMaterials', 'mtllib', 'ok', 'usedMaterials']);
+  });
+
+  it('give the vertices and the faces with their materials to an observer, negative indices resolved', () => {
+    const faces: Array<[string, readonly number[]]> = [];
+    let vertices = 0;
+    readObj(Buffer.from(`${TRIANGLE}f 1 2 3\nusemtl Mat_1\nf -1 -2 -3\n`), { onVertex: () => vertices++, onFace: (material, corners) => faces.push([material, corners]) });
+    expect(vertices).toBe(3);
+    expect(faces).toEqual([
+      ['', [0, 1, 2]],
+      ['Mat_1', [2, 1, 0]],
+    ]);
   });
 
   it('read the Kd of each material, null for a material without one, and leave the vocabulary and the ranges to the gate', () => {

@@ -9,15 +9,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { isFormatCompatibleWithMagicBytes } from '../../src/lib/registry';
-import { readMtl, readObj, type ObjReading } from './obj-mtl';
+import { hasExtension, readMtl, readObj, shown, type ObjScan } from './obj-mtl';
 
 const VALIDATOR_TIMEOUT_MS = 60_000;
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico', 'psd']);
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
 export const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'odd', 'dxf', 'emf', 'wmf']);
 const ZIP_MIME_TYPE = 'application/zip';
-const OBJ_NAME = /\.obj$/i;
-const MTL_NAME = /\.mtl$/i;
+const END_RECORD_SIGNATURE = 0x06054b50;
+const END_RECORD_BYTES = 22;
+const END_RECORD_MAX_COMMENT_BYTES = 0xffff;
 const PACKAGE_PARTS: Readonly<Record<string, string>> = {
   docx: '[Content_Types].xml',
   xlsx: '[Content_Types].xml',
@@ -44,7 +45,7 @@ export interface OutputCheckOptions {
 }
 
 type ArchiveEntries = { entries: JSZip.JSZipObject[]; folders: JSZip.JSZipObject[] } | { problem: string };
-type ObjModel = { problem: string } | { reading: Extract<ObjReading, { ok: true }> };
+type ObjModel = { problem: string } | { reading: ObjScan };
 
 /** The files and the folders of a ZIP, or why `label` is not a readable ZIP. */
 async function archiveEntries(buffer: Buffer, label: string): Promise<ArchiveEntries> {
@@ -65,6 +66,25 @@ async function pageArchiveProblem(buffer: Buffer, target: string, workDir: strin
   return null;
 }
 
+/**
+ * The number of entries the end-of-central-directory record declares (PKWARE APPNOTE 4.3.16, total entries at offset 10), found as zip readers do by
+ * looking back from the end for the signature whose comment length reaches the end of the buffer; null when no such record exists.
+ */
+function declaredEntryCount(buffer: Buffer): number | null {
+  const last = buffer.length - END_RECORD_BYTES;
+  for (let at = last; at >= Math.max(0, last - END_RECORD_MAX_COMMENT_BYTES); at--) {
+    if (buffer.readUInt32LE(at) === END_RECORD_SIGNATURE && at + END_RECORD_BYTES + buffer.readUInt16LE(at + 20) === buffer.length) return buffer.readUInt16LE(at + 10);
+  }
+  return null;
+}
+
+/** JSZip keeps one entry per name, so an archive that repeats a name shows fewer entries than its central directory declares. */
+function repeatedNameProblem(buffer: Buffer, distinctNames: number): string | null {
+  const declared = declaredEntryCount(buffer);
+  if (declared === null) return 'obj archive has no end-of-central-directory record';
+  return declared === distinctNames ? null : `obj archive declares ${declared} entries but holds ${distinctNames} distinct names, so an entry name is repeated`;
+}
+
 /** The OBJ read by the line reader (see obj-mtl.ts), or why the bytes are not a readable OBJ. The reader refuses everything that is not text of the OBJ vocabulary, executables and other formats included. */
 function readableObj(buffer: Buffer): ObjModel {
   if (buffer.length === 0) return { problem: 'empty output' };
@@ -74,31 +94,30 @@ function readableObj(buffer: Buffer): ObjModel {
 
 /**
  * Why a plain OBJ is refused for the material lines it holds: convertCadWithOcct returns a bare OBJ only when the model has no colour, and then
- * neither writer puts `mtllib` or a named `usemtl` in it. A bare `usemtl`, which the kernel writer emits, names nothing.
+ * neither writer puts `mtllib` or `usemtl` in it.
  */
-function plainObjMaterialProblem(reading: Extract<ObjReading, { ok: true }>): string | null {
-  if (reading.mtllibs.length > 0) return `obj names material file ${reading.mtllibs[0]}, which comes only in a ZIP with the OBJ`;
+function plainObjMaterialProblem(reading: ObjScan): string | null {
+  if (reading.mtllib !== null) return `obj names material file ${shown(reading.mtllib)}, which comes only in a ZIP with the OBJ`;
   const [material] = reading.usedMaterials;
-  if (material !== undefined) return `obj uses material ${material}, whose material file comes only in a ZIP with the OBJ`;
+  if (material !== undefined) return `obj uses material ${shown(material)}, whose material file comes only in a ZIP with the OBJ`;
   return null;
 }
 
 /**
  * Why the OBJ and the MTL file of an archive do not belong together, or null. Both directions are checked, as the writer creates every material from
- * a face it then writes, with a `Kd`: the `mtllib` names are the MTL file and nothing else, every `usemtl` material is defined by a `newmtl`, at
+ * a face it then writes, with a `Kd`: the `mtllib` line names the MTL file, every `usemtl` material is defined by a `newmtl`, at
  * least one material is taken by a face, every `newmtl` is taken by one, and each of them has a `Kd`.
  */
-function objMaterialProblem(reading: Extract<ObjReading, { ok: true }>, materialFile: string, materials: ReadonlyMap<string, unknown>): string | null {
-  const missing = reading.mtllibs.find((name) => name !== materialFile);
-  if (missing !== undefined) return `obj names material file ${missing}, which the archive lacks`;
-  if (!reading.mtllibs.includes(materialFile)) return `material file ${materialFile} is not named by an mtllib line`;
-  const undefinedMaterial = [...reading.usedMaterials].find((name) => !materials.has(name));
-  if (undefinedMaterial !== undefined) return `obj uses material ${undefinedMaterial}, which ${materialFile} does not define`;
+function objMaterialProblem(reading: ObjScan, materialFile: string, materials: ReadonlyMap<string, unknown>): string | null {
+  if (reading.mtllib === null) return `material file ${shown(materialFile)} is not named by an mtllib line`;
+  if (reading.mtllib !== materialFile) return `obj names material file ${shown(reading.mtllib)}, which the archive lacks`;
+  const undefinedMaterial = reading.usedMaterials.find((name) => !materials.has(name));
+  if (undefinedMaterial !== undefined) return `obj uses material ${shown(undefinedMaterial)}, which ${shown(materialFile)} does not define`;
   if (reading.facedMaterials.size === 0) return 'no face of the obj takes a material, so the model loads as a flat grey mesh';
   const unused = [...materials.keys()].find((name) => !reading.facedMaterials.has(name));
-  if (unused !== undefined) return `${materialFile} defines material ${unused}, which no face of the obj takes`;
+  if (unused !== undefined) return `${shown(materialFile)} defines material ${shown(unused)}, which no face of the obj takes`;
   const withoutKd = [...reading.facedMaterials].find((name) => materials.get(name) === null);
-  if (withoutKd !== undefined) return `material ${withoutKd} has no Kd, so its faces have no colour`;
+  if (withoutKd !== undefined) return `material ${shown(withoutKd)} has no Kd, so its faces have no colour`;
   return null;
 }
 
@@ -111,19 +130,21 @@ async function objArchiveProblem(buffer: Buffer): Promise<string | null> {
   const archive = await archiveEntries(buffer, 'obj archive');
   if ('problem' in archive) return archive.problem;
   const { entries, folders } = archive;
+  const repeated = repeatedNameProblem(buffer, entries.length + folders.length);
+  if (repeated !== null) return repeated;
   const nested = entries.find((entry) => /[/\\]/.test(entry.name));
-  if (nested !== undefined) return `obj archive entry ${nested.name} is not at the archive root`;
-  if (folders.length > 0) return `obj archive holds the folder ${folders[0].name}`;
-  const objects = entries.filter((entry) => OBJ_NAME.test(entry.name));
-  const materials = entries.filter((entry) => MTL_NAME.test(entry.name));
+  if (nested !== undefined) return `obj archive entry ${shown(nested.name)} is not at the archive root`;
+  if (folders.length > 0) return `obj archive holds the folder ${shown(folders[0].name)}`;
+  const objects = entries.filter((entry) => hasExtension(entry.name, 'obj'));
+  const materials = entries.filter((entry) => hasExtension(entry.name, 'mtl'));
   if (objects.length !== 1) return `obj archive holds ${objects.length} .obj files, not one`;
   if (materials.length !== 1) return `obj archive holds ${materials.length} .mtl files, not one`;
   const extra = entries.find((entry) => entry !== objects[0] && entry !== materials[0]);
-  if (extra !== undefined) return `obj archive holds an unexpected entry ${extra.name}`;
+  if (extra !== undefined) return `obj archive holds an unexpected entry ${shown(extra.name)}`;
   const model = readableObj(await objects[0].async('nodebuffer'));
-  if ('problem' in model) return `model ${objects[0].name}: ${model.problem}`;
+  if ('problem' in model) return `model ${shown(objects[0].name)}: ${model.problem}`;
   const library = readMtl(await materials[0].async('nodebuffer'));
-  if (!library.ok) return `material file ${materials[0].name}: ${library.problem}`;
+  if (!library.ok) return `material file ${shown(materials[0].name)}: ${library.problem}`;
   return objMaterialProblem(model.reading, materials[0].name, library.materials);
 }
 

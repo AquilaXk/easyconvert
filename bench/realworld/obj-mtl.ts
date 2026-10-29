@@ -2,117 +2,137 @@
  * Line reader for the OBJ and MTL files that the CAD conversions write, shared by the real-world output check and the tests that read a colour back.
  *
  * Statement grammar: the Wavefront OBJ and MTL specifications (Paul Bourke's file format notes). A line is blank, a `#` comment, or a keyword
- * followed by whitespace-separated fields; vertex, texture and normal indices of a face are 1-based, and a negative index counts back from the last one
- * defined so far. A material set by `usemtl` applies to the faces that follow it, until the next `usemtl`. The MTL colours `Ka`, `Kd` and `Ks` are RGB
- * in 0 to 1, `Tr` is a transparency in 0 to 1 and `Ns` is a specular exponent, never negative.
+ * followed by whitespace-separated fields; vertex and normal indices of a face are 1-based, and a negative index counts back from the last one
+ * defined so far. A material set by `usemtl` applies to the faces that follow it, until the next `usemtl`. The MTL colours `Ka`, `Kd` and `Ks`
+ * are RGB in 0 to 1, `Tr` is a transparency in 0 to 1 and `Ns` is a specular exponent, never negative.
  *
- * Vocabulary: what the writers in this repository emit, nothing else.
- * - OBJ: `native/cad-convert/cad-convert.cpp` writeObj writes `#`, `mtllib`, `v`, `usemtl` and `f` with plain vertex indices. The Open CASCADE
- *   writer (RWObj_ObjWriterContext.cxx, V7_8_1, lines 118-286) also writes `vn`, `vt`, `g`, a bare `usemtl`, and the `v/vt/vn`, `v//vn` and `v/vt` face forms. The
- *   pure engine (src/lib/edge/pure/pure-cad.ts encodeObj) writes `o`, `vn` and `v//vn`. The union is the vocabulary. A face writes one form for all its corners.
+ * Vocabulary: what the two OBJ writers shipped here emit, nothing else.
+ * - `native/cad-convert/cad-convert.cpp` writeObj writes `#`, one `mtllib` when the model has colours, `v`, then `usemtl` with a material name before
+ *   the faces of that material, and `f` with plain vertex indices. The kernel's own OBJ writer body is not used (the comment above writeObj, line 521).
+ * - `src/lib/edge/pure/pure-cad.ts` encodeObj writes `#`, `o`, `v`, `vn` and `f` with `v//vn` corners (plain `v` corners without normals).
  * - MTL: RWObj_ObjMaterialMap.cxx (V7_8_1, identical in V7_6_3) DefineMaterial, lines 65-151, writes `#`, `newmtl`, `Ka`, `Kd`, `Ks`, `Ns` and `Tr`, and
  *   `map_Kd` for a texture. The converter's archive holds no image, so a `map_Kd` would name a file that is not there, and it is not in the vocabulary.
+ *
+ * Writer policy, stricter than the format:
+ * - A face index must name a vertex or normal defined before it. The format lets a positive index name a later one; both writers put every `v` before
+ *   the first `f`, so a forward index in an output means the file is damaged.
+ * - Material and file names are the writers' set `[A-Za-z0-9._-]` (isSafeMaterialName in cad-convert.cpp, outputStem in cad-occt.ts), one word each.
+ * - The OBJ has at most one `mtllib` line, and an MTL gives each attribute at most once per material.
+ *
+ * Bounds, so that a hostile output cannot cost more than its size: a line is at most MAX_LINE_BYTES (the longest line a writer emits is a polygon
+ * face, about 18 bytes a corner, so 8 KiB holds 450 corners and writeObj's three-corner faces and 60-byte vertices by a wide margin), a number at most
+ * MAX_NUMBER_CHARS, a name at most MAX_NAME_CHARS (the longest file name), and at most MAX_MATERIALS distinct materials. The number pattern has one way to
+ * match each string, so it runs in time linear in the field, and the field length is checked first. These bounds are this check's own; neither writer
+ * has a reference limit. Every token that a refusal quotes is cut to MAX_SHOWN_CHARS with its control bytes replaced.
  */
 
-type Rgb = readonly [number, number, number];
-type Statement = { keyword: string; fields: string[] };
-type NumberedStatement = Statement & { number: number };
-type CornerForm = 'v' | 'v/vt' | 'v//vn' | 'v/vt/vn';
+export type Point = readonly [number, number, number];
+export type Colour = readonly [number, number, number];
+type Statement = { keyword: string; fields: string[]; number: number };
+type CornerForm = 'v' | 'v//vn';
 type Resolved = { index: number } | { problem: string };
-type IndexKind = 'vertex' | 'texture' | 'normal';
+type IndexKind = 'vertex' | 'normal';
 
-const OBJ_VOCABULARY: ReadonlySet<string> = new Set(['mtllib', 'usemtl', 'o', 'g', 'v', 'vn', 'vt', 'f']);
 const MTL_COLOURS: ReadonlySet<string> = new Set(['Ka', 'Kd', 'Ks']);
 const MTL_SCALARS: ReadonlySet<string> = new Set(['Ns', 'Tr']);
 const INTEGER = /^[+-]?\d+$/;
-const DECIMAL = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+const NAME = /^[A-Za-z0-9._-]+$/;
+const CONTROL_BYTES = /\p{Cc}/gu;
 const NEWLINE = 0x0a;
-const DEFINED_ITEMS: Readonly<Record<IndexKind, string>> = { vertex: 'vertices', texture: 'texture coordinates', normal: 'normals' };
-const NO_MATERIAL = '';
+const MAX_LINE_BYTES = 8192;
+const MAX_NUMBER_CHARS = 64;
+const MAX_NAME_CHARS = 255;
+const MAX_MATERIALS = 100_000;
+const MAX_SHOWN_CHARS = 40;
+const NO_MATERIAL = -1;
+const DEFINED_ITEMS: Readonly<Record<IndexKind, string>> = { vertex: 'vertices', normal: 'normals' };
 
-/** The vertices of an OBJ and its faces with the material each takes; the faces hold 0-based vertex indices, negative indices already resolved. */
-export class ObjGeometry {
-  constructor(
-    private readonly coordinates: readonly number[],
-    private readonly corners: readonly number[],
-    private readonly faceEnds: readonly number[],
-    private readonly faceMaterials: readonly number[],
-    private readonly materialNames: readonly string[]
-  ) {}
-
-  get vertexCount(): number {
-    return this.coordinates.length / 3;
-  }
-
-  get faceCount(): number {
-    return this.faceEnds.length;
-  }
-
-  /** Each face with its material (`''` before the first named `usemtl`) and the position of each of its corners. */
-  *faces(): Generator<{ material: string; vertices: Rgb[] }> {
-    let start = 0;
-    for (let face = 0; face < this.faceEnds.length; face++) {
-      const vertices: Rgb[] = [];
-      for (let corner = start; corner < this.faceEnds[face]; corner++) {
-        const at = this.corners[corner] * 3;
-        vertices.push([this.coordinates[at], this.coordinates[at + 1], this.coordinates[at + 2]]);
-      }
-      yield { material: this.materialNames[this.faceMaterials[face]], vertices };
-      start = this.faceEnds[face];
-    }
-  }
+/** Receives the geometry of an OBJ as it is read, for a caller that needs it; the gate passes none and the reader keeps nothing. */
+export interface ObjObserver {
+  onVertex?(point: Point): void;
+  /** `material` is `''` before the first `usemtl`; `corners` are 0-based vertex indices with the negative ones resolved. */
+  onFace?(material: string, corners: readonly number[]): void;
 }
 
-export type ObjReading<Geometry = null> =
+export type ObjReading =
   | {
       ok: true;
-      /** The file names of the `mtllib` lines, the fields of a line joined by a space. */
-      mtllibs: string[];
-      /** The names of the materials a `usemtl` line sets. */
-      usedMaterials: ReadonlySet<string>;
+      /** The file name of the `mtllib` line, null when there is none. */
+      mtllib: string | null;
+      /** The names of the materials a `usemtl` line sets, in order of first use. */
+      usedMaterials: readonly string[];
       /** The names of the materials that at least one face takes: set by a `usemtl` before the face. */
       facedMaterials: ReadonlySet<string>;
-      /** The vertices and the faces when the read was asked to keep them (`{ geometry: true }`), otherwise null. */
-      geometry: Geometry;
     }
   | { ok: false; problem: string };
-export type MtlReading = { ok: true; materials: Map<string, Rgb | null> } | { ok: false; problem: string };
+/** The successful read of an OBJ. */
+export type ObjScan = Extract<ObjReading, { ok: true }>;
+export type MtlReading = { ok: true; materials: Map<string, Colour | null> } | { ok: false; problem: string };
 
-/** The statements of a buffer with their 1-based line numbers, one line decoded at a time; blank lines and comments are skipped. */
-export function* statementsOf(buffer: Buffer): Generator<NumberedStatement> {
+/** Whether an archive entry name has the extension, in any case. */
+export function hasExtension(name: string, extension: 'obj' | 'mtl'): boolean {
+  return name.toLowerCase().endsWith(`.${extension}`);
+}
+
+/** A token of the file as a refusal may quote it: cut to MAX_SHOWN_CHARS and without control bytes. */
+export function shown(token: string): string {
+  const cut = token.length > MAX_SHOWN_CHARS ? `${token.slice(0, MAX_SHOWN_CHARS)}...` : token;
+  return cut.replace(CONTROL_BYTES, '?');
+}
+
+/**
+ * Hands the statements of a buffer to `take` one line at a time, blank lines and comments skipped, and returns the first problem with its line number.
+ * A line over MAX_LINE_BYTES is refused before it is decoded.
+ */
+function readStatements(buffer: Buffer, take: (statement: Statement) => string | null): string | null {
   let start = 0;
   let number = 0;
   while (start < buffer.length) {
     const found = buffer.indexOf(NEWLINE, start);
     const end = found === -1 ? buffer.length : found;
     number++;
+    if (end - start > MAX_LINE_BYTES) return `line ${number}: ${end - start} bytes is over the ${MAX_LINE_BYTES} byte line limit`;
     const trimmed = buffer.toString('utf-8', start, end).trim();
     if (trimmed !== '' && !trimmed.startsWith('#')) {
       const [keyword, ...fields] = trimmed.split(/\s+/);
-      yield { keyword, fields, number };
+      const problem = take({ keyword, fields, number });
+      if (problem !== null) return `line ${number}: ${problem}`;
     }
     start = end + 1;
   }
+  return null;
+}
+
+function isDecimal(field: string): boolean {
+  return field.length <= MAX_NUMBER_CHARS && DECIMAL.test(field);
 }
 
 function isNumbers(fields: readonly string[], least: number, most: number): boolean {
-  return fields.length >= least && fields.length <= most && fields.every((field) => DECIMAL.test(field) && Number.isFinite(Number(field)));
+  return fields.length >= least && fields.length <= most && fields.every((field) => isDecimal(field) && Number.isFinite(Number(field)));
+}
+
+/** Why `fields` is not the one name that `keyword` takes, or null. */
+function nameProblem(keyword: string, fields: readonly string[]): string | null {
+  if (fields.length !== 1) return `${keyword} needs exactly one name, not ${fields.length}`;
+  const [name] = fields;
+  if (name.length > MAX_NAME_CHARS || !NAME.test(name)) return `${keyword} name ${shown(name)} is not letters, digits, '.', '_' and '-' in at most ${MAX_NAME_CHARS} characters`;
+  return null;
 }
 
 /** The 0-based position of the item that the 1-based or negative `part` names among the `count` items defined so far, or why it names none. */
 function resolveIndex(part: string, count: number, what: IndexKind, corner: string): Resolved {
-  if (part === '') return { problem: `corner ${corner} has an empty index` };
-  if (!INTEGER.test(part)) return { problem: `unrecognised token ${part} in corner ${corner}` };
+  if (part === '') return { problem: `corner ${shown(corner)} has an empty index` };
+  if (!INTEGER.test(part)) return { problem: `unrecognised token ${shown(part)} in corner ${shown(corner)}` };
   const index = Number(part);
-  if (index === 0 || Math.abs(index) > count) return { problem: `${what} index ${part} is not within the ${count} ${DEFINED_ITEMS[what]} defined so far` };
+  if (index === 0 || Math.abs(index) > count) return { problem: `${what} index ${shown(part)} is not within the ${count} ${DEFINED_ITEMS[what]} defined so far` };
   return { index: index > 0 ? index - 1 : count + index };
 }
 
 function cornerForm(parts: readonly string[], corner: string): CornerForm | { problem: string } {
-  if (parts.length > 3) return { problem: `corner ${corner} has more than three indices` };
   if (parts.length === 1) return 'v';
-  if (parts.length === 2) return 'v/vt';
-  return parts[1] === '' ? 'v//vn' : 'v/vt/vn';
+  if (parts.length === 3 && parts[1] === '') return 'v//vn';
+  return { problem: `corner ${shown(corner)} is not written as v or v//vn` };
 }
 
 /**
@@ -122,155 +142,147 @@ function cornerForm(parts: readonly string[], corner: string): CornerForm | { pr
 class ObjScanner {
   private vertexCount = 0;
   private faceCount = 0;
-  private textureCount = 0;
   private normalCount = 0;
-  private readonly coordinates: number[] = [];
-  private readonly corners: number[] = [];
-  private readonly faceEnds: number[] = [];
-  private readonly faceMaterials: number[] = [];
-  private readonly materialNames: string[] = [NO_MATERIAL];
-  private readonly materialIds = new Map<string, number>([[NO_MATERIAL, 0]]);
-  private material = 0;
-  private readonly mtllibs: string[] = [];
-  private readonly usedMaterials = new Set<string>();
-  private readonly facedMaterials = new Set<string>();
+  private mtllib: string | null = null;
+  private readonly materialNames: string[] = [];
+  private readonly materialIds = new Map<string, number>();
+  private readonly facedIds = new Set<number>();
+  private material = NO_MATERIAL;
 
-  constructor(private readonly keepGeometry: boolean) {}
+  constructor(private readonly observer: ObjObserver) {}
 
   /** Why the statement is not valid in this place, or null once it has been taken in. After a problem the scanner is not to be used again. */
   accept({ keyword, fields }: Statement): string | null {
     switch (keyword) {
+      case 'o':
+        return null;
       case 'v':
         if (!isNumbers(fields, 3, 4)) return 'a vertex needs three or four numbers';
         this.vertexCount++;
-        if (this.keepGeometry) this.coordinates.push(Number(fields[0]), Number(fields[1]), Number(fields[2]));
+        this.observer.onVertex?.([Number(fields[0]), Number(fields[1]), Number(fields[2])]);
         return null;
       case 'vn':
+        if (!isNumbers(fields, 3, 3)) return 'a normal needs three numbers';
         this.normalCount++;
-        return isNumbers(fields, 3, 3) ? null : 'a normal needs three numbers';
-      case 'vt':
-        this.textureCount++;
-        return isNumbers(fields, 1, 3) ? null : 'a texture coordinate needs one to three numbers';
+        return null;
       case 'f':
         return this.takeFace(fields);
       case 'mtllib':
-        if (fields.length === 0) return 'mtllib names no file';
-        this.mtllibs.push(fields.join(' '));
-        return null;
+        return this.takeLibrary(fields);
       case 'usemtl':
-        this.setMaterial(fields.join(' '));
-        return null;
+        return this.takeMaterial(fields);
       default:
-        return null;
+        return `statement ${shown(keyword)} is not one the converter writes`;
     }
   }
 
-  private setMaterial(name: string): void {
-    if (name !== NO_MATERIAL) this.usedMaterials.add(name);
-    let id = this.materialIds.get(name);
+  private takeLibrary(fields: readonly string[]): string | null {
+    const problem = nameProblem('mtllib', fields);
+    if (problem !== null) return problem;
+    if (this.mtllib !== null) return 'a second mtllib line';
+    this.mtllib = fields[0];
+    return null;
+  }
+
+  private takeMaterial(fields: readonly string[]): string | null {
+    const problem = nameProblem('usemtl', fields);
+    if (problem !== null) return problem;
+    let id = this.materialIds.get(fields[0]);
     if (id === undefined) {
+      if (this.materialNames.length >= MAX_MATERIALS) return `the OBJ names more than ${MAX_MATERIALS} materials`;
       id = this.materialNames.length;
-      this.materialNames.push(name);
-      this.materialIds.set(name, id);
+      this.materialNames.push(fields[0]);
+      this.materialIds.set(fields[0], id);
     }
     this.material = id;
+    return null;
   }
 
   private takeFace(fields: readonly string[]): string | null {
     if (fields.length < 3) return 'a face needs at least three corners';
+    const corners: number[] | null = this.observer.onFace === undefined ? null : [];
     let first: CornerForm | null = null;
     for (const corner of fields) {
       const parts = corner.split('/');
       const form = cornerForm(parts, corner);
       if (typeof form !== 'string') return form.problem;
       first ??= form;
-      if (form !== first) return `corner ${corner} is written as ${form}, the first corner as ${first}`;
+      if (form !== first) return `corner ${shown(corner)} is written as ${form}, the first corner as ${first}`;
       const vertex = resolveIndex(parts[0], this.vertexCount, 'vertex', corner);
       if ('problem' in vertex) return vertex.problem;
-      if (form === 'v/vt' || form === 'v/vt/vn') {
-        const texture = resolveIndex(parts[1], this.textureCount, 'texture', corner);
-        if ('problem' in texture) return texture.problem;
-      }
-      if (form === 'v//vn' || form === 'v/vt/vn') {
+      if (form === 'v//vn') {
         const normal = resolveIndex(parts[2], this.normalCount, 'normal', corner);
         if ('problem' in normal) return normal.problem;
       }
-      if (this.keepGeometry) this.corners.push(vertex.index);
+      corners?.push(vertex.index);
     }
     this.faceCount++;
-    if (this.keepGeometry) {
-      this.faceEnds.push(this.corners.length);
-      this.faceMaterials.push(this.material);
-    }
-    if (this.material !== 0) this.facedMaterials.add(this.materialNames[this.material]);
+    if (this.material !== NO_MATERIAL) this.facedIds.add(this.material);
+    if (corners !== null) this.observer.onFace?.(this.material === NO_MATERIAL ? '' : this.materialNames[this.material], corners);
     return null;
   }
 
-  finish(): ObjReading<ObjGeometry | null> {
+  finish(): ObjReading {
     if (this.vertexCount === 0) return { ok: false, problem: 'the OBJ defines no vertex' };
     if (this.faceCount === 0) return { ok: false, problem: 'the OBJ defines no face' };
-    return {
-      ok: true,
-      mtllibs: this.mtllibs,
-      usedMaterials: this.usedMaterials,
-      facedMaterials: this.facedMaterials,
-      geometry: this.keepGeometry ? new ObjGeometry(this.coordinates, this.corners, this.faceEnds, this.faceMaterials, this.materialNames) : null,
-    };
+    return { ok: true, mtllib: this.mtllib, usedMaterials: this.materialNames, facedMaterials: new Set([...this.facedIds].map((id) => this.materialNames[id])) };
   }
 }
 
 /**
  * Reads an OBJ line by line. It is readable when its statements are all in the writers' vocabulary, it has a vertex and a face, and every face
- * index refers to something already defined. Returns the `mtllib` file names, the `usemtl` material names and the materials that faces take, for the
- * cross-check with the MTL file. With `{ geometry: true }` it also keeps the vertices and the faces with their materials, which costs memory in
- * proportion to the model, so the gate, which needs only the materials, leaves it off.
+ * index refers to something already defined. Returns the `mtllib` file name, the `usemtl` material names and the materials that faces take, for the
+ * cross-check with the MTL file. The geometry goes to the observer when there is one and is kept nowhere, so the cost in memory does not grow with
+ * the model.
  */
-export function readObj(buffer: Buffer): ObjReading;
-export function readObj(buffer: Buffer, options: { geometry: true }): ObjReading<ObjGeometry>;
-export function readObj(buffer: Buffer, options: { geometry?: boolean } = {}): ObjReading<ObjGeometry | null> {
-  const scanner = new ObjScanner(options.geometry === true);
-  for (const statement of statementsOf(buffer)) {
-    if (!OBJ_VOCABULARY.has(statement.keyword)) return { ok: false, problem: `line ${statement.number}: statement ${statement.keyword} is not one the converter writes` };
-    const problem = scanner.accept(statement);
-    if (problem !== null) return { ok: false, problem: `line ${statement.number}: ${problem}` };
-  }
-  return scanner.finish();
+export function readObj(buffer: Buffer, observer: ObjObserver = {}): ObjReading {
+  const scanner = new ObjScanner(observer);
+  const problem = readStatements(buffer, (statement) => scanner.accept(statement));
+  return problem === null ? scanner.finish() : { ok: false, problem };
 }
 
-/** Why one statement of an MTL is not valid, or null; `current` is the material it belongs to (null before the first `newmtl`). */
-function mtlStatementProblem(keyword: string, fields: readonly string[], current: string | null): string | null {
-  if (keyword === 'newmtl') return fields.length > 0 ? null : 'newmtl names no material';
-  if (!MTL_COLOURS.has(keyword) && !MTL_SCALARS.has(keyword)) return `statement ${keyword} is not one the converter writes`;
+/** Why one statement of an MTL is not valid, or null; `current` is the material it belongs to (null before the first `newmtl`) and `given` its attributes so far. */
+function mtlStatementProblem(keyword: string, fields: readonly string[], current: string | null, given: ReadonlySet<string>): string | null {
+  if (keyword === 'newmtl') return nameProblem(keyword, fields);
+  if (!MTL_COLOURS.has(keyword) && !MTL_SCALARS.has(keyword)) return `statement ${shown(keyword)} is not one the converter writes`;
   if (current === null) return `${keyword} comes before any newmtl`;
+  if (given.has(keyword)) return `${keyword} is given twice for material ${shown(current)}`;
   if (MTL_COLOURS.has(keyword)) {
     if (!isNumbers(fields, 3, 3)) return `${keyword} needs three numbers`;
-    return fields.every((field) => Number(field) >= 0 && Number(field) <= 1) ? null : `${keyword} ${fields.join(' ')} has a channel outside 0 to 1`;
+    return fields.every((field) => Number(field) >= 0 && Number(field) <= 1) ? null : `${keyword} ${shown(fields.join(' '))} has a channel outside 0 to 1`;
   }
-  if (!isNumbers(fields, 1, 1)) return `${keyword} needs one number`;
+  if (fields.length !== 1 || !isDecimal(fields[0])) return `${keyword} needs one number`;
   const value = Number(fields[0]);
-  if (keyword === 'Tr') return value >= 0 && value <= 1 ? null : `Tr ${fields[0]} is outside 0 to 1`;
-  return value >= 0 ? null : `Ns ${fields[0]} is negative`;
+  if (!Number.isFinite(value)) return `${keyword} ${shown(fields[0])} is not a finite number`;
+  if (keyword === 'Tr') return value >= 0 && value <= 1 ? null : `Tr ${shown(fields[0])} is outside 0 to 1`;
+  return value >= 0 ? null : `Ns ${shown(fields[0])} is negative`;
 }
 
 /**
- * Reads an MTL line by line: its statements must all be in the writers' vocabulary with values in their ranges, each material is defined once, and it
- * must define a material. The result maps each material to its `Kd`, null when it has none.
+ * Reads an MTL line by line: its statements must all be in the writers' vocabulary with values in their ranges, each material is defined once and
+ * gives each attribute once, and it must define a material. The result maps each material to its `Kd`, null when it has none. A lenient read
+ * (`{ lenient: true }`) keeps only what `newmtl` and `Kd` say, whatever else the file holds, for a test that reads a colour back.
  */
-export function readMtl(buffer: Buffer): MtlReading {
-  const materials = new Map<string, Rgb | null>();
+export function readMtl(buffer: Buffer, { lenient = false }: { lenient?: boolean } = {}): MtlReading {
+  const materials = new Map<string, Colour | null>();
   let current: string | null = null;
-  for (const { keyword, fields, number } of statementsOf(buffer)) {
-    const problem = mtlStatementProblem(keyword, fields, current);
-    if (problem !== null) return { ok: false, problem: `line ${number}: ${problem}` };
+  let given = new Set<string>();
+  const problem = readStatements(buffer, ({ keyword, fields }) => {
+    const statementProblem = lenient ? null : mtlStatementProblem(keyword, fields, current, given);
+    if (statementProblem !== null) return statementProblem;
     if (keyword === 'newmtl') {
-      current = fields.join(' ');
-      if (materials.has(current)) return { ok: false, problem: `line ${number}: material ${current} is defined twice` };
+      current = fields[0] ?? '';
+      if (!lenient && materials.has(current)) return `material ${shown(current)} is defined twice`;
+      if (materials.size >= MAX_MATERIALS && !materials.has(current)) return `the MTL defines more than ${MAX_MATERIALS} materials`;
       materials.set(current, null);
-    } else if (keyword === 'Kd' && current !== null) {
-      const [red, green, blue] = fields.map(Number);
-      materials.set(current, [red, green, blue]);
+      given = new Set();
+    } else if (current !== null) {
+      given.add(keyword);
+      if (keyword === 'Kd') materials.set(current, [Number(fields[0]), Number(fields[1]), Number(fields[2])]);
     }
-  }
-  if (materials.size === 0) return { ok: false, problem: 'the MTL defines no material' };
+    return null;
+  });
+  if (problem !== null) return { ok: false, problem };
+  if (!lenient && materials.size === 0) return { ok: false, problem: 'the MTL defines no material' };
   return { ok: true, materials };
 }
