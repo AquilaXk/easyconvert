@@ -1,12 +1,10 @@
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import { outputProblem } from '../bench/realworld/output-check';
 import { convertCadWithOcct } from '../src/lib/conversions/cad-occt';
 import { createDeflatedZipBuffer } from '../src/lib/conversions/zip-writer';
 import { haveCadConverter } from './helpers/cad-kernel';
+import { mtlMaterials, objMaterialAreas } from './helpers/cad-obj-output';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
@@ -17,31 +15,31 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
+const NO_WORK_DIR = '';
 const OBJ = Buffer.from('# model\nmtllib x.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Mat_1\nf 1 2 3\n');
 const MTL = Buffer.from(
   '# Exported by Open CASCADE Technology [dev.opencascade.org]\nnewmtl Mat_1\nKa 0.200000 0.025000 0.025000\nKd 0.800000 0.100000 0.100000\nKs 0.000000 0.000000 0.000000\nNs 0.000000\nTr 0.500000\n'
 );
 const PLAIN_OBJ = 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n';
+const TRIANGLE = 'v 0 0 0\nv 1 0 0\nv 0 1 0\n';
 
-let workDir = '';
-beforeEach(() => {
-  workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'obj-check-'));
-});
-afterEach(() => {
-  fs.rmSync(workDir, { recursive: true, force: true });
-});
-
+/** The ZIP of `files` by JSZip; a name that ends in a slash becomes a folder entry. */
 async function zipOf(files: Record<string, Buffer | string>): Promise<Buffer> {
   const zip = new JSZip();
-  for (const [name, data] of Object.entries(files)) zip.file(name, data);
+  for (const [name, data] of Object.entries(files)) {
+    if (name.endsWith('/')) zip.folder(name.slice(0, -1));
+    else zip.file(name, data);
+  }
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-const check = (buffer: Buffer, mimeType?: string, emptyInput?: boolean) => outputProblem(buffer, 'obj', workDir, { pdfinfo: '', identify: '', mimeType, emptyInput });
+function check(buffer: Buffer, { mimeType, emptyInput }: { mimeType?: string; emptyInput?: boolean } = {}): Promise<string | null> {
+  return outputProblem(buffer, 'obj', NO_WORK_DIR, { pdfinfo: '', identify: '', mimeType, emptyInput });
+}
 
 describe('a plain OBJ', () => {
   it.each([
-    ['the form cad-convert writes', '# Wavefront OBJ, coordinates in mm\nmtllib a.mtl\nv 0 0 0\nv 1.5e-3 0 0\nv 0 -1 0\nusemtl Mat_1\nf 1 2 3\nf -3 -2 -1\n'],
+    ['the form cad-convert writes for a model with no colour', '# Wavefront OBJ, coordinates in mm\nv 0 0 0\nv 1.5e-3 0 0\nv 0 -1 0\nf 1 2 3\nf -3 -2 -1\n'],
     ['the form the kernel writes, with normals, texture coordinates and groups', 'g part\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nvt 0 0\nvt 1 0\nvt 0 1\nusemtl\nf 1/1/1 2/2/1 3/3/1\nf 1//1 2//1 3//1\nf 1/1 2/2 3/3\n'],
     ['the form the pure engine writes', '# Wavefront OBJ\no model\n\nv 0 0 0\nv 1 0 0\nv 0 1 0\n\nvn 0 0 1\nvn 0 0 1\nvn 0 0 1\n\nf 1//1 2//2 3//3\n'],
     ['a quad, a vertex with a weight and Windows line ends', 'v 0 0 0 1\r\nv 1 0 0\r\nv 1 1 0\r\nv 0 1 0\r\nf 1 2 3 4\r\n'],
@@ -58,44 +56,70 @@ describe('a plain OBJ', () => {
     ['a face that names a vertex defined after it', 'v 0 0 0\nv 1 0 0\nf 1 2 3\nv 0 1 0\n', /line 3: vertex index 3/],
     ['a negative face index past the vertex count', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf -1 -2 -4\n', /vertex index -4/],
     ['a face index of zero', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\n', /vertex index 0/],
-    ['a face index that is not an integer', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 1.5\n', /vertex index 1.5/],
+    ['a face index that is not an integer', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 1.5\n', /unrecognised token 1\.5/],
+    ['a face corner that is not a number', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 abc\n', /unrecognised token abc in corner abc/],
+    ['corners written in different forms', TRIANGLE + 'vn 0 0 1\nf 1//1 2//1 3\n', /corner 3 is written as v, the first corner as v\/\/vn/],
+    ['a corner with a slash and no texture index', TRIANGLE + 'f 1/ 2/ 3/\n', /corner 1\/ has an empty index/],
+    ['a corner with a slash and no normal index', TRIANGLE + 'vt 0 0\nf 1/1/ 2/1/ 3/1/\n', /has an empty index/],
     ['a normal index past the normals', 'v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nf 1//1 2//1 3//2\n', /normal index 2 is not within the 1 normals/],
     ['a face of two corners', 'v 0 0 0\nv 1 0 0\nf 1 2\n', /at least three corners/],
     ['a vertex that is not a number', 'v 0 0 nan\nv 1 0 0\nv 0 1 0\nf 1 2 3\n', /vertex needs three or four numbers/],
     ['a statement the writers do not emit', 'v 0 0 0\nv 1 0 0\nv 0 1 0\ncstype bspline\nf 1 2 3\n', /statement cstype is not one the converter writes/],
+    ['an mtllib line, whose material file comes only in a ZIP', 'mtllib a.mtl\n' + PLAIN_OBJ, /names material file a\.mtl, which comes only in a ZIP/],
+    ['a named usemtl, whose material file comes only in a ZIP', TRIANGLE + 'usemtl Mat_1\nf 1 2 3\n', /uses material Mat_1, whose material file comes only in a ZIP/],
+    ['the form cad-convert writes for a model with colours, which is a ZIP', OBJ.toString(), /names material file x\.mtl, which comes only in a ZIP/],
+    ['an executable', '\u007fELF\u0002\u0001\u0001\u0000 binary', /not readable/],
   ])('is refused with %s', async (_name, text, reason) => {
     expect(await check(Buffer.from(text))).toMatch(reason);
   });
 
   it('is refused when it is empty, unless the corpus marks the input as having no content', async () => {
     expect(await check(Buffer.alloc(0))).toBe('empty output');
-    expect(await check(Buffer.alloc(0), undefined, true)).toBeNull();
+    expect(await check(Buffer.alloc(0), { emptyInput: true })).toBeNull();
   });
 
   it('is still judged as an OBJ when the conversion declares model/obj, and a ZIP that is not declared as one is refused', async () => {
-    expect(await check(Buffer.from(PLAIN_OBJ), 'model/obj')).toBeNull();
-    expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': MTL }))).toBe('output bytes do not match obj');
+    expect(await check(Buffer.from(PLAIN_OBJ), { mimeType: 'model/obj' })).toBeNull();
+    expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': MTL }))).toMatch(/obj is not readable/);
   });
 });
 
 describe('an OBJ delivered as a ZIP', () => {
-  it('is accepted when it is the archive convertCadWithOcct builds from the OBJ and the MTL file', async () => {
+  it('is accepted when createDeflatedZipBuffer, the writer convertCadWithOcct builds its archive with, wrote it', async () => {
     const archive = await createDeflatedZipBuffer([
       { name: 'part.obj', data: Buffer.from(OBJ.toString().replace('x.mtl', 'part.mtl')) },
       { name: 'part.mtl', data: MTL },
     ]);
-    expect(await check(archive, ZIP_MIME)).toBeNull();
+    expect(await check(archive, { mimeType: ZIP_MIME })).toBeNull();
   });
 
   it('is accepted when an independent ZIP writer built it', async () => {
-    expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': MTL }), ZIP_MIME)).toBeNull();
+    expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': MTL }), { mimeType: ZIP_MIME })).toBeNull();
+  });
+
+  it('is accepted when two materials each take faces, faces come before the first usemtl, and the file name holds a space', async () => {
+    const obj = `mtllib my model.mtl\n${TRIANGLE}v 1 1 0\nf 1 2 3\nusemtl Mat_1\nf 1 2 3\nusemtl Red paint\nf 2 4 3\nusemtl Mat_2\nf -4 -3 -1\n`;
+    const mtl = `${MTL}newmtl Red paint\nKd 1 0 0\nnewmtl Mat_2\nKd 0 1 0\nTr 0\nNs 1000\n`;
+    expect(await check(await zipOf({ 'my model.obj': obj, 'my model.mtl': mtl }), { mimeType: ZIP_MIME })).toBeNull();
   });
 
   it.each([
+    ['an mtllib line and no usemtl, which loads as a grey mesh', { 'x.obj': OBJ.toString().replace('usemtl Mat_1\n', ''), 'x.mtl': MTL }, /no face of the obj takes a material/],
+    ['a usemtl after the last face, which no face takes', { 'x.obj': OBJ.toString().replace('usemtl Mat_1\nf 1 2 3\n', 'f 1 2 3\nusemtl Mat_1\n'), 'x.mtl': MTL }, /no face of the obj takes a material/],
+    ['a material that no face takes next to one that a face takes', { 'x.obj': OBJ, 'x.mtl': `${MTL}newmtl Spare\nKd 0 0 1\n` }, /x\.mtl defines material Spare, which no face of the obj takes/],
+    ['a used material that has no Kd', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKa 0.2 0.2 0.2\nTr 0\n' }, /material Mat_1 has no Kd/],
+    ['a material defined twice', { 'x.obj': OBJ, 'x.mtl': `${MTL}newmtl Mat_1\nKd 0 0 1\n` }, /line \d+: material Mat_1 is defined twice/],
+    ['a Kd channel outside 0 to 1', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 9 -3 400\n' }, /Kd 9 -3 400 has a channel outside 0 to 1/],
+    ['a Ka channel outside 0 to 1', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKa 0 0 1.01\nKd 1 1 1\n' }, /Ka 0 0 1\.01 has a channel outside 0 to 1/],
+    ['a Ks channel below 0', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nKs -0.1 0 0\n' }, /Ks -0\.1 0 0 has a channel outside 0 to 1/],
+    ['a Tr outside 0 to 1', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nTr 5\n' }, /Tr 5 is outside 0 to 1/],
+    ['a negative Ns', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nNs -1\n' }, /Ns -1 is negative/],
+    ['an Ns that is not finite', { 'x.obj': OBJ, 'x.mtl': 'newmtl Mat_1\nKd 1 1 1\nNs 1e999\n' }, /Ns needs one number/],
     ['a usemtl that the MTL file does not define', { 'x.obj': OBJ, 'x.mtl': 'newmtl Other\nKd 1 1 1\n' }, /uses material Mat_1, which x\.mtl does not define/],
     ['an MTL file that no mtllib line names', { 'x.obj': OBJ.toString().replace('mtllib x.mtl\n', ''), 'x.mtl': MTL }, /x\.mtl is not named by an mtllib line/],
     ['an MTL file that the mtllib line names under another name', { 'x.obj': OBJ, 'y.mtl': MTL }, /names material file x\.mtl, which the archive lacks/],
-    ['an mtllib line that names a second file the archive lacks', { 'x.obj': OBJ.toString().replace('mtllib x.mtl', 'mtllib x.mtl y.mtl'), 'x.mtl': MTL }, /names material file y\.mtl/],
+    ['an mtllib line that names a second file the archive lacks', { 'x.obj': OBJ.toString().replace('mtllib x.mtl', 'mtllib x.mtl y.mtl'), 'x.mtl': MTL }, /names material file x\.mtl y\.mtl, which the archive lacks/],
+    ['a folder entry', { 'x.obj': OBJ, 'x.mtl': MTL, 'docs/': '' }, /holds the folder docs\//],
     ['no MTL file', { 'x.obj': OBJ }, /holds 0 \.mtl files, not one/],
     ['two MTL files', { 'x.obj': OBJ, 'x.mtl': MTL, 'y.mtl': MTL }, /holds 2 \.mtl files, not one/],
     ['no OBJ', { 'x.mtl': MTL }, /holds 0 \.obj files, not one/],
@@ -112,19 +136,19 @@ describe('an OBJ delivered as a ZIP', () => {
     ['an MTL colour before any material', { 'x.obj': OBJ, 'x.mtl': 'Kd 1 1 1\nnewmtl Mat_1\n' }, /Kd comes before any newmtl/],
     ['an OBJ that is a plain text', { 'x.obj': 'hello world, not an obj', 'x.mtl': MTL }, /model x\.obj: obj is not readable/],
     ['an OBJ with a face index past the vertex count', { 'x.obj': OBJ.toString().replace('f 1 2 3', 'f 1 2 9'), 'x.mtl': MTL }, /model x\.obj: .*vertex index 9/],
-    ['an OBJ that is an executable', { 'x.obj': Buffer.from('7f454c46020101000000000000000000', 'hex'), 'x.mtl': MTL }, /model x\.obj: output bytes do not match obj/],
+    ['an OBJ that is an executable', { 'x.obj': Buffer.from('7f454c46020101000000000000000000', 'hex'), 'x.mtl': MTL }, /model x\.obj: obj is not readable/],
     ['a zero-byte OBJ', { 'x.obj': Buffer.alloc(0), 'x.mtl': MTL }, /model x\.obj: empty output/],
   ])('is refused with %s', async (_name, files, reason) => {
-    expect(await check(await zipOf(files), ZIP_MIME)).toMatch(reason);
+    expect(await check(await zipOf(files), { mimeType: ZIP_MIME })).toMatch(reason);
   });
 
   it('is refused for a zero-byte OBJ entry even when the corpus marks the input as having no content', async () => {
-    expect(await check(await zipOf({ 'x.obj': Buffer.alloc(0), 'x.mtl': MTL }), ZIP_MIME, true)).toBe('model x.obj: empty output');
+    expect(await check(await zipOf({ 'x.obj': Buffer.alloc(0), 'x.mtl': MTL }), { mimeType: ZIP_MIME, emptyInput: true })).toBe('model x.obj: empty output');
   });
 
   it('is refused when the bytes are not a ZIP, and when the output is empty', async () => {
-    expect(await check(Buffer.from('PK\u0003\u0004 corrupt archive'), ZIP_MIME)).toBe('obj archive is not a readable ZIP');
-    expect(await check(Buffer.alloc(0), ZIP_MIME)).toBe('empty output');
+    expect(await check(Buffer.from('PK\u0003\u0004 corrupt archive'), { mimeType: ZIP_MIME })).toBe('obj archive is not a readable ZIP');
+    expect(await check(Buffer.alloc(0), { mimeType: ZIP_MIME })).toBe('empty output');
   });
 });
 
@@ -134,7 +158,31 @@ describe.skipIf(!haveCadConverter)('the archive convertCadWithOcct returns for a
       const { bytes, format } = await requireRealworldSample(ctx, id);
       const result = await convertCadWithOcct(bytes, format, 'obj');
       expect(result.mimeType).toBe(ZIP_MIME);
-      expect(await outputProblem(result.buffer, 'obj', workDir, { pdfinfo: '', identify: '', mimeType: result.mimeType })).toBeNull();
+      expect(await check(result.buffer, { mimeType: result.mimeType })).toBeNull();
     });
   }
+});
+
+describe('the helpers that read an OBJ and an MTL file back in tests', () => {
+  it('sum the area under each material with the face indices resolved by the gate, negative ones included', () => {
+    const obj = Buffer.from(`${TRIANGLE}v 1 1 0\nf 1 2 3\nusemtl Mat_1\nf -4 -3 -2\nf 2 4 3\nusemtl Mat_2\nf -3 -1 -2\n`);
+    const areas = objMaterialAreas(obj);
+    expect([...areas.keys()]).toEqual(['', 'Mat_1', 'Mat_2']);
+    expect(areas.get('')).toBeCloseTo(0.5);
+    expect(areas.get('Mat_1')).toBeCloseTo(1);
+    expect(areas.get('Mat_2')).toBeCloseTo(0.5);
+  });
+
+  it('throw for an OBJ the gate refuses instead of reading it another way', () => {
+    expect(() => objMaterialAreas(Buffer.from(`${TRIANGLE}f 1 2 4\n`))).toThrow(/vertex index 4/);
+  });
+
+  it('read the Kd of each material, null for a material without one, and leave the vocabulary and the ranges to the gate', () => {
+    const colours = mtlMaterials(Buffer.from('newmtl A\nKd 0.25 0.5 1\nmap_Kd wood.png\nnewmtl B\nKa 9 9 9\nnewmtl C\nKd 7 7 7\n'));
+    expect([...colours]).toEqual([
+      ['A', [0.25, 0.5, 1]],
+      ['B', null],
+      ['C', [7, 7, 7]],
+    ]);
+  });
 });

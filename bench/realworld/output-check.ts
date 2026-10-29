@@ -43,13 +43,15 @@ export interface OutputCheckOptions {
   emptyInput?: boolean;
 }
 
-type ArchiveEntries = { entries: JSZip.JSZipObject[] } | { problem: string };
+type ArchiveEntries = { entries: JSZip.JSZipObject[]; folders: JSZip.JSZipObject[] } | { problem: string };
+type ObjModel = { problem: string } | { reading: Extract<ObjReading, { ok: true }> };
 
-/** The files (not the directories) of a ZIP, or why `label` is not a readable ZIP. */
+/** The files and the folders of a ZIP, or why `label` is not a readable ZIP. */
 async function archiveEntries(buffer: Buffer, label: string): Promise<ArchiveEntries> {
   const zip = await JSZip.loadAsync(buffer).catch(() => null);
   if (zip === null) return { problem: `${label} is not a readable ZIP` };
-  return { entries: Object.values(zip.files).filter((entry) => !entry.dir) };
+  const all = Object.values(zip.files);
+  return { entries: all.filter((entry) => !entry.dir), folders: all.filter((entry) => entry.dir) };
 }
 
 async function pageArchiveProblem(buffer: Buffer, target: string, workDir: string, options: OutputCheckOptions): Promise<string | null> {
@@ -63,42 +65,66 @@ async function pageArchiveProblem(buffer: Buffer, target: string, workDir: strin
   return null;
 }
 
-/** Why the bytes are not a readable OBJ: the text signature of the format, then the line reader (see obj-mtl.ts). */
-function objBytesProblem(buffer: Buffer): { problem: string } | { reading: Extract<ObjReading, { ok: true }> } {
+/** The OBJ read by the line reader (see obj-mtl.ts), or why the bytes are not a readable OBJ. The reader refuses everything that is not text of the OBJ vocabulary, executables and other formats included. */
+function readableObj(buffer: Buffer): ObjModel {
   if (buffer.length === 0) return { problem: 'empty output' };
-  if (!isFormatCompatibleWithMagicBytes(buffer, 'obj')) return { problem: 'output bytes do not match obj' };
   const reading = readObj(buffer);
   return reading.ok ? { reading } : { problem: `obj is not readable, ${reading.problem}` };
 }
 
 /**
+ * Why a plain OBJ is refused for the material lines it holds: convertCadWithOcct returns a bare OBJ only when the model has no colour, and then
+ * neither writer puts `mtllib` or a named `usemtl` in it. A bare `usemtl`, which the kernel writer emits, names nothing.
+ */
+function plainObjMaterialProblem(reading: Extract<ObjReading, { ok: true }>): string | null {
+  if (reading.mtllibs.length > 0) return `obj names material file ${reading.mtllibs[0]}, which comes only in a ZIP with the OBJ`;
+  const [material] = reading.usedMaterials;
+  if (material !== undefined) return `obj uses material ${material}, whose material file comes only in a ZIP with the OBJ`;
+  return null;
+}
+
+/**
+ * Why the OBJ and the MTL file of an archive do not belong together, or null. Both directions are checked, as the writer creates every material from
+ * a face it then writes, with a `Kd`: the `mtllib` names are the MTL file and nothing else, every `usemtl` material is defined by a `newmtl`, at
+ * least one material is taken by a face, every `newmtl` is taken by one, and each of them has a `Kd`.
+ */
+function objMaterialProblem(reading: Extract<ObjReading, { ok: true }>, materialFile: string, materials: ReadonlyMap<string, unknown>): string | null {
+  const missing = reading.mtllibs.find((name) => name !== materialFile);
+  if (missing !== undefined) return `obj names material file ${missing}, which the archive lacks`;
+  if (!reading.mtllibs.includes(materialFile)) return `material file ${materialFile} is not named by an mtllib line`;
+  const undefinedMaterial = [...reading.usedMaterials].find((name) => !materials.has(name));
+  if (undefinedMaterial !== undefined) return `obj uses material ${undefinedMaterial}, which ${materialFile} does not define`;
+  if (reading.facedMaterials.size === 0) return 'no face of the obj takes a material, so the model loads as a flat grey mesh';
+  const unused = [...materials.keys()].find((name) => !reading.facedMaterials.has(name));
+  if (unused !== undefined) return `${materialFile} defines material ${unused}, which no face of the obj takes`;
+  const withoutKd = [...reading.facedMaterials].find((name) => materials.get(name) === null);
+  if (withoutKd !== undefined) return `material ${withoutKd} has no Kd, so its faces have no colour`;
+  return null;
+}
+
+/**
  * An OBJ with colours is delivered as a ZIP of the OBJ and its MTL file (convertCadWithOcct returns a ZIP only then), so that `mtllib` resolves and
- * the model does not load as a flat grey mesh. The archive is flat and holds exactly one OBJ and one MTL file, the OBJ is readable, the `mtllib` names are
- * the MTL file and nothing else, every `usemtl` material is defined by a `newmtl`, and the MTL holds only statements the writer emits.
+ * the model does not load as a flat grey mesh. The archive is flat and holds exactly one OBJ and one MTL file and nothing else, not even a folder, the OBJ is
+ * readable, the MTL holds only statements the writer emits, and the two agree on the materials (see objMaterialProblem).
  */
 async function objArchiveProblem(buffer: Buffer): Promise<string | null> {
   const archive = await archiveEntries(buffer, 'obj archive');
   if ('problem' in archive) return archive.problem;
-  const { entries } = archive;
+  const { entries, folders } = archive;
   const nested = entries.find((entry) => /[/\\]/.test(entry.name));
   if (nested !== undefined) return `obj archive entry ${nested.name} is not at the archive root`;
+  if (folders.length > 0) return `obj archive holds the folder ${folders[0].name}`;
   const objects = entries.filter((entry) => OBJ_NAME.test(entry.name));
   const materials = entries.filter((entry) => MTL_NAME.test(entry.name));
   if (objects.length !== 1) return `obj archive holds ${objects.length} .obj files, not one`;
   if (materials.length !== 1) return `obj archive holds ${materials.length} .mtl files, not one`;
   const extra = entries.find((entry) => entry !== objects[0] && entry !== materials[0]);
   if (extra !== undefined) return `obj archive holds an unexpected entry ${extra.name}`;
-  const model = objBytesProblem(await objects[0].async('nodebuffer'));
+  const model = readableObj(await objects[0].async('nodebuffer'));
   if ('problem' in model) return `model ${objects[0].name}: ${model.problem}`;
   const library = readMtl(await materials[0].async('nodebuffer'));
   if (!library.ok) return `material file ${materials[0].name}: ${library.problem}`;
-  const { mtllibs, usedMaterials } = model.reading;
-  const missing = mtllibs.find((name) => name !== materials[0].name);
-  if (missing !== undefined) return `obj names material file ${missing}, which the archive lacks`;
-  if (!mtllibs.includes(materials[0].name)) return `material file ${materials[0].name} is not named by an mtllib line`;
-  const undefinedMaterial = usedMaterials.find((name) => !library.materials.has(name));
-  if (undefinedMaterial !== undefined) return `obj uses material ${undefinedMaterial}, which ${materials[0].name} does not define`;
-  return null;
+  return objMaterialProblem(model.reading, materials[0].name, library.materials);
 }
 
 /** Why the output is not a readable file of the target type, or null when it is. */
@@ -107,8 +133,8 @@ export async function outputProblem(buffer: Buffer, target: string, workDir: str
   if (options.mimeType === ZIP_MIME_TYPE && PAGE_TARGETS.has(target)) return pageArchiveProblem(buffer, target, workDir, options);
   if (options.mimeType === ZIP_MIME_TYPE && target === 'obj') return objArchiveProblem(buffer);
   if (target === 'obj') {
-    const model = objBytesProblem(buffer);
-    return 'problem' in model ? model.problem : null;
+    const model = readableObj(buffer);
+    return 'problem' in model ? model.problem : plainObjMaterialProblem(model.reading);
   }
   if (!isFormatCompatibleWithMagicBytes(buffer, target)) return `output bytes do not match ${target}`;
   const part = PACKAGE_PARTS[target];

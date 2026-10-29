@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { readMtl, statementOf } from '../../bench/realworld/obj-mtl';
+import { readObj, statementsOf } from '../../bench/realworld/obj-mtl';
 import type { ConversionResult } from '../../src/lib/types';
 
 /**
@@ -20,34 +20,42 @@ export async function objFiles(result: Pick<ConversionResult, 'buffer' | 'mimeTy
   };
 }
 
-/** Surface area of the triangles that each material (`usemtl`) of an OBJ covers, by plain text parsing of the OBJ; faces before any `usemtl` count under ''. */
+/**
+ * Surface area of the triangles that each material (`usemtl`) of an OBJ covers; faces before any named `usemtl` count under ''. The OBJ is read by the
+ * line reader of the real-world output check (bench/realworld/obj-mtl.ts), the one that resolves the face indices, so there is a single index rule; an
+ * OBJ the reader refuses throws.
+ */
 export function objMaterialAreas(obj: Buffer): Map<string, number> {
-  const vertices: Array<[number, number, number]> = [];
+  const reading = readObj(obj, { geometry: true });
+  if (!reading.ok) throw new Error(`the OBJ file is not readable: ${reading.problem}`);
   const areas = new Map<string, number>();
-  let material = '';
-  for (const line of obj.toString('utf-8').split('\n')) {
-    const statement = statementOf(line);
-    if (statement === null) continue;
-    const { keyword, fields } = statement;
-    if (keyword === 'v') vertices.push([Number(fields[0]), Number(fields[1]), Number(fields[2])]);
-    else if (keyword === 'usemtl') material = fields.join(' ');
-    else if (keyword === 'f') {
-      const corners = fields.map((field) => vertices[Number(field.split('/')[0]) - 1]);
-      for (let i = 1; i + 1 < corners.length; i++) {
-        const [a, b, c] = [corners[0], corners[i], corners[i + 1]];
-        const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-        const area = 0.5 * Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]);
-        areas.set(material, (areas.get(material) ?? 0) + area);
-      }
+  for (const { material, vertices } of reading.geometry.faces()) {
+    for (let i = 1; i + 1 < vertices.length; i++) {
+      const [a, b, c] = [vertices[0], vertices[i], vertices[i + 1]];
+      const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+      const area = 0.5 * Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]);
+      areas.set(material, (areas.get(material) ?? 0) + area);
     }
   }
   return areas;
 }
 
-/** The materials (`newmtl`) of an MTL file with their diffuse colour (`Kd`), null for a material that gives none; the file is read by the line reader of the real-world output check. */
+/**
+ * The materials (`newmtl`) of an MTL file with their diffuse colour (`Kd`), null for a material that gives none. This read is lenient: it takes the
+ * statements of the same tokenizer as the gate (statementsOf) and looks only at `newmtl` and `Kd`, so a test of a colour does not depend on the
+ * vocabulary and the ranges that the gate holds the writers to.
+ */
 export function mtlMaterials(mtl: Buffer): ReadonlyMap<string, readonly [number, number, number] | null> {
-  const reading = readMtl(mtl);
-  if (!reading.ok) throw new Error(`the MTL file is not readable: ${reading.problem}`);
-  return reading.materials;
+  const materials = new Map<string, readonly [number, number, number] | null>();
+  let current: string | null = null;
+  for (const { keyword, fields } of statementsOf(mtl)) {
+    if (keyword === 'newmtl') {
+      current = fields.join(' ');
+      materials.set(current, null);
+    } else if (keyword === 'Kd' && current !== null) {
+      materials.set(current, [Number(fields[0]), Number(fields[1]), Number(fields[2])]);
+    }
+  }
+  return materials;
 }
