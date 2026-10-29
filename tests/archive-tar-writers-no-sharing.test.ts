@@ -13,7 +13,7 @@ import { craftSevenZip } from './helpers/seven-zip-craft';
 import { craftZip } from './helpers/zip-craft';
 
 /**
- * No tar writer hands out a buffer of its own. Each test converts once, writes 0xff over every byte range of the result,
+ * No tar writer hands out a shared buffer. Each test converts once, writes 0xff over every byte range of the result,
  * and converts again from a fresh copy of the same input; the second result must equal the first. A header, padding or end
  * block taken from a module-level buffer would carry the 0xff into the second result.
  *

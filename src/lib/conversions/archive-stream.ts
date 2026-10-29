@@ -91,13 +91,10 @@ export interface StreamRunOptions {
  * The converted tar, as byte ranges to write in order. Read each range by its offset and length, never through its whole
  * `buffer`.
  *
- * A range is new memory of this call (a header, zeros taken from Node's allocation pool, encoded output), or a view of this
- * call's input (`source.buffer`, which the caller owns, or the buffer `loadSource` reads a `source.filePath` into), or a view
- * of the bytes this call unpacked, including the frame a sandboxed child wrote them into. No range is reachable from another
- * call. Copy a result before writing to it, and do not change the input while a result that views it is in use.
- *
- * This is the one statement of what a range may alias; the routes, the repack module and the policy entry cite it and do not
- * restate it.
+ * A range is memory this call allocated, a view of this call's input (`source.buffer`, which the caller owns, or the buffer
+ * `loadSource` reads a `source.filePath` into), or a view of the bytes this call unpacked, including the frame a sandboxed
+ * child wrote them into. The module keeps no memory between calls, so two results share bytes only where both view the same
+ * input. Copy a result before writing to it, and do not change the input while a result that views it is in use.
  */
 export interface StreamedArchive {
   segments: Uint8Array[];
@@ -129,9 +126,8 @@ function blockPadding(length: number): number {
 }
 
 /**
- * Padding as a slice of Node's allocation pool, because `Buffer.alloc` per member measured 0.8 to 1.1 ms against 0.24 to
- * 0.33 ms on a tar of 2,000 members. The slice is zeroed because an unzeroed pool slice would carry other allocations' bytes
- * into the tar. Aliasing: see `StreamedArchive`.
+ * Padding as a slice of Node's allocation pool, because a `Buffer.alloc` per member costs measurably more on large tars
+ * (policy entry 111). The slice is zeroed because an unzeroed pool slice would carry other allocations' bytes into the tar.
  */
 export function pushPadding(segments: Uint8Array[], length: number): void {
   const padding = blockPadding(length);

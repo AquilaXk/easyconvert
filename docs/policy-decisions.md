@@ -153,9 +153,6 @@ Compression
 64. [The bzip2 block sort: induced sorting with the suffix type in the array entries, and the bound the nightly run holds](#64-the-bzip2-block-sort-induced-sorting-with-the-suffix-type-in-the-array-entries-and-the-bound-the-nightly-run-holds)
 65. [Pictures on PDF, PostScript and EPS pages: the page follows the stored print density](#65-pictures-on-pdf-postscript-and-eps-pages-the-page-follows-the-stored-print-density)
 87. [Gzip, bzip2 and xz targets of an archive with several entries: a tar of the entries compressed with that codec](#87-gzip-bzip2-and-xz-targets-of-an-archive-with-several-entries-a-tar-of-the-entries-compressed-with-that-codec)
-
-Archive stream output
-
 111. [CRC-32 is the runtime's zlib routine alone, a converted tar is written over its unpacked bytes when the entries keep their places, and the floor of the Silesia xz row](#111-crc-32-is-the-runtimes-zlib-routine-alone-a-converted-tar-is-written-over-its-unpacked-bytes-when-the-entries-keep-their-places-and-the-floor-of-the-silesia-xz-row)
 
 ---
@@ -3872,7 +3869,7 @@ Archive stream output
   - **Rewriting the headers in place without checking the layout**: a dropped entry or a longer header moves every later body, and the result would not be the vetted tar.
   - **Standard output of 7-Zip to a file**, **a warm 7-Zip process** (entry 50) and **a decoder in the process** (entry 50: 1.3 to 1.5 times `xz`).
 - **Verified by**:
-  - **`tests/archive-stream-tar-in-place.test.ts`** shows that the gzip and xz routes write the tar over the unpacked bytes only where the layout allows it, never write onto a body or into the rooms around the frame, return segments equal to the reference tar everywhere else, and do not keep a long tail alive behind the worker result.
+  - **`tests/archive-stream-tar-in-place.test.ts`** shows that the gzip and xz routes write the tar over the unpacked bytes only where the layout allows it, never write onto a body or into the rooms around the frame through the write methods the test observes (index assignment, `write*` and `DataView` setters are not observed), return segments equal to the reference tar everywhere else, and do not keep a long tail alive behind the worker result.
   - **`tests/archive-tar-writers-no-sharing.test.ts`** shows that every tar writer pads and ends with zeros of its own, and that a write through one result reaches a second result of the same input only where a result views the input.
   - **`tests/worker-output-segments.test.ts`** shows that the file route writes the ranges joined, in one `writevSync`, continues after a short write, and throws on a failure, on a call that accepts no bytes and on a count of exactly one byte above the bytes pending.
   - **Byte identity** against the previous head: the output of the gzip, xz and bzip2 routes for the 5,355,520-byte tar of the Silesia `xml` file, plain and with 1 MiB of zeros appended, through the buffer route and the file route, is 5,346,816 bytes with sha256 `926c14ca49179051b47853dd039752f3b6b5bb39b2a0e0e6f2c31aba545c32f6` before and after.
