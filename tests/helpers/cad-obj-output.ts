@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { readMtl, statementOf } from '../../bench/realworld/obj-mtl';
 import type { ConversionResult } from '../../src/lib/types';
 
 /**
@@ -25,7 +26,9 @@ export function objMaterialAreas(obj: Buffer): Map<string, number> {
   const areas = new Map<string, number>();
   let material = '';
   for (const line of obj.toString('utf-8').split('\n')) {
-    const [keyword, ...fields] = line.trim().split(/\s+/);
+    const statement = statementOf(line);
+    if (statement === null) continue;
+    const { keyword, fields } = statement;
     if (keyword === 'v') vertices.push([Number(fields[0]), Number(fields[1]), Number(fields[2])]);
     else if (keyword === 'usemtl') material = fields.join(' ');
     else if (keyword === 'f') {
@@ -42,16 +45,9 @@ export function objMaterialAreas(obj: Buffer): Map<string, number> {
   return areas;
 }
 
-/** The materials (`newmtl`) of an MTL file with their diffuse colour (`Kd`), null for a material that gives none. */
-export function mtlMaterials(mtl: Buffer): Map<string, [number, number, number] | null> {
-  const materials = new Map<string, [number, number, number] | null>();
-  let name = '';
-  for (const line of mtl.toString('utf-8').split('\n')) {
-    const [keyword, ...fields] = line.trim().split(/\s+/);
-    if (keyword === 'newmtl') {
-      name = fields.join(' ');
-      materials.set(name, null);
-    } else if (keyword === 'Kd') materials.set(name, [Number(fields[0]), Number(fields[1]), Number(fields[2])]);
-  }
-  return materials;
+/** The materials (`newmtl`) of an MTL file with their diffuse colour (`Kd`), null for a material that gives none; the file is read by the line reader of the real-world output check. */
+export function mtlMaterials(mtl: Buffer): ReadonlyMap<string, readonly [number, number, number] | null> {
+  const reading = readMtl(mtl);
+  if (!reading.ok) throw new Error(`the MTL file is not readable: ${reading.problem}`);
+  return reading.materials;
 }
