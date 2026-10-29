@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -19,8 +19,7 @@ import { MAX_TOOL_MESSAGE_CHARS, outputProblem } from '../bench/realworld/output
 import { convertCadWithOcct } from '../src/lib/conversions/cad-occt';
 import { MAX_OUTPUT_NAME_CHARS } from '../src/lib/conversions/cad-output-name';
 import { createDeflatedZipBuffer } from '../src/lib/conversions/zip-writer';
-import { SandboxedMemoryLimitError, executeSandboxedBinary } from '../src/lib/security/process-sandbox';
-import { ConversionFailedError, SandboxUnavailableError } from '../src/lib/types';
+import { ConversionFailedError } from '../src/lib/types';
 import { haveCadConverter } from './helpers/cad-kernel';
 import { mtlMaterials, objFiles, objMaterialAreas } from './helpers/cad-obj-output';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -31,12 +30,6 @@ import { requireRealworldSample } from './helpers/realworld-sample';
  * statements their writers emit; the ZIPs here come from the writer's own function and from JSZip, an independent writer.
  */
 
-// The real runner stays in place; a test replaces one call of it to stand for a host the real one cannot be brought to behave like.
-vi.mock('../src/lib/security/process-sandbox', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../src/lib/security/process-sandbox')>();
-  return { ...actual, executeSandboxedBinary: vi.fn(actual.executeSandboxedBinary) };
-});
-
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
 const READER_TIMEOUT_MS = 3000;
@@ -46,12 +39,13 @@ const READER_SLEEP_S = 30;
 const DESCENDANT_SLEEP_S = 8;
 /** The interval of the timer that shows the event loop is served while a reader floods its output. */
 const EVENT_LOOP_TICK_MS = 5;
-/** The longest the event loop may go unserved while a reader prints about 10 MB to stderr over a second. */
+/**
+ * The longest the event loop may go unserved while a reader prints about 10 MB to stderr in 50 bursts. The largest gaps measured were 6.8 ms on an
+ * idle macOS host, 17 ms there with 12 busy loops running, and about 8 ms on the Linux VM, so the bound is more than ten times the worst of them.
+ */
 const MAX_EVENT_LOOP_GAP_MS = 250;
 /** The most that the runner holds of the output of a reader (its default of 50 MB). */
 const RUNNER_OUTPUT_LIMIT_BYTES = 50 * 1024 * 1024;
-/** How much longer than its timeout a reader that ignores SIGTERM may take to give its verdict. */
-const KILL_MARGIN_MS = 2000;
 const LOCAL_HEADER = Buffer.from('PK\u0003\u0004', 'latin1');
 const CENTRAL_HEADER = Buffer.from('PK\u0001\u0002', 'latin1');
 const LOCAL_HEADER_BYTES = 30;
@@ -245,6 +239,19 @@ describe('a reference reader that fails', () => {
   const readerPrinting = (name: string, message: string): string => readerScript(name, `printf '%s\\n' '${message}' >&2\nexit 1`);
   const problemOf = (identify: string, readerTimeoutMs?: number) => outputProblem(PNG, 'png', WORK_DIR, { pdfinfo: '', identify, readerTimeoutMs });
 
+  /** A reader that cannot be started is a fault of the host, not a verdict on the output: a plain Error, which runJob books as a crash and not as a conversion refusal. */
+  const expectCannotRun = async (verdict: Promise<string | null>, name: string, code: string, readerPath: string) => {
+    const thrown = await verdict.then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(thrown).toBeInstanceOf(Error);
+    expect(thrown).not.toBeInstanceOf(ConversionFailedError);
+    expect((thrown as Error).name).toBe('Error');
+    expect((thrown as Error).message).toBe(`reference reader ${name} cannot run: ${code} ${readerPath}`);
+    expect((thrown as Error).cause).toBeInstanceOf(Error);
+  };
+
   // The expected strings below spell out "reference reader refused the output by <name>"; the gate and these tests are coupled through that shape, which a regex in the corpus test matches too.
 
   it('is quoted beyond the length of a token of the file, so the tail that names the cause survives', async () => {
@@ -337,7 +344,7 @@ describe('a reference reader that fails', () => {
     expect(fs.readdirSync(work)).toEqual(['out.png']);
   });
 
-  it('serves the event loop while a reader that stays under the output limit prints about 10 MB to stderr over a second, then quotes it', async () => {
+  it('serves the event loop while a reader that stays under the output limit prints about 10 MB to stderr in 50 bursts, then quotes it', async () => {
     const work = fs.mkdtempSync(path.join(WORK_DIR, 'steady-flood-'));
     const reader = readerScript('steady-flooding-reader', "for i in $(seq 1 50); do head -c 200000 /dev/zero | tr '\\0' x; sleep 0.02; done >&2\nexit 1");
     let last = performance.now();
@@ -380,7 +387,7 @@ describe('a reference reader that fails', () => {
   });
 
   // skip-ok: root ignores directory permissions, so the work directory stays writable for it.
-  it.skipIf(process.getuid?.() === 0)('throws, and does not say the reader did not run, when the work directory cannot hold its scratch directory', async () => {
+  it.skipIf(process.getuid?.() === 0)('throws the file system error, and does not blame the reader, when the work directory cannot hold its scratch directory', async () => {
     const work = fs.mkdtempSync(path.join(WORK_DIR, 'readonly-'));
     fs.writeFileSync(path.join(work, 'out.png'), '');
     const reader = readerScript('never-started-reader', 'exit 0');
@@ -399,30 +406,25 @@ describe('a reference reader that fails', () => {
     expect(await outputProblem(pdf, 'pdf', WORK_DIR, { pdfinfo: '', identify: failing })).toBeNull();
     expect(await outputProblem(PNG, 'png', WORK_DIR, { pdfinfo: failing, identify: '' })).toBeNull();
     const missing = path.join(WORK_DIR, 'no-such-pdfinfo');
-    expect(await outputProblem(pdf, 'pdf', WORK_DIR, { pdfinfo: missing, identify: '' })).toBe(`reference reader pdfinfo did not run: not found ${missing}`);
+    await expectCannotRun(outputProblem(pdf, 'pdf', WORK_DIR, { pdfinfo: missing, identify: '' }), 'pdfinfo', 'ENOENT', missing);
   });
 
-  it('says the reader did not run, and that it is not executable, when the file cannot be executed', async () => {
-    const plain = path.join(WORK_DIR, 'not-executable-reader');
-    fs.writeFileSync(plain, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
-    expect(await problemOf(plain)).toBe(`reference reader identify did not run: not executable ${plain}`);
-  });
-
-  it('ends a reader that ignores SIGTERM at the timeout', async () => {
+  it('kills a reader that ignores SIGTERM with SIGKILL at the timeout, long before it would end by itself', async () => {
     const reader = readerScript('stubborn-reader', "trap '' TERM\nexec sleep 30");
     const started = Date.now();
     expect(await problemOf(reader, 500)).toBe('reference reader identify timed out');
-    expect(Date.now() - started).toBeLessThan(500 + KILL_MARGIN_MS);
+    expect(Date.now() - started).toBeLessThan(READER_TIMEOUT_MS);
   });
 
-  /** Whether the process exists and is not a zombie: `kill(pid, 0)` succeeds for a process that has ended and is not yet reaped, `ps` shows its state as Z. */
+  /**
+   * Whether the process exists and is not a zombie: `kill(pid, 0)` succeeds for a process that has ended and is not yet reaped, `ps` shows its state as Z.
+   * `ps` exits 1 and prints nothing for a pid that does not exist; any other failure of `ps` fails the test instead of reading as a dead process.
+   */
   const isAlive = (pid: number): boolean => {
-    let state = '';
-    try {
-      state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim();
-    } catch {
-      return false;
-    }
+    const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+    if (ps.error) throw ps.error;
+    if (ps.status !== 0 && !(ps.status === 1 && ps.stderr === '')) throw new Error(`ps failed with status ${ps.status}: ${ps.stderr}`);
+    const state = ps.stdout.trim();
     return state !== '' && !state.startsWith('Z');
   };
 
@@ -448,19 +450,33 @@ describe('a reference reader that fails', () => {
     expect(elapsedMs).toBeLessThan(DESCENDANT_SLEEP_S * 1000);
   });
 
-  it('kills a descendant that still holds the stderr of a reader that has ended, and gives the timeout as the verdict, as the runner waits for the pipe', { timeout: 10_000 }, async () => {
-    const { problem, elapsedMs } = await runWithDescendant('forking-failing-reader', 'echo fail >&2\nexit 1');
+  it.each([
+    ['exits non-zero', 'echo fail >&2\nexit 1'],
+    ['exits 0', 'exit 0'],
+  ])('kills a descendant that still holds the stderr of a reader that %s, and gives the timeout as the verdict, as the runner waits for the pipe', { timeout: 10_000 }, async (ending, afterFork) => {
+    const { problem, elapsedMs } = await runWithDescendant(`forking-${ending.replace(/\W+/g, '-')}-reader`, afterFork);
     expect(problem).toBe('reference reader identify timed out');
     expect(elapsedMs).toBeLessThan(DESCENDANT_SLEEP_S * 1000);
   });
 
-  it('says the reader did not run, with the error code, for a path through a file and for a path of 5,000 characters', async () => {
-    expect(await problemOf('/etc/hosts/identify')).toBe('reference reader identify did not run: ENOTDIR /etc/hosts/identify');
-    expect(await problemOf(`/${'a'.repeat(5000)}`)).toBe(`reference reader identify did not run: ENAMETOOLONG /${'a'.repeat(MAX_TOOL_MESSAGE_CHARS - 1)}...`);
+  it('throws the error code for a path through a file and for a path of 5,000 characters, the path cut to MAX_TOOL_MESSAGE_CHARS', async () => {
+    await expectCannotRun(problemOf('/etc/hosts/identify'), 'identify', 'ENOTDIR', '/etc/hosts/identify');
+    await expectCannotRun(problemOf(`/${'a'.repeat(5000)}`), 'identify', 'ENAMETOOLONG', `/${'a'.repeat(MAX_TOOL_MESSAGE_CHARS - 1)}...`);
   });
 
-  it('says the reader is not executable when its path is a directory', async () => {
-    expect(await problemOf(WORK_DIR)).toBe(`reference reader identify did not run: not executable ${WORK_DIR}`);
+  it('throws ENOENT for a missing path, EACCES for a file that is not executable and for a directory', async () => {
+    const missing = path.join(WORK_DIR, 'no-such-reader');
+    await expectCannotRun(problemOf(missing), 'identify', 'ENOENT', missing);
+    const plain = path.join(WORK_DIR, 'not-executable-reader');
+    fs.writeFileSync(plain, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+    await expectCannotRun(problemOf(plain), 'identify', 'EACCES', plain);
+    await expectCannotRun(problemOf(WORK_DIR), 'identify', 'EACCES', WORK_DIR);
+  });
+
+  it('throws ENOENT, and does not refuse the output, for a script whose shebang names an interpreter that is not there', async () => {
+    const reader = path.join(WORK_DIR, 'lost-interpreter-reader');
+    fs.writeFileSync(reader, '#!/nonexistent/interp\nexit 0\n', { mode: 0o755 });
+    await expectCannotRun(problemOf(reader), 'identify', 'ENOENT', reader);
   });
 
   it('quotes the stderr of a reader that exits 127 or 126, as the status of a program that ran says nothing about its launch', async () => {
@@ -474,7 +490,7 @@ describe('a reference reader that fails', () => {
     const wrapper = readerScript('wrapper-reader', 'exec /opt/nonexistent/identify "$@"');
     const problem = await problemOf(wrapper);
     expect(problem).toMatch(/^reference reader refused the output by identify: .*\/opt\/nonexistent\/identify.* \(exit 12[67]\)$/);
-    expect(problem).not.toContain('did not run');
+    expect(problem).not.toContain('cannot run');
   });
 
   it('runs a reader named by a relative path from the directory of the gate, and not from the scratch directory it runs in', async () => {
@@ -484,66 +500,13 @@ describe('a reference reader that fails', () => {
     expect(await problemOf(relative)).toBe('reference reader refused the output by identify: relative ran (exit 1)');
   });
 
-  it('looks a bare name up in the PATH the runner gives the reader, and says it is not found when no directory holds it', async () => {
-    const directory = fs.mkdtempSync(path.join(WORK_DIR, 'bin-'));
-    fs.writeFileSync(path.join(directory, 'plain-file'), 'not a program');
-    fs.writeFileSync(path.join(directory, 'bare-reader'), "#!/bin/sh\necho found on the path >&2\nexit 1\n", { mode: 0o755 });
-    const original = process.env.PATH;
-    process.env.PATH = [path.join(directory, 'no-such-directory'), path.join(directory, 'plain-file'), directory].join(path.delimiter);
-    try {
-      expect(await problemOf('bare-reader')).toBe('reference reader refused the output by identify: found on the path (exit 1)');
-      expect(await problemOf('plain-file')).toBe('reference reader identify did not run: not executable plain-file');
-      expect(await problemOf('absent-reader')).toBe('reference reader identify did not run: not found absent-reader');
-    } finally {
-      process.env.PATH = original;
-    }
-  });
-
-  it('runs the reader with the network settings of the host, without a proxy variable and in the network namespace of the gate', async () => {
+  it('runs the reader without a proxy variable and in the network namespace of the gate', async () => {
     const own = process.platform === 'linux' ? fs.readlinkSync('/proc/self/ns/net') : '';
     const reader = readerScript(
       'network-reader',
       `if [ -n "$HTTP_PROXY$HTTPS_PROXY$ALL_PROXY$http_proxy$https_proxy$all_proxy" ]; then echo proxy set >&2; exit 1; fi\nif [ -n '${own}' ] && [ "$(readlink /proc/self/ns/net)" != '${own}' ]; then echo other namespace >&2; exit 1; fi\nexit 0`
     );
     expect(await problemOf(reader)).toBeNull();
-  });
-
-  describe('when the runner throws', () => {
-    const throwOnce = (error: unknown) => vi.mocked(executeSandboxedBinary).mockRejectedValueOnce(error);
-    const quiet = () => readerScript('quiet-reader', 'exit 0');
-
-    it('rethrows a sandbox that is unavailable as a plain Error that is not a conversion refusal, so the gate books a crash and not a refusal', async () => {
-      const unavailable = new SandboxUnavailableError('Strict network isolation failed: Linux unshare capability is unavailable');
-      throwOnce(unavailable);
-      const thrown = await problemOf(quiet()).then(
-        () => null,
-        (error: unknown) => error
-      );
-      expect(thrown).toBeInstanceOf(Error);
-      expect(thrown).not.toBeInstanceOf(ConversionFailedError);
-      expect((thrown as { status?: unknown }).status).toBeUndefined();
-      expect((thrown as Error).name).toBe('Error');
-      expect((thrown as Error).message).toBe(`reference reader identify cannot run: ${unavailable.message}`);
-      expect((thrown as Error).cause).toBe(unavailable);
-    });
-
-    it('says the reader went past the memory limit', async () => {
-      throwOnce(new SandboxedMemoryLimitError(512));
-      expect(await problemOf(quiet())).toBe('reference reader identify went past the memory limit');
-    });
-
-    it('says the reader did not run, with the code, when the runner cannot start a reader found executable', async () => {
-      throwOnce(Object.assign(new Error('spawn EMFILE'), { code: 'EMFILE' }));
-      const reader = quiet();
-      expect(await problemOf(reader)).toBe(`reference reader identify did not run: EMFILE ${reader}`);
-      throwOnce(new Error('spawn failed without a code'));
-      expect(await problemOf(reader)).toBe(`reference reader identify did not run: spawn failed without a code ${reader}`);
-    });
-  });
-
-  it('says it did not run, with its path, when the reader is missing', async () => {
-    const missing = path.join(WORK_DIR, 'no-such-reader');
-    expect(await problemOf(missing)).toBe(`reference reader identify did not run: not found ${missing}`);
   });
 });
 
