@@ -297,13 +297,18 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file', () => {
-    expect(jobs.length).toBeGreaterThanOrEqual(28);
+  it('reads every job of every workflow file: 28 on a runner and 4 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(32);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(28);
+    expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(4);
   });
 
-  it('gives each job either a runner or a reusable workflow to run in', () => {
-    const neither = jobs.filter(({ job }) => job['runs-on'] === undefined && typeof job.uses !== 'string').map(({ where }) => where);
-    expect(neither).toEqual([]);
+  it('keeps every reusable workflow a job calls inside this repository', () => {
+    const outside = jobs
+      .filter(({ job }) => job.uses !== undefined)
+      .filter(({ job }) => !String(job.uses).startsWith('./.github/workflows/'))
+      .map(({ where, job }) => `${where}: ${job.uses}`);
+    expect(outside).toEqual([]);
   });
 
   it(`runs every job that names a runner on ${RUNNER_IMAGE}, so that no gate moves with the hosted latest image`, () => {

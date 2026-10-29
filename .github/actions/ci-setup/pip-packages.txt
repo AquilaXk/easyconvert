@@ -5,7 +5,7 @@
 pyarrow==25.0.1
 duckdb==1.5.6
 # DuckDB imports pytz when it hands a TIMESTAMPTZ value to Python (bench/reference-server.py, data.check) and declares no dependency on it.
-pytz==2026.6
+pytz==2026.5
 pymupdf==1.28.2
 python-docx==1.2.0
 openpyxl==3.1.5

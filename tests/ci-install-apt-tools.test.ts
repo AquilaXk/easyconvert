@@ -223,7 +223,15 @@ describe('the committed package list and scripts', () => {
     expect(verify).toContain("'usage: cad-convert'");
     expect(verify).toContain("python3 -I -c 'import trimesh'");
     expect(verify).toContain('cannot import trimesh');
-    expect(tools.slice(tools.indexOf('main() {'))).toMatch(/run_tasks \|\| return 1\n\s+verify_cad_tools/);
+    expect(tools.slice(tools.indexOf('main() {'))).toMatch(/run_tasks \|\| return 1\n\s+verify_cad_tools \|\| return 1\n\s+verify_bench_python_modules\n/);
+  });
+
+  it('pins pytz and checks its import by name, since DuckDB needs it for a TIMESTAMPTZ value and declares no dependency on it', () => {
+    const tools = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
+    const verify = tools.slice(tools.indexOf('verify_bench_python_modules() {'), tools.indexOf('main() {'));
+    expect(readFileSync(path.join(ACTION_DIR, 'pip-packages.txt'), 'utf-8')).toMatch(/^pytz==\d+\.\d+$/m);
+    expect(verify).toContain("python3 -I -c 'import pytz'");
+    expect(verify).toContain('cannot import pytz');
   });
 
   it('installs the ebook converter from a pinned archive over HTTPS only and checks its digest before unpacking it', () => {
