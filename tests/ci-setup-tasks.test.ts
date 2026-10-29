@@ -496,7 +496,7 @@ describe('the benchmark Python module check', () => {
     const bin = path.join(scratch(), 'bin');
     mkdirSync(bin);
     const python = path.join(bin, 'python3');
-    writeFileSync(python, `#!/bin/sh\nif [ "$3" = "import pytz" ]; then echo "ModuleNotFoundError: No module named 'pytz'" >&2; exit ${importExitCode}; fi\nexit 0\n`);
+    writeFileSync(python, `#!/bin/sh\nif [ "$3" = "import pytz" ] && [ ${importExitCode} -ne 0 ]; then echo "ModuleNotFoundError: No module named 'pytz'" >&2; exit ${importExitCode}; fi\nexit 0\n`);
     chmodSync(python, 0o755);
     return runSourced('verify_bench_python_modules', {}, bin);
   }
@@ -512,5 +512,17 @@ describe('the benchmark Python module check', () => {
     const outcome = runCheck(0);
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).not.toContain('::error::');
+    expect(outcome.stdout).toContain('python3 with pytz');
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('fails main with status 1 when every earlier step passes and pytz cannot be imported', () => {
+    const bin = path.join(scratch(), 'bin');
+    mkdirSync(bin);
+    const python = path.join(bin, 'python3');
+    writeFileSync(python, `#!/bin/sh\nif [ "$3" = "import pytz" ]; then echo "ModuleNotFoundError: No module named 'pytz'" >&2; exit 1; fi\nexit 0\n`);
+    chmodSync(python, 0o755);
+    const outcome = runSourced('configure() { return 0; }; select_tasks() { return 0; }; run_tasks() { return 0; }; verify_cad_tools() { return 0; }; main', {}, bin);
+    expect(outcome.status).toBe(1);
+    expect(outcome.stdout).toContain("No module named 'pytz'");
   });
 });
