@@ -27,6 +27,7 @@ interface Step {
 
 interface Job {
   name?: string;
+  'runs-on'?: unknown;
   uses?: string;
   needs?: string | string[];
   if?: string;
@@ -283,6 +284,34 @@ describe('third-party actions', () => {
       expect(pinned.length).toBeGreaterThan(0);
       for (const line of pinned) expect(line).toMatch(SHA_PINNED_COMMENT);
     }
+  });
+});
+
+describe('the runner image of every workflow job', () => {
+  const RUNNER_IMAGE = 'ubuntu-24.04';
+  const jobs = readdirSync(WORKFLOWS)
+    .filter((file) => /\.ya?ml$/.test(file))
+    .sort()
+    .flatMap((file) => {
+      const workflow = parse(read(path.join(WORKFLOWS, file))) as Workflow;
+      return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
+    });
+
+  it('reads every job of every workflow file', () => {
+    expect(jobs.length).toBeGreaterThanOrEqual(28);
+  });
+
+  it('gives each job either a runner or a reusable workflow to run in', () => {
+    const neither = jobs.filter(({ job }) => job['runs-on'] === undefined && typeof job.uses !== 'string').map(({ where }) => where);
+    expect(neither).toEqual([]);
+  });
+
+  it(`runs every job that names a runner on ${RUNNER_IMAGE}, so that no gate moves with the hosted latest image`, () => {
+    const onOtherImage = jobs
+      .filter(({ job }) => job['runs-on'] !== undefined)
+      .filter(({ job }) => job['runs-on'] !== RUNNER_IMAGE)
+      .map(({ where, job }) => `${where}: ${JSON.stringify(job['runs-on'])}`);
+    expect(onOtherImage).toEqual([]);
   });
 });
 
