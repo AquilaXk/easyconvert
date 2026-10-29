@@ -124,6 +124,7 @@ Usage limits
 107. [Conversion options never name a server file: server-only keys are refused on every route, there is no external subtitle file, and a manifest name is a bare file name](#107-conversion-options-never-name-a-server-file-server-only-keys-are-refused-on-every-route-there-is-no-external-subtitle-file-and-a-manifest-name-is-a-bare-file-name)
 108. [SFTP storage: a path, the user and the host are checked before they reach the sftp client, every argument is quoted as the client reads it, and each call keeps its key in a directory of its own and gives the client none of the server's environment](#108-sftp-storage-a-path-the-user-and-the-host-are-checked-before-they-reach-the-sftp-client-every-argument-is-quoted-as-the-client-reads-it-and-each-call-keeps-its-key-in-a-directory-of-its-own-and-gives-the-client-none-of-the-servers-environment)
 109. [MP3 and Ogg sources need FFmpeg: no in-process decoder stands in for it, and the switch that routes a source around FFmpeg is server-only](#109-mp3-and-ogg-sources-need-ffmpeg-no-in-process-decoder-stands-in-for-it-and-the-switch-that-routes-a-source-around-ffmpeg-is-server-only)
+110. [CI runners are pinned to Ubuntu 24.04 until the jobs are moved to the next image on purpose](#110-ci-runners-are-pinned-to-ubuntu-2404-until-the-jobs-are-moved-to-the-next-image-on-purpose)
 
 Delivery
 
@@ -3792,3 +3793,23 @@ Compression
   - **Keeping `decodeOgg` to validate headers and return a typed error**: the page parser had no other use once the decoder returned nothing, so it would be a validator without a decoder behind it; the refusal is typed already.
 - **Verified by**: `tests/media-no-fake-audio-decoders.test.ts` (an MPEG-1 Layer III stream, the same behind an ID3v2 tag, Ogg Vorbis and Opus with audio packets, with headers only, with a short identification packet, cut off mid-page, and bytes named as Ogg, each to WAV and FLAC with `disableNativeEngine` and with `FFMPEG_PATH` pointing at nothing: a 503 naming `ffmpeg` and no output; `decodeAudioBuffer` by hint, by sync word, by `OggS` and behind an ID3v2 tag; the index exports neither function), `tests/server-only-option-paths.test.ts` (the schema and all six routes refuse `disableNativeEngine` by name; every server-only key is refused), and `tests/phase-2-sota-precision.test.ts` (an MP3 written by the reference encoder converts to WAV through FFmpeg with the sample count of an independent FFmpeg decode, and is refused in process). The new tests failed on the code before the change, and each fix was taken out by hand to show its tests fail. Tests changed: the Ogg decode assertions in `tests/phase-1-archive-and-media-fidelity.test.ts` and `tests/phase-3-pure-codecs-parity.test.ts` called the deleted `decodeOgg` on streams it answered with empty PCM or `Unsupported audio format`; they keep the container assertions and the refusal is now tested once, in the new file. The old `decodeMp3` oracle test compared only the length of its output with FFmpeg's and that the samples were not all zero, which noise also satisfies.
 - **Revisit when**: QA wants the media tools to work on a host without FFmpeg (then a decoder is taken from a maintained permissively licensed library, with the reference decoder's output as the oracle, not written here), or an audio format that FFmpeg decodes is added to the in-process WAV and FLAC pipeline.
+
+## 110. CI runners are pinned to Ubuntu 24.04 until the jobs are moved to the next image on purpose
+
+- **Status**: Implemented, decided 2026-10-30 (QA request: keep the nightly and CI gates working).
+- **Decision**:
+  - Every job in `.github/workflows/` runs on `ubuntu-24.04` instead of `ubuntu-latest`, 28 jobs in nine workflows.
+  - The label moves to `ubuntu-26.04` in one change of its own, made when the jobs have been run on that image and pass.
+- **Why**:
+  - The hosted runners move `ubuntu-latest` from Ubuntu 24.04 to 26.04 gradually, between 2026-10-19 and 2026-11-19. Consecutive runs of one workflow can land on either image during that window.
+  - The nightly of 2026-10-29 had jobs on both images. The jobs on 26.04 failed in tool setup: the apt task of the parity quality job failed, and the reference data tool could not import the Python module `pytz`. The same jobs on 24.04 got through setup in the nights before.
+  - A gate whose image changes under it measures the image, not the change. The speed rows compare runs over CI history, and the quality rows depend on the tool versions the image installs.
+  - Pinning the image version is the documented way to opt out of the move until a workflow is ready.
+- **Trade-offs**:
+  - The jobs stay on an older image until the move is made, and miss the newer preinstalled tool versions it carries.
+  - The move becomes a task of its own: the tool setup, the reference tools and the speed history all have to be checked on the new image.
+- **Alternatives rejected**:
+  - **Keep `ubuntu-latest` and fix the setup for 26.04 now.** That would change the image under every gate in the same window as the conversion work. Speed history before and after the move could not be told apart.
+  - **Pin only the failing jobs.** Mixed images within one workflow make a run's results depend on which job landed where.
+- **Verified by**: `grep -rh "runs-on:" .github/workflows` lists 28 jobs, all on `ubuntu-24.04`, and no `ubuntu-latest` remains under `.github/`. The CI run of this change and the next nightly report `Image: ubuntu-24.04` in their runner set-up logs.
+- **Revisit when**: the hosted runners announce the end of support for `ubuntu-24.04`, or the jobs have been run on `ubuntu-26.04` with tool setup, quality and speed rows passing. The move is then one change that switches the label, fixes the setup and restarts the speed history.
