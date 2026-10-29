@@ -1,7 +1,6 @@
 import zlib from 'node:zlib';
 import { ConversionFailedError } from '../types';
 import { copyYielding, CPU_POOL_MIN_BYTES, runCpuTask } from '../workers/cpu-pool';
-import { crc32 } from './crc32';
 
 /**
  * 16-bit RGB PNG writer (PNG Third Edition, W3C): per-row adaptive filtering chosen by the minimum sum of absolute
@@ -162,7 +161,7 @@ function chunk(type: string, data: Uint8Array): Buffer {
   out.writeUInt32BE(data.length, 0);
   out.write(type, 4, 'latin1');
   out.set(data, 8);
-  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
+  out.writeUInt32BE(zlib.crc32(out.subarray(4, 8 + data.length)), 8 + data.length);
   return out;
 }
 

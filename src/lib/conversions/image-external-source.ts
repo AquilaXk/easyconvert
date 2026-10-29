@@ -1,4 +1,4 @@
-import { crc32 } from './crc32';
+import zlib from 'node:zlib';
 import { withUprightOrientation } from './image-orientation';
 import { ConversionFailedError, type ConversionOptions, type ConversionResult } from '../types';
 import { convertImage } from './image';
@@ -72,7 +72,7 @@ export function withUprightExifOrientation(png: Buffer): Buffer {
     if (type === EXIF_CHUNK_TYPE) {
       const out = Buffer.from(png);
       withUprightOrientation(png.subarray(dataStart, dataEnd)).copy(out, dataStart);
-      out.writeUInt32BE(crc32(out.subarray(offset + 4, dataEnd)), dataEnd);
+      out.writeUInt32BE(zlib.crc32(out.subarray(offset + 4, dataEnd)), dataEnd);
       return out;
     }
     offset = dataEnd + PNG_CRC_OFFSET_FROM_END;

@@ -1,6 +1,6 @@
+import zlib from 'node:zlib';
 import sharp from 'sharp';
 import { ConversionFailedError } from '../types';
-import { crc32 } from './archive';
 import { assertFrameCount, RGBA_BYTES_PER_PIXEL } from './image-limits';
 
 /**
@@ -181,7 +181,7 @@ function readChunk(state: ParseState, buffer: Buffer, pos: number): number {
   const dataAt = pos + CHUNK_DATA_OFFSET;
   const end = dataAt + length + CHUNK_CRC_BYTES;
   if (end > buffer.length) throw malformed(`${type} chunk of ${length} bytes runs past the end of the file`);
-  if (crc32(buffer.subarray(pos + CHUNK_LENGTH_BYTES, dataAt + length)) !== buffer.readUInt32BE(dataAt + length)) {
+  if (zlib.crc32(buffer.subarray(pos + CHUNK_LENGTH_BYTES, dataAt + length)) !== buffer.readUInt32BE(dataAt + length)) {
     throw malformed(`CRC mismatch in ${type} chunk`);
   }
   if (!state.sawIhdr && type !== 'IHDR') throw malformed('the first chunk is not IHDR');
@@ -296,7 +296,7 @@ function chunkBytes(type: string, data: Buffer): Buffer {
   out.writeUInt32BE(data.length, 0);
   out.write(type, CHUNK_LENGTH_BYTES, 'latin1');
   data.copy(out, CHUNK_DATA_OFFSET);
-  out.writeUInt32BE(crc32(out.subarray(CHUNK_LENGTH_BYTES, CHUNK_DATA_OFFSET + data.length)), CHUNK_DATA_OFFSET + data.length);
+  out.writeUInt32BE(zlib.crc32(out.subarray(CHUNK_LENGTH_BYTES, CHUNK_DATA_OFFSET + data.length)), CHUNK_DATA_OFFSET + data.length);
   return out;
 }
 

@@ -1,3 +1,4 @@
+import zlib from 'node:zlib';
 import { getMaxInMemoryBytes } from '../storage/errors';
 import type { ArchiveCollisionPolicy } from '../types';
 import {
@@ -13,9 +14,9 @@ import {
   LIMITS,
   MILLISECONDS_PER_SECOND,
   PERMISSION_BITS,
-  TAR_END_OF_ARCHIVE,
   lastEntryPerPath,
   loadSource,
+  pushEndOfArchive,
   pushFileMember,
   sourceBytes,
   tarFromEntries,
@@ -34,7 +35,6 @@ import {
 import { buildTarEntryHeaders, isZipBufferEncrypted, readTarEntries, type TarEntry } from './archive';
 import { NativeBzip2Error, bzip2WithLbzip2, getLbzip2Path, lbzip2MaxInputBytes } from './archive-lbzip2';
 import { NativeDeflateError, deflateRawWithLibdeflate, getLibdeflateGzipPath } from './archive-libdeflate';
-import { crc32 } from './crc32';
 import { DEFLATE_BLOCK_BYTES, deflateRawBlocks } from './deflate-blocks';
 import { ZipWriter, type ZipDeflater, type ZipEntryInput } from './zip-writer';
 
@@ -51,6 +51,8 @@ import { ZipWriter, type ZipDeflater, type ZipEntryInput } from './zip-writer';
  * caller then hands the request to the general pipeline, which re-reads the archive from the start and reports whatever
  * is wrong with its own typed errors. These routes only ever shorten a conversion that would have succeeded; they never
  * decide on a refusal.
+ *
+ * What a result may alias, and who owns the source, is the contract of `StreamedArchive` (archive-stream.ts).
  */
 
 export interface RepackRequest {
@@ -210,7 +212,7 @@ function gzipHeader(level: number, name: string | undefined, mtimeSeconds: numbe
 
 function gzipTrailer(data: Buffer): Buffer {
   const trailer = Buffer.alloc(GZIP_TRAILER_BYTES);
-  trailer.writeUInt32LE(crc32(data), 0);
+  trailer.writeUInt32LE(zlib.crc32(data), 0);
   trailer.writeUInt32LE(data.length % UINT32_MODULUS, 4);
   return trailer;
 }
@@ -281,7 +283,7 @@ function listedFrom(entry: { filename: string; isDirectory: boolean; sizeBytes: 
   return { path: entry.filename, isDirectory: entry.isDirectory, sizeBytes: entry.sizeBytes, linkKind: entry.linkKind ?? null, isSpecial: false };
 }
 
-interface TarMember {
+export interface TarMember {
   filename: string;
   isDirectory: boolean;
   data: Buffer;
@@ -290,7 +292,7 @@ interface TarMember {
 }
 
 /** A tar written from members whose paths and sizes have passed the policy: canonical headers, the end blocks, no mode bits beyond rwx. */
-function tarFromMembers(members: readonly TarMember[]): Uint8Array[] {
+export function tarFromMembers(members: readonly TarMember[]): Uint8Array[] {
   const segments: Uint8Array[] = [];
   for (const member of lastEntryPerPath([...members])) {
     const mtime = member.mtimeMs === undefined ? undefined : new Date(member.mtimeMs);
@@ -300,7 +302,7 @@ function tarFromMembers(members: readonly TarMember[]): Uint8Array[] {
       pushFileMember(segments, member.filename, member.data, member.mode ?? DEFAULT_FILE_MODE, mtime);
     }
   }
-  segments.push(TAR_END_OF_ARCHIVE);
+  pushEndOfArchive(segments);
   return segments;
 }
 

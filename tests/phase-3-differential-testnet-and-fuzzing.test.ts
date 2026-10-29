@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
-import { extractZipArchive, createZipArchive, crc32 } from '../src/lib/conversions/archive';
+import { extractZipArchive, createZipArchive } from '../src/lib/conversions/archive';
 import { decodeWoff2 } from '../src/lib/conversions/font';
 import { Woff2FormatError } from '../src/lib/conversions/font-woff2';
 import { CorruptStreamError } from '../src/lib/types';
@@ -431,13 +431,10 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
 
     });
 
-    describe('2.3 Archive Boundary & CRC-32 Oracle', () => {
-      it('verifies 100% CRC-32 match and file content roundtrip on multi-file archives', async () => {
+    describe('2.3 Archive Round Trip & Path Boundary', () => {
+      it('reads back every file of a multi-file ZIP it wrote, through the reader that checks each stored CRC-32', async () => {
         const file1Content = Buffer.from('Differential testnet text payload 1', 'utf-8');
         const file2Content = Buffer.from('Differential testnet text payload 2 - with more bytes', 'utf-8');
-
-        const crc1Expected = crc32(file1Content);
-        const crc2Expected = crc32(file2Content);
 
         const zipResult = await createZipArchive([
           { filename: 'nested/doc1.txt', buffer: file1Content },
@@ -451,10 +448,10 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         const extFile2 = extracted.find((f) => f.filename === 'doc2.txt');
 
         expect(extFile1).toBeDefined();
-        expect(crc32(extFile1!.buffer)).toBe(crc1Expected);
+        expect(extFile1!.buffer.equals(file1Content)).toBe(true);
 
         expect(extFile2).toBeDefined();
-        expect(crc32(extFile2!.buffer)).toBe(crc2Expected);
+        expect(extFile2!.buffer.equals(file2Content)).toBe(true);
       });
 
       it('prevents directory traversal attacks (zip-slip) by refusing the archive', async () => {

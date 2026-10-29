@@ -176,7 +176,31 @@ export function handOffOutput(
   return finalPath;
 }
 
-/** Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy. */
+/**
+ * Writes `pending` to the descriptor's position with `writev`, and again for what a call left, until none is left. One
+ * call takes any number of buffers, since libuv splits the vector per system call (`IOV_MAX`). The call returns the bytes
+ * it wrote, which may stop inside a range; the call that follows retries what is left, and raises if the failure
+ * persists. A count above the pending bytes cannot come from a working descriptor and is an error.
+ */
+function writeVectored(fd: number, pending: readonly Uint8Array[]): void {
+  let rest = pending;
+  while (rest.length > 0) {
+    const total = fs.writevSync(fd, rest);
+    let written = total;
+    let skipped = 0;
+    while (skipped < rest.length && written >= rest[skipped].byteLength) written -= rest[skipped++].byteLength;
+    if (skipped === rest.length && written > 0) throw new Error('The output file reported more bytes written than were pending.');
+    const next = rest.slice(skipped);
+    if (total === 0 && next.length > 0) throw new Error('The output file accepted no bytes of the write.');
+    if (written > 0) next[0] = next[0].subarray(written);
+    rest = next;
+  }
+}
+
+/**
+ * Writes an output that is already in memory as byte ranges straight to its destination, without a temporary copy, in one
+ * `writev` for the whole list (a tar of 2,000 members is 6,001 ranges), and a short write continues where it stopped.
+ */
 export function writeOutputSegments(
   segments: readonly Uint8Array[],
   targetFormat: string,
@@ -186,12 +210,7 @@ export function writeOutputSegments(
   const finalPath = resolveOutputPath(targetFormat, options, vfsPayload);
   const fd = fs.openSync(finalPath, 'w');
   try {
-    for (const segment of segments) {
-      let written = 0;
-      while (written < segment.length) {
-        written += fs.writeSync(fd, segment, written, segment.length - written);
-      }
-    }
+    writeVectored(fd, segments);
   } finally {
     fs.closeSync(fd);
   }

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
+import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import { ConversionFailedError, PayloadLimitError } from '../types';
-import { crc32 } from './archive';
 import { loadFontCoverageIndex, toDrawableText, type PdfFontFace } from './pdf-fonts';
 import { TextMeter } from './text-wrap';
 import {
@@ -68,7 +68,7 @@ function pngChunk(type: string, data: Buffer): Buffer {
   chunk.writeUInt32BE(data.length, 0);
   chunk.write(type, PNG_CHUNK_TYPE_OFFSET, 'latin1');
   data.copy(chunk, PNG_CHUNK_DATA_OFFSET);
-  chunk.writeUInt32BE(crc32(chunk.subarray(PNG_CHUNK_TYPE_OFFSET, PNG_CHUNK_DATA_OFFSET + data.length)), PNG_CHUNK_DATA_OFFSET + data.length);
+  chunk.writeUInt32BE(zlib.crc32(chunk.subarray(PNG_CHUNK_TYPE_OFFSET, PNG_CHUNK_DATA_OFFSET + data.length)), PNG_CHUNK_DATA_OFFSET + data.length);
   return chunk;
 }
 
