@@ -88,15 +88,31 @@ export interface StreamRunOptions {
 }
 
 /**
- * The converted tar, as the byte ranges to write in order.
+ * The converted archive, as the byte ranges to write in order. This is the one statement of the contract of every route
+ * that returns one (`archive-repack.ts` and the policy entry cite it and do not restate it).
  *
- * The caller owns the input. A segment is a byte range that may view the input (a stored RAR member, an entry of a tar
- * packed into a ZIP that the ZIP stores) or the bytes the archive was unpacked into, and never a buffer that a module owns. It is read
- * only through its `byteOffset` and `byteLength`, never as the whole `segment.buffer`. A write through one result is visible
- * in every other result that views the same input bytes, since two results of one input share its stored members. Padding
- * and end blocks are fresh, disjoint slices (the padding from Node's shared allocation pool), so a write to them reaches no
- * other result. The caller writes the segments out or joins them, keeps a segment as it is only when it is the only one,
- * and copies before it writes to a result or to the input.
+ * Whose bytes. The caller owns `source.buffer`. A `source.filePath` is read by the module (`loadSource`) into a buffer of
+ * its own that the caller never holds; "the input" below is that buffer for such a source, and each call reads its own, so
+ * results of two calls on a file never share bytes. A route that unpacks a stream (gzip, xz, bzip2, 7-Zip) owns the bytes
+ * it unpacked into and gives them up with the result.
+ *
+ * What a segment is. A byte range, read only through its `byteOffset` and `byteLength`, never as the whole
+ * `segment.buffer`. It is one of three things:
+ * - Fresh: headers, ZIP structures, compressed output, the files `sevenZipToTar` extracted, and on the routes that
+ *   return several segments the padding and the end blocks. Each is its own slice, disjoint from the input and from
+ *   every other result (padding is a zeroed slice of Node's shared allocation pool, the end blocks a new buffer), so a
+ *   write to it reaches nothing else.
+ * - A view of the input. The routes are `rarToTar` (a stored RAR member) and `tarToZip` (an entry the ZIP stores: level 0,
+ *   no deflate gain, or a precompressed name such as `x.png`). `zipToTar` does not: the reader copies a stored ZIP member.
+ * - A view of the unpacked bytes: the body that `wrapAsMember` wraps, and the bodies of a tar that `gzipToTar` or
+ *   `streamToTar` unpacked.
+ * `tarSegmentsOverUnpacked` and `wrapInPlace` return a single segment that is a view of the unpacked bytes or of the
+ * frame; there the padding and the end blocks are not slices of their own but bytes written inside that one view.
+ *
+ * Aliasing. A write through a segment that views the input is a write to the input, and shows in every other result of
+ * the same `source.buffer` that views those bytes. Nothing in the project writes through a result. The caller writes the
+ * segments out or joins them, keeps a segment as it is only when it is the only one, and copies before it writes to a
+ * result or to the input.
  */
 export interface StreamedArchive {
   segments: Uint8Array[];
@@ -128,9 +144,10 @@ function blockPadding(length: number): number {
 }
 
 /**
- * Padding and end blocks are fresh zeros in every tar, each its own slice and disjoint from every other segment, because
- * whoever holds a result may write to it. The end blocks are a new buffer; padding is a zeroed slice of Node's shared
- * allocation pool, since a new ArrayBuffer for each member shows on a tar of 2,000 members.
+ * Padding for the routes that return several segments: a zeroed slice of Node's shared allocation pool (a new ArrayBuffer
+ * for each member shows on a tar of 2,000 members). The pool is shared by every slice of it, so the slice must be zeroed
+ * here, and a segment of it is a byte range that is read only through its offset and length. The in-place routes write
+ * their zeros inside their own view instead (see `StreamedArchive`).
  */
 export function pushPadding(segments: Uint8Array[], length: number): void {
   const padding = blockPadding(length);

@@ -52,11 +52,7 @@ import { ZipWriter, type ZipDeflater, type ZipEntryInput } from './zip-writer';
  * is wrong with its own typed errors. These routes only ever shorten a conversion that would have succeeded; they never
  * decide on a refusal.
  *
- * The segments of a result follow the contract of `StreamedArchive` (archive-stream.ts). The caller owns the source. The
- * segments are byte ranges that may view it (the stored member of a RAR, an entry of a tar packed into a ZIP that the ZIP stores,
- * the bodies of a tar), never a buffer of this module, and are read only with their offset and length. A write through a result
- * is visible in any other result that views the same source bytes. Headers, padding and end blocks are fresh, disjoint
- * slices in every result (the padding from Node's shared allocation pool).
+ * What a result may alias, and who owns the source, is the contract of `StreamedArchive` (archive-stream.ts).
  */
 
 export interface RepackRequest {
