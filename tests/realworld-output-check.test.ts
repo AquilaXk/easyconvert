@@ -31,8 +31,7 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
 const READER_TIMEOUT_MS = 3000;
-const READER_OUTPUT_LIMIT_BYTES = 1024 * 1024;
-const KILL_GRACE_MS = 5000;
+const TIMEOUT_MARGIN_MS = 2000;
 const LOCAL_HEADER = Buffer.from('PK\u0003\u0004', 'latin1');
 const CENTRAL_HEADER = Buffer.from('PK\u0001\u0002', 'latin1');
 const LOCAL_HEADER_BYTES = 30;
@@ -40,6 +39,7 @@ const LOCAL_NAME_LENGTH_OFFSET = 26;
 const LOCAL_EXTRA_LENGTH_OFFSET = 28;
 const RESERVED_BLOCK_TYPE = 0x07;
 const CENTRAL_CRC_OFFSET = 16;
+const LOCAL_CRC_OFFSET = 14;
 const OBJ = Buffer.from('# model\nmtllib x.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Mat_1\nf 1 2 3\n');
 const MTL = Buffer.from(
   '# Exported by Open CASCADE Technology [dev.opencascade.org]\nnewmtl Mat_1\nKa 0.200000 0.025000 0.025000\nKd 0.800000 0.100000 0.100000\nKs 0.000000 0.000000 0.000000\nNs 0.000000\nTr 0.500000\n'
@@ -51,6 +51,13 @@ const TRIANGLE = 'v 0 0 0\nv 1 0 0\nv 0 1 0\n';
 function withCentralCrcDamaged(archive: Buffer): Buffer {
   const damaged = Buffer.from(archive);
   for (let at = damaged.indexOf(CENTRAL_HEADER); at !== -1; at = damaged.indexOf(CENTRAL_HEADER, at + 1)) damaged[at + CENTRAL_CRC_OFFSET] ^= 0xff;
+  return damaged;
+}
+
+/** A copy of the ZIP with the CRC-32 of each entry damaged in its local header only; JSZip does not read that copy. */
+function withLocalCrcDamaged(archive: Buffer): Buffer {
+  const damaged = Buffer.from(archive);
+  for (let at = damaged.indexOf(LOCAL_HEADER); at !== -1; at = damaged.indexOf(LOCAL_HEADER, at + 1)) damaged[at + LOCAL_CRC_OFFSET] ^= 0xff;
   return damaged;
 }
 
@@ -262,9 +269,36 @@ describe('a reference reader that fails', () => {
     expect(await problemOf(reader)).toBeNull();
   });
 
-  it('says the reader printed too much to stderr when it passes 1 MiB there', async () => {
+  it('accepts the output of a reader that prints 2 MiB of warnings to stderr and exits 0, as the reader\'s exit status decides', async () => {
     const reader = readerScript('loud-stderr-reader', 'head -c 2097152 /dev/zero | tr "\\0" "x" >&2\nexit 0');
-    expect(await problemOf(reader)).toBe(`reference reader identify printed more than ${READER_OUTPUT_LIMIT_BYTES} bytes to stderr`);
+    expect(await problemOf(reader)).toBeNull();
+  });
+
+  it('quotes the first line of stderr of a reader that prints 2 MiB there and exits non-zero', async () => {
+    const reader = readerScript('loud-failing-reader', "echo the cause >&2\nhead -c 2097152 /dev/zero | tr \"\\0\" \"x\" >&2\nexit 1");
+    expect(await problemOf(reader)).toBe('reference reader refused the output by identify: the cause (exit 1)');
+  });
+
+  it('keeps what a reader killed at the timeout leaves in its temporary directory inside the work directory, and removes it', async () => {
+    const work = fs.mkdtempSync(path.join(WORK_DIR, 'killed-'));
+    const record = path.join(work, 'record');
+    const reader = readerScript('leaking-reader', `printf '%s\\n%s\\n' "$MAGICK_TEMPORARY_PATH" "$TMPDIR" > '${record}'\necho cache > "$MAGICK_TEMPORARY_PATH/magick-cache"\ntrap '' TERM\nexec sleep 30`);
+    expect(await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader, readerTimeoutMs: 500 })).toBe('reference reader identify timed out');
+    const [magickPath, tmpDir] = fs.readFileSync(record, 'utf8').trim().split('\n');
+    expect(magickPath).toBe(tmpDir);
+    expect(path.relative(work, magickPath).startsWith('..')).toBe(false);
+    expect(magickPath).not.toBe(os.tmpdir());
+    expect(fs.existsSync(magickPath)).toBe(false);
+  });
+
+  it('judges a %PDF- output by pdfinfo, and an image target never by pdfinfo', async () => {
+    const pdf = Buffer.from('%PDF-1.4\n%%EOF\n');
+    const failing = readerPrinting('failing-pdfinfo', 'Syntax Error: cannot read xref table');
+    expect(await outputProblem(pdf, 'pdf', WORK_DIR, { pdfinfo: failing, identify: '' })).toBe("reference reader refused the output by pdfinfo: Syntax Error: cannot read xref table (exit 1)");
+    expect(await outputProblem(pdf, 'pdf', WORK_DIR, { pdfinfo: '', identify: failing })).toBeNull();
+    expect(await outputProblem(PNG, 'png', WORK_DIR, { pdfinfo: failing, identify: '' })).toBeNull();
+    const missing = path.join(WORK_DIR, 'no-such-pdfinfo');
+    expect(await outputProblem(pdf, 'pdf', WORK_DIR, { pdfinfo: missing, identify: '' })).toBe(`reference reader pdfinfo did not run: ENOENT ${missing}`);
   });
 
   it('says the reader did not run, with the error code, when the file cannot be executed', async () => {
@@ -277,7 +311,7 @@ describe('a reference reader that fails', () => {
     const reader = readerScript('stubborn-reader', "trap '' TERM\nexec sleep 30");
     const started = Date.now();
     expect(await problemOf(reader, 500)).toBe('reference reader identify timed out');
-    expect(Date.now() - started).toBeLessThan(500 + KILL_GRACE_MS);
+    expect(Date.now() - started).toBeLessThan(500 + TIMEOUT_MARGIN_MS);
   });
 
   it('says it did not run, with its path, when the reader is missing', async () => {
@@ -294,6 +328,10 @@ describe('a page archive', () => {
     const archive = await zipOf({ 'doc-1.png': PNG });
     expect(await archiveProblem(archive)).toBeNull();
     expect(await archiveProblem(withCentralCrcDamaged(archive))).toBe('png page archive has an entry whose CRC-32 is wrong');
+  });
+
+  it('is accepted when only the CRC-32 in the local header of a page is wrong, as only the central copy is checked', async () => {
+    expect(await archiveProblem(withLocalCrcDamaged(await zipOf({ 'doc-1.png': PNG })))).toBeNull();
   });
 
   it('is refused as not readable, and not as a wrong CRC-32, when a page does not inflate but its CRC-32 is intact', async () => {

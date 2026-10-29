@@ -23,12 +23,12 @@
  * createDeflatedZipBuffer). It does not judge uploads or archives made by an attacker; a guard against a shape the writers cannot produce is out of scope.
  *
  * Bounds on the text layer, so that reading a file costs no more than its size, in lines, fields and tokens a message quotes. Each is marked as
- * derived from a writer or as the check's own; no writer has a limit for the check's own. They do not bound what a ZIP inflates to: the archive
- * is the converter's own output.
+ * derived from a writer or as the check's own; a writer has no limit for the check's own. They do not bound what a ZIP inflates to: the
+ * archive is the converter's own output.
  * - MAX_LINE_BYTES, 1 MiB, is the check's own. A line is checked before it is decoded. writeObj's longest line is under 100 bytes (a vertex of about 60
  *   bytes, an mtllib of at most 75). encodeObj writes as many corners as its input face has, and its input type holds triangles, so no face it writes
- *   today has more than 3 corners; it has no cap on the `o` name either. A corner is at most 23 bytes (`i//i` with two 10-digit indices and a blank), so 1 MiB holds a face of
- *   about 45,000 corners. The bound guards the reader's robustness, not a shape a writer emits, and the faces of the 14 corpus models have 3 corners.
+ *   today has more than 3 corners; it has no cap on the `o` name either. A corner is at most 23 bytes (`i//i` with two 10-digit indices and a blank), so 1 MiB holds a face of about
+ *   45,000 corners. The bound guards the reader's robustness, not a shape a writer emits, and the faces of the 14 corpus models have 3 corners.
  * - MAX_NUMBER_CHARS, 64, is the check's own: the longest number, and the longest index of a face corner. The number pattern has one way to match each
  *   string, so it runs in time linear in the field, and the field length is checked first.
  * - MAX_LIBRARY_NAME_CHARS is derived from a writer: outputStem (cad-occt.ts) caps the stem at MAX_OUTPUT_NAME_CHARS (cad-output-name.ts, a module
