@@ -124,12 +124,12 @@ Usage limits
 107. [Conversion options never name a server file: server-only keys are refused on every route, there is no external subtitle file, and a manifest name is a bare file name](#107-conversion-options-never-name-a-server-file-server-only-keys-are-refused-on-every-route-there-is-no-external-subtitle-file-and-a-manifest-name-is-a-bare-file-name)
 108. [SFTP storage: a path, the user and the host are checked before they reach the sftp client, every argument is quoted as the client reads it, and each call keeps its key in a directory of its own and gives the client none of the server's environment](#108-sftp-storage-a-path-the-user-and-the-host-are-checked-before-they-reach-the-sftp-client-every-argument-is-quoted-as-the-client-reads-it-and-each-call-keeps-its-key-in-a-directory-of-its-own-and-gives-the-client-none-of-the-servers-environment)
 109. [MP3 and Ogg sources need FFmpeg: no in-process decoder stands in for it, and the switch that routes a source around FFmpeg is server-only](#109-mp3-and-ogg-sources-need-ffmpeg-no-in-process-decoder-stands-in-for-it-and-the-switch-that-routes-a-source-around-ffmpeg-is-server-only)
-110. [CI runners are pinned to Ubuntu 24.04 until the jobs are moved to the next image on purpose](#110-ci-runners-are-pinned-to-ubuntu-2404-until-the-jobs-are-moved-to-the-next-image-on-purpose)
 
 Delivery
 
 32. [Code smell ratchet](#32-code-smell-ratchet)
 47. [Merging without the up-to-date requirement](#47-merging-without-the-up-to-date-requirement)
+110. [CI runners are pinned to Ubuntu 24.04 until the jobs are moved to the next image on purpose](#110-ci-runners-are-pinned-to-ubuntu-2404-until-the-jobs-are-moved-to-the-next-image-on-purpose)
 
 Quality evidence
 
@@ -3796,20 +3796,24 @@ Compression
 
 ## 110. CI runners are pinned to Ubuntu 24.04 until the jobs are moved to the next image on purpose
 
-- **Status**: Implemented, decided 2026-10-30 (QA request: keep the nightly and CI gates working).
+- **Status**: Implemented, decided 2026-10-30 (QA request: keep the nightly and CI gates working). The pin fixes the label, not the image build, and this change does not claim a green nightly. The nightly stays red from other causes: the cold apt cache after an image rotation (a row of issue 763) and the AVIF speed rows of issue 641.
 - **Decision**:
-  - Every job in `.github/workflows/` runs on `ubuntu-24.04` instead of `ubuntu-latest`, 28 jobs in nine workflows.
+  - Every job in `.github/workflows/` that names a runner uses `ubuntu-24.04` instead of `ubuntu-latest`, 28 jobs in nine workflows. The four jobs that call a reusable workflow with `uses:` name no runner.
+  - `tests/ci-workflows.test.ts` holds the rule: a job that names a runner names exactly `ubuntu-24.04`, and every job names a runner or a reusable workflow.
+  - `pytz` is pinned in `.github/actions/ci-setup/pip-packages.txt` (2026.6), and `install-tools.sh` checks `python3 -I -c 'import pytz'` beside the `trimesh` check.
   - The label moves to `ubuntu-26.04` in one change of its own, made when the jobs have been run on that image and pass.
 - **Why**:
-  - The hosted runners move `ubuntu-latest` from Ubuntu 24.04 to 26.04 gradually, between 2026-10-19 and 2026-11-19. Consecutive runs of one workflow can land on either image during that window.
-  - The nightly of 2026-10-29 had jobs on both images. The jobs on 26.04 failed in tool setup: the apt task of the parity quality job failed, and the reference data tool could not import the Python module `pytz`. The same jobs on 24.04 got through setup in the nights before.
+  - The hosted runners move `ubuntu-latest` from Ubuntu 24.04 to 26.04 gradually, between 2026-10-19 and 2026-11-19. The image changes per run, not within one: the nightlies of 2026-10-26, 10-27 and 10-28 ran 24 of 24 jobs on `ubuntu-24.04`, and the nightly of 2026-10-29 (run 40845395326) ran 24 of 24 on `ubuntu-26.04`.
+  - On 26.04 the benchmark step failed in `data.check` of `bench/reference-server.py`: DuckDB imports `pytz` when it returns a TIMESTAMPTZ value to Python, and `pytz` was in neither `pip-packages.txt` nor `apt-packages.txt`. It was an undeclared dependency that 24.04 happened to carry, and this change declares it. In a clean virtual environment with the pinned list, reading a TIMESTAMPTZ Parquet column through `read_parquet_duckdb` fails with `Required module 'pytz' failed to import` and returns the row once `pytz==2026.6` is installed.
+  - The two apt failures of the same night (`bench-parity-quality (image)` and `(video)`) are not an image defect. Both are `task apt exceeded its limit of 300s` with an empty `APT_CACHE_HIT`: the package cache is keyed on the image version, so the first run on a new image build downloads everything inside the limit. `realworld (2)` on 24.04 failed the same way on 2026-10-28. This change does not fix it, and a row for it is in issue 763.
   - A gate whose image changes under it measures the image, not the change. The speed rows compare runs over CI history, and the quality rows depend on the tool versions the image installs.
   - Pinning the image version is the documented way to opt out of the move until a workflow is ready.
 - **Trade-offs**:
+  - The pin fixes the label but not the image build. The runner provider still rebuilds the `ubuntu-24.04` image weekly, and each new build changes the image version that keys the caches, so the apt cache starts cold after every rotation.
   - The jobs stay on an older image until the move is made, and miss the newer preinstalled tool versions it carries.
   - The move becomes a task of its own: the tool setup, the reference tools and the speed history all have to be checked on the new image.
 - **Alternatives rejected**:
   - **Keep `ubuntu-latest` and fix the setup for 26.04 now.** That would change the image under every gate in the same window as the conversion work. Speed history before and after the move could not be told apart.
-  - **Pin only the failing jobs.** Mixed images within one workflow make a run's results depend on which job landed where.
-- **Verified by**: `grep -rh "runs-on:" .github/workflows` lists 28 jobs, all on `ubuntu-24.04`, and no `ubuntu-latest` remains under `.github/`. The CI run of this change and the next nightly report `Image: ubuntu-24.04` in their runner set-up logs.
-- **Revisit when**: the hosted runners announce the end of support for `ubuntu-24.04`, or the jobs have been run on `ubuntu-26.04` with tool setup, quality and speed rows passing. The move is then one change that switches the label, fixes the setup and restarts the speed history.
+  - **Pin only the failing jobs.** One rule and one label are easier to hold than a list of exceptions: with a single label, a test can assert it for every job, and a job added later cannot start on another image unnoticed.
+- **Verified by**: `tests/ci-workflows.test.ts` (the group "the runner image of every workflow job" reads every file under `.github/workflows/`; red with one job set back to `ubuntu-latest`, where it names the file, the job and the label, and green with the 28 jobs on `ubuntu-24.04`), and `grep -rh "runs-on:" .github/workflows`, which lists 28 jobs, all on `ubuntu-24.04`. The CI run of this change and the next nightly report `Image: ubuntu-24.04` in their runner set-up logs.
+- **Revisit when**: the hosted runners announce the end of support for `ubuntu-24.04`, or the jobs have been run on `ubuntu-26.04` with tool setup, quality and speed rows passing. The move is then one change that switches the label, fixes the setup (the apt cold-cache limit included) and restarts the speed history.
