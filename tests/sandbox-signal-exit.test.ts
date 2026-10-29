@@ -108,6 +108,17 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
         })
       ).rejects.toThrow('Pre-aborted signal');
     });
+
+    it('keeps the spawn error code of a binary that cannot be started, and leaves it unset for a program that exits with the same status', async () => {
+      const missing = (await executeSandboxedBinary('/nonexistent/program', [], { networkIsolated: false }).catch((e: unknown) => e)) as SandboxedProcessError;
+      expect(missing).toBeInstanceOf(SandboxedProcessError);
+      expect(missing.exitCode).toBe(127);
+      expect(missing.spawnErrorCode).toBe('ENOENT');
+      const exited = (await executeSandboxedBinary('/bin/sh', ['-c', 'exit 127'], { networkIsolated: false }).catch((e: unknown) => e)) as SandboxedProcessError;
+      expect(exited).toBeInstanceOf(SandboxedProcessError);
+      expect(exited.exitCode).toBe(127);
+      expect(exited.spawnErrorCode).toBeUndefined();
+    });
   });
 
   describe('2. Native Engine Swallowed Error Elimination & No-Output Fail-Closed', () => {

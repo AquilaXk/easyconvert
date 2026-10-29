@@ -58,6 +58,8 @@ export class SandboxedProcessError extends Error {
   public signal: NodeJS.Signals | null;
   /** What the process printed before it failed; some tools print a report and exit non-zero. */
   public stdout: string;
+  /** The Node error code (ENOENT, EACCES, ENOEXEC) of a process that could not be started; unset when the process ran and exited. */
+  public spawnErrorCode?: string;
 
   constructor(
     message: string,
@@ -578,15 +580,16 @@ const SPAWN_NOT_FOUND_STATUS = 127;
 
 /**
  * A process that could not be started fails the same way whether or not a confinement wrapper ran
- * it: as a SandboxedProcessError carrying the shell's status, so callers see one typed error.
+ * it: as a SandboxedProcessError carrying the shell's status, so callers see one typed error. The status alone does not
+ * tell a failed start from a program that exited with it, so spawnErrorCode keeps the code of the start failure.
  */
 function spawnFailureError(err: Error): Error {
   const code = (err as NodeJS.ErrnoException).code;
-  if (code === 'ENOENT') {
-    return new SandboxedProcessError(`Sandboxed execution error: ${err.message}`, SPAWN_NOT_FOUND_STATUS, err.message);
-  }
-  if (code === 'EACCES' || code === 'ENOEXEC') {
-    return new SandboxedProcessError(`Sandboxed execution error: ${err.message}`, SPAWN_NOT_EXECUTABLE_STATUS, err.message);
+  if (code === 'ENOENT' || code === 'EACCES' || code === 'ENOEXEC') {
+    const status = code === 'ENOENT' ? SPAWN_NOT_FOUND_STATUS : SPAWN_NOT_EXECUTABLE_STATUS;
+    const failure = new SandboxedProcessError(`Sandboxed execution error: ${err.message}`, status, err.message);
+    failure.spawnErrorCode = code;
+    return failure;
   }
   return err;
 }
