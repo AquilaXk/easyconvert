@@ -12,7 +12,7 @@ jobs:
   review:
     # Secrets are unavailable to fork PRs; skip drafts and forks.
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read

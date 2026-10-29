@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -27,6 +27,7 @@ interface Step {
 
 interface Job {
   name?: string;
+  'runs-on'?: unknown;
   uses?: string;
   needs?: string | string[];
   if?: string;
@@ -283,6 +284,58 @@ describe('third-party actions', () => {
       expect(pinned.length).toBeGreaterThan(0);
       for (const line of pinned) expect(line).toMatch(SHA_PINNED_COMMENT);
     }
+  });
+});
+
+describe('the runner image of every workflow job', () => {
+  const RUNNER_IMAGE = 'ubuntu-24.04';
+  const jobs = readdirSync(WORKFLOWS)
+    .filter((file) => /\.ya?ml$/.test(file))
+    .sort()
+    .flatMap((file) => {
+      const workflow = parse(read(path.join(WORKFLOWS, file))) as Workflow;
+      return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
+    });
+
+  it('reads every job of every workflow file: 28 on a runner and 4 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(32);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(28);
+    expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(4);
+  });
+
+  it('points every local uses, of a job and of a step, at a file of this repository (a step names the folder of its action.yml)', () => {
+    const targets = jobs.flatMap(({ where, job }) => [
+      { where, uses: job.uses },
+      ...(job.steps ?? []).map((step) => ({ where, uses: step.uses })),
+    ]).filter((entry): entry is { where: string; uses: string } => typeof entry.uses === 'string' && entry.uses.startsWith('./'));
+    expect(targets.length).toBeGreaterThan(0);
+    const missing = targets
+      .filter(({ uses }) => !existsSync(path.join(ROOT, uses.endsWith('.yml') || uses.endsWith('.yaml') ? uses : path.join(uses, 'action.yml'))))
+      .map(({ where, uses }) => `${where}: ${uses}`);
+    expect(missing).toEqual([]);
+  });
+
+  it('gives every job exactly one of a runner and a reusable workflow to call', () => {
+    const notExactlyOne = jobs
+      .filter(({ job }) => (job['runs-on'] !== undefined) === (job.uses !== undefined))
+      .map(({ where, job }) => `${where}: runs-on ${JSON.stringify(job['runs-on'])}, uses ${JSON.stringify(job.uses)}`);
+    expect(notExactlyOne).toEqual([]);
+  });
+
+  it('keeps every reusable workflow a job calls inside this repository', () => {
+    const outside = jobs
+      .filter(({ job }) => job.uses !== undefined)
+      .filter(({ job }) => !/^\.\/\.github\/workflows\/[^/]+\.ya?ml$/.test(String(job.uses)))
+      .map(({ where, job }) => `${where}: ${job.uses}`);
+    expect(outside).toEqual([]);
+  });
+
+  it(`runs every job that names a runner on ${RUNNER_IMAGE}, so that no gate moves with the hosted latest image`, () => {
+    const onOtherImage = jobs
+      .filter(({ job }) => job['runs-on'] !== undefined)
+      .filter(({ job }) => job['runs-on'] !== RUNNER_IMAGE)
+      .map(({ where, job }) => `${where}: ${JSON.stringify(job['runs-on'])}`);
+    expect(onOtherImage).toEqual([]);
   });
 });
 

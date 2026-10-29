@@ -490,3 +490,60 @@ chmod 755 "$1/bin/gxps"
     expect(existsSync(path.join(stub.cacheDir, 'gxps.sha256'))).toBe(true);
   });
 });
+
+describe('the benchmark Python module check', () => {
+  /** A python3 that succeeds silently for every call, except `-I -c 'import pytz'` when `pytzImports` is false. */
+  function stubPython(pytzImports: boolean): string {
+    const bin = path.join(scratch(), 'bin');
+    mkdirSync(bin);
+    const python = path.join(bin, 'python3');
+    const body = pytzImports
+      ? 'exit 0'
+      : `if [ "$3" = "import pytz" ]; then echo "ModuleNotFoundError: No module named 'pytz'" >&2; exit 1; fi\nexit 0`;
+    writeFileSync(python, `#!/bin/sh\n${body}\n`);
+    chmodSync(python, 0o755);
+    return bin;
+  }
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('fails the step with an error line when pytz cannot be imported', () => {
+    const outcome = runSourced('verify_bench_python_modules', {}, stubPython(false));
+    expect(outcome.status).toBe(1);
+    expect(outcome.stdout).toContain('::error::');
+    expect(outcome.stdout).toContain("No module named 'pytz'");
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('passes when pytz imports', () => {
+    const outcome = runSourced('verify_bench_python_modules', {}, stubPython(true));
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).not.toContain('::error::');
+    expect(outcome.stdout).toContain('python3 with pytz');
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('fails main with status 1 when every earlier step passes and pytz cannot be imported', () => {
+    const outcome = runSourced('configure() { return 0; }; select_tasks() { return 0; }; run_tasks() { return 0; }; verify_cad_tools() { return 0; }; main', {}, stubPython(false));
+    expect(outcome.status).toBe(1);
+    expect(outcome.stdout).toContain("No module named 'pytz'");
+  });
+});
+
+describe('main stops at the first step that fails', () => {
+  const STEPS = ['configure', 'select_tasks', 'run_tasks', 'verify_cad_tools', 'verify_bench_python_modules'];
+
+  /** `configure` ends the process itself with `exit 1` and `select_tasks` cannot fail; these two return their status. */
+  it.skipIf(skipUnless(NEEDS, canRunSetup)).each(['run_tasks', 'verify_cad_tools'])('returns 1 and runs no later step when %s fails', (failing) => {
+    const log = path.join(scratch(), 'steps.log');
+    const stubs = STEPS.map((step) => `${step}() { echo ${step} >> "$STEP_LOG"; return ${step === failing ? 1 : 0}; }`).join('\n');
+    const outcome = runSourced(`${stubs}\nmain`, { STEP_LOG: log });
+    expect(outcome.status, outcome.stderr).toBe(1);
+    const ran = readFileSync(log, 'utf-8').trim().split('\n');
+    expect(ran).toEqual(STEPS.slice(0, STEPS.indexOf(failing) + 1));
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('runs every step and returns 0 when none fails', () => {
+    const log = path.join(scratch(), 'steps.log');
+    const stubs = STEPS.map((step) => `${step}() { echo ${step} >> "$STEP_LOG"; return 0; }`).join('\n');
+    const outcome = runSourced(`${stubs}\nmain`, { STEP_LOG: log });
+    expect(outcome.status, outcome.stderr).toBe(0);
+    expect(readFileSync(log, 'utf-8').trim().split('\n')).toEqual(STEPS);
+  });
+});

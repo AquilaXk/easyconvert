@@ -34,7 +34,7 @@ jobs:
   # Timing comparisons run one file at a time, so a suite neither starves the others nor is starved by them.
   perf:
     needs: sharp-libvips
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     services:
@@ -89,7 +89,7 @@ jobs:
   # Output quality against reference encoders, gated on bench/baseline.json.
   bench:
     needs: sharp-libvips
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     services:
@@ -159,7 +159,7 @@ jobs:
   bench-parity-quality:
     name: bench-parity-quality (${{ matrix.group }})
     needs: sharp-libvips
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -269,7 +269,7 @@ jobs:
   bench-parity-speed:
     if: inputs.ab_base_ref == ''
     needs: sharp-libvips
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     services:
@@ -366,7 +366,7 @@ jobs:
     if: inputs.ab_base_ref != ''
     needs: sharp-libvips
     name: bench-ab-speed (${{ matrix.family }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -464,7 +464,7 @@ jobs:
 
   # The dependency licence gate arrives with its own script; until the script exists the job says so and passes.
   licenses:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
@@ -493,7 +493,7 @@ jobs:
   # of any pair's typed-refusal rate past bench/realworld/baseline.json. Files are fetched by digest and cached per shard.
   realworld:
     needs: sharp-libvips
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -549,7 +549,7 @@ jobs:
   realworld-gate:
     needs: [realworld]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
