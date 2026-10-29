@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { SpawnOptions } from 'node:child_process';
 import JSZip from 'jszip';
 import {
   MAX_LIBRARY_NAME_CHARS,
@@ -28,10 +29,21 @@ import { requireRealworldSample } from './helpers/realworld-sample';
  * statements their writers emit; the ZIPs here come from the writer's own function and from JSZip, an independent writer.
  */
 
+const spawnHook = vi.hoisted(() => ({ replacement: undefined as undefined | ((command: string) => unknown) }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawn: (command: string, args: string[], options: SpawnOptions) => spawnHook.replacement?.(command) ?? actual.spawn(command, args, options),
+  };
+});
+
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
 const READER_TIMEOUT_MS = 3000;
-const TIMEOUT_MARGIN_MS = 5000;
+const TIMEOUT_MARGIN_MS = 2000;
+/** The reader that is killed and whose descendant keeps the pipe open; the verdict must not wait for the descendant, which sleeps for 8 s. */
+const DESCENDANT_SLEEP_S = 8;
 const LOCAL_HEADER = Buffer.from('PK\u0003\u0004', 'latin1');
 const CENTRAL_HEADER = Buffer.from('PK\u0001\u0002', 'latin1');
 const LOCAL_HEADER_BYTES = 30;
@@ -225,6 +237,8 @@ describe('a reference reader that fails', () => {
   const readerPrinting = (name: string, message: string): string => readerScript(name, `printf '%s\\n' '${message}' >&2\nexit 1`);
   const problemOf = (identify: string, readerTimeoutMs?: number) => outputProblem(PNG, 'png', WORK_DIR, { pdfinfo: '', identify, readerTimeoutMs });
 
+  // The expected strings below spell out "reference reader refused the output by <name>"; the gate and these tests are coupled through that shape, which a regex in the corpus test matches too.
+
   it('is quoted beyond the length of a token of the file, so the tail that names the cause survives', async () => {
     const message = `identify: ${'a'.repeat(100)} @ error/png.c/ReadPNGImage/3962`;
     expect(message.length).toBeGreaterThan(MAX_SHOWN_CHARS);
@@ -279,10 +293,9 @@ describe('a reference reader that fails', () => {
     expect(await problemOf(reader)).toBe('reference reader refused the output by identify: the cause (exit 1)');
   });
 
-  // The expected strings below spell out "reference reader refused the output by <name>"; the gate and these tests are coupled through that shape, which a regex in the corpus test matches too.
   const readerDirsIn = (dir: string): string[] => fs.readdirSync(dir).filter((name) => name.startsWith('reader-'));
 
-  it('keeps what a reader killed at the timeout leaves in its temporary directory inside the work directory, and removes it', async () => {
+  it('keeps what a reader killed at the timeout leaves in its temporary directory inside the work directory, and removes it', { timeout: 15_000 }, async () => {
     const work = fs.mkdtempSync(path.join(WORK_DIR, 'killed-'));
     const record = path.join(work, 'record');
     const reader = readerScript('leaking-reader', `printf '%s\\n%s\\n' "$MAGICK_TEMPORARY_PATH" "$TMPDIR" > '${record}'\necho cache > "$MAGICK_TEMPORARY_PATH/magick-cache"\ntrap '' TERM\nexec sleep 30`);
@@ -337,7 +350,7 @@ describe('a reference reader that fails', () => {
     });
     try {
       expect(await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader })).toBeNull();
-      expect(spy).toHaveBeenCalled();
+      expect(spy.mock.results.some((result) => result.type === 'throw')).toBe(true);
     } finally {
       spy.mockRestore();
     }
@@ -350,7 +363,9 @@ describe('a reference reader that fails', () => {
     const reader = readerScript('never-started-reader', 'exit 0');
     fs.chmodSync(work, 0o555);
     try {
-      await expect(outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader })).rejects.toThrow(/EACCES/);
+      const run = outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader });
+      await expect(run).rejects.toThrow(/EACCES/);
+      await expect(run).rejects.not.toThrow(/did not run/);
     } finally {
       fs.chmodSync(work, 0o755);
     }
@@ -377,6 +392,36 @@ describe('a reference reader that fails', () => {
     const started = Date.now();
     expect(await problemOf(reader, 500)).toBe('reference reader identify timed out');
     expect(Date.now() - started).toBeLessThan(500 + TIMEOUT_MARGIN_MS);
+  });
+
+  it('returns the verdict of a reader that ends while a descendant holds its stderr, without waiting for the descendant', { timeout: 6000 }, async () => {
+    const started = Date.now();
+    const timedOut = await problemOf(readerScript('forking-timeout-reader', `(sleep ${DESCENDANT_SLEEP_S}) &\nexec sleep 30`), 1000);
+    expect(timedOut).toBe('reference reader identify timed out');
+    expect(Date.now() - started).toBeLessThan(1000 + TIMEOUT_MARGIN_MS);
+    const refusedAt = Date.now();
+    const refused = await problemOf(readerScript('forking-failing-reader', `(sleep ${DESCENDANT_SLEEP_S}) &\necho fail >&2\nexit 1`), 1000);
+    expect(refused).toBe('reference reader refused the output by identify: fail (exit 1)');
+    expect(Date.now() - refusedAt).toBeLessThan(1000);
+  });
+
+  it('says the reader did not run, and raises nothing, when spawn reports EMFILE with no stdio', async () => {
+    const { EventEmitter } = await import('node:events');
+    spawnHook.replacement = () => {
+      const child = new EventEmitter();
+      process.nextTick(() => child.emit('error', Object.assign(new Error('spawn EMFILE'), { code: 'EMFILE' })));
+      return child;
+    };
+    try {
+      expect(await problemOf('/bin/identify')).toBe('reference reader identify did not run: EMFILE');
+    } finally {
+      spawnHook.replacement = undefined;
+    }
+  });
+
+  it('says the reader did not run when spawn throws, for a path through a file and for a path of 5,000 characters', async () => {
+    expect(await problemOf('/etc/hosts/identify')).toMatch(/^reference reader identify did not run: ENOTDIR/);
+    expect(await problemOf(`/${'a'.repeat(5000)}`)).toMatch(/^reference reader identify did not run: ENAMETOOLONG/);
   });
 
   it('says it did not run, with its path, when the reader is missing', async () => {

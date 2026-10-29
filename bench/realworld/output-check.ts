@@ -4,7 +4,7 @@
  * accepted when it is a well-formed ZIP whose entries are all readable files of the target type. An OBJ of a model that has colours
  * is delivered as a ZIP of the OBJ and the MTL file its `mtllib` line names, declared as `application/zip` too; see objArchiveProblem.
  */
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
@@ -19,6 +19,8 @@ export const MAX_TOOL_MESSAGE_CHARS = 200;
 const CRC_MISMATCH_MESSAGE = 'Corrupted zip : CRC32 mismatch';
 /** How much of a reader's stderr is kept for its first non-empty line; the rest is read and dropped. */
 const STDERR_HEAD_BYTES = 64 * 1024;
+/** How long the stderr pipe of a reader that has ended may stay open, held by a descendant, before it is destroyed. */
+const STDERR_CLOSE_GRACE_MS = 200;
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico', 'psd']);
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
 export const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'odd', 'dxf', 'emf', 'wmf']);
@@ -163,9 +165,15 @@ export async function outputProblem(buffer: Buffer, target: string, workDir: str
   return readerProblem(run, reader.name);
 }
 
+/** A reference reader: its name in a refusal and where it is. */
+interface ReferenceReader {
+  name: string;
+  path: string;
+}
+
 /** The reference reader that judges `target` and where it is, or undefined when the target has none or its path is empty. */
-function readerFor(target: string, options: OutputCheckOptions): { name: string; path: string } | undefined {
-  let reader: { name: string; path: string } | undefined;
+function readerFor(target: string, options: OutputCheckOptions): ReferenceReader | undefined {
+  let reader: ReferenceReader | undefined;
   if (target === 'pdf') reader = { name: 'pdfinfo', path: options.pdfinfo };
   else if (IMAGE_TARGETS.has(target)) reader = { name: 'identify', path: options.identify };
   return reader === undefined || reader.path === '' ? undefined : reader;
@@ -183,11 +191,13 @@ interface ReaderRun {
 /**
  * Runs a reference reader on `file`. The gate never reads stdout, so it is ignored. Stderr is a pipe: the first STDERR_HEAD_BYTES are kept
  * for the first line and the rest is read and dropped, so the pipe never fills, the reader never blocks on it, and nothing reaches the disk. The
- * timeout alone ends a reader, with SIGKILL on the direct child; descendants of a reader that forks are not killed, and the configured readers
- * (pdfinfo, identify) do not fork. A killed ImageMagick cannot remove its pixel cache, so that and TMPDIR point into a directory of its own
- * under `workDir`, which this function removes once the reader has ended. That protects only this path: pool.ts `killTree` kills the job
- * server's process group, and then the `finally` that removes `workDir` (child.ts) does not run either. Only the reader's own failure is
- * returned; a failure of the gate's own file system calls is thrown, and a failing cleanup is ignored.
+ * outcome is taken from `exit`, which fires when the reader itself ends, not from `close`, which also waits for every descendant that holds the
+ * pipe. After `exit` the stderr pipe gets STDERR_CLOSE_GRACE_MS to drain, then it is destroyed and the head read so far is used. The timeout
+ * alone ends a reader, with SIGKILL on the direct child; descendants are not killed. A spawn that fails, by an `error` event or by a throw,
+ * is returned as `spawnError`. A killed ImageMagick cannot remove its pixel cache, so that and TMPDIR point into a directory of its own under
+ * `workDir`, which this function removes once the reader has ended. That removal is per run because a page archive reuses `workDir` for every
+ * page and some callers pass `os.tmpdir()`. Only the reader's own failure is returned; a failure of the gate's own file system calls is thrown,
+ * and a failing cleanup is ignored, which can lose the cause when the first 64 KiB of stderr hold no non-blank line.
  */
 async function runReader(reader: string, file: string, workDir: string, timeout: number): Promise<ReaderRun> {
   const scratch = fs.mkdtempSync(path.join(workDir, 'reader-'));
@@ -195,24 +205,45 @@ async function runReader(reader: string, file: string, workDir: string, timeout:
     return await new Promise<ReaderRun>((resolve) => {
       const kept: Buffer[] = [];
       let keptBytes = 0;
-      let spawnError: NodeJS.ErrnoException | undefined;
-      const child = spawn(reader, [file], {
-        stdio: ['ignore', 'ignore', 'pipe'],
-        timeout,
-        killSignal: 'SIGKILL',
-        env: { ...process.env, MAGICK_TEMPORARY_PATH: scratch, TMPDIR: scratch },
+      let settled = false;
+      const settle = (run: Omit<ReaderRun, 'stderrHead'>): void => {
+        if (settled) return;
+        settled = true;
+        resolve({ ...run, stderrHead: Buffer.concat(kept) });
+      };
+      const failed = (error: NodeJS.ErrnoException): void => settle({ code: null, signal: null, timedOut: false, spawnError: error });
+      let child: ChildProcess;
+      try {
+        child = spawn(reader, [file], {
+          stdio: ['ignore', 'ignore', 'pipe'],
+          timeout,
+          killSignal: 'SIGKILL',
+          env: { ...process.env, MAGICK_TEMPORARY_PATH: scratch, TMPDIR: scratch },
+        });
+      } catch (error) {
+        failed(error as NodeJS.ErrnoException);
+        return;
+      }
+      child.on('error', (error: NodeJS.ErrnoException) => {
+        if (child.pid === undefined) failed(error);
       });
-      child.stderr.on('data', (chunk: Buffer) => {
+      child.stderr?.on('data', (chunk: Buffer) => {
         if (keptBytes >= STDERR_HEAD_BYTES) return;
         const part = chunk.subarray(0, STDERR_HEAD_BYTES - keptBytes);
         kept.push(part);
         keptBytes += part.length;
       });
-      child.on('error', (error: NodeJS.ErrnoException) => {
-        if (child.pid === undefined) spawnError = error;
-      });
-      child.on('close', (code, signal) => {
-        resolve({ code, signal, timedOut: child.killed && signal === 'SIGKILL', spawnError, stderrHead: Buffer.concat(kept) });
+      const ended = (code: number | null, signal: NodeJS.Signals | null): void =>
+        settle({ code, signal, timedOut: child.killed && signal === 'SIGKILL' });
+      child.on('exit', (code, signal) => {
+        const grace = setTimeout(() => {
+          child.stderr?.destroy();
+          ended(code, signal);
+        }, STDERR_CLOSE_GRACE_MS);
+        child.on('close', () => {
+          clearTimeout(grace);
+          ended(code, signal);
+        });
       });
     });
   } finally {
