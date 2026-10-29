@@ -4,7 +4,7 @@
  * accepted when it is a well-formed ZIP whose entries are all readable files of the target type. An OBJ of a model that has colours
  * is delivered as a ZIP of the OBJ and the MTL file its `mtllib` line names, declared as `application/zip` too; see objArchiveProblem.
  */
-import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
@@ -13,13 +13,11 @@ import { hasExtension, readMtl, readObj, shown, type ObjScan } from './obj-mtl';
 
 const VALIDATOR_TIMEOUT_MS = 60_000;
 const READER_PREFIX = 'reference reader';
-/** Opens every refusal by a reader that ran and rejected the output; the shape "refused the output by <name>" is matched by an existing test regex. */
-const REFUSED_PREFIX = `${READER_PREFIX} refused the output by `;
 /** The most code points that a refusal quotes of each part of a reference reader's message: its first line of stderr, its path, its signal. */
 export const MAX_TOOL_MESSAGE_CHARS = 200;
 /** The message JSZip throws when the CRC-32 of an entry differs from the one in the central directory. */
 const CRC_MISMATCH_MESSAGE = 'Corrupted zip : CRC32 mismatch';
-/** How much of a reader's stderr file is read for its first non-empty line. */
+/** How much of a reader's stderr is kept for its first non-empty line; the rest is read and dropped. */
 const STDERR_HEAD_BYTES = 64 * 1024;
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico', 'psd']);
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
@@ -157,83 +155,91 @@ export async function outputProblem(buffer: Buffer, target: string, workDir: str
     const zip = await JSZip.loadAsync(buffer).catch(() => null);
     if (zip === null || zip.file(part) === null) return `${target} package has no ${part}`;
   }
-  const [name, reader] = target === 'pdf' ? ['pdfinfo', options.pdfinfo] : ['identify', options.identify];
-  if (reader === '' || (target !== 'pdf' && !IMAGE_TARGETS.has(target))) return null;
+  const reader = readerFor(target, options);
+  if (reader === undefined) return null;
   const file = path.join(workDir, `out.${target}`);
   fs.writeFileSync(file, buffer);
-  try {
-    runReader(reader, file, workDir, options.readerTimeoutMs ?? VALIDATOR_TIMEOUT_MS);
-  } catch (error) {
-    return readerProblem(error, name);
-  }
-  return null;
+  const run = await runReader(reader.path, file, workDir, options.readerTimeoutMs ?? VALIDATOR_TIMEOUT_MS);
+  return readerProblem(run, reader.name);
+}
+
+/** The reference reader that judges `target` and where it is, or undefined when the target has none or its path is empty. */
+function readerFor(target: string, options: OutputCheckOptions): { name: string; path: string } | undefined {
+  let reader: { name: string; path: string } | undefined;
+  if (target === 'pdf') reader = { name: 'pdfinfo', path: options.pdfinfo };
+  else if (IMAGE_TARGETS.has(target)) reader = { name: 'identify', path: options.identify };
+  return reader === undefined || reader.path === '' ? undefined : reader;
+}
+
+/** How a reference reader ended; `timedOut` is true only when the timeout killed it. */
+interface ReaderRun {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  timedOut: boolean;
+  spawnError?: NodeJS.ErrnoException;
+  stderrHead: Buffer;
 }
 
 /**
- * Runs a reference reader on `file`. The gate never reads stdout, so it is ignored. Stderr goes to a file in `workDir`, so no pipe fills
- * and no limit applies; only its head is read, for the first line. SIGKILL ends the direct child at the timeout; descendants of a reader that forks
- * are not killed, and the configured readers (pdfinfo, identify) do not fork. A killed ImageMagick cannot remove its pixel cache, so that and
- * TMPDIR point into a directory of its own under `workDir`, which this function removes once the reader has ended, and which the caller's
- * removal of `workDir` (child.ts, in a `finally`) would remove too.
+ * Runs a reference reader on `file`. The gate never reads stdout, so it is ignored. Stderr is a pipe: the first STDERR_HEAD_BYTES are kept
+ * for the first line and the rest is read and dropped, so the pipe never fills, the reader never blocks on it, and nothing reaches the disk. The
+ * timeout alone ends a reader, with SIGKILL on the direct child; descendants of a reader that forks are not killed, and the configured readers
+ * (pdfinfo, identify) do not fork. A killed ImageMagick cannot remove its pixel cache, so that and TMPDIR point into a directory of its own
+ * under `workDir`, which this function removes once the reader has ended. That protects only this path: pool.ts `killTree` kills the job
+ * server's process group, and then the `finally` that removes `workDir` (child.ts) does not run either. Only the reader's own failure is
+ * returned; a failure of the gate's own file system calls is thrown, and a failing cleanup is ignored.
  */
-function runReader(reader: string, file: string, workDir: string, timeout: number): void {
+async function runReader(reader: string, file: string, workDir: string, timeout: number): Promise<ReaderRun> {
   const scratch = fs.mkdtempSync(path.join(workDir, 'reader-'));
-  const stderrFile = path.join(scratch, 'stderr');
-  const fd = fs.openSync(stderrFile, 'w');
   try {
-    execFileSync(reader, [file], {
-      stdio: ['ignore', 'ignore', fd],
-      timeout,
-      killSignal: 'SIGKILL',
-      env: { ...process.env, MAGICK_TEMPORARY_PATH: scratch, TMPDIR: scratch },
+    return await new Promise<ReaderRun>((resolve) => {
+      const kept: Buffer[] = [];
+      let keptBytes = 0;
+      let spawnError: NodeJS.ErrnoException | undefined;
+      const child = spawn(reader, [file], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+        timeout,
+        killSignal: 'SIGKILL',
+        env: { ...process.env, MAGICK_TEMPORARY_PATH: scratch, TMPDIR: scratch },
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        if (keptBytes >= STDERR_HEAD_BYTES) return;
+        const part = chunk.subarray(0, STDERR_HEAD_BYTES - keptBytes);
+        kept.push(part);
+        keptBytes += part.length;
+      });
+      child.on('error', (error: NodeJS.ErrnoException) => {
+        if (child.pid === undefined) spawnError = error;
+      });
+      child.on('close', (code, signal) => {
+        resolve({ code, signal, timedOut: child.killed && signal === 'SIGKILL', spawnError, stderrHead: Buffer.concat(kept) });
+      });
     });
-  } catch (error) {
-    (error as ReaderError).stderr = readHead(stderrFile);
-    throw error;
   } finally {
-    fs.closeSync(fd);
-    fs.rmSync(scratch, { recursive: true, force: true });
+    try {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    } catch {
+      // A scratch directory that cannot be removed is left to the removal of workDir; it never changes the verdict.
+    }
   }
-}
-
-/** The first STDERR_HEAD_BYTES of a file. */
-function readHead(file: string): Buffer {
-  const fd = fs.openSync(file, 'r');
-  try {
-    const head = Buffer.alloc(STDERR_HEAD_BYTES);
-    return head.subarray(0, fs.readSync(fd, head, 0, STDERR_HEAD_BYTES, 0));
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-interface ReaderError {
-  code?: string;
-  path?: string;
-  stderr?: Buffer;
-  signal?: string | null;
-  status?: number | null;
 }
 
 /** The first non-empty line of what a reference reader printed to stderr, cut to MAX_TOOL_MESSAGE_CHARS code points; empty when it printed none. */
-function firstStderrLine(stderr: Buffer | undefined): string {
-  const line = (stderr?.toString() ?? '').split('\n').map((text) => text.trim()).find((text) => text !== '');
+function firstStderrLine(stderr: Buffer): string {
+  const line = stderr.toString().split('\n').map((text) => text.trim()).find((text) => text !== '');
   return line === undefined ? '' : shown(line, MAX_TOOL_MESSAGE_CHARS);
 }
 
-/** How the reference reader `name` ended, in the order that tells most: it did not start, it printed too much, it timed out, a signal killed it, it exited with a status; its first line of stderr goes with the last three. */
-function readerProblem(error: unknown, name: string): string {
-  const { code, path: binary, stderr, signal, status } = error as ReaderError;
-  const reader = `${READER_PREFIX} ${name}`;
-  if (typeof code === 'string' && status == null && signal == null) {
-    return `${reader} did not run: ${[code, binary === undefined ? '' : shown(binary, MAX_TOOL_MESSAGE_CHARS)].join(' ').trim()}`;
+/** Why the reference reader `name` rejected the output, or null when it exited 0. In the order that tells most: it did not start, it timed out, a signal killed it, it exited with a status; its first line of stderr goes with the last three. */
+function readerProblem(run: ReaderRun, name: string): string | null {
+  const { code, signal, timedOut, spawnError, stderrHead } = run;
+  if (spawnError !== undefined) {
+    return `${READER_PREFIX} ${name} did not run: ${[spawnError.code, spawnError.path === undefined ? '' : shown(spawnError.path, MAX_TOOL_MESSAGE_CHARS)].join(' ').trim()}`;
   }
-  const said = firstStderrLine(stderr);
-  if (code === 'ETIMEDOUT') return said === '' ? `${reader} timed out` : `${reader} timed out: ${said}`;
-  let ending = '';
-  if (signal) ending = `signal ${shown(signal, MAX_TOOL_MESSAGE_CHARS)}`;
-  else if (typeof status === 'number') ending = `exit ${status}`;
-  if (said === '' && ending === '') return `${REFUSED_PREFIX}${name}: ${shown(String(error), MAX_TOOL_MESSAGE_CHARS)}`;
-  if (said === '') return `${REFUSED_PREFIX}${name}: ${ending}`;
-  return `${REFUSED_PREFIX}${name}: ${said}${ending === '' ? '' : ` (${ending})`}`;
+  const said = firstStderrLine(stderrHead);
+  if (timedOut) return said === '' ? `${READER_PREFIX} ${name} timed out` : `${READER_PREFIX} ${name} timed out: ${said}`;
+  if (signal === null && code === 0) return null;
+  const ending = signal === null ? `exit ${code}` : `signal ${shown(signal, MAX_TOOL_MESSAGE_CHARS)}`;
+  const refusal = `${READER_PREFIX} refused the output by ${name}`;
+  return said === '' ? `${refusal}: ${ending}` : `${refusal}: ${said} (${ending})`;
 }

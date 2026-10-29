@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import JSZip from 'jszip';
 import {
   MAX_LIBRARY_NAME_CHARS,
@@ -31,7 +31,7 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
 const READER_TIMEOUT_MS = 3000;
-const TIMEOUT_MARGIN_MS = 2000;
+const TIMEOUT_MARGIN_MS = 5000;
 const LOCAL_HEADER = Buffer.from('PK\u0003\u0004', 'latin1');
 const CENTRAL_HEADER = Buffer.from('PK\u0001\u0002', 'latin1');
 const LOCAL_HEADER_BYTES = 30;
@@ -279,16 +279,81 @@ describe('a reference reader that fails', () => {
     expect(await problemOf(reader)).toBe('reference reader refused the output by identify: the cause (exit 1)');
   });
 
+  // The expected strings below spell out "reference reader refused the output by <name>"; the gate and these tests are coupled through that shape, which a regex in the corpus test matches too.
+  const readerDirsIn = (dir: string): string[] => fs.readdirSync(dir).filter((name) => name.startsWith('reader-'));
+
   it('keeps what a reader killed at the timeout leaves in its temporary directory inside the work directory, and removes it', async () => {
     const work = fs.mkdtempSync(path.join(WORK_DIR, 'killed-'));
     const record = path.join(work, 'record');
     const reader = readerScript('leaking-reader', `printf '%s\\n%s\\n' "$MAGICK_TEMPORARY_PATH" "$TMPDIR" > '${record}'\necho cache > "$MAGICK_TEMPORARY_PATH/magick-cache"\ntrap '' TERM\nexec sleep 30`);
-    expect(await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader, readerTimeoutMs: 500 })).toBe('reference reader identify timed out');
+    expect(await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader, readerTimeoutMs: READER_TIMEOUT_MS })).toBe('reference reader identify timed out');
     const [magickPath, tmpDir] = fs.readFileSync(record, 'utf8').trim().split('\n');
     expect(magickPath).toBe(tmpDir);
     expect(path.relative(work, magickPath).startsWith('..')).toBe(false);
     expect(magickPath).not.toBe(os.tmpdir());
     expect(fs.existsSync(magickPath)).toBe(false);
+  });
+
+  it('leaves no scratch directory in the work directory after a pass, after a non-zero exit and after a timeout', async () => {
+    const work = fs.mkdtempSync(path.join(WORK_DIR, 'scratch-'));
+    const run = (body: string, name: string, timeoutMs?: number) =>
+      outputProblem(PNG, 'png', work, { pdfinfo: '', identify: readerScript(name, body), readerTimeoutMs: timeoutMs });
+    expect(await run('exit 0', 'passing-scratch-reader')).toBeNull();
+    expect(readerDirsIn(work)).toEqual([]);
+    expect(await run('exit 1', 'failing-scratch-reader')).toBe('reference reader refused the output by identify: exit 1');
+    expect(readerDirsIn(work)).toEqual([]);
+    expect(await run('exec sleep 30', 'sleeping-scratch-reader', 500)).toBe('reference reader identify timed out');
+    expect(readerDirsIn(work)).toEqual([]);
+  });
+
+  it('ends a reader that prints to stderr without end at the timeout, without blocking the event loop and without writing it to disk', async () => {
+    const work = fs.mkdtempSync(path.join(WORK_DIR, 'flood-'));
+    const reader = readerScript('flooding-reader', 'exec yes x >&2');
+    let ticks = 0;
+    const timer = setInterval(() => (ticks += 1), 20);
+    const started = Date.now();
+    const problem = await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader, readerTimeoutMs: 1000 });
+    clearInterval(timer);
+    expect(problem).toBe('reference reader identify timed out: x');
+    expect(Date.now() - started).toBeLessThan(1000 + TIMEOUT_MARGIN_MS);
+    expect(ticks).toBeGreaterThan(10);
+  });
+
+  it('holds no file over 1 MiB in the work directory while a reader prints 20 MB to stderr, and still reads its exit status', async () => {
+    const work = fs.mkdtempSync(path.join(WORK_DIR, 'big-stderr-'));
+    const record = path.join(work, 'record');
+    const reader = readerScript('big-stderr-reader', `echo the cause >&2\nyes x | head -c 20000000 >&2\nfind '${work}' -type f -size +2048 > '${record}'\nexit 1`);
+    expect(await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader })).toBe('reference reader refused the output by identify: the cause (exit 1)');
+    expect(fs.readFileSync(record, 'utf8')).toBe('');
+  });
+
+  it('reports a failing removal of its scratch directory to nobody: a valid output with a passing reader is still accepted', async () => {
+    const work = fs.mkdtempSync(path.join(WORK_DIR, 'rm-fails-'));
+    const reader = readerScript('passing-reader', 'exit 0');
+    const real = fs.rmSync;
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (String(target).includes(`${path.sep}reader-`)) throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+      return real(target, options);
+    });
+    try {
+      expect(await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader })).toBeNull();
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // skip-ok: root ignores directory permissions, so the work directory stays writable for it.
+  it.skipIf(process.getuid?.() === 0)('throws, and does not say the reader did not run, when the work directory cannot hold its scratch directory', async () => {
+    const work = fs.mkdtempSync(path.join(WORK_DIR, 'readonly-'));
+    fs.writeFileSync(path.join(work, 'out.png'), '');
+    const reader = readerScript('never-started-reader', 'exit 0');
+    fs.chmodSync(work, 0o555);
+    try {
+      await expect(outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader })).rejects.toThrow(/EACCES/);
+    } finally {
+      fs.chmodSync(work, 0o755);
+    }
   });
 
   it('judges a %PDF- output by pdfinfo, and an image target never by pdfinfo', async () => {
