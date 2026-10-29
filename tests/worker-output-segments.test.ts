@@ -39,10 +39,13 @@ function write(segments: readonly Uint8Array[]): Buffer {
 }
 
 describe('writeOutputSegments', () => {
-  it('writes the ranges joined, in order, empty ones included', () => {
+  it('writes the ranges joined, in order, empty ones included, with one call for the whole list', () => {
     const segments = manySegments();
+    const writev = vi.spyOn(fs, 'writevSync');
 
     expect(write(segments).equals(Buffer.concat(segments))).toBe(true);
+    expect(writev).toHaveBeenCalledTimes(1);
+    expect(writev.mock.calls[0][1]).toHaveLength(SEGMENT_COUNT);
   });
 
   it('writes an empty output as an empty file', () => {
@@ -118,6 +121,15 @@ describe('writeOutputSegments', () => {
     expect(calls).toBe(2);
     expect(close).toHaveBeenCalledTimes(1);
     expect(fs.readFileSync(outputPath).toString()).toBe('first');
+  });
+
+  it('throws when a write reports more bytes than were pending, and closes the file', () => {
+    const writev = vi.spyOn(fs, 'writevSync').mockReturnValue(100);
+    const close = vi.spyOn(fs, 'closeSync');
+
+    expect(() => writeOutputSegments([Buffer.from('data'), Buffer.from('more')], 'tar', undefined, { outputPath })).toThrow(/more bytes written than were pending/);
+    expect(writev).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('throws when a write accepts no bytes while some are pending, and closes the file', () => {

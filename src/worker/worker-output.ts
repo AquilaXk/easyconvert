@@ -178,9 +178,9 @@ export function handOffOutput(
 
 /**
  * Writes `pending` to the descriptor's position with `writev`, and again for what a call left, until none is left. One
- * call takes any number of buffers, since libuv splits the vector per system call (`IOV_MAX`). It can still return a
- * total below the sum: when a later chunk of the vector fails, libuv returns the bytes of the chunks that finished, and
- * the call that follows raises that failure.
+ * call takes any number of buffers, since libuv splits the vector per system call (`IOV_MAX`). The call returns the bytes
+ * it wrote, which may stop inside a range; the call that follows raises a failure of a later chunk. A count above the
+ * pending bytes cannot come from a working descriptor and is an error.
  */
 function writeVectored(fd: number, pending: readonly Uint8Array[]): void {
   let rest = pending;
@@ -189,6 +189,7 @@ function writeVectored(fd: number, pending: readonly Uint8Array[]): void {
     let written = total;
     let skipped = 0;
     while (skipped < rest.length && written >= rest[skipped].byteLength) written -= rest[skipped++].byteLength;
+    if (skipped === rest.length && written > 0) throw new Error('The output file reported more bytes written than were pending.');
     const next = rest.slice(skipped);
     if (total === 0 && next.length > 0) throw new Error('The output file accepted no bytes of the write.');
     if (written > 0) next[0] = next[0].subarray(written);
