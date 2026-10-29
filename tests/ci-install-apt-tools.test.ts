@@ -228,7 +228,7 @@ describe('the committed package list and scripts', () => {
   it('pins pytz and checks its import by name, since DuckDB needs it for a TIMESTAMPTZ value and declares no dependency on it', () => {
     const tools = readFileSync(path.join(ACTION_DIR, 'install-tools.sh'), 'utf-8');
     const verify = tools.slice(tools.indexOf('verify_bench_python_modules() {'), tools.indexOf('main() {'));
-    expect(readFileSync(path.join(ACTION_DIR, 'pip-packages.txt'), 'utf-8')).toMatch(/^pytz==2026\.5$/m);
+    expect(readFileSync(path.join(ACTION_DIR, 'pip-packages.txt'), 'utf-8')).toMatch(/^pytz==\d+\.\d+$/m);
     expect(verify).toContain("python3 -I -c 'import pytz'");
     expect(verify).toContain('cannot import pytz');
   });

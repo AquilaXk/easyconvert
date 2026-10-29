@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -301,6 +301,18 @@ describe('the runner image of every workflow job', () => {
     expect(jobs).toHaveLength(32);
     expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(28);
     expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(4);
+  });
+
+  it('points every local uses, of a job and of a step, at a file of this repository (a step names the folder of its action.yml)', () => {
+    const targets = jobs.flatMap(({ where, job }) => [
+      { where, uses: job.uses },
+      ...(job.steps ?? []).map((step) => ({ where, uses: step.uses })),
+    ]).filter((entry): entry is { where: string; uses: string } => typeof entry.uses === 'string' && entry.uses.startsWith('./'));
+    expect(targets.length).toBeGreaterThan(0);
+    const missing = targets
+      .filter(({ uses }) => !existsSync(path.join(ROOT, uses.endsWith('.yml') || uses.endsWith('.yaml') ? uses : path.join(uses, 'action.yml'))))
+      .map(({ where, uses }) => `${where}: ${uses}`);
+    expect(missing).toEqual([]);
   });
 
   it('gives every job exactly one of a runner and a reusable workflow to call', () => {

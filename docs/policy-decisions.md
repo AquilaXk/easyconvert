@@ -3796,7 +3796,7 @@ Compression
 
 ## 110. CI runners are pinned to Ubuntu 24.04 until the jobs are moved to the next image on purpose
 
-- **Status**: Implemented, decided 2026-10-30 (QA request: keep the nightly and CI gates working). The pin fixes the label, not the image build, and this change does not claim a green nightly. The nightly stays red from other causes: the cold apt cache after an image rotation (a row of issue 763), the AVIF speed rows of issue 641 and `realworld-gate`, which reported bad-output 1 on 2026-10-25, 10-26, 10-27 (plus crash 1) and 10-29, and failed on 10-28 with "got 9 of 10 shard reports" because `realworld (2)` hit the apt limit.
+- **Status**: Implemented, decided 2026-10-30 (QA request: keep the nightly and CI gates working). The pin fixes the label, not the image build, and this change does not claim a green nightly. The nightly stays red from other causes: the cold apt cache after an image rotation (a row of issue 763), the AVIF speed rows of issue 641 and `realworld-gate`, with bad-output 1 on every nightly from 2026-10-25 to 2026-10-29 except 10-28 (crash 1 as well on 10-27), and on 10-28 a shard lost to the apt limit left 9 of 10 reports.
 - **Decision**:
   - Every job in `.github/workflows/` that names a runner uses `ubuntu-24.04` instead of `ubuntu-latest`, 28 jobs in nine workflows. The four jobs that call a reusable workflow with `uses:` name no runner.
   - `tests/ci-workflows.test.ts` holds three rules for every job of every workflow file:

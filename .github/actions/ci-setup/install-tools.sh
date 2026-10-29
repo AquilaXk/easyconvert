@@ -402,7 +402,7 @@ main() {
   select_tasks
   run_tasks || return 1
   verify_cad_tools || return 1
-  verify_bench_python_modules || return 1
+  verify_bench_python_modules
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
