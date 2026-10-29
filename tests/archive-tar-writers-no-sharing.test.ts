@@ -17,8 +17,8 @@ import { craftZip } from './helpers/zip-craft';
  * and converts again from a fresh copy of the same input; the second result must equal the first. A header, padding or end
  * block taken from a module-level buffer would carry the 0xff into the second result.
  *
- * The input is copied for each run on purpose: a stored RAR member or a stored tar entry may be a view of the input, which is the
- * contract of `StreamedArchive` (byte ranges that may alias the input or the unpacked bytes, never a buffer of the module).
+ * The input is copied for each run on purpose: a stored RAR member or a tar entry that the ZIP stores may be a view of the input, which is
+ * the contract of `StreamedArchive` (byte ranges that may alias the input or the unpacked bytes, never a buffer of the module).
  */
 const BLOCK = 512;
 const END_BLOCKS_BYTES = 2 * BLOCK;
@@ -312,6 +312,16 @@ describe('two results of one input kept alive', () => {
       await writeOverFirst(async () => (await tarToZip({ source: { buffer: tar }, compressionLevel: 6 }))?.segments),
       Buffer.alloc(NOISE.length, FILL_BYTE)
     );
+  });
+
+  it('tarToZip with deflate shows the write in the second result for a compressible entry stored because of its name, a view of the tar', async () => {
+    const tar = Buffer.concat([hostileTarMember({ name: 'x.png' }, BETA), hostileTarEnd()]);
+    const run = Buffer.alloc(BETA.length, FILL_BYTE);
+
+    const written = await writeOverFirst(async () => (await tarToZip({ source: { buffer: tar }, compressionLevel: 6 }))?.segments);
+
+    expect(written.before.includes(BETA)).toBe(true);
+    expectMembersOverwritten(written, run);
   });
 });
 
