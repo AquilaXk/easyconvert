@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { SpawnOptions } from 'node:child_process';
 import JSZip from 'jszip';
 import {
   MAX_LIBRARY_NAME_CHARS,
@@ -29,21 +28,15 @@ import { requireRealworldSample } from './helpers/realworld-sample';
  * statements their writers emit; the ZIPs here come from the writer's own function and from JSZip, an independent writer.
  */
 
-const spawnHook = vi.hoisted(() => ({ replacement: undefined as undefined | ((command: string) => unknown) }));
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
-  return {
-    ...actual,
-    spawn: (command: string, args: string[], options: SpawnOptions) => spawnHook.replacement?.(command) ?? actual.spawn(command, args, options),
-  };
-});
-
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
 const READER_TIMEOUT_MS = 3000;
-const TIMEOUT_MARGIN_MS = 2000;
-/** The reader that is killed and whose descendant keeps the pipe open; the verdict must not wait for the descendant, which sleeps for 8 s. */
+/** How long the readers that wait for the timeout would sleep otherwise; a verdict that comes sooner was not waiting for them. */
+const READER_SLEEP_S = 30;
+/** How long a descendant that a reader leaves behind would sleep; it holds the reader's stderr for that long unless it is killed. */
 const DESCENDANT_SLEEP_S = 8;
+/** The interval of the timer that shows the event loop is served while a reader floods its output. */
+const EVENT_LOOP_TICK_MS = 5;
 const LOCAL_HEADER = Buffer.from('PK\u0003\u0004', 'latin1');
 const CENTRAL_HEADER = Buffer.from('PK\u0001\u0002', 'latin1');
 const LOCAL_HEADER_BYTES = 30;
@@ -272,10 +265,10 @@ describe('a reference reader that fails', () => {
     expect(await problemOf(noisy)).toBe('reference reader refused the output by identify: decoding (signal SIGKILL)');
   });
 
-  it('says it timed out, with the first line of stderr when there is one', async () => {
+  it('says it timed out, whether the reader printed a line of stderr first or not', async () => {
     expect(await problemOf(readerScript('sleeping-reader', 'exec sleep 30'), READER_TIMEOUT_MS)).toBe('reference reader identify timed out');
     const noisy = readerScript('noisy-sleeping-reader', "printf 'still decoding\\n' >&2\nexec sleep 30");
-    expect(await problemOf(noisy, READER_TIMEOUT_MS)).toBe('reference reader identify timed out: still decoding');
+    expect(await problemOf(noisy, READER_TIMEOUT_MS)).toBe('reference reader identify timed out');
   }, 4 * READER_TIMEOUT_MS);
 
   it('accepts the output of a reader that prints more than 1 MiB to stdout and exits 0, as the gate never reads stdout', async () => {
@@ -319,17 +312,19 @@ describe('a reference reader that fails', () => {
     expect(readerDirsIn(work)).toEqual([]);
   });
 
-  it('ends a reader that prints to stderr without end at the timeout, without blocking the event loop and without writing it to disk', async () => {
+  it('stops a reader that prints to stderr without end at the runner\'s output limit, without blocking the event loop and without writing it to disk', async () => {
     const work = fs.mkdtempSync(path.join(WORK_DIR, 'flood-'));
     const reader = readerScript('flooding-reader', 'exec yes x >&2');
     let ticks = 0;
-    const timer = setInterval(() => (ticks += 1), 20);
+    const timer = setInterval(() => (ticks += 1), EVENT_LOOP_TICK_MS);
     const started = Date.now();
-    const problem = await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader, readerTimeoutMs: 1000 });
+    const problem = await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader, readerTimeoutMs: READER_SLEEP_S * 1000 });
+    const elapsedMs = Date.now() - started;
     clearInterval(timer);
-    expect(problem).toBe('reference reader identify timed out: x');
-    expect(Date.now() - started).toBeLessThan(1000 + TIMEOUT_MARGIN_MS);
-    expect(ticks).toBeGreaterThan(10);
+    expect(problem).toMatch(/^reference reader identify printed more than \d+ bytes$/);
+    expect(elapsedMs).toBeLessThan(READER_SLEEP_S * 1000);
+    expect(ticks * EVENT_LOOP_TICK_MS * 4).toBeGreaterThanOrEqual(elapsedMs);
+    expect(fs.readdirSync(work)).toEqual(['out.png']);
   });
 
   it('holds no file over 1 MiB in the work directory while a reader prints 20 MB to stderr, and still reads its exit status', async () => {
@@ -344,13 +339,15 @@ describe('a reference reader that fails', () => {
     const work = fs.mkdtempSync(path.join(WORK_DIR, 'rm-fails-'));
     const reader = readerScript('passing-reader', 'exit 0');
     const real = fs.rmSync;
+    const refused: string[] = [];
     const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
-      if (String(target).includes(`${path.sep}reader-`)) throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
-      return real(target, options);
+      if (!String(target).includes(`${path.sep}reader-`)) return real(target, options);
+      refused.push(String(target));
+      throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
     });
     try {
       expect(await outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader })).toBeNull();
-      expect(spy.mock.results.some((result) => result.type === 'throw')).toBe(true);
+      expect(refused.map((target) => path.dirname(target))).toEqual([work]);
     } finally {
       spy.mockRestore();
     }
@@ -363,9 +360,7 @@ describe('a reference reader that fails', () => {
     const reader = readerScript('never-started-reader', 'exit 0');
     fs.chmodSync(work, 0o555);
     try {
-      const run = outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader });
-      await expect(run).rejects.toThrow(/EACCES/);
-      await expect(run).rejects.not.toThrow(/did not run/);
+      await expect(outputProblem(PNG, 'png', work, { pdfinfo: '', identify: reader })).rejects.toThrow(/EACCES/);
     } finally {
       fs.chmodSync(work, 0o755);
     }
@@ -378,55 +373,78 @@ describe('a reference reader that fails', () => {
     expect(await outputProblem(pdf, 'pdf', WORK_DIR, { pdfinfo: '', identify: failing })).toBeNull();
     expect(await outputProblem(PNG, 'png', WORK_DIR, { pdfinfo: failing, identify: '' })).toBeNull();
     const missing = path.join(WORK_DIR, 'no-such-pdfinfo');
-    expect(await outputProblem(pdf, 'pdf', WORK_DIR, { pdfinfo: missing, identify: '' })).toBe(`reference reader pdfinfo did not run: ENOENT ${missing}`);
+    expect(await outputProblem(pdf, 'pdf', WORK_DIR, { pdfinfo: missing, identify: '' })).toBe(`reference reader pdfinfo did not run: not found ${missing}`);
   });
 
-  it('says the reader did not run, with the error code, when the file cannot be executed', async () => {
+  it('says the reader did not run, and that it is not executable, when the file cannot be executed', async () => {
     const plain = path.join(WORK_DIR, 'not-executable-reader');
     fs.writeFileSync(plain, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
-    expect(await problemOf(plain)).toBe(`reference reader identify did not run: EACCES ${plain}`);
+    expect(await problemOf(plain)).toBe(`reference reader identify did not run: not executable ${plain}`);
   });
 
   it('ends a reader that ignores SIGTERM at the timeout', async () => {
     const reader = readerScript('stubborn-reader', "trap '' TERM\nexec sleep 30");
     const started = Date.now();
     expect(await problemOf(reader, 500)).toBe('reference reader identify timed out');
-    expect(Date.now() - started).toBeLessThan(500 + TIMEOUT_MARGIN_MS);
+    expect(Date.now() - started).toBeLessThan(READER_SLEEP_S * 1000);
   });
 
-  it('returns the verdict of a reader that ends while a descendant holds its stderr, without waiting for the descendant', { timeout: 6000 }, async () => {
-    const started = Date.now();
-    const timedOut = await problemOf(readerScript('forking-timeout-reader', `(sleep ${DESCENDANT_SLEEP_S}) &\nexec sleep 30`), 1000);
-    expect(timedOut).toBe('reference reader identify timed out');
-    expect(Date.now() - started).toBeLessThan(1000 + TIMEOUT_MARGIN_MS);
-    const refusedAt = Date.now();
-    const refused = await problemOf(readerScript('forking-failing-reader', `(sleep ${DESCENDANT_SLEEP_S}) &\necho fail >&2\nexit 1`), 1000);
-    expect(refused).toBe('reference reader refused the output by identify: fail (exit 1)');
-    expect(Date.now() - refusedAt).toBeLessThan(1000);
-  });
-
-  it('says the reader did not run, and raises nothing, when spawn reports EMFILE with no stdio', async () => {
-    const { EventEmitter } = await import('node:events');
-    spawnHook.replacement = () => {
-      const child = new EventEmitter();
-      process.nextTick(() => child.emit('error', Object.assign(new Error('spawn EMFILE'), { code: 'EMFILE' })));
-      return child;
-    };
+  const isAlive = (pid: number): boolean => {
     try {
-      expect(await problemOf('/bin/identify')).toBe('reference reader identify did not run: EMFILE');
-    } finally {
-      spawnHook.replacement = undefined;
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
     }
+  };
+
+  /** Runs a reader that starts a descendant, which holds the reader's stderr, and writes its pid to a file; returns the verdict and how long it took, once the descendant is gone. */
+  const runWithDescendant = async (name: string, afterFork: string) => {
+    const pidFile = path.join(WORK_DIR, `${name}.pid`);
+    const reader = readerScript(name, `sleep ${DESCENDANT_SLEEP_S} &\necho $! > '${pidFile}'\n${afterFork}`);
+    const started = Date.now();
+    const problem = await problemOf(reader, 1000);
+    const elapsedMs = Date.now() - started;
+    const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+    try {
+      await vi.waitFor(() => expect(isAlive(pid)).toBe(false), { timeout: 1000 });
+    } finally {
+      if (isAlive(pid)) process.kill(pid, 'SIGKILL');
+    }
+    return { problem, elapsedMs };
+  };
+
+  it('kills the whole process group of a reader at the timeout, so the descendant it forked does not outlive the verdict', { timeout: 10_000 }, async () => {
+    const { problem, elapsedMs } = await runWithDescendant('forking-timeout-reader', `exec sleep ${READER_SLEEP_S}`);
+    expect(problem).toBe('reference reader identify timed out');
+    expect(elapsedMs).toBeLessThan(DESCENDANT_SLEEP_S * 1000);
   });
 
-  it('says the reader did not run when spawn throws, for a path through a file and for a path of 5,000 characters', async () => {
-    expect(await problemOf('/etc/hosts/identify')).toMatch(/^reference reader identify did not run: ENOTDIR/);
-    expect(await problemOf(`/${'a'.repeat(5000)}`)).toMatch(/^reference reader identify did not run: ENAMETOOLONG/);
+  it('kills a descendant that still holds the stderr of a reader that has ended, and gives the timeout as the verdict, as the runner waits for the pipe', { timeout: 10_000 }, async () => {
+    const { problem, elapsedMs } = await runWithDescendant('forking-failing-reader', 'echo fail >&2\nexit 1');
+    expect(problem).toBe('reference reader identify timed out');
+    expect(elapsedMs).toBeLessThan(DESCENDANT_SLEEP_S * 1000);
+  });
+
+  it('says the reader did not run when the runner cannot start it, for a path through a file and for a path of 5,000 characters', async () => {
+    expect(await problemOf('/etc/hosts/identify')).toMatch(/^reference reader identify did not run: [^/]+ \/etc\/hosts\/identify$/);
+    expect(await problemOf(`/${'a'.repeat(5000)}`)).toMatch(/^reference reader identify did not run: [^/]+ \/a+\.\.\.$/);
+  });
+
+  // skip-ok: Linux isolates the network with unshare, so strict isolation holds there and the reader runs.
+  it.skipIf(process.platform === 'linux')('throws, and gives no verdict, when strict isolation is required on a host that cannot isolate the network', async () => {
+    const reader = readerScript('strict-reader', 'exit 0');
+    process.env.STRICT_SANDBOX = 'true';
+    try {
+      await expect(problemOf(reader)).rejects.toThrow(/isolation/i);
+    } finally {
+      delete process.env.STRICT_SANDBOX;
+    }
   });
 
   it('says it did not run, with its path, when the reader is missing', async () => {
     const missing = path.join(WORK_DIR, 'no-such-reader');
-    expect(await problemOf(missing)).toBe(`reference reader identify did not run: ENOENT ${missing}`);
+    expect(await problemOf(missing)).toBe(`reference reader identify did not run: not found ${missing}`);
   });
 });
 

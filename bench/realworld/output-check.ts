@@ -4,11 +4,17 @@
  * accepted when it is a well-formed ZIP whose entries are all readable files of the target type. An OBJ of a model that has colours
  * is delivered as a ZIP of the OBJ and the MTL file its `mtllib` line names, declared as `application/zip` too; see objArchiveProblem.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { isFormatCompatibleWithMagicBytes } from '../../src/lib/registry';
+import {
+  SandboxedBufferLimitError,
+  SandboxedProcessError,
+  SandboxedTimeoutError,
+  executeSandboxedBinary,
+  rethrowSandboxUnavailable,
+} from '../../src/lib/security/process-sandbox';
 import { hasExtension, readMtl, readObj, shown, type ObjScan } from './obj-mtl';
 
 const VALIDATOR_TIMEOUT_MS = 60_000;
@@ -17,10 +23,14 @@ const READER_PREFIX = 'reference reader';
 export const MAX_TOOL_MESSAGE_CHARS = 200;
 /** The message JSZip throws when the CRC-32 of an entry differs from the one in the central directory. */
 const CRC_MISMATCH_MESSAGE = 'Corrupted zip : CRC32 mismatch';
-/** How much of a reader's stderr is kept for its first non-empty line; the rest is read and dropped. */
-const STDERR_HEAD_BYTES = 64 * 1024;
-/** How long the stderr pipe of a reader that has ended may stay open, held by a descendant, before it is destroyed. */
-const STDERR_CLOSE_GRACE_MS = 200;
+/**
+ * What a status says when it is the one executeSandboxedBinary gives a reader that could not be started (spawnFailureError), and that a shell, or unshare
+ * when it wraps the reader, gives a command it cannot find or execute.
+ */
+const LAUNCH_FAILURES: ReadonlyMap<number, string> = new Map([
+  [127, 'not found'],
+  [126, 'not executable'],
+]);
 const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'tiff', 'tif', 'bmp', 'avif', 'heic', 'ico', 'psd']);
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
 export const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'odd', 'dxf', 'emf', 'wmf']);
@@ -161,8 +171,7 @@ export async function outputProblem(buffer: Buffer, target: string, workDir: str
   if (reader === undefined) return null;
   const file = path.join(workDir, `out.${target}`);
   fs.writeFileSync(file, buffer);
-  const run = await runReader(reader.path, file, workDir, options.readerTimeoutMs ?? VALIDATOR_TIMEOUT_MS);
-  return readerProblem(run, reader.name);
+  return runReader(reader, file, workDir, options.readerTimeoutMs ?? VALIDATOR_TIMEOUT_MS);
 }
 
 /** A reference reader: its name in a refusal and where it is. */
@@ -179,98 +188,66 @@ function readerFor(target: string, options: OutputCheckOptions): ReferenceReader
   return reader === undefined || reader.path === '' ? undefined : reader;
 }
 
-/** How a reference reader ended; `timedOut` is true only when the timeout killed it. */
-interface ReaderRun {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-  timedOut: boolean;
-  spawnError?: NodeJS.ErrnoException;
-  stderrHead: Buffer;
-}
-
 /**
- * Runs a reference reader on `file`. The gate never reads stdout, so it is ignored. Stderr is a pipe: the first STDERR_HEAD_BYTES are kept
- * for the first line and the rest is read and dropped, so the pipe never fills, the reader never blocks on it, and nothing reaches the disk. The
- * outcome is taken from `exit`, which fires when the reader itself ends, not from `close`, which also waits for every descendant that holds the
- * pipe. After `exit` the stderr pipe gets STDERR_CLOSE_GRACE_MS to drain, then it is destroyed and the head read so far is used. The timeout
- * alone ends a reader, with SIGKILL on the direct child; descendants are not killed. A spawn that fails, by an `error` event or by a throw,
- * is returned as `spawnError`. A killed ImageMagick cannot remove its pixel cache, so that and TMPDIR point into a directory of its own under
- * `workDir`, which this function removes once the reader has ended. That removal is per run because a page archive reuses `workDir` for every
- * page and some callers pass `os.tmpdir()`. Only the reader's own failure is returned; a failure of the gate's own file system calls is thrown,
- * and a failing cleanup is ignored, which can lose the cause when the first 64 KiB of stderr hold no non-blank line.
+ * Runs a reference reader on `file` through executeSandboxedBinary, the runner every converter uses: the reader leads its own process group, the whole
+ * group is killed at `timeoutMs`, and stdout and stderr together are held to the runner's default of 50 MB. The gate reads no stdout, and a many-frame
+ * image makes `identify` print a line or two per frame, so the cap takes hundreds of thousands of frames to reach. Returns null when the reader exits 0
+ * and otherwise why it refused; see readerProblem.
+ * A killed ImageMagick cannot remove its pixel cache, so that and TMPDIR point into a directory of its own under `workDir`, which this function removes
+ * once the reader has ended. That removal is per run because a page archive reuses `workDir` for every page and some callers pass `os.tmpdir()`.
+ * A removal that fails is ignored and the directory is left to the removal of `workDir`. A failure of the gate's own file system calls is thrown.
  */
-async function runReader(reader: string, file: string, workDir: string, timeout: number): Promise<ReaderRun> {
-  const scratch = fs.mkdtempSync(path.join(workDir, 'reader-'));
+async function runReader(reader: ReferenceReader, file: string, workDir: string, timeoutMs: number): Promise<string | null> {
+  const scratch = path.resolve(fs.mkdtempSync(path.join(workDir, 'reader-')));
   try {
-    return await new Promise<ReaderRun>((resolve) => {
-      const kept: Buffer[] = [];
-      let keptBytes = 0;
-      let settled = false;
-      const settle = (run: Omit<ReaderRun, 'stderrHead'>): void => {
-        if (settled) return;
-        settled = true;
-        resolve({ ...run, stderrHead: Buffer.concat(kept) });
-      };
-      const failed = (error: NodeJS.ErrnoException): void => settle({ code: null, signal: null, timedOut: false, spawnError: error });
-      let child: ChildProcess;
-      try {
-        child = spawn(reader, [file], {
-          stdio: ['ignore', 'ignore', 'pipe'],
-          timeout,
-          killSignal: 'SIGKILL',
-          env: { ...process.env, MAGICK_TEMPORARY_PATH: scratch, TMPDIR: scratch },
-        });
-      } catch (error) {
-        failed(error as NodeJS.ErrnoException);
-        return;
-      }
-      child.on('error', (error: NodeJS.ErrnoException) => {
-        if (child.pid === undefined) failed(error);
-      });
-      child.stderr?.on('data', (chunk: Buffer) => {
-        if (keptBytes >= STDERR_HEAD_BYTES) return;
-        const part = chunk.subarray(0, STDERR_HEAD_BYTES - keptBytes);
-        kept.push(part);
-        keptBytes += part.length;
-      });
-      const ended = (code: number | null, signal: NodeJS.Signals | null): void =>
-        settle({ code, signal, timedOut: child.killed && signal === 'SIGKILL' });
-      child.on('exit', (code, signal) => {
-        const grace = setTimeout(() => {
-          child.stderr?.destroy();
-          ended(code, signal);
-        }, STDERR_CLOSE_GRACE_MS);
-        child.on('close', () => {
-          clearTimeout(grace);
-          ended(code, signal);
-        });
-      });
+    await executeSandboxedBinary(reader.path, [path.resolve(file)], {
+      timeoutMs,
+      env: { MAGICK_TEMPORARY_PATH: scratch, TMPDIR: scratch },
+      cwd: scratch,
     });
+    return null;
+  } catch (error) {
+    return readerProblem(error, reader);
   } finally {
     try {
       fs.rmSync(scratch, { recursive: true, force: true });
     } catch {
-      // A scratch directory that cannot be removed is left to the removal of workDir; it never changes the verdict.
+      // The directory is left to the removal of workDir; a failed removal never changes the verdict.
     }
   }
 }
 
 /** The first non-empty line of what a reference reader printed to stderr, cut to MAX_TOOL_MESSAGE_CHARS code points; empty when it printed none. */
-function firstStderrLine(stderr: Buffer): string {
-  const line = stderr.toString().split('\n').map((text) => text.trim()).find((text) => text !== '');
-  return line === undefined ? '' : shown(line, MAX_TOOL_MESSAGE_CHARS);
+function firstStderrLine(stderr: string): string {
+  for (let start = 0; start < stderr.length; ) {
+    const newline = stderr.indexOf('\n', start);
+    const end = newline === -1 ? stderr.length : newline;
+    const line = stderr.slice(start, end).trim();
+    if (line !== '') return shown(line, MAX_TOOL_MESSAGE_CHARS);
+    start = end + 1;
+  }
+  return '';
 }
 
-/** Why the reference reader `name` rejected the output, or null when it exited 0. In the order that tells most: it did not start, it timed out, a signal killed it, it exited with a status; its first line of stderr goes with the last three. */
-function readerProblem(run: ReaderRun, name: string): string | null {
-  const { code, signal, timedOut, spawnError, stderrHead } = run;
-  if (spawnError !== undefined) {
-    return `${READER_PREFIX} ${name} did not run: ${[spawnError.code, spawnError.path === undefined ? '' : shown(spawnError.path, MAX_TOOL_MESSAGE_CHARS)].join(' ').trim()}`;
+/**
+ * Why the reference reader rejected the output, from what executeSandboxedBinary threw: it did not start, it timed out, it printed more than the runner
+ * holds, a signal killed it, or it exited with a status; its first line of stderr goes with the last two. A sandbox that is unavailable is the host's
+ * fault and is thrown, not judged. Any other error is the runner failing to start the reader (EMFILE, ENOTDIR), and says so with its code, or its message when it has none.
+ */
+function readerProblem(error: unknown, reader: ReferenceReader): string {
+  const prefix = `${READER_PREFIX} ${reader.name}`;
+  if (error instanceof SandboxedTimeoutError) return `${prefix} timed out`;
+  if (error instanceof SandboxedBufferLimitError) return `${prefix} printed more than ${error.limitBytes} bytes`;
+  if (error instanceof SandboxedProcessError) {
+    const launch = error.signal === null && error.exitCode !== null ? LAUNCH_FAILURES.get(error.exitCode) : undefined;
+    if (launch !== undefined) return `${prefix} did not run: ${launch} ${shown(reader.path, MAX_TOOL_MESSAGE_CHARS)}`;
+    const said = firstStderrLine(error.stderr);
+    const ending = error.signal === null ? `exit ${error.exitCode}` : `signal ${shown(error.signal, MAX_TOOL_MESSAGE_CHARS)}`;
+    const refusal = `${READER_PREFIX} refused the output by ${reader.name}`;
+    return said === '' ? `${refusal}: ${ending}` : `${refusal}: ${said} (${ending})`;
   }
-  const said = firstStderrLine(stderrHead);
-  if (timedOut) return said === '' ? `${READER_PREFIX} ${name} timed out` : `${READER_PREFIX} ${name} timed out: ${said}`;
-  if (signal === null && code === 0) return null;
-  const ending = signal === null ? `exit ${code}` : `signal ${shown(signal, MAX_TOOL_MESSAGE_CHARS)}`;
-  const refusal = `${READER_PREFIX} refused the output by ${name}`;
-  return said === '' ? `${refusal}: ${ending}` : `${refusal}: ${said} (${ending})`;
+  rethrowSandboxUnavailable(error);
+  if (!(error instanceof Error)) throw error;
+  const code = (error as NodeJS.ErrnoException).code;
+  return `${prefix} did not run: ${shown(code ?? error.message, MAX_TOOL_MESSAGE_CHARS)} ${shown(reader.path, MAX_TOOL_MESSAGE_CHARS)}`;
 }
