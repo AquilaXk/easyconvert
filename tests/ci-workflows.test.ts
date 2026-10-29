@@ -303,6 +303,13 @@ describe('the runner image of every workflow job', () => {
     expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(4);
   });
 
+  it('gives every job exactly one of a runner and a reusable workflow to call', () => {
+    const neither = jobs
+      .filter(({ job }) => (job['runs-on'] !== undefined) === (job.uses !== undefined))
+      .map(({ where, job }) => `${where}: runs-on ${JSON.stringify(job['runs-on'])}, uses ${JSON.stringify(job.uses)}`);
+    expect(neither).toEqual([]);
+  });
+
   it('keeps every reusable workflow a job calls inside this repository', () => {
     const outside = jobs
       .filter(({ job }) => job.uses !== undefined)

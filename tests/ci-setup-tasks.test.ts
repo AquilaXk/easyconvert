@@ -490,3 +490,27 @@ chmod 755 "$1/bin/gxps"
     expect(existsSync(path.join(stub.cacheDir, 'gxps.sha256'))).toBe(true);
   });
 });
+
+describe('the benchmark Python module check', () => {
+  function runCheck(importExitCode: number): Outcome {
+    const bin = path.join(scratch(), 'bin');
+    mkdirSync(bin);
+    const python = path.join(bin, 'python3');
+    writeFileSync(python, `#!/bin/sh\nif [ "$3" = "import pytz" ]; then echo "ModuleNotFoundError: No module named 'pytz'" >&2; exit ${importExitCode}; fi\nexit 0\n`);
+    chmodSync(python, 0o755);
+    return runSourced('verify_bench_python_modules', {}, bin);
+  }
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('fails the step with an error line when pytz cannot be imported', () => {
+    const outcome = runCheck(1);
+    expect(outcome.status).toBe(1);
+    expect(outcome.stdout).toContain('::error::');
+    expect(outcome.stdout).toContain("No module named 'pytz'");
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('passes when pytz imports', () => {
+    const outcome = runCheck(0);
+    expect(outcome.status).toBe(0);
+    expect(outcome.stdout).not.toContain('::error::');
+  });
+});

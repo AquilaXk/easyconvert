@@ -386,8 +386,8 @@ verify_cad_tools() {
   echo "cad-convert: $(command -v cad-convert); python3 with trimesh: $(command -v python3)"
 }
 
-# The Python modules the benchmark needs that its packages do not declare: DuckDB imports pytz when it hands a TIMESTAMPTZ value to Python, so a
-# missing one would fail only in the benchmark step.
+# DuckDB imports pytz when it hands a TIMESTAMPTZ value to Python without declaring it as a dependency, so pip-packages.txt pins it. This confirms
+# the pinned module imports under python3 -I, because a missing one would fail only in the benchmark step.
 verify_bench_python_modules() {
   local python_problem
   if ! python_problem="$(python3 -I -c 'import pytz' 2>&1)"; then

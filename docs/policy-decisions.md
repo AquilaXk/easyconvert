@@ -3796,11 +3796,16 @@ Compression
 
 ## 110. CI runners are pinned to Ubuntu 24.04 until the jobs are moved to the next image on purpose
 
-- **Status**: Implemented, decided 2026-10-30 (QA request: keep the nightly and CI gates working). The pin fixes the label, not the image build, and this change does not claim a green nightly. The nightly stays red from other causes: the cold apt cache after an image rotation (a row of issue 763) and the AVIF speed rows of issue 641.
+- **Status**: Implemented, decided 2026-10-30 (QA request: keep the nightly and CI gates working). The pin fixes the label, not the image build, and this change does not claim a green nightly. The nightly stays red from other causes: the cold apt cache after an image rotation (a row of issue 763), the AVIF speed rows of issue 641 and `realworld-gate`, which reported bad-output on every nightly from 2026-10-26 to 2026-10-29.
 - **Decision**:
   - Every job in `.github/workflows/` that names a runner uses `ubuntu-24.04` instead of `ubuntu-latest`, 28 jobs in nine workflows. The four jobs that call a reusable workflow with `uses:` name no runner.
-  - `tests/ci-workflows.test.ts` holds the rule: a job that names a runner names exactly `ubuntu-24.04`, and every job names a runner or a reusable workflow.
-  - `pytz` is pinned in `.github/actions/ci-setup/pip-packages.txt` (2026.5), and `install-tools.sh` checks `python3 -I -c 'import pytz'` beside the `trimesh` check.
+  - `tests/ci-workflows.test.ts` holds three rules for every job of every workflow file:
+    - A job has exactly one of `runs-on` and `uses`.
+    - `runs-on` is exactly `ubuntu-24.04`.
+    - `uses` names only a local file under `./.github/workflows/`.
+    The counts (32 jobs, 28 with `runs-on`, 4 with `uses`) are checked as well.
+  - `pytz` is pinned in `.github/actions/ci-setup/pip-packages.txt` (2026.5), and `install-tools.sh` checks `python3 -I -c 'import pytz'` in `verify_bench_python_modules`, which runs after `verify_cad_tools`.
+  - The pin is `pytz==2026.5` and not 2026.6. Version 2026.6 was uploaded on 2026-10-29, the day it would have been pinned, while 2026.5 had been out since 2026-10-04 and meets the same need.
   - The label moves to `ubuntu-26.04` in one change of its own, made when the jobs have been run on that image and pass.
 - **Why**:
   - The hosted runners move `ubuntu-latest` from Ubuntu 24.04 to 26.04 gradually, between 2026-10-19 and 2026-11-19. The image changes per run, not within one: the nightlies of 2026-10-26, 10-27 and 10-28 ran 24 of 24 jobs on `ubuntu-24.04`, and the nightly of 2026-10-29 (run 40845395326) ran 24 of 24 on `ubuntu-26.04`.
@@ -3815,5 +3820,5 @@ Compression
 - **Alternatives rejected**:
   - **Keep `ubuntu-latest` and fix the setup for 26.04 now.** That would change the image under every gate in the same window as the conversion work. Speed history before and after the move could not be told apart.
   - **Pin only the failing jobs.** One rule and one label are easier to hold than a list of exceptions: with a single label, a test can assert it for every job, and a job added later cannot start on another image unnoticed.
-- **Verified by**: `tests/ci-workflows.test.ts` (the group "the runner image of every workflow job" reads every file under `.github/workflows/`; red with one job set back to `ubuntu-latest`, where it names the file, the job and the label, and green with the 28 jobs on `ubuntu-24.04`), and `grep -rh "runs-on:" .github/workflows`, which lists 28 jobs, all on `ubuntu-24.04`. The CI run of this change and the next nightly report `Image: ubuntu-24.04` in their runner set-up logs.
+- **Verified by**: `tests/ci-install-apt-tools.test.ts`, `tests/ci-setup-tasks.test.ts` (`verify_bench_python_modules` returns 1 and prints the `::error::` line when `python3` cannot import `pytz`, and returns 0 when it can; red with `return 1` changed to `return 0`), `tests/ci-workflows.test.ts` (the group "the runner image of every workflow job" reads every file under `.github/workflows/`; red with one job set back to `ubuntu-latest`, where it names the file, the job and the label, and green with the 28 jobs on `ubuntu-24.04`), and `grep -rh "runs-on:" .github/workflows`, which lists 28 jobs, all on `ubuntu-24.04`. The CI run of this change and the next nightly report `Image: ubuntu-24.04` in their runner set-up logs.
 - **Revisit when**: the hosted runners announce the end of support for `ubuntu-24.04`, or the jobs have been run on `ubuntu-26.04` with tool setup, quality and speed rows passing. The move is then one change that switches the label, fixes the setup (the apt cold-cache limit included) and restarts the speed history.
