@@ -88,12 +88,16 @@ export interface StreamRunOptions {
 }
 
 /**
- * The converted archive, as the byte ranges to write in order. This is the one statement of what a segment may alias; the
- * routes, the repack module and the policy entry cite it and do not restate it.
- * - A segment may view the caller's input or this call's unpacked bytes.
- * - It never views a module-level buffer or another call's bytes.
- * - It is read by its `byteOffset` and `byteLength`, never through `segment.buffer` whole.
- * - A caller that wants to write into a result copies it first.
+ * The converted tar, as byte ranges to write in order. Read each range by its offset and length, never through its whole
+ * `buffer`.
+ *
+ * A range is new memory of this call (a header, zeros taken from Node's allocation pool, encoded output), or a view of this
+ * call's input (`source.buffer`, which the caller owns, or the buffer `loadSource` reads a `source.filePath` into), or a view
+ * of the bytes this call unpacked, including the frame a sandboxed child wrote them into. No range is reachable from another
+ * call. Copy a result before writing to it, and do not change the input while a result that views it is in use.
+ *
+ * This is the one statement of what a range may alias; the routes, the repack module and the policy entry cite it and do not
+ * restate it.
  */
 export interface StreamedArchive {
   segments: Uint8Array[];
@@ -124,7 +128,11 @@ function blockPadding(length: number): number {
   return (TAR_BLOCK_BYTES - (length % TAR_BLOCK_BYTES)) % TAR_BLOCK_BYTES;
 }
 
-/** Padding as a zeroed slice of Node's allocation pool, which is not zeroed itself. Aliasing: see `StreamedArchive`. */
+/**
+ * Padding as a slice of Node's allocation pool, because `Buffer.alloc` per member measured 0.8 to 1.1 ms against 0.24 to
+ * 0.33 ms on a tar of 2,000 members. The slice is zeroed because an unzeroed pool slice would carry other allocations' bytes
+ * into the tar. Aliasing: see `StreamedArchive`.
+ */
 export function pushPadding(segments: Uint8Array[], length: number): void {
   const padding = blockPadding(length);
   if (padding > 0) segments.push(Buffer.allocUnsafe(padding).fill(0));
@@ -406,8 +414,8 @@ function memberHeaderBytes(name: string): number {
 
 /**
  * A tar around one member whose bytes already sit in a buffer with room before and after them: the header, the padding
- * and the end marker are written into that room. When the room does not fit the header it wraps without writing into the
- * frame.
+ * and the end marker are written into that room. It falls back to `wrapAsMember`, and writes nothing into the frame, when
+ * there is no frame or when the room is not exactly the header's length.
  */
 export function wrapInPlace(output: SevenZipOutput, name: string): Uint8Array[] {
   const data = output.stdout;

@@ -3,7 +3,7 @@ import zlib from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { readTarEntries } from '../src/lib/conversions/archive';
 import { tarFromMembers, rarToTar, tarToZip, zipToTar, type TarMember } from '../src/lib/conversions/archive-repack';
-import { LIMITS, sevenZipToTar, streamToTar, wrapInPlace, type SevenZipOutput } from '../src/lib/conversions/archive-stream';
+import { LIMITS, sevenZipToTar, streamToTar, wrapAsMember, wrapInPlace, type SevenZipOutput } from '../src/lib/conversions/archive-stream';
 import { readZipDirectory, readZipEntries } from '../src/lib/conversions/archive-zip-reader';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { hostileTarEnd, hostileTarMember } from './helpers/hostile-tar';
@@ -339,15 +339,15 @@ describe('wrapInPlace', () => {
   const HEADROOM = BLOCK;
 
   /** What 7-Zip's output looks like to the wrap: the body inside a frame with room for the header before it and the padding and end blocks behind it. */
-  function outputOf(body: Buffer, withFrame: boolean): SevenZipOutput {
-    const frame = Buffer.alloc(HEADROOM + body.length + BLOCK - 1 + END_BLOCKS_BYTES, FILL_BYTE);
-    body.copy(frame, HEADROOM);
-    return { stdout: frame.subarray(HEADROOM, HEADROOM + body.length), frame: withFrame ? frame : undefined, headroomBytes: HEADROOM };
+  function outputOf(body: Buffer, withFrame: boolean, headroom = HEADROOM): SevenZipOutput {
+    const frame = Buffer.alloc(headroom + body.length + BLOCK - 1 + END_BLOCKS_BYTES, FILL_BYTE);
+    body.copy(frame, headroom);
+    return { stdout: frame.subarray(headroom, headroom + body.length), frame: withFrame ? frame : undefined, headroomBytes: headroom };
   }
 
   it.each([
     ['in the frame it was given', true],
-    ['without writing into the frame when there is none', false],
+    ['from segments when there is no frame', false],
   ])('writes a tar of its own %s, and nothing of it is shared with the next one', async (_name, withFrame) => {
     const { first, second } = await convertTwice(() => wrapInPlace(outputOf(ALPHA, withFrame), 'member'));
 
@@ -355,5 +355,22 @@ describe('wrapInPlace', () => {
     expectFiles(first, { member: ALPHA });
     expectZeroPadding(first);
     expect(first).toHaveLength(BLOCK + BLOCK + END_BLOCKS_BYTES);
+  });
+
+  it.each([
+    ['shorter', BLOCK / 2],
+    ['longer', BLOCK * 2],
+  ])('wraps from segments, and leaves the frame as it was, when the headroom is %s than the header', (_name, headroom) => {
+    const output = outputOf(ALPHA, true, headroom);
+    const frame = output.frame as Buffer;
+    const bodyEnd = headroom + ALPHA.length;
+
+    const segments = wrapInPlace(output, 'member');
+
+    const tar = Buffer.concat(segments);
+    expect(tar.equals(Buffer.concat(wrapAsMember('member', ALPHA)))).toBe(true);
+    expect(frame.subarray(0, headroom).every((byte) => byte === FILL_BYTE)).toBe(true);
+    expect(frame.subarray(headroom, bodyEnd).equals(ALPHA)).toBe(true);
+    expect(frame.subarray(bodyEnd).every((byte) => byte === FILL_BYTE)).toBe(true);
   });
 });

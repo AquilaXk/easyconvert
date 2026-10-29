@@ -138,7 +138,8 @@ interface ObservedWrites {
 
 /**
  * The calls of the methods that write into a buffer: `set`, `fill` and `copyWithin` of `%TypedArray%.prototype`, which a plain
- * `Uint8Array` view reaches, `Buffer.prototype.fill` (a Buffer's own) and `Buffer.prototype.copy`.
+ * `Uint8Array` view reaches, `Buffer.prototype.fill` (a Buffer's own) and `Buffer.prototype.copy`. It sees only these. A write
+ * by index assignment, by the `write*` methods of a Buffer or by the setters of a `DataView` is not observed.
  */
 function observeWrites(): ObservedWrites {
   const typedArray = Object.getPrototypeOf(Uint8Array.prototype) as Uint8Array;
@@ -475,7 +476,7 @@ describe('the bytes that follow the end-of-archive blocks', () => {
 
   it('do not keep 30 MiB in memory behind the worker result', async () => {
     // The worker accepts the engine only when the path names a file, so a missing one cannot stand in; the gzip route
-    // runs no child process, which the count of sandbox runs shows.
+    // starts no sandboxed run, which the count of runs shows.
     vi.stubEnv('P7ZIP_PATH', process.execPath);
     sandboxFrames.started = 0;
 
@@ -488,7 +489,7 @@ describe('the bytes that follow the end-of-archive blocks', () => {
     expect(result?.buffer?.buffer.byteLength).toBeLessThan(MIB);
   }, 60_000);
 
-  it('counts a sandbox run when the xz route starts its child, so that the count of the test above can show none', async () => {
+  it('counts a sandbox run when the xz route starts its child, so that the count in \'do not keep 30 MiB in memory behind the worker result\' can show none', async () => {
     vi.stubEnv('P7ZIP_PATH', process.execPath);
     sandboxFrames.started = 0;
 
@@ -561,11 +562,15 @@ describe('the segments of a converted tar', () => {
 describe('a payload that 7-Zip carries out of its sandbox', () => {
   async function throughSandbox(
     payload: Buffer
-  ): Promise<{ segments: Uint8Array[]; frame: Buffer; headroom: number; tailroom: number; observed: ReturnType<typeof observeWrites> }> {
+  ): Promise<{ segments: Uint8Array[]; frame: Buffer; headroom: number; tailroom: number; observed: ReturnType<typeof observeWrites>; bodiesBefore: Uint8Array[] }> {
     const xz = execFileSync(getOracleToolPath('xz') as string, ['-c'], { input: payload });
     sandboxFrames.runs.length = 0;
     let observed: ReturnType<typeof observeWrites> | undefined;
+    let bodiesBefore: Uint8Array[] = [];
     sandboxFrames.afterRun = () => {
+      const { frame, headroom, tailroom } = sandboxFrames.runs[0];
+      const output = frame.subarray(headroom, frame.length - tailroom);
+      bodiesBefore = classifyUnpacked(output) === 'plain' ? [] : fileBodies(output);
       observed = observeWrites();
     };
     const result = await streamToTar({
@@ -579,7 +584,7 @@ describe('a payload that 7-Zip carries out of its sandbox', () => {
     const [{ frame, headroom, tailroom }] = sandboxFrames.runs;
     expect(headroom).toBeGreaterThan(0);
     expect(tailroom).toBeGreaterThan(0);
-    return { segments: result?.segments ?? [], frame, headroom, tailroom, observed: observed as ReturnType<typeof observeWrites> };
+    return { segments: result?.segments ?? [], frame, headroom, tailroom, observed: observed as ReturnType<typeof observeWrites>, bodiesBefore };
   }
 
   oracleTest('that is a tar is rewritten inside the frame, and the rooms around it stay as they were', ['7z', 'xz'], async () => {
@@ -589,13 +594,12 @@ describe('a payload that 7-Zip carries out of its sandbox', () => {
       hostileTarEnd(),
     ]);
 
-    const { segments, frame, headroom, tailroom, observed } = await throughSandbox(tar);
+    const { segments, frame, headroom, tailroom, observed, bodiesBefore } = await throughSandbox(tar);
 
     expect(segments).toHaveLength(1);
     const [segment] = segments;
-    const bodies = fileBodies(Buffer.from(segment.buffer, segment.byteOffset, segment.length));
-    expectBodiesToBeViewsOf(bodies, frame);
-    expectNoWriteOverBodies(observed, bodies, frame);
+    expectBodiesToBeViewsOf(bodiesBefore, frame);
+    expectNoWriteOverBodies(observed, bodiesBefore, frame);
     expect(segment.byteOffset).toBeGreaterThan(0);
     expect(segment.buffer.byteLength).toBeGreaterThan(segment.byteOffset + segment.length);
     expect(Buffer.from(segment).equals(referenceTarFromCopy(tar))).toBe(true);
