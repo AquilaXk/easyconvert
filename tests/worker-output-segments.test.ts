@@ -124,10 +124,12 @@ describe('writeOutputSegments', () => {
   });
 
   it('throws when a write reports more bytes than were pending, and closes the file', () => {
-    const writev = vi.spyOn(fs, 'writevSync').mockReturnValue(100);
+    const segments = [Buffer.from('data'), Buffer.from('more')];
+    const pending = segments.reduce((total, segment) => total + segment.length, 0);
+    const writev = vi.spyOn(fs, 'writevSync').mockReturnValue(pending + 1);
     const close = vi.spyOn(fs, 'closeSync');
 
-    expect(() => writeOutputSegments([Buffer.from('data'), Buffer.from('more')], 'tar', undefined, { outputPath })).toThrow(/more bytes written than were pending/);
+    expect(() => writeOutputSegments(segments, 'tar', undefined, { outputPath })).toThrow(/more bytes written than were pending/);
     expect(writev).toHaveBeenCalledTimes(1);
     expect(close).toHaveBeenCalledTimes(1);
   });

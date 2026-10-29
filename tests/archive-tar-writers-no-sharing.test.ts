@@ -17,8 +17,7 @@ import { craftZip } from './helpers/zip-craft';
  * and converts again from a fresh copy of the same input; the second result must equal the first. A header, padding or end
  * block taken from a module-level buffer would carry the 0xff into the second result.
  *
- * The input is copied for each run on purpose: a stored RAR member or a tar entry that the ZIP stores may be a view of the input, which is
- * the contract of `StreamedArchive` (byte ranges that may alias the input or the unpacked bytes, never a buffer of the module).
+ * The input is copied for each run on purpose: a result may view the input (see `StreamedArchive`).
  */
 const BLOCK = 512;
 const END_BLOCKS_BYTES = 2 * BLOCK;
@@ -28,6 +27,7 @@ const TEST_TIMEOUT_MS = 60_000;
 const ALPHA = Buffer.from('alpha, not a multiple of a block');
 const BETA = Buffer.alloc(1500, 7);
 const GAMMA = Buffer.alloc(BLOCK * 2, 9);
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /** The bytes of one segment, through its own offset and length, whatever the size of the buffer behind it. */
 function bytesOf(segment: Uint8Array): Buffer {
@@ -197,8 +197,7 @@ describe('the tar writers of the repack routes', () => {
 
 /**
  * Two results of one input, both alive, and junk written over the first. A route that copies leaves the second equal to
- * what it was; a route whose members are views of the input shows the junk in the second, which is the contract of
- * `StreamedArchive` and not a fault of the writer.
+ * what it was; a result that views the input shows the junk in the second, which `StreamedArchive` allows.
  */
 describe('two results of one input kept alive', () => {
   type Convert = () => Promise<readonly Uint8Array[] | undefined> | readonly Uint8Array[] | undefined;
@@ -323,6 +322,17 @@ describe('two results of one input kept alive', () => {
     expect(written.before.includes(BETA)).toBe(true);
     expectMembersOverwritten(written, run);
   });
+
+  it('tarToZip with deflate shows the write in the second result for a compressible entry stored because its bytes start with a PNG signature, a view of the tar', async () => {
+    const body = Buffer.concat([PNG_SIGNATURE, Buffer.alloc(BETA.length - PNG_SIGNATURE.length, 7)]);
+    const tar = Buffer.concat([hostileTarMember({ name: 'a.bin' }, body), hostileTarEnd()]);
+    const run = Buffer.alloc(body.length, FILL_BYTE);
+
+    const written = await writeOverFirst(async () => (await tarToZip({ source: { buffer: tar }, compressionLevel: 6 }))?.segments);
+
+    expect(written.before.includes(body)).toBe(true);
+    expectMembersOverwritten(written, run);
+  });
 });
 
 describe('wrapInPlace', () => {
@@ -337,7 +347,7 @@ describe('wrapInPlace', () => {
 
   it.each([
     ['in the frame it was given', true],
-    ['by copying when there is no frame', false],
+    ['without writing into the frame when there is none', false],
   ])('writes a tar of its own %s, and nothing of it is shared with the next one', async (_name, withFrame) => {
     const { first, second } = await convertTwice(() => wrapInPlace(outputOf(ALPHA, withFrame), 'member'));
 

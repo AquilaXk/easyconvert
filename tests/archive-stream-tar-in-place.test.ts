@@ -50,6 +50,8 @@ const FRAME_HEAD = 300;
 const FRAME_TAIL = 700;
 const JUNK_BYTE = 0x58;
 const BODY_BYTES = 4096;
+/** `printf 'counted\n' | xz -c`, so that the control needs no xz tool. */
+const TINY_XZ_BASE64 = '/Td6WFoAAATm1rRGBMAMCCEBFgAAAAAAAAAAAKx3qqQBAAdjb3VudGVkCgD4p6elvuGrgAABKAizkwBzH7bzfQEAAAAABFla';
 type Policy = Pick<StreamRunOptions, 'skipLinks' | 'collisionPolicy'>;
 const KEEP_LAST_DUPLICATE: Policy = { collisionPolicy: 'overwrite' };
 const SKIP_LINKS: Policy = { skipLinks: true };
@@ -127,34 +129,67 @@ interface ObservedCalls {
   mock: { calls: unknown[][]; contexts: unknown[]; results: { value: unknown }[] };
 }
 
-/** The calls of the three methods that write into a buffer: `Uint8Array.prototype.set`, `Buffer.prototype.copy` and `Buffer.prototype.fill`. */
-function observeWrites(): { writes: ObservedCalls; copies: ObservedCalls; fills: ObservedCalls } {
-  const typedArray = Object.getPrototypeOf(Uint8Array.prototype) as Uint8Array;
-  return { writes: vi.spyOn(typedArray, 'set'), copies: vi.spyOn(Buffer.prototype, 'copy'), fills: vi.spyOn(Buffer.prototype, 'fill') };
+interface ObservedWrites {
+  sets: ObservedCalls;
+  copies: ObservedCalls;
+  fills: ObservedCalls[];
+  moves: ObservedCalls;
 }
 
-/** Where the observed `set`, `copy` and `fill` calls wrote, whatever view of the memory they went through. */
-function writeTargets({ writes, copies, fills }: { writes: ObservedCalls; copies: ObservedCalls; fills: ObservedCalls }): ByteRange[] {
-  const targets = writes.mock.calls.map(([source, offset], index) => rangeOf(writes.mock.contexts[index] as Uint8Array, (offset as number | undefined) ?? 0, (source as Uint8Array).length));
+/**
+ * The calls of the methods that write into a buffer: `set`, `fill` and `copyWithin` of `%TypedArray%.prototype`, which a plain
+ * `Uint8Array` view reaches, `Buffer.prototype.fill` (a Buffer's own) and `Buffer.prototype.copy`.
+ */
+function observeWrites(): ObservedWrites {
+  const typedArray = Object.getPrototypeOf(Uint8Array.prototype) as Uint8Array;
+  return {
+    sets: vi.spyOn(typedArray, 'set'),
+    copies: vi.spyOn(Buffer.prototype, 'copy'),
+    fills: [vi.spyOn(typedArray, 'fill'), vi.spyOn(Buffer.prototype, 'fill')],
+    moves: vi.spyOn(typedArray, 'copyWithin'),
+  };
+}
+
+/** A start or end argument of a typed array method, resolved as the method does: absent is `fallback`, a negative one counts from the end. */
+function indexArgument(value: unknown, length: number, fallback: number): number {
+  if (typeof value !== 'number') return fallback;
+  return value < 0 ? Math.max(0, length + value) : Math.min(value, length);
+}
+
+/** Where the observed calls wrote, whatever view of the memory they went through. */
+function writeTargets({ sets, copies, fills, moves }: ObservedWrites): ByteRange[] {
+  const targets = sets.mock.calls.map(([source, offset], index) => rangeOf(sets.mock.contexts[index] as Uint8Array, (offset as number | undefined) ?? 0, (source as Uint8Array).length));
   copies.mock.calls.forEach(([target, targetStart], index) => {
     targets.push(rangeOf(target as Uint8Array, (targetStart as number | undefined) ?? 0, copies.mock.results[index].value as number));
   });
-  fills.mock.calls.forEach(([, start, end], index) => {
-    const view = fills.mock.contexts[index] as Uint8Array;
-    const from = typeof start === 'number' ? start : 0;
-    const to = typeof end === 'number' ? end : view.length;
-    targets.push(rangeOf(view, from, to - from));
+  for (const fill of fills) {
+    fill.mock.calls.forEach(([, start, end], index) => {
+      const view = fill.mock.contexts[index] as Uint8Array;
+      const from = indexArgument(start, view.length, 0);
+      targets.push(rangeOf(view, from, indexArgument(end, view.length, view.length) - from));
+    });
+  }
+  moves.mock.calls.forEach(([target, start, end], index) => {
+    const view = moves.mock.contexts[index] as Uint8Array;
+    const to = indexArgument(target, view.length, 0);
+    const from = indexArgument(start, view.length, 0);
+    targets.push(rangeOf(view, to, Math.min(indexArgument(end, view.length, view.length) - from, view.length - to)));
   });
   return targets;
 }
 
-/** The observed writes must be seen at all, and none may land on a body, which the rewrite leaves where it is. */
-function expectNoWriteOverBodies(observed: { writes: ObservedCalls; copies: ObservedCalls; fills: ObservedCalls }, bodies: readonly Uint8Array[]): void {
+/**
+ * None of the observed writes may land on a body, which the rewrite leaves where it is, and at least one must land in `region`
+ * (the unpacked bytes or the frame) outside the bodies, so that the observation is shown to see the rewrite itself and not
+ * only a write elsewhere, such as the allocation of a padding.
+ */
+function expectNoWriteOverBodies(observed: ObservedWrites, bodies: readonly Uint8Array[], region: Uint8Array): void {
   const bodyRanges = bodies.map((body) => rangeOf(body));
   const targets = writeTargets(observed);
+  const regionRange = rangeOf(region);
   expect(bodyRanges.length).toBeGreaterThan(0);
-  expect(targets.length).toBeGreaterThan(0);
   expect(targets.filter((target) => bodyRanges.some((body) => overlap(target, body)))).toEqual([]);
+  expect(targets.filter((target) => overlap(target, regionRange) && !bodyRanges.some((body) => overlap(target, body))).length).toBeGreaterThan(0);
 }
 
 /** A fresh pool slab, so that the copy and the headers written after it fit in it. */
@@ -221,7 +256,7 @@ describe('a tar that gzip, bzip2 or xz carries', () => {
     const expected = referenceTarFromCopy(tar);
     expect(expected.equals(tar)).toBe(false);
     const observed = observeWrites();
-    const { writes, copies } = observed;
+    const { sets: writes, copies } = observed;
 
     const { unpacked, segments, bodiesBefore } = await viaGzip(tar);
     const sources = writes.mock.calls.map(([source]) => source as Uint8Array);
@@ -233,7 +268,7 @@ describe('a tar that gzip, bzip2 or xz carries', () => {
     expect(sources.length).toBeGreaterThan(0);
     expect(sources.filter((source) => isWindowOf(source, unpacked))).toEqual([]);
     expect(copies.mock.contexts.filter((source) => isWindowOf(source as Uint8Array, unpacked))).toEqual([]);
-    expectNoWriteOverBodies(observed, bodiesBefore);
+    expectNoWriteOverBodies(observed, bodiesBefore, unpacked);
     const bodyBytes = bodiesBefore.reduce((total, body) => total + body.length, 0);
     expect(bodyBytes).toBe('first body'.length + BODY_BYTES);
     expect(bytesWrittenInto(unpacked, writes, copies)).toBe(expected.length - bodyBytes);
@@ -440,7 +475,7 @@ describe('the bytes that follow the end-of-archive blocks', () => {
 
   it('do not keep 30 MiB in memory behind the worker result', async () => {
     // The worker accepts the engine only when the path names a file, so a missing one cannot stand in; the gzip route
-    // runs no child process, and the count of sandbox runs sees one (see the xz run of the last describe).
+    // runs no child process, which the count of sandbox runs shows.
     vi.stubEnv('P7ZIP_PATH', process.execPath);
     sandboxFrames.started = 0;
 
@@ -452,6 +487,15 @@ describe('the bytes that follow the end-of-archive blocks', () => {
     // streamedArchiveResult joins the uncut segments with Buffer.concat, which may slice the pool slab but never keeps the 30 MiB.
     expect(result?.buffer?.buffer.byteLength).toBeLessThan(MIB);
   }, 60_000);
+
+  it('counts a sandbox run when the xz route starts its child, so that the count of the test above can show none', async () => {
+    vi.stubEnv('P7ZIP_PATH', process.execPath);
+    sandboxFrames.started = 0;
+
+    await convertWithNative7z(Buffer.from(TINY_XZ_BASE64, 'base64'), 'xz', 'tar', {}, 'sample.tar.xz').catch(() => undefined);
+
+    expect(sandboxFrames.started).toBe(1);
+  });
 });
 
 describe('the segments of a converted tar', () => {
@@ -538,14 +582,6 @@ describe('a payload that 7-Zip carries out of its sandbox', () => {
     return { segments: result?.segments ?? [], frame, headroom, tailroom, observed: observed as ReturnType<typeof observeWrites> };
   }
 
-  oracleTest('is a sandbox run that the counter of the retention test sees', ['7z', 'xz'], async () => {
-    sandboxFrames.started = 0;
-
-    await throughSandbox(Buffer.from('counted\n'.repeat(20)));
-
-    expect(sandboxFrames.started).toBe(1);
-  });
-
   oracleTest('that is a tar is rewritten inside the frame, and the rooms around it stay as they were', ['7z', 'xz'], async () => {
     const tar = Buffer.concat([
       hostileTarMember({ name: 'a.txt', mode: 0o4755, magic: 'ustar ', version: ' \0' }, Buffer.from('first body')),
@@ -557,7 +593,9 @@ describe('a payload that 7-Zip carries out of its sandbox', () => {
 
     expect(segments).toHaveLength(1);
     const [segment] = segments;
-    expectNoWriteOverBodies(observed, fileBodies(Buffer.from(segment.buffer, segment.byteOffset, segment.length)));
+    const bodies = fileBodies(Buffer.from(segment.buffer, segment.byteOffset, segment.length));
+    expectBodiesToBeViewsOf(bodies, frame);
+    expectNoWriteOverBodies(observed, bodies, frame);
     expect(segment.byteOffset).toBeGreaterThan(0);
     expect(segment.buffer.byteLength).toBeGreaterThan(segment.byteOffset + segment.length);
     expect(Buffer.from(segment).equals(referenceTarFromCopy(tar))).toBe(true);
@@ -575,7 +613,7 @@ describe('a payload that 7-Zip carries out of its sandbox', () => {
 
     expect(segments).toHaveLength(1);
     const [segment] = segments;
-    expectNoWriteOverBodies(observed, [frame.subarray(headroom, headroom + payload.length)]);
+    expectNoWriteOverBodies(observed, [frame.subarray(headroom, headroom + payload.length)], frame);
     expect(segment.buffer).toBe(frame.buffer);
     expect(segment.byteOffset).toBe(frame.byteOffset);
     expect(Buffer.from(segment).equals(expected)).toBe(true);
