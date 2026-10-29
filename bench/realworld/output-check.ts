@@ -16,9 +16,6 @@ const IMAGE_TARGETS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif',
 /** Targets a multi-page document is split into, one file per page, inside a ZIP. */
 export const PAGE_TARGETS: ReadonlySet<string> = new Set([...IMAGE_TARGETS, 'svg', 'eps', 'odd', 'dxf', 'emf', 'wmf']);
 const ZIP_MIME_TYPE = 'application/zip';
-const END_RECORD_SIGNATURE = 0x06054b50;
-const END_RECORD_BYTES = 22;
-const END_RECORD_MAX_COMMENT_BYTES = 0xffff;
 const PACKAGE_PARTS: Readonly<Record<string, string>> = {
   docx: '[Content_Types].xml',
   xlsx: '[Content_Types].xml',
@@ -61,28 +58,9 @@ async function pageArchiveProblem(buffer: Buffer, target: string, workDir: strin
   if (archive.entries.length === 0) return `${target} page archive has no pages`;
   for (const entry of archive.entries) {
     const problem = await outputProblem(await entry.async('nodebuffer'), target, workDir, { ...options, mimeType: undefined, emptyInput: false });
-    if (problem !== null) return `page ${entry.name}: ${problem}`;
+    if (problem !== null) return `page ${shown(entry.name)}: ${problem}`;
   }
   return null;
-}
-
-/**
- * The number of entries the end-of-central-directory record declares (PKWARE APPNOTE 4.3.16, total entries at offset 10), found as zip readers do by
- * looking back from the end for the signature whose comment length reaches the end of the buffer; null when no such record exists.
- */
-function declaredEntryCount(buffer: Buffer): number | null {
-  const last = buffer.length - END_RECORD_BYTES;
-  for (let at = last; at >= Math.max(0, last - END_RECORD_MAX_COMMENT_BYTES); at--) {
-    if (buffer.readUInt32LE(at) === END_RECORD_SIGNATURE && at + END_RECORD_BYTES + buffer.readUInt16LE(at + 20) === buffer.length) return buffer.readUInt16LE(at + 10);
-  }
-  return null;
-}
-
-/** JSZip keeps one entry per name, so an archive that repeats a name shows fewer entries than its central directory declares. */
-function repeatedNameProblem(buffer: Buffer, distinctNames: number): string | null {
-  const declared = declaredEntryCount(buffer);
-  if (declared === null) return 'obj archive has no end-of-central-directory record';
-  return declared === distinctNames ? null : `obj archive declares ${declared} entries but holds ${distinctNames} distinct names, so an entry name is repeated`;
 }
 
 /** The OBJ read by the line reader (see obj-mtl.ts), or why the bytes are not a readable OBJ. The reader refuses everything that is not text of the OBJ vocabulary, executables and other formats included. */
@@ -130,8 +108,6 @@ async function objArchiveProblem(buffer: Buffer): Promise<string | null> {
   const archive = await archiveEntries(buffer, 'obj archive');
   if ('problem' in archive) return archive.problem;
   const { entries, folders } = archive;
-  const repeated = repeatedNameProblem(buffer, entries.length + folders.length);
-  if (repeated !== null) return repeated;
   const nested = entries.find((entry) => /[/\\]/.test(entry.name));
   if (nested !== undefined) return `obj archive entry ${shown(nested.name)} is not at the archive root`;
   if (folders.length > 0) return `obj archive holds the folder ${shown(folders[0].name)}`;
@@ -170,7 +146,7 @@ export async function outputProblem(buffer: Buffer, target: string, workDir: str
     if (IMAGE_TARGETS.has(target) && options.identify !== '') execFileSync(options.identify, [file], { stdio: 'pipe', timeout: VALIDATOR_TIMEOUT_MS });
   } catch (error) {
     const stderr = (error as { stderr?: Buffer }).stderr?.toString().trim().split('\n')[0] ?? String(error);
-    return `reference reader refused the output: ${stderr}`;
+    return `reference reader refused the output: ${shown(stderr)}`;
   }
   return null;
 }

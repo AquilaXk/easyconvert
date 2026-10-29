@@ -1,7 +1,6 @@
-import os from 'node:os';
 import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
-import { readObj } from '../bench/realworld/obj-mtl';
+import { readObj, shown } from '../bench/realworld/obj-mtl';
 import { outputProblem } from '../bench/realworld/output-check';
 import { convertCadWithOcct } from '../src/lib/conversions/cad-occt';
 import { createDeflatedZipBuffer } from '../src/lib/conversions/zip-writer';
@@ -17,8 +16,9 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 
 const ZIP_MIME = 'application/zip';
 const CONVERSION_TIMEOUT_MS = 120_000;
-const WORK_DIR = os.tmpdir();
-const GENEROUS_TIME_GUARD_MS = 1_000;
+const WORK_DIR = '';
+const MAX_LINE_BYTES = 1024 * 1024;
+const MAX_MATERIALS = 100_000;
 const OBJ = Buffer.from('# model\nmtllib x.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl Mat_1\nf 1 2 3\n');
 const MTL = Buffer.from(
   '# Exported by Open CASCADE Technology [dev.opencascade.org]\nnewmtl Mat_1\nKa 0.200000 0.025000 0.025000\nKd 0.800000 0.100000 0.100000\nKs 0.000000 0.000000 0.000000\nNs 0.000000\nTr 0.500000\n'
@@ -44,6 +44,9 @@ describe('a plain OBJ', () => {
   it.each([
     ['the form cad-convert writes for a model with no colour', '# Wavefront OBJ, coordinates in mm\nv 0 0 0\nv 1.5e-3 0 0\nv 0 -1 0\nf 1 2 3\nf -3 -2 -1\n'],
     ['the form the pure engine writes with normals', '# Wavefront OBJ\no model\n\nv 0 0 0\nv 1 0 0\nv 0 1 0\n\nvn 0 0 1\nvn 0 0 1\nvn 0 0 1\n\nf 1//1 2//2 3//3\n'],
+    ['a face of 2,000 corners, longer than 8 KiB, as encodeObj writes it for any polygon', `v 0 0 0\nv 1 0 0\nv 0 1 0\nvn 0 0 1\nvn 0 0 1\nvn 0 0 1\nf ${'1//1 2//2 3//3 '.repeat(667).trim()}\n`],
+    ['a face index of 64 characters', `${TRIANGLE}f 1 2 ${'0'.repeat(63)}3\n`],
+    ['an o name of 20,000 characters, which encodeObj writes without a cap', `o ${'n'.repeat(20_000)}\n${PLAIN_OBJ}`],
     ['a quad, a vertex with a weight and Windows line ends', 'v 0 0 0 1\r\nv 1 0 0\r\nv 1 1 0\r\nv 0 1 0\r\nf 1 2 3 4\r\n'],
   ])('is accepted in %s', async (_name, text) => {
     expect(await check(Buffer.from(text))).toBeNull();
@@ -82,6 +85,8 @@ describe('a plain OBJ', () => {
     ['a usemtl name with a slash', TRIANGLE + 'usemtl a/b\nf 1 2 3\n', /usemtl name a\/b is not letters, digits/],
     ['an mtllib name with a slash', 'mtllib ../x.mtl\n' + PLAIN_OBJ, /mtllib name \.\.\/x\.mtl is not letters, digits/],
     ['a usemtl name over 255 characters', TRIANGLE + `usemtl ${'m'.repeat(256)}\nf 1 2 3\n`, /usemtl name m{40}\.\.\. is not letters, digits/],
+    ['an mtllib name over 68 characters, the 64 of outputStem and .mtl', `mtllib ${'m'.repeat(65)}.mtl\n` + PLAIN_OBJ, /mtllib name m{40}\.\.\. is not letters, digits, '\.', '_' and '-' in at most 68 characters/],
+    ['a face index over 64 characters', TRIANGLE + `f 1 2 ${'0'.repeat(64)}3\n`, /an index of corner 0{40}\.\.\. is over 64 characters/],
     ['the form cad-convert writes for a model with colours, which is a ZIP', OBJ.toString(), /names material file x\.mtl, which comes only in a ZIP/],
     ['an executable', '\u007fELF\u0002\u0001\u0001\u0000 binary', /not readable/],
   ])('is refused with %s', async (_name, text, reason) => {
@@ -99,34 +104,33 @@ describe('a plain OBJ', () => {
   });
 });
 
-describe('a hostile OBJ', () => {
-  const MIB = 1024 * 1024;
+describe('an OBJ beyond the bounds of the check', () => {
+  const lineOf = (length: number) => Buffer.from(`${PLAIN_OBJ}# ${'c'.repeat(length - 2)}\n`);
 
-  it('is refused at a digit run that no number pattern may backtrack over, in milliseconds', async () => {
-    for (const digits of [80_000, 5_000, 60]) {
-      const started = performance.now();
-      const problem = await check(Buffer.from(`v 0 0 ${'1'.repeat(digits)}x\nv 1 0 0\nv 0 1 0\nf 1 2 3\n`));
-      expect(problem).toMatch(/^obj is not readable, line 1: /);
-      expect(performance.now() - started).toBeLessThan(GENEROUS_TIME_GUARD_MS);
+  it('is refused at a digit run past the number bound, and at a short one by the number pattern', async () => {
+    for (const digits of [80_000, 5_000]) {
+      expect(await check(Buffer.from(`v 0 0 ${'1'.repeat(digits)}x\nv 1 0 0\nv 0 1 0\nf 1 2 3\n`))).toMatch(/^obj is not readable, line 1: a vertex needs three or four numbers$/);
     }
+    expect(await check(Buffer.from(`v 0 0 ${'1'.repeat(60)}x\nv 1 0 0\nv 0 1 0\nf 1 2 3\n`))).toMatch(/^obj is not readable, line 1: a vertex needs three or four numbers$/);
   });
 
-  it('is refused at a number longer than a number may be, and a long number of the right form is refused, but a short one is read', async () => {
+  it('is refused at a number of 65 characters, and a number of 64 is read', async () => {
     expect(await check(Buffer.from(`v 0 0 ${'1'.repeat(65)}\nv 1 0 0\nv 0 1 0\nf 1 2 3\n`))).toMatch(/line 1: a vertex needs three or four numbers/);
+    expect(await check(Buffer.from(`v 0 0 ${'1'.repeat(64)}\nv 1 0 0\nv 0 1 0\nf 1 2 3\n`))).toBeNull();
     expect(await check(Buffer.from(`v 0 0 0.${'1'.repeat(40)}e-5\nv 1 0 0\nv 0 1 0\nf 1 2 3\n`))).toBeNull();
   });
 
   it.each([
     ['a plain', (n: number) => Buffer.alloc(n, 'a')],
     ['a spaced', (n: number) => Buffer.from(`v ${'1 '.repeat(n / 2)}`.slice(0, n))],
-  ])('is refused for %s line of 1 MiB before it is decoded, with a short message', async (_name, line) => {
-    const problem = await check(line(MIB));
-    expect(problem).toBe(`obj is not readable, line 1: ${MIB} bytes is over the 8192 byte line limit`);
+  ])('is refused for %s line over the line bound before it is decoded, with a short message', async (_name, line) => {
+    const problem = await check(line(MAX_LINE_BYTES + 1));
+    expect(problem).toBe(`obj is not readable, line 1: ${MAX_LINE_BYTES + 1} bytes is over the ${MAX_LINE_BYTES} byte line limit`);
   });
 
-  it('is refused at the line number of a long line, and a line at the limit is read', async () => {
-    expect(await check(Buffer.from(`${PLAIN_OBJ}# ${'c'.repeat(8190)}\n`))).toBeNull();
-    expect(await check(Buffer.from(`${PLAIN_OBJ}# ${'c'.repeat(8191)}\n`))).toMatch(/line 5: 8193 bytes is over the 8192 byte line limit/);
+  it('is refused at the line number of a line one byte over the bound, and a line at the bound is read', async () => {
+    expect(await check(lineOf(MAX_LINE_BYTES))).toBeNull();
+    expect(await check(lineOf(MAX_LINE_BYTES + 1))).toMatch(new RegExp(`line 5: ${MAX_LINE_BYTES + 1} bytes is over the ${MAX_LINE_BYTES} byte line limit`));
   });
 
   it('is refused with a message that quotes at most 40 characters of a token and no control byte', async () => {
@@ -138,15 +142,26 @@ describe('a hostile OBJ', () => {
     expect(zip?.length).toBeLessThan(200);
   });
 
-  it('is refused for more distinct materials than the writers can make, in the OBJ and in the MTL', async () => {
-    let usemtl = '';
-    let newmtl = '';
-    for (let i = 0; i <= 100_000; i++) {
-      usemtl += `usemtl m${i}\nf 1 2 3\n`;
-      newmtl += `newmtl m${i}\nKd 1 1 1\n`;
-    }
-    expect(await check(Buffer.from(TRIANGLE + usemtl))).toMatch(/the OBJ names more than 100000 materials/);
-    expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': newmtl }), { mimeType: ZIP_MIME })).toMatch(/the MTL defines more than 100000 materials/);
+  it('is quoted by code points, with format and line-separator characters replaced', async () => {
+    const emoji = await check(Buffer.from(`${'\u{1F600}'.repeat(60)} 1\n`));
+    expect(emoji).toBe(`obj is not readable, line 1: statement ${'\u{1F600}'.repeat(40)}... is not one the converter writes`);
+    expect(shown('a\u202Eb\u200Bc\u2028d\u2029e\u0007f')).toBe('a?b?c?d?e?f');
+    expect(shown('\u{1F600}'.repeat(40))).toBe('\u{1F600}'.repeat(40));
+  });
+
+  it('quotes an entry name through the same cut in a page archive', async () => {
+    const archive = await zipOf({ [`${'n'.repeat(300)}.png`]: 'not an image' });
+    const problem = await outputProblem(archive, 'png', WORK_DIR, { pdfinfo: '', identify: '', mimeType: ZIP_MIME });
+    expect(problem).toMatch(new RegExp(`^page ${'n'.repeat(40)}\\.\\.\\.: `));
+  });
+
+  it('is refused for more distinct materials than the writers can make, in the OBJ and in the MTL, and the last one the bound allows is read', async () => {
+    const usemtl = (count: number) => Array.from({ length: count }, (_, i) => `usemtl m${i}\nf 1 2 3\n`).join('');
+    const newmtl = (count: number) => Array.from({ length: count }, (_, i) => `newmtl m${i}\nKd 1 1 1\n`).join('');
+    expect(await check(Buffer.from(TRIANGLE + usemtl(MAX_MATERIALS + 1)))).toMatch(/line \d+: the OBJ names more than 100000 materials/);
+    expect(await check(Buffer.from(TRIANGLE + usemtl(MAX_MATERIALS)))).toMatch(/uses material m0, whose material file comes only in a ZIP/);
+    expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': newmtl(MAX_MATERIALS + 1) }), { mimeType: ZIP_MIME })).toMatch(/the MTL defines more than 100000 materials/);
+    expect(await check(await zipOf({ 'x.obj': `mtllib x.mtl\n${TRIANGLE}${usemtl(MAX_MATERIALS)}`, 'x.mtl': newmtl(MAX_MATERIALS) }), { mimeType: ZIP_MIME })).toBeNull();
   });
 });
 
@@ -222,16 +237,6 @@ describe('an OBJ delivered as a ZIP', () => {
     expect(await check(await zipOf({ 'x.obj': Buffer.alloc(0), 'x.mtl': MTL }), { mimeType: ZIP_MIME, emptyInput: true })).toBe('model x.obj: empty output');
   });
 
-  it('is refused when an entry name is repeated, though JSZip would show one entry for the two', async () => {
-    const archive = await createDeflatedZipBuffer([
-      { name: 'x.obj', data: OBJ },
-      { name: 'x.obj', data: OBJ },
-      { name: 'x.mtl', data: MTL },
-    ]);
-    expect((await JSZip.loadAsync(archive)).file(/\.obj$/)).toHaveLength(1);
-    expect(await check(archive, { mimeType: ZIP_MIME })).toBe('obj archive declares 3 entries but holds 2 distinct names, so an entry name is repeated');
-  });
-
   it('is refused with an entry name cut to 40 characters', async () => {
     expect(await check(await zipOf({ 'x.obj': OBJ, 'x.mtl': MTL, [`${'n'.repeat(300)}.txt`]: 'hello' }), { mimeType: ZIP_MIME })).toBe(
       `obj archive holds an unexpected entry ${'n'.repeat(40)}...`
@@ -293,5 +298,11 @@ describe('the helpers that read an OBJ and an MTL file back in tests', () => {
       ['B', null],
       ['C', [7, 7, 7]],
     ]);
+  });
+
+  it('throw for a material with no name and for a Kd that is not three numbers, instead of keying or reading them', () => {
+    expect(() => mtlMaterials(Buffer.from('newmtl\nKd 1 1 1\n'))).toThrow(/newmtl needs one name, not 0/);
+    expect(() => mtlMaterials(Buffer.from('newmtl A\nKd 1 x 1\n'))).toThrow(/Kd needs three numbers/);
+    expect(() => mtlMaterials(Buffer.from('newmtl A\nKd 1 1\n'))).toThrow(/Kd needs three numbers/);
   });
 });

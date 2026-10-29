@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import { hasExtension, readMtl, readObj, type Colour, type Point } from '../../bench/realworld/obj-mtl';
+import { hasExtension, readObj, readStatements, type Colour, type Point } from '../../bench/realworld/obj-mtl';
 import type { ConversionResult } from '../../src/lib/types';
 
 /**
@@ -48,11 +48,25 @@ export function objMaterialAreas(obj: Buffer): Map<string, number> {
 }
 
 /**
- * The materials (`newmtl`) of an MTL file with their diffuse colour (`Kd`), null for a material that gives none. This read is lenient (see readMtl): it
- * looks only at `newmtl` and `Kd`, so a test of a colour does not depend on the vocabulary and the ranges that the gate holds the writers to.
+ * The materials (`newmtl`) of an MTL file with their diffuse colour (`Kd`), null for a material that gives none. It looks only at `newmtl` and `Kd`, so a
+ * test of a colour does not depend on the vocabulary and the ranges that the gate holds the writers to (readMtl); a `newmtl` with no name or a `Kd` that
+ * is not three numbers throws.
  */
 export function mtlMaterials(mtl: Buffer): ReadonlyMap<string, Colour | null> {
-  const reading = readMtl(mtl, { lenient: true });
-  if (!reading.ok) throw new Error(`the MTL file is not readable: ${reading.problem}`);
-  return reading.materials;
+  const materials = new Map<string, Colour | null>();
+  let current: string | null = null;
+  const problem = readStatements(mtl, ({ keyword, fields }) => {
+    if (keyword === 'newmtl') {
+      if (fields.length !== 1) return `newmtl needs one name, not ${fields.length}`;
+      current = fields[0];
+      materials.set(current, null);
+    } else if (keyword === 'Kd' && current !== null) {
+      const channels = fields.map(Number);
+      if (channels.length !== 3 || channels.some(Number.isNaN)) return 'Kd needs three numbers';
+      materials.set(current, [channels[0], channels[1], channels[2]]);
+    }
+    return null;
+  });
+  if (problem !== null) throw new Error(`the MTL file is not readable: ${problem}`);
+  return materials;
 }

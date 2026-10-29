@@ -19,16 +19,27 @@
  * - Material and file names are the writers' set `[A-Za-z0-9._-]` (isSafeMaterialName in cad-convert.cpp, outputStem in cad-occt.ts), one word each.
  * - The OBJ has at most one `mtllib` line, and an MTL gives each attribute at most once per material.
  *
- * Bounds, so that a hostile output cannot cost more than its size: a line is at most MAX_LINE_BYTES (the longest line a writer emits is a polygon
- * face, about 18 bytes a corner, so 8 KiB holds 450 corners and writeObj's three-corner faces and 60-byte vertices by a wide margin), a number at most
- * MAX_NUMBER_CHARS, a name at most MAX_NAME_CHARS (the longest file name), and at most MAX_MATERIALS distinct materials. The number pattern has one way to
- * match each string, so it runs in time linear in the field, and the field length is checked first. These bounds are this check's own; neither writer
- * has a reference limit. Every token that a refusal quotes is cut to MAX_SHOWN_CHARS with its control bytes replaced.
+ * Threat model: this check judges what the repository's own writers produce (writeObj, encodeObj and the ZIP that convertCadWithOcct builds with
+ * createDeflatedZipBuffer). It does not judge uploads or archives made by an attacker; a guard against a shape the writers cannot produce is out of scope.
+ *
+ * Bounds on the text layer, so that reading a file costs no more than its size in lines, fields and tokens a message quotes. They are this check's own;
+ * neither writer has a reference limit. They do not bound what a ZIP inflates to: the archive is the converter's own output.
+ * - A line is at most MAX_LINE_BYTES, checked before the line is decoded. writeObj's longest line is under 100 bytes (a vertex of about 60 bytes, an
+ *   mtllib of at most 75). encodeObj has no cap on the corners of a face nor on the `o` name; a corner is at most 23 bytes (`i//i` with two 10-digit
+ *   indices and a blank), so 1 MiB holds a face of about 45,000 corners, and the faces of the 14 corpus models have 3 corners. The bound is far above
+ *   any model a writer makes, and no line of a writer reaches it.
+ * - A number, and each index of a face corner, is at most MAX_NUMBER_CHARS. The number pattern has one way to match each string, so it runs in time
+ *   linear in the field, and the field length is checked first.
+ * - An mtllib name is at most MAX_LIBRARY_NAME_CHARS: outputStem caps the stem at MAX_OUTPUT_NAME_CHARS (64, cad-occt.ts) and `.mtl` follows. No writer
+ *   caps a material name (isSafeMaterialName only checks its characters), so a `usemtl` or `newmtl` name is held to MAX_NAME_CHARS, 255, the longest
+ *   name a file system holds.
+ * - At most MAX_MATERIALS distinct materials.
+ * Every token that a refusal quotes is cut to MAX_SHOWN_CHARS code points with its control, format and line-separator characters replaced.
  */
 
 export type Point = readonly [number, number, number];
 export type Colour = readonly [number, number, number];
-type Statement = { keyword: string; fields: string[]; number: number };
+type Statement = { keyword: string; fields: string[] };
 type CornerForm = 'v' | 'v//vn';
 type Resolved = { index: number } | { problem: string };
 type IndexKind = 'vertex' | 'normal';
@@ -38,10 +49,11 @@ const MTL_SCALARS: ReadonlySet<string> = new Set(['Ns', 'Tr']);
 const INTEGER = /^[+-]?\d+$/;
 const DECIMAL = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 const NAME = /^[A-Za-z0-9._-]+$/;
-const CONTROL_BYTES = /\p{Cc}/gu;
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 const NEWLINE = 0x0a;
-const MAX_LINE_BYTES = 8192;
+const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_NUMBER_CHARS = 64;
+const MAX_LIBRARY_NAME_CHARS = 68;
 const MAX_NAME_CHARS = 255;
 const MAX_MATERIALS = 100_000;
 const MAX_SHOWN_CHARS = 40;
@@ -75,17 +87,23 @@ export function hasExtension(name: string, extension: 'obj' | 'mtl'): boolean {
   return name.toLowerCase().endsWith(`.${extension}`);
 }
 
-/** A token of the file as a refusal may quote it: cut to MAX_SHOWN_CHARS and without control bytes. */
+/** A token of the file as a refusal may quote it: cut to MAX_SHOWN_CHARS code points and without control, format or line-separator characters. */
 export function shown(token: string): string {
-  const cut = token.length > MAX_SHOWN_CHARS ? `${token.slice(0, MAX_SHOWN_CHARS)}...` : token;
-  return cut.replace(CONTROL_BYTES, '?');
+  let end = 0;
+  let count = 0;
+  for (const point of token) {
+    if (count === MAX_SHOWN_CHARS) return `${token.slice(0, end).replace(UNPRINTABLE, '?')}...`;
+    end += point.length;
+    count++;
+  }
+  return token.replace(UNPRINTABLE, '?');
 }
 
 /**
  * Hands the statements of a buffer to `take` one line at a time, blank lines and comments skipped, and returns the first problem with its line number.
  * A line over MAX_LINE_BYTES is refused before it is decoded.
  */
-function readStatements(buffer: Buffer, take: (statement: Statement) => string | null): string | null {
+export function readStatements(buffer: Buffer, take: (statement: Statement) => string | null): string | null {
   let start = 0;
   let number = 0;
   while (start < buffer.length) {
@@ -96,7 +114,7 @@ function readStatements(buffer: Buffer, take: (statement: Statement) => string |
     const trimmed = buffer.toString('utf-8', start, end).trim();
     if (trimmed !== '' && !trimmed.startsWith('#')) {
       const [keyword, ...fields] = trimmed.split(/\s+/);
-      const problem = take({ keyword, fields, number });
+      const problem = take({ keyword, fields });
       if (problem !== null) return `line ${number}: ${problem}`;
     }
     start = end + 1;
@@ -112,17 +130,18 @@ function isNumbers(fields: readonly string[], least: number, most: number): bool
   return fields.length >= least && fields.length <= most && fields.every((field) => isDecimal(field) && Number.isFinite(Number(field)));
 }
 
-/** Why `fields` is not the one name that `keyword` takes, or null. */
-function nameProblem(keyword: string, fields: readonly string[]): string | null {
+/** Why `fields` is not the one name of at most `limit` characters that `keyword` takes, or null. */
+function nameProblem(keyword: string, fields: readonly string[], limit: number): string | null {
   if (fields.length !== 1) return `${keyword} needs exactly one name, not ${fields.length}`;
   const [name] = fields;
-  if (name.length > MAX_NAME_CHARS || !NAME.test(name)) return `${keyword} name ${shown(name)} is not letters, digits, '.', '_' and '-' in at most ${MAX_NAME_CHARS} characters`;
+  if (name.length > limit || !NAME.test(name)) return `${keyword} name ${shown(name)} is not letters, digits, '.', '_' and '-' in at most ${limit} characters`;
   return null;
 }
 
 /** The 0-based position of the item that the 1-based or negative `part` names among the `count` items defined so far, or why it names none. */
 function resolveIndex(part: string, count: number, what: IndexKind, corner: string): Resolved {
   if (part === '') return { problem: `corner ${shown(corner)} has an empty index` };
+  if (part.length > MAX_NUMBER_CHARS) return { problem: `an index of corner ${shown(corner)} is over ${MAX_NUMBER_CHARS} characters` };
   if (!INTEGER.test(part)) return { problem: `unrecognised token ${shown(part)} in corner ${shown(corner)}` };
   const index = Number(part);
   if (index === 0 || Math.abs(index) > count) return { problem: `${what} index ${shown(part)} is not within the ${count} ${DEFINED_ITEMS[what]} defined so far` };
@@ -177,7 +196,7 @@ class ObjScanner {
   }
 
   private takeLibrary(fields: readonly string[]): string | null {
-    const problem = nameProblem('mtllib', fields);
+    const problem = nameProblem('mtllib', fields, MAX_LIBRARY_NAME_CHARS);
     if (problem !== null) return problem;
     if (this.mtllib !== null) return 'a second mtllib line';
     this.mtllib = fields[0];
@@ -185,7 +204,7 @@ class ObjScanner {
   }
 
   private takeMaterial(fields: readonly string[]): string | null {
-    const problem = nameProblem('usemtl', fields);
+    const problem = nameProblem('usemtl', fields, MAX_NAME_CHARS);
     if (problem !== null) return problem;
     let id = this.materialIds.get(fields[0]);
     if (id === undefined) {
@@ -243,7 +262,7 @@ export function readObj(buffer: Buffer, observer: ObjObserver = {}): ObjReading 
 
 /** Why one statement of an MTL is not valid, or null; `current` is the material it belongs to (null before the first `newmtl`) and `given` its attributes so far. */
 function mtlStatementProblem(keyword: string, fields: readonly string[], current: string | null, given: ReadonlySet<string>): string | null {
-  if (keyword === 'newmtl') return nameProblem(keyword, fields);
+  if (keyword === 'newmtl') return nameProblem(keyword, fields, MAX_NAME_CHARS);
   if (!MTL_COLOURS.has(keyword) && !MTL_SCALARS.has(keyword)) return `statement ${shown(keyword)} is not one the converter writes`;
   if (current === null) return `${keyword} comes before any newmtl`;
   if (given.has(keyword)) return `${keyword} is given twice for material ${shown(current)}`;
@@ -260,20 +279,19 @@ function mtlStatementProblem(keyword: string, fields: readonly string[], current
 
 /**
  * Reads an MTL line by line: its statements must all be in the writers' vocabulary with values in their ranges, each material is defined once and
- * gives each attribute once, and it must define a material. The result maps each material to its `Kd`, null when it has none. A lenient read
- * (`{ lenient: true }`) keeps only what `newmtl` and `Kd` say, whatever else the file holds, for a test that reads a colour back.
+ * gives each attribute once, and it must define a material. The result maps each material to its `Kd`, null when it has none.
  */
-export function readMtl(buffer: Buffer, { lenient = false }: { lenient?: boolean } = {}): MtlReading {
+export function readMtl(buffer: Buffer): MtlReading {
   const materials = new Map<string, Colour | null>();
   let current: string | null = null;
   let given = new Set<string>();
   const problem = readStatements(buffer, ({ keyword, fields }) => {
-    const statementProblem = lenient ? null : mtlStatementProblem(keyword, fields, current, given);
+    const statementProblem = mtlStatementProblem(keyword, fields, current, given);
     if (statementProblem !== null) return statementProblem;
     if (keyword === 'newmtl') {
-      current = fields[0] ?? '';
-      if (!lenient && materials.has(current)) return `material ${shown(current)} is defined twice`;
-      if (materials.size >= MAX_MATERIALS && !materials.has(current)) return `the MTL defines more than ${MAX_MATERIALS} materials`;
+      current = fields[0];
+      if (materials.has(current)) return `material ${shown(current)} is defined twice`;
+      if (materials.size >= MAX_MATERIALS) return `the MTL defines more than ${MAX_MATERIALS} materials`;
       materials.set(current, null);
       given = new Set();
     } else if (current !== null) {
@@ -283,6 +301,6 @@ export function readMtl(buffer: Buffer, { lenient = false }: { lenient?: boolean
     return null;
   });
   if (problem !== null) return { ok: false, problem };
-  if (!lenient && materials.size === 0) return { ok: false, problem: 'the MTL defines no material' };
+  if (materials.size === 0) return { ok: false, problem: 'the MTL defines no material' };
   return { ok: true, materials };
 }
