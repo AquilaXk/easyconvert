@@ -368,6 +368,8 @@ run_tasks() {
 
 # The two tools the STEP and IGES tests cannot run without, checked the way the tests look for them (the first of each on the PATH), once all
 # parts are done: a missing one fails the step with its own name here, not as a collection error of every CAD suite later.
+# pytz is checked with them: DuckDB imports it for a TIMESTAMPTZ value and declares no dependency on it, so a missing one would fail only
+# in the benchmark step.
 verify_cad_tools() {
   local usage python_problem
   if ! command -v cad-convert > /dev/null; then
@@ -383,7 +385,11 @@ verify_cad_tools() {
     echo "::error::$(command -v python3) -I cannot import trimesh: $python_problem"
     return 1
   fi
-  echo "cad-convert: $(command -v cad-convert); python3 with trimesh: $(command -v python3)"
+  if ! python_problem="$(python3 -I -c 'import pytz' 2>&1)"; then
+    echo "::error::$(command -v python3) -I cannot import pytz: $python_problem"
+    return 1
+  fi
+  echo "cad-convert: $(command -v cad-convert); python3 with trimesh and pytz: $(command -v python3)"
 }
 
 main() {
