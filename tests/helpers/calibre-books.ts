@@ -70,7 +70,7 @@ export function lrfText(book: Buffer): string {
 /** The text of the XHTML documents of an OEB package delivered as a ZIP, in name order. */
 export async function oebText(book: Buffer): Promise<string> {
   const zip = await JSZip.loadAsync(book);
-  const pages = Object.keys(zip.files).filter((name) => /\.x?html$/i.test(name)).sort();
+  const pages = Object.keys(zip.files).filter((name) => /\.x?html$/i.test(name)).sort((a, b) => a.localeCompare(b));
   return wordsOfMarkup((await Promise.all(pages.map((name) => (zip.file(name) as JSZip.JSZipObject).async('string')))).join(' '));
 }
 

@@ -173,14 +173,14 @@ describe.skipIf(calibreMissing)('e-books written by calibre', () => {
     const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'calibre-private-tmp-'));
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'calibre-output-'));
     const previous = process.env.TMPDIR;
-    process.env.TMPDIR = privateTmp;
     try {
-      await dispatchConversion(sourceOf(LATIN_PARAGRAPHS), 'txt', tgt, { outputPath: path.join(outputDir, `out.${tgt}`) } as WorkerEngineOptions, `${TITLE}.txt`);
-    } finally {
-      if (previous === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = previous;
-    }
-    try {
+      process.env.TMPDIR = privateTmp;
+      try {
+        await dispatchConversion(sourceOf(LATIN_PARAGRAPHS), 'txt', tgt, { outputPath: path.join(outputDir, `out.${tgt}`) } as WorkerEngineOptions, `${TITLE}.txt`);
+      } finally {
+        if (previous === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = previous;
+      }
       expect(fs.readdirSync(privateTmp).filter((name) => name.startsWith(WORKER_TEMP_PREFIX))).toEqual([]);
       expect(fs.readdirSync(outputDir)).toHaveLength(1);
     } finally {

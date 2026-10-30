@@ -10,7 +10,7 @@ import { requiresNativeEngine } from '../src/lib/conversions/native-engine-pairs
 import { CALIBRE_EBOOK_TARGETS } from '../src/lib/conversions/calibre-ebook-targets';
 import { writeEbookTargetFromText } from '../src/lib/conversions/office';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { convertWithCalibre, type CalibreDeps, type CalibreRequest } from '../src/worker/ebook-calibre';
+import { CALIBRE_TARGETS, convertWithCalibre, type CalibreDeps, type CalibreRequest } from '../src/worker/ebook-calibre';
 import {
   ConversionFailedError,
   CpuTaskTimeoutError,
@@ -36,9 +36,11 @@ const PLAIN_TEXT = Buffer.from('A short book.\n\nWith two paragraphs.\n', 'utf-8
 const HANGUL = '안녕하세요 한글 문장입니다.';
 const FAKE_TEXT_NAME = 'fake-text.txt';
 const TIME_LIMIT_MS = 1500;
-/** Each run of the slow stand-in lasts this long: more than a run may take of TIME_LIMIT_MS once the first run has used its share, and far less than ROOMY_LIMIT_MS. */
-const RUN_DURATION_MS = 1000;
-const ROOMY_LIMIT_MS = 20_000;
+/** The slow run of a stand-in lasts this long: far past TIME_LIMIT_MS, so that the run is killed by the limit and not by how fast the host is. */
+const SLOW_RUN_MS = 3000;
+/** The EPUB step of the slow-staging test lasts this long and the run after it a part of it, together more than TIME_LIMIT_MS and each far less. */
+const SLOW_STAGING_MS = 1200;
+const QUICK_RUN_MS = 600;
 const PROCESS_END_WAIT_MS = 3000;
 const PROCESS_POLL_MS = 50;
 const SRC_ROOT = path.join(__dirname, '..', 'src');
@@ -288,16 +290,40 @@ describe('the calibre route against a stand-in program', () => {
 
   it('gives the two runs of a PDB book one time limit between them, not one each', async () => {
     setScannedText('A short book.');
-    const slow = fakeProgram(`setTimeout(() => {${validOutput()}}, ${RUN_DURATION_MS});`);
-    const outcome = await convertWithCalibre(deps(), request('txt', 'pdb', PLAIN_TEXT, { timeoutMs: TIME_LIMIT_MS }), slow).catch((error: unknown) => error);
+    const slowSecondRun = fakeProgram(`if (output.endsWith('.txt')) {${validOutput()}} else setTimeout(() => {${validOutput()}}, ${SLOW_RUN_MS});`);
+    const startedAt = Date.now();
+    const outcome = await convertWithCalibre(deps(), request('txt', 'pdb', PLAIN_TEXT, { timeoutMs: TIME_LIMIT_MS }), slowSecondRun).catch((error: unknown) => error);
+    const elapsedMs = Date.now() - startedAt;
     expect(runsOf()).toHaveLength(2);
     expect(outcome).toBeInstanceOf(CpuTaskTimeoutError);
     expect((outcome as Error).message).toContain(`${TIME_LIMIT_MS} ms`);
-
-    const roomy = await convertWithCalibre(deps(), request('txt', 'pdb', PLAIN_TEXT, { timeoutMs: ROOMY_LIMIT_MS }), slow);
-    expect(runsOf()).toHaveLength(4);
-    fs.rmSync(roomy.filePath as string, { force: true });
+    expect(elapsedMs).toBeLessThan(2 * TIME_LIMIT_MS);
   }, 30_000);
+
+  it('gives calibre its full time limit however long the source took to write as EPUB', async () => {
+    const program = fakeProgram(`setTimeout(() => {${validOutput()}}, ${QUICK_RUN_MS});`);
+    const slowStaging = deps();
+    const quick = slowStaging.convert;
+    slowStaging.convert = async (...args) => {
+      await new Promise((resolve) => setTimeout(resolve, SLOW_STAGING_MS));
+      return quick(...args);
+    };
+    const result = await convertWithCalibre(slowStaging, request('txt', 'mobi', PLAIN_TEXT, { timeoutMs: TIME_LIMIT_MS }), program);
+    expect(runsOf()).toHaveLength(1);
+    expect(result.engineUsed).toBe('native-calibre');
+    fs.rmSync(result.filePath as string, { force: true });
+  }, 30_000);
+
+  it('keeps the options and output signatures of each target in step with the image build and the container check', () => {
+    const shellFiles = ['Dockerfile.worker', path.join('scripts', 'verify-worker-container.sh')].map((name) => fs.readFileSync(path.join(__dirname, '..', name), 'utf-8'));
+    const printable = (bytes: Buffer): string => (bytes.every((byte) => byte >= 0x20 && byte < 0x7f) ? bytes.toString('latin1') : bytes.toString('hex'));
+    const expected = Object.entries(CALIBRE_TARGETS).flatMap(([target, definition]) => [
+      ...(definition.args.length > 0 ? [`${target} options: ${definition.args.join(' ')}`] : []),
+      ...(definition.signature ? [`${target} signature: ${printable(definition.signature.bytes)}`] : [`${target} package: *.opf`]),
+    ]);
+    const missing = shellFiles.flatMap((text, index) => expected.filter((line) => !text.includes(line.slice(line.indexOf(': ') + 2))).map((line) => `${index === 0 ? 'Dockerfile.worker' : 'verify-worker-container.sh'}: ${line}`));
+    expect(missing).toEqual([]);
+  });
 
   it('answers a book protected by DRM with the typed 422 error', async () => {
     const program = fakeProgram(`process.stderr.write('Traceback...\\ncalibre.ebooks.DRMError: This book is locked by DRM\\n'); process.exit(1);`);
@@ -364,6 +390,7 @@ describe('the calibre route against a stand-in program', () => {
     const oversized = deps(Buffer.from('the buffer, not the file'), { filePath: epubPath, size: 257 * 1024 * 1024 });
     const error = await convertWithCalibre(oversized, request('txt', 'mobi'), program).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(PayloadLimitError);
+    expect((error as Error).message).toMatch(/^The EPUB written from the \.txt file is /);
     expect(oversized.discarded).toEqual([epubPath]);
     expect(runsOf()).toHaveLength(1);
   });

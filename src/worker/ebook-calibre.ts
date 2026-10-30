@@ -28,7 +28,8 @@ import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } fr
  * of the pair), which calibre reads best, and then converted. Calibre runs with a configuration, cache and temporary
  * directory of its own inside the job directory (so no plug-in, setting or earlier job reaches it), no network, the
  * address space, file size, output and time limits of the other native programs, and the process group is killed on a
- * timeout or an abort. The route has one deadline: a PDB book needs two runs, and the second gets the time the first left.
+ * timeout or an abort. The route has one deadline for calibre, which starts when the book is staged (writing the source as EPUB
+ * keeps the time limit of its own stage): a PDB book needs two runs, and the second gets the time the first left.
  * Its failure is a typed `ConversionFailedError`; a worker without the program answers with an unavailable engine and
  * never writes a file of its own.
  *
@@ -195,13 +196,13 @@ function inputSize(input: Buffer | WorkerVfsPayload): number {
   return input.inputPath ? fs.statSync(input.inputPath).size : 0;
 }
 
-function assertBookSize(size: number, src: string): void {
-  if (size > MAX_BOOK_BYTES) throw new PayloadLimitError(`The .${src} file is ${size} bytes, more than the ${MAX_BOOK_BYTES} bytes that can be converted.`);
+function assertBookSize(size: number, description: string): void {
+  if (size > MAX_BOOK_BYTES) throw new PayloadLimitError(`${description} is ${size} bytes, more than the ${MAX_BOOK_BYTES} bytes that can be converted.`);
 }
 
 /** Puts the e-book calibre reads in the job directory under a name of its own (calibre picks its reader by the extension) and returns its path. */
 function stageNativeBook(input: Buffer | WorkerVfsPayload, src: string, dir: string): string {
-  assertBookSize(inputSize(input), src);
+  assertBookSize(inputSize(input), `The .${src} file`);
   const staged = path.join(dir, `${BOOK_NAME}.${src}`);
   if (!Buffer.isBuffer(input) && !input.inputBuffer && input.inputPath) fs.copyFileSync(input.inputPath, staged);
   else fs.writeFileSync(staged, readRawInputBuffer(input));
@@ -216,7 +217,7 @@ async function stageEpubOfSource(deps: CalibreDeps, request: CalibreRequest, dir
   const epubOptions = { ...options, outputPath: undefined, inProcessFallback: undefined } as WorkerEngineOptions;
   const written = await deps.convert(source, src, EPUB_FORMAT, epubOptions, originalFilename);
   try {
-    assertBookSize(written.size, EPUB_FORMAT);
+    assertBookSize(written.size, `The EPUB written from the .${src} file`);
     const staged = path.join(dir, `${BOOK_NAME}.${EPUB_FORMAT}`);
     if (written.filePath) fs.copyFileSync(written.filePath, staged);
     else fs.writeFileSync(staged, written.buffer);
@@ -316,7 +317,7 @@ function assertOutputFormat(outputPath: string, src: string, tgt: string, signat
  * The five targets. The PalmDB type and creator (bytes 60 to 67 of the Palm database header) of a Mobipocket book is `BOOKMOBI`,
  * of a PalmDOC book `TEXtREAd`; an LRF book starts with the UTF-16LE magic "LRF".
  */
-const CALIBRE_TARGETS: Readonly<Record<string, CalibreTarget>> = {
+export const CALIBRE_TARGETS: Readonly<Record<string, CalibreTarget>> = {
   mobi: { args: ['--mobi-file-type', 'old', '--no-inline-toc'], signature: MOBIPOCKET_SIGNATURE },
   azw3: { args: ['--no-inline-toc'], signature: MOBIPOCKET_SIGNATURE },
   pdb: {
@@ -341,10 +342,10 @@ export async function convertWithCalibre(deps: CalibreDeps, request: CalibreRequ
   if (program === null) throw calibreEngineUnavailable('ebook-convert (calibre) is not installed or not in PATH');
   const target = CALIBRE_TARGETS[tgt];
   const startTime = Date.now();
-  const limitMs = runTimeoutMs(options);
   return withSandboxDir(TEMP_PREFIX, async (dir) => {
-    const run: CalibreRun = { program, dir, environment: calibreEnvironment(dir), request, limitMs, deadlineAt: startTime + limitMs };
     const bookPath = CALIBRE_NATIVE_SOURCES.has(src) ? stageNativeBook(input, src, dir) : await stageEpubOfSource(deps, request, dir);
+    const limitMs = runTimeoutMs(options);
+    const run: CalibreRun = { program, dir, environment: calibreEnvironment(dir), request, limitMs, deadlineAt: Date.now() + limitMs };
     const outputPath = path.join(dir, `${OUTPUT_NAME}.${tgt}`);
     const extraArguments = (await target.prepare?.(run, bookPath)) ?? [];
     await runCalibre(run, [bookPath, outputPath, ...target.args, ...extraArguments]);
