@@ -4,21 +4,27 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import {
+  canonicalEntryPath,
   convertArchive,
+  createZipArchive,
   extract7zArchive,
   extractRarArchive,
   extractTarArchive,
   inspectArchive,
-  sanitizeArchivePath,
+  repairZipArchive,
 } from '../src/lib/conversions/archive';
+import { decodeRar4FileName } from '../src/lib/conversions/archive-rar4-name';
+import JSZip from 'jszip';
 import { UnsafeArchiveError, type UnsafeArchiveReason } from '../src/lib/conversions/archive-extraction-safety';
 import { getOracleToolPath } from './helpers/differential-oracle';
+import { localEntryOnly } from './helpers/decompression-fixtures';
 import { oracleTest } from './helpers/oracle-test';
 import { pythonTarEntries } from './helpers/hostile-tar';
 import { buildStoredRar4 } from './helpers/rar4-stored';
-import { craftSevenZip } from './helpers/seven-zip-craft';
-import { END_OF_ARCHIVE, craftEntry, craftPaxHeader, paxRecordBytes } from './helpers/tar-craft';
+import { S_IFLNK, craftSevenZip, unixAttributes } from './helpers/seven-zip-craft';
+import { END_OF_ARCHIVE, craftEntry, craftHeader, craftPaxHeader, paxRecordBytes } from './helpers/tar-craft';
 
 /**
  * Entry names that are not plain relative paths are refused in tar, 7z and RAR archives, as they are in ZIP, and never
@@ -206,10 +212,10 @@ describe('RAR entries with an unsafe name are refused', () => {
   }
 });
 
-describe('sanitizeArchivePath and tar inspection', () => {
+describe('canonicalEntryPath and tar inspection', () => {
   function reasonOf(name: string): string | undefined {
     try {
-      sanitizeArchivePath(name);
+      canonicalEntryPath(name);
     } catch (error) {
       return error instanceof UnsafeArchiveError ? error.reason : undefined;
     }
@@ -228,10 +234,10 @@ describe('sanitizeArchivePath and tar inspection', () => {
   });
 
   it('keeps the spelling of a safe name apart from the separators and the current-directory parts it has always dropped', () => {
-    expect(sanitizeArchivePath('docs/a.txt')).toBe('docs/a.txt');
-    expect(sanitizeArchivePath('./docs//a.txt')).toBe('docs/a.txt');
-    expect(sanitizeArchivePath('docs\\a.txt')).toBe('docs/a.txt');
-    expect(sanitizeArchivePath('.')).toBeNull();
+    expect(canonicalEntryPath('docs/a.txt')).toBe('docs/a.txt');
+    expect(canonicalEntryPath('./docs//a.txt')).toBe('docs/a.txt');
+    expect(canonicalEntryPath('docs\\a.txt')).toBe('docs/a.txt');
+    expect(canonicalEntryPath('.')).toBeNull();
   });
 
   oracleTest(
@@ -280,4 +286,167 @@ describe('safe names are kept and ordinary archives convert byte for byte as bef
     },
     TEST_TIMEOUT_MS
   );
+});
+
+describe('inspection and conversion agree on which names are unsafe', () => {
+  const LOOKALIKE = UNSAFE_NAMES.find((candidate) => candidate.label === 'fullwidth full stops that fold to a traversal') as UnsafeName;
+
+  oracleTest(
+    'a tar name of fullwidth full stops is reported unextractable, as the conversion refuses it',
+    ['tar'],
+    async () => {
+      const tar = tarWithMember('ustar', LOOKALIKE.name);
+      const report = await inspectArchive(tar, { filename: 'lookalike.tar' });
+      expect(report.entries[1]).toMatchObject({ name: LOOKALIKE.name, unsafePath: true });
+      expect(report.extractable).toBe(false);
+      await expect(convertArchive(tar, 'tar', 'zip', {}, 'lookalike.tar')).rejects.toMatchObject({ reason: 'path-traversal' });
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'a 7z name of fullwidth full stops is reported unextractable, as the conversion refuses it',
+    ['7z'],
+    async () => {
+      const archive = sevenZipWithMember(LOOKALIKE.name);
+      const report = await inspectArchive(archive, { filename: 'lookalike.7z' });
+      expect(report.entries.find((entry) => entry.name === LOOKALIKE.name)).toMatchObject({ unsafePath: true });
+      expect(report.extractable).toBe(false);
+      await expect(convertArchive(archive, '7z', 'zip', {}, 'lookalike.7z')).rejects.toMatchObject({ reason: 'path-traversal' });
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'a symlink followed by a traversing name is reported, not thrown',
+    ['tar'],
+    async () => {
+      const tar = Buffer.concat([
+        craftEntry('ok.txt', 'fine'),
+        craftHeader({ name: 'link', typeflag: '2', linkname: 'ok.txt' }),
+        craftEntry('../evil.txt', BODY),
+        END_OF_ARCHIVE,
+      ]);
+      const report = await inspectArchive(tar, { filename: 'link-then-slip.tar' });
+      expect(report.entries.map((entry) => entry.name)).toEqual(['ok.txt', 'link', '../evil.txt']);
+      expect(report.entries[2]).toMatchObject({ unsafePath: true });
+      expect(report.extractable).toBe(false);
+      await expect(convertArchive(tar, 'tar', 'zip', {}, 'link-then-slip.tar')).rejects.toBeInstanceOf(UnsafeArchiveError);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  it('reports a skipped 7z link for what it is, whatever its name', () => {
+    const archive = craftSevenZip([
+      { name: 'ok.txt', data: Buffer.from('fine') },
+      { name: '../link', data: Buffer.from('ok.txt'), attributes: unixAttributes(S_IFLNK | 0o777, 0) },
+    ]);
+    const skipped: string[] = [];
+    expect(extract7zArchive(archive, { skipLinks: true, onSkippedLinks: (names) => skipped.push(...names) }).map((file) => file.filename)).toEqual(['ok.txt']);
+    expect(skipped).toEqual(['../link']);
+    expect(() => extract7zArchive(archive)).toThrow(expect.objectContaining({ reason: 'link-entry' }));
+  });
+});
+
+describe('writers keep the names of the uploader own files', () => {
+  const NAMES: Array<[string, string]> = [
+    ['\uFF31\uFF1A\u56DE\u7B54.txt', '\uFF31\uFF1A\u56DE\u7B54.txt'],
+    ['a:b.txt', 'a:b.txt'],
+    ['../x.png', 'x.png'],
+  ];
+
+  for (const [uploaded, written] of NAMES) {
+    oracleTest(
+      `an encrypted zip of '${uploaded}' converts and lists '${written}'`,
+      ['7z'],
+      async () => {
+        const result = await createZipArchive([{ filename: uploaded, buffer: BODY }], { password: 'Correct-Horse-Battery-1' }, 'encrypted.zip');
+        expect(sevenZipNames(result.buffer as Buffer, `encrypted-${written.length}`, 'zip')).toEqual([written]);
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
+});
+
+describe('repairing a damaged zip salvages around a record without a usable name', () => {
+  async function withoutZipBinary<T>(operation: () => Promise<T>): Promise<T> {
+    const original = process.env.ZIP_PATH;
+    process.env.ZIP_PATH = path.join(os.tmpdir(), 'no-such-zip-binary');
+    try {
+      return await operation();
+    } finally {
+      if (original === undefined) delete process.env.ZIP_PATH;
+      else process.env.ZIP_PATH = original;
+    }
+  }
+
+  const GOOD = Buffer.from('good entry bytes '.repeat(20));
+  const deflated = (data: Buffer): Buffer => zlib.deflateRawSync(data);
+
+  async function salvaged(archive: Buffer): Promise<string[]> {
+    const zip = await JSZip.loadAsync(await withoutZipBinary(() => repairZipArchive(archive)));
+    return Object.keys(zip.files);
+  }
+
+  for (const [label, name] of [['an empty name', ''], ['a NUL in the name', 'a\0b.txt'], ['a line break in the name', 'a\nb.txt']] as const) {
+    it(`keeps the good entry next to a record with ${label}, whichever comes first`, async () => {
+      expect(await salvaged(Buffer.concat([localEntryOnly('good.txt', deflated(GOOD)), localEntryOnly(name, deflated(BODY))]))).toEqual(['good.txt']);
+      expect(await salvaged(Buffer.concat([localEntryOnly(name, deflated(BODY)), localEntryOnly('good.txt', deflated(GOOD))]))).toEqual(['good.txt']);
+    });
+  }
+
+  it('still refuses a record that climbs out of the directory or is absolute', async () => {
+    for (const [name, reason] of [['../evil.txt', 'path-traversal'], ['/etc/evil.txt', 'absolute-path']] as const) {
+      await expect(salvaged(Buffer.concat([localEntryOnly('good.txt', deflated(GOOD)), localEntryOnly(name, deflated(BODY))])), name).rejects.toMatchObject({ name: 'UnsafeArchiveError', reason });
+    }
+  });
+});
+
+describe('stored RAR 4 names with a Unicode form', () => {
+  const CJK_NAME = '\u8CC7\u6599/\u65E5\u672C\u8A9E.txt';
+
+  function rarWithUnicodeMember(unicodeName: string): Buffer {
+    return buildStoredRar4([
+      { name: 'ok.txt', data: Buffer.from('fine') },
+      { name: '?????.txt', unicodeName, data: BODY },
+    ]);
+  }
+
+  it('reads the Unicode name, as 7-Zip lists it, and not the OEM name or an error', async () => {
+    const archive = rarWithUnicodeMember(CJK_NAME);
+    const files = extractRarArchive(archive);
+    expect(files.map((file) => file.filename)).toEqual(['ok.txt', CJK_NAME]);
+    expect(files[1].buffer.equals(BODY)).toBe(true);
+    const converted = await convertArchive(archive, 'rar', 'zip', {}, 'cjk.rar');
+    expect(Object.keys((await JSZip.loadAsync(converted.buffer as Buffer)).files)).toContain(CJK_NAME);
+  });
+
+  oracleTest(
+    'agrees with the names 7-Zip decodes from the same header',
+    ['7z'],
+    () => {
+      const archive = rarWithUnicodeMember(CJK_NAME);
+      expect(sevenZipNames(archive, 'rar-cjk', 'rar').map(slashes)).toEqual(['ok.txt', CJK_NAME]);
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  it('refuses a Unicode form that spells a traversal', () => {
+    expect(() => extractRarArchive(rarWithUnicodeMember('..\uFF0Fevil.txt'))).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError', reason: 'path-traversal' }));
+  });
+
+  it('decodes every command of the encoding, bounded by the length of the name field', () => {
+    const field = (oem: string, ...encoded: number[]): Buffer => Buffer.concat([Buffer.from(oem, 'latin1'), Buffer.from([0, ...encoded])]);
+    // High byte 0x30; commands 0 (byte), 1 (byte under the high byte), 2 (two bytes), 3 (copy the OEM characters at the positions of the next three units, each plus 1, under the high byte).
+    expect(decodeRar4FileName(field('abc.txt', 0x30, 0b00011011, 0x41, 0x42, 0x34, 0x12, 0x81, 0x01), true)).toBe('A\u3042\u1234\u302F\u3075\u3079');
+    // Command 3 without the correction flag copies OEM characters as they are, two for a length byte of 0.
+    expect(decodeRar4FileName(field('abc.txt', 0x00, 0b11000000, 0x00), true)).toBe('ab');
+    // A run longer than the field is cut at the field length, as the reference caps its output.
+    expect(decodeRar4FileName(field('abc', 0x00, 0b11000000, 0x7f), true)).toHaveLength(7);
+    // A truncated command ends the name where the data ends.
+    expect(decodeRar4FileName(field('abc', 0x00, 0b10000000, 0x34), true)).toBe('');
+    // Without the flag, or without a NUL, the field is the name itself.
+    expect(decodeRar4FileName(Buffer.from('plain.txt'), false)).toBe('plain.txt');
+    expect(decodeRar4FileName(Buffer.from('utf8-\u00e9.txt'), true)).toBe('utf8-\u00e9.txt');
+  });
 });

@@ -247,6 +247,21 @@ describe('on-disk route: a compressed file that is not a tar is one member named
   }
 
   oracleTest(
+    'a selection that names the member keeps it, and one that names nothing is refused as an archive without files',
+    [...TOOLS],
+    async () => {
+      const payload = zipfText(5_000, 23);
+      const compressed = WRAPPERS[0].compress(payload);
+      for (const entries of [['notes'], ['no*'], ['*']]) {
+        const output = await convert(compressed, 'xz', 'notes.xz', { zeroHeap: true, entries });
+        expect(names(output, `selected-plain-${entries[0].length}`), JSON.stringify(entries)).toEqual(['notes']);
+      }
+      await expect(convert(compressed, 'xz', 'notes.xz', { zeroHeap: true, entries: ['other.txt'] })).rejects.toThrow('The archive contains no files to convert.');
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
     'the member keeps every extension but the last',
     [...TOOLS],
     async () => {

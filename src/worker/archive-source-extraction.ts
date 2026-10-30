@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { ARCHIVE_SECURITY_LIMITS, extractWithSpannedStream7z } from '../lib/conversions/archive';
+import { ARCHIVE_SECURITY_LIMITS, extractWithSpannedStream7z, matchArchiveGlob } from '../lib/conversions/archive';
 import {
+  UnreadableArchiveError,
   extractArchiveContained,
   readFirstTarBlock,
   type ContainedExtractionRequest,
@@ -100,16 +101,25 @@ export async function extractSourceArchive(params: ExtractArchiveParams, src: st
  * the unpacked file decides with `classifyUnpacked` whether it is a tar. A tar is extracted as the archive it is, through the
  * same listing, vetting and extraction as a tar source, with the request's policy, so the conversion packs its members and
  * not the tar as one file; one that fails to read is damaged, never an ordinary payload. Any other file is the one member,
- * named after the source without its last extension (`memberNameFor`). The ratio of the tar is measured against the upload.
+ * named after the source without its last extension (`memberNameFor`), and the selection of entries is applied to that
+ * name; a selection that leaves nothing leaves an empty tree. The ratio of the tar is measured against the upload. A
+ * wrapper that did not unpack to exactly one file is not a shape this route knows, and is refused.
  */
 async function unwrapStreamPayload(request: ContainedExtractionRequest, wrapper: ContainedTree, includePatterns: string[] | undefined): Promise<SourceExtraction> {
-  const unwrapped: SourceExtraction = { entryCount: wrapper.entryCount, skippedLinks: wrapper.skippedLinks, alternateStreams: wrapper.alternateStreams };
-  if (wrapper.files.length !== 1 || wrapper.entryCount !== 1) return unwrapped;
+  if (wrapper.files.length !== 1) {
+    throw new UnreadableArchiveError(`The compressed file unpacked to ${wrapper.files.length} files where one was expected.`);
+  }
   const payload = wrapper.files[0].absPath;
   if (classifyUnpacked(readFirstTarBlock(payload)) === 'plain') {
-    const member = path.join(path.dirname(payload), memberNameFor(request.archiveName ?? ''));
-    if (member !== payload) fs.renameSync(payload, member);
-    return unwrapped;
+    const memberName = memberNameFor(request.archiveName ?? '');
+    const selected = matchArchiveGlob(memberName, includePatterns);
+    if (selected) {
+      const member = path.join(path.dirname(payload), memberName);
+      if (member !== payload) fs.renameSync(payload, member);
+    } else {
+      fs.rmSync(payload, { force: true });
+    }
+    return { entryCount: selected ? 1 : 0, skippedLinks: wrapper.skippedLinks, alternateStreams: wrapper.alternateStreams };
   }
   const tarDir = `${request.extractDir}-tar`;
   fs.mkdirSync(tarDir);

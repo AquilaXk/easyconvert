@@ -8,14 +8,7 @@ const TAR_HEADER_BYTES = 512;
 
 /** POSIX and GNU tars carry `ustar` in their first header; compression wrappers do not rename the inner file reliably. */
 export function hasTarMagic(filePath: string): boolean {
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const header = Buffer.alloc(TAR_HEADER_BYTES);
-    const read = fs.readSync(fd, header, 0, TAR_HEADER_BYTES, 0);
-    return read === TAR_HEADER_BYTES && header.toString('latin1', TAR_MAGIC_OFFSET, TAR_MAGIC_OFFSET + TAR_MAGIC.length) === TAR_MAGIC;
-  } finally {
-    fs.closeSync(fd);
-  }
+  return hasTarMagicBlock(readFirstTarBlock(filePath));
 }
 
 const TAR_CHECKSUM_OFFSET = 148;

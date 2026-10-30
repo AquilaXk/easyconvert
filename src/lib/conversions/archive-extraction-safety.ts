@@ -514,12 +514,20 @@ const TRAILING_SEPARATOR_PATTERN = /[\\/]$/;
 
 /** Longest stretch of an entry name a message quotes; the rest of a name made to fill a log is cut off. */
 const QUOTED_NAME_MAX_CHARS = 200;
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/g;
+/** C0 and C1 controls and the line and paragraph separators, which would break or forge a line of a log. */
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
 const ASCII_ONLY = /^[\u0000-\u007f]*$/;
+const HIGH_SURROGATE_MIN = 0xd800;
+const HIGH_SURROGATE_MAX = 0xdbff;
 
-/** An entry name as a message quotes it: cut to {@link QUOTED_NAME_MAX_CHARS} and with control characters written out. */
+/** An entry name as a message quotes it: cut to {@link QUOTED_NAME_MAX_CHARS} (not inside a surrogate pair) and with control characters written out. */
 function quotedEntryName(rawPath: string): string {
-  const shown = rawPath.length > QUOTED_NAME_MAX_CHARS ? `${rawPath.slice(0, QUOTED_NAME_MAX_CHARS)}...` : rawPath;
+  let shown = rawPath;
+  if (rawPath.length > QUOTED_NAME_MAX_CHARS) {
+    const last = rawPath.charCodeAt(QUOTED_NAME_MAX_CHARS - 1);
+    const end = last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX ? QUOTED_NAME_MAX_CHARS - 1 : QUOTED_NAME_MAX_CHARS;
+    shown = `${rawPath.slice(0, end)}...`;
+  }
   return shown.replace(CONTROL_CHARACTERS, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
@@ -1418,7 +1426,7 @@ export function summarizeInspectionSafety(entries: InspectionEntryInput[]): Insp
   const flags: InspectionEntryFlags[] = entries.map((entry) => {
     const flag: InspectionEntryFlags = {};
     if (entry.kind !== undefined) flag.kind = entry.kind;
-    if (entryPathProblem(entry.name) !== null) flag.unsafePath = true;
+    if (archiveEntryNameError(entry.name) !== null) flag.unsafePath = true;
     return flag;
   });
 

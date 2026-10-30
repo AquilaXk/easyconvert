@@ -587,7 +587,7 @@
     "rule": "complexity",
     "function": "repairZipArchive",
     "count": 1,
-    "maxValue": 32
+    "maxValue": 31
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -615,7 +615,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4203
+    "maxValue": 4186
   },
   {
     "file": "src/lib/conversions/archive.ts",

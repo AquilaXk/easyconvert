@@ -31,7 +31,6 @@ import {
   UnsafeArchiveError,
   archiveEntryNameError,
   assertListedNamesSafe,
-  assertSafeArchiveEntryName,
   assertListingResourceCaps,
   extractArchiveContained,
   extractArchiveContainedSync,
@@ -53,6 +52,8 @@ import { inspectLzSource, isRarArchive, isSevenZipArchive, isZipArchive, sniffLz
 import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { singleStreamPayload } from './archive-single-stream';
+import { RAR4_FILE_FLAG_UNICODE, decodeRar4FileName } from './archive-rar4-name';
+import { canonicalArchivePath, canonicalEntryPath, safeCanonicalArchivePath } from './archive-entry-path';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
@@ -136,6 +137,7 @@ import {
 } from './zstd-dict';
 
 export {
+  canonicalEntryPath,
   compressZstd,
   decompressZstd,
   compressLzma,
@@ -334,7 +336,7 @@ function createEncryptedArchiveVia7z(
   if (archiveType === 'zip') assertZipPasswordSupported(password);
 
   const resolvedFiles = resolveArchiveEntryCollisions(files, collisionPolicy || 'rename');
-  assertEncryptedArchiveInputWithinLimits(resolvedFiles.map((f) => sanitizeArchivePath(f.filename) || path.basename(f.filename)));
+  assertEncryptedArchiveInputWithinLimits(resolvedFiles.map((f) => safeCanonicalArchivePath(f.filename) || path.basename(f.filename)));
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${archiveType}_create_${Date.now()}_${token}`);
@@ -342,7 +344,7 @@ function createEncryptedArchiveVia7z(
   fs.mkdirSync(stagingDir, { recursive: true });
   try {
     for (const f of resolvedFiles) {
-      const safe = sanitizeArchivePath(f.filename) || path.basename(f.filename);
+      const safe = safeCanonicalArchivePath(f.filename) || path.basename(f.filename);
       const dest = path.join(stagingDir, safe);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, f.buffer);
@@ -500,48 +502,6 @@ export const ARCHIVE_SECURITY_LIMITS = {
   MAX_UNCOMPRESSED_SIZE: 500 * 1024 * 1024, // 500MB limit
   MAX_RATIO: 100, // 100:1 compression ratio
 };
-
-const PATH_DOT_CHAR_CODE = 0x2e;
-const BACKSLASH_CHAR = '\\';
-
-/** Joins the '/'-separated components except empty and '.' ones, without allocating arrays. */
-function joinPathSegments(filename: string): string {
-  let joined = '';
-  let start = 0;
-  while (start <= filename.length) {
-    const slash = filename.indexOf('/', start);
-    const end = slash === -1 ? filename.length : slash;
-    const isDot = end - start === 1 && filename.charCodeAt(start) === PATH_DOT_CHAR_CODE;
-    if (end > start && !isDot) {
-      const segment = filename.slice(start, end);
-      joined = joined === '' ? segment : `${joined}/${segment}`;
-    }
-    start = end + 1;
-  }
-  return joined;
-}
-
-/** The canonical spelling of a stored name that is a plain relative path, or null when it names the extraction root (`.`, `./`). */
-function canonicalArchivePath(filename: string): string | null {
-  const normalized = joinPathSegments(filename.includes(BACKSLASH_CHAR) ? filename.replaceAll(BACKSLASH_CHAR, '/') : filename);
-  return normalized === '' ? null : normalized;
-}
-
-/**
- * The canonical spelling of a stored entry name: backslashes are separators, and empty and `.` components are dropped.
- * A name that is not a plain relative path (traversal, absolute, drive path, NUL, lookalikes of those; see
- * `assertSafeArchiveEntryName`) throws an UnsafeArchiveError that names it, and is never repaired into another path.
- * Returns null for a name that is the extraction root itself.
- */
-export function sanitizeArchivePath(filename: string): string | null {
-  assertSafeArchiveEntryName(filename);
-  return canonicalArchivePath(filename);
-}
-
-/** {@link canonicalArchivePath} for a caller that must not throw: null for an unsafe name as well as for the root. */
-function safeCanonicalArchivePath(filename: string): string | null {
-  return archiveEntryNameError(filename) === null ? canonicalArchivePath(filename) : null;
-}
 
 /**
  * Inspects PKZIP local file headers and central directory records for bit 0 or bit 6 encryption flags.
@@ -1358,6 +1318,18 @@ function decodeGnuLongText(data: Buffer): string {
   return (nul === -1 ? data : data.subarray(0, nul)).toString('utf8');
 }
 
+interface TarReaderOptions {
+  /** Every entry is recorded as stored (raw name, declared size) into this array, and nothing is sanitized or resolved. */
+  listing?: ListedArchiveEntry[];
+  /** Link entries are reported as entries but their targets are neither resolved nor tracked (the caller leaves links out). */
+  ignoreLinks?: boolean;
+  /**
+   * An entry whose name is not a plain relative path is returned as stored, with its links neither resolved nor tracked,
+   * for a caller that only describes the archive; otherwise the name is refused.
+   */
+  reportUnsafeNames?: boolean;
+}
+
 /**
  * Stateful single-pass TAR reader. Per-block work goes through methods (no per-block closures) and
  * entry bodies stay views into the source buffer.
@@ -1381,19 +1353,14 @@ class TarReader {
   /** 32-bit view for the checksum fast path; null when the buffer start is not word-aligned. */
   private readonly words: Uint32Array | null;
 
-  /** In listing mode every entry is recorded as stored (raw name, declared size) and nothing is sanitized or resolved. */
   private readonly listing: ListedArchiveEntry[] | null;
-
-  /** Link entries are reported as entries but their targets are neither resolved nor tracked (the caller leaves links out). */
   private readonly ignoreLinks: boolean;
-
-  /** An unsafe entry name is returned as stored, for a caller that only describes the archive; otherwise it is refused. */
   private readonly reportUnsafeNames: boolean;
 
-  constructor(private readonly tarBuffer: Buffer, listing: ListedArchiveEntry[] | null = null, ignoreLinks = false, reportUnsafeNames = false) {
-    this.listing = listing;
-    this.ignoreLinks = ignoreLinks;
-    this.reportUnsafeNames = reportUnsafeNames;
+  constructor(private readonly tarBuffer: Buffer, options: TarReaderOptions = {}) {
+    this.listing = options.listing ?? null;
+    this.ignoreLinks = options.ignoreLinks === true;
+    this.reportUnsafeNames = options.reportUnsafeNames === true;
     const aligned = tarBuffer.byteOffset % TAR_WORD_BYTES === 0;
     this.words = aligned
       ? new Uint32Array(tarBuffer.buffer, tarBuffer.byteOffset, Math.floor(tarBuffer.length / TAR_WORD_BYTES))
@@ -1610,12 +1577,16 @@ class TarReader {
       this.listing.push(listedTarEntry(rawName, type, bodySize));
       return;
     }
-    const filename = this.reportUnsafeNames && archiveEntryNameError(rawName) !== null ? rawName : sanitizeArchivePath(rawName);
+    const nameError = archiveEntryNameError(rawName);
+    if (nameError !== null && !this.reportUnsafeNames) throw nameError;
+    const filename = nameError === null ? canonicalArchivePath(rawName) : rawName;
     if (!filename) return;
 
-    if (this.symlinks.size > 0) resolveTarPath(filename.split('/'), this.symlinks, `entry '${filename}'`);
     const isLink = type === 'symlink' || type === 'hardlink';
-    if (isLink && !this.ignoreLinks) body = this.registerLink(filename, linkName, type) ?? body;
+    if (nameError === null) {
+      if (this.symlinks.size > 0) resolveTarPath(filename.split('/'), this.symlinks, `entry '${filename}'`);
+      if (isLink && !this.ignoreLinks) body = this.registerLink(filename, linkName, type) ?? body;
+    }
     if (type === 'file' || type === 'hardlink') this.contentByName.set(filename, body);
 
     this.entries.push({
@@ -1652,7 +1623,7 @@ function listedTarEntry(rawName: string, type: TarEntryType, bodySize: number): 
  */
 export function listTarEntries(tarBuffer: Buffer): ListedArchiveEntry[] {
   const listing: ListedArchiveEntry[] = [];
-  new TarReader(tarBuffer, listing).read();
+  new TarReader(tarBuffer, { listing }).read();
   return listing;
 }
 
@@ -1670,10 +1641,10 @@ export function listTarEntries(tarBuffer: Buffer): ListedArchiveEntry[] {
  * regular files. Entries that would be written through an earlier symlink are rejected. With `ignoreLinks`, link
  * entries are returned without their targets being resolved or tracked, for a caller that leaves every link out. An entry
  * whose name is not a plain relative path throws an UnsafeArchiveError that names it, unless `reportUnsafeNames` asks for the
- * name as it is stored (an inspection, which describes the archive and writes nothing).
+ * name as it is stored, its links neither resolved nor tracked (an inspection, which describes the archive and writes nothing).
  */
-export function readTarEntries(tarBuffer: Buffer, options: { ignoreLinks?: boolean; reportUnsafeNames?: boolean } = {}): TarEntry[] {
-  return new TarReader(tarBuffer, null, options.ignoreLinks === true, options.reportUnsafeNames === true).read();
+export function readTarEntries(tarBuffer: Buffer, options: Pick<TarReaderOptions, 'ignoreLinks' | 'reportUnsafeNames'> = {}): TarEntry[] {
+  return new TarReader(tarBuffer, options).read();
 }
 
 /**
@@ -1839,7 +1810,7 @@ export function extractRarArchive(
             if (exceedsArchiveRatio(totalUncompressedSize, rarBuffer.length, ARCHIVE_SECURITY_LIMITS.MAX_RATIO)) {
               throw new DecompressionLimitError(`Archive bomb detected: compression ratio exceeds ${ARCHIVE_SECURITY_LIMITS.MAX_RATIO}:1 limit`);
             }
-            const sanitized = sanitizeArchivePath(relPath);
+            const sanitized = canonicalEntryPath(relPath);
             if (sanitized && matchArchiveGlob(sanitized, options.entries)) {
               extracted.push({ filename: sanitized, buffer: buf });
             }
@@ -1918,8 +1889,9 @@ export function extractRarArchive(
       }
 
       if (offset + 32 + nameSize <= rarBuffer.length) {
-        const filename = rarBuffer.toString('utf-8', offset + 32, offset + 32 + nameSize);
-        const sanitizedName = sanitizeArchivePath(filename);
+        const headFlags = rarBuffer.readUInt16LE(offset + 3);
+        const filename = decodeRar4FileName(rarBuffer.subarray(offset + 32, offset + 32 + nameSize), (headFlags & RAR4_FILE_FLAG_UNICODE) !== 0);
+        const sanitizedName = canonicalEntryPath(filename);
         const dataOffset = offset + headSize;
 
         if (dataOffset + packSize > rarBuffer.length) {
@@ -2978,7 +2950,6 @@ function selectSevenZipFiles(entries: SevenZipEntry[], options: SevenZipExtractO
   const files: { filename: string; buffer: Buffer }[] = [];
   const skippedLinks: string[] = [];
   for (const entry of entries) {
-    const filename = sanitizeArchivePath(entry.name);
     const kind = classifySevenZipAttributes(entry.attributes);
     if (kind.isSpecial) {
       throw new UnsafeArchiveError('special-entry', `Archive contains a device, FIFO or socket entry (${entry.name}), which is not extracted.`);
@@ -2990,6 +2961,7 @@ function selectSevenZipFiles(entries: SevenZipEntry[], options: SevenZipExtractO
       skippedLinks.push(entry.name);
       continue;
     }
+    const filename = canonicalEntryPath(entry.name);
     if (filename) files.push({ filename, buffer: entry.data });
   }
   options.onSkippedLinks?.(skippedLinks);
@@ -3095,17 +3067,28 @@ export function getZipBinaryPath(): string | null {
   return null;
 }
 
+/** A bomb guard or an unsafe entry name: the salvage of a damaged ZIP skips an unreadable record but never swallows these. */
+function isRefusal(err: unknown): boolean {
+  return err instanceof DecompressionLimitError || err instanceof UnsafeArchiveError;
+}
+
+/**
+ * The name to salvage a local record under, or '' for a record whose name is garbled (empty, NUL, a line break), which
+ * the salvage skips like any other unreadable record. A name that climbs out of the directory or is absolute is refused.
+ */
+function salvagedRecordName(rawName: string): string {
+  const nameError = archiveEntryNameError(rawName);
+  if (nameError === null) return canonicalArchivePath(rawName) || path.basename(rawName);
+  if (nameError.reason === 'invalid-entry-name') return '';
+  throw nameError;
+}
+
 /**
  * Repairs a damaged or truncated ZIP archive.
  * First attempts sandboxed `zip -FF <in> --out <out> -q -y`.
  * Falls back to pure TypeScript Local File Header scanner that salvages all valid entries
  * and rebuilds an intact Central Directory structure.
  */
-/** A bomb guard or an unsafe entry name: the salvage of a damaged ZIP skips an unreadable record but never swallows these. */
-function isRefusal(err: unknown): boolean {
-  return err instanceof DecompressionLimitError || err instanceof UnsafeArchiveError;
-}
-
 export async function repairZipArchive(
   zipBuffer: Buffer,
   _options: ConversionOptions = {}
@@ -3179,7 +3162,7 @@ export async function repairZipArchive(
         const dataStart = pos + 30 + nameLen + extraLen;
         if (pos + 30 + nameLen <= zipBuffer.length && dataStart <= zipBuffer.length) {
           const rawName = zipBuffer.toString('utf-8', pos + 30, pos + 30 + nameLen);
-          const cleanName = sanitizeArchivePath(rawName) || path.basename(rawName);
+          const cleanName = salvagedRecordName(rawName);
 
           let rawChunk: Buffer | null = null;
           if (compSize > 0 && dataStart + compSize <= zipBuffer.length) {
@@ -3658,7 +3641,7 @@ async function inspectRarBuffer(
 
       const nameStart = offset + 32;
       const rawName = nameStart + nameSize <= buffer.length
-        ? buffer.toString('utf-8', nameStart, nameStart + nameSize)
+        ? decodeRar4FileName(buffer.subarray(nameStart, nameStart + nameSize), (headFlags & RAR4_FILE_FLAG_UNICODE) !== 0)
         : 'unknown';
 
       entries.push({

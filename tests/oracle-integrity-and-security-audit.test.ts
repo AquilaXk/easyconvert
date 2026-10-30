@@ -33,7 +33,7 @@ import {
   DANGEROUS_SYSCALL_FILTER_LIST,
   executeSandboxedBinary,
 } from '../src/lib/security/process-sandbox';
-import { sanitizeArchivePath, ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
+import { canonicalEntryPath, ARCHIVE_SECURITY_LIMITS } from '../src/lib/conversions/archive';
 import { sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { decodeSfnt } from '../src/lib/conversions/font';
 import { ConversionFailedError } from '../src/lib/types';
@@ -744,10 +744,10 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
         ['', 'invalid-entry-name'],
       ];
       for (const [name, reason] of refused) {
-        expect(() => sanitizeArchivePath(name), name).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError', reason }));
+        expect(() => canonicalEntryPath(name), name).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError', reason }));
       }
-      expect(sanitizeArchivePath('docs//./readme.txt')).toBe('docs/readme.txt');
-      expect(sanitizeArchivePath('.')).toBeNull();
+      expect(canonicalEntryPath('docs//./readme.txt')).toBe('docs/readme.txt');
+      expect(canonicalEntryPath('.')).toBeNull();
     });
 
     it('verifies archive security limits guard against 42.zip decompression bombs', () => {
