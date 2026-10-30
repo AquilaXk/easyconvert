@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import JSZip from 'jszip';
 import { convertWithNative7z } from '../src/worker/engines';
 import { jsonRecords, runBytes, zipfText } from './helpers/archive-corpus';
 import { oracleTest } from './helpers/oracle-test';
@@ -257,6 +258,19 @@ describe('on-disk route: a compressed file that is not a tar is one member named
         expect(names(output, `selected-plain-${entries[0].length}`), JSON.stringify(entries)).toEqual(['notes']);
       }
       await expect(convert(compressed, 'xz', 'notes.xz', { zeroHeap: true, entries: ['other.txt'] })).rejects.toThrow('The archive contains no files to convert.');
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'a zip uploaded as a gzip file is refused, because the wrapper did not unpack to exactly one file',
+    [...TOOLS],
+    async () => {
+      const zip = new JSZip();
+      zip.file('one.txt', 'first');
+      zip.file('two.txt', 'second');
+      const bytes = await zip.generateAsync({ type: 'nodebuffer' });
+      await expect(convert(bytes, 'gz', 'disguised.gz', { zeroHeap: true })).rejects.toThrow(/unpacked to 2 files where one was expected/);
     },
     TEST_TIMEOUT_MS
   );

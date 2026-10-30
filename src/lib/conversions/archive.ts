@@ -29,7 +29,7 @@ import {
   NativeRenameUnsupportedError,
   UnreadableArchiveError,
   UnsafeArchiveError,
-  archiveEntryNameError,
+  quotedEntryName,
   assertListedNamesSafe,
   assertListingResourceCaps,
   extractArchiveContained,
@@ -53,7 +53,7 @@ import { InflateBudget, inflateRawSalvage } from './bounded-inflate';
 import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { singleStreamPayload } from './archive-single-stream';
 import { RAR4_FILE_FLAG_UNICODE, decodeRar4FileName } from './archive-rar4-name';
-import { canonicalArchivePath, canonicalEntryPath, safeCanonicalArchivePath } from './archive-entry-path';
+import { canonicalEntryPath, encryptedStagedName, safeCanonicalArchivePath, validateEntryPath } from './archive-entry-path';
 import { createZipBuffer, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
 import { packXzStream, unpackXzStream } from './xz-format';
@@ -336,16 +336,16 @@ function createEncryptedArchiveVia7z(
   if (archiveType === 'zip') assertZipPasswordSupported(password);
 
   const resolvedFiles = resolveArchiveEntryCollisions(files, collisionPolicy || 'rename');
-  assertEncryptedArchiveInputWithinLimits(resolvedFiles.map((f) => safeCanonicalArchivePath(f.filename) || path.basename(f.filename)));
+  const stagedNames = resolvedFiles.map((f) => encryptedStagedName(f.filename));
+  assertEncryptedArchiveInputWithinLimits(stagedNames);
   const tmpDir = os.tmpdir();
   const token = crypto.randomBytes(8).toString('hex');
   const workDir = path.join(tmpDir, `easyconvert_${archiveType}_create_${Date.now()}_${token}`);
   const stagingDir = path.join(workDir, 'staging');
   fs.mkdirSync(stagingDir, { recursive: true });
   try {
-    for (const f of resolvedFiles) {
-      const safe = safeCanonicalArchivePath(f.filename) || path.basename(f.filename);
-      const dest = path.join(stagingDir, safe);
+    for (const [i, f] of resolvedFiles.entries()) {
+      const dest = path.join(stagingDir, stagedNames[i]);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       fs.writeFileSync(dest, f.buffer);
     }
@@ -1577,9 +1577,8 @@ class TarReader {
       this.listing.push(listedTarEntry(rawName, type, bodySize));
       return;
     }
-    const nameError = archiveEntryNameError(rawName);
+    const { path: filename, error: nameError } = validateEntryPath(rawName);
     if (nameError !== null && !this.reportUnsafeNames) throw nameError;
-    const filename = nameError === null ? canonicalArchivePath(rawName) : rawName;
     if (!filename) return;
 
     const isLink = type === 'symlink' || type === 'hardlink';
@@ -1903,7 +1902,7 @@ export function extractRarArchive(
         // Verify CRC32
         const computedCrc = zlib.crc32(fileBuf);
         if (computedCrc !== fileCrc) {
-          throw new CorruptStreamError(`Corrupted RAR archive: CRC mismatch for ${filename} (expected 0x${fileCrc.toString(16)}, got 0x${computedCrc.toString(16)})`);
+          throw new CorruptStreamError(`Corrupted RAR archive: CRC mismatch for ${quotedEntryName(filename)} (expected 0x${fileCrc.toString(16)}, got 0x${computedCrc.toString(16)})`);
         }
 
         totalUncompressedSize += fileBuf.length;
@@ -2952,7 +2951,7 @@ function selectSevenZipFiles(entries: SevenZipEntry[], options: SevenZipExtractO
   for (const entry of entries) {
     const kind = classifySevenZipAttributes(entry.attributes);
     if (kind.isSpecial) {
-      throw new UnsafeArchiveError('special-entry', `Archive contains a device, FIFO or socket entry (${entry.name}), which is not extracted.`);
+      throw new UnsafeArchiveError('special-entry', `Archive contains a device, FIFO or socket entry (${quotedEntryName(entry.name)}), which is not extracted.`);
     }
     if (kind.isSymlink) {
       if (!options.skipLinks) {
@@ -3073,14 +3072,14 @@ function isRefusal(err: unknown): boolean {
 }
 
 /**
- * The name to salvage a local record under, or '' for a record whose name is garbled (empty, NUL, a line break), which
+ * The name to salvage a local record under, or null for a record whose name is garbled (empty or holding a control character), which
  * the salvage skips like any other unreadable record. A name that climbs out of the directory or is absolute is refused.
  */
-function salvagedRecordName(rawName: string): string {
-  const nameError = archiveEntryNameError(rawName);
-  if (nameError === null) return canonicalArchivePath(rawName) || path.basename(rawName);
-  if (nameError.reason === 'invalid-entry-name') return '';
-  throw nameError;
+function salvagedRecordName(rawName: string): string | null {
+  const { path: name, error } = validateEntryPath(rawName);
+  if (error === null) return name || path.basename(rawName);
+  if (error.reason === 'invalid-entry-name') return null;
+  throw error;
 }
 
 /**

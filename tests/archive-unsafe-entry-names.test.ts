@@ -8,6 +8,7 @@ import zlib from 'node:zlib';
 import {
   canonicalEntryPath,
   convertArchive,
+  create7zArchive,
   createZipArchive,
   extract7zArchive,
   extractRarArchive,
@@ -348,12 +349,106 @@ describe('inspection and conversion agree on which names are unsafe', () => {
   });
 });
 
+describe('names that only look like a drive or hold a harmless character convert, real drive paths are refused', () => {
+  const ORDINARY = ['\uFF31\uFF1A\u56DE\u7B54.txt', 'a:b.txt'];
+  const DRIVE_PATHS = ['C:/evil.txt', 'C:\\evil.txt', './C:/evil.txt', '.\\C:\\evil.txt', './/C:/x', 'C:'];
+  const CONTROL_NAMES = ['a\u0001b.txt', 'a\u007fb.txt', 'a\u0085b.txt', 'a\u2028b.txt', 'a\tb.txt'];
+
+  async function zipOf(name: string): Promise<Buffer> {
+    const zip = new JSZip();
+    zip.file('ok.txt', 'fine');
+    zip.file(name, BODY);
+    return zip.generateAsync({ type: 'nodebuffer' });
+  }
+
+  async function converted(archive: Buffer, source: string): Promise<string[]> {
+    const result = await convertArchive(archive, source as 'tar', 'zip', {}, `named.${source}`);
+    return Object.keys((await JSZip.loadAsync(result.buffer as Buffer)).files);
+  }
+
+  for (const name of ORDINARY) {
+    oracleTest(
+      `'${name}' is read from tar, 7z, RAR and ZIP as the independent listers read it`,
+      ['tar', '7z'],
+      async () => {
+        const tar = tarWithMember('ustar', name);
+        expect(independentTarNames(tar, 'ordinary-drive-lookalike', name)).toContain(name);
+        const sevenZip = sevenZipWithMember(name);
+        expect(sevenZipNames(sevenZip, 'ordinary-drive-lookalike', '7z')).toContain(name);
+        const rar = buildStoredRar4([
+          { name: 'ok.txt', data: Buffer.from('fine') },
+          { name: /^[\x20-\x7e]+$/.test(name) ? name : '?????.txt', unicodeName: /^[\x20-\x7e]+$/.test(name) ? undefined : name, data: BODY },
+        ]);
+        expect(sevenZipNames(rar, 'ordinary-drive-lookalike', 'rar')).toContain(name);
+        const zip = await zipOf(name);
+        expect(sevenZipNames(zip, 'ordinary-drive-lookalike', 'zip')).toContain(name);
+
+        expect(await converted(tar, 'tar')).toContain(name);
+        expect(await converted(sevenZip, '7z')).toContain(name);
+        expect(await converted(rar, 'rar')).toContain(name);
+        const fromZip = await convertArchive(zip, 'zip', 'tar', {}, 'named.zip');
+        expect(independentTarNames(fromZip.buffer as Buffer, 'ordinary-zip-to-tar', name)).toContain(name);
+        expect(canonicalEntryPath(name)).toBe(name);
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
+
+  for (const name of DRIVE_PATHS) {
+    it(`refuses '${name}' as an absolute path in tar, 7z, RAR and ZIP`, async () => {
+      const zip = await zipOf(name);
+      const refused = [
+        () => convertArchive(tarWithMember('ustar', name), 'tar', 'zip', {}, 'drive.tar'),
+        () => convertArchive(sevenZipWithMember(name), '7z', 'zip', {}, 'drive.7z'),
+        () => convertArchive(rarWithMember(name), 'rar', 'zip', {}, 'drive.rar'),
+        () => convertArchive(zip, 'zip', 'tar', {}, 'drive.zip'),
+      ];
+      for (const run of refused) expect((await refusal(run())).reason).toBe('absolute-path');
+      expect(() => canonicalEntryPath(name)).toThrow(expect.objectContaining({ reason: 'absolute-path' }));
+    });
+  }
+
+  for (const name of CONTROL_NAMES) {
+    it(`refuses a control character in '${JSON.stringify(name)}' in tar, 7z and ZIP, and quotes it in the message`, async () => {
+      const zip = await zipOf(name);
+      for (const run of [
+        () => convertArchive(tarWithMember('ustar', name), 'tar', 'zip', {}, 'control.tar'),
+        () => convertArchive(sevenZipWithMember(name), '7z', 'zip', {}, 'control.7z'),
+        () => convertArchive(zip, 'zip', 'tar', {}, 'control.zip'),
+      ]) {
+        const error = await refusal(run());
+        expect(error.reason).toBe('invalid-entry-name');
+        expect(error.message).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/);
+      }
+    });
+  }
+});
+
 describe('writers keep the names of the uploader own files', () => {
   const NAMES: Array<[string, string]> = [
     ['\uFF31\uFF1A\u56DE\u7B54.txt', '\uFF31\uFF1A\u56DE\u7B54.txt'],
     ['a:b.txt', 'a:b.txt'],
     ['../x.png', 'x.png'],
   ];
+
+  for (const uploaded of ['', 'a\0b.txt', 'a\u0001b.txt']) {
+    oracleTest(
+      `an encrypted zip and 7z refuse the upload name ${JSON.stringify(uploaded)} with a typed error`,
+      ['7z'],
+      async () => {
+        const options = { password: 'Correct-Horse-Battery-1' };
+        const zip = await createZipArchive([{ filename: uploaded, buffer: BODY }], options, 'encrypted.zip').then(() => null, (e: unknown) => e);
+        expect(zip).toBeInstanceOf(UnsafeArchiveError);
+        expect(zip).toMatchObject({ reason: 'invalid-entry-name' });
+        const sevenZip = await Promise.resolve()
+          .then(() => create7zArchive([{ filename: uploaded, buffer: BODY }], options, 'encrypted.7z'))
+          .then(() => null, (e: unknown) => e);
+        expect(sevenZip).toBeInstanceOf(UnsafeArchiveError);
+        expect(sevenZip).toMatchObject({ reason: 'invalid-entry-name' });
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
 
   for (const [uploaded, written] of NAMES) {
     oracleTest(

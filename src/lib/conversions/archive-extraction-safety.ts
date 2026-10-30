@@ -175,7 +175,8 @@ const UNIX_SPECIAL_MODE = /^[cbps][-rwxsStT]{9}$/;
 const WINDOWS_ATTRIBUTE_LETTERS = /^[RHS8DAdNTsLCOIEV]+$/;
 /** Unix mode in the high 16 bits, printed as hex when 7-Zip cannot render it as `rwx`. */
 const HEX_ATTRIBUTE = /^[0-9A-F]{8}$/;
-const DRIVE_LETTER_PREFIX = /^[A-Za-z]:/;
+/** A Windows drive: a letter and a colon that end the first component (`C:\x`, `C:/x`, `C:`). `a:b.txt` is an ordinary name. */
+const DRIVE_LETTER_PREFIX = /^[A-Za-z]:(?:[\\/]|$)/;
 /** With no password supplied, 7-Zip prompts for one and aborts when stdin is closed ("Break signaled", exit 255). */
 const PASSWORD_PROMPT_ABORT_PATTERN = /^(?:Break signaled|Enter password.*)$/m;
 /**
@@ -225,8 +226,9 @@ export function exceedsArchiveRatio(decodedBytes: number, archiveBytes: number, 
 const MAX_ENTRY_FILTER_PATTERNS = 1_000;
 const MAX_ENTRY_FILTER_TOTAL_BYTES = 64 * 1024;
 const ENTRY_FILTER_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
-/** NUL, and CR/LF: line breaks in names are how listing fields get forged, and newer builds rewrite them anyway. */
-const ENTRY_NAME_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
+/** C0 and C1 controls and the line and paragraph separators, which would break or forge a line of a log or a listing. */
+const CONTROL_CHARACTER_SOURCE = '[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]';
+const ENTRY_NAME_FORBIDDEN_CHARACTERS = new RegExp(CONTROL_CHARACTER_SOURCE);
 /** Single-stream wrapper extensions and the suffix 7-Zip's output name gets ("tgz" unpacks to "<name>.tar"). */
 const WRAPPER_EXTENSION_SUFFIXES = new Map<string, string>([
   ['gz', ''],
@@ -466,13 +468,26 @@ function hasParentComponent(rawPath: string): boolean {
   return false;
 }
 
+/** Whether the name, after its leading empty and `.` components, starts with a drive: `./C:/x`, `.\\C:\\x` and `.//C:/x` canonicalise to `C:/x`. */
+function canonicalFormIsDrivePath(rawPath: string): boolean {
+  let start = 0;
+  for (let at = 0; at < rawPath.length; at++) {
+    const code = rawPath.charCodeAt(at);
+    if (code === SLASH_CODE || code === BACKSLASH_CODE) {
+      if (at - start > 1 || (at - start === 1 && rawPath.charCodeAt(start) !== DOT_CODE)) break;
+      start = at + 1;
+    }
+  }
+  return start > 0 && DRIVE_LETTER_PREFIX.test(rawPath.slice(start));
+}
+
 /** Why an entry name cannot be extracted under the root, or null when it is a plain relative path. */
 function entryPathProblem(rawPath: string): 'path-traversal' | 'absolute-path' | 'invalid-entry-name' | null {
   if (rawPath === '' || ENTRY_NAME_FORBIDDEN_CHARACTERS.test(rawPath)) {
     return 'invalid-entry-name';
   }
   const first = rawPath.charCodeAt(0);
-  if (first === SLASH_CODE || first === BACKSLASH_CODE || DRIVE_LETTER_PREFIX.test(rawPath)) {
+  if (first === SLASH_CODE || first === BACKSLASH_CODE || DRIVE_LETTER_PREFIX.test(rawPath) || canonicalFormIsDrivePath(rawPath)) {
     return 'absolute-path';
   }
   return hasParentComponent(rawPath) ? 'path-traversal' : null;
@@ -514,14 +529,13 @@ const TRAILING_SEPARATOR_PATTERN = /[\\/]$/;
 
 /** Longest stretch of an entry name a message quotes; the rest of a name made to fill a log is cut off. */
 const QUOTED_NAME_MAX_CHARS = 200;
-/** C0 and C1 controls and the line and paragraph separators, which would break or forge a line of a log. */
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g;
+const CONTROL_CHARACTERS = new RegExp(CONTROL_CHARACTER_SOURCE, 'g');
 const ASCII_ONLY = /^[\u0000-\u007f]*$/;
 const HIGH_SURROGATE_MIN = 0xd800;
 const HIGH_SURROGATE_MAX = 0xdbff;
 
 /** An entry name as a message quotes it: cut to {@link QUOTED_NAME_MAX_CHARS} (not inside a surrogate pair) and with control characters written out. */
-function quotedEntryName(rawPath: string): string {
+export function quotedEntryName(rawPath: string): string {
   let shown = rawPath;
   if (rawPath.length > QUOTED_NAME_MAX_CHARS) {
     const last = rawPath.charCodeAt(QUOTED_NAME_MAX_CHARS - 1);
@@ -536,7 +550,7 @@ function entryPathError(rawPath: string, storedName: string): UnsafeArchiveError
   if (problem === null && entryPathDepth(rawPath) <= MAX_ENTRY_PATH_DEPTH) return null;
   const quoted = quotedEntryName(storedName);
   if (problem === 'invalid-entry-name') {
-    return new UnsafeArchiveError('invalid-entry-name', `Archive contains an entry with an empty name or one holding NUL or a line break ('${quoted}').`);
+    return new UnsafeArchiveError('invalid-entry-name', `Archive contains an entry with an empty name or one holding a control character ('${quoted}').`);
   }
   if (problem === 'absolute-path') {
     return new UnsafeArchiveError('absolute-path', `Archive contains an entry with an absolute path ('${quoted}').`);
@@ -548,7 +562,7 @@ function entryPathError(rawPath: string, storedName: string): UnsafeArchiveError
 }
 
 /**
- * The refusal an entry name earns, or null when it is a plain relative path: not empty, free of NUL and line breaks,
+ * The refusal an entry name earns, or null when it is a plain relative path: not empty, free of control characters,
  * not absolute, not a drive path, not climbing out with `..`, and not nested deeper than the cap. The name is also
  * checked after Unicode compatibility folding, because a fullwidth full stop or solidus becomes `.` or `/` in a layer
  * that normalises (a Windows code page, macOS, a search index). Plain ASCII is its own folding, so it is checked once.
