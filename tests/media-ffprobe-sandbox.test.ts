@@ -25,6 +25,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
 import { type FfprobePath, probeInput, resetInputProbeCache } from '../src/lib/conversions/media-ffprobe';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 import { getUnshareCapability, resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
@@ -83,7 +84,7 @@ describe.skipIf(skipUnless('unprivileged namespaces (unshare -r -n)', ON_LINUX &
   () => {
     it('starts ffprobe in a network namespace of its own, as the mapped root of a user namespace (unshare -r -n)', () => {
       vi.stubEnv('STRICT_SANDBOX', 'true');
-      expect(() => probeInput(SAMPLE_MP4_PATH, path.join(spyDir, 'ffprobe') as FfprobePath)).toThrow();
+      expect(() => probeInput(openMediaInput(SAMPLE_MP4_PATH, 'mp4'), path.join(spyDir, 'ffprobe') as FfprobePath)).toThrow();
       const probes = spawnedTools().filter((line) => line.startsWith('ffprobe '));
       expect(probes.length).toBeGreaterThan(0);
       const ownNetwork = readlinkSync('/proc/self/ns/net');

@@ -4,8 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { convertMedia, getFfprobePath } from '../src/lib/conversions/media';
-import { type FfprobePath, probeInput, resetInputProbeCache } from '../src/lib/conversions/media-ffprobe';
+import { convertMedia } from '../src/lib/conversions/media';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 import { RefusedMediaInputError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -109,12 +109,11 @@ describe.skipIf(skip)('a playlist or reference list uploaded as a media containe
     expect(outcome).toBeInstanceOf(RefusedMediaInputError);
   }, CONVERSION_TIMEOUT_MS);
 
-  it('refuses the list in ffprobe too, before a probe reads what it names', () => {
+  it('refuses the list when the input is opened, so no probe reads what it names', () => {
     const listPath = path.join(markerDir, `easyconvert-list-${process.pid}.mp4`);
     fs.writeFileSync(listPath, concatList(path.basename(markerWav)));
-    resetInputProbeCache();
     try {
-      expect(() => probeInput(listPath, getFfprobePath() as FfprobePath)).toThrow(RefusedMediaInputError);
+      expect(() => openMediaInput(listPath, 'mp4')).toThrow(RefusedMediaInputError);
     } finally {
       fs.rmSync(listPath, { force: true });
     }

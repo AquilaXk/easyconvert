@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { parseWavPcmHeader, readWavPcmInfo, WAV_HEADER_SCAN_BYTES } from '../src/lib/conversions/wav-header';
 import { probeMediaDuration } from '../src/lib/conversions/media';
 import { probeAudioStreamCount } from '../src/lib/conversions/media-ffprobe';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 import { craftWav, int16Bytes, sineSamples } from './helpers/wav-craft';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -173,8 +174,8 @@ describe('probes against ffprobe', () => {
           const info = readWavPcmInfo(file);
           expect(info, item.name).not.toBeNull();
           expect(Math.abs((info?.durationSeconds ?? 0) - Number.parseFloat(reported)), item.name).toBeLessThan(DURATION_TOLERANCE_S);
-          expect(probeMediaDuration(file)).toBe(info?.durationSeconds);
-          expect(probeAudioStreamCount(file, ffprobe as never), item.name).toBe(streams);
+          expect(probeMediaDuration(openMediaInput(file, 'wav'))).toBe(info?.durationSeconds);
+          expect(probeAudioStreamCount(openMediaInput(file, 'wav'), ffprobe as never), item.name).toBe(streams);
         });
       }
     },

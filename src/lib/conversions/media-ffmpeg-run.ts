@@ -1,6 +1,6 @@
-import { SandboxedProcessError, type SandboxedExecutionOptions, type SandboxedExecutionResult } from '../security/process-sandbox';
+import { SandboxedProcessError, type SandboxedExecutionResult } from '../security/process-sandbox';
 import { explainFfmpegFailure, partialDecodeIn } from './media-decode-failures';
-import { runFfmpeg } from './media-process';
+import { type FfmpegRunOptions, runFfmpeg } from './media-process';
 
 /**
  * A failure of the encoder FFmpeg reports at the start of a run, with the change to the arguments that lets the same run
@@ -68,7 +68,7 @@ const RETRY_RULES: readonly RetryRule[] = [withFlacBlockSize, withOpusRearLayout
 export async function runFfmpegTranscode(
   ffmpegBin: string,
   args: string[],
-  options: SandboxedExecutionOptions
+  options: FfmpegRunOptions
 ): Promise<SandboxedExecutionResult> {
   let attempt = args;
   let result: SandboxedExecutionResult | undefined;

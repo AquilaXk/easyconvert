@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import { EngineUnavailableError } from '../types';
 import { DEFAULT_HDR_PEAK_NITS, HLG_REFERENCE_PEAK_NITS, PQ_PEAK_NITS, SDR_PEAK_NITS, createBt2390Parameters } from './hdr-tonemap';
 import { type FfprobePath } from './media-ffprobe';
-import { runFfmpegSync, runFfprobe } from './media-process';
+import { type MediaInput, runFfmpegSync, runFfprobe } from './media-process';
 
 /**
  * HDR to SDR video: the filter chain and the colour tags of the 8-bit BT.709 result.
@@ -63,11 +63,11 @@ export function resetZscaleCache(): void {
  * Maximum content light level in cd/m2 from the first video stream's side data (MP4 `clli`, Matroska
  * MaxCLL), or undefined when the stream states none.
  */
-export function probeVideoMaxLightLevel(filePath: string, ffprobe: FfprobePath): number | undefined {
+export function probeVideoMaxLightLevel(input: MediaInput, ffprobe: FfprobePath): number | undefined {
   const run = runFfprobe(
     ffprobe,
     ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream_side_data=max_content', '-of', 'default=nw=1:nk=1'],
-    filePath,
+    input,
     { timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: MAX_LIGHT_LEVEL_OUTPUT_BYTES }
   );
   if (!run.ok) return undefined;

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { EmptyAudioInputError } from '../types';
 import { FFPROBE_TIMEOUT_MS, type FfprobePath, resolveFfprobeBinary } from './media-ffprobe';
-import { runFfprobe } from './media-process';
+import { type MediaInput, runFfprobe } from './media-process';
 
 /**
  * Why an FFmpeg run wrote an empty or unreadable file. A target format without a file header (ADTS, the `.aac` target)
@@ -34,11 +34,11 @@ interface FirstPacketReport {
  * Audio packets ffprobe reads from the start of the file, at most one, or undefined when the file has no audio stream
  * or ffprobe cannot read it. Zero means an audio stream with no packet in it.
  */
-export function audioPacketsAtStart(filePath: string, ffprobe: FfprobePath): number | undefined {
+export function audioPacketsAtStart(input: MediaInput, ffprobe: FfprobePath): number | undefined {
   const run = runFfprobe(
     ffprobe,
     ['-v', 'error', '-select_streams', 'a', '-read_intervals', READ_FIRST_PACKET, '-show_entries', 'stream=index:packet=stream_index', '-of', 'json'],
-    filePath,
+    input,
     { timeoutMs: FFPROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BYTES }
   );
   if (!run.ok) return undefined;
@@ -53,27 +53,27 @@ export function audioPacketsAtStart(filePath: string, ffprobe: FfprobePath): num
 }
 
 /** The error for a run that wrote no bytes: the named refusal when the input holds an audio stream with no packet. */
-export function emptyOutputError(inputPath: string, ffmpegBin: string, src: string, tgt: string): Error {
-  if (audioPacketsAtStart(inputPath, resolveFfprobeBinary(ffmpegBin)) === 0) return new EmptyAudioInputError(tgt);
-  return new Error(`FFmpeg output is empty (0 bytes) for ${src} -> ${tgt}`);
+export function emptyOutputError(input: MediaInput, ffmpegBin: string, tgt: string): Error {
+  if (audioPacketsAtStart(input, resolveFfprobeBinary(ffmpegBin)) === 0) return new EmptyAudioInputError(tgt);
+  return new Error(`FFmpeg output is empty (0 bytes) for ${input.format} -> ${tgt}`);
 }
 
 /**
  * The error for an output of `size` bytes, or undefined when it needs none: an empty output, or a small output of a target
  * that holds nothing readable for an input without samples (the one probe is made only then).
  */
-export function outputSizeError(size: number, inputPath: string, ffmpegBin: string, src: string, tgt: string): Error | undefined {
-  if (size === 0) return emptyOutputError(inputPath, ffmpegBin, src, tgt);
+export function outputSizeError(size: number, input: MediaInput, ffmpegBin: string, tgt: string): Error | undefined {
+  if (size === 0) return emptyOutputError(input, ffmpegBin, tgt);
   const mayBeUnreadable = size < SMALL_OUTPUT_BYTES && UNREADABLE_WHEN_EMPTY_TARGETS.has(tgt);
-  if (mayBeUnreadable && audioPacketsAtStart(inputPath, resolveFfprobeBinary(ffmpegBin)) === 0) return new EmptyAudioInputError(tgt);
+  if (mayBeUnreadable && audioPacketsAtStart(input, resolveFfprobeBinary(ffmpegBin)) === 0) return new EmptyAudioInputError(tgt);
   return undefined;
 }
 
 /** Throws unless the run wrote a file with bytes in it. */
-export function assertOutputWritten(outputPath: string, inputPath: string, ffmpegBin: string, src: string, tgt: string): void {
+export function assertOutputWritten(outputPath: string, input: MediaInput, ffmpegBin: string, tgt: string): void {
   if (!fs.existsSync(outputPath)) {
     throw new Error(`FFmpeg execution completed without producing expected output file "${outputPath}"`);
   }
-  const failure = outputSizeError(fs.statSync(outputPath).size, inputPath, ffmpegBin, src, tgt);
+  const failure = outputSizeError(fs.statSync(outputPath).size, input, ffmpegBin, tgt);
   if (failure) throw failure;
 }

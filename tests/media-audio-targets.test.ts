@@ -18,6 +18,7 @@ import {
   resetHardwareAccelerationCache,
 } from '../src/lib/conversions/media-ffmpeg-args';
 import { ConversionFailedError, EngineUnavailableError, InvalidMediaOptionError } from '../src/lib/types';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * Audio-only targets must write exactly one audio stream in the codec and container the target
@@ -368,7 +369,7 @@ describe('encoder capability probe', () => {
 
 describe('audio-only argument construction', () => {
   it.each(IDS)('%s maps one audio stream and drops video, subtitles and data', (id) => {
-    const args = buildFfmpegArguments('/nonexistent/in.mkv', `/tmp/out.${id}`, 'mkv', id, { disableHwaccel: true });
+    const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), `/tmp/out.${id}`, id, { disableHwaccel: true });
     expect(args).toEqual(expect.arrayContaining(['-vn', '-sn', '-dn']));
     const mapIdx = args.indexOf('-map');
     expect(args.slice(mapIdx, mapIdx + 2)).toEqual(['-map', '0:a:0']);
@@ -378,57 +379,57 @@ describe('audio-only argument construction', () => {
   });
 
   it('selects the requested audio track', () => {
-    const args = buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/out.flac', 'mkv', 'flac', { audio: { track: 2 } });
+    const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/out.flac', 'flac', { audio: { track: 2 } });
     expect(argAfter(args, '-map')).toBe('0:a:2');
   });
 
   it('rejects a track selection an audio-only file cannot hold', () => {
     expect(() =>
-      buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/out.flac', 'mkv', 'flac', { audio: { track: 'all' } })
+      buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/out.flac', 'flac', { audio: { track: 'all' } })
     ).toThrow(InvalidMediaOptionError);
     expect(() =>
-      buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/out.flac', 'mkv', 'flac', { audio: { track: -1 } })
+      buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/out.flac', 'flac', { audio: { track: -1 } })
     ).toThrow(InvalidMediaOptionError);
   });
 
   it('rejects an audio codec the target container cannot carry', () => {
     expect(() =>
-      buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/out.mp3', 'mkv', 'mp3', { audio: { codec: 'flac' } })
+      buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/out.mp3', 'mp3', { audio: { codec: 'flac' } })
     ).toThrow(InvalidMediaOptionError);
-    const ogg = buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/out.ogg', 'mkv', 'ogg', { audio: { codec: 'opus' } });
+    const ogg = buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/out.ogg', 'ogg', { audio: { codec: 'opus' } });
     expect(argAfter(ogg, '-c:a')).toBe('libopus');
   });
 
   it('keeps lossless targets free of a default bitrate and lossy ones on an explicit rate', () => {
-    expect(buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/o.aiff', 'mkv', 'aiff', {})).not.toContain('-b:a');
-    expect(argAfter(buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/o.ac3', 'mkv', 'ac3', {}), '-b:a')).toBe('192k');
-    expect(argAfter(buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/o.opus', 'mkv', 'opus', {}), '-b:a')).toBe('128k');
+    expect(buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/o.aiff', 'aiff', {})).not.toContain('-b:a');
+    expect(argAfter(buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/o.ac3', 'ac3', {}), '-b:a')).toBe('192k');
+    expect(argAfter(buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/o.opus', 'opus', {}), '-b:a')).toBe('128k');
   });
 
   it('pins AMR to 8 kHz mono and rejects a conflicting request', () => {
-    const args = buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/o.amr', 'mkv', 'amr', {});
+    const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/o.amr', 'amr', {});
     expect(argAfter(args, '-ar')).toBe('8000');
     expect(argAfter(args, '-ac')).toBe('1');
     expect(() =>
-      buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/o.amr', 'mkv', 'amr', { audio: { sampleRate: 44100 } })
+      buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/o.amr', 'amr', { audio: { sampleRate: 44100 } })
     ).toThrow(InvalidMediaOptionError);
     expect(() =>
-      buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/o.amr', 'mkv', 'amr', { audio: { channels: 2 } })
+      buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/o.amr', 'amr', { audio: { channels: 2 } })
     ).toThrow(InvalidMediaOptionError);
   });
 
   it('fails closed with an EngineUnavailableError (503, not 400) when the FFmpeg build lacks the encoder', () => {
     const bin = makeFfmpegWithout('no-wmav2', 'wmav2');
-    const attempt = () => buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/o.wma', 'mkv', 'wma', {}, bin);
+    const attempt = () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/o.wma', 'wma', {}, bin);
     expect(attempt).toThrow(EngineUnavailableError);
     expect(attempt).toThrow(/no 'wmav2' encoder/);
     // The same stand-in still encodes a target whose encoder it lists.
     resetHardwareAccelerationCache();
-    expect(argAfter(buildFfmpegArguments('/nonexistent/in.mkv', '/tmp/o.mp3', 'mkv', 'mp3', {}, bin), '-c:a')).toBe('libmp3lame');
+    expect(argAfter(buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/tmp/o.mp3', 'mp3', {}, bin), '-c:a')).toBe('libmp3lame');
   });
 
   it('fails closed for an advertised audio target FFmpeg cannot encode at all', () => {
-    const attempt = () => buildFfmpegArguments('/nonexistent/in.dss', '/tmp/o.dss', 'dss', 'dss', {});
+    const attempt = () => buildFfmpegArguments(openMediaInput('/nonexistent/in.dss', 'dss'), '/tmp/o.dss', 'dss', {});
     expect(attempt).toThrow(ConversionFailedError);
     expect(attempt).toThrow(/dss/);
   });
@@ -522,8 +523,8 @@ describe('explicit codec equal to the target default', () => {
   }
 
   it('gives an explicit default codec the same quality-based default as an implicit one', () => {
-    const implicit = buildFfmpegArguments('/nonexistent/in.wav', '/tmp/o.ogg', 'wav', 'ogg', {});
-    const explicit = buildFfmpegArguments('/nonexistent/in.wav', '/tmp/o.ogg', 'wav', 'ogg', { audio: { codec: 'vorbis' } });
+    const implicit = buildFfmpegArguments(openMediaInput('/nonexistent/in.wav', 'wav'), '/tmp/o.ogg', 'ogg', {});
+    const explicit = buildFfmpegArguments(openMediaInput('/nonexistent/in.wav', 'wav'), '/tmp/o.ogg', 'ogg', { audio: { codec: 'vorbis' } });
     expect(argAfter(explicit, '-q:a')).toBe(argAfter(implicit, '-q:a'));
     expect(argAfter(explicit, '-q:a')).toBeDefined();
     expect(explicit).not.toContain('-b:a');
@@ -531,7 +532,7 @@ describe('explicit codec equal to the target default', () => {
 
   it('accepts the target own PCM codec for aifc, caf and voc', () => {
     for (const id of ['aifc', 'caf', 'voc']) {
-      const args = buildFfmpegArguments('/nonexistent/in.wav', `/tmp/o.${id}`, 'wav', id, { audio: { codec: 'pcm_s16le' } });
+      const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.wav', 'wav'), `/tmp/o.${id}`, id, { audio: { codec: 'pcm_s16le' } });
       expect(argAfter(args, '-c:a')).toBe('pcm_s16le');
       expect(args).not.toContain('-b:a');
     }
@@ -540,7 +541,7 @@ describe('explicit codec equal to the target default', () => {
 
 describe('encoder format limits are rejected before ffmpeg runs', () => {
   const build = (id: string, options: Parameters<typeof buildFfmpegArguments>[4], input = '/nonexistent/in.wav') =>
-    buildFfmpegArguments(input, `/tmp/o.${id}`, 'wav', id, options);
+    buildFfmpegArguments(openMediaInput(input, 'wav'), `/tmp/o.${id}`, id, options);
 
   it('limits Opus to the rates libopus codes and defaults to 48 kHz', () => {
     for (const id of ['opus', 'weba']) {
@@ -625,7 +626,7 @@ describe('inputs outside the encoder sample rate set', () => {
   oracleTest('emits the resample rate only when the input rate is unsupported and the caller set none', ['ffmpeg', 'ffprobe'], () => {
     const high = toneAtRate(HIGH_RATE);
     const build = (file: string, id: string, options = {}) =>
-      buildFfmpegArguments(file, path.join(workDir, `o.${id}`), 'wav', id, options, getOracleToolPath('ffmpeg'));
+      buildFfmpegArguments(openMediaInput(file, 'wav'), path.join(workDir, `o.${id}`), id, options, getOracleToolPath('ffmpeg'));
     expect(argAfter(build(high, 'wma'), '-ar')).toBe(String(WMA_MAX_RATE));
     expect(argAfter(build(high, 'ac3'), '-ar')).toBe(String(WMA_MAX_RATE));
     expect(argAfter(build(toneAtRate(LOW_RATE), 'wma'), '-ar')).toBeUndefined();
@@ -652,7 +653,7 @@ describe('audio stream selection', () => {
   oracleTest('rejects a track the input does not have', ['ffmpeg', 'ffprobe'], () => {
     const source = videoWithAudio();
     expect(() =>
-      buildFfmpegArguments(source, path.join(workDir, 'o.flac'), 'mkv', 'flac', { audio: { track: 1 } }, getOracleToolPath('ffmpeg'))
+      buildFfmpegArguments(openMediaInput(source, 'mkv'), path.join(workDir, 'o.flac'), 'flac', { audio: { track: 1 } }, getOracleToolPath('ffmpeg'))
     ).toThrow(InvalidMediaOptionError);
   });
 
@@ -660,7 +661,7 @@ describe('audio stream selection', () => {
     const source = silentVideo();
     for (const id of ['m4a', 'ogg', 'wma', 'aiff']) {
       expect(() =>
-        buildFfmpegArguments(source, path.join(workDir, `o.${id}`), 'mp4', id, {}, getOracleToolPath('ffmpeg'))
+        buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, `o.${id}`), id, {}, getOracleToolPath('ffmpeg'))
       ).toThrow(NoAudioStreamError);
       // The conversion entry point surfaces it as a ConversionFailedError (HTTP 400), never an empty file.
       const attempt = convertMedia(fs.readFileSync(source), 'mp4', id, {}, 'silent');

@@ -9,7 +9,9 @@ import {
   ffmpegVersionProblem,
   MEDIA_INPUT_DEMUXERS,
   REFERENCE_INPUT_FORMATS,
+  openMediaInput,
   runFfmpeg,
+  runFfprobe,
 } from '../src/lib/conversions/media-process';
 import { getUnshareCapability, resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
@@ -24,10 +26,16 @@ import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 
 const SRC_ROOT = path.resolve(__dirname, '..', 'src');
 const SPAWN_MODULE = path.join('lib', 'conversions', 'media-process.ts');
-/** A call that starts a process, whose first argument names an ffmpeg or ffprobe binary. */
+/** A call that starts a process, whose first argument (on the same line or the next) names an ffmpeg or ffprobe binary. */
 const MEDIA_TOOL_SPAWN =
-  /\b(?:execFileSync|execFile|spawnSync|spawn|execSync|executeSandboxedBinary|resolveSandboxedCommand)\(\s*(?:[\w.]*ff(?:mpeg|probe)\w*|['"`][^'"`\n]*ff(?:mpeg|probe))/i;
+  /\b(?:execFileSync|execFile|spawnSync|spawn|execSync|executeSandboxedBinary|resolveSandboxedCommand)\(\s*(?:[\w.]*ff(?:mpeg|probe)\w*|['"`][^'"`\n]*ff(?:mpeg|probe))/gi;
 const SPY_MODE = 0o755;
+const PROBE_LIMITS = { timeoutMs: 5000, maxBuffer: 64 * 1024 };
+
+/** `file:line` of every call in `text` that starts an ffmpeg or ffprobe process, wherever its arguments are wrapped. */
+function mediaToolSpawns(text: string, file: string): string[] {
+  return [...text.matchAll(MEDIA_TOOL_SPAWN)].map((match) => `${file}:${text.slice(0, match.index).split('\n').length}`);
+}
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -56,14 +64,13 @@ describe('the call sites of ffmpeg and ffprobe', () => {
   it('start no ffmpeg or ffprobe process outside the one spawning module', () => {
     const rawSpawns = sourceFiles(SRC_ROOT)
       .filter((file) => path.relative(SRC_ROOT, file) !== SPAWN_MODULE)
-      .flatMap((file) =>
-        readFileSync(file, 'utf-8')
-          .split('\n')
-          .map((line, index) => ({ line, at: `${path.relative(SRC_ROOT, file)}:${index + 1}` }))
-          .filter(({ line }) => MEDIA_TOOL_SPAWN.test(line))
-          .map(({ at }) => at)
-      );
+      .flatMap((file) => mediaToolSpawns(readFileSync(file, 'utf-8'), path.relative(SRC_ROOT, file)));
     expect(rawSpawns).toEqual([]);
+  });
+
+  it('control: the scan finds a spawn whose binary is on the line after the call', () => {
+    const wrapped = ['const out = execFileSync(', '  ffprobeBin,', "  ['-v', 'error', input],", ');'].join('\n');
+    expect(mediaToolSpawns(wrapped, 'x.ts')).toEqual(['x.ts:1']);
   });
 
   const PACKAGING_SOURCE = {
@@ -71,14 +78,14 @@ describe('the call sites of ffmpeg and ffprobe', () => {
     hasAudio: true,
   };
   const BUILT: ReadonlyArray<[string, () => string[]]> = [
-    ['a video transcode', () => buildFfmpegArguments('/nonexistent/in.mkv', '/nonexistent/out.webm', 'mkv', 'webm', {})],
-    ['a trimmed video transcode', () => buildFfmpegArguments('/nonexistent/in.mov', '/nonexistent/out.mp4', 'mov', 'mp4', { trim: { start: '00:00:01', end: '00:00:02' } })],
-    ['a thumbnail', () => buildFfmpegArguments('/nonexistent/in.mp4', '/nonexistent/out.jpg', 'mp4', 'jpg', { thumbnail: { at: ['00:00:01'] } })],
-    ['an accurate thumbnail', () => buildFfmpegArguments('/nonexistent/in.avi', '/nonexistent/out.png', 'avi', 'png', { thumbnail: { at: ['00:00:01'], accurate: true } })],
-    ['a subtitle extraction', () => buildFfmpegArguments('/nonexistent/in.mkv', '/nonexistent/out.srt', 'mkv', 'srt', { subtitles: { mode: 'extract' } })],
-    ['a soft subtitle from a file', () => buildFfmpegArguments('/nonexistent/in.mkv', '/nonexistent/out.mkv', 'mkv', 'mkv', { subtitles: { mode: 'soft', input: '/nonexistent/subs.srt' } })],
-    ['an HLS package', () => buildHlsDashArguments('/nonexistent/in.mp4', '/nonexistent/out', { format: 'hls' }, null, PACKAGING_SOURCE)],
-    ['a DASH package', () => buildHlsDashArguments('/nonexistent/in.webm', '/nonexistent/out', { format: 'dash' }, null, PACKAGING_SOURCE)],
+    ['a video transcode', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/nonexistent/out.webm', 'webm', {})],
+    ['a trimmed video transcode', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mov', 'mov'), '/nonexistent/out.mp4', 'mp4', { trim: { start: '00:00:01', end: '00:00:02' } })],
+    ['a thumbnail', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/nonexistent/out.jpg', 'jpg', { thumbnail: { at: ['00:00:01'] } })],
+    ['an accurate thumbnail', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.avi', 'avi'), '/nonexistent/out.png', 'png', { thumbnail: { at: ['00:00:01'], accurate: true } })],
+    ['a subtitle extraction', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/nonexistent/out.srt', 'srt', { subtitles: { mode: 'extract' } })],
+    ['a soft subtitle from a file', () => buildFfmpegArguments(openMediaInput('/nonexistent/in.mkv', 'mkv'), '/nonexistent/out.mkv', 'mkv', { subtitles: { mode: 'soft', input: '/nonexistent/subs.srt' } })],
+    ['an HLS package', () => buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/nonexistent/out', { format: 'hls' }, null, PACKAGING_SOURCE)],
+    ['a DASH package', () => buildHlsDashArguments(openMediaInput('/nonexistent/in.webm', 'webm'), '/nonexistent/out', { format: 'dash' }, null, PACKAGING_SOURCE)],
   ];
 
   it.each(BUILT)('give every input of %s a protocol whitelist and a demuxer', (_, build) => {
@@ -92,7 +99,7 @@ describe('the call sites of ffmpeg and ffprobe', () => {
   });
 });
 
-describe('runFfmpeg', () => {
+describe('runFfmpeg and runFfprobe', () => {
   let spyDir = '';
   let spy = '';
   let spyLog = '';
@@ -130,6 +137,16 @@ describe('runFfmpeg', () => {
 
   it('control: starts ffmpeg when every input is guarded', async () => {
     await runFfmpeg(spy, ['-y', '-protocol_whitelist', 'file', '-f', 'mov', '-i', '/x/in.mp4', '/x/out.wav'], {});
+    expect(started()).toBe(true);
+  });
+
+  it('does not start ffprobe with -allowed_extensions ALL', () => {
+    expect(() => runFfprobe(spy, ['-allowed_extensions', 'ALL'], openMediaInput('/x/in.mp4', 'mp4'), PROBE_LIMITS)).toThrow();
+    expect(started()).toBe(false);
+  });
+
+  it('control: starts ffprobe over an opened input', () => {
+    expect(runFfprobe(spy, ['-v', 'error'], openMediaInput('/x/in.mp4', 'mp4'), PROBE_LIMITS).ok).toBe(true);
     expect(started()).toBe(true);
   });
 });
@@ -170,7 +187,7 @@ describe.skipIf(skipWithoutTools('ffmpeg'))('the demuxer table of the media inpu
 describe('the minimum FFmpeg version', () => {
   let spyDir = '';
 
-  /** An ffmpeg that prints `firstLine` as the first line of `-version`. */
+  /** An ffmpeg or ffprobe that prints `firstLine` as the first line of `-version`. */
   function ffmpegReporting(name: string, firstLine: string): string {
     const spy = path.join(spyDir, name);
     writeFileSync(spy, `#!/bin/sh\necho "${firstLine}"\necho "built with clang"\n`);
@@ -196,6 +213,7 @@ describe('the minimum FFmpeg version', () => {
     ['ffmpeg version 8.1.3 Copyright (c) 2000-2026 the FFmpeg developers', 'v813'],
     ['ffmpeg version 9.0.2 Copyright (c) 2000-2026 the FFmpeg developers', 'v902'],
     ['ffmpeg version n9.0 Copyright (c) 2000-2026 the FFmpeg developers', 'vn90'],
+    ['ffprobe version 9.0.2 Copyright (c) 2007-2026 the FFmpeg developers', 'probe902'],
   ])('accepts %s', (firstLine, name) => {
     expect(ffmpegVersionProblem(ffmpegReporting(name, firstLine))).toBeUndefined();
   });
@@ -205,22 +223,33 @@ describe('the minimum FFmpeg version', () => {
     ['ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers', 'v611'],
     ['ffmpeg version 7.1.5 Copyright (c) 2000-2025 the FFmpeg developers', 'v715'],
     ['ffmpeg version N-120000-gabcdef0123 Copyright (c) 2000-2026 the FFmpeg developers', 'vgit'],
+    ['ffprobe version 8.1.2 Copyright (c) 2007-2026 the FFmpeg developers', 'probe812'],
   ])('names the problem of %s', (firstLine, name) => {
     expect(ffmpegVersionProblem(ffmpegReporting(name, firstLine))).toMatch(/8\.1\.3/);
   });
 
+  it('tells a binary that cannot run apart from a development build', () => {
+    expect(ffmpegVersionProblem(path.join(spyDir, 'absent-ffmpeg'))).toMatch(/could not be run/);
+    expect(ffmpegVersionProblem(ffmpegReporting('vgit2', 'ffmpeg version N-120000-gabcdef0123 Copyright'))).toMatch(/development build/);
+  });
+
   it('only warns outside STRICT_SANDBOX, so a development host with an older FFmpeg still starts', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    enforceFfmpegMinimumVersion(ffmpegReporting('warn611', 'ffmpeg version 6.1.1 Copyright'));
+    enforceFfmpegMinimumVersion(ffmpegReporting('warn611', 'ffmpeg version 6.1.1 Copyright'), null);
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it.skipIf(skipUnless('unprivileged namespaces (unshare -r -n)', getUnshareCapability().available))(
-    'refuses to start under STRICT_SANDBOX with an FFmpeg older than the minimum',
+    'refuses to start under STRICT_SANDBOX with an ffmpeg or an ffprobe older than the minimum, or without an ffprobe',
     () => {
       vi.stubEnv('STRICT_SANDBOX', 'true');
-      expect(() => enforceFfmpegMinimumVersion(ffmpegReporting('strict812', 'ffmpeg version 8.1.2 Copyright'))).toThrow(EngineUnavailableError);
-      expect(() => enforceFfmpegMinimumVersion(ffmpegReporting('strict902', 'ffmpeg version 9.0.2 Copyright'))).not.toThrow();
+      const current = ffmpegReporting('strict902', 'ffmpeg version 9.0.2 Copyright');
+      const currentProbe = ffmpegReporting('strictprobe902', 'ffprobe version 9.0.2 Copyright');
+      const oldProbe = ffmpegReporting('strictprobe812', 'ffprobe version 8.1.2 Copyright');
+      expect(() => enforceFfmpegMinimumVersion(ffmpegReporting('strict812', 'ffmpeg version 8.1.2 Copyright'), currentProbe)).toThrow(EngineUnavailableError);
+      expect(() => enforceFfmpegMinimumVersion(current, oldProbe)).toThrow(EngineUnavailableError);
+      expect(() => enforceFfmpegMinimumVersion(current, null)).toThrow(EngineUnavailableError);
+      expect(() => enforceFfmpegMinimumVersion(current, currentProbe)).not.toThrow();
     }
   );
 });

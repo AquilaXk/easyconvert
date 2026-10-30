@@ -1,6 +1,5 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
-import path from 'node:path';
 import { HEADER_WINDOW_BYTES } from '../format-signatures';
 import { sniffMimeTypeFromMagicBytes } from '../registry';
 import {
@@ -113,31 +112,49 @@ const SNIFFED_CONTAINER_DEMUXERS: Readonly<Record<string, string>> = {
   'audio/aac': 'aac',
 };
 
+/**
+ * Where FFmpeg's `read_probe` of a reference format looks. `start` compares the first bytes of the probe buffer (`strncmp`,
+ * `memcmp`). `text` searches it with C string functions (`strstr`, `av_stristr`), which stop at the first NUL byte, so only
+ * the text before it can match. A binary container has a NUL in its first bytes, so the manifest text a metadata tag holds
+ * never makes FFmpeg probe it as a manifest. SDP's line walk also passes a NUL inside a line, but scores 50, below the probe
+ * of every container whose file it could then match.
+ */
+type ProbeSignature = { at: 'start'; prefix: string } | { at: 'text'; matches: (text: string) => boolean };
+
 export interface ReferenceInputFormat {
   /** What the input is taken for, as the refusal names it. */
   kind: string;
   /** The FFmpeg demuxers of this format. */
   demuxers: readonly string[];
-  /** The test of FFmpeg's probe for the format, over the first bytes as Latin-1; absent when FFmpeg picks it only by name or option. */
-  signature?: (head: string) => boolean;
+  /** The test of FFmpeg's probe for the format; absent when FFmpeg picks it only by name or option. */
+  signature?: ProbeSignature;
 }
 
 /**
  * FFmpeg demuxers that open other files or URLs, or render arbitrary bytes as a picture, as their sources in FFmpeg 9.0.2
  * define them. The signatures repeat the `read_probe` of each: hls.c `hls_probe` (#EXTM3U at the start), concatdec.c
  * `concat_probe`, dashdec.c `dash_probe` (`<MPD` and a DASH profile, any case), imfdec.c `imf_probe`, rtsp.c `sdp_probe` (a
- * line that starts `c=IN IP`), mpeg.c `vobsub_probe` and bintext.c `xbin_probe`. FFmpeg picks the others only by file name or by option:
- * img2dec.c (file name patterns), tty.c (`read_probe` needs a text extension), bintext.c (bin, adf, idf), lavfi (filter
- * graphs, whose `movie` source opens files), avisynth and vapoursynth (scripts), rtsp and rtp (network) and dvdvideo.
+ * line that starts `c=IN IP`), mpeg.c `vobsub_probe` (its 20-byte prefix) and bintext.c `xbin_probe`. FFmpeg picks the
+ * others only by file name or by option: img2dec.c (file name patterns), tty.c (`read_probe` needs a text extension),
+ * bintext.c (bin, adf, idf), lavfi (filter graphs, whose `movie` source opens files), avisynth and vapoursynth (scripts),
+ * rtsp and rtp (network) and dvdvideo.
  */
 export const REFERENCE_INPUT_FORMATS: readonly ReferenceInputFormat[] = [
-  { kind: 'HLS playlist', demuxers: ['hls'], signature: (head) => head.startsWith('#EXTM3U') },
-  { kind: 'concat list', demuxers: ['concat'], signature: (head) => head.startsWith('ffconcat version 1.0') },
-  { kind: 'DASH manifest', demuxers: ['dash'], signature: (head) => /<MPD/i.test(head) && /dash:profile|3GPP:PSS:profile:DASH1/i.test(head) },
-  { kind: 'IMF composition playlist', demuxers: ['imf'], signature: (head) => head.includes('<CompositionPlaylist') && head.includes('ContentTitle>') },
-  { kind: 'SDP session description', demuxers: ['sdp', 'rtp', 'rtsp'], signature: (head) => /^c=IN IP/m.test(head) },
-  { kind: 'VobSub index', demuxers: ['vobsub'], signature: (head) => head.startsWith('# VobSub index file, v') },
-  { kind: 'XBIN text picture', demuxers: ['xbin'], signature: (head) => head.startsWith('XBIN\x1a') },
+  { kind: 'HLS playlist', demuxers: ['hls'], signature: { at: 'start', prefix: '#EXTM3U' } },
+  { kind: 'concat list', demuxers: ['concat'], signature: { at: 'start', prefix: 'ffconcat version 1.0' } },
+  {
+    kind: 'DASH manifest',
+    demuxers: ['dash'],
+    signature: { at: 'text', matches: (text) => /<MPD/i.test(text) && /dash:profile|3GPP:PSS:profile:DASH1/i.test(text) },
+  },
+  {
+    kind: 'IMF composition playlist',
+    demuxers: ['imf'],
+    signature: { at: 'text', matches: (text) => text.includes('<CompositionPlaylist') && text.includes('ContentTitle>') },
+  },
+  { kind: 'SDP session description', demuxers: ['sdp', 'rtp', 'rtsp'], signature: { at: 'text', matches: (text) => /^c=IN IP/m.test(text) } },
+  { kind: 'VobSub index', demuxers: ['vobsub'], signature: { at: 'start', prefix: '# VobSub index file,' } },
+  { kind: 'XBIN text picture', demuxers: ['xbin'], signature: { at: 'start', prefix: 'XBIN\x1a' } },
   { kind: 'image sequence', demuxers: ['image2'] },
   { kind: 'text picture', demuxers: ['tty', 'bin', 'adf', 'idf'] },
   { kind: 'filter graph', demuxers: ['lavfi'] },
@@ -145,56 +162,100 @@ export const REFERENCE_INPUT_FORMATS: readonly ReferenceInputFormat[] = [
   { kind: 'DVD', demuxers: ['dvdvideo'] },
 ];
 
-/** A UTF-8 byte order mark as the Latin-1 reading of the head shows it. */
-const UTF8_BOM = /^ï»¿/;
+/** A UTF-8 byte order mark as the Latin-1 reading of the bytes shows it. */
+const UTF8_BOM = /^\xEF\xBB\xBF/;
+/**
+ * The bytes FFmpeg's format probe reads at most: `formatprobesize`, whose default is PROBE_BUF_MAX (1 MiB) in
+ * libavformat's options_table.h. A reference signature further into the file is never probed.
+ */
+const FORMAT_PROBE_BYTES = 1024 * 1024;
+const NUL = 0;
 
-function readHead(filePath: string): Buffer {
-  if (!fs.existsSync(filePath)) return Buffer.alloc(0);
+/** What the probe of a reference format sees of a file: its first bytes, and the text before its first NUL. */
+interface ProbeWindow {
+  head: Buffer;
+  text: string;
+}
+
+/**
+ * Reads the first HEADER_WINDOW_BYTES of `filePath`, and more up to FORMAT_PROBE_BYTES only while no NUL has been read: the
+ * text signatures end at the first NUL, which a binary container has in its first bytes. A missing file reads as empty.
+ */
+function readProbeWindow(filePath: string): ProbeWindow {
+  if (!fs.existsSync(filePath)) return { head: Buffer.alloc(0), text: '' };
   const fd = fs.openSync(filePath, 'r');
   try {
-    const head = Buffer.alloc(HEADER_WINDOW_BYTES);
-    return head.subarray(0, fs.readSync(fd, head, 0, HEADER_WINDOW_BYTES, 0));
+    const chunks: Buffer[] = [];
+    let length = 0;
+    let nulAt = -1;
+    while (nulAt < 0 && length < FORMAT_PROBE_BYTES) {
+      const chunk = Buffer.allocUnsafe(Math.min(HEADER_WINDOW_BYTES, FORMAT_PROBE_BYTES - length));
+      const read = fs.readSync(fd, chunk, 0, chunk.length, length);
+      if (read === 0) break;
+      const filled = chunk.subarray(0, read);
+      const chunkNul = filled.indexOf(NUL);
+      if (chunkNul >= 0) nulAt = length + chunkNul;
+      chunks.push(filled);
+      length += read;
+    }
+    const bytes = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, length);
+    const text = bytes.subarray(0, nulAt < 0 ? length : nulAt).toString('latin1').replace(UTF8_BOM, '');
+    return { head: bytes.subarray(0, Math.min(length, HEADER_WINDOW_BYTES)), text };
   } finally {
     fs.closeSync(fd);
   }
 }
 
+/** A prefix holds no NUL, so it matches the text before the first NUL exactly when it matches the bytes. */
+function probes(signature: ProbeSignature, text: string): boolean {
+  return signature.at === 'start' ? text.startsWith(signature.prefix) : signature.matches(text);
+}
+
+declare const openedMediaInput: unique symbol;
+
 /**
- * The demuxers `filePath` may be read with: the container its signature shows, or else the one of its declared format. Every
- * conversion writes its input as `<name>.<source format>`, so the extension is the declared format the upload check compared
- * with the bytes; the client's file name never reaches here. A file whose first bytes FFmpeg's probe would take for a reference
- * format is refused first, whatever container it also looks like: the `subtitles` filter of a burn opens the input again with
- * FFmpeg's own probe (vf_subtitles.c `avformat_open_input` with no format). A declared format without an entry is refused too.
+ * A media input whose reader is decided: the demuxers FFmpeg may open it with, from its bytes and the conversion's declared
+ * source format. Only openMediaInput makes one, so every argument list and probe reads a file that passed the reference check.
  */
-function inputDemuxers(filePath: string): readonly string[] {
-  const head = readHead(filePath);
-  const text = head.toString('latin1').replace(UTF8_BOM, '');
-  const reference = REFERENCE_INPUT_FORMATS.find((format) => format.signature?.(text));
+export interface MediaInput {
+  readonly path: string;
+  /** The conversion's declared source format (registry id). */
+  readonly format: string;
+  readonly demuxers: readonly string[];
+  readonly [openedMediaInput]: true;
+}
+
+/**
+ * Decides how `filePath` is read, from its bytes and the declared source `format` of the conversion (never the file's name:
+ * a queued job reads `<sha256>.bin`). A file whose first bytes FFmpeg's probe would take for a reference format is refused,
+ * whatever container it also looks like, because the `subtitles` filter of a burn opens the input again with FFmpeg's own
+ * probe (vf_subtitles.c `avformat_open_input` with no format). Otherwise the container its signature shows is forced, or else
+ * the demuxers of the declared format; a format without an entry is refused too.
+ */
+export function openMediaInput(filePath: string, format: string): MediaInput {
+  const { head, text } = readProbeWindow(filePath);
+  const reference = REFERENCE_INPUT_FORMATS.find((candidate) => candidate.signature !== undefined && probes(candidate.signature, text));
   if (reference !== undefined) {
     throw new RefusedMediaInputError(
       reference.kind,
       `The file is a ${reference.kind}, not a media file: it names other files or addresses for the reader to open, which a conversion never does.`
     );
   }
+  const declared = format.toLowerCase();
   const sniffed = sniffMimeTypeFromMagicBytes(head);
-  if (sniffed !== undefined && Object.hasOwn(SNIFFED_CONTAINER_DEMUXERS, sniffed)) return [SNIFFED_CONTAINER_DEMUXERS[sniffed]];
-  const declared = path.extname(filePath).slice(1).toLowerCase();
-  if (!Object.hasOwn(MEDIA_INPUT_DEMUXERS, declared)) {
+  const container = sniffed !== undefined && Object.hasOwn(SNIFFED_CONTAINER_DEMUXERS, sniffed) ? SNIFFED_CONTAINER_DEMUXERS[sniffed] : undefined;
+  if (container === undefined && !Object.hasOwn(MEDIA_INPUT_DEMUXERS, declared)) {
     throw new RefusedMediaInputError(declared, `There is no media reader a conversion may use for a .${declared} file.`);
   }
-  return MEDIA_INPUT_DEMUXERS[declared];
+  const demuxers: readonly string[] = container === undefined ? MEDIA_INPUT_DEMUXERS[declared] : [container];
+  return { path: filePath, format: declared, demuxers } as MediaInput;
 }
 
-/** The input options that pin how `filePath` is opened: the protocol whitelist and the demuxer choice. */
-export function mediaInputOptions(filePath: string): string[] {
-  const demuxers = inputDemuxers(filePath);
+/** `-i` with the options that pin how `input` is opened: the protocol whitelist and the demuxer choice. */
+export function mediaInputArgs(input: MediaInput): string[] {
+  const { demuxers } = input;
   const choice = demuxers.length === 1 ? ['-f', demuxers[0]] : ['-format_whitelist', demuxers.join(',')];
-  return ['-protocol_whitelist', PROTOCOL_WHITELIST, ...choice];
-}
-
-/** `-i filePath` with the options that pin how it is opened. */
-export function mediaInputArgs(filePath: string): string[] {
-  return [...mediaInputOptions(filePath), '-i', filePath];
+  return ['-protocol_whitelist', PROTOCOL_WHITELIST, ...choice, '-i', input.path];
 }
 
 /** An input generated by a filter graph of our own (never one from a request). */
@@ -210,24 +271,23 @@ function assertGuardedInputs(args: readonly string[]): void {
   let inputStart = 0;
   args.forEach((arg, index) => {
     if (OPEN_EXTENSION_OPTIONS.has(arg) && args[index + 1] === 'ALL') {
-      throw new Error(`ffmpeg must not run with ${arg} ALL.`);
+      throw new Error(`ffmpeg and ffprobe must not run with ${arg} ALL.`);
     }
     if (arg !== '-i') return;
     const options = args.slice(inputStart, index);
     const whitelisted = options.some((option, at) => option === '-protocol_whitelist' && options[at + 1] === PROTOCOL_WHITELIST);
     if (!whitelisted || !options.some((option) => DEMUXER_CHOICES.has(option))) {
-      throw new Error('ffmpeg input without -protocol_whitelist file and a demuxer choice; build it with mediaInputArgs.');
+      throw new Error('An input without -protocol_whitelist file and a demuxer choice; build it with mediaInputArgs.');
     }
     inputStart = index + 2;
   });
 }
 
+/** The options of an ffmpeg run; the network namespace is not one, because every run gets it. */
+export type FfmpegRunOptions = Omit<SandboxedExecutionOptions, 'networkIsolated'>;
+
 /** Runs ffmpeg in the sandbox (network namespace, sanitized environment) with guarded inputs. */
-export async function runFfmpeg(
-  ffmpegBin: string,
-  args: string[],
-  options: SandboxedExecutionOptions
-): Promise<SandboxedExecutionResult> {
+export async function runFfmpeg(ffmpegBin: string, args: string[], options: FfmpegRunOptions): Promise<SandboxedExecutionResult> {
   assertGuardedInputs(args);
   return executeSandboxedBinary(ffmpegBin, args, { ...options, networkIsolated: true });
 }
@@ -267,14 +327,16 @@ export function runFfmpegSync(ffmpegBin: string, args: readonly string[], limits
   return runSandboxedSync(ffmpegBin, args, limits);
 }
 
-/** Runs ffprobe over `filePath` in the sandbox, with `args` before the input and the input opened as mediaInputArgs opens it. */
-export function runFfprobe(ffprobe: string, args: readonly string[], filePath: string, limits: ToolLimits): ToolRun {
-  return runSandboxedSync(ffprobe, [...args, ...mediaInputArgs(filePath)], limits);
+/** Runs ffprobe over `input` in the sandbox, with `args` before the input and the input opened as mediaInputArgs opens it. */
+export function runFfprobe(ffprobe: string, args: readonly string[], input: MediaInput, limits: ToolLimits): ToolRun {
+  const probeArgs = [...args, ...mediaInputArgs(input)];
+  assertGuardedInputs(probeArgs);
+  return runSandboxedSync(ffprobe, probeArgs, limits);
 }
 
 const FFMPEG_VERSION_TIMEOUT_MS = 3000;
 const FFMPEG_VERSION_MAX_BYTES = 64 * 1024;
-const FFMPEG_VERSION_LINE = /^ffmpeg version n?(\d+)\.(\d+)(?:\.(\d+))?/m;
+const FFMPEG_VERSION_LINE = /^(?:ffmpeg|ffprobe) version n?(\d+)\.(\d+)(?:\.(\d+))?/m;
 const SOXR_FEATURE_FLAG = '--enable-libsoxr';
 
 export interface FfmpegVersion {
@@ -287,11 +349,13 @@ export interface FfmpegBuildFacts {
   soxr: boolean;
   /** Release number from the first line of `-version`; undefined for a development build (`N-123-g...`) or an unreadable answer. */
   version: FfmpegVersion | undefined;
+  /** Why `-version` did not run (a missing binary, a crash); undefined when it ran. */
+  runFailure: string | undefined;
 }
 
 const buildCache = new Map<string, FfmpegBuildFacts>();
 
-/** What `ffmpeg -version` says about the build. The probe runs once per binary. */
+/** What `-version` of an ffmpeg or ffprobe binary says about the build. The probe runs once per binary. */
 export function probeFfmpegBuild(ffmpegBin: string): FfmpegBuildFacts {
   const cached = buildCache.get(ffmpegBin);
   if (cached !== undefined) return cached;
@@ -300,6 +364,7 @@ export function probeFfmpegBuild(ffmpegBin: string): FfmpegBuildFacts {
   const facts: FfmpegBuildFacts = {
     soxr: run.ok && run.stdout.includes(SOXR_FEATURE_FLAG),
     version: release ? { major: Number(release[1]), minor: Number(release[2]), patch: Number(release[3] ?? 0) } : undefined,
+    runFailure: run.ok ? undefined : run.failure,
   };
   buildCache.set(ffmpegBin, facts);
   return facts;
@@ -321,22 +386,29 @@ function versionText({ major, minor, patch }: FfmpegVersion): string {
   return `${major}.${minor}.${patch}`;
 }
 
-/** Why `ffmpegBin` is not fit to serve, or undefined when its release is MIN_FFMPEG_VERSION or later. */
-export function ffmpegVersionProblem(ffmpegBin: string): string | undefined {
-  const { version } = probeFfmpegBuild(ffmpegBin);
-  if (version !== undefined && atLeast(version, MIN_FFMPEG_VERSION)) return undefined;
-  const found = version === undefined ? 'a development build or an unreadable version' : `release ${versionText(version)}`;
-  return `FFmpeg ${versionText(MIN_FFMPEG_VERSION)} or later is required, and ${ffmpegBin} is ${found}.`;
+function describeBuild({ version, runFailure }: FfmpegBuildFacts): string {
+  if (runFailure !== undefined) return `could not be run (${runFailure})`;
+  return version === undefined ? 'is a development build or an unreadable version' : `is release ${versionText(version)}`;
+}
+
+/** Why the ffmpeg or ffprobe `binary` is not fit to serve, or undefined when its release is MIN_FFMPEG_VERSION or later. */
+export function ffmpegVersionProblem(binary: string): string | undefined {
+  const build = probeFfmpegBuild(binary);
+  if (build.version !== undefined && atLeast(build.version, MIN_FFMPEG_VERSION)) return undefined;
+  return `FFmpeg ${versionText(MIN_FFMPEG_VERSION)} or later is required, and ${binary} ${describeBuild(build)}.`;
 }
 
 /**
- * The start-up check of the installed FFmpeg. Under STRICT_SANDBOX an older or unknown release stops the process; elsewhere
- * (a development host with its distribution's FFmpeg) it is logged and the process starts.
+ * The start-up check of the installed ffmpeg and of the ffprobe that reads every upload before it. Under STRICT_SANDBOX an
+ * older or unknown release, a binary that cannot run, and a missing ffprobe stop the process; elsewhere (a development host
+ * with its distribution's FFmpeg) they are logged and the process starts.
  */
-export function enforceFfmpegMinimumVersion(ffmpegBin: string | null): void {
+export function enforceFfmpegMinimumVersion(ffmpegBin: string | null, ffprobeBin: string | null): void {
   if (ffmpegBin === null) return;
-  const problem = ffmpegVersionProblem(ffmpegBin);
-  if (problem === undefined) return;
+  const ffprobeProblem = ffprobeBin === null ? `No ffprobe was found for ${ffmpegBin}.` : ffmpegVersionProblem(ffprobeBin);
+  const problems = [ffmpegVersionProblem(ffmpegBin), ffprobeProblem].filter((problem) => problem !== undefined);
+  if (problems.length === 0) return;
+  const problem = problems.join(' ');
   if (process.env.STRICT_SANDBOX === 'true') throw new EngineUnavailableError('ffmpeg', problem);
   console.warn(`[EasyConvert] ${problem}`);
 }

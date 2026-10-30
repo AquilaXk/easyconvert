@@ -8,6 +8,7 @@ import {
   probeHardwareAcceleration,
   resetHardwareAccelerationCache,
 } from '../src/lib/conversions/media-ffmpeg-args';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * The hardware capability probe runs synchronously on the conversion path, so it must be bounded
@@ -132,7 +133,7 @@ describe('probe cache', () => {
 
 describe('video codec names', () => {
   const build = (codec: string) =>
-    buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+    buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
       disableHwaccel: true,
       video: { codec } as never,
     });
@@ -149,7 +150,7 @@ describe('video codec names', () => {
 
   it('applies the same alias and check to the legacy videoCodec option', () => {
     const legacy = (codec: string) =>
-      buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+      buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
         disableHwaccel: true,
         videoCodec: codec as never,
       });
