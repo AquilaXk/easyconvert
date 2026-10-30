@@ -1,3 +1,5 @@
+// First import on purpose: the flag must be set before any WebAssembly instance exists (docs/policy-decisions.md, entry 115).
+import './wasm-import-wrappers';
 import fs from 'node:fs';
 import { FORMAT_REGISTRY } from '../registry';
 import {
