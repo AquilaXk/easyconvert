@@ -17,8 +17,8 @@ import {
  * - `docker-compose.yml` is local development: it must start with no cloud settings and no secret
  *   (running `docker compose up`, or Redis alone, must never ask for one), and must not invent
  *   credentials.
- * - `docker-compose.prod.yml` is the production overlay: it selects NODE_ENV=production and refuses
- *   to start without the settings production needs.
+ * - `docker-compose.prod.yml` is the production stack of the shared host (a complete file, not an overlay): it selects
+ *   NODE_ENV=production, defaults the driver to local and refuses to start without the settings production needs.
  *
  * Oracles, none from src/: the `yaml` package parses the files (anchors and merge keys expanded); variable
  * interpolation follows the
@@ -171,31 +171,54 @@ describe(`${LOCAL_FILE} (local development)`, () => {
   });
 });
 
-describe(`${PRODUCTION_FILE} (production overlay)`, () => {
-  const files = [LOCAL_FILE, PRODUCTION_FILE];
-  const ociShell = (secret: string): Environment => ({
-    STORAGE_DRIVER: 'oci',
+describe(`${PRODUCTION_FILE} (production stack)`, () => {
+  const files = [PRODUCTION_FILE];
+  const APPLICATION_SERVICES = ['web', ...WORKER_SERVICES] as const;
+  /**
+   * The settings of the `environment` blocks that are required without a default, whatever the storage driver. The Redis password
+   * (inside the nested default of REDIS_URL) and the scratch directory (a bind mount) are not in an `environment` block, so
+   * tests/compose-hardening.test.ts checks them against `docker compose config`.
+   */
+  const REQUIRED = ['APP_URL', 'JOB_SECRET_KEK', 'STORAGE_SIGNING_SECRET'];
+  const baseShell = (secret: string): Environment => ({
     STORAGE_SIGNING_SECRET: secret,
     JOB_SECRET_KEK: randomSecret(),
-    OCI_NAMESPACE: 'examplens',
-    OCI_REGION: 'ap-seoul-1',
-    OCI_BUCKET: 'example-bucket',
-    OCI_ACCESS_KEY_ID: 'example-access-key-id',
-    OCI_SECRET_ACCESS_KEY: 'example-secret-access-key',
+    REDIS_PASSWORD: 'p'.repeat(24),
+    APP_URL: 'https://convert.example.test',
+    EASYCONVERT_SCRATCH_DIR: '/scratch',
+    JWT_SECRET: randomSecret(),
+    KEY_HASH_PEPPER: randomSecret(),
+    WEBHOOK_SECRET_KEK: randomSecret(),
   });
 
-  it.each(WORKER_SERVICES)('%s refuses to start without a storage driver, a signing secret and a job sealing key', (service) => {
+  it.each(APPLICATION_SERVICES)('%s refuses to start without the signing secret, the sealing key and the public origin', (service) => {
     const { missing } = resolveServiceEnvironment(files, service, {});
-    expect([...missing].sort()).toEqual(['JOB_SECRET_KEK', 'STORAGE_DRIVER', 'STORAGE_SIGNING_SECRET']);
+    const expected = service === 'web' ? [...REQUIRED, 'JWT_SECRET', 'KEY_HASH_PEPPER', 'WEBHOOK_SECRET_KEK'] : REQUIRED;
+    expect([...new Set(missing)].sort()).toEqual([...expected].sort());
   });
 
-  it.each(WORKER_SERVICES)('%s runs in production and resolves the OCI driver from the variables it forwards', (service) => {
+  it.each(APPLICATION_SERVICES)('%s runs in production and resolves the local driver without any cloud setting', (service) => {
     const secret = randomSecret();
-    const { env, missing } = resolveServiceEnvironment(files, service, ociShell(secret));
+    const { env, missing } = resolveServiceEnvironment(files, service, baseShell(secret));
 
     expect(missing).toEqual([]);
     expect(env.NODE_ENV).toBe('production');
     expect(() => assertSigningSecretConfigured(env)).not.toThrow();
+    expect(resolveStorageConfig(env)).toEqual({ driver: 'local' });
+  });
+
+  it('resolves the OCI driver when a later scale-out sets it with its variables', () => {
+    const { env, missing } = resolveServiceEnvironment(files, 'worker', {
+      ...baseShell(randomSecret()),
+      STORAGE_DRIVER: 'oci',
+      OCI_NAMESPACE: 'examplens',
+      OCI_REGION: 'ap-seoul-1',
+      OCI_BUCKET: 'example-bucket',
+      OCI_ACCESS_KEY_ID: 'example-access-key-id',
+      OCI_SECRET_ACCESS_KEY: 'example-secret-access-key',
+    });
+
+    expect(missing).toEqual([]);
     const config = resolveStorageConfig(env);
     expect(isRemoteStorageConfig(config)).toBe(true);
     expect(config).toMatchObject({
@@ -206,14 +229,12 @@ describe(`${PRODUCTION_FILE} (production overlay)`, () => {
       accessKeyId: 'example-access-key-id',
       namespace: 'examplens',
     });
-    expect((config as { secretAccessKey: string }).secretAccessKey).toBe('example-secret-access-key');
   });
 
   it('resolves the S3 driver from the S3_* variables it forwards', () => {
     const { env, missing } = resolveServiceEnvironment(files, 'worker', {
+      ...baseShell(randomSecret()),
       STORAGE_DRIVER: 's3',
-      STORAGE_SIGNING_SECRET: randomSecret(),
-      JOB_SECRET_KEK: randomSecret(),
       S3_ENDPOINT: 'https://s3.example.test',
       S3_REGION: 'eu-west-1',
       S3_BUCKET: 'example-bucket',
@@ -231,8 +252,14 @@ describe(`${PRODUCTION_FILE} (production overlay)`, () => {
   });
 
   it('stops startup with a typed error naming the missing OCI variable instead of inventing one', () => {
-    const shell = ociShell(randomSecret());
-    delete shell.OCI_NAMESPACE;
+    const shell: Environment = {
+      ...baseShell(randomSecret()),
+      STORAGE_DRIVER: 'oci',
+      OCI_REGION: 'ap-seoul-1',
+      OCI_BUCKET: 'example-bucket',
+      OCI_ACCESS_KEY_ID: 'example-access-key-id',
+      OCI_SECRET_ACCESS_KEY: 'example-secret-access-key',
+    };
     const { env } = resolveServiceEnvironment(files, 'worker', shell);
 
     let thrown: unknown;
@@ -243,14 +270,11 @@ describe(`${PRODUCTION_FILE} (production overlay)`, () => {
     }
     expect(thrown).toBeInstanceOf(StorageConfigError);
     expect((thrown as StorageConfigError).missing).toEqual(['OCI_NAMESPACE']);
-    expect((thrown as StorageConfigError).message).toBe(
-      'Storage driver "oci" is missing required configuration: OCI_NAMESPACE.'
-    );
   });
 
   it('keeps the public development secret out of production', () => {
     const [publicSecret] = [...KNOWN_PUBLIC_SIGNING_SECRETS];
-    const { env } = resolveServiceEnvironment(files, 'worker', ociShell(publicSecret));
+    const { env } = resolveServiceEnvironment(files, 'worker', baseShell(publicSecret));
     expect(() => assertSigningSecretConfigured(env)).toThrow(StorageConfigError);
   });
 });

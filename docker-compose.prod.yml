@@ -1,57 +1,309 @@
-# Production overlay for docker-compose.yml:
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Production stack for the shared OCI A1 host (docs/deploy-oci.md). It is a complete file, not an overlay: the local development
+# stack is docker-compose.yml, whose split and GPU workers stay there (see "Services" below for why production has neither).
 #
-# It runs the workers with NODE_ENV=production and requires, without a default, the settings that
-# production start-up validates. Compose stops with the message below when one is missing; a driver
-# value the application rejects stops the worker at start-up with a named variable. Nothing here
-# invents a tenancy, a bucket, a credential or a secret.
+#   docker compose --project-directory /opt/easyconvert/current --env-file /opt/easyconvert/.env \
+#     -f /opt/easyconvert/current/docker-compose.prod.yml up -d --wait
 #
-#   STORAGE_DRIVER          oci | s3 | local
-#                           oci: set OCI_NAMESPACE, OCI_REGION, OCI_BUCKET, OCI_ACCESS_KEY_ID and
-#                                OCI_SECRET_ACCESS_KEY (OCI_ENDPOINT only to override the endpoint)
-#                           s3:  set S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID and
-#                                S3_SECRET_ACCESS_KEY
-#                           local: objects stay on the shared volume (single node)
-#   STORAGE_SIGNING_SECRET  random secret of at least 32 bytes that signs upload and download URLs
-#   JOB_SECRET_KEK          random secret of at least 32 bytes that seals URLs and headers in queued jobs
-#                           (JOB_SECRET_KEK_PREVIOUS: the old key during a rotation)
+# The deploy workflow (.github/workflows/deploy-oci.yml, deploy/oci/deploy.sh) is the only thing that runs it.
+#
+# Host rules (docs/policy-decisions.md, entry 122)
+#   - The instance is shared with another service that is still in development. Every container has a hard CPU and memory limit, so
+#     neither side can exhaust the host, and a CPU weight below the default (512 against 1024), so this stack gives way under
+#     contention and uses idle cores otherwise. Revisit the budget when that service goes to production.
+#   - Every published port is bound to 127.0.0.1. Redis publishes nothing and sits on an internal network.
+#   - Uploads, results and conversion scratch live on one capped directory (EASYCONVERT_SCRATCH_DIR, a mounted loop file system of a
+#     fixed size, see docs/deploy-oci.md). No object storage is used: STORAGE_DRIVER is local and cannot be overridden here.
+#
+# Budget. The knob is EASYCONVERT_BUDGET_CPUS and EASYCONVERT_BUDGET_MEMORY_GB in the env file (defaults 3.5 and 20); deploy/oci/deploy.sh
+# derives the per-service values below from them (`deploy.sh budget`) and writes only the ones the env file does not set itself. The
+# defaults written here are what the derivation gives for 3.5 cpus and 20 GB, so the file also runs without the script:
+#   worker 2.5 cpus, 14g, 4 jobs; web 0.8 cpus, 5632m; redis 0.2 cpus, 512m. Total 3.5 cpus, 20 GB.
+#
+# Scaling later (docs/deploy-oci.md, "Scaling later"): web and worker share nothing but Redis (REDIS_URL) and the storage driver's root,
+# so the shape below does not tie them to one host. REDIS_URL set in the env file uses that Redis and leaves the local one off; a
+# STORAGE_DRIVER of s3 or oci with its variables moves objects off the host; `--profile split` runs one worker per resource class,
+# each with its own replica count.
+#
+# Variables without a default are required (`:?`): Compose stops with the message when one is missing, and the applications stop at
+# start-up when a secret is shorter than 32 bytes (docs/configuration.md). No secret, key or address ever gets a default value here.
 
-# Variables without a `:?` message are passed through from the shell or .env when set and left unset
-# otherwise; no secret, key, tenancy or endpoint ever gets a default value here.
-x-production-environment: &production-environment
-  - NODE_ENV=production
-  - STORAGE_DRIVER=${STORAGE_DRIVER:?set STORAGE_DRIVER to oci, s3 or local}
-  - STORAGE_SIGNING_SECRET=${STORAGE_SIGNING_SECRET:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
-  - JOB_SECRET_KEK=${JOB_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
-  - JOB_SECRET_KEK_PREVIOUS
+name: easyconvert
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "5m"
+    max-file: "3"
+
+# Hardening shared by every EasyConvert application container: read-only root, no capabilities, no new privileges, the worker seccomp
+# profile (docker/seccomp-worker.json adds only the namespace calls the per-child sandbox needs), noexec/nosuid/nodev scratch, and
+# the AppArmor profile easyconvert (deploy/oci/apparmor-easyconvert: Docker's default rules plus the user namespace the sandbox needs on
+# Ubuntu 24.04). pids_limit caps each container. nproc is counted per uid across the whole host, and every application container
+# runs as uid 10001, so it is set far above the sum of their pids_limit and is never the limit that trips first.
+# oom_score_adj 500 is added to the kernel's score under host-wide memory pressure: it ranks these containers ahead of Guaranteed pods
+# (-997) and of Burstable pods that request over half the host's memory, and behind BestEffort pods (1000), if the other service runs as pods.
+# The hard limits, not this score, are what protect the other service.
+x-app: &app
+  restart: unless-stopped
+  init: true
+  read_only: true
+  pids_limit: 256
+  oom_score_adj: 500
+  ulimits:
+    nproc: 4096
+    nofile:
+      soft: 65536
+      hard: 65536
+    fsize: 10737418240
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+    - seccomp=./docker/seccomp-worker.json
+    - apparmor=easyconvert
+  logging: *logging
+  networks:
+    - backend
+    - egress
+
+x-app-environment: &app-environment
+  NODE_ENV: production
+  # Local files on the capped scratch directory: this deployment keeps no user file in cloud object storage. The driver is a variable
+  # only so that a later scale-out can set s3 or oci with their variables below (the root EASYCONVERT_STORAGE_DIR is then unused).
+  STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+  EASYCONVERT_STORAGE_DIR: /shared/storage
+  S3_ENDPOINT:
+  S3_REGION:
+  S3_BUCKET:
+  S3_ACCESS_KEY_ID:
+  S3_SECRET_ACCESS_KEY:
+  OCI_NAMESPACE:
+  OCI_REGION:
+  OCI_BUCKET:
+  OCI_ENDPOINT:
+  OCI_ACCESS_KEY_ID:
+  OCI_SECRET_ACCESS_KEY:
+  STORAGE_SIGNING_SECRET: ${STORAGE_SIGNING_SECRET:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+  JOB_SECRET_KEK: ${JOB_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+  JOB_SECRET_KEK_PREVIOUS:
+  KEY_ENCRYPTION_KEY:
+  STORAGE_VAULT_KEY:
+  # The Redis of this stack unless REDIS_URL names another (a managed or separate host). The password is hex (openssl rand -hex 24),
+  # so it needs no URL escaping.
+  # No `:?` inside the default: some Compose releases evaluate it even when REDIS_URL is set. deploy.sh refuses an env secret
+  # with neither, and the Redis of the stack refuses to start without a password.
+  REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD}@redis:6379}
+  # How long a stored result lives before and after it is downloaded. No default here: the application's schema holds them.
+  RESULT_UNDELIVERED_TTL_SECONDS:
+  RESULT_DELIVERED_GRACE_SECONDS:
+  APP_URL: ${APP_URL:?set the public origin, for example https://convert.aquilaxk.site}
+  # The origin that sign-in redirects and the same-origin check use (src/lib/auth/oauth.ts, src/middleware.ts); without it they
+  # would fall back to the forwarded Host header.
+  APP_ORIGIN: ${APP_ORIGIN:-${APP_URL}}
+  STRICT_SANDBOX: "true"
+  # On the container's own tmpfs, not on the shared /tmp directory, so replicas and classes do not share one heartbeat file.
+  WORKER_HEARTBEAT_FILE: /home/easyconvert/worker-heartbeat.json
   # Bounds the glibc heap of the image library's threads; see docker-compose.yml.
-  - MALLOC_ARENA_MAX=2
-  # Public origin of the application (https://...); the local driver needs it to build upload URLs.
-  - APP_URL
-  - OCI_NAMESPACE
-  - OCI_REGION
-  - OCI_BUCKET
-  - OCI_ENDPOINT
-  - OCI_ACCESS_KEY_ID
-  - OCI_SECRET_ACCESS_KEY
-  - S3_ENDPOINT
-  - S3_REGION
-  - S3_BUCKET
-  - S3_ACCESS_KEY_ID
-  - S3_SECRET_ACCESS_KEY
+  MALLOC_ARENA_MAX: "2"
+
+x-worker: &worker
+  <<: *app
+  image: ${EASYCONVERT_WORKER_IMAGE:?set by the deploy job to the digest-pinned worker image}
+  cpu_shares: 512
+  stop_grace_period: 120s
+  depends_on:
+    redis:
+      condition: service_healthy
+      required: false
+  volumes:
+    - type: bind
+      source: ${EASYCONVERT_SCRATCH_DIR:?set the mounted scratch directory, see docs/deploy-oci.md}/storage
+      target: /shared/storage
+      bind:
+        create_host_path: false
+    - type: bind
+      source: ${EASYCONVERT_SCRATCH_DIR}/tmp-worker
+      target: /tmp
+      bind:
+        create_host_path: false
+  tmpfs:
+    - /home/easyconvert:size=512m,nosuid,nodev,uid=10001,gid=10001,mode=0750
 
 services:
-  worker:
-    environment: *production-environment
+  redis:
+    image: redis:7.4-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
+    container_name: easyconvert-redis
+    profiles:
+      - redis
+    restart: unless-stopped
+    init: true
+    read_only: true
+    user: "999:1000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    oom_score_adj: 500
+    cpus: ${EASYCONVERT_REDIS_CPUS:-0.2}
+    cpu_shares: 512
+    mem_limit: 512m
+    memswap_limit: 512m
+    logging: *logging
+    networks:
+      - backend
+    # Persistence is on because users, API keys, quota counters and the queue live here and a restart must not log everyone out or
+    # forget keys. The append-only file is rewritten at 16 MB and the data is capped by maxmemory, so the footprint stays near
+    # 2 x 256 MB at worst and a few MB in practice. noeviction: a full Redis refuses writes instead of dropping queued jobs.
+    command:
+      - sh
+      - -c
+      - >-
+        test -n "$$REDIS_PASSWORD" || { echo "REDIS_PASSWORD is empty: refusing to start Redis without a password" >&2; exit 1; };
+        exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 256mb --maxmemory-policy noeviction
+        --appendonly yes --appendfsync everysec --auto-aof-rewrite-percentage 100 --auto-aof-rewrite-min-size 16mb
+        --save "" --protected-mode yes
+    environment:
+      # Required for the web and worker URL below when this Redis is used; empty here only because a stack that sets REDIS_URL to
+      # another Redis does not start this service, and the command refuses an empty password.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    volumes:
+      - redis-data:/data
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev,uid=999,gid=1000,mode=0700
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
+  web:
+    <<: *app
+    image: ${EASYCONVERT_WEB_IMAGE:?set by the deploy job to the digest-pinned web image}
+    container_name: easyconvert-web
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: false
+    ports:
+      - "127.0.0.1:${EASYCONVERT_WEB_PORT:-8090}:3000"
+    cpus: ${EASYCONVERT_WEB_CPUS:-0.8}
+    cpu_shares: 512
+    mem_limit: ${EASYCONVERT_WEB_MEMORY:-5632m}
+    memswap_limit: ${EASYCONVERT_WEB_MEMORY:-5632m}
+    stop_grace_period: 60s
+    environment:
+      <<: *app-environment
+      JWT_SECRET: ${JWT_SECRET:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+      KEY_HASH_PEPPER: ${KEY_HASH_PEPPER:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+      WEBHOOK_SECRET_KEK: ${WEBHOOK_SECRET_KEK:?set a random secret of at least 32 bytes, for example openssl rand -hex 32}
+      GOOGLE_CLIENT_ID:
+      GOOGLE_CLIENT_SECRET:
+      # The host reverse proxy is the only hop that can reach the published port; it overwrites X-Forwarded-For with the client
+      # address that the CDN in front of the origin reported (deploy/oci/nginx-easyconvert.conf), docs/client-ip-trust.md.
+      TRUSTED_PROXIES: ${EASYCONVERT_TRUSTED_PROXIES:-127.0.0.1/32,172.16.0.0/12}
+    volumes:
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR:?set the mounted scratch directory, see docs/deploy-oci.md}/storage
+        target: /shared/storage
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR}/tmp-web
+        target: /tmp
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /home/easyconvert:size=512m,nosuid,nodev,uid=10001,gid=10001,mode=0750
+      - /app/.next/cache:size=128m,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0750
+
+  # The worker that subscribes to every queue: the launch worker. Concurrency, not worker count, is its knob, because each worker repeats
+  # the baseline memory of its engines. It has no container_name, so EASYCONVERT_WORKER_REPLICAS can raise the count on a larger host,
+  # and 0 turns it off when `--profile split` runs a worker per resource class instead (two consumers of one queue do no harm, but the
+  # classes exist to isolate heavy jobs from light ones).
+  worker:
+    <<: *worker
+    deploy:
+      replicas: ${EASYCONVERT_WORKER_REPLICAS:-1}
+    cpus: ${EASYCONVERT_WORKER_CPUS:-2.5}
+    mem_limit: ${EASYCONVERT_WORKER_MEMORY:-14g}
+    memswap_limit: ${EASYCONVERT_WORKER_MEMORY:-14g}
+    environment:
+      <<: *app-environment
+      WORKER_CONCURRENCY: ${EASYCONVERT_WORKER_CONCURRENCY:-4}
+      WORKER_MAX_RSS_MB: ${EASYCONVERT_WORKER_MAX_RSS_MB:-4096}
+
+  # Workers per resource class (ResourceClass in src/lib/types.ts; WORKER_QUEUES in src/worker/index.ts). They are off at launch and
+  # start with `--profile split` (or `--profile gpu` for the GPU worker, which needs /dev/dri on its host). Each scales on its own through
+  # its replica count and its limits; the defaults are those of the same services in docker-compose.yml and are meant to be set for the
+  # host they run on (docs/deploy-oci.md, "Scaling later"). They talk to the others only through Redis and the storage driver.
   worker-light:
-    environment: *production-environment
+    <<: *worker
+    profiles:
+      - split
+    deploy:
+      replicas: ${EASYCONVERT_CLASS_LIGHT_REPLICAS:-1}
+    cpus: ${EASYCONVERT_CLASS_LIGHT_CPUS:-2.0}
+    mem_limit: ${EASYCONVERT_CLASS_LIGHT_MEMORY:-4g}
+    memswap_limit: ${EASYCONVERT_CLASS_LIGHT_MEMORY:-4g}
+    environment:
+      <<: *app-environment
+      WORKER_QUEUES: light
+      WORKER_CONCURRENCY: ${EASYCONVERT_CLASS_LIGHT_CONCURRENCY:-6}
 
   worker-cpu:
-    environment: *production-environment
+    <<: *worker
+    profiles:
+      - split
+    deploy:
+      replicas: ${EASYCONVERT_CLASS_CPU_REPLICAS:-1}
+    cpus: ${EASYCONVERT_CLASS_CPU_CPUS:-2.5}
+    mem_limit: ${EASYCONVERT_CLASS_CPU_MEMORY:-10g}
+    memswap_limit: ${EASYCONVERT_CLASS_CPU_MEMORY:-10g}
+    environment:
+      <<: *app-environment
+      WORKER_QUEUES: cpu
+      WORKER_CONCURRENCY: ${EASYCONVERT_CLASS_CPU_CONCURRENCY:-3}
 
   worker-memory:
-    environment: *production-environment
+    <<: *worker
+    profiles:
+      - split
+    deploy:
+      replicas: ${EASYCONVERT_CLASS_MEMORY_REPLICAS:-1}
+    cpus: ${EASYCONVERT_CLASS_MEMORY_CPUS:-2.0}
+    mem_limit: ${EASYCONVERT_CLASS_MEMORY_MEMORY:-14g}
+    memswap_limit: ${EASYCONVERT_CLASS_MEMORY_MEMORY:-14g}
+    environment:
+      <<: *app-environment
+      WORKER_QUEUES: memory
+      WORKER_CONCURRENCY: "1"
+      # One job may legitimately hold most of the container's memory; recycle near the limit.
+      WORKER_MAX_RSS_MB: ${EASYCONVERT_CLASS_MEMORY_MAX_RSS_MB:-12288}
 
   worker-gpu:
-    environment: *production-environment
+    <<: *worker
+    profiles:
+      - gpu
+    deploy:
+      replicas: ${EASYCONVERT_CLASS_GPU_REPLICAS:-1}
+    devices:
+      - /dev/dri:/dev/dri
+    cpus: ${EASYCONVERT_CLASS_GPU_CPUS:-4.0}
+    mem_limit: ${EASYCONVERT_CLASS_GPU_MEMORY:-12g}
+    memswap_limit: ${EASYCONVERT_CLASS_GPU_MEMORY:-12g}
+    environment:
+      <<: *app-environment
+      WORKER_QUEUES: gpu
+      WORKER_CONCURRENCY: "3"
+      HWACCEL_ENABLED: "true"
+
+networks:
+  # Redis and the application containers. No route out: Redis cannot be reached from the host or the internet.
+  backend:
+    internal: true
+  # Outbound access for the web (sign-in with Google) and the worker (URL imports).
+  egress: {}
+
+volumes:
+  redis-data:

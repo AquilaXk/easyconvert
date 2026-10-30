@@ -372,9 +372,9 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file: 27 on a runner and 4 that call a reusable workflow', () => {
-    expect(jobs).toHaveLength(31);
-    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(27);
+  it('reads every job of every workflow file: 29 on a runner and 4 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(33);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(29);
     expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(4);
   });
 
@@ -405,10 +405,19 @@ describe('the runner image of every workflow job', () => {
     expect(outside).toEqual([]);
   });
 
-  it(`runs every job that names a runner on ${RUNNER_IMAGE}, so that no gate moves with the hosted latest image`, () => {
+  /**
+   * The two jobs of the deploy workflow: the arm64 image build, and the deploy on the runner that is installed on the OCI host. That
+   * runner is registered with no default label, so its one label is the only way a job can reach it.
+   */
+  const DEPLOY_RUNNERS: Record<string, unknown> = {
+    'deploy-oci.yml build': 'ubuntu-24.04-arm',
+    'deploy-oci.yml deploy': ['easyconvert-production'],
+  };
+
+  it(`runs every job that names a runner on ${RUNNER_IMAGE}, except the two jobs of the deploy workflow, so that no gate moves with the hosted latest image`, () => {
     const onOtherImage = jobs
       .filter(({ job }) => job['runs-on'] !== undefined)
-      .filter(({ job }) => job['runs-on'] !== RUNNER_IMAGE)
+      .filter(({ where, job }) => JSON.stringify(job['runs-on']) !== JSON.stringify(DEPLOY_RUNNERS[where] ?? RUNNER_IMAGE))
       .map(({ where, job }) => `${where}: ${JSON.stringify(job['runs-on'])}`);
     expect(onOtherImage).toEqual([]);
   });
