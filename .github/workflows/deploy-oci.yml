@@ -5,24 +5,22 @@ name: Deploy to the OCI host
 #
 #   build   push to main: the worker image (Dockerfile.worker), then the web image (Dockerfile.web) on top of that exact worker digest,
 #           both for linux/arm64, pushed to GHCR as sha-<commit> and main.
-#   deploy  workflow_dispatch on main, in the environment easyconvert-production, on the runner labelled easyconvert-production:
-#           pins the chosen build by digest, starts it, checks health and rolls back to the previous release when it does not come up.
-#           The runner is separate from the one of the other service on this host and the job reads and writes only /opt/easyconvert.
+#   deploy  workflow_dispatch on main, in the environment easyconvert-production, on the runner whose only label is
+#           easyconvert-production: pins the chosen build by digest, starts it, checks health and one conversion, and rolls back to the
+#           previous release when either fails. The runner is separate from the one of the other service on this host and the job
+#           reads and writes only /opt/easyconvert. The job log is public: it names keys and digests, never a secret value.
+#
+# Every push to main builds unless it changes only documentation or tests. The list is `paths` with negations rather than
+# `paths-ignore`, because only `paths` can take a path back in after a negation, and the worker image copies THIRD_PARTY_NOTICES.md.
 on:
   push:
     branches: [main]
     paths:
-      - 'Dockerfile.worker'
-      - 'Dockerfile.web'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'next.config.mjs'
-      - 'src/**'
-      - 'public/**'
-      - 'native/**'
-      - 'docker/**'
-      - 'scripts/**'
-      - '.github/workflows/deploy-oci.yml'
+      - '**'
+      - '!docs/**'
+      - '!tests/**'
+      - '!**/*.md'
+      - 'THIRD_PARTY_NOTICES.md'
   workflow_dispatch:
     inputs:
       action:
@@ -114,7 +112,7 @@ jobs:
 
   deploy:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, Linux, ARM64, easyconvert-production]
+    runs-on: [easyconvert-production]
     environment: easyconvert-production
     timeout-minutes: 45
     permissions:

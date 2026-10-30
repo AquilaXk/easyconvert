@@ -12,14 +12,14 @@ One host, one Compose project named `easyconvert`, started only by the deploy wo
 | `worker` | `ghcr.io/aquilaxk/easyconvert-worker@sha256:...` | none | Queue worker for every queue, 4 jobs at a time |
 | `redis` | `redis:7.4-alpine@sha256:...` | none | Queue, users, API keys, quotas. Password, internal network |
 
-The host nginx terminates TLS for `easyconvert.aquilaxk.site` (a proposed name, QA confirms it) and proxies to `127.0.0.1:8090`. The CDN in front of the origin is the only client the firewall lets reach port 443.
+The host nginx terminates TLS for `convert.aquilaxk.site` and proxies to `127.0.0.1:8090`. The CDN in front of the origin is the only client the firewall lets reach port 443.
 
 | File | Purpose |
 | --- | --- |
 | `Dockerfile.web` | The web image: the worker image plus the Next.js build |
 | `docker-compose.prod.yml` | The stack, with hard limits and loopback ports |
 | `deploy/oci/nginx-easyconvert.conf` | nginx site for the domain |
-| `deploy/oci/logrotate-easyconvert.conf` | Rotation of the JSON edge log |
+| `deploy/oci/apparmor-easyconvert` | AppArmor profile of the web and worker containers |
 | `deploy/oci/deploy.sh` | Deploy, rollback, guard and sweep, run by the workflow |
 | `deploy/oci/env-allowlist.txt` | The keys the env secret may carry |
 | `.github/workflows/deploy-oci.yml` | Image build on main and the manual deploy |
@@ -28,16 +28,16 @@ Nothing here touches the other service's paths (`/opt/easysubway`, its nginx sit
 
 ## First-time setup
 
-Do these once, in this order. No step needs a secret value written in this repository.
+Do these once per host, in this order. No step needs a secret value written in this repository. Steps 1 to 4 were done on 2026-10-30 and stay here so the host can be rebuilt; steps 5 to 8 remain for QA.
 
-1. **DNS.** In the CDN dashboard add a proxied record for `easyconvert.aquilaxk.site` that points at the public address of the instance, as the other site's record does. Set the SSL mode of the zone, or of this host name, to Full (strict).
-2. **Origin certificate.** In the CDN dashboard create an origin certificate for the host name. Port 80 is closed, so HTTP-01 cannot work, and DNS-01 would keep a DNS API token on the host. An origin certificate needs neither and is valid for up to 15 years. On the host:
+1. **Deploy user and directory** (done).
    ```
-   sudo install -d -m 0750 /etc/ssl/easyconvert
-   sudo install -m 0644 origin.pem /etc/ssl/easyconvert/origin.pem
-   sudo install -m 0600 origin.key /etc/ssl/easyconvert/origin.key
+   sudo useradd --create-home --shell /bin/bash easyconvert-deploy
+   sudo usermod -aG docker easyconvert-deploy
+   sudo install -d -o easyconvert-deploy -g easyconvert-deploy -m 0750 /opt/easyconvert
    ```
-3. **Scratch file system.** Uploads, results and every temporary file live on one file system of a fixed size, so a full scratch gives "no space left" to EasyConvert and never to the host. It is a file on the existing data volume, reserved up front:
+   Membership of the `docker` group is root-equivalent on this host, so who can send a job to this user's runner matters. The runner takes only jobs that ask for its one label, `easyconvert-production` (step 3). In this repository only the deploy job asks for it, and that job runs only when started by hand on `main`, in the environment of step 4, after QA approves it. Any workflow file can name the label, though, including one on another branch or in a pull request from a fork. The fork setting of step 4 holds every workflow run of an outside contributor's pull request until it is approved, so read the workflow files of such a pull request before approving its run.
+2. **Scratch file system** (done). Uploads, results and every temporary file live on one file system of a fixed size, so a full scratch gives "no space left" to EasyConvert and never to the host. It is a file on the existing data volume, reserved up front:
    ```
    base=/var/lib/easysubway-data/easyconvert
    sudo install -d -m 0755 "$base" "$base/scratch"
@@ -48,24 +48,22 @@ Do these once, in this order. No step needs a secret value written in this repos
    sudo install -d -o 10001 -g 10001 -m 0750 "$base/scratch/storage" "$base/scratch/tmp-web" "$base/scratch/tmp-worker"
    df -h /var/lib/easysubway-data "$base/scratch"
    ```
-   Check the `df` line first: the images of this stack take about twice the size of one worker image while two releases exist, and the other service's data shares the volume. `deploy.sh` stops a deploy that would leave less than 15 GiB free. The cap is 12 GiB; raise it only after reading the `df` output.
-4. **Deploy user and directory.**
+   The images of this stack take about twice the size of one worker image while two releases exist, and the other service's data shares the volume. `deploy.sh` stops a deploy that would leave less than 15 GiB free. The cap is 12 GiB; raise it only after reading the `df` output.
+3. **Runner** (done). A self-hosted Linux ARM64 runner, installed as the user `easyconvert-deploy` in `/home/easyconvert-deploy/actions-runner` as a service of its own, registered without the default labels so that `easyconvert-production` is its only label:
    ```
-   sudo useradd --create-home --shell /bin/bash easyconvert-deploy
-   sudo usermod -aG docker easyconvert-deploy
-   sudo install -d -o easyconvert-deploy -g easyconvert-deploy -m 0750 /opt/easyconvert
-   ```
-   Membership of the `docker` group is root-equivalent on this host. The deploy workflow is the only thing that runs as this user, and it is restricted to `main` and to the environment below.
-5. **Runner.** In the repository settings (Actions, Runners) add a self-hosted Linux ARM64 runner. Install it as the user `easyconvert-deploy` in `/home/easyconvert-deploy/actions-runner`, with the extra label `easyconvert-production`, and as a service of its own:
-   ```
-   ./config.sh --url https://github.com/AquilaXk/easyconvert --token <registration token from the settings page> --labels easyconvert-production
+   ./config.sh --url https://github.com/AquilaXk/easyconvert --token <registration token from the settings page> --no-default-labels --labels easyconvert-production
    sudo ./svc.sh install easyconvert-deploy && sudo ./svc.sh start
    ```
    The registration token is shown once and expires within the hour. The runner of the other service keeps its own label and is not touched.
-6. **Environment and secret.** Create the GitHub environment `easyconvert-production`. Restrict deployments to the `main` branch and require QA as reviewer. Add one secret named `EASYCONVERT_ENV`, a file of `KEY=VALUE` lines. Generate every secret with `openssl rand -hex 32` (the password with `openssl rand -hex 24`). The keys, by name:
+4. **Environment, secret and fork setting** (done).
+   - The GitHub environment `easyconvert-production` allows deployments from `main` only and requires QA as reviewer.
+   - The repository holds every workflow run of a pull request from an outside contributor's fork until it is approved. Check it with `gh api repos/AquilaXk/easyconvert/actions/permissions/fork-pr-contributor-approval --jq .approval_policy`, which must print `all_external_contributors`.
+   - The environment has one secret, `EASYCONVERT_ENV`, a file of `KEY=VALUE` lines. Every secret in it is generated with `openssl rand -hex 32` (the password with `openssl rand -hex 24`). The keys, by name:
+
    | Key | Meaning |
    | --- | --- |
-   | `APP_URL` | `https://easyconvert.aquilaxk.site` |
+   | `APP_URL` | `https://convert.aquilaxk.site` |
+   | `APP_ORIGIN` | Optional. The origin of sign-in redirects, `APP_URL` when absent |
    | `EASYCONVERT_SCRATCH_DIR` | `/var/lib/easysubway-data/easyconvert/scratch` |
    | `REDIS_PASSWORD` | Hex password of the stack's Redis |
    | `STORAGE_SIGNING_SECRET`, `JOB_SECRET_KEK`, `JWT_SECRET`, `KEY_HASH_PEPPER`, `WEBHOOK_SECRET_KEK` | Required secrets, 32 bytes or more each (`docs/configuration.md`) |
@@ -73,17 +71,37 @@ Do these once, in this order. No step needs a secret value written in this repos
    | `EASYCONVERT_BUDGET_CPUS`, `EASYCONVERT_BUDGET_MEMORY_GB` | Optional budget, defaults 3.5 and 20 |
    | `STORAGE_DRIVER`, `S3_*`, `OCI_*`, `REDIS_URL` | Left out at launch. See "Scaling later" |
 
-   The workflow keeps only the keys listed in `deploy/oci/env-allowlist.txt`. A key that is not listed is dropped and its name (never its value) is written to the job log. The image variables are not on the list, so the secret cannot replace the digests that the deploy pins.
-7. **nginx.** On the host, from a checkout of this repository:
+   The workflow keeps only the keys listed in `deploy/oci/env-allowlist.txt`. The job log is public. A dropped line is named there by its key when the key has the shape of a variable name, and otherwise only by its line number, so no value is ever written to the log. The image variables are not on the list, so the secret cannot replace the digests that the deploy pins.
+5. **DNS** (QA). In the CDN dashboard add a proxied record for `convert.aquilaxk.site` that points at the public address of the instance, as the other site's record does. Set the SSL mode of the zone, or of this host name, to Full (strict).
+6. **Origin certificate** (QA). In the CDN dashboard create an origin certificate for the host name. Port 80 is closed, so HTTP-01 cannot work, and DNS-01 would keep a DNS API token on the host. An origin certificate needs neither and is valid for up to 15 years. On the host:
+   ```
+   sudo install -d -m 0750 /etc/ssl/easyconvert
+   sudo install -m 0644 origin.pem /etc/ssl/easyconvert/origin.pem
+   sudo install -m 0600 origin.key /etc/ssl/easyconvert/origin.key
+   ```
+7. **AppArmor profile** (QA). Ubuntu 24.04 sets `kernel.apparmor_restrict_unprivileged_userns=1`, so a container under Docker's default profile cannot create the user namespace that every native conversion runs in (`unshare -r -n`), and every conversion would fail. The setting stays as it is for the rest of the host. Instead the web and worker containers run under the profile `easyconvert`, Docker's default rules plus the user namespace. Docker refuses to start a container whose profile is not loaded, so do this before the first deploy. On the host, from a checkout of this repository:
+   ```
+   sudo install -m 0644 deploy/oci/apparmor-easyconvert /etc/apparmor.d/easyconvert
+   sudo apparmor_parser -r -W /etc/apparmor.d/easyconvert
+   sudo aa-status | grep -w easyconvert
+   ```
+   The last line must print `easyconvert` among the profiles in enforce mode. AppArmor loads the profiles of `/etc/apparmor.d` again at every boot. To see that it works, compare the same sandbox under both profiles. The first command must print `ok`, and the second must fail with `Permission denied`:
+   ```
+   for profile in easyconvert docker-default; do
+     sudo -u easyconvert-deploy docker run --rm --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges:true \
+       --security-opt seccomp=docker/seccomp-worker.json --security-opt apparmor=$profile ubuntu:24.04 \
+       unshare -r -n -- echo ok
+   done
+   ```
+8. **nginx** (QA). On the host, from a checkout of this repository:
    ```
    sudo install -m 0644 deploy/oci/nginx-easyconvert.conf /etc/nginx/sites-available/easyconvert
    sudo ln -s /etc/nginx/sites-available/easyconvert /etc/nginx/sites-enabled/easyconvert
-   sudo install -m 0644 deploy/oci/logrotate-easyconvert.conf /etc/logrotate.d/easyconvert
    sudo nginx -t && sudo systemctl reload nginx
    ```
-   The site file defines no `default_server`, so the 444 default of the other site is unchanged, and no listener on port 80. All its zone and log names start with `easyconvert_`.
-8. **First deploy.** Run the workflow `deploy-oci` by hand (Actions, Run workflow) on `main` with action `deploy` and image_ref `main`, after a push to main has built the images. The job log ends with the two digests that are now running.
-9. **Hourly guard (optional).** Each deploy copies `deploy.sh` to `/opt/easyconvert/bin/`. To get a warning in the system log when the scratch or the volume fills, add to the crontab of `easyconvert-deploy`: `0 * * * * /opt/easyconvert/bin/deploy.sh guard` and `30 4 * * * /opt/easyconvert/bin/deploy.sh sweep` (temporary files older than two hours). A deploy runs the guard and the sweep every time.
+   The site file defines no `default_server`, so the 444 default of the other site is unchanged, and no listener on port 80. All its zone and log names start with `easyconvert_`. Its edge log, `/var/log/nginx/easyconvert-edge.log`, is rotated by the distribution's `/etc/logrotate.d/nginx`, which covers `/var/log/nginx/*.log`. Do not add a stanza of its own: logrotate reports a log that two stanzas name as a duplicate and skips one of them, which can stop the rotation of the other site's logs.
+9. **First deploy.** Run the workflow `deploy-oci` by hand (Actions, Run workflow) on `main` with action `deploy` and image_ref `main`, after a push to main has built the images. The job log ends with the two digests that are now running.
+10. **Hourly guard (optional).** Each deploy copies `deploy.sh` to `/opt/easyconvert/bin/`. To get a warning in the system log when the scratch or the volume fills, add to the crontab of `easyconvert-deploy`: `0 * * * * /opt/easyconvert/bin/deploy.sh guard` and `30 4 * * * /opt/easyconvert/bin/deploy.sh sweep` (temporary files older than two hours). A deploy runs the guard and the sweep every time.
 
 ## Capacity budget
 
@@ -106,7 +124,7 @@ On 4 OCPU and 24 GB that is about 0.2 OCPU on average, peaks near 1.9 OCPU, and 
 | `redis` | 0.2 | 512 MiB | `maxmemory 256mb`, no eviction, plus the append-only rewrite |
 | Total | 3.5 | 20 GiB | Leaves 0.5 OCPU and 4 GiB for the other service and the system |
 
-Every container also has `memswap_limit` equal to its memory limit (no swap) and `cpu_shares: 512` against the default 1024, so the other service wins under contention and this stack uses idle cores otherwise. A large file waits in the queue instead of being given more capacity. If four heavy jobs run together and pass 14 GiB, the kernel kills one process of the container and that job fails; raise the budget when the logs show it.
+Every container also has `memswap_limit` equal to its memory limit (no swap) and `cpu_shares: 512` against the default 1024, so the other service wins under contention and this stack uses idle cores otherwise. Every container has `oom_score_adj: 500`, so when the host as a whole runs out of memory the kernel kills a process of this stack before one of the other service. `pids_limit` caps the processes of each container. The per-user `nproc` limit is 4096: it counts every process of uid 10001 on the host, and the web and every worker run as that uid. A large file waits in the queue instead of being given more capacity. If four heavy jobs run together and pass 14 GiB, the kernel kills one process of the container and that job fails; raise the budget when the logs show it.
 
 **One knob.** `EASYCONVERT_BUDGET_CPUS` and `EASYCONVERT_BUDGET_MEMORY_GB` in the env secret size the whole stack. `deploy/oci/deploy.sh budget` prints what they give, for example:
 
@@ -116,7 +134,7 @@ EASYCONVERT_BUDGET_CPUS=3.5 EASYCONVERT_BUDGET_MEMORY_GB=20 bash deploy/oci/depl
 
 A per-service key in the secret (`EASYCONVERT_WORKER_CONCURRENCY` and the others in the allowlist) wins over the derived value. Re-measure the host after the first weeks of traffic and revisit the budget when the other service goes to production.
 
-**Scratch and disk.** The scratch file system is 12 GiB (step 3). Logs are rotated at 5 MB, 3 files per container, and the nginx edge log daily for 7 days. Only the current and the previous release of the images stay on disk.
+**Scratch and disk.** The scratch file system is 12 GiB (step 2). Logs are rotated at 5 MB, 3 files per container, and the nginx edge log with the distribution's other nginx logs. Only the current and the previous release of the images stay on disk.
 
 ## Delete on delivery
 
@@ -128,16 +146,20 @@ A per-service key in the secret (`EASYCONVERT_WORKER_CONCURRENCY` and the others
 ## Deploying
 
 1. Merge to `main`. The `build` job builds the worker image and then the web image for arm64 and pushes them as `sha-<commit>` and `main`. The job summary lists the digests.
-2. Run `deploy-oci` by hand with action `deploy` and image_ref `main` or `sha-<commit>`. The job runs on the `easyconvert-production` runner and:
-   - checks that the scratch directory is a mount point and that the data volume has at least 15 GiB free;
-   - pulls both images and pins them by digest;
+2. Run `deploy-oci` by hand with action `deploy` and image_ref `main` or `sha-<40 character commit>`; any other value is refused. The job runs on the `easyconvert-production` runner and:
+   - checks that the scratch directory is a mount point and that the data volume has at least 15 GiB free, and that the budget in the secret can be used;
+   - pulls both images, pins them by digest, and refuses the pair when the web image records another worker image than the one pinned (`org.opencontainers.image.base.name`, set by `Dockerfile.web`);
    - writes a mode 0600 env file, the compose file and the seccomp profile into `/opt/easyconvert/releases/<time>-<ref>/`;
    - runs `docker compose up -d --wait`, then checks `http://127.0.0.1:8090/api/health` for up to 150 seconds;
+   - converts a one-pixel PPM to PNG through `http://127.0.0.1:8090/api/convert`. ImageMagick decodes it in the sandbox, so this fails when the host does not let the sandbox run (the AppArmor profile of step 7), which the health check cannot see;
    - on success moves the `current` and `previous` links, keeps two releases, and removes the images that neither release names (by digest, from the two repositories of this stack only; there is no prune).
+
+   The job log is public. It shows the digests, the names of dropped keys and, when a release fails its checks, the last 80 lines of the web and worker logs. Neither service writes a secret value to its log.
 
 ## Rolling back
 
-- **Automatic.** When the new release does not become healthy, `deploy.sh` starts the previous release again, removes the failed one and fails the job. With no previous release it stops the stack.
+- **Automatic.** When the new release does not become healthy or the smoke conversion fails, `deploy.sh` starts the previous release again, removes the failed one and fails the job. With no previous release it stops the stack.
+- **Cancelled job.** When the job is cancelled while the new release starts, `deploy.sh` starts the previous release again without waiting for it, removes the new one and exits. The runner kills the job a few seconds after the cancel. If that cut the restart short, deploy again the ref of the `current` release (the end of its directory name).
 - **By hand.** Run `deploy-oci` with action `rollback`. It starts the release behind the `previous` link and swaps the two links. The images of both releases are still on disk, so nothing is pulled.
 - **Which digests are running.** `readlink /opt/easyconvert/current` and `cat /opt/easyconvert/current/images.env`.
 - Redis keeps its data across both (volume `easyconvert_redis-data`).

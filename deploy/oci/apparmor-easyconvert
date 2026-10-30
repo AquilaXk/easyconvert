@@ -1,0 +1,75 @@
+# AppArmor profile of the EasyConvert web and worker containers (security_opt apparmor=easyconvert in docker-compose.prod.yml).
+# Install it once per host (docs/deploy-oci.md, first-time setup): it must be loaded before a container that names it can start.
+#
+# The rules are Docker's docker-default profile as moby renders it on Ubuntu (github.com/moby/profiles, apparmor/template.go at
+# commit a21872828a8e5745d79e2fc1a07ee6dad8aedffa, Apache-2.0, with the tunables/global and abstractions/base includes the
+# generator adds when they exist). Three lines differ, all for Ubuntu 24.04, where kernel.apparmor_restrict_unprivileged_userns=1
+# refuses an unprivileged user namespace to any profile that does not grant one. Ubuntu's documented route is a profile of the
+# program's own with the userns rule, which leaves that host-wide setting as it is for the other services on the host:
+#   - abi 4.0 instead of moby's 3.0, because 4.0 is the first ABI with the userns rule;
+#   - userns, so that the sandbox's `unshare -r -n` (src/lib/security/process-sandbox.ts) and qpdf-runner's
+#     unshare(CLONE_NEWUSER | CLONE_NEWNET) can create the namespaces every native child runs in;
+#   - unix, because under ABI 4.0 the network rule no longer covers unix sockets, the reason moby pins ABI 3.0.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile easyconvert flags=(attach_disconnected,mediate_deleted) {
+  include <abstractions/base>
+
+  network,
+  unix,
+  userns,
+  # Disallow obsolete socket families removed from the Linux kernel.
+  deny network ax25,
+  deny network ipx,
+  deny network appletalk,
+  deny network netrom,
+  deny network rose,
+  deny network econet,
+  deny network atmsvc,
+  deny network irda,
+  deny network wanpipe,
+  deny network isdn,
+  deny network caif,
+  # Disallow AF_ALG (Linux kernel crypto API).
+  deny network alg,
+  # Disallow AF_VSOCK to prevent host/guest communication.
+  deny network vsock,
+  capability,
+  file,
+  umount,
+  # Host (privileged) processes may send signals to container processes.
+  signal (receive) peer=unconfined,
+  # runc may send signals to container processes (for "docker stop").
+  signal (receive) peer=runc,
+  # crun may send signals to container processes (for "docker stop" when used with crun OCI runtime).
+  signal (receive) peer=crun,
+  # dockerd may send signals to container processes (for "docker kill"); dockerd runs unconfined on Ubuntu.
+  signal (receive) peer=unconfined,
+  # Container processes may send signals amongst themselves.
+  signal (send,receive) peer=easyconvert,
+
+  deny @{PROC}/* w,   # deny write for all files directly in /proc (not in a subdir)
+  # deny write to files not in /proc/<number>/** or /proc/sys/**
+  deny @{PROC}/{[^1-9/],[^1-9/][^0-9/],[^1-9s/][^0-9y/][^0-9s/],[^1-9/][^0-9/][^0-9/][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,  # deny /proc/sys except /proc/sys/k* (effectively /proc/sys/kernel)
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,  # deny everything except shm* in /proc/sys/kernel/
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  # allow processes within the container to trace each other,
+  # provided all other LSM and yama setting allow it.
+  ptrace (trace,tracedby,read,readby) peer=easyconvert,
+}

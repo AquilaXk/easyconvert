@@ -330,10 +330,13 @@ describe('the runner image of every workflow job', () => {
     expect(outside).toEqual([]);
   });
 
-  /** The two jobs of the deploy workflow: the arm64 image build, and the deploy on the runner that is installed on the OCI host. */
+  /**
+   * The two jobs of the deploy workflow: the arm64 image build, and the deploy on the runner that is installed on the OCI host. That
+   * runner is registered with no default label, so its one label is the only way a job can reach it.
+   */
   const DEPLOY_RUNNERS: Record<string, unknown> = {
     'deploy-oci.yml build': 'ubuntu-24.04-arm',
-    'deploy-oci.yml deploy': ['self-hosted', 'Linux', 'ARM64', 'easyconvert-production'],
+    'deploy-oci.yml deploy': ['easyconvert-production'],
   };
 
   it(`runs every job that names a runner on ${RUNNER_IMAGE}, except the two jobs of the deploy workflow, so that no gate moves with the hosted latest image`, () => {

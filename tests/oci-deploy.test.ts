@@ -25,6 +25,8 @@ interface ComposeService {
   read_only?: boolean;
   init?: boolean;
   pids_limit?: number;
+  oom_score_adj?: number;
+  ulimits?: { nproc?: number };
   cpus?: string | number;
   cpu_shares?: number;
   mem_limit?: string;
@@ -103,13 +105,23 @@ describe('docker-compose.prod.yml network exposure', () => {
 });
 
 describe('docker-compose.prod.yml container hardening', () => {
-  it.each(APP_SERVICES)('%s drops all capabilities, forbids new privileges, applies the worker seccomp profile and has a read-only root', (name) => {
+  it.each(APP_SERVICES)('%s drops all capabilities, forbids new privileges, applies the worker seccomp and the EasyConvert AppArmor profile and has a read-only root', (name) => {
     const service = compose.services[name];
     expect(service.cap_drop).toEqual(['ALL']);
-    expect(service.security_opt).toEqual(['no-new-privileges:true', 'seccomp=./docker/seccomp-worker.json']);
+    expect(service.security_opt).toEqual(['no-new-privileges:true', 'seccomp=./docker/seccomp-worker.json', 'apparmor=easyconvert']);
     expect(service.read_only).toBe(true);
     expect(service.init).toBe(true);
     expect(service.pids_limit).toBe(256);
+  });
+
+  it('sets a per-uid process limit that every application container together cannot reach, so that only each pids_limit applies', () => {
+    // RLIMIT_NPROC counts every process of the uid on the host, and all application containers run as uid 10001.
+    const pidsOfAllContainers = APP_SERVICES.reduce((sum, name) => sum + (compose.services[name].pids_limit ?? Infinity), 0);
+    for (const name of APP_SERVICES) expect(compose.services[name].ulimits?.nproc, name).toBeGreaterThan(pidsOfAllContainers);
+  });
+
+  it.each(['redis', ...APP_SERVICES])('%s is the first choice of the kernel OOM killer, ahead of the other service on the host', (name) => {
+    expect(compose.services[name].oom_score_adj).toBe(500);
   });
 
   it('hardens Redis the same way, as a non-root user', () => {
@@ -118,6 +130,10 @@ describe('docker-compose.prod.yml container hardening', () => {
     expect(redis.security_opt).toEqual(['no-new-privileges:true']);
     expect(redis.read_only).toBe(true);
     expect(redis.user).toMatch(/^[1-9]\d*:\d+$/);
+  });
+
+  it('gives the sign-in redirects the public origin, not the forwarded Host header, unless the env file names another', () => {
+    for (const name of ['web', 'worker']) expect(compose.services[name].environment?.APP_ORIGIN, name).toBe('${APP_ORIGIN:-${APP_URL}}');
   });
 
   it.each(['redis', ...APP_SERVICES])('%s rotates its json-file log at 5 MB and keeps 3 files', (name) => {
@@ -216,6 +232,39 @@ describe('docker-compose.prod.yml scale-out shape', () => {
   });
 });
 
+describe('AppArmor profile', () => {
+  const profile = read('deploy/oci/apparmor-easyconvert');
+  const rules = profile.split('\n').map((line) => line.replace(/#.*$/, '').trim()).filter(Boolean);
+  /** The deny rules of Docker's docker-default profile (moby/profiles apparmor/template.go), copied by hand. */
+  const DOCKER_DEFAULT_DENIES = [
+    'deny @{PROC}/* w,',
+    'deny @{PROC}/sys/[^k]** w,',
+    'deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,',
+    'deny @{PROC}/sysrq-trigger rwklx,',
+    'deny @{PROC}/kcore rwklx,',
+    'deny mount,',
+    'deny /sys/firmware/** rwklx,',
+    'deny /sys/kernel/security/** rwklx,',
+  ];
+
+  it('is the profile the compose file names', () => {
+    const name = /^profile (\S+) flags=\(attach_disconnected,mediate_deleted\) \{$/m.exec(profile)?.[1];
+    expect(name).toBe('easyconvert');
+    expect(compose.services.web.security_opt).toContain(`apparmor=${name}`);
+  });
+
+  it('grants the user namespace the sandbox needs on Ubuntu 24.04, under the ABI that has the rule, and keeps unix sockets', () => {
+    expect(rules[0]).toBe('abi <abi/4.0>,');
+    expect(rules).toContain('userns,');
+    expect(rules).toContain('unix,');
+    expect(rules.filter((rule) => /\buserns\b/.test(rule) && rule.startsWith('deny'))).toEqual([]);
+  });
+
+  it("keeps every deny rule of Docker's default profile", () => {
+    for (const rule of DOCKER_DEFAULT_DENIES) expect(rules, rule).toContain(rule);
+  });
+});
+
 describe('Dockerfile.web', () => {
   const web = read('Dockerfile.web');
   const worker = read('Dockerfile.worker');
@@ -225,6 +274,12 @@ describe('Dockerfile.web', () => {
     expect(nodeImage(web)).toBeDefined();
     expect(nodeImage(web)).toBe(nodeImage(worker));
     expect(nodeImage(web)).toMatch(/^node:\d+\.\d+\.\d+-[a-z]+-slim@sha256:[0-9a-f]{64}$/);
+  });
+
+  it('records the worker image it is built on, where the deploy reads it back', () => {
+    const finalStage = web.slice(web.search(/^FROM \$\{WORKER_IMAGE\} AS web$/m));
+    expect(finalStage).toMatch(/^ARG WORKER_IMAGE$/m);
+    expect(finalStage).toMatch(/^LABEL org\.opencontainers\.image\.base\.name="\$\{WORKER_IMAGE\}"$/m);
   });
 
   it('is built on the worker image, runs as its non-root user and starts Next.js', () => {
@@ -244,7 +299,7 @@ describe('nginx site file', () => {
     expect(withoutComments).not.toMatch(/default_server/);
     expect(withoutComments).not.toMatch(/listen\s+(\[::\]:)?80\b/);
     expect(withoutComments.match(/^server \{/gm)).toHaveLength(1);
-    expect(withoutComments).toMatch(/server_name easyconvert\.aquilaxk\.site;/);
+    expect(withoutComments).toMatch(/server_name convert\.aquilaxk\.site;/);
   });
 
   it('names every http-level object with the easyconvert_ prefix, so that it cannot collide with the other site', () => {
@@ -269,11 +324,12 @@ describe('nginx site file', () => {
     expect(withoutComments).toMatch(/proxy_set_header X-Forwarded-For \$remote_addr;/);
     expect(withoutComments).not.toMatch(/\$proxy_add_x_forwarded_for/);
     expect(withoutComments).toMatch(/proxy_set_header Forwarded "";/);
+    expect(withoutComments).toMatch(/proxy_set_header X-Forwarded-Host \$host;/);
   });
 
   it('proxies only to the loopback port of the web service and streams bodies without spooling to disk', () => {
     const upstreams = [...withoutComments.matchAll(/server (\S+);/g)].map((match) => match[1]);
-    expect(upstreams.filter((target) => !/^127\.0\.0\.1:8090$|^easyconvert\.aquilaxk\.site$/.test(target))).toEqual([]);
+    expect(upstreams.filter((target) => !/^127\.0\.0\.1:8090$|^convert\.aquilaxk\.site$/.test(target))).toEqual([]);
     expect(withoutComments).toMatch(/proxy_request_buffering off;/);
     expect(withoutComments).toMatch(/proxy_buffering off;/);
   });
@@ -298,7 +354,7 @@ describe('nginx site file', () => {
 describe('deploy workflow', () => {
   const text = read('.github/workflows/deploy-oci.yml');
   const workflow = parse(text) as {
-    on: { push: { branches: string[] }; workflow_dispatch: { inputs: Record<string, unknown> } };
+    on: { push: { branches: string[]; paths: string[] }; workflow_dispatch: { inputs: Record<string, unknown> } };
     permissions: Record<string, string>;
     jobs: Record<string, { 'runs-on': unknown; environment?: string; if?: string; permissions?: Record<string, string>; 'timeout-minutes'?: number; steps: Array<{ name?: string; uses?: string; run?: string; env?: Record<string, string>; with?: Record<string, string>; if?: string }> }>;
   };
@@ -321,12 +377,27 @@ describe('deploy workflow', () => {
     expect(build.permissions).toEqual({ contents: 'read', packages: 'write' });
   });
 
-  it('deploys by hand, from main, on a runner and in an environment of its own that the other service does not use', () => {
+  it('builds for every push except one that changes only documentation or tests', () => {
+    // GitHub's rule for `paths`: the last pattern that matches a path decides, and a `!` pattern excludes it.
+    const triggers = (file: string): boolean =>
+      workflow.on.push.paths.reduce((included, pattern) => {
+        const negated = pattern.startsWith('!');
+        return path.matchesGlob(file, negated ? pattern.slice(1) : pattern) ? !negated : included;
+      }, false);
+    for (const file of ['Dockerfile.worker', 'tsconfig.json', 'postcss.config.mjs', 'tailwind.config.ts', 'THIRD_PARTY_NOTICES.md', 'src/app/page.tsx', 'docker/imagemagick/policy.xml']) {
+      expect(triggers(file), file).toBe(true);
+    }
+    for (const file of ['docs/deploy-oci.md', 'tests/oci-deploy.test.ts', 'README.md', 'native/qpdf-runner/README.md']) {
+      expect(triggers(file), file).toBe(false);
+    }
+  });
+
+  it('deploys by hand, from main, on the one label of a runner and in an environment of its own that the other service does not use', () => {
     const deploy = workflow.jobs.deploy;
     expect(Object.keys(workflow.on).sort()).toEqual(['push', 'workflow_dispatch']);
     expect(deploy.if).toContain("github.event_name == 'workflow_dispatch'");
     expect(deploy.if).toContain("github.ref == 'refs/heads/main'");
-    expect(deploy['runs-on']).toEqual(['self-hosted', 'Linux', 'ARM64', 'easyconvert-production']);
+    expect(deploy['runs-on']).toEqual(['easyconvert-production']);
     expect(deploy.environment).toBe('easyconvert-production');
     expect(deploy.permissions).toEqual({ contents: 'read', packages: 'read' });
     expect(text).not.toMatch(/easysubway/i);
@@ -398,8 +469,11 @@ function run(args: string[], options: { env?: Record<string, string>; input?: st
 }
 
 describe('deploy.sh filter-env', () => {
+  /** Lines of a secret that a line break split, or that were pasted without a key: none of their text may reach the public log. */
+  const NOT_KEY_VALUE = ['no-equals-sign-secret-value', 'split+base64/secret==', 'MIIBsplitbase64secretline==', 'lower_key=secret-of-a-lowercase-key'];
+
   it('keeps the allowlisted keys, drops the others and names only the key of a dropped line', () => {
-    const input = ['# a comment', '', 'JWT_SECRET=a=b=c', 'EASYCONVERT_WEB_IMAGE=evil@sha256:0', 'UNLISTED_KEY=top-secret-value', 'no-equals-sign', 'APP_URL=https://x.test\r'].join('\n');
+    const input = ['# a comment', '', 'JWT_SECRET=a=b=c', 'EASYCONVERT_WEB_IMAGE=evil@sha256:0', 'UNLISTED_KEY=top-secret-value', 'APP_URL=https://x.test\r'].join('\n');
     const result = run(['filter-env'], { input });
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('JWT_SECRET=a=b=c\nAPP_URL=https://x.test\n');
@@ -407,6 +481,16 @@ describe('deploy.sh filter-env', () => {
     expect(result.stderr).toContain("key 'EASYCONVERT_WEB_IMAGE'");
     expect(result.stderr).not.toContain('top-secret-value');
     expect(result.stderr).not.toContain('a=b=c');
+  });
+
+  it('names a line without a variable name by its number only, and writes none of its text to the log', () => {
+    const input = ['APP_URL=https://x.test', ...NOT_KEY_VALUE].join('\n');
+    const result = run(['filter-env'], { input });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('APP_URL=https://x.test\n');
+    const logged = result.stderr.trim().split('\n');
+    const numbers = logged.map((line) => /^\[deploy\] dropped a line of the env secret: line (\d+) is not KEY=VALUE$/.exec(line)?.[1]);
+    expect(numbers).toEqual(NOT_KEY_VALUE.map((_, index) => String(index + 2)));
   });
 });
 
@@ -446,6 +530,9 @@ describe('deploy.sh budget', () => {
   });
 });
 
+/** A valid image ref: the tag of the build of one commit. */
+const ref = (hexDigit: string): string => `sha-${hexDigit.repeat(40)}`;
+
 describe('deploy.sh against stand-ins for the host', () => {
   const sandboxes: string[] = [];
   let sandbox: string;
@@ -478,7 +565,13 @@ case "$1" in
   pull) exit 0 ;;
   image)
     case "$2" in
-      inspect) ref="\${@: -1}"; echo "\${ref%%:*}@sha256:$(printf '%s' "$ref" | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-64)" ;;
+      inspect)
+        ref="\${@: -1}"
+        digest() { printf '%s' "$1" | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-64; }
+        case "$*" in
+          *Labels*) echo "\${STUB_WEB_BASE:-ghcr.io/aquilaxk/easyconvert-worker@sha256:$(digest "ghcr.io/aquilaxk/easyconvert-worker:\${ref##*:}")}" ;;
+          *) echo "\${ref%%:*}@sha256:$(digest "$ref")" ;;
+        esac ;;
       ls) cat "$STUB_IMAGES" 2>/dev/null || true ;;
       rm) exit 0 ;;
     esac ;;
@@ -486,7 +579,9 @@ case "$1" in
     dir=""; prev=""
     for arg in "$@"; do [ "$prev" = "--project-directory" ] && dir="$arg"; prev="$arg"; done
     case " $* " in
-      *" up "*) case "$dir" in *"$STUB_FAIL_UP"*) [ -n "$STUB_FAIL_UP" ] && exit 1 ;; esac ;;
+      *" up "*)
+        case "$dir" in *"$STUB_SIGNAL_UP"*) [ -n "$STUB_SIGNAL_UP" ] && kill -TERM "$PPID" ;; esac
+        case "$dir" in *"$STUB_FAIL_UP"*) [ -n "$STUB_FAIL_UP" ] && exit 1 ;; esac ;;
     esac ;;
 esac
 exit 0`
@@ -495,6 +590,19 @@ exit 0`
       'curl',
       `echo "curl $*" >> "$STUB_LOG"
 last_up="$(grep ' up ' "$STUB_LOG" | tail -n 1)"
+case "$*" in
+  *api/convert*)
+    out=""; prev=""
+    for arg in "$@"; do
+      [ "$prev" = "-o" ] && out="$arg"
+      case "$arg" in file=@*) upload="\${arg#file=@}"; cp "\${upload%%;*}" "$STUB_UPLOAD" ;; esac
+      prev="$arg"
+    done
+    case "$last_up" in *"$STUB_FAIL_SMOKE"*) [ -n "$STUB_FAIL_SMOKE" ] && exit 22 ;; esac
+    case "$last_up" in *"$STUB_HTML_SMOKE"*) [ -n "$STUB_HTML_SMOKE" ] && { echo '<html>' > "$out"; exit 0; } ;; esac
+    printf '\\211PNG\\r\\n\\032\\n' > "$out"
+    exit 0 ;;
+esac
 case "$last_up" in *"$STUB_FAIL_HEALTH"*) [ -n "$STUB_FAIL_HEALTH" ] && exit 22 ;; esac
 exit 0`
     );
@@ -512,6 +620,7 @@ exit 0`
     EASYCONVERT_HOME: home,
     STUB_LOG: log,
     STUB_IMAGES: path.join(sandbox, 'images.txt'),
+    STUB_UPLOAD: path.join(sandbox, 'upload.ppm'),
     HEALTH_ATTEMPTS: '2',
     HEALTH_INTERVAL: '0',
     SOURCE_DIR: ROOT,
@@ -544,7 +653,7 @@ exit 0`
   });
 
   it('pins both images by digest, writes a private env file with the derived budget, starts the stack and records the release', () => {
-    const result = run(['deploy', 'sha-0123456789abcdef'], { env: hostEnv() });
+    const result = run(['deploy', ref('0')], { env: hostEnv() });
     expect(result.status, result.stderr).toBe(0);
     const release = path.join(home, 'releases', currentRelease());
     const images = readFileSync(path.join(release, 'images.env'), 'utf-8');
@@ -573,9 +682,9 @@ exit 0`
   });
 
   it('rolls back to the previous release when the new one does not start, and removes the failed release', () => {
-    expect(run(['deploy', 'good'], { env: hostEnv() }).status).toBe(0);
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
     const good = currentRelease();
-    const result = run(['deploy', 'bad'], { env: hostEnv({ STUB_FAIL_UP: '-bad' }) });
+    const result = run(['deploy', ref('b')], { env: hostEnv({ STUB_FAIL_UP: ref('b') }) });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('rolling back');
     expect(currentRelease()).toBe(good);
@@ -585,16 +694,75 @@ exit 0`
   });
 
   it('rolls back when the stack starts but the health check never passes', () => {
-    expect(run(['deploy', 'good'], { env: hostEnv() }).status).toBe(0);
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
     const good = currentRelease();
-    const result = run(['deploy', 'sick'], { env: hostEnv({ STUB_FAIL_HEALTH: '-sick' }) });
+    const result = run(['deploy', ref('c')], { env: hostEnv({ STUB_FAIL_HEALTH: ref('c') }) });
     expect(result.status).toBe(1);
     expect(currentRelease()).toBe(good);
     expect(calls().filter((call) => / up -d /.test(call)).at(-1)).toContain(good);
   });
 
+  it.each(['latest', 'sha-0123456789abcdef', `${ref('a')}0`, 'main; rm -rf /', '../main', ''])('refuses the image ref %j before it touches the host', (bad) => {
+    const result = run(['deploy', bad], { env: hostEnv() });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('must be main or sha-<40 hex characters>');
+    expect(calls()).toEqual([]);
+  });
+
+  it('fails before it pulls anything when the budget in the env secret cannot be used', () => {
+    writeFileSync(envFile, `${ENV_BODY}\nEASYCONVERT_BUDGET_CPUS=1\n`);
+    const result = run(['deploy', 'main'], { env: hostEnv() });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('budget');
+    expect(calls().filter((call) => call.startsWith('docker pull'))).toEqual([]);
+  });
+
+  it('refuses a web image built on another worker image than the one it pins, before anything starts', () => {
+    const result = run(['deploy', 'main'], { env: hostEnv({ STUB_WEB_BASE: `ghcr.io/aquilaxk/easyconvert-worker@sha256:${'f'.repeat(64)}` }) });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('was built on');
+    expect(calls().filter((call) => / up /.test(call))).toEqual([]);
+    expect(releases()).toEqual([]);
+  });
+
+  it('converts a PPM to PNG through the web service before it moves the links', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const smoke = calls().filter((call) => call.startsWith('curl') && call.includes('http://127.0.0.1:8090/api/convert'));
+    expect(smoke).toHaveLength(1);
+    expect(smoke[0]).toContain('targetFormat=png');
+    expect(smoke[0]).toContain('filename=smoke.ppm');
+    const upload = readFileSync(path.join(sandbox, 'upload.ppm'));
+    expect(upload.subarray(0, 11).toString('latin1')).toBe('P6\n1 1\n255\n');
+    expect(upload.length).toBe(11 + 3);
+  });
+
+  it.each([
+    ['answers with an error', 'STUB_FAIL_SMOKE'],
+    ['answers with something that is not a PNG', 'STUB_HTML_SMOKE'],
+  ])('rolls back when the smoke conversion %s, and shows the logs of web and worker only', (_, knob) => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const result = run(['deploy', ref('d')], { env: hostEnv({ [knob]: ref('d') }) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('smoke conversion');
+    expect(currentRelease()).toBe(good);
+    expect(releases()).toEqual([good]);
+    expect(calls().filter((call) => / logs /.test(call)).map((call) => call.split(' logs ')[1])).toEqual(['--no-color --tail 80 web worker']);
+  });
+
+  it('starts the current release again and removes the new one when the job is cancelled while the new one starts', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const result = run(['deploy', ref('e')], { env: hostEnv({ STUB_SIGNAL_UP: ref('e') }) });
+    expect(result.status).toBe(130);
+    expect(result.stderr).toContain('cancelled');
+    expect(currentRelease()).toBe(good);
+    expect(releases()).toEqual([good]);
+    expect(calls().filter((call) => / up /.test(call)).at(-1)).toContain(good);
+  });
+
   it('stops the stack when the first release is unhealthy and there is nothing to roll back to', () => {
-    const result = run(['deploy', 'sick'], { env: hostEnv({ STUB_FAIL_HEALTH: '-sick' }) });
+    const result = run(['deploy', ref('c')], { env: hostEnv({ STUB_FAIL_HEALTH: ref('c') }) });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('no previous release');
     expect(existsSync(path.join(home, 'current'))).toBe(false);
@@ -602,7 +770,7 @@ exit 0`
   });
 
   it('keeps the current and the previous release and their images, and removes only unused images of its own repositories', () => {
-    for (const ref of ['one', 'two', 'three']) expect(run(['deploy', ref], { env: hostEnv() }).status).toBe(0);
+    for (const digit of ['1', '2', '3']) expect(run(['deploy', ref(digit)], { env: hostEnv() }).status).toBe(0);
     expect(releases()).toHaveLength(2);
     expect(lstatSync(path.join(home, 'previous')).isSymbolicLink()).toBe(true);
     const digestsOf = (link: string): string[] => (readFileSync(path.join(home, link, 'images.env'), 'utf-8').match(/sha256:[0-9a-f]{64}/g) ?? []);
@@ -620,7 +788,7 @@ exit 0`
       ].join('\n')
     );
     writeFileSync(log, '');
-    expect(run(['deploy', 'four'], { env: hostEnv() }).status).toBe(0);
+    expect(run(['deploy', ref('4')], { env: hostEnv() }).status).toBe(0);
     const removed = calls().filter((call) => call.startsWith('docker image rm')).join('\n');
     expect(removed).toContain('removeunused');
     expect(removed).toContain('removestale');
@@ -630,9 +798,9 @@ exit 0`
   });
 
   it('rolls back on request to the previous release and swaps the two links', () => {
-    expect(run(['deploy', 'one'], { env: hostEnv() }).status).toBe(0);
+    expect(run(['deploy', ref('1')], { env: hostEnv() }).status).toBe(0);
     const first = currentRelease();
-    expect(run(['deploy', 'two'], { env: hostEnv() }).status).toBe(0);
+    expect(run(['deploy', ref('2')], { env: hostEnv() }).status).toBe(0);
     const second = currentRelease();
     const result = run(['rollback'], { env: hostEnv() });
     expect(result.status, result.stderr).toBe(0);
@@ -645,8 +813,8 @@ exit 0`
   });
 
   it('never leaves the home directory it was given', () => {
-    run(['deploy', 'one'], { env: hostEnv() });
-    expect(readdirSync(sandbox).sort()).toEqual(['bin', 'calls.log', 'filtered.env', 'home']);
+    run(['deploy', ref('1')], { env: hostEnv() });
+    expect(readdirSync(sandbox).sort()).toEqual(['bin', 'calls.log', 'filtered.env', 'home', 'upload.ppm']);
   });
 });
 
@@ -667,10 +835,16 @@ describe('operations document and policy entry', () => {
   });
 
   it('names each file that the document tells the operator to install', () => {
-    for (const file of ['deploy/oci/nginx-easyconvert.conf', 'deploy/oci/logrotate-easyconvert.conf', 'deploy/oci/deploy.sh', 'deploy/oci/env-allowlist.txt']) {
+    for (const file of ['deploy/oci/nginx-easyconvert.conf', 'deploy/oci/apparmor-easyconvert', 'deploy/oci/deploy.sh', 'deploy/oci/env-allowlist.txt']) {
       expect(doc).toContain(file);
       expect(existsSync(path.join(ROOT, file)), file).toBe(true);
     }
+  });
+
+  it('tells the operator to load the AppArmor profile and check it, and installs no rotation of its own for the edge log', () => {
+    expect(doc).toContain('sudo apparmor_parser -r -W /etc/apparmor.d/easyconvert');
+    expect(doc).toContain('aa-status');
+    expect(doc).not.toMatch(/\/etc\/logrotate\.d\/easyconvert/);
   });
 
   it('records the hosting and storage decision as entry 122', () => {

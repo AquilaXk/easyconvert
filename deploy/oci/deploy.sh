@@ -8,7 +8,8 @@
 #   deploy.sh budget                           print the per-service limits derived from the two budget knobs
 #   deploy.sh guard                            exit 1 and log a warning when the scratch mount is missing or a disk is nearly full
 #   deploy.sh sweep                            delete scratch temp files older than two hours, from inside the worker image
-#   deploy.sh deploy <image-ref>               pull, pin by digest, start, health check, roll back on failure, prune old images
+#   deploy.sh deploy <image-ref>               pull, pin by digest, start, check health and one conversion, roll back on failure,
+#                                              prune old images (<image-ref> is main or sha-<40 hex characters>)
 #   deploy.sh rollback                         start the previous release again
 set -euo pipefail
 
@@ -16,6 +17,7 @@ HOME_DIR="${EASYCONVERT_HOME:-/opt/easyconvert}"
 WORKER_REPO="${WORKER_REPO:-ghcr.io/aquilaxk/easyconvert-worker}"
 WEB_REPO="${WEB_REPO:-ghcr.io/aquilaxk/easyconvert-web}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8090/api/health}"
+SMOKE_URL="${SMOKE_URL:-http://127.0.0.1:8090/api/convert}"
 DATA_ROOT="${DATA_ROOT:-/var/lib/easysubway-data}"
 MIN_FREE_GB="${MIN_FREE_GB:-15}"
 SCRATCH_WARN_PERCENT="${SCRATCH_WARN_PERCENT:-85}"
@@ -24,21 +26,30 @@ HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOWLIST="${ENV_ALLOWLIST:-$SCRIPT_DIR/env-allowlist.txt}"
 KEEP_RELEASES=2
+IMAGE_REF_PATTERN='^(main|sha-[0-9a-f]{40})$'
+ENV_KEY_PATTERN='^[A-Z_][A-Z0-9_]*$'
+BASE_IMAGE_LABEL='org.opencontainers.image.base.name'
+PNG_SIGNATURE='89504e470d0a1a0a'
 
 log() { printf '[deploy] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
-# Keys of the allowlist, one per line. A line of the raw env that is not KEY=VALUE for one of them is dropped; only the key is named.
+# Keys of the allowlist, one per line. A line of the raw env that is not KEY=VALUE for one of them is dropped. The job log is public, so
+# a dropped line is named by its key only when the key has the shape of a variable name, and otherwise by its line number: a line
+# without a valid key may be a secret value that a line break split off.
 filter_env() {
-  local line key
+  local line key number=0
   while IFS= read -r line || [ -n "$line" ]; do
+    number=$((number + 1))
     line="${line%$'\r'}"
     case "$line" in ''|'#'*) continue ;; esac
     key="${line%%=*}"
-    if [ "$key" != "$line" ] && grep -Fxq -- "$key" "$ALLOWLIST"; then
+    if [ "$key" = "$line" ] || ! [[ "$key" =~ $ENV_KEY_PATTERN ]]; then
+      log "dropped a line of the env secret: line $number is not KEY=VALUE"
+    elif grep -Fxq -- "$key" "$ALLOWLIST"; then
       printf '%s\n' "$line"
     else
-      log "dropped a line of the env secret: key '${key:-?}' is not in the allowlist"
+      log "dropped a line of the env secret: key '$key' is not in the allowlist"
     fi
   done
 }
@@ -51,7 +62,7 @@ env_value() { # env_value <file> <key>
 # split of 3.5 cpus and 20 GiB: Redis 0.2 cpu and 0.5 GiB, the web 23% of the cpus and 27.5% of the memory, the worker the rest. The
 # worker runs one job per 3.4 GiB (the share docker-compose.yml gives each of 3 jobs in 10 GiB, the figure the input limits of
 # src/lib/conversions are sized for) and at most two jobs per cpu.
-budget() {
+budget() { # budget <cpus> <memory GiB>, empty for the launch default
   local cpus="${1:-3.5}" mem_gib="${2:-20}"
   awk -v c="$cpus" -v m="$mem_gib" 'BEGIN {
     if (c !~ /^[0-9]+(\.[0-9]+)?$/ || m !~ /^[0-9]+(\.[0-9]+)?$/ || c < 1.5 || m < 6) { print "budget needs at least 1.5 cpus and 6 GiB" > "/dev/stderr"; exit 1 }
@@ -103,6 +114,14 @@ pin() { # pin <repo> <ref>: pull and print repo@digest
   case "$digest" in "$repo@sha256:"*) printf '%s' "$digest" ;; *) die "no digest for $repo:$ref" ;; esac
 }
 
+# The web image names the worker image it was built on (Dockerfile.web). A tag that moved for one image and not yet for the other
+# would pair a new worker with an old web; the pair is refused before anything starts.
+check_pair() { # check_pair <ref> <worker repo@digest>
+  local ref="$1" worker="$2" base
+  base="$(docker image inspect --format "{{ index .Config.Labels \"$BASE_IMAGE_LABEL\" }}" "$WEB_REPO:$ref" 2> /dev/null || true)"
+  [ "$base" = "$worker" ] || die "the web image of $ref was built on '${base:-no recorded image}', not on $worker"
+}
+
 healthy() {
   local remaining="$HEALTH_ATTEMPTS"
   while [ "$remaining" -gt 0 ]; do
@@ -113,8 +132,39 @@ healthy() {
   return 1
 }
 
+# One conversion through the web service: a 1x1 PPM, which ImageMagick decodes in a sandboxed child (`unshare -r -n`), to PNG.
+# /api/health starts no child, so this is the check that the host lets the sandbox run (AppArmor profile, seccomp profile).
+smoke_conversion() {
+  local dir status=1
+  dir="$(mktemp -d)"
+  printf 'P6\n1 1\n255\n\377\000\000' > "$dir/smoke.ppm"
+  if curl --fail --silent --show-error --max-time 60 -o "$dir/smoke.png" \
+    -F "file=@$dir/smoke.ppm;filename=smoke.ppm" -F targetFormat=png "$SMOKE_URL" \
+    && [ "$(head -c 8 "$dir/smoke.png" | od -An -tx1 | tr -d ' \n')" = "$PNG_SIGNATURE" ]; then
+    status=0
+  else
+    log "the smoke conversion (PPM to PNG through $SMOKE_URL) failed"
+  fi
+  rm -rf -- "$dir"
+  return "$status"
+}
+
 start_release() { # start_release <release-dir>
-  compose "$1" up -d --wait --wait-timeout 240 --remove-orphans && healthy
+  compose "$1" up -d --wait --wait-timeout 240 --remove-orphans && healthy && smoke_conversion
+}
+
+# A cancelled job (the runner sends SIGINT, then SIGTERM, then kills it seconds later) starts the previous release again without
+# waiting for it, so the stack is not left on a release that never passed its checks.
+cancelled() { # cancelled <release-dir> <previous-dir>
+  local release="$1" previous="$2"
+  log "cancelled: starting the previous release again"
+  if [ -n "$previous" ] && [ -d "$previous" ]; then
+    compose "$previous" up -d --remove-orphans || log "could not start $previous"
+  elif [ -f "$release/.env" ]; then
+    compose "$release" down || true
+  fi
+  rm -rf -- "$release"
+  exit 130
 }
 
 # Removes the EasyConvert images that neither the current nor the previous release names. Only images of the two repositories are
@@ -145,13 +195,19 @@ prune_releases() {
 }
 
 deploy() {
-  local ref="${1:?image ref}" source_dir="${SOURCE_DIR:?SOURCE_DIR (the checkout)}" raw_env="${ENV_FILE:?ENV_FILE (the filtered env)}"
-  local release worker web
+  local ref="${1:-}" source_dir="${SOURCE_DIR:?SOURCE_DIR (the checkout)}" raw_env="${ENV_FILE:?ENV_FILE (the filtered env)}"
+  local release worker web previous budget_env
+  [[ "$ref" =~ $IMAGE_REF_PATTERN ]] || die "the image ref must be main or sha-<40 hex characters>"
   guard "$raw_env"
+  budget_env="$(budget "$(env_value "$raw_env" EASYCONVERT_BUDGET_CPUS)" "$(env_value "$raw_env" EASYCONVERT_BUDGET_MEMORY_GB)")" \
+    || die "the budget in the env secret cannot be used"
 
   worker="$(pin "$WORKER_REPO" "$ref")"
   web="$(pin "$WEB_REPO" "$ref")"
-  release="$HOME_DIR/releases/$(date -u +%Y%m%dT%H%M%SZ)-${ref//[^A-Za-z0-9_.-]/_}"
+  check_pair "$ref" "$worker"
+  previous="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
+  release="$HOME_DIR/releases/$(date -u +%Y%m%dT%H%M%SZ)-$ref"
+  trap 'cancelled "$release" "$previous"' INT TERM
   mkdir -p "$release/docker" "$HOME_DIR/bin"
   cp "$SCRIPT_DIR/deploy.sh" "$SCRIPT_DIR/env-allowlist.txt" "$HOME_DIR/bin/"
   cp "$source_dir/docker-compose.prod.yml" "$release/"
@@ -161,12 +217,11 @@ deploy() {
   (
     umask 077
     cat "$raw_env" > "$release/.env"
-    local cpus mem line key
-    cpus="$(env_value "$raw_env" EASYCONVERT_BUDGET_CPUS)"; mem="$(env_value "$raw_env" EASYCONVERT_BUDGET_MEMORY_GB)"
+    local line key
     while IFS= read -r line; do
       key="${line%%=*}"
       grep -q "^$key=" "$raw_env" || printf '%s\n' "$line" >> "$release/.env"
-    done < <(budget "${cpus:-3.5}" "${mem:-20}")
+    done <<< "$budget_env"
     cat "$release/images.env" >> "$release/.env"
   )
   chmod 600 "$release/.env"
@@ -174,9 +229,8 @@ deploy() {
   compose "$release" config --quiet || die "the compose file does not accept this env secret"
   compose "$release" run --rm --no-deps --entrypoint sh worker -c 'find /tmp -mindepth 1 -mmin +120 -delete' || log "scratch sweep skipped"
 
-  local previous
-  previous="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
   if start_release "$release"; then
+    trap - INT TERM
     [ -z "$previous" ] || ln -sfn "$previous" "$HOME_DIR/previous"
     ln -sfn "$release" "$HOME_DIR/current"
     prune_releases
@@ -185,8 +239,8 @@ deploy() {
     return 0
   fi
 
-  log "the new release did not become healthy: rolling back"
-  compose "$release" logs --no-color --tail 80 >&2 || true
+  log "the new release failed its checks: rolling back"
+  compose "$release" logs --no-color --tail 80 web worker >&2 || true
   if [ -n "$previous" ] && [ -d "$previous" ]; then
     start_release "$previous" || die "rollback to $previous also failed"
     log "rolled back to $(basename "$previous")"
@@ -194,6 +248,7 @@ deploy() {
     compose "$release" down || true
     log "no previous release to roll back to; the stack is stopped"
   fi
+  trap - INT TERM
   rm -rf -- "$release"
   return 1
 }

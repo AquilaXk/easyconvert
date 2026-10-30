@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile(\\.worker)?$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/(cad-convert|qpdf-runner)/|^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$",
+  "scope": "^bench/(corpus/|families/|[^/]+\\.(ts|py|json)$)|^scripts/ci-parity-[^/]*\\.mjs$|^\\.github/workflows/ci\\.yml$|^src/(lib/conversions|lib/workers|worker)/|^src/lib/jobs/artifact-helpers\\.ts$|^src/lib/queue/graph/node-executor\\.ts$|^src/lib/security/(process-sandbox|svg-sanitizer|helper-process|sandbox-launcher[^/]*)\\.ts$|^package(-lock)?\\.json$|^Dockerfile(?!\\.web$)[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/|^native/(cad-convert|qpdf-runner)/|^docker/sharp-libvips/|^\\.github/(actions/sharp-libvips/|workflows/sharp-libvips\\.yml$)|^scripts/ab-base-dependencies\\.sh$",
   "families": {
     "image": { "bench": "image" },
     "video": { "bench": "video" },
@@ -134,7 +134,7 @@
     },
     {
       "families": ["*"],
-      "match": "^src/lib/security/process-sandbox\\.ts$|^package(-lock)?\\.json$|^Dockerfile(\\.worker)?$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/"
+      "match": "^src/lib/security/process-sandbox\\.ts$|^package(-lock)?\\.json$|^Dockerfile[^/]*$|^docker/seccomp-[^/]*\\.json$|^\\.github/actions/ci-setup/"
     },
     {
       "families": ["*"],

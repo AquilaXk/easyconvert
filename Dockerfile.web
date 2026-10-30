@@ -43,6 +43,11 @@ RUN npx next build
 # ==============================================================================
 FROM ${WORKER_IMAGE} AS web
 
+# The worker image this one is built on (an OCI image-spec annotation key), which deploy/oci/deploy.sh compares with the worker image
+# it pins, so that a web and a worker image of two different builds are never started together.
+ARG WORKER_IMAGE
+LABEL org.opencontainers.image.base.name="${WORKER_IMAGE}"
+
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
