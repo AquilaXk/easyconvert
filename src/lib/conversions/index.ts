@@ -1,3 +1,5 @@
+// First import on purpose: the flag must be set before any WebAssembly instance exists (docs/policy-decisions.md, entry 115).
+import './wasm-import-wrappers';
 import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
 import { FORMAT_REGISTRY, sniffMimeTypeFromMagicBytes, isFormatCompatibleWithMagicBytes } from '../registry';
 import { assertNotSpoofedFile } from '../security/file-guard';

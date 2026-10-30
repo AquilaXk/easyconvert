@@ -8,16 +8,14 @@ import { proseText, SeededRandom } from './helpers/archive-corpus';
 import { expectBwt, fibonacciWord, naiveRotationSort, prefixDoubling, randomBlock, repeatWord } from './helpers/bwt-reference';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
-import { expectLinearOnInputs, expectNoSlowerThanReference, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { cpuClockMs, expectLinearOnInputs, expectNoSlowerThanReference, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
- * Regression guard for the suffix sorter against prefix doubling on a full block. Node.js 24 made the reference 2.1 times
- * faster and the previous sorter (a generic induced sort over a type array) 1.4 times, which left it at 1.5x on the CI
- * runner (nightly run on Node.js 24: ratio 0.65 against the bound 0.5). The current sorter (bzip2-suffix-sort.ts: type bits in the
- * suffix array entries, no type array, no rescans) measures 2.1x to 2.2x on the 4-core Linux test VM, where the
- * previous one measured 1.2x. A return to prefix doubling (1x) or to the previous sorter fails.
+ * Regression guard for the suffix sorter against prefix doubling on a full block. The sorter is single-threaded, so the claim is
+ * measured in CPU time: a process that waits for a core on a busy host is not charged for the wait. The bound sits above the
+ * spread of the current sorter and below the readings of the previous one (policy entries 64 and 112).
  */
-const MIN_BWT_SPEEDUP = 2;
+const MIN_BWT_SPEEDUP = 1.55;
 
 /**
  * The Burrows-Wheeler step of the bzip2 encoder against independent references:
@@ -130,7 +128,7 @@ describe('bzip2 Burrows-Wheeler transform', () => {
         'bwt of repository text',
         () => prefixDoubling(block),
         () => burrowsWheelerTransform(block, workspace),
-        { maxRatio: 1 / MIN_BWT_SPEEDUP, passes: 3 }
+        { maxRatio: 1 / MIN_BWT_SPEEDUP, passes: 3, clock: cpuClockMs }
       );
     },
     TEST_TIMEOUT_MS
@@ -164,7 +162,7 @@ describe('bzip2 Burrows-Wheeler transform', () => {
         const small = build(150_000);
         const large = build(600_000);
         const workspace = new BwtWorkspace();
-        await expectLinearOnInputs('bwt scaling', (block: Uint8Array) => burrowsWheelerTransform(block, workspace), { small, large, maxRatio: 8 });
+        await expectLinearOnInputs('bwt scaling', (block: Uint8Array) => burrowsWheelerTransform(block, workspace), { small, large, maxRatio: 8, clock: cpuClockMs });
       },
       SCALING_TEST_TIMEOUT_MS
     );

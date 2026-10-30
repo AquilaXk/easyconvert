@@ -1,17 +1,11 @@
 import { setFlagsFromString } from 'node:v8';
 
 /**
- * Keeps every WebAssembly call into a JavaScript import on V8's generic wrapper. Import it before any module that
- * instantiates WebAssembly: V8 reads the budget when an instance is made.
+ * Keeps WebAssembly calls into JavaScript imports on V8's generic wrapper, so tier-up adds no wrapper to the cache that the
+ * threads of a process share (Node.js 24's V8 frees such a wrapper twice). It must be the first import of every module that
+ * converts, because V8 reads the budget when an instance is made. The mechanism, the cost for JavaScript-to-WebAssembly calls
+ * and the evidence are in docs/policy-decisions.md, entry 115.
  *
- * Past the budget (1,000 calls) V8 compiles a wrapper for the import into a cache shared by every thread of the process.
- * V8 13.6, the one in Node.js 24, adds a wrapper to the caller's code scope before it checks that the wrapper is dying, so a
- * wrapper that wasm code GC is freeing on one thread is freed a second time when the scope of a tier-up on another thread
- * ends (V8 commit 9b8ca54d5a, "Fix lookup of wrappers marked is_dying", first in V8 13.7). The pdf.js decoders and
- * tesseract.js run WebAssembly on threads of their own and HarfBuzz on the main thread, and a job server died with SIGSEGV or
- * a V8 fatal error in `Runtime_TierUpWasmToJSWrapper`. With a budget no instance reaches, no JavaScript import gets a
- * compiled wrapper in that cache.
- *
- * Remove this module when the runtime's V8 has that commit.
+ * Remove this module and its test when the runtime's V8 has V8 commit 9b8ca54d5a (V8 13.7).
  */
 setFlagsFromString('--wasm-wrapper-tiering-budget=2147483647');
