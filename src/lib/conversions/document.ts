@@ -30,6 +30,7 @@ import {
   STRUCTURED_OCR_TARGETS,
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
+import { extractPdfTextLayerPages } from './pdf-text-geometry';
 import { PdfTextGeometryError } from './pdf-text-types';
 import { openPdfForRebuilding, openPdfForReading, type PdfAccess } from './pdf-access';
 import { assertPdfHeader, extractPdfDocument, readPdfDocument, type ExtractedPdfDocument, type ReadPdfResult } from './pdf-text-document';
@@ -44,6 +45,8 @@ import { canDrawInPdf, loadFontCoverageIndex } from './pdf-fonts';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeHtmlInput } from './html-encoding';
 import { decodeTextInput } from './text-input';
+import { outlookMessageText, readOutlookMessage } from './office/msg-reader';
+import { assertReadableAsText } from './office/text-source-guard';
 import { markdownToSafeHtml } from './markdown-pdf';
 import { renderMarkdownFragment } from './markdown';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
@@ -561,9 +564,12 @@ export async function convertDocument(
     }
 
     if (tgt === 'hocr' || tgt === 'alto') {
-      // Pages OCR recognized keep their OCR result; the others take their word boxes from the text layer.
+      // Pages OCR recognized keep their OCR result; the others take their word boxes from the text layer. A page below the density
+      // threshold that recognition found nothing on (a page that holds only its number) has not been read for geometry yet.
+      const unreadLayers = pageAnalyses.filter((page) => page.text !== '' && !textLayerResults.has(page.pageNumber) && !pageOcrResults.has(page.pageNumber));
+      const sparseLayerResults = await extractPdfTextLayerPages(pdfBytes, new Set(unreadLayers.map((page) => page.pageNumber)));
       const combinedResult = assembleCombinedOcrResult(
-        new Map([...textLayerResults, ...pageOcrResults]),
+        new Map([...textLayerResults, ...sparseLayerResults, ...pageOcrResults]),
         pageAnalyses,
         extractedText,
         ocrInfo.confidence
@@ -625,6 +631,8 @@ export async function convertDocument(
     // A PDF draws with installed fonts: a symbol-font character none of them covers shows as U+FFFD and is reported.
     if (tgt === 'pdf') await loadFontCoverageIndex();
     textContent = extractTextFromDoc(inputBuffer, tgt === 'pdf' ? canDrawInPdf : undefined);
+  } else if (src === 'msg') {
+    textContent = outlookMessageText(readOutlookMessage(inputBuffer));
   } else if (src === 'tex') {
     textContent = extractTextFromTex(inputBuffer.toString('utf-8'));
   } else if (HTML_SOURCE_FORMATS.has(src)) {
@@ -634,6 +642,7 @@ export async function convertDocument(
     // Rendered text must be exactly the input text: non-UTF-8 bytes fail instead of becoming mojibake.
     textContent = decodeTextInput(inputBuffer);
   } else {
+    assertReadableAsText(inputBuffer, src);
     textContent = inputBuffer.toString('utf-8');
   }
 

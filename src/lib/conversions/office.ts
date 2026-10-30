@@ -333,6 +333,12 @@ export async function convertOffice(
   }
 
   // 20. Target is EPUB (from MD, HTML, TXT, DOCX, etc.)
+  if (tgt === 'epub' && src === 'pdf') {
+    // The block model the PDF reader built is written as it is: its text never passes through Markdown, whose rules would read
+    // a row of numbers as nested lists and whose limits are those of a user's document.
+    const epubBuffer = await documentToEpub(await readPdfForOffice(inputBuffer, options), { title: baseName, language: options.language });
+    return { buffer: epubBuffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: epubBuffer.length };
+  }
   if (tgt === 'epub') {
     const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
     const epubBuffer = await generateEpubFromText(textContent, src, options, baseName);

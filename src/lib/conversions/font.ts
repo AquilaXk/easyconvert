@@ -630,26 +630,32 @@ export function encodeEot(font: ParsedFont): Buffer {
   return Buffer.concat([header, sfntBuf]);
 }
 
+/** Embedded OpenType header facts (W3C member submission "Embedded OpenType (EOT) File Format", EOT header: Flags at offset 12). */
+const EOT_HEADER_MIN_BYTES = 36;
+const EOT_FLAG_COMPRESSED = 0x4;
+const EOT_FLAG_XOR_ENCRYPTED = 0x10000000;
+const EOT_XOR_KEY = 0x50;
+
 /**
- * Decodes Microsoft Embedded OpenType (EOT) into ParsedFont
+ * Decodes Microsoft Embedded OpenType (EOT) into ParsedFont. The font data is the last `FontDataSize` bytes; it is XOR-encrypted
+ * with 0x50 when the flag says so (libeot `eot2ttf` does the same), and a MicroType Express compressed font is refused by name.
  */
 export function decodeEot(buffer: Buffer, defaultName: string): ParsedFont {
-  if (buffer.length < 36 || buffer.readUInt16LE(34) !== 0x504c) {
-    throw new Error('Invalid EOT font: missing LP signature at offset 34.');
+  if (buffer.length < EOT_HEADER_MIN_BYTES || buffer.readUInt16LE(34) !== 0x504c) {
+    throw new ConversionFailedError('Invalid EOT font: missing LP signature at offset 34.');
   }
 
   const fontDataSize = buffer.readUInt32LE(4);
-  const sfntCandidate = buffer.subarray(buffer.length - fontDataSize);
-
-  if (sfntCandidate.length >= 12) {
-    try {
-      return decodeSfnt(sfntCandidate, defaultName);
-    } catch {
-      // Fallback
-    }
+  const flags = buffer.readUInt32LE(12);
+  if ((flags & EOT_FLAG_COMPRESSED) !== 0) {
+    throw new ConversionFailedError('This EOT font is compressed with MicroType Express (MTX), which this service does not decompress, so its outlines cannot be read.');
   }
-
-  return createCanonicalFont(buffer, defaultName);
+  if (fontDataSize < SFNT_HEADER_BYTES || fontDataSize > buffer.length) {
+    throw new ConversionFailedError('Invalid EOT font: the font data it declares does not fit in the file.');
+  }
+  const fontData = Buffer.from(buffer.subarray(buffer.length - fontDataSize));
+  if ((flags & EOT_FLAG_XOR_ENCRYPTED) !== 0) for (let at = 0; at < fontData.length; at += 1) fontData[at] ^= EOT_XOR_KEY;
+  return decodeSfnt(fontData, defaultName);
 }
 
 export interface GlyphPoint {
