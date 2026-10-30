@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { Readable, PassThrough } from 'node:stream';
 import Redis from 'ioredis';
+import { readyGatedRedis } from '../redis/when-ready';
 import { localFsStorage } from './local-fs-storage';
 import { objectStorage, storageProvider } from './selected-storage';
 import { globalSharedObjects } from './shared-store';
@@ -142,11 +143,11 @@ export class RedisTusSessionStore implements TusSessionStore {
     } else {
       const url = process.env.REDIS_URL;
       if (url) {
-        this.redis = new Redis(url, { maxRetriesPerRequest: 2, enableOfflineQueue: false });
+        this.redis = readyGatedRedis(new Redis(url, { maxRetriesPerRequest: 2, enableOfflineQueue: false }));
       } else {
         const host = process.env.REDIS_HOST || '127.0.0.1';
         const port = Number(process.env.REDIS_PORT || 6379);
-        this.redis = new Redis({ host, port, maxRetriesPerRequest: 2, enableOfflineQueue: false });
+        this.redis = readyGatedRedis(new Redis({ host, port, maxRetriesPerRequest: 2, enableOfflineQueue: false }));
       }
     }
   }

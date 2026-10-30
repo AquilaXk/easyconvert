@@ -16,6 +16,7 @@ import type { User } from '../auth/types';
 import { decryptSecret } from './secret-encryption';
 import { isIpInCidr, isIpAllowed } from './ip-utils';
 import { resolveRetentionPolicy } from '../storage/result-retention';
+import { readyGatedRedis } from '../redis/when-ready';
 
 export { isIpInCidr, isIpAllowed };
 
@@ -202,6 +203,25 @@ export interface TokenBucketResult {
   error?: string;
 }
 
+interface RedisEndpoint {
+  url?: string;
+  host?: string;
+  port?: number;
+}
+
+/** The fail-fast client for the configured Redis, connecting now and waiting for the connection before each command. */
+function connectFromEnvironment(endpoint: RedisEndpoint): Redis | undefined {
+  const url = endpoint.url || process.env.REDIS_URL;
+  const host = endpoint.host || process.env.REDIS_HOST;
+  const port = endpoint.port || (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
+  const failFast = { enableOfflineQueue: false, maxRetriesPerRequest: 1 };
+  try {
+    if (url) return readyGatedRedis(new Redis(url, failFast));
+    if (host) return readyGatedRedis(new Redis({ host, port, ...failFast }));
+  } catch {}
+  return undefined;
+}
+
 /**
  * Redis-backed Key Store with atomic Lua script metering and 2-phase quota transactions
  * (Reserve-Commit/Rollback) preventing TOCTOU races in distributed environments.
@@ -227,55 +247,15 @@ export class RedisKeyStore extends KeyStore {
       isIsolated = keyPrefixOrOptions.isolated ?? isolated;
       client = keyPrefixOrOptions.redisClient;
       if (!client) {
-        const host = keyPrefixOrOptions.redisHost || process.env.REDIS_HOST;
-        const url = keyPrefixOrOptions.redisUrl || process.env.REDIS_URL;
-        const port =
-          keyPrefixOrOptions.redisPort ||
-          (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
-        if (url) {
-          try {
-            client = new Redis(url, {
-              lazyConnect: true,
-              enableOfflineQueue: false,
-              maxRetriesPerRequest: 1,
-            });
-          } catch {}
-        } else if (host) {
-          try {
-            client = new Redis({
-              host,
-              port,
-              lazyConnect: true,
-              enableOfflineQueue: false,
-              maxRetriesPerRequest: 1,
-            });
-          } catch {}
-        }
+        client = connectFromEnvironment({
+          url: keyPrefixOrOptions.redisUrl,
+          host: keyPrefixOrOptions.redisHost,
+          port: keyPrefixOrOptions.redisPort,
+        });
       }
     } else {
       prefix = keyPrefixOrOptions;
-      const host = process.env.REDIS_HOST;
-      const url = process.env.REDIS_URL;
-      const port = process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379;
-      if (url) {
-        try {
-          client = new Redis(url, {
-            lazyConnect: true,
-            enableOfflineQueue: false,
-            maxRetriesPerRequest: 1,
-          });
-        } catch {}
-      } else if (host) {
-        try {
-          client = new Redis({
-            host,
-            port,
-            lazyConnect: true,
-            enableOfflineQueue: false,
-            maxRetriesPerRequest: 1,
-          });
-        } catch {}
-      }
+      client = connectFromEnvironment({});
     }
 
     super(isIsolated);
