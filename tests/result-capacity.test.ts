@@ -544,6 +544,24 @@ describe('early deletion when the disk runs full', () => {
     expect(attempts).toHaveLength(MISSING_IN_A_ROW);
   });
 
+  it('does not pause after such a run, so the next pass reaches the results behind it', async () => {
+    const user = await createUser('wiped-then-real');
+    const now = Date.now();
+    for (let i = 0; i < MISSING_IN_A_ROW + 5; i++) await storeResult(user, `gone${i}`, now - (60 - i) * MINUTE_MS);
+    for (let i = 0; i < 3; i++) await storeResult(user, `real${i}`, now - (40 - i) * MINUTE_MS);
+    const deletedForReal: string[] = [];
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation((key: string) => {
+      if (key.includes('/gone')) return false;
+      deletedForReal.push(key);
+      return true;
+    });
+    setDiskProbe(async () => 90);
+    expect(await evictForCapacity(storageProvider, now)).toBe(0);
+
+    expect(await evictForCapacity(storageProvider, now + 1000)).toBeGreaterThan(0);
+    expect(deletedForReal.length).toBeGreaterThan(0);
+  });
+
   describe('when the results were saved by another process', () => {
     /** A second store on the same directory, which is all another process shares with this one. */
     const savedByWorker = new SharedObjectStore();

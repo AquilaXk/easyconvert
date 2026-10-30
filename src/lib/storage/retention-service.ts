@@ -492,7 +492,9 @@ export async function evictForCapacity(storage: SweptStorage, now: number = Date
     if (after === undefined) return deleted;
     used = after;
   }
-  if (deleted === 0 || used >= startUsed) {
+  // A run of records whose object was already gone marked them gone, so the next pass starts past them: no pause for it.
+  // Space freed by another process (no deletion here, use lower) is not futile either.
+  if (used >= startUsed && missingInARow < MISSING_IN_A_ROW) {
     futilePass = { at: now, used };
     console.warn(
       `[Retention] Stopped deleting results early: ${deleted} deleted and the disk is ${used.toFixed(1)}% full, not lower than the ${startUsed.toFixed(1)}% it began at`
