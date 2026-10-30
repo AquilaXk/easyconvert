@@ -3,6 +3,7 @@
  * document with several pages is delivered as a ZIP of one file per page, declared as `application/zip`; that archive is
  * accepted when it is a well-formed ZIP whose entries are all readable files of the target type. An OBJ of a model that has colours
  * is delivered as a ZIP of the OBJ and the MTL file its `mtllib` line names, declared as `application/zip` too; see objArchiveProblem.
+ * An OEB book is calibre's OEB folder delivered as one ZIP, declared as `application/zip` as well; see oebArchiveProblem.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -138,11 +139,29 @@ async function objArchiveProblem(buffer: Buffer): Promise<string | null> {
   return objMaterialProblem(model.reading, materials[0].name, library.materials);
 }
 
+/**
+ * An OEB book is calibre's OEB folder delivered as one ZIP: an `.opf` package beside XHTML content documents, an NCX and a style sheet. It is accepted
+ * when it is a readable ZIP with an `.opf` and at least one `.html` or `.xhtml` file, and, unless the corpus marks the input as empty, the content
+ * documents hold text once their markup is taken out (the read-back of oebText in tests/helpers/calibre-books.ts).
+ */
+async function oebArchiveProblem(buffer: Buffer, emptyInput: boolean): Promise<string | null> {
+  const archive = await archiveEntries(buffer, 'oeb archive');
+  if ('problem' in archive) return archive.problem;
+  const { entries } = archive;
+  if (!entries.some((entry) => hasExtension(entry.name, 'opf'))) return 'oeb archive has no .opf package';
+  const pages = entries.filter((entry) => /\.x?html$/i.test(entry.name));
+  if (pages.length === 0) return 'oeb archive has no XHTML content document';
+  if (emptyInput) return null;
+  const markup = (await Promise.all(pages.map((page) => page.async('string')))).join(' ');
+  return markup.replace(/<[^>]*>/g, ' ').trim() === '' ? 'oeb archive content documents hold no text' : null;
+}
+
 /** Why the output is not a readable file of the target type, or null when it is. */
 export async function outputProblem(buffer: Buffer, target: string, workDir: string, options: OutputCheckOptions): Promise<string | null> {
   if (buffer.length === 0) return options.emptyInput === true ? null : 'empty output';
   if (options.mimeType === ZIP_MIME_TYPE && PAGE_TARGETS.has(target)) return pageArchiveProblem(buffer, target, workDir, options);
   if (options.mimeType === ZIP_MIME_TYPE && target === 'obj') return objArchiveProblem(buffer);
+  if (options.mimeType === ZIP_MIME_TYPE && target === 'oeb') return oebArchiveProblem(buffer, options.emptyInput === true);
   if (target === 'obj') {
     const model = readableObj(buffer);
     return 'problem' in model ? model.problem : plainObjMaterialProblem(model.reading);

@@ -644,6 +644,41 @@ describe('an OBJ delivered as a ZIP', () => {
   });
 });
 
+describe('an OEB book delivered as a ZIP', () => {
+  const OPF = '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0"><manifest/></package>';
+  const XHTML = '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Chapter one has words.</p></body></html>';
+  const oebProblem = (archive: Buffer, options: { emptyInput?: boolean } = {}) =>
+    outputProblem(archive, 'oeb', WORK_DIR, { pdfinfo: '', identify: '', mimeType: ZIP_MIME, ...options });
+
+  it('is accepted with an OPF package, a content document, an NCX and a style sheet', async () => {
+    const archive = await zipOf({ 'content.opf': OPF, 'index.xhtml': XHTML, 'toc.ncx': '<ncx/>', 'style.css': 'p{}' });
+    expect(await oebProblem(archive)).toBeNull();
+  });
+
+  it('is accepted when the content document is in a folder and named .html', async () => {
+    expect(await oebProblem(await zipOf({ 'book/content.opf': OPF, 'book/part1.html': XHTML }))).toBeNull();
+  });
+
+  it('is refused without an OPF package', async () => {
+    expect(await oebProblem(await zipOf({ 'index.xhtml': XHTML, 'toc.ncx': '<ncx/>' }))).toBe('oeb archive has no .opf package');
+  });
+
+  it('is refused without a content document', async () => {
+    expect(await oebProblem(await zipOf({ 'content.opf': OPF, 'style.css': 'p{}' }))).toBe('oeb archive has no XHTML content document');
+  });
+
+  it('is refused when the content documents hold no text, unless the corpus marks the input as empty', async () => {
+    const archive = await zipOf({ 'content.opf': OPF, 'index.xhtml': '<html><body><p> </p></body></html>' });
+    expect(await oebProblem(archive)).toBe('oeb archive content documents hold no text');
+    expect(await oebProblem(archive, { emptyInput: true })).toBeNull();
+  });
+
+  it('is refused when the ZIP has no entry, and when the bytes are not a ZIP', async () => {
+    expect(await oebProblem(await zipOf({}))).toBe('oeb archive has no .opf package');
+    expect(await oebProblem(Buffer.from('PK\u0003\u0004 corrupt archive'))).toBe('oeb archive is not a readable ZIP');
+  });
+});
+
 describe.skipIf(!haveCadConverter)('the archive convertCadWithOcct returns for a coloured real model', () => {
   for (const id of ['cq-red_cube_blue_cylinder.step', 'pyocc-testfile.igs']) {
     it(`passes the gate: ${id}`, { timeout: CONVERSION_TIMEOUT_MS }, async (ctx) => {
