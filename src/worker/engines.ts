@@ -134,7 +134,6 @@ import {
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
 export type { WorkerVfsPayload, WorkerEngineOptions, WorkerConversionResult } from './worker-types';
-export { officeInputWithoutMacros };
 
 // Fixed standard locations for native CLI binaries (hardened against injection)
 const BINARY_PATHS: Record<string, string[]> = {

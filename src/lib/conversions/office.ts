@@ -9958,7 +9958,7 @@ async function convertGenericEbookSource(inputBuffer: Buffer, src: string, tgt: 
 }
 
 /** Writes the text of an e-book in the targets the in-process engine writes for the e-book sources: EPUB, TXT, RTF, rasters and PDF (the Palm, Sony and Open eBook targets are calibre's). */
-async function writeEbookTargetFromText(
+export async function writeEbookTargetFromText(
   text: string,
   src: string,
   tgt: string,
@@ -9982,7 +9982,7 @@ async function writeEbookTargetFromText(
     const rendered = await renderTextToRaster(text, tgt, baseName);
     return { buffer: rendered.buffer, mimeType: rendered.mimeType, filename: `${baseName}.${tgt}`, size: rendered.buffer.length };
   }
-
+  if (tgt !== 'pdf') throw new UnsupportedTargetError(`Cannot write the text of a .${src} book as '.${tgt}'.`);
   const pdfBuffer = await generatePdfFromDocx([{ text, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
   return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
 }

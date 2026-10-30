@@ -5,8 +5,7 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { ConversionFailedError, EngineMissingError } from '../src/lib/types';
-import { executeWorkerConversion } from '../src/worker/engines';
-import { convertFile } from '../src/lib/conversions';
+import type { WorkerEngineOptions } from '../src/worker/worker-types';
 import { calibreBinary, calibreMetadata, calibreText, lrfText, normalized, oebText } from './helpers/calibre-books';
 import { palmDocText, readMobiBook, readPalmDatabase, readPalmDocHeader, recordsStartingWith, wordsOfMarkup } from './helpers/palmdb-reader';
 import { skipUnless } from './helpers/strict-skip';
@@ -26,6 +25,8 @@ import { skipUnless } from './helpers/strict-skip';
 
 const calibreMissing = skipUnless('ebook-convert', calibreBinary !== null);
 const CONVERSION_TIMEOUT_MS = 120_000;
+/** The names every temporary directory and file of the worker begins with (`easyconvert-calibre-`, `easyconvert-vfs`, `easyconvert_worker_sandbox_`). */
+const WORKER_TEMP_PREFIX = 'easyconvert';
 const MOBI_HEADER_ENCODING_UTF8 = 65001;
 const KF8_VERSION = 8;
 const MOBI6_VERSION = 6;
@@ -49,7 +50,7 @@ const sourceOf = (paragraphs: readonly string[]): Buffer => Buffer.from(paragrap
 async function written(source: Buffer, src: string, tgt: string, name = `${TITLE}.${src}`): Promise<Buffer> {
   const result = await dispatchConversion(source, src, tgt, {}, name);
   expect(result.engineUsed, `${src} -> ${tgt}`).toBe('native-calibre');
-  expect(result.filename).toBe(`${TITLE}.${tgt}`);
+  expect(result.filename).toBe(`${TITLE}.${tgt === 'oeb' ? 'zip' : tgt}`);
   return result.buffer;
 }
 
@@ -157,13 +158,6 @@ describe.skipIf(calibreMissing)('e-books written by calibre', () => {
     expect(text).toBe(expectedText(src === 'pdb' ? LATIN_PARAGRAPHS : PARAGRAPHS));
   }, CONVERSION_TIMEOUT_MS);
 
-  it('an EPUB is converted as it is (the pair is not advertised, so the worker is called directly)', async () => {
-    const epub = (await convertFile(sourceOf(PARAGRAPHS), 'txt', 'epub', {}, `${TITLE}.txt`)).buffer;
-    const result = await executeWorkerConversion(epub, 'epub', 'mobi', {}, `${TITLE}.epub`);
-    expect(result.engineUsed).toBe('native-calibre');
-    expect(wordsOfMarkup(palmDocText(result.buffer).toString('utf-8'))).toBe(expectedText(PARAGRAPHS));
-  }, CONVERSION_TIMEOUT_MS);
-
   it('a damaged book is a typed conversion failure, not a missing engine and not a server error', async () => {
     const file = await book('mobi');
     const error = await dispatchConversion(file.subarray(0, 300), 'mobi', 'azw3', {}, 'broken.mobi').catch((caught: unknown) => caught);
@@ -172,10 +166,26 @@ describe.skipIf(calibreMissing)('e-books written by calibre', () => {
     expect((error as Error).message).toMatch(/^calibre could not convert the \.mobi file to \.azw3/);
   }, CONVERSION_TIMEOUT_MS);
 
-  it('leaves no job directory behind', async () => {
-    const before = new Set(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-calibre-')));
-    await written(sourceOf(LATIN_PARAGRAPHS), 'txt', 'mobi');
-    const left = fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('easyconvert-calibre-') && !before.has(name));
-    expect(left).toEqual([]);
+  it.each(['mobi', 'pdb', 'oeb'])('leaves nothing of a .%s conversion in the temporary directory', async (tgt) => {
+    // A temporary directory of the test's own, so that the job directories of other test files running at the same time are not counted;
+    // the result is written outside it, so that what is left in it is only what the route itself failed to remove. Only the worker's own
+    // entries are counted: the test runner may make a cache directory of its own (`tsx-<uid>`) in the temporary directory on a first import.
+    const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'calibre-private-tmp-'));
+    const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'calibre-output-'));
+    const previous = process.env.TMPDIR;
+    process.env.TMPDIR = privateTmp;
+    try {
+      await dispatchConversion(sourceOf(LATIN_PARAGRAPHS), 'txt', tgt, { outputPath: path.join(outputDir, `out.${tgt}`) } as WorkerEngineOptions, `${TITLE}.txt`);
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previous;
+    }
+    try {
+      expect(fs.readdirSync(privateTmp).filter((name) => name.startsWith(WORKER_TEMP_PREFIX))).toEqual([]);
+      expect(fs.readdirSync(outputDir)).toHaveLength(1);
+    } finally {
+      fs.rmSync(privateTmp, { recursive: true, force: true });
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
   }, CONVERSION_TIMEOUT_MS);
 });

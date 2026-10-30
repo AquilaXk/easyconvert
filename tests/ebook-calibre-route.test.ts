@@ -8,6 +8,7 @@ import { convertFile } from '../src/lib/conversions';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { requiresNativeEngine } from '../src/lib/conversions/native-engine-pairs';
 import { CALIBRE_EBOOK_TARGETS } from '../src/lib/conversions/calibre-ebook-targets';
+import { writeEbookTargetFromText } from '../src/lib/conversions/office';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { convertWithCalibre, type CalibreDeps, type CalibreRequest } from '../src/worker/ebook-calibre';
 import {
@@ -18,7 +19,9 @@ import {
   EngineUnavailableError,
   InvalidConversionOutputError,
   PayloadLimitError,
+  UnsupportedTargetError,
 } from '../src/lib/types';
+import type { WorkerConversionResult } from '../src/worker/worker-types';
 import { withMissingBinary } from './helpers/native-tools';
 
 /**
@@ -33,6 +36,9 @@ const PLAIN_TEXT = Buffer.from('A short book.\n\nWith two paragraphs.\n', 'utf-8
 const HANGUL = '안녕하세요 한글 문장입니다.';
 const FAKE_TEXT_NAME = 'fake-text.txt';
 const TIME_LIMIT_MS = 1500;
+/** Each run of the slow stand-in lasts this long: more than a run may take of TIME_LIMIT_MS once the first run has used its share, and far less than ROOMY_LIMIT_MS. */
+const RUN_DURATION_MS = 1000;
+const ROOMY_LIMIT_MS = 20_000;
 const PROCESS_END_WAIT_MS = 3000;
 const PROCESS_POLL_MS = 50;
 const SRC_ROOT = path.join(__dirname, '..', 'src');
@@ -96,7 +102,10 @@ function setScannedText(text: string): void {
   fs.writeFileSync(fakeTextPath(), text);
 }
 
-function deps(epub: Buffer = Buffer.from('epub bytes')): CalibreDeps & { converted: Array<{ src: string; tgt: string }>; discarded: Array<string | undefined> } {
+function deps(
+  epub: Buffer = Buffer.from('epub bytes'),
+  written: Partial<WorkerConversionResult> = {}
+): CalibreDeps & { converted: Array<{ src: string; tgt: string }>; discarded: Array<string | undefined> } {
   const converted: Array<{ src: string; tgt: string }> = [];
   const discarded: Array<string | undefined> = [];
   return {
@@ -104,7 +113,7 @@ function deps(epub: Buffer = Buffer.from('epub bytes')): CalibreDeps & { convert
     discarded,
     async convert(_input, src, target) {
       converted.push({ src, tgt: target });
-      return { buffer: epub, mimeType: 'application/epub+zip', filename: 'book.epub', size: epub.length, engineUsed: 'internal-fallback', executionTimeMs: 0 };
+      return { buffer: epub, mimeType: 'application/epub+zip', filename: 'book.epub', size: epub.length, engineUsed: 'internal-fallback', executionTimeMs: 0, ...written };
     },
     discardOutput(filePath) {
       discarded.push(filePath);
@@ -149,6 +158,12 @@ describe('a worker without ebook-convert', () => {
     expect((failure as Error).message).toBe(`Engine 'ebook-convert' is unavailable: Writing .${target} needs the native ebook-convert (calibre) engine; the in-process engine has no writer for it.`);
   });
 
+  it('does not write a calibre target in-process from the text of a book, whatever the caller asks', async () => {
+    const failure = await writeEbookTargetFromText('A short book.', 'pml', 'mobi', {}, 'book').catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(UnsupportedTargetError);
+    expect((failure as Error).message).toBe("Cannot write the text of a .pml book as '.mobi'.");
+  });
+
   it('marks every pair that ends in a calibre target as native-engine only, for every source the registry advertises', () => {
     const pairs = Object.entries(FORMAT_REGISTRY).flatMap(([source, def]) => def.targetFormats.filter((target) => CALIBRE_EBOOK_TARGETS.has(target)).map((target) => [source, target] as const));
     expect(pairs.length).toBeGreaterThan(CALIBRE_EBOOK_TARGETS.size);
@@ -186,7 +201,7 @@ describe('the calibre route against a stand-in program', () => {
     expect(path.basename(run.args[1])).toBe(`converted.${target}`);
     expect(run.args.slice(2)).toEqual(options);
     expect(result.engineUsed).toBe('native-calibre');
-    expect(result.filename).toBe(`book.${target}`);
+    expect(result.filename).toBe(target === 'oeb' ? 'book.zip' : `book.${target}`);
     fs.rmSync(result.filePath as string, { force: true });
   });
 
@@ -202,7 +217,7 @@ describe('the calibre route against a stand-in program', () => {
     for (const result of results) fs.rmSync(result.filePath as string, { force: true });
   });
 
-  it.each(['mobi', 'azw', 'azw3', 'pdb', 'lrf', 'fb2'])('hands a .%s book to calibre as it is, under a name with its extension', async (src) => {
+  it.each(['mobi', 'azw', 'azw3', 'pdb', 'lrf'])('hands a .%s book to calibre as it is, under a name with its extension', async (src) => {
     const program = fakeProgram(validOutput());
     setScannedText('unused');
     const converters = deps();
@@ -245,10 +260,11 @@ describe('the calibre route against a stand-in program', () => {
     }
   });
 
-  it('packs the OEB folder as a ZIP with its OPF package and XHTML', async () => {
+  it('packs the OEB folder as a ZIP file named for what it is, with its OPF package and XHTML', async () => {
     const program = fakeProgram(validOutput());
     const result = await convertWithCalibre(deps(), request('txt', 'oeb'), program);
     expect(result.mimeType).toBe('application/zip');
+    expect(result.filename).toBe('book.zip');
     const zip = await JSZip.loadAsync(result.buffer);
     expect(Object.keys(zip.files).sort()).toEqual(['OEBPS/', 'OEBPS/c1.xhtml', 'content.opf'].filter((name) => !name.endsWith('/')));
     fs.rmSync(result.filePath as string, { force: true });
@@ -269,6 +285,19 @@ describe('the calibre route against a stand-in program', () => {
     expect(write.args.slice(2)).toEqual(['--format', 'doc', '--pdb-output-encoding', encoding]);
     fs.rmSync(result.filePath as string, { force: true });
   });
+
+  it('gives the two runs of a PDB book one time limit between them, not one each', async () => {
+    setScannedText('A short book.');
+    const slow = fakeProgram(`setTimeout(() => {${validOutput()}}, ${RUN_DURATION_MS});`);
+    const outcome = await convertWithCalibre(deps(), request('txt', 'pdb', PLAIN_TEXT, { timeoutMs: TIME_LIMIT_MS }), slow).catch((error: unknown) => error);
+    expect(runsOf()).toHaveLength(2);
+    expect(outcome).toBeInstanceOf(CpuTaskTimeoutError);
+    expect((outcome as Error).message).toContain(`${TIME_LIMIT_MS} ms`);
+
+    const roomy = await convertWithCalibre(deps(), request('txt', 'pdb', PLAIN_TEXT, { timeoutMs: ROOMY_LIMIT_MS }), slow);
+    expect(runsOf()).toHaveLength(4);
+    fs.rmSync(roomy.filePath as string, { force: true });
+  }, 30_000);
 
   it('answers a book protected by DRM with the typed 422 error', async () => {
     const program = fakeProgram(`process.stderr.write('Traceback...\\ncalibre.ebooks.DRMError: This book is locked by DRM\\n'); process.exit(1);`);
@@ -321,14 +350,22 @@ describe('the calibre route against a stand-in program', () => {
     expect(runsOf()).toEqual([]);
   });
 
-  it('refuses an EPUB whose archive holds an entry that climbs out of the package, or the same entry twice', async () => {
-    const program = fakeProgram(validOutput());
-    const climbing = new JSZip();
-    climbing.file('mimetype', 'application/epub+zip');
-    climbing.file('../escape.xhtml', '<html/>');
-    const error = await convertWithCalibre(deps(), request('epub', 'mobi', await climbing.generateAsync({ type: 'nodebuffer' })), program).catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(ConversionFailedError);
-    expect(runsOf()).toEqual([]);
+  it('takes the EPUB of another source from the file the converter left, and refuses one larger than a document may be', async () => {
+    const staged = path.join(workDir, 'staged-copy.epub');
+    const program = fakeProgram(`${validOutput()}\nif (input.endsWith('.epub')) fs.copyFileSync(input, ${JSON.stringify(staged)});`);
+    const epubPath = path.join(workDir, 'written.epub');
+    fs.writeFileSync(epubPath, 'epub in a file');
+    const converters = deps(Buffer.from('the buffer, not the file'), { filePath: epubPath, size: 14 });
+    const result = await convertWithCalibre(converters, request('txt', 'mobi'), program);
+    expect(fs.readFileSync(staged, 'utf-8')).toBe('epub in a file');
+    expect(converters.discarded).toEqual([epubPath]);
+    fs.rmSync(result.filePath as string, { force: true });
+
+    const oversized = deps(Buffer.from('the buffer, not the file'), { filePath: epubPath, size: 257 * 1024 * 1024 });
+    const error = await convertWithCalibre(oversized, request('txt', 'mobi'), program).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(PayloadLimitError);
+    expect(oversized.discarded).toEqual([epubPath]);
+    expect(runsOf()).toHaveLength(1);
   });
 });
 

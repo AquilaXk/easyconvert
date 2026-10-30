@@ -32,8 +32,8 @@ export function decodeWindows1252(bytes: Uint8Array): string {
 
 /** The characters Windows-1252 encodes: ASCII, the Latin-1 letters from U+00A0, and the 27 characters it puts in bytes 0x80..0x9F. */
 const ENCODABLE_TEXT = new RegExp(
-  `^[\\u0000-\\u007f\\u00a0-\\u00ff${HIGH_TABLE.filter((codePoint) => codePoint > 0xff)
-    .map((codePoint) => `\\u${codePoint.toString(16).padStart(4, '0')}`)
+  String.raw`^[\u0000-\u007f\u00a0-\u00ff${HIGH_TABLE.filter((codePoint) => codePoint > 0xff)
+    .map((codePoint) => String.raw`\u${codePoint.toString(16).padStart(4, '0')}`)
     .join('')}]*$`
 );
 

@@ -360,13 +360,30 @@ RUN fluidsynth --version | grep -q 'FluidSynth runtime version' \
 RUN fontforge -lang=ff -c 'Print($version)' 2>/dev/null | grep -Eq '^[0-9]{8}$'
 
 # E-book writer (calibre, installed above): the build fails unless `ebook-convert` starts, finds its Qt platform plug-in without a display and
-# writes a MOBI book, whose Palm database header names it (type `BOOK`, creator `MOBI`), from a text file, with its configuration in a scratch directory.
+# writes all five targets (MOBI, AZW3, PDB, LRF, OEB) from a text file with the options of the worker's route and its configuration in a scratch
+# directory, and each result carries its format's signature: the Palm database type and creator `BOOKMOBI` (MOBI) or `TEXtREAd` (PDB), the MOBI
+# version 8 (AZW3), the LRF magic, or an OPF package in the OEB folder.
 RUN scratch="$(mktemp -d)" \
     && mkdir "${scratch}/config" "${scratch}/cache" "${scratch}/tmp" \
     && printf 'Hello\n' > "${scratch}/book.txt" \
-    && HOME="${scratch}" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="${scratch}/config" CALIBRE_CACHE_DIRECTORY="${scratch}/cache" CALIBRE_TEMP_DIR="${scratch}/tmp" \
-        ebook-convert "${scratch}/book.txt" "${scratch}/book.mobi" > /dev/null \
+    && export HOME="${scratch}" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="${scratch}/config" \
+        CALIBRE_CACHE_DIRECTORY="${scratch}/cache" CALIBRE_TEMP_DIR="${scratch}/tmp" \
+    && for target in mobi azw3 pdb lrf oeb; do \
+        case "${target}" in \
+            mobi) set -- --mobi-file-type old --no-inline-toc ;; \
+            azw3) set -- --no-inline-toc ;; \
+            pdb) set -- --format doc --pdb-output-encoding cp1252 ;; \
+            *) set -- ;; \
+        esac; \
+        timeout 120 ebook-convert "${scratch}/book.txt" "${scratch}/book.${target}" "$@" > /dev/null || exit 1; \
+    done \
     && test "$(dd if="${scratch}/book.mobi" bs=1 skip=60 count=8 2> /dev/null)" = "BOOKMOBI" \
+    && test "$(dd if="${scratch}/book.azw3" bs=1 skip=60 count=8 2> /dev/null)" = "BOOKMOBI" \
+    && record0="$(od -An -tu4 --endian=big -j78 -N4 "${scratch}/book.azw3")" \
+    && test "$(od -An -tu4 --endian=big -j$((record0 + 36)) -N4 "${scratch}/book.azw3" | tr -d ' ')" = "8" \
+    && test "$(dd if="${scratch}/book.pdb" bs=1 skip=60 count=8 2> /dev/null)" = "TEXtREAd" \
+    && test "$(od -An -tx1 -N8 "${scratch}/book.lrf" | tr -d ' \n')" = "4c00520046000000" \
+    && find "${scratch}/book.oeb" -name '*.opf' | grep -q . \
     && rm -rf "${scratch}"
 
 # PDF/A validator (pinned release, checksum-verified); the PDF/A post-process refuses to run without it.

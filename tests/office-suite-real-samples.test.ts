@@ -12,7 +12,7 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 import { defaultResolver } from '../bench/tools';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { sofficeConvert } from './helpers/soffice-convert';
-import { calibreBinary, textOfCalibreTarget } from './helpers/calibre-books';
+import { calibreBinary, calibreText, textOfCalibreTarget } from './helpers/calibre-books';
 import { xpsGlyphText } from './helpers/xps-glyphs';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
@@ -236,24 +236,9 @@ function referenceWords(sample: Buffer, extension: string): Set<string> {
 /** The e-book formats calibre also reads, which gives a second reference for their words. */
 const CALIBRE_EXTENSIONS: ReadonlySet<string> = new Set(['lrf', 'pdb']);
 
-/** The text of an e-book as calibre reads it (`ebook-convert` to plain text), or undefined when the tool is not installed. */
-function calibreText(book: Buffer, extension: string): string | undefined {
-  const tool = defaultResolver()('ebook-convert');
-  if (!tool) return undefined;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'calibre-ref-'));
-  try {
-    fs.writeFileSync(path.join(dir, `in.${extension}`), book);
-    execFileSync(tool, [path.join(dir, `in.${extension}`), path.join(dir, 'out.txt')], { stdio: 'ignore', timeout: 120_000 });
-    return fs.readFileSync(path.join(dir, 'out.txt'), 'utf-8');
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 /** calibre's words of an e-book source, or undefined when `ebook-convert` is not installed (or the format is not an e-book). */
 function calibreWords(sample: Buffer, extension: string): Set<string> | undefined {
-  const text = CALIBRE_EXTENSIONS.has(extension) ? calibreText(sample, extension) : undefined;
-  return text === undefined ? undefined : new Set(wordsOf(text));
+  return calibreBinary !== null && CALIBRE_EXTENSIONS.has(extension) ? new Set(wordsOf(calibreText(sample, extension))) : undefined;
 }
 
 async function epubText(epub: Buffer): Promise<string> {
