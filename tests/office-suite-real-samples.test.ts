@@ -12,7 +12,7 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 import { defaultResolver } from '../bench/tools';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { sofficeConvert } from './helpers/soffice-convert';
-import { mobiText } from './helpers/mobi-text';
+import { calibreBinary, textOfCalibreTarget } from './helpers/calibre-books';
 import { xpsGlyphText } from './helpers/xps-glyphs';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
@@ -31,7 +31,7 @@ import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
  */
 
 const toolsMissing = skipWithoutTools('soffice', 'pdftotext', 'pdfinfo');
-const calibreMissing = skipUnless('ebook-convert', defaultResolver()('ebook-convert') !== null);
+const calibreMissing = skipUnless('ebook-convert', calibreBinary !== null);
 const CONVERSION_TIMEOUT_MS = 600_000;
 const MIN_WORD_LENGTH = 4;
 /** Share of the words of the reference text that the output may lack: headers, footers and page numbers are laid out differently. */
@@ -412,7 +412,8 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
         const calibre = calibreWords(sample, extension);
         const printed = targets.some((target) => IMAGE_TARGETS.has(target)) ? printedPages(sample, extension) : undefined;
         if (phrasesInSourceBytes) expectPhrases(phrases, sample.toString('latin1'), `${id} (pinned phrases in the bytes of the file)`);
-        for (const target of targets) {
+        // The Palm, Kindle, Sony and Open eBook targets are written by calibre and read back by the e-book suite below.
+        for (const target of targets.filter((candidate) => !EBOOK_CONTAINER_TARGETS.has(candidate))) {
           const label = `${id} -> ${target}`;
           const result = await dispatchConversion(sample, extension, target, {}, id);
           // A document of several pages becomes one image per page, in a ZIP.
@@ -429,7 +430,6 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
           }
           if (target in STREAM_OF_LEGACY_TARGET) expectLegacyOfficeContainer(result.buffer, target, label);
           if (target === 'ods') expect(await packageMimetype(result.buffer), `${label} is a spreadsheet, not a template`).toBe('application/vnd.oasis.opendocument.spreadsheet');
-          if (EBOOK_CONTAINER_TARGETS.has(target)) continue;
           if (target === 'txt') expect(result.buffer.subarray(0, UTF8_BYTE_ORDER_MARK.length), `${label} starts with a byte order mark`).not.toEqual(UTF8_BYTE_ORDER_MARK);
           const text = await outputText(result.buffer, target);
           expect(text, label).toBeDefined();
@@ -445,9 +445,9 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
 });
 
 /**
- * E-book outputs read back: the Palm family by calibre (PalmDOC) and by the MobileRead layout of the book, the Sony and Open
- * eBook outputs by their words in the file. No independent reader accepts the files of the Sony and Open eBook writers (calibre
- * refuses the LRF header and cannot open the OEB package), so for those two only the words in the bytes are checked.
+ * E-book outputs read back: the Palm, Kindle, Sony and Open eBook targets are written by calibre, and each is read by a reader
+ * that is not the writer (tests/helpers/calibre-books.ts: the PalmDOC text of a MOBI book decompressed by the MobileRead layout,
+ * calibre's plain-text export for AZW3 and PDB, `lrf2lrs` for LRF, the XHTML of the package for OEB).
  */
 describe.skipIf(toolsMissing || calibreMissing)('e-book outputs of the formats the office suite reads', () => {
   for (const { id, extension, targets, phrases } of SAMPLES.filter((sample) => sample.targets.some((target) => EBOOK_CONTAINER_TARGETS.has(target)))) {
@@ -461,13 +461,9 @@ describe.skipIf(toolsMissing || calibreMissing)('e-book outputs of the formats t
           const output = (await dispatchConversion(sample, extension, target, {}, id)).buffer;
           const palm = PALM_TYPE_AND_CREATOR[target];
           if (palm !== undefined) expect(output.subarray(60, 68).toString('latin1'), label).toBe(palm);
-          const readers: string[] = [];
-          if (target === 'pdb') readers.push(calibreText(output, 'pdb') ?? '');
-          if (target === 'mobi' || target === 'azw3') readers.push(mobiText(output));
-          if (target === 'lrf' || target === 'oeb') readers.push(output.toString('utf-8'));
-          expect(readers, label).toHaveLength(1);
-          expectWordsOf(reference, wordsOf(readers[0]), label);
-          expectPhrases(phrases, readers[0], `${label} (pinned phrases)`);
+          const text = await textOfCalibreTarget(output, target);
+          expectWordsOf(reference, wordsOf(text), label);
+          expectPhrases(phrases, text, `${label} (pinned phrases)`);
         },
         CONVERSION_TIMEOUT_MS
       );

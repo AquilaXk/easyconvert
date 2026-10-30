@@ -77,6 +77,7 @@ const ADVISORY_BINARIES: ReadonlyArray<readonly [string, NativeBinaryName]> = [
   ['tesseract', 'tesseract'],
   ['7z', 'p7zip'],
   ['dcraw_emu', 'dcrawEmu'],
+  ['ebook-convert', 'ebookConvert'],
 ];
 
 function isRedisConfigured(): boolean {

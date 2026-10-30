@@ -10,6 +10,7 @@ import { asUnreadableDocument } from '../src/worker/office-suite-route';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { FORMAT_REGISTRY, getFormatByExtension } from '../src/lib/registry';
+import { CALIBRE_EBOOK_TARGETS } from '../src/lib/conversions/calibre-ebook-targets';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
 import { sofficeConvert } from './helpers/soffice-convert';
@@ -205,8 +206,8 @@ describe('how the office suite reaches the targets it does not write', () => {
     ['lwp', 'html', 'docx'],
     ['lwp', 'md', 'docx'],
     ['lrf', 'epub', 'docx'],
-    ['lrf', 'azw3', 'txt'],
-    ['pdb', 'mobi', 'txt'],
+    ['lrf', 'xps', 'txt'],
+    ['pdb', 'hwp', 'txt'],
     ['pdb', 'epub', 'docx'],
     ['numbers', 'csv', 'xlsx'],
     ['sxw', 'html', 'docx'],
@@ -243,7 +244,7 @@ describe('how the office suite reaches the targets it does not write', () => {
     ['dot', 'txt', 'txt'],
     ['doc', 'xps', 'txt'],
     ['dot', 'hwpx', 'txt'],
-    ['doc', 'mobi', 'txt'],
+    ['doc', 'hwp', 'txt'],
     ['doc', 'epub', 'docx'],
     ['xls', 'csv', 'xlsx'],
     ['xlt', 'csv', 'xlsx'],
@@ -312,7 +313,8 @@ describe('the targets the in-process engine writes from plain text only', () => 
     const fromText = getFormatByExtension('txt')?.targetFormats ?? [];
     const fromWordDocument = new Set(getFormatByExtension('docx')?.targetFormats);
     const notFromWordDocument = fromText.filter((target) => !fromWordDocument.has(target) && target !== 'docx');
-    expect([...notFromWordDocument].sort()).toEqual([...TEXT_ONLY_TARGETS].sort());
+    // The Palm, Sony and Open eBook targets are offered for a text file too, and calibre writes them from any source.
+    expect([...notFromWordDocument].sort()).toEqual([...TEXT_ONLY_TARGETS, ...CALIBRE_EBOOK_TARGETS].sort());
   });
 
   it.each([...TEXT_ONLY_TARGETS])('.%s is written from text, and the engine turns a Word document down for it', async (target) => {

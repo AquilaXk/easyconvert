@@ -11,7 +11,7 @@
 #   2. executing a file from /tmp fails with EACCES (noexec)
 #   3. the process holds no cap_sys_admin (kernel view; `capsh --print` too when it is installed)
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
-#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; LibreOffice with VERIFY_LIBREOFFICE=1)
+#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; calibre for a MOBI book; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
 #   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
@@ -250,6 +250,20 @@ if HOME="$work_dir" sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" fontforge -l
   pass "fontforge converted a Type 1 font to an OpenType font inside the sandbox"
 else
   fail "fontforge did not convert a Type 1 font inside the sandbox: $(tail -c 300 "$work_dir/fontforge.err" 2>/dev/null)"
+fi
+
+# calibre writes MOBI, AZW3, PDB, LRF and OEB books: it converts a text file to a MOBI book started as the worker starts it (Qt without a display,
+# its configuration, cache and temporary directories in the scratch directory), and the result must carry the Mobipocket type and creator
+# `BOOKMOBI` of the Palm database header (bytes 60 to 67).
+mkdir -p "$work_dir/calibre-config" "$work_dir/calibre-cache" "$work_dir/calibre-tmp"
+printf '%s\n' "$MARKER_TEXT" > "$work_dir/book.txt"
+if sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" \
+    CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
+    ebook-convert "$work_dir/book.txt" "$work_dir/book.mobi" >"$work_dir/calibre.out" 2>&1 \
+  && [ "$(dd if="$work_dir/book.mobi" bs=1 skip=60 count=8 2>/dev/null)" = "BOOKMOBI" ]; then
+  pass "calibre converted a text file to a MOBI book inside the sandbox"
+else
+  fail "calibre did not convert a text file to a MOBI book inside the sandbox: $(tail -c 300 "$work_dir/calibre.out" 2>/dev/null)"
 fi
 
 if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then

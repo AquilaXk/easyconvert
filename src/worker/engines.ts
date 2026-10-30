@@ -24,11 +24,9 @@ import {
   PayloadLimitError,
   PdfPasswordRequiredError,
 } from '../lib/types';
-import { getMaxInMemoryBytes } from '../lib/storage/errors';
 import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
-import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
-import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
+import { assertDrawingPackage, assertWorkbookNotEncrypted, officeInputWithoutMacros } from './office-input-checks';
 import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withMetafileFrame, withMetafileInk, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
@@ -37,6 +35,7 @@ import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
 import { hasCjkScript, hasComplexTextScript } from '../lib/conversions/ctl';
 import { isSvgPageTarget, svgPageEncoder } from './svg-page-encoders';
+import { isCalibreEbookTarget } from '../lib/conversions/calibre-ebook-targets';
 import { assertFontCoverage, findUncoveredCodePoint, loadFontCoverageIndex } from '../lib/conversions/pdf-fonts';
 import { decodeHtmlInput } from '../lib/conversions/html-encoding';
 import { decodeTextInput, readTextFileCharacters } from '../lib/conversions/text-input';
@@ -79,6 +78,7 @@ import {
 } from './sandbox';
 import { convertPostScript, type PostScriptJob } from './postscript-render';
 import { convertXps, type XpsJob } from './xps-render';
+import { convertWithCalibre } from './ebook-calibre';
 import { renderSvgAsPdf } from './svg-render';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 import { illustratorRouteFormat } from './illustrator-route';
@@ -134,6 +134,7 @@ import {
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError };
 
 export type { WorkerVfsPayload, WorkerEngineOptions, WorkerConversionResult } from './worker-types';
+export { officeInputWithoutMacros };
 
 // Fixed standard locations for native CLI binaries (hardened against injection)
 const BINARY_PATHS: Record<string, string[]> = {
@@ -211,6 +212,7 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/opt/homebrew/bin/ps2pdf',
   ],
   gxps: [...(process.env.GXPS_PATH ? [process.env.GXPS_PATH] : []), '/usr/local/bin/gxps', '/usr/bin/gxps', '/opt/homebrew/bin/gxps'],
+  ebookConvert: [...(process.env.EBOOK_CONVERT_PATH ? [process.env.EBOOK_CONVERT_PATH] : []), '/usr/bin/ebook-convert', '/usr/local/bin/ebook-convert', '/opt/homebrew/bin/ebook-convert'],
   tesseract: [
     ...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []),
     '/usr/bin/tesseract',
@@ -255,7 +257,8 @@ export type NativeBinaryName =
   | 'tesseract'
   | 'ps2pdf'
   | 'rsvgConvert'
-  | 'dcrawEmu';
+  | 'dcrawEmu'
+  | 'ebookConvert';
 
 /** The environment variable that overrides each native CLI's location. */
 const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
@@ -269,6 +272,7 @@ const NATIVE_BINARY_ENV_VARS: Readonly<Record<NativeBinaryName, string>> = {
   ps2pdf: 'PS2PDF_PATH',
   rsvgConvert: 'RSVG_CONVERT_PATH',
   dcrawEmu: 'DCRAW_EMU_PATH',
+  ebookConvert: 'EBOOK_CONVERT_PATH',
 };
 
 /**
@@ -290,6 +294,7 @@ export function probeNativeEngines(): {
   pdftotext: boolean;
   tesseract: boolean;
   dcrawEmu: boolean;
+  ebookConvert: boolean;
   hardwareAcceleration?: HardwareAccelerationCapabilities;
 } {
   const ffmpegPath = resolveBinary(BINARY_PATHS.ffmpeg, process.env.FFMPEG_PATH);
@@ -301,6 +306,7 @@ export function probeNativeEngines(): {
     pdftotext: resolveBinary(BINARY_PATHS.pdftotext, process.env.PDFTOTEXT_PATH) !== null,
     tesseract: resolveBinary(BINARY_PATHS.tesseract, process.env.TESSERACT_PATH) !== null,
     dcrawEmu: resolveBinary(BINARY_PATHS.dcrawEmu, process.env.DCRAW_EMU_PATH) !== null,
+    ebookConvert: resolveBinary(BINARY_PATHS.ebookConvert, process.env.EBOOK_CONVERT_PATH) !== null,
     hardwareAcceleration: probeHardwareAcceleration(ffmpegPath),
   };
 }
@@ -1978,49 +1984,6 @@ export async function convertWithInProcessRawSensor(
 const OFFICE_NATIVE_RESAVE_FORMATS: ReadonlySet<string> = new Set(['odd']);
 /** A presentation LibreOffice can only read: its HTML is the text of the PDF it renders. */
 const PRESENTATION_HTML_SOURCES: ReadonlySet<string> = new Set(['key']);
-/** Sources only LibreOffice renders: an unreadable file is the client's, so it answers a typed 400 instead of an untyped failure. */
-const DRAWING_SOURCES: ReadonlySet<string> = new Set(['odg', 'odd']);
-/**
- * The package a macro-enabled variant is handed to LibreOffice as: the plain package without its macro project, so no
- * macro is ever in reach of the office suite. Inputs that are not in memory and other formats are handed over as they are.
- */
-export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload, src: string): Promise<Buffer | WorkerVfsPayload> {
-  const family = OOXML_VARIANT_FAMILY[src];
-  const buffer = family === undefined ? undefined : inputAsBuffer(input);
-  if (family === undefined || buffer === undefined) return input;
-  const plain = await ooxmlVariantAsPlainPackage(buffer, src, family);
-  return plain.droppedMacros ? plain.buffer : input;
-}
-/** The input as a buffer when it is held in memory or small enough to be read (files too big for memory go straight to LibreOffice). */
-function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
-  if (Buffer.isBuffer(input)) return input;
-  if (input.inputBuffer) return input.inputBuffer;
-  if (input.inputPath && fs.existsSync(input.inputPath) && fs.statSync(input.inputPath).size <= getMaxInMemoryBytes()) {
-    return fs.readFileSync(input.inputPath);
-  }
-  return undefined;
-}
-
-/** Proves, before LibreOffice starts, that a drawing is an OpenDocument drawing package. */
-async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src: string): Promise<void> {
-  if (!DRAWING_SOURCES.has(src)) return;
-  const buffer = inputAsBuffer(input);
-  if (buffer) await assertOpenDocumentGraphic(buffer, src);
-}
-
-/** Sources that are Excel 97-2003 workbooks (BIFF8): the workbook and its template. */
-const BIFF_WORKBOOK_SOURCES: ReadonlySet<string> = new Set(['xls', 'xlt']);
-/**
- * Answers an encrypted legacy workbook with the same typed error (HTTP 422) on every route. The in-process reader
- * raises it for the text targets; LibreOffice would only report that the source could not be loaded, which is
- * indistinguishable from a damaged file, so the FilePass record is looked for before it starts.
- */
-function assertWorkbookNotEncrypted(input: Buffer | WorkerVfsPayload, src: string): void {
-  if (!BIFF_WORKBOOK_SOURCES.has(src)) return;
-  const buffer = inputAsBuffer(input);
-  if (buffer) assertXlsNotEncrypted(buffer);
-}
-
 const HTML_TARGET = 'html';
 const HTML_BODY_PATTERN = /<body[^>]*>([\s\S]*)<\/body>/i;
 const HTML_TAG_PATTERN = /<[^>]*>/g;
@@ -2219,9 +2182,9 @@ const OFFICE_SUITE_DEPS: OfficeSuiteRouteDeps = {
 };
 
 /**
- * One conversion of the request's image session. A format only the office suite reads goes to a target it does not write
- * through an interchange file; any other conversion runs the engines, and a legacy Office document that the strict
- * in-process reader refuses is then tried by the office suite.
+ * One conversion of the request's image session. A target only calibre writes goes to `ebook-convert`; a format only the office
+ * suite reads goes to a target it does not write through an interchange file; any other conversion runs the engines, and a
+ * legacy Office document that the strict in-process reader refuses is then tried by the office suite.
  */
 async function convertWithOfficeSuiteRoutes(
   input: Buffer | WorkerVfsPayload,
@@ -2233,6 +2196,10 @@ async function convertWithOfficeSuiteRoutes(
   assertConversionOptionsObject(options);
   options.signal?.throwIfAborted();
   const request = { input, src: validateFormat(sourceFormat), tgt: validateFormat(targetFormat), options, originalFilename };
+  if (isCalibreEbookTarget(request.tgt)) {
+    assertNotSpoofedFileVfs(input, request.src, originalFilename);
+    return convertWithCalibre(OFFICE_SUITE_DEPS, request, resolveBinary(BINARY_PATHS.ebookConvert, process.env.EBOOK_CONVERT_PATH));
+  }
   const interchange = interchangeNeeded(request.src, request.tgt, isPdfChainTarget(request.tgt) || ARCHIVE_TARGET_FORMATS.has(request.tgt));
   if (interchange !== undefined) {
     assertNotSpoofedFileVfs(input, request.src, originalFilename);

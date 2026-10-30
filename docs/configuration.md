@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 123 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 124 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -275,6 +275,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `GXPS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `GS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `DCRAW_EMU_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `EBOOK_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `DWG2DXF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `CAD_CONVERT_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `QPDF_RUNNER_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -308,6 +309,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `GXPS_PATH`: Path of the GhostXPS `gxps` executable that draws an XPS or OpenXPS document as a PDF; searched in the standard locations when unset. XPS to PDF and to page images cannot be converted without it (HTTP 503).
 - `GS_PATH`: Path of the Ghostscript `gs` executable that the PDF optimize operation runs.
 - `DCRAW_EMU_PATH`: Path of the LibRaw `dcraw_emu` executable.
+- `EBOOK_CONVERT_PATH`: Path of the calibre `ebook-convert` executable that writes MOBI, AZW3, PDB, LRF and OEB books; searched in the standard locations when unset. Those five formats cannot be written without it (HTTP 503).
 - `DWG2DXF_PATH`: Path of the LibreDWG `dwg2dxf` executable that reads a DWG drawing into a DXF; searched in the standard locations when unset. A DWG cannot be converted without it (HTTP 503).
 - `CAD_CONVERT_PATH`: Path of the `cad-convert` executable (native/cad-convert, linked to the Open CASCADE libraries) that reads and writes STEP and IGES; searched in the standard locations when unset. A STEP or IGES file cannot be converted without it (HTTP 503).
 - `QPDF_RUNNER_PATH`: Path of the `qpdf-runner` executable (native/qpdf-runner) that runs the qpdf jobs of the PDF operations from a process that holds libqpdf already loaded; searched in the standard locations when unset. Without it, or when it cannot start a job, every job runs the `qpdf` program as before.

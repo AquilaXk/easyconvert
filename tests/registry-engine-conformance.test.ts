@@ -29,7 +29,8 @@ import { buildOtf, cs } from './helpers/cff-font-builder';
 import { buildPfa, buildPfb, rectangleGlyph } from './helpers/type1-builder';
 import { buildPatchExr, buildPatchUltraHdr } from './helpers/hdr-test-images';
 import { buildWordBinary } from './helpers/word-binary-builder';
-import { buildMobiFromBytes } from './helpers/mobi-builder';
+import { buildMobi, buildMobiFromBytes } from './helpers/mobi-builder';
+import { isCalibreEbookTarget } from '../src/lib/conversions/calibre-ebook-targets';
 import { buildAzw4, textPdf } from './helpers/print-replica-builder';
 import { loadConformanceDurations, partOfKey, planConformanceParts } from '../scripts/ci-conformance-parts.mjs';
 import { buildPptBinary } from './helpers/ppt-binary-builder';
@@ -260,6 +261,7 @@ const FIRST_PART_ONLY_TESTS: readonly RegExp[] = [
   /^has an intact sample for every RAW/,
   /^has a validator for every target/,
   /^lists only pairs the registry advertises/,
+  /^lists every registry pair that ends in a calibre target/,
 ];
 /** A test that converts one pair is named `<source> -> <target> ...`. */
 const PAIR_TEST_NAME = /^(\S+) -> (\S+) /;
@@ -614,25 +616,41 @@ async function probeInputs(source: string): Promise<Buffer[]> {
  * for Office-to-Office targets, LibreOffice (or the PostScript interpreter) chained with Poppler for
  * page targets (pdftoppm images, the image encoders, pdftops, pdftocairo SVG and DXF), Poppler
  * pdftoppm for PDF pages to raster images, Poppler pdftocairo for pdf->svg, and GhostXPS chained with Poppler for
- * XPS documents. Authored by hand from the native tools' capabilities.
+ * XPS documents. The Palm, Kindle, Sony and Open eBook targets (MOBI, AZW3, PDB, LRF, OEB) are written by calibre's
+ * `ebook-convert` for every source that offers them. Authored by hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
+  azw: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  azw3: ['lrf', 'mobi', 'oeb', 'pdb'],
+  azw4: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  cbc: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   doc: ['jpg', 'png', 'rtf'],
   docx: ['doc', 'jpg', 'png', 'rtf'],
   eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
+  htm: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  html: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  htmlz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   key: ['html', 'pdf', 'pptx'],
+  lrf: ['azw3', 'mobi', 'oeb', 'pdb'],
+  mobi: ['azw3', 'lrf', 'oeb', 'pdb'],
   odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
   odg: ['bmp', 'jpg', 'pdf', 'png'],
   odp: ['jpg', 'png', 'ppt'],
   ods: ['jpg', 'png'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
+  oeb: ['mobi'],
   oxps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
-  pdf: ['jpg', 'png', 'svg', 'tiff'],
+  pdb: ['azw3', 'lrf', 'mobi', 'oeb'],
+  pdf: ['azw3', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'svg', 'tiff'],
+  pml: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   pps: ['ppt'],
   ppt: ['jpg', 'odp', 'png'],
   ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
   pptx: ['jpg', 'png', 'ppt'],
-  rtf: ['doc', 'jpg', 'png'],
+  rb: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  rtf: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png'],
+  txt: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
+  txtz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   xls: ['jpg', 'png'],
   xlsx: ['jpg', 'png'],
   xps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
@@ -1501,7 +1519,9 @@ describe('native-engine pairs route through the dispatcher', () => {
   const allNativePairs = Object.entries(NATIVE_ENGINE_PAIRS).flatMap(([source, targets]) =>
     targets.map((target) => [source, target] as [string, string])
   );
-  const pairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
+  const allPartPairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
+  /** The pairs that end in a calibre target are proven by the missing-engine suite below and by tests/ebook-calibre-writers.test.ts, not by the LibreOffice and Poppler suites. */
+  const pairs = allPartPairs.filter(([, target]) => !isCalibreEbookTarget(target));
   const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source);
   const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && authorable(pair));
   const officeToImage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && IMAGE_TARGETS.has(pair[1]) && authorable(pair));
@@ -1514,6 +1534,7 @@ describe('native-engine pairs route through the dispatcher', () => {
 
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
+    if (isCalibreEbookTarget(target)) return { envVar: 'EBOOK_CONVERT_PATH', engineName: 'ebook-convert' };
     if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
     if (source !== PDF_SOURCE) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
@@ -1572,6 +1593,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** Input that passes the magic-byte check; the missing engine rejects it before any parsing. */
   async function missingEngineInput(source: string): Promise<Buffer> {
     if (SEEDS[source]) return fixture(SEEDS[source]);
+    const ebook = await ebookSourceInput(source);
+    if (ebook) return ebook;
     if (source === 'rtf') return Buffer.from('{\\rtf1\\ansi Probe paragraph.\\par}', 'latin1');
     if (source === 'odt') return headerOnlyOdf('application/vnd.oasis.opendocument.text');
     if (ODF_MIMETYPE[source]) return headerOnlyOdf(ODF_MIMETYPE[source]);
@@ -1579,6 +1602,47 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (POSTSCRIPT_SOURCES.has(source)) return Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\nshowpage\n', 'latin1');
     if (XPS_SOURCES.has(source)) return emptyZipPackage();
     return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
+  }
+
+  /** A book of each e-book source that the calibre targets are offered for, with the leading bytes its spoof check reads. */
+  async function ebookSourceInput(source: string): Promise<Buffer | undefined> {
+    const palm = buildMobiFromBytes(Buffer.from('<html><body>probe</body></html>'), { compress: false });
+    const zipOf = async (files: Record<string, string>): Promise<Buffer> => {
+      const zip = new JSZip();
+      for (const [name, data] of Object.entries(files)) zip.file(name, data);
+      return zip.generateAsync({ type: 'nodebuffer' });
+    };
+    switch (source) {
+      case 'txt':
+      case 'pml':
+        return Buffer.from('Probe paragraph.\n');
+      case 'html':
+      case 'htm':
+        return Buffer.from('<!DOCTYPE html><html><body><p>Probe paragraph.</p></body></html>');
+      case 'mobi':
+      case 'azw':
+      case 'azw3':
+        return palm;
+      case 'pdb':
+        return buildMobi({ textRecords: [Buffer.from('Probe paragraph.')], compression: 1, encoding: 1252, textLength: 16, plainPalmDoc: true });
+      case 'lrf':
+        return Buffer.concat([Buffer.from([0x4c, 0x00, 0x52, 0x00, 0x46, 0x00, 0x00, 0x00]), Buffer.alloc(120)]);
+      case 'rb':
+        return simpleRocketBook('<html><body><p>Probe paragraph.</p></body></html>');
+      case 'azw4':
+        return buildAzw4([await textPdf(['Probe page'])]);
+      case 'cbc':
+        // A ZIP is refused by the spoof check of the worker (the signature table lists no `cbc` among the ZIP formats), which runs before the engine is looked for.
+        return Buffer.from('comics.txt\n');
+      case 'htmlz':
+        return zipOf({ 'index.html': '<html><body><p>Probe paragraph.</p></body></html>' });
+      case 'txtz':
+        return zipOf({ 'index.txt': 'Probe paragraph.' });
+      case 'oeb':
+        return Buffer.from('<?xml version="1.0"?><package><text><![CDATA[Probe paragraph.]]></text></package>');
+      default:
+        return undefined;
+    }
   }
 
   /** A ZIP package that passes the magic-byte check of a ZIP-based source. */
@@ -1659,7 +1723,14 @@ describe('native-engine pairs route through the dispatcher', () => {
     expect(allNativePairs.filter(([source, target]) => !FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
   });
 
-  it.each(pairs)('%s -> %s fails with EngineUnavailableError when its engine is missing', async (source, target) => {
+  // skip-ok: part selection: the sharded run executes each of these once, in part 1.
+  it.runIf(IS_FIRST_PART)('lists every registry pair that ends in a calibre target, so that none is left to the in-process probe', () => {
+    const listed = new Set(allNativePairs.map(([source, target]) => `${source}->${target}`));
+    const advertised = Object.entries(FORMAT_REGISTRY).flatMap(([source, def]) => def.targetFormats.filter(isCalibreEbookTarget).map((target) => `${source}->${target}`));
+    expect(advertised.filter((pair) => !listed.has(pair))).toEqual([]);
+  });
+
+  it.each(allPartPairs)('%s -> %s fails with EngineUnavailableError when its engine is missing', async (source, target) => {
     const { envVar, engineName } = engineOf(source, target);
     const input = await missingEngineInput(source);
     const run = withMissingBinary(envVar, () => dispatchConversion(input, source, target, {}, `probe.${source}`));
