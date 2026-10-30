@@ -15,10 +15,10 @@ jobs:
       fail-fast: false
       matrix:
         variant:
-          - default-a
-          - default-b
-          - budget-a
-          - budget-b
+          - synthetic
+          - keep
+          - terminate
+          - replay
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -32,6 +32,12 @@ jobs:
           path: ~/.cache/easyconvert-realworld
           key: realworld-5-${{ hashFiles('bench/realworld/manifest.json') }}
           restore-keys: realworld-5-
+      - uses: ./.github/actions/ci-setup
+        if: matrix.variant == 'replay'
+      - uses: ./.github/actions/pinned-7zip
+        if: matrix.variant == 'replay'
+        with:
+          export-env: "true"
       - name: Enable core dumps
         run: |
           sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
@@ -41,13 +47,23 @@ jobs:
       - name: Stress
         run: |
           ulimit -c unlimited
-          flags=""
-          case "${{ matrix.variant }}" in budget-*) flags="--wasm-wrapper-tiering-budget=2147483647" ;; esac
+          file=~/.cache/easyconvert-realworld/govdocs1-001157.pdf
           crashes=0
-          for run in $(seq 1 14); do
-            node $flags .github/segv-probe/wrapper-churn.mjs 4 60 || { crashes=$((crashes + 1)); echo "run $run exit $?"; }
+          for run in $(seq 1 10); do
+            case "${{ matrix.variant }}" in
+              synthetic) node --stress-wasm-code-gc .github/segv-probe/wrapper-churn.mjs 4 60 ;;
+              keep) node --stress-wasm-code-gc .github/segv-probe/stress.mjs keep "$file" 200 4 50 ;;
+              terminate) node --stress-wasm-code-gc .github/segv-probe/stress.mjs terminate "$file" 200 4 2 ;;
+              replay)
+                sed -i "s/\`--max-old-space-size=\${options.heapMb}\`\]/\`--max-old-space-size=\${options.heapMb}\`, '--stress-wasm-code-gc']/" bench/realworld/pool.ts
+                grep -n "stress-wasm" bench/realworld/pool.ts
+                npx --no-install tsx bench/realworld/run.ts run --shard 5/10 --limit 335 --out "rw-$run.json" > "rw-$run.log" 2>&1
+                node -e "const j=require('./rw-$run.json').jobs; const bad=j.filter(r=>r.verdict==='crash'||r.verdict==='hang'); console.log('replay', JSON.stringify(bad)); process.exit(bad.length ? 1 : 0)" ;;
+            esac
+            code=$?
+            if [ $code -ne 0 ]; then crashes=$((crashes + 1)); echo "run $run exit $code"; fi
           done
-          echo "RESULT ${{ matrix.variant }} runs=14 crashes=$crashes"
+          echo "RESULT ${{ matrix.variant }} runs=10 crashes=$crashes"
           ls /tmp/cores
       - name: Backtraces
         if: always()
