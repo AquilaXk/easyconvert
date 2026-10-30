@@ -34,7 +34,7 @@ import {
   sweepRetention,
 } from '../src/lib/storage/retention-service';
 import { mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
-import { SharedObjectStore } from '../src/lib/storage/shared-store';
+import { globalSharedObjects, SharedObjectStore } from '../src/lib/storage/shared-store';
 import {
   JOB_INPUT_HOLD_MAX_MS,
   addInterval,
@@ -792,6 +792,56 @@ describe('the file ledger shared by the web server and the workers', () => {
       expect(storageProvider.getObject(key)).toBeUndefined();
     });
 
+    it('says so when the lifetime of a held object could not be extended, and leaves no temporary file behind', async () => {
+      const { key, storedAt } = await storeForOneHour();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const realWrite = fs.writeFileSync;
+      vi.spyOn(fs, 'writeFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+        if (String(target).endsWith('.tmp')) {
+          fs.closeSync(fs.openSync(String(target), 'w'));
+          throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+        }
+        return (realWrite as (...args: unknown[]) => void)(target, ...rest);
+      }) as typeof fs.writeFileSync);
+      const storageDir = globalSharedObjects.getStorageDir();
+
+      expect(await holdResultForJob(key, 'job-full', storedAt + 50 * MINUTE_MS)).toBe(true);
+
+      vi.restoreAllMocks();
+      expect(warn.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(/Could not extend the lifetime of/);
+      expect(fs.readdirSync(storageDir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+      await releaseResultHold(key, 'job-full');
+    });
+
+    it('removes the temporary files an interrupted extension left, once they are stale, and no others', () => {
+      const storageDir = globalSharedObjects.getStorageDir();
+      fs.mkdirSync(storageDir, { recursive: true });
+      const stale = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.${crypto.randomUUID()}.tmp`);
+      const fresh = path.join(storageDir, `${crypto.randomBytes(8).toString('hex')}.meta.json.${crypto.randomUUID()}.tmp`);
+      fs.writeFileSync(stale, '{}');
+      fs.writeFileSync(fresh, '{}');
+      const old = new Date(Date.now() - 11 * MINUTE_MS);
+      fs.utimesSync(stale, old, old);
+
+      storageProvider.sweepExpiredObjects?.();
+
+      expect(fs.existsSync(stale)).toBe(false);
+      expect(fs.existsSync(fresh)).toBe(true);
+      fs.rmSync(fresh);
+    });
+
+    it('says once that a hold cannot extend anything when no storage is bound', async () => {
+      bindRetentionStorage(undefined);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { key } = await storeForOneHour();
+
+      await holdResultForJob(key, 'job-a');
+      await holdResultForJob(key, 'job-b');
+
+      expect(warn.mock.calls.filter((call) => /No bound storage can extend/.test(String(call[0])))).toHaveLength(1);
+      vi.restoreAllMocks();
+    });
+
     it('removes the object of a result that no job holds when its lifetime ends', async () => {
       const { key, storedAt } = await storeForOneHour();
       storageCleansAt(storedAt + ONE_HOUR_MS + MINUTE_MS);
@@ -821,7 +871,7 @@ describe('the file ledger shared by the web server and the workers', () => {
 
       storageCleansAt(storedAt + ONE_HOUR_MS + MINUTE_MS);
 
-      expect(storageProvider.getObject(key)?.buffer.toString('ascii')).toBe('0123456789');
+      expect((await storageProvider.getObject(key))?.buffer.toString('ascii')).toBe('0123456789');
     });
   });
 

@@ -513,14 +513,15 @@ export class S3ObjectStorageService implements IStorageBackend {
   }
 
   deleteObject(key: string): boolean {
-    globalSharedObjects.delete(key);
+    const shared = globalSharedObjects.delete(key);
     const obj = this.objects.get(key);
     if (obj?.filePath && fs.existsSync(obj.filePath)) {
       try {
         fs.rmSync(obj.filePath, { force: true });
       } catch {}
     }
-    return this.objects.delete(key);
+    const own = this.objects.delete(key);
+    return own || shared;
   }
 
   deleteByPrefix(prefix: string): number {
@@ -779,6 +780,7 @@ export class S3ObjectStorageService implements IStorageBackend {
       }
     }
 
+    globalSharedObjects.sweepStaleTempFiles(now);
     return swept;
   }
 }

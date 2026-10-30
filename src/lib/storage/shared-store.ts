@@ -9,6 +9,11 @@ import {
   getMaxInMemoryBytes,
 } from './errors';
 
+/** Ends the name of the file `extendExpiry` writes before it renames it over the expiry file. */
+const META_TEMP_SUFFIX = '.tmp';
+/** How old such a file must be before a sweep removes it. */
+const STALE_TEMP_FILE_MS = 10 * 60 * 1000;
+
 /**
  * Enterprise Shared Object Store with Disk Spool Persistence.
  * Shared across S3, OCI, and unified storage adapters.
@@ -186,23 +191,60 @@ export class SharedObjectStore extends Map<string, StoredObject> {
 
   /**
    * Raises the expiry of the object under `key` to `expiresAt`, in this process and in the file every process reads;
-   * an expiry that is later already stays. Returns false when there is no such object.
+   * an expiry that is later already stays. Returns false when there is no such object. Throws when the file could not
+   * be written (a full disk, say), after removing its temporary file: then only this process keeps the object longer,
+   * and the caller must be told.
    */
   public extendExpiry(key: string, expiresAt: number): boolean {
     const cached = super.get(key);
     if (cached && cached.expiresAt < expiresAt) cached.expiresAt = expiresAt;
     const { metaPath } = this.getPathsForKey(key);
+    let meta: { expiresAt?: number };
     try {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { expiresAt?: number };
-      if (typeof meta.expiresAt !== 'number' || meta.expiresAt < expiresAt) {
-        const tempPath = `${metaPath}.${crypto.randomUUID()}.tmp`;
-        fs.writeFileSync(tempPath, JSON.stringify({ ...meta, expiresAt }), 'utf-8');
-        fs.renameSync(tempPath, metaPath);
-      }
-      return true;
+      meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { expiresAt?: number };
     } catch {
       return cached !== undefined;
     }
+    if (typeof meta.expiresAt === 'number' && meta.expiresAt >= expiresAt) return true;
+    const tempPath = `${metaPath}.${crypto.randomUUID()}${META_TEMP_SUFFIX}`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify({ ...meta, expiresAt }), 'utf-8');
+      fs.renameSync(tempPath, metaPath);
+      return true;
+    } catch (error) {
+      try {
+        fs.rmSync(tempPath, { force: true });
+      } catch {
+        // the sweep of stale temporary files removes it
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Removes the temporary files an interrupted `extendExpiry` left next to the objects, once they are older than
+   * STALE_TEMP_FILE_MS: a write that is still running finishes long before.
+   */
+  public sweepStaleTempFiles(now: number = Date.now()): number {
+    let removed = 0;
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.storageDir);
+    } catch {
+      return 0;
+    }
+    for (const name of names) {
+      if (!name.includes('.meta.json.') || !name.endsWith(META_TEMP_SUFFIX)) continue;
+      const filePath = path.join(this.storageDir, name);
+      try {
+        if (now - fs.statSync(filePath).mtimeMs < STALE_TEMP_FILE_MS) continue;
+        fs.rmSync(filePath, { force: true });
+        removed++;
+      } catch {
+        // gone already, or not ours to remove
+      }
+    }
+    return removed;
   }
 
   public stat(key: string): ObjectStat | null {
@@ -380,7 +422,7 @@ export const globalSharedObjects = new SharedObjectStore();
 
 /**
  * Raises the expiry of the object under `key` for a backend that keeps objects in its own map next to the shared
- * store: in that map, and through `SharedObjectStore.extendExpiry` for every other process. False when neither has it.
+ * store: in that map, and through `SharedObjectStore.extendExpiry` for every other process. False when neither has it. Throws when the shared file could not be written.
  */
 export function extendStoredExpiry(own: ReadonlyMap<string, StoredObject>, key: string, expiresAt: number): boolean {
   const cached = own.get(key);

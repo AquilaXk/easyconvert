@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
 import { POST as directUploadRoute } from '../src/app/api/v1/uploads/direct/route';
@@ -11,6 +12,7 @@ import { POST as convertRoute } from '../src/app/api/convert/route';
 import { parseConfig } from '../src/lib/config';
 import { storageProvider } from '../src/lib/storage';
 import { resolveLocalStorageDir } from '../src/lib/storage/storage-config';
+import { SharedObjectStore } from '../src/lib/storage/shared-store';
 import { diskUsageProbe, resolveCapacityPolicy, usedPercent } from '../src/lib/storage/result-capacity';
 import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
@@ -22,6 +24,7 @@ import {
   FUTILE_PASS_DELETIONS,
   FUTILE_PAUSE_MS,
   holdResultForJob,
+  MISSING_IN_A_ROW,
   releaseResultHold,
   recordServed,
   registerResult,
@@ -509,6 +512,77 @@ describe('early deletion when the disk runs full', () => {
 
     expect(await evictForCapacity(storageProvider, now)).toBe(3);
     expect(disk.used).toBe(78);
+  });
+
+  it('measures the disk again after a result whose object is gone, because another process may have freed it', async () => {
+    const user = await createUser('freed');
+    const now = Date.now();
+    for (let i = 0; i < 6; i++) await storeResult(user, `freed${i}`, now - (60 - i) * MINUTE_MS);
+    const disk = { used: 90 };
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation(() => {
+      disk.used -= PERCENT_PER_RESULT;
+      return false;
+    });
+    setDiskProbe(async () => disk.used);
+
+    expect(await evictForCapacity(storageProvider, now)).toBe(0);
+    expect(disk.used).toBe(78);
+  });
+
+  it('stops a pass after a run of results whose object is gone', async () => {
+    const user = await createUser('wiped');
+    const now = Date.now();
+    for (let i = 0; i < MISSING_IN_A_ROW + 5; i++) await storeResult(user, `wiped${i}`, now - (60 - i) * MINUTE_MS);
+    const attempts: string[] = [];
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation((key: string) => {
+      attempts.push(key);
+      return false;
+    });
+    setDiskProbe(async () => 90);
+
+    expect(await evictForCapacity(storageProvider, now)).toBe(0);
+    expect(attempts).toHaveLength(MISSING_IN_A_ROW);
+  });
+
+  describe('when the results were saved by another process', () => {
+    /** A second store on the same directory, which is all another process shares with this one. */
+    const savedByWorker = new SharedObjectStore();
+
+    async function storeInWorker(user: User, label: string, at: number): Promise<string> {
+      const key = `conversions/${user.id}/${label}_${crypto.randomBytes(4).toString('hex')}.bin`;
+      await savedByWorker.saveStream(key, Readable.from([BODY]), { filename: `${label}.bin`, mimeType: MIME_TYPE });
+      storedKeys.push(key);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(at);
+      await registerResult(key);
+      vi.useRealTimers();
+      return key;
+    }
+
+    it('reports a deleted object as deleted although this process never held it', async () => {
+      const user = await createUser('foreign');
+      const key = await storeInWorker(user, 'foreign', Date.now());
+      expect(storageProvider.getObject(key)).toBeDefined();
+
+      expect(storageProvider.deleteObject(key)).toBe(true);
+
+      expect(storageProvider.getObject(key)).toBeUndefined();
+      expect(storageProvider.deleteObject(key)).toBe(false);
+    });
+
+    it('stops at the low threshold, because each deletion is seen as a deletion and the disk is measured again', async () => {
+      const user = await createUser('foreign-pass');
+      const now = Date.now();
+      const keys: string[] = [];
+      for (let i = 0; i < 30; i++) keys.push(await storeInWorker(user, `w${i}`, now - (60 - i) * MINUTE_MS));
+      const probe = vi.fn(async () => 60 + keys.filter((key) => savedByWorker.has(key)).length);
+      setDiskProbe(probe);
+
+      expect(await evictForCapacity(storageProvider, now)).toBe(10);
+
+      expect(keys.filter((key) => savedByWorker.has(key))).toHaveLength(20);
+      expect(probe).toHaveBeenCalledTimes(11);
+    });
   });
 
   describe('when the temporary directory is on another disk', () => {

@@ -67,6 +67,13 @@ export const FAILURES_IN_A_ROW = 3;
  */
 export const FUTILE_PAUSE_MS = 5 * 60 * 1000;
 const FUTILE_USE_CHANGE_PERCENT = 1;
+/**
+ * Results in a row whose object was already gone after which an early-deletion pass stops: the records and the store
+ * disagree widely (another process is deleting them, or the store was cleared), so the next pass starts from what is
+ * left. Each such result is marked gone, which is right for it, but costs a ledger write and a store call for nothing
+ * the disk can see. The disk is measured again after each one, because that other process may have freed it.
+ */
+export const MISSING_IN_A_ROW = 10;
 /** How long a measurement of the disk or a deletion in the store may take before it counts as failed. */
 export const STORAGE_CALL_TIMEOUT_MS = 30_000;
 /** Attempts to reopen a record whose object could not be deleted, with a pause that doubles from REOPEN_BACKOFF_MS. */
@@ -183,6 +190,7 @@ export async function recordServed(key: string, range: { first: number; last: nu
 }
 
 let heldStorage: Pick<IStorageBackend, 'extendExpiry'> | undefined;
+let missingExtensionReported = false;
 
 /**
  * Names the storage whose objects a hold keeps alive (see `holdResultForJob`). The web server and the worker bind the
@@ -190,12 +198,26 @@ let heldStorage: Pick<IStorageBackend, 'extendExpiry'> | undefined;
  */
 export function bindRetentionStorage(storage: Pick<IStorageBackend, 'extendExpiry'> | undefined): void {
   heldStorage = storage;
+  missingExtensionReported = false;
 }
 
-/** Raises the lifetime the object under `key` was stored with to `until`, so that the storage does not remove it under the job that holds it. */
+/**
+ * Raises the lifetime the object under `key` was stored with to `until`, so that the storage does not remove it under
+ * the job that holds it. Says so when it could not: the object keeps the lifetime it was stored with, and the
+ * record alone keeps the result until then.
+ */
 async function extendObjectLifetime(key: string, until: number): Promise<void> {
+  if (!heldStorage?.extendExpiry) {
+    if (!missingExtensionReported) {
+      missingExtensionReported = true;
+      console.warn('[Retention] No bound storage can extend the lifetime of an object; a held file keeps the lifetime it was stored with');
+    }
+    return;
+  }
   try {
-    await heldStorage?.extendExpiry?.(key, until);
+    if (!(await heldStorage.extendExpiry(key, until))) {
+      console.warn(`[Retention] Could not extend the lifetime of "${key}" for the job that holds it; it keeps the one it was stored with`);
+    }
   } catch (error) {
     console.warn(`[Retention] Could not extend the lifetime of "${key}" for the job that holds it; it keeps the one it was stored with:`, error);
   }
@@ -421,11 +443,12 @@ function diskProbesFor(storage: SweptStorage): DiskProbes | undefined {
 /**
  * Deletes results before their time while the disk is above RESULT_DISK_HIGH_PERCENT, in the order of
  * `capacityEvictionOrder`, until it is at or below RESULT_DISK_LOW_PERCENT. Only the disk of the storage directory
- * counts: a full temporary directory is not freed by deleting results. A result whose object is already gone, or
- * that a job claimed in the meantime, is skipped and counts for nothing. The pass stops when FAILURES_IN_A_ROW
- * deletions failed in a row, or when FUTILE_PASS_DELETIONS results are gone and the use is still not lower than at
- * the start. A pass that deleted nothing or lowered nothing pauses early deletion for FUTILE_PAUSE_MS, unless the use
- * moved by then. Returns how many were deleted.
+ * counts: a full temporary directory is not freed by deleting results. A result that a job claimed in the meantime is
+ * skipped. A result whose object is already gone counts as no deletion, but the disk is measured again after it,
+ * because the process that removed the object may have freed it. The pass stops when FAILURES_IN_A_ROW deletions
+ * failed in a row, when MISSING_IN_A_ROW objects in a row were gone, or when FUTILE_PASS_DELETIONS results are gone
+ * and the use is still not lower than at the start. A pass that deleted nothing or lowered nothing pauses early
+ * deletion for FUTILE_PAUSE_MS, unless the use moved by then. Returns how many were deleted.
  */
 export async function evictForCapacity(storage: SweptStorage, now: number = Date.now()): Promise<number> {
   const probe = diskProbesFor(storage)?.storage;
@@ -444,8 +467,9 @@ export async function evictForCapacity(storage: SweptStorage, now: number = Date
   let used = startUsed;
   let deleted = 0;
   let failedInARow = 0;
+  let missingInARow = 0;
   for (const record of candidates) {
-    if (used <= capacity.lowPercent || failedInARow >= FAILURES_IN_A_ROW) break;
+    if (used <= capacity.lowPercent || failedInARow >= FAILURES_IN_A_ROW || missingInARow >= MISSING_IN_A_ROW) break;
     if (deleted >= FUTILE_PASS_DELETIONS && used >= startUsed) break;
     let outcome: DeleteOutcome;
     try {
@@ -456,9 +480,14 @@ export async function evictForCapacity(storage: SweptStorage, now: number = Date
       console.warn(`[Retention] Could not delete "${record.key}" to free disk space:`, error);
       continue;
     }
-    if (outcome !== 'removed') continue;
-    deleted++;
-    console.warn(`[Retention] Deleted "${record.key}" early: the disk was ${used.toFixed(1)}% full, above ${capacity.highPercent}%`);
+    if (outcome === 'skipped') continue;
+    if (outcome === 'removed') {
+      deleted++;
+      missingInARow = 0;
+      console.warn(`[Retention] Deleted "${record.key}" early: the disk was ${used.toFixed(1)}% full, above ${capacity.highPercent}%`);
+    } else {
+      missingInARow++;
+    }
     const after = await measure();
     if (after === undefined) return deleted;
     used = after;
