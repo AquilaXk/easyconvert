@@ -17,7 +17,6 @@ import {
   SandboxedBufferLimitError,
   SandboxedProcessError,
 } from '../security/process-sandbox';
-import { hasTarHeaderChecksum, hasTarMagic } from './archive-tar-detect';
 import { LIST_ALTERNATE_STREAMS, SKIP_ALTERNATE_STREAMS, separateAlternateStreams, type ArchiveListing } from './archive-alternate-streams';
 import { damagedEntryMessage, diskImageMessage, multiVolumeMessage, nextVolumeName, unsupportedMethodMessage } from './archive-refusal-reasons';
 import {
@@ -29,7 +28,7 @@ import {
 } from './archive-password';
 
 export { assertArchivePasswordSafe };
-export { hasTarHeaderChecksum, hasTarMagic, hasTarMagicBlock, isTarHeaderBlock } from './archive-tar-detect';
+export { hasTarHeaderChecksum, hasTarMagic, hasTarMagicBlock, isTarHeaderBlock, readFirstTarBlock } from './archive-tar-detect';
 
 /**
  * Contained extraction of untrusted archives through the 7-Zip CLI.
@@ -176,7 +175,8 @@ const UNIX_SPECIAL_MODE = /^[cbps][-rwxsStT]{9}$/;
 const WINDOWS_ATTRIBUTE_LETTERS = /^[RHS8DAdNTsLCOIEV]+$/;
 /** Unix mode in the high 16 bits, printed as hex when 7-Zip cannot render it as `rwx`. */
 const HEX_ATTRIBUTE = /^[0-9A-F]{8}$/;
-const DRIVE_LETTER_PREFIX = /^[A-Za-z]:/;
+/** A Windows drive: a letter and a colon that end the first component (`C:\x`, `C:/x`, `C:`). `a:b.txt` is an ordinary name. */
+const DRIVE_LETTER_PREFIX = /^[A-Za-z]:(?:[\\/]|$)/;
 /** With no password supplied, 7-Zip prompts for one and aborts when stdin is closed ("Break signaled", exit 255). */
 const PASSWORD_PROMPT_ABORT_PATTERN = /^(?:Break signaled|Enter password.*)$/m;
 /**
@@ -226,8 +226,9 @@ export function exceedsArchiveRatio(decodedBytes: number, archiveBytes: number, 
 const MAX_ENTRY_FILTER_PATTERNS = 1_000;
 const MAX_ENTRY_FILTER_TOTAL_BYTES = 64 * 1024;
 const ENTRY_FILTER_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
-/** NUL, and CR/LF: line breaks in names are how listing fields get forged, and newer builds rewrite them anyway. */
-const ENTRY_NAME_FORBIDDEN_CHARACTERS = /[\0\r\n]/;
+/** C0 and C1 controls and the line and paragraph separators, which would break or forge a line of a log or a listing. */
+const CONTROL_CHARACTER_SOURCE = '[\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]';
+const ENTRY_NAME_FORBIDDEN_CHARACTERS = new RegExp(CONTROL_CHARACTER_SOURCE);
 /** Single-stream wrapper extensions and the suffix 7-Zip's output name gets ("tgz" unpacks to "<name>.tar"). */
 const WRAPPER_EXTENSION_SUFFIXES = new Map<string, string>([
   ['gz', ''],
@@ -451,19 +452,45 @@ export function acceptInternalHardLinks(entries: ListedArchiveEntry[]): ListedAr
   });
 }
 
+const SLASH_CODE = 0x2f;
+const BACKSLASH_CODE = 0x5c;
+const DOT_CODE = 0x2e;
+
+/** Whether a component of the path (split on either separator) is `..`; one pass, no array. */
+function hasParentComponent(rawPath: string): boolean {
+  let start = 0;
+  for (let at = 0; at <= rawPath.length; at++) {
+    const code = at === rawPath.length ? SLASH_CODE : rawPath.charCodeAt(at);
+    if (code !== SLASH_CODE && code !== BACKSLASH_CODE) continue;
+    if (at - start === 2 && rawPath.charCodeAt(start) === DOT_CODE && rawPath.charCodeAt(start + 1) === DOT_CODE) return true;
+    start = at + 1;
+  }
+  return false;
+}
+
+/** Whether the name, after its leading empty and `.` components, starts with a drive: `./C:/x`, `.\\C:\\x` and `.//C:/x` canonicalise to `C:/x`. */
+function canonicalFormIsDrivePath(rawPath: string): boolean {
+  let start = 0;
+  for (let at = 0; at < rawPath.length; at++) {
+    const code = rawPath.charCodeAt(at);
+    if (code === SLASH_CODE || code === BACKSLASH_CODE) {
+      if (at - start > 1 || (at - start === 1 && rawPath.charCodeAt(start) !== DOT_CODE)) break;
+      start = at + 1;
+    }
+  }
+  return start > 0 && DRIVE_LETTER_PREFIX.test(rawPath.slice(start));
+}
+
 /** Why an entry name cannot be extracted under the root, or null when it is a plain relative path. */
 function entryPathProblem(rawPath: string): 'path-traversal' | 'absolute-path' | 'invalid-entry-name' | null {
   if (rawPath === '' || ENTRY_NAME_FORBIDDEN_CHARACTERS.test(rawPath)) {
     return 'invalid-entry-name';
   }
-  const normalized = rawPath.replace(/\\/g, '/');
-  if (normalized.startsWith('/') || DRIVE_LETTER_PREFIX.test(normalized)) {
+  const first = rawPath.charCodeAt(0);
+  if (first === SLASH_CODE || first === BACKSLASH_CODE || DRIVE_LETTER_PREFIX.test(rawPath) || canonicalFormIsDrivePath(rawPath)) {
     return 'absolute-path';
   }
-  if (normalized.split('/').includes('..')) {
-    return 'path-traversal';
-  }
-  return null;
+  return hasParentComponent(rawPath) ? 'path-traversal' : null;
 }
 
 const PATH_SEPARATOR_PATTERN = /[\\/]/;
@@ -471,8 +498,13 @@ const PATH_SEPARATOR_PATTERN = /[\\/]/;
 /** Number of path components, ignoring empty and `.` segments. */
 function entryPathDepth(rawPath: string): number {
   let depth = 0;
-  for (const segment of rawPath.split(PATH_SEPARATOR_PATTERN)) {
-    if (segment !== '' && segment !== '.') depth++;
+  let start = 0;
+  for (let at = 0; at <= rawPath.length; at++) {
+    const code = at === rawPath.length ? SLASH_CODE : rawPath.charCodeAt(at);
+    if (code !== SLASH_CODE && code !== BACKSLASH_CODE) continue;
+    const length = at - start;
+    if (length > 1 || (length === 1 && rawPath.charCodeAt(start) !== DOT_CODE)) depth++;
+    start = at + 1;
   }
   return depth;
 }
@@ -495,32 +527,67 @@ function occupyPath(occupied: Set<string>, rawPath: string): void {
 /** A name that ends this way names a directory in every writer; a file entry carrying it is a disguised directory header. */
 const TRAILING_SEPARATOR_PATTERN = /[\\/]$/;
 
-function assertSafeEntryPath(rawPath: string): void {
+/** Longest stretch of an entry name a message quotes; the rest of a name made to fill a log is cut off. */
+const QUOTED_NAME_MAX_CHARS = 200;
+const CONTROL_CHARACTERS = new RegExp(CONTROL_CHARACTER_SOURCE, 'g');
+const ASCII_ONLY = /^[\u0000-\u007f]*$/;
+const HIGH_SURROGATE_MIN = 0xd800;
+const HIGH_SURROGATE_MAX = 0xdbff;
+
+/** An entry name as a message quotes it: cut to {@link QUOTED_NAME_MAX_CHARS} (not inside a surrogate pair) and with control characters written out. */
+export function quotedEntryName(rawPath: string): string {
+  let shown = rawPath;
+  if (rawPath.length > QUOTED_NAME_MAX_CHARS) {
+    const last = rawPath.charCodeAt(QUOTED_NAME_MAX_CHARS - 1);
+    const end = last >= HIGH_SURROGATE_MIN && last <= HIGH_SURROGATE_MAX ? QUOTED_NAME_MAX_CHARS - 1 : QUOTED_NAME_MAX_CHARS;
+    shown = `${rawPath.slice(0, end)}...`;
+  }
+  return shown.replace(CONTROL_CHARACTERS, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+function entryPathError(rawPath: string, storedName: string): UnsafeArchiveError | null {
   const problem = entryPathProblem(rawPath);
+  if (problem === null && entryPathDepth(rawPath) <= MAX_ENTRY_PATH_DEPTH) return null;
+  const quoted = quotedEntryName(storedName);
   if (problem === 'invalid-entry-name') {
-    throw new UnsafeArchiveError('invalid-entry-name', 'Archive contains an entry with an empty name or one holding NUL or a line break.');
+    return new UnsafeArchiveError('invalid-entry-name', `Archive contains an entry with an empty name or one holding a control character ('${quoted}').`);
   }
   if (problem === 'absolute-path') {
-    throw new UnsafeArchiveError('absolute-path', 'Archive contains an entry with an absolute path.');
+    return new UnsafeArchiveError('absolute-path', `Archive contains an entry with an absolute path ('${quoted}').`);
   }
   if (problem === 'path-traversal') {
-    throw new UnsafeArchiveError('path-traversal', 'Archive contains an entry that escapes the extraction directory.');
+    return new UnsafeArchiveError('path-traversal', `Archive contains an entry that escapes the extraction directory ('${quoted}').`);
   }
-  if (entryPathDepth(rawPath) > MAX_ENTRY_PATH_DEPTH) {
-    throw new UnsafeArchiveError('path-depth', `Archive contains an entry nested deeper than ${MAX_ENTRY_PATH_DEPTH} levels.`);
-  }
+  return new UnsafeArchiveError('path-depth', `Archive contains an entry nested deeper than ${MAX_ENTRY_PATH_DEPTH} levels ('${quoted}').`);
 }
 
 /**
- * Throws for an entry name that is not a plain relative path: empty or holding NUL or a line break, absolute, a drive
- * path, climbing out with `..`, or nested deeper than the cap. The name is also checked after Unicode compatibility
- * folding, because a fullwidth full stop or solidus becomes `.` or `/` in a layer that normalises (a Windows code page,
- * macOS, a search index). A name is only ever accepted or refused here, never rewritten.
+ * The refusal an entry name earns, or null when it is a plain relative path: not empty, free of control characters,
+ * not absolute, not a drive path, not climbing out with `..`, and not nested deeper than the cap. The name is also
+ * checked after Unicode compatibility folding, because a fullwidth full stop or solidus becomes `.` or `/` in a layer
+ * that normalises (a Windows code page, macOS, a search index). Plain ASCII is its own folding, so it is checked once.
+ * The error names the entry as it is stored. A name is only ever accepted or refused here, never rewritten.
  */
-export function assertSafeArchiveEntryName(rawPath: string): void {
-  assertSafeEntryPath(rawPath);
+export function archiveEntryNameError(rawPath: string): UnsafeArchiveError | null {
+  const stored = entryPathError(rawPath, rawPath);
+  if (stored !== null || ASCII_ONLY.test(rawPath)) return stored;
   const folded = rawPath.normalize('NFKC');
-  if (folded !== rawPath) assertSafeEntryPath(folded);
+  return folded === rawPath ? null : entryPathError(folded, rawPath);
+}
+
+/** Throws the refusal {@link archiveEntryNameError} finds for an entry name. */
+export function assertSafeArchiveEntryName(rawPath: string): void {
+  const refusal = archiveEntryNameError(rawPath);
+  if (refusal !== null) throw refusal;
+}
+
+/** Refuses a bare listing (one name per line, as `unrar lb` prints it) when it holds more names than the entry cap or a name that is not a plain relative path. */
+export function assertListedNamesSafe(listing: string, limits: ArchiveExtractionLimits): void {
+  const names = listing.split('\n');
+  if (names.length > limits.MAX_FILES + 1) throw entryCountError(names.length, limits);
+  for (const name of names) {
+    if (name !== '') assertSafeArchiveEntryName(name);
+  }
 }
 
 /** The running total with one entry's declared size added; a size that is not a safe integer, or a total over the cap, is refused. */
@@ -563,7 +630,7 @@ export function assertSafeArchiveListing(
   // such as `N/d/d/.../f` is one listing line but creates a directory per level.
   const occupied = new Set<string>();
   for (const entry of entries) {
-    assertSafeEntryPath(entry.path);
+    assertSafeArchiveEntryName(entry.path);
     if (entry.linkKind !== null) {
       if (!policy.skipLinks) {
         throw new UnsafeArchiveError('link-entry', 'Archive contains a symbolic or hard link entry, which is not extracted.');
@@ -927,11 +994,6 @@ export interface ContainedExtractionRequest {
   allowInternalHardLinks?: boolean;
   /** What to do when two entries share a path. Defaults to 'rename', which native extraction hands to another engine. */
   collisionPolicy?: ArchiveCollisionPolicy;
-  /**
-   * The archive is a compression wrapper (gz, bz2, xz, ...). When it unpacks to a single `.tar`, that
-   * tar is listed and vetted too, because the caller repackages it without extracting it.
-   */
-  validateNestedTar?: boolean;
   signal?: AbortSignal;
 }
 
@@ -1211,28 +1273,6 @@ function withListingFindings(tree: ContainedTree, findings: Pick<ContainedTree, 
 }
 
 /**
- * A compression wrapper that unpacks to one file may hold a tar the caller repackages unopened. List it so
- * links and traversal names inside it are seen. A payload that is not a tar is left alone; a tar that
- * cannot be read fails closed.
- */
-async function vetNestedTar(request: ContainedExtractionRequest, tree: ContainedTree, ratioBytes: number): Promise<void> {
-  if (tree.files.length !== 1) return;
-  const candidate = tree.files[0];
-  const isTar = hasTarMagic(candidate.absPath);
-  // 7-Zip opens a file as a tar only when its first block is a tar header; any other payload has nothing to vet.
-  if (!isTar && !hasTarHeaderChecksum(candidate.absPath)) return;
-  try {
-    const inner = await listArchive(request, { archivePath: candidate.absPath, typeFlag: '-ttar' }, []);
-    // The inner tar is repackaged as a whole, so its links cannot be skipped selectively.
-    assertSafeArchiveListing(inner.entries, ratioBytes, request.limits);
-  } catch (err) {
-    const failure = toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
-    if (failure instanceof UnreadableArchiveError && !isTar) return;
-    throw failure;
-  }
-}
-
-/**
  * Lists, vets, extracts and re-verifies an archive. Resolves with the contained output tree, or
  * rejects with a typed error; nothing is written before the listing has passed the policy.
  */
@@ -1276,15 +1316,10 @@ export async function extractArchiveContained(request: ContainedExtractionReques
     throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password), failureContext(request, listing));
   }
 
-  const tree = withListingFindings(
+  return withListingFindings(
     assertExtractionContained(request.extractDir, ratioBytes, request.limits, { allowInternalHardLinks: request.allowInternalHardLinks }),
     { skippedLinks, alternateStreams }
   );
-
-  if (request.validateNestedTar) {
-    await vetNestedTar(request, tree, ratioBytes);
-  }
-  return tree;
 }
 
 /** Synchronous twin of {@link extractArchiveContained} for the library's synchronous conversion path. */
@@ -1405,7 +1440,7 @@ export function summarizeInspectionSafety(entries: InspectionEntryInput[]): Insp
   const flags: InspectionEntryFlags[] = entries.map((entry) => {
     const flag: InspectionEntryFlags = {};
     if (entry.kind !== undefined) flag.kind = entry.kind;
-    if (entryPathProblem(entry.name) !== null) flag.unsafePath = true;
+    if (archiveEntryNameError(entry.name) !== null) flag.unsafePath = true;
     return flag;
   });
 

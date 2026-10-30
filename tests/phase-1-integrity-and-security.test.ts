@@ -14,7 +14,7 @@ import { getExcelColumnName } from '../src/lib/conversions/xlsx-writer';
 import { convertMedia } from '../src/lib/conversions/media';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { parseXmlDocument, xmlToJsonMl } from '../src/lib/conversions/data-xml';
-import { DataLimitExceededError, DataParseError } from '../src/lib/types';
+import { DataLimitExceededError, DataParseError, EngineUnavailableError } from '../src/lib/types';
 import JSZip from 'jszip';
 import { oracleTest } from './helpers/oracle-test';
 import { parseCsvWithPython, sheetRowsViaLibreOffice } from './helpers/sheet-rows';
@@ -227,37 +227,11 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
   });
 
   describe('5. E-Book Format Conversions (azw3, mobi, lrf, oeb, pdb)', () => {
-    it('successfully converts to azw3, mobi, lrf, oeb, and pdb without throwing unsupported', async () => {
+    it.each(['azw3', 'mobi', 'lrf', 'oeb', 'pdb'])('has no in-process writer for .%s: it fails closed instead of writing a file no reader opens', async (tgt) => {
       const textBuffer = Buffer.from('# Chapter 1: The Odyssey\n\nSing in me, Muse, and through me tell the story.');
-      const ebookTargets = ['azw3', 'mobi', 'lrf', 'oeb', 'pdb'];
-
-      for (const tgt of ebookTargets) {
-        const res = await convertOffice(textBuffer, 'txt', tgt, {}, 'odyssey.txt');
-        expect(res.filename).toBe(`odyssey.${tgt}`);
-        expect(res.size).toBeGreaterThan(0);
-        expect(res.buffer.length).toBeGreaterThan(0);
-
-        if (tgt === 'pdb') {
-          expect(res.mimeType).toBe('application/vnd.palm');
-          // Check Palm Database header 'BOOK' or 'TEXt'
-          expect(res.buffer.toString('ascii', 60, 64)).toBe('TEXt');
-        } else if (tgt === 'mobi') {
-          expect(res.mimeType).toBe('application/x-mobipocket-ebook');
-          expect(res.buffer.toString('ascii', 60, 64)).toBe('BOOK');
-          expect(res.buffer.indexOf('MOBI')).toBeGreaterThan(0);
-        } else if (tgt === 'azw3') {
-          expect(res.mimeType).toBe('application/vnd.amazon.mobi8-ebook');
-          expect(res.buffer.toString('ascii', 60, 64)).toBe('BOOK');
-          expect(res.buffer.indexOf('MOBI')).toBeGreaterThan(0);
-        } else if (tgt === 'oeb') {
-          expect(res.mimeType).toBe('application/x-oeb1-package+xml');
-          expect(res.buffer.toString('utf-8')).toContain('<package');
-          expect(res.buffer.toString('utf-8')).toContain('The Odyssey');
-        } else if (tgt === 'lrf') {
-          expect(res.mimeType).toBe('application/x-sony-bbeb');
-          expect(res.buffer.toString('ascii', 2, 6)).toBe('L001');
-        }
-      }
+      const failure = await convertOffice(textBuffer, 'txt', tgt, {}, 'odyssey.txt').catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EngineUnavailableError);
+      expect(failure).toMatchObject({ engineName: 'ebook-convert' });
     });
   });
 

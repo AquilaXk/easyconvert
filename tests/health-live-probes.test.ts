@@ -35,6 +35,7 @@ const BINARY_ENV: Readonly<Record<string, string>> = {
   pdftotext: 'PDFTOTEXT_PATH',
   tesseract: 'TESSERACT_PATH',
   dcraw_emu: 'DCRAW_EMU_PATH',
+  'ebook-convert': 'EBOOK_CONVERT_PATH',
 };
 const REQUIRED_COMPONENTS = [...Object.keys(BINARY_ENV), 'redis', 'storage'];
 

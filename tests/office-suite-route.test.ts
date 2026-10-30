@@ -292,7 +292,7 @@ describe('which targets the office suite writes in one pass', () => {
     ['wps', 'html', false, 'docx'],
     ['wps', 'html', true, undefined],
     ['wps', 'pdf', false, undefined],
-    ['lrf', 'azw3', false, 'txt'],
+    ['lrf', 'xps', false, 'txt'],
     ['lrf', 'epub', false, 'docx'],
     ['numbers', 'csv', false, 'xlsx'],
     ['pub', 'html', false, undefined],
