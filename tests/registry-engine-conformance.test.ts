@@ -654,7 +654,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   oxps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   parquet: ['xls'],
   pdb: ['azw3', 'lrf', 'mobi', 'oeb'],
-  pdf: ['azw3', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'svg', 'tiff'],
+  pdf: ['azw3', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'svg', 'tiff', 'xls'],
   pml: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   pps: ['ppt'],
   ppt: ['jpg', 'odp', 'png'],
@@ -1545,14 +1545,15 @@ describe('native-engine pairs route through the dispatcher', () => {
   const officeToPostscriptPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && POSTSCRIPT_TARGETS.has(pair[1]) && authorable(pair));
   const postscriptPairs = pairs.filter(([source]) => POSTSCRIPT_SOURCES.has(source));
   const pdfToSvg = pairs.filter(([source, target]) => source === PDF_SOURCE && target === SVG_TARGET);
-  const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && target !== SVG_TARGET);
+  const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && target !== SVG_TARGET && target !== 'xls');
 
   /** Native engine (and the environment variable that points to it) that converts a pair. */
   function engineOf(source: string, target: string): { envVar: string; engineName: string } {
     if (isCalibreEbookTarget(target)) return { envVar: 'EBOOK_CONVERT_PATH', engineName: 'ebook-convert' };
     if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
-    if (source !== PDF_SOURCE) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
+    // A table read from a PDF is written as .xls by the office suite, like every other source of .xls.
+    if (source !== PDF_SOURCE || target === 'xls') return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     if (target === SVG_TARGET) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
     return { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' };
   }
