@@ -11,7 +11,7 @@ import {
   REFERENCE_INPUT_FORMATS,
   runFfmpeg,
 } from '../src/lib/conversions/media-process';
-import { resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
+import { getUnshareCapability, resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { EngineUnavailableError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -215,7 +215,7 @@ describe('the minimum FFmpeg version', () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it.skipIf(skipUnless('a Linux host (network namespaces)', process.platform === 'linux'))(
+  it.skipIf(skipUnless('unprivileged namespaces (unshare -r -n)', getUnshareCapability().available))(
     'refuses to start under STRICT_SANDBOX with an FFmpeg older than the minimum',
     () => {
       vi.stubEnv('STRICT_SANDBOX', 'true');

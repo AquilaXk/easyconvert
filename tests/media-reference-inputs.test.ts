@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { convertMedia, getFfprobePath } from '../src/lib/conversions/media';
 import { type FfprobePath, probeInput, resetInputProbeCache } from '../src/lib/conversions/media-ffprobe';
 import { RefusedMediaInputError } from '../src/lib/types';
+import { requireOracleTool } from './helpers/differential-oracle';
 import { skipWithoutTools } from './helpers/strict-skip';
 
 /**
@@ -111,6 +113,23 @@ describe.skipIf(skip)('a playlist or reference list uploaded as a media containe
       fs.rmSync(listPath, { force: true });
     }
   });
+
+  it('refuses a real MP4 whose first bytes also hold a DASH manifest, which the subtitle burn filter would probe as one', async () => {
+    const mp4 = path.join(markerDir, `easyconvert-dash-tag-${process.pid}.mp4`);
+    execFileSync(requireOracleTool('ffmpeg'), [
+      '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=0.5',
+      '-metadata', 'comment=<MPD profiles="urn:mpeg:dash:profile:isoff-live:2011"><BaseURL>file:///etc/passwd</BaseURL></MPD>',
+      '-movflags', '+faststart', '-c:v', 'mpeg4', mp4,
+    ]);
+    try {
+      expect(fs.readFileSync(mp4).subarray(0, 64 * 1024).includes('<MPD')).toBe(true);
+      const outcome = await convert(fs.readFileSync(mp4), 'mp4', 'webm');
+      expect(outcome).toBeInstanceOf(RefusedMediaInputError);
+      expect((outcome as RefusedMediaInputError).kind).toBe('DASH manifest');
+    } finally {
+      fs.rmSync(mp4, { force: true });
+    }
+  }, CONVERSION_TIMEOUT_MS);
 
   it('still converts a real WAVE file whose samples spell the marker', async () => {
     const outcome = await convert(fs.readFileSync(markerWav), 'wav', 'wav');
