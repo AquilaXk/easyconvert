@@ -820,7 +820,8 @@ export class UnsupportedDwgVersionError extends UnprocessableCadInputError {
 
 /**
  * True for the failures that say "the file is intact but this engine cannot convert it" and answer HTTP 422 through `status`: an
- * encrypted office document or PDF, an archive's password and method errors, a CAD file the readers refuse, a font that cannot be read and an audio file with no samples.
+ * encrypted office document or PDF, an archive's password and method errors, a CAD file the readers refuse, a font that cannot be read, an audio file with no samples
+ * and a media upload that is a playlist or a reference list.
  */
 export function isUnprocessableInputError(error: unknown): error is ConversionFailedError & { readonly status: number } {
   return (
@@ -828,7 +829,8 @@ export function isUnprocessableInputError(error: unknown): error is ConversionFa
     error instanceof ArchiveInputUnprocessableError ||
     error instanceof UnprocessableCadInputError ||
     error instanceof UnprocessableFontInputError ||
-    error instanceof EmptyAudioInputError
+    error instanceof EmptyAudioInputError ||
+    error instanceof RefusedMediaInputError
   );
 }
 
@@ -1213,6 +1215,22 @@ export class EmptyAudioInputError extends UnprocessableMediaInputError {
   constructor(target: string) {
     super(`The audio file holds no audio samples, so there is nothing to write as a .${target} file that a player or reader can open.`);
     this.name = 'EmptyAudioInputError';
+  }
+}
+
+/**
+ * A media upload that is a playlist or a reference list (an HLS playlist, a concat list, a DASH manifest), or a format with no
+ * demuxer a conversion may use. FFmpeg would open the files and URLs such an input names, so it is refused before any engine
+ * reads it, with 422 (through `status`); another worker would refuse it too.
+ */
+export class RefusedMediaInputError extends UnprocessableMediaInputError {
+  readonly status = 422;
+  /** What the input was taken for: a reference format (`hls`, `concat`) or the declared format that has no demuxer. */
+  readonly kind: string;
+  constructor(kind: string, message: string) {
+    super(message);
+    this.name = 'RefusedMediaInputError';
+    this.kind = kind;
   }
 }
 
