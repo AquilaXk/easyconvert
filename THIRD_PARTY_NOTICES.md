@@ -491,83 +491,83 @@ Licence text: not embedded (optional platform package that is not installed on e
 
 ---
 
-### @next/env@15.5.27
+### @next/env@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/env/-/env-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/@next/env/-/env-15.5.28.tgz
 - **Repository**: https://github.com/vercel/next.js
 
 Licence text: the package ships no LICENSE, COPYING or NOTICE file.
 
 ---
 
-### @next/swc-darwin-arm64@15.5.27
+### @next/swc-darwin-arm64@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-15.5.28.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-darwin-x64@15.5.27
+### @next/swc-darwin-x64@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-15.5.28.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-linux-arm64-gnu@15.5.27
+### @next/swc-linux-arm64-gnu@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-15.5.28.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-linux-arm64-musl@15.5.27
+### @next/swc-linux-arm64-musl@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-15.5.28.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-linux-x64-gnu@15.5.27
+### @next/swc-linux-x64-gnu@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-15.5.28.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-linux-x64-musl@15.5.27
+### @next/swc-linux-x64-musl@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-15.5.28.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-win32-arm64-msvc@15.5.27
+### @next/swc-win32-arm64-msvc@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-15.5.28.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
-### @next/swc-win32-x64-msvc@15.5.27
+### @next/swc-win32-x64-msvc@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-15.5.28.tgz
 
 Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
@@ -3065,10 +3065,10 @@ SOFTWARE.
 
 ---
 
-### fast-uri@3.1.8
+### fast-uri@3.1.9
 
 - **License**: `BSD-3-Clause`
-- **Source**: https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.8.tgz
+- **Source**: https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.9.tgz
 - **Repository**: git+https://github.com/fastify/fast-uri.git
 
 #### LICENSE
@@ -5177,10 +5177,10 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ---
 
-### markdown-it@14.3.2
+### markdown-it@14.3.3
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/markdown-it/-/markdown-it-14.3.2.tgz
+- **Source**: https://registry.npmjs.org/markdown-it/-/markdown-it-14.3.3.tgz
 - **Repository**: markdown-it/markdown-it
 
 #### LICENSE
@@ -5338,10 +5338,10 @@ SOFTWARE.
 
 ---
 
-### nanoid@3.3.19
+### nanoid@3.3.20
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/nanoid/-/nanoid-3.3.19.tgz
+- **Source**: https://registry.npmjs.org/nanoid/-/nanoid-3.3.20.tgz
 - **Repository**: ai/nanoid
 
 #### LICENSE
@@ -5371,10 +5371,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
-### next@15.5.27
+### next@15.5.28
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/next/-/next-15.5.27.tgz
+- **Source**: https://registry.npmjs.org/next/-/next-15.5.28.tgz
 - **Repository**: vercel/next.js
 
 #### license.md
@@ -6050,10 +6050,10 @@ SOFTWARE.
 
 ---
 
-### postcss@8.5.29
+### postcss@8.5.32
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/postcss/-/postcss-8.5.29.tgz
+- **Source**: https://registry.npmjs.org/postcss/-/postcss-8.5.32.tgz
 - **Repository**: postcss/postcss
 
 #### LICENSE
@@ -7891,10 +7891,10 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ---
 
-### undici@6.29.0
+### undici@6.29.1
 
 - **License**: `MIT`
-- **Source**: https://registry.npmjs.org/undici/-/undici-6.29.0.tgz
+- **Source**: https://registry.npmjs.org/undici/-/undici-6.29.1.tgz
 - **Repository**: git+https://github.com/nodejs/undici.git
 
 #### LICENSE

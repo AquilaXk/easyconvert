@@ -401,7 +401,9 @@ describe('option-f.patch and aom-release-x64.patch, the optimisation level of th
 
   it('applies the aom patch on linux-x64 only, so arm64 keeps the upstream aom until its bytes are compared', () => {
     const build = readFileSync(path.join(BUILD_DIR, 'build.sh'), 'utf-8');
-    expect(build).toContain('if [ "$PLATFORM" = linux-x64 ]; then patch -p1 --forward --fuzz=0 < "$here/aom-release-x64.patch"; fi');
+    expect(build.split('\n').filter((line) => line.includes('aom-release-x64.patch') && !line.startsWith('#'))).toEqual([
+      'if [ "$PLATFORM" = linux-x64 ]; then patch -p1 --forward --fuzz=0 < "$here/aom-release-x64.patch"; fi',
+    ]);
   });
 
   it('leaves aom out of option-f.patch, which keeps the -O3 of mozjpeg, libpng and libwebp that entry 84 measured', () => {
