@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { isProcessRunning } from './helpers/process-state';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -835,7 +836,7 @@ exit 0`
       proc.kill('SIGKILL');
     }
   }
-  const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const alive = isProcessRunning;
 
   it('ends the command that is running and starts the current release again at once when the job is cancelled while the new one starts', async () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
