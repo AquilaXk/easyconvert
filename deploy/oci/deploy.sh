@@ -12,15 +12,20 @@
 #                                              prune old images (<image-ref> is main or sha-<40 hex characters>)
 #   deploy.sh rollback                         start the previous release again
 #   deploy.sh reconcile                        start the current release again from its pinned images and check it (the repair after an
-#                                              interrupted deploy or a host restart)
+#                                              interrupted deploy or a host restart); does nothing while the hold marker exists
+#   deploy.sh hold | release                   create or remove $EASYCONVERT_HOME/hold, which keeps the hourly reconcile from starting a
+#                                              stack that was stopped by hand
 #
 # A job is cancelled by SIGINT, then SIGTERM, and killed seconds later. Bash runs a trap only between commands, so every command that
 # can take long runs through child(): in the background, in a process group of its own, waited for with `wait`, which a trapped signal
-# interrupts at once. The handler ends that command and starts the release that was running before it returns.
+# interrupts at once. The handler ends that command and starts the release that was running before it returns. A SIGKILL cannot be
+# handled: the command that was running goes on, but it holds no lock (child() closes the lock's descriptor), so the next reconcile
+# can repair the stack.
 set -euo pipefail
 set -m
 
 HOME_DIR="${EASYCONVERT_HOME:-/opt/easyconvert}"
+HOLD_MARKER="$HOME_DIR/hold"
 WORKER_REPO="${WORKER_REPO:-ghcr.io/aquilaxk/easyconvert-worker}"
 WEB_REPO="${WEB_REPO:-ghcr.io/aquilaxk/easyconvert-web}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8090/api/health}"
@@ -76,10 +81,11 @@ filter_env() {
 }
 
 # child <command...>: the command runs in the background with its own process group and no terminal input, and this waits for it. The
-# group lets stop_child end everything the command started, a function's docker or curl included.
+# group lets stop_child end everything the command started, a function's docker or curl included. Descriptor 9 (the lock) is closed in
+# it, so that a command which outlives a killed deploy.sh does not keep the lock.
 child() {
   local status=0
-  "$@" < /dev/null &
+  "$@" < /dev/null 9>&- &
   CHILD=$!
   wait "$CHILD" || status=$?
   CHILD=""
@@ -169,7 +175,8 @@ check_pair() { # check_pair <web repo@digest> <worker repo@digest>
   [ "$base" = "$worker" ] || die "the web image $web was built on '${base:-no recorded image}', not on $worker"
 }
 
-# The profile that Docker loads from the host is the file of this checkout, or the new containers would run under another one.
+# The profile file installed on the host is the file of this checkout. This compares the installed file only: the policy that the
+# kernel has loaded is the one the operator reloads from it (docs/deploy-oci.md, step 7), and profiles_applied checks the containers.
 check_profile() {
   cmp -s "$SCRIPT_DIR/apparmor-easyconvert" "$APPARMOR_INSTALLED" \
     || die "$APPARMOR_INSTALLED is missing or differs from deploy/oci/apparmor-easyconvert: install the profile again (docs/deploy-oci.md, first-time setup, step 7)"
@@ -210,12 +217,15 @@ smoke_conversion() {
 
 # Docker names the profile a container was created with; a container created without ours (the compose file edited, the profile
 # option dropped) would run under another profile and pass every other check on a host that happens to allow it.
-profiles_applied() { # profiles_applied <release-dir>
-  local service id profile
+profiles_applied() { # profiles_applied <release-dir>: every replica; the web needs one, the all-queue worker may have none
+  local service id ids profile
   for service in web worker; do
-    id="$(compose "$1" ps -q "$service")"
-    profile="$(docker inspect --format '{{.AppArmorProfile}}' "$id" 2> /dev/null || true)"
-    [ "$profile" = "$APPARMOR_PROFILE" ] || { log "the $service container runs under '${profile:-no profile}', not under '$APPARMOR_PROFILE'"; return 1; }
+    ids="$(compose "$1" ps -q "$service")"
+    if [ "$service" = web ] && [ -z "$ids" ]; then log "no web container is running"; return 1; fi
+    for id in $ids; do
+      profile="$(docker inspect --format '{{.AppArmorProfile}}' "$id" 2> /dev/null || true)"
+      [ "$profile" = "$APPARMOR_PROFILE" ] || { log "a $service container runs under '${profile:-no profile}', not under '$APPARMOR_PROFILE'"; return 1; }
+    done
   done
 }
 
@@ -224,6 +234,7 @@ start_release() { # start_release <release-dir>
   profiles_applied "$1" || return 1
   healthy || { log "$HEALTH_URL did not answer"; return 1; }
   smoke_conversion || return 1
+  [ -z "$(compose "$1" ps -q worker)" ] && return 0
   child compose "$1" exec -T worker unshare -r -n -- true || { log "the worker cannot create its sandbox namespaces (unshare -r -n)"; return 1; }
 }
 
@@ -238,6 +249,13 @@ cancelled() { # cancelled <release to start again, or empty> [<release to stop w
   elif [ -n "${2:-}" ] && [ -f "$2/.env" ]; then
     compose "$2" down || true
   fi
+  exit 130
+}
+
+cancelled_reconcile() {
+  trap '' INT TERM
+  stop_child
+  log "cancelled during reconcile: run reconcile again"
   exit 130
 }
 
@@ -285,8 +303,7 @@ deploy() {
   release="$HOME_DIR/releases/$(date -u +%Y%m%dT%H%M%SZ)-$ref"
   PENDING_RELEASE="$release"
   trap 'cancelled "$previous" "$release"' INT TERM
-  mkdir -p "$release/docker" "$HOME_DIR/bin"
-  cp "$SCRIPT_DIR/deploy.sh" "$SCRIPT_DIR/env-allowlist.txt" "$HOME_DIR/bin/"
+  mkdir -p "$release/docker"
   cp "$source_dir/docker-compose.prod.yml" "$release/"
   cp "$source_dir/docker/seccomp-worker.json" "$release/docker/"
   printf 'EASYCONVERT_WORKER_IMAGE=%s\nEASYCONVERT_WEB_IMAGE=%s\n' "$worker" "$web" > "$release/images.env"
@@ -308,9 +325,11 @@ deploy() {
 
   if start_release "$release"; then
     trap '' INT TERM
+    PENDING_RELEASE=""
     [ -z "$previous" ] || ln -sfn "$previous" "$HOME_DIR/previous"
     ln -sfn "$release" "$HOME_DIR/current"
-    PENDING_RELEASE=""
+    mkdir -p "$HOME_DIR/bin"
+    cp "$SCRIPT_DIR/deploy.sh" "$SCRIPT_DIR/env-allowlist.txt" "$HOME_DIR/bin/"
     trap - INT TERM
     prune_releases
     prune_images
@@ -336,6 +355,7 @@ rollback() {
   previous="$(readlink -f "$HOME_DIR/previous" 2> /dev/null || true)"
   [ -n "$previous" ] && [ -d "$previous" ] || die "there is no previous release"
   current="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
+  guard "$HOME_DIR/current/.env"
   trap 'cancelled "$current"' INT TERM
   start_release "$previous" || die "the previous release did not become healthy; run reconcile to start the current release again"
   trap '' INT TERM
@@ -349,12 +369,25 @@ rollback() {
 # release was built from would not do: a release of the ref main has no fixed name to deploy again.
 reconcile() {
   local current
+  if [ -e "$HOLD_MARKER" ]; then log "the stack is held ($HOLD_MARKER exists): reconcile does nothing; deploy.sh release removes the hold"; return 0; fi
   current="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
   [ -n "$current" ] && [ -d "$current" ] || die "there is no current release"
-  trap 'cancelled ""' INT TERM
+  guard "$current/.env"
+  trap 'cancelled_reconcile' INT TERM
   start_release "$current" || die "the current release did not become healthy"
   trap - INT TERM
   log "now running $(basename "$current")"
+}
+
+hold() {
+  mkdir -p "$HOME_DIR"
+  : > "$HOLD_MARKER"
+  log "hold set: reconcile does nothing until deploy.sh release"
+}
+
+release_hold() {
+  rm -f -- "$HOLD_MARKER"
+  log "hold removed"
 }
 
 sweep() {
@@ -369,5 +402,7 @@ case "${1:-}" in
   deploy) acquire_lock; deploy "${2:-}" ;;
   rollback) acquire_lock; rollback ;;
   reconcile) acquire_lock; reconcile ;;
-  *) die "usage: deploy.sh filter-env | budget | guard | sweep | deploy <image-ref> | rollback | reconcile" ;;
+  hold) hold ;;
+  release) release_hold ;;
+  *) die "usage: deploy.sh filter-env | budget | guard | sweep | deploy <image-ref> | rollback | reconcile | hold | release" ;;
 esac

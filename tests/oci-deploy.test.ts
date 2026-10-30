@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
@@ -619,7 +619,11 @@ case "$1" in
     dir=""; prev=""
     for arg in "$@"; do [ "$prev" = "--project-directory" ] && dir="$arg"; prev="$arg"; done
     case " $* " in
-      *" ps "*) echo "container-\${@: -1}-$(basename "$dir")" ;;
+      *" ps "*)
+        service="\${@: -1}"; count=1
+        [ "$service" = web ] && count="\${STUB_WEB_REPLICAS:-1}"
+        [ "$service" = worker ] && count="\${STUB_WORKER_REPLICAS:-1}"
+        i=0; while [ "$i" -lt "$count" ]; do echo "container-$service-$i-$(basename "$dir")"; i=$((i+1)); done ;;
       *" exec "*)
         for f in $STUB_FAIL_EXEC; do case "$dir" in *"$f"*) exit 1 ;; esac; done ;;
       *" up "*)
@@ -1004,6 +1008,107 @@ exit 0`
     expect(run(['rollback'], { env: hostEnv() }).status).not.toBe(0);
   });
 
+  it('checks the profile of every replica of the web and the worker, and the sandbox of the worker', () => {
+    const result = run(['deploy', ref('a')], { env: hostEnv({ STUB_WORKER_REPLICAS: '2', STUB_WEB_REPLICAS: '2' }) });
+    expect(result.status, result.stderr).toBe(0);
+    const inspected = calls().filter((call) => call.startsWith('docker inspect --format {{.AppArmorProfile}}'));
+    expect(inspected.map((call) => /container-(?:web|worker)-\d/.exec(call)?.[0])).toEqual(['container-web-0', 'container-web-1', 'container-worker-0', 'container-worker-1']);
+  });
+
+  it('rolls back when one replica of the worker runs under another profile', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const result = run(['deploy', ref('b')], { env: hostEnv({ STUB_WORKER_REPLICAS: '2', STUB_BAD_PROFILE: 'container-worker-1-' }) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("runs under 'docker-default', not under 'easyconvert'");
+    expect(currentRelease()).toBe(good);
+  });
+
+  it('skips the sandbox check of the worker when the all-queue worker has no replica, and refuses a stack with no web container', () => {
+    const noWorker = run(['deploy', ref('a')], { env: hostEnv({ STUB_WORKER_REPLICAS: '0' }) });
+    expect(noWorker.status, noWorker.stderr).toBe(0);
+    expect(calls().some((call) => / exec /.test(call))).toBe(false);
+    const noWeb = run(['deploy', ref('b')], { env: hostEnv({ STUB_WEB_REPLICAS: '0' }) });
+    expect(noWeb.status).toBe(1);
+    expect(noWeb.stderr).toContain('no web container');
+    expect(path.basename(readlinkSync(path.join(home, 'current')))).toContain(ref('a'));
+  });
+
+  it('keeps the release that the current link names when the link move fails after it made the link', () => {
+    stub('ln', 'case "$*" in *current*) /bin/ln "$@"; exit 1 ;; esac\nexec /bin/ln "$@"');
+    const result = run(['deploy', ref('a')], { env: hostEnv() });
+    expect(result.status).not.toBe(0);
+    expect(releases()).toHaveLength(1);
+    expect(existsSync(path.join(home, 'current', 'docker-compose.prod.yml'))).toBe(true);
+  });
+
+  it('copies deploy.sh and the allowlist to bin only after the release passed its checks', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    expect(existsSync(path.join(home, 'bin', 'deploy.sh'))).toBe(true);
+    expect(existsSync(path.join(home, 'bin', 'env-allowlist.txt'))).toBe(true);
+    rmSync(path.join(home, 'bin'), { recursive: true });
+    expect(run(['deploy', ref('b')], { env: hostEnv({ STUB_FAIL_HEALTH: ref('b') }) }).status).toBe(1);
+    expect(existsSync(path.join(home, 'bin'))).toBe(false);
+  });
+
+  it('checks the scratch mount first when it reconciles or rolls back', () => {
+    expect(run(['deploy', ref('1')], { env: hostEnv() }).status).toBe(0);
+    expect(run(['deploy', ref('2')], { env: hostEnv() }).status).toBe(0);
+    writeFileSync(log, '');
+    for (const command of ['reconcile', 'rollback']) {
+      const result = run([command], { env: hostEnv({ STUB_MOUNT_STATUS: '1' }) });
+      expect(result.status, command).toBe(1);
+      expect(result.stderr, command).toContain('is not a mount point');
+    }
+    expect(calls().filter((call) => / up /.test(call))).toEqual([]);
+  });
+
+  it('holds the stack down on hold, so that reconcile logs it and does nothing until release', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    expect(run(['hold'], { env: hostEnv() }).status).toBe(0);
+    expect(existsSync(path.join(home, 'hold'))).toBe(true);
+    writeFileSync(log, '');
+    const held = run(['reconcile'], { env: hostEnv() });
+    expect(held.status, held.stderr).toBe(0);
+    expect(held.stderr).toContain('held');
+    expect(calls()).toEqual([]);
+    expect(run(['release'], { env: hostEnv() }).status).toBe(0);
+    expect(existsSync(path.join(home, 'hold'))).toBe(false);
+    expect(run(['reconcile'], { env: hostEnv() }).status).toBe(0);
+    expect(calls().some((call) => / up -d /.test(call))).toBe(true);
+  });
+
+  it('says that a cancelled reconcile has to be run again and claims no restart', async () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const env = hostEnv({ STUB_HANG_UP: ref('a') });
+    const result = await cancelWhile(['reconcile'], env, () => existsSync(env.STUB_HANG_MARK));
+    expect(result.code).toBe(130);
+    expect(result.stderr).toContain('cancelled during reconcile: run reconcile again');
+    expect(result.stderr).not.toContain('starting the previous release');
+    expect(alive(result.hangPid ?? 0)).toBe(false);
+  });
+
+  const hasFlock = spawnSync('flock', ['--version']).status === 0;
+  // skip-ok: platform capability: flock(1) belongs to util-linux and is missing on macOS, where the lock test cannot run.
+  it.skipIf(!hasFlock)('leaves no holder of the lock when deploy.sh is killed with SIGKILL while a command runs', async () => {
+    unlinkSync(path.join(bin, 'flock'));
+    const env = hostEnv({ STUB_HANG_UP: ref('f') });
+    const proc = spawn('bash', [SCRIPT, 'deploy', ref('f')], { env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env }, stdio: 'ignore' });
+    const exited = new Promise<void>((resolve) => proc.on('exit', () => resolve()));
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(env.STUB_HANG_MARK) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(existsSync(env.STUB_HANG_MARK), 'the stub command never started').toBe(true);
+      proc.kill('SIGKILL');
+      await exited;
+      const second = spawnSync('flock', ['-n', path.join(home, 'deploy.lock'), 'true']);
+      expect(second.status, 'the orphaned command still holds the lock').toBe(0);
+    } finally {
+      if (existsSync(env.STUB_HANG_MARK)) { try { process.kill(Number(readFileSync(env.STUB_HANG_MARK, 'utf-8')), 'SIGKILL'); } catch { /* already ended */ } }
+      proc.kill('SIGKILL');
+    }
+  });
+
   it('never leaves the home directory it was given', () => {
     run(['deploy', ref('1')], { env: hostEnv() });
     expect(readdirSync(sandbox).sort()).toEqual(['bin', 'calls.log', 'filtered.env', 'home', 'upload.ppm']);
@@ -1053,6 +1158,8 @@ describe('operations document and policy entry', () => {
   it('names the repair after an interrupted deploy, the residual trust of the docker-group runner and the limits of the public log and the edge log', () => {
     expect(doc).toContain('deploy.sh reconcile');
     expect(doc).toContain('15 * * * * /opt/easyconvert/bin/deploy.sh reconcile');
+    expect(doc).toContain('/opt/easyconvert/bin/deploy.sh hold');
+    expect(doc).toContain('deploy.sh release');
     expect(doc).not.toMatch(/deploy again the ref of the `current` release/);
     expect(doc).toContain('Residual trust');
     expect(doc).toContain('#761');
@@ -1064,7 +1171,7 @@ describe('operations document and policy entry', () => {
     for (const text of [doc, policy.slice(policy.indexOf('## 122.'))]) {
       expect(text).toContain('RESULT_UNDELIVERED_TTL_SECONDS');
       expect(text).toContain('RESULT_DELIVERED_GRACE_SECONDS');
-      expect(text).toContain('entry 125');
+      expect(text).toContain('PR #919');
       expect(text).not.toMatch(/next pull request/);
     }
   });

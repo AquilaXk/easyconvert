@@ -8,23 +8,23 @@ The contents of the first production deploy (`v0.1.0`, a pre-release), summarise
 
 ### Added
 
-- Conversion between 292 formats in 12 categories: documents and office files, PDF, e-books, spreadsheets and data, images, camera RAW and HDR, audio, video, archives and compression, fonts, vector graphics, and CAD and 3D, each with a reference engine or a decoder of its own and a quality benchmark against the reference tools.
+- Conversion between 302 formats in 12 categories: images, documents, structured data, spreadsheets, presentations, archives, audio, video, e-books, fonts, CAD and vector graphics.
 - PDF tools: text and layout extraction, watermark, protect, merge, unlock, compress, page operations and PDF/A, and tables written as the sheets of an XLSX or XLS workbook.
-- OCR with hOCR and ALTO output, CJK and vertical text, deskew, and multi-page and multi-column reading order.
+- OCR with hOCR and ALTO output, CJK and vertical text, deskew and multi-page documents.
 - E-book writers for MOBI, AZW3, PDB, LRF and OEB, a RocketBook reader, XPS, DWG, Visio, CorelDRAW and Type 1 font sources, and STEP and IGES writers.
 - A public API with a single contract, job graphs with fan-out and fan-in, task chaining, cancellation, idempotency keys, presigned multipart and resumable (TUS) uploads, webhooks with rotating secrets and durable retries, API keys with scopes and rate-limit headers, and a generated SDK and OpenAPI document.
 - Accounts with Google sign-in, a dashboard for API keys, usage metering and quotas.
 - Local, S3-compatible and OCI object storage behind one streaming interface, with bring-your-own-storage credentials sealed in the job.
-- The web interface: format directory with a page for every conversion pair, a conversion queue, and accessible FAQs.
+- The web interface: format pages with bidirectional conversion grids, and accessible FAQs.
 - Production packaging for the shared OCI arm64 host: a web image on the worker image, a hardened Compose stack with hard CPU and memory limits and a capped scratch mount, an AppArmor profile, the nginx site, a manual deploy workflow with health and smoke checks, rollback and reconcile, and the operations guide `docs/deploy-oci.md`.
 - A quality and speed gate on conversion changes, a nightly run on real-world files, a weekly 20,000-file corpus, and a record of every policy decision with its reasons in `docs/policy-decisions.md`.
 
 ### Changed
 
-- Faster conversions on the speed rows: native zstd, bzip2, deflate and ZIP writers, AVIF, WebP and JPEG encoders started from a launcher with idle threads, Poppler and qpdf started from small helpers, and Parquet and CSV paths scanned a word at a time.
+- Faster conversions on the speed rows: native zstd, bzip2, deflate and ZIP writers, faster AVIF, WebP and JPEG encoding, qpdf run by a native runner, and Parquet and CSV cells scanned a word at a time.
 - Output closer to the reference tools: AVIF written as one tile at the reference settings, Opus and AAC encoded and resampled as the references do, DOCX, ODT and HTML pages laid out as the office suite draws them, and EMF, WMF, DXF and PostScript pages sized as the references size them.
 - The worker image moves to Debian 13 and Node.js 24, and builds FFmpeg 9.0.2, libvips with its codecs at -O3, and a pinned 7-Zip and veraPDF.
-- Pull request checks run once per head and speed parity moves to the nightly run; new code smells are gated by a shrinking baseline.
+- New code smells are gated by a shrinking baseline.
 
 ### Fixed
 
