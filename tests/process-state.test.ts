@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { isProcessRunning, waitUntilStopped } from './helpers/process-state';
 
 /** Hang guard of a wait for a state the test caused: the state arrives in milliseconds, this only ends a wait that never would. */
-const STOP_LIMIT_MS = 10_000;
+const WAIT_LIMIT_MS = 10_000;
 
 /** Signals the pid without regard to its state: a zombie still answers. */
 function answersSignal(pid: number): boolean {
@@ -15,45 +15,52 @@ function answersSignal(pid: number): boolean {
   }
 }
 
-/** Reads lines from `stream` until `count` have arrived; a stream that ends first fails the wait. */
-function readLines(stream: NodeJS.ReadableStream, count: number): Promise<string[]> {
+/** Reads lines from `stream` until `count` have arrived; a stream that ends first, or a stall past `limitMs`, fails the wait. */
+function readLines(stream: NodeJS.ReadableStream, count: number, limitMs: number): Promise<string[]> {
   return new Promise((resolve, reject) => {
     let text = '';
+    const finish = (settle: () => void): void => {
+      clearTimeout(timer);
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+      settle();
+    };
     const onData = (chunk: Buffer): void => {
       text += chunk.toString();
       const lines = text.split('\n');
-      if (lines.length > count) {
-        stream.off('data', onData);
-        resolve(lines.slice(0, count));
-      }
+      if (lines.length > count) finish(() => resolve(lines.slice(0, count)));
     };
+    const onEnd = (): void => finish(() => reject(new Error(`the stream ended after ${text.length} characters`)));
+    const timer = setTimeout(() => finish(() => reject(new Error(`${count} lines did not arrive within ${limitMs} ms`))), limitMs);
     stream.on('data', onData);
-    stream.once('end', () => reject(new Error(`the stream ended after ${text.length} characters`)));
+    stream.once('end', onEnd);
   });
 }
 
 describe('whether a process is running', () => {
+  /** Above the two waits of the zombie case, so that a wait's own message ends a stalled case: vitest's default test timeout is 5 s. */
+  const ZOMBIE_TEST_TIMEOUT_MS = 3 * WAIT_LIMIT_MS;
+
   it('counts a zombie as stopped although it still answers a signal, and a live process as running', async () => {
     // The shell starts a sleeper and replaces itself with cat, which never waits for a child: a sleeper that is killed
     // stays a zombie for as long as cat runs. cat echoes the line the test sends, so the echo shows the shell has been replaced.
-    const parent = spawn('/bin/sh', ['-c', 'sleep 60 & echo $!; exec cat'], { stdio: ['pipe', 'pipe', 'ignore'] });
-    let pid = 0;
+    const parent = spawn('/bin/sh', ['-c', 'sleep 60 & echo $!; exec cat'], { stdio: ['pipe', 'pipe', 'ignore'], detached: true });
+    const group = -(parent.pid as number);
     try {
       parent.stdin.write('replaced\n');
-      const [sleeper, echo] = await readLines(parent.stdout, 2);
+      const [sleeper, echo] = await readLines(parent.stdout, 2, WAIT_LIMIT_MS);
       expect(echo).toBe('replaced');
-      pid = Number(sleeper);
+      const pid = Number(sleeper);
       expect(isProcessRunning(pid)).toBe(true);
       process.kill(pid, 'SIGKILL');
-      expect(await waitUntilStopped(pid, STOP_LIMIT_MS)).toBe(true);
+      expect(await waitUntilStopped(pid, WAIT_LIMIT_MS)).toBe(true);
       expect(answersSignal(pid)).toBe(true);
       expect(isProcessRunning(parent.pid as number)).toBe(true);
     } finally {
-      // The sleeper first, while its parent still holds the pid: after the parent is gone init reaps it and the pid can be reused.
-      if (pid > 0 && answersSignal(pid)) process.kill(pid, 'SIGKILL');
-      parent.kill('SIGKILL');
+      // The shell and its sleeper share one process group, so one signal ends both wherever the case stopped, and no pid is reused.
+      if (answersSignal(group)) process.kill(group, 'SIGKILL');
     }
-  });
+  }, ZOMBIE_TEST_TIMEOUT_MS);
 
   it('counts a pid that no process holds as stopped', async () => {
     const child = spawn('/bin/sh', ['-c', 'exit 0']);

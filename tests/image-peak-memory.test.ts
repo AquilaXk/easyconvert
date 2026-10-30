@@ -8,14 +8,14 @@ import sharp from 'sharp';
 import { buildAnimatedWebpFromStill } from './helpers/webp-builder';
 import { SeededRandom } from './helpers/archive-corpus';
 import { buildTiffWithOrientation } from './helpers/exif-orientation';
+import { SERVICE_MALLOC_ARENA_MAX } from './helpers/service-heap';
 
 /**
  * Peak-memory regression for oriented animations: each conversion runs in a fresh Node process and the
  * kernel's resident high-water mark (VmHWM) before and after it is compared with the 512 MiB budget plus a
  * 64 MiB margin. An animation the budget admits must stay under that; one it refuses must not have been
- * decoded at all. The child runs with the service's glibc heap bound (SERVICE_MALLOC_ARENA_MAX). Without it the measured
- * peaks of oriented 2000x2000 animations were 471 MiB (6 frames), 482 (7), 518 (8), 565 (10 noisy frames to GIF), 591 (11)
- * and 617 (14), and 3000x3000 x 5 frames reached 685 MiB; with it a 6 frame animation to GIF adds 363 to 416 MiB.
+ * decoded at all. The child runs with the service's glibc heap bound (SERVICE_MALLOC_ARENA_MAX, read from docker-compose.yml): without
+ * it the child grows an arena for each thread of the image library and reads a figure the service never reaches (policy entry 112).
  *
  * Oracle: /proc/self/status of the child process, independent of the converter's own accounting. The fixtures
  * are animated WebP files built by the hand-written container builder around one noisy still image per size,
@@ -30,14 +30,6 @@ const ROTATED_QUARTER_TURN = 6;
 const ADMITTED_SIDE = 2000;
 const ADMITTED_FRAMES = 6;
 const NOISE_SEED = 7;
-/**
- * The glibc heap bound the service runs with (docker-compose.yml and docker-compose.prod.yml set it; the `tests` job of ci.yml
- * does not). A child without it grows an arena for each thread of the image library: the same 2000x2000 x 6 frame animation to
- * GIF added 504 to 541 MiB without it and 363 to 416 MiB with it (8 runs each, 12 busy processes on 4 vCPUs), and the 578 MiB the
- * shard runner read once came from a child without it. What stays with it is the spread of one input, 49 to 52 MiB over 8 runs,
- * which is the garbage collector's and the pipeline threads' timing; the bound sits 160 MiB over the largest figure.
- */
-const SERVICE_MALLOC_ARENA_MAX = '2';
 const CHILD_TIMEOUT_MS = 170_000;
 const TEST_TIMEOUT_MS = 180_000;
 const FIXTURE_TIMEOUT_MS = 60_000;
@@ -56,7 +48,7 @@ interface Measurement {
 let dir: string;
 
 async function noisyAnimation(side: number, frames: number): Promise<string> {
-  const raw = Buffer.from(new SeededRandom(NOISE_SEED).bytes(side * side * 3));
+  const raw = new SeededRandom(NOISE_SEED).bytes(side * side * 3);
   const still = await sharp(raw, { raw: { width: side, height: side, channels: 3 } }).webp({ quality: NOISE_QUALITY }).toBuffer();
   const file = path.join(dir, `noise_${side}_${frames}.webp`);
   fs.writeFileSync(

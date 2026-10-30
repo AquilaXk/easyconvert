@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyOklabQuantizationAndDither } from '../src/lib/conversions/color-quantizer';
 import { comparePictures } from './helpers/palette-metrics';
 import { runConvert, runIdentify, SKIP_WITHOUT_MAGICK } from './helpers/imagemagick';
+import { SERVICE_MALLOC_ARENA_MAX } from './helpers/service-heap';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -24,7 +25,7 @@ const DELTA_E_RATIO = 1.1;
 const PERF_WIDTH = 1600;
 const PERF_HEIGHT = 1200;
 const PERF_MAX_CPU_SECONDS = 1.5;
-const PERF_MAX_ADDED_MIB = 60;
+const PERF_MAX_ADDED_MIB = 40;
 const PERF_RUNS = 5;
 const CHILD_TIMEOUT_MS = 170_000;
 const MEASURE_SCRIPT = path.join(__dirname, 'helpers', 'measure-peak-quantize.mts');
@@ -88,7 +89,7 @@ describe.skipIf(SKIP_WITHOUT_MAGICK)('256-colour quantization against ImageMagic
 });
 
 describe.skipIf(SKIP_WITHOUT_MAGICK || skipUnless('Linux /proc (VmHWM)', HAS_PROC))('cost at 1.92 megapixels and 256 colours', () => {
-  it('takes at most 1.5 s of CPU time and adds at most 60 MiB of resident memory', async () => {
+  it('takes at most 1.5 s of CPU time and adds at most 40 MiB of resident memory', async () => {
     const rgbaFile = path.join(workDir, 'perf.rgba');
     // A textured picture with a smooth tonal range: the statistics of a photograph, 10 thousand histogram bins.
     runConvert(['-seed', '11', '-size', `${PERF_WIDTH}x${PERF_HEIGHT}`, 'plasma:fractal', '-blur', '0x2', '-attenuate', '0.3', '+noise', 'Gaussian', '-alpha', 'on', '-depth', '8', `rgba:${rgbaFile}`]);
@@ -96,7 +97,7 @@ describe.skipIf(SKIP_WITHOUT_MAGICK || skipUnless('Linux /proc (VmHWM)', HAS_PRO
     const { stdout } = await execFileAsync(
       process.execPath,
       ['--expose-gc', '--import', 'tsx', MEASURE_SCRIPT, rgbaFile, String(PERF_WIDTH), String(PERF_HEIGHT), String(COLOURS), String(PERF_RUNS)],
-      { cwd: path.join(__dirname, '..'), timeout: CHILD_TIMEOUT_MS, maxBuffer: 1024 * 1024 }
+      { cwd: path.join(__dirname, '..'), env: { ...process.env, MALLOC_ARENA_MAX: SERVICE_MALLOC_ARENA_MAX }, timeout: CHILD_TIMEOUT_MS, maxBuffer: 1024 * 1024 }
     );
     const measured = JSON.parse(stdout.trim().split('\n').pop() as string) as { bestCpuMs: number; addedMiB: number };
     expect(measured.bestCpuMs / 1000).toBeLessThanOrEqual(PERF_MAX_CPU_SECONDS);

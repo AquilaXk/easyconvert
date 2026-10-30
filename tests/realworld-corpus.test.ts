@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,7 +41,9 @@ const HANG_DEADLINE_MS = 1;
 const JOB_DEADLINE_MS = 120_000;
 /** How long the input of a slow job is held back: far past the pool deadline, however fast the host. */
 const HELD_BACK_MS = 100;
-const MKFIFO = '/usr/bin/mkfifo';
+/** A wrong pool that waits on a pipe nobody writes would hold the case until its timeout: the pipe is written to after this long. */
+const RELEASE_AFTER_MS = 5_000;
+const RELEASE_POLL_MS = 100;
 const POOL_TEST_TIMEOUT_MS = 240_000;
 const HEAP_MB = 1024;
 const MIN_CORPUS_FILES = 5000;
@@ -53,8 +55,28 @@ const MIN_CORPUS_FILES = 5000;
  */
 function pipeInput(dir: string, name: string): string {
   const pipe = path.join(dir, name);
-  execFileSync(MKFIFO, [pipe]);
+  execFileSync('mkfifo', [pipe]);
   return pipe;
+}
+
+/**
+ * Writes `data` to every reader that waits on `pipe` from RELEASE_AFTER_MS on, so that a pool that ignores a deadline gets an
+ * answer, fails the case on its verdict within seconds and reaches the case's `finally`. A pool that kills the job at its
+ * deadline has no reader left, and a write end opened without blocking finds none.
+ */
+function releaseReaders(pipe: string, data: Buffer): () => void {
+  let timer = setTimeout(poll, RELEASE_AFTER_MS);
+  function poll(): void {
+    try {
+      const fd = fs.openSync(pipe, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
+      fs.writeSync(fd, data);
+      fs.closeSync(fd);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENXIO') throw error;
+    }
+    timer = setTimeout(poll, RELEASE_POLL_MS);
+  }
+  return () => clearTimeout(timer);
 }
 
 async function zipOf(files: Record<string, Buffer>, compression: 'STORE' | 'DEFLATE', comment?: string): Promise<Buffer> {
@@ -313,12 +335,23 @@ describe('verdicts and gate', () => {
 });
 
 describe('isolated job pool', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-pool-'));
-  const good = path.join(dir, 'good.png');
-  const broken = path.join(dir, 'broken.png');
-  fs.writeFileSync(good, PNG_1X1);
-  fs.writeFileSync(broken, Buffer.concat([PNG_1X1.subarray(0, 40), Buffer.alloc(16)]));
-  const blocked = pipeInput(dir, 'blocked.png');
+  let dir: string;
+  let good: string;
+  let broken: string;
+  let blocked: string;
+
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-pool-'));
+    good = path.join(dir, 'good.png');
+    broken = path.join(dir, 'broken.png');
+    fs.writeFileSync(good, PNG_1X1);
+    fs.writeFileSync(broken, Buffer.concat([PNG_1X1.subarray(0, 40), Buffer.alloc(16)]));
+    blocked = pipeInput(dir, 'blocked.png');
+  });
+
+  afterAll(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 
   it('converts a valid file, refuses a corrupt one with a typed error, and survives a hang', async () => {
     const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
@@ -335,6 +368,7 @@ describe('isolated job pool', () => {
       pool.stop();
     }
     const hanging = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, heapMb: HEAP_MB, env });
+    const stopReleasing = releaseReaders(blocked, PNG_1X1);
     try {
       const [first, second] = await hanging.runAll([
         { path: blocked, name: 'blocked.png', format: 'png', target: 'bmp' },
@@ -344,6 +378,7 @@ describe('isolated job pool', () => {
       expect(second.verdict).toBe('hang');
       expect(first.detail).toMatch(/no answer within 1 ms/);
     } finally {
+      stopReleasing();
       hanging.stop();
     }
   }, POOL_TEST_TIMEOUT_MS);
@@ -408,11 +443,15 @@ describe('job deadline by size', () => {
     const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
     const pool = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, heapMb: HEAP_MB, env });
     // The file of the second job is written HELD_BACK_MS after the job server opens it: 100 times the pool deadline.
-    const written = fs.promises.open(held, 'w').then(async (handle) => {
-      await new Promise((resolve) => setTimeout(resolve, HELD_BACK_MS));
-      await handle.writeFile(PNG_1X1);
-      await handle.close();
-    });
+    const written = fs.promises
+      .open(held, 'w')
+      .then(async (handle) => {
+        await new Promise((resolve) => setTimeout(resolve, HELD_BACK_MS));
+        await handle.writeFile(PNG_1X1);
+        await handle.close();
+      })
+      .catch(() => undefined);
+    const stopReleasing = releaseReaders(blocked, PNG_1X1);
     try {
       const [notGiven, given] = await pool.runAll([
         { path: blocked, name: 'blocked.png', format: 'png', target: 'bmp' },
@@ -422,10 +461,11 @@ describe('job deadline by size', () => {
       expect(notGiven.detail).toMatch(/no answer within 1 ms/);
       expect(given.verdict).toBe('ok');
     } finally {
+      stopReleasing();
       pool.stop();
       // A reader releases a writer that no job server opened, so the pending open does not outlive a failed test.
       fs.closeSync(fs.openSync(held, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK));
-      await written.catch(() => undefined);
+      await written;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, POOL_TEST_TIMEOUT_MS);

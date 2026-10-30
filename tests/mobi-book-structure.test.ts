@@ -12,7 +12,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { runEpubcheck } from './helpers/epubcheck';
 import { buildMobi, palmDocCompress } from './helpers/mobi-builder';
 import { oracleTest } from './helpers/oracle-test';
-import { cpuClockMs, expectLinearOnInputs, expectNoSlowerThanReference, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { cpuClockMs, expectLinearOnInputs, expectNoSlowerThanReference, MIN_SAMPLE_MS, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * A MOBI book keeps its structure when it becomes an EPUB or a PDF: the chapters its table of contents names are headings
@@ -328,13 +328,11 @@ describe('the time the reader takes on markup built to make it slow', () => {
   const read = (input: Buffer) => readMobiModel(input, 'book').catch(() => undefined);
 
   describe('a book of unclosed constructs against a book of the same size with every construct closed', () => {
-    // The reader's work on these books is a few milliseconds at 100 KB, and a claim made by comparing a book with one a quarter of its
-    // size needs a base of a few tenths of a millisecond, which a garbage collection or a change of compiler tier moves by a factor of
-    // three (the same 100 KB book read 0.4 and 1.6 ms in two processes on a quiet machine); the ratio of two such samples read 13x on a
-    // loaded runner. The claim here is that the hostile book costs the reader no more than the plain one, both 400 KB, in CPU time,
-    // interleaved, best pass of each. Work that grows as the square of the number of unclosed constructs is 10 to 100 times the cost
-    // of the plain book at this size.
-    const MAX_COST_RATIO = 2;
+    // The claim is that the hostile book costs the reader no more than the plain one of the same size, in CPU time, interleaved, best
+    // pass of each (tests/helpers/timing.ts); a baseline of a few tenths of a millisecond, as a book a quarter of the size gives, is moved
+    // by a factor of three by the compiler tier and the collector. The bound sits over the spread of the healthy ratio and far
+    // under the cost of a reader that scans to the end of the book for each unclosed construct (policy entry 112).
+    const MAX_COST_RATIO = 1;
     const PLAIN_FILLER = '<b>x</b> ';
 
     it.each([
@@ -344,7 +342,9 @@ describe('the time the reader takes on markup built to make it slow', () => {
       ['link tags with a position that are never closed', () => afterMarkup('<a filepos=1 ', SIZE), () => afterMarkup(PLAIN_FILLER, SIZE)],
     ])('costs no more than the closed constructs: %s', async (name, hostileBook, plainBook) => {
       const [hostile, plain] = [hostileBook(), plainBook()];
-      await expectNoSlowerThanReference(name, () => read(plain), () => read(hostile), { maxRatio: MAX_COST_RATIO, clock: cpuClockMs });
+      await expect(readMobiModel(plain, 'book'), 'the plain book is read in full, so the comparison has a real baseline').resolves.toBeDefined();
+      const { smallSampleMs } = await expectNoSlowerThanReference(name, () => read(plain), () => read(hostile), { maxRatio: MAX_COST_RATIO, clock: cpuClockMs });
+      expect(smallSampleMs, `${name}: the plain book's sample was too short to time`).toBeGreaterThanOrEqual(MIN_SAMPLE_MS);
     }, SCALING_TEST_TIMEOUT_MS);
   });
 
