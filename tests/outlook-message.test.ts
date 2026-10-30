@@ -204,10 +204,10 @@ describe('a message is read from its properties', () => {
 
   it('falls back to the HTML body, then to the compressed RTF body, when there is no plain one', async () => {
     const html = message([{ name: '__substg1.0_10130102', data: Buffer.from('<html><body><p>From <b>html</b></p></body></html>') }]);
-    expect(await text(html)).toContain('From html');
+    expect(await text(html)).toBe('From html');
 
     const rtf = message([{ name: '__substg1.0_10090102', data: compressedRtf(' hi mom}') }]);
-    expect(await text(rtf)).toContain('hi mom');
+    expect(await text(rtf)).toBe('hi mom');
   });
 });
 

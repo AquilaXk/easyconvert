@@ -15,7 +15,7 @@ import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseEr
 import { assertWellFormedXml } from './xml-wellformed';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { calibreEngineUnavailable, isCalibreEbookTarget } from './calibre-ebook-targets';
-import { readPdfForOffice } from './pdf-office';
+import { pdfToEpub, readPdfForOffice } from './pdf-office';
 import { documentToDocx } from './document-model/docx';
 import { documentToStructuredText } from './document-model/markdown';
 import { analyzeDocumentLayout, DlaBoundingBox } from './dla-engine';
@@ -334,21 +334,9 @@ export async function convertOffice(
   }
 
   // 20. Target is EPUB (from MD, HTML, TXT, DOCX, etc.)
-  if (tgt === 'epub' && src === 'pdf') {
-    // The block model the PDF reader built is written as it is: its text never passes through Markdown, whose rules would read
-    // a row of numbers as nested lists and whose limits are those of a user's document.
-    const epubBuffer = await documentToEpub(await readPdfForOffice(inputBuffer, options), { title: baseName, language: options.language });
-    return { buffer: epubBuffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: epubBuffer.length };
-  }
   if (tgt === 'epub') {
-    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    const epubBuffer = await generateEpubFromText(textContent, src, options, baseName);
-    return {
-      buffer: epubBuffer,
-      mimeType: 'application/epub+zip',
-      filename: `${baseName}.epub`,
-      size: epubBuffer.length,
-    };
+    const epubBuffer = await generateEpubFromSource(inputBuffer, src, options, baseName);
+    return { buffer: epubBuffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: epubBuffer.length };
   }
 
   // 21. Target is PDF (from Office or Ebook sources)
@@ -419,6 +407,12 @@ export async function convertOffice(
   }
 
   throw new Error(`Unsupported office conversion from ${sourceFormat} to ${targetFormat}`);
+}
+
+/** An EPUB from any other source; a PDF is written from its blocks (`pdfToEpub`), the rest from the text extracted from them. */
+async function generateEpubFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
+  if (src === 'pdf') return pdfToEpub(inputBuffer, options, baseName);
+  return generateEpubFromText(await extractTextContentForOffice(inputBuffer, src, options, baseName), src, options, baseName);
 }
 
 /** An ODT from any other source: PDF text keeps the text writer; every other source is written from the block model. */

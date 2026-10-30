@@ -773,7 +773,7 @@
     "rule": "complexity",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 167
+    "maxValue": 163
   },
   {
     "file": "src/lib/conversions/document.ts",
@@ -787,7 +787,7 @@
     "rule": "max-lines-per-function",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 494
+    "maxValue": 475
   },
   {
     "file": "src/lib/conversions/docx-model.ts",
@@ -904,7 +904,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3496
+    "maxValue": 3480
   },
   {
     "file": "src/lib/conversions/hwp-reader.ts",
@@ -1534,7 +1534,7 @@
     "rule": "max-lines-per-function",
     "function": "convertOffice",
     "count": 1,
-    "maxValue": 259
+    "maxValue": 253
   },
   {
     "file": "src/lib/conversions/office.ts",

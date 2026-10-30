@@ -60,9 +60,10 @@ describe('an encrypted Office Open XML package under its own extension', () => {
         openReadStream: async (_key: string, range?: { start: number; end: number }) =>
           Readable.from([large.subarray(range?.start ?? 0, (range?.end ?? large.length - 1) + 1)]),
       };
-      await expect(assertNotSpoofedObject(backend, 'uploads/locked', large.length, large.subarray(0, OBJECT_HEADER_BYTES), 'xlsx', 'locked.xlsx')).rejects.toBeInstanceOf(
-        EncryptedOfficeDocumentError
-      );
+      await expect(assertNotSpoofedObject(backend, 'uploads/locked', large.length, large.subarray(0, OBJECT_HEADER_BYTES), 'xlsx', 'locked.xlsx')).rejects.toMatchObject({
+        name: 'EncryptedOfficeDocumentError',
+        status: 422,
+      });
     });
   });
 

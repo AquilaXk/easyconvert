@@ -1,4 +1,5 @@
 import { ConversionFailedError, type ConversionOptions } from '../types';
+import { documentToEpub } from './document-model/epub';
 import type { DocumentModel } from './document-model/model';
 import { plainTextModel } from './document-model/plain';
 import { evaluatePageOcrDecisions, recognizeRenderedPdfPages } from './ocr';
@@ -86,4 +87,12 @@ export async function readPdfContentForOffice(source: Buffer, options: Conversio
 export async function readPdfForOffice(source: Buffer, options: ConversionOptions, withImages = false): Promise<DocumentModel> {
   const content = await readPdfContentForOffice(source, options, withImages);
   return content.kind === 'layout' ? content.extracted.model : plainTextModel(content.pages.map((page) => page.text).join('\n\n'));
+}
+
+/**
+ * An EPUB from a PDF, written from the block model its reader built, as it is for a DOCX: the text never passes through Markdown,
+ * whose rules read a row of numbers as nested lists and whose limits are those of a user's document.
+ */
+export async function pdfToEpub(source: Buffer, options: ConversionOptions, title: string): Promise<Buffer> {
+  return documentToEpub(await readPdfForOffice(source, options), { title, language: options.language });
 }

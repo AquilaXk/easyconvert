@@ -45,7 +45,7 @@ describe('the flags of an EOT header', () => {
   it('refuses font data that is no sfnt instead of making a font of the file', async () => {
     const damaged = Buffer.from(await eotOf());
     damaged.fill(0x41, damaged.length - damaged.readUInt32LE(4), damaged.length - damaged.readUInt32LE(4) + 64);
-    await expect(convertFont(damaged, 'eot', 'ttf', {}, 'damaged.eot')).rejects.toBeInstanceOf(Error);
+    await expect(convertFont(damaged, 'eot', 'ttf', {}, 'damaged.eot')).rejects.toThrow(/Invalid SFNT font: the directory of \d+ tables is cut short/);
   });
 
   it('refuses a file whose declared font data does not fit', async () => {
