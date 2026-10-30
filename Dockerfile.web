@@ -36,7 +36,7 @@ COPY src/ ./src/
 
 # `next build` has no runtime environment: the production requirements of the configuration are enforced at start-up, not here
 # (NEXT_PHASE=phase-production-build).
-RUN npx next build
+RUN ./node_modules/.bin/next build
 
 # ==============================================================================
 # Stage 2: Web runtime on the worker image
