@@ -6,9 +6,11 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions';
+import { isCalibreEbookTarget } from '../src/lib/conversions/calibre-ebook-targets';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { ConversionFailedError } from '../src/lib/types';
 import { EncryptedOfficeDocumentError } from '../src/lib/conversions/office/legacy-office-errors';
-import { readMobiText } from '../src/lib/conversions/office/mobi-reader';
+import { textOfCalibreTarget } from './helpers/calibre-books';
 import { oracleTest } from './helpers/oracle-test';
 import { extractTextWithExternalPdftotext, requireOracleTool } from './helpers/differential-oracle';
 import { buildMobi, buildMobiFromBytes } from './helpers/mobi-builder';
@@ -72,10 +74,12 @@ describe('AZW4 Print Replica books', () => {
   }, NATIVE_TIMEOUT_MS);
 
   for (const target of TARGETS.filter((t) => t !== 'pdf')) {
-    oracleTest(`azw4 -> ${target} carries the text of the embedded PDF`, ['pdftotext'], async () => {
+    // The Palm, Sony and Open eBook targets are written by calibre through the worker; the others by the in-process engine.
+    oracleTest(`azw4 -> ${target} carries the text of the embedded PDF`, isCalibreEbookTarget(target) ? ['pdftotext', 'ebook-convert'] : ['pdftotext'], async () => {
       const pdf = await textPdf(PAGES);
-      const result = await convertFile(buildMobiFromBytes(mopStream([pdf]), { compress: true }), 'azw4', target, {}, 'replica.azw4');
-      expect(result.filename).toBe(`replica.${target}`);
+      const book = buildMobiFromBytes(mopStream([pdf]), { compress: true });
+      const result = isCalibreEbookTarget(target) ? await dispatchConversion(book, 'azw4', target, {}, 'replica.azw4') : await convertFile(book, 'azw4', target, {}, 'replica.azw4');
+      expect(result.filename).toBe(`replica.${target === 'oeb' ? 'zip' : target}`);
       const expected = extractTextWithExternalPdftotext(pdf) ?? '';
       const text = await readConverted(result.buffer, target);
       expect(normalizeWhitespace(text)).toContain(PAGES[0]);
@@ -124,7 +128,7 @@ async function readConverted(buffer: Buffer, target: string): Promise<string> {
     const parts = await Promise.all(Object.keys(zip.files).filter((n) => /\.xhtml$/.test(n)).map((n) => zip.files[n].async('string')));
     return parts.join(' ').replace(/<[^>]+>/g, ' ');
   }
-  if (target === 'mobi' || target === 'azw3' || target === 'pdb') return readMobiText(buffer);
+  if (isCalibreEbookTarget(target)) return textOfCalibreTarget(buffer, target);
   return buffer.toString('latin1').replace(/\\[a-z]+\d* ?/g, ' ');
 }
 

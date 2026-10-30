@@ -14,6 +14,11 @@ import { createCipheriv, createHash } from 'node:crypto';
 export interface StoredRarEntry {
   name: string;
   data: Buffer;
+  /**
+   * The Unicode spelling of the name. The header then carries the Unicode flag and its name field holds `name` (the OEM
+   * form, Latin-1), a NUL, and the Unicode form in the compact encoding RAR 4 defines.
+   */
+  unicodeName?: string;
 }
 
 export interface StoredRarOptions {
@@ -43,6 +48,14 @@ const FLAG_END_NO_NEXT_VOLUME = 0x4000;
 const FLAG_MAIN_VOLUME = 0x0001;
 /** Main header flag: the volumes are numbered `.part1.rar`, `.part2.rar`, ... */
 const FLAG_MAIN_NEW_NUMBERING = 0x0010;
+/** File header flag: the name field holds the OEM name, a NUL and the encoded Unicode name. */
+const FLAG_UNICODE = 0x0200;
+/** The commands of the encoded Unicode name: a byte below 0x100, a byte under the shared high byte, and a full code unit. */
+const NAME_COMMAND_LOW_BYTE = 0;
+const NAME_COMMAND_HIGH_BYTE_SHARED = 1;
+const NAME_COMMAND_FULL_UNIT = 2;
+const NAME_COMMANDS_PER_FLAG_BYTE = 4;
+const BYTE_RANGE = 0x100;
 /** File header flag: the entry continues in the next volume. */
 const FLAG_SPLIT_AFTER = 0x0002;
 /** End-of-archive flag: another volume follows. */
@@ -123,6 +136,38 @@ function encryptEntry(data: Buffer, password: string): Buffer {
   return Buffer.concat([cipher.update(padded), cipher.final()]);
 }
 
+/**
+ * The Unicode form of a RAR 4 name: a shared high byte, then commands of two bits, four to a flag byte with the first in
+ * the top bits. A unit below 0x100 is one byte, a unit with the shared high byte is its low byte, any other unit is two
+ * bytes little-endian.
+ */
+function encodeUnicodeName(text: string): Buffer {
+  const units = Array.from({ length: text.length }, (_, index) => text.charCodeAt(index));
+  const shared = (units.find((unit) => unit >= BYTE_RANGE) ?? 0) >>> 8;
+  const bytes: number[] = [shared];
+  for (let start = 0; start < units.length; start += NAME_COMMANDS_PER_FLAG_BYTE) {
+    const group = units.slice(start, start + NAME_COMMANDS_PER_FLAG_BYTE);
+    let flags = 0;
+    const data: number[] = [];
+    group.forEach((unit, index) => {
+      let command = NAME_COMMAND_FULL_UNIT;
+      if (unit < BYTE_RANGE) command = NAME_COMMAND_LOW_BYTE;
+      else if (unit >>> 8 === shared) command = NAME_COMMAND_HIGH_BYTE_SHARED;
+      flags |= command << (6 - 2 * index);
+      if (command === NAME_COMMAND_FULL_UNIT) data.push(unit & 0xff, unit >>> 8);
+      else data.push(unit & 0xff);
+    });
+    bytes.push(flags, ...data);
+  }
+  return Buffer.from(bytes);
+}
+
+function fileNameField(entry: StoredRarEntry): Buffer {
+  const oem = Buffer.from(entry.name, 'latin1');
+  if (entry.unicodeName === undefined) return oem;
+  return Buffer.concat([oem, Buffer.from([0]), encodeUnicodeName(entry.unicodeName)]);
+}
+
 export function buildStoredRar4(entries: readonly StoredRarEntry[], options: StoredRarOptions = {}): Buffer {
   const main = Buffer.alloc(MAIN_HEADER_BYTES);
   main.writeUInt8(HEAD_MAIN, 2);
@@ -132,13 +177,13 @@ export function buildStoredRar4(entries: readonly StoredRarEntry[], options: Sto
 
   entries.forEach((entry, index) => {
     const split = options.firstVolume === true && index === entries.length - 1;
-    const name = Buffer.from(entry.name, 'latin1');
+    const name = fileNameField(entry);
     const encrypted = options.password === undefined ? undefined : encryptEntry(entry.data, options.password);
     const stored = split ? entry.data.subarray(0, Math.floor(entry.data.length / 2)) : (encrypted ?? entry.data);
     const saltBytes = encrypted ? SALT_BYTES : 0;
     const header = Buffer.alloc(FILE_HEADER_FIXED_BYTES + name.length + saltBytes);
     header.writeUInt8(HEAD_FILE, 2);
-    header.writeUInt16LE(FLAG_LONG_BLOCK | (split ? FLAG_SPLIT_AFTER : 0) | (encrypted ? FLAG_PASSWORD | FLAG_SALT : 0), 3);
+    header.writeUInt16LE(FLAG_LONG_BLOCK | (entry.unicodeName === undefined ? 0 : FLAG_UNICODE) | (split ? FLAG_SPLIT_AFTER : 0) | (encrypted ? FLAG_PASSWORD | FLAG_SALT : 0), 3);
     header.writeUInt16LE(header.length, 5);
     header.writeUInt32LE(stored.length, 7);
     header.writeUInt32LE(entry.data.length, 11);

@@ -551,12 +551,6 @@
   {
     "file": "src/lib/conversions/archive.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "extractRarArchive",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/archive.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "inspectArchiveVia7zCli",
     "count": 1
   },
@@ -579,7 +573,7 @@
     "rule": "complexity",
     "function": "extractRarArchive",
     "count": 1,
-    "maxValue": 48
+    "maxValue": 45
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -593,7 +587,7 @@
     "rule": "complexity",
     "function": "repairZipArchive",
     "count": 1,
-    "maxValue": 32
+    "maxValue": 31
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -621,7 +615,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4205
+    "maxValue": 4185
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -1554,7 +1548,7 @@
     "rule": "max-lines-per-function",
     "function": "convertOffice",
     "count": 1,
-    "maxValue": 268
+    "maxValue": 267
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1603,7 +1597,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 10258
+    "maxValue": 10094
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -2749,7 +2743,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2611
+    "maxValue": 2577
   },
   {
     "file": "src/worker/engines.ts",

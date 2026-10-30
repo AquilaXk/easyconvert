@@ -9,7 +9,7 @@ import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from '../src/lib/conv
 import { craftDocx, paragraph } from './helpers/docx-craft';
 import { pythonModuleAvailable, runPythonHelper } from './helpers/python-oracle';
 import { readXps } from './helpers/xps-text-walker';
-import { officeInputWithoutMacros } from '../src/worker/engines';
+import { officeInputWithoutMacros } from '../src/worker/office-input-checks';
 
 /**
  * Macro-enabled, template and slideshow Office Open XML variants are read like their plain formats (#670). The packages
