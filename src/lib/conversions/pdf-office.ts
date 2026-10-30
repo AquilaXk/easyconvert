@@ -14,12 +14,14 @@ import { PdfTextGeometryError } from './pdf-text-types';
 
 const DEFAULT_DENSITY_THRESHOLD = 15;
 
-function ocrTextOf(results: Map<number, OcrResult>): string {
-  return [...results]
-    .sort(([a], [b]) => a - b)
-    .map(([, result]) => result.text)
-    .filter((text) => text.trim() !== '')
-    .join('\n\n');
+/** The pages OCR read as text by page number; a page it read as empty is not one. */
+function readPagesOf(results: Map<number, OcrResult>): Map<number, string> {
+  return new Map(
+    [...results]
+      .filter(([, result]) => result.text.trim() !== '')
+      .sort(([a], [b]) => a - b)
+      .map(([pageNumber, result]): [number, string] => [pageNumber, result.text])
+  );
 }
 
 /**
@@ -60,8 +62,9 @@ export async function readPdfContentForOffice(source: Buffer, options: Conversio
     language: options.ocrLanguage,
     detectOrientation: options.ocrDetectOrientation,
   });
-  const recognizedText = ocrTextOf(recognized);
-  if (recognizedText === '') {
+  // A page OCR read as empty is not a recognized page: it keeps its own text layer, and so its tables.
+  const readByOcr = readPagesOf(recognized);
+  if (readByOcr.size === 0) {
     if (extracted && hasText) return { kind: 'layout', extracted };
     throw new ConversionFailedError('PDF has no text layer and OCR recognised no text on any page.');
   }
@@ -69,16 +72,14 @@ export async function readPdfContentForOffice(source: Buffer, options: Conversio
   const pages: { pageNumber: number; text: string }[] = [];
   if (analyses.length > 0) {
     for (const analysis of analyses) {
-      const ocr = recognized.get(analysis.pageNumber);
-      if (ocr) pages.push({ pageNumber: analysis.pageNumber, text: ocr.text });
+      const ocrText = readByOcr.get(analysis.pageNumber);
+      if (ocrText !== undefined) pages.push({ pageNumber: analysis.pageNumber, text: ocrText });
       else if (analysis.text) pages.push({ pageNumber: analysis.pageNumber, text: analysis.text });
     }
   } else {
-    for (const [pageNumber, result] of [...recognized].sort(([a], [b]) => a - b)) {
-      if (result.text.trim() !== '') pages.push({ pageNumber, text: result.text });
-    }
+    for (const [pageNumber, text] of readByOcr) pages.push({ pageNumber, text });
   }
-  return { kind: 'text', pages, extracted, recognizedPages: new Set(recognized.keys()) };
+  return { kind: 'text', pages, extracted, recognizedPages: new Set(readByOcr.keys()) };
 }
 
 /** The document model of a PDF for the Office, e-book and slide writers; see `readPdfContentForOffice` for the failures. */

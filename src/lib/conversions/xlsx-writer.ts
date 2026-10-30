@@ -352,12 +352,14 @@ const SHEET_NAME_FORBIDDEN = /[[\]:*?/\\]/;
 const SHEET_NAME_MAX_CHARS = 31;
 
 /**
- * Whether the sheets can be a workbook: at most WORKBOOK_MAX_SHEETS of them, and each name 1 to 31 characters without `[ ] : * ? / \`,
+ * Whether the sheets can be a workbook: at least one and at most WORKBOOK_MAX_SHEETS of them (ECMA-376 18.2.20 `sheets` holds one or more
+ * `sheet`), and each name 1 to 31 characters without `[ ] : * ? / \`,
  * different from the others without regard to case, as the office suite that reads the workbook on the way to `.xls` takes them.
  * @throws SheetLimitError (413) for more sheets than a workbook holds.
  * @throws Error for a name the caller must not give.
  */
 function assertWorkbookSheets(sheets: readonly WorkbookSheet[]): void {
+  if (sheets.length === 0) throw new Error('A workbook has at least one sheet.');
   if (sheets.length > WORKBOOK_MAX_SHEETS) throw sheetLimitError('The workbook', sheets.length, 'sheets', 'a workbook', WORKBOOK_MAX_SHEETS);
   const seen = new Set<string>();
   for (const { name } of sheets) {
@@ -376,7 +378,7 @@ function assertWorkbookSheets(sheets: readonly WorkbookSheet[]): void {
  * `compression` is `STORE` only for a workbook that is read once and discarded (the office suite's `.xls` export).
  * @throws SheetLimitError (413) when the workbook has more than WORKBOOK_MAX_SHEETS sheets, or a cell lies past row 1,048,576 or column
  *   16,384, or holds more than 32,767 characters; the table is never cut to fit.
- * @throws Error when a sheet name is empty, over 31 characters, holds one of `[ ] : * ? / \` or repeats another (case apart).
+ * @throws Error when there is no sheet, or a sheet name is empty, over 31 characters, holds one of `[ ] : * ? / \` or repeats another (case apart).
  */
 export async function writeXlsxWorkbook(sheets: readonly WorkbookSheet[], textCells: TextCells, compression: WorkbookCompression = 'DEFLATE'): Promise<Buffer> {
   assertWorkbookSheets(sheets);

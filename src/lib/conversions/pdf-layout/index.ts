@@ -177,11 +177,17 @@ function joinTables(last: DetectedTable, next: DetectedTable): DetectedTable {
   return { ...last, rows: [...last.rows, ...(repeated ? next.rows.slice(1) : next.rows)], box: { ...last.box, y1: Math.max(last.box.y1, next.box.y1) } };
 }
 
-/** Paragraphs that continue into the next flow (column or page) become one. */
-function joinContinuations(blocks: PageBlock[]): PageBlock[] {
+/**
+ * Tables that continue on a following page become one, and with `'all'` so do paragraphs that continue into the next flow (column or page).
+ * A caller that keeps only the tables asks for `'tables'`: merging a paragraph copies the one before it, which a document of pages that
+ * are each one open paragraph turns into work quadratic in the page count.
+ */
+function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' = 'all'): PageBlock[] {
   const flowRight = new Map<number, number>();
   for (const block of blocks) {
-    if (block.kind === 'paragraph') flowRight.set(block.paragraph.flow, Math.max(flowRight.get(block.paragraph.flow) ?? 0, block.paragraph.box.x1));
+    if (join === 'all' && block.kind === 'paragraph') {
+      flowRight.set(block.paragraph.flow, Math.max(flowRight.get(block.paragraph.flow) ?? 0, block.paragraph.box.x1));
+    }
   }
   const joined: PageBlock[] = [];
   for (const block of blocks) {
@@ -191,6 +197,7 @@ function joinContinuations(blocks: PageBlock[]): PageBlock[] {
       continue;
     }
     if (
+      join === 'all' &&
       block.kind === 'paragraph' &&
       last?.kind === 'paragraph' &&
       last.paragraph.flow !== block.paragraph.flow &&
@@ -306,7 +313,7 @@ function furnitureKey(text: string): string {
 function splitPageFurniture(
   blocks: PageBlock[],
   pages: PdfPageContent[]
-): { body: PageBlock[]; header: Paragraph[]; footer: Paragraph[] } {
+): { body: PageBlock[]; header: Paragraph[]; footer: Paragraph[]; running: ReadonlySet<PageBlock> } {
   const pageHeights = new Map(pages.map((page) => [page.pageNumber, page.height]));
   const candidates = new Map<PageBlock, FurnitureBand>();
   for (const block of blocks) {
@@ -314,7 +321,7 @@ function splitPageFurniture(
     const band = furnitureBand(block, pageHeights);
     if (band) candidates.set(block, band);
   }
-  if (candidates.size === 0) return { body: blocks, header: [], footer: [] };
+  if (candidates.size === 0) return { body: blocks, header: [], footer: [], running: new Set() };
   const accepted = new Set<PageBlock>();
   if (pages.length >= PAGE_FURNITURE_MIN_PAGES) {
     const pagesByKey = new Map<string, Set<number>>();
@@ -338,14 +345,14 @@ function splitPageFurniture(
       }
     }
   }
-  if (accepted.size === 0) return { body: blocks, header: [], footer: [] };
+  if (accepted.size === 0) return { body: blocks, header: [], footer: [], running: accepted };
   const firstPageOf = (band: FurnitureBand): Paragraph[] => {
     const lines = [...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph);
     if (lines.length === 0) return [];
     const firstPage = Math.min(...lines.map((paragraph) => paragraph.pageNumber));
     return lines.filter((paragraph) => paragraph.pageNumber === firstPage).sort((a, b) => a.box.y0 - b.box.y0);
   };
-  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer') };
+  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), running: accepted };
 }
 
 /** The lines of text one page holds in reading order, vertical and angled text included. */
@@ -362,12 +369,12 @@ export interface LaidOutPdf {
    * page it starts on. The running headers and footers are out of the flow, so a table whose next page begins with a header is joined.
    */
   tables: DetectedTable[];
-  /** The lines of every page, running headers and footers included. */
+  /** The lines of every page in reading order, the running headers and footers out of them as they are out of the document's flow. */
   pageText: PdfPageText[];
 }
 
-function paragraphLines(layout: PageLayout): string[] {
-  return layout.blocks.flatMap((block) => (block.kind === 'paragraph' ? block.paragraph.lines.map((line) => line.text) : []));
+function paragraphLines(layout: PageLayout, running: ReadonlySet<PageBlock>): string[] {
+  return layout.blocks.flatMap((block) => (block.kind === 'paragraph' && !running.has(block) ? block.paragraph.lines.map((line) => line.text) : []));
 }
 
 /**
@@ -397,7 +404,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
   });
   const furniture = splitPageFurniture(joinContinuations(layouts.flatMap((layout) => layout.blocks)), pages);
   const blocks = furniture.body;
-  const tables = joinContinuations(blocks).flatMap((block) => (block.kind === 'table' ? [block.table] : []));
+  const tables = joinContinuations(blocks, 'tables').flatMap((block) => (block.kind === 'table' ? [block.table] : []));
 
   const paragraphs = blocks.flatMap((block) => (block.kind === 'paragraph' && !block.full ? [block.paragraph] : []));
   const bodySize = bodySizeOf(paragraphs.length > 0 ? paragraphs : blocks.flatMap((block) => (block.kind === 'paragraph' ? [block.paragraph] : [])));
@@ -474,11 +481,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
     ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
     ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
   };
-  return { model: documentModel, tables, pageText: layouts.map((layout) => ({ pageNumber: layout.page.pageNumber, lines: paragraphLines(layout) })) };
-}
-
-export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont[]): DocumentModel {
-  return layoutPdf(pages, fonts).model;
+  return { model: documentModel, tables, pageText: layouts.map((layout) => ({ pageNumber: layout.page.pageNumber, lines: paragraphLines(layout, furniture.running) })) };
 }
 
 export type { DocumentModel, LayoutLine };

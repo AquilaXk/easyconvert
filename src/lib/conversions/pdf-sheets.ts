@@ -5,7 +5,7 @@
  * line of text for a row. The tables and the lines come from the one layout pass that writes documents (`layoutPdf`: ruled tables, then
  * aligned text), so a table is the same table in both outputs. A page that OCR read keeps its recognized text as a sheet `Page N`.
  */
-import type { ConversionOptions } from '../types';
+import { ConversionFailedError, type ConversionOptions } from '../types';
 import { reportConversionWarning } from './conversion-warnings';
 import type { DetectedTable, TableCell } from './pdf-layout/types';
 import { readPdfContentForOffice, type PdfOfficeContent } from './pdf-office';
@@ -42,24 +42,10 @@ function tableSheet(table: DetectedTable, name: string): WorkbookSheet {
   return { name, rows, merges };
 }
 
-interface PageSheet {
-  pageNumber: number;
-  sheet: WorkbookSheet;
-}
-
-function tableSheets(tables: DetectedTable[]): PageSheet[] {
-  const perPage = new Map<number, number>();
-  return tables.map((table) => {
-    const number = (perPage.get(table.pageNumber) ?? 0) + 1;
-    perPage.set(table.pageNumber, number);
-    return { pageNumber: table.pageNumber, sheet: tableSheet(table, `Page ${table.pageNumber} Table ${number}`) };
-  });
-}
-
 /** The sheet of a page's lines of text, a line for a row, or none for a page without text. */
-function textSheet(pageNumber: number, lines: readonly string[]): PageSheet[] {
+function textSheet(pageNumber: number, lines: readonly string[]): WorkbookSheet[] {
   const rows = lines.filter((line) => line.trim() !== '').map((line) => [line]);
-  return rows.length === 0 ? [] : [{ pageNumber, sheet: { name: `Page ${pageNumber}`, rows } }];
+  return rows.length === 0 ? [] : [{ name: `Page ${pageNumber}`, rows }];
 }
 
 /** What the sheets are made of: the layout of the pages that have a text layer, and the text OCR read from the other pages by page number. */
@@ -68,30 +54,41 @@ export interface PdfSheetInput {
   recognized: ReadonlyMap<number, string>;
 }
 
+/** The sheets of a PDF, in page order, and the pages whose text beside the tables they leave out. */
+export interface PdfSheets {
+  sheets: WorkbookSheet[];
+  leftOut: number[];
+}
+
 /**
  * The sheets a PDF gives: the tables of the pages with a text layer, and the text of the pages OCR read. A document with no table has a
- * text sheet for every page that has text; with a table, the text outside the tables is left out and the conversion says which pages
- * lost it. Sheets are in page order.
+ * text sheet for every page that has text; with a table, the text outside the tables is left out and `leftOut` says which pages lost it.
  */
-export function sheetsOfPdf({ layout, recognized }: PdfSheetInput): WorkbookSheet[] {
-  const tables = tableSheets((layout?.tables ?? []).filter((table) => !recognized.has(table.pageNumber)));
-  const layoutPages = (layout?.pageText ?? []).filter((page) => !recognized.has(page.pageNumber));
-  const recognizedSheets = [...recognized].flatMap(([pageNumber, text]) => textSheet(pageNumber, text.split(/\r?\n/)));
-  let sheets: PageSheet[];
-  if (tables.length === 0) {
-    sheets = [...layoutPages.flatMap((page) => textSheet(page.pageNumber, page.lines)), ...recognizedSheets];
-  } else {
-    sheets = [...tables, ...recognizedSheets];
-    const leftOut = layoutPages.filter((page) => page.lines.some((line) => line.trim() !== '')).map((page) => page.pageNumber);
-    if (leftOut.length > 0) reportConversionWarning(`Left out the text outside the tables of ${pagesPhrase(leftOut)}: a workbook of a PDF that has tables holds the tables.`);
+export function sheetsOfPdf({ layout, recognized }: PdfSheetInput): PdfSheets {
+  const tablesOfPage = new Map<number, DetectedTable[]>();
+  for (const table of layout?.tables ?? []) {
+    if (recognized.has(table.pageNumber)) continue;
+    const onPage = tablesOfPage.get(table.pageNumber);
+    if (onPage) onPage.push(table);
+    else tablesOfPage.set(table.pageNumber, [table]);
   }
-  return sheets.sort((a, b) => a.pageNumber - b.pageNumber).map((entry) => entry.sheet);
+  const linesOfPage = new Map((layout?.pageText ?? []).filter((page) => !recognized.has(page.pageNumber)).map((page) => [page.pageNumber, page.lines]));
+  const pageNumbers = [...new Set([...tablesOfPage.keys(), ...linesOfPage.keys(), ...recognized.keys()])].sort((a, b) => a - b);
+  const withTables = tablesOfPage.size > 0;
+  const sheets = pageNumbers.flatMap((pageNumber): WorkbookSheet[] => {
+    const recognizedText = recognized.get(pageNumber);
+    if (recognizedText !== undefined) return textSheet(pageNumber, recognizedText.split(/\r?\n/));
+    if (withTables) return (tablesOfPage.get(pageNumber) ?? []).map((table, index) => tableSheet(table, `Page ${pageNumber} Table ${index + 1}`));
+    return textSheet(pageNumber, linesOfPage.get(pageNumber) ?? []);
+  });
+  const leftOut = withTables ? pageNumbers.filter((pageNumber) => (linesOfPage.get(pageNumber) ?? []).some((line) => line.trim() !== '')) : [];
+  return { sheets, leftOut };
 }
 
 function sheetInputOf(content: PdfOfficeContent): PdfSheetInput {
   if (content.kind === 'layout') return { layout: content.extracted, recognized: new Map() };
-  const recognized = content.pages.filter((page) => content.recognizedPages.has(page.pageNumber)).map((page): [number, string] => [page.pageNumber, page.text]);
-  return { layout: content.extracted, recognized: new Map(recognized) };
+  const recognized = new Map(content.pages.filter((page) => content.recognizedPages.has(page.pageNumber)).map((page): [number, string] => [page.pageNumber, page.text]));
+  return { layout: content.extracted, recognized };
 }
 
 /**
@@ -99,5 +96,8 @@ function sheetInputOf(content: PdfOfficeContent): PdfSheetInput {
  * For the failures see `readPdfContentForOffice` and `layoutPdf`; `writeXlsxWorkbook` refuses a workbook of too many sheets.
  */
 export async function readPdfSheets(source: Buffer, options: ConversionOptions): Promise<WorkbookSheet[]> {
-  return sheetsOfPdf(sheetInputOf(await readPdfContentForOffice(source, options)));
+  const { sheets, leftOut } = sheetsOfPdf(sheetInputOf(await readPdfContentForOffice(source, options)));
+  if (sheets.length === 0) throw new ConversionFailedError('PDF has no text outside its running headers and footers to write as sheets.');
+  if (leftOut.length > 0) reportConversionWarning(`Left out the text outside the tables of ${pagesPhrase(leftOut)}: a workbook of a PDF that has tables holds the tables.`);
+  return sheets;
 }
