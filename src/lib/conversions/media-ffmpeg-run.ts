@@ -1,10 +1,6 @@
-import {
-  executeSandboxedBinary,
-  SandboxedProcessError,
-  type SandboxedExecutionOptions,
-  type SandboxedExecutionResult,
-} from '../security/process-sandbox';
+import { SandboxedProcessError, type SandboxedExecutionOptions, type SandboxedExecutionResult } from '../security/process-sandbox';
 import { explainFfmpegFailure, partialDecodeIn } from './media-decode-failures';
+import { runFfmpeg } from './media-process';
 
 /**
  * A failure of the encoder FFmpeg reports at the start of a run, with the change to the arguments that lets the same run
@@ -78,7 +74,7 @@ export async function runFfmpegTranscode(
   let result: SandboxedExecutionResult | undefined;
   for (let restarts = 0; result === undefined; restarts += 1) {
     try {
-      result = await executeSandboxedBinary(ffmpegBin, attempt, options);
+      result = await runFfmpeg(ffmpegBin, attempt, options);
     } catch (error) {
       if (!(error instanceof SandboxedProcessError)) throw error;
       const adjusted = restarts < MAX_RESTARTS ? firstAdjustment(attempt, error.stderr) : undefined;

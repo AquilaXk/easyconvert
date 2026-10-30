@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { probeFfmpegBuild } from '../src/lib/conversions/media-audio-quality';
+import { probeFfmpegBuild } from '../src/lib/conversions/media-process';
 import { buildFfmpegArguments, buildLoudnessMeasureArguments } from '../src/lib/conversions/media-ffmpeg-args';
 import { wavPacketBytes, wavPacketSizeKeepsOutput } from '../src/lib/conversions/media-wav-input';
 import type { ConversionOptions } from '../src/lib/types';
@@ -91,7 +91,7 @@ describe('the packet size for a WAVE file', () => {
     ['8.1', 8, 1, false],
     ['9.0', 9, 0, false],
   ])('is used with FFmpeg %s: %s', (_label, major, minor, expected) => {
-    expect(wavPacketSizeKeepsOutput({ major, minor })).toBe(expected);
+    expect(wavPacketSizeKeepsOutput({ major, minor, patch: 0 })).toBe(expected);
   });
 
   it('is not used with a build whose release is not known', () => {
@@ -107,7 +107,9 @@ describe('the arguments of a conversion from a WAVE file', () => {
     const input = writeWav(`args-${target}.wav`, RATE, TWELVE_SECONDS);
     const args = buildFfmpegArguments(input, path.join(workDir, `o.${target}`), 'wav', target, {}, ffmpeg());
     const at = args.indexOf('-i');
-    expect(args.slice(at - 4, at + 2)).toEqual(['-probesize', '32', '-max_size', String(PACKET_BYTES_OF_TWELVE_SECONDS), '-i', input]);
+    expect(args.slice(0, at + 2)).toEqual([
+      '-y', '-probesize', '32', '-protocol_whitelist', 'file', '-f', 'wav', '-max_size', String(PACKET_BYTES_OF_TWELVE_SECONDS), '-i', input,
+    ]);
   });
 
   it('keep the default packets for a file too short to be cut into 32 packets of more than the default', () => {

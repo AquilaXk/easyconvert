@@ -514,7 +514,7 @@ describe('the arguments of a plain MP4 to H.264 conversion', () => {
   it('are built for an input that is not there without asking for streams', () => {
     const absent = path.join(workDir, 'absent.mp4');
     const args = buildFfmpegArguments(absent, path.join(workDir, 'o.mp4'), 'mp4', 'mp4', { disableHwaccel: true }, null);
-    expect(args.slice(0, args.indexOf('-i') + 2)).toEqual(['-y', '-i', absent]);
+    expect(args.slice(0, args.indexOf('-i') + 2)).toEqual(['-y', '-protocol_whitelist', 'file', '-f', 'mov', '-i', absent]);
     expect(args.filter((arg) => arg === '-map')).toEqual([]);
   });
 });

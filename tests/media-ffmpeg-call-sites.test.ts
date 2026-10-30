@@ -147,9 +147,12 @@ describe.skipIf(skipWithoutTools('ffmpeg'))('the demuxer table of the media inpu
     return names;
   }
 
-  it('names a demuxer for every audio and video source of the registry', () => {
-    const sources = Object.values(FORMAT_REGISTRY)
-      .filter((format) => (format.category === 'audio' || format.category === 'video') && !NOT_DEMUXED.has(format.id))
+  it('names a demuxer for every source of the registry that FFmpeg reads: audio, video, and images with a video target', () => {
+    const formats = Object.values(FORMAT_REGISTRY);
+    const videoTargets = new Set(formats.filter((format) => format.category === 'video').map((format) => format.id));
+    const sources = formats
+      .filter((format) => format.category === 'audio' || format.category === 'video' || format.targetFormats.some((target) => videoTargets.has(target)))
+      .filter((format) => !NOT_DEMUXED.has(format.id))
       .map((format) => format.id);
     expect(sources.filter((id) => !Object.hasOwn(MEDIA_INPUT_DEMUXERS, id))).toEqual([]);
   });

@@ -315,11 +315,9 @@ describe('WP-44a: Media Video Encoding & Filter Controls', () => {
       const trimArgs = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
         trim: { start: '00:00:02.500', end: '00:00:15.000' },
       });
-      expect(trimArgs[1]).toBe('-ss');
-      expect(trimArgs[2]).toBe('00:00:02.500');
-      expect(trimArgs[3]).toBe('-to');
-      expect(trimArgs[4]).toBe('00:00:15.000');
-      expect(trimArgs[5]).toBe('-i');
+      const inputOptions = trimArgs.slice(0, trimArgs.indexOf('-i'));
+      expect(inputOptions[inputOptions.indexOf('-ss') + 1]).toBe('00:00:02.500');
+      expect(inputOptions[inputOptions.indexOf('-to') + 1]).toBe('00:00:15.000');
     });
   });
 

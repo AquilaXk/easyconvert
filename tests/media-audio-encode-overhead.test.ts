@@ -60,6 +60,11 @@ function argAfter(args: string[], flag: string): string | undefined {
   return at === -1 ? undefined : args[at + 1];
 }
 
+/** The options of the first input: everything before its `-i`. */
+function inputOptions(args: string[]): string[] {
+  return args.slice(0, args.indexOf('-i'));
+}
+
 /**
  * A directory holding wrappers named `ffmpeg` and `ffprobe` that append every invocation to a log and then run the
  * real binary. Used as the sibling pair the engine resolves, it records exactly the processes a conversion starts.
@@ -168,8 +173,9 @@ describe('the arguments of a WAVE to audio encode', () => {
     (target) => {
       const input = writeWav(`probe-args-${target}.wav`, 44_100, NOT_MONO, 0.3);
       const args = buildFfmpegArguments(input, path.join(workDir, `o.${target}`), 'wav', target, {}, null);
-      const at = args.indexOf('-i');
-      expect(args.slice(at - 2, at + 2)).toEqual(['-probesize', '32', '-i', input]);
+      const options = inputOptions(args);
+      expect(options.slice(options.indexOf('-probesize'), options.indexOf('-probesize') + 2)).toEqual(['-probesize', '32']);
+      expect(args[args.indexOf('-i') + 1]).toBe(input);
     }
   );
 
@@ -177,16 +183,16 @@ describe('the arguments of a WAVE to audio encode', () => {
     const adpcm = path.join(workDir, 'probe-args-adpcm.wav');
     fs.writeFileSync(adpcm, craftWav({ sampleRate: 8000, channels: 1, bitsPerSample: 16, formatTag: 2, data: new Uint8Array(2000) }));
     const compressed = buildFfmpegArguments(adpcm, path.join(workDir, 'o.opus'), 'wav', 'opus', { audio: { sampleRate: 16_000 } }, null);
-    expect(compressed.slice(0, compressed.indexOf('-i') + 2)).toEqual(['-y', '-i', adpcm]);
+    expect(inputOptions(compressed)).not.toContain('-probesize');
     const missing = path.join(workDir, 'absent.wav');
     const absent = buildFfmpegArguments(missing, path.join(workDir, 'o.aac'), 'wav', 'aac', {}, null);
-    expect(absent.slice(0, absent.indexOf('-i') + 2)).toEqual(['-y', '-i', missing]);
+    expect(inputOptions(absent)).not.toContain('-probesize');
   });
 
   it('keeps the input probing for a video target', () => {
     const input = writeWav('probe-args-video.wav', 44_100, NOT_MONO, 0.3);
     const args = buildFfmpegArguments(input, path.join(workDir, 'o.mp4'), 'wav', 'mp4', { disableHwaccel: true }, null);
-    expect(args.slice(0, args.indexOf('-i') + 2)).toEqual(['-y', '-i', input]);
+    expect(inputOptions(args)).not.toContain('-probesize');
   });
 });
 

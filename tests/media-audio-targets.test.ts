@@ -374,7 +374,7 @@ describe('audio-only argument construction', () => {
     expect(args.slice(mapIdx, mapIdx + 2)).toEqual(['-map', '0:a:0']);
     expect(args.filter((a) => a === '-map')).toHaveLength(1);
     expect(argAfter(args, '-c:a')).toBe(EXPECTED[id].encoder);
-    expect(argAfter(args, '-f')).toBe(EXPECTED_MUXER[id]);
+    expect(args[args.lastIndexOf('-f') + 1]).toBe(EXPECTED_MUXER[id]);
   });
 
   it('selects the requested audio track', () => {

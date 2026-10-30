@@ -12,9 +12,10 @@ import {
   EngineUnavailableError,
   InvalidMediaOptionError,
   MediaPackagingOptions,
+  RefusedMediaInputError,
 } from '../types';
 export { ConversionFailedError };
-import { executeSandboxedBinary, SandboxedProcessError } from '../security/process-sandbox';
+import { rethrowSandboxUnavailable, SandboxedProcessError } from '../security/process-sandbox';
 import {
   buildFfmpegArguments,
   buildHlsDashArguments,
@@ -31,6 +32,7 @@ import { describeDroppedStreams } from './media-dropped-streams';
 import { outputSizeError } from './media-empty-output';
 import { DEFAULT_MEDIA_TIER_MAX_MS, computeMediaTimeoutMs } from './media-job-limit';
 import { runFfmpegTranscode } from './media-ffmpeg-run';
+import { runFfmpeg, runFfmpegSync } from './media-process';
 import { type FfprobePath, probeInput, resolveFfprobeBinary } from './media-ffprobe';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from './media-two-pass';
 import { encodeFlacStreamAsync } from './flac-encoder';
@@ -150,7 +152,10 @@ export function probeMediaDuration(filePath: string, options?: ConversionOptions
     const ffprobe = ffmpegBin ? resolveFfprobeBinary(ffmpegBin) : getFfprobePath();
     if (!ffprobe) return 0;
     return probeInput(filePath, ffprobe as FfprobePath).durationSec ?? 0;
-  } catch {
+  } catch (err) {
+    // A host that cannot confine ffprobe, and an input that is a playlist, are refused; any other unreadable file has no known duration.
+    rethrowSandboxUnavailable(err);
+    if (err instanceof RefusedMediaInputError) throw err;
     return 0;
   }
 }
@@ -175,6 +180,10 @@ export function plannedRungCount(packaging: MediaPackagingOptions, source: Packa
 }
 
 
+const VERSION_PROBE_TIMEOUT_MS = 2000;
+const VERSION_PROBE_MAX_BYTES = 64 * 1024;
+const FFMPEG_VERSION_WORD = /ffmpeg\s+version\s+([^\s]+)/i;
+
 export function detectFfmpegEnvironment(): FfmpegEnvironmentInfo {
   const ffmpegPath = getFfmpegPath();
   const isContainer =
@@ -191,15 +200,8 @@ export function detectFfmpegEnvironment(): FfmpegEnvironmentInfo {
     };
   }
 
-  let version: string | undefined;
-  try {
-    const out = execFileSync(ffmpegPath, ['-version'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 2000,
-    }).toString('utf-8');
-    const match = out.match(/ffmpeg\s+version\s+([^\s]+)/i);
-    if (match) version = match[1];
-  } catch {}
+  const run = runFfmpegSync(ffmpegPath, ['-version'], { timeoutMs: VERSION_PROBE_TIMEOUT_MS, maxBuffer: VERSION_PROBE_MAX_BYTES });
+  const version = run.ok ? FFMPEG_VERSION_WORD.exec(run.stdout)?.[1] : undefined;
 
   return {
     available: true,
@@ -397,9 +399,9 @@ async function executeFfmpegTranscode(
         signal: options.signal,
         ...(cwd ? { cwd } : {}),
       });
-    const runFfmpeg = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeoutMs);
+    const runTranscode = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeoutMs);
     // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
-    const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
+    const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runTranscode });
 
     if (isTwoPassRequested(options)) {
       // Pass logs live in a job directory of their own, removed whether the passes succeed or fail.
@@ -413,7 +415,7 @@ async function executeFfmpegTranscode(
     } else {
       const args = buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
       try {
-        await runFfmpeg(args);
+        await runTranscode(args);
       } catch (err) {
         // An advertised hardware encoder can still fail at runtime (missing device or driver).
         // Retry exactly once in software; every other failure, and a failed retry, reports the original error.
@@ -428,7 +430,7 @@ async function executeFfmpegTranscode(
           inputPath, outputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
         );
         try {
-          await runFfmpeg(softwareArgs);
+          await runTranscode(softwareArgs);
         } catch {
           throw err;
         }
@@ -484,7 +486,7 @@ async function executeFfmpegThumbnails(
       createdFiles.push(outputPath);
 
       const args = buildFfmpegArguments(inputPath, outputPath, src, actualTgt, options, ffmpegBin, ts);
-      await executeSandboxedBinary(ffmpegBin, args, {
+      await runFfmpeg(ffmpegBin, args, {
         timeoutMs: 30000,
         maxBuffer: 50 * 1024 * 1024,
         networkIsolated: true,
@@ -554,7 +556,7 @@ export async function packageHlsDashMedia(
   try {
     const source = probePackagingSource(inputPath, ffmpegBin);
     const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
-    await executeSandboxedBinary(ffmpegBin, args, {
+    await runFfmpeg(ffmpegBin, args, {
       cwd: outputDir,
       timeoutMs: computePackagingTimeoutMs(source.geometry.durationSec, plannedRungCount(packaging, source), stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS)),
       maxBuffer: 100 * 1024 * 1024,

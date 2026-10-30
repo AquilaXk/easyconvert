@@ -199,7 +199,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
       expect(args[args.indexOf('-sc_threshold:v:0') + 1]).toBe('0');
 
       // HLS muxer options
-      expect(args[args.indexOf('-f') + 1]).toBe('hls');
+      expect(args[args.lastIndexOf('-f') + 1]).toBe('hls');
       expect(args[args.indexOf('-hls_time') + 1]).toBe('4');
       expect(args[args.indexOf('-hls_playlist_type') + 1]).toBe('vod');
       expect(args[args.indexOf('-hls_flags') + 1]).toBe('independent_segments');
@@ -275,7 +275,7 @@ describe('WP-44c: Media HLS/DASH Adaptive Bitrate Packaging Engine (media.packag
         audioCodec: 'aac',
       }, null, SOURCE_1080P_30FPS);
 
-      expect(args[args.indexOf('-f') + 1]).toBe('dash');
+      expect(args[args.lastIndexOf('-f') + 1]).toBe('dash');
       expect(args[args.indexOf('-seg_duration') + 1]).toBe('4');
       expect(args[args.indexOf('-use_template') + 1]).toBe('1');
       expect(args[args.indexOf('-use_timeline') + 1]).toBe('1');

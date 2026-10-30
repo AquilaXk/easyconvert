@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
   ConversionFailedError,
   EngineUnavailableError,
@@ -10,6 +9,7 @@ import {
   UnprocessableMediaInputError,
 } from '../types';
 import { explainProbeFailure } from './media-decode-failures';
+import { runFfprobe } from './media-process';
 import { findUndecodableAudio } from './media-undecodable-audio';
 import { type LayoutStream, readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
@@ -49,6 +49,8 @@ export type FfprobePath = string & { readonly __brand: 'FfprobePath' };
 export const FFPROBE_TIMEOUT_MS = 10_000;
 /** The JSON of a 64-stream file with long tags stays far below this; a larger report is not a media file. */
 const MAX_FFPROBE_JSON_BYTES = 4 * 1024 * 1024;
+/** Output limit of a probe that prints a few values, as Node's default for a synchronous child. */
+const MAX_FFPROBE_SCALAR_BYTES = 1024 * 1024;
 /** Most streams one conversion maps. Probing and `-map` lists grow with the stream count, so it is bounded. */
 export const MAX_MAPPED_STREAMS = 64;
 /** Highest frame rate accepted from a probe; a larger r_frame_rate is a timebase artefact of variable-rate input. */
@@ -84,24 +86,17 @@ export function resolveFfprobeBinary(ffmpegBin?: string | null): FfprobePath {
 }
 
 /** The error for an input ffprobe could not open: the codec the build lacks when that is why, otherwise ffprobe's own report. */
-function probeFailure(ffprobe: FfprobePath, filePath: string, err: unknown): ConversionFailedError {
-  const unsupported = explainProbeFailure(ffprobe, filePath);
-  if (unsupported !== undefined) return unsupported;
-  const detail = err instanceof Error ? err.message : String(err);
-  return new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
+function probeFailure(ffprobe: FfprobePath, filePath: string, detail: string): ConversionFailedError {
+  return explainProbeFailure(ffprobe, filePath) ?? new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
 }
 
-function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): string {
-  try {
-    return execFileSync(ffprobe, ['-v', 'error', ...args, '-of', 'default=noprint_wrappers=1:nokey=1', filePath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: FFPROBE_TIMEOUT_MS,
-    })
-      .toString('utf-8')
-      .trim();
-  } catch (err) {
-    throw probeFailure(ffprobe, filePath, err);
-  }
+function probeScalar(ffprobe: FfprobePath, filePath: string, args: string[]): string {
+  const run = runFfprobe(ffprobe, ['-v', 'error', ...args, '-of', 'default=noprint_wrappers=1:nokey=1'], filePath, {
+    timeoutMs: FFPROBE_TIMEOUT_MS,
+    maxBuffer: MAX_FFPROBE_SCALAR_BYTES,
+  });
+  if (!run.ok) throw probeFailure(ffprobe, filePath, run.failure);
+  return run.stdout.trim();
 }
 
 /**
@@ -112,7 +107,7 @@ function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): str
 export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
   const wav = readWavPcmInfo(filePath);
   if (wav !== null) return streamIndex === 0 ? wav.channels : 0;
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels']);
+  const out = probeScalar(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels']);
   if (out === '') {
     return 0;
   }
@@ -127,7 +122,7 @@ export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, strea
 export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): number {
   // A WAVE file with uncompressed samples has exactly one audio stream; its header says so without a process.
   if (readWavPcmInfo(filePath) !== null) return 1;
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', 'a', '-show_entries', 'stream=index']);
+  const out = probeScalar(ffprobe, filePath, ['-select_streams', 'a', '-show_entries', 'stream=index']);
   return out === '' ? 0 : out.split('\n').length;
 }
 
@@ -138,7 +133,7 @@ export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): n
 export function probeAudioSampleRate(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
   const wav = readWavPcmInfo(filePath);
   if (wav !== null) return streamIndex === 0 ? wav.sampleRate : 0;
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate']);
+  const out = probeScalar(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate']);
   if (out === '') {
     return 0;
   }
@@ -325,20 +320,11 @@ export function probeInput(filePath: string, ffprobe: FfprobePath): InputProbe {
   const remembered = identity === undefined ? undefined : probeCache.get(identity);
   if (remembered) return remembered;
 
-  let stdout: string;
-  try {
-    stdout = execFileSync(ffprobe, [...INPUT_PROBE_ARGS, filePath], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: FFPROBE_TIMEOUT_MS,
-      maxBuffer: MAX_FFPROBE_JSON_BYTES,
-    });
-  } catch (err) {
-    throw probeFailure(ffprobe, filePath, err);
-  }
+  const run = runFfprobe(ffprobe, INPUT_PROBE_ARGS, filePath, { timeoutMs: FFPROBE_TIMEOUT_MS, maxBuffer: MAX_FFPROBE_JSON_BYTES });
+  if (!run.ok) throw probeFailure(ffprobe, filePath, run.failure);
   let parsed: { streams?: unknown; format?: { start_time?: unknown; duration?: unknown }; chapters?: unknown };
   try {
-    parsed = JSON.parse(stdout) as typeof parsed;
+    parsed = JSON.parse(run.stdout) as typeof parsed;
   } catch {
     throw new MediaProbeError('ffprobe did not return valid JSON for the input media.');
   }
@@ -455,7 +441,7 @@ function planningFrameRate(stream: InputStream): { num: number; den: number } | 
 
 /** Duration of the input container in seconds, from ffprobe; throws when it cannot be read. */
 export function probeInputDuration(filePath: string, ffprobe: FfprobePath): number {
-  const out = runFfprobe(ffprobe, filePath, ['-show_entries', 'format=duration']);
+  const out = probeScalar(ffprobe, filePath, ['-show_entries', 'format=duration']);
   const parsed = Number.parseFloat(out);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new MediaProbeError(`ffprobe reported an invalid duration: "${out}"`);

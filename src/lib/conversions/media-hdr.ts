@@ -1,8 +1,8 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { EngineUnavailableError } from '../types';
 import { DEFAULT_HDR_PEAK_NITS, HLG_REFERENCE_PEAK_NITS, PQ_PEAK_NITS, SDR_PEAK_NITS, createBt2390Parameters } from './hdr-tonemap';
 import { type FfprobePath } from './media-ffprobe';
+import { runFfmpegSync, runFfprobe } from './media-process';
 
 /**
  * HDR to SDR video: the filter chain and the colour tags of the 8-bit BT.709 result.
@@ -26,7 +26,6 @@ export const SDR_COLOUR_ARGS: readonly string[] = [
 
 const FULL_SCALE_16 = 65_535;
 const PROBE_TIMEOUT_MS = 10_000;
-const PROBE_KILL_SIGNAL = 'SIGKILL';
 const FILTER_LIST_TIMEOUT_MS = 10_000;
 const FILTER_LIST_MAX_BYTES = 1024 * 1024;
 const MAX_LIGHT_LEVEL_OUTPUT_BYTES = 4096;
@@ -46,18 +45,8 @@ export function assertZscaleAvailable(ffmpegBin: string | null | undefined): voi
   }
   let available = filterCache.get(ffmpegBin);
   if (available === undefined) {
-    try {
-      const listing = execFileSync(ffmpegBin, ['-hide_banner', '-filters'], {
-        encoding: 'utf-8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: FILTER_LIST_TIMEOUT_MS,
-        killSignal: PROBE_KILL_SIGNAL,
-        maxBuffer: FILTER_LIST_MAX_BYTES,
-      });
-      available = listsZscale(listing);
-    } catch {
-      available = false;
-    }
+    const listing = runFfmpegSync(ffmpegBin, ['-hide_banner', '-filters'], { timeoutMs: FILTER_LIST_TIMEOUT_MS, maxBuffer: FILTER_LIST_MAX_BYTES });
+    available = listing.ok && listsZscale(listing.stdout);
     filterCache.set(ffmpegBin, available);
   }
   if (!available) {
@@ -75,17 +64,14 @@ export function resetZscaleCache(): void {
  * MaxCLL), or undefined when the stream states none.
  */
 export function probeVideoMaxLightLevel(filePath: string, ffprobe: FfprobePath): number | undefined {
-  let out = '';
-  try {
-    out = execFileSync(
-      ffprobe,
-      ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream_side_data=max_content', '-of', 'default=nw=1:nk=1', filePath],
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS, killSignal: PROBE_KILL_SIGNAL, maxBuffer: MAX_LIGHT_LEVEL_OUTPUT_BYTES },
-    );
-  } catch {
-    return undefined;
-  }
-  for (const line of out.split('\n')) {
+  const run = runFfprobe(
+    ffprobe,
+    ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream_side_data=max_content', '-of', 'default=nw=1:nk=1'],
+    filePath,
+    { timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: MAX_LIGHT_LEVEL_OUTPUT_BYTES }
+  );
+  if (!run.ok) return undefined;
+  for (const line of run.stdout.split('\n')) {
     const value = Number(line.trim());
     if (Number.isFinite(value) && value > 0) return value;
   }

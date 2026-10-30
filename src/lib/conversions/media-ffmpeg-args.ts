@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
   ConversionFailedError,
   ConversionOptions,
@@ -43,6 +42,7 @@ import { pictureOf, softwareEncoderThreads } from './media-encoder-threads';
 import { type Vp9Deadline, vp9DeadlineOfInput, vp9SpeedArgs } from './media-vp9-effort';
 import type { LayoutStream } from './mp4-layout';
 import { addWavPacketSize, readWavInputFacts } from './media-wav-input';
+import { lavfiInputArgs, mediaInputArgs, runFfmpegSync } from './media-process';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
   chooseResampler,
@@ -128,14 +128,14 @@ const hwCapabilityCache = new Map<string, HardwareAccelerationCapabilities>();
  */
 const encoderListCache = new Map<string, { encoders: ReadonlySet<string>; probedAt: number }>();
 const PROBE_CACHE_TTL_MS = 10 * 60 * 1000;
-/** A child that ignores SIGTERM must not outlive its probe timeout. */
-const PROBE_KILL_SIGNAL = 'SIGKILL';
 const ENCODER_LIST_TIMEOUT_MS = 3000;
+const ENCODER_LIST_MAX_BYTES = 1024 * 1024;
 /** Directory that holds the DRM nodes Intel Quick Sync needs. */
 const DRM_DEVICE_DIR = '/dev/dri';
 const DRM_RENDER_NODE = /^renderD\d+$/;
 /** Opening a hardware session is quick on a working device; a hung driver must not stall conversions. */
 const HW_SESSION_PROBE_TIMEOUT_MS = 5000;
+const HW_SESSION_PROBE_MAX_BYTES = 64 * 1024;
 const HW_PROBE_FRAME_SIZE = '256x256';
 const QSV_ENCODERS = ['h264_qsv', 'hevc_qsv'];
 const NVENC_ENCODERS = ['h264_nvenc', 'hevc_nvenc'];
@@ -174,21 +174,17 @@ function canOpenEncoderSession(
   deviceArgs: readonly string[] = [],
   filter?: string
 ): boolean {
-  try {
-    execFileSync(
-      ffmpegPath,
-      [
-        '-hide_banner', '-v', 'error', ...deviceArgs,
-        '-f', 'lavfi', '-i', `color=c=black:s=${HW_PROBE_FRAME_SIZE}:r=1:d=1`,
-        ...(filter ? ['-vf', filter] : []),
-        '-frames:v', '1', '-c:v', encoder, '-f', 'null', '-',
-      ],
-      { stdio: 'ignore', timeout: HW_SESSION_PROBE_TIMEOUT_MS, killSignal: PROBE_KILL_SIGNAL }
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  const run = runFfmpegSync(
+    ffmpegPath,
+    [
+      '-hide_banner', '-v', 'error', ...deviceArgs,
+      ...lavfiInputArgs(`color=c=black:s=${HW_PROBE_FRAME_SIZE}:r=1:d=1`),
+      ...(filter ? ['-vf', filter] : []),
+      '-frames:v', '1', '-c:v', encoder, '-f', 'null', '-',
+    ],
+    { timeoutMs: HW_SESSION_PROBE_TIMEOUT_MS, maxBuffer: HW_SESSION_PROBE_MAX_BYTES }
+  );
+  return run.ok;
 }
 
 /** True when the ffmpeg arguments select a hardware video encoder (nvenc, vaapi, qsv, videotoolbox). */
@@ -214,21 +210,13 @@ export function probeSupportedEncoders(ffmpegPath: string | null | undefined): R
     return cached.encoders;
   }
   const encoders = new Set<string>();
-  try {
-    const output = execFileSync(ffmpegPath, ['-hide_banner', '-encoders'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: ENCODER_LIST_TIMEOUT_MS,
-      killSignal: PROBE_KILL_SIGNAL,
-    });
-    for (const line of output.split('\n')) {
-      const match = line.match(ENCODER_LISTING_LINE);
-      if (match) {
-        encoders.add(match[1]);
-      }
+  const listing = runFfmpegSync(ffmpegPath, ['-hide_banner', '-encoders'], { timeoutMs: ENCODER_LIST_TIMEOUT_MS, maxBuffer: ENCODER_LIST_MAX_BYTES });
+  // An unrunnable binary lists nothing; the empty answer is cached with the others for the probe's lifetime.
+  for (const line of listing.ok ? listing.stdout.split('\n') : []) {
+    const match = line.match(ENCODER_LISTING_LINE);
+    if (match) {
+      encoders.add(match[1]);
     }
-  } catch {
-    // An unrunnable binary lists nothing; the empty answer is cached with the others for the probe's lifetime.
   }
   encoderListCache.set(ffmpegPath, { encoders, probedAt: now });
   return encoders;
@@ -714,10 +702,10 @@ export function buildFfmpegArguments(
   if (isThumbnail) {
     const timestamp = overrideTimestamp || options.thumbnail?.at?.[0] || '00:00:01.000';
     if (options.thumbnail?.accurate) {
-      inputArgs.push('-i', inputPath);
+      inputArgs.push(...mediaInputArgs(inputPath));
       outputArgs.push('-ss', timestamp);
     } else {
-      inputArgs.push('-ss', timestamp, '-i', inputPath);
+      inputArgs.push('-ss', timestamp, ...mediaInputArgs(inputPath));
     }
 
     const videoFilters: string[] = [];
@@ -742,7 +730,7 @@ export function buildFfmpegArguments(
     if (options.trim?.end) {
       inputArgs.push('-to', options.trim.end);
     }
-    inputArgs.push('-i', inputPath);
+    inputArgs.push(...mediaInputArgs(inputPath));
 
     outputArgs.push('-vn', '-an');
     const sIdx = typeof options.subtitles.streamIndex === 'number' ? options.subtitles.streamIndex : 0;
@@ -766,13 +754,13 @@ export function buildFfmpegArguments(
     inputArgs.push('-to', options.trim.end);
   }
   const wav = readWavInputFacts(tgt, inputPath, inputArgs);
-  inputArgs.push('-i', inputPath);
+  inputArgs.push(...mediaInputArgs(inputPath));
 
   if (options.subtitles?.mode === 'soft') {
     if (!options.subtitles.input) {
       throw new InvalidMediaOptionError("Subtitle 'soft' mode adds an external subtitle file, which a request cannot supply; burn a subtitle stream of the input with 'burn' and streamIndex instead.");
     }
-    inputArgs.push('-i', options.subtitles.input);
+    inputArgs.push(...mediaInputArgs(options.subtitles.input));
   }
 
   const isVideo = ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(tgt);
@@ -896,7 +884,7 @@ export function buildFfmpegArguments(
         chapterInput = inputArgs.filter((arg) => arg === '-i').length;
         inputArgs.push('-itsoffset', chapters.startTimeSec.toFixed(CHAPTER_OFFSET_DECIMALS));
         if (options.trim?.start) inputArgs.push('-ss', options.trim.start);
-        inputArgs.push('-i', inputPath);
+        inputArgs.push(...mediaInputArgs(inputPath));
       }
       outputArgs.push('-map_metadata', '0', '-map_chapters', String(chapterInput));
     }
@@ -1659,7 +1647,7 @@ export function buildHlsDashArguments(
   const { fpsNum, fpsDen } = probed.geometry;
 
   const globalArgs: string[] = ['-y', '-loglevel', 'error'];
-  const inputArgs: string[] = ['-i', inputPath];
+  const inputArgs: string[] = mediaInputArgs(inputPath);
 
   // Construct filter_complex
   const filterParts: string[] = [];

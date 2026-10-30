@@ -69,6 +69,7 @@ import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversion
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
 import { assertOutputWritten } from '../lib/conversions/media-empty-output';
 import { runFfmpegTranscode } from '../lib/conversions/media-ffmpeg-run';
+import { runFfmpeg } from '../lib/conversions/media-process';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import {
   executeSandboxedBinary,
@@ -491,7 +492,7 @@ export async function convertWithNativeFfmpeg(
           const ts = options.thumbnail.at[i];
           const partOut = path.join(tempDir, `output_${i}.${tgt}`);
           const partArgs = buildFfmpegArguments(inputPath, partOut, src, tgt, options, ffmpegBin, ts);
-          await executeSandboxedBinary(ffmpegBin, partArgs, {
+          await runFfmpeg(ffmpegBin, partArgs, {
             cwd: tempDir,
             timeoutMs: timeout,
             maxBuffer,
@@ -530,7 +531,7 @@ export async function convertWithNativeFfmpeg(
 
         const source = probePackagingSource(inputPath, ffmpegBin);
         const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
-        await executeSandboxedBinary(ffmpegBin, args, {
+        await runFfmpeg(ffmpegBin, args, {
           cwd: outputDir,
           timeoutMs: computePackagingTimeoutMs(
             source.geometry.durationSec,
@@ -574,9 +575,9 @@ export async function convertWithNativeFfmpeg(
 
       const runFfmpegWith = (ffmpegArgs: string[], limitMs: number) =>
         runFfmpegTranscode(ffmpegBin, ffmpegArgs, { cwd: tempDir, timeoutMs: limitMs, maxBuffer, networkIsolated: true, signal: options.signal });
-      const runFfmpeg = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
+      const runTranscode = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
       // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
-      const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
+      const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runTranscode });
 
       if (isTwoPassRequested(options)) {
         // The pass logs go to the job's sandbox directory (the working directory), which is removed with it.
@@ -585,7 +586,7 @@ export async function convertWithNativeFfmpeg(
       } else {
         const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
         try {
-          await runFfmpeg(args);
+          await runTranscode(args);
         } catch (err) {
           // A hardware encoder that passed the capability probe can still fail at runtime (device lost,
           // driver error). Retry exactly once in software; a failed retry reports the original error,
@@ -598,7 +599,7 @@ export async function convertWithNativeFfmpeg(
             inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
           );
           try {
-            await runFfmpeg(softwareArgs);
+            await runTranscode(softwareArgs);
           } catch {
             throw err;
           }

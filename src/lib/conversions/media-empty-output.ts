@@ -1,7 +1,7 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { EmptyAudioInputError } from '../types';
 import { FFPROBE_TIMEOUT_MS, type FfprobePath, resolveFfprobeBinary } from './media-ffprobe';
+import { runFfprobe } from './media-process';
 
 /**
  * Why an FFmpeg run wrote an empty or unreadable file. A target format without a file header (ADTS, the `.aac` target)
@@ -20,7 +20,6 @@ const UNREADABLE_WHEN_EMPTY_TARGETS: ReadonlySet<string> = new Set(['m4a', 'mp3'
  */
 const SMALL_OUTPUT_BYTES = 8 * 1024;
 
-const PROBE_KILL_SIGNAL = 'SIGKILL';
 const PROBE_MAX_BYTES = 64 * 1024;
 /** `%+#1` reads from the start up to one packet, so a probe costs the same for a 1 KB file and a 500 MB one. */
 const READ_FIRST_PACKET = '%+#1';
@@ -36,18 +35,21 @@ interface FirstPacketReport {
  * or ffprobe cannot read it. Zero means an audio stream with no packet in it.
  */
 export function audioPacketsAtStart(filePath: string, ffprobe: FfprobePath): number | undefined {
+  const run = runFfprobe(
+    ffprobe,
+    ['-v', 'error', '-select_streams', 'a', '-read_intervals', READ_FIRST_PACKET, '-show_entries', 'stream=index:packet=stream_index', '-of', 'json'],
+    filePath,
+    { timeoutMs: FFPROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BYTES }
+  );
+  if (!run.ok) return undefined;
+  let report: FirstPacketReport;
   try {
-    const out = execFileSync(
-      ffprobe,
-      ['-v', 'error', '-select_streams', 'a', '-read_intervals', READ_FIRST_PACKET, '-show_entries', 'stream=index:packet=stream_index', '-of', 'json', filePath],
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: FFPROBE_TIMEOUT_MS, killSignal: PROBE_KILL_SIGNAL, maxBuffer: PROBE_MAX_BYTES },
-    );
-    const report = JSON.parse(out) as FirstPacketReport;
-    if ((report.streams ?? []).length === 0) return undefined;
-    return (report.packets ?? []).length;
+    report = JSON.parse(run.stdout) as FirstPacketReport;
   } catch {
     return undefined;
   }
+  if ((report.streams ?? []).length === 0) return undefined;
+  return (report.packets ?? []).length;
 }
 
 /** The error for a run that wrote no bytes: the named refusal when the input holds an audio stream with no packet. */
