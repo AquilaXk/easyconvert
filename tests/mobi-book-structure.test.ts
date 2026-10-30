@@ -12,7 +12,7 @@ import { requireOracleTool } from './helpers/differential-oracle';
 import { runEpubcheck } from './helpers/epubcheck';
 import { buildMobi, palmDocCompress } from './helpers/mobi-builder';
 import { oracleTest } from './helpers/oracle-test';
-import { cpuClockMs, expectLinearOnInputs, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { cpuClockMs, expectLinearOnInputs, expectNoSlowerThanReference, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * A MOBI book keeps its structure when it becomes an EPUB or a PDF: the chapters its table of contents names are headings
@@ -312,40 +312,58 @@ describe('the table of contents of a MOBI book', () => {
 });
 
 describe('the time the reader takes on markup built to make it slow', () => {
-  const SMALL = 100_000;
-  const GROWTH = 4;
-  // A linear reader takes about GROWTH times as long on GROWTH times the input, a quadratic one GROWTH squared: the bound sits between.
-  const MAX_RATIO = 8;
-  // The reader's work on 100 KB is a few milliseconds, which a garbage collection or a busy neighbour on the runner can double,
-  // and on 400 KB a preemption of a hundred milliseconds in every pass of the larger size read 13x against 4.9x on a quiet
-  // machine. The sizes are therefore timed alternately, in CPU time (a process waiting for a core is not charged), each sample at
-  // least MIN_SAMPLE_MS long, and the best pass of each size is kept (tests/helpers/timing.ts); work that grows as the square of
-  // the input keeps its ratio near GROWTH squared.
+  const SIZE = 400_000;
   const endBook = (tail: string, size: number): Buffer => {
     const filler = tail.repeat(Math.ceil(size / tail.length));
     return bookOf(layout(`${guide}${chapterTemplate(CHAPTERS)}${mark('toc')}<mbp:pagebreak/>${tocLinks(CHAPTERS)}${filler}<mbp:pagebreak/></body></html>`));
   };
   const afterMarkup = (tail: string, size: number): Buffer => bookOf(layout(`${guide}${chapterTemplate(CHAPTERS)}</body></html>${tail.repeat(Math.ceil(size / tail.length))}`));
+  const pointingAtParagraphs = (paragraph: string, size: number): Buffer => {
+    const count = Math.ceil(size / 40);
+    const paragraphs = Array.from({ length: count }, (_unused, i) => `${mark(`p${i}`)}${paragraph}`).join('');
+    const links = Array.from({ length: count }, (_unused, i) => `<p><a filepos={{p${i}}}>T${i}</a></p>`).join('');
+    return bookOf(layout(`${guide}${paragraphs}${mark('toc')}<mbp:pagebreak/>${links}<mbp:pagebreak/></body></html>`));
+  };
+  // The reader's refusal of a book counts: it did the work.
+  const read = (input: Buffer) => readMobiModel(input, 'book').catch(() => undefined);
 
-  it.each([
-    ['links of the contents page that never close', (size: number) => endBook('<a filepos=0000000100>x ', size)],
-    ['contents entries that point at paragraphs that never close', (size: number) => {
-      const count = Math.ceil(size / 40);
-      const paragraphs = Array.from({ length: count }, (_unused, i) => `${mark(`p${i}`)}<p>x`).join('');
-      const links = Array.from({ length: count }, (_unused, i) => `<p><a filepos={{p${i}}}>T${i}</a></p>`).join('');
-      return bookOf(layout(`${guide}${paragraphs}${mark('toc')}<mbp:pagebreak/>${links}<mbp:pagebreak/></body></html>`));
-    }],
-    ['picture tags that are never closed', (size: number) => afterMarkup('<img ', size)],
-    ['MOBI tags that are never closed', (size: number) => afterMarkup('<mbp:', size)],
-    ['link tags with a position that are never closed', (size: number) => afterMarkup('<a filepos=1 ', size)],
-  ])('grows in proportion to the input on %s', async (name, make) => {
-    // The reader's refusal of a book counts: it did the work. The books are built before the clock starts.
-    await expectLinearOnInputs(name, (input: Buffer) => readMobiModel(input, 'book').catch(() => undefined), {
-      small: make(SMALL),
-      large: make(SMALL * GROWTH),
-      factor: GROWTH,
-      maxRatio: MAX_RATIO,
-      clock: cpuClockMs,
-    });
-  }, SCALING_TEST_TIMEOUT_MS);
+  describe('a book of unclosed constructs against a book of the same size with every construct closed', () => {
+    // The reader's work on these books is a few milliseconds at 100 KB, and a claim made by comparing a book with one a quarter of its
+    // size needs a base of a few tenths of a millisecond, which a garbage collection or a change of compiler tier moves by a factor of
+    // three (the same 100 KB book read 0.4 and 1.6 ms in two processes on a quiet machine); the ratio of two such samples read 13x on a
+    // loaded runner. The claim here is that the hostile book costs the reader no more than the plain one, both 400 KB, in CPU time,
+    // interleaved, best pass of each. Work that grows as the square of the number of unclosed constructs is 10 to 100 times the cost
+    // of the plain book at this size.
+    const MAX_COST_RATIO = 2;
+    const PLAIN_FILLER = '<b>x</b> ';
+
+    it.each([
+      ['links of the contents page that never close', () => endBook('<a filepos=0000000100>x ', SIZE), () => endBook(PLAIN_FILLER, SIZE)],
+      ['picture tags that are never closed', () => afterMarkup('<img ', SIZE), () => afterMarkup(PLAIN_FILLER, SIZE)],
+      ['MOBI tags that are never closed', () => afterMarkup('<mbp:', SIZE), () => afterMarkup(PLAIN_FILLER, SIZE)],
+      ['link tags with a position that are never closed', () => afterMarkup('<a filepos=1 ', SIZE), () => afterMarkup(PLAIN_FILLER, SIZE)],
+    ])('costs no more than the closed constructs: %s', async (name, hostileBook, plainBook) => {
+      const [hostile, plain] = [hostileBook(), plainBook()];
+      await expectNoSlowerThanReference(name, () => read(plain), () => read(hostile), { maxRatio: MAX_COST_RATIO, clock: cpuClockMs });
+    }, SCALING_TEST_TIMEOUT_MS);
+  });
+
+  describe('contents entries that point at paragraphs that never close', () => {
+    // Each entry makes the reader look 4,096 characters on for a closing tag, so the book costs several times a plain one by design and
+    // its cost is compared with its own size instead: 4x the entries take at most 8x as long (linear 4x, quadratic 16x). A book of 100 KB
+    // takes tens of milliseconds, far above the timer; CPU time, interleaved, best pass of each size (tests/helpers/timing.ts).
+    const SMALL = 100_000;
+    const GROWTH = 4;
+    const MAX_RATIO = 8;
+
+    it('grows in proportion to the input', async () => {
+      await expectLinearOnInputs('contents entries that point at paragraphs that never close', read, {
+        small: pointingAtParagraphs('<p>x', SMALL),
+        large: pointingAtParagraphs('<p>x', SMALL * GROWTH),
+        factor: GROWTH,
+        maxRatio: MAX_RATIO,
+        clock: cpuClockMs,
+      });
+    }, SCALING_TEST_TIMEOUT_MS);
+  });
 });
