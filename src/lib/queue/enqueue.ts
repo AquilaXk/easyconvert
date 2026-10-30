@@ -1,5 +1,6 @@
 import type { ConversionJobData, ConversionJobResult } from '../types';
 import type { IStorageBackend } from '../storage/oci-storage';
+import { withInputHeld } from '../storage/retention-service';
 import { generateJobId, type IQueueEngine, type Job, type JobOptions } from './bullmq-engine';
 import { sealJobDataSecrets } from './option-secrets';
 import { conversionDeadlineMs, tierMaxDeadlineMs } from './job-deadline';
@@ -29,7 +30,8 @@ export type ConversionJobOptions = Omit<JobOptions, 'timeout'>;
 
 /**
  * Puts a conversion job on `queue` with the deadline of its tier and input as the job timeout. The open password of a
- * protected input is sealed under the job id first, so the stored job never holds it (see option-secrets).
+ * protected input is sealed under the job id first, so the stored job never holds it (see option-secrets). An input
+ * that is an earlier result is held for the job from here until the job ends (see `withInputHeld`).
  */
 export async function enqueueConversionJob(
   queue: IQueueEngine<ConversionJobData, ConversionJobResult>,
@@ -45,12 +47,14 @@ export async function enqueueConversionJob(
     inputBytes: owner.inputBytes,
   });
   const jobId = opts.jobId ?? generateJobId();
-  return queue.add(name, sealJobDataSecrets(data, jobId), {
-    ...opts,
-    timeout,
-    jobId,
-    ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }),
-  });
+  return withInputHeld(data.storageKey, jobId, () =>
+    queue.add(name, sealJobDataSecrets(data, jobId), {
+      ...opts,
+      timeout,
+      jobId,
+      ...(owner.notAfter === undefined ? {} : { deadlineAt: owner.notAfter }),
+    })
+  );
 }
 
 /** Byte length of a base64 payload without decoding it. */

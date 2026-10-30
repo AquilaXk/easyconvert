@@ -399,9 +399,15 @@ export function OPTIONS() {
   return new NextResponse(null, { status: 204, headers });
 }
 
-/** Creating a tus upload takes new disk space; the direct-upload routes this path also serves check for themselves. */
+/**
+ * Only starting an upload takes new disk space: a tus creation or `?action=initiate`. Parts, completion and abort of
+ * a running upload go on while the disk is full; the abort frees space. The direct-upload routes this path also
+ * serves check for themselves.
+ */
 function isNewTusUpload(req: NextRequest): boolean {
-  return !req.nextUrl?.pathname.includes('/direct');
+  if (req.nextUrl?.pathname.includes('/direct')) return false;
+  const action = req.nextUrl?.searchParams.get('action');
+  return !action || action === 'initiate';
 }
 
 export const POST = admittingNewFiles(async function POST(

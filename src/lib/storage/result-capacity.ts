@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { readIntegerSetting } from './result-retention';
+import { isHeld, readIntegerSetting, type RetentionPolicy, type RetentionRecord } from './result-retention';
 
 /**
  * Early deletion of results when the disk of the local storage driver runs full (docs/policy-decisions.md, entry
@@ -13,6 +13,12 @@ export const DISK_LOW_VARIABLE = 'RESULT_DISK_LOW_PERCENT';
 export const DISK_REFUSE_VARIABLE = 'RESULT_DISK_REFUSE_PERCENT';
 
 const PERCENT = 100;
+/**
+ * Age before which an undelivered result is not deleted for space. A client polls its job and downloads the result
+ * within seconds to minutes of its end; ten minutes keeps that path whole when the disk fills from something that
+ * deleting results cannot free (uploads, spools), while results nobody fetched in that time still go first.
+ */
+export const CAPACITY_MIN_AGE_MS = 10 * 60 * 1000;
 
 export interface CapacityPolicy {
   /** Use, in percent, above which results are deleted early. */
@@ -54,16 +60,58 @@ export function usedPercent({ blocks, bfree, bavail }: DiskBlocks): number {
   return usable === 0 ? 0 : (used * PERCENT) / usable;
 }
 
-/** Measures the use of the file system that holds `directory`, in percent; undefined while the directory does not exist yet. */
+/** Measures the use of the fullest file system among some directories, in percent; undefined while none of them exists yet. */
 export type DiskProbe = () => Promise<number | undefined>;
 
-export function statfsProbe(directory: string): DiskProbe {
+/** The device of `directory`, or undefined while it does not exist yet. */
+async function deviceOf(directory: string): Promise<number | undefined> {
+  try {
+    return (await fs.promises.stat(directory)).dev;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Measures the file systems that hold `directories` (the storage directory, where results live, and the temporary
+ * directory, where uploads and conversions spool) and reports the fuller one. A file system that holds several of
+ * them is measured once.
+ */
+export function diskUsageProbe(directories: readonly string[]): DiskProbe {
   return async () => {
-    try {
-      return usedPercent(await fs.promises.statfs(directory));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-      throw error;
+    const byDevice = new Map<number, string>();
+    for (const directory of directories) {
+      const device = await deviceOf(directory);
+      if (device !== undefined && !byDevice.has(device)) byDevice.set(device, directory);
     }
+    if (byDevice.size === 0) return undefined;
+    const uses = await Promise.all([...byDevice.values()].map(async (directory) => usedPercent(await fs.promises.statfs(directory))));
+    return Math.max(...uses);
   };
+}
+
+/**
+ * Whether the result of `record` may be deleted for space at `now`. Never a result that is gone, held by a job, or
+ * undelivered and either younger than CAPACITY_MIN_AGE_MS or partly sent (a client may resume it) within the
+ * undelivered time.
+ */
+export function isCapacityCandidate(record: RetentionRecord, now: number, policy: RetentionPolicy): boolean {
+  if (record.goneAt !== undefined || isHeld(record, now)) return false;
+  if (record.deliveredAt !== undefined) return true;
+  const recentlyServed = record.lastServedAt !== undefined && now - record.lastServedAt < policy.undeliveredTtlMs;
+  return now - record.createdAt >= CAPACITY_MIN_AGE_MS && record.received.length === 0 && !recentlyServed;
+}
+
+/**
+ * The results to delete when the disk runs full, in order: delivered results in their grace period, the earliest
+ * delivery first, then undelivered results, the oldest first. Only results `isCapacityCandidate` allows are listed.
+ */
+export function capacityEvictionOrder(records: readonly RetentionRecord[], now: number, policy: RetentionPolicy): RetentionRecord[] {
+  const candidates = records.filter((record) => isCapacityCandidate(record, now, policy));
+  const delivered = candidates.filter((record) => record.deliveredAt !== undefined);
+  const undelivered = candidates.filter((record) => record.deliveredAt === undefined);
+  delivered.sort((a, b) => (a.deliveredAt as number) - (b.deliveredAt as number));
+  undelivered.sort((a, b) => a.createdAt - b.createdAt);
+  return [...delivered, ...undelivered];
 }

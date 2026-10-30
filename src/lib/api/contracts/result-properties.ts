@@ -69,6 +69,10 @@ export const ResultRetentionSchema = {
     state: { type: 'string', enum: ['available', 'deleted'] },
     deleteAt: { type: 'number', description: 'Epoch milliseconds after which an available result is deleted.' },
     deliveredAt: { type: 'number', description: 'Epoch milliseconds of the first complete download, when there was one.' },
-    reason: { type: 'string', enum: ['delivered', 'expired'], description: 'Why a deleted result is gone: it was downloaded, or nobody downloaded it in time.' },
+    reason: {
+      type: 'string',
+      enum: ['delivered', 'expired', 'capacity'],
+      description: 'Why a deleted result is gone: it was downloaded, nobody downloaded it in time, or it was deleted early because the server ran out of disk space.',
+    },
   },
 } as const;

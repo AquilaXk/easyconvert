@@ -2,6 +2,7 @@ import { Queue, Worker, Job, createQueueEngine, IQueueEngine, WorkerOptions } fr
 import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../types';
 import { storageProvider } from '../storage';
 import { isUploadKey } from '../storage/key-namespace';
+import { releaseResultHold } from '../storage/retention-service';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
 import { processNodeJob } from './node-processor';
@@ -47,6 +48,8 @@ export async function processConversionJob(
  */
 async function removeJobInput(jobId: string, storageKey: string): Promise<void> {
   if (!isUploadKey(storageKey)) {
+    // An owner's earlier result chained as the input stays theirs; the job only gives up its hold on it.
+    await releaseResultHold(storageKey, jobId);
     return;
   }
   try {

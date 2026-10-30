@@ -16,7 +16,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/e
 import { secureShredBuffer } from '../security/memory-shredder';
 import { isUploadKey } from '../storage/key-namespace';
 import { resolveRetentionPolicy } from '../storage/result-retention';
-import { registerStoredResult } from '../storage/retention-service';
+import { registerStoredResult, releaseResultHold } from '../storage/retention-service';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
@@ -111,6 +111,8 @@ function discardConversionOutput(jobId: string, result: EngineResult): void {
 /** Deletes a job's uploaded input upon final attempt failure. */
 async function removeJobInput(jobId: string, storageKey: string, storage: IStorageBackend): Promise<void> {
   if (!isUploadKey(storageKey)) {
+    // An owner's earlier result chained as the input stays theirs; the job only gives up its hold on it.
+    await releaseResultHold(storageKey, jobId);
     return;
   }
   try {

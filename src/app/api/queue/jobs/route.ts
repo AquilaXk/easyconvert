@@ -9,7 +9,7 @@ import { detectFormatFromFilename } from '@/lib/registry';
 import { ConversionOptions } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
 import { validateApiAccess, authErrorHeaders, commitQuota, rollbackQuota } from '@/lib/api-keys/guard';
-import { claimStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
+import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import type { JobState } from '@/lib/queue/bullmq-engine';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-response';
@@ -131,7 +131,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     // Authorize caller against storage key
     if (
       storageKey &&
-      (typeof storageKey !== 'string' || !(await claimStorageKeyAsJobInput(storageKey, auth.user.id)))
+      (typeof storageKey !== 'string' || !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id)))
     ) {
       return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND);
     }

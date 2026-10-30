@@ -4,7 +4,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
-import { claimStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
+import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
+import { initGraphHoldingInputs } from '@/lib/queue/graph/input-cleanup';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
@@ -470,7 +471,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
 
     // Authorize a caller-supplied key before anything reads the object.
-    if (storageKey && !storageKey.startsWith('inline') && !(await claimStorageKeyAsJobInput(storageKey, auth.user.id))) {
+    if (storageKey && !storageKey.startsWith('inline') && !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id))) {
       return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
     }
 
@@ -632,7 +633,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     if (graph) {
       graph.nodes = normalizeGraphNodes(graph);
       const graphId = generateJobId();
-      const graphState = await graphScheduler.initGraph(graphId, graph as any, {
+      const graphState = await initGraphHoldingInputs(graphScheduler, graphId, graph as any, {
         ownerUserId: auth.user.id,
         reservationId: reservation.reservationId,
         webhookUrl: effectiveWebhookUrl,

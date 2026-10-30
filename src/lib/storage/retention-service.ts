@@ -1,10 +1,16 @@
+import os from 'node:os';
+import { StorageNotFoundError } from './adapters/adapter-interface';
 import { classifyStorageKey } from './key-namespace';
 import type { IStorageBackend } from './oci-storage';
 import { getRetentionLedger } from './retention-ledger';
-import { resolveCapacityPolicy, statfsProbe, type DiskProbe } from './result-capacity';
 import {
   capacityEvictionOrder,
-  deferDeletion,
+  diskUsageProbe,
+  isCapacityCandidate,
+  resolveCapacityPolicy,
+  type DiskProbe,
+} from './result-capacity';
+import {
   holdRecord,
   isDeleted,
   isRetainedKey,
@@ -12,6 +18,8 @@ import {
   newRecord,
   reasonOf,
   recordServedRange,
+  releaseHold,
+  reopenAfterFailedDelete,
   resolveRetentionPolicy,
   type RetentionReason,
   type RetentionRecord,
@@ -30,10 +38,20 @@ export type SweptStorage = DeletableStorage & Partial<Pick<IStorageBackend, 'kin
 export type ResultStorage = Pick<IStorageBackend, 'saveObject' | 'deleteObject'>;
 
 const SWEEP_INTERVAL_MS = 60_000;
+/** Longest one sweep may take before the next one may start; every ledger command has its own shorter timeout. */
+const SWEEP_TIMEOUT_MS = 50_000;
 /** Results deleted per sweep; a backlog is cleared over the following sweeps. */
 const SWEEP_BATCH = 500;
-/** Most records one early deletion for space considers; a later sweep continues if the disk is still full. */
-const CAPACITY_SCAN_LIMIT = 5_000;
+/**
+ * How long one answer to "may new files come in" holds in this process. The answer measures the disk and may run an
+ * early deletion, which reads every record; every request in between gets the same answer without either.
+ */
+export const CAPACITY_CHECK_TTL_MS = 5_000;
+/**
+ * Deletions in a row that did not lower the use of the disk after which an early deletion stops: whatever fills
+ * the disk is not results (uploads, a spool, files still open), and deleting more results would not free it.
+ */
+const MAX_FUTILE_DELETIONS = 3;
 /** What a refused upload is told to wait: one sweep, which deletes results when the disk is full. */
 export const STORAGE_FULL_RETRY_AFTER_SECONDS = SWEEP_INTERVAL_MS / 1000;
 
@@ -145,22 +163,61 @@ export async function recordServed(key: string, range: { first: number; last: nu
 }
 
 /**
- * Keeps a result that a queued job reads as its input for the undelivered time from now: the sweep and an early
- * deletion for space leave it alone until then.
+ * Holds the result under `key` for the job `holder`, which reads it as its input: the sweep and an early deletion
+ * for space leave it alone until `releaseResultHold` or JOB_INPUT_HOLD_MAX_MS. Returns false when the result was
+ * deleted before the hold could be taken, so the job must not be queued. A key the rule does not track, or a ledger
+ * that cannot be reached, holds nothing and returns true.
  */
-export async function holdResultForJob(key: string, now: number = Date.now()): Promise<void> {
-  if (!isRetainedKey(key)) return;
-  const until = now + resolveRetentionPolicy().undeliveredTtlMs;
+export async function holdResultForJob(key: string, holder: string, now: number = Date.now()): Promise<boolean> {
+  if (!isRetainedKey(key)) return true;
+  let tracked = false;
   try {
-    await getRetentionLedger().update(key, (current) => current && holdRecord(current, until));
+    const held = await getRetentionLedger().update(key, (current) => {
+      tracked = current !== undefined;
+      return current && holdRecord(current, holder, now);
+    });
+    return held !== undefined || !tracked;
   } catch (error) {
-    console.warn(`[Retention] Could not hold "${key}" for the job that reads it; it keeps its own deletion time:`, error);
+    console.warn(`[Retention] Could not hold "${key}" for the job ${holder}; it keeps its own deletion time:`, error);
+    return true;
+  }
+}
+
+/** Ends the hold of the job `holder` on the result under `key`, when it ended. Safe to call again or for a key without one. */
+export async function releaseResultHold(key: string, holder: string): Promise<void> {
+  if (!isRetainedKey(key)) return;
+  try {
+    await getRetentionLedger().update(key, (current) => current && releaseHold(current, holder));
+  } catch (error) {
+    console.warn(`[Retention] Could not end the hold of the job ${holder} on "${key}"; it ends by itself:`, error);
+  }
+}
+
+/** The provider named by the not-found error of an input the retention rule deleted before its job was queued. */
+const RETENTION_PROVIDER = 'retention';
+
+/**
+ * Runs `start`, which queues the job `holder`, while its input `key` is held for it, so that neither the sweep nor an
+ * early deletion for space removes a result the job reads before it ends (its end calls `releaseResultHold`). When
+ * the input was deleted after it was authorized, nothing is queued and a StorageNotFoundError is thrown, which the
+ * routes answer like a missing object. A failed `start` gives the hold up again.
+ */
+export async function withInputHeld<T>(key: string | undefined, holder: string, start: () => Promise<T>): Promise<T> {
+  if (key === undefined) return start();
+  if (!(await holdResultForJob(key, holder))) throw new StorageNotFoundError(key, RETENTION_PROVIDER);
+  try {
+    return await start();
+  } catch (error) {
+    await releaseResultHold(key, holder);
+    throw error;
   }
 }
 
 /**
- * Deletes the object of `key` and keeps a record that says it is gone, with `reason` when it went early. Returns
- * whether a record was marked; a key without a record is only taken out of the sweep.
+ * Deletes the result under `key` when its record still allows it: for `capacity`, when `isCapacityCandidate` holds;
+ * otherwise when it is due. The record is marked gone first, in the same atomic change that checks it, so a job that
+ * holds the result in the meantime keeps it. When the object cannot be deleted, the record is reopened for a later
+ * sweep. Returns whether this call deleted it; a key without a record has its object deleted and leaves the sweep.
  */
 export async function deleteResult(
   storage: DeletableStorage,
@@ -168,12 +225,30 @@ export async function deleteResult(
   now: number = Date.now(),
   reason?: 'capacity'
 ): Promise<boolean> {
-  await storage.deleteObject(key);
   const ledger = getRetentionLedger();
-  const gone = await ledger.update(key, (current) => current && markGone(current, now, reason));
-  if (gone) return true;
-  await ledger.forget(key);
-  return false;
+  const policy = resolveRetentionPolicy();
+  const mayDelete = (record: RetentionRecord): boolean =>
+    reason === 'capacity' ? isCapacityCandidate(record, now, policy) : record.goneAt === undefined && isDeleted(record, now);
+  let tracked = false;
+  const marked = await ledger.update(key, (current) => {
+    tracked = current !== undefined;
+    return current && mayDelete(current) ? markGone(current, now, reason) : undefined;
+  });
+  if (!tracked) {
+    await storage.deleteObject(key);
+    await ledger.forget(key);
+    return false;
+  }
+  if (!marked) return false;
+  try {
+    await storage.deleteObject(key);
+  } catch (error) {
+    await ledger.update(key, (current) => current && reopenAfterFailedDelete(current, now)).catch((reopenError: unknown) => {
+      console.warn(`[Retention] Could not reopen "${key}" for a later sweep after its deletion failed:`, reopenError);
+    });
+    throw error;
+  }
+  return true;
 }
 
 /**
@@ -181,59 +256,64 @@ export async function deleteResult(
  * fails is reported and tried again after a pause, behind the keys that are due by then, so it cannot block them.
  */
 export async function sweepRetention(storage: DeletableStorage, now: number = Date.now()): Promise<number> {
-  const ledger = getRetentionLedger();
   let deleted = 0;
-  for (const key of await ledger.collectDue(now, SWEEP_BATCH)) {
+  for (const key of await getRetentionLedger().collectDue(now, SWEEP_BATCH)) {
     try {
       if (await deleteResult(storage, key, now)) deleted++;
     } catch (error) {
       console.warn(`[Retention] Could not delete the result "${key}"; trying again later:`, error);
-      await ledger.update(key, (current) => current && deferDeletion(current, now)).catch((deferError: unknown) => {
-        console.warn(`[Retention] Could not postpone the deletion of "${key}":`, deferError);
-      });
     }
   }
   return deleted;
 }
 
 let diskProbeOverride: DiskProbe | undefined;
+let admission: { measuredAt: number; admits: Promise<boolean> } | undefined;
 
-/** Replaces the measurement of the disk; `undefined` measures the storage directory again. For tests. */
+/** Replaces the measurement of the disk; `undefined` measures the directories again. Forgets the last admission. For tests. */
 export function setDiskProbe(probe: DiskProbe | undefined): void {
   diskProbeOverride = probe;
+  admission = undefined;
 }
 
-/** How full the disk of `storage` is; undefined for an object store, which has no fixed size. */
+/** How full the disks of `storage` and of the temporary files are; undefined for an object store, which has no fixed size. */
 function diskProbeFor(storage: SweptStorage): DiskProbe | undefined {
   if (storage.kind !== 'local') return undefined;
-  return diskProbeOverride ?? statfsProbe(resolveLocalStorageDir());
+  return diskProbeOverride ?? diskUsageProbe([resolveLocalStorageDir(), os.tmpdir()]);
 }
 
 /**
  * Deletes results before their time while the disk is above RESULT_DISK_HIGH_PERCENT, in the order of
- * `capacityEvictionOrder`, until it is at or below RESULT_DISK_LOW_PERCENT. Returns how many were deleted.
+ * `capacityEvictionOrder`, until it is at or below RESULT_DISK_LOW_PERCENT or MAX_FUTILE_DELETIONS deletions in a
+ * row did not lower it. Returns how many were deleted.
  */
 export async function evictForCapacity(storage: SweptStorage, now: number = Date.now()): Promise<number> {
   const probe = diskProbeFor(storage);
   if (!probe) return 0;
-  const policy = resolveCapacityPolicy();
+  const capacity = resolveCapacityPolicy();
   let used = await probe();
-  if (used === undefined || used <= policy.highPercent) return 0;
-  const candidates = capacityEvictionOrder(await getRetentionLedger().liveRecords(CAPACITY_SCAN_LIMIT), now);
+  if (used === undefined || used <= capacity.highPercent) return 0;
+  const candidates = capacityEvictionOrder(await getRetentionLedger().liveRecords(), now, resolveRetentionPolicy());
   let deleted = 0;
+  let futile = 0;
   for (const record of candidates) {
-    if (used <= policy.lowPercent) break;
+    if (used <= capacity.lowPercent || futile >= MAX_FUTILE_DELETIONS) break;
     try {
-      if (await deleteResult(storage, record.key, now, 'capacity')) {
-        deleted++;
-        console.warn(`[Retention] Deleted "${record.key}" early: the disk was ${used.toFixed(1)}% full, above ${policy.highPercent}%`);
-      }
+      if (!(await deleteResult(storage, record.key, now, 'capacity'))) continue;
     } catch (error) {
       console.warn(`[Retention] Could not delete "${record.key}" to free disk space:`, error);
+      continue;
     }
-    used = (await probe()) ?? 0;
+    deleted++;
+    console.warn(`[Retention] Deleted "${record.key}" early: the disk was ${used.toFixed(1)}% full, above ${capacity.highPercent}%`);
+    const after = await probe();
+    if (after === undefined) break;
+    futile = after < used ? 0 : futile + 1;
+    used = after;
   }
-  if (used > policy.lowPercent) {
+  if (futile >= MAX_FUTILE_DELETIONS) {
+    console.warn(`[Retention] Stopped deleting results early: ${futile} deletions in a row did not lower the use of the disk (${used.toFixed(1)}%)`);
+  } else if (used > capacity.lowPercent) {
     console.warn(`[Retention] The disk is still ${used.toFixed(1)}% full after deleting ${deleted} result(s); nothing else may be deleted`);
   }
   return deleted;
@@ -250,27 +330,53 @@ function evictForCapacityOnce(storage: SweptStorage): Promise<number> {
 }
 
 /**
- * Whether `storage` can take a new upload or conversion. Above RESULT_DISK_REFUSE_PERCENT the early deletion runs
- * first, and the answer is no only when the disk is still above it afterwards. An object store always can.
+ * Above RESULT_DISK_REFUSE_PERCENT the early deletion runs first, and the answer is no only when the disk is still
+ * above it afterwards. A disk that cannot be measured, or an early deletion that fails, lets the files in: only a
+ * full disk that the deletion ran on refuses.
  */
-export async function admitsNewFiles(storage: SweptStorage): Promise<boolean> {
+async function measureAdmission(storage: SweptStorage, probe: DiskProbe): Promise<boolean> {
+  try {
+    const { refusePercent } = resolveCapacityPolicy();
+    const used = await probe();
+    if (used === undefined || used <= refusePercent) return true;
+    await evictForCapacityOnce(storage);
+    const after = await probe();
+    return after === undefined || after <= refusePercent;
+  } catch (error) {
+    console.warn('[Retention] Could not measure the disk or delete results to free it; new files are let in:', error);
+    return true;
+  }
+}
+
+/**
+ * Whether `storage` can take a new upload or conversion (see `measureAdmission`). The answer is measured at most
+ * once per CAPACITY_CHECK_TTL_MS in this process. An object store always can.
+ */
+export function admitsNewFiles(storage: SweptStorage): Promise<boolean> {
   const probe = diskProbeFor(storage);
-  if (!probe) return true;
-  const { refusePercent } = resolveCapacityPolicy();
-  const used = await probe();
-  if (used === undefined || used <= refusePercent) return true;
-  await evictForCapacityOnce(storage);
-  return ((await probe()) ?? 0) <= refusePercent;
+  if (!probe) return Promise.resolve(true);
+  const now = Date.now();
+  if (!admission || now - admission.measuredAt >= CAPACITY_CHECK_TTL_MS) {
+    admission = { measuredAt: now, admits: measureAdmission(storage, probe) };
+  }
+  return admission.admits;
 }
 
 let sweepTimer: NodeJS.Timeout | undefined;
 let sweepInFlight: Promise<void> | undefined;
 
-/** One sweep: the results whose time has passed, then early deletions while the disk is too full. */
-async function runSweep(storage: SweptStorage): Promise<void> {
-  await getRetentionLedger().ready();
-  await sweepRetention(storage);
-  await evictForCapacityOnce(storage);
+/** One sweep: the results whose time has passed, then early deletions while the disk is too full. Rejects after SWEEP_TIMEOUT_MS. */
+function runSweep(storage: SweptStorage): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`The sweep took longer than ${SWEEP_TIMEOUT_MS} ms`)), SWEEP_TIMEOUT_MS);
+    timer.unref();
+  });
+  const sweep = (async () => {
+    await sweepRetention(storage);
+    await evictForCapacityOnce(storage);
+  })();
+  return Promise.race([sweep, timeout]).finally(() => clearTimeout(timer));
 }
 
 /**
