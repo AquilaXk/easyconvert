@@ -118,7 +118,7 @@
     },
     {
       "families": ["*"],
-      "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard|conversion-warnings)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output|worker-output|worker-types)\\.ts$"
+      "match": "^src/lib/conversions/(dispatch|index|job-time|options-guard|conversion-warnings|wasm-import-wrappers)\\.ts$|^src/lib/workers/|^src/worker/(engines|index|sandbox|persisted-output|worker-output|worker-types)\\.ts$"
     },
     {
       "families": ["*"],
