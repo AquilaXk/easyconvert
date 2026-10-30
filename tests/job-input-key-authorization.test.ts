@@ -14,7 +14,8 @@ import {
 } from '../src/lib/queue/conversion-queue';
 import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import { storageProvider } from '../src/lib/storage';
-import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import { sweepRetention } from '../src/lib/storage/retention-service';
 import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -199,6 +200,40 @@ describe('job submission authorizes caller-supplied storage keys (#249)', () => 
     expect(await missingLegacy.json()).toEqual(await notOwnedLegacy.json());
   });
 
+  it('authorizes every upload node of a graph, so another user\'s output can be neither held nor converted through a second node', async () => {
+    const alice = await createUser('input_alice');
+    const bob = await createUser('input_bob');
+    const ownUpload = storeCsv(`uploads/${uniqueSuffix()}_scores.csv`);
+    const aliceKey = storeCsv(`conversions/${alice.id}/${uniqueSuffix()}_scores.csv`);
+    const countsBefore = await conversionQueue.getJobCounts();
+
+    const res = await submitV1Job(
+      new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await writeKeyHeaders(bob)) },
+        body: JSON.stringify({
+          originalFilename: 'scores.csv',
+          graph: {
+            nodes: {
+              first: { op: 'import.upload', storageKey: ownUpload },
+              second: { op: 'import.upload', storageKey: aliceKey },
+              tojson: { op: 'convert', input: 'first', targetFormat: 'json' },
+              otherjson: { op: 'convert', input: 'second', targetFormat: 'json' },
+              out: { op: 'export.internal', input: 'tojson' },
+              otherout: { op: 'export.internal', input: 'otherjson' },
+            },
+          },
+        }),
+      })
+    );
+
+    expect(res.status).toBe(404);
+    expect((await res.json()).detail).toBe(NOT_FOUND_DETAIL);
+    expect(await getRetentionLedger().get(aliceKey)).toBeUndefined();
+    expect(await getRetentionLedger().get(ownUpload)).toBeUndefined();
+    expect(await conversionQueue.getJobCounts()).toEqual(countsBefore);
+  });
+
   it('accepts the owner chaining their own conversions/ and results/ outputs', async () => {
     const alice = await createUser('input_alice');
     const aliceJob = await conversionQueue.add('convert', victimJobData(alice.id));
@@ -287,7 +322,7 @@ describe('job input cleanup deletes only uploads (#249)', () => {
         expect(storageProvider.getObject(uploadKey)).toBeUndefined();
       });
     } finally {
-      setRetentionLedger(undefined);
+      restoreIsolatedRetentionLedger();
       fs.rmSync(ledgerDir, { recursive: true, force: true });
     }
   });

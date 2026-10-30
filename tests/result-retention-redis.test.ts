@@ -8,8 +8,10 @@ import {
   setRetentionLedger,
 } from '../src/lib/storage/retention-ledger';
 import {
+  holdResultForJob,
   recordServed,
   registerResult,
+  releaseResultHold,
   resultAvailability,
   startRetentionSweep,
   stopRetentionSweep,
@@ -116,6 +118,37 @@ describe.skipIf(!REDIS_URL)('retention records in Redis', () => {
     } finally {
       for (const client of instances) client.disconnect();
     }
+  });
+
+  it('keeps an upload while any job holds it and deletes it one grace period after the last job ended', async () => {
+    const key = `uploads/redis_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.csv`;
+    expect(await holdResultForJob(key, 'job-a')).toBe(true);
+    expect(await holdResultForJob(key, 'job-b')).toBe(true);
+
+    await releaseResultHold(key, 'job-a');
+    await sweepRetention(storage, Date.now() + POLICY.deliveredGraceMs + SECOND_MS);
+    expect(deleted).not.toContain(key);
+
+    await releaseResultHold(key, 'job-b');
+    await sweepRetention(storage, Date.now() + POLICY.deliveredGraceMs - SECOND_MS);
+    expect(deleted).not.toContain(key);
+    await sweepRetention(storage, Date.now() + POLICY.deliveredGraceMs + SECOND_MS);
+    expect(deleted).toContain(key);
+  });
+
+  it('keeps an earlier result past its time while a job reads it and sweeps it once the job ended', async () => {
+    const key = newKey();
+    await registerResult(key);
+    expect(await holdResultForJob(key, 'job-chain')).toBe(true);
+    const due = Date.now() + POLICY.undeliveredTtlMs + SECOND_MS;
+
+    await sweepRetention(storage, due);
+    expect(deleted).not.toContain(key);
+    expect(await resultAvailability(key, due)).toMatchObject({ state: 'available' });
+
+    await releaseResultHold(key, 'job-chain');
+    await sweepRetention(storage, due);
+    expect(deleted).toContain(key);
   });
 
   it('drops a due key whose record is gone and still deletes the keys behind it', async () => {

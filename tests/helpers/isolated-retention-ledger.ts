@@ -10,7 +10,16 @@ import { FileRetentionLedger, setRetentionLedger } from '../../src/lib/storage/r
  * holds on one file in the next run, or in a test file that sweeps.
  */
 const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-test-ledger-'));
-setRetentionLedger(new FileRetentionLedger(ledgerDir));
+const isolatedLedger = new FileRetentionLedger(ledgerDir);
+setRetentionLedger(isolatedLedger);
+
+/**
+ * Puts the ledger of this test file back after a test replaced it. `setRetentionLedger(undefined)` would select the
+ * shared default under `.easyconvert/storage` for the rest of the file.
+ */
+export function restoreIsolatedRetentionLedger(): void {
+  setRetentionLedger(isolatedLedger);
+}
 
 afterAll(() => {
   setRetentionLedger(undefined);

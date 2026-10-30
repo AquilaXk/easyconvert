@@ -18,13 +18,17 @@ import {
   setRetentionLedger,
   type RetentionLedger,
 } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import {
+  deleteResult,
   holdResultForJob,
   releaseResultHold,
   recordServed,
   registerResult,
   resultAvailability,
   saveRetainedResult,
+  startRetentionSweep,
+  stopRetentionSweep,
   sweepRetention,
 } from '../src/lib/storage/retention-service';
 import { mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
@@ -171,7 +175,7 @@ describe('delete on delivery through the download route and the sweep', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    setRetentionLedger(undefined);
+    restoreIsolatedRetentionLedger();
     fs.rmSync(ledgerDir, { recursive: true, force: true });
     for (const key of storedKeys.splice(0)) storageProvider.deleteObject(key);
   });
@@ -495,7 +499,7 @@ describe('the file ledger shared by the web server and the workers', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     deleted.length = 0;
-    setRetentionLedger(undefined);
+    restoreIsolatedRetentionLedger();
     fs.rmSync(ledgerDir, { recursive: true, force: true });
   });
 
@@ -534,6 +538,93 @@ describe('the file ledger shared by the web server and the workers', () => {
     expect(await sweepRetention(failing, due + SECOND_MS)).toBe(0);
     expect(deleted).toEqual([fresh]);
     expect(await resultAvailability(poison, due)).toMatchObject({ state: 'deleted' });
+  });
+
+  it('reopens the record again when the first attempts to reopen it fail after a failed delete, so no object is left that no sweep finds', async () => {
+    const key = newKey();
+    await registerResult(key);
+    const ledger = new FileRetentionLedger(ledgerDir);
+    setRetentionLedger(ledger);
+    const realUpdate = ledger.update.bind(ledger);
+    let calls = 0;
+    vi.spyOn(ledger, 'update').mockImplementation((target, change) => {
+      calls++;
+      return calls === 2 || calls === 3 ? Promise.reject(new Error('ledger busy')) : realUpdate(target, change);
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const refusing = { deleteObject: async () => Promise.reject(new Error('object store refused')) };
+    const due = Date.now() + POLICY.undeliveredTtlMs + SECOND_MS;
+
+    await expect(deleteResult(refusing, key, due)).rejects.toThrow('object store refused');
+
+    expect(calls).toBe(4);
+    const record = await new FileRetentionLedger(ledgerDir).get(key);
+    expect(record?.goneAt).toBeUndefined();
+    expect(record?.retryAt).toBeGreaterThan(due);
+  });
+
+  it('reports a record it cannot reopen after three attempts, and still rethrows the failed delete', async () => {
+    const key = newKey();
+    await registerResult(key);
+    const ledger = new FileRetentionLedger(ledgerDir);
+    setRetentionLedger(ledger);
+    const realUpdate = ledger.update.bind(ledger);
+    let calls = 0;
+    vi.spyOn(ledger, 'update').mockImplementation((target, change) => {
+      calls++;
+      return calls === 1 ? realUpdate(target, change) : Promise.reject(new Error('ledger down'));
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const refusing = { deleteObject: async () => Promise.reject(new Error('object store refused')) };
+
+    await expect(deleteResult(refusing, key, Date.now() + POLICY.undeliveredTtlMs + SECOND_MS)).rejects.toThrow('object store refused');
+
+    expect(calls).toBe(4);
+    expect(warn.mock.calls.some((args) => args.map(String).join(' ').includes(key) && args.map(String).join(' ').includes('ledger down'))).toBe(true);
+  });
+
+  it('warns with the key when the object of a delivered result or an upload is already gone, and not when a result simply expired', async () => {
+    const delivered = newKey();
+    const expired = newKey();
+    const upload = `uploads/${Date.now()}_${crypto.randomBytes(4).toString('hex')}_missing.csv`;
+    await registerResult(delivered);
+    await recordServed(delivered, { first: 0, last: 9, size: 10 });
+    await registerResult(expired);
+    expect(await holdResultForJob(upload, 'job-missing')).toBe(true);
+    await releaseResultHold(upload, 'job-missing');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const absent = { deleteObject: async () => false };
+    const warned = () => warn.mock.calls.map((args) => args.map(String).join(' '));
+
+    expect(await sweepRetention(absent, Date.now() + POLICY.undeliveredTtlMs + SECOND_MS)).toBe(3);
+
+    expect(warned().some((line) => line.includes(delivered))).toBe(true);
+    expect(warned().some((line) => line.includes(upload))).toBe(true);
+    expect(warned().some((line) => line.includes(expired))).toBe(false);
+  });
+
+  it('forgets the record of a deleted upload at once, and keeps the gone record of a deleted result for a day', async () => {
+    const upload = `uploads/${Date.now()}_${crypto.randomBytes(4).toString('hex')}_forgotten.csv`;
+    const result = newKey();
+    await registerResult(result);
+    expect(await holdResultForJob(upload, 'job-forget')).toBe(true);
+    await releaseResultHold(upload, 'job-forget');
+
+    expect(await sweepRetention(storage, Date.now() + POLICY.undeliveredTtlMs + SECOND_MS)).toBe(2);
+
+    expect(await new FileRetentionLedger(ledgerDir).get(upload)).toBeUndefined();
+    expect((await new FileRetentionLedger(ledgerDir).get(result))?.goneAt).toBeTypeOf('number');
+  });
+
+  it('reports the end of the last hold as the deletion time while a job holds the result', async () => {
+    const key = newKey();
+    await registerResult(key);
+    const now = Date.now();
+    expect(await holdResultForJob(key, 'job-keeps', now)).toBe(true);
+
+    const availability = await resultAvailability(key, now);
+
+    expect(availability).toMatchObject({ state: 'available', deleteAt: now + JOB_INPUT_HOLD_MAX_MS });
   });
 
   it('removes the leftovers of a write that stopped half-way once they are an hour old', async () => {
@@ -633,6 +724,66 @@ describe('the file ledger shared by the web server and the workers', () => {
   });
 });
 
+describe('the sweep timer', () => {
+  const SWEEP_INTERVAL_MS = 60_000;
+  const SLOW_SWEEP_MS = 50_000;
+  let ledgerDir: string;
+
+  beforeEach(() => {
+    ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-sweep-timer-'));
+    setRetentionLedger(new FileRetentionLedger(ledgerDir));
+  });
+
+  afterEach(() => {
+    stopRetentionSweep();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    restoreIsolatedRetentionLedger();
+    fs.rmSync(ledgerDir, { recursive: true, force: true });
+  });
+
+  async function dueKey(): Promise<string> {
+    const key = `conversions/sweep-timer/${Date.now()}_${crypto.randomBytes(4).toString('hex')}.bin`;
+    await registerResult(key);
+    await new FileRetentionLedger(ledgerDir).update(key, (current) => current && { ...current, deleteAt: 1 });
+    return key;
+  }
+
+  /** Lets the file system work that the fake timers do not wait for finish; true when `done` holds in time. */
+  async function settles(done: () => boolean): Promise<boolean> {
+    for (let attempt = 0; attempt < 500 && !done(); attempt++) await new Promise((resolve) => setImmediate(resolve));
+    return done();
+  }
+
+  it('starts no second sweep while a slow one runs, warns once, and sweeps again when it has ended', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const deletions: string[] = [];
+    const storage = { deleteObject: async (key: string) => (deletions.push(key), await gate, true) };
+    const first = await dueKey();
+
+    startRetentionSweep(storage);
+    expect(await settles(() => deletions.length === 1)).toBe(true);
+    await vi.advanceTimersByTimeAsync(SLOW_SWEEP_MS);
+    await vi.advanceTimersByTimeAsync(SWEEP_INTERVAL_MS * 2);
+
+    expect(deletions).toEqual([first]);
+    expect(warn.mock.calls.filter((args) => String(args[0]).includes('the next one starts when it ends'))).toHaveLength(1);
+
+    release();
+    const second = await dueKey();
+    for (let tick = 0; tick < 5 && !deletions.includes(second); tick++) {
+      await vi.advanceTimersByTimeAsync(SWEEP_INTERVAL_MS);
+      await settles(() => deletions.includes(second));
+    }
+    expect(deletions).toEqual([first, second]);
+  });
+});
+
 /** A port on this host that nothing listens on. */
 async function closedPort(): Promise<number> {
   const server = net.createServer();
@@ -672,5 +823,19 @@ describe('the Redis ledger while Redis cannot be reached', () => {
       process.off('warning', onWarning);
       redis.disconnect();
     }
+  });
+});
+
+describe('the ledger of a test file', () => {
+  it('is put back after a test replaced it, and never becomes the shared default', async () => {
+    const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-isolation-'));
+    setRetentionLedger(new FileRetentionLedger(ledgerDir));
+    fs.rmSync(ledgerDir, { recursive: true, force: true });
+    restoreIsolatedRetentionLedger();
+    const key = `conversions/isolation/${crypto.randomBytes(6).toString('hex')}.bin`;
+
+    await registerResult(key);
+
+    expect(await new FileRetentionLedger().get(key)).toBeUndefined();
   });
 });

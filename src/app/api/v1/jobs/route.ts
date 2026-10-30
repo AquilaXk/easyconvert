@@ -5,7 +5,7 @@ import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
-import { initGraphHoldingInputs } from '@/lib/queue/graph/input-cleanup';
+import { graphInputKeys, initGraphHoldingInputs } from '@/lib/queue/graph/input-cleanup';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
@@ -53,6 +53,16 @@ const STORAGE_TIER_PAYLOAD_LIMITS: Record<string, number> = {
   pro: 5 * 1024 * 1024 * 1024, // 5 GiB
   enterprise: 10 * 1024 * 1024 * 1024, // 10 GiB
 };
+
+/** Whether the caller may use every stored file a job reads: the top-level `storageKey` and each `import.upload` node of its graph. */
+async function mayUseStoredInputs(storageKey: string | undefined, graph: JobGraph | undefined, callerUserId: string): Promise<boolean> {
+  const keys = new Set(graph ? graphInputKeys(normalizeGraphNodes(graph)) : []);
+  if (storageKey) keys.add(storageKey);
+  for (const key of keys) {
+    if (!key.startsWith('inline') && !(await mayUseStorageKeyAsJobInput(key, callerUserId))) return false;
+  }
+  return true;
+}
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
@@ -471,7 +481,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
 
     // Authorize a caller-supplied key before anything reads the object.
-    if (storageKey && !storageKey.startsWith('inline') && !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id))) {
+    if (!(await mayUseStoredInputs(storageKey, graph, auth.user.id))) {
       return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
     }
 

@@ -11,10 +11,18 @@ import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-schedul
 import { initGraphHoldingInputs } from '../src/lib/queue/graph/input-cleanup';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import { holdResultForJob, recordServed, registerResult, releaseResultHold, sweepRetention, withInputHeld } from '../src/lib/storage/retention-service';
 import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { StorageNotFoundError } from '../src/lib/storage/adapters/adapter-interface';
-import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
+import {
+  endUploadUse,
+  holdRecord,
+  JOB_INPUT_HOLD_MAX_MS,
+  newUploadRecord,
+  resolveRetentionPolicy,
+  type RetentionRecord,
+} from '../src/lib/storage/result-retention';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 /**
@@ -36,7 +44,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  setRetentionLedger(undefined);
+  restoreIsolatedRetentionLedger();
   fs.rmSync(ledgerDir, { recursive: true, force: true });
   for (const key of storedKeys.splice(0)) s3Storage.deleteObject(key);
 });
@@ -296,6 +304,39 @@ describe('an upload that several jobs convert to different formats', () => {
     expect(await sweepAfterGrace()).toBe(1);
     expect(s3Storage.getObject(key)).toBeUndefined();
     await queue.close();
+  });
+
+  it('starts the grace period again whenever a later job ends, so an upload is never deleted sooner than the rule says', async () => {
+    const MINUTE_MS = 60_000;
+    const key = storeUpload('grace-restart');
+    const start = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(start);
+      expect(await holdResultForJob(key, 'job-a')).toBe(true);
+      await releaseResultHold(key, 'job-a');
+
+      vi.setSystemTime(start + 8 * MINUTE_MS);
+      expect(await holdResultForJob(key, 'job-b')).toBe(true);
+      vi.setSystemTime(start + 8 * MINUTE_MS + 5000);
+      await releaseResultHold(key, 'job-b');
+
+      expect(await sweepRetention(s3Storage, start + 11 * MINUTE_MS)).toBe(0);
+      expect(s3Storage.getObject(key)).toBeDefined();
+      expect(await sweepRetention(s3Storage, start + 8 * MINUTE_MS + 5000 + POLICY.deliveredGraceMs + 1000)).toBe(1);
+      expect(s3Storage.getObject(key)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('is not kept past its longest lifetime by the grace period of a late job', () => {
+    const created = 1_000_000;
+    const record = newUploadRecord('uploads/late.csv', created);
+    const held = holdRecord(record, 'job-late', created + JOB_INPUT_HOLD_MAX_MS - 5 * 60_000) as RetentionRecord;
+    const ended = endUploadUse(held, 'job-late', created + JOB_INPUT_HOLD_MAX_MS - 5 * 60_000, POLICY) as RetentionRecord;
+
+    expect(ended.deleteAt).toBe(created + JOB_INPUT_HOLD_MAX_MS);
   });
 
   it('stays to its own lifetime when a job that held it could not be queued', async () => {

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { RemoteStorageBackend } from '../src/lib/storage/remote-storage-backend';
 import { S3ObjectClient } from '../src/lib/storage/s3-object-client';
 import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import { recordServed, registerResult, resultAvailability, sweepRetention } from '../src/lib/storage/retention-service';
 import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
@@ -55,7 +56,7 @@ describe('delete on delivery on an S3-compatible object store', () => {
   });
 
   afterEach(() => {
-    setRetentionLedger(undefined);
+    restoreIsolatedRetentionLedger();
     fs.rmSync(ledgerDir, { recursive: true, force: true });
     fs.rmSync(scratchDir, { recursive: true, force: true });
   });

@@ -26,6 +26,7 @@ import { createSessionToken } from '../src/lib/auth/session';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import { sweepRetention } from '../src/lib/storage/retention-service';
 import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
@@ -644,7 +645,7 @@ describe('Job lifecycle safety: cancellation, timeouts, and engine-backed cancel
     });
 
     afterEach(() => {
-      setRetentionLedger(undefined);
+      restoreIsolatedRetentionLedger();
       fs.rmSync(ledgerDir, { recursive: true, force: true });
     });
 

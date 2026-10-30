@@ -10,6 +10,7 @@ import { graphScheduler } from '../src/lib/queue/graph';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import { sweepRetention } from '../src/lib/storage/retention-service';
 import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
@@ -35,7 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  setRetentionLedger(undefined);
+  restoreIsolatedRetentionLedger();
   fs.rmSync(ledgerDir, { recursive: true, force: true });
 });
 

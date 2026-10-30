@@ -19,6 +19,7 @@ import type { JobGraph } from '../src/lib/queue/graph/types';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import { sweepRetention } from '../src/lib/storage/retention-service';
 import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 
@@ -448,7 +449,7 @@ describe('WP-32: Unified Shared Node Processor', () => {
         expect(await sweepRetention(s3Storage, afterGrace)).toBe(1);
         expect(s3Storage.getObject(storageKey)).toBeUndefined();
       } finally {
-        setRetentionLedger(undefined);
+        restoreIsolatedRetentionLedger();
         fs.rmSync(ledgerDir, { recursive: true, force: true });
       }
     });

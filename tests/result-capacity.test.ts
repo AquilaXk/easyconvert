@@ -10,11 +10,15 @@ import { POST as tusUploadRoute } from '../src/app/api/v1/uploads/[[...id]]/rout
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { parseConfig } from '../src/lib/config';
 import { storageProvider } from '../src/lib/storage';
+import { resolveLocalStorageDir } from '../src/lib/storage/storage-config';
 import { diskUsageProbe, resolveCapacityPolicy, usedPercent } from '../src/lib/storage/result-capacity';
 import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import {
+  admitsNewFiles,
   CAPACITY_CHECK_TTL_MS,
   evictForCapacity,
+  FUTILE_PAUSE_MS,
   holdResultForJob,
   releaseResultHold,
   recordServed,
@@ -128,7 +132,7 @@ describe('early deletion when the disk runs full', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     setDiskProbe(undefined);
-    setRetentionLedger(undefined);
+    restoreIsolatedRetentionLedger();
     fs.rmSync(ledgerDir, { recursive: true, force: true });
     for (const key of storedKeys.splice(0)) storageProvider.deleteObject(key);
   });
@@ -330,6 +334,85 @@ describe('early deletion when the disk runs full', () => {
 
     expect(await evictForCapacity(storageProvider, now)).toBe(3);
     expect(disk.deleted).toHaveLength(3);
+  });
+
+  /** A disk that stays at `used` however many objects are deleted from storage. */
+  function stuckDisk(used: number) {
+    const disk = { used, deleted: [] as string[] };
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation((key: string) => {
+      disk.deleted.push(key);
+      return true;
+    });
+    setDiskProbe(async () => disk.used);
+    return disk;
+  }
+
+  it('remembers a pass that did not lower the use, and tries again only after a pause or when the use moved', async () => {
+    const user = await createUser('pause');
+    const now = Date.now();
+    for (let i = 0; i < 9; i++) await storeResult(user, `p${i}`, now - (50 - i) * MINUTE_MS);
+    const disk = stuckDisk(90);
+
+    expect(await evictForCapacity(storageProvider, now)).toBe(3);
+    expect(await evictForCapacity(storageProvider, now + MINUTE_MS)).toBe(0);
+    expect(await evictForCapacity(storageProvider, now + FUTILE_PAUSE_MS - 1)).toBe(0);
+    expect(disk.deleted).toHaveLength(3);
+
+    expect(await evictForCapacity(storageProvider, now + FUTILE_PAUSE_MS)).toBe(3);
+    expect(disk.deleted).toHaveLength(6);
+
+    disk.used = 93;
+    expect(await evictForCapacity(storageProvider, now + FUTILE_PAUSE_MS + MINUTE_MS)).toBe(3);
+    expect(disk.deleted).toHaveLength(9);
+  });
+
+  it('deletes three results per pause over ten minutes of requests while the use of the disk never moves', async () => {
+    const user = await createUser('constant');
+    const start = Date.now();
+    for (let i = 0; i < 30; i++) await storeResult(user, `k${i}`, start - (50 - i) * MINUTE_MS);
+    const disk = stuckDisk(97);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(start);
+
+    const deletedByMinute: number[] = [];
+    for (let minute = 0; minute < 10; minute++) {
+      await admitsNewFiles(storageProvider);
+      deletedByMinute.push(disk.deleted.length);
+      vi.setSystemTime(start + (minute + 1) * MINUTE_MS);
+    }
+
+    expect(deletedByMinute).toEqual([3, 3, 3, 3, 3, 6, 6, 6, 6, 6]);
+  });
+
+  describe('when the temporary directory is on another disk', () => {
+    const TEMP_PERCENT = 97;
+    const STORAGE_PERCENT = 50;
+
+    function fullTempDisk() {
+      const tempDir = os.tmpdir();
+      vi.spyOn(fs.promises, 'statfs').mockImplementation((async (directory: fs.PathLike) => {
+        const used = String(directory) === tempDir ? TEMP_PERCENT : STORAGE_PERCENT;
+        return { blocks: 100, bfree: 100 - used, bavail: 100 - used };
+      }) as unknown as typeof fs.promises.statfs);
+      const realStat = fs.promises.stat.bind(fs.promises);
+      vi.spyOn(fs.promises, 'stat').mockImplementation((async (target: fs.PathLike) => {
+        const stats = await realStat(target);
+        return Object.assign(stats, { dev: String(target) === tempDir ? 2 : 1 });
+      }) as unknown as typeof fs.promises.stat);
+      fs.mkdirSync(resolveLocalStorageDir(), { recursive: true });
+    }
+
+    it('deletes no result for it, because deleting results cannot free it, and still refuses new files', async () => {
+      const user = await createUser('spool');
+      const now = Date.now();
+      for (let i = 0; i < 5; i++) await storeResult(user, `s${i}`, now - (50 - i) * MINUTE_MS);
+      fullTempDisk();
+      const remove = vi.spyOn(storageProvider, 'deleteObject');
+
+      expect(await evictForCapacity(storageProvider, now)).toBe(0);
+      expect(await admitsNewFiles(storageProvider)).toBe(false);
+      expect(remove).not.toHaveBeenCalled();
+    });
   });
 
   it('leaves undelivered results younger than ten minutes alone', async () => {

@@ -206,13 +206,14 @@ export function newUploadRecord(key: string, now: number): RetentionRecord {
 
 /**
  * The record of an upload once the job `holder` that read it ended. When no other job holds it, it is deleted after
- * the grace period of a delivered result, counted from this end, so that a client that asks for another format a
- * moment later still finds it. Undefined when the job held nothing.
+ * the grace period of a delivered result, counted from this end and not later than JOB_INPUT_HOLD_MAX_MS after the
+ * upload was first read, so that a client that asks for another format a moment later still finds it, however
+ * often it does. Undefined when the job held nothing.
  */
 export function endUploadUse(record: RetentionRecord, holder: string, now: number, policy: RetentionPolicy): RetentionRecord | undefined {
   const released = releaseHold(record, holder);
   if (!released || isHeld(released, now)) return released;
-  return { ...released, deleteAt: Math.min(released.deleteAt, now + policy.deliveredGraceMs) };
+  return { ...released, deleteAt: Math.min(released.createdAt + JOB_INPUT_HOLD_MAX_MS, now + policy.deliveredGraceMs) };
 }
 
 /** The record after the deletion of its object failed: it is live again and the sweep tries again after FAILED_DELETE_RETRY_MS. */

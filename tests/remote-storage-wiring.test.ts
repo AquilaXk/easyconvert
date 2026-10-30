@@ -428,44 +428,47 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       const ledgers = await import('../src/lib/storage/retention-ledger');
       const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-wiring-ledger-'));
       ledgers.setRetentionLedger(new ledgers.FileRetentionLedger(ledgerDir));
-      const inputKey = `uploads/${Date.now()}_scores.csv`;
-      await storage.storageProvider.saveObject(inputKey, Buffer.from(CSV_INPUT), 'text/csv', 'scores.csv', 3_600_000);
+      try {
+        const inputKey = `uploads/${Date.now()}_scores.csv`;
+        await storage.storageProvider.saveObject(inputKey, Buffer.from(CSV_INPUT), 'text/csv', 'scores.csv', 3_600_000);
 
-      const res = await submit(inputKey, 'scores.csv');
-      expect(res.status).toBe(202);
-      const { jobId } = await res.json();
-      expect((await queueModule.conversionQueue.getJob(jobId))?.data.storageKey).toBe(inputKey);
+        const res = await submit(inputKey, 'scores.csv');
+        expect(res.status).toBe(202);
+        const { jobId } = await res.json();
+        expect((await queueModule.conversionQueue.getJob(jobId))?.data.storageKey).toBe(inputKey);
 
-      const worker = new bullmq.Worker(queueModule.conversionQueue, queueModule.processConversionJob, { concurrency: 1 });
-      queueModule.attachInputCleanupOnCompletion(worker);
-      const result = await new Promise<ConversionJobResult>((resolve, reject) => {
-        worker.on('completed', (job: { id: string }, value: ConversionJobResult) => {
-          if (job.id === jobId) resolve(value);
+        const worker = new bullmq.Worker(queueModule.conversionQueue, queueModule.processConversionJob, { concurrency: 1 });
+        queueModule.attachInputCleanupOnCompletion(worker);
+        const result = await new Promise<ConversionJobResult>((resolve, reject) => {
+          worker.on('completed', (job: { id: string }, value: ConversionJobResult) => {
+            if (job.id === jobId) resolve(value);
+          });
+          worker.on('failed', (job: { id: string }, err: Error) => {
+            if (job.id === jobId) reject(err);
+          });
         });
-        worker.on('failed', (job: { id: string }, err: Error) => {
-          if (job.id === jobId) reject(err);
+        await worker.close();
+
+        const rows = JSON.parse(server.objects.get(result.resultKey)!.body.toString('utf-8'));
+        expect(rows).toEqual([
+          { name: 'Alice', score: '100' },
+          { name: 'Bob', score: '95' },
+        ]);
+        // Downloads go through the application, whatever the driver, so that a delivery can be seen and the result deleted after it.
+        expect(result.downloadUrl).toBe(`/api/storage/file/${encodeURIComponent(result.resultKey)}`);
+
+        // The completed job's upload is held until it ended, and the sweep deletes it from the object store once the grace period has passed.
+        const { sweepRetention } = await import('../src/lib/storage/retention-service');
+        const { resolveRetentionPolicy } = await import('../src/lib/storage/result-retention');
+        const afterGrace = Date.now() + resolveRetentionPolicy({}).deliveredGraceMs + 1000;
+        await vi.waitFor(async () => {
+          await sweepRetention(storage.storageProvider, afterGrace);
+          expect(server.objects.has(inputKey)).toBe(false);
         });
-      });
-      await worker.close();
-
-      const rows = JSON.parse(server.objects.get(result.resultKey)!.body.toString('utf-8'));
-      expect(rows).toEqual([
-        { name: 'Alice', score: '100' },
-        { name: 'Bob', score: '95' },
-      ]);
-      // Downloads go through the application, whatever the driver, so that a delivery can be seen and the result deleted after it.
-      expect(result.downloadUrl).toBe(`/api/storage/file/${encodeURIComponent(result.resultKey)}`);
-
-      // The completed job's upload is held until it ended, and the sweep deletes it from the object store once the grace period has passed.
-      const { sweepRetention } = await import('../src/lib/storage/retention-service');
-      const { resolveRetentionPolicy } = await import('../src/lib/storage/result-retention');
-      const afterGrace = Date.now() + resolveRetentionPolicy({}).deliveredGraceMs + 1000;
-      await vi.waitFor(async () => {
-        await sweepRetention(storage.storageProvider, afterGrace);
-        expect(server.objects.has(inputKey)).toBe(false);
-      });
-      ledgers.setRetentionLedger(undefined);
-      fs.rmSync(ledgerDir, { recursive: true, force: true });
+      } finally {
+        ledgers.setRetentionLedger(undefined);
+        fs.rmSync(ledgerDir, { recursive: true, force: true });
+      }
     });
 
     it('rejects a stored object whose first bytes do not match its extension, reading only its header', async () => {

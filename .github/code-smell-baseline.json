@@ -149,7 +149,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 185
+    "maxValue": 183
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",

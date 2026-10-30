@@ -19,6 +19,7 @@ import { ociWorker } from '../src/worker/index';
 import { attachInputCleanupOnCompletion } from '../src/lib/queue/conversion-queue';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import { holdResultForJob } from '../src/lib/storage/retention-service';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
@@ -344,7 +345,7 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
         });
         await vi.waitFor(async () => expect(await heldBy()).toEqual([]));
       } finally {
-        setRetentionLedger(undefined);
+        restoreIsolatedRetentionLedger();
         fs.rmSync(ledgerDir, { recursive: true, force: true });
       }
     });
