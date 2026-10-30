@@ -79,7 +79,7 @@ describe('AZW4 Print Replica books', () => {
       const pdf = await textPdf(PAGES);
       const book = buildMobiFromBytes(mopStream([pdf]), { compress: true });
       const result = isCalibreEbookTarget(target) ? await dispatchConversion(book, 'azw4', target, {}, 'replica.azw4') : await convertFile(book, 'azw4', target, {}, 'replica.azw4');
-      expect(result.filename).toBe(`replica.${target}`);
+      expect(result.filename).toBe(`replica.${target === 'oeb' ? 'zip' : target}`);
       const expected = extractTextWithExternalPdftotext(pdf) ?? '';
       const text = await readConverted(result.buffer, target);
       expect(normalizeWhitespace(text)).toContain(PAGES[0]);

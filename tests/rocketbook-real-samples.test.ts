@@ -128,7 +128,7 @@ describe.each(SAMPLES)('the real Rocket eBook file $id', ({ id, title, author })
     const { bytes } = await requireRealworldSample(ctx, id);
     for (const target of FORMAT_REGISTRY.rb.targetFormats.filter(isCalibreEbookTarget)) {
       const output = await dispatchConversion(bytes, 'rb', target, {}, id);
-      expect(output.filename, target).toBe(`${id.replace(/\.rb$/, '')}.${target}`);
+      expect(output.filename, target).toBe(`${id.replace(/\.rb$/, '')}.${target === 'oeb' ? 'zip' : target}`);
       const text = wordsOf(await textOfCalibreTarget(output.buffer, target)).join(' ');
       for (const phrase of PHRASES) expect(text, `${target}: ${phrase}`).toContain(phrase);
     }
