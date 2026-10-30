@@ -277,7 +277,9 @@ export function safeExtractXmlElements(
               // Self closing nested tag, does not increase depth
             } else {
               depth++;
-              if (depth > maxDepth) break; // Bound depth
+              // Every later opening of the same name would walk as far for its own close: a nest this deep ends the scan, which keeps the
+              // elements found before it and is linear in the input where going on was quadratic.
+              if (depth > maxDepth) return results;
             }
             searchPos = nextHeaderClose + 1;
             continue;

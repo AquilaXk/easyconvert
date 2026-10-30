@@ -845,6 +845,25 @@ describe('the extent of an OOXML workbook the office suite exports as .xls', () 
     }
   });
 
+  async function withoutWorksheets(): Promise<Buffer> {
+    const zip = await JSZip.loadAsync(await realWorkbookBytes(3, 3));
+    zip.remove('xl/worksheets/sheet1.xml');
+    zip.file('xl/workbook.xml', (await zip.file('xl/workbook.xml')!.async('text')).replace(/<sheet [^>]*\/>/, ''));
+    zip.file('[Content_Types].xml', (await zip.file('[Content_Types].xml')!.async('text')).replace(/<Override PartName="\/xl\/worksheets\/sheet1.xml"[^>]*\/>/, ''));
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  it.each([
+    ['a package that holds the names of an XLSX and no sheet', async () => fs.readFileSync(path.join(__dirname, 'fixtures/zip-packages/xlsx-names-only.xlsx'))],
+    ['a workbook whose sheet list and sheet part are gone', withoutWorksheets],
+  ])('refuses %s as the reader does, instead of passing it to the export', async (_name, build) => {
+    const { deps, calls } = standIns();
+    const failure = await convertXlsTarget(deps, xlsxRequest(await build()), unused).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect((failure as Error).message).toBe('Invalid XLSX workbook: no worksheets found in archive.');
+    expect(calls.written).toEqual([]);
+  });
+
   it('refuses a source that is not a ZIP package instead of passing it on unchecked', async () => {
     const { deps } = standIns();
     const failure = await convertXlsTarget(deps, xlsxRequest(Buffer.from('not a zip')), unused).catch((error: unknown) => error);
