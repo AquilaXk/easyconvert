@@ -362,6 +362,11 @@ export function convertFile(
   return withConversionWarnings(() => convertFileInScope(inputBuffer, sourceFormat, targetFormat, options, originalFilename));
 }
 
+/** Whether the office engine writes the spreadsheet target of a data source: it reads delimited text and JSON as sheets, while Parquet is a typed table that the data engine writes as one. */
+function officeEngineWritesSheet(src: string, tgt: string): boolean {
+  return src !== 'parquet' && ['ods', 'xlsx', 'xls'].includes(tgt);
+}
+
 async function convertFileInScope(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -538,7 +543,7 @@ async function convertFileInScope(
 
   // 5. Data category routing (CSV, TSV, TAB, JSON, NDJSON, JSONL, YAML, XML)
   if (srcDef.category === 'data' || ['csv', 'tsv', 'tab', 'ndjson', 'jsonl', 'json', 'yaml', 'yml', 'xml'].includes(src)) {
-    if (['ods', 'xlsx', 'xls'].includes(tgt)) {
+    if (officeEngineWritesSheet(src, tgt)) {
       return convertOffice(inputBuffer, src, tgt, options, originalFilename);
     }
     return convertData(inputBuffer, src, tgt, options, originalFilename);

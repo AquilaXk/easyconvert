@@ -165,7 +165,9 @@ def read_xlsx(path):
 
 
 def instant(text):
-    """The UTC instant an ISO 8601 or SQL timestamp names; naive times count as UTC. None for any other text."""
+    """The UTC instant an ISO 8601 date or SQL timestamp names; a date is its midnight and naive times count as UTC. None for any other text."""
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        text += "T00:00:00"
     if len(text) < 19 or text[4] != "-" or text[10] not in "T ":
         return None
     candidate = text.replace(" ", "T", 1)

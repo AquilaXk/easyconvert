@@ -22,7 +22,9 @@ import {
   UnsupportedOptionError,
   UnsupportedTargetError,
 } from '../types';
-import { generateXlsxFromData, generateOdsFromData, generateXlsXmlFromData } from './office';
+import { generateOdsFromData } from './office';
+import { writeXlsx, type SheetCell } from './xlsx-writer';
+import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
 import { renderPdfTables } from './pdf-table-layout';
 import {
@@ -488,6 +490,12 @@ function tableRecords(table: DataTable): DataObject[] {
 
 function cellText(value: DataValue): string {
   return value === null ? '' : String(value);
+}
+
+/** The cell a table value is written as in a workbook: its own type, and the text of an integer past the 15 digits a sheet keeps. */
+function sheetCellOf(value: DataValue): SheetCell {
+  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  return typeof value === 'bigint' ? String(value) : stringifyJsonLossless(value);
 }
 
 /** Rejects unpaired surrogates in a table: every table writer would silently turn them into U+FFFD. */
@@ -1025,11 +1033,9 @@ async function convertStructured(
     return { buffer: odsBuffer, mimeType: 'application/vnd.oasis.opendocument.spreadsheet', filename: `${baseName}.ods`, size: odsBuffer.length };
   }
   if (tgt === 'xls') {
-    return textResult(generateXlsXmlFromData(tableStrings(table), baseName), 'application/vnd.ms-excel', baseName, 'xls');
+    throw unconvertibleOfficeTarget(src, tgt);
   }
-  // xlsx: the workbook writer reads RFC 4180 CSV, so it gets the table without BOM or formula escaping.
-  const csvText = Papa.unparse({ fields: table.fields, data: table.rows.map((row) => row.map(cellText)) });
-  const xlsxBuffer = await generateXlsxFromData(Buffer.from(csvText, 'utf-8'), 'csv', { ...options, delimiter: ',' }, baseName);
+  const xlsxBuffer = await writeXlsx([table.fields, ...table.rows.map((row) => row.map(sheetCellOf))], 'verbatim', options.uncompressedWorkbook);
   return {
     buffer: xlsxBuffer,
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

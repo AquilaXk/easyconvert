@@ -63,6 +63,9 @@ import { markdownToDocumentModel, readEpubModel } from './source-model';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variants';
 import { officeReadingFormat } from './office/office-suite-sources';
 import { assertReadableAsText } from './office/text-source-guard';
+import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from './office/sheet-bounds';
+import { writeXlsx, type SheetCell } from './xlsx-writer';
+import { parseDelimitedRows } from './delimited-detect';
 
 export { buildOpenXpsPackage };
 
@@ -265,7 +268,7 @@ export async function convertOffice(
 
   // 15. Target is XLSX (from CSV, TSV, JSON)
   if (tgt === 'xlsx') {
-    const xlsxBuffer = await generateXlsxFromData(inputBuffer, src, options, baseName);
+    const xlsxBuffer = await generateXlsxFromData(inputBuffer, src, options);
     return {
       buffer: xlsxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -286,17 +289,9 @@ export async function convertOffice(
     };
   }
 
-  // 17. Target is XLS
+  // 17. Target is XLS: only the office suite writes a BIFF8 workbook, from the XLSX workbook this engine writes (the worker's route)
   if (tgt === 'xls') {
-    const rows = await extractRowsForOffice(inputBuffer, src, options);
-    const xlsXml = generateXlsXmlFromData(rows, baseName);
-    const buffer = Buffer.from(xlsXml, 'utf-8');
-    return {
-      buffer,
-      mimeType: 'application/vnd.ms-excel',
-      filename: `${baseName}.xls`,
-      size: buffer.length,
-    };
+    throw unconvertibleOfficeTarget(src, tgt);
   }
 
   // 18. Target is ODP (OpenDocument Presentation)
@@ -5171,6 +5166,18 @@ function numberFormatFractionDigits(skeleton: string): { min: number; max: numbe
 }
 
 /**
+ * The day a date serial counts from. The 1900 system (the default) has day zero on 1899-12-30, which makes serials from 61 on agree
+ * with Excel's (Lotus 1-2-3 leap day bug at day 60); the 1904 system (`workbookPr date1904`, ECMA-376 Part 1, 18.2.28) has day zero on
+ * 1904-01-01.
+ */
+export interface SpreadsheetDateSystem {
+  readonly dayZero: number;
+}
+const MS_PER_DAY = 86_400_000;
+const DATE_SYSTEM_1900: SpreadsheetDateSystem = { dayZero: Date.UTC(1899, 11, 30) };
+const DATE_SYSTEM_1904: SpreadsheetDateSystem = { dayZero: Date.UTC(1904, 0, 1) };
+
+/**
  * Formats a raw spreadsheet cell value according to its Excel number format: percent, grouped thousands, currency and
  * fixed-point formats show the fraction digits the format code asks for; dates become ISO dates. Anything else is
  * shown as stored.
@@ -5178,7 +5185,8 @@ function numberFormatFractionDigits(skeleton: string): { min: number; max: numbe
 export function formatSpreadsheetCellValue(
   rawVal: string,
   numFmtId?: number,
-  customFormat?: string
+  customFormat?: string,
+  dateSystem: SpreadsheetDateSystem = DATE_SYSTEM_1900
 ): string {
   if (!rawVal || isNaN(Number(rawVal))) return rawVal;
   const num = Number(rawVal);
@@ -5224,9 +5232,7 @@ export function formatSpreadsheetCellValue(
         customFormat.toLowerCase().includes('mm') ||
         customFormat.toLowerCase().includes('dd')))
   ) {
-    // Excel date epoch: Jan 1 1900 (with Lotus 1-2-3 leap day bug at day 60)
-    const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-    const date = new Date(excelEpoch.getTime() + num * 86400000);
+    const date = new Date(dateSystem.dayZero + num * MS_PER_DAY);
     if (!isNaN(date.getTime())) {
       return date.toISOString().split('T')[0];
     }
@@ -5256,9 +5262,20 @@ export interface OfficeWorksheetPrintArea {
   endCol: number;
 }
 
+/** A hyperlink of a cell: the URL it opens, or `#` and the location in the workbook it jumps to. Rows and columns count from zero. */
+export interface OfficeWorksheetHyperlink {
+  row: number;
+  col: number;
+  target: string;
+}
+
 export interface OfficeWorksheet {
   name: string;
   rows: string[][];
+  /** The merged ranges of the sheet, absent when it has none. The value of a merged range is in its first cell. */
+  mergedRanges?: OfficeWorksheetPrintArea[];
+  /** The hyperlinks of the sheet's cells, absent when it has none. */
+  hyperlinks?: OfficeWorksheetHyperlink[];
   /** The charts the sheet's drawing holds, in the order the drawing places them. */
   charts?: OpenXmlChartData[];
   structuredRows?: OfficeWorksheetCell[][];
@@ -5389,16 +5406,19 @@ export function formatCsvCell(cell: string, delimiter: string): string {
  * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
  * and workbook.xml.rels, resolving shared strings, NumberFormats, and formulas.
  */
-/** The relationships of a package part: target by relationship id, with the relationship's type. */
-async function readPartRelationships(zip: JSZip, partPath: string): Promise<Map<string, { type: string; target: string }>> {
+/**
+ * The relationships of a package part: target by relationship id, with the relationship's type. The targets are package paths;
+ * with `external` the relationships that point outside the package are read instead, and their targets are the URLs as written.
+ */
+async function readPartRelationships(zip: JSZip, partPath: string, external = false): Promise<Map<string, { type: string; target: string }>> {
   const slash = partPath.lastIndexOf('/');
   const directory = partPath.slice(0, slash);
   const relsFile = zip.file(`${directory}/_rels/${partPath.slice(slash + 1)}.rels`);
   const relationships = new Map<string, { type: string; target: string }>();
   if (!relsFile) return relationships;
   for (const rel of safeExtractXmlElements(await readZipEntryText(relsFile), 'Relationship')) {
-    if (rel.attrs.Id && rel.attrs.Target && rel.attrs.TargetMode !== 'External') {
-      relationships.set(rel.attrs.Id, { type: rel.attrs.Type ?? '', target: resolveZipPath(directory, rel.attrs.Target) });
+    if (rel.attrs.Id && rel.attrs.Target && (rel.attrs.TargetMode === 'External') === external) {
+      relationships.set(rel.attrs.Id, { type: rel.attrs.Type ?? '', target: external ? rel.attrs.Target : resolveZipPath(directory, rel.attrs.Target) });
     }
   }
   return relationships;
@@ -5422,28 +5442,64 @@ async function readWorksheetCharts(zip: JSZip, sheetPath: string): Promise<OpenX
   return charts;
 }
 
+/** A rich-text string without its phonetic guides (`rPh` runs, ECMA-376 Part 1, 18.4.6), which are readings written beside the text and not part of it. */
+function withoutPhoneticRuns(stringXml: string): string {
+  if (!stringXml.includes('<rPh')) return stringXml;
+  let text = stringXml;
+  for (const run of safeExtractXmlElements(stringXml, 'rPh')) text = text.replace(run.raw, '');
+  return text;
+}
+
+/** The date system of a workbook: 1904 when `workbookPr` says `date1904` (an ST_Boolean: "1" or "true"), else 1900. */
+function readDateSystem(workbookXml: string): SpreadsheetDateSystem {
+  const date1904 = safeExtractFirstXmlElement(workbookXml, 'workbookPr')?.attrs.date1904;
+  return date1904 === '1' || date1904 === 'true' ? DATE_SYSTEM_1904 : DATE_SYSTEM_1900;
+}
+
+/** The merged ranges and the cell hyperlinks that follow the cell data of a worksheet. */
+async function readSheetMergesAndLinks(
+  zip: JSZip,
+  sheetPath: string,
+  sheetXml: string,
+  charge: (count: number) => void
+): Promise<Pick<OfficeWorksheet, 'mergedRanges' | 'hyperlinks'>> {
+  // Both lists follow `sheetData` (ECMA-376 Part 1, 18.3.1.99), so the cell data is not scanned again.
+  const afterCells = sheetXml.slice(Math.max(0, sheetXml.lastIndexOf('</sheetData>')));
+  const mergedRanges: OfficeWorksheetPrintArea[] = [];
+  for (const merge of safeExtractXmlElements(afterCells, 'mergeCell')) {
+    const range = parseA1Range(merge.attrs.ref ?? '');
+    if (range) mergedRanges.push({ startRow: range.startRow, endRow: range.endRow, startCol: range.startCol, endCol: range.endCol });
+  }
+  const links = safeExtractXmlElements(afterCells, 'hyperlink');
+  const hyperlinks: OfficeWorksheetHyperlink[] = [];
+  const externalTargets = links.length > 0 ? await readPartRelationships(zip, sheetPath, true) : new Map<string, { type: string; target: string }>();
+  for (const link of links) {
+    const cell = parseA1Range(link.attrs.ref ?? '');
+    const external = link.attrs['r:id'] === undefined ? undefined : externalTargets.get(link.attrs['r:id'])?.target;
+    const target = external ?? (link.attrs.location === undefined ? undefined : `#${link.attrs.location}`);
+    if (cell && target !== undefined) hyperlinks.push({ row: cell.startRow, col: cell.startCol, target });
+  }
+  charge(mergedRanges.length + hyperlinks.length);
+  return { ...(mergedRanges.length > 0 ? { mergedRanges } : {}), ...(hyperlinks.length > 0 ? { hyperlinks } : {}) };
+}
+
+/** The strings of `xl/sharedStrings.xml` in index order; a rich-text string is its runs joined, without phonetic guides. */
+async function readSharedStrings(zip: JSZip): Promise<string[]> {
+  const sstFile = zip.file('xl/sharedStrings.xml');
+  if (!sstFile) return [];
+  const sstXml = await readZipEntryText(sstFile);
+  const siElements = safeExtractXmlElements(sstXml, 'si');
+  if (siElements.length > 0) return siElements.map((si) => safeExtractAllText(withoutPhoneticRuns(si.content), 't'));
+  return safeExtractXmlElements(sstXml, 't').map((t) => safeDecodeXmlEntities(t.content));
+}
+
 export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8Array): Promise<OfficeWorksheet[]> {
   const zip = (zipOrBuffer && typeof (zipOrBuffer as JSZip).file === 'function')
     ? (zipOrBuffer as JSZip)
     : await JSZip.loadAsync(zipOrBuffer as Buffer | Uint8Array);
 
   // 1. Parse shared strings
-  const sharedStrings: string[] = [];
-  const sstFile = zip.file('xl/sharedStrings.xml');
-  if (sstFile) {
-    const sstXml = await readZipEntryText(sstFile);
-    const siElements = safeExtractXmlElements(sstXml, 'si');
-    if (siElements.length > 0) {
-      for (const si of siElements) {
-        sharedStrings.push(safeExtractAllText(si.content, 't'));
-      }
-    } else {
-      const tElements = safeExtractXmlElements(sstXml, 't');
-      for (const t of tElements) {
-        sharedStrings.push(safeDecodeXmlEntities(t.content));
-      }
-    }
-  }
+  const sharedStrings = await readSharedStrings(zip);
 
   // 2. Parse NumberFormats, Fonts, Fills, Borders, and Cell Styles from xl/styles.xml
   const styleNumFmtMap = new Map<number, number>();
@@ -5567,12 +5623,14 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   const sheetEntries: Array<{ name: string; path: string }> = [];
   const printAreaBySheetIndex = new Map<number, OfficeWorksheetPrintArea>();
   const printAreaBySheetName = new Map<string, OfficeWorksheetPrintArea>();
+  let dateSystem = DATE_SYSTEM_1900;
 
   const wbFile = zip.file('xl/workbook.xml');
   const wbRelsFile = zip.file('xl/_rels/workbook.xml.rels');
 
   if (wbFile) {
     const wbXml = await readZipEntryText(wbFile);
+    dateSystem = readDateSystem(wbXml);
     const relsMap = new Map<string, string>();
 
     if (wbRelsFile) {
@@ -5744,7 +5802,8 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
         if (isInline) {
           const isEl = safeExtractFirstXmlElement(body, 'is');
           if (isEl) {
-            cellValue = safeExtractAllText(isEl.content, 't') || safeExtractAllText(isEl.content);
+            const inlineText = withoutPhoneticRuns(isEl.content);
+            cellValue = safeExtractAllText(inlineText, 't') || safeExtractAllText(inlineText);
           } else if (tContent !== null) {
             cellValue = safeDecodeXmlEntities(tContent);
           }
@@ -5756,7 +5815,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
             cellValue = sharedStrings[strIdx] ?? '';
           } else {
             // Apply NumberFormat formatting
-            cellValue = formatSpreadsheetCellValue(vContent, numFmtId, customFmt);
+            cellValue = formatSpreadsheetCellValue(vContent, numFmtId, customFmt, dateSystem);
           }
         } else if (tContent !== null) {
           cellValue = safeDecodeXmlEntities(tContent);
@@ -5814,6 +5873,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       name: entry.name,
       rows,
       structuredRows,
+      ...(await readSheetMergesAndLinks(zip, entry.path, sheetXml, chargeCells)),
       columnWidths: columnWidths.length > 0 ? columnWidths : undefined,
       printArea,
       ...(charts.length > 0 ? { charts } : {}),
@@ -6130,18 +6190,6 @@ async function convertXlsxSource(
       mimeType: 'application/vnd.oasis.opendocument.spreadsheet',
       filename: `${baseName}.ods`,
       size: odsBuffer.length,
-    };
-  }
-
-  // XLSX -> XLS
-  if (tgt === 'xls') {
-    const xlsContent = generateXlsXmlFromData(primaryRows, baseName);
-    const buffer = Buffer.from(xlsContent, 'utf-8');
-    return {
-      buffer,
-      mimeType: 'application/vnd.ms-excel',
-      filename: `${baseName}.xls`,
-      size: buffer.length,
     };
   }
 
@@ -8428,24 +8476,6 @@ export async function generatePptxFromText(
 }
 
 /**
- * Bijective Base-26 Excel column naming algorithm (0 -> 'A', 25 -> 'Z', 26 -> 'AA', etc.)
- */
-export function getExcelColumnName(colIndex: number): string {
-  let colName = '';
-  let temp = colIndex + 1;
-  while (temp > 0) {
-    const mod = (temp - 1) % 26;
-    colName = String.fromCharCode(65 + mod) + colName;
-    temp = Math.floor((temp - 1) / 26);
-  }
-  return colName;
-}
-
-/** The most rows and columns an OOXML worksheet can hold (ECMA-376 Part 1, 18.3.1.35 and 18.3.1.13); a damaged part must not make the reader build more. */
-const XLSX_MAX_ROWS = 1_048_576;
-const XLSX_MAX_COLUMNS = 16_384;
-const XLSX_LAST_COLUMN_NAME = 'XFD';
-/**
  * Most cells and rows the reader builds for one workbook, padding included: the 20 million cells that the data-format readers
  * (Parquet) allow for a table. A sparse sheet inside the bounds above can still ask for 16.7 billion padded cells (a cell at XFD
  * on each of 1048576 rows), and each padded cell takes about 53 bytes of heap.
@@ -8479,12 +8509,19 @@ export function getExcelColumnIndex(colLetters: string): number {
 
 const JSON_TABLE_SHAPE_MESSAGE = 'Invalid JSON table: expected an array of objects or an array of values.';
 
+/** The cell a JSON value becomes: its own type for a string, number or boolean, nothing for null, and the JSON text for a nested value. */
+function jsonTableCell(value: unknown): SheetCell {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  return JSON.stringify(value);
+}
+
 /**
  * The table a JSON document holds: an array of objects becomes a header row (the keys of the first record) and one
  * row per record; an array of plain values becomes a single "Value" column. Anything else is not a table and is
  * refused, as is text that is not JSON: a sheet holding the document's own text would be a substitute result.
  */
-function parseJsonTableRows(text: string): string[][] {
+function parseJsonTableCells(text: string): SheetCell[][] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -8495,104 +8532,47 @@ function parseJsonTableRows(text: string): string[][] {
   const first: unknown = parsed[0];
   if (typeof first === 'object' && first !== null && !Array.isArray(first)) {
     const headers = Object.keys(first);
-    return [headers, ...parsed.map((item) => headers.map((header) => String((item as Record<string, unknown>)[header] ?? '')))];
+    return [headers, ...parsed.map((item) => headers.map((header) => jsonTableCell((item as Record<string, unknown>)[header])))];
   }
   if (parsed.some((item) => typeof item === 'object' && item !== null)) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
-  return [['Value'], ...parsed.map((item) => [String(item)])];
+  return [['Value'], ...parsed.map((item) => [jsonTableCell(item)])];
+}
+
+/** The text of a cell as a text target writes it. */
+function sheetCellText(cell: SheetCell): string {
+  return cell === null ? '' : String(cell);
+}
+
+function parseJsonTableRows(text: string): string[][] {
+  return parseJsonTableCells(text).map((row) => row.map(sheetCellText));
 }
 
 /**
- * Generates OpenXML XLSX Zip Archive from CSV / TSV / JSON
+ * The rows of CSV or TSV text: the lines that are not blank, each with its fields. Text that is not well formed delimited
+ * text (an unterminated quote, a quote that closes inside a field) is a DataParseError; a sheet of the text split on the
+ * delimiter would be a substitute result.
+ */
+function delimitedSheetRows(inputBuffer: Buffer, sourceType: string, options: ConversionOptions): string[][] {
+  const text = inputBuffer.toString('utf-8').replace(/^\uFEFF/, '');
+  return parseDelimitedRows(text, sourceType === 'tsv' || sourceType === 'tab' ? '\t' : options.delimiter || ',', sourceType);
+}
+
+/** An XLSX workbook of a table of text cells; a cell that spells a number or an ISO date is stored as one. */
+export function generateXlsxFromRows(rows: readonly (readonly string[])[], options: ConversionOptions = {}): Promise<Buffer> {
+  return writeXlsx(rows, 'detect', options.uncompressedWorkbook);
+}
+
+/**
+ * Generates the OpenXML XLSX package of a CSV, TSV or JSON table, with typed cells. JSON keeps the types it has (a string is
+ * text whatever it spells); delimited text stores a field that spells a number or an ISO date as one.
  */
 export async function generateXlsxFromData(
   inputBuffer: Buffer,
   sourceType: string,
-  options: ConversionOptions,
-  title: string
+  options: ConversionOptions
 ): Promise<Buffer> {
-  const zip = new JSZip();
-  const rawText = inputBuffer.toString('utf-8');
-
-  let rows: string[][] = [];
-  if (sourceType === 'json') {
-    rows = parseJsonTableRows(rawText);
-  } else {
-    // Delimited (CSV or TSV) using Papa.parse for RFC 4180 compliance
-    const delim = sourceType === 'tsv' ? '\t' : options.delimiter || ',';
-    const parsedCsv = Papa.parse<string[]>(rawText, {
-      delimiter: delim,
-      skipEmptyLines: true,
-    });
-    rows =
-      parsedCsv.data && parsedCsv.data.length > 0
-        ? parsedCsv.data
-        : rawText
-            .split(/\r?\n/)
-            .filter((l) => l.trim().length > 0)
-            .map((line) => line.split(delim));
-  }
-
-  // Build sheet1.xml row data
-  let sheetRowsXml = '';
-  rows.forEach((row, rIdx) => {
-    sheetRowsXml += `<row r="${rIdx + 1}">`;
-    row.forEach((cell, cIdx) => {
-      const colLetter = getExcelColumnName(cIdx);
-      sheetRowsXml += `<c r="${colLetter}${rIdx + 1}" t="inlineStr"><is><t>${escapeXml(
-        cell
-      )}</t></is></c>`;
-    });
-    sheetRowsXml += '</row>';
-  });
-
-  zip.file(
-    '[Content_Types].xml',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-  <Default Extension="xml" ContentType="application/xml"/>
-  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-</Types>`
-  );
-
-  zip.file(
-    '_rels/.rels',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
-</Relationships>`
-  );
-
-  zip.file(
-    'xl/workbook.xml',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets>
-    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
-  </sheets>
-</workbook>`
-  );
-
-  zip.file(
-    'xl/_rels/workbook.xml.rels',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
-</Relationships>`
-  );
-
-  zip.file(
-    'xl/worksheets/sheet1.xml',
-    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-  <sheetData>
-    ${sheetRowsXml}
-  </sheetData>
-</worksheet>`
-  );
-
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  if (sourceType === 'json') return writeXlsx(parseJsonTableCells(inputBuffer.toString('utf-8')), 'verbatim', options.uncompressedWorkbook);
+  return generateXlsxFromRows(delimitedSheetRows(inputBuffer, sourceType, options), options);
 }
 
 /** Sources whose extracted text is Markdown (headings, lists, tables), read as such when writing an EPUB or DOCX. */
@@ -8846,22 +8826,13 @@ export async function convertOdsSource(
 
   // ODS -> XLSX
   if (tgt === 'xlsx') {
-    const delim = options.delimiter || ',';
-    const csv = rows.map((r) => r.map((c) => formatCsvCell(c, delim)).join(delim)).join('\n');
-    const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
+    const xlsxBuffer = await generateXlsxFromRows(rows);
     return {
       buffer: xlsxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       filename: `${baseName}.xlsx`,
       size: xlsxBuffer.length,
     };
-  }
-
-  // ODS -> XLS
-  if (tgt === 'xls') {
-    const xls = generateXlsXmlFromData(rows, baseName);
-    const buffer = Buffer.from(xls, 'utf-8');
-    return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
   }
 
   // ODS -> HTML
@@ -9596,10 +9567,6 @@ export async function convertXlsSource(
     return { buffer, mimeType: 'text/tab-separated-values', filename: `${baseName}.tsv`, size: buffer.length };
   }
 
-  if (tgt === 'xls') {
-    return { buffer: inputBuffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: inputBuffer.length };
-  }
-
   if (tgt === 'pdf' && worksheets !== undefined) {
     const sheets: OfficeWorksheet[] = namedSheetsOf(worksheets)
       .filter(({ sheet: worksheet }) => worksheet.rowCount > 0)
@@ -9612,9 +9579,7 @@ export async function convertXlsSource(
   const rows = sheet.toRows(tgt === 'pdf' ? PDF_TEXT_LIMIT : GRID_LIMIT);
 
   if (tgt === 'xlsx') {
-    const delim = options.delimiter || ',';
-    const csv = rows.map((r) => r.map((c) => formatCsvCell(c, delim)).join(delim)).join('\n');
-    const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', options, baseName);
+    const xlsxBuffer = await generateXlsxFromRows(rows);
     return {
       buffer: xlsxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -9784,33 +9749,6 @@ export async function generateOdsFromData(
 }
 
 /**
- * Generates Microsoft Excel XML Spreadsheet (2003)
- */
-export function generateXlsXmlFromData(rows: string[][], baseName: string): string {
-  let rowsXml = '';
-  rows.forEach((row) => {
-    rowsXml += '   <Row>\n';
-    row.forEach((cell) => {
-      rowsXml += `    <Cell><Data ss:Type="String">${escapeXml(cell)}</Data></Cell>\n`;
-    });
-    rowsXml += '   </Row>\n';
-  });
-
-  return `<?xml version="1.0"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:o="urn:schemas-microsoft-com:office:office"
- xmlns:x="urn:schemas-microsoft-com:office:excel"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:html="http://www.w3.org/TR/REC-html40">
- <Worksheet ss:Name="${escapeXml(baseName)}">
-  <Table>
-${rowsXml}  </Table>
- </Worksheet>
-</Workbook>`;
-}
-
-/**
  * Generates OpenDocument Presentation (ODP) Archive
  */
 export async function generateOdpFromSlides(
@@ -9930,19 +9868,7 @@ async function extractRowsForOffice(
   const text = inputBuffer.toString('utf-8');
   if (src === 'json') return parseJsonTableRows(text);
 
-  const delim = src === 'tsv' ? '\t' : options.delimiter || ',';
-  const parsedCsv = Papa.parse<string[]>(text, {
-    delimiter: delim,
-    skipEmptyLines: true,
-  });
-  if (parsedCsv.data && parsedCsv.data.length > 0) {
-    return parsedCsv.data;
-  }
-
-  return text
-    .split(/\r?\n/)
-    .filter((l) => l.trim().length > 0)
-    .map((l) => l.split(delim));
+  return delimitedSheetRows(inputBuffer, src, options);
 }
 
 /**
@@ -9982,19 +9908,13 @@ async function convertEtSource(
   }
 
   if (tgt === 'xlsx') {
-    const buffer = await generateXlsxFromData(Buffer.from(Papa.unparse(rows), 'utf-8'), 'csv', { ...options, delimiter: ',' }, baseName);
+    const buffer = await generateXlsxFromRows(rows, options);
     return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename: `${baseName}.xlsx`, size: buffer.length };
   }
 
   if (tgt === 'ods') {
     const buffer = await generateOdsFromData(rows, baseName);
     return { buffer, mimeType: 'application/vnd.oasis.opendocument.spreadsheet', filename: `${baseName}.ods`, size: buffer.length };
-  }
-
-  if (tgt === 'xls') {
-    const xlsXml = generateXlsXmlFromData(rows, baseName);
-    const buffer = Buffer.from(xlsXml, 'utf-8');
-    return { buffer, mimeType: 'application/vnd.ms-excel', filename: `${baseName}.xls`, size: buffer.length };
   }
 
   if (tgt === 'html') {

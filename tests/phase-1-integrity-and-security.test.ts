@@ -8,11 +8,8 @@ import {
   createZipArchive,
   ARCHIVE_SECURITY_LIMITS,
 } from '../src/lib/conversions/archive';
-import {
-  getExcelColumnName,
-  generateXlsxFromData,
-  convertOffice,
-} from '../src/lib/conversions/office';
+import { generateXlsxFromData, convertOffice } from '../src/lib/conversions/office';
+import { getExcelColumnName } from '../src/lib/conversions/xlsx-writer';
 import { convertMedia } from '../src/lib/conversions/media';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
 import { parseXmlDocument, xmlToJsonMl } from '../src/lib/conversions/data-xml';
@@ -191,7 +188,7 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
       const values = Array.from({ length: 30 }, (_, i) => `Val${i + 1}`).join(',');
       const csv = `${headers}\n${values}`;
 
-      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', {}, 'wide_sheet');
+      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', {});
       const zip = await JSZip.loadAsync(xlsxBuffer);
       const sheetXml = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
 
@@ -201,14 +198,19 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
       expect(sheetXml).toContain('r="AA1"');
       expect(sheetXml).toContain('r="AB1"');
       expect(sheetXml).toContain('r="AD1"');
-      // Verify AA1 has its correct value Val27
-      expect(sheetXml).toMatch(/<c r="AA1" t="inlineStr"><is><t>Col27<\/t><\/is><\/c>/);
-      expect(sheetXml).toMatch(/<c r="AA2" t="inlineStr"><is><t>Val27<\/t><\/is><\/c>/);
+      // Verify AA1 and AA2 hold the shared strings Col27 and Val27
+      const sharedStrings = (await zip.file('xl/sharedStrings.xml')!.async('text')).match(/<t>([^<]*)<\/t>/g)!.map((item) => item.slice(3, -4));
+      const sharedStringOf = (reference: string): string => {
+        const index = Number(new RegExp(`<c r="${reference}" t="s"><v>(\\d+)</v></c>`).exec(sheetXml)![1]);
+        return sharedStrings[index];
+      };
+      expect(sharedStringOf('AA1')).toBe('Col27');
+      expect(sharedStringOf('AA2')).toBe('Val27');
     });
 
     oracleTest('keeps quoted commas inside their cells when a CSV becomes an XLSX workbook', ['soffice', 'python3', 'xmllint'], async () => {
       const csv = 'Name,Bio,Role\n"Smith, John","Software Engineer, Lead",Architect';
-      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', {}, 'quoted_sheet');
+      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', {});
       const zip = await JSZip.loadAsync(xlsxBuffer);
       const sheetXml = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
 

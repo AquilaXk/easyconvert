@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import JSZip from 'jszip';
 import { requireOracleTool } from './differential-oracle';
 import { sofficeConvert } from './soffice-office';
 
@@ -28,8 +29,8 @@ export function parseCsvWithPython(text: string, delimiter = ','): string[][] {
   return JSON.parse(output) as string[][];
 }
 
-/** The rows of the first sheet of an `ods` or `xlsx` package, as an office suite reads them. */
-export function sheetRowsViaLibreOffice(file: Buffer, extension: 'ods' | 'xlsx'): string[][] {
+/** The rows of the first sheet of an `ods`, `xlsx` or `xls` file, as an office suite reads them. */
+export function sheetRowsViaLibreOffice(file: Buffer, extension: 'ods' | 'xlsx' | 'xls'): string[][] {
   const csv = sofficeConvert(file, extension, LIBREOFFICE_CSV_FILTER, 'csv').toString('utf-8');
   return parseCsvWithPython(csv);
 }
@@ -38,4 +39,24 @@ export function sheetRowsViaLibreOffice(file: Buffer, extension: 'ods' | 'xlsx')
 export function shownSheetRowsViaLibreOffice(file: Buffer, extension: 'ods' | 'xlsx'): string[][] {
   const csv = sofficeConvert(file, extension, LIBREOFFICE_CSV_AS_SHOWN, 'csv').toString('utf-8');
   return parseCsvWithPython(csv);
+}
+
+/**
+ * The `office:value-type` and value attribute of every cell of the first sheet, as an office suite opens the file and saves it as
+ * ODS: `float:1.5`, `string:abc`, `boolean:true`, `date:2024-03-05`. They name what kind of value each cell holds, which the CSV
+ * export shows only through the language of the machine (TRUE or 참).
+ */
+export async function cellKindsViaLibreOffice(file: Buffer, extension: 'xlsx' | 'xls'): Promise<string[][]> {
+  const ods = sofficeConvert(file, extension, 'ods', 'ods');
+  const content = await (await JSZip.loadAsync(ods)).file('content.xml')!.async('text');
+  const firstTable = /<table:table [^>]*>([\s\S]*?)<\/table:table>/.exec(content)?.[1] ?? '';
+  return [...firstTable.matchAll(/<table:table-row\b[^>]*>([\s\S]*?)<\/table:table-row>/g)].map((row) =>
+    [...row[1].matchAll(/<table:table-cell\b([^>]*?)\/?>/g)].flatMap((cell) => {
+      const attributes = cell[1];
+      const type = /office:value-type="([^"]+)"/.exec(attributes)?.[1];
+      if (type === undefined) return [];
+      const value = /office:(?:boolean-value|date-value|value)="([^"]+)"/.exec(attributes)?.[1] ?? '';
+      return [`${type}:${value}`];
+    })
+  );
 }

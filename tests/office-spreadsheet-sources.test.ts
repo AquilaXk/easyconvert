@@ -22,13 +22,13 @@ const ET_TEXT_ROWS = [
 const ET_CSV = 'Name,Value\nItemA,100\n"Item ""B"", quoted",200\n';
 
 describe('JSON spreadsheet sources', () => {
-  it.each(['xlsx', 'ods', 'xls'])('json that does not parse is refused for the .%s target, not wrapped into one cell', async (target) => {
+  it.each(['xlsx', 'ods'])('json that does not parse is refused for the .%s target, not wrapped into one cell', async (target) => {
     const failure = await convertFile(Buffer.from('{"a": 1,'), 'json', target, {}, 'broken.json').catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(DataParseError);
     expect((failure as Error).message).toMatch(/^Invalid JSON: /);
   });
 
-  it.each(['xlsx', 'ods', 'xls'])('json that is neither an array of records nor of values is refused for the .%s target', async (target) => {
+  it.each(['xlsx', 'ods'])('json that is neither an array of records nor of values is refused for the .%s target', async (target) => {
     const failure = await convertFile(Buffer.from('{"a": 1}'), 'json', target, {}, 'object.json').catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(DataParseError);
     expect((failure as Error).message).toBe('Invalid JSON table: expected an array of objects or an array of values.');

@@ -4,8 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import {
+  assertXlsSourceFits,
   asUnreadableDocument,
   convertThroughInterchange,
+  convertThroughWorkbook,
+  convertXlsTarget,
+  xlsNeedsWorkbook,
   interchangeNeeded,
   officeSuiteReadsInput,
   officeSuiteWritesTarget,
@@ -17,7 +21,8 @@ import {
 } from '../src/worker/office-suite-route';
 import { emf, wmf } from './helpers/metafile-headers';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
-import { ConversionFailedError, CorruptStreamError, EngineUnavailableError, SandboxUnavailableError } from '../src/lib/types';
+import { ConversionFailedError, CorruptStreamError, DataLimitExceededError, DataParseError, EngineUnavailableError, SandboxUnavailableError } from '../src/lib/types';
+import { writeXlsx } from '../src/lib/conversions/xlsx-writer';
 import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from '../src/worker/worker-types';
@@ -649,3 +654,155 @@ describe('a metafile that the office suite draws as a blank page', () => {
     expect(discarded).toEqual([PDF.filePath]);
   });
 });
+
+describe('an .xls written from a table the in-process engine reads', () => {
+  const workbook = (): WorkerConversionResult => result({ buffer: Buffer.from('PK workbook'), filePath: '/tmp/workbook.xlsx', engineUsed: 'internal-fallback' });
+  const exported = (): WorkerConversionResult => result({ buffer: Buffer.from('BIFF8 file'), filePath: '/out/table.xls', engineUsed: 'native-soffice-pool' });
+  const csvRequest = (overrides: Partial<OfficeSuiteRequest> = {}): OfficeSuiteRequest =>
+    request({ src: 'csv', tgt: 'xls', originalFilename: 'table.csv', input: Buffer.from('a,b\n1,2\n'), ...overrides });
+
+  /** The workbook the in-process engine would write for a table of `rowCount` rows. */
+  async function realWorkbook(rowCount: number, width = 1): Promise<WorkerConversionResult> {
+    const buffer = await writeXlsx(Array.from({ length: rowCount }, () => Array.from({ length: width }, () => 'x')), 'verbatim');
+    return result({ buffer, filePath: '/tmp/workbook.xlsx', engineUsed: 'internal-fallback' });
+  }
+
+  it('is routed to the workbook for a source the office suite does not read, and straight to the export for one it reads', () => {
+    for (const src of ['csv', 'tsv', 'json', 'parquet', 'pdf', 'et']) expect(xlsNeedsWorkbook(src, 'xls', Buffer.from('x')), src).toBe(true);
+    for (const src of ['xlsx', 'xlsm', 'ods', 'numbers']) expect(xlsNeedsWorkbook(src, 'xls', Buffer.from('x')), src).toBe(false);
+    expect(xlsNeedsWorkbook('csv', 'xlsx', Buffer.from('x'))).toBe(false);
+  });
+
+  it('has the engine write the XLSX workbook and the office suite export it as .xls', async () => {
+    const { deps, calls } = standIns({ convert: async () => workbook(), write: async () => exported() });
+    const answer = await convertThroughWorkbook(deps, csvRequest({ options: { inProcessFallback: false } }));
+    expect(answer.filePath).toBe('/out/table.xls');
+    expect(calls.converted).toHaveLength(1);
+    expect(calls.converted[0]).toMatchObject({ src: 'csv', target: 'xlsx', originalFilename: 'table.csv' });
+    expect(calls.converted[0].options.inProcessFallback).toBeUndefined();
+    expect(calls.converted[0].options.uncompressedWorkbook).toBe(true);
+    expect(calls.written).toHaveLength(1);
+    expect(calls.written[0]).toMatchObject({ src: 'xlsx', target: 'xls', originalFilename: 'table.csv' });
+    expect(calls.written[0].input).toEqual(Buffer.from('PK workbook'));
+    expect(calls.written[0].options).toMatchObject({ throwOnUnavailable: true });
+  });
+
+  it('keeps the workbook off the output path of the request, which only the export writes', async () => {
+    const { deps, calls } = standIns({ convert: async () => workbook(), write: async () => exported() });
+    const input: WorkerVfsPayload = { inputPath: '/in/table.csv', outputPath: '/out/table.xls' };
+    await convertThroughWorkbook(deps, csvRequest({ input, options: { outputPath: '/out/table.xls' } as WorkerEngineOptions }));
+    expect((calls.converted[0].input as WorkerVfsPayload).outputPath).toBeUndefined();
+    expect((calls.converted[0].options as { outputPath?: string }).outputPath).toBeUndefined();
+    expect(calls.written[0].input).toEqual({ inputBuffer: Buffer.from('PK workbook'), outputPath: '/out/table.xls' });
+  });
+
+  it('removes the workbook whether the export succeeds or fails', async () => {
+    const ok = standIns({ convert: async () => workbook(), write: async () => exported() });
+    await convertThroughWorkbook(ok.deps, csvRequest());
+    expect(ok.calls.discarded.map((call) => call.filePath)).toEqual(['/tmp/workbook.xlsx']);
+
+    const failing = standIns({ convert: async () => workbook(), write: async () => Promise.reject(new Error('the export failed')) });
+    await expect(convertThroughWorkbook(failing.deps, csvRequest())).rejects.toThrow('the export failed');
+    expect(failing.calls.discarded.map((call) => call.filePath)).toEqual(['/tmp/workbook.xlsx']);
+  });
+
+  it('answers an unavailable engine when the office suite wrote nothing, and an unavailable sandbox as it is', async () => {
+    const none = standIns({ convert: async () => workbook(), write: async () => null });
+    const failure = await convertThroughWorkbook(none.deps, csvRequest()).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(EngineUnavailableError);
+    expect((failure as Error).message).toBe("Engine 'soffice' is unavailable: LibreOffice produced no .xls file for the .csv source");
+
+    const unavailable = new SandboxUnavailableError('no sandbox on this host');
+    const missing = standIns({ convert: async () => workbook(), write: async () => Promise.reject(unavailable) });
+    await expect(convertThroughWorkbook(missing.deps, csvRequest())).rejects.toBe(unavailable);
+  });
+
+  it('refuses a table the engine could not read before the office suite starts', async () => {
+    const parse = new DataParseError('Failed to parse CSV: Quoted field unterminated');
+    const { deps, calls } = standIns({ convert: async () => Promise.reject(parse) });
+    await expect(convertThroughWorkbook(deps, csvRequest())).rejects.toBe(parse);
+    expect(calls.written).toEqual([]);
+  });
+
+  it.each([
+    ['more than 65,536 rows', 65_537, 1, /rows/],
+    ['more than 256 columns', 2, 257, /columns/],
+  ])('refuses a workbook of %s with a 413 before the office suite can cut it', async (_name, rows, width, message) => {
+    const { deps, calls } = standIns({ convert: async () => realWorkbook(rows, width), write: async () => exported() });
+    const failure = await convertThroughWorkbook(deps, csvRequest()).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(DataLimitExceededError);
+    expect((failure as DataLimitExceededError).status).toBe(413);
+    expect((failure as Error).message).toMatch(message);
+    expect(calls.written).toEqual([]);
+    expect(calls.discarded).toHaveLength(1);
+  });
+
+  it('hands a workbook that reaches row 65,536 and column 256 to the office suite', async () => {
+    const sparse = Array.from({ length: 65_536 }, (_, row) => (row === 0 ? Array.from({ length: 256 }, () => 'x') : row === 65_535 ? ['x'] : []));
+    const corner = result({ buffer: await writeXlsx(sparse, 'verbatim'), filePath: '/tmp/workbook.xlsx', engineUsed: 'internal-fallback' });
+    const { deps, calls } = standIns({ convert: async () => corner, write: async () => exported() });
+    await convertThroughWorkbook(deps, csvRequest());
+    expect(calls.written).toHaveLength(1);
+  });
+});
+
+describe('the conversion of a request that targets .xls', () => {
+  const unused = (): Promise<WorkerConversionResult> => Promise.reject(new Error('this conversion must not run'));
+
+  it('goes through the workbook for a table the office suite does not read, and not through the direct conversion', async () => {
+    const { deps, calls } = standIns({ convert: async () => result({ buffer: Buffer.from('PK workbook'), engineUsed: 'internal-fallback' }), write: async () => result({ filePath: '/out/table.xls' }) });
+    const answer = await convertXlsTarget(deps, request({ src: 'csv', tgt: 'xls', input: Buffer.from('a\n1\n') }), unused);
+    expect(answer.filePath).toBe('/out/table.xls');
+    expect(calls.converted).toHaveLength(1);
+  });
+
+  it('checks a workbook the office suite reads against the BIFF8 sheet, and converts it directly when it fits', async () => {
+    const { deps, calls } = standIns();
+    const direct = result({ filePath: '/out/book.xls' });
+    const input = await realWorkbookBytes(10, 3);
+    expect(await convertXlsTarget(deps, request({ src: 'xlsx', tgt: 'xls', input }), async () => direct)).toBe(direct);
+    expect(calls.converted).toEqual([]);
+
+    const tooTall = await realWorkbookBytes(65_537, 1);
+    await expect(convertXlsTarget(deps, request({ src: 'xlsx', tgt: 'xls', input: tooTall }), unused)).rejects.toBeInstanceOf(DataLimitExceededError);
+  });
+
+  it('leaves a request for any other target to the direct conversion', async () => {
+    const { deps, calls } = standIns();
+    const direct = result({ filePath: '/out/table.xlsx' });
+    expect(await convertXlsTarget(deps, request({ src: 'csv', tgt: 'xlsx' }), async () => direct)).toBe(direct);
+    expect(calls.converted).toEqual([]);
+    expect(calls.written).toEqual([]);
+  });
+});
+
+describe('an OOXML workbook the office suite exports as .xls', () => {
+  it('is refused with a 413 when a worksheet declares more rows or columns than a BIFF8 sheet holds', async () => {
+    const tall = (await realWorkbookBytes(65_537, 1));
+    const wide = (await realWorkbookBytes(2, 257));
+    const messages: string[] = [];
+    for (const bytes of [tall, wide]) {
+      for (const src of ['xlsx', 'xlsm']) {
+        const failure = await assertXlsSourceFits(src, bytes).catch((error: unknown) => error);
+        expect(failure, src).toBeInstanceOf(DataLimitExceededError);
+        messages.push((failure as Error).message);
+      }
+    }
+    expect(messages).toEqual([
+      'The workbook (xl/worksheets/sheet1.xml) has 65537 rows, and an .xls worksheet holds at most 65536; nothing was cut.',
+      'The workbook (xl/worksheets/sheet1.xml) has 65537 rows, and an .xls worksheet holds at most 65536; nothing was cut.',
+      'The workbook (xl/worksheets/sheet1.xml) has 257 columns, and an .xls worksheet holds at most 256; nothing was cut.',
+      'The workbook (xl/worksheets/sheet1.xml) has 257 columns, and an .xls worksheet holds at most 256; nothing was cut.',
+    ]);
+  });
+
+  it('is passed on when it fits, when it is another format, and when it is not a package', async () => {
+    await expect(assertXlsSourceFits('xlsx', await realWorkbookBytes(100, 5))).resolves.toBeUndefined();
+    await expect(assertXlsSourceFits('ods', await realWorkbookBytes(65_537, 1))).resolves.toBeUndefined();
+    await expect(assertXlsSourceFits('xlsx', Buffer.from('not a zip'))).resolves.toBeUndefined();
+  });
+});
+
+async function realWorkbookBytes(rowCount: number, width: number): Promise<Buffer> {
+  return writeXlsx(Array.from({ length: rowCount }, () => Array.from({ length: width }, () => 'x')), 'verbatim');
+}

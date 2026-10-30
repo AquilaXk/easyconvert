@@ -113,3 +113,37 @@ export function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryRea
 export async function readZipEntryText(entry: JSZip.JSZipObject, options: ZipEntryReadOptions = {}): Promise<string> {
   return (await readZipEntryBytes(entry, options)).toString('utf-8');
 }
+
+/**
+ * The first `limit` decoded bytes of `entry` (fewer when the entry is shorter), as latin1 text. The entry is not inflated past the
+ * bytes that make up the prefix, so a worksheet of hundreds of MB is not decoded to read the start of it.
+ */
+export function readZipEntryPrefix(entry: JSZip.JSZipObject, limit: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const stream = entry.nodeStream('nodebuffer');
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).subarray(0, limit).toString('latin1'));
+    };
+    stream.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      chunks.push(chunk);
+      total += chunk.length;
+      if (total >= limit) {
+        finish();
+        stream.pause();
+        (stream as unknown as { destroy?: () => void }).destroy?.();
+      }
+    });
+    stream.on('error', (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(new CorruptStreamError(`ZIP entry '${entry.name}' is not a valid compressed entry: ${error.message}`));
+    });
+    stream.on('end', finish);
+  });
+}

@@ -1414,7 +1414,7 @@
     "rule": "complexity",
     "function": "convertXlsxSource",
     "count": 1,
-    "maxValue": 37
+    "maxValue": 36
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1442,7 +1442,7 @@
     "rule": "complexity",
     "function": "parseAllXlsxWorksheets",
     "count": 1,
-    "maxValue": 108
+    "maxValue": 104
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1554,14 +1554,7 @@
     "rule": "max-lines-per-function",
     "function": "convertOffice",
     "count": 1,
-    "maxValue": 268
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "max-lines-per-function",
-    "function": "convertXlsxSource",
-    "count": 1,
-    "maxValue": 257
+    "maxValue": 260
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1575,7 +1568,7 @@
     "rule": "max-lines-per-function",
     "function": "parseAllXlsxWorksheets",
     "count": 1,
-    "maxValue": 335
+    "maxValue": 324
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1603,7 +1596,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 10258
+    "maxValue": 10178
   },
   {
     "file": "src/lib/conversions/office.ts",

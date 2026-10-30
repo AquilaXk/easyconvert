@@ -5,6 +5,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { createWorkerSandboxDir } from './sandbox';
 import { readPersistedOutput } from './persisted-output';
+import { getMimeType } from './worker-output';
 import {
   executeSandboxedBinary,
   rethrowSandboxUnavailable,
@@ -125,23 +126,6 @@ function validateFormat(format: string): string {
   }
   return sanitized;
 }
-
-const MIME_TYPES: Record<string, string> = {
-  pdf: 'application/pdf',
-  html: 'text/html',
-  txt: 'text/plain',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  odt: 'application/vnd.oasis.opendocument.text',
-  ods: 'application/vnd.oasis.opendocument.spreadsheet',
-  odp: 'application/vnd.oasis.opendocument.presentation',
-  odg: 'application/vnd.oasis.opendocument.graphics',
-  odd: 'application/vnd.oasis.opendocument.graphics-template',
-  csv: 'text/csv',
-  doc: 'application/msword',
-  rtf: 'application/rtf',
-};
 
 /** The PDF export filter of each application of the office suite. */
 const PDF_EXPORT_FILTER_OF_APPLICATION: Readonly<Record<OfficeSuiteApplication, string>> = {
@@ -613,7 +597,7 @@ export class LibreOfficePoolManager {
     let cachedBuffer: Buffer | null = null;
     return {
       filePath: persistedPath,
-      mimeType: MIME_TYPES[targetFormat] || 'application/octet-stream',
+      mimeType: getMimeType(targetFormat),
       filename: `${baseName}.${targetFormat}`,
       size: stat.size,
       engineUsed: 'native-soffice-pool',

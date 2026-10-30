@@ -170,7 +170,9 @@ Summary after table.`;
     expect(await zipEntryText(zip, 'xl/workbook.xml')).toContain('<sheet ');
 
     const sheetXml = await zipEntryText(zip, 'xl/worksheets/sheet1.xml');
-    expect(sheetXml).toContain('Widget A');
+    expect(sheetXml).toContain('<c r="B2"><v>19.99</v></c>');
+    expect(sheetXml).toContain('<c r="C3"><v>5</v></c>');
+    expect(await zipEntryText(zip, 'xl/sharedStrings.xml')).toContain('<si><t>Widget A</t></si>');
   });
 
   it('converts XLSX to XML structured document', async () => {

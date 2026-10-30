@@ -29,7 +29,7 @@ import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
-import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withMetafileFrame, withMetafileInk, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withMetafileFrame, withMetafileInk, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -2219,9 +2219,9 @@ const OFFICE_SUITE_DEPS: OfficeSuiteRouteDeps = {
 };
 
 /**
- * One conversion of the request's image session. A format only the office suite reads goes to a target it does not write
- * through an interchange file; any other conversion runs the engines, and a legacy Office document that the strict
- * in-process reader refuses is then tried by the office suite.
+ * One conversion of the request's image session. A format only the office suite reads goes to a target it does not write through
+ * an interchange file, a table written as `.xls` through an XLSX workbook; any other conversion runs the engines, and a legacy
+ * Office document that the strict in-process reader refuses is then tried by the office suite.
  */
 async function convertWithOfficeSuiteRoutes(
   input: Buffer | WorkerVfsPayload,
@@ -2238,7 +2238,7 @@ async function convertWithOfficeSuiteRoutes(
     assertNotSpoofedFileVfs(input, request.src, originalFilename);
     return convertThroughInterchange(OFFICE_SUITE_DEPS, request, interchange);
   }
-  return convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename).catch(async (refusal: unknown) => {
+  return convertXlsTarget(OFFICE_SUITE_DEPS, request, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename)).catch(async (refusal: unknown) => {
     const retried = await retryRefusedLegacyDocument(OFFICE_SUITE_DEPS, request, refusal);
     if (retried) return retried;
     throw refusal;

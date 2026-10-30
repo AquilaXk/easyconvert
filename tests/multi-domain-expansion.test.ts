@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import sharp from 'sharp';
 import { convertFile } from '../src/lib/conversions/index';
 import { buildTrueTypeFont } from './helpers/mac-font-containers';
-import { UnprocessableCadInputError } from '../src/lib/types';
+import { EngineUnavailableError, UnprocessableCadInputError } from '../src/lib/types';
 import fs from 'node:fs';
 import path from 'node:path';
 import { haveCadConverter, haveCadOracles } from './helpers/cad-kernel';
@@ -341,23 +341,21 @@ endsolid Cube`;
       expect(parsed[0].SKU).toBe('A101');
     });
 
-    it('converts CSV to Microsoft Excel XML Spreadsheet (XLS)', async () => {
+    it('leaves the .xls target to the office suite: the in-process engine writes no BIFF8 and no XML under an .xls name', async () => {
       const csv = 'Category,Q1,Q2\nHardware,12000,15000\nSoftware,45000,52000';
-      const buffer = Buffer.from(csv, 'utf-8');
-
-      const result = await convertFile(buffer, 'csv', 'xls', {}, 'sales.csv');
-      expect(result.mimeType).toBe('application/vnd.ms-excel');
-      expect(result.filename).toBe('sales.xls');
-
-      const xml = result.buffer.toString('utf-8');
-      expect(xml).toContain('urn:schemas-microsoft-com:office:spreadsheet');
-      expect(xml).toContain('<Workbook');
-      expect(xml).toContain('Hardware');
+      const failure = await convertFile(Buffer.from(csv, 'utf-8'), 'csv', 'xls', {}, 'sales.csv').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(EngineUnavailableError);
+      expect((failure as EngineUnavailableError).engineName).toBe('soffice');
     });
 
-    it('converts Excel XML Spreadsheet (XLS) to CSV and PDF', async () => {
-      const csv = 'Month,Revenue\nJan,100\nFeb,150';
-      const xlsResult = await convertFile(Buffer.from(csv, 'utf-8'), 'csv', 'xls', {}, 'revenue.csv');
+    it('converts an Excel 2003 XML Spreadsheet (read under the .xls name) to CSV and PDF', async () => {
+      const cell = (text: string): string => `<Cell><Data ss:Type="String">${text}</Data></Cell>`;
+      const row = (...cells: string[]): string => `<Row>${cells.map(cell).join('')}</Row>`;
+      const xlsResult = {
+        buffer: Buffer.from(
+          `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Sheet1"><Table>${row('Month', 'Revenue')}${row('Jan', '100')}${row('Feb', '150')}</Table></Worksheet></Workbook>`
+        ),
+      };
 
       // XLS -> CSV
       const csvResult = await convertFile(xlsResult.buffer, 'xls', 'csv', {}, 'revenue.xls');

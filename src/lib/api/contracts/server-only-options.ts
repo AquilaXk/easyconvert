@@ -23,4 +23,5 @@ export const SERVER_ONLY_OPTION_KEYS = [
   'pdfExportPageRange',
   'maxRenderedPages',
   'disableNativeEngine',
+  'uncompressedWorkbook',
 ] as const satisfies readonly (keyof WorkerEngineOptions | keyof WorkerVfsPayload)[];
