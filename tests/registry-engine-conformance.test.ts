@@ -617,24 +617,29 @@ async function probeInputs(source: string): Promise<Buffer[]> {
  * XPS documents. Authored by hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
+  csv: ['xls'],
   doc: ['jpg', 'png', 'rtf'],
   docx: ['doc', 'jpg', 'png', 'rtf'],
   eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
+  json: ['xls'],
   key: ['html', 'pdf', 'pptx'],
   odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
   odg: ['bmp', 'jpg', 'pdf', 'png'],
   odp: ['jpg', 'png', 'ppt'],
-  ods: ['jpg', 'png'],
+  ods: ['jpg', 'png', 'xls'],
   odt: ['doc', 'jpg', 'png', 'rtf'],
   oxps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
+  parquet: ['xls'],
   pdf: ['jpg', 'png', 'svg', 'tiff'],
   pps: ['ppt'],
   ppt: ['jpg', 'odp', 'png'],
   ps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'jpg', 'pdf', 'png', 'ps', 'svg', 'tiff', 'webp'],
   pptx: ['jpg', 'png', 'ppt'],
   rtf: ['doc', 'jpg', 'png'],
+  tsv: ['xls'],
   xls: ['jpg', 'png'],
-  xlsx: ['jpg', 'png'],
+  xlsm: ['xls'],
+  xlsx: ['jpg', 'png', 'xls'],
   xps: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
 };
 
@@ -1473,8 +1478,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   const JPEG_SOI = Buffer.from([0xff, 0xd8, 0xff]);
   const OLE_SECTOR_BYTES = 512;
   const DARK_CHANNEL_MAX = 128;
-  /** The CFB stream that holds the main body of a Word or PowerPoint binary file. */
-  const OLE_BODY_STREAM: Readonly<Record<string, string>> = { doc: 'WordDocument', ppt: 'PowerPoint Document' };
+  /** The CFB stream that holds the main body of a Word, PowerPoint or Excel binary file. */
+  const OLE_BODY_STREAM: Readonly<Record<string, string>> = { doc: 'WordDocument', ppt: 'PowerPoint Document', xls: 'Workbook' };
   const ODF_MIMETYPE: Readonly<Record<string, string>> = {
     odp: 'application/vnd.oasis.opendocument.presentation',
     odg: 'application/vnd.oasis.opendocument.graphics',
@@ -1540,9 +1545,16 @@ describe('native-engine pairs route through the dispatcher', () => {
     pptx: 'golden/office/drawingml-shapes-presentation.pptx',
     odg: 'office-sources/drawing-two-pages.odg',
     pdf: 'sample.pdf',
+    parquet: 'parquet/plain-uncompressed.parquet',
+  };
+  /** Table sources that are text: a small table with a quoted cell. */
+  const TABLE_TEXT_SEEDS: Readonly<Record<string, string>> = {
+    csv: 'name,amount,note\nwidget,1.5,"a,b"\ngadget,-153.375,plain\n',
+    tsv: 'name\tamount\tnote\nwidget\t1.5\ta b\ngadget\t-153.375\tplain\n',
+    json: '[{"name":"widget","amount":1.5,"note":"a,b"},{"name":"gadget","amount":-153.375,"note":"plain"}]',
   };
   /** Sources without a fixture, converted from a seed by the LibreOffice CLI itself. */
-  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', ppt: 'pptx', pps: 'pptx', odp: 'pptx', odd: 'odg' };
+  const DERIVED_FROM: Readonly<Record<string, string>> = { doc: 'docx', rtf: 'docx', odt: 'docx', xls: 'xlsx', xlsm: 'xlsx', ppt: 'pptx', pps: 'pptx', odp: 'pptx', odd: 'odg' };
   /** The extension LibreOffice writes for a derived source: a drawing template is its .otg export, read back as .odd. */
   const LIBREOFFICE_EXTENSION: Readonly<Record<string, string>> = { odd: 'otg' };
 
@@ -1563,11 +1575,16 @@ describe('native-engine pairs route through the dispatcher', () => {
   }
 
   const realInputs = new Map<string, Buffer>();
+  function buildRealInput(source: string): Buffer {
+    if (TABLE_TEXT_SEEDS[source] !== undefined) return Buffer.from(TABLE_TEXT_SEEDS[source]);
+    const from = DERIVED_FROM[source];
+    if (from === undefined) return fixture(SEEDS[source]);
+    return sofficeConvert(fixture(SEEDS[from]), from, LIBREOFFICE_EXTENSION[source] ?? source);
+  }
   function realInput(source: string): Buffer {
     let input = realInputs.get(source);
     if (!input) {
-      const from = DERIVED_FROM[source];
-      input = from ? sofficeConvert(fixture(SEEDS[from]), from, LIBREOFFICE_EXTENSION[source] ?? source) : fixture(SEEDS[source]);
+      input = buildRealInput(source);
       realInputs.set(source, input);
     }
     return input;
@@ -1583,6 +1600,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** Input that passes the magic-byte check; the missing engine rejects it before any parsing. */
   async function missingEngineInput(source: string): Promise<Buffer> {
     if (SEEDS[source]) return fixture(SEEDS[source]);
+    if (TABLE_TEXT_SEEDS[source] !== undefined) return Buffer.from(TABLE_TEXT_SEEDS[source]);
+    if (source === 'xlsm') return EXTRA_PROBES.xlsm();
     if (source === 'rtf') return Buffer.from('{\\rtf1\\ansi Probe paragraph.\\par}', 'latin1');
     if (source === 'odt') return headerOnlyOdf('application/vnd.oasis.opendocument.text');
     if (ODF_MIMETYPE[source]) return headerOnlyOdf(ODF_MIMETYPE[source]);

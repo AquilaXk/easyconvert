@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { safeExtractXmlElements } from '../src/lib/conversions/safe-xml-scanner';
-import { SCALING_TEST_TIMEOUT_MS, SCALING_FACTOR, expectLinearOnInputs } from './helpers/timing';
+import { SCALING_TEST_TIMEOUT_MS, SCALING_FACTOR, cpuClockMs, expectLinearOnInputs } from './helpers/timing';
 
 /**
  * Each opening of a tag searches ahead for its own close and counts the openings of the same name between, up to the depth bound.
@@ -23,7 +23,7 @@ describe('repeated openings of one tag', () => {
       const { largeResult } = await expectLinearOnInputs(
         shape,
         (xml: string) => safeExtractXmlElements(xml, 'row'),
-        { small: build(OPENINGS), large: build(OPENINGS * SCALING_FACTOR) }
+        { small: build(OPENINGS), large: build(OPENINGS * SCALING_FACTOR), clock: cpuClockMs }
       );
       expect(largeResult).toEqual([]);
     }, SCALING_TEST_TIMEOUT_MS);
@@ -34,5 +34,41 @@ describe('repeated openings of one tag', () => {
     expect(safeExtractXmlElements(shallow, 'row')).toHaveLength(1);
     const tooDeep = `<row>a</row><row>b</row>${nested(66)}<row>c</row>`;
     expect(safeExtractXmlElements(tooDeep, 'row').map((element) => element.content)).toEqual(['a', 'b']);
+  });
+});
+
+/**
+ * The search for the next opening and the next closing of a tag used to start afresh at every step, so a search that found nothing (or
+ * found the close far ahead) walked to the end of the input each time. 80,000 self-closing children of one element took 13.7 s, and 64,000
+ * openings after a stray closing tag 7.8 s. A search that has already answered for an earlier position answers for the later ones.
+ */
+const CHILDREN = 5_000;
+const childrenOfOne = (count: number): string => `<T>${'<T/>'.repeat(count)}</T>`;
+const openingsAfterStrayClose = (count: number): string => `</t>${'<t id="1">'.repeat(count)}`;
+
+describe('one open tag with many self-closing children, and openings after a stray closing tag', () => {
+  it('cost CPU time linear in the number of self-closing children of one open tag', async () => {
+    const { largeResult } = await expectLinearOnInputs(
+      'self-closing children',
+      (xml: string) => safeExtractXmlElements(xml, 'T'),
+      { small: childrenOfOne(CHILDREN), large: childrenOfOne(CHILDREN * SCALING_FACTOR), clock: cpuClockMs }
+    );
+    expect(largeResult).toHaveLength(1);
+    expect(largeResult[0].content).toBe('<T/>'.repeat(CHILDREN * SCALING_FACTOR));
+  }, SCALING_TEST_TIMEOUT_MS);
+
+  it('cost CPU time linear in the number of openings that follow a stray closing tag', async () => {
+    const { largeResult } = await expectLinearOnInputs(
+      'openings after a stray close',
+      (xml: string) => safeExtractXmlElements(xml, 't'),
+      { small: openingsAfterStrayClose(CHILDREN), large: openingsAfterStrayClose(CHILDREN * SCALING_FACTOR), clock: cpuClockMs }
+    );
+    expect(largeResult).toEqual([]);
+  }, SCALING_TEST_TIMEOUT_MS);
+
+  it('still close each opening that has a close, and skip the closes that only share a name prefix', () => {
+    const xml = '</t>a<t id="1">b</t><t id="2"><tx></tx></t><t id="3">';
+    const found = safeExtractXmlElements(xml, 't').map((element) => [element.attrs.id, element.content]);
+    expect(found).toEqual([['1', 'b'], ['2', '<tx></tx>']]);
   });
 });

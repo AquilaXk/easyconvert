@@ -1943,20 +1943,6 @@
     "maxValue": 7
   },
   {
-    "file": "src/lib/conversions/safe-xml-scanner.ts",
-    "rule": "complexity",
-    "function": "safeExtractXmlAttributes",
-    "count": 1,
-    "maxValue": 35
-  },
-  {
-    "file": "src/lib/conversions/safe-xml-scanner.ts",
-    "rule": "complexity",
-    "function": "safeExtractXmlElements",
-    "count": 1,
-    "maxValue": 62
-  },
-  {
     "file": "src/lib/conversions/svg-geometry.ts",
     "rule": "max-lines",
     "function": "<module>",
