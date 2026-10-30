@@ -1,10 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Queue } from '../src/lib/queue/bullmq-engine';
 import { attachJobCancellationListeners, processConversionJob } from '../src/lib/queue/conversion-queue';
 import { dispatchEngine } from '../src/lib/queue/dispatch-engine';
 import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-scheduler';
+import { initGraphHoldingInputs } from '../src/lib/queue/graph/input-cleanup';
 import { s3Storage } from '../src/lib/storage/s3-storage';
+import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { recordServed, registerResult, sweepRetention, withInputHeld } from '../src/lib/storage/retention-service';
+import { enqueueConversionJob } from '../src/lib/queue/enqueue';
+import { StorageNotFoundError } from '../src/lib/storage/adapters/adapter-interface';
+import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 /**
@@ -149,5 +158,72 @@ describe('the uploaded input of a graph', () => {
     expect(await scheduler.cancelGraph(graphId)).toBe(true);
 
     expect(s3Storage.getObject(key)).toBeDefined();
+  });
+});
+
+describe('the hold on an owner\'s earlier output chained as a job input', () => {
+  const POLICY = resolveRetentionPolicy({});
+  let ledgerDir: string;
+  const deleted: string[] = [];
+  const storage = { deleteObject: async (key: string) => (deleted.push(key), true) };
+
+  afterEach(() => {
+    deleted.length = 0;
+    setRetentionLedger(undefined);
+    if (ledgerDir) fs.rmSync(ledgerDir, { recursive: true, force: true });
+  });
+
+  async function deliveredResult(): Promise<string> {
+    ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-hold-'));
+    setRetentionLedger(new FileRetentionLedger(ledgerDir));
+    const key = `conversions/user-1/${Date.now()}_${crypto.randomBytes(4).toString('hex')}_chained.csv`;
+    await registerResult(key);
+    await recordServed(key, { first: 0, last: 9, size: 10 });
+    return key;
+  }
+
+  const afterUndelivered = () => Date.now() + POLICY.undeliveredTtlMs + 1000;
+
+  it('lasts while the job is queued and ends when the job is cancelled', async () => {
+    const key = await deliveredResult();
+    const queue = new Queue<ConversionJobData, ConversionJobResult>('input-hold-cancel');
+    attachJobCancellationListeners(queue);
+    const jobId = `hold_${crypto.randomBytes(4).toString('hex')}`;
+    const job = await enqueueConversionJob(queue, 'convert', jobData(key), { jobId, attempts: ATTEMPTS }, {});
+    expect(job.id).toBe(jobId);
+    expect(await sweepRetention(storage, afterUndelivered())).toBe(0);
+
+    expect(await queue.cancelJob(jobId, 'Cancelled by user')).toBe(true);
+
+    await vi.waitFor(async () => expect(await sweepRetention(storage, afterUndelivered())).toBe(1));
+    expect(deleted).toEqual([key]);
+    await queue.close();
+  });
+
+  it('lasts while a graph that reads it runs and ends when the graph ends', async () => {
+    const key = await deliveredResult();
+    const scheduler = new InMemoryGraphScheduler();
+    const graphId = `g_hold_${crypto.randomBytes(4).toString('hex')}`;
+    await initGraphHoldingInputs(scheduler, graphId, {
+      nodes: {
+        src: { op: 'import.upload' as const, storageKey: key },
+        out: { op: 'convert' as const, input: 'src', targetFormat: 'json' },
+      },
+    }, {});
+    expect(await sweepRetention(storage, afterUndelivered())).toBe(0);
+
+    expect(await scheduler.cancelGraph(graphId)).toBe(true);
+
+    expect(await sweepRetention(storage, afterUndelivered())).toBe(1);
+  });
+
+  it('is given up when the job cannot be queued, and refuses an input deleted before the job was queued', async () => {
+    const key = await deliveredResult();
+    await expect(withInputHeld(key, 'job-refused', () => Promise.reject(new Error('queue down')))).rejects.toThrow('queue down');
+    expect(await sweepRetention(storage, afterUndelivered())).toBe(1);
+
+    const start = vi.fn(async () => 'queued');
+    await expect(withInputHeld(key, 'job-late', start)).rejects.toBeInstanceOf(StorageNotFoundError);
+    expect(start).not.toHaveBeenCalled();
   });
 });

@@ -98,6 +98,26 @@ describe.skipIf(!REDIS_URL)('retention records in Redis', () => {
     await second.quit();
   });
 
+  it('keeps every range when 32 updates from four instances race on one record', async () => {
+    const UPDATES = 32;
+    const instances = Array.from({ length: 4 }, () => new Redis(REDIS_URL as string, { maxRetriesPerRequest: 2 }));
+    const ledgers = instances.map((client) => new RedisRetentionLedger(client));
+    const key = newKey();
+    await registerResult(key);
+    const now = Date.now();
+    try {
+      const results = await Promise.allSettled(
+        Array.from({ length: UPDATES }, (_, i) =>
+          ledgers[i % ledgers.length].update(key, (current) => current && recordServedRange(current, { first: i, last: i, size: UPDATES }, now, POLICY))
+        )
+      );
+      expect(results.filter((result) => result.status === 'rejected')).toHaveLength(0);
+      expect((await ledgers[0].get(key))?.received).toEqual([[0, UPDATES - 1]]);
+    } finally {
+      for (const client of instances) client.disconnect();
+    }
+  });
+
   it('drops a due key whose record is gone and still deletes the keys behind it', async () => {
     const orphan = newKey();
     const due = `${RETENTION_REDIS_PREFIX}due`;

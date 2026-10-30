@@ -15,6 +15,7 @@ import {
   canonicalJSON,
 } from '../src/lib/api/idempotency';
 import { withIdempotency } from '../src/lib/api/with-idempotency';
+import { setDiskProbe } from '../src/lib/storage/retention-service';
 
 const DEFAULT_REDIS_URL = 'redis://127.0.0.1:6379';
 
@@ -63,6 +64,8 @@ describe.each([
     }
 
     setIdempotencyStore(store);
+    // The disk is measured before a job is admitted; a real statfs per request would spread the requests apart.
+    setDiskProbe(async () => 0);
 
     const email = `idem_${Date.now()}_${Math.random().toString(36).substring(7)}@easyconvert.local`;
     testUser = await userStore.createUser({
@@ -78,6 +81,7 @@ describe.each([
 
   afterEach(async () => {
     setIdempotencyStore(null);
+    setDiskProbe(undefined);
     if (redisClient) {
       try {
         await store.reset?.();
@@ -113,9 +117,9 @@ describe.each([
     const requests = Array.from({ length: 10 }, () => createJobRequest(idempotencyKey));
     const responses = await Promise.all(requests.map((req) => jobsPostHandler(req)));
 
-    const replayedResponses = responses.filter((r) => r.headers.get('idempotent-replayed') === 'true');
-    const successResponses = responses.filter((r) => r.status === 202 && !replayedResponses.includes(r));
+    const successResponses = responses.filter((r) => r.status === 202);
     const conflictResponses = responses.filter((r) => r.status === 409);
+    const replayedResponses = responses.filter((r) => r.headers.get('idempotent-replayed') === 'true');
 
     expect(successResponses).toHaveLength(1);
     expect(conflictResponses.length + replayedResponses.length).toBe(9);

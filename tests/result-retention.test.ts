@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import Redis from 'ioredis';
 import { Readable } from 'node:stream';
 import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
@@ -10,9 +12,15 @@ import { GET as filesRoute } from '../src/app/api/account/files/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { GET as jobRoute } from '../src/app/api/v1/jobs/[id]/route';
 import { storageProvider } from '../src/lib/storage';
-import { FileRetentionLedger, setRetentionLedger, type RetentionLedger } from '../src/lib/storage/retention-ledger';
+import {
+  FileRetentionLedger,
+  RedisRetentionLedger,
+  setRetentionLedger,
+  type RetentionLedger,
+} from '../src/lib/storage/retention-ledger';
 import {
   holdResultForJob,
+  releaseResultHold,
   recordServed,
   registerResult,
   resultAvailability,
@@ -21,6 +29,7 @@ import {
 } from '../src/lib/storage/retention-service';
 import { mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
 import {
+  JOB_INPUT_HOLD_MAX_MS,
   addInterval,
   coversWholeObject,
   newRecord,
@@ -63,7 +72,7 @@ function unreachableLedger(): RetentionLedger {
   const unreachable = async (): Promise<never> => {
     throw new Error('retention ledger unreachable');
   };
-  return { get: unreachable, update: unreachable, dueKeys: unreachable, pruneGone: unreachable };
+  return { get: unreachable, update: unreachable, forget: unreachable, collectDue: unreachable, liveRecords: unreachable };
 }
 
 describe('the retention policy', () => {
@@ -542,26 +551,126 @@ describe('the file ledger shared by the web server and the workers', () => {
     expect(fs.existsSync(recent)).toBe(true);
   });
 
-  it('keeps a result that a queued job reads as its input past its grace period, and refuses a deleted one as an input', async () => {
+  it('does not remove the lock of the next writer after its own lock was broken as stale', async () => {
+    const key = newKey();
+    await registerResult(key);
+    const lockFile = path.join(ledgerDir, '.retention', `${crypto.createHash('sha256').update(key).digest('hex')}.json.lock`);
+    const writers = [new FileRetentionLedger(ledgerDir), new FileRetentionLedger(ledgerDir)];
+    const realWriteFile = fs.promises.writeFile.bind(fs.promises);
+    let signalSecondWriting!: () => void;
+    const secondWriting = new Promise<void>((resolve) => {
+      signalSecondWriting = resolve;
+    });
+    let firstDone!: Promise<unknown>;
+    let secondDone: Promise<unknown> | undefined;
+    let lockKeptForSecond: boolean | undefined;
+    let recordWrites = 0;
+    vi.spyOn(fs.promises, 'writeFile').mockImplementation((async (file: string, data: string, options: unknown) => {
+      if (!String(file).endsWith('.tmp')) return realWriteFile(file, data, options as BufferEncoding);
+      recordWrites++;
+      if (recordWrites === 1) {
+        const longAgo = new Date(Date.now() - 2 * 60 * SECOND_MS);
+        fs.utimesSync(lockFile, longAgo, longAgo);
+        secondDone = writers[1].update(key, (current) => current && { ...current, size: 2 });
+        await secondWriting;
+      } else {
+        signalSecondWriting();
+        await firstDone;
+        lockKeptForSecond = fs.existsSync(lockFile);
+      }
+      return realWriteFile(file, data, options as BufferEncoding);
+    }) as unknown as typeof fs.promises.writeFile);
+
+    firstDone = writers[0].update(key, (current) => current && { ...current, size: 1 });
+    await firstDone;
+    await secondDone;
+
+    expect(lockKeptForSecond).toBe(true);
+    expect((await writers[0].get(key))?.size).toBe(2);
+  });
+
+  it('lists every live record for an early deletion, not only the first files of the directory', async () => {
+    const keys = Array.from({ length: 12 }, () => newKey());
+    for (const key of keys) await registerResult(key);
+    const live = await new FileRetentionLedger(ledgerDir).liveRecords();
+    expect(live.map((record) => record.key).sort()).toEqual([...keys].sort());
+  });
+
+  async function storeOwnResult(label: string): Promise<{ owner: User; key: string }> {
     const owner = await userStore.sanitizeUser(
-      await userStore.createUser({ email: `chain_${Date.now()}@retention.test`, name: 'chain', tier: 'pro' })
+      await userStore.createUser({ email: `${label}_${Date.now()}@retention.test`, name: label, tier: 'pro' })
     );
-    const key = `conversions/${owner.id}/${Date.now()}_chained.bin`;
-    await storageProvider.saveObject(key, TEN_BYTES, MIME_TYPE, 'chained.bin');
+    const key = `conversions/${owner.id}/${Date.now()}_${label}.bin`;
+    await storageProvider.saveObject(key, TEN_BYTES, MIME_TYPE, `${label}.bin`);
     await registerResult(key);
     await recordServed(key, { first: 0, last: 9, size: 10 });
-    await holdResultForJob(key);
+    return { owner, key };
+  }
 
-    const afterGrace = Date.now() + POLICY.deliveredGraceMs + SECOND_MS;
-    expect(await sweepRetention(storageProvider, afterGrace)).toBe(0);
+  it('keeps a result that a job reads as its input until that job ends, also past the undelivered time', async () => {
+    const { owner, key } = await storeOwnResult('chain');
+    expect(await holdResultForJob(key, 'job-1')).toBe(true);
+    expect(await holdResultForJob(key, 'job-2')).toBe(true);
+
+    const afterUndelivered = Date.now() + POLICY.undeliveredTtlMs + SECOND_MS;
+    expect(await sweepRetention(storageProvider, afterUndelivered)).toBe(0);
+    await releaseResultHold(key, 'job-1');
+    expect(await sweepRetention(storageProvider, afterUndelivered)).toBe(0);
     expect(await mayUseStorageKeyAsJobInput(key, owner.id)).toBe(true);
 
-    const afterHold = Date.now() + POLICY.undeliveredTtlMs + SECOND_MS;
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(afterHold);
-    expect(await mayUseStorageKeyAsJobInput(key, owner.id)).toBe(false);
-    vi.useRealTimers();
-    expect(await sweepRetention(storageProvider, afterHold)).toBe(1);
+    await releaseResultHold(key, 'job-2');
+    expect(await sweepRetention(storageProvider, afterUndelivered)).toBe(1);
     expect(storageProvider.getObject(key)).toBeUndefined();
+    expect(await holdResultForJob(key, 'job-3')).toBe(false);
+    expect(await mayUseStorageKeyAsJobInput(key, owner.id)).toBe(false);
+  });
+
+  it('ends the hold of a job that never reported back once the longest hold has passed', async () => {
+    const { key } = await storeOwnResult('lost');
+    expect(await holdResultForJob(key, 'job-lost')).toBe(true);
+    expect(await sweepRetention(storageProvider, Date.now() + JOB_INPUT_HOLD_MAX_MS - SECOND_MS)).toBe(0);
+    expect(await sweepRetention(storageProvider, Date.now() + JOB_INPUT_HOLD_MAX_MS + SECOND_MS)).toBe(1);
+  });
+});
+
+/** A port on this host that nothing listens on. */
+async function closedPort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as net.AddressInfo;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+describe('the Redis ledger while Redis cannot be reached', () => {
+  const PARALLEL_CALLS = 50;
+  const CONNECT_WAIT_MS = 2_000;
+  const FAIL_FAST_MS = 300;
+
+  it('fails every call after one short wait, then at once, without piling up listeners', async () => {
+    const redis = new Redis(`redis://127.0.0.1:${await closedPort()}`, { maxRetriesPerRequest: 2, enableOfflineQueue: false });
+    redis.on('error', () => undefined);
+    const warnings: string[] = [];
+    const onWarning = (warning: Error) => warnings.push(warning.name);
+    process.on('warning', onWarning);
+    const ledger = new RedisRetentionLedger(redis);
+    const reads = () => Promise.allSettled(Array.from({ length: PARALLEL_CALLS }, (_, i) => ledger.get(`conversions/outage/f${i}`)));
+    try {
+      let start = Date.now();
+      const first = await reads();
+      const firstMs = Date.now() - start;
+      start = Date.now();
+      const second = await reads();
+      const secondMs = Date.now() - start;
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect([...first, ...second].every((result) => result.status === 'rejected')).toBe(true);
+      expect(firstMs).toBeLessThan(CONNECT_WAIT_MS + FAIL_FAST_MS);
+      expect(secondMs).toBeLessThan(FAIL_FAST_MS);
+      expect(warnings).not.toContain('MaxListenersExceededWarning');
+    } finally {
+      process.off('warning', onWarning);
+      redis.disconnect();
+    }
   });
 });
