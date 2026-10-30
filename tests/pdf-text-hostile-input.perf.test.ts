@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
 import { graphicsStateDepth } from '../src/lib/conversions/pdf-stream-guard';
-import { layoutPdfDocument } from '../src/lib/conversions/pdf-layout';
+import { layoutPdf } from '../src/lib/conversions/pdf-layout';
 import type { PdfContentFont, PdfContentItem, PdfPageContent } from '../src/lib/conversions/pdf-text-types';
 import { type CraftObject, buildPdf, flate, singlePagePdf } from './helpers/pdf-craft';
-import { expectLinearOnInputs, expectSizeIndependentOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
+import { cpuClockMs, expectLinearOnInputs, expectSizeIndependentOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * Timing-ratio checks for the hostile inputs of pdf-text-hostile-input.test.ts and pdf-layout-units.test.ts, which keep
@@ -15,6 +15,7 @@ import { expectLinearOnInputs, expectSizeIndependentOnInputs, SCALING_FACTOR, SC
 const BOUND_TEST_TIMEOUT_MS = 120_000;
 const OPERAND_RUN = 80 * 1000;
 const COLUMN_LINES = 50 * 1000;
+const OPEN_PARAGRAPH_PAGES = 2000;
 /** n log n with allocation: a quadratic layout takes 16x for 4x the lines. */
 const COLUMN_MAX_RATIO = 10;
 const STATE_DEPTH_LIMIT = 256;
@@ -104,11 +105,39 @@ describe('reading-order layout stays near-linear in the line count', () => {
   };
 
   it('lays out a long column of lines in near-linear time', async () => {
-    const { largeResult } = await expectLinearOnInputs('column of lines', (page: PdfPageContent) => layoutPdfDocument([page], [font]), {
+    const { largeResult } = await expectLinearOnInputs('column of lines', (page: PdfPageContent) => layoutPdf([page], [font]).model, {
       small: column(COLUMN_LINES / SCALING_FACTOR),
       large: column(COLUMN_LINES),
       maxRatio: COLUMN_MAX_RATIO,
     });
     expect(largeResult.pageCount).toBe(1);
+  }, SCALING_TEST_TIMEOUT_MS);
+});
+
+describe('a document of pages that are each one open paragraph under a running footer', () => {
+  const font: PdfContentFont = { name: 'Body', bold: false, italic: false, monospace: false, serif: false };
+  const LINE = 'the paragraph runs on from the page before and goes on over the page after it with no stop';
+  const item = (text: string, baseline: number): PdfContentItem => ({ text, x: 50, baseline, width: text.length * 6, size: 12, font: 0, rtl: false, angled: false, vertical: false });
+  const pages = (count: number): PdfPageContent[] =>
+    Array.from({ length: count }, (_, i) => ({
+      pageNumber: i + 1,
+      width: 600,
+      height: 800,
+      items: [item(LINE, 100), item(LINE, 114), item(`Page ${i + 1}`, 770)],
+      rules: [],
+      images: [],
+      unmappedGlyphs: 0,
+      operatorsSkipped: false,
+      rulesTruncated: false,
+    }));
+
+  it('is laid out in time linear in the page count, the tables found without merging the paragraphs again', async () => {
+    const { largeResult } = await expectLinearOnInputs('open paragraphs under a footer', (input: PdfPageContent[]) => layoutPdf(input, [font]), {
+      small: pages(OPEN_PARAGRAPH_PAGES / SCALING_FACTOR),
+      large: pages(OPEN_PARAGRAPH_PAGES),
+      clock: cpuClockMs,
+    });
+    expect(largeResult.model.pageCount).toBe(OPEN_PARAGRAPH_PAGES);
+    expect(largeResult.pageText.every((page) => page.lines.length === 2)).toBe(true);
   }, SCALING_TEST_TIMEOUT_MS);
 });
