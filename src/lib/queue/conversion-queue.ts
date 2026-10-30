@@ -1,7 +1,6 @@
 import { Queue, Worker, Job, createQueueEngine, IQueueEngine, WorkerOptions } from './bullmq-engine';
 import type { ConversionJobData, ConversionJobResult, ResourceClass } from '../types';
 import { storageProvider } from '../storage';
-import { isUploadKey } from '../storage/key-namespace';
 import { releaseResultHold } from '../storage/retention-service';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { MISSING_WEBHOOK_SECRET_REASON, webhookDispatcher } from '../api-keys/webhook-dispatcher';
@@ -40,25 +39,6 @@ export async function processConversionJob(
   job: Job<ConversionJobData, ConversionJobResult>
 ): Promise<ConversionJobResult> {
   return processNodeJob(job, dispatchEngine, storageProvider);
-}
-
-/**
- * Deletes a job's uploaded input, reporting a missing object or a failed delete. Only an upload
- * belongs to the job: a user's `conversions/` or `results/` output chained as the input is kept.
- */
-async function removeJobInput(jobId: string, storageKey: string): Promise<void> {
-  if (!isUploadKey(storageKey)) {
-    // An owner's earlier result chained as the input stays theirs; the job only gives up its hold on it.
-    await releaseResultHold(storageKey, jobId);
-    return;
-  }
-  try {
-    if (!(await storageProvider.deleteObject(storageKey))) {
-      console.warn(`[ConversionQueue] Input cleanup for job ${jobId} found no object at key "${storageKey}".`);
-    }
-  } catch (err) {
-    console.warn(`[ConversionQueue] Input cleanup for job ${jobId} failed to delete key "${storageKey}":`, err);
-  }
 }
 
 /**
@@ -198,35 +178,36 @@ export function attachJobLifecycleListeners(
 }
 
 /**
- * Deletes a job's uploaded input once the worker has recorded its completion. Attach it to every
- * worker that runs processConversionJob.
+ * Ends the hold of a job on its input once the worker has recorded its completion or its last failure; an upload no
+ * other job holds is deleted after a short grace period (see `releaseResultHold`). Attach it to every worker that
+ * runs processConversionJob.
  */
 export function attachInputCleanupOnCompletion(
   worker: Worker<ConversionJobData, ConversionJobResult>
 ): void {
   worker.on('completed', (job: Job<ConversionJobData, ConversionJobResult>) => {
     if (job.data?.storageKey) {
-      void removeJobInput(job.id, job.data.storageKey);
+      void releaseResultHold(job.data.storageKey, job.id);
     }
   });
   worker.on('failed', (job: Job<ConversionJobData, ConversionJobResult>, err: unknown) => {
     if (job.data?.storageKey && isFinalFailure(job, err)) {
-      void removeJobInput(job.id, job.data.storageKey);
+      void releaseResultHold(job.data.storageKey, job.id);
     }
   });
 }
 
 /**
- * Owns the quota refund and the input cleanup for cancelled jobs. The engine emits `cancelled` once per cancelled
+ * Owns the quota refund and the release of the input for cancelled jobs. The engine emits `cancelled` once per cancelled
  * job, in the process whose cancelJob won the transition, so every cancel path refunds exactly once.
  */
 export function attachJobCancellationListeners(
   queue: IQueueEngine<ConversionJobData, ConversionJobResult>
 ): void {
   queue.on('cancelled', async (job: Job<ConversionJobData, ConversionJobResult>) => {
-    // A cancelled job never runs again, so its uploaded input is not needed any more.
+    // A cancelled job never runs again, so it no longer needs its input.
     if (job.data?.storageKey) {
-      await removeJobInput(job.id, job.data.storageKey);
+      await releaseResultHold(job.data.storageKey, job.id);
     }
     if (!job.data?.reservationId) {
       return;

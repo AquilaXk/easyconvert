@@ -16,6 +16,7 @@ import {
   CAPACITY_CHECK_TTL_MS,
   evictForCapacity,
   holdResultForJob,
+  releaseResultHold,
   recordServed,
   registerResult,
   resultAvailability,
@@ -188,6 +189,22 @@ describe('early deletion when the disk runs full', () => {
     expect(await evictForCapacity(storageProvider, now)).toBe(1);
     expect(disk.deleted).toEqual([other]);
     expect(storageProvider.getObject(input)).toBeDefined();
+  });
+
+  it('never deletes an upload, also when no job holds it any more', async () => {
+    const user = await createUser('upload');
+    const now = Date.now();
+    const upload = `uploads/${user.id}/${crypto.randomBytes(4).toString('hex')}_input.bin`;
+    await storageProvider.saveObject(upload, BODY, MIME_TYPE, 'input.bin');
+    storedKeys.push(upload);
+    expect(await holdResultForJob(upload, 'job-upload', now - 50 * MINUTE_MS)).toBe(true);
+    await releaseResultHold(upload, 'job-upload');
+    const other = await storeResult(user, 'other', now - 40 * MINUTE_MS);
+    const disk = fakeDisk(99);
+
+    expect(await evictForCapacity(storageProvider, now)).toBe(1);
+    expect(disk.deleted).toEqual([other]);
+    expect(storageProvider.getObject(upload)).toBeDefined();
   });
 
   it('answers the owner of a result deleted for space with 410 and the reason', async () => {

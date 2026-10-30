@@ -23,6 +23,7 @@ export default defineConfig({
       // The tests that count or record the programs a PDF operation starts see the qpdf program; tests/qpdf-runner*.test.ts turn the runner on.
       QPDF_RUNNER: 'off',
     },
+    setupFiles: ['tests/helpers/isolated-retention-ledger.ts'],
     include: ['tests/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/.worktrees/**', '**/.claude/worktrees/**', 'ab-base/**'],
   },

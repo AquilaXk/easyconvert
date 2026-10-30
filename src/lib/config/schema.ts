@@ -717,7 +717,7 @@ const SCHEMA_ENTRIES = [
     name: 'RESULT_UNDELIVERED_TTL_SECONDS',
     area: 'storage',
     description:
-      'Seconds a conversion result is kept when nobody has downloaded it completely, counted from the moment it is stored; after that it is deleted and its download answers 410 Gone. The input of a job is deleted as soon as the job ends and does not wait for it. Applies to every storage driver; a bucket lifecycle rule is only a backstop.',
+      'Seconds a conversion result is kept when nobody has downloaded it completely, counted from the moment it is stored; after that it is deleted and its download answers 410 Gone. The upload a job reads is deleted shortly after the last job that reads it ends (RESULT_DELIVERED_GRACE_SECONDS) and does not wait for this. Applies to every storage driver; a bucket lifecycle rule is only a backstop.',
     kind: { type: 'integer', min: 60, max: 86_400 },
     default: 3600,
     requiredInProduction: false,

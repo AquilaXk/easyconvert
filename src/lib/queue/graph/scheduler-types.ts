@@ -85,6 +85,5 @@ export interface IGraphScheduler {
   getGraphState(graphId: string): Promise<GraphExecutionState | undefined>;
   cancelGraph(graphId: string, reason?: string): Promise<boolean>;
   getNodeOutputs(graphId: string, nodeIds: NodeId | NodeId[]): Promise<string[]>;
-  /** Deletes what an ended graph leaves in storage: its intermediate artifacts and the uploads it read. Returns how many objects. */
   cleanupIntermediates(graphId: string): Promise<number>;
 }

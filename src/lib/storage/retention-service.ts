@@ -1,6 +1,6 @@
 import os from 'node:os';
 import { StorageNotFoundError } from './adapters/adapter-interface';
-import { classifyStorageKey } from './key-namespace';
+import { classifyStorageKey, isUploadKey } from './key-namespace';
 import type { IStorageBackend } from './oci-storage';
 import { getRetentionLedger } from './retention-ledger';
 import {
@@ -11,11 +11,14 @@ import {
   type DiskProbe,
 } from './result-capacity';
 import {
+  endUploadUse,
   holdRecord,
   isDeleted,
+  isHoldableKey,
   isRetainedKey,
   markGone,
   newRecord,
+  newUploadRecord,
   reasonOf,
   recordServedRange,
   releaseHold,
@@ -163,18 +166,20 @@ export async function recordServed(key: string, range: { first: number; last: nu
 }
 
 /**
- * Holds the result under `key` for the job `holder`, which reads it as its input: the sweep and an early deletion
- * for space leave it alone until `releaseResultHold` or JOB_INPUT_HOLD_MAX_MS. Returns false when the result was
- * deleted before the hold could be taken, so the job must not be queued. A key the rule does not track, or a ledger
- * that cannot be reached, holds nothing and returns true.
+ * Holds the file under `key` for the job `holder`, which reads it as its input: an earlier result that the sweep and
+ * an early deletion for space leave alone, or an upload that is not deleted while another job may still read it. The
+ * hold lasts until `releaseResultHold` or JOB_INPUT_HOLD_MAX_MS. Returns false when the file was deleted before the
+ * hold could be taken, so the job must not be queued. A key the rule does not track, or a ledger that cannot be
+ * reached, holds nothing and returns true.
  */
 export async function holdResultForJob(key: string, holder: string, now: number = Date.now()): Promise<boolean> {
-  if (!isRetainedKey(key)) return true;
+  if (!isHoldableKey(key)) return true;
   let tracked = false;
   try {
     const held = await getRetentionLedger().update(key, (current) => {
       tracked = current !== undefined;
-      return current && holdRecord(current, holder, now);
+      const base = current ?? (isUploadKey(key) ? newUploadRecord(key, now) : undefined);
+      return base && holdRecord(base, holder, now);
     });
     return held !== undefined || !tracked;
   } catch (error) {
@@ -183,11 +188,27 @@ export async function holdResultForJob(key: string, holder: string, now: number 
   }
 }
 
-/** Ends the hold of the job `holder` on the result under `key`, when it ended. Safe to call again or for a key without one. */
+/**
+ * Ends the hold of the job `holder` on the file under `key`, because the job ended. An upload that no other job holds
+ * is deleted by the sweep after the grace period (`endUploadUse`); an earlier result keeps its own deletion time.
+ * Safe to call again or for a key without a hold. An upload that was never held keeps its own lifetime.
+ */
 export async function releaseResultHold(key: string, holder: string): Promise<void> {
-  if (!isRetainedKey(key)) return;
+  if (!isHoldableKey(key)) return;
+  const policy = resolveRetentionPolicy();
+  const now = Date.now();
+  await changeHold(key, holder, (current) => (isUploadKey(key) ? endUploadUse(current, holder, now, policy) : releaseHold(current, holder)));
+}
+
+/** Gives up the hold of `holder` on `key` without the job having run: the file keeps the deletion time it had. */
+async function giveUpHold(key: string, holder: string): Promise<void> {
+  if (!isHoldableKey(key)) return;
+  await changeHold(key, holder, (current) => releaseHold(current, holder));
+}
+
+async function changeHold(key: string, holder: string, change: (current: RetentionRecord) => RetentionRecord | undefined): Promise<void> {
   try {
-    await getRetentionLedger().update(key, (current) => current && releaseHold(current, holder));
+    await getRetentionLedger().update(key, (current) => current && change(current));
   } catch (error) {
     console.warn(`[Retention] Could not end the hold of the job ${holder} on "${key}"; it ends by itself:`, error);
   }
@@ -198,9 +219,10 @@ const RETENTION_PROVIDER = 'retention';
 
 /**
  * Runs `start`, which queues the job `holder`, while its input `key` is held for it, so that neither the sweep nor an
- * early deletion for space removes a result the job reads before it ends (its end calls `releaseResultHold`). When
- * the input was deleted after it was authorized, nothing is queued and a StorageNotFoundError is thrown, which the
- * routes answer like a missing object. A failed `start` gives the hold up again.
+ * early deletion for space removes a result the job reads, and no other job's end deletes an upload it reads, before
+ * it ends (its end calls `releaseResultHold`). When the input was deleted after it was authorized, nothing is queued
+ * and a StorageNotFoundError is thrown, which the routes answer like a missing object. A failed `start` gives the
+ * hold up again and leaves the file as it was.
  */
 export async function withInputHeld<T>(key: string | undefined, holder: string, start: () => Promise<T>): Promise<T> {
   if (key === undefined) return start();
@@ -208,7 +230,7 @@ export async function withInputHeld<T>(key: string | undefined, holder: string, 
   try {
     return await start();
   } catch (error) {
-    await releaseResultHold(key, holder);
+    await giveUpHold(key, holder);
     throw error;
   }
 }

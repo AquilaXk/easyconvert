@@ -18,6 +18,8 @@ import { createZipArchive } from '../src/lib/conversions';
 import { ociWorker } from '../src/worker/index';
 import { attachInputCleanupOnCompletion } from '../src/lib/queue/conversion-queue';
 import { s3Storage } from '../src/lib/storage/s3-storage';
+import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { holdResultForJob } from '../src/lib/storage/retention-service';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
@@ -312,37 +314,38 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
       expect(result.filename).toBe('document.zip');
     });
 
-    it('cleans up storageKey upload input when worker job permanently fails on final attempt', async () => {
-      const deletedKeys: string[] = [];
-      const originalDelete = s3Storage.deleteObject;
-      s3Storage.deleteObject = vi.fn((key: string) => {
-        deletedKeys.push(key);
-        return true;
-      });
-
+    it('ends the hold on the storageKey upload input only when the worker job permanently fails on the final attempt', async () => {
+      const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-signal-exit-holds-'));
+      setRetentionLedger(new FileRetentionLedger(ledgerDir));
+      const key = 'uploads/job-retry/input.txt';
+      const heldBy = async () => Object.keys((await getRetentionLedger().get(key))?.holds ?? {});
       const emitter = new EventEmitter();
       attachInputCleanupOnCompletion(emitter as any);
 
       try {
-        // Retry attempt 1 of 3: Should NOT clean up yet
+        await holdResultForJob(key, 'job-retry');
+
+        // Retry attempt 1 of 3: Should NOT release yet
         emitter.emit('failed', {
           id: 'job-retry',
-          data: { storageKey: 'uploads/job-retry/input.txt' },
+          data: { storageKey: key },
           opts: { attempts: 3 },
           attemptsMade: 1,
         });
-        expect(deletedKeys).toEqual([]);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(await heldBy()).toEqual(['job-retry']);
 
-        // Final attempt 3 of 3: SHOULD clean up
+        // Final attempt 3 of 3: SHOULD release
         emitter.emit('failed', {
           id: 'job-retry',
-          data: { storageKey: 'uploads/job-retry/input.txt' },
+          data: { storageKey: key },
           opts: { attempts: 3 },
           attemptsMade: 3,
         });
-        expect(deletedKeys).toEqual(['uploads/job-retry/input.txt']);
+        await vi.waitFor(async () => expect(await heldBy()).toEqual([]));
       } finally {
-        s3Storage.deleteObject = originalDelete;
+        setRetentionLedger(undefined);
+        fs.rmSync(ledgerDir, { recursive: true, force: true });
       }
     });
   });

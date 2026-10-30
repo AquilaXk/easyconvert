@@ -1,35 +1,53 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Queue } from '../src/lib/queue/bullmq-engine';
-import { attachJobCancellationListeners, processConversionJob } from '../src/lib/queue/conversion-queue';
+import { Queue, type Job } from '../src/lib/queue/bullmq-engine';
+import { attachInputCleanupOnCompletion, attachJobCancellationListeners, processConversionJob } from '../src/lib/queue/conversion-queue';
 import { dispatchEngine } from '../src/lib/queue/dispatch-engine';
 import { InMemoryGraphScheduler } from '../src/lib/queue/graph/in-memory-scheduler';
 import { initGraphHoldingInputs } from '../src/lib/queue/graph/input-cleanup';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
-import { recordServed, registerResult, sweepRetention, withInputHeld } from '../src/lib/storage/retention-service';
+import { holdResultForJob, recordServed, registerResult, releaseResultHold, sweepRetention, withInputHeld } from '../src/lib/storage/retention-service';
 import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { StorageNotFoundError } from '../src/lib/storage/adapters/adapter-interface';
 import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 /**
- * An uploaded input is deleted as soon as nothing can read it any more: when the job ends, is cancelled, or
- * (for a graph) when the graph has ended. It is kept while a retry may still run.
+ * An uploaded input is held for every job or graph that reads it and goes, after the grace period of a delivered
+ * result, once the last of them ended, was cancelled or failed for the last time. It is kept while a retry may still run.
  */
 
 const CSV_INPUT = 'name,score\nAlice,100\nBob,95\n';
 const ATTEMPTS = 3;
 
 const storedKeys: string[] = [];
+const POLICY = resolveRetentionPolicy({});
+let ledgerDir: string;
+
+beforeEach(() => {
+  ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-input-holds-'));
+  setRetentionLedger(new FileRetentionLedger(ledgerDir));
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
+  setRetentionLedger(undefined);
+  fs.rmSync(ledgerDir, { recursive: true, force: true });
   for (const key of storedKeys.splice(0)) s3Storage.deleteObject(key);
 });
+
+const afterGrace = () => Date.now() + POLICY.deliveredGraceMs + 1000;
+const beforeGraceEnds = () => Date.now() + POLICY.deliveredGraceMs - 1000;
+
+/** Runs the sweep at the time the grace period of the last job has passed. */
+async function sweepAfterGrace(): Promise<number> {
+  return sweepRetention(s3Storage, afterGrace());
+}
 
 function storeUpload(label: string): string {
   const key = `uploads/input-deletion-${label}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.csv`;
@@ -54,15 +72,18 @@ describe('the input of a single job', () => {
   it('stays while a retry is pending and goes with the final failed attempt', async () => {
     const key = storeUpload('retry');
     const queue = new Queue<ConversionJobData, ConversionJobResult>('input-deletion-retry');
-    const job = await queue.add('convert', jobData(key), { attempts: ATTEMPTS });
+    const job = await enqueueConversionJob(queue, 'convert', jobData(key), { attempts: ATTEMPTS }, {});
     vi.spyOn(dispatchEngine, 'convert').mockRejectedValue(new Error('disk hiccup'));
 
     job.attemptsMade = 1;
     await expect(processConversionJob(job)).rejects.toThrow('disk hiccup');
+    expect(await sweepAfterGrace()).toBe(0);
     expect(s3Storage.getObject(key)?.buffer.toString('utf-8')).toBe(CSV_INPUT);
 
     job.attemptsMade = ATTEMPTS;
     await expect(processConversionJob(job)).rejects.toThrow('disk hiccup');
+    expect(await sweepRetention(s3Storage, beforeGraceEnds())).toBe(0);
+    expect(await sweepAfterGrace()).toBe(1);
     expect(s3Storage.getObject(key)).toBeUndefined();
     await queue.close();
   });
@@ -71,12 +92,16 @@ describe('the input of a single job', () => {
     const key = storeUpload('cancel');
     const queue = new Queue<ConversionJobData, ConversionJobResult>('input-deletion-cancel');
     attachJobCancellationListeners(queue);
-    const job = await queue.add('convert', jobData(key), { attempts: ATTEMPTS });
+    const job = await enqueueConversionJob(queue, 'convert', jobData(key), { attempts: ATTEMPTS }, {});
+    expect(await sweepAfterGrace()).toBe(0);
     expect(s3Storage.getObject(key)).toBeDefined();
 
     expect(await queue.cancelJob(job.id, 'Cancelled by user')).toBe(true);
 
-    await vi.waitFor(() => expect(s3Storage.getObject(key)).toBeUndefined());
+    await vi.waitFor(async () => {
+      await sweepAfterGrace();
+      expect(s3Storage.getObject(key)).toBeUndefined();
+    });
     await queue.close();
   });
 
@@ -112,15 +137,17 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-complete');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await scheduler.initGraph(graphId, twoNodes(key));
+    await initGraphHoldingInputs(scheduler, graphId, twoNodes(key), {});
 
     await scheduler.onNodeStarted(graphId, 'src');
     const first = await scheduler.onNodeCompleted(graphId, 'src', [key]);
     expect(first.graphCompleted).toBe(false);
+    expect(await sweepAfterGrace()).toBe(0);
     expect(s3Storage.getObject(key)).toBeDefined();
 
     const last = await scheduler.onNodeCompleted(graphId, 'out', ['intermediate/none/out.json']);
     expect(last.graphCompleted).toBe(true);
+    expect(await sweepAfterGrace()).toBe(1);
     expect(s3Storage.getObject(key)).toBeUndefined();
   });
 
@@ -128,11 +155,12 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-failed');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
-    await scheduler.initGraph(graphId, twoNodes(key));
+    await initGraphHoldingInputs(scheduler, graphId, twoNodes(key), {});
 
     const failure = await scheduler.onNodeFailed(graphId, 'src', 'boom');
 
     expect(failure.graphFailed).toBe(true);
+    expect(await sweepAfterGrace()).toBe(1);
     expect(s3Storage.getObject(key)).toBeUndefined();
   });
 
@@ -140,11 +168,24 @@ describe('the uploaded input of a graph', () => {
     const key = storeUpload('graph-cancelled');
     const scheduler = new InMemoryGraphScheduler();
     const graphId = newGraphId();
+    await initGraphHoldingInputs(scheduler, graphId, twoNodes(key), {});
+
+    expect(await scheduler.cancelGraph(graphId)).toBe(true);
+
+    expect(await sweepAfterGrace()).toBe(1);
+    expect(s3Storage.getObject(key)).toBeUndefined();
+  });
+
+  it('is kept by a graph that never held it, to its own lifetime', async () => {
+    const key = storeUpload('graph-unheld');
+    const scheduler = new InMemoryGraphScheduler();
+    const graphId = newGraphId();
     await scheduler.initGraph(graphId, twoNodes(key));
 
     expect(await scheduler.cancelGraph(graphId)).toBe(true);
 
-    expect(s3Storage.getObject(key)).toBeUndefined();
+    expect(await sweepAfterGrace()).toBe(0);
+    expect(s3Storage.getObject(key)).toBeDefined();
   });
 
   it('leaves an owner\'s earlier output used as the graph input alone', async () => {
@@ -162,20 +203,14 @@ describe('the uploaded input of a graph', () => {
 });
 
 describe('the hold on an owner\'s earlier output chained as a job input', () => {
-  const POLICY = resolveRetentionPolicy({});
-  let ledgerDir: string;
   const deleted: string[] = [];
   const storage = { deleteObject: async (key: string) => (deleted.push(key), true) };
 
   afterEach(() => {
     deleted.length = 0;
-    setRetentionLedger(undefined);
-    if (ledgerDir) fs.rmSync(ledgerDir, { recursive: true, force: true });
   });
 
   async function deliveredResult(): Promise<string> {
-    ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-hold-'));
-    setRetentionLedger(new FileRetentionLedger(ledgerDir));
     const key = `conversions/user-1/${Date.now()}_${crypto.randomBytes(4).toString('hex')}_chained.csv`;
     await registerResult(key);
     await recordServed(key, { first: 0, last: 9, size: 10 });
@@ -225,5 +260,64 @@ describe('the hold on an owner\'s earlier output chained as a job input', () => 
     const start = vi.fn(async () => 'queued');
     await expect(withInputHeld(key, 'job-late', start)).rejects.toBeInstanceOf(StorageNotFoundError);
     expect(start).not.toHaveBeenCalled();
+  });
+});
+
+describe('an upload that several jobs convert to different formats', () => {
+  async function endJob(worker: EventEmitter, job: Job<ConversionJobData, ConversionJobResult>): Promise<void> {
+    worker.emit('completed', job);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+
+  it('converts for every job, one after the other and at the same time, and goes after the last one ends', async () => {
+    const key = storeUpload('shared');
+    const queue = new Queue<ConversionJobData, ConversionJobResult>('input-deletion-shared');
+    const worker = new EventEmitter();
+    attachInputCleanupOnCompletion(worker as never);
+    const enqueue = (label: string) => enqueueConversionJob(queue, 'convert', jobData(key), { jobId: `shared_${label}_${crypto.randomBytes(4).toString('hex')}` }, {});
+    const [first, second, third] = [await enqueue('a'), await enqueue('b'), await enqueue('c')];
+
+    const firstResult = await processConversionJob(first);
+    await endJob(worker, first);
+    expect(firstResult.resultKey).toBeDefined();
+    expect(s3Storage.getObject(key)).toBeDefined();
+    expect(await sweepAfterGrace()).toBe(0);
+
+    const [secondResult, thirdResult] = await Promise.all([processConversionJob(second), processConversionJob(third)]);
+    expect(secondResult.resultKey).toBeDefined();
+    expect(thirdResult.resultKey).toBeDefined();
+    await endJob(worker, second);
+    expect(s3Storage.getObject(key)).toBeDefined();
+    expect(await sweepAfterGrace()).toBe(0);
+
+    await endJob(worker, third);
+    expect(await sweepRetention(s3Storage, beforeGraceEnds())).toBe(0);
+    expect(s3Storage.getObject(key)).toBeDefined();
+    expect(await sweepAfterGrace()).toBe(1);
+    expect(s3Storage.getObject(key)).toBeUndefined();
+    await queue.close();
+  });
+
+  it('stays to its own lifetime when a job that held it could not be queued', async () => {
+    const key = storeUpload('unqueued');
+    await expect(withInputHeld(key, 'job-unqueued', () => Promise.reject(new Error('queue down')))).rejects.toThrow('queue down');
+
+    expect(await sweepAfterGrace()).toBe(0);
+    expect(s3Storage.getObject(key)).toBeDefined();
+  });
+
+  it('is not freed for the other job when the end of one job is reported twice', async () => {
+    const key = storeUpload('twice');
+    expect(await holdResultForJob(key, 'job-a')).toBe(true);
+    expect(await holdResultForJob(key, 'job-b')).toBe(true);
+
+    await releaseResultHold(key, 'job-a');
+    await releaseResultHold(key, 'job-a');
+
+    expect(await sweepAfterGrace()).toBe(0);
+    expect(s3Storage.getObject(key)).toBeDefined();
+    await releaseResultHold(key, 'job-b');
+    expect(await sweepAfterGrace()).toBe(1);
+    expect(s3Storage.getObject(key)).toBeUndefined();
   });
 });

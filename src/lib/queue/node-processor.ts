@@ -14,7 +14,6 @@ import { scopeStorageObjects } from '../storage/scoped-storage';
 import { convertFile } from '../conversions';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/errors';
 import { secureShredBuffer } from '../security/memory-shredder';
-import { isUploadKey } from '../storage/key-namespace';
 import { resolveRetentionPolicy } from '../storage/result-retention';
 import { registerStoredResult, releaseResultHold } from '../storage/retention-service';
 import { processGraphNodeJob } from './graph/node-executor';
@@ -105,22 +104,6 @@ function discardConversionOutput(jobId: string, result: EngineResult): void {
       `[NodeProcessor] Failed to discard output of aborted job ${jobId} at "${result.filePath}":`,
       err
     );
-  }
-}
-
-/** Deletes a job's uploaded input upon final attempt failure. */
-async function removeJobInput(jobId: string, storageKey: string, storage: IStorageBackend): Promise<void> {
-  if (!isUploadKey(storageKey)) {
-    // An owner's earlier result chained as the input stays theirs; the job only gives up its hold on it.
-    await releaseResultHold(storageKey, jobId);
-    return;
-  }
-  try {
-    if (!(await storage.deleteObject(storageKey))) {
-      console.warn(`[NodeProcessor] Input cleanup for job ${jobId} found no object at key "${storageKey}".`);
-    }
-  } catch (err) {
-    console.warn(`[NodeProcessor] Input cleanup for job ${jobId} failed to delete key "${storageKey}":`, err);
   }
 }
 
@@ -397,7 +380,7 @@ export async function processNodeJob(
       secureShredBuffer(inputBufferForShredding, 2);
     }
     if (job.data.storageKey && !conversionSucceeded && isFinalFailure(job, failure)) {
-      await removeJobInput(job.id, job.data.storageKey, storage);
+      await releaseResultHold(job.data.storageKey, job.id);
     }
     await scope.releaseAll();
   }

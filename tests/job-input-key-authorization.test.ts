@@ -1,5 +1,8 @@
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as submitLegacyJob } from '../src/app/api/queue/jobs/route';
@@ -11,6 +14,9 @@ import {
 } from '../src/lib/queue/conversion-queue';
 import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import { storageProvider } from '../src/lib/storage';
+import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { sweepRetention } from '../src/lib/storage/retention-service';
+import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
@@ -262,16 +268,27 @@ describe('job input cleanup deletes only uploads (#249)', () => {
     await queue.close();
   });
 
-  it('still deletes an anonymous uploads/ input after its job completes', async () => {
-    const uploadKey = storeCsv(`uploads/${uniqueSuffix()}_scores.csv`);
+  it('still deletes an anonymous uploads/ input after its job completes and the grace period has passed', async () => {
+    const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-anonymous-input-'));
+    setRetentionLedger(new FileRetentionLedger(ledgerDir));
+    try {
+      const uploadKey = storeCsv(`uploads/${uniqueSuffix()}_scores.csv`);
 
-    const res = await legacySubmit(uploadKey);
-    expect(res.status).toBe(200);
-    const { jobId } = await res.json();
+      const res = await legacySubmit(uploadKey);
+      expect(res.status).toBe(200);
+      const { jobId } = await res.json();
 
-    const result = await completeQueuedJob(jobId);
-    expect(JSON.parse((await storedText(result.resultKey)) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
-    expect(storageProvider.getObject(uploadKey)).toBeUndefined();
-    createdKeys.push(result.resultKey);
+      const result = await completeQueuedJob(jobId);
+      expect(JSON.parse((await storedText(result.resultKey)) ?? 'null')).toEqual(EXPECTED_JSON_ROWS);
+      createdKeys.push(result.resultKey);
+      const afterGrace = Date.now() + resolveRetentionPolicy({}).deliveredGraceMs + 1000;
+      await vi.waitFor(async () => {
+        await sweepRetention(storageProvider, afterGrace);
+        expect(storageProvider.getObject(uploadKey)).toBeUndefined();
+      });
+    } finally {
+      setRetentionLedger(undefined);
+      fs.rmSync(ledgerDir, { recursive: true, force: true });
+    }
   });
 });

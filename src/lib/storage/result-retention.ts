@@ -1,5 +1,5 @@
 import { CONFIG_SCHEMA, ConfigRuleError, parseKind } from '../config/schema';
-import { classifyStorageKey } from './key-namespace';
+import { classifyStorageKey, isUploadKey } from './key-namespace';
 
 /**
  * Delete-on-delivery retention of conversion results (docs/policy-decisions.md, "Results are deleted
@@ -75,7 +75,7 @@ export interface RetentionRecord {
   goneAt?: number;
   /** Set when the result was deleted before its time because the disk ran full. */
   goneReason?: 'capacity';
-  /** The jobs that read this result as their input, each with the time its hold ends unless the job ends first. */
+  /** The jobs that read this file as their input, each with the time its hold ends unless the job ends first. */
   holds?: Record<string, number>;
   /** A sweep could not delete the object; the next attempt waits until then, so the key does not block the others. */
   retryAt?: number;
@@ -92,6 +92,11 @@ export const FAILED_DELETE_RETRY_MS = 5 * 60 * 1000;
 export const JOB_INPUT_HOLD_MAX_MS = 24 * 60 * 60 * 1000;
 /** Most jobs that hold one result at once; one more is refused like a missing input. */
 export const MAX_HOLDS = 32;
+
+/** Whether `key` is a file that jobs hold as their input while they run: the retained results and the uploads. */
+export function isHoldableKey(key: string): boolean {
+  return isUploadKey(key) || isRetainedKey(key);
+}
 
 /** Whether results under `key` follow the retention rule: job results and a user's synchronous outputs. */
 export function isRetainedKey(key: string): boolean {
@@ -189,6 +194,25 @@ export function releaseHold(record: RetentionRecord, holder: string): RetentionR
   const holds = { ...record.holds };
   delete holds[holder];
   return { ...record, holds };
+}
+
+/**
+ * The record of an upload that is read as an input for the first time. Only the holds on it keep it, up to
+ * JOB_INPUT_HOLD_MAX_MS, which is as long as an upload lives anyway: a job whose end is never reported cannot keep it longer.
+ */
+export function newUploadRecord(key: string, now: number): RetentionRecord {
+  return { key, createdAt: now, deleteAt: now + JOB_INPUT_HOLD_MAX_MS, received: [] };
+}
+
+/**
+ * The record of an upload once the job `holder` that read it ended. When no other job holds it, it is deleted after
+ * the grace period of a delivered result, counted from this end, so that a client that asks for another format a
+ * moment later still finds it. Undefined when the job held nothing.
+ */
+export function endUploadUse(record: RetentionRecord, holder: string, now: number, policy: RetentionPolicy): RetentionRecord | undefined {
+  const released = releaseHold(record, holder);
+  if (!released || isHeld(released, now)) return released;
+  return { ...released, deleteAt: Math.min(released.deleteAt, now + policy.deliveredGraceMs) };
 }
 
 /** The record after the deletion of its object failed: it is live again and the sweep tries again after FAILED_DELETE_RETRY_MS. */
