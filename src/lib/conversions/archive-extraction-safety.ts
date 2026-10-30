@@ -450,19 +450,32 @@ export function acceptInternalHardLinks(entries: ListedArchiveEntry[]): ListedAr
   });
 }
 
+const SLASH_CODE = 0x2f;
+const BACKSLASH_CODE = 0x5c;
+const DOT_CODE = 0x2e;
+
+/** Whether a component of the path (split on either separator) is `..`; one pass, no array. */
+function hasParentComponent(rawPath: string): boolean {
+  let start = 0;
+  for (let at = 0; at <= rawPath.length; at++) {
+    const code = at === rawPath.length ? SLASH_CODE : rawPath.charCodeAt(at);
+    if (code !== SLASH_CODE && code !== BACKSLASH_CODE) continue;
+    if (at - start === 2 && rawPath.charCodeAt(start) === DOT_CODE && rawPath.charCodeAt(start + 1) === DOT_CODE) return true;
+    start = at + 1;
+  }
+  return false;
+}
+
 /** Why an entry name cannot be extracted under the root, or null when it is a plain relative path. */
 function entryPathProblem(rawPath: string): 'path-traversal' | 'absolute-path' | 'invalid-entry-name' | null {
   if (rawPath === '' || ENTRY_NAME_FORBIDDEN_CHARACTERS.test(rawPath)) {
     return 'invalid-entry-name';
   }
-  const normalized = rawPath.replace(/\\/g, '/');
-  if (normalized.startsWith('/') || DRIVE_LETTER_PREFIX.test(normalized)) {
+  const first = rawPath.charCodeAt(0);
+  if (first === SLASH_CODE || first === BACKSLASH_CODE || DRIVE_LETTER_PREFIX.test(rawPath)) {
     return 'absolute-path';
   }
-  if (normalized.split('/').includes('..')) {
-    return 'path-traversal';
-  }
-  return null;
+  return hasParentComponent(rawPath) ? 'path-traversal' : null;
 }
 
 const PATH_SEPARATOR_PATTERN = /[\\/]/;
@@ -470,8 +483,13 @@ const PATH_SEPARATOR_PATTERN = /[\\/]/;
 /** Number of path components, ignoring empty and `.` segments. */
 function entryPathDepth(rawPath: string): number {
   let depth = 0;
-  for (const segment of rawPath.split(PATH_SEPARATOR_PATTERN)) {
-    if (segment !== '' && segment !== '.') depth++;
+  let start = 0;
+  for (let at = 0; at <= rawPath.length; at++) {
+    const code = at === rawPath.length ? SLASH_CODE : rawPath.charCodeAt(at);
+    if (code !== SLASH_CODE && code !== BACKSLASH_CODE) continue;
+    const length = at - start;
+    if (length > 1 || (length === 1 && rawPath.charCodeAt(start) !== DOT_CODE)) depth++;
+    start = at + 1;
   }
   return depth;
 }

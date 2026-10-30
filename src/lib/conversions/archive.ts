@@ -1813,7 +1813,7 @@ export function extractRarArchive(
       };
       // unrar writes an entry that climbs out of the directory, or is absolute, below the directory instead, so the stored names
       // are read first (`lb` prints them bare, one per line) and an unsafe one refuses the archive before anything is extracted.
-      assertListedNamesSafe(runUnrar(['lb', '-idq', ...pwArgs, tmpFile], listingBufferLimit(ARCHIVE_SECURITY_LIMITS)).toString('utf-8'), ARCHIVE_SECURITY_LIMITS);
+      assertListedNamesSafe(runUnrar(['lb', ...pwArgs, tmpFile], listingBufferLimit(ARCHIVE_SECURITY_LIMITS)).toString('utf-8'), ARCHIVE_SECURITY_LIMITS);
       // -idq keeps error text on stderr so a password failure can be told from other failures.
       runUnrar(['x', '-idq', '-y', ...pwArgs, tmpFile, extractDir], ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
 
