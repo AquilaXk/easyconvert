@@ -223,7 +223,8 @@ function storageNames(streams: Streams, prefix: string): string[] {
     const slash = key.indexOf('/');
     if (slash > 0) names.add(key.slice(0, slash));
   }
-  return [...names].sort().slice(0, MAX_LISTED);
+  // The names end in eight upper-case hex digits (MS-OXMSG 2.2.1, 2.2.2), so the English collation orders them by number.
+  return [...names].sort((a, b) => a.localeCompare(b, 'en')).slice(0, MAX_LISTED);
 }
 
 interface Recipients {
