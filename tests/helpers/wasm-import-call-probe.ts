@@ -3,7 +3,7 @@
  * loads, then prints how much cheaper a WebAssembly call into a JavaScript import is on an instance that has made 20,000 such
  * calls than on new instances that have made fewer than V8's tier-up budget (1,000 calls). V8 tiers an import that is called
  * past the budget up from its generic wrapper to a compiled one, about five times cheaper a call; the generic wrapper costs
- * the same before and after. One line of JSON: the five ratios, steady cost over fresh cost, sorted.
+ * the same before and after. One line of JSON: the seven ratios, steady cost over fresh cost, sorted.
  */
 import '../../src/lib/conversions/dispatch';
 
@@ -16,9 +16,9 @@ const MODULE_BYTES = Uint8Array.from([
   0x01, 0x20, 0x00, 0x49, 0x0d, 0x00, 0x0b, 0x0b,
 ]);
 const CALLS_UNDER_BUDGET = 900;
-const INSTANCES = 400;
+const INSTANCES = 1000;
 const WARM_CALLS = 20_000;
-const SAMPLES = 5;
+const SAMPLES = 7;
 
 const module = new WebAssembly.Module(MODULE_BYTES);
 const identity = (value: number): number => value;

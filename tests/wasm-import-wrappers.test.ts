@@ -18,7 +18,7 @@ describe('WebAssembly import calls of a conversion process', () => {
   it('stay on the generic wrapper after many calls', () => {
     const output = execFileSync(process.execPath, ['--import', 'tsx', PROBE], { encoding: 'utf8', timeout: 120_000 });
     const ratios = JSON.parse(output.trim().split('\n').pop() ?? '[]') as number[];
-    expect(ratios).toHaveLength(5);
-    expect(ratios[2]).toBeGreaterThan(MIN_MEDIAN_RATIO);
+    expect(ratios).toHaveLength(7);
+    expect(ratios[3]).toBeGreaterThan(MIN_MEDIAN_RATIO);
   }, 150_000);
 });
