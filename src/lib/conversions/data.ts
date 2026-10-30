@@ -22,8 +22,8 @@ import {
   UnsupportedOptionError,
   UnsupportedTargetError,
 } from '../types';
-import { generateOdsFromData } from './office';
-import { writeXlsx, type SheetCell } from './xlsx-writer';
+import { generateOdsFromData, officeSheetWorkbook } from './office';
+import { sheetCellOfValue, writeXlsx, type SheetCell } from './xlsx-writer';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
 import { renderPdfTables } from './pdf-table-layout';
@@ -31,6 +31,7 @@ import {
   MAX_DATA_NESTING_DEPTH,
   MAX_INTEGER_LITERAL_DIGITS,
   dataObjectKeys,
+  fieldsInFirstSeenOrder,
   isDataObject,
   normalizeDataValue,
   parseJsonLossless,
@@ -466,17 +467,13 @@ function setCell(cells: Map<string, DataValue>, path: string, value: DataValue):
 
 /** A table over the union of all records' columns in first-seen order; a non-object record fills "value". */
 function tabulate(records: DataValue[], leadingFields: readonly string[] = []): DataTable {
-  const fieldIndex = new Map<string, number>(leadingFields.map((field, index) => [field, index]));
   const flattened = records.map((record) => {
     const cells = new Map<string, DataValue>();
     if (isDataObject(record)) flattenInto(record, '', cells);
     else setCell(cells, 'value', Array.isArray(record) ? stringifyJsonLossless(record) : record);
-    for (const field of cells.keys()) {
-      if (!fieldIndex.has(field)) fieldIndex.set(field, fieldIndex.size);
-    }
     return cells;
   });
-  const fields = [...fieldIndex.keys()];
+  const fields = fieldsInFirstSeenOrder(flattened.map((cells) => cells.keys()), leadingFields);
   return { fields, rows: flattened.map((cells) => fields.map((field) => cells.get(field) ?? null)) };
 }
 
@@ -492,10 +489,9 @@ function cellText(value: DataValue): string {
   return value === null ? '' : String(value);
 }
 
-/** The cell a table value is written as in a workbook: its own type, and the text of an integer past the 15 digits a sheet keeps. */
-function sheetCellOf(value: DataValue): SheetCell {
-  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
-  return typeof value === 'bigint' ? String(value) : stringifyJsonLossless(value);
+/** The sheet of a table: the header row, then one row per record, each value in a cell of its own type. */
+function tableSheet(table: DataTable): SheetCell[][] {
+  return [table.fields, ...table.rows.map((row) => row.map(sheetCellOfValue))];
 }
 
 /** Rejects unpaired surrogates in a table: every table writer would silently turn them into U+FFFD. */
@@ -976,6 +972,26 @@ export async function convertData(
   return convertStructured(inputBuffer, src, tgt, options, baseName);
 }
 
+/** Sources the data engine reads as a table of records for a spreadsheet target; their values keep their types. */
+export const STRUCTURED_SHEET_SOURCES: ReadonlySet<string> = new Set(['parquet', 'ndjson', 'jsonl', 'yaml', 'yml', 'toml', 'xml']);
+
+/**
+ * The XLSX workbook the office suite reads once on the way to `.xls` and discards: the sheet the `.xlsx` target writes of the source,
+ * stored without deflate. The suite inflates nothing then, and deflating took 18 of the 28 ms that writing the workbook of the data
+ * family's 2,500-row table took.
+ */
+export async function writeTransientWorkbook(inputBuffer: Buffer, src: string, options: ConversionOptions): Promise<Buffer> {
+  if (!STRUCTURED_SHEET_SOURCES.has(src)) return officeSheetWorkbook(inputBuffer, src, options, 'STORE');
+  assertDataOptions(options);
+  const write = async (): Promise<Buffer> => {
+    const source = readStructuredSource(inputBuffer, src, 'xlsx', options);
+    const table = tabulate(source.records(), source.fields);
+    assertTableUnicode(table, 'xlsx');
+    return writeXlsx(tableSheet(table), 'verbatim', 'STORE');
+  };
+  return src === 'parquet' ? guardParquetSource(write) : write();
+}
+
 async function convertStructured(
   inputBuffer: Buffer,
   src: string,
@@ -1035,7 +1051,7 @@ async function convertStructured(
   if (tgt === 'xls') {
     throw unconvertibleOfficeTarget(src, tgt);
   }
-  const xlsxBuffer = await writeXlsx([table.fields, ...table.rows.map((row) => row.map(sheetCellOf))], 'verbatim', options.uncompressedWorkbook);
+  const xlsxBuffer = await writeXlsx(tableSheet(table), 'verbatim');
   return {
     buffer: xlsxBuffer,
     mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

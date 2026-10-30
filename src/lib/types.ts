@@ -248,8 +248,6 @@ export interface ConversionOptions {
   disableHwaccel?: boolean;
   /** Server code and tests only (the options schema refuses it): convert in-process, as a host without FFmpeg does. */
   disableNativeEngine?: boolean;
-  /** Server code only (the options schema refuses it): write an XLSX workbook uncompressed, when the office suite reads it and it is discarded. */
-  uncompressedWorkbook?: boolean;
   // Office & PDF export options
   pdfStandard?: 'pdfa' | 'pdfa-1b' | 'pdfa-2b' | 'pdfa-3b';
   pdfVersion?: string;
@@ -717,21 +715,8 @@ export class DataParseError extends ConversionFailedError {
   }
 }
 
-/**
- * An input asks for more work or memory than the engine allows: a stream that would decode past a
- * size limit, or a document that would produce more text blocks or character mappings than the caps.
- * The routes answer it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
- */
-export class PayloadLimitError extends ConversionFailedError {
-  readonly status = 413;
-  constructor(message: string) {
-    super(message);
-    this.name = 'PayloadLimitError';
-  }
-}
-
-/** Structured-data input or output that exceeds a cap: entity or alias expansion, expanded size, nesting depth, the rows, columns or cell text of a sheet. */
-export class DataLimitExceededError extends PayloadLimitError {
+/** Structured-data input that exceeds a safety cap: entity or alias expansion, expanded size, nesting depth. */
+export class DataLimitExceededError extends ConversionFailedError {
   constructor(message: string) {
     super(message);
     this.name = 'DataLimitExceededError';
@@ -1014,6 +999,30 @@ export class GraphExportError extends ConversionFailedError {
   constructor(message: string, readonly destinationStatus?: number) {
     super(message);
     this.name = 'GraphExportError';
+  }
+}
+
+/**
+ * An input asks for more work or memory than the engine allows: a stream that would decode past a
+ * size limit, or a document that would produce more text blocks or character mappings than the caps.
+ * The routes answer it with HTTP 413 through `status`, ahead of the generic 400 for a ConversionFailedError.
+ */
+export class PayloadLimitError extends ConversionFailedError {
+  readonly status = 413;
+  constructor(message: string) {
+    super(message);
+    this.name = 'PayloadLimitError';
+  }
+}
+
+/**
+ * A table past what a sheet of the target holds (its rows, its columns, the characters of a cell), or a workbook that cannot be
+ * checked against those bounds. It is refused rather than cut, with the 413 of the other limits.
+ */
+export class SheetLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SheetLimitError';
   }
 }
 

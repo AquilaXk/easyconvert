@@ -1512,7 +1512,7 @@
     "rule": "complexity",
     "function": "safeExtractXmlElements",
     "count": 1,
-    "maxValue": 63
+    "maxValue": 62
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1596,7 +1596,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 10178
+    "maxValue": 10155
   },
   {
     "file": "src/lib/conversions/office.ts",

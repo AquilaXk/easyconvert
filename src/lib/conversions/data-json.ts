@@ -56,6 +56,15 @@ export function dataObjectKeys(target: object): string[] {
   return (hasOrderedObjects ? ORDERED_KEYS.get(target) : undefined) ?? Object.keys(target);
 }
 
+/** The fields of a table of records: `leading` first, then every key the records name, each once, in the order it first appears. */
+export function fieldsInFirstSeenOrder(keyLists: Iterable<Iterable<string>>, leading: readonly string[] = []): string[] {
+  const fields = new Set(leading);
+  for (const keys of keyLists) {
+    for (const key of keys) fields.add(key);
+  }
+  return [...fields];
+}
+
 /**
  * Wraps DataObjects carrying recorded source key order in an `ownKeys` Proxy so third-party
  * serializers (`yaml`, `smol-toml`) that call `Object.keys`/`Object.entries` observe source order.

@@ -64,8 +64,8 @@ import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variant
 import { officeReadingFormat } from './office/office-suite-sources';
 import { assertReadableAsText } from './office/text-source-guard';
 import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from './office/sheet-bounds';
-import { writeXlsx, type SheetCell } from './xlsx-writer';
-import { parseDelimitedRows } from './delimited-detect';
+import { DAY_ZERO_1900, MS_PER_DAY, writeXlsx, type WorkbookCompression } from './xlsx-writer';
+import { DELIMITED_SHEET_SOURCES, delimitedSheetRows, noTableReader, parseJsonTableCells, parseJsonTableRows } from './sheet-text-tables';
 
 export { buildOpenXpsPackage };
 
@@ -268,7 +268,7 @@ export async function convertOffice(
 
   // 15. Target is XLSX (from CSV, TSV, JSON)
   if (tgt === 'xlsx') {
-    const xlsxBuffer = await generateXlsxFromData(inputBuffer, src, options);
+    const xlsxBuffer = await officeSheetWorkbook(inputBuffer, src, options);
     return {
       buffer: xlsxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -2239,6 +2239,8 @@ export interface SafeXmlElement {
 export interface SafeXmlScannerOptions {
   maxDepth?: number;
   maxElements?: number;
+  /** Takes each element as it is found, in place of the returned list (which is then empty), so that a long list is not held. */
+  onElement?: (element: SafeXmlElement) => void;
 }
 
 /**
@@ -2297,6 +2299,8 @@ export function safeExtractXmlAttributes(tagHeader: string): SafeXmlAttributeMap
   return attrs;
 }
 
+const SAFE_XML_SCANNER_DEFAULTS = { maxElements: 50_000, maxDepth: 64 } as const;
+
 /**
  * Safely extracts XML elements in linear O(N) time without ReDoS backtracking.
  * Accurately tracks nested elements of the same tag name and enforces strict depth bounds.
@@ -2307,8 +2311,9 @@ export function safeExtractXmlElements(
   options: SafeXmlScannerOptions = {}
 ): SafeXmlElement[] {
   const results: SafeXmlElement[] = [];
-  const maxElements = options.maxElements ?? 50000;
-  const maxDepth = options.maxDepth ?? 64;
+  const { maxElements, maxDepth, onElement } = { ...SAFE_XML_SCANNER_DEFAULTS, ...options };
+  let found = 0;
+  const take = onElement ?? ((element: SafeXmlElement): void => void results.push(element));
 
   const tagList = Array.isArray(tagName) ? tagName : [tagName];
   const targetMap = new Map<string, { targetLocal: string; targetPrefix: string | null }>();
@@ -2321,7 +2326,7 @@ export function safeExtractXmlElements(
 
   const closingTagPresentMap = new Map<string, boolean>();
   let pos = 0;
-  while (pos < xml.length && results.length < maxElements) {
+  while (pos < xml.length && found < maxElements) {
     const nextLt = xml.indexOf('<', pos);
     if (nextLt === -1) break;
 
@@ -2404,7 +2409,8 @@ export function safeExtractXmlElements(
     );
 
     if (isSelfClosing) {
-      results.push({
+      found++;
+      take({
         tag: currentTag,
         localName: currLocal,
         prefix: currPrefix,
@@ -2503,7 +2509,8 @@ export function safeExtractXmlElements(
     }
 
     if (matchedEnd !== -1) {
-      results.push({
+      found++;
+      take({
         tag: currentTag,
         localName: currLocal,
         prefix: currPrefix,
@@ -5173,8 +5180,7 @@ function numberFormatFractionDigits(skeleton: string): { min: number; max: numbe
 export interface SpreadsheetDateSystem {
   readonly dayZero: number;
 }
-const MS_PER_DAY = 86_400_000;
-const DATE_SYSTEM_1900: SpreadsheetDateSystem = { dayZero: Date.UTC(1899, 11, 30) };
+const DATE_SYSTEM_1900: SpreadsheetDateSystem = { dayZero: DAY_ZERO_1900 };
 const DATE_SYSTEM_1904: SpreadsheetDateSystem = { dayZero: Date.UTC(1904, 0, 1) };
 
 /**
@@ -5255,12 +5261,15 @@ export interface OfficeWorksheetCell {
   align?: 'left' | 'center' | 'right';
 }
 
-export interface OfficeWorksheetPrintArea {
+/** A rectangle of cells, its first and last rows and columns counted from zero. */
+export interface OfficeCellRange {
   startRow: number;
   endRow: number;
   startCol: number;
   endCol: number;
 }
+
+export type OfficeWorksheetPrintArea = OfficeCellRange;
 
 /** A hyperlink of a cell: the URL it opens, or `#` and the location in the workbook it jumps to. Rows and columns count from zero. */
 export interface OfficeWorksheetHyperlink {
@@ -5273,7 +5282,7 @@ export interface OfficeWorksheet {
   name: string;
   rows: string[][];
   /** The merged ranges of the sheet, absent when it has none. The value of a merged range is in its first cell. */
-  mergedRanges?: OfficeWorksheetPrintArea[];
+  mergedRanges?: OfficeCellRange[];
   /** The hyperlinks of the sheet's cells, absent when it has none. */
   hyperlinks?: OfficeWorksheetHyperlink[];
   /** The charts the sheet's drawing holds, in the order the drawing places them. */
@@ -5442,12 +5451,22 @@ async function readWorksheetCharts(zip: JSZip, sheetPath: string): Promise<OpenX
   return charts;
 }
 
-/** A rich-text string without its phonetic guides (`rPh` runs, ECMA-376 Part 1, 18.4.6), which are readings written beside the text and not part of it. */
+/**
+ * A rich-text string without its phonetic guides (`rPh` runs, ECMA-376 Part 1, 18.4.6), which are readings written beside the text and
+ * not part of it: openpyxl's `Text.content` joins `t` and the runs' `t` only (openpyxl 3.1.5, cell/text.py lines 173 to 184), and
+ * SheetJS drops every `rPh` with one global replace (xlsx 0.18.5, `parse_si`, xlsx.js line 9470). The string is rebuilt in one pass
+ * from the runs' positions, and every run goes, however many there are: the string itself is bounded by the size of its part.
+ */
 function withoutPhoneticRuns(stringXml: string): string {
   if (!stringXml.includes('<rPh')) return stringXml;
-  let text = stringXml;
-  for (const run of safeExtractXmlElements(stringXml, 'rPh')) text = text.replace(run.raw, '');
-  return text;
+  const kept: string[] = [];
+  let from = 0;
+  for (const run of safeExtractXmlElements(stringXml, 'rPh', { maxElements: Number.POSITIVE_INFINITY })) {
+    kept.push(stringXml.slice(from, run.startIndex));
+    from = run.endIndex;
+  }
+  kept.push(stringXml.slice(from));
+  return kept.join('');
 }
 
 /** The date system of a workbook: 1904 when `workbookPr` says `date1904` (an ST_Boolean: "1" or "true"), else 1900. */
@@ -5465,7 +5484,7 @@ async function readSheetMergesAndLinks(
 ): Promise<Pick<OfficeWorksheet, 'mergedRanges' | 'hyperlinks'>> {
   // Both lists follow `sheetData` (ECMA-376 Part 1, 18.3.1.99), so the cell data is not scanned again.
   const afterCells = sheetXml.slice(Math.max(0, sheetXml.lastIndexOf('</sheetData>')));
-  const mergedRanges: OfficeWorksheetPrintArea[] = [];
+  const mergedRanges: OfficeCellRange[] = [];
   for (const merge of safeExtractXmlElements(afterCells, 'mergeCell')) {
     const range = parseA1Range(merge.attrs.ref ?? '');
     if (range) mergedRanges.push({ startRow: range.startRow, endRow: range.endRow, startCol: range.startCol, endCol: range.endCol });
@@ -5483,14 +5502,24 @@ async function readSheetMergesAndLinks(
   return { ...(mergedRanges.length > 0 ? { mergedRanges } : {}), ...(hyperlinks.length > 0 ? { hyperlinks } : {}) };
 }
 
-/** The strings of `xl/sharedStrings.xml` in index order; a rich-text string is its runs joined, without phonetic guides. */
+/**
+ * The strings of `xl/sharedStrings.xml` in index order; a rich-text string is its runs joined, without phonetic guides. SheetJS
+ * (`parse_sst_xml`, xlsx.js lines 9482 to 9496) and openpyxl (`read_string_table`, reader/strings.py lines 10 to 24) read every
+ * item; here the items count against the cells the reader builds for a workbook, since no sheet can show more strings than it has
+ * cells, and a table past that is refused (413) rather than cut. The items are taken one at a time, never held as a list.
+ */
 async function readSharedStrings(zip: JSZip): Promise<string[]> {
   const sstFile = zip.file('xl/sharedStrings.xml');
   if (!sstFile) return [];
   const sstXml = await readZipEntryText(sstFile);
-  const siElements = safeExtractXmlElements(sstXml, 'si');
-  if (siElements.length > 0) return siElements.map((si) => safeExtractAllText(withoutPhoneticRuns(si.content), 't'));
-  return safeExtractXmlElements(sstXml, 't').map((t) => safeDecodeXmlEntities(t.content));
+  const strings: string[] = [];
+  const limit = { maxElements: XLSX_MAX_MATERIALISED_CELLS + 1 };
+  safeExtractXmlElements(sstXml, 'si', { ...limit, onElement: (si) => strings.push(safeExtractAllText(withoutPhoneticRuns(si.content), 't')) });
+  if (strings.length === 0) safeExtractXmlElements(sstXml, 't', { ...limit, onElement: (t) => strings.push(safeDecodeXmlEntities(t.content)) });
+  if (strings.length > XLSX_MAX_MATERIALISED_CELLS) {
+    throw new PayloadLimitError(`The XLSX shared string table holds more than ${XLSX_MAX_MATERIALISED_CELLS} strings, more than the cells a workbook is read with.`);
+  }
+  return strings;
 }
 
 export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8Array): Promise<OfficeWorksheet[]> {
@@ -5749,7 +5778,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       }
     }
 
-    const rowEls = safeExtractXmlElements(sheetXml, 'row');
+    const rowEls = worksheetRowElements(sheetXml, entry.name);
 
     for (const rowEl of rowEls) {
       const rowAttrs = rowEl.attrs;
@@ -8492,6 +8521,13 @@ function worksheetBoundError(sheetName: string, problem: string): ConversionFail
   return new ConversionFailedError(`Invalid XLSX worksheet '${sheetName}': ${problem}.`);
 }
 
+/** Every row element of a worksheet, up to the most a worksheet holds; one more is past the last row of any worksheet. */
+function worksheetRowElements(sheetXml: string, sheetName: string): SafeXmlElement[] {
+  const rows = safeExtractXmlElements(sheetXml, 'row', { maxElements: XLSX_MAX_ROWS + 1 });
+  if (rows.length > XLSX_MAX_ROWS) throw worksheetBoundError(sheetName, `it has more than ${XLSX_MAX_ROWS} rows, the last row of a worksheet`);
+  return rows;
+}
+
 /**
  * Inverse Bijective Base-26 column index calculation ('A' -> 0, 'Z' -> 25, 'AA' -> 26, 'C' -> 2, etc.)
  */
@@ -8507,72 +8543,14 @@ export function getExcelColumnIndex(colLetters: string): number {
   return Math.max(0, idx - 1);
 }
 
-const JSON_TABLE_SHAPE_MESSAGE = 'Invalid JSON table: expected an array of objects or an array of values.';
-
-/** The cell a JSON value becomes: its own type for a string, number or boolean, nothing for null, and the JSON text for a nested value. */
-function jsonTableCell(value: unknown): SheetCell {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
-  return JSON.stringify(value);
-}
-
 /**
- * The table a JSON document holds: an array of objects becomes a header row (the keys of the first record) and one
- * row per record; an array of plain values becomes a single "Value" column. Anything else is not a table and is
- * refused, as is text that is not JSON: a sheet holding the document's own text would be a substitute result.
+ * The XLSX workbook of a source the office engine reads as a table: delimited text and a Kingsoft workbook store a field that spells
+ * a number or an ISO date as one, JSON keeps the types its values have. Any other source is refused (`noTableReader`).
  */
-function parseJsonTableCells(text: string): SheetCell[][] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (err) {
-    throw new DataParseError(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  if (!Array.isArray(parsed) || parsed.length === 0) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
-  const first: unknown = parsed[0];
-  if (typeof first === 'object' && first !== null && !Array.isArray(first)) {
-    const headers = Object.keys(first);
-    return [headers, ...parsed.map((item) => headers.map((header) => jsonTableCell((item as Record<string, unknown>)[header])))];
-  }
-  if (parsed.some((item) => typeof item === 'object' && item !== null)) throw new DataParseError(JSON_TABLE_SHAPE_MESSAGE);
-  return [['Value'], ...parsed.map((item) => [jsonTableCell(item)])];
-}
-
-/** The text of a cell as a text target writes it. */
-function sheetCellText(cell: SheetCell): string {
-  return cell === null ? '' : String(cell);
-}
-
-function parseJsonTableRows(text: string): string[][] {
-  return parseJsonTableCells(text).map((row) => row.map(sheetCellText));
-}
-
-/**
- * The rows of CSV or TSV text: the lines that are not blank, each with its fields. Text that is not well formed delimited
- * text (an unterminated quote, a quote that closes inside a field) is a DataParseError; a sheet of the text split on the
- * delimiter would be a substitute result.
- */
-function delimitedSheetRows(inputBuffer: Buffer, sourceType: string, options: ConversionOptions): string[][] {
-  const text = inputBuffer.toString('utf-8').replace(/^\uFEFF/, '');
-  return parseDelimitedRows(text, sourceType === 'tsv' || sourceType === 'tab' ? '\t' : options.delimiter || ',', sourceType);
-}
-
-/** An XLSX workbook of a table of text cells; a cell that spells a number or an ISO date is stored as one. */
-export function generateXlsxFromRows(rows: readonly (readonly string[])[], options: ConversionOptions = {}): Promise<Buffer> {
-  return writeXlsx(rows, 'detect', options.uncompressedWorkbook);
-}
-
-/**
- * Generates the OpenXML XLSX package of a CSV, TSV or JSON table, with typed cells. JSON keeps the types it has (a string is
- * text whatever it spells); delimited text stores a field that spells a number or an ISO date as one.
- */
-export async function generateXlsxFromData(
-  inputBuffer: Buffer,
-  sourceType: string,
-  options: ConversionOptions
-): Promise<Buffer> {
-  if (sourceType === 'json') return writeXlsx(parseJsonTableCells(inputBuffer.toString('utf-8')), 'verbatim', options.uncompressedWorkbook);
-  return generateXlsxFromRows(delimitedSheetRows(inputBuffer, sourceType, options), options);
+export async function officeSheetWorkbook(inputBuffer: Buffer, src: string, options: ConversionOptions, compression?: WorkbookCompression): Promise<Buffer> {
+  if (src === 'json') return writeXlsx(parseJsonTableCells(inputBuffer.toString('utf-8')), 'verbatim', compression);
+  if (DELIMITED_SHEET_SOURCES.has(src) || src === 'et') return writeXlsx(await extractRowsForOffice(inputBuffer, src, options), 'detect', compression);
+  throw noTableReader(src);
 }
 
 /** Sources whose extracted text is Markdown (headings, lists, tables), read as such when writing an EPUB or DOCX. */
@@ -8826,7 +8804,7 @@ export async function convertOdsSource(
 
   // ODS -> XLSX
   if (tgt === 'xlsx') {
-    const xlsxBuffer = await generateXlsxFromRows(rows);
+    const xlsxBuffer = await writeXlsx(rows, 'detect');
     return {
       buffer: xlsxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -9579,7 +9557,7 @@ export async function convertXlsSource(
   const rows = sheet.toRows(tgt === 'pdf' ? PDF_TEXT_LIMIT : GRID_LIMIT);
 
   if (tgt === 'xlsx') {
-    const xlsxBuffer = await generateXlsxFromRows(rows);
+    const xlsxBuffer = await writeXlsx(rows, 'detect');
     return {
       buffer: xlsxBuffer,
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -9864,11 +9842,10 @@ async function extractRowsForOffice(
     if (startsWithBytes(inputBuffer, ZIP_LOCAL_HEADER_SIGNATURE)) return extractRowsForOffice(inputBuffer, 'xlsx', options);
     if (isCfbfContainer(inputBuffer)) return readCfbfWorkbookSheet(inputBuffer).toRows();
   }
+  if (src !== 'json' && src !== 'et' && !DELIMITED_SHEET_SOURCES.has(src)) throw noTableReader(src);
 
   const text = inputBuffer.toString('utf-8');
-  if (src === 'json') return parseJsonTableRows(text);
-
-  return delimitedSheetRows(inputBuffer, src, options);
+  return src === 'json' ? parseJsonTableRows(text) : delimitedSheetRows(text, src, options);
 }
 
 /**
@@ -9908,7 +9885,7 @@ async function convertEtSource(
   }
 
   if (tgt === 'xlsx') {
-    const buffer = await generateXlsxFromRows(rows, options);
+    const buffer = await writeXlsx(rows, 'detect');
     return { buffer, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', filename: `${baseName}.xlsx`, size: buffer.length };
   }
 

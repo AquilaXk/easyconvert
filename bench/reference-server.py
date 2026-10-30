@@ -11,6 +11,7 @@ olefile and xlrd (the text of Word, Excel and PowerPoint 97-2003 files). None of
 """
 import csv
 import json
+import re
 import sys
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -155,11 +156,22 @@ def read_parquet_duckdb(path):
     return names, [[render(value) for value in row] for row in cursor.fetchall()]
 
 
+FIXED_DECIMAL_FORMAT = re.compile(r"^0\.(0+)$")
+
+
+def sheet_cell_text(cell):
+    """The text a sheet shows for a cell: a number under a fixed-decimal format (0.00, ECMA-376 Part 1, 18.8.30) with its decimals."""
+    fixed = FIXED_DECIMAL_FORMAT.match(getattr(cell, "number_format", None) or "")
+    if fixed and isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
+        return "%.*f" % (len(fixed.group(1)), cell.value)
+    return render(cell.value)
+
+
 def read_xlsx(path):
     import openpyxl
 
     workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    rows = [[render(cell) for cell in row] for row in workbook.worksheets[0].iter_rows(values_only=True)]
+    rows = [[sheet_cell_text(cell) for cell in row] for row in workbook.worksheets[0].iter_rows()]
     workbook.close()
     return rows[0], rows[1:]
 

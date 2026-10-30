@@ -1,4 +1,4 @@
-import { DataLimitExceededError } from '../../types';
+import { SheetLimitError } from '../../types';
 
 /**
  * The most a worksheet holds in each spreadsheet format. A table past a bound is refused with a typed limit error, never cut:
@@ -28,6 +28,6 @@ export const XLS_MAX_COLUMNS = 256;
 export const SHEET_MAX_CELL_CHARS = 32_767;
 
 /** The refusal of a table that is past one of the bounds above: a 413 that names how much there is and how much a sheet holds. */
-export function sheetLimitError(subject: string, count: number, what: string, sheet: string, limit: number): DataLimitExceededError {
-  return new DataLimitExceededError(`${subject} has ${count} ${what}, and ${sheet} holds at most ${limit}; nothing was cut.`);
+export function sheetLimitError(subject: string, count: number, what: string, sheet: string, limit: number): SheetLimitError {
+  return new SheetLimitError(`${subject} has ${count} ${what}, and ${sheet} holds at most ${limit}; nothing was cut.`);
 }

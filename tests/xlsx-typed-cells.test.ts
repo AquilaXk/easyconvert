@@ -4,7 +4,7 @@ import { convertFile } from '../src/lib/conversions';
 import { classifyJobFailure } from '../src/lib/queue/job-failure';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DataLimitExceededError, DataParseError, UnsupportedTargetError } from '../src/lib/types';
+import { DataLimitExceededError, DataParseError, SheetLimitError, UnsupportedTargetError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { cellKindsViaLibreOffice, sheetRowsViaLibreOffice } from './helpers/sheet-rows';
 
@@ -54,7 +54,6 @@ describe('typed cells of a workbook written from CSV', () => {
   it.each([
     ['a leading zero', '00004'],
     ['exponent notation', '1e4'],
-    ['a trailing zero after the point', '1.50'],
     ['a plus sign', '+5'],
     ['a thousands separator', '1,250'],
     ['sixteen digits, which a double does not keep', '1234567890123456'],
@@ -75,6 +74,31 @@ describe('typed cells of a workbook written from CSV', () => {
     const cell = cellOf(await sheetOf(await csvToXlsx(`value\n${value}\n`)), 'A2');
     expect(cell).not.toMatch(/\bt="/);
     expect(cell).toContain(`<v>${stored}</v>`);
+  });
+
+  it.each([
+    ['20.00', '20', '0.00'],
+    ['5.50', '5.5', '0.00'],
+    ['0.0', '0', '0.0'],
+    ['-12.500', '-12.5', '0.000'],
+  ])('writes %s, a figure with zeros after its last digit, as a number under a format that shows them', async (text, stored, formatCode) => {
+    const xlsx = await csvToXlsx(`value\n${text}\n`);
+    const cell = cellOf(await sheetOf(xlsx), 'A2');
+    expect(cell).not.toMatch(/\bt="/);
+    expect(cell).toContain(`<v>${stored}</v>`);
+    const style = Number(/\bs="(\d+)"/.exec(cell)![1]);
+    const styles = await partOf(xlsx, 'xl/styles.xml');
+    const xf = [...styles.matchAll(/<xf [^>]*>/g)].slice(1)[style];
+    const formatId = /numFmtId="(\d+)"/.exec(xf![0])![1];
+    expect(styles).toContain(`<numFmt numFmtId="${formatId}" formatCode="${formatCode}"/>`);
+  });
+
+  it.each([
+    ['a leading zero', '007.50'],
+    ['more than 15 significant digits', '1234567890123.4560'],
+    ['a negative zero', '-0.00'],
+  ])('keeps a trailing-zero figure with %s as text', async (_name, value) => {
+    expect(cellOf(await sheetOf(await csvToXlsx(`value\n${value}\n`)), 'A2')).toMatch(/t="s"/);
   });
 
   it('writes an ISO date as a serial number under a date format', async () => {
@@ -101,16 +125,6 @@ describe('typed cells of a workbook written from CSV', () => {
       '<si><t>text</t></si>',
       '<si><t xml:space="preserve">  padded_x0001_ _x005F_x0041_ </t></si>',
     ]);
-  });
-});
-
-describe('a workbook the office suite reads once', () => {
-  it('can be written uncompressed, with the same cells and larger parts', async () => {
-    const csv = `a,b\n${'row,2024-03-05\n'.repeat(500)}`;
-    const deflated = (await convertFile(Buffer.from(csv), 'csv', 'xlsx', {}, 't.csv')).buffer;
-    const stored = (await convertFile(Buffer.from(csv), 'csv', 'xlsx', { uncompressedWorkbook: true }, 't.csv')).buffer;
-    expect(stored.length).toBeGreaterThan(deflated.length * 2);
-    expect(await sheetOf(stored)).toBe(await sheetOf(deflated));
   });
 });
 
@@ -206,21 +220,31 @@ describe('the limits of a worksheet', () => {
   it('refuses a table of more than 1,048,576 rows as a 413 instead of cutting it', async () => {
     const csv = `a\n${'x\n'.repeat(1_048_576)}`;
     const failure = await convertFile(Buffer.from(csv), 'csv', 'xlsx', {}, 'tall.csv').catch((err: unknown) => err);
-    expect(failure).toBeInstanceOf(DataLimitExceededError);
-    expect((failure as DataLimitExceededError).status).toBe(413);
+    expect(failure).toBeInstanceOf(SheetLimitError);
+    expect((failure as SheetLimitError).status).toBe(413);
   }, 120_000);
 
   it('refuses a table of more than 16,384 columns as a 413 instead of cutting it', async () => {
     const csv = `${Array.from({ length: 16_385 }, (_, i) => `c${i}`).join(',')}\n`;
     const failure = await convertFile(Buffer.from(csv), 'csv', 'xlsx', {}, 'wide.csv').catch((err: unknown) => err);
-    expect(failure).toBeInstanceOf(DataLimitExceededError);
-    expect((failure as DataLimitExceededError).status).toBe(413);
+    expect(failure).toBeInstanceOf(SheetLimitError);
+    expect((failure as SheetLimitError).status).toBe(413);
   });
 
   it('refuses a cell of more than 32,767 characters as a 413 instead of cutting it', async () => {
     const failure = await convertFile(Buffer.from(`a\n${'x'.repeat(32_768)}\n`), 'csv', 'xlsx', {}, 'long.csv').catch((err: unknown) => err);
-    expect(failure).toBeInstanceOf(DataLimitExceededError);
+    expect(failure).toBeInstanceOf(SheetLimitError);
     expect((failure as Error).message).toBe('The table has 32768 characters in one cell, and a worksheet holds at most 32767; nothing was cut.');
+  });
+});
+
+describe('the status of a limit that is not a sheet bound', () => {
+  it('stays a 400 for a YAML document past the alias cap', async () => {
+    const yaml = `base: &a [1]\n${Array.from({ length: 101 }, (_, i) => `k${i}: *a`).join('\n')}\n`;
+    const failure = await convertFile(Buffer.from(yaml), 'yaml', 'json', {}, 'aliases.yaml').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(DataLimitExceededError);
+    expect(failure).not.toBeInstanceOf(SheetLimitError);
+    expect(classifyJobFailure(failure)).toMatchObject({ code: 'DataLimitExceededError', status: 400 });
   });
 });
 
@@ -250,5 +274,12 @@ describe('what an office suite reads from the workbook', () => {
     ]);
     const dated = await csvToXlsx('when\n2024-03-05\n');
     expect((await cellKindsViaLibreOffice(dated, 'xlsx'))[1]).toEqual(['date:2024-03-05']);
+  });
+
+  oracleTest('sums a money column whose figures are spelled with and without trailing zeros, every cell counted', ['soffice'], async () => {
+    const xlsx = await csvToXlsx('amount\n19.99\n20.00\n5.50\n7\n');
+    const kinds = (await cellKindsViaLibreOffice(xlsx, 'xlsx')).slice(1).map(([kind]) => kind);
+    expect(kinds).toEqual(['float:19.99', 'float:20', 'float:5.5', 'float:7']);
+    expect(sheetRowsViaLibreOffice(xlsx, 'xlsx')).toEqual([['amount'], ['19.99'], ['20.00'], ['5.50'], ['7']]);
   });
 });

@@ -8,7 +8,7 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { classifyJobFailure } from '../src/lib/queue/job-failure';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { DataLimitExceededError, DataParseError, PayloadLimitError, UnsupportedTargetError } from '../src/lib/types';
+import { DataParseError, SheetLimitError, UnsupportedTargetError } from '../src/lib/types';
 import { readXlsCells } from './helpers/biff8-records';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -82,7 +82,7 @@ describe('a table converted to .xls', () => {
     expect(cells.get('1,3')).toMatchObject({ kind: 'string', value: 'x' });
   }, LONG_TIMEOUT_MS);
 
-  for (const source of ['tsv', 'xlsx', 'ods', 'et', 'parquet', 'pdf'] as const) {
+  for (const source of ['tsv', 'xlsx', 'ods', 'et', 'parquet'] as const) {
     oracleTest(`from .${source} is a Compound File and not SpreadsheetML`, ['soffice', 'file'], async () => {
       const csv = Buffer.from('a,b\n1,x\n2,y\n');
       const tsv = Buffer.from('a\tb\n1\tx\n2\ty\n');
@@ -109,15 +109,15 @@ describe('the limits of a BIFF8 sheet', () => {
   it('refuses more than 65,536 rows with a 413 and does not cut the table', async () => {
     const csv = `a\n${'x\n'.repeat(65_536)}`;
     const failure = await dispatchConversion(Buffer.from(csv), 'csv', 'xls', {}, 'tall.csv').catch((err: unknown) => err);
-    expect(failure).toBeInstanceOf(DataLimitExceededError);
-    expect((failure as DataLimitExceededError).status).toBe(413);
+    expect(failure).toBeInstanceOf(SheetLimitError);
+    expect((failure as SheetLimitError).status).toBe(413);
   }, LONG_TIMEOUT_MS);
 
   it('refuses more than 256 columns with a 413 and does not cut the table', async () => {
     const csv = `${Array.from({ length: 257 }, (_, i) => `c${i}`).join(',')}\n`;
     const failure = await dispatchConversion(Buffer.from(csv), 'csv', 'xls', {}, 'wide.csv').catch((err: unknown) => err);
-    expect(failure).toBeInstanceOf(DataLimitExceededError);
-    expect((failure as DataLimitExceededError).status).toBe(413);
+    expect(failure).toBeInstanceOf(SheetLimitError);
+    expect((failure as SheetLimitError).status).toBe(413);
   });
 });
 
@@ -137,8 +137,8 @@ describe('the extent the BIFF8 bounds are checked against', () => {
     const header = Array.from({ length: 257 }, (_, i) => `c${i}`).join(',');
     const ods = (await convertFile(Buffer.from(`${header}\n`), 'csv', 'ods', {}, 'wide.csv')).buffer;
     const failure = await dispatchConversion(ods, 'ods', 'xls', {}, 'wide.ods').catch((err: unknown) => err);
-    expect(failure).toBeInstanceOf(PayloadLimitError);
-    expect((failure as PayloadLimitError).status).toBe(413);
+    expect(failure).toBeInstanceOf(SheetLimitError);
+    expect((failure as SheetLimitError).status).toBe(413);
   }, LONG_TIMEOUT_MS);
 });
 
@@ -147,6 +147,7 @@ describe('a PDF source of an .xls', () => {
     const pdf = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.pdf'));
     const failure = await dispatchConversion(pdf, 'pdf', 'xls', {}, 'sample.pdf').catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(UnsupportedTargetError);
+    expect((failure as Error).message).toBe('A PDF is not converted to a spreadsheet yet: the tables of its pages are not extracted.');
   }, LONG_TIMEOUT_MS);
 });
 

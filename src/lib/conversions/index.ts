@@ -10,7 +10,7 @@ import {
 } from './image';
 import { convertImageSource } from './image-external-source';
 import { convertDocument, extractTextFromPdf } from './document';
-import { convertData } from './data';
+import { STRUCTURED_SHEET_SOURCES, convertData } from './data';
 import {
   convertMedia,
   packageHlsDashMedia,
@@ -362,9 +362,12 @@ export function convertFile(
   return withConversionWarnings(() => convertFileInScope(inputBuffer, sourceFormat, targetFormat, options, originalFilename));
 }
 
-/** Whether the office engine writes the spreadsheet target of a data source: it reads delimited text and JSON as sheets, while Parquet is a typed table that the data engine writes as one. */
+/**
+ * Whether the office engine writes the spreadsheet target of a data source: it reads delimited text and JSON as sheets, while
+ * Parquet, NDJSON, JSONL, YAML, TOML and XML are tables of records that the data engine reads and writes with their types.
+ */
 function officeEngineWritesSheet(src: string, tgt: string): boolean {
-  return src !== 'parquet' && ['ods', 'xlsx', 'xls'].includes(tgt);
+  return !STRUCTURED_SHEET_SOURCES.has(src) && ['ods', 'xlsx', 'xls'].includes(tgt);
 }
 
 async function convertFileInScope(

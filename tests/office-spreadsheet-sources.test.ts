@@ -25,7 +25,7 @@ describe('JSON spreadsheet sources', () => {
   it.each(['xlsx', 'ods'])('json that does not parse is refused for the .%s target, not wrapped into one cell', async (target) => {
     const failure = await convertFile(Buffer.from('{"a": 1,'), 'json', target, {}, 'broken.json').catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(DataParseError);
-    expect((failure as Error).message).toMatch(/^Invalid JSON: /);
+    expect((failure as Error).message).toMatch(/^JSON parsing failed: /);
   });
 
   it.each(['xlsx', 'ods'])('json that is neither an array of records nor of values is refused for the .%s target', async (target) => {

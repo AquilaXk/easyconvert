@@ -6,6 +6,7 @@ import {
   DataParseError,
   DataRepresentationError,
   DecompressionLimitError,
+  SheetLimitError,
   UnsupportedOptionError,
 } from '../../types';
 
@@ -57,6 +58,7 @@ const MESSAGE_ONLY_ERRORS: ReadonlyMap<string, MessageOnlyError> = new Map<strin
   ['DecompressionLimitError', DecompressionLimitError],
   ['EdgeStorageQuotaError', EdgeStorageQuotaError],
   ['EdgeUnsupportedError', EdgeUnsupportedError],
+  ['SheetLimitError', SheetLimitError],
   ['UnsupportedOptionError', UnsupportedOptionError],
 ]);
 

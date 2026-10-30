@@ -1,8 +1,11 @@
 import fs from 'node:fs';
-import { ConversionFailedError, CorruptStreamError, EncryptedOfficeDocumentError, EngineUnavailableError } from '../lib/types';
+import { ConversionFailedError, CorruptStreamError, EncryptedOfficeDocumentError, EngineUnavailableError, SheetLimitError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
 import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../lib/conversions/office/legacy-office-limits';
 import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
+import { writeTransientWorkbook } from '../lib/conversions/data';
+import { assertNotSpoofedFile } from '../lib/security/file-guard';
+import { readRawInputBuffer } from './worker-output';
 import { repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
 import {
   CGM_ENCODING_PROBE_BYTES,
@@ -294,67 +297,88 @@ export async function convertThroughInterchange(deps: OfficeSuiteRouteDeps, requ
   }
 }
 
-/** The one BIFF8 target and the OOXML workbook format the in-process engine writes for it. */
+/** The one BIFF8 target and the OOXML workbook format its source is checked in before the office suite exports it. */
 const BIFF8_TARGET = 'xls';
 const XLSX_FORMAT = 'xlsx';
 
-/**
- * Whether an `.xls` target is written from an XLSX workbook the in-process engine makes first: every source the office suite does
- * not read itself (CSV, TSV, JSON, Parquet, PDF and Kingsoft workbooks). A source it reads goes to its `MS Excel 97` export in one pass.
- */
-export function xlsNeedsWorkbook(src: string, tgt: string, input: Buffer | WorkerVfsPayload): boolean {
-  return tgt === BIFF8_TARGET && !officeSuiteReadsInputAndWrites(src, tgt, input);
+/** Whether a source is an OOXML workbook (XLSX or one of its macro-enabled and template variants), whose cells are read as they are. */
+function isOoxmlWorkbook(src: string): boolean {
+  return src === XLSX_FORMAT || OOXML_VARIANT_FAMILY[src] === XLSX_FORMAT;
 }
 
 /**
- * A table the in-process engine reads, written as `.xls`: the engine writes the XLSX workbook (typed cells, shared strings), the
- * workbook is checked against the BIFF8 sheet (65,536 rows, 256 columns), and the office suite's `MS Excel 97` export writes the
- * BIFF8 file. Nothing in-process writes BIFF8, so a missing office suite is an unavailable engine, not a file of another format; the
- * workbook never goes to the output path of the request, which only the final export writes.
+ * The bytes of a source workbook, for the check against the BIFF8 sheet. A file larger than the check reads is refused (413): passing
+ * it on unchecked would let the export cut it.
  */
-export async function convertThroughWorkbook(deps: OfficeSuiteRouteDeps, request: OfficeSuiteRequest): Promise<WorkerConversionResult> {
+function workbookBytes(input: Buffer | WorkerVfsPayload): Buffer {
+  const bytes = inputBytes(input);
+  if (bytes === undefined) {
+    throw new SheetLimitError(`The workbook is larger than the ${LEGACY_OFFICE_MAX_INPUT_BYTES} bytes the check against the .xls sheet bounds reads, so it is not exported.`);
+  }
+  return bytes;
+}
+
+/**
+ * An XLSX workbook checked against the BIFF8 sheet (65,536 rows, 256 columns, `assertWorkbookFitsXls`) and exported by the office
+ * suite's `MS Excel 97` filter. The workbook never goes to the output path of the request, which only this export writes.
+ */
+async function exportCheckedWorkbook(deps: OfficeSuiteRouteDeps, request: OfficeSuiteRequest, workbook: Buffer): Promise<WorkerConversionResult> {
   const { input, src, tgt, options, originalFilename } = request;
-  const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
-  const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
-  const workbook = await deps.convert(source, src, XLSX_FORMAT, { ...options, outputPath: undefined, inProcessFallback: undefined, uncompressedWorkbook: true } as WorkerEngineOptions, originalFilename);
+  await assertWorkbookFitsXls(workbook);
+  const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? workbook : { inputBuffer: workbook, outputPath: input.outputPath };
+  let written: WorkerConversionResult | null;
   try {
-    await assertWorkbookFitsXls(workbook.buffer);
-    const next: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? workbook.buffer : { inputBuffer: workbook.buffer, outputPath: requestedOutput };
-    const written = await deps.writeWithOfficeSuite(next, XLSX_FORMAT, tgt, { ...options, throwOnUnavailable: true }, originalFilename);
-    if (!written) throw new EngineUnavailableError('soffice', `LibreOffice produced no .${tgt} file for the .${src} source`);
-    return written;
+    written = await deps.writeWithOfficeSuite(next, XLSX_FORMAT, tgt, { ...options, throwOnUnavailable: true }, originalFilename);
   } catch (err) {
     rethrowSandboxUnavailable(err);
     throw err;
+  }
+  if (!written) throw new EngineUnavailableError('soffice', `LibreOffice produced no .${tgt} file for the .${src} source`);
+  return written;
+}
+
+/**
+ * A source the office suite reads but whose cells are not read in process (ODS, Numbers): the suite writes it as an XLSX workbook
+ * first, which holds what the suite loaded, and that workbook is checked and exported.
+ */
+async function exportThroughSuiteWorkbook(deps: OfficeSuiteRouteDeps, request: OfficeSuiteRequest): Promise<WorkerConversionResult> {
+  const { input, src, options, originalFilename } = request;
+  const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
+  let workbook: WorkerConversionResult | null;
+  try {
+    workbook = await deps.writeWithOfficeSuite(source, src, XLSX_FORMAT, { ...options, outputPath: undefined, throwOnUnavailable: true } as WorkerEngineOptions, originalFilename);
+  } catch (err) {
+    rethrowSandboxUnavailable(err);
+    throw asUnreadableDocument(err, src);
+  }
+  if (!workbook) throw new EngineUnavailableError('soffice', `LibreOffice produced no .${XLSX_FORMAT} file for the .${src} source`);
+  try {
+    return await exportCheckedWorkbook(deps, request, workbook.buffer);
   } finally {
     deps.discardOutput(workbook.filePath, input, options);
   }
 }
 
 /**
- * An OOXML workbook the office suite writes as `.xls` is refused (413) when a worksheet declares more rows or columns than a BIFF8 sheet
- * holds, because the export would cut them. A workbook of another format, and one past the size a legacy document may have, go
- * to the export unchecked.
- */
-export async function assertXlsSourceFits(src: string, input: Buffer | WorkerVfsPayload): Promise<void> {
-  if (src !== XLSX_FORMAT && OOXML_VARIANT_FAMILY[src] !== XLSX_FORMAT) return;
-  const bytes = inputBytes(input);
-  if (bytes !== undefined) await assertWorkbookFitsXls(bytes);
-}
-
-/**
- * The conversion of a request that targets `.xls`: a source the office suite does not read goes through the XLSX workbook the
- * in-process engine writes; any other source is checked against the BIFF8 sheet and then converted by `convertDirectly`, the office
- * suite's export of the source itself. A request for any other target is `convertDirectly` alone.
+ * The conversion of a request that targets `.xls`. Every source reaches the office suite's export as an XLSX workbook checked against
+ * the BIFF8 sheet, so that nothing is cut: a table the in-process engine reads (CSV, TSV, JSON, Parquet, Kingsoft) is written by
+ * the engine's own writer, stored, an OOXML workbook is checked as it is and converted by `convertDirectly`, and any other source the suite reads goes
+ * through the XLSX workbook the suite writes of it. A request for any other target is `convertDirectly` alone.
  */
 export async function convertXlsTarget(
   deps: OfficeSuiteRouteDeps,
   request: OfficeSuiteRequest,
   convertDirectly: () => Promise<WorkerConversionResult>
 ): Promise<WorkerConversionResult> {
-  if (request.tgt !== BIFF8_TARGET) return convertDirectly();
-  if (xlsNeedsWorkbook(request.src, request.tgt, request.input)) return convertThroughWorkbook(deps, request);
-  await assertXlsSourceFits(request.src, request.input);
+  const { input, src, tgt, options, originalFilename } = request;
+  if (tgt !== BIFF8_TARGET) return convertDirectly();
+  if (!officeSuiteReadsInputAndWrites(src, tgt, input)) {
+    const table = readRawInputBuffer(input);
+    assertNotSpoofedFile(table, src, originalFilename);
+    return exportCheckedWorkbook(deps, request, await writeTransientWorkbook(table, src, options));
+  }
+  if (!isOoxmlWorkbook(src)) return exportThroughSuiteWorkbook(deps, request);
+  await assertWorkbookFitsXls(workbookBytes(input));
   return convertDirectly();
 }
 

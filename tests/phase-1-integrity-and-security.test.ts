@@ -8,7 +8,8 @@ import {
   createZipArchive,
   ARCHIVE_SECURITY_LIMITS,
 } from '../src/lib/conversions/archive';
-import { generateXlsxFromData, convertOffice } from '../src/lib/conversions/office';
+import { convertOffice } from '../src/lib/conversions/office';
+import { convertFile } from '../src/lib/conversions';
 import { getExcelColumnName } from '../src/lib/conversions/xlsx-writer';
 import { convertMedia } from '../src/lib/conversions/media';
 import { convertVectorCad } from '../src/lib/conversions/vector-cad';
@@ -188,7 +189,7 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
       const values = Array.from({ length: 30 }, (_, i) => `Val${i + 1}`).join(',');
       const csv = `${headers}\n${values}`;
 
-      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', {});
+      const xlsxBuffer = (await convertFile(Buffer.from(csv, 'utf-8'), 'csv', 'xlsx', {}, 'table.csv')).buffer;
       const zip = await JSZip.loadAsync(xlsxBuffer);
       const sheetXml = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
 
@@ -210,7 +211,7 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
 
     oracleTest('keeps quoted commas inside their cells when a CSV becomes an XLSX workbook', ['soffice', 'python3', 'xmllint'], async () => {
       const csv = 'Name,Bio,Role\n"Smith, John","Software Engineer, Lead",Architect';
-      const xlsxBuffer = await generateXlsxFromData(Buffer.from(csv, 'utf-8'), 'csv', {});
+      const xlsxBuffer = (await convertFile(Buffer.from(csv, 'utf-8'), 'csv', 'xlsx', {}, 'table.csv')).buffer;
       const zip = await JSZip.loadAsync(xlsxBuffer);
       const sheetXml = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
 
