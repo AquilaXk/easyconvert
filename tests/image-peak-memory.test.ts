@@ -1,20 +1,21 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFile } from 'node:child_process';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
 import { buildAnimatedWebpFromStill } from './helpers/webp-builder';
+import { SeededRandom } from './helpers/archive-corpus';
 import { buildTiffWithOrientation } from './helpers/exif-orientation';
+import { SERVICE_MALLOC_ARENA_MAX } from './helpers/service-heap';
 
 /**
  * Peak-memory regression for oriented animations: each conversion runs in a fresh Node process and the
  * kernel's resident high-water mark (VmHWM) before and after it is compared with the 512 MiB budget plus a
  * 64 MiB margin. An animation the budget admits must stay under that; one it refuses must not have been
- * decoded at all. The measured peaks of oriented 2000x2000 animations are 471 MiB (6 frames), 482 (7),
- * 518 (8), 565 (10 noisy frames to GIF), 591 (11) and 617 (14); 3000x3000 x 5 frames reached 685 MiB.
+ * decoded at all. The child runs with the service's glibc heap bound (SERVICE_MALLOC_ARENA_MAX, read from docker-compose.yml): without
+ * it the child grows an arena for each thread of the image library and reads a figure the service never reaches (policy entry 112).
  *
  * Oracle: /proc/self/status of the child process, independent of the converter's own accounting. The fixtures
  * are animated WebP files built by the hand-written container builder around one noisy still image per size,
@@ -28,6 +29,7 @@ const NOISE_QUALITY = 90;
 const ROTATED_QUARTER_TURN = 6;
 const ADMITTED_SIDE = 2000;
 const ADMITTED_FRAMES = 6;
+const NOISE_SEED = 7;
 const CHILD_TIMEOUT_MS = 170_000;
 const TEST_TIMEOUT_MS = 180_000;
 const FIXTURE_TIMEOUT_MS = 60_000;
@@ -46,7 +48,7 @@ interface Measurement {
 let dir: string;
 
 async function noisyAnimation(side: number, frames: number): Promise<string> {
-  const raw = crypto.randomBytes(side * side * 3);
+  const raw = new SeededRandom(NOISE_SEED).bytes(side * side * 3);
   const still = await sharp(raw, { raw: { width: side, height: side, channels: 3 } }).webp({ quality: NOISE_QUALITY }).toBuffer();
   const file = path.join(dir, `noise_${side}_${frames}.webp`);
   fs.writeFileSync(
@@ -59,6 +61,7 @@ async function noisyAnimation(side: number, frames: number): Promise<string> {
 async function measure(file: string, sourceFormat: string, target: string): Promise<Measurement> {
   const { stdout } = await execFileAsync(process.execPath, ['--import', 'tsx', MEASURE_SCRIPT, file, target, '{}', sourceFormat], {
     cwd: path.join(__dirname, '..'),
+    env: { ...process.env, MALLOC_ARENA_MAX: SERVICE_MALLOC_ARENA_MAX },
     timeout: CHILD_TIMEOUT_MS,
     maxBuffer: 1024 * 1024,
   });

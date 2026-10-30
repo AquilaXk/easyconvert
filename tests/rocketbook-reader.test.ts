@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
@@ -8,7 +8,7 @@ import { isOfficeSuiteOnlySource } from '../src/lib/conversions/office/office-su
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { readRocketBookModel } from '../src/lib/conversions/rocketbook-model';
 import { withMissingBinary } from './helpers/native-tools';
-import { expectNoHang, settle } from './helpers/timing';
+import { cpuClockMs, DEFAULT_HANG_GUARD_MS, expectLinearOnInputs, expectNoHang, SCALING_TEST_TIMEOUT_MS, settle } from './helpers/timing';
 import {
   FLAG_ENCRYPTED,
   FLAG_PLAIN,
@@ -32,9 +32,9 @@ import {
 
 const ONE_PIXEL_PNG = greyPng(1);
 const PICTURE_PNG = greyPng(8);
-/** Each hostile input is refused in milliseconds once bounded; the guard fails work that grows with what the file claims. */
-const HOSTILE_GUARD_MS = 1_000;
 const PNG_IHDR_END = 33;
+/** Above the hang guard, so that the guard's own message ends a case that hangs: vitest's default test timeout is 5 s, under the 10 s guard. */
+const HOSTILE_TEST_TIMEOUT_MS = 2 * DEFAULT_HANG_GUARD_MS;
 
 /** PICTURE_PNG made `bytes` long by a private ancillary chunk after its header, which decoders skip (PNG specification 5.4). */
 function paddedPng(bytes: number): Buffer {
@@ -254,11 +254,20 @@ describe('a file that is not a readable RocketBook', () => {
   });
 
   it('splits an author line of 64 KiB of white space in linear time', async () => {
-    const run = ' '.repeat(65_000);
-    const author = `AUTHOR=Ann${run}Lee with Bob`;
-    const book = await expectNoHang('white space author', () => readRocketBook(buildRocketBook([infoPage([author]), htmlPage('index.html', '<P>x</P>')])), HOSTILE_GUARD_MS);
-    expect(book.authors).toEqual([`Ann${run}Lee`, 'Bob']);
-  });
+    const SMALL_RUN = 16_250;
+    const GROWTH = 4;
+    const bookWithRun = (run: string) => buildRocketBook([infoPage([`AUTHOR=Ann${run}Lee with Bob`]), htmlPage('index.html', '<P>x</P>')]);
+    const small = ' '.repeat(SMALL_RUN);
+    const large = ' '.repeat(SMALL_RUN * GROWTH);
+    const { largeResult } = await expectLinearOnInputs('white space author', readRocketBook, {
+      small: bookWithRun(small),
+      large: bookWithRun(large),
+      factor: GROWTH,
+      clock: cpuClockMs,
+    });
+    expect(largeResult.authors).toEqual([`Ann${large}Lee`, 'Bob']);
+    expect(readRocketBook(bookWithRun(small)).authors).toEqual([`Ann${small}Lee`, 'Bob']);
+  }, SCALING_TEST_TIMEOUT_MS);
 
   it('names a page in an error without the control characters of its stored name', () => {
     const file = buildRocketBook([{ ...imagePage('bad%0D%0Aline%07.png', ONE_PIXEL_PNG), statedSize: 5000 }]);
@@ -272,9 +281,19 @@ describe('a file that is not a readable RocketBook', () => {
 
 describe('a hostile chunk table', () => {
   const SHORTEST_ZLIB_STREAM = zlib.deflateSync(Buffer.alloc(0));
+  let inflateCalls: MockInstance<typeof zlib.inflateSync>;
 
+  beforeEach(() => {
+    inflateCalls = vi.spyOn(zlib, 'inflateSync');
+  });
+
+  afterEach(() => {
+    inflateCalls.mockRestore();
+  });
+
+  /** The refusal of `file`, found within the hang guard: the claim is how much work was done, which the calls to the inflater count. */
   function failureOf(file: Buffer): Promise<unknown> {
-    return expectNoHang('hostile chunk table', () => settle(() => readRocketBook(file)), HOSTILE_GUARD_MS).then((settled) => (settled.ok ? undefined : settled.error));
+    return expectNoHang('hostile chunk table', () => settle(() => readRocketBook(file))).then((settled) => (settled.ok ? undefined : settled.error));
   }
 
   it('is refused before any chunk is read when it lists four million chunks of no bytes', async () => {
@@ -289,7 +308,8 @@ describe('a hostile chunk table', () => {
     expect(overLimit).toBeInstanceOf(PayloadLimitError);
     expect(moreChunksThanText).toBeInstanceOf(RocketBookFormatError);
     expect([overLimit, moreChunksThanText].map((error) => (error as { status: number }).status)).toEqual([413, 400]);
-  });
+    expect(inflateCalls).not.toHaveBeenCalled();
+  }, HOSTILE_TEST_TIMEOUT_MS);
 
   it('is refused when 65,535 pages all point at one stored page of many chunks', async () => {
     const stored = deflatedChunks(Array.from({ length: 64 }, () => zlib.deflateSync(Buffer.from('x'))), 64);
@@ -298,22 +318,26 @@ describe('a hostile chunk table', () => {
     const failure = await failureOf(buildRocketBook(pages));
     expect(failure).toBeInstanceOf(PayloadLimitError);
     expect((failure as Error).message).toBe(`The RocketBook pages list more than ${ROCKETBOOK_LIMITS.maxChunks} compressed chunks together.`);
-  });
+    expect(inflateCalls).not.toHaveBeenCalled();
+  }, HOSTILE_TEST_TIMEOUT_MS);
 
   it('is refused before any chunk is inflated when a page holds more of the smallest zlib streams than the limit', async () => {
     const pageOf = (count: number) => buildRocketBook([{ name: 'index.html', flags: 8, data: deflatedChunks(Array.from({ length: count }, () => SHORTEST_ZLIB_STREAM), count) }]);
     const overLimit = await failureOf(pageOf(ROCKETBOOK_LIMITS.maxChunks + 1));
+    const inflatedOverLimit = inflateCalls.mock.calls.length;
     const atLimit = await failureOf(pageOf(ROCKETBOOK_LIMITS.maxChunks));
     expect(overLimit).toBeInstanceOf(PayloadLimitError);
     expect([overLimit, atLimit].map((error) => (error as { status: number }).status)).toEqual([413, 400]);
-  });
+    expect(inflatedOverLimit, 'streams inflated before the page over the limit was refused').toBe(0);
+    expect(inflateCalls.mock.calls.length, 'a page at the limit is read: the counter sees the inflater').toBeGreaterThan(0);
+  }, HOSTILE_TEST_TIMEOUT_MS);
 
   it('is refused when a page of the smallest zlib streams inflates to none of the text it states', async () => {
     const file = buildRocketBook([{ name: 'index.html', flags: 8, data: deflatedChunks(Array.from({ length: 1000 }, () => SHORTEST_ZLIB_STREAM), 1000) }]);
     const failure = await failureOf(file);
     expect(failure).toBeInstanceOf(RocketBookFormatError);
     expect((failure as Error).message).toMatch(/states 1000 bytes of text and its chunks hold 0/);
-  });
+  }, HOSTILE_TEST_TIMEOUT_MS);
 });
 
 describe('a RocketBook converted to the targets of the e-book pipeline', () => {
@@ -413,7 +437,7 @@ describe('a RocketBook converted to the targets of the e-book pipeline', () => {
     expect(failure).toBeInstanceOf(PayloadLimitError);
     expect((failure as Error).message).toBe('The document embeds more than 2000 images.');
     expect((await readRocketBookModel(buildRocketBook([page(0), page(1), imagePage('0.png', PICTURE_PNG)]), 'book')).images).toHaveLength(1);
-  });
+  }, HOSTILE_TEST_TIMEOUT_MS);
 
   it('is refused with a typed error when its pages together name one picture for more bytes than the model embeds', async () => {
     const picture = paddedPng(1024 * 1024);
