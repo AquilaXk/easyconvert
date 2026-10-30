@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertMedia, getFfprobePath } from '../src/lib/conversions/media';
 import { type FfprobePath, probeInput, resetInputProbeCache } from '../src/lib/conversions/media-ffprobe';
 import { RefusedMediaInputError } from '../src/lib/types';
@@ -57,6 +58,11 @@ function hlsPlaylist(...uris: string[]): Buffer {
 /** The conversion's result: the output bytes, or the error it was refused with. */
 async function convert(input: Buffer, src: string, tgt: string): Promise<Buffer | unknown> {
   return convertMedia(input, src, tgt, {}, `upload.${src}`).then((result) => result.buffer, (error: unknown) => error);
+}
+
+function expectConverted(outcome: unknown): void {
+  expect(outcome).toBeInstanceOf(Buffer);
+  expect((outcome as Buffer).length).toBeGreaterThan(0);
 }
 
 function carriesMarker(outcome: unknown): boolean {
@@ -114,25 +120,89 @@ describe.skipIf(skip)('a playlist or reference list uploaded as a media containe
     }
   });
 
-  it('refuses a real MP4 whose first bytes also hold a DASH manifest, which the subtitle burn filter would probe as one', async () => {
-    const mp4 = path.join(markerDir, `easyconvert-dash-tag-${process.pid}.mp4`);
-    execFileSync(requireOracleTool('ffmpeg'), [
-      '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=0.5',
-      '-metadata', 'comment=<MPD profiles="urn:mpeg:dash:profile:isoff-live:2011"><BaseURL>file:///etc/passwd</BaseURL></MPD>',
-      '-movflags', '+faststart', '-c:v', 'mpeg4', mp4,
-    ]);
+  it('still converts a real WAVE file whose samples spell the marker', async () => {
+    const outcome = await convert(fs.readFileSync(markerWav), 'wav', 'wav');
+    expect(carriesMarker(outcome)).toBe(true);
+  }, CONVERSION_TIMEOUT_MS);
+});
+
+/** A minimal SDP session description: FFmpeg's sdp_probe takes any text with a line that starts `c=IN IP`. */
+const SDP_SESSION = 'v=0\no=- 0 0 IN IP4 0.0.0.0\nc=IN IP4 0.0.0.0\nt=0 0';
+const DASH_MANIFEST = '<MPD profiles="urn:mpeg:dash:profile:isoff-live:2011"><BaseURL>file:///etc/passwd</BaseURL></MPD>';
+const IMF_PLAYLIST = '<CompositionPlaylist><ContentTitle>x</ContentTitle></CompositionPlaylist>';
+/** FFmpeg's format probe reads up to 1 MiB (`formatprobesize`); this puts the SDP line past 64 KiB and inside it. */
+const DEEP_PADDING_BYTES = 900 * 1024;
+
+describe.skipIf(skip)('manifest text inside a media container, which FFmpeg probes as the container', () => {
+  const VIDEO = ['-f', 'lavfi', '-i', 'testsrc=size=64x48:rate=10:duration=0.5'];
+  const AUDIO = ['-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.5'];
+  const CONTAINERS: ReadonlyArray<[string, string, string[]]> = [
+    ['mp4', 'mkv', [...VIDEO, '-c:v', 'mpeg4', '-f', 'mp4']],
+    ['mkv', 'mp4', [...VIDEO, '-c:v', 'mpeg4', '-f', 'matroska']],
+    ['mp3', 'wav', [...AUDIO, '-c:a', 'libmp3lame', '-f', 'mp3']],
+    ['wav', 'mp3', [...AUDIO, '-f', 'wav']],
+    ['ogg', 'wav', [...AUDIO, '-c:a', 'flac', '-f', 'ogg']],
+    ['flac', 'wav', [...AUDIO, '-f', 'flac']],
+  ];
+
+  it.each(CONTAINERS)('converts a %s whose comment tag holds an SDP session description', async (src, tgt, encoding) => {
+    const file = path.join(markerDir, `easyconvert-sdp-tag-${process.pid}.${src}`);
+    execFileSync(requireOracleTool('ffmpeg'), ['-v', 'error', '-y', ...encoding, '-metadata', `comment=${SDP_SESSION}`, file]);
     try {
-      expect(fs.readFileSync(mp4).subarray(0, 64 * 1024).includes('<MPD')).toBe(true);
-      const outcome = await convert(fs.readFileSync(mp4), 'mp4', 'webm');
-      expect(outcome).toBeInstanceOf(RefusedMediaInputError);
-      expect((outcome as RefusedMediaInputError).kind).toBe('DASH manifest');
+      const bytes = fs.readFileSync(file);
+      expect(bytes.includes('c=IN IP4', 0, 'latin1')).toBe(true);
+      expectConverted(await convert(bytes, src, tgt));
+    } finally {
+      fs.rmSync(file, { force: true });
+    }
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('converts an MP4 whose comment tag holds a DASH manifest', async () => {
+    const mp4 = path.join(markerDir, `easyconvert-dash-tag-${process.pid}.mp4`);
+    execFileSync(requireOracleTool('ffmpeg'), ['-v', 'error', '-y', ...VIDEO, '-metadata', `comment=${DASH_MANIFEST}`, '-movflags', '+faststart', '-c:v', 'mpeg4', mp4]);
+    try {
+      expectConverted(await convert(fs.readFileSync(mp4), 'mp4', 'mkv'));
     } finally {
       fs.rmSync(mp4, { force: true });
     }
   }, CONVERSION_TIMEOUT_MS);
+});
 
-  it('still converts a real WAVE file whose samples spell the marker', async () => {
-    const outcome = await convert(fs.readFileSync(markerWav), 'wav', 'wav');
-    expect(carriesMarker(outcome)).toBe(true);
+describe.skipIf(skip)('a manifest or index uploaded as a text file under a media name', () => {
+  const deepSdp = `v=0\n${'a=x-pad:000000\n'.repeat(DEEP_PADDING_BYTES / 15)}c=IN IP4 0.0.0.0\nt=0 0\n`;
+  const TEXTS: ReadonlyArray<[string, string, string]> = [
+    ['an SDP session description', SDP_SESSION, 'SDP session description'],
+    ['an SDP session description whose c= line is 900 KiB in', deepSdp, 'SDP session description'],
+    ['a DASH manifest', DASH_MANIFEST, 'DASH manifest'],
+    ['an IMF composition playlist', IMF_PLAYLIST, 'IMF composition playlist'],
+    ['a VobSub index with no version after the comma', '# VobSub index file,v7\nsize: 720x480\n', 'VobSub index'],
+  ];
+
+  it.each(TEXTS)('refuses %s named .mp4', async (_, text, kind) => {
+    const outcome = await convert(Buffer.from(text, 'latin1'), 'mp4', 'webm');
+    expect(outcome).toBeInstanceOf(RefusedMediaInputError);
+    expect((outcome as RefusedMediaInputError).kind).toBe(kind);
+  }, CONVERSION_TIMEOUT_MS);
+});
+
+describe.skipIf(skip)('a media job whose stored input is named by its hash, as the job queue stores it', () => {
+  const STORED_ENCODINGS: ReadonlyArray<[string, string[]]> = [
+    ['mp3', ['-c:a', 'libmp3lame', '-f', 'mp3']],
+    ['wma', ['-c:a', 'wmav2', '-f', 'asf']],
+  ];
+
+  it.each(STORED_ENCODINGS)('converts a %s read from <sha256>.bin to WAVE', async (src, encoding) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-stored-input-'));
+    try {
+      const stored = path.join(dir, `${'5b'.repeat(32)}.bin`);
+      const output = path.join(dir, 'out.wav');
+      execFileSync(requireOracleTool('ffmpeg'), ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1', ...encoding, stored]);
+      await dispatchConversion({ inputPath: stored, outputPath: output }, src, 'wav', {}, `song.${src}`);
+      const duration = execFileSync(requireOracleTool('ffprobe'), ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', output], { encoding: 'utf-8' });
+      expect(fs.readFileSync(output).subarray(0, 4).toString('latin1')).toBe('RIFF');
+      expect(Number(duration)).toBeGreaterThan(0.9);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   }, CONVERSION_TIMEOUT_MS);
 });
