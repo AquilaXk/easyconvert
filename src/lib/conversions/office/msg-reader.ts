@@ -59,6 +59,7 @@ const PR_MESSAGE_DELIVERY_TIME = 0x0e06;
 const PR_RECIPIENT_TYPE = 0x0c15;
 const PR_MESSAGE_CODEPAGE = 0x3ffd;
 const PR_INTERNET_CPID = 0x3fde;
+const UTF16LE_CODE_PAGE = 1200;
 const RECIPIENT_TO = 1;
 const RECIPIENT_CC = 2;
 const RECIPIENT_BCC = 3;
@@ -100,7 +101,12 @@ const CODE_PAGE_LABELS: ReadonlyMap<number, string> = new Map([
   [51932, 'euc-jp'],
   [20932, 'euc-jp'],
   [54936, 'gb18030'],
-  [1200, 'utf-16le'],
+  [50221, 'iso-2022-jp'],
+  [50222, 'iso-2022-jp'],
+  [51949, 'euc-kr'],
+  [38598, 'iso-8859-8-i'],
+  [21866, 'koi8-u'],
+  [20936, 'gbk'],
 ]);
 
 function unreadableCodePage(codePage: number): LegacyOfficeFormatError {
@@ -150,10 +156,13 @@ function int32Property(properties: ReadonlyMap<number, { type: number; value: Bu
   return property?.type === INT32_TYPE ? property.value.readInt32LE(0) : undefined;
 }
 
-/** A code page property; 0 and below name no code page, so the next property or the default stands. */
+/**
+ * A code page property; 0 and below name no code page, and 1200 (UTF-16LE) names the Unicode strings, which carry no code
+ * page, not the 8-bit ones this decodes, so the next property or the default stands.
+ */
 function codePageProperty(properties: ReadonlyMap<number, { type: number; value: Buffer }>, id: number): number | undefined {
   const codePage = int32Property(properties, id);
-  return codePage !== undefined && codePage > 0 ? codePage : undefined;
+  return codePage !== undefined && codePage > 0 && codePage !== UTF16LE_CODE_PAGE ? codePage : undefined;
 }
 
 function dateProperty(properties: ReadonlyMap<number, { type: number; value: Buffer }>, id: number): Date | undefined {

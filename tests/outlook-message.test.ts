@@ -318,9 +318,16 @@ describe('the code page of a message', () => {
     ['51932 (EUC-JP)', 51932, Buffer.from([0xa4, 0xa2]), 'あ'],
     ['20932 (EUC-JP, JIS X 0208-1990)', 20932, Buffer.from([0xa4, 0xa2]), 'あ'],
     ['54936 (GB18030)', 54936, Buffer.from([0xc4, 0xe3]), '你'],
-    ['1200 (UTF-16LE)', 1200, Buffer.from('Привет', 'utf16le'), 'Привет'],
+    ['50221 (ISO-2022-JP)', 50221, Buffer.from([ESCAPE, 0x24, 0x42, 0x24, 0x22, ESCAPE, 0x28, 0x42]), 'あ'],
+    ['51949 (EUC-KR)', 51949, Buffer.from([0xb0, 0xa1]), '가'],
+    ['21866 (KOI8-U)', 21866, Buffer.from([0xf0, 0xd2, 0xc9, 0xd7, 0xc5, 0xd4]), 'Привет'],
   ])('reads a string in code page %s', async (_label, codePage, bytes, expected) => {
     expect(await subjectIn(bytes, [codePage])).toBe(`Subject: ${expected}`);
+  });
+
+  it('takes code page 1200 for unset, since 8-bit strings are never UTF-16, and uses the next property', async () => {
+    expect(await subjectIn(Buffer.from('Hello', 'latin1'), [1200])).toBe('Subject: Hello');
+    expect(await subjectIn(Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]), [1200, 1251])).toBe('Subject: Привет');
   });
 
   it('takes a code page of 0 or below for unset and uses the next property, then Windows-1252', async () => {

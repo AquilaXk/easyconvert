@@ -46,4 +46,8 @@ describe('a binary source with no reader that starts with the same bytes', () =>
     expect(() => sourceBytesAsText(bytes, 'djvu')).toThrow(/fail-closed against mojibake/);
     expect(() => sourceBytesAsText(bytes, 'msg')).toThrow(expect.objectContaining({ name: 'LegacyOfficeFormatError' }));
   });
+  it.each(['txt', 'md'])('is refused as .%s when its FE FF mark is followed by null code units', (format) => {
+    const bytes = Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from([0x00, 0x01, 0x00, 0x02]), Buffer.alloc(4096)]);
+    expect(() => sourceBytesAsText(bytes, format)).toThrow(/Binary null bytes detected/);
+  });
 });
