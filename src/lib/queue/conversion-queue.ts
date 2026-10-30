@@ -214,13 +214,17 @@ export function attachInputCleanupOnCompletion(
 }
 
 /**
- * Owns the quota refund for cancelled jobs. The engine emits `cancelled` once per cancelled job, in
- * the process whose cancelJob won the transition, so every cancel path refunds exactly once.
+ * Owns the quota refund and the input cleanup for cancelled jobs. The engine emits `cancelled` once per cancelled
+ * job, in the process whose cancelJob won the transition, so every cancel path refunds exactly once.
  */
 export function attachJobCancellationListeners(
   queue: IQueueEngine<ConversionJobData, ConversionJobResult>
 ): void {
   queue.on('cancelled', async (job: Job<ConversionJobData, ConversionJobResult>) => {
+    // A cancelled job never runs again, so its uploaded input is not needed any more.
+    if (job.data?.storageKey) {
+      await removeJobInput(job.id, job.data.storageKey);
+    }
     if (!job.data?.reservationId) {
       return;
     }

@@ -355,7 +355,7 @@ describe('/api/storage/file OpenAPI contract (#249)', () => {
     const spec = await (await getOpenApiSpec()).json();
     const operation = spec.paths['/api/storage/file/{key}']?.get;
 
-    expect(Object.keys(operation?.responses ?? {}).sort()).toEqual(['200', '206', '403', '404', '416', '429']);
+    expect(Object.keys(operation?.responses ?? {}).sort()).toEqual(['200', '206', '403', '404', '410', '416', '429']);
     expect(operation.security).toEqual([
       { ApiKeyAuth: ['storage:download'] },
       { BearerAuth: ['storage:download'] },

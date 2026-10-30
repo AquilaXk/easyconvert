@@ -526,6 +526,7 @@ export class KeyStore {
     toFormat: string;
     size: number;
     downloadUrl: string;
+    ttlMs?: number;
   }): Promise<UserConversionFile> {
     this.ensureInitialized();
 
@@ -564,7 +565,7 @@ export class KeyStore {
       size: data.size,
       downloadUrl,
       createdAt: now,
-      expiresAt: now + 3600 * 1000, // 1 hour lifetime
+      expiresAt: now + (data.ttlMs ?? 3600 * 1000),
     };
 
     this.userFiles.set(file.id, file);

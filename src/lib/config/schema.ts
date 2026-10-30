@@ -714,6 +714,28 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'RESULT_UNDELIVERED_TTL_SECONDS',
+    area: 'storage',
+    description:
+      'Seconds a conversion result is kept when nobody has downloaded it completely, counted from the moment it is stored; after that it is deleted and its download answers 410 Gone. The input of a job is deleted as soon as the job ends and does not wait for it. Applies to every storage driver; a bucket lifecycle rule is only a backstop.',
+    kind: { type: 'integer', min: 60, max: 86_400 },
+    default: 3600,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'RESULT_DELIVERED_GRACE_SECONDS',
+    area: 'storage',
+    description:
+      'Seconds a conversion result stays downloadable after its first complete delivery (one response, or ranges that together cover the whole file), so a second click or a resumed download still works. After that it is deleted and its download answers 410 Gone. A download that stops early does not count as a delivery.',
+    kind: { type: 'integer', min: 1, max: 3600 },
+    default: 600,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'OCI_NAMESPACE',
     area: 'storage',
     description: 'OCI Object Storage namespace (a single DNS label). Required when STORAGE_DRIVER is `oci`; checked when storage is selected.',

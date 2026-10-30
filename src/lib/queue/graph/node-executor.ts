@@ -60,6 +60,8 @@ import {
   requestedTargetFormat,
 } from '../../jobs/graph-operations';
 import { pageCappedEngine, pageLimitForOwner } from '../page-cap';
+import { resolveRetentionPolicy } from '../../storage/result-retention';
+import { registerResult } from '../../storage/retention-service';
 import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
 import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
 
@@ -773,8 +775,9 @@ export async function processGraphNodeJob(
             stored.buffer,
             stored.mimeType,
             stored.filename || path.basename(inputKey),
-            60 * 60 * 1000
+            resolveRetentionPolicy().undeliveredTtlMs
           );
+          await registerResult(promotedKey);
           outputKeys.push(promotedKey);
         }
         await job.log(`Promoted ${outputKeys.length} result(s) to permanent storage`);

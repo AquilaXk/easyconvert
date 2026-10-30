@@ -1375,6 +1375,18 @@ export const JobResourceSchema = {
       type: 'integer',
       description: 'HTTP status the same failure answers on the synchronous API, for example 413 when the input exceeds the pixel limit, or 504 when the job ran past its wall-clock deadline.',
     },
+    retention: {
+      type: 'object',
+      description:
+        'Whether the converted file can still be downloaded. A result is deleted shortly after its first complete download, or when nobody downloaded it in time; its download then answers 410. Present for a completed job that stored a result.',
+      required: ['state'],
+      properties: {
+        state: { type: 'string', enum: ['available', 'deleted'] },
+        deleteAt: { type: 'number', description: 'Epoch milliseconds after which an available result is deleted.' },
+        deliveredAt: { type: 'number', description: 'Epoch milliseconds of the first complete download, when there was one.' },
+        reason: { type: 'string', enum: ['delivered', 'expired'], description: 'Why a deleted result is gone: it was downloaded, or nobody downloaded it in time.' },
+      },
+    },
     ...EngineTraceProperties,
     ...DroppedStreamsProperties,
     ...ConversionWarningsProperties,
