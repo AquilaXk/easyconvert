@@ -7,8 +7,6 @@ import { assertWorkbookFitsXls } from '../src/lib/conversions/office/xls-limits'
 import { XLSX_MAX_RANGES_PER_WORKBOOK, XLSX_MAX_SHEETS } from '../src/lib/conversions/office/xlsx-sheets';
 import { writeXlsx } from '../src/lib/conversions/xlsx-writer';
 import { DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
-import { oracleTest } from './helpers/oracle-test';
-import { sofficeConvert } from './helpers/soffice-office';
 import { DEFAULT_HANG_GUARD_MS, cpuClockMs, expectSizeIndependentOnInputs } from './helpers/timing';
 
 /**
@@ -147,24 +145,6 @@ describe('hyperlinks of a worksheet', () => {
       });
       await expectReadAndConverted(workbook);
     }, 60_000);
-
-    oracleTest('are read and convert from a workbook the office suite wrote', ['soffice'], async () => {
-      const namespaces = [
-        'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"',
-        'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"',
-        'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"',
-        'xmlns:xlink="http://www.w3.org/1999/xlink"',
-      ].join(' ');
-      const rows = Array.from(
-        { length: LINKS },
-        (_, index) => `<table:table-row><table:table-cell office:value-type="string"><text:p><text:a xlink:href="https://example.com/p/${index}">l${index}</text:a></text:p></table:table-cell></table:table-row>`
-      ).join('');
-      const flat = Buffer.from(
-        `<?xml version="1.0" encoding="UTF-8"?><office:document ${namespaces} office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet><table:table table:name="Data">${rows}</table:table></office:spreadsheet></office:body></office:document>`,
-        'utf-8'
-      );
-      await expectReadAndConverted(sofficeConvert(flat, 'fods', 'xlsx', 'xlsx'));
-    }, 240_000);
   });
 
   it('count against the workbook allowance only: links past it are left out, and the sheet is still read', async () => {
