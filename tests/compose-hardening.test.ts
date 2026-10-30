@@ -208,14 +208,16 @@ describe('compose files carry no default for secrets, keys or cloud identifiers'
     }
   });
 
-  it('requires the storage driver, signing secret and sealing key in production, for every worker', () => {
+  it('requires the signing secret and the sealing key in production, defaults the storage driver to local, for every application service', () => {
     const text = readFileSync(PROD_PATH, 'utf-8');
-    expect(text).toMatch(/STORAGE_DRIVER=\$\{STORAGE_DRIVER:\?/);
-    expect(text).toMatch(/STORAGE_SIGNING_SECRET=\$\{STORAGE_SIGNING_SECRET:\?/);
-    expect(text).toMatch(/JOB_SECRET_KEK=\$\{JOB_SECRET_KEK:\?/);
-    expect(Object.keys(prod.services).sort()).toEqual([...WORKER_SERVICES].sort());
-    for (const name of WORKER_SERVICES) {
-      expect(environmentOf(prod.services[name]).NODE_ENV, name).toBe('production');
+    expect(text).toMatch(/STORAGE_DRIVER: \$\{STORAGE_DRIVER:-local\}/);
+    expect(text).toMatch(/STORAGE_SIGNING_SECRET: \$\{STORAGE_SIGNING_SECRET:\?/);
+    expect(text).toMatch(/JOB_SECRET_KEK: \$\{JOB_SECRET_KEK:\?/);
+    expect(Object.keys(prod.services).sort()).toEqual(['redis', 'web', ...WORKER_SERVICES].sort());
+    for (const name of ['web', ...WORKER_SERVICES]) {
+      const env = environmentOf(prod.services[name]);
+      expect(env.NODE_ENV, name).toBe('production');
+      expect(env.STORAGE_DRIVER, name).toBe('${STORAGE_DRIVER:-local}');
     }
   });
 });
@@ -242,7 +244,18 @@ function composeCli(): ComposeCliResult {
 const compose = composeCli();
 
 describe.skipIf(skipUnless('docker compose', compose.available))('docker compose config agrees with the YAML parse', () => {
-  const PROD_ENV = { STORAGE_DRIVER: 'local', STORAGE_SIGNING_SECRET: 'x'.repeat(32), JOB_SECRET_KEK: 'y'.repeat(32) };
+  const PROD_ENV: Record<string, string> = {
+    STORAGE_SIGNING_SECRET: 'x'.repeat(32),
+    JOB_SECRET_KEK: 'y'.repeat(32),
+    REDIS_PASSWORD: 'z'.repeat(24),
+    APP_URL: 'https://convert.example.test',
+    JWT_SECRET: 'j'.repeat(32),
+    KEY_HASH_PEPPER: 'k'.repeat(32),
+    WEBHOOK_SECRET_KEK: 'w'.repeat(32),
+    EASYCONVERT_SCRATCH_DIR: '/scratch',
+    EASYCONVERT_WEB_IMAGE: `example.test/web@sha256:${'1'.repeat(64)}`,
+    EASYCONVERT_WORKER_IMAGE: `example.test/worker@sha256:${'2'.repeat(64)}`,
+  };
 
   function config(args: string[], env: Record<string, string> = {}): ComposeFile {
     const result = compose.run([...args, 'config', '--format', 'json'], env);
@@ -277,23 +290,36 @@ describe.skipIf(skipUnless('docker compose', compose.available))('docker compose
     }
   });
 
-  it('applies the production overlay to every worker and leaves the cloud identifiers unset', () => {
-    const effective = config(['-f', 'docker-compose.yml', '-f', 'docker-compose.prod.yml', '--profile', 'split'], PROD_ENV);
-    for (const name of WORKER_SERVICES) {
+  it('expands the production file for every application service and leaves the cloud identifiers unset', () => {
+    const effective = config(['-f', 'docker-compose.prod.yml', '--profile', 'redis', '--profile', 'split', '--profile', 'gpu'], PROD_ENV);
+    for (const name of ['web', ...WORKER_SERVICES]) {
       const env = environmentOf(effective.services[name]);
       expect(env.NODE_ENV, name).toBe('production');
+      expect(env.STORAGE_DRIVER, name).toBe('local');
       expect(env.OCI_NAMESPACE, name).toBeNull();
       expect(env.OCI_ENDPOINT, name).toBeNull();
       expect(env.S3_SECRET_ACCESS_KEY, name).toBeNull();
     }
   });
 
-  it('refuses the production overlay without a signing secret', () => {
-    const result = compose.run(['-f', 'docker-compose.yml', '-f', 'docker-compose.prod.yml', 'config'], {
-      STORAGE_DRIVER: 'local',
-      JOB_SECRET_KEK: 'y'.repeat(32),
-    });
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('STORAGE_SIGNING_SECRET');
+  it('uses the Redis named by REDIS_URL, without a Redis password and without the Redis service of the stack', () => {
+    const env: Record<string, string> = { ...PROD_ENV, REDIS_URL: 'rediss://:secret@redis.example.test:6380' };
+    delete env.REDIS_PASSWORD;
+    const effective = config(['-f', 'docker-compose.prod.yml'], env);
+    expect(Object.keys(effective.services).sort()).toEqual(['web', 'worker']);
+    for (const name of ['web', 'worker']) {
+      expect(environmentOf(effective.services[name]).REDIS_URL, name).toBe('rediss://:secret@redis.example.test:6380');
+    }
   });
+
+  it.each(['STORAGE_SIGNING_SECRET', 'JOB_SECRET_KEK', 'REDIS_PASSWORD', 'APP_URL', 'JWT_SECRET', 'EASYCONVERT_SCRATCH_DIR'])(
+    'refuses the production file without %s',
+    (missing) => {
+      const env: Record<string, string> = { ...PROD_ENV };
+      delete env[missing];
+      const result = compose.run(['-f', 'docker-compose.prod.yml', 'config', '--quiet'], env);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(missing);
+    }
+  );
 });

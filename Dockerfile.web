@@ -1,0 +1,59 @@
+# EasyConvert OCI Web Server (Next.js), linux/arm64 (OCI Ampere A1) and linux/amd64
+#
+# The web process converts in process (the synchronous /api/convert route) and so needs every engine the worker has. This image is
+# therefore the worker image plus the Next.js build: it adds one layer (.next, public and next.config.mjs) to the worker image it is
+# built on, shares every other layer with it on disk and in the registry, and starts the server instead of the worker. Build the worker
+# image first (Dockerfile.worker) and pass its digest as WORKER_IMAGE:
+#
+#   docker build -f Dockerfile.web --build-arg WORKER_IMAGE=ghcr.io/<owner>/easyconvert-worker@sha256:<digest> .
+#
+# Next.js standalone output is not used: next.config.mjs turns output file tracing off, and the worker image already carries the
+# production node_modules (with the libvips build the worker pins), which `next start` reads.
+
+# Same pinned base as Dockerfile.worker (tests/web-image.test.ts fails when the two differ).
+ARG NODE_IMAGE=node:24.20.0-trixie-slim@sha256:50c3b2f6988dfc307b86e5301d69611af31f4789bdf232863b07d3b02fe55ae0
+ARG WORKER_IMAGE
+
+# ==============================================================================
+# Stage 1: Next.js build
+# ==============================================================================
+FROM ${NODE_IMAGE} AS webbuilder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+WORKDIR /app
+
+COPY package*.json ./
+
+# Dependencies with the build tools (Tailwind, TypeScript), ignoring lifecycle scripts for supply-chain security
+RUN npm ci --include=dev --ignore-scripts
+
+COPY tsconfig.json next.config.mjs postcss.config.mjs tailwind.config.ts ./
+COPY public/ ./public/
+COPY src/ ./src/
+
+# `next build` has no runtime environment: the production requirements of the configuration are enforced at start-up, not here
+# (NEXT_PHASE=phase-production-build).
+RUN npx next build
+
+# ==============================================================================
+# Stage 2: Web runtime on the worker image
+# ==============================================================================
+FROM ${WORKER_IMAGE} AS web
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+COPY --from=webbuilder --chown=easyconvert:easyconvert /app/.next ./.next
+COPY --from=webbuilder --chown=easyconvert:easyconvert /app/public ./public
+COPY --chown=easyconvert:easyconvert next.config.mjs ./next.config.mjs
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl --fail --silent --show-error --max-time 8 http://127.0.0.1:3000/api/health > /dev/null || exit 1
+
+# Process init wrapper (tini) is the inherited ENTRYPOINT. The server runs as the unprivileged user of the worker image.
+CMD ["node", "node_modules/next/dist/bin/next", "start", "--hostname", "0.0.0.0", "--port", "3000"]

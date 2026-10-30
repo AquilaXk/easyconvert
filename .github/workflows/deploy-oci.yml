@@ -1,0 +1,161 @@
+name: Deploy to the OCI host
+
+# Builds the arm64 images on every push to main that changes what they contain, and deploys a chosen build to the shared OCI A1 host on
+# request (docs/deploy-oci.md). Nothing here runs on a schedule and nothing deploys by itself.
+#
+#   build   push to main: the worker image (Dockerfile.worker), then the web image (Dockerfile.web) on top of that exact worker digest,
+#           both for linux/arm64, pushed to GHCR as sha-<commit> and main.
+#   deploy  workflow_dispatch on main, in the environment easyconvert-production, on the runner labelled easyconvert-production:
+#           pins the chosen build by digest, starts it, checks health and rolls back to the previous release when it does not come up.
+#           The runner is separate from the one of the other service on this host and the job reads and writes only /opt/easyconvert.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile.worker'
+      - 'Dockerfile.web'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'next.config.mjs'
+      - 'src/**'
+      - 'public/**'
+      - 'native/**'
+      - 'docker/**'
+      - 'scripts/**'
+      - '.github/workflows/deploy-oci.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'deploy a build, or roll back to the previous release'
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+      image_ref:
+        description: 'Tag of the build to deploy: main (the latest build) or sha-<40 character commit>'
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-oci-${{ github.event_name }}
+  cancel-in-progress: false
+
+env:
+  WORKER_REPO: ghcr.io/aquilaxk/easyconvert-worker
+  WEB_REPO: ghcr.io/aquilaxk/easyconvert-web
+
+jobs:
+  build:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to the container registry
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The sharplibvips stage compiles libvips; the layer cache keeps it, so only the first build and a change to that stage pay for it.
+      - name: Build and push the worker image
+        id: worker
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: Dockerfile.worker
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ${{ env.WORKER_REPO }}:sha-${{ github.sha }}
+            ${{ env.WORKER_REPO }}:main
+          cache-from: type=registry,ref=${{ env.WORKER_REPO }}:buildcache-arm64
+          cache-to: type=registry,ref=${{ env.WORKER_REPO }}:buildcache-arm64,mode=max
+
+      - name: Build and push the web image on that worker image
+        id: web
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: Dockerfile.web
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            WORKER_IMAGE=${{ env.WORKER_REPO }}@${{ steps.worker.outputs.digest }}
+          tags: |
+            ${{ env.WEB_REPO }}:sha-${{ github.sha }}
+            ${{ env.WEB_REPO }}:main
+
+      - name: Record the digests
+        env:
+          WORKER_DIGEST: ${{ steps.worker.outputs.digest }}
+          WEB_DIGEST: ${{ steps.web.outputs.digest }}
+        run: |
+          {
+            echo '### Images built for linux/arm64'
+            echo "- worker: \`${WORKER_REPO}@${WORKER_DIGEST}\`"
+            echo "- web: \`${WEB_REPO}@${WEB_DIGEST}\`"
+            echo "- deploy it with the \`deploy-oci\` workflow and image_ref \`sha-${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, ARM64, easyconvert-production]
+    environment: easyconvert-production
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Log in to the container registry
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The one secret is a KEY=VALUE file. Only the keys of deploy/oci/env-allowlist.txt are kept (the names of the others are logged,
+      # never their values) and the result is a mode 0600 file in the job's temporary directory.
+      - name: Filter the env secret through the allowlist
+        if: inputs.action == 'deploy'
+        env:
+          EASYCONVERT_ENV: ${{ secrets.EASYCONVERT_ENV }}
+        run: |
+          set -euo pipefail
+          [ -n "$EASYCONVERT_ENV" ] || { echo "the environment easyconvert-production has no secret EASYCONVERT_ENV" >&2; exit 1; }
+          umask 077
+          printf '%s\n' "$EASYCONVERT_ENV" | bash deploy/oci/deploy.sh filter-env > "$RUNNER_TEMP/easyconvert.env"
+          echo "ENV_FILE=$RUNNER_TEMP/easyconvert.env" >> "$GITHUB_ENV"
+
+      - name: Deploy, check health, roll back on failure
+        if: inputs.action == 'deploy'
+        env:
+          SOURCE_DIR: ${{ github.workspace }}
+          IMAGE_REF: ${{ inputs.image_ref }}
+        run: bash deploy/oci/deploy.sh deploy "$IMAGE_REF"
+
+      - name: Roll back to the previous release
+        if: inputs.action == 'rollback'
+        run: bash deploy/oci/deploy.sh rollback
+
+      - name: Remove the filtered env file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/easyconvert.env"

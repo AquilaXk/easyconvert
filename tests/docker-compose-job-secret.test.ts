@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { parse } from 'yaml';
 
 /**
- * The production overlay runs the workers with NODE_ENV=production, where the worker refuses to
+ * The production stack runs the workers with NODE_ENV=production, where the worker refuses to
  * start without JOB_SECRET_KEK. It must therefore require the value (no public default that would
  * make every deployment seal secrets under the same known key) and hand it to every worker service.
  * Local development forwards the key from the shell when set and never invents one.
@@ -13,6 +13,7 @@ const ROOT = path.resolve(__dirname, '..');
 const LOCAL_FILE = 'docker-compose.yml';
 const PRODUCTION_FILE = 'docker-compose.prod.yml';
 const WORKER_SERVICES = ['worker', 'worker-light', 'worker-cpu', 'worker-memory', 'worker-gpu'];
+const PRODUCTION_SERVICES = ['web', ...WORKER_SERVICES];
 const REQUIRED_VALUE = /^JOB_SECRET_KEK=\$\{JOB_SECRET_KEK:\?[^}]+\}$/;
 /** A bare name passes the shell's value through and sets nothing when the shell has none. */
 const FORWARDED_VALUE = /^JOB_SECRET_KEK$/;
@@ -31,13 +32,15 @@ function workerKekEntries(file: string, service: string): string[] {
 }
 
 describe('docker compose worker services', () => {
-  for (const service of WORKER_SERVICES) {
+  for (const service of PRODUCTION_SERVICES) {
     it(`${service} requires JOB_SECRET_KEK with no default in production`, () => {
       const kek = workerKekEntries(PRODUCTION_FILE, service);
       expect(kek).toHaveLength(1);
       expect(kek[0]).toMatch(REQUIRED_VALUE);
     });
+  }
 
+  for (const service of WORKER_SERVICES) {
     it(`${service} forwards JOB_SECRET_KEK from the shell in local development`, () => {
       const kek = workerKekEntries(LOCAL_FILE, service);
       expect(kek).toHaveLength(1);
