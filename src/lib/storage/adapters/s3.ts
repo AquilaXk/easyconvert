@@ -42,7 +42,9 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
  * Absolute ceiling for one request, however steadily bytes trickle in, so a slow peer cannot hold
  * a connection open indefinitely. CompleteMultipartUpload of a large object can keep the response
  * open with whitespace for several minutes; 15 minutes leaves a wide margin above that and still
- * bounds a slow-loris peer. A downloaded body handed to the caller is not covered by this ceiling.
+ * bounds a slow-loris peer. The BYOS adapter keeps it running for a downloaded body too. The
+ * internal object client (s3-object-client.ts) ends it when the headers arrive, because a result is
+ * streamed to a client at the client's pace; the inactivity timeout still bounds that body.
  */
 export const S3_REQUEST_MAX_DURATION_MS = 15 * 60_000;
 /** Error documents are small; a larger body is truncated so a hostile endpoint cannot exhaust memory. */
