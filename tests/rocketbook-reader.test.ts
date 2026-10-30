@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
@@ -32,8 +32,6 @@ import {
 
 const ONE_PIXEL_PNG = greyPng(1);
 const PICTURE_PNG = greyPng(8);
-/** Each hostile input is refused in milliseconds once bounded; the guard fails work that grows with what the file claims. */
-const HOSTILE_GUARD_MS = 1_000;
 const PNG_IHDR_END = 33;
 
 /** PICTURE_PNG made `bytes` long by a private ancillary chunk after its header, which decoders skip (PNG specification 5.4). */
@@ -256,7 +254,7 @@ describe('a file that is not a readable RocketBook', () => {
   it('splits an author line of 64 KiB of white space in linear time', async () => {
     const run = ' '.repeat(65_000);
     const author = `AUTHOR=Ann${run}Lee with Bob`;
-    const book = await expectNoHang('white space author', () => readRocketBook(buildRocketBook([infoPage([author]), htmlPage('index.html', '<P>x</P>')])), HOSTILE_GUARD_MS);
+    const book = await expectNoHang('white space author', () => readRocketBook(buildRocketBook([infoPage([author]), htmlPage('index.html', '<P>x</P>')])));
     expect(book.authors).toEqual([`Ann${run}Lee`, 'Bob']);
   });
 
@@ -272,9 +270,19 @@ describe('a file that is not a readable RocketBook', () => {
 
 describe('a hostile chunk table', () => {
   const SHORTEST_ZLIB_STREAM = zlib.deflateSync(Buffer.alloc(0));
+  let inflateCalls: MockInstance<typeof zlib.inflateSync>;
 
+  beforeEach(() => {
+    inflateCalls = vi.spyOn(zlib, 'inflateSync');
+  });
+
+  afterEach(() => {
+    inflateCalls.mockRestore();
+  });
+
+  /** The refusal of `file`, found within the hang guard: the claim is how much work was done, which the calls to the inflater count. */
   function failureOf(file: Buffer): Promise<unknown> {
-    return expectNoHang('hostile chunk table', () => settle(() => readRocketBook(file)), HOSTILE_GUARD_MS).then((settled) => (settled.ok ? undefined : settled.error));
+    return expectNoHang('hostile chunk table', () => settle(() => readRocketBook(file))).then((settled) => (settled.ok ? undefined : settled.error));
   }
 
   it('is refused before any chunk is read when it lists four million chunks of no bytes', async () => {
@@ -289,6 +297,7 @@ describe('a hostile chunk table', () => {
     expect(overLimit).toBeInstanceOf(PayloadLimitError);
     expect(moreChunksThanText).toBeInstanceOf(RocketBookFormatError);
     expect([overLimit, moreChunksThanText].map((error) => (error as { status: number }).status)).toEqual([413, 400]);
+    expect(inflateCalls).not.toHaveBeenCalled();
   });
 
   it('is refused when 65,535 pages all point at one stored page of many chunks', async () => {
@@ -298,14 +307,18 @@ describe('a hostile chunk table', () => {
     const failure = await failureOf(buildRocketBook(pages));
     expect(failure).toBeInstanceOf(PayloadLimitError);
     expect((failure as Error).message).toBe(`The RocketBook pages list more than ${ROCKETBOOK_LIMITS.maxChunks} compressed chunks together.`);
+    expect(inflateCalls).not.toHaveBeenCalled();
   });
 
   it('is refused before any chunk is inflated when a page holds more of the smallest zlib streams than the limit', async () => {
     const pageOf = (count: number) => buildRocketBook([{ name: 'index.html', flags: 8, data: deflatedChunks(Array.from({ length: count }, () => SHORTEST_ZLIB_STREAM), count) }]);
     const overLimit = await failureOf(pageOf(ROCKETBOOK_LIMITS.maxChunks + 1));
+    const inflatedOverLimit = inflateCalls.mock.calls.length;
     const atLimit = await failureOf(pageOf(ROCKETBOOK_LIMITS.maxChunks));
     expect(overLimit).toBeInstanceOf(PayloadLimitError);
     expect([overLimit, atLimit].map((error) => (error as { status: number }).status)).toEqual([413, 400]);
+    expect(inflatedOverLimit, 'streams inflated before the page over the limit was refused').toBe(0);
+    expect(inflateCalls.mock.calls.length, 'a page at the limit is read: the counter sees the inflater').toBeGreaterThan(0);
   });
 
   it('is refused when a page of the smallest zlib streams inflates to none of the text it states', async () => {
