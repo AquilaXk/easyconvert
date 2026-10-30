@@ -4,7 +4,6 @@ import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office
 import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../lib/conversions/office/legacy-office-limits';
 import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
 import { writeTransientWorkbook } from '../lib/conversions/data';
-import { assertNotSpoofedFile } from '../lib/security/file-guard';
 import { readRawInputBuffer } from './worker-output';
 import { repairPptPersistIdSeed } from '../lib/conversions/office/ppt-reader';
 import {
@@ -298,7 +297,7 @@ export async function convertThroughInterchange(deps: OfficeSuiteRouteDeps, requ
 }
 
 /** The one BIFF8 target and the OOXML workbook format its source is checked in before the office suite exports it. */
-const BIFF8_TARGET = 'xls';
+export const BIFF8_TARGET = 'xls';
 const XLSX_FORMAT = 'xlsx';
 
 /** Whether a source is an OOXML workbook (XLSX or one of its macro-enabled and template variants), whose cells are read as they are. */
@@ -346,7 +345,8 @@ async function exportThroughSuiteWorkbook(deps: OfficeSuiteRouteDeps, request: O
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) ? input : { ...input, outputPath: undefined };
   let workbook: WorkerConversionResult | null;
   try {
-    workbook = await deps.writeWithOfficeSuite(source, src, XLSX_FORMAT, { ...options, outputPath: undefined, throwOnUnavailable: true } as WorkerEngineOptions, originalFilename);
+    // The filter names the final .xls export, not this XLSX pass, which would write BIFF8 bytes where the workbook check reads XLSX.
+    workbook = await deps.writeWithOfficeSuite(source, src, XLSX_FORMAT, { ...options, libreOfficeFilter: undefined, outputPath: undefined, throwOnUnavailable: true } as WorkerEngineOptions, originalFilename);
   } catch (err) {
     rethrowSandboxUnavailable(err);
     throw asUnreadableDocument(err, src);
@@ -373,9 +373,7 @@ export async function convertXlsTarget(
   const { input, src, tgt, options, originalFilename } = request;
   if (tgt !== BIFF8_TARGET) return convertDirectly();
   if (!officeSuiteReadsInputAndWrites(src, tgt, input)) {
-    const table = readRawInputBuffer(input);
-    assertNotSpoofedFile(table, src, originalFilename);
-    return exportCheckedWorkbook(deps, request, await writeTransientWorkbook(table, src, options));
+    return exportCheckedWorkbook(deps, request, await writeTransientWorkbook(readRawInputBuffer(input), src, options));
   }
   if (!isOoxmlWorkbook(src)) return exportThroughSuiteWorkbook(deps, request);
   await assertWorkbookFitsXls(workbookBytes(input));

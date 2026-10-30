@@ -364,7 +364,7 @@ export function convertFile(
 
 /**
  * Whether the office engine writes the spreadsheet target of a data source: it reads delimited text and JSON as sheets, while
- * Parquet, NDJSON, JSONL, YAML, TOML and XML are tables of records that the data engine reads and writes with their types.
+ * Parquet is a table of records that the data engine reads and writes with its types.
  */
 function officeEngineWritesSheet(src: string, tgt: string): boolean {
   return !STRUCTURED_SHEET_SOURCES.has(src) && ['ods', 'xlsx', 'xls'].includes(tgt);

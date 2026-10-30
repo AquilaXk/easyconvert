@@ -29,7 +29,7 @@ import { convertFile, convertImage } from '../lib/conversions';
 import { wordsPastEdgeOfOfficePdf } from './office-pdf-page-edge';
 import { assertOpenDocumentGraphic, assertXlsNotEncrypted } from '../lib/conversions/office';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
-import { OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withMetafileFrame, withMetafileInk, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
+import { BIFF8_TARGET, OFFICE_NATIVE_SOURCES, asUnreadableDocument, convertThroughInterchange, convertXlsTarget, interchangeNeeded, officeSuiteReadsInput, officeSuiteReadsInputAndWrites, retryRefusedLegacyDocument, withMetafileFrame, withMetafileInk, withOfficePageBounds, withPresentationRetry, type OfficeSuiteRouteDeps } from './office-suite-route';
 import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
@@ -2234,10 +2234,9 @@ async function convertWithOfficeSuiteRoutes(
   options.signal?.throwIfAborted();
   const request = { input, src: validateFormat(sourceFormat), tgt: validateFormat(targetFormat), options, originalFilename };
   const interchange = interchangeNeeded(request.src, request.tgt, isPdfChainTarget(request.tgt) || ARCHIVE_TARGET_FORMATS.has(request.tgt));
-  if (interchange !== undefined) {
-    assertNotSpoofedFileVfs(input, request.src, originalFilename);
-    return convertThroughInterchange(OFFICE_SUITE_DEPS, request, interchange);
-  }
+  // An interchange file and an .xls are written by the office suite or the table writers, which have not checked the declared source.
+  if (interchange !== undefined || request.tgt === BIFF8_TARGET) assertNotSpoofedFileVfs(input, request.src, originalFilename);
+  if (interchange !== undefined) return convertThroughInterchange(OFFICE_SUITE_DEPS, request, interchange);
   return convertXlsTarget(OFFICE_SUITE_DEPS, request, () => convertWithinImageSession(input, sourceFormat, targetFormat, options, originalFilename)).catch(async (refusal: unknown) => {
     const retried = await retryRefusedLegacyDocument(OFFICE_SUITE_DEPS, request, refusal);
     if (retried) return retried;
