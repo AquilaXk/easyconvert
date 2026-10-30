@@ -3,6 +3,8 @@ name: Report a failed scheduled run
 # Opens one issue labelled `nightly-regression` for a failing scheduled run, or comments on the one that is already open, so a
 # streak of failures stays in one place. Called by the jobs that gate a scheduled workflow (nightly.yml, regression-corpus.yml),
 # which decide when to call it: `if: always() && contains(needs.*.result, 'failure')`. The run it reports is the caller's.
+# The report names the commits since the last successful run of the same workflow on the same branch: speed parity is
+# measured only there (docs/policy-decisions.md, entry 123), so those commits are the suspects of a regression.
 on:
   workflow_call:
 
@@ -36,11 +38,37 @@ jobs:
             });
             const failed = jobs.filter((job) => job.conclusion === 'failure');
             const lines = failed.map((job) => `- [${job.name}](${job.html_url})`);
+
+            const maxSuspects = 50;
+            const { data: run } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: context.runId });
+            const { data: previous } = await github.rest.actions.listWorkflowRuns({
+              owner,
+              repo,
+              workflow_id: run.workflow_id,
+              branch: run.head_branch,
+              status: 'success',
+              per_page: 1,
+            });
+            const lastGood = previous.workflow_runs[0];
+            const suspects = [];
+            if (!lastGood) {
+              suspects.push('No earlier successful run on this branch: every commit up to this one is a suspect.');
+            } else if (lastGood.head_sha === context.sha) {
+              suspects.push(`The last successful run was on this same commit (${context.sha.slice(0, 7)}): the change is in the runner or a tool, not in a commit.`);
+            } else {
+              const { data: compare } = await github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${lastGood.head_sha}...${context.sha}` });
+              const commits = compare.commits.slice(-maxSuspects).reverse();
+              suspects.push(`Commits since the last successful run ([${lastGood.id}](${lastGood.html_url}) on ${lastGood.head_sha.slice(0, 7)}, [compare](${compare.html_url})):`);
+              suspects.push(...commits.map((commit) => `- [${commit.sha.slice(0, 7)}](${commit.html_url}) ${commit.commit.message.split('\n')[0]}`));
+              if (compare.commits.length > commits.length) suspects.push(`- and ${compare.commits.length - commits.length} older commits in the compare view`);
+            }
             const body = [
               `Run [${context.runId}](${runUrl}) failed on ${context.sha.slice(0, 7)}.`,
               '',
               'Failing jobs:',
               ...(lines.length > 0 ? lines : ['- (the failing job could not be listed)']),
+              '',
+              ...suspects,
             ].join('\n');
 
             const open = await github.rest.issues.listForRepo({ owner, repo, labels: label, state: 'open', per_page: 1 });

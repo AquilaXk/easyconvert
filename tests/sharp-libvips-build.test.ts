@@ -658,7 +658,7 @@ describe('the jobs that convert pictures', () => {
   const USE = './.github/actions/sharp-libvips';
   /** Every job whose results depend on the image library: the test suites, the conformance gate and the benchmarks. */
   const CONSUMERS: Array<[string, Workflow, string]> = [
-    ...['tests', 'conformance', 'parity-quality', 'parity-speed'].map((job): [string, Workflow, string] => ['ci.yml', ci, job]),
+    ...['tests', 'conformance', 'parity-quality'].map((job): [string, Workflow, string] => ['ci.yml', ci, job]),
     ...['perf', 'bench', 'bench-parity-quality', 'bench-parity-speed', 'bench-ab-speed', 'realworld'].map((job): [string, Workflow, string] => ['nightly.yml', nightly, job]),
   ];
   const converts = (step: Step): boolean => /vitest run|bench:quality|bench:realworld/.test(step.run ?? '');
@@ -672,7 +672,7 @@ describe('the jobs that convert pictures', () => {
     expect(use, `${name} before converting`).toBeLessThan(index(converts));
   });
 
-  it.each([['ci.yml', ci, 'parity-speed', 'base-install'], ['nightly.yml', nightly, 'bench-ab-speed', 'base']] as const)(
+  it.each([['nightly.yml', nightly, 'bench-ab-speed', 'base']] as const)(
     '%s %s gives the base of the comparison its dependencies before the head gets its library, and the base its own when it has one',
     (_file, flow, name, baseStep) => {
       const steps = flow.jobs[name].steps;

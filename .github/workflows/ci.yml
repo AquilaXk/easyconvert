@@ -9,19 +9,16 @@ name: CI
 #   - the registry conformance pairs by recorded duration, in as many parts as keep each part near the tests.
 # Timing-ratio suites (*.perf.test.ts) do not run here: they need a quiet machine and run nightly (nightly.yml).
 #
-# Reference parity: a conversion change merges only when it is at or above the reference tool in quality and speed.
-#   - parity-quality measures the changed families' quality rows on every push to the pull request;
-#   - parity-speed measures their speed rows once the `automerge` label is on (and again for a commit pushed after it),
-#     so the timing run is the last gate before the merge. Without the label, and with a conversion family changed, it
-#     is skipped, which `verify` reports as not yet satisfied: automerge cannot merge before speed parity has run on
-#     the current head.
-# The label-dependent verdicts need a fresh run when a label is added or removed, so those events trigger this workflow.
+# Reference parity: parity-quality measures the quality rows of the families a pull request changes, on every push. Speed
+# parity is not a pull request check: the nightly run measures every family on main against its recorded history, and a
+# failing night names the commits since the last good one (report-failure.yml). No label starts this workflow, so it runs
+# once per head commit; parity-quality reads the `security` label when it runs.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -41,8 +38,6 @@ jobs:
       # Benchmark families the pull request changes (comma list), the conversion families it changes that have no
       # reference-compared bench rows yet, and whether either is non-empty (see bench/family-map.json).
       bench_families: ${{ steps.families.outputs.families }}
-      # The same families as a JSON list, for the matrix of the speed job (one shard per family).
-      bench_families_json: ${{ steps.families.outputs.families_json }}
       bench_unmapped: ${{ steps.families.outputs.unmapped }}
       bench_changed: ${{ steps.families.outputs.changed }}
 
@@ -91,8 +86,10 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code changed: $code"
 
-      # Which benchmark families the reference-parity jobs must measure. Only a pull request has them; the map is
-      # bench/family-map.json and the mapper needs no installed dependencies.
+      # Which benchmark families the quality job must measure. Only a pull request has them; the map is
+      # bench/family-map.json and the mapper needs no installed dependencies. The base is the first parent of the merge
+      # commit under test: the event's base sha can be another commit of main, and a diff against it counts the commits
+      # between the two as changes of this pull request.
       - name: Map changed paths to benchmark families
         id: families
         shell: bash
@@ -104,8 +101,10 @@ jobs:
           families=""
           unmapped=""
           if [ "$EVENT_NAME" = pull_request ]; then
-            if [ -n "$PR_BASE_SHA" ] && git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"; then
-              mapped="$(git diff --name-only "$PR_BASE_SHA" HEAD | node scripts/ci-parity-families.mjs)"
+            parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
+            base="${parent:-$PR_BASE_SHA}"
+            if [ -n "$base" ] && git fetch --no-tags --depth=1 origin "$base"; then
+              mapped="$(git diff --name-only "$base" HEAD | node scripts/ci-parity-families.mjs)"
               printf '%s\n' "$mapped"
               families="$(printf '%s\n' "$mapped" | sed -n 's/^families=//p')"
               unmapped="$(printf '%s\n' "$mapped" | sed -n 's/^unmapped=//p')"
@@ -118,27 +117,10 @@ jobs:
           if [ -n "$families" ] || [ -n "$unmapped" ]; then changed=true; fi
           {
             echo "families=$families"
-            echo "families_json=$(printf '%s\n' "$families" | jq -Rc 'split(",") | map(select(. != ""))')"
             echo "unmapped=$unmapped"
             echo "changed=$changed"
           } >> "$GITHUB_OUTPUT"
           echo "benchmark families: ${families:-none}; without bench rows: ${unmapped:-none}"
-
-      # A speed shard backs the gap entries of its own family only, so each family of a changed gap entry needs a shard.
-      # The families come from the base's family map and gap file: the change cannot map its entries away from their shard.
-      - name: Require a speed shard for every changed gap entry
-        id: shards
-        if: github.event_name == 'pull_request'
-        shell: bash
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          FAMILIES: ${{ steps.families.outputs.families }}
-        run: |
-          if ! git cat-file -e "${PR_BASE_SHA}^{commit}" 2>/dev/null; then
-            echo "no comparable base commit: every family is measured"
-            exit 0
-          fi
-          node scripts/ci-parity-shards.mjs "$FAMILIES"
 
   # Static gates that need no external tools: the anti-cheat scan, the code-smell ratchet, the linter and the production build (which
   # type-checks). They run in their own job so the tool install does not delay them.
@@ -305,7 +287,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        part: [1, 2, 3, 4]
 
     # Real Redis for the queue suites that exercise Lua transitions, heartbeats,
     # and stall recovery (an in-process mock cannot execute Lua).
@@ -660,7 +642,7 @@ jobs:
       BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
       BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
       # Measured with the heap bound the service runs with (docker-compose.yml), so a photograph's AVIF is encoded on the threads
-      # the worker leases (src/lib/conversions/image-threads.ts), as in the speed jobs.
+      # the worker leases (src/lib/conversions/image-threads.ts), as in the nightly speed job.
       MALLOC_ARENA_MAX: "2"
 
     steps:
@@ -711,7 +693,7 @@ jobs:
 
       # A quality entry the change adds or edits in bench/parity-gaps.json is backed by the baseline of the base: it may not
       # record a value worse than the baseline held the row to. The base is the first parent of the merge commit this job
-      # tested, as in the speed job; only its two files are read, from git.
+      # tested; only its two files are read, from git.
       - name: Read the gap file and the baseline of the base
         id: base
         env:
@@ -767,220 +749,16 @@ jobs:
               scope: 'quality',
             });
 
-  # Reference parity, speed half: ours against the reference tool, interleaved in this job, for the changed families'
-  # throughput rows, decided by a confidence interval of the speed ratio (bench/speed-parity.ts). Timing is never
-  # cached and never compared with a stored number. It runs once the `automerge` label is on, and again for a commit
-  # pushed after the label, so it is the last gate before the merge.
-  #   - nothing to measure (no conversion family changed): the job runs, says so, and succeeds;
-  #   - a conversion family changed and the label is on: the job measures;
-  #   - a conversion family changed and the label is off: the job is skipped, and `verify` fails until the label is
-  #     added, so automerge cannot merge before this job has run on the current head.
-  #
-  # One shard per changed family, in parallel: the comparison with the base takes several times the time of the reference alone,
-  # and the families are independent. Every shard judges its own rows at the per-row error rate of the whole benchmark
-  # (bench/ab-config.ts: 0.01 over AB_ROW_BUDGET rows, more than the rows of all the families together) and has its own share of
-  # the extra pairs. A change with nothing to measure runs one shard that says so.
-  parity-speed:
-    name: parity speed (${{ matrix.family }})
-    needs: [changes, sharp-libvips]
-    if: >-
-      github.event_name == 'pull_request' &&
-      (needs.changes.outputs.bench_changed != 'true' || contains(github.event.pull_request.labels.*.name, 'automerge'))
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        family: ${{ fromJSON(needs.changes.outputs.bench_families_json != '[]' && needs.changes.outputs.bench_families_json || '["none"]') }}
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-
-    env:
-      ORACLE_STRICT_MODE: "1"
-      BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
-      BENCH_FAMILIES: ${{ matrix.family == 'none' && '' || matrix.family }}
-      BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
-      # The pull request times the generated corpus only; the public sample sets are timed by the nightly run (bench/scope.ts).
-      BENCH_CORPUS_TIER: pr
-      # Timed with the heap bound the service runs with (docker-compose.yml): without it image encodes lease at most two threads
-      # (src/lib/conversions/image-threads.ts), and the rows would time a configuration that is never deployed.
-      MALLOC_ARENA_MAX: "2"
-
-    steps:
-      - name: Say that there is nothing to measure
-        if: env.BENCH_CHANGED != 'true'
-        run: echo "speed parity runs when the automerge label is added; no conversion family changed, so there is nothing to measure"
-
-      - name: Checkout repository
-        if: env.BENCH_CHANGED == 'true'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Require bench rows for every changed conversion family
-        if: env.BENCH_UNMAPPED != ''
-        run: |
-          for family in ${BENCH_UNMAPPED//,/ }; do
-            echo "::error::add reference-compared bench rows for $family"
-          done
-          exit 1
-
-      - name: Setup Node.js
-        if: env.BENCH_CHANGED == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-          cache: 'npm'
-
-      - name: Install dependencies
-        if: env.BENCH_CHANGED == 'true'
-        run: npm ci --ignore-scripts
-
-      # The service runs the PDF text thread from the bundle `npm run build` makes (Dockerfile.worker, `build:worker`); without it the
-      # thread runs the TypeScript source through tsx, which transpiles every module at every thread start. Time what is deployed.
-      - name: Build the PDF text worker bundle
-        if: env.BENCH_CHANGED == 'true'
-        run: npm run build:pdf-text-worker
-
-      - name: Install tools and start test services
-        if: env.BENCH_CHANGED == 'true'
-        uses: ./.github/actions/ci-setup
-
-      # The product is timed with the 7-Zip build the worker image ships (its assembler LZMA decoder is what production
-      # runs); the reference rows keep the distribution's 7-Zip from PATH (bench/tools.ts), which P7ZIP_PATH does not touch.
-      - name: Install the pinned upstream 7-Zip
-        if: env.BENCH_CHANGED == 'true'
-        uses: ./.github/actions/pinned-7zip
-        with:
-          export-env: "true"
-
-      # The speed of this change is measured against its base in the same pairs (bench/ab-speed.ts). The base is the first
-      # parent of the merge commit this job tested, not the event's base sha, which can be older than the merge. It is
-      # checked out beside this tree, with its own dependencies, and measured by a process of its own.
-      - name: Check out the base of the tested merge
-        id: base
-        if: env.BENCH_CHANGED == 'true'
-        env:
-          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
-          parent="${parent:-$EVENT_BASE_SHA}"
-          git fetch --no-tags --depth=1 origin "$parent"
-          git worktree add --detach ab-base "$parent"
-          echo "sha=$parent" >> "$GITHUB_OUTPUT"
-          echo "the base is $parent"
-
-      # A change cannot loosen the gate that judges it: the speed verdict, its thresholds and the A/B machinery come from the
-      # base (scripts/ci-parity-base-gate.mjs, run from the base's own copy). The base's gate must still fit this tree.
-      - name: Use the gate of the base
-        if: env.BENCH_CHANGED == 'true'
-        run: |
-          if [ -f ab-base/scripts/ci-parity-base-gate.mjs ]; then
-            node ab-base/scripts/ci-parity-base-gate.mjs ab-base
-            node_modules/.bin/tsc --noEmit -p . 2>&1 | grep -E '^(bench|scripts)/' && { echo "::error::the gate of the base does not fit this change: a change that needs another interface of the gate files lands in two steps, the gate files first (bench/README.md, A change cannot loosen the gate that judges it)"; exit 1; } || true
-          else
-            echo "::notice::the base has no gate to take: this change introduces it, and is judged by its own"
-          fi
-
-      - name: Restore the dependencies of the base
-        id: base-modules
-        if: env.BENCH_CHANGED == 'true'
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ab-base/node_modules
-          key: ab-base-modules-${{ runner.os }}-${{ hashFiles('ab-base/package-lock.json') }}
-
-      # The base runs on its own dependencies and its own libvips, so a change of either shows in the comparison
-      # (scripts/ab-base-dependencies.sh says when it shares this tree's node_modules and when it gets a copy or its own install).
-      - name: Install the dependencies of the base
-        id: base-install
-        if: env.BENCH_CHANGED == 'true'
-        env:
-          RESTORED: ${{ steps.base-modules.outputs.cache-hit == 'true' }}
-        run: bash scripts/ab-base-dependencies.sh "$RESTORED" >> "$GITHUB_OUTPUT"
-
-      - name: Save the dependencies of the base
-        if: env.BENCH_CHANGED == 'true' && steps.base-modules.outputs.cache-hit != 'true' && hashFiles('ab-base/package-lock.json') != hashFiles('package-lock.json')
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ab-base/node_modules
-          key: ab-base-modules-${{ runner.os }}-${{ hashFiles('ab-base/package-lock.json') }}
-
-      # Each side is timed with the library its worker image ships: after the save above, so the cache keeps the npm package's.
-      - name: Use the libvips of the worker image
-        if: env.BENCH_CHANGED == 'true'
-        uses: ./.github/actions/sharp-libvips
-
-      - name: Use the libvips of the base's worker image
-        if: env.BENCH_CHANGED == 'true' && steps.base-install.outputs.own-libvips == 'true'
-        uses: ./.github/actions/sharp-libvips
-        with:
-          root: ab-base
-
-      # The base is timed the same way. A base from before the bundle existed has no such script and stays on its source.
-      - name: Build the PDF text worker bundle of the base
-        if: env.BENCH_CHANGED == 'true'
-        run: |
-          if grep -q '"build:pdf-text-worker"' ab-base/package.json; then
-            (cd ab-base && npm run build:pdf-text-worker)
-          fi
-
-      - name: Measure speed against the reference tools
-        id: bench
-        if: env.BENCH_CHANGED == 'true'
-        env:
-          BENCH_BASE_ROOT: ab-base
-        run: |
-          set +e
-          npm run bench:quality -- --parity --speed-only --family "$BENCH_FAMILIES" --base-gaps ab-base/bench/parity-gaps.json
-          code=$?
-          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
-          echo "benchmark exit code: $code"
-          exit 0
-
-      - name: Publish the parity table
-        if: always() && env.BENCH_CHANGED == 'true'
-        run: |
-          if [ -f bench-results/parity-verdict.md ]; then
-            { echo '### Reference parity: speed'; cat bench-results/parity-verdict.md; } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload the benchmark report
-        if: always() && env.BENCH_CHANGED == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: parity-speed-results-${{ matrix.family }}
-          path: bench-results/
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Apply the parity verdict and the security exemption
-        if: env.BENCH_CHANGED == 'true'
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
-        with:
-          script: |
-            const policy = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-parity-policy.mjs`);
-            await policy.applyParityVerdict({
-              github,
-              context,
-              core,
-              fs: require('node:fs'),
-              runFilePath: 'bench-results/parity-verdict.json',
-              scope: `speed-${process.env.BENCH_FAMILIES}`,
-            });
-
   # The libvips the worker image ships, built when its cache key is not in the cache (.github/workflows/sharp-libvips.yml). It
   # runs on every event: a key in the cache costs a lookup, and the jobs that convert pictures wait for it.
   sharp-libvips:
     uses: ./.github/workflows/sharp-libvips.yml
 
   # The required check. The heavy jobs may be skipped only when `changes` found documentation-only edits; any
-  # other skipped, cancelled or failed job fails the gate. The parity jobs follow the same rule with their own
-  # verdict: quality runs when a conversion family changed, and speed runs when nothing needs measuring or the
-  # `automerge` label is on; a skipped speed job with a conversion family changed is not yet satisfied.
+  # other skipped, cancelled or failed job fails the gate. Parity quality runs when a conversion family changed.
   verify:
     if: always()
-    needs: [changes, sharp-libvips, checks, tests, conformance, integration, container, parity-quality, parity-speed]
+    needs: [changes, sharp-libvips, checks, tests, conformance, integration, container, parity-quality]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -989,7 +767,6 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           CODE_CHANGED: ${{ needs.changes.outputs.code }}
           BENCH_CHANGED: ${{ needs.changes.outputs.bench_changed }}
-          HAS_AUTOMERGE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'automerge') }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           SHARP_LIBVIPS_RESULT: ${{ needs.sharp-libvips.result }}
           CHECKS_RESULT: ${{ needs.checks.result }}
@@ -998,10 +775,9 @@ jobs:
           INTEGRATION_RESULT: ${{ needs.integration.result }}
           CONTAINER_RESULT: ${{ needs.container.result }}
           PARITY_QUALITY_RESULT: ${{ needs.parity-quality.result }}
-          PARITY_SPEED_RESULT: ${{ needs.parity-speed.result }}
         run: |
-          echo "code changed: $CODE_CHANGED, conversion family changed: $BENCH_CHANGED, automerge label: $HAS_AUTOMERGE_LABEL"
-          echo "changes: $CHANGES_RESULT, sharp-libvips: $SHARP_LIBVIPS_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT, parity speed: $PARITY_SPEED_RESULT"
+          echo "code changed: $CODE_CHANGED, conversion family changed: $BENCH_CHANGED"
+          echo "changes: $CHANGES_RESULT, sharp-libvips: $SHARP_LIBVIPS_RESULT, checks: $CHECKS_RESULT, tests: $TESTS_RESULT, conformance: $CONFORMANCE_RESULT, integration: $INTEGRATION_RESULT, container: $CONTAINER_RESULT, parity quality: $PARITY_QUALITY_RESULT"
           failed=0
           if [ "$CHANGES_RESULT" != success ] || [ "$SHARP_LIBVIPS_RESULT" != success ] || [ "$CONTAINER_RESULT" != success ]; then failed=1; fi
           # The expected result of the heavy jobs follows from the filter's verdict alone.
@@ -1017,18 +793,6 @@ jobs:
           quality_expected=skipped
           if [ "$EVENT_NAME" = pull_request ] && [ "$BENCH_CHANGED" = true ]; then quality_expected=success; fi
           if [ "$PARITY_QUALITY_RESULT" != "$quality_expected" ]; then failed=1; fi
-          # Parity speed: success when nothing needs measuring or the label started the measurement. With a
-          # conversion family changed and no label the job is skipped, and that is not yet satisfied.
-          speed_expected=skipped
-          if [ "$EVENT_NAME" = pull_request ]; then
-            if [ "$BENCH_CHANGED" != true ] || [ "$HAS_AUTOMERGE_LABEL" = true ]; then
-              speed_expected=success
-            else
-              echo "::error::speed parity has not run: add the automerge label to run it before the merge"
-              failed=1
-            fi
-          fi
-          if [ "$PARITY_SPEED_RESULT" != "$speed_expected" ]; then failed=1; fi
           if [ "$failed" != 0 ]; then
             echo "::error::a required job did not finish as expected"
             exit 1

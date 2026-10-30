@@ -217,7 +217,9 @@ is sequential sampling: only a row still undecided at the first cap pays for it,
 row still undecided at the last cap is a failure of this absolute rule, which the nightly run and a run without a base
 (`--parity` without `--base-root`) apply to every row, and the pull request job applies to a row the base cannot run.
 
-**Pull requests: speed against the base of the change.** A fixed line cannot be both stable and sensitive for a row whose
+**Speed against the base of a change.** Since entry 123 of docs/policy-decisions.md no pull request job runs this
+comparison; it runs on request, `gh workflow run nightly.yml --ref <branch> -f ab_base_ref=main` (`bench-ab-speed`), and
+the paragraphs below describe the machinery it uses. A fixed line cannot be both stable and sensitive for a row whose
 true ratio sits near it (issue #700, when the line was 0.97: a row at 0.98 straddled it at any cap, and an unchanged row failed by chance), so the
 `parity speed` jobs of a pull request judge the change by what it did to the row, as performance gates that compare with the
 base branch do. A job takes the first parent of the merge commit it tested as the base (not the event's base sha, which can be
@@ -543,10 +545,9 @@ conformance still run, and a metric worse than our own baseline still fails. The
 rows below the reference and their gap issue, and opens or updates one `parity-gap` issue per family.
 
 `ci.yml` wires this into `verify`: `parity-quality` runs on every push to a pull request that changes a conversion
-family; `parity-speed` runs when the `automerge` label is on (and again for a commit pushed after it). With a
-conversion family changed and no label, `parity-speed` is skipped and `verify` fails with "add the automerge label",
-so auto-merge cannot fire before speed parity ran on the current head. The nightly workflow runs the full parity
-benchmark on every family and case.
+family. Speed parity is not a pull request check (docs/policy-decisions.md, entry 123): the nightly workflow runs the
+full parity benchmark on every family and case on `main`, and a failing night lists the commits since the last good one
+in the `nightly-regression` issue.
 
 ## Refreshing recorded numbers from CI
 
@@ -554,11 +555,11 @@ Speed depends on the machine, so the speed ratios in `bench/baseline.json` and `
 per-part durations in `.github/ci/conformance-durations.json`, are recorded from a CI run and never from a laptop.
 
 **Speed ratios.** The nightly workflow's `bench-parity-speed` job measures every throughput row on the runner and keeps
-the report as the `bench-speed-results` artifact for 30 days (the `parity speed` job of a pull request keeps
-`parity-speed-results` for 7 days). The job summary also lists what a refresh would change. To refresh:
+the report as the `bench-speed-results` artifact for 30 days. The job summary also lists what a refresh would change. To
+refresh:
 
 ```sh
-gh workflow run nightly.yml --ref <branch>        # main once merged; or pick the run of a pull request's parity speed job
+gh workflow run nightly.yml --ref <branch>        # main once merged
 gh run download <run id> -n bench-speed-results -D speed-results
 npm run bench:refresh-speed -- speed-results            # dry run: prints every change
 npm run bench:refresh-speed -- --write speed-results    # rewrites baseline.json and parity-gaps.json
