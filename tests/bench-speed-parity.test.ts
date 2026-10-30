@@ -33,9 +33,9 @@ function decide(ratios: number[], options?: Parameters<typeof decideSpeed>[2]): 
 }
 
 describe('the policy constants', () => {
-  it('allow ours to lose three percent of the reference speed, with a 95 percent interval', () => {
-    expect(SPEED_PARITY_TOLERANCE).toBe(0.03);
-    expect(PASS_LINE).toBeCloseTo(0.97, 12);
+  it('allow ours to lose ten percent of the reference speed, with a 95 percent interval', () => {
+    expect(SPEED_PARITY_TOLERANCE).toBe(0.1);
+    expect(PASS_LINE).toBeCloseTo(0.9, 12);
     expect(SPEED_CONFIDENCE_LEVEL).toBe(0.95);
   });
 
@@ -124,12 +124,12 @@ describe('the speed decision', () => {
   });
 
   it('fails a steady shortfall just beyond the tolerance', () => {
-    const { ours, reference } = pairs([0.95, 0.96, 0.955, 0.95, 0.96, 0.955, 0.96]);
+    const { ours, reference } = pairs([0.88, 0.89, 0.885, 0.88, 0.89, 0.885, 0.89]);
     expect(decideSpeed(ours, reference).verdict).toBe('fail');
   });
 
   it('is unstable when the interval straddles the pass line', () => {
-    const { ours, reference } = pairs([0.9, 0.95, 1.0, 1.05, 0.98, 1.02, 0.96]);
+    const { ours, reference } = pairs([0.85, 0.95, 1.0, 1.05, 0.98, 1.02, 0.96]);
     const decision = decideSpeed(ours, reference);
     expect(decision.verdict).toBe('unstable');
     expect(decision.lower).toBeLessThan(PASS_LINE);
@@ -153,9 +153,9 @@ describe('the speed decision', () => {
   });
 
   it('takes the tolerance from the caller', () => {
-    const { ours, reference } = pairs([0.9, 0.91, 0.92, 0.9, 0.91, 0.92, 0.9]);
+    const { ours, reference } = pairs([0.82, 0.83, 0.84, 0.82, 0.83, 0.84, 0.82]);
     expect(decideSpeed(ours, reference).verdict).toBe('fail');
-    expect(decideSpeed(ours, reference, { tolerance: 0.15 }).verdict).toBe('pass');
+    expect(decideSpeed(ours, reference, { tolerance: 0.2 }).verdict).toBe('pass');
   });
 
   it('throws typed errors for malformed pairs', () => {
@@ -234,7 +234,7 @@ describe('collecting paired runs until the decision is stable', () => {
 
   it('collects more pairs while the interval straddles the line, and passes once it clears it', async () => {
     // Seven pairs with one slow outlier straddle the line; every later pair is fast, so four more clear it at 11.
-    const run = scripted((pair) => (pair === 0 ? 0.95 : 1.1));
+    const run = scripted((pair) => (pair === 0 ? 0.85 : 1.1));
     const timing = await adaptiveSpeedTiming(run.ours, run.reference, { ...LIGHT_SPEED_PLAN, warmup: 0 }, run.now);
     expect(timing.runs).toBe(SPEED_LIGHT_INITIAL_PAIRS + LIGHT_SPEED_PLAN.step);
     expect(timing.decision.verdict).toBe('pass');

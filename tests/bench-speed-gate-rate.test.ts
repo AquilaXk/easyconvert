@@ -52,10 +52,10 @@ describe.each(WEIGHTS)('the A/B gate on %s rows', (weight) => {
 });
 
 describe('the gate without a base, for contrast', () => {
-  it('fails a row at parity by chance on a share of the runs, which is what the A/B comparison removes', async () => {
-    const absolute = await failureRate((seed) => absoluteGateFails(truth(1, 1, 0.05), 'heavy', seed), TRIALS);
+  it('fails a row just above the pass line by chance on a share of the runs, which is what the A/B comparison removes', async () => {
+    const absolute = await failureRate((seed) => absoluteGateFails(truth(0.93, 1, 0.05), 'heavy', seed), TRIALS);
     expect(absolute).toBeGreaterThan(0.15);
-    expect(await failureRate((seed) => abGateFails(truth(1, 1, 0.05), 'heavy', seed), TRIALS)).toBe(0);
+    expect(await failureRate((seed) => abGateFails(truth(0.93, 1, 0.05), 'heavy', seed), TRIALS)).toBe(0);
   });
 });
 

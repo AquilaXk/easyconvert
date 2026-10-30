@@ -8,6 +8,7 @@ import { performance } from 'node:perf_hooks';
 import type { ChildMessage, HostMessage } from './ab-protocol';
 import type { AdaptiveTiming } from './speed-parity';
 import { slowed, type TimerInit } from './speed-timing';
+import { SPEED_PARITY_TOLERANCE } from './speed-config';
 
 /** What a runner gets back for a row the benchmark times: a stub, since the child's rows are not used. */
 const STUB_TIMING: AdaptiveTiming = {
@@ -19,7 +20,7 @@ const STUB_TIMING: AdaptiveTiming = {
   oursCv: 0,
   referenceCv: 0,
   repeats: { ours: 1, reference: 1 },
-  decision: { verdict: 'pass', pairs: 1, median: 1, lower: null, upper: null, confidence: null, passLine: 0.97 },
+  decision: { verdict: 'pass', pairs: 1, median: 1, lower: null, upper: null, confidence: null, passLine: 1 - SPEED_PARITY_TOLERANCE },
   unstableAtCap: false,
 };
 

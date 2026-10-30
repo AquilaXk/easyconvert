@@ -137,6 +137,7 @@ Quality evidence
 18. [Public sample sets as evidence](#18-public-sample-sets-as-evidence)
 37. [Real sample files for every input format](#37-real-sample-files-for-every-input-format)
 92. [Acknowledging an intended speed slowdown against the base, row by row, single-use](#92-acknowledging-an-intended-speed-slowdown-against-the-base-row-by-row-single-use)
+114. [The launch pass line of a speed row is 0.90 of the reference](#114-the-launch-pass-line-of-a-speed-row-is-090-of-the-reference)
 
 Tabular data
 
@@ -3916,3 +3917,19 @@ Compression
 - **Verified by**: `tests/xlsx-typed-cells.test.ts` (numbers, booleans and shared strings in the sheet XML; the strings that stay text; ISO dates as serials under the date format; the escapes; JSON types; unterminated and misplaced quotes as 400; 1,048,577 rows, 16,385 columns and a 32,768-character cell as 413; a LibreOffice read-back of every cell to CSV and of the cell kinds to ODS), `tests/xls-real-binary-output.test.ts` (the Compound File signature and `file` for CSV, TSV, JSON, XLSX, ODS, Kingsoft, Parquet and PDF sources; a test-side record walker, `tests/helpers/biff8-records.ts`, that finds RK, MULRK or NUMBER records for numbers, `LABELSST` for text and a cached boolean for TRUE and FALSE; a LibreOffice read-back to the source values, a cell with a comma, a quote and a line break through xls to csv to xlsx; the pair xls to xls refused; 65,537 rows and 257 columns as 413), `tests/xlsx-reader-merges-dates-links.test.ts` (merged ranges, hyperlinks and the 1904 date system on workbooks LibreOffice wrote from flat OpenDocument text; the 1904 flag and the phonetic runs on workbooks written by hand), `tests/office-suite-route.test.ts` (the workbook route with stand-ins for the suite: the request's options, the output path, the clean-up, the missing suite, a table that cannot be read, a workbook past the BIFF8 bounds), and the touched tests on Ubuntu 24.04 with LibreOffice 24.2 under `ORACLE_STRICT_MODE=1`. `ORACLE_STRICT_MODE=1 npm run bench:quality -- --parity --family data --quality-only`: 151 rows, 0 regressed, parity PASS; the speed rows of the family against the base (`--speed-only --base-root`): CSV to XLSX 1.175 head against base (18 pairs), XLSX to CSV 0.983 (24 pairs, upper bound 1.021).
 - **Revisit when**: QA wants BIFF8 written without the office suite (then the writer is taken from a maintained library whose output the suite and Excel read, or written from [MS-XLS] and tested against both), the worker image drops the office suite, the speed of the export row is measured below the launch bar, or Excel files with dates before 1900-03-01 or ISO timestamps need to become date cells (then the reader writes the time part of a date-time format too).
 
+## 114. The launch pass line of a speed row is 0.90 of the reference
+
+- **Status**: Implemented (issue #444, PR #906), decided 2026-10-30 (QA decision: launch first, then improve speed over time).
+- **Decision**:
+  - **A speed row passes against the reference when the lower bound of its speed-ratio interval is at least 0.90** (`SPEED_PARITY_TOLERANCE` = 0.10 in `bench/speed-config.ts`; the stub decision of `bench/ab-child-core.ts` takes the same line). It was 0.97.
+  - **Unchanged**: the per-PR check that a change is no slower than its base (the A/B gate and its thresholds in `bench/ab-config.ts`), the output-correctness and quality gates, and the low-level optimisation work on the rows below the reference.
+  - The gate takes `bench/speed-config.ts` from the base commit (`scripts/ci-parity-base-gate.mjs`), so the line holds for the pull requests opened after this one is merged, not for this one.
+- **Why**: the launch is held by rows between 0.90 and 0.97 of the reference that need engine work of weeks (the office-suite start-up of the `.xls` export is one: 0.899 to 0.926 of the reference's own CSV import). A user does not notice a tenth of the time of a conversion; a missing or wrong output is what keeps a user away. The A/B gate still stops a change that makes a row slower than its base, so the line cannot drift down release by release.
+- **Trade-offs**:
+  - **Rows between 0.90 and 0.97 pass without a gap entry**, so they leave `bench/parity-gaps.json` and its history. Their numbers stay in every nightly report.
+  - **The nightly reads fewer failures**, which hides the rows that sit just above the new line; the report still prints each ratio.
+- **Alternatives rejected**:
+  - **Keeping 0.97 and listing every row below it as a tracked gap**: it is the same release with more entries to maintain, and a gap entry pins a row's history rather than its target.
+  - **A lower line per family**: no family's users wait differently enough to justify separate lines at launch.
+- **Verified by**: `tests/bench-speed-parity.test.ts` (the constant and the decisions at the new line), `tests/bench-parity.test.ts` (a row that lost parity, a tracked row and an acknowledged slowdown judged against 0.90), `tests/bench-speed-gate-rate.test.ts` (the absolute gate fails a row just above the line on a share of the runs while the A/B gate does not), and the whole `tests/bench-*.test.ts` set.
+- **Revisit when**: the product has launched; then raise the line back toward 0.97 family by family, starting with the families whose rows already sit above it.
