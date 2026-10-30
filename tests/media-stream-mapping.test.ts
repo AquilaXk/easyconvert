@@ -27,6 +27,7 @@ import {
   planStreamMapping,
 } from '../src/lib/conversions/media-stream-plan';
 import { InvalidMediaOptionError, TooManyMediaStreamsError } from '../src/lib/types';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * A transcode keeps every audio and subtitle track with its language and disposition, the chapters, and
@@ -294,7 +295,7 @@ describe('stream mapping plan (pure)', () => {
 
 describe('frame rate and audio sync arguments', () => {
   const base = (video: object, extra: object = {}) =>
-    buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', { disableHwaccel: true, ...extra, video: { codec: 'h264', ...video } } as never);
+    buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', { disableHwaccel: true, ...extra, video: { codec: 'h264', ...video } } as never);
 
   it('keeps variable frame rate with -fps_mode passthrough when no rate is requested', () => {
     const args = base({});

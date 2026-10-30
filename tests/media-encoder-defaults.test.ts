@@ -33,6 +33,7 @@ import {
 import { describeAudioProcessing } from '../src/lib/conversions/media-audio-run';
 import { convertMedia } from '../src/lib/conversions/media';
 import { EngineUnavailableError, InvalidMediaOptionError } from '../src/lib/types';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * Encoder defaults and loudness normalisation. Argument tests read the exact ffmpeg arguments; output tests
@@ -45,7 +46,7 @@ const SOURCE = '/nonexistent/in.mp4';
 const OUT = '/tmp/out.mp4';
 
 function args(options: object, tgt = 'mp4'): string[] {
-  return buildFfmpegArguments(SOURCE, `/tmp/out.${tgt}`, 'mp4', tgt, { disableHwaccel: true, ...options } as never);
+  return buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), `/tmp/out.${tgt}`, tgt, { disableHwaccel: true, ...options } as never);
 }
 function after(list: string[], flag: string): string {
   return list[list.indexOf(flag) + 1];
@@ -100,11 +101,11 @@ describe('x264, x265, VP9 and AV1 defaults (arguments)', () => {
       fs.writeFileSync(fake, '#!/bin/sh\ncase "$*" in\n  *-encoders*) echo " V....D libx264              libx264 H.264"; echo " V....D libaom-av1           libaom AV1";;\nesac\n');
       fs.chmodSync(fake, 0o755);
       resetHardwareAccelerationCache();
-      const build = () => buildFfmpegArguments(SOURCE, OUT, 'mp4', 'mp4', { disableHwaccel: true, video: { codec: 'av1' } }, fake);
+      const build = () => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, video: { codec: 'av1' } }, fake);
       expect(build).toThrow(EngineUnavailableError);
       expect(build).toThrow(/libsvtav1/);
       // H.264 on the same build is untouched.
-      expect(() => buildFfmpegArguments(SOURCE, OUT, 'mp4', 'mp4', { disableHwaccel: true, video: { codec: 'h264' } }, fake)).not.toThrow();
+      expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, video: { codec: 'h264' } }, fake)).not.toThrow();
     } finally {
       resetHardwareAccelerationCache();
       fs.rmSync(dir, { recursive: true, force: true });
@@ -181,9 +182,9 @@ describe('loudness normalisation (arguments and report parsing)', () => {
 
   it('refuses to encode a loudness request without a measurement and measures exactly one audio track', () => {
     const options = { audio: { loudness: {} } };
-    expect(() => buildFfmpegArguments(SOURCE, '/tmp/out.wav', 'wav', 'wav', options as never)).toThrow(/measuring pass/);
+    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', options as never)).toThrow(/measuring pass/);
     // Without an input to inspect, a video target cannot say which track to measure.
-    expect(() => buildFfmpegArguments(SOURCE, OUT, 'wav', 'mp4', options as never, null, undefined, apply)).toThrow(/needs an input file/);
+    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), OUT, 'mp4', options as never, null, undefined, apply)).toThrow(/needs an input file/);
   });
 
   it('builds the audio-only measuring pass: same map and format arguments, loudnorm at the target, null sink', () => {
@@ -191,7 +192,7 @@ describe('loudness normalisation (arguments and report parsing)', () => {
     try {
       const wav = path.join(dir, 'in.wav');
       fs.writeFileSync(wav, wavFromSamples(sineSamples(48000, 1, 1), 48000, 1));
-      const measure = buildLoudnessMeasureArguments(wav, 'wav', 'flac', { audio: { loudness: { preset: 'streaming' }, volume: 50 } });
+      const measure = buildLoudnessMeasureArguments(openMediaInput(wav, 'wav'), 'flac', { audio: { loudness: { preset: 'streaming' }, volume: 50 } });
       expect(measure.slice(-3)).toEqual(['-f', 'null', '-']);
       expect(after(measure, '-af')).toBe('volume=0.5,loudnorm=I=-14:TP=-1:LRA=11:print_format=json');
       expect(measure).toContain('-vn');
@@ -223,10 +224,10 @@ describe('resampler and dither (arguments)', () => {
       expect(() => chooseResampler('sinc' as never, withSoxr)).toThrow(InvalidMediaOptionError);
 
       // The AAC track of an MP4 is lossy: its coding noise is some 55 dB above the error of soxr at 16 bits.
-      const a = buildFfmpegArguments(SOURCE, '/tmp/out.mp4', 'mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, withSoxr);
+      const a = buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/out.mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, withSoxr);
       expect(after(a, '-filter:a')).toBe('aresample=async=1:first_pts=0,aresample=22050:resampler=soxr:precision=16');
       expect(after(a, '-ar')).toBe('22050');
-      const b = buildFfmpegArguments(SOURCE, '/tmp/out.mp4', 'mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, without);
+      const b = buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), '/tmp/out.mp4', 'mp4', { disableHwaccel: true, audio: { sampleRate: 22050 } }, without);
       expect(after(b, '-filter:a')).toBe('aresample=async=1:first_pts=0');
       expect(describeAudioProcessing({}, without, undefined)).toEqual({
         resampler: 'swr',
@@ -244,7 +245,7 @@ describe('resampler and dither (arguments)', () => {
       fs.writeFileSync(withSoxr, '#!/bin/sh\ncase "$*" in\n  *-version*) echo "configuration: --enable-gpl --enable-libsoxr";;\nesac\n');
       fs.chmodSync(withSoxr, 0o755);
       const filterOf = (target: string, audio: object, source = 'wav'): string =>
-        after(buildFfmpegArguments(SOURCE, `/tmp/out.${target}`, source, target, { disableHwaccel: true, audio } as never, withSoxr), '-filter:a');
+        after(buildFfmpegArguments(openMediaInput(SOURCE, source), `/tmp/out.${target}`, target, { disableHwaccel: true, audio } as never, withSoxr), '-filter:a');
 
       // Lossy encoders other than libopus: the AAC and MP3 encoders, Vorbis.
       for (const target of ['aac', 'm4a', 'mp3', 'ogg']) {
@@ -252,7 +253,7 @@ describe('resampler and dither (arguments)', () => {
       }
       // libopus (a 44.1 kHz source is brought to 48 kHz) gets no filter of ours: ffmpeg's own conversion feeds it what the reference command feeds it.
       for (const target of ['opus', 'weba']) {
-        const args = buildFfmpegArguments(SOURCE, `/tmp/out.${target}`, 'wav', target, { disableHwaccel: true, audio: { sampleRate: 48000 } } as never, withSoxr);
+        const args = buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), `/tmp/out.${target}`, target, { disableHwaccel: true, audio: { sampleRate: 48000 } } as never, withSoxr);
         expect(args, target).not.toContain('-filter:a');
         expect(after(args, '-ar'), target).toBe('48000');
       }
@@ -263,11 +264,11 @@ describe('resampler and dither (arguments)', () => {
       }
       expect(filterOf('opus', { sampleRate: 48000, resampler: 'soxr' })).toBe('aresample=48000:resampler=soxr:precision=28');
       expect(
-        buildFfmpegArguments(SOURCE, '/tmp/out.opus', 'wav', 'opus', { audio: { sampleRate: 48000, resampler: 'swr' } } as never, withSoxr)
+        buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.opus', 'opus', { audio: { sampleRate: 48000, resampler: 'swr' } } as never, withSoxr)
       ).not.toContain('-filter:a');
       // A normalised file is resampled back from loudnorm's 192 kHz with the full precision.
       const normalised = buildFfmpegArguments(
-        SOURCE, '/tmp/out.opus', 'wav', 'opus',
+        openMediaInput(SOURCE, 'wav'), '/tmp/out.opus', 'opus',
         { audio: { sampleRate: 48000, loudness: {} } } as never, withSoxr,
         undefined,
         { kind: 'apply', measurement: { inputI: -20, inputTp: -3, inputLra: 5, inputThresh: -30, targetOffset: 0, sampleRate: 44100 } }
@@ -279,12 +280,12 @@ describe('resampler and dither (arguments)', () => {
   });
 
   it('dithers the reduction to 16-bit PCM with triangular_hp by default and rejects dither for other codecs', () => {
-    const wav = buildFfmpegArguments(SOURCE, '/tmp/out.wav', 'wav', 'wav', {});
+    const wav = buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', {});
     expect(after(wav, '-filter:a')).toBe('aresample=dither_method=triangular_hp,aformat=sample_fmts=s16');
-    const plain = buildFfmpegArguments(SOURCE, '/tmp/out.wav', 'wav', 'wav', { audio: { dither: 'triangular' } });
+    const plain = buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', { audio: { dither: 'triangular' } });
     expect(after(plain, '-filter:a')).toBe('aresample=dither_method=triangular,aformat=sample_fmts=s16');
-    expect(() => buildFfmpegArguments(SOURCE, '/tmp/out.wav', 'wav', 'wav', { audio: { dither: 'gaussian' as never } })).toThrow(InvalidMediaOptionError);
-    expect(() => buildFfmpegArguments(SOURCE, OUT, 'mp4', 'mp4', { disableHwaccel: true, audio: { codec: 'aac', dither: 'triangular_hp' } })).toThrow(
+    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'wav'), '/tmp/out.wav', 'wav', { audio: { dither: 'gaussian' as never } })).toThrow(InvalidMediaOptionError);
+    expect(() => buildFfmpegArguments(openMediaInput(SOURCE, 'mp4'), OUT, 'mp4', { disableHwaccel: true, audio: { codec: 'aac', dither: 'triangular_hp' } })).toThrow(
       /16-bit PCM output only/
     );
   });

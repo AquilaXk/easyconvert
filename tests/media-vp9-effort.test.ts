@@ -11,6 +11,7 @@ import { requireEncoders } from './helpers/ffmpeg-media-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { HAS_ZSCALE } from './helpers/zimg-oracle';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * How hard libvpx-vp9 works on a job. A job whose frames do not fit the media time limit at the good deadline (whose
@@ -107,7 +108,7 @@ function flagValue(args: string[], flag: string): string {
 }
 
 function webmArgs(input: string, options: object = {}, target = 'webm'): string[] {
-  return buildFfmpegArguments(input, `/tmp/out.${target}`, 'mp4', target, { disableHwaccel: true, ...options } as never, requireOracleTool('ffmpeg'));
+  return buildFfmpegArguments(openMediaInput(input, 'mp4'), `/tmp/out.${target}`, target, { disableHwaccel: true, ...options } as never, requireOracleTool('ffmpeg'));
 }
 
 describe.skipIf(skip)('the arguments of a VP9 encode', () => {
@@ -147,9 +148,8 @@ describe.skipIf(skip)('the arguments of a VP9 encode', () => {
   it('keep the good deadline for both passes of a two-pass encode, which the realtime deadline cannot do', { timeout: FIXTURE_TIMEOUT_MS }, () => {
     const input = blackMp4('fhd60-30s-d.mp4', '1920x1080', 60, 30);
     const passes = buildTwoPassArguments(
-      input,
+      openMediaInput(input, 'mp4'),
       '/tmp/out.webm',
-      'mp4',
       'webm',
       { disableHwaccel: true, video: { rateControl: { mode: 'vbr', bitrateK: 2000, twoPass: true } } } as never,
       requireOracleTool('ffmpeg'),
@@ -160,7 +160,7 @@ describe.skipIf(skip)('the arguments of a VP9 encode', () => {
 
   it('count the frames of a plain MP4 from its header, as ffprobe counts its packets', { timeout: FIXTURE_TIMEOUT_MS }, () => {
     const input = blackMp4('fhd60-count.mp4', '1920x1080', 60, 5);
-    const layout = probeStreamLayout(input, resolveFfprobeBinary(undefined));
+    const layout = probeStreamLayout(openMediaInput(input, 'mp4'), resolveFfprobeBinary(undefined));
     const counted = execFileSync(
       requireOracleTool('ffprobe'),
       ['-v', 'error', '-count_packets', '-select_streams', 'v:0', '-show_entries', 'stream=nb_read_packets', '-of', 'csv=p=0', input],

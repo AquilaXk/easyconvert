@@ -19,6 +19,9 @@ import { processNodeJob, nativeEngine } from '../lib/queue/node-processor';
 import { killProcessGroup } from '../lib/security/process-sandbox';
 import { probeNativeEngines } from './engines';
 import { assertSealingKeyConfigured } from '../lib/security/job-secret-seal';
+import { getFfmpegPath } from '../lib/conversions/media';
+import { enforceFfmpegMinimumVersion } from '../lib/conversions/media-process';
+import { findFfprobeBinary } from '../lib/conversions/media-ffprobe';
 import { shutdownSharedOcrWorkerPool } from '../lib/conversions/ocr-worker-pool';
 
 export interface WorkerLifecycleConfig {
@@ -178,6 +181,9 @@ export function resolveSubscribedQueues(): IQueueEngine<ConversionJobData, Conve
 // Fail closed before any job is popped: without a sealing key the worker could not open the
 // secrets of the jobs it would take, so it refuses to start (SealingKeyConfigError).
 assertSealingKeyConfigured();
+// Under STRICT_SANDBOX an ffmpeg or ffprobe older than the minimum (or of unknown release) stops the worker before it takes a job.
+const ffmpegBin = getFfmpegPath();
+enforceFfmpegMinimumVersion(ffmpegBin, findFfprobeBinary(ffmpegBin));
 
 const config = getWorkerLifecycleConfig();
 const subscribedQueues = resolveSubscribedQueues();
