@@ -21,6 +21,7 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { InvalidMediaOptionError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * A request option never names a file of the server. Options that only server code sets (where the worker writes or
@@ -299,16 +300,16 @@ describe('a packaging manifest name is a bare file name with the extension of it
     });
 
     it(`the argument builder refuses ${label}`, () => {
-      expect(() => buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', packaging as never, 'ffmpeg', PACKAGING_SOURCE)).toThrowError(InvalidMediaOptionError);
+      expect(() => buildHlsDashArguments(openMediaInput('/tmp/in.mp4', 'mp4'), '/tmp/out', packaging as never, 'ffmpeg', PACKAGING_SOURCE)).toThrowError(InvalidMediaOptionError);
     });
   }
 
   it('accepts a bare name and writes the manifest inside the output directory', () => {
     expect(validateOrProblem(ConversionOptionsSchema, { packaging: { format: 'hls', masterPlaylistName: 'Main_v2-1.m3u8' } }).ok).toBe(true);
     expect(validateOrProblem(ConversionOptionsSchema, { packaging: { format: 'dash', masterPlaylistName: 'stream.mpd' } }).ok).toBe(true);
-    const dash = buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', { format: 'dash', masterPlaylistName: 'stream.mpd' }, 'ffmpeg', PACKAGING_SOURCE);
+    const dash = buildHlsDashArguments(openMediaInput('/tmp/in.mp4', 'mp4'), '/tmp/out', { format: 'dash', masterPlaylistName: 'stream.mpd' }, 'ffmpeg', PACKAGING_SOURCE);
     expect(dash.at(-1)).toBe(path.join('/tmp/out', 'stream.mpd'));
-    const hls = buildHlsDashArguments('/tmp/in.mp4', '/tmp/out', { format: 'hls', masterPlaylistName: 'Main_v2-1.m3u8' }, 'ffmpeg', PACKAGING_SOURCE);
+    const hls = buildHlsDashArguments(openMediaInput('/tmp/in.mp4', 'mp4'), '/tmp/out', { format: 'hls', masterPlaylistName: 'Main_v2-1.m3u8' }, 'ffmpeg', PACKAGING_SOURCE);
     expect(hls[hls.indexOf('-master_pl_name') + 1]).toBe('Main_v2-1.m3u8');
   });
 });
@@ -407,7 +408,7 @@ describe('a path in a filtergraph is escaped by the FFmpeg filtergraph rules', (
 });
 
 function buildFfmpegArgumentsForBurn(subtitlePath: string): string[] {
-  return buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {
+  return buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {
     disableHwaccel: true,
     subtitles: { mode: 'burn', input: subtitlePath },
   });

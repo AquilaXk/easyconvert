@@ -13,6 +13,7 @@ import { oracleTest } from './helpers/oracle-test';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipUnless } from './helpers/strict-skip';
 import { HAS_ZSCALE } from './helpers/zimg-oracle';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * The HDR10 clip of the real-world corpus (30 s, 1080p, 60 fps, HEVC Main 10) to WebM. At the good deadline the encode
@@ -74,7 +75,7 @@ describe.skipIf(skipUnless('ffmpeg with zscale and lutrgb', HAS_ZSCALE))('HDR10 
 
         // The lossless tone-mapped frames: the filter chain of the conversion written to FFV1, so that the score
         // below judges the encoder alone.
-        const args = buildFfmpegArguments(sample.path, path.join(dir, 'unused.webm'), 'mp4', 'webm', { disableHwaccel: true }, ffmpeg());
+        const args = buildFfmpegArguments(openMediaInput(sample.path, 'mp4'), path.join(dir, 'unused.webm'), 'webm', { disableHwaccel: true }, ffmpeg());
         const filter = args[args.indexOf('-vf') + 1];
         const reference = path.join(dir, 'reference.mkv');
         execFileSync(ffmpeg(), ['-v', 'error', '-y', '-i', sample.path, '-vf', filter, '-pix_fmt', 'yuv420p', '-an', '-c:v', 'ffv1', reference], { stdio: ['ignore', 'ignore', 'pipe'] });
