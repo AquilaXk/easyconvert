@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Builds sharp's libvips-cpp.so with the upstream build (build/posix.sh of sharp-libvips at UPSTREAM_SHA, unpacked by
 # toolchain.sh into /packaging), changed by four patches:
-#   option-f.patch        aom, mozjpeg, libpng and libwebp at -O3 (posix.sh lines 181, 204, 212 and 225) instead of the -Os default
-#                         of lines 44-46, aom as a Release build (libaom's own default build type) instead of MinSizeRel; the other
-#                         libraries keep the upstream flags;
+#   option-f.patch        mozjpeg, libpng and libwebp at -O3 (posix.sh lines 204, 212 and 225) instead of the -Os default of
+#                         lines 44-46; the other libraries keep the upstream flags;
+#   aom-release-x64.patch on linux-x64 only, aom as a Release build (libaom's own default build type) at -O3 instead of
+#                         MinSizeRel at -Os (posix.sh lines 181-182); arm64 keeps the upstream flags until its bytes are compared;
 #   pinned-notices.patch  the notices file from the pinned archive instead of the upstream main branch;
 #   webp-thread-level.patch  one line in posix.sh that applies libvips-webp-thread-level.patch to the libvips sources, which sets
 #                         libwebp's thread_level for a picture with an alpha band (its alpha plane is compressed on a second thread) in webpsave.c;
@@ -22,6 +23,7 @@ out="$1"
 
 cd /packaging
 patch -p1 --forward < "$here/option-f.patch"
+if [ "$PLATFORM" = linux-x64 ]; then patch -p1 --forward --fuzz=0 < "$here/aom-release-x64.patch"; fi
 patch -p1 --forward < "$here/pinned-notices.patch"
 patch -p1 --forward < "$here/webp-thread-level.patch"
 patch -p1 --forward < "$here/heif-auto-tiles.patch"
