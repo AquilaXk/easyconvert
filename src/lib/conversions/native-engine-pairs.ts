@@ -1,4 +1,5 @@
 import { EngineUnavailableError, UnsupportedTargetError } from '../types';
+import { isCalibreEbookTarget } from './calibre-ebook-targets';
 
 /**
  * Pairs that only a native engine converts: the in-process engine has no code path for them.
@@ -34,9 +35,9 @@ function normalizeFormat(format: string): string {
   return format.toLowerCase().replace(/^\./, '').trim();
 }
 
-/** Whether a pair can only be converted by a native engine. */
+/** Whether a pair can only be converted by a native engine: the pairs listed above, and every pair that ends in a format only calibre writes. */
 export function requiresNativeEngine(sourceFormat: string, targetFormat: string): boolean {
-  return NATIVE_ENGINE_ONLY_PAIRS.has(`${normalizeFormat(sourceFormat)}->${normalizeFormat(targetFormat)}`);
+  return NATIVE_ENGINE_ONLY_PAIRS.has(`${normalizeFormat(sourceFormat)}->${normalizeFormat(targetFormat)}`) || isCalibreEbookTarget(normalizeFormat(targetFormat));
 }
 
 /**

@@ -22,58 +22,58 @@ export interface SafeXmlScannerOptions {
   onElement?: (element: SafeXmlElement) => void;
 }
 
+const NOT_FOUND = -1;
+const CHAR_SLASH = 47;
+const CHAR_GT = 62;
+
+function skipBlanks(text: string, from: number): number {
+  let i = from;
+  while (i < text.length && text.charCodeAt(i) <= 32) i++;
+  return i;
+}
+
+/** The end of a name or a bare value: the first blank, `/` or `>` (and `=` too when `stopAtEquals`). */
+function wordEnd(text: string, from: number, stopAtEquals: boolean): number {
+  let i = from;
+  while (i < text.length) {
+    const code = text.charCodeAt(i);
+    if (code <= 32 || code === CHAR_SLASH || code === CHAR_GT || (stopAtEquals && code === 61)) break;
+    i++;
+  }
+  return i;
+}
+
+/** The end of a quoted value, or of the text when the quote is never closed. */
+function quotedValueEnd(text: string, from: number, quote: string): number {
+  const close = text.indexOf(quote, from);
+  return close === NOT_FOUND ? text.length : close;
+}
+
 /**
  * Linearly extracts XML attributes from an opening tag header in O(N) time with zero regex backtracking.
  */
 export function safeExtractXmlAttributes(tagHeader: string): SafeXmlAttributeMap {
   const attrs: SafeXmlAttributeMap = {};
-  let i = 0;
-  if (i < tagHeader.length && tagHeader[i] === '<') i++;
-  // Skip tag name
-  while (i < tagHeader.length && tagHeader.charCodeAt(i) > 32 && tagHeader[i] !== '/' && tagHeader[i] !== '>') i++;
+  let i = wordEnd(tagHeader, tagHeader.startsWith('<') ? 1 : 0, false);
 
   while (i < tagHeader.length) {
-    // Skip whitespace
-    while (i < tagHeader.length && tagHeader.charCodeAt(i) <= 32) i++;
+    i = skipBlanks(tagHeader, i);
     if (i >= tagHeader.length || tagHeader[i] === '/' || tagHeader[i] === '>') break;
 
-    const keyStart = i;
-    while (
-      i < tagHeader.length &&
-      tagHeader[i] !== '=' &&
-      tagHeader.charCodeAt(i) > 32 &&
-      tagHeader[i] !== '/' &&
-      tagHeader[i] !== '>'
-    ) {
-      i++;
-    }
-    const key = tagHeader.slice(keyStart, i).trim();
-    while (i < tagHeader.length && tagHeader.charCodeAt(i) <= 32) i++;
+    const keyEnd = wordEnd(tagHeader, i, true);
+    const key = tagHeader.slice(i, keyEnd).trim();
+    i = skipBlanks(tagHeader, keyEnd);
 
-    if (i < tagHeader.length && tagHeader[i] === '=') {
-      i++;
-      while (i < tagHeader.length && tagHeader.charCodeAt(i) <= 32) i++;
-      if (i < tagHeader.length && (tagHeader[i] === '"' || tagHeader[i] === "'")) {
-        const quote = tagHeader[i++];
-        const valStart = i;
-        while (i < tagHeader.length && tagHeader[i] !== quote) i++;
-        attrs[key] = safeDecodeXmlEntities(tagHeader.slice(valStart, i));
-        if (i < tagHeader.length) i++; // skip closing quote
-      } else {
-        const valStart = i;
-        while (
-          i < tagHeader.length &&
-          tagHeader.charCodeAt(i) > 32 &&
-          tagHeader[i] !== '>' &&
-          tagHeader[i] !== '/'
-        ) {
-          i++;
-        }
-        attrs[key] = safeDecodeXmlEntities(tagHeader.slice(valStart, i));
-      }
-    } else if (key) {
-      attrs[key] = 'true';
+    if (tagHeader[i] !== '=') {
+      if (key) attrs[key] = 'true';
+      continue;
     }
+    i = skipBlanks(tagHeader, i + 1);
+    const quote = tagHeader[i] === '"' || tagHeader[i] === "'" ? tagHeader[i] : '';
+    const valueStart = quote ? i + 1 : i;
+    const valueEnd = quote ? quotedValueEnd(tagHeader, valueStart, quote) : wordEnd(tagHeader, valueStart, false);
+    attrs[key] = safeDecodeXmlEntities(tagHeader.slice(valueStart, valueEnd));
+    i = quote && valueEnd < tagHeader.length ? valueEnd + 1 : valueEnd;
   }
   return attrs;
 }
@@ -90,6 +90,194 @@ function withScannerDefaults(options: SafeXmlScannerOptions): Required<Pick<Safe
 }
 
 /**
+ * A search for the first match at or after a position, asked for positions that mostly only grow. The last match answers
+ * every position up to it, and a miss answers every position after it, so a scan that asks again for each opening of a tag
+ * walks the text once, where a fresh search for each walked it to the next match (or to the end) every time.
+ */
+class ForwardSearch {
+  private from = 0;
+  private found = NOT_FOUND;
+  private missFrom = Infinity;
+
+  constructor(private readonly search: (from: number) => number) {}
+
+  next(from: number): number {
+    if (from >= this.missFrom) return NOT_FOUND;
+    if (this.found !== NOT_FOUND && from >= this.from && from <= this.found) return this.found;
+    const found = this.search(from);
+    if (found === NOT_FOUND) {
+      this.missFrom = from;
+      return NOT_FOUND;
+    }
+    this.from = from;
+    this.found = found;
+    return found;
+  }
+}
+
+/** The searches that the scan of one tag name shares between its openings. */
+class TagSearch {
+  readonly startTag: string;
+  readonly nextOpening: ForwardSearch;
+  readonly nextClosing: ForwardSearch;
+  private readonly closeTag: string;
+
+  constructor(private readonly xml: string, tag: string) {
+    this.startTag = '<' + tag;
+    this.closeTag = '</' + tag;
+    this.nextOpening = new ForwardSearch((from) => xml.indexOf(this.startTag, from));
+    this.nextClosing = new ForwardSearch((from) => this.searchClosing(from));
+  }
+
+  /** The end of the closing tag that starts at `index`, past any blanks before its `>` (W3C XML 1.0 section 3.1). */
+  closingEnd(index: number): number {
+    return skipBlanks(this.xml, index + this.closeTag.length) + 1;
+  }
+
+  private searchClosing(from: number): number {
+    let p = from;
+    while (p < this.xml.length) {
+      const index = this.xml.indexOf(this.closeTag, p);
+      if (index === NOT_FOUND) return NOT_FOUND;
+      const gt = skipBlanks(this.xml, index + this.closeTag.length);
+      if (this.xml[gt] === '>') return index;
+      p = index + this.closeTag.length;
+    }
+    return NOT_FOUND;
+  }
+}
+
+interface TargetSpec {
+  name: string;
+  local: string;
+  prefix?: string;
+}
+
+function splitName(name: string): { local: string; prefix?: string } {
+  if (!name.includes(':')) return { local: name };
+  const parts = name.split(':');
+  return { local: parts[1], prefix: parts[0] };
+}
+
+function targetSpecs(tagName: string | string[]): TargetSpec[] {
+  return (Array.isArray(tagName) ? tagName : [tagName]).map((name) => ({ name, ...splitName(name) }));
+}
+
+/** Whether a name is one of the wanted ones: a wanted name with a prefix must match whole, one without matches the local part. */
+function matchesTarget(specs: TargetSpec[], tag: string, local: string): boolean {
+  return specs.some((spec) => (spec.prefix ? tag === spec.name : local === spec.local));
+}
+
+/** The index that ends the name of the opening tag at `lt`. */
+function tagNameEnd(xml: string, lt: number): number {
+  let end = lt + 1;
+  while (end < xml.length && xml.charCodeAt(end) > 32 && xml[end] !== '>' && xml[end] !== '/') end++;
+  return end;
+}
+
+/** The `>` that closes the header of the tag whose name ends at `from`, with the quotes of its attributes skipped. */
+function headerCloseFrom(xml: string, from: number): number {
+  let i = from;
+  let quote = '';
+  while (i < xml.length) {
+    const ch = xml[i];
+    if (quote) {
+      if (ch === quote) quote = '';
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === '>') {
+      break;
+    }
+    i++;
+  }
+  return i;
+}
+
+/** The index of the `/` that ends a self-closing header, or -1 when the header is not self-closing. */
+function selfClosingSlash(xml: string, lt: number, headerClose: number): number {
+  let i = headerClose - 1;
+  while (i > lt && xml.charCodeAt(i) <= 32) i--;
+  return i > lt && xml[i] === '/' ? i : NOT_FOUND;
+}
+
+/** The position after a comment, a CDATA section, a processing instruction, a declaration or a closing tag at `lt`, or -1 for none of them. */
+function skipNonElement(xml: string, lt: number): number {
+  if (xml.startsWith('<!--', lt)) return afterMarker(xml, '-->', lt + 4);
+  if (xml.startsWith('<![CDATA[', lt)) return afterMarker(xml, ']]>', lt + 9);
+  const next = xml[lt + 1];
+  if (next === '?' || next === '!' || next === '/') return afterMarker(xml, '>', lt + 2);
+  return NOT_FOUND;
+}
+
+function afterMarker(xml: string, marker: string, from: number): number {
+  const at = xml.indexOf(marker, from);
+  return at === NOT_FOUND ? xml.length : at + marker.length;
+}
+
+/** The position after a comment or a CDATA section that starts at `at`, or -1 when none does. */
+function skipCommentOrCdata(xml: string, at: number): number {
+  if (xml.startsWith('<!--', at)) return afterMarker(xml, '-->', at + 4);
+  if (xml.startsWith('<![CDATA[', at)) return afterMarker(xml, ']]>', at + 9);
+  return NOT_FOUND;
+}
+
+/**
+ * The `>` of the opening of the same tag at `open` that an element holds, or -1 when the text there is not such an opening
+ * (the name goes on, as in `<rowx`, or the header never ends).
+ */
+function nestedOpeningClose(xml: string, open: number, startTagLength: number): number {
+  const code = xml.charCodeAt(open + startTagLength);
+  if (!(code === CHAR_GT || code === CHAR_SLASH || code <= 32)) return NOT_FOUND;
+  return xml.indexOf('>', open);
+}
+
+interface ElementEnd {
+  contentEnd: number;
+  end: number;
+}
+
+const TOO_DEEP = Symbol('too deep');
+
+/**
+ * Walks from the end of an opening header to the closing tag that matches it, counting the openings of the same name between.
+ * It is `null` when the element is never closed, and `TOO_DEEP` when the nest passes the bound: every later opening of the
+ * same name would walk as far for its own close, so the caller ends the scan, which keeps the elements found before it
+ * and is linear in the input where going on was quadratic.
+ */
+function findElementEnd(xml: string, tag: TagSearch, headerClose: number, maxDepth: number): ElementEnd | null | typeof TOO_DEEP {
+  let depth = 0;
+  let searchPos = headerClose + 1;
+  while (searchPos < xml.length) {
+    const skipped = skipCommentOrCdata(xml, searchPos);
+    if (skipped !== NOT_FOUND) {
+      searchPos = skipped;
+      continue;
+    }
+    const closing = tag.nextClosing.next(searchPos);
+    if (closing === NOT_FOUND) return null;
+
+    const opening = tag.nextOpening.next(searchPos);
+    if (opening === NOT_FOUND || opening >= closing) {
+      if (depth === 0) return { contentEnd: closing, end: tag.closingEnd(closing) };
+      depth--;
+      searchPos = tag.closingEnd(closing);
+      continue;
+    }
+    const openingClose = nestedOpeningClose(xml, opening, tag.startTag.length);
+    if (openingClose === NOT_FOUND) {
+      searchPos = opening + tag.startTag.length;
+      continue;
+    }
+    if (selfClosingSlash(xml, opening, openingClose) === NOT_FOUND) {
+      depth++;
+      if (depth > maxDepth) return TOO_DEEP;
+    }
+    searchPos = openingClose + 1;
+  }
+  return null;
+}
+
+/**
  * Safely extracts XML elements in linear O(N) time without ReDoS backtracking.
  * Accurately tracks nested elements of the same tag name and enforces strict depth bounds.
  */
@@ -102,216 +290,56 @@ export function safeExtractXmlElements(
   const { maxElements, maxDepth, onElement } = withScannerDefaults(options);
   let found = 0;
   const take = onElement ?? ((element: SafeXmlElement): void => void results.push(element));
+  const specs = targetSpecs(tagName);
+  const searches = new Map<string, TagSearch>();
 
-  const tagList = Array.isArray(tagName) ? tagName : [tagName];
-  const targetMap = new Map<string, { targetLocal: string; targetPrefix: string | null }>();
-  for (const t of tagList) {
-    targetMap.set(t, {
-      targetLocal: t.includes(':') ? t.split(':')[1] : t,
-      targetPrefix: t.includes(':') ? t.split(':')[0] : null,
-    });
-  }
-
-  const closingTagPresentMap = new Map<string, boolean>();
   let pos = 0;
   while (pos < xml.length && found < maxElements) {
-    const nextLt = xml.indexOf('<', pos);
-    if (nextLt === -1) break;
-
-    // Skip comments <!-- ... -->
-    if (xml.startsWith('<!--', nextLt)) {
-      const endComment = xml.indexOf('-->', nextLt + 4);
-      pos = endComment === -1 ? xml.length : endComment + 3;
-      continue;
-    }
-    // Skip CDATA <![CDATA[ ... ]]>
-    if (xml.startsWith('<![CDATA[', nextLt)) {
-      const endCdata = xml.indexOf(']]>', nextLt + 9);
-      pos = endCdata === -1 ? xml.length : endCdata + 3;
-      continue;
-    }
-    // Skip processing instructions <? ... ?> or <! ... >
-    if (xml[nextLt + 1] === '?' || xml[nextLt + 1] === '!') {
-      const endPi = xml.indexOf('>', nextLt + 2);
-      pos = endPi === -1 ? xml.length : endPi + 1;
-      continue;
-    }
-    // Skip closing tags
-    if (xml[nextLt + 1] === '/') {
-      const endClose = xml.indexOf('>', nextLt + 2);
-      pos = endClose === -1 ? xml.length : endClose + 1;
+    const lt = xml.indexOf('<', pos);
+    if (lt === NOT_FOUND) break;
+    const skipped = skipNonElement(xml, lt);
+    if (skipped !== NOT_FOUND) {
+      pos = skipped;
       continue;
     }
 
-    // Read current opening tag name
-    let tagEnd = nextLt + 1;
-    while (
-      tagEnd < xml.length &&
-      xml.charCodeAt(tagEnd) > 32 &&
-      xml[tagEnd] !== '>' &&
-      xml[tagEnd] !== '/'
-    ) {
-      tagEnd++;
-    }
-    const currentTag = xml.slice(nextLt + 1, tagEnd);
-    const currLocal = currentTag.includes(':') ? currentTag.split(':')[1] : currentTag;
-    const currPrefix = currentTag.includes(':') ? currentTag.split(':')[0] : undefined;
-
-    let isMatch = false;
-    for (const [tName, spec] of targetMap) {
-      if (spec.targetPrefix ? currentTag === tName : currLocal === spec.targetLocal) {
-        isMatch = true;
-        break;
-      }
-    }
-
-    // Find the end of this tag's header '>' taking quotes into account
-    let headerClose = tagEnd;
-    let inQuote = false;
-    let quoteChar = '';
-    while (headerClose < xml.length) {
-      const ch = xml[headerClose];
-      if (inQuote) {
-        if (ch === quoteChar) inQuote = false;
-      } else if (ch === '"' || ch === "'") {
-        inQuote = true;
-        quoteChar = ch;
-      } else if (ch === '>') {
-        break;
-      }
-      headerClose++;
-    }
+    const tagEnd = tagNameEnd(xml, lt);
+    const currentTag = xml.slice(lt + 1, tagEnd);
+    const { local, prefix } = splitName(currentTag);
+    const headerClose = headerCloseFrom(xml, tagEnd);
     if (headerClose >= xml.length) break;
-
-    let checkIdx = headerClose - 1;
-    while (checkIdx > nextLt && xml.charCodeAt(checkIdx) <= 32) checkIdx--;
-    const isSelfClosing = checkIdx > nextLt && xml[checkIdx] === '/';
-
-    if (!isMatch) {
+    if (!matchesTarget(specs, currentTag, local)) {
       pos = headerClose + 1;
       continue;
     }
 
-    const attrs = safeExtractXmlAttributes(
-      xml.slice(nextLt + 1, isSelfClosing ? checkIdx : headerClose)
-    );
-
-    if (isSelfClosing) {
-      found++;
-      take({
-        tag: currentTag,
-        localName: currLocal,
-        prefix: currPrefix,
-        raw: xml.slice(nextLt, headerClose + 1),
-        attrs,
-        content: '',
-        startIndex: nextLt,
-        endIndex: headerClose + 1,
-      });
-      pos = headerClose + 1;
-      continue;
-    }
-
-    // If document has no closing tags for this element, skip to avoid search
-    let hasClosing = closingTagPresentMap.get(currentTag);
-    if (hasClosing === undefined) {
-      hasClosing = xml.indexOf('</' + currLocal) !== -1 || xml.indexOf('</' + currentTag) !== -1;
-      closingTagPresentMap.set(currentTag, hasClosing);
-    }
-    if (!hasClosing) {
-      pos = headerClose + 1;
-      continue;
-    }
-
-    // Helper to find the next matching closing tag allowing optional whitespace before '>' (W3C XML 1.0 §3.1)
-    const findNextClosingTag = (fromIndex: number): { index: number; end: number } | null => {
-      let p = fromIndex;
-      const targetClose = '</' + currentTag;
-      while (p < xml.length) {
-        const idx = xml.indexOf(targetClose, p);
-        if (idx === -1) return null;
-        let c = idx + targetClose.length;
-        while (c < xml.length && xml.charCodeAt(c) <= 32) c++;
-        if (c < xml.length && xml[c] === '>') {
-          return { index: idx, end: c + 1 };
-        }
-        p = idx + targetClose.length;
-      }
-      return null;
-    };
-
-    // Scan for matching closing tag with depth tracking
-    const startTag = '<' + currentTag;
-    let depth = 0;
-    let searchPos = headerClose + 1;
-    let matchedEnd = -1;
-    let contentEnd = -1;
-
-    while (searchPos < xml.length) {
-      // Skip inner comments or CDATA
-      if (xml.startsWith('<!--', searchPos)) {
-        const endC = xml.indexOf('-->', searchPos + 4);
-        searchPos = endC === -1 ? xml.length : endC + 3;
+    const slash = selfClosingSlash(xml, lt, headerClose);
+    let end = headerClose + 1;
+    let contentEnd = lt;
+    if (slash === NOT_FOUND) {
+      let tag = searches.get(currentTag);
+      if (!tag) searches.set(currentTag, (tag = new TagSearch(xml, currentTag)));
+      const element = findElementEnd(xml, tag, headerClose, maxDepth);
+      if (element === TOO_DEEP) return results;
+      if (element === null) {
+        pos = headerClose + 1;
         continue;
       }
-      if (xml.startsWith('<![CDATA[', searchPos)) {
-        const endCd = xml.indexOf(']]>', searchPos + 9);
-        searchPos = endCd === -1 ? xml.length : endCd + 3;
-        continue;
-      }
-
-      const nextOpen = xml.indexOf(startTag, searchPos);
-      const closeInfo = findNextClosingTag(searchPos);
-
-      if (!closeInfo) break; // Unclosed tag, abort gracefully
-
-      if (nextOpen !== -1 && nextOpen < closeInfo.index) {
-        const charAfter = xml[nextOpen + startTag.length];
-        if (charAfter === '>' || charAfter === '/' || charAfter <= ' ') {
-          // Check if self-closing
-          const nextHeaderClose = xml.indexOf('>', nextOpen);
-          if (nextHeaderClose !== -1) {
-            let slashIdx = nextHeaderClose - 1;
-            while (slashIdx > nextOpen && xml.charCodeAt(slashIdx) <= 32) slashIdx--;
-            if (slashIdx > nextOpen && xml[slashIdx] === '/') {
-              // Self closing nested tag, does not increase depth
-            } else {
-              depth++;
-              if (depth > maxDepth) break; // Bound depth
-            }
-            searchPos = nextHeaderClose + 1;
-            continue;
-          }
-        }
-        searchPos = nextOpen + startTag.length;
-      } else {
-        if (depth === 0) {
-          contentEnd = closeInfo.index;
-          matchedEnd = closeInfo.end;
-          break;
-        } else {
-          depth--;
-          searchPos = closeInfo.end;
-        }
-      }
+      end = element.end;
+      contentEnd = element.contentEnd;
     }
-
-    if (matchedEnd !== -1) {
-      found++;
-      take({
-        tag: currentTag,
-        localName: currLocal,
-        prefix: currPrefix,
-        raw: xml.slice(nextLt, matchedEnd),
-        attrs,
-        content: xml.slice(headerClose + 1, contentEnd),
-        startIndex: nextLt,
-        endIndex: matchedEnd,
-      });
-      pos = matchedEnd;
-    } else {
-      pos = headerClose + 1;
-    }
+    found++;
+    take({
+      tag: currentTag,
+      localName: local,
+      prefix,
+      raw: xml.slice(lt, end),
+      attrs: safeExtractXmlAttributes(xml.slice(lt + 1, slash === NOT_FOUND ? headerClose : slash)),
+      content: slash === NOT_FOUND ? xml.slice(headerClose + 1, contentEnd) : '',
+      startIndex: lt,
+      endIndex: end,
+    });
+    pos = end;
   }
 
   return results;

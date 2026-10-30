@@ -11,7 +11,7 @@
 #   2. executing a file from /tmp fails with EACCES (noexec)
 #   3. the process holds no cap_sys_admin (kernel view; `capsh --print` too when it is installed)
 #   4. a child in the sandbox's namespaces cannot connect to the Redis port while the parent can
-#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; LibreOffice with VERIFY_LIBREOFFICE=1)
+#   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; calibre for a MOBI book; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
 #   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
@@ -250,6 +250,58 @@ if HOME="$work_dir" sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" fontforge -l
   pass "fontforge converted a Type 1 font to an OpenType font inside the sandbox"
 else
   fail "fontforge did not convert a Type 1 font inside the sandbox: $(tail -c 300 "$work_dir/fontforge.err" 2>/dev/null)"
+fi
+
+# calibre writes MOBI, AZW3, PDB, LRF and OEB books: it converts a text file to each of the five started as the worker starts it (Qt without a
+# display, its configuration, cache and temporary directories in the scratch directory, the options of the worker's route), and each result must
+# carry the signature of its format: the Palm database type and creator `BOOKMOBI` (MOBI) or `TEXtREAd` (PDB) at bytes 60 to 67, the MOBI header
+# version 8 (AZW3, 36 bytes into record 0), the LRF magic, or an OPF package in the OEB folder.
+mkdir -p "$work_dir/calibre-config" "$work_dir/calibre-cache" "$work_dir/calibre-tmp"
+printf '%s\n' "$MARKER_TEXT" > "$work_dir/book.txt"
+
+calibre_options() {
+  case "$1" in
+    mobi) echo "--mobi-file-type old --no-inline-toc" ;;
+    azw3) echo "--no-inline-toc" ;;
+    pdb) echo "--format doc --pdb-output-encoding cp1252" ;;
+  esac
+}
+
+# Prints what is wrong with the book calibre wrote for the target, or nothing when its signature is the format's.
+calibre_book_problem() {
+  local target="$1" book="$work_dir/book.$1" record0
+  case "$target" in
+    mobi) [ "$(dd if="$book" bs=1 skip=60 count=8 2>/dev/null)" = "BOOKMOBI" ] || echo "no BOOKMOBI type and creator" ;;
+    pdb) [ "$(dd if="$book" bs=1 skip=60 count=8 2>/dev/null)" = "TEXtREAd" ] || echo "no TEXtREAd type and creator" ;;
+    azw3)
+      record0="$(od -An -tu4 --endian=big -j78 -N4 "$book" | tr -d ' ')"
+      [ "$(dd if="$book" bs=1 skip=60 count=8 2>/dev/null)" = "BOOKMOBI" ] \
+        && [ "$(od -An -tu4 --endian=big -j$((record0 + 36)) -N4 "$book" | tr -d ' ')" = "8" ] || echo "not a MOBI version 8 book" ;;
+    lrf) [ "$(od -An -tx1 -N8 "$book" | tr -d ' \n')" = "4c00520046000000" ] || echo "no LRF magic" ;;
+    oeb) find "$book" -name '*.opf' 2>/dev/null | grep -q . || echo "no OPF package in the folder" ;;
+  esac
+}
+
+calibre_failure=""
+for calibre_target in mobi azw3 pdb lrf oeb; do
+  # The options of the target are separate words on purpose.
+  # shellcheck disable=SC2046
+  if ! sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" \
+      CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
+      ebook-convert "$work_dir/book.txt" "$work_dir/book.$calibre_target" $(calibre_options "$calibre_target") >"$work_dir/calibre.out" 2>&1; then
+    calibre_failure="the .$calibre_target run failed: $(tail -c 300 "$work_dir/calibre.out" 2>/dev/null)"
+    break
+  fi
+  calibre_problem="$(calibre_book_problem "$calibre_target")"
+  if [ -n "$calibre_problem" ]; then
+    calibre_failure="the .$calibre_target book fails its check ($calibre_problem)"
+    break
+  fi
+done
+if [ -z "$calibre_failure" ]; then
+  pass "calibre converted a text file to MOBI, AZW3, PDB, LRF and OEB books inside the sandbox"
+else
+  fail "calibre did not convert a text file to the five e-book targets inside the sandbox: $calibre_failure"
 fi
 
 if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then

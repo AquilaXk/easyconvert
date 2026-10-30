@@ -1,7 +1,8 @@
 import type JSZip from 'jszip';
 import { PayloadLimitError } from '../../types';
 import { safeExtractXmlElements, type SafeXmlElement } from '../safe-xml-scanner';
-import { readZipEntryText, type ZipEntryReadOptions } from '../zip-entry-reader';
+import { readZipEntryText } from '../zip-entry-reader';
+import { forEachRelationship, newRelationshipAllowance, readPartRelationships, streamElementsWithin, type OpcReadOptions, type RelationshipAllowance } from './opc-parts';
 import { resolveZipPath } from './zip-path';
 
 /**
@@ -14,9 +15,6 @@ export const XLSX_MAX_MATERIALISED_CELLS = 20_000_000;
 /** Sheets of one workbook: LibreOffice Calc holds at most 10,000 (`MAXTABCOUNT`, sc/inc/address.hxx), so a workbook that lists more cannot be opened whole. */
 export const XLSX_MAX_SHEETS = 10_000;
 
-/** Hyperlinks on one worksheet: 65,530, "Excel specifications and limits" (Microsoft, "Hyperlinks in a worksheet"). */
-export const XLSX_MAX_HYPERLINKS_PER_SHEET = 65_530;
-
 /**
  * Merged ranges and hyperlinks the reader holds for all sheets of one workbook: one for each row of a worksheet. A merged range
  * is four numbers and takes 66 bytes of heap (measured: 1,048,576 of them took 66 MiB), so the bound keeps them near 100 MiB. A
@@ -24,44 +22,13 @@ export const XLSX_MAX_HYPERLINKS_PER_SHEET = 65_530;
  */
 export const XLSX_MAX_RANGES_PER_WORKBOOK = 1_048_576;
 
-/**
- * Elements of one relationships or content-types part: the 65,530 hyperlinks a worksheet holds (each has a relationship) and the
- * 10,000 sheets of a workbook, with room for the parts that go with them, rounded up.
- */
+/** `Override` elements of the content types of a workbook: the 10,000 sheets, with room for the other parts of a package, rounded up. */
 export const XLSX_MAX_PART_ENTRIES = 100_000;
 
 const DEFAULT_WORKBOOK_PATH = 'xl/workbook.xml';
 
-/**
- * Hands the elements of one tag to `onElement` as the scanner finds them, so that no list of them is held, and refuses (413) the
- * one past `limit` with `refusal`: the scanner's own limit of 50,000 elements would end the list there without a word. The scan
- * stops at that element, so a part that holds millions costs the time of `limit` of them.
- */
-export function streamElementsWithin(xml: string, tagName: string, limit: number, refusal: string, onElement: (element: SafeXmlElement) => void): void {
-  let taken = 0;
-  safeExtractXmlElements(xml, tagName, {
-    maxElements: limit + 1,
-    onElement: (element) => {
-      taken += 1;
-      if (taken > limit) throw new PayloadLimitError(refusal);
-      onElement(element);
-    },
-  });
-}
-
-/**
- * The relationships of a part that sits in `directory`, by relationship id. Internal targets are resolved to package paths;
- * with `external` the relationships that point outside the package are read instead, and their targets are the URLs as written.
- */
-export function readRelationships(xml: string, directory: string, external = false): Map<string, { type: string; target: string }> {
-  const relationships = new Map<string, { type: string; target: string }>();
-  streamElementsWithin(xml, 'Relationship', XLSX_MAX_PART_ENTRIES, `A relationships part lists more than ${XLSX_MAX_PART_ENTRIES} relationships.`, (rel) => {
-    if (rel.attrs.Id && rel.attrs.Target && (rel.attrs.TargetMode === 'External') === external) {
-      relationships.set(rel.attrs.Id, { type: rel.attrs.Type ?? '', target: external ? rel.attrs.Target : resolveZipPath(directory, rel.attrs.Target) });
-    }
-  });
-  return relationships;
-}
+/** The refusal of a package with no worksheet, which the reader and the check of the `.xls` bounds answer alike. */
+export const XLSX_NO_WORKSHEETS_MESSAGE = 'Invalid XLSX workbook: no worksheets found in archive.';
 
 export interface XlsxSheetEntry {
   name: string;
@@ -81,22 +48,17 @@ function directoryOf(part: string): string {
   return part.slice(0, Math.max(0, part.lastIndexOf('/')));
 }
 
-/** The relationships part of a part: `xl/workbook.xml` has `xl/_rels/workbook.xml.rels`. */
-function relationshipsPartOf(part: string): string {
-  const slash = part.lastIndexOf('/');
-  return `${part.slice(0, slash + 1)}_rels/${part.slice(slash + 1)}.rels`;
-}
-
 /** The part the package's root relationships name as its office document, else `xl/workbook.xml`. */
-async function readWorkbookPath(zip: JSZip, readOptions: ZipEntryReadOptions): Promise<string> {
+async function readWorkbookPath(zip: JSZip, options: OpcReadOptions & { relationships: RelationshipAllowance }): Promise<string> {
   const rootRelationships = zip.file('_rels/.rels');
+  const found: { path?: string } = {};
   if (rootRelationships) {
-    const relationships = readRelationships(await readZipEntryText(rootRelationships, readOptions), '');
-    for (const relationship of relationships.values()) {
-      if (relationship.type.endsWith('/officeDocument')) return relationship.target;
-    }
+    forEachRelationship(await readZipEntryText(rootRelationships, options), options.relationships, (rel) => {
+      const { Id: id, Target: target, TargetMode: mode, Type: type } = rel.attrs;
+      if (found.path === undefined && id && target && mode !== 'External' && type?.endsWith('/officeDocument')) found.path = resolveZipPath('', target);
+    });
   }
-  return DEFAULT_WORKBOOK_PATH;
+  return found.path ?? DEFAULT_WORKBOOK_PATH;
 }
 
 /**
@@ -127,35 +89,37 @@ function relationshipIdOf(attrs: SafeXmlElement['attrs']): string | undefined {
  * its output is the same as before; the part of such a sheet that has a relationship is returned apart, for the checks that must
  * cover whatever an office suite opens.
  */
-export async function discoverXlsxSheets(zip: JSZip, readOptions: ZipEntryReadOptions = {}): Promise<XlsxSheets> {
+export async function discoverXlsxSheets(zip: JSZip, readOptions: OpcReadOptions = {}): Promise<XlsxSheets> {
   const sheets: XlsxSheetEntry[] = [];
   const unnamedSheetParts: string[] = [];
-  const workbookPath = await readWorkbookPath(zip, readOptions);
+  const options = { ...readOptions, relationships: readOptions.relationships ?? newRelationshipAllowance() };
+  const workbookPath = await readWorkbookPath(zip, options);
   const wbFile = zip.file(workbookPath);
-  const workbookXml = wbFile ? await readZipEntryText(wbFile, readOptions) : undefined;
+  const workbookXml = wbFile ? await readZipEntryText(wbFile, options) : undefined;
 
   if (workbookXml !== undefined) {
     const directory = directoryOf(workbookPath);
-    const relsFile = zip.file(relationshipsPartOf(workbookPath));
-    const targets = new Map<string, string>();
-    if (relsFile) {
-      for (const [id, relationship] of readRelationships(await readZipEntryText(relsFile, readOptions), directory)) targets.set(id, relationship.target);
-    }
+    const listing: Array<{ name: string | undefined; rId: string | undefined }> = [];
+    const wanted = new Set<string>();
+    streamElementsWithin(workbookXml, 'sheet', XLSX_MAX_SHEETS, `The XLSX workbook lists more than ${XLSX_MAX_SHEETS} sheets, the most an office suite opens.`, (sEl) => {
+      const rId = relationshipIdOf(sEl.attrs);
+      if (rId !== undefined) wanted.add(rId);
+      listing.push({ name: sEl.attrs.name, rId });
+    });
+    const targets = wanted.size === 0 ? new Map<string, { target: string }>() : await readPartRelationships(zip, workbookPath, options, (id, _type, external) => !external && wanted.has(id));
 
     const listed = new Set<string>();
     let named = 0;
-    streamElementsWithin(workbookXml, 'sheet', XLSX_MAX_SHEETS, `The XLSX workbook lists more than ${XLSX_MAX_SHEETS} sheets, the most an office suite opens.`, (sEl) => {
-      const name = sEl.attrs.name;
-      const rId = relationshipIdOf(sEl.attrs);
-      const target = rId === undefined ? undefined : targets.get(rId);
-      if (!name && target === undefined) return;
+    for (const { name, rId } of listing) {
+      const target = rId === undefined ? undefined : targets.get(rId)?.target;
+      if (!name && target === undefined) continue;
       if (name) named += 1;
       const path = target === undefined ? resolveZipPath(directory, `worksheets/sheet${named}.xml`) : withoutRepeatedDirectory(zip, directory, target);
-      if (listed.has(path)) return;
+      if (listed.has(path)) continue;
       listed.add(path);
       if (name) sheets.push({ name, path });
       else unnamedSheetParts.push(path);
-    });
+    }
   }
 
   // Fallback: search zip directly for worksheets

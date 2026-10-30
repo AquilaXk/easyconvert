@@ -6,7 +6,7 @@
 #   pip      the Python format oracles
 #   verapdf  the PDF/A validator, from the cached install when the cache was restored
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
-#   calibre   the ebook converter the ebook benchmark compares against, from its release archive checked against a pinned SHA-256
+#   calibre   the ebook converter the ebook benchmark compares against and the writer of the MOBI, AZW3, PDB, LRF and OEB tests, from its release archive checked against a pinned SHA-256
 #   libredwg the DWG reader (dwg2dxf), built from its release archive checked against a pinned SHA-256, or the cached build
 #   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build when its digest still matches
 #   raw      the RAW sample files
@@ -157,7 +157,7 @@ task_epubcheck() {
   epubcheck --version
 }
 
-# Ebook conversions are compared with calibre's `ebook-convert` (GPL-3.0, run as a separate process). The release archive carries
+# Ebook conversions are compared with calibre's `ebook-convert` (GPL-3.0, run as a separate process), which also writes the MOBI, AZW3, PDB, LRF and OEB books that tests/ebook-calibre-writers.test.ts reads back. The release archive carries
 # its own Python and Qt, so the system Python packages that the oracles install cannot shadow its libraries; it is checked
 # before anything in it runs.
 task_calibre() {

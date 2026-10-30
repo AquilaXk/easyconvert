@@ -254,13 +254,13 @@ describe('Phase 5: OCR Sandwich PDF Typography Parity & Security Hardening', () 
         deepXml = `<layer id="${i}">${deepXml}</layer>`;
       }
 
-      // Default maxDepth = 64 halts at 64th nested level to prevent recursion attacks
+      // Default maxDepth = 64: a nest of the same name deeper than that ends the scan, so the outer layer finds nothing
       const firstLayer = safeExtractFirstXmlElement(deepXml, 'layer');
       const customDepthLayer = safeExtractFirstXmlElement(deepXml, 'layer', { maxDepth: 100 });
       const textEl = safeExtractFirstXmlElement(deepXml, 'w:t', { maxDepth: 100 });
 
       // The scanner is iterative: 70 levels return their answers instead of overflowing the stack.
-      expect(firstLayer?.attrs.id).toBe('64');
+      expect(firstLayer).toBeNull();
       expect(customDepthLayer?.attrs.id).toBe('69');
       expect(textEl?.content).toBe('Deeply Nested Secret');
     });

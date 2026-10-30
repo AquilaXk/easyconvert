@@ -5,14 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
-import { defaultResolver } from '../bench/tools';
 import { convertFile } from '../src/lib/conversions';
+import { isCalibreEbookTarget } from '../src/lib/conversions/calibre-ebook-targets';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { readRocketBook } from '../src/lib/conversions/office/rocketbook-reader';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { extractTextWithExternalPdftotext } from './helpers/differential-oracle';
-import { mobiText } from './helpers/mobi-text';
+import { calibreBinary, textOfCalibreTarget } from './helpers/calibre-books';
 import { requireRealworldSample } from './helpers/realworld-sample';
-import { skipWithoutTools } from './helpers/strict-skip';
+import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 
 /**
  * The two Rocket eBook files of the Open Preservation Foundation format corpus (written by calibre 0.8.57 and 0.9.0,
@@ -35,7 +36,7 @@ const LAST_WORDS = ['or', 'neighboring', 'rights', 'to', 'this', 'work'];
 const CONVERSION_TIMEOUT_MS = 120_000;
 
 const pdftotextMissing = skipWithoutTools('pdftotext');
-const calibreTool = defaultResolver()('ebook-convert');
+const calibreTool = calibreBinary;
 
 function wordsOf(text: string): string[] {
   return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -100,15 +101,13 @@ describe.each(SAMPLES)('the real Rocket eBook file $id', ({ id, title, author })
 
   it('is written to every target the registry advertises, each holding the words of the book', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, id);
-    for (const target of FORMAT_REGISTRY.rb.targetFormats) {
+    for (const target of FORMAT_REGISTRY.rb.targetFormats.filter((candidate) => !isCalibreEbookTarget(candidate))) {
       const output = await convertFile(bytes, 'rb', target, {}, id);
       expect(output.filename, target).toBe(`${id.replace(/\.rb$/, '')}.${target}`);
       let words: string[] | undefined;
       if (target === 'txt') words = wordsOf(output.buffer.toString('utf-8'));
       if (target === 'html') words = wordsOf(stripMarkup(output.buffer.toString('utf-8')));
       if (target === 'epub') words = await epubWords(output.buffer);
-      if (target === 'mobi' || target === 'azw3') words = wordsOf(stripMarkup(mobiText(output.buffer)));
-      if (target === 'oeb' || target === 'lrf') words = wordsOf(output.buffer.toString('utf-8'));
       if (target === 'rtf') words = wordsOf(output.buffer.toString('latin1'));
       if (target === 'zip') {
         const entries = await JSZip.loadAsync(output.buffer);
@@ -117,14 +116,21 @@ describe.each(SAMPLES)('the real Rocket eBook file $id', ({ id, title, author })
         expect(Buffer.from(await entries.files[names[0]].async('uint8array')).equals(bytes), target).toBe(true);
         continue;
       }
-      if (target === 'pdb') {
-        expect(output.buffer.subarray(60, 68).toString('latin1'), target).toBe('TEXtREAd');
-        continue;
-      }
       if (target === 'pdf') continue;
       const text = (words ?? []).join(' ');
       for (const phrase of PHRASES) expect(text, `${target}: ${phrase}`).toContain(phrase);
       if (target === 'epub' || target === 'html' || target === 'txt') expect(digestOf(words ?? []), target).toBe(CALIBRE_WORDS_SHA256);
+    }
+  }, CONVERSION_TIMEOUT_MS);
+
+  // skip-ok: the five books are written by calibre, which only some hosts have; the suite names it in strict mode
+  it.skipIf(skipUnless('ebook-convert', calibreTool !== null))('is written to the Palm, Kindle, Sony and Open eBook targets, each read back with the words of the book', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, id);
+    for (const target of FORMAT_REGISTRY.rb.targetFormats.filter(isCalibreEbookTarget)) {
+      const output = await dispatchConversion(bytes, 'rb', target, {}, id);
+      expect(output.filename, target).toBe(`${id.replace(/\.rb$/, '')}.${target === 'oeb' ? 'zip' : target}`);
+      const text = wordsOf(await textOfCalibreTarget(output.buffer, target)).join(' ');
+      for (const phrase of PHRASES) expect(text, `${target}: ${phrase}`).toContain(phrase);
     }
   }, CONVERSION_TIMEOUT_MS);
 

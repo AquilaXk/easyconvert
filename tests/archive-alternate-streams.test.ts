@@ -58,13 +58,14 @@ describe('the listing property that marks an alternate stream', () => {
 
   it('lets a stream named like a drive path through while a real entry named like one is still refused', () => {
     const stream = 'Path = A:com.apple.provenance\nSize = 11\nAlternate Stream = +\n';
-    const realEntry = 'Path = C:evil.txt\nSize = 4\nAlternate Stream = -\n';
+    const realEntry = 'Path = C:/evil.txt\nSize = 4\nAlternate Stream = -\n';
     const vet = (text: string): unknown =>
       assertSafeArchiveListing(separateAlternateStreams(parse7zTechnicalListing(text)).entries, 1000, ARCHIVE_SECURITY_LIMITS);
     expect(vet(stream)).toMatchObject({ entryCount: 0 });
     expect(() => vet(realEntry)).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError', reason: 'absolute-path' }));
-    // The same name without the property is a file name, whatever follows the colon.
-    expect(() => vet('Path = A:com.apple.provenance\nSize = 11\n')).toThrow(expect.objectContaining({ reason: 'absolute-path' }));
+    // The same name without the property is an ordinary file name: a drive ends its first component with the colon.
+    expect(vet('Path = A:com.apple.provenance\nSize = 11\n')).toMatchObject({ entryCount: 1 });
+    expect(() => vet('Path = A:\\com.apple.provenance\nSize = 11\n')).toThrow(expect.objectContaining({ reason: 'absolute-path' }));
   });
 
   it('does not count the size or the name of a stream against the caps', () => {

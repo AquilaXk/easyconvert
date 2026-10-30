@@ -3,7 +3,8 @@ import { ConversionFailedError } from '../../types';
 import { InflateBudget } from '../bounded-inflate';
 import { openPackage } from '../package-access';
 import { readZipEntryText, scanZipEntry } from '../zip-entry-reader';
-import { XLSX_MAX_PART_ENTRIES, discoverXlsxSheets, streamElementsWithin } from './xlsx-sheets';
+import { streamElementsWithin } from './opc-parts';
+import { XLSX_MAX_PART_ENTRIES, XLSX_NO_WORKSHEETS_MESSAGE, discoverXlsxSheets } from './xlsx-sheets';
 import { XLS_MAX_COLUMNS, XLS_MAX_ROWS, sheetLimitError } from './sheet-bounds';
 
 /**
@@ -250,13 +251,15 @@ async function worksheetEntriesToCheck(zip: JSZip, budget: InflateBudget): Promi
 
 /**
  * Refuses (413) an XLSX package with a worksheet that holds a cell past row 65,536 or column 256. A package that is not a ZIP, a
- * part that does not inflate, a listed sheet that is not in the package, and a cell reference that is not an A1 reference are
- * refused too, so that nothing reaches the export unchecked.
+ * package without a worksheet (the refusal of the reader), a part that does not inflate, a listed sheet that is not in the package,
+ * and a cell reference that is not an A1 reference are refused too, so that nothing reaches the export unchecked.
  */
 export async function assertWorkbookFitsXls(xlsx: Buffer): Promise<void> {
   const zip = await openPackage(xlsx, 'XLSX');
   const budget = new InflateBudget();
-  for (const [part, entry] of await worksheetEntriesToCheck(zip, budget)) {
+  const entries = await worksheetEntriesToCheck(zip, budget);
+  if (entries.size === 0) throw new ConversionFailedError(XLSX_NO_WORKSHEETS_MESSAGE);
+  for (const [part, entry] of entries) {
     const extent = new WorksheetExtent(part);
     await scanZipEntry(entry, (chunk) => extent.feed(chunk.toString('latin1')), { budget, maxBytes: budget.limit, label: `"${part}"` });
   }

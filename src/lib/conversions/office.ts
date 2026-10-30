@@ -1,7 +1,8 @@
 import crypto from 'node:crypto';
 import { InflateBudget } from './bounded-inflate';
 import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
-import { XLSX_MAX_MATERIALISED_CELLS, XLSX_MAX_HYPERLINKS_PER_SHEET, XLSX_MAX_RANGES_PER_WORKBOOK, discoverXlsxSheets, streamElementsWithin, readRelationships } from './office/xlsx-sheets';
+import { newRelationshipAllowance, readPartRelationships, streamFirstElements, type OpcReadOptions } from './office/opc-parts';
+import { XLSX_MAX_MATERIALISED_CELLS, XLSX_MAX_RANGES_PER_WORKBOOK, XLSX_NO_WORKSHEETS_MESSAGE, discoverXlsxSheets } from './office/xlsx-sheets';
 import { resolveZipPath } from './office/zip-path';
 import { safeDecodeXmlEntities, safeExtractXmlElements, type SafeXmlElement, type SafeXmlScannerOptions } from './safe-xml-scanner';
 import { HTML_MAX_EMBEDDED_BASE64_CHARS, PptxMedia, base64Length } from './office/pptx-media';
@@ -13,6 +14,7 @@ import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, ret
 import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
+import { calibreEngineUnavailable, isCalibreEbookTarget } from './calibre-ebook-targets';
 import { readPdfForOffice } from './pdf-office';
 import { documentToDocx } from './document-model/docx';
 import { documentToStructuredText } from './document-model/markdown';
@@ -88,6 +90,9 @@ export async function convertOffice(
   // A template or slide show is read by the reader of the format it is a layout of.
   const src = officeReadingFormat(sourceFormat);
   const tgt = targetFormat.toLowerCase();
+  if (isCalibreEbookTarget(tgt)) {
+    throw calibreEngineUnavailable(`Writing .${tgt} needs the native ebook-convert (calibre) engine; the in-process engine has no writer for it.`);
+  }
   // PDF and raster writers draw text with installed fonts found through the coverage index.
   await loadFontCoverageIndex();
 
@@ -355,12 +360,6 @@ export async function convertOffice(
   // 22. Target is Apple iWork (pages, numbers, key)
   if (['pages', 'numbers', 'key'].includes(tgt)) {
     throw new Error(`Unsupported office conversion: target iWork format '${tgt}' is not supported`);
-  }
-
-  // 23. Target is eBook (azw3, mobi, lrf, oeb, pdb)
-  if (['azw3', 'mobi', 'lrf', 'oeb', 'pdb'].includes(tgt)) {
-    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    return convertMobiSource(Buffer.from(textContent, 'utf-8'), 'txt', tgt, options, baseName);
   }
 
   // 23.1 Target is FB2 (FictionBook 2.0 with semantic markup)
@@ -5086,28 +5085,19 @@ export function formatCsvCell(cell: string, delimiter: string): string {
 }
 
 
-/**
- * The relationships of a package part: target by relationship id, with the relationship's type. The targets are package paths;
- * with `external` the relationships that point outside the package are read instead, and their targets are the URLs as written.
- */
-async function readPartRelationships(zip: JSZip, partPath: string, external = false): Promise<Map<string, { type: string; target: string }>> {
-  const slash = partPath.lastIndexOf('/');
-  const relsFile = zip.file(`${partPath.slice(0, slash + 1)}_rels/${partPath.slice(slash + 1)}.rels`);
-  if (!relsFile) return new Map();
-  return readRelationships(await readZipEntryText(relsFile), partPath.slice(0, Math.max(0, slash)), external);
-}
-
 /** The charts of the drawings a worksheet shows (worksheet to drawing to chart parts), in the order each drawing places them. */
-async function readWorksheetCharts(zip: JSZip, sheetPath: string): Promise<OpenXmlChartData[]> {
+async function readWorksheetCharts(zip: JSZip, drawingParts: readonly string[], options: OpcReadOptions): Promise<OpenXmlChartData[]> {
   const charts: OpenXmlChartData[] = [];
-  for (const drawing of (await readPartRelationships(zip, sheetPath)).values()) {
-    if (!drawing.type.endsWith('/drawing')) continue;
-    const drawingFile = zip.file(drawing.target);
+  for (const drawingPart of drawingParts) {
+    const drawingFile = zip.file(drawingPart);
     if (!drawingFile) continue;
-    const references = await readPartRelationships(zip, drawing.target);
     const drawingXml = await readZipEntryText(drawingFile);
-    for (const match of drawingXml.matchAll(/<(?:\w+:)?chart\b[^>]*?\br:id="([^"]+)"/g)) {
-      const chartFile = zip.file(references.get(match[1])?.target ?? '');
+    const chartIds = [...drawingXml.matchAll(/<(?:\w+:)?chart\b[^>]*?\br:id="([^"]+)"/g)].map((match) => match[1]);
+    if (chartIds.length === 0) continue;
+    const wanted = new Set(chartIds);
+    const references = await readPartRelationships(zip, drawingPart, options, (id, _type, external) => !external && wanted.has(id));
+    for (const chartId of chartIds) {
+      const chartFile = zip.file(references.get(chartId)?.target ?? '');
       const chart = chartFile ? parseOpenXmlChart(await readZipEntryText(chartFile)) : null;
       if (chart) charts.push(chart);
     }
@@ -5140,37 +5130,46 @@ function readDateSystem(workbookXml: string): SpreadsheetDateSystem {
 }
 
 /**
- * The merged ranges and the cell hyperlinks that follow the cell data of a worksheet, handed to their final lists as the scanner
- * finds them. A worksheet holds at most `XLSX_MAX_HYPERLINKS_PER_SHEET` hyperlinks, and the workbook at most `allowance` more of
- * both together (`XLSX_MAX_RANGES_PER_WORKBOOK` less what the sheets before it used); one past either is refused (413).
+ * What follows the cell data of a worksheet and what its relationships part holds for the sheet: the merged ranges and the cell
+ * hyperlinks, how many elements of both the scan took, and the parts of the drawings the sheet shows. The workbook holds at most
+ * `allowance` more ranges and links together (`XLSX_MAX_RANGES_PER_WORKBOOK` less what the sheets before it used): past it the lists
+ * stop growing and the conversion goes on without the rest, since a target that shows none would be refused for them. The relationships
+ * part is read once, under the workbook budget, for the ids that the links name and for the drawings, so the map follows the links.
  */
-async function readSheetMergesAndLinks(
+async function readSheetAnnotations(
   zip: JSZip,
   sheetPath: string,
   sheetXml: string,
-  allowance: number
-): Promise<Pick<OfficeWorksheet, 'mergedRanges' | 'hyperlinks'>> {
+  allowance: number,
+  options: OpcReadOptions
+): Promise<Pick<OfficeWorksheet, 'mergedRanges' | 'hyperlinks'> & { used: number; drawingParts: string[] }> {
   // Both lists follow `sheetData` (ECMA-376 Part 1, 18.3.1.99), so the cell data is not scanned again.
   const afterCells = sheetXml.slice(Math.max(0, sheetXml.lastIndexOf('</sheetData>')));
-  const workbookRefusal = `The XLSX merged ranges and hyperlinks hold more than ${XLSX_MAX_RANGES_PER_WORKBOOK} entries in all.`;
   const mergedRanges: OfficeCellRange[] = [];
-  streamElementsWithin(afterCells, 'mergeCell', allowance, workbookRefusal, (merge) => {
+  let used = streamFirstElements(afterCells, 'mergeCell', allowance, (merge) => {
     const range = parseA1Range(merge.attrs.ref ?? '');
     if (range) mergedRanges.push({ startRow: range.startRow, endRow: range.endRow, startCol: range.startCol, endCol: range.endCol });
   });
-  const hyperlinks: OfficeWorksheetHyperlink[] = [];
+  const links: Array<{ row: number; col: number; id: string | undefined; location: string | undefined }> = [];
+  const wantedIds = new Set<string>();
   if (afterCells.includes('hyperlink')) {
-    const externalTargets = await readPartRelationships(zip, sheetPath, true);
-    const room = allowance - mergedRanges.length;
-    const refusal = room < XLSX_MAX_HYPERLINKS_PER_SHEET ? workbookRefusal : `A worksheet holds at most ${XLSX_MAX_HYPERLINKS_PER_SHEET} hyperlinks.`;
-    streamElementsWithin(afterCells, 'hyperlink', Math.min(room, XLSX_MAX_HYPERLINKS_PER_SHEET), refusal, (link) => {
+    used += streamFirstElements(afterCells, 'hyperlink', allowance - used, (link) => {
       const cell = parseA1Range(link.attrs.ref ?? '');
-      const external = link.attrs['r:id'] === undefined ? undefined : externalTargets.get(link.attrs['r:id'])?.target;
-      const target = external ?? (link.attrs.location === undefined ? undefined : `#${link.attrs.location}`);
-      if (cell && target !== undefined) hyperlinks.push({ row: cell.startRow, col: cell.startCol, target });
+      const { 'r:id': id, location } = link.attrs;
+      if (!cell || (id === undefined && location === undefined)) return;
+      if (id !== undefined) wantedIds.add(id);
+      links.push({ row: cell.startRow, col: cell.startCol, id, location });
     });
   }
-  return { ...(mergedRanges.length > 0 ? { mergedRanges } : {}), ...(hyperlinks.length > 0 ? { hyperlinks } : {}) };
+  const related = await readPartRelationships(zip, sheetPath, options, (id, type, external) => (external ? wantedIds.has(id) : type.endsWith('/drawing')));
+  const hyperlinks: OfficeWorksheetHyperlink[] = [];
+  for (const { row, col, id, location } of links) {
+    const linked = id === undefined ? undefined : related.get(id);
+    const target = (linked?.external ? linked.target : undefined) ?? (location === undefined ? undefined : `#${location}`);
+    if (target !== undefined) hyperlinks.push({ row, col, target });
+  }
+  const drawingParts = [...related.values()].filter((relationship) => !relationship.external).map((relationship) => relationship.target);
+  return { ...(mergedRanges.length > 0 ? { mergedRanges } : {}), ...(hyperlinks.length > 0 ? { hyperlinks } : {}), used, drawingParts };
 }
 
 /**
@@ -5344,8 +5343,10 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   }
 
   // 3. Discover all worksheets from workbook.xml and workbook.xml.rels
-  const { workbookXml: wbXml, sheets: sheetEntries } = await discoverXlsxSheets(zip);
-  if (sheetEntries.length === 0) throw new ConversionFailedError('Invalid XLSX workbook: no worksheets found in archive.');
+  // One decoded-byte budget (a sheet of a million rows is hundreds of MB of XML) and one relationship scan allowance for the workbook.
+  const partOptions = { budget: new InflateBudget(), relationships: newRelationshipAllowance() };
+  const { workbookXml: wbXml, sheets: sheetEntries } = await discoverXlsxSheets(zip, partOptions);
+  if (sheetEntries.length === 0) throw new ConversionFailedError(XLSX_NO_WORKSHEETS_MESSAGE);
   const printAreaBySheetIndex = new Map<number, OfficeWorksheetPrintArea>();
   const printAreaBySheetName = new Map<string, OfficeWorksheetPrintArea>();
   let dateSystem = DATE_SYSTEM_1900;
@@ -5382,9 +5383,6 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   const allSheets: OfficeWorksheet[] = [];
   let expandedTextChars = 0;
   const maxCellTextChars = xlsxMaxCellTextChars();
-  // The sheets of one workbook share a decoded-byte budget, so many large sheets cannot add up past it; one sheet may
-  // take all of it, because a sheet of a million rows is hundreds of MB of XML.
-  const sheetBudget = new InflateBudget();
   // The cells and rows the reader builds for all sheets, the empty ones that pad a cell out to its column and a row out to its
   // row number included: a few bytes of XML ('<c r="XFD1"/>' on each of 1300 rows) otherwise ask for millions of them.
   let materialisedCells = 0;
@@ -5405,10 +5403,9 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     const sFile = zip.file(entry.path);
     if (!sFile) continue;
 
-    const sheetXml = await readZipEntryText(sFile, { budget: sheetBudget, maxBytes: sheetBudget.limit });
-    // Before the well-formedness check, which costs far more than a scan that stops at the bound: 3.3 s of CPU and 600 MB for the 125 MB of 5 million `mergeCell`s.
-    const annotations = await readSheetMergesAndLinks(zip, entry.path, sheetXml, XLSX_MAX_RANGES_PER_WORKBOOK - rangesHeld);
-    rangesHeld += (annotations.mergedRanges?.length ?? 0) + (annotations.hyperlinks?.length ?? 0);
+    const sheetXml = await readZipEntryText(sFile, { budget: partOptions.budget, maxBytes: partOptions.budget.limit });
+    const { used, drawingParts, ...annotations } = await readSheetAnnotations(zip, entry.path, sheetXml, XLSX_MAX_RANGES_PER_WORKBOOK - rangesHeld, partOptions);
+    rangesHeld += used;
     assertWellFormedXml(entry.path, sheetXml, 'XLSX');
     const rows: string[][] = [];
     const structuredRows: OfficeWorksheetCell[][] = [];
@@ -5536,7 +5533,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       }
     }
 
-    const charts = await readWorksheetCharts(zip, entry.path);
+    const charts = await readWorksheetCharts(zip, drawingParts, partOptions);
     allSheets.push({
       name: entry.name,
       rows,
@@ -7309,140 +7306,6 @@ async function convertFb2Source(
 }
 
 /**
- * Generates genuine Palm Database format with optional MOBI/AZW3 header
- */
-function generatePalmDoc(
-  text: string,
-  title: string,
-  type: 'pdb' | 'mobi' | 'azw3' = 'pdb'
-): Buffer {
-  const isMobi = type === 'mobi' || type === 'azw3';
-  const textBuffer = Buffer.from(text, 'utf-8');
-  const CHUNK_SIZE = 4096;
-  const numTextRecords = Math.max(1, Math.ceil(textBuffer.length / CHUNK_SIZE));
-  const numRecords = isMobi ? 1 + numTextRecords + 1 : 1 + numTextRecords;
-
-  // 1. Palm Database Header (78 bytes)
-  const header = Buffer.alloc(78);
-  const cleanTitle = title.replace(/[^\x20-\x7E]/g, '_').slice(0, 31);
-  header.write(cleanTitle, 0, 31, 'ascii');
-  header.writeUInt16BE(0, 32); // attributes
-  header.writeUInt16BE(0, 34); // version
-  const palmEpoch = Math.floor(Date.now() / 1000) + 2082844800;
-  header.writeUInt32BE(palmEpoch, 36); // creation time
-  header.writeUInt32BE(palmEpoch, 40); // modification time
-  header.write(isMobi ? 'BOOK' : 'TEXt', 60, 4, 'ascii');
-  header.write(isMobi ? 'MOBI' : 'REAd', 64, 4, 'ascii');
-  header.writeUInt16BE(numRecords, 76);
-
-  // 2. Prepare Records
-  const records: Buffer[] = [];
-
-  // Record 0: PalmDOC header (16 bytes)
-  const palmDocHeader = Buffer.alloc(16);
-  palmDocHeader.writeUInt16BE(1, 0); // 1 = uncompressed
-  palmDocHeader.writeUInt16BE(0, 2);
-  palmDocHeader.writeUInt32BE(textBuffer.length, 4);
-  palmDocHeader.writeUInt16BE(numTextRecords, 8);
-  palmDocHeader.writeUInt16BE(CHUNK_SIZE, 10);
-  palmDocHeader.writeUInt32BE(0, 12);
-
-  if (isMobi) {
-    const mobiHeader = Buffer.alloc(232);
-    mobiHeader.write('MOBI', 0, 4, 'ascii');
-    mobiHeader.writeUInt32BE(232, 4);
-    mobiHeader.writeUInt32BE(2, 8); // mobi book
-    mobiHeader.writeUInt32BE(65001, 12); // UTF-8
-    mobiHeader.writeUInt32BE(1234567, 16);
-    mobiHeader.writeUInt32BE(type === 'azw3' ? 8 : 6, 20);
-    mobiHeader.writeUInt32BE(0xffffffff, 24);
-    mobiHeader.writeUInt32BE(0xffffffff, 28);
-    mobiHeader.writeUInt32BE(0xffffffff, 32);
-    mobiHeader.writeUInt32BE(0xffffffff, 36);
-    mobiHeader.writeUInt32BE(0xffffffff, 40);
-    mobiHeader.writeUInt32BE(0, 80);
-    mobiHeader.writeUInt32BE(cleanTitle.length, 84);
-    mobiHeader.writeUInt32BE(16 + 232, 88);
-
-    const titleBuffer = Buffer.from(cleanTitle, 'utf-8');
-    records.push(Buffer.concat([palmDocHeader, mobiHeader, titleBuffer]));
-  } else {
-    records.push(palmDocHeader);
-  }
-
-  for (let i = 0; i < numTextRecords; i++) {
-    const start = i * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, textBuffer.length);
-    records.push(textBuffer.subarray(start, end));
-  }
-
-  if (isMobi) {
-    records.push(Buffer.from('FLIS\x00\x00\x00\x08\x00\x41\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff', 'binary'));
-  }
-
-  // 3. Record info list
-  const recordListSize = numRecords * 8 + 2;
-  const recordList = Buffer.alloc(recordListSize);
-
-  let currentOffset = 78 + recordListSize;
-  for (let i = 0; i < numRecords; i++) {
-    recordList.writeUInt32BE(currentOffset, i * 8);
-    recordList.writeUInt8(0, i * 8 + 4);
-    recordList.writeUInt8((i >> 16) & 0xff, i * 8 + 5);
-    recordList.writeUInt8((i >> 8) & 0xff, i * 8 + 6);
-    recordList.writeUInt8(i & 0xff, i * 8 + 7);
-    currentOffset += records[i].length;
-  }
-  recordList.writeUInt16BE(0, numRecords * 8);
-
-  return Buffer.concat([header, recordList, ...records]);
-}
-
-/**
- * Generates Open eBook Publication (OEB 1.0) XML package
- */
-function generateOebPackage(text: string, title: string): Buffer {
-  const oebXml = `<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE package PUBLIC "+//ISBN 0-9673008-1-9//DTD OEB 1.0.1 Package//EN" "http://openebook.org/dtds/oeb-1.0.1/oebpkg101.dtd">
-<package unique-identifier="uid">
-  <metadata>
-    <dc-metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-      <dc:Title>${escapeXml(title)}</dc:Title>
-      <dc:Language>en</dc:Language>
-      <dc:Identifier id="uid">urn:uuid:easyconvert-${Date.now()}</dc:Identifier>
-    </dc-metadata>
-  </metadata>
-  <manifest>
-    <item id="content" href="content.html" media-type="text/html"/>
-  </manifest>
-  <spine>
-    <itemref idref="content"/>
-  </spine>
-  <guide/>
-  <text>
-<![CDATA[
-${text}
-]]>
-  </text>
-</package>`;
-  return Buffer.from(oebXml, 'utf-8');
-}
-
-/**
- * Generates Sony BBeB (LRF) document binary
- */
-function generateLrf(text: string, _title: string): Buffer {
-  const header = Buffer.alloc(28);
-  header.set([0x00, 0x00, 0x4c, 0x30, 0x30, 0x31, 0x00, 0x00], 0);
-  header.writeUInt16LE(0x0200, 8); // version
-  header.writeUInt32LE(28, 10); // root object offset
-  header.writeUInt32LE(1, 14); // object count
-  const textBuf = Buffer.from(text, 'utf-8');
-  header.writeUInt32LE(textBuf.length, 18);
-  return Buffer.concat([header, textBuf]);
-}
-
-/**
  * MOBI / AZW3 / E-Book Parser & Converter
  */
 async function convertMobiSource(
@@ -7490,31 +7353,6 @@ async function convertMobiSource(
 
     const buffer = await p;
     return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
-  }
-
-  if (tgt === 'pdb') {
-    const buffer = generatePalmDoc(fullText, baseName, 'pdb');
-    return { buffer, mimeType: 'application/vnd.palm', filename: `${baseName}.pdb`, size: buffer.length };
-  }
-
-  if (tgt === 'mobi') {
-    const buffer = generatePalmDoc(fullText, baseName, 'mobi');
-    return { buffer, mimeType: 'application/x-mobipocket-ebook', filename: `${baseName}.mobi`, size: buffer.length };
-  }
-
-  if (tgt === 'azw3') {
-    const buffer = generatePalmDoc(fullText, baseName, 'azw3');
-    return { buffer, mimeType: 'application/vnd.amazon.mobi8-ebook', filename: `${baseName}.azw3`, size: buffer.length };
-  }
-
-  if (tgt === 'oeb') {
-    const buffer = generateOebPackage(fullText, baseName);
-    return { buffer, mimeType: 'application/x-oeb1-package+xml', filename: `${baseName}.oeb`, size: buffer.length };
-  }
-
-  if (tgt === 'lrf') {
-    const buffer = generateLrf(fullText, baseName);
-    return { buffer, mimeType: 'application/x-sony-bbeb', filename: `${baseName}.lrf`, size: buffer.length };
   }
 
   throw new Error(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
@@ -9627,8 +9465,8 @@ async function convertGenericEbookSource(inputBuffer: Buffer, src: string, tgt: 
   return writeEbookTargetFromText(await readGenericEbookText(inputBuffer, src), src, tgt, options, baseName);
 }
 
-/** Writes the text of an e-book in any target the e-book sources advertise: EPUB, the Palm family, TXT, RTF, rasters and PDF. */
-async function writeEbookTargetFromText(
+/** Writes the text of an e-book in the targets the in-process engine writes for the e-book sources: EPUB, TXT, RTF, rasters and PDF (the Palm, Sony and Open eBook targets are calibre's). */
+export async function writeEbookTargetFromText(
   text: string,
   src: string,
   tgt: string,
@@ -9638,9 +9476,6 @@ async function writeEbookTargetFromText(
   if (tgt === 'epub') {
     const buffer = await generateEpubFromText(text, src, options, baseName);
     return { buffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: buffer.length };
-  }
-  if (tgt === 'mobi' || tgt === 'azw3' || tgt === 'lrf' || tgt === 'oeb' || tgt === 'pdb') {
-    return convertMobiSource(Buffer.from(text, 'utf-8'), 'txt', tgt, options, baseName);
   }
   if (tgt === 'txt') {
     const buffer = Buffer.from(text, 'utf-8');
@@ -9655,7 +9490,7 @@ async function writeEbookTargetFromText(
     const rendered = await renderTextToRaster(text, tgt, baseName);
     return { buffer: rendered.buffer, mimeType: rendered.mimeType, filename: `${baseName}.${tgt}`, size: rendered.buffer.length };
   }
-
+  if (tgt !== 'pdf') throw new UnsupportedTargetError(`Cannot write the text of a .${src} book as '.${tgt}'.`);
   const pdfBuffer = await generatePdfFromDocx([{ text, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
   return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
 }
