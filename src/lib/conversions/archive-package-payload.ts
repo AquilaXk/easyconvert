@@ -7,6 +7,7 @@ import {
   UnreadableArchiveError,
   extractArchiveContained,
   hasTarHeaderChecksum,
+  readFirstTarBlock,
   removeDirectoryTree,
   unpackedBytesCap,
   unpackedBytesCapError,
@@ -45,7 +46,6 @@ export const PACKAGE_SOURCES: ReadonlySet<string> = new Set(['rpm', 'deb']);
  */
 export const LINK_TOLERANT_SOURCES: ReadonlySet<string> = new Set([...PACKAGE_SOURCES, 'dmg', 'img', 'iso', 'cpio']);
 
-const FIRST_BLOCK_BYTES = 512;
 const CPIO_MAGICS = new Set(['070701', '070702', '070707']);
 const STRIPPED_CPIO_MAGIC = '07070X';
 const CPIO_MAGIC_BYTES = 6;
@@ -87,19 +87,9 @@ export interface PackagePayload {
   root: string;
 }
 
-function readFirstBlock(file: string): Buffer {
-  const fd = fs.openSync(file, 'r');
-  try {
-    const block = Buffer.alloc(FIRST_BLOCK_BYTES);
-    return block.subarray(0, fs.readSync(fd, block, 0, FIRST_BLOCK_BYTES, 0));
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 /** What an extracted payload stream is, from its first bytes; null when it is none of the payloads packages carry. */
 function sniffPayload(file: string): PayloadKind | null {
-  const head = readFirstBlock(file);
+  const head = readFirstTarBlock(file);
   const magic = head.toString('latin1', 0, CPIO_MAGIC_BYTES);
   if (CPIO_MAGICS.has(magic)) return 'cpio';
   if (magic === STRIPPED_CPIO_MAGIC) return 'stripped';

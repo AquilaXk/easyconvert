@@ -29,3 +29,15 @@ export function decodeWindows1252(bytes: Uint8Array): string {
   }
   return chunks.join('');
 }
+
+/** The characters Windows-1252 encodes: ASCII, the Latin-1 letters from U+00A0, and the 27 characters it puts in bytes 0x80..0x9F. */
+const ENCODABLE_TEXT = new RegExp(
+  String.raw`^[\u0000-\u007f\u00a0-\u00ff${HIGH_TABLE.filter((codePoint) => codePoint > 0xff)
+    .map((codePoint) => String.raw`\u${codePoint.toString(16).padStart(4, '0')}`)
+    .join('')}]*$`
+);
+
+/** Whether Windows-1252 has a byte for every character of `text`; the five bytes the code page leaves undefined hold no character, and a character past U+FFFF has none. */
+export function fitsWindows1252(text: string): boolean {
+  return ENCODABLE_TEXT.test(text);
+}

@@ -10,6 +10,7 @@ import { assertEmbeddableImageWithinLimit, openInputImage, openLimitedSharp, ret
 import { ConversionOptions, ConversionResult, ConversionFailedError, DataParseError, EngineUnavailableError, InvalidSheetIndexError, PayloadLimitError, UnsupportedTargetError } from '../types';
 import { assertWellFormedXml } from './xml-wellformed';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
+import { calibreEngineUnavailable, isCalibreEbookTarget } from './calibre-ebook-targets';
 import { readPdfForOffice } from './pdf-office';
 import { documentToDocx } from './document-model/docx';
 import { documentToStructuredText } from './document-model/markdown';
@@ -81,6 +82,9 @@ export async function convertOffice(
   // A template or slide show is read by the reader of the format it is a layout of.
   const src = officeReadingFormat(sourceFormat);
   const tgt = targetFormat.toLowerCase();
+  if (isCalibreEbookTarget(tgt)) {
+    throw calibreEngineUnavailable(`Writing .${tgt} needs the native ebook-convert (calibre) engine; the in-process engine has no writer for it.`);
+  }
   // PDF and raster writers draw text with installed fonts found through the coverage index.
   await loadFontCoverageIndex();
 
@@ -356,12 +360,6 @@ export async function convertOffice(
   // 22. Target is Apple iWork (pages, numbers, key)
   if (['pages', 'numbers', 'key'].includes(tgt)) {
     throw new Error(`Unsupported office conversion: target iWork format '${tgt}' is not supported`);
-  }
-
-  // 23. Target is eBook (azw3, mobi, lrf, oeb, pdb)
-  if (['azw3', 'mobi', 'lrf', 'oeb', 'pdb'].includes(tgt)) {
-    const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-    return convertMobiSource(Buffer.from(textContent, 'utf-8'), 'txt', tgt, options, baseName);
   }
 
   // 23.1 Target is FB2 (FictionBook 2.0 with semantic markup)
@@ -7610,140 +7608,6 @@ async function convertFb2Source(
 }
 
 /**
- * Generates genuine Palm Database format with optional MOBI/AZW3 header
- */
-function generatePalmDoc(
-  text: string,
-  title: string,
-  type: 'pdb' | 'mobi' | 'azw3' = 'pdb'
-): Buffer {
-  const isMobi = type === 'mobi' || type === 'azw3';
-  const textBuffer = Buffer.from(text, 'utf-8');
-  const CHUNK_SIZE = 4096;
-  const numTextRecords = Math.max(1, Math.ceil(textBuffer.length / CHUNK_SIZE));
-  const numRecords = isMobi ? 1 + numTextRecords + 1 : 1 + numTextRecords;
-
-  // 1. Palm Database Header (78 bytes)
-  const header = Buffer.alloc(78);
-  const cleanTitle = title.replace(/[^\x20-\x7E]/g, '_').slice(0, 31);
-  header.write(cleanTitle, 0, 31, 'ascii');
-  header.writeUInt16BE(0, 32); // attributes
-  header.writeUInt16BE(0, 34); // version
-  const palmEpoch = Math.floor(Date.now() / 1000) + 2082844800;
-  header.writeUInt32BE(palmEpoch, 36); // creation time
-  header.writeUInt32BE(palmEpoch, 40); // modification time
-  header.write(isMobi ? 'BOOK' : 'TEXt', 60, 4, 'ascii');
-  header.write(isMobi ? 'MOBI' : 'REAd', 64, 4, 'ascii');
-  header.writeUInt16BE(numRecords, 76);
-
-  // 2. Prepare Records
-  const records: Buffer[] = [];
-
-  // Record 0: PalmDOC header (16 bytes)
-  const palmDocHeader = Buffer.alloc(16);
-  palmDocHeader.writeUInt16BE(1, 0); // 1 = uncompressed
-  palmDocHeader.writeUInt16BE(0, 2);
-  palmDocHeader.writeUInt32BE(textBuffer.length, 4);
-  palmDocHeader.writeUInt16BE(numTextRecords, 8);
-  palmDocHeader.writeUInt16BE(CHUNK_SIZE, 10);
-  palmDocHeader.writeUInt32BE(0, 12);
-
-  if (isMobi) {
-    const mobiHeader = Buffer.alloc(232);
-    mobiHeader.write('MOBI', 0, 4, 'ascii');
-    mobiHeader.writeUInt32BE(232, 4);
-    mobiHeader.writeUInt32BE(2, 8); // mobi book
-    mobiHeader.writeUInt32BE(65001, 12); // UTF-8
-    mobiHeader.writeUInt32BE(1234567, 16);
-    mobiHeader.writeUInt32BE(type === 'azw3' ? 8 : 6, 20);
-    mobiHeader.writeUInt32BE(0xffffffff, 24);
-    mobiHeader.writeUInt32BE(0xffffffff, 28);
-    mobiHeader.writeUInt32BE(0xffffffff, 32);
-    mobiHeader.writeUInt32BE(0xffffffff, 36);
-    mobiHeader.writeUInt32BE(0xffffffff, 40);
-    mobiHeader.writeUInt32BE(0, 80);
-    mobiHeader.writeUInt32BE(cleanTitle.length, 84);
-    mobiHeader.writeUInt32BE(16 + 232, 88);
-
-    const titleBuffer = Buffer.from(cleanTitle, 'utf-8');
-    records.push(Buffer.concat([palmDocHeader, mobiHeader, titleBuffer]));
-  } else {
-    records.push(palmDocHeader);
-  }
-
-  for (let i = 0; i < numTextRecords; i++) {
-    const start = i * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, textBuffer.length);
-    records.push(textBuffer.subarray(start, end));
-  }
-
-  if (isMobi) {
-    records.push(Buffer.from('FLIS\x00\x00\x00\x08\x00\x41\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff', 'binary'));
-  }
-
-  // 3. Record info list
-  const recordListSize = numRecords * 8 + 2;
-  const recordList = Buffer.alloc(recordListSize);
-
-  let currentOffset = 78 + recordListSize;
-  for (let i = 0; i < numRecords; i++) {
-    recordList.writeUInt32BE(currentOffset, i * 8);
-    recordList.writeUInt8(0, i * 8 + 4);
-    recordList.writeUInt8((i >> 16) & 0xff, i * 8 + 5);
-    recordList.writeUInt8((i >> 8) & 0xff, i * 8 + 6);
-    recordList.writeUInt8(i & 0xff, i * 8 + 7);
-    currentOffset += records[i].length;
-  }
-  recordList.writeUInt16BE(0, numRecords * 8);
-
-  return Buffer.concat([header, recordList, ...records]);
-}
-
-/**
- * Generates Open eBook Publication (OEB 1.0) XML package
- */
-function generateOebPackage(text: string, title: string): Buffer {
-  const oebXml = `<?xml version="1.0" encoding="utf-8"?>
-<!DOCTYPE package PUBLIC "+//ISBN 0-9673008-1-9//DTD OEB 1.0.1 Package//EN" "http://openebook.org/dtds/oeb-1.0.1/oebpkg101.dtd">
-<package unique-identifier="uid">
-  <metadata>
-    <dc-metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-      <dc:Title>${escapeXml(title)}</dc:Title>
-      <dc:Language>en</dc:Language>
-      <dc:Identifier id="uid">urn:uuid:easyconvert-${Date.now()}</dc:Identifier>
-    </dc-metadata>
-  </metadata>
-  <manifest>
-    <item id="content" href="content.html" media-type="text/html"/>
-  </manifest>
-  <spine>
-    <itemref idref="content"/>
-  </spine>
-  <guide/>
-  <text>
-<![CDATA[
-${text}
-]]>
-  </text>
-</package>`;
-  return Buffer.from(oebXml, 'utf-8');
-}
-
-/**
- * Generates Sony BBeB (LRF) document binary
- */
-function generateLrf(text: string, _title: string): Buffer {
-  const header = Buffer.alloc(28);
-  header.set([0x00, 0x00, 0x4c, 0x30, 0x30, 0x31, 0x00, 0x00], 0);
-  header.writeUInt16LE(0x0200, 8); // version
-  header.writeUInt32LE(28, 10); // root object offset
-  header.writeUInt32LE(1, 14); // object count
-  const textBuf = Buffer.from(text, 'utf-8');
-  header.writeUInt32LE(textBuf.length, 18);
-  return Buffer.concat([header, textBuf]);
-}
-
-/**
  * MOBI / AZW3 / E-Book Parser & Converter
  */
 async function convertMobiSource(
@@ -7791,31 +7655,6 @@ async function convertMobiSource(
 
     const buffer = await p;
     return { buffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: buffer.length };
-  }
-
-  if (tgt === 'pdb') {
-    const buffer = generatePalmDoc(fullText, baseName, 'pdb');
-    return { buffer, mimeType: 'application/vnd.palm', filename: `${baseName}.pdb`, size: buffer.length };
-  }
-
-  if (tgt === 'mobi') {
-    const buffer = generatePalmDoc(fullText, baseName, 'mobi');
-    return { buffer, mimeType: 'application/x-mobipocket-ebook', filename: `${baseName}.mobi`, size: buffer.length };
-  }
-
-  if (tgt === 'azw3') {
-    const buffer = generatePalmDoc(fullText, baseName, 'azw3');
-    return { buffer, mimeType: 'application/vnd.amazon.mobi8-ebook', filename: `${baseName}.azw3`, size: buffer.length };
-  }
-
-  if (tgt === 'oeb') {
-    const buffer = generateOebPackage(fullText, baseName);
-    return { buffer, mimeType: 'application/x-oeb1-package+xml', filename: `${baseName}.oeb`, size: buffer.length };
-  }
-
-  if (tgt === 'lrf') {
-    const buffer = generateLrf(fullText, baseName);
-    return { buffer, mimeType: 'application/x-sony-bbeb', filename: `${baseName}.lrf`, size: buffer.length };
   }
 
   throw new Error(`Unsupported conversion from ${src.toUpperCase()} to ${tgt}`);
@@ -10118,8 +9957,8 @@ async function convertGenericEbookSource(inputBuffer: Buffer, src: string, tgt: 
   return writeEbookTargetFromText(await readGenericEbookText(inputBuffer, src), src, tgt, options, baseName);
 }
 
-/** Writes the text of an e-book in any target the e-book sources advertise: EPUB, the Palm family, TXT, RTF, rasters and PDF. */
-async function writeEbookTargetFromText(
+/** Writes the text of an e-book in the targets the in-process engine writes for the e-book sources: EPUB, TXT, RTF, rasters and PDF (the Palm, Sony and Open eBook targets are calibre's). */
+export async function writeEbookTargetFromText(
   text: string,
   src: string,
   tgt: string,
@@ -10129,9 +9968,6 @@ async function writeEbookTargetFromText(
   if (tgt === 'epub') {
     const buffer = await generateEpubFromText(text, src, options, baseName);
     return { buffer, mimeType: 'application/epub+zip', filename: `${baseName}.epub`, size: buffer.length };
-  }
-  if (tgt === 'mobi' || tgt === 'azw3' || tgt === 'lrf' || tgt === 'oeb' || tgt === 'pdb') {
-    return convertMobiSource(Buffer.from(text, 'utf-8'), 'txt', tgt, options, baseName);
   }
   if (tgt === 'txt') {
     const buffer = Buffer.from(text, 'utf-8');
@@ -10146,7 +9982,7 @@ async function writeEbookTargetFromText(
     const rendered = await renderTextToRaster(text, tgt, baseName);
     return { buffer: rendered.buffer, mimeType: rendered.mimeType, filename: `${baseName}.${tgt}`, size: rendered.buffer.length };
   }
-
+  if (tgt !== 'pdf') throw new UnsupportedTargetError(`Cannot write the text of a .${src} book as '.${tgt}'.`);
   const pdfBuffer = await generatePdfFromDocx([{ text, isHeading: false, isBold: false, isItalic: false }], [], options, baseName);
   return { buffer: pdfBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: pdfBuffer.length };
 }
