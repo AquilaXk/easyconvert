@@ -158,7 +158,7 @@ describe.skipIf(skipUnless('Linux with unprivileged namespaces (unshare -r -n)',
       const out = await decompressXz(packXz(PAYLOAD));
       const runs = spyRuns();
       expect(runs).toHaveLength(1);
-      expect(runs[0].argv).toMatch(/^-d -T1 -c -q --memlimit-decompress=\d+$/);
+      expect(runs[0].argv).toMatch(/^-d -T1 -c --memlimit-decompress=\d+$/);
       expectConfined(runs[0]);
       expect(out.equals(PAYLOAD)).toBe(true);
     });
@@ -382,6 +382,14 @@ describe.skipIf(skipUnless('xz', XZ_BINARY !== null))('a stream the native xz re
   it('a reserved check type is refused by the native xz with a 422', async () => {
     const stream = withReservedCheck(xzWrite(['-C', 'crc32']));
     const error = await failureOf(decompressXz(stream));
+    expect(error).toBeInstanceOf(UnsupportedArchiveMethodError);
+    expect((error as UnsupportedArchiveMethodError).status).toBe(422);
+    expect(host.inProcessDecodes).toBe(0);
+  });
+
+  it('a reserved check type on a truncated stream is still a 422, not a 400 named after the warning', async () => {
+    const stream = withReservedCheck(xzWrite(['-C', 'crc32']));
+    const error = await failureOf(decompressXz(stream.subarray(0, stream.length - 20)));
     expect(error).toBeInstanceOf(UnsupportedArchiveMethodError);
     expect((error as UnsupportedArchiveMethodError).status).toBe(422);
     expect(host.inProcessDecodes).toBe(0);

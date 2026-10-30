@@ -134,9 +134,10 @@ function decodeRefusal(failure: unknown, maxOutputBytes: number, xzBin: string):
   if (failure.exitCode !== XZ_EXIT_ERROR && failure.exitCode !== XZ_EXIT_WARNING) return null;
   const message = xzOwnMessage(failure.stderr, xzBin);
   if (message === null) return null;
-  if (failure.exitCode === XZ_EXIT_WARNING) {
-    return XZ_UNSUPPORTED_CHECK.test(message) ? new UnsupportedArchiveMethodError(`XZ archive: ${message}`) : null;
-  }
+  // xz prints this warning at the stream header, before any later error, so it is looked for on every line.
+  const unsupportedCheck = failure.stderr.split('\n').map((line) => xzOwnMessage(line, xzBin)).find((line) => line !== null && XZ_UNSUPPORTED_CHECK.test(line));
+  if (unsupportedCheck) return new UnsupportedArchiveMethodError(`XZ archive: ${unsupportedCheck}`);
+  if (failure.exitCode === XZ_EXIT_WARNING) return null;
   if (XZ_MEMORY_REFUSAL.test(message)) return memoryRefusal;
   return new CorruptStreamError(`Invalid XZ archive: ${message || 'the stream was refused'}`);
 }
