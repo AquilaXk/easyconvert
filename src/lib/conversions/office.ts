@@ -65,7 +65,7 @@ import { officeReadingFormat } from './office/office-suite-sources';
 import { assertReadableAsText } from './office/text-source-guard';
 import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from './office/sheet-bounds';
 import { DAY_ZERO_1900, MS_PER_DAY, writeXlsx, type WorkbookCompression } from './xlsx-writer';
-import { DELIMITED_SHEET_SOURCES, delimitedSheetRows, noTableReader, parseJsonTableCells, parseJsonTableRows } from './sheet-text-tables';
+import { delimitedSheetRows, parseJsonTableCells, parseJsonTableRows, pdfSheetRefusal } from './sheet-text-tables';
 
 export { buildOpenXpsPackage };
 
@@ -8544,13 +8544,12 @@ export function getExcelColumnIndex(colLetters: string): number {
 }
 
 /**
- * The XLSX workbook of a source the office engine reads as a table: delimited text and a Kingsoft workbook store a field that spells
- * a number or an ISO date as one, JSON keeps the types its values have. Any other source is refused (`noTableReader`).
+ * The XLSX workbook of a source the office engine reads as a table: JSON keeps the types its values have, delimited text and a Kingsoft
+ * workbook store a field that spells a number or an ISO date as one. A PDF is refused (`pdfSheetRefusal`).
  */
 export async function officeSheetWorkbook(inputBuffer: Buffer, src: string, options: ConversionOptions, compression?: WorkbookCompression): Promise<Buffer> {
   if (src === 'json') return writeXlsx(parseJsonTableCells(inputBuffer.toString('utf-8')), 'verbatim', compression);
-  if (DELIMITED_SHEET_SOURCES.has(src) || src === 'et') return writeXlsx(await extractRowsForOffice(inputBuffer, src, options), 'detect', compression);
-  throw noTableReader(src);
+  return writeXlsx(await extractRowsForOffice(inputBuffer, src, options), 'detect', compression);
 }
 
 /** Sources whose extracted text is Markdown (headings, lists, tables), read as such when writing an EPUB or DOCX. */
@@ -9842,7 +9841,7 @@ async function extractRowsForOffice(
     if (startsWithBytes(inputBuffer, ZIP_LOCAL_HEADER_SIGNATURE)) return extractRowsForOffice(inputBuffer, 'xlsx', options);
     if (isCfbfContainer(inputBuffer)) return readCfbfWorkbookSheet(inputBuffer).toRows();
   }
-  if (src !== 'json' && src !== 'et' && !DELIMITED_SHEET_SOURCES.has(src)) throw noTableReader(src);
+  if (src === 'pdf') throw pdfSheetRefusal();
 
   const text = inputBuffer.toString('utf-8');
   return src === 'json' ? parseJsonTableRows(text) : delimitedSheetRows(text, src, options);

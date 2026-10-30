@@ -37,9 +37,6 @@ export function parseJsonTableRows(text: string): string[][] {
   return parseJsonTableCells(text).map((row) => row.map(sheetCellText));
 }
 
-/** Delimited text sources, read with the reader of the data engine. */
-export const DELIMITED_SHEET_SOURCES: ReadonlySet<string> = new Set(['csv', 'tsv', 'tab']);
-
 /**
  * The rows of CSV or TSV text: the lines that are not blank, each with its fields. Text that is not well formed delimited
  * text (an unterminated quote, a quote that closes inside a field) is a DataParseError; a sheet of the text split on the
@@ -50,10 +47,9 @@ export function delimitedSheetRows(text: string, sourceType: string, options: Co
 }
 
 /**
- * The refusal of a spreadsheet target for a source that holds no table this engine reads. A PDF is refused until its pages' tables
- * are extracted: reading its bytes as delimited text gave junk rows or a misleading parse error.
+ * The refusal of a spreadsheet target for a PDF until the tables of its pages are extracted: reading its bytes as delimited text gave
+ * junk rows or a misleading parse error.
  */
-export function noTableReader(src: string): UnsupportedTargetError {
-  if (src === 'pdf') return new UnsupportedTargetError('A PDF is not converted to a spreadsheet yet: the tables of its pages are not extracted.');
-  return new UnsupportedTargetError(`Cannot convert ${src.toUpperCase()} documents to a spreadsheet: the in-process engine reads no table from them.`);
+export function pdfSheetRefusal(): UnsupportedTargetError {
+  return new UnsupportedTargetError('A PDF is not converted to a spreadsheet yet: the tables of its pages are not extracted.');
 }
