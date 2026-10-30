@@ -90,7 +90,9 @@ x-app-environment: &app-environment
   STORAGE_VAULT_KEY:
   # The Redis of this stack unless REDIS_URL names another (a managed or separate host). The password is hex (openssl rand -hex 24),
   # so it needs no URL escaping.
-  REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD:?set the Redis password, for example openssl rand -hex 24}@redis:6379}
+  # No `:?` inside the default: some Compose releases evaluate it even when REDIS_URL is set. deploy.sh refuses an env secret
+  # with neither, and the Redis of the stack refuses to start without a password.
+  REDIS_URL: ${REDIS_URL:-redis://:${REDIS_PASSWORD}@redis:6379}
   # How long a stored result lives before and after it is downloaded. No default here: the application's schema holds them.
   RESULT_UNDELIVERED_TTL_SECONDS:
   RESULT_DELIVERED_GRACE_SECONDS:

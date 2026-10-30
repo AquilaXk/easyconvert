@@ -312,7 +312,7 @@ describe.skipIf(skipUnless('docker compose', compose.available))('docker compose
     }
   });
 
-  it.each(['STORAGE_SIGNING_SECRET', 'JOB_SECRET_KEK', 'REDIS_PASSWORD', 'APP_URL', 'JWT_SECRET', 'EASYCONVERT_SCRATCH_DIR'])(
+  it.each(['STORAGE_SIGNING_SECRET', 'JOB_SECRET_KEK', 'APP_URL', 'JWT_SECRET', 'EASYCONVERT_SCRATCH_DIR'])(
     'refuses the production file without %s',
     (missing) => {
       const env: Record<string, string> = { ...PROD_ENV };

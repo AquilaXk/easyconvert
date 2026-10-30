@@ -294,6 +294,8 @@ deploy() {
   check_profile
   budget_env="$(budget "$(env_value "$raw_env" EASYCONVERT_BUDGET_CPUS)" "$(env_value "$raw_env" EASYCONVERT_BUDGET_MEMORY_GB)")" \
     || die "the budget in the env secret cannot be used"
+  [ -n "$(env_value "$raw_env" REDIS_URL)" ] || [ -n "$(env_value "$raw_env" REDIS_PASSWORD)" ] \
+    || die "the env secret sets neither REDIS_PASSWORD (the Redis of this stack) nor REDIS_URL (another Redis)"
 
   worker="$(pin "$WORKER_REPO" "$ref")"
   web="$(pin "$WEB_REPO" "$ref")"

@@ -762,6 +762,14 @@ exit 0`
     expect(calls()).toEqual([]);
   });
 
+  it('fails before it pulls anything when the env secret names no Redis password and no other Redis', () => {
+    writeFileSync(envFile, `${ENV_BODY.replace('REDIS_PASSWORD=redis-password-value', '')}\n`);
+    const result = run(['deploy', 'main'], { env: hostEnv() });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('neither REDIS_PASSWORD');
+    expect(calls().filter((call) => call.startsWith('docker pull'))).toEqual([]);
+  });
+
   it('fails before it pulls anything when the budget in the env secret cannot be used', () => {
     writeFileSync(envFile, `${ENV_BODY}\nEASYCONVERT_BUDGET_CPUS=1\n`);
     const result = run(['deploy', 'main'], { env: hostEnv() });
