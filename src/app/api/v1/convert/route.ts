@@ -18,8 +18,7 @@ import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile } from '@/lib/security/file-guard';
 import { storageProvider } from '@/lib/storage';
-import { resolveRetentionPolicy } from '@/lib/storage/result-retention';
-import { registerResult } from '@/lib/storage/retention-service';
+import { saveRetainedResult } from '@/lib/storage/retention-service';
 import {
   createProblemDetailsResponse,
   createEngineUnavailableResponse,
@@ -404,9 +403,7 @@ export async function POST(req: NextRequest) {
     const outExtension = conversionResult.mimeType === ZIP_MIME_TYPE ? 'zip' : targetDef.extension || targetDef.id;
     const outFileName = `${baseName}.${outExtension}`;
     const storageKey = `conversions/${auth.user.id}/${Date.now()}_${outFileName}`;
-    const { undeliveredTtlMs } = resolveRetentionPolicy();
-    await storageProvider.saveObject(storageKey, outputBuffer, conversionResult.mimeType, outFileName, undeliveredTtlMs);
-    await registerResult(storageKey);
+    await saveRetainedResult(storageProvider, storageKey, outputBuffer, conversionResult.mimeType, outFileName);
 
     // 3. Phase 2: Commit reserved quota unit upon SUCCESSFUL conversion
     if (reservation?.reservationId) {
@@ -423,7 +420,6 @@ export async function POST(req: NextRequest) {
       toFormat: targetDef.id,
       size: outputBuffer.length,
       downloadUrl,
-      ttlMs: undeliveredTtlMs,
     });
 
     // Check if raw binary is requested (Zero-Heap: skip base64 serialization completely)

@@ -420,7 +420,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       return { ...app, submit, queueModule, bullmq };
     }
 
-    it('runs a submitted job from an object-store input to a presigned result and removes the upload', async () => {
+    it('runs a submitted job from an object-store input to a result served through the application and removes the upload', async () => {
       const { storage, submit, queueModule, bullmq } = await loadJobApp();
       const inputKey = `uploads/${Date.now()}_scores.csv`;
       await storage.storageProvider.saveObject(inputKey, Buffer.from(CSV_INPUT), 'text/csv', 'scores.csv', 3_600_000);
@@ -447,9 +447,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
         { name: 'Alice', score: '100' },
         { name: 'Bob', score: '95' },
       ]);
-      const downloaded = await fetch(result.downloadUrl);
-      expect(downloaded.status).toBe(HTTP_OK);
-      expect(JSON.parse(await downloaded.text())).toEqual(rows);
+      // Downloads go through the application, whatever the driver, so that a delivery can be seen and the result deleted after it.
+      expect(result.downloadUrl).toBe(`/api/storage/file/${encodeURIComponent(result.resultKey)}`);
 
       // The completed job's upload is deleted from the object store.
       await vi.waitFor(() => expect(server.objects.has(inputKey)).toBe(false));
@@ -601,7 +600,7 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
       );
     }
 
-    it('reads the input from the object store, writes the result there, and returns a presigned download URL', async () => {
+    it('reads the input from the object store, writes the result there, and names the application as its download', async () => {
       const backend = makeBackend();
       const csv = 'id,name,role\n101,Ada Lovelace,Mathematician\n102,Alan Turing,Computer Scientist\n';
       await backend.saveObject('uploads/users.csv', Buffer.from(csv), 'text/csv', 'users.csv');
@@ -629,13 +628,8 @@ describe('STORAGE_DRIVER=oci wires every storage path to the object store', () =
         { id: '102', name: 'Alan Turing', role: 'Computer Scientist' },
       ]);
 
-      // The URL in the job result is a real presigned object-store URL: a plain HTTP client gets the result.
-      const downloadUrl = new URL(result.downloadUrl);
-      expect(downloadUrl.origin).toBe(server.url);
-      expect(downloadUrl.searchParams.get('X-Amz-Credential')?.startsWith(`${ACCESS_KEY}/`)).toBe(true);
-      const res = await fetch(result.downloadUrl);
-      expect(res.status).toBe(HTTP_OK);
-      expect(Buffer.from(await res.arrayBuffer()).equals(stored!.body)).toBe(true);
+      // The URL in the job result is the application's download route, not a link into the bucket.
+      expect(result.downloadUrl).toBe(`/api/storage/file/${encodeURIComponent(result.resultKey)}`);
       expect(result.size).toBe(stored!.body.length);
     });
 

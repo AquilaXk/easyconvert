@@ -1,3 +1,4 @@
+import type { IStorageBackend } from './oci-storage';
 import { getRetentionLedger } from './retention-ledger';
 import {
   isDeleted,
@@ -15,16 +16,34 @@ export interface DeletableStorage {
   deleteObject(key: string): boolean | Promise<boolean>;
 }
 
+/** A storage backend that can store a result. */
+export type ResultStorage = Pick<IStorageBackend, 'saveObject'>;
+
 const SWEEP_INTERVAL_MS = 60_000;
 /** Results deleted per sweep; a backlog is cleared over the following sweeps. */
 const SWEEP_BATCH = 500;
 
-/** Starts the retention clock of a result that was just stored with `resolveRetentionPolicy().undeliveredTtlMs`. */
+/**
+ * Starts the retention clock of a result that was just stored with `resolveRetentionPolicy().undeliveredTtlMs`
+ * as its lifetime. A result is only deleted on schedule when it was registered.
+ */
 export async function registerResult(key: string): Promise<void> {
   if (!isRetainedKey(key)) return;
   const now = Date.now();
   const policy = resolveRetentionPolicy();
   await getRetentionLedger().update(key, (current) => current ?? newRecord(key, now, policy));
+}
+
+/** Stores a result that lives for the undelivered time and registers it, so that the sweep and the download route know it. */
+export async function saveRetainedResult(
+  storage: ResultStorage,
+  key: string,
+  buffer: Buffer,
+  mimeType: string,
+  filename: string
+): Promise<void> {
+  await storage.saveObject(key, buffer, mimeType, filename, resolveRetentionPolicy().undeliveredTtlMs);
+  await registerResult(key);
 }
 
 /** What a client can be told about a result: the job API reports it next to the result. */

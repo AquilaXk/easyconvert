@@ -379,7 +379,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 1650
+    "maxValue": 1597
   },
   {
     "file": "src/lib/api/contracts/validate.ts",
@@ -2533,14 +2533,14 @@
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 521
+    "maxValue": 515
   },
   {
     "file": "src/lib/queue/node-processor.ts",
     "rule": "complexity",
     "function": "processNodeJob",
     "count": 1,
-    "maxValue": 63
+    "maxValue": 62
   },
   {
     "file": "src/lib/queue/node-processor.ts",

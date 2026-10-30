@@ -7,6 +7,7 @@ import type { User, UserTier } from '../auth/types';
 import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile } from './types';
 import { isIpAllowed } from './ip-utils';
 import { globalSharedObjects } from '../storage/shared-store';
+import { resolveRetentionPolicy } from '../storage/result-retention';
 import { encryptSecret, decryptSecret } from './secret-encryption';
 import type { ApiKeyRotateOptions, ApiKeyRotateResult, ApiKeyUpdateOptions } from './types';
 
@@ -565,7 +566,7 @@ export class KeyStore {
       size: data.size,
       downloadUrl,
       createdAt: now,
-      expiresAt: now + (data.ttlMs ?? 3600 * 1000),
+      expiresAt: now + (data.ttlMs ?? resolveRetentionPolicy().undeliveredTtlMs),
     };
 
     this.userFiles.set(file.id, file);

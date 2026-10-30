@@ -14,6 +14,7 @@ const REDIS_URL = process.env.REDIS_URL;
 const POLICY = resolveRetentionPolicy({});
 const SECOND_MS = 1000;
 
+// skip-ok: needs a Redis server; `npm run test:redis` provides one and tests/redis-suites-registered.test.ts holds this file in that script.
 describe.skipIf(!REDIS_URL)('retention records in Redis', () => {
   let redis: Redis;
   const deleted: string[] = [];

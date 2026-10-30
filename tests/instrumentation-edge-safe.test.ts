@@ -14,10 +14,14 @@ const source = fs.readFileSync(path.join(__dirname, '../src/instrumentation.ts')
 const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
 const GUARD = /if \(process\.env\.NEXT_RUNTIME === 'nodejs'\) \{([\s\S]*?)\n  \}/;
-const NODE_ONLY_IMPORTS = ["import('./lib/config/web-startup')", "import('./lib/storage/selected-storage')"];
+const NODE_ONLY_IMPORTS = [
+  "import('./lib/config/web-startup')",
+  "import('./lib/storage/selected-storage')",
+  "import('./lib/storage/retention-service')",
+];
 
 describe('src/instrumentation.ts', () => {
-  it('loads the configuration check and the storage selection only inside a positive Node runtime check', () => {
+  it('loads the configuration check, the storage selection and the retention sweep only inside a positive Node runtime check', () => {
     const guarded = GUARD.exec(code);
     expect(guarded?.[1].match(/import\('[^']+'\)/g)).toEqual(NODE_ONLY_IMPORTS);
     expect(code.replace(GUARD, '').match(/import\(/g)).toBeNull();
