@@ -416,6 +416,13 @@ async function cursorFromPngSeed(): Promise<Buffer> {
   return Buffer.concat([header, PNG_SEED]);
 }
 
+function buildProbeMobi(): Buffer {
+  return buildMobiFromBytes(Buffer.from('<html><body><h1>Probe heading</h1><p>First probe paragraph.</p></body></html>', 'utf-8'), { compress: false });
+}
+
+/** The single-file Open eBook package the reader takes: the text sits in `<text>`, since no writer of the product makes a source of this format any more. */
+const OEB_PROBE_PACKAGE = '<?xml version="1.0"?><package><text><![CDATA[Probe heading\n\nFirst probe paragraph.]]></text></package>';
+
 /** Small hand-built inputs for source families with no fixture and no derivation seed. */
 const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   ndjson: () => NDJSON_TEXT,
@@ -438,10 +445,13 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   'tar.gz': () => gzipSync(TAR_SEED),
   cbz: buildCbz,
   // E-book sources are read by their container layout, so each probe is a hand-built container with real content:
-  // a MOBI whose text record holds HTML, a Print Replica book around a pdf-lib PDF, a collection of one comic
+  // a MOBI (the probe of AZW and AZW3 too) whose text record holds HTML, an OEB package that carries its text, a Print Replica book around a pdf-lib PDF, a collection of one comic
   // volume whose page is a scanned line of English text (the OCR route needs lettering to recognise), FictionBook
   // XML, and the HTMLZ and TXTZ ZIP wrappers.
-  azw: () => buildMobiFromBytes(Buffer.from('<html><body><h1>Probe heading</h1><p>First probe paragraph.</p></body></html>', 'utf-8'), { compress: false }),
+  azw: buildProbeMobi,
+  azw3: buildProbeMobi,
+  mobi: buildProbeMobi,
+  oeb: () => Buffer.from(OEB_PROBE_PACKAGE, 'utf-8'),
   azw4: async () => buildAzw4([await textPdf(['Probe heading', 'First probe paragraph'])]),
   cbc: buildProbeCbc,
   fb2: () => Buffer.from(FB2_PROBE, 'utf-8'),
@@ -1639,7 +1649,7 @@ describe('native-engine pairs route through the dispatcher', () => {
       case 'txtz':
         return zipOf({ 'index.txt': 'Probe paragraph.' });
       case 'oeb':
-        return Buffer.from('<?xml version="1.0"?><package><text><![CDATA[Probe paragraph.]]></text></package>');
+        return Buffer.from(OEB_PROBE_PACKAGE);
       default:
         return undefined;
     }
