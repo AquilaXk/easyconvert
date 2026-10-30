@@ -94,6 +94,15 @@ describe('a table converted to .xls', () => {
   }
 });
 
+describe('a libreOfficeFilter on the .xls target', () => {
+  oracleTest('names the export, so an .ods source still comes back as a Compound File', ['soffice', 'file'], async () => {
+    const ods = (await convertFile(Buffer.from('a,b\n1,x\n2,y\n'), 'csv', 'ods', {}, 'table.csv')).buffer;
+    const converted = await dispatchConversion(ods, 'ods', 'xls', { libreOfficeFilter: 'MS Excel 97' }, 'table.ods');
+    expect(converted.buffer.subarray(0, CFB_SIGNATURE.length)).toEqual(CFB_SIGNATURE);
+    expect(fileDescription(converted.buffer)).toContain('Composite Document File V2');
+  }, LONG_TIMEOUT_MS);
+});
+
 describe('a table that is not well formed is refused for the .xls target', () => {
   it.each([
     ['csv', 'a,b\n1,"two\n'],

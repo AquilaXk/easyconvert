@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { InflateBudget } from './bounded-inflate';
 import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
+import { XLSX_MAX_MATERIALISED_CELLS, discoverXlsxSheets, extractWithinCellBudget } from './office/xlsx-sheets';
 import { HTML_MAX_EMBEDDED_BASE64_CHARS, PptxMedia, base64Length } from './office/pptx-media';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
@@ -2301,6 +2302,15 @@ export function safeExtractXmlAttributes(tagHeader: string): SafeXmlAttributeMap
 
 const SAFE_XML_SCANNER_DEFAULTS = { maxElements: 50_000, maxDepth: 64 } as const;
 
+/** The options of a scan with each default kept for an option that is absent or explicitly `undefined`. */
+function withScannerDefaults(options: SafeXmlScannerOptions): Required<Pick<SafeXmlScannerOptions, 'maxElements' | 'maxDepth'>> & Pick<SafeXmlScannerOptions, 'onElement'> {
+  return {
+    maxElements: options.maxElements ?? SAFE_XML_SCANNER_DEFAULTS.maxElements,
+    maxDepth: options.maxDepth ?? SAFE_XML_SCANNER_DEFAULTS.maxDepth,
+    onElement: options.onElement,
+  };
+}
+
 /**
  * Safely extracts XML elements in linear O(N) time without ReDoS backtracking.
  * Accurately tracks nested elements of the same tag name and enforces strict depth bounds.
@@ -2311,7 +2321,7 @@ export function safeExtractXmlElements(
   options: SafeXmlScannerOptions = {}
 ): SafeXmlElement[] {
   const results: SafeXmlElement[] = [];
-  const { maxElements, maxDepth, onElement } = { ...SAFE_XML_SCANNER_DEFAULTS, ...options };
+  const { maxElements, maxDepth, onElement } = withScannerDefaults(options);
   let found = 0;
   const take = onElement ?? ((element: SafeXmlElement): void => void results.push(element));
 
@@ -5412,10 +5422,6 @@ export function formatCsvCell(cell: string, delimiter: string): string {
 
 
 /**
- * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
- * and workbook.xml.rels, resolving shared strings, NumberFormats, and formulas.
- */
-/**
  * The relationships of a package part: target by relationship id, with the relationship's type. The targets are package paths;
  * with `external` the relationships that point outside the package are read instead, and their targets are the URLs as written.
  */
@@ -5425,7 +5431,7 @@ async function readPartRelationships(zip: JSZip, partPath: string, external = fa
   const relsFile = zip.file(`${directory}/_rels/${partPath.slice(slash + 1)}.rels`);
   const relationships = new Map<string, { type: string; target: string }>();
   if (!relsFile) return relationships;
-  for (const rel of safeExtractXmlElements(await readZipEntryText(relsFile), 'Relationship')) {
+  for (const rel of extractWithinCellBudget(await readZipEntryText(relsFile), 'Relationship', 'relationships')) {
     if (rel.attrs.Id && rel.attrs.Target && (rel.attrs.TargetMode === 'External') === external) {
       relationships.set(rel.attrs.Id, { type: rel.attrs.Type ?? '', target: external ? rel.attrs.Target : resolveZipPath(directory, rel.attrs.Target) });
     }
@@ -5485,11 +5491,11 @@ async function readSheetMergesAndLinks(
   // Both lists follow `sheetData` (ECMA-376 Part 1, 18.3.1.99), so the cell data is not scanned again.
   const afterCells = sheetXml.slice(Math.max(0, sheetXml.lastIndexOf('</sheetData>')));
   const mergedRanges: OfficeCellRange[] = [];
-  for (const merge of safeExtractXmlElements(afterCells, 'mergeCell')) {
+  for (const merge of extractWithinCellBudget(afterCells, 'mergeCell', 'merged ranges')) {
     const range = parseA1Range(merge.attrs.ref ?? '');
     if (range) mergedRanges.push({ startRow: range.startRow, endRow: range.endRow, startCol: range.startCol, endCol: range.endCol });
   }
-  const links = safeExtractXmlElements(afterCells, 'hyperlink');
+  const links = extractWithinCellBudget(afterCells, 'hyperlink', 'hyperlinks');
   const hyperlinks: OfficeWorksheetHyperlink[] = [];
   const externalTargets = links.length > 0 ? await readPartRelationships(zip, sheetPath, true) : new Map<string, { type: string; target: string }>();
   for (const link of links) {
@@ -5506,7 +5512,8 @@ async function readSheetMergesAndLinks(
  * The strings of `xl/sharedStrings.xml` in index order; a rich-text string is its runs joined, without phonetic guides. SheetJS
  * (`parse_sst_xml`, xlsx.js lines 9482 to 9496) and openpyxl (`read_string_table`, reader/strings.py lines 10 to 24) read every
  * item; here the items count against the cells the reader builds for a workbook, since no sheet can show more strings than it has
- * cells, and a table past that is refused (413) rather than cut. The items are taken one at a time, never held as a list.
+ * cells, and a table past that is refused (413) rather than cut. The items are handed to the list one at a time as the scanner finds
+ * them; the list itself is held whole, bounded by that count and not by bytes.
  */
 async function readSharedStrings(zip: JSZip): Promise<string[]> {
   const sstFile = zip.file('xl/sharedStrings.xml');
@@ -5522,6 +5529,10 @@ async function readSharedStrings(zip: JSZip): Promise<string[]> {
   return strings;
 }
 
+/**
+ * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
+ * and workbook.xml.rels, resolving shared strings, NumberFormats, and formulas.
+ */
 export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8Array): Promise<OfficeWorksheet[]> {
   const zip = (zipOrBuffer && typeof (zipOrBuffer as JSZip).file === 'function')
     ? (zipOrBuffer as JSZip)
@@ -5649,40 +5660,13 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
   }
 
   // 3. Discover all worksheets from workbook.xml and workbook.xml.rels
-  const sheetEntries: Array<{ name: string; path: string }> = [];
+  const { workbookXml: wbXml, sheets: sheetEntries } = await discoverXlsxSheets(zip);
   const printAreaBySheetIndex = new Map<number, OfficeWorksheetPrintArea>();
   const printAreaBySheetName = new Map<string, OfficeWorksheetPrintArea>();
   let dateSystem = DATE_SYSTEM_1900;
 
-  const wbFile = zip.file('xl/workbook.xml');
-  const wbRelsFile = zip.file('xl/_rels/workbook.xml.rels');
-
-  if (wbFile) {
-    const wbXml = await readZipEntryText(wbFile);
+  if (wbXml !== undefined) {
     dateSystem = readDateSystem(wbXml);
-    const relsMap = new Map<string, string>();
-
-    if (wbRelsFile) {
-      const wbRelsXml = await readZipEntryText(wbRelsFile);
-      for (const rEl of safeExtractXmlElements(wbRelsXml, 'Relationship')) {
-        if (rEl.attrs.Id && rEl.attrs.Target) {
-          relsMap.set(rEl.attrs.Id, rEl.attrs.Target);
-        }
-      }
-    }
-
-    for (const sEl of safeExtractXmlElements(wbXml, 'sheet')) {
-      const sheetName = sEl.attrs.name;
-      const rId = sEl.attrs['r:id'];
-      if (sheetName) {
-        let relTarget = (rId ? relsMap.get(rId) : undefined) || `worksheets/sheet${sheetEntries.length + 1}.xml`;
-        // Normalize target path
-        if (!relTarget.startsWith('xl/')) {
-          relTarget = relTarget.startsWith('/') ? relTarget.slice(1) : `xl/${relTarget}`;
-        }
-        sheetEntries.push({ name: sheetName, path: relTarget });
-      }
-    }
 
     // Parse <definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">Sheet1!$B$2:$C$3</definedName></definedNames>
     for (const dnEl of safeExtractXmlElements(wbXml, 'definedName')) {
@@ -5707,25 +5691,6 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
         }
       }
     }
-  }
-
-  // Fallback: search zip directly for worksheets
-  if (sheetEntries.length === 0) {
-    const wsFiles = Object.keys(zip.files)
-      .filter((fn) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(fn))
-      .sort((a, b) => {
-        const numA = parseInt(a.replace(/\D/g, ''), 10) || 0;
-        const numB = parseInt(b.replace(/\D/g, ''), 10) || 0;
-        return numA - numB;
-      });
-
-    for (let idx = 0; idx < wsFiles.length; idx++) {
-      sheetEntries.push({ name: `Sheet${idx + 1}`, path: wsFiles[idx] });
-    }
-  }
-
-  if (sheetEntries.length === 0) {
-    throw new ConversionFailedError('Invalid XLSX workbook: no worksheets found in archive.');
   }
 
   // 4. Parse all discovered worksheets
@@ -8504,12 +8469,6 @@ export async function generatePptxFromText(
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-/**
- * Most cells and rows the reader builds for one workbook, padding included: the 20 million cells that the data-format readers
- * (Parquet) allow for a table. A sparse sheet inside the bounds above can still ask for 16.7 billion padded cells (a cell at XFD
- * on each of 1048576 rows), and each padded cell takes about 53 bytes of heap.
- */
-const XLSX_MAX_MATERIALISED_CELLS = 20_000_000;
 /**
  * The row that pads a sheet out to the number of its next row. Every padded row shares this frozen array, so a sheet whose cells sit
  * on its last row costs one reference per empty row and not two arrays; a reader that tried to write into it would throw.

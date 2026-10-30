@@ -1442,7 +1442,7 @@
     "rule": "complexity",
     "function": "parseAllXlsxWorksheets",
     "count": 1,
-    "maxValue": 104
+    "maxValue": 91
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1568,7 +1568,7 @@
     "rule": "max-lines-per-function",
     "function": "parseAllXlsxWorksheets",
     "count": 1,
-    "maxValue": 324
+    "maxValue": 286
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1596,7 +1596,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 10154
+    "maxValue": 10113
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -2742,7 +2742,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2611
+    "maxValue": 2610
   },
   {
     "file": "src/worker/engines.ts",

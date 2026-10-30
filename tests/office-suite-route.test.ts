@@ -746,6 +746,19 @@ describe('the conversion of a request that targets .xls', () => {
     }
   });
 
+  it('keeps a libreOfficeFilter off the XLSX pass of an ODS or Numbers source and on the .xls export', async () => {
+    for (const src of ['ods', 'numbers']) {
+      let runs = 0;
+      const { deps, calls } = standIns({ write: async () => (++runs === 1 ? result({ buffer: await realWorkbookBytes(3, 3), filePath: '/tmp/suite.xlsx' }) : result({ filePath: '/out/book.xls' })) });
+      const options = { libreOfficeFilter: 'MS Excel 97' };
+      await convertXlsTarget(deps, request({ src, tgt: 'xls', input: Buffer.from('source'), options }), unused);
+      expect(calls.written.map((call) => `${call.src}->${call.target}`)).toEqual([`${src}->xlsx`, 'xlsx->xls']);
+      expect(calls.written[0].options.libreOfficeFilter, `${src} to xlsx`).toBeUndefined();
+      expect(calls.written[1].options.libreOfficeFilter, 'xlsx to xls').toBe('MS Excel 97');
+      expect(options).toEqual({ libreOfficeFilter: 'MS Excel 97' });
+    }
+  });
+
   it('leaves a request for any other target to the direct conversion', async () => {
     const { deps, calls } = standIns();
     const direct = result({ filePath: '/out/table.xlsx' });
@@ -781,6 +794,40 @@ describe('the extent of an OOXML workbook the office suite exports as .xls', () 
   it('is read from the cells when the declared dimension is smaller than they are', async () => {
     await expectSheetLimit(await withDimension(await realWorkbookBytes(65_537, 1), '<dimension ref="A1:A2"/>'));
     await expectSheetLimit(await withDimension(await realWorkbookBytes(2, 257), '<dimension ref="A1:B2"/>'));
+  });
+
+  async function withSheetAt(xlsx: Buffer, part: string, listed: boolean): Promise<Buffer> {
+    const zip = await JSZip.loadAsync(xlsx);
+    const sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
+    zip.remove('xl/worksheets/sheet1.xml');
+    zip.file(part, sheet);
+    zip.file('xl/_rels/workbook.xml.rels', (await zip.file('xl/_rels/workbook.xml.rels')!.async('text')).replace('worksheets/sheet1.xml', part.replace(/^xl\//, '')));
+    const types = await zip.file('[Content_Types].xml')!.async('text');
+    zip.file('[Content_Types].xml', listed ? types.replace('/xl/worksheets/sheet1.xml', `/${part}`) : types.replace(/<Override PartName="\/xl\/worksheets\/sheet1.xml"[^>]*\/>/, ''));
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  it('is read from the sheet the workbook names, at a part no content type lists and outside xl/worksheets', async () => {
+    await expectSheetLimit(await withSheetAt(await realWorkbookBytes(65_537, 1), 'xl/sheets/data.xml', false));
+  });
+
+  it('fits a workbook whose short sheet sits at such a part', async () => {
+    const { deps } = standIns();
+    const direct = result({ filePath: '/out/book.xls' });
+    const input = await withSheetAt(await realWorkbookBytes(3, 3), 'xl/sheets/data.xml', false);
+    expect(await convertXlsTarget(deps, xlsxRequest(input), async () => direct)).toBe(direct);
+  });
+
+  it('does not count a worksheet part the workbook never references', async () => {
+    const tall = await JSZip.loadAsync(await realWorkbookBytes(65_537, 1));
+    const book = await JSZip.loadAsync(await realWorkbookBytes(3, 3));
+    book.file('xl/worksheets/orphan.xml', await tall.file('xl/worksheets/sheet1.xml')!.async('text'));
+    const types = await book.file('[Content_Types].xml')!.async('text');
+    book.file('[Content_Types].xml', types.replace('</Types>', '<Override PartName="/xl/worksheets/orphan.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'));
+    const { deps } = standIns();
+    const direct = result({ filePath: '/out/book.xls' });
+    const input = await book.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    expect(await convertXlsTarget(deps, xlsxRequest(input), async () => direct)).toBe(direct);
   });
 
   it('refuses a source that is not a ZIP package instead of passing it on unchecked', async () => {

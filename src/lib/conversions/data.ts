@@ -972,8 +972,8 @@ export async function convertData(
   return convertStructured(inputBuffer, src, tgt, options, baseName);
 }
 
-/** Sources the data engine reads as a table of records for a spreadsheet target; their values keep their types. */
-export const STRUCTURED_SHEET_SOURCES: ReadonlySet<string> = new Set(['parquet', 'ndjson', 'jsonl', 'yaml', 'yml', 'toml', 'xml']);
+/** Sources the data engine reads as a table of records for a spreadsheet target; their values keep their types. Parquet is the only one the registry offers a spreadsheet target for. */
+export const STRUCTURED_SHEET_SOURCES: ReadonlySet<string> = new Set(['parquet']);
 
 /**
  * The XLSX workbook the office suite reads once on the way to `.xls` and discards: the sheet the `.xlsx` target writes of the source,

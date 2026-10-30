@@ -3,8 +3,6 @@ import { dataObjectKeys, fieldsInFirstSeenOrder, isDataObject, parseJsonLossless
 import { parseDelimitedRows } from './delimited-detect';
 import { sheetCellOfValue, type SheetCell } from './xlsx-writer';
 
-/** The tables that text sources hold for a spreadsheet target: a JSON document and delimited text. */
-
 const JSON_TABLE_SHAPE_MESSAGE = 'Invalid JSON table: expected an array of objects or an array of values.';
 
 /**
