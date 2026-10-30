@@ -6,6 +6,7 @@ import {
   resolveFfprobeBinary,
   type LoudnessStage,
 } from './media-ffmpeg-args';
+import type { MediaInput } from './media-process';
 
 /**
  * Runs the measuring pass of a loudness request and describes the audio choices a conversion made. The
@@ -16,8 +17,7 @@ import {
 export type FfmpegStderrRunner = (args: string[]) => Promise<{ stderr: Buffer }>;
 
 export interface LoudnessPassInput {
-  inputPath: string;
-  src: string;
+  input: MediaInput;
   tgt: string;
   options: ConversionOptions;
   ffmpegBin: string;
@@ -29,12 +29,12 @@ export interface LoudnessPassInput {
  * write (trim, channel layout and filters included) and returns its measurement. Undefined when no
  * normalisation was requested.
  */
-export async function measureLoudnessStage(input: LoudnessPassInput): Promise<LoudnessStage | undefined> {
-  if (!input.options.audio?.loudness) return undefined;
-  const args = buildLoudnessMeasureArguments(input.inputPath, input.src, input.tgt, input.options, input.ffmpegBin);
-  const { stderr } = await input.run(args);
-  const track = typeof input.options.audio.track === 'number' ? input.options.audio.track : 0;
-  const sampleRate = probeAudioSampleRate(input.inputPath, resolveFfprobeBinary(input.ffmpegBin), track);
+export async function measureLoudnessStage(pass: LoudnessPassInput): Promise<LoudnessStage | undefined> {
+  if (!pass.options.audio?.loudness) return undefined;
+  const args = buildLoudnessMeasureArguments(pass.input, pass.tgt, pass.options, pass.ffmpegBin);
+  const { stderr } = await pass.run(args);
+  const track = typeof pass.options.audio.track === 'number' ? pass.options.audio.track : 0;
+  const sampleRate = probeAudioSampleRate(pass.input, resolveFfprobeBinary(pass.ffmpegBin), track);
   return { kind: 'apply', measurement: parseLoudnormMeasurement(stderr.toString('utf-8'), sampleRate) };
 }
 

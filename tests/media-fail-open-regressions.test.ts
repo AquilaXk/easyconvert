@@ -9,6 +9,7 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { convertMedia, packageHlsDashMedia } from '../src/lib/conversions/media';
 import { buildFfmpegArguments, resetHardwareAccelerationCache } from '../src/lib/conversions/media-ffmpeg-args';
 import { InvalidMediaOptionError } from '../src/lib/types';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * Regression tests for media fail-open defects. Inputs are generated with ffmpeg lavfi sources;
@@ -191,7 +192,7 @@ describe('media fail-open regressions', () => {
     const input = fs.readFileSync(inputPath);
     for (const video of [{ codec: 'h264' as const }, { codec: 'hevc' as const, profile: 'main' }]) {
       const build = () =>
-        buildFfmpegArguments(inputPath, path.join(workDir, 'hdr-reject-out.mp4'), 'mp4', 'mp4', { disableHwaccel: true, toneMap: 'none', video });
+        buildFfmpegArguments(openMediaInput(inputPath, 'mp4'), path.join(workDir, 'hdr-reject-out.mp4'), 'mp4', { disableHwaccel: true, toneMap: 'none', video });
       expect(build).toThrow(InvalidMediaOptionError);
       expect(build).toThrow(HDR_ERROR);
 
@@ -237,7 +238,7 @@ describe('media fail-open regressions', () => {
       resetHardwareAccelerationCache();
       const fakeFfmpeg = makeHardwareFfmpeg(`hw-reject-${i}`, encoders);
       const build = () =>
-        buildFfmpegArguments(input, path.join(workDir, `hw-reject-${i}.mp4`), 'mp4', 'mp4', { toneMap: 'none', video: { codec } }, fakeFfmpeg);
+        buildFfmpegArguments(openMediaInput(input, 'mp4'), path.join(workDir, `hw-reject-${i}.mp4`), 'mp4', { toneMap: 'none', video: { codec } }, fakeFfmpeg);
       expect(build).toThrow(InvalidMediaOptionError);
       expect(build).toThrow(HDR_ERROR);
     }
@@ -254,7 +255,7 @@ describe('media fail-open regressions', () => {
       resetHardwareAccelerationCache();
       const fakeFfmpeg = makeHardwareFfmpeg(`hw-tenbit-${i}`, encoders);
       const output = path.join(workDir, `hw-tenbit-${i}.mp4`);
-      const args = buildFfmpegArguments(input, output, 'mp4', 'mp4', { video: { codec, profile } }, fakeFfmpeg);
+      const args = buildFfmpegArguments(openMediaInput(input, 'mp4'), output, 'mp4', { video: { codec, profile } }, fakeFfmpeg);
 
       // Hardware encoders here receive no -profile:v and may only take 8-bit surfaces.
       for (const enc of encoders) {
@@ -284,12 +285,12 @@ describe('media fail-open regressions', () => {
     const input = makeHdrInput('hdr-vaapi.mp4');
     const fakeFfmpeg = makeHardwareFfmpeg('hw-vaapi', ['h264_vaapi', 'hevc_vaapi']);
     const build8 = () =>
-      buildFfmpegArguments(input, path.join(workDir, 'vaapi-8.mp4'), 'mp4', 'mp4', { video: { codec: 'hevc' } }, fakeFfmpeg);
+      buildFfmpegArguments(openMediaInput(input, 'mp4'), path.join(workDir, 'vaapi-8.mp4'), 'mp4', { video: { codec: 'hevc' } }, fakeFfmpeg);
     expect(build8).toThrow(HDR_ERROR);
 
     resetHardwareAccelerationCache();
     const args = buildFfmpegArguments(
-      input, path.join(workDir, 'vaapi-10.mp4'), 'mp4', 'mp4', { video: { codec: 'hevc', profile: 'main10' } }, fakeFfmpeg
+      openMediaInput(input, 'mp4'), path.join(workDir, 'vaapi-10.mp4'), 'mp4', { video: { codec: 'hevc', profile: 'main10' } }, fakeFfmpeg
     );
     expect(args).not.toContain('hevc_vaapi');
     expect(args.join(' ')).not.toContain('format=nv12,hwupload');

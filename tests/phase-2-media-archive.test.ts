@@ -7,6 +7,7 @@ import { ConversionFailedError } from '../src/lib/types';
 import { compressWithZstdDict, decompressWithZstdDict, DATA_DICTIONARY_JSON_CSV } from '../src/lib/conversions/zstd-dict';
 import { compressLzma, compressLzma2 } from '../src/lib/conversions/lzma-encoder';
 import { decompressLzma, decompressLzma2 } from '../src/lib/conversions/archive';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 describe('Phase 2: Media & Archive Fail-Closed & Spec Parity (#141)', () => {
   // ==========================================================================
@@ -14,7 +15,7 @@ describe('Phase 2: Media & Archive Fail-Closed & Spec Parity (#141)', () => {
   // ==========================================================================
   describe('1. Media Video Dimension Normalization & Fail-Closed', () => {
     it('normalizes odd video dimensions with scale=trunc(iw/2)*2:trunc(ih/2)*2 and pix_fmt yuv420p', () => {
-      const args = buildFfmpegArguments('/tmp/sample.avi', '/tmp/output.mp4', 'avi', 'mp4', {
+      const args = buildFfmpegArguments(openMediaInput('/tmp/sample.avi', 'avi'), '/tmp/output.mp4', 'mp4', {
         videoCodec: 'h264',
       });
 
@@ -26,7 +27,7 @@ describe('Phase 2: Media & Archive Fail-Closed & Spec Parity (#141)', () => {
     });
 
     it('preserves explicit resolution while adding video transcoding flags', () => {
-      const args = buildFfmpegArguments('/tmp/sample.avi', '/tmp/output.mp4', 'avi', 'mp4', {
+      const args = buildFfmpegArguments(openMediaInput('/tmp/sample.avi', 'avi'), '/tmp/output.mp4', 'mp4', {
         videoCodec: 'h264',
         videoResolution: '720p',
       });

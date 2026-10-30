@@ -7,6 +7,7 @@ import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { convertWithNativeFfmpeg } from '../src/worker/engines';
 import { audioPacketsAtStart, emptyOutputError } from '../src/lib/conversions/media-empty-output';
 import { resolveFfprobeBinary } from '../src/lib/conversions/media-ffprobe';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 import { EmptyAudioInputError, UnprocessableMediaInputError, isUnprocessableInputError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
@@ -230,8 +231,8 @@ describe.skipIf(skip)('the probe that tells an empty input from another cause of
 
   it('gives the plain empty-output error, not the named refusal, for a file with no audio stream', () => {
     const videoOnly = generate('video-only.mkv', ['-f', 'lavfi', '-i', 'color=c=black:size=64x64:rate=5:duration=1', '-c:v', 'ffv1']);
-    expect(audioPacketsAtStart(videoOnly, ffprobe)).toBeUndefined();
-    const error = emptyOutputError(videoOnly, requireOracleTool('ffmpeg'), 'mkv', 'aac');
+    expect(audioPacketsAtStart(openMediaInput(videoOnly, 'mkv'), ffprobe)).toBeUndefined();
+    const error = emptyOutputError(openMediaInput(videoOnly, 'mkv'), requireOracleTool('ffmpeg'), 'aac');
     expect(error).not.toBeInstanceOf(EmptyAudioInputError);
     expect(error.message).toBe('FFmpeg output is empty (0 bytes) for mkv -> aac');
   });
@@ -244,13 +245,13 @@ describe.skipIf(skip)('the probe that tells an empty input from another cause of
       { encoding: 'utf8' }
     );
     expect(Number(counted.stdout.trim())).toBeGreaterThan(MANY_PACKETS);
-    expect(audioPacketsAtStart(long, ffprobe)).toBe(1);
-    expect(emptyOutputError(long, requireOracleTool('ffmpeg'), 'wav', 'aac')).not.toBeInstanceOf(EmptyAudioInputError);
+    expect(audioPacketsAtStart(openMediaInput(long, 'wav'), ffprobe)).toBe(1);
+    expect(emptyOutputError(openMediaInput(long, 'wav'), requireOracleTool('ffmpeg'), 'aac')).not.toBeInstanceOf(EmptyAudioInputError);
   });
 
   it('reports zero packets for an audio stream with none', () => {
     const emptyFile = path.join(workDir, 'empty.wav');
     fs.writeFileSync(emptyFile, wav(new Int16Array(0)));
-    expect(audioPacketsAtStart(emptyFile, ffprobe)).toBe(0);
+    expect(audioPacketsAtStart(openMediaInput(emptyFile, 'wav'), ffprobe)).toBe(0);
   });
 });

@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import {
   AudioDither,
   AudioResampler,
@@ -8,6 +7,7 @@ import {
   LoudnessOptions,
   LoudnessPreset,
 } from '../types';
+import { probeFfmpegBuild } from './media-process';
 
 /**
  * Audio quality controls for the ffmpeg transcode: EBU R128 loudness normalisation (ITU-R BS.1770-4
@@ -171,41 +171,6 @@ export const LOSSY_AUDIO_ENCODERS: ReadonlySet<string> = new Set([
   'wmav2',
   'libopencore_amrnb',
 ]);
-const SOXR_FEATURE_FLAG = '--enable-libsoxr';
-const FFMPEG_VERSION_TIMEOUT_MS = 3000;
-const FFMPEG_VERSION_LINE = /^ffmpeg version n?(\d+)\.(\d+)/m;
-
-export interface FfmpegBuildFacts {
-  soxr: boolean;
-  /** Release number from the first line of `-version`; undefined for a development build (`N-123-g...`) or an unreadable answer. */
-  version: { major: number; minor: number } | undefined;
-}
-
-const buildCache = new Map<string, FfmpegBuildFacts>();
-
-/** What `ffmpeg -version` says about the build. The probe runs once per binary. */
-export function probeFfmpegBuild(ffmpegBin: string): FfmpegBuildFacts {
-  const cached = buildCache.get(ffmpegBin);
-  if (cached !== undefined) return cached;
-  let facts: FfmpegBuildFacts = { soxr: false, version: undefined };
-  try {
-    const out = execFileSync(ffmpegBin, ['-hide_banner', '-version'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: FFMPEG_VERSION_TIMEOUT_MS,
-    });
-    const release = FFMPEG_VERSION_LINE.exec(out);
-    facts = {
-      soxr: out.includes(SOXR_FEATURE_FLAG),
-      version: release ? { major: Number(release[1]), minor: Number(release[2]) } : undefined,
-    };
-  } catch {
-    // An unrunnable binary has neither feature; the answer is kept for the binary's lifetime like any other.
-  }
-  buildCache.set(ffmpegBin, facts);
-  return facts;
-}
-
 /** True when the ffmpeg build was configured with libsoxr. */
 export function ffmpegHasSoxr(ffmpegBin: string): boolean {
   return probeFfmpegBuild(ffmpegBin).soxr;

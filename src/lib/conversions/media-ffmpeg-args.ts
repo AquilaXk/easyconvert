@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
   ConversionFailedError,
   ConversionOptions,
@@ -43,6 +42,7 @@ import { pictureOf, softwareEncoderThreads } from './media-encoder-threads';
 import { type Vp9Deadline, vp9DeadlineOfInput, vp9SpeedArgs } from './media-vp9-effort';
 import type { LayoutStream } from './mp4-layout';
 import { addWavPacketSize, readWavInputFacts } from './media-wav-input';
+import { lavfiInputArgs, type MediaInput, mediaInputArgs, openMediaInput, runFfmpegSync } from './media-process';
 import { SDR_COLOUR_ARGS, type VideoToneMapPlan, assertZscaleAvailable, planVideoToneMap, probeVideoMaxLightLevel } from './media-hdr';
 import {
   chooseResampler,
@@ -128,14 +128,14 @@ const hwCapabilityCache = new Map<string, HardwareAccelerationCapabilities>();
  */
 const encoderListCache = new Map<string, { encoders: ReadonlySet<string>; probedAt: number }>();
 const PROBE_CACHE_TTL_MS = 10 * 60 * 1000;
-/** A child that ignores SIGTERM must not outlive its probe timeout. */
-const PROBE_KILL_SIGNAL = 'SIGKILL';
 const ENCODER_LIST_TIMEOUT_MS = 3000;
+const ENCODER_LIST_MAX_BYTES = 1024 * 1024;
 /** Directory that holds the DRM nodes Intel Quick Sync needs. */
 const DRM_DEVICE_DIR = '/dev/dri';
 const DRM_RENDER_NODE = /^renderD\d+$/;
 /** Opening a hardware session is quick on a working device; a hung driver must not stall conversions. */
 const HW_SESSION_PROBE_TIMEOUT_MS = 5000;
+const HW_SESSION_PROBE_MAX_BYTES = 64 * 1024;
 const HW_PROBE_FRAME_SIZE = '256x256';
 const QSV_ENCODERS = ['h264_qsv', 'hevc_qsv'];
 const NVENC_ENCODERS = ['h264_nvenc', 'hevc_nvenc'];
@@ -174,21 +174,17 @@ function canOpenEncoderSession(
   deviceArgs: readonly string[] = [],
   filter?: string
 ): boolean {
-  try {
-    execFileSync(
-      ffmpegPath,
-      [
-        '-hide_banner', '-v', 'error', ...deviceArgs,
-        '-f', 'lavfi', '-i', `color=c=black:s=${HW_PROBE_FRAME_SIZE}:r=1:d=1`,
-        ...(filter ? ['-vf', filter] : []),
-        '-frames:v', '1', '-c:v', encoder, '-f', 'null', '-',
-      ],
-      { stdio: 'ignore', timeout: HW_SESSION_PROBE_TIMEOUT_MS, killSignal: PROBE_KILL_SIGNAL }
-    );
-    return true;
-  } catch {
-    return false;
-  }
+  const run = runFfmpegSync(
+    ffmpegPath,
+    [
+      '-hide_banner', '-v', 'error', ...deviceArgs,
+      ...lavfiInputArgs(`color=c=black:s=${HW_PROBE_FRAME_SIZE}:r=1:d=1`),
+      ...(filter ? ['-vf', filter] : []),
+      '-frames:v', '1', '-c:v', encoder, '-f', 'null', '-',
+    ],
+    { timeoutMs: HW_SESSION_PROBE_TIMEOUT_MS, maxBuffer: HW_SESSION_PROBE_MAX_BYTES }
+  );
+  return run.ok;
 }
 
 /** True when the ffmpeg arguments select a hardware video encoder (nvenc, vaapi, qsv, videotoolbox). */
@@ -214,21 +210,13 @@ export function probeSupportedEncoders(ffmpegPath: string | null | undefined): R
     return cached.encoders;
   }
   const encoders = new Set<string>();
-  try {
-    const output = execFileSync(ffmpegPath, ['-hide_banner', '-encoders'], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: ENCODER_LIST_TIMEOUT_MS,
-      killSignal: PROBE_KILL_SIGNAL,
-    });
-    for (const line of output.split('\n')) {
-      const match = line.match(ENCODER_LISTING_LINE);
-      if (match) {
-        encoders.add(match[1]);
-      }
+  const listing = runFfmpegSync(ffmpegPath, ['-hide_banner', '-encoders'], { timeoutMs: ENCODER_LIST_TIMEOUT_MS, maxBuffer: ENCODER_LIST_MAX_BYTES });
+  // An unrunnable binary lists nothing; the empty answer is cached with the others for the probe's lifetime.
+  for (const line of listing.ok ? listing.stdout.split('\n') : []) {
+    const match = line.match(ENCODER_LISTING_LINE);
+    if (match) {
+      encoders.add(match[1]);
     }
-  } catch {
-    // An unrunnable binary lists nothing; the empty answer is cached with the others for the probe's lifetime.
   }
   encoderListCache.set(ffmpegPath, { encoders, probedAt: now });
   return encoders;
@@ -366,14 +354,14 @@ function assertTwoPassSupported(options: ConversionOptions, tgt: string, codec: 
 }
 
 /** The output length cap in seconds, checked against the input when it can be read. */
-function resolveOutputDuration(options: ConversionOptions, inputPath: string, ffmpegBin?: string | null): number | undefined {
+function resolveOutputDuration(options: ConversionOptions, input: MediaInput, ffmpegBin?: string | null): number | undefined {
   const duration = options.duration;
   if (duration === undefined) return undefined;
   if (typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0 || duration > MAX_OUTPUT_DURATION_SEC) {
     throw new InvalidMediaOptionError(`Invalid duration ${String(duration)}. Must be more than 0 and at most ${MAX_OUTPUT_DURATION_SEC} seconds.`);
   }
-  if (fs.existsSync(inputPath)) {
-    const sourceDuration = probeInputDuration(inputPath, resolveFfprobeBinary(ffmpegBin));
+  if (fs.existsSync(input.path)) {
+    const sourceDuration = probeInputDuration(input, resolveFfprobeBinary(ffmpegBin));
     if (duration > sourceDuration + DURATION_EPSILON_SEC) {
       throw new InvalidMediaOptionError(`Invalid duration ${duration}: the input lasts ${sourceDuration.toFixed(3)} seconds.`);
     }
@@ -607,11 +595,11 @@ function assertEncoderLimits(
   tgt: string,
   spec: AudioTargetSpec,
   options: ConversionOptions,
-  inputPath: string,
+  input: MediaInput,
   ffmpegBin?: string | null
 ): void {
   assertSampleRateLimits(tgt, spec, options.audio?.sampleRate ?? options.audioSampleRate);
-  assertChannelLimits(tgt, spec, options, inputPath, ffmpegBin);
+  assertChannelLimits(tgt, spec, options, input, ffmpegBin);
 }
 
 /**
@@ -621,7 +609,7 @@ function assertEncoderLimits(
  */
 function audioOnlyStreamArgs(
   tgt: string,
-  inputPath: string,
+  input: MediaInput,
   options: ConversionOptions,
   ffmpegBin?: string | null
 ): string[] {
@@ -633,8 +621,8 @@ function audioOnlyStreamArgs(
   if (!Number.isInteger(index) || index < 0) {
     throw new InvalidMediaOptionError('Audio track index must be a non-negative integer.');
   }
-  if (fs.existsSync(inputPath)) {
-    const available = probeAudioStreamCount(inputPath, resolveFfprobeBinary(ffmpegBin));
+  if (fs.existsSync(input.path)) {
+    const available = probeAudioStreamCount(input, resolveFfprobeBinary(ffmpegBin));
     if (available === 0) {
       throw new NoAudioStreamError(`The input has no audio stream, so it cannot be converted to '${tgt}'.`);
     }
@@ -655,13 +643,12 @@ export type LoudnessStage = { kind: 'measure' } | { kind: 'apply'; measurement: 
 
 /** Arguments of the loudness measuring pass: the audio of the conversion through loudnorm, to a null sink. */
 export function buildLoudnessMeasureArguments(
-  inputPath: string,
-  src: string,
+  input: MediaInput,
   tgt: string,
   options: ConversionOptions,
   ffmpegBin?: string | null
 ): string[] {
-  return buildFfmpegArguments(inputPath, '', src, tgt, options, ffmpegBin, undefined, { kind: 'measure' });
+  return buildFfmpegArguments(input, '', tgt, options, ffmpegBin, undefined, { kind: 'measure' });
 }
 
 /**
@@ -670,9 +657,8 @@ export function buildLoudnessMeasureArguments(
  * the caller runs them in a job directory it removes afterwards. A request that is not two-pass is rejected.
  */
 export function buildTwoPassArguments(
-  inputPath: string,
+  input: MediaInput,
   outputPath: string,
-  src: string,
   tgt: string,
   options: ConversionOptions,
   ffmpegBin: string | null | undefined,
@@ -683,7 +669,7 @@ export function buildTwoPassArguments(
     throw new InvalidMediaOptionError('Two-pass arguments were requested without rateControl.twoPass.');
   }
   const build = (pass: 1 | 2) =>
-    buildFfmpegArguments(inputPath, outputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage, { pass, logPrefix });
+    buildFfmpegArguments(input, outputPath, tgt, options, ffmpegBin, undefined, loudnessStage, { pass, logPrefix });
   return [build(1), build(2)];
 }
 
@@ -695,9 +681,8 @@ export function buildTwoPassArguments(
  * and then this call with the measurement, so a normalisation is never applied from invented numbers.
  */
 export function buildFfmpegArguments(
-  inputPath: string,
+  input: MediaInput,
   outputPath: string,
-  src: string,
   tgt: string,
   options: ConversionOptions = {},
   ffmpegBin?: string | null,
@@ -714,10 +699,10 @@ export function buildFfmpegArguments(
   if (isThumbnail) {
     const timestamp = overrideTimestamp || options.thumbnail?.at?.[0] || '00:00:01.000';
     if (options.thumbnail?.accurate) {
-      inputArgs.push('-i', inputPath);
+      inputArgs.push(...mediaInputArgs(input));
       outputArgs.push('-ss', timestamp);
     } else {
-      inputArgs.push('-ss', timestamp, '-i', inputPath);
+      inputArgs.push('-ss', timestamp, ...mediaInputArgs(input));
     }
 
     const videoFilters: string[] = [];
@@ -742,7 +727,7 @@ export function buildFfmpegArguments(
     if (options.trim?.end) {
       inputArgs.push('-to', options.trim.end);
     }
-    inputArgs.push('-i', inputPath);
+    inputArgs.push(...mediaInputArgs(input));
 
     outputArgs.push('-vn', '-an');
     const sIdx = typeof options.subtitles.streamIndex === 'number' ? options.subtitles.streamIndex : 0;
@@ -765,14 +750,15 @@ export function buildFfmpegArguments(
   if (options.trim?.end) {
     inputArgs.push('-to', options.trim.end);
   }
-  const wav = readWavInputFacts(tgt, inputPath, inputArgs);
-  inputArgs.push('-i', inputPath);
+  const wav = readWavInputFacts(tgt, input.path, inputArgs);
+  inputArgs.push(...mediaInputArgs(input));
 
   if (options.subtitles?.mode === 'soft') {
     if (!options.subtitles.input) {
       throw new InvalidMediaOptionError("Subtitle 'soft' mode adds an external subtitle file, which a request cannot supply; burn a subtitle stream of the input with 'burn' and streamIndex instead.");
     }
-    inputArgs.push('-i', options.subtitles.input);
+    const subtitleFile = options.subtitles.input;
+    inputArgs.push(...mediaInputArgs(openMediaInput(subtitleFile, path.extname(subtitleFile).slice(1))));
   }
 
   const isVideo = ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(tgt);
@@ -788,7 +774,7 @@ export function buildFfmpegArguments(
   if (passStage && !PASS_LOG_PREFIX_PATTERN.test(passStage.logPrefix)) {
     throw new ConversionFailedError(`Invalid pass log prefix "${passStage.logPrefix}".`);
   }
-  const outputDuration = resolveOutputDuration(options, inputPath, ffmpegBin);
+  const outputDuration = resolveOutputDuration(options, input, ffmpegBin);
   if (outputDuration !== undefined) {
     outputArgs.push('-t', String(outputDuration));
   }
@@ -832,7 +818,7 @@ export function buildFfmpegArguments(
   const specEncoderInUse =
     audioSpec !== undefined && (!options.audio?.codec || AUDIO_CODEC_MAP[options.audio.codec] === audioSpec.encoder);
   if (audioSpec && specEncoderInUse) {
-    assertEncoderLimits(tgt, audioSpec, options, inputPath, ffmpegBin);
+    assertEncoderLimits(tgt, audioSpec, options, input, ffmpegBin);
   }
 
   // Stream mapping
@@ -840,8 +826,8 @@ export function buildFfmpegArguments(
   // attachments are mapped explicitly, instead of ffmpeg's one-audio, one-subtitle default selection.
   // A missing input file (argument-only callers) keeps the earlier selection rules.
   const inputLayout =
-    !audioSpec && isVideo && fs.existsSync(inputPath)
-      ? probeStreamLayout(inputPath, resolveFfprobeBinary(ffmpegBin))
+    !audioSpec && isVideo && fs.existsSync(input.path)
+      ? probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin))
       : undefined;
   const inputStreams = inputLayout?.streams;
   const burnRequested = options.subtitles?.mode === 'burn';
@@ -865,7 +851,7 @@ export function buildFfmpegArguments(
   let streamPlan: StreamMapPlan | undefined;
   let audioOnlyMapArgs: string[] = [];
   if (audioSpec) {
-    audioOnlyMapArgs = audioOnlyStreamArgs(tgt, inputPath, options, ffmpegBin);
+    audioOnlyMapArgs = audioOnlyStreamArgs(tgt, input, options, ffmpegBin);
     outputArgs.push(...audioOnlyMapArgs);
   } else if (inputStreams) {
     const chapters = inputLayout?.chapters;
@@ -896,7 +882,7 @@ export function buildFfmpegArguments(
         chapterInput = inputArgs.filter((arg) => arg === '-i').length;
         inputArgs.push('-itsoffset', chapters.startTimeSec.toFixed(CHAPTER_OFFSET_DECIMALS));
         if (options.trim?.start) inputArgs.push('-ss', options.trim.start);
-        inputArgs.push('-i', inputPath);
+        inputArgs.push(...mediaInputArgs(input));
       }
       outputArgs.push('-map_metadata', '0', '-map_chapters', String(chapterInput));
     }
@@ -1035,7 +1021,7 @@ export function buildFfmpegArguments(
           );
         }
         assertZscaleAvailable(ffmpegBin);
-        hdrToSdr = planVideoToneMap(transfer, toneMapMode, probeVideoMaxLightLevel(inputPath, resolveFfprobeBinary(ffmpegBin)));
+        hdrToSdr = planVideoToneMap(transfer, toneMapMode, probeVideoMaxLightLevel(input, resolveFfprobeBinary(ffmpegBin)));
       }
     }
 
@@ -1148,7 +1134,7 @@ export function buildFfmpegArguments(
     // Stage 6: subtitles burn (prior to even dimension normalization)
     if (burnRequested && !burnBitmapStream) {
       // An external file, or a text subtitle stream of the input itself (`si` counts subtitle streams).
-      const source = options.subtitles?.input ?? inputPath;
+      const source = options.subtitles?.input ?? input.path;
       const stream = options.subtitles?.input ? '' : `:si=${options.subtitles?.streamIndex ?? 0}`;
       videoFilters.push(`subtitles=filename=${escapeFfmpegFilterPath(source)}${stream}`);
     }
@@ -1375,7 +1361,7 @@ export function buildFfmpegArguments(
     // The audio is re-encoded: start it at zero and fill or trim leading gaps so it stays in step with the picture.
     audioFilters.push(AUDIO_SYNC_FILTER);
   }
-  const channelPlan = planAudioChannels(audioSpec, specEncoderInUse, options, inputPath, ffmpegBin);
+  const channelPlan = planAudioChannels(audioSpec, specEncoderInUse, options, input, ffmpegBin);
   audioFilters.push(...channelPlan.filters);
   audioFormatArgs.push(...channelPlan.args);
 
@@ -1389,11 +1375,11 @@ export function buildFfmpegArguments(
     audioFormatArgs.push('-ar', String(options.audio.sampleRate));
   } else if (typeof options.audioSampleRate === 'number' && Number.isFinite(options.audioSampleRate) && options.audioSampleRate >= 8000 && options.audioSampleRate <= 192000) {
     audioFormatArgs.push('-ar', String(options.audioSampleRate));
-  } else if (audioSpec && specEncoderInUse && (audioSpec.allowedSampleRates || audioSpec.maxSampleRate) && fs.existsSync(inputPath)) {
+  } else if (audioSpec && specEncoderInUse && (audioSpec.allowedSampleRates || audioSpec.maxSampleRate) && fs.existsSync(input.path)) {
     // The caller set no rate: an input the encoder codes natively keeps its rate (a forced rate makes libopus
     // code a band the signal does not have), and one it cannot code is brought into its supported set.
     const track = typeof options.audio?.track === 'number' ? options.audio.track : 0;
-    const resampleRate = resampleRateFor(audioSpec, probeAudioSampleRate(inputPath, resolveFfprobeBinary(ffmpegBin), track));
+    const resampleRate = resampleRateFor(audioSpec, probeAudioSampleRate(input, resolveFfprobeBinary(ffmpegBin), track));
     if (resampleRate !== undefined) {
       audioFormatArgs.push('-ar', String(resampleRate));
     }
@@ -1514,11 +1500,11 @@ export interface PackagingSource {
 }
 
 /** Probes the first video stream (exact frame rate, displayed size, duration) and whether the input has audio. */
-export function probePackagingSource(inputPath: string, ffmpegBin?: string | null): PackagingSource {
+export function probePackagingSource(input: MediaInput, ffmpegBin?: string | null): PackagingSource {
   const ffprobe = resolveFfprobeBinary(ffmpegBin);
   return {
-    geometry: probeVideoGeometry(inputPath, ffprobe),
-    hasAudio: probeAudioChannels(inputPath, ffprobe) > 0,
+    geometry: probeVideoGeometry(input, ffprobe),
+    hasAudio: probeAudioChannels(input, ffprobe) > 0,
   };
 }
 
@@ -1598,7 +1584,7 @@ function segmentKeyframeArgs(codec: string, rungIndex: number, gopFrames: number
  * gets a capped peak rate, so the declared BANDWIDTH holds.
  */
 export function buildHlsDashArguments(
-  inputPath: string,
+  input: MediaInput,
   outputDir: string,
   packaging: MediaPackagingOptions,
   ffmpegBin?: string | null,
@@ -1653,13 +1639,13 @@ export function buildHlsDashArguments(
     );
   }
 
-  const probed = source ?? probePackagingSource(inputPath, ffmpegBin);
+  const probed = source ?? probePackagingSource(input, ffmpegBin);
   const ladder = capLadderToSource(requestedLadder, probed.geometry);
   const hasAudio = probed.hasAudio;
   const { fpsNum, fpsDen } = probed.geometry;
 
   const globalArgs: string[] = ['-y', '-loglevel', 'error'];
-  const inputArgs: string[] = ['-i', inputPath];
+  const inputArgs: string[] = mediaInputArgs(input);
 
   // Construct filter_complex
   const filterParts: string[] = [];

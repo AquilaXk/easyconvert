@@ -24,6 +24,7 @@ import { InvalidMediaOptionError, NoVideoStreamError } from '../src/lib/types';
 import { probeVideoGeometry, resolveFfprobeBinary } from '../src/lib/conversions/media-ffprobe';
 import { ConversionOptionsSchema } from '../src/lib/api/contracts/schemas';
 import { validateOrProblem } from '../src/lib/api/contracts/validate';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * HLS and DASH packaging must cut every rung at the same instants, on IDR frames, whatever the source
@@ -89,7 +90,7 @@ describe('segment planning (pure)', () => {
 
   it('emits GOP, forced keyframes, scene-cut off and equal min/max keyint on every rung', () => {
     const args = buildHlsDashArguments(
-      '/nonexistent/in.mp4',
+      openMediaInput('/nonexistent/in.mp4', 'mp4'),
       '/tmp/out',
       { format: 'hls', segmentSeconds: 4, ladder: [{ height: 720, bitrateK: 2500 }, { height: 360, bitrateK: 800 }] },
       null,
@@ -108,7 +109,7 @@ describe('segment planning (pure)', () => {
   it('caps each rung at 1.07x the declared rate with a 1.5x buffer', () => {
     expect(rungRateCaps(2500)).toEqual({ maxrateK: 2675, bufsizeK: 3750 });
     const args = buildHlsDashArguments(
-      '/nonexistent/in.mp4',
+      openMediaInput('/nonexistent/in.mp4', 'mp4'),
       '/tmp/out',
       { format: 'hls', ladder: [{ height: 720, bitrateK: 2500 }] },
       null,
@@ -144,7 +145,7 @@ describe('segment planning (pure)', () => {
 
   it('plans an input of 480 px height as a single 480p rung in the arguments', () => {
     const args = buildHlsDashArguments(
-      '/nonexistent/in.mp4',
+      openMediaInput('/nonexistent/in.mp4', 'mp4'),
       '/tmp/out',
       { format: 'hls' },
       null,
@@ -157,7 +158,7 @@ describe('segment planning (pure)', () => {
 
   it('tags HEVC as hvc1 and switches HLS to fMP4 segments with an init section on request', () => {
     const args = buildHlsDashArguments(
-      '/nonexistent/in.mp4',
+      openMediaInput('/nonexistent/in.mp4', 'mp4'),
       '/tmp/out',
       { format: 'hls', videoCodec: 'hevc', segmentType: 'fmp4', ladder: [{ height: 360, bitrateK: 800 }] },
       null,
@@ -171,7 +172,7 @@ describe('segment planning (pure)', () => {
 
   it('rejects an unknown segmentType, TS for DASH, odd and duplicate rung heights', () => {
     const build = (packaging: object) => () =>
-      buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', packaging as never, null, geometry());
+      buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', packaging as never, null, geometry());
     expect(build({ format: 'hls', segmentType: 'mp4' })).toThrow(InvalidMediaOptionError);
     expect(build({ format: 'dash', segmentType: 'ts' })).toThrow(InvalidMediaOptionError);
     expect(build({ format: 'hls', ladder: [{ height: 481, bitrateK: 1000 }] })).toThrow(/even height/);
@@ -180,7 +181,7 @@ describe('segment planning (pure)', () => {
 
   it('bounds the ladder at 10 rungs, in the builder and in the request schema', () => {
     const rungs = (n: number) => Array.from({ length: n }, (_, i) => ({ height: 144 + 2 * i, bitrateK: 200 + i }));
-    const build = (n: number) => () => buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', { format: 'hls', ladder: rungs(n) }, null, geometry({ height: 4320 }));
+    const build = (n: number) => () => buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', { format: 'hls', ladder: rungs(n) }, null, geometry({ height: 4320 }));
     expect(build(10)).not.toThrow();
     expect(build(11)).toThrow(/at most 10 rungs/);
     expect(validateOrProblem(ConversionOptionsSchema, { packaging: { format: 'hls', ladder: rungs(10) } }).ok).toBe(true);
@@ -398,7 +399,7 @@ describe('HLS keyframe alignment at the source frame rate', () => {
         fs.writeFileSync(src, portrait);
         execFileSync(ffmpeg(), ['-v', 'error', '-y', '-display_rotation', '90', '-i', src, '-c', 'copy', rotated]);
         const ffprobe = requireOracleTool('ffprobe');
-        const probed = probeVideoGeometry(rotated, resolveFfprobeBinary(ffmpeg()));
+        const probed = probeVideoGeometry(openMediaInput(rotated, 'mp4'), resolveFfprobeBinary(ffmpeg()));
         expect({ width: probed.width, height: probed.height }).toEqual({ width: SOURCE_HEIGHT, height: SOURCE_WIDTH });
         const { dir, master } = await packageHls(fs.readFileSync(rotated), {
           segmentSeconds: SEGMENT_SECONDS,
@@ -542,9 +543,9 @@ describe('MPEG-DASH keyframe alignment', () => {
 });
 
 it('keeps the keyframe cadence independent of the audio presence', () => {
-  const withAudio = buildHlsDashArguments('/nonexistent/in.mp4', '/tmp/out', { format: 'dash', ladder: [{ height: 360, bitrateK: 800 }] }, null, geometry({ height: 360 }));
+  const withAudio = buildHlsDashArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out', { format: 'dash', ladder: [{ height: 360, bitrateK: 800 }] }, null, geometry({ height: 360 }));
   const without = buildHlsDashArguments(
-    '/nonexistent/in.mp4',
+    openMediaInput('/nonexistent/in.mp4', 'mp4'),
     '/tmp/out',
     { format: 'dash', ladder: [{ height: 360, bitrateK: 800 }] },
     null,
