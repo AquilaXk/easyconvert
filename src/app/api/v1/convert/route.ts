@@ -17,7 +17,7 @@ import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-s
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
-import { assertNotSpoofedFile } from '@/lib/security/file-guard';
+import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import { storageProvider } from '@/lib/storage';
 import { saveRetainedResult } from '@/lib/storage/retention-service';
 import {
@@ -365,10 +365,10 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
         await redisKeyStore.rollbackQuota(reservation.reservationId);
       }
       return reply(createProblemDetailsResponse(
-        400,
+        spoofCheckStatus(err),
         err.message || 'File spoofing detected.',
         instanceUri,
-        'Bad Request',
+        undefined,
         undefined,
         rateLimitHeaders
       ));

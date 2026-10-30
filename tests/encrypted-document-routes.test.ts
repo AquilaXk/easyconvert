@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 import { POST as convertPost } from '../src/app/api/convert/route';
 import { POST as batchPost } from '../src/app/api/convert/batch/route';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
+import { POST as jobsPost } from '../src/app/api/v1/jobs/route';
 import { GET as getV1JobRoute } from '../src/app/api/v1/jobs/[id]/route';
 import { Worker } from '../src/lib/queue/bullmq-engine';
 import { conversionQueue, processConversionJob } from '../src/lib/queue/conversion-queue';
@@ -11,6 +12,7 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { EncryptedOfficeDocumentError } from '../src/lib/types';
 import type { ConversionJobData } from '../src/lib/types';
+import { buildCompoundFile } from './helpers/cfb-craft';
 import { buildWordBinary } from './helpers/word-binary-builder';
 
 /**
@@ -116,5 +118,56 @@ describe('an encrypted document fails a job once, with status 422', () => {
     const res = await getV1JobRoute(new NextRequest(`${BASE_URL}/api/v1/jobs/${job.id}`, { headers: readHeaders }), { params: { id: job.id } });
     const body = await res.json();
     expect(body).toMatchObject({ status: 'failed', attemptsMade: 1, failedStatus: HTTP_UNPROCESSABLE, failedCode: 'EncryptedOfficeDocumentError' });
+  });
+});
+
+describe('a password-protected Office Open XML package answers 422 where the signature rules called it a spoof', () => {
+  const LOCKED_XLSX = buildCompoundFile([
+    { name: 'EncryptionInfo', data: Buffer.alloc(224, 3) },
+    { name: 'EncryptedPackage', data: Buffer.alloc(3000, 7) },
+  ]);
+  const WORD_NAMED_XLSX = buildCompoundFile([{ name: 'WordDocument', data: Buffer.alloc(600, 1) }]);
+
+  async function postJob(headers: Record<string, string>, file: Buffer): Promise<Response> {
+    return jobsPost(
+      new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: 'locked.xlsx', targetFormat: 'csv', inputBufferBase64: file.toString('base64') }),
+      })
+    );
+  }
+
+  it('POST /api/v1/jobs answers a 422 problem document that says encrypted, and a spoof stays a 400', async () => {
+    const headers = await apiKeyHeaders();
+    const res = await postJob(headers, LOCKED_XLSX);
+    expect(res.status).toBe(HTTP_UNPROCESSABLE);
+    expect(res.headers.get('content-type')).toContain('application/problem+json');
+    const problem = await res.json();
+    expect(problem).toMatchObject({ status: HTTP_UNPROCESSABLE, title: 'Unprocessable Entity' });
+    expect(problem.detail).toMatch(/encrypted or password protected/);
+
+    const spoof = await postJob(headers, WORD_NAMED_XLSX);
+    expect(spoof.status).toBe(HTTP_BAD_REQUEST);
+    expect((await spoof.json()).title).toBe('File Spoofing Detected');
+  });
+
+  it('POST /api/v1/convert and POST /api/convert answer 422, and a spoof stays a 400', async () => {
+    const headers = await apiKeyHeaders();
+    const csvForm = (file: Buffer): FormData => {
+      const data = form(file, 'locked.xlsx');
+      data.set('targetFormat', 'csv');
+      return data;
+    };
+    const send = async (file: Buffer, route: 'v1' | 'legacy'): Promise<Response> =>
+      route === 'v1'
+        ? v1ConvertPost(new NextRequest(`${BASE_URL}/api/v1/convert`, { method: 'POST', headers, body: csvForm(file) }))
+        : convertPost(new NextRequest(`${BASE_URL}/api/convert`, { method: 'POST', body: csvForm(file) }));
+    for (const route of ['v1', 'legacy'] as const) {
+      const locked = await send(LOCKED_XLSX, route);
+      expect(locked.status, route).toBe(HTTP_UNPROCESSABLE);
+      expect(JSON.stringify(await locked.json())).toMatch(/encrypted or password protected/);
+      expect((await send(WORD_NAMED_XLSX, route)).status, route).toBe(HTTP_BAD_REQUEST);
+    }
   });
 });

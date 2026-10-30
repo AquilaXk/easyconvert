@@ -159,6 +159,11 @@ describe('classifying changed paths', () => {
     }
   });
 
+  it('keeps a new Dockerfile in scope, and leaves only the web image layer out, which adds the Next.js build and no engine', () => {
+    expect(classify('Dockerfile.foo')).toEqual({ benchmarked: [...BENCH_FAMILIES], unmapped: [], unclassified: [] });
+    expect(classify('Dockerfile.web')).toEqual({ benchmarked: [], unmapped: [], unclassified: [] });
+  });
+
   it('sends the SVG sanitizer to the image family that renders through it', () => {
     expect(classify('src/lib/security/svg-sanitizer.ts')).toEqual({ benchmarked: ['image', 'vector'], unmapped: [], unclassified: [] });
   });

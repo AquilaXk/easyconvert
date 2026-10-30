@@ -3,8 +3,59 @@ import { assertNotSpoofedFile as assertSignatureMatches, FileExtensionSpoofError
 import { assertGzippedXmlRoot } from './gzipped-xml-root';
 import { OBJECT_HEADER_BYTES, readObjectRange } from '../storage/object-header';
 import type { IStorageBackend } from '../storage/oci-storage';
-import { compoundFileVerdictFrom, compoundFileVerdictFromAsync, type AsyncByteSource, type ByteSource, type CompoundFileVerdict } from '../compound-file-kind';
+import {
+  compoundFileVerdictFrom,
+  compoundFileVerdictFromAsync,
+  readCompoundFileRoot,
+  readCompoundFileRootFrom,
+  readCompoundFileRootFromAsync,
+  type AsyncByteSource,
+  type ByteSource,
+  type CompoundFileRoot,
+  type CompoundFileVerdict,
+} from '../compound-file-kind';
+import { OOXML_VARIANT_FAMILY } from '../conversions/ooxml-variants';
+import { EncryptedOfficeDocumentError, isUnprocessableInputError } from '../types';
 import { COMPOUND_FILE_ONLY_EXTENSIONS } from '../format-signatures';
+
+const OOXML_EXTENSIONS: ReadonlySet<string> = new Set(['docx', 'xlsx', 'pptx', 'potx', ...Object.keys(OOXML_VARIANT_FAMILY)]);
+/** The two entries under the root of the compound file that holds an encrypted Office Open XML package ([MS-OFFCRYPTO] 2.1). */
+const ENCRYPTED_PACKAGE_ENTRIES = ['ENCRYPTEDPACKAGE', 'ENCRYPTIONINFO'] as const;
+
+function extensionOf(declared: string): string {
+  return declared.toLowerCase().replace(/^\./, '').trim();
+}
+
+/**
+ * A password-protected .docx, .xlsx or .pptx is not a ZIP package: Office wraps the encrypted package in a compound file, so the
+ * signature rules call it a spoofed extension. It is the file the extension names, and the caller is told it is encrypted.
+ */
+function isOoxmlSpoof(error: unknown, declared: string): error is FileExtensionSpoofError {
+  return error instanceof FileExtensionSpoofError && OOXML_EXTENSIONS.has(extensionOf(declared));
+}
+
+function encryptedPackageError(error: FileExtensionSpoofError, declared: string, root: CompoundFileRoot): Error {
+  if (root.status !== 'read' || !ENCRYPTED_PACKAGE_ENTRIES.every((name) => root.names.has(name))) return error;
+  return new EncryptedOfficeDocumentError(`The ${extensionOf(declared).toUpperCase()} file is encrypted or password protected, so its content cannot be read.`);
+}
+
+const HTTP_BAD_REQUEST = 400;
+
+export interface SpoofCheckRefusal {
+  status: number;
+  title: string;
+}
+
+/** The answer for an upload the spoof check turned away: a spoofed extension is a 400, an encrypted package a 422; undefined for any other error. */
+export function spoofCheckRefusal(error: unknown): SpoofCheckRefusal | undefined {
+  if (error instanceof FileExtensionSpoofError) return { status: HTTP_BAD_REQUEST, title: 'File Spoofing Detected' };
+  return isUnprocessableInputError(error) ? { status: error.status, title: 'Unprocessable Entity' } : undefined;
+}
+
+/** The HTTP status of any error the spoof check throws: a 422 for an encrypted package, a 400 for every other refusal. */
+export function spoofCheckStatus(error: unknown): number {
+  return spoofCheckRefusal(error)?.status ?? HTTP_BAD_REQUEST;
+}
 
 /**
  * The server side spoof check of a buffer that holds the start of a file: the signature rules of the registry, then the root
@@ -12,7 +63,11 @@ import { COMPOUND_FILE_ONLY_EXTENSIONS } from '../format-signatures';
  * entry point that checks an upload calls this one, not the registry's `assertNotSpoofedFile`.
  */
 export function assertNotSpoofedFile(buffer: Buffer | Uint8Array, declaredExtensionOrFormatId: string, filename?: string): void {
-  assertSignatureMatches(buffer, declaredExtensionOrFormatId, filename);
+  try {
+    assertSignatureMatches(buffer, declaredExtensionOrFormatId, filename);
+  } catch (error) {
+    throw isOoxmlSpoof(error, declaredExtensionOrFormatId) ? encryptedPackageError(error, declaredExtensionOrFormatId, readCompoundFileRoot(buffer)) : error;
+  }
   assertGzippedXmlRoot(buffer, declaredExtensionOrFormatId, filename);
 }
 
@@ -43,11 +98,23 @@ function assertDirectoryVerdict(verdict: CompoundFileVerdict, ext: string, filen
 function assertCompoundFileKindInFile(header: Uint8Array, declaredExtension: string, filename: string | undefined, fd: number): void {
   const ext = compoundExtensionToRead(header, declaredExtension);
   if (ext === undefined) return;
-  const source: ByteSource = (offset, length) => {
+  assertDirectoryVerdict(compoundFileVerdictFrom(ext, fileSource(fd)), ext, filename);
+}
+
+function objectSource(storage: Pick<IStorageBackend, 'openReadStream'>, key: string, size: number): AsyncByteSource {
+  return async (offset, length) => {
+    if (offset >= size) return new Uint8Array(0);
+    const bytes = await readObjectRange(storage, key, offset, Math.min(length, size - offset));
+    if (!bytes) throw new Error('Stored object is unavailable. Operation failed closed.');
+    return bytes;
+  };
+}
+
+function fileSource(fd: number): ByteSource {
+  return (offset, length) => {
     const bytes = Buffer.alloc(length);
     return bytes.subarray(0, fs.readSync(fd, bytes, 0, length, offset));
   };
-  assertDirectoryVerdict(compoundFileVerdictFrom(ext, source), ext, filename);
 }
 
 /**
@@ -65,13 +132,7 @@ export async function assertCompoundFileKindInObject(
 ): Promise<void> {
   const ext = compoundExtensionToRead(header, declaredExtension);
   if (ext === undefined) return;
-  const source: AsyncByteSource = async (offset, length) => {
-    if (offset >= size) return new Uint8Array(0);
-    const bytes = await readObjectRange(storage, key, offset, Math.min(length, size - offset));
-    if (!bytes) throw new Error('Stored object is unavailable. Operation failed closed.');
-    return bytes;
-  };
-  assertDirectoryVerdict(await compoundFileVerdictFromAsync(ext, source), ext, filename);
+  assertDirectoryVerdict(await compoundFileVerdictFromAsync(ext, objectSource(storage, key, size)), ext, filename);
 }
 
 /** The whole spoof check of a stored object whose first 64 KiB are `header`: the signature rules, then the directory of a compound-only format read where it lies. */
@@ -83,7 +144,12 @@ export async function assertNotSpoofedObject(
   declaredExtension: string,
   filename?: string
 ): Promise<void> {
-  assertNotSpoofedFile(header, declaredExtension, filename);
+  try {
+    assertNotSpoofedFile(header, declaredExtension, filename);
+  } catch (error) {
+    if (!isOoxmlSpoof(error, declaredExtension)) throw error;
+    throw encryptedPackageError(error, declaredExtension, await readCompoundFileRootFromAsync(objectSource(storage, key, size)));
+  }
   await assertCompoundFileKindInObject(storage, key, size, header, declaredExtension, filename);
 }
 
@@ -129,7 +195,12 @@ export function assertNotSpoofedFilePath(
         formatOrExt = sub || 'bin';
       }
     }
-    assertNotSpoofedFile(slice, formatOrExt, filename);
+    try {
+      assertNotSpoofedFile(slice, formatOrExt, filename);
+    } catch (error) {
+      if (!isOoxmlSpoof(error, formatOrExt)) throw error;
+      throw encryptedPackageError(error, formatOrExt, readCompoundFileRootFrom(fileSource(fd)));
+    }
     assertCompoundFileKindInFile(slice, formatOrExt, filename, fd);
   } finally {
     fs.closeSync(fd);

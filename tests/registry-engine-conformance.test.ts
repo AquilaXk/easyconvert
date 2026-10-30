@@ -1,3 +1,4 @@
+import { buildCompoundFile } from './helpers/cfb-craft';
 import { afterAll, afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
@@ -425,6 +426,8 @@ const OEB_PROBE_PACKAGE = '<?xml version="1.0"?><package><text><![CDATA[Probe he
 
 /** Small hand-built inputs for source families with no fixture and no derivation seed. */
 const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
+  // An Outlook message is a compound file of MAPI property streams (MS-OXMSG): a property header and a Unicode subject are enough.
+  msg: () => buildCompoundFile([{ name: '__properties_version1.0', data: Buffer.alloc(32) }, { name: '__substg1.0_0037001F', data: Buffer.from('Probe\u0000', 'utf16le') }]),
   ndjson: () => NDJSON_TEXT,
   jsonl: () => NDJSON_TEXT,
   // The pictures that command-line decoders read (docs/policy-decisions.md, section 38) are judged by their format, not by their name:

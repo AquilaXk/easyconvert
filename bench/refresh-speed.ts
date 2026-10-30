@@ -12,9 +12,7 @@
  *   npm run bench:refresh-speed -- --write <report.json | artifact directory>...  rewrites the two files
  *   npm run bench:refresh-speed -- --reseed [--write]                              restarts every history at its last step
  *
- * Sources: the `bench-speed-results` artifact of the nightly workflow (30 days; start one with
- * `gh workflow run nightly.yml`), or the `parity-speed-results` artifact of the `parity speed` job of ci.yml (7 days) from
- * a run on the default branch.
+ * Source: the `bench-speed-results` artifact of the nightly workflow (30 days; start one with `gh workflow run nightly.yml`).
  *
  * Exit codes: 0 done, 2 the inputs cannot be used.
  */

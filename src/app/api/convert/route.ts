@@ -7,7 +7,7 @@ import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
-import { assertNotSpoofedFile } from '@/lib/security/file-guard';
+import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import {
   ConversionOptions,
   ConversionFailedError,
@@ -187,7 +187,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     } catch (err: any) {
       return NextResponse.json(
         { success: false, error: err.message || 'File spoofing detected.' },
-        { status: 400 }
+        { status: spoofCheckStatus(err) }
       );
     }
 
