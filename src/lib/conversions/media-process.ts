@@ -125,16 +125,16 @@ export interface ReferenceInputFormat {
 /**
  * FFmpeg demuxers that open other files or URLs, or render arbitrary bytes as a picture, as their sources in FFmpeg 9.0.2
  * define them. The signatures repeat the `read_probe` of each: hls.c `hls_probe` (#EXTM3U at the start), concatdec.c
- * `concat_probe`, dashdec.c `dash_probe` (`<MPD`, any case), imfdec.c `imf_probe`, rtsp.c `sdp_probe` (a line that starts
- * `c=IN IP`), mpeg.c `vobsub_probe` and bintext.c `xbin_probe`. FFmpeg picks the others only by file name or by option:
+ * `concat_probe`, dashdec.c `dash_probe` (`<MPD` and a DASH profile, any case), imfdec.c `imf_probe`, rtsp.c `sdp_probe` (a
+ * line that starts `c=IN IP`), mpeg.c `vobsub_probe` and bintext.c `xbin_probe`. FFmpeg picks the others only by file name or by option:
  * img2dec.c (file name patterns), tty.c (`read_probe` needs a text extension), bintext.c (bin, adf, idf), lavfi (filter
  * graphs, whose `movie` source opens files), avisynth and vapoursynth (scripts), rtsp and rtp (network) and dvdvideo.
  */
 export const REFERENCE_INPUT_FORMATS: readonly ReferenceInputFormat[] = [
   { kind: 'HLS playlist', demuxers: ['hls'], signature: (head) => head.startsWith('#EXTM3U') },
   { kind: 'concat list', demuxers: ['concat'], signature: (head) => head.startsWith('ffconcat version 1.0') },
-  { kind: 'DASH manifest', demuxers: ['dash'], signature: (head) => /<MPD/i.test(head) },
-  { kind: 'IMF composition playlist', demuxers: ['imf'], signature: (head) => head.includes('<CompositionPlaylist') },
+  { kind: 'DASH manifest', demuxers: ['dash'], signature: (head) => /<MPD/i.test(head) && /dash:profile|3GPP:PSS:profile:DASH1/i.test(head) },
+  { kind: 'IMF composition playlist', demuxers: ['imf'], signature: (head) => head.includes('<CompositionPlaylist') && head.includes('ContentTitle>') },
   { kind: 'SDP session description', demuxers: ['sdp', 'rtp', 'rtsp'], signature: (head) => /^c=IN IP/m.test(head) },
   { kind: 'VobSub index', demuxers: ['vobsub'], signature: (head) => head.startsWith('# VobSub index file, v') },
   { kind: 'XBIN text picture', demuxers: ['xbin'], signature: (head) => head.startsWith('XBIN\x1a') },
@@ -162,13 +162,12 @@ function readHead(filePath: string): Buffer {
 /**
  * The demuxers `filePath` may be read with: the container its signature shows, or else the one of its declared format. Every
  * conversion writes its input as `<name>.<source format>`, so the extension is the declared format the upload check compared
- * with the bytes; the client's file name never reaches here. A file that opens like a reference format is refused, and so
- * is a declared format without an entry.
+ * with the bytes; the client's file name never reaches here. A file whose first bytes FFmpeg's probe would take for a reference
+ * format is refused first, whatever container it also looks like: the `subtitles` filter of a burn opens the input again with
+ * FFmpeg's own probe (vf_subtitles.c `avformat_open_input` with no format). A declared format without an entry is refused too.
  */
 function inputDemuxers(filePath: string): readonly string[] {
   const head = readHead(filePath);
-  const sniffed = sniffMimeTypeFromMagicBytes(head);
-  if (sniffed !== undefined && Object.hasOwn(SNIFFED_CONTAINER_DEMUXERS, sniffed)) return [SNIFFED_CONTAINER_DEMUXERS[sniffed]];
   const text = head.toString('latin1').replace(UTF8_BOM, '');
   const reference = REFERENCE_INPUT_FORMATS.find((format) => format.signature?.(text));
   if (reference !== undefined) {
@@ -177,6 +176,8 @@ function inputDemuxers(filePath: string): readonly string[] {
       `The file is a ${reference.kind}, not a media file: it names other files or addresses for the reader to open, which a conversion never does.`
     );
   }
+  const sniffed = sniffMimeTypeFromMagicBytes(head);
+  if (sniffed !== undefined && Object.hasOwn(SNIFFED_CONTAINER_DEMUXERS, sniffed)) return [SNIFFED_CONTAINER_DEMUXERS[sniffed]];
   const declared = path.extname(filePath).slice(1).toLowerCase();
   if (!Object.hasOwn(MEDIA_INPUT_DEMUXERS, declared)) {
     throw new RefusedMediaInputError(declared, `There is no media reader a conversion may use for a .${declared} file.`);
