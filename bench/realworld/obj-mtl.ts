@@ -89,7 +89,7 @@ export type ObjScan = Extract<ObjReading, { ok: true }>;
 export type MtlReading = { ok: true; materials: Map<string, Colour | null> } | { ok: false; problem: string };
 
 /** Whether an archive entry name has the extension, in any case. */
-export function hasExtension(name: string, extension: 'obj' | 'mtl'): boolean {
+export function hasExtension(name: string, extension: 'obj' | 'mtl' | 'opf'): boolean {
   return name.toLowerCase().endsWith(`.${extension}`);
 }
 
