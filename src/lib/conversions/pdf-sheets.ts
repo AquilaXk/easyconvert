@@ -81,8 +81,7 @@ export function sheetsOfPdf({ layout, recognized }: PdfSheetInput): PdfSheets {
     if (withTables) return (tablesOfPage.get(pageNumber) ?? []).map((table, index) => tableSheet(table, `Page ${pageNumber} Table ${index + 1}`));
     return textSheet(pageNumber, linesOfPage.get(pageNumber) ?? []);
   });
-  const bodyLinesOfPage = new Map((layout?.pageText ?? []).map((page) => [page.pageNumber, page.bodyLines]));
-  const leftOut = withTables ? pageNumbers.filter((pageNumber) => !recognized.has(pageNumber) && (bodyLinesOfPage.get(pageNumber) ?? []).some((line) => line.trim() !== '')) : [];
+  const leftOut = withTables ? pageNumbers.filter((pageNumber) => !recognized.has(pageNumber) && (linesOfPage.get(pageNumber) ?? []).some((line) => line.trim() !== '')) : [];
   return { sheets, leftOut };
 }
 

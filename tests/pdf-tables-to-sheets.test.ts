@@ -207,6 +207,9 @@ describe('the text of pages beside the tables of a PDF', () => {
 });
 
 describe('the running header and footer of the pages of a PDF', () => {
+  const tablePage = (number: number, band: string, baseline = 770): PdfPageContent =>
+    page(number, [item('Item', 60, 120), item('Qty', 160, 120), item(String(number), 60, 150), item('4', 160, 150), item(band, 280, baseline)], twoColumnRules(100, 2));
+
   async function withFooter(base: PDFDocument): Promise<Buffer> {
     base.getPages().forEach((sheet, index) => sheet.drawText(`Page ${index + 1}`, { x: 280, y: 30, size: 10 }));
     return Buffer.from(await base.save());
@@ -240,12 +243,41 @@ describe('the running header and footer of the pages of a PDF', () => {
     ]);
   });
 
-  it('leave no warning for a document of tables with a footer on every page', () => {
-    const tablePage = (number: number): PdfPageContent =>
-      page(number, [item('Item', 60, 120), item('Qty', 160, 120), item(String(number), 60, 150), item('4', 160, 150), item(`Page ${number}`, 280, 770)], twoColumnRules(100, 2));
-    const { tables, pageText } = layoutPdf([tablePage(1), tablePage(2), tablePage(3)], FONTS);
-    expect(pageText.flatMap((entry) => entry.bodyLines)).toEqual([]);
+  it('leave no warning for a document of tables with only the page number as a footer', () => {
+    const { tables, pageText } = layoutPdf([1, 2, 3].map((number) => tablePage(number, `Page ${number}`)), FONTS);
     expect(sheetsOfPdf({ layout: { tables, pageText }, recognized: new Map() }).leftOut).toEqual([]);
+  });
+
+  it('warn for every page whose per-page header beside a table is not in the workbook', () => {
+    const { tables, pageText } = layoutPdf([1, 2, 3].map((number) => tablePage(number, `Invoice No. ${1000 + number}`, 770)), FONTS);
+    const { sheets, leftOut } = sheetsOfPdf({ layout: { tables, pageText }, recognized: new Map() });
+    expect(sheets.map((sheet) => sheet.name)).toEqual(['Page 1 Table 1']);
+    expect(leftOut).toEqual([1, 2, 3]);
+  });
+
+  describe('keep every line that is not the number of the page it is on', () => {
+    const textPage = (number: number, furniture: string): PdfPageContent => page(number, [item(`Body of page ${number}`, 60, 300), item(furniture, 280, 770)]);
+    const rowsOf = (pages: PdfPageContent[]) => sheetsOfPages(pages).map((sheet) => sheet.rows.map((row) => row[0]));
+
+    it.each(['© 2026', '2024', '12%', '$5', '第3章 概要', '価格 1000円'])('a recurring %s footer stays a row on every page', (footer) => {
+      expect(rowsOf([1, 2, 3].map((number) => textPage(number, footer)))).toEqual([1, 2, 3].map((number) => [`Body of page ${number}`, footer]));
+    });
+
+    it.each([
+      ['Page N', (n: number) => `Page ${n}`],
+      ['N', (n: number) => String(n)],
+      ['PAGE N', (n: number) => `PAGE ${n}`],
+      ['N of 9', (n: number) => `${n} of 9`],
+      ['N / 9', (n: number) => `${n} / 9`],
+      ['Page N of 9', (n: number) => `Page ${n} of 9`],
+    ])('the footer %s is dropped from every page', (_name, footer) => {
+      expect(rowsOf([1, 2, 3].map((number) => textPage(number, footer(number))))).toEqual([['Body of page 1'], ['Body of page 2'], ['Body of page 3']]);
+    });
+
+    it('keeps Page 5 printed on page 3', () => {
+      const rows = rowsOf([1, 2, 3].map((number) => textPage(number, `Page ${number + 2}`)));
+      expect(rows.map((page) => page[1])).toEqual(['Page 3', 'Page 4', 'Page 5']);
+    });
   });
 
   it('keep the first and last line of a one-page letter as rows', async () => {

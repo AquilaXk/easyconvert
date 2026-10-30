@@ -305,15 +305,20 @@ function furnitureKey(text: string): string {
   return text.replace(PAGE_NUMBER, '#').trim();
 }
 
+/** What `splitPageFurniture` takes out of the flow, and which of those blocks recur on several pages. */
+interface PageFurniture {
+  body: PageBlock[];
+  header: Paragraph[];
+  footer: Paragraph[];
+  recurring: ReadonlySet<PageBlock>;
+}
+
 /**
  * Running headers and footers: one-line paragraphs in the top or bottom band of their page that recur on several
  * pages (page numbers masked) or, in a one-page document, are no larger than the body text. They leave the body flow
  * and become the document's page header and footer.
  */
-function splitPageFurniture(
-  blocks: PageBlock[],
-  pages: PdfPageContent[]
-): { body: PageBlock[]; header: Paragraph[]; footer: Paragraph[]; running: ReadonlySet<PageBlock>; recurring: ReadonlySet<PageBlock> } {
+function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageFurniture {
   const pageHeights = new Map(pages.map((page) => [page.pageNumber, page.height]));
   const candidates = new Map<PageBlock, FurnitureBand>();
   for (const block of blocks) {
@@ -321,7 +326,7 @@ function splitPageFurniture(
     const band = furnitureBand(block, pageHeights);
     if (band) candidates.set(block, band);
   }
-  if (candidates.size === 0) return { body: blocks, header: [], footer: [], running: new Set(), recurring: new Set() };
+  if (candidates.size === 0) return { body: blocks, header: [], footer: [], recurring: new Set() };
   const accepted = new Set<PageBlock>();
   const recurring = new Set<PageBlock>();
   if (pages.length >= PAGE_FURNITURE_MIN_PAGES) {
@@ -349,26 +354,30 @@ function splitPageFurniture(
       }
     }
   }
-  if (accepted.size === 0) return { body: blocks, header: [], footer: [], running: accepted, recurring };
+  if (accepted.size === 0) return { body: blocks, header: [], footer: [], recurring };
   const firstPageOf = (band: FurnitureBand): Paragraph[] => {
     const lines = [...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph);
     if (lines.length === 0) return [];
     const firstPage = Math.min(...lines.map((paragraph) => paragraph.pageNumber));
     return lines.filter((paragraph) => paragraph.pageNumber === firstPage).sort((a, b) => a.box.y0 - b.box.y0);
   };
-  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), running: accepted, recurring };
+  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), recurring };
 }
 
-/** A line that is only a page number, as a running footer or header gives it: "3", "Page 3", "Page 3 of 9", "3 / 9". */
-const BARE_PAGE_NUMBER = /^\W*(page\s*)?\d+(\s*(of|\/)\s*\d+)?\W*$/i;
+/** A line that is nothing but a page number, as a running footer or header prints it: "3", "Page 3", "3 of 9", "3 / 9"; the first number is captured. */
+const PAGE_NUMBER_LINE = /^(?:page\s*)?(\d+)(?:\s*(?:of|\/)\s*\d+)?$/i;
+
+/** Whether the line is the number of the page it is on, the one line of a recurring header or footer a text sheet leaves out. */
+function isOwnPageNumber(text: string, pageNumber: number): boolean {
+  const match = PAGE_NUMBER_LINE.exec(text.trim());
+  return match !== null && Number(match[1]) === pageNumber;
+}
 
 /** The lines of text one page holds in reading order, vertical and angled text included. */
 export interface PdfPageText {
   pageNumber: number;
-  /** Every line of the page, but the bare page numbers of the running headers and footers of a document of several pages. */
+  /** Every line of the page, but the page's own number where a running header or footer recurs: a wrong guess adds a line, never loses one. */
   lines: string[];
-  /** The lines of the page that are not a running header or footer: the text a table report leaves out. */
-  bodyLines: string[];
 }
 
 /** What one layout pass over the pages gives: the document, and the tables and lines of text that a spreadsheet takes from it. */
@@ -379,20 +388,21 @@ export interface LaidOutPdf {
    * page it starts on. The running headers and footers are out of the flow, so a table whose next page begins with a header is joined.
    */
   tables: DetectedTable[];
+  /** The lines of text of each page, for the text sheets of a workbook. */
   pageText: PdfPageText[];
 }
 
-function pageTextOf(layout: PageLayout, furniture: { running: ReadonlySet<PageBlock>; recurring: ReadonlySet<PageBlock> }): PdfPageText {
+function pageTextOf(layout: PageLayout, recurring: ReadonlySet<PageBlock>): PdfPageText {
+  const { pageNumber } = layout.page;
   const lines: string[] = [];
-  const bodyLines: string[] = [];
   for (const block of layout.blocks) {
     if (block.kind !== 'paragraph') continue;
-    const texts = block.paragraph.lines.map((line) => line.text);
-    if (!furniture.running.has(block)) bodyLines.push(...texts);
-    if (!furniture.recurring.has(block)) lines.push(...texts);
-    else lines.push(...texts.filter((text) => !BARE_PAGE_NUMBER.test(text)));
+    const dropsOwnNumber = recurring.has(block);
+    for (const { text } of block.paragraph.lines) {
+      if (!dropsOwnNumber || !isOwnPageNumber(text, pageNumber)) lines.push(text);
+    }
   }
-  return { pageNumber: layout.page.pageNumber, lines, bodyLines };
+  return { pageNumber, lines };
 }
 
 /**
@@ -499,7 +509,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
     ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
     ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
   };
-  return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture)) };
+  return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture.recurring)) };
 }
 
 export type { DocumentModel, LayoutLine };
