@@ -150,7 +150,7 @@
     },
     {
       "families": ["compression"],
-      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|deflate-blocks|lz(ip|o1x|op)|lzma-[^/]*|rpm-[^/]*|sevenzip-reader|xz-format|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$|^src/worker/archive-source-extraction\\.ts$"
+      "match": "^src/lib/conversions/(archive[^/]*|bounded-inflate|bzip2[^/]*|crc32|deflate-blocks|lz(ip|o1x|op)|lzma-[^/]*|rpm-[^/]*|sevenzip-reader|xz-format|xz-native|zip-writer|zstd[^/]*)\\.ts$|^src/lib/conversions/wasm/xxh64\\.ts$|^src/worker/archive-source-extraction\\.ts$"
     },
     {
       "families": ["image", "raw"],

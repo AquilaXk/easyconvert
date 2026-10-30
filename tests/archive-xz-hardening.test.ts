@@ -108,9 +108,19 @@ function referenceAccepts(stream: Buffer): boolean {
   return spawnSync(xzPath(), ['-t', '-q'], { input: stream }).status === 0;
 }
 
-function attempt(run: () => Buffer): { ok: true; value: Buffer } | { ok: false; error: unknown } {
+type Attempt = { ok: true; value: Buffer } | { ok: false; error: unknown };
+
+function attempt(run: () => Buffer): Attempt {
   try {
     return { ok: true, value: run() };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+async function attemptAsync(run: () => Promise<Buffer>): Promise<Attempt> {
+  try {
+    return { ok: true, value: await run() };
   } catch (error) {
     return { ok: false, error };
   }
@@ -132,11 +142,11 @@ describe('every check type and block layout decodes like xz -dc', () => {
     oracleTest(
       label,
       [...XZ_TOOLS],
-      () => {
+      async () => {
         const stream = encode(sample, args);
         expect(referenceAccepts(stream)).toBe(true);
         expect(sha256(unpackXz(stream))).toBe(sha256(sample));
-        expect(sha256(decompressXz(stream))).toBe(sha256(referenceDecode(stream)));
+        expect(sha256(await decompressXz(stream))).toBe(sha256(referenceDecode(stream)));
       },
       TIMEOUT_MS
     );
@@ -145,7 +155,7 @@ describe('every check type and block layout decodes like xz -dc', () => {
   oracleTest(
     'concatenated streams and stream padding between and after them',
     [...XZ_TOOLS],
-    () => {
+    async () => {
       const first = encode(sample, ['-C', 'crc32']);
       const second = encode(machineCode, ['-T0', '--block-size=64KiB', '-C', 'crc64']);
       const third = encode(sample.subarray(0, 1000), ['-C', 'sha256']);
@@ -154,7 +164,7 @@ describe('every check type and block layout decodes like xz -dc', () => {
       const expected = referenceDecode(stream);
       expect(expected.length).toBe(sample.length + machineCode.length + 1000);
       expect(sha256(unpackXz(stream))).toBe(sha256(expected));
-      expect(sha256(decompressXz(stream))).toBe(sha256(expected));
+      expect(sha256(await decompressXz(stream))).toBe(sha256(expected));
     },
     TIMEOUT_MS
   );
@@ -180,7 +190,7 @@ describe('branch and delta filters are decoded like xz -dc', () => {
     oracleTest(
       label,
       [...XZ_TOOLS],
-      () => {
+      async () => {
         const input = label.includes('several blocks') ? Buffer.concat([machineCode, sample]) : machineCode;
         const args = [...chain, '--lzma2=preset=1', ...(label.includes('several blocks') ? ['--block-size=64KiB', '-C', 'crc64'] : [])];
         const stream = encode(input, args);
@@ -189,7 +199,7 @@ describe('branch and delta filters are decoded like xz -dc', () => {
         const expected = referenceDecode(stream);
         expect(sha256(expected)).toBe(sha256(input));
         expect(sha256(unpackXz(stream))).toBe(sha256(expected));
-        expect(sha256(decompressXz(stream))).toBe(sha256(expected));
+        expect(sha256(await decompressXz(stream))).toBe(sha256(expected));
       },
       TIMEOUT_MS
     );
@@ -335,7 +345,7 @@ describe('a decompression bomb is a 413 and stops early', () => {
       expect(referenceAccepts(stream)).toBe(true);
       for (const [label, run] of [
         ['in-process reader', (input: Buffer) => attempt(() => unpackXz(input))],
-        ['decompressXz', (input: Buffer) => attempt(() => decompressXz(input))],
+        ['decompressXz', (input: Buffer) => attemptAsync(() => decompressXz(input))],
       ] as const) {
         const { largeResult } = await expectNoHangOnInput(label, run, stream, 60_000);
         expect(largeResult.ok, label).toBe(false);

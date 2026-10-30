@@ -89,13 +89,13 @@ describe('level 0 is a real value: it stores', () => {
   oracleTest(
     'xz is written at xz level 0, not at the default level',
     [...TOOLS],
-    () => {
+    async () => {
       const bin = getOracleToolPath('xz') as string;
-      const level = (n: number): Buffer => execFileSync(bin, [`-${n}`, '-c', '-q'], { input: TEXT });
+      const level = (n: number): Buffer => execFileSync(bin, ['-T1', `-${n}`, '-c', '-q'], { input: TEXT });
       expect(level(0).equals(level(6))).toBe(false);
-      expect(compressXz(TEXT, { compressionLevel: 0 }).equals(level(0))).toBe(true);
-      expect(compressXz(TEXT, { compressionLevel: 9 }).equals(level(9))).toBe(true);
-      expect(compressXz(TEXT, {}).equals(level(6))).toBe(true);
+      expect((await compressXz(TEXT, { compressionLevel: 0 })).equals(level(0))).toBe(true);
+      expect((await compressXz(TEXT, { compressionLevel: 9 })).equals(level(9))).toBe(true);
+      expect((await compressXz(TEXT, {})).equals(level(6))).toBe(true);
     },
     TEST_TIMEOUT_MS
   );
@@ -110,7 +110,7 @@ describe('a level that is not an integer from 0 to 9 is refused, not clamped', (
       async () => {
         await expect(createZipArchive(FILES, options, 'a.zip')).rejects.toMatchObject({ name: 'UnsupportedOptionError' });
         expect(() => create7zArchive(FILES, options, 'a.7z')).toThrow(expect.objectContaining({ name: 'UnsupportedOptionError' }));
-        expect(() => compressXz(TEXT, options)).toThrow(expect.objectContaining({ name: 'UnsupportedOptionError' }));
+        await expect(compressXz(TEXT, options)).rejects.toMatchObject({ name: 'UnsupportedOptionError' });
         const tar = tarOfText();
         for (const target of ['tar.gz', 'gz']) {
           await expect(convertFile(tar, 'tar', target, options, 'text.tar'), target).rejects.toMatchObject({ name: 'UnsupportedOptionError' });
