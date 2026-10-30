@@ -14,10 +14,12 @@ import { expectLinearOnInputs, expectNoSlowerThanReference, SCALING_TEST_TIMEOUT
  * Regression guard for the suffix sorter against prefix doubling on a full block. Node.js 24 made the reference 2.1 times
  * faster and the previous sorter (a generic induced sort over a type array) 1.4 times, which left it at 1.5x on the CI
  * runner (nightly run on Node.js 24: ratio 0.65 against the bound 0.5). The current sorter (bzip2-suffix-sort.ts: type bits in the
- * suffix array entries, no type array, no rescans) measures 2.1x to 2.2x on the 4-core Linux test VM, where the
- * previous one measured 1.2x. A return to prefix doubling (1x) or to the previous sorter fails.
+ * suffix array entries, no type array, no rescans) measures 2.2x on the 4-core Linux test VM (ratio 0.44 to 0.50 in 22 runs, idle
+ * and beside 24 busy processes; the median of 9 alternating runs reads the same 0.44 to 0.49). A bound of 0.5 left 8% for the
+ * host: 1 run in 20 read 0.508 beside 12 busy processes and 1 in 20 read 0.558 beside 36, after the 12 passes the helper takes. The
+ * bound is 1.6x (ratio 0.625): above every run measured, below the previous sorter (1.4x, ratio 0.71) and far below prefix doubling (1x).
  */
-const MIN_BWT_SPEEDUP = 2;
+const MIN_BWT_SPEEDUP = 1.6;
 
 /**
  * The Burrows-Wheeler step of the bzip2 encoder against independent references:
