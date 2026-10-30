@@ -8,7 +8,8 @@ name: Deploy to the OCI host
 #   deploy  workflow_dispatch on main, in the environment easyconvert-production, on the runner whose only label is
 #           easyconvert-production: pins the chosen build by digest, starts it, checks health and one conversion, and rolls back to the
 #           previous release when either fails. The runner is separate from the one of the other service on this host and the job
-#           reads and writes only /opt/easyconvert. The job log is public: it names keys and digests, never a secret value.
+#           reads and writes only /opt/easyconvert. The job log is public: it names digests and line numbers, never a secret value.
+#           The steps `exec` deploy.sh, so the runner's cancel signals reach it and not a wrapper shell that would hold them back.
 #
 # Every push to main builds unless it changes only documentation or tests. The list is `paths` with negations rather than
 # `paths-ignore`, because only `paths` can take a path back in after a negation, and the worker image copies THIRD_PARTY_NOTICES.md.
@@ -130,8 +131,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The one secret is a KEY=VALUE file. Only the keys of deploy/oci/env-allowlist.txt are kept (the names of the others are logged,
-      # never their values) and the result is a mode 0600 file in the job's temporary directory.
+      # The one secret is a KEY=VALUE file. Only the keys of deploy/oci/env-allowlist.txt are kept (a dropped line is logged by its
+      # number, never by any of its text) and the result is a mode 0600 file in the job's temporary directory.
       - name: Filter the env secret through the allowlist
         if: inputs.action == 'deploy'
         env:
@@ -148,11 +149,11 @@ jobs:
         env:
           SOURCE_DIR: ${{ github.workspace }}
           IMAGE_REF: ${{ inputs.image_ref }}
-        run: bash deploy/oci/deploy.sh deploy "$IMAGE_REF"
+        run: exec bash deploy/oci/deploy.sh deploy "$IMAGE_REF"
 
       - name: Roll back to the previous release
         if: inputs.action == 'rollback'
-        run: bash deploy/oci/deploy.sh rollback
+        run: exec bash deploy/oci/deploy.sh rollback
 
       - name: Remove the filtered env file
         if: always()

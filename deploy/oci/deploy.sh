@@ -4,14 +4,21 @@
 # the EasyConvert containers and images, and the scratch mount. It never runs a prune that reaches images or containers it did not
 # create, and it never touches the other service's paths, nginx site or cluster.
 #
-#   deploy.sh filter-env  < raw-env            keep only the keys of deploy/oci/env-allowlist.txt (names of dropped keys go to stderr)
+#   deploy.sh filter-env  < raw-env            keep only the keys of deploy/oci/env-allowlist.txt (dropped lines are named by number on stderr)
 #   deploy.sh budget                           print the per-service limits derived from the two budget knobs
 #   deploy.sh guard                            exit 1 and log a warning when the scratch mount is missing or a disk is nearly full
 #   deploy.sh sweep                            delete scratch temp files older than two hours, from inside the worker image
 #   deploy.sh deploy <image-ref>               pull, pin by digest, start, check health and one conversion, roll back on failure,
 #                                              prune old images (<image-ref> is main or sha-<40 hex characters>)
 #   deploy.sh rollback                         start the previous release again
+#   deploy.sh reconcile                        start the current release again from its pinned images and check it (the repair after an
+#                                              interrupted deploy or a host restart)
+#
+# A job is cancelled by SIGINT, then SIGTERM, and killed seconds later. Bash runs a trap only between commands, so every command that
+# can take long runs through child(): in the background, in a process group of its own, waited for with `wait`, which a trapped signal
+# interrupts at once. The handler ends that command and starts the release that was running before it returns.
 set -euo pipefail
+set -m
 
 HOME_DIR="${EASYCONVERT_HOME:-/opt/easyconvert}"
 WORKER_REPO="${WORKER_REPO:-ghcr.io/aquilaxk/easyconvert-worker}"
@@ -28,15 +35,29 @@ ALLOWLIST="${ENV_ALLOWLIST:-$SCRIPT_DIR/env-allowlist.txt}"
 KEEP_RELEASES=2
 IMAGE_REF_PATTERN='^(main|sha-[0-9a-f]{40})$'
 ENV_KEY_PATTERN='^[A-Z_][A-Z0-9_]*$'
+APPARMOR_PROFILE='easyconvert'
+APPARMOR_INSTALLED="${APPARMOR_INSTALLED:-/etc/apparmor.d/easyconvert}"
 BASE_IMAGE_LABEL='org.opencontainers.image.base.name'
 PNG_SIGNATURE='89504e470d0a1a0a'
+
+CHILD=""
+SMOKE_DIR=""
+PENDING_RELEASE=""
 
 log() { printf '[deploy] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
+# Leaves nothing of an attempt behind however the script ends: the smoke test's directory, and a release directory (with its .env)
+# that never became the current release, also when the rollback after it failed too.
+cleanup_exit() {
+  [ -z "$SMOKE_DIR" ] || rm -rf -- "$SMOKE_DIR"
+  [ -z "$PENDING_RELEASE" ] || rm -rf -- "$PENDING_RELEASE"
+}
+trap cleanup_exit EXIT
+
 # Keys of the allowlist, one per line. A line of the raw env that is not KEY=VALUE for one of them is dropped. The job log is public, so
-# a dropped line is named by its key only when the key has the shape of a variable name, and otherwise by its line number: a line
-# without a valid key may be a secret value that a line break split off.
+# a dropped line is named by its number and never by any of its text: a line that looks like a key may be the part of a secret value
+# that a line break split off (the padding of base64 is upper case and ends in "=").
 filter_env() {
   local line key number=0
   while IFS= read -r line || [ -n "$line" ]; do
@@ -49,9 +70,34 @@ filter_env() {
     elif grep -Fxq -- "$key" "$ALLOWLIST"; then
       printf '%s\n' "$line"
     else
-      log "dropped a line of the env secret: key '$key' is not in the allowlist"
+      log "dropped a line of the env secret: line $number is not a key of the allowlist"
     fi
   done
+}
+
+# child <command...>: the command runs in the background with its own process group and no terminal input, and this waits for it. The
+# group lets stop_child end everything the command started, a function's docker or curl included.
+child() {
+  local status=0
+  "$@" < /dev/null &
+  CHILD=$!
+  wait "$CHILD" || status=$?
+  CHILD=""
+  return "$status"
+}
+
+stop_child() {
+  [ -n "$CHILD" ] || return 0
+  kill -TERM -- "-$CHILD" 2> /dev/null || true
+  wait "$CHILD" 2> /dev/null || true
+  CHILD=""
+}
+
+# One deploy.sh at a time on the host: a deploy, a rollback, a reconcile and the hourly reconcile of cron would otherwise start two
+# releases against one Compose project.
+acquire_lock() {
+  exec 9> "$HOME_DIR/deploy.lock" || die "cannot open $HOME_DIR/deploy.lock"
+  flock -n 9 || die "another deploy.sh is running"
 }
 
 env_value() { # env_value <file> <key>
@@ -115,55 +161,83 @@ pin() { # pin <repo> <ref>: pull and print repo@digest
 }
 
 # The web image names the worker image it was built on (Dockerfile.web). A tag that moved for one image and not yet for the other
-# would pair a new worker with an old web; the pair is refused before anything starts.
-check_pair() { # check_pair <ref> <worker repo@digest>
-  local ref="$1" worker="$2" base
-  base="$(docker image inspect --format "{{ index .Config.Labels \"$BASE_IMAGE_LABEL\" }}" "$WEB_REPO:$ref" 2> /dev/null || true)"
-  [ "$base" = "$worker" ] || die "the web image of $ref was built on '${base:-no recorded image}', not on $worker"
+# would pair a new worker with an old web; the pair is refused before anything starts. Both are the pinned digests, so the check reads
+# the images that will run and not whatever the tag names by then.
+check_pair() { # check_pair <web repo@digest> <worker repo@digest>
+  local web="$1" worker="$2" base
+  base="$(docker image inspect --format "{{ index .Config.Labels \"$BASE_IMAGE_LABEL\" }}" "$web" 2> /dev/null || true)"
+  [ "$base" = "$worker" ] || die "the web image $web was built on '${base:-no recorded image}', not on $worker"
+}
+
+# The profile that Docker loads from the host is the file of this checkout, or the new containers would run under another one.
+check_profile() {
+  cmp -s "$SCRIPT_DIR/apparmor-easyconvert" "$APPARMOR_INSTALLED" \
+    || die "$APPARMOR_INSTALLED is missing or differs from deploy/oci/apparmor-easyconvert: install the profile again (docs/deploy-oci.md, first-time setup, step 7)"
 }
 
 healthy() {
   local remaining="$HEALTH_ATTEMPTS"
   while [ "$remaining" -gt 0 ]; do
-    if curl --fail --silent --max-time 8 "$HEALTH_URL" > /dev/null; then return 0; fi
+    if child curl --fail --silent --max-time 8 "$HEALTH_URL" > /dev/null; then return 0; fi
     remaining=$((remaining - 1))
-    sleep "$HEALTH_INTERVAL"
+    child sleep "$HEALTH_INTERVAL"
   done
   return 1
 }
 
 # One conversion through the web service: a 1x1 PPM, which ImageMagick decodes in a sandboxed child (`unshare -r -n`), to PNG.
-# /api/health starts no child, so this is the check that the host lets the sandbox run (AppArmor profile, seccomp profile).
+# /api/health starts no child, so this is the check that the host lets the sandbox run (AppArmor profile, seccomp profile). The job
+# log is public: only the HTTP status is logged, never the body of the answer.
 smoke_conversion() {
-  local dir status=1
-  dir="$(mktemp -d)"
-  printf 'P6\n1 1\n255\n\377\000\000' > "$dir/smoke.ppm"
-  if curl --fail --silent --show-error --max-time 60 -o "$dir/smoke.png" \
-    -F "file=@$dir/smoke.ppm;filename=smoke.ppm" -F targetFormat=png "$SMOKE_URL" \
-    && [ "$(head -c 8 "$dir/smoke.png" | od -An -tx1 | tr -d ' \n')" = "$PNG_SIGNATURE" ]; then
-    status=0
+  local http ok=1
+  SMOKE_DIR="$(mktemp -d)"
+  printf 'P6\n1 1\n255\n\377\000\000' > "$SMOKE_DIR/smoke.ppm"
+  child curl --fail --silent --max-time 60 -o "$SMOKE_DIR/smoke.png" -w '%{http_code}' \
+    -F "file=@$SMOKE_DIR/smoke.ppm;filename=smoke.ppm" -F targetFormat=png "$SMOKE_URL" > "$SMOKE_DIR/status" || true
+  http="$(cat "$SMOKE_DIR/status")"
+  [[ "$http" =~ ^[0-9]{3}$ ]] || http="none"
+  if [ "$http" != 200 ]; then
+    log "the smoke conversion (PPM to PNG through $SMOKE_URL) failed: HTTP status $http"
+  elif [ "$(head -c 8 "$SMOKE_DIR/smoke.png" | od -An -tx1 | tr -d ' \n')" != "$PNG_SIGNATURE" ]; then
+    log "the smoke conversion (PPM to PNG through $SMOKE_URL) answered HTTP status 200 with something that is not a PNG"
   else
-    log "the smoke conversion (PPM to PNG through $SMOKE_URL) failed"
+    ok=0
   fi
-  rm -rf -- "$dir"
-  return "$status"
+  rm -rf -- "$SMOKE_DIR"
+  SMOKE_DIR=""
+  return "$ok"
+}
+
+# Docker names the profile a container was created with; a container created without ours (the compose file edited, the profile
+# option dropped) would run under another profile and pass every other check on a host that happens to allow it.
+profiles_applied() { # profiles_applied <release-dir>
+  local service id profile
+  for service in web worker; do
+    id="$(compose "$1" ps -q "$service")"
+    profile="$(docker inspect --format '{{.AppArmorProfile}}' "$id" 2> /dev/null || true)"
+    [ "$profile" = "$APPARMOR_PROFILE" ] || { log "the $service container runs under '${profile:-no profile}', not under '$APPARMOR_PROFILE'"; return 1; }
+  done
 }
 
 start_release() { # start_release <release-dir>
-  compose "$1" up -d --wait --wait-timeout 240 --remove-orphans && healthy && smoke_conversion
+  child compose "$1" up -d --wait --wait-timeout 240 --remove-orphans || { log "docker compose up did not bring the stack up"; return 1; }
+  profiles_applied "$1" || return 1
+  healthy || { log "$HEALTH_URL did not answer"; return 1; }
+  smoke_conversion || return 1
+  child compose "$1" exec -T worker unshare -r -n -- true || { log "the worker cannot create its sandbox namespaces (unshare -r -n)"; return 1; }
 }
 
-# A cancelled job (the runner sends SIGINT, then SIGTERM, then kills it seconds later) starts the previous release again without
-# waiting for it, so the stack is not left on a release that never passed its checks.
-cancelled() { # cancelled <release-dir> <previous-dir>
-  local release="$1" previous="$2"
+# A cancelled job starts the release that was running before it again, without waiting for it to be healthy, so the stack is not left
+# on a release that never passed its checks. The runner sends the second signal while this runs, so signals are ignored from the start.
+cancelled() { # cancelled <release to start again, or empty> [<release to stop when there is none>]
+  trap '' INT TERM
+  stop_child
   log "cancelled: starting the previous release again"
-  if [ -n "$previous" ] && [ -d "$previous" ]; then
-    compose "$previous" up -d --remove-orphans || log "could not start $previous"
-  elif [ -f "$release/.env" ]; then
-    compose "$release" down || true
+  if [ -d "$1" ]; then
+    compose "$1" up -d --remove-orphans || log "could not start $1"
+  elif [ -n "${2:-}" ] && [ -f "$2/.env" ]; then
+    compose "$2" down || true
   fi
-  rm -rf -- "$release"
   exit 130
 }
 
@@ -199,15 +273,18 @@ deploy() {
   local release worker web previous budget_env
   [[ "$ref" =~ $IMAGE_REF_PATTERN ]] || die "the image ref must be main or sha-<40 hex characters>"
   guard "$raw_env"
+  check_profile
   budget_env="$(budget "$(env_value "$raw_env" EASYCONVERT_BUDGET_CPUS)" "$(env_value "$raw_env" EASYCONVERT_BUDGET_MEMORY_GB)")" \
     || die "the budget in the env secret cannot be used"
 
   worker="$(pin "$WORKER_REPO" "$ref")"
   web="$(pin "$WEB_REPO" "$ref")"
-  check_pair "$ref" "$worker"
+  check_pair "$web" "$worker"
   previous="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
+  [ -d "$previous" ] || previous=""
   release="$HOME_DIR/releases/$(date -u +%Y%m%dT%H%M%SZ)-$ref"
-  trap 'cancelled "$release" "$previous"' INT TERM
+  PENDING_RELEASE="$release"
+  trap 'cancelled "$previous" "$release"' INT TERM
   mkdir -p "$release/docker" "$HOME_DIR/bin"
   cp "$SCRIPT_DIR/deploy.sh" "$SCRIPT_DIR/env-allowlist.txt" "$HOME_DIR/bin/"
   cp "$source_dir/docker-compose.prod.yml" "$release/"
@@ -227,12 +304,14 @@ deploy() {
   chmod 600 "$release/.env"
 
   compose "$release" config --quiet || die "the compose file does not accept this env secret"
-  compose "$release" run --rm --no-deps --entrypoint sh worker -c 'find /tmp -mindepth 1 -mmin +120 -delete' || log "scratch sweep skipped"
+  child compose "$release" run --rm --no-deps --entrypoint sh worker -c 'find /tmp -mindepth 1 -mmin +120 -delete' || log "scratch sweep skipped"
 
   if start_release "$release"; then
-    trap - INT TERM
+    trap '' INT TERM
     [ -z "$previous" ] || ln -sfn "$previous" "$HOME_DIR/previous"
     ln -sfn "$release" "$HOME_DIR/current"
+    PENDING_RELEASE=""
+    trap - INT TERM
     prune_releases
     prune_images
     log "deployed $worker and $web"
@@ -241,15 +320,14 @@ deploy() {
 
   log "the new release failed its checks: rolling back"
   compose "$release" logs --no-color --tail 80 web worker >&2 || true
-  if [ -n "$previous" ] && [ -d "$previous" ]; then
-    start_release "$previous" || die "rollback to $previous also failed"
+  if [ -n "$previous" ]; then
+    start_release "$previous" || die "rollback to $previous also failed; run reconcile after fixing the cause, or deploy again"
     log "rolled back to $(basename "$previous")"
   else
     compose "$release" down || true
     log "no previous release to roll back to; the stack is stopped"
   fi
   trap - INT TERM
-  rm -rf -- "$release"
   return 1
 }
 
@@ -257,11 +335,26 @@ rollback() {
   local previous current
   previous="$(readlink -f "$HOME_DIR/previous" 2> /dev/null || true)"
   [ -n "$previous" ] && [ -d "$previous" ] || die "there is no previous release"
-  current="$(readlink -f "$HOME_DIR/current")"
-  start_release "$previous" || die "the previous release did not become healthy"
+  current="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
+  trap 'cancelled "$current"' INT TERM
+  start_release "$previous" || die "the previous release did not become healthy; run reconcile to start the current release again"
+  trap '' INT TERM
   ln -sfn "$current" "$HOME_DIR/previous"
   ln -sfn "$previous" "$HOME_DIR/current"
+  trap - INT TERM
   log "now running $(basename "$previous")"
+}
+
+# Brings the current release up again from the digests its images.env pins, and runs the checks of a deploy. A deploy of the ref the
+# release was built from would not do: a release of the ref main has no fixed name to deploy again.
+reconcile() {
+  local current
+  current="$(readlink -f "$HOME_DIR/current" 2> /dev/null || true)"
+  [ -n "$current" ] && [ -d "$current" ] || die "there is no current release"
+  trap 'cancelled ""' INT TERM
+  start_release "$current" || die "the current release did not become healthy"
+  trap - INT TERM
+  log "now running $(basename "$current")"
 }
 
 sweep() {
@@ -273,7 +366,8 @@ case "${1:-}" in
   budget) budget "${EASYCONVERT_BUDGET_CPUS:-3.5}" "${EASYCONVERT_BUDGET_MEMORY_GB:-20}" ;;
   guard) guard "${2:-$HOME_DIR/current/.env}" ;;
   sweep) sweep ;;
-  deploy) deploy "${2:-}" ;;
-  rollback) rollback ;;
-  *) die "usage: deploy.sh filter-env | budget | guard | sweep | deploy <image-ref> | rollback" ;;
+  deploy) acquire_lock; deploy "${2:-}" ;;
+  rollback) acquire_lock; rollback ;;
+  reconcile) acquire_lock; reconcile ;;
+  *) die "usage: deploy.sh filter-env | budget | guard | sweep | deploy <image-ref> | rollback | reconcile" ;;
 esac

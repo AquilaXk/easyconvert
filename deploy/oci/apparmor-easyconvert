@@ -39,14 +39,13 @@ profile easyconvert flags=(attach_disconnected,mediate_deleted) {
   capability,
   file,
   umount,
-  # Host (privileged) processes may send signals to container processes.
+  # Host (privileged) processes may send signals to container processes. moby's template names the daemon's own profile in a rule
+  # of its own for "docker kill"; dockerd runs unconfined on Ubuntu, so that rule is this one.
   signal (receive) peer=unconfined,
   # runc may send signals to container processes (for "docker stop").
   signal (receive) peer=runc,
   # crun may send signals to container processes (for "docker stop" when used with crun OCI runtime).
   signal (receive) peer=crun,
-  # dockerd may send signals to container processes (for "docker kill"); dockerd runs unconfined on Ubuntu.
-  signal (receive) peer=unconfined,
   # Container processes may send signals amongst themselves.
   signal (send,receive) peer=easyconvert,
 

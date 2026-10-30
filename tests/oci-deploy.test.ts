@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
@@ -263,6 +263,11 @@ describe('AppArmor profile', () => {
   it("keeps every deny rule of Docker's default profile", () => {
     for (const rule of DOCKER_DEFAULT_DENIES) expect(rules, rule).toContain(rule);
   });
+
+  it('states no rule twice', () => {
+    const body = rules.filter((rule) => rule !== '}' && !rule.startsWith('profile ') && !rule.startsWith('include '));
+    expect(body.filter((rule, index) => body.indexOf(rule) !== index)).toEqual([]);
+  });
 });
 
 describe('Dockerfile.web', () => {
@@ -377,17 +382,29 @@ describe('deploy workflow', () => {
     expect(build.permissions).toEqual({ contents: 'read', packages: 'write' });
   });
 
-  it('builds for every push except one that changes only documentation or tests', () => {
-    // GitHub's rule for `paths`: the last pattern that matches a path decides, and a `!` pattern excludes it.
+  it('builds for every push except one that changes only documentation or tests, dot files and the workflows included', () => {
+    // GitHub's filter patterns (workflow syntax, "Filter pattern cheat sheet"): `*` is any characters but `/`, `**` is any characters
+    // including `/`, `**/` also matches no directory at all, and a leading dot is no exception for either. The last pattern that
+    // matches a path decides, and a `!` pattern excludes it. (path.matchesGlob skips dot files, which GitHub does not.)
+    const pattern = (glob: string): RegExp => {
+      const source = glob.replace(/\*\*\/|\*\*|\*|\?|[.+^${}()|[\]\\]/g, (token) => {
+        if (token === '**/') return '(?:.*/)?';
+        if (token === '**') return '.*';
+        if (token === '*') return '[^/]*';
+        if (token === '?') return '[^/]';
+        return `\\${token}`;
+      });
+      return new RegExp(`^${source}$`);
+    };
     const triggers = (file: string): boolean =>
-      workflow.on.push.paths.reduce((included, pattern) => {
-        const negated = pattern.startsWith('!');
-        return path.matchesGlob(file, negated ? pattern.slice(1) : pattern) ? !negated : included;
+      workflow.on.push.paths.reduce((included, glob) => {
+        const negated = glob.startsWith('!');
+        return pattern(negated ? glob.slice(1) : glob).test(file) ? !negated : included;
       }, false);
-    for (const file of ['Dockerfile.worker', 'tsconfig.json', 'postcss.config.mjs', 'tailwind.config.ts', 'THIRD_PARTY_NOTICES.md', 'src/app/page.tsx', 'docker/imagemagick/policy.xml']) {
+    for (const file of ['Dockerfile.worker', 'tsconfig.json', 'postcss.config.mjs', 'tailwind.config.ts', 'THIRD_PARTY_NOTICES.md', 'src/app/page.tsx', 'docker/imagemagick/policy.xml', '.github/workflows/deploy-oci.yml', '.dockerignore', 'deploy/oci/deploy.sh', 'docker-compose.prod.yml']) {
       expect(triggers(file), file).toBe(true);
     }
-    for (const file of ['docs/deploy-oci.md', 'tests/oci-deploy.test.ts', 'README.md', 'native/qpdf-runner/README.md']) {
+    for (const file of ['docs/deploy-oci.md', 'tests/oci-deploy.test.ts', 'README.md', 'native/qpdf-runner/README.md', 'CHANGELOG.md', '.github/RELEASE_TEMPLATE.md', '.github/PULL_REQUEST_TEMPLATE.md']) {
       expect(triggers(file), file).toBe(false);
     }
   });
@@ -420,6 +437,12 @@ describe('deploy workflow', () => {
     expect(runs).not.toMatch(/\bssh\b|\bscp\b|\bsudo\b|docker system prune|docker image prune|docker volume prune/);
     expect(runs).toContain('deploy.sh deploy "$IMAGE_REF"');
     expect(runs).toContain('deploy.sh rollback');
+  });
+
+  it('execs the deploy script in the steps that deploy and roll back, so that the runner signals it and no wrapper shell holds the signal back', () => {
+    const steps = workflow.jobs.deploy.steps.filter((step) => /deploy\.sh (deploy|rollback)/.test(step.run ?? ''));
+    expect(steps).toHaveLength(2);
+    for (const step of steps) expect(step.run, step.name).toMatch(/^exec bash deploy\/oci\/deploy\.sh /);
   });
 });
 
@@ -472,15 +495,25 @@ describe('deploy.sh filter-env', () => {
   /** Lines of a secret that a line break split, or that were pasted without a key: none of their text may reach the public log. */
   const NOT_KEY_VALUE = ['no-equals-sign-secret-value', 'split+base64/secret==', 'MIIBsplitbase64secretline==', 'lower_key=secret-of-a-lowercase-key'];
 
-  it('keeps the allowlisted keys, drops the others and names only the key of a dropped line', () => {
+  it('keeps the allowlisted keys, drops the others and names a dropped line by its number only', () => {
     const input = ['# a comment', '', 'JWT_SECRET=a=b=c', 'EASYCONVERT_WEB_IMAGE=evil@sha256:0', 'UNLISTED_KEY=top-secret-value', 'APP_URL=https://x.test\r'].join('\n');
     const result = run(['filter-env'], { input });
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('JWT_SECRET=a=b=c\nAPP_URL=https://x.test\n');
-    expect(result.stderr).toContain("key 'UNLISTED_KEY'");
-    expect(result.stderr).toContain("key 'EASYCONVERT_WEB_IMAGE'");
-    expect(result.stderr).not.toContain('top-secret-value');
-    expect(result.stderr).not.toContain('a=b=c');
+    expect(result.stderr).toContain('line 4 is not a key of the allowlist');
+    expect(result.stderr).toContain('line 5 is not a key of the allowlist');
+    for (const text of ['UNLISTED_KEY', 'EASYCONVERT_WEB_IMAGE', 'top-secret-value', 'a=b=c']) expect(result.stderr).not.toContain(text);
+  });
+
+  it('writes no upper-case fragment before an equals sign to the log, such as the padding of a base64 value that a line break split off', () => {
+    const result = run(['filter-env'], { input: 'APP_URL=https://x.test\nQUJDREVG==\nTHE_SECRET_PART=\n' });
+    expect(result.stdout).toBe('APP_URL=https://x.test\n');
+    expect(result.stderr.trim().split('\n')).toEqual([
+      '[deploy] dropped a line of the env secret: line 2 is not a key of the allowlist',
+      '[deploy] dropped a line of the env secret: line 3 is not a key of the allowlist',
+    ]);
+    expect(result.stderr).not.toContain('QUJDREVG');
+    expect(result.stderr).not.toContain('THE_SECRET_PART');
   });
 
   it('names a line without a variable name by its number only, and writes none of its text to the log', () => {
@@ -533,7 +566,7 @@ describe('deploy.sh budget', () => {
 /** A valid image ref: the tag of the build of one commit. */
 const ref = (hexDigit: string): string => `sha-${hexDigit.repeat(40)}`;
 
-describe('deploy.sh against stand-ins for the host', () => {
+describe('deploy.sh against stand-ins for the host', { timeout: 30_000 }, () => {
   const sandboxes: string[] = [];
   let sandbox: string;
   let home: string;
@@ -561,15 +594,22 @@ describe('deploy.sh against stand-ins for the host', () => {
     stub(
       'docker',
       `echo "docker $*" >> "$STUB_LOG"
+digest() { printf '%s' "$1" | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-64; }
 case "$1" in
-  pull) exit 0 ;;
+  pull)
+    ref="\${@: -1}"
+    mkdir -p "$STUB_PULLED"
+    echo "\${ref##*:}" > "$STUB_PULLED/$(digest "$ref")"
+    exit 0 ;;
+  inspect) case "\${@: -1}" in *"$STUB_BAD_PROFILE"*) [ -n "$STUB_BAD_PROFILE" ] && { echo docker-default; exit 0; } ;; esac; echo easyconvert ;;
   image)
     case "$2" in
       inspect)
         ref="\${@: -1}"
-        digest() { printf '%s' "$1" | (sha256sum 2>/dev/null || shasum -a 256) | cut -c1-64; }
         case "$*" in
-          *Labels*) echo "\${STUB_WEB_BASE:-ghcr.io/aquilaxk/easyconvert-worker@sha256:$(digest "ghcr.io/aquilaxk/easyconvert-worker:\${ref##*:}")}" ;;
+          *Labels*)
+            case "$ref" in *@sha256:*) tag="$(cat "$STUB_PULLED/\${ref##*sha256:}")" ;; *) tag="\${ref##*:}" ;; esac
+            echo "\${STUB_WEB_BASE:-ghcr.io/aquilaxk/easyconvert-worker@sha256:$(digest "ghcr.io/aquilaxk/easyconvert-worker:$tag")}" ;;
           *) echo "\${ref%%:*}@sha256:$(digest "$ref")" ;;
         esac ;;
       ls) cat "$STUB_IMAGES" 2>/dev/null || true ;;
@@ -579,9 +619,12 @@ case "$1" in
     dir=""; prev=""
     for arg in "$@"; do [ "$prev" = "--project-directory" ] && dir="$arg"; prev="$arg"; done
     case " $* " in
+      *" ps "*) echo "container-\${@: -1}-$(basename "$dir")" ;;
+      *" exec "*)
+        for f in $STUB_FAIL_EXEC; do case "$dir" in *"$f"*) exit 1 ;; esac; done ;;
       *" up "*)
-        case "$dir" in *"$STUB_SIGNAL_UP"*) [ -n "$STUB_SIGNAL_UP" ] && kill -TERM "$PPID" ;; esac
-        case "$dir" in *"$STUB_FAIL_UP"*) [ -n "$STUB_FAIL_UP" ] && exit 1 ;; esac ;;
+        for f in $STUB_HANG_UP; do case "$dir" in *"$f"*) echo $$ > "$STUB_HANG_MARK"; exec sleep 20 ;; esac; done
+        for f in $STUB_FAIL_UP; do case "$dir" in *"$f"*) exit 1 ;; esac; done ;;
     esac ;;
 esac
 exit 0`
@@ -598,14 +641,17 @@ case "$*" in
       case "$arg" in file=@*) upload="\${arg#file=@}"; cp "\${upload%%;*}" "$STUB_UPLOAD" ;; esac
       prev="$arg"
     done
-    case "$last_up" in *"$STUB_FAIL_SMOKE"*) [ -n "$STUB_FAIL_SMOKE" ] && exit 22 ;; esac
-    case "$last_up" in *"$STUB_HTML_SMOKE"*) [ -n "$STUB_HTML_SMOKE" ] && { echo '<html>' > "$out"; exit 0; } ;; esac
+    case "$last_up" in *"$STUB_FAIL_SMOKE"*) [ -n "$STUB_FAIL_SMOKE" ] && { echo 'body-of-the-error-page' > "$out"; printf 500; exit 22; } ;; esac
+    case "$last_up" in *"$STUB_HTML_SMOKE"*) [ -n "$STUB_HTML_SMOKE" ] && { echo '<html>' > "$out"; printf 200; exit 0; } ;; esac
     printf '\\211PNG\\r\\n\\032\\n' > "$out"
+    printf 200
     exit 0 ;;
 esac
 case "$last_up" in *"$STUB_FAIL_HEALTH"*) [ -n "$STUB_FAIL_HEALTH" ] && exit 22 ;; esac
 exit 0`
     );
+    stub('flock', '[ -z "$STUB_LOCK_BUSY" ]');
+    stub('readlink', 'if [ "$1" = -f ] && [ ! -e "$2" ]; then printf "%s\\n" "$2"; exit 0; fi\nexec /usr/bin/readlink "$@"');
     stub('mountpoint', 'exit "${STUB_MOUNT_STATUS:-0}"');
     stub('df', `case "$*" in *avail*) printf 'Avail\\n%s\\n' "\${STUB_AVAIL_GIB:-100}" ;; *) printf 'Use%%\\n %s%%\\n' "\${STUB_USED:-10}" ;; esac`);
     stub('logger', 'echo "logger $*" >> "$STUB_LOG"');
@@ -621,6 +667,9 @@ exit 0`
     STUB_LOG: log,
     STUB_IMAGES: path.join(sandbox, 'images.txt'),
     STUB_UPLOAD: path.join(sandbox, 'upload.ppm'),
+    STUB_PULLED: path.join(bin, '.pulled'),
+    STUB_HANG_MARK: path.join(sandbox, 'hang.pid'),
+    APPARMOR_INSTALLED: path.join(ROOT, 'deploy', 'oci', 'apparmor-easyconvert'),
     HEALTH_ATTEMPTS: '2',
     HEALTH_INTERVAL: '0',
     SOURCE_DIR: ROOT,
@@ -750,15 +799,158 @@ exit 0`
     expect(calls().filter((call) => / logs /.test(call)).map((call) => call.split(' logs ')[1])).toEqual(['--no-color --tail 80 web worker']);
   });
 
-  it('starts the current release again and removes the new one when the job is cancelled while the new one starts', () => {
+  /**
+   * Starts deploy.sh and signals it once `ready` is true, as the runner does for a cancelled job. A stub command that is
+   * still running when the signal arrives sleeps for 20 seconds, so a script that waits for it to end cannot finish in time.
+   */
+  async function cancelWhile(args: string[], env: Record<string, string>, ready: () => boolean) {
+    const proc = spawn('bash', [SCRIPT, ...args], { env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', ...env }, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    const exited = new Promise<number | null>((resolve) => proc.on('exit', (code) => resolve(code)));
+    const hangPid = (): number | undefined => (existsSync(env.STUB_HANG_MARK) ? Number(readFileSync(env.STUB_HANG_MARK, 'utf-8')) : undefined);
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!ready() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(ready(), 'the stub command never started').toBe(true);
+      const signalled = Date.now();
+      proc.kill('SIGTERM');
+      const code = await Promise.race([exited, new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 8_000))]);
+      return { code, seconds: (Date.now() - signalled) / 1000, stderr, hangPid: hangPid() };
+    } finally {
+      const pid = hangPid();
+      if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* already ended */ } }
+      proc.kill('SIGKILL');
+    }
+  }
+  const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+  it('ends the command that is running and starts the current release again at once when the job is cancelled while the new one starts', async () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
     const good = currentRelease();
-    const result = run(['deploy', ref('e')], { env: hostEnv({ STUB_SIGNAL_UP: ref('e') }) });
-    expect(result.status).toBe(130);
+    const env = hostEnv({ STUB_HANG_UP: ref('e') });
+    const result = await cancelWhile(['deploy', ref('e')], env, () => existsSync(env.STUB_HANG_MARK));
+    expect(result.code).toBe(130);
+    expect(result.seconds).toBeLessThan(5);
     expect(result.stderr).toContain('cancelled');
+    expect(alive(result.hangPid ?? 0)).toBe(false);
     expect(currentRelease()).toBe(good);
     expect(releases()).toEqual([good]);
     expect(calls().filter((call) => / up /.test(call)).at(-1)).toContain(good);
+  });
+
+  it('ends a pending health check at once on cancel, and does not wait for its interval', async () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const env = hostEnv({ STUB_FAIL_HEALTH: ref('c'), HEALTH_INTERVAL: '20', HEALTH_ATTEMPTS: '5' });
+    const healthChecks = (): number => calls().filter((call) => call.startsWith('curl') && call.includes('/api/health')).length;
+    const before = healthChecks();
+    const result = await cancelWhile(['deploy', ref('c')], env, () => healthChecks() > before);
+    expect(result.code).toBe(130);
+    expect(result.seconds).toBeLessThan(5);
+    expect(currentRelease()).toBe(good);
+    expect(releases()).toEqual([good]);
+    expect(calls().filter((call) => / up /.test(call)).at(-1)).toContain(good);
+  });
+
+  it('starts the current release again when a rollback by hand is cancelled while the previous one starts', async () => {
+    expect(run(['deploy', ref('1')], { env: hostEnv() }).status).toBe(0);
+    const first = currentRelease();
+    expect(run(['deploy', ref('2')], { env: hostEnv() }).status).toBe(0);
+    const second = currentRelease();
+    const env = hostEnv({ STUB_HANG_UP: ref('1') });
+    const result = await cancelWhile(['rollback'], env, () => existsSync(env.STUB_HANG_MARK));
+    expect(result.code).toBe(130);
+    expect(result.seconds).toBeLessThan(5);
+    expect(alive(result.hangPid ?? 0)).toBe(false);
+    expect(currentRelease()).toBe(second);
+    expect(path.basename(readlinkSync(path.join(home, 'previous')))).toBe(first);
+    expect(calls().filter((call) => / up /.test(call)).at(-1)).toContain(second);
+  });
+
+  it('leaves no failed release behind, and no env file of it, when the rollback fails too', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const result = run(['deploy', ref('b')], { env: hostEnv({ STUB_FAIL_UP: `${ref('a')} ${ref('b')}` }) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('rollback to');
+    expect(result.stderr).toContain('also failed');
+    expect(currentRelease()).toBe(good);
+    expect(releases()).toEqual([good]);
+  });
+
+  it('refuses to run while another deploy.sh holds the lock', () => {
+    const result = run(['deploy', 'main'], { env: hostEnv({ STUB_LOCK_BUSY: '1' }) });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('another deploy.sh is running');
+    expect(calls().filter((call) => call.startsWith('docker pull'))).toEqual([]);
+  });
+
+  it('brings the current release up again from its pinned images, also for a release of the ref main, and checks it like a deploy', () => {
+    expect(run(['deploy', 'main'], { env: hostEnv() }).status).toBe(0);
+    const release = realpathSync(path.join(home, 'releases', currentRelease()));
+    writeFileSync(log, '');
+    const result = run(['reconcile'], { env: hostEnv() });
+    expect(result.status, result.stderr).toBe(0);
+    expect(calls().filter((call) => call.startsWith('docker pull'))).toEqual([]);
+    const up = calls().find((call) => / up -d --wait /.test(call));
+    expect(up).toContain(`--project-directory ${release}`);
+    expect(up).toContain(`-f ${release}/docker-compose.prod.yml`);
+    expect(calls().some((call) => call.startsWith('curl') && call.includes('/api/convert'))).toBe(true);
+    expect(calls().some((call) => / exec -T worker unshare -r -n -- true$/.test(call))).toBe(true);
+    expect(currentRelease()).toBe(path.basename(release));
+  });
+
+  it('refuses to reconcile when there is no current release', () => {
+    const result = run(['reconcile'], { env: hostEnv() });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('no current release');
+  });
+
+  it('refuses to deploy when the loaded AppArmor profile differs from the one of the checkout, before it pulls anything', () => {
+    const drifted = path.join(sandbox, 'apparmor-easyconvert');
+    writeFileSync(drifted, `${read('deploy/oci/apparmor-easyconvert')}  /tmp/x rw,\n`);
+    for (const installed of [drifted, path.join(sandbox, 'missing')]) {
+      const result = run(['deploy', 'main'], { env: hostEnv({ APPARMOR_INSTALLED: installed }) });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('differs from deploy/oci/apparmor-easyconvert');
+    }
+    expect(calls().filter((call) => call.startsWith('docker pull'))).toEqual([]);
+  });
+
+  it('rolls back when a container does not run under the easyconvert profile, and when the worker cannot create its sandbox', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const good = currentRelease();
+    const profile = run(['deploy', ref('b')], { env: hostEnv({ STUB_BAD_PROFILE: ref('b') }) });
+    expect(profile.status).toBe(1);
+    expect(profile.stderr).toContain("runs under 'docker-default', not under 'easyconvert'");
+    expect(calls().some((call) => call.startsWith('docker inspect --format {{.AppArmorProfile}}'))).toBe(true);
+    const sandboxFailure = run(['deploy', ref('c')], { env: hostEnv({ STUB_FAIL_EXEC: ref('c') }) });
+    expect(sandboxFailure.status).toBe(1);
+    expect(sandboxFailure.stderr).toContain('cannot create its sandbox namespaces');
+    expect(currentRelease()).toBe(good);
+    expect(releases()).toEqual([good]);
+  });
+
+  it('checks the pairing on the pinned web digest and not on the tag', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const pairing = calls().filter((call) => call.startsWith('docker image inspect') && call.includes('Labels'));
+    expect(pairing).toHaveLength(1);
+    expect(pairing[0]).toMatch(/ ghcr\.io\/aquilaxk\/easyconvert-web@sha256:[0-9a-f]{64}$/);
+  });
+
+  it('logs the HTTP status of a failed smoke conversion and nothing of its answer', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    const result = run(['deploy', ref('d')], { env: hostEnv({ STUB_FAIL_SMOKE: ref('d') }) });
+    expect(result.stderr).toContain('failed: HTTP status 500');
+    expect(result.stderr).not.toContain('body-of-the-error-page');
+  });
+
+  it('keeps no previous link after the first deploy, also where readlink -f prints the path of a missing link', () => {
+    expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
+    expect(existsSync(path.join(home, 'previous'))).toBe(false);
+    expect(lstatSync(path.join(home, 'current')).isSymbolicLink()).toBe(true);
+    expect(run(['rollback'], { env: hostEnv() }).status).not.toBe(0);
   });
 
   it('stops the stack when the first release is unhealthy and there is nothing to roll back to', () => {
@@ -845,6 +1037,54 @@ describe('operations document and policy entry', () => {
     expect(doc).toContain('sudo apparmor_parser -r -W /etc/apparmor.d/easyconvert');
     expect(doc).toContain('aa-status');
     expect(doc).not.toMatch(/\/etc\/logrotate\.d\/easyconvert/);
+  });
+
+  it('states what was measured on the host about the profile and does not claim that the default profile fails', () => {
+    for (const text of [doc, policy.slice(policy.indexOf('## 122.'))]) {
+      expect(text).not.toMatch(/must fail with `Permission denied`/);
+      expect(text).not.toMatch(/every conversion would fail\./);
+    }
+    expect(doc).toContain('works in a container under both `docker-default` and `easyconvert`');
+    expect(doc).toContain("docker inspect --format '{{.AppArmorProfile}}'");
+    expect(doc).toContain('posix_mqueue');
+    expect(doc).toContain('userns_create');
+  });
+
+  it('names the repair after an interrupted deploy, the residual trust of the docker-group runner and the limits of the public log and the edge log', () => {
+    expect(doc).toContain('deploy.sh reconcile');
+    expect(doc).toContain('15 * * * * /opt/easyconvert/bin/deploy.sh reconcile');
+    expect(doc).not.toMatch(/deploy again the ref of the `current` release/);
+    expect(doc).toContain('Residual trust');
+    expect(doc).toContain('#761');
+    expect(doc).toContain('sets no size limit');
+    expect(doc).toContain('no check proves it');
+  });
+
+  it('points to the retention settings and their policy entry and no longer calls delete on delivery the next pull request', () => {
+    for (const text of [doc, policy.slice(policy.indexOf('## 122.'))]) {
+      expect(text).toContain('RESULT_UNDELIVERED_TTL_SECONDS');
+      expect(text).toContain('RESULT_DELIVERED_GRACE_SECONDS');
+      expect(text).toContain('entry 125');
+      expect(text).not.toMatch(/next pull request/);
+    }
+  });
+
+  it('writes the versioning rule in entry 122 and the release documents it names', () => {
+    const entry = policy.slice(policy.indexOf('## 122.'));
+    for (const text of ['One version per production deploy, never one per pull request', '`0.y.z`', '`v0.1.0`', 'pre-release', '`1.0.0`', 'semver.org/spec/v2.0.0.html', 'keepachangelog.com/en/1.1.0/']) {
+      expect(entry, text).toContain(text);
+    }
+    const changelog = read('CHANGELOG.md');
+    expect(changelog).toContain('keepachangelog.com/en/1.1.0/');
+    expect(changelog).toContain('semver.org/spec/v2.0.0.html');
+    const unreleased = changelog.slice(changelog.indexOf('## [Unreleased]'));
+    expect([...unreleased.matchAll(/^### (.+)$/gm)].map((match) => match[1])).toEqual(['Added', 'Changed', 'Fixed', 'Security']);
+    const template = read('.github/RELEASE_TEMPLATE.md');
+    expect([...template.matchAll(/^## (.+)$/gm)].map((match) => match[1])).toEqual([
+      'Highlights', 'Security', 'Added', 'Changed', 'Fixed', 'Removed / Deprecated', 'Known limitations', 'Operations', 'Full changelog',
+    ]);
+    const sections = template.split(/^## /m).slice(1);
+    for (const section of sections) expect(section, section.split('\n')[0]).toMatch(/<!--[\s\S]+-->/);
   });
 
   it('records the hosting and storage decision as entry 122', () => {
