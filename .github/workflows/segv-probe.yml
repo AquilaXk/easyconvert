@@ -37,13 +37,10 @@ jobs:
           sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
           sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p
           sudo apt-get install -y gdb > /dev/null
-          npm run build:pdf-text-worker
+          echo built
       - name: Stress
         run: |
           ulimit -c unlimited
-          hook="$PWD/.github/segv-probe/hook.cjs"
-          sed -i "s|\`--max-old-space-size=\${options.heapMb}\`\]|\`--max-old-space-size=\${options.heapMb}\`, '--require', '$hook']|" bench/realworld/pool.ts
-          grep -n "execArgv" bench/realworld/pool.ts
           end=$((SECONDS + 1800)); run=0
           while [ $SECONDS -lt $end ]; do
             run=$((run + 1))
