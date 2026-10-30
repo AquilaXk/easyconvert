@@ -8,14 +8,7 @@ const TAR_HEADER_BYTES = 512;
 
 /** POSIX and GNU tars carry `ustar` in their first header; compression wrappers do not rename the inner file reliably. */
 export function hasTarMagic(filePath: string): boolean {
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const header = Buffer.alloc(TAR_HEADER_BYTES);
-    const read = fs.readSync(fd, header, 0, TAR_HEADER_BYTES, 0);
-    return read === TAR_HEADER_BYTES && header.toString('latin1', TAR_MAGIC_OFFSET, TAR_MAGIC_OFFSET + TAR_MAGIC.length) === TAR_MAGIC;
-  } finally {
-    fs.closeSync(fd);
-  }
+  return hasTarMagicBlock(readFirstTarBlock(filePath));
 }
 
 const TAR_CHECKSUM_OFFSET = 148;
@@ -67,16 +60,22 @@ export function hasTarMagicBlock(header: Uint8Array): boolean {
   return true;
 }
 
+/** The first 512 bytes of a file, or fewer when it is shorter; throws when it cannot be opened. */
+export function readFirstTarBlock(filePath: string): Buffer {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const block = Buffer.alloc(TAR_HEADER_BYTES);
+    return block.subarray(0, fs.readSync(fd, block, 0, TAR_HEADER_BYTES, 0));
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** Whether the first 512-byte block of `filePath` is a tar header (see {@link isTarHeaderBlock}); a missing or short file is not. */
 export function hasTarHeaderChecksum(filePath: string): boolean {
-  let fd: number | null = null;
   try {
-    fd = fs.openSync(filePath, 'r');
-    const header = Buffer.alloc(TAR_HEADER_BYTES);
-    return fs.readSync(fd, header, 0, TAR_HEADER_BYTES, 0) === TAR_HEADER_BYTES && isTarHeaderBlock(header);
+    return isTarHeaderBlock(readFirstTarBlock(filePath));
   } catch {
     return false;
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
   }
 }
