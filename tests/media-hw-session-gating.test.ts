@@ -11,6 +11,7 @@ import {
   probeHardwareAcceleration,
   resetHardwareAccelerationCache,
 } from '../src/lib/conversions/media-ffmpeg-args';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * A host whose ffmpeg lists NVENC or VAAPI encoders but cannot open a hardware session (no GPU,
@@ -118,7 +119,7 @@ describe('NVENC capability probe', () => {
 
   oracleTest('builds software H.264 arguments on a host that cannot open an NVENC session', ['ffmpeg'], () => {
     const { bin } = makeStub('args-sw', false);
-    const args = buildFfmpegArguments('/nonexistent/in.mp4', '/tmp/out.mp4', 'mp4', 'mp4', {}, bin);
+    const args = buildFfmpegArguments(openMediaInput('/nonexistent/in.mp4', 'mp4'), '/tmp/out.mp4', 'mp4', {}, bin);
     expect(args[args.indexOf('-c:v') + 1]).toBe('libx264');
   });
 });

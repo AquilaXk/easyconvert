@@ -68,6 +68,7 @@ import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversion
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
 import { assertOutputWritten } from '../lib/conversions/media-empty-output';
 import { runFfmpegTranscode } from '../lib/conversions/media-ffmpeg-run';
+import { openMediaInput, runFfmpeg } from '../lib/conversions/media-process';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import {
   executeSandboxedBinary,
@@ -484,10 +485,10 @@ export async function convertWithNativeFfmpeg(
 
   try {
     return await withSandboxDir('easyconvert-ffmpeg-', async (tempDir) => {
-      const { inputPath } = resolveInputContext(input, src, tempDir);
+      const media = openMediaInput(resolveInputContext(input, src, tempDir).inputPath, src);
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 
-      const durationSeconds = probeMediaDuration(inputPath, options, ffmpegBin);
+      const durationSeconds = probeMediaDuration(media, options, ffmpegBin);
       const timeout = computeMediaTimeoutMs(durationSeconds, stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS));
       const maxBuffer = Math.min(options.maxBufferBytes || 200 * 1024 * 1024, 500 * 1024 * 1024);
       if (options.thumbnail?.at && options.thumbnail.at.length > 1) {
@@ -495,12 +496,11 @@ export async function convertWithNativeFfmpeg(
         for (let i = 0; i < options.thumbnail.at.length; i++) {
           const ts = options.thumbnail.at[i];
           const partOut = path.join(tempDir, `output_${i}.${tgt}`);
-          const partArgs = buildFfmpegArguments(inputPath, partOut, src, tgt, options, ffmpegBin, ts);
-          await executeSandboxedBinary(ffmpegBin, partArgs, {
+          const partArgs = buildFfmpegArguments(media, partOut, tgt, options, ffmpegBin, ts);
+          await runFfmpeg(ffmpegBin, partArgs, {
             cwd: tempDir,
             timeoutMs: timeout,
             maxBuffer,
-            networkIsolated: true,
             signal: options.signal,
           });
           if (fs.existsSync(partOut)) {
@@ -533,9 +533,9 @@ export async function convertWithNativeFfmpeg(
         const outputDir = path.join(tempDir, 'packaged');
         fs.mkdirSync(outputDir, { recursive: true });
 
-        const source = probePackagingSource(inputPath, ffmpegBin);
-        const args = buildHlsDashArguments(inputPath, outputDir, packaging, ffmpegBin, source);
-        await executeSandboxedBinary(ffmpegBin, args, {
+        const source = probePackagingSource(media, ffmpegBin);
+        const args = buildHlsDashArguments(media, outputDir, packaging, ffmpegBin, source);
+        await runFfmpeg(ffmpegBin, args, {
           cwd: outputDir,
           timeoutMs: computePackagingTimeoutMs(
             source.geometry.durationSec,
@@ -543,7 +543,6 @@ export async function convertWithNativeFfmpeg(
             stageTimeoutMs(options, DEFAULT_MEDIA_TIER_MAX_MS)
           ),
           maxBuffer,
-          networkIsolated: true,
           signal: options.signal,
         });
 
@@ -578,19 +577,19 @@ export async function convertWithNativeFfmpeg(
       }
 
       const runFfmpegWith = (ffmpegArgs: string[], limitMs: number) =>
-        runFfmpegTranscode(ffmpegBin, ffmpegArgs, { cwd: tempDir, timeoutMs: limitMs, maxBuffer, networkIsolated: true, signal: options.signal });
-      const runFfmpeg = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
+        runFfmpegTranscode(ffmpegBin, ffmpegArgs, { cwd: tempDir, timeoutMs: limitMs, maxBuffer, signal: options.signal });
+      const runTranscode = (ffmpegArgs: string[]) => runFfmpegWith(ffmpegArgs, timeout);
       // A loudness request measures first (cheap: audio only), so the encode applies real numbers.
-      const loudnessStage = await measureLoudnessStage({ inputPath, src, tgt, options, ffmpegBin, run: runFfmpeg });
+      const loudnessStage = await measureLoudnessStage({ input: media, tgt, options, ffmpegBin, run: runTranscode });
 
       if (isTwoPassRequested(options)) {
         // The pass logs go to the job's sandbox directory (the working directory), which is removed with it.
-        const passes = buildTwoPassArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
+        const passes = buildTwoPassArguments(media, tempOutputPath, tgt, options, ffmpegBin, TWO_PASS_LOG_PREFIX, loudnessStage);
         await runTwoPass(passes, twoPassBudgetMs(timeout), runFfmpegWith);
       } else {
-        const args = buildFfmpegArguments(inputPath, tempOutputPath, src, tgt, options, ffmpegBin, undefined, loudnessStage);
+        const args = buildFfmpegArguments(media, tempOutputPath, tgt, options, ffmpegBin, undefined, loudnessStage);
         try {
-          await runFfmpeg(args);
+          await runTranscode(args);
         } catch (err) {
           // A hardware encoder that passed the capability probe can still fail at runtime (device lost,
           // driver error). Retry exactly once in software; a failed retry reports the original error,
@@ -600,17 +599,17 @@ export async function convertWithNativeFfmpeg(
             throw err;
           }
           const softwareArgs = buildFfmpegArguments(
-            inputPath, tempOutputPath, src, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
+            media, tempOutputPath, tgt, { ...options, disableHwaccel: true }, ffmpegBin, undefined, loudnessStage
           );
           try {
-            await runFfmpeg(softwareArgs);
+            await runTranscode(softwareArgs);
           } catch {
             throw err;
           }
         }
       }
 
-      assertOutputWritten(tempOutputPath, inputPath, ffmpegBin, src, tgt);
+      assertOutputWritten(tempOutputPath, media, ffmpegBin, tgt);
 
       const vfsPayload = Buffer.isBuffer(input) ? undefined : input;
       const persistedPath = handOffOutput(tempOutputPath, tgt, options, vfsPayload);
@@ -624,7 +623,7 @@ export async function convertWithNativeFfmpeg(
       );
       transcoded.metadata = {
         ...describeAudioProcessing(options, ffmpegBin, loudnessStage),
-        ...describeDroppedStreams(inputPath, tgt, options, ffmpegBin),
+        ...describeDroppedStreams(media, tgt, options, ffmpegBin),
       };
       return transcoded;
     });

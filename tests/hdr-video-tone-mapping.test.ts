@@ -11,6 +11,7 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { runConvert } from './helpers/imagemagick';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { HAS_ZSCALE, decodeFrameFloat, pqOfNits, psnrDb, renderSdrWithZimg } from './helpers/zimg-oracle';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * HDR video to 8-bit SDR. The input clips are generated with ffmpeg from 16-bit PQ and HLG test pictures; the
@@ -136,7 +137,7 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
     symlinkSync(getOracleToolPath('ffprobe')!, path.join(dir, 'ffprobe'));
     resetHardwareAccelerationCache();
     resetZscaleCache();
-    const build = () => buildFfmpegArguments(pq, path.join(work, 'x.mp4'), 'mp4', 'mp4', { disableHwaccel: true }, fake);
+    const build = () => buildFfmpegArguments(openMediaInput(pq, 'mp4'), path.join(work, 'x.mp4'), 'mp4', { disableHwaccel: true }, fake);
     expect(build).toThrow(EngineUnavailableError);
     expect(build).toThrow(/zscale/);
     resetZscaleCache();
@@ -145,7 +146,7 @@ describe.skipIf(skipWithoutTools('ffmpeg', 'ffprobe', 'identify') || skipUnless(
   it('SDR input gets no HDR chain and no forced tags', () => {
     const sdr = path.join(work, 'sdr.mp4');
     execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=64x48:rate=25:duration=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', sdr]);
-    const args = buildFfmpegArguments(sdr, path.join(work, 'y.mp4'), 'mp4', 'mp4', { disableHwaccel: true }, getOracleToolPath('ffmpeg')!);
+    const args = buildFfmpegArguments(openMediaInput(sdr, 'mp4'), path.join(work, 'y.mp4'), 'mp4', { disableHwaccel: true }, getOracleToolPath('ffmpeg')!);
     expect(args.join(' ')).not.toMatch(/zscale|lutrgb/);
     expect(args).not.toContain('-color_trc');
   });

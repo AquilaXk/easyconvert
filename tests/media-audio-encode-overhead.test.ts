@@ -11,6 +11,7 @@ import { convertWithNativeFfmpeg } from '../src/worker/engines';
 import { getOracleToolPath } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { craftWav, int16Bytes, sineSamples } from './helpers/wav-craft';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * What an audio encode costs besides the encoder. A WAVE source describes itself in its header, so a conversion
@@ -60,6 +61,11 @@ function argAfter(args: string[], flag: string): string | undefined {
   return at === -1 ? undefined : args[at + 1];
 }
 
+/** The options of the first input: everything before its `-i`. */
+function inputOptions(args: string[]): string[] {
+  return args.slice(0, args.indexOf('-i'));
+}
+
 /**
  * A directory holding wrappers named `ffmpeg` and `ffprobe` that append every invocation to a log and then run the
  * real binary. Used as the sibling pair the engine resolves, it records exactly the processes a conversion starts.
@@ -97,21 +103,21 @@ describe('a WAVE source is described by its header', () => {
 
   it.each(CASES)('reads the rate and channels of $name without starting ffprobe', ({ name, rate, channels }) => {
     const file = writeWav(`probe-${rate}-${channels}.wav`, rate, channels, 0.2);
-    expect(probeAudioSampleRate(file, MISSING_FFPROBE as never), name).toBe(rate);
-    expect(probeAudioChannels(file, MISSING_FFPROBE as never), name).toBe(channels);
+    expect(probeAudioSampleRate(openMediaInput(file, 'wav'), MISSING_FFPROBE as never), name).toBe(rate);
+    expect(probeAudioChannels(openMediaInput(file, 'wav'), MISSING_FFPROBE as never), name).toBe(channels);
   });
 
   it('reports no stream for a track a WAVE file does not have', () => {
     const file = writeWav('probe-track.wav', 16_000, 1, 0.2);
-    expect(probeAudioSampleRate(file, MISSING_FFPROBE as never, 1)).toBe(0);
-    expect(probeAudioChannels(file, MISSING_FFPROBE as never, 1)).toBe(0);
+    expect(probeAudioSampleRate(openMediaInput(file, 'wav'), MISSING_FFPROBE as never, 1)).toBe(0);
+    expect(probeAudioChannels(openMediaInput(file, 'wav'), MISSING_FFPROBE as never, 1)).toBe(0);
   });
 
   it('still asks ffprobe for what the header reader cannot answer exactly', () => {
     const compressed = path.join(workDir, 'adpcm.wav');
     fs.writeFileSync(compressed, craftWav({ sampleRate: 8000, channels: 1, bitsPerSample: 16, formatTag: 2, data: new Uint8Array(2000) }));
-    expect(() => probeAudioSampleRate(compressed, MISSING_FFPROBE as never)).toThrow(ConversionFailedError);
-    expect(() => probeAudioChannels(path.join(workDir, 'absent.wav'), MISSING_FFPROBE as never)).toThrow(ConversionFailedError);
+    expect(() => probeAudioSampleRate(openMediaInput(compressed, 'wav'), MISSING_FFPROBE as never)).toThrow(ConversionFailedError);
+    expect(() => probeAudioChannels(openMediaInput(path.join(workDir, 'absent.wav'), 'wav'), MISSING_FFPROBE as never)).toThrow(ConversionFailedError);
   });
 
   oracleTest(
@@ -126,8 +132,8 @@ describe('a WAVE source is described by its header', () => {
           { encoding: 'utf-8' }
         ).trim();
         expect(reported, name).toBe(`${rate},${channels}`);
-        expect(probeAudioSampleRate(file, tool('ffprobe') as never), name).toBe(rate);
-        expect(probeAudioChannels(file, tool('ffprobe') as never), name).toBe(channels);
+        expect(probeAudioSampleRate(openMediaInput(file, 'wav'), tool('ffprobe') as never), name).toBe(rate);
+        expect(probeAudioChannels(openMediaInput(file, 'wav'), tool('ffprobe') as never), name).toBe(channels);
       }
     },
     TEST_TIMEOUT_MS
@@ -147,7 +153,7 @@ describe('the arguments of a WAVE to audio encode', () => {
   it('feeds libopus a 48 kHz source as it is: no rate argument and no resampling filter', () => {
     const spy = probeSpy('opus48');
     const input = writeWav('opus-48k.wav', 48_000, NOT_MONO, 0.3);
-    const args = buildFfmpegArguments(input, path.join(workDir, 'o.opus'), 'wav', 'opus', {}, spy.ffmpeg);
+    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.opus'), 'opus', {}, spy.ffmpeg);
     expect(argAfter(args, '-c:a')).toBe('libopus');
     expect(args).not.toContain('-ar');
     expect(args).not.toContain('-filter:a');
@@ -157,7 +163,7 @@ describe('the arguments of a WAVE to audio encode', () => {
   it('resamples a 44.1 kHz source to the one rate libopus codes above it, and starts no ffprobe to find out', () => {
     const spy = probeSpy('opus44');
     const input = writeWav('opus-44k.wav', 44_100, NOT_MONO, 0.3);
-    const args = buildFfmpegArguments(input, path.join(workDir, 'o.opus'), 'wav', 'opus', {}, spy.ffmpeg);
+    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.opus'), 'opus', {}, spy.ffmpeg);
     expect(argAfter(args, '-ar')).toBe('48000');
     expect(args).not.toContain('-filter:a');
     expect(spy.probeRuns()).toBe(0);
@@ -167,26 +173,30 @@ describe('the arguments of a WAVE to audio encode', () => {
     'reads a header-described WAVE input with a minimal probe for the %s target',
     (target) => {
       const input = writeWav(`probe-args-${target}.wav`, 44_100, NOT_MONO, 0.3);
-      const args = buildFfmpegArguments(input, path.join(workDir, `o.${target}`), 'wav', target, {}, null);
-      const at = args.indexOf('-i');
-      expect(args.slice(at - 2, at + 2)).toEqual(['-probesize', '32', '-i', input]);
+      const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `o.${target}`), target, {}, null);
+      const options = inputOptions(args);
+      expect(options.slice(options.indexOf('-probesize'), options.indexOf('-probesize') + 2)).toEqual(['-probesize', '32']);
+      expect(args[args.indexOf('-i') + 1]).toBe(input);
     }
   );
 
   it('keeps the input probing when the header cannot describe the input', () => {
     const adpcm = path.join(workDir, 'probe-args-adpcm.wav');
     fs.writeFileSync(adpcm, craftWav({ sampleRate: 8000, channels: 1, bitsPerSample: 16, formatTag: 2, data: new Uint8Array(2000) }));
-    const compressed = buildFfmpegArguments(adpcm, path.join(workDir, 'o.opus'), 'wav', 'opus', { audio: { sampleRate: 16_000 } }, null);
-    expect(compressed.slice(0, compressed.indexOf('-i') + 2)).toEqual(['-y', '-i', adpcm]);
+    const compressed = buildFfmpegArguments(openMediaInput(adpcm, 'wav'), path.join(workDir, 'o.opus'), 'opus', { audio: { sampleRate: 16_000 } }, null);
+    expect(inputOptions(compressed)).not.toContain('-probesize');
     const missing = path.join(workDir, 'absent.wav');
-    const absent = buildFfmpegArguments(missing, path.join(workDir, 'o.aac'), 'wav', 'aac', {}, null);
-    expect(absent.slice(0, absent.indexOf('-i') + 2)).toEqual(['-y', '-i', missing]);
+    const absent = buildFfmpegArguments(openMediaInput(missing, 'wav'), path.join(workDir, 'o.aac'), 'aac', {}, null);
+    expect(inputOptions(absent)).not.toContain('-probesize');
+    expect(compressed[compressed.indexOf('-i') + 1]).toBe(adpcm);
+    expect(absent[absent.indexOf('-i') + 1]).toBe(missing);
   });
 
   it('keeps the input probing for a video target', () => {
     const input = writeWav('probe-args-video.wav', 44_100, NOT_MONO, 0.3);
-    const args = buildFfmpegArguments(input, path.join(workDir, 'o.mp4'), 'wav', 'mp4', { disableHwaccel: true }, null);
-    expect(args.slice(0, args.indexOf('-i') + 2)).toEqual(['-y', '-i', input]);
+    const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, null);
+    expect(inputOptions(args)).not.toContain('-probesize');
+    expect(args[args.indexOf('-i') + 1]).toBe(input);
   });
 });
 
@@ -198,8 +208,7 @@ describe('loudness is measured only when it is asked for', () => {
     const input = writeWav('loud-none.wav', 44_100, NOT_MONO, 0.3);
     const runs: string[][] = [];
     const stage = await measureLoudnessStage({
-      inputPath: input,
-      src: 'wav',
+      input: openMediaInput(input, 'wav'),
       tgt: 'opus',
       options: { audio: { bitrateK: 64 } },
       ffmpegBin: '/nonexistent/ffmpeg',
@@ -216,8 +225,7 @@ describe('loudness is measured only when it is asked for', () => {
     const input = writeWav('loud-on.wav', 44_100, NOT_MONO, 0.3);
     const runs: string[][] = [];
     const stage = await measureLoudnessStage({
-      inputPath: input,
-      src: 'wav',
+      input: openMediaInput(input, 'wav'),
       tgt: 'opus',
       options: { audio: { bitrateK: 64, loudness: { preset: 'podcast' } } },
       ffmpegBin: MISSING_FFPROBE.replace('ffprobe', 'ffmpeg'),
@@ -265,7 +273,7 @@ describe('an audio conversion asks which encoders exist and opens no hardware se
       const input = writeWav('hw-listing.wav', 44_100, 2, 0.2);
       const binaries = hardwareListingBinaries('opus');
       for (let conversion = 0; conversion < 3; conversion++) {
-        const args = buildFfmpegArguments(input, path.join(workDir, `hw-listing-${conversion}.opus`), 'wav', 'opus', { audio: { bitrateK: 64 } }, binaries.ffmpeg);
+        const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, `hw-listing-${conversion}.opus`), 'opus', { audio: { bitrateK: 64 } }, binaries.ffmpeg);
         expect(args).toContain('libopus');
       }
       const calls = binaries.calls();
@@ -374,7 +382,7 @@ describe('a minimal input probe leaves the encoded audio as the reference encode
         () => {
           const input = writeWav(`same-${target}-${rate}.wav`, rate, channels, 2);
           const ours = path.join(workDir, `same-ours-${rate}.${target}`);
-          const minimal = buildFfmpegArguments(input, ours, 'wav', target, { audio: { bitrateK: 64 } }, tool('ffmpeg'));
+          const minimal = buildFfmpegArguments(openMediaInput(input, 'wav'), ours, target, { audio: { bitrateK: 64 } }, tool('ffmpeg'));
           expect(minimal).toContain('-probesize');
           run(minimal);
 

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import type { ConversionOptions } from '../types';
 import { probeStreamLayout, resolveFfprobeBinary } from './media-ffprobe';
 import { planStreamMapping, type VideoContainer } from './media-stream-plan';
+import type { MediaInput } from './media-process';
 
 /**
  * Names the input streams a video-container conversion left out, for the result metadata. The conversion keeps
@@ -12,20 +13,20 @@ import { planStreamMapping, type VideoContainer } from './media-stream-plan';
 const VIDEO_CONTAINER_TARGETS: ReadonlySet<string> = new Set<VideoContainer>(['mp4', 'mov', 'mkv', 'webm', 'avi']);
 
 /**
- * `{ droppedStreams }` for the conversion of `inputPath` to `tgt`, or `{}` when every stream was carried, the
+ * `{ droppedStreams }` for the conversion of `input` to `tgt`, or `{}` when every stream was carried, the
  * target is not a video container (an audio or image target keeps one kind of stream by definition) or the
  * request does not map streams (a thumbnail or a subtitle extraction).
  */
 export function describeDroppedStreams(
-  inputPath: string,
+  input: MediaInput,
   tgt: string,
   options: ConversionOptions,
   ffmpegBin: string | null | undefined
 ): Record<string, unknown> {
   const mapsStreams =
-    VIDEO_CONTAINER_TARGETS.has(tgt) && !options.thumbnail && options.subtitles?.mode !== 'extract' && fs.existsSync(inputPath);
+    VIDEO_CONTAINER_TARGETS.has(tgt) && !options.thumbnail && options.subtitles?.mode !== 'extract' && fs.existsSync(input.path);
   if (!mapsStreams) return {};
-  const layout = probeStreamLayout(inputPath, resolveFfprobeBinary(ffmpegBin));
+  const layout = probeStreamLayout(input, resolveFfprobeBinary(ffmpegBin));
   const plan = planStreamMapping({
     streams: layout.streams,
     container: tgt as VideoContainer,

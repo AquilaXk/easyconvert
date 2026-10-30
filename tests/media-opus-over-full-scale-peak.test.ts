@@ -8,6 +8,7 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { measureLoudness } from './helpers/ffmpeg-measure';
 import { oracleTest } from './helpers/oracle-test';
 import { craftWav, int16Bytes } from './helpers/wav-craft';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * Opus from a source that sits at the rails. The encoded peak of such a source follows the exact samples the encoder is
@@ -107,7 +108,7 @@ describe('Opus from a source at full scale is coded from the samples the referen
         else expect(sourcePeak).toBeLessThan(-1);
 
         const ours = path.join(workDir, `ours-${boostDb}-${seed}.opus`);
-        run(buildFfmpegArguments(input, ours, 'wav', 'opus', { audio: { bitrateK: kbps } }, tool('ffmpeg')));
+        run(buildFfmpegArguments(openMediaInput(input, 'wav'), ours, 'opus', { audio: { bitrateK: kbps } }, tool('ffmpeg')));
         const reference = path.join(workDir, `ref-${boostDb}-${seed}.opus`);
         run(['-y', '-i', input, '-vn', '-map_metadata', '-1', '-c:a', 'libopus', '-b:a', `${kbps}k`, reference]);
 

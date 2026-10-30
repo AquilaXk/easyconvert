@@ -9,6 +9,7 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { requireEncoders } from './helpers/ffmpeg-media-fixtures';
 import { measureSsimPsnr } from './helpers/ffmpeg-measure';
 import { oracleTest } from './helpers/oracle-test';
+import { openMediaInput } from '../src/lib/conversions/media-process';
 
 /**
  * Threads of the software H.264 and H.265 encoders. Left to the encoders, x264 limits itself by the picture height
@@ -122,7 +123,7 @@ describe('the arguments of a software encode', () => {
 
   function build(codec: string, video: Record<string, unknown> = {}, extra: Record<string, unknown> = {}): string[] {
     makeSource();
-    return buildFfmpegArguments(source, path.join(workDir, 'out.mp4'), 'mp4', 'mp4', { disableHwaccel: true, video: { codec, ...video }, ...extra } as never, tool());
+    return buildFfmpegArguments(openMediaInput(source, 'mp4'), path.join(workDir, 'out.mp4'), 'mp4', { disableHwaccel: true, video: { codec, ...video }, ...extra } as never, tool());
   }
 
   function threadsOf(args: string[]): string[] {
@@ -199,7 +200,7 @@ describe('the arguments of a software encode', () => {
       vi.spyOn(os, 'availableParallelism').mockReturnValue(12);
       for (const codec of ['h264', 'hevc']) {
         const passes = buildTwoPassArguments(
-          source, path.join(workDir, 'out.mp4'), 'mp4', 'mp4',
+          openMediaInput(source, 'mp4'), path.join(workDir, 'out.mp4'), 'mp4',
           { disableHwaccel: true, video: { codec, rateControl: { mode: 'vbr', bitrateK: 800, twoPass: true } } } as never,
           tool(), 'pass'
         );
@@ -221,7 +222,7 @@ describe('the threads the encoders really start', () => {
 
   /** Our arguments for `input`, run at info level so the encoder reports the thread counts it started. */
   function ourRun(codec: 'h264' | 'hevc', output: string, input: string = source): string {
-    const args = buildFfmpegArguments(input, output, 'mp4', 'mp4', { disableHwaccel: true, video: { codec, rateControl: { mode: 'crf', crf: CRF } } }, tool());
+    const args = buildFfmpegArguments(openMediaInput(input, 'mp4'), output, 'mp4', { disableHwaccel: true, video: { codec, rateControl: { mode: 'crf', crf: CRF } } }, tool());
     const run = spawnSync(tool(), ['-hide_banner', '-nostdin', '-loglevel', 'info', ...args], { encoding: 'utf8' });
     if (run.status !== 0) throw new Error(run.stderr);
     return run.stderr;
