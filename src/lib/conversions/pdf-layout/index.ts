@@ -348,6 +348,27 @@ function splitPageFurniture(
   return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer') };
 }
 
+/**
+ * The tables of a document's pages for a spreadsheet, found as for a document: ruled tables, then aligned text (`layoutPage`).
+ * The running headers and footers leave the flow first, so that a table whose next page begins with a header is still read as one,
+ * and a table that goes on in the same columns on a following page is one table (`joinContinuations`).
+ * @throws PdfLayoutLimitError when a page needs more than PDF_LAYOUT_MAX_STEPS_PER_PAGE steps.
+ */
+export function detectPdfTables(pages: PdfPageContent[], fonts: PdfContentFont[]): DetectedTable[] {
+  const flows = new Counter();
+  const layouts = pages.map((page, index) => layoutPage(page, fonts, flows, index * COLUMN_FLOW_BASE * 1000));
+  const body = splitPageFurniture(
+    layouts.flatMap((layout) => layout.blocks),
+    pages
+  ).body;
+  return joinContinuations(body).flatMap((block) => (block.kind === 'table' ? [block.table] : []));
+}
+
+/** The text of a page for a spreadsheet: its rows top to bottom, each with the pieces of text that sit apart on a line, left to right. */
+export function pdfTextRows(page: PdfPageContent, fonts: PdfContentFont[]): string[][] {
+  return buildRows(page.items, fonts, new LayoutBudget(page.pageNumber)).map((row) => row.segments.map((segment) => segment.text));
+}
+
 export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont[]): DocumentModel {
   const flows = new Counter();
   const imageIds = new Counter();

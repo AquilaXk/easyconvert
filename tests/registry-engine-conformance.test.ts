@@ -1042,17 +1042,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   });
 });
 
-/**
- * Advertised pairs refused on purpose until their engine lands, with the refusal they answer: PDF to a workbook waits for the tables
- * of PDF pages to be extracted (#671), so it is refused rather than written from the PDF's bytes read as delimited text.
- */
-const REFUSED_UNTIL_SUPPORTED: Readonly<Record<string, readonly string[]>> = {
-  document: [
-    'pdf -> xlsx: A PDF is not converted to a spreadsheet yet: the tables of its pages are not extracted.',
-    "pdf -> xls: Cannot convert PDF documents to '.xls'.",
-  ],
-};
-
 describe('every advertised registry pair has an engine path', () => {
   const categories = [...new Set(Object.values(FORMAT_REGISTRY).map((def) => def.category))].sort();
 
@@ -1060,7 +1049,7 @@ describe('every advertised registry pair has an engine path', () => {
     // Camera RAW sources decode real sensor data per pair, so each gets its own test below.
     it(`${category} sources`, async () => {
       const pairs = pairsFor((c) => c === category).filter(([source]) => !RAW_CHECKS_ENABLED || !RAW_SOURCE_SET.has(source));
-      expect(await findUnroutedPairs(pairs)).toEqual(REFUSED_UNTIL_SUPPORTED[category]?.filter((refusal) => inPart(refusal.split(':')[0].replace(' -> ', '->'))) ?? []);
+      expect(await findUnroutedPairs(pairs)).toEqual([]);
     }, CATEGORY_TIMEOUT_MS);
   }
 

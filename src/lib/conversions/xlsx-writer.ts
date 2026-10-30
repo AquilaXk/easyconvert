@@ -27,6 +27,21 @@ export interface SheetTable {
   readonly textCells: TextCells;
 }
 
+/** A range of cells joined into one (ECMA-376 Part 1, 18.3.1.54 `mergeCell`): its first cell's row and column from zero, and its extent. */
+export interface SheetMerge {
+  readonly row: number;
+  readonly column: number;
+  readonly rowSpan: number;
+  readonly columnSpan: number;
+}
+
+/** One sheet of a workbook: its tab name, its rows, and the ranges of cells that are merged (the value of a range is in its first cell). */
+export interface WorkbookSheet {
+  readonly name: string;
+  readonly rows: readonly (readonly SheetCell[])[];
+  readonly merges?: readonly SheetMerge[];
+}
+
 /** How the parts of the package are stored: deflated for a result, stored for a workbook the office suite reads once and discards. */
 export type WorkbookCompression = 'DEFLATE' | 'STORE';
 
@@ -214,38 +229,56 @@ class CellFormats {
   }
 }
 
-interface WrittenSheet {
-  xml: string;
-  strings: string[];
-  stringReferences: number;
-  formats: CellFormats;
-}
-
 const tableLimitError = (count: number, what: string, limit: number): SheetLimitError => sheetLimitError('The table', count, what, 'a worksheet', limit);
 
+/** The shared string table of a workbook: every distinct text once, and how many cells refer to a string. */
+class SharedStrings {
+  readonly strings: string[] = [];
+  references = 0;
+  private readonly index = new Map<string, number>();
+
+  referenceTo(text: string): number {
+    if (text.length > SHEET_MAX_CELL_CHARS) throw tableLimitError(text.length, 'characters in one cell', SHEET_MAX_CELL_CHARS);
+    this.references++;
+    let at = this.index.get(text);
+    if (at === undefined) {
+      at = this.strings.length;
+      this.index.set(text, at);
+      this.strings.push(text);
+    }
+    return at;
+  }
+}
+
+/** What the sheets of one workbook share: its string table and its cell formats, which `styles.xml` and `sharedStrings.xml` hold once. */
+interface WorkbookParts {
+  readonly strings: SharedStrings;
+  readonly formats: CellFormats;
+}
+
+/** The `mergeCells` element of a sheet, (18.3.1.55) placed after `sheetData` as the sequence of `worksheet` has it (18.3.1.99), or nothing for a sheet without a merge. */
+function mergeCellsXml(merges: readonly SheetMerge[]): string {
+  const ranges = merges.filter((merge) => merge.rowSpan > 1 || merge.columnSpan > 1);
+  if (ranges.length === 0) return '';
+  const refs = ranges.map((merge) => {
+    const lastRow = merge.row + merge.rowSpan;
+    const lastColumn = merge.column + merge.columnSpan;
+    if (lastRow > XLSX_MAX_ROWS) throw tableLimitError(lastRow, 'rows', XLSX_MAX_ROWS);
+    if (lastColumn > XLSX_MAX_COLUMNS) throw tableLimitError(lastColumn, 'columns', XLSX_MAX_COLUMNS);
+    return `<mergeCell ref="${getExcelColumnName(merge.column)}${merge.row + 1}:${getExcelColumnName(lastColumn - 1)}${lastRow}"/>`;
+  });
+  return `<mergeCells count="${refs.length}">${refs.join('')}</mergeCells>`;
+}
+
 /**
- * The sheet XML of a table, the strings it shares and the formats it uses. The extent is the last row and column that hold a cell:
+ * The sheet XML of a table. The extent is the last row and column that hold a cell:
  * a cell past the last row or column of a worksheet is refused (413), while empty fields at the end of a row or empty rows at the end
  * of the table are not cells and count for nothing, and the `dimension` the sheet declares is that extent.
  */
-function writeSheet(rows: readonly (readonly SheetCell[])[], textCells: TextCells): WrittenSheet {
-  const stringIndex = new Map<string, number>();
-  const strings: string[] = [];
-  const formats = new CellFormats();
-  let stringReferences = 0;
-  const referenceTo = (text: string): number => {
-    if (text.length > SHEET_MAX_CELL_CHARS) throw tableLimitError(text.length, 'characters in one cell', SHEET_MAX_CELL_CHARS);
-    stringReferences++;
-    let index = stringIndex.get(text);
-    if (index === undefined) {
-      index = strings.length;
-      stringIndex.set(text, index);
-      strings.push(text);
-    }
-    return index;
-  };
+function writeSheet(sheet: WorkbookSheet, textCells: TextCells, parts: WorkbookParts): string {
+  const { strings, formats } = parts;
   const writeCell = (reference: string, cell: Exclude<WrittenCell, null>): string => {
-    if (typeof cell === 'string') return `<c r="${reference}" t="s"><v>${referenceTo(cell)}</v></c>`;
+    if (typeof cell === 'string') return `<c r="${reference}" t="s"><v>${strings.referenceTo(cell)}</v></c>`;
     if (typeof cell === 'number') return `<c r="${reference}"><v>${cell}</v></c>`;
     if (typeof cell === 'boolean') return `<c r="${reference}" t="b"><v>${cell ? 1 : 0}</v></c>`;
     if ('serial' in cell) return `<c r="${reference}" s="${DATE_STYLE_INDEX}"><v>${cell.serial}</v></c>`;
@@ -255,8 +288,8 @@ function writeSheet(rows: readonly (readonly SheetCell[])[], textCells: TextCell
   const body: string[] = [];
   let lastRow = 0;
   let lastColumn = 0;
-  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-    const row = rows[rowIndex];
+  for (let rowIndex = 0; rowIndex < sheet.rows.length; rowIndex++) {
+    const row = sheet.rows[rowIndex];
     const rowNumber = rowIndex + 1;
     let cells = '';
     for (let column = 0; column < row.length; column++) {
@@ -273,16 +306,15 @@ function writeSheet(rows: readonly (readonly SheetCell[])[], textCells: TextCell
   }
 
   const lastCell = `${getExcelColumnName(Math.max(lastColumn, 1) - 1)}${Math.max(lastRow, 1)}`;
-  const xml = `${XML_DECLARATION}<worksheet xmlns="${MAIN_NAMESPACE}"><dimension ref="A1:${lastCell}"/><sheetData>${body.join('')}</sheetData></worksheet>`;
-  return { xml, strings, stringReferences, formats };
+  return `${XML_DECLARATION}<worksheet xmlns="${MAIN_NAMESPACE}"><dimension ref="A1:${lastCell}"/><sheetData>${body.join('')}</sheetData>${mergeCellsXml(sheet.merges ?? [])}</worksheet>`;
 }
 
-const CONTENT_TYPES =
+const CONTENT_TYPES_HEAD =
   `${XML_DECLARATION}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
   '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
   '<Default Extension="xml" ContentType="application/xml"/>' +
-  '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
-  '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+  '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>';
+const CONTENT_TYPES_TAIL =
   '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
   '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>';
 
@@ -290,36 +322,60 @@ const PACKAGE_RELATIONSHIPS =
   `${XML_DECLARATION}<Relationships xmlns="${PACKAGE_RELATIONSHIPS_NAMESPACE}">` +
   `<Relationship Id="rId1" Type="${RELATIONSHIPS_NAMESPACE}/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
 
-const WORKBOOK =
-  `${XML_DECLARATION}<workbook xmlns="${MAIN_NAMESPACE}" xmlns:r="${RELATIONSHIPS_NAMESPACE}">` +
-  '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>';
+const XML_ATTRIBUTE_ENTITIES: Readonly<Record<string, string>> = { ...XML_TEXT_ENTITIES, '"': '&quot;' };
 
-const WORKBOOK_RELATIONSHIPS =
-  `${XML_DECLARATION}<Relationships xmlns="${PACKAGE_RELATIONSHIPS_NAMESPACE}">` +
-  `<Relationship Id="rId1" Type="${RELATIONSHIPS_NAMESPACE}/worksheet" Target="worksheets/sheet1.xml"/>` +
-  `<Relationship Id="rId2" Type="${RELATIONSHIPS_NAMESPACE}/styles" Target="styles.xml"/>` +
-  `<Relationship Id="rId3" Type="${RELATIONSHIPS_NAMESPACE}/sharedStrings" Target="sharedStrings.xml"/></Relationships>`;
+/** The `[Content_Types].xml`, `workbook.xml` and its relationships for the sheets of a workbook, each sheet `sheet<n>.xml` with the relationship `rId<n>`. */
+function workbookParts(sheets: readonly WorkbookSheet[]): { contentTypes: string; workbook: string; relationships: string } {
+  const numbers = sheets.map((_, index) => index + 1);
+  const styles = sheets.length + 1;
+  const sharedStrings = sheets.length + 2;
+  return {
+    contentTypes:
+      CONTENT_TYPES_HEAD +
+      numbers.map((n) => `<Override PartName="/xl/worksheets/sheet${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('') +
+      CONTENT_TYPES_TAIL,
+    workbook:
+      `${XML_DECLARATION}<workbook xmlns="${MAIN_NAMESPACE}" xmlns:r="${RELATIONSHIPS_NAMESPACE}"><sheets>` +
+      sheets.map((sheet, index) => `<sheet name="${sheet.name.replace(/[&<>"]/g, (character) => XML_ATTRIBUTE_ENTITIES[character])}" sheetId="${numbers[index]}" r:id="rId${numbers[index]}"/>`).join('') +
+      '</sheets></workbook>',
+    relationships:
+      `${XML_DECLARATION}<Relationships xmlns="${PACKAGE_RELATIONSHIPS_NAMESPACE}">` +
+      numbers.map((n) => `<Relationship Id="rId${n}" Type="${RELATIONSHIPS_NAMESPACE}/worksheet" Target="worksheets/sheet${n}.xml"/>`).join('') +
+      `<Relationship Id="rId${styles}" Type="${RELATIONSHIPS_NAMESPACE}/styles" Target="styles.xml"/>` +
+      `<Relationship Id="rId${sharedStrings}" Type="${RELATIONSHIPS_NAMESPACE}/sharedStrings" Target="sharedStrings.xml"/></Relationships>`,
+  };
+}
 
 /**
- * The XLSX package of a table of one sheet. `textCells` says whether a string cell is read as the number or date it spells (a
- * delimited text or a sheet read as text) or kept as the text it is (a typed source such as JSON, where "007" is a string).
+ * The XLSX package of a workbook of one or more sheets, in the order given, sharing one string table and one set of cell formats.
+ * `textCells` says whether a string cell is read as the number or date it spells (a delimited text, a sheet read as text, a table
+ * of a PDF) or kept as the text it is (a typed source such as JSON, where "007" is a string).
  * `compression` is `STORE` only for a workbook that is read once and discarded (the office suite's `.xls` export).
+ * The caller names the sheets: a name of 1 to 31 characters without `[ ] : * ? / \`, each one different from the others (case apart).
  * @throws SheetLimitError (413) when a cell lies past row 1,048,576 or column 16,384, or holds more than 32,767 characters; the
  *   table is never cut to fit.
  */
-export async function writeXlsx(rows: readonly (readonly SheetCell[])[], textCells: TextCells, compression: WorkbookCompression = 'DEFLATE'): Promise<Buffer> {
-  const sheet = writeSheet(rows, textCells);
+export async function writeXlsxWorkbook(sheets: readonly WorkbookSheet[], textCells: TextCells, compression: WorkbookCompression = 'DEFLATE'): Promise<Buffer> {
+  const parts: WorkbookParts = { strings: new SharedStrings(), formats: new CellFormats() };
+  const sheetXml = sheets.map((sheet) => writeSheet(sheet, textCells, parts));
+  const { strings } = parts;
   const sharedStrings =
-    `${XML_DECLARATION}<sst xmlns="${MAIN_NAMESPACE}" count="${sheet.stringReferences}" uniqueCount="${sheet.strings.length}">` +
-    `${sheet.strings.map(sharedStringItem).join('')}</sst>`;
+    `${XML_DECLARATION}<sst xmlns="${MAIN_NAMESPACE}" count="${strings.references}" uniqueCount="${strings.strings.length}">` +
+    `${strings.strings.map(sharedStringItem).join('')}</sst>`;
+  const { contentTypes, workbook, relationships } = workbookParts(sheets);
 
   const zip = new JSZip();
-  zip.file('[Content_Types].xml', CONTENT_TYPES);
+  zip.file('[Content_Types].xml', contentTypes);
   zip.file('_rels/.rels', PACKAGE_RELATIONSHIPS);
-  zip.file('xl/workbook.xml', WORKBOOK);
-  zip.file('xl/_rels/workbook.xml.rels', WORKBOOK_RELATIONSHIPS);
-  zip.file('xl/styles.xml', sheet.formats.stylesXml());
+  zip.file('xl/workbook.xml', workbook);
+  zip.file('xl/_rels/workbook.xml.rels', relationships);
+  zip.file('xl/styles.xml', parts.formats.stylesXml());
   zip.file('xl/sharedStrings.xml', sharedStrings);
-  zip.file('xl/worksheets/sheet1.xml', sheet.xml);
+  sheetXml.forEach((xml, index) => zip.file(`xl/worksheets/sheet${index + 1}.xml`, xml));
   return zip.generateAsync({ type: 'nodebuffer', compression });
+}
+
+/** The XLSX package of a table of one sheet, `Sheet1`; see `writeXlsxWorkbook`. */
+export function writeXlsx(rows: readonly (readonly SheetCell[])[], textCells: TextCells, compression: WorkbookCompression = 'DEFLATE'): Promise<Buffer> {
+  return writeXlsxWorkbook([{ name: 'Sheet1', rows }], textCells, compression);
 }

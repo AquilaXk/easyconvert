@@ -142,15 +142,6 @@ describe('the extent the BIFF8 bounds are checked against', () => {
   }, LONG_TIMEOUT_MS);
 });
 
-describe('a PDF source of an .xls', () => {
-  it('is refused as an unsupported pair before any office suite runs', async () => {
-    const pdf = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.pdf'));
-    const failure = await dispatchConversion(pdf, 'pdf', 'xls', {}, 'sample.pdf').catch((err: unknown) => err);
-    expect(failure).toBeInstanceOf(UnsupportedTargetError);
-    expect((failure as Error).message).toBe('A PDF is not converted to a spreadsheet yet: the tables of its pages are not extracted.');
-  }, LONG_TIMEOUT_MS);
-});
-
 describe('a BIFF8 workbook read back', () => {
   const COMMA_ROWS = [
     ['name', 'note'],

@@ -4,7 +4,7 @@ import { plainTextModel } from './document-model/plain';
 import { evaluatePageOcrDecisions, recognizeRenderedPdfPages } from './ocr';
 import type { OcrResult } from './ocr-pdf-combiner';
 import { openPdfForReading } from './pdf-access';
-import { readPdfDocument } from './pdf-text-document';
+import { readPdfDocument, type ExtractedPdfDocument } from './pdf-text-document';
 import { PdfTextGeometryError } from './pdf-text-types';
 
 /**
@@ -22,6 +22,11 @@ function ocrTextOf(results: Map<number, OcrResult>): string {
     .join('\n\n');
 }
 
+/** What a PDF holds for a writer: the structure of its text layer, or the text of its pages when OCR read them. */
+export type PdfOfficeContent =
+  | { kind: 'layout'; extracted: ExtractedPdfDocument }
+  | { kind: 'text'; pages: { pageNumber: number; text: string }[] };
+
 /**
  * @param withImages carry the images of the pages in the result (a writer that places them needs this).
  * @throws PdfTextUnmappedError when no page of the document reads for want of a Unicode mapping and OCR is off.
@@ -29,7 +34,7 @@ function ocrTextOf(results: Map<number, OcrResult>): string {
  * @throws ConversionFailedError when the document has no text and OCR finds none.
  * @throws OcrEngineUnavailableError when a page needs OCR and no engine can render it.
  */
-export async function readPdfForOffice(source: Buffer, options: ConversionOptions, withImages = false): Promise<DocumentModel> {
+export async function readPdfContentForOffice(source: Buffer, options: ConversionOptions, withImages = false): Promise<PdfOfficeContent> {
   // An encrypted document is read from a copy qpdf decrypted with the request's password, the empty one when there is none.
   const inputBuffer = await openPdfForReading(source, options.password, options.signal);
   const densityThreshold = options.ocrDensityThreshold || DEFAULT_DENSITY_THRESHOLD;
@@ -45,7 +50,7 @@ export async function readPdfForOffice(source: Buffer, options: ConversionOption
   const analyses = read?.analyses ?? [];
   const { pagesNeedingOcr } = evaluatePageOcrDecisions(analyses, options.ocrMode || 'skip_text');
   const needsOcr = !hasText || (options.ocrEnabled === true && (pagesNeedingOcr.length > 0 || analyses.length === 0));
-  if (!needsOcr && extracted) return extracted.model;
+  if (!needsOcr && extracted) return { kind: 'layout', extracted };
 
   const recognized = await recognizeRenderedPdfPages(inputBuffer, pagesNeedingOcr.length > 0 ? new Set(pagesNeedingOcr) : undefined, {
     dpi: options.dpi,
@@ -54,19 +59,27 @@ export async function readPdfForOffice(source: Buffer, options: ConversionOption
   });
   const recognizedText = ocrTextOf(recognized);
   if (recognizedText === '') {
-    if (extracted && hasText) return extracted.model;
+    if (extracted && hasText) return { kind: 'layout', extracted };
     throw new ConversionFailedError('PDF has no text layer and OCR recognised no text on any page.');
   }
   // Pages read by OCR and pages with their own text are joined in page order as paragraphs.
-  const parts: string[] = [];
+  const pages: { pageNumber: number; text: string }[] = [];
   if (analyses.length > 0) {
     for (const analysis of analyses) {
       const ocr = recognized.get(analysis.pageNumber);
-      if (ocr) parts.push(ocr.text);
-      else if (analysis.text) parts.push(analysis.text);
+      if (ocr) pages.push({ pageNumber: analysis.pageNumber, text: ocr.text });
+      else if (analysis.text) pages.push({ pageNumber: analysis.pageNumber, text: analysis.text });
     }
   } else {
-    parts.push(recognizedText);
+    for (const [pageNumber, result] of [...recognized].sort(([a], [b]) => a - b)) {
+      if (result.text.trim() !== '') pages.push({ pageNumber, text: result.text });
+    }
   }
-  return plainTextModel(parts.join('\n\n'));
+  return { kind: 'text', pages };
+}
+
+/** The document model of a PDF for the Office, e-book and slide writers; see `readPdfContentForOffice` for the failures. */
+export async function readPdfForOffice(source: Buffer, options: ConversionOptions, withImages = false): Promise<DocumentModel> {
+  const content = await readPdfContentForOffice(source, options, withImages);
+  return content.kind === 'layout' ? content.extracted.model : plainTextModel(content.pages.map((page) => page.text).join('\n\n'));
 }
