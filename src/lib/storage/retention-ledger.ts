@@ -346,7 +346,7 @@ export class RedisRetentionLedger implements RetentionLedger {
         key
       );
       if (written === 1) return next;
-      await delay(Math.random() * Math.min(CAS_BACKOFF_MAX_MS, CAS_BACKOFF_BASE_MS * 2 ** attempt));
+      await delay(crypto.randomInt(Math.min(CAS_BACKOFF_MAX_MS, CAS_BACKOFF_BASE_MS * 2 ** attempt) + 1));
     }
     throw new Error(`The retention record changed ${MAX_UPDATE_ATTEMPTS} times while it was being updated`);
   }
