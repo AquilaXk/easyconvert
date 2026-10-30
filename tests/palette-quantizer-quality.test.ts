@@ -13,7 +13,8 @@ import { skipUnless } from './helpers/strict-skip';
 /**
  * Perceptual palette quantizer against ImageMagick's own `-colors 256 -dither FloydSteinberg` on five pictures, and
  * its cost at 1.92 megapixels. PSNR and mean Delta E_OK are computed in the test from the published definitions
- * (tests/helpers/palette-metrics.ts); the memory figure is the kernel's VmHWM of a fresh process.
+ * (tests/helpers/palette-metrics.ts); the time is the CPU time of a fresh process, so the other test files of a shard do not
+ * stretch it, and the memory figure is that process's VmHWM read after a collection (tests/helpers/measure-peak-quantize.mts).
  */
 
 const execFileAsync = promisify(execFile);
@@ -22,7 +23,7 @@ const PSNR_MARGIN_DB = 1;
 const DELTA_E_RATIO = 1.1;
 const PERF_WIDTH = 1600;
 const PERF_HEIGHT = 1200;
-const PERF_MAX_SECONDS = 1.5;
+const PERF_MAX_CPU_SECONDS = 1.5;
 const PERF_MAX_ADDED_MIB = 60;
 const PERF_RUNS = 5;
 const CHILD_TIMEOUT_MS = 170_000;
@@ -87,18 +88,18 @@ describe.skipIf(SKIP_WITHOUT_MAGICK)('256-colour quantization against ImageMagic
 });
 
 describe.skipIf(SKIP_WITHOUT_MAGICK || skipUnless('Linux /proc (VmHWM)', HAS_PROC))('cost at 1.92 megapixels and 256 colours', () => {
-  it('takes at most 1.5 s and adds at most 60 MiB of resident memory', async () => {
+  it('takes at most 1.5 s of CPU time and adds at most 60 MiB of resident memory', async () => {
     const rgbaFile = path.join(workDir, 'perf.rgba');
     // A textured picture with a smooth tonal range: the statistics of a photograph, 10 thousand histogram bins.
     runConvert(['-seed', '11', '-size', `${PERF_WIDTH}x${PERF_HEIGHT}`, 'plasma:fractal', '-blur', '0x2', '-attenuate', '0.3', '+noise', 'Gaussian', '-alpha', 'on', '-depth', '8', `rgba:${rgbaFile}`]);
     expect(readFileSync(rgbaFile).length).toBe(PERF_WIDTH * PERF_HEIGHT * 4);
     const { stdout } = await execFileAsync(
       process.execPath,
-      ['--import', 'tsx', MEASURE_SCRIPT, rgbaFile, String(PERF_WIDTH), String(PERF_HEIGHT), String(COLOURS), String(PERF_RUNS)],
+      ['--expose-gc', '--import', 'tsx', MEASURE_SCRIPT, rgbaFile, String(PERF_WIDTH), String(PERF_HEIGHT), String(COLOURS), String(PERF_RUNS)],
       { cwd: path.join(__dirname, '..'), timeout: CHILD_TIMEOUT_MS, maxBuffer: 1024 * 1024 }
     );
-    const measured = JSON.parse(stdout.trim().split('\n').pop() as string) as { bestMs: number; addedMiB: number };
-    expect(measured.bestMs / 1000).toBeLessThanOrEqual(PERF_MAX_SECONDS);
+    const measured = JSON.parse(stdout.trim().split('\n').pop() as string) as { bestCpuMs: number; addedMiB: number };
+    expect(measured.bestCpuMs / 1000).toBeLessThanOrEqual(PERF_MAX_CPU_SECONDS);
     expect(measured.addedMiB).toBeLessThanOrEqual(PERF_MAX_ADDED_MIB);
   }, 180_000);
 });
