@@ -18,6 +18,8 @@ import {
   admitsNewFiles,
   CAPACITY_CHECK_TTL_MS,
   evictForCapacity,
+  FAILURES_IN_A_ROW,
+  FUTILE_PASS_DELETIONS,
   FUTILE_PAUSE_MS,
   holdResultForJob,
   releaseResultHold,
@@ -25,6 +27,7 @@ import {
   registerResult,
   resultAvailability,
   setDiskProbe,
+  STORAGE_CALL_TIMEOUT_MS,
 } from '../src/lib/storage/retention-service';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
@@ -131,6 +134,7 @@ describe('early deletion when the disk runs full', () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     setDiskProbe(undefined);
     restoreIsolatedRetentionLedger();
     fs.rmSync(ledgerDir, { recursive: true, force: true });
@@ -275,6 +279,16 @@ describe('early deletion when the disk runs full', () => {
     expect(upload.status).toBe(HTTP_UNAUTHORIZED);
   });
 
+  it('lets new files in when the measurement of the disk never answers', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    setDiskProbe(() => new Promise<number>(() => undefined));
+
+    const admitted = admitsNewFiles(storageProvider);
+    await vi.advanceTimersByTimeAsync(STORAGE_CALL_TIMEOUT_MS);
+
+    expect(await admitted).toBe(true);
+  });
+
   it('lets new files in at 97% when the records of the results cannot be read', async () => {
     const ledger = new FileRetentionLedger(ledgerDir);
     vi.spyOn(ledger, 'liveRecords').mockRejectedValue(new Error('retention ledger unreachable'));
@@ -289,7 +303,8 @@ describe('early deletion when the disk runs full', () => {
     const ledger = new FileRetentionLedger(ledgerDir);
     const scans = vi.spyOn(ledger, 'liveRecords');
     setRetentionLedger(ledger);
-    fakeDisk(97);
+    await storeResult(await createUser('window'), 'only', Date.now() - 20 * MINUTE_MS);
+    fakeDisk(100);
     vi.useFakeTimers({ toFake: ['Date'] });
     const start = Date.now();
     const upload = () => directUploadRoute(new NextRequest(`${BASE_URL}/api/v1/uploads/direct`, { method: 'POST' }));
@@ -322,20 +337,6 @@ describe('early deletion when the disk runs full', () => {
     expect(Buffer.from(await resumed.arrayBuffer()).toString('ascii')).toBe('56789');
   });
 
-  it('stops after three deletions in a row that did not lower the use of the disk', async () => {
-    const user = await createUser('futile');
-    const now = Date.now();
-    for (let i = 0; i < 6; i++) await storeResult(user, `full${i}`, now - (50 - i) * MINUTE_MS);
-    const disk = fakeDisk(90);
-    vi.spyOn(storageProvider, 'deleteObject').mockImplementation((key: string) => {
-      disk.deleted.push(key);
-      return true;
-    });
-
-    expect(await evictForCapacity(storageProvider, now)).toBe(3);
-    expect(disk.deleted).toHaveLength(3);
-  });
-
   /** A disk that stays at `used` however many objects are deleted from storage. */
   function stuckDisk(used: number) {
     const disk = { used, deleted: [] as string[] };
@@ -347,29 +348,74 @@ describe('early deletion when the disk runs full', () => {
     return disk;
   }
 
+  it('stops after twenty deletions that together did not lower the use of the disk', async () => {
+    const user = await createUser('futile');
+    const now = Date.now();
+    for (let i = 0; i < 30; i++) await storeResult(user, `full${i}`, now - (50 - i) * MINUTE_MS);
+    const disk = stuckDisk(90);
+
+    expect(await evictForCapacity(storageProvider, now)).toBe(FUTILE_PASS_DELETIONS);
+    expect(disk.deleted).toHaveLength(FUTILE_PASS_DELETIONS);
+  });
+
+  it('judges a pass by what it lowered in all, so results that free less than the disk reports in one step still count', async () => {
+    const user = await createUser('coarse');
+    const now = Date.now();
+    for (let i = 0; i < 20; i++) await storeResult(user, `tiny${i}`, now - (50 - i) * MINUTE_MS);
+    vi.stubEnv('RESULT_DISK_LOW_PERCENT', '84');
+    const disk = { exact: 86, deleted: 0 };
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation(() => {
+      disk.deleted++;
+      disk.exact -= 0.25;
+      return true;
+    });
+    setDiskProbe(async () => Math.ceil(disk.exact));
+
+    expect(await evictForCapacity(storageProvider, now)).toBe(8);
+    expect(disk.exact).toBe(84);
+  });
+
+  it('keeps deleting past twenty results while writes that arrive between the probes hide the drop of single deletions, as long as the pass lowers the use', async () => {
+    const user = await createUser('noisy');
+    const now = Date.now();
+    for (let i = 0; i < 30; i++) await storeResult(user, `noisy${i}`, now - (50 - i) * MINUTE_MS);
+    const disk = { used: 90, probes: 0 };
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation(() => {
+      disk.used -= 1;
+      return true;
+    });
+    setDiskProbe(async () => {
+      disk.probes++;
+      if (disk.probes % 4 !== 1) disk.used += 1;
+      return disk.used;
+    });
+
+    expect(await evictForCapacity(storageProvider, now)).toBe(30);
+  });
+
   it('remembers a pass that did not lower the use, and tries again only after a pause or when the use moved', async () => {
     const user = await createUser('pause');
     const now = Date.now();
-    for (let i = 0; i < 9; i++) await storeResult(user, `p${i}`, now - (50 - i) * MINUTE_MS);
+    for (let i = 0; i < 50; i++) await storeResult(user, `p${i}`, now - (60 - i) * MINUTE_MS);
     const disk = stuckDisk(90);
 
-    expect(await evictForCapacity(storageProvider, now)).toBe(3);
+    expect(await evictForCapacity(storageProvider, now)).toBe(FUTILE_PASS_DELETIONS);
     expect(await evictForCapacity(storageProvider, now + MINUTE_MS)).toBe(0);
     expect(await evictForCapacity(storageProvider, now + FUTILE_PAUSE_MS - 1)).toBe(0);
-    expect(disk.deleted).toHaveLength(3);
+    expect(disk.deleted).toHaveLength(FUTILE_PASS_DELETIONS);
 
-    expect(await evictForCapacity(storageProvider, now + FUTILE_PAUSE_MS)).toBe(3);
-    expect(disk.deleted).toHaveLength(6);
+    expect(await evictForCapacity(storageProvider, now + FUTILE_PAUSE_MS)).toBe(FUTILE_PASS_DELETIONS);
+    expect(disk.deleted).toHaveLength(2 * FUTILE_PASS_DELETIONS);
 
     disk.used = 93;
-    expect(await evictForCapacity(storageProvider, now + FUTILE_PAUSE_MS + MINUTE_MS)).toBe(3);
-    expect(disk.deleted).toHaveLength(9);
+    expect(await evictForCapacity(storageProvider, now + FUTILE_PAUSE_MS + MINUTE_MS)).toBe(10);
+    expect(disk.deleted).toHaveLength(50);
   });
 
-  it('deletes three results per pause over ten minutes of requests while the use of the disk never moves', async () => {
+  it('deletes twenty results per pause over ten minutes of requests while the use of the disk never moves', async () => {
     const user = await createUser('constant');
     const start = Date.now();
-    for (let i = 0; i < 30; i++) await storeResult(user, `k${i}`, start - (50 - i) * MINUTE_MS);
+    for (let i = 0; i < 90; i++) await storeResult(user, `k${i}`, start - (100 - i) * MINUTE_MS);
     const disk = stuckDisk(97);
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(start);
@@ -381,7 +427,88 @@ describe('early deletion when the disk runs full', () => {
       vi.setSystemTime(start + (minute + 1) * MINUTE_MS);
     }
 
-    expect(deletedByMinute).toEqual([3, 3, 3, 3, 3, 6, 6, 6, 6, 6]);
+    expect(deletedByMinute).toEqual([20, 20, 20, 20, 20, 40, 40, 40, 40, 40]);
+  });
+
+  it('pauses after a pass with nothing to delete, so that requests do not read every record again and again', async () => {
+    const ledger = new FileRetentionLedger(ledgerDir);
+    const scans = vi.spyOn(ledger, 'liveRecords');
+    setRetentionLedger(ledger);
+    const user = await createUser('nothing');
+    const start = Date.now();
+    for (let i = 0; i < 20; i++) await storeResult(user, `young${i}`, start);
+    const disk = stuckDisk(97);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(start);
+
+    for (let request = 0; request < 120; request++) {
+      vi.setSystemTime(start + request * 5 * SECOND_MS);
+      expect(await admitsNewFiles(storageProvider)).toBe(false);
+    }
+
+    expect(disk.deleted).toEqual([]);
+    expect(scans).toHaveBeenCalledTimes(2);
+  });
+
+  it('pauses after a pass in which every deletion failed, and stops that pass after three failures in a row', async () => {
+    const user = await createUser('failing');
+    const start = Date.now();
+    for (let i = 0; i < 40; i++) await storeResult(user, `f${i}`, start - (50 - i) * MINUTE_MS);
+    const attempts: string[] = [];
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation((key: string) => {
+      attempts.push(key);
+      throw new Error('EACCES');
+    });
+    setDiskProbe(async () => 97);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(start);
+
+    for (let request = 0; request < 24; request++) {
+      vi.setSystemTime(start + request * 5 * SECOND_MS);
+      await admitsNewFiles(storageProvider);
+    }
+
+    expect(attempts).toHaveLength(FAILURES_IN_A_ROW);
+  });
+
+  it('leaves a result alone while its failed deletion waits for the next try', async () => {
+    const user = await createUser('retry');
+    const now = Date.now();
+    const poison = await storeResult(user, 'poison', now - 50 * MINUTE_MS);
+    await storeResult(user, 'other', now - 40 * MINUTE_MS);
+    const attempts: string[] = [];
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation((key: string) => {
+      attempts.push(key);
+      if (key === poison) throw new Error('EACCES');
+      return true;
+    });
+    const disk = { used: 90 };
+    setDiskProbe(async () => disk.used);
+
+    await evictForCapacity(storageProvider, now);
+    disk.used = 93;
+    await evictForCapacity(storageProvider, now + MINUTE_MS);
+
+    expect(attempts.filter((key) => key === poison)).toHaveLength(1);
+    expect(await resultAvailability(poison)).toMatchObject({ state: 'available' });
+  });
+
+  it('counts a result whose object is already gone as skipped, not as a deletion that freed nothing', async () => {
+    const user = await createUser('missing');
+    const now = Date.now();
+    const gone: string[] = [];
+    for (let i = 0; i < 5; i++) gone.push(await storeResult(user, `gone${i}`, now - (60 - i) * MINUTE_MS));
+    for (let i = 0; i < 5; i++) await storeResult(user, `here${i}`, now - (30 - i) * MINUTE_MS);
+    const disk = { used: 90 };
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation((key: string) => {
+      if (gone.includes(key)) return false;
+      disk.used -= PERCENT_PER_RESULT;
+      return true;
+    });
+    setDiskProbe(async () => disk.used);
+
+    expect(await evictForCapacity(storageProvider, now)).toBe(3);
+    expect(disk.used).toBe(78);
   });
 
   describe('when the temporary directory is on another disk', () => {

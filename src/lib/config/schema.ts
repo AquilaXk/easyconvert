@@ -739,7 +739,7 @@ const SCHEMA_ENTRIES = [
     name: 'RESULT_DISK_HIGH_PERCENT',
     area: 'storage',
     description:
-      'Disk use, in percent of the file system that holds EASYCONVERT_STORAGE_DIR, above which the sweep deletes results before their time: delivered results in their grace period first, the earliest delivery first, then undelivered results, the oldest first, until the use is at or below RESULT_DISK_LOW_PERCENT or three deletions in a row did not lower it, and then waits five minutes unless the use moved. The files of a queued or running job, undelivered results younger than ten minutes and partly downloaded results are never deleted. Such a result answers 410 Gone with the reason `capacity`. Local storage driver only; must be above RESULT_DISK_LOW_PERCENT and below RESULT_DISK_REFUSE_PERCENT.',
+      'Disk use, in percent of the file system that holds EASYCONVERT_STORAGE_DIR, above which the sweep deletes results before their time: delivered results in their grace period first, the earliest delivery first, then undelivered results, the oldest first, until the use is at or below RESULT_DISK_LOW_PERCENT. A pass that deleted nothing, or whose deletions together did not lower the use, waits five minutes unless the use moved. The files of a queued or running job, undelivered results younger than ten minutes and partly downloaded results are never deleted. Such a result answers 410 Gone with the reason `capacity`. Local storage driver only; must be above RESULT_DISK_LOW_PERCENT and below RESULT_DISK_REFUSE_PERCENT.',
     kind: { type: 'integer', min: 1, max: 99 },
     default: 85,
     requiredInProduction: false,

@@ -92,12 +92,12 @@ export function diskUsageProbe(directories: readonly string[]): DiskProbe {
 }
 
 /**
- * Whether the result of `record` may be deleted for space at `now`. Never an upload, or a result that is gone, held by a job, or
- * undelivered and either younger than CAPACITY_MIN_AGE_MS or partly sent (a client may resume it) within the
- * undelivered time.
+ * Whether the result of `record` may be deleted for space at `now`. Never an upload, or a result that is gone, held by a job,
+ * waiting for the next try after a failed deletion, or undelivered and either younger than CAPACITY_MIN_AGE_MS or partly
+ * sent (a client may resume it) within the undelivered time.
  */
 export function isCapacityCandidate(record: RetentionRecord, now: number, policy: RetentionPolicy): boolean {
-  if (!isRetainedKey(record.key) || record.goneAt !== undefined || isHeld(record, now)) return false;
+  if (!isRetainedKey(record.key) || record.goneAt !== undefined || isHeld(record, now) || (record.retryAt ?? 0) > now) return false;
   if (record.deliveredAt !== undefined) return true;
   const recentlyServed = record.lastServedAt !== undefined && now - record.lastServedAt < policy.undeliveredTtlMs;
   return now - record.createdAt >= CAPACITY_MIN_AGE_MS && record.received.length === 0 && !recentlyServed;

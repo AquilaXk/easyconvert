@@ -234,6 +234,32 @@ describe('job submission authorizes caller-supplied storage keys (#249)', () => 
     expect(await conversionQueue.getJobCounts()).toEqual(countsBefore);
   });
 
+  it('authorizes a graph key that only begins with "inline"', async () => {
+    const bob = await createUser('input_inline');
+    const lookalike = storeCsv(`inline_${uniqueSuffix()}_scores.csv`);
+    const countsBefore = await conversionQueue.getJobCounts();
+
+    const res = await submitV1Job(
+      new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await writeKeyHeaders(bob)) },
+        body: JSON.stringify({
+          originalFilename: 'scores.csv',
+          graph: {
+            nodes: {
+              first: { op: 'import.upload', storageKey: lookalike },
+              tojson: { op: 'convert', input: 'first', targetFormat: 'json' },
+              out: { op: 'export.internal', input: 'tojson' },
+            },
+          },
+        }),
+      })
+    );
+
+    expect(res.status).toBe(404);
+    expect(await conversionQueue.getJobCounts()).toEqual(countsBefore);
+  });
+
   it('accepts the owner chaining their own conversions/ and results/ outputs', async () => {
     const alice = await createUser('input_alice');
     const aliceJob = await conversionQueue.add('convert', victimJobData(alice.id));

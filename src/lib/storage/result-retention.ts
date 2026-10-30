@@ -178,14 +178,16 @@ export function isHeld(record: RetentionRecord, now: number): boolean {
 
 /**
  * The record while the job `holder` reads the result as its input: it is neither swept nor deleted for space until
- * the job ends or JOB_INPUT_HOLD_MAX_MS has passed. Undefined when the result is deleted already, or when MAX_HOLDS
- * other jobs hold it.
+ * the job ends or JOB_INPUT_HOLD_MAX_MS has passed. An upload is held for no longer than JOB_INPUT_HOLD_MAX_MS after
+ * it was first read, whoever reads it later. Undefined when the result is deleted already, or when MAX_HOLDS other
+ * jobs hold it.
  */
 export function holdRecord(record: RetentionRecord, holder: string, now: number): RetentionRecord | undefined {
   if (isDeleted(record, now)) return undefined;
   const holds = activeHolds(record, now);
   if (!(holder in holds) && Object.keys(holds).length >= MAX_HOLDS) return undefined;
-  return { ...record, holds: { ...holds, [holder]: now + JOB_INPUT_HOLD_MAX_MS } };
+  const until = now + JOB_INPUT_HOLD_MAX_MS;
+  return { ...record, holds: { ...holds, [holder]: isUploadKey(record.key) ? Math.min(until, record.createdAt + JOB_INPUT_HOLD_MAX_MS) : until } };
 }
 
 /** The record once the job `holder` ended; undefined when it held nothing. */

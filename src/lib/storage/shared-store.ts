@@ -95,7 +95,7 @@ export class SharedObjectStore extends Map<string, StoredObject> {
     // 1. Check in-memory map
     const inMem = super.get(key);
     if (inMem) {
-      if (inMem.expiresAt && Date.now() > inMem.expiresAt) {
+      if (inMem.expiresAt && Date.now() > inMem.expiresAt && this.renewedExpiry(inMem) < Date.now()) {
         this.delete(key);
         return undefined;
       }
@@ -161,6 +161,47 @@ export class SharedObjectStore extends Map<string, StoredObject> {
       return reconstructed;
     } catch {
       return undefined;
+    }
+  }
+
+  /** The expiry written next to the object on the shared disk, which is what every process agrees on; undefined without it. */
+  private diskExpiry(key: string): number | undefined {
+    try {
+      const expiresAt = (JSON.parse(fs.readFileSync(this.getPathsForKey(key).metaPath, 'utf-8')) as { expiresAt?: unknown }).expiresAt;
+      return typeof expiresAt === 'number' ? expiresAt : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The expiry of a copy this process holds in memory, brought up to the one on the shared disk when another process
+   * extended it (see `extendExpiry`). A process only looks at the disk once its own copy says the object expired.
+   */
+  public renewedExpiry(cached: Pick<StoredObject, 'key' | 'expiresAt'>): number {
+    const shared = this.diskExpiry(cached.key);
+    if (shared !== undefined && shared > cached.expiresAt) cached.expiresAt = shared;
+    return cached.expiresAt;
+  }
+
+  /**
+   * Raises the expiry of the object under `key` to `expiresAt`, in this process and in the file every process reads;
+   * an expiry that is later already stays. Returns false when there is no such object.
+   */
+  public extendExpiry(key: string, expiresAt: number): boolean {
+    const cached = super.get(key);
+    if (cached && cached.expiresAt < expiresAt) cached.expiresAt = expiresAt;
+    const { metaPath } = this.getPathsForKey(key);
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { expiresAt?: number };
+      if (typeof meta.expiresAt !== 'number' || meta.expiresAt < expiresAt) {
+        const tempPath = `${metaPath}.${crypto.randomUUID()}.tmp`;
+        fs.writeFileSync(tempPath, JSON.stringify({ ...meta, expiresAt }), 'utf-8');
+        fs.renameSync(tempPath, metaPath);
+      }
+      return true;
+    } catch {
+      return cached !== undefined;
     }
   }
 
@@ -337,3 +378,12 @@ export class SharedObjectStore extends Map<string, StoredObject> {
 
 export const globalSharedObjects = new SharedObjectStore();
 
+/**
+ * Raises the expiry of the object under `key` for a backend that keeps objects in its own map next to the shared
+ * store: in that map, and through `SharedObjectStore.extendExpiry` for every other process. False when neither has it.
+ */
+export function extendStoredExpiry(own: ReadonlyMap<string, StoredObject>, key: string, expiresAt: number): boolean {
+  const cached = own.get(key);
+  if (cached && cached.expiresAt < expiresAt) cached.expiresAt = expiresAt;
+  return globalSharedObjects.extendExpiry(key, expiresAt) || cached !== undefined;
+}

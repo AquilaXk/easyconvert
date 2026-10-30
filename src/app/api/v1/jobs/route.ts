@@ -42,6 +42,7 @@ import {
   JobGraphSchema,
 } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext } from '@/lib/api/with-idempotency';
+import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { tusEngine } from '@/lib/storage/tus-engine';
 
 export const dynamic = 'force-dynamic';
@@ -59,7 +60,7 @@ async function mayUseStoredInputs(storageKey: string | undefined, graph: JobGrap
   const keys = new Set(graph ? graphInputKeys(normalizeGraphNodes(graph)) : []);
   if (storageKey) keys.add(storageKey);
   for (const key of keys) {
-    if (!key.startsWith('inline') && !(await mayUseStorageKeyAsJobInput(key, callerUserId))) return false;
+    if (!isInlineInputKey(key) && !(await mayUseStorageKeyAsJobInput(key, callerUserId))) return false;
   }
   return true;
 }
@@ -458,12 +459,12 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     if (!storageKey && graph && !inputBufferBase64 && !uploadedBuffer) {
       const graphNodes = normalizeGraphNodes(graph);
       const uploadNode = Object.values(graphNodes).find((n) => n.op === 'import.upload') as { storageKey?: string } | undefined;
-      if (uploadNode?.storageKey && !uploadNode.storageKey.startsWith('inline')) {
+      if (uploadNode?.storageKey && !isInlineInputKey(uploadNode.storageKey)) {
         storageKey = uploadNode.storageKey;
       }
     }
 
-    if (!originalFilename && storageKey && !storageKey.startsWith('inline')) {
+    if (!originalFilename && storageKey && !isInlineInputKey(storageKey)) {
       originalFilename = storageKey.split('/').pop() || 'file';
     }
 

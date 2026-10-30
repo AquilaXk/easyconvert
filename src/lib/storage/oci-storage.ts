@@ -152,6 +152,12 @@ export interface IStorageBackend {
   getActiveSessionsCount(): MaybePromise<number | null>;
   /** Stored objects, or null when the backend cannot count them cheaply. */
   getObjectsCount(): MaybePromise<number | null>;
+  /**
+   * Raises the expiry of an object so that it outlives the lifetime it was stored with, for every process that reads
+   * it; an expiry that is later already stays. False when there is no such object. Absent on a backend whose objects
+   * carry their expiry in the store.
+   */
+  extendExpiry?(key: string, expiresAt: number): MaybePromise<boolean>;
   sweepExpiredObjects?(now?: number): number;
   stopGc?(): void;
   generatePresignedUploadUrl?(
@@ -184,7 +190,7 @@ export interface IStorageBackend {
   getSigningSecret?(): string;
 }
 
-import { globalSharedObjects } from './shared-store';
+import { extendStoredExpiry, globalSharedObjects } from './shared-store';
 
 /**
  * Local-disk backend that mirrors the OCI Object Storage multipart workflow. It is selected by
@@ -561,7 +567,7 @@ export class OciObjectStorageService implements IStorageBackend {
     if (!obj) return undefined;
 
     // Lazy expiration eviction
-    if (Date.now() > obj.expiresAt) {
+    if (Date.now() > obj.expiresAt && Date.now() > globalSharedObjects.renewedExpiry(obj)) {
       this.deleteObject(key);
       return undefined;
     }
@@ -613,6 +619,10 @@ export class OciObjectStorageService implements IStorageBackend {
     return count;
   }
 
+  extendExpiry(key: string, expiresAt: number): boolean {
+    return extendStoredExpiry(this.objects, key, expiresAt);
+  }
+
   /**
    * Sweeps expired objects from memory and shreds their buffers in bulk
    */
@@ -621,7 +631,7 @@ export class OciObjectStorageService implements IStorageBackend {
     const expiredKeys = new Set<string>();
 
     for (const [key, obj] of this.objects.entries()) {
-      if (now > obj.expiresAt) {
+      if (now > obj.expiresAt && now > globalSharedObjects.renewedExpiry(obj)) {
         expiredKeys.add(key);
         if (obj.key) expiredKeys.add(obj.key);
       }
@@ -951,6 +961,10 @@ export class S3CompatibleStorageBackend implements IStorageBackend {
     return typeof this.backend.deleteByPrefix === 'function'
       ? this.backend.deleteByPrefix(prefix)
       : 0;
+  }
+
+  extendExpiry(key: string, expiresAt: number): boolean {
+    return this.backend.extendExpiry(key, expiresAt);
   }
 
   sweepExpiredObjects(now?: number): number {

@@ -20,6 +20,7 @@ import {
 } from '../src/lib/storage/retention-ledger';
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
 import {
+  bindRetentionStorage,
   deleteResult,
   holdResultForJob,
   releaseResultHold,
@@ -28,15 +29,19 @@ import {
   resultAvailability,
   saveRetainedResult,
   startRetentionSweep,
+  STORAGE_CALL_TIMEOUT_MS,
   stopRetentionSweep,
   sweepRetention,
 } from '../src/lib/storage/retention-service';
 import { mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
+import { SharedObjectStore } from '../src/lib/storage/shared-store';
 import {
   JOB_INPUT_HOLD_MAX_MS,
   addInterval,
   coversWholeObject,
+  holdRecord,
   newRecord,
+  newUploadRecord,
   recordServedRange,
   resolveRetentionPolicy,
   MAX_RECEIVED_RANGES,
@@ -155,6 +160,17 @@ describe('the record of one result', () => {
     const first = recordServedRange(fresh, { first: 0, last: 9, size: 10 }, NOW + 1, POLICY);
     const second = recordServedRange(first, { first: 0, last: 9, size: 10 }, NOW + 5 * SECOND_MS, POLICY);
     expect(second.deleteAt).toBe(first.deleteAt);
+  });
+
+  it('never holds an upload for more than a day after it was first read, however late another job reads it', () => {
+    const first = holdRecord(newUploadRecord('uploads/a.csv', NOW), 'job-a', NOW);
+    const second = holdRecord(first as NonNullable<typeof first>, 'job-b', NOW + JOB_INPUT_HOLD_MAX_MS - SECOND_MS);
+    expect(second?.holds).toEqual({ 'job-a': NOW + JOB_INPUT_HOLD_MAX_MS, 'job-b': NOW + JOB_INPUT_HOLD_MAX_MS });
+  });
+
+  it('holds a result for a day from the moment a job takes it', () => {
+    const held = holdRecord(newRecord('results/j/a.pdf', NOW, POLICY), 'job-a', NOW + 30 * SECOND_MS);
+    expect(held?.holds).toEqual({ 'job-a': NOW + 30 * SECOND_MS + JOB_INPUT_HOLD_MAX_MS });
   });
 
   it('never keeps a result longer than the undelivered time because of the grace period', () => {
@@ -616,15 +632,40 @@ describe('the file ledger shared by the web server and the workers', () => {
     expect((await new FileRetentionLedger(ledgerDir).get(result))?.goneAt).toBeTypeOf('number');
   });
 
-  it('reports the end of the last hold as the deletion time while a job holds the result', async () => {
+  it('keeps reporting the deletion time of the result itself while a job holds it, because the end of the job cancels the hold', async () => {
     const key = newKey();
     await registerResult(key);
     const now = Date.now();
+    const own = (await new FileRetentionLedger(ledgerDir).get(key))?.deleteAt;
     expect(await holdResultForJob(key, 'job-keeps', now)).toBe(true);
 
-    const availability = await resultAvailability(key, now);
+    expect(await resultAvailability(key, now)).toMatchObject({ state: 'available', deleteAt: own });
+  });
 
-    expect(availability).toMatchObject({ state: 'available', deleteAt: now + JOB_INPUT_HOLD_MAX_MS });
+  it('gives up on a deletion that never finishes, so that the sweep goes on with the other results and tries this one again', async () => {
+    const hung = newKey();
+    const other = newKey();
+    await registerResult(hung);
+    await registerResult(other);
+    const removed: string[] = [];
+    const store = {
+      deleteObject: (key: string): Promise<boolean> => (key === hung ? new Promise<boolean>(() => undefined) : Promise.resolve((removed.push(key), true))),
+    };
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let settled = false;
+    const sweep = sweepRetention(store, Date.now() + POLICY.undeliveredTtlMs + SECOND_MS).finally(() => {
+      settled = true;
+    });
+    while (!settled) {
+      await new Promise((resolve) => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(STORAGE_CALL_TIMEOUT_MS);
+    }
+    vi.useRealTimers();
+
+    expect(await sweep).toBe(1);
+    expect(removed).toEqual([other]);
+    expect((await new FileRetentionLedger(ledgerDir).get(hung))?.goneAt).toBeUndefined();
   });
 
   it('removes the leftovers of a write that stopped half-way once they are an hour old', async () => {
@@ -714,6 +755,74 @@ describe('the file ledger shared by the web server and the workers', () => {
     expect(storageProvider.getObject(key)).toBeUndefined();
     expect(await holdResultForJob(key, 'job-3')).toBe(false);
     expect(await mayUseStorageKeyAsJobInput(key, owner.id)).toBe(false);
+  });
+
+  describe('the lifetime the object was stored with', () => {
+    const MINUTE_MS = 60 * SECOND_MS;
+
+    beforeEach(() => bindRetentionStorage(storageProvider));
+    afterEach(() => {
+      bindRetentionStorage(undefined);
+      vi.useRealTimers();
+    });
+
+    /** The storage's own removal of what expired, at `at`; a read after it sees what is left. */
+    function storageCleansAt(at: number): void {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(at);
+      storageProvider.sweepExpiredObjects?.();
+    }
+
+    async function storeForOneHour(): Promise<{ key: string; storedAt: number }> {
+      const key = newKey();
+      const storedAt = Date.now();
+      await saveRetainedResult(storageProvider, key, TEN_BYTES, MIME_TYPE, 'held.bin');
+      return { key, storedAt };
+    }
+
+    it('does not remove the object of a result under a job that holds it past the undelivered time', async () => {
+      const { key, storedAt } = await storeForOneHour();
+      expect(await holdResultForJob(key, 'job-long', storedAt + 50 * MINUTE_MS)).toBe(true);
+
+      storageCleansAt(storedAt + ONE_HOUR_MS + MINUTE_MS);
+
+      expect(storageProvider.getObject(key)).toBeDefined();
+      await releaseResultHold(key, 'job-long');
+      expect(await sweepRetention(storageProvider, storedAt + ONE_HOUR_MS + MINUTE_MS)).toBe(1);
+      expect(storageProvider.getObject(key)).toBeUndefined();
+    });
+
+    it('removes the object of a result that no job holds when its lifetime ends', async () => {
+      const { key, storedAt } = await storeForOneHour();
+      storageCleansAt(storedAt + ONE_HOUR_MS + MINUTE_MS);
+      expect(storageProvider.getObject(key)).toBeUndefined();
+    });
+
+    it('does not remove an upload under a job that read it near the end of its day', async () => {
+      const upload = `uploads/${Date.now()}_${crypto.randomBytes(4).toString('hex')}_late.bin`;
+      const storedAt = Date.now();
+      await storageProvider.saveObject(upload, TEN_BYTES, MIME_TYPE, 'late.bin');
+      expect(await holdResultForJob(upload, 'job-late', storedAt + JOB_INPUT_HOLD_MAX_MS - 5 * MINUTE_MS)).toBe(true);
+
+      storageCleansAt(storedAt + JOB_INPUT_HOLD_MAX_MS + MINUTE_MS);
+
+      expect(storageProvider.getObject(upload)).toBeDefined();
+      vi.useRealTimers();
+      await releaseResultHold(upload, 'job-late');
+      storageProvider.deleteObject(upload);
+    });
+
+    it('does not remove a file in the process that saved it when another process extended its lifetime on the shared disk', async () => {
+      const key = newKey();
+      const storedAt = Date.now();
+      await storageProvider.saveObjectFromStream(key, Readable.from([TEN_BYTES]), { filename: 'shared.bin', mimeType: MIME_TYPE }, ONE_HOUR_MS);
+      await registerResult(key);
+      expect(new SharedObjectStore().extendExpiry(key, storedAt + 2 * ONE_HOUR_MS)).toBe(true);
+
+      storageCleansAt(storedAt + ONE_HOUR_MS + MINUTE_MS);
+
+      expect(storageProvider.getObject(key)?.buffer.toString('ascii')).toBe('0123456789');
+    });
   });
 
   it('ends the hold of a job that never reported back once the longest hold has passed', async () => {

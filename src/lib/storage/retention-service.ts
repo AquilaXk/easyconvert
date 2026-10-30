@@ -36,7 +36,7 @@ export interface DeletableStorage {
 }
 
 /** A storage backend the sweep runs on; a `local` one keeps its objects on this host's disk. */
-export type SweptStorage = DeletableStorage & Partial<Pick<IStorageBackend, 'kind'>>;
+export type SweptStorage = DeletableStorage & Partial<Pick<IStorageBackend, 'kind' | 'extendExpiry'>>;
 
 /** A storage backend that can store a result, and remove it again when it cannot be registered. */
 export type ResultStorage = Pick<IStorageBackend, 'saveObject' | 'deleteObject'>;
@@ -52,17 +52,23 @@ const SWEEP_BATCH = 500;
  */
 export const CAPACITY_CHECK_TTL_MS = 5_000;
 /**
- * Deletions in a row that did not lower the use of the disk after which an early deletion stops: whatever fills
- * the disk is not results (uploads, a spool, files still open), and deleting more results would not free it.
+ * Deletions of one early-deletion pass after which it stops when the use of the disk is still not lower than when the
+ * pass began: whatever fills the disk is not results (uploads, a spool, files still open), and deleting more of them
+ * would not free it. A pass is judged as a whole, because one result can free less than a step of the measurement and
+ * writes that arrive in between hide the drop of any single deletion.
  */
-const MAX_FUTILE_DELETIONS = 3;
+export const FUTILE_PASS_DELETIONS = 20;
+/** Deletions that failed in a row after which an early-deletion pass stops: the store is down or refusing, and each try may take the timeout. */
+export const FAILURES_IN_A_ROW = 3;
 /**
- * How long after a pass that stopped for that reason the next early deletion waits, unless the use of the disk moved
- * by FUTILE_USE_CHANGE_PERCENT or more by then. Without it every sweep of every process would delete another
- * MAX_FUTILE_DELETIONS results for nothing.
+ * How long after a pass that lowered nothing (no result to delete, every deletion failed, or the use stayed as high)
+ * the next early deletion waits, unless the use of the disk moved by FUTILE_USE_CHANGE_PERCENT or more by then.
+ * Without it every request and every sweep of every process would read all records and try again for nothing.
  */
 export const FUTILE_PAUSE_MS = 5 * 60 * 1000;
 const FUTILE_USE_CHANGE_PERCENT = 1;
+/** How long a measurement of the disk or a deletion in the store may take before it counts as failed. */
+export const STORAGE_CALL_TIMEOUT_MS = 30_000;
 /** Attempts to reopen a record whose object could not be deleted, with a pause that doubles from REOPEN_BACKOFF_MS. */
 const REOPEN_ATTEMPTS = 3;
 const REOPEN_BACKOFF_MS = 100;
@@ -112,7 +118,7 @@ export async function saveRetainedResult(
 /** What a client can be told about a result: the job API reports it next to the result. */
 export interface ResultAvailability {
   state: 'available' | 'deleted';
-  /** Epoch ms after which the result is deleted, later than its own deletion time while a job holds it; for an available result. */
+  /** Epoch ms of the record's own deletion time; for an available result. A job that still reads the result postpones the deletion until it ends. */
   deleteAt?: number;
   deliveredAt?: number;
   /** Why a deleted result is gone. */
@@ -139,7 +145,7 @@ export async function resultAvailability(key: string, now: number = Date.now()):
   const record = await readRecord(key);
   if (!record) return undefined;
   if (isDeleted(record, now)) return { state: 'deleted', reason: reasonOf(record), deliveredAt: record.deliveredAt };
-  return { state: 'available', deleteAt: keptUntil(record), deliveredAt: record.deliveredAt };
+  return { state: 'available', deleteAt: record.deleteAt, deliveredAt: record.deliveredAt };
 }
 
 /** Whether the result stored under `key` was deleted by the retention rule (or must be treated as deleted now). */
@@ -176,12 +182,32 @@ export async function recordServed(key: string, range: { first: number; last: nu
   await getRetentionLedger().update(key, (current) => recordServedRange(current ?? newRecord(key, now, policy), range, now, policy));
 }
 
+let heldStorage: Pick<IStorageBackend, 'extendExpiry'> | undefined;
+
+/**
+ * Names the storage whose objects a hold keeps alive (see `holdResultForJob`). The web server and the worker bind the
+ * one they sweep when they start the sweep; `undefined` unbinds it.
+ */
+export function bindRetentionStorage(storage: Pick<IStorageBackend, 'extendExpiry'> | undefined): void {
+  heldStorage = storage;
+}
+
+/** Raises the lifetime the object under `key` was stored with to `until`, so that the storage does not remove it under the job that holds it. */
+async function extendObjectLifetime(key: string, until: number): Promise<void> {
+  try {
+    await heldStorage?.extendExpiry?.(key, until);
+  } catch (error) {
+    console.warn(`[Retention] Could not extend the lifetime of "${key}" for the job that holds it; it keeps the one it was stored with:`, error);
+  }
+}
+
 /**
  * Holds the file under `key` for the job `holder`, which reads it as its input: an earlier result that the sweep and
  * an early deletion for space leave alone, or an upload that is not deleted while another job may still read it. The
- * hold lasts until `releaseResultHold` or JOB_INPUT_HOLD_MAX_MS. Returns false when the file was deleted before the
- * hold could be taken, so the job must not be queued. A key the rule does not track, or a ledger that cannot be
- * reached, holds nothing and returns true.
+ * hold lasts until `releaseResultHold` or JOB_INPUT_HOLD_MAX_MS, and the object's own lifetime in storage is raised
+ * to the end of the hold, so that the storage does not remove it under the job. Returns false when the file was
+ * deleted before the hold could be taken, so the job must not be queued. A key the rule does not track, or a ledger
+ * that cannot be reached, holds nothing and returns true.
  */
 export async function holdResultForJob(key: string, holder: string, now: number = Date.now()): Promise<boolean> {
   if (!isHoldableKey(key)) return true;
@@ -192,6 +218,7 @@ export async function holdResultForJob(key: string, holder: string, now: number 
       const base = current ?? (isUploadKey(key) ? newUploadRecord(key, now) : undefined);
       return base && holdRecord(base, holder, now);
     });
+    if (held) await extendObjectLifetime(key, keptUntil(held));
     return held !== undefined || !tracked;
   } catch (error) {
     console.warn(`[Retention] Could not hold "${key}" for the job ${holder}; it keeps its own deletion time:`, error);
@@ -254,11 +281,23 @@ function expectsObject(record: RetentionRecord | undefined, key: string, reason:
   return reason === 'capacity' || isUploadKey(key) || record?.deliveredAt !== undefined;
 }
 
-/** Deletes the object under `key` and warns when there was none although the deletion was due early. */
-async function removeObject(storage: DeletableStorage, key: string, expected: boolean): Promise<void> {
-  if (!(await storage.deleteObject(key)) && expected) {
+/** `call`, which fails when it takes longer than STORAGE_CALL_TIMEOUT_MS, so that one hung store call cannot stop every deletion of the process. */
+function bounded<T>(what: string, call: () => T | Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not finish within ${STORAGE_CALL_TIMEOUT_MS} ms`)), STORAGE_CALL_TIMEOUT_MS);
+    timer.unref();
+  });
+  return Promise.race([Promise.resolve().then(call), expired]).finally(() => clearTimeout(timer));
+}
+
+/** Deletes the object under `key`, warns when there was none although the deletion was due early, and returns whether there was one. */
+async function removeObject(storage: DeletableStorage, key: string, expected: boolean): Promise<boolean> {
+  const found = await bounded(`Deleting "${key}"`, () => storage.deleteObject(key));
+  if (!found && expected) {
     console.warn(`[Retention] Deleting "${key}" found no object`);
   }
+  return found;
 }
 
 /** Reopens the record of `key` after the deletion of its object failed, again after a pause when the ledger fails too. */
@@ -277,21 +316,15 @@ async function reopenAfterDeleteFailure(key: string, now: number): Promise<void>
   }
 }
 
-/**
- * Deletes the result under `key` when its record still allows it: for `capacity`, when `isCapacityCandidate` holds;
- * otherwise when it is due. The record is marked gone first, in the same atomic change that checks it, so a job that
- * holds the result in the meantime keeps it. When the object cannot be deleted, the record is reopened for a later
- * sweep, which is tried again if the ledger fails; a process that stops between the mark and the deletion leaves a
- * gone record with its object, which only the lifetime the object was stored with removes. A deleted upload's record
- * is forgotten, because nobody asks for it afterwards. Returns whether this call deleted it; a key without a
- * record has its object deleted and leaves the sweep.
- */
-export async function deleteResult(
+/** What a deletion did: removed the object, found its record due but no object, or left everything as it was. */
+type DeleteOutcome = 'removed' | 'missing' | 'skipped';
+
+async function deleteRecordedResult(
   storage: DeletableStorage,
   key: string,
-  now: number = Date.now(),
-  reason?: 'capacity'
-): Promise<boolean> {
+  now: number,
+  reason: 'capacity' | undefined
+): Promise<DeleteOutcome> {
   const ledger = getRetentionLedger();
   const policy = resolveRetentionPolicy();
   const mayDelete = (record: RetentionRecord): boolean =>
@@ -304,11 +337,12 @@ export async function deleteResult(
   if (!tracked) {
     await removeObject(storage, key, isUploadKey(key));
     await ledger.forget(key);
-    return false;
+    return 'skipped';
   }
-  if (!marked) return false;
+  if (!marked) return 'skipped';
+  let found: boolean;
   try {
-    await removeObject(storage, key, expectsObject(tracked, key, reason));
+    found = await removeObject(storage, key, expectsObject(tracked, key, reason));
   } catch (error) {
     await reopenAfterDeleteFailure(key, now);
     throw error;
@@ -318,7 +352,25 @@ export async function deleteResult(
       console.warn(`[Retention] Could not forget the record of the deleted upload "${key}":`, forgetError);
     });
   }
-  return true;
+  return found ? 'removed' : 'missing';
+}
+
+/**
+ * Deletes the result under `key` when its record still allows it: for `capacity`, when `isCapacityCandidate` holds;
+ * otherwise when it is due. The record is marked gone first, in the same atomic change that checks it, so a job that
+ * holds the result in the meantime keeps it. When the object cannot be deleted, the record is reopened for a later
+ * sweep, which is tried again if the ledger fails; a process that stops between the mark and the deletion leaves a
+ * gone record with its object, which only the lifetime the object was stored with removes. A deleted upload's record
+ * is forgotten, because nobody asks for it afterwards. Returns whether this call took the result out of service,
+ * also when its object was already gone; a key without a record has its object deleted and leaves the sweep.
+ */
+export async function deleteResult(
+  storage: DeletableStorage,
+  key: string,
+  now: number = Date.now(),
+  reason?: 'capacity'
+): Promise<boolean> {
+  return (await deleteRecordedResult(storage, key, now, reason)) !== 'skipped';
 }
 
 /**
@@ -368,44 +420,54 @@ function diskProbesFor(storage: SweptStorage): DiskProbes | undefined {
 
 /**
  * Deletes results before their time while the disk is above RESULT_DISK_HIGH_PERCENT, in the order of
- * `capacityEvictionOrder`, until it is at or below RESULT_DISK_LOW_PERCENT or MAX_FUTILE_DELETIONS deletions in a
- * row did not lower it. Only the disk of the storage directory counts: a full temporary directory is not freed by
- * deleting results. After a futile pass nothing is deleted until FUTILE_PAUSE_MS has passed or the use moved.
- * Returns how many were deleted.
+ * `capacityEvictionOrder`, until it is at or below RESULT_DISK_LOW_PERCENT. Only the disk of the storage directory
+ * counts: a full temporary directory is not freed by deleting results. A result whose object is already gone, or
+ * that a job claimed in the meantime, is skipped and counts for nothing. The pass stops when FAILURES_IN_A_ROW
+ * deletions failed in a row, or when FUTILE_PASS_DELETIONS results are gone and the use is still not lower than at
+ * the start. A pass that deleted nothing or lowered nothing pauses early deletion for FUTILE_PAUSE_MS, unless the use
+ * moved by then. Returns how many were deleted.
  */
 export async function evictForCapacity(storage: SweptStorage, now: number = Date.now()): Promise<number> {
   const probe = diskProbesFor(storage)?.storage;
   if (!probe) return 0;
+  const measure = (): Promise<number | undefined> => bounded('Measuring the disk', probe);
   const capacity = resolveCapacityPolicy();
-  let used = await probe();
-  if (used === undefined) return 0;
-  if (used <= capacity.highPercent) {
+  const startUsed = await measure();
+  if (startUsed === undefined) return 0;
+  if (startUsed <= capacity.highPercent) {
     futilePass = undefined;
     return 0;
   }
-  if (futilePass && now - futilePass.at < FUTILE_PAUSE_MS && Math.abs(used - futilePass.used) < FUTILE_USE_CHANGE_PERCENT) return 0;
+  if (futilePass && now - futilePass.at < FUTILE_PAUSE_MS && Math.abs(startUsed - futilePass.used) < FUTILE_USE_CHANGE_PERCENT) return 0;
   futilePass = undefined;
   const candidates = capacityEvictionOrder(await getRetentionLedger().liveRecords(), now, resolveRetentionPolicy());
+  let used = startUsed;
   let deleted = 0;
-  let futile = 0;
+  let failedInARow = 0;
   for (const record of candidates) {
-    if (used <= capacity.lowPercent || futile >= MAX_FUTILE_DELETIONS) break;
+    if (used <= capacity.lowPercent || failedInARow >= FAILURES_IN_A_ROW) break;
+    if (deleted >= FUTILE_PASS_DELETIONS && used >= startUsed) break;
+    let outcome: DeleteOutcome;
     try {
-      if (!(await deleteResult(storage, record.key, now, 'capacity'))) continue;
+      outcome = await deleteRecordedResult(storage, record.key, now, 'capacity');
+      failedInARow = 0;
     } catch (error) {
+      failedInARow++;
       console.warn(`[Retention] Could not delete "${record.key}" to free disk space:`, error);
       continue;
     }
+    if (outcome !== 'removed') continue;
     deleted++;
     console.warn(`[Retention] Deleted "${record.key}" early: the disk was ${used.toFixed(1)}% full, above ${capacity.highPercent}%`);
-    const after = await probe();
-    if (after === undefined) break;
-    futile = after < used ? 0 : futile + 1;
+    const after = await measure();
+    if (after === undefined) return deleted;
     used = after;
   }
-  if (futile >= MAX_FUTILE_DELETIONS) {
+  if (deleted === 0 || used >= startUsed) {
     futilePass = { at: now, used };
-    console.warn(`[Retention] Stopped deleting results early: ${futile} deletions in a row did not lower the use of the disk (${used.toFixed(1)}%)`);
+    console.warn(
+      `[Retention] Stopped deleting results early: ${deleted} deleted and the disk is ${used.toFixed(1)}% full, not lower than the ${startUsed.toFixed(1)}% it began at`
+    );
   } else if (used > capacity.lowPercent) {
     console.warn(`[Retention] The disk is still ${used.toFixed(1)}% full after deleting ${deleted} result(s); nothing else may be deleted`);
   }
@@ -430,10 +492,10 @@ function evictForCapacityOnce(storage: SweptStorage): Promise<number> {
 async function measureAdmission(storage: SweptStorage, probe: DiskProbe): Promise<boolean> {
   try {
     const { refusePercent } = resolveCapacityPolicy();
-    const used = await probe();
+    const used = await bounded('Measuring the disk', probe);
     if (used === undefined || used <= refusePercent) return true;
     await evictForCapacityOnce(storage);
-    const after = await probe();
+    const after = await bounded('Measuring the disk', probe);
     return after === undefined || after <= refusePercent;
   } catch (error) {
     console.warn('[Retention] Could not measure the disk or delete results to free it; new files are let in:', error);
@@ -477,6 +539,7 @@ function runSweep(storage: SweptStorage): Promise<void> {
  */
 export function startRetentionSweep(storage: SweptStorage): void {
   if (sweepTimer) return;
+  bindRetentionStorage(storage);
   const run = (): void => {
     if (sweepInFlight) return;
     sweepInFlight = runSweep(storage)
