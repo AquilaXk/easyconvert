@@ -156,7 +156,7 @@ describe('tar entries with an unsafe name are refused', () => {
 
   it('refuses the archive instead of leaving out the unsafe member', async () => {
     const tar = tarWithMember('ustar', '../evil.txt');
-    await expect(convertArchive(tar, 'tar', 'tar', {}, 'hostile.tar')).rejects.toBeInstanceOf(UnsafeArchiveError);
+    await expect(convertArchive(tar, 'tar', 'tar', {}, 'hostile.tar')).rejects.toMatchObject({ name: 'UnsafeArchiveError', reason: 'path-traversal' });
   });
 });
 
@@ -197,7 +197,8 @@ describe('RAR entries with an unsafe name are refused', () => {
 
         const error = await refusal(convertArchive(archive, 'rar', 'zip', {}, 'hostile.rar'));
         expect(['path-traversal', 'absolute-path']).toContain(error.reason);
-        expect(error.message).toContain(slashes(unsafe.name));
+        // unrar prints a backslash as a separator, the in-process reader as it is stored; either way the entry is named.
+        expect([unsafe.name, slashes(unsafe.name)].some((spelling) => error.message.includes(spelling))).toBe(true);
         expect(() => extractRarArchive(archive)).toThrow(UnsafeArchiveError);
       },
       TEST_TIMEOUT_MS

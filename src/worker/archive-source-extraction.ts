@@ -1,6 +1,15 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { ARCHIVE_SECURITY_LIMITS, extractWithSpannedStream7z } from '../lib/conversions/archive';
-import { extractArchiveContained } from '../lib/conversions/archive-extraction-safety';
+import {
+  extractArchiveContained,
+  readFirstTarBlock,
+  type ContainedExtractionRequest,
+  type ContainedTree,
+} from '../lib/conversions/archive-extraction-safety';
 import { LINK_TOLERANT_SOURCES, PACKAGE_SOURCES, extractPackagePayload } from '../lib/conversions/archive-package-payload';
+import { memberNameFor } from '../lib/conversions/archive-stream';
+import { classifyUnpacked } from '../lib/conversions/archive-stream-route';
 import type { WorkerEngineOptions } from './worker-types';
 
 export interface ExtractArchiveParams {
@@ -15,7 +24,7 @@ export interface ExtractArchiveParams {
   options?: WorkerEngineOptions;
 }
 
-/** Compression wrappers that unpack to a single tar, which is repackaged without being extracted. */
+/** Compression wrappers that unpack to a single file: the tar or the one file the conversion packs. */
 const COMPRESSED_STREAM_FORMATS = new Set([
   'gz', 'gzip', 'tgz', 'tar.gz',
   'bz2', 'bzip2', 'tbz2', 'tar.bz2',
@@ -56,7 +65,8 @@ export async function extractSourceArchive(params: ExtractArchiveParams, src: st
   }
 
   const includePatterns = options?.entries && options.entries.length > 0 ? options.entries : undefined;
-  const request = {
+  const isWrapper = COMPRESSED_STREAM_FORMATS.has(src);
+  const request: ContainedExtractionRequest = {
     p7zBin,
     archivePath: inputPath,
     extractDir,
@@ -67,12 +77,12 @@ export async function extractSourceArchive(params: ExtractArchiveParams, src: st
     label: 'archive',
     archiveName,
     password: options?.password,
-    includePatterns,
+    // A wrapper holds one file, so a selection names members of the tar inside it and is applied there.
+    includePatterns: isWrapper ? undefined : includePatterns,
     // Packages and disk images carry symbolic links as a matter of course; unless the caller decides, the links are left
     // out and reported, never followed and never a reason to refuse the whole archive.
     skipLinks: options?.skipLinks ?? LINK_TOLERANT_SOURCES.has(src),
     collisionPolicy: options?.collisionPolicy,
-    validateNestedTar: COMPRESSED_STREAM_FORMATS.has(src),
     signal: options?.signal,
   };
   if (PACKAGE_SOURCES.has(src)) {
@@ -81,5 +91,37 @@ export async function extractSourceArchive(params: ExtractArchiveParams, src: st
     return { entryCount, skippedLinks, alternateStreams, root: payload.root, mayBeEmpty: true };
   }
   const tree = await extractArchiveContained(request);
+  if (isWrapper) return unwrapStreamPayload(request, tree, includePatterns);
   return { entryCount: tree.entryCount, skippedLinks: tree.skippedLinks, alternateStreams: tree.alternateStreams };
+}
+
+/**
+ * What a compression wrapper holds, as the streamed route reads it (`streamToTar` in archive-stream.ts): the first block of
+ * the unpacked file decides with `classifyUnpacked` whether it is a tar. A tar is extracted as the archive it is, through the
+ * same listing, vetting and extraction as a tar source, with the request's policy, so the conversion packs its members and
+ * not the tar as one file; one that fails to read is damaged, never an ordinary payload. Any other file is the one member,
+ * named after the source without its last extension (`memberNameFor`). The ratio of the tar is measured against the upload.
+ */
+async function unwrapStreamPayload(request: ContainedExtractionRequest, wrapper: ContainedTree, includePatterns: string[] | undefined): Promise<SourceExtraction> {
+  const unwrapped: SourceExtraction = { entryCount: wrapper.entryCount, skippedLinks: wrapper.skippedLinks, alternateStreams: wrapper.alternateStreams };
+  if (wrapper.files.length !== 1 || wrapper.entryCount !== 1) return unwrapped;
+  const payload = wrapper.files[0].absPath;
+  if (classifyUnpacked(readFirstTarBlock(payload)) === 'plain') {
+    const member = path.join(path.dirname(payload), memberNameFor(request.archiveName ?? ''));
+    if (member !== payload) fs.renameSync(payload, member);
+    return unwrapped;
+  }
+  const tarDir = `${request.extractDir}-tar`;
+  fs.mkdirSync(tarDir);
+  const tar = await extractArchiveContained({
+    ...request,
+    archivePath: payload,
+    extractDir: tarDir,
+    typeFlag: '-ttar',
+    includePatterns,
+    password: undefined,
+    ratioBaseBytes: fs.statSync(request.archivePath).size,
+  });
+  fs.rmSync(payload, { force: true });
+  return { entryCount: tar.entryCount, skippedLinks: tar.skippedLinks, alternateStreams: wrapper.alternateStreams + tar.alternateStreams, root: tarDir };
 }

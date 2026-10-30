@@ -732,16 +732,22 @@ describe('Differential Oracle Hollow-Pass Eradication & Zero-Trust Audit Testnet
       expect(worker.security_opt).toEqual(['no-new-privileges:true', 'seccomp=./docker/seccomp-worker.json']);
     });
 
-    it('enforces Zip Slip directory traversal sanitization across Unix and Windows paths', () => {
-      expect(sanitizeArchivePath('../../etc/passwd')).toBe('etc/passwd');
-      expect(sanitizeArchivePath('../../../var/log/syslog')).toBe('var/log/syslog');
-      expect(sanitizeArchivePath('..\\..\\windows\\system32\\cmd.exe')).toBe('windows/system32/cmd.exe');
-      expect(sanitizeArchivePath('C:\\Users\\admin\\secrets.txt')).toBe('Users/admin/secrets.txt');
-      expect(sanitizeArchivePath('/absolute/root/file.txt')).toBe('absolute/root/file.txt');
-      expect(sanitizeArchivePath('////multiple/slashes/file.txt')).toBe('multiple/slashes/file.txt');
+    it('refuses Zip Slip directory traversal names across Unix and Windows paths instead of rewriting them', () => {
+      const refused: Array<[string, string]> = [
+        ['../../etc/passwd', 'path-traversal'],
+        ['../../../var/log/syslog', 'path-traversal'],
+        ['..\\..\\windows\\system32\\cmd.exe', 'path-traversal'],
+        ['C:\\Users\\admin\\secrets.txt', 'absolute-path'],
+        ['/absolute/root/file.txt', 'absolute-path'],
+        ['////multiple/slashes/file.txt', 'absolute-path'],
+        ['..', 'path-traversal'],
+        ['', 'invalid-entry-name'],
+      ];
+      for (const [name, reason] of refused) {
+        expect(() => sanitizeArchivePath(name), name).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError', reason }));
+      }
+      expect(sanitizeArchivePath('docs//./readme.txt')).toBe('docs/readme.txt');
       expect(sanitizeArchivePath('.')).toBeNull();
-      expect(sanitizeArchivePath('..')).toBeNull();
-      expect(sanitizeArchivePath('')).toBeNull();
     });
 
     it('verifies archive security limits guard against 42.zip decompression bombs', () => {

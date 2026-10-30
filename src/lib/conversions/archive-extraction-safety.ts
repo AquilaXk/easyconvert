@@ -17,7 +17,6 @@ import {
   SandboxedBufferLimitError,
   SandboxedProcessError,
 } from '../security/process-sandbox';
-import { hasTarHeaderChecksum, hasTarMagic } from './archive-tar-detect';
 import { LIST_ALTERNATE_STREAMS, SKIP_ALTERNATE_STREAMS, separateAlternateStreams, type ArchiveListing } from './archive-alternate-streams';
 import { damagedEntryMessage, diskImageMessage, multiVolumeMessage, nextVolumeName, unsupportedMethodMessage } from './archive-refusal-reasons';
 import {
@@ -29,7 +28,7 @@ import {
 } from './archive-password';
 
 export { assertArchivePasswordSafe };
-export { hasTarHeaderChecksum, hasTarMagic, hasTarMagicBlock, isTarHeaderBlock } from './archive-tar-detect';
+export { hasTarHeaderChecksum, hasTarMagic, hasTarMagicBlock, isTarHeaderBlock, readFirstTarBlock } from './archive-tar-detect';
 
 /**
  * Contained extraction of untrusted archives through the 7-Zip CLI.
@@ -495,32 +494,60 @@ function occupyPath(occupied: Set<string>, rawPath: string): void {
 /** A name that ends this way names a directory in every writer; a file entry carrying it is a disguised directory header. */
 const TRAILING_SEPARATOR_PATTERN = /[\\/]$/;
 
-function assertSafeEntryPath(rawPath: string): void {
+/** Longest stretch of an entry name a message quotes; the rest of a name made to fill a log is cut off. */
+const QUOTED_NAME_MAX_CHARS = 200;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/g;
+const ASCII_ONLY = /^[\u0000-\u007f]*$/;
+
+/** An entry name as a message quotes it: cut to {@link QUOTED_NAME_MAX_CHARS} and with control characters written out. */
+function quotedEntryName(rawPath: string): string {
+  const shown = rawPath.length > QUOTED_NAME_MAX_CHARS ? `${rawPath.slice(0, QUOTED_NAME_MAX_CHARS)}...` : rawPath;
+  return shown.replace(CONTROL_CHARACTERS, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+}
+
+function entryPathError(rawPath: string, storedName: string): UnsafeArchiveError | null {
   const problem = entryPathProblem(rawPath);
+  if (problem === null && entryPathDepth(rawPath) <= MAX_ENTRY_PATH_DEPTH) return null;
+  const quoted = quotedEntryName(storedName);
   if (problem === 'invalid-entry-name') {
-    throw new UnsafeArchiveError('invalid-entry-name', 'Archive contains an entry with an empty name or one holding NUL or a line break.');
+    return new UnsafeArchiveError('invalid-entry-name', `Archive contains an entry with an empty name or one holding NUL or a line break ('${quoted}').`);
   }
   if (problem === 'absolute-path') {
-    throw new UnsafeArchiveError('absolute-path', 'Archive contains an entry with an absolute path.');
+    return new UnsafeArchiveError('absolute-path', `Archive contains an entry with an absolute path ('${quoted}').`);
   }
   if (problem === 'path-traversal') {
-    throw new UnsafeArchiveError('path-traversal', 'Archive contains an entry that escapes the extraction directory.');
+    return new UnsafeArchiveError('path-traversal', `Archive contains an entry that escapes the extraction directory ('${quoted}').`);
   }
-  if (entryPathDepth(rawPath) > MAX_ENTRY_PATH_DEPTH) {
-    throw new UnsafeArchiveError('path-depth', `Archive contains an entry nested deeper than ${MAX_ENTRY_PATH_DEPTH} levels.`);
-  }
+  return new UnsafeArchiveError('path-depth', `Archive contains an entry nested deeper than ${MAX_ENTRY_PATH_DEPTH} levels ('${quoted}').`);
 }
 
 /**
- * Throws for an entry name that is not a plain relative path: empty or holding NUL or a line break, absolute, a drive
- * path, climbing out with `..`, or nested deeper than the cap. The name is also checked after Unicode compatibility
- * folding, because a fullwidth full stop or solidus becomes `.` or `/` in a layer that normalises (a Windows code page,
- * macOS, a search index). A name is only ever accepted or refused here, never rewritten.
+ * The refusal an entry name earns, or null when it is a plain relative path: not empty, free of NUL and line breaks,
+ * not absolute, not a drive path, not climbing out with `..`, and not nested deeper than the cap. The name is also
+ * checked after Unicode compatibility folding, because a fullwidth full stop or solidus becomes `.` or `/` in a layer
+ * that normalises (a Windows code page, macOS, a search index). Plain ASCII is its own folding, so it is checked once.
+ * The error names the entry as it is stored. A name is only ever accepted or refused here, never rewritten.
  */
-export function assertSafeArchiveEntryName(rawPath: string): void {
-  assertSafeEntryPath(rawPath);
+export function archiveEntryNameError(rawPath: string): UnsafeArchiveError | null {
+  const stored = entryPathError(rawPath, rawPath);
+  if (stored !== null || ASCII_ONLY.test(rawPath)) return stored;
   const folded = rawPath.normalize('NFKC');
-  if (folded !== rawPath) assertSafeEntryPath(folded);
+  return folded === rawPath ? null : entryPathError(folded, rawPath);
+}
+
+/** Throws the refusal {@link archiveEntryNameError} finds for an entry name. */
+export function assertSafeArchiveEntryName(rawPath: string): void {
+  const refusal = archiveEntryNameError(rawPath);
+  if (refusal !== null) throw refusal;
+}
+
+/** Refuses a bare listing (one name per line, as `unrar lb` prints it) when it holds more names than the entry cap or a name that is not a plain relative path. */
+export function assertListedNamesSafe(listing: string, limits: ArchiveExtractionLimits): void {
+  const names = listing.split('\n');
+  if (names.length > limits.MAX_FILES + 1) throw entryCountError(names.length, limits);
+  for (const name of names) {
+    if (name !== '') assertSafeArchiveEntryName(name);
+  }
 }
 
 /** The running total with one entry's declared size added; a size that is not a safe integer, or a total over the cap, is refused. */
@@ -563,7 +590,7 @@ export function assertSafeArchiveListing(
   // such as `N/d/d/.../f` is one listing line but creates a directory per level.
   const occupied = new Set<string>();
   for (const entry of entries) {
-    assertSafeEntryPath(entry.path);
+    assertSafeArchiveEntryName(entry.path);
     if (entry.linkKind !== null) {
       if (!policy.skipLinks) {
         throw new UnsafeArchiveError('link-entry', 'Archive contains a symbolic or hard link entry, which is not extracted.');
@@ -927,11 +954,6 @@ export interface ContainedExtractionRequest {
   allowInternalHardLinks?: boolean;
   /** What to do when two entries share a path. Defaults to 'rename', which native extraction hands to another engine. */
   collisionPolicy?: ArchiveCollisionPolicy;
-  /**
-   * The archive is a compression wrapper (gz, bz2, xz, ...). When it unpacks to a single `.tar`, that
-   * tar is listed and vetted too, because the caller repackages it without extracting it.
-   */
-  validateNestedTar?: boolean;
   signal?: AbortSignal;
 }
 
@@ -1211,28 +1233,6 @@ function withListingFindings(tree: ContainedTree, findings: Pick<ContainedTree, 
 }
 
 /**
- * A compression wrapper that unpacks to one file may hold a tar the caller repackages unopened. List it so
- * links and traversal names inside it are seen. A payload that is not a tar is left alone; a tar that
- * cannot be read fails closed.
- */
-async function vetNestedTar(request: ContainedExtractionRequest, tree: ContainedTree, ratioBytes: number): Promise<void> {
-  if (tree.files.length !== 1) return;
-  const candidate = tree.files[0];
-  const isTar = hasTarMagic(candidate.absPath);
-  // 7-Zip opens a file as a tar only when its first block is a tar header; any other payload has nothing to vet.
-  if (!isTar && !hasTarHeaderChecksum(candidate.absPath)) return;
-  try {
-    const inner = await listArchive(request, { archivePath: candidate.absPath, typeFlag: '-ttar' }, []);
-    // The inner tar is repackaged as a whole, so its links cannot be skipped selectively.
-    assertSafeArchiveListing(inner.entries, ratioBytes, request.limits);
-  } catch (err) {
-    const failure = toArchiveFailure(err, request.label, 'list', request.limits, Boolean(request.password));
-    if (failure instanceof UnreadableArchiveError && !isTar) return;
-    throw failure;
-  }
-}
-
-/**
  * Lists, vets, extracts and re-verifies an archive. Resolves with the contained output tree, or
  * rejects with a typed error; nothing is written before the listing has passed the policy.
  */
@@ -1276,15 +1276,10 @@ export async function extractArchiveContained(request: ContainedExtractionReques
     throw toArchiveFailure(err, request.label, 'extract', request.limits, Boolean(request.password), failureContext(request, listing));
   }
 
-  const tree = withListingFindings(
+  return withListingFindings(
     assertExtractionContained(request.extractDir, ratioBytes, request.limits, { allowInternalHardLinks: request.allowInternalHardLinks }),
     { skippedLinks, alternateStreams }
   );
-
-  if (request.validateNestedTar) {
-    await vetNestedTar(request, tree, ratioBytes);
-  }
-  return tree;
 }
 
 /** Synchronous twin of {@link extractArchiveContained} for the library's synchronous conversion path. */

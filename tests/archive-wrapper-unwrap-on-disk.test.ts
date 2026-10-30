@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { convertWithNative7z } from '../src/worker/engines';
-import { UnsafeArchiveError } from '../src/lib/conversions/archive-extraction-safety';
 import { jsonRecords, runBytes, zipfText } from './helpers/archive-corpus';
 import { oracleTest } from './helpers/oracle-test';
 import { createSevenZipSpy, type SevenZipSpy } from './helpers/seven-zip-spy';
@@ -69,7 +68,11 @@ function listTar(tar: Buffer, label: string): string {
   return execFileSync('tar', ['-tvf', file], { encoding: 'utf8' });
 }
 
-/** Mode and name of every member, as the system tar prints them (owner and date columns differ between a tar and its rewrite). */
+/**
+ * Mode and name of every member, as the system tar prints them (owner and date columns differ between a tar and its
+ * rewrite), in name order: the on-disk pipeline writes the members in the order 7-Zip walks the extracted tree, and the
+ * streamed route in the order of the tar it read, so the order is not part of what the two have to share.
+ */
 function modesAndNames(tar: Buffer, label: string): string[] {
   return listTar(tar, label)
     .split('\n')
@@ -77,7 +80,8 @@ function modesAndNames(tar: Buffer, label: string): string[] {
     .map((line) => {
       const columns = line.trim().split(/\s+/);
       return `${columns[0]} ${columns.at(-1)}`;
-    });
+    })
+    .sort();
 }
 
 function names(tar: Buffer, label: string): string[] {
@@ -92,7 +96,7 @@ function member(tar: Buffer, name: string): Buffer {
   return execFileSync('tar', ['-xOf', file, name], { maxBuffer: 1 << 30 });
 }
 
-async function convert(input: Buffer, source: string, filename: string, options: { zeroHeap?: boolean } = {}): Promise<Buffer> {
+async function convert(input: Buffer, source: string, filename: string, options: { zeroHeap?: boolean; entries?: string[] } = {}): Promise<Buffer> {
   const result = await convertWithNative7z(input, source, 'tar', options, filename);
   if (result === null) throw new Error('the native 7-Zip engine declined the conversion');
   return result.buffer ?? fs.readFileSync(result.filePath as string);
@@ -194,7 +198,7 @@ describe('on-disk route: a compressed tar comes back as the tar inside it', () =
   );
 
   oracleTest(
-    'a payload tar holding a symlink is refused on the on-disk route, as it is on the streamed route',
+    'a payload tar holding a symlink or a traversing name is refused on the on-disk route, as it is on the streamed route',
     [...TOOLS],
     async () => {
       const withLink = fs.readFileSync(
@@ -203,9 +207,22 @@ describe('on-disk route: a compressed tar comes back as the tar inside it', () =
           { name: 'escape', kind: 'symlink', target: '/etc' },
         ])
       );
+      const withSlip = fs.readFileSync(buildTarWithEntries(path.join(workDir, 'slip.xz'), [{ name: '../../../outside/pwned.txt', data: 'pwned' }]));
       for (const options of [{}, { zeroHeap: true }]) {
-        await expect(convertWithNative7z(withLink, 'xz', 'tar', options, 'link.tar.xz'), JSON.stringify(options)).rejects.toBeInstanceOf(UnsafeArchiveError);
+        await expect(convertWithNative7z(withLink, 'xz', 'tar', options, 'link.tar.xz'), JSON.stringify(options)).rejects.toMatchObject({ name: 'UnsafeArchiveError', reason: 'link-entry' });
+        await expect(convertWithNative7z(withSlip, 'xz', 'tar', options, 'slip.tar.xz'), JSON.stringify(options)).rejects.toMatchObject({ name: 'UnsafeArchiveError', reason: 'path-traversal' });
       }
+    },
+    TEST_TIMEOUT_MS
+  );
+
+  oracleTest(
+    'a selection of entries names members of the tar inside the wrapper',
+    [...TOOLS],
+    async () => {
+      const output = await convert(WRAPPERS[0].compress(fixture.tar), 'tar.xz', 'fixture.tar.xz', { entries: ['docs/a.txt'] });
+      expect(names(output, 'selected').filter((name) => !name.endsWith('/'))).toEqual(['docs/a.txt']);
+      expect(member(output, 'docs/a.txt').equals(fixture.files.get('docs/a.txt') as Buffer)).toBe(true);
     },
     TEST_TIMEOUT_MS
   );

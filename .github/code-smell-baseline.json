@@ -551,12 +551,6 @@
   {
     "file": "src/lib/conversions/archive.ts",
     "rule": "@typescript-eslint/no-explicit-any",
-    "function": "extractRarArchive",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/archive.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
     "function": "inspectArchiveVia7zCli",
     "count": 1
   },
@@ -579,7 +573,7 @@
     "rule": "complexity",
     "function": "extractRarArchive",
     "count": 1,
-    "maxValue": 48
+    "maxValue": 45
   },
   {
     "file": "src/lib/conversions/archive.ts",
@@ -621,7 +615,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 4205
+    "maxValue": 4203
   },
   {
     "file": "src/lib/conversions/archive.ts",
