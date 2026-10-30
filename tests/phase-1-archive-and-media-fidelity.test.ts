@@ -15,13 +15,13 @@ import {
   detectFfmpegEnvironment,
   getUnrarBinaryPath,
   ARCHIVE_SECURITY_LIMITS,
-  sanitizeArchivePath,
   write7zVarint,
   read7zVarint,
 } from '../src/lib/conversions';
 import { bestSnrDb, decodeAudioWithFfmpeg, sineSamples, wavFromSamples } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
 import { buildStoredRar4 } from './helpers/rar4-stored';
+import { craftSevenZip } from './helpers/seven-zip-craft';
 
 /** A stored RAR 4.x archive written by the independent fixture writer (tests/helpers/rar4-stored.ts). */
 function storedRar(files: { filename: string; buffer: Buffer }[]): Buffer {
@@ -105,11 +105,16 @@ describe('Phase 1: Authentic Archive Decompression & Media Codec Fidelity (#107)
       expect(failureOf(Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00]))).toMatchObject(tooShort);
     });
 
-    it('sanitizes Zip-Slip directory traversal attempts in 7z entries', () => {
-      expect(sanitizeArchivePath('../../etc/passwd')).toBe('etc/passwd');
-      expect(sanitizeArchivePath('..\\..\\windows\\system32\\cmd.exe')).toBe('windows/system32/cmd.exe');
-      expect(sanitizeArchivePath('C:\\Users\\admin\\file.txt')).toBe('Users/admin/file.txt');
-      expect(sanitizeArchivePath('/absolute/path/file.txt')).toBe('absolute/path/file.txt');
+    it('refuses Zip-Slip directory traversal names in 7z entries instead of rewriting them', () => {
+      for (const [name, reason] of [
+        ['../../etc/passwd', 'path-traversal'],
+        ['..\\..\\windows\\system32\\cmd.exe', 'path-traversal'],
+        ['C:\\Users\\admin\\file.txt', 'absolute-path'],
+        ['/absolute/path/file.txt', 'absolute-path'],
+      ] as const) {
+        const archive = craftSevenZip([{ name, data: Buffer.from('payload') }]);
+        expect(() => extract7zArchive(archive), name).toThrow(expect.objectContaining({ name: 'UnsafeArchiveError', reason }));
+      }
     });
 
     it('encodes and decodes standard 7z variable-length numbers across boundary ranges', () => {
