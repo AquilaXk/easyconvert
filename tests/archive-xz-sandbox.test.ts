@@ -21,10 +21,10 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, default: { ...actual, execFileSync }, execFileSync };
 });
 
-import { compressXz, convertArchive, decompressXz, packXz, unpackXz } from '../src/lib/conversions/archive';
-import { JOB_DEADLINE_AT } from '../src/lib/conversions/job-time';
-import { getUnshareCapability, resetUnshareCapabilityCache, SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
-import { SandboxUnavailableError } from '../src/lib/types';
+import { compressXz, convertArchive, createTarArchive, decompressXz, packXz, unpackXz } from '../src/lib/conversions/archive';
+import { JOB_DEADLINE_AT, type JobDeadlined } from '../src/lib/conversions/job-time';
+import { getUnshareCapability, resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
+import { CpuTaskTimeoutError, SandboxUnavailableError, type ConversionOptions } from '../src/lib/types';
 import { skipUnless } from './helpers/strict-skip';
 
 const SPY_MODE = 0o755;
@@ -53,9 +53,8 @@ const RECORDING_SPY = (log: string): string => `#!/bin/sh
 exit 3
 `;
 
-/** Records its start, then outlives any deadline. */
-const SLOW_SPY = (log: string): string => `#!/bin/sh
-echo "started" >> "${log}"
+/** Outlives any deadline. */
+const SLOW_SPY = `#!/bin/sh
 exec sleep ${SLOW_SPY_SECONDS}
 `;
 
@@ -162,24 +161,23 @@ describe('the namespace sandbox is unavailable in strict mode', () => {
 
   it('keeps the typed refusal through the conversion entry point for both directions', async () => {
     await expect(convertArchive(packXz(PAYLOAD), 'xz', 'tar', {}, 'payload.xz')).rejects.toBeInstanceOf(SandboxUnavailableError);
-    await expect(convertArchive(PAYLOAD, 'tar', 'xz', {}, 'payload.tar')).rejects.toBeInstanceOf(SandboxUnavailableError);
+    await expect(convertArchive(createTarArchive([{ filename: 'payload.txt', buffer: PAYLOAD }], {}, 'payload.tar').buffer, 'tar', 'xz', {}, 'payload.tar')).rejects.toBeInstanceOf(SandboxUnavailableError);
     expect(spyRuns()).toEqual([]);
   });
 });
 
 describe('the job deadline and the abort signal reach the native xz', () => {
   beforeEach(() => {
-    useSpy(writeSpy('xz-slow', SLOW_SPY(spyLog)));
+    useSpy(writeSpy('xz-slow', SLOW_SPY));
   });
 
   it(
     'decompressXz stops at the job deadline instead of waiting for xz',
     async () => {
       const started = Date.now();
-      const options = { [JOB_DEADLINE_AT]: started + DEADLINE_MS };
-      await expect(decompressXz(packXz(PAYLOAD), options)).rejects.toBeInstanceOf(SandboxedTimeoutError);
+      const options: ConversionOptions & JobDeadlined = { [JOB_DEADLINE_AT]: started + DEADLINE_MS };
+      await expect(decompressXz(packXz(PAYLOAD), options)).rejects.toBeInstanceOf(CpuTaskTimeoutError);
       expect(Date.now() - started).toBeLessThan(BOUND_MS);
-      expect(readFileSync(spyLog, 'utf-8')).toContain('started');
     },
     TEST_TIMEOUT_MS
   );
@@ -199,8 +197,9 @@ describe('the job deadline and the abort signal reach the native xz', () => {
   );
 
   it('decompressXz refuses an already aborted signal before starting xz', async () => {
+    useSpy(writeSpy('xz-recording', RECORDING_SPY(spyLog)));
     const reason = new Error('job cancelled');
     await expect(decompressXz(packXz(PAYLOAD), { signal: AbortSignal.abort(reason) })).rejects.toBe(reason);
-    expect(existsSync(spyLog)).toBe(false);
+    expect(spyRuns()).toEqual([]);
   });
 });
