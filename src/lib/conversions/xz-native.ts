@@ -49,34 +49,34 @@ const XZ_EXIT_ERROR = 1;
 const XZ_MEMORY_REFUSAL = /memory usage limit reached|cannot allocate memory/i;
 const XZ_UNSUPPORTED_OPTIONS = /unsupported options/i;
 
+interface NativeXzJob {
+  xzBin: string;
+  args: string[];
+  addressSpaceBytes: number;
+  /** What a run past the stage limit is reported as (CpuTaskTimeoutError). */
+  task: string;
+}
+
 /**
  * Runs the native `xz` on uploaded bytes in the process sandbox (network and user namespaces, sanitized environment,
  * no shell) with the address space and CPU time capped, the stage limit held to the time the job has left, and the
  * job's signal. The output is a pipe, so `maxBuffer` is its size cap. A run past the stage limit is a
  * CpuTaskTimeoutError, the type `dispatch.ts` gives other tools that outrun their limit.
  */
-async function runNativeXz(
-  xzBin: string,
-  args: string[],
-  stdin: Buffer,
-  options: ConversionOptions,
-  addressSpaceBytes: number,
-  maxBuffer: number,
-  task: string
-): Promise<Buffer> {
+async function runNativeXz(job: NativeXzJob, stdin: Buffer, options: ConversionOptions, maxBuffer: number): Promise<Buffer> {
   const timeoutMs = stageTimeoutMs(options, CPU_POOL_TASK_TIMEOUT_MS);
   try {
-    const run = await executeSandboxedBinary(xzBin, args, {
+    const run = await executeSandboxedBinary(job.xzBin, job.args, {
       stdin,
       maxBuffer,
       timeoutMs,
       networkIsolated: true,
       signal: options.signal,
-      rlimits: { asBytes: addressSpaceBytes, cpuSeconds: Math.ceil(timeoutMs / 1000) },
+      rlimits: { asBytes: job.addressSpaceBytes, cpuSeconds: Math.ceil(timeoutMs / 1000) },
     });
     return run.stdout;
   } catch (error) {
-    if (error instanceof SandboxedTimeoutError && !options.signal?.aborted) throw new CpuTaskTimeoutError(task, error.timeoutMs);
+    if (error instanceof SandboxedTimeoutError && !options.signal?.aborted) throw new CpuTaskTimeoutError(job.task, error.timeoutMs);
     throw error;
   }
 }
@@ -85,7 +85,7 @@ async function runNativeXz(
  * Rethrows what no other engine may answer for: the job's abort, a host that cannot confine the child
  * (SandboxUnavailableError) and a run past its time limit. Returns for any other failure of the native run.
  */
-export function rethrowUnlessFallback(error: unknown, signal: AbortSignal | undefined): void {
+function rethrowUnlessFallback(error: unknown, signal: AbortSignal | undefined): void {
   if (signal?.aborted) throw error;
   rethrowSandboxUnavailable(error);
   if (error instanceof CpuTaskTimeoutError) throw error;
@@ -124,15 +124,8 @@ export async function compressWithNativeXz(
   const xzBin = getXzBinaryPath();
   if (!xzBin) return null;
   try {
-    return await runNativeXz(
-      xzBin,
-      [XZ_SINGLE_THREAD, `-${level}`, '-c', '-q'],
-      input,
-      options,
-      COMPRESS_ADDRESS_SPACE_BYTES,
-      maxOutputBytes,
-      '.xz compression'
-    );
+    const job = { xzBin, args: [XZ_SINGLE_THREAD, `-${level}`, '-c', '-q'], addressSpaceBytes: COMPRESS_ADDRESS_SPACE_BYTES, task: '.xz compression' };
+    return await runNativeXz(job, input, options, maxOutputBytes);
   } catch (error) {
     rethrowUnlessFallback(error, options.signal);
     return null;
@@ -149,15 +142,13 @@ export async function decompressWithNativeXz(input: Buffer, options: ConversionO
   const xzBin = getXzBinaryPath();
   if (!xzBin) return null;
   try {
-    return await runNativeXz(
+    const job = {
       xzBin,
-      ['-d', XZ_SINGLE_THREAD, '-c', '-q', `--memlimit-decompress=${DECODE_MEMLIMIT_BYTES}`],
-      input,
-      options,
-      DECODE_ADDRESS_SPACE_BYTES,
-      maxOutputBytes,
-      '.xz decompression'
-    );
+      args: ['-d', XZ_SINGLE_THREAD, '-c', '-q', `--memlimit-decompress=${DECODE_MEMLIMIT_BYTES}`],
+      addressSpaceBytes: DECODE_ADDRESS_SPACE_BYTES,
+      task: '.xz decompression',
+    };
+    return await runNativeXz(job, input, options, maxOutputBytes);
   } catch (error) {
     rethrowUnlessFallback(error, options.signal);
     const refusal = decodeRefusal(error, maxOutputBytes);

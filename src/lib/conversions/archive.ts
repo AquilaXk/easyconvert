@@ -104,7 +104,7 @@ import {
   rethrowSandboxUnavailable,
   getSanitizedEnvironment,
 } from '../security/process-sandbox';
-import { compressWithNativeXz, decompressWithNativeXz, getXzBinaryPath, rethrowUnlessFallback } from './xz-native';
+import { compressWithNativeXz, decompressWithNativeXz, getXzBinaryPath } from './xz-native';
 export { getXzBinaryPath };
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
@@ -3712,6 +3712,11 @@ function isTypedArchiveFailure(err: unknown): err is ConversionFailedError {
   return err instanceof ConversionFailedError && err.constructor !== ConversionFailedError;
 }
 
+/** A failure that is not the archive's to rename: one of its typed failures, or whatever stopped the job (its abort). */
+function isPassThroughFailure(err: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true || isTypedArchiveFailure(err);
+}
+
 export async function convertArchive(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -3904,8 +3909,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
-      rethrowUnlessFallback(err, options.signal);
-      if (isTypedArchiveFailure(err)) throw err;
+      if (isPassThroughFailure(err, options.signal)) throw err;
       throw new ConversionFailedError(
         `Failed to decompress XZ archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
