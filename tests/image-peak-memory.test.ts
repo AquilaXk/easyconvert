@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFile } from 'node:child_process';
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import sharp from 'sharp';
 import { buildAnimatedWebpFromStill } from './helpers/webp-builder';
+import { SeededRandom } from './helpers/archive-corpus';
 import { buildTiffWithOrientation } from './helpers/exif-orientation';
 
 /**
@@ -28,6 +28,15 @@ const NOISE_QUALITY = 90;
 const ROTATED_QUARTER_TURN = 6;
 const ADMITTED_SIDE = 2000;
 const ADMITTED_FRAMES = 6;
+const NOISE_SEED = 7;
+/**
+ * The glibc heap bound the service runs with (docker-compose.yml and docker-compose.prod.yml set it; the `tests` job of ci.yml
+ * does not). A child without it grows an arena for each thread of the image library: the same 2000x2000 x 6 frame animation to
+ * GIF added 504 to 541 MiB without it and 363 to 416 MiB with it (8 runs each, 12 busy processes on 4 vCPUs), and the 578 MiB the
+ * shard runner read once came from a child without it. What stays with it is the spread of one input, 49 to 52 MiB over 8 runs,
+ * which is the garbage collector's and the pipeline threads' timing; the bound sits 160 MiB over the largest figure.
+ */
+const SERVICE_MALLOC_ARENA_MAX = '2';
 const CHILD_TIMEOUT_MS = 170_000;
 const TEST_TIMEOUT_MS = 180_000;
 const FIXTURE_TIMEOUT_MS = 60_000;
@@ -46,7 +55,7 @@ interface Measurement {
 let dir: string;
 
 async function noisyAnimation(side: number, frames: number): Promise<string> {
-  const raw = crypto.randomBytes(side * side * 3);
+  const raw = Buffer.from(new SeededRandom(NOISE_SEED).bytes(side * side * 3));
   const still = await sharp(raw, { raw: { width: side, height: side, channels: 3 } }).webp({ quality: NOISE_QUALITY }).toBuffer();
   const file = path.join(dir, `noise_${side}_${frames}.webp`);
   fs.writeFileSync(
@@ -59,6 +68,7 @@ async function noisyAnimation(side: number, frames: number): Promise<string> {
 async function measure(file: string, sourceFormat: string, target: string): Promise<Measurement> {
   const { stdout } = await execFileAsync(process.execPath, ['--import', 'tsx', MEASURE_SCRIPT, file, target, '{}', sourceFormat], {
     cwd: path.join(__dirname, '..'),
+    env: { ...process.env, MALLOC_ARENA_MAX: SERVICE_MALLOC_ARENA_MAX },
     timeout: CHILD_TIMEOUT_MS,
     maxBuffer: 1024 * 1024,
   });

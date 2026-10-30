@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,9 +39,23 @@ const PAYLOAD_TEXT = 'real-world corpus payload '.repeat(200);
 const PNG_1X1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 const HANG_DEADLINE_MS = 1;
 const JOB_DEADLINE_MS = 120_000;
+/** How long the input of a slow job is held back: far past the pool deadline, however fast the host. */
+const HELD_BACK_MS = 100;
+const MKFIFO = '/usr/bin/mkfifo';
 const POOL_TEST_TIMEOUT_MS = 240_000;
 const HEAP_MB = 1024;
 const MIN_CORPUS_FILES = 5000;
+
+/**
+ * A file name whose read blocks until a writer opens it (a named pipe). The job server reads its input first, so a job on
+ * this name cannot answer before the test lets it: a deadline that must beat the answer does so on any host, where a job on
+ * a real file races the deadline against the conversion.
+ */
+function pipeInput(dir: string, name: string): string {
+  const pipe = path.join(dir, name);
+  execFileSync(MKFIFO, [pipe]);
+  return pipe;
+}
 
 async function zipOf(files: Record<string, Buffer>, compression: 'STORE' | 'DEFLATE', comment?: string): Promise<Buffer> {
   const zip = new JSZip();
@@ -303,6 +318,7 @@ describe('isolated job pool', () => {
   const broken = path.join(dir, 'broken.png');
   fs.writeFileSync(good, PNG_1X1);
   fs.writeFileSync(broken, Buffer.concat([PNG_1X1.subarray(0, 40), Buffer.alloc(16)]));
+  const blocked = pipeInput(dir, 'blocked.png');
 
   it('converts a valid file, refuses a corrupt one with a typed error, and survives a hang', async () => {
     const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
@@ -321,8 +337,8 @@ describe('isolated job pool', () => {
     const hanging = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, heapMb: HEAP_MB, env });
     try {
       const [first, second] = await hanging.runAll([
-        { path: good, name: 'good.png', format: 'png', target: 'bmp' },
-        { path: good, name: 'good.png', format: 'png', target: 'bmp' },
+        { path: blocked, name: 'blocked.png', format: 'png', target: 'bmp' },
+        { path: blocked, name: 'blocked.png', format: 'png', target: 'bmp' },
       ]);
       expect(first.verdict).toBe('hang');
       expect(second.verdict).toBe('hang');
@@ -387,19 +403,29 @@ describe('job deadline by size', () => {
 
   it('takes the deadline of a job in place of the pool deadline, so a job given time is not reported as hung', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-deadline-'));
-    const good = path.join(dir, 'good.png');
-    fs.writeFileSync(good, PNG_1X1);
+    const blocked = pipeInput(dir, 'blocked.png');
+    const held = pipeInput(dir, 'held.png');
     const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
     const pool = await JobPool.start({ workers: 1, deadlineMs: HANG_DEADLINE_MS, heapMb: HEAP_MB, env });
+    // The file of the second job is written HELD_BACK_MS after the job server opens it: 100 times the pool deadline.
+    const written = fs.promises.open(held, 'w').then(async (handle) => {
+      await new Promise((resolve) => setTimeout(resolve, HELD_BACK_MS));
+      await handle.writeFile(PNG_1X1);
+      await handle.close();
+    });
     try {
       const [notGiven, given] = await pool.runAll([
-        { path: good, name: 'good.png', format: 'png', target: 'bmp' },
-        { path: good, name: 'good.png', format: 'png', target: 'bmp', deadlineMs: JOB_DEADLINE_MS },
+        { path: blocked, name: 'blocked.png', format: 'png', target: 'bmp' },
+        { path: held, name: 'held.png', format: 'png', target: 'bmp', deadlineMs: JOB_DEADLINE_MS },
       ]);
       expect(notGiven.verdict).toBe('hang');
+      expect(notGiven.detail).toMatch(/no answer within 1 ms/);
       expect(given.verdict).toBe('ok');
     } finally {
       pool.stop();
+      // A reader releases a writer that no job server opened, so the pending open does not outlive a failed test.
+      fs.closeSync(fs.openSync(held, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK));
+      await written.catch(() => undefined);
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, POOL_TEST_TIMEOUT_MS);
