@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,8 +8,19 @@ import path from 'node:path';
  * Whether the simulated host denies `unshare` its namespaces, the way Docker's default seccomp profile does without
  * CAP_SYS_ADMIN. Only the capability probe's own `unshare` call fails; every other child process runs for real.
  */
-const host = vi.hoisted(() => ({ denyUnshare: false }));
+const host = vi.hoisted(() => ({ denyUnshare: false, inProcessDecodes: 0 }));
 const UNSHARE_EPERM_STATUS = 1;
+
+vi.mock('../src/lib/conversions/xz-format', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/lib/conversions/xz-format')>();
+  return {
+    ...actual,
+    unpackXzStream: (...args: Parameters<typeof actual.unpackXzStream>) => {
+      host.inProcessDecodes += 1;
+      return actual.unpackXzStream(...args);
+    },
+  };
+});
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -21,10 +33,19 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, default: { ...actual, execFileSync }, execFileSync };
 });
 
-import { compressXz, convertArchive, createTarArchive, decompressXz, packXz, unpackXz } from '../src/lib/conversions/archive';
+import {
+  compressXz,
+  convertArchive,
+  createTarArchive,
+  decompressXz,
+  getXzBinaryPath,
+  packXz,
+  packXzAsync,
+  unpackXz,
+} from '../src/lib/conversions/archive';
 import { JOB_DEADLINE_AT, type JobDeadlined } from '../src/lib/conversions/job-time';
-import { getUnshareCapability, resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
-import { CpuTaskTimeoutError, SandboxUnavailableError, type ConversionOptions } from '../src/lib/types';
+import { getPrlimitCapability, getUnshareCapability, resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
+import { CorruptStreamError, CpuTaskTimeoutError, DecompressionLimitError, SandboxUnavailableError, type ConversionOptions } from '../src/lib/types';
 import { skipUnless } from './helpers/strict-skip';
 
 const SPY_MODE = 0o755;
@@ -87,6 +108,7 @@ afterAll(() => {
 
 beforeEach(() => {
   rmSync(spyLog, { force: true });
+  host.inProcessDecodes = 0;
   resetUnshareCapabilityCache();
 });
 
@@ -127,7 +149,7 @@ describe.skipIf(skipUnless('Linux with unprivileged namespaces (unshare -r -n)',
       const stream = await compressXz(PAYLOAD, { compressionLevel: 6 });
       const runs = spyRuns();
       expect(runs).toHaveLength(1);
-      expect(runs[0].argv).toBe('-6 -c -q');
+      expect(runs[0].argv).toBe('-T1 -6 -c -q');
       expectConfined(runs[0]);
       expect(unpackXz(stream).equals(PAYLOAD)).toBe(true);
     });
@@ -136,7 +158,7 @@ describe.skipIf(skipUnless('Linux with unprivileged namespaces (unshare -r -n)',
       const out = await decompressXz(packXz(PAYLOAD));
       const runs = spyRuns();
       expect(runs).toHaveLength(1);
-      expect(runs[0].argv).toMatch(/^-d -c -q --memlimit-decompress=\d+$/);
+      expect(runs[0].argv).toMatch(/^-d -T1 -c -q --memlimit-decompress=\d+$/);
       expectConfined(runs[0]);
       expect(out.equals(PAYLOAD)).toBe(true);
     });
@@ -202,4 +224,83 @@ describe('the job deadline and the abort signal reach the native xz', () => {
     await expect(decompressXz(packXz(PAYLOAD), { signal: AbortSignal.abort(reason) })).rejects.toBe(reason);
     expect(spyRuns()).toEqual([]);
   });
+});
+
+describe('a compression past the stage limit is a CpuTaskTimeoutError, not a stream from the pure encoder', () => {
+  it(
+    'compressXz stops at the job deadline',
+    async () => {
+      useSpy(writeSpy('xz-slow', SLOW_SPY));
+      const started = Date.now();
+      const options: ConversionOptions & JobDeadlined = { [JOB_DEADLINE_AT]: started + DEADLINE_MS };
+      await expect(compressXz(PAYLOAD, options)).rejects.toBeInstanceOf(CpuTaskTimeoutError);
+      expect(Date.now() - started).toBeLessThan(BOUND_MS);
+    },
+    TEST_TIMEOUT_MS
+  );
+});
+
+const XZ_BINARY = getXzBinaryPath();
+const DICTIONARY_MIB = 512;
+
+function xzWrite(args: string[]): Buffer {
+  const run = spawnSync(XZ_BINARY as string, ['-T1', '-c', '-q', ...args], { input: PAYLOAD, maxBuffer: 64 * KIB * KIB });
+  if (run.status !== 0) throw new Error(`xz ${args.join(' ')} failed: ${run.stderr?.toString()}`);
+  return run.stdout;
+}
+
+// skip-ok: the refusals under test are the installed xz's own, so a host without xz cannot show them.
+describe.skipIf(skipUnless('xz', XZ_BINARY !== null))('a stream the native xz refused is refused, not decoded again in the event loop', () => {
+  it('a dictionary above the decoder memory limit is a 413', async () => {
+    const stream = xzWrite([`--lzma2=dict=${DICTIONARY_MIB}MiB`]);
+    const outcome = await decompressXz(stream).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(outcome).toBeInstanceOf(DecompressionLimitError);
+    expect((outcome as DecompressionLimitError).status).toBe(413);
+    expect(host.inProcessDecodes).toBe(0);
+  });
+
+  it('a truncated stream is a CorruptStreamError (400)', async () => {
+    const stream = xzWrite(['-6']);
+    const outcome = await decompressXz(stream.subarray(0, stream.length - 20)).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(outcome).toBeInstanceOf(CorruptStreamError);
+    expect((outcome as CorruptStreamError).status).toBe(400);
+    expect(host.inProcessDecodes).toBe(0);
+  });
+
+  it('the in-process reader still decodes when the native binary is not installed', async () => {
+    const stream = xzWrite(['-6']);
+    vi.stubEnv('XZ_PATH', path.join(spyDir, 'no-such-xz'));
+    expect((await decompressXz(stream)).equals(PAYLOAD)).toBe(true);
+    expect(host.inProcessDecodes).toBe(1);
+  });
+});
+
+const REAL_INPUT = Buffer.concat([PAYLOAD, Buffer.from(Array.from({ length: 40_000 }, (_, i) => (i * 2_654_435_761) >>> 24))]);
+
+// skip-ok: needs the Linux namespace wrapper and prlimit around the installed xz, so a host without them cannot show the limits.
+describe.skipIf(
+  skipUnless('Linux with unprivileged namespaces, prlimit and xz', ON_LINUX && HAS_NAMESPACES && getPrlimitCapability().available && XZ_BINARY !== null)
+)('the installed xz runs under the real sandbox and prlimit', () => {
+  beforeEach(() => {
+    vi.stubEnv('STRICT_SANDBOX', 'true');
+  });
+
+  it(
+    'compresses at level 9 inside the 1 GiB address space and decodes the stream, both natively',
+    async () => {
+      const reference = spawnSync(XZ_BINARY as string, ['-T1', '-9', '-c', '-q'], { input: REAL_INPUT, maxBuffer: 64 * KIB * KIB }).stdout;
+      const stream = await compressXz(REAL_INPUT, { compressionLevel: 9 });
+      expect(stream.equals(reference), 'the bytes of xz -T1 -9').toBe(true);
+      expect((await packXzAsync(REAL_INPUT, { compressionLevel: 9 })).equals(reference), 'the pure encoder writes another stream').toBe(false);
+      expect((await decompressXz(stream)).equals(REAL_INPUT)).toBe(true);
+      expect(host.inProcessDecodes, 'no decode in the event loop').toBe(0);
+    },
+    TEST_TIMEOUT_MS
+  );
 });

@@ -91,7 +91,7 @@ describe('level 0 is a real value: it stores', () => {
     [...TOOLS],
     async () => {
       const bin = getOracleToolPath('xz') as string;
-      const level = (n: number): Buffer => execFileSync(bin, [`-${n}`, '-c', '-q'], { input: TEXT });
+      const level = (n: number): Buffer => execFileSync(bin, ['-T1', `-${n}`, '-c', '-q'], { input: TEXT });
       expect(level(0).equals(level(6))).toBe(false);
       expect((await compressXz(TEXT, { compressionLevel: 0 })).equals(level(0))).toBe(true);
       expect((await compressXz(TEXT, { compressionLevel: 9 })).equals(level(9))).toBe(true);

@@ -22,7 +22,6 @@ import {
   EngineUnavailableError,
   CorruptStreamError,
   DecompressionLimitError,
-  CpuTaskTimeoutError,
   PayloadLimitError,
 } from '../types';
 import {
@@ -100,10 +99,9 @@ import {
   resolveSandboxedCommand,
   rethrowSandboxUnavailable,
   getSanitizedEnvironment,
-  SandboxedBufferLimitError,
-  SandboxedTimeoutError,
 } from '../security/process-sandbox';
-import { resolveBinaryPath } from './pdf-postprocess/utils';
+import { compressWithNativeXz, decompressWithNativeXz, getXzBinaryPath, rethrowUnlessFallback } from './xz-native';
+export { getXzBinaryPath };
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
   archivePasswordError,
@@ -1994,15 +1992,6 @@ export function decompressLzma2(
 // ==========================================
 // Native XZ & 7-Zip Toolchain Resolvers
 // ==========================================
-const XZ_BINARY = 'xz';
-const XZ_ENV = 'XZ_PATH';
-const XZ_CANDIDATES = ['/usr/bin/xz', '/usr/local/bin/xz', '/opt/homebrew/bin/xz'];
-
-/** Location of `xz`, or null when it is not installed (an override that names no file counts as not installed). */
-export function getXzBinaryPath(): string | null {
-  return resolveBinaryPath(XZ_ENV, XZ_CANDIDATES, XZ_BINARY);
-}
-
 /**
  * 7-Zip executable names, best first. `7zz` is what upstream 7-Zip and Homebrew install; Debian and
  * Ubuntu's `7zip` package installs `7z`, `7za` and `7zr` (`7zr` reads and writes 7z only). `7zz` is
@@ -2086,99 +2075,30 @@ export function unpackXz(buf: Buffer): Buffer {
   return unpackXzStream(buf, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
 }
 
-const BYTES_PER_MIB = 1024 * 1024;
-
-/**
- * Address space the native `xz` may map to compress. The xz(1) memory table puts preset -9 at 674 MiB; measured with
- * `prlimit --as`, -9 fails at 500 MiB and passes at 700 MiB, so 1 GiB leaves room for the C library and the stack.
- */
-const NATIVE_XZ_COMPRESS_ADDRESS_SPACE_BYTES = 1024 * BYTES_PER_MIB;
-
-/**
- * Memory the native `xz` may use to decode: far above any preset (the largest, -9, needs 65 MiB), far below the
- * 1.5 GiB a header can announce. A stream that asks for more is decoded by the in-process reader, whose memory follows
- * the decoded output (capped below) and not the dictionary size.
- */
-const NATIVE_XZ_MEMLIMIT_BYTES = 256 * BYTES_PER_MIB;
-
-/** The decoder's own limit plus the C library, the stack and the buffers around the dictionary. */
-const NATIVE_XZ_DECODE_ADDRESS_SPACE_BYTES = NATIVE_XZ_MEMLIMIT_BYTES + 256 * BYTES_PER_MIB;
-
-/**
- * How the native `xz` runs on uploaded bytes: in the process sandbox (network and user namespaces, sanitized
- * environment, no shell) with the address space, CPU time and file size capped, the stage limit held to the time the
- * job has left, and the job's signal. Both directions share it; only the address space differs.
- */
-function nativeXzRun(options: ConversionOptions, addressSpaceBytes: number, stdin: Buffer) {
-  const timeoutMs = stageTimeoutMs(options, CPU_POOL_TASK_TIMEOUT_MS);
-  return {
-    stdin,
-    maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-    timeoutMs,
-    networkIsolated: true,
-    signal: options.signal,
-    rlimits: {
-      asBytes: addressSpaceBytes,
-      cpuSeconds: Math.ceil(timeoutMs / 1000),
-      fsizeBytes: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-    },
-  };
-}
-
 /**
  * Compresses to .xz. The native `xz` does the work as a sandboxed child process when it is installed; when it cannot,
  * the pure encoder runs on a pool thread, which keeps the event loop free either way. A host that cannot confine the
- * child refuses the request (SandboxUnavailableError) before any spawn instead of choosing another engine. A native
- * run that fails falls back to the pure encoder, which writes a stream of its own; it never returns a placeholder.
+ * child refuses the request (SandboxUnavailableError) before any spawn instead of choosing another engine, and a run
+ * past the stage limit is a CpuTaskTimeoutError. Any other native failure falls back to the pure encoder, which writes
+ * a stream of its own; it never returns a placeholder.
  */
 export async function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Promise<Buffer> {
   const level = resolveArchiveCompressionLevel(options.compressionLevel);
-  const xzBin = getXzBinaryPath();
-  if (xzBin) {
-    try {
-      const run = await executeSandboxedBinary(
-        xzBin,
-        [`-${level}`, '-c', '-q'],
-        nativeXzRun(options, NATIVE_XZ_COMPRESS_ADDRESS_SPACE_BYTES, inputBuffer)
-      );
-      return run.stdout;
-    } catch (err) {
-      if (options.signal?.aborted) throw err;
-      rethrowSandboxUnavailable(err);
-    }
-  }
-  return packXzAsync(inputBuffer, options, { signal: options.signal });
+  const native = await compressWithNativeXz(level, inputBuffer, options, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+  return native ?? packXzAsync(inputBuffer, options, { signal: options.signal });
 }
 
 /**
- * Decodes an .xz file. The native `xz` does the work as a sandboxed child process when it is installed; when it cannot
- * (it refused the stream, hit the memory limit, or is an older build without a filter the file uses) the in-process
- * reader decodes it or names the defect with a typed error. Output past the byte cap is a 413 from either, a run past
- * the stage limit is a CpuTaskTimeoutError, and a host that cannot confine the child refuses the request
- * (SandboxUnavailableError) before any spawn.
+ * Decodes an .xz file. The native `xz` does the work as a sandboxed child process and refuses a stream it ran on with
+ * a typed error (see `decompressWithNativeXz`); the in-process reader decodes only when the native binary is missing
+ * or cannot judge the stream.
  */
 export async function decompressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Promise<Buffer> {
   if (inputBuffer.length < 32) {
     throw new CorruptStreamError('Invalid XZ archive: buffer too small');
   }
-  const xzBin = getXzBinaryPath();
-  if (xzBin) {
-    const run = nativeXzRun(options, NATIVE_XZ_DECODE_ADDRESS_SPACE_BYTES, inputBuffer);
-    try {
-      // Its diagnostics are captured, not inherited: the in-process reader names the defect.
-      return (await executeSandboxedBinary(xzBin, ['-d', '-c', '-q', `--memlimit-decompress=${NATIVE_XZ_MEMLIMIT_BYTES}`], run)).stdout;
-    } catch (error) {
-      if (options.signal?.aborted) throw error;
-      rethrowSandboxUnavailable(error);
-      if (error instanceof SandboxedBufferLimitError) {
-        throw new DecompressionLimitError(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-        );
-      }
-      if (error instanceof SandboxedTimeoutError) throw new CpuTaskTimeoutError('.xz decompression', error.timeoutMs);
-    }
-  }
-  return unpackXz(inputBuffer);
+  const native = await decompressWithNativeXz(inputBuffer, options, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+  return native ?? unpackXz(inputBuffer);
 }
 
 /** Names 7-Zip gives the intermediate tar when it unpacks a compressed tarball. */
@@ -4004,8 +3924,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
-      if (options.signal?.aborted) throw err;
-      rethrowSandboxUnavailable(err);
+      rethrowUnlessFallback(err, options.signal);
       if (isTypedArchiveFailure(err)) throw err;
       throw new ConversionFailedError(
         `Failed to decompress XZ archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
