@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
+import { readyGatedRedis } from '../redis/when-ready';
 
 export type StorageProviderType =
   | 's3'
@@ -156,16 +157,10 @@ export class CredentialsVault {
     if (redisClient) {
       this.redisClient = redisClient;
     } else if (process.env.REDIS_URL) {
-      const client = new Redis(process.env.REDIS_URL, {
-        lazyConnect: true,
-        maxRetriesPerRequest: 1,
-        enableOfflineQueue: false,
-      });
-      // Failures surface on the operation that needs Redis (as a CredentialsVaultPersistenceError);
-      // the listener only keeps a connection error from becoming an unhandled event.
-      client.on('error', () => undefined);
-      client.connect().catch(() => undefined);
-      this.redisClient = client;
+      // Failures surface on the operation that needs Redis (as a CredentialsVaultPersistenceError).
+      this.redisClient = readyGatedRedis(
+        new Redis(process.env.REDIS_URL, { maxRetriesPerRequest: 1, enableOfflineQueue: false })
+      );
     }
   }
 
