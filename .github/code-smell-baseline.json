@@ -1548,7 +1548,7 @@
     "rule": "max-lines-per-function",
     "function": "convertOffice",
     "count": 1,
-    "maxValue": 268
+    "maxValue": 267
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1597,7 +1597,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 10258
+    "maxValue": 10094
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -2743,7 +2743,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2611
+    "maxValue": 2577
   },
   {
     "file": "src/worker/engines.ts",

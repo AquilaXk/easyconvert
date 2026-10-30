@@ -3,7 +3,8 @@ import zlib from 'node:zlib';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { ROCKETBOOK_LIMITS, RocketBookFormatError, readRocketBook } from '../src/lib/conversions/office/rocketbook-reader';
-import { ConversionFailedError, DecompressionLimitError, PayloadLimitError } from '../src/lib/types';
+import { ConversionFailedError, DecompressionLimitError, EngineUnavailableError, PayloadLimitError } from '../src/lib/types';
+import { isCalibreEbookTarget } from '../src/lib/conversions/calibre-ebook-targets';
 import { isOfficeSuiteOnlySource } from '../src/lib/conversions/office/office-suite-sources';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { readRocketBookModel } from '../src/lib/conversions/rocketbook-model';
@@ -392,11 +393,21 @@ describe('a RocketBook converted to the targets of the e-book pipeline', () => {
   });
 
   it('is written to every target the registry advertises for .rb', async () => {
-    for (const target of FORMAT_REGISTRY.rb.targetFormats) {
+    for (const target of FORMAT_REGISTRY.rb.targetFormats.filter((format) => !isCalibreEbookTarget(format))) {
       const out = await convertFile(book, 'rb', target, {}, 'book.rb');
       expect(out.buffer.length, target).toBeGreaterThan(0);
       expect(out.filename, target).toBe(`book.${target}`);
     }
+  });
+
+  it('leaves the targets that only calibre writes to the worker: the in-process engine answers an unavailable engine, never a file', async () => {
+    const calibreTargets = FORMAT_REGISTRY.rb.targetFormats.filter(isCalibreEbookTarget);
+    const failures = await Promise.all(calibreTargets.map((target) => convertFile(book, 'rb', target, {}, 'book.rb').catch((error: unknown) => error)));
+    expect(failures.every((failure) => failure instanceof EngineUnavailableError)).toBe(true);
+    expect(failures.map((failure) => (failure as Error).message)).toEqual(
+      calibreTargets.map((target) => `Engine 'ebook-convert' is unavailable: Writing .${target} needs the native ebook-convert (calibre) engine; the in-process engine has no writer for it.`)
+    );
+    expect(calibreTargets).toEqual(['azw3', 'lrf', 'mobi', 'oeb', 'pdb']);
   });
 
   it('is read without the office suite: .rb is no longer a format only the suite imports', async () => {
