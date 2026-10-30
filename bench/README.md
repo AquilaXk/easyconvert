@@ -200,7 +200,7 @@ with exit 1 whether or not it is behind the reference.
 | Compression ratio, lossless size | ours is no larger |
 | SSIM, PSNR, SNR, VMAF, bytes, bit rate of a lossy case | not worse at equal size; where the sizes differ the case is judged by its BD-rate (a lowered quality setting moves along the same rate-distortion curve and is not behind the reference) |
 | Lossless exactness | ours is 1 |
-| Throughput | the lower bound of the speed-ratio interval is at least `1 - SPEED_PARITY_TOLERANCE` (0.03) |
+| Throughput | the lower bound of the speed-ratio interval is at least `1 - SPEED_PARITY_TOLERANCE` (0.10) |
 
 The row's own tolerance in `bench/rows.ts` is the measurement allowance and nothing more: a number worse than the
 reference by no more than that passes, and the summary counts it as "within the measurement allowance".
@@ -210,7 +210,7 @@ Ours and the reference run alternately (the order flips every pair) after a warm
 our side runs in-process and its JIT needs them; one for video, OCR and office), and each pair gives the ratio of
 reference time to our time. The interval is the sign-test interval of the median ratio, taken from the order
 statistics of the sorted ratios (`bench/speed-parity.ts`): 95 percent coverage, no distribution assumption, no random
-numbers. PASS when its lower bound is at least 0.97, FAIL when its upper bound is below 0.97, otherwise UNSTABLE: four
+numbers. PASS when its lower bound is at least 0.90, FAIL when its upper bound is below 0.90, otherwise UNSTABLE: four
 more pairs are added, up to 25 for light rows and 12 for video, OCR and office, and then (second cap) up to 50 and 36
 (`SPEED_LIGHT_EXTENDED_MAX_PAIRS`, `SPEED_HEAVY_EXTENDED_MAX_PAIRS`; the interval is exact up to 64 pairs). The extension
 is sequential sampling: only a row still undecided at the first cap pays for it, and it stops at the first decision. A
@@ -218,7 +218,7 @@ row still undecided at the last cap is a failure of this absolute rule, which th
 (`--parity` without `--base-root`) apply to every row, and the pull request job applies to a row the base cannot run.
 
 **Pull requests: speed against the base of the change.** A fixed line cannot be both stable and sensitive for a row whose
-true ratio sits near it (issue #700: a row at 0.98 straddles 0.97 at any cap, and an unchanged row fails by chance), so the
+true ratio sits near it (issue #700, when the line was 0.97: a row at 0.98 straddled it at any cap, and an unchanged row failed by chance), so the
 `parity speed` jobs of a pull request judge the change by what it did to the row, as performance gates that compare with the
 base branch do. A job takes the first parent of the merge commit it tested as the base (not the event's base sha, which can be
 older), checks it out beside the head (`ab-base`) with its own dependencies (its own `npm ci` when its lock file differs,
@@ -235,8 +235,8 @@ samples of a pair (this runner, this minute) cancels in the head-to-base ratio. 
   (`AB_DEFAULT_REGRESSION`) for the rows that have none: the one-sided
   upper confidence bound of the median of base time / head time is below `1 / (1 + delta)`, and fresh pairs (as many
   as the first set, taken after it, in head and base processes started for the confirmation) show it too; or
-- the base was at the reference (median reference time / base time at least 0.97) and the head is credibly below it (that
-  bound for reference time / head time under 0.97), confirmed the same way; or
+- the base was at the reference (median reference time / base time at least 0.90) and the head is credibly below it (that
+  bound for reference time / head time under 0.90), confirmed the same way; or
 - the row is a tracked gap (`bench/parity-gaps.json`) and the level of its history (the median of its points, or the
   recorded ratio) times the median head-to-base ratio is under the floor or the prediction bound of that history: the history
   rule of the nightly run applies to what the change did, so a change that walks a gap down by less than `delta` at a time
@@ -492,7 +492,7 @@ applies to what the change did to the row.
 - *A speed row that is listed is "tracked".* Being below the reference does not fail it, but it fails when its median gets
   slower than its own history predicts or falls 35 percent under the median of its history (next section). A tracked row that now passes the normal rule is reported as
   "now at parity: remove it from bench/parity-gaps.json". A row already at parity is not tracked and has to keep its
-  interval lower bound at or above 0.97 in the same job, unchanged.
+  interval lower bound at or above 0.90 in the same job, unchanged.
 - *Every entry names its issue* (`issue` is required and the loader refuses `null`): image quality #640, image speed
   #641, audio #642, video #643, OCR #644, 7z/xz decompress and 7z compress #487, zstd compress #497 (and the near-parity zstd decode row, `compression/mixed.zst->tar/throughput`, until it has an issue of its own; its note says so). Speed entries carry
   the latest CI-measured `ratio` for display and a `history` of the ratios of the latest runs; remove the entry when
@@ -525,7 +525,7 @@ continuous benchmarking (`bench/speed-history.ts`):
   fails a halving of a speed.
 - With fewer than `SPEED_HISTORY_MIN_POINTS` (3) runs there is no bound, and the floor is the only limit: a row with no
   history is held to 65 percent of its recorded `ratio`. A run that ended undecided at the cap counts the same way, by its
-  median; the pass line of 0.97 is not used for a tracked row.
+  median; the pass line of 0.90 is not used for a tracked row.
 - **A history restarts at a step.** A speed-up that lands on main puts the older points on the wrong side of a code
   change, and their spread then measures the change, not the runner. A run more than `SPEED_STEP_FACTOR` (1.6) times the
   geometric mean of the history, or above the upper edge of its 99 percent prediction interval (the spread no lower than

@@ -171,6 +171,8 @@ describe('parity-speed', () => {
     const dependencies = read('scripts', 'ab-base-dependencies.sh');
     expect(dependencies).toContain('cmp -s package-lock.json ab-base/package-lock.json');
     expect(dependencies).toContain('cd ab-base && npm ci --ignore-scripts');
+    // The script's stdout is $GITHUB_OUTPUT: npm's own lines must go to stderr.
+    expect(dependencies).toMatch(/\(cd ab-base && npm ci [^\n]*\) >&2/);
     const restore = speed.steps.find((step) => step.uses?.startsWith('actions/cache/restore@'));
     expect(String(restore?.with?.key)).toContain("hashFiles('ab-base/package-lock.json')");
     expect(stepNamed(speed, 'bench').env?.BENCH_BASE_ROOT).toBe('ab-base');

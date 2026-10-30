@@ -6,6 +6,7 @@ import JSZip from 'jszip';
 import {
   asUnreadableDocument,
   convertThroughInterchange,
+  convertXlsTarget,
   interchangeNeeded,
   officeSuiteReadsInput,
   officeSuiteWritesTarget,
@@ -17,7 +18,9 @@ import {
 } from '../src/worker/office-suite-route';
 import { emf, wmf } from './helpers/metafile-headers';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
-import { ConversionFailedError, CorruptStreamError, EngineUnavailableError, SandboxUnavailableError } from '../src/lib/types';
+import { ConversionFailedError, CorruptStreamError, DataParseError, EngineUnavailableError, PayloadLimitError, SandboxUnavailableError, SheetLimitError } from '../src/lib/types';
+import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../src/lib/conversions/office/legacy-office-limits';
+import { writeXlsx } from '../src/lib/conversions/xlsx-writer';
 import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
 import type { WorkerConversionResult, WorkerEngineOptions, WorkerVfsPayload } from '../src/worker/worker-types';
@@ -87,6 +90,18 @@ describe('the interchange file of a format only the office suite reads', () => {
     const { deps, calls } = standIns();
     await convertThroughInterchange(deps, request({ options: { inProcessFallback: false } }), 'docx');
     expect(calls.converted[0].options.inProcessFallback).toBeUndefined();
+  });
+
+  it('is written without the export filter of the request, which names the target and not the interchange format', async () => {
+    const { deps, calls } = standIns();
+    const options = { libreOfficeFilter: 'writer_pdf_Export' };
+    await convertThroughInterchange(deps, request({ options }), 'docx');
+    expect(calls.written[0].options.libreOfficeFilter).toBeUndefined();
+    expect(options).toEqual({ libreOfficeFilter: 'writer_pdf_Export' });
+
+    const own = standIns({ write: async () => result({ filePath: '/out/letter.pdf', engineUsed: 'native-soffice' }) });
+    await convertThroughInterchange(own.deps, request({ tgt: 'pdf', options }), 'pdf');
+    expect(own.calls.written[0].options.libreOfficeFilter).toBe('writer_pdf_Export');
   });
 
   it('is the answer itself when the office suite writes the target, with the request’s output path and options', async () => {
@@ -649,3 +664,226 @@ describe('a metafile that the office suite draws as a blank page', () => {
     expect(discarded).toEqual([PDF.filePath]);
   });
 });
+
+describe('an .xls written from a table the in-process engine reads', () => {
+  const exported = (): WorkerConversionResult => result({ buffer: Buffer.from('BIFF8 file'), filePath: '/out/table.xls', engineUsed: 'native-soffice-pool' });
+  const unused = (): Promise<WorkerConversionResult> => Promise.reject(new Error('this conversion must not run'));
+  const csvRequest = (overrides: Partial<OfficeSuiteRequest> = {}): OfficeSuiteRequest =>
+    request({ src: 'csv', tgt: 'xls', originalFilename: 'table.csv', input: Buffer.from('a,b\n1,2\n'), ...overrides });
+
+  it('has the engine write an XLSX workbook of the table and the office suite export it as .xls', async () => {
+    const { deps, calls } = standIns({ write: async () => exported() });
+    const answer = await convertXlsTarget(deps, csvRequest(), unused);
+    expect(answer.filePath).toBe('/out/table.xls');
+    expect(calls.converted).toEqual([]);
+    expect(calls.written).toHaveLength(1);
+    expect(calls.written[0]).toMatchObject({ src: 'xlsx', target: 'xls', originalFilename: 'table.csv' });
+    expect(calls.written[0].options).toMatchObject({ throwOnUnavailable: true });
+    const handed = await JSZip.loadAsync(calls.written[0].input as Buffer);
+    expect(await handed.file('xl/worksheets/sheet1.xml')!.async('text')).toContain('<c r="A2"><v>1</v></c>');
+  });
+
+  it('keeps the workbook off the output path of the request, which only the export writes', async () => {
+    const { deps, calls } = standIns({ write: async () => exported() });
+    const input: WorkerVfsPayload = { inputBuffer: Buffer.from('a,b\n1,2\n'), outputPath: '/out/table.xls' };
+    await convertXlsTarget(deps, csvRequest({ input }), unused);
+    expect((calls.written[0].input as WorkerVfsPayload).outputPath).toBe('/out/table.xls');
+    expect(Buffer.isBuffer((calls.written[0].input as WorkerVfsPayload).inputBuffer)).toBe(true);
+  });
+
+  it('answers an unavailable engine when the office suite wrote nothing, and an unavailable sandbox as it is', async () => {
+    const none = standIns({ write: async () => null });
+    const failure = await convertXlsTarget(none.deps, csvRequest(), unused).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(EngineUnavailableError);
+    expect((failure as Error).message).toBe("Engine 'soffice' is unavailable: LibreOffice produced no .xls file for the .csv source");
+
+    const unavailable = new SandboxUnavailableError('no sandbox on this host');
+    const missing = standIns({ write: async () => Promise.reject(unavailable) });
+    await expect(convertXlsTarget(missing.deps, csvRequest(), unused)).rejects.toBe(unavailable);
+  });
+
+  it('refuses a table the engine could not read before the office suite starts', async () => {
+    const { deps, calls } = standIns();
+    await expect(convertXlsTarget(deps, csvRequest({ input: Buffer.from('a,b\n1,"two\n') }), unused)).rejects.toBeInstanceOf(DataParseError);
+    expect(calls.written).toEqual([]);
+  });
+
+  it.each([
+    ['more than 65,536 rows', 65_537, 1, /rows/],
+    ['more than 256 columns', 2, 257, /columns/],
+  ])('refuses a table of %s with a 413 before the office suite can cut it', async (_name, rows, width, message) => {
+    const { deps, calls } = standIns({ write: async () => exported() });
+    const table = Buffer.from(`${Array.from({ length: rows }, () => Array.from({ length: width }, () => 'x').join(',')).join('\n')}\n`);
+    const failure = await convertXlsTarget(deps, csvRequest({ input: table }), unused).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SheetLimitError);
+    expect((failure as SheetLimitError).status).toBe(413);
+    expect((failure as Error).message).toMatch(message);
+    expect(calls.written).toEqual([]);
+  });
+
+  it('hands a table that reaches row 65,536 and column 256 to the office suite', async () => {
+    const table = Buffer.from(`${Array.from({ length: 256 }, () => 'x').join(',')}\n${'x\n'.repeat(65_535)}`);
+    const { deps, calls } = standIns({ write: async () => exported() });
+    await convertXlsTarget(deps, csvRequest({ input: table }), unused);
+    expect(calls.written).toHaveLength(1);
+  });
+});
+
+describe('the conversion of a request that targets .xls', () => {
+  const unused = (): Promise<WorkerConversionResult> => Promise.reject(new Error('this conversion must not run'));
+
+  it('checks a workbook the office suite reads against the BIFF8 sheet, and converts it directly when it fits', async () => {
+    const { deps, calls } = standIns();
+    const direct = result({ filePath: '/out/book.xls' });
+    for (const src of ['xlsx', 'xlsm']) {
+      expect(await convertXlsTarget(deps, request({ src, tgt: 'xls', input: await realWorkbookBytes(10, 3) }), async () => direct)).toBe(direct);
+      await expect(convertXlsTarget(deps, request({ src, tgt: 'xls', input: await realWorkbookBytes(65_537, 1) }), unused)).rejects.toBeInstanceOf(SheetLimitError);
+    }
+    expect(calls.converted).toEqual([]);
+  });
+
+  it('has the office suite write an ODS or Numbers source as XLSX first, and checks that workbook before the export', async () => {
+    for (const src of ['ods', 'numbers']) {
+      const wide = standIns({ write: async () => result({ buffer: await realWorkbookBytes(2, 257), filePath: '/tmp/suite.xlsx' }) });
+      const failure = await convertXlsTarget(wide.deps, request({ src, tgt: 'xls', input: Buffer.from('source') }), unused).catch((error: unknown) => error);
+      expect(failure, src).toBeInstanceOf(SheetLimitError);
+      expect(wide.calls.written.map((call) => `${call.src}->${call.target}`)).toEqual([`${src}->xlsx`]);
+      expect(wide.calls.discarded.map((call) => call.filePath)).toEqual(['/tmp/suite.xlsx']);
+
+      let runs = 0;
+      const fits = standIns({ write: async () => (++runs === 1 ? result({ buffer: await realWorkbookBytes(3, 3), filePath: '/tmp/suite.xlsx' }) : result({ filePath: '/out/book.xls' })) });
+      const answer = await convertXlsTarget(fits.deps, request({ src, tgt: 'xls', input: Buffer.from('source') }), unused);
+      expect(answer.filePath).toBe('/out/book.xls');
+      expect(fits.calls.written.map((call) => `${call.src}->${call.target}`)).toEqual([`${src}->xlsx`, 'xlsx->xls']);
+    }
+  });
+
+  it('keeps a libreOfficeFilter off the XLSX pass of an ODS or Numbers source and on the .xls export', async () => {
+    for (const src of ['ods', 'numbers']) {
+      let runs = 0;
+      const { deps, calls } = standIns({ write: async () => (++runs === 1 ? result({ buffer: await realWorkbookBytes(3, 3), filePath: '/tmp/suite.xlsx' }) : result({ filePath: '/out/book.xls' })) });
+      const options = { libreOfficeFilter: 'MS Excel 97' };
+      await convertXlsTarget(deps, request({ src, tgt: 'xls', input: Buffer.from('source'), options }), unused);
+      expect(calls.written.map((call) => `${call.src}->${call.target}`)).toEqual([`${src}->xlsx`, 'xlsx->xls']);
+      expect(calls.written[0].options.libreOfficeFilter, `${src} to xlsx`).toBeUndefined();
+      expect(calls.written[1].options.libreOfficeFilter, 'xlsx to xls').toBe('MS Excel 97');
+      expect(options).toEqual({ libreOfficeFilter: 'MS Excel 97' });
+    }
+  });
+
+  it('leaves a request for any other target to the direct conversion', async () => {
+    const { deps, calls } = standIns();
+    const direct = result({ filePath: '/out/table.xlsx' });
+    expect(await convertXlsTarget(deps, request({ src: 'csv', tgt: 'xlsx' }), async () => direct)).toBe(direct);
+    expect(calls.converted).toEqual([]);
+    expect(calls.written).toEqual([]);
+  });
+});
+
+describe('the extent of an OOXML workbook the office suite exports as .xls', () => {
+  const unused = (): Promise<WorkerConversionResult> => Promise.reject(new Error('this conversion must not run'));
+  const xlsxRequest = (input: Buffer | WorkerVfsPayload): OfficeSuiteRequest => request({ src: 'xlsx', tgt: 'xls', input, originalFilename: 'book.xlsx' });
+
+  async function withDimension(xlsx: Buffer, dimension: string): Promise<Buffer> {
+    const zip = await JSZip.loadAsync(xlsx);
+    const sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
+    zip.file('xl/worksheets/sheet1.xml', sheet.replace(/<dimension [^>]*\/>/, dimension));
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  async function expectSheetLimit(input: Buffer | WorkerVfsPayload): Promise<void> {
+    const { deps, calls } = standIns();
+    const failure = await convertXlsTarget(deps, xlsxRequest(input), unused).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(SheetLimitError);
+    expect((failure as PayloadLimitError).status).toBe(413);
+    expect(calls.written).toEqual([]);
+  }
+
+  it('is read from the cells when the worksheet declares no dimension', async () => {
+    await expectSheetLimit(await withDimension(await realWorkbookBytes(2, 257), ''));
+  });
+
+  it('is read from the cells when the declared dimension is smaller than they are', async () => {
+    await expectSheetLimit(await withDimension(await realWorkbookBytes(65_537, 1), '<dimension ref="A1:A2"/>'));
+    await expectSheetLimit(await withDimension(await realWorkbookBytes(2, 257), '<dimension ref="A1:B2"/>'));
+  });
+
+  async function withSheetAt(xlsx: Buffer, part: string, listed: boolean): Promise<Buffer> {
+    const zip = await JSZip.loadAsync(xlsx);
+    const sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
+    zip.remove('xl/worksheets/sheet1.xml');
+    zip.file(part, sheet);
+    zip.file('xl/_rels/workbook.xml.rels', (await zip.file('xl/_rels/workbook.xml.rels')!.async('text')).replace('worksheets/sheet1.xml', part.replace(/^xl\//, '')));
+    const types = await zip.file('[Content_Types].xml')!.async('text');
+    zip.file('[Content_Types].xml', listed ? types.replace('/xl/worksheets/sheet1.xml', `/${part}`) : types.replace(/<Override PartName="\/xl\/worksheets\/sheet1.xml"[^>]*\/>/, ''));
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  it('is read from the sheet the workbook names, at a part no content type lists and outside xl/worksheets', async () => {
+    await expectSheetLimit(await withSheetAt(await realWorkbookBytes(65_537, 1), 'xl/sheets/data.xml', false));
+  });
+
+  it('fits a workbook whose short sheet sits at such a part', async () => {
+    const { deps } = standIns();
+    const direct = result({ filePath: '/out/book.xls' });
+    const input = await withSheetAt(await realWorkbookBytes(3, 3), 'xl/sheets/data.xml', false);
+    expect(await convertXlsTarget(deps, xlsxRequest(input), async () => direct)).toBe(direct);
+  });
+
+  it('counts a tall worksheet part that nothing references, which no producer writes: a 413 on the safe side', async () => {
+    const tall = await JSZip.loadAsync(await realWorkbookBytes(65_537, 1));
+    const sheet = await tall.file('xl/worksheets/sheet1.xml')!.async('text');
+    const orphans: Array<[string, boolean]> = [['xl/worksheets/orphan.xml', false], ['xl/orphans/typed.xml', true]];
+    for (const [part, typed] of orphans) {
+      const book = await JSZip.loadAsync(await realWorkbookBytes(3, 3));
+      book.file(part, sheet);
+      if (typed) {
+        const types = await book.file('[Content_Types].xml')!.async('text');
+        book.file('[Content_Types].xml', types.replace('</Types>', `<Override PartName="/${part}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`));
+      }
+      await expectSheetLimit(await book.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+    }
+  });
+
+  async function withoutWorksheets(): Promise<Buffer> {
+    const zip = await JSZip.loadAsync(await realWorkbookBytes(3, 3));
+    zip.remove('xl/worksheets/sheet1.xml');
+    zip.file('xl/workbook.xml', (await zip.file('xl/workbook.xml')!.async('text')).replace(/<sheet [^>]*\/>/, ''));
+    zip.file('[Content_Types].xml', (await zip.file('[Content_Types].xml')!.async('text')).replace(/<Override PartName="\/xl\/worksheets\/sheet1.xml"[^>]*\/>/, ''));
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  it.each([
+    ['a package that holds the names of an XLSX and no sheet', async () => fs.readFileSync(path.join(__dirname, 'fixtures/zip-packages/xlsx-names-only.xlsx'))],
+    ['a workbook whose sheet list and sheet part are gone', withoutWorksheets],
+  ])('refuses %s as the reader does, instead of passing it to the export', async (_name, build) => {
+    const { deps, calls } = standIns();
+    const failure = await convertXlsTarget(deps, xlsxRequest(await build()), unused).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect((failure as Error).message).toBe('Invalid XLSX workbook: no worksheets found in archive.');
+    expect(calls.written).toEqual([]);
+  });
+
+  it('refuses a source that is not a ZIP package instead of passing it on unchecked', async () => {
+    const { deps } = standIns();
+    const failure = await convertXlsTarget(deps, xlsxRequest(Buffer.from('not a zip')), unused).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect((failure as Error).message).not.toBe('this conversion must not run');
+  });
+
+  it('refuses a source file too large to read for the check instead of passing it on unchecked', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xls-bound-'));
+    try {
+      const inputPath = path.join(dir, 'huge.xlsx');
+      fs.writeFileSync(inputPath, '');
+      fs.truncateSync(inputPath, LEGACY_OFFICE_MAX_INPUT_BYTES + 1);
+      await expectSheetLimit({ inputPath, outputPath: path.join(dir, 'huge.xls') });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+async function realWorkbookBytes(rowCount: number, width: number): Promise<Buffer> {
+  return writeXlsx(Array.from({ length: rowCount }, () => Array.from({ length: width }, () => 'x')), 'verbatim');
+}

@@ -1017,6 +1017,17 @@ export class PayloadLimitError extends ConversionFailedError {
   }
 }
 
+/**
+ * A table past what a sheet of the target holds (its rows, its columns, the characters of a cell), or a workbook that cannot be
+ * checked against those bounds. It is refused rather than cut, with the 413 of the other limits.
+ */
+export class SheetLimitError extends PayloadLimitError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SheetLimitError';
+  }
+}
+
 /** A compressed stream would decode past a per-stream or per-document byte limit. */
 export class DecompressionLimitError extends PayloadLimitError {
   constructor(message: string) {

@@ -41,8 +41,12 @@ function declaredSize(entry: JSZip.JSZipObject): number | undefined {
   return typeof declared === 'number' && Number.isFinite(declared) ? declared : undefined;
 }
 
-/** The decoded bytes of `entry`; more than the cap is a DecompressionLimitError (413), a broken or lying entry a CorruptStreamError (400). */
-export function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryReadOptions = {}): Promise<Buffer> {
+/**
+ * Streams the decoded bytes of `entry` to `consume`, chunk by chunk, and resolves with how many there were. More than the cap is a
+ * DecompressionLimitError (413), a broken or lying entry a CorruptStreamError (400), and an error that `consume` throws ends the read
+ * and rejects with that error. The bytes are charged to the package budget once the entry ends.
+ */
+export function scanZipEntry(entry: JSZip.JSZipObject, consume: (chunk: Buffer) => void, options: ZipEntryReadOptions = {}): Promise<number> {
   const label = options.label ?? `ZIP entry '${entry.name}'`;
   const budgetRemaining = options.budget ? options.budget.remaining : Number.POSITIVE_INFINITY;
   const entryCap = options.maxBytes ?? MAX_ZIP_ENTRY_BYTES;
@@ -57,18 +61,13 @@ export function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryRea
   if (declared !== undefined && declared > cap) {
     return Promise.reject(overLimit());
   }
-  return new Promise<Buffer>((resolve, reject) => {
+  return new Promise<number>((resolve, reject) => {
     const stream = entry.nodeStream('nodebuffer');
-    const chunks: Buffer[] = [];
-    // With a declared size the bytes go straight into one buffer, so a large part is not held twice while it is joined.
-    let target: Buffer | undefined;
     let total = 0;
     let settled = false;
-    const fail = (error: Error): void => {
+    const fail = (error: unknown): void => {
       if (settled) return;
       settled = true;
-      chunks.length = 0;
-      target = undefined;
       stream.pause();
       (stream as unknown as { destroy?: () => void }).destroy?.();
       reject(error);
@@ -80,11 +79,12 @@ export function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryRea
         fail(overLimit());
       } else if (declared !== undefined && total > declared) {
         fail(new CorruptStreamError(`${label} decodes to more than the ${declared} bytes it declares.`));
-      } else if (declared !== undefined) {
-        target ??= Buffer.allocUnsafe(declared);
-        chunk.copy(target, total - chunk.length);
       } else {
-        chunks.push(chunk);
+        try {
+          consume(chunk);
+        } catch (error) {
+          fail(error);
+        }
       }
     });
     stream.on('error', (error: Error) => {
@@ -92,24 +92,47 @@ export function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryRea
     });
     stream.on('end', () => {
       if (settled) return;
-      settled = true;
-      const bytes = target ? target.subarray(0, total) : Buffer.concat(chunks);
-      if (declared !== undefined && bytes.length !== declared) {
-        reject(new CorruptStreamError(`${label} decodes to ${bytes.length} bytes but declares ${declared}.`));
+      if (declared !== undefined && total !== declared) {
+        fail(new CorruptStreamError(`${label} decodes to ${total} bytes but declares ${declared}.`));
         return;
       }
       try {
-        options.budget?.charge(bytes.length, label);
+        options.budget?.charge(total, label);
       } catch (error) {
-        reject(error);
+        fail(error);
         return;
       }
-      resolve(bytes);
+      settled = true;
+      resolve(total);
     });
   });
+}
+
+/** The decoded bytes of `entry`, read under the caps of {@link scanZipEntry}. */
+export async function readZipEntryBytes(entry: JSZip.JSZipObject, options: ZipEntryReadOptions = {}): Promise<Buffer> {
+  const declared = declaredSize(entry);
+  const chunks: Buffer[] = [];
+  // With a declared size the bytes go straight into one buffer, so a large part is not held twice while it is joined.
+  let target: Buffer | undefined;
+  let written = 0;
+  const total = await scanZipEntry(
+    entry,
+    (chunk) => {
+      if (declared === undefined) {
+        chunks.push(chunk);
+        return;
+      }
+      target ??= Buffer.allocUnsafe(declared);
+      chunk.copy(target, written);
+      written += chunk.length;
+    },
+    options
+  );
+  return target ? target.subarray(0, total) : Buffer.concat(chunks, total);
 }
 
 /** The UTF-8 text of `entry`, read under the same caps as {@link readZipEntryBytes}. */
 export async function readZipEntryText(entry: JSZip.JSZipObject, options: ZipEntryReadOptions = {}): Promise<string> {
   return (await readZipEntryBytes(entry, options)).toString('utf-8');
 }
+

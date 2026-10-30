@@ -12,7 +12,7 @@ import {
 } from './image';
 import { convertImageSource } from './image-external-source';
 import { convertDocument, extractTextFromPdf } from './document';
-import { convertData } from './data';
+import { STRUCTURED_SHEET_SOURCES, convertData } from './data';
 import {
   convertMedia,
   packageHlsDashMedia,
@@ -146,7 +146,6 @@ import {
   packXz,
   unpackXz,
   convertWithNative7z,
-  getXzBinaryPath,
   get7zBinaryPath,
   inspectArchive,
   repairZipArchive,
@@ -154,6 +153,7 @@ import {
   matchArchiveGlob,
   validateMultiVolumeSequence,
 } from './archive';
+import { getXzBinaryPath } from './xz-native';
 
 import { withConversionWarnings } from './conversion-warnings';
 import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';
@@ -364,6 +364,14 @@ export function convertFile(
   return withConversionWarnings(() => convertFileInScope(inputBuffer, sourceFormat, targetFormat, options, originalFilename));
 }
 
+/**
+ * Whether the office engine writes the spreadsheet target of a data source: it reads delimited text and JSON as sheets, while
+ * Parquet is a table of records that the data engine reads and writes with its types.
+ */
+function officeEngineWritesSheet(src: string, tgt: string): boolean {
+  return !STRUCTURED_SHEET_SOURCES.has(src) && ['ods', 'xlsx', 'xls'].includes(tgt);
+}
+
 async function convertFileInScope(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -540,7 +548,7 @@ async function convertFileInScope(
 
   // 5. Data category routing (CSV, TSV, TAB, JSON, NDJSON, JSONL, YAML, XML)
   if (srcDef.category === 'data' || ['csv', 'tsv', 'tab', 'ndjson', 'jsonl', 'json', 'yaml', 'yml', 'xml'].includes(src)) {
-    if (['ods', 'xlsx', 'xls'].includes(tgt)) {
+    if (officeEngineWritesSheet(src, tgt)) {
       return convertOffice(inputBuffer, src, tgt, options, originalFilename);
     }
     return convertData(inputBuffer, src, tgt, options, originalFilename);

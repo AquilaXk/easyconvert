@@ -104,6 +104,7 @@ import {
   rethrowSandboxUnavailable,
   getSanitizedEnvironment,
 } from '../security/process-sandbox';
+import { compressWithNativeXz, decompressWithNativeXz } from './xz-native';
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
   archivePasswordError,
@@ -1955,36 +1956,6 @@ export function decompressLzma2(
 // ==========================================
 // Native XZ & 7-Zip Toolchain Resolvers
 // ==========================================
-let resolvedXzPath: string | null = null;
-export function getXzBinaryPath(): string | null {
-  if (resolvedXzPath !== null) return resolvedXzPath || null;
-  const fixedLocations = [
-    '/usr/bin/xz',
-    '/usr/local/bin/xz',
-    '/opt/homebrew/bin/xz',
-  ];
-  for (const loc of fixedLocations) {
-    if (fs.existsSync(loc)) {
-      resolvedXzPath = loc;
-      return loc;
-    }
-  }
-  const whichBins = ['/usr/bin/which', '/bin/which'];
-  for (const whichBin of whichBins) {
-    if (fs.existsSync(whichBin)) {
-      try {
-        const out = execFileSync(whichBin, ['xz'], { stdio: 'pipe' }).toString().trim();
-        if (out && fs.existsSync(out)) {
-          resolvedXzPath = out;
-          return out;
-        }
-      } catch {}
-    }
-  }
-  resolvedXzPath = '';
-  return null;
-}
-
 /**
  * 7-Zip executable names, best first. `7zz` is what upstream 7-Zip and Homebrew install; Debian and
  * Ubuntu's `7zip` package installs `7z`, `7za` and `7zr` (`7zr` reads and writes 7z only). `7zz` is
@@ -2068,83 +2039,30 @@ export function unpackXz(buf: Buffer): Buffer {
   return unpackXzStream(buf, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
 }
 
-export function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Buffer {
+/**
+ * Compresses to .xz. The native `xz` does the work as a sandboxed child process when it is installed; when it cannot,
+ * the pure encoder runs on a pool thread, which keeps the event loop free either way. A host that cannot confine the
+ * child refuses the request (SandboxUnavailableError) before any spawn instead of choosing another engine, and a run
+ * past the stage limit is a CpuTaskTimeoutError. Any other native failure falls back to the pure encoder, which writes
+ * a stream of its own; it never returns a placeholder.
+ */
+export async function compressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Promise<Buffer> {
   const level = resolveArchiveCompressionLevel(options.compressionLevel);
-  const xzBin = getXzBinaryPath();
-  if (xzBin) {
-    try {
-      return execFileSync(xzBin, [`-${level}`, '-c', '-q'], {
-        input: inputBuffer,
-        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-      });
-    } catch {}
-  }
-  return packXz(inputBuffer, options);
+  const native = await compressWithNativeXz(level, inputBuffer, options, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+  return native ?? packXzAsync(inputBuffer, options, { signal: options.signal });
 }
 
 /**
- * `compressXz` that keeps the event loop free: the native `xz` runs as a sandboxed child process, the pure encoder on a
- * pool thread. A native run that fails falls back to the pure encoder, which writes a stream of its own; it never
- * returns a placeholder.
+ * Decodes an .xz file. The native `xz` does the work as a sandboxed child process and refuses a stream it ran on with
+ * a typed error (see `decompressWithNativeXz`); the in-process reader decodes only when the native binary is missing
+ * or cannot judge the stream.
  */
-export async function compressXzAsync(
-  inputBuffer: Buffer,
-  options: ConversionOptions = {},
-  runtime: { signal?: AbortSignal } = {}
-): Promise<Buffer> {
-  const level = resolveArchiveCompressionLevel(options.compressionLevel);
-  const xzBin = getXzBinaryPath();
-  if (xzBin) {
-    try {
-      const run = await executeSandboxedBinary(xzBin, [`-${level}`, '-c', '-q'], {
-        stdin: inputBuffer,
-        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-        timeoutMs: CPU_POOL_TASK_TIMEOUT_MS,
-        networkIsolated: true,
-        signal: runtime.signal,
-      });
-      return run.stdout;
-    } catch (err) {
-      if (runtime.signal?.aborted) throw err;
-    }
-  }
-  return packXzAsync(inputBuffer, options, runtime);
-}
-
-/**
- * Memory the native `xz` may use to decode: far above any preset (the largest, -9, needs 65 MiB), far below the
- * 1.5 GiB a header can announce. A stream that asks for more is decoded by the in-process reader, whose memory follows
- * the decoded output (capped below) and not the dictionary size.
- */
-const NATIVE_XZ_MEMLIMIT_BYTES = 256 * 1024 * 1024;
-
-/**
- * Decodes an .xz file. The native `xz` does the work when it is installed; when it cannot (it refused the stream, hit
- * the memory limit, or is an older build without a filter the file uses) the in-process reader decodes it or names
- * the defect with a typed error. Output past the byte cap is a 413 from either.
- */
-export function decompressXz(inputBuffer: Buffer): Buffer {
+export async function decompressXz(inputBuffer: Buffer, options: ConversionOptions = {}): Promise<Buffer> {
   if (inputBuffer.length < 32) {
     throw new CorruptStreamError('Invalid XZ archive: buffer too small');
   }
-  const xzBin = getXzBinaryPath();
-  if (xzBin) {
-    try {
-      return execFileSync(xzBin, ['-d', '-c', '-q', `--memlimit-decompress=${NATIVE_XZ_MEMLIMIT_BYTES}`], {
-        input: inputBuffer,
-        maxBuffer: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
-        // Its diagnostics are captured, not inherited: the in-process reader names the defect.
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOBUFS') {
-        throw new DecompressionLimitError(
-          `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
-        );
-      }
-    }
-  }
-  return unpackXz(inputBuffer);
+  const native = await decompressWithNativeXz(inputBuffer, options, ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE);
+  return native ?? unpackXz(inputBuffer);
 }
 
 /** Names 7-Zip gives the intermediate tar when it unpacks a compressed tarball. */
@@ -3793,6 +3711,11 @@ function isTypedArchiveFailure(err: unknown): err is ConversionFailedError {
   return err instanceof ConversionFailedError && err.constructor !== ConversionFailedError;
 }
 
+/** A failure that is not the archive's to rename: one of its typed failures, or whatever stopped the job (its abort). */
+function isPassThroughFailure(err: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true || isTypedArchiveFailure(err);
+}
+
 export async function convertArchive(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -3968,7 +3891,7 @@ export async function convertArchive(
     }
   } else if (src === 'tar.xz' || src === 'txz' || src === 'xz') {
     try {
-      const uncompressed = decompressXz(effectiveBuffer);
+      const uncompressed = await decompressXz(effectiveBuffer, options);
       if (uncompressed.length > ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE) {
         throw new DecompressionLimitError(
           `Archive bomb detected: uncompressed size exceeds limit of ${ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE} bytes (500MB)`
@@ -3985,7 +3908,7 @@ export async function convertArchive(
         files = [{ filename: baseName, buffer: uncompressed }];
       }
     } catch (err) {
-      if (isTypedArchiveFailure(err)) throw err;
+      if (isPassThroughFailure(err, options.signal)) throw err;
       throw new ConversionFailedError(
         `Failed to decompress XZ archive '${effectiveFilename}': ${err instanceof Error ? err.message : String(err)}`
       );
@@ -4129,7 +4052,7 @@ export async function convertArchive(
   } else if (tgt === 'tar.xz' || tgt === 'txz') {
     // 7.3 Target TAR.XZ / TXZ
     const tarResult = createTarArchive(files, options, `${baseName}.tar`);
-    const xzBuffer = await compressXzAsync(tarResult.buffer, options);
+    const xzBuffer = await compressXz(tarResult.buffer, options);
     result = {
       buffer: xzBuffer,
       mimeType: 'application/x-xz-compressed-tar',
@@ -4139,7 +4062,7 @@ export async function convertArchive(
   } else if (tgt === 'xz') {
     // 7.4 Target XZ
     const { raw: rawToCompress, filename, mimeType } = singleStreamPayload(files, options, { baseName, sourceFilename: effectiveFilename, target: tgt, streamMimeType: 'application/x-xz' }, createTarArchive);
-    const xzBuffer = await compressXzAsync(rawToCompress, options);
+    const xzBuffer = await compressXz(rawToCompress, options);
     result = {
       buffer: xzBuffer,
       mimeType,

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import zlib from 'node:zlib';
+import JSZip from 'jszip';
 import {
   detectSandboxEnvironment,
   getSanitizedEnvironment,
@@ -54,7 +55,7 @@ import { convertArchive } from '../src/lib/conversions/archive';
 import { convertData } from '../src/lib/conversions/data';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { buildRleBombFrame } from './helpers/zstd-frames';
-import { ConversionFailedError } from '../src/lib/types';
+import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 
 /** What every zstd command-line build prints for --version. */
@@ -487,7 +488,7 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
       expect(decompressed.toString('utf-8')).toBe(rawPayload.toString('utf-8'));
     });
 
-    it('supports converting Parquet to xml, html, ndjson, and xls', async () => {
+    it('supports converting Parquet to xml, html, ndjson and xlsx, and leaves xls to the office suite', async () => {
       const records = [{ id: 1, name: 'Alpha' }, { id: 2, name: 'Beta' }];
       const parquetBuf = encodeParquet(records);
 
@@ -503,9 +504,13 @@ describe('Phase 3: SOTA Infrastructure — Sandboxing, Zstandard, Parquet & Vari
       expect(ndjsonRes.mimeType).toBe('application/x-ndjson');
       expect(ndjsonRes.buffer.toString('utf-8')).toContain('"name":"Alpha"');
 
-      const xlsRes = await convertData(parquetBuf, 'parquet', 'xls', {}, 'sample.parquet');
-      expect(xlsRes.mimeType).toBe('application/vnd.ms-excel');
-      expect(xlsRes.buffer.toString('utf-8')).toContain('Alpha');
+      const xlsxRes = await convertData(parquetBuf, 'parquet', 'xlsx', {}, 'sample.parquet');
+      expect(xlsxRes.mimeType).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      const sharedStrings = await (await JSZip.loadAsync(xlsxRes.buffer)).file('xl/sharedStrings.xml')!.async('text');
+      expect(sharedStrings).toContain('Alpha');
+
+      // The data engine writes no BIFF8: an .xls is the office suite's export, never XML under an .xls name.
+      await expect(convertData(parquetBuf, 'parquet', 'xls', {}, 'sample.parquet')).rejects.toBeInstanceOf(EngineUnavailableError);
     });
   });
 

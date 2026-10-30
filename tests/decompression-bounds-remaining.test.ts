@@ -690,7 +690,7 @@ describe('large parsed parts: worksheets take the workbook budget, content XML 1
     const failure = await dispatchConversion(workbook, 'xlsx', 'csv', {}, 'huge.xlsx').catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(DecompressionLimitError);
     expect((failure as DecompressionLimitError).status).toBe(413);
-    expect((failure as Error).message).toMatch(/ZIP entry 'xl\/worksheets\/sheet1\.xml' decodes to more than the limit of 268435456 bytes/);
+    expect((failure as Error).message).toMatch(/ZIP entry 'xl\/worksheets\/sheet1\.xml' would exceed the decoded-byte budget of 268435456 bytes for the whole package/);
   });
 
   /** A workbook of two sheets, each a part of `sheetBytes` bytes (one row and a comment of spaces). */

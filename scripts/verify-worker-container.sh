@@ -15,6 +15,7 @@
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
 #   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
+#   9. xz (the .xz encoder and decoder of the archive conversions) is installed and round-trips inside the sandbox, also under the worker's own address-space caps
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -30,6 +31,9 @@ REDIS_HOST="${VERIFY_REDIS_HOST:-127.0.0.1}"
 REDIS_PORT="${VERIFY_REDIS_PORT:-6379}"
 APP_DIR="${VERIFY_APP_DIR:-/app}"
 ADDRESS_SPACE_LIMIT_BYTES=$((4 * 1024 * 1024 * 1024))
+XZ_COMPRESS_ADDRESS_SPACE_BYTES=$((1024 * 1024 * 1024))
+XZ_DECODE_ADDRESS_SPACE_BYTES=$((512 * 1024 * 1024))
+XZ_DECODE_MEMLIMIT=256MiB
 CAP_SYS_ADMIN_BIT=21
 CONNECT_TIMEOUT_MS=3000
 LISTENER_WAIT_TRIES=50
@@ -61,7 +65,13 @@ fi
 
 # Runs a command the way the worker runs a native child: user and network namespaces, address-space limit.
 sandboxed() {
-  unshare -r -n -- prlimit --as="$ADDRESS_SPACE_LIMIT_BYTES" -- "$@"
+  sandboxed_as "$ADDRESS_SPACE_LIMIT_BYTES" "$@"
+}
+
+sandboxed_as() {
+  local address_space_bytes="$1"
+  shift
+  unshare -r -n -- prlimit --as="$address_space_bytes" -- "$@"
 }
 
 CONNECT_SCRIPT='
@@ -355,6 +365,29 @@ else
     pass "qpdf-runner ran a job in a user and network namespace of its own"
   else
     fail "qpdf-runner could not run an isolated job: $(printf '%s' "$runner_output" | head -c 300)"
+  fi
+fi
+
+# --- 9. xz ---------------------------------------------------------------------------------------------
+# The archive conversions run `xz -T1 -<level> -c -q` under a 1 GiB address space to write a .xz file and `xz -d -T1 -c --memlimit-decompress=256MiB` under
+# 512 MiB to read one, with the data on stdin; without it every .xz file is read by the in-process decoder on the event loop and written by the pure encoder,
+# and none of the sandbox limits applies. The two limited runs below use the worker's own caps (src/lib/conversions/xz-native.ts), not the 4 GiB of the others.
+if ! command -v xz >/dev/null 2>&1; then
+  fail "xz is not installed (package xz-utils): .xz files are decoded in the event loop and encoded by the pure encoder"
+else
+  xz_input="$(head -c 4096 /dev/zero | tr '\0' 'x')"
+  xz_output="$(printf '%s' "$xz_input" | sandboxed xz -T1 -6 -c -q 2>"$work_dir/xz.err" | sandboxed xz -d -T1 -c 2>>"$work_dir/xz.err")"
+  if [ "$xz_output" = "$xz_input" ]; then
+    pass "xz compressed and decompressed 4096 bytes inside the sandbox"
+  else
+    fail "xz did not round-trip inside the sandbox: $(head -c 300 "$work_dir/xz.err" 2>/dev/null)"
+  fi
+  xz_capped_output="$(printf '%s' "$xz_input" | sandboxed_as "$XZ_COMPRESS_ADDRESS_SPACE_BYTES" xz -T1 -9 -c -q 2>"$work_dir/xz-capped.err" \
+    | sandboxed_as "$XZ_DECODE_ADDRESS_SPACE_BYTES" xz -d -T1 -c "--memlimit-decompress=$XZ_DECODE_MEMLIMIT" 2>>"$work_dir/xz-capped.err")"
+  if [ "$xz_capped_output" = "$xz_input" ]; then
+    pass "xz -9 compressed under a 1 GiB address space and decompressed under 512 MiB with a 256 MiB decoder limit"
+  else
+    fail "xz did not round-trip under the worker's address-space caps: $(head -c 300 "$work_dir/xz-capped.err" 2>/dev/null)"
   fi
 fi
 

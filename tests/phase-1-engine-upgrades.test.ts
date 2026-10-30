@@ -3,9 +3,9 @@ import JSZip from 'jszip';
 import {
   convertOffice,
   getExcelColumnIndex,
-  getExcelColumnName,
   extractTextFromDoc,
 } from '../src/lib/conversions/office';
+import { getExcelColumnName } from '../src/lib/conversions/xlsx-writer';
 import { demuxMp4 } from '../src/lib/edge/workers/webcodecs.worker';
 import { convertDocument } from '../src/lib/conversions/document';
 import { UnsupportedTargetError } from '../src/lib/types';

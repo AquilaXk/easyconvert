@@ -665,7 +665,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'application/x-iwork-pages-sffpages',
     category: 'document',
     description: 'Apple iWork Pages word processing document.',
-    targetFormats: ['zip', 'xls'],
+    targetFormats: ['zip'],
   },
   wpd: {
     id: 'wpd',

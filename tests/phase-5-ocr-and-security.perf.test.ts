@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { expectLinearScaling, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
-import { safeExtractXmlElements } from '../src/lib/conversions/office';
+import { safeExtractXmlElements } from '../src/lib/conversions/safe-xml-scanner';
 
 /**
  * Timing-ratio checks moved out of phase-5-ocr-and-security.test.ts.
