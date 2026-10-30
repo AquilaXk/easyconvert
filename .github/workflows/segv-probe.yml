@@ -10,15 +10,11 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        variant:
-          - synthetic
-          - keep
-          - terminate
-          - replay
+        variant: [a, b, c, d]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -33,9 +29,7 @@ jobs:
           key: realworld-5-${{ hashFiles('bench/realworld/manifest.json') }}
           restore-keys: realworld-5-
       - uses: ./.github/actions/ci-setup
-        if: matrix.variant == 'replay'
       - uses: ./.github/actions/pinned-7zip
-        if: matrix.variant == 'replay'
         with:
           export-env: "true"
       - name: Enable core dumps
@@ -47,28 +41,24 @@ jobs:
       - name: Stress
         run: |
           ulimit -c unlimited
-          file=~/.cache/easyconvert-realworld/govdocs1-001157.pdf
-          crashes=0
-          for run in $(seq 1 10); do
-            case "${{ matrix.variant }}" in
-              synthetic) node --wasm-wrapper-tiering-budget=1 .github/segv-probe/wrapper-churn.mjs 4 60 ;;
-              keep) node --wasm-wrapper-tiering-budget=1 .github/segv-probe/stress.mjs keep "$file" 200 4 50 ;;
-              terminate) node --wasm-wrapper-tiering-budget=1 .github/segv-probe/stress.mjs terminate "$file" 200 4 2 ;;
-              replay)
-                sed -i "s/\`--max-old-space-size=\${options.heapMb}\`\]/\`--max-old-space-size=\${options.heapMb}\`, '--wasm-wrapper-tiering-budget=1']/" bench/realworld/pool.ts
-                npx --no-install tsx bench/realworld/run.ts run --shard 5/10 --limit 335 --out "rw-$run.json" > "rw-$run.log" 2>&1
-                node -e "const j=require('./rw-$run.json').jobs; const bad=j.filter(r=>r.verdict==='crash'||r.verdict==='hang'); console.log('replay', JSON.stringify(bad)); process.exit(bad.length ? 1 : 0)" ;;
-            esac
-            code=$?
-            if [ $code -ne 0 ]; then crashes=$((crashes + 1)); echo "run $run exit $code"; fi
+          hook="$PWD/.github/segv-probe/hook.cjs"
+          sed -i "s|\`--max-old-space-size=\${options.heapMb}\`\]|\`--max-old-space-size=\${options.heapMb}\`, '--require', '$hook']|" bench/realworld/pool.ts
+          grep -n "execArgv" bench/realworld/pool.ts
+          end=$((SECONDS + 1800)); run=0
+          while [ $SECONDS -lt $end ]; do
+            run=$((run + 1))
+            npx --no-install tsx bench/realworld/run.ts run --shard 5/10 --limit 335 --out "rw-$run.json" > "rw-$run.log" 2>&1
+            node -e "const j=require('./rw-$run.json').jobs; console.log('replay $run', JSON.stringify(j.filter(r=>r.verdict==='crash'||r.verdict==='hang')))"
           done
-          echo "RESULT ${{ matrix.variant }} runs=10 crashes=$crashes"
           ls /tmp/cores
       - name: Backtraces
         if: always()
         run: |
           shopt -s nullglob
-          for core in $(ls /tmp/cores/core.* 2>/dev/null | head -2); do
+          for core in /tmp/cores/core.*; do
+            pid="${core##*.}"
             echo "=== $core"
-            gdb -q -batch -ex 'bt 25' "$(command -v node)" "$core" 2>&1 | grep -v '^warning' | head -60
+            echo "--- last events of $pid"
+            tail -40 "/tmp/probe/$pid.log"
+            gdb -q -batch -ex 'info threads' -ex 'thread apply all bt 30' "$(command -v node)" "$core" 2>&1 | grep -v '^warning' | head -900
           done
