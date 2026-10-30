@@ -104,7 +104,7 @@ jobs:
             parent="$(git cat-file -p HEAD | sed -n 's/^parent //p' | head -1)"
             base="${parent:-$PR_BASE_SHA}"
             if [ -n "$base" ] && git fetch --no-tags --depth=1 origin "$base"; then
-              mapped="$(git diff --name-only "$base" HEAD | node scripts/ci-parity-families.mjs)"
+              mapped="$(git diff --name-only "$base" HEAD | PR_BASE_SHA="$base" node scripts/ci-parity-families.mjs)"
               printf '%s\n' "$mapped"
               families="$(printf '%s\n' "$mapped" | sed -n 's/^families=//p')"
               unmapped="$(printf '%s\n' "$mapped" | sed -n 's/^unmapped=//p')"

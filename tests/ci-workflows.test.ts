@@ -247,7 +247,7 @@ describe('the nightly workflow', () => {
     const SHA = 'c'.repeat(40);
 
     /** Runs the report script against a stand-in client; returns the body of the issue it opened. */
-    async function report(lastGood: { id: number; head_sha: string; html_url: string } | undefined, commits: string[]): Promise<string> {
+    async function report(lastGood: { id: number; head_sha: string; html_url: string } | undefined | null, commits: string[]): Promise<string> {
       let body = '';
       const github = {
         paginate: async () => [{ name: 'bench-parity-speed', conclusion: 'failure', html_url: 'https://example.invalid/job' }],
@@ -255,8 +255,9 @@ describe('the nightly workflow', () => {
           actions: {
             listJobsForWorkflowRun: () => undefined,
             getWorkflowRun: async () => ({ data: { workflow_id: 7, head_branch: 'main' } }),
-            listWorkflowRuns: async (query: { status: string; branch: string; workflow_id: number }) => {
-              expect(query).toMatchObject({ status: 'success', branch: 'main', workflow_id: 7 });
+            listWorkflowRuns: async (query: { status: string; branch: string; workflow_id: number; event: string }) => {
+              if (lastGood === null) throw new Error('rate limited');
+              expect(query).toMatchObject({ status: 'success', branch: 'main', workflow_id: 7, event: 'schedule' });
               return { data: { workflow_runs: lastGood ? [lastGood] : [] } };
             },
           },
@@ -266,6 +267,7 @@ describe('the nightly workflow', () => {
               return {
                 data: {
                   html_url: 'https://example.invalid/compare',
+                  total_commits: commits.length,
                   commits: commits.map((title, index) => ({ sha: `${index}`.padStart(40, 'a'), html_url: `https://example.invalid/${index}`, commit: { message: `${title}\n\nbody` } })),
                 },
               };
@@ -298,8 +300,13 @@ describe('the nightly workflow', () => {
       const body = await report({ id: 5, head_sha: 'b'.repeat(40), html_url: 'https://example.invalid/run/5' }, Array.from({ length: 60 }, (_, index) => `Change ${index}`));
       expect(body).toContain('Change 59');
       expect(body).toContain('Change 10');
-      expect(body).not.toMatch(/ Change 9$/m);
+      expect(body).not.toMatch(/`Change 9`$/m);
       expect(body).toContain('- and 10 older commits in the compare view');
+    });
+
+    it('still opens the issue when the suspects cannot be listed', async () => {
+      const body = await report(null, []);
+      expect(body.split('\n').filter((line) => line.startsWith('Suspects'))).toEqual(['Suspects could not be listed: rate limited']);
     });
 
     it('says so when there is no earlier good run, or when it was on the same commit', async () => {
