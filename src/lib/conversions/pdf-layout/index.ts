@@ -348,28 +348,33 @@ function splitPageFurniture(
   return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer') };
 }
 
+/** The lines of text one page holds in reading order, vertical and angled text included. */
+export interface PdfPageText {
+  pageNumber: number;
+  lines: string[];
+}
+
+/** What one layout pass over the pages gives: the document, and the tables and lines of text that a spreadsheet takes from it. */
+export interface LaidOutPdf {
+  model: DocumentModel;
+  /**
+   * The tables of the document, a table that goes on in the same columns on a following page as one (`joinContinuations`), each on the
+   * page it starts on. The running headers and footers are out of the flow, so a table whose next page begins with a header is joined.
+   */
+  tables: DetectedTable[];
+  /** The lines of every page, running headers and footers included. */
+  pageText: PdfPageText[];
+}
+
+function paragraphLines(layout: PageLayout): string[] {
+  return layout.blocks.flatMap((block) => (block.kind === 'paragraph' ? block.paragraph.lines.map((line) => line.text) : []));
+}
+
 /**
- * The tables of a document's pages for a spreadsheet, found as for a document: ruled tables, then aligned text (`layoutPage`).
- * The running headers and footers leave the flow first, so that a table whose next page begins with a header is still read as one,
- * and a table that goes on in the same columns on a following page is one table (`joinContinuations`).
+ * Lays out the pages once: the document model, and the tables and lines of text of the pages for a spreadsheet.
  * @throws PdfLayoutLimitError when a page needs more than PDF_LAYOUT_MAX_STEPS_PER_PAGE steps.
  */
-export function detectPdfTables(pages: PdfPageContent[], fonts: PdfContentFont[]): DetectedTable[] {
-  const flows = new Counter();
-  const layouts = pages.map((page, index) => layoutPage(page, fonts, flows, index * COLUMN_FLOW_BASE * 1000));
-  const body = splitPageFurniture(
-    layouts.flatMap((layout) => layout.blocks),
-    pages
-  ).body;
-  return joinContinuations(body).flatMap((block) => (block.kind === 'table' ? [block.table] : []));
-}
-
-/** The text of a page for a spreadsheet: its rows top to bottom, each with the pieces of text that sit apart on a line, left to right. */
-export function pdfTextRows(page: PdfPageContent, fonts: PdfContentFont[]): string[][] {
-  return buildRows(page.items, fonts, new LayoutBudget(page.pageNumber)).map((row) => row.segments.map((segment) => segment.text));
-}
-
-export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont[]): DocumentModel {
+export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): LaidOutPdf {
   const flows = new Counter();
   const imageIds = new Counter();
   const layouts = pages.map((page, index) => layoutPage(page, fonts, flows, index * COLUMN_FLOW_BASE * 1000));
@@ -392,6 +397,7 @@ export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont
   });
   const furniture = splitPageFurniture(joinContinuations(layouts.flatMap((layout) => layout.blocks)), pages);
   const blocks = furniture.body;
+  const tables = joinContinuations(blocks).flatMap((block) => (block.kind === 'table' ? [block.table] : []));
 
   const paragraphs = blocks.flatMap((block) => (block.kind === 'paragraph' && !block.full ? [block.paragraph] : []));
   const bodySize = bodySizeOf(paragraphs.length > 0 ? paragraphs : blocks.flatMap((block) => (block.kind === 'paragraph' ? [block.paragraph] : [])));
@@ -455,7 +461,7 @@ export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont
     else sections.push({ columns, blocks: [block] });
   });
   const first = pages[0];
-  return {
+  const documentModel: DocumentModel = {
     sections,
     images: documentImages,
     pageWidthPt: first?.width ?? 0,
@@ -468,6 +474,11 @@ export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont
     ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
     ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
   };
+  return { model: documentModel, tables, pageText: layouts.map((layout) => ({ pageNumber: layout.page.pageNumber, lines: paragraphLines(layout) })) };
+}
+
+export function layoutPdfDocument(pages: PdfPageContent[], fonts: PdfContentFont[]): DocumentModel {
+  return layoutPdf(pages, fonts).model;
 }
 
 export type { DocumentModel, LayoutLine };

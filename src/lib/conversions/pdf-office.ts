@@ -22,10 +22,13 @@ function ocrTextOf(results: Map<number, OcrResult>): string {
     .join('\n\n');
 }
 
-/** What a PDF holds for a writer: the structure of its text layer, or the text of its pages when OCR read them. */
+/**
+ * What a PDF holds for a writer: the structure of its text layer, or the text of its pages when OCR read some. A document read by OCR
+ * keeps the structure of the pages that have a text layer (`extracted`, null when pdfjs could not read it) and says which pages OCR read.
+ */
 export type PdfOfficeContent =
   | { kind: 'layout'; extracted: ExtractedPdfDocument }
-  | { kind: 'text'; pages: { pageNumber: number; text: string }[] };
+  | { kind: 'text'; pages: { pageNumber: number; text: string }[]; extracted: ExtractedPdfDocument | null; recognizedPages: ReadonlySet<number> };
 
 /**
  * @param withImages carry the images of the pages in the result (a writer that places them needs this).
@@ -75,7 +78,7 @@ export async function readPdfContentForOffice(source: Buffer, options: Conversio
       if (result.text.trim() !== '') pages.push({ pageNumber, text: result.text });
     }
   }
-  return { kind: 'text', pages };
+  return { kind: 'text', pages, extracted, recognizedPages: new Set(recognized.keys()) };
 }
 
 /** The document model of a PDF for the Office, e-book and slide writers; see `readPdfContentForOffice` for the failures. */

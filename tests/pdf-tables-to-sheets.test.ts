@@ -1,18 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import JSZip from 'jszip';
-import { afterAll, describe, expect, it } from 'vitest';
+import { PDFDocument } from 'pdf-lib';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import * as ocr from '../src/lib/conversions/ocr';
 import { shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
-import { parseAllXlsxWorksheets, type OfficeWorksheet } from '../src/lib/conversions/office';
+import { extractAllSheetsForOffice, parseAllXlsxWorksheets, type OfficeWorksheet } from '../src/lib/conversions/office';
 import { WORKBOOK_MAX_SHEETS } from '../src/lib/conversions/office/sheet-bounds';
-import { detectPdfTables, pdfTextRows } from '../src/lib/conversions/pdf-layout';
-import { sheetsOfPdfContent } from '../src/lib/conversions/pdf-sheets';
+import { layoutPdf } from '../src/lib/conversions/pdf-layout';
+import { sheetsOfPdf } from '../src/lib/conversions/pdf-sheets';
 import { readPdfDocument } from '../src/lib/conversions/pdf-text-document';
 import type { PdfContentFont, PdfContentItem, PdfContentRule, PdfPageContent } from '../src/lib/conversions/pdf-text-types';
-import { writeXlsxWorkbook } from '../src/lib/conversions/xlsx-writer';
-import { SheetLimitError } from '../src/lib/types';
+import { writeXlsxWorkbook, type WorkbookSheet } from '../src/lib/conversions/xlsx-writer';
+import { SheetLimitError, UnsupportedTargetError } from '../src/lib/types';
 import { readXlsCells } from './helpers/biff8-records';
 import { oracleTest } from './helpers/oracle-test';
 import { sofficeConvert } from './helpers/soffice-office';
@@ -27,6 +29,21 @@ const STRUCTURE = path.join(__dirname, 'fixtures', 'pdf-structure');
 const CORPUS = path.join(__dirname, '..', 'bench', 'corpus');
 const LONG_TIMEOUT_MS = 180_000;
 const CFB_SIGNATURE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
+
+const budgetsCreated = vi.hoisted(() => ({ count: 0 }));
+
+vi.mock('../src/lib/conversions/pdf-layout/limits', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../src/lib/conversions/pdf-layout/limits')>();
+  return {
+    ...original,
+    LayoutBudget: class extends original.LayoutBudget {
+      constructor(pageNumber: number) {
+        super(pageNumber);
+        budgetsCreated.count++;
+      }
+    },
+  };
+});
 
 const read = (name: string): Buffer => fs.readFileSync(path.join(STRUCTURE, name));
 
@@ -155,6 +172,88 @@ describe('a PDF with no table', () => {
   });
 });
 
+describe('the text sheets of a PDF with vertical writing', () => {
+  it('keeps both sentences of a page of vertical Japanese', async () => {
+    const truth = fs.readFileSync(path.join(__dirname, 'fixtures', 'pdf-text', 'vertical.truth.txt'), 'utf8').split('\n').filter((line) => line.trim() !== '');
+    const sheets = await sheetsOf(fs.readFileSync(path.join(__dirname, 'fixtures', 'pdf-text', 'vertical.pdf')));
+    expect(sheets.map((sheet) => sheet.name)).toEqual(['Page 1']);
+    expect(sheets[0].rows.map((row) => row[0])).toEqual(truth);
+  });
+});
+
+describe('the layout pass of a PDF converted to a workbook', () => {
+  it('runs once for each page, as for a document, whether the pages hold a table or not', async () => {
+    for (const [name, pages] of [['doc-04.pdf', 2], ['doc-03.pdf', 1]] as const) {
+      budgetsCreated.count = 0;
+      await workbookOf(read(name));
+      expect(budgetsCreated.count, name).toBe(pages);
+    }
+  });
+});
+
+describe('the text of pages beside the tables of a PDF', () => {
+  it('is left out, with a warning that names the pages', async () => {
+    const result = await convertFile(read('doc-02.pdf'), 'pdf', 'xlsx', {}, 'doc-02.pdf');
+    expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.name)).toEqual(['Page 1 Table 1']);
+    expect(result.metadata?.warnings).toEqual(['Left out the text outside the tables of pages 1, 2: a workbook of a PDF that has tables holds the tables.']);
+  });
+
+  it('leaves no warning for a document of tables only', async () => {
+    const pdf = (await convertFile(Buffer.from('| Name | Count |\n|---|---|\n| pens | 4 |\n| ink | 9 |\n'), 'md', 'pdf', {}, 'table.md')).buffer;
+    const result = await convertFile(pdf, 'pdf', 'xlsx', {}, 'table.pdf');
+    expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.rows)).toEqual([[['Name', 'Count'], ['pens', '4'], ['ink', '9']]]);
+    expect(result.metadata?.warnings).toBeUndefined();
+  });
+});
+
+describe('a PDF with a table and a scanned page, converted with OCR on', () => {
+  const OCR_TEXT = 'Scanned heading\nScanned body line';
+
+  async function tableAndScan(): Promise<Buffer> {
+    const scan = (await convertFile(fs.readFileSync(path.join(CORPUS, 'scan.png')), 'png', 'pdf', {}, 'scan.png')).buffer;
+    const merged = await PDFDocument.create();
+    for (const bytes of [read('merged-table.pdf'), scan]) {
+      const [copied] = await merged.copyPages(await PDFDocument.load(bytes), [0]);
+      merged.addPage(copied);
+    }
+    return Buffer.from(await merged.save());
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterAll(async () => {
+    await shutdownOcrWorkerPool();
+  });
+
+  it('keeps the table of the page with a text layer and writes the recognized text of the scan as a page sheet', async () => {
+    const recognize = vi.spyOn(ocr, 'recognizeRenderedPdfPages').mockResolvedValue(new Map([[2, { text: OCR_TEXT, confidence: null, wordCount: 5, lines: [] }]]));
+    const pdf = await tableAndScan();
+    const sheets = await parseAllXlsxWorksheets((await convertFile(pdf, 'pdf', 'xlsx', { ocrEnabled: true }, 'mixed.pdf')).buffer);
+    expect(recognize).toHaveBeenCalledOnce();
+    expect([...recognize.mock.calls[0][1]!]).toEqual([2]);
+    expect(sheets.map((sheet) => sheet.name)).toEqual(['Page 1 Table 1', 'Page 2']);
+    expect(sheets[0].rows[0]).toEqual(['Region', '', 'Total']);
+    expect(sheets[1].rows).toEqual([['Scanned heading'], ['Scanned body line']]);
+  }, LONG_TIMEOUT_MS);
+
+  oracleTest('reads the scan with the recognition of a document conversion', ['tesseract'], async () => {
+    const truth = fs.readFileSync(path.join(CORPUS, 'scan.gt.txt'), 'utf8').split('\n').filter((line) => line.trim() !== '');
+    const sheets = await parseAllXlsxWorksheets((await convertFile(await tableAndScan(), 'pdf', 'xlsx', { ocrEnabled: true }, 'mixed.pdf')).buffer);
+    expect(sheets.map((sheet) => sheet.name)).toEqual(['Page 1 Table 1', 'Page 2']);
+    expect(sheets[1].rows.map((row) => row[0])).toEqual(truth);
+  }, LONG_TIMEOUT_MS);
+});
+
+describe('a PDF read for rows of delimited text', () => {
+  it('is refused, never read as the text its bytes spell', async () => {
+    const failure = await extractAllSheetsForOffice(read('doc-03.pdf'), 'pdf').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(UnsupportedTargetError);
+    expect((failure as Error).message).toBe('A PDF is read for a workbook by its tables and pages (readPdfSheets), never as rows of delimited text.');
+  });
+});
+
 const REGULAR: PdfContentFont = { name: 'Body', bold: false, italic: false, monospace: false, serif: false };
 const FONTS = [REGULAR];
 
@@ -174,6 +273,8 @@ function twoColumnRules(top: number, rows: number): PdfContentRule[] {
   return [...horizontal, ...vertical];
 }
 
+const sheetsOfPages = (pages: PdfPageContent[]): WorkbookSheet[] => sheetsOfPdf({ layout: layoutPdf(pages, FONTS), recognized: new Map() });
+
 describe('the tables of pages written out by hand', () => {
   it('joins a table that goes on after a running header on the next page, without the header', () => {
     const first = page(
@@ -186,7 +287,7 @@ describe('the tables of pages written out by hand', () => {
       [item('Quarterly report 2', 50, 40), item('ink', 60, 120), item('9', 160, 120), item('pads', 60, 150), item('12', 160, 150)],
       twoColumnRules(100, 2)
     );
-    const tables = detectPdfTables([first, second], FONTS);
+    const { tables } = layoutPdf([first, second], FONTS);
     expect(tables).toHaveLength(1);
     expect(tables[0].pageNumber).toBe(1);
     expect(tables[0].rows.map((row) => row.map((cell) => cell.paragraphs.map((paragraph) => paragraph.text).join('')))).toEqual([
@@ -197,19 +298,44 @@ describe('the tables of pages written out by hand', () => {
     ]);
   });
 
-  it('keeps two tables of one page apart and numbers them in the page', async () => {
+  it('keeps two tables of one page apart and numbers them in the page', () => {
     const items = [item('a', 60, 120), item('1', 160, 120), item('b', 60, 330), item('2', 160, 330)];
     const rules = [...twoColumnRules(100, 1), ...twoColumnRules(300, 1)];
-    const content = { kind: 'layout' as const, extracted: { model: undefined as never, text: '', unmappedPages: [], pages: [page(3, items, rules)], fonts: FONTS } };
-    expect(sheetsOfPdfContent(content).map((sheet) => [sheet.name, sheet.rows])).toEqual([
+    expect(sheetsOfPages([page(3, items, rules)]).map((sheet) => [sheet.name, sheet.rows])).toEqual([
       ['Page 3 Table 1', [['a', '1']]],
       ['Page 3 Table 2', [['b', '2']]],
     ]);
   });
 
-  it('reads the pieces of a line that sit apart as the columns of its row', () => {
-    const rows = pdfTextRows(page(1, [item('Total', 50, 100), item('42', 300, 100), item('A closing remark', 50, 130)]), FONTS);
-    expect(rows).toEqual([['Total', '42'], ['A closing remark']]);
+  it('joins the lines of a wrapped paragraph of a cell with a space and its paragraphs with a line break', () => {
+    const rules = [
+      ...[100, 200].map((y): PdfContentRule => ({ x0: 50, y0: y, x1: 350, y1: y, thickness: 0.5 })),
+      ...[50, 200, 350].map((x): PdfContentRule => ({ x0: x, y0: 100, x1: x, y1: 200, thickness: 0.5 })),
+    ];
+    const items = [
+      item('Wrapped over', 60, 120),
+      item('two lines', 60, 134),
+      item('First paragraph', 210, 120),
+      item('Second paragraph', 210, 170),
+    ];
+    const [sheet] = sheetsOfPages([page(1, items, rules)]);
+    expect(sheet.rows).toEqual([['Wrapped over two lines', 'First paragraph\nSecond paragraph']]);
+  });
+
+  it('gives a text sheet a row for each line of a page, the pieces that sit apart on a line as one', () => {
+    const sheets = sheetsOfPages([page(1, [item('Total', 50, 100), item('42', 300, 100), item('A closing remark', 50, 130)])]);
+    expect(sheets.map((sheet) => [sheet.name, sheet.rows])).toEqual([['Page 1', [['Total 42'], ['A closing remark']]]]);
+  });
+
+  it('gives the text of a page of angled text only', () => {
+    const sheets = sheetsOfPages([page(1, [{ ...item('Rotated note', 100, 300), angled: true }])]);
+    expect(sheets.map((sheet) => [sheet.name, sheet.rows])).toEqual([['Page 1', [['Rotated note']]]]);
+  });
+
+  it('writes no sheet for a page without text, in the layout and in the text OCR read', () => {
+    expect(sheetsOfPages([page(1, [item('Only page text', 50, 100)]), page(2, []), page(3, [item('Third', 50, 100)])]).map((sheet) => sheet.name)).toEqual(['Page 1', 'Page 3']);
+    const sheets = sheetsOfPdf({ layout: null, recognized: new Map([[1, 'Read by OCR\n\n'], [2, '  \n']]) });
+    expect(sheets.map((sheet) => [sheet.name, sheet.rows])).toEqual([['Page 1', [['Read by OCR']]]]);
   });
 });
 
@@ -241,18 +367,27 @@ describe('the sheets of one workbook', () => {
     expect((failure as SheetLimitError).status).toBe(413);
   });
 
-  it('refuses more sheets than a workbook holds, never cutting them', () => {
-    const pages = Array.from({ length: WORKBOOK_MAX_SHEETS + 1 }, (_, i) => ({ pageNumber: i + 1, text: 'line' }));
-    expect(() => sheetsOfPdfContent({ kind: 'text', pages: pages.slice(0, WORKBOOK_MAX_SHEETS) })).not.toThrow();
-    const failure = (() => {
-      try {
-        return sheetsOfPdfContent({ kind: 'text', pages });
-      } catch (err) {
-        return err;
-      }
-    })();
+  it('refuses more sheets than a workbook holds with a 413, never cutting them', async () => {
+    const sheetsOf = (count: number): WorkbookSheet[] => Array.from({ length: count }, (_, i) => ({ name: `S${i + 1}`, rows: [['x']] }));
+    const failure = await writeXlsxWorkbook(sheetsOf(WORKBOOK_MAX_SHEETS + 1), 'detect').catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(SheetLimitError);
     expect((failure as SheetLimitError).status).toBe(413);
+    const workbook = await JSZip.loadAsync(await writeXlsxWorkbook(sheetsOf(WORKBOOK_MAX_SHEETS), 'detect', 'STORE'));
+    expect(Object.keys(workbook.files).filter((entry) => /^xl\/worksheets\/sheet\d+\.xml$/.test(entry))).toHaveLength(WORKBOOK_MAX_SHEETS);
+  }, LONG_TIMEOUT_MS);
+
+  it.each([
+    ['an empty name', ''],
+    ['a name of 32 characters', 'a'.repeat(32)],
+    ...Array.from('[]:*?/\\', (character): [string, string] => [`a name with ${character}`, `Q${character}1`]),
+  ])('refuses %s', async (_what, name) => {
+    await expect(writeXlsxWorkbook([{ name, rows: [['x']] }], 'detect')).rejects.toThrow(/sheet name/);
+  });
+
+  it('refuses a name another sheet has, without regard to case, and takes one of 31 characters', async () => {
+    await expect(writeXlsxWorkbook([{ name: 'Page 1', rows: [['x']] }, { name: 'PAGE 1', rows: [['y']] }], 'detect')).rejects.toThrow(/once/);
+    const sheets = await parseAllXlsxWorksheets(await writeXlsxWorkbook([{ name: 'a'.repeat(31), rows: [['x']] }], 'detect'));
+    expect(sheets.map((sheet) => sheet.name)).toEqual(['a'.repeat(31)]);
   });
 });
 

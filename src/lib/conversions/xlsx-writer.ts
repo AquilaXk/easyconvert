@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
 import type { SheetLimitError } from '../types';
 import { stringifyJsonLossless, type DataValue } from './data-json';
-import { SHEET_MAX_CELL_CHARS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, sheetLimitError } from './office/sheet-bounds';
+import { SHEET_MAX_CELL_CHARS, WORKBOOK_MAX_SHEETS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, sheetLimitError } from './office/sheet-bounds';
 
 /**
  * Writes a table as an XLSX workbook with typed cells (ECMA-376 Part 1, 18.3): a number is a number, a boolean `t="b"`, a date a serial
@@ -346,16 +346,40 @@ function workbookParts(sheets: readonly WorkbookSheet[]): { contentTypes: string
   };
 }
 
+/** What a tab name may not hold: the seven characters Excel's rename dialog and LibreOffice Calc refuse. */
+const SHEET_NAME_FORBIDDEN = /[[\]:*?/\\]/;
+/** Characters of a tab name that Excel allows ("Excel specifications and limits"), counted in UTF-16 units as Excel counts them. */
+const SHEET_NAME_MAX_CHARS = 31;
+
+/**
+ * Whether the sheets can be a workbook: at most WORKBOOK_MAX_SHEETS of them, and each name 1 to 31 characters without `[ ] : * ? / \`,
+ * different from the others without regard to case, as the office suite that reads the workbook on the way to `.xls` takes them.
+ * @throws SheetLimitError (413) for more sheets than a workbook holds.
+ * @throws Error for a name the caller must not give.
+ */
+function assertWorkbookSheets(sheets: readonly WorkbookSheet[]): void {
+  if (sheets.length > WORKBOOK_MAX_SHEETS) throw sheetLimitError('The workbook', sheets.length, 'sheets', 'a workbook', WORKBOOK_MAX_SHEETS);
+  const seen = new Set<string>();
+  for (const { name } of sheets) {
+    if (name.length < 1 || name.length > SHEET_NAME_MAX_CHARS) throw new Error(`A sheet name is 1 to ${SHEET_NAME_MAX_CHARS} characters, not ${name.length}: "${name}".`);
+    if (SHEET_NAME_FORBIDDEN.test(name)) throw new Error(`A sheet name holds none of [ ] : * ? / \\: "${name}".`);
+    const key = name.toLowerCase();
+    if (seen.has(key)) throw new Error(`A sheet name is used once in a workbook: "${name}".`);
+    seen.add(key);
+  }
+}
+
 /**
  * The XLSX package of a workbook of one or more sheets, in the order given, sharing one string table and one set of cell formats.
  * `textCells` says whether a string cell is read as the number or date it spells (a delimited text, a sheet read as text, a table
  * of a PDF) or kept as the text it is (a typed source such as JSON, where "007" is a string).
  * `compression` is `STORE` only for a workbook that is read once and discarded (the office suite's `.xls` export).
- * The caller names the sheets: a name of 1 to 31 characters without `[ ] : * ? / \`, each one different from the others (case apart).
- * @throws SheetLimitError (413) when a cell lies past row 1,048,576 or column 16,384, or holds more than 32,767 characters; the
- *   table is never cut to fit.
+ * @throws SheetLimitError (413) when the workbook has more than WORKBOOK_MAX_SHEETS sheets, or a cell lies past row 1,048,576 or column
+ *   16,384, or holds more than 32,767 characters; the table is never cut to fit.
+ * @throws Error when a sheet name is empty, over 31 characters, holds one of `[ ] : * ? / \` or repeats another (case apart).
  */
 export async function writeXlsxWorkbook(sheets: readonly WorkbookSheet[], textCells: TextCells, compression: WorkbookCompression = 'DEFLATE'): Promise<Buffer> {
+  assertWorkbookSheets(sheets);
   const parts: WorkbookParts = { strings: new SharedStrings(), formats: new CellFormats() };
   const sheetXml = sheets.map((sheet) => writeSheet(sheet, textCells, parts));
   const { strings } = parts;

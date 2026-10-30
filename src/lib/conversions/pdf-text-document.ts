@@ -4,9 +4,10 @@ import { reportConversionWarning } from './conversion-warnings';
 import type { DocumentModel } from './document-model/model';
 import { documentToText } from './document-model/text';
 import type { OcrResult } from './ocr-pdf-combiner';
-import { layoutPdfDocument } from './pdf-layout';
+import { layoutPdf, type PdfPageText } from './pdf-layout';
+import type { DetectedTable } from './pdf-layout/types';
 import { runPdfTextJob } from './pdf-text-geometry';
-import { PdfTextUnmappedError, pagesPhrase, type PdfContentFont, type PdfGeometryPages, type PdfPageContent, type PdfTextJobResult } from './pdf-text-types';
+import { PdfTextUnmappedError, pagesPhrase, type PdfGeometryPages, type PdfPageContent, type PdfTextJobResult } from './pdf-text-types';
 
 /**
  * The text and structure of a PDF read from its text layer: pdfjs `getTextContent()` per page in page-tree order
@@ -37,8 +38,10 @@ export interface ExtractedPdfDocument {
   unmappedPages: number[];
   /** The positioned content, for callers that need geometry or rules. */
   pages: PdfPageContent[];
-  /** The document's fonts, which the items of `pages` refer to by index. */
-  fonts: PdfContentFont[];
+  /** The tables of the pages, one that goes on over several pages as one, each on the page it starts on (see `LaidOutPdf`). */
+  tables: DetectedTable[];
+  /** The lines of text of every page, for a reader that takes the text of a page apart from the document's flow. */
+  pageText: PdfPageText[];
 }
 
 /** What `readPdfDocument` asks of the single pass over the document. */
@@ -117,12 +120,12 @@ export function documentFromJob(job: PdfTextJobResult, options: ExtractPdfOption
   const someTextReads = pages.some((page) => visibleGlyphsOf(page) > 0);
   if (unmappedPages.length > 0 && !someTextReads && !omit) throw new PdfTextUnmappedError(unmappedPages);
   reportLeftOut(job.content, pages, unmapped, !omit);
-  const model = layoutPdfDocument(pages, job.fonts);
+  const { model, tables, pageText } = layoutPdf(pages, job.fonts);
   const geometry = new Map([...job.geometry].filter(([pageNumber]) => !unmapped.has(pageNumber)));
   const analyses: PdfPageAnalysis[] = job.analyses.map((analysis) =>
     unmapped.has(analysis.pageNumber) ? { ...analysis, charCount: 0, wordCount: 0, hasTextLayer: false, text: '' } : analysis
   );
-  return { extracted: { model, text: documentToText(model), unmappedPages, pages, fonts: job.fonts }, analyses, geometry };
+  return { extracted: { model, text: documentToText(model), unmappedPages, pages, tables, pageText }, analyses, geometry };
 }
 
 /**

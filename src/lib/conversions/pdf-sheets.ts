@@ -1,23 +1,23 @@
-import type { ConversionOptions } from '../types';
-import { WORKBOOK_MAX_SHEETS, sheetLimitError } from './office/sheet-bounds';
-import { detectPdfTables, pdfTextRows } from './pdf-layout';
-import type { DetectedTable } from './pdf-layout/types';
-import { readPdfContentForOffice, type PdfOfficeContent } from './pdf-office';
-import type { PdfContentFont, PdfPageContent } from './pdf-text-types';
-import type { SheetCell, SheetMerge, WorkbookSheet } from './xlsx-writer';
-
 /**
  * The sheets of a workbook written from a PDF, as a table extractor lays them out: one sheet for each table the pages hold, named
  * `Page N Table M` after the page it starts on (Camelot's `TableList.export(f='excel')` writes `page-N-table-M`); a table that goes on in
- * the same columns on the next page stays one table. A document with no table gives one sheet `Page N` for each page, a line of text
- * for a row and the pieces of a line that sit apart in the columns of its row. Tables are found by the layout analysis that writes
- * documents (`pdf-layout`: ruled tables, then aligned text), so a table is the same table in both outputs.
+ * the same columns on the next page stays one table. A document with no table gives one sheet `Page N` for each page that has text, a
+ * line of text for a row. The tables and the lines come from the one layout pass that writes documents (`layoutPdf`: ruled tables, then
+ * aligned text), so a table is the same table in both outputs. A page that OCR read keeps its recognized text as a sheet `Page N`.
  */
+import type { ConversionOptions } from '../types';
+import { reportConversionWarning } from './conversion-warnings';
+import type { DetectedTable, TableCell } from './pdf-layout/types';
+import { readPdfContentForOffice, type PdfOfficeContent } from './pdf-office';
+import type { ExtractedPdfDocument } from './pdf-text-document';
+import { pagesPhrase } from './pdf-text-types';
+import type { SheetCell, SheetMerge, WorkbookSheet } from './xlsx-writer';
 
-const TABLE_CELL_JOINER = '\n';
+/** A cell's paragraphs are set apart by a line break; the lines of one paragraph are already joined by a space (`joinLines`). */
+const PARAGRAPH_JOINER = '\n';
 
-function cellText(cell: DetectedTable['rows'][number][number]): SheetCell {
-  const text = cell.paragraphs.map((paragraph) => paragraph.text).join(TABLE_CELL_JOINER);
+function cellText(cell: TableCell): SheetCell {
+  const text = cell.paragraphs.map((paragraph) => paragraph.text).join(PARAGRAPH_JOINER);
   return text === '' ? null : text;
 }
 
@@ -42,44 +42,62 @@ function tableSheet(table: DetectedTable, name: string): WorkbookSheet {
   return { name, rows, merges };
 }
 
-function tableSheets(tables: DetectedTable[]): WorkbookSheet[] {
+interface PageSheet {
+  pageNumber: number;
+  sheet: WorkbookSheet;
+}
+
+function tableSheets(tables: DetectedTable[]): PageSheet[] {
   const perPage = new Map<number, number>();
   return tables.map((table) => {
     const number = (perPage.get(table.pageNumber) ?? 0) + 1;
     perPage.set(table.pageNumber, number);
-    return tableSheet(table, `Page ${table.pageNumber} Table ${number}`);
+    return { pageNumber: table.pageNumber, sheet: tableSheet(table, `Page ${table.pageNumber} Table ${number}`) };
   });
 }
 
-function textSheet(pageNumber: number, rows: string[][]): WorkbookSheet {
-  return { name: `Page ${pageNumber}`, rows };
+/** The sheet of a page's lines of text, a line for a row, or none for a page without text. */
+function textSheet(pageNumber: number, lines: readonly string[]): PageSheet[] {
+  const rows = lines.filter((line) => line.trim() !== '').map((line) => [line]);
+  return rows.length === 0 ? [] : [{ pageNumber, sheet: { name: `Page ${pageNumber}`, rows } }];
 }
 
-/** The lines of text OCR read from a page, one for a row. */
-function lineRows(text: string): string[][] {
-  return text.split(/\r?\n/).filter((line) => line.trim() !== '').map((line) => [line]);
+/** What the sheets are made of: the layout of the pages that have a text layer, and the text OCR read from the other pages by page number. */
+export interface PdfSheetInput {
+  layout: Pick<ExtractedPdfDocument, 'tables' | 'pageText'> | null;
+  recognized: ReadonlyMap<number, string>;
 }
 
-function layoutSheets(pages: PdfPageContent[], fonts: PdfContentFont[]): WorkbookSheet[] {
-  const tables = detectPdfTables(pages, fonts);
-  if (tables.length > 0) return tableSheets(tables);
-  return pages.map((page) => textSheet(page.pageNumber, pdfTextRows(page, fonts)));
+/**
+ * The sheets a PDF gives: the tables of the pages with a text layer, and the text of the pages OCR read. A document with no table has a
+ * text sheet for every page that has text; with a table, the text outside the tables is left out and the conversion says which pages
+ * lost it. Sheets are in page order.
+ */
+export function sheetsOfPdf({ layout, recognized }: PdfSheetInput): WorkbookSheet[] {
+  const tables = tableSheets((layout?.tables ?? []).filter((table) => !recognized.has(table.pageNumber)));
+  const layoutPages = (layout?.pageText ?? []).filter((page) => !recognized.has(page.pageNumber));
+  const recognizedSheets = [...recognized].flatMap(([pageNumber, text]) => textSheet(pageNumber, text.split(/\r?\n/)));
+  let sheets: PageSheet[];
+  if (tables.length === 0) {
+    sheets = [...layoutPages.flatMap((page) => textSheet(page.pageNumber, page.lines)), ...recognizedSheets];
+  } else {
+    sheets = [...tables, ...recognizedSheets];
+    const leftOut = layoutPages.filter((page) => page.lines.some((line) => line.trim() !== '')).map((page) => page.pageNumber);
+    if (leftOut.length > 0) reportConversionWarning(`Left out the text outside the tables of ${pagesPhrase(leftOut)}: a workbook of a PDF that has tables holds the tables.`);
+  }
+  return sheets.sort((a, b) => a.pageNumber - b.pageNumber).map((entry) => entry.sheet);
 }
 
-/** The sheets a PDF's content gives. @throws SheetLimitError (413) for more than WORKBOOK_MAX_SHEETS sheets. */
-export function sheetsOfPdfContent(content: PdfOfficeContent): WorkbookSheet[] {
-  const sheets =
-    content.kind === 'layout'
-      ? layoutSheets(content.extracted.pages, content.extracted.fonts)
-      : content.pages.map((page) => textSheet(page.pageNumber, lineRows(page.text)));
-  if (sheets.length > WORKBOOK_MAX_SHEETS) throw sheetLimitError('The PDF', sheets.length, 'sheets of tables or pages', 'a workbook', WORKBOOK_MAX_SHEETS);
-  return sheets;
+function sheetInputOf(content: PdfOfficeContent): PdfSheetInput {
+  if (content.kind === 'layout') return { layout: content.extracted, recognized: new Map() };
+  const recognized = content.pages.filter((page) => content.recognizedPages.has(page.pageNumber)).map((page): [number, string] => [page.pageNumber, page.text]);
+  return { layout: content.extracted, recognized: new Map(recognized) };
 }
 
 /**
  * The sheets of a PDF's workbook; a document without a text layer is read as `pdf` to a document is (`readPdfContentForOffice`).
- * @throws SheetLimitError (413) for more than WORKBOOK_MAX_SHEETS sheets; for the other failures see `readPdfContentForOffice` and `detectPdfTables`.
+ * For the failures see `readPdfContentForOffice` and `layoutPdf`; `writeXlsxWorkbook` refuses a workbook of too many sheets.
  */
 export async function readPdfSheets(source: Buffer, options: ConversionOptions): Promise<WorkbookSheet[]> {
-  return sheetsOfPdfContent(await readPdfContentForOffice(source, options));
+  return sheetsOfPdf(sheetInputOf(await readPdfContentForOffice(source, options)));
 }
