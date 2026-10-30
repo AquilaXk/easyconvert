@@ -1,5 +1,5 @@
 import type { ConversionOptions } from '../types';
-import { probeFfmpegBuild } from './media-audio-quality';
+import { type FfmpegVersion, probeFfmpegBuild } from './media-process';
 import { isAudioOnlyTarget } from './media-audio-targets';
 import { readWavPcmInfo, type WavPcmInfo } from './wav-header';
 
@@ -63,7 +63,7 @@ export function wavPacketBytes(dataBytes: number): number | undefined {
  * its block size: the packet size then sets the block size of the file. A development build and a release outside the range
  * keep the default packets.
  */
-export function wavPacketSizeKeepsOutput(version: { major: number; minor: number } | undefined): boolean {
+export function wavPacketSizeKeepsOutput(version: FfmpegVersion | undefined): boolean {
   if (version === undefined) return false;
   const { major, minor } = version;
   return (major === 4 && minor >= 4) || (major >= 5 && major <= 7) || (major === 8 && minor === 0);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { layoutPdfDocument } from '../src/lib/conversions/pdf-layout';
+import { layoutPdf } from '../src/lib/conversions/pdf-layout';
 import { parseListMarker } from '../src/lib/conversions/pdf-layout/lists';
 import { PDF_LAYOUT_MAX_STEPS_PER_PAGE, PdfLayoutLimitError } from '../src/lib/conversions/pdf-layout/limits';
 import { counterLabel, markerText } from '../src/lib/conversions/document-model/counters';
@@ -89,7 +89,7 @@ describe('structure from positioned text', () => {
     const items = [item('A title across the page', 150, 60, 20, 1)];
     left.forEach((text, index) => items.push(item(text, 50, 120 + index * 14)));
     right.forEach((text, index) => items.push(item(text, 330, 120 + index * 14)));
-    const model = layoutPdfDocument([page(items.reverse())], FONTS);
+    const model = layoutPdf([page(items.reverse())], FONTS).model;
     expect(model.sections.map((section) => section.columns)).toEqual([1, 2]);
     const order = documentToText(model).replace(/\s+/g, ' ');
     expect(order.indexOf('A title')).toBeLessThan(order.indexOf('alpha one'));
@@ -99,7 +99,7 @@ describe('structure from positioned text', () => {
   it('orders a right-to-left line by its runs, keeping a left-to-right number inside', () => {
     // Drawn left to right on the page: "shalom" run, the number 42, then the first words of the sentence (right-most).
     const rtl = (text: string, x: number): PdfContentItem => ({ ...item(text, x, 100), rtl: true });
-    const model = layoutPdfDocument([page([rtl('סוף', 100), item('42', 160, 100), rtl('התחלה', 200)])], FONTS);
+    const model = layoutPdf([page([rtl('סוף', 100), item('42', 160, 100), rtl('התחלה', 200)])], FONTS).model;
     expect(documentToText(model)).toBe('התחלה 42 סוף');
   });
 
@@ -112,7 +112,7 @@ describe('structure from positioned text', () => {
       item('More body text follows the bold run-in heading and fills the line quite well.', 50, 200),
       item('and a second line to make the body size the most common one on the page.', 50, 214),
     ];
-    const model = layoutPdfDocument([page(items)], FONTS);
+    const model = layoutPdf([page(items)], FONTS).model;
     const blocks = model.sections.flatMap((section) => section.blocks);
     expect(blocks.map((block) => (block.type === 'heading' ? `h${block.level}` : block.type))).toEqual(['h1', 'paragraph', 'h2', 'paragraph']);
   });
@@ -129,7 +129,7 @@ describe('structure from positioned text', () => {
       item('2.', 70, 210),
       item('numbered two', 95, 210),
     ];
-    const model = layoutPdfDocument([page(items)], FONTS);
+    const model = layoutPdf([page(items)], FONTS).model;
     const lists = model.sections.flatMap((section) => section.blocks).filter((block): block is ListBlock => block.type === 'list');
     expect(lists.map((list) => ({ kind: list.levels[0].kind, items: list.items.map((entry) => entry.runs.map((run) => run.text).join('')) }))).toEqual([
       { kind: 'bullet', items: ['first bullet', 'second bullet'] },
@@ -152,7 +152,7 @@ describe('structure from positioned text', () => {
       item('merged cell', 60, 180),
       item('c3', 260, 180),
     ];
-    const model = layoutPdfDocument([page(items, rules)], FONTS);
+    const model = layoutPdf([page(items, rules)], FONTS).model;
     const table = model.sections.flatMap((section) => section.blocks).find((block) => block.type === 'table');
     expect(table?.type === 'table' ? table.rows.map((row) => row.map((cell) => `${cell.paragraphs.map((p) => p.runs.map((r) => r.text).join('')).join('')}:${cell.colSpan}`)) : null).toEqual([
       ['H1:1', 'H2:1', 'H3:1'],
@@ -167,7 +167,7 @@ describe('structure from positioned text', () => {
       item('tion are in the old Anglo-', 50, 114),
       item('Saxon style, as it was said.', 50, 128),
     ];
-    expect(lines(layoutPdfDocument([page(items)], FONTS))).toEqual(['The records of the organization are in the old Anglo-Saxon style, as it was said.']);
+    expect(lines(layoutPdf([page(items)], FONTS).model)).toEqual(['The records of the organization are in the old Anglo-Saxon style, as it was said.']);
   });
 });
 
@@ -180,7 +180,7 @@ describe('hostile pages', () => {
       'hostile page',
       () => {
         try {
-          return { model: layoutPdfDocument([page(items)], FONTS) };
+          return { model: layoutPdf([page(items)], FONTS).model };
         } catch (error) {
           return { error };
         }
@@ -199,20 +199,20 @@ describe('hostile pages', () => {
 
   it('lays out a column of 50,000 lines top to bottom without hanging (growth ratio in the perf suite)', async () => {
     const items = Array.from({ length: COLUMN_LINES }, (_, i) => item(`r${i}`, 20, 20 + i * 20));
-    const model = await expectNoHang('column of lines', () => layoutPdfDocument([page(items)], FONTS), 30_000);
+    const model = await expectNoHang('column of lines', () => layoutPdf([page(items)], FONTS).model, 30_000);
     expect(documentToText(model).match(/r\d+/g)).toEqual(items.map((entry) => entry.text));
   }, HOSTILE_TEST_TIMEOUT_MS);
 
   it('lays out a staircase that peels one run per cut without hanging', async () => {
     const items = Array.from({ length: STAIRCASE_RUNS }, (_, i) => item(`s${i}`, 20 + (i % 5) * 100, 20 + i * 14));
-    const model = await expectNoHang('staircase', () => layoutPdfDocument([page(items)], FONTS), 30_000);
+    const model = await expectNoHang('staircase', () => layoutPdf([page(items)], FONTS).model, 30_000);
     expect([...(documentToText(model).match(/s\d+/g) ?? [])].sort()).toEqual(items.map((entry) => entry.text).sort());
   }, HOSTILE_TEST_TIMEOUT_MS);
 
   it('lays out a page of many tiny gaps without recursing without bound', async () => {
     const items: PdfContentItem[] = [];
     for (let row = 0; row < 200; row++) for (let column = 0; column < 40; column++) items.push(item('x', 20 + column * 14, 20 + row * 3.5, 3));
-    const model = await expectNoHang('dense grid', () => layoutPdfDocument([page(items)], FONTS), 20_000);
+    const model = await expectNoHang('dense grid', () => layoutPdf([page(items)], FONTS).model, 20_000);
     expect(documentToText(model).replace(/[^x]/g, '')).toBe('x'.repeat(200 * 40));
   });
 });

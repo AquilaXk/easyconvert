@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process';
 import { UnprocessableMediaInputError, UnsupportedMediaCodecError } from '../types';
+import { type MediaInput, runFfprobe } from './media-process';
 
 /**
  * What a decoder says when it cannot decode a stream, turned into an error that names the stream or the codec. FFmpeg's own
@@ -80,11 +80,10 @@ export function explainFfmpegFailure(log: string): UnprocessableMediaInputError 
  * warning level, below the level the probes run at, so it is asked again here with a bounded log; undefined when the file
  * fails for any other reason.
  */
-export function explainProbeFailure(ffprobe: string, filePath: string): UnsupportedMediaCodecError | undefined {
-  const run = spawnSync(ffprobe, ['-v', 'warning', '-show_entries', 'stream=index', '-of', 'csv', filePath], {
-    encoding: 'utf8',
-    timeout: DIAGNOSIS_TIMEOUT_MS,
+export function explainProbeFailure(ffprobe: string, input: MediaInput): UnsupportedMediaCodecError | undefined {
+  const run = runFfprobe(ffprobe, ['-v', 'warning', '-show_entries', 'stream=index', '-of', 'csv'], input, {
+    timeoutMs: DIAGNOSIS_TIMEOUT_MS,
     maxBuffer: DIAGNOSIS_MAX_BYTES,
   });
-  return unsupportedCodecIn(run.stderr ?? '');
+  return unsupportedCodecIn(run.stderr);
 }

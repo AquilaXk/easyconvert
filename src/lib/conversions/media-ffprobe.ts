@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
   ConversionFailedError,
   EngineUnavailableError,
@@ -10,6 +9,7 @@ import {
   UnprocessableMediaInputError,
 } from '../types';
 import { explainProbeFailure } from './media-decode-failures';
+import { type MediaInput, runFfprobe } from './media-process';
 import { findUndecodableAudio } from './media-undecodable-audio';
 import { type LayoutStream, readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
@@ -49,6 +49,8 @@ export type FfprobePath = string & { readonly __brand: 'FfprobePath' };
 export const FFPROBE_TIMEOUT_MS = 10_000;
 /** The JSON of a 64-stream file with long tags stays far below this; a larger report is not a media file. */
 const MAX_FFPROBE_JSON_BYTES = 4 * 1024 * 1024;
+/** Output limit of a probe that prints a few values, as Node's default for a synchronous child. */
+const MAX_FFPROBE_SCALAR_BYTES = 1024 * 1024;
 /** Most streams one conversion maps. Probing and `-map` lists grow with the stream count, so it is bounded. */
 export const MAX_MAPPED_STREAMS = 64;
 /** Highest frame rate accepted from a probe; a larger r_frame_rate is a timebase artefact of variable-rate input. */
@@ -61,47 +63,43 @@ const HALF_TURN_DEGREES = 180;
 const BITS_PER_KILOBIT = 1000;
 
 /**
- * Resolves the ffprobe binary that belongs to an ffmpeg installation: the sibling of `ffmpegBin`
- * when present, otherwise `FFPROBE_PATH` or a standard location. Throws when none exists.
+ * The ffprobe binary that belongs to an ffmpeg installation: the sibling of `ffmpegBin` when present, otherwise
+ * `FFPROBE_PATH` or a standard location; null when none exists.
  */
-export function resolveFfprobeBinary(ffmpegBin?: string | null): FfprobePath {
+export function findFfprobeBinary(ffmpegBin?: string | null): FfprobePath | null {
   const override = process.env.FFPROBE_PATH;
-  if (override && !fs.existsSync(override)) {
-    // An explicit override that names no file means ffprobe is not installed; do not search elsewhere.
-    throw new EngineUnavailableError('ffprobe', 'ffprobe is required to inspect media streams but was not found.');
-  }
+  // An explicit override that names no file means ffprobe is not installed; do not search elsewhere.
+  if (override && !fs.existsSync(override)) return null;
   if (ffmpegBin) {
     const sibling = path.join(path.dirname(ffmpegBin), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
     if (fs.existsSync(sibling)) {
       return sibling as FfprobePath;
     }
   }
-  const found = getInternalFfprobe();
-  if (!found) {
+  return getInternalFfprobe() as FfprobePath | null;
+}
+
+/** findFfprobeBinary for a conversion, which cannot run without one: throws EngineUnavailableError when none exists. */
+export function resolveFfprobeBinary(ffmpegBin?: string | null): FfprobePath {
+  const found = findFfprobeBinary(ffmpegBin);
+  if (found === null) {
     throw new EngineUnavailableError('ffprobe', 'ffprobe is required to inspect media streams but was not found.');
   }
-  return found as FfprobePath;
+  return found;
 }
 
 /** The error for an input ffprobe could not open: the codec the build lacks when that is why, otherwise ffprobe's own report. */
-function probeFailure(ffprobe: FfprobePath, filePath: string, err: unknown): ConversionFailedError {
-  const unsupported = explainProbeFailure(ffprobe, filePath);
-  if (unsupported !== undefined) return unsupported;
-  const detail = err instanceof Error ? err.message : String(err);
-  return new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
+function probeFailure(ffprobe: FfprobePath, input: MediaInput, detail: string): ConversionFailedError {
+  return explainProbeFailure(ffprobe, input) ?? new ConversionFailedError(`ffprobe could not inspect the input media: ${detail}`);
 }
 
-function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): string {
-  try {
-    return execFileSync(ffprobe, ['-v', 'error', ...args, '-of', 'default=noprint_wrappers=1:nokey=1', filePath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: FFPROBE_TIMEOUT_MS,
-    })
-      .toString('utf-8')
-      .trim();
-  } catch (err) {
-    throw probeFailure(ffprobe, filePath, err);
-  }
+function probeScalar(ffprobe: FfprobePath, input: MediaInput, args: string[]): string {
+  const run = runFfprobe(ffprobe, ['-v', 'error', ...args, '-of', 'default=noprint_wrappers=1:nokey=1'], input, {
+    timeoutMs: FFPROBE_TIMEOUT_MS,
+    maxBuffer: MAX_FFPROBE_SCALAR_BYTES,
+  });
+  if (!run.ok) throw probeFailure(ffprobe, input, run.failure);
+  return run.stdout.trim();
 }
 
 /**
@@ -109,10 +107,10 @@ function runFfprobe(ffprobe: FfprobePath, filePath: string, args: string[]): str
  * Throws when ffprobe cannot read the file instead of reporting a silent input. A WAVE file with uncompressed
  * samples answers from its header, without a process.
  */
-export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
-  const wav = readWavPcmInfo(filePath);
+export function probeAudioChannels(input: MediaInput, ffprobe: FfprobePath, streamIndex = 0): number {
+  const wav = readWavPcmInfo(input.path);
   if (wav !== null) return streamIndex === 0 ? wav.channels : 0;
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels']);
+  const out = probeScalar(ffprobe, input, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=channels']);
   if (out === '') {
     return 0;
   }
@@ -124,10 +122,10 @@ export function probeAudioChannels(filePath: string, ffprobe: FfprobePath, strea
 }
 
 /** Number of audio streams in the file; 0 when it has none. Throws when ffprobe cannot read the file. */
-export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): number {
+export function probeAudioStreamCount(input: MediaInput, ffprobe: FfprobePath): number {
   // A WAVE file with uncompressed samples has exactly one audio stream; its header says so without a process.
-  if (readWavPcmInfo(filePath) !== null) return 1;
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', 'a', '-show_entries', 'stream=index']);
+  if (readWavPcmInfo(input.path) !== null) return 1;
+  const out = probeScalar(ffprobe, input, ['-select_streams', 'a', '-show_entries', 'stream=index']);
   return out === '' ? 0 : out.split('\n').length;
 }
 
@@ -135,10 +133,10 @@ export function probeAudioStreamCount(filePath: string, ffprobe: FfprobePath): n
  * Sample rate in Hz of the selected audio stream (the first by default), or 0 when it has none. A WAVE file with
  * uncompressed samples answers from its header, without a process.
  */
-export function probeAudioSampleRate(filePath: string, ffprobe: FfprobePath, streamIndex = 0): number {
-  const wav = readWavPcmInfo(filePath);
+export function probeAudioSampleRate(input: MediaInput, ffprobe: FfprobePath, streamIndex = 0): number {
+  const wav = readWavPcmInfo(input.path);
   if (wav !== null) return streamIndex === 0 ? wav.sampleRate : 0;
-  const out = runFfprobe(ffprobe, filePath, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate']);
+  const out = probeScalar(ffprobe, input, ['-select_streams', `a:${streamIndex}`, '-show_entries', 'stream=sample_rate']);
   if (out === '') {
     return 0;
   }
@@ -266,10 +264,10 @@ function toInputStream(raw: RawStream): InputStream {
  * Sets `undecodable` on the audio streams of `streams` that state no sample rate (ffprobe reads it from the first decoded frame
  * and found none while it analysed the start of the file) and of which no packet decodes when the first ones are tried.
  */
-function markUndecodableAudio(ffprobe: FfprobePath, filePath: string, streams: InputStream[], raw: readonly RawStream[]): void {
+function markUndecodableAudio(ffprobe: FfprobePath, input: MediaInput, streams: InputStream[], raw: readonly RawStream[]): void {
   const suspects = streams.filter((stream, position) => stream.type === 'audio' && !(Number(raw[position].sample_rate) > 0));
   if (suspects.length === 0) return;
-  const undecodable = findUndecodableAudio(ffprobe, filePath, suspects.map((stream) => stream.index));
+  const undecodable = findUndecodableAudio(ffprobe, input, suspects.map((stream) => stream.index));
   for (const stream of suspects) {
     if (undecodable.has(stream.index)) stream.undecodable = true;
   }
@@ -293,11 +291,14 @@ export interface InputProbe {
 const PROBE_CACHE_ENTRIES = 16;
 const probeCache = new Map<string, InputProbe>();
 
-/** Identity of the bytes on disk: a rewritten file changes at least one of these, so its probe is never reused. */
-function fileIdentity(filePath: string): string | undefined {
+/**
+ * Identity of the bytes on disk and of the demuxers they are read with: a rewritten file changes at least one of these, so its
+ * probe is never reused, nor one made with another demuxer.
+ */
+function inputIdentity(input: MediaInput): string | undefined {
   try {
-    const stat = fs.statSync(filePath);
-    return [filePath, stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino].join('\0');
+    const stat = fs.statSync(input.path);
+    return [input.path, input.demuxers.join(','), stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino].join('\0');
   } catch {
     return undefined;
   }
@@ -315,30 +316,21 @@ export function resetInputProbeCache(): void {
 const INPUT_PROBE_ARGS = ['-v', 'error', '-show_streams', '-show_entries', 'format=start_time,duration:chapter=id', '-of', 'json'];
 
 /**
- * One ffprobe run over `filePath` for the stream list, the timeline and the duration. The result is remembered
+ * One ffprobe run over `input` for the stream list, the timeline and the duration. The result is remembered
  * for the file as it is on disk, so the planner, the metadata that names dropped streams and the duration check of
  * one conversion cost one process between them. More than MAX_MAPPED_STREAMS streams throws
  * TooManyMediaStreamsError, so no later step lists or maps an unbounded number of streams.
  */
-export function probeInput(filePath: string, ffprobe: FfprobePath): InputProbe {
-  const identity = fileIdentity(filePath);
+export function probeInput(input: MediaInput, ffprobe: FfprobePath): InputProbe {
+  const identity = inputIdentity(input);
   const remembered = identity === undefined ? undefined : probeCache.get(identity);
   if (remembered) return remembered;
 
-  let stdout: string;
-  try {
-    stdout = execFileSync(ffprobe, [...INPUT_PROBE_ARGS, filePath], {
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: FFPROBE_TIMEOUT_MS,
-      maxBuffer: MAX_FFPROBE_JSON_BYTES,
-    });
-  } catch (err) {
-    throw probeFailure(ffprobe, filePath, err);
-  }
+  const run = runFfprobe(ffprobe, INPUT_PROBE_ARGS, input, { timeoutMs: FFPROBE_TIMEOUT_MS, maxBuffer: MAX_FFPROBE_JSON_BYTES });
+  if (!run.ok) throw probeFailure(ffprobe, input, run.failure);
   let parsed: { streams?: unknown; format?: { start_time?: unknown; duration?: unknown }; chapters?: unknown };
   try {
-    parsed = JSON.parse(stdout) as typeof parsed;
+    parsed = JSON.parse(run.stdout) as typeof parsed;
   } catch {
     throw new MediaProbeError('ffprobe did not return valid JSON for the input media.');
   }
@@ -354,7 +346,7 @@ export function probeInput(filePath: string, ffprobe: FfprobePath): InputProbe {
   const duration = typeof parsed.format?.duration === 'string' ? Number.parseFloat(parsed.format.duration) : Number.NaN;
   const raw = parsed.streams as RawStream[];
   const streams = raw.map(toInputStream);
-  markUndecodableAudio(ffprobe, filePath, streams, raw);
+  markUndecodableAudio(ffprobe, input, streams, raw);
   const probe: InputProbe = {
     streams,
     timeline: {
@@ -380,17 +372,17 @@ export interface StreamLayout {
 }
 
 /**
- * What the stream mapping of a conversion needs to know about `filePath`. A plain MP4 answers from its movie box
+ * What the stream mapping of a conversion needs to know about `input`. A plain MP4 answers from its movie box
  * without a process; every other input, and every MP4 the header reader cannot describe exactly, is probed with
  * ffprobe once (the probe is remembered for the file, so the rest of the conversion reads it again at no cost).
  */
-export function probeStreamLayout(filePath: string, ffprobe: FfprobePath): StreamLayout {
-  const identity = fileIdentity(filePath);
+export function probeStreamLayout(input: MediaInput, ffprobe: FfprobePath): StreamLayout {
+  const identity = inputIdentity(input);
   if (identity === undefined || !probeCache.has(identity)) {
-    const header = readMp4Layout(filePath);
+    const header = readMp4Layout(input.path);
     if (header !== null) return { streams: header.streams, durationSec: header.durationSec };
   }
-  const probe = probeInput(filePath, ffprobe);
+  const probe = probeInput(input, ffprobe);
   const { chapterCount, startTimeSec } = probe.timeline;
   const layout: StreamLayout = { streams: probe.streams, durationSec: probe.durationSec };
   return chapterCount > 0 ? { ...layout, chapters: { count: chapterCount, startTimeSec } } : layout;
@@ -402,18 +394,18 @@ export function layoutColorTransfer(layout: StreamLayout): string {
 }
 
 /** Every stream of the input, in index order. */
-export function probeInputStreams(filePath: string, ffprobe: FfprobePath): InputStream[] {
-  return probeInput(filePath, ffprobe).streams;
+export function probeInputStreams(input: MediaInput, ffprobe: FfprobePath): InputStream[] {
+  return probeInput(input, ffprobe).streams;
 }
 
 /** Start time and chapter count of the input. */
-export function probeInputTimeline(filePath: string, ffprobe: FfprobePath): InputTimeline {
-  return probeInput(filePath, ffprobe).timeline;
+export function probeInputTimeline(input: MediaInput, ffprobe: FfprobePath): InputTimeline {
+  return probeInput(input, ffprobe).timeline;
 }
 
 /** Transfer characteristic of the first video stream (e.g. `bt709`, `smpte2084`), or '' when it states none. */
-export function probeVideoColorTransfer(filePath: string, ffprobe: FfprobePath): string {
-  return probeInput(filePath, ffprobe).streams.find((stream) => stream.type === 'video')?.colorTransfer ?? '';
+export function probeVideoColorTransfer(input: MediaInput, ffprobe: FfprobePath): string {
+  return probeInput(input, ffprobe).streams.find((stream) => stream.type === 'video')?.colorTransfer ?? '';
 }
 
 /** The first video stream that is a real video track, not cover art; undefined when the input has none. */
@@ -454,8 +446,8 @@ function planningFrameRate(stream: InputStream): { num: number; den: number } | 
 }
 
 /** Duration of the input container in seconds, from ffprobe; throws when it cannot be read. */
-export function probeInputDuration(filePath: string, ffprobe: FfprobePath): number {
-  const out = runFfprobe(ffprobe, filePath, ['-show_entries', 'format=duration']);
+export function probeInputDuration(input: MediaInput, ffprobe: FfprobePath): number {
+  const out = probeScalar(ffprobe, input, ['-show_entries', 'format=duration']);
   const parsed = Number.parseFloat(out);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new MediaProbeError(`ffprobe reported an invalid duration: "${out}"`);
@@ -467,8 +459,8 @@ export function probeInputDuration(filePath: string, ffprobe: FfprobePath): numb
  * Frame rate (exact rational), displayed size and duration of the first video stream. A file without a
  * video track throws NoVideoStreamError; a stream whose rate or size cannot be read throws MediaProbeError.
  */
-export function probeVideoGeometry(filePath: string, ffprobe: FfprobePath): VideoGeometry {
-  const stream = firstVideoStream(probeInputStreams(filePath, ffprobe));
+export function probeVideoGeometry(input: MediaInput, ffprobe: FfprobePath): VideoGeometry {
+  const stream = firstVideoStream(probeInputStreams(input, ffprobe));
   if (!stream) {
     throw new NoVideoStreamError('The input has no video stream, so it cannot be packaged for streaming.');
   }
@@ -482,7 +474,7 @@ export function probeVideoGeometry(filePath: string, ffprobe: FfprobePath): Vide
     fpsDen: rate.den,
     width: size.width,
     height: size.height,
-    durationSec: probeInputDuration(filePath, ffprobe),
+    durationSec: probeInputDuration(input, ffprobe),
     bitrateK: stream.bitRateK,
   };
 }

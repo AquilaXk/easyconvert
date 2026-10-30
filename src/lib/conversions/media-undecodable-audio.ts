@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { type MediaInput, runFfprobe } from './media-process';
 
 /**
  * Finds the audio streams of a file that cannot be decoded at all. ffprobe reports a stream's sample rate from the first
@@ -16,20 +16,17 @@ const PROBE_TIMEOUT_MS = 10_000;
 const PROBE_MAX_BYTES = 64 * 1024;
 
 /** True when ffprobe ran and decoded no frame from the first packets of stream `index`. */
-function decodesNothing(ffprobe: string, filePath: string, index: number): boolean {
-  try {
-    const out = execFileSync(
-      ffprobe,
-      ['-v', 'quiet', '-select_streams', String(index), '-show_entries', 'frame=pts', '-of', 'csv=p=0', '-read_intervals', `%+#${UNDECODABLE_PROBE_PACKETS}`, filePath],
-      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BYTES }
-    );
-    return out.trim() === '';
-  } catch {
-    return false;
-  }
+function decodesNothing(ffprobe: string, input: MediaInput, index: number): boolean {
+  const run = runFfprobe(
+    ffprobe,
+    ['-v', 'quiet', '-select_streams', String(index), '-show_entries', 'frame=pts', '-of', 'csv=p=0', '-read_intervals', `%+#${UNDECODABLE_PROBE_PACKETS}`],
+    input,
+    { timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BYTES }
+  );
+  return run.ok && run.stdout.trim() === '';
 }
 
 /** The indexes among `suspects` (absolute stream indexes of audio streams without a sample rate) that decode nothing. */
-export function findUndecodableAudio(ffprobe: string, filePath: string, suspects: readonly number[]): Set<number> {
-  return new Set(suspects.slice(0, MAX_SUSPECTS_TRIED).filter((index) => decodesNothing(ffprobe, filePath, index)));
+export function findUndecodableAudio(ffprobe: string, input: MediaInput, suspects: readonly number[]): Set<number> {
+  return new Set(suspects.slice(0, MAX_SUSPECTS_TRIED).filter((index) => decodesNothing(ffprobe, input, index)));
 }

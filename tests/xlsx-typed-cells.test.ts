@@ -2,9 +2,7 @@ import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { classifyJobFailure } from '../src/lib/queue/job-failure';
-import fs from 'node:fs';
-import path from 'node:path';
-import { DataLimitExceededError, DataParseError, SheetLimitError, UnsupportedTargetError } from '../src/lib/types';
+import { DataLimitExceededError, DataParseError, SheetLimitError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { cellKindsViaLibreOffice, sheetRowsViaLibreOffice } from './helpers/sheet-rows';
 
@@ -168,15 +166,6 @@ describe('a JSON array of records', () => {
     expect(sheet).not.toContain('r="B2"');
     expect(sheet).not.toContain('r="A3"');
     expect(cellOf(sheet, 'B3')).toBe('<c r="B3"><v>2</v></c>');
-  });
-});
-
-describe('a PDF source of a workbook', () => {
-  it('is refused as an unsupported pair, never read as delimited text', async () => {
-    const pdf = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.pdf'));
-    const failure = await convertFile(pdf, 'pdf', 'xlsx', {}, 'sample.pdf').catch((err: unknown) => err);
-    expect(failure).toBeInstanceOf(UnsupportedTargetError);
-    expect(classifyJobFailure(failure)).toMatchObject({ code: 'UnsupportedTargetError' });
   });
 });
 

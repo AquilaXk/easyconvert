@@ -24,7 +24,7 @@ elif [ "$same_lock" = true ] && [ "$base_libvips" = "$head_libvips" ]; then
 elif [ "$same_lock" = true ]; then
   cp -a node_modules ab-base/node_modules
 else
-  (cd ab-base && npm ci --ignore-scripts --no-audit --no-fund)
+  (cd ab-base && npm ci --ignore-scripts --no-audit --no-fund) >&2
 fi
 echo "libvips of the head: $head_libvips; of the base: ${base_libvips:-none, the npm package library}" >&2
 

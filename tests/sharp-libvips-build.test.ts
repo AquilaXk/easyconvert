@@ -380,6 +380,39 @@ describe('the AV1 auto-tiles patch', () => {
   });
 });
 
+describe('option-f.patch and aom-release-x64.patch, the optimisation level of the codecs that do the encode work', () => {
+  const hunksOf = (file: string): string[][] =>
+    readFileSync(path.join(BUILD_DIR, file), 'utf-8')
+      .split(/^@@.*$/m)
+      .slice(1)
+      .map((body) => body.split('\n'));
+  const removed = (hunk: string[]): string[] => hunk.filter((line) => line.startsWith('-')).map((line) => line.slice(1));
+  const added = (hunk: string[]): string[] => hunk.filter((line) => line.startsWith('+')).map((line) => line.slice(1));
+
+  it('builds aom as a Release (libaom CMakeLists.txt, lines 34 to 39, make Release the default) instead of MinSizeRel, and changes no other option of it', () => {
+    const [aom, ...others] = hunksOf('aom-release-x64.patch');
+    expect(others).toEqual([]);
+    expect(removed(aom).join('\n')).toContain('-DCMAKE_BUILD_TYPE=MinSizeRel');
+    expect(added(aom).join('\n')).toContain('-DCMAKE_BUILD_TYPE=Release');
+    expect(removed(aom)).toHaveLength(2);
+    expect(added(aom)).toHaveLength(2);
+    expect(aom.filter((line) => line.startsWith(' ')).join('\n')).toContain('-DENABLE_NASM=1');
+  });
+
+  it('applies the aom patch on linux-x64 only, so arm64 keeps the upstream aom until its bytes are compared', () => {
+    const build = readFileSync(path.join(BUILD_DIR, 'build.sh'), 'utf-8');
+    expect(build.split('\n').filter((line) => line.includes('aom-release-x64.patch') && !line.startsWith('#'))).toEqual([
+      'if [ "$PLATFORM" = linux-x64 ]; then patch -p1 --forward --fuzz=0 < "$here/aom-release-x64.patch"; fi',
+    ]);
+  });
+
+  it('leaves aom out of option-f.patch, which keeps the -O3 of mozjpeg, libpng and libwebp that entry 84 measured', () => {
+    const hunks = hunksOf('option-f.patch');
+    expect(hunks.flatMap(removed).some((line) => line.includes('AOM_AS_FLAGS'))).toBe(false);
+    expect(hunks.flatMap(added).filter((line) => line.includes('-O3'))).toHaveLength(3);
+  });
+});
+
 describe('check-build-output.sh, the one check of what the sharplibvips stage hands over', () => {
   const BYTES = 'the rebuilt library\n';
 
