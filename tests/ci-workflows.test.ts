@@ -83,9 +83,8 @@ describe('concurrency and triggers of ci.yml', () => {
 
   it('runs on pushes to main only, so a pull request commit is not built twice', () => {
     expect(ci.on.push).toEqual({ branches: ['main'] });
-    // Labels decide two verdicts (the automerge label starts speed parity, the security label excuses parity), so a
-    // label change needs a fresh run; no other event type is added.
-    expect(ci.on.pull_request).toEqual({ branches: ['main'], types: ['opened', 'synchronize', 'reopened', 'labeled', 'unlabeled'] });
+    // No label decides a verdict of this workflow, so a label change does not run it again.
+    expect(ci.on.pull_request).toEqual({ branches: ['main'], types: ['opened', 'synchronize', 'reopened'] });
   });
 
   it('reads the repository and nothing else', () => {
@@ -120,7 +119,7 @@ describe('the pull request workflow', () => {
 
   it('runs the conformance gate in parts and the other suites in duration-balanced shards', () => {
     expect(ci.jobs.tests.strategy?.matrix?.shard).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(ci.jobs.conformance.strategy?.matrix?.part).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(ci.jobs.conformance.strategy?.matrix?.part).toEqual([1, 2, 3, 4]);
     const run = stepRun(ci, 'tests', 'Run unit and integration tests');
     expect(run).toContain('scripts/ci-test-shards.mjs');
     expect(run).not.toContain('--shard');
@@ -242,6 +241,82 @@ describe('the nightly workflow', () => {
     expect(Object.keys(reportFailure.jobs)).toEqual(['report']);
   });
 
+  describe('the suspects a failing run names', () => {
+    const script = String(reportFailure.jobs.report.steps[0].with?.script);
+    const run = Object.getPrototypeOf(async () => undefined).constructor as new (...args: string[]) => (...values: unknown[]) => Promise<void>;
+    const SHA = 'c'.repeat(40);
+
+    /** Runs the report script against a stand-in client; returns the body of the issue it opened. */
+    async function report(lastGood: { id: number; head_sha: string; html_url: string } | undefined | null, commits: string[]): Promise<string> {
+      let body = '';
+      const github = {
+        paginate: async () => [{ name: 'bench-parity-speed', conclusion: 'failure', html_url: 'https://example.invalid/job' }],
+        rest: {
+          actions: {
+            listJobsForWorkflowRun: () => undefined,
+            getWorkflowRun: async () => ({ data: { workflow_id: 7, head_branch: 'main' } }),
+            listWorkflowRuns: async (query: { status: string; branch: string; workflow_id: number; event: string }) => {
+              if (lastGood === null) throw new Error('rate limited');
+              expect(query).toMatchObject({ status: 'success', branch: 'main', workflow_id: 7, event: 'schedule' });
+              return { data: { workflow_runs: lastGood ? [lastGood] : [] } };
+            },
+          },
+          repos: {
+            compareCommitsWithBasehead: async ({ basehead }: { basehead: string }) => {
+              expect(basehead).toBe(`${lastGood?.head_sha}...${SHA}`);
+              return {
+                data: {
+                  html_url: 'https://example.invalid/compare',
+                  total_commits: commits.length,
+                  commits: commits.map((title, index) => ({ sha: `${index}`.padStart(40, 'a'), html_url: `https://example.invalid/${index}`, commit: { message: `${title}\n\nbody` } })),
+                },
+              };
+            },
+          },
+          issues: {
+            listForRepo: async () => ({ data: [] }),
+            createLabel: async () => undefined,
+            createComment: async () => undefined,
+            create: async (issue: { body: string }) => {
+              body = issue.body;
+            },
+          },
+        },
+      };
+      const context = { repo: { owner: 'o', repo: 'r' }, serverUrl: 'https://example.invalid', runId: 1, sha: SHA };
+      await new run('github', 'context', script)(github, context);
+      return body;
+    }
+
+    it('lists the commits since the last successful run of the workflow on the branch, newest first', async () => {
+      const body = await report({ id: 5, head_sha: 'b'.repeat(40), html_url: 'https://example.invalid/run/5' }, ['Older change', 'Newer change']);
+      expect(body).toContain('Commits since the last successful run ([5](https://example.invalid/run/5) on bbbbbbb, [compare](https://example.invalid/compare)):');
+      expect(body.indexOf('Newer change')).toBeGreaterThan(-1);
+      expect(body.indexOf('Newer change')).toBeLessThan(body.indexOf('Older change'));
+      expect(body).not.toContain('body');
+    });
+
+    it('caps the list and points at the compare view for the rest', async () => {
+      const body = await report({ id: 5, head_sha: 'b'.repeat(40), html_url: 'https://example.invalid/run/5' }, Array.from({ length: 60 }, (_, index) => `Change ${index}`));
+      expect(body).toContain('Change 59');
+      expect(body).toContain('Change 10');
+      expect(body).not.toMatch(/`Change 9`$/m);
+      expect(body).toContain('- and 10 older commits in the compare view');
+    });
+
+    it('still opens the issue when the suspects cannot be listed', async () => {
+      const body = await report(null, []);
+      expect(body.split('\n').filter((line) => line.startsWith('Suspects'))).toEqual(['Suspects could not be listed: rate limited']);
+    });
+
+    it('says so when there is no earlier good run, or when it was on the same commit', async () => {
+      expect((await report(undefined, [])).split('\n').at(-1)).toBe('No earlier successful run on this branch: every commit up to this one is a suspect.');
+      expect((await report({ id: 5, head_sha: SHA, html_url: 'https://example.invalid/run/5' }, [])).split('\n').at(-1)).toBe(
+        'The last successful run was on this same commit (ccccccc): the change is in the runner or a tool, not in a commit.'
+      );
+    });
+  });
+
   it('runs the real-world corpus in ten cached shards and gates on their merged report', () => {
     const run = nightly.jobs.realworld;
     expect(run.strategy?.matrix?.shard).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
@@ -297,9 +372,9 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file: 28 on a runner and 4 that call a reusable workflow', () => {
-    expect(jobs).toHaveLength(32);
-    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(28);
+  it('reads every job of every workflow file: 27 on a runner and 4 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(31);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(27);
     expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(4);
   });
 
@@ -693,12 +768,6 @@ describe('the pinned 7-Zip the corpus and the speed rows run the product with', 
       expect(workflow.jobs[job].steps[install].with?.['export-env'], job).toBe('true');
       expect(install, job).toBeLessThan(workflow.jobs[job].steps.findIndex((step) => step.name === runName));
     }
-    const prSpeed = ci.jobs['parity-speed'];
-    const install = pinnedStepIndex(ci, 'parity-speed');
-    expect(prSpeed.steps[install].with?.['export-env']).toBe('true');
-    const firstBench = prSpeed.steps.findIndex((step) => (step.run ?? '').includes('bench:quality -- --parity --speed-only'));
-    expect(firstBench).toBeGreaterThan(-1);
-    expect(install).toBeLessThan(firstBench);
   });
 
   it('runs the archive suites of the integration job with that build through P7ZIP_PATH only for that step', () => {

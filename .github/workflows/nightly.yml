@@ -323,7 +323,7 @@ jobs:
       - name: Run the speed parity benchmark
         env:
           ORACLE_STRICT_MODE: "1"
-          # The heap bound the service runs with (docker-compose.yml); see the parity speed job in ci.yml.
+          # The heap bound the service runs with (docker-compose.yml), as in the parity quality job of ci.yml.
           MALLOC_ARENA_MAX: "2"
         run: npm run bench:quality -- --parity --speed-only
 

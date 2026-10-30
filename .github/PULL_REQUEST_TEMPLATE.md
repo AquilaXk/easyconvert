@@ -53,4 +53,4 @@
 - [ ] Changes match acceptance criteria of the related issue.
 - [ ] No extraneous files or secrets included.
 - [ ] If a policy or default changed: `docs/policy-decisions.md` is updated with the decision, why it is right in practice, its benefits and trade-offs, the alternatives rejected, and how it is verified.
-- [ ] If a conversion family changed: `parity quality` passes, and the `automerge` label has been added so `parity speed` runs on the final commit (a row listed in `bench/parity-gaps.json` fails when its median falls below the 99% prediction bound of its CI history or below 65% of the median of that history, whichever is higher).
+- [ ] If a conversion family changed: `parity quality` passes. Speed parity is measured nightly on `main` (a row listed in `bench/parity-gaps.json` fails when its median falls below the 99% prediction bound of its CI history or below 65% of the median of that history, whichever is higher); for a speed change, compare the branch with `main` first: `gh workflow run nightly.yml --ref <branch> -f ab_base_ref=main`.
