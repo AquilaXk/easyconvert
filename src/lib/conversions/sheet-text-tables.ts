@@ -1,4 +1,4 @@
-import { DataParseError, UnsupportedTargetError, type ConversionOptions } from '../types';
+import { DataParseError, type ConversionOptions } from '../types';
 import { dataObjectKeys, fieldsInFirstSeenOrder, isDataObject, parseJsonLossless } from './data-json';
 import { parseDelimitedRows } from './delimited-detect';
 import { sheetCellOfValue, type SheetCell } from './xlsx-writer';
@@ -42,12 +42,4 @@ export function parseJsonTableRows(text: string): string[][] {
  */
 export function delimitedSheetRows(text: string, sourceType: string, options: ConversionOptions): string[][] {
   return parseDelimitedRows(text.replace(/^\uFEFF/, ''), sourceType === 'tsv' || sourceType === 'tab' ? '\t' : options.delimiter || ',', sourceType);
-}
-
-/**
- * The refusal of a spreadsheet target for a PDF until the tables of its pages are extracted: reading its bytes as delimited text gave
- * junk rows or a misleading parse error.
- */
-export function pdfSheetRefusal(): UnsupportedTargetError {
-  return new UnsupportedTargetError('A PDF is not converted to a spreadsheet yet: the tables of its pages are not extracted.');
 }

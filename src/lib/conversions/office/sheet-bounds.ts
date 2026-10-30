@@ -31,3 +31,10 @@ export const SHEET_MAX_CELL_CHARS = 32_767;
 export function sheetLimitError(subject: string, count: number, what: string, sheet: string, limit: number): SheetLimitError {
   return new SheetLimitError(`${subject} has ${count} ${what}, and ${sheet} holds at most ${limit}; nothing was cut.`);
 }
+
+/**
+ * Sheets of one workbook: 10,000, the tabs LibreOffice Calc holds (`MAXTABCOUNT`, sc/inc/address.hxx). Excel states no count ("Excel
+ * specifications and limits": limited by available memory), and the office suite is what reads the workbook on the way to `.xls`, so
+ * a workbook past what it holds would lose sheets there. A workbook past the bound is refused with a typed limit error, never cut.
+ */
+export const WORKBOOK_MAX_SHEETS = 10_000;
