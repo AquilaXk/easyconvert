@@ -1,0 +1,73 @@
+name: segv probe
+
+on:
+  push:
+    branches: [fix/pdf-html-segv]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: 'npm'
+      - run: npm ci --ignore-scripts
+      - uses: ./.github/actions/sharp-libvips
+      - uses: ./.github/actions/ci-setup
+      - uses: ./.github/actions/pinned-7zip
+        with:
+          export-env: "true"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/easyconvert-realworld
+          key: realworld-5-${{ hashFiles('bench/realworld/manifest.json') }}
+          restore-keys: realworld-5-
+      - name: Enable core dumps
+        run: |
+          sudo mkdir -p /tmp/cores && sudo chmod 1777 /tmp/cores
+          sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p
+          sudo apt-get install -y gdb > /dev/null
+      - name: Replay the start of shard 5
+        run: |
+          ulimit -c unlimited
+          for round in 1 2 3 4 5 6; do
+            npx --no-install tsx bench/realworld/run.ts run --shard 5/10 --limit 335 --out "rw-${round}.json" > "rw-${round}.log" 2>&1 || true
+            node -e "const j=require('./rw-${round}.json').jobs; console.log('round ${round}', JSON.stringify(j.filter(r=>r.verdict==='crash'||r.verdict==='hang')))"
+            ls /tmp/cores
+          done
+      - name: Loop the file alone
+        run: |
+          ulimit -c unlimited
+          cat > /tmp/loop.mts <<'EOF'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const { dispatchConversion } = await import(path.join(process.cwd(), 'src/lib/conversions/dispatch.ts'));
+          const input = fs.readFileSync(process.argv[2]);
+          let ok = 0;
+          for (let i = 0; i < 300; i++) {
+            const r = await dispatchConversion(input, 'pdf', 'html', {}, 'x.pdf');
+            if (r.buffer.length > 500000) ok++;
+          }
+          console.log('loop ok', ok);
+          process.exit();
+          EOF
+          node --import tsx /tmp/loop.mts ~/.cache/easyconvert-realworld/govdocs1-001157.pdf || echo "loop exit $?"
+          ls /tmp/cores
+      - name: Backtraces
+        if: always()
+        run: |
+          shopt -s nullglob
+          for core in /tmp/cores/core.*; do
+            echo "=== $core"
+            gdb -q -batch -ex 'info sharedlibrary' -ex 'info threads' -ex 'thread apply all bt 40' "$(command -v node)" "$core" 2>&1 | grep -v '^warning' | head -600
+          done
