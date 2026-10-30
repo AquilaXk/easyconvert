@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import Redis from 'ioredis';
 import { mapWithConcurrency } from '../conversions/ocr-page-batch';
+import { readyGatedRedis } from '../redis/when-ready';
 import { GONE_RECORD_MS, isSweepDue, sweepAt, type RetentionRecord } from './result-retention';
 import { resolveLocalStorageDir } from './storage-config';
 
@@ -260,10 +261,6 @@ const MAX_UPDATE_ATTEMPTS = 16;
 const CAS_BACKOFF_BASE_MS = 2;
 const CAS_BACKOFF_MAX_MS = 100;
 const MGET_BATCH = 100;
-/** Longest a ledger operation waits for the connection; ioredis's first reconnect attempts fall inside it. */
-const CONNECT_WAIT_MS = 2_000;
-/** After a wait for the connection ran out, operations fail at once for this long instead of each waiting again. */
-const UNREACHABLE_HOLD_MS = 5_000;
 /** Longest one Redis command may take; a command that hangs fails instead of stopping the sweep. */
 const REDIS_COMMAND_TIMEOUT_MS = 5_000;
 
@@ -271,6 +268,13 @@ const REDIS_COMMAND_TIMEOUT_MS = 5_000;
  * Writes a record only when it still holds what the caller read (`ARGV[1]`, empty for none), and keeps the due set
  * in step: `ARGV[4]` is the due score, empty to leave the set.
  */
+/** Drops a record and its due entry together. */
+const FORGET_LUA = `
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+return 1
+`;
+
 const COMPARE_AND_SET_LUA = `
 local current = redis.call('GET', KEYS[1])
 if current == false then current = '' end
@@ -286,40 +290,13 @@ return 1
 
 /** A record per key with a Redis expiry, and a sorted set of the keys still to delete, scored by when the sweep takes them. */
 export class RedisRetentionLedger implements RetentionLedger {
-  private connectionWait: Promise<void> | undefined;
-  private unreachableUntil = 0;
-
   constructor(private readonly redis: Redis) {}
-
-  /**
-   * Resolves when the connection is ready, or after CONNECT_WAIT_MS. The client has no offline queue, so a command
-   * sent before then fails at once; this lets the first commands after a start wait for the connection. All callers
-   * share one wait, and once a wait ran out the next ones for UNREACHABLE_HOLD_MS do not wait, so an outage fails
-   * every call quickly.
-   */
-  private whenConnected(): Promise<void> {
-    if (this.redis.status === 'ready' || Date.now() < this.unreachableUntil) return Promise.resolve();
-    this.connectionWait ??= new Promise<void>((resolve) => {
-      const finish = (connected: boolean): void => {
-        clearTimeout(timer);
-        this.redis.off('ready', onReady);
-        this.connectionWait = undefined;
-        if (!connected) this.unreachableUntil = Date.now() + UNREACHABLE_HOLD_MS;
-        resolve();
-      };
-      const onReady = (): void => finish(true);
-      const timer = setTimeout(() => finish(false), CONNECT_WAIT_MS);
-      this.redis.once('ready', onReady);
-    });
-    return this.connectionWait;
-  }
 
   private recordKey(key: string): string {
     return `${REDIS_RECORD_PREFIX}${key}`;
   }
 
   async get(key: string): Promise<RetentionRecord | undefined> {
-    await this.whenConnected();
     const raw = await this.redis.get(this.recordKey(key));
     return raw === null ? undefined : parseRecord(raw);
   }
@@ -328,7 +305,6 @@ export class RedisRetentionLedger implements RetentionLedger {
     key: string,
     change: (current: RetentionRecord | undefined) => RetentionRecord | undefined
   ): Promise<RetentionRecord | undefined> {
-    await this.whenConnected();
     for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt++) {
       const raw = await this.redis.get(this.recordKey(key));
       const next = change(raw === null ? undefined : parseRecord(raw));
@@ -352,19 +328,16 @@ export class RedisRetentionLedger implements RetentionLedger {
   }
 
   async forget(key: string): Promise<void> {
-    await this.whenConnected();
-    await this.redis.multi().del(this.recordKey(key)).zrem(REDIS_DUE_SET, key).exec();
+    await this.redis.eval(FORGET_LUA, 2, this.recordKey(key), REDIS_DUE_SET, key);
   }
 
   /** Redis expires the records of deleted results itself. */
   async collectDue(now: number, limit: number): Promise<string[]> {
-    await this.whenConnected();
     return this.redis.zrangebyscore(REDIS_DUE_SET, '-inf', now, 'LIMIT', 0, limit);
   }
 
   /** The due set holds exactly the keys of results not deleted yet. */
   async liveRecords(): Promise<RetentionRecord[]> {
-    await this.whenConnected();
     const keys = await this.redis.zrange(REDIS_DUE_SET, '0', '-1');
     const records: RetentionRecord[] = [];
     for (let start = 0; start < keys.length; start += MGET_BATCH) {
@@ -383,8 +356,8 @@ let activeLedger: RetentionLedger | undefined;
 function createRedis(): Redis {
   const options = { maxRetriesPerRequest: 2, enableOfflineQueue: false, commandTimeout: REDIS_COMMAND_TIMEOUT_MS };
   const url = process.env.REDIS_URL;
-  if (url) return new Redis(url, options);
-  return new Redis({ ...options, host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT || 6379) });
+  if (url) return readyGatedRedis(new Redis(url, options));
+  return readyGatedRedis(new Redis({ ...options, host: process.env.REDIS_HOST, port: Number(process.env.REDIS_PORT || 6379) }));
 }
 
 export function getRetentionLedger(): RetentionLedger {
