@@ -244,14 +244,42 @@ describe('the running header and footer of the pages of a PDF', () => {
     const tablePage = (number: number): PdfPageContent =>
       page(number, [item('Item', 60, 120), item('Qty', 160, 120), item(String(number), 60, 150), item('4', 160, 150), item(`Page ${number}`, 280, 770)], twoColumnRules(100, 2));
     const { tables, pageText } = layoutPdf([tablePage(1), tablePage(2), tablePage(3)], FONTS);
-    expect(pageText.flatMap((entry) => entry.lines)).toEqual([]);
+    expect(pageText.flatMap((entry) => entry.bodyLines)).toEqual([]);
     expect(sheetsOfPdf({ layout: { tables, pageText }, recognized: new Map() }).leftOut).toEqual([]);
   });
 
-  it('is refused as a PDF with no text to write when nothing else is on the pages', async () => {
+  it('keep the first and last line of a one-page letter as rows', async () => {
+    const document = await PDFDocument.create();
+    const letter = document.addPage([600, 800]);
+    letter.drawText('Dear Customer, your order ships Monday', { x: 60, y: 760, size: 12 });
+    for (let i = 0; i < 6; i++) letter.drawText(`Body line ${i + 1} of the letter`, { x: 60, y: 600 - i * 20, size: 12 });
+    letter.drawText('Contact: support at example dot com', { x: 60, y: 770 - 740, size: 12 });
+    const sheets = await parseAllXlsxWorksheets((await convertFile(Buffer.from(await document.save()), 'pdf', 'xlsx', {}, 'letter.pdf')).buffer);
+    const rows = sheets[0].rows.map((row) => row[0]);
+    expect(rows[0]).toBe('Dear Customer, your order ships Monday');
+    expect(rows).toContain('Contact: support at example dot com');
+  });
+
+  it('keep the value that differs on each page of a header, in the sheet of its page', async () => {
+    const document = await PDFDocument.create();
+    for (const number of [1001, 1002, 1003]) {
+      const sheet = document.addPage([600, 800]);
+      sheet.drawText(`Invoice No. ${number}`, { x: 60, y: 760, size: 12 });
+      sheet.drawText('Amount due on receipt', { x: 60, y: 600, size: 12 });
+    }
+    const sheets = await parseAllXlsxWorksheets((await convertFile(Buffer.from(await document.save()), 'pdf', 'xlsx', {}, 'invoices.pdf')).buffer);
+    expect(sheets.map((sheet) => sheet.rows.map((row) => row[0]))).toEqual([
+      ['Invoice No. 1001', 'Amount due on receipt'],
+      ['Invoice No. 1002', 'Amount due on receipt'],
+      ['Invoice No. 1003', 'Amount due on receipt'],
+    ]);
+  });
+
+  it('convert a PDF whose only text is one line at the top of each page', async () => {
     const document = await PDFDocument.create();
     for (const number of [1, 2]) document.addPage([600, 800]).drawText(`Annual report ${number}`, { x: 60, y: 770, size: 12 });
-    await expect(convertFile(Buffer.from(await document.save()), 'pdf', 'xlsx', {}, 'header-only.pdf')).rejects.toThrow(/running headers and footers/);
+    const sheets = await parseAllXlsxWorksheets((await convertFile(Buffer.from(await document.save()), 'pdf', 'xlsx', {}, 'header-only.pdf')).buffer);
+    expect(sheets.map((sheet) => sheet.rows)).toEqual([[['Annual report 1']], [['Annual report 2']]]);
   });
 });
 

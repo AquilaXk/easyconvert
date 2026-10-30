@@ -81,7 +81,8 @@ export function sheetsOfPdf({ layout, recognized }: PdfSheetInput): PdfSheets {
     if (withTables) return (tablesOfPage.get(pageNumber) ?? []).map((table, index) => tableSheet(table, `Page ${pageNumber} Table ${index + 1}`));
     return textSheet(pageNumber, linesOfPage.get(pageNumber) ?? []);
   });
-  const leftOut = withTables ? pageNumbers.filter((pageNumber) => (linesOfPage.get(pageNumber) ?? []).some((line) => line.trim() !== '')) : [];
+  const bodyLinesOfPage = new Map((layout?.pageText ?? []).map((page) => [page.pageNumber, page.bodyLines]));
+  const leftOut = withTables ? pageNumbers.filter((pageNumber) => !recognized.has(pageNumber) && (bodyLinesOfPage.get(pageNumber) ?? []).some((line) => line.trim() !== '')) : [];
   return { sheets, leftOut };
 }
 
@@ -97,7 +98,7 @@ function sheetInputOf(content: PdfOfficeContent): PdfSheetInput {
  */
 export async function readPdfSheets(source: Buffer, options: ConversionOptions): Promise<WorkbookSheet[]> {
   const { sheets, leftOut } = sheetsOfPdf(sheetInputOf(await readPdfContentForOffice(source, options)));
-  if (sheets.length === 0) throw new ConversionFailedError('PDF has no text outside its running headers and footers to write as sheets.');
+  if (sheets.length === 0) throw new ConversionFailedError('PDF has no text to write as sheets.');
   if (leftOut.length > 0) reportConversionWarning(`Left out the text outside the tables of ${pagesPhrase(leftOut)}: a workbook of a PDF that has tables holds the tables.`);
   return sheets;
 }

@@ -15,7 +15,7 @@ import { cpuClockMs, expectLinearOnInputs, expectSizeIndependentOnInputs, SCALIN
 const BOUND_TEST_TIMEOUT_MS = 120_000;
 const OPERAND_RUN = 80 * 1000;
 const COLUMN_LINES = 50 * 1000;
-const OPEN_PARAGRAPH_PAGES = 800;
+const OPEN_PARAGRAPH_PAGES = 2000;
 /** n log n with allocation: a quadratic layout takes 16x for 4x the lines. */
 const COLUMN_MAX_RATIO = 10;
 const STATE_DEPTH_LIMIT = 256;

@@ -313,7 +313,7 @@ function furnitureKey(text: string): string {
 function splitPageFurniture(
   blocks: PageBlock[],
   pages: PdfPageContent[]
-): { body: PageBlock[]; header: Paragraph[]; footer: Paragraph[]; running: ReadonlySet<PageBlock> } {
+): { body: PageBlock[]; header: Paragraph[]; footer: Paragraph[]; running: ReadonlySet<PageBlock>; recurring: ReadonlySet<PageBlock> } {
   const pageHeights = new Map(pages.map((page) => [page.pageNumber, page.height]));
   const candidates = new Map<PageBlock, FurnitureBand>();
   for (const block of blocks) {
@@ -321,8 +321,9 @@ function splitPageFurniture(
     const band = furnitureBand(block, pageHeights);
     if (band) candidates.set(block, band);
   }
-  if (candidates.size === 0) return { body: blocks, header: [], footer: [], running: new Set() };
+  if (candidates.size === 0) return { body: blocks, header: [], footer: [], running: new Set(), recurring: new Set() };
   const accepted = new Set<PageBlock>();
+  const recurring = new Set<PageBlock>();
   if (pages.length >= PAGE_FURNITURE_MIN_PAGES) {
     const pagesByKey = new Map<string, Set<number>>();
     for (const [block, band] of candidates) {
@@ -334,7 +335,10 @@ function splitPageFurniture(
     }
     for (const [block, band] of candidates) {
       const entry = block as ParagraphEntry;
-      if ((pagesByKey.get(`${band}:${furnitureKey(entry.paragraph.text)}`)?.size ?? 0) >= PAGE_FURNITURE_MIN_PAGES) accepted.add(block);
+      if ((pagesByKey.get(`${band}:${furnitureKey(entry.paragraph.text)}`)?.size ?? 0) >= PAGE_FURNITURE_MIN_PAGES) {
+        accepted.add(block);
+        recurring.add(block);
+      }
     }
   } else {
     const rest = blocks.flatMap((block) => (block.kind === 'paragraph' && !candidates.has(block) ? [block.paragraph] : []));
@@ -345,20 +349,26 @@ function splitPageFurniture(
       }
     }
   }
-  if (accepted.size === 0) return { body: blocks, header: [], footer: [], running: accepted };
+  if (accepted.size === 0) return { body: blocks, header: [], footer: [], running: accepted, recurring };
   const firstPageOf = (band: FurnitureBand): Paragraph[] => {
     const lines = [...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph);
     if (lines.length === 0) return [];
     const firstPage = Math.min(...lines.map((paragraph) => paragraph.pageNumber));
     return lines.filter((paragraph) => paragraph.pageNumber === firstPage).sort((a, b) => a.box.y0 - b.box.y0);
   };
-  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), running: accepted };
+  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), running: accepted, recurring };
 }
+
+/** A line that is only a page number, as a running footer or header gives it: "3", "Page 3", "Page 3 of 9", "3 / 9". */
+const BARE_PAGE_NUMBER = /^\W*(page\s*)?\d+(\s*(of|\/)\s*\d+)?\W*$/i;
 
 /** The lines of text one page holds in reading order, vertical and angled text included. */
 export interface PdfPageText {
   pageNumber: number;
+  /** Every line of the page, but the bare page numbers of the running headers and footers of a document of several pages. */
   lines: string[];
+  /** The lines of the page that are not a running header or footer: the text a table report leaves out. */
+  bodyLines: string[];
 }
 
 /** What one layout pass over the pages gives: the document, and the tables and lines of text that a spreadsheet takes from it. */
@@ -369,12 +379,20 @@ export interface LaidOutPdf {
    * page it starts on. The running headers and footers are out of the flow, so a table whose next page begins with a header is joined.
    */
   tables: DetectedTable[];
-  /** The lines of every page in reading order, the running headers and footers out of them as they are out of the document's flow. */
   pageText: PdfPageText[];
 }
 
-function paragraphLines(layout: PageLayout, running: ReadonlySet<PageBlock>): string[] {
-  return layout.blocks.flatMap((block) => (block.kind === 'paragraph' && !running.has(block) ? block.paragraph.lines.map((line) => line.text) : []));
+function pageTextOf(layout: PageLayout, furniture: { running: ReadonlySet<PageBlock>; recurring: ReadonlySet<PageBlock> }): PdfPageText {
+  const lines: string[] = [];
+  const bodyLines: string[] = [];
+  for (const block of layout.blocks) {
+    if (block.kind !== 'paragraph') continue;
+    const texts = block.paragraph.lines.map((line) => line.text);
+    if (!furniture.running.has(block)) bodyLines.push(...texts);
+    if (!furniture.recurring.has(block)) lines.push(...texts);
+    else lines.push(...texts.filter((text) => !BARE_PAGE_NUMBER.test(text)));
+  }
+  return { pageNumber: layout.page.pageNumber, lines, bodyLines };
 }
 
 /**
@@ -481,7 +499,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
     ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
     ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
   };
-  return { model: documentModel, tables, pageText: layouts.map((layout) => ({ pageNumber: layout.page.pageNumber, lines: paragraphLines(layout, furniture.running) })) };
+  return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture)) };
 }
 
 export type { DocumentModel, LayoutLine };
