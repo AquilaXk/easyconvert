@@ -11,6 +11,7 @@ import JSZip from 'jszip';
 import { isFormatCompatibleWithMagicBytes } from '../../src/lib/registry';
 import { SandboxedBufferLimitError, SandboxedProcessError, SandboxedTimeoutError, executeSandboxedBinary } from '../../src/lib/security/process-sandbox';
 import { hasExtension, readMtl, readObj, shown, type ObjScan } from './obj-mtl';
+import { wordsOfMarkup } from '../../tests/helpers/palmdb-reader';
 
 const VALIDATOR_TIMEOUT_MS = 60_000;
 const READER_PREFIX = 'reference reader';
@@ -153,7 +154,7 @@ async function oebArchiveProblem(buffer: Buffer, emptyInput: boolean): Promise<s
   if (pages.length === 0) return 'oeb archive has no XHTML content document';
   if (emptyInput) return null;
   const markup = (await Promise.all(pages.map((page) => page.async('string')))).join(' ');
-  return markup.replace(/<[^>]*>/g, ' ').trim() === '' ? 'oeb archive content documents hold no text' : null;
+  return wordsOfMarkup(markup) === '' ? 'oeb archive content documents hold no text' : null;
 }
 
 /** Why the output is not a readable file of the target type, or null when it is. */

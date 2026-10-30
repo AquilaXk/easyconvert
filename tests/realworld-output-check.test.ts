@@ -667,6 +667,14 @@ describe('an OEB book delivered as a ZIP', () => {
     expect(await oebProblem(await zipOf({ 'content.opf': OPF, 'style.css': 'p{}' }))).toBe('oeb archive has no XHTML content document');
   });
 
+  it.each([
+    ['a title in the head and an empty body', '<html><head><title>Unknown</title><style>p{margin:0}</style></head><body></body></html>'],
+    ['a body of a non-breaking space', '<html><head/><body><p>&nbsp;</p></body></html>'],
+    ['a body of a script only', '<html><body><script>var x = 1;</script></body></html>'],
+  ])('is refused when the content documents hold %s, as the read-back of the books sees no text', async (_label, page) => {
+    expect(await oebProblem(await zipOf({ 'content.opf': OPF, 'index.xhtml': page }))).toBe('oeb archive content documents hold no text');
+  });
+
   it('is refused when the content documents hold no text, unless the corpus marks the input as empty', async () => {
     const archive = await zipOf({ 'content.opf': OPF, 'index.xhtml': '<html><body><p> </p></body></html>' });
     expect(await oebProblem(archive)).toBe('oeb archive content documents hold no text');
