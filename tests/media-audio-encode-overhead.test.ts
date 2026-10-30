@@ -188,12 +188,15 @@ describe('the arguments of a WAVE to audio encode', () => {
     const missing = path.join(workDir, 'absent.wav');
     const absent = buildFfmpegArguments(openMediaInput(missing, 'wav'), path.join(workDir, 'o.aac'), 'aac', {}, null);
     expect(inputOptions(absent)).not.toContain('-probesize');
+    expect(compressed[compressed.indexOf('-i') + 1]).toBe(adpcm);
+    expect(absent[absent.indexOf('-i') + 1]).toBe(missing);
   });
 
   it('keeps the input probing for a video target', () => {
     const input = writeWav('probe-args-video.wav', 44_100, NOT_MONO, 0.3);
     const args = buildFfmpegArguments(openMediaInput(input, 'wav'), path.join(workDir, 'o.mp4'), 'mp4', { disableHwaccel: true }, null);
     expect(inputOptions(args)).not.toContain('-probesize');
+    expect(args[args.indexOf('-i') + 1]).toBe(input);
   });
 });
 
