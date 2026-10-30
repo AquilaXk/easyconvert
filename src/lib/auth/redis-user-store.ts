@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
+import { readyGatedRedis } from '../redis/when-ready';
 import type { User, UserRecord } from './types';
 
 export interface RedisUserStoreOptions {
@@ -101,30 +102,17 @@ export class RedisUserStore {
       const port =
         options.redisPort || (process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379);
 
-      if (url) {
-        try {
-          this.redisClient = new Redis(url, {
-            lazyConnect: true,
-            enableOfflineQueue: false,
-            maxRetriesPerRequest: 1,
-          });
+      const failFast = { enableOfflineQueue: false, maxRetriesPerRequest: 1 };
+      try {
+        if (url) {
+          this.redisClient = readyGatedRedis(new Redis(url, failFast));
           this.isConnectedToRedis = true;
-        } catch {
-          this.isConnectedToRedis = false;
-        }
-      } else if (host) {
-        try {
-          this.redisClient = new Redis({
-            host,
-            port,
-            lazyConnect: true,
-            enableOfflineQueue: false,
-            maxRetriesPerRequest: 1,
-          });
+        } else if (host) {
+          this.redisClient = readyGatedRedis(new Redis({ host, port, ...failFast }));
           this.isConnectedToRedis = true;
-        } catch {
-          this.isConnectedToRedis = false;
         }
+      } catch {
+        this.isConnectedToRedis = false;
       }
     }
   }

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
+import { readyGatedRedis } from '../redis/when-ready';
 
 export type IdempotencyStatus = 'in_flight' | 'completed';
 
@@ -297,9 +298,9 @@ export class RedisIdempotencyStore implements IdempotencyStore {
       const host = options?.redisHost || process.env.REDIS_HOST || '127.0.0.1';
       const port = options?.redisPort || (process.env.REDIS_PORT ? Number.parseInt(process.env.REDIS_PORT, 10) : 6379);
       if (url) {
-        this.redis = new Redis(url, { lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 1 });
+        this.redis = readyGatedRedis(new Redis(url, { enableOfflineQueue: false, maxRetriesPerRequest: 1 }));
       } else {
-        this.redis = new Redis({ host, port, lazyConnect: true, enableOfflineQueue: false, maxRetriesPerRequest: 1 });
+        this.redis = readyGatedRedis(new Redis({ host, port, enableOfflineQueue: false, maxRetriesPerRequest: 1 }));
       }
     }
   }
