@@ -27,6 +27,16 @@ const gates = new WeakMap<Redis, ReadyGate>();
 
 function noop(): void {}
 
+/** Logs a connection error once per distinct message, so a wrong password or a refused port is visible without a flood. */
+function connectionErrorLogger(): (error: Error) => void {
+  let last = '';
+  return (error) => {
+    if (error.message === last) return;
+    last = error.message;
+    console.warn('[Redis] Connection error:', error.message);
+  };
+}
+
 function gateOf(client: Redis): ReadyGate {
   let gate = gates.get(client);
   if (!gate) {
@@ -67,12 +77,16 @@ export function whenReady(client: Redis): Promise<void> {
 
 /**
  * A client built with `enableOfflineQueue: false` refuses every command sent before the connection is ready, which
- * includes the first commands after the process starts. This connects the client now, keeps a connection error from
- * becoming an unhandled event (it surfaces on the command that needs Redis), and returns the client with every command
+ * includes the first commands after the process starts. This connects the client now, logs each distinct connection error
+ * once (the command that needs Redis fails by itself), and returns the client with every command
  * waiting for `whenReady` first. Redis that is really down still fails fast: one wait, then immediate failures.
  */
 export function readyGatedRedis(client: Redis): Redis {
-  client.on('error', noop);
+  client.on('error', connectionErrorLogger());
+  // A client that is ready again ends the hold of an earlier wait that ran out, so a later short drop is waited for.
+  client.on('ready', () => {
+    gateOf(client).unreachableUntil = 0;
+  });
   if (client.status === 'wait') client.connect().catch(noop);
   return new Proxy(client, {
     get(target, property) {

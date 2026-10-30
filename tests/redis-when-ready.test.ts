@@ -163,6 +163,37 @@ describe('readyGatedRedis', () => {
     expect(client.listenerCount('error')).toBe(1);
   });
 
+  it('logs each distinct connection error once, so a wrong password is visible without a flood', () => {
+    const client = new FakeRedis();
+    readyGatedRedis(asRedis(client));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      client.emit('error', new Error('WRONGPASS invalid username-password pair'));
+      client.emit('error', new Error('WRONGPASS invalid username-password pair'));
+      client.emit('error', new Error('connect ECONNREFUSED 127.0.0.1:6379'));
+
+      expect(warn.mock.calls.map((call) => call[1])).toEqual(['WRONGPASS invalid username-password pair', 'connect ECONNREFUSED 127.0.0.1:6379']);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('ends the hold once the client is ready again, so a later short drop is waited for', async () => {
+    const client = new FakeRedis();
+    const gated = readyGatedRedis(asRedis(client));
+    const first = expect(gated.get('k')).rejects.toThrow('enableOfflineQueue');
+    await vi.advanceTimersByTimeAsync(REDIS_READY_WAIT_MS);
+    await first;
+
+    client.becomeReady();
+    client.status = 'reconnecting';
+    const reply = gated.get('k');
+    await vi.advanceTimersByTimeAsync(10);
+    client.becomeReady();
+
+    await expect(reply).resolves.toBe('value');
+  });
+
   it('leaves event methods and the connection state unwaited', () => {
     const client = new FakeRedis();
     const gated = readyGatedRedis(asRedis(client));
@@ -211,7 +242,7 @@ describe('Redis clients without an offline queue', () => {
   /** Files that build such a client and wait for the connection on their own. */
   const OWN_CONNECTION_HANDLING = new Map<string, string>([
     ['lib/health/probes.ts', 'connects and awaits the connection before its single ping'],
-    ['lib/queue/bullmq-engine.ts', 'tracks the connection itself and serves from memory while Redis is not connected'],
+    ['lib/queue/bullmq-engine.ts', 'waits for its own handshake before an enqueue (waitForRedisReady) and fails closed with QueueUnavailableError'],
   ]);
 
   it('are built through readyGatedRedis, so no command is sent before the connection is ready', () => {
