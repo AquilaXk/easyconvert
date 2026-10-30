@@ -15,10 +15,10 @@ jobs:
       fail-fast: false
       matrix:
         variant:
-          - terminate 200 4 2
-          - terminate 200 1 2
-          - keep 200 4 50
-          - keep 200 1 200
+          - default-a
+          - default-b
+          - budget-a
+          - budget-b
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -41,8 +41,13 @@ jobs:
       - name: Stress
         run: |
           ulimit -c unlimited
-          read -r mode total concurrency per <<< "${{ matrix.variant }}"
-          bash .github/segv-probe/repeat.sh 900 "$mode" ~/.cache/easyconvert-realworld/govdocs1-001157.pdf "$total" "$concurrency" "$per"
+          flags=""
+          case "${{ matrix.variant }}" in budget-*) flags="--wasm-wrapper-tiering-budget=2147483647" ;; esac
+          crashes=0
+          for run in $(seq 1 14); do
+            node $flags .github/segv-probe/wrapper-churn.mjs 4 60 || { crashes=$((crashes + 1)); echo "run $run exit $?"; }
+          done
+          echo "RESULT ${{ matrix.variant }} runs=14 crashes=$crashes"
           ls /tmp/cores
       - name: Backtraces
         if: always()
