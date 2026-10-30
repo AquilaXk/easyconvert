@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
 import { classifyJobFailure } from '../src/lib/queue/job-failure';
-import { DataLimitExceededError, DataParseError } from '../src/lib/types';
+import fs from 'node:fs';
+import path from 'node:path';
+import { DataLimitExceededError, DataParseError, UnsupportedTargetError } from '../src/lib/types';
 import { oracleTest } from './helpers/oracle-test';
 import { cellKindsViaLibreOffice, sheetRowsViaLibreOffice } from './helpers/sheet-rows';
 
@@ -109,6 +111,58 @@ describe('a workbook the office suite reads once', () => {
     const stored = (await convertFile(Buffer.from(csv), 'csv', 'xlsx', { uncompressedWorkbook: true }, 't.csv')).buffer;
     expect(stored.length).toBeGreaterThan(deflated.length * 2);
     expect(await sheetOf(stored)).toBe(await sheetOf(deflated));
+  });
+});
+
+describe('a large table read back from its workbook', () => {
+  it('keeps every cell of a table with more than 50,000 rows and more than 50,000 distinct strings', async () => {
+    const lines = ['name,code', ...Array.from({ length: 60_000 }, (_, i) => `name ${i},code-${i}`)];
+    const xlsx = await csvToXlsx(`${lines.join('\n')}\n`);
+    const back = await convertFile(xlsx, 'xlsx', 'csv', {}, 'many.xlsx');
+    expect(back.buffer.toString('utf-8').trim().split(/\r?\n/)).toEqual(lines);
+  }, 120_000);
+});
+
+describe('numbers from a typed source', () => {
+  // A double from JSON or Parquet has no spelling to keep: it is written as the shortest text that reads back as the same double.
+  const DOUBLES = { coordinate: 37.77490123456789, sum: 0.1 + 0.2, third: 1 / 3, small: 1e-7 };
+  const STORED = ['<c r="A2"><v>37.77490123456789</v></c>', '<c r="B2"><v>0.30000000000000004</v></c>', '<c r="C2"><v>0.3333333333333333</v></c>', '<c r="D2"><v>1e-7</v></c>'];
+
+  it('writes a JSON double as a number cell whatever its digits', async () => {
+    const sheet = await sheetOf((await convertFile(Buffer.from(JSON.stringify([DOUBLES])), 'json', 'xlsx', {}, 'doubles.json')).buffer);
+    expect(['A2', 'B2', 'C2', 'D2'].map((reference) => cellOf(sheet, reference))).toEqual(STORED);
+  });
+
+  it('writes a Parquet double as a number cell whatever its digits', async () => {
+    const parquet = (await convertFile(Buffer.from(JSON.stringify([DOUBLES])), 'json', 'parquet', {}, 'doubles.json')).buffer;
+    const sheet = await sheetOf((await convertFile(parquet, 'parquet', 'xlsx', {}, 'doubles.parquet')).buffer);
+    expect(['A2', 'B2', 'C2', 'D2'].map((reference) => cellOf(sheet, reference))).toEqual(STORED);
+  });
+});
+
+describe('a JSON array of records', () => {
+  it('refuses an item that is not an object as a 400', async () => {
+    const failure = await convertFile(Buffer.from('[{"a":1},null]'), 'json', 'xlsx', {}, 'mixed.json').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(DataParseError);
+    expect(classifyJobFailure(failure)).toMatchObject({ code: 'DataParseError', status: 400 });
+  });
+
+  it('takes its header from the keys of every record, in the order they first appear', async () => {
+    const sheet = await sheetOf((await convertFile(Buffer.from('[{"a":1},{"b":2}]'), 'json', 'xlsx', {}, 'records.json')).buffer);
+    expect(cellOf(sheet, 'B1')).toMatch(/t="s"/);
+    expect(cellOf(sheet, 'A2')).toBe('<c r="A2"><v>1</v></c>');
+    expect(sheet).not.toContain('r="B2"');
+    expect(sheet).not.toContain('r="A3"');
+    expect(cellOf(sheet, 'B3')).toBe('<c r="B3"><v>2</v></c>');
+  });
+});
+
+describe('a PDF source of a workbook', () => {
+  it('is refused as an unsupported pair, never read as delimited text', async () => {
+    const pdf = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.pdf'));
+    const failure = await convertFile(pdf, 'pdf', 'xlsx', {}, 'sample.pdf').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(UnsupportedTargetError);
+    expect(classifyJobFailure(failure)).toMatchObject({ code: 'UnsupportedTargetError' });
   });
 });
 

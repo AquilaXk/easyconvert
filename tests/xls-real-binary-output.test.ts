@@ -8,7 +8,7 @@ import { convertOffice } from '../src/lib/conversions/office';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { classifyJobFailure } from '../src/lib/queue/job-failure';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
-import { DataLimitExceededError, DataParseError, UnsupportedTargetError } from '../src/lib/types';
+import { DataLimitExceededError, DataParseError, PayloadLimitError, UnsupportedTargetError } from '../src/lib/types';
 import { readXlsCells } from './helpers/biff8-records';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -119,6 +119,35 @@ describe('the limits of a BIFF8 sheet', () => {
     expect(failure).toBeInstanceOf(DataLimitExceededError);
     expect((failure as DataLimitExceededError).status).toBe(413);
   });
+});
+
+describe('the extent the BIFF8 bounds are checked against', () => {
+  oracleTest('is the last cell that holds something, so empty fields at the end of a row past column 256 pass', ['soffice', 'python3'], async () => {
+    const empties = ','.repeat(297);
+    const csv = `a,b,c${empties}\n1,2,3${empties}\n`;
+    const converted = await dispatchConversion(Buffer.from(csv), 'csv', 'xls', {}, 'trailing.csv');
+    expect(converted.buffer.subarray(0, CFB_SIGNATURE.length)).toEqual(CFB_SIGNATURE);
+    expect(sheetRowsViaLibreOffice(converted.buffer, 'xls')).toEqual([
+      ['a', 'b', 'c'],
+      ['1', '2', '3'],
+    ]);
+  }, LONG_TIMEOUT_MS);
+
+  oracleTest('holds for an .ods source: one wider than 256 columns is refused with a 413', ['soffice'], async () => {
+    const header = Array.from({ length: 257 }, (_, i) => `c${i}`).join(',');
+    const ods = (await convertFile(Buffer.from(`${header}\n`), 'csv', 'ods', {}, 'wide.csv')).buffer;
+    const failure = await dispatchConversion(ods, 'ods', 'xls', {}, 'wide.ods').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as PayloadLimitError).status).toBe(413);
+  }, LONG_TIMEOUT_MS);
+});
+
+describe('a PDF source of an .xls', () => {
+  it('is refused as an unsupported pair before any office suite runs', async () => {
+    const pdf = fs.readFileSync(path.join(__dirname, 'fixtures', 'sample.pdf'));
+    const failure = await dispatchConversion(pdf, 'pdf', 'xls', {}, 'sample.pdf').catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(UnsupportedTargetError);
+  }, LONG_TIMEOUT_MS);
 });
 
 describe('a BIFF8 workbook read back', () => {

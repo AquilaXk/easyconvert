@@ -21,7 +21,8 @@ import {
 } from '../src/worker/office-suite-route';
 import { emf, wmf } from './helpers/metafile-headers';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
-import { ConversionFailedError, CorruptStreamError, DataLimitExceededError, DataParseError, EngineUnavailableError, SandboxUnavailableError } from '../src/lib/types';
+import { ConversionFailedError, CorruptStreamError, DataLimitExceededError, DataParseError, EngineUnavailableError, PayloadLimitError, SandboxUnavailableError } from '../src/lib/types';
+import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../src/lib/conversions/office/legacy-office-limits';
 import { writeXlsx } from '../src/lib/conversions/xlsx-writer';
 import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
@@ -800,6 +801,54 @@ describe('an OOXML workbook the office suite exports as .xls', () => {
     await expect(assertXlsSourceFits('xlsx', await realWorkbookBytes(100, 5))).resolves.toBeUndefined();
     await expect(assertXlsSourceFits('ods', await realWorkbookBytes(65_537, 1))).resolves.toBeUndefined();
     await expect(assertXlsSourceFits('xlsx', Buffer.from('not a zip'))).resolves.toBeUndefined();
+  });
+});
+
+describe('the extent of an OOXML workbook the office suite exports as .xls', () => {
+  const unused = (): Promise<WorkerConversionResult> => Promise.reject(new Error('this conversion must not run'));
+  const xlsxRequest = (input: Buffer | WorkerVfsPayload): OfficeSuiteRequest => request({ src: 'xlsx', tgt: 'xls', input, originalFilename: 'book.xlsx' });
+
+  async function withDimension(xlsx: Buffer, dimension: string): Promise<Buffer> {
+    const zip = await JSZip.loadAsync(xlsx);
+    const sheet = await zip.file('xl/worksheets/sheet1.xml')!.async('text');
+    zip.file('xl/worksheets/sheet1.xml', sheet.replace(/<dimension [^>]*\/>/, dimension));
+    return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  async function expectSheetLimit(input: Buffer | WorkerVfsPayload): Promise<void> {
+    const { deps, calls } = standIns();
+    const failure = await convertXlsTarget(deps, xlsxRequest(input), unused).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PayloadLimitError);
+    expect((failure as PayloadLimitError).status).toBe(413);
+    expect(calls.written).toEqual([]);
+  }
+
+  it('is read from the cells when the worksheet declares no dimension', async () => {
+    await expectSheetLimit(await withDimension(await realWorkbookBytes(2, 257), ''));
+  });
+
+  it('is read from the cells when the declared dimension is smaller than they are', async () => {
+    await expectSheetLimit(await withDimension(await realWorkbookBytes(65_537, 1), '<dimension ref="A1:A2"/>'));
+    await expectSheetLimit(await withDimension(await realWorkbookBytes(2, 257), '<dimension ref="A1:B2"/>'));
+  });
+
+  it('refuses a source that is not a ZIP package instead of passing it on unchecked', async () => {
+    const { deps } = standIns();
+    const failure = await convertXlsTarget(deps, xlsxRequest(Buffer.from('not a zip')), unused).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ConversionFailedError);
+    expect((failure as Error).message).not.toBe('this conversion must not run');
+  });
+
+  it('refuses a source file too large to read for the check instead of passing it on unchecked', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'xls-bound-'));
+    try {
+      const inputPath = path.join(dir, 'huge.xlsx');
+      fs.writeFileSync(inputPath, '');
+      fs.truncateSync(inputPath, LEGACY_OFFICE_MAX_INPUT_BYTES + 1);
+      await expectSheetLimit({ inputPath, outputPath: path.join(dir, 'huge.xls') });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

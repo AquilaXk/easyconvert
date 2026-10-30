@@ -4,6 +4,7 @@ import { convertFile } from '../src/lib/conversions';
 import { parseAllXlsxWorksheets } from '../src/lib/conversions/office';
 import { oracleTest } from './helpers/oracle-test';
 import { sofficeConvert } from './helpers/soffice-office';
+import { cpuClockMs, expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * What the XLSX reader returns beyond the text of the cells: the ranges that are merged, the base of the date serials, the targets
@@ -163,4 +164,21 @@ describe('rich text with phonetic guides', () => {
     const [sheet] = await parseAllXlsxWorksheets(workbook);
     expect(sheet.rows[0]).toEqual(['日本']);
   });
+
+  it('leaves out 100,000 phonetic runs in CPU time linear in their number', async () => {
+    const RUNS = 100_000;
+    const rubyWorkbook = (runs: number): Promise<Buffer> =>
+      handWrittenWorkbook({
+        sharedStrings: `<si><t>base</t>${'<rPh sb="0" eb="1"><t>ル</t></rPh>'.repeat(runs)}</si>`,
+        sheetData: '<row r="1"><c r="A1" t="s"><v>0</v></c></row>',
+      });
+    const small = await rubyWorkbook(RUNS / SCALING_FACTOR);
+    const large = await rubyWorkbook(RUNS);
+    const { largeResult } = await expectLinearOnInputs('phonetic run removal', (xlsx: Buffer) => convertFile(xlsx, 'xlsx', 'csv', {}, 'ruby.xlsx'), {
+      small,
+      large,
+      clock: cpuClockMs,
+    });
+    expect(largeResult.buffer.toString('utf-8').trim()).toBe('base');
+  }, SCALING_TEST_TIMEOUT_MS);
 });
