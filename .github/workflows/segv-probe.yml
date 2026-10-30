@@ -51,12 +51,10 @@ jobs:
           crashes=0
           for run in $(seq 1 10); do
             case "${{ matrix.variant }}" in
-              synthetic) node --stress-wasm-code-gc .github/segv-probe/wrapper-churn.mjs 4 60 ;;
-              keep) node --stress-wasm-code-gc .github/segv-probe/stress.mjs keep "$file" 200 4 50 ;;
-              terminate) node --stress-wasm-code-gc .github/segv-probe/stress.mjs terminate "$file" 200 4 2 ;;
+              synthetic) node .github/segv-probe/wrapper-churn.mjs 4 60 toggle ;;
+              keep) node .github/segv-probe/stress.mjs keep "$file" 200 4 50 toggle ;;
+              terminate) node .github/segv-probe/stress.mjs terminate "$file" 200 4 2 toggle ;;
               replay)
-                sed -i "s/\`--max-old-space-size=\${options.heapMb}\`\]/\`--max-old-space-size=\${options.heapMb}\`, '--stress-wasm-code-gc']/" bench/realworld/pool.ts
-                grep -n "stress-wasm" bench/realworld/pool.ts
                 npx --no-install tsx bench/realworld/run.ts run --shard 5/10 --limit 335 --out "rw-$run.json" > "rw-$run.log" 2>&1
                 node -e "const j=require('./rw-$run.json').jobs; const bad=j.filter(r=>r.verdict==='crash'||r.verdict==='hang'); console.log('replay', JSON.stringify(bad)); process.exit(bad.length ? 1 : 0)" ;;
             esac

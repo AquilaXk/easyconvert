@@ -1,4 +1,5 @@
 import { Worker, isMainThread, workerData, parentPort } from 'node:worker_threads';
+import { setFlagsFromString } from 'node:v8';
 
 // (module (import "env" "f" (func (param i32) (result i32))) (func (export "run") (param i32) (local i32) loop: call f; i++; br_if i<n))
 const WASM = Uint8Array.from([
@@ -26,7 +27,14 @@ if (!isMainThread) {
   }
 }
 
-const [threads = '4', seconds = '30'] = process.argv.slice(2);
+const [threads = '4', seconds = '30', toggle] = process.argv.slice(2);
+if (toggle === 'toggle') {
+  let on = false;
+  setInterval(() => {
+    on = !on;
+    setFlagsFromString(on ? '--initial-old-space-size=128' : '--initial-old-space-size=0');
+  }, 1).unref();
+}
 const end = Date.now() + Number(seconds) * 1000;
 let started = 0;
 async function lane() {

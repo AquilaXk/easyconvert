@@ -1,8 +1,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { setFlagsFromString } from 'node:v8';
 
-const [mode, file, total, concurrency, jobsPerThread] = process.argv.slice(2);
+const [mode, file, total, concurrency, jobsPerThread, toggle] = process.argv.slice(2);
+if (toggle === 'toggle') {
+  let on = false;
+  setInterval(() => {
+    on = !on;
+    setFlagsFromString(on ? '--initial-old-space-size=128' : '--initial-old-space-size=0');
+  }, 1).unref();
+}
 const bytes = fs.readFileSync(file);
 const job = { geometry: 'none', content: true, images: true, densityThreshold: 15 };
 const entry = path.resolve('dist/pdf-text-worker.js');
