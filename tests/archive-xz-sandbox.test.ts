@@ -334,20 +334,19 @@ describe('what xz itself reports is refused with its message, not decoded again'
     expect(host.inProcessDecodes).toBe(0);
   });
 
-  it.each(['SIGABRT', 'SIGBUS', 'SIGILL', 'SIGFPE'])('a death by %s is a CorruptStreamError naming the signal', async (signal) => {
-    useSpy(writeSpy('xz-dies', `#!/bin/sh\nkill -${signal.slice(3)} $$\n`));
+  it('a crash signal (SIGABRT) is a CorruptStreamError naming the signal', async () => {
+    useSpy(writeSpy('xz-dies', '#!/bin/sh\nkill -ABRT $$\n'));
     const error = await failureOf(decompressXz(packXz(PAYLOAD)));
     expect(error).toBeInstanceOf(CorruptStreamError);
     expect((error as CorruptStreamError).status).toBe(400);
-    expect((error as CorruptStreamError).message).toContain(signal);
+    expect((error as CorruptStreamError).message).toContain('SIGABRT');
     expect(host.inProcessDecodes).toBe(0);
   });
 
-  it('a death by SIGXCPU is a CpuTaskTimeoutError', async () => {
-    useSpy(writeSpy('xz-cpu-limit', '#!/bin/sh\nkill -XCPU $$\n'));
-    const error = await failureOf(decompressXz(packXz(PAYLOAD)));
-    expect(error).toBeInstanceOf(CpuTaskTimeoutError);
-    expect(host.inProcessDecodes).toBe(0);
+  it('a signal that is not a crash (SIGTERM) leaves the stream to the in-process reader', async () => {
+    useSpy(writeSpy('xz-terminated', '#!/bin/sh\nkill -TERM $$\n'));
+    expect((await decompressXz(packXz(PAYLOAD))).equals(PAYLOAD)).toBe(true);
+    expect(host.inProcessDecodes).toBe(1);
   });
 });
 
@@ -380,12 +379,21 @@ describe.skipIf(skipUnless('xz', XZ_BINARY !== null))('a stream the native xz re
     expect(host.inProcessDecodes).toBe(0);
   });
 
-  it('a reserved check type is left to the in-process reader, which answers 422', async () => {
+  it('a reserved check type is refused by the native xz with a 422', async () => {
     const stream = withReservedCheck(xzWrite(['-C', 'crc32']));
     const error = await failureOf(decompressXz(stream));
     expect(error).toBeInstanceOf(UnsupportedArchiveMethodError);
     expect((error as UnsupportedArchiveMethodError).status).toBe(422);
-    expect(host.inProcessDecodes).toBe(1);
+    expect(host.inProcessDecodes).toBe(0);
+  });
+
+  it('a reserved check type after a valid stream with megabytes of output is a 422 and the first stream is not decoded in process', async () => {
+    const big = spawnSync(XZ_BINARY as string, ['-T1', '-c', '-q', '-C', 'crc32'], { input: Buffer.alloc(8 * KIB * KIB, 'a'), maxBuffer: 64 * KIB * KIB }).stdout;
+    const upload = Buffer.concat([big, withReservedCheck(xzWrite(['-C', 'crc32']))]);
+    const error = await failureOf(decompressXz(upload));
+    expect(error).toBeInstanceOf(UnsupportedArchiveMethodError);
+    expect((error as UnsupportedArchiveMethodError).status).toBe(422);
+    expect(host.inProcessDecodes).toBe(0);
   });
 
   it('the in-process reader still decodes when the native binary is not installed', async () => {

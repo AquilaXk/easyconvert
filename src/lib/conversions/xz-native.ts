@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { CorruptStreamError, CpuTaskTimeoutError, DecompressionLimitError, type ConversionOptions } from '../types';
+import { CorruptStreamError, CpuTaskTimeoutError, DecompressionLimitError, UnsupportedArchiveMethodError, type ConversionOptions } from '../types';
 import {
   executeSandboxedBinary,
   rethrowSandboxUnavailable,
@@ -47,9 +47,13 @@ const DECODE_ADDRESS_SPACE_BYTES = DECODE_MEMLIMIT_BYTES + 256 * BYTES_PER_MIB;
 
 /** xz(1) EXIT STATUS: 1 is an error (a refused stream), 2 a warning (for example a reserved integrity check). */
 const XZ_EXIT_ERROR = 1;
+const XZ_EXIT_WARNING = 2;
 const XZ_MEMORY_REFUSAL = /memory usage limit reached|cannot allocate memory/i;
 const XZ_STDIN_PREFIX = /^\(stdin\):\s*/;
-const SIGNAL_CPU_LIMIT: NodeJS.Signals = 'SIGXCPU';
+/** The decode runs without `-q`: it hides warnings, and a warning is how xz reports an unsupported integrity check (exit 2). */
+const XZ_UNSUPPORTED_CHECK = /unsupported type of integrity check/i;
+/** The signals of a crashed decoder. Any other signal (a stop from outside) says nothing about the stream. */
+const CRASH_SIGNALS: ReadonlySet<NodeJS.Signals> = new Set(['SIGABRT', 'SIGBUS', 'SIGILL', 'SIGFPE']);
 
 interface NativeXzJob {
   xzBin: string;
@@ -86,7 +90,6 @@ async function runNativeXz(job: NativeXzJob, stdin: Buffer, options: ConversionO
     if (options.signal?.aborted) throw failure;
     rethrowSandboxUnavailable(failure);
     if (failure instanceof SandboxedTimeoutError) throw new CpuTaskTimeoutError(job.task, failure.timeoutMs);
-    if (failure instanceof SandboxedProcessError && failure.signal === SIGNAL_CPU_LIMIT) throw new CpuTaskTimeoutError(job.task, timeoutMs);
     return { failure };
   }
 }
@@ -107,11 +110,12 @@ function xzOwnMessage(stderr: string, xzBin: string): string | null {
 
 /**
  * The typed refusal for a stream the native decoder ran on and rejected, or null when the native run said nothing
- * about the stream. Refused: output past the byte cap, a decoder past its memory limit, a death by signal and an
- * exit 1 whose message is xz's own, "Unsupported options" included (the shipped xz knows every filter the reader
- * knows, so a stream it rejects that way is damaged). Left to the in-process reader, which names the case: exit 2
- * (a warning such as a reserved integrity check, refused at the stream header), a wrapper's failure and a process
- * that could not start.
+ * about the stream. Refused: output past the byte cap, a decoder past its memory limit, a death by a crash signal,
+ * an exit 2 whose own message reports an unsupported integrity check (a 422, the only exit 2 an upload chooses; the
+ * in-process reader would decode the streams before it on the event loop) and an exit 1 whose message is xz's own,
+ * "Unsupported options" included (the shipped xz knows every filter the reader knows, so a stream it rejects that way
+ * is damaged). Left to the in-process reader, which names the case: any other exit 2, any other signal, a wrapper's
+ * failure and a process that could not start.
  */
 function decodeRefusal(failure: unknown, maxOutputBytes: number, xzBin: string): Error | null {
   const memoryRefusal = new DecompressionLimitError(
@@ -124,10 +128,15 @@ function decodeRefusal(failure: unknown, maxOutputBytes: number, xzBin: string):
   }
   if (failure instanceof SandboxedMemoryLimitError) return memoryRefusal;
   if (!(failure instanceof SandboxedProcessError)) return null;
-  if (failure.signal !== null) return new CorruptStreamError(`Invalid XZ archive: the decoder was stopped by ${failure.signal}`);
-  if (failure.exitCode !== XZ_EXIT_ERROR) return null;
+  if (failure.signal !== null) {
+    return CRASH_SIGNALS.has(failure.signal) ? new CorruptStreamError(`Invalid XZ archive: the decoder was stopped by ${failure.signal}`) : null;
+  }
+  if (failure.exitCode !== XZ_EXIT_ERROR && failure.exitCode !== XZ_EXIT_WARNING) return null;
   const message = xzOwnMessage(failure.stderr, xzBin);
   if (message === null) return null;
+  if (failure.exitCode === XZ_EXIT_WARNING) {
+    return XZ_UNSUPPORTED_CHECK.test(message) ? new UnsupportedArchiveMethodError(`XZ archive: ${message}`) : null;
+  }
   if (XZ_MEMORY_REFUSAL.test(message)) return memoryRefusal;
   return new CorruptStreamError(`Invalid XZ archive: ${message || 'the stream was refused'}`);
 }
@@ -161,7 +170,7 @@ export async function decompressWithNativeXz(input: Buffer, options: ConversionO
   if (!xzBin) return null;
   const job = {
     xzBin,
-    args: ['-d', XZ_SINGLE_THREAD, '-c', '-q', `--memlimit-decompress=${DECODE_MEMLIMIT_BYTES}`],
+    args: ['-d', XZ_SINGLE_THREAD, '-c', `--memlimit-decompress=${DECODE_MEMLIMIT_BYTES}`],
     addressSpaceBytes: DECODE_ADDRESS_SPACE_BYTES,
     task: '.xz decompression',
   };
