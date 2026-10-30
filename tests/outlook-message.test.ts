@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { extractTextContentForOffice } from '../src/lib/conversions/office';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { readCfbContainer } from '../src/lib/conversions/office/cfb-streams';
 import { decompressRtf, rtfChecksum } from '../src/lib/conversions/office/msg-rtf-compression';
 import { readRtfText } from '../src/lib/conversions/office/rtf-reader';
 import { buildCompoundFile, type CfbStream } from './helpers/cfb-craft';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { cpuClockMs, expectLinearOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
  * Outlook messages (.msg) were handed to the plain-text writers as if they were text: the compound file's bytes became the
@@ -252,5 +254,114 @@ describe('what is not an Outlook message is refused with a typed answer', () => 
     const djvu = Buffer.concat([Buffer.from('AT&TFORM'), Buffer.alloc(64), Buffer.from('DJVMDIRM')]);
     await expect(dispatchConversion(djvu, 'djvu', 'txt', {}, 'book.djvu')).rejects.toThrow(/fail-closed against mojibake/);
     await expect(dispatchConversion(djvu, 'djvu', 'pdf', {}, 'book.djvu')).rejects.toThrow(/fail-closed against mojibake/);
+  });
+});
+
+const EMPTY_RTF_TAIL = '\\deff0 {\\fonttbl{\\f0 Arial;}}\\pard\\f0\\fs20\\par}';
+const attachment = (index: number, name: string, size: number): CfbStream[] => [
+  { name: `__attach_version1.0_#0000000${index}/__substg1.0_37010102`, data: Buffer.alloc(size) },
+  unicode(`__attach_version1.0_#0000000${index}/`, '3707', name),
+];
+
+describe('the body of a message is trimmed in linear time', () => {
+  it('trims a run of white space followed by a character in CPU time linear in its length', async () => {
+    const BASE_SPACES = 50_000;
+    const body = (spaces: number): Buffer => message([unicode('', '1000', `${' '.repeat(spaces)}x`)]);
+    const { largeResult } = await expectLinearOnInputs('white space before the last character of the body', (bytes: Buffer) => text(bytes), {
+      small: body(BASE_SPACES),
+      large: body(BASE_SPACES * SCALING_FACTOR),
+      clock: cpuClockMs,
+    });
+    expect(await largeResult).toMatch(/x$/);
+  }, SCALING_TEST_TIMEOUT_MS);
+});
+
+describe('the RTF body of a message', () => {
+  it('converts a message whose only body is an RTF without text to its headers and its attachment list', async () => {
+    const bytes = message([
+      unicode('', '0037', 'Please see attached'),
+      unicode('', '0C1A', 'Ada'),
+      { name: '__substg1.0_10090102', data: compressedRtf(EMPTY_RTF_TAIL) },
+      ...attachment(0, 'scan.pdf', 100),
+    ]);
+    expect(await text(bytes)).toBe(['From: Ada', 'Subject: Please see attached', '', 'Attachments:', '- scan.pdf (100 bytes)'].join('\n'));
+    const noBody = message([unicode('', '0037', 'Please see attached'), unicode('', '0C1A', 'Ada'), ...attachment(0, 'scan.pdf', 100)]);
+    expect(await text(noBody)).toBe(await text(bytes));
+  });
+
+  it('names an RTF it cannot read in a warning and still converts the message', async () => {
+    const damaged = Buffer.from(compressedRtf(' hi}'));
+    damaged.writeUInt32LE(0, 12);
+    const result = await dispatchConversion(message([unicode('', '0037', 'Subject line'), { name: '__substg1.0_10090102', data: damaged }]), 'msg', 'txt', {}, 'message.msg');
+    expect(result.buffer.toString('utf8')).toBe('Subject: Subject line');
+    expect(result.metadata?.warnings).toEqual([expect.stringMatching(/RTF body/)]);
+  });
+
+  it('gives no warning when the RTF only holds no text', async () => {
+    const result = await dispatchConversion(message([unicode('', '0037', 'S'), { name: '__substg1.0_10090102', data: compressedRtf(EMPTY_RTF_TAIL) }]), 'msg', 'txt', {}, 'message.msg');
+    expect(result.metadata?.warnings).toBeUndefined();
+  });
+});
+
+describe('the code page of a message', () => {
+  const ESCAPE = 0x1b;
+  const subjectIn = async (bytes: Buffer, codePages: readonly number[]): Promise<string> =>
+    text(
+      message(
+        [{ name: '__substg1.0_0037001E', data: Buffer.concat([bytes, Buffer.alloc(2)]) }],
+        codePages.map((codePage, index) => fixedEntry(index === 0 ? 0x3fde : 0x3ffd, TYPE_INT32, int32(codePage)))
+      )
+    );
+
+  it.each([
+    ['50220 (ISO-2022-JP)', 50220, Buffer.from([ESCAPE, 0x24, 0x42, 0x24, 0x22, ESCAPE, 0x28, 0x42]), 'あ'],
+    ['51932 (EUC-JP)', 51932, Buffer.from([0xa4, 0xa2]), 'あ'],
+    ['20932 (EUC-JP, JIS X 0208-1990)', 20932, Buffer.from([0xa4, 0xa2]), 'あ'],
+    ['54936 (GB18030)', 54936, Buffer.from([0xc4, 0xe3]), '你'],
+    ['1200 (UTF-16LE)', 1200, Buffer.from('Привет', 'utf16le'), 'Привет'],
+  ])('reads a string in code page %s', async (_label, codePage, bytes, expected) => {
+    expect(await subjectIn(bytes, [codePage])).toBe(`Subject: ${expected}`);
+  });
+
+  it('takes a code page of 0 or below for unset and uses the next property, then Windows-1252', async () => {
+    const russian = Buffer.from([0xcf, 0xf0, 0xe8, 0xe2, 0xe5, 0xf2]);
+    expect(await subjectIn(russian, [0, 1251])).toBe('Subject: Привет');
+    expect(await subjectIn(russian, [-1, 1251])).toBe('Subject: Привет');
+    expect(await subjectIn(Buffer.from([0xe9]), [0, 0])).toBe('Subject: é');
+    expect(await subjectIn(Buffer.from([0xe9]), [-5])).toBe('Subject: é');
+  });
+
+  it('refuses a code page no decoder reads with the typed 400, not a 500', async () => {
+    for (const codePage of [28602, 437, 99999]) {
+      await expect(subjectIn(Buffer.from('abc'), [codePage])).rejects.toMatchObject({ name: 'LegacyOfficeFormatError', status: 400 });
+    }
+  });
+});
+
+describe('recipients and the sender are written by one rule', () => {
+  const recipient = (index: number, name: string, addressType: string, address: string, smtp?: string): CfbStream[] => [
+    unicode(`__recip_version1.0_#0000000${index}/`, '3001', name),
+    unicode(`__recip_version1.0_#0000000${index}/`, '3002', addressType),
+    unicode(`__recip_version1.0_#0000000${index}/`, '3003', address),
+    ...(smtp === undefined ? [] : [unicode(`__recip_version1.0_#0000000${index}/`, '39FE', smtp)]),
+  ];
+
+  it('leaves out an Exchange address unless the SMTP one is there, as for the sender', async () => {
+    const bytes = message([
+      unicode('', '0C1A', 'Ada'),
+      unicode('', '0C1E', 'EX'),
+      unicode('', '0C1F', '/O=EXCH/OU=FIRST/CN=ADA'),
+      ...recipient(0, 'Grace Hopper', 'EX', '/O=EXCH/OU=FIRST/CN=GRACE'),
+      ...recipient(1, 'Alan Turing', 'EX', '/O=EXCH/OU=FIRST/CN=ALAN', 'alan@example.org'),
+      ...recipient(2, 'Edsger Dijkstra', 'SMTP', 'edsger@example.org'),
+    ]);
+    expect(await text(bytes)).toBe(['From: Ada', 'To: Grace Hopper; Alan Turing <alan@example.org>; Edsger Dijkstra <edsger@example.org>'].join('\n'));
+  });
+});
+
+describe('the text of a message for the office writers', () => {
+  it('is the same headers and body the text target gives, not the compound file refusal', async () => {
+    const bytes = message([unicode('', '0037', 'Quarterly numbers'), unicode('', '0C1A', 'Ada Lovelace'), unicode('', '1000', 'Body of the message')]);
+    expect(await extractTextContentForOffice(bytes, 'msg', {}, 'message')).toBe(await text(bytes));
   });
 });

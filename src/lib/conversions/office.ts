@@ -68,6 +68,7 @@ import { markdownToDocumentModel, readEpubModel } from './source-model';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variants';
 import { officeReadingFormat } from './office/office-suite-sources';
 import { assertReadableAsText } from './office/text-source-guard';
+import { sourceBytesAsText } from './office/text-source';
 import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from './office/sheet-bounds';
 import { DAY_ZERO_1900, MS_PER_DAY, writeXlsx, writeXlsxWorkbook, type WorkbookCompression } from './xlsx-writer';
 import { readPdfSheets } from './pdf-sheets';
@@ -518,9 +519,7 @@ export async function extractTextContentForOffice(
     );
   }
 
-  assertReadableAsText(inputBuffer, src);
-
-  return inputBuffer.toString('utf-8');
+  return sourceBytesAsText(inputBuffer, src);
 }
 
 export async function extractTextFromOdt(buffer: Buffer): Promise<string> {

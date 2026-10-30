@@ -71,7 +71,7 @@ describe('an encrypted Office Open XML package under its own extension', () => {
     it(`is refused as encrypted for the real file ${id}, by buffer and by path`, async (ctx) => {
       const { bytes, path: file } = await requireRealworldSample(ctx, id);
       const ext = id.slice(id.lastIndexOf('.') + 1);
-      expect(() => assertNotSpoofedFile(bytes.subarray(0, OBJECT_HEADER_BYTES), ext, id)).toThrow(/encrypted or password protected|spoofing rejected/);
+      expect(() => assertNotSpoofedFile(bytes.subarray(0, OBJECT_HEADER_BYTES), ext, id)).toThrow(EncryptedOfficeDocumentError);
       expect(() => assertNotSpoofedFilePath(file, ext, id)).toThrow(EncryptedOfficeDocumentError);
     });
   }

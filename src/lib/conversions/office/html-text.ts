@@ -94,6 +94,19 @@ function appendText(state: TextState, raw: string): void {
   state.atLineStart = false;
 }
 
+function trimBlanksEnd(line: string): string {
+  let end = line.length;
+  while (end > 0 && (line[end - 1] === ' ' || line[end - 1] === '\t')) end -= 1;
+  return line.slice(0, end);
+}
+
+/** `text` with the spaces and tabs in front of each line break cut: one pass, where a pattern restarts at every blank of a long run. */
+export function trimBlanksBeforeLineBreaks(text: string): string {
+  const lines = text.split(LINE_BREAK);
+  const last = lines.length - 1;
+  return lines.map((line, index) => (index === last ? line : trimBlanksEnd(line))).join(LINE_BREAK);
+}
+
 /** The text of `html`: paragraphs separated by one blank line, lines by a line break, no markup. */
 export function htmlToText(html: string): string {
   const state: TextState = { out: [], pending: '', atLineStart: true };
@@ -153,5 +166,5 @@ export function htmlToText(html: string): string {
     else if (BLOCK_ELEMENTS.has(name)) requestBreak(state, PARAGRAPH_BREAK);
     else if (CELL_ELEMENTS.has(name) && !state.atLineStart) state.out.push(' ');
   }
-  return state.out.join('').replace(/ {2,}/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, PARAGRAPH_BREAK).trim();
+  return trimBlanksBeforeLineBreaks(state.out.join('').replace(/ {2,}/g, ' ')).replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, PARAGRAPH_BREAK).trim();
 }

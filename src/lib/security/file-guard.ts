@@ -15,7 +15,7 @@ import {
   type CompoundFileVerdict,
 } from '../compound-file-kind';
 import { OOXML_VARIANT_FAMILY } from '../conversions/ooxml-variants';
-import { EncryptedOfficeDocumentError } from '../types';
+import { EncryptedOfficeDocumentError, isUnprocessableInputError } from '../types';
 import { COMPOUND_FILE_ONLY_EXTENSIONS } from '../format-signatures';
 
 const OOXML_EXTENSIONS: ReadonlySet<string> = new Set(['docx', 'xlsx', 'pptx', 'potx', ...Object.keys(OOXML_VARIANT_FAMILY)]);
@@ -37,6 +37,24 @@ function isOoxmlSpoof(error: unknown, declared: string): error is FileExtensionS
 function encryptedPackageError(error: FileExtensionSpoofError, declared: string, root: CompoundFileRoot): Error {
   if (root.status !== 'read' || !ENCRYPTED_PACKAGE_ENTRIES.every((name) => root.names.has(name))) return error;
   return new EncryptedOfficeDocumentError(`The ${extensionOf(declared).toUpperCase()} file is encrypted or password protected, so its content cannot be read.`);
+}
+
+const HTTP_BAD_REQUEST = 400;
+
+export interface SpoofCheckRefusal {
+  status: number;
+  title: string;
+}
+
+/** The answer for an upload the spoof check turned away: a spoofed extension is a 400, an encrypted package a 422; undefined for any other error. */
+export function spoofCheckRefusal(error: unknown): SpoofCheckRefusal | undefined {
+  if (error instanceof FileExtensionSpoofError) return { status: HTTP_BAD_REQUEST, title: 'File Spoofing Detected' };
+  return isUnprocessableInputError(error) ? { status: error.status, title: 'Unprocessable Entity' } : undefined;
+}
+
+/** The HTTP status of any error the spoof check throws: a 422 for an encrypted package, a 400 for every other refusal. */
+export function spoofCheckStatus(error: unknown): number {
+  return spoofCheckRefusal(error)?.status ?? HTTP_BAD_REQUEST;
 }
 
 /**

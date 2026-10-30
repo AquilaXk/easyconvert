@@ -1,9 +1,10 @@
+import { reportConversionWarning } from '../conversion-warnings';
 import { decodeHtmlInput } from '../html-encoding';
 import { readCfbContainer } from './cfb-streams';
 import { htmlToText } from './html-text';
 import { LegacyOfficeFormatError } from './legacy-office-errors';
 import { decompressRtf } from './msg-rtf-compression';
-import { readRtfText } from './rtf-reader';
+import { readRtfText, RtfHoldsNoTextError } from './rtf-reader';
 
 /**
  * The text of an Outlook message (.msg), read from its compound file as [MS-OXMSG] lays it out: property streams named
@@ -46,6 +47,7 @@ const PR = {
   html: '1013',
   rtfCompressed: '1009',
   displayName: '3001',
+  addressType: '3002',
   emailAddress: '3003',
   smtpAddress: '39FE',
   attachLongName: '3707',
@@ -94,18 +96,36 @@ const CODE_PAGE_LABELS: ReadonlyMap<number, string> = new Map([
   [874, 'windows-874'],
   [10000, 'macintosh'],
   [20866, 'koi8-r'],
+  [50220, 'iso-2022-jp'],
+  [51932, 'euc-jp'],
+  [20932, 'euc-jp'],
+  [54936, 'gb18030'],
+  [1200, 'utf-16le'],
 ]);
+
+function unreadableCodePage(codePage: number): LegacyOfficeFormatError {
+  return new LegacyOfficeFormatError(`${LABEL}: the message code page ${codePage} is not one this service reads.`);
+}
 
 function decoderLabel(codePage: number): string {
   const known = CODE_PAGE_LABELS.get(codePage);
   if (known !== undefined) return known;
   if (codePage >= 1250 && codePage <= 1258) return `windows-${codePage}`;
   if (codePage >= 28591 && codePage <= 28605) return `iso-8859-${codePage - 28590}`;
-  throw new LegacyOfficeFormatError(`${LABEL}: the message code page ${codePage} is not one this service reads.`);
+  throw unreadableCodePage(codePage);
+}
+
+/** The label of a range above can name an encoding the runtime lacks (28602 is "iso-8859-12", which the standard does not define). */
+function decoderFor(codePage: number): TextDecoder {
+  try {
+    return new TextDecoder(decoderLabel(codePage));
+  } catch (error) {
+    throw error instanceof LegacyOfficeFormatError ? error : unreadableCodePage(codePage);
+  }
 }
 
 function decodeAnsi(bytes: Buffer, codePage: number): string {
-  return new TextDecoder(decoderLabel(codePage)).decode(bytes);
+  return decoderFor(codePage).decode(bytes);
 }
 
 function cutAtNul(text: string): string {
@@ -128,6 +148,12 @@ function fixedProperties(stream: Buffer | undefined, headerBytes: number): Map<n
 function int32Property(properties: ReadonlyMap<number, { type: number; value: Buffer }>, id: number): number | undefined {
   const property = properties.get(id);
   return property?.type === INT32_TYPE ? property.value.readInt32LE(0) : undefined;
+}
+
+/** A code page property; 0 and below name no code page, so the next property or the default stands. */
+function codePageProperty(properties: ReadonlyMap<number, { type: number; value: Buffer }>, id: number): number | undefined {
+  const codePage = int32Property(properties, id);
+  return codePage !== undefined && codePage > 0 ? codePage : undefined;
 }
 
 function dateProperty(properties: ReadonlyMap<number, { type: number; value: Buffer }>, id: number): Date | undefined {
@@ -160,14 +186,25 @@ function addressText({ name, address }: MsgAddress): string {
   return name === '' ? address : `${name} <${address}>`;
 }
 
+interface MailboxProperties {
+  name: string;
+  smtp: string | undefined;
+  addressType: string | undefined;
+  address: string | undefined;
+}
+
+/** A sender or a recipient. An Exchange address ("/O=...") is not one a reader can use; the SMTP address stands in when the message has it. */
+function mailboxText({ name, smtp, addressType, address }: MailboxProperties): string {
+  return addressText({ name, address: smtp ?? (addressType?.toUpperCase() === 'EX' ? '' : (address ?? '')) });
+}
+
 function senderOf(streams: Streams, codePage: number): string {
-  const name = fieldProperty(streams, '', PR.senderName, codePage) ?? fieldProperty(streams, '', PR.sentRepresentingName, codePage) ?? '';
-  const smtp = fieldProperty(streams, '', PR.senderSmtp, codePage);
-  const addressType = fieldProperty(streams, '', PR.senderAddressType, codePage)?.toUpperCase();
-  const raw = fieldProperty(streams, '', PR.senderAddress, codePage) ?? '';
-  // An Exchange address ("/O=...") is not one a reader can use; the SMTP address stands in when the message has it.
-  const address = smtp ?? (addressType === 'EX' ? '' : raw);
-  return addressText({ name, address });
+  return mailboxText({
+    name: fieldProperty(streams, '', PR.senderName, codePage) ?? fieldProperty(streams, '', PR.sentRepresentingName, codePage) ?? '',
+    smtp: fieldProperty(streams, '', PR.senderSmtp, codePage),
+    addressType: fieldProperty(streams, '', PR.senderAddressType, codePage),
+    address: fieldProperty(streams, '', PR.senderAddress, codePage),
+  });
 }
 
 function storageNames(streams: Streams, prefix: string): string[] {
@@ -191,9 +228,12 @@ function recipientsOf(streams: Streams, codePage: number): Recipients {
   for (const storage of storageNames(streams, RECIPIENT_PREFIX)) {
     const prefix = `${storage}/`;
     const kind = int32Property(fixedProperties(streams.get(`${prefix}${PROPERTY_STREAM}`), SUB_OBJECT_PROPERTY_HEADER_BYTES), PR_RECIPIENT_TYPE);
-    const name = fieldProperty(streams, prefix, PR.displayName, codePage) ?? '';
-    const address = fieldProperty(streams, prefix, PR.smtpAddress, codePage) ?? fieldProperty(streams, prefix, PR.emailAddress, codePage) ?? '';
-    const text = addressText({ name, address });
+    const text = mailboxText({
+      name: fieldProperty(streams, prefix, PR.displayName, codePage) ?? '',
+      smtp: fieldProperty(streams, prefix, PR.smtpAddress, codePage),
+      addressType: fieldProperty(streams, prefix, PR.addressType, codePage),
+      address: fieldProperty(streams, prefix, PR.emailAddress, codePage),
+    });
     if (text === '') continue;
     if (kind === RECIPIENT_CC) recipients.cc.push(text);
     else if (kind === RECIPIENT_BCC) recipients.bcc.push(text);
@@ -222,11 +262,23 @@ function htmlBody(streams: Streams, codePage: number): string | undefined {
   return text === undefined ? undefined : htmlToText(text);
 }
 
+/** The RTF body, or undefined when it holds no text (the normal shape of a message that only carries attachments) or cannot be read; the latter is reported. */
 function rtfBody(streams: Streams): string | undefined {
   const compressed = binaryProperty(streams, '', PR.rtfCompressed);
   if (compressed === undefined) return undefined;
   const rtf = decompressRtf(compressed);
-  return rtf === undefined ? undefined : readRtfText(rtf);
+  if (rtf === undefined) {
+    reportConversionWarning(`${LABEL}: the RTF body is damaged (its checksum or size does not match), so the message body was left out.`);
+    return undefined;
+  }
+  try {
+    return readRtfText(rtf);
+  } catch (error) {
+    if (error instanceof RtfHoldsNoTextError) return undefined;
+    if (!(error instanceof LegacyOfficeFormatError)) throw error;
+    reportConversionWarning(`${LABEL}: the RTF body cannot be read (${error.message}), so the message body was left out.`);
+    return undefined;
+  }
 }
 
 function bodyOf(streams: Streams, codePage: number): string {
@@ -245,7 +297,7 @@ export function readOutlookMessage(buffer: Buffer): OutlookMessage {
   if (!streams.has(PROPERTY_STREAM)) {
     throw new LegacyOfficeFormatError(`${LABEL}: the compound file has no message property stream, so it is not an Outlook message.`);
   }
-  const codePage = int32Property(properties, PR_INTERNET_CPID) ?? int32Property(properties, PR_MESSAGE_CODEPAGE) ?? DEFAULT_CODE_PAGE;
+  const codePage = codePageProperty(properties, PR_INTERNET_CPID) ?? codePageProperty(properties, PR_MESSAGE_CODEPAGE) ?? DEFAULT_CODE_PAGE;
   const listed = recipientsOf(streams, codePage);
   return {
     subject: fieldProperty(streams, '', PR.subject, codePage) ?? '',
@@ -273,7 +325,7 @@ export function outlookMessageText(message: OutlookMessage): string {
     ...headerLine('Date', message.date?.toISOString() ?? ''),
     ...headerLine('Subject', message.subject),
   ];
-  const parts = [lines.join('\n'), message.body.replace(/\s+$/, '')].filter((part) => part !== '');
+  const parts = [lines.join('\n'), message.body.trimEnd()].filter((part) => part !== '');
   if (message.attachments.length > 0) {
     parts.push(['Attachments:', ...message.attachments.map((attachment) => `- ${attachment.name} (${attachment.bytes} bytes)`)].join('\n'));
   }

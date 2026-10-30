@@ -10,6 +10,9 @@ import { decodeWindows1252 } from './windows-1252';
  */
 
 const LABEL = 'RTF document';
+
+/** A well-formed RTF document whose text is empty: the answer for an RTF body of a message that only carries attachments. */
+export class RtfHoldsNoTextError extends LegacyOfficeFormatError {}
 const EARLY_CLOSE_WARNING = 'The RTF document group closes before the end of the file; the groups after it were read as part of the document.';
 
 /** Deepest group nesting the reader follows. */
@@ -283,7 +286,7 @@ class RtfReader {
     while (end > 0 && (text[end - 1] === '\n' || text[end - 1] === '\t' || text[end - 1] === ' ')) end--;
     const trimmed = text.slice(0, end);
     if (trimmed.trim().length === 0) {
-      throw new LegacyOfficeFormatError(`${LABEL}: the document holds no text.`);
+      throw new RtfHoldsNoTextError(`${LABEL}: the document holds no text.`);
     }
     return trimmed;
   }

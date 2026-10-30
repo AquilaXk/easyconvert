@@ -13,8 +13,8 @@ import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class
 import { generateJobId } from '@/lib/queue/bullmq-engine';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { readObjectHeader } from '@/lib/storage/object-header';
-import { detectFormatFromFilename, getFormatByExtension, FileExtensionSpoofError } from '@/lib/registry';
-import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject } from '@/lib/security/file-guard';
+import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { ConversionOptions, JobStatus, PipelineTask, JobGraph, QueueUnavailableError } from '@/lib/types';
 import {
   validateJobGraph,
@@ -557,9 +557,8 @@ export async function POST(req: NextRequest) {
         }
       }
     } catch (err: any) {
-      if (err instanceof FileExtensionSpoofError) {
-        return await failWithRollback(400, err.message, 'File Spoofing Detected');
-      }
+      const refusal = spoofCheckRefusal(err);
+      if (refusal) return await failWithRollback(refusal.status, err.message, refusal.title);
       const storageProblem = describeStorageError(err);
       if (storageProblem) {
         return await failWithRollback(storageProblem.status, storageProblem.detail, storageProblem.title, undefined, storageProblem.headers);

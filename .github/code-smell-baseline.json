@@ -163,7 +163,7 @@
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 615
+    "maxValue": 614
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",
@@ -1576,7 +1576,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 9602
+    "maxValue": 9601
   },
   {
     "file": "src/lib/conversions/office.ts",
