@@ -70,7 +70,7 @@ describe('container job in .github/workflows/ci.yml', () => {
   it('runs in parallel with the other jobs, after the libvips build it copies, and is required by the verify aggregate', () => {
     expect(container.needs).toBe('sharp-libvips');
     expect(container['timeout-minutes']).toBeLessThanOrEqual(CONTAINER_JOB_MAX_MINUTES);
-    expect(workflow.jobs.verify.needs).toEqual(['changes', 'sharp-libvips', 'checks', 'tests', 'conformance', 'integration', 'container', 'parity-quality', 'parity-speed']);
+    expect(workflow.jobs.verify.needs).toEqual(['changes', 'sharp-libvips', 'checks', 'tests', 'conformance', 'integration', 'container', 'parity-quality']);
     const verifyScript = workflow.jobs.verify.steps.map((step) => step.run ?? '').join('\n');
     expect(verifyScript).toContain('"$CONTAINER_RESULT" != success');
   });
