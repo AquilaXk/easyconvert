@@ -92,6 +92,18 @@ describe('the interchange file of a format only the office suite reads', () => {
     expect(calls.converted[0].options.inProcessFallback).toBeUndefined();
   });
 
+  it('is written without the export filter of the request, which names the target and not the interchange format', async () => {
+    const { deps, calls } = standIns();
+    const options = { libreOfficeFilter: 'writer_pdf_Export' };
+    await convertThroughInterchange(deps, request({ options }), 'docx');
+    expect(calls.written[0].options.libreOfficeFilter).toBeUndefined();
+    expect(options).toEqual({ libreOfficeFilter: 'writer_pdf_Export' });
+
+    const own = standIns({ write: async () => result({ filePath: '/out/letter.pdf', engineUsed: 'native-soffice' }) });
+    await convertThroughInterchange(own.deps, request({ tgt: 'pdf', options }), 'pdf');
+    expect(own.calls.written[0].options.libreOfficeFilter).toBe('writer_pdf_Export');
+  });
+
   it('is the answer itself when the office suite writes the target, with the request’s output path and options', async () => {
     const { deps, calls } = standIns({ write: async () => result({ filePath: '/out/letter.txt', engineUsed: 'native-soffice' }) });
     const input: WorkerVfsPayload = { inputPath: '/in/letter.wps', outputPath: '/out/letter.txt' };
@@ -818,16 +830,19 @@ describe('the extent of an OOXML workbook the office suite exports as .xls', () 
     expect(await convertXlsTarget(deps, xlsxRequest(input), async () => direct)).toBe(direct);
   });
 
-  it('does not count a worksheet part the workbook never references', async () => {
+  it('counts a tall worksheet part that nothing references, which no producer writes: a 413 on the safe side', async () => {
     const tall = await JSZip.loadAsync(await realWorkbookBytes(65_537, 1));
-    const book = await JSZip.loadAsync(await realWorkbookBytes(3, 3));
-    book.file('xl/worksheets/orphan.xml', await tall.file('xl/worksheets/sheet1.xml')!.async('text'));
-    const types = await book.file('[Content_Types].xml')!.async('text');
-    book.file('[Content_Types].xml', types.replace('</Types>', '<Override PartName="/xl/worksheets/orphan.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'));
-    const { deps } = standIns();
-    const direct = result({ filePath: '/out/book.xls' });
-    const input = await book.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
-    expect(await convertXlsTarget(deps, xlsxRequest(input), async () => direct)).toBe(direct);
+    const sheet = await tall.file('xl/worksheets/sheet1.xml')!.async('text');
+    const orphans: Array<[string, boolean]> = [['xl/worksheets/orphan.xml', false], ['xl/orphans/typed.xml', true]];
+    for (const [part, typed] of orphans) {
+      const book = await JSZip.loadAsync(await realWorkbookBytes(3, 3));
+      book.file(part, sheet);
+      if (typed) {
+        const types = await book.file('[Content_Types].xml')!.async('text');
+        book.file('[Content_Types].xml', types.replace('</Types>', `<Override PartName="/${part}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`));
+      }
+      await expectSheetLimit(await book.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+    }
   });
 
   it('refuses a source that is not a ZIP package instead of passing it on unchecked', async () => {

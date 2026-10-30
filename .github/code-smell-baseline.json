@@ -1442,7 +1442,7 @@
     "rule": "complexity",
     "function": "parseAllXlsxWorksheets",
     "count": 1,
-    "maxValue": 91
+    "maxValue": 87
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1503,20 +1503,6 @@
   {
     "file": "src/lib/conversions/office.ts",
     "rule": "complexity",
-    "function": "safeExtractXmlAttributes",
-    "count": 1,
-    "maxValue": 35
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
-    "function": "safeExtractXmlElements",
-    "count": 1,
-    "maxValue": 62
-  },
-  {
-    "file": "src/lib/conversions/office.ts",
-    "rule": "complexity",
     "function": "tokenize",
     "count": 1,
     "maxValue": 31
@@ -1568,7 +1554,7 @@
     "rule": "max-lines-per-function",
     "function": "parseAllXlsxWorksheets",
     "count": 1,
-    "maxValue": 286
+    "maxValue": 274
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1596,7 +1582,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 10113
+    "maxValue": 9769
   },
   {
     "file": "src/lib/conversions/office.ts",
@@ -1955,6 +1941,20 @@
     "function": "decodeTruePlane",
     "count": 1,
     "maxValue": 7
+  },
+  {
+    "file": "src/lib/conversions/safe-xml-scanner.ts",
+    "rule": "complexity",
+    "function": "safeExtractXmlAttributes",
+    "count": 1,
+    "maxValue": 35
+  },
+  {
+    "file": "src/lib/conversions/safe-xml-scanner.ts",
+    "rule": "complexity",
+    "function": "safeExtractXmlElements",
+    "count": 1,
+    "maxValue": 62
   },
   {
     "file": "src/lib/conversions/svg-geometry.ts",

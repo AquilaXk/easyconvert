@@ -277,7 +277,7 @@ export async function convertThroughInterchange(deps: OfficeSuiteRouteDeps, requ
   const requestedOutput = Buffer.isBuffer(input) ? undefined : input.outputPath;
   const writesTarget = interchange === tgt;
   const source: Buffer | WorkerVfsPayload = Buffer.isBuffer(input) || writesTarget ? input : { ...input, outputPath: undefined };
-  const writerOptions = { ...(writesTarget ? options : { ...options, outputPath: undefined }), throwOnUnavailable: true } as WorkerEngineOptions;
+  const writerOptions = { ...(writesTarget ? options : { ...options, libreOfficeFilter: undefined, outputPath: undefined }), throwOnUnavailable: true } as WorkerEngineOptions;
   let written: WorkerConversionResult | null;
   try {
     written = await deps.writeWithOfficeSuite(source, src, interchange, writerOptions, originalFilename);

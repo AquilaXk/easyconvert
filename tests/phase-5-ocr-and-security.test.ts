@@ -12,14 +12,8 @@ import {
   assertNotSpoofedFile,
   FileExtensionSpoofError,
 } from '../src/lib/registry';
-import {
-  safeExtractXmlElements,
-  safeExtractFirstXmlElement,
-  safeExtractXmlAttributes,
-  safeDecodeXmlEntities,
-  safeExtractAllText,
-  safeFindColor,
-} from '../src/lib/conversions/office';
+import { safeExtractFirstXmlElement, safeExtractAllText, safeFindColor } from '../src/lib/conversions/office';
+import { safeExtractXmlElements, safeExtractXmlAttributes, safeDecodeXmlEntities } from '../src/lib/conversions/safe-xml-scanner';
 
 /** Opening tags in the small run of the unclosed-tag growth check, and the filler after each one. */
 const UNCLOSED_OPENINGS = 5000;

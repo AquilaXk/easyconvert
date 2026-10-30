@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
 import { InflateBudget } from './bounded-inflate';
 import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
-import { XLSX_MAX_MATERIALISED_CELLS, discoverXlsxSheets, extractWithinCellBudget } from './office/xlsx-sheets';
+import { XLSX_MAX_MATERIALISED_CELLS, XLSX_MAX_HYPERLINKS_PER_SHEET, XLSX_MAX_RANGES_PER_WORKBOOK, discoverXlsxSheets, streamElementsWithin, readRelationships } from './office/xlsx-sheets';
+import { resolveZipPath } from './office/zip-path';
+import { safeDecodeXmlEntities, safeExtractXmlElements, type SafeXmlElement, type SafeXmlScannerOptions } from './safe-xml-scanner';
 import { HTML_MAX_EMBEDDED_BASE64_CHARS, PptxMedia, base64Length } from './office/pptx-media';
 import JSZip from 'jszip';
 import Papa from 'papaparse';
@@ -2222,323 +2224,6 @@ export function renderDrawingMlToSvg(
   return { svg, shapes };
 }
 
-export interface SafeXmlAttributeMap {
-  [key: string]: string;
-}
-
-export interface SafeXmlElement {
-  tag: string;
-  localName: string;
-  prefix?: string;
-  raw: string;
-  attrs: SafeXmlAttributeMap;
-  content: string;
-  startIndex: number;
-  endIndex: number;
-}
-
-export interface SafeXmlScannerOptions {
-  maxDepth?: number;
-  maxElements?: number;
-  /** Takes each element as it is found, in place of the returned list (which is then empty), so that a long list is not held. */
-  onElement?: (element: SafeXmlElement) => void;
-}
-
-/**
- * Linearly extracts XML attributes from an opening tag header in O(N) time with zero regex backtracking.
- */
-export function safeExtractXmlAttributes(tagHeader: string): SafeXmlAttributeMap {
-  const attrs: SafeXmlAttributeMap = {};
-  let i = 0;
-  if (i < tagHeader.length && tagHeader[i] === '<') i++;
-  // Skip tag name
-  while (i < tagHeader.length && tagHeader.charCodeAt(i) > 32 && tagHeader[i] !== '/' && tagHeader[i] !== '>') i++;
-
-  while (i < tagHeader.length) {
-    // Skip whitespace
-    while (i < tagHeader.length && tagHeader.charCodeAt(i) <= 32) i++;
-    if (i >= tagHeader.length || tagHeader[i] === '/' || tagHeader[i] === '>') break;
-
-    const keyStart = i;
-    while (
-      i < tagHeader.length &&
-      tagHeader[i] !== '=' &&
-      tagHeader.charCodeAt(i) > 32 &&
-      tagHeader[i] !== '/' &&
-      tagHeader[i] !== '>'
-    ) {
-      i++;
-    }
-    const key = tagHeader.slice(keyStart, i).trim();
-    while (i < tagHeader.length && tagHeader.charCodeAt(i) <= 32) i++;
-
-    if (i < tagHeader.length && tagHeader[i] === '=') {
-      i++;
-      while (i < tagHeader.length && tagHeader.charCodeAt(i) <= 32) i++;
-      if (i < tagHeader.length && (tagHeader[i] === '"' || tagHeader[i] === "'")) {
-        const quote = tagHeader[i++];
-        const valStart = i;
-        while (i < tagHeader.length && tagHeader[i] !== quote) i++;
-        attrs[key] = safeDecodeXmlEntities(tagHeader.slice(valStart, i));
-        if (i < tagHeader.length) i++; // skip closing quote
-      } else {
-        const valStart = i;
-        while (
-          i < tagHeader.length &&
-          tagHeader.charCodeAt(i) > 32 &&
-          tagHeader[i] !== '>' &&
-          tagHeader[i] !== '/'
-        ) {
-          i++;
-        }
-        attrs[key] = safeDecodeXmlEntities(tagHeader.slice(valStart, i));
-      }
-    } else if (key) {
-      attrs[key] = 'true';
-    }
-  }
-  return attrs;
-}
-
-const SAFE_XML_SCANNER_DEFAULTS = { maxElements: 50_000, maxDepth: 64 } as const;
-
-/** The options of a scan with each default kept for an option that is absent or explicitly `undefined`. */
-function withScannerDefaults(options: SafeXmlScannerOptions): Required<Pick<SafeXmlScannerOptions, 'maxElements' | 'maxDepth'>> & Pick<SafeXmlScannerOptions, 'onElement'> {
-  return {
-    maxElements: options.maxElements ?? SAFE_XML_SCANNER_DEFAULTS.maxElements,
-    maxDepth: options.maxDepth ?? SAFE_XML_SCANNER_DEFAULTS.maxDepth,
-    onElement: options.onElement,
-  };
-}
-
-/**
- * Safely extracts XML elements in linear O(N) time without ReDoS backtracking.
- * Accurately tracks nested elements of the same tag name and enforces strict depth bounds.
- */
-export function safeExtractXmlElements(
-  xml: string,
-  tagName: string | string[],
-  options: SafeXmlScannerOptions = {}
-): SafeXmlElement[] {
-  const results: SafeXmlElement[] = [];
-  const { maxElements, maxDepth, onElement } = withScannerDefaults(options);
-  let found = 0;
-  const take = onElement ?? ((element: SafeXmlElement): void => void results.push(element));
-
-  const tagList = Array.isArray(tagName) ? tagName : [tagName];
-  const targetMap = new Map<string, { targetLocal: string; targetPrefix: string | null }>();
-  for (const t of tagList) {
-    targetMap.set(t, {
-      targetLocal: t.includes(':') ? t.split(':')[1] : t,
-      targetPrefix: t.includes(':') ? t.split(':')[0] : null,
-    });
-  }
-
-  const closingTagPresentMap = new Map<string, boolean>();
-  let pos = 0;
-  while (pos < xml.length && found < maxElements) {
-    const nextLt = xml.indexOf('<', pos);
-    if (nextLt === -1) break;
-
-    // Skip comments <!-- ... -->
-    if (xml.startsWith('<!--', nextLt)) {
-      const endComment = xml.indexOf('-->', nextLt + 4);
-      pos = endComment === -1 ? xml.length : endComment + 3;
-      continue;
-    }
-    // Skip CDATA <![CDATA[ ... ]]>
-    if (xml.startsWith('<![CDATA[', nextLt)) {
-      const endCdata = xml.indexOf(']]>', nextLt + 9);
-      pos = endCdata === -1 ? xml.length : endCdata + 3;
-      continue;
-    }
-    // Skip processing instructions <? ... ?> or <! ... >
-    if (xml[nextLt + 1] === '?' || xml[nextLt + 1] === '!') {
-      const endPi = xml.indexOf('>', nextLt + 2);
-      pos = endPi === -1 ? xml.length : endPi + 1;
-      continue;
-    }
-    // Skip closing tags
-    if (xml[nextLt + 1] === '/') {
-      const endClose = xml.indexOf('>', nextLt + 2);
-      pos = endClose === -1 ? xml.length : endClose + 1;
-      continue;
-    }
-
-    // Read current opening tag name
-    let tagEnd = nextLt + 1;
-    while (
-      tagEnd < xml.length &&
-      xml.charCodeAt(tagEnd) > 32 &&
-      xml[tagEnd] !== '>' &&
-      xml[tagEnd] !== '/'
-    ) {
-      tagEnd++;
-    }
-    const currentTag = xml.slice(nextLt + 1, tagEnd);
-    const currLocal = currentTag.includes(':') ? currentTag.split(':')[1] : currentTag;
-    const currPrefix = currentTag.includes(':') ? currentTag.split(':')[0] : undefined;
-
-    let isMatch = false;
-    for (const [tName, spec] of targetMap) {
-      if (spec.targetPrefix ? currentTag === tName : currLocal === spec.targetLocal) {
-        isMatch = true;
-        break;
-      }
-    }
-
-    // Find the end of this tag's header '>' taking quotes into account
-    let headerClose = tagEnd;
-    let inQuote = false;
-    let quoteChar = '';
-    while (headerClose < xml.length) {
-      const ch = xml[headerClose];
-      if (inQuote) {
-        if (ch === quoteChar) inQuote = false;
-      } else if (ch === '"' || ch === "'") {
-        inQuote = true;
-        quoteChar = ch;
-      } else if (ch === '>') {
-        break;
-      }
-      headerClose++;
-    }
-    if (headerClose >= xml.length) break;
-
-    let checkIdx = headerClose - 1;
-    while (checkIdx > nextLt && xml.charCodeAt(checkIdx) <= 32) checkIdx--;
-    const isSelfClosing = checkIdx > nextLt && xml[checkIdx] === '/';
-
-    if (!isMatch) {
-      pos = headerClose + 1;
-      continue;
-    }
-
-    const attrs = safeExtractXmlAttributes(
-      xml.slice(nextLt + 1, isSelfClosing ? checkIdx : headerClose)
-    );
-
-    if (isSelfClosing) {
-      found++;
-      take({
-        tag: currentTag,
-        localName: currLocal,
-        prefix: currPrefix,
-        raw: xml.slice(nextLt, headerClose + 1),
-        attrs,
-        content: '',
-        startIndex: nextLt,
-        endIndex: headerClose + 1,
-      });
-      pos = headerClose + 1;
-      continue;
-    }
-
-    // If document has no closing tags for this element, skip to avoid search
-    let hasClosing = closingTagPresentMap.get(currentTag);
-    if (hasClosing === undefined) {
-      hasClosing = xml.indexOf('</' + currLocal) !== -1 || xml.indexOf('</' + currentTag) !== -1;
-      closingTagPresentMap.set(currentTag, hasClosing);
-    }
-    if (!hasClosing) {
-      pos = headerClose + 1;
-      continue;
-    }
-
-    // Helper to find the next matching closing tag allowing optional whitespace before '>' (W3C XML 1.0 §3.1)
-    const findNextClosingTag = (fromIndex: number): { index: number; end: number } | null => {
-      let p = fromIndex;
-      const targetClose = '</' + currentTag;
-      while (p < xml.length) {
-        const idx = xml.indexOf(targetClose, p);
-        if (idx === -1) return null;
-        let c = idx + targetClose.length;
-        while (c < xml.length && xml.charCodeAt(c) <= 32) c++;
-        if (c < xml.length && xml[c] === '>') {
-          return { index: idx, end: c + 1 };
-        }
-        p = idx + targetClose.length;
-      }
-      return null;
-    };
-
-    // Scan for matching closing tag with depth tracking
-    const startTag = '<' + currentTag;
-    let depth = 0;
-    let searchPos = headerClose + 1;
-    let matchedEnd = -1;
-    let contentEnd = -1;
-
-    while (searchPos < xml.length) {
-      // Skip inner comments or CDATA
-      if (xml.startsWith('<!--', searchPos)) {
-        const endC = xml.indexOf('-->', searchPos + 4);
-        searchPos = endC === -1 ? xml.length : endC + 3;
-        continue;
-      }
-      if (xml.startsWith('<![CDATA[', searchPos)) {
-        const endCd = xml.indexOf(']]>', searchPos + 9);
-        searchPos = endCd === -1 ? xml.length : endCd + 3;
-        continue;
-      }
-
-      const nextOpen = xml.indexOf(startTag, searchPos);
-      const closeInfo = findNextClosingTag(searchPos);
-
-      if (!closeInfo) break; // Unclosed tag, abort gracefully
-
-      if (nextOpen !== -1 && nextOpen < closeInfo.index) {
-        const charAfter = xml[nextOpen + startTag.length];
-        if (charAfter === '>' || charAfter === '/' || charAfter <= ' ') {
-          // Check if self-closing
-          const nextHeaderClose = xml.indexOf('>', nextOpen);
-          if (nextHeaderClose !== -1) {
-            let slashIdx = nextHeaderClose - 1;
-            while (slashIdx > nextOpen && xml.charCodeAt(slashIdx) <= 32) slashIdx--;
-            if (slashIdx > nextOpen && xml[slashIdx] === '/') {
-              // Self closing nested tag, does not increase depth
-            } else {
-              depth++;
-              if (depth > maxDepth) break; // Bound depth
-            }
-            searchPos = nextHeaderClose + 1;
-            continue;
-          }
-        }
-        searchPos = nextOpen + startTag.length;
-      } else {
-        if (depth === 0) {
-          contentEnd = closeInfo.index;
-          matchedEnd = closeInfo.end;
-          break;
-        } else {
-          depth--;
-          searchPos = closeInfo.end;
-        }
-      }
-    }
-
-    if (matchedEnd !== -1) {
-      found++;
-      take({
-        tag: currentTag,
-        localName: currLocal,
-        prefix: currPrefix,
-        raw: xml.slice(nextLt, matchedEnd),
-        attrs,
-        content: xml.slice(headerClose + 1, contentEnd),
-        startIndex: nextLt,
-        endIndex: matchedEnd,
-      });
-      pos = matchedEnd;
-    } else {
-      pos = headerClose + 1;
-    }
-  }
-
-  return results;
-}
-
 /**
  * Returns the first matching element in linear time, or null if not found.
  */
@@ -2557,27 +2242,6 @@ export function safeExtractFirstXmlElement(
 export function safeExtractTagContent(xml: string, tagName: string | string[]): string | null {
   const el = safeExtractFirstXmlElement(xml, tagName);
   return el ? el.content : null;
-}
-
-/**
- * Linearly decodes standard XML entities and strips tags safely in O(N) time.
- */
-export function safeDecodeXmlEntities(str: string): string {
-  if (!str) return '';
-  return str
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, dec) => {
-      const code = parseInt(dec, 10);
-      return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : _;
-    })
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
-      const code = parseInt(hex, 16);
-      return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : _;
-    });
 }
 
 /**
@@ -5427,16 +5091,9 @@ export function formatCsvCell(cell: string, delimiter: string): string {
  */
 async function readPartRelationships(zip: JSZip, partPath: string, external = false): Promise<Map<string, { type: string; target: string }>> {
   const slash = partPath.lastIndexOf('/');
-  const directory = partPath.slice(0, slash);
-  const relsFile = zip.file(`${directory}/_rels/${partPath.slice(slash + 1)}.rels`);
-  const relationships = new Map<string, { type: string; target: string }>();
-  if (!relsFile) return relationships;
-  for (const rel of extractWithinCellBudget(await readZipEntryText(relsFile), 'Relationship', 'relationships')) {
-    if (rel.attrs.Id && rel.attrs.Target && (rel.attrs.TargetMode === 'External') === external) {
-      relationships.set(rel.attrs.Id, { type: rel.attrs.Type ?? '', target: external ? rel.attrs.Target : resolveZipPath(directory, rel.attrs.Target) });
-    }
-  }
-  return relationships;
+  const relsFile = zip.file(`${partPath.slice(0, slash + 1)}_rels/${partPath.slice(slash + 1)}.rels`);
+  if (!relsFile) return new Map();
+  return readRelationships(await readZipEntryText(relsFile), partPath.slice(0, Math.max(0, slash)), external);
 }
 
 /** The charts of the drawings a worksheet shows (worksheet to drawing to chart parts), in the order each drawing places them. */
@@ -5481,30 +5138,37 @@ function readDateSystem(workbookXml: string): SpreadsheetDateSystem {
   return date1904 === '1' || date1904 === 'true' ? DATE_SYSTEM_1904 : DATE_SYSTEM_1900;
 }
 
-/** The merged ranges and the cell hyperlinks that follow the cell data of a worksheet. */
+/**
+ * The merged ranges and the cell hyperlinks that follow the cell data of a worksheet, handed to their final lists as the scanner
+ * finds them. A worksheet holds at most `XLSX_MAX_HYPERLINKS_PER_SHEET` hyperlinks, and the workbook at most `allowance` more of
+ * both together (`XLSX_MAX_RANGES_PER_WORKBOOK` less what the sheets before it used); one past either is refused (413).
+ */
 async function readSheetMergesAndLinks(
   zip: JSZip,
   sheetPath: string,
   sheetXml: string,
-  charge: (count: number) => void
+  allowance: number
 ): Promise<Pick<OfficeWorksheet, 'mergedRanges' | 'hyperlinks'>> {
   // Both lists follow `sheetData` (ECMA-376 Part 1, 18.3.1.99), so the cell data is not scanned again.
   const afterCells = sheetXml.slice(Math.max(0, sheetXml.lastIndexOf('</sheetData>')));
+  const workbookRefusal = `The XLSX merged ranges and hyperlinks hold more than ${XLSX_MAX_RANGES_PER_WORKBOOK} entries in all.`;
   const mergedRanges: OfficeCellRange[] = [];
-  for (const merge of extractWithinCellBudget(afterCells, 'mergeCell', 'merged ranges')) {
+  streamElementsWithin(afterCells, 'mergeCell', allowance, workbookRefusal, (merge) => {
     const range = parseA1Range(merge.attrs.ref ?? '');
     if (range) mergedRanges.push({ startRow: range.startRow, endRow: range.endRow, startCol: range.startCol, endCol: range.endCol });
-  }
-  const links = extractWithinCellBudget(afterCells, 'hyperlink', 'hyperlinks');
+  });
   const hyperlinks: OfficeWorksheetHyperlink[] = [];
-  const externalTargets = links.length > 0 ? await readPartRelationships(zip, sheetPath, true) : new Map<string, { type: string; target: string }>();
-  for (const link of links) {
-    const cell = parseA1Range(link.attrs.ref ?? '');
-    const external = link.attrs['r:id'] === undefined ? undefined : externalTargets.get(link.attrs['r:id'])?.target;
-    const target = external ?? (link.attrs.location === undefined ? undefined : `#${link.attrs.location}`);
-    if (cell && target !== undefined) hyperlinks.push({ row: cell.startRow, col: cell.startCol, target });
+  if (afterCells.includes('hyperlink')) {
+    const externalTargets = await readPartRelationships(zip, sheetPath, true);
+    const room = allowance - mergedRanges.length;
+    const refusal = room < XLSX_MAX_HYPERLINKS_PER_SHEET ? workbookRefusal : `A worksheet holds at most ${XLSX_MAX_HYPERLINKS_PER_SHEET} hyperlinks.`;
+    streamElementsWithin(afterCells, 'hyperlink', Math.min(room, XLSX_MAX_HYPERLINKS_PER_SHEET), refusal, (link) => {
+      const cell = parseA1Range(link.attrs.ref ?? '');
+      const external = link.attrs['r:id'] === undefined ? undefined : externalTargets.get(link.attrs['r:id'])?.target;
+      const target = external ?? (link.attrs.location === undefined ? undefined : `#${link.attrs.location}`);
+      if (cell && target !== undefined) hyperlinks.push({ row: cell.startRow, col: cell.startCol, target });
+    });
   }
-  charge(mergedRanges.length + hyperlinks.length);
   return { ...(mergedRanges.length > 0 ? { mergedRanges } : {}), ...(hyperlinks.length > 0 ? { hyperlinks } : {}) };
 }
 
@@ -5527,6 +5191,25 @@ async function readSharedStrings(zip: JSZip): Promise<string[]> {
     throw new PayloadLimitError(`The XLSX shared string table holds more than ${XLSX_MAX_MATERIALISED_CELLS} strings, more than the cells a workbook is read with.`);
   }
   return strings;
+}
+
+/** The widths in points of the columns a worksheet sets, by zero-based column: `<cols><col min="1" max="1" width="15" customWidth="1"/></cols>`. */
+function readColumnWidths(sheetXml: string, sheetName: string): number[] {
+  const columnWidths: number[] = [];
+  const colsEl = safeExtractFirstXmlElement(sheetXml, 'cols');
+  if (!colsEl) return columnWidths;
+  for (const cl of safeExtractXmlElements(colsEl.content, 'col')) {
+    if (cl.attrs.min && cl.attrs.max && cl.attrs.width) {
+      const min = parseInt(cl.attrs.min, 10) - 1;
+      const max = parseInt(cl.attrs.max, 10) - 1;
+      const ptWidth = Math.round(parseFloat(cl.attrs.width) * 7.5);
+      if (max >= XLSX_MAX_COLUMNS) throw worksheetBoundError(sheetName, `column ${max + 1} is past the last column of a worksheet (${XLSX_LAST_COLUMN_NAME})`);
+      for (let c = min; c <= max; c++) {
+        columnWidths[c] = ptWidth;
+      }
+    }
+  }
+  return columnWidths;
 }
 
 /**
@@ -5661,6 +5344,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
 
   // 3. Discover all worksheets from workbook.xml and workbook.xml.rels
   const { workbookXml: wbXml, sheets: sheetEntries } = await discoverXlsxSheets(zip);
+  if (sheetEntries.length === 0) throw new ConversionFailedError('Invalid XLSX workbook: no worksheets found in archive.');
   const printAreaBySheetIndex = new Map<number, OfficeWorksheetPrintArea>();
   const printAreaBySheetName = new Map<string, OfficeWorksheetPrintArea>();
   let dateSystem = DATE_SYSTEM_1900;
@@ -5711,6 +5395,9 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     }
   };
 
+  // The merged ranges and hyperlinks held for all sheets, which no byte or cell budget keeps small: a `mergeCell` is 25 bytes of XML.
+  let rangesHeld = 0;
+
   for (let entryIdx = 0; entryIdx < sheetEntries.length; entryIdx++) {
     const entry = sheetEntries[entryIdx];
     const printArea = printAreaBySheetIndex.get(entryIdx) || printAreaBySheetName.get(entry.name.toLowerCase());
@@ -5718,30 +5405,16 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     if (!sFile) continue;
 
     const sheetXml = await readZipEntryText(sFile, { budget: sheetBudget, maxBytes: sheetBudget.limit });
+    // Before the well-formedness check, which costs far more than a scan that stops at the bound: 3.3 s of CPU and 600 MB for the 125 MB of 5 million `mergeCell`s.
+    const annotations = await readSheetMergesAndLinks(zip, entry.path, sheetXml, XLSX_MAX_RANGES_PER_WORKBOOK - rangesHeld);
+    rangesHeld += (annotations.mergedRanges?.length ?? 0) + (annotations.hyperlinks?.length ?? 0);
     assertWellFormedXml(entry.path, sheetXml, 'XLSX');
     const rows: string[][] = [];
     const structuredRows: OfficeWorksheetCell[][] = [];
     const cellMap: Record<string, any> = {};
     const formulaCells: Array<{ ref: string; formula: string; rowIdx: number; colIdx: number }> = [];
 
-    // Parse column widths from <cols><col min="1" max="1" width="15" customWidth="1"/></cols>
-    const columnWidths: number[] = [];
-    const colsEl = safeExtractFirstXmlElement(sheetXml, 'cols');
-    if (colsEl) {
-      const colEls = safeExtractXmlElements(colsEl.content, 'col');
-      for (const cl of colEls) {
-        if (cl.attrs.min && cl.attrs.max && cl.attrs.width) {
-          const min = parseInt(cl.attrs.min, 10) - 1;
-          const max = parseInt(cl.attrs.max, 10) - 1;
-          const width = parseFloat(cl.attrs.width);
-          const ptWidth = Math.round(width * 7.5);
-          if (max >= XLSX_MAX_COLUMNS) throw worksheetBoundError(entry.name, `column ${max + 1} is past the last column of a worksheet (${XLSX_LAST_COLUMN_NAME})`);
-          for (let c = min; c <= max; c++) {
-            columnWidths[c] = ptWidth;
-          }
-        }
-      }
-    }
+    const columnWidths = readColumnWidths(sheetXml, entry.name);
 
     const rowEls = worksheetRowElements(sheetXml, entry.name);
 
@@ -5867,7 +5540,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
       name: entry.name,
       rows,
       structuredRows,
-      ...(await readSheetMergesAndLinks(zip, entry.path, sheetXml, chargeCells)),
+      ...annotations,
       columnWidths: columnWidths.length > 0 ? columnWidths : undefined,
       printArea,
       ...(charts.length > 0 ? { charts } : {}),
@@ -6238,23 +5911,6 @@ export interface VisualSlide {
   width: number;
   height: number;
   backgroundColor?: string;
-}
-
-function resolveZipPath(baseDir: string, relativePath: string): string {
-  if (relativePath.startsWith('/')) {
-    return relativePath.slice(1);
-  }
-  const parts = `${baseDir}/${relativePath}`.split('/');
-  const resolved: string[] = [];
-  for (const part of parts) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') {
-      resolved.pop();
-    } else {
-      resolved.push(part);
-    }
-  }
-  return resolved.join('/');
 }
 
 /**
