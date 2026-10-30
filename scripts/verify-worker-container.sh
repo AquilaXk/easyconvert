@@ -14,7 +14,8 @@
 #   5. one real conversion completes inside the sandbox (pdftotext; cad-convert for STEP; fluidsynth for MIDI; FontForge for a Type 1 font; calibre for a MOBI book; LibreOffice with VERIFY_LIBREOFFICE=1)
 #   6. libdeflate-gzip (the deflate encoder for ZIP and gzip payloads past 4 MiB) is installed and round-trips inside the sandbox
 #   7. lbzip2 (the bzip2 encoder for tar.bz2 targets of up to two blocks) is installed and round-trips inside the sandbox
-#   8. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
+#   8. xz (the .xz encoder and decoder of the archive conversions) is installed and round-trips inside the sandbox
+#   9. qpdf-runner (the qpdf jobs of the PDF operations) runs a job in a user and network namespace of its own under this container's seccomp profile
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -344,7 +345,22 @@ else
   fi
 fi
 
-# --- 8. qpdf-runner ------------------------------------------------------------------------------------
+# --- 8. xz ---------------------------------------------------------------------------------------------
+# The archive conversions run `xz -T1 -N -c -q` to write a .xz file and `xz -d -T1 -c -q` to read one, with the data on stdin; without it every .xz
+# file is read by the in-process decoder on the event loop and written by the pure encoder, and none of the sandbox limits applies.
+if ! command -v xz >/dev/null 2>&1; then
+  fail "xz is not installed (package xz-utils): .xz files are decoded in the event loop and encoded by the pure encoder"
+else
+  xz_input="$(head -c 4096 /dev/zero | tr '\0' 'x')"
+  xz_output="$(printf '%s' "$xz_input" | sandboxed xz -T1 -6 -c -q 2>"$work_dir/xz.err" | sandboxed xz -d -T1 -c -q 2>>"$work_dir/xz.err")"
+  if [ "$xz_output" = "$xz_input" ]; then
+    pass "xz compressed and decompressed 4096 bytes inside the sandbox"
+  else
+    fail "xz did not round-trip inside the sandbox: $(head -c 300 "$work_dir/xz.err" 2>/dev/null)"
+  fi
+fi
+
+# --- 9. qpdf-runner ------------------------------------------------------------------------------------
 # The PDF operations start qpdf jobs in children of qpdf-runner, each in the namespaces `unshare -r -n` makes; --self-test runs one real job the same
 # way (fork, unshare, the maps, the limits, libqpdf). When it cannot, the worker runs every job with the qpdf program instead, slower but the same.
 if ! command -v qpdf-runner >/dev/null 2>&1; then

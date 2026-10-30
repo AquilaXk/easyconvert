@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { CorruptStreamError, CpuTaskTimeoutError, DecompressionLimitError, type ConversionOptions } from '../types';
 import {
   executeSandboxedBinary,
@@ -47,7 +48,8 @@ const DECODE_ADDRESS_SPACE_BYTES = DECODE_MEMLIMIT_BYTES + 256 * BYTES_PER_MIB;
 /** xz(1) EXIT STATUS: 1 is an error (a refused stream), 2 a warning (for example a reserved integrity check). */
 const XZ_EXIT_ERROR = 1;
 const XZ_MEMORY_REFUSAL = /memory usage limit reached|cannot allocate memory/i;
-const XZ_UNSUPPORTED_OPTIONS = /unsupported options/i;
+const XZ_STDIN_PREFIX = /^\(stdin\):\s*/;
+const SIGNAL_CPU_LIMIT: NodeJS.Signals = 'SIGXCPU';
 
 interface NativeXzJob {
   xzBin: string;
@@ -57,13 +59,18 @@ interface NativeXzJob {
   task: string;
 }
 
+/** What the sandboxed run did: the bytes xz wrote, or the failure of the run itself. */
+type NativeXzRun = { stdout: Buffer } | { failure: unknown };
+
 /**
  * Runs the native `xz` on uploaded bytes in the process sandbox (network and user namespaces, sanitized environment,
  * no shell) with the address space and CPU time capped, the stage limit held to the time the job has left, and the
- * job's signal. The output is a pipe, so `maxBuffer` is its size cap. A run past the stage limit is a
- * CpuTaskTimeoutError, the type `dispatch.ts` gives other tools that outrun their limit.
+ * job's signal. The output is a pipe, so `maxBuffer` is its size cap. What no other engine may answer for is thrown:
+ * the job's abort, a host that cannot confine the child (SandboxUnavailableError) and a run past the stage limit,
+ * which is a CpuTaskTimeoutError, the type `dispatch.ts` gives other tools that outrun their limit. Any other failure
+ * is returned for the caller to classify.
  */
-async function runNativeXz(job: NativeXzJob, stdin: Buffer, options: ConversionOptions, maxBuffer: number): Promise<Buffer> {
+async function runNativeXz(job: NativeXzJob, stdin: Buffer, options: ConversionOptions, maxBuffer: number): Promise<NativeXzRun> {
   const timeoutMs = stageTimeoutMs(options, CPU_POOL_TASK_TIMEOUT_MS);
   try {
     const run = await executeSandboxedBinary(job.xzBin, job.args, {
@@ -74,40 +81,55 @@ async function runNativeXz(job: NativeXzJob, stdin: Buffer, options: ConversionO
       signal: options.signal,
       rlimits: { asBytes: job.addressSpaceBytes, cpuSeconds: Math.ceil(timeoutMs / 1000) },
     });
-    return run.stdout;
-  } catch (error) {
-    if (error instanceof SandboxedTimeoutError && !options.signal?.aborted) throw new CpuTaskTimeoutError(job.task, error.timeoutMs);
-    throw error;
+    return { stdout: run.stdout };
+  } catch (failure) {
+    if (options.signal?.aborted) throw failure;
+    rethrowSandboxUnavailable(failure);
+    if (failure instanceof SandboxedTimeoutError) throw new CpuTaskTimeoutError(job.task, failure.timeoutMs);
+    if (failure instanceof SandboxedProcessError && failure.signal === SIGNAL_CPU_LIMIT) throw new CpuTaskTimeoutError(job.task, timeoutMs);
+    return { failure };
   }
 }
 
 /**
- * Rethrows what no other engine may answer for: the job's abort, a host that cannot confine the child
- * (SandboxUnavailableError) and a run past its time limit. Returns for any other failure of the native run.
+ * The message xz itself wrote, or null when the first line of stderr is not xz's. xz starts its diagnostics with the
+ * name it was started under and a colon (`/usr/bin/xz: (stdin): Compressed data is corrupt`, or `xz: ...` where the C
+ * library keeps only the base name); the `unshare` and `prlimit` wrappers start theirs with their own names, and a
+ * failure of a wrapper says nothing about the stream. Only the first line is kept and the `(stdin): ` that names the
+ * input is dropped.
  */
-function rethrowUnlessFallback(error: unknown, signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw error;
-  rethrowSandboxUnavailable(error);
-  if (error instanceof CpuTaskTimeoutError) throw error;
+function xzOwnMessage(stderr: string, xzBin: string): string | null {
+  const firstLine = stderr.split('\n', 1)[0].trim();
+  const prefix = [xzBin, path.basename(xzBin)].map((name) => `${name}:`).find((candidate) => firstLine.startsWith(candidate));
+  if (prefix === undefined) return null;
+  return firstLine.slice(prefix.length).trim().replace(XZ_STDIN_PREFIX, '');
 }
 
 /**
  * The typed refusal for a stream the native decoder ran on and rejected, or null when the native run said nothing
- * about the stream. Exit 1 with "Unsupported options" (a build older than the filter the file uses) and exit 2 (a
- * warning such as a reserved integrity check) are left to the in-process reader, which names those cases.
+ * about the stream. Refused: output past the byte cap, a decoder past its memory limit, a death by signal and an
+ * exit 1 whose message is xz's own, "Unsupported options" included (the shipped xz knows every filter the reader
+ * knows, so a stream it rejects that way is damaged). Left to the in-process reader, which names the case: exit 2
+ * (a warning such as a reserved integrity check, refused at the stream header), a wrapper's failure and a process
+ * that could not start.
  */
-function decodeRefusal(error: unknown, maxOutputBytes: number): Error | null {
-  if (error instanceof SandboxedBufferLimitError) {
-    return new DecompressionLimitError(`Archive bomb detected: uncompressed size exceeds limit of ${maxOutputBytes} bytes (500MB)`);
-  }
+function decodeRefusal(failure: unknown, maxOutputBytes: number, xzBin: string): Error | null {
   const memoryRefusal = new DecompressionLimitError(
-    `Invalid XZ archive: decoding needs more than the ${DECODE_MEMLIMIT_BYTES / BYTES_PER_MIB} MiB memory limit`
+    `The XZ stream needs more than the ${DECODE_MEMLIMIT_BYTES / BYTES_PER_MIB} MiB decoder memory limit`
   );
-  if (error instanceof SandboxedMemoryLimitError) return memoryRefusal;
-  if (!(error instanceof SandboxedProcessError) || error.exitCode !== XZ_EXIT_ERROR) return null;
-  if (XZ_MEMORY_REFUSAL.test(error.stderr)) return memoryRefusal;
-  if (XZ_UNSUPPORTED_OPTIONS.test(error.stderr)) return null;
-  return new CorruptStreamError(`Invalid XZ archive: ${error.stderr.trim() || 'the stream was refused'}`);
+  if (failure instanceof SandboxedBufferLimitError) {
+    return new DecompressionLimitError(
+      `Archive bomb detected: uncompressed size exceeds limit of ${maxOutputBytes} bytes (${Math.round(maxOutputBytes / BYTES_PER_MIB)}MB)`
+    );
+  }
+  if (failure instanceof SandboxedMemoryLimitError) return memoryRefusal;
+  if (!(failure instanceof SandboxedProcessError)) return null;
+  if (failure.signal !== null) return new CorruptStreamError(`Invalid XZ archive: the decoder was stopped by ${failure.signal}`);
+  if (failure.exitCode !== XZ_EXIT_ERROR) return null;
+  const message = xzOwnMessage(failure.stderr, xzBin);
+  if (message === null) return null;
+  if (XZ_MEMORY_REFUSAL.test(message)) return memoryRefusal;
+  return new CorruptStreamError(`Invalid XZ archive: ${message || 'the stream was refused'}`);
 }
 
 /**
@@ -123,36 +145,29 @@ export async function compressWithNativeXz(
 ): Promise<Buffer | null> {
   const xzBin = getXzBinaryPath();
   if (!xzBin) return null;
-  try {
-    const job = { xzBin, args: [XZ_SINGLE_THREAD, `-${level}`, '-c', '-q'], addressSpaceBytes: COMPRESS_ADDRESS_SPACE_BYTES, task: '.xz compression' };
-    return await runNativeXz(job, input, options, maxOutputBytes);
-  } catch (error) {
-    rethrowUnlessFallback(error, options.signal);
-    return null;
-  }
+  const job = { xzBin, args: [XZ_SINGLE_THREAD, `-${level}`, '-c', '-q'], addressSpaceBytes: COMPRESS_ADDRESS_SPACE_BYTES, task: '.xz compression' };
+  const run = await runNativeXz(job, input, options, maxOutputBytes);
+  return 'stdout' in run ? run.stdout : null;
 }
 
 /**
  * Decodes with the native `xz`, or returns null when it is not installed or cannot judge the stream (see
  * `decodeRefusal`). A stream it ran on and refused is thrown as a typed error: output past `maxOutputBytes` or a
- * decoder past its memory limit is a 413, a damaged stream is a CorruptStreamError, and a run past the stage limit is
- * a CpuTaskTimeoutError. The abort and an unconfined host are thrown too.
+ * decoder past its memory limit is a 413, a damaged stream or a death by signal is a CorruptStreamError, and a run
+ * past the stage limit is a CpuTaskTimeoutError. The abort and an unconfined host are thrown too.
  */
 export async function decompressWithNativeXz(input: Buffer, options: ConversionOptions, maxOutputBytes: number): Promise<Buffer | null> {
   const xzBin = getXzBinaryPath();
   if (!xzBin) return null;
-  try {
-    const job = {
-      xzBin,
-      args: ['-d', XZ_SINGLE_THREAD, '-c', '-q', `--memlimit-decompress=${DECODE_MEMLIMIT_BYTES}`],
-      addressSpaceBytes: DECODE_ADDRESS_SPACE_BYTES,
-      task: '.xz decompression',
-    };
-    return await runNativeXz(job, input, options, maxOutputBytes);
-  } catch (error) {
-    rethrowUnlessFallback(error, options.signal);
-    const refusal = decodeRefusal(error, maxOutputBytes);
-    if (refusal) throw refusal;
-    return null;
-  }
+  const job = {
+    xzBin,
+    args: ['-d', XZ_SINGLE_THREAD, '-c', '-q', `--memlimit-decompress=${DECODE_MEMLIMIT_BYTES}`],
+    addressSpaceBytes: DECODE_ADDRESS_SPACE_BYTES,
+    task: '.xz decompression',
+  };
+  const run = await runNativeXz(job, input, options, maxOutputBytes);
+  if ('stdout' in run) return run.stdout;
+  const refusal = decodeRefusal(run.failure, maxOutputBytes, xzBin);
+  if (refusal) throw refusal;
+  return null;
 }

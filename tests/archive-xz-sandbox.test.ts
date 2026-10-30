@@ -33,20 +33,20 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...actual, default: { ...actual, execFileSync }, execFileSync };
 });
 
-import {
-  compressXz,
-  convertArchive,
-  createTarArchive,
-  decompressXz,
-  getXzBinaryPath,
-  packXz,
-  packXzAsync,
-  unpackXz,
-} from '../src/lib/conversions/archive';
+import { compressXz, convertArchive, createTarArchive, decompressXz, packXz, unpackXz } from '../src/lib/conversions/archive';
+import { getXzBinaryPath } from '../src/lib/conversions/xz-native';
 import { JOB_DEADLINE_AT, type JobDeadlined } from '../src/lib/conversions/job-time';
 import { getPrlimitCapability, getUnshareCapability, resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
-import { CorruptStreamError, CpuTaskTimeoutError, DecompressionLimitError, SandboxUnavailableError, type ConversionOptions } from '../src/lib/types';
+import {
+  CorruptStreamError,
+  CpuTaskTimeoutError,
+  DecompressionLimitError,
+  SandboxUnavailableError,
+  UnsupportedArchiveMethodError,
+  type ConversionOptions,
+} from '../src/lib/types';
 import { skipUnless } from './helpers/strict-skip';
+import { zipCrc32 } from './helpers/zip-craft';
 
 const SPY_MODE = 0o755;
 const KIB = 1024;
@@ -241,7 +241,12 @@ describe('a compression past the stage limit is a CpuTaskTimeoutError, not a str
 });
 
 const XZ_BINARY = getXzBinaryPath();
-const DICTIONARY_MIB = 512;
+const BLOCK_BYTES = '8KiB';
+const OVER_LIMIT_DICTIONARY_BYTE = 34;
+const INVALID_DICTIONARY_BYTE = 41;
+const RESERVED_CHECK_TYPE = 0x02;
+const STREAM_HEADER_BYTES = 12;
+const LZMA2_FILTER = Buffer.from([0x21, 0x01]);
 
 function xzWrite(args: string[]): Buffer {
   const run = spawnSync(XZ_BINARY as string, ['-T1', '-c', '-q', ...args], { input: PAYLOAD, maxBuffer: 64 * KIB * KIB });
@@ -249,28 +254,138 @@ function xzWrite(args: string[]): Buffer {
   return run.stdout;
 }
 
+function refreshCrc(stream: Buffer, from: number, to: number, at: number): void {
+  stream.writeUInt32LE(zipCrc32(stream.subarray(from, to)), at);
+}
+
+/** Where the second block starts: the stream header plus the padded size that the first record of the index gives block 1. */
+function secondBlockOffset(stream: Buffer): number {
+  const indexAt = stream.length - STREAM_HEADER_BYTES - (stream.readUInt32LE(stream.length - 8) + 1) * 4;
+  let at = indexAt + 2;
+  let unpaddedSize = 0;
+  for (let shift = 0; ; shift += 7) {
+    const byte = stream[at++];
+    unpaddedSize += (byte & 0x7f) * 2 ** shift;
+    if ((byte & 0x80) === 0) break;
+  }
+  return STREAM_HEADER_BYTES + Math.ceil(unpaddedSize / 4) * 4;
+}
+
+/** Sets the LZMA2 dictionary size byte of the block that starts at `blockAt` and rewrites the CRC-32 of its header. */
+function withDictionaryByte(stream: Buffer, blockAt: number, dictionaryByte: number): Buffer {
+  const patched = Buffer.from(stream);
+  const headerSize = (patched[blockAt] + 1) * 4;
+  patched[patched.indexOf(LZMA2_FILTER, blockAt) + LZMA2_FILTER.length] = dictionaryByte;
+  refreshCrc(patched, blockAt, blockAt + headerSize - 4, blockAt + headerSize - 4);
+  return patched;
+}
+
+/** Declares an integrity check type that xz(1) cannot verify in the stream header and again in the footer. */
+function withReservedCheck(stream: Buffer): Buffer {
+  const patched = Buffer.from(stream);
+  patched[7] = RESERVED_CHECK_TYPE;
+  refreshCrc(patched, 6, 8, 8);
+  patched[patched.length - 3] = RESERVED_CHECK_TYPE;
+  refreshCrc(patched, patched.length - 8, patched.length - 2, patched.length - 12);
+  return patched;
+}
+
+async function failureOf(run: Promise<unknown>): Promise<unknown> {
+  return run.then(
+    () => null,
+    (error: unknown) => error
+  );
+}
+
+/** A tool that writes `stderr` (`$0` is the path it was started by) the way the `unshare` or `prlimit` wrapper would, then exits 1. */
+function failingSpy(name: string, stderr: string): string {
+  return writeSpy(name, `#!/bin/sh\necho "${stderr}" >&2\nexit 1\n`);
+}
+
+describe('a failure that is not the stream\'s falls back to the in-process reader', () => {
+  const cases: Array<[string, string]> = [
+    ['unshare cannot make the namespaces', 'unshare: unshare failed: No space left on device'],
+    ['prlimit cannot set the address space', 'prlimit: failed to set the AS resource limit: Cannot allocate memory'],
+  ];
+
+  it.each(cases)('%s', async (name, stderr) => {
+    useSpy(failingSpy('xz-wrapper-failure', stderr));
+    const out = await decompressXz(packXz(PAYLOAD));
+    expect(out.equals(PAYLOAD), name).toBe(true);
+    expect(host.inProcessDecodes).toBe(1);
+  });
+
+  it('an exit status other than 1 leaves the stream to the in-process reader', async () => {
+    useSpy(writeSpy('xz-recording', RECORDING_SPY(spyLog)));
+    expect((await decompressXz(packXz(PAYLOAD))).equals(PAYLOAD)).toBe(true);
+    expect(host.inProcessDecodes).toBe(1);
+  });
+});
+
+describe('what xz itself reports is refused with its message, not decoded again', () => {
+  it.each([
+    ['the base name', 'xz'],
+    ['the path it was started by', '$0'],
+  ])('keeps the first line only and drops the program name (%s) and the input name', async (_form, programName) => {
+    useSpy(failingSpy('xz', `${programName}: (stdin): Compressed data is corrupt\n${programName}: a second line the client does not need`));
+    const error = await failureOf(decompressXz(packXz(PAYLOAD)));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect((error as CorruptStreamError).message).toBe('Invalid XZ archive: Compressed data is corrupt');
+    expect(host.inProcessDecodes).toBe(0);
+  });
+
+  it.each(['SIGABRT', 'SIGBUS', 'SIGILL', 'SIGFPE'])('a death by %s is a CorruptStreamError naming the signal', async (signal) => {
+    useSpy(writeSpy('xz-dies', `#!/bin/sh\nkill -${signal.slice(3)} $$\n`));
+    const error = await failureOf(decompressXz(packXz(PAYLOAD)));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect((error as CorruptStreamError).status).toBe(400);
+    expect((error as CorruptStreamError).message).toContain(signal);
+    expect(host.inProcessDecodes).toBe(0);
+  });
+
+  it('a death by SIGXCPU is a CpuTaskTimeoutError', async () => {
+    useSpy(writeSpy('xz-cpu-limit', '#!/bin/sh\nkill -XCPU $$\n'));
+    const error = await failureOf(decompressXz(packXz(PAYLOAD)));
+    expect(error).toBeInstanceOf(CpuTaskTimeoutError);
+    expect(host.inProcessDecodes).toBe(0);
+  });
+});
+
 // skip-ok: the refusals under test are the installed xz's own, so a host without xz cannot show them.
 describe.skipIf(skipUnless('xz', XZ_BINARY !== null))('a stream the native xz refused is refused, not decoded again in the event loop', () => {
   it('a dictionary above the decoder memory limit is a 413', async () => {
-    const stream = xzWrite([`--lzma2=dict=${DICTIONARY_MIB}MiB`]);
-    const outcome = await decompressXz(stream).then(
-      () => null,
-      (error: unknown) => error
-    );
-    expect(outcome).toBeInstanceOf(DecompressionLimitError);
-    expect((outcome as DecompressionLimitError).status).toBe(413);
+    const stream = withDictionaryByte(xzWrite(['-6']), STREAM_HEADER_BYTES, OVER_LIMIT_DICTIONARY_BYTE);
+    const error = await failureOf(decompressXz(stream));
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    expect((error as DecompressionLimitError).status).toBe(413);
+    expect((error as DecompressionLimitError).message).toBe('The XZ stream needs more than the 256 MiB decoder memory limit');
     expect(host.inProcessDecodes).toBe(0);
   });
 
   it('a truncated stream is a CorruptStreamError (400)', async () => {
     const stream = xzWrite(['-6']);
-    const outcome = await decompressXz(stream.subarray(0, stream.length - 20)).then(
-      () => null,
-      (error: unknown) => error
-    );
-    expect(outcome).toBeInstanceOf(CorruptStreamError);
-    expect((outcome as CorruptStreamError).status).toBe(400);
+    const error = await failureOf(decompressXz(stream.subarray(0, stream.length - 20)));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect((error as CorruptStreamError).status).toBe(400);
     expect(host.inProcessDecodes).toBe(0);
+  });
+
+  it('a second block with an unsupported dictionary is a 400 and block 1 is not decoded in process', async () => {
+    const stream = xzWrite([`--block-size=${BLOCK_BYTES}`, '-C', 'crc32']);
+    const secondBlockAt = secondBlockOffset(stream);
+    const error = await failureOf(decompressXz(withDictionaryByte(stream, secondBlockAt, INVALID_DICTIONARY_BYTE)));
+    expect(error).toBeInstanceOf(CorruptStreamError);
+    expect((error as CorruptStreamError).status).toBe(400);
+    expect((error as CorruptStreamError).message).toMatch(/Unsupported options/);
+    expect(host.inProcessDecodes).toBe(0);
+  });
+
+  it('a reserved check type is left to the in-process reader, which answers 422', async () => {
+    const stream = withReservedCheck(xzWrite(['-C', 'crc32']));
+    const error = await failureOf(decompressXz(stream));
+    expect(error).toBeInstanceOf(UnsupportedArchiveMethodError);
+    expect((error as UnsupportedArchiveMethodError).status).toBe(422);
+    expect(host.inProcessDecodes).toBe(1);
   });
 
   it('the in-process reader still decodes when the native binary is not installed', async () => {
@@ -297,7 +412,6 @@ describe.skipIf(
       const reference = spawnSync(XZ_BINARY as string, ['-T1', '-9', '-c', '-q'], { input: REAL_INPUT, maxBuffer: 64 * KIB * KIB }).stdout;
       const stream = await compressXz(REAL_INPUT, { compressionLevel: 9 });
       expect(stream.equals(reference), 'the bytes of xz -T1 -9').toBe(true);
-      expect((await packXzAsync(REAL_INPUT, { compressionLevel: 9 })).equals(reference), 'the pure encoder writes another stream').toBe(false);
       expect((await decompressXz(stream)).equals(REAL_INPUT)).toBe(true);
       expect(host.inProcessDecodes, 'no decode in the event loop').toBe(0);
     },

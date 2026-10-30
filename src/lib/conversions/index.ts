@@ -146,7 +146,6 @@ import {
   packXz,
   unpackXz,
   convertWithNative7z,
-  getXzBinaryPath,
   get7zBinaryPath,
   inspectArchive,
   repairZipArchive,
@@ -154,6 +153,7 @@ import {
   matchArchiveGlob,
   validateMultiVolumeSequence,
 } from './archive';
+import { getXzBinaryPath } from './xz-native';
 
 import { withConversionWarnings } from './conversion-warnings';
 import { quantizeMedianCut, quantizeNeuQuant, encodeBmp8 } from './quantize';

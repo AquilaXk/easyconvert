@@ -104,8 +104,7 @@ import {
   rethrowSandboxUnavailable,
   getSanitizedEnvironment,
 } from '../security/process-sandbox';
-import { compressWithNativeXz, decompressWithNativeXz, getXzBinaryPath } from './xz-native';
-export { getXzBinaryPath };
+import { compressWithNativeXz, decompressWithNativeXz } from './xz-native';
 import {
   SEVEN_ZIP_ASK_PASSWORD_SWITCH,
   archivePasswordError,
