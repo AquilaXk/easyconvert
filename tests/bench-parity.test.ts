@@ -196,8 +196,8 @@ describe('speed rows', () => {
     it('does not fail on a first set the second set of pairs did not confirm', () => {
       expect(verdictOf(measured({ abMedian: 0.7, abUpper: 0.75, abSlowerConfirmed: false })).outcome).toBe('pass');
       expect(verdictOf(measured({ abMedian: 0.7, abUpper: 0.75, abSlowerConfirmed: true })).basis).toBe('speed-slower-than-base');
-      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.9, abLostConfirmed: false })).outcome).toBe('pass');
-      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.9, abLostConfirmed: true })).basis).toBe('speed-lost-parity');
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.85, abLostConfirmed: false })).outcome).toBe('pass');
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.85, abLostConfirmed: true })).basis).toBe('speed-lost-parity');
     });
 
     it('passes a head that is not credibly slower by that much, however low the reference ratio sits', () => {
@@ -227,9 +227,9 @@ describe('speed rows', () => {
     });
 
     it('fails when the base was at the reference and the head is credibly below it, and passes a base that was already below', () => {
-      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.95 }))).toMatchObject({ outcome: 'fail', basis: 'speed-lost-parity' });
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.85 }))).toMatchObject({ outcome: 'fail', basis: 'speed-lost-parity' });
       expect(verdictOf(measured({ abBaseVsReferenceMedian: 1.02, abHeadVsReferenceUpper: 0.98 })).outcome).toBe('pass');
-      expect(verdictOf(measured({ abBaseVsReferenceMedian: 0.9, abHeadVsReferenceUpper: 0.95 }))).toMatchObject({ outcome: 'pass', basis: 'speed-unchanged-below-reference' });
+      expect(verdictOf(measured({ abBaseVsReferenceMedian: 0.85, abHeadVsReferenceUpper: 0.88 }))).toMatchObject({ outcome: 'pass', basis: 'speed-unchanged-below-reference' });
     });
 
     it('passes a row at the reference', () => {
@@ -247,16 +247,16 @@ describe('speed rows', () => {
       });
 
       it('passes a row below the reference that the change left as it was, tracked', () => {
-        expect(verdictOf(measured({ abMedian: 1 }), tracked(0.9))).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
+        expect(verdictOf(measured({ abMedian: 1 }), tracked(0.8))).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
         // The ratio the child measured against the reference does not enter: only the head-to-base ratio does.
-        expect(verdictOf(measured({ abMedian: 1, ratioMedian: 0.3, ratioLow: 0.2, ratioHigh: 0.4 }), tracked(0.9)).outcome).toBe('pass');
+        expect(verdictOf(measured({ abMedian: 1, ratioMedian: 0.3, ratioLow: 0.2, ratioHigh: 0.4 }), tracked(0.8)).outcome).toBe('pass');
       });
 
       it('fails a change that walks a tracked gap under its history, though it is not credibly slower than the base', () => {
         // A noisy row: its median fell to 0.6 of the base, yet its upper bound (1.05) does not show a slowdown beyond 10 percent.
-        const walked = verdictOf(measured({ abMedian: 0.6, abUpper: 1.05 }), tracked(0.9));
+        const walked = verdictOf(measured({ abMedian: 0.6, abUpper: 1.05 }), tracked(0.8));
         expect(walked).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
-        expect(verdictOf(measured({ abMedian: 0.95, abUpper: 1.05 }), tracked(0.9)).outcome).toBe('fail');
+        expect(verdictOf(measured({ abMedian: 0.95, abUpper: 1.05 }), tracked(0.8)).outcome).toBe('fail');
       });
     });
 
@@ -892,7 +892,7 @@ describe('a parity run on a saved report', () => {
     const { code, lines, verdict } = await run(rowsWith(-2, 0.96, 'fail'), { baseline: baselineEntries(0.5) });
     expect(code).toBe(3);
     expect(lines).toContain(
-      `BELOW REFERENCE ${SPEED_ID}: speed ratio 0.5 [0.4, 0.6] over 9 pairs; the upper bound is below 0.97, so ours is slower than the reference [not a known gap: bring it to parity, or file a gap issue and list the row in bench/parity-gaps.json]`
+      `BELOW REFERENCE ${SPEED_ID}: speed ratio 0.5 [0.4, 0.6] over 9 pairs; the upper bound is below 0.9, so ours is slower than the reference [not a known gap: bring it to parity, or file a gap issue and list the row in bench/parity-gaps.json]`
     );
     expect(verdict).toMatchObject({ exitCode: 3, baseline: { regressions: [] }, parity: { verdict: 'fail', summary: { fail: 1 } } });
   });
@@ -1084,10 +1084,10 @@ describe('a parity run on a saved report', () => {
     });
 
     it('fails the acknowledged row exactly as before when the head is credibly below the reference', async () => {
-      const below = await judged(abRow({ abHeadVsReferenceUpper: 0.9 }), { accepted: [ack()] });
+      const below = await judged(abRow({ abHeadVsReferenceUpper: 0.85 }), { accepted: [ack()] });
       expect(below.code).toBe(3);
       expect(rowOf(below.verdict)).toMatchObject({ outcome: 'fail', basis: 'speed-slower-than-base' });
-      const unconfirmed = await judged(abRow({ abHeadVsReferenceUpper: 0.9, abLostConfirmed: false }), { accepted: [ack()] });
+      const unconfirmed = await judged(abRow({ abHeadVsReferenceUpper: 0.85, abLostConfirmed: false }), { accepted: [ack()] });
       expect(unconfirmed.code).toBe(0);
     });
 
@@ -1131,7 +1131,7 @@ describe('a parity run on a saved report', () => {
     });
 
     it('keeps the failure of a row whose acknowledgement is stale when the row lost parity for another reason', async () => {
-      const lost = await judged(abRow({ abMedian: 1, abUpper: 1.05, abHeadVsReferenceUpper: 0.9, abBaseVsReferenceMedian: 1.4, speedVerdict: 'fail' }), { accepted: [ack()], baseAccepted: [ack()] });
+      const lost = await judged(abRow({ abMedian: 1, abUpper: 1.05, abHeadVsReferenceUpper: 0.85, abBaseVsReferenceMedian: 1.4, speedVerdict: 'fail' }), { accepted: [ack()], baseAccepted: [ack()] });
       expect(lost.code).toBe(3);
       expect(rowOf(lost.verdict)).toMatchObject({ outcome: 'fail', basis: 'speed-lost-parity' });
     });

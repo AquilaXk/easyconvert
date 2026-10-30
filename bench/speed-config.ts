@@ -20,8 +20,11 @@ export const MS_PER_SECOND = 1_000;
 /** Two floating point results closer than this are equal for the regression gate. */
 export const GATE_EPSILON = 1e-9;
 
-/** Share of the reference speed ours may lose and still pass: the measurement allowance of a speed row. */
-export const SPEED_PARITY_TOLERANCE = 0.03;
+/**
+ * Share of the reference speed ours may lose and still pass: the launch pass line is 0.90 of the reference (QA decision
+ * 2026-10-30, docs/policy-decisions.md entry 114). The check that a change is no slower than its base is separate and unchanged.
+ */
+export const SPEED_PARITY_TOLERANCE = 0.1;
 
 /** Two-sided confidence level of the speed-ratio interval. */
 export const SPEED_CONFIDENCE_LEVEL = 0.95;

@@ -182,7 +182,7 @@
     },
     {
       "families": ["document", "ebook", "data"],
-      "match": "^src/lib/conversions/(office|office/spreadsheet-limits)\\.ts$"
+      "match": "^src/lib/conversions/(office|xlsx-writer|sheet-text-tables|office/spreadsheet-limits)\\.ts$"
     },
     {
       "families": ["document", "ebook"],
@@ -194,7 +194,7 @@
     },
     {
       "families": ["document"],
-      "match": "^src/lib/conversions/(document|document-language|document-targets|docx-[^/]*|epub-reader|office|markdown|markdown-pdf|github-slug|html-[^/]*|package-access|zip-entry-reader|source-model|text-input|text-wrap|css-references|ctl|symbol-font-map|public-address|hwp[^/]*|cfbf-writer|xml-tree|native-engine-pairs|ooxml-variants|output-check)\\.ts$|^src/lib/conversions/(office|document-model)/|^src/worker/(libreoffice-pool|office-suite-route|office-input-checks|office-pdf-page-edge|pdf-ink|xps-render)\\.ts$"
+      "match": "^src/lib/conversions/(document|document-language|document-targets|docx-[^/]*|epub-reader|office|markdown|markdown-pdf|github-slug|html-[^/]*|package-access|zip-entry-reader|source-model|text-input|text-wrap|css-references|ctl|symbol-font-map|public-address|hwp[^/]*|cfbf-writer|xml-tree|safe-xml-scanner|native-engine-pairs|ooxml-variants|output-check)\\.ts$|^src/lib/conversions/(office|document-model)/|^src/worker/(libreoffice-pool|office-suite-route|office-input-checks|office-pdf-page-edge|pdf-ink|xps-render)\\.ts$"
     },
     {
       "families": ["document"],

@@ -130,6 +130,26 @@ function quoteParseError(error: Papa.ParseError, text: string, src: string): Dat
   );
 }
 
+/** Papaparse's reading of delimited text, every line included; any quote problem throws the DataParseError with the lowest row. */
+function parseDelimitedText(text: string, delimiter: string, src: string): Papa.ParseResult<string[]> {
+  const parsed = Papa.parse<string[]>(text, { skipEmptyLines: false, delimiter, newline: guessLineBreak(text) });
+  if (parsed.errors.length > 0) {
+    const errors = parsed.errors.map((error) => quoteParseError(error, text, src));
+    errors.sort((a, b) => (a.row ?? Number.MAX_SAFE_INTEGER) - (b.row ?? Number.MAX_SAFE_INTEGER));
+    throw errors[0];
+  }
+  return parsed;
+}
+
+/**
+ * The rows of delimited text as a sheet holds them: the lines that are not blank, each with the fields it has. Unlike
+ * `parseDelimitedRecords` the rows are not evened out to a header, because a sheet cell that a row lacks is empty. Any quote
+ * problem throws the same DataParseError.
+ */
+export function parseDelimitedRows(text: string, delimiter: string, src: string): string[][] {
+  return parseDelimitedText(text, delimiter, src).data.filter((row) => !isBlankRow(row));
+}
+
 function isBlankRow(row: readonly string[]): boolean {
   return row.length === 1 && row[0] === '';
 }
@@ -327,12 +347,7 @@ function evenOutRows(rows: string[][], ragged: RaggedRows): void {
  * DataParseError with the lowest row.
  */
 export function parseDelimitedRecords(text: string, delimiter: string, src: string): DelimitedRecords {
-  const parsed = Papa.parse<string[]>(text, { skipEmptyLines: false, delimiter, newline: guessLineBreak(text) });
-  if (parsed.errors.length > 0) {
-    const errors = parsed.errors.map((error) => quoteParseError(error, text, src));
-    errors.sort((a, b) => (a.row ?? Number.MAX_SAFE_INTEGER) - (b.row ?? Number.MAX_SAFE_INTEGER));
-    throw errors[0];
-  }
+  const parsed = parseDelimitedText(text, delimiter, src);
   const ragged = tallyRaggedRows(parsed.data);
   const rows = parsed.data.filter((row) => !isBlankRow(row));
   if (rows.length === 0) return { fields: [], records: [], ragged };

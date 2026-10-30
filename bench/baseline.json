@@ -8347,8 +8347,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 61955.5,
-      "delta": -6223.5,
+      "ours": 65985,
+      "delta": -2189,
       "ratio": null
     },
     "data/class-mixed->xlsx/cell_mismatches": {
@@ -8358,7 +8358,7 @@
         "rel": 0
       },
       "ours": 0,
-      "delta": -3181,
+      "delta": -1468.5,
       "ratio": null
     },
     "data/class-mixed->xlsx/converts": {
@@ -9537,8 +9537,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 35550,
-      "delta": -3755,
+      "ours": 34757,
+      "delta": -4544,
       "ratio": null
     },
     "data/data-sp500-constituents.csv->xlsx/cell_mismatches": {
@@ -9548,7 +9548,7 @@
         "rel": 0
       },
       "ours": 0,
-      "delta": -503,
+      "delta": 0,
       "ratio": null
     },
     "data/data-sp500-constituents.csv->xlsx/converts": {
@@ -9617,8 +9617,8 @@
         "abs": 0,
         "rel": 0.03
       },
-      "ours": 88361,
-      "delta": -8692,
+      "ours": 97213,
+      "delta": 166,
       "ratio": null
     },
     "data/data-weather.csv->xlsx/cell_mismatches": {
@@ -9628,7 +9628,7 @@
         "rel": 0
       },
       "ours": 0,
-      "delta": -5859,
+      "delta": -2937,
       "ratio": null
     },
     "data/data-weather.csv->xlsx/converts": {
