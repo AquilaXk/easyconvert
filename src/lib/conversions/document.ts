@@ -30,6 +30,7 @@ import {
   STRUCTURED_OCR_TARGETS,
 } from './ocr';
 import { OcrPageDecision, PdfPageAnalysis } from '../types';
+import { extractPdfTextLayerPages } from './pdf-text-geometry';
 import { PdfTextGeometryError } from './pdf-text-types';
 import { openPdfForRebuilding, openPdfForReading, type PdfAccess } from './pdf-access';
 import { assertPdfHeader, extractPdfDocument, readPdfDocument, type ExtractedPdfDocument, type ReadPdfResult } from './pdf-text-document';
@@ -44,6 +45,7 @@ import { canDrawInPdf, loadFontCoverageIndex } from './pdf-fonts';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeHtmlInput } from './html-encoding';
 import { decodeTextInput } from './text-input';
+import { sourceBytesAsText } from './office/text-source';
 import { markdownToSafeHtml } from './markdown-pdf';
 import { renderMarkdownFragment } from './markdown';
 import { analyzeDocumentLayout, DlaBoundingBox, DlaBlock, DlaPageLayout } from './dla-engine';
@@ -142,6 +144,47 @@ async function synthesizeSearchablePdf(pdf: Buffer, pageOcrResults: Map<number, 
   }
 }
 
+
+interface PdfOcrMarkupSources {
+  pdfBytes: Buffer;
+  pageAnalyses: PdfPageAnalysis[];
+  /** Word geometry of the pages that keep their own text layer. */
+  textLayerResults: ReadonlyMap<number, OcrResult>;
+  pageOcrResults: ReadonlyMap<number, OcrResult>;
+  extractedText: string;
+  confidence: number | null | undefined;
+  ocrMetadata: Record<string, unknown> | undefined;
+}
+
+/**
+ * hOCR or ALTO of a PDF. Pages OCR recognized keep their OCR result; the others take their word boxes from the text layer. A page
+ * below the density threshold that recognition found nothing on (a page that holds only its number) has not been read for geometry yet.
+ */
+async function pdfOcrMarkupResult(tgt: 'hocr' | 'alto', sources: PdfOcrMarkupSources, baseName: string, originalFilename: string): Promise<ConversionResult> {
+  const { pdfBytes, pageAnalyses, textLayerResults, pageOcrResults } = sources;
+  const unread = pageAnalyses.filter((page) => page.text !== '' && !textLayerResults.has(page.pageNumber) && !pageOcrResults.has(page.pageNumber));
+  const sparseLayerResults = await extractPdfTextLayerPages(pdfBytes, new Set(unread.map((page) => page.pageNumber)));
+  const combinedResult = assembleCombinedOcrResult(
+    new Map([...textLayerResults, ...sparseLayerResults, ...pageOcrResults]),
+    pageAnalyses,
+    sources.extractedText,
+    sources.confidence
+  );
+  const isHocr = tgt === 'hocr';
+  const xml = isHocr
+    ? exportHocr(combinedResult, { documentTitle: baseName, filename: originalFilename })
+    : exportAlto(combinedResult, { filename: originalFilename });
+  const buffer = Buffer.from(xml, 'utf-8');
+  return {
+    buffer,
+    mimeType: isHocr ? 'application/xhtml+xml' : 'application/xml',
+    filename: `${baseName}.${isHocr ? 'hocr' : 'xml'}`,
+    size: buffer.length,
+    ocrExtractedText: combinedResult.text,
+    ocrConfidence: combinedResult.confidence,
+    ...(sources.ocrMetadata ? { metadata: sources.ocrMetadata } : {}),
+  };
+}
 export async function convertDocument(
   inputBuffer: Buffer,
   sourceFormat: string,
@@ -561,27 +604,7 @@ export async function convertDocument(
     }
 
     if (tgt === 'hocr' || tgt === 'alto') {
-      // Pages OCR recognized keep their OCR result; the others take their word boxes from the text layer.
-      const combinedResult = assembleCombinedOcrResult(
-        new Map([...textLayerResults, ...pageOcrResults]),
-        pageAnalyses,
-        extractedText,
-        ocrInfo.confidence
-      );
-      const isHocr = tgt === 'hocr';
-      const xml = isHocr
-        ? exportHocr(combinedResult, { documentTitle: baseName, filename: originalFilename })
-        : exportAlto(combinedResult, { filename: originalFilename });
-      const buffer = Buffer.from(xml, 'utf-8');
-      return {
-        buffer,
-        mimeType: isHocr ? 'application/xhtml+xml' : 'application/xml',
-        filename: `${baseName}.${isHocr ? 'hocr' : 'xml'}`,
-        size: buffer.length,
-        ocrExtractedText: combinedResult.text,
-        ocrConfidence: combinedResult.confidence,
-        ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
-      };
+      return pdfOcrMarkupResult(tgt, { pdfBytes, pageAnalyses, textLayerResults, pageOcrResults, extractedText, confidence: ocrInfo.confidence, ocrMetadata }, baseName, originalFilename);
     }
 
     if (tgt === 'png' || tgt === 'jpg' || tgt === 'jpeg' || tgt === 'tiff' || tgt === 'tif' || tgt === 'ppm') {
@@ -634,7 +657,7 @@ export async function convertDocument(
     // Rendered text must be exactly the input text: non-UTF-8 bytes fail instead of becoming mojibake.
     textContent = decodeTextInput(inputBuffer);
   } else {
-    textContent = inputBuffer.toString('utf-8');
+    textContent = sourceBytesAsText(inputBuffer, src);
   }
 
   // Convert to PDF

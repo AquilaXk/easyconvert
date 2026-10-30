@@ -8,6 +8,7 @@ import {
   UnsupportedOptionError,
 } from '../types';
 import { InflateBudget, MAX_STREAM_INFLATE_BYTES, inflateBounded } from './bounded-inflate';
+import { eotFontData } from './font-eot';
 import { extractSfntFromMacBinary, extractSfntFromResourceFork, looksLikeSfnt } from './font-mac-resource';
 import { isType1Format, type1FileToOpenType } from './font-fontforge';
 import { parseCff, type CffContour, type CffGlyph, type CffMatrix } from './font-cff';
@@ -630,26 +631,9 @@ export function encodeEot(font: ParsedFont): Buffer {
   return Buffer.concat([header, sfntBuf]);
 }
 
-/**
- * Decodes Microsoft Embedded OpenType (EOT) into ParsedFont
- */
+/** Decodes Microsoft Embedded OpenType (EOT) into ParsedFont; `eotFontData` reads the header flags (compression, XOR encryption). */
 export function decodeEot(buffer: Buffer, defaultName: string): ParsedFont {
-  if (buffer.length < 36 || buffer.readUInt16LE(34) !== 0x504c) {
-    throw new Error('Invalid EOT font: missing LP signature at offset 34.');
-  }
-
-  const fontDataSize = buffer.readUInt32LE(4);
-  const sfntCandidate = buffer.subarray(buffer.length - fontDataSize);
-
-  if (sfntCandidate.length >= 12) {
-    try {
-      return decodeSfnt(sfntCandidate, defaultName);
-    } catch {
-      // Fallback
-    }
-  }
-
-  return createCanonicalFont(buffer, defaultName);
+  return decodeSfnt(eotFontData(buffer), defaultName);
 }
 
 export interface GlyphPoint {
