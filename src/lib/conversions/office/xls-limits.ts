@@ -1,8 +1,9 @@
+import type JSZip from 'jszip';
 import { ConversionFailedError } from '../../types';
 import { InflateBudget } from '../bounded-inflate';
 import { openPackage } from '../package-access';
-import { scanZipEntry } from '../zip-entry-reader';
-import { discoverXlsxSheets } from './xlsx-sheets';
+import { readZipEntryText, scanZipEntry } from '../zip-entry-reader';
+import { XLSX_MAX_PART_ENTRIES, discoverXlsxSheets, streamElementsWithin } from './xlsx-sheets';
 import { XLS_MAX_COLUMNS, XLS_MAX_ROWS, sheetLimitError } from './sheet-bounds';
 
 /**
@@ -13,12 +14,18 @@ import { XLS_MAX_COLUMNS, XLS_MAX_ROWS, sheetLimitError } from './sheet-bounds';
  * The extent is the last row and column that hold a cell with a value, a formula or an inline string, counted the way SheetJS reads
  * a worksheet (xlsx 0.18.5, `parse_ws_xml_data`, xlsx.js lines 14851 and 14880 to 14881): a `row` without `r` follows the row before
  * it, a `c` without `r` follows the cell before it, and the range grows from the cells read (lines 14854 and 14924), never from the
- * declared `dimension`. The worksheets are the ones the reader finds (`discoverXlsxSheets`), so a sheet the reader would export is checked
- * and a part the workbook does not reference is not. The parts are streamed, charged to one decoded-byte budget for the workbook, and never held whole.
+ * declared `dimension`. The office suite is what cuts the rows, so the parts checked are every one it may open as a worksheet: the
+ * sheets the workbook lists (`discoverXlsxSheets`: whatever their name, at the target their relationship names), the parts under
+ * `xl/worksheets/`, and the parts that `[Content_Types].xml` types as a worksheet. A workbook that lists a sheet whose part is not
+ * in the package is refused, not passed. A tall part that nothing references gets a 413 as well, which is the safe side: no
+ * producer writes one. The parts are streamed, charged to one decoded-byte budget for the workbook, and never held whole.
  */
 
 /** The children of `c` that give a cell content (ECMA-376 Part 1, 18.3.1.4): a value, a formula, an inline string. */
 const CELL_CONTENT: ReadonlySet<string> = new Set(['v', 'f', 'is']);
+/** The parts a package keeps its worksheets in by convention; `_rels` holds their relationships. */
+const WORKSHEET_PARTS = /^xl\/worksheets\/(?!_rels\/).+\.xml$/i;
+const WORKSHEET_CONTENT_TYPE_SUFFIX = 'spreadsheetml.worksheet+xml';
 const ROW_NUMBER = /^\d+$/;
 const CELL_REFERENCE = /^\$?([A-Za-z]+)\$?(\d+)$/;
 const ATTRIBUTE = /\s([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
@@ -202,17 +209,54 @@ class WorksheetExtent {
   }
 }
 
+/** The parts that `[Content_Types].xml` gives the content type of a worksheet, at most `XLSX_MAX_PART_ENTRIES` of its entries read. */
+async function worksheetPartsByContentType(zip: JSZip, budget: InflateBudget): Promise<string[]> {
+  const types = zip.file('[Content_Types].xml');
+  if (types === null) return [];
+  const parts: string[] = [];
+  streamElementsWithin(
+    await readZipEntryText(types, { budget, maxBytes: budget.limit }),
+    'Override',
+    XLSX_MAX_PART_ENTRIES,
+    `The content types of the workbook list more than ${XLSX_MAX_PART_ENTRIES} parts.`,
+    (override) => {
+      const { PartName: partName, ContentType: contentType } = override.attrs;
+      if (partName !== undefined && contentType?.endsWith(WORKSHEET_CONTENT_TYPE_SUFFIX)) parts.push(partName.replace(/^\//, ''));
+    }
+  );
+  return parts;
+}
+
+/**
+ * Every part of the package an office suite may open as a worksheet, once each: the sheets the workbook lists, then the parts
+ * under `xl/worksheets/` and the parts typed as worksheets that are in the package. A sheet the workbook lists whose part is
+ * missing is a refusal.
+ */
+async function worksheetEntriesToCheck(zip: JSZip, budget: InflateBudget): Promise<Map<string, JSZip.JSZipObject>> {
+  const { sheets, unnamedSheetParts } = await discoverXlsxSheets(zip, { budget });
+  const entries = new Map<string, JSZip.JSZipObject>();
+  for (const part of [...sheets.map((sheet) => sheet.path), ...unnamedSheetParts]) {
+    const entry = zip.file(part);
+    if (entry === null) throw new ConversionFailedError(`The workbook lists a sheet at "${part}", which is not in the package, so it cannot be checked against the .xls bounds.`);
+    entries.set(part, entry);
+  }
+  const conventional = Object.keys(zip.files).filter((part) => WORKSHEET_PARTS.test(part));
+  for (const part of [...conventional, ...(await worksheetPartsByContentType(zip, budget))]) {
+    const entry = zip.file(part);
+    if (entry !== null) entries.set(part, entry);
+  }
+  return entries;
+}
+
 /**
  * Refuses (413) an XLSX package with a worksheet that holds a cell past row 65,536 or column 256. A package that is not a ZIP, a
- * part that does not inflate, and a cell reference that is not an A1 reference are refused too, so that nothing reaches the export
- * unchecked.
+ * part that does not inflate, a listed sheet that is not in the package, and a cell reference that is not an A1 reference are
+ * refused too, so that nothing reaches the export unchecked.
  */
 export async function assertWorkbookFitsXls(xlsx: Buffer): Promise<void> {
   const zip = await openPackage(xlsx, 'XLSX');
   const budget = new InflateBudget();
-  for (const { path: part } of (await discoverXlsxSheets(zip, { budget })).sheets) {
-    const entry = zip.file(part);
-    if (entry === null) continue;
+  for (const [part, entry] of await worksheetEntriesToCheck(zip, budget)) {
     const extent = new WorksheetExtent(part);
     await scanZipEntry(entry, (chunk) => extent.feed(chunk.toString('latin1')), { budget, maxBytes: budget.limit, label: `"${part}"` });
   }
