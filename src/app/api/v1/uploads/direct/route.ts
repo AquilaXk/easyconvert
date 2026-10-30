@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
@@ -30,7 +31,7 @@ function computeChosenPartSize(totalSize: number, requestedPartSize?: number): n
   return MIN_PART_SIZE;
 }
 
-export async function POST(req: NextRequest) {
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/uploads/direct';
 
   // 1. Guard check: Authenticate and require 'convert:write' scope
@@ -154,4 +155,4 @@ export async function POST(req: NextRequest) {
     },
     { status: 200 }
   );
-}
+});

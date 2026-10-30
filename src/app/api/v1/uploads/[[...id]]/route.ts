@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import {
   LocalFsStorage,
@@ -398,7 +399,12 @@ export function OPTIONS() {
   return new NextResponse(null, { status: 204, headers });
 }
 
-export async function POST(
+/** Creating a tus upload takes new disk space; the direct-upload routes this path also serves check for themselves. */
+function isNewTusUpload(req: NextRequest): boolean {
+  return !req.nextUrl?.pathname.includes('/direct');
+}
+
+export const POST = admittingNewFiles(async function POST(
   req: NextRequest,
   context: UploadRouteContext
 ) {
@@ -576,7 +582,7 @@ export async function POST(
       { 'Tus-Resumable': TUS_RESUMABLE_VERSION }
     );
   }
-}
+}, isNewTusUpload);
 
 export async function HEAD(
   req: NextRequest,

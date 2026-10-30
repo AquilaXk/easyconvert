@@ -34,7 +34,8 @@ export interface RetentionPolicy {
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-function readSeconds(env: Env, name: string): number {
+/** The integer setting `name` of `env`, or its schema default when unset. A malformed value is a RangeError naming the variable and its rule. */
+export function readIntegerSetting(env: Env, name: string): number {
   const spec = CONFIG_SCHEMA.find((candidate) => candidate.name === name);
   if (!spec || spec.kind.type !== 'integer' || typeof spec.default !== 'number') {
     throw new Error(`${name} is not an integer setting with a default in the configuration schema`);
@@ -52,8 +53,8 @@ function readSeconds(env: Env, name: string): number {
 /** The retention settings of `env`. A set value that is malformed is an error and never falls back to a default. */
 export function resolveRetentionPolicy(env: Env = process.env): RetentionPolicy {
   return {
-    undeliveredTtlMs: readSeconds(env, UNDELIVERED_TTL_VARIABLE) * MS_PER_SECOND,
-    deliveredGraceMs: readSeconds(env, DELIVERED_GRACE_VARIABLE) * MS_PER_SECOND,
+    undeliveredTtlMs: readIntegerSetting(env, UNDELIVERED_TTL_VARIABLE) * MS_PER_SECOND,
+    deliveredGraceMs: readIntegerSetting(env, DELIVERED_GRACE_VARIABLE) * MS_PER_SECOND,
   };
 }
 
@@ -70,9 +71,18 @@ export interface RetentionRecord {
   received: ByteInterval[];
   deliveredAt?: number;
   goneAt?: number;
+  /** Set when the result was deleted before its time because the disk ran full. */
+  goneReason?: 'capacity';
+  /** A queued or running job reads this result as its input until then. */
+  heldUntil?: number;
+  /** A sweep could not delete the object; the next attempt waits until then, so the key does not block the others. */
+  retryAt?: number;
 }
 
-export type RetentionReason = 'delivered' | 'expired';
+export type RetentionReason = 'delivered' | 'expired' | 'capacity';
+
+/** How long a sweep waits before it tries again to delete an object whose deletion failed. */
+export const FAILED_DELETE_RETRY_MS = 5 * 60 * 1000;
 
 /** Whether results under `key` follow the retention rule: job results and a user's synchronous outputs. */
 export function isRetainedKey(key: string): boolean {
@@ -127,13 +137,36 @@ export function recordServedRange(
   const next: RetentionRecord = { ...record, size: range.size, received };
   if (coversWholeObject(received, range.size)) {
     next.deliveredAt = now;
-    next.deleteAt = Math.min(record.deleteAt, now + policy.deliveredGraceMs);
+    next.deleteAt = Math.max(Math.min(record.deleteAt, now + policy.deliveredGraceMs), record.heldUntil ?? 0);
   }
   return next;
 }
 
-export function markGone(record: RetentionRecord, now: number): RetentionRecord {
-  return record.goneAt === undefined ? { ...record, goneAt: now } : record;
+export function markGone(record: RetentionRecord, now: number, reason?: 'capacity'): RetentionRecord {
+  if (record.goneAt !== undefined) return record;
+  return reason === undefined ? { ...record, goneAt: now } : { ...record, goneAt: now, goneReason: reason };
+}
+
+/** The record while a job that reads the result as its input may still run, until `until`: it is neither swept nor deleted for space before then. */
+export function holdRecord(record: RetentionRecord, until: number): RetentionRecord {
+  if (record.goneAt !== undefined) return record;
+  const heldUntil = Math.max(record.heldUntil ?? 0, until);
+  return { ...record, heldUntil, deleteAt: Math.max(record.deleteAt, heldUntil) };
+}
+
+/** The record after a failed deletion: the sweep tries again after FAILED_DELETE_RETRY_MS. */
+export function deferDeletion(record: RetentionRecord, now: number): RetentionRecord {
+  return record.goneAt === undefined ? { ...record, retryAt: now + FAILED_DELETE_RETRY_MS } : record;
+}
+
+/** When the sweep picks the record up: at `deleteAt`, or later after a failed deletion. */
+export function sweepAt(record: RetentionRecord): number {
+  return Math.max(record.deleteAt, record.retryAt ?? 0);
+}
+
+/** Whether the sweep deletes the object of `record` at `now`. */
+export function isSweepDue(record: RetentionRecord, now: number): boolean {
+  return record.goneAt === undefined && sweepAt(record) <= now;
 }
 
 /** Whether the object of `record` must no longer be served at `now`. */
@@ -142,5 +175,20 @@ export function isDeleted(record: RetentionRecord, now: number): boolean {
 }
 
 export function reasonOf(record: RetentionRecord): RetentionReason {
+  if (record.goneReason !== undefined) return record.goneReason;
   return record.deliveredAt === undefined ? 'expired' : 'delivered';
+}
+
+/**
+ * The results to delete when the disk runs full, in order: delivered results in their grace period, the earliest
+ * delivery first, then undelivered results, the oldest first. A result already gone, or held by a queued or running
+ * job, is never in the list.
+ */
+export function capacityEvictionOrder(records: readonly RetentionRecord[], now: number): RetentionRecord[] {
+  const live = records.filter((record) => record.goneAt === undefined && !((record.heldUntil ?? 0) > now));
+  const delivered = live.filter((record) => record.deliveredAt !== undefined);
+  const undelivered = live.filter((record) => record.deliveredAt === undefined);
+  delivered.sort((a, b) => (a.deliveredAt as number) - (b.deliveredAt as number));
+  undelivered.sort((a, b) => a.createdAt - b.createdAt);
+  return [...delivered, ...undelivered];
 }

@@ -113,9 +113,9 @@ describe.each([
     const requests = Array.from({ length: 10 }, () => createJobRequest(idempotencyKey));
     const responses = await Promise.all(requests.map((req) => jobsPostHandler(req)));
 
-    const successResponses = responses.filter((r) => r.status === 202);
-    const conflictResponses = responses.filter((r) => r.status === 409);
     const replayedResponses = responses.filter((r) => r.headers.get('idempotent-replayed') === 'true');
+    const successResponses = responses.filter((r) => r.status === 202 && !replayedResponses.includes(r));
+    const conflictResponses = responses.filter((r) => r.status === 409);
 
     expect(successResponses).toHaveLength(1);
     expect(conflictResponses.length + replayedResponses.length).toBe(9);

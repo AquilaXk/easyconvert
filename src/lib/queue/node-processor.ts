@@ -16,7 +16,7 @@ import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/e
 import { secureShredBuffer } from '../security/memory-shredder';
 import { isUploadKey } from '../storage/key-namespace';
 import { resolveRetentionPolicy } from '../storage/result-retention';
-import { registerResult } from '../storage/retention-service';
+import { registerStoredResult } from '../storage/retention-service';
 import { processGraphNodeJob } from './graph/node-executor';
 import type { ConversionEnginePort, EngineResult, VfsPayload } from './engine-port';
 import { dispatchEngine } from './dispatch-engine';
@@ -348,7 +348,7 @@ export async function processNodeJob(
       );
     }
 
-    await registerResult(resultKey);
+    await registerStoredResult(storage, resultKey);
 
     conversionSucceeded = true;
     const durationMs = Date.now() - startTime;

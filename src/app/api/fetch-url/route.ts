@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { fetch as undiciFetch } from 'undici';
 import {
   MAX_STREAM_BYTES,
@@ -11,7 +12,7 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(req: NextRequest) {
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/fetch-url';
 
   // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
@@ -239,4 +240,4 @@ export async function POST(req: NextRequest) {
   } finally {
     ssrfAgent.close().catch(() => {});
   }
-}
+});

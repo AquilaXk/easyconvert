@@ -32,6 +32,11 @@ const PRODUCTION = 'production';
 /** Tiers whose job deadline base must not exceed their maximum (src/lib/queue/job-deadline.ts). */
 const JOB_DEADLINE_TIERS = ['FREE', 'PRO', 'ENTERPRISE'] as const;
 const PRODUCTION_BUILD_PHASE = 'phase-production-build';
+/** Disk thresholds that must rise strictly (src/lib/storage/result-capacity.ts). */
+const DISK_THRESHOLD_ORDER = [
+  ['RESULT_DISK_LOW_PERCENT', 'RESULT_DISK_HIGH_PERCENT'],
+  ['RESULT_DISK_HIGH_PERCENT', 'RESULT_DISK_REFUSE_PERCENT'],
+] as const;
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -146,6 +151,14 @@ export function parseConfig(env: Env, options: LoadConfigOptions = {}): Config {
     const max = values.get(`JOB_DEADLINE_MAX_MS_${tier}`);
     if (typeof base === 'number' && typeof max === 'number' && base > max) {
       failures.push({ variable: `JOB_DEADLINE_BASE_MS_${tier}`, rule: `must not exceed JOB_DEADLINE_MAX_MS_${tier}` });
+    }
+  }
+
+  for (const [lower, upper] of DISK_THRESHOLD_ORDER) {
+    const below = values.get(lower);
+    const above = values.get(upper);
+    if (typeof below === 'number' && typeof above === 'number' && below >= above) {
+      failures.push({ variable: lower, rule: `must be below ${upper}` });
     }
   }
 

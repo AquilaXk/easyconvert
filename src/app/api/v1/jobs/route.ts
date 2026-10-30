@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
-import { mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
+import { claimStorageKeyAsJobInput, STORAGE_OBJECT_NOT_FOUND } from '@/lib/api-keys/owner-access';
 import { conversionQueue, getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { enqueueConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { stripEngineControls } from '@/lib/conversions/job-time';
@@ -52,7 +53,7 @@ const STORAGE_TIER_PAYLOAD_LIMITS: Record<string, number> = {
   enterprise: 10 * 1024 * 1024 * 1024, // 10 GiB
 };
 
-export async function POST(req: NextRequest) {
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
   // 1. Guard check: Authenticate API key or user session with 'convert:write' scope
@@ -469,7 +470,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Authorize a caller-supplied key before anything reads the object.
-    if (storageKey && !storageKey.startsWith('inline') && !(await mayUseStorageKeyAsJobInput(storageKey, auth.user.id))) {
+    if (storageKey && !storageKey.startsWith('inline') && !(await claimStorageKeyAsJobInput(storageKey, auth.user.id))) {
       return await failWithRollback(404, STORAGE_OBJECT_NOT_FOUND, 'Not Found');
     }
 
@@ -739,7 +740,7 @@ export async function POST(req: NextRequest) {
     const message = error instanceof Error ? error.message : 'Job enqueue failure';
     return failWithRollback(500, message, 'Internal Server Error');
   }
-}
+});
 
 export async function GET(req: NextRequest) {
   return withQueueErrors(req.nextUrl?.pathname || '/api/v1/jobs', () => listJobs(req));

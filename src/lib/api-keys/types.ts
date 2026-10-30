@@ -84,6 +84,8 @@ export interface UserConversionFile {
   toFormat: string;
   size: number;
   downloadUrl: string;
+  /** The storage key of the file, which the retention rule tracks; absent on records made before it was kept. */
+  storageKey?: string;
   createdAt: number;
   expiresAt: number;
 }

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
@@ -36,7 +37,7 @@ export const dynamic = 'force-dynamic';
 // Maximum allowed payload for real-time zero-retention in-memory conversion
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
-export async function POST(req: NextRequest) {
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/convert';
 
@@ -280,4 +281,4 @@ export async function POST(req: NextRequest) {
   } finally {
     releaseSlot?.();
   }
-}
+});

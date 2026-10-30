@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { NextRequest } from 'next/server';
 import { startS3StubServer, type S3StubServer } from './helpers/s3-stub-server';
 
@@ -16,6 +19,7 @@ const SECRET = 'oci/Secret+Key/EXAMPLEKEY000000000000000';
 const BASE_URL = 'http://localhost:3000';
 const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
+const HTTP_BAD_REQUEST = 400;
 const DOWNLOAD_WINDOW_SECONDS = 900;
 const SEVEN_DAYS_SECONDS = 604_800;
 const TEST_TIMEOUT_MS = 30_000;
@@ -109,7 +113,24 @@ describe('presigned download URLs are issued to the owner only', () => {
     expect(shorter.searchParams.get('X-Amz-Expires')).toBe('60');
   });
 
-  it('presigns a finished job result for the user who submitted the job', async () => {
+  it('gives no signed link for a conversion result the retention rule tracks', async () => {
+    const { user, cookie } = await loadUser('tracked');
+    const { FileRetentionLedger, setRetentionLedger } = await import('../src/lib/storage/retention-ledger');
+    const { registerResult } = await import('../src/lib/storage/retention-service');
+    const ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-presign-ledger-'));
+    setRetentionLedger(new FileRetentionLedger(ledgerDir));
+    try {
+      const key = `conversions/${user.id}/tracked.pdf`;
+      await registerResult(key);
+      expect((await presignDownload(cookie, { key })).status).toBe(HTTP_BAD_REQUEST);
+      expect(server.requests).toEqual([]);
+    } finally {
+      setRetentionLedger(undefined);
+      fs.rmSync(ledgerDir, { recursive: true, force: true });
+    }
+  });
+
+  it('gives no signed link for a job result, which is downloaded through the application so its delivery is recorded', async () => {
     const { user, cookie } = await loadUser('jobowner');
     const { conversionQueue } = await import('../src/lib/queue/conversion-queue');
     const job = await conversionQueue.add(
@@ -118,8 +139,9 @@ describe('presigned download URLs are issued to the owner only', () => {
     );
     const key = `results/${job.id}/a.json`;
     const res = await presignDownload(cookie, { key });
-    expect(res.status).toBe(HTTP_OK);
-    expect(new URL((await res.json()).url).pathname).toBe(`/${BUCKET}/${key}`);
+    expect(res.status).toBe(HTTP_BAD_REQUEST);
+    expect((await res.json()).detail).toMatch(/\/api\/storage\/file\//);
+    expect(server.requests).toEqual([]);
 
     const stranger = await loadUser('jobstranger');
     expect((await presignDownload(stranger.cookie, { key })).status).toBe(HTTP_NOT_FOUND);

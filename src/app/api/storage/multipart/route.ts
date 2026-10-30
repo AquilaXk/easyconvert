@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
+import { mayPresignDownload } from '@/lib/storage/retention-service';
 import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
@@ -22,6 +24,8 @@ const TIER_MAX_MULTIPART_BYTES: Record<UserTier | 'anonymous', number> = {
 
 const MAX_MULTIPART_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
 const PRESIGN_UNSUPPORTED = 'Storage provider does not support presigned URLs or invalid type specified.';
+const RETAINED_DOWNLOAD_PRESIGN_REFUSED =
+  'A conversion result has no signed download link. Download it from /api/storage/file/<key>.';
 
 /** The session operations the multipart actions need; every shipped backend provides them. */
 type MultipartCapableStorage = IStorageBackend &
@@ -103,11 +107,46 @@ async function presignUploadPart(
   return NextResponse.json({ success: true, ...presigned });
 }
 
+/**
+ * A download URL for an object the caller provably owns. A signed URL needs no further authentication, so an
+ * unresolved owner (job record unreadable), an ownerless key and another user's key are all answered like a missing
+ * object. A result the retention rule tracks gets none: the bucket would answer the client, so the delivery could
+ * not be recorded and the result would not be deleted after it (docs/policy-decisions.md, entry 125).
+ */
+async function presignDownload(
+  storage: MultipartCapableStorage,
+  key: string,
+  expiresInSeconds: number | undefined,
+  userId: string,
+  instanceUri: string
+): Promise<Response> {
+  const ownership = await resolveObjectOwnership(key);
+  if (!ownership.resolved || ownership.ownerUserId !== userId) {
+    return createProblemDetailsResponse(404, STORAGE_OBJECT_NOT_FOUND, instanceUri);
+  }
+  if (!(await mayPresignDownload(key))) {
+    return createProblemDetailsResponse(400, RETAINED_DOWNLOAD_PRESIGN_REFUSED, instanceUri);
+  }
+  if (!storage.generatePresignedDownloadUrl) {
+    return createProblemDetailsResponse(400, PRESIGN_UNSUPPORTED, instanceUri);
+  }
+  const presigned = await storage.generatePresignedDownloadUrl(
+    key,
+    Math.min(expiresInSeconds ?? DOWNLOAD_PRESIGN_MAX_SECONDS, DOWNLOAD_PRESIGN_MAX_SECONDS)
+  );
+  return NextResponse.json({ success: true, ...presigned });
+}
+
 function sameEtag(a: string, b: string): boolean {
   return a.replace(/"/g, '') === b.replace(/"/g, '');
 }
 
-export async function POST(req: NextRequest) {
+/** Only starting an upload takes new disk space; parts, completion and abort of a running one go on. */
+function isNewMultipartUpload(req: NextRequest): boolean {
+  return (req.nextUrl?.searchParams.get('action') || 'initiate') === 'initiate';
+}
+
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/storage/multipart';
   const { searchParams } = new URL(req.url);
   const action = searchParams.get('action') || 'initiate';
@@ -405,25 +444,7 @@ export async function POST(req: NextRequest) {
       if (type === 'upload') {
         return await presignUploadPart(storage, { key, partNumber, uploadId, expiresInSeconds }, currentUser.id, instanceUri);
       } else if (type === 'download') {
-        // A signed URL needs no further authentication, so it is issued only for a key the caller
-        // provably owns: an unresolved owner (job record unreadable), an ownerless key and another
-        // user's key are all answered like a missing object.
-        const ownership = await resolveObjectOwnership(key);
-        if (!ownership.resolved || ownership.ownerUserId !== currentUser.id) {
-          return createProblemDetailsResponse(
-            404,
-            STORAGE_OBJECT_NOT_FOUND,
-            instanceUri
-          );
-        }
-
-        if (storage.generatePresignedDownloadUrl) {
-          const presigned = await storage.generatePresignedDownloadUrl(
-            key,
-            Math.min(expiresInSeconds ?? DOWNLOAD_PRESIGN_MAX_SECONDS, DOWNLOAD_PRESIGN_MAX_SECONDS)
-          );
-          return NextResponse.json({ success: true, ...presigned });
-        }
+        return await presignDownload(storage, key, expiresInSeconds, currentUser.id, instanceUri);
       }
 
       return createProblemDetailsResponse(400, PRESIGN_UNSUPPORTED, instanceUri);
@@ -447,4 +468,4 @@ export async function POST(req: NextRequest) {
       instanceUri
     );
   }
-}
+}, isNewMultipartUpload);

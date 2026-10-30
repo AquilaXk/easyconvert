@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { createZipArchive } from '@/lib/conversions';
 import { dispatchConversion } from '@/lib/conversions/dispatch';
 import { conversionDeadlineMs, syncDeadlineMs, tierMaxDeadlineMs } from '@/lib/queue/job-deadline';
@@ -51,7 +52,7 @@ function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { op
   return problem ? { problem } : { options: parsed };
 }
 
-export async function POST(req: NextRequest) {
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/convert/batch';
   let reservationId: string | undefined;
   // At most five conversions in flight for an anonymous or free caller (the slot is held until the request ends).
@@ -280,4 +281,4 @@ export async function POST(req: NextRequest) {
   } finally {
     releaseSlot?.();
   }
-}
+});

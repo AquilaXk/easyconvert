@@ -1,9 +1,21 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 import Redis from 'ioredis';
-import { RedisRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
-import { recordServed, registerResult, resultAvailability, sweepRetention } from '../src/lib/storage/retention-service';
-import { resolveRetentionPolicy } from '../src/lib/storage/result-retention';
+import {
+  RETENTION_REDIS_PREFIX,
+  RedisRetentionLedger,
+  getRetentionLedger,
+  setRetentionLedger,
+} from '../src/lib/storage/retention-ledger';
+import {
+  recordServed,
+  registerResult,
+  resultAvailability,
+  startRetentionSweep,
+  stopRetentionSweep,
+  sweepRetention,
+} from '../src/lib/storage/retention-service';
+import { recordServedRange, resolveRetentionPolicy } from '../src/lib/storage/result-retention';
 
 /**
  * The retention records of a scaled-out deployment live in Redis, so every web instance and worker sees the
@@ -27,6 +39,7 @@ describe.skipIf(!REDIS_URL)('retention records in Redis', () => {
 
   afterEach(() => {
     deleted.length = 0;
+    vi.restoreAllMocks();
   });
 
   afterAll(async () => {
@@ -67,5 +80,70 @@ describe.skipIf(!REDIS_URL)('retention records in Redis', () => {
     expect((await resultAvailability(key))?.deliveredAt).toBeUndefined();
     await recordServed(key, { first: 5, last: 9, size: 10 });
     expect((await resultAvailability(key))?.deliveredAt).toBeTypeOf('number');
+  });
+
+  it('keeps every range when two instances record pieces of one file at the same moment', async () => {
+    const key = newKey();
+    await registerResult(key);
+    const second = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 2 });
+    const instances = [new RedisRetentionLedger(redis), new RedisRetentionLedger(second)];
+    const now = Date.now();
+    await Promise.all(
+      Array.from({ length: 10 }, (_, offset) =>
+        instances[offset % 2].update(key, (current) => current && recordServedRange(current, { first: offset, last: offset, size: 10 }, now, POLICY))
+      )
+    );
+    expect((await instances[1].get(key))?.received).toEqual([[0, 9]]);
+    expect((await resultAvailability(key))?.deliveredAt).toBe(now);
+    await second.quit();
+  });
+
+  it('drops a due key whose record is gone and still deletes the keys behind it', async () => {
+    const orphan = newKey();
+    const due = `${RETENTION_REDIS_PREFIX}due`;
+    await redis.zadd(due, 1, orphan);
+    const key = newKey();
+    await registerResult(key);
+
+    await sweepRetention(storage, Date.now() + POLICY.undeliveredTtlMs + SECOND_MS);
+    expect(deleted).toContain(key);
+    expect(await redis.zscore(due, orphan)).toBeNull();
+  });
+
+  it('moves a result whose deletion failed behind the others', async () => {
+    const poison = newKey();
+    const fresh = newKey();
+    await registerResult(poison);
+    await registerResult(fresh);
+    const failing = {
+      deleteObject: async (key: string) => {
+        if (key === poison) throw new Error('object store refused');
+        return storage.deleteObject(key);
+      },
+    };
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const due = Date.now() + POLICY.undeliveredTtlMs + SECOND_MS;
+
+    await sweepRetention(failing, due);
+    expect(deleted).toContain(fresh);
+    expect(Number(await redis.zscore(`${RETENTION_REDIS_PREFIX}due`, poison))).toBeGreaterThan(due);
+  });
+
+  it('runs the start-up sweep once the connection the environment selects is ready', async () => {
+    const key = newKey();
+    await registerResult(key);
+    await new RedisRetentionLedger(redis).update(key, (current) => current && { ...current, deleteAt: Date.now() - SECOND_MS });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setRetentionLedger(undefined);
+    const selected = getRetentionLedger();
+    try {
+      startRetentionSweep(storage);
+      await vi.waitFor(() => expect(deleted).toContain(key), { timeout: 2_000 });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      stopRetentionSweep();
+      (selected as unknown as { redis: Redis }).redis.disconnect();
+      setRetentionLedger(new RedisRetentionLedger(redis));
+    }
   });
 });

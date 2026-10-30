@@ -96,14 +96,14 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 85
+    "maxValue": 81
   },
   {
     "file": "src/app/api/storage/multipart/route.ts",
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 295
+    "maxValue": 281
   },
   {
     "file": "src/app/api/v1/archives/inspect/route.ts",

@@ -736,6 +736,39 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
   },
   {
+    name: 'RESULT_DISK_HIGH_PERCENT',
+    area: 'storage',
+    description:
+      'Disk use, in percent of the file system that holds EASYCONVERT_STORAGE_DIR, above which the sweep deletes results before their time: delivered results in their grace period first, the earliest delivery first, then undelivered results, the oldest first, until the use is at or below RESULT_DISK_LOW_PERCENT. The files of a queued or running job are never deleted. Such a result answers 410 Gone with the reason `capacity`. Local storage driver only; must be above RESULT_DISK_LOW_PERCENT and below RESULT_DISK_REFUSE_PERCENT.',
+    kind: { type: 'integer', min: 1, max: 99 },
+    default: 85,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'RESULT_DISK_LOW_PERCENT',
+    area: 'storage',
+    description:
+      'Disk use, in percent, at or below which the early deletion that RESULT_DISK_HIGH_PERCENT starts stops again. Local storage driver only; must be below RESULT_DISK_HIGH_PERCENT.',
+    kind: { type: 'integer', min: 1, max: 99 },
+    default: 80,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
+    name: 'RESULT_DISK_REFUSE_PERCENT',
+    area: 'storage',
+    description:
+      'Disk use, in percent, above which new uploads and conversions answer 503 with Retry-After, after an early deletion of results did not bring the use down to it. Local storage driver only; must be above RESULT_DISK_HIGH_PERCENT and at most 99.',
+    kind: { type: 'integer', min: 1, max: 99 },
+    default: 95,
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
+  {
     name: 'OCI_NAMESPACE',
     area: 'storage',
     description: 'OCI Object Storage namespace (a single DNS label). Required when STORAGE_DRIVER is `oci`; checked when storage is selected.',

@@ -3,14 +3,23 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { NextRequest } from 'next/server';
 import { GET as downloadRoute } from '../src/app/api/storage/file/[...key]/route';
 import { GET as filesRoute } from '../src/app/api/account/files/route';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { GET as jobRoute } from '../src/app/api/v1/jobs/[id]/route';
 import { storageProvider } from '../src/lib/storage';
-import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
-import { registerResult, resultAvailability, sweepRetention } from '../src/lib/storage/retention-service';
+import { FileRetentionLedger, setRetentionLedger, type RetentionLedger } from '../src/lib/storage/retention-ledger';
+import {
+  holdResultForJob,
+  recordServed,
+  registerResult,
+  resultAvailability,
+  saveRetainedResult,
+  sweepRetention,
+} from '../src/lib/storage/retention-service';
+import { mayUseStorageKeyAsJobInput } from '../src/lib/api-keys/owner-access';
 import {
   addInterval,
   coversWholeObject,
@@ -19,7 +28,9 @@ import {
   resolveRetentionPolicy,
   MAX_RECEIVED_RANGES,
 } from '../src/lib/storage/result-retention';
-import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { conversionQueue, processConversionJob } from '../src/lib/queue/conversion-queue';
+import { Queue } from '../src/lib/queue/bullmq-engine';
+import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
@@ -33,6 +44,27 @@ const MIME_TYPE = 'application/octet-stream';
 const TEN_BYTES = Buffer.from('0123456789', 'ascii');
 // Several chunks of 64 KiB, so a download can stop between chunks.
 const LARGE_BYTES = crypto.randomBytes(512 * 1024);
+const SLOW_CHUNK_BYTES = 64 * 1024;
+const SLOW_CHUNK_DELAY_MS = 50;
+
+/** `bytes` in chunks that arrive one by one, like a body streamed from an object store. */
+function slowSource(bytes: Buffer): Readable {
+  async function* chunks() {
+    for (let offset = 0; offset < bytes.length; offset += SLOW_CHUNK_BYTES) {
+      await new Promise((resolve) => setTimeout(resolve, SLOW_CHUNK_DELAY_MS));
+      yield bytes.subarray(offset, offset + SLOW_CHUNK_BYTES);
+    }
+  }
+  return Readable.from(chunks());
+}
+
+/** A ledger whose store cannot be reached: Redis down, or the ledger directory unreadable. */
+function unreachableLedger(): RetentionLedger {
+  const unreachable = async (): Promise<never> => {
+    throw new Error('retention ledger unreachable');
+  };
+  return { get: unreachable, update: unreachable, dueKeys: unreachable, pruneGone: unreachable };
+}
 
 describe('the retention policy', () => {
   it('keeps an unfetched result for an hour and a delivered one for ten minutes', () => {
@@ -221,6 +253,125 @@ describe('delete on delivery through the download route and the sweep', () => {
     expect(await bodyBytes(retry)).toEqual(LARGE_BYTES);
   });
 
+  it('does not count a download whose client left while the next chunk was still on its way', async () => {
+    const user = await createUser('pending-cancel');
+    const key = await storeResult(user, LARGE_BYTES);
+    vi.spyOn(storageProvider, 'openReadStream').mockImplementation(() => slowSource(LARGE_BYTES) as never);
+
+    const res = await download(key, asUser(user));
+    const reader = res.body!.getReader();
+    expect((await reader.read()).done).toBe(false);
+    const pending = reader.read();
+    await new Promise((resolve) => setTimeout(resolve, SLOW_CHUNK_DELAY_MS / 2));
+    await reader.cancel(new Error('client went away'));
+    await pending;
+    await new Promise((resolve) => setTimeout(resolve, 3 * SLOW_CHUNK_DELAY_MS));
+
+    expect((await ledger().get(key))?.deliveredAt).toBeUndefined();
+  });
+
+  it('adds what a cancelled download sent to a resumed download of the rest', async () => {
+    const user = await createUser('resumed');
+    const key = await storeResult(user, LARGE_BYTES);
+    const headers = asUser(user);
+
+    const cut = await download(key, headers);
+    const reader = cut.body!.getReader();
+    let received = 0;
+    for (let i = 0; i < 2; i++) received += (await reader.read()).value!.byteLength;
+    await reader.cancel();
+    expect((await ledger().get(key))?.deliveredAt).toBeUndefined();
+
+    const rest = await download(key, { ...headers, Range: `bytes=${received}-` });
+    expect(rest.status).toBe(206);
+    expect(Buffer.concat([LARGE_BYTES.subarray(0, received), await bodyBytes(rest)])).toEqual(LARGE_BYTES);
+    expect((await ledger().get(key))?.deliveredAt).toBeTypeOf('number');
+  });
+
+  it('tells a buffering proxy not to buffer a file, so the end of the body is the end of the delivery', async () => {
+    const user = await createUser('proxy');
+    const key = await storeResult(user);
+    const res = await download(key, asUser(user));
+    expect(res.headers.get('X-Accel-Buffering')).toBe('no');
+    await bodyBytes(res);
+  });
+
+  it('removes a stored result again when its record cannot be written, so no object is left that no sweep finds', async () => {
+    const user = await createUser('unregistered');
+    const key = `conversions/${user.id}/${Date.now()}_unregistered.bin`;
+    storedKeys.push(key);
+    setRetentionLedger(unreachableLedger());
+
+    await expect(saveRetainedResult(storageProvider, key, TEN_BYTES, MIME_TYPE, 'r.bin')).rejects.toThrow('unreachable');
+    expect(storageProvider.getObject(key)).toBeUndefined();
+  });
+
+  it('removes a job result again when the worker cannot write its record', async () => {
+    setRetentionLedger(unreachableLedger());
+    const upload = `uploads/unregistered-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.csv`;
+    await storageProvider.saveObject(upload, Buffer.from('name,score\nAlice,100\n'), 'text/csv', 'scores.csv');
+    storedKeys.push(upload);
+    const saved: string[] = [];
+    const save = storageProvider.saveObject.bind(storageProvider);
+    vi.spyOn(storageProvider, 'saveObject').mockImplementation((key, ...rest) => (saved.push(key), save(key, ...rest)));
+    const queue = new Queue<ConversionJobData, ConversionJobResult>('retention-unregistered');
+    const data = { jobId: '', originalFilename: 'scores.csv', sourceFormat: 'csv', targetFormat: 'json', fileSize: 22, options: {}, storageKey: upload };
+    const job = await queue.add('convert', data as ConversionJobData);
+
+    await expect(processConversionJob(job)).rejects.toThrow('unreachable');
+    const resultKeys = saved.filter((key) => key.startsWith(`results/${job.id}/`));
+    expect(resultKeys).toHaveLength(1);
+    expect(storageProvider.getObject(resultKeys[0])).toBeUndefined();
+    await queue.close();
+  });
+
+  it('serves a result from storage when its record cannot be read, and leaves the retention state out', async () => {
+    const user = await createUser('ledger-down');
+    const key = await storeResult(user);
+    const downloadUrl = `/api/storage/file/${encodeURIComponent(key)}`;
+    await redisKeyStore.recordUserFile({ userId: user.id, fileName: 'result.bin', fromFormat: 'csv', toFormat: 'json', size: 10, downloadUrl, storageKey: key });
+    setRetentionLedger(unreachableLedger());
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await download(key, asUser(user));
+    expect(res.status).toBe(200);
+    expect(await bodyBytes(res)).toEqual(TEN_BYTES);
+    expect(await resultAvailability(key)).toBeUndefined();
+    const files = await filesRoute(new NextRequest(`${BASE_URL}/api/account/files`, { headers: asUser(user) }));
+    expect(files.status).toBe(200);
+    expect((await files.json()).files.map((file: { downloadUrl: string }) => file.downloadUrl)).toContain(downloadUrl);
+  });
+
+  it('serves a file the retention rule does not cover without reading the ledger', async () => {
+    const key = `uploads/retention-unread-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.bin`;
+    await storageProvider.saveObject(key, TEN_BYTES, MIME_TYPE, 'in.bin', POLICY.undeliveredTtlMs);
+    storedKeys.push(key);
+    const get = vi.fn(async () => {
+      throw new Error('retention ledger unreachable');
+    });
+    setRetentionLedger({ ...unreachableLedger(), get });
+
+    const res = await download(key, {});
+    expect(res.status).toBe(200);
+    expect(await bodyBytes(res)).toEqual(TEN_BYTES);
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('answers 410 for a result whose time has passed even when deleting it right then fails', async () => {
+    const user = await createUser('lazy-delete-fails');
+    const key = await storeResult(user);
+    await bodyBytes(await download(key, asUser(user)));
+    vi.spyOn(storageProvider, 'deleteObject').mockImplementation(() => {
+      throw new Error('storage unreachable');
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + POLICY.deliveredGraceMs + SECOND_MS);
+    expect((await download(key, asUser(user))).status).toBe(410);
+  });
+
   it('counts ranges that together cover the file as a delivery, and a tail alone as none', async () => {
     const user = await createUser('ranges');
     const headers = asUser(user);
@@ -304,7 +455,7 @@ describe('delete on delivery through the download route and the sweep', () => {
     const user = await createUser('account-files');
     const key = await storeResult(user);
     const downloadUrl = `/api/storage/file/${encodeURIComponent(key)}`;
-    await redisKeyStore.recordUserFile({ userId: user.id, fileName: 'result.bin', fromFormat: 'csv', toFormat: 'json', size: 10, downloadUrl });
+    await redisKeyStore.recordUserFile({ userId: user.id, fileName: 'result.bin', fromFormat: 'csv', toFormat: 'json', size: 10, downloadUrl, storageKey: key });
     const list = async () => {
       const res = await filesRoute(new NextRequest(`${BASE_URL}/api/account/files`, { headers: asUser(user) }));
       return (await res.json()).files as Array<{ downloadUrl: string; remainingSeconds: number }>;
@@ -319,5 +470,98 @@ describe('delete on delivery through the download route and the sweep', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(Date.now() + POLICY.deliveredGraceMs + SECOND_MS);
     expect(await list()).toEqual([]);
+  });
+});
+
+describe('the file ledger shared by the web server and the workers', () => {
+  let ledgerDir: string;
+  const deleted: string[] = [];
+  const storage = { deleteObject: async (key: string) => (deleted.push(key), true) };
+
+  beforeEach(() => {
+    ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ec-ledger-'));
+    setRetentionLedger(new FileRetentionLedger(ledgerDir));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    deleted.length = 0;
+    setRetentionLedger(undefined);
+    fs.rmSync(ledgerDir, { recursive: true, force: true });
+  });
+
+  const newKey = () => `conversions/ledger-user/${Date.now()}_${crypto.randomBytes(4).toString('hex')}.bin`;
+
+  it('keeps every range when two processes record pieces of one file at the same moment', async () => {
+    const key = newKey();
+    await registerResult(key);
+    const processes = [new FileRetentionLedger(ledgerDir), new FileRetentionLedger(ledgerDir)];
+    const now = Date.now();
+    await Promise.all(
+      Array.from({ length: 10 }, (_, offset) =>
+        processes[offset % 2].update(key, (current) => current && recordServedRange(current, { first: offset, last: offset, size: 10 }, now, POLICY))
+      )
+    );
+    expect((await processes[0].get(key))?.received).toEqual([[0, 9]]);
+    expect((await processes[1].get(key))?.deliveredAt).toBe(now);
+  });
+
+  it('moves a result whose deletion failed behind the others instead of retrying it first on every sweep', async () => {
+    const poison = newKey();
+    const fresh = newKey();
+    await registerResult(poison);
+    await registerResult(fresh);
+    const failing = {
+      deleteObject: async (key: string) => {
+        if (key === poison) throw new Error('object store refused');
+        return storage.deleteObject(key);
+      },
+    };
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const due = Date.now() + POLICY.undeliveredTtlMs + SECOND_MS;
+
+    expect(await sweepRetention(failing, due)).toBe(1);
+    expect(deleted).toEqual([fresh]);
+    expect(await sweepRetention(failing, due + SECOND_MS)).toBe(0);
+    expect(deleted).toEqual([fresh]);
+    expect(await resultAvailability(poison, due)).toMatchObject({ state: 'deleted' });
+  });
+
+  it('removes the leftovers of a write that stopped half-way once they are an hour old', async () => {
+    await registerResult(newKey());
+    const directory = path.join(ledgerDir, '.retention');
+    const stale = path.join(directory, 'record.json.0123456789ab.tmp');
+    const recent = path.join(directory, 'record.json.ba9876543210.tmp');
+    fs.writeFileSync(stale, '{');
+    fs.writeFileSync(recent, '{');
+    const twoHoursAgo = new Date(Date.now() - 2 * ONE_HOUR_MS);
+    fs.utimesSync(stale, twoHoursAgo, twoHoursAgo);
+
+    await sweepRetention(storage);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(recent)).toBe(true);
+  });
+
+  it('keeps a result that a queued job reads as its input past its grace period, and refuses a deleted one as an input', async () => {
+    const owner = await userStore.sanitizeUser(
+      await userStore.createUser({ email: `chain_${Date.now()}@retention.test`, name: 'chain', tier: 'pro' })
+    );
+    const key = `conversions/${owner.id}/${Date.now()}_chained.bin`;
+    await storageProvider.saveObject(key, TEN_BYTES, MIME_TYPE, 'chained.bin');
+    await registerResult(key);
+    await recordServed(key, { first: 0, last: 9, size: 10 });
+    await holdResultForJob(key);
+
+    const afterGrace = Date.now() + POLICY.deliveredGraceMs + SECOND_MS;
+    expect(await sweepRetention(storageProvider, afterGrace)).toBe(0);
+    expect(await mayUseStorageKeyAsJobInput(key, owner.id)).toBe(true);
+
+    const afterHold = Date.now() + POLICY.undeliveredTtlMs + SECOND_MS;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(afterHold);
+    expect(await mayUseStorageKeyAsJobInput(key, owner.id)).toBe(false);
+    vi.useRealTimers();
+    expect(await sweepRetention(storageProvider, afterHold)).toBe(1);
+    expect(storageProvider.getObject(key)).toBeUndefined();
   });
 });

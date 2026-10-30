@@ -527,14 +527,16 @@ export class KeyStore {
     toFormat: string;
     size: number;
     downloadUrl: string;
+    storageKey?: string;
     ttlMs?: number;
   }): Promise<UserConversionFile> {
     this.ensureInitialized();
 
     const now = Date.now();
     let downloadUrl = data.downloadUrl;
+    let storageKey = data.storageKey;
     if (downloadUrl?.startsWith('data:')) {
-      const storageKey = `conversions/${data.userId}/${Date.now()}_${encodeURIComponent(data.fileName)}`;
+      storageKey = `conversions/${data.userId}/${Date.now()}_${encodeURIComponent(data.fileName)}`;
       try {
         const matches = /^data:([^;]+);base64,(.*)$/.exec(downloadUrl);
         if (matches) {
@@ -565,6 +567,7 @@ export class KeyStore {
       toFormat: data.toFormat,
       size: data.size,
       downloadUrl,
+      storageKey,
       createdAt: now,
       expiresAt: now + (data.ttlMs ?? resolveRetentionPolicy().undeliveredTtlMs),
     };

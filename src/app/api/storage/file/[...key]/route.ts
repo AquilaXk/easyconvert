@@ -6,8 +6,8 @@ import { attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { parseByteRange, satisfiedContentRange, unsatisfiedContentRange } from '@/lib/api/http-range';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { deliveryTrackedStream } from '@/lib/api/delivery-stream';
-import { deleteResult, isResultDeleted, recordServed } from '@/lib/storage/retention-service';
-import { isRetainedKey } from '@/lib/storage/result-retention';
+import { deleteResult, recordServed, resultAvailability } from '@/lib/storage/retention-service';
+import { isRetainedKey, type RetentionReason } from '@/lib/storage/result-retention';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +17,8 @@ const PRIVATE_NO_STORE = 'private, no-store';
 
 const GONE_MESSAGE =
   'This file was deleted. A result is deleted shortly after it has been downloaded completely, or when nobody downloaded it in time. Convert the file again to get a new one.';
+const CAPACITY_GONE_MESSAGE =
+  'This file was deleted early because the server ran out of disk space. Convert the file again to get a new one.';
 
 /**
  * Decodes a still-encoded path key. Next.js already decodes catch-all segments, so a key that
@@ -48,8 +50,11 @@ export async function GET(
       { status: 404, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
     );
 
-  const goneResponse = () =>
-    NextResponse.json({ success: false, error: GONE_MESSAGE }, { status: 410, headers: { 'Cache-Control': PRIVATE_NO_STORE } });
+  const goneResponse = (reason: RetentionReason | undefined) =>
+    NextResponse.json(
+      { success: false, error: reason === 'capacity' ? CAPACITY_GONE_MESSAGE : GONE_MESSAGE, reason },
+      { status: 410, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
+    );
 
   const instanceUri = req.nextUrl?.pathname || '/api/storage/file';
   let resolvedKey = fullKey;
@@ -77,11 +82,15 @@ export async function GET(
 
   // A result the retention rule deleted answers 410 to its owner, also in the moments before the sweep removes the object.
   if (!stored) {
-    return (await isResultDeleted(fullKey)) ? goneResponse() : notFound();
+    const availability = await resultAvailability(fullKey);
+    return availability?.state === 'deleted' ? goneResponse(availability.reason) : notFound();
   }
-  if (await isResultDeleted(resolvedKey)) {
-    await deleteResult(s3Storage, resolvedKey);
-    return goneResponse();
+  const availability = await resultAvailability(resolvedKey);
+  if (availability?.state === 'deleted') {
+    await deleteResult(s3Storage, resolvedKey).catch((error: unknown) => {
+      console.warn(`[StorageDownload] Could not delete the expired result "${resolvedKey}"; the sweep tries again:`, error);
+    });
+    return goneResponse(availability.reason);
   }
 
   const fileHeaders: Record<string, string> = {
@@ -94,6 +103,8 @@ export async function GET(
     ...fileHeaders,
     'Content-Type': stored.mimeType,
     'Content-Disposition': attachmentContentDisposition(stored.filename),
+    // A proxy that buffers the body would take all of it at once, and a slow client would look delivered.
+    'X-Accel-Buffering': 'no',
   };
 
   const range = parseByteRange(req.headers.get('range'), stored.size);
@@ -121,9 +132,11 @@ export async function GET(
   }
 
   const first = range.kind === 'partial' ? range.start : 0;
-  const last = range.kind === 'partial' ? range.end : stored.size - 1;
+  const length = range.kind === 'partial' ? range.end - range.start + 1 : stored.size;
   const webStream = isRetainedKey(resolvedKey)
-    ? deliveryTrackedStream(nodeStream as Readable, () => noteDelivery(resolvedKey, { first, last, size: stored.size }))
+    ? deliveryTrackedStream(nodeStream as Readable, length, (sent) =>
+        sent > 0 || sent === length ? noteDelivery(resolvedKey, { first, last: first + sent - 1, size: stored.size }) : Promise.resolve()
+      )
     : Readable.toWeb(nodeStream as Readable);
   if (range.kind === 'partial') {
     return new NextResponse(webStream as any, {
@@ -145,7 +158,7 @@ export async function GET(
   });
 }
 
-/** A result that could not be recorded as delivered is deleted when its undelivered time ends, so the download itself is not failed. */
+/** Bytes `[first, last]` that were handed to the client; a result whose delivery cannot be recorded is deleted when its undelivered time ends, so the download itself is not failed. */
 async function noteDelivery(key: string, range: { first: number; last: number; size: number }): Promise<void> {
   try {
     await recordServed(key, range);

@@ -2,7 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import Redis from 'ioredis';
-import { GONE_RECORD_MS, type RetentionRecord } from './result-retention';
+import { mapWithConcurrency } from '../conversions/ocr-page-batch';
+import { GONE_RECORD_MS, isSweepDue, sweepAt, type RetentionRecord } from './result-retention';
 import { resolveLocalStorageDir } from './storage-config';
 
 /**
@@ -11,27 +12,42 @@ import { resolveLocalStorageDir } from './storage-config';
  * storage directory otherwise (one host, API and workers sharing EASYCONVERT_STORAGE_DIR). Both survive a
  * restart, so a result whose time has passed is deleted by the next sweep.
  *
- * A change reads the record, applies a pure function and writes it back. Two instances that finish serving the
- * same file in the same instant can lose one range; the file is then counted as delivered a moment later or, at
- * worst, expires after the undelivered time. Neither keeps a file longer than that time.
+ * A change reads the record, applies a pure function and writes the result atomically: two instances that serve
+ * the same file at once both keep their ranges.
  */
 export interface RetentionLedger {
+  /** Resolves once the store accepts commands. */
+  ready(): Promise<void>;
   get(key: string): Promise<RetentionRecord | undefined>;
-  /** Stores what `change` returns for the record of `key` (undefined deletes nothing and stores nothing). */
+  /** Stores what `change` returns for the record of `key` (undefined stores nothing). Atomic per key. */
   update(
     key: string,
     change: (current: RetentionRecord | undefined) => RetentionRecord | undefined
   ): Promise<RetentionRecord | undefined>;
-  /** Keys whose object must be deleted by `now`, oldest first. */
-  dueKeys(now: number, limit: number): Promise<string[]>;
-  /** Removes the records of results deleted longer ago than GONE_RECORD_MS; returns how many. */
-  pruneGone(now: number): Promise<number>;
+  /** Removes the record of `key` and its place in the sweep. */
+  forget(key: string): Promise<void>;
+  /**
+   * One pass of the sweep: the keys whose object must be deleted by `now`, oldest first, at most `limit`. The same
+   * pass forgets records of results deleted longer ago than GONE_RECORD_MS and leftovers of interrupted writes.
+   */
+  collectDue(now: number, limit: number): Promise<string[]>;
+  /** Records of results not deleted yet, at most `limit`, for early deletion when the disk runs full. */
+  liveRecords(limit: number): Promise<RetentionRecord[]>;
 }
 
 const RECORD_SUFFIX = '.json';
 const TEMP_SUFFIX = '.tmp';
+const LOCK_SUFFIX = '.lock';
 const TEMP_RANDOM_BYTES = 6;
 const LEDGER_DIRECTORY = '.retention';
+/** Record files read at once by a scan of the file ledger. */
+const SCAN_CONCURRENCY = 32;
+/** A temporary file or lock older than this was left by a process that stopped mid-write. */
+const LEFTOVER_AGE_MS = 60 * 60 * 1000;
+/** A lock held longer than this belongs to a process that stopped; an update takes milliseconds. */
+const LOCK_STALE_MS = 30_000;
+const LOCK_RETRY_MS = 10;
+const LOCK_WAIT_MS = 10_000;
 
 function isRetentionRecord(value: unknown): value is RetentionRecord {
   if (typeof value !== 'object' || value === null) return false;
@@ -48,13 +64,45 @@ function parseRecord(raw: string): RetentionRecord | undefined {
   }
 }
 
-/** One small file per result under `<storage dir>/.retention`, replaced atomically. */
+function errorCode(error: unknown): string | undefined {
+  return (error as NodeJS.ErrnoException).code;
+}
+
+function isGoneLongAgo(record: RetentionRecord, now: number): boolean {
+  return record.goneAt !== undefined && record.goneAt + GONE_RECORD_MS <= now;
+}
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Runs the work for one key after the work queued before it for the same key, in this process. */
+class KeyedSerializer {
+  private readonly tails = new Map<string, Promise<unknown>>();
+
+  run<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.tails.get(key) ?? Promise.resolve();
+    const result = previous.then(work, work);
+    const tail = result.catch(() => undefined);
+    this.tails.set(key, tail);
+    void tail.then(() => {
+      if (this.tails.get(key) === tail) this.tails.delete(key);
+    });
+    return result;
+  }
+}
+
+/**
+ * One small file per result under `<storage dir>/.retention`, replaced atomically. An update holds a lock file
+ * next to the record, so the web server and the workers sharing the directory never interleave on one record.
+ */
 export class FileRetentionLedger implements RetentionLedger {
   private readonly directory: string;
+  private readonly serializer = new KeyedSerializer();
 
   constructor(storageDir: string = resolveLocalStorageDir()) {
     this.directory = path.join(storageDir, LEDGER_DIRECTORY);
   }
+
+  async ready(): Promise<void> {}
 
   private pathFor(key: string): string {
     return path.join(this.directory, `${crypto.createHash('sha256').update(key).digest('hex')}${RECORD_SUFFIX}`);
@@ -64,7 +112,7 @@ export class FileRetentionLedger implements RetentionLedger {
     try {
       return parseRecord(await fs.promises.readFile(file, 'utf-8'));
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      if (errorCode(error) === 'ENOENT') return undefined;
       throw error;
     }
   }
@@ -73,60 +121,168 @@ export class FileRetentionLedger implements RetentionLedger {
     return this.readFile(this.pathFor(key));
   }
 
+  private async acquireLock(lock: string): Promise<void> {
+    const giveUpAt = Date.now() + LOCK_WAIT_MS;
+    for (;;) {
+      try {
+        await (await fs.promises.open(lock, 'wx')).close();
+        return;
+      } catch (error) {
+        if (errorCode(error) !== 'EEXIST') throw error;
+      }
+      const stat = await fs.promises.stat(lock).catch(() => undefined);
+      if (stat && Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+        await fs.promises.rm(lock, { force: true });
+        continue;
+      }
+      if (Date.now() > giveUpAt) throw new Error(`Timed out after ${LOCK_WAIT_MS} ms waiting for a retention record lock`);
+      await delay(LOCK_RETRY_MS);
+    }
+  }
+
+  private async withLock<T>(key: string, work: (file: string) => Promise<T>): Promise<T> {
+    return this.serializer.run(key, async () => {
+      const file = this.pathFor(key);
+      await fs.promises.mkdir(this.directory, { recursive: true });
+      const lock = `${file}${LOCK_SUFFIX}`;
+      await this.acquireLock(lock);
+      try {
+        return await work(file);
+      } finally {
+        await fs.promises.rm(lock, { force: true });
+      }
+    });
+  }
+
   async update(
     key: string,
     change: (current: RetentionRecord | undefined) => RetentionRecord | undefined
   ): Promise<RetentionRecord | undefined> {
-    const file = this.pathFor(key);
-    const next = change(await this.readFile(file));
-    if (!next) return undefined;
-    await fs.promises.mkdir(this.directory, { recursive: true });
-    const temp = `${file}.${crypto.randomBytes(TEMP_RANDOM_BYTES).toString('hex')}${TEMP_SUFFIX}`;
-    await fs.promises.writeFile(temp, JSON.stringify(next), 'utf-8');
-    await fs.promises.rename(temp, file);
-    return next;
+    return this.withLock(key, async (file) => {
+      const next = change(await this.readFile(file));
+      if (!next) return undefined;
+      const temp = `${file}.${crypto.randomBytes(TEMP_RANDOM_BYTES).toString('hex')}${TEMP_SUFFIX}`;
+      await fs.promises.writeFile(temp, JSON.stringify(next), 'utf-8');
+      await fs.promises.rename(temp, file);
+      return next;
+    });
   }
 
-  private async listRecords(): Promise<RetentionRecord[]> {
-    let names: string[];
+  async forget(key: string): Promise<void> {
+    await this.withLock(key, (file) => fs.promises.rm(file, { force: true }));
+  }
+
+  private async listNames(): Promise<string[]> {
     try {
-      names = await fs.promises.readdir(this.directory);
+      return await fs.promises.readdir(this.directory);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      if (errorCode(error) === 'ENOENT') return [];
       throw error;
     }
-    const records = await Promise.all(
-      names.filter((name) => name.endsWith(RECORD_SUFFIX)).map((name) => this.readFile(path.join(this.directory, name)))
-    );
-    return records.filter((record): record is RetentionRecord => record !== undefined);
   }
 
-  async dueKeys(now: number, limit: number): Promise<string[]> {
-    return (await this.listRecords())
-      .filter((record) => record.goneAt === undefined && record.deleteAt <= now)
-      .sort((a, b) => a.deleteAt - b.deleteAt)
+  private async scan(): Promise<{ records: RetentionRecord[]; leftovers: string[] }> {
+    const names = await this.listNames();
+    const records = await mapWithConcurrency(
+      names.filter((name) => name.endsWith(RECORD_SUFFIX)),
+      SCAN_CONCURRENCY,
+      (name) => this.readFile(path.join(this.directory, name))
+    );
+    return {
+      records: records.filter((record): record is RetentionRecord => record !== undefined),
+      leftovers: names.filter((name) => name.endsWith(TEMP_SUFFIX) || name.endsWith(LOCK_SUFFIX)),
+    };
+  }
+
+  private async removeOldLeftovers(names: readonly string[], now: number): Promise<void> {
+    await mapWithConcurrency(names, SCAN_CONCURRENCY, async (name) => {
+      const file = path.join(this.directory, name);
+      const stat = await fs.promises.stat(file).catch(() => undefined);
+      if (stat && now - stat.mtimeMs > LEFTOVER_AGE_MS) await fs.promises.rm(file, { force: true });
+    });
+  }
+
+  async collectDue(now: number, limit: number): Promise<string[]> {
+    const { records, leftovers } = await this.scan();
+    await mapWithConcurrency(
+      records.filter((record) => isGoneLongAgo(record, now)),
+      SCAN_CONCURRENCY,
+      (record) => fs.promises.rm(this.pathFor(record.key), { force: true })
+    );
+    await this.removeOldLeftovers(leftovers, now);
+    return records
+      .filter((record) => isSweepDue(record, now))
+      .sort((a, b) => sweepAt(a) - sweepAt(b))
       .slice(0, limit)
       .map((record) => record.key);
   }
 
-  async pruneGone(now: number): Promise<number> {
-    const expired = (await this.listRecords()).filter(
-      (record) => record.goneAt !== undefined && record.goneAt + GONE_RECORD_MS <= now
-    );
-    await Promise.all(expired.map((record) => fs.promises.rm(this.pathFor(record.key), { force: true })));
-    return expired.length;
+  async liveRecords(limit: number): Promise<RetentionRecord[]> {
+    const { records } = await this.scan();
+    return records.filter((record) => record.goneAt === undefined).slice(0, limit);
   }
 }
 
-const REDIS_RECORD_PREFIX = 'retention:record:';
-const REDIS_DUE_SET = 'retention:due';
+/** Namespace of the retention keys in a Redis that the queue and the key store share. */
+export const RETENTION_REDIS_PREFIX = 'easyconvert:retention:';
+const REDIS_RECORD_PREFIX = `${RETENTION_REDIS_PREFIX}record:`;
+const REDIS_DUE_SET = `${RETENTION_REDIS_PREFIX}due`;
+/** Attempts of a compare-and-set before an update gives up; each failed one means another instance just wrote. */
+const MAX_UPDATE_ATTEMPTS = 16;
+const MGET_BATCH = 100;
+/** Longest a ledger operation waits for the connection; ioredis's first reconnect attempts fall inside it. */
+const CONNECT_WAIT_MS = 2_000;
 
-/** A record per key with a Redis expiry, and a sorted set of the keys still to delete, scored by `deleteAt`. */
+/**
+ * Writes a record only when it still holds what the caller read (`ARGV[1]`, empty for none), and keeps the due set
+ * in step: `ARGV[4]` is the due score, empty to leave the set.
+ */
+const COMPARE_AND_SET_LUA = `
+local current = redis.call('GET', KEYS[1])
+if current == false then current = '' end
+if current ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[3])
+if ARGV[4] == '' then
+  redis.call('ZREM', KEYS[2], ARGV[5])
+else
+  redis.call('ZADD', KEYS[2], ARGV[4], ARGV[5])
+end
+return 1
+`;
+
+/** A record per key with a Redis expiry, and a sorted set of the keys still to delete, scored by when the sweep takes them. */
 export class RedisRetentionLedger implements RetentionLedger {
   constructor(private readonly redis: Redis) {}
 
+  /**
+   * Resolves when the connection is ready, or after `maxWaitMs`. The client has no offline queue, so a command sent
+   * before then fails at once; this lets the first commands after a start wait for the connection, while a command
+   * during an outage still fails after a short wait instead of hanging.
+   */
+  private whenConnected(maxWaitMs?: number): Promise<void> {
+    if (this.redis.status === 'ready') return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        this.redis.off('ready', done);
+        resolve();
+      };
+      const timer = maxWaitMs === undefined ? undefined : setTimeout(done, maxWaitMs);
+      this.redis.once('ready', done);
+    });
+  }
+
+  ready(): Promise<void> {
+    return this.whenConnected();
+  }
+
+  private recordKey(key: string): string {
+    return `${REDIS_RECORD_PREFIX}${key}`;
+  }
+
   async get(key: string): Promise<RetentionRecord | undefined> {
-    const raw = await this.redis.get(`${REDIS_RECORD_PREFIX}${key}`);
+    await this.whenConnected(CONNECT_WAIT_MS);
+    const raw = await this.redis.get(this.recordKey(key));
     return raw === null ? undefined : parseRecord(raw);
   }
 
@@ -134,27 +290,51 @@ export class RedisRetentionLedger implements RetentionLedger {
     key: string,
     change: (current: RetentionRecord | undefined) => RetentionRecord | undefined
   ): Promise<RetentionRecord | undefined> {
-    const next = change(await this.get(key));
-    if (!next) return undefined;
-    const keepUntil = (next.goneAt ?? next.deleteAt) + GONE_RECORD_MS;
-    const pipeline = this.redis.multi();
-    pipeline.set(`${REDIS_RECORD_PREFIX}${key}`, JSON.stringify(next), 'PX', Math.max(1, keepUntil - Date.now()));
-    if (next.goneAt === undefined) {
-      pipeline.zadd(REDIS_DUE_SET, next.deleteAt, key);
-    } else {
-      pipeline.zrem(REDIS_DUE_SET, key);
+    await this.whenConnected(CONNECT_WAIT_MS);
+    for (let attempt = 0; attempt < MAX_UPDATE_ATTEMPTS; attempt++) {
+      const raw = await this.redis.get(this.recordKey(key));
+      const next = change(raw === null ? undefined : parseRecord(raw));
+      if (!next) return undefined;
+      const keepUntil = (next.goneAt ?? next.deleteAt) + GONE_RECORD_MS;
+      const written = await this.redis.eval(
+        COMPARE_AND_SET_LUA,
+        2,
+        this.recordKey(key),
+        REDIS_DUE_SET,
+        raw ?? '',
+        JSON.stringify(next),
+        String(Math.max(1, keepUntil - Date.now())),
+        next.goneAt === undefined ? String(sweepAt(next)) : '',
+        key
+      );
+      if (written === 1) return next;
     }
-    await pipeline.exec();
-    return next;
+    throw new Error(`The retention record changed ${MAX_UPDATE_ATTEMPTS} times while it was being updated`);
   }
 
-  async dueKeys(now: number, limit: number): Promise<string[]> {
+  async forget(key: string): Promise<void> {
+    await this.whenConnected(CONNECT_WAIT_MS);
+    await this.redis.multi().del(this.recordKey(key)).zrem(REDIS_DUE_SET, key).exec();
+  }
+
+  /** Redis expires the records of deleted results itself. */
+  async collectDue(now: number, limit: number): Promise<string[]> {
+    await this.whenConnected(CONNECT_WAIT_MS);
     return this.redis.zrangebyscore(REDIS_DUE_SET, '-inf', now, 'LIMIT', 0, limit);
   }
 
-  /** Redis expires the records itself. */
-  async pruneGone(): Promise<number> {
-    return 0;
+  async liveRecords(limit: number): Promise<RetentionRecord[]> {
+    await this.whenConnected(CONNECT_WAIT_MS);
+    const keys = await this.redis.zrange(REDIS_DUE_SET, '0', String(limit - 1));
+    const records: RetentionRecord[] = [];
+    for (let start = 0; start < keys.length; start += MGET_BATCH) {
+      const raws = await this.redis.mget(keys.slice(start, start + MGET_BATCH).map((key) => this.recordKey(key)));
+      for (const raw of raws) {
+        const record = raw === null ? undefined : parseRecord(raw);
+        if (record && record.goneAt === undefined) records.push(record);
+      }
+    }
+    return records;
   }
 }
 

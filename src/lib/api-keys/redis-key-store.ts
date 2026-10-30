@@ -998,6 +998,7 @@ export class RedisKeyStore extends KeyStore {
     toFormat: string;
     size: number;
     downloadUrl: string;
+    storageKey?: string;
     ttlMs?: number;
   }): Promise<UserConversionFile> {
     this.ensureInitialized();
@@ -1011,6 +1012,7 @@ export class RedisKeyStore extends KeyStore {
       toFormat: data.toFormat,
       size: data.size,
       downloadUrl: data.downloadUrl,
+      storageKey: data.storageKey,
       createdAt: now,
       expiresAt: now + ttl,
     };

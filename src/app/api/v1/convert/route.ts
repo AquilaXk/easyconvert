@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
@@ -115,7 +116,7 @@ function parseConvertFormData(formData: FormData): { error?: string; status?: nu
   return { data: { file: file as File, sourceDef, targetDef, options } };
 }
 
-export async function POST(req: NextRequest) {
+export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/v1/convert';
 
@@ -411,7 +412,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Record in user's file conversion history
-    const downloadUrl = `/api/storage/file/${encodeURIComponent(storageKey)}`;
+    const stored = { storageKey, downloadUrl: `/api/storage/file/${encodeURIComponent(storageKey)}` };
 
     const userFile = await redisKeyStore.recordUserFile({
       userId: auth.user.id,
@@ -419,7 +420,7 @@ export async function POST(req: NextRequest) {
       fromFormat: sourceDef.id,
       toFormat: targetDef.id,
       size: outputBuffer.length,
-      downloadUrl,
+      ...stored,
     });
 
     // Check if raw binary is requested (Zero-Heap: skip base64 serialization completely)
@@ -460,7 +461,7 @@ export async function POST(req: NextRequest) {
         size: outputBuffer.length,
         durationMs,
         dataUri,
-        downloadUrl,
+        downloadUrl: stored.downloadUrl,
         expiresAt: userFile.expiresAt,
         ...frameMetadataFields(conversionResult),
         ...engineTraceFields(conversionResult),
@@ -540,4 +541,4 @@ export async function POST(req: NextRequest) {
   } finally {
     releaseSlot?.();
   }
-}
+});
