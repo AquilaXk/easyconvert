@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { knownRefusal, readKnownRefusals } from '../bench/realworld/report';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { requireOracleTool } from './helpers/differential-oracle';
-import { qpdfCheckPasses, withTempDir } from './helpers/encrypted-pdf-fixtures';
+import { withTempDir } from './helpers/encrypted-pdf-fixtures';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
 
@@ -55,29 +55,33 @@ function popplerPages(pdf: Buffer): number | null {
   });
 }
 
-/** Whether `qpdf in out` writes a file: the repair a damaged PDF would need to be read through. */
-function qpdfRewrites(pdf: Buffer): boolean {
+/** The file `qpdf in out` writes, the repair a damaged PDF would need to be read through, or null when it writes none. */
+function qpdfRewrite(pdf: Buffer): Buffer | null {
   return withTempDir((dir) => {
     const input = path.join(dir, 'in.pdf');
     const output = path.join(dir, 'out.pdf');
     fs.writeFileSync(input, pdf);
     try {
       execFileSync(requireOracleTool('qpdf'), ['--warning-exit-0', input, output], { stdio: 'ignore' });
-      return fs.existsSync(output);
+      return fs.existsSync(output) ? fs.readFileSync(output) : null;
     } catch {
-      return false;
+      return null;
     }
   });
 }
 
+/** Whether Poppler reads at least one page from the file. */
+const popplerReadsPages = (pdf: Buffer): boolean => (popplerPages(pdf) ?? 0) > 0;
+
 describe.each(Object.entries(REFUSALS))('%s', (id, targets) => {
   it.skipIf(toolsMissing)(
-    'cannot be opened by qpdf (check and rewrite both fail) or by Poppler, so there is nothing to repair it into',
+    'holds no page Poppler reads, before or after a qpdf repair',
     async (ctx) => {
       const { bytes } = await requireRealworldSample(ctx, id);
-      expect(qpdfCheckPasses(bytes)).toBe(false);
-      expect(qpdfRewrites(bytes)).toBe(false);
-      expect(popplerPages(bytes)).toBeNull();
+      // Whether a qpdf release passes its check or writes a repaired file varies by version; what holds on all of them is that no page can be read.
+      expect(popplerReadsPages(bytes)).toBe(false);
+      const repaired = qpdfRewrite(bytes);
+      expect(repaired === null || !popplerReadsPages(repaired)).toBe(true);
     },
     SAMPLE_TIMEOUT_MS
   );
