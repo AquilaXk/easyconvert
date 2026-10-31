@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { knownRefusal, readKnownRefusals } from '../bench/realworld/report';
 import { crashDetail } from '../bench/realworld/verdict';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
 import { CompoundFileStructureError } from '../src/lib/types';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
@@ -20,8 +21,9 @@ describe('a PowerPoint file whose sector chain loops', () => {
     it(`is refused for ${target} with the loop named, and the refusal is a known one`, async (ctx) => {
       const { bytes } = await requireRealworldSample(ctx, SAMPLE);
       const failure = await dispatchConversion(bytes, 'ppt', target, {}, SAMPLE).catch((error: unknown) => error);
-      expect(failure).toBeInstanceOf(CompoundFileStructureError);
-      const refusal = failure as CompoundFileStructureError;
+      expect(failure).toBeInstanceOf(LegacyOfficeFormatError);
+      const refusal = failure as LegacyOfficeFormatError;
+      expect(refusal.cause).toBeInstanceOf(CompoundFileStructureError);
       expect(refusal.status).toBe(HTTP_BAD_REQUEST);
       expect(refusal.message).toContain('the sector chain starting at sector 213 returns to sector 0');
       const job = { file: SAMPLE, source: 'ppt', target, verdict: 'refused', ms: 0, detail: crashDetail(refusal.name, refusal.message, null) } as const;

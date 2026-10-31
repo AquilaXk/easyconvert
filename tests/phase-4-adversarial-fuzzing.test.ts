@@ -439,7 +439,6 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       cyclicOle.writeUInt16LE(6, 32); // Mini sector shift 6 (64 bytes)
       cyclicOle.writeUInt32LE(1, 44); // 1 SAT sector
       cyclicOle.writeUInt32LE(1, 48); // Dir stream at sector 1 (sector 0 holds the FAT)
-      cyclicOle.writeUInt32LE(4096, 56); // Mini stream cutoff ([MS-CFB] 2.2)
       cyclicOle.writeUInt32LE(0, 76); // MSAT[0] at sector 0
 
       // In SAT table at sector 0 (byte offset 512):

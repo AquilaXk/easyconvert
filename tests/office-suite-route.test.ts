@@ -191,7 +191,7 @@ describe('a legacy document the strict reader refused', () => {
     ['a format with no office-suite reader behind it', legacy({ src: 'docx', tgt: 'html' }), refusal],
     ['a request that was cancelled', legacy({ src: 'doc', tgt: 'html', options: { signal: AbortSignal.abort() } }), refusal],
     ['a destroyed directory or mini FAT, which the suite would write as text', legacy({ src: 'xls', tgt: 'csv' }), new CompoundFileStructureError('Corrupt CFBF container: the sector chain starting at sector 4078 reaches sector 1419968535, which the file does not hold.')],
-    ['a destroyed structure that a reader reports with its label', legacy({ src: 'ppt', tgt: 'pdf' }), new CompoundFileStructureError('PowerPoint presentation: the compound file is malformed (Corrupt CFBF container: its directory holds no entry.).')],
+    ['a destroyed structure that a reader reports with its label', legacy({ src: 'ppt', tgt: 'pdf' }), new LegacyOfficeFormatError('PowerPoint presentation: the compound file is malformed (Corrupt CFBF container: its directory holds no entry.).', { cause: new CompoundFileStructureError('Corrupt CFBF container: its directory holds no entry.') })],
   ])('is not retried for %s', async (_name, retried, error) => {
     const { deps, calls } = standIns();
     expect(await retryRefusedLegacyDocument(deps, retried, error)).toBeUndefined();

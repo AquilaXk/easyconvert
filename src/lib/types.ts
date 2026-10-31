@@ -1092,10 +1092,11 @@ export class CorruptStreamError extends ConversionFailedError {
 }
 
 /**
- * The structure that describes a compound file is destroyed: its directory or mini FAT chain runs out of the file or the FAT, ends
- * on a marker other than the end of chain, loops, shares a sector with the FAT or with another chain, or the directory holds no
- * entry. A stream cut short is the stream's own damage (`CorruptStreamError`); this is the file's table of contents, so no other
- * reader finds the document either and the office suite is not asked to retry it. Maps to HTTP 400.
+ * The structure that describes a compound file is destroyed: its directory, mini FAT or mini stream chain runs out of the file or
+ * the FAT, ends on a marker other than the end of chain, loops, shares a sector with the FAT or with another chain, the FAT sector
+ * list or the DIFAT chain names a sector twice, or the directory holds no entry or more than it may. A stream cut short is the
+ * stream's own damage (`CorruptStreamError`); this is the file's table of contents, so no other reader finds the document either
+ * and the office suite is not asked to retry it, also when a reader wraps the error as its `cause`. Maps to HTTP 400.
  */
 export class CompoundFileStructureError extends CorruptStreamError {
   constructor(message: string) {

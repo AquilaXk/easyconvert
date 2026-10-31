@@ -109,7 +109,7 @@
   },
   {
     "file": "govdocs1-001630.ppt",
-    "detail": "^CompoundFileStructureError: PowerPoint presentation: the compound file is malformed \\(Corrupt CFBF container: the sector chain starting at sector 213 returns to sector 0\\.\\)\\.$",
+    "detail": "^LegacyOfficeFormatError: PowerPoint presentation: the compound file is malformed \\(Corrupt CFBF container: the sector chain starting at sector 213 returns to sector 0\\.\\)\\.$",
     "reason": "Damaged: the FAT chain of the directory returns to sector 0 (the chain from sector 213, the first directory sector, reaches sector 0 again), so the compound file has no readable stream. Apache POI 5.4.0 refuses to open it (POIFSFileSystem: \"Potential loop detected - Block 0 was already claimed but was just requested again\"), LibreOffice 24.2.7 does not load it (\"source file could not be loaded\") and LibreOffice 26.8 opens the bytes as a text document, so no reader reads it as a presentation. The refusal names the loop (tests/ppt-cfb-sector-loop.test.ts).",
     "issue": 783
   },

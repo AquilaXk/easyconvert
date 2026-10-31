@@ -16,8 +16,7 @@ import {
  * What a compound file may make the parser hold or claim. The tables it builds are no larger than the file can use: the FAT as many
  * sectors as map the file, the mini FAT as many entries as the mini stream has mini sectors, and none at all when there is no mini
  * stream. A chain claims the sectors its stream declares and no more, and a file cut short of a stream's last sector gives that
- * stream only the bytes the file holds. A mini stream cutoff in the header that disagrees with the parser's is refused when a stream
- * lies between the two.
+ * stream only the bytes the file holds. The mini stream cutoff in the header is not read: a file reads the same whatever it gives.
  */
 
 const MIB = 1024 * 1024;
@@ -152,7 +151,7 @@ describe('the bytes a chain gives to its stream', () => {
   });
 });
 
-describe('a mini stream cutoff in the header that the parser does not read', () => {
+describe('a mini stream cutoff in the header, which the parser does not read', () => {
   const SECTOR_BYTES = 512;
   const PARSER_CUTOFF = 4096;
   const SECTORS = 40;
@@ -167,9 +166,10 @@ describe('a mini stream cutoff in the header that the parser does not read', () 
   const sectorAt = (sector: number): number => (sector + 1) * SECTOR_BYTES;
 
   /**
-   * A version 3 file as a writer with the mini stream cutoff `headerCutoff` lays it out: the FAT at sector 0, the directory at 1,
-   * the mini FAT at 2, a mini stream of 79 mini sectors on sectors 3 to 12 and sectors 13 on for the streams of the FAT. The
-   * stream `S` has `size` bytes and starts at `start`: a mini sector for a stream below the cutoff, a sector from it up.
+   * A version 3 file whose header gives the mini stream cutoff `headerCutoff`, laid out as the cutoff of 4096 lays it out: the FAT
+   * at sector 0, the directory at 1, the mini FAT at 2, a mini stream of 79 mini sectors on sectors 3 to 12 and sectors 13 on for
+   * the streams of the FAT. The stream `S` has `size` bytes and starts at `start`: a mini sector for a stream below 4096, a sector
+   * from it up.
    */
   function writtenWithCutoff(headerCutoff: number, size: number, start: number): Buffer {
     const file = Buffer.alloc((SECTORS + 1) * SECTOR_BYTES);
@@ -215,45 +215,18 @@ describe('a mini stream cutoff in the header that the parser does not read', () 
     return file;
   }
 
-  it('leaves a file that the cutoff of 4096 agrees with as it was', () => {
-    const regular = parseCfbf(writtenWithCutoff(PARSER_CUTOFF, 5000, REGULAR_FIRST)).paths.get(STREAM_NAME) as Buffer;
-    expect(regular).toEqual(Buffer.alloc(5000, 0x5a));
-    const mini = parseCfbf(writtenWithCutoff(PARSER_CUTOFF, 3000, 0)).paths.get(STREAM_NAME) as Buffer;
-    expect(mini).toEqual(Buffer.alloc(3000, 0x41));
-  });
+  const STREAMS_AROUND_THE_CUTOFF = [
+    [100, 0],
+    [3000, 0],
+    [4095, 0],
+    [4096, REGULAR_FIRST],
+    [5000, REGULAR_FIRST],
+  ];
 
-  it('refuses the stream of a writer with a cutoff of 8192, which lives in the mini stream where this parser looks in the sectors', () => {
-    const file = writtenWithCutoff(8192, 5000, 0);
-    expect(() => parseCfbf(file)).toThrow(CorruptStreamError);
-    expect(() => parseCfbf(file)).toThrow(/its header gives the mini stream cutoff 8192, so its stream "S" of 5000 bytes is stored in the other store/);
-  });
-
-  it('would otherwise return the bytes of sectors no chain of the stream owns', () => {
-    const crafted = writtenWithCutoff(8192, 5000, REGULAR_FIRST);
-    expect(() => parseCfbf(crafted)).toThrow(/mini stream cutoff 8192/);
-    crafted.writeUInt32LE(PARSER_CUTOFF, 56);
-    expect(parseCfbf(crafted).paths.get(STREAM_NAME)).toEqual(Buffer.alloc(5000, 0x5a));
-  });
-
-  it.each([
-    [8192, 4095, 'ok'],
-    [8192, 4096, 'refused'],
-    [8192, 8191, 'refused'],
-    [8192, 8192, 'ok'],
-    [512, 511, 'ok'],
-    [512, 512, 'refused'],
-    [512, 4095, 'refused'],
-    [512, 4096, 'ok'],
-    [0, 300, 'refused'],
-  ])('refuses a stream between the header cutoff %i and 4096 and no other: %i bytes is %s', (headerCutoff, size, outcome) => {
-    const start = size < PARSER_CUTOFF ? 0 : REGULAR_FIRST;
-    const file = writtenWithCutoff(headerCutoff, size, start);
-    if (outcome === 'ok') expect(parseCfbf(file).paths.get(STREAM_NAME)?.length).toBe(size);
-    else expect(() => parseCfbf(file)).toThrow(/its header gives the mini stream cutoff/);
-  });
-
-  it('leaves unchecked a stream of no bytes, which lies in neither store', () => {
-    const file = writtenWithCutoff(8192, 0, 0);
-    expect(parseCfbf(file).directoryEntries.map((entry) => entry.name)).toEqual(['Root Entry', STREAM_NAME]);
+  it.each([0, 1, 512, 4095, 4097, 0x2000, 0x7fffffff, 0xffffffff])('reads every stream from the store the cutoff of 4096 puts it in whatever the header gives: %i', (headerCutoff) => {
+    for (const [size, start] of STREAMS_AROUND_THE_CUTOFF) {
+      const stream = parseCfbf(writtenWithCutoff(headerCutoff, size, start)).paths.get(STREAM_NAME) as Buffer;
+      expect(stream, `${size} bytes`).toEqual(Buffer.alloc(size, size < PARSER_CUTOFF ? 0x41 : 0x5a));
+    }
   });
 });

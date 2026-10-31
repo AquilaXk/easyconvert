@@ -447,6 +447,14 @@ function isEncryptedWorkbookRefusal(src: string, refusal: unknown): boolean {
 }
 
 /**
+ * The refusal, or the parser error a reader wrapped it around (its `cause`), is a compound file whose table of contents is destroyed.
+ * That is no damage the office suite repairs: for the real workbooks whose directory runs past the file it wrote their bytes as text.
+ */
+function isDestroyedStructure(refusal: unknown): boolean {
+  return refusal instanceof CompoundFileStructureError || (refusal instanceof Error && refusal.cause instanceof CompoundFileStructureError);
+}
+
+/**
  * A legacy binary Office document (Word, Excel, PowerPoint, and their templates and slide shows) that the strict in-process
  * reader refuses as malformed, or a workbook it refuses as encrypted, is read by the office suite instead, which reads damaged files the way the application that
  * wrote them does. Only a file that starts like a legacy binary document is handed over: the office suite also loads the
@@ -457,8 +465,7 @@ function isEncryptedWorkbookRefusal(src: string, refusal: unknown): boolean {
 export async function retryRefusedLegacyDocument(deps: OfficeSuiteRouteDeps, request: OfficeSuiteRequest, refusal: unknown): Promise<WorkerConversionResult | undefined> {
   const interchange = legacyReaderRetryInterchange(request.src, request.tgt);
   const readerRefusal = refusal instanceof LegacyOfficeFormatError || refusal instanceof CorruptStreamError || isEncryptedWorkbookRefusal(request.src, refusal);
-  // A destroyed directory or mini FAT is no damage the suite repairs: for the real workbooks whose directory runs past the file it wrote their bytes as text.
-  const refused = readerRefusal && !(refusal instanceof CompoundFileStructureError);
+  const refused = readerRefusal && !isDestroyedStructure(refusal);
   if (interchange === undefined || !refused || request.options.signal?.aborted) return undefined;
   const head = leadingBytes(request.input);
   if (!LEGACY_BINARY_SIGNATURES.some((signature) => startsWithBytes(head, signature))) return undefined;

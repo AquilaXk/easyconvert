@@ -1,4 +1,3 @@
-import { CompoundFileStructureError } from '../../types';
 import { isCfbfContainer, parseCfbf, type CfbfContainer } from '../cfbf-reader';
 import { LegacyOfficeFormatError } from './legacy-office-errors';
 
@@ -32,8 +31,9 @@ function assertCfbHeader(buffer: Buffer, label: string): void {
 /**
  * Opens an OLE2 compound file ([MS-CFB]). A file that is not a compound file, has an inconsistent header, exceeds a limit of
  * `parseCfbf` (its size, its directory entries, the depth and the path length of its storages) or cannot be walked throws a
- * LegacyOfficeFormatError that names the label; no failure escapes as an untyped error. A destroyed directory or mini FAT keeps its
- * type, a CompoundFileStructureError, so that the office suite is not asked to read what no reader can find the document in.
+ * LegacyOfficeFormatError that names the label; no failure escapes as an untyped error. The error of the parser is its `cause`, so
+ * that a destroyed directory or mini FAT stays a CompoundFileStructureError to whoever asks, and the office suite is not asked to
+ * read what no reader can find the document in.
  */
 export function readCfbContainer(buffer: Buffer, label: string): CfbfContainer {
   if (!isCfbfContainer(buffer)) {
@@ -44,8 +44,7 @@ export function readCfbContainer(buffer: Buffer, label: string): CfbfContainer {
     return parseCfbf(buffer);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    const message = `${label}: the compound file is malformed (${reason}).`;
-    throw err instanceof CompoundFileStructureError ? new CompoundFileStructureError(message) : new LegacyOfficeFormatError(message);
+    throw new LegacyOfficeFormatError(`${label}: the compound file is malformed (${reason}).`, { cause: err });
   }
 }
 

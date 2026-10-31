@@ -47,7 +47,8 @@ function writeTable(file: Buffer, sectors: readonly number[], table: readonly nu
 const fatSectors = (file: Buffer): number[] =>
   Array.from({ length: file.readUInt32LE(FAT_SECTOR_COUNT_OFFSET) }, (_, index) => file.readUInt32LE(HEADER_DIFAT_OFFSET + index * 4));
 const readFat = (file: Buffer): number[] => readTable(file, fatSectors(file));
-const miniFatSectors = (file: Buffer): number[] => chainOf(readFat(file), file.readUInt32LE(FIRST_MINI_FAT_SECTOR_OFFSET));
+/** The sectors of the mini FAT, in the order of its chain. */
+export const miniFatSectors = (file: Buffer): number[] => chainOf(readFat(file), file.readUInt32LE(FIRST_MINI_FAT_SECTOR_OFFSET));
 
 function entryOffset(file: Buffer, id: number): number {
   const directory = chainOf(readFat(file), file.readUInt32LE(FIRST_DIRECTORY_SECTOR_OFFSET));

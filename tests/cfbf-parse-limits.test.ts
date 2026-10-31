@@ -138,7 +138,37 @@ describe('the FAT sector list', () => {
     const file = buildCfbfContainer([{ name: 'A', data: filled(80 * 1024, 0x41) }]);
     expect(file.readUInt32LE(FAT_SECTOR_COUNT_OFFSET)).toBe(2);
     file.writeUInt32LE(file.readUInt32LE(HEADER_DIFAT_OFFSET), HEADER_DIFAT_OFFSET + 4);
+    expect(refusalOf(file)).toBeInstanceOf(CompoundFileStructureError);
     expect(() => parseCfbf(file)).toThrow(/the FAT sector list names sector \d+ twice/);
+  });
+
+  /** A file of one FAT sector whose header counts two and lists `second` as the second: the file maps with one, so the second is not read. */
+  const countingASecondFatSector = (second: (file: Buffer) => number): Buffer => {
+    const file = threeStreams(STREAM_BYTES);
+    expect(file.readUInt32LE(FAT_SECTOR_COUNT_OFFSET)).toBe(1);
+    file.writeUInt32LE(second(file), HEADER_DIFAT_OFFSET + 4);
+    file.writeUInt32LE(2, FAT_SECTOR_COUNT_OFFSET);
+    return file;
+  };
+
+  it('refuses a FAT sector listed twice beyond the sectors the parser reads, as it refuses one it reads', () => {
+    const file = countingASecondFatSector((written) => written.readUInt32LE(HEADER_DIFAT_OFFSET));
+    expect(refusalOf(file)).toBeInstanceOf(CompoundFileStructureError);
+    expect(() => parseCfbf(file)).toThrow(/the FAT sector list names sector \d+ twice/);
+  });
+
+  it('claims the sectors the list names beyond the ones the file maps as table sectors, so that no stream reads them', () => {
+    let listed = 0;
+    const file = countingASecondFatSector((written) => (listed = startOf(written, 'B') + 1));
+    const refusal = refusalOf(file);
+    expect(refusal).toBeInstanceOf(CorruptStreamError);
+    expect((refusal as Error).message).toMatch(new RegExp(`reads sector ${listed}, which holds the FAT or the DIFAT`));
+  });
+
+  it('lists no more sectors than the header counts, so that the rest of a header that is not filled with free markers names nothing', () => {
+    const file = threeStreams(STREAM_BYTES);
+    for (let slot = 1; slot < 109; slot++) file.writeUInt32LE(file.readUInt32LE(HEADER_DIFAT_OFFSET), HEADER_DIFAT_OFFSET + slot * 4);
+    expect(parseCfbf(file).paths.get('A')).toEqual(filled(STREAM_BYTES, 0x41));
   });
 });
 
@@ -205,6 +235,7 @@ describe('the number of directory entries', () => {
   it(`reads a directory of ${MAX_DIRECTORY_ENTRIES} entries and refuses one more`, () => {
     expect(parseCfbf(directoryOnlyFile(MAX_DIRECTORY_ENTRIES)).directoryEntries).toHaveLength(MAX_DIRECTORY_ENTRIES);
     expect(() => parseCfbf(directoryOnlyFile(MAX_DIRECTORY_ENTRIES + 1))).toThrow(/its directory holds more than 65536 entries/);
+    expect(refusalOf(directoryOnlyFile(MAX_DIRECTORY_ENTRIES + 1))).toBeInstanceOf(CompoundFileStructureError);
   });
 
   it('counts the free slots of the directory, as the check of the file kind does', () => {
@@ -284,7 +315,7 @@ describe('chains that return to themselves', () => {
     expect(file.readUInt32LE(72)).toBe(1);
     file.writeUInt32LE(firstDifat, (firstDifat + 1) * SECTOR_BYTES + SECTOR_BYTES - 4);
     file.writeUInt32LE(3, 72);
-    await expectRefused('DIFAT cycle', file, /the DIFAT chain returns to sector/);
+    await expectRefused('DIFAT cycle', file, /the DIFAT chain returns to sector/, CompoundFileStructureError);
   });
 });
 
@@ -307,7 +338,7 @@ describe('directory and mini FAT chains that end where the file or the FAT does 
     await expectRefused('directory past the FAT', padded, /sector chain starting at sector \d+ ends at sector \d+, which the FAT does not cover/, CompoundFileStructureError);
   });
 
-  it('refuses a mini FAT chain that runs to a sector past the file, as far as the mini stream needs it', async () => {
+  it('refuses a mini FAT chain that runs to a sector past the file', async () => {
     const file = needingTwoMiniFatSectors();
     file.writeUInt32LE(2, MINI_FAT_SECTOR_COUNT_OFFSET);
     setFatEntry(file, firstMiniFatSector(file), MAX_UNREACHABLE_SECTOR);
@@ -320,11 +351,11 @@ describe('directory and mini FAT chains that end where the file or the FAT does 
     expect(parseCfbf(file).paths.get('A')).toEqual(filled(MINI_STREAM_BYTES, 0x41));
   });
 
-  it('does not follow a mini FAT chain further than the mini stream can be addressed', () => {
+  it('follows a mini FAT chain to its end even where the mini stream cannot address more', async () => {
     const file = threeStreams(MINI_STREAM_BYTES);
     file.writeUInt32LE(2, MINI_FAT_SECTOR_COUNT_OFFSET);
     setFatEntry(file, firstMiniFatSector(file), MAX_UNREACHABLE_SECTOR);
-    expect(parseCfbf(file).paths.get('C')).toEqual(filled(MINI_STREAM_BYTES, 0x43));
+    await expectRefused('mini FAT past the file after the addressed entries', file, /sector chain starting at sector \d+ reaches sector \d+, which the file does not hold/, CompoundFileStructureError);
   });
 });
 
@@ -443,7 +474,7 @@ describe('the mini stream cutoff', () => {
     expect(parseCfbf(file).paths.get('A')).toEqual(filled(MINI_STREAM_BYTES, 0x41));
   });
 
-  it.each([512, 4095, 4097, 0x7fffffff, 0xffffffff])('reads with the cutoff of 4096 whatever the header gives when no stream lies between the two: %i', (cutoff) => {
+  it.each([0, 512, 4095, 4097, 0x2000, 0x7fffffff, 0xffffffff])('reads with the cutoff of 4096 whatever the header gives: %i', (cutoff) => {
     const file = threeStreams(MINI_STREAM_BYTES);
     const control = parseCfbf(file);
     file.writeUInt32LE(cutoff, MINI_STREAM_CUTOFF_OFFSET);
@@ -501,6 +532,15 @@ describe('the size of the file', () => {
   it('is the limit of the legacy Office readers, which answer it in their own words with the label of the document', () => {
     expect(() => readCfbContainer(oversized, 'Word document')).toThrow(LegacyOfficeFormatError);
     expect(() => readCfbContainer(oversized, 'Word document')).toThrow(`Word document: the compound file is malformed (The compound file is larger than the ${CFBF_MAX_FILE_BYTES}-byte limit.).`);
+    const refusal = (() => {
+      try {
+        readCfbContainer(oversized, 'Word document');
+      } catch (error) {
+        return error as Error;
+      }
+      return undefined;
+    })();
+    expect(refusal?.cause).toBeInstanceOf(CorruptStreamError);
   });
 
   it('is the bound of every reader that parses a compound file in full', async () => {
