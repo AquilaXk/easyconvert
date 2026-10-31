@@ -143,8 +143,9 @@ RUN /tmp/install-ffmpeg.sh /opt/ffmpeg
 # packaging with its patches) and two patches to libdjvu (scripts/djvulibre-patches), all pinned by SHA-256 in
 # scripts/install-djvulibre.sh, with the library linked into the programs; the worker runs them as separate sandboxed processes and
 # nothing links them into the application. The distribution package of the same version is installed in this stage only, as the
-# reference whose pixels the patched program must match. The stage fails if a patch does not apply, a hardening property is missing,
-# or a program fails its checks (a page drawn, the two chains that need the patches, the reference manual drawn to the same pixels).
+# reference the patched program is checked against; it must be the pinned revision, so a Debian update of the source stops the build.
+# The stage fails if a patch does not apply, a hardening property is missing, or a program fails its checks (a page drawn, the chains
+# that only the patches end in time while the reference still searches them, the reference manual drawn to the same pixels).
 FROM ${NODE_IMAGE} AS djvulibre
 
 RUN apt-get update \

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Sets up the test tools of one CI job. The parts do not depend on each other, so they run at once and the step
 # lasts as long as the slowest one (the package install) instead of the sum of all of them:
-#   apt      conversion and oracle CLIs, from the cached .deb files when the cache was restored, cad-convert (the STEP and IGES
-#            program, native/cad-convert) built against the Open CASCADE development packages of the same list, and the patched
-#            djvulibre (scripts/install-djvulibre.sh) built against its libjpeg and libtiff, or the cached build
+#   apt      conversion and oracle CLIs, from the cached .deb files when the cache was restored, and cad-convert (the STEP and IGES
+#            program, native/cad-convert) built against the Open CASCADE development packages of the same list
 #   pip      the Python format oracles
 #   verapdf  the PDF/A validator, from the cached install when the cache was restored
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
@@ -12,6 +11,9 @@
 #   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build when its digest still matches
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
+# One part needs what another installs and runs once they are all done:
+#   djvulibre the patched DjVu renderer (scripts/install-djvulibre.sh), built against the libjpeg and libtiff of the apt task and
+#            checked against its ddjvu, or the cached build
 # Every part runs under `timeout` with its own limit, so a part that hangs fails the step by name once its limit has
 # passed, long before the job timeout. Each part logs to its own file; the logs are printed in groups afterwards, a
 # failed or stopped part is printed in full outside a group, and a cancelled job prints them as well.
@@ -46,10 +48,14 @@ set +a
 
 # Seconds each task may run. The whole step of a job took 119 s at most over the last 64 successful runs, with the
 # package install the slowest part; a limit is two to three times what a part can need, and the longest one, s3,
-# covers its counted worst case (315 s: 165 pull, 30 start, 100 wait, 20 signature checks). The job timeout is
-# 15 minutes, so the step never leaves a job less than nine.
+# covers its counted worst case (315 s: 165 pull, 30 start, 100 wait, 20 signature checks). The DjVu renderer builds
+# only when its cache misses, after the other parts: the script took 41 s on four arm64 cores, and inside the apt task
+# it made the cold task of the first CI run take 172 to 257 s and pass the limit of 300 s once, where the warm task takes
+# 72 to 96 s; 240 s is more than twice what it can need on the four x64 cores of a runner. The job timeout is 15 minutes,
+# so the step, at most 360 s and then 240 s, never leaves a job less than five.
 declare -A task_limit_seconds=(
   [apt]=300
+  [djvulibre]=240
   [pip]=180
   [verapdf]=240
   [epubcheck]=120
@@ -135,15 +141,14 @@ task_apt() {
   # --check loads the library and prints its version, which is the sign that the runner can serve the PDF operations.
   sudo "$action_path/../../../native/qpdf-runner/build.sh" /usr/local/bin/qpdf-runner || return 1
   qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "qpdf-runner does not load libqpdf" >&2; return 1; }
-  install_djvulibre
 }
 
 # DjVu input is drawn by djvulibre built from the Debian source of 3.5.28 with two patches (scripts/install-djvulibre.sh), against the
-# libjpeg and libtiff development packages of the list, so it follows the packages as cad-convert does. The distribution's ddjvu of the
-# same version, which the list also installs for the oracle tools, is the reference the build compares its pixels with. The build is
+# libjpeg and libtiff development packages of the apt task, so it follows the packages as cad-convert does. The distribution's ddjvu of
+# the same version, which that task also installs for the oracle tools, is the reference the build is checked against. The build is
 # cached by the runner image and the hash of the script and its patches; a restored build is used only when its programs still have
 # the digests written at the build. The programs are linked into /usr/local/bin, which comes before /usr/bin for the worker and the oracles.
-install_djvulibre() {
+task_djvulibre() {
   local digest_file="$djvulibre_dir/programs.sha256"
   if [ "$djvulibre_cache_hit" = true ] && sha256sum --check --strict --status "$digest_file" 2> /dev/null; then
     sudo ln -sf "$djvulibre_dir/bin/ddjvu" /usr/local/bin/ddjvu
@@ -312,7 +317,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt install_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {
@@ -418,10 +423,17 @@ verify_bench_python_modules() {
   echo "python3 with pytz: $(command -v python3)"
 }
 
+# Runs the tasks that need what the others installed, under the same limits.
+run_dependent_tasks() {
+  tasks=(djvulibre)
+  run_tasks
+}
+
 main() {
   configure
   select_tasks
   run_tasks || return 1
+  run_dependent_tasks || return 1
   verify_cad_tools || return 1
   verify_bench_python_modules
 }
