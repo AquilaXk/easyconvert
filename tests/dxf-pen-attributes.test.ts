@@ -346,6 +346,11 @@ describe('pictures', () => {
     ['a width of 0', '<image x="0" y="0" width="0" height="1" href="#"/>'],
     ['a height of 0px', '<image x="0" y="0" width="1" height="0px" href="#"/>'],
     ['a width of 0.0 and no height', '<image x="0" y="0" width="0.0" href="#"/>'],
+    ['a negative width', '<image x="0" y="0" width="-1" height="1" href="#"/>'],
+    ['a height of 0%', '<image x="0" y="0" width="1" height="0%" href="#"/>'],
+    ['a width of 0e0 in upper-case units with spaces', '<image x="0" y="0" width=" 0E0PX " height="1" href="#"/>'],
+    ['opacity 0 on the <symbol> a <use> draws', '<defs><symbol id="s" opacity="0"><image x="0" y="0" width="1" height="1" href="#"/></symbol></defs><use href="#s"/>'],
+    ['visibility hidden on the <symbol> a <use> draws', '<defs><symbol id="s" visibility="hidden"><image x="0" y="0" width="1" height="1" href="#"/></symbol></defs><use href="#s"/>'],
   ])('is not reported for a picture that is not painted: %s', async (_name, picture) => {
     const { dxf, warnings } = await conversion(`${outline}${picture}`);
     expect(warnings).toBeUndefined();

@@ -10,7 +10,7 @@ import {
   sheetLimitError,
 } from './office/sheet-bounds';
 import { PARQUET_MAX_CELLS, PARQUET_MAX_COLUMNS, PARQUET_MAX_ROWS } from './parquet-format';
-import { PDF_TABLE_MAX_CELLS, PDF_TABLE_MAX_COLUMNS } from './pdf-table-layout';
+import { PDF_TABLE_MAX_CELLS, PDF_TABLE_MAX_COLUMNS } from './pdf-table-bounds';
 
 /**
  * What a table holds in one target format, checked by the table of records before its matrix is built and by the spreadsheet writers, so

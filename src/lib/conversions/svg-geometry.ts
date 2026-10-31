@@ -1109,7 +1109,11 @@ function renderUse(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     if (target.attrs.has('viewBox')) {
       throw new UnsupportedOptionError('SVG <symbol> with a viewBox is not supported by metafile encoders.');
     }
-    renderChildren(target, useCtx, state);
+    const declared = declaredProperties(target.attrs, target.name, state.sheet);
+    assertNeutralPaintProperties(declared, state.pens);
+    assertValidPaintDeclarations(declared);
+    if (declared.get('display') === 'none') return;
+    renderChildren(target, deriveContext(useCtx, target.attrs, declared, state.pens), state);
   } else if (NON_RENDERED_ELEMENTS.has(target.name)) {
     throw new UnsupportedOptionError(`SVG <use> of non-rendering element <${target.name}> is not supported by metafile encoders.`);
   } else {
