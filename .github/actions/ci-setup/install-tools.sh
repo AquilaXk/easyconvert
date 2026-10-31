@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Sets up the test tools of one CI job. The parts do not depend on each other, so they run at once and the step
 # lasts as long as the slowest one (the package install) instead of the sum of all of them:
-#   apt      conversion and oracle CLIs, from the cached .deb files when the cache was restored, and cad-convert (the STEP and IGES
-#            program, native/cad-convert) built against the Open CASCADE development packages of the same list
+#   apt      conversion and oracle CLIs, from the cached .deb files when the cache was restored, cad-convert (the STEP and IGES
+#            program, native/cad-convert) built against the Open CASCADE development packages of the same list, and the patched
+#            djvulibre (scripts/install-djvulibre.sh) built against its libjpeg and libtiff, or the cached build
 #   pip      the Python format oracles
 #   verapdf  the PDF/A validator, from the cached install when the cache was restored
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
@@ -15,7 +16,7 @@
 # passed, long before the job timeout. Each part logs to its own file; the logs are printed in groups afterwards, a
 # failed or stopped part is printed in full outside a group, and a cancelled job prints them as well.
 #
-# Environment: ACTION_PATH, APT_DEBS, PIP_WHEELS (the directory of the cached wheels), APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT, GHOSTXPS_CACHE_HIT and S3_TEST_SERVER (true or false). With
+# Environment: ACTION_PATH, APT_DEBS, PIP_WHEELS (the directory of the cached wheels), APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT, GHOSTXPS_CACHE_HIT, DJVULIBRE_CACHE_HIT and S3_TEST_SERVER (true or false). With
 # S3_TEST_SERVER=true also S3_IMAGE_CACHE_DIR and the STORAGE_TEST_S3_* variables of the job.
 #
 # Sourcing the file defines the functions and runs nothing, which is how the tests exercise the limits.
@@ -71,6 +72,8 @@ configure() {
   export libredwg_dir=/opt/libredwg
   export ghostxps_cache_hit="${GHOSTXPS_CACHE_HIT:-false}"
   export ghostxps_dir=/opt/ghostxps
+  export djvulibre_cache_hit="${DJVULIBRE_CACHE_HIT:-false}"
+  export djvulibre_dir=/opt/djvulibre
   export pip_wheels="${PIP_WHEELS:?PIP_WHEELS}"
   s3_test_server="${S3_TEST_SERVER-}"
   case "$s3_test_server" in
@@ -132,6 +135,24 @@ task_apt() {
   # --check loads the library and prints its version, which is the sign that the runner can serve the PDF operations.
   sudo "$action_path/../../../native/qpdf-runner/build.sh" /usr/local/bin/qpdf-runner || return 1
   qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "qpdf-runner does not load libqpdf" >&2; return 1; }
+  install_djvulibre
+}
+
+# DjVu input is drawn by djvulibre built from the Debian source of 3.5.28 with two patches (scripts/install-djvulibre.sh), against the
+# libjpeg and libtiff development packages of the list, so it follows the packages as cad-convert does. The distribution's ddjvu of the
+# same version, which the list also installs for the oracle tools, is the reference the build compares its pixels with. The build is
+# cached by the runner image and the hash of the script and its patches; a restored build is used only when its programs still have
+# the digests written at the build. The programs are linked into /usr/local/bin, which comes before /usr/bin for the worker and the oracles.
+install_djvulibre() {
+  local digest_file="$djvulibre_dir/programs.sha256"
+  if [ "$djvulibre_cache_hit" = true ] && sha256sum --check --strict --status "$digest_file" 2> /dev/null; then
+    sudo ln -sf "$djvulibre_dir/bin/ddjvu" /usr/local/bin/ddjvu
+    sudo ln -sf "$djvulibre_dir/bin/djvused" /usr/local/bin/djvused
+    return
+  fi
+  if [ "$djvulibre_cache_hit" = true ]; then echo "the cached djvulibre does not match its recorded digests; building it again"; fi
+  sudo env DJVULIBRE_REFERENCE_DDJVU=/usr/bin/ddjvu "$action_path/../../../scripts/install-djvulibre.sh" "$djvulibre_dir" || return 1
+  sha256sum "$djvulibre_dir/bin/ddjvu" "$djvulibre_dir/bin/djvused" | sudo tee "$digest_file" > /dev/null
 }
 
 # PDF/A results are refused unless veraPDF validates them.
@@ -291,7 +312,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt install_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_ghostxps task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {

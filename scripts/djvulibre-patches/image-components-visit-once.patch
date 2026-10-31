@@ -1,0 +1,161 @@
+libdjvu/DjVuImage: search the included files once each for a page component
+
+DjVuImage::get_info(), get_bg44(), get_bgpm(), get_fgjb(), get_fgpm() and
+get_fgbc() look for a component in the file of the page and then, depth first,
+in the files it includes. A shared file included through several paths is
+searched once for each path, so a chain of shared files that each include the
+next two costs a number of visits that grows like the Fibonacci numbers: 40
+such files take 50 s to draw one empty page, though each file is created and
+decoded only once.
+
+Search the graph as DjVuFile::get_merged_anno() walks it, with a map of the
+URLs already visited, so that each file is searched once. The first file
+found in depth-first order is the one the recursive search found: a file is
+skipped only when an earlier visit searched it and everything it includes
+without finding the component. get_info() calls init_rotate() on the
+information it finds, as before; its second call on the caller's own (empty)
+information is gone, which never ran, as the first call leaves rotate_count at
+an orientation from 0 to 3.
+
+--- a/libdjvu/DjVuImage.cpp
++++ b/libdjvu/DjVuImage.cpp
+@@ -106,104 +106,72 @@
+ 
+ //// DJVUIMAGE: DATA COLLECTORS
+ 
+-GP<DjVuInfo>
+-DjVuImage::get_info(const GP<DjVuFile> & file) const
++// A shared file may be included through several paths.  As in
++// DjVuFile::get_merged_anno(), each file is searched once, so that the
++// search costs one visit per file and not one per path.
++template <class TYPE> static GP<TYPE>
++find_component(const GP<DjVuFile> & file, GP<TYPE> DjVuFile::* component,
++               GMap<GURL, void *> & map)
+ {
+-   if (file->info)
+-   {
+-     if(rotate_count<0)
+-     {
+-       const_cast<DjVuImage *>(this)->init_rotate(*(file->info));
+-     }
+-     return file->info;
+-   }
++   GURL url=file->get_url();
++   if (map.contains(url))
++     return 0;
++   map[url]=0;
++   if (file->*component)
++     return file->*component;
+    GPList<DjVuFile> list=file->get_included_files();
+    for(GPosition pos=list;pos;++pos)
+    {
+-      GP<DjVuInfo> info=get_info(list[pos]);
+-      if (info) 
+-      {
+-        if(rotate_count<0)
+-        {
+-          const_cast<DjVuImage *>(this)->init_rotate(*(file->info));
+-        }
+-        return info;
+-      }
++      GP<TYPE> found=find_component(list[pos], component, map);
++      if (found)
++        return found;
+    }
+    return 0;
+ }
+ 
++GP<DjVuInfo>
++DjVuImage::get_info(const GP<DjVuFile> & file) const
++{
++   GMap<GURL, void *> map;
++   GP<DjVuInfo> info=find_component(file, &DjVuFile::info, map);
++   if (info && rotate_count<0)
++     const_cast<DjVuImage *>(this)->init_rotate(*info);
++   return info;
++}
++
+ GP<IW44Image>
+ DjVuImage::get_bg44(const GP<DjVuFile> & file) const
+ {
+-   if (file->bg44)
+-     return file->bg44;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<IW44Image> bg44=get_bg44(list[pos]);
+-      if (bg44)
+-        return bg44;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::bg44, map);
+ }
+ 
+ GP<GPixmap>
+ DjVuImage::get_bgpm(const GP<DjVuFile> & file) const
+ {
+-   if (file->bgpm)
+-     return file->bgpm;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<GPixmap> bgpm=get_bgpm(list[pos]);
+-      if (bgpm) return bgpm;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::bgpm, map);
+ }
+ 
+ GP<JB2Image>
+ DjVuImage::get_fgjb(const GP<DjVuFile> & file) const
+ {
+-   if (file->fgjb)
+-     return file->fgjb;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<JB2Image> fgjb=get_fgjb(list[pos]);
+-      if (fgjb)
+-        return fgjb;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::fgjb, map);
+ }
+ 
+ GP<GPixmap>
+ DjVuImage::get_fgpm(const GP<DjVuFile> & file) const
+ {
+-   if (file->fgpm)
+-     return file->fgpm;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<GPixmap> fgpm=get_fgpm(list[pos]);
+-      if (fgpm)
+-        return fgpm;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::fgpm, map);
+ }
+ 
+ GP<DjVuPalette>
+ DjVuImage::get_fgbc(const GP<DjVuFile> & file) const
+ {
+-   if (file->fgbc)
+-     return file->fgbc;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<DjVuPalette> fgbc=get_fgbc(list[pos]);
+-      if (fgbc) return fgbc;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::fgbc, map);
+ }
+ 
+ GP<DjVuInfo>   

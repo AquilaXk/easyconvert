@@ -1,0 +1,32 @@
+libdjvu/DjVuFile: fail the decoding when its thread cannot be started
+
+DjVuFile::start_decode() sets the DECODING flag and starts a thread that runs
+decode_func(), which clears it. The result of GThread::create() was ignored,
+so when pthread_create() fails (EAGAIN under RLIMIT_NPROC, or no address space
+left for the stack under RLIMIT_AS) the file stays DECODING forever and every
+file that includes it waits in wait_for_finish(): ddjvu then waits at 0% CPU
+until it is killed. A chain of 300 shared files that each include the next
+does this under a 2 GiB address space limit.
+
+Throw DjVuFile.decode_fail when the thread does not start. The handler that
+is already there clears DECODING, sets DECODE_FAILED and notifies the ports,
+so the including file fails as for any included file that cannot be decoded
+and the program reports the error. The life saver reference that the thread
+would have released is released here.
+
+--- a/libdjvu/DjVuFile.cpp
++++ b/libdjvu/DjVuFile.cpp
+@@ -1338,7 +1338,12 @@
+       decode_life_saver=this;
+       
+       decode_thread=new GThread();
+-      decode_thread->create(static_decode_func, this);
++      if (decode_thread->create(static_decode_func, this))
++      {
++        // The thread did not start: nothing will ever finish decoding.
++        decode_life_saver=0;
++        G_THROW( ERR_MSG("DjVuFile.decode_fail") );
++      }
+     }
+   }
+   G_CATCH_ALL
