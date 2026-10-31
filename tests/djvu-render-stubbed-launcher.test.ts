@@ -7,11 +7,12 @@ import {
   drawBudgetMs,
   MEMORY_LIMIT_MB,
   PDF_PAGE_COUNT_FLOOR_MS,
+  PROGRAM_TASK_LIMIT,
   SIZE_RUN_TIMEOUT_MS,
   type DjvuJob,
 } from '../src/worker/djvu-render';
 import { SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../src/worker/sandbox';
-import { chunk, singlePage } from './helpers/djvu-builder';
+import { singlePage } from './helpers/djvu-builder';
 
 /**
  * The time limits and the verdicts of the DjVu chain (src/worker/djvu-render.ts), driven with a stand-in for the launcher of
@@ -88,9 +89,6 @@ function given(programs: Programs, pagesDrawn = programs.sizes.length): void {
   stubPrograms(programs);
 }
 
-/** A page file with a byte for each of `pixels` pixels, far more than the credit a byte can carry needs: the budget credits the pixels whole. */
-const inputHolding = (pixels: number): Buffer => singlePage(64, 64, [chunk('JUNK', Buffer.alloc(pixels))]);
-
 async function convert(tgt: string, options: DjvuJob['options'] = {}, input: Buffer = singlePage(64, 64)): Promise<unknown> {
   countPdfPages.mockReset();
   countPdfPages.mockImplementation(async () => drawnPages);
@@ -129,45 +127,38 @@ const pixels = (pages: readonly Sizes[]) => pages.reduce((sum, page) => sum + pa
 
 describe('the budget of ddjvu', () => {
   it.each([
-    ['no time spent and one 64 x 64 page in a file as small as a page: the floor and the page at 4 pixels a microsecond', 0, 4_096, 4_096, 15_002],
-    ['a hostile file of 8,786 bytes that declares a page of 9,999 x 9,999 pixels: the floor and what its bytes can hold', 0, 9_999 * 9_999, 8_786, 15_036],
-    ['reports that took 937 ms and nothing to draw: still the floor', 937, 0, 1_000, 15_000],
-    ['reports that took 1,000 ms and nothing to draw: sixteen times the reports', 1_000, 0, 1_000, 16_000],
-    ['reports that took 3,000 ms and 13 million pixels a file of a million bytes can hold: sixteen times the reports and the pixels', 3_000, 13_000_000, 1_000_000, 51_250],
-  ])('is %s', (_name, reportMs, drawnPixels, inputBytes, expected) => {
-    expect(drawBudgetMs(reportMs, drawnPixels, inputBytes)).toBe(expected);
+    ['no time spent and one 64 x 64 page: the floor and the page at 4 pixels a microsecond', 0, 4_096, 15_002],
+    ['a page declared 9,999 x 9,999 pixels in a file of a few bytes: the floor and every pixel the page declares', 0, 9_999 * 9_999, 39_996],
+    ['reports that took 937 ms and nothing to draw: still the floor', 937, 0, 15_000],
+    ['reports that took 1,000 ms and nothing to draw: sixteen times the reports', 1_000, 0, 16_000],
+    ['reports that took 3,000 ms and 13 million pixels: sixteen times the reports and the pixels', 3_000, 13_000_000, 51_250],
+  ])('is %s', (_name, reportMs, drawnPixels, expected) => {
+    expect(drawBudgetMs(reportMs, drawnPixels)).toBe(expected);
   });
 
-  it('is the floor and the drawn pixels at their rate when the file can hold them: every page for a PDF, the selected ones for images', async () => {
+  it('is the floor and the drawn pixels at their rate: every page for a PDF, the selected ones for images', async () => {
     given({ sizes: PAGES });
-    await convert('pdf', { timeoutMs: LONG_JOB_MS }, inputHolding(pixels(PAGES)));
-    expect(drawLimitMs()).toBe(drawBudgetMs(0, pixels(PAGES), inputHolding(pixels(PAGES)).length));
+    await convert('pdf', { timeoutMs: LONG_JOB_MS });
+    expect(drawLimitMs()).toBe(drawBudgetMs(0, pixels(PAGES)));
     given({ sizes: PAGES }, 1);
     launch.mockClear();
-    await convert('png', { timeoutMs: LONG_JOB_MS, pages: '2' }, inputHolding(pixels(PAGES)));
-    expect(drawLimitMs()).toBe(drawBudgetMs(0, pixels([PAGES[1]]), inputHolding(pixels(PAGES)).length));
+    await convert('png', { timeoutMs: LONG_JOB_MS, pages: '2' });
+    expect(drawLimitMs()).toBe(drawBudgetMs(0, pixels([PAGES[1]])));
   });
 
-  it('counts no more pixels than the bytes of the file can hold, whatever sizes the pages declare', async () => {
+  it('counts every pixel the pages declare, however few bytes the file has', async () => {
     const declared: Sizes[] = Array.from({ length: 6 }, () => ({ width: DECLARED_SIDE, height: DECLARED_SIDE }));
-    const input = singlePage(64, 64);
     given({ sizes: declared });
-    await convert('pdf', { timeoutMs: LONG_JOB_MS }, input);
-    expect(drawLimitMs()).toBe(drawBudgetMs(0, pixels(declared), input.length));
-    expect(drawLimitMs()).toBeLessThan(15_000 + 1_000);
-    given({ sizes: PAGES });
-    launch.mockClear();
-    const halfHeld = inputHolding(pixels(PAGES) / 2);
-    await convert('pdf', { timeoutMs: LONG_JOB_MS }, halfHeld);
-    expect(drawLimitMs()).toBe(drawBudgetMs(0, pixels(PAGES), halfHeld.length));
+    await convert('pdf', { timeoutMs: LONG_JOB_MS }, singlePage(64, 64));
+    expect(drawLimitMs()).toBe(drawBudgetMs(0, pixels(declared)));
+    expect(drawLimitMs()).toBeGreaterThan(pixels(declared) / 4_000);
   });
 
   it('is sixteen times what the work before ddjvu took, when that is more than the floor', async () => {
     const countMs = 3_000;
     given({ sizes: PAGES, countMs });
-    const input = inputHolding(pixels(PAGES));
-    await convert('pdf', { timeoutMs: LONG_JOB_MS }, input);
-    expect(drawLimitMs()).toBe(drawBudgetMs(countMs, pixels(PAGES), input.length));
+    await convert('pdf', { timeoutMs: LONG_JOB_MS });
+    expect(drawLimitMs()).toBe(drawBudgetMs(countMs, pixels(PAGES)));
     expect(drawLimitMs()).toBeGreaterThanOrEqual(16 * countMs);
   });
 
@@ -178,10 +169,9 @@ describe('the budget of ddjvu', () => {
   });
 
   it('refuses a document ddjvu did not draw within the budget with the typed time-limit refusal, saying the document took too long to draw', async () => {
-    const input = inputHolding(pixels(PAGES));
-    const budget = drawBudgetMs(0, pixels(PAGES), input.length);
+    const budget = drawBudgetMs(0, pixels(PAGES));
     given({ sizes: PAGES, drawError: new SandboxedTimeoutError(budget) });
-    const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }, input));
+    const error = await refusalOf(convert('pdf', { timeoutMs: LONG_JOB_MS }));
     expect(error).toMatchObject({ name: 'CpuTaskTimeoutError', status: 422, message: `The .djvu document took too long to draw: ddjvu ran past the ${budget} ms its pages allow.` });
   });
 
@@ -190,6 +180,22 @@ describe('the budget of ddjvu', () => {
     const error = await refusalOf(convert('pdf', { timeoutMs: SHORT_JOB_MS }));
     expect(error).toMatchObject({ name: 'CpuTaskTimeoutError', status: 422, message: expect.stringContaining(`${SHORT_JOB_MS} ms`) });
     expect(error.message).not.toContain('took too long to draw');
+  });
+});
+
+describe('the limits of every program run', () => {
+  it('bounds the tasks of each run of djvused and ddjvu', async () => {
+    given({ sizes: PAGES });
+    await convert('pdf', { timeoutMs: LONG_JOB_MS });
+    const limits = launch.mock.calls.map(([binary, args, options]) => {
+      const program = path.basename(binary as string);
+      return [program, program === 'djvused' ? scriptOf(args as string[]) : 'draw', (options as { rlimits?: { nproc?: number } }).rlimits?.nproc];
+    });
+    expect(limits).toEqual([
+      ['djvused', 'n', PROGRAM_TASK_LIMIT],
+      ['djvused', 'size', PROGRAM_TASK_LIMIT],
+      ['ddjvu', 'draw', PROGRAM_TASK_LIMIT],
+    ]);
   });
 });
 

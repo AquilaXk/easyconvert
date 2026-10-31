@@ -7,6 +7,7 @@ import yaml from 'js-yaml';
 
 import {
   getPrlimitCapability,
+  getUnshareCapability,
   buildPrlimitArgs,
   resolveSandboxedCommand,
   executeSandboxedBinary,
@@ -16,6 +17,7 @@ import {
   SandboxedBufferLimitError,
 } from '../src/lib/security/process-sandbox';
 import { withWorkerSandbox, runInWorkerSandbox } from '../src/worker/sandbox';
+import { skipUnless } from './helpers/strict-skip';
 import net from 'node:net';
 import { checkRedisConnectivity } from '../scripts/worker-healthcheck.js';
 import {
@@ -201,6 +203,21 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
         expect(resolved.args).toEqual(['-version']);
       }
     });
+
+    it.skipIf(skipUnless('Linux, whose /proc/self/limits shows the limits of a run', process.platform === 'linux'))(
+      'bounds the tasks of a run by RLIMIT_NPROC only when the run has a user namespace of its own, where the kernel counts that run alone',
+      async () => {
+        const unshare = getUnshareCapability();
+        const ownUserNamespace = unshare.available && unshare.args.includes('-r') && getPrlimitCapability().available;
+        const softLimit = (limits: string) => /^Max processes\s+(\S+)/m.exec(limits)?.[1];
+        const outside = softLimit(fs.readFileSync('/proc/self/limits', 'utf-8'));
+        const taskLimitIn = async (networkIsolated: boolean) =>
+          softLimit((await executeSandboxedBinary('/bin/cat', ['/proc/self/limits'], { networkIsolated, rlimits: { nproc: 64 } })).stdout.toString());
+        expect(outside).toMatch(/^(\d+|unlimited)$/);
+        expect(await taskLimitIn(true)).toBe(ownUserNamespace ? '64' : outside);
+        expect(await taskLimitIn(false)).toBe(outside);
+      }
+    );
 
     it('terminates full process group on execution timeout', async () => {
       // Run an intentional sleep process with small 150ms timeout

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkDjvuContainer, DJVU_MAX_DIRECTORY_FILES, DJVU_MAX_INPUT_BYTES } from '../src/lib/conversions/djvu-container';
+import { checkDjvuContainer, DJVU_MAX_COMPONENT_BYTES, DJVU_MAX_DIRECTORY_FILES, DJVU_MAX_INPUT_BYTES } from '../src/lib/conversions/djvu-container';
 import { assertNotSpoofedFile, FileExtensionSpoofError } from '../src/lib/registry';
 import { bundledDocument, bundleOf, chunk, form, includeChunk, indirectDocument, oldBundledDocument, pageForm, singlePage } from './helpers/djvu-builder';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -134,6 +134,38 @@ describe.skipIf(!haveBzz)('the directory of a bundle', () => {
     expectWithinHangGuard('the container', Number(process.hrtime.bigint() - started) / 1e6, { guardMs: HANG_GUARD_MS, expectedLocalMs: EXPECTED_LOCAL_MS });
     expect(refusalOf(bundledDocument([big], entriesOf(DJVU_MAX_DIRECTORY_FILES + 1)))).toMatchObject({ name: 'PayloadLimitError', status: 413 });
     expect(refusalOf(bundledDocument([big], entriesOf(MAX_COUNT_IN_HEADER)))).toMatchObject({ name: 'PayloadLimitError', status: 413 });
+  });
+
+  /** A page component of exactly `length` bytes, its FORM header included: 12 bytes of FORM header and type, 18 of INFO and a JUNK chunk. */
+  const pageOfLength = (length: number): Buffer => pageForm(10, 10, [chunk('JUNK', Buffer.alloc(length - 38))]);
+
+  it('refuses a bundle with a component of 16 MiB or more, whose size its directory cannot record, and accepts one of 16 MiB less two bytes and a single page of any size', () => {
+    const bundleWith = (length: number) => bundleOf([{ form: page, kind: 'page', id: 'a.djvu' }, { form: pageOfLength(length), kind: 'page', id: 'b.djvu' }]);
+    expect(() => checkDjvuContainer(bundleWith(DJVU_MAX_COMPONENT_BYTES - 1))).not.toThrow();
+    for (const length of [DJVU_MAX_COMPONENT_BYTES + 1, DJVU_MAX_COMPONENT_BYTES + 3]) {
+      expect(refusalOf(bundleWith(length))).toMatchObject({
+        name: 'DjvuComponentSizeError',
+        status: 422,
+        message: `The DjVu document holds a component of ${length} bytes. A bundled DjVu document records the size of each component in 24 bits, so djvulibre cannot read a component of 16777216 bytes (16 MiB) or more; a page that large converts as a single-page DjVu file.`,
+      });
+    }
+    expect(() => checkDjvuContainer(Buffer.concat([Buffer.from('AT&T', 'latin1'), pageOfLength(DJVU_MAX_COMPONENT_BYTES + 3)]))).not.toThrow();
+  });
+
+  it('walks a bundle of 500,000 chunks after its directory to its last component in time that does not grow with the file, and leaves a chunk that overruns the bundle to djvulibre', () => {
+    const bundle = bundleOf(files(1));
+    const withChunksBefore = (last: Buffer) => {
+      const padded = Buffer.concat([bundle, Buffer.from('ANTa\0\0\0\0'.repeat(500_000), 'latin1'), last]);
+      padded.writeUInt32BE(padded.length - 8 - 4, 8);
+      return padded;
+    };
+    const started = process.hrtime.bigint();
+    expect(() => checkDjvuContainer(withChunksBefore(Buffer.alloc(0)))).not.toThrow();
+    expectWithinHangGuard('the component walk', Number(process.hrtime.bigint() - started) / 1e6, { guardMs: HANG_GUARD_MS, expectedLocalMs: EXPECTED_LOCAL_MS });
+    expect(refusalOf(withChunksBefore(pageOfLength(DJVU_MAX_COMPONENT_BYTES + 1)))).toMatchObject({ name: 'DjvuComponentSizeError', status: 422 });
+    const overrun = Buffer.concat([bundle, Buffer.from('FORM\x7f\0\0\0DJVU', 'latin1')]);
+    overrun.writeUInt32BE(overrun.length - 8 - 4, 8);
+    expect(() => checkDjvuContainer(overrun)).not.toThrow();
   });
 });
 

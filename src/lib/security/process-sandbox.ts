@@ -16,6 +16,10 @@ export interface SandboxEnvironment {
 export interface SandboxedRlimitsOptions {
   asBytes?: number;
   fsizeBytes?: number;
+  /**
+   * The tasks (processes and threads) of the run. Set only when the run has a user namespace of its own: the kernel counts
+   * RLIMIT_NPROC over every task of the real uid in a user namespace, so outside one it would count the worker and every other run.
+   */
   nproc?: number;
   cpuSeconds?: number;
 }
@@ -464,6 +468,13 @@ export function generateSeccompBpfProfile(options?: { blockNetwork?: boolean }):
   };
 }
 
+/** Whether the run gets a user namespace of its own: network isolation on Linux through an unshare that maps the user (`-r`). */
+function runsInOwnUserNamespace(networkIsolated: boolean, sandboxOptions: UnshareIsolationOptions): boolean {
+  if (process.platform !== 'linux' || !networkIsolated) return false;
+  const cap = getUnshareCapability();
+  return cap.available && buildUnshareIsolationArgs(cap, sandboxOptions).includes('-r');
+}
+
 /**
  * Resolves the final execution command, wrapping with unshare namespace isolation
  * when networkIsolated is requested and running on a supported Linux host with unshare capabilities.
@@ -511,6 +522,9 @@ export function resolveSandboxedCommand(
   }
   if (!effectiveRlimits.fsizeBytes && maxFileSize && maxFileSize > 0) {
     effectiveRlimits.fsizeBytes = maxFileSize;
+  }
+  if (effectiveRlimits.nproc !== undefined && !runsInOwnUserNamespace(networkIsolated, sandboxOptions)) {
+    delete effectiveRlimits.nproc;
   }
 
   let finalBinary = binaryPath;
