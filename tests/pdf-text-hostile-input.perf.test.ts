@@ -153,4 +153,27 @@ describe('a document of pages that are each one open paragraph', () => {
     const text = block.type === 'paragraph' ? block.runs.map((run) => run.text).join('') : '';
     expect(text.split(LINE)).toHaveLength(OPEN_PARAGRAPH_PAGES * 2 + 1);
   }, SCALING_TEST_TIMEOUT_MS);
+
+  it('stays linear when words are broken with a hyphen at the end of every line, each rejoin cutting only its own piece', async () => {
+    // Lines enough per page for the text of the run to dwarf a line, so a rejoin that copies the run shows as quadratic.
+    const HYPHENATED_LINES_PER_PAGE = 20;
+    const BROKEN = 'the paragraph runs on from the page before and goes on over the page af-';
+    const RESUMED = 'ter it with no stop and the word was broken at the end of the line adminis-';
+    const hyphenated = (count: number): PdfPageContent[] =>
+      pages(count, false).map((page) => ({
+        ...page,
+        items: Array.from({ length: HYPHENATED_LINES_PER_PAGE }, (_, line) => item(line % 2 === 0 ? RESUMED.replace(/^ter/, 'tration') : BROKEN, 100 + line * 14)),
+      }));
+    const { largeResult } = await expectLinearOnInputs('open hyphenated paragraphs without a footer', (input: PdfPageContent[]) => layoutPdf(input, [font]), {
+      small: hyphenated(OPEN_PARAGRAPH_PAGES / SCALING_FACTOR),
+      large: hyphenated(OPEN_PARAGRAPH_PAGES),
+      clock: cpuClockMs,
+    });
+    const blocks = largeResult.model.sections.flatMap((section) => section.blocks);
+    expect(blocks).toHaveLength(1);
+    const [block] = blocks;
+    const text = block.type === 'paragraph' ? block.runs.map((run) => run.text).join('') : '';
+    expect(text).not.toContain('af- ');
+    expect(text.split('page aftration')).toHaveLength((OPEN_PARAGRAPH_PAGES * HYPHENATED_LINES_PER_PAGE) / 2);
+  }, SCALING_TEST_TIMEOUT_MS);
 });

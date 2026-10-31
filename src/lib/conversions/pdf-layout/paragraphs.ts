@@ -193,6 +193,8 @@ export function openParagraph(paragraph: Paragraph): OpenParagraph {
 export class ParagraphBuilder {
   private readonly lines: LayoutLine[] = [];
   private readonly runs: StyledRun[] = [];
+  /** The text of each run as the pieces it was given, joined once in `finish`: cutting a hyphen then costs the last piece, not the run. */
+  private readonly runPieces: string[][] = [];
   private readonly pieces: string[] = [];
   private tail = '';
   private sentenceEnd = false;
@@ -217,16 +219,9 @@ export class ParagraphBuilder {
 
   /** Drops the hyphen that ends the text so far: "adminis-" and "tration" are one word. */
   private dropHyphen(hyphen: string): void {
-    let remaining = hyphen.length;
-    while (remaining > 0 && this.pieces.length > 0) {
-      const piece = this.pieces[this.pieces.length - 1];
-      const keep = Math.max(0, piece.length - remaining);
-      remaining -= piece.length - keep;
-      this.pieces[this.pieces.length - 1] = piece.slice(0, keep);
-    }
+    cutEnd(this.pieces, hyphen.length);
     this.tail = this.tail.slice(0, this.tail.length - hyphen.length);
-    const last = this.runs[this.runs.length - 1];
-    last.text = last.text.slice(0, last.text.length - hyphen.length);
+    cutEnd(this.runPieces[this.runPieces.length - 1], hyphen.length);
   }
 
   add(line: LayoutLine): void {
@@ -240,13 +235,17 @@ export class ParagraphBuilder {
         // A hyphen before a capital letter or a digit is part of the compound ("Anglo-Saxon"): kept, with no space after it.
       } else if (needsSpaceBetween(this.tail, lineText)) {
         this.append(' ');
-        this.runs[this.runs.length - 1].text += ' ';
+        this.runPieces[this.runPieces.length - 1].push(' ');
       }
     }
     for (const run of line.runs) {
       const last = this.runs[this.runs.length - 1];
-      if (last && last.bold === run.bold && last.italic === run.italic && last.monospace === run.monospace) last.text += run.text;
-      else this.runs.push({ ...run });
+      if (last && last.bold === run.bold && last.italic === run.italic && last.monospace === run.monospace) {
+        this.runPieces[this.runPieces.length - 1].push(run.text);
+      } else {
+        this.runs.push({ ...run });
+        this.runPieces.push([run.text]);
+      }
     }
     this.append(lineText);
     if (this.lines.length === 0) {
@@ -288,7 +287,7 @@ export class ParagraphBuilder {
   finish(): Paragraph {
     const dominant = this.dominant!;
     return {
-      runs: this.runs,
+      runs: this.runs.map((run, index) => ({ ...run, text: this.runPieces[index].join('') })),
       text: this.pieces.join(''),
       lines: this.lines,
       box: { x0: this.x0, x1: this.x1, y0: this.y0, y1: this.y1 },
@@ -304,6 +303,21 @@ export class ParagraphBuilder {
       pageNumber: this.pageNumber,
       full: this.full,
     };
+  }
+}
+
+/** Removes the last `count` code units of the text that `parts` joins to, dropping parts it empties. */
+function cutEnd(parts: string[], count: number): void {
+  let remaining = count;
+  while (remaining > 0 && parts.length > 0) {
+    const last = parts[parts.length - 1];
+    if (last.length <= remaining) {
+      remaining -= last.length;
+      parts.pop();
+    } else {
+      parts[parts.length - 1] = last.slice(0, last.length - remaining);
+      remaining = 0;
+    }
   }
 }
 
