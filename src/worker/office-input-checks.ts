@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { assertOpenDocumentGraphic, xlsHasFilePass } from '../lib/conversions/office';
 import { isEncryptedWordDocument } from '../lib/conversions/office/doc-reader';
+import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../lib/conversions/office/legacy-office-limits';
 import { officeReadingFormat } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
 import { getMaxInMemoryBytes } from '../lib/storage/errors';
@@ -25,14 +26,26 @@ export async function officeInputWithoutMacros(input: Buffer | WorkerVfsPayload,
   const plain = await ooxmlVariantAsPlainPackage(buffer, src, family);
   return plain.droppedMacros ? plain.buffer : input;
 }
-/** The input as a buffer when it is held in memory or small enough to be read (files too big for memory go straight to LibreOffice). */
-function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
+/**
+ * The input as a buffer when it is held in memory, or is a file of at most `maxBytes` that exists; undefined for a larger or missing file,
+ * which goes on to the office suite as it is.
+ */
+export function boundedInput(input: Buffer | WorkerVfsPayload, maxBytes: number): Buffer | undefined {
   if (Buffer.isBuffer(input)) return input;
   if (input.inputBuffer) return input.inputBuffer;
-  if (input.inputPath && fs.existsSync(input.inputPath) && fs.statSync(input.inputPath).size <= getMaxInMemoryBytes()) {
-    return fs.readFileSync(input.inputPath);
-  }
-  return undefined;
+  if (input.inputPath === undefined) return undefined;
+  const size = fs.statSync(input.inputPath, { throwIfNoEntry: false })?.size;
+  return size === undefined || size > maxBytes ? undefined : fs.readFileSync(input.inputPath);
+}
+
+/** The input of a legacy binary Office document, read as far as the in-process readers of those formats read (`LEGACY_OFFICE_MAX_INPUT_BYTES`). */
+export function legacyOfficeInput(input: Buffer | WorkerVfsPayload): Buffer | undefined {
+  return boundedInput(input, LEGACY_OFFICE_MAX_INPUT_BYTES);
+}
+
+/** The input of a package that is read whole before the office suite sees it: as large as a job holds in memory. */
+function inputAsBuffer(input: Buffer | WorkerVfsPayload): Buffer | undefined {
+  return boundedInput(input, getMaxInMemoryBytes());
 }
 
 /** Proves, before LibreOffice starts, that a drawing is an OpenDocument drawing package. */
@@ -50,7 +63,7 @@ export async function assertDrawingPackage(input: Buffer | WorkerVfsPayload, src
 export function isEncryptedLegacyOffice(input: Buffer | WorkerVfsPayload, src: string): boolean {
   const reading = officeReadingFormat(src);
   if (reading !== 'xls' && reading !== 'doc') return false;
-  const buffer = inputAsBuffer(input);
+  const buffer = legacyOfficeInput(input);
   if (buffer === undefined) return false;
   return reading === 'xls' ? xlsHasFilePass(buffer) : isEncryptedWordDocument(buffer);
 }

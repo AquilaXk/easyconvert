@@ -3,7 +3,7 @@ import { buildCfbfContainer } from '../src/lib/conversions/cfbf-writer';
 import { parseCfbf } from '../src/lib/conversions/hwp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { repairPptPersistIdSeed } from '../src/lib/conversions/office/ppt-reader';
-import { withPresentationRetry } from '../src/worker/office-suite-route';
+import { withEncryptedAnswer } from '../src/worker/office-suite-route';
 import type { WorkerConversionResult, WorkerVfsPayload } from '../src/worker/worker-types';
 import { NO_ENTRY, entryFields, entryId, moveChainSectorToEnd, moveMiniChainSectorToEnd, setEntry } from './helpers/cfbf-layout';
 import { oracleTest } from './helpers/oracle-test';
@@ -190,7 +190,7 @@ describe('the office suite run on a presentation it could not load', () => {
   it('runs it once more on a copy with the seed raised', async () => {
     const { file, editOffset } = craftPresentation({ seed: 3, persistIds: PERSIST_IDS });
     const { run, inputs } = suiteFailingOnce(notLoaded());
-    await expect(withPresentationRetry(run)(file, 'ppt', 'pdf')).resolves.toBe(suiteResult);
+    await expect(withEncryptedAnswer(run)(file, 'ppt', 'pdf')).resolves.toBe(suiteResult);
     expect(inputs).toHaveLength(2);
     expect(seedOf(inputs[1] as Buffer, editOffset)).toBe(6);
   });
@@ -198,7 +198,7 @@ describe('the office suite run on a presentation it could not load', () => {
   it('answers an encrypted presentation as encrypted without running it again', async () => {
     const { file } = craftPresentation({ seed: 3, persistIds: PERSIST_IDS, token: ENCRYPTED_TOKEN });
     const { run } = suiteFailingOnce(notLoaded());
-    await expect(withPresentationRetry(run)(file, 'ppt', 'pdf')).rejects.toBeInstanceOf(EncryptedOfficeDocumentError);
+    await expect(withEncryptedAnswer(run)(file, 'ppt', 'pdf')).rejects.toBeInstanceOf(EncryptedOfficeDocumentError);
     expect(run).toHaveBeenCalledTimes(1);
   });
 
@@ -209,7 +209,7 @@ describe('the office suite run on a presentation it could not load', () => {
   ])('keeps the error of the suite for %s', async (_, input) => {
     const failure = notLoaded();
     const { run } = suiteFailingOnce(failure);
-    await expect(withPresentationRetry(run)(input, 'ppt', 'pdf')).rejects.toBe(failure);
+    await expect(withEncryptedAnswer(run)(input, 'ppt', 'pdf')).rejects.toBe(failure);
     expect(run).toHaveBeenCalledTimes(1);
   });
 });

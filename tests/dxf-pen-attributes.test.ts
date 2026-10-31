@@ -303,6 +303,8 @@ describe('pictures', () => {
   const PICTURE = '<image x="20" y="20" width="10" height="10" href="data:image/png;base64,iVBORw0KGgo="/>';
   const outline = '<rect x="10" y="10" width="50" height="30" fill="none" stroke="#000"/>';
   const plain = dxfOf(outline);
+  const LEFT_OUT = 'Left out the pictures of the page: a DXF holds lines and text and no bitmaps.';
+  const SHEET = `<rect x="0" y="0" width="${PAGE_WIDTH}" height="${PAGE_HEIGHT}" fill="#fff"/>`;
 
   const conversion = async (body: string): Promise<{ dxf: DxfDocument; warnings: unknown }> => {
     const result = await withConversionWarnings(async () => {
@@ -320,7 +322,7 @@ describe('pictures', () => {
   ])('is left out, with the geometry around it written as before and a warning that says so: %s', async (_name, picture) => {
     const { dxf, warnings } = await conversion(`${outline}${picture}`);
     expect(dxf.entities).toEqual(plain.entities);
-    expect(warnings).toEqual(['Left out the pictures of the pages: a DXF holds lines and text and no bitmaps.']);
+    expect(warnings).toEqual([LEFT_OUT]);
   });
 
   it('is not reported for a picture the page does not draw, nor for a page without one', async () => {
@@ -328,8 +330,65 @@ describe('pictures', () => {
     expect((await conversion(outline)).warnings).toBeUndefined();
   });
 
+  it.each([
+    ['visibility hidden as an attribute', '<image visibility="hidden" x="0" y="0" width="1" height="1" href="#"/>'],
+    ['visibility collapse in a style', '<image style="visibility: collapse" x="0" y="0" width="1" height="1" href="#"/>'],
+    ['visibility hidden inherited from a group', '<g visibility="hidden"><image x="0" y="0" width="1" height="1" href="#"/></g>'],
+    ['visibility hidden inherited through a <use>', '<defs><image id="p" x="0" y="0" width="1" height="1" href="#"/></defs><use href="#p" visibility="hidden"/>'],
+    ['opacity 0', '<image opacity="0" x="0" y="0" width="1" height="1" href="#"/>'],
+    ['opacity 0 in a style', '<image style="opacity: 0.0" x="0" y="0" width="1" height="1" href="#"/>'],
+    ['opacity 0%', '<image opacity="0%" x="0" y="0" width="1" height="1" href="#"/>'],
+    ['a display of none on the group', '<g display="none"><image x="0" y="0" width="1" height="1" href="#"/></g>'],
+  ])('is not reported for a picture that is not painted: %s', async (_name, picture) => {
+    const { dxf, warnings } = await conversion(`${outline}${picture}`);
+    expect(warnings).toBeUndefined();
+    expect(dxf.entities).toEqual(plain.entities);
+  });
+
+  it.each([
+    ['visible inside a group that hides the rest', '<g visibility="hidden"><image visibility="visible" x="0" y="0" width="1" height="1" href="#"/></g>'],
+    ['visibility inherit', '<image visibility="inherit" x="0" y="0" width="1" height="1" href="#"/>'],
+    ['an opacity just above 0', '<image opacity="0.01" x="0" y="0" width="1" height="1" href="#"/>'],
+    ['an opacity of 50%', '<image opacity="50%" x="0" y="0" width="1" height="1" href="#"/>'],
+  ])('is reported for a picture that is painted: %s', async (_name, picture) => {
+    expect((await conversion(`${outline}${picture}`)).warnings).toEqual([LEFT_OUT]);
+  });
+
   it('leaves a page of only a picture to the rule for a page without geometry', () => {
     expect(refusal(PICTURE)).toMatch(/^ConversionFailedError: /);
+  });
+
+  describe('on a sheet that covers the page', () => {
+    const NO_GEOMETRY = /^ConversionFailedError: The page draws no vector geometry, so there is nothing to write as DXF\.$/;
+
+    it.each([
+      ['a white sheet', SHEET],
+      ['a sheet that falls short of the page by a point', `<rect x="0.5" y="0.5" width="${PAGE_WIDTH - 1}" height="${PAGE_HEIGHT - 1}" fill="#fff"/>`],
+      ['two sheets', `${SHEET}<path d="M 0 0 H ${PAGE_WIDTH} V ${PAGE_HEIGHT} H 0 Z" fill="#eee" stroke="none"/>`],
+      ['a sheet of a group with a transform', `<g transform="translate(0 0)">${SHEET}</g>`],
+    ])('is a page of only a picture, refused as a page without geometry: %s', (_name, sheet) => {
+      expect(refusal(`${sheet}${PICTURE}`)).toMatch(NO_GEOMETRY);
+    });
+
+    it.each([
+      ['a stroked border', `<rect x="0" y="0" width="${PAGE_WIDTH}" height="${PAGE_HEIGHT}" fill="#fff" stroke="#000"/>`],
+      ['a sheet smaller than the page', `<rect x="10" y="10" width="${PAGE_WIDTH - 20}" height="${PAGE_HEIGHT - 20}" fill="#fff"/>`],
+      ['a sheet and an outline', `${SHEET}${outline}`],
+      ['a line across the page', '<path d="M 0 50 H 200" stroke="#000" fill="none"/>'],
+    ])('is written with the picture left out when the page also draws %s', async (_name, geometry) => {
+      const { dxf, warnings } = await conversion(`${geometry}${PICTURE}`);
+      expect(dxf.entities.length).toBeGreaterThan(0);
+      expect(warnings).toEqual([LEFT_OUT]);
+    });
+
+    it('writes the sheet of a page with no picture, and of a page whose only picture is not painted', async () => {
+      const { dxf, warnings } = await conversion(SHEET);
+      expect(dxf.entities).toHaveLength(1);
+      expect(warnings).toBeUndefined();
+      const hidden = await conversion(`${SHEET}<image visibility="hidden" x="0" y="0" width="1" height="1" href="#"/>`);
+      expect(hidden.dxf.entities).toHaveLength(1);
+      expect(hidden.warnings).toBeUndefined();
+    });
   });
 
   it('reports once however many pictures a page draws, and reads them in bounded time', async () => {

@@ -65,7 +65,8 @@ const REFUSED_FOR_OTHER_CONTENT = ['govdocs1-002956.ps', 'govdocs1-003229.ps'] a
  * one picture page of 36 and 000766 is one page of a map. Every page converts and the conversion says the pictures were left out.
  */
 const PICTURE_FILES = ['govdocs1-004087.ps', 'govdocs1-006990.ps', 'govdocs1-000766.ps'] as const;
-const PICTURES_LEFT_OUT_WARNING = 'Left out the pictures of the pages: a DXF holds lines and text and no bitmaps.';
+const picturesLeftOutWarning = (pages: readonly number[]): string =>
+  `Left out the pictures of ${pages.length === 1 ? 'page' : 'pages'} ${pages.join(', ')}: a DXF holds lines and text and no bitmaps.`;
 
 /**
  * Files whose pages clip their drawing to a rectangle that is not the page. A clip that hides at most a point is dropped
@@ -308,7 +309,7 @@ describe('PostScript files that draw their text with bitmap fonts', () => {
         expect(pages).toHaveLength(pageCount(pdf));
         const withPictures = picturePages(pdf);
         expect(withPictures.length, 'pages Poppler draws a picture on').toBeGreaterThan(0);
-        expect(result.metadata?.warnings).toEqual([PICTURES_LEFT_OUT_WARNING]);
+        expect(result.metadata?.warnings).toEqual([picturesLeftOutWarning(withPictures)]);
         for (const page of withPictures) expect(readDxf(pages[page - 1]).entities.length, `page ${page} keeps its geometry`).toBeGreaterThan(0);
         if (PYTHON_WITH_EZDXF !== null) {
           const audited = pages.map((page) => (page.length <= AUDIT_WHOLE_PAGE_CHARACTERS ? page : withoutGeometry(page)));
@@ -368,7 +369,10 @@ function pageCount(pdf: Buffer): number {
   }
 }
 
-/** The pages (from 1) on which Poppler's own SVG for the page holds an `<image>`: the pictures a DXF cannot hold. */
+/**
+ * The pages (from 1) on which Poppler's own SVG for the page draws an `<image>`: one that the page places outside the definitions and the
+ * masks (a `<use>` of it), which a DXF cannot hold. The images inside a mask are the characters of a bitmap font, which the DXF writes as text.
+ */
 function picturePages(pdf: Buffer): number[] {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-picture-pages-'));
   try {
@@ -378,7 +382,10 @@ function picturePages(pdf: Buffer): number[] {
     for (let page = 1; page <= pageCount(pdf); page += 1) {
       const svg = path.join(directory, `page-${page}.svg`);
       execFileSync('pdftocairo', ['-svg', '-f', String(page), '-l', String(page), file, svg]);
-      if (fs.readFileSync(svg, 'utf-8').includes('<image ')) pages.push(page);
+      const text = fs.readFileSync(svg, 'utf-8');
+      const imageIds = [...text.matchAll(/<image\b[^>]*\bid="([^"]+)"/g)].map((match) => match[1]);
+      const placed = text.replace(/<mask\b[\s\S]*?<\/mask>/g, '').replace(/<defs>[\s\S]*?<\/defs>/g, '');
+      if (imageIds.some((id) => placed.includes(`href="#${id}"`))) pages.push(page);
     }
     return pages;
   } finally {

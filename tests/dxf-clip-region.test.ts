@@ -389,9 +389,9 @@ describe('a bitmap glyph under a clip', () => {
 
   it('is set aside when its extent is inside the clip and refused when it is not', () => {
     const inside = new BitmapGlyphs(true);
-    parseSvgGeometries(glyphPage(60), inside, 'centre-line');
+    parseSvgGeometries(glyphPage(60), { bitmapGlyphs: inside, pens: 'centre-line' });
     expect(inside.marks).toHaveLength(1);
-    expect(() => parseSvgGeometries(glyphPage(160), new BitmapGlyphs(true), 'centre-line')).toThrow(/clip-path "url\(#c\)" is not supported/);
+    expect(() => parseSvgGeometries(glyphPage(160), { bitmapGlyphs: new BitmapGlyphs(true), pens: 'centre-line' })).toThrow(/clip-path "url\(#c\)" is not supported/);
   });
 });
 

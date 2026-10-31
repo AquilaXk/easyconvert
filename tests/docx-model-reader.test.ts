@@ -148,6 +148,25 @@ describe('phonetic guides (ECMA-376 17.3.3.25)', () => {
     expect(firstParagraphText(cellBlocks((tableOf(model).rows[0])[0]))).toBe('字');
   });
 
+  it.each([
+    ['a paragraph', (guide: string) => `<w:p>${run('before ')}${guide}${run(' after')}</w:p>`],
+    ['a hyperlink', (guide: string) => `<w:p>${run('before ')}<w:hyperlink w:anchor="a">${guide}</w:hyperlink>${run(' after')}</w:p>`],
+    ['an insertion', (guide: string) => `<w:p>${run('before ')}<w:ins w:id="1" w:author="a">${guide}</w:ins>${run(' after')}</w:p>`],
+    ['a content control', (guide: string) => `<w:p>${run('before ')}<w:sdt><w:sdtContent>${guide}</w:sdtContent></w:sdt>${run(' after')}</w:p>`],
+    ['a smart tag', (guide: string) => `<w:p>${run('before ')}<w:smartTag w:uri="u" w:element="e">${guide}</w:smartTag>${run(' after')}</w:p>`],
+  ])('reads a guide that stands directly in %s as the text it is set over', async (_name, around) => {
+    const guide = '<w:ruby><w:rt><w:r><w:t>とうきょう</w:t></w:r></w:rt><w:rubyBase><w:r><w:t>東京</w:t></w:r></w:rubyBase></w:ruby>';
+    const { model } = await read(await craftDocx({ body: around(guide) }));
+    expect(firstParagraphText(bodyBlocks(model))).toBe('before 東京 after');
+  });
+
+  it('reads the guides of a base that holds guides, directly under a paragraph', async () => {
+    const inner = '<w:ruby><w:rt><w:r><w:t>b</w:t></w:r></w:rt><w:rubyBase><w:r><w:t>B</w:t></w:r></w:rubyBase></w:ruby>';
+    const outer = `<w:ruby><w:rt><w:r><w:t>a</w:t></w:r></w:rt><w:rubyBase>${inner}<w:r><w:t>A</w:t></w:r></w:rubyBase></w:ruby>`;
+    const { model } = await read(await craftDocx({ body: `<w:p>${outer}</w:p>` }));
+    expect(firstParagraphText(bodyBlocks(model))).toBe('BA');
+  });
+
   it('terminates on guides nested within the limit of element depth', async () => {
     const depth = 60;
     const nested = `${'<w:ruby><w:rubyBase><w:r>'.repeat(depth)}<w:t>core</w:t>${'</w:r></w:rubyBase></w:ruby>'.repeat(depth)}`;
