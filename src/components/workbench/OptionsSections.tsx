@@ -5,7 +5,6 @@ export {
   LABEL_CLASS,
   parseOptionalNonNegativeInt,
   parseOptionalPositiveInt,
-  pickFromList,
   SECTION_HEADING_CLASS,
   type SectionProps,
 } from './options/section-primitives';

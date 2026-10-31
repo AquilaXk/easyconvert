@@ -10,9 +10,10 @@ import {
   type SectionProps,
 } from './section-primitives';
 import {
-  resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
+  resolveSelectableVideoCodecs,
   sanitizeVideoOptionsForTarget,
+  type SelectableVideoCodec,
 } from './options-capabilities';
 
 const DEFAULT_IMAGE_QUALITY: Readonly<Record<string, number>> = {
@@ -27,11 +28,14 @@ const FIT_OPTIONS: ReadonlyArray<{ value: NonNullable<ConversionOptions['fit']>;
   { value: 'inside', label: 'Fit Inside' },
 ];
 
-const VIDEO_CODEC_OPTIONS: ReadonlyArray<{ value: NonNullable<ConversionOptions['videoCodec']>; label: string }> = [
+type VideoCodecChoice = { value: SelectableVideoCodec; label: string };
+
+const VIDEO_CODEC_OPTIONS: ReadonlyArray<VideoCodecChoice> = [
   { value: 'h264', label: 'H.264 (AVC)' },
   { value: 'hevc', label: 'H.265 (HEVC)' },
   { value: 'vp9', label: 'VP9' },
   { value: 'av1', label: 'AV1' },
+  { value: 'prores', label: 'Apple ProRes' },
 ];
 const VIDEO_FPS_VALUES: ReadonlyArray<NonNullable<ConversionOptions['videoFps']>> = [24, 30, 60];
 
@@ -202,11 +206,10 @@ export interface VideoOptionsSectionProps extends SectionProps {
 
 function resolveSelectedVideoCodec(
   options: ConversionOptions,
-  codecChoices: ReadonlyArray<{ value: NonNullable<ConversionOptions['videoCodec']>; label: string }>
+  codecChoices: ReadonlyArray<VideoCodecChoice>
 ): string {
-  if (options.videoCodec) return options.videoCodec;
-  const nested = options.video?.codec;
-  return nested && codecChoices.some((c) => c.value === nested) ? nested : '';
+  const active = options.video?.codec || options.videoCodec;
+  return active && codecChoices.some((c) => c.value === active) ? active : '';
 }
 
 function stripCodecBoundVideoFields(
@@ -224,18 +227,24 @@ function stripCodecBoundVideoFields(
 function applyVideoCodecChange(
   options: ConversionOptions,
   targetFormat: string,
-  codecChoices: ReadonlyArray<{ value: NonNullable<ConversionOptions['videoCodec']>; label: string }>,
+  codecChoices: ReadonlyArray<VideoCodecChoice>,
   raw: string
 ): ConversionOptions {
   const chosen = raw ? codecChoices.find((c) => c.value === raw)?.value : undefined;
-  const sanitized = sanitizeVideoOptionsForTarget(
-    {
-      videoCodec: chosen,
-      videoFps: options.videoFps,
-      video: stripCodecBoundVideoFields(options.video),
-    },
-    targetFormat
-  );
+  const strippedVideo = stripCodecBoundVideoFields(options.video);
+  const nextSlice =
+    chosen === 'prores'
+      ? {
+          videoCodec: undefined,
+          videoFps: options.videoFps,
+          video: { ...(strippedVideo ?? {}), codec: 'prores' as const },
+        }
+      : {
+          videoCodec: chosen,
+          videoFps: options.videoFps,
+          video: strippedVideo,
+        };
+  const sanitized = sanitizeVideoOptionsForTarget(nextSlice, targetFormat);
   return {
     ...options,
     videoCodec: sanitized.videoCodec,
@@ -245,7 +254,7 @@ function applyVideoCodecChange(
 }
 
 export function VideoOptionsSection({ options, onChange, showCodec, targetFormat }: Readonly<VideoOptionsSectionProps>) {
-  const allowedCodecs = resolveAllowedVideoCodecs(targetFormat);
+  const allowedCodecs = resolveSelectableVideoCodecs(targetFormat);
   const codecChoices = VIDEO_CODEC_OPTIONS.filter((o) => allowedCodecs.includes(o.value));
   const selectedCodec = resolveSelectedVideoCodec(options, codecChoices);
   const parseFps = (raw: string): ConversionOptions['videoFps'] =>

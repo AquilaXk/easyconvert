@@ -24,11 +24,3 @@ export function parseOptionalNonNegativeInt(raw: string): number | undefined {
   const parsed = Number.parseInt(raw, 10);
   return Number.isNaN(parsed) || parsed < 0 ? undefined : parsed;
 }
-
-export function pickFromList<T extends string>(
-  list: ReadonlyArray<T>,
-  raw: string,
-  fallback: T
-): T {
-  return list.find((item) => item === raw) ?? fallback;
-}

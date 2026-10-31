@@ -32,7 +32,14 @@ function pluralizeFiles(count: number): string {
 }
 
 function hasItemOptionError(item: ConversionQueueItem): boolean {
-  if (!item.targetFormat) return false;
+  if (
+    !item.targetFormat ||
+    item.status === 'completed' ||
+    item.status === 'uploading' ||
+    item.status === 'converting'
+  ) {
+    return false;
+  }
   return getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password) !== null;
 }
 
@@ -182,10 +189,9 @@ function QueueFooterBar({
 
 function deriveQueueViewState(
   items: ConversionQueueItem[],
-  isConverting: boolean,
-  maxLimit: number
+  convertibleItems: ConversionQueueItem[],
+  isConverting: boolean
 ) {
-  const convertibleItems = items.filter((item) => item.size <= maxLimit);
   const effectiveBusy =
     isConverting || items.some((i) => i.status === 'uploading' || i.status === 'converting');
   const completedCount = items.filter((i) => i.status === 'completed').length;
@@ -197,7 +203,7 @@ function deriveQueueViewState(
   const hasInvalidOptions = convertibleItems.some(hasItemOptionError);
   const canConvert = !effectiveBusy && allHaveTarget && hasPending && !hasInvalidOptions;
   const statusSummary = getQueueStatusSummary(items, convertibleItems, effectiveBusy);
-  return { convertibleItems, effectiveBusy, completedCount, allDone, canConvert, statusSummary };
+  return { effectiveBusy, completedCount, allDone, canConvert, statusSummary };
 }
 
 export default function ConversionQueue({
@@ -211,10 +217,14 @@ export default function ConversionQueue({
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
   const maxLimit = getEffectiveMaxFileSize();
-  const view = deriveQueueViewState(items, isConverting, maxLimit);
+  const convertibleItems = useMemo(
+    () => items.filter((item) => item.size <= maxLimit),
+    [items, maxLimit]
+  );
+  const view = deriveQueueViewState(items, convertibleItems, isConverting);
   const batchAvailableFormats = useMemo(
-    () => collectBatchTargetFormats(view.convertibleItems),
-    [view.convertibleItems]
+    () => collectBatchTargetFormats(convertibleItems),
+    [convertibleItems]
   );
   const currentOptionsItem = items.find((i) => i.id === activeOptionsModalId);
 
@@ -223,7 +233,7 @@ export default function ConversionQueue({
       <div className="w-full rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm overflow-visible">
         {items.length > 1 && (
           <QueueBatchHeader
-            itemCount={items.length} canBatchSelect={view.convertibleItems.length > 1} effectiveBusy={view.effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
+            itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={view.effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
             batchTargetLabel={batchTargetLabel} batchAvailableFormats={batchAvailableFormats} onUpdateAllTargets={onUpdateAllTargets}
             onToggleBatchSelector={() => { setActiveFormatSelectorId(null); setIsBatchSelectorOpen((prev) => !prev); }}
             onCloseBatchSelector={() => setIsBatchSelectorOpen(false)}

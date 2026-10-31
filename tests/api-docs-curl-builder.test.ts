@@ -534,5 +534,65 @@ describe('OpenAPI schema resolution, union unwrapping, and cURL synthesis', () =
     expect(multipartUnionCurl).toContain('-F "file=@sample.docx"');
     expect(multipartUnionCurl).toContain('-F "mode=strict"');
     expect(multipartUnionCurl).not.toContain('targetFormat=pdf');
+
+    const outerNullWrapped: OpenApiSchemaObject = {
+      default: null,
+      example: null,
+      const: null,
+      enum: [null],
+      anyOf: [
+        { type: 'null' },
+        { type: 'string', default: 'balanced', example: 'turbo' },
+      ],
+    };
+    expect(unwrapPrimarySchema(outerNullWrapped)).toMatchObject({
+      type: 'string',
+      default: 'balanced',
+      example: 'turbo',
+    });
+    expect(unwrapPrimarySchema(outerNullWrapped)?.const).toBeUndefined();
+    expect(unwrapPrimarySchema(outerNullWrapped)?.enum).toBeUndefined();
+
+    const enumNullInt: OpenApiSchemaObject = {
+      oneOf: [{ enum: [null] }, { type: 'integer', minimum: 5 }],
+    };
+    expect(primarySchemaType(enumNullInt)).toBe('integer');
+    expect(unwrapPrimarySchema(enumNullInt)).toMatchObject({ type: 'integer', minimum: 5 });
+
+    const nullTypeWithProps: OpenApiSchemaObject = {
+      type: ['null'],
+      properties: { a: { type: 'string' } },
+    };
+    expect(primarySchemaType(nullTypeWithProps)).toBe('object');
+
+    const nullLiteralsCurl = buildCurlSnippet(
+      {
+        key: 'POST:/api/v1/null-literals-check',
+        method: 'post',
+        path: '/api/v1/null-literals-check',
+        operation: {
+          parameters: [{ name: 'minCount', in: 'query', required: true, schema: enumNullInt }],
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['preset', 'count', 'nested'],
+                  properties: {
+                    preset: outerNullWrapped,
+                    count: enumNullInt,
+                    nested: { ...nullTypeWithProps, required: ['a'] },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '',
+      'https://api.easyconvert.com'
+    );
+    expect(nullLiteralsCurl).toContain('?minCount=5"');
+    expect(nullLiteralsCurl).toContain('\'{"preset":"turbo","count":5,"nested":{"a":"sample"}}\'');
   });
 });

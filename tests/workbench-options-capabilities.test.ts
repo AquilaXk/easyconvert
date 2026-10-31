@@ -8,7 +8,9 @@ import {
   isValidPasswordForTarget,
   resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
+  resolveSelectableVideoCodecs,
   sanitizeOptionsForPair,
+  sanitizeVideoOptionsForTarget,
 } from '../src/components/workbench/options/options-capabilities';
 import {
   AudioOptionsSection,
@@ -158,6 +160,8 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect([...FFMPEG_VIDEO_CONTAINERS]).toEqual(['mp4', 'mov', 'mkv', 'webm', 'avi']);
     expect(resolveAllowedVideoCodecs('mp4')).toEqual(['h264', 'hevc', 'vp9', 'av1']);
     expect(resolveAllowedVideoCodecs('mov')).toEqual(['h264', 'hevc', 'vp9', 'av1']);
+    expect(resolveSelectableVideoCodecs('mov')).toEqual(['h264', 'hevc', 'vp9', 'av1', 'prores']);
+    expect(resolveSelectableVideoCodecs('mp4')).toEqual(['h264', 'hevc', 'vp9', 'av1']);
     expect(resolveAllowedVideoCodecs('mkv')).toEqual(['h264', 'hevc', 'vp9', 'av1']);
     expect(resolveAllowedVideoCodecs('webm')).toEqual(['vp9', 'av1']);
     expect(resolveAllowedVideoCodecs('avi')).toEqual([]);
@@ -368,6 +372,27 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(
       sanitizeOptionsForPair({ video: { codec: 'prores', profile: 'hq' } }, 'mov', 'mp4')
     ).toEqual({});
+    expect(
+      sanitizeVideoOptionsForTarget({ video: { rateControl: { mode: 'crf', crf: 51 } } }, 'avi')
+    ).toEqual({ video: { rateControl: { mode: 'crf', crf: 51 } } });
+    for (const badCrf of [52, -1, Number.NaN]) {
+      expect(sanitizeVideoOptionsForTarget({ video: { rateControl: { mode: 'crf', crf: badCrf } } }, 'avi')).toEqual({});
+    }
+    expect(
+      sanitizeVideoOptionsForTarget(
+        { videoCodec: 'h264', video: { codec: 'av1', preset: '8', profile: 'main', rateControl: { mode: 'crf', crf: 60 } } },
+        'webm'
+      )
+    ).toEqual({ video: { codec: 'av1', preset: '8', profile: 'main', rateControl: { mode: 'crf', crf: 60 } } });
+    expect(
+      sanitizeVideoOptionsForTarget(
+        { videoCodec: 'vp9', video: { codec: 'prores', profile: 'hq', rateControl: { mode: 'crf', crf: 60 } } },
+        'mp4'
+      )
+    ).toEqual({});
+    expect(
+      sanitizeVideoOptionsForTarget({ videoCodec: 'vp9', video: { rateControl: { mode: 'crf', crf: 58 } } }, 'avi')
+    ).toEqual({});
 
     expect(
       sanitizeOptionsForPair({ password: '비밀번호', compressionLevel: 9 }, 'txt', 'tar')
@@ -389,7 +414,17 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(getPasswordValidationError('txt', 'zip', '비밀번호')).toBe(
       'ZIP passwords support 1 to 99 printable ASCII characters only.'
     );
-    expect(getPasswordValidationError('txt', '7z', '비밀번호')).toBeNull();
+    expect(getPasswordValidationError('txt', '7z', '비밀번호🔑')).toBeNull();
+    expect(isValidPasswordForTarget('비밀번호🔑', '7z')).toBe(true);
+    for (const badPw of ['bad\npw', 'bad\0pw', 'bad\ud800pw', 'bad\udc00pw']) {
+      expect(isValidPasswordForTarget(badPw, '7z')).toBe(false);
+      expect(getPasswordValidationError('txt', '7z', badPw)).toBe(
+        'Passwords cannot contain line breaks, null bytes, or invalid Unicode.'
+      );
+      expect(getPasswordValidationError('pdf', 'txt', badPw)).toBe(
+        'Passwords cannot contain line breaks, null bytes, or invalid Unicode.'
+      );
+    }
     expect(getPasswordValidationError('txt', '7z', 'a'.repeat(257))).toBe(
       'Passwords must be 256 characters or fewer.'
     );
@@ -557,6 +592,19 @@ describe('Workbench media, document, and tabular capability model', () => {
     findControlProps(renderNestedVideo(), 'opt-video-codec')!.onChange!({ target: { value: '' } });
     expect(nestedCodecVideoOpts).toEqual({});
 
+    let movVideoOpts: ConversionOptions = { videoCodec: 'h264', video: { codec: 'prores', profile: 'hq' } };
+    const renderMovVideo = () =>
+      VideoOptionsSection({ options: movVideoOpts, onChange: (next) => { movVideoOpts = next; }, showCodec: true, targetFormat: 'mov' });
+    const movDom = renderDom(createElement(VideoOptionsSection, { options: movVideoOpts, onChange: () => undefined, showCodec: true, targetFormat: 'mov' }));
+    expect(select(movDom, 'option').map((o) => attrOf(o, 'value'))).toContain('prores');
+    expect(findControlProps(renderMovVideo(), 'opt-video-codec')!.value).toBe('prores');
+    findControlProps(renderMovVideo(), 'opt-video-codec')!.onChange!({ target: { value: '' } });
+    expect(movVideoOpts).toEqual({});
+    findControlProps(renderMovVideo(), 'opt-video-codec')!.onChange!({ target: { value: 'prores' } });
+    expect(movVideoOpts).toEqual({ video: { codec: 'prores' } });
+    findControlProps(renderMovVideo(), 'opt-video-codec')!.onChange!({ target: { value: '' } });
+    expect(movVideoOpts).toEqual({});
+
     const mountedUnicodeZipModal = renderDom(
       createElement(OptionsModal, {
         filename: 'report.txt', sourceFormat: 'txt', targetFormat: 'zip',
@@ -625,24 +673,18 @@ describe('Workbench media, document, and tabular capability model', () => {
     ).toBe(false);
 
     const maxBytes = clientConverter.getEffectiveMaxFileSize();
+    const noop = () => undefined;
+    const rowNoops = {
+      isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
+      onSelectTargetFormat: noop, onOpenOptions: noop, onRetry: noop, onRemove: noop,
+    };
     const recoverableRowDom = renderDom(
       createElement(QueueItemRow, {
         item: makeItem({
-          id: 'cells-err-1',
-          name: 'sheet.csv',
-          size: 2048,
-          sourceFormat: 'csv',
-          targetFormat: 'parquet',
-          status: 'error',
-          error: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.',
+          id: 'cells-err-1', name: 'sheet.csv', size: 2048, sourceFormat: 'csv', targetFormat: 'parquet',
+          status: 'error', error: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.',
         }),
-        isFormatSelectorOpen: false,
-        onToggleFormatSelector: () => undefined,
-        onCloseFormatSelector: () => undefined,
-        onSelectTargetFormat: () => undefined,
-        onOpenOptions: () => undefined,
-        onRetry: () => undefined,
-        onRemove: () => undefined,
+        ...rowNoops,
       })
     );
     expect(
@@ -659,19 +701,10 @@ describe('Workbench media, document, and tabular capability model', () => {
     const oversizeRowDom = renderDom(
       createElement(QueueItemRow, {
         item: makeItem({
-          id: 'over-1',
-          size: maxBytes + 1024,
-          targetFormat: 'webm',
-          status: 'error',
-          error: 'File exceeds the 100 MB real-time conversion limit.',
+          id: 'over-1', size: maxBytes + 1024, targetFormat: 'webm',
+          status: 'error', error: 'File exceeds the 100 MB real-time conversion limit.',
         }),
-        isFormatSelectorOpen: false,
-        onToggleFormatSelector: () => undefined,
-        onCloseFormatSelector: () => undefined,
-        onSelectTargetFormat: () => undefined,
-        onOpenOptions: () => undefined,
-        onRetry: () => undefined,
-        onRemove: () => undefined,
+        ...rowNoops,
       })
     );
     expect(
@@ -752,28 +785,19 @@ describe('Workbench media, document, and tabular capability model', () => {
 
   it('fails closed on invalid target passwords across queue transitions while keeping recoverable non-size errors convertible', async () => {
     const noop = () => undefined;
+    const queueNoops = {
+      onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop,
+      onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false,
+    };
     const parquetFailedQueue = renderDom(
       createElement(ConversionQueue, {
         items: [
           makeItem({
-            id: 'parquet-err',
-            name: 'sheet.csv',
-            size: 2048,
-            sourceFormat: 'csv',
-            targetFormat: 'parquet',
-            status: 'error',
-            error: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.',
+            id: 'parquet-err', name: 'sheet.csv', size: 2048, sourceFormat: 'csv', targetFormat: 'parquet',
+            status: 'error', error: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.',
           }),
         ],
-        onRemoveItem: noop,
-        onClearAll: noop,
-        onUpdateTargetFormat: noop,
-        onUpdateOptions: noop,
-        onConvertAll: noop,
-        onConvertSingle: noop,
-        onAddMoreFiles: noop,
-        onDownloadAllZip: noop,
-        isConverting: false,
+        ...queueNoops,
       })
     );
     const parquetConvertBtn = select(parquetFailedQueue, 'button').find(
@@ -786,13 +810,8 @@ describe('Workbench media, document, and tabular capability model', () => {
 
     const pwHarness = buildTestQueueContext([
       makeItem({
-        id: 'arch-1',
-        name: 'report.txt',
-        sourceFormat: 'txt',
-        targetFormat: '7z',
-        status: 'completed',
-        resultUrl: 'blob:http://localhost/arch-7z',
-        options: { password: '비밀번호' },
+        id: 'arch-1', name: 'report.txt', sourceFormat: 'txt', targetFormat: '7z',
+        status: 'completed', resultUrl: 'blob:http://localhost/arch-7z', options: { password: '비밀번호' },
       }),
     ]);
 
@@ -806,14 +825,8 @@ describe('Workbench media, document, and tabular capability model', () => {
 
     const invalidZipRowDom = renderDom(
       createElement(QueueItemRow, {
-        item: zipItem,
-        isFormatSelectorOpen: false,
-        onToggleFormatSelector: noop,
-        onCloseFormatSelector: noop,
-        onSelectTargetFormat: noop,
-        onOpenOptions: noop,
-        onRetry: noop,
-        onRemove: noop,
+        item: zipItem, isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
+        onSelectTargetFormat: noop, onOpenOptions: noop, onRetry: noop, onRemove: noop,
       })
     );
     expect(
@@ -826,23 +839,27 @@ describe('Workbench media, document, and tabular capability model', () => {
       attrOf(select(invalidZipRowDom, 'button').find((b) => visibleText(b) === 'Retry')!, 'disabled')
     ).toBe('');
 
-    const invalidZipQueueDom = renderDom(
-      createElement(ConversionQueue, {
-        items: [zipItem],
-        onRemoveItem: noop,
-        onClearAll: noop,
-        onUpdateTargetFormat: noop,
-        onUpdateOptions: noop,
-        onConvertAll: noop,
-        onConvertSingle: noop,
-        onAddMoreFiles: noop,
-        onDownloadAllZip: noop,
-        isConverting: false,
-      })
-    );
+    const invalidZipQueueDom = renderDom(createElement(ConversionQueue, { items: [zipItem], ...queueNoops }));
     expect(
       attrOf(select(invalidZipQueueDom, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')
     ).toBe('');
+
+    const completedPlusReadyQueueDom = renderDom(
+      createElement(ConversionQueue, {
+        items: [
+          makeItem({
+            id: 'done-zip', name: 'done.txt', sourceFormat: 'txt', targetFormat: 'zip',
+            status: 'completed', resultUrl: 'blob:http://localhost/done-zip', options: { password: '비밀번호' },
+          }),
+          makeItem({ id: 'pending-valid', name: 'next.txt', sourceFormat: 'txt', targetFormat: '7z', status: 'ready' }),
+        ],
+        ...queueNoops,
+      })
+    );
+    expect(
+      attrOf(select(completedPlusReadyQueueDom, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')
+    ).toBeNull();
+    expect(visibleText(select(completedPlusReadyQueueDom, 'output')[0])).toBe('Ready to convert 1 file');
 
     const execSpy = vi.spyOn(clientConverter, 'executeItemConversion').mockResolvedValue(undefined);
     try {

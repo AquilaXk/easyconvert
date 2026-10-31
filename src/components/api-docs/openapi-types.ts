@@ -231,22 +231,27 @@ export function formatSchemaType(
   return fallback;
 }
 
+function isNullOnlyEnum(values: OpenApiSchemaObject['enum']): boolean {
+  return values !== undefined && values.length > 0 && values.every((item) => item === null);
+}
+
 function resolveExplicitPrimaryType(raw: OpenApiSchemaObject['type']): string | undefined {
-  if (typeof raw === 'string') return raw === 'null' ? 'string' : raw;
-  if (Array.isArray(raw)) return raw.find((item) => item !== 'null') ?? 'string';
+  if (typeof raw === 'string') return raw === 'null' ? undefined : raw;
+  if (Array.isArray(raw)) return raw.find((item) => item !== 'null');
   return undefined;
 }
 
 const MAX_UNION_UNWRAP_STEPS = 8;
 
 function isNullUnionBranch(branch: OpenApiSchemaObject): boolean {
-  if (branch.type === 'null' || branch.const === null) return true;
+  if (branch.type === 'null' || branch.const === null || isNullOnlyEnum(branch.enum)) return true;
   return Array.isArray(branch.type) && branch.type.length === 1 && branch.type[0] === 'null';
 }
 
 function shouldStopUnionUnwrap(schema: OpenApiSchemaObject): boolean {
-  if (schema.const !== undefined || schema.items !== undefined) return true;
-  if (schema.enum?.length) return true;
+  if (schema.items !== undefined) return true;
+  if (schema.const !== undefined && schema.const !== null) return true;
+  if (schema.enum?.length && !isNullOnlyEnum(schema.enum)) return true;
   return !(schema.oneOf?.length || schema.anyOf?.length);
 }
 
@@ -270,15 +275,31 @@ function applyMergedObjectFields(
   }
 }
 
+function clearOuterNullLiterals(
+  merged: OpenApiSchemaObject,
+  outer: OpenApiSchemaObject,
+  branch: OpenApiSchemaObject
+): void {
+  if (outer.const === null && branch.const === undefined) delete merged.const;
+  if (isNullOnlyEnum(outer.enum) && !branch.enum) delete merged.enum;
+  if (outer.example === null && branch.example === undefined) delete merged.example;
+  if (outer.default === null && branch.default === undefined) delete merged.default;
+}
+
 function mergeUnionStep(
   outer: OpenApiSchemaObject,
   branch: OpenApiSchemaObject
 ): OpenApiSchemaObject {
   const outerRest = omitUnionKeywords(outer);
   const merged: OpenApiSchemaObject = { ...outerRest, ...branch };
-  if (outerRest.example !== undefined) merged.example = outerRest.example;
-  if (outerRest.default !== undefined) merged.default = outerRest.default;
+  if (outerRest.example !== undefined && outerRest.example !== null) {
+    merged.example = outerRest.example;
+  }
+  if (outerRest.default !== undefined && outerRest.default !== null) {
+    merged.default = outerRest.default;
+  }
   if (branch.type === undefined && outerRest.type !== undefined) merged.type = outerRest.type;
+  clearOuterNullLiterals(merged, outerRest, branch);
   applyMergedObjectFields(merged, outerRest, branch);
   return merged;
 }

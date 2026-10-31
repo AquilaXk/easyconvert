@@ -13,7 +13,12 @@ export {
   resolveAudioCapabilities,
   sanitizeVideoOptionsForTarget,
 };
-export { isLosslessAudioTarget, type AudioCapabilities } from './media-capabilities';
+export {
+  isLosslessAudioTarget,
+  resolveSelectableVideoCodecs,
+  type AudioCapabilities,
+  type SelectableVideoCodec,
+} from './media-capabilities';
 
 export type PasswordMode = 'archive-encrypt' | 'archive-reencrypt' | 'pdf-decrypt';
 
@@ -241,6 +246,17 @@ function applySanitizedDocumentOptions(
   applySanitizedOcrOptions(next, options, visible);
 }
 
+function hasForbiddenPasswordChars(value: string): boolean {
+  if (value.includes('\r') || value.includes('\n') || value.includes('\0')) return true;
+  let cursor = 0;
+  while (cursor < value.length) {
+    const code = value.codePointAt(cursor) ?? 0;
+    if (code >= 0xd800 && code <= 0xdfff) return true;
+    cursor += code > 0xffff ? 2 : 1;
+  }
+  return false;
+}
+
 export function isValidPasswordForTarget(password: string, targetFormat: string): boolean {
   if (targetFormat.toLowerCase() === 'zip') {
     return (
@@ -249,7 +265,11 @@ export function isValidPasswordForTarget(password: string, targetFormat: string)
       ZIP_PRINTABLE_ASCII_PATTERN.test(password)
     );
   }
-  return password.length > 0 && password.length <= MAX_GENERAL_PASSWORD_LENGTH;
+  return (
+    password.length > 0 &&
+    password.length <= MAX_GENERAL_PASSWORD_LENGTH &&
+    !hasForbiddenPasswordChars(password)
+  );
 }
 
 export function getPasswordValidationError(
@@ -259,9 +279,13 @@ export function getPasswordValidationError(
 ): string | null {
   if (!password || resolvePasswordMode(sourceFormat, targetFormat) === null) return null;
   if (isValidPasswordForTarget(password, targetFormat)) return null;
-  return targetFormat.toLowerCase() === 'zip'
-    ? 'ZIP passwords support 1 to 99 printable ASCII characters only.'
-    : 'Passwords must be 256 characters or fewer.';
+  if (targetFormat.toLowerCase() === 'zip') {
+    return 'ZIP passwords support 1 to 99 printable ASCII characters only.';
+  }
+  if (hasForbiddenPasswordChars(password)) {
+    return 'Passwords cannot contain line breaks, null bytes, or invalid Unicode.';
+  }
+  return 'Passwords must be 256 characters or fewer.';
 }
 
 function applySanitizedSecurityAndArchiveOptions(

@@ -74,9 +74,7 @@ function hasValidItemOptions(item: ConversionQueueItem): boolean {
   return getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password) === null;
 }
 
-function canResetToReady(item: ConversionQueueItem, maxLimit: number): boolean {
-  return item.status === 'completed' || (item.status === 'error' && item.size <= maxLimit);
-}
+type IdleItemPatch = Pick<ConversionQueueItem, 'targetFormat' | 'options'>;
 
 function isConvertiblePendingItem(item: ConversionQueueItem, maxLimit: number): boolean {
   return (
@@ -87,12 +85,7 @@ function isConvertiblePendingItem(item: ConversionQueueItem, maxLimit: number): 
   );
 }
 
-function patchIdleItem(
-  item: ConversionQueueItem,
-  patch: Pick<ConversionQueueItem, 'targetFormat' | 'options'>,
-  maxLimit: number
-): ConversionQueueItem {
-  if (item.size > maxLimit) return { ...item, ...patch };
+function patchIdleItem(item: ConversionQueueItem, patch: IdleItemPatch): ConversionQueueItem {
   const optionError = getPasswordValidationError(
     item.sourceFormat,
     patch.targetFormat,
@@ -107,13 +100,9 @@ function patchIdleItem(
     ...patch,
     progress: 0,
   };
-  if (optionError !== null) {
-    return { ...base, status: 'error', error: optionError };
-  }
-  if (canResetToReady(item, maxLimit) || item.status === 'ready') {
-    return { ...base, status: 'ready' };
-  }
-  return { ...item, ...patch };
+  return optionError !== null
+    ? { ...base, status: 'error', error: optionError }
+    : { ...base, status: 'ready' };
 }
 
 function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Set<string>): string {
@@ -241,7 +230,7 @@ export interface QueueMutationContext {
 export function createQueueMutators(ctx: QueueMutationContext) {
   const mutateIdleItems = (
     predicate: (item: ConversionQueueItem) => boolean,
-    getPatch: (item: ConversionQueueItem) => Pick<ConversionQueueItem, 'targetFormat' | 'options'>
+    getPatch: (item: ConversionQueueItem) => IdleItemPatch
   ) => {
     const maxLimit = getEffectiveMaxFileSize();
     const canEdit = (item: ConversionQueueItem) =>
@@ -252,7 +241,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
       ctx.revokeBlobUrl(item.resultUrl);
     }
     ctx.updateQueue((prev) =>
-      prev.map((item) => (canEdit(item) ? patchIdleItem(item, getPatch(item), maxLimit) : item))
+      prev.map((item) => (canEdit(item) ? patchIdleItem(item, getPatch(item)) : item))
     );
   };
 
