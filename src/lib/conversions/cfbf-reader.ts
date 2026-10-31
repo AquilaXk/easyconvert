@@ -1,4 +1,5 @@
-import { ConversionFailedError, CorruptStreamError } from '../types';
+import os from 'node:os';
+import { CompoundFileStructureError, CorruptStreamError } from '../types';
 import {
   CFBF_DIRECTORY_ENTRY_BYTES,
   CFBF_FIRST_RESERVED_SECTOR,
@@ -67,41 +68,48 @@ const CFBF_STORAGE_ENTRY = 1;
 const CFBF_STREAM_ENTRY = 2;
 const CFBF_ROOT_ENTRY = 5;
 
-/**
- * Marks `sector` as read by chain `owner`, in the table of which chain read each sector. A sector read twice by one chain is a loop,
- * and one read by two chains is shared; both are refused, so no file makes the parser copy a sector twice. A sector of the FAT or
- * the DIFAT belongs to no chain. This is the loop rule of Apache POI BlockStore.ChainLoopDetector (a block claimed twice, the FAT
- * and DIFAT sectors in the same detector as the property table, `POIFSFileSystem.readCoreContents`), kept across chains as olefile
- * `_check_duplicate_stream` keeps the first sectors of all streams, and applied to every sector of every chain.
- */
-function claimChainSector(owners: Uint32Array, sector: number, owner: number, start: number, unit: ChainUnit): void {
-  if (owners[sector] === CFBF_TABLE_OWNER) {
-    throw new CorruptStreamError(`Corrupt CFBF container: the ${unit} chain starting at ${unit} ${start} reads ${unit} ${sector}, which holds the FAT or the DIFAT.`);
-  }
-  if (owners[sector] === owner) {
-    throw new CorruptStreamError(`Corrupt CFBF container: the ${unit} chain starting at ${unit} ${start} returns to ${unit} ${sector}.`);
-  }
-  if (owners[sector] !== 0) {
-    throw new CorruptStreamError(`Corrupt CFBF container: ${unit} ${sector} belongs to two chains.`);
-  }
-  owners[sector] = owner;
-}
-
+/** Marker that ends a chain of sectors ([MS-CFB] 2.1). */
+const CFBF_END_OF_CHAIN = 0xfffffffe;
 /** The list a reader keeps of the units of the chain it is reading starts at this many, and doubles when a chain is longer. */
 const CHAIN_LIST_START = 64;
+/** The words of a table are filled from the bytes of the file, which are little-endian ([MS-CFB] 2.1); a host of the other order swaps them. */
+const LITTLE_ENDIAN_HOST = os.endianness() === 'LE';
 
 type ChainUnit = 'sector' | 'mini sector';
 
 /**
+ * What a chain is for. The directory and the mini FAT are the structure that describes the file ('structure'): such a chain starts
+ * at a sector, stays inside the file and the FAT, shares no sector with another chain or with the FAT, and ends at the end-of-chain
+ * marker, and any other chain a refusal names is a `CompoundFileStructureError`. A stream's own chain ('stream') may end where the
+ * file does, and its damage is a `CorruptStreamError`.
+ */
+type ChainRole = 'structure' | 'stream';
+
+const hex = (marker: number): string => `0x${marker.toString(16)}`;
+
+function chainRefusal(structural: boolean, message: string): CorruptStreamError {
+  return structural ? new CompoundFileStructureError(message) : new CorruptStreamError(message);
+}
+
+/**
  * Reads chains of units (sectors of the file, or mini sectors of the mini stream) out of `data`: the units are listed as the table
- * gives them, each claimed once (`claimChainSector`), and the chain is copied into one buffer of exactly the bytes it holds, up to
- * `maxBytes`, with no buffer for a unit. The sectors of a file start after its one-sector header ([MS-CFB] 2.2) and the mini sectors
- * at the start of the mini stream. `owners` is the table of who read each unit; one list of units serves every chain, so a stream
- * costs no allocation but its own bytes.
+ * gives them, each claimed once, and the chain is copied into one buffer of exactly the bytes it holds, up to `maxBytes`, with no
+ * buffer for a unit. The sectors of a file start after its one-sector header ([MS-CFB] 2.2) and the mini sectors at the start of
+ * the mini stream. `owners` is the table of who read each unit; one list of units serves every chain, so a stream costs no
+ * allocation but its own bytes.
+ *
+ * A unit read twice by one chain is a loop and one read by two chains is shared; both are refused, so no file makes the parser
+ * copy a unit twice. A sector of the FAT or the DIFAT belongs to no chain. This is the loop rule of Apache POI
+ * BlockStore.ChainLoopDetector (a block claimed twice, the FAT and DIFAT sectors in the same detector as the property table,
+ * `POIFSFileSystem.readCoreContents`), kept across chains as olefile `_check_duplicate_stream` keeps the first sectors of all
+ * streams, and applied to every unit of every chain. A unit shared by a stream and a structure chain is refused as the structure's
+ * damage, whichever of the two pointers is wrong: the file's table of contents can no longer be told from its data.
  */
 class ChainReader {
   private chains = 0;
   private units = new Uint32Array(CHAIN_LIST_START);
+  private unitCount = 0;
+  private readonly structureOwners = new Set<number>();
   private readonly firstUnitOffset: number;
 
   constructor(
@@ -114,60 +122,96 @@ class ChainReader {
     this.firstUnitOffset = unit === 'sector' ? unitBytes : 0;
   }
 
+  /** The bytes of the chain that starts at `start`, at most `maxBytes`. */
+  read(start: number, maxBytes = Infinity, role: ChainRole = 'stream'): Buffer {
+    const chain = Buffer.allocUnsafe(this.walk(start, maxBytes, role));
+    this.copyInto(chain);
+    return chain;
+  }
+
+  /** The words of a table that the chain from `start` holds, at most `maxWords`, filled in place with no copy of the bytes. */
+  readWords(start: number, maxWords: number, role: ChainRole): Uint32Array {
+    const words = new Uint32Array(this.walk(start, maxWords * Uint32Array.BYTES_PER_ELEMENT, role) >>> 2);
+    const bytes = Buffer.from(words.buffer);
+    this.copyInto(bytes);
+    if (!LITTLE_ENDIAN_HOST) bytes.swap32();
+    return words;
+  }
+
   /**
-   * The bytes of the chain that starts at `start`, at most `maxBytes`. A chain stops at an end marker, at the byte limit, or, when
-   * `mustEnd` is not set, at a unit that the data or the table does not hold (the stream that needed the rest is refused for its
-   * size). With `mustEnd`, a chain that runs to a unit that the data or the table does not hold is refused.
+   * Lists the units of the chain and returns the bytes they hold, at most `maxBytes`. A chain stops at an end marker, at the byte
+   * limit, or, for a stream, at a unit that the data or the table does not hold (the stream that needed the rest is refused for its
+   * size). A structure chain that runs to a unit that the data or the table does not hold, or ends on another marker, is refused.
    */
-  read(start: number, maxBytes = Infinity, mustEnd = false): Buffer {
-    if (start >= CFBF_FIRST_RESERVED_SECTOR) return Buffer.alloc(0);
+  private walk(start: number, maxBytes: number, role: ChainRole): number {
+    const structural = role === 'structure';
     const owner = ++this.chains;
-    let count = 0;
+    if (structural) this.structureOwners.add(owner);
+    this.unitCount = 0;
+    if (start >= CFBF_FIRST_RESERVED_SECTOR && structural) {
+      throw new CompoundFileStructureError(`Corrupt CFBF container: the ${this.unit} chain starts at the marker ${hex(start)}, not at a ${this.unit}.`);
+    }
     let bytes = 0;
     let current = start;
     while (current < CFBF_FIRST_RESERVED_SECTOR) {
       const offset = this.offsetOf(current);
       if (offset >= this.data.length) {
-        if (mustEnd) throw this.endsOutside(start, `reaches ${this.unit} ${current}, which the file does not hold`);
+        if (structural) throw this.endsOutside(start, `reaches ${this.unit} ${current}, which the file does not hold`);
         break;
       }
-      claimChainSector(this.owners, current, owner, start, this.unit);
-      if (count === this.units.length) {
+      this.claim(current, owner, start, structural);
+      if (this.unitCount === this.units.length) {
         const grown = new Uint32Array(this.units.length * 2);
         grown.set(this.units);
         this.units = grown;
       }
-      this.units[count++] = current;
+      this.units[this.unitCount++] = current;
       bytes += Math.min(this.unitBytes, this.data.length - offset);
       if (bytes >= maxBytes) break;
       if (current >= this.table.length) {
-        if (mustEnd) throw this.endsOutside(start, `ends at ${this.unit} ${current}, which the FAT does not cover`);
+        if (structural) throw this.endsOutside(start, `ends at ${this.unit} ${current}, which the FAT does not cover`);
         break;
       }
       current = this.table[current];
     }
-
-    const chain = Buffer.allocUnsafe(Math.min(bytes, maxBytes));
-    let copied = 0;
-    for (let i = 0; i < count && copied < chain.length; i++) {
-      const offset = this.offsetOf(this.units[i]);
-      copied += this.data.copy(chain, copied, offset, Math.min(offset + this.unitBytes, this.data.length));
+    if (structural && current >= CFBF_FIRST_RESERVED_SECTOR && current !== CFBF_END_OF_CHAIN) {
+      throw this.endsOutside(start, `ends at the marker ${hex(current)}, not at the end of the chain`);
     }
-    return chain;
+    return Math.min(bytes, maxBytes);
+  }
+
+  private copyInto(target: Buffer): void {
+    let copied = 0;
+    for (let i = 0; i < this.unitCount && copied < target.length; i++) {
+      const offset = this.offsetOf(this.units[i]);
+      copied += this.data.copy(target, copied, offset, Math.min(offset + this.unitBytes, this.data.length));
+    }
   }
 
   private offsetOf(unit: number): number {
     return this.firstUnitOffset + unit * this.unitBytes;
   }
 
-  /**
-   * A plain ConversionFailedError, not a CorruptStreamError: the office suite is given every file that the in-process reader refuses
-   * as corrupt (`retryRefusedLegacyDocument`), and for the three real workbooks whose directory chain runs past the file
-   * (govdocs1-007750, -007751, -008063) it writes the bytes as text. These files were refused before the chain was checked, with
-   * the same class of error, and stay refused.
-   */
-  private endsOutside(start: number, what: string): ConversionFailedError {
-    return new ConversionFailedError(`Corrupt CFBF container: the ${this.unit} chain starting at ${this.unit} ${start} ${what}.`);
+  /** Marks the unit at `index` as read by chain `owner`, or refuses the chain when the unit is read already. */
+  private claim(index: number, owner: number, start: number, structural: boolean): void {
+    const previous = this.owners[index];
+    if (previous === 0) {
+      this.owners[index] = owner;
+      return;
+    }
+    const name = this.unit;
+    const chain = `the ${name} chain starting at ${name} ${start}`;
+    if (previous === CFBF_TABLE_OWNER) {
+      throw chainRefusal(structural, `Corrupt CFBF container: ${chain} reads ${name} ${index}, which holds the FAT or the DIFAT.`);
+    }
+    if (previous === owner) {
+      throw chainRefusal(structural, `Corrupt CFBF container: ${chain} returns to ${name} ${index}.`);
+    }
+    throw chainRefusal(structural || this.structureOwners.has(previous), `Corrupt CFBF container: ${name} ${index} belongs to two chains.`);
+  }
+
+  private endsOutside(start: number, what: string): CompoundFileStructureError {
+    return new CompoundFileStructureError(`Corrupt CFBF container: the ${this.unit} chain starting at ${this.unit} ${start} ${what}.`);
   }
 }
 
@@ -187,6 +231,23 @@ function assertStreamSizesFit(entries: readonly CfbfDirectoryEntry[], miniStream
   if (regular > sectorBytes || mini > miniStreamBytes) {
     throw new CorruptStreamError(
       `Corrupt CFBF container: its streams declare ${regular} bytes in ${sectorBytes} bytes of sectors and ${mini} bytes in a ${miniStreamBytes}-byte mini stream.`
+    );
+  }
+}
+
+/**
+ * Refuses a file whose header gives a mini stream cutoff other than 4096 when a stream is of a size between the two values. A
+ * writer places a stream in the mini stream below its cutoff and in the sectors from it up, and this reader takes the cutoff as
+ * 4096 (`CFBF_MINI_STREAM_CUTOFF`), so such a stream would be read from the other store and return the bytes of other sectors.
+ * LibreOffice takes the cutoff from the header (`stgelem.cxx` line 205), so the office suite may still read the file.
+ */
+function assertStreamPlacementAgrees(entries: readonly CfbfDirectoryEntry[], headerCutoff: number): void {
+  const lowest = Math.min(headerCutoff, CFBF_MINI_STREAM_CUTOFF);
+  const highest = Math.max(headerCutoff, CFBF_MINI_STREAM_CUTOFF);
+  const misplaced = entries.find((entry) => entry.type === CFBF_STREAM_ENTRY && entry.streamSize !== 0 && entry.streamSize >= lowest && entry.streamSize < highest);
+  if (misplaced !== undefined) {
+    throw new CorruptStreamError(
+      `Corrupt CFBF container: its header gives the mini stream cutoff ${headerCutoff}, so its stream "${misplaced.name}" of ${misplaced.streamSize} bytes is stored in the other store than the one a cutoff of ${CFBF_MINI_STREAM_CUTOFF} reads.`
     );
   }
 }
@@ -215,6 +276,7 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   const fatSectorCount = buffer.readUInt32LE(44);
   const firstDirSector = buffer.readUInt32LE(48);
   const firstMiniFatSector = buffer.readUInt32LE(60);
+  const headerCutoff = buffer.readUInt32LE(56);
   const miniFatSectorCount = buffer.readUInt32LE(64);
   const firstDifatSector = buffer.readUInt32LE(68);
   const difatSectorCount = buffer.readUInt32LE(72);
@@ -225,12 +287,15 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
 
   // 1. Collect all FAT sector IDs from header (up to 109) and additional DIFAT sectors. Each DIFAT and FAT sector is read once
   // (Apache POI POIFSFileSystem.readCoreContents claims every FAT and XFAT block in one ChainLoopDetector), and the list ends at
-  // the first FAT sector past the file, so the FAT never outgrows the file.
+  // the first FAT sector past the file or when it holds the sectors that map every sector of the file, so the FAT never outgrows
+  // the file (olefile `loadfat` shrinks the FAT to the sectors of the file, `olefile.py` lines 1643 to 1645).
+  const fatEntriesPerSector = sectorSize / 4;
+  const fatSectorLimit = Math.min(fatSectorCount, Math.ceil(sectorsInFile / fatEntriesPerSector));
   const sectorOwners = new Uint32Array(sectorsInFile);
   const fatSectorIds: number[] = [];
   let fatListEnded = false;
   const addFatSector = (sId: number): void => {
-    if (fatListEnded || sId >= CFBF_FIRST_RESERVED_SECTOR || fatSectorIds.length >= fatSectorCount) return;
+    if (fatListEnded || sId >= CFBF_FIRST_RESERVED_SECTOR || fatSectorIds.length >= fatSectorLimit) return;
     if (!wholeSector(sId)) {
       fatListEnded = true;
       return;
@@ -257,7 +322,6 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   }
 
   // 2. Build the unified FAT table (mapping sector -> next sector)
-  const fatEntriesPerSector = sectorSize / 4;
   const totalFatEntries = fatSectorIds.length * fatEntriesPerSector;
   const fat = new Uint32Array(totalFatEntries);
 
@@ -271,8 +335,8 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
   const sectorReader = new ChainReader(buffer, 'sector', sectorSize, fat, sectorOwners);
 
   // 3. Read Directory stream: the slots it may hold and one more, so that a chain that holds more is refused; a chain that does not
-  // end at an end marker or runs out of the file or the FAT is refused, not cut short.
-  const dirBuffer = sectorReader.read(firstDirSector, CFBF_DIRECTORY_READ_BYTES, true);
+  // end at the end-of-chain marker or runs out of the file or the FAT is refused, not cut short.
+  const dirBuffer = sectorReader.read(firstDirSector, CFBF_DIRECTORY_READ_BYTES, 'structure');
   const entryCount = Math.floor(dirBuffer.length / CFBF_DIRECTORY_ENTRY_BYTES);
   if (entryCount > CFBF_MAX_DIRECTORY_ENTRIES) {
     throw new CorruptStreamError(`Corrupt CFBF container: its directory holds more than ${CFBF_MAX_DIRECTORY_ENTRIES} entries.`);
@@ -307,25 +371,27 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
     });
   }
 
-  const rootEntry = directoryEntries.find((d) => d.type === CFBF_ROOT_ENTRY) || directoryEntries[0];
-  const hasMiniStream = rootEntry !== undefined && rootEntry.startingSector < CFBF_FIRST_RESERVED_SECTOR && rootEntry.streamSize > 0;
-  assertStreamSizesFit(directoryEntries, hasMiniStream ? rootEntry.streamSize : 0, sectorsInFile * sectorSize);
-
-  // 4. Build MiniFAT table; its chain too must end at an end marker.
-  let miniFat: Uint32Array = new Uint32Array(0);
-  if (miniFatSectorCount > 0 && firstMiniFatSector < CFBF_FIRST_RESERVED_SECTOR) {
-    const miniFatBuffer = sectorReader.read(firstMiniFatSector, miniFatSectorCount * sectorSize, true);
-    miniFat = new Uint32Array(Math.floor(miniFatBuffer.length / 4));
-    for (let i = 0; i < miniFat.length; i++) {
-      miniFat[i] = miniFatBuffer.readUInt32LE(i * 4);
-    }
+  if (directoryEntries.length === 0) {
+    throw new CompoundFileStructureError('Corrupt CFBF container: its directory holds no entry.');
   }
+  const rootEntry = directoryEntries.find((d) => d.type === CFBF_ROOT_ENTRY) || directoryEntries[0];
+  const hasMiniStream = rootEntry.startingSector < CFBF_FIRST_RESERVED_SECTOR && rootEntry.streamSize > 0;
+  assertStreamSizesFit(directoryEntries, hasMiniStream ? rootEntry.streamSize : 0, sectorsInFile * sectorSize);
+  assertStreamPlacementAgrees(directoryEntries, headerCutoff);
 
-  // 5. MiniStream buffer (stored in Root Entry starting sector)
+  // 4. The mini stream (stored in the Root Entry's chain) and its MiniFAT. The MiniFAT is read only when there is a mini stream, and
+  // only the entries that the mini stream can address (olefile `loadminifat` shrinks the table to the mini sectors of the root
+  // entry's size, `olefile.py` lines 1667 and 1681, and loads it only when a stream below the cutoff is opened, lines 1858 to
+  // 1860); its chain too must end at an end marker.
+  let miniFat: Uint32Array = new Uint32Array(0);
   let miniStreamBuffer: Buffer = Buffer.alloc(0);
   if (hasMiniStream) {
     if (miniSectorShift !== CFBF_MINI_SECTOR_SHIFT) {
       throw new CorruptStreamError(`Corrupt CFBF container: mini sector shift ${miniSectorShift} is not ${CFBF_MINI_SECTOR_SHIFT}.`);
+    }
+    if (miniFatSectorCount > 0) {
+      const addressableMiniSectors = Math.ceil(Math.min(rootEntry.streamSize, sectorsInFile * sectorSize) / miniSectorSize);
+      miniFat = sectorReader.readWords(firstMiniFatSector, Math.min(addressableMiniSectors, miniFatSectorCount * fatEntriesPerSector), 'structure');
     }
     miniStreamBuffer = sectorReader.read(rootEntry.startingSector, rootEntry.streamSize);
   }
@@ -430,7 +496,7 @@ export function parseCfbf(buffer: Buffer): CfbfContainer {
       if (miniSector >= miniFat.length) return undefined;
       miniSector = miniFat[miniSector];
     }
-    if (miniSector >= CFBF_FIRST_RESERVED_SECTOR || !rootEntry) return undefined;
+    if (miniSector >= CFBF_FIRST_RESERVED_SECTOR) return undefined;
     return chainByteOffset(rootEntry.startingSector, miniSector * miniSectorSize + (offset % miniSectorSize));
   }
 

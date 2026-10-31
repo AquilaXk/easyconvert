@@ -18,8 +18,8 @@ import {
 } from '../src/worker/office-suite-route';
 import { emf, wmf } from './helpers/metafile-headers';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
-import { ConversionFailedError, CorruptStreamError, DataParseError, EngineUnavailableError, PayloadLimitError, SandboxUnavailableError, SheetLimitError } from '../src/lib/types';
-import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../src/lib/conversions/office/legacy-office-limits';
+import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, DataParseError, EngineUnavailableError, PayloadLimitError, SandboxUnavailableError, SheetLimitError } from '../src/lib/types';
+import { CFBF_MAX_FILE_BYTES } from '../src/lib/compound-file-kind';
 import { writeXlsx } from '../src/lib/conversions/xlsx-writer';
 import { resolveLibreOfficeFilter } from '../src/worker/libreoffice-pool';
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
@@ -190,6 +190,8 @@ describe('a legacy document the strict reader refused', () => {
     ['a refusal of another kind', legacy({ src: 'doc', tgt: 'html' }), new Error('out of memory')],
     ['a format with no office-suite reader behind it', legacy({ src: 'docx', tgt: 'html' }), refusal],
     ['a request that was cancelled', legacy({ src: 'doc', tgt: 'html', options: { signal: AbortSignal.abort() } }), refusal],
+    ['a destroyed directory or mini FAT, which the suite would write as text', legacy({ src: 'xls', tgt: 'csv' }), new CompoundFileStructureError('Corrupt CFBF container: the sector chain starting at sector 4078 reaches sector 1419968535, which the file does not hold.')],
+    ['a destroyed structure that a reader reports with its label', legacy({ src: 'ppt', tgt: 'pdf' }), new CompoundFileStructureError('PowerPoint presentation: the compound file is malformed (Corrupt CFBF container: its directory holds no entry.).')],
   ])('is not retried for %s', async (_name, retried, error) => {
     const { deps, calls } = standIns();
     expect(await retryRefusedLegacyDocument(deps, retried, error)).toBeUndefined();
@@ -876,7 +878,7 @@ describe('the extent of an OOXML workbook the office suite exports as .xls', () 
     try {
       const inputPath = path.join(dir, 'huge.xlsx');
       fs.writeFileSync(inputPath, '');
-      fs.truncateSync(inputPath, LEGACY_OFFICE_MAX_INPUT_BYTES + 1);
+      fs.truncateSync(inputPath, CFBF_MAX_FILE_BYTES + 1);
       await expectSheetLimit({ inputPath, outputPath: path.join(dir, 'huge.xls') });
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

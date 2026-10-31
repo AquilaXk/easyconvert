@@ -1,7 +1,7 @@
 import fs from 'node:fs';
-import { ConversionFailedError, CorruptStreamError, EncryptedOfficeDocumentError, EngineUnavailableError, SheetLimitError } from '../lib/types';
+import { CompoundFileStructureError, ConversionFailedError, CorruptStreamError, EncryptedOfficeDocumentError, EngineUnavailableError, SheetLimitError } from '../lib/types';
 import { LegacyOfficeFormatError } from '../lib/conversions/office/legacy-office-errors';
-import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../lib/conversions/office/legacy-office-limits';
+import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { assertWorkbookFitsXls } from '../lib/conversions/office/xls-limits';
 import { writeTransientWorkbook } from '../lib/conversions/data';
 import { readRawInputBuffer } from './worker-output';
@@ -342,7 +342,7 @@ function isOoxmlWorkbook(src: string): boolean {
 function workbookBytes(input: Buffer | WorkerVfsPayload): Buffer {
   const bytes = legacyOfficeInput(input);
   if (bytes === undefined) {
-    throw new SheetLimitError(`The workbook is larger than the ${LEGACY_OFFICE_MAX_INPUT_BYTES} bytes the check against the .xls sheet bounds reads, so it is not exported.`);
+    throw new SheetLimitError(`The workbook is larger than the ${CFBF_MAX_FILE_BYTES} bytes the check against the .xls sheet bounds reads, so it is not exported.`);
   }
   return bytes;
 }
@@ -456,7 +456,9 @@ function isEncryptedWorkbookRefusal(src: string, refusal: unknown): boolean {
  */
 export async function retryRefusedLegacyDocument(deps: OfficeSuiteRouteDeps, request: OfficeSuiteRequest, refusal: unknown): Promise<WorkerConversionResult | undefined> {
   const interchange = legacyReaderRetryInterchange(request.src, request.tgt);
-  const refused = refusal instanceof LegacyOfficeFormatError || refusal instanceof CorruptStreamError || isEncryptedWorkbookRefusal(request.src, refusal);
+  const readerRefusal = refusal instanceof LegacyOfficeFormatError || refusal instanceof CorruptStreamError || isEncryptedWorkbookRefusal(request.src, refusal);
+  // A destroyed directory or mini FAT is no damage the suite repairs: for the real workbooks whose directory runs past the file it wrote their bytes as text.
+  const refused = readerRefusal && !(refusal instanceof CompoundFileStructureError);
   if (interchange === undefined || !refused || request.options.signal?.aborted) return undefined;
   const head = leadingBytes(request.input);
   if (!LEGACY_BINARY_SIGNATURES.some((signature) => startsWithBytes(head, signature))) return undefined;

@@ -2,13 +2,14 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { readKnownRefusals } from '../bench/realworld/report';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
+import { CompoundFileStructureError } from '../src/lib/types';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
  * Three real government workbooks (#783: govdocs1-007750, -007751, -008063) were refused with "Workbook stream not found in
  * CFBF container", and since the directory chain of the compound file parser must end inside the file they are refused for the
- * sector chain that runs to a sector the file does not hold (as a ConversionFailedError, which the office suite is not asked to
- * retry: it would write these bytes as text). The reader looks for both stream names (BIFF8 `Workbook`, BIFF5/7 `Book`, as xlrd and the other
+ * sector chain that runs to a sector the file does not hold (as a CompoundFileStructureError, which the office suite is not asked
+ * to retry: it would write these bytes as text). The reader looks for both stream names (BIFF8 `Workbook`, BIFF5/7 `Book`, as xlrd and the other
  * established readers do); these files have neither because their compound file structure is destroyed:
  *
  * - 007750 and 007751 went through a text-mode transfer: every LF byte is preceded by an inserted CR, which shifts all that
@@ -23,7 +24,7 @@ import { requireRealworldSample } from './helpers/realworld-sample';
 const TEXT_MODE_DAMAGED = ['govdocs1-007750.xls', 'govdocs1-007751.xls'] as const;
 const TRUNCATED = 'govdocs1-008063.xls';
 const CHAIN_PAST_THE_FILE = /Corrupt CFBF container: the sector chain starting at sector \d+ reaches sector \d+, which the file does not hold\./;
-const CHAIN_PAST_THE_FILE_DETAIL = 'ConversionFailedError: Corrupt CFBF container: the sector chain starting at sector 4078 reaches sector 1419968535, which the file does not hold.';
+const CHAIN_PAST_THE_FILE_DETAIL = 'CompoundFileStructureError: Corrupt CFBF container: the sector chain starting at sector 4078 reaches sector 1419968535, which the file does not hold.';
 
 /**
  * SHA-256 of the first sheet as xlrd 2.0.2 reads it (`str(cell.value)` per cell, Python csv.writer with LF line ends, final
@@ -60,6 +61,12 @@ function withoutInsertedCarriageReturns(bytes: Buffer): Buffer {
   return Buffer.from(kept);
 }
 
+async function expectDestroyedStructure(conversion: Promise<unknown>): Promise<void> {
+  const refusal = await conversion.catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(CompoundFileStructureError);
+  expect((refusal as Error).message).toMatch(CHAIN_PAST_THE_FILE);
+}
+
 describe('the real workbooks whose compound file is destroyed', () => {
   describe.each(TEXT_MODE_DAMAGED)('%s (sent in text mode)', (id) => {
     it('has a line feed behind every carriage return, so the sector tables are shifted', async (ctx) => {
@@ -69,7 +76,7 @@ describe('the real workbooks whose compound file is destroyed', () => {
 
     it('is refused for csv as a compound file whose directory runs past the file', async (ctx) => {
       const { bytes } = await requireRealworldSample(ctx, id);
-      await expect(dispatchConversion(bytes, 'xls', 'csv', {}, id)).rejects.toThrow(CHAIN_PAST_THE_FILE);
+      await expectDestroyedStructure(dispatchConversion(bytes, 'xls', 'csv', {}, id));
     });
 
     it('converts, once the inserted carriage returns are taken out, to the cells xlrd reads', { timeout: 60_000 }, async (ctx) => {
@@ -90,7 +97,7 @@ describe('the real workbooks whose compound file is destroyed', () => {
 
     it('is refused for csv as a compound file whose directory runs past the file', async (ctx) => {
       const { bytes } = await requireRealworldSample(ctx, TRUNCATED);
-      await expect(dispatchConversion(bytes, 'xls', 'csv', {}, TRUNCATED)).rejects.toThrow(CHAIN_PAST_THE_FILE);
+      await expectDestroyedStructure(dispatchConversion(bytes, 'xls', 'csv', {}, TRUNCATED));
     });
   });
 

@@ -1,3 +1,4 @@
+import { CompoundFileStructureError } from '../../types';
 import { reportConversionWarning } from '../conversion-warnings';
 import { isSymbolFontName, isSymbolFontPrivateUse, mapSymbolFontCharacter, SYMBOL_FONT_PRIVATE_USE_BASE, symbolReplacementWarning, undrawableSymbolWarning } from '../symbol-font-map';
 import { CheckedReader, readCfbStreams, requireCfbStream } from './cfb-streams';
@@ -367,7 +368,7 @@ export function isEncryptedWordDocument(buffer: Buffer): boolean {
     const word = new CheckedReader(requireCfbStream(readCfbStreams(buffer, LABEL), WORD_DOCUMENT_STREAM, LABEL), LABEL);
     return hasFibSignature(word) && fibFlagsEncrypted(word.u16(FIB_FLAGS_OFFSET));
   } catch (err) {
-    if (err instanceof LegacyOfficeFormatError) return false;
+    if (err instanceof LegacyOfficeFormatError || err instanceof CompoundFileStructureError) return false;
     throw err;
   }
 }

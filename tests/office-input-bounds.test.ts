@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../src/lib/conversions/office/legacy-office-limits';
+import { CFBF_MAX_FILE_BYTES } from '../src/lib/compound-file-kind';
 import { boundedInput, isEncryptedLegacyOffice, legacyOfficeInput } from '../src/worker/office-input-checks';
 
 /**
@@ -55,13 +55,13 @@ describe('the input of a legacy binary Office document', () => {
   const outputPath = '/unused/out';
 
   it('is not read past the size the legacy readers accept', () => {
-    expect(legacyOfficeInput({ inputPath: fileOfSize('past-limit.xls', LEGACY_OFFICE_MAX_INPUT_BYTES + 1), outputPath })).toBeUndefined();
+    expect(legacyOfficeInput({ inputPath: fileOfSize('past-limit.xls', CFBF_MAX_FILE_BYTES + 1), outputPath })).toBeUndefined();
   });
 
   it('is not judged encrypted when it is a file past that size', () => {
     const file = path.join(directory, 'past-limit-encrypted.xls');
     fs.writeFileSync(file, Buffer.from('d0cf11e0a1b11ae1', 'hex'));
-    fs.truncateSync(file, LEGACY_OFFICE_MAX_INPUT_BYTES + 1);
+    fs.truncateSync(file, CFBF_MAX_FILE_BYTES + 1);
     expect(isEncryptedLegacyOffice({ inputPath: file, outputPath }, 'xls')).toBe(false);
     expect(isEncryptedLegacyOffice({ inputPath: file, outputPath }, 'doc')).toBe(false);
   });

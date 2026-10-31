@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { assertOpenDocumentGraphic, xlsHasFilePass } from '../lib/conversions/office';
 import { isEncryptedWordDocument } from '../lib/conversions/office/doc-reader';
-import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../lib/conversions/office/legacy-office-limits';
+import { CFBF_MAX_FILE_BYTES } from '../lib/compound-file-kind';
 import { officeReadingFormat } from '../lib/conversions/office/office-suite-sources';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantAsPlainPackage } from '../lib/conversions/ooxml-variants';
 import { getMaxInMemoryBytes } from '../lib/storage/errors';
@@ -38,9 +38,9 @@ export function boundedInput(input: Buffer | WorkerVfsPayload, maxBytes: number)
   return fs.statSync(input.inputPath).size > maxBytes ? undefined : fs.readFileSync(input.inputPath);
 }
 
-/** The input of a legacy binary Office document, read as far as the in-process readers of those formats read (`LEGACY_OFFICE_MAX_INPUT_BYTES`). */
+/** The input of a legacy binary Office document, read as far as the in-process readers of those formats read (`CFBF_MAX_FILE_BYTES`). */
 export function legacyOfficeInput(input: Buffer | WorkerVfsPayload): Buffer | undefined {
-  return boundedInput(input, LEGACY_OFFICE_MAX_INPUT_BYTES);
+  return boundedInput(input, CFBF_MAX_FILE_BYTES);
 }
 
 /** Whether the input is a file that is not there; the checks run after or before the office suite, which answers for a missing input. */

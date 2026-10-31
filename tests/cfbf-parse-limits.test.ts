@@ -6,9 +6,9 @@ import { parseHwpDocument } from '../src/lib/conversions/hwp';
 import { convertXlsSource, xlsHasFilePass } from '../src/lib/conversions/office';
 import { readCfbContainer } from '../src/lib/conversions/office/cfb-streams';
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
-import { LEGACY_OFFICE_MAX_INPUT_BYTES } from '../src/lib/conversions/office/legacy-office-limits';
-import { ConversionFailedError, CorruptStreamError } from '../src/lib/types';
+import { CompoundFileStructureError, CorruptStreamError } from '../src/lib/types';
 import { entryFields, entryId, setEntry, setFatEntry, setMiniFatEntry } from './helpers/cfbf-layout';
+import { arrayBuffersGrowth } from './helpers/cfbf-large';
 import { expectNoHang } from './helpers/timing';
 
 /**
@@ -45,13 +45,6 @@ const DIRECTORY_READ_CAP_BYTES = (MAX_DIRECTORY_ENTRIES + 1) * CFBF_DIRECTORY_EN
 
 const filled = (size: number, byte: number): Buffer => Buffer.alloc(size, byte);
 const startOf = (file: Buffer, name: string): number => entryFields(file, entryId(file, name)).start;
-
-/** How much the array buffers (the bytes of every Buffer) grew while `run` ran, garbage that has not been collected yet included. */
-const arrayBuffersGrowth = (run: () => void): number => {
-  const before = process.memoryUsage().arrayBuffers;
-  run();
-  return process.memoryUsage().arrayBuffers - before;
-};
 
 /** What `parseCfbf` throws for the file, or undefined when it parses. */
 const refusalOf = (file: Buffer): unknown => {
@@ -142,11 +135,10 @@ describe('the FAT sector list', () => {
   });
 
   it('refuses a FAT sector listed twice', () => {
-    const file = buildCfbfContainer([{ name: 'A', data: filled(STREAM_BYTES, 0x41) }]);
-    expect(file.readUInt32LE(FAT_SECTOR_COUNT_OFFSET)).toBe(1);
-    file.writeUInt32LE(2, FAT_SECTOR_COUNT_OFFSET);
+    const file = buildCfbfContainer([{ name: 'A', data: filled(80 * 1024, 0x41) }]);
+    expect(file.readUInt32LE(FAT_SECTOR_COUNT_OFFSET)).toBe(2);
     file.writeUInt32LE(file.readUInt32LE(HEADER_DIFAT_OFFSET), HEADER_DIFAT_OFFSET + 4);
-    expect(() => parseCfbf(file)).toThrow(CorruptStreamError);
+    expect(() => parseCfbf(file)).toThrow(/the FAT sector list names sector \d+ twice/);
   });
 });
 
@@ -230,7 +222,7 @@ describe('the number of directory entries', () => {
   });
 });
 
-async function expectRefused(label: string, file: Buffer, reason: RegExp, refusedAs: typeof ConversionFailedError = CorruptStreamError): Promise<void> {
+async function expectRefused(label: string, file: Buffer, reason: RegExp, refusedAs: typeof CorruptStreamError = CorruptStreamError): Promise<void> {
   const refusal = await expectNoHang(label, () => refusalOf(file));
   expect(refusal).toBeInstanceOf(refusedAs);
   expect((refusal as Error).message).toMatch(reason);
@@ -299,40 +291,40 @@ describe('chains that return to themselves', () => {
 describe('directory and mini FAT chains that end where the file or the FAT does not reach', () => {
   const firstDirectorySector = (file: Buffer): number => file.readUInt32LE(FIRST_DIRECTORY_SECTOR_OFFSET);
   const firstMiniFatSector = (file: Buffer): number => file.readUInt32LE(FIRST_MINI_FAT_SECTOR_OFFSET);
+  /** Three streams of 3,000 bytes: a mini stream of 141 mini sectors, whose mini FAT takes two sectors. */
+  const needingTwoMiniFatSectors = (): Buffer => threeStreams(3000);
 
   it('refuses a directory chain that runs to a sector past the file', async () => {
     const file = threeStreams(MINI_STREAM_BYTES);
     setFatEntry(file, firstDirectorySector(file), MAX_UNREACHABLE_SECTOR);
-    await expectRefused('directory past the file', file, /sector chain starting at sector \d+ reaches sector \d+, which the file does not hold/, ConversionFailedError);
+    await expectRefused('directory past the file', file, /sector chain starting at sector \d+ reaches sector \d+, which the file does not hold/, CompoundFileStructureError);
   });
 
   it('refuses a directory chain that runs to a sector the FAT does not cover', async () => {
     const fatEntries = SECTOR_BYTES / 4;
     const padded = Buffer.concat([threeStreams(MINI_STREAM_BYTES), Buffer.alloc(fatEntries * SECTOR_BYTES)]);
     setFatEntry(padded, firstDirectorySector(padded), fatEntries + 1);
-    await expectRefused('directory past the FAT', padded, /sector chain starting at sector \d+ ends at sector \d+, which the FAT does not cover/, ConversionFailedError);
+    await expectRefused('directory past the FAT', padded, /sector chain starting at sector \d+ ends at sector \d+, which the FAT does not cover/, CompoundFileStructureError);
   });
 
-  it('refuses a mini FAT chain that runs to a sector past the file', async () => {
-    const file = threeStreams(MINI_STREAM_BYTES);
+  it('refuses a mini FAT chain that runs to a sector past the file, as far as the mini stream needs it', async () => {
+    const file = needingTwoMiniFatSectors();
     file.writeUInt32LE(2, MINI_FAT_SECTOR_COUNT_OFFSET);
     setFatEntry(file, firstMiniFatSector(file), MAX_UNREACHABLE_SECTOR);
-    await expectRefused('mini FAT past the file', file, /sector chain starting at sector \d+ reaches sector \d+, which the file does not hold/, ConversionFailedError);
-  });
-
-  it('refuses them as a failed conversion and not as a corrupt stream, which the office suite is asked to retry', () => {
-    const file = threeStreams(MINI_STREAM_BYTES);
-    setFatEntry(file, firstDirectorySector(file), MAX_UNREACHABLE_SECTOR);
-    const refusal = refusalOf(file);
-    expect((refusal as Error).name).toBe('ConversionFailedError');
-    expect((refusal as Error).message).toMatch(/the sector chain starting at sector \d+ reaches sector \d+/);
-    expect(refusal).not.toBeInstanceOf(CorruptStreamError);
+    await expectRefused('mini FAT past the file', file, /sector chain starting at sector \d+ reaches sector \d+, which the file does not hold/, CompoundFileStructureError);
   });
 
   it('reads a mini FAT chain that ends before the sectors the header counts', () => {
     const file = threeStreams(MINI_STREAM_BYTES);
     file.writeUInt32LE(2, MINI_FAT_SECTOR_COUNT_OFFSET);
     expect(parseCfbf(file).paths.get('A')).toEqual(filled(MINI_STREAM_BYTES, 0x41));
+  });
+
+  it('does not follow a mini FAT chain further than the mini stream can be addressed', () => {
+    const file = threeStreams(MINI_STREAM_BYTES);
+    file.writeUInt32LE(2, MINI_FAT_SECTOR_COUNT_OFFSET);
+    setFatEntry(file, firstMiniFatSector(file), MAX_UNREACHABLE_SECTOR);
+    expect(parseCfbf(file).paths.get('C')).toEqual(filled(MINI_STREAM_BYTES, 0x43));
   });
 });
 
@@ -451,7 +443,7 @@ describe('the mini stream cutoff', () => {
     expect(parseCfbf(file).paths.get('A')).toEqual(filled(MINI_STREAM_BYTES, 0x41));
   });
 
-  it.each([0, 512, 4095, 4097, 0x7fffffff, 0xffffffff])('reads with the cutoff of 4096 whatever the header gives: %i', (cutoff) => {
+  it.each([512, 4095, 4097, 0x7fffffff, 0xffffffff])('reads with the cutoff of 4096 whatever the header gives when no stream lies between the two: %i', (cutoff) => {
     const file = threeStreams(MINI_STREAM_BYTES);
     const control = parseCfbf(file);
     file.writeUInt32LE(cutoff, MINI_STREAM_CUTOFF_OFFSET);
@@ -506,10 +498,9 @@ describe('the size of the file', () => {
     expect(parseCfbf(oversized.subarray(0, CFBF_MAX_FILE_BYTES)).paths.get('A')).toEqual(filled(MINI_STREAM_BYTES, 0x41));
   });
 
-  it('is the limit of the legacy Office readers, which answer it in their own words', () => {
-    expect(LEGACY_OFFICE_MAX_INPUT_BYTES).toBe(CFBF_MAX_FILE_BYTES);
+  it('is the limit of the legacy Office readers, which answer it in their own words with the label of the document', () => {
     expect(() => readCfbContainer(oversized, 'Word document')).toThrow(LegacyOfficeFormatError);
-    expect(() => readCfbContainer(oversized, 'Word document')).toThrow(`Word document: the file exceeds the ${CFBF_MAX_FILE_BYTES}-byte limit.`);
+    expect(() => readCfbContainer(oversized, 'Word document')).toThrow(`Word document: the compound file is malformed (The compound file is larger than the ${CFBF_MAX_FILE_BYTES}-byte limit.).`);
   });
 
   it('is the bound of every reader that parses a compound file in full', async () => {
