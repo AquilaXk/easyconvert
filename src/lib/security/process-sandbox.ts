@@ -17,8 +17,9 @@ export interface SandboxedRlimitsOptions {
   asBytes?: number;
   fsizeBytes?: number;
   /**
-   * The tasks (processes and threads) of the run. Set only when the run has a user namespace of its own: the kernel counts
-   * RLIMIT_NPROC over every task of the real uid in a user namespace, so outside one it would count the worker and every other run.
+   * The tasks (processes and threads) of the run. The kernel counts RLIMIT_NPROC over the tasks of the real uid in one user namespace
+   * (Linux 5.14 and later), so the limit bounds the run alone only in a user namespace of its own: a run that cannot have one is
+   * refused with SandboxUnavailableError instead of being started without the limit or with one that counts the worker.
    */
   nproc?: number;
   cpuSeconds?: number;
@@ -468,11 +469,16 @@ export function generateSeccompBpfProfile(options?: { blockNetwork?: boolean }):
   };
 }
 
-/** Whether the run gets a user namespace of its own: network isolation on Linux through an unshare that maps the user (`-r`). */
-function runsInOwnUserNamespace(networkIsolated: boolean, sandboxOptions: UnshareIsolationOptions): boolean {
-  if (process.platform !== 'linux' || !networkIsolated) return false;
-  const cap = getUnshareCapability();
-  return cap.available && buildUnshareIsolationArgs(cap, sandboxOptions).includes('-r');
+/** The rlimits of a run: the explicit ones, with the address space and the file size taken from memoryLimitMb and maxFileSize when unset. */
+function effectiveRlimitsOf(rlimits: SandboxedRlimitsOptions | undefined, memoryLimitMb: number | undefined, maxFileSize: number | undefined): SandboxedRlimitsOptions {
+  const effective: SandboxedRlimitsOptions = { ...(rlimits || {}) };
+  if (!effective.asBytes && memoryLimitMb && memoryLimitMb > 0) {
+    effective.asBytes = memoryLimitMb * 1024 * 1024;
+  }
+  if (!effective.fsizeBytes && maxFileSize && maxFileSize > 0) {
+    effective.fsizeBytes = maxFileSize;
+  }
+  return effective;
 }
 
 /**
@@ -513,18 +519,12 @@ export function resolveSandboxedCommand(
     rlimits = networkIsolatedOrOptions.rlimits;
   }
 
-  // Construct effective rlimits from explicit options or memoryLimitMb / maxFileSize
-  const effectiveRlimits: SandboxedRlimitsOptions = {
-    ...(rlimits || {}),
-  };
-  if (!effectiveRlimits.asBytes && memoryLimitMb && memoryLimitMb > 0) {
-    effectiveRlimits.asBytes = memoryLimitMb * 1024 * 1024;
-  }
-  if (!effectiveRlimits.fsizeBytes && maxFileSize && maxFileSize > 0) {
-    effectiveRlimits.fsizeBytes = maxFileSize;
-  }
-  if (effectiveRlimits.nproc !== undefined && !runsInOwnUserNamespace(networkIsolated, sandboxOptions)) {
-    delete effectiveRlimits.nproc;
+  const effectiveRlimits = effectiveRlimitsOf(rlimits, memoryLimitMb, maxFileSize);
+  const unshare = process.platform === 'linux' && networkIsolated ? getUnshareCapability() : undefined;
+  const isolationArgs = unshare?.available ? buildUnshareIsolationArgs(unshare, sandboxOptions) : undefined;
+  const capPrlimit = getPrlimitCapability();
+  if (effectiveRlimits.nproc !== undefined && !(isolationArgs?.includes('-r') && capPrlimit.available)) {
+    throw new SandboxUnavailableError('The task limit of a run is kept only by prlimit in a user namespace of its own (unshare -r), which this host cannot give the run; the program is not started.');
   }
 
   let finalBinary = binaryPath;
@@ -532,7 +532,6 @@ export function resolveSandboxedCommand(
   let isWrapped = false;
 
   // Apply prlimit wrapping if available on Linux and rlimits are specified
-  const capPrlimit = getPrlimitCapability();
   const hasRlimits =
     effectiveRlimits.asBytes !== undefined ||
     effectiveRlimits.fsizeBytes !== undefined ||
@@ -548,12 +547,10 @@ export function resolveSandboxedCommand(
     }
   }
 
-  if (process.platform === 'linux' && networkIsolated) {
-    const cap = getUnshareCapability();
-    if (cap.available) {
-      const isolationArgs = buildUnshareIsolationArgs(cap, sandboxOptions);
+  if (unshare) {
+    if (isolationArgs) {
       return {
-        binary: cap.path,
+        binary: unshare.path,
         args: [...isolationArgs, '--', finalBinary, ...finalArgs],
         wrapped: true,
       };

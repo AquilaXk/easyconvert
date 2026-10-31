@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync, execFile } from 'node:child_process';
+import { spawn, spawnSync, execFile } from 'node:child_process';
 import yaml from 'js-yaml';
 
 import {
@@ -15,6 +15,7 @@ import {
   SandboxedTimeoutError,
   SandboxedMemoryLimitError,
   SandboxedBufferLimitError,
+  SandboxedProcessError,
 } from '../src/lib/security/process-sandbox';
 import { withWorkerSandbox, runInWorkerSandbox } from '../src/worker/sandbox';
 import { skipUnless } from './helpers/strict-skip';
@@ -32,7 +33,7 @@ import {
   ociWorker,
 } from '../src/worker/index';
 import { Job, Queue } from '../src/lib/queue/bullmq-engine';
-import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { SandboxUnavailableError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
 
 /** Real engine, CLI or large-input work: the 5 s default fails on a loaded CI shard without any regression; 60 s only stops a hang. */
 const ENGINE_TEST_TIMEOUT_MS = 60_000;
@@ -204,20 +205,40 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
       }
     });
 
-    it.skipIf(skipUnless('Linux, whose /proc/self/limits shows the limits of a run', process.platform === 'linux'))(
-      'bounds the tasks of a run by RLIMIT_NPROC only when the run has a user namespace of its own, where the kernel counts that run alone',
-      async () => {
-        const unshare = getUnshareCapability();
-        const ownUserNamespace = unshare.available && unshare.args.includes('-r') && getPrlimitCapability().available;
-        const softLimit = (limits: string) => /^Max processes\s+(\S+)/m.exec(limits)?.[1];
-        const outside = softLimit(fs.readFileSync('/proc/self/limits', 'utf-8'));
-        const taskLimitIn = async (networkIsolated: boolean) =>
-          softLimit((await executeSandboxedBinary('/bin/cat', ['/proc/self/limits'], { networkIsolated, rlimits: { nproc: 64 } })).stdout.toString());
-        expect(outside).toMatch(/^(\d+|unlimited)$/);
-        expect(await taskLimitIn(true)).toBe(ownUserNamespace ? '64' : outside);
-        expect(await taskLimitIn(false)).toBe(outside);
-      }
-    );
+    describe('the task limit of a run', () => {
+      /**
+       * RLIMIT_NPROC counts the tasks of the real uid in one user namespace (Linux 5.14 and later, where the count moved into the
+       * ucounts of the namespace), so a run in a user namespace of its own is bounded by its own tasks. Sleepers of the same uid outside
+       * the run and the tasks the run forks together pass the limit; only the run's own forks count against it.
+       */
+      const RUN_TASK_LIMIT = 64;
+      const OUTSIDE_SLEEPERS = 40;
+      const FORKS_WITHIN = 50;
+      const FORKS_PAST = RUN_TASK_LIMIT + 6;
+      const RUN_TIMEOUT_MS = 20_000;
+      const ownUserNamespace = getUnshareCapability().args.includes('-r') && getPrlimitCapability().available;
+      const forking = (children: number) => `n=0; while [ $n -lt ${children} ]; do sleep 2 & n=$((n+1)); done; wait; echo forked=$n`;
+      const runForking = (children: number) =>
+        executeSandboxedBinary('/bin/sh', ['-c', forking(children)], { networkIsolated: true, rlimits: { nproc: RUN_TASK_LIMIT }, timeoutMs: RUN_TIMEOUT_MS });
+
+      it('is refused, not dropped, for a run that cannot have a user namespace of its own', () => {
+        expect(() => resolveSandboxedCommand('/bin/true', [], { networkIsolated: false, rlimits: { nproc: RUN_TASK_LIMIT } })).toThrow(SandboxUnavailableError);
+      });
+
+      it.skipIf(skipUnless('Linux with unprivileged user namespaces and prlimit, where a run can have a user namespace of its own', process.platform === 'linux' && ownUserNamespace))(
+        'counts the tasks of the run alone: with sleepers of the same uid outside, the run forks more than they are, and fails past the limit',
+        async () => {
+          const sleepers = Array.from({ length: OUTSIDE_SLEEPERS }, () => spawn('sleep', ['30'], { stdio: 'ignore' }));
+          try {
+            expect((await runForking(FORKS_WITHIN)).stdout.toString().trim()).toBe(`forked=${FORKS_WITHIN}`);
+            await expect(runForking(FORKS_PAST)).rejects.toBeInstanceOf(SandboxedProcessError);
+          } finally {
+            for (const sleeper of sleepers) sleeper.kill('SIGKILL');
+          }
+        },
+        2 * RUN_TIMEOUT_MS
+      );
+    });
 
     it('terminates full process group on execution timeout', async () => {
       // Run an intentional sleep process with small 150ms timeout

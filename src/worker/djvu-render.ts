@@ -15,7 +15,7 @@ import type { XpsJob } from './xps-render';
 /**
  * DjVu documents are drawn by `ddjvu` of djvulibre (GPL-2.0-or-later, a separate program built from the Debian source of 3.5.28 with
  * two patches to libdjvu, scripts/install-djvulibre.sh) into a PDF, which the native PDF tools take to every page target, as
- * GhostXPS's PDF is taken.
+ * GhostXPS's PDF is taken. Only that build is run (`DJVULIBRE_REQUIRED_PATCHES`).
  * The program decodes each page (IW44 wavelet background, JB2 bilevel mask, foreground colours) to a raster and writes
  * it with libtiff into a temporary TIFF beside the output, which `tiff2pdf` (compiled into the program,
  * tools/ddjvu.cpp `closefile`, lines 646 to 700) turns into a PDF of one image per page. The PDF holds no text layer; the
@@ -32,8 +32,8 @@ import type { XpsJob } from './xps-render';
  * ended (the deadline, a time-out, a kill, a lost helper) is not a verdict on the document. All three programs run before the output exists,
  * in a directory of their own that holds the one file and the output, in the sandbox, without network, and share the one
  * deadline of the job (`DjvuRun`): a document costs at most the stage limit, 120 s by default, whatever its includes. `ddjvu`
- * also has a budget of its own, from what the reports took and the pixels it draws (`drawBudgetMs`), and every program a limit on
- * the threads of its run (`PROGRAM_TASK_LIMIT`).
+ * also has a budget of its own, from what the reports took and the pixels it draws, at most as many as its bytes can hold
+ * (`drawBudgetMs`), and every program a limit on the threads of its run (`PROGRAM_TASK_LIMIT`).
  *
  * The program stops at the first page it cannot decode, with a message and the exit status 10 (tools/ddjvu.cpp
  * `dopage`, lines 728 to 746, unless `-skip` is given, which is not), so a truncated or damaged page is a failure here and
@@ -71,22 +71,35 @@ const PAGE_COUNT_RUN_TIMEOUT_MS = 30_000;
  */
 export const SIZE_RUN_TIMEOUT_MS = 120_000;
 /**
- * The budget of `ddjvu`: `max(15 s, 16 x the time the two reports took) + the drawn pixels at 4 megapixels a second`, at most what is
- * left of the deadline. The pixels are the drawn pages' as the file declares them. The patched program searches a shared file once
- * however many pages and files include it, and fails at once when a thread does not start, so a chain of shared files no longer holds
- * it idle and a declared size buys only the drawing the program does for it (entry 135 of docs/policy-decisions.md has the measured
- * documents and chains).
+ * The budget of `ddjvu`: `max(15 s, 16 x the time the two reports took) + the credited pixels at 4 megapixels a second`, at most what
+ * is left of the deadline. The pixels are the drawn pages' as the file declares them, but no more than `DRAW_PIXELS_PER_INPUT_BYTE` for
+ * each byte of the file: a file declares any size for a few bytes, and the program draws a blank page declared 9,999 x 9,999 in 0.46 s,
+ * so without the cap 260 such pages in a file of 9 KB would hold the worker until the deadline. The cap keeps three times its drawing
+ * for the document with the most pixels a byte that was measured, 8 smooth colour pages of 100 megapixels (369 pixels a byte, drawn in
+ * 16.2 s): 15 s and 64 pixels a byte give it 49.7 s (entry 135 of docs/policy-decisions.md has the measured documents and chains).
  */
 const DRAW_BUDGET_FLOOR_MS = 15_000;
 const DRAW_BUDGET_REPORT_FACTOR = 16;
 const DRAW_PIXELS_PER_MS = 4_000;
+const DRAW_PIXELS_PER_INPUT_BYTE = 64;
 /**
  * The tasks of one run of a program, set as RLIMIT_NPROC in the user namespace of the run (process-sandbox.ts). The program decodes each
  * file a page includes on a thread of its own and keeps the threads of a chain alive until its end; the real documents use at most 3
  * at once. At this limit the patched `ddjvu` fails a chain of 300 shared files in 0.08 s with at most 64 threads instead of taking up
- * to 252 of the 256 tasks of the worker container, and draws a chain of 40 (entry 135).
+ * to 252 of the 256 tasks of the worker container, and draws a chain of 40 (entry 135). The limit is per run, and a worker runs as many
+ * jobs at once as its `WORKER_CONCURRENCY`: its DjVu runs hold at most that times 64 tasks, 256 in the one worker of the launch (4 jobs),
+ * the `pids_limit` of its container, and 384 in the light worker of the split profile (6 jobs, page images), for the 0.1 s that hostile
+ * chains take to fail.
  */
 export const PROGRAM_TASK_LIMIT = 64;
+/**
+ * The patches of the djvulibre build of scripts/install-djvulibre.sh that the limits of this file rely on: a shared file searched once
+ * (else a chain of shared files holds `ddjvu` for a time that grows with its paths) and a decode that fails when its thread cannot start
+ * (else `ddjvu` waits forever at the task limit). The build installs them beside its programs, in <prefix>/share/doc/djvulibre/patches,
+ * which is the stamp this file checks: any other `ddjvu`, such as the distribution's, is not run, wherever it is found or `DDJVU_PATH`
+ * points.
+ */
+export const DJVULIBRE_REQUIRED_PATCHES = ['include-search-visit-once.patch', 'decode-thread-start-failure.patch'] as const;
 /**
  * Four glibc heaps for the program's threads. Without a bound each thread that decodes an included file gets an arena of its own, 64 MiB
  * of address space each, and from about 30 of them the 2 GiB limit is met: the patched program then fails a chain of 40 shared files
@@ -125,6 +138,7 @@ interface DjvuRun {
   readonly job: DjvuJob;
   readonly tempDir: string;
   readonly inputPath: string;
+  readonly inputBytes: number;
   readonly limitMs: number;
   readonly startedAt: number;
 }
@@ -225,6 +239,18 @@ async function launchInRun(
   }
 }
 
+/** Whether `ddjvu` is the build of scripts/install-djvulibre.sh: the required patches sit in the doc directory of its prefix. */
+export function isPatchedDjvulibre(ddjvu: string): boolean {
+  const patches = path.join(path.dirname(fs.realpathSync(ddjvu)), '..', 'share', 'doc', 'djvulibre', 'patches');
+  return DJVULIBRE_REQUIRED_PATCHES.every((name) => fs.existsSync(path.join(patches, name)));
+}
+
+function checkPatchedBuild(job: DjvuJob): void {
+  if (!isPatchedDjvulibre(job.interpreter)) {
+    throw new EngineUnavailableError(RENDER_PROGRAM, `${job.interpreter} is not the djvulibre build of scripts/install-djvulibre.sh, whose patches the limits of a DjVu run rely on`);
+  }
+}
+
 /** `djvused` ships in the package of `ddjvu` and sits next to it. */
 function reportProgramOf(job: DjvuJob): string {
   const program = path.join(path.dirname(job.interpreter), REPORT_PROGRAM);
@@ -288,9 +314,13 @@ async function readPageSizes(run: DjvuRun, pageCount: number): Promise<DjvuPageS
   }
 }
 
-/** The budget of `ddjvu` for a document whose reports took `reportMs` and whose drawn pages declare `drawnPixels`. */
-export function drawBudgetMs(reportMs: number, drawnPixels: number): number {
-  return Math.ceil(Math.max(DRAW_BUDGET_FLOOR_MS, DRAW_BUDGET_REPORT_FACTOR * reportMs) + drawnPixels / DRAW_PIXELS_PER_MS);
+/**
+ * The budget of `ddjvu` for a document of `inputBytes` whose reports took `reportMs` and whose drawn pages declare `drawnPixels`:
+ * the pixels count only up to what the bytes of the file can hold.
+ */
+export function drawBudgetMs(reportMs: number, drawnPixels: number, inputBytes: number): number {
+  const creditedPixels = Math.min(drawnPixels, inputBytes * DRAW_PIXELS_PER_INPUT_BYTE);
+  return Math.ceil(Math.max(DRAW_BUDGET_FLOOR_MS, DRAW_BUDGET_REPORT_FACTOR * reportMs) + creditedPixels / DRAW_PIXELS_PER_MS);
 }
 
 /** The pages as the `-page` argument of the program: `3-5,8`. */
@@ -345,7 +375,7 @@ async function writePdf(run: DjvuRun, plan: DrawPlan): Promise<string> {
   const { job, tempDir } = run;
   const pdfPath = path.join(tempDir, PDF_FILE);
   const reportMs = Date.now() - run.startedAt;
-  await drawWithinBudget(run, plan, drawBudgetMs(reportMs, plan.drawnPixels), pdfPath);
+  await drawWithinBudget(run, plan, drawBudgetMs(reportMs, plan.drawnPixels, run.inputBytes), pdfPath);
   const size = fs.existsSync(pdfPath) ? fs.statSync(pdfPath).size : 0;
   if (size === 0) throw new ConversionFailedError(`ddjvu drew no page from the .${job.src} file.`);
   if (size > plan.maxBytes) throw drawnPdfTooLargeError('ddjvu', job.src, size, plan.maxBytes);
@@ -374,9 +404,10 @@ export async function convertDjvu(job: DjvuJob): Promise<WorkerConversionResult 
   const startTime = Date.now();
   checkDjvuContainer(bytes);
   const draw = async (tempDir: string): Promise<string> => {
+    checkPatchedBuild(job);
     const inputPath = path.join(tempDir, INPUT_FILE);
     fs.writeFileSync(inputPath, bytes, { mode: 0o600 });
-    const run: DjvuRun = { job, tempDir, inputPath, limitMs: runTimeoutMs(options), startedAt: Date.now() };
+    const run: DjvuRun = { job, tempDir, inputPath, inputBytes: bytes.length, limitMs: runTimeoutMs(options), startedAt: Date.now() };
     const pageCount = await readPageCount(run);
     return writePdf(run, drawPlanOf(job, await readPageSizes(run, pageCount)));
   };
