@@ -26,9 +26,9 @@ import {
 } from '../../worker/engines';
 
 const PDF_FORMAT = 'pdf';
-/** Sources of the office suite, PDF, PostScript and XPS tools, whose time-limit failures are typed. */
+/** Sources of the office suite, PDF, PostScript, XPS and DjVu tools, whose time-limit failures are typed. */
 const TIMEOUT_TYPED_SOURCES: ReadonlySet<string> = new Set([
-  'pdf', 'ps', 'xps', 'oxps', 'doc', 'docx', 'docm', 'dotx', 'dotm', 'rtf', 'odt', 'xls', 'xlsx', 'xlsm', 'xltx', 'xltm', 'ods', 'ppt', 'pptx', 'pptm', 'potx', 'potm', 'ppsx', 'ppsm', 'odp',
+  'pdf', 'ps', 'xps', 'oxps', 'djvu', 'djv', 'doc', 'docx', 'docm', 'dotx', 'dotm', 'rtf', 'odt', 'xls', 'xlsx', 'xlsm', 'xltx', 'xltm', 'ods', 'ppt', 'pptx', 'pptm', 'potx', 'potm', 'ppsx', 'ppsm', 'odp',
   ...OFFICE_SUITE_SOURCE_FORMATS,
 ]);
 const IN_PROCESS_ENGINE: WorkerConversionResult['engineUsed'] = 'internal-fallback';

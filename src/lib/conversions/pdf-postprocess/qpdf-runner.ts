@@ -230,10 +230,10 @@ function decodeResult(body: Buffer): JobResult {
 // --- Errors ---------------------------------------------------------------------------------------------------------------
 
 /** The failure of a program that ran and did not succeed, as executeSandboxedBinary reports it. */
-function processFailure(result: JobResult, options: LaunchedExecutionOptions): Error {
+export function processFailure(result: JobResult, options: LaunchedExecutionOptions): Error {
   const signal = result.signal === 0 ? null : (SIGNAL_NAMES[result.signal] ?? (`SIG${result.signal}` as NodeJS.Signals));
   const memoryLimitMb = options.memoryLimitMb ?? (options.rlimits?.asBytes ? Math.round(options.rlimits.asBytes / BYTES_PER_MB) : undefined);
-  if ((result.signal === SIGKILL || result.signal === SIGSEGV) && memoryLimitMb && memoryLimitMb > 0) return new SandboxedMemoryLimitError(memoryLimitMb);
+  if ((result.signal === SIGKILL || result.signal === SIGSEGV) && memoryLimitMb && memoryLimitMb > 0) return new SandboxedMemoryLimitError(memoryLimitMb, signal ?? undefined);
   if (result.signal === SIGXFSZ) return new SandboxedBufferLimitError(options.maxFileSize || options.rlimits?.fsizeBytes || options.maxBuffer || DEFAULT_MAX_BUFFER_BYTES);
   const stderrText = result.stderr.toString('utf8').trim();
   let summary: string;

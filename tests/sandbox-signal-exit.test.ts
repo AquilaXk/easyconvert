@@ -86,6 +86,13 @@ describe('PR 0-A: Sandbox Signal Exits & Fail-Closed Guardrails', () => {
       const memError = caughtError as SandboxedMemoryLimitError;
       expect(memError.limitMb).toBe(64);
       expect(memError.message).toContain('64MB');
+      expect(memError.signal).toBe('SIGKILL');
+    });
+
+    it('names SIGSEGV on the memory limit error of a child that faults under the limit, so a crash and a kill can be told apart', async () => {
+      const error = await executeSandboxedBinary('/bin/sh', ['-c', 'kill -11 $$'], { memoryLimitMb: 64 }).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(SandboxedMemoryLimitError);
+      expect((error as SandboxedMemoryLimitError).signal).toBe('SIGSEGV');
     });
 
     it('aborts process execution when AbortSignal triggers', async () => {

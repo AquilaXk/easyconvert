@@ -39,6 +39,7 @@ import { ensureSample } from '../bench/corpora';
 import { pinnedDwgSample } from './helpers/dwg-samples';
 import { isOfficeSuiteOnlySource, officeReadingFormat } from '../src/lib/conversions/office/office-suite-sources';
 import { realworldSampleBytes } from './helpers/realworld-sample';
+import { singlePage } from './helpers/djvu-builder';
 
 /**
  * Registry/engine conformance gate.
@@ -650,6 +651,8 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   lrf: ['azw3', 'mobi', 'oeb', 'pdb'],
   mobi: ['azw3', 'lrf', 'oeb', 'pdb'],
   ndjson: ['xls'],
+  djv: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
+  djvu: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   odd: ['avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'tiff', 'webp'],
   odg: ['bmp', 'jpg', 'pdf', 'png'],
   odp: ['jpg', 'png', 'ppt'],
@@ -1524,6 +1527,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   const POSTSCRIPT_SOURCES = new Set(['eps', 'ps']);
   /** XPS sources are drawn by GhostXPS; their real renders are proven on real files by tests/xps-render.test.ts. */
   const XPS_SOURCES = new Set(['xps', 'oxps']);
+  /** DjVu sources are drawn by ddjvu; their real renders are proven on real files by tests/djvu-render.test.ts. */
+  const DJVU_SOURCES = new Set(['djvu', 'djv']);
   const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
   const IMAGE_TARGETS = new Set(['jpg', 'png']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
@@ -1553,7 +1558,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   const allPartPairs = allNativePairs.filter(([source, target]) => inPart(`${source}->${target}`));
   /** The pairs that end in a calibre target are proven by the missing-engine suite below and by tests/ebook-calibre-writers.test.ts, not by the LibreOffice and Poppler suites. */
   const pairs = allPartPairs.filter(([, target]) => !isCalibreEbookTarget(target));
-  const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source);
+  const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source) && !DJVU_SOURCES.has(source);
   const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && authorable(pair));
   const officeToImage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && IMAGE_TARGETS.has(pair[1]) && authorable(pair));
   const POSTSCRIPT_TARGETS = new Set(['eps', 'ps']);
@@ -1568,6 +1573,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (isCalibreEbookTarget(target)) return { envVar: 'EBOOK_CONVERT_PATH', engineName: 'ebook-convert' };
     if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
+    if (DJVU_SOURCES.has(source)) return { envVar: 'DDJVU_PATH', engineName: 'ddjvu' };
     // A table read from a PDF is written as .xls by the office suite, like every other source of .xls.
     if (source !== PDF_SOURCE || target === 'xls') return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     if (target === SVG_TARGET) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
@@ -1652,6 +1658,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (source === 'key') return headerOnlyOdf('application/x-iwork-keynote-sffkey');
     if (POSTSCRIPT_SOURCES.has(source)) return Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\nshowpage\n', 'latin1');
     if (XPS_SOURCES.has(source)) return emptyZipPackage();
+    if (DJVU_SOURCES.has(source)) return singlePage(64, 64);
     return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
   }
 

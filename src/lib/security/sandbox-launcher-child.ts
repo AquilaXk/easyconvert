@@ -60,7 +60,7 @@ function describe(error: unknown): Described {
   const plain = (detail: LauncherErrorDetail): Described => ({ detail, stdout: NO_TEXT, stderr: NO_TEXT });
   if (error instanceof SandboxedTimeoutError) return plain({ kind: 'timeout', message: error.message, timeoutMs: error.timeoutMs });
   if (error instanceof SandboxedBufferLimitError) return plain({ kind: 'buffer', message: error.message, limitBytes: error.limitBytes });
-  if (error instanceof SandboxedMemoryLimitError) return plain({ kind: 'memory', message: error.message, limitMb: error.limitMb });
+  if (error instanceof SandboxedMemoryLimitError) return plain({ kind: 'memory', message: error.message, limitMb: error.limitMb, signal: error.signal });
   if (error instanceof SandboxUnavailableError) return plain({ kind: 'unavailable', message: shortMessage(error.reason) });
   return plain({ kind: 'other', message: shortMessage(error instanceof Error ? error.message : String(error)) });
 }

@@ -16,6 +16,7 @@ import {
 import { encodeFrame, FrameReader, isBadFrame, type LauncherReply, type LauncherRequest } from '../src/lib/security/sandbox-launcher-protocol';
 import {
   SandboxedBufferLimitError,
+  SandboxedMemoryLimitError,
   SandboxedProcessError,
   SandboxedTimeoutError,
 } from '../src/lib/security/process-sandbox';
@@ -95,6 +96,14 @@ describe('sandbox launcher', () => {
     expect(failure.exitCode).toBe(3);
     expect(failure.stderr).toBe('boom');
     expect(failure.stdout).toBe('partial');
+  });
+
+  it('carries the signal of a program stopped under its memory limit back from the helper', async () => {
+    for (const signal of ['SIGSEGV', 'SIGKILL'] as const) {
+      const error = await launch(SH, shell(`kill -${signal.slice(3)} $$`), { networkIsolated: false, memoryLimitMb: 64 }).catch((e: unknown) => e);
+      expect(error, signal).toBeInstanceOf(SandboxedMemoryLimitError);
+      expect((error as SandboxedMemoryLimitError).signal).toBe(signal);
+    }
   });
 
   it('keeps a failing program\'s long stderr whole at both ends, and its neighbours unharmed', async () => {

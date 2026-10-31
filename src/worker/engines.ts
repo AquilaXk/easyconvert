@@ -79,6 +79,7 @@ import {
   SandboxedBufferLimitError,
 } from './sandbox';
 import { convertPostScript, type PostScriptJob } from './postscript-render';
+import { convertDjvu } from './djvu-render';
 import { convertXps, type XpsJob } from './xps-render';
 import { convertWithCalibre } from './ebook-calibre';
 import { renderSvgAsPdf } from './svg-render';
@@ -210,6 +211,7 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/opt/homebrew/bin/ps2pdf',
   ],
   gxps: [...(process.env.GXPS_PATH ? [process.env.GXPS_PATH] : []), '/usr/local/bin/gxps', '/usr/bin/gxps', '/opt/homebrew/bin/gxps'],
+  ddjvu: [...(process.env.DDJVU_PATH ? [process.env.DDJVU_PATH] : []), '/usr/bin/ddjvu', '/usr/local/bin/ddjvu', '/opt/homebrew/bin/ddjvu'],
   ebookConvert: [...(process.env.EBOOK_CONVERT_PATH ? [process.env.EBOOK_CONVERT_PATH] : []), '/usr/bin/ebook-convert', '/usr/local/bin/ebook-convert', '/opt/homebrew/bin/ebook-convert'],
   tesseract: [
     ...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []),
@@ -1891,7 +1893,7 @@ export async function convertWithNativeSvg(
   return renderSvgAsPdf({ svg, renderer, input, options, originalFilename });
 }
 
-/** A program of the Ghostscript family that draws the pages of a source no other engine can: it writes a PDF (the XPS route also counts its pages). */
+/** A program that draws the pages of a source no other engine can: it writes a PDF (the XPS and DjVu routes also count its pages). */
 interface FixedPageRoute {
   sources: ReadonlySet<string>;
   /** The engine label and the prefix of the fallback chain entry. */
@@ -1903,34 +1905,26 @@ interface FixedPageRoute {
   render: (job: PostScriptJob & Pick<XpsJob, 'countPdfPages'>) => Promise<WorkerConversionResult | null>;
 }
 /**
- * PostScript (EPS, PS) goes through the interpreter (postscript-render.ts), XPS and OpenXPS through GhostXPS (xps-render.ts).
- * Both hand the PDF, for targets other than PDF, to the native tools every PDF source uses (Poppler images and SVG, the
+ * PostScript (EPS, PS) goes through the interpreter (postscript-render.ts), XPS and OpenXPS through GhostXPS (xps-render.ts),
+ * DjVu through `ddjvu` (djvu-render.ts). All hand the PDF, for targets other than PDF, to the native tools every PDF source uses (Poppler images and SVG, the
  * encoded rasters, pdftops and the DXF writer).
  */
 const FIXED_PAGE_ROUTES: readonly FixedPageRoute[] = [
   { sources: new Set(['eps', 'ps']), label: 'native-postscript', binary: 'ps2pdf', program: 'ps2pdf (Ghostscript)', render: convertPostScript },
   { sources: new Set(['xps', 'oxps']), label: 'native-xps', binary: 'gxps', program: 'gxps (GhostXPS)', render: convertXps },
+  { sources: new Set(['djvu', 'djv']), label: 'native-djvu', binary: 'ddjvu', program: 'ddjvu (djvulibre-bin)', render: convertDjvu },
 ];
+/** What a fixed page route is asked to draw: the source, its bytes and the request. */
+type FixedPageRequest = Pick<PostScriptJob, 'input' | 'src' | 'tgt' | 'options' | 'originalFilename'>;
 /**
  * Draws a source of `route` and returns null when its program is missing and the caller did not ask for an error; with
  * `throwOnUnavailable` a missing program is an EngineUnavailableError.
  */
-async function convertWithFixedPageRoute(
-  route: FixedPageRoute,
-  input: Buffer | WorkerVfsPayload,
-  src: string,
-  tgt: string,
-  options: WorkerEngineOptions,
-  originalFilename: string
-): Promise<WorkerConversionResult | null> {
+async function convertWithFixedPageRoute(route: FixedPageRoute, request: FixedPageRequest): Promise<WorkerConversionResult | null> {
   const interpreter = resolveBinary(BINARY_PATHS[route.binary], process.env[`${route.binary.toUpperCase()}_PATH`]);
-  if (!interpreter) {
-    if (options.throwOnUnavailable) {
-      throw new EngineUnavailableError(route.binary, `${route.program} is not installed or not in PATH`);
-    }
-    return null;
-  }
-  return route.render({ input, src, tgt, options, originalFilename, interpreter, convertPdfPages: convertPdfPagesWithNativeTools, countPdfPages: countPagesOfReadablePdf });
+  if (!interpreter && request.options.throwOnUnavailable) throw new EngineUnavailableError(route.binary, `${route.program} is not installed or not in PATH`);
+  if (!interpreter) return null;
+  return route.render({ ...request, interpreter, convertPdfPages: convertPdfPagesWithNativeTools, countPdfPages: countPagesOfReadablePdf });
 }
 
 /**
@@ -2402,11 +2396,11 @@ async function convertWithinImageSession(
     }
   }
 
-  // 1c'. PostScript and XPS sources: the program that draws them, then the native PDF tools for every page target.
+  // 1c'. PostScript, XPS and DjVu sources: the program that draws them, then the native PDF tools for every page target.
   const fixedPageRoute = FIXED_PAGE_ROUTES.find((route) => route.sources.has(src));
   if (fixedPageRoute && (tgt === 'pdf' || isPdfChainTarget(tgt))) {
     try {
-      const pageRes = await convertWithFixedPageRoute(fixedPageRoute, input, src, tgt, nativeOptions, originalFilename);
+      const pageRes = await convertWithFixedPageRoute(fixedPageRoute, { input, src, tgt, options: nativeOptions, originalFilename });
       if (pageRes) return { ...pageRes, fallbackChain: fallbackChain.length > 0 ? fallbackChain : undefined };
     } catch (err) {
       rethrowSandboxUnavailable(err);

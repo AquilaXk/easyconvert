@@ -11,7 +11,7 @@ The contents of the first production deploy (`v0.1.0`, a pre-release), summarise
 - Conversion between 302 formats in 12 categories: images, documents, structured data, spreadsheets, presentations, archives, audio, video, e-books, fonts, CAD and vector graphics.
 - PDF tools: text and layout extraction, watermark, protect, merge, unlock, compress, page operations and PDF/A, and tables written as the sheets of an XLSX or XLS workbook.
 - OCR with hOCR and ALTO output, CJK and vertical text, deskew and multi-page documents.
-- E-book writers for MOBI, AZW3, PDB, LRF and OEB, a RocketBook reader, XPS, DWG, Visio, CorelDRAW and Type 1 font sources, and STEP and IGES writers.
+- E-book writers for MOBI, AZW3, PDB, LRF and OEB, a RocketBook reader, XPS, DjVu, DWG, Visio, CorelDRAW and Type 1 font sources, and STEP and IGES writers.
 - A public API with a single contract, job graphs with fan-out and fan-in, task chaining, cancellation, idempotency keys, presigned multipart and resumable (TUS) uploads, webhooks with rotating secrets and durable retries, API keys with scopes and rate-limit headers, and a generated SDK and OpenAPI document.
 - Accounts with Google sign-in, a dashboard for API keys, usage metering and quotas.
 - Local, S3-compatible and OCI object storage behind one streaming interface, with bring-your-own-storage credentials sealed in the job.

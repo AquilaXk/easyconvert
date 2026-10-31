@@ -719,8 +719,8 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.djvu',
     category: 'document',
     description: 'High-density compression format designed for scanned books and high-res text.',
-    targetFormats: ['pdf', 'txt', 'zip'],
-    optionsSchema: { ocrEnabled: true, ocrLanguage: true },
+    targetFormats: ['pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
+    optionsSchema: { pages: true, dpi: true },
   },
   abw: {
     id: 'abw',
@@ -1014,7 +1014,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
     mimeType: 'image/vnd.djvu',
     category: 'ebook',
     description: 'DjVu scanned document short extension.',
-    targetFormats: ['pdf', 'txt', 'epub', 'zip'],
+    targetFormats: ['pdf', 'zip', 'avif', 'bmp', 'eps', 'gif', 'ico', 'jpg', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
   },
 
   // ==========================================

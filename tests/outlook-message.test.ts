@@ -252,8 +252,8 @@ describe('what is not an Outlook message is refused with a typed answer', () => 
 
   it('refuses a binary container that has no reader instead of writing its bytes as text', async () => {
     const djvu = Buffer.concat([Buffer.from('AT&TFORM'), Buffer.alloc(64), Buffer.from('DJVMDIRM')]);
-    await expect(dispatchConversion(djvu, 'djvu', 'txt', {}, 'book.djvu')).rejects.toThrow(/fail-closed against mojibake/);
-    await expect(dispatchConversion(djvu, 'djvu', 'pdf', {}, 'book.djvu')).rejects.toThrow(/fail-closed against mojibake/);
+    await expect(extractTextContentForOffice(djvu, 'djvu', {}, 'book')).rejects.toThrow(/fail-closed against mojibake/);
+    await expect(dispatchConversion(djvu, 'djvu', 'txt', {}, 'book.djvu')).rejects.toMatchObject({ name: 'UnsupportedTargetError' });
   });
 });
 

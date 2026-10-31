@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   encodeRun,
   launchQpdf,
+  processFailure,
   qpdfRunnerState,
   QPDF_RUNNER_ENV,
   QPDF_RUNNER_LIB_ENV,
@@ -16,7 +17,7 @@ import {
   startQpdfRunner,
   stopQpdfRunner,
 } from '../src/lib/conversions/pdf-postprocess/qpdf-runner';
-import { getSanitizedEnvironment, SandboxedBufferLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
+import { getSanitizedEnvironment, SandboxedBufferLimitError, SandboxedMemoryLimitError, SandboxedProcessError, SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import { skipUnless } from './helpers/strict-skip';
 
 /**
@@ -180,6 +181,31 @@ describe('the reader of the runner\'s replies', () => {
   it('refuses a length that no reply has', () => {
     expect(() => new ReplyReader().push(Buffer.from([0xff, 0xff, 0xff, 0xff, 11, 0, 0, 0, 1]))).toThrow('impossible length');
     expect(() => new ReplyReader().push(Buffer.from([0, 0, 0, 2, 11, 0, 0, 0, 1]))).toThrow('impossible length');
+  });
+});
+
+describe('the failure of a job, as executeSandboxedBinary words it', () => {
+  const SIGKILL = 9;
+  const SIGSEGV = 11;
+  const SIGABRT = 6;
+  const failed = (signal: number, options: Parameters<typeof processFailure>[1]): Error =>
+    processFailure({ kind: 5, exitStatus: 0, signal, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }, options);
+
+  it.each([
+    ['a fault', SIGSEGV, 'SIGSEGV'],
+    ['a kill', SIGKILL, 'SIGKILL'],
+  ])('names the signal on the memory limit error of %s under the address space limit', (_name, signal, name) => {
+    const error = failed(signal, { memoryLimitMb: 2048 });
+    expect(error).toBeInstanceOf(SandboxedMemoryLimitError);
+    expect(error).toMatchObject({ limitMb: 2048, signal: name });
+  });
+
+  it('reads the limit from the rlimits when no memory limit is given, and keeps a crash that is not the limit as a process error', () => {
+    expect(failed(SIGSEGV, { rlimits: { asBytes: 512 * 1024 * 1024 } })).toMatchObject({ name: 'SandboxedMemoryLimitError', limitMb: 512, signal: 'SIGSEGV' });
+    const aborted = failed(SIGABRT, { memoryLimitMb: 2048 });
+    expect(aborted).toBeInstanceOf(SandboxedProcessError);
+    expect(aborted).toMatchObject({ signal: 'SIGABRT', exitCode: null });
+    expect(failed(SIGSEGV, {})).toMatchObject({ name: 'SandboxedProcessError', signal: 'SIGSEGV' });
   });
 });
 
