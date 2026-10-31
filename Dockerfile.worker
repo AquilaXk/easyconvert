@@ -137,6 +137,39 @@ COPY scripts/ffmpeg-patches /tmp/ffmpeg-patches
 RUN /tmp/install-ffmpeg.sh /opt/ffmpeg
 
 # ==============================================================================
+# Stage 3d: Patched djvulibre (ddjvu, djvused)
+# ==============================================================================
+# DjVu input. djvulibre (GPL-2.0-or-later) is built here from the Debian 13 source of 3.5.28 (the upstream archive and the Debian
+# packaging with its patches) and two patches to libdjvu (scripts/djvulibre-patches), all pinned by SHA-256 in
+# scripts/install-djvulibre.sh, with the library linked into the programs; the worker runs them as separate sandboxed processes and
+# nothing links them into the application. The distribution package of the same version is installed in this stage only, as the
+# reference the patched program is checked against; it must be the pinned revision, so a Debian update of the source stops the build.
+# The stage fails if a patch does not apply, a hardening property is missing, or a program fails its checks (a page drawn, the chains
+# that only the patches end in time while the reference still searches them, the reference manual drawn to the same pixels).
+FROM ${NODE_IMAGE} AS djvulibre
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        xz-utils \
+        build-essential \
+        patch \
+        autoconf \
+        automake \
+        libtool \
+        pkg-config \
+        libjpeg-dev \
+        libtiff-dev \
+        djvulibre-bin \
+        poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-djvulibre.sh /tmp/install-djvulibre.sh
+COPY scripts/djvulibre-patches /tmp/djvulibre-patches
+COPY scripts/lib/djvulibre-gates.sh /tmp/lib/djvulibre-gates.sh
+RUN DJVULIBRE_REFERENCE_DDJVU=/usr/bin/ddjvu /tmp/install-djvulibre.sh /opt/djvulibre
+
+# ==============================================================================
 # Stage 4: Open CASCADE program (cad-convert)
 # ==============================================================================
 # STEP and IGES input and output. native/cad-convert is our own small program, built here against the unmodified Open CASCADE
@@ -260,7 +293,6 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         libheif-plugin-libde265 \
         libopenjp2-tools \
         poppler-utils \
-        djvulibre-bin \
         tesseract-ocr \
         tesseract-ocr-eng \
         tesseract-ocr-kor \
@@ -332,14 +364,21 @@ COPY --from=ghostxps /opt/ghostxps/bin/gxps /usr/local/bin/gxps
 COPY --from=ghostxps /opt/ghostxps/share/doc/ghostxps /usr/share/doc/ghostxps
 RUN gxps -v
 
-# DjVu renderer (the distribution's djvulibre-bin, GPL-2.0-or-later, started as a separate program like the other GPL tools above; its
-# licence text is collected by the notices step below). The build fails when a program does not start or cannot do its part: a page
-# is encoded with cjb2 from a bitmap written here, djvused (which the worker runs before it draws, to learn the pages and their sizes)
-# must report one page of 8 x 8 pixels, and ddjvu draws it, which goes through its TIFF and PDF writers.
-RUN ddjvu --help 2>&1 | grep -q 'DjVuLibre-3' \
+# DjVu renderer (the patched djvulibre built in the djvulibre stage, GPL-2.0-or-later, started as a separate program like the other GPL
+# tools above). The worker finds it as /usr/local/bin/ddjvu with djvused beside it; the distribution's package is not installed, so no
+# /usr/bin/ddjvu comes first. Its licence text goes to /usr/share/doc/djvulibre/copyright, which the notices step below collects into
+# /licenses with the system packages; the SOURCE file names the source package and the patches, which sit beside it. The build fails if
+# a library is missing or the programs cannot do their part: djvused (which the worker runs before it draws, to learn the pages and
+# their sizes) must report one page of 8 x 8 pixels from a page written here as bytes (an INFO chunk, libdjvu/DjVuInfo.cpp), and ddjvu
+# draws it, which goes through its TIFF and PDF writers.
+COPY --from=djvulibre /opt/djvulibre /opt/djvulibre
+COPY --from=djvulibre /opt/djvulibre/share/doc/djvulibre /usr/share/doc/djvulibre
+RUN ln -s /opt/djvulibre/bin/ddjvu /usr/local/bin/ddjvu \
+    && ln -s /opt/djvulibre/bin/djvused /usr/local/bin/djvused \
+    && ! ldd /opt/djvulibre/bin/ddjvu /opt/djvulibre/bin/djvused | grep -q 'not found' \
+    && test ! -e /usr/bin/ddjvu \
     && dir="$(mktemp -d)" \
-    && printf 'P4\n8 8\n\252\125\252\125\252\125\252\125' > "$dir/page.pbm" \
-    && cjb2 "$dir/page.pbm" "$dir/page.djvu" \
+    && printf 'AT&TFORM\000\000\000\026DJVUINFO\000\000\000\012\000\010\000\010\030\000\054\001\026\000' > "$dir/page.djvu" \
     && [ "$(djvused -e n "$dir/page.djvu")" = "1" ] \
     && [ "$(djvused -e size "$dir/page.djvu")" = "width=8 height=8" ] \
     && ddjvu -format=pdf "$dir/page.djvu" "$dir/page.pdf" \
@@ -446,10 +485,11 @@ COPY THIRD_PARTY_NOTICES.md /licenses/
 RUN cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE
 RUN cp /usr/share/doc/ghostxps/SOURCE /licenses/ghostxps.SOURCE
 RUN cp /usr/share/doc/ffmpeg/SOURCE /licenses/ffmpeg.SOURCE
+RUN cp /usr/share/doc/djvulibre/SOURCE /licenses/djvulibre.SOURCE
 # The licence texts of the pdf.js decoders (JBIG2, OpenJPEG) sit in a subfolder of the package, which the notices file does not embed.
 RUN mkdir -p /licenses/pdfjs-dist-wasm && cp /app/node_modules/pdfjs-dist/wasm/LICENSE_* /licenses/pdfjs-dist-wasm/
 # The versions this image was built with (every Debian package, and the Node.js runtime), kept next to the notices.
-RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; cat /usr/share/doc/ffmpeg/tool-version.txt; } > /licenses/tool-versions.txt
+RUN { dpkg-query -W -f='${binary:Package} ${Version}\n' | sort; printf 'nodejs %s\n' "$(node --version)"; cat /usr/share/doc/ffmpeg/tool-version.txt; cat /usr/share/doc/djvulibre/tool-version.txt; } > /licenses/tool-versions.txt
 RUN chmod -R a+rX /licenses
 
 # 5. Drop to unprivileged non-root user (UID:GID 10001:10001)

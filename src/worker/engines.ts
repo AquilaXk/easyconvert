@@ -211,7 +211,7 @@ const BINARY_PATHS: Record<string, string[]> = {
     '/opt/homebrew/bin/ps2pdf',
   ],
   gxps: [...(process.env.GXPS_PATH ? [process.env.GXPS_PATH] : []), '/usr/local/bin/gxps', '/usr/bin/gxps', '/opt/homebrew/bin/gxps'],
-  ddjvu: [...(process.env.DDJVU_PATH ? [process.env.DDJVU_PATH] : []), '/usr/bin/ddjvu', '/usr/local/bin/ddjvu', '/opt/homebrew/bin/ddjvu'],
+  ddjvu: [...(process.env.DDJVU_PATH ? [process.env.DDJVU_PATH] : []), '/usr/local/bin/ddjvu', '/usr/bin/ddjvu', '/opt/homebrew/bin/ddjvu'],
   ebookConvert: [...(process.env.EBOOK_CONVERT_PATH ? [process.env.EBOOK_CONVERT_PATH] : []), '/usr/bin/ebook-convert', '/usr/local/bin/ebook-convert', '/opt/homebrew/bin/ebook-convert'],
   tesseract: [
     ...(process.env.TESSERACT_PATH ? [process.env.TESSERACT_PATH] : []),
@@ -1912,7 +1912,7 @@ interface FixedPageRoute {
 const FIXED_PAGE_ROUTES: readonly FixedPageRoute[] = [
   { sources: new Set(['eps', 'ps']), label: 'native-postscript', binary: 'ps2pdf', program: 'ps2pdf (Ghostscript)', render: convertPostScript },
   { sources: new Set(['xps', 'oxps']), label: 'native-xps', binary: 'gxps', program: 'gxps (GhostXPS)', render: convertXps },
-  { sources: new Set(['djvu', 'djv']), label: 'native-djvu', binary: 'ddjvu', program: 'ddjvu (djvulibre-bin)', render: convertDjvu },
+  { sources: new Set(['djvu', 'djv']), label: 'native-djvu', binary: 'ddjvu', program: 'ddjvu (djvulibre)', render: convertDjvu },
 ];
 /** What a fixed page route is asked to draw: the source, its bytes and the request. */
 type FixedPageRequest = Pick<PostScriptJob, 'input' | 'src' | 'tgt' | 'options' | 'originalFilename'>;

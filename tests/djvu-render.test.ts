@@ -11,11 +11,12 @@ import { EngineUnavailableError } from '../src/lib/types';
 import { countPagesOfReadablePdf } from '../src/worker/engines';
 import { convertDjvu, type DjvuJob } from '../src/worker/djvu-render';
 import { requireOracleTool, type ExternalOracleTool } from './helpers/differential-oracle';
-import { bundledDocument, bundleOf, chunk, form, includeChunk, pageForm, singlePage, waveletForm, type BundleFile } from './helpers/djvu-builder';
+import { bundledDocument, bundleOf, chunk, chunksOfId, form, includeChunk, maskedPageOf, maskOverChain, pageForm, singlePage, waveletForm, type BundleFile } from './helpers/djvu-builder';
+import { DISTRIBUTION_DDJVU, djvuRunsCanStart, patchedDdjvu, recordDigests, stampedBinDir } from './helpers/djvulibre-build';
 import { pdfinfoPages } from './helpers/encrypted-pdf-fixtures';
 import { withMissingBinary } from './helpers/native-tools';
 import { requireRealworldSample } from './helpers/realworld-sample';
-import { skipWithoutTools } from './helpers/strict-skip';
+import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { expectWithinHangGuard } from './helpers/timing';
 
 /**
@@ -37,10 +38,27 @@ const CHAIN_EXPECTED_LOCAL_MS = 500;
 const POC_F_EXPECTED_LOCAL_MS = 2_000;
 /** A hang guard of twenty times the longer of the two chains (poc_f, 2 s); a chain that waits is also ended by the 15 s budget of ddjvu, and the outcome then is not 'drawn'. */
 const CHAIN_HANG_GUARD_MS = 40_000;
+/**
+ * The patched build (scripts/install-djvulibre.sh): poc_f of 40 files converts in 0.04 s and a plain chain of 300 is refused in 0.08 s
+ * under the task limit of a run (1.1 s where only the address space stops its threads) in the production-like container on Apple
+ * silicon (measured); the unpatched 3.5.28 takes about 50 s for the first and waits on the second until its budget ends it.
+ */
+const PATCHED_CHAIN_EXPECTED_LOCAL_MS = 1_500;
+const patchedBuild = await patchedDdjvu();
+const notPatched = skipUnless('the djvulibre build of scripts/install-djvulibre.sh', patchedBuild !== undefined);
+const runsCannotStart = skipUnless('a user namespace of its own and prlimit for each DjVu run (Linux)', djvuRunsCanStart());
+/** The worker draws only with the patched build, in runs that can have their task limit. */
+const canDraw = haveTools && !notPatched && !runsCannotStart;
+const noDistributionBuild = skipUnless(`the distribution's ddjvu at ${DISTRIBUTION_DDJVU}, the reference of the patched build`, fs.existsSync(DISTRIBUTION_DDJVU));
 /** The file count of a bundle directory: after `AT&TFORM`, the form size, `DJVM`, the `DIRM` header and the version byte. */
 const DIRM_FILE_COUNT_AT = 16 + 8 + 1;
 const HANSARD = 'wc-hansard-1963-malaysia-bill-clause-4.djvu';
 const DOGV = 'wc-dogv-12042005.djvu';
+/** The first page of DOGV and the shared file of the dictionary its JB2 mask needs, as `djvmcvt -i` names them. */
+const DOGV_FIRST_PAGE = 'p0001.djvu';
+const DOGV_DICTIONARY = 'dict0020.iff';
+/** The chains of shared files the mask of that page is drawn over: the unpatched program takes 8.2 s at 30 files, 1.7 times as long for each more. */
+const MASK_CHAIN_LEVELS = [40, 60];
 const TIKA_INDIRECT = 'tika-testdjvu.djvu';
 /** The most pages a request renders to images: the limit of the other page chains. */
 const IMAGE_PAGE_LIMIT = 500;
@@ -107,7 +125,7 @@ function ocrOfPage(pdfPath: string, page: number): string {
   return run('tesseract', [path.join(dir, 'page.pgm'), 'stdout', '-l', 'eng', '--psm', '6']);
 }
 
-describe.skipIf(!haveTools)('real DjVu files drawn by ddjvu', () => {
+describe.skipIf(!canDraw)('real DjVu files drawn by ddjvu', () => {
   for (const id of [HANSARD, DOGV]) {
     it(
       `${id} becomes the PDF ddjvu writes: its pages, their sizes and their pixels`,
@@ -167,6 +185,58 @@ describe.skipIf(!haveTools)('real DjVu files drawn by ddjvu', () => {
     },
     CONVERSION_TIMEOUT_MS
   );
+});
+
+describe.skipIf(!haveTools || notPatched || noDistributionBuild)('the patched ddjvu against the distribution build of the same version', () => {
+  for (const id of [HANSARD, DOGV]) {
+    it(
+      `draws ${id} to the PDF the distribution's ddjvu writes: the same pages, page sizes and pixels on every page`,
+      async (ctx) => {
+        const sample = await requireRealworldSample(ctx, id);
+        const dir = scratchDir('djvu-patched-');
+        const patched = path.join(dir, 'patched.pdf');
+        const distribution = path.join(dir, 'distribution.pdf');
+        execFileSync(patchedBuild ?? '', ['-format=pdf', sample.path, patched]);
+        execFileSync(DISTRIBUTION_DDJVU, ['-format=pdf', sample.path, distribution]);
+        const pages = pdfinfoPages(fs.readFileSync(distribution));
+        expect(pdfinfoPages(fs.readFileSync(patched))).toBe(pages);
+        expect(pageSizes(patched, pages)).toEqual(pageSizes(distribution, pages));
+        for (let page = 1; page <= pages; page++) expect(rasterOf(patched, page).equals(rasterOf(distribution, page)), `page ${page}`).toBe(true);
+      },
+      CONVERSION_TIMEOUT_MS
+    );
+  }
+
+  /** The `BG44` chunks `c44` writes for a picture of `DIAMOND_SIDE` pixels whose grey level at (x, y) is `level(x, y)`. */
+  const DIAMOND_SIDE = 64;
+  function waveletChunks(name: string, level: (x: number, y: number) => number): Buffer[] {
+    const dir = scratchDir('djvu-diamond-');
+    const pixels = Buffer.alloc(DIAMOND_SIDE * DIAMOND_SIDE * 3);
+    for (let y = 0; y < DIAMOND_SIDE; y++) for (let x = 0; x < DIAMOND_SIDE; x++) pixels.fill(level(x, y), (y * DIAMOND_SIDE + x) * 3, (y * DIAMOND_SIDE + x + 1) * 3);
+    fs.writeFileSync(path.join(dir, `${name}.ppm`), Buffer.concat([Buffer.from(`P6\n${DIAMOND_SIDE} ${DIAMOND_SIDE}\n255\n`, 'latin1'), pixels]));
+    run('c44', [path.join(dir, `${name}.ppm`), path.join(dir, `${name}.djvu`)]);
+    return chunksOfId(fs.readFileSync(path.join(dir, `${name}.djvu`)), 'BG44');
+  }
+
+  function drawnBy(program: string, bytes: Buffer, name: string): Buffer {
+    const dir = scratchDir('djvu-diamond-out-');
+    execFileSync(program, ['-format=pdf', writeTemp(bytes, `${name}.djvu`), path.join(dir, `${name}.pdf`)]);
+    return rasterOf(path.join(dir, `${name}.pdf`), 1);
+  }
+
+  it('takes the background the distribution build takes when the page reaches it through two branches that share a file, the second holding a decoy', () => {
+    const background = waveletChunks('background', (x) => x * 4);
+    const decoy = waveletChunks('decoy', (_x, y) => (y % 16 < 8 ? 0 : 255));
+    const diamond = bundleOf([
+      { form: pageForm(DIAMOND_SIDE, DIAMOND_SIDE, [includeChunk('a'), includeChunk('b')]), kind: 'page', id: 'page' },
+      { form: form('DJVI', [includeChunk('s')]), kind: 'include', id: 'a' },
+      { form: form('DJVI', [...decoy, includeChunk('s')]), kind: 'include', id: 'b' },
+      { form: form('DJVI', background), kind: 'include', id: 's' },
+    ]);
+    const patched = drawnBy(patchedBuild ?? '', diamond, 'patched');
+    expect(patched.equals(drawnBy(DISTRIBUTION_DDJVU, diamond, 'distribution'))).toBe(true);
+    expect(patched.equals(drawnBy(DISTRIBUTION_DDJVU, singlePage(DIAMOND_SIDE, DIAMOND_SIDE, decoy), 'decoy'))).toBe(false);
+  });
 });
 
 describe.skipIf(!haveTools)('DjVu files that are refused', () => {
@@ -229,7 +299,7 @@ describe.skipIf(!haveTools)('DjVu files that are refused', () => {
   );
 });
 
-describe.skipIf(!haveTools)('the page limits', () => {
+describe.skipIf(!canDraw)('the page limits', () => {
   /** A document of `count` pages of 8 x 8 pixels, written by the djvulibre encoders. */
   function tinyDocument(count: number): Buffer {
     const dir = scratchDir('djvu-tiny-');
@@ -256,7 +326,7 @@ describe.skipIf(!haveTools)('the page limits', () => {
   );
 });
 
-describe.skipIf(!haveTools)('documents built byte by byte, against the pages djvused reports', () => {
+describe.skipIf(!canDraw)('documents built byte by byte, against the pages djvused reports', () => {
   const WIDTH = 64;
   const HEIGHT = 48;
   const SIDE = WIDTH;
@@ -356,11 +426,12 @@ describe.skipIf(!haveTools)('documents built byte by byte, against the pages djv
 
   /** The real `djvused` next to a `ddjvu` that leaves a file when it is started and then runs `body`, to show whether a refusal came before it. */
   function realReportWithMarkedRenderer(body = 'exit 10'): { interpreter: string; started: string } {
-    const dir = scratchDir('djvu-marked-');
+    const dir = stampedBinDir(scratchDir('djvu-marked-'));
     const started = path.join(dir, 'started');
     fs.writeFileSync(path.join(dir, 'ddjvu'), `#!/bin/sh\ntouch '${started}'\n${body}\n`);
     fs.chmodSync(path.join(dir, 'ddjvu'), 0o755);
     fs.symlinkSync(requireOracleTool('djvused'), path.join(dir, 'djvused'));
+    recordDigests(dir);
     return { interpreter: path.join(dir, 'ddjvu'), started };
   }
 
@@ -503,9 +574,41 @@ describe.skipIf(!haveTools)('documents built byte by byte, against the pages djv
     expect(outcome).toBe('drawn');
     expectWithinHangGuard('poc_f', elapsedMs, { guardMs: CHAIN_HANG_GUARD_MS, expectedLocalMs: POC_F_EXPECTED_LOCAL_MS });
   }, CONVERSION_TIMEOUT_MS);
+
+  it('draws a chain of 40 shared files that each include the next two, which the unpatched program searches once for each path', async () => {
+    const { elapsedMs, outcome } = await chainOutcome(bundleOf(includeChain(40, (index) => [index + 1, index + 2], () => [])));
+    expect(outcome).toBe('drawn');
+    expectWithinHangGuard('poc_f of 40 files', elapsedMs, { guardMs: CHAIN_HANG_GUARD_MS, expectedLocalMs: PATCHED_CHAIN_EXPECTED_LOCAL_MS });
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('refuses a plain chain of 300 shared files when the threads of its files cannot start, where the unpatched program waits for them until its budget', async () => {
+    const { elapsedMs, outcome } = await chainOutcome(bundleOf(includeChain(300, (index) => [index + 1], () => [])));
+    expect(outcome).toMatch(/^ConversionFailedError: ddjvu (could not draw|exceeded its output or memory limit)/);
+    expectWithinHangGuard('the plain chain of 300 files', elapsedMs, { guardMs: CHAIN_HANG_GUARD_MS, expectedLocalMs: PATCHED_CHAIN_EXPECTED_LOCAL_MS });
+  }, CONVERSION_TIMEOUT_MS);
+
+  it.for(MASK_CHAIN_LEVELS)(
+    'refuses the JB2 mask of a real page over %i shared files that each include the next two and none its dictionary, which the unpatched program searches for once for each path',
+    { timeout: CONVERSION_TIMEOUT_MS },
+    async (levels, ctx) => {
+      const page = maskedPageOf((await requireRealworldSample(ctx, DOGV)).path, DOGV_FIRST_PAGE, DOGV_DICTIONARY);
+      const { elapsedMs, outcome } = await chainOutcome(maskOverChain(page, levels, false));
+      expect(outcome).toMatch(/^ConversionFailedError: ddjvu could not draw the \.djvu file: .*shape dictionary/);
+      expectWithinHangGuard(`the mask over ${levels} files`, elapsedMs, { guardMs: CHAIN_HANG_GUARD_MS, expectedLocalMs: PATCHED_CHAIN_EXPECTED_LOCAL_MS });
+    }
+  );
+
+  it('draws the mask over 60 such files whose first includes the dictionary after the chain, to the pixels of the page in its own document', async (ctx) => {
+    const sample = await requireRealworldSample(ctx, DOGV);
+    const levels = MASK_CHAIN_LEVELS[MASK_CHAIN_LEVELS.length - 1];
+    const drawn = writeTemp((await dispatchConversion(maskOverChain(maskedPageOf(sample.path, DOGV_FIRST_PAGE, DOGV_DICTIONARY), levels, true), 'djvu', 'pdf', {}, 'mask.djvu')).buffer, 'mask.pdf');
+    const original = path.join(scratchDir('djvu-mask-reference-'), 'page.pdf');
+    run('ddjvu', ['-format=pdf', '-page=1', sample.path, original]);
+    expect(rasterOf(drawn, 1).equals(rasterOf(original, 1))).toBe(true);
+  }, CONVERSION_TIMEOUT_MS);
 });
 
-describe('the programs and their limits', () => {
+describe.skipIf(runsCannotStart)('the programs and their limits', () => {
   const DIRECTORY = (pages: number) => `printf '${pages}\\n'`;
   /** Sets `$script` to the value of the `-e` flag of the run, which is what a `djvused` stand-in tells its two runs apart by. */
   const SCRIPT_OF_RUN = 'script=; prev=; for a in "$@"; do if [ "$prev" = -e ]; then script="$a"; fi; prev="$a"; done';
@@ -524,7 +627,7 @@ describe('the programs and their limits', () => {
    */
   function standIn(body: string, options: { pages?: number; side?: number; reporter?: string; djvused?: boolean } = {}): StandIn {
     const { pages = 1, side = 64, reporter, djvused = true } = options;
-    const dir = scratchDir('djvu-stand-in-');
+    const dir = stampedBinDir(scratchDir('djvu-stand-in-'));
     const started = path.join(dir, 'started');
     fs.writeFileSync(
       path.join(dir, 'ddjvu'),
@@ -535,6 +638,7 @@ describe('the programs and their limits', () => {
       fs.writeFileSync(path.join(dir, 'djvused'), `#!/bin/sh\n${SCRIPT_OF_RUN}\n${reporter ?? `case "$script" in n) ${DIRECTORY(pages)};; size) ${SIZES(pages, side)};; esac`}\n`);
       fs.chmodSync(path.join(dir, 'djvused'), 0o755);
     }
+    recordDigests(dir);
     return { interpreter: path.join(dir, 'ddjvu'), started };
   }
 
@@ -606,9 +710,9 @@ describe('the programs and their limits', () => {
     expect(error).toMatchObject({ name: 'CpuTaskTimeoutError', status: 422, message: expect.stringContaining('1500 ms') });
   }, 20_000);
 
-  it('gives ddjvu one glibc heap', async () => {
+  it('gives ddjvu four glibc heaps', async () => {
     const error = await refusalOf(convertWith(standIn('echo "arena=$MALLOC_ARENA_MAX" >&2; exit 10'), 'pdf'));
-    expect(error).toMatchObject({ name: 'ConversionFailedError', message: 'ddjvu could not draw the .djvu file: arena=1' });
+    expect(error).toMatchObject({ name: 'ConversionFailedError', message: 'ddjvu could not draw the .djvu file: arena=4' });
   });
 
   it('refuses a PDF too large for the page tools before it is read for an image target', async () => {

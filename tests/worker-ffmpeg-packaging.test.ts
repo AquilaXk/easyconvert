@@ -72,7 +72,7 @@ describe('the runner of the worker image', () => {
 
   it('records the FFmpeg version and source digest in the tool-versions manifest from the install script, not from a second copy', () => {
     const manifest = instructions(runner, 'RUN').find((argument) => argument.includes('/licenses/tool-versions.txt')) ?? '';
-    expect(manifest).toMatch(/; cat \/usr\/share\/doc\/ffmpeg\/tool-version\.txt; \} > \/licenses\/tool-versions\.txt$/);
+    expect(manifest).toMatch(/; cat \/usr\/share\/doc\/ffmpeg\/tool-version\.txt;( cat \/usr\/share\/doc\/[\w-]+\/tool-version\.txt;)* \} > \/licenses\/tool-versions\.txt$/);
     const line = INSTALL.match(/printf '([^']*)\\n' "\$FFMPEG_VERSION" "\$FFMPEG_SHA256" > "\$INSTALL_DIR\/share\/doc\/ffmpeg\/tool-version\.txt"/);
     expect(line?.[1]).toBe('ffmpeg %s (source, sha256 %s)');
   });

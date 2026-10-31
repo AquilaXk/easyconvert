@@ -9,6 +9,7 @@ import {
   SandboxedProcessError,
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
+import { Semaphore, type SemaphoreQueue } from '../workers/semaphore';
 import { parseTesseractBlocks, type OcrResult } from './ocr-pdf-combiner';
 import { groupAtBoundaries, wordBoundariesAfter, type OcrWordMerge } from './ocr-word-merge';
 import { fallbackReadsMore, ocrFallbackPageSegMode, ocrSegmentationFor } from './ocr-config';
@@ -280,41 +281,12 @@ export function parseTesseractTsv(tsv: string, language?: string, pageText?: str
   };
 }
 
-/** Bounds concurrent native runs and the queue behind them. */
-export class CliSemaphore {
-  private active = 0;
-  private readonly waiting: Array<() => void> = [];
-
-  constructor(
-    private readonly limit: number,
-    private readonly maxQueued: number,
-    /** What is queued, for the saturation message. */
-    private readonly unit: string = 'native runs'
-  ) {}
-
-  async run<T>(task: () => Promise<T>): Promise<T> {
-    if (this.active >= this.limit) {
-      if (this.waiting.length >= this.maxQueued) {
-        throw new OcrEngineUnavailableError(
-          `OCR is saturated: ${this.maxQueued} ${this.unit} are already waiting.`
-        );
-      }
-      // The slot is handed over directly, so `active` stays counted across the hand-off.
-      await new Promise<void>((resolve) => this.waiting.push(resolve));
-    } else {
-      this.active++;
-    }
-    try {
-      return await task();
-    } finally {
-      const next = this.waiting.shift();
-      if (next) next();
-      else this.active--;
-    }
-  }
+/** The queue bound of an OCR semaphore: past `maxQueued` waiting `unit`s a run is refused as an unavailable engine. */
+export function ocrQueue(maxQueued: number, unit: string = 'native runs'): SemaphoreQueue {
+  return { maxQueued, onSaturated: () => new OcrEngineUnavailableError(`OCR is saturated: ${maxQueued} ${unit} are already waiting.`) };
 }
 
-const cliSemaphore = new CliSemaphore(OCR_CLI_MAX_CONCURRENCY, OCR_CLI_MAX_QUEUED);
+const cliSemaphore = new Semaphore(OCR_CLI_MAX_CONCURRENCY, ocrQueue(OCR_CLI_MAX_QUEUED));
 
 export interface CliOcrRequest {
   cliPath: string;

@@ -1,0 +1,270 @@
+libdjvu: search the included files once each for a page component and a shape dictionary
+
+DjVuImage::get_info(), get_bg44(), get_bgpm(), get_fgjb(), get_fgpm() and
+get_fgbc() look for a component in the file of the page and then, depth first,
+in the files it includes. DjVuFile::get_fgjd() looks the same way for the
+shape dictionary that a JB2 mask (Sjbz) needs. A shared file included through
+several paths is searched once for each path, so a chain of shared files that
+each include the next two costs a number of visits that grows like the
+Fibonacci numbers, though each file is created and decoded only once: 40 such
+files take 50 s to draw an empty page, and a page whose mask needs a
+dictionary over 30 of them takes 8 s.
+
+Search the graph as DjVuFile::find_ndir() and get_merged_anno() walk it, with
+a map of the URLs already visited, so that each file is searched once. The
+first file found in depth-first order is the one the recursive search found:
+a file is skipped only when an earlier visit searched it and everything it
+includes without finding what is looked for. get_fgjd() waits for the files
+still decoding and searches again, as before; each such pass searches each
+file once. It used to be woken, and search again, for every chunk decoded in
+any file below the page: a mask without its dictionary over a chain of 60
+such files of 2000 small chunks each took 8 s to fail, where the same chain
+decodes in 2.3 s without a mask. Only get_fgjd() waits on the chunk monitor
+(wait_for_chunk()), and only a shape dictionary (Djbz) or a file that stops
+decoding, which notify_file_flags_changed() still signals, can change what
+it finds or whether it waits, so notify_chunk_done() wakes it for a Djbz
+chunk alone. get_info() calls init_rotate() on the information it finds, as
+before; its second call on the caller's own (empty) information is gone,
+which never ran, as the first call leaves rotate_count at an orientation from
+0 to 3.
+
+The other walks over the included files that ddjvu reaches when it draws a
+page already search each file once or do not recurse:
+ - DjVuFile::get_merged_anno() (the annotations of a page, through
+   DjVuImage::get_anno() and DjVuFile::merge_anno()), find_ndir() and
+   decode_ndir() keep the same map;
+ - DjVuPortcaster::compute_closure() (every notification between files)
+   keeps a set of the ports it reached;
+ - DjVuFile::get_anno(), get_text() and get_meta() read the file alone, and
+   wait_for_finish(), decode_func(), notify_file_flags_changed(),
+   trigger_cb() and process_incl_chunk() look at the files it includes
+   directly.
+DjVuFile::stop_decode() and stop() recurse once per path with no map, but only
+when a document stops its files: ~DjVuDocument(), stop_init(),
+check_unnamed_files() after a failed initialisation, and the child of a
+stopped file. ddjvu entered neither while it drew a page over a chain of 20
+such files, and it leaves through exit() when a page fails. DjVuDocEditor
+walks the files for the editing commands of djvused, and
+add_file_to_djvm() and local_get_url_names() of DjVuDocument, which keep a
+map, for saving a document.
+
+--- a/libdjvu/DjVuFile.h
++++ b/libdjvu/DjVuFile.h
+@@ -648,7 +648,7 @@
+ 
+       // Functions dealing with the shape directory (fgjd)
+    static GP<JB2Dict> static_get_fgjd(void *);
+-   GP<JB2Dict> get_fgjd(int block=0);
++   GP<JB2Dict> get_fgjd(int block, GMap<GURL, void *> & map);
+ 
+       // Functions used to wait for smth
+    void		wait_for_chunk(void);
+--- a/libdjvu/DjVuFile.cpp
++++ b/libdjvu/DjVuFile.cpp
+@@ -387,9 +387,13 @@
+ }
+ 
+ void
+-DjVuFile::notify_chunk_done(const DjVuPort *, const GUTF8String &)
++DjVuFile::notify_chunk_done(const DjVuPort *, const GUTF8String & name)
+ {
+   check();
++  // Only get_fgjd() waits for a chunk, and only a shape dictionary can
++  // change what it finds.
++  if (name != "Djbz")
++    return;
+   chunk_mon.enter();
+   chunk_mon.broadcast();
+   chunk_mon.leave();
+@@ -746,30 +750,37 @@
+ DjVuFile::static_get_fgjd(void *arg)
+ {
+   DjVuFile *file = (DjVuFile*)arg;
+-  return file->get_fgjd(1);
++  GMap<GURL, void *> map;
++  return file->get_fgjd(1, map);
+ }
+ 
++// A shared file may be included through several paths.  As in
++// find_ndir(), each pass searches each file once, so that it costs
++// one visit per file and not one per path.
+ GP<JB2Dict>
+-DjVuFile::get_fgjd(int block)
++DjVuFile::get_fgjd(int block, GMap<GURL, void *> & map)
+ {
+   check();
+   
+   // Simplest case
+   if (fgjd)
+     return fgjd;
++  if (map.contains(url))
++    return 0;
+   // Check wether included files
+   chunk_mon.enter();
+   G_TRY {
+     for(;;)
+     {
+       int active = 0;
++      map[url]=0;
+       GPList<DjVuFile> incs = get_included_files();
+       for (GPosition pos=incs.firstpos(); pos; ++pos)
+       {
+         GP<DjVuFile> file = incs[pos];
+         if (file->is_decoding())
+           active = 1;
+-        GP<JB2Dict> fgjd = file->get_fgjd();
++        GP<JB2Dict> fgjd = file->get_fgjd(0, map);
+         if (fgjd)
+         {
+           chunk_mon.leave();
+@@ -784,6 +795,8 @@
+         break;
+       // Wait until a new chunk gets decoded
+       wait_for_chunk();
++      // and search every file again
++      map.empty();
+     }
+   } G_CATCH_ALL {
+     chunk_mon.leave();
+--- a/libdjvu/DjVuImage.cpp
++++ b/libdjvu/DjVuImage.cpp
+@@ -106,104 +106,72 @@
+ 
+ //// DJVUIMAGE: DATA COLLECTORS
+ 
+-GP<DjVuInfo>
+-DjVuImage::get_info(const GP<DjVuFile> & file) const
++// A shared file may be included through several paths.  As in
++// DjVuFile::get_merged_anno(), each file is searched once, so that the
++// search costs one visit per file and not one per path.
++template <class TYPE> static GP<TYPE>
++find_component(const GP<DjVuFile> & file, GP<TYPE> DjVuFile::* component,
++               GMap<GURL, void *> & map)
+ {
+-   if (file->info)
+-   {
+-     if(rotate_count<0)
+-     {
+-       const_cast<DjVuImage *>(this)->init_rotate(*(file->info));
+-     }
+-     return file->info;
+-   }
++   GURL url=file->get_url();
++   if (map.contains(url))
++     return 0;
++   map[url]=0;
++   if (file->*component)
++     return file->*component;
+    GPList<DjVuFile> list=file->get_included_files();
+    for(GPosition pos=list;pos;++pos)
+    {
+-      GP<DjVuInfo> info=get_info(list[pos]);
+-      if (info) 
+-      {
+-        if(rotate_count<0)
+-        {
+-          const_cast<DjVuImage *>(this)->init_rotate(*(file->info));
+-        }
+-        return info;
+-      }
++      GP<TYPE> found=find_component(list[pos], component, map);
++      if (found)
++        return found;
+    }
+    return 0;
+ }
+ 
++GP<DjVuInfo>
++DjVuImage::get_info(const GP<DjVuFile> & file) const
++{
++   GMap<GURL, void *> map;
++   GP<DjVuInfo> info=find_component(file, &DjVuFile::info, map);
++   if (info && rotate_count<0)
++     const_cast<DjVuImage *>(this)->init_rotate(*info);
++   return info;
++}
++
+ GP<IW44Image>
+ DjVuImage::get_bg44(const GP<DjVuFile> & file) const
+ {
+-   if (file->bg44)
+-     return file->bg44;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<IW44Image> bg44=get_bg44(list[pos]);
+-      if (bg44)
+-        return bg44;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::bg44, map);
+ }
+ 
+ GP<GPixmap>
+ DjVuImage::get_bgpm(const GP<DjVuFile> & file) const
+ {
+-   if (file->bgpm)
+-     return file->bgpm;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<GPixmap> bgpm=get_bgpm(list[pos]);
+-      if (bgpm) return bgpm;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::bgpm, map);
+ }
+ 
+ GP<JB2Image>
+ DjVuImage::get_fgjb(const GP<DjVuFile> & file) const
+ {
+-   if (file->fgjb)
+-     return file->fgjb;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<JB2Image> fgjb=get_fgjb(list[pos]);
+-      if (fgjb)
+-        return fgjb;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::fgjb, map);
+ }
+ 
+ GP<GPixmap>
+ DjVuImage::get_fgpm(const GP<DjVuFile> & file) const
+ {
+-   if (file->fgpm)
+-     return file->fgpm;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<GPixmap> fgpm=get_fgpm(list[pos]);
+-      if (fgpm)
+-        return fgpm;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::fgpm, map);
+ }
+ 
+ GP<DjVuPalette>
+ DjVuImage::get_fgbc(const GP<DjVuFile> & file) const
+ {
+-   if (file->fgbc)
+-     return file->fgbc;
+-   GPList<DjVuFile> list=file->get_included_files();
+-   for(GPosition pos=list;pos;++pos)
+-   {
+-      GP<DjVuPalette> fgbc=get_fgbc(list[pos]);
+-      if (fgbc) return fgbc;
+-   }
+-   return 0;
++   GMap<GURL, void *> map;
++   return find_component(file, &DjVuFile::fgbc, map);
+ }
+ 
+ GP<DjVuInfo>   
