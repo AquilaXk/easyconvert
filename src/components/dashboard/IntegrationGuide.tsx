@@ -84,7 +84,7 @@ print(response.json())`,
     } else if (event.key === 'Home') {
       nextTab = SNIPPET_TABS[0];
     } else if (event.key === 'End') {
-      nextTab = SNIPPET_TABS[SNIPPET_TABS.length - 1];
+      nextTab = SNIPPET_TABS.at(-1) ?? null;
     }
 
     if (nextTab) {

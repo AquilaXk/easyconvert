@@ -192,7 +192,7 @@ export function CreateApiKeyForm({
         <div className="flex flex-wrap items-center gap-2.5 pt-2">
           <button
             type="submit"
-            disabled={isGeneratingKey}
+            disabled={isGeneratingKey || selectedScopes.length === 0}
             className="min-h-[44px] px-4 py-2 rounded-md bg-brand-700 hover:bg-brand-800 text-white font-semibold text-sm inline-flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 disabled:opacity-60"
           >
             {isGeneratingKey ? (

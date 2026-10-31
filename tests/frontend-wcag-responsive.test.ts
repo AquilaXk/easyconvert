@@ -23,18 +23,27 @@ import { resolveOAuthErrorMessage } from '../src/components/auth/AuthForms';
 import ApiDocsPage from '../src/app/api-docs/page';
 import { buildCurlSnippet } from '../src/components/api-docs/curl-builder';
 import { RequestBodySection } from '../src/components/api-docs/EndpointSchemaTables';
-import type { OpenApiOperation, OpenApiSchemaObject } from '../src/components/api-docs/openapi-types';
+import {
+  dereferenceSchema,
+  type OpenApiOperation,
+  type OpenApiSchemaObject,
+} from '../src/components/api-docs/openapi-types';
 import { buildOpenApiDocument } from '../src/lib/api/openapi';
 import StatusPage from '../src/app/status/page';
 import { DiagnosticResultsCard } from '../src/components/status/StatusDiagnosticsPanels';
-import { collectEdgeDiagnostics } from '../src/components/status/status-probes';
+import { collectEdgeDiagnostics, probeWasmSimd } from '../src/components/status/status-probes';
 import UnitConverterPage from '../src/app/unit-converter/page';
 import { formatEditableDecimal } from '../src/lib/unit-catalog';
 import OptionsModal from '../src/components/OptionsModal';
-import { computeVisibleSections, DEFAULT_OPTIONS } from '../src/components/workbench/options/options-capabilities';
+import {
+  computeVisibleSections,
+  DEFAULT_OPTIONS,
+  resolvePasswordMode,
+} from '../src/components/workbench/options/options-capabilities';
 import UrlImportModal from '../src/components/UrlImportModal';
 import ConversionQueue from '../src/components/ConversionQueue';
-import FormatSelector from '../src/components/FormatSelector';
+import FormatSelector, { computeDesktopPortalPosition } from '../src/components/FormatSelector';
+import { getEffectiveMaxFileSize } from '../src/lib/client-converter';
 import { CreateApiKeyForm } from '../src/components/dashboard/ApiKeyCreateCard';
 import { ApiKeysPanel } from '../src/components/dashboard/ApiKeysPanel';
 import { DlqPayloadDialog } from '../src/components/dashboard/DlqPayloadDialog';
@@ -245,15 +254,29 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
         onClose: noop,
       })
     );
-    expect(phrasesMissing(zipToTarText, ['Archive Password (ZIP)'])).toEqual([]);
-    expect(phrasesPresent(zipToTarText, ['Compression Level', 'Output Archive Password', 'Open Password'])).toEqual([]);
+    expect(
+      phrasesPresent(zipToTarText, [
+        'Archive Password',
+        'Compression Level',
+        'Output Archive Password',
+        'Open Password',
+      ])
+    ).toEqual([]);
 
+    expect(Object.keys(DEFAULT_OPTIONS)).toHaveLength(0);
     expect(DEFAULT_OPTIONS.delimiter).toBeUndefined();
     expect(computeVisibleSections('pdf', 'hocr').canConfigureOcr).toBe(true);
+    expect(computeVisibleSections('pdf', 'hocr').ocrAlwaysEnabled).toBe(true);
     expect(computeVisibleSections('png', 'alto').canConfigureOcr).toBe(true);
     expect(computeVisibleSections('docx', 'txt').canConfigureLayout).toBe(false);
-    expect(computeVisibleSections('docx', 'pdf').canConfigureLayout).toBe(true);
+    expect(computeVisibleSections('docx', 'pdf').canConfigureLayout).toBe(false);
+    expect(computeVisibleSections('md', 'pdf').canConfigureLayout).toBe(true);
+    expect(computeVisibleSections('png', 'pdf').canConfigureLayout).toBe(true);
     expect(computeVisibleSections('pdf', 'docx').canSelectPages).toBe(false);
+    expect(resolvePasswordMode('rar', 'zip')).toBe('archive-reencrypt');
+    expect(resolvePasswordMode('pdf', 'zip')).toBe('archive-encrypt');
+    expect(resolvePasswordMode('pdf', 'txt')).toBe('pdf-decrypt');
+    expect(resolvePasswordMode('zip', 'tar')).toBeNull();
 
     const csvToTsvText = visibleText(
       render(OptionsModal, {
@@ -291,6 +314,37 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(videoLabels.filter((text) => text.startsWith('Trim Start'))).toHaveLength(1);
     expect(videoLabels.filter((text) => text.startsWith('Trim End'))).toHaveLength(1);
     expect(phrasesMissing(visibleText(videoModal), ['Video Codec', 'Audio Bitrate'])).toEqual([]);
+
+    const webmModalText = visibleText(
+      render(OptionsModal, { filename: 'clip.mp4', sourceFormat: 'mp4', targetFormat: 'webm', initialOptions: {}, onSave: noop, onClose: noop })
+    );
+    expect(phrasesMissing(webmModalText, ['VP9', 'AV1', 'Opus', 'Vorbis'])).toEqual([]);
+    expect(phrasesPresent(webmModalText, ['H.264 (AVC)', 'H.265 (HEVC)', 'AAC'])).toEqual([]);
+
+    const wavModalText = visibleText(
+      render(OptionsModal, { filename: 'track.mp3', sourceFormat: 'mp3', targetFormat: 'wav', initialOptions: {}, onSave: noop, onClose: noop })
+    );
+    expect(phrasesMissing(wavModalText, ['Sample Rate', 'Channels'])).toEqual([]);
+    expect(phrasesPresent(wavModalText, ['Audio Bitrate', 'Audio Codec'])).toEqual([]);
+
+    const rarToZipModal = render(OptionsModal, { filename: 'bundle.rar', sourceFormat: 'rar', targetFormat: 'zip', initialOptions: {}, onSave: noop, onClose: noop });
+    expect(visibleText(rarToZipModal)).toContain('Archive Password (RAR to ZIP)');
+    expect(attrOf(select(rarToZipModal, 'input', 'id', 'opt-doc-password')[0], 'maxlength')).toBe('99');
+
+    const hocrModal = render(OptionsModal, { filename: 'scan.pdf', sourceFormat: 'pdf', targetFormat: 'hocr', initialOptions: {}, onSave: noop, onClose: noop });
+    expect(select(hocrModal, 'input', 'id', 'opt-doc-ocr')).toHaveLength(0);
+    expect(attrOf(select(hocrModal, 'select', 'id', 'opt-doc-ocr-lang')[0], 'disabled')).toBeNull();
+
+    const flipped = computeDesktopPortalPosition({ top: 760, bottom: 800, left: 200 } as DOMRect, 1440, 820);
+    expect(flipped).toMatchObject({ top: 'auto', bottom: 68 });
+
+    const maxBytes = getEffectiveMaxFileSize();
+    const oversizeItem = { id: 'over', file: new File(['x'], 'big.mp4'), name: 'big.mp4', size: maxBytes + 1, sourceFormat: 'mp4', targetFormat: '', status: 'error' as const, progress: 0, options: {} };
+    const validItem = { id: 'ok', file: new File(['x'], 'ok.png'), name: 'ok.png', size: 128, sourceFormat: 'png', targetFormat: 'webp', status: 'ready' as const, progress: 0, options: {} };
+    const mixedQueue = render(ConversionQueue, { items: [oversizeItem, validItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false });
+    expect(attrOf(select(mixedQueue, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')).toBeNull();
+    const onlyOversize = render(ConversionQueue, { items: [oversizeItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false });
+    expect(attrOf(select(onlyOversize, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')).toBe('');
 
     const labelTargets = new Set(
       select(videoModal, 'label')
@@ -343,7 +397,6 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       entry: sampleEntry,
       onClose: noop,
       onReplay: noop,
-      onCopy: noop,
     });
     const dlqDialogs = select(dlqModal, 'dialog');
     expect(dlqDialogs).toHaveLength(1);
@@ -587,6 +640,116 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     );
     expect(rotateCurl).toContain('"endpointId":"ep_01J9EXAMPLE"');
     expect(rotateCurl).toContain('"graceSeconds":86400');
+    expect(rotateCurl).not.toContain('apiKeyId');
+
+    const resolvedByUriId = dereferenceSchema(
+      { $ref: 'https://easyconvert.local/schemas/conversion-options.json' },
+      schemas
+    );
+    expect(resolvedByUriId?.type).toBe('object');
+    expect(resolvedByUriId?.properties?.quality).toBeDefined();
+
+    const resolvedPdfaProblem = dereferenceSchema(
+      { $ref: '#/components/schemas/PdfaValidationProblem' },
+      schemas
+    );
+    expect(resolvedPdfaProblem?.type).toBe('object');
+    expect(resolvedPdfaProblem?.properties?.status).toBeDefined();
+    expect(resolvedPdfaProblem?.properties?.detail).toBeDefined();
+    expect(resolvedPdfaProblem?.properties?.profile).toBeDefined();
+    expect(resolvedPdfaProblem?.properties?.failedRules).toBeDefined();
+    expect(resolvedPdfaProblem?.required).toEqual(
+      expect.arrayContaining([
+        'type',
+        'title',
+        'status',
+        'detail',
+        'instance',
+        'profile',
+        'failedRules',
+      ])
+    );
+
+    const patchKeyOp = doc.paths['/api/keys/{id}'].patch as unknown as OpenApiOperation;
+    const patchKeyCurl = buildCurlSnippet(
+      {
+        key: 'PATCH:/api/keys/{id}',
+        method: 'patch',
+        path: '/api/keys/{id}',
+        operation: patchKeyOp,
+      },
+      '',
+      '/',
+      { schemas }
+    );
+    const patchDataStart = patchKeyCurl.indexOf("-d '");
+    expect(patchDataStart).toBeGreaterThan(-1);
+    const patchDataEnd = patchKeyCurl.indexOf("'", patchDataStart + 4);
+    const patchPayload = JSON.parse(
+      patchKeyCurl.slice(patchDataStart + 4, patchDataEnd)
+    ) as Record<string, unknown>;
+    expect(Object.keys(patchPayload)).toEqual(['name']);
+
+    const patchCidrCurl = buildCurlSnippet(
+      {
+        key: 'PATCH:/api/keys/{id}:cidr',
+        method: 'patch',
+        path: '/api/keys/{id}',
+        operation: {
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    allowedIps: { type: 'array', items: { type: 'string' } },
+                    expiresAt: { type: 'number' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '',
+      '/',
+      { schemas }
+    );
+    expect(patchCidrCurl).toContain('"allowedIps":["203.0.113.0/24"]');
+    expect(patchCidrCurl).not.toContain('expiresAt');
+
+    const jobsOp = doc.paths['/api/v1/jobs'].post as unknown as OpenApiOperation;
+    const jobsJsonCurl = buildCurlSnippet(
+      {
+        key: 'POST:/api/v1/jobs',
+        method: 'post',
+        path: '/api/v1/jobs',
+        operation: {
+          ...jobsOp,
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': jobsOp.requestBody!.content!['application/json'],
+            },
+          },
+        },
+      },
+      '',
+      '/',
+      { schemas }
+    );
+    expect(jobsJsonCurl).toContain('"uploadId":"upl_01J9EXAMPLE"');
+    expect(jobsJsonCurl).toContain('"targetFormat":"pdf"');
+
+    const sessionMeOp = doc.paths['/api/auth/me'].get as unknown as OpenApiOperation;
+    const sessionCurl = buildCurlSnippet(
+      { key: 'GET:/api/auth/me', method: 'get', path: '/api/auth/me', operation: sessionMeOp },
+      'ec_live_ignored',
+      '/',
+      { schemas }
+    );
+    expect(sessionCurl).toContain('-b "easyconvert_session=YOUR_SESSION_COOKIE"');
+    expect(sessionCurl).not.toContain('Authorization: Bearer');
 
     const scopesCurl = buildCurlSnippet(
       {
@@ -699,6 +862,25 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onCancel: noop,
     });
     expect(visibleText(emptyScopesForm)).toContain('Select at least one scope to generate a key.');
+    const emptyScopesSubmit = select(emptyScopesForm, 'button', 'type', 'submit');
+    expect(emptyScopesSubmit).toHaveLength(1);
+    expect(attrOf(emptyScopesSubmit[0], 'disabled')).toBe('');
+
+    const validScopesForm = render(CreateApiKeyForm, {
+      newKeyName: 'Worker Key',
+      selectedScopes: ['convert:read'],
+      keyExpiry: '30d',
+      isGeneratingKey: false,
+      onNameChange: noop,
+      onToggleScope: noop,
+      onExpiryChange: noop,
+      onSubmit: noop,
+      onCancel: noop,
+    });
+    const validScopesSubmit = select(validScopesForm, 'button', 'type', 'submit');
+    expect(validScopesSubmit).toHaveLength(1);
+    expect(attrOf(validScopesSubmit[0], 'disabled')).toBeNull();
+
     expect(buildKeyCreationRequest('Worker Key', [], '30d', 1730000000000)).toEqual({
       ok: false,
       error: 'Select at least one permission scope before creating an API key.',
@@ -779,6 +961,8 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(attrOf(statusTabpanel[0], 'role')).toBe('tabpanel');
     expect(select(statusDom, 'output', 'aria-live', 'polite').length).toBeGreaterThanOrEqual(1);
 
+    expect(probeWasmSimd().supported).toBe(true);
+
     const validateSpy = vi.spyOn(WebAssembly, 'validate').mockReturnValueOnce(false);
     try {
       const probes = collectEdgeDiagnostics();
@@ -795,11 +979,12 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(formatEditableDecimal(1e-7, 8)).toBe('0.0000001');
     expect(formatEditableDecimal(1e-9, 6)).toBe('0.000000001');
     expect(formatEditableDecimal(-1e-9, 6)).toBe('-0.000000001');
+    expect(formatEditableDecimal(1e-22, 6)).toBe('0.0000000000000000000001');
     expect(formatEditableDecimal(1e21, 6)).toBe('1000000000000000000000');
     expect(formatEditableDecimal(0, 6)).toBe('0');
     expect(formatEditableDecimal(Number.NaN, 6)).toBe('0');
 
-    for (const sample of [1e-7, 1e-9, -1e-9, 1e-15, 0.45359237, 100, 1e21]) {
+    for (const sample of [1e-7, 1e-9, -1e-9, 1e-15, 1e-22, -1e-22, 0.45359237, 100, 1e21]) {
       expect(formatEditableDecimal(sample, 6)).toMatch(editablePattern);
     }
   });

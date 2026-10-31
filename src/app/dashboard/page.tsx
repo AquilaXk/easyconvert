@@ -123,7 +123,6 @@ export default function DashboardPage() {
                 onDelete={(id) => {
                   void filesAndDlq.handleDeleteDlq(id);
                 }}
-                onCopy={keys.copyToClipboard}
               />
             )}
 

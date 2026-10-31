@@ -1,30 +1,35 @@
 import { ConversionOptions, FormatCategory } from '@/lib/types';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 
-export type PasswordMode = 'archive-encrypt' | 'pdf-decrypt' | 'archive-decrypt';
+export type PasswordMode = 'archive-encrypt' | 'archive-reencrypt' | 'pdf-decrypt';
 
-export const DEFAULT_OPTIONS: ConversionOptions = {
-  quality: 85,
-  fit: 'contain',
-  stripMetadata: false,
-  orientation: 'portrait',
-  compressionLevel: 6,
-};
+export const DEFAULT_OPTIONS: ConversionOptions = {};
 
 const IMAGE_CATEGORIES: ReadonlyArray<FormatCategory> = ['image', 'vector', 'cad'];
 const ENCRYPTABLE_ARCHIVES: ReadonlySet<string> = new Set(['zip', '7z']);
 const DECRYPTABLE_ARCHIVES: ReadonlySet<string> = new Set(['zip', '7z', 'rar']);
 const DELIMITED_FORMATS: ReadonlySet<string> = new Set(['csv', 'tsv']);
 const TIFF_SOURCES: ReadonlySet<string> = new Set(['tiff', 'tif']);
-
-const PDF_ORIENTATION_SOURCE_CATEGORIES: ReadonlySet<FormatCategory> = new Set([
-  'image',
-  'vector',
-  'document',
-  'spreadsheet',
-  'presentation',
-  'ebook',
-  'data',
+const LOSSLESS_AUDIO_TARGETS: ReadonlySet<string> = new Set([
+  'wav',
+  'flac',
+  'aiff',
+  'aif',
+  'aifc',
+  'alac',
+  'au',
+  'caf',
+  'voc',
+  'pcm',
+]);
+const TEXT_PDF_ORIENTATION_SOURCES: ReadonlySet<string> = new Set([
+  'txt',
+  'md',
+  'markdown',
+  'html',
+  'htm',
+  'xhtml',
+  'hwp',
 ]);
 
 export const OCR_TARGETS: ReadonlySet<string> = new Set([
@@ -45,12 +50,17 @@ function inCategories(
   return Boolean(category && allowed.includes(category));
 }
 
-export function resolvePasswordMode(src: string, tgt: string): PasswordMode | null {
-  const cleanSrc = src.toLowerCase();
-  const cleanTgt = tgt.toLowerCase();
-  if (ENCRYPTABLE_ARCHIVES.has(cleanTgt)) return 'archive-encrypt';
-  if (cleanSrc === 'pdf') return 'pdf-decrypt';
-  if (DECRYPTABLE_ARCHIVES.has(cleanSrc)) return 'archive-decrypt';
+export function isLosslessAudioTarget(targetFormat: string): boolean {
+  return LOSSLESS_AUDIO_TARGETS.has(targetFormat.toLowerCase());
+}
+
+export function resolvePasswordMode(sourceFormat: string, targetFormat: string): PasswordMode | null {
+  const src = sourceFormat.toLowerCase();
+  const tgt = targetFormat.toLowerCase();
+  if (ENCRYPTABLE_ARCHIVES.has(tgt)) {
+    return DECRYPTABLE_ARCHIVES.has(src) ? 'archive-reencrypt' : 'archive-encrypt';
+  }
+  if (src === 'pdf') return 'pdf-decrypt';
   return null;
 }
 
@@ -95,7 +105,7 @@ function canConfigurePdfOrientation(
   sourceCategory: FormatCategory | undefined
 ): boolean {
   if (tgt !== 'pdf' || src === 'pdf') return false;
-  return Boolean(sourceCategory && PDF_ORIENTATION_SOURCE_CATEGORIES.has(sourceCategory));
+  return sourceCategory === 'image' || TEXT_PDF_ORIENTATION_SOURCES.has(src);
 }
 
 function computeDocumentCaps(
@@ -107,12 +117,14 @@ function computeDocumentCaps(
   const canSelectPages = canSelectSourcePages(src, tgt, targetCategory);
   const canConfigureLayout = canConfigurePdfOrientation(src, tgt, sourceCategory);
   const canConfigureOcr = (src === 'pdf' || sourceCategory === 'image') && OCR_TARGETS.has(tgt);
+  const ocrAlwaysEnabled = tgt === 'hocr' || tgt === 'alto';
   const showDocument = canSelectPages || canConfigureLayout || canConfigureOcr;
-  return { canSelectPages, canConfigureLayout, canConfigureOcr, showDocument };
+  return { canSelectPages, canConfigureLayout, canConfigureOcr, ocrAlwaysEnabled, showDocument };
 }
 
 function computeDataCaps(src: string, tgt: string, sourceCategory: FormatCategory | undefined) {
-  const canConfigureDelimiter = isDelimitedFormat(src) || isDelimitedFormat(tgt);
+  const canConfigureDelimiter =
+    isDelimitedFormat(src) || ((sourceCategory === 'spreadsheet' || src === 'pdf') && tgt === 'csv');
   const canConfigureSheetIndex =
     sourceCategory === 'spreadsheet' || Boolean(FORMAT_REGISTRY[src]?.optionsSchema?.sheetIndex);
   const showData = canConfigureDelimiter || canConfigureSheetIndex;
@@ -142,3 +154,4 @@ export function computeVisibleSections(sourceFormat: string, targetFormat: strin
 }
 
 export type VisibleOptionsSections = ReturnType<typeof computeVisibleSections>;
+export type VisibleOptionSections = VisibleOptionsSections;

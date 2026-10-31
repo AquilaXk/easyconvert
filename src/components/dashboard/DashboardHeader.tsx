@@ -56,7 +56,7 @@ export function DashboardHeader({
     } else if (event.key === 'Home') {
       nextTab = tabs[0].id;
     } else if (event.key === 'End') {
-      nextTab = tabs[tabs.length - 1].id;
+      nextTab = tabs.at(-1)?.id ?? null;
     }
 
     if (nextTab) {

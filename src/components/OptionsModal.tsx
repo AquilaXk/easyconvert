@@ -5,15 +5,25 @@ import { X } from 'lucide-react';
 import { ConversionOptions } from '@/lib/types';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import {
-  ArchiveOptionsSection, AudioOptionsSection, DataOptionsSection,
-  DocumentOptionsSection, ImageOptionsSection, PasswordOptionsSection, VideoOptionsSection,
+  ArchiveOptionsSection,
+  AudioOptionsSection,
+  computeVisibleSections,
+  DataOptionsSection,
+  DEFAULT_OPTIONS,
+  DocumentOptionsSection,
+  ImageOptionsSection,
+  PasswordOptionsSection,
+  VideoOptionsSection,
+  type VisibleOptionsSections,
 } from './workbench/OptionsSections';
-import {
-  computeVisibleSections, DEFAULT_OPTIONS, resolvePasswordMode,
-  type PasswordMode, type VisibleOptionsSections,
-} from './workbench/options/options-capabilities';
 
-export { computeVisibleSections, DEFAULT_OPTIONS, resolvePasswordMode, type PasswordMode };
+export {
+  computeVisibleSections,
+  DEFAULT_OPTIONS,
+  isLosslessAudioTarget,
+  resolvePasswordMode,
+  type PasswordMode,
+} from './workbench/options/options-capabilities';
 
 export interface OptionsModalProps {
   filename: string;
@@ -33,17 +43,26 @@ interface ModalSectionGroupProps {
 function DocumentAndSecurityGroup({ visible, options, onChange }: Readonly<ModalSectionGroupProps>) {
   return (
     <>
-      {visible.showImage && <ImageOptionsSection options={options} onChange={onChange} />}
+      {visible.showImage && (
+        <ImageOptionsSection options={options} onChange={onChange} targetFormat={visible.tgt} />
+      )}
       {visible.showDocument && (
         <DocumentOptionsSection
-          options={options} onChange={onChange} canSelectPages={visible.canSelectPages}
-          canConfigureLayout={visible.canConfigureLayout} canConfigureOcr={visible.canConfigureOcr}
+          options={options}
+          onChange={onChange}
+          canSelectPages={visible.canSelectPages}
+          canConfigureLayout={visible.canConfigureLayout}
+          canConfigureOcr={visible.canConfigureOcr}
+          ocrAlwaysEnabled={visible.ocrAlwaysEnabled}
         />
       )}
       {visible.passwordMode && (
         <PasswordOptionsSection
-          options={options} onChange={onChange} mode={visible.passwordMode}
-          sourceFormat={visible.src} targetFormat={visible.tgt}
+          options={options}
+          onChange={onChange}
+          mode={visible.passwordMode}
+          sourceFormat={visible.src}
+          targetFormat={visible.tgt}
         />
       )}
     </>
@@ -54,15 +73,27 @@ function MediaAndDataGroup({ visible, options, onChange }: Readonly<ModalSection
   return (
     <>
       {visible.showVideo && (
-        <VideoOptionsSection options={options} onChange={onChange} showCodec={visible.targetCategory === 'video'} />
+        <VideoOptionsSection
+          options={options}
+          onChange={onChange}
+          showCodec={visible.targetCategory === 'video'}
+          targetFormat={visible.tgt}
+        />
       )}
       {visible.showAudio && (
-        <AudioOptionsSection options={options} onChange={onChange} includeTrim={!visible.showVideo} />
+        <AudioOptionsSection
+          options={options}
+          onChange={onChange}
+          includeTrim={!visible.showVideo}
+          targetFormat={visible.tgt}
+        />
       )}
       {visible.showData && (
         <DataOptionsSection
-          options={options} onChange={onChange}
-          canConfigureDelimiter={visible.canConfigureDelimiter} canConfigureSheetIndex={visible.canConfigureSheetIndex}
+          options={options}
+          onChange={onChange}
+          canConfigureDelimiter={visible.canConfigureDelimiter}
+          canConfigureSheetIndex={visible.canConfigureSheetIndex}
         />
       )}
       {visible.showArchive && <ArchiveOptionsSection options={options} onChange={onChange} />}

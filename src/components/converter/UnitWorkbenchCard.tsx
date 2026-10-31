@@ -72,6 +72,21 @@ export interface UnitWorkbenchCardProps {
   handlers: Readonly<UnitWorkbenchHandlers>;
 }
 
+function isEditableNumericDraft(val: string): boolean {
+  let hasDot = false;
+  const start = val.startsWith('-') ? 1 : 0;
+  for (let i = start; i < val.length; i += 1) {
+    const code = val.codePointAt(i);
+    if (code === 46) {
+      if (hasDot) return false;
+      hasDot = true;
+    } else if (code === undefined || code < 48 || code > 57) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function UnitWorkbenchCard({
   selection,
   values,
@@ -124,7 +139,7 @@ export function UnitWorkbenchCard({
             value={inputStr}
             onChange={(e) => {
               const val = e.target.value;
-              if (val === '' || val === '-' || /^-?\d*\.?\d*$/.test(val)) onChangeInput(val);
+              if (isEditableNumericDraft(val)) onChangeInput(val);
             }}
             placeholder="0"
             className="w-full min-h-[48px] px-4 py-2.5 rounded-md bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border text-brand-950 dark:text-white font-mono text-lg sm:text-xl font-bold focus:border-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors"

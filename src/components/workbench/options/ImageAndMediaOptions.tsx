@@ -10,15 +10,36 @@ import {
   SECTION_HEADING_CLASS,
   SectionProps,
 } from '../OptionsSections';
+import { FORMAT_REGISTRY } from '@/lib/registry';
+import { isLosslessAudioTarget } from './options-capabilities';
+
+const AUDIO_CODECS_BY_TARGET: Readonly<Record<string, ReadonlyArray<AudioCodec>>> = {
+  webm: ['opus', 'vorbis'],
+  weba: ['opus', 'vorbis'],
+  ogg: ['vorbis', 'opus', 'flac'],
+  oga: ['vorbis', 'opus', 'flac'],
+  mp4: ['aac', 'mp3', 'opus', 'flac', 'pcm_s16le'],
+  mov: ['aac', 'mp3', 'opus', 'flac', 'pcm_s16le'],
+};
+
+function resolveAllowedAudioCodecs(targetFormat: string): ReadonlyArray<{ value: AudioCodec; label: string }> {
+  const tgt = targetFormat.toLowerCase();
+  const mapped = AUDIO_CODECS_BY_TARGET[tgt];
+  if (mapped) return AUDIO_CODEC_OPTIONS.filter((o) => mapped.includes(o.value));
+  return FORMAT_REGISTRY[tgt]?.category === 'video' ? AUDIO_CODEC_OPTIONS : [];
+}
+
+const DEFAULT_IMAGE_QUALITY: Readonly<Record<string, number>> = {
+  avif: 60,
+  webp: 80,
+};
 
 const FIT_OPTIONS: ReadonlyArray<{ value: NonNullable<ConversionOptions['fit']>; label: string }> = [
   { value: 'contain', label: 'Contain' },
   { value: 'cover', label: 'Cover' },
   { value: 'fill', label: 'Stretch to Fill' },
   { value: 'inside', label: 'Fit Inside' },
-  { value: 'outside', label: 'Fit Outside' },
 ];
-const FIT_VALUES = FIT_OPTIONS.map((o) => o.value);
 
 const VIDEO_CODEC_OPTIONS: ReadonlyArray<{ value: NonNullable<ConversionOptions['videoCodec']>; label: string }> = [
   { value: 'h264', label: 'H.264 (AVC)' },
@@ -26,7 +47,6 @@ const VIDEO_CODEC_OPTIONS: ReadonlyArray<{ value: NonNullable<ConversionOptions[
   { value: 'vp9', label: 'VP9' },
   { value: 'av1', label: 'AV1' },
 ];
-const VIDEO_CODEC_VALUES = VIDEO_CODEC_OPTIONS.map((o) => o.value);
 const VIDEO_FPS_VALUES: ReadonlyArray<NonNullable<ConversionOptions['videoFps']>> = [24, 30, 60];
 
 const AUDIO_CODEC_OPTIONS: ReadonlyArray<{ value: AudioCodec; label: string }> = [
@@ -75,8 +95,13 @@ function TrimRangeFields({ options, onChange, prefix }: Readonly<SectionProps & 
   );
 }
 
-export function ImageOptionsSection({ options, onChange }: Readonly<SectionProps>) {
-  const qualityValue = options.quality ?? 85;
+export interface ImageOptionsSectionProps extends SectionProps {
+  targetFormat: string;
+}
+
+export function ImageOptionsSection({ options, onChange, targetFormat }: Readonly<ImageOptionsSectionProps>) {
+  const defaultQuality = DEFAULT_IMAGE_QUALITY[targetFormat.toLowerCase()] ?? 85;
+  const effectiveQuality = options.quality ?? defaultQuality;
   return (
     <section className="space-y-4">
       <h3 className={SECTION_HEADING_CLASS}>Image &amp; Raster Parameters</h3>
@@ -91,7 +116,18 @@ export function ImageOptionsSection({ options, onChange }: Readonly<SectionProps
         </div>
         <div>
           <label htmlFor="opt-image-fit" className={LABEL_CLASS}>Resize Fit</label>
-          <select id="opt-image-fit" value={options.fit || 'contain'} onChange={(e) => onChange({ ...options, fit: pickFromList(FIT_VALUES, e.target.value, 'contain') })} className={INPUT_CLASS}>
+          <select
+            id="opt-image-fit"
+            value={options.fit ?? ''}
+            onChange={(e) =>
+              onChange({
+                ...options,
+                fit: e.target.value ? (e.target.value as ConversionOptions['fit']) : undefined,
+              })
+            }
+            className={INPUT_CLASS}
+          >
+            <option value="">Automatic (contain when resized)</option>
             {FIT_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
@@ -99,9 +135,9 @@ export function ImageOptionsSection({ options, onChange }: Readonly<SectionProps
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <label htmlFor="opt-image-quality" className="text-xs font-semibold text-brand-950 dark:text-neutral-200">Compression Quality</label>
-          <span className="text-xs font-mono text-brand-700 dark:text-brand-300">{qualityValue}%</span>
+          <span className="text-xs font-mono text-brand-700 dark:text-brand-300">{effectiveQuality}%</span>
         </div>
-        <input id="opt-image-quality" type="range" min={1} max={100} value={qualityValue} onChange={(e) => onChange({ ...options, quality: Number(e.target.value) })} className="w-full min-h-[44px] accent-[#5C6BC0] cursor-pointer" />
+        <input id="opt-image-quality" type="range" min={1} max={100} value={effectiveQuality} onChange={(e) => onChange({ ...options, quality: Number(e.target.value) })} className="w-full min-h-[44px] accent-[#5C6BC0] cursor-pointer" />
       </div>
       <div className="flex items-center gap-3 min-h-[44px]">
         <input id="opt-strip-metadata" type="checkbox" checked={Boolean(options.stripMetadata)} onChange={(e) => onChange({ ...options, stripMetadata: e.target.checked })} className="w-4 h-4 rounded accent-[#5C6BC0] cursor-pointer" />
@@ -111,7 +147,16 @@ export function ImageOptionsSection({ options, onChange }: Readonly<SectionProps
   );
 }
 
-export function VideoOptionsSection({ options, onChange, showCodec }: Readonly<SectionProps & { showCodec: boolean }>) {
+export interface VideoOptionsSectionProps extends SectionProps {
+  showCodec: boolean;
+  targetFormat: string;
+}
+
+export function VideoOptionsSection({ options, onChange, showCodec, targetFormat }: Readonly<VideoOptionsSectionProps>) {
+  const codecChoices =
+    targetFormat.toLowerCase() === 'webm'
+      ? VIDEO_CODEC_OPTIONS.filter((o) => o.value === 'vp9' || o.value === 'av1')
+      : VIDEO_CODEC_OPTIONS;
   const parseFps = (raw: string): ConversionOptions['videoFps'] =>
     raw ? VIDEO_FPS_VALUES.find((fps) => fps === Number(raw)) : undefined;
 
@@ -122,8 +167,19 @@ export function VideoOptionsSection({ options, onChange, showCodec }: Readonly<S
         {showCodec && (
           <div>
             <label htmlFor="opt-video-codec" className={LABEL_CLASS}>Video Codec</label>
-            <select id="opt-video-codec" value={options.videoCodec || 'h264'} onChange={(e) => onChange({ ...options, videoCodec: pickFromList(VIDEO_CODEC_VALUES, e.target.value, 'h264') })} className={INPUT_CLASS}>
-              {VIDEO_CODEC_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            <select
+              id="opt-video-codec"
+              value={options.videoCodec ?? ''}
+              onChange={(e) =>
+                onChange({
+                  ...options,
+                  videoCodec: e.target.value ? (e.target.value as ConversionOptions['videoCodec']) : undefined,
+                })
+              }
+              className={INPUT_CLASS}
+            >
+              <option value="">Automatic (format default)</option>
+              {codecChoices.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
         )}
@@ -148,8 +204,15 @@ export function VideoOptionsSection({ options, onChange, showCodec }: Readonly<S
   );
 }
 
-export function AudioOptionsSection({ options, onChange, includeTrim }: Readonly<SectionProps & { includeTrim: boolean }>) {
+export interface AudioOptionsSectionProps extends SectionProps {
+  includeTrim: boolean;
+  targetFormat: string;
+}
+
+export function AudioOptionsSection({ options, onChange, includeTrim, targetFormat }: Readonly<AudioOptionsSectionProps>) {
   const volumeValue = options.audioVolume ?? 100;
+  const losslessTarget = isLosslessAudioTarget(targetFormat);
+  const allowedAudioCodecs = resolveAllowedAudioCodecs(targetFormat);
   const parseSampleRate = (raw: string): ConversionOptions['audioSampleRate'] =>
     raw ? AUDIO_SAMPLE_RATE_VALUES.find((sr) => sr === Number(raw)) : undefined;
 
@@ -167,19 +230,34 @@ export function AudioOptionsSection({ options, onChange, includeTrim }: Readonly
     <section className="space-y-4">
       <h3 className={SECTION_HEADING_CLASS}>Audio Stream Parameters</h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <label htmlFor="opt-audio-codec" className={LABEL_CLASS}>Audio Codec</label>
-          <select id="opt-audio-codec" value={options.audio?.codec || ''} onChange={(e) => updateAudioCodec(e.target.value)} className={INPUT_CLASS}>
-            <option value="">Automatic for Format</option>
-            {AUDIO_CODEC_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <label htmlFor="opt-audio-bitrate" className={LABEL_CLASS}>Audio Bitrate</label>
-          <select id="opt-audio-bitrate" value={options.audioBitrate || '192k'} onChange={(e) => onChange({ ...options, audioBitrate: pickFromList(AUDIO_BITRATE_VALUES, e.target.value, '192k') })} className={INPUT_CLASS}>
-            {AUDIO_BITRATE_VALUES.map((br) => <option key={br} value={br}>{br.replace('k', ' kbps')}</option>)}
-          </select>
-        </div>
+        {allowedAudioCodecs.length > 0 && (
+          <div>
+            <label htmlFor="opt-audio-codec" className={LABEL_CLASS}>Audio Codec</label>
+            <select id="opt-audio-codec" value={options.audio?.codec || ''} onChange={(e) => updateAudioCodec(e.target.value)} className={INPUT_CLASS}>
+              <option value="">Automatic for Format</option>
+              {allowedAudioCodecs.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        )}
+        {!losslessTarget && (
+          <div>
+            <label htmlFor="opt-audio-bitrate" className={LABEL_CLASS}>Audio Bitrate</label>
+            <select
+              id="opt-audio-bitrate"
+              value={options.audioBitrate ?? ''}
+              onChange={(e) =>
+                onChange({
+                  ...options,
+                  audioBitrate: e.target.value ? (e.target.value as ConversionOptions['audioBitrate']) : undefined,
+                })
+              }
+              className={INPUT_CLASS}
+            >
+              <option value="">Automatic (format default)</option>
+              {AUDIO_BITRATE_VALUES.map((br) => <option key={br} value={br}>{br.replace('k', ' kbps')}</option>)}
+            </select>
+          </div>
+        )}
         <div>
           <label htmlFor="opt-audio-sample-rate" className={LABEL_CLASS}>Sample Rate</label>
           <select id="opt-audio-sample-rate" value={options.audioSampleRate ?? ''} onChange={(e) => onChange({ ...options, audioSampleRate: parseSampleRate(e.target.value) })} className={INPUT_CLASS}>

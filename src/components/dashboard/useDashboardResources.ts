@@ -101,7 +101,8 @@ export function useFilesAndDlqController(
       const res = await fetch(`/api/webhooks/dlq/${id}/replay`, { method: 'POST' });
       const data = (await res.json().catch(() => null)) as Record<string, unknown> | null;
       if (res.ok && data?.success) {
-        setDlqFeedback(`Webhook replay succeeded (HTTP ${String(data.statusCode ?? res.status)}).`);
+        const statusLabel = typeof data.statusCode === 'number' ? data.statusCode : res.status;
+        setDlqFeedback(`Webhook replay succeeded (HTTP ${statusLabel}).`);
       } else {
         const reason = extractApiError(data, `HTTP ${res.status}`);
         setDlqFeedback(`Webhook replay failed (${reason}).`);

@@ -4,6 +4,7 @@ import React, { useMemo, useState } from 'react';
 import { ArrowRight, ChevronDown, Loader2, Package, Trash2, X } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/types';
 import { getAvailableTargetFormats } from '@/lib/registry';
+import { getEffectiveMaxFileSize } from '@/lib/client-converter';
 import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
 import AdBanner from './AdBanner';
@@ -25,19 +26,34 @@ export interface ConversionQueueProps {
   onDismissZipError?: () => void;
 }
 
-function getQueueStatusSummary(items: ConversionQueueItem[], isBusy: boolean): string {
+function getQueueStatusSummary(
+  items: ConversionQueueItem[],
+  convertibleItems: ConversionQueueItem[],
+  isBusy: boolean
+): string {
   if (isBusy) return 'Converting queued files...';
-  if (items.some((i) => !i.targetFormat?.trim())) return 'Please select an output format to continue';
-  if (items.length > 0 && items.every((i) => i.status === 'completed')) {
-    return items.length === 1 ? 'Conversion complete for 1 file' : `Conversion complete for ${items.length} files`;
+  if (convertibleItems.length === 0) {
+    if (items.length === 0) return 'No files in queue';
+    return items.length === 1
+      ? '1 file exceeds the conversion size limit. Remove it to continue.'
+      : `${items.length} files exceed the conversion size limit. Remove them to continue.`;
   }
-  const errorCount = items.filter((i) => i.status === 'error').length;
+  if (convertibleItems.some((i) => !i.targetFormat?.trim())) {
+    return 'Please select an output format to continue';
+  }
+  if (convertibleItems.every((i) => i.status === 'completed')) {
+    return convertibleItems.length === 1
+      ? 'Conversion complete for 1 file'
+      : `Conversion complete for ${convertibleItems.length} files`;
+  }
+  const errorCount = convertibleItems.filter((i) => i.status === 'error').length;
   if (errorCount > 0) {
     return errorCount === 1
       ? '1 file failed conversion. Retry or remove to continue.'
       : `${errorCount} files failed conversion. Retry or remove to continue.`;
   }
-  return items.length === 1 ? 'Ready to convert 1 file' : `Ready to convert ${items.length} files`;
+  const readyCount = convertibleItems.filter((i) => i.status === 'ready').length;
+  return readyCount === 1 ? 'Ready to convert 1 file' : `Ready to convert ${readyCount} files`;
 }
 
 function collectBatchTargetFormats(items: ConversionQueueItem[]): FormatDefinition[] {
@@ -51,19 +67,19 @@ function collectBatchTargetFormats(items: ConversionQueueItem[]): FormatDefiniti
 }
 
 interface QueueBatchHeaderProps {
-  itemCount: number; effectiveBusy: boolean; isBatchSelectorOpen: boolean; batchTargetLabel: string;
+  itemCount: number; canBatchSelect: boolean; effectiveBusy: boolean; isBatchSelectorOpen: boolean; batchTargetLabel: string;
   batchAvailableFormats: FormatDefinition[]; onUpdateAllTargets?: (targetFormat: string) => void;
   onToggleBatchSelector: () => void; onCloseBatchSelector: () => void;
   onSelectBatchTarget: (fmt: string) => void; onClearAll: () => void;
 }
 
 function QueueBatchHeader({
-  itemCount, effectiveBusy, isBatchSelectorOpen, batchTargetLabel, batchAvailableFormats,
+  itemCount, canBatchSelect, effectiveBusy, isBatchSelectorOpen, batchTargetLabel, batchAvailableFormats,
   onUpdateAllTargets, onToggleBatchSelector, onCloseBatchSelector, onSelectBatchTarget, onClearAll,
 }: Readonly<QueueBatchHeaderProps>) {
   return (
     <div className="px-4 sm:px-5 py-3 border-b border-neutral-border dark:border-dark-border flex flex-wrap items-center justify-between gap-3">
-      {onUpdateAllTargets ? (
+      {onUpdateAllTargets && canBatchSelect ? (
         <div className="flex items-center flex-wrap gap-2.5">
           <span className="text-xs font-medium text-ink-secondary dark:text-neutral-300">Convert all to</span>
           <div className="relative">
@@ -165,14 +181,16 @@ export default function ConversionQueue({
   const [batchTargetLabel, setBatchTargetLabel] = useState<string>('');
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
+  const maxLimit = getEffectiveMaxFileSize();
+  const convertibleItems = items.filter((i) => i.size <= maxLimit);
   const effectiveBusy = isConverting || items.some((i) => i.status === 'uploading' || i.status === 'converting');
   const completedCount = items.filter((i) => i.status === 'completed').length;
-  const allDone = items.length > 0 && completedCount === items.length;
-  const allHaveTarget = items.length > 0 && items.every((i) => Boolean(i.targetFormat?.trim()));
-  const hasPending = items.some((i) => i.status === 'ready' || i.status === 'error');
+  const allDone = convertibleItems.length > 0 && convertibleItems.every((i) => i.status === 'completed');
+  const allHaveTarget = convertibleItems.length > 0 && convertibleItems.every((i) => Boolean(i.targetFormat?.trim()));
+  const hasPending = convertibleItems.some((i) => i.status === 'ready' || i.status === 'error');
   const canConvert = !effectiveBusy && allHaveTarget && hasPending;
-  const statusSummary = getQueueStatusSummary(items, effectiveBusy);
-  const batchAvailableFormats = useMemo(() => collectBatchTargetFormats(items), [items]);
+  const statusSummary = getQueueStatusSummary(items, convertibleItems, effectiveBusy);
+  const batchAvailableFormats = useMemo(() => collectBatchTargetFormats(convertibleItems), [convertibleItems]);
   const currentOptionsItem = items.find((i) => i.id === activeOptionsModalId);
 
   return (
@@ -180,7 +198,7 @@ export default function ConversionQueue({
       <div className="w-full rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm overflow-visible">
         {items.length > 1 && (
           <QueueBatchHeader
-            itemCount={items.length} effectiveBusy={effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
+            itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
             batchTargetLabel={batchTargetLabel} batchAvailableFormats={batchAvailableFormats} onUpdateAllTargets={onUpdateAllTargets}
             onToggleBatchSelector={() => { setActiveFormatSelectorId(null); setIsBatchSelectorOpen((prev) => !prev); }}
             onCloseBatchSelector={() => setIsBatchSelectorOpen(false)}

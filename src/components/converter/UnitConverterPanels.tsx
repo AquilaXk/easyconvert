@@ -4,6 +4,7 @@ import {
   POPULAR_CONVERSIONS,
   REFERENCE_VALUES,
   convertValue,
+  formatEditableDecimal,
   type UnitDefinition,
 } from '@/lib/unit-catalog';
 
@@ -67,9 +68,7 @@ export function CategoryBreakdownSection({
           const formatted = Number.isFinite(conv.value)
             ? conv.value.toLocaleString(undefined, { maximumFractionDigits: precision })
             : '0';
-          const copyText = Number.isFinite(conv.value)
-            ? Number.parseFloat(conv.value.toFixed(precision)).toString()
-            : '0';
+          const copyText = formatEditableDecimal(conv.value, precision);
           const cardClass = getBreakdownCardClass(conv.key === toUnitKey, conv.key === fromUnitKey);
 
           return (

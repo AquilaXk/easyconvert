@@ -80,57 +80,50 @@ function shouldCloseOnTab(e: KeyboardEvent, popover: HTMLElement | null): boolea
   if (e.key !== 'Tab' || !popover) return false;
   const focusables = Array.from(popover.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
   if (focusables.length === 0) return true;
-  return document.activeElement === (e.shiftKey ? focusables[0] : focusables[focusables.length - 1]);
+  return document.activeElement === (e.shiftKey ? focusables[0] : focusables.at(-1));
 }
 
-function computeDesktopPortalPosition(triggerRect: DOMRect, viewportW: number, viewportH: number): React.CSSProperties | null {
+export function computeDesktopPortalPosition(
+  triggerRect: DOMRect,
+  viewportW: number,
+  viewportH: number
+): React.CSSProperties | null {
   if (triggerRect.bottom <= 64 || triggerRect.top >= viewportH) return null;
   const panelWidth = Math.min(440, viewportW - 32);
   const left = Math.min(Math.max(12, triggerRect.left), Math.max(12, viewportW - panelWidth - 12));
   const spaceBelow = viewportH - triggerRect.bottom - 16;
   const spaceAbove = triggerRect.top - 72;
   if (spaceBelow >= NATURAL_PANEL_HEIGHT || spaceBelow >= spaceAbove) {
-    return { top: triggerRect.bottom + 8, left, maxHeight: Math.max(180, Math.min(NATURAL_PANEL_HEIGHT, spaceBelow)) };
+    return {
+      top: triggerRect.bottom + 8,
+      bottom: 'auto',
+      left,
+      maxHeight: Math.max(180, Math.min(NATURAL_PANEL_HEIGHT, spaceBelow)),
+    };
   }
   const effectiveHeight = Math.max(180, Math.min(NATURAL_PANEL_HEIGHT, spaceAbove));
-  return { top: Math.max(72, triggerRect.top - effectiveHeight - 8), left, maxHeight: effectiveHeight };
+  return {
+    top: 'auto',
+    bottom: viewportH - triggerRect.top + 8,
+    left,
+    maxHeight: effectiveHeight,
+  };
 }
 
-export default function FormatSelector({
-  availableFormats, selectedFormatId, sourceFormat, allowAny = false, onSelect, onClose, title,
-}: Readonly<FormatSelectorProps>) {
-  const inputId = useId();
-  const [search, setSearch] = useState('');
-  const [isMobile, setIsMobile] = useState(readInitialMobileState);
-  const [portalStyle, setPortalStyle] = useState<React.CSSProperties>({ top: 0, left: 12 });
-  const anchorRef = useRef<HTMLSpanElement>(null);
-  const popoverRef = useRef<HTMLDialogElement>(null);
-  const dialogRef = useRef<HTMLDialogElement>(null);
-  const triggerRef = useRef<HTMLElement | null>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+interface DesktopPopoverRefs {
+  anchorRef: React.RefObject<HTMLSpanElement | null>;
+  popoverRef: React.RefObject<HTMLDialogElement | null>;
+  triggerRef: React.MutableRefObject<HTMLElement | null>;
+  onCloseRef: React.MutableRefObject<() => void>;
+}
 
-  useModalDialog(dialogRef, isMobile, onClose);
-
-  const allFormats = useMemo(() => (availableFormats !== undefined ? availableFormats : getAllFormats()), [availableFormats]);
-  const categoriesWithFormats = useMemo(() => groupFormatsByCategory(allFormats), [allFormats]);
-  const categories = useMemo(() => sortFormatCategories(categoriesWithFormats.keys()), [categoriesWithFormats]);
-  const initialCategory = useMemo(
-    () => resolveInitialCategory(selectedFormatId, sourceFormat, allFormats, categories),
-    [selectedFormatId, sourceFormat, allFormats, categories]
-  );
-  const [activeCategory, setActiveCategory] = useState<string>(initialCategory);
-
-  useEffect(() => { setActiveCategory(initialCategory); }, [initialCategory]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-    const media = window.matchMedia('(max-width: 639px)');
-    const sync = () => setIsMobile(media.matches);
-    sync();
-    media.addEventListener('change', sync);
-    return () => media.removeEventListener('change', sync);
-  }, []);
+function useDesktopPopoverEffects(
+  isMobile: boolean,
+  inputId: string,
+  refs: DesktopPopoverRefs,
+  setPortalStyle: React.Dispatch<React.SetStateAction<React.CSSProperties>>
+): void {
+  const { anchorRef, popoverRef, triggerRef, onCloseRef } = refs;
 
   useEffect(() => {
     if (isMobile || typeof document === 'undefined') return;
@@ -138,11 +131,23 @@ export default function FormatSelector({
     document.getElementById(inputId)?.focus({ preventScroll: true });
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' || shouldCloseOnTab(e, popoverRef.current)) {
+      if (e.key === 'Escape') {
         e.preventDefault();
         const trigger = triggerRef.current;
         onCloseRef.current();
         trigger?.focus({ preventScroll: true });
+        return;
+      }
+      if (shouldCloseOnTab(e, popoverRef.current)) {
+        if (e.shiftKey) {
+          e.preventDefault();
+          const trigger = triggerRef.current;
+          onCloseRef.current();
+          trigger?.focus({ preventScroll: true });
+          return;
+        }
+        triggerRef.current?.focus({ preventScroll: true });
+        onCloseRef.current();
       }
     };
     const handlePointerDown = (event: PointerEvent) => {
@@ -156,7 +161,7 @@ export default function FormatSelector({
       window.removeEventListener('keydown', handleKeyDown);
       document.removeEventListener('pointerdown', handlePointerDown);
     };
-  }, [isMobile, inputId]);
+  }, [isMobile, inputId, anchorRef, popoverRef, triggerRef, onCloseRef]);
 
   useIsomorphicLayoutEffect(() => {
     if (isMobile || typeof window === 'undefined') return;
@@ -174,7 +179,50 @@ export default function FormatSelector({
       window.removeEventListener('resize', updatePosition);
       window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [isMobile]);
+  }, [isMobile, anchorRef, onCloseRef, setPortalStyle]);
+}
+
+function useMobileBreakpoint(): boolean {
+  const [isMobile, setIsMobile] = useState(readInitialMobileState);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 639px)');
+    const sync = () => setIsMobile(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+  return isMobile;
+}
+
+export default function FormatSelector({
+  availableFormats, selectedFormatId, sourceFormat, allowAny = false, onSelect, onClose, title,
+}: Readonly<FormatSelectorProps>) {
+  const inputId = useId();
+  const [search, setSearch] = useState('');
+  const isMobile = useMobileBreakpoint();
+  const [portalStyle, setPortalStyle] = useState<React.CSSProperties>({ top: 0, bottom: 'auto', left: 12 });
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const popoverRef = useRef<HTMLDialogElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useModalDialog(dialogRef, isMobile, onClose);
+
+  const allFormats = useMemo(() => availableFormats ?? getAllFormats(), [availableFormats]);
+  const categoriesWithFormats = useMemo(() => groupFormatsByCategory(allFormats), [allFormats]);
+  const categories = useMemo(() => sortFormatCategories(categoriesWithFormats.keys()), [categoriesWithFormats]);
+  const initialCategory = useMemo(
+    () => resolveInitialCategory(selectedFormatId, sourceFormat, allFormats, categories),
+    [selectedFormatId, sourceFormat, allFormats, categories]
+  );
+  const [activeCategory, setActiveCategory] = useState<string>(initialCategory);
+
+  useEffect(() => { setActiveCategory(initialCategory); }, [initialCategory]);
+
+  useDesktopPopoverEffects(isMobile, inputId, { anchorRef, popoverRef, triggerRef, onCloseRef }, setPortalStyle);
 
   const displayedFormats = useMemo(
     () => filterDisplayedFormats(allFormats, categoriesWithFormats, activeCategory, search),

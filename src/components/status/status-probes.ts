@@ -1,3 +1,5 @@
+import { checkOpfsSupport, checkWasmSimdSupport } from '@/lib/edge/tier-router';
+
 export type ComponentCategory = 'core' | 'pipeline' | 'privacy';
 export type CategoryFilter = 'all' | ComponentCategory;
 
@@ -125,19 +127,9 @@ export const CATEGORY_TABS: ReadonlyArray<{ id: CategoryFilter; label: string }>
   { id: 'privacy', label: 'Privacy & Retention (3)' },
 ];
 
-function probeWasmSimd(): DiagnosticResult {
+export function probeWasmSimd(): DiagnosticResult {
   const start = performance.now();
-  let hasWasmSimd = false;
-  try {
-    const simdBytes = new Uint8Array([
-      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b,
-      0x03, 0x02, 0x01, 0x00, 0x0a, 0x0a, 0x01, 0x08, 0x00, 0xfd, 0x0c, 0x00, 0x00, 0x00, 0x00,
-      0x0b,
-    ]);
-    hasWasmSimd = WebAssembly.validate(simdBytes);
-  } catch {
-    hasWasmSimd = false;
-  }
+  const hasWasmSimd = checkWasmSimdSupport();
   return {
     id: 'wasm',
     name: 'WebAssembly SIMD Vector Acceleration',
@@ -153,9 +145,7 @@ function probeOpfs(): DiagnosticResult {
   const start = performance.now();
   let hasOpfs = false;
   try {
-    if (typeof navigator !== 'undefined' && 'storage' in navigator && navigator.storage) {
-      hasOpfs = typeof navigator.storage.getDirectory === 'function';
-    }
+    hasOpfs = checkOpfsSupport();
   } catch {
     hasOpfs = false;
   }

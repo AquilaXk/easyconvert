@@ -7,33 +7,52 @@ interface DlqPayloadDialogProps {
   entry: WebhookDlqEntry | null;
   onClose: () => void;
   onReplay: (id: string) => void;
-  onCopy?: (text: string) => void;
 }
 
 export function DlqPayloadDialog({
   entry,
   onClose,
   onReplay,
-  onCopy,
 }: Readonly<DlqPayloadDialogProps>) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copiedPayload, setCopiedPayload] = useState(false);
 
   useModalDialog(dialogRef, Boolean(entry), onClose);
 
   useEffect(() => {
     setCopiedPayload(false);
+    if (copyTimerRef.current !== null) {
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = null;
+    }
   }, [entry?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
 
   if (!entry) return null;
 
-  const handleCopyPayload = (payloadJson: string) => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      void navigator.clipboard.writeText(payloadJson);
+  const handleCopyPayload = async (payloadJson: string) => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(payloadJson);
+      setCopiedPayload(true);
+      if (copyTimerRef.current !== null) {
+        clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = setTimeout(() => {
+        setCopiedPayload(false);
+        copyTimerRef.current = null;
+      }, 2000);
+    } catch {
+      setCopiedPayload(false);
     }
-    onCopy?.(payloadJson);
-    setCopiedPayload(true);
-    setTimeout(() => setCopiedPayload(false), 2000);
   };
 
   const formattedPayload = JSON.stringify(entry.payload, null, 2);
@@ -93,7 +112,9 @@ export function DlqPayloadDialog({
               </span>
               <button
                 type="button"
-                onClick={() => handleCopyPayload(formattedPayload)}
+                onClick={() => {
+                  void handleCopyPayload(formattedPayload);
+                }}
                 aria-label="Copy webhook payload JSON"
                 className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 rounded-md border border-neutral-border dark:border-dark-border text-xs font-semibold text-brand-700 dark:text-brand-300 hover:bg-neutral-subtle dark:hover:bg-dark-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700"
               >

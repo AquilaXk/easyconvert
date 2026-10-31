@@ -4,6 +4,7 @@ export const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options',
 export type HttpMethod = (typeof HTTP_METHODS)[number];
 
 export interface OpenApiSchemaObject {
+  $id?: string;
   type?: string | readonly string[];
   description?: string;
   format?: string;
@@ -17,6 +18,7 @@ export interface OpenApiSchemaObject {
   items?: OpenApiSchemaObject;
   required?: readonly string[];
   properties?: Record<string, OpenApiSchemaObject>;
+  allOf?: ReadonlyArray<OpenApiSchemaObject>;
   $ref?: string;
 }
 
@@ -72,24 +74,79 @@ export interface OpenApiSpec {
 
 const COMPONENT_SCHEMA_PREFIX = '#/components/schemas/';
 
+function lookupReferencedSchema(
+  ref: string,
+  schemas: Record<string, OpenApiSchemaObject> | undefined
+): OpenApiSchemaObject | undefined {
+  if (!schemas) return undefined;
+  if (ref.startsWith(COMPONENT_SCHEMA_PREFIX)) {
+    return schemas[ref.slice(COMPONENT_SCHEMA_PREFIX.length)];
+  }
+  return Object.values(schemas).find((candidate) => candidate.$id === ref);
+}
+
+function mergeAllOfSchema(
+  outer: OpenApiSchemaObject,
+  schemas: Record<string, OpenApiSchemaObject> | undefined,
+  visited: ReadonlySet<string>
+): OpenApiSchemaObject {
+  const mergedProperties: Record<string, OpenApiSchemaObject> = {};
+  const requiredSet = new Set<string>();
+  let resolvedType: OpenApiSchemaObject['type'] = outer.type;
+  let resolvedDescription: string | undefined = outer.description;
+
+  for (const subSchema of outer.allOf ?? []) {
+    const resolvedSub = dereferenceSchemaInternal(subSchema, schemas, new Set(visited));
+    if (!resolvedSub) continue;
+    if (resolvedType === undefined && resolvedSub.type !== undefined) resolvedType = resolvedSub.type;
+    if (resolvedDescription === undefined && resolvedSub.description !== undefined) {
+      resolvedDescription = resolvedSub.description;
+    }
+    if (resolvedSub.properties) Object.assign(mergedProperties, resolvedSub.properties);
+    for (const reqKey of resolvedSub.required ?? []) requiredSet.add(reqKey);
+  }
+
+  if (outer.properties) Object.assign(mergedProperties, outer.properties);
+  for (const reqKey of outer.required ?? []) requiredSet.add(reqKey);
+
+  const merged: OpenApiSchemaObject = { ...outer };
+  delete merged.allOf;
+  if (resolvedType !== undefined) merged.type = resolvedType;
+  if (resolvedDescription !== undefined) merged.description = resolvedDescription;
+  if (Object.keys(mergedProperties).length > 0) merged.properties = mergedProperties;
+  if (requiredSet.size > 0) merged.required = [...requiredSet];
+  return merged;
+}
+
+function dereferenceSchemaInternal(
+  schema: OpenApiSchemaObject | undefined,
+  schemas: Record<string, OpenApiSchemaObject> | undefined,
+  visited: Set<string>
+): OpenApiSchemaObject | undefined {
+  if (!schema) return undefined;
+  let current: OpenApiSchemaObject = schema;
+  while (current.$ref) {
+    const ref: string = current.$ref;
+    if (visited.has(ref)) break;
+    const resolved = lookupReferencedSchema(ref, schemas);
+    if (!resolved) break;
+    visited.add(ref);
+    current = resolved;
+  }
+  if (current !== schema && schema.description && !current.description) {
+    current = { ...current, description: schema.description };
+  }
+  if (current.allOf && current.allOf.length > 0) {
+    return mergeAllOfSchema(current, schemas, visited);
+  }
+  return current;
+}
+
 export function dereferenceSchema(
   schema: OpenApiSchemaObject | undefined,
   schemas?: Record<string, OpenApiSchemaObject>
 ): OpenApiSchemaObject | undefined {
-  if (!schema) return undefined;
-  let current: OpenApiSchemaObject | undefined = schema;
-  const visited = new Set<string>();
-  while (current?.$ref) {
-    const ref: string = current.$ref;
-    if (!ref.startsWith(COMPONENT_SCHEMA_PREFIX) || visited.has(ref)) {
-      break;
-    }
-    visited.add(ref);
-    const resolved: OpenApiSchemaObject | undefined = schemas?.[ref.slice(COMPONENT_SCHEMA_PREFIX.length)];
-    if (!resolved) break;
-    current = resolved;
-  }
-  return current;
+  return dereferenceSchemaInternal(schema, schemas, new Set<string>());
 }
 
 export function formatSchemaType(

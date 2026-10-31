@@ -60,7 +60,7 @@ export function useAuthController() {
     } else if (event.key === 'Home') {
       nextTab = AUTH_TABS[0];
     } else if (event.key === 'End') {
-      nextTab = AUTH_TABS[AUTH_TABS.length - 1];
+      nextTab = AUTH_TABS.at(-1) ?? null;
     }
 
     if (nextTab) {

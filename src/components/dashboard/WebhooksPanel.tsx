@@ -15,7 +15,6 @@ interface WebhooksPanelProps {
   onInspect: (entry: WebhookDlqEntry | null) => void;
   onReplay: (id: string) => void;
   onDelete: (id: string) => void;
-  onCopy?: (text: string) => void;
 }
 
 export function WebhooksPanel({
@@ -30,7 +29,6 @@ export function WebhooksPanel({
   onInspect,
   onReplay,
   onDelete,
-  onCopy,
 }: Readonly<WebhooksPanelProps>) {
   return (
     <div
@@ -204,7 +202,6 @@ export function WebhooksPanel({
         entry={inspectingEntry}
         onClose={() => onInspect(null)}
         onReplay={onReplay}
-        onCopy={onCopy}
       />
     </div>
   );

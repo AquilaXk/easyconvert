@@ -8,7 +8,8 @@ export function resolveQueueSummary(summary?: QueueSummaryInput): string | undef
   const srcs = summary.sourceFormats.map((s) => s.toUpperCase());
   const tgts = summary.targetFormats.filter(Boolean).map((t) => t.toUpperCase());
   if (srcs.length === 0) return undefined;
-  return `Queued files (${srcs.join(', ')}${tgts.length > 0 ? ` to ${tgts.join(', ')}` : ''})`;
+  const targetSuffix = tgts.length > 0 ? ` to ${tgts.join(', ')}` : '';
+  return `Queued files (${srcs.join(', ')}${targetSuffix})`;
 }
 
 export interface HeroTitleState {

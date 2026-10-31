@@ -6,8 +6,6 @@ import {
   convertValue,
   formatEditableDecimal,
   resolveStartingCategory,
-  type UnitCategory,
-  type UnitDefinition,
 } from '@/lib/unit-catalog';
 import {
   CategorySelectorBar,
@@ -20,7 +18,7 @@ import {
 } from '@/components/converter/UnitConverterPanels';
 
 export { UNIT_CATEGORIES, convertValue };
-export type { UnitCategory, UnitDefinition };
+export type { UnitCategory, UnitDefinition } from '@/lib/unit-catalog';
 
 interface UnitConverterProps {
   initialCategory?: string;
@@ -94,7 +92,12 @@ export default function UnitConverter({
   const handleSwap = () => {
     setFromUnitKey(toUnitKey);
     setToUnitKey(fromUnitKey);
-    if (Number.isFinite(calculatedResult) && calculatedResult !== 0) {
+    const parsedInput = Number.parseFloat(inputStr);
+    if (
+      inputStr.trim() !== '' &&
+      Number.isFinite(parsedInput) &&
+      Number.isFinite(calculatedResult)
+    ) {
       setInputStr(formatEditableDecimal(calculatedResult, precision));
     }
   };

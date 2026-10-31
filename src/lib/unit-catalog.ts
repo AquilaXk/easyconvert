@@ -204,6 +204,31 @@ export function resolveStartingCategory(initialCategory: string, initialSrc?: st
   return UNIT_CATEGORIES[initialCategory] ? initialCategory : 'weight';
 }
 
+function trimDecimalFraction(formatted: string): string {
+  if (!formatted.includes('.')) {
+    return formatted === '-0' || formatted === '' ? '0' : formatted;
+  }
+  let end = formatted.length;
+  while (end > 0 && formatted.codePointAt(end - 1) === 48) {
+    end -= 1;
+  }
+  if (end > 0 && formatted.codePointAt(end - 1) === 46) {
+    end -= 1;
+  }
+  const trimmed = end === formatted.length ? formatted : formatted.slice(0, end);
+  return trimmed === '' || trimmed === '0' || trimmed === '-0' ? '0' : trimmed;
+}
+
+function expandNegativeExponential(expFormatted: string): string {
+  const markerIndex = expFormatted.indexOf('e-');
+  if (markerIndex === -1) return expFormatted;
+  const coeff = expFormatted.slice(0, markerIndex);
+  const exp = Number.parseInt(expFormatted.slice(markerIndex + 2), 10);
+  if (!Number.isFinite(exp) || exp <= 0) return coeff;
+  const digits = coeff.replaceAll('.', '');
+  return `0.${'0'.repeat(exp - 1)}${digits}`;
+}
+
 export function formatEditableDecimal(value: number, precision: number): string {
   if (!Number.isFinite(value) || value === 0) return '0';
   const sign = value < 0 ? '-' : '';
@@ -215,12 +240,13 @@ export function formatEditableDecimal(value: number, precision: number): string 
     return `${sign}${intPart}${fracPart}${'0'.repeat(padZeros)}`;
   }
   const basePrecision = Math.min(20, Math.max(0, Math.trunc(precision)));
-  let fixed = abs.toFixed(basePrecision);
-  if (Number.parseFloat(fixed) === 0) {
-    const expanded = Math.min(20, Math.max(basePrecision, Math.ceil(-Math.log10(abs)) + 2));
-    fixed = abs.toFixed(expanded);
+  const fixed = abs.toFixed(basePrecision);
+  if (Number.parseFloat(fixed) !== 0) {
+    const trimmedFixed = trimDecimalFraction(fixed);
+    return trimmedFixed === '0' ? '0' : `${sign}${trimmedFixed}`;
   }
-  const trimmed = fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed;
-  return trimmed === '' || trimmed === '0' ? '0' : `${sign}${trimmed}`;
+  const fractionDigits = Math.min(14, Math.max(2, basePrecision));
+  const expanded = trimDecimalFraction(expandNegativeExponential(abs.toExponential(fractionDigits)));
+  return expanded === '0' ? '0' : `${sign}${expanded}`;
 }
 

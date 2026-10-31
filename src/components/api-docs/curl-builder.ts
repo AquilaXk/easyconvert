@@ -8,6 +8,7 @@ import {
 } from './openapi-types';
 
 const DEFAULT_API_ORIGIN = 'https://api.easyconvert.com';
+const SESSION_COOKIE_NAME = 'easyconvert_session';
 type SchemaMap = Record<string, OpenApiSchemaObject>;
 
 export interface CurlBuildOptions {
@@ -20,8 +21,9 @@ const SAMPLE_PROP_VALUES: Record<string, unknown> = {
   uploadId: 'upl_01J9EXAMPLE',
   targetFormat: 'pdf',
   name: 'Production Worker Key',
+  allowedIps: ['203.0.113.0/24'],
   scopes: ['convert:read', 'convert:write', 'storage:download'],
-  expiresInDays: 90,
+  expiresAt: 1893456000000,
   webhookUrl: 'https://example.com/webhooks/easyconvert',
   filename: 'document.docx',
   contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -39,16 +41,52 @@ const SAMPLE_PROP_VALUES: Record<string, unknown> = {
 };
 
 const escapeDoubleQuoted = (value: string): string =>
-  value.replace(/[\r\n]+/g, ' ').replace(/[\\"$`]/g, '\\$&');
+  value.replace(/[\r\n]+/g, ' ').replace(/[\\"$`]/g, String.raw`\$&`);
 
-const escapeSingleQuoted = (value: string): string => value.replace(/'/g, "'\\''");
+const escapeSingleQuoted = (value: string): string => value.replaceAll("'", String.raw`'\''`);
+
+function stripTrailingSlashes(input: string): string {
+  let end = input.length;
+  while (end > 0 && input.codePointAt(end - 1) === 47) {
+    end -= 1;
+  }
+  return end === input.length ? input : input.slice(0, end);
+}
+
+function substitutePathParams(
+  pathTemplate: string,
+  resolveValue: (name: string) => string
+): string {
+  let result = '';
+  let cursor = 0;
+  while (cursor < pathTemplate.length) {
+    const openIdx = pathTemplate.indexOf('{', cursor);
+    if (openIdx === -1) {
+      result += pathTemplate.slice(cursor);
+      break;
+    }
+    const closeIdx = pathTemplate.indexOf('}', openIdx + 1);
+    if (closeIdx === -1) {
+      result += pathTemplate.slice(cursor);
+      break;
+    }
+    result += pathTemplate.slice(cursor, openIdx);
+    const paramName = pathTemplate.slice(openIdx + 1, closeIdx);
+    result += paramName.length > 0 ? resolveValue(paramName) : '{}';
+    cursor = closeIdx + 1;
+  }
+  return result;
+}
 
 export function resolveBaseUrl(serverUrl?: string, runtimeOrigin?: string): string {
-  const origin = runtimeOrigin?.trim().replace(/\/+$/, '') || DEFAULT_API_ORIGIN;
+  const origin = stripTrailingSlashes(runtimeOrigin?.trim() ?? '') || DEFAULT_API_ORIGIN;
   const trimmed = serverUrl?.trim();
   if (!trimmed || trimmed === '/') return origin;
-  if (/^https?:\/\//i.test(trimmed)) return trimmed.replace(/\/+$/, '');
-  const normalized = trimmed.replace(/\/+$/, '');
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith('http://') || lower.startsWith('https://')) {
+    return stripTrailingSlashes(trimmed);
+  }
+  const normalized = stripTrailingSlashes(trimmed);
   return normalized.startsWith('/') ? `${origin}${normalized}` : `${origin}/${normalized}`;
 }
 
@@ -66,15 +104,34 @@ function resolveExplicitSample(
   return { found: false };
 }
 
+function selectPayloadKeys(
+  schema: OpenApiSchemaObject,
+  properties: Record<string, OpenApiSchemaObject>,
+  method?: string
+): readonly string[] {
+  const requiredKeys = schema.required ?? [];
+  if (requiredKeys.length > 0) return requiredKeys;
+  if ('endpointId' in properties && 'apiKeyId' in properties) {
+    return ['endpointId', ...('graceSeconds' in properties ? ['graceSeconds'] : [])];
+  }
+  if ('uploadId' in properties && 'targetFormat' in properties) {
+    return ['uploadId', 'targetFormat'];
+  }
+  if (method === 'patch') {
+    return Object.keys(properties).slice(0, 1);
+  }
+  return Object.keys(properties).slice(0, 3);
+}
+
 function synthesizeObjectPayload(
   schema: OpenApiSchemaObject,
   schemas: SchemaMap | undefined,
-  depth: number
+  depth: number,
+  method?: string
 ): Record<string, unknown> {
   const properties = schema.properties;
   if (!properties || depth > 4) return {};
-  const requiredKeys = schema.required ?? [];
-  const selectedKeys = requiredKeys.length > 0 ? requiredKeys : Object.keys(properties).slice(0, 3);
+  const selectedKeys = selectPayloadKeys(schema, properties, method);
   const payload: Record<string, unknown> = {};
   for (const propKey of selectedKeys) {
     payload[propKey] = synthesizeSchemaValue(propKey, properties[propKey], schemas, depth + 1);
@@ -99,16 +156,25 @@ function synthesizeSchemaValue(
   return 'sample';
 }
 
-function buildSampleJsonBody(media: OpenApiMediaType | undefined, schemas: SchemaMap | undefined): string {
+function buildSampleJsonBody(
+  media: OpenApiMediaType | undefined,
+  schemas: SchemaMap | undefined,
+  method?: string
+): string {
   const resolved = dereferenceSchema(media?.schema, schemas);
   if (!resolved?.properties) return JSON.stringify({ targetFormat: 'pdf' });
-  return JSON.stringify(synthesizeObjectPayload(resolved, schemas, 0));
+  return JSON.stringify(synthesizeObjectPayload(resolved, schemas, 0, method));
 }
 
 function resolveParameterSample(param: OpenApiParameter, schemas: SchemaMap | undefined): string {
   const schema = dereferenceSchema(param.schema, schemas);
   const explicit = resolveExplicitSample(param.name, schema);
-  if (explicit.found && (typeof explicit.value !== 'object' || explicit.value === null)) {
+  if (
+    explicit.found &&
+    (typeof explicit.value === 'string' ||
+      typeof explicit.value === 'number' ||
+      typeof explicit.value === 'boolean')
+  ) {
     return String(explicit.value);
   }
   const type = primarySchemaType(schema);
@@ -131,7 +197,7 @@ function resolveEndpointUrl(
       queryParts.push(`${encodeURIComponent(param.name)}=${encodeURIComponent(resolveParameterSample(param, schemas))}`);
     }
   }
-  const resolvedPath = path.replace(/\{([^}]+)\}/g, (_match, name: string) =>
+  const resolvedPath = substitutePathParams(path, (name) =>
     encodeURIComponent(resolveParameterSample(pathParams.get(name) ?? { name, in: 'path' }, schemas))
   );
   return queryParts.length > 0 ? `${baseUrl}${resolvedPath}?${queryParts.join('&')}` : `${baseUrl}${resolvedPath}`;
@@ -140,7 +206,13 @@ function resolveEndpointUrl(
 function resolveHeaderSample(lowerName: string, schema: OpenApiSchemaObject | undefined): string {
   if (schema) {
     for (const candidate of [schema.example, schema.default, schema.const]) {
-      if (candidate !== undefined) return String(candidate);
+      if (
+        typeof candidate === 'string' ||
+        typeof candidate === 'number' ||
+        typeof candidate === 'boolean'
+      ) {
+        return String(candidate);
+      }
     }
   }
   if (lowerName === 'upload-length') return '1048576';
@@ -168,14 +240,17 @@ function collectHeaderMap(
 }
 
 function isTusCreationEndpoint(endpoint: ParsedEndpointItem): boolean {
-  if (endpoint.method !== 'post' || !/\/uploads\/?$/.test(endpoint.path)) return false;
+  const trimmedPath = stripTrailingSlashes(endpoint.path);
+  if (endpoint.method !== 'post' || !trimmedPath.endsWith('/uploads')) return false;
   const content = endpoint.operation.requestBody?.content;
   return !content || (!content['application/json'] && !content['multipart/form-data']);
 }
 
 function formatMultipartValue(propName: string, prop: OpenApiSchemaObject, schemas: SchemaMap | undefined): string {
   const sample = synthesizeSchemaValue(propName, prop, schemas, 1);
-  return typeof sample === 'object' && sample !== null ? JSON.stringify(sample) : String(sample);
+  if (typeof sample === 'string') return sample;
+  if (typeof sample === 'number' || typeof sample === 'boolean') return String(sample);
+  return JSON.stringify(sample);
 }
 
 function buildMultipartFlags(media: OpenApiMediaType, path: string, schemas: SchemaMap | undefined): string[] {
@@ -209,13 +284,31 @@ function appendPayloadFlags(
   if (content['multipart/form-data']) {
     lines.push(...buildMultipartFlags(content['multipart/form-data'], endpoint.path, schemas));
   } else if (content['application/json']) {
-    lines.push('  -H "Content-Type: application/json"', `  -d '${escapeSingleQuoted(buildSampleJsonBody(content['application/json'], schemas))}'`);
+    lines.push(
+      '  -H "Content-Type: application/json"',
+      `  -d '${escapeSingleQuoted(buildSampleJsonBody(content['application/json'], schemas, endpoint.method))}'`
+    );
   } else if (!isTusCreate && content['application/offset+octet-stream']) {
     lines.push('  -H "Content-Type: application/offset+octet-stream"', '  --data-binary @./chunk.bin');
   } else if (content['application/octet-stream'] || endpoint.method === 'put') {
     if (content['application/octet-stream']) lines.push('  -H "Content-Type: application/octet-stream"');
     lines.push('  --upload-file ./part.bin');
   }
+}
+
+function buildAuthFlag(
+  security: Array<Record<string, string[]>> | undefined,
+  apiKeyInput: string
+): string | null {
+  if (Array.isArray(security)) {
+    if (security.length === 0) return null;
+    const hasSessionCookie = security.some((req) => 'SessionCookie' in req);
+    const hasApiAuth = security.some((req) => 'BearerAuth' in req || 'ApiKeyAuth' in req);
+    if (hasSessionCookie && !hasApiAuth) {
+      return `  -b "${SESSION_COOKIE_NAME}=YOUR_SESSION_COOKIE"`;
+    }
+  }
+  return `  -H "Authorization: Bearer ${escapeDoubleQuoted(apiKeyInput.trim() || 'YOUR_API_KEY')}"`;
 }
 
 export function buildCurlSnippet(
@@ -231,9 +324,8 @@ export function buildCurlSnippet(
   const lines: string[] = [
     method === 'head' ? `curl -I "${escapedUrl}"` : `curl -X ${method.toUpperCase()} "${escapedUrl}"`,
   ];
-  if (!(Array.isArray(operation.security) && operation.security.length === 0)) {
-    lines.push(`  -H "Authorization: Bearer ${escapeDoubleQuoted(apiKeyInput.trim() || 'YOUR_API_KEY')}"`);
-  }
+  const authFlag = buildAuthFlag(operation.security, apiKeyInput);
+  if (authFlag) lines.push(authFlag);
   const isTusCreate = isTusCreationEndpoint(endpoint);
   for (const headerValue of collectHeaderMap(operation.parameters, schemas, isTusCreate).values()) {
     lines.push(`  -H "${headerValue}"`);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { User } from '@/lib/auth/types';
 import type { ApiKey, ApiKeyScope, QuotaUsage } from '@/lib/api-keys/types';
@@ -35,6 +35,41 @@ export function buildKeyCreationRequest(
   };
 }
 
+function useClipboardCopyStatus() {
+  const [copiedKey, setCopiedKey] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  const copyToClipboard = useCallback((text: string) => {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) return;
+    const writeSecret = async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopiedKey(true);
+        if (copyTimerRef.current !== null) {
+          clearTimeout(copyTimerRef.current);
+        }
+        copyTimerRef.current = setTimeout(() => {
+          setCopiedKey(false);
+          copyTimerRef.current = null;
+        }, 2000);
+      } catch {
+        setCopiedKey(false);
+      }
+    };
+    void writeSecret();
+  }, []);
+
+  return { copiedKey, copyToClipboard };
+}
+
 function useApiKeysController(
   enabled: boolean,
   onReportError: (message: string | null) => void
@@ -45,7 +80,6 @@ function useApiKeysController(
   const [generatedSecret, setGeneratedSecret] = useState<string | null>(null);
   const [isGeneratingKey, setIsGeneratingKey] = useState(false);
   const [showGenerateForm, setShowGenerateForm] = useState(false);
-  const [copiedKey, setCopiedKey] = useState(false);
   const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
   const [selectedScopes, setSelectedScopes] = useState<ApiKeyScope[]>([
     'convert:write',
@@ -53,6 +87,7 @@ function useApiKeysController(
     'storage:download',
   ]);
   const [keyExpiry, setKeyExpiry] = useState<KeyExpiryOption>('30d');
+  const { copiedKey, copyToClipboard } = useClipboardCopyStatus();
 
   const fetchKeysAndQuota = useCallback(async () => {
     try {
@@ -81,14 +116,6 @@ function useApiKeysController(
       void fetchKeysAndQuota();
     }
   }, [enabled, fetchKeysAndQuota]);
-
-  const copyToClipboard = useCallback((text: string) => {
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      void navigator.clipboard.writeText(text);
-      setCopiedKey(true);
-      setTimeout(() => setCopiedKey(false), 2000);
-    }
-  }, []);
 
   const handleGenerateKey = async (e: React.FormEvent) => {
     e.preventDefault();

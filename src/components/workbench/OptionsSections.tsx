@@ -39,6 +39,9 @@ export {
   AudioOptionsSection,
   ImageOptionsSection,
   VideoOptionsSection,
+  type AudioOptionsSectionProps,
+  type ImageOptionsSectionProps,
+  type VideoOptionsSectionProps,
 } from './options/ImageAndMediaOptions';
 
 export {
@@ -46,14 +49,19 @@ export {
   DataOptionsSection,
   DocumentOptionsSection,
   PasswordOptionsSection,
+  type DataOptionsSectionProps,
+  type DocumentOptionsSectionProps,
+  type PasswordOptionsSectionProps,
 } from './options/DocumentAndArchiveOptions';
 
 export {
   computeVisibleSections,
   DEFAULT_OPTIONS,
   isDelimitedFormat,
+  isLosslessAudioTarget,
   OCR_TARGETS,
   resolvePasswordMode,
   type PasswordMode,
+  type VisibleOptionSections,
   type VisibleOptionsSections,
 } from './options/options-capabilities';
