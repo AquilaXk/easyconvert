@@ -54,10 +54,12 @@ export interface PdfSheetInput {
   recognized: ReadonlyMap<number, string>;
 }
 
-/** The sheets of a PDF, in page order, and the pages whose text beside the tables they leave out. */
+/** The sheets of a PDF, in page order, the pages whose text beside the tables they leave out, and the text sheets that lost a bare page number. */
 export interface PdfSheets {
   sheets: WorkbookSheet[];
   leftOut: number[];
+  /** Pages whose text sheet leaves out a bare number as the counter of the page (`pageCounterBlocks`), which the sheet is named after. */
+  bareCounterPages: number[];
 }
 
 /**
@@ -82,7 +84,13 @@ export function sheetsOfPdf({ layout, recognized }: PdfSheetInput): PdfSheets {
     return textSheet(pageNumber, linesOfPage.get(pageNumber) ?? []);
   });
   const leftOut = withTables ? pageNumbers.filter((pageNumber) => !recognized.has(pageNumber) && (linesOfPage.get(pageNumber) ?? []).some((line) => line.trim() !== '')) : [];
-  return { sheets, leftOut };
+  // Only pages that get a text sheet, and only a bare number at the head of a page: one at its foot is the page number and goes silently.
+  const bareCounterPages = withTables
+    ? []
+    : (layout?.pageText ?? [])
+        .filter((page) => !recognized.has(page.pageNumber) && page.hasHeaderBareCounter && page.lines.some((line) => line.trim() !== ''))
+        .map((page) => page.pageNumber);
+  return { sheets, leftOut, bareCounterPages };
 }
 
 function sheetInputOf(content: PdfOfficeContent): PdfSheetInput {
@@ -96,8 +104,11 @@ function sheetInputOf(content: PdfOfficeContent): PdfSheetInput {
  * For the failures see `readPdfContentForOffice` and `layoutPdf`; `writeXlsxWorkbook` refuses a workbook of too many sheets.
  */
 export async function readPdfSheets(source: Buffer, options: ConversionOptions): Promise<WorkbookSheet[]> {
-  const { sheets, leftOut } = sheetsOfPdf(sheetInputOf(await readPdfContentForOffice(source, options)));
+  const { sheets, leftOut, bareCounterPages } = sheetsOfPdf(sheetInputOf(await readPdfContentForOffice(source, options)));
   if (sheets.length === 0) throw new ConversionFailedError('PDF has no text to write as sheets.');
   if (leftOut.length > 0) reportConversionWarning(`Left out the text outside the tables of ${pagesPhrase(leftOut)}: a workbook of a PDF that has tables holds the tables.`);
+  if (bareCounterPages.length > 0) {
+    reportConversionWarning(`Left out the bare number printed on ${pagesPhrase(bareCounterPages)} as a page counter: a text sheet is named after its page.`);
+  }
   return sheets;
 }

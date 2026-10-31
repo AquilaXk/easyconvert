@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { InflateBudget } from './bounded-inflate';
 import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
 import { newRelationshipAllowance, readPartRelationships, streamFirstElements, type OpcReadOptions } from './office/opc-parts';
-import { XLSX_MAX_MATERIALISED_CELLS, XLSX_MAX_RANGES_PER_WORKBOOK, XLSX_NO_WORKSHEETS_MESSAGE, discoverXlsxSheets } from './office/xlsx-sheets';
+import { XLSX_MAX_RANGES_PER_WORKBOOK, XLSX_NO_WORKSHEETS_MESSAGE, discoverXlsxSheets } from './office/xlsx-sheets';
 import { resolveZipPath } from './office/zip-path';
 import { safeDecodeXmlEntities, safeExtractXmlElements, type SafeXmlElement, type SafeXmlScannerOptions } from './safe-xml-scanner';
 import { HTML_MAX_EMBEDDED_BASE64_CHARS, PptxMedia, base64Length } from './office/pptx-media';
@@ -71,7 +71,7 @@ import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variant
 import { officeReadingFormat } from './office/office-suite-sources';
 import { assertReadableAsText } from './office/text-source-guard';
 import { sourceBytesAsText } from './office/text-source';
-import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, assertSheetsWithinGrid } from './office/sheet-bounds';
+import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_MATERIALISED_CELLS, XLSX_MAX_ROWS, assertSheetsWithinGrid } from './office/sheet-bounds';
 import { readWorksheetStructure, worksheetBoundError } from './office/xlsx-worksheet-structure';
 import { DAY_ZERO_1900, MS_PER_DAY, writeXlsx, writeXlsxWorkbook, type WorkbookCompression } from './xlsx-writer';
 import { readPdfSheets } from './pdf-sheets';
