@@ -15,6 +15,7 @@ import type {
 import { isRightToLeftRegion, orderRows, type LineGroup } from './columns';
 import { buildRows } from './lines';
 import { LayoutBudget } from './limits';
+import { pageCounterBlocks, type FurnitureLine } from './page-counters';
 import { continuesInNextFlow, openParagraph, ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
 import { assembleLists, bodySizeOf, headingLevels, inlineRuns } from './structure';
 import { detectLatticeTables, detectStreamTables, tableSegment } from './tables';
@@ -317,12 +318,21 @@ function furnitureKey(text: string): string {
   return text.replace(PAGE_NUMBER, '#').trim();
 }
 
-/** What `splitPageFurniture` takes out of the flow, and which of those blocks recur on several pages. */
+/** The header and footer lines among `blocks` that print the number of their page (`pageCounterBlocks`). */
+function pageCountersOf(blocks: Iterable<PageBlock>, candidates: ReadonlyMap<PageBlock, FurnitureBand>): Set<PageBlock> {
+  const lines = [...blocks].map((block): FurnitureLine<PageBlock> => {
+    const { paragraph } = block as ParagraphEntry;
+    return { block, key: `${candidates.get(block)}:${furnitureKey(paragraph.text)}`, text: paragraph.text, pageNumber: paragraph.pageNumber };
+  });
+  return pageCounterBlocks(lines);
+}
+
+/** What `splitPageFurniture` takes out of the flow, and which of those blocks are the page counter of their page. */
 interface PageFurniture {
   body: PageBlock[];
   header: Paragraph[];
   footer: Paragraph[];
-  recurring: ReadonlySet<PageBlock>;
+  counters: ReadonlySet<PageBlock>;
 }
 
 /**
@@ -338,9 +348,8 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
     const band = furnitureBand(block, pageHeights);
     if (band) candidates.set(block, band);
   }
-  if (candidates.size === 0) return { body: blocks, header: [], footer: [], recurring: new Set() };
+  if (candidates.size === 0) return { body: blocks, header: [], footer: [], counters: new Set() };
   const accepted = new Set<PageBlock>();
-  const recurring = new Set<PageBlock>();
   if (pages.length >= PAGE_FURNITURE_MIN_PAGES) {
     const pagesByKey = new Map<string, Set<number>>();
     for (const [block, band] of candidates) {
@@ -354,7 +363,6 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
       const entry = block as ParagraphEntry;
       if ((pagesByKey.get(`${band}:${furnitureKey(entry.paragraph.text)}`)?.size ?? 0) >= PAGE_FURNITURE_MIN_PAGES) {
         accepted.add(block);
-        recurring.add(block);
       }
     }
   } else {
@@ -366,29 +374,23 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
       }
     }
   }
-  if (accepted.size === 0) return { body: blocks, header: [], footer: [], recurring };
+  // A one-page document has no recurrence to show a header or footer by, and a table page has no body text to compare its size with: the line
+  // that prints the page's own number in a band is its counter whether or not it is furniture.
+  const counters = pageCountersOf(pages.length === 1 ? candidates.keys() : accepted, candidates);
+  if (accepted.size === 0) return { body: blocks, header: [], footer: [], counters };
   const firstPageOf = (band: FurnitureBand): Paragraph[] => {
     const lines = [...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph);
     if (lines.length === 0) return [];
     const firstPage = Math.min(...lines.map((paragraph) => paragraph.pageNumber));
     return lines.filter((paragraph) => paragraph.pageNumber === firstPage).sort((a, b) => a.box.y0 - b.box.y0);
   };
-  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), recurring };
-}
-
-/** A line that is nothing but a page number, as a running footer or header prints it: "3", "Page 3", "3 of 9", "3 / 9"; the first number is captured. */
-const PAGE_NUMBER_LINE = /^(?:page\s*)?(\d+)(?:\s*(?:of|\/)\s*\d+)?$/i;
-
-/** Whether the line is the number of the page it is on, the one line of a recurring header or footer a text sheet leaves out. */
-function isOwnPageNumber(text: string, pageNumber: number): boolean {
-  const match = PAGE_NUMBER_LINE.exec(text.trim());
-  return match !== null && Number(match[1]) === pageNumber;
+  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), counters };
 }
 
 /** The lines of text one page holds in reading order, vertical and angled text included. */
 export interface PdfPageText {
   pageNumber: number;
-  /** Every line of the page, but the page's own number where a running header or footer recurs: a wrong guess adds a line, never loses one. */
+  /** Every line of the page, but its page counter (`pageCounterBlocks`): a miss keeps a line. */
   lines: string[];
 }
 
@@ -404,15 +406,13 @@ export interface LaidOutPdf {
   pageText: PdfPageText[];
 }
 
-function pageTextOf(layout: PageLayout, recurring: ReadonlySet<PageBlock>): PdfPageText {
+function pageTextOf(layout: PageLayout, counters: ReadonlySet<PageBlock>): PdfPageText {
   const { pageNumber } = layout.page;
   const lines: string[] = [];
   for (const block of layout.blocks) {
     if (block.kind !== 'paragraph') continue;
-    const dropsOwnNumber = recurring.has(block);
-    for (const { text } of block.paragraph.lines) {
-      if (!dropsOwnNumber || !isOwnPageNumber(text, pageNumber)) lines.push(text);
-    }
+    if (counters.has(block)) continue;
+    for (const { text } of block.paragraph.lines) lines.push(text);
   }
   return { pageNumber, lines };
 }
@@ -521,7 +521,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
     ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
     ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
   };
-  return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture.recurring)) };
+  return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture.counters)) };
 }
 
 export type { DocumentModel, LayoutLine };
