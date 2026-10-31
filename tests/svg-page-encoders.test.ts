@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPdfTextJob } from '../src/lib/conversions/pdf-text-geometry';
 import { readDxf } from './helpers/dxf-reader';
+import { PicturePages } from '../src/lib/conversions/vector-dxf';
 import { isSvgPageTarget, svgPageEncoder } from '../src/worker/svg-page-encoders';
 import { withPageNumbers } from '../src/worker/worker-output';
 import type { WorkerConversionResult } from '../src/worker/worker-types';
@@ -24,7 +25,7 @@ const WMF_STANDARD_HEADER_WORDS = 9;
 const RENDERED = { filename: 'drawing.svg' } as WorkerConversionResult;
 
 function write(target: string): Promise<Buffer> {
-  return svgPageEncoder(target, RENDERED, () => undefined)(Buffer.from(SVG), RENDERED.filename);
+  return svgPageEncoder(target, RENDERED, () => undefined, {}, new PicturePages())(Buffer.from(SVG), RENDERED.filename);
 }
 
 describe('the writers of the SVG-page targets', () => {
@@ -79,7 +80,7 @@ describe('the text layer of a PDF, for the pages of one render', () => {
     job.mockResolvedValue({ content: Array.from({ length: PAGES }, (_, index) => ({ pageNumber: index + 1, ...layer })) } as Awaited<ReturnType<typeof runPdfTextJob>>);
     const rendered = withPageNumbers({ filename: 'doc.zip' } as WorkerConversionResult, Array.from({ length: PAGES }, (_, index) => index + 1));
     const readPdf = vi.fn(() => Buffer.from('%PDF-'));
-    const encode = svgPageEncoder('dxf', rendered, readPdf);
+    const encode = svgPageEncoder('dxf', rendered, readPdf, {}, new PicturePages());
 
     const pages = await Promise.all(Array.from({ length: PAGES }, (_, index) => encode(Buffer.from(BITMAP_PAGE), `doc-p${String(index + 1).padStart(3, '0')}.svg`)));
 

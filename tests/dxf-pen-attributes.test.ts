@@ -339,6 +339,13 @@ describe('pictures', () => {
     ['opacity 0 in a style', '<image style="opacity: 0.0" x="0" y="0" width="1" height="1" href="#"/>'],
     ['opacity 0%', '<image opacity="0%" x="0" y="0" width="1" height="1" href="#"/>'],
     ['a display of none on the group', '<g display="none"><image x="0" y="0" width="1" height="1" href="#"/></g>'],
+    ['opacity 0 on the group', '<g opacity="0"><image x="0" y="0" width="1" height="1" href="#"/></g>'],
+    ['opacity 0 in the style of the group', '<g style="opacity:0"><image x="0" y="0" width="1" height="1" href="#"/></g>'],
+    ['opacity 0 on a group two levels up', '<g opacity="0%"><g transform="translate(1 1)"><image x="0" y="0" width="1" height="1" href="#"/></g></g>'],
+    ['opacity 0 on the <use> that draws it', '<defs><image id="p" x="0" y="0" width="1" height="1" href="#"/></defs><use href="#p" opacity="0"/>'],
+    ['a width of 0', '<image x="0" y="0" width="0" height="1" href="#"/>'],
+    ['a height of 0px', '<image x="0" y="0" width="1" height="0px" href="#"/>'],
+    ['a width of 0.0 and no height', '<image x="0" y="0" width="0.0" href="#"/>'],
   ])('is not reported for a picture that is not painted: %s', async (_name, picture) => {
     const { dxf, warnings } = await conversion(`${outline}${picture}`);
     expect(warnings).toBeUndefined();
@@ -350,6 +357,9 @@ describe('pictures', () => {
     ['visibility inherit', '<image visibility="inherit" x="0" y="0" width="1" height="1" href="#"/>'],
     ['an opacity just above 0', '<image opacity="0.01" x="0" y="0" width="1" height="1" href="#"/>'],
     ['an opacity of 50%', '<image opacity="50%" x="0" y="0" width="1" height="1" href="#"/>'],
+    ['a group at opacity 0.5', '<g opacity="0.5"><image x="0" y="0" width="1" height="1" href="#"/></g>'],
+    ['a group at opacity 0 beside it', '<g opacity="0"><rect width="1" height="1"/></g><image x="0" y="0" width="1" height="1" href="#"/>'],
+    ['a width of 0.5 and a height of 2cm', '<image x="0" y="0" width="0.5" height="2cm" href="#"/>'],
   ])('is reported for a picture that is painted: %s', async (_name, picture) => {
     expect((await conversion(`${outline}${picture}`)).warnings).toEqual([LEFT_OUT]);
   });
