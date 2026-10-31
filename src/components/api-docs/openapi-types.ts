@@ -8,8 +8,8 @@ export interface OpenApiSchemaObject {
   type?: string | readonly string[];
   description?: string;
   format?: string;
-  enum?: ReadonlyArray<string | number | boolean>;
-  const?: string | number | boolean;
+  enum?: ReadonlyArray<string | number | boolean | null>;
+  const?: string | number | boolean | null;
   example?: unknown;
   default?: unknown;
   minimum?: number;
@@ -232,23 +232,63 @@ export function formatSchemaType(
 }
 
 function resolveExplicitPrimaryType(raw: OpenApiSchemaObject['type']): string | undefined {
-  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'string') return raw === 'null' ? 'string' : raw;
   if (Array.isArray(raw)) return raw.find((item) => item !== 'null') ?? 'string';
   return undefined;
 }
 
 const MAX_UNION_UNWRAP_STEPS = 8;
 
-function hasOwnSchemaShape(schema: OpenApiSchemaObject): boolean {
-  if (schema.type !== undefined || schema.const !== undefined) return true;
-  if (schema.properties !== undefined || schema.items !== undefined) return true;
-  return Boolean(schema.enum?.length);
+function isNullUnionBranch(branch: OpenApiSchemaObject): boolean {
+  if (branch.type === 'null' || branch.const === null) return true;
+  return Array.isArray(branch.type) && branch.type.length === 1 && branch.type[0] === 'null';
 }
 
-function nextUnionPrimaryBranch(schema: OpenApiSchemaObject): OpenApiSchemaObject | undefined {
-  if (hasOwnSchemaShape(schema)) return undefined;
+function shouldStopUnionUnwrap(schema: OpenApiSchemaObject): boolean {
+  if (schema.const !== undefined || schema.items !== undefined) return true;
+  if (schema.enum?.length) return true;
+  return !(schema.oneOf?.length || schema.anyOf?.length);
+}
+
+function omitUnionKeywords(schema: OpenApiSchemaObject): OpenApiSchemaObject {
+  const copy: OpenApiSchemaObject = { ...schema };
+  delete copy.oneOf;
+  delete copy.anyOf;
+  return copy;
+}
+
+function applyMergedObjectFields(
+  merged: OpenApiSchemaObject,
+  outer: OpenApiSchemaObject,
+  branch: OpenApiSchemaObject
+): void {
+  if (outer.properties || branch.properties) {
+    merged.properties = { ...outer.properties, ...branch.properties };
+  }
+  if (outer.required?.length || branch.required?.length) {
+    merged.required = Array.from(new Set([...(outer.required ?? []), ...(branch.required ?? [])]));
+  }
+}
+
+function mergeUnionStep(
+  outer: OpenApiSchemaObject,
+  branch: OpenApiSchemaObject
+): OpenApiSchemaObject {
+  const outerRest = omitUnionKeywords(outer);
+  const merged: OpenApiSchemaObject = { ...outerRest, ...branch };
+  if (outerRest.example !== undefined) merged.example = outerRest.example;
+  if (outerRest.default !== undefined) merged.default = outerRest.default;
+  if (branch.type === undefined && outerRest.type !== undefined) merged.type = outerRest.type;
+  applyMergedObjectFields(merged, outerRest, branch);
+  return merged;
+}
+
+function nextUnionPrimaryStep(schema: OpenApiSchemaObject): OpenApiSchemaObject | undefined {
+  if (shouldStopUnionUnwrap(schema)) return undefined;
   const union = schema.oneOf ?? schema.anyOf;
-  return union?.[0];
+  if (!union?.length) return undefined;
+  const branch = union.find((item) => !isNullUnionBranch(item)) ?? union[0];
+  return branch ? mergeUnionStep(schema, branch) : undefined;
 }
 
 export function unwrapPrimarySchema(
@@ -256,7 +296,7 @@ export function unwrapPrimarySchema(
 ): OpenApiSchemaObject | undefined {
   let current = schema;
   for (let step = 0; step < MAX_UNION_UNWRAP_STEPS && current; step += 1) {
-    const next = nextUnionPrimaryBranch(current);
+    const next = nextUnionPrimaryStep(current);
     if (!next) break;
     current = next;
   }

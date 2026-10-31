@@ -6,9 +6,9 @@ import {
   LABEL_CLASS,
   parseOptionalNonNegativeInt,
   SECTION_HEADING_CLASS,
-  SectionProps,
-} from '../OptionsSections';
-import { isValidPasswordForTarget, type PasswordMode } from './options-capabilities';
+  type SectionProps,
+} from './section-primitives';
+import { getPasswordValidationError, type PasswordMode } from './options-capabilities';
 
 const OCR_LANGUAGE_CHOICES: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'eng', label: 'English' },
@@ -186,9 +186,9 @@ export function PasswordOptionsSection({
   targetFormat,
 }: Readonly<PasswordOptionsSectionProps>) {
   const copy = describePasswordSection(mode, sourceFormat, targetFormat);
-  const hasInvalidPassword = Boolean(
-    options.password && !isValidPasswordForTarget(options.password, targetFormat)
-  );
+  const effectiveSource = sourceFormat || (mode === 'pdf-decrypt' ? 'pdf' : '');
+  const passwordError = getPasswordValidationError(effectiveSource, targetFormat, options.password);
+  const hasInvalidPassword = passwordError !== null;
   return (
     <section className="space-y-2">
       <h3 className={SECTION_HEADING_CLASS}>{copy.heading}</h3>
@@ -206,9 +206,9 @@ export function PasswordOptionsSection({
           placeholder="Leave blank if no password is needed"
           className={INPUT_CLASS}
         />
-        {hasInvalidPassword && (
+        {passwordError && (
           <p id="opt-doc-password-error" role="alert" className="mt-1.5 text-xs font-medium text-red-600 dark:text-red-400">
-            ZIP passwords support 1 to 99 printable ASCII characters only.
+            {passwordError}
           </p>
         )}
         <p id="opt-doc-password-help" className="mt-1.5 text-xs text-ink-muted dark:text-neutral-400">{copy.helper}</p>

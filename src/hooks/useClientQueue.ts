@@ -7,6 +7,7 @@ import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } 
 import { executeItemConversion, getEffectiveMaxFileSize } from '@/lib/client-converter';
 import {
   DEFAULT_OPTIONS,
+  getPasswordValidationError,
   sanitizeOptionsForPair,
 } from '@/components/workbench/options/options-capabilities';
 
@@ -69,6 +70,10 @@ export function areOptionsEqual(a: ConversionOptions, b: ConversionOptions): boo
   return areValuesEqual(a, b);
 }
 
+function hasValidItemOptions(item: ConversionQueueItem): boolean {
+  return getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password) === null;
+}
+
 function canResetToReady(item: ConversionQueueItem, maxLimit: number): boolean {
   return item.status === 'completed' || (item.status === 'error' && item.size <= maxLimit);
 }
@@ -77,7 +82,8 @@ function isConvertiblePendingItem(item: ConversionQueueItem, maxLimit: number): 
   return (
     (item.status === 'ready' || item.status === 'error') &&
     Boolean(item.targetFormat) &&
-    item.size <= maxLimit
+    item.size <= maxLimit &&
+    hasValidItemOptions(item)
   );
 }
 
@@ -86,17 +92,28 @@ function patchIdleItem(
   patch: Pick<ConversionQueueItem, 'targetFormat' | 'options'>,
   maxLimit: number
 ): ConversionQueueItem {
-  if (!canResetToReady(item, maxLimit)) return { ...item, ...patch };
-  return {
+  if (item.size > maxLimit) return { ...item, ...patch };
+  const optionError = getPasswordValidationError(
+    item.sourceFormat,
+    patch.targetFormat,
+    patch.options.password
+  );
+  const base = {
     id: item.id,
     file: item.file,
     name: item.name,
     size: item.size,
     sourceFormat: item.sourceFormat,
     ...patch,
-    status: 'ready',
     progress: 0,
   };
+  if (optionError !== null) {
+    return { ...base, status: 'error', error: optionError };
+  }
+  if (canResetToReady(item, maxLimit) || item.status === 'ready') {
+    return { ...base, status: 'ready' };
+  }
+  return { ...item, ...patch };
 }
 
 function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Set<string>): string {
@@ -232,9 +249,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
     const matches = ctx.queueRef.current.filter(canEdit);
     if (matches.length === 0) return;
     for (const item of matches) {
-      if (canResetToReady(item, maxLimit)) {
-        ctx.revokeBlobUrl(item.resultUrl);
-      }
+      ctx.revokeBlobUrl(item.resultUrl);
     }
     ctx.updateQueue((prev) =>
       prev.map((item) => (canEdit(item) ? patchIdleItem(item, getPatch(item), maxLimit) : item))
@@ -348,7 +363,29 @@ function canConvertBatchTarget(
   ctx: QueueMutationContext
 ): item is ConversionQueueItem {
   if (!item || ctx.isItemBusy(item) || item.status === 'completed') return false;
-  return Boolean(item.targetFormat) && item.size <= getEffectiveMaxFileSize();
+  return (
+    Boolean(item.targetFormat) &&
+    item.size <= getEffectiveMaxFileSize() &&
+    hasValidItemOptions(item)
+  );
+}
+
+function failInvalidItemOptions(current: ConversionQueueItem, ctx: QueueMutationContext): boolean {
+  const optionError = getPasswordValidationError(
+    current.sourceFormat,
+    current.targetFormat,
+    current.options.password
+  );
+  if (optionError === null) return false;
+  ctx.revokeBlobUrl(current.resultUrl);
+  ctx.updateQueue((prev) =>
+    prev.map((i) =>
+      i.id === current.id
+        ? { ...i, status: 'error', error: optionError, progress: 0, resultUrl: undefined }
+        : i
+    )
+  );
+  return true;
 }
 
 export function createConversionRunners(ctx: QueueMutationContext) {
@@ -356,6 +393,7 @@ export function createConversionRunners(ctx: QueueMutationContext) {
     const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
     const current = ctx.queueRef.current.find((i) => i.id === id);
     if (!current?.targetFormat || current.size > getEffectiveMaxFileSize() || ctx.inFlightIdsRef.current.has(id)) return;
+    if (failInvalidItemOptions(current, ctx)) return;
     const gen = (ctx.generationRef.current.get(id) ?? 0) + 1;
     ctx.generationRef.current.set(id, gen);
     ctx.inFlightIdsRef.current.add(id);

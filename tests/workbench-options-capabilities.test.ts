@@ -3,13 +3,13 @@ import { createElement, isValidElement, useRef, type ReactNode } from 'react';
 import {
   computeVisibleSections,
   FFMPEG_VIDEO_CONTAINERS,
+  getPasswordValidationError,
   isLosslessAudioTarget,
   isValidPasswordForTarget,
   resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
   sanitizeOptionsForPair,
 } from '../src/components/workbench/options/options-capabilities';
-import { isValidPasswordForTarget as isValidPasswordFromSections } from '../src/components/workbench/OptionsSections';
 import {
   AudioOptionsSection,
   ImageOptionsSection,
@@ -20,9 +20,10 @@ import {
   DocumentOptionsSection,
   PasswordOptionsSection,
 } from '../src/components/workbench/options/DocumentAndArchiveOptions';
-import OptionsModal, {
-  isValidPasswordForTarget as isValidPasswordFromModal,
-} from '../src/components/OptionsModal';
+import { INPUT_CLASS as PRIMITIVE_INPUT_CLASS } from '../src/components/workbench/options/section-primitives';
+import { INPUT_CLASS as BARREL_INPUT_CLASS } from '../src/components/workbench/OptionsSections';
+import OptionsModal from '../src/components/OptionsModal';
+import ConversionQueue from '../src/components/ConversionQueue';
 import QueueItemRow from '../src/components/workbench/QueueItemRow';
 import {
   areOptionsEqual,
@@ -280,26 +281,121 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(sanitizeOptionsForPair(forWebm, 'mp4', 'webm')).toEqual(forWebm);
     expect(
       sanitizeOptionsForPair(
-        { video: { codec: 'h264', profile: 'high', scale: { width: 1280, fit: 'contain' } } },
+        {
+          videoCodec: 'h264',
+          video: {
+            preset: 'fast',
+            profile: 'high',
+            level: '4.1',
+            scale: { width: 1280, fit: 'contain' },
+          },
+        },
         'mp4',
         'webm'
       )
     ).toEqual({
       video: { scale: { width: 1280, fit: 'contain' } },
     });
-
     expect(
-      sanitizeOptionsForPair({ password: 'secret', compressionLevel: 9 }, 'txt', 'tar')
+      sanitizeOptionsForPair(
+        { video: { profile: 'high', preset: 'fast', level: '4.1' } },
+        'mp4',
+        'webm'
+      )
     ).toEqual({});
     expect(
+      sanitizeOptionsForPair(
+        {
+          videoCodec: 'h264',
+          video: {
+            preset: 'fast',
+            profile: 'high',
+            level: '4.1',
+            rateControl: { mode: 'vbr', bitrateK: 2000, twoPass: true },
+          },
+        },
+        'mp4',
+        'avi'
+      )
+    ).toEqual({
+      video: { rateControl: { mode: 'vbr', bitrateK: 2000 } },
+    });
+    expect(
+      sanitizeOptionsForPair(
+        {
+          videoCodec: 'av1',
+          video: {
+            preset: 'fast',
+            profile: 'high',
+            level: '4.0',
+            rateControl: { mode: 'vbr', bitrateK: 1500, twoPass: true },
+          },
+        },
+        'mp4',
+        'mp4'
+      )
+    ).toEqual({
+      videoCodec: 'av1',
+      video: { rateControl: { mode: 'vbr', bitrateK: 1500 } },
+    });
+    expect(
+      sanitizeOptionsForPair(
+        { videoCodec: 'av1', video: { preset: '8', profile: 'main' } },
+        'mp4',
+        'mp4'
+      )
+    ).toEqual({
+      videoCodec: 'av1',
+      video: { preset: '8', profile: 'main' },
+    });
+    expect(
+      sanitizeOptionsForPair(
+        {
+          video: {
+            codec: 'prores',
+            profile: 'hq',
+            preset: 'fast',
+            level: '4.1',
+            rateControl: { mode: 'crf', crf: 20 },
+          },
+        },
+        'mp4',
+        'mov'
+      )
+    ).toEqual({
+      video: { codec: 'prores', profile: 'hq' },
+    });
+    expect(
+      sanitizeOptionsForPair({ video: { codec: 'prores', profile: 'hq' } }, 'mov', 'mp4')
+    ).toEqual({});
+
+    expect(
+      sanitizeOptionsForPair({ password: '비밀번호', compressionLevel: 9 }, 'txt', 'tar')
+    ).toEqual({});
+    expect(
+      sanitizeOptionsForPair({ password: '비밀번호' }, 'txt', 'zip')
+    ).toEqual({ password: '비밀번호' });
+    expect(
       sanitizeOptionsForPair({ password: 'a'.repeat(100), compressionLevel: 6 }, 'txt', 'zip')
-    ).toEqual({ compressionLevel: 6 });
+    ).toEqual({ password: 'a'.repeat(100), compressionLevel: 6 });
     expect(
       sanitizeOptionsForPair({ password: 'a'.repeat(100), compressionLevel: 6 }, 'txt', '7z')
     ).toEqual({ password: 'a'.repeat(100), compressionLevel: 6 });
     expect(
       sanitizeOptionsForPair({ password: 'a'.repeat(257) }, 'pdf', 'txt')
-    ).toEqual({});
+    ).toEqual({ password: 'a'.repeat(257) });
+
+    expect(getPasswordValidationError('txt', 'tar', '비밀번호')).toBeNull();
+    expect(getPasswordValidationError('txt', 'zip', '비밀번호')).toBe(
+      'ZIP passwords support 1 to 99 printable ASCII characters only.'
+    );
+    expect(getPasswordValidationError('txt', '7z', '비밀번호')).toBeNull();
+    expect(getPasswordValidationError('txt', '7z', 'a'.repeat(257))).toBe(
+      'Passwords must be 256 characters or fewer.'
+    );
+    expect(getPasswordValidationError('pdf', 'txt', 'a'.repeat(257))).toBe(
+      'Passwords must be 256 characters or fewer.'
+    );
 
     const pngPdfOpts: ConversionOptions = {
       ocrEnabled: true,
@@ -324,218 +420,162 @@ describe('Workbench media, document, and tabular capability model', () => {
       videoOpts = next;
     };
 
-    const tree1 = VideoOptionsSection({
-      options: videoOpts,
-      onChange: applyVideo,
-      showCodec: true,
-      targetFormat: 'mp4',
-    });
-    findControlProps(tree1, 'opt-video-width')!.onChange!({ target: { value: '1280' } });
+    expect(PRIMITIVE_INPUT_CLASS).toBe(BARREL_INPUT_CLASS);
+
+    const renderMp4Video = () =>
+      VideoOptionsSection({ options: videoOpts, onChange: applyVideo, showCodec: true, targetFormat: 'mp4' });
+    findControlProps(renderMp4Video(), 'opt-video-width')!.onChange!({ target: { value: '1280' } });
     expect(videoOpts).toEqual({ video: { scale: { width: 1280, fit: 'contain' } } });
     expect(videoOpts.width).toBeUndefined();
 
-    const tree2 = VideoOptionsSection({
-      options: videoOpts,
-      onChange: applyVideo,
-      showCodec: true,
-      targetFormat: 'mp4',
-    });
-    findControlProps(tree2, 'opt-video-height')!.onChange!({ target: { value: '720' } });
+    findControlProps(renderMp4Video(), 'opt-video-height')!.onChange!({ target: { value: '720' } });
     expect(videoOpts).toEqual({ video: { scale: { width: 1280, height: 720, fit: 'contain' } } });
 
-    const tree3 = VideoOptionsSection({
-      options: videoOpts,
-      onChange: applyVideo,
-      showCodec: true,
-      targetFormat: 'mp4',
-    });
-    findControlProps(tree3, 'opt-video-width')!.onChange!({ target: { value: '' } });
-    const tree4 = VideoOptionsSection({
-      options: videoOpts,
-      onChange: applyVideo,
-      showCodec: true,
-      targetFormat: 'mp4',
-    });
-    findControlProps(tree4, 'opt-video-height')!.onChange!({ target: { value: '' } });
+    findControlProps(renderMp4Video(), 'opt-video-width')!.onChange!({ target: { value: '' } });
+    findControlProps(renderMp4Video(), 'opt-video-height')!.onChange!({ target: { value: '' } });
     expect(videoOpts).toEqual({});
 
     const aviModalDom = renderDom(
       createElement(OptionsModal, {
-        filename: 'clip.mp4',
-        sourceFormat: 'mp4',
-        targetFormat: 'avi',
-        initialOptions: {},
-        onSave: () => undefined,
-        onClose: () => undefined,
+        filename: 'clip.mp4', sourceFormat: 'mp4', targetFormat: 'avi',
+        initialOptions: {}, onSave: () => undefined, onClose: () => undefined,
       })
     );
     expect(select(aviModalDom, 'select', 'id', 'opt-video-codec')).toHaveLength(0);
     expect(select(aviModalDom, 'select', 'id', 'opt-video-fps')).toHaveLength(1);
 
     let audioOpts: ConversionOptions = {
-      audio: { codec: 'aac' },
-      audioBitrate: '256k',
-      audioSampleRate: 22050,
-      audioChannels: '5.1',
+      audio: { codec: 'aac' }, audioBitrate: '256k', audioSampleRate: 22050, audioChannels: '5.1',
     };
-    const applyAudio = (next: ConversionOptions) => {
-      audioOpts = next;
-    };
-    findControlProps(
-      AudioOptionsSection({
-        options: audioOpts,
-        onChange: applyAudio,
-        includeTrim: false,
-        targetFormat: 'mp4',
-      }),
-      'opt-audio-codec'
-    )!.onChange!({ target: { value: 'flac' } });
+    const applyAudio = (next: ConversionOptions) => { audioOpts = next; };
+    const renderAudio = (targetFormat: string) =>
+      AudioOptionsSection({ options: audioOpts, onChange: applyAudio, includeTrim: false, targetFormat });
+    findControlProps(renderAudio('mp4'), 'opt-audio-codec')!.onChange!({ target: { value: 'flac' } });
     expect(audioOpts.audioBitrate).toBeUndefined();
     expect(audioOpts.audio?.codec).toBe('flac');
 
-    audioOpts = {
-      audio: { codec: 'aac' },
-      audioBitrate: '192k',
-      audioSampleRate: 22050,
-      audioChannels: '5.1',
-    };
-    findControlProps(
-      AudioOptionsSection({
-        options: audioOpts,
-        onChange: applyAudio,
-        includeTrim: false,
-        targetFormat: 'mp4',
-      }),
-      'opt-audio-codec'
-    )!.onChange!({ target: { value: 'opus' } });
+    audioOpts = { audio: { codec: 'aac' }, audioBitrate: '192k', audioSampleRate: 22050, audioChannels: '5.1' };
+    findControlProps(renderAudio('mp4'), 'opt-audio-codec')!.onChange!({ target: { value: 'opus' } });
     expect(audioOpts.audioSampleRate).toBeUndefined();
     expect(audioOpts.audioChannels).toBe('5.1');
 
-    findControlProps(
-      AudioOptionsSection({
-        options: audioOpts,
-        onChange: applyAudio,
-        includeTrim: false,
-        targetFormat: 'mp4',
-      }),
-      'opt-audio-codec'
-    )!.onChange!({ target: { value: 'mp3' } });
+    findControlProps(renderAudio('mp4'), 'opt-audio-codec')!.onChange!({ target: { value: 'mp3' } });
     expect(audioOpts.audioChannels).toBeUndefined();
 
     audioOpts = { audioVolume: 140 };
-    findControlProps(
-      AudioOptionsSection({
-        options: audioOpts,
-        onChange: applyAudio,
-        includeTrim: false,
-        targetFormat: 'mp3',
-      }),
-      'opt-audio-volume'
-    )!.onChange!({ target: { value: '100' } });
+    findControlProps(renderAudio('mp3'), 'opt-audio-volume')!.onChange!({ target: { value: '100' } });
     expect(audioOpts.audioVolume).toBeUndefined();
 
     const amrDom = renderDom(
-      createElement(AudioOptionsSection, {
-        options: {},
-        onChange: () => undefined,
-        includeTrim: true,
-        targetFormat: 'amr',
-      })
+      createElement(AudioOptionsSection, { options: {}, onChange: () => undefined, includeTrim: true, targetFormat: 'amr' })
     );
     expect(select(amrDom, 'select', 'id', 'opt-audio-bitrate')).toHaveLength(0);
     expect(select(amrDom, 'select', 'id', 'opt-audio-sample-rate')).toHaveLength(0);
     expect(select(amrDom, 'select', 'id', 'opt-audio-channels')).toHaveLength(0);
 
     let dataOpts: ConversionOptions = {};
-    const applyData = (next: ConversionOptions) => {
-      dataOpts = next;
-    };
-    findControlProps(
-      DataOptionsSection({
-        options: dataOpts,
-        onChange: applyData,
-        canConfigureDelimiter: true,
-        canConfigureSheetIndex: true,
-      }),
-      'opt-data-sheet-index'
-    )!.onChange!({ target: { value: '3' } });
+    const applyData = (next: ConversionOptions) => { dataOpts = next; };
+    const renderData = () =>
+      DataOptionsSection({ options: dataOpts, onChange: applyData, canConfigureDelimiter: true, canConfigureSheetIndex: true });
+    findControlProps(renderData(), 'opt-data-sheet-index')!.onChange!({ target: { value: '3' } });
     expect(dataOpts).toEqual({ sheetIndex: 3, sheetMode: 'index' });
-
-    findControlProps(
-      DataOptionsSection({
-        options: dataOpts,
-        onChange: applyData,
-        canConfigureDelimiter: true,
-        canConfigureSheetIndex: true,
-      }),
-      'opt-data-sheet-index'
-    )!.onChange!({ target: { value: '' } });
+    findControlProps(renderData(), 'opt-data-sheet-index')!.onChange!({ target: { value: '' } });
     expect(dataOpts).toEqual({ sheetIndex: undefined, sheetMode: undefined });
 
     let docOpts: ConversionOptions = {};
-    const applyDoc = (next: ConversionOptions) => {
-      docOpts = next;
-    };
-    findControlProps(
-      DocumentOptionsSection({
-        options: docOpts,
-        onChange: applyDoc,
-        canSelectPages: false,
-        canConfigureLayout: false,
-        canConfigureOcr: true,
-      }),
-      'opt-doc-ocr'
-    )!.onChange!({ target: { value: '', checked: true } });
+    const applyDoc = (next: ConversionOptions) => { docOpts = next; };
+    const renderDoc = () =>
+      DocumentOptionsSection({ options: docOpts, onChange: applyDoc, canSelectPages: false, canConfigureLayout: false, canConfigureOcr: true });
+    findControlProps(renderDoc(), 'opt-doc-ocr')!.onChange!({ target: { value: '', checked: true } });
     expect(docOpts).toEqual({ ocrEnabled: true, ocrLanguage: 'eng' });
-
-    findControlProps(
-      DocumentOptionsSection({
-        options: docOpts,
-        onChange: applyDoc,
-        canSelectPages: false,
-        canConfigureLayout: false,
-        canConfigureOcr: true,
-      }),
-      'opt-doc-ocr'
-    )!.onChange!({ target: { value: '', checked: false } });
+    findControlProps(renderDoc(), 'opt-doc-ocr')!.onChange!({ target: { value: '', checked: false } });
     expect(docOpts).toEqual({ ocrEnabled: undefined, ocrLanguage: undefined });
 
     let imgOpts: ConversionOptions = { stripMetadata: true };
     findControlProps(
-      ImageOptionsSection({
-        options: imgOpts,
-        onChange: (next) => {
-          imgOpts = next;
-        },
-        targetFormat: 'webp',
-      }),
+      ImageOptionsSection({ options: imgOpts, onChange: (next) => { imgOpts = next; }, targetFormat: 'webp' }),
       'opt-strip-metadata'
     )!.onChange!({ target: { value: '', checked: false } });
     expect(imgOpts.stripMetadata).toBeUndefined();
 
     const sevenZipPwDom = renderDom(
       createElement(PasswordOptionsSection, {
-        options: {},
-        onChange: () => undefined,
-        mode: 'archive-encrypt',
-        sourceFormat: 'txt',
-        targetFormat: '7z',
+        options: {}, onChange: () => undefined, mode: 'archive-encrypt', sourceFormat: 'txt', targetFormat: '7z',
       })
     );
-    expect(attrOf(select(sevenZipPwDom, 'input', 'id', 'opt-doc-password')[0], 'maxlength')).toBe(
-      '256'
-    );
-    expect(
-      attrOf(select(sevenZipPwDom, 'input', 'id', 'opt-doc-password')[0], 'aria-describedby')
-    ).toBe('opt-doc-password-help');
+    expect(attrOf(select(sevenZipPwDom, 'input', 'id', 'opt-doc-password')[0], 'maxlength')).toBe('256');
+    expect(attrOf(select(sevenZipPwDom, 'input', 'id', 'opt-doc-password')[0], 'aria-describedby')).toBe('opt-doc-password-help');
 
-    expect(isValidPasswordForTarget).toBe(isValidPasswordFromSections);
-    expect(isValidPasswordForTarget).toBe(isValidPasswordFromModal);
+    expect(isValidPasswordForTarget('', 'ZIP')).toBe(false);
     expect(isValidPasswordForTarget('AsciiSecret1!', 'ZIP')).toBe(true);
     expect(isValidPasswordForTarget('비밀번호', 'ZIP')).toBe(false);
 
+    const tooLongSevenZipDom = renderDom(
+      createElement(PasswordOptionsSection, {
+        options: { password: 'a'.repeat(257) }, onChange: () => undefined,
+        mode: 'archive-encrypt', sourceFormat: 'txt', targetFormat: '7z',
+      })
+    );
+    const sevenZipAlerts = select(tooLongSevenZipDom, 'p', 'role', 'alert');
+    expect(sevenZipAlerts).toHaveLength(1);
+    expect(visibleText(sevenZipAlerts[0])).toBe('Passwords must be 256 characters or fewer.');
+
+    const tooLongPdfDom = renderDom(
+      createElement(PasswordOptionsSection, {
+        options: { password: 'a'.repeat(257) }, onChange: () => undefined,
+        mode: 'pdf-decrypt', sourceFormat: 'pdf', targetFormat: 'txt',
+      })
+    );
+    expect(visibleText(select(tooLongPdfDom, 'p', 'role', 'alert')[0])).toBe(
+      'Passwords must be 256 characters or fewer.'
+    );
+
+    let nestedCodecVideoOpts: ConversionOptions = {
+      video: {
+        codec: 'hevc',
+        profile: 'main10',
+        preset: 'slow',
+        rateControl: { mode: 'vbr', bitrateK: 2000, twoPass: true },
+      },
+    };
+    const renderNestedVideo = () =>
+      VideoOptionsSection({
+        options: nestedCodecVideoOpts,
+        onChange: (next) => { nestedCodecVideoOpts = next; },
+        showCodec: true,
+        targetFormat: 'mp4',
+      });
+    const videoCodecCtrl = findControlProps(renderNestedVideo(), 'opt-video-codec')!;
+    expect(videoCodecCtrl.value).toBe('hevc');
+    videoCodecCtrl.onChange!({ target: { value: 'av1' } });
+    expect(nestedCodecVideoOpts).toEqual({
+      videoCodec: 'av1',
+      video: { rateControl: { mode: 'vbr', bitrateK: 2000 } },
+    });
+
+    nestedCodecVideoOpts = { video: { codec: 'h264', profile: 'high', level: '4.1', preset: 'slow' } };
+    findControlProps(renderNestedVideo(), 'opt-video-codec')!.onChange!({ target: { value: '' } });
+    expect(nestedCodecVideoOpts).toEqual({});
+
+    const mountedUnicodeZipModal = renderDom(
+      createElement(OptionsModal, {
+        filename: 'report.txt', sourceFormat: 'txt', targetFormat: 'zip',
+        initialOptions: { password: '비밀번호' }, onSave: () => undefined, onClose: () => undefined,
+      })
+    );
+    const mountedPwInput = select(mountedUnicodeZipModal, 'input', 'id', 'opt-doc-password')[0];
+    expect(attrOf(mountedPwInput, 'value')).toBe('비밀번호');
+    expect(attrOf(mountedPwInput, 'aria-invalid')).toBe('true');
+    expect(visibleText(select(mountedUnicodeZipModal, 'p', 'role', 'alert')[0])).toBe(
+      'ZIP passwords support 1 to 99 printable ASCII characters only.'
+    );
+    const mountedApplyBtn = select(mountedUnicodeZipModal, 'button').find(
+      (b) => visibleText(b) === 'Apply Options'
+    )!;
+    expect(attrOf(mountedApplyBtn, 'disabled')).toBe('');
+
     const onSaveZip = vi.fn();
-    let capturedApplyProps: ControlProps | null = null;
+    const captured: { apply: ControlProps | null } = { apply: null };
     function ZipModalAfterNonAsciiPassword() {
       const didType = useRef(false);
       const tree = OptionsModal({
@@ -550,7 +590,7 @@ describe('Workbench media, document, and tabular capability model', () => {
         didType.current = true;
         findControlProps(tree, 'opt-doc-password')!.onChange!({ target: { value: '비밀번호' } });
       } else {
-        capturedApplyProps = findButtonPropsByText(tree, 'Apply Options');
+        captured.apply = findButtonPropsByText(tree, 'Apply Options');
       }
       return tree;
     }
@@ -566,7 +606,7 @@ describe('Workbench media, document, and tabular capability model', () => {
     const zipPwInput = select(zipModalDom, 'input', 'id', 'opt-doc-password')[0];
     expect(attrOf(zipPwInput, 'aria-invalid')).toBe('true');
     expect(attrOf(zipPwInput, 'aria-describedby')).toBe('opt-doc-password-error');
-    capturedApplyProps?.onClick?.();
+    captured.apply?.onClick?.();
     expect(onSaveZip).not.toHaveBeenCalled();
   });
 
@@ -705,6 +745,123 @@ describe('Workbench media, document, and tabular capability model', () => {
       resolveConversion?.();
       await firstBatch;
       expect(harness.state.isBatchRunning).toBe(false);
+    } finally {
+      execSpy.mockRestore();
+    }
+  });
+
+  it('fails closed on invalid target passwords across queue transitions while keeping recoverable non-size errors convertible', async () => {
+    const noop = () => undefined;
+    const parquetFailedQueue = renderDom(
+      createElement(ConversionQueue, {
+        items: [
+          makeItem({
+            id: 'parquet-err',
+            name: 'sheet.csv',
+            size: 2048,
+            sourceFormat: 'csv',
+            targetFormat: 'parquet',
+            status: 'error',
+            error: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.',
+          }),
+        ],
+        onRemoveItem: noop,
+        onClearAll: noop,
+        onUpdateTargetFormat: noop,
+        onUpdateOptions: noop,
+        onConvertAll: noop,
+        onConvertSingle: noop,
+        onAddMoreFiles: noop,
+        onDownloadAllZip: noop,
+        isConverting: false,
+      })
+    );
+    const parquetConvertBtn = select(parquetFailedQueue, 'button').find(
+      (b) => visibleText(b) === 'Convert'
+    )!;
+    expect(attrOf(parquetConvertBtn, 'disabled')).toBeNull();
+    expect(visibleText(select(parquetFailedQueue, 'output')[0])).toBe(
+      '1 file failed conversion. Retry or remove to continue.'
+    );
+
+    const pwHarness = buildTestQueueContext([
+      makeItem({
+        id: 'arch-1',
+        name: 'report.txt',
+        sourceFormat: 'txt',
+        targetFormat: '7z',
+        status: 'completed',
+        resultUrl: 'blob:http://localhost/arch-7z',
+        options: { password: '비밀번호' },
+      }),
+    ]);
+
+    pwHarness.mutators.handleUpdateTargetFormat('arch-1', 'zip');
+    const zipItem = pwHarness.ctx.queueRef.current[0];
+    expect(pwHarness.state.revokedUrls).toEqual(['blob:http://localhost/arch-7z']);
+    expect(zipItem.targetFormat).toBe('zip');
+    expect(zipItem.options).toEqual({ password: '비밀번호' });
+    expect(zipItem.status).toBe('error');
+    expect(zipItem.error).toBe('ZIP passwords support 1 to 99 printable ASCII characters only.');
+
+    const invalidZipRowDom = renderDom(
+      createElement(QueueItemRow, {
+        item: zipItem,
+        isFormatSelectorOpen: false,
+        onToggleFormatSelector: noop,
+        onCloseFormatSelector: noop,
+        onSelectTargetFormat: noop,
+        onOpenOptions: noop,
+        onRetry: noop,
+        onRemove: noop,
+      })
+    );
+    expect(
+      attrOf(select(invalidZipRowDom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled')
+    ).toBeNull();
+    expect(
+      attrOf(select(invalidZipRowDom, 'button', 'data-testid', 'queue-options-btn')[0], 'disabled')
+    ).toBeNull();
+    expect(
+      attrOf(select(invalidZipRowDom, 'button').find((b) => visibleText(b) === 'Retry')!, 'disabled')
+    ).toBe('');
+
+    const invalidZipQueueDom = renderDom(
+      createElement(ConversionQueue, {
+        items: [zipItem],
+        onRemoveItem: noop,
+        onClearAll: noop,
+        onUpdateTargetFormat: noop,
+        onUpdateOptions: noop,
+        onConvertAll: noop,
+        onConvertSingle: noop,
+        onAddMoreFiles: noop,
+        onDownloadAllZip: noop,
+        isConverting: false,
+      })
+    );
+    expect(
+      attrOf(select(invalidZipQueueDom, 'button').find((b) => visibleText(b) === 'Convert')!, 'disabled')
+    ).toBe('');
+
+    const execSpy = vi.spyOn(clientConverter, 'executeItemConversion').mockResolvedValue(undefined);
+    try {
+      await pwHarness.runners.convertSingleItem('arch-1');
+      await pwHarness.runners.handleConvertAll();
+      expect(execSpy).not.toHaveBeenCalled();
+
+      pwHarness.mutators.handleUpdateTargetFormat('arch-1', '7z');
+      expect(pwHarness.ctx.queueRef.current[0].status).toBe('ready');
+      expect(pwHarness.ctx.queueRef.current[0].error).toBeUndefined();
+      expect(pwHarness.ctx.queueRef.current[0].options).toEqual({ password: '비밀번호' });
+
+      pwHarness.mutators.handleUpdateTargetFormat('arch-1', 'zip');
+      expect(pwHarness.ctx.queueRef.current[0].status).toBe('error');
+
+      pwHarness.mutators.handleUpdateOptions('arch-1', { password: 'Secret123' });
+      expect(pwHarness.ctx.queueRef.current[0].status).toBe('ready');
+      expect(pwHarness.ctx.queueRef.current[0].error).toBeUndefined();
+      expect(pwHarness.ctx.queueRef.current[0].options).toEqual({ password: 'Secret123' });
     } finally {
       execSpy.mockRestore();
     }

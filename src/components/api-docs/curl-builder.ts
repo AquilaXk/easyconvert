@@ -101,9 +101,10 @@ function readSchemaExplicitValue(
 ): { found: true; value: unknown } | { found: false } {
   if (!schema) return { found: false };
   for (const candidate of [schema.example, schema.default, schema.const]) {
-    if (candidate !== undefined) return { found: true, value: candidate };
+    if (candidate !== undefined && candidate !== null) return { found: true, value: candidate };
   }
-  if (schema.enum?.length) return { found: true, value: schema.enum[0] };
+  const nonNullEnum = schema.enum?.find((item) => item !== null);
+  if (nonNullEnum !== undefined) return { found: true, value: nonNullEnum };
   return { found: false };
 }
 

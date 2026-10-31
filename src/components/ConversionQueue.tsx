@@ -9,6 +9,7 @@ import FormatSelector from './FormatSelector';
 import OptionsModal from './OptionsModal';
 import AdBanner from './AdBanner';
 import QueueItemRow from './workbench/QueueItemRow';
+import { getPasswordValidationError } from './workbench/options/options-capabilities';
 
 export interface ConversionQueueProps {
   items: ConversionQueueItem[];
@@ -26,6 +27,15 @@ export interface ConversionQueueProps {
   onDismissZipError?: () => void;
 }
 
+function pluralizeFiles(count: number): string {
+  return count === 1 ? '1 file' : `${count} files`;
+}
+
+function hasItemOptionError(item: ConversionQueueItem): boolean {
+  if (!item.targetFormat) return false;
+  return getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password) !== null;
+}
+
 function getQueueStatusSummary(
   items: ConversionQueueItem[],
   convertibleItems: ConversionQueueItem[],
@@ -41,19 +51,18 @@ function getQueueStatusSummary(
   if (convertibleItems.some((i) => !i.targetFormat?.trim())) {
     return 'Please select an output format to continue';
   }
+  if (convertibleItems.some(hasItemOptionError)) {
+    return 'Update password options or output format to continue.';
+  }
   if (convertibleItems.every((i) => i.status === 'completed')) {
-    return convertibleItems.length === 1
-      ? 'Conversion complete for 1 file'
-      : `Conversion complete for ${convertibleItems.length} files`;
+    return `Conversion complete for ${pluralizeFiles(convertibleItems.length)}`;
   }
   const errorCount = convertibleItems.filter((i) => i.status === 'error').length;
   if (errorCount > 0) {
-    return errorCount === 1
-      ? '1 file failed conversion. Retry or remove to continue.'
-      : `${errorCount} files failed conversion. Retry or remove to continue.`;
+    return `${pluralizeFiles(errorCount)} failed conversion. Retry or remove to continue.`;
   }
   const readyCount = convertibleItems.filter((i) => i.status === 'ready').length;
-  return readyCount === 1 ? 'Ready to convert 1 file' : `Ready to convert ${readyCount} files`;
+  return `Ready to convert ${pluralizeFiles(readyCount)}`;
 }
 
 function collectBatchTargetFormats(items: ConversionQueueItem[]): FormatDefinition[] {
@@ -171,6 +180,26 @@ function QueueFooterBar({
   );
 }
 
+function deriveQueueViewState(
+  items: ConversionQueueItem[],
+  isConverting: boolean,
+  maxLimit: number
+) {
+  const convertibleItems = items.filter((item) => item.size <= maxLimit);
+  const effectiveBusy =
+    isConverting || items.some((i) => i.status === 'uploading' || i.status === 'converting');
+  const completedCount = items.filter((i) => i.status === 'completed').length;
+  const allDone =
+    convertibleItems.length > 0 && convertibleItems.every((i) => i.status === 'completed');
+  const allHaveTarget =
+    convertibleItems.length > 0 && convertibleItems.every((i) => Boolean(i.targetFormat?.trim()));
+  const hasPending = convertibleItems.some((i) => i.status === 'ready' || i.status === 'error');
+  const hasInvalidOptions = convertibleItems.some(hasItemOptionError);
+  const canConvert = !effectiveBusy && allHaveTarget && hasPending && !hasInvalidOptions;
+  const statusSummary = getQueueStatusSummary(items, convertibleItems, effectiveBusy);
+  return { convertibleItems, effectiveBusy, completedCount, allDone, canConvert, statusSummary };
+}
+
 export default function ConversionQueue({
   items, onRemoveItem, onClearAll, onUpdateTargetFormat, onUpdateAllTargets,
   onUpdateOptions, onConvertAll, onConvertSingle, onAddMoreFiles, onDownloadAllZip,
@@ -182,16 +211,11 @@ export default function ConversionQueue({
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
   const maxLimit = getEffectiveMaxFileSize();
-  const isConvertibleItem = (item: ConversionQueueItem) => item.size <= maxLimit;
-  const convertibleItems = items.filter(isConvertibleItem);
-  const effectiveBusy = isConverting || items.some((i) => i.status === 'uploading' || i.status === 'converting');
-  const completedCount = items.filter((i) => i.status === 'completed').length;
-  const allDone = convertibleItems.length > 0 && convertibleItems.every((i) => i.status === 'completed');
-  const allHaveTarget = convertibleItems.length > 0 && convertibleItems.every((i) => Boolean(i.targetFormat?.trim()));
-  const hasPending = convertibleItems.some((i) => i.status === 'ready' || i.status === 'error');
-  const canConvert = !effectiveBusy && allHaveTarget && hasPending;
-  const statusSummary = getQueueStatusSummary(items, convertibleItems, effectiveBusy);
-  const batchAvailableFormats = useMemo(() => collectBatchTargetFormats(convertibleItems), [convertibleItems]);
+  const view = deriveQueueViewState(items, isConverting, maxLimit);
+  const batchAvailableFormats = useMemo(
+    () => collectBatchTargetFormats(view.convertibleItems),
+    [view.convertibleItems]
+  );
   const currentOptionsItem = items.find((i) => i.id === activeOptionsModalId);
 
   return (
@@ -199,7 +223,7 @@ export default function ConversionQueue({
       <div className="w-full rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-sm overflow-visible">
         {items.length > 1 && (
           <QueueBatchHeader
-            itemCount={items.length} canBatchSelect={convertibleItems.length > 1} effectiveBusy={effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
+            itemCount={items.length} canBatchSelect={view.convertibleItems.length > 1} effectiveBusy={view.effectiveBusy} isBatchSelectorOpen={isBatchSelectorOpen}
             batchTargetLabel={batchTargetLabel} batchAvailableFormats={batchAvailableFormats} onUpdateAllTargets={onUpdateAllTargets}
             onToggleBatchSelector={() => { setActiveFormatSelectorId(null); setIsBatchSelectorOpen((prev) => !prev); }}
             onCloseBatchSelector={() => setIsBatchSelectorOpen(false)}
@@ -223,13 +247,13 @@ export default function ConversionQueue({
           ))}
         </div>
         <QueueFooterBar
-          statusSummary={statusSummary} zipError={zipError} onDismissZipError={onDismissZipError}
-          effectiveBusy={effectiveBusy} completedCount={completedCount} allDone={allDone} canConvert={canConvert}
+          statusSummary={view.statusSummary} zipError={zipError} onDismissZipError={onDismissZipError}
+          effectiveBusy={view.effectiveBusy} completedCount={view.completedCount} allDone={view.allDone} canConvert={view.canConvert}
           onAddMoreFiles={onAddMoreFiles} onDownloadAllZip={onDownloadAllZip} onConvertAll={onConvertAll}
         />
       </div>
-      {completedCount > 0 && <AdBanner slot="post-conversion" className="mt-8" />}
-      {currentOptionsItem?.targetFormat && isConvertibleItem(currentOptionsItem) && (
+      {view.completedCount > 0 && <AdBanner slot="post-conversion" className="mt-8" />}
+      {currentOptionsItem?.targetFormat && currentOptionsItem.size <= maxLimit && (
         <OptionsModal
           key={`${currentOptionsItem.id}:${currentOptionsItem.sourceFormat}:${currentOptionsItem.targetFormat}`}
           filename={currentOptionsItem.name} sourceFormat={currentOptionsItem.sourceFormat}

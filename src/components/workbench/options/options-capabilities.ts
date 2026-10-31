@@ -4,12 +4,14 @@ import {
   FFMPEG_VIDEO_CONTAINERS,
   resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
+  sanitizeVideoOptionsForTarget,
 } from './media-capabilities';
 
 export {
   FFMPEG_VIDEO_CONTAINERS,
   resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
+  sanitizeVideoOptionsForTarget,
 };
 export { isLosslessAudioTarget, type AudioCapabilities } from './media-capabilities';
 
@@ -241,9 +243,25 @@ function applySanitizedDocumentOptions(
 
 export function isValidPasswordForTarget(password: string, targetFormat: string): boolean {
   if (targetFormat.toLowerCase() === 'zip') {
-    return password.length <= MAX_ZIP_PASSWORD_LENGTH && ZIP_PRINTABLE_ASCII_PATTERN.test(password);
+    return (
+      password.length > 0 &&
+      password.length <= MAX_ZIP_PASSWORD_LENGTH &&
+      ZIP_PRINTABLE_ASCII_PATTERN.test(password)
+    );
   }
   return password.length > 0 && password.length <= MAX_GENERAL_PASSWORD_LENGTH;
+}
+
+export function getPasswordValidationError(
+  sourceFormat: string,
+  targetFormat: string,
+  password: string | undefined
+): string | null {
+  if (!password || resolvePasswordMode(sourceFormat, targetFormat) === null) return null;
+  if (isValidPasswordForTarget(password, targetFormat)) return null;
+  return targetFormat.toLowerCase() === 'zip'
+    ? 'ZIP passwords support 1 to 99 printable ASCII characters only.'
+    : 'Passwords must be 256 characters or fewer.';
 }
 
 function applySanitizedSecurityAndArchiveOptions(
@@ -251,11 +269,7 @@ function applySanitizedSecurityAndArchiveOptions(
   options: ConversionOptions,
   visible: VisibleOptionsSections
 ): void {
-  if (
-    visible.passwordMode !== null &&
-    options.password &&
-    isValidPasswordForTarget(options.password, visible.tgt)
-  ) {
+  if (visible.passwordMode !== null && options.password) {
     next.password = options.password;
   }
   if (visible.showArchive && options.compressionLevel !== undefined) {
@@ -263,28 +277,6 @@ function applySanitizedSecurityAndArchiveOptions(
   }
 }
 
-function sanitizeVideoScale(
-  scale: NonNullable<ConversionOptions['video']>['scale']
-): NonNullable<ConversionOptions['video']>['scale'] {
-  const sw = scale?.width;
-  const sh = scale?.height;
-  const hasW = Boolean(sw && sw > 0);
-  const hasH = Boolean(sh && sh > 0);
-  if (!hasW && !hasH) return undefined;
-  return {
-    ...(hasW ? { width: sw } : {}),
-    ...(hasH ? { height: sh } : {}),
-    fit: scale?.fit ?? 'contain',
-  };
-}
-
-const SCALE_ONLY_OMITTED_KEYS: ReadonlySet<string> = new Set(['scale']);
-const CODEC_AND_SCALE_OMITTED_KEYS: ReadonlySet<string> = new Set([
-  'scale',
-  'codec',
-  'profile',
-  'level',
-]);
 const AUDIO_CODEC_OMITTED_KEYS: ReadonlySet<string> = new Set(['codec']);
 
 function copyDefinedFields(
@@ -298,34 +290,16 @@ function copyDefinedFields(
   return clean;
 }
 
-function sanitizeVideoEncodingOptions(
-  video: ConversionOptions['video'],
-  allowedVCodecs: ReadonlyArray<string>
-): ConversionOptions['video'] {
-  if (!video) return undefined;
-  const dropCodec = video.codec !== undefined && !allowedVCodecs.includes(video.codec);
-  const clean = copyDefinedFields(
-    video as Record<string, unknown>,
-    dropCodec ? CODEC_AND_SCALE_OMITTED_KEYS : SCALE_ONLY_OMITTED_KEYS
-  );
-  const cleanScale = sanitizeVideoScale(video.scale);
-  if (cleanScale) clean.scale = cleanScale;
-  return Object.keys(clean).length > 0 ? (clean as NonNullable<ConversionOptions['video']>) : undefined;
-}
-
 function applySanitizedVideoOptions(
   next: ConversionOptions,
   options: ConversionOptions,
   visible: VisibleOptionsSections
 ): void {
   if (!visible.showVideo) return;
-  const allowedVCodecs = resolveAllowedVideoCodecs(visible.tgt);
-  if (options.videoCodec && allowedVCodecs.includes(options.videoCodec)) {
-    next.videoCodec = options.videoCodec;
-  }
-  if (options.videoFps !== undefined) next.videoFps = options.videoFps;
-  const cleanVideo = sanitizeVideoEncodingOptions(options.video, allowedVCodecs);
-  if (cleanVideo) next.video = cleanVideo;
+  const sanitized = sanitizeVideoOptionsForTarget(options, visible.tgt);
+  if (sanitized.videoCodec !== undefined) next.videoCodec = sanitized.videoCodec;
+  if (sanitized.videoFps !== undefined) next.videoFps = sanitized.videoFps;
+  if (sanitized.video !== undefined) next.video = sanitized.video;
 }
 
 function sanitizeAudioEncodingOptions(

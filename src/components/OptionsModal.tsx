@@ -5,32 +5,21 @@ import { X } from 'lucide-react';
 import { ConversionOptions } from '@/lib/types';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import {
+  computeVisibleSections,
+  DEFAULT_OPTIONS,
+  getPasswordValidationError,
+  sanitizeOptionsForPair,
+  type VisibleOptionsSections,
+} from './workbench/options/options-capabilities';
+import {
   ArchiveOptionsSection,
   AudioOptionsSection,
-  computeVisibleSections,
   DataOptionsSection,
-  DEFAULT_OPTIONS,
   DocumentOptionsSection,
   ImageOptionsSection,
-  isValidPasswordForTarget,
   PasswordOptionsSection,
-  sanitizeOptionsForPair,
   VideoOptionsSection,
-  type VisibleOptionsSections,
 } from './workbench/OptionsSections';
-
-export {
-  computeVisibleSections,
-  DEFAULT_OPTIONS,
-  FFMPEG_VIDEO_CONTAINERS,
-  isLosslessAudioTarget,
-  isValidPasswordForTarget,
-  resolveAllowedVideoCodecs,
-  resolveAudioCapabilities,
-  resolvePasswordMode,
-  sanitizeOptionsForPair,
-  type PasswordMode,
-} from './workbench/options/options-capabilities';
 
 export interface OptionsModalProps {
   filename: string;
@@ -120,11 +109,8 @@ export default function OptionsModal({
 
   const visible = computeVisibleSections(sourceFormat, targetFormat);
   const targetLabel = (targetFormat || 'target').toUpperCase();
-  const hasInvalidPassword = Boolean(
-    visible.passwordMode !== null &&
-      options.password &&
-      !isValidPasswordForTarget(options.password, targetFormat)
-  );
+  const hasInvalidPassword =
+    getPasswordValidationError(sourceFormat, targetFormat, options.password) !== null;
 
   const handleApply = () => {
     if (hasInvalidPassword) return;

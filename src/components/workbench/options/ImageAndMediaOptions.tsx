@@ -7,11 +7,12 @@ import {
   LABEL_CLASS,
   parseOptionalPositiveInt,
   SECTION_HEADING_CLASS,
-  SectionProps,
-} from '../OptionsSections';
+  type SectionProps,
+} from './section-primitives';
 import {
   resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
+  sanitizeVideoOptionsForTarget,
 } from './options-capabilities';
 
 const DEFAULT_IMAGE_QUALITY: Readonly<Record<string, number>> = {
@@ -199,9 +200,54 @@ export interface VideoOptionsSectionProps extends SectionProps {
   targetFormat: string;
 }
 
+function resolveSelectedVideoCodec(
+  options: ConversionOptions,
+  codecChoices: ReadonlyArray<{ value: NonNullable<ConversionOptions['videoCodec']>; label: string }>
+): string {
+  if (options.videoCodec) return options.videoCodec;
+  const nested = options.video?.codec;
+  return nested && codecChoices.some((c) => c.value === nested) ? nested : '';
+}
+
+function stripCodecBoundVideoFields(
+  video: ConversionOptions['video']
+): ConversionOptions['video'] {
+  if (!video) return undefined;
+  const next = { ...video };
+  delete next.codec;
+  delete next.profile;
+  delete next.level;
+  delete next.preset;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function applyVideoCodecChange(
+  options: ConversionOptions,
+  targetFormat: string,
+  codecChoices: ReadonlyArray<{ value: NonNullable<ConversionOptions['videoCodec']>; label: string }>,
+  raw: string
+): ConversionOptions {
+  const chosen = raw ? codecChoices.find((c) => c.value === raw)?.value : undefined;
+  const sanitized = sanitizeVideoOptionsForTarget(
+    {
+      videoCodec: chosen,
+      videoFps: options.videoFps,
+      video: stripCodecBoundVideoFields(options.video),
+    },
+    targetFormat
+  );
+  return {
+    ...options,
+    videoCodec: sanitized.videoCodec,
+    videoFps: sanitized.videoFps,
+    video: sanitized.video,
+  };
+}
+
 export function VideoOptionsSection({ options, onChange, showCodec, targetFormat }: Readonly<VideoOptionsSectionProps>) {
   const allowedCodecs = resolveAllowedVideoCodecs(targetFormat);
   const codecChoices = VIDEO_CODEC_OPTIONS.filter((o) => allowedCodecs.includes(o.value));
+  const selectedCodec = resolveSelectedVideoCodec(options, codecChoices);
   const parseFps = (raw: string): ConversionOptions['videoFps'] =>
     raw ? VIDEO_FPS_VALUES.find((fps) => fps === Number(raw)) : undefined;
   const updateVideoScale = (axis: 'width' | 'height', raw: string) => {
@@ -217,13 +263,8 @@ export function VideoOptionsSection({ options, onChange, showCodec, targetFormat
             <label htmlFor="opt-video-codec" className={LABEL_CLASS}>Video Codec</label>
             <select
               id="opt-video-codec"
-              value={options.videoCodec ?? ''}
-              onChange={(e) =>
-                onChange({
-                  ...options,
-                  videoCodec: e.target.value ? codecChoices.find((c) => c.value === e.target.value)?.value : undefined,
-                })
-              }
+              value={selectedCodec}
+              onChange={(e) => onChange(applyVideoCodecChange(options, targetFormat, codecChoices, e.target.value))}
               className={INPUT_CLASS}
             >
               <option value="">Automatic (format default)</option>

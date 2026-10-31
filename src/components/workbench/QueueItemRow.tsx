@@ -9,6 +9,7 @@ import { ConversionQueueItem, FormatCategory } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
 import { getEffectiveMaxFileSize } from '@/lib/client-converter';
 import FormatSelector from '../FormatSelector';
+import { getPasswordValidationError } from './options/options-capabilities';
 
 export interface QueueItemRowProps {
   item: ConversionQueueItem;
@@ -59,13 +60,34 @@ function renderCategoryIcon(ext: string): React.ReactNode {
   return <FileText className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
 }
 
-function isRetryDisabled(item: ConversionQueueItem, isBusy: boolean, isOversize: boolean): boolean {
-  return isBusy || !item.targetFormat || isOversize;
+function resolveOptionError(item: ConversionQueueItem): string | null {
+  if (!item.targetFormat) return null;
+  return getPasswordValidationError(item.sourceFormat, item.targetFormat, item.options.password);
+}
+
+function resolveRowError(item: ConversionQueueItem, optionError: string | null): string | null {
+  if (optionError) return optionError;
+  return item.status === 'error' ? item.error || 'Conversion failed.' : null;
+}
+
+function isRetryDisabled(
+  item: ConversionQueueItem,
+  isBusy: boolean,
+  isOversize: boolean,
+  optionError: string | null
+): boolean {
+  return isBusy || !item.targetFormat || isOversize || optionError !== null;
 }
 
 function RowStatusDisplay({
-  item, isBusy, isOversize, onRetry,
-}: Readonly<{ item: ConversionQueueItem; isBusy: boolean; isOversize: boolean; onRetry: () => void }>) {
+  item, isBusy, isOversize, optionError, onRetry,
+}: Readonly<{
+  item: ConversionQueueItem;
+  isBusy: boolean;
+  isOversize: boolean;
+  optionError: string | null;
+  onRetry: () => void;
+}>) {
   if (isBusy) {
     const rounded = Math.round(item.progress);
     return (
@@ -94,12 +116,12 @@ function RowStatusDisplay({
       </div>
     );
   }
-  if (item.status === 'error') {
+  if (item.status === 'error' || optionError !== null) {
     return (
       <div className="flex items-center gap-2">
         <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-status-dangerSoft text-status-danger dark:bg-red-950/40 dark:text-red-300 border border-red-500/30">Failed</span>
         <button
-          type="button" disabled={isRetryDisabled(item, isBusy, isOversize)} onClick={onRetry}
+          type="button" disabled={isRetryDisabled(item, isBusy, isOversize, optionError)} onClick={onRetry}
           className="inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-md border border-red-300 dark:border-red-800 text-xs font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Retry
@@ -127,6 +149,8 @@ export default function QueueItemRow({
   const isOversize = item.size > getEffectiveMaxFileSize();
   const hasTarget = Boolean(item.targetFormat);
   const isPdf = item.sourceFormat.toLowerCase() === 'pdf';
+  const optionError = !isBusy && item.status !== 'completed' ? resolveOptionError(item) : null;
+  const rowError = !isBusy && item.status !== 'completed' ? resolveRowError(item, optionError) : null;
 
   const iconTileClass = isPdf
     ? 'bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-800/40'
@@ -151,9 +175,9 @@ export default function QueueItemRow({
             <span aria-hidden="true">&bull;</span>
             <span>{getFormatLabel(item.sourceFormat)}</span>
           </p>
-          {item.status === 'error' && (
+          {rowError && (
             <p role="alert" className="text-xs text-red-600 dark:text-red-400 mt-1">
-              {item.error || 'Conversion failed.'}
+              {rowError}
             </p>
           )}
         </div>
@@ -200,7 +224,13 @@ export default function QueueItemRow({
           <Sliders className="w-4 h-4" />
         </button>
 
-        <RowStatusDisplay item={item} isBusy={isBusy} isOversize={isOversize} onRetry={onRetry} />
+        <RowStatusDisplay
+          item={item}
+          isBusy={isBusy}
+          isOversize={isOversize}
+          optionError={optionError}
+          onRetry={onRetry}
+        />
 
         <button
           type="button"
