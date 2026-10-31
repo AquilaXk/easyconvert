@@ -8,6 +8,7 @@ import { resolveObjectOwnership, mayUseStorageKeyAsJobInput, STORAGE_OBJECT_NOT_
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
+import { PLAN_MAX_FILE_BYTES } from '../src/lib/plan-limits';
 
 const BASE_URL = 'http://localhost:3000';
 const createdKeys: string[] = [];
@@ -127,21 +128,21 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
   it('(c) rejects parts exceeding 64 MiB with 413, and rejects totalSize exceeding tier limit with 413', async () => {
     const alice = await createUser('alice_size', 'free');
 
-    // 1. totalSize exceeds free tier limit (100 MiB)
+    // 1. totalSize exceeds the free plan limit (1 GiB)
     const overTierReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
       method: 'POST',
       headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         filename: 'huge-archive.zip',
         mimeType: 'application/zip',
-        totalSize: 101 * 1024 * 1024, // 101 MiB > 100 MiB free tier
+        totalSize: 1024 * 1024 * 1024 + 1, // one byte over the 1 GiB free limit
       }),
     });
     const overTierRes = await multipartPost(overTierReq);
     expect(overTierRes.status).toBe(413);
     const overTierJson = await overTierRes.json();
     expect(overTierJson.status).toBe(413);
-    expect(overTierJson.detail).toContain('exceeds maximum allowed upload size');
+    expect(overTierJson.detail).toContain('exceeds the 1 GB limit for the free plan');
 
     // 2. Part size exceeds 64 MiB
     const validInitReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
@@ -266,8 +267,7 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     const nanRes = await multipartPost(nanReq);
     expect(nanRes.status).toBe(400);
 
-    // 2. Reject cumulative bytes exceeding tier limit
-    // For free tier (100 MiB), initiate a valid large session (e.g. 90 MiB)
+    // 2. Reject cumulative bytes exceeding the plan limit (free: 1 GiB)
     const largeInitReq = new NextRequest(`${BASE_URL}/api/storage/multipart?action=initiate`, {
       method: 'POST',
       headers: sessionHeaders(alice, { 'Content-Type': 'application/json' }),
@@ -277,34 +277,21 @@ describe('Security: Multipart Upload Authentication and Ownership Guard', () => 
     expect(largeInitRes.status).toBe(200);
     const largeSession = await largeInitRes.json();
 
-    // Upload part 1: 60 MiB
-    const part1Buf = Buffer.alloc(60 * 1024 * 1024, 0xaa);
-    const part1Req = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
-      method: 'POST',
-      headers: sessionHeaders(alice, {
-        'x-upload-id': largeSession.uploadId,
-        'x-part-number': '1',
-      }),
-      body: part1Buf,
-    });
-    const part1Res = await multipartPost(part1Req);
-    expect(part1Res.status).toBe(200);
-
-    // Upload part 2: 50 MiB (60 + 50 = 110 MiB > 100 MiB free tier limit)
-    // Check via Content-Length header or body size
+    // The session already holds a part that leaves 10 bytes below the limit; a part of 11 bytes passes it.
+    vi.spyOn(s3Storage, 'getUploadedParts').mockReturnValue([{ partNumber: 1, etag: 'e1', size: PLAN_MAX_FILE_BYTES.free - 10 }]);
     const part2Req = new NextRequest(`${BASE_URL}/api/storage/multipart?action=chunk`, {
       method: 'POST',
       headers: sessionHeaders(alice, {
         'x-upload-id': largeSession.uploadId,
         'x-part-number': '2',
-        'content-length': String(50 * 1024 * 1024),
+        'content-length': '11',
       }),
       body: Buffer.from('mock content length probe'),
     });
     const part2Res = await multipartPost(part2Req);
     expect(part2Res.status).toBe(413);
     const part2Json = await part2Res.json();
-    expect(part2Json.detail).toContain('exceeds maximum allowed size');
+    expect(part2Json.detail).toContain('exceeds the 1 GB limit for the free plan');
 
     s3Storage.abortMultipartUpload(largeSession.uploadId);
   });

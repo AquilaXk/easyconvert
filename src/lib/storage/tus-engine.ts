@@ -9,6 +9,7 @@ import { localFsStorage } from './local-fs-storage';
 import { objectStorage, storageProvider } from './selected-storage';
 import { globalSharedObjects } from './shared-store';
 import { assertNotSpoofedFilePath } from '../security/file-guard';
+import { LARGEST_PLAN_FILE_BYTES } from '../plan-limits';
 import { resolveDeclaredFormat } from './declared-format';
 import { MAX_CONTENT_TYPE_LENGTH, isValidContentType } from './object-attributes';
 
@@ -411,7 +412,7 @@ export class TusEngine {
   private readonly tusDir: string;
   private readonly defaultTtlSeconds: number;
   private readonly lockManager = new SessionLockManager();
-  readonly maxUploadSize: number = 5 * 1024 * 1024 * 1024; // 5 GiB
+  readonly maxUploadSize: number = LARGEST_PLAN_FILE_BYTES;
 
   constructor(options?: { tusDir?: string; defaultTtlSeconds?: number }) {
     this.tusDir =

@@ -2,6 +2,8 @@
 
 import React, { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { formatBytes } from '@/lib/format-bytes';
+import { PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
 
 export interface FaqItem {
   q: string;
@@ -25,7 +27,7 @@ const DEFAULT_FAQS: FaqItem[] = [
   },
   {
     q: 'What is the maximum file size limit?',
-    a: 'EasyConvert supports individual files up to 1 GB. Browser-executed conversions start immediately without waiting for network uploads.',
+    a: `EasyConvert supports individual files up to ${formatBytes(PLAN_MAX_FILE_BYTES.anonymous)} without an account. Browser-executed conversions start immediately without waiting for network uploads.`,
   },
   {
     q: 'Can I convert multiple files in one batch?',

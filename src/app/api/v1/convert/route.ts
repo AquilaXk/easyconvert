@@ -26,6 +26,7 @@ import {
   createPdfPostprocessResponse,
 } from '@/lib/api/problem-details';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
+import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
 import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-error-response';
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
@@ -48,7 +49,6 @@ export const dynamic = 'force-dynamic';
 const INTERNAL_ERROR_DETAIL = 'Internal conversion error';
 
 const ASYNC_THRESHOLD_BYTES = 10 * 1024 * 1024; // 10 MB auto-handoff threshold
-const MAX_PROGRAMMATIC_FILE_SIZE = 500 * 1024 * 1024; // 500 MB max payload for async handoff
 
 interface ValidatedConvertInput {
   file: File;
@@ -57,24 +57,34 @@ interface ValidatedConvertInput {
   options: ConversionOptions;
 }
 
-function parseConvertFormData(formData: FormData): { error?: string; status?: number; data?: ValidatedConvertInput } {
+type ParsedConvertForm = { problem: NextResponse; data?: undefined } | { data: ValidatedConvertInput; problem?: undefined };
+
+/** The validated input of a convert request, or the problem answer for the first thing wrong with it. */
+function parseConvertFormData(
+  formData: FormData,
+  caller: Parameters<typeof fileSizeLimitProblem>[0],
+  instanceUri: string,
+  headers: Record<string, string>
+): ParsedConvertForm {
+  const badRequest = (detail: string): ParsedConvertForm => ({
+    problem: createProblemDetailsResponse(400, detail, instanceUri, 'Bad Request', undefined, headers),
+  });
   const file = formData.get('file');
 
   if (!file || typeof file === 'string' || !(file instanceof Blob)) {
-    return { error: 'Missing required "file" or invalid file binary in multipart request.', status: 400 };
+    return badRequest('Missing required "file" or invalid file binary in multipart request.');
   }
 
   if (file.size === 0) {
-    return { error: 'File payload is empty (0 bytes).', status: 400 };
+    return badRequest('File payload is empty (0 bytes).');
   }
 
-  if (file.size > MAX_PROGRAMMATIC_FILE_SIZE) {
-    return { error: 'File size exceeds the 500 MB asynchronous payload boundary.', status: 400 };
-  }
+  const tooLarge = fileSizeLimitProblem(caller, file.size, instanceUri, headers);
+  if (tooLarge) return { problem: tooLarge };
 
   const targetFormatEntry = formData.get('targetFormat');
   if (!targetFormatEntry || typeof targetFormatEntry !== 'string') {
-    return { error: 'Missing required "targetFormat" parameter.', status: 400 };
+    return badRequest('Missing required "targetFormat" parameter.');
   }
   const targetFormat = targetFormatEntry.trim();
 
@@ -83,20 +93,17 @@ function parseConvertFormData(formData: FormData): { error?: string; status?: nu
   sourceDef ??= detectFormatFromFilename(file.name);
 
   if (!sourceDef) {
-    return { error: `Could not identify source format for file "${file.name}".`, status: 400 };
+    return badRequest(`Could not identify source format for file "${file.name}".`);
   }
 
   const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
   const targetDef = getFormatByExtension(tgt);
   if (!targetDef) {
-    return { error: `Unsupported target format "${targetFormat}".`, status: 400 };
+    return badRequest(`Unsupported target format "${targetFormat}".`);
   }
 
   if (!sourceDef.targetFormats.includes(tgt) && !sourceDef.targetFormats.includes(targetDef.id)) {
-    return {
-      error: `Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`,
-      status: 400,
-    };
+    return badRequest(`Conversion from ${sourceDef.id.toUpperCase()} to ${targetDef.id.toUpperCase()} is not currently supported.`);
   }
 
   let options: ConversionOptions = {};
@@ -105,11 +112,11 @@ function parseConvertFormData(formData: FormData): { error?: string; status?: nu
     try {
       const parsed = JSON.parse(optionsRaw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return { error: 'The "options" field must be a valid JSON object.', status: 400 };
+        return badRequest('The "options" field must be a valid JSON object.');
       }
       options = parsed;
     } catch {
-      return { error: 'Invalid JSON string provided in "options" field.', status: 400 };
+      return badRequest('Invalid JSON string provided in "options" field.');
     }
   }
 
@@ -196,17 +203,8 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     }
     releaseSlot = slot.release;
     const formData = await req.formData();
-    const validation = parseConvertFormData(formData);
-    if (validation.error || !validation.data) {
-      return reply(createProblemDetailsResponse(
-        validation.status ?? 400,
-        validation.error || 'Invalid request parameters.',
-        instanceUri,
-        'Bad Request',
-        undefined,
-        rateLimitHeaders
-      ));
-    }
+    const validation = parseConvertFormData(formData, auth.user, instanceUri, rateLimitHeaders);
+    if (!validation.data) return reply(validation.problem);
 
     const { file, sourceDef, targetDef, options } = validation.data;
 

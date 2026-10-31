@@ -29,6 +29,8 @@ import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { characterErrorRatePercent } from './helpers/ocr-cer';
 
+const GIB = 1024 * 1024 * 1024;
+
 describe('Advanced Conversion Algorithms & Cross-Domain Boost', () => {
   describe('Domain: Color Quantization (NeuQuant & Median Cut)', () => {
     it('quantizes RGB image with Median Cut algorithm into 16 and 256 colors', () => {
@@ -368,15 +370,15 @@ The voyage was recorded.`;
     });
   });
 
-  describe('Domain: Zero-Retention Batch 100MB Gate', () => {
-    it('blocks batch requests when any single file exceeds 100MB', async () => {
+  describe('Domain: Batch Plan File Size Gate', () => {
+    it('blocks a batch with a file over the 1 GB limit of an anonymous caller with 413', async () => {
       const req = {
         formData: async () => {
           const map = new Map<string, any>();
           map.set('files', [
             {
               name: 'huge_archive.zip',
-              size: 105 * 1024 * 1024,
+              size: GIB + 1,
               arrayBuffer: async () => new ArrayBuffer(0),
             },
           ]);
@@ -388,25 +390,25 @@ The voyage was recorded.`;
       } as unknown as NextRequest;
 
       const res = await batchRoute(req);
-      expect(res.status).toBe(400);
       const json = await res.json();
+      expect(res.status, JSON.stringify(json)).toBe(413);
       expect(json.success).toBe(false);
-      expect(json.error).toMatch(/exceeds real-time in-memory conversion limit/i);
+      expect(json.error).toMatch(/exceeds the 1 GB limit for anonymous use\. Pro allows files up to 5 GB/);
     });
 
-    it('blocks batch requests when cumulative size exceeds 100MB', async () => {
+    it('blocks a batch whose files together pass the 1 GB limit with 413', async () => {
       const req = {
         formData: async () => {
           const map = new Map<string, any>();
           map.set('files', [
             {
               name: 'file1.zip',
-              size: 60 * 1024 * 1024,
+              size: GIB / 2 + 1,
               arrayBuffer: async () => new ArrayBuffer(0),
             },
             {
               name: 'file2.zip',
-              size: 50 * 1024 * 1024,
+              size: GIB / 2,
               arrayBuffer: async () => new ArrayBuffer(0),
             },
           ]);
@@ -418,10 +420,10 @@ The voyage was recorded.`;
       } as unknown as NextRequest;
 
       const res = await batchRoute(req);
-      expect(res.status).toBe(400);
       const json = await res.json();
+      expect(res.status, JSON.stringify(json)).toBe(413);
       expect(json.success).toBe(false);
-      expect(json.error).toMatch(/exceeds real-time in-memory conversion limit/i);
+      expect(json.error).toMatch(/exceeds the 1 GB limit for anonymous use\. Pro allows files up to 5 GB/);
     });
   });
 });

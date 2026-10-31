@@ -1,9 +1,10 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
-import { resolveConversionTier, resolveTierAfterEdgeFailure, checkOpfsSupport, ConversionTier } from './edge/tier-router';
+import { resolveConversionTier, resolveTierAfterEdgeFailure, ConversionTier } from './edge/tier-router';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
-import { OPFS_MAX_FILE_BYTES } from './edge/opfs/limits';
+import { formatBytes } from './format-bytes';
+import { getViewerMaxFileBytes } from './viewer-plan';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
 import { canvasToBlob } from './edge/pipelines/canvas-blob';
 import { assertEncodedBlob, BMP_MIME_TYPE, canvasMimeType } from './edge/canvas-encoding';
@@ -67,17 +68,6 @@ export class ClientEdgeEscalationError extends Error {
 
 function describeEdgeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-/**
- * Returns dynamic maximum file size limit.
- * If browser supports OPFS, expands up to 2GB streaming limit; otherwise default 100MB.
- */
-export function getEffectiveMaxFileSize(baseMax: number = 100 * 1024 * 1024): number {
-  if (typeof window !== 'undefined' && checkOpfsSupport()) {
-    return OPFS_MAX_FILE_BYTES; // 2 GB OPFS VFS ceiling
-  }
-  return baseMax;
 }
 
 /**
@@ -640,13 +630,12 @@ export function createItemConverter(
   maxFileSize?: number
 ) {
   return async (item: ConversionQueueItem): Promise<void> => {
-    const effectiveLimit = maxFileSize !== undefined ? maxFileSize : getEffectiveMaxFileSize();
+    const effectiveLimit = maxFileSize !== undefined ? maxFileSize : getViewerMaxFileBytes();
     if (item.file.size > effectiveLimit) {
-      const limitMb = Math.round(effectiveLimit / (1024 * 1024));
       setQueue((prev) =>
         prev.map((i) =>
           i.id === item.id
-            ? { ...i, status: 'error', error: `File size exceeds ${limitMb} MB limit.` }
+            ? { ...i, status: 'error', error: `File size exceeds the ${formatBytes(effectiveLimit)} limit.` }
             : i
         )
       );

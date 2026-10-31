@@ -22,12 +22,13 @@ import {
   probeEdgeCapabilities,
 } from '@/lib/edge/tier-router';
 import {
-  getEffectiveMaxFileSize,
   tryProcessClientEdge,
   createItemConverter,
   executeItemConversion,
 } from '@/lib/client-converter';
 import { ConversionQueueItem } from '@/lib/types';
+import { PLAN_MAX_FILE_BYTES } from '@/lib/plan-limits';
+import { getViewerMaxFileBytes, setViewerPlan } from '@/lib/viewer-plan';
 import * as path from 'node:path';
 import { collectModuleGraph, identifierUses, parseSource } from './helpers/ts-source';
 
@@ -528,9 +529,17 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
   // 7. Client Converter & Queue Integration
   // ==========================================================================
   describe('Client Converter Integration (client-converter.ts)', () => {
-    it('calculates dynamic effective file size limit', () => {
-      const limit = getEffectiveMaxFileSize(100 * 1024 * 1024);
-      expect(limit).toBeGreaterThanOrEqual(100 * 1024 * 1024);
+    it('takes the file size limit from the plan of the viewer, whatever the browser supports', () => {
+      vi.stubGlobal('window', {});
+      vi.stubGlobal('navigator', { storage: { getDirectory: async () => ({}) } });
+      try {
+        expect(getViewerMaxFileBytes()).toBe(PLAN_MAX_FILE_BYTES.anonymous);
+        setViewerPlan('pro');
+        expect(getViewerMaxFileBytes()).toBe(PLAN_MAX_FILE_BYTES.pro);
+      } finally {
+        setViewerPlan('anonymous');
+        vi.unstubAllGlobals();
+      }
     });
 
     it('leaves structured data conversion to the server: tryProcessClientEdge converts nothing', async () => {
@@ -623,7 +632,7 @@ describe('Phase 1: Pure Isomorphic Fast-Path & Edge Infrastructure (L0)', () => 
       await converter(queueItem);
 
       expect(queue[0].status).toBe('error');
-      expect(queue[0].error).toContain('File size exceeds 50 MB limit.');
+      expect(queue[0].error).toContain('File size exceeds the 50 MB limit.');
     });
   });
 });

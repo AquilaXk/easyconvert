@@ -31,6 +31,7 @@ import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secre
 import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
 import { validateTierPageLimit } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { fileTooLargeMessage, maxFileBytes, planOfCaller } from '@/lib/plan-limits';
 import { describeStorageError } from '@/lib/api/storage-error-response';
 import { QUEUE_UNAVAILABLE_DETAIL, queueRetryAfterHeaders, withQueueErrors } from '@/lib/api/queue-error-response';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
@@ -48,12 +49,6 @@ import { tusEngine } from '@/lib/storage/tus-engine';
 export const dynamic = 'force-dynamic';
 
 const MAX_INLINE_PAYLOAD_SIZE = 32 * 1024 * 1024; // 32 MiB ceiling for inline multipart and base64 payloads
-
-const STORAGE_TIER_PAYLOAD_LIMITS: Record<string, number> = {
-  free: 1024 * 1024 * 1024, // 1 GiB
-  pro: 5 * 1024 * 1024 * 1024, // 5 GiB
-  enterprise: 10 * 1024 * 1024 * 1024, // 10 GiB
-};
 
 /** Whether the caller may use every stored file a job reads: the top-level `storageKey` and each `import.upload` node of its graph. */
 async function mayUseStoredInputs(storageKey: string | undefined, graph: JobGraph | undefined, callerUserId: string): Promise<boolean> {
@@ -526,14 +521,9 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
         if (!fileSize) {
           fileSize = info.size;
         }
-        const userTier = auth.user.tier || 'free';
-        const tierMaxBytes = STORAGE_TIER_PAYLOAD_LIMITS[userTier] || STORAGE_TIER_PAYLOAD_LIMITS.free;
-        if (fileSize > tierMaxBytes) {
-          return await failWithRollback(
-            413,
-            `Storage payload size (${fileSize} bytes) exceeds the ${tierMaxBytes} bytes limit for tier '${userTier}'.`,
-            'Payload Too Large'
-          );
+        const plan = planOfCaller(auth.user);
+        if (info.size > maxFileBytes(plan)) {
+          return await failWithRollback(413, fileTooLargeMessage(plan, info.size), 'Payload Too Large');
         }
         if (s3Storage.kind === 'remote') {
           // The object lives in the object store: check its first bytes without downloading the rest.

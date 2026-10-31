@@ -16,9 +16,21 @@ import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-respo
 import { redactText } from '@/lib/security/redact';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { refuseOversizeFile } from '@/lib/api/file-size-limit';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
+
+/** The options object of a multipart `options` field, or the message that names what is wrong with it. */
+function parseOptionsField(raw: string): { options: ConversionOptions } | { error: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { error: 'Invalid JSON format for "options" parameter.' };
+  }
+  return isConversionOptionsObject(parsed) ? { options: parsed } : { error: 'The "options" field must be a JSON object.' };
+}
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   // 1. Guard check: Authenticate API key/session or enforce anonymous IP rate limit & daily quota
@@ -63,6 +75,12 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     return problem;
   };
 
+  /** The 400 or 413 problem for an uploaded file this route cannot take: a name with no format, or a size over the plan limit. */
+  const refuseUploadedFile = (file: File) =>
+    detectFormatFromFilename(file.name)
+      ? refuseOversizeFile(auth.user, file.size, instanceUri, reservationId)
+      : failUnknownSource(file.name);
+
   try {
     // At most five conversions in flight (queued plus running) for an anonymous or free caller.
     const room = await mayEnqueue(auth.user.id, auth.user.tier);
@@ -87,22 +105,16 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       storageKey = (formData.get('storageKey') as string) || undefined;
 
       if (optionsRaw) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(optionsRaw);
-        } catch {
-          return await failWithRollback(400, 'Invalid JSON format for "options" parameter.');
-        }
-        if (!isConversionOptionsObject(parsed)) {
-          return await failWithRollback(400, 'The "options" field must be a JSON object.');
-        }
-        options = parsed;
+        const parsed = parseOptionsField(optionsRaw);
+        if ('error' in parsed) return await failWithRollback(400, parsed.error);
+        options = parsed.options;
         const optionsProblem = await rejectInvalidOptions(options);
         if (optionsProblem) return optionsProblem;
       }
 
       if (file) {
-        if (!detectFormatFromFilename(file.name)) return await failUnknownSource(file.name);
+        const refusal = await refuseUploadedFile(file);
+        if (refusal) return refusal;
         originalFilename = file.name;
         fileSize = file.size;
         const arrayBuffer = await file.arrayBuffer();
@@ -148,6 +160,10 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     if (!detected) return await failUnknownSource(originalFilename);
     const sourceFormat = detected.extension;
 
+    const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, storageProvider);
+    const oversize = await refuseOversizeFile(auth.user, inputBytes, instanceUri, reservationId);
+    if (oversize) return oversize;
+
     // Add conversion task to BullMQ Distributed Queue
     const job = await enqueueConversionJob(
       conversionQueue,
@@ -168,7 +184,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
         attempts: 2,
         backoff: { type: 'fixed', delay: 1500 },
       },
-      { tier: auth.user.tier, inputBytes: await trustedInputBytes({ storageKey, inputBufferBase64 }, storageProvider) }
+      { tier: auth.user.tier, inputBytes }
     );
 
     return NextResponse.json({

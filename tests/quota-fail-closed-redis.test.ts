@@ -358,7 +358,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
         body: JSON.stringify({
           filename: 'document.pdf',
           mimeType: 'application/pdf',
-          totalSize: 45 * 1024 * 1024, // 45 MiB (< 100 MiB free cap)
+          totalSize: 45 * 1024 * 1024, // 45 MiB (< 1 GiB free cap)
         }),
       });
 
@@ -369,7 +369,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       expect(json.uploadId).toBeDefined();
     });
 
-    it('rejects multipart upload exceeding free tier 100MB cap with 413 Payload Too Large', async () => {
+    it('rejects multipart upload exceeding the free plan 1 GB limit with 413 Payload Too Large', async () => {
       const token = createSessionToken(testUser);
       const req = new NextRequest('http://localhost:3000/api/storage/multipart?action=initiate', {
         method: 'POST',
@@ -380,7 +380,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
         body: JSON.stringify({
           filename: 'giant-video.mp4',
           mimeType: 'video/mp4',
-          totalSize: 120 * 1024 * 1024, // 120 MiB (> 100 MiB free cap)
+          totalSize: 1024 * 1024 * 1024 + 1, // one byte over the 1 GiB free limit
         }),
       });
 
@@ -388,7 +388,7 @@ describe('Phase 1-C: Quota Fail-Closed, Anonymous Protection & CSRF Middleware',
       expect(res.status).toBe(413);
       const json = await res.json();
       expect(json.status).toBe(413);
-      expect(json.detail).toMatch(/exceeds maximum allowed upload size of 104857600 bytes for tier 'free'/i);
+      expect(json.detail).toBe('File size 1,073,741,825 bytes exceeds the 1 GB limit for the free plan. Pro allows files up to 5 GB.');
     });
   });
 

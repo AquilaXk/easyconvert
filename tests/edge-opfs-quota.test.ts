@@ -8,7 +8,6 @@ vi.mock('../src/lib/edge/workers/opfs-archive', async (importOriginal) => {
   return { ...actual, createGunzipTarTransformer: vi.fn(actual.createGunzipTarTransformer) };
 });
 
-import { getEffectiveMaxFileSize } from '../src/lib/client-converter';
 import { OPFS_MAX_FILE_BYTES } from '../src/lib/edge/opfs/limits';
 import { createGunzipTarTransformer, OPFS_MAX_DECOMPRESSED_BYTES } from '../src/lib/edge/workers/opfs-archive';
 import { EdgeStorageQuotaError, EdgeUnsupportedError, rehydrateWorkerError } from '../src/lib/edge/workers/worker-errors';
@@ -96,11 +95,8 @@ describe('a storage failure ends the conversion instead of restarting it in memo
 });
 
 describe('inflation is capped at the largest file the edge accepts, and a failure leaves no output (issue #480)', () => {
-  it('derives the cap from the effective file size limit', () => {
-    vi.stubGlobal('window', {});
-    vi.stubGlobal('navigator', { storage: { getDirectory: async () => ({}) } });
+  it('derives the cap from the largest file the edge streams through OPFS', () => {
     expect(OPFS_MAX_DECOMPRESSED_BYTES).toBe(OPFS_MAX_FILE_BYTES);
-    expect(getEffectiveMaxFileSize()).toBe(OPFS_MAX_FILE_BYTES);
     expect(OPFS_MAX_FILE_BYTES).toBe(2 * 1024 * MIB);
   });
 

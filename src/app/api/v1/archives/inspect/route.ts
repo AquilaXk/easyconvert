@@ -4,6 +4,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { buildRateLimitHeaders } from '@/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
+import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
 import { inspectArchive } from '@/lib/conversions';
@@ -15,6 +16,27 @@ import {
 } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
+
+type MultipartArchive =
+  | { problem: NextResponse; archiveBuffer?: undefined }
+  | { problem?: undefined; archiveBuffer: Buffer; filename: string; password: string | undefined };
+
+/** The archive, its file name and its password from a multipart form, or the 400 for a form without a file. */
+async function readMultipartArchive(req: NextRequest, instanceUri: string): Promise<MultipartArchive> {
+  const formData = await req.formData();
+  const fileEntry = formData.get('file');
+  if (!fileEntry || typeof fileEntry === 'string' || !(fileEntry instanceof Blob)) {
+    return {
+      problem: createProblemDetailsResponse(400, 'Missing required "file" in multipart form data.', instanceUri, 'Bad Request'),
+    };
+  }
+  const password = formData.get('password');
+  return {
+    archiveBuffer: Buffer.from(await fileEntry.arrayBuffer()),
+    filename: (fileEntry as File).name,
+    password: typeof password === 'string' && password ? password : undefined,
+  };
+}
 
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/archives/inspect';
@@ -45,24 +67,9 @@ export async function POST(req: NextRequest) {
 
   try {
     if (contentType.includes('multipart/form-data')) {
-      const formData = await req.formData();
-      const fileEntry = formData.get('file');
-      if (!fileEntry || typeof fileEntry === 'string' || !(fileEntry instanceof Blob)) {
-        return createProblemDetailsResponse(
-          400,
-          'Missing required "file" in multipart form data.',
-          instanceUri,
-          'Bad Request'
-        );
-      }
-      filename = (fileEntry as File).name;
-      const arrayBuf = await fileEntry.arrayBuffer();
-      archiveBuffer = Buffer.from(arrayBuf);
-
-      const pw = formData.get('password');
-      if (typeof pw === 'string' && pw) {
-        password = pw;
-      }
+      const upload = await readMultipartArchive(req, instanceUri);
+      if (upload.problem) return upload.problem;
+      ({ archiveBuffer, filename, password } = upload);
     } else if (contentType.includes('application/json')) {
       const body = await req.json();
       if (!body || typeof body !== 'object') {
@@ -126,6 +133,9 @@ export async function POST(req: NextRequest) {
         'Bad Request'
       );
     }
+
+    const tooLarge = fileSizeLimitProblem(auth.user, archiveBuffer.length, instanceUri);
+    if (tooLarge) return tooLarge;
 
     const inspection = await inspectArchive(archiveBuffer, { filename, password });
     return NextResponse.json({

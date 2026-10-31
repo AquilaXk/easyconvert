@@ -4,7 +4,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 37
+    "maxValue": 36
   },
   {
     "file": "src/app/api/convert/route.ts",
@@ -69,14 +69,14 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 81
+    "maxValue": 74
   },
   {
     "file": "src/app/api/storage/multipart/route.ts",
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 281
+    "maxValue": 257
   },
   {
     "file": "src/app/api/v1/archives/inspect/route.ts",
@@ -89,7 +89,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 41
+    "maxValue": 38
   },
   {
     "file": "src/app/api/v1/convert/route.ts",
@@ -102,14 +102,14 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 62
+    "maxValue": 59
   },
   {
     "file": "src/app/api/v1/convert/route.ts",
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 367
+    "maxValue": 358
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -122,7 +122,7 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 183
+    "maxValue": 181
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
@@ -136,7 +136,7 @@
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 614
+    "maxValue": 609
   },
   {
     "file": "src/app/api/v1/uploads/[[...id]]/route.ts",

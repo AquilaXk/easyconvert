@@ -34,6 +34,8 @@ import {
   type QueueMutationContext,
 } from '../src/hooks/useClientQueue';
 import * as clientConverter from '../src/lib/client-converter';
+import { fileTooLargeMessage } from '../src/lib/plan-limits';
+import { getViewerMaxFileBytes } from '../src/lib/viewer-plan';
 import type { ConversionOptions, ConversionQueueItem } from '../src/lib/types';
 import { attrOf, renderDom, select, visibleText } from './helpers/rendered-dom';
 
@@ -672,7 +674,7 @@ describe('Workbench media, document, and tabular capability model', () => {
       )
     ).toBe(false);
 
-    const maxBytes = clientConverter.getEffectiveMaxFileSize();
+    const maxBytes = getViewerMaxFileBytes();
     const noop = () => undefined;
     const rowNoops = {
       isFormatSelectorOpen: false, onToggleFormatSelector: noop, onCloseFormatSelector: noop,
@@ -702,7 +704,7 @@ describe('Workbench media, document, and tabular capability model', () => {
       createElement(QueueItemRow, {
         item: makeItem({
           id: 'over-1', size: maxBytes + 1024, targetFormat: 'webm',
-          status: 'error', error: 'File exceeds the 100 MB real-time conversion limit.',
+          status: 'error', error: fileTooLargeMessage('anonymous', maxBytes + 1024),
         }),
         ...rowNoops,
       })
@@ -733,7 +735,7 @@ describe('Workbench media, document, and tabular capability model', () => {
         sourceFormat: 'mp4',
         targetFormat: '',
         status: 'error',
-        error: 'File exceeds the 100 MB real-time conversion limit.',
+        error: fileTooLargeMessage('anonymous', maxBytes + 10),
       }),
     ]);
 

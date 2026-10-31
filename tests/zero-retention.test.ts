@@ -3,14 +3,14 @@ import { NextRequest } from 'next/server';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 
 describe('Zero-Retention & In-Memory Pipeline Tests', () => {
-  it('blocks files exceeding 100MB limit with descriptive error', async () => {
-    // Mock NextRequest formData returning a file with size > 100MB
+  it('blocks a file one byte past the 1 GB limit of an anonymous caller with a 413 that names the limit', async () => {
+    // Mock NextRequest formData returning a file one byte past the 1 GiB limit
     const req = {
       formData: async () => {
         const map = new Map<string, any>();
         map.set('file', {
           name: 'large_dataset.zip',
-          size: 105 * 1024 * 1024,
+          size: 1024 * 1024 * 1024 + 1,
           arrayBuffer: async () => new ArrayBuffer(0),
         });
         map.set('targetFormat', 'tar');
@@ -19,11 +19,11 @@ describe('Zero-Retention & In-Memory Pipeline Tests', () => {
     } as unknown as NextRequest;
 
     const res = await convertRoute(req);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(413);
 
     const json = await res.json();
     expect(json.success).toBe(false);
-    expect(json.error).toMatch(/exceeds real-time in-memory conversion limit/i);
+    expect(json.error).toContain('exceeds the 1 GB limit for anonymous use');
   });
 
   it('verifies Zero-Data-Retention headers on successful conversion', async () => {

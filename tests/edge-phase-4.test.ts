@@ -16,6 +16,7 @@ import {
   QUOTA_CRITICAL_RATIO,
 } from '../src/lib/edge/opfs/storage-gc';
 import { resolveConversionTier } from '../src/lib/edge/tier-router';
+import { OPFS_MAX_FILE_BYTES } from '../src/lib/edge/opfs/limits';
 import { streamConvertWithOpfs } from '../src/lib/edge/pipelines/opfs-streaming-pipeline';
 
 describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collector (L3)', () => {
@@ -238,6 +239,16 @@ describe('Phase 4: OPFS Large File VFS Streaming Pipeline & Quota Garbage Collec
       expect(res.tier).toBe('L3');
       expect(res.tierName).toBe('Edge L3 (OPFS Stream)');
       expect(res.isClientEdge).toBe(true);
+    });
+
+    it('streams a file of exactly 2 GiB through OPFS and sends one byte more to the server', () => {
+      const atCeiling = resolveConversionTier('csv', 'tsv', OPFS_MAX_FILE_BYTES, {}, { hasOpfsSyncAccess: true });
+      expect(atCeiling.tier).toBe('L3');
+
+      const pastCeiling = resolveConversionTier('csv', 'tsv', OPFS_MAX_FILE_BYTES + 1, {}, { hasOpfsSyncAccess: true });
+      expect(pastCeiling.tier).toBe('L4');
+      expect(pastCeiling.isClientEdge).toBe(false);
+      expect(pastCeiling.reason).toBe('File is larger than the browser can stream through OPFS');
     });
 
     it('falls back to Tier L4 when file > 100MB but OPFS is unavailable in browser', () => {

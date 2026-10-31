@@ -276,7 +276,7 @@ describe('WP-20 Storage Streaming API & 2GB Crash Removal', () => {
 
       const body = await res.json();
       expect(body.title).toMatch(/Payload Too Large/i);
-      expect(body.detail).toMatch(/exceeds the 1073741824 bytes limit for tier 'free'/i);
+      expect(body.detail).toContain('exceeds the 1 GB limit for the free plan');
     });
   });
 });

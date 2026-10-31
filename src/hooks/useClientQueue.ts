@@ -4,7 +4,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
-import { executeItemConversion, getEffectiveMaxFileSize } from '@/lib/client-converter';
+import { executeItemConversion } from '@/lib/client-converter';
+import { fileTooLargeMessage, maxFileBytes, type Plan } from '@/lib/plan-limits';
+import { getViewerMaxFileBytes, getViewerPlan } from '@/lib/viewer-plan';
+import { useViewerPlan } from './useViewerPlan';
 import {
   DEFAULT_OPTIONS,
   getPasswordValidationError,
@@ -118,12 +121,11 @@ function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Se
   return candidate;
 }
 
-function buildQueuedFileItem(file: File, maxLimit: number, effectiveDefault?: string): ConversionQueueItem {
+export function buildQueuedFileItem(file: File, plan: Plan, effectiveDefault?: string): ConversionQueueItem {
   const detected = detectFormatFromFilename(file.name);
   const ext = detected?.extension ?? (file.name.split('.').pop() || 'bin');
   const sourceFormat = ext.toLowerCase();
-  const isOverSize = file.size > maxLimit;
-  const limitMb = Math.round(maxLimit / (1024 * 1024));
+  const isOverSize = file.size > maxFileBytes(plan);
   return {
     id: createQueueItemId(file.name),
     file,
@@ -132,7 +134,7 @@ function buildQueuedFileItem(file: File, maxLimit: number, effectiveDefault?: st
     sourceFormat,
     targetFormat: resolveInitialTargetFormat(sourceFormat, effectiveDefault),
     status: isOverSize ? 'error' : 'ready',
-    error: isOverSize ? `File exceeds the ${limitMb} MB real-time conversion limit.` : undefined,
+    error: isOverSize ? fileTooLargeMessage(plan, file.size) : undefined,
     progress: 0,
     options: { ...DEFAULT_OPTIONS },
   };
@@ -232,7 +234,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
     predicate: (item: ConversionQueueItem) => boolean,
     getPatch: (item: ConversionQueueItem) => IdleItemPatch
   ) => {
-    const maxLimit = getEffectiveMaxFileSize();
+    const maxLimit = getViewerMaxFileBytes();
     const canEdit = (item: ConversionQueueItem) =>
       !ctx.isItemBusy(item) && item.size <= maxLimit && predicate(item);
     const matches = ctx.queueRef.current.filter(canEdit);
@@ -251,7 +253,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
     ctx.inFlightIdsRef.current.delete(id);
     ctx.syncInFlight();
     ctx.updateQueue((prev) => prev.filter((i) => i.id !== id));
-    const maxLimit = getEffectiveMaxFileSize();
+    const maxLimit = getViewerMaxFileBytes();
     const hasPendingConvertible = ctx.queueRef.current.some((i) =>
       isConvertiblePendingItem(i, maxLimit)
     );
@@ -354,7 +356,7 @@ function canConvertBatchTarget(
   if (!item || ctx.isItemBusy(item) || item.status === 'completed') return false;
   return (
     Boolean(item.targetFormat) &&
-    item.size <= getEffectiveMaxFileSize() &&
+    item.size <= getViewerMaxFileBytes() &&
     hasValidItemOptions(item)
   );
 }
@@ -381,7 +383,7 @@ export function createConversionRunners(ctx: QueueMutationContext) {
   const convertSingleItem = async (itemOrId: ConversionQueueItem | string): Promise<void> => {
     const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
     const current = ctx.queueRef.current.find((i) => i.id === id);
-    if (!current?.targetFormat || current.size > getEffectiveMaxFileSize() || ctx.inFlightIdsRef.current.has(id)) return;
+    if (!current?.targetFormat || current.size > getViewerMaxFileBytes() || ctx.inFlightIdsRef.current.has(id)) return;
     if (failInvalidItemOptions(current, ctx)) return;
     const gen = (ctx.generationRef.current.get(id) ?? 0) + 1;
     ctx.generationRef.current.set(id, gen);
@@ -427,7 +429,7 @@ export function createConversionRunners(ctx: QueueMutationContext) {
 
   const handleConvertAll = async () => {
     if (ctx.batchRunningRef.current) return;
-    const maxLimit = getEffectiveMaxFileSize();
+    const maxLimit = getViewerMaxFileBytes();
     const ids = ctx.queueRef.current
       .filter((i) => isConvertiblePendingItem(i, maxLimit))
       .map((i) => i.id);
@@ -460,6 +462,7 @@ const updateQueueState = (
 };
 
 export function useClientQueue(options?: UseClientQueueOptions) {
+  useViewerPlan();
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
   const [inFlightCount, setInFlightCount] = useState(0);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
@@ -484,9 +487,9 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   const isItemBusy = (i: ConversionQueueItem) =>
     i.status === 'uploading' || i.status === 'converting' || inFlightIdsRef.current.has(i.id);
   const handleFilesSelected = (files: File[], overrideTarget?: string) => {
-    const maxLimit = getEffectiveMaxFileSize();
+    const plan = getViewerPlan();
     const def = overrideTarget || options?.defaultTarget;
-    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, maxLimit, def))]);
+    updateQueue((prev) => [...prev, ...files.map((f) => buildQueuedFileItem(f, plan, def))]);
   };
   const handleFilesSelectedRef = useRef(handleFilesSelected);
   useQueueLifecycleEffects(mountedRef, blobUrlsRef, timersRef, handleFilesSelectedRef, handleFilesSelected);

@@ -5,6 +5,7 @@ import {
   createProblemResponse,
   jsonBody,
   requireScope,
+  PLAN_FILE_LIMIT_DESCRIPTION,
 } from '../shared';
 
 const TUS_VERSION = '1.0.0';
@@ -105,7 +106,7 @@ export const uploadPaths = {
         '401': createProblemResponse('Authentication required.'),
         '403': createProblemResponse('API key lacks the "convert:write" scope.'),
         '412': tusPlainText('Unsupported `Tus-Resumable` version.'),
-        '413': createProblemResponse('`Upload-Length` exceeds `Tus-Max-Size`.'),
+        '413': createProblemResponse(`${PLAN_FILE_LIMIT_DESCRIPTION} \`Tus-Max-Size\` is the largest limit of any plan; the limit of the caller's plan applies.`),
         '460': tusPlainText('First chunk does not match `Upload-Checksum`.'),
       },
     },
@@ -221,7 +222,7 @@ export const uploadPaths = {
         }),
         '400': createProblemResponse('Missing filename or invalid size.'),
         '401': createProblemResponse('Authentication required.'),
-        '413': createProblemResponse('Upload exceeds the size or part-count limit.'),
+        '413': createProblemResponse(`${PLAN_FILE_LIMIT_DESCRIPTION} Or: the upload needs more parts than the part-count limit.`),
       },
     },
   },

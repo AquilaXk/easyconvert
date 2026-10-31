@@ -36,7 +36,7 @@ import {
 import UrlImportModal from '../src/components/UrlImportModal';
 import ConversionQueue from '../src/components/ConversionQueue';
 import FormatSelector, { computeDesktopPortalPosition } from '../src/components/FormatSelector';
-import { getEffectiveMaxFileSize } from '../src/lib/client-converter';
+import { getViewerMaxFileBytes } from '../src/lib/viewer-plan';
 import { CreateApiKeyForm } from '../src/components/dashboard/ApiKeyCreateCard';
 import { ApiKeysPanel } from '../src/components/dashboard/ApiKeysPanel';
 import { DlqPayloadDialog } from '../src/components/dashboard/DlqPayloadDialog';
@@ -268,7 +268,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     const flipped = computeDesktopPortalPosition({ top: 760, bottom: 800, left: 200 } as DOMRect, 1440, 820);
     expect(flipped).toMatchObject({ top: 'auto', bottom: 68 });
 
-    const maxBytes = getEffectiveMaxFileSize();
+    const maxBytes = getViewerMaxFileBytes();
     const oversizeItem = { id: 'over', file: new File(['x'], 'big.mp4'), name: 'big.mp4', size: maxBytes + 1, sourceFormat: 'mp4', targetFormat: '', status: 'error' as const, progress: 0, options: {} };
     const validItem = { id: 'ok', file: new File(['x'], 'ok.png'), name: 'ok.png', size: 128, sourceFormat: 'png', targetFormat: 'webp', status: 'ready' as const, progress: 0, options: {} };
     const mixedQueue = render(ConversionQueue, { items: [oversizeItem, validItem], onRemoveItem: noop, onClearAll: noop, onUpdateTargetFormat: noop, onUpdateOptions: noop, onConvertAll: noop, onConvertSingle: noop, onAddMoreFiles: noop, onDownloadAllZip: noop, isConverting: false });

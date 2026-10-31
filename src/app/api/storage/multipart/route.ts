@@ -7,7 +7,7 @@ import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
-import type { UserTier } from '@/lib/auth/types';
+import { callerMaxFileBytes, fileSizeLimitProblem } from '@/lib/api/file-size-limit';
 import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { PRESIGN_MAX_EXPIRES_SECONDS, PRESIGN_MIN_EXPIRES_SECONDS, SigV4SigningError, assertValidObjectKey } from '@/lib/storage/s3-sigv4';
 
@@ -15,14 +15,6 @@ export const dynamic = 'force-dynamic';
 
 const MAX_PART_BYTES = 64 * 1024 * 1024; // 64 MiB
 
-const TIER_MAX_MULTIPART_BYTES: Record<UserTier | 'anonymous', number> = {
-  anonymous: 50 * 1024 * 1024,
-  free: 100 * 1024 * 1024,
-  pro: 1024 * 1024 * 1024,
-  enterprise: 5 * 1024 * 1024 * 1024,
-};
-
-const MAX_MULTIPART_TOTAL_BYTES = 5 * 1024 * 1024 * 1024;
 const PRESIGN_UNSUPPORTED = 'Storage provider does not support presigned URLs or invalid type specified.';
 const RETAINED_DOWNLOAD_PRESIGN_REFUSED =
   'A conversion result has no signed download link. Download it from /api/storage/file/<key>.';
@@ -201,17 +193,8 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
         );
       }
 
-      const effectiveTier = currentUser.id.startsWith('anon:') ? 'anonymous' : currentUser.tier;
-      const maxAllowedBytes =
-        (effectiveTier && TIER_MAX_MULTIPART_BYTES[effectiveTier]) || MAX_MULTIPART_TOTAL_BYTES;
-
-      if (totalSize > maxAllowedBytes) {
-        return createProblemDetailsResponse(
-          413,
-          `Requested total size ${totalSize} bytes exceeds maximum allowed upload size of ${maxAllowedBytes} bytes for tier '${effectiveTier}'.`,
-          instanceUri
-        );
-      }
+      const tooLarge = fileSizeLimitProblem(currentUser, totalSize, instanceUri);
+      if (tooLarge) return tooLarge;
 
       const initResult = await storage.initiateMultipartUpload(
         filename,
@@ -253,8 +236,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
         );
       }
 
-      const maxAllowedBytes =
-        (currentUser.tier && TIER_MAX_MULTIPART_BYTES[currentUser.tier]) || MAX_MULTIPART_TOTAL_BYTES;
+      const maxAllowedBytes = callerMaxFileBytes(currentUser);
 
       let currentSessionBytes = 0;
       for (const partInfo of (await storage.getUploadedParts(uploadId)) ?? []) {
@@ -273,13 +255,8 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
             instanceUri
           );
         }
-        if (currentSessionBytes + declaredLength > maxAllowedBytes) {
-          return createProblemDetailsResponse(
-            413,
-            `Total upload size exceeds maximum allowed size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
-            instanceUri
-          );
-        }
+        const tooLarge = fileSizeLimitProblem(currentUser, currentSessionBytes + declaredLength, instanceUri);
+        if (tooLarge) return tooLarge;
       }
 
       if (!req.body) {
@@ -382,26 +359,16 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
           totalPartBytes += partInfo.size;
         }
       }
-      const maxAllowedBytes =
-        (currentUser.tier && TIER_MAX_MULTIPART_BYTES[currentUser.tier]) || MAX_MULTIPART_TOTAL_BYTES;
-      if (totalPartBytes > maxAllowedBytes) {
-        return createProblemDetailsResponse(
-          413,
-          `Completed upload size ${totalPartBytes} bytes exceeds maximum allowed upload size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
-          instanceUri
-        );
-      }
+      const tooLarge = fileSizeLimitProblem(currentUser, totalPartBytes, instanceUri);
+      if (tooLarge) return tooLarge;
 
       const completeResult = await storage.completeMultipartUpload(uploadId, parts);
       // Parts can be added to an open session between the listing above and the completion, so
       // the size that was actually assembled is checked again, and an object over the cap is removed.
-      if (completeResult.size > maxAllowedBytes) {
+      const assembledTooLarge = fileSizeLimitProblem(currentUser, completeResult.size, instanceUri);
+      if (assembledTooLarge) {
         await storage.deleteObject(completeResult.key);
-        return createProblemDetailsResponse(
-          400,
-          `Completed upload size ${completeResult.size} bytes exceeds maximum allowed upload size of ${maxAllowedBytes} bytes for tier '${currentUser.tier}'.`,
-          instanceUri
-        );
+        return assembledTooLarge;
       }
       return NextResponse.json({ success: true, ...completeResult });
     }

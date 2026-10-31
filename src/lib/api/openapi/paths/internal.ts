@@ -19,6 +19,8 @@ import {
   CLIENT_CLOSED_DESCRIPTION,
   CONCURRENCY_LIMIT_NOTE,
   JOB_TIMEOUT_DESCRIPTION,
+  PLAN_FILE_LIMIT_DESCRIPTION,
+  PLAN_FILE_LIMITS_TEXT,
 } from '../shared';
 import { ENGINE_UNAVAILABLE_PROBLEM_TYPE } from '@/lib/api/problem-details';
 
@@ -31,7 +33,7 @@ const INTERNAL = { 'x-internal': true };
 
 const ENGINE_UNAVAILABLE_DESCRIPTION = `The pair needs a native engine that is not installed on this deployment (problem type \`${ENGINE_UNAVAILABLE_PROBLEM_TYPE}\`).${PDFA_ENGINE_NOTE}`;
 const PAYLOAD_LIMIT_DESCRIPTION =
-  'The file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.';
+  `${PLAN_FILE_LIMIT_DESCRIPTION} Or: the file would decode past a size limit: a compressed stream or table larger than 64 MiB, more than 256 MiB of decoded data in one document, or more text blocks or character mappings than the engine allows.`;
 
 const ANONYMOUS_OR_SCOPE = (scope: string) => [...requireScope(scope), {}];
 
@@ -272,7 +274,7 @@ export const internalPaths = {
       operationId: 'convertBatchInternal',
       security: ANONYMOUS_OR_SCOPE('convert:write'),
       requestBody: multipartBody({
-        files: { type: 'array', items: { type: 'string', format: 'binary' }, description: 'Up to 100 MB in total.' },
+        files: { type: 'array', items: { type: 'string', format: 'binary' }, description: `Up to the file limit of the plan in total (${PLAN_FILE_LIMITS_TEXT}).` },
         targetFormats: { type: 'string', description: 'JSON map of filename to target format; `default` applies to the rest.' },
         options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
       }, ['files']),
@@ -317,7 +319,7 @@ export const internalPaths = {
         '400': createErrorResponse('Missing or invalid URL, or the remote server returned 4xx.'),
         '401': createProblemResponse('Authentication required.'),
         '403': createErrorResponse('URL resolves to a private address.'),
-        '413': createErrorResponse('Remote file exceeds 100 MB.'),
+        '413': createErrorResponse('Remote file exceeds the 100 MB limit of the import.'),
         '502': createErrorResponse('Redirect failure, remote 5xx, or empty body.'),
       },
     },
@@ -496,7 +498,7 @@ export const internalPaths = {
         '400': createProblemResponse('Unknown action or invalid input.'),
         '401': createProblemResponse('Authentication required.'),
         '404': createProblemResponse('Upload not found or owned by another user.'),
-        '413': createProblemResponse('Part or total size exceeds the limit.'),
+        '413': createProblemResponse(`${PLAN_FILE_LIMIT_DESCRIPTION} Or: a part is over 64 MiB.`),
       },
     },
   },

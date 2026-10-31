@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import { NextRequest } from 'next/server';
+import { PLAN_MAX_FILE_BYTES, fileTooLargeMessage } from '../src/lib/plan-limits';
 import { startS3StubServer, type S3StubServer, type StubRequestRecord } from './helpers/s3-stub-server';
 
 /**
@@ -22,6 +23,7 @@ const SIGNING_SECRET = 'route-blockers-test-signing-secret-0001';
 const BASE_URL = 'http://localhost:3000';
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_NOT_FOUND = 404;
 const HTTP_UNAVAILABLE = 503;
 const PROBLEM_JSON = 'application/problem+json';
@@ -30,7 +32,7 @@ const PROVIDER_DETAIL = ['SlowDown', 'AccessDenied', 'AKIAOCIEXAMPLE', 'S3 reque
 const PART_URL_WINDOW_SECONDS = 900;
 const SEVEN_DAYS_SECONDS = 604_800;
 const MIB = 1024 * 1024;
-const FREE_TIER_CAP_BYTES = 100 * MIB;
+const FREE_TIER_CAP_BYTES = PLAN_MAX_FILE_BYTES.free;
 
 const PDF = Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n');
 const CSV = Buffer.from('name,score\nAlice,100\nBob,95\n');
@@ -250,10 +252,8 @@ describe('object-store routes after the final review', () => {
       });
 
       const res = await multipart(cookie, 'complete', { uploadId: init.uploadId });
-      expect(res.status).toBe(HTTP_BAD_REQUEST);
-      expect((await res.json()).detail).toBe(
-        `Completed upload size ${FREE_TIER_CAP_BYTES + 1 + 10} bytes exceeds maximum allowed upload size of ${FREE_TIER_CAP_BYTES} bytes for tier 'free'.`
-      );
+      expect(res.status).toBe(HTTP_PAYLOAD_TOO_LARGE);
+      expect((await res.json()).detail).toBe(fileTooLargeMessage('free', FREE_TIER_CAP_BYTES + 1 + 10));
       expect(listings).toBe(2);
       expect(server.objects.size).toBe(0);
     });

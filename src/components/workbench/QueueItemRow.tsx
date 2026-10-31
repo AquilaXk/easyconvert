@@ -7,7 +7,9 @@ import {
 } from 'lucide-react';
 import { ConversionQueueItem, FormatCategory } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
-import { getEffectiveMaxFileSize } from '@/lib/client-converter';
+import { maxFileBytes } from '@/lib/plan-limits';
+import { formatBytes } from '@/lib/format-bytes';
+import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatSelector from '../FormatSelector';
 import { getPasswordValidationError } from './options/options-capabilities';
 
@@ -35,14 +37,6 @@ const CATEGORY_ICONS: Partial<Record<FormatCategory, { Icon: LucideIcon; color: 
   archive: { Icon: Archive, color: 'text-sky-600 dark:text-sky-400' },
   font: { Icon: Type, color: 'text-blue-600 dark:text-blue-400' },
 };
-
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  const value = bytes / Math.pow(1024, index);
-  return `${Number.parseFloat(value.toFixed(1))} ${units[index]}`;
-}
 
 function getFormatLabel(ext: string): string {
   const clean = ext.toLowerCase();
@@ -146,7 +140,8 @@ export default function QueueItemRow({
   onRemove,
 }: Readonly<QueueItemRowProps>) {
   const isBusy = item.status === 'uploading' || item.status === 'converting';
-  const isOversize = item.size > getEffectiveMaxFileSize();
+  const plan = useViewerPlan();
+  const isOversize = item.size > maxFileBytes(plan);
   const hasTarget = Boolean(item.targetFormat);
   const isPdf = item.sourceFormat.toLowerCase() === 'pdf';
   const optionError = !isBusy && item.status !== 'completed' ? resolveOptionError(item) : null;

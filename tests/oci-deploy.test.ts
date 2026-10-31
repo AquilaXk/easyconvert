@@ -59,6 +59,7 @@ const RETENTION_SETTINGS = [
 ];
 const APP_SERVICES = ['web', 'worker', 'worker-light', 'worker-cpu', 'worker-memory', 'worker-gpu'];
 const LOOPBACK_PORT = /^127\.0\.0\.1:/;
+const CDN_FREE_PLAN_BODY_MB = 100;
 /** `${NAME:-default}` as written in a limit; returns the default. */
 const defaultOf = (value: string | number | undefined): string => {
   const match = /^\$\{[A-Z0-9_]+:-([^}]*)\}$/.exec(String(value));
@@ -321,13 +322,10 @@ describe('nginx site file', () => {
     for (const name of names) expect(name).toMatch(/^easyconvert_/);
   });
 
-  it('accepts the largest body the application accepts and no more than the free plan of the CDN', () => {
-    const route = read('src/app/api/convert/route.ts');
-    const cap = /const MAX_FILE_SIZE = (\d+) \* 1024 \* 1024/.exec(route);
-    expect(cap).not.toBeNull();
+  it('caps a request body at the 100 MB the free plan of the CDN lets through, plus the multipart framing', () => {
     const nginxMegabytes = Number(/client_max_body_size (\d+)m;/.exec(withoutComments)?.[1]);
-    expect(nginxMegabytes).toBeGreaterThan(Number(cap?.[1]));
-    expect(nginxMegabytes).toBeLessThanOrEqual(Number(cap?.[1]) + 8);
+    expect(nginxMegabytes).toBeGreaterThan(CDN_FREE_PLAN_BODY_MB);
+    expect(nginxMegabytes).toBeLessThanOrEqual(CDN_FREE_PLAN_BODY_MB + 8);
   });
 
   it('trusts CF-Connecting-IP only from the CDN ranges and hands the application exactly one forwarded address', () => {

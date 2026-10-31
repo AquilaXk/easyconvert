@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { storageProvider } from '@/lib/storage';
@@ -10,7 +11,6 @@ export const dynamic = 'force-dynamic';
 
 const MIN_PART_SIZE = 5 * 1024 * 1024; // 5 MiB S3 minimum
 const MAX_PART_SIZE = 5 * 1024 * 1024 * 1024; // 5 GiB
-const MAX_TOTAL_SIZE = 10 * 1024 * 1024 * 1024; // 10 GiB
 const MAX_PARTS_COUNT = 10000;
 
 interface DirectUploadInitiateBody {
@@ -69,14 +69,8 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     );
   }
 
-  if (totalSize > MAX_TOTAL_SIZE) {
-    return createProblemDetailsResponse(
-      413,
-      `Requested total size ${totalSize} bytes exceeds maximum allowed upload size of ${MAX_TOTAL_SIZE} bytes.`,
-      instanceUri,
-      'Payload Too Large'
-    );
-  }
+  const tooLarge = fileSizeLimitProblem(auth.user, totalSize, instanceUri);
+  if (tooLarge) return tooLarge;
 
   const chosenPartSize = computeChosenPartSize(totalSize, body.partSize);
   const totalParts = Math.max(1, Math.ceil(totalSize / chosenPartSize));

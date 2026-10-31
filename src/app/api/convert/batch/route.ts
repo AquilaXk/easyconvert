@@ -7,6 +7,7 @@ import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurren
 import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
+import { refuseOversizeFile } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
 import { tierMaxPages, withTierPageCap } from '@/lib/conversions/page-range';
 import {
@@ -29,9 +30,6 @@ import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
-
-// Maximum allowed payload for real-time zero-retention in-memory conversion
-const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 
 /**
  * The options every file of the batch is converted with, from the multipart `options` field, or the 400 that refuses
@@ -117,21 +115,12 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
       if (f.size === 0) {
         return await failWithRollback(400, `Batch payload contains empty file "${f.name}". File buffer has 0 bytes.`);
       }
-      if (f.size > MAX_FILE_SIZE) {
-        return await failWithRollback(
-          400,
-          `File "${f.name}" exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, files larger than 100 MB are not supported.`
-        );
-      }
       totalBatchSize += f.size;
     }
 
-    if (totalBatchSize > MAX_FILE_SIZE) {
-      return await failWithRollback(
-        400,
-        'Total batch payload size exceeds real-time in-memory conversion limit (100 MB). To ensure zero-retention privacy and instant processing without cloud storage footprint, batch conversions exceeding 100 MB are not supported.'
-      );
-    }
+    // The files are converted from memory and zipped together, so the whole batch is held to one file's limit.
+    const tooLarge = await refuseOversizeFile(auth.user, totalBatchSize, instanceUri, reservationId);
+    if (tooLarge) return tooLarge;
 
     let targetFormatsMap: Record<string, string> = {};
     if (targetFormatsRaw) {
