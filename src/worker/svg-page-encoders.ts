@@ -65,8 +65,8 @@ export function svgPageEncoder(
   target: string,
   rendered: WorkerConversionResult,
   readPdf: () => Buffer | undefined,
-  access: PdfAccess = {},
-  leftOut = new PicturePages()
+  access: PdfAccess,
+  leftOut: PicturePages
 ): (svg: Buffer, entryName: string) => Promise<Buffer> {
   const encode = SVG_PAGE_ENCODERS[target];
   const pages = pageNumbersOf(rendered);

@@ -5,7 +5,7 @@ import { isEncryptedWordDocument } from '../src/lib/conversions/office/doc-reade
 import { xlsHasFilePass } from '../src/lib/conversions/office';
 import { ConversionFailedError, EncryptedOfficeDocumentError, SandboxUnavailableError } from '../src/lib/types';
 import { isEncryptedLegacyOffice } from '../src/worker/office-input-checks';
-import { retryRefusedLegacyDocument, withEncryptedAnswer, type OfficeSuiteRouteDeps } from '../src/worker/office-suite-route';
+import { retryRefusedLegacyDocument, withLegacyOfficeRecovery, type OfficeSuiteRouteDeps } from '../src/worker/office-suite-route';
 import { SandboxedProcessError, SandboxedTimeoutError } from '../src/lib/security/process-sandbox';
 import type { WorkerConversionResult, WorkerVfsPayload } from '../src/worker/worker-types';
 import { buildCompoundFile } from './helpers/cfb-craft';
@@ -92,7 +92,7 @@ describe('the office suite run on a legacy workbook or document it could not loa
 
   it('hands a workbook with a FilePass record to the suite and returns what the suite wrote', async () => {
     const run = vi.fn(async () => suiteResult);
-    await expect(withEncryptedAnswer(run)(encryptedWorkbook(), 'xls', 'xlsx')).resolves.toBe(suiteResult);
+    await expect(withLegacyOfficeRecovery(run)(encryptedWorkbook(), 'xls', 'xlsx')).resolves.toBe(suiteResult);
     expect(run).toHaveBeenCalledTimes(1);
   });
 
@@ -101,7 +101,7 @@ describe('the office suite run on a legacy workbook or document it could not loa
     ['a workbook template with a FilePass record', encryptedWorkbook(), 'xlt'],
     ['a Word document with the encrypted flag', wordDocument(WORD_FIB_ENCRYPTED), 'doc'],
   ])('answers %s as encrypted (422) when the suite wrote nothing', async (_name, input, src) => {
-    const failure = await withEncryptedAnswer(failingSuite(new Error(NOT_LOADED)))(input, src, 'pdf').catch((err: unknown) => err);
+    const failure = await withLegacyOfficeRecovery(failingSuite(new Error(NOT_LOADED)))(input, src, 'pdf').catch((err: unknown) => err);
     expect(failure).toBeInstanceOf(EncryptedOfficeDocumentError);
     expect((failure as EncryptedOfficeDocumentError).status).toBe(HTTP_UNPROCESSABLE);
     expect((failure as Error).message).toMatch(/encrypted/i);
@@ -113,7 +113,7 @@ describe('the office suite run on a legacy workbook or document it could not loa
     ['bytes that are no compound file', Buffer.from('not a compound file'), 'xls'],
   ])('keeps the error of the suite for %s', async (_name, input, src) => {
     const failure = new Error(NOT_LOADED);
-    await expect(withEncryptedAnswer(failingSuite(failure))(input, src, 'pdf')).rejects.toBe(failure);
+    await expect(withLegacyOfficeRecovery(failingSuite(failure))(input, src, 'pdf')).rejects.toBe(failure);
   });
 
   it.each([
@@ -122,7 +122,7 @@ describe('the office suite run on a legacy workbook or document it could not loa
     ['a stop of the suite on the document', new SandboxedProcessError('Unspecified Application Error', 1, 'Unspecified Application Error')],
     ['a document with no export filter for the target', new SandboxedProcessError('Error: no export filter for /out/x.pdf found', 1, '')],
   ])('keeps %s as it is, even for an encrypted workbook', async (_name, failure) => {
-    await expect(withEncryptedAnswer(failingSuite(failure))(encryptedWorkbook(), 'xls', 'pdf')).rejects.toBe(failure);
+    await expect(withLegacyOfficeRecovery(failingSuite(failure))(encryptedWorkbook(), 'xls', 'pdf')).rejects.toBe(failure);
   });
 });
 
@@ -165,7 +165,7 @@ describe('the reader refusal of an encrypted workbook, tried on the office suite
   });
 
   it('does not run the suite again on its own verdict that the workbook is encrypted', async () => {
-    const verdict = await withEncryptedAnswer(async () => {
+    const verdict = await withLegacyOfficeRecovery(async () => {
       throw new Error(NOT_LOADED);
     })(encryptedWorkbook(), 'xls', 'pdf').catch((err: unknown) => err);
     const { deps: suite, writes } = deps(async () => suiteResult);

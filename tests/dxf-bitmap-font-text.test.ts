@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PdfContentItem } from '../src/lib/conversions/pdf-text-types';
-import { encodeSvgPageToDxf, encodeSvgPageToDxfWithText } from '../src/lib/conversions/vector-dxf';
+import { encodeSvgPageToDxf, encodeSvgPageToDxfWithText, PicturePages } from '../src/lib/conversions/vector-dxf';
 import { recoverUnmappedGlyphs } from '../src/lib/conversions/pdf-glyph-recovery';
 import { readDxf, withoutGeometry, type DxfTextRecord } from './helpers/dxf-reader';
 
@@ -37,6 +37,9 @@ function glyph(id: string, top: number, depth = 0, width = 6): string {
 }
 
 const use = (id: string, x: number, y: number): string => `<use xlink:href="#${id}" x="${x}" y="${y}"/>`;
+/** One page written on its own: the pictures it leaves out are not reported here. */
+const encodePage = (svg: Buffer, readText: Parameters<typeof encodeSvgPageToDxfWithText>[1]): Promise<Buffer> => encodeSvgPageToDxfWithText(svg, readText, new PicturePages());
+
 const RULE = '<path fill="none" stroke="rgb(0%, 0%, 0%)" d="M 72 100 L 540 100"/>';
 
 function item(text: string, x: number, baseline: number, width: number, font = 0, extra: Partial<PdfContentItem> = {}): PdfContentItem {
@@ -47,7 +50,7 @@ function item(text: string, x: number, baseline: number, width: number, font = 0
 const layer = (items: PdfContentItem[]) => async () => ({ width: PAGE_WIDTH, height: PAGE_HEIGHT, items });
 
 async function written(svg: string, items: PdfContentItem[]): Promise<ReturnType<typeof readDxf>> {
-  return readDxf((await encodeSvgPageToDxfWithText(Buffer.from(svg), layer(items))).toString('utf-8'));
+  return readDxf((await encodePage(Buffer.from(svg), layer(items))).toString('utf-8'));
 }
 
 /** Coordinates are written with six decimals; four are compared. */
@@ -106,7 +109,7 @@ describe('bitmap-font characters written as DXF TEXT', () => {
   it('never reads the text layer of a page without glyph pictures, and writes that page byte for byte as before', async () => {
     const svg = Buffer.from(page('', RULE));
     const readText = vi.fn(layer([item('H', 72, 90, 6)]));
-    const withText = await encodeSvgPageToDxfWithText(svg, readText);
+    const withText = await encodePage(svg, readText);
     expect(readText).not.toHaveBeenCalled();
     expect(withText.equals(encodeSvgPageToDxf(svg))).toBe(true);
   });
@@ -153,7 +156,7 @@ describe('the copy of a page that an independent reader audits for its text', ()
   it('drops the LINE and POLYLINE records with their vertices and keeps the header, the styles and every TEXT', async () => {
     const glyphLine = '<path fill="none" stroke="rgb(0%, 0%, 0%)" d="M 10 10 L 50 10"/>';
     const outline = '<path fill="rgb(0%, 0%, 0%)" d="M 20 200 L 30 200 L 30 210 L 20 210 Z"/>';
-    const text = (await encodeSvgPageToDxfWithText(Buffer.from(page(DEFS, `${RULE}${glyphLine}${outline}${LINE}`)), layer(LINE_ITEMS))).toString('utf-8');
+    const text = (await encodePage(Buffer.from(page(DEFS, `${RULE}${glyphLine}${outline}${LINE}`)), layer(LINE_ITEMS))).toString('utf-8');
     const whole = readDxf(text);
     expect(whole.entities.length).toBeGreaterThan(1);
     const stripped = withoutGeometry(text);
@@ -164,7 +167,7 @@ describe('the copy of a page that an independent reader audits for its text', ()
 });
 
 describe('bitmap-font pages that stay refused for DXF', () => {
-  const refused = (items: PdfContentItem[], svg = page(DEFS, LINE)): Promise<Buffer> => encodeSvgPageToDxfWithText(Buffer.from(svg), layer(items));
+  const refused = (items: PdfContentItem[], svg = page(DEFS, LINE)): Promise<Buffer> => encodePage(Buffer.from(svg), layer(items));
 
   it('a page whose text layer has no text for most of its glyph pictures, the rule of the PDF text reader', async () => {
     await expect(refused([])).rejects.toThrow(
@@ -193,7 +196,7 @@ describe('hostile bitmap-font pages', () => {
   it('refuses a run whose width is not finite instead of writing it, as a Type 3 font with zero widths gives', async () => {
     const page1 = page(DEFS, LINE);
     const infinite = [item('Hi', 72, 90, Number.POSITIVE_INFINITY), ...LINE_ITEMS.slice(1)];
-    await expect(encodeSvgPageToDxfWithText(Buffer.from(page1), layer(infinite))).rejects.toThrow(
+    await expect(encodePage(Buffer.from(page1), layer(infinite))).rejects.toThrow(
       /^The page cannot be written as DXF: bitmap-font text with a position or size that is not a finite number is not supported\.$/
     );
   });
@@ -214,7 +217,7 @@ describe('hostile bitmap-font pages', () => {
   it('refuses a page whose glyph uses pass the rendered-element budget before reading its text layer', async () => {
     const uses = Array.from({ length: 34_000 }, (_, i) => use('g-H', i % 600, 90 + Math.floor(i / 600))).join('');
     const readText = vi.fn(layer([]));
-    await expect(encodeSvgPageToDxfWithText(Buffer.from(page(DEFS, uses)), readText)).rejects.toThrow(/more than 100000 rendered elements/);
+    await expect(encodePage(Buffer.from(page(DEFS, uses)), readText)).rejects.toThrow(/more than 100000 rendered elements/);
     expect(readText).not.toHaveBeenCalled();
   });
 

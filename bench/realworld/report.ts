@@ -4,6 +4,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { FORMAT_REGISTRY } from '../../src/lib/registry';
 import { FATAL_VERDICTS, VERDICT_ORDER, type Verdict } from './verdict';
 
 export const BASELINE_PATH = path.join(__dirname, 'baseline.json');
@@ -200,7 +201,7 @@ export function readKnownFailures(file = KNOWN_FAILURES_PATH): KnownFailure[] {
   return list;
 }
 
-const isFormatName = (value: unknown): value is string => typeof value === 'string' && value !== '';
+const isFormatName = (value: unknown): value is string => typeof value === 'string' && Object.hasOwn(FORMAT_REGISTRY, value);
 
 export function readKnownRefusals(file = KNOWN_REFUSALS_PATH): KnownRefusal[] {
   if (!fs.existsSync(file)) return [];
@@ -208,9 +209,9 @@ export function readKnownRefusals(file = KNOWN_REFUSALS_PATH): KnownRefusal[] {
   for (const entry of list) {
     if (!Number.isInteger(entry.issue) || entry.issue <= 0) throw new Error(`${file}: every known refusal needs the issue that tracks it`);
     if (entry.reason.trim() === '') throw new Error(`${file}: the known refusal of ${entry.file} needs its reason`);
-    if (entry.source !== undefined && !isFormatName(entry.source)) throw new Error(`${file}: the known refusal of ${entry.file} needs a source that is a format name`);
+    if (entry.source !== undefined && !isFormatName(entry.source)) throw new Error(`${file}: the known refusal of ${entry.file} needs a source that is a format of the registry`);
     const targets = targetsOf(entry);
-    if (targets !== undefined && (targets.length === 0 || !targets.every(isFormatName))) throw new Error(`${file}: the known refusal of ${entry.file} needs a target that is a format name or a list of them`);
+    if (targets !== undefined && (targets.length === 0 || !targets.every(isFormatName))) throw new Error(`${file}: the known refusal of ${entry.file} needs a target that is a format of the registry or a list of them`);
     entry.detail = new RegExp(entry.detail).source;
   }
   return list;
