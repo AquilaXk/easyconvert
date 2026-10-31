@@ -84,7 +84,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 /** Reserves the caller's conversion unit and queues the job; the unit is given back whenever no job was queued. */
 async function startJob(req: NextRequest, user: User, instanceUri: string): Promise<Response> {
   const unit = await reserveConversionUnit(user);
-  if (!unit.reserved) return createProblemDetailsResponse(unit.status, unit.error, instanceUri, undefined, unit.problemType, authErrorHeaders(unit));
+  if (!unit.reserved) return createProblemDetailsResponse(unit.status, unit.error, instanceUri, undefined, unit.problemType);
   let res: Response | undefined;
   try {
     res = await queueJob(req, user, unit.reservationId, instanceUri);

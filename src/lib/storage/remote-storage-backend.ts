@@ -72,7 +72,8 @@ export const REMOTE_STAGED_FILE_MAX_AGE_MS = 6 * HOUR_MS;
 export const REMOTE_DELETE_BY_PREFIX_MAX_OBJECTS = 10_000;
 const DELETE_CONCURRENCY = 8;
 const UPLOAD_TOKEN_VERSION = 'v1';
-const MAX_UPLOAD_TOKEN_LENGTH = 4096;
+/** The longest upload id this backend hands out and accepts: a signed token. */
+export const MAX_UPLOAD_TOKEN_LENGTH = 4096;
 const MAX_FILENAME_KEY_LENGTH = 200;
 const STAGED_FILE_SUFFIX = '.staged';
 const STAGED_DIR_MODE = 0o700;

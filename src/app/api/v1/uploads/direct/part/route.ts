@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { partBodyProblem } from '@/lib/api/file-size-limit';
 import { MULTIPART_MAX_PART_BYTES, storageProvider } from '@/lib/storage';
-import { declaredPartBytes, partFailureResponse, receivePart } from '@/lib/storage/part-admission';
+import { receivePart } from '@/lib/storage/part-admission';
+import { declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
 import type { IStorageBackend } from '@/lib/storage/oci-storage';
 import { verifySigV4QueryUrl } from '@/lib/storage/sigv4-presigner';
 

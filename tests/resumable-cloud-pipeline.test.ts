@@ -12,7 +12,8 @@ import { executeItemConversion } from '../src/lib/client-converter';
 import { SINGLE_REQUEST_FILE_MAX_BYTES, UPLOAD_PART_MAX_BYTES } from '../src/lib/plan-limits';
 
 const MIB = 1024 * 1024;
-const NO_WAIT: ResumableTiming = { pollIntervalMs: 0, retryDelayMs: 0, maxWaitMs: 60_000 };
+const NO_WAIT: ResumableTiming = { pollIntervalMs: 0, retryDelayMs: 0, maxWaitMs: 60_000, partInFlightWaitMs: 5_000 };
+const PART_IN_FLIGHT = 'https://api.easyconvert.io/problems/part-in-flight';
 
 interface Call {
   method: string;
@@ -262,6 +263,34 @@ describe('a file over a single request is converted through parts and a job', ()
 
     await expect(executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT)).rejects.toThrow('2 GiB a day');
     expect(calls).toHaveLength(1);
+  });
+
+  it('waits behind an earlier attempt of the same part without spending its attempts', async () => {
+    let behind = 6;
+    installFetch(happyServer([COMPLETED], (call) => {
+      if (!call.url.includes('action=chunk') || behind-- <= 0) return undefined;
+      return json({ type: PART_IN_FLIGHT, detail: 'This part is still being received from an earlier request.' }, 503, { 'Retry-After': '0' });
+    }));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    await executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, NO_WAIT);
+
+    expect(calls.filter((c) => c.url.includes('action=chunk') && c.url.includes('partNumber=1'))).toHaveLength(7);
+    expect(calls.filter((c) => c.url.includes('action=complete'))).toHaveLength(1);
+  });
+
+  it('gives up on a part still on the way once the wait for it is over, and closes the upload', async () => {
+    installFetch(happyServer([COMPLETED], (call) =>
+      call.url.includes('action=chunk') ? json({ type: PART_IN_FLIGHT, detail: 'still on the way' }, 503, { 'Retry-After': '0' }) : undefined
+    ));
+    const { file } = bigFile('big.csv', UPLOAD_PART_MAX_BYTES + 1);
+
+    await expect(
+      executeResumableCloudConversion(file, 'json', {}, { onProgress: () => undefined }, { ...NO_WAIT, partInFlightWaitMs: 30 })
+    ).rejects.toThrow('still on the way');
+
+    expect(calls.filter((c) => c.url.includes('action=chunk')).length).toBeGreaterThan(4);
+    expect(calls.at(-1)).toMatchObject({ url: '/api/storage/multipart?action=abort', json: { uploadId: 'up_1' } });
   });
 
   it('gives up on a part after four attempts and closes the upload', async () => {

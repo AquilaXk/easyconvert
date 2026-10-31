@@ -105,12 +105,17 @@ export async function registerStoredResult(storage: Pick<IStorageBackend, 'delet
   try {
     await registerResult(key);
   } catch (error) {
-    try {
-      await storage.deleteObject(key);
-    } catch (cleanupError) {
-      console.warn(`[Retention] Could not remove the unregistered result "${key}":`, cleanupError);
-    }
+    await removeUnregistered(storage, key);
     throw error;
+  }
+}
+
+/** Removes an object whose record could not be written, because no sweep would ever find it; a removal that fails is logged with the key, and the error that caused it stays the caller's to throw. */
+async function removeUnregistered(storage: Pick<IStorageBackend, 'deleteObject'>, key: string): Promise<void> {
+  try {
+    await storage.deleteObject(key);
+  } catch (cleanupError) {
+    console.warn(`[Retention] Could not remove the unregistered object "${key}":`, cleanupError);
   }
 }
 
@@ -128,7 +133,7 @@ export async function registerCompletedUpload(storage: Pick<IStorageBackend, 'de
   try {
     await getRetentionLedger().update(key, (current) => current ?? fresh);
   } catch (error) {
-    await storage.deleteObject(key);
+    await removeUnregistered(storage, key);
     throw error;
   }
 }
@@ -298,7 +303,7 @@ export async function releaseResultHold(key: string, holder: string): Promise<vo
   if (!isHoldableKey(key)) return;
   const policy = resolveRetentionPolicy();
   const now = Date.now();
-  await changeHold(key, holder, (current) => (isUploadKey(key) ? endUploadUse(current, holder, now, policy) : releaseHold(current, holder)));
+  await changeHold(key, holder, (current) => (recordKind(current) === 'upload' ? endUploadUse(current, holder, now, policy) : releaseHold(current, holder)));
 }
 
 /** Gives up the hold of `holder` on `key` without the job having run: the file keeps the deletion time it had. */
@@ -340,8 +345,8 @@ export async function withInputHeld<T>(key: string | undefined, holder: string, 
  * Whether a missing object is worth a warning when its deletion runs: not for a result that expires, whose object
  * leaves storage at the same time through the lifetime it was stored with.
  */
-function expectsObject(record: RetentionRecord | undefined, key: string, reason: 'capacity' | undefined): boolean {
-  return reason === 'capacity' || isUploadKey(key) || record?.deliveredAt !== undefined;
+function expectsObject(record: RetentionRecord, reason: 'capacity' | undefined): boolean {
+  return reason === 'capacity' || recordKind(record) === 'upload' || record.deliveredAt !== undefined;
 }
 
 /** `call`, which fails when it takes longer than STORAGE_CALL_TIMEOUT_MS, so that one hung store call cannot stop every deletion of the process. */
@@ -405,12 +410,12 @@ async function deleteRecordedResult(
   if (!marked) return 'skipped';
   let found: boolean;
   try {
-    found = await removeObject(storage, key, expectsObject(tracked, key, reason));
+    found = await removeObject(storage, key, expectsObject(tracked, reason));
   } catch (error) {
     await reopenAfterDeleteFailure(key, now);
     throw error;
   }
-  if (isUploadKey(key)) {
+  if (recordKind(tracked) === 'upload') {
     await ledger.forget(key).catch((forgetError: unknown) => {
       console.warn(`[Retention] Could not forget the record of the deleted upload "${key}":`, forgetError);
     });

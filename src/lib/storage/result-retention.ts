@@ -113,9 +113,14 @@ export function isRetainedKey(key: string): boolean {
   return namespace === 'job-result' || namespace === 'user-conversion';
 }
 
-/** What `record` is of: its kind, or for a record written before kinds existed, what its key says (no account upload had one). */
+/** What an earlier build marked a record of an account's upload with, before records had a kind. */
+type LegacyMarkedRecord = RetentionRecord & { accountUpload?: boolean };
+
+/** What `record` is of: its kind, or for a record written before kinds existed, its legacy mark or what its key says. */
 export function recordKind(record: RetentionRecord): RecordKind {
-  return record.kind ?? (isUploadKey(record.key) ? 'upload' : 'result');
+  if (record.kind) return record.kind;
+  if ((record as LegacyMarkedRecord).accountUpload === true) return 'account-upload';
+  return isUploadKey(record.key) ? 'upload' : 'result';
 }
 
 /** Whether `record` is of an upload, ownerless or an account's, not of a result. */

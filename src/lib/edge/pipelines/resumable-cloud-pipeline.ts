@@ -27,12 +27,15 @@ export interface ResumableTiming {
   retryDelayMs: number;
   /** Longest the call waits for the job to end. */
   maxWaitMs: number;
+  /** Longest a part waits behind an earlier attempt of itself that the server is still writing. */
+  partInFlightWaitMs: number;
 }
 
 const DEFAULT_RESUMABLE_TIMING: ResumableTiming = {
   pollIntervalMs: 1000,
   retryDelayMs: 1000,
   maxWaitMs: 2 * 60 * 60 * 1000,
+  partInFlightWaitMs: 2 * 60 * 1000,
 };
 
 /** Progress shown while the parts go up; the rest is the conversion on the server. */
@@ -42,11 +45,14 @@ const FULL_PROGRESS = 100;
 const MAX_ATTEMPTS = 4;
 const MAX_RETRY_AFTER_MS = 60_000;
 /** Answers that say the request was not taken up: the rate limit, and a server that is busy. */
-const NOT_TAKEN_STATUSES: ReadonlySet<number> = new Set([429, 503]);
+const HTTP_SERVICE_UNAVAILABLE = 503;
+const NOT_TAKEN_STATUSES: ReadonlySet<number> = new Set([429, HTTP_SERVICE_UNAVAILABLE]);
 /** Answers after which a request may or may not have been taken up: an edge or a server that failed while it ran. */
 const UNKNOWN_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 /** The answer to a repeat of a request with an idempotency key while the first one still runs. */
 const IN_FLIGHT_STATUS = 409;
+/** The answer to a part sent again while an earlier attempt of it is still being written. */
+const PART_IN_FLIGHT_TYPE = 'https://api.easyconvert.io/problems/part-in-flight';
 /**
  * Refusals of a status that says "not taken up" that sending again cannot change: the daily quota and the upload budget
  * of a visitor, which last until the next day, and uploads without an account turned off by the server's setup.
@@ -136,10 +142,20 @@ function retryDelayMs(res: Response | undefined, attempt: number, timing: Resuma
   return timing.retryDelayMs * 2 ** (attempt - 1);
 }
 
+/** The problem type an answer names, when its body is a problem. */
+async function problemTypeOf(res: Response): Promise<unknown> {
+  return ((await res.clone().json().catch(() => ({}))) as Body).type;
+}
+
 /** Whether a refusal holds until the next day, so sending the request again cannot change it: the quota or the upload budget. */
 async function isFinalRefusal(res: Response): Promise<boolean> {
-  const body = (await res.clone().json().catch(() => ({}))) as Body;
-  return typeof body.type === 'string' && FINAL_REFUSAL_TYPES.has(body.type);
+  const type = await problemTypeOf(res);
+  return typeof type === 'string' && FINAL_REFUSAL_TYPES.has(type);
+}
+
+/** Whether the server refused a part because an earlier attempt of it is still being written: that attempt ends, one way or the other. */
+async function isPartInFlight(res: Response): Promise<boolean> {
+  return res.status === HTTP_SERVICE_UNAVAILABLE && (await problemTypeOf(res)) === PART_IN_FLIGHT_TYPE;
 }
 
 async function shouldSendAgain(res: Response, policy: SendPolicy): Promise<boolean> {
@@ -148,22 +164,35 @@ async function shouldSendAgain(res: Response, policy: SendPolicy): Promise<boole
   return policy === 'idempotent' && res.status === IN_FLIGHT_STATUS;
 }
 
-/** Sends a request, and sends it again as its policy allows, at most MAX_ATTEMPTS times. A cancellation is never sent again. */
+/**
+ * Sends a request, and sends it again as its policy allows, at most MAX_ATTEMPTS times. A cancellation is never sent
+ * again. A part refused because an earlier attempt of it is still being written spends no attempt: it waits as the
+ * server says, for `partInFlightWaitMs` at most from the first such answer.
+ */
 async function sendWithRetry(
   send: () => Promise<Response>,
   signal: AbortSignal | undefined,
   timing: ResumableTiming,
   policy: SendPolicy
 ): Promise<Response> {
-  for (let attempt = 1; ; attempt++) {
+  let attempt = 1;
+  let waitingUntil: number | undefined;
+  for (;;) {
     let res: Response | undefined;
     try {
       res = await send();
     } catch (err) {
       if (signal?.aborted || attempt === MAX_ATTEMPTS || policy === 'once') throw err;
     }
-    if (res && (attempt === MAX_ATTEMPTS || !(await shouldSendAgain(res, policy)))) return res;
+    const behindEarlierAttempt = res !== undefined && (await isPartInFlight(res));
+    if (res && behindEarlierAttempt) {
+      waitingUntil ??= Date.now() + timing.partInFlightWaitMs;
+      if (Date.now() >= waitingUntil) return res;
+    } else if (res && (attempt === MAX_ATTEMPTS || !(await shouldSendAgain(res, policy)))) {
+      return res;
+    }
     await sleep(retryDelayMs(res, attempt, timing), signal);
+    if (!behindEarlierAttempt) attempt++;
   }
 }
 

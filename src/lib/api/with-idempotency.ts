@@ -289,7 +289,8 @@ export async function acquireIdempotency(
  * Runs `handler` once per `Idempotency-Key` of `scopeUserId` on this route. A repeat of the same request gets the first
  * answer, so a client may send it again after a network error and learns what the first one created; a repeat while the
  * first runs gets 409 with `Retry-After`. Only a success is kept: after a refusal the same request may be sent again.
- * Without the header the handler just runs.
+ * Without the header the handler just runs. Once the handler returned, its answer is returned even when the store cannot
+ * record it (a warning in the log); a handler that threw releases the key first.
  */
 export async function respondOnce(
   req: NextRequest | Request,
@@ -301,15 +302,22 @@ export async function respondOnce(
   if (rawKey === null) return handler();
   const { response, context } = await acquireIdempotency(req, scopeUserId, rawKey, instanceUri);
   if (!context) return response as Response;
+  let res: Response;
   try {
-    const res = await handler();
-    if (res.ok) await context.complete(res);
-    else await context.abort();
-    return res;
+    res = await handler();
   } catch (error) {
     await context.abort();
     throw error;
   }
+  // The handler is done, so what it did cannot be undone: a store that cannot keep the answer costs a repeat its replay,
+  // not the caller the answer.
+  try {
+    if (res.ok) await context.complete(res);
+    else await context.abort();
+  } catch (error) {
+    console.warn(`[idempotency] Could not settle the idempotency key of ${instanceUri}; the answer is returned without a replay:`, error);
+  }
+  return res;
 }
 
 /**

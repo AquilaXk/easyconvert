@@ -238,7 +238,7 @@ export function useDashboardController() {
     } catch {
       setActionError('Network error while signing out.');
     }
-    await refreshViewerPlan();
+    void refreshViewerPlan({ afterSessionChange: true });
     router.push('/auth');
     router.refresh();
   };

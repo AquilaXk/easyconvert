@@ -29,7 +29,8 @@ import { LARGEST_PLAN_FILE_BYTES } from '@/lib/plan-limits';
 import type { User } from '@/lib/auth/types';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
-import { PartRefusedError, declaredPartBytes, forgetUploadParts, partFailureResponse, receivePart, type PartStore } from '@/lib/storage/part-admission';
+import { forgetUploadParts, receivePart, type PartStore } from '@/lib/storage/part-admission';
+import { declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
 import { POST as directPostHandler } from '../direct/route';
 import { PUT as directPartPutHandler } from '../direct/part/route';
 import { POST as directCompletePostHandler } from '../direct/complete/route';
@@ -166,18 +167,23 @@ async function handlePartUpload(
   }
 
   // Parts sent at once are held together to the declared size, as on the other part routes (entry 137).
-  const part = await receivePart(
-    localPartStore(objectStorage),
-    {
-      uploadId,
-      partNumber,
-      declaredBytes: declaredPartBytes(req.headers),
-      totalSize: session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES,
-      maxPartBytes: MULTIPART_MAX_PART_BYTES,
-    },
-    req.body
-  );
-  return NextResponse.json({ success: true, part });
+  try {
+    const part = await receivePart(
+      localPartStore(objectStorage),
+      {
+        uploadId,
+        partNumber,
+        declaredBytes: declaredPartBytes(req.headers),
+        totalSize: session.totalSize ?? MULTIPART_MAX_TOTAL_BYTES,
+        maxPartBytes: MULTIPART_MAX_PART_BYTES,
+      },
+      req.body
+    );
+    return NextResponse.json({ success: true, part });
+  } catch (error: unknown) {
+    // An error of the operating system keeps the answers of the other actions (a removed session is 404, anything else a fixed 500).
+    return isSystemError(error) ? uploadActionErrorResponse(error, instanceUri) : partFailureResponse(error, instanceUri);
+  }
 }
 
 /** The part operations of local storage in the shape the part ledger takes. */
@@ -386,7 +392,6 @@ async function handleAbortUpload(
 }
 
 function uploadActionErrorResponse(err: unknown, instanceUri: string): Response {
-  if (err instanceof PartRefusedError) return partFailureResponse(err, instanceUri);
   if (err instanceof UnknownDeclaredFormatError) {
     return createProblemDetailsResponse(400, err.message, instanceUri, 'Unknown Format', UNKNOWN_FORMAT_PROBLEM_TYPE);
   }

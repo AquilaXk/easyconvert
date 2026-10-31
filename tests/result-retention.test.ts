@@ -190,6 +190,12 @@ describe('the record of one result', () => {
     expect(isCapacityCandidate({ ...written('results/j/a.pdf'), deliveredAt: NOW }, NOW + ONE_HOUR_MS, POLICY)).toBe(true);
   });
 
+  it('reads an account upload marked the way an earlier build wrote it, though its key looks like a result', () => {
+    const marked = { ...newRecord('conversions/u1/a.csv', NOW, POLICY), kind: undefined, accountUpload: true };
+    expect(holdRecord(marked, 'job-a', NOW + SECOND_MS)?.holds).toEqual({ 'job-a': NOW + JOB_INPUT_HOLD_MAX_MS });
+    expect(isCapacityCandidate({ ...marked, deliveredAt: NOW }, NOW + ONE_HOUR_MS, POLICY)).toBe(false);
+  });
+
   it('never keeps a result longer than the undelivered time because of the grace period', () => {
     const nearlyDue = { ...newRecord('results/j/a.pdf', NOW, POLICY), deleteAt: NOW + 5 * SECOND_MS };
     expect(recordServedRange(nearlyDue, { first: 0, last: 9, size: 10 }, NOW + 1, POLICY).deleteAt).toBe(NOW + 5 * SECOND_MS);

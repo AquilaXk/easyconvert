@@ -10,6 +10,7 @@ import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { getIdempotencyStore } from '../src/lib/api/idempotency';
 import { mayPresignDownload, sweepRetention } from '../src/lib/storage/retention-service';
 import {
   ANONYMOUS_DAILY_UPLOAD_BYTES,
@@ -629,6 +630,78 @@ describe('an Idempotency-Key makes opening an upload and starting a job safe to 
     expect(repeat.status).toBe(200);
     expect(repeat.headers.get('idempotent-replayed')).toBe('true');
     expect((await repeat.json()).key).toBe(first.key);
+  });
+});
+
+describe('a completion the store took is final', () => {
+  async function stagedUpload(address: string): Promise<{ visitor: Record<string, string>; uploadId: string; etag: string; bytes: Buffer }> {
+    const visitor = from(address);
+    const bytes = Buffer.from('a,b\n1,2\n');
+    const { uploadId } = await (await initiate(visitor, bytes.length)).json();
+    const { etag } = await (await multipartPost(part(uploadId, bytes, visitor))).json();
+    return { visitor, uploadId, etag, bytes };
+  }
+
+  it('answers with the stored file when the idempotency store cannot keep the answer, and logs it', async () => {
+    const { visitor, uploadId, etag } = await stagedUpload('203.0.113.81');
+    vi.spyOn(getIdempotencyStore(), 'complete').mockRejectedValueOnce(new Error('redis: connection reset'));
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await multipartPost(
+      multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, { ...visitor, 'Idempotency-Key': `lost-${uploadId}` })
+    );
+
+    expect(res.status).toBe(200);
+    const { key } = await res.json();
+    cleanups.push(() => {
+      s3Storage.deleteObject(key);
+    });
+    expect(warned.mock.calls.some(([message]) => String(message).includes('idempotency'))).toBe(true);
+  });
+
+  it('answers a completion whose record and whose cleanup both failed with the refusal, and logs the key it could not remove', async () => {
+    const { visitor, uploadId, etag } = await stagedUpload('203.0.113.82');
+    vi.spyOn(getRetentionLedger(), 'update').mockRejectedValueOnce(new Error('ledger down'));
+    const deleted = vi.spyOn(s3Storage, 'deleteObject').mockRejectedValueOnce(new Error('store down at /var/data'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const res = await multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, visitor));
+
+    expect(res.status).toBe(500);
+    expect((await res.json()).detail).toBe('The upload could not be recorded, so it cannot be converted. Upload the file again.');
+    const key = deleted.mock.calls[0][0];
+    expect(warned.mock.calls.some(([message]) => String(message).includes(key))).toBe(true);
+    cleanups.push(() => {
+      s3Storage.deleteObject(key);
+    });
+  });
+
+  it('closes the budget of an upload whose assembled size is not the declared one', async () => {
+    const { visitor, uploadId, etag, bytes } = await stagedUpload('203.0.113.83');
+    vi.spyOn(s3Storage, 'completeMultipartUpload').mockImplementationOnce(() => ({
+      location: '/api/storage/file/uploads%2Fmismatch.csv',
+      key: 'uploads/mismatch.csv',
+      size: bytes.length + 1,
+      etag: '"e"',
+    }));
+
+    const res = await multipartPost(multipart('complete', { uploadId, parts: [{ partNumber: 1, etag }] }, visitor));
+
+    expect(res.status).toBe(400);
+    expect((await initiate(visitor, MIB)).status).toBe(200);
+    expect((await initiate(visitor, MIB)).status).toBe(200);
+  });
+
+  it('builds no idempotency scope from an upload id that is not an id', async () => {
+    const visitor = from('203.0.113.84');
+    const acquire = vi.spyOn(getIdempotencyStore(), 'acquire');
+
+    for (const uploadId of ['x'.repeat(5000), 'up 1\n2']) {
+      const res = await multipartPost(multipart('complete', { uploadId, parts: [] }, { ...visitor, 'Idempotency-Key': 'junk' }));
+      expect(res.status).toBe(404);
+    }
+    expect(acquire).not.toHaveBeenCalled();
   });
 });
 

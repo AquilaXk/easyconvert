@@ -1,7 +1,3 @@
-import type { NextResponse } from 'next/server';
-import { createProblemDetailsResponse } from '../api/problem-details';
-import { parseContentLength } from '../api/request-body-limit';
-import { STORAGE_RETRY_AFTER_SECONDS, storageErrorResponse } from '../api/storage-error-response';
 import type { UploadedPart } from '../types';
 import type { MaybePromise } from './oci-storage';
 
@@ -36,41 +32,30 @@ export interface PartStore {
 }
 
 interface SessionLedger {
-  /** The size of each stored part, by part number. */
+  /** The size of each stored part, by part number; filled once `loaded` settles. */
   stored: Map<number, number>;
   /** The most bytes the attempt on the way of each part number may write. */
   onTheWay: Map<number, number>;
   usedAt: number;
+  /** The one read of the stored parts of the session, which every request that comes first waits for. */
+  loaded: Promise<void>;
 }
 
-const HTTP_REQUEST_TIMEOUT = 408;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 /** A ledger with no part on the way that was not used for this long is dropped; its next part reads the store again. */
 const IDLE_LEDGER_MS = 60 * 60 * 1000;
 const LEDGER_SWEEP_INTERVAL_MS = 60 * 1000;
-/**
- * The longest wait for the next bytes of a part: the default `client_body_timeout` of nginx, which times the gap between
- * two reads of a request body, not the whole body, and answers 408 when it passes.
- */
-export const PART_IDLE_TIMEOUT_MS = 60 * 1000;
-
-/** The detail of a failure worth sending again; the error, which can name a host or a path, stays in the server log. */
-export const UPLOAD_UNAVAILABLE_DETAIL = 'A service this upload needs is temporarily unavailable. Retry the request shortly.';
 const PART_IN_FLIGHT_DETAIL = 'This part is still being received from an earlier request. Send it again once that request ends.';
-const PART_IDLE_DETAIL = `No bytes of this part arrived for ${PART_IDLE_TIMEOUT_MS / 1000} seconds, so the part was dropped. Send it again.`;
 
 const ledgers = new Map<string, SessionLedger>();
 let nextSweepAt = 0;
-/** Counts the ledgers dropped by a completion or an abort, so a part list read across one is not kept. */
-let forgetCount = 0;
 
-/** A part this process refused before or while writing it: the HTTP status says why, `retryAfterSeconds` when to send it again. */
+/** A part this process refused before writing it: 413 when the session has no room for it, 503 when an earlier attempt of the same part is still being written. */
 export class PartRefusedError extends Error {
   constructor(
-    readonly statusCode: typeof HTTP_REQUEST_TIMEOUT | typeof HTTP_PAYLOAD_TOO_LARGE | typeof HTTP_SERVICE_UNAVAILABLE,
-    message: string,
-    readonly retryAfterSeconds?: number
+    readonly statusCode: typeof HTTP_PAYLOAD_TOO_LARGE | typeof HTTP_SERVICE_UNAVAILABLE,
+    message: string
   ) {
     super(message);
   }
@@ -84,17 +69,30 @@ function sweepIdleLedgers(now: number): void {
   }
 }
 
-async function ledgerOf(storage: PartStore, uploadId: string): Promise<SessionLedger> {
+async function readStoredParts(storage: PartStore, uploadId: string, stored: Map<number, number>): Promise<void> {
+  const parts = (await storage.getUploadedParts(uploadId)) ?? [];
+  for (const part of parts) stored.set(part.partNumber, part.size);
+}
+
+/**
+ * The ledger of a session, created by the first request that names it, which starts the one read of the stored parts
+ * that all requests of the session wait for. A completion or an abort drops it (`forgetUploadParts`), so a request that
+ * already holds it writes against a ledger nobody else sees and fails in the store; a read that failed is not kept.
+ */
+function ledgerOf(storage: PartStore, uploadId: string): SessionLedger {
   const known = ledgers.get(uploadId);
   if (known) return known;
-  const forgetsBefore = forgetCount;
-  const parts = (await storage.getUploadedParts(uploadId)) ?? [];
-  // Another request may have read the store meanwhile; the first ledger is the one every request shares.
-  const raced = ledgers.get(uploadId);
-  if (raced) return raced;
-  const ledger: SessionLedger = { stored: new Map(parts.map((part) => [part.partNumber, part.size])), onTheWay: new Map(), usedAt: Date.now() };
-  // A session completed or aborted while its parts were read must not get its ledger back; this part's write then fails in the store.
-  if (forgetCount === forgetsBefore) ledgers.set(uploadId, ledger);
+  const stored = new Map<number, number>();
+  const ledger: SessionLedger = {
+    stored,
+    onTheWay: new Map(),
+    usedAt: Date.now(),
+    loaded: readStoredParts(storage, uploadId, stored).catch((error: unknown) => {
+      if (ledgers.get(uploadId) === ledger) ledgers.delete(uploadId);
+      throw error;
+    }),
+  };
+  ledgers.set(uploadId, ledger);
   return ledger;
 }
 
@@ -117,7 +115,7 @@ function sumBesides(sizes: ReadonlyMap<number, number>, partNumber: number): num
  * counts with its stored size or the size of its attempt on the way, whichever is larger, since either may land last.
  */
 function admit(ledger: SessionLedger, partNumber: number, declaredBytes: number | undefined, totalSize: number, maxPartBytes: number): PartAdmission | PartRefusedError {
-  if (ledger.onTheWay.has(partNumber)) return new PartRefusedError(HTTP_SERVICE_UNAVAILABLE, PART_IN_FLIGHT_DETAIL, STORAGE_RETRY_AFTER_SECONDS);
+  if (ledger.onTheWay.has(partNumber)) return new PartRefusedError(HTTP_SERVICE_UNAVAILABLE, PART_IN_FLIGHT_DETAIL);
   const largest = new Map(ledger.stored);
   for (const [number, bytes] of ledger.onTheWay) largest.set(number, Math.max(largest.get(number) ?? 0, bytes));
   const otherPartsBound = sumBesides(largest, partNumber);
@@ -132,35 +130,6 @@ function admit(ledger: SessionLedger, partNumber: number, declaredBytes: number 
   return { maxBytes: bytes, otherStoredBytes: sumBesides(ledger.stored, partNumber) };
 }
 
-/**
- * The body of a part that errors once no bytes arrived for `idleMs`, so a body that stops arriving cannot hold its part
- * number and its share of the declared size. Behind the middleware the framework hands a route the body only once it
- * ended (next/dist/server/body-streams.js, `finalize`), and a client that disconnects fails the request before the route
- * runs; this bounds the read wherever a route gets the body as it arrives.
- */
-function endingWhenIdle(body: ReadableStream<Uint8Array>, idleMs: number): ReadableStream<Uint8Array> {
-  const reader = body.getReader();
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const idle = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new PartRefusedError(HTTP_REQUEST_TIMEOUT, PART_IDLE_DETAIL)), idleMs);
-      });
-      try {
-        const chunk = await Promise.race([reader.read(), idle]);
-        if (chunk.done) controller.close();
-        else controller.enqueue(chunk.value);
-      } catch (error) {
-        reader.cancel(error).catch(() => undefined);
-        controller.error(error);
-      } finally {
-        clearTimeout(timer);
-      }
-    },
-    cancel: (reason) => reader.cancel(reason),
-  });
-}
-
 export interface PartRequest {
   uploadId: string;
   partNumber: number;
@@ -173,24 +142,18 @@ export interface PartRequest {
 
 /**
  * Writes one part of a session through `storage`, admitted against the size the session declared together with every
- * part of it on the way. Throws PartRefusedError for a part the session has no room for (413), a repeat of a part on the
- * way (503) and a body that stopped arriving (408).
+ * part of it on the way. Throws PartRefusedError for a part the session has no room for (413) and a repeat of a part on the
+ * way (503).
  */
 export async function receivePart(storage: PartStore, request: PartRequest, body: ReadableStream<Uint8Array>): Promise<UploadedPart> {
   const { uploadId, partNumber, declaredBytes, totalSize, maxPartBytes } = request;
-  const ledger = await ledgerOf(storage, uploadId);
+  const ledger = ledgerOf(storage, uploadId);
+  await ledger.loaded;
   const admission = admit(ledger, partNumber, declaredBytes, totalSize, maxPartBytes);
   if (admission instanceof PartRefusedError) throw admission;
   ledger.onTheWay.set(partNumber, admission.maxBytes);
   try {
-    const part = await storage.uploadPartStream(
-      uploadId,
-      partNumber,
-      endingWhenIdle(body, PART_IDLE_TIMEOUT_MS),
-      admission.maxBytes,
-      totalSize,
-      admission.otherStoredBytes
-    );
+    const part = await storage.uploadPartStream(uploadId, partNumber, body, admission.maxBytes, totalSize, admission.otherStoredBytes);
     ledger.stored.set(partNumber, part.size);
     return part;
   } finally {
@@ -202,41 +165,5 @@ export async function receivePart(storage: PartStore, request: PartRequest, body
 
 /** Drops the ledger of a session that was completed or aborted. */
 export function forgetUploadParts(uploadId: string): void {
-  forgetCount += 1;
   ledgers.delete(uploadId);
-}
-
-/** The length a part request declared, when its Content-Length is a whole number of bytes (the route refused any other). */
-export function declaredPartBytes(headers: Pick<Headers, 'get'>): number | undefined {
-  const declared = parseContentLength(headers.get('content-length'));
-  return declared.kind === 'bytes' ? declared.bytes : undefined;
-}
-
-/** The message of `error` when it names no path, else `fallback`: a path on this host stays in the server log. */
-function messageWithoutPath(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message && !error.message.includes('/') && !error.message.includes('\\') ? error.message : fallback;
-}
-
-/**
- * The answer to a part that could not be written: the problem of a storage error, the status a refusal or a bound of the
- * store gave the error, or else 503 with `Retry-After`, since the store could not be reached and the part is worth
- * sending again.
- */
-export function partFailureResponse(error: unknown, instanceUri: string, extraHeaders: Record<string, string> = {}): NextResponse {
-  const storageProblem = storageErrorResponse(error, instanceUri, extraHeaders);
-  if (storageProblem) return storageProblem;
-  if (error instanceof PartRefusedError) {
-    const headers = error.retryAfterSeconds === undefined ? extraHeaders : { 'Retry-After': String(error.retryAfterSeconds), ...extraHeaders };
-    const title = error.statusCode === HTTP_REQUEST_TIMEOUT ? 'Request Timeout' : undefined;
-    return createProblemDetailsResponse(error.statusCode, error.message, instanceUri, title, undefined, headers);
-  }
-  const status = (error as { statusCode?: unknown } | null)?.statusCode;
-  if (typeof status === 'number') {
-    return createProblemDetailsResponse(status, messageWithoutPath(error, 'The part could not be stored.'), instanceUri, undefined, undefined, extraHeaders);
-  }
-  console.error('[parts] A part could not be written:', error);
-  return createProblemDetailsResponse(HTTP_SERVICE_UNAVAILABLE, UPLOAD_UNAVAILABLE_DETAIL, instanceUri, undefined, undefined, {
-    'Retry-After': String(STORAGE_RETRY_AFTER_SECONDS),
-    ...extraHeaders,
-  });
 }

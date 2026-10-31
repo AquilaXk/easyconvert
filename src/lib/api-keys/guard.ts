@@ -193,7 +193,7 @@ interface QuotaCheck {
 }
 
 /** Why the quota of a caller could not be reserved: the quota store is offline (503), or the conversions of the day are used up (429). */
-type QuotaRefusal = Required<Pick<ApiAuthResult, 'error' | 'status' | 'problemType'>> & Pick<ApiAuthResult, 'remaining' | 'retryAfterSeconds'>;
+type QuotaRefusal = Required<Pick<ApiAuthResult, 'error' | 'status' | 'problemType'>> & Pick<ApiAuthResult, 'remaining'>;
 
 /** The refusal of `userId` for a quota check that did not allow it; an anonymous caller is told how to get more. */
 function quotaRefusal(quota: QuotaCheck, userId: string): QuotaRefusal {

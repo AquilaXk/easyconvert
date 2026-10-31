@@ -129,8 +129,9 @@ export function useAuthController() {
         return;
       }
 
-      // The header and the queue keep their plan across the client-side navigation, so they learn the new session here.
-      await refreshViewerPlan();
+      // The header and the queue keep their plan across the client-side navigation, so they learn the new session here;
+      // the redirect does not wait for the answer, which the page that follows joins.
+      void refreshViewerPlan({ afterSessionChange: true });
       setSuccessMessage(
         activeTab === 'register' ? 'Account created. Redirecting...' : 'Signed in. Redirecting...'
       );

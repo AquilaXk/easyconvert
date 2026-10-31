@@ -22,7 +22,9 @@ import {
   resumeUploadReservation,
   type BudgetRefusal,
 } from '@/lib/api-keys/anonymous-upload-budget';
-import { UPLOAD_UNAVAILABLE_DETAIL, declaredPartBytes, forgetUploadParts, partFailureResponse, receivePart } from '@/lib/storage/part-admission';
+import { forgetUploadParts, receivePart } from '@/lib/storage/part-admission';
+import { UPLOAD_UNAVAILABLE_DETAIL, declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
+import { MAX_UPLOAD_TOKEN_LENGTH } from '@/lib/storage/remote-storage-backend';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { formatBytes } from '@/lib/format-bytes';
 import { DOWNLOAD_PRESIGN_MAX_SECONDS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
@@ -68,15 +70,21 @@ interface ActionContext {
   storage: MultipartCapableStorage;
   user: User;
   instanceUri: string;
+  /** The JSON body of the request, read once for the action and its idempotency key; empty for a part, whose body is its bytes. */
+  body: Body;
 }
 
 type Body = Record<string, unknown>;
 
+/** The JSON body of `req` as an object, or an empty one. It reads a copy, so the idempotency key can still read the request. */
 function readJson(req: Request): Promise<Body> {
-  return req.json().then(
-    (body: unknown) => (body && typeof body === 'object' ? (body as Body) : {}),
-    () => ({})
-  );
+  return req
+    .clone()
+    .json()
+    .then(
+      (body: unknown) => (body && typeof body === 'object' ? (body as Body) : {}),
+      () => ({})
+    );
 }
 
 function badRequest(detail: string, instanceUri: string): NextResponse {
@@ -231,9 +239,9 @@ function unattributedUploadRefusal(instanceUri: string): NextResponse {
  * Opens an upload session: the declared size is held to the plan limit and the part size to the bounds of a part, a
  * job must be able to start for the caller, and an anonymous caller's budget must have room for the declared size.
  */
-async function openSession({ req, storage, user, instanceUri }: ActionContext): Promise<Response> {
+async function openSession({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
   if (isUnattributedAnonymous(user.id)) return unattributedUploadRefusal(instanceUri);
-  const { filename, mimeType, totalSize, partSize } = await readJson(req);
+  const { filename, mimeType, totalSize, partSize } = body;
   if (typeof filename !== 'string' || !filename || typeof totalSize !== 'number' || !Number.isSafeInteger(totalSize)) {
     return badRequest('Missing "filename" or "totalSize" in initiation payload.', instanceUri);
   }
@@ -417,8 +425,8 @@ function selectCompletionParts(requested: unknown, stored: readonly StoredPart[]
  * Completes a session whose parts hold exactly its declared size, from exactly the parts it checked, and records the
  * upload, so that a job reading it holds it, before its budget is closed.
  */
-async function finishSession({ req, storage, user, instanceUri }: ActionContext): Promise<Response> {
-  const { uploadId, parts } = await readJson(req);
+async function finishSession({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
+  const { uploadId, parts } = body;
   if (typeof uploadId !== 'string' || !uploadId) return badRequest('Missing required "uploadId" in complete request.', instanceUri);
   const session = await usableSession(storage, uploadId, user.id);
   if (!session) return notFound(instanceUri);
@@ -426,13 +434,14 @@ async function finishSession({ req, storage, user, instanceUri }: ActionContext)
   const selection = selectCompletionParts(parts, (await storage.getUploadedParts(uploadId)) ?? [], session.totalSize);
   if ('problem' in selection) return badRequest(selection.problem, instanceUri);
   const completeResult = await storage.completeMultipartUpload(uploadId, selection.parts);
+  // The store consumed the session, so from here every answer is final: a repeat would find no session to complete.
+  forgetUploadParts(uploadId);
   // A part can be replaced between the listing above and the completion, so the assembled size is checked again.
   if (completeResult.size !== session.totalSize) {
     await storage.deleteObject(completeResult.key);
+    await closeReservation(uploadId, 'aborted');
     return badRequest(`The assembled upload holds ${completeResult.size} bytes, but the upload declared ${session.totalSize} bytes.`, instanceUri);
   }
-  forgetUploadParts(uploadId);
-  // The store consumed the session, so from here every answer is final: a repeat would find no session to complete.
   try {
     await registerCompletedUpload(storage, completeResult.key);
   } catch (error) {
@@ -444,14 +453,20 @@ async function finishSession({ req, storage, user, instanceUri }: ActionContext)
   return NextResponse.json({ success: true, ...completeResult });
 }
 
+/** Whether `uploadId` can be an id a store handed out: printable ASCII within the longest of them, so no junk becomes part of a key. */
+function isUploadIdShape(uploadId: unknown): uploadId is string {
+  return typeof uploadId === 'string' && uploadId.length <= MAX_UPLOAD_TOKEN_LENGTH && /^[\x21-\x7E]+$/.test(uploadId);
+}
+
 /**
  * An `Idempotency-Key` lets a client whose answer was lost ask again which file the completion stored. The key is scoped
  * to the upload and the owner its session records, not to the address bucket: an anonymous visitor holds the upload by
- * its id, and keeps getting the first answer when its address moves to another bucket.
+ * its id, and keeps getting the first answer when its address moves to another bucket. A repeat is authorised by the key
+ * value alone, which only the client that sent the first request knows, as the upload id is.
  */
 async function completeUpload(context: ActionContext): Promise<Response> {
-  const { uploadId } = await readJson(context.req.clone());
-  if (typeof uploadId !== 'string' || !uploadId) return finishSession(context);
+  const { uploadId } = context.body;
+  if (!isUploadIdShape(uploadId)) return finishSession(context);
   return respondOnce(context.req, `${uploadOwnerOf(context.user.id)}:${uploadId}`, context.instanceUri, () => finishSession(context));
 }
 
@@ -469,8 +484,8 @@ async function closeReservation(uploadId: string, outcome: 'completed' | 'aborte
  * Aborts a session and gives its budget back. The abort is answered once the store took it: a budget that cannot be
  * reached then keeps the bytes until the session's reservation expires, which returns them.
  */
-async function abortUpload({ req, storage, user, instanceUri }: ActionContext): Promise<Response> {
-  const { uploadId } = await readJson(req);
+async function abortUpload({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
+  const { uploadId } = body;
   if (typeof uploadId !== 'string' || !uploadId) return badRequest('Missing "uploadId"', instanceUri);
   if (!mayUseUploadSession(await storage.getUploadOwner(uploadId), user.id)) return notFound(instanceUri);
   let aborted = false;
@@ -492,8 +507,8 @@ async function mayDiscard(storage: MultipartCapableStorage, key: string, userId:
 }
 
 /** Deletes a completed upload the client gave up (a failure after `complete`), unless a conversion reads it. */
-async function discardCompletedUpload({ req, storage, user, instanceUri }: ActionContext): Promise<Response> {
-  const { key } = await readJson(req);
+async function discardCompletedUpload({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
+  const { key } = body;
   if (typeof key !== 'string' || !key) return badRequest('Missing required "key" in discard request.', instanceUri);
   if (!(await mayDiscard(storage, key, user.id))) return notFound(instanceUri);
   if (!(await discardUpload(storage, key))) {
@@ -502,8 +517,8 @@ async function discardCompletedUpload({ req, storage, user, instanceUri }: Actio
   return NextResponse.json({ success: true });
 }
 
-async function presign({ req, storage, user, instanceUri }: ActionContext): Promise<Response> {
-  const { type = 'upload', key, partNumber, uploadId, expiresInSeconds } = await readJson(req);
+async function presign({ storage, user, instanceUri, body }: ActionContext): Promise<Response> {
+  const { type = 'upload', key, partNumber, uploadId, expiresInSeconds } = body;
   const inputProblem = presignInputProblem(key, expiresInSeconds);
   if (inputProblem) return badRequest(inputProblem, instanceUri);
   const validKey = key as string;
@@ -557,7 +572,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const handler = ACTIONS.get(action);
   if (!handler) return badRequest(`Unknown multipart action: "${action}"`, instanceUri);
   try {
-    return await handler({ req, storage: storageProvider, user: auth.user, instanceUri });
+    return await handler({ req, storage: storageProvider, user: auth.user, instanceUri, body: action === 'chunk' ? {} : await readJson(req) });
   } catch (error: unknown) {
     return storageErrorResponse(error, instanceUri) ?? unexpectedFailure(error, action, instanceUri);
   }

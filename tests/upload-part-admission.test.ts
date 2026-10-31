@@ -10,13 +10,12 @@ import { s3Storage } from '../src/lib/storage/s3-storage';
 import { localFsStorage } from '../src/lib/storage/local-fs-storage';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
-import { PART_IDLE_TIMEOUT_MS, forgetUploadParts, receivePart, type PartStore } from '../src/lib/storage/part-admission';
+import { forgetUploadParts, receivePart, type PartStore } from '../src/lib/storage/part-admission';
 
 const BASE_URL = 'http://localhost:3000';
 const MIB = 1024 * 1024;
 const PART_BYTES = 5 * MIB;
 const OK = 200;
-const REQUEST_TIMEOUT = 408;
 const PAYLOAD_TOO_LARGE = 413;
 const SERVICE_UNAVAILABLE = 503;
 
@@ -118,30 +117,48 @@ describe('parts of one upload sent at once are held together to the size it decl
     expect(results.map((res) => res.status).sort()).toEqual([OK, SERVICE_UNAVAILABLE]);
     const repeat = results.find((res) => res.status === SERVICE_UNAVAILABLE)!;
     expect(repeat.headers.get('retry-after')).toBe('5');
+    expect((await repeat.json()).type).toBe('https://api.easyconvert.io/problems/part-in-flight');
     expect(storedBytes(uploadId)).toBe(PART_BYTES);
   });
 
-  it('holds the parts of the public upload route to the declared size the same way', async () => {
+  /** A session of an account on local disk, and a sender of its parts through the public upload route. */
+  async function publicUploadSession(): Promise<(partNumber: number) => Promise<Response>> {
     const email = `ledger_${Date.now()}_${crypto.randomBytes(6).toString('hex')}@ledger.test`;
     const user = userStore.sanitizeUser(await userStore.createUser({ email, name: 'ledger', tier: 'free' }));
     const session = await localFsStorage.createMultipart(`uploads/ledger-${Date.now()}.csv`, undefined, { ownerUserId: user.id, totalSize: PART_BYTES });
     cleanups.push(() => {
       void localFsStorage.abortMultipart(session.key, session.uploadId);
     });
-    const send = (n: number) =>
+    return (partNumber) =>
       v1UploadsPost(
-        new NextRequest(`${BASE_URL}/api/v1/uploads?action=part&uploadId=${session.uploadId}&partNumber=${n}`, {
+        new NextRequest(`${BASE_URL}/api/v1/uploads?action=part&uploadId=${session.uploadId}&partNumber=${partNumber}`, {
           method: 'POST',
           headers: { Cookie: `easyconvert_session=${createSessionToken(user)}` },
           body: new Uint8Array(Buffer.alloc(PART_BYTES, 'w')),
         }),
         { params: Promise.resolve({ id: undefined }) }
       );
+  }
+
+  it('holds the parts of the public upload route to the declared size the same way', async () => {
+    const send = await publicUploadSession();
 
     const statuses = (await Promise.all([1, 2, 3, 4].map(send))).map((res) => res.status);
 
     expect(countOf(statuses, OK), String(statuses)).toBe(1);
     expect(countOf(statuses, PAYLOAD_TOO_LARGE), String(statuses)).toBe(3);
+  });
+
+  it('answers a part of the public upload route that failed without an HTTP status with 503 and a fixed sentence', async () => {
+    const send = await publicUploadSession();
+    vi.spyOn(localFsStorage, 'savePartStream').mockRejectedValueOnce(new Error('disk went away at /srv/easyconvert/data/part-1'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const res = await send(1);
+
+    expect(res.status).toBe(SERVICE_UNAVAILABLE);
+    expect(res.headers.get('retry-after')).toBe('5');
+    expect((await res.json()).detail).toBe('A service this upload needs is temporarily unavailable. Retry the request shortly.');
   });
 
   it('holds the parts of the signed part route to the declared size the same way', async () => {
@@ -213,8 +230,6 @@ const partOf = (uploadId: string, partNumber: number, bytes: number, totalSize: 
 });
 
 describe('the ledger of parts on the way', () => {
-  afterEach(() => vi.useRealTimers());
-
   it('lets one attempt of a part number write at a time and refuses the repeats with 503', async () => {
     const uploadId = 'up_ledger_repeats';
     const { store, gates } = gatedStore();
@@ -252,32 +267,48 @@ describe('the ledger of parts on the way', () => {
     forgetUploadParts(uploadId);
   });
 
-  it('ends a part whose body stops arriving after the idle time with 408, and takes the part again', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const uploadId = 'up_ledger_idle';
-    const reading: PartStore = {
-      getUploadedParts: async () => [],
-      uploadPartStream: async (_uploadId, partNumber, body) => {
-        for await (const chunk of Readable.fromWeb(body as never)) void chunk;
-        return { partNumber, size: 0, etag: 'e' };
+  it('lets the first callers of a session share one ledger when another session ends during the first part list read', async () => {
+    const uploadId = 'up_ledger_shared_first_read';
+    const { store, gates, listReads } = gatedStore();
+    const slowList: PartStore = {
+      ...store,
+      getUploadedParts: async (id) => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return store.getUploadedParts(id);
       },
     };
-    const neverEnding = new ReadableStream<Uint8Array>({ start: (controller) => controller.enqueue(new Uint8Array(16)) });
 
-    const stalled = receivePart(reading, partOf(uploadId, 1, 5 * MIB, 5 * MIB), neverEnding).catch((error: { statusCode?: number }) => error);
-    await vi.advanceTimersByTimeAsync(PART_IDLE_TIMEOUT_MS);
+    const attempts = [1, 2, 3, 4, 5, 6].map((n) =>
+      receivePart(slowList, partOf(uploadId, n, 5 * MIB, 5 * MIB), emptyBody()).then(
+        () => 'stored',
+        (error: { statusCode?: number }) => error.statusCode
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    forgetUploadParts('up_some_other_session');
+    await vi.waitFor(() => expect(gates.length).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 60));
 
-    expect(await stalled).toMatchObject({ statusCode: REQUEST_TIMEOUT });
+    expect(gates).toHaveLength(1);
+    expect(listReads()).toBe(1);
+    gates.forEach((open) => open());
+    const outcomes = await Promise.all(attempts);
+    expect(outcomes.filter((outcome) => outcome === 'stored')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome === PAYLOAD_TOO_LARGE)).toHaveLength(5);
+    forgetUploadParts(uploadId);
+  });
+
+  it('does not keep a ledger whose part list read failed, so the next part reads the store again', async () => {
+    const uploadId = 'up_ledger_failed_read';
     const { store, gates } = gatedStore();
-    const retry = receivePart(store, partOf(uploadId, 1, 5 * MIB, 5 * MIB), emptyBody());
+    const failingList: PartStore = { ...store, getUploadedParts: async () => Promise.reject(new Error('list failed')) };
+    await expect(receivePart(failingList, partOf(uploadId, 1, MIB, 2 * MIB), emptyBody())).rejects.toThrow('list failed');
+
+    const retry = receivePart(store, partOf(uploadId, 1, MIB, 2 * MIB), emptyBody());
     await vi.waitFor(() => expect(gates).toHaveLength(1));
     gates[0]();
     await expect(retry).resolves.toMatchObject({ partNumber: 1 });
     forgetUploadParts(uploadId);
-  });
-
-  it('keeps the idle time of nginx between two reads of a body', () => {
-    expect(PART_IDLE_TIMEOUT_MS).toBe(60_000);
   });
 
   it('does not keep a part list read while the session ended, so the next part reads the store again', async () => {
