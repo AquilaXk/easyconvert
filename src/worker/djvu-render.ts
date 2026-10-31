@@ -265,7 +265,7 @@ async function launchInRun(
   }
 }
 
-/** The verdict on the files of the last build checked, kept until one of them is replaced or written: device, inode and change time. */
+/** The verdict on the files of the last build checked, kept until one of them is replaced or written: device, inode and modification time. */
 let checkedBuild: { readonly files: string; readonly problem: string | undefined } | undefined;
 
 function identityOf(file: string): string {
