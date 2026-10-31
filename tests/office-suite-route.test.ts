@@ -198,6 +198,40 @@ describe('a legacy document the strict reader refused', () => {
     expect(calls.written).toEqual([]);
   });
 
+  describe('whose destroyed structure a reader wrapped in other errors', () => {
+    const MAX_CAUSE_DEPTH = 8;
+    const destroyed = (): CompoundFileStructureError => new CompoundFileStructureError('Corrupt CFBF container: its directory holds no entry.');
+    /** The structure error under `wrappers` readers' errors, each the `cause` of the one above. */
+    const underWrappers = (wrappers: number): Error => {
+      let error: Error = destroyed();
+      for (let level = 0; level < wrappers; level++) error = new LegacyOfficeFormatError(`wrapper ${level}`, { cause: error });
+      return error;
+    };
+
+    it.each([1, 2, MAX_CAUSE_DEPTH])('is not retried when %i wrappers stand over it', async (wrappers) => {
+      const { deps, calls } = standIns();
+      expect(await retryRefusedLegacyDocument(deps, legacy({ src: 'ppt', tgt: 'pdf' }), underWrappers(wrappers))).toBeUndefined();
+      expect(calls.written).toEqual([]);
+    });
+
+    it('is retried when the structure error lies deeper than the readers add, so that a chain of causes is read to a bound', async () => {
+      const { deps, calls } = standIns();
+      const answer = await retryRefusedLegacyDocument(deps, legacy({ src: 'ppt', tgt: 'pdf' }), underWrappers(MAX_CAUSE_DEPTH + 1));
+      expect(answer).toBeDefined();
+      expect(calls.written[0]).toMatchObject({ src: 'ppt' });
+    });
+
+    it('ends on a chain of causes that returns to an error it has seen, and retries a refusal that holds no destroyed structure', async () => {
+      const first = new LegacyOfficeFormatError('PowerPoint presentation: the compound file is malformed.');
+      const second = new CorruptStreamError('Corrupt CFBF container: a stream returns to its first sector.');
+      first.cause = second;
+      second.cause = first;
+      const { deps, calls } = standIns();
+      expect(await retryRefusedLegacyDocument(deps, legacy({ src: 'ppt', tgt: 'pdf' }), first)).toBeDefined();
+      expect(calls.written[0]).toMatchObject({ src: 'ppt' });
+    });
+  });
+
   it.each([
     ['an HTML page', '<html><body><img src="file:///etc/hostname"></body></html>'],
     ['an RTF document', '{\\rtf1\\ansi A letter.}'],

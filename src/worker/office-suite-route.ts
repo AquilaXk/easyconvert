@@ -446,12 +446,23 @@ function isEncryptedWorkbookRefusal(src: string, refusal: unknown): boolean {
   return refusal instanceof EncryptedOfficeDocumentError && !(refusal instanceof SuiteEncryptedDocumentError) && officeReadingFormat(src) === 'xls';
 }
 
+/** How many wrappers deep `isDestroyedStructure` looks for the parser's error; a reader adds one, so a few more than that is generous and a loop of causes ends. */
+const MAX_CAUSE_DEPTH = 8;
+
 /**
- * The refusal, or the parser error a reader wrapped it around (its `cause`), is a compound file whose table of contents is destroyed.
- * That is no damage the office suite repairs: for the real workbooks whose directory runs past the file it wrote their bytes as text.
+ * The refusal, or an error it wraps (its `cause`), is a compound file whose table of contents is destroyed. That is no damage the
+ * office suite repairs: for the real workbooks whose directory runs past the file it wrote their bytes as text. Both shapes reach
+ * this gate because the readers differ: the Excel and HWP readers call `parseCfbf` themselves, so their refusal is the bare
+ * `CompoundFileStructureError`, while the Word, PowerPoint and Outlook readers open the file with `readCfbContainer`, which wraps it in
+ * a `LegacyOfficeFormatError` that names the document and keeps the parser's error as the `cause`.
  */
 function isDestroyedStructure(refusal: unknown): boolean {
-  return refusal instanceof CompoundFileStructureError || (refusal instanceof Error && refusal.cause instanceof CompoundFileStructureError);
+  let error = refusal;
+  for (let depth = 0; depth <= MAX_CAUSE_DEPTH && error instanceof Error; depth++) {
+    if (error instanceof CompoundFileStructureError) return true;
+    error = error.cause;
+  }
+  return false;
 }
 
 /**

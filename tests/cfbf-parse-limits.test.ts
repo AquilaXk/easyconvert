@@ -165,6 +165,20 @@ describe('the FAT sector list', () => {
     expect((refusal as Error).message).toMatch(new RegExp(`reads sector ${listed}, which holds the FAT or the DIFAT`));
   });
 
+  it('skips a marker in the list without counting it, so that the slots [A, free, B] under a count of 2 name A and B', () => {
+    const streams = [{ name: 'A', data: filled(80 * 1024, 0x41) }];
+    const file = buildCfbfContainer(streams);
+    expect(file.readUInt32LE(FAT_SECTOR_COUNT_OFFSET)).toBe(2);
+    const second = file.readUInt32LE(HEADER_DIFAT_OFFSET + 4);
+    file.writeUInt32LE(NO_ENTRY, HEADER_DIFAT_OFFSET + 4);
+    file.writeUInt32LE(second, HEADER_DIFAT_OFFSET + 8);
+    expect(parseCfbf(file).paths.get('A')).toEqual(filled(80 * 1024, 0x41));
+
+    const onlyFirst = buildCfbfContainer(streams);
+    onlyFirst.writeUInt32LE(NO_ENTRY, HEADER_DIFAT_OFFSET + 4);
+    expect(refusalOf(onlyFirst)).toBeInstanceOf(CorruptStreamError);
+  });
+
   it('lists no more sectors than the header counts, so that the rest of a header that is not filled with free markers names nothing', () => {
     const file = threeStreams(STREAM_BYTES);
     for (let slot = 1; slot < 109; slot++) file.writeUInt32LE(file.readUInt32LE(HEADER_DIFAT_OFFSET), HEADER_DIFAT_OFFSET + slot * 4);
@@ -380,7 +394,7 @@ describe('a directory tree that returns to itself', () => {
       { name: 'S', children: [{ name: 'T', data: filled(MINI_STREAM_BYTES, 0x54) }] },
     ]);
     damage(file);
-    await expectRefused('directory tree cycle', file, /the directory tree reaches entry \d+ twice/);
+    await expectRefused('directory tree cycle', file, /the directory tree reaches entry \d+ twice/, CompoundFileStructureError);
   });
 });
 
@@ -401,6 +415,7 @@ describe('a directory tree that nests storages deeply', () => {
     const tooDeep = buildCfbfContainer(storageChain(MAX_STORAGE_DEPTH + 1, [leaf('leaf'), bulk()]));
     expect(arrayBuffersGrowth(() => expect(() => parseCfbf(tooDeep)).toThrow(CorruptStreamError))).toBeLessThan(BYTES_PER_MIB);
     await expectRefused('depth past the limit', tooDeep, /storages are nested more than 1000 deep/);
+    expect(refusalOf(tooDeep)).not.toBeInstanceOf(CompoundFileStructureError);
   });
 
   it('refuses a chain of every entry of a full directory', async () => {
@@ -438,6 +453,7 @@ describe('a directory tree that nests storages deeply', () => {
       const overBudget = buildCfbfContainer(storageChain(MAX_STORAGE_DEPTH, [...streamsWithNames(NAME_CHARS_AT_BUDGET + 1), bulk()]));
       expect(arrayBuffersGrowth(() => expect(() => parseCfbf(overBudget)).toThrow(CorruptStreamError))).toBeLessThan(BYTES_PER_MIB);
       await expectRefused('path budget', overBudget, /paths of its entries spell out more than 16777216 characters/);
+      expect(refusalOf(overBudget)).not.toBeInstanceOf(CompoundFileStructureError);
     });
   });
 });

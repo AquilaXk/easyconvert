@@ -12,9 +12,8 @@ export { EncryptedOfficeDocumentError } from '../../types';
 export class LegacyOfficeFormatError extends ConversionFailedError {
   readonly status = MALFORMED_STATUS;
 
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'LegacyOfficeFormatError';
-    if (options?.cause !== undefined) this.cause = options.cause;
   }
 }

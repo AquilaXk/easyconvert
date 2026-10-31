@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { buildCfbfContainer } from '../src/lib/conversions/cfbf-writer';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { parseCfbf } from '../src/lib/conversions/cfbf-reader';
 import { convertXlsSource } from '../src/lib/conversions/office';
 import { readCfbContainer } from '../src/lib/conversions/office/cfb-streams';
 import { isEncryptedWordDocument } from '../src/lib/conversions/office/doc-reader';
 import { LegacyOfficeFormatError } from '../src/lib/conversions/office/legacy-office-errors';
 import { CompoundFileStructureError, CorruptStreamError } from '../src/lib/types';
-import { entryFields, entryId, miniFatSectors, setEntry, setFatEntry } from './helpers/cfbf-layout';
+import { entryFields, entryId, miniFatSectors, moveChainSectorToEnd, setEntry, setFatEntry } from './helpers/cfbf-layout';
 
 /**
  * One cause for a destroyed table of contents. A compound file keeps where its streams are in three chains (the directory, the mini
@@ -159,12 +160,67 @@ describe('the mini FAT chain', () => {
     expectStructureRefusal(file, /the sector chain starts at the marker 0x[0-9a-f]+, not at a sector/);
   });
 
+  it('is not claimed when no stream needs it, so that a large stream may lie on its sectors; one small stream makes it a chain that no stream may share', () => {
+    const padded = (...sizes: number[]): Buffer => Buffer.concat([streams(...sizes), Buffer.alloc((SECTOR_BYTES / 4) * SECTOR_BYTES)]);
+    const LARGE_ON_TABLE_SECTORS_BYTES = 4096;
+    const onTheMiniFatAndMiniStream = (file: Buffer): void => {
+      const sectors = [miniFatStart(file), rootStart(file), ...Array.from({ length: LARGE_ON_TABLE_SECTORS_BYTES / SECTOR_BYTES - 2 }, (_, index) => UNUSED_SECTOR + index)];
+      sectors.forEach((sector, index) => setFatEntry(file, sector, index + 1 < sectors.length ? sectors[index + 1] : END_OF_CHAIN));
+      setEntry(file, entryId(file, 'A'), { start: miniFatStart(file), size: LARGE_ON_TABLE_SECTORS_BYTES });
+    };
+
+    const withoutSmallStream = padded(SMALL_STREAM_BYTES, LARGE_STREAM_BYTES);
+    onTheMiniFatAndMiniStream(withoutSmallStream);
+    expect(parseCfbf(withoutSmallStream).paths.get('A')?.length).toBe(LARGE_ON_TABLE_SECTORS_BYTES);
+
+    const withSmallStream = padded(SMALL_STREAM_BYTES, LARGE_STREAM_BYTES, SMALL_STREAM_BYTES);
+    onTheMiniFatAndMiniStream(withSmallStream);
+    expectStructureRefusal(withSmallStream, /belongs to two chains/);
+  });
+
   it('is not read at all when there is no mini stream, so nothing the header says of it is a fault', () => {
     const file = streams(LARGE_STREAM_BYTES);
     expect(file.readUInt32LE(MINI_FAT_SECTOR_COUNT_OFFSET)).toBe(0);
     file.writeUInt32LE(0xffffffff, MINI_FAT_SECTOR_COUNT_OFFSET);
     file.writeUInt32LE(BEYOND_THE_FILE, FIRST_MINI_FAT_SECTOR_OFFSET);
     expect(parseCfbf(file).paths.get('A')).toEqual(filled(LARGE_STREAM_BYTES, 0x41));
+  });
+});
+
+describe('a file cut inside the last sector of the file', () => {
+  const CUT_BYTES = 400;
+  /** Enough small streams for a mini FAT of two sectors, the second of which holds more entries than the cut sector keeps words. */
+  const fourSmallStreams = (): Buffer => streams(...Array.from({ length: 4 }, () => MINI_STREAM_NEEDING_TWO_MINI_FAT_SECTORS_BYTES));
+  const cutBytes = (file: Buffer): Buffer => Buffer.from(file.subarray(0, file.length - CUT_BYTES));
+
+  /** The mini FAT chain runs from its first sector through a sector appended to the file, then on to its second sector, and the file ends 400 bytes into the appended one. */
+  const routedThroughTheCutSector = (): Buffer => {
+    const [first, second] = miniFatSectors(fourSmallStreams());
+    const appended = fourSmallStreams().length / SECTOR_BYTES - 1;
+    const file = Buffer.concat([fourSmallStreams(), Buffer.alloc(SECTOR_BYTES)]);
+    setFatEntry(file, first, appended);
+    setFatEntry(file, appended, second);
+    return cutBytes(file);
+  };
+
+  it('refuses a mini FAT chain that goes on past the cut sector, as a destroyed structure', () => {
+    expectStructureRefusal(routedThroughTheCutSector(), /continues past sector \d+, which the file cuts short/);
+  });
+
+  it('refuses it as a destroyed structure for a workbook too, as a 400 and not as a range error', async () => {
+    const refusal = await dispatchConversion(routedThroughTheCutSector(), 'xls', 'csv', {}, 'cut.xls').catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(CompoundFileStructureError);
+    expect((refusal as CompoundFileStructureError).status).toBe(HTTP_BAD_REQUEST);
+  });
+
+  it('reads the whole words of a cut sector that ends the mini FAT chain, and refuses the stream whose entries the file lost as its own damage', () => {
+    const base = fourSmallStreams();
+    const file = cutBytes(moveChainSectorToEnd(base, miniFatStart(base), 1));
+    expect(miniFatSectors(file)[1]).toBe(Math.ceil(file.length / SECTOR_BYTES) - 2);
+    const refusal = refusalOf(file);
+    expect(refusal).toBeInstanceOf(CorruptStreamError);
+    expect(refusal).not.toBeInstanceOf(CompoundFileStructureError);
+    expect((refusal as Error).message).toMatch(/stream "D" declares 3000 bytes but its sector chain holds/);
   });
 });
 
@@ -189,6 +245,40 @@ describe('the mini stream chain of the root entry', () => {
     const file = smallAndLarge();
     setEntry(file, entryId(file, 'B'), { start: rootStart(file) });
     expectStructureRefusal(file, /belongs to two chains/);
+  });
+
+  describe('past the bytes its size asks of it', () => {
+    const paddedFile = (): Buffer => Buffer.concat([smallAndLarge(), Buffer.alloc((SECTOR_BYTES / 4) * SECTOR_BYTES)]);
+
+    it('is walked to its end and the tail is part of the structure: a whole chain with one sector more than the size needs is read', () => {
+      const file = paddedFile();
+      setFatEntry(file, rootStart(file), UNUSED_SECTOR);
+      setFatEntry(file, UNUSED_SECTOR, END_OF_CHAIN);
+      expect(parseCfbf(file).paths.get('A')).toEqual(filled(SMALL_STREAM_BYTES, 0x41));
+    });
+
+    it.each([
+      ['returns to its first sector', (file: Buffer) => { setFatEntry(file, rootStart(file), UNUSED_SECTOR); setFatEntry(file, UNUSED_SECTOR, rootStart(file)); }, /returns to sector/],
+      ['loops on itself', (file: Buffer) => { setFatEntry(file, rootStart(file), UNUSED_SECTOR); setFatEntry(file, UNUSED_SECTOR, UNUSED_SECTOR); }, /returns to sector/],
+      ['runs into the directory', (file: Buffer) => setFatEntry(file, rootStart(file), directoryStart(file)), /belongs to two chains/],
+      ['runs into the first sector of a large stream', (file: Buffer) => setFatEntry(file, rootStart(file), startOf(file, 'B')), /belongs to two chains/],
+      ['ends on the free marker', (file: Buffer) => setFatEntry(file, rootStart(file), FREE_SECTOR), /ends at the marker 0xffffffff, not at the end of the chain/],
+      ['runs past the file', (file: Buffer) => setFatEntry(file, rootStart(file), BEYOND_THE_FILE), /reaches sector \d+, which the file does not hold/],
+    ])('is refused as a destroyed structure when its tail %s', (_, damage, reason) => {
+      const file = paddedFile();
+      damage(file);
+      expectStructureRefusal(file, reason);
+    });
+  });
+
+  it.each([
+    ['starts at the end-of-chain marker', { start: END_OF_CHAIN }],
+    ['starts at the free marker', { start: FREE_SECTOR }],
+    ['holds no byte', { size: 0 }],
+  ])('is refused as a destroyed structure when a stream below the cutoff needs it and it %s', (_, damage) => {
+    const file = smallAndLarge();
+    setEntry(file, ROOT_ENTRY_ID, damage);
+    expectStructureRefusal(file, /its root entry holds no mini stream/);
   });
 
   it('is not read when no stream lies below the cutoff, whatever the root entry says of a mini stream', () => {
@@ -243,6 +333,7 @@ describe('the readers of legacy documents', () => {
     expect(refusal).toBeInstanceOf(LegacyOfficeFormatError);
     expect((refusal as LegacyOfficeFormatError).message).toMatch(/^PowerPoint presentation: the compound file is malformed \(Corrupt CFBF container: the sector chain starting at sector \d+ reaches sector \d+, which the file does not hold\.\)\.$/);
     expect((refusal as LegacyOfficeFormatError).cause).toBeInstanceOf(CompoundFileStructureError);
+    expect(Object.getOwnPropertyDescriptor(refusal, 'cause')?.enumerable).toBe(false);
   });
 
   it('refuse the damage of a stream as a legacy document format error whose cause is not a destroyed structure', () => {
