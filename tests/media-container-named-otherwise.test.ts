@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { probeInput, resolveFfprobeBinary } from '../src/lib/conversions/media-ffprobe';
-import { openMediaInput } from '../src/lib/conversions/media-process';
+import { mediaInputArgs, openMediaInput } from '../src/lib/conversions/media-process';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { skipWithoutTools } from './helpers/strict-skip';
@@ -63,5 +63,28 @@ describe.skipIf(skip)('a media file of another container than its name says', ()
         fs.rmSync(dir, { recursive: true, force: true });
       }
     }, CONVERSION_TIMEOUT_MS);
+  }
+});
+
+/**
+ * The list of `.mpg` and `.mpeg` gained `mpegts` for the transport stream above. FFmpeg's probe still chooses among the listed
+ * demuxers by the bytes, so an ordinary Program Stream, which is what these names hold, must not be taken for a transport stream.
+ */
+const PROGRAM_STREAMS: readonly { id: string; format: string }[] = [
+  { id: 'fate-pcm_aud.mpg', format: 'mpg' },
+  { id: 'samples-eof.mpeg', format: 'mpeg' },
+];
+
+describe.skipIf(skip)('an ordinary Program Stream under .mpg and .mpeg', () => {
+  for (const { id, format } of PROGRAM_STREAMS) {
+    it(`opens ${id} (.${format}) as mpeg with the demuxers the name lists`, async (ctx) => {
+      const sample = await requireRealworldSample(ctx, id);
+      expect(ffprobeValue(sample.path, 'format=format_name')).toBe('mpeg');
+      const input = openMediaInput(sample.path, format);
+      expect(input.demuxers).toContain('mpegts');
+      const opened = execFileSync(requireOracleTool('ffprobe'), ['-v', 'error', '-show_entries', 'format=format_name', '-of', 'csv=p=0', ...mediaInputArgs(input)], { encoding: 'utf-8' });
+      expect(opened.trim()).toBe('mpeg');
+      expect(probeInput(input, resolveFfprobeBinary()).streams.length).toBeGreaterThan(0);
+    });
   }
 });
