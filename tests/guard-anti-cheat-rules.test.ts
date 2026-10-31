@@ -1121,4 +1121,110 @@ export function encodeStep(model: any): Buffer {
       });
     });
   });
+  // =========================================================================
+  // 7. G7: absolute time bounds in the files the pull request gate runs
+  // =========================================================================
+  describe('Rules G7 and G7b: a measured time is bounded as a hang guard or not at all', () => {
+    const timedTest = (bound: string, extra = ''): string => `
+import { it, expect } from 'vitest';
+${extra}
+it('converts a hostile file', () => {
+  const started = performance.now();
+  work();
+  expect(performance.now() - started).toBeLessThan(${bound});
+});
+`;
+
+    const guardWith = (files: Record<string, string>): { status: number; output: string } => {
+      let outcome = { status: 0, output: '' };
+      withTempDir((dir) => {
+        for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
+        const res = runGuardSubprocess(dir, ['--strict']);
+        outcome = { status: res.status, output: res.stderr + res.stdout };
+      });
+      return outcome;
+    };
+
+    it('flags a fixed bound on a time read from the clock (positive case)', () => {
+      const res = guardWith({ 'hostile.test.ts': timedTest('3000') });
+      expect(res.status).not.toBe(0);
+      expect(res.output).toContain('G7-ABSOLUTE-TIME-BOUND');
+      expect(res.output).toContain('converts a hostile file');
+    });
+
+    it('flags a bound on a variable named for a measured time, and a bound that is a named budget (positive case)', () => {
+      const res = guardWith({
+        'named.test.ts': `
+import { it, expect } from 'vitest';
+const BUDGET_MS = 5000;
+it('reads a table', () => {
+  const ms = measure();
+  expect(ms).toBeLessThan(BUDGET_MS);
+});
+`,
+      });
+      expect(res.status).not.toBe(0);
+      expect(res.output).toContain('G7-ABSOLUTE-TIME-BOUND');
+    });
+
+    it('flags the CPU time of the work against a hang-guard constant: that claim states how long the work takes (positive case)', () => {
+      const res = guardWith({
+        'cpu.test.ts': `
+import { it, expect } from 'vitest';
+import { DEFAULT_HANG_GUARD_MS, cpuClockMs } from './helpers/timing';
+it('reads a hostile workbook', () => {
+  const started = cpuClockMs();
+  work();
+  const cpuMs = cpuClockMs() - started;
+  expect(cpuMs).toBeLessThan(DEFAULT_HANG_GUARD_MS);
+});
+`,
+      });
+      expect(res.status).not.toBe(0);
+      expect(res.output).toContain('G7-ABSOLUTE-TIME-BOUND');
+    });
+
+    it('permits a bound that is a constant named as a hang guard (negative case)', () => {
+      const res = guardWith({ 'guard.test.ts': timedTest('REFUSAL_HANG_GUARD_MS * 2', 'const REFUSAL_HANG_GUARD_MS = 30_000;') });
+      expect(res.status).toBe(0);
+      expect(res.output).not.toContain('G7');
+    });
+
+    it('permits a file that bounds the time through the helper, and timestamps or values the code computed (negative case)', () => {
+      const res = guardWith({
+        'helper.test.ts': `
+import { it, expect } from 'vitest';
+import { expectWithinHangGuard } from './helpers/timing';
+it('uses the helper', () => {
+  const ms = measure();
+  expectWithinHangGuard('work', ms, { guardMs: 10_000, expectedLocalMs: 300 });
+  expect(stored.expiresAtMs).toBeLessThan(Date.now() + 60_000);
+  expect(result.remainingMs).toBeLessThanOrEqual(60_000);
+  expect(deadlineAt).toBeLessThanOrEqual(Date.now() + 5_000);
+});
+`,
+      });
+      expect(res.status).toBe(0);
+      expect(res.output).not.toContain('G7');
+    });
+
+    it('leaves a timing-ratio file alone: a .perf.test.ts file runs in the nightly workflow (negative case)', () => {
+      const res = guardWith({ 'hostile.perf.test.ts': timedTest('3000') });
+      expect(res.status).toBe(0);
+      expect(res.output).not.toContain('G7');
+    });
+
+    it('flags a hang-guard constant under the floor that makes it a hang guard (positive case)', () => {
+      const res = guardWith({ 'floor.test.ts': timedTest('RUN_HANG_GUARD_MS', 'const RUN_HANG_GUARD_MS = 5000;') });
+      expect(res.status).not.toBe(0);
+      expect(res.output).toContain('G7b-HANG-GUARD-FLOOR');
+      expect(res.output).toContain('RUN_HANG_GUARD_MS');
+    });
+
+    it('accepts a hang-guard constant at the floor (negative case)', () => {
+      const res = guardWith({ 'floor.test.ts': timedTest('RUN_HANG_GUARD_MS', 'const RUN_HANG_GUARD_MS = 10_000;') });
+      expect(res.status).toBe(0);
+      expect(res.output).not.toContain('G7b');
+    });
+  });
 });
