@@ -31,7 +31,7 @@ describe('the frames of a PDF whose catalog has no page tree', () => {
     const error = await readPdfPageFrames(pdfWithPagesEntry('/S /JavaScript /JS (func=function(){};func();)')).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(PdfPageFrameError);
     const message = (error as PdfPageFrameError).message;
-    expect(message).toMatch(/\/Pages entry of the catalog is not a page tree/);
+    expect(message).toMatch(/\/Pages entry of the catalog is missing or is not a page tree dictionary/);
     expect(message).not.toMatch(PARSER_TYPE_ERROR);
   });
 
@@ -44,7 +44,7 @@ describe('the frames of a PDF whose catalog has no page tree', () => {
     const { bytes } = await requireRealworldSample(ctx, 'pdfjs-issue15590.pdf');
     const error = await readPdfPageFrames(bytes).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(PdfPageFrameError);
-    expect((error as PdfPageFrameError).message).toMatch(/\/Pages entry of the catalog is not a page tree/);
+    expect((error as PdfPageFrameError).message).toMatch(/\/Pages entry of the catalog is missing or is not a page tree dictionary/);
     expect((error as PdfPageFrameError).message).not.toMatch(PARSER_TYPE_ERROR);
   });
 });
