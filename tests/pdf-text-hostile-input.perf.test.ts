@@ -114,16 +114,16 @@ describe('reading-order layout stays near-linear in the line count', () => {
   }, SCALING_TEST_TIMEOUT_MS);
 });
 
-describe('a document of pages that are each one open paragraph under a running footer', () => {
+describe('a document of pages that are each one open paragraph', () => {
   const font: PdfContentFont = { name: 'Body', bold: false, italic: false, monospace: false, serif: false };
   const LINE = 'the paragraph runs on from the page before and goes on over the page after it with no stop';
   const item = (text: string, baseline: number): PdfContentItem => ({ text, x: 50, baseline, width: text.length * 6, size: 12, font: 0, rtl: false, angled: false, vertical: false });
-  const pages = (count: number): PdfPageContent[] =>
+  const pages = (count: number, footer: boolean): PdfPageContent[] =>
     Array.from({ length: count }, (_, i) => ({
       pageNumber: i + 1,
       width: 600,
       height: 800,
-      items: [item(LINE, 100), item(LINE, 114), item(`Page ${i + 1}`, 770)],
+      items: [item(LINE, 100), item(LINE, 114), ...(footer ? [item(`Page ${i + 1}`, 770)] : [])],
       rules: [],
       images: [],
       unmappedGlyphs: 0,
@@ -131,13 +131,26 @@ describe('a document of pages that are each one open paragraph under a running f
       rulesTruncated: false,
     }));
 
-  it('is laid out in time linear in the page count, the tables found without merging the paragraphs again', async () => {
+  it('is laid out in time linear in the page count under a running footer, the tables found without merging the paragraphs again', async () => {
     const { largeResult } = await expectLinearOnInputs('open paragraphs under a footer', (input: PdfPageContent[]) => layoutPdf(input, [font]), {
-      small: pages(OPEN_PARAGRAPH_PAGES / SCALING_FACTOR),
-      large: pages(OPEN_PARAGRAPH_PAGES),
+      small: pages(OPEN_PARAGRAPH_PAGES / SCALING_FACTOR, true),
+      large: pages(OPEN_PARAGRAPH_PAGES, true),
       clock: cpuClockMs,
     });
     expect(largeResult.model.pageCount).toBe(OPEN_PARAGRAPH_PAGES);
     expect(largeResult.pageText.every((page) => page.lines.length === 2)).toBe(true);
+  }, SCALING_TEST_TIMEOUT_MS);
+
+  it('is laid out in time linear in the page count where every page continues into the next, the whole run made one paragraph', async () => {
+    const { largeResult } = await expectLinearOnInputs('open paragraphs without a footer', (input: PdfPageContent[]) => layoutPdf(input, [font]), {
+      small: pages(OPEN_PARAGRAPH_PAGES / SCALING_FACTOR, false),
+      large: pages(OPEN_PARAGRAPH_PAGES, false),
+      clock: cpuClockMs,
+    });
+    const blocks = largeResult.model.sections.flatMap((section) => section.blocks);
+    expect(blocks).toHaveLength(1);
+    const [block] = blocks;
+    const text = block.type === 'paragraph' ? block.runs.map((run) => run.text).join('') : '';
+    expect(text.split(LINE)).toHaveLength(OPEN_PARAGRAPH_PAGES * 2 + 1);
   }, SCALING_TEST_TIMEOUT_MS);
 });

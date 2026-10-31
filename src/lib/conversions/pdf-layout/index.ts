@@ -15,7 +15,7 @@ import type {
 import { isRightToLeftRegion, orderRows, type LineGroup } from './columns';
 import { buildRows } from './lines';
 import { LayoutBudget } from './limits';
-import { continuesInNextFlow, mergeParagraphs, paragraphsOfFlow } from './paragraphs';
+import { continuesInNextFlow, openParagraph, ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
 import { assembleLists, bodySizeOf, headingLevels, inlineRuns } from './structure';
 import { detectLatticeTables, detectStreamTables, tableSegment } from './tables';
 import { extractVerticalLines } from './vertical';
@@ -179,8 +179,9 @@ function joinTables(last: DetectedTable, next: DetectedTable): DetectedTable {
 
 /**
  * Tables that continue on a following page become one, and with `'all'` so do paragraphs that continue into the next flow (column or page).
- * A caller that keeps only the tables asks for `'tables'`: merging a paragraph copies the one before it, which a document of pages that
- * are each one open paragraph turns into work quadratic in the page count.
+ * A run of paragraphs that continue into one another is gathered in one builder and made a paragraph once, when the run ends:
+ * building the merged paragraph at every step copies the lines before it, which a document of pages that are each one open
+ * paragraph turns into work quadratic in the page count. A caller that keeps only the tables asks for `'tables'` and merges none.
  */
 function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' = 'all'): PageBlock[] {
   const flowRight = new Map<number, number>();
@@ -190,24 +191,35 @@ function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' = 'all'):
     }
   }
   const joined: PageBlock[] = [];
+  /** The paragraph at the end of `joined` and the lines of it and of the ones that continue it, once one has been added. */
+  let run: { head: ParagraphEntry; builder: ParagraphBuilder } | undefined;
+  const finishRun = (): void => {
+    if (!run) return;
+    joined[joined.length - 1] = { ...run.head, paragraph: run.builder.finish() };
+    run = undefined;
+  };
   for (const block of blocks) {
     const last = joined[joined.length - 1];
     if (block.kind === 'table' && last?.kind === 'table' && continuesTable(last.table, block.table)) {
       joined[joined.length - 1] = { ...last, table: joinTables(last.table, block.table) };
       continue;
     }
-    if (
-      join === 'all' &&
-      block.kind === 'paragraph' &&
-      last?.kind === 'paragraph' &&
-      last.paragraph.flow !== block.paragraph.flow &&
-      continuesInNextFlow(last.paragraph, block.paragraph, flowRight.get(last.paragraph.flow) ?? last.paragraph.box.x1)
-    ) {
-      joined[joined.length - 1] = { ...last, paragraph: mergeParagraphs(last.paragraph, block.paragraph) };
-    } else {
-      joined.push(block);
+    if (join === 'all' && block.kind === 'paragraph' && last?.kind === 'paragraph' && last.paragraph.flow !== block.paragraph.flow) {
+      const end = run ? run.builder.end() : openParagraph(last.paragraph);
+      if (continuesInNextFlow(end, block.paragraph, flowRight.get(last.paragraph.flow) ?? end.x1)) {
+        if (!run) {
+          const builder = new ParagraphBuilder(last.paragraph.flow, last.paragraph.pageNumber, last.paragraph.full);
+          builder.addAll(last.paragraph.lines);
+          run = { head: last, builder };
+        }
+        run.builder.addAll(block.paragraph.lines);
+        continue;
+      }
     }
+    finishRun();
+    joined.push(block);
   }
+  finishRun();
   return joined;
 }
 
