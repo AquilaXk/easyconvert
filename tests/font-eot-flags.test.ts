@@ -1,18 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { convertFont } from '../src/lib/conversions/font';
+import { convertFont, decodeEot } from '../src/lib/conversions/font';
 import { ConversionFailedError } from '../src/lib/types';
-import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
  * An Embedded OpenType file declares in its header (Flags, offset 12) whether the font data is compressed with MicroType Express
  * (0x4) or XOR-encrypted with 0x50 (0x10000000). The reader took the last FontDataSize bytes for an sfnt whatever the flags said and,
  * when they were not one, made a font of the raw EOT bytes: two IBM Plex Sans Arabic files (compressed) were refused as fonts
- * "with no glyph outlines", which no one could act on. A compressed file is now refused by name, and an XOR-encrypted one is read.
+ * "with no glyph outlines", which no one could act on. The in-process reader now refuses a compressed file by name and reads an XOR-encrypted
+ * one; convertFont sends a compressed file to eot2ttf first, and tests/font-eot-mtx.test.ts converts the two real files.
  */
 
-const EOT_LP_SIGNATURE_OFFSET = 34;
 const FLAGS_OFFSET = 12;
 const XOR_FLAG = 0x10000000;
 const XOR_KEY = 0x50;
@@ -34,12 +33,11 @@ describe('the flags of an EOT header', () => {
     expect(fromHidden.equals(fromPlain)).toBe(true);
   });
 
-  it('refuses MicroType Express compression by name', async () => {
+  it('refuses MicroType Express compression by name in the in-process reader, which does not decompress it', async () => {
     const compressed = Buffer.from(await eotOf());
     compressed.writeUInt32LE(compressed.readUInt32LE(FLAGS_OFFSET) | 0x4, FLAGS_OFFSET);
-    const attempt = convertFont(compressed, 'eot', 'ttf', {}, 'compressed.eot');
-    await expect(attempt).rejects.toBeInstanceOf(ConversionFailedError);
-    await expect(attempt).rejects.toThrow(/MicroType Express/);
+    expect(() => decodeEot(compressed, 'compressed')).toThrow(ConversionFailedError);
+    expect(() => decodeEot(compressed, 'compressed')).toThrow(/MicroType Express/);
   });
 
   it('refuses font data that is no sfnt instead of making a font of the file', async () => {
@@ -53,13 +51,4 @@ describe('the flags of an EOT header', () => {
     lying.writeUInt32LE(lying.length + 1, 4);
     await expect(convertFont(lying, 'eot', 'ttf', {}, 'lying.eot')).rejects.toThrow(/does not fit/);
   });
-
-  for (const id of ['plex-ibmplexsansarabic-bold.eot', 'plex-ibmplexsansarabic-light.eot']) {
-    it(`names the compression of the real file ${id}`, async (ctx) => {
-      const { bytes } = await requireRealworldSample(ctx, id);
-      expect(bytes.readUInt32LE(FLAGS_OFFSET) & 0x4).toBe(0x4);
-      expect(bytes.readUInt16LE(EOT_LP_SIGNATURE_OFFSET)).toBe(0x504c);
-      await expect(convertFont(bytes, 'eot', 'otf', {}, id)).rejects.toThrow(/MicroType Express/);
-    });
-  }
 });

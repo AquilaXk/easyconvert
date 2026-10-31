@@ -49,6 +49,7 @@ const ORACLE_BINARIES: { name: string; tool: ExternalOracleTool }[] = [
   { name: 'inkscape', tool: 'inkscape' },
   { name: 'libredwg (dwg2dxf)', tool: 'dwg2dxf' },
   { name: 'fontforge-nox (fontforge)', tool: 'fontforge' },
+  { name: 'libeot (eot2ttf)', tool: 'eot2ttf' },
   { name: 'veraPDF', tool: 'verapdf' },
   { name: 'libreoffice (soffice)', tool: 'soffice' },
   { name: 'tesseract-ocr (tesseract)', tool: 'tesseract' },

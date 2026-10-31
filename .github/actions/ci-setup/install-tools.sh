@@ -132,6 +132,10 @@ task_apt() {
   # --check loads the library and prints its version, which is the sign that the runner can serve the PDF operations.
   sudo "$action_path/../../../native/qpdf-runner/build.sh" /usr/local/bin/qpdf-runner || return 1
   qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "qpdf-runner does not load libqpdf" >&2; return 1; }
+  # EOT fonts compressed with MicroType Express are decompressed by libeot's eot2ttf (MPL-2.0, an unmodified separate program), built from the
+  # commit pinned in scripts/install-libeot.sh, which fetches it by its full hash. It compiles in seconds, so it needs no cache. The script links
+  # the program into /usr/local/bin and fails when it does not start.
+  sudo "$action_path/../../../scripts/install-libeot.sh" /opt/libeot || return 1
 }
 
 # PDF/A results are refused unless veraPDF validates them.
