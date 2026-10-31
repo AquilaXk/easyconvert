@@ -380,7 +380,7 @@ describe('the AV1 auto-tiles patch', () => {
   });
 });
 
-describe('option-f.patch and aom-release-x64.patch, the optimisation level of the codecs that do the encode work', () => {
+describe('option-f.patch and aom-release.patch, the optimisation level of the codecs that do the encode work', () => {
   const hunksOf = (file: string): string[][] =>
     readFileSync(path.join(BUILD_DIR, file), 'utf-8')
       .split(/^@@.*$/m)
@@ -390,7 +390,7 @@ describe('option-f.patch and aom-release-x64.patch, the optimisation level of th
   const added = (hunk: string[]): string[] => hunk.filter((line) => line.startsWith('+')).map((line) => line.slice(1));
 
   it('builds aom as a Release (libaom CMakeLists.txt, lines 34 to 39, make Release the default) instead of MinSizeRel, and changes no other option of it', () => {
-    const [aom, ...others] = hunksOf('aom-release-x64.patch');
+    const [aom, ...others] = hunksOf('aom-release.patch');
     expect(others).toEqual([]);
     expect(removed(aom).join('\n')).toContain('-DCMAKE_BUILD_TYPE=MinSizeRel');
     expect(added(aom).join('\n')).toContain('-DCMAKE_BUILD_TYPE=Release');
@@ -399,10 +399,10 @@ describe('option-f.patch and aom-release-x64.patch, the optimisation level of th
     expect(aom.filter((line) => line.startsWith(' ')).join('\n')).toContain('-DENABLE_NASM=1');
   });
 
-  it('applies the aom patch on linux-x64 only, so arm64 keeps the upstream aom until its bytes are compared', () => {
+  it('applies the aom patch on both platforms, so the arm64 library of the Ampere host has the Release aom the x64 one has', () => {
     const build = readFileSync(path.join(BUILD_DIR, 'build.sh'), 'utf-8');
-    expect(build.split('\n').filter((line) => line.includes('aom-release-x64.patch') && !line.startsWith('#'))).toEqual([
-      'if [ "$PLATFORM" = linux-x64 ]; then patch -p1 --forward --fuzz=0 < "$here/aom-release-x64.patch"; fi',
+    expect(build.split('\n').filter((line) => line.includes('aom-release.patch') && !line.startsWith('#'))).toEqual([
+      'patch -p1 --forward --fuzz=0 < "$here/aom-release.patch"',
     ]);
   });
 
