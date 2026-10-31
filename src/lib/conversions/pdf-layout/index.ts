@@ -307,12 +307,12 @@ function furnitureKey(text: string): string {
 }
 
 /** The header and footer lines among `blocks` that print the number of their page (`pageCounterBlocks`). */
-function pageCountersOf(blocks: Iterable<PageBlock>, candidates: ReadonlyMap<PageBlock, FurnitureBand>, pageCount: number): Set<PageBlock> {
+function pageCountersOf(blocks: Iterable<PageBlock>, candidates: ReadonlyMap<PageBlock, FurnitureBand>): Set<PageBlock> {
   const lines = [...blocks].map((block): FurnitureLine<PageBlock> => {
     const { paragraph } = block as ParagraphEntry;
     return { block, key: `${candidates.get(block)}:${furnitureKey(paragraph.text)}`, text: paragraph.text, pageNumber: paragraph.pageNumber };
   });
-  return pageCounterBlocks(lines, pageCount);
+  return pageCounterBlocks(lines);
 }
 
 /** What `splitPageFurniture` takes out of the flow, and which of those blocks are the page counter of their page. */
@@ -364,7 +364,7 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
   }
   // A one-page document has no recurrence to show a header or footer by, and a table page has no body text to compare its size with: the line
   // that prints the page's own number in a band is its counter whether or not it is furniture.
-  const counters = pageCountersOf(pages.length === 1 ? candidates.keys() : accepted, candidates, pages.length);
+  const counters = pageCountersOf(pages.length === 1 ? candidates.keys() : accepted, candidates);
   if (accepted.size === 0) return { body: blocks, header: [], footer: [], counters };
   const firstPageOf = (band: FurnitureBand): Paragraph[] => {
     const lines = [...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph);

@@ -288,6 +288,46 @@ describe('the running header and footer of the pages of a PDF', () => {
       expect(rowsOf([1, 2, 3].map((number) => textPage(number, `Page ${number + 2}`)))).toEqual([['Body of page 1'], ['Body of page 2'], ['Body of page 3']]);
     });
 
+    const headerPage = (number: number, furniture: string): PdfPageContent => page(number, [item(`Body of page ${number}`, 60, 300), item(furniture, 280, 30)]);
+    const bodyOf = (number: number) => `Body of page ${number}`;
+    const withoutFurniture = (number: number): PdfPageContent => page(number, [item(bodyOf(number), 60, 300)]);
+
+    it('keeps a bare invoice number that runs 1001, 1002, 1003 in the header band', () => {
+      const rows = rowsOf([1001, 1002, 1003].map((value, index) => headerPage(index + 1, String(value))));
+      expect(rows).toEqual([['1001', bodyOf(1)], ['1002', bodyOf(2)], ['1003', bodyOf(3)]]);
+    });
+
+    it('keeps bare 5 and 6 printed on two pages', () => {
+      expect(rowsOf([textPage(1, '5'), textPage(2, '6')])).toEqual([[bodyOf(1), '5'], [bodyOf(2), '6']]);
+    });
+
+    it('keeps Page 5 and Page 6 printed on two pages, for two pages show no constant', () => {
+      expect(rowsOf([textPage(1, 'Page 5'), textPage(2, 'Page 6')])).toEqual([[bodyOf(1), 'Page 5'], [bodyOf(2), 'Page 6']]);
+    });
+
+    it('keeps bare numbers that run two ahead of the pages, however many pages there are', () => {
+      expect(rowsOf([3, 4, 5, 6].map((value, index) => textPage(index + 1, String(value))))).toEqual([3, 4, 5, 6].map((value, index) => [bodyOf(index + 1), String(value)]));
+    });
+
+    it('keeps the fractions 1/3, 2/3, 3/3 printed on pages 2 to 4, and drops them where they are the page counter on pages 1 to 3', () => {
+      const afterCover = [withoutFurniture(1), ...[2, 3, 4].map((number) => textPage(number, `${number - 1}/3`))];
+      expect(rowsOf(afterCover)).toEqual([[bodyOf(1)], [bodyOf(2), '1/3'], [bodyOf(3), '2/3'], [bodyOf(4), '3/3']]);
+      expect(rowsOf([1, 2, 3].map((number) => textPage(number, `${number}/3`)))).toEqual([[bodyOf(1)], [bodyOf(2)], [bodyOf(3)]]);
+    });
+
+    it.each(['- #', '# -', '— #', '# —'])('keeps the one-sided form %s as text on every page', (form) => {
+      const printed = (number: number) => form.replace('#', String(number));
+      expect(rowsOf([1, 2, 3].map((number) => textPage(number, printed(number))))).toEqual([1, 2, 3].map((number) => [bodyOf(number), printed(number)]));
+    });
+
+    it('keeps a bare 1 in the top band of a one-page document', () => {
+      expect(rowsOf([headerPage(1, '1')])).toEqual([['1', bodyOf(1)]]);
+    });
+
+    it('drops a bare counter in the header band on pages 1 to 3', () => {
+      expect(rowsOf([1, 2, 3].map((number) => headerPage(number, String(number))))).toEqual([[bodyOf(1)], [bodyOf(2)], [bodyOf(3)]]);
+    });
+
     it.each([
       ['the same number on every page', [7, 7, 7]],
       ['numbers that follow no constant offset', [3, 5, 4]],
