@@ -427,7 +427,7 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
     });
 
     it('fails closed on cyclic sector allocation table (SAT) loops without infinite loop', async () => {
-      const cyclicOle = Buffer.alloc(1536);
+      const cyclicOle = Buffer.alloc(2048);
       // Valid CFBF magic: 0xD0CF11E0A1B11AE1
       cyclicOle[0] = 0xd0;
       cyclicOle[1] = 0xcf;
@@ -442,20 +442,21 @@ describe('Phase 4: Coverage-Guided Adversarial Parser Fuzzing Suite', () => {
       cyclicOle.writeUInt16LE(9, 30); // Sector shift 9 (512 bytes)
       cyclicOle.writeUInt16LE(6, 32); // Mini sector shift 6 (64 bytes)
       cyclicOle.writeUInt32LE(1, 44); // 1 SAT sector
-      cyclicOle.writeUInt32LE(0, 48); // Dir stream at sector 0
+      cyclicOle.writeUInt32LE(1, 48); // Dir stream at sector 1 (sector 0 holds the FAT)
+      cyclicOle.writeUInt32LE(4096, 56); // Mini stream cutoff ([MS-CFB] 2.2)
       cyclicOle.writeUInt32LE(0, 76); // MSAT[0] at sector 0
 
       // In SAT table at sector 0 (byte offset 512):
-      // Sector 0 points to sector 1, sector 1 points back to sector 0 (infinite cycle)
-      cyclicOle.writeUInt32LE(1, 512);
-      cyclicOle.writeUInt32LE(0, 512 + 4);
+      // Sector 1 points to sector 2, sector 2 points back to sector 1 (infinite cycle)
+      cyclicOle.writeUInt32LE(2, 512 + 4);
+      cyclicOle.writeUInt32LE(1, 512 + 8);
 
       // The walk ends at the first repeated sector and the container is refused.
       const outcome = await expectNoHang('cyclic SAT', () => settle(() => parseCfbf(cyclicOle)));
       expect(outcome.ok).toBe(false);
       const error = (outcome as { ok: false; error: unknown }).error;
       expect(error).toBeInstanceOf(CorruptStreamError);
-      expect((error as Error).message).toMatch(/Corrupt CFBF container: the sector chain starting at sector 0 returns to sector 0/);
+      expect((error as Error).message).toMatch(/Corrupt CFBF container: the sector chain starting at sector 1 returns to sector 1/);
     });
 
     it('fails closed on record headers with negative or absurd payload lengths in parseHwpRecords', () => {

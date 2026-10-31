@@ -577,7 +577,7 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
       });
 
       it('fails closed when OLE2 sector allocation chain forms an infinite cycle', () => {
-        const cyclicOle2 = Buffer.alloc(1024);
+        const cyclicOle2 = Buffer.alloc(1536);
         // Valid magic bytes
         cyclicOle2[0] = 0xd0;
         cyclicOle2[1] = 0xcf;
@@ -589,15 +589,16 @@ describe('Phase 3: Differential Testnet & Fuzzing Gates', () => {
         cyclicOle2[7] = 0xe1;
         cyclicOle2.writeUInt16LE(9, 30); // Sector size 512 bytes
         cyclicOle2.writeUInt32LE(1, 44); // 1 SAT sector
-        cyclicOle2.writeUInt32LE(0, 48); // Dir stream start at sector 0
+        cyclicOle2.writeUInt32LE(1, 48); // Dir stream start at sector 1 (sector 0 holds the FAT)
+        cyclicOle2.writeUInt32LE(4096, 56); // Mini stream cutoff ([MS-CFB] 2.2)
         cyclicOle2.writeUInt32LE(0, 76); // MSAT[0] at sector 0
 
-        // Cyclic FAT entry: sector 0 points to sector 0
-        cyclicOle2.writeUInt32LE(0, 512);
+        // Cyclic FAT entry: sector 1 points to sector 1
+        cyclicOle2.writeUInt32LE(1, 512 + 4);
 
-        // The directory chain 0 -> 0 is walked once and refused instead of being read as a container without entries.
+        // The directory chain 1 -> 1 is walked once and refused instead of being read as a container without entries.
         expect(() => parseCfbf(cyclicOle2)).toThrow(CorruptStreamError);
-        expect(() => parseCfbf(cyclicOle2)).toThrow(/the sector chain starting at sector 0 returns to sector 0/);
+        expect(() => parseCfbf(cyclicOle2)).toThrow(/the sector chain starting at sector 1 returns to sector 1/);
       });
     });
 

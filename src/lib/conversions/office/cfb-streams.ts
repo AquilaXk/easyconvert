@@ -1,3 +1,4 @@
+import { CFBF_MAX_FILE_BYTES } from '../../compound-file-kind';
 import { isCfbfContainer, parseCfbf, type CfbfContainer } from '../hwp';
 import { LegacyOfficeFormatError } from './legacy-office-errors';
 
@@ -29,11 +30,15 @@ function assertCfbHeader(buffer: Buffer, label: string): void {
 }
 
 /**
- * Opens an OLE2 compound file ([MS-CFB]). A file that is not a compound file, has an inconsistent header, exceeds a limit of
- * `parseCfbf` (its size, its directory entries, the depth and the path length of its storages) or cannot be walked throws a
- * LegacyOfficeFormatError; no failure escapes as an untyped error.
+ * Opens an OLE2 compound file ([MS-CFB]). A file that is larger than the limit of `parseCfbf` (answered with this label's own
+ * words), is not a compound file, has an inconsistent header, exceeds another limit of `parseCfbf` (its directory entries, the
+ * depth and the path length of its storages) or cannot be walked throws a LegacyOfficeFormatError; no failure escapes as an
+ * untyped error.
  */
 export function readCfbContainer(buffer: Buffer, label: string): CfbfContainer {
+  if (buffer.length > CFBF_MAX_FILE_BYTES) {
+    throw new LegacyOfficeFormatError(`${label}: the file exceeds the ${CFBF_MAX_FILE_BYTES}-byte limit.`);
+  }
   if (!isCfbfContainer(buffer)) {
     throw new LegacyOfficeFormatError(`${label}: the file is not an OLE2 compound file.`);
   }
