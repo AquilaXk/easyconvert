@@ -797,6 +797,32 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     );
     expect(credsCurl).toContain('"providerType":"s3"');
     expect(credsCurl).toContain('"bucket":"my-conversions-bucket"');
+
+    const intOrStr: OpenApiSchemaObject = { oneOf: [{ type: 'integer', minimum: 0 }, { type: 'string' }] };
+    const filterUnion: OpenApiSchemaObject = {
+      oneOf: [{ type: 'object', required: ['mode'], properties: { mode: { const: 'strict' }, tag: { type: 'string' } } }, { type: 'string' }],
+    };
+    const unionBodySchema: OpenApiSchemaObject = {
+      oneOf: [
+        { type: 'object', required: ['filter', 'offset'], properties: { filter: filterUnion, offset: intOrStr } },
+        { type: 'object', required: ['fallback'], properties: { fallback: { const: 'other' } } },
+      ],
+    };
+    const unionCurl = buildCurlSnippet(
+      {
+        key: 'POST:/api/v1/union-check', method: 'post', path: '/api/v1/union-check',
+        operation: {
+          parameters: [{ name: 'offset', in: 'query', required: true, schema: intOrStr }],
+          requestBody: { content: { 'application/json': { schema: unionBodySchema } } },
+        },
+      },
+      '',
+      'https://api.easyconvert.com'
+    );
+    expect(unionCurl).toContain('?offset=0"');
+    expect(unionCurl).toContain('\'{"filter":{"mode":"strict"},"offset":0}\'');
+    expect(unionCurl).not.toContain('{"targetFormat":"pdf"}');
+    expect(unionCurl).not.toContain('"filter":{}');
   });
 
   it('enforces roving tablists, persistent status live regions, RBAC warnings, and unmounted empty dialogs', () => {

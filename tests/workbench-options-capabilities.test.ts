@@ -1,13 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createElement, isValidElement, type ReactNode } from 'react';
+import { createElement, isValidElement, useRef, type ReactNode } from 'react';
 import {
   computeVisibleSections,
   FFMPEG_VIDEO_CONTAINERS,
   isLosslessAudioTarget,
+  isValidPasswordForTarget,
   resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
   sanitizeOptionsForPair,
 } from '../src/components/workbench/options/options-capabilities';
+import { isValidPasswordForTarget as isValidPasswordFromSections } from '../src/components/workbench/OptionsSections';
 import {
   AudioOptionsSection,
   ImageOptionsSection,
@@ -18,7 +20,9 @@ import {
   DocumentOptionsSection,
   PasswordOptionsSection,
 } from '../src/components/workbench/options/DocumentAndArchiveOptions';
-import OptionsModal from '../src/components/OptionsModal';
+import OptionsModal, {
+  isValidPasswordForTarget as isValidPasswordFromModal,
+} from '../src/components/OptionsModal';
 import QueueItemRow from '../src/components/workbench/QueueItemRow';
 import {
   areOptionsEqual,
@@ -36,6 +40,7 @@ interface ControlProps {
   checked?: boolean;
   maxLength?: number;
   disabled?: boolean;
+  onClick?: () => void;
   onChange?: (event: { target: { value: string; checked?: boolean } }) => void;
   children?: ReactNode;
 }
@@ -56,6 +61,24 @@ function findControlProps(node: ReactNode, targetId: string): ControlProps | nul
   const props = node.props as ControlProps;
   if (props.id === targetId) return props;
   return findControlProps(props.children, targetId);
+}
+
+function findButtonPropsByText(node: ReactNode, label: string): ControlProps | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findButtonPropsByText(child, label);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isValidElement(node)) return null;
+  if (typeof node.type === 'function') {
+    const rendered = (node.type as (props: unknown) => ReactNode)(node.props);
+    return findButtonPropsByText(rendered, label);
+  }
+  const props = node.props as ControlProps;
+  if (node.type === 'button' && props.children === label) return props;
+  return findButtonPropsByText(props.children, label);
 }
 
 function buildTestQueueContext(initialItems: ConversionQueueItem[]) {
@@ -216,12 +239,15 @@ describe('Workbench media, document, and tabular capability model', () => {
   it('scopes delimiter and worksheet index visibility to real spreadsheet/tabular pairs', () => {
     expect(computeVisibleSections('csv', 'json').canConfigureDelimiter).toBe(true);
     expect(computeVisibleSections('csv', 'zip').canConfigureDelimiter).toBe(false);
+    expect(computeVisibleSections('csv', 'zst').canConfigureDelimiter).toBe(false);
     expect(computeVisibleSections('tsv', 'xlsx').canConfigureDelimiter).toBe(false);
     expect(computeVisibleSections('tsv', 'ods').canConfigureDelimiter).toBe(false);
     expect(computeVisibleSections('tsv', 'xls').canConfigureDelimiter).toBe(false);
     expect(computeVisibleSections('tsv', 'json').canConfigureDelimiter).toBe(true);
+    expect(computeVisibleSections('tab', 'json').canConfigureDelimiter).toBe(true);
+    expect(computeVisibleSections('tab', 'xlsx').canConfigureDelimiter).toBe(false);
     expect(computeVisibleSections('pdf', 'csv').canConfigureDelimiter).toBe(false);
-    expect(computeVisibleSections('xlsx', 'tsv').canConfigureDelimiter).toBe(true);
+    expect(computeVisibleSections('xlsx', 'tsv').canConfigureDelimiter).toBe(false);
     expect(computeVisibleSections('docx', 'csv').canConfigureDelimiter).toBe(true);
 
     expect(computeVisibleSections('xlsx', 'csv').canConfigureSheetIndex).toBe(true);
@@ -252,6 +278,15 @@ describe('Workbench media, document, and tabular capability model', () => {
       trim: { start: '00:00:02', end: '00:00:10' },
     });
     expect(sanitizeOptionsForPair(forWebm, 'mp4', 'webm')).toEqual(forWebm);
+    expect(
+      sanitizeOptionsForPair(
+        { video: { codec: 'h264', profile: 'high', scale: { width: 1280, fit: 'contain' } } },
+        'mp4',
+        'webm'
+      )
+    ).toEqual({
+      video: { scale: { width: 1280, fit: 'contain' } },
+    });
 
     expect(
       sanitizeOptionsForPair({ password: 'secret', compressionLevel: 9 }, 'txt', 'tar')
@@ -490,6 +525,49 @@ describe('Workbench media, document, and tabular capability model', () => {
     expect(attrOf(select(sevenZipPwDom, 'input', 'id', 'opt-doc-password')[0], 'maxlength')).toBe(
       '256'
     );
+    expect(
+      attrOf(select(sevenZipPwDom, 'input', 'id', 'opt-doc-password')[0], 'aria-describedby')
+    ).toBe('opt-doc-password-help');
+
+    expect(isValidPasswordForTarget).toBe(isValidPasswordFromSections);
+    expect(isValidPasswordForTarget).toBe(isValidPasswordFromModal);
+    expect(isValidPasswordForTarget('AsciiSecret1!', 'ZIP')).toBe(true);
+    expect(isValidPasswordForTarget('비밀번호', 'ZIP')).toBe(false);
+
+    const onSaveZip = vi.fn();
+    let capturedApplyProps: ControlProps | null = null;
+    function ZipModalAfterNonAsciiPassword() {
+      const didType = useRef(false);
+      const tree = OptionsModal({
+        filename: 'report.txt',
+        sourceFormat: 'txt',
+        targetFormat: 'zip',
+        initialOptions: {},
+        onSave: onSaveZip,
+        onClose: () => undefined,
+      });
+      if (!didType.current) {
+        didType.current = true;
+        findControlProps(tree, 'opt-doc-password')!.onChange!({ target: { value: '비밀번호' } });
+      } else {
+        capturedApplyProps = findButtonPropsByText(tree, 'Apply Options');
+      }
+      return tree;
+    }
+    const zipModalDom = renderDom(createElement(ZipModalAfterNonAsciiPassword));
+    const zipApplyBtn = select(zipModalDom, 'button').find((b) => visibleText(b) === 'Apply Options')!;
+    expect(attrOf(zipApplyBtn, 'disabled')).toBe('');
+    const zipAlerts = select(zipModalDom, 'p', 'role', 'alert');
+    expect(zipAlerts).toHaveLength(1);
+    expect(attrOf(zipAlerts[0], 'id')).toBe('opt-doc-password-error');
+    expect(visibleText(zipAlerts[0])).toBe(
+      'ZIP passwords support 1 to 99 printable ASCII characters only.'
+    );
+    const zipPwInput = select(zipModalDom, 'input', 'id', 'opt-doc-password')[0];
+    expect(attrOf(zipPwInput, 'aria-invalid')).toBe('true');
+    expect(attrOf(zipPwInput, 'aria-describedby')).toBe('opt-doc-password-error');
+    capturedApplyProps?.onClick?.();
+    expect(onSaveZip).not.toHaveBeenCalled();
   });
 
   it('compares nested options structurally, disables oversize row controls, and prevents batch stranding', async () => {
@@ -507,6 +585,37 @@ describe('Workbench media, document, and tabular capability model', () => {
     ).toBe(false);
 
     const maxBytes = clientConverter.getEffectiveMaxFileSize();
+    const recoverableRowDom = renderDom(
+      createElement(QueueItemRow, {
+        item: makeItem({
+          id: 'cells-err-1',
+          name: 'sheet.csv',
+          size: 2048,
+          sourceFormat: 'csv',
+          targetFormat: 'parquet',
+          status: 'error',
+          error: 'Cannot write Parquet: table exceeds the limit of 5000000 cells.',
+        }),
+        isFormatSelectorOpen: false,
+        onToggleFormatSelector: () => undefined,
+        onCloseFormatSelector: () => undefined,
+        onSelectTargetFormat: () => undefined,
+        onOpenOptions: () => undefined,
+        onRetry: () => undefined,
+        onRemove: () => undefined,
+      })
+    );
+    expect(
+      attrOf(select(recoverableRowDom, 'button', 'data-testid', 'queue-target-format-btn')[0], 'disabled')
+    ).toBeNull();
+    expect(
+      attrOf(select(recoverableRowDom, 'button', 'data-testid', 'queue-options-btn')[0], 'disabled')
+    ).toBeNull();
+    const recoverableRetryBtn = select(recoverableRowDom, 'button').find(
+      (b) => visibleText(b) === 'Retry'
+    )!;
+    expect(attrOf(recoverableRetryBtn, 'disabled')).toBeNull();
+
     const oversizeRowDom = renderDom(
       createElement(QueueItemRow, {
         item: makeItem({

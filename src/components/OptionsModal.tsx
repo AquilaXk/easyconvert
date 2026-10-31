@@ -12,6 +12,7 @@ import {
   DEFAULT_OPTIONS,
   DocumentOptionsSection,
   ImageOptionsSection,
+  isValidPasswordForTarget,
   PasswordOptionsSection,
   sanitizeOptionsForPair,
   VideoOptionsSection,
@@ -23,6 +24,7 @@ export {
   DEFAULT_OPTIONS,
   FFMPEG_VIDEO_CONTAINERS,
   isLosslessAudioTarget,
+  isValidPasswordForTarget,
   resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
   resolvePasswordMode,
@@ -118,6 +120,17 @@ export default function OptionsModal({
 
   const visible = computeVisibleSections(sourceFormat, targetFormat);
   const targetLabel = (targetFormat || 'target').toUpperCase();
+  const hasInvalidPassword = Boolean(
+    visible.passwordMode !== null &&
+      options.password &&
+      !isValidPasswordForTarget(options.password, targetFormat)
+  );
+
+  const handleApply = () => {
+    if (hasInvalidPassword) return;
+    onSave(sanitizeOptionsForPair(options, sourceFormat, targetFormat));
+    onClose();
+  };
 
   return (
     <dialog
@@ -164,8 +177,9 @@ export default function OptionsModal({
         </button>
         <button
           type="button"
-          onClick={() => { onSave(sanitizeOptionsForPair(options, sourceFormat, targetFormat)); onClose(); }}
-          className="min-h-[44px] px-5 rounded-md bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white text-sm font-semibold transition-colors cursor-pointer"
+          disabled={hasInvalidPassword}
+          onClick={handleApply}
+          className="min-h-[44px] px-5 rounded-md bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white text-sm font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Apply Options
         </button>

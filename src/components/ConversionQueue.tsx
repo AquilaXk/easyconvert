@@ -182,8 +182,7 @@ export default function ConversionQueue({
   const [activeOptionsModalId, setActiveOptionsModalId] = useState<string | null>(null);
 
   const maxLimit = getEffectiveMaxFileSize();
-  const isConvertibleItem = (item: ConversionQueueItem) =>
-    item.size <= maxLimit && !item.error?.includes('exceeds the');
+  const isConvertibleItem = (item: ConversionQueueItem) => item.size <= maxLimit;
   const convertibleItems = items.filter(isConvertibleItem);
   const effectiveBusy = isConverting || items.some((i) => i.status === 'uploading' || i.status === 'converting');
   const completedCount = items.filter((i) => i.status === 'completed').length;

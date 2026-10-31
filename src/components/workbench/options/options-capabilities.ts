@@ -2,19 +2,16 @@ import { AudioCodec, ConversionOptions, FormatCategory } from '@/lib/types';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 import {
   FFMPEG_VIDEO_CONTAINERS,
-  isLosslessAudioTarget,
   resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
-  type AudioCapabilities,
 } from './media-capabilities';
 
 export {
   FFMPEG_VIDEO_CONTAINERS,
-  isLosslessAudioTarget,
   resolveAllowedVideoCodecs,
   resolveAudioCapabilities,
-  type AudioCapabilities,
 };
+export { isLosslessAudioTarget, type AudioCapabilities } from './media-capabilities';
 
 export type PasswordMode = 'archive-encrypt' | 'archive-reencrypt' | 'pdf-decrypt';
 
@@ -23,7 +20,6 @@ export const DEFAULT_OPTIONS: ConversionOptions = {};
 const IMAGE_CATEGORIES: ReadonlyArray<FormatCategory> = ['image', 'vector', 'cad'];
 const ENCRYPTABLE_ARCHIVES: ReadonlySet<string> = new Set(['zip', '7z']);
 const DECRYPTABLE_ARCHIVES: ReadonlySet<string> = new Set(['zip', '7z', 'rar']);
-const DELIMITED_FORMATS: ReadonlySet<string> = new Set(['csv', 'tsv']);
 const TIFF_SOURCES: ReadonlySet<string> = new Set(['tiff', 'tif']);
 const TEXT_PDF_ORIENTATION_SOURCES: ReadonlySet<string> = new Set([
   'txt',
@@ -35,22 +31,6 @@ const TEXT_PDF_ORIENTATION_SOURCES: ReadonlySet<string> = new Set([
   'hwp',
 ]);
 
-const ARCHIVE_TARGETS: ReadonlySet<string> = new Set([
-  'zip',
-  '7z',
-  'tar',
-  'gz',
-  'tgz',
-  'tar.gz',
-  'tar.bz2',
-  'tar.xz',
-  'tar.7z',
-  'bz2',
-  'bz',
-  'tbz',
-  'tbz2',
-  'rar',
-]);
 const SHEET_WORKBOOK_TARGETS: ReadonlySet<string> = new Set(['xlsx', 'ods', 'xls']);
 const XLSX_TABULAR_SOURCES: ReadonlySet<string> = new Set([
   'xlsx',
@@ -110,11 +90,6 @@ export function resolvePasswordMode(sourceFormat: string, targetFormat: string):
   return null;
 }
 
-export function isDelimitedFormat(fmt: string): boolean {
-  if (DELIMITED_FORMATS.has(fmt)) return true;
-  return fmt !== 'json' && Boolean(FORMAT_REGISTRY[fmt]?.optionsSchema?.delimiter);
-}
-
 function isImageCapablePair(
   sourceCategory: FormatCategory | undefined,
   targetCategory: FormatCategory | undefined,
@@ -171,17 +146,24 @@ function computeDocumentCaps(
   return { canSelectPages, canConfigureLayout, canConfigureOcr, ocrAlwaysEnabled, showDocument };
 }
 
-function canConfigureTableDelimiter(src: string, tgt: string): boolean {
-  if (!tgt || ARCHIVE_TARGETS.has(tgt)) return false;
+function canConfigureTableDelimiter(
+  src: string,
+  tgt: string,
+  targetCategory: FormatCategory | undefined
+): boolean {
+  if (!tgt || targetCategory === 'archive') return false;
   if (src === 'csv') return true;
-  if (src === 'tsv') return !SHEET_WORKBOOK_TARGETS.has(tgt);
+  if (src === 'tsv' || src === 'tab') return !SHEET_WORKBOOK_TARGETS.has(tgt);
   if (tgt === 'csv') return DELIMITER_CSV_OUTPUT_SOURCES.has(src);
-  if (tgt === 'tsv') return XLSX_TABULAR_SOURCES.has(src);
   return false;
 }
 
-function computeDataCaps(src: string, tgt: string) {
-  const canConfigureDelimiter = canConfigureTableDelimiter(src, tgt);
+function computeDataCaps(
+  src: string,
+  tgt: string,
+  targetCategory: FormatCategory | undefined
+) {
+  const canConfigureDelimiter = canConfigureTableDelimiter(src, tgt, targetCategory);
   const canConfigureSheetIndex = XLSX_TABULAR_SOURCES.has(src) && SHEET_INDEX_TARGETS.has(tgt);
   const showData = canConfigureDelimiter || canConfigureSheetIndex;
   return { canConfigureDelimiter, canConfigureSheetIndex, showData };
@@ -194,7 +176,7 @@ export function computeVisibleSections(sourceFormat: string, targetFormat: strin
   const targetCategory = tgt ? FORMAT_REGISTRY[tgt]?.category : undefined;
   const media = computeMediaCaps(sourceCategory, targetCategory, tgt);
   const doc = computeDocumentCaps(src, tgt, sourceCategory, targetCategory);
-  const data = computeDataCaps(src, tgt);
+  const data = computeDataCaps(src, tgt, targetCategory);
   const passwordMode = resolvePasswordMode(src, tgt);
   const showArchive = targetCategory === 'archive' && tgt !== 'tar';
   const hasAny = [
@@ -257,11 +239,11 @@ function applySanitizedDocumentOptions(
   applySanitizedOcrOptions(next, options, visible);
 }
 
-function isValidPasswordForTarget(password: string, tgt: string): boolean {
-  if (tgt === 'zip') {
+export function isValidPasswordForTarget(password: string, targetFormat: string): boolean {
+  if (targetFormat.toLowerCase() === 'zip') {
     return password.length <= MAX_ZIP_PASSWORD_LENGTH && ZIP_PRINTABLE_ASCII_PATTERN.test(password);
   }
-  return password.length <= MAX_GENERAL_PASSWORD_LENGTH;
+  return password.length > 0 && password.length <= MAX_GENERAL_PASSWORD_LENGTH;
 }
 
 function applySanitizedSecurityAndArchiveOptions(
@@ -296,14 +278,36 @@ function sanitizeVideoScale(
   };
 }
 
+const SCALE_ONLY_OMITTED_KEYS: ReadonlySet<string> = new Set(['scale']);
+const CODEC_AND_SCALE_OMITTED_KEYS: ReadonlySet<string> = new Set([
+  'scale',
+  'codec',
+  'profile',
+  'level',
+]);
+const AUDIO_CODEC_OMITTED_KEYS: ReadonlySet<string> = new Set(['codec']);
+
+function copyDefinedFields(
+  source: Record<string, unknown>,
+  omittedKeys: ReadonlySet<string>
+): Record<string, unknown> {
+  const clean: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(source)) {
+    if (val !== undefined && !omittedKeys.has(key)) clean[key] = val;
+  }
+  return clean;
+}
+
 function sanitizeVideoEncodingOptions(
-  video: ConversionOptions['video']
+  video: ConversionOptions['video'],
+  allowedVCodecs: ReadonlyArray<string>
 ): ConversionOptions['video'] {
   if (!video) return undefined;
-  const clean: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(video)) {
-    if (key !== 'scale' && val !== undefined) clean[key] = val;
-  }
+  const dropCodec = video.codec !== undefined && !allowedVCodecs.includes(video.codec);
+  const clean = copyDefinedFields(
+    video as Record<string, unknown>,
+    dropCodec ? CODEC_AND_SCALE_OMITTED_KEYS : SCALE_ONLY_OMITTED_KEYS
+  );
   const cleanScale = sanitizeVideoScale(video.scale);
   if (cleanScale) clean.scale = cleanScale;
   return Object.keys(clean).length > 0 ? (clean as NonNullable<ConversionOptions['video']>) : undefined;
@@ -320,7 +324,7 @@ function applySanitizedVideoOptions(
     next.videoCodec = options.videoCodec;
   }
   if (options.videoFps !== undefined) next.videoFps = options.videoFps;
-  const cleanVideo = sanitizeVideoEncodingOptions(options.video);
+  const cleanVideo = sanitizeVideoEncodingOptions(options.video, allowedVCodecs);
   if (cleanVideo) next.video = cleanVideo;
 }
 
@@ -329,10 +333,7 @@ function sanitizeAudioEncodingOptions(
   allowedCodecs: ReadonlyArray<AudioCodec>
 ): ConversionOptions['audio'] {
   if (!audio) return undefined;
-  const clean: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(audio)) {
-    if (key !== 'codec' && val !== undefined) clean[key] = val;
-  }
+  const clean = copyDefinedFields(audio as Record<string, unknown>, AUDIO_CODEC_OMITTED_KEYS);
   if (audio.codec && allowedCodecs.includes(audio.codec)) {
     clean.codec = audio.codec;
   }

@@ -8,7 +8,7 @@ import {
   SECTION_HEADING_CLASS,
   SectionProps,
 } from '../OptionsSections';
-import type { PasswordMode } from './options-capabilities';
+import { isValidPasswordForTarget, type PasswordMode } from './options-capabilities';
 
 const OCR_LANGUAGE_CHOICES: ReadonlyArray<{ value: string; label: string }> = [
   { value: 'eng', label: 'English' },
@@ -148,15 +148,17 @@ export interface PasswordOptionsSectionProps extends SectionProps {
 
 function describePasswordSection(mode: PasswordMode, sourceFormat: string, targetFormat: string) {
   const tgtUpper = targetFormat.toUpperCase();
-  const zipConstraint =
-    targetFormat.toLowerCase() === 'zip'
-      ? ' ZIP passwords support up to 99 printable ASCII characters.'
-      : '';
+  const isZip = targetFormat.toLowerCase() === 'zip';
+  const maxLength = isZip ? 99 : 256;
+  const zipConstraint = isZip
+    ? ' ZIP passwords support up to 99 printable ASCII characters.'
+    : '';
   if (mode === 'archive-encrypt') {
     return {
       heading: 'Archive Encryption',
       label: `Output Archive Password (${tgtUpper})`,
       helper: `Optional AES-256 password to protect the generated archive.${zipConstraint}`,
+      maxLength,
     };
   }
   if (mode === 'archive-reencrypt') {
@@ -165,12 +167,14 @@ function describePasswordSection(mode: PasswordMode, sourceFormat: string, targe
       heading: 'Archive Password & Re-encryption',
       label: `Archive Password (${srcUpper} to ${tgtUpper})`,
       helper: `Unlocks an encrypted ${srcUpper} archive and encrypts the output ${tgtUpper} archive with this password.${zipConstraint}`,
+      maxLength,
     };
   }
   return {
     heading: 'PDF Decryption',
     label: 'Open Password (PDF)',
     helper: 'Enter the document open password if the source PDF is encrypted.',
+    maxLength,
   };
 }
 
@@ -182,7 +186,9 @@ export function PasswordOptionsSection({
   targetFormat,
 }: Readonly<PasswordOptionsSectionProps>) {
   const copy = describePasswordSection(mode, sourceFormat, targetFormat);
-  const isZipTarget = targetFormat.toLowerCase() === 'zip';
+  const hasInvalidPassword = Boolean(
+    options.password && !isValidPasswordForTarget(options.password, targetFormat)
+  );
   return (
     <section className="space-y-2">
       <h3 className={SECTION_HEADING_CLASS}>{copy.heading}</h3>
@@ -192,13 +198,20 @@ export function PasswordOptionsSection({
           id="opt-doc-password"
           type="password"
           autoComplete="off"
-          maxLength={isZipTarget ? 99 : 256}
+          maxLength={copy.maxLength}
+          aria-invalid={hasInvalidPassword || undefined}
+          aria-describedby={hasInvalidPassword ? 'opt-doc-password-error' : 'opt-doc-password-help'}
           value={options.password || ''}
           onChange={(e) => onChange({ ...options, password: e.target.value || undefined })}
           placeholder="Leave blank if no password is needed"
           className={INPUT_CLASS}
         />
-        <p className="mt-1.5 text-xs text-ink-muted dark:text-neutral-400">{copy.helper}</p>
+        {hasInvalidPassword && (
+          <p id="opt-doc-password-error" role="alert" className="mt-1.5 text-xs font-medium text-red-600 dark:text-red-400">
+            ZIP passwords support 1 to 99 printable ASCII characters only.
+          </p>
+        )}
+        <p id="opt-doc-password-help" className="mt-1.5 text-xs text-ink-muted dark:text-neutral-400">{copy.helper}</p>
       </div>
     </section>
   );

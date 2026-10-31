@@ -124,7 +124,7 @@ export default function QueueItemRow({
   onRemove,
 }: Readonly<QueueItemRowProps>) {
   const isBusy = item.status === 'uploading' || item.status === 'converting';
-  const isOversize = item.size > getEffectiveMaxFileSize() || Boolean(item.error?.includes('exceeds the'));
+  const isOversize = item.size > getEffectiveMaxFileSize();
   const hasTarget = Boolean(item.targetFormat);
   const isPdf = item.sourceFormat.toLowerCase() === 'pdf';
 

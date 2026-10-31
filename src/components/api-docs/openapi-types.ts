@@ -237,14 +237,39 @@ function resolveExplicitPrimaryType(raw: OpenApiSchemaObject['type']): string | 
   return undefined;
 }
 
-export function primarySchemaType(schema: OpenApiSchemaObject | undefined): string {
-  if (!schema) return 'string';
-  const explicit = resolveExplicitPrimaryType(schema.type);
-  if (explicit) return explicit;
+const MAX_UNION_UNWRAP_STEPS = 8;
+
+function hasOwnSchemaShape(schema: OpenApiSchemaObject): boolean {
+  if (schema.type !== undefined || schema.const !== undefined) return true;
+  if (schema.properties !== undefined || schema.items !== undefined) return true;
+  return Boolean(schema.enum?.length);
+}
+
+function nextUnionPrimaryBranch(schema: OpenApiSchemaObject): OpenApiSchemaObject | undefined {
+  if (hasOwnSchemaShape(schema)) return undefined;
   const union = schema.oneOf ?? schema.anyOf;
-  if (union?.length) return primarySchemaType(union[0]);
-  if (schema.properties) return 'object';
-  if (schema.items) return 'array';
+  return union?.[0];
+}
+
+export function unwrapPrimarySchema(
+  schema: OpenApiSchemaObject | undefined
+): OpenApiSchemaObject | undefined {
+  let current = schema;
+  for (let step = 0; step < MAX_UNION_UNWRAP_STEPS && current; step += 1) {
+    const next = nextUnionPrimaryBranch(current);
+    if (!next) break;
+    current = next;
+  }
+  return current;
+}
+
+export function primarySchemaType(schema: OpenApiSchemaObject | undefined): string {
+  const effective = unwrapPrimarySchema(schema);
+  if (!effective) return 'string';
+  const explicit = resolveExplicitPrimaryType(effective.type);
+  if (explicit) return explicit;
+  if (effective.properties) return 'object';
+  if (effective.items) return 'array';
   return 'string';
 }
 

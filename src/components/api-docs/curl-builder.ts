@@ -1,6 +1,7 @@
 import {
   dereferenceSchema,
   primarySchemaType,
+  unwrapPrimarySchema,
   type OpenApiMediaType,
   type OpenApiParameter,
   type OpenApiSchemaObject,
@@ -91,17 +92,33 @@ export function resolveBaseUrl(serverUrl?: string, runtimeOrigin?: string): stri
   return normalized.startsWith('/') ? `${origin}${normalized}` : `${origin}/${normalized}`;
 }
 
-function resolveExplicitSample(
-  key: string,
+function isScalarSample(value: unknown): value is string | number | boolean {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+}
+
+function readSchemaExplicitValue(
   schema: OpenApiSchemaObject | undefined
 ): { found: true; value: unknown } | { found: false } {
-  if (schema) {
-    for (const candidate of [schema.example, schema.default, schema.const]) {
-      if (candidate !== undefined) return { found: true, value: candidate };
-    }
-    if (schema.enum && schema.enum.length > 0) return { found: true, value: schema.enum[0] };
+  if (!schema) return { found: false };
+  for (const candidate of [schema.example, schema.default, schema.const]) {
+    if (candidate !== undefined) return { found: true, value: candidate };
   }
-  if (key && Object.hasOwn(SAMPLE_PROP_VALUES, key)) return { found: true, value: SAMPLE_PROP_VALUES[key] };
+  if (schema.enum?.length) return { found: true, value: schema.enum[0] };
+  return { found: false };
+}
+
+function resolveExplicitSample(
+  key: string,
+  schema: OpenApiSchemaObject | undefined,
+  effective: OpenApiSchemaObject | undefined
+): { found: true; value: unknown } | { found: false } {
+  const outerExplicit = readSchemaExplicitValue(schema);
+  if (outerExplicit.found) return outerExplicit;
+  const innerExplicit = effective !== schema ? readSchemaExplicitValue(effective) : outerExplicit;
+  if (innerExplicit.found) return innerExplicit;
+  if (key && Object.hasOwn(SAMPLE_PROP_VALUES, key)) {
+    return { found: true, value: SAMPLE_PROP_VALUES[key] };
+  }
   return { found: false };
 }
 
@@ -140,6 +157,20 @@ function synthesizeObjectPayload(
   return payload;
 }
 
+function synthesizeArrayItems(
+  schema: OpenApiSchemaObject,
+  schemas: SchemaMap | undefined,
+  depth: number
+): unknown[] {
+  return schema.items ? [synthesizeSchemaValue('', schema.items, schemas, depth + 1)] : [];
+}
+
+function synthesizePrimitiveValue(type: string, schema: OpenApiSchemaObject): unknown {
+  if (type === 'integer' || type === 'number') return schema.minimum ?? 1;
+  if (type === 'boolean') return true;
+  return 'sample';
+}
+
 function synthesizeSchemaValue(
   key: string,
   rawSchema: OpenApiSchemaObject | undefined,
@@ -147,14 +178,14 @@ function synthesizeSchemaValue(
   depth: number
 ): unknown {
   const schema = dereferenceSchema(rawSchema, schemas);
-  const explicit = resolveExplicitSample(key, schema);
+  const effective = unwrapPrimarySchema(schema);
+  const explicit = resolveExplicitSample(key, schema, effective);
   if (explicit.found) return explicit.value;
-  const type = primarySchemaType(schema);
-  if (type === 'array') return schema?.items ? [synthesizeSchemaValue('', schema.items, schemas, depth + 1)] : [];
-  if (type === 'object') return schema ? synthesizeObjectPayload(schema, schemas, depth) : {};
-  if (type === 'integer' || type === 'number') return schema?.minimum ?? 1;
-  if (type === 'boolean') return true;
-  return 'sample';
+  if (!effective) return 'sample';
+  const type = primarySchemaType(effective);
+  if (type === 'array') return synthesizeArrayItems(effective, schemas, depth);
+  if (type === 'object') return synthesizeObjectPayload(effective, schemas, depth);
+  return synthesizePrimitiveValue(type, effective);
 }
 
 function buildSampleJsonBody(
@@ -163,23 +194,25 @@ function buildSampleJsonBody(
   method?: string
 ): string {
   const resolved = dereferenceSchema(media?.schema, schemas);
-  if (!resolved?.properties) return JSON.stringify({ targetFormat: 'pdf' });
-  return JSON.stringify(synthesizeObjectPayload(resolved, schemas, 0, method));
+  const effective = unwrapPrimarySchema(resolved);
+  const explicit = resolveExplicitSample('', resolved, effective);
+  if (explicit.found) return JSON.stringify(explicit.value);
+  if (effective && primarySchemaType(effective) === 'array') {
+    return JSON.stringify(synthesizeArrayItems(effective, schemas, 0));
+  }
+  if (!effective?.properties) return JSON.stringify({ targetFormat: 'pdf' });
+  return JSON.stringify(synthesizeObjectPayload(effective, schemas, 0, method));
 }
 
 function resolveParameterSample(param: OpenApiParameter, schemas: SchemaMap | undefined): string {
   const schema = dereferenceSchema(param.schema, schemas);
-  const explicit = resolveExplicitSample(param.name, schema);
-  if (
-    explicit.found &&
-    (typeof explicit.value === 'string' ||
-      typeof explicit.value === 'number' ||
-      typeof explicit.value === 'boolean')
-  ) {
+  const effective = unwrapPrimarySchema(schema);
+  const explicit = resolveExplicitSample(param.name, schema, effective);
+  if (explicit.found && isScalarSample(explicit.value)) {
     return String(explicit.value);
   }
-  const type = primarySchemaType(schema);
-  if (type === 'integer' || type === 'number') return String(schema?.minimum ?? 1);
+  const type = primarySchemaType(effective);
+  if (type === 'integer' || type === 'number') return String(effective?.minimum ?? 1);
   if (type === 'boolean') return 'true';
   return `${param.name}_01J9EXAMPLE`;
 }
@@ -205,19 +238,16 @@ function resolveEndpointUrl(
 }
 
 function resolveHeaderSample(lowerName: string, schema: OpenApiSchemaObject | undefined): string {
-  if (schema) {
-    for (const candidate of [schema.example, schema.default, schema.const]) {
-      if (
-        typeof candidate === 'string' ||
-        typeof candidate === 'number' ||
-        typeof candidate === 'boolean'
-      ) {
-        return String(candidate);
-      }
-    }
+  const effective = unwrapPrimarySchema(schema);
+  const explicit = resolveExplicitSample('', schema, effective);
+  if (explicit.found && isScalarSample(explicit.value)) {
+    return String(explicit.value);
   }
   if (lowerName === 'upload-length') return '1048576';
   if (lowerName === 'upload-offset') return '0';
+  const type = primarySchemaType(effective);
+  if (type === 'integer' || type === 'number') return String(effective?.minimum ?? 1);
+  if (type === 'boolean') return 'true';
   return '1.0.0';
 }
 
@@ -250,23 +280,38 @@ function isTusCreationEndpoint(endpoint: ParsedEndpointItem): boolean {
 function formatMultipartValue(propName: string, prop: OpenApiSchemaObject, schemas: SchemaMap | undefined): string {
   const sample = synthesizeSchemaValue(propName, prop, schemas, 1);
   if (typeof sample === 'string') return sample;
-  if (typeof sample === 'number' || typeof sample === 'boolean') return String(sample);
+  if (isScalarSample(sample)) return String(sample);
   return JSON.stringify(sample);
 }
 
+function buildMultipartPropertyFlag(
+  propName: string,
+  rawProp: OpenApiSchemaObject,
+  binaryFile: string,
+  requiredSet: ReadonlySet<string>,
+  schemas: SchemaMap | undefined
+): string | null {
+  const prop = dereferenceSchema(rawProp, schemas) ?? rawProp;
+  const effectiveProp = unwrapPrimarySchema(prop) ?? prop;
+  if (effectiveProp.format === 'binary' || propName === 'file') {
+    return `  -F "${escapeDoubleQuoted(propName)}=${binaryFile}"`;
+  }
+  if (requiredSet.has(propName) || propName === 'targetFormat') {
+    const formatted = formatMultipartValue(propName, prop, schemas);
+    return `  -F "${escapeDoubleQuoted(propName)}=${escapeDoubleQuoted(formatted)}"`;
+  }
+  return null;
+}
+
 function buildMultipartFlags(media: OpenApiMediaType, path: string, schemas: SchemaMap | undefined): string[] {
-  const schema = dereferenceSchema(media.schema, schemas);
+  const effective = unwrapPrimarySchema(dereferenceSchema(media.schema, schemas));
   const binaryFile = path.includes('archives') ? '@archive.zip' : '@sample.docx';
-  if (!schema?.properties) return [`  -F "file=${binaryFile}"`, '  -F "targetFormat=pdf"'];
-  const requiredSet = new Set(schema.required ?? []);
+  if (!effective?.properties) return [`  -F "file=${binaryFile}"`, '  -F "targetFormat=pdf"'];
+  const requiredSet = new Set(effective.required ?? []);
   const flags: string[] = [];
-  for (const [propName, rawProp] of Object.entries(schema.properties)) {
-    const prop = dereferenceSchema(rawProp, schemas) ?? rawProp;
-    if (prop.format === 'binary' || propName === 'file') {
-      flags.push(`  -F "${escapeDoubleQuoted(propName)}=${binaryFile}"`);
-    } else if (requiredSet.has(propName) || propName === 'targetFormat') {
-      flags.push(`  -F "${escapeDoubleQuoted(propName)}=${escapeDoubleQuoted(formatMultipartValue(propName, prop, schemas))}"`);
-    }
+  for (const [propName, rawProp] of Object.entries(effective.properties)) {
+    const flag = buildMultipartPropertyFlag(propName, rawProp, binaryFile, requiredSet, schemas);
+    if (flag) flags.push(flag);
   }
   return flags.length > 0 ? flags : [`  -F "file=${binaryFile}"`];
 }
