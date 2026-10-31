@@ -224,7 +224,8 @@ export function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' = 
       tableRun.add(block.table);
       continue;
     }
-    if (join === 'all' && block.kind === 'paragraph' && last?.kind === 'paragraph' && last.paragraph.flow !== block.paragraph.flow) {
+    // A full paragraph (vertical, angled, or one that fills its flow) never continues, and its stored box is not the one its lines give.
+    if (join === 'all' && block.kind === 'paragraph' && last?.kind === 'paragraph' && !last.paragraph.full && last.paragraph.flow !== block.paragraph.flow) {
       const open = paragraphRun ?? builderOf(last.paragraph);
       const end = open.end();
       if (continuesInNextFlow(end, block.paragraph, flowRight.get(last.paragraph.flow) ?? end.x1)) {
