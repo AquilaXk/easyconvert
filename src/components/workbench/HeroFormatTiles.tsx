@@ -17,13 +17,15 @@ export default function HeroFormatTiles({
   targetFormat,
   onSourceChange,
   onTargetChange,
-}: HeroFormatTilesProps) {
+}: Readonly<HeroFormatTilesProps>) {
   const [openPicker, setOpenPicker] = useState<'source' | 'target' | null>(null);
 
   const normalizedSource = sourceFormat.toLowerCase();
   const normalizedTarget = targetFormat.toLowerCase();
-  const sourceDisplay = normalizedSource === 'any' || !normalizedSource ? 'ANY' : normalizedSource.toUpperCase();
-  const targetDisplay = normalizedTarget === 'any' || !normalizedTarget ? '...' : normalizedTarget.toUpperCase();
+  const sourceDisplay =
+    normalizedSource === 'any' || !normalizedSource ? 'ANY' : normalizedSource.toUpperCase();
+  const targetDisplay =
+    normalizedTarget === 'any' || !normalizedTarget ? '...' : normalizedTarget.toUpperCase();
 
   const targetAvailableFormats =
     normalizedSource !== 'any' && normalizedSource
@@ -60,30 +62,20 @@ export default function HeroFormatTiles({
         </button>
 
         {openPicker === 'source' && (
-          <>
-            <div
-              className="hidden sm:block fixed inset-0 z-30"
-              onClick={() => setOpenPicker(null)}
-            />
-            <div className="sm:absolute sm:left-0 sm:top-full sm:mt-2 sm:z-40">
-              <FormatSelector
-                allowAny
-                selectedFormatId={normalizedSource}
-                onSelect={(fmt) => {
-                  onSourceChange(fmt);
-                  setOpenPicker(null);
-                }}
-                onClose={() => setOpenPicker(null)}
-                title="Convert from format"
-              />
-            </div>
-          </>
+          <FormatSelector
+            allowAny
+            selectedFormatId={normalizedSource}
+            onSelect={(fmt) => {
+              onSourceChange(fmt);
+              setOpenPicker(null);
+            }}
+            onClose={() => setOpenPicker(null)}
+            title="Convert from format"
+          />
         )}
       </div>
 
-      <span className="text-xs uppercase tracking-wider text-slate-300 font-semibold">
-        to
-      </span>
+      <span className="text-xs uppercase tracking-wider text-slate-300 font-semibold">to</span>
 
       <div className="relative">
         <button
@@ -109,26 +101,18 @@ export default function HeroFormatTiles({
         </button>
 
         {openPicker === 'target' && (
-          <>
-            <div
-              className="hidden sm:block fixed inset-0 z-30"
-              onClick={() => setOpenPicker(null)}
-            />
-            <div className="sm:absolute sm:right-0 sm:top-full sm:mt-2 sm:z-40">
-              <FormatSelector
-                allowAny
-                availableFormats={targetAvailableFormats}
-                sourceFormat={normalizedSource !== 'any' ? normalizedSource : undefined}
-                selectedFormatId={normalizedTarget}
-                onSelect={(fmt) => {
-                  onTargetChange(fmt);
-                  setOpenPicker(null);
-                }}
-                onClose={() => setOpenPicker(null)}
-                title="Convert to format"
-              />
-            </div>
-          </>
+          <FormatSelector
+            allowAny
+            availableFormats={targetAvailableFormats}
+            sourceFormat={normalizedSource !== 'any' ? normalizedSource : undefined}
+            selectedFormatId={normalizedTarget}
+            onSelect={(fmt) => {
+              onTargetChange(fmt);
+              setOpenPicker(null);
+            }}
+            onClose={() => setOpenPicker(null)}
+            title="Convert to format"
+          />
         )}
       </div>
     </div>

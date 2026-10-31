@@ -2421,7 +2421,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 3309
+    "maxValue": 3307
   },
   {
     "file": "src/lib/security/memory-shredder.ts",

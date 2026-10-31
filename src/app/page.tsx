@@ -14,7 +14,6 @@ export default function Home() {
   const {
     queue,
     isConverting,
-    setPresetTarget,
     zipError,
     clearZipError,
     handleFilesSelected,
@@ -29,23 +28,15 @@ export default function Home() {
   } = useClientQueue({ bundlePrefix: 'easyconvert_bundle' });
 
   const activeQueueSummary = useMemo(() => {
-    if (queue.length === 0) {
-      return undefined;
-    }
-    const sourceFormats = Array.from(new Set(queue.map((item) => item.sourceFormat)));
-    const targetFormats = Array.from(
-      new Set(queue.map((item) => item.targetFormat).filter(Boolean))
+    if (queue.length === 0) return undefined;
+    const srcs = Array.from(new Set(queue.map((item) => item.sourceFormat.toUpperCase())));
+    const tgts = Array.from(
+      new Set(queue.map((item) => item.targetFormat.trim().toUpperCase()).filter(Boolean))
     );
-    return { sourceFormats, targetFormats };
+    const targetSuffix = tgts.length > 0 ? ` to ${tgts.join(', ')}` : '';
+    const countLabel = queue.length === 1 ? '1 file' : `${queue.length} files`;
+    return `${countLabel} (${srcs.join(', ')}${targetSuffix})`;
   }, [queue]);
-
-  const handleSelectPreset = (_source: string, target: string) => {
-    setPresetTarget(target);
-    const input = document.getElementById('main-file-input');
-    if (input instanceof HTMLInputElement) {
-      input.click();
-    }
-  };
 
   const handleOpenFilePicker = () => {
     const input = document.getElementById('main-file-input');
@@ -76,15 +67,19 @@ export default function Home() {
               onUpdateTargetFormat={handleUpdateTargetFormat}
               onUpdateAllTargets={handleUpdateAllTargets}
               onUpdateOptions={handleUpdateOptions}
-              onConvertAll={handleConvertAll}
+              onConvertAll={() => {
+                void handleConvertAll();
+              }}
               onConvertSingle={(id) => {
                 const target = queue.find((item) => item.id === id);
                 if (target) {
-                  convertSingleItem(target);
+                  void convertSingleItem(target);
                 }
               }}
               onAddMoreFiles={handleOpenFilePicker}
-              onDownloadAllZip={handleDownloadAllZip}
+              onDownloadAllZip={() => {
+                void handleDownloadAllZip();
+              }}
               isConverting={isConverting}
               zipError={zipError}
               onDismissZipError={clearZipError}
@@ -94,7 +89,7 @@ export default function Home() {
 
         {queue.length === 0 && (
           <>
-            <Features onSelectPreset={handleSelectPreset} />
+            <Features />
             <AdBanner slot="mid-content" />
             <FaqSection />
           </>

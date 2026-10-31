@@ -1,4 +1,5 @@
 import React from 'react';
+import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 
 interface ConversionGridCardProps {
@@ -7,7 +8,11 @@ interface ConversionGridCardProps {
   direction: 'from' | 'to';
 }
 
-function ConversionGridCard({ formatName, formats, direction }: Readonly<ConversionGridCardProps>) {
+function ConversionGridCard({
+  formatName,
+  formats,
+  direction,
+}: Readonly<ConversionGridCardProps>) {
   const isFrom = direction === 'from';
   const upperName = formatName.toUpperCase();
 
@@ -27,16 +32,16 @@ function ConversionGridCard({ formatName, formats, direction }: Readonly<Convers
           const fromFmt = isFrom ? formatName : fmt;
           const toFmt = isFrom ? fmt : formatName;
           return (
-            <a
+            <Link
               key={fmt}
               href={`/${fromFmt.toLowerCase()}-to-${toFmt.toLowerCase()}`}
-              className="min-h-[40px] flex items-center justify-between gap-2 px-3 py-2 rounded-md bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border hover:border-brand-700 hover:bg-brand-50 dark:hover:bg-white/10 text-xs font-semibold text-brand-950 dark:text-neutral-200 transition-colors group"
+              className="min-h-[44px] sm:min-h-[40px] flex items-center justify-between gap-2 px-3 py-2 rounded-md bg-neutral-subtle dark:bg-white/5 border border-neutral-border dark:border-dark-border hover:border-brand-700 hover:bg-brand-50 dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 text-xs font-semibold text-brand-950 dark:text-neutral-200 transition-colors group"
             >
               <span className="truncate">
                 {fromFmt.toUpperCase()} to {toFmt.toUpperCase()}
               </span>
               <ArrowRight className="w-3.5 h-3.5 text-ink-muted group-hover:text-brand-700 dark:group-hover:text-brand-400 shrink-0 transition-colors" />
-            </a>
+            </Link>
           );
         })}
       </div>
@@ -64,10 +69,18 @@ export function FormatCrossLinks({
   return (
     <section className="max-w-5xl mx-auto px-4 sm:px-6 my-12 space-y-6">
       {convertFromTargets.length > 0 && (
-        <ConversionGridCard formatName={sourceFormat} formats={convertFromTargets} direction="from" />
+        <ConversionGridCard
+          formatName={sourceFormat}
+          formats={convertFromTargets}
+          direction="from"
+        />
       )}
       {convertToSources.length > 0 && (
-        <ConversionGridCard formatName={targetForReverse} formats={convertToSources} direction="to" />
+        <ConversionGridCard
+          formatName={targetForReverse}
+          formats={convertToSources}
+          direction="to"
+        />
       )}
     </section>
   );

@@ -16,8 +16,9 @@ import {
   Sliders,
   Download,
   ChevronDown,
+  type LucideIcon,
 } from 'lucide-react';
-import { ConversionQueueItem } from '@/lib/types';
+import { ConversionQueueItem, FormatCategory } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
 import FormatSelector from '../FormatSelector';
 
@@ -32,84 +33,66 @@ export interface QueueItemRowProps {
   onRemove: () => void;
 }
 
+const CATEGORY_ICONS: Partial<Record<FormatCategory, { Icon: LucideIcon; color: string }>> = {
+  audio: { Icon: Music, color: 'text-amber-600 dark:text-amber-400' },
+  video: { Icon: Video, color: 'text-purple-600 dark:text-purple-400' },
+  image: { Icon: FileImage, color: 'text-emerald-600 dark:text-emerald-400' },
+  vector: { Icon: Compass, color: 'text-indigo-600 dark:text-indigo-400' },
+  cad: { Icon: Compass, color: 'text-indigo-600 dark:text-indigo-400' },
+  ebook: { Icon: BookOpen, color: 'text-indigo-600 dark:text-indigo-400' },
+  presentation: { Icon: Presentation, color: 'text-orange-600 dark:text-orange-400' },
+  spreadsheet: { Icon: Database, color: 'text-teal-600 dark:text-teal-400' },
+  data: { Icon: Database, color: 'text-teal-600 dark:text-teal-400' },
+  archive: { Icon: Archive, color: 'text-sky-600 dark:text-sky-400' },
+  font: { Icon: Type, color: 'text-blue-600 dark:text-blue-400' },
+};
+
 function formatBytes(bytes: number): string {
-  if (bytes <= 0) {
-    return '0 B';
-  }
+  if (bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
   const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
   const value = bytes / Math.pow(1024, index);
-  return `${parseFloat(value.toFixed(1))} ${units[index]}`;
+  return `${Number.parseFloat(value.toFixed(1))} ${units[index]}`;
 }
 
 function getFormatLabel(ext: string): string {
   const clean = ext.toLowerCase();
-  const def = FORMAT_REGISTRY[clean];
-  if (def?.name) {
-    return def.name;
-  }
-  return `${clean.toUpperCase()} File`;
+  return FORMAT_REGISTRY[clean]?.name || `${clean.toUpperCase()} File`;
 }
 
 function renderCategoryIcon(ext: string): React.ReactNode {
   const clean = ext.toLowerCase();
-  const cat = FORMAT_REGISTRY[clean]?.category || 'document';
-
-  switch (cat) {
-    case 'audio':
-      return <Music className="w-5 h-5 text-amber-600 dark:text-amber-400" />;
-    case 'video':
-      return <Video className="w-5 h-5 text-purple-600 dark:text-purple-400" />;
-    case 'image':
-      return <FileImage className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />;
-    case 'vector':
-    case 'cad':
-      return <Compass className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />;
-    case 'ebook':
-      return <BookOpen className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />;
-    case 'presentation':
-      return <Presentation className="w-5 h-5 text-orange-600 dark:text-orange-400" />;
-    case 'spreadsheet':
-    case 'data':
-      return <Database className="w-5 h-5 text-teal-600 dark:text-teal-400" />;
-    case 'archive':
-      return <Archive className="w-5 h-5 text-sky-600 dark:text-sky-400" />;
-    case 'font':
-      return <Type className="w-5 h-5 text-blue-600 dark:text-blue-400" />;
-    default:
-      if (clean === 'pdf') {
-        return <FileText className="w-5 h-5 text-red-600 dark:text-red-400" />;
-      }
-      return <FileText className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
+  if (clean === 'pdf') {
+    return <FileText className="w-5 h-5 text-red-600 dark:text-red-400" />;
   }
+  const cat = FORMAT_REGISTRY[clean]?.category || 'document';
+  const entry = CATEGORY_ICONS[cat];
+  if (entry) {
+    const { Icon, color } = entry;
+    return <Icon className={`w-5 h-5 ${color}`} />;
+  }
+  return <FileText className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
 }
 
 function RowStatusDisplay({
   item,
   onRetry,
-}: {
+}: Readonly<{
   item: ConversionQueueItem;
   onRetry: () => void;
-}) {
+}>) {
   if (item.status === 'uploading' || item.status === 'converting') {
-    const clampedProgress = Math.max(8, Math.min(100, Math.round(item.progress)));
+    const rounded = Math.round(item.progress);
     return (
       <div className="flex items-center gap-2 min-w-[140px]">
-        <div
-          role="progressbar"
-          aria-valuenow={Math.round(item.progress)}
-          aria-valuemin={0}
-          aria-valuemax={100}
+        <progress
+          value={rounded}
+          max={100}
           aria-label={`Converting ${item.name}`}
-          className="flex-1 h-2 bg-neutral-200 dark:bg-dark-elevated rounded-full overflow-hidden"
-        >
-          <div
-            className="h-full bg-brand-700 transition-all duration-200 rounded-full"
-            style={{ width: `${clampedProgress}%` }}
-          />
-        </div>
+          className="flex-1 h-2 w-full rounded-full overflow-hidden accent-brand-700 [&::-webkit-progress-bar]:bg-neutral-200 dark:[&::-webkit-progress-bar]:bg-dark-elevated [&::-webkit-progress-value]:bg-brand-700 [&::-moz-progress-bar]:bg-brand-700"
+        />
         <span className="text-xs font-mono text-ink-secondary dark:text-neutral-300 tabular-nums">
-          {Math.round(item.progress)}%
+          {rounded}%
         </span>
       </div>
     );
@@ -117,7 +100,6 @@ function RowStatusDisplay({
 
   if (item.status === 'completed') {
     const baseName = item.name.replace(/\.[^/.]+$/, '') || item.name;
-    const resultFilename = `${baseName}.${item.targetFormat}`;
     return (
       <div className="flex items-center gap-2">
         <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-status-successSoft text-status-success dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-500/30">
@@ -126,7 +108,7 @@ function RowStatusDisplay({
         {item.resultUrl && (
           <a
             href={item.resultUrl}
-            download={resultFilename}
+            download={`${baseName}.${item.targetFormat}`}
             className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 rounded-md bg-status-success hover:opacity-95 text-white text-xs font-semibold transition-opacity"
           >
             <Download className="w-4 h-4" />
@@ -154,9 +136,7 @@ function RowStatusDisplay({
     );
   }
 
-  if (!item.targetFormat) {
-    return null;
-  }
+  if (!item.targetFormat) return null;
 
   return (
     <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-neutral-subtle dark:bg-dark-elevated text-ink-secondary dark:text-neutral-300 border border-neutral-border dark:border-dark-border">
@@ -174,7 +154,7 @@ export default function QueueItemRow({
   onOpenOptions,
   onRetry,
   onRemove,
-}: QueueItemRowProps) {
+}: Readonly<QueueItemRowProps>) {
   const isBusy = item.status === 'uploading' || item.status === 'converting';
   const hasTarget = Boolean(item.targetFormat);
   const isPdf = item.sourceFormat.toLowerCase() === 'pdf';
@@ -229,24 +209,14 @@ export default function QueueItemRow({
           </button>
 
           {isFormatSelectorOpen && (
-            <>
-              <div
-                className="fixed inset-0 z-20 hidden sm:block"
-                onClick={onCloseFormatSelector}
-              />
-              <div className="sm:absolute sm:right-0 sm:top-full sm:mt-2 sm:z-30">
-                <FormatSelector
-                  sourceFormat={item.sourceFormat}
-                  availableFormats={getAvailableTargetFormats(item.sourceFormat)}
-                  selectedFormatId={item.targetFormat}
-                  onSelect={(fmt) => {
-                    onSelectTargetFormat(fmt);
-                  }}
-                  onClose={onCloseFormatSelector}
-                  title={`Convert ${item.sourceFormat.toUpperCase()} to`}
-                />
-              </div>
-            </>
+            <FormatSelector
+              sourceFormat={item.sourceFormat}
+              availableFormats={getAvailableTargetFormats(item.sourceFormat)}
+              selectedFormatId={item.targetFormat}
+              onSelect={onSelectTargetFormat}
+              onClose={onCloseFormatSelector}
+              title={`Convert ${item.sourceFormat.toUpperCase()} to`}
+            />
           )}
         </div>
 
@@ -254,7 +224,7 @@ export default function QueueItemRow({
           type="button"
           data-testid="queue-options-btn"
           aria-label={`Conversion options for ${item.name}`}
-          disabled={isBusy}
+          disabled={!item.targetFormat || isBusy}
           onClick={onOpenOptions}
           className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] px-2.5 rounded-md border border-neutral-border dark:border-dark-border bg-white dark:bg-dark-elevated text-ink-secondary dark:text-neutral-300 hover:border-brand-700 hover:text-brand-950 dark:hover:text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >

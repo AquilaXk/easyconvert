@@ -3,7 +3,7 @@
 import React from 'react';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
-import { Loader2 } from 'lucide-react';
+import { AlertCircle, Loader2, X } from 'lucide-react';
 import { DashboardHeader } from '@/components/dashboard/DashboardHeader';
 import { ApiKeysPanel } from '@/components/dashboard/ApiKeysPanel';
 import { JobsHistoryPanel } from '@/components/dashboard/JobsHistoryPanel';
@@ -17,6 +17,8 @@ export default function DashboardPage() {
     loading,
     activeTab,
     setActiveTab,
+    actionError,
+    clearActionError,
     handleLogout,
     keys,
     filesAndDlq,
@@ -26,12 +28,27 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold flex flex-col text-brand-950 dark:text-dark-text transition-colors">
       <Header />
 
-      <main id="main-content" className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12">
+      <main
+        id="main-content"
+        className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12"
+      >
         {loading || !user ? (
-          <div role="status" className="py-20 flex flex-col items-center justify-center gap-3">
-            <h1 className="text-xl font-bold text-brand-950 dark:text-white">Developer Dashboard</h1>
-            <Loader2 className="w-7 h-7 animate-spin text-brand-700 dark:text-brand-400" aria-hidden="true" />
-            <p className="text-sm text-ink-secondary dark:text-dark-muted">Loading account session...</p>
+          <div className="py-20 flex flex-col items-center justify-center gap-3">
+            <h1 className="text-xl font-bold text-brand-950 dark:text-white">
+              Developer Dashboard
+            </h1>
+            <output
+              aria-live="polite"
+              className="flex flex-col items-center justify-center gap-3"
+            >
+              <Loader2
+                className="w-7 h-7 animate-spin text-brand-700 dark:text-brand-400"
+                aria-hidden="true"
+              />
+              <span className="text-sm text-ink-secondary dark:text-dark-muted">
+                Loading account session...
+              </span>
+            </output>
           </div>
         ) : (
           <>
@@ -40,20 +57,47 @@ export default function DashboardPage() {
               activeTab={activeTab}
               filesCount={filesAndDlq.userFiles.length}
               dlqCount={filesAndDlq.dlqEntries.length}
-              onSelectTab={setActiveTab}
-              onLogout={handleLogout}
+              onSelectTab={(tab) => {
+                clearActionError();
+                setActiveTab(tab);
+              }}
+              onLogout={() => {
+                void handleLogout();
+              }}
             />
 
-            {activeTab === 'api' && (
-              <ApiKeysPanel state={keys.state} actions={keys.actions} />
+            {actionError && (
+              <div
+                role="alert"
+                className="mb-6 pl-4 pr-2 py-2.5 rounded-xl bg-status-dangerSoft dark:bg-rose-950/30 border border-status-danger/30 dark:border-rose-800/50 text-status-danger dark:text-rose-300 text-sm flex items-center justify-between gap-3"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <AlertCircle className="w-5 h-5 shrink-0" aria-hidden="true" />
+                  <span className="break-words">{actionError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearActionError}
+                  aria-label="Dismiss dashboard error"
+                  className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md hover:bg-rose-100 dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             )}
+
+            {activeTab === 'api' && <ApiKeysPanel state={keys.state} actions={keys.actions} />}
 
             {activeTab === 'files' && (
               <JobsHistoryPanel
                 files={filesAndDlq.userFiles}
                 loading={filesAndDlq.filesLoading}
-                onRefresh={filesAndDlq.fetchUserFiles}
-                onDeleteFile={filesAndDlq.handleDeleteFile}
+                onRefresh={() => {
+                  void filesAndDlq.fetchUserFiles();
+                }}
+                onDeleteFile={(id) => {
+                  void filesAndDlq.handleDeleteFile(id);
+                }}
               />
             )}
 
@@ -64,13 +108,20 @@ export default function DashboardPage() {
                 replayingId={filesAndDlq.replayingDlqId}
                 feedback={filesAndDlq.dlqFeedback}
                 inspectingEntry={filesAndDlq.inspectingDlq}
-                onRefresh={filesAndDlq.fetchDlqEntries}
-                onClearAll={filesAndDlq.handleClearDlq}
+                onRefresh={() => {
+                  void filesAndDlq.fetchDlqEntries();
+                }}
+                onClearAll={() => {
+                  void filesAndDlq.handleClearDlq();
+                }}
                 onDismissFeedback={() => filesAndDlq.setDlqFeedback(null)}
                 onInspect={filesAndDlq.setInspectingDlq}
-                onReplay={filesAndDlq.handleReplayWebhook}
-                onDelete={filesAndDlq.handleDeleteDlq}
-                onCopy={keys.copyToClipboard}
+                onReplay={(id) => {
+                  void filesAndDlq.handleReplayWebhook(id);
+                }}
+                onDelete={(id) => {
+                  void filesAndDlq.handleDeleteDlq(id);
+                }}
               />
             )}
 

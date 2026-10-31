@@ -15,7 +15,7 @@ interface WebhooksPanelProps {
   onInspect: (entry: WebhookDlqEntry | null) => void;
   onReplay: (id: string) => void;
   onDelete: (id: string) => void;
-  onCopy: (text: string) => void;
+  onCopy?: (text: string) => void;
 }
 
 export function WebhooksPanel({
@@ -33,7 +33,12 @@ export function WebhooksPanel({
   onCopy,
 }: Readonly<WebhooksPanelProps>) {
   return (
-    <div id="dashboard-panel-dlq" role="tabpanel" aria-labelledby="dashboard-tab-dlq" className="space-y-6">
+    <div
+      id="dashboard-panel-dlq"
+      role="tabpanel"
+      aria-labelledby="dashboard-tab-dlq"
+      className="space-y-6"
+    >
       <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-xl p-6 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div>
@@ -48,7 +53,8 @@ export function WebhooksPanel({
               )}
             </div>
             <p className="text-sm text-ink-secondary dark:text-dark-muted mt-1">
-              Failed webhook deliveries retained after exhausted backoff retries. Inspect payloads or trigger a replay.
+              Failed webhook deliveries retained after exhausted backoff retries. Inspect payloads
+              or trigger a replay.
             </p>
           </div>
 
@@ -57,7 +63,7 @@ export function WebhooksPanel({
               type="button"
               onClick={onRefresh}
               disabled={loading}
-              className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-md border border-neutral-border dark:border-dark-border text-xs font-semibold hover:bg-neutral-subtle dark:hover:bg-dark-elevated transition-colors"
+              className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-md border border-neutral-border dark:border-dark-border text-xs font-semibold hover:bg-neutral-subtle dark:hover:bg-dark-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               <span>Refresh</span>
@@ -66,7 +72,7 @@ export function WebhooksPanel({
               <button
                 type="button"
                 onClick={onClearAll}
-                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-md border border-rose-200 dark:border-rose-900/60 text-rose-700 dark:text-rose-400 text-xs font-semibold hover:bg-rose-50 dark:hover:bg-rose-950/20 transition-colors"
+                className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-md border border-rose-200 dark:border-rose-900/60 text-rose-700 dark:text-rose-400 text-xs font-semibold hover:bg-rose-50 dark:hover:bg-rose-950/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Clear DLQ</span>
@@ -76,8 +82,8 @@ export function WebhooksPanel({
         </div>
 
         {feedback && (
-          <div
-            role="status"
+          <output
+            aria-live="polite"
             className="mb-4 pl-4 pr-2 py-2 rounded-lg bg-brand-50 dark:bg-brand-950/30 border border-brand-200 dark:border-brand-800/40 text-xs text-brand-900 dark:text-brand-300 flex items-center justify-between gap-2"
           >
             <span>{feedback}</span>
@@ -85,17 +91,19 @@ export function WebhooksPanel({
               type="button"
               onClick={onDismissFeedback}
               aria-label="Dismiss webhook notification"
-              className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md hover:bg-brand-100 dark:hover:bg-white/10"
+              className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md hover:bg-brand-100 dark:hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700"
             >
               <X className="w-4 h-4" />
             </button>
-          </div>
+          </output>
         )}
 
         {entries.length === 0 ? (
           <div className="text-center py-14 border border-neutral-border dark:border-dark-border rounded-xl bg-neutral-scaffold/50 dark:bg-dark-scaffold/40">
             <Inbox className="w-10 h-10 text-ink-muted dark:text-dark-muted mx-auto mb-2.5" />
-            <p className="text-base font-semibold text-brand-950 dark:text-white">Dead Letter Queue is Empty</p>
+            <p className="text-base font-semibold text-brand-950 dark:text-white">
+              Dead Letter Queue is Empty
+            </p>
             <p className="text-xs text-ink-muted dark:text-dark-muted mt-1 max-w-sm mx-auto">
               All webhook deliveries succeeded or no failed dispatches are pending.
             </p>
@@ -117,7 +125,10 @@ export function WebhooksPanel({
                 {entries.map((entry) => {
                   const isReplayed = entry.status === 'replayed';
                   return (
-                    <tr key={entry.id} className="hover:bg-neutral-scaffold/40 dark:hover:bg-dark-elevated/40">
+                    <tr
+                      key={entry.id}
+                      className="hover:bg-neutral-scaffold/40 dark:hover:bg-dark-elevated/40"
+                    >
                       <td className="py-3.5 pr-4 whitespace-nowrap">
                         <span className="font-mono text-xs font-semibold text-brand-700 dark:text-brand-400">
                           {entry.event}
@@ -152,7 +163,7 @@ export function WebhooksPanel({
                             type="button"
                             onClick={() => onInspect(entry)}
                             aria-label={`Inspect payload for ${entry.event}`}
-                            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md border border-neutral-border dark:border-dark-border hover:bg-neutral-subtle dark:hover:bg-dark-elevated text-ink-secondary dark:text-dark-muted hover:text-brand-950 dark:hover:text-white transition-colors"
+                            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md border border-neutral-border dark:border-dark-border hover:bg-neutral-subtle dark:hover:bg-dark-elevated text-ink-secondary dark:text-dark-muted hover:text-brand-950 dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors"
                           >
                             <Eye className="w-4 h-4" />
                           </button>
@@ -161,7 +172,7 @@ export function WebhooksPanel({
                             onClick={() => onReplay(entry.id)}
                             disabled={replayingId === entry.id}
                             aria-label={`Replay webhook ${entry.id}`}
-                            className="min-h-[44px] inline-flex items-center gap-1.5 px-3 rounded-md bg-brand-700 hover:bg-brand-800 text-white text-xs font-semibold shadow-sm transition-colors disabled:opacity-60"
+                            className="min-h-[44px] inline-flex items-center gap-1.5 px-3 rounded-md bg-brand-700 hover:bg-brand-800 text-white text-xs font-semibold shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors disabled:opacity-60"
                           >
                             {replayingId === entry.id ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -174,7 +185,7 @@ export function WebhooksPanel({
                             type="button"
                             onClick={() => onDelete(entry.id)}
                             aria-label={`Delete failed webhook ${entry.id}`}
-                            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md border border-neutral-border dark:border-dark-border hover:bg-rose-50 dark:hover:bg-rose-950/30 text-status-danger dark:text-rose-400 transition-colors"
+                            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md border border-neutral-border dark:border-dark-border hover:bg-rose-50 dark:hover:bg-rose-950/30 text-status-danger dark:text-rose-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 transition-colors"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>

@@ -10,7 +10,7 @@ const config: Config = {
   theme: {
     extend: {
       maxWidth: {
-        '8xl': '90rem',
+        "8xl": "90rem",
       },
       colors: {
         brand: {
@@ -21,10 +21,10 @@ const config: Config = {
           400: "#B4BCFB",
           500: "#8E9CE6",
           600: "#7480D2",
-          700: "#5C6BC0", // Main signature accent (primary CTA button fill, main interaction, focus ring)
-          800: "#4A58A9", // Main CTA button pressed state
-          900: "#3B4890", // Signature surface text/border/focus
-          950: "#1F2340", // Content primary body text
+          700: "#5C6BC0",
+          800: "#4A58A9",
+          900: "#3B4890",
+          950: "#1F2340",
         },
         primary: {
           DEFAULT: "#5C6BC0",
@@ -63,8 +63,8 @@ const config: Config = {
           infoSoft: "#EEF5FF",
         },
         dark: {
-          scaffold: "#141724", // Dark Indigo-Tinted Charcoal Scaffold
-          surface: "#1B2032",  // Elevated Card
+          scaffold: "#141724",
+          surface: "#1B2032",
           elevated: "#242B42",
           border: "#2C3452",
           text: "#F8F9FD",
@@ -81,20 +81,6 @@ const config: Config = {
           "Arial",
           "sans-serif",
         ],
-      },
-      animation: {
-        "spin-pulse": "spin-pulse 3s ease-in-out infinite",
-        "arrow-sweep": "arrow-sweep 2.4s ease-in-out infinite",
-      },
-      keyframes: {
-        "spin-pulse": {
-          "0%, 100%": { opacity: "0.85", transform: "rotate(0deg)" },
-          "50%": { opacity: "1", transform: "rotate(180deg)" },
-        },
-        "arrow-sweep": {
-          "0%, 100%": { opacity: "0", transform: "translateX(-100%)" },
-          "50%": { opacity: "1", transform: "translateX(100%)" },
-        },
       },
     },
   },

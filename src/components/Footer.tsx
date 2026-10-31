@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import Link from 'next/link';
 import { Moon, Sun, ShieldCheck } from 'lucide-react';
+import { useThemeToggle } from '@/hooks/useThemeToggle';
 import BrandLogo from './BrandLogo';
 
 interface DirectoryCategory {
@@ -98,36 +99,8 @@ const SECONDARY_LINKS: readonly { label: string; href: string }[] = [
   { label: 'Status', href: '/status' },
 ];
 
-interface ThemeEventDetail {
-  theme?: string;
-}
-
 export default function Footer() {
-  const [isDark, setIsDark] = useState(false);
-
-  useEffect(() => {
-    setIsDark(document.documentElement.classList.contains('dark'));
-
-    const handleThemeChange: EventListener = (event) => {
-      const custom = event as CustomEvent<ThemeEventDetail>;
-      if (custom.detail?.theme) {
-        setIsDark(custom.detail.theme === 'dark');
-      }
-    };
-
-    window.addEventListener('easyconvert-theme-change', handleThemeChange);
-    return () => {
-      window.removeEventListener('easyconvert-theme-change', handleThemeChange);
-    };
-  }, []);
-
-  const toggleDarkMode = () => {
-    const nextTheme = isDark ? 'light' : 'dark';
-    document.documentElement.classList.toggle('dark', nextTheme === 'dark');
-    localStorage.theme = nextTheme;
-    setIsDark(nextTheme === 'dark');
-    window.dispatchEvent(new CustomEvent('easyconvert-theme-change', { detail: { theme: nextTheme } }));
-  };
+  const { isDark, toggleDarkMode } = useThemeToggle();
 
   return (
     <footer className="bg-white dark:bg-[#0E111D] text-ink-secondary dark:text-slate-300 border-t border-neutral-border dark:border-dark-border transition-colors mt-auto font-sans">
@@ -138,12 +111,12 @@ export default function Footer() {
               <h2 className="text-brand-950 dark:text-white font-semibold text-sm mb-3 tracking-tight">
                 {category.title}
               </h2>
-              <ul className="space-y-2">
+              <ul className="space-y-1 sm:space-y-2">
                 {category.links.map((link) => (
                   <li key={`${category.title}-${link.label}`}>
                     <Link
                       href={link.href}
-                      className="text-ink-secondary hover:text-brand-700 dark:text-slate-400 dark:hover:text-white text-[13px] transition-colors block leading-snug py-0.5"
+                      className="min-h-[44px] sm:min-h-0 inline-flex items-center text-ink-secondary hover:text-brand-700 dark:text-slate-400 dark:hover:text-white text-[13px] transition-colors leading-snug py-0.5"
                     >
                       {link.label}
                     </Link>
@@ -155,12 +128,12 @@ export default function Footer() {
         </div>
 
         <div className="pt-8 mt-10 border-t border-neutral-border dark:border-dark-border">
-          <nav aria-label="Footer secondary" className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px]">
+          <nav aria-label="Footer secondary" className="flex flex-wrap items-center gap-x-6 gap-y-1 text-[13px]">
             {SECONDARY_LINKS.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
-                className="min-h-[36px] inline-flex items-center text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors font-medium"
+                className="min-h-[44px] sm:min-h-[36px] inline-flex items-center text-ink-secondary hover:text-brand-950 dark:text-slate-400 dark:hover:text-white transition-colors font-medium"
               >
                 {item.label}
               </Link>
@@ -185,7 +158,7 @@ export default function Footer() {
             type="button"
             onClick={toggleDarkMode}
             aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md text-ink-secondary hover:text-brand-950 bg-neutral-subtle hover:bg-neutral-border/60 border border-neutral-border dark:bg-dark-surface dark:border-dark-border dark:text-slate-300 dark:hover:text-white transition-colors cursor-pointer"
+            className="min-w-[44px] sm:min-w-[36px] min-h-[44px] sm:min-h-[36px] inline-flex items-center justify-center rounded-md text-ink-secondary hover:text-brand-950 bg-neutral-subtle hover:bg-neutral-border/60 border border-neutral-border dark:bg-dark-surface dark:border-dark-border dark:text-slate-300 dark:hover:text-white transition-colors cursor-pointer"
           >
             {isDark ? (
               <Sun className="w-4 h-4 text-amber-400" />

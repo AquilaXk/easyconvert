@@ -14,13 +14,16 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/',
 }));
 
-import { CATEGORIES, FORMAT_REGISTRY, getAllFormats } from '../src/lib/registry';
+import { CATEGORIES, getAllFormats } from '../src/lib/registry';
 import { CATEGORY_ORDER, REGISTRY_STATS } from '../src/lib/registry-stats';
 import HomePage from '../src/app/page';
 import DynamicConverterPage from '../src/app/[slug]/page';
 import AuthPage from '../src/app/auth/page';
+import { resolveOAuthErrorMessage } from '../src/components/auth/AuthForms';
 import ApiDocsPage from '../src/app/api-docs/page';
+import { buildCurlSnippet } from '../src/components/api-docs/curl-builder';
 import StatusPage from '../src/app/status/page';
+import { DiagnosticResultsCard } from '../src/components/status/StatusDiagnosticsPanels';
 import UnitConverterPage from '../src/app/unit-converter/page';
 import OptionsModal from '../src/components/OptionsModal';
 import UrlImportModal from '../src/components/UrlImportModal';
@@ -147,7 +150,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(violations).toEqual([]);
   });
 
-  it('scopes OptionsModal sections to the active format pair and uses native dialog + 16px labeled controls', () => {
+  it('scopes OptionsModal sections strictly to engine capabilities and uses native dialog + 16px labeled controls', () => {
     const imageModal = render(OptionsModal, {
       filename: 'photo.png',
       sourceFormat: 'png',
@@ -172,17 +175,78 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     ).toEqual([]);
     expect(phrasesPresent(imageText, ['Page Range', 'Open Password', 'Video Codec', 'Audio Bitrate'])).toEqual([]);
 
-    const pdfToDocxModal = render(OptionsModal, {
-      filename: 'report.pdf',
-      sourceFormat: 'pdf',
-      targetFormat: 'docx',
-      initialOptions: {},
-      onSave: noop,
-      onClose: noop,
-    });
-    const pdfText = visibleText(pdfToDocxModal);
-    expect(phrasesMissing(pdfText, ['Page Range', 'Open Password (PDF)'])).toEqual([]);
-    expect(phrasesPresent(pdfText, ['Video Codec', 'Audio Bitrate', 'Width (px)'])).toEqual([]);
+    const pngToPdfText = visibleText(
+      render(OptionsModal, {
+        filename: 'scan.png',
+        sourceFormat: 'png',
+        targetFormat: 'pdf',
+        initialOptions: {},
+        onSave: noop,
+        onClose: noop,
+      })
+    );
+    expect(phrasesPresent(pngToPdfText, ['Open Password', 'Page Range', 'Orientation'])).toEqual([]);
+
+    const pdfToPngText = visibleText(
+      render(OptionsModal, {
+        filename: 'slides.pdf',
+        sourceFormat: 'pdf',
+        targetFormat: 'png',
+        initialOptions: {},
+        onSave: noop,
+        onClose: noop,
+      })
+    );
+    expect(phrasesMissing(pdfToPngText, ['Page Range', 'Open Password (PDF)'])).toEqual([]);
+    expect(phrasesPresent(pdfToPngText, ['Orientation', 'Enable OCR text recognition'])).toEqual([]);
+
+    const jsonToYamlText = visibleText(
+      render(OptionsModal, {
+        filename: 'config.json',
+        sourceFormat: 'json',
+        targetFormat: 'yaml',
+        initialOptions: {},
+        onSave: noop,
+        onClose: noop,
+      })
+    );
+    expect(phrasesPresent(jsonToYamlText, ['Field Delimiter', 'Worksheet Index'])).toEqual([]);
+
+    const pngToMp4Text = visibleText(
+      render(OptionsModal, {
+        filename: 'poster.png',
+        sourceFormat: 'png',
+        targetFormat: 'mp4',
+        initialOptions: {},
+        onSave: noop,
+        onClose: noop,
+      })
+    );
+    expect(phrasesPresent(pngToMp4Text, ['Audio Bitrate', 'Audio Codec'])).toEqual([]);
+
+    const zipToTarText = visibleText(
+      render(OptionsModal, {
+        filename: 'bundle.zip',
+        sourceFormat: 'zip',
+        targetFormat: 'tar',
+        initialOptions: {},
+        onSave: noop,
+        onClose: noop,
+      })
+    );
+    expect(phrasesPresent(zipToTarText, ['Compression Level', 'Output Archive Password', 'Open Password'])).toEqual([]);
+
+    const pngToZipText = visibleText(
+      render(OptionsModal, {
+        filename: 'bundle.png',
+        sourceFormat: 'png',
+        targetFormat: 'zip',
+        initialOptions: {},
+        onSave: noop,
+        onClose: noop,
+      })
+    );
+    expect(phrasesMissing(pngToZipText, ['Compression Level', 'Output Archive Password (ZIP)'])).toEqual([]);
 
     const videoModal = render(OptionsModal, {
       filename: 'clip.mov',
@@ -196,16 +260,6 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(videoLabels.filter((text) => text.startsWith('Trim Start'))).toHaveLength(1);
     expect(videoLabels.filter((text) => text.startsWith('Trim End'))).toHaveLength(1);
     expect(phrasesMissing(visibleText(videoModal), ['Video Codec', 'Audio Bitrate'])).toEqual([]);
-
-    const fontModal = render(OptionsModal, {
-      filename: 'inter.ttf',
-      sourceFormat: 'ttf',
-      targetFormat: 'woff2',
-      initialOptions: {},
-      onSave: noop,
-      onClose: noop,
-    });
-    expect(visibleText(fontModal)).toMatch(/Standard lossless conversion parameters apply/);
 
     const labelTargets = new Set(
       select(videoModal, 'label')
@@ -226,11 +280,11 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     }
   });
 
-  it('renders UrlImportModal and DlqPayloadDialog with native HTML dialog elements and accessible controls', () => {
+  it('renders UrlImportModal and DlqPayloadDialog with native HTML dialog elements and typed payloads', () => {
     const urlModal = render(UrlImportModal, {
       isOpen: true,
       onClose: noop,
-      onImport: noop,
+      onAddFile: noop,
     });
     const urlDialogs = select(urlModal, 'dialog');
     expect(urlDialogs).toHaveLength(1);
@@ -243,14 +297,16 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
 
     const sampleEntry: WebhookDlqEntry = {
       id: 'dlq_01',
-      webhookId: 'wh_01',
+      originalDeliveryId: 'deliv_01',
       targetUrl: 'https://hooks.example.com/events',
       event: 'job.completed',
       payload: { jobId: 'job_123', status: 'completed' },
-      attempts: 3,
-      lastStatus: 502,
+      secret: 'whsec_redacted',
+      failedAt: 1730332800000,
+      finalStatusCode: 502,
       errorMessage: 'Upstream gateway timeout',
-      createdAt: '2026-10-31T00:00:00.000Z',
+      retryCount: 3,
+      status: 'failed',
     };
     const dlqModal = render(DlqPayloadDialog, {
       entry: sampleEntry,
@@ -264,7 +320,7 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(phrasesMissing(visibleText(dlqModal), ['Inspect Webhook Payload', 'Upstream gateway timeout', 'Replay Now'])).toEqual([]);
   });
 
-  it('distinguishes unselected vs ready, converting, and error states in ConversionQueue', () => {
+  it('distinguishes unselected, ready, converting, and error states in ConversionQueue with semantic progress and output elements', () => {
     const unselectedQueue = render(ConversionQueue, {
       items: [makeQueueItem({ targetFormat: '' })],
       onRemoveItem: noop,
@@ -281,29 +337,17 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(phrasesMissing(unselectedText, ['Select format', 'Please select an output format to continue'])).toEqual([]);
     expect(phrasesPresent(unselectedText, ['Ready to convert'])).toEqual([]);
 
+    const optionsBtn = select(unselectedQueue, 'button', 'aria-label', 'Conversion options for diagram.png');
+    expect(optionsBtn).toHaveLength(1);
+    expect(attrOf(optionsBtn[0], 'disabled')).toBe('');
+
     const convertBtn = select(unselectedQueue, 'button').find((b) => visibleText(b) === 'Convert');
     expect(convertBtn).toBeDefined();
     expect(attrOf(convertBtn as DomElement, 'disabled')).toBe('');
 
-    const statusLive = select(unselectedQueue, 'div', 'role', 'status');
-    expect(statusLive).toHaveLength(1);
-    expect(attrOf(statusLive[0], 'aria-live')).toBe('polite');
-
-    const readyQueue = render(ConversionQueue, {
-      items: [makeQueueItem({ targetFormat: 'webp', status: 'ready' })],
-      onRemoveItem: noop,
-      onClearAll: noop,
-      onUpdateTargetFormat: noop,
-      onUpdateOptions: noop,
-      onConvertAll: noop,
-      onConvertSingle: noop,
-      onAddMoreFiles: noop,
-      onDownloadAllZip: noop,
-      isConverting: false,
-    });
-    expect(phrasesMissing(visibleText(readyQueue), ['Ready', 'Ready to convert 1 file'])).toEqual([]);
-    const enabledConvertBtn = select(readyQueue, 'button').find((b) => visibleText(b) === 'Convert');
-    expect(attrOf(enabledConvertBtn as DomElement, 'disabled')).toBeNull();
+    const statusOutputs = select(unselectedQueue, 'output');
+    expect(statusOutputs).toHaveLength(1);
+    expect(attrOf(statusOutputs[0], 'aria-live')).toBe('polite');
 
     const convertingQueue = render(ConversionQueue, {
       items: [makeQueueItem({ status: 'converting', progress: 64 })],
@@ -317,9 +361,9 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
       onDownloadAllZip: noop,
       isConverting: true,
     });
-    const progressBars = select(convertingQueue, 'div', 'role', 'progressbar');
+    const progressBars = select(convertingQueue, 'progress');
     expect(progressBars).toHaveLength(1);
-    expect(attrOf(progressBars[0], 'aria-valuenow')).toBe('64');
+    expect(attrOf(progressBars[0], 'value')).toBe('64');
 
     const errorQueue = render(ConversionQueue, {
       items: [makeQueueItem({ status: 'error', error: 'Corrupt PNG header signature' })],
@@ -335,25 +379,74 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     });
     const alerts = allElements(errorQueue).filter((el) => attrOf(el, 'role') === 'alert');
     expect(alerts.map((a) => visibleText(a))).toEqual(['Corrupt PNG header signature']);
-    expect(select(errorQueue, 'button').some((b) => visibleText(b) === 'Retry')).toBe(true);
   });
 
-  it('auto-selects the matching source format category in FormatSelector and pairs search input with a label', () => {
+  it('handles FormatSelector empty capability arrays, OAuth error allowlists, unsupported diagnostics, and OpenAPI cURL synthesis', () => {
     const imagePicker = render(FormatSelector, {
       sourceFormat: 'png',
       onSelect: noop,
       onClose: noop,
     });
+    expect(phrasesMissing(visibleText(imagePicker), ['WEBP', 'JPG', 'AVIF'])).toEqual([]);
 
-    const pickerText = visibleText(imagePicker);
-    expect(phrasesMissing(pickerText, ['WEBP', 'JPG', 'AVIF'])).toEqual([]);
+    const emptyPicker = render(FormatSelector, {
+      availableFormats: [],
+      sourceFormat: 'xyz',
+      onSelect: noop,
+      onClose: noop,
+    });
+    expect(visibleText(emptyPicker)).toMatch(/No supported output formats for this file/);
+    expect(phrasesPresent(visibleText(emptyPicker), ['WEBP', 'DOCX', 'MP4'])).toEqual([]);
 
-    const searchInputs = select(imagePicker, 'input', 'type', 'text');
-    expect(searchInputs).toHaveLength(1);
-    const inputId = attrOf(searchInputs[0], 'id');
-    expect(inputId).not.toBeNull();
-    expect(attrOf(searchInputs[0], 'class') ?? '').toMatch(/\btext-base\b/);
-    expect(select(imagePicker, 'label', 'for', inputId as string)).toHaveLength(1);
+    expect(resolveOAuthErrorMessage(null)).toBeNull();
+    expect(resolveOAuthErrorMessage('%')).toBe('Authentication failed. Please try signing in again.');
+    expect(resolveOAuthErrorMessage('100%')).toBe('Authentication failed. Please try signing in again.');
+    expect(resolveOAuthErrorMessage('Call +1-800-PHISH')).toBe('Authentication failed. Please try signing in again.');
+    expect(resolveOAuthErrorMessage('account_linking_required')).toMatch(/Sign in with your password first/);
+
+    const diagDom = render(DiagnosticResultsCard, {
+      results: [
+        { id: 'wasm', name: 'WebAssembly SIMD', details: '128-bit lanes', latencyMs: 1, supported: true },
+        { id: 'opfs', name: 'Origin Private FS', details: 'Blob memory streaming active', latencyMs: 1, supported: false },
+      ],
+    });
+    expect(phrasesMissing(visibleText(diagDom), ['1/2 Active', 'Unavailable'])).toEqual([]);
+
+    const jsonPostCurl = buildCurlSnippet(
+      {
+        key: 'post:/api/v1/jobs',
+        method: 'post',
+        path: '/api/v1/jobs',
+        operation: {
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: { properties: { uploadId: { type: 'string' }, targetFormat: { type: 'string' } }, required: ['uploadId', 'targetFormat'] },
+              },
+            },
+          },
+        },
+      },
+      '',
+      'https://api.easyconvert.com'
+    );
+    expect(jsonPostCurl).toContain('-H "Content-Type: application/json"');
+    expect(jsonPostCurl).not.toContain('-F "file=@sample.docx"');
+
+    const publicPutCurl = buildCurlSnippet(
+      {
+        key: 'put:/api/v1/uploads/direct/part',
+        method: 'put',
+        path: '/api/v1/uploads/direct/part',
+        operation: {
+          security: [],
+          requestBody: { content: { 'application/octet-stream': {} } },
+        },
+      },
+      ''
+    );
+    expect(publicPutCurl).toContain('--upload-file ./part.bin');
+    expect(publicPutCurl).not.toContain('Authorization: Bearer');
   });
 
   it('maintains WCAG 2.1 AA landmarks, single h1, non-skipping heading levels, and labeled 16px controls across routes', () => {

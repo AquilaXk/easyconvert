@@ -3,7 +3,11 @@
 import { useState, useEffect, useRef } from 'react';
 import JSZip from 'jszip';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
-import { detectFormatFromFilename, FORMAT_REGISTRY } from '@/lib/registry';
+import {
+  detectFormatFromFilename,
+  FORMAT_REGISTRY,
+  getAvailableTargetFormats,
+} from '@/lib/registry';
 import { createItemConverter, getEffectiveMaxFileSize } from '@/lib/client-converter';
 
 declare global {
@@ -17,86 +21,98 @@ interface UseClientQueueOptions {
   bundlePrefix?: string;
 }
 
+const DEFAULT_ITEM_OPTIONS: ConversionOptions = {
+  quality: 85,
+  fit: 'contain',
+  stripMetadata: false,
+  orientation: 'portrait',
+  delimiter: ',',
+  compressionLevel: 6,
+};
+
 function createQueueItemId(fileName: string): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `item-${Date.now()}-${fileName}`;
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `item-${Date.now()}-${fileName}`;
 }
 
-function resolveInitialTargetFormat(
-  supportedTargets: string[] | undefined,
-  effectiveDefault: string | undefined
-): string {
-  if (!effectiveDefault || effectiveDefault.toLowerCase() === 'any') {
-    return '';
-  }
-  const preferredFmt = effectiveDefault.toLowerCase();
-  if (supportedTargets && supportedTargets.length > 0) {
-    return supportedTargets.includes(preferredFmt) ? preferredFmt : '';
-  }
-  return preferredFmt;
+function revokeBlobIfNeeded(url?: string): void {
+  if (url?.startsWith('blob:')) URL.revokeObjectURL(url);
 }
 
-function buildUniqueArchiveName(
-  itemName: string,
-  targetFormat: string,
-  usedFilenames: Set<string>
-): string {
-  const dotIndex = itemName.lastIndexOf('.');
-  const baseName = (dotIndex > 0 ? itemName.substring(0, dotIndex) : itemName) || itemName;
+function resolveInitialTargetFormat(sourceFormat: string, effectiveDefault?: string): string {
+  if (!effectiveDefault || effectiveDefault.toLowerCase() === 'any') return '';
+  const cleanTarget = effectiveDefault.toLowerCase();
+  const normalizedSource = sourceFormat.toLowerCase();
+  if (!FORMAT_REGISTRY[normalizedSource]) {
+    return FORMAT_REGISTRY[cleanTarget]?.available === false ? '' : cleanTarget;
+  }
+  return getAvailableTargetFormats(normalizedSource).some((f) => f.id === cleanTarget)
+    ? cleanTarget
+    : '';
+}
+
+function resetItemIfFinished(
+  item: ConversionQueueItem,
+  patch: Pick<ConversionQueueItem, 'targetFormat' | 'options'>
+): ConversionQueueItem {
+  if (item.status !== 'completed' && item.status !== 'error') return { ...item, ...patch };
+  revokeBlobIfNeeded(item.resultUrl);
+  return {
+    id: item.id,
+    file: item.file,
+    name: item.name,
+    size: item.size,
+    sourceFormat: item.sourceFormat,
+    targetFormat: patch.targetFormat,
+    options: patch.options,
+    status: 'ready',
+    progress: 0,
+  };
+}
+
+function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Set<string>): string {
+  const dot = itemName.lastIndexOf('.');
+  const baseName = (dot > 0 ? itemName.substring(0, dot) : itemName) || itemName;
   let candidate = `${baseName}.${targetFormat}`;
   let counter = 1;
-  while (usedFilenames.has(candidate)) {
+  while (used.has(candidate)) {
     candidate = `${baseName}_(${counter}).${targetFormat}`;
     counter += 1;
   }
-  usedFilenames.add(candidate);
+  used.add(candidate);
   return candidate;
 }
 
 export function useClientQueue(options?: UseClientQueueOptions) {
   const [queue, setQueue] = useState<ConversionQueueItem[]>([]);
   const [isConverting, setIsConverting] = useState(false);
-  const [presetTarget, setPresetTarget] = useState<string>('');
   const [zipError, setZipError] = useState<string | null>(null);
 
   const handleFilesSelected = (files: File[], overrideTarget?: string) => {
     const maxLimit = getEffectiveMaxFileSize();
-    const effectiveDefault = overrideTarget || presetTarget || options?.defaultTarget;
-    if (presetTarget) {
-      setPresetTarget('');
-    }
-
+    const effectiveDefault = overrideTarget || options?.defaultTarget;
     const newItems: ConversionQueueItem[] = files.map((file) => {
       const detected = detectFormatFromFilename(file.name);
-      const sourceFormat = detected ? detected.extension : file.name.split('.').pop() || 'bin';
-      const targetFormat = resolveInitialTargetFormat(detected?.targetFormats, effectiveDefault);
+      const ext = detected ? detected.extension : file.name.split('.').pop() || 'bin';
+      const sourceFormat = ext.toLowerCase();
+      const targetFormat = resolveInitialTargetFormat(sourceFormat, effectiveDefault);
       const isOverSize = file.size > maxLimit;
-
       return {
         id: createQueueItemId(file.name),
         file,
         name: file.name,
         size: file.size,
-        sourceFormat: sourceFormat.toLowerCase(),
-        targetFormat: targetFormat.toLowerCase(),
+        sourceFormat,
+        targetFormat,
         status: isOverSize ? 'error' : 'ready',
         error: isOverSize
           ? `File exceeds ${Math.round(maxLimit / (1024 * 1024))} MB real-time conversion limit.`
           : undefined,
         progress: 0,
-        options: {
-          quality: 85,
-          fit: 'contain',
-          stripMetadata: false,
-          orientation: 'portrait',
-          delimiter: ',',
-          compressionLevel: 6,
-        },
+        options: { ...DEFAULT_ITEM_OPTIONS },
       };
     });
-
     setQueue((prev) => [...prev, ...newItems]);
   };
 
@@ -104,9 +120,7 @@ export function useClientQueue(options?: UseClientQueueOptions) {
   handleFilesSelectedRef.current = handleFilesSelected;
 
   useEffect(() => {
-    if (process.env.NODE_ENV === 'production') {
-      return;
-    }
+    if (process.env.NODE_ENV === 'production') return;
     window.__addTestFile = (name: string, target?: string) => {
       const file = new File(['mock test data content'], name, { type: 'application/pdf' });
       handleFilesSelectedRef.current([file], target);
@@ -118,46 +132,48 @@ export function useClientQueue(options?: UseClientQueueOptions) {
 
   const handleRemoveItem = (id: string) => {
     setQueue((prev) => {
-      const target = prev.find((i) => i.id === id);
-      if (target?.resultUrl) {
-        URL.revokeObjectURL(target.resultUrl);
-      }
+      revokeBlobIfNeeded(prev.find((i) => i.id === id)?.resultUrl);
       return prev.filter((i) => i.id !== id);
     });
   };
 
   const handleClearAll = () => {
-    queue.forEach((item) => {
-      if (item.resultUrl) {
-        URL.revokeObjectURL(item.resultUrl);
-      }
-    });
+    queue.forEach((item) => revokeBlobIfNeeded(item.resultUrl));
     setZipError(null);
     setQueue([]);
   };
 
   const handleUpdateTargetFormat = (id: string, targetFormat: string) => {
+    const cleanTarget = targetFormat.toLowerCase();
     setQueue((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, targetFormat } : item))
+      prev.map((item) =>
+        item.id !== id || item.targetFormat.toLowerCase() === cleanTarget
+          ? item
+          : resetItemIfFinished(item, { targetFormat: cleanTarget, options: item.options })
+      )
     );
   };
 
   const handleUpdateAllTargets = (targetFormat: string) => {
-    const normalizedTarget = targetFormat.toLowerCase();
+    const cleanTarget = targetFormat.toLowerCase();
     setQueue((prev) =>
       prev.map((item) => {
-        const def = FORMAT_REGISTRY[item.sourceFormat];
-        if (def && def.targetFormats.includes(normalizedTarget)) {
-          return { ...item, targetFormat: normalizedTarget };
-        }
-        return item;
+        const isSupported = getAvailableTargetFormats(item.sourceFormat).some(
+          (f) => f.id === cleanTarget
+        );
+        if (!isSupported || item.targetFormat.toLowerCase() === cleanTarget) return item;
+        return resetItemIfFinished(item, { targetFormat: cleanTarget, options: item.options });
       })
     );
   };
 
   const handleUpdateOptions = (id: string, nextOptions: ConversionOptions) => {
     setQueue((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, options: nextOptions } : item))
+      prev.map((item) =>
+        item.id === id
+          ? resetItemIfFinished(item, { targetFormat: item.targetFormat, options: nextOptions })
+          : item
+      )
     );
   };
 
@@ -165,51 +181,34 @@ export function useClientQueue(options?: UseClientQueueOptions) {
 
   const handleConvertAll = async () => {
     setIsConverting(true);
-    const pendingItems = queue.filter((i) => i.status === 'ready' || i.status === 'error');
-    for (const item of pendingItems) {
+    for (const item of queue.filter((i) => i.status === 'ready' || i.status === 'error')) {
       await convertSingleItem(item);
     }
     setIsConverting(false);
   };
 
-  const clearZipError = () => {
-    setZipError(null);
-  };
-
   const handleDownloadAllZip = async () => {
     const completedItems = queue.filter((i) => i.status === 'completed' && i.resultUrl);
-    if (completedItems.length === 0) {
-      return;
-    }
-
+    if (completedItems.length === 0) return;
     setZipError(null);
     try {
       const zip = new JSZip();
-      const usedFilenames = new Set<string>();
-
+      const used = new Set<string>();
       for (const item of completedItems) {
-        if (!item.resultUrl) {
-          continue;
-        }
+        if (!item.resultUrl) continue;
         const res = await fetch(item.resultUrl);
-        const blob = await res.blob();
-        const archiveFilename = buildUniqueArchiveName(item.name, item.targetFormat, usedFilenames);
-        zip.file(archiveFilename, blob);
+        zip.file(buildUniqueArchiveName(item.name, item.targetFormat, used), await res.blob());
       }
-
-      const zipBlob = await zip.generateAsync({ type: 'blob' });
-      const zipUrl = URL.createObjectURL(zipBlob);
+      const zipUrl = URL.createObjectURL(await zip.generateAsync({ type: 'blob' }));
       const anchor = document.createElement('a');
       anchor.href = zipUrl;
-      const prefix = options?.bundlePrefix || 'easyconvert_bundle';
-      anchor.download = `${prefix}_${Date.now()}.zip`;
+      anchor.download = `${options?.bundlePrefix || 'easyconvert_bundle'}_${Date.now()}.zip`;
       document.body.appendChild(anchor);
       anchor.click();
-      document.body.removeChild(anchor);
+      anchor.remove();
       URL.revokeObjectURL(zipUrl);
     } catch (err: unknown) {
-      const detail = err instanceof Error ? err.message : 'Unknown error';
-      setZipError(`Could not build ZIP archive. ${detail}`);
+      setZipError(`Could not build ZIP archive. ${err instanceof Error ? err.message : 'Unknown error'}`);
     }
   };
 
@@ -217,10 +216,8 @@ export function useClientQueue(options?: UseClientQueueOptions) {
     queue,
     setQueue,
     isConverting,
-    presetTarget,
-    setPresetTarget,
     zipError,
-    clearZipError,
+    clearZipError: () => setZipError(null),
     handleFilesSelected,
     handleRemoveItem,
     handleClearAll,

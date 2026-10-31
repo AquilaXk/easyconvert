@@ -1,5 +1,12 @@
 import type { FormatCategory, FormatDefinition } from './types';
-import { FORMAT_REGISTRY, getAvailableTargetFormats } from './registry';
+import {
+  CATEGORY_LABELS,
+  CATEGORY_ORDER,
+  FORMAT_REGISTRY,
+  getAvailableTargetFormats,
+} from './registry';
+
+export { CATEGORY_LABELS, CATEGORY_ORDER };
 
 export interface CategoryRegistryStat {
   id: FormatCategory;
@@ -14,36 +21,6 @@ export interface RegistryStats {
   pairCount: number;
   categories: CategoryRegistryStat[];
 }
-
-export const CATEGORY_ORDER: readonly FormatCategory[] = [
-  'image',
-  'document',
-  'archive',
-  'video',
-  'audio',
-  'ebook',
-  'spreadsheet',
-  'presentation',
-  'data',
-  'vector',
-  'font',
-  'cad',
-];
-
-export const CATEGORY_LABELS: Record<FormatCategory, string> = {
-  image: 'Images',
-  document: 'Documents',
-  archive: 'Archives',
-  video: 'Video',
-  audio: 'Audio',
-  ebook: 'Ebooks',
-  spreadsheet: 'Spreadsheets',
-  presentation: 'Presentations',
-  data: 'Data & Tables',
-  vector: 'Vector',
-  font: 'Fonts',
-  cad: 'CAD & 3D',
-};
 
 function computeRegistryStats(): RegistryStats {
   const allFormats = Object.values(FORMAT_REGISTRY);
@@ -84,4 +61,24 @@ function computeRegistryStats(): RegistryStats {
   };
 }
 
-export const REGISTRY_STATS: RegistryStats = computeRegistryStats();
+let cachedStats: RegistryStats | undefined;
+
+function getRegistryStats(): RegistryStats {
+  cachedStats ??= computeRegistryStats();
+  return cachedStats;
+}
+
+export const REGISTRY_STATS: RegistryStats = {
+  get formatCount() {
+    return getRegistryStats().formatCount;
+  },
+  get categoryCount() {
+    return getRegistryStats().categoryCount;
+  },
+  get pairCount() {
+    return getRegistryStats().pairCount;
+  },
+  get categories() {
+    return getRegistryStats().categories;
+  },
+};

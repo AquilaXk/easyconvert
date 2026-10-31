@@ -2,104 +2,32 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { getAvailableTargetFormats } from '@/lib/registry';
-import { REGISTRY_STATS } from '@/lib/registry-stats';
 import UrlImportModal from './UrlImportModal';
 import HeroFormatTiles from './workbench/HeroFormatTiles';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
+import {
+  computeHeroSubtitle,
+  computeHeroTitle,
+  QueueSummaryInput,
+  resolveQueueSummary,
+} from './workbench/hero-copy';
 
 export interface HeroProps {
   onFilesSelected: (files: File[], defaultTarget?: string) => void;
   hasActiveQueue: boolean;
   activeSourceFormat?: string;
   activeTargetFormat?: string;
+  initialSourceFormat?: string;
+  initialTargetFormat?: string;
   categoryTitle?: string;
   categoryDescription?: string;
-  activeQueueSummary?: { sourceFormats: string[]; targetFormats: string[] };
+  activeQueueSummary?: QueueSummaryInput;
 }
 
 function getEffectiveTargetFormat(chosen?: string, fallback?: string): string | undefined {
-  if (chosen && chosen.toLowerCase() !== 'any') {
-    return chosen.toLowerCase();
-  }
-  if (fallback && fallback.toLowerCase() !== 'any') {
-    return fallback.toLowerCase();
-  }
+  if (chosen && chosen.toLowerCase() !== 'any') return chosen.toLowerCase();
+  if (fallback && fallback.toLowerCase() !== 'any') return fallback.toLowerCase();
   return undefined;
-}
-
-function computeHeroTitle({
-  categoryTitle,
-  hasActiveQueue,
-  activeSourceFormat,
-  activeTargetFormat,
-  sourceFormat,
-  targetFormat,
-  userChangedTiles,
-}: {
-  categoryTitle?: string;
-  hasActiveQueue: boolean;
-  activeSourceFormat?: string;
-  activeTargetFormat?: string;
-  sourceFormat: string;
-  targetFormat: string;
-  userChangedTiles: boolean;
-}): string {
-  if (categoryTitle && !userChangedTiles) {
-    return categoryTitle;
-  }
-
-  const src = (hasActiveQueue ? activeSourceFormat || sourceFormat : sourceFormat).toLowerCase();
-  const tgt = (hasActiveQueue ? activeTargetFormat || targetFormat : targetFormat).toLowerCase();
-  const hasSrc = Boolean(src && src !== 'any');
-  const hasTgt = Boolean(tgt && tgt !== 'any');
-
-  if (hasSrc && hasTgt) {
-    return `${src.toUpperCase()} to ${tgt.toUpperCase()} Converter`;
-  }
-  if (hasSrc) {
-    return `${src.toUpperCase()} Converter`;
-  }
-  if (hasTgt) {
-    return `Convert to ${tgt.toUpperCase()}`;
-  }
-  return 'File Converter';
-}
-
-function computeHeroSubtitle({
-  categoryDescription,
-  hasActiveQueue,
-  sourceFormat,
-  targetFormat,
-  userChangedTiles,
-}: {
-  categoryDescription?: string;
-  hasActiveQueue: boolean;
-  sourceFormat: string;
-  targetFormat: string;
-  userChangedTiles: boolean;
-}): string {
-  if (categoryDescription && !userChangedTiles && !hasActiveQueue) {
-    return categoryDescription;
-  }
-
-  const countPhrase = `${REGISTRY_STATS.formatCount} formats in ${REGISTRY_STATS.categoryCount} categories`;
-
-  if (hasActiveQueue) {
-    return `Choose output formats, adjust parameters, and download converted files across ${countPhrase}.`;
-  }
-
-  const src = sourceFormat.toLowerCase();
-  const tgt = targetFormat.toLowerCase();
-  const hasSrc = Boolean(src && src !== 'any');
-  const hasTgt = Boolean(tgt && tgt !== 'any');
-
-  if (hasSrc && hasTgt) {
-    return `Convert ${src.toUpperCase()} to ${tgt.toUpperCase()} online. Supports ${countPhrase} with encrypted transfer and ephemeral processing.`;
-  }
-  if (hasSrc) {
-    return `Convert ${src.toUpperCase()} files online across ${countPhrase} with encrypted transfer and ephemeral processing.`;
-  }
-  return `Convert documents, images, audio, video, structured data, and archives online across ${countPhrase}.`;
 }
 
 export default function Hero({
@@ -107,47 +35,55 @@ export default function Hero({
   hasActiveQueue,
   activeSourceFormat,
   activeTargetFormat,
+  initialSourceFormat,
+  initialTargetFormat,
   categoryTitle,
   categoryDescription,
-}: HeroProps) {
-  const [sourceFormat, setSourceFormat] = useState(
-    activeSourceFormat ? activeSourceFormat.toLowerCase() : 'any'
-  );
-  const [targetFormat, setTargetFormat] = useState(
-    activeTargetFormat ? activeTargetFormat.toLowerCase() : 'any'
-  );
+  activeQueueSummary,
+}: Readonly<HeroProps>) {
+  const seedSource = activeSourceFormat ?? initialSourceFormat;
+  const seedTarget = activeTargetFormat ?? initialTargetFormat;
+  const [sourceFormat, setSourceFormat] = useState(seedSource ? seedSource.toLowerCase() : 'any');
+  const [targetFormat, setTargetFormat] = useState(seedTarget ? seedTarget.toLowerCase() : 'any');
   const [userChangedTiles, setUserChangedTiles] = useState(false);
   const [isUrlModalOpen, setIsUrlModalOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const targetFormatRef = useRef(targetFormat);
+  const prevHasActiveQueueRef = useRef(hasActiveQueue);
 
   useEffect(() => {
     targetFormatRef.current = targetFormat;
   }, [targetFormat]);
 
   useEffect(() => {
-    if (activeSourceFormat) {
-      setSourceFormat(activeSourceFormat.toLowerCase());
-    }
-  }, [activeSourceFormat]);
+    if (seedSource) setSourceFormat(seedSource.toLowerCase());
+  }, [seedSource]);
 
   useEffect(() => {
-    if (activeTargetFormat) {
-      const normalized = activeTargetFormat.toLowerCase();
+    if (seedTarget) {
+      const normalized = seedTarget.toLowerCase();
       setTargetFormat(normalized);
       targetFormatRef.current = normalized;
     }
-  }, [activeTargetFormat]);
+  }, [seedTarget]);
+
+  useEffect(() => {
+    const wasActive = prevHasActiveQueueRef.current;
+    prevHasActiveQueueRef.current = hasActiveQueue;
+    if (wasActive && !hasActiveQueue && !seedSource && !seedTarget) {
+      setSourceFormat('any');
+      setTargetFormat('any');
+      targetFormatRef.current = 'any';
+      setUserChangedTiles(false);
+    }
+  }, [hasActiveQueue, seedSource, seedTarget]);
 
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-      ) {
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
       const pastedFiles = e.clipboardData?.files;
@@ -159,7 +95,6 @@ export default function Hero({
         onFilesSelected(files, effectiveTarget);
       }
     };
-
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
   }, [activeTargetFormat, onFilesSelected]);
@@ -210,20 +145,20 @@ export default function Hero({
   const title = computeHeroTitle({
     categoryTitle,
     hasActiveQueue,
-    activeSourceFormat,
-    activeTargetFormat,
+    activeSourceFormat: seedSource,
+    activeTargetFormat: seedTarget,
     sourceFormat,
     targetFormat,
     userChangedTiles,
   });
-
-  const subtitle = computeHeroSubtitle({
+  const subtitle = computeHeroSubtitle(
     categoryDescription,
     hasActiveQueue,
     sourceFormat,
     targetFormat,
-    userChangedTiles,
-  });
+    userChangedTiles
+  );
+  const queueSummaryText = resolveQueueSummary(activeQueueSummary);
 
   return (
     <>
@@ -240,12 +175,15 @@ export default function Hero({
       {hasActiveQueue ? (
         <section className="bg-brand-950 dark:bg-[#111526] masthead-grid text-white py-6 sm:py-7 border-b border-white/10">
           <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
-              {title}
-            </h1>
-            <p className="mt-1.5 text-sm text-slate-300 max-w-2xl">
-              {subtitle}
-            </p>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">{title}</h1>
+              {queueSummaryText?.includes('files') && (
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-mono font-medium bg-white/10 text-slate-200 border border-white/15">
+                  {queueSummaryText}
+                </span>
+              )}
+            </div>
+            <p className="mt-1.5 text-sm text-slate-300 max-w-2xl">{subtitle}</p>
           </div>
         </section>
       ) : (
@@ -261,7 +199,6 @@ export default function Hero({
                     {subtitle}
                   </p>
                 </div>
-
                 <div className="lg:col-span-5 mt-7 lg:mt-0 flex justify-center lg:justify-end">
                   <HeroFormatTiles
                     sourceFormat={sourceFormat}

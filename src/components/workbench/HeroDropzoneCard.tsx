@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { ChevronDown, Upload, HardDrive, Globe } from 'lucide-react';
+import { getEffectiveMaxFileSize } from '@/lib/client-converter';
 import { REGISTRY_STATS } from '@/lib/registry-stats';
 
 interface HeroDropzoneCardProps {
@@ -23,6 +24,8 @@ const POPULAR_PAIRS: readonly { label: string; href: string }[] = [
   { label: 'EPUB to PDF', href: '/epub-to-pdf' },
 ];
 
+const TWO_GIB = 2 * 1024 * 1024 * 1024;
+
 export default function HeroDropzoneCard({
   isDragOver,
   onDragOver,
@@ -30,9 +33,14 @@ export default function HeroDropzoneCard({
   onDrop,
   onOpenFileDialog,
   onOpenUrlModal,
-}: HeroDropzoneCardProps) {
+}: Readonly<HeroDropzoneCardProps>) {
   const [showSourceMenu, setShowSourceMenu] = useState(false);
+  const [maxSizeCopy, setMaxSizeCopy] = useState('Up to 2 GB (OPFS)');
   const splitButtonRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setMaxSizeCopy(getEffectiveMaxFileSize() >= TWO_GIB ? 'Up to 2 GB' : 'Up to 100 MB');
+  }, []);
 
   useEffect(() => {
     if (!showSourceMenu) return;
@@ -75,67 +83,78 @@ export default function HeroDropzoneCard({
           Drop files here, or paste from clipboard
         </p>
 
-        <div ref={splitButtonRef} className="relative inline-flex items-stretch rounded-md shadow-sm mt-5">
-          <button
-            type="button"
-            onClick={onOpenFileDialog}
-            className="min-h-[48px] px-6 bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white font-semibold text-sm sm:text-base rounded-l-md flex items-center gap-2 cursor-pointer transition-colors"
-          >
-            <Upload className="w-4 h-4 shrink-0" />
-            <span>Select File</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowSourceMenu((v) => !v)}
-            aria-label="More file sources"
-            aria-haspopup="menu"
-            aria-expanded={showSourceMenu}
-            className="min-h-[48px] w-12 bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white border-l border-white/20 rounded-r-md flex items-center justify-center cursor-pointer transition-colors"
-          >
-            <ChevronDown
-              className={`w-4 h-4 transition-transform duration-150 ${showSourceMenu ? 'rotate-180' : ''}`}
-            />
-          </button>
-
-          {showSourceMenu && (
-            <div
-              role="menu"
-              aria-label="File sources"
-              className="absolute top-full right-0 mt-2 w-52 max-w-[calc(100dvw-2rem)] rounded-lg bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-xl p-1.5 z-40 text-left"
+        <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+          <div ref={splitButtonRef} className="relative inline-flex items-stretch rounded-md shadow-sm">
+            <button
+              type="button"
+              onClick={onOpenFileDialog}
+              className="min-h-[48px] px-6 bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white font-semibold text-sm sm:text-base rounded-l-md flex items-center gap-2 cursor-pointer transition-colors"
             >
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setShowSourceMenu(false);
-                  onOpenFileDialog();
-                }}
-                className="min-h-[44px] w-full px-3 rounded-md text-sm font-medium text-brand-950 dark:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 flex items-center gap-2.5 transition-colors cursor-pointer"
+              <Upload className="w-4 h-4 shrink-0" />
+              <span>Select File</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowSourceMenu((v) => !v)}
+              aria-label="More file sources"
+              aria-haspopup="menu"
+              aria-expanded={showSourceMenu}
+              className="min-h-[48px] w-12 bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white border-l border-white/20 rounded-r-md flex items-center justify-center cursor-pointer transition-colors"
+            >
+              <ChevronDown
+                className={`w-4 h-4 transition-transform duration-150 ${showSourceMenu ? 'rotate-180' : ''}`}
+              />
+            </button>
+
+            {showSourceMenu && (
+              <div
+                role="menu"
+                aria-label="File sources"
+                className="absolute top-full right-0 mt-2 w-52 max-w-[calc(100dvw-2rem)] rounded-lg bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border shadow-xl p-1.5 z-40 text-left"
               >
-                <HardDrive className="w-4 h-4 text-ink-muted dark:text-dark-muted shrink-0" />
-                <span>From Device</span>
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setShowSourceMenu(false);
-                  onOpenUrlModal();
-                }}
-                className="min-h-[44px] w-full px-3 rounded-md text-sm font-medium text-brand-950 dark:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 flex items-center gap-2.5 transition-colors cursor-pointer"
-              >
-                <Globe className="w-4 h-4 text-ink-muted dark:text-dark-muted shrink-0" />
-                <span>From URL</span>
-              </button>
-            </div>
-          )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setShowSourceMenu(false);
+                    onOpenFileDialog();
+                  }}
+                  className="min-h-[44px] w-full px-3 rounded-md text-sm font-medium text-brand-950 dark:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 flex items-center gap-2.5 transition-colors cursor-pointer"
+                >
+                  <HardDrive className="w-4 h-4 text-ink-muted dark:text-dark-muted shrink-0" />
+                  <span>From Device</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setShowSourceMenu(false);
+                    onOpenUrlModal();
+                  }}
+                  className="min-h-[44px] w-full px-3 rounded-md text-sm font-medium text-brand-950 dark:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 flex items-center gap-2.5 transition-colors cursor-pointer"
+                >
+                  <Globe className="w-4 h-4 text-ink-muted dark:text-dark-muted shrink-0" />
+                  <span>From URL</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={onOpenUrlModal}
+            className="min-h-[44px] sm:min-h-[36px] px-3.5 rounded-md text-xs font-medium bg-neutral-subtle hover:bg-neutral-border/60 dark:bg-dark-elevated dark:hover:bg-white/10 text-ink-secondary dark:text-slate-200 border border-neutral-border dark:border-dark-border inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <Globe className="w-3.5 h-3.5 shrink-0" />
+            <span>Add from URL</span>
+          </button>
         </div>
 
         <div className="mt-5 pt-4 border-t border-neutral-border/70 dark:border-dark-border text-xs text-ink-muted dark:text-dark-muted flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
           <span>{REGISTRY_STATS.formatCount} Formats Supported</span>
           <span aria-hidden="true">&middot;</span>
-          <span>Up to 1 GB</span>
+          <span>{maxSizeCopy}</span>
           <span aria-hidden="true">&middot;</span>
           <span>Encrypted &amp; Ephemeral</span>
         </div>
@@ -149,7 +168,7 @@ export default function HeroDropzoneCard({
           <Link
             key={pair.href}
             href={pair.href}
-            className="min-h-[36px] px-3 py-1.5 rounded-md text-xs font-medium bg-white dark:bg-dark-surface text-ink-secondary dark:text-slate-300 border border-neutral-border dark:border-dark-border hover:border-brand-600 hover:text-brand-700 dark:hover:text-white inline-flex items-center transition-colors"
+            className="min-h-[44px] sm:min-h-[36px] px-3 py-1.5 rounded-md text-xs font-medium bg-white dark:bg-dark-surface text-ink-secondary dark:text-slate-300 border border-neutral-border dark:border-dark-border hover:border-brand-600 hover:text-brand-700 dark:hover:text-white inline-flex items-center transition-colors"
           >
             {pair.label}
           </Link>

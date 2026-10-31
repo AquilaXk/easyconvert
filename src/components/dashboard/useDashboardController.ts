@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { User } from '@/lib/auth/types';
-import type { ApiKey, ApiKeyScope, QuotaUsage, WebhookDlqEntry } from '@/lib/api-keys/types';
+import type { ApiKey, ApiKeyScope, QuotaUsage } from '@/lib/api-keys/types';
 import type { ApiKeysPanelActions, ApiKeysPanelState } from './ApiKeysPanel';
 import {
+  extractApiError,
   resolveExpiryTimestamp,
   type DashboardTab,
-  type FileWithRemaining,
   type KeyExpiryOption,
 } from './dashboard-types';
+import { useFilesAndDlqController } from './useDashboardResources';
 
-function useApiKeysController(enabled: boolean) {
+function useApiKeysController(
+  enabled: boolean,
+  onReportError: (message: string | null) => void
+) {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [quota, setQuota] = useState<QuotaUsage | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
@@ -28,29 +32,35 @@ function useApiKeysController(enabled: boolean) {
 
   const fetchKeysAndQuota = useCallback(async () => {
     try {
-      const [keysRes, quotaRes] = await Promise.all([fetch('/api/keys'), fetch('/api/keys/usage')]);
+      const [keysRes, quotaRes] = await Promise.all([
+        fetch('/api/keys'),
+        fetch('/api/keys/usage'),
+      ]);
       if (keysRes.ok) {
         const keysData = await keysRes.json();
         if (keysData.success) setApiKeys(keysData.keys);
+      } else {
+        const errBody: unknown = await keysRes.json().catch(() => null);
+        onReportError(extractApiError(errBody, `Failed to load API keys (HTTP ${keysRes.status}).`));
       }
       if (quotaRes.ok) {
         const quotaData = await quotaRes.json();
         if (quotaData.success) setQuota(quotaData.usage);
       }
     } catch {
-      return;
+      onReportError('Network error while loading API keys.');
     }
-  }, []);
+  }, [onReportError]);
 
   useEffect(() => {
     if (enabled) {
-      fetchKeysAndQuota();
+      void fetchKeysAndQuota();
     }
   }, [enabled, fetchKeysAndQuota]);
 
   const copyToClipboard = useCallback((text: string) => {
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(text);
+      void navigator.clipboard.writeText(text);
       setCopiedKey(true);
       setTimeout(() => setCopiedKey(false), 2000);
     }
@@ -59,6 +69,7 @@ function useApiKeysController(enabled: boolean) {
   const handleGenerateKey = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsGeneratingKey(true);
+    onReportError(null);
     try {
       const expiresAt = resolveExpiryTimestamp(keyExpiry, Date.now());
       const res = await fetch('/api/keys', {
@@ -70,25 +81,43 @@ function useApiKeysController(enabled: boolean) {
           expiresAt,
         }),
       });
-      const data = await res.json();
-      if (data.success && data.secretKey) {
+      const data: unknown = await res.json().catch(() => null);
+      if (
+        res.ok &&
+        data &&
+        typeof data === 'object' &&
+        'success' in data &&
+        data.success &&
+        'secretKey' in data &&
+        typeof data.secretKey === 'string'
+      ) {
         setGeneratedSecret(data.secretKey);
         setNewKeyName('');
         setShowGenerateForm(false);
         await fetchKeysAndQuota();
+        return;
       }
+      onReportError(extractApiError(data, `Failed to create API key (HTTP ${res.status}).`));
     } catch {
-      return;
+      onReportError('Network error while creating API key.');
     } finally {
       setIsGeneratingKey(false);
     }
   };
 
   const handleRevokeKey = async (id: string) => {
-    const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' }).catch(() => null);
-    if (res?.ok) {
+    onReportError(null);
+    try {
+      const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const data: unknown = await res.json().catch(() => null);
+        onReportError(extractApiError(data, `Failed to revoke API key (HTTP ${res.status}).`));
+        return;
+      }
       setRevokingKeyId(null);
       await fetchKeysAndQuota();
+    } catch {
+      onReportError('Network error while revoking API key.');
     }
   };
 
@@ -97,16 +126,8 @@ function useApiKeysController(enabled: boolean) {
   };
 
   const state: ApiKeysPanelState = {
-    apiKeys,
-    quota,
-    newKeyName,
-    generatedSecret,
-    isGeneratingKey,
-    showGenerateForm,
-    copiedKey,
-    revokingKeyId,
-    selectedScopes,
-    keyExpiry,
+    apiKeys, quota, newKeyName, generatedSecret, isGeneratingKey,
+    showGenerateForm, copiedKey, revokingKeyId, selectedScopes, keyExpiry,
   };
 
   const actions: ApiKeysPanelActions = {
@@ -116,136 +137,13 @@ function useApiKeysController(enabled: boolean) {
     onNameChange: setNewKeyName,
     onToggleScope: handleToggleScope,
     onExpiryChange: setKeyExpiry,
-    onGenerateKey: handleGenerateKey,
+    onGenerateKey: (event) => { void handleGenerateKey(event); },
     onRequestRevoke: setRevokingKeyId,
-    onConfirmRevoke: handleRevokeKey,
+    onConfirmRevoke: (id) => { void handleRevokeKey(id); },
     onCopy: copyToClipboard,
   };
 
   return { state, actions, copyToClipboard };
-}
-
-function useFilesAndDlqController(enabled: boolean) {
-  const [userFiles, setUserFiles] = useState<FileWithRemaining[]>([]);
-  const [filesLoading, setFilesLoading] = useState(false);
-  const [dlqEntries, setDlqEntries] = useState<WebhookDlqEntry[]>([]);
-  const [dlqLoading, setDlqLoading] = useState(false);
-  const [inspectingDlq, setInspectingDlq] = useState<WebhookDlqEntry | null>(null);
-  const [replayingDlqId, setReplayingDlqId] = useState<string | null>(null);
-  const [dlqFeedback, setDlqFeedback] = useState<string | null>(null);
-
-  const fetchUserFiles = useCallback(async () => {
-    setFilesLoading(true);
-    try {
-      const res = await fetch('/api/account/files');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success) setUserFiles(data.files);
-      }
-    } catch {
-      return;
-    } finally {
-      setFilesLoading(false);
-    }
-  }, []);
-
-  const fetchDlqEntries = useCallback(async () => {
-    setDlqLoading(true);
-    try {
-      const res = await fetch('/api/webhooks/dlq');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && Array.isArray(data.entries)) {
-          setDlqEntries(data.entries);
-        }
-      }
-    } catch {
-      return;
-    } finally {
-      setDlqLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (enabled) {
-      fetchUserFiles();
-      fetchDlqEntries();
-    }
-  }, [enabled, fetchUserFiles, fetchDlqEntries]);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setUserFiles((prev) =>
-        prev
-          .map((file) => ({
-            ...file,
-            remainingSeconds: Math.max(0, file.remainingSeconds - 1),
-          }))
-          .filter((file) => file.remainingSeconds > 0)
-      );
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const handleDeleteFile = async (id: string) => {
-    const res = await fetch(`/api/account/files/${id}`, { method: 'DELETE' }).catch(() => null);
-    if (res?.ok) {
-      setUserFiles((prev) => prev.filter((file) => file.id !== id));
-    }
-  };
-
-  const handleReplayWebhook = async (id: string) => {
-    setReplayingDlqId(id);
-    setDlqFeedback(null);
-    try {
-      const res = await fetch(`/api/webhooks/dlq/${id}/replay`, { method: 'POST' });
-      const data = await res.json();
-      if (data.success) {
-        setDlqFeedback(`Webhook replay succeeded (HTTP ${data.statusCode}).`);
-      } else {
-        setDlqFeedback(`Webhook replay failed (${data.message || data.error || 'Delivery failed'}).`);
-      }
-      await fetchDlqEntries();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Network failure';
-      setDlqFeedback(`Replay request failed (${msg}).`);
-    } finally {
-      setReplayingDlqId(null);
-    }
-  };
-
-  const handleDeleteDlq = async (id: string) => {
-    const res = await fetch(`/api/webhooks/dlq/${id}`, { method: 'DELETE' }).catch(() => null);
-    if (res?.ok) {
-      setDlqEntries((prev) => prev.filter((entry) => entry.id !== id));
-    }
-  };
-
-  const handleClearDlq = async () => {
-    const res = await fetch('/api/webhooks/dlq', { method: 'DELETE' }).catch(() => null);
-    if (res?.ok) {
-      setDlqEntries([]);
-      setDlqFeedback('Dead letter queue cleared.');
-    }
-  };
-
-  return {
-    userFiles,
-    filesLoading,
-    fetchUserFiles,
-    handleDeleteFile,
-    dlqEntries,
-    dlqLoading,
-    inspectingDlq,
-    setInspectingDlq,
-    replayingDlqId,
-    dlqFeedback,
-    setDlqFeedback,
-    fetchDlqEntries,
-    handleReplayWebhook,
-    handleDeleteDlq,
-    handleClearDlq,
-  };
 }
 
 export function useDashboardController() {
@@ -253,6 +151,10 @@ export function useDashboardController() {
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<DashboardTab>('api');
   const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const reportError = useCallback((message: string | null) => setActionError(message), []);
+  const clearActionError = useCallback(() => setActionError(null), []);
 
   const fetchProfile = useCallback(async () => {
     try {
@@ -262,11 +164,8 @@ export function useDashboardController() {
         return;
       }
       const data = await res.json();
-      if (data.success && data.user) {
-        setUser(data.user);
-      } else {
-        router.push('/auth');
-      }
+      if (data.success && data.user) setUser(data.user);
+      else router.push('/auth');
     } catch {
       router.push('/auth');
     } finally {
@@ -275,25 +174,24 @@ export function useDashboardController() {
   }, [router]);
 
   useEffect(() => {
-    fetchProfile();
+    void fetchProfile();
   }, [fetchProfile]);
 
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      setActionError('Network error while signing out.');
+    }
     router.push('/auth');
     router.refresh();
   };
 
-  const keys = useApiKeysController(Boolean(user));
-  const filesAndDlq = useFilesAndDlqController(Boolean(user));
+  const keys = useApiKeysController(Boolean(user), reportError);
+  const filesAndDlq = useFilesAndDlqController(Boolean(user), reportError);
 
   return {
-    user,
-    loading,
-    activeTab,
-    setActiveTab,
-    handleLogout,
-    keys,
-    filesAndDlq,
+    user, loading, activeTab, setActiveTab, actionError, clearActionError,
+    handleLogout, keys, filesAndDlq,
   };
 }

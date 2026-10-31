@@ -6,20 +6,27 @@ const EC_MONOGRAM_PATH =
 const LAVENDER_ACCENT_AND_ARROW_PATH =
   'M8162 8564 c-13 -9 -44 -39 -70 -66 -26 -28 -83 -90 -128 -137 -44 -47 -91 -104 -104 -126 -13 -22 -35 -53 -49 -68 -14 -15 -35 -46 -46 -67 -89 -173 -145 -290 -145 -303 0 -8 -7 -32 -16 -53 -23 -53 -39 -114 -62 -239 -5 -23 -11 -46 -15 -52 -10 -16 -11 -413 -2 -498 4 -38 14 -84 21 -102 8 -17 11 -38 9 -45 -3 -8 8 -52 25 -99 16 -46 30 -93 30 -104 0 -27 141 -306 173 -345 14 -16 37 -53 50 -82 14 -29 53 -84 86 -123 34 -38 69 -82 79 -97 25 -40 57 -49 157 -46 l89 3 19 50 c11 28 32 84 49 125 36 90 39 101 109 356 11 38 22 95 26 125 3 30 11 60 17 68 5 7 11 27 12 45 1 17 8 63 15 101 19 105 23 196 22 470 0 181 -3 257 -13 274 -6 13 -14 59 -16 101 -2 44 -12 103 -23 135 -11 32 -18 61 -16 66 6 9 -9 80 -36 165 -10 34 -19 72 -19 85 0 13 -7 33 -15 43 -8 11 -15 34 -15 50 0 17 -9 45 -20 61 -11 17 -20 44 -20 60 0 17 -9 44 -20 60 -11 17 -20 42 -20 57 0 39 -68 168 -89 168 -4 0 -17 -7 -29 -16z M11556 10462 c-3 -6 -26 -20 -51 -32 -26 -13 -108 -83 -202 -175 -87 -84 -178 -168 -202 -186 -24 -19 -59 -49 -78 -67 -31 -28 -37 -30 -47 -17 -9 12 -11 8 -12 -22 0 -27 -7 -42 -28 -57 -26 -21 -48 -41 -288 -268 -115 -109 -204 -190 -363 -333 -37 -33 -96 -88 -132 -122 -35 -35 -75 -66 -89 -69 -13 -3 -21 -11 -18 -16 6 -10 -160 -175 -226 -225 -63 -48 -180 -167 -180 -184 0 -9 -7 -23 -17 -30 -41 -34 -53 -114 -30 -200 15 -56 78 -137 115 -145 15 -4 37 -15 49 -24 13 -10 53 -25 90 -34 38 -10 93 -24 123 -33 30 -9 78 -20 105 -24 28 -4 95 -17 150 -29 55 -13 112 -24 127 -25 14 -2 32 -6 39 -11 7 -4 31 -11 54 -15 22 -4 85 -18 140 -30 55 -12 112 -23 126 -24 14 -2 36 -8 47 -14 11 -6 34 -11 51 -11 16 0 32 -4 35 -9 3 -5 20 -11 38 -14 18 -3 53 -10 78 -16 25 -5 88 -19 140 -30 53 -11 107 -24 121 -30 29 -10 128 -32 171 -36 14 -2 31 -6 37 -9 18 -11 123 -37 129 -32 2 3 17 -1 33 -9 15 -8 39 -15 53 -15 14 0 35 -4 48 -9 90 -35 289 -49 360 -25 47 15 108 71 108 98 0 7 9 25 20 39 28 35 36 144 21 270 -7 56 -16 109 -21 118 -4 8 -13 73 -20 145 -7 71 -16 134 -20 139 -4 6 -13 57 -19 115 -7 58 -17 114 -22 125 -4 11 -13 74 -19 140 -6 66 -15 129 -20 140 -10 24 -30 167 -30 213 0 18 -7 44 -16 57 -9 14 -14 35 -11 46 7 25 -11 174 -24 204 -4 11 -13 74 -19 140 -6 66 -15 129 -20 140 -10 25 -30 168 -30 216 0 19 -5 40 -11 46 -7 7 -13 27 -14 47 -8 97 -136 217 -230 215 -16 0 -44 3 -61 6 -18 4 -34 3 -38 -3z';
 
+type LogoSizePreset = 'sm' | 'md' | 'lg' | 'xl';
+
 interface BrandLogoProps {
-  /** Size variant: 'sm' | 'md' | 'lg' | 'xl' or custom number */
-  size?: 'sm' | 'md' | 'lg' | 'xl' | number;
-  /** Whether to show text alongside the icon */
+  size?: LogoSizePreset | number;
   showText?: boolean;
-  /** Custom class for the wrapper */
   className?: string;
-  /** Invert text colors for dark backgrounds or force light */
   textClassName?: string;
-  /** Custom icon class */
   iconClassName?: string;
 }
 
-export function BrandIcon({ size = 32, className = '' }: { size?: number | string; className?: string }) {
+interface BrandIconProps {
+  size?: number | string;
+  className?: string;
+  decorative?: boolean;
+}
+
+export function BrandIcon({
+  size = 32,
+  className = '',
+  decorative = false,
+}: Readonly<BrandIconProps>) {
   const pixelSize = typeof size === 'number' ? size : 32;
 
   return (
@@ -30,18 +37,18 @@ export function BrandIcon({ size = 32, className = '' }: { size?: number | strin
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={`shrink-0 transition-transform duration-200 ${className}`}
-      aria-label="EasyConvert Official Emblem Logo Mark"
+      aria-hidden={decorative ? 'true' : undefined}
+      role={decorative ? undefined : 'img'}
+      aria-label={decorative ? undefined : 'EasyConvert'}
     >
       <circle cx="60" cy="60" r="50" fill="#F4F5FD" stroke="#5C6BC0" strokeWidth="3.75" />
-      <g id="brand-signature-icon" transform="translate(60, 60) scale(0.00743, -0.00743) translate(-7200, -7200)">
+      <g transform="translate(60, 60) scale(0.00743, -0.00743) translate(-7200, -7200)">
         <path fill="#B4BCFB" d={LAVENDER_ACCENT_AND_ARROW_PATH} />
         <path fill="#5C6BC0" d={EC_MONOGRAM_PATH} />
       </g>
     </svg>
   );
 }
-
-type LogoSizePreset = 'sm' | 'md' | 'lg' | 'xl';
 
 const SIZE_MAP: Record<LogoSizePreset, { pixelSize: number; textClass: string }> = {
   sm: { pixelSize: 26, textClass: 'text-lg' },
@@ -62,7 +69,7 @@ export default function BrandLogo({
   className = '',
   textClassName = '',
   iconClassName = '',
-}: BrandLogoProps) {
+}: Readonly<BrandLogoProps>) {
   const resolved =
     typeof size === 'number'
       ? { pixelSize: size, textClass: resolveNumericTextClass(size) }
@@ -72,7 +79,7 @@ export default function BrandLogo({
 
   return (
     <div className={`inline-flex items-center gap-2.5 select-none ${className}`}>
-      <BrandIcon size={resolved.pixelSize} className={iconClassName} />
+      <BrandIcon size={resolved.pixelSize} className={iconClassName} decorative={showText} />
       {showText && (
         <span
           className={`font-sans tracking-tight font-extrabold transition-colors flex items-center leading-none ${resolved.textClass} ${effectiveTextClass}`}

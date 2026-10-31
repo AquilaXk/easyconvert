@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { Globe, X, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
+import { useModalDialog } from '@/hooks/useModalDialog';
 
-interface UrlImportModalProps {
+export interface UrlImportModalProps {
   isOpen?: boolean;
   onClose: () => void;
-  onImport?: (file: File) => void;
   onAddFile?: (file: File) => void;
 }
 
@@ -17,21 +17,14 @@ interface FetchUrlErrorPayload {
 export default function UrlImportModal({
   isOpen = true,
   onClose,
-  onImport,
   onAddFile,
-}: UrlImportModalProps) {
+}: Readonly<UrlImportModalProps>) {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const dialog = dialogRef.current;
-    if (dialog && typeof dialog.showModal === 'function' && !dialog.open) {
-      dialog.showModal();
-    }
-  }, [isOpen]);
+  useModalDialog(dialogRef, isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -64,7 +57,6 @@ export default function UrlImportModal({
       const blob = await response.blob();
       const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
 
-      onImport?.(file);
       onAddFile?.(file);
       onClose();
     } catch (err: unknown) {
@@ -78,10 +70,6 @@ export default function UrlImportModal({
     <dialog
       ref={dialogRef}
       aria-labelledby="url-import-heading"
-      onClose={onClose}
-      onClick={(e) => {
-        if (e.target === dialogRef.current) onClose();
-      }}
       className="w-[calc(100dvw-1.5rem)] max-w-md rounded-xl p-0 bg-white dark:bg-dark-surface text-brand-950 dark:text-white border border-neutral-border dark:border-dark-border shadow-2xl overflow-hidden"
     >
       <div className="px-5 py-4 border-b border-neutral-border dark:border-dark-border flex items-center justify-between gap-3">
@@ -90,7 +78,10 @@ export default function UrlImportModal({
             <Globe className="w-4 h-4" />
           </div>
           <div className="min-w-0">
-            <h2 id="url-import-heading" className="text-base font-semibold text-brand-950 dark:text-white">
+            <h2
+              id="url-import-heading"
+              className="text-base font-semibold text-brand-950 dark:text-white"
+            >
               Add File from URL
             </h2>
             <p className="text-xs text-ink-muted dark:text-dark-muted">
@@ -108,7 +99,12 @@ export default function UrlImportModal({
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="p-5 space-y-4">
+      <form
+        onSubmit={(e) => {
+          void handleSubmit(e);
+        }}
+        className="p-5 space-y-4"
+      >
         <div>
           <label
             htmlFor="url-input"
@@ -123,7 +119,7 @@ export default function UrlImportModal({
             placeholder="https://example.com/document.pdf"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            className="w-full min-h-[44px] px-3.5 text-base bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border rounded-md text-brand-950 dark:text-white placeholder-ink-muted dark:placeholder-dark-muted focus:border-brand-700"
+            className="w-full min-h-[44px] px-3.5 text-base bg-neutral-scaffold dark:bg-dark-elevated border border-neutral-border dark:border-dark-border rounded-md text-brand-950 dark:text-white placeholder-ink-muted dark:placeholder-dark-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 focus:border-brand-700"
           />
         </div>
 

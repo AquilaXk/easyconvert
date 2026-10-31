@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import Image from 'next/image';
 import { FileText, Key, Layers, LogOut, Send, Shield } from 'lucide-react';
 import type { User } from '@/lib/auth/types';
@@ -21,6 +21,13 @@ export function DashboardHeader({
   onSelectTab,
   onLogout,
 }: Readonly<DashboardHeaderProps>) {
+  const tabRefs = useRef<Record<DashboardTab, HTMLButtonElement | null>>({
+    api: null,
+    files: null,
+    dlq: null,
+    usage: null,
+  });
+
   const tabs: Array<{
     id: DashboardTab;
     label: string;
@@ -33,6 +40,31 @@ export function DashboardHeader({
     { id: 'dlq', label: 'Webhook DLQ', icon: Send, badge: dlqCount, badgeDanger: true },
     { id: 'usage', label: 'Usage & Rate Limits', icon: Layers },
   ];
+
+  const handleTabKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    currentTab: DashboardTab
+  ) => {
+    const currentIndex = tabs.findIndex((item) => item.id === currentTab);
+    if (currentIndex === -1) return;
+
+    let nextTab: DashboardTab | null = null;
+    if (event.key === 'ArrowRight') {
+      nextTab = tabs[(currentIndex + 1) % tabs.length].id;
+    } else if (event.key === 'ArrowLeft') {
+      nextTab = tabs[(currentIndex - 1 + tabs.length) % tabs.length].id;
+    } else if (event.key === 'Home') {
+      nextTab = tabs[0].id;
+    } else if (event.key === 'End') {
+      nextTab = tabs[tabs.length - 1].id;
+    }
+
+    if (nextTab) {
+      event.preventDefault();
+      onSelectTab(nextTab);
+      tabRefs.current[nextTab]?.focus();
+    }
+  };
 
   return (
     <>
@@ -60,7 +92,7 @@ export function DashboardHeader({
               </h1>
               <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-xs font-bold uppercase tracking-wider bg-brand-50 dark:bg-white/10 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-white/15">
                 <Shield className="w-3.5 h-3.5" aria-hidden="true" />
-                {user.tier.toUpperCase()} TIER
+                <span>{user.tier.toUpperCase()} TIER</span>
               </span>
             </div>
             <p className="text-sm text-ink-secondary dark:text-dark-muted mt-1 break-all">
@@ -79,7 +111,7 @@ export function DashboardHeader({
         <button
           type="button"
           onClick={onLogout}
-          className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md border border-neutral-border dark:border-dark-border text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-dark-elevated text-sm font-semibold transition-colors"
+          className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-md border border-neutral-border dark:border-dark-border text-ink-secondary dark:text-neutral-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-dark-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 text-sm font-semibold transition-colors"
         >
           <LogOut className="w-4 h-4" />
           <span>Sign Out</span>
@@ -97,13 +129,18 @@ export function DashboardHeader({
           return (
             <button
               key={tab.id}
+              ref={(el) => {
+                tabRefs.current[tab.id] = el;
+              }}
               id={`dashboard-tab-${tab.id}`}
               role="tab"
               aria-selected={isSelected}
               aria-controls={`dashboard-panel-${tab.id}`}
+              tabIndex={isSelected ? 0 : -1}
               type="button"
               onClick={() => onSelectTab(tab.id)}
-              className={`min-h-[44px] flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap ${
+              onKeyDown={(event) => handleTabKeyDown(event, tab.id)}
+              className={`min-h-[44px] flex items-center gap-2 px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-700 ${
                 isSelected
                   ? 'border-brand-700 text-brand-700 dark:text-brand-400 dark:border-brand-400'
                   : 'border-transparent text-ink-secondary dark:text-dark-muted hover:text-brand-950 dark:hover:text-white'

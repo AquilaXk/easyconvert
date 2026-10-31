@@ -35,15 +35,29 @@ export interface FileWithRemaining extends UserConversionFile {
 }
 
 export function formatCountdown(seconds: number): string {
-  const minutes = Math.floor(seconds / 60);
-  const secs = seconds % 60;
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+  const minutes = Math.floor(safeSeconds / 60);
+  const secs = safeSeconds % 60;
   return `${minutes}m ${secs < 10 ? '0' : ''}${secs}s`;
 }
 
 export function formatBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const base = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
   const index = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(base)));
   return `${Number.parseFloat((bytes / Math.pow(base, index)).toFixed(1))} ${sizes[index]}`;
+}
+
+export function extractApiError(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === 'object') {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.error === 'string' && record.error.trim().length > 0) {
+      return record.error;
+    }
+    if (typeof record.message === 'string' && record.message.trim().length > 0) {
+      return record.message;
+    }
+  }
+  return fallback;
 }

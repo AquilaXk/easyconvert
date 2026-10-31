@@ -2885,16 +2885,14 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = {
   },
 };
 
-const CATEGORY_META: readonly [FormatCategory, string][] = [
-  ['image', 'Images'], ['document', 'Documents'], ['archive', 'Archives'], ['video', 'Video'],
-  ['audio', 'Audio'], ['ebook', 'Ebooks'], ['spreadsheet', 'Spreadsheets'], ['presentation', 'Presentations'],
-  ['data', 'Data & Tables'], ['vector', 'Vector'], ['font', 'Fonts'], ['cad', 'CAD & 3D'],
-];
-export const CATEGORIES: { id: FormatCategory; label: string; count: number }[] = CATEGORY_META.map(([id, label]) => ({
-  id,
-  label,
-  count: Object.values(FORMAT_REGISTRY).filter((f) => f.category === id).length,
-}));
+export const CATEGORY_LABELS: Record<FormatCategory, string> = {
+  image: 'Images', document: 'Documents', archive: 'Archives', video: 'Video', audio: 'Audio', ebook: 'Ebooks',
+  spreadsheet: 'Spreadsheets', presentation: 'Presentations', data: 'Data & Tables', vector: 'Vector', font: 'Fonts', cad: 'CAD & 3D',
+};
+export const CATEGORY_ORDER = Object.keys(CATEGORY_LABELS) as FormatCategory[];
+const categoryCounts = new Map<FormatCategory, number>();
+for (const f of Object.values(FORMAT_REGISTRY)) categoryCounts.set(f.category, (categoryCounts.get(f.category) ?? 0) + 1);
+export const CATEGORIES: { id: FormatCategory; label: string; count: number }[] = CATEGORY_ORDER.map((id) => ({ id, label: CATEGORY_LABELS[id], count: categoryCounts.get(id) ?? 0 }));
 
 export function getFormatByExtension(ext: string): FormatDefinition | undefined {
   const cleanExt = ext.toLowerCase().replace(/^\./, '').trim();

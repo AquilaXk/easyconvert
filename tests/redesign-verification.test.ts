@@ -283,12 +283,11 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(grids.map((g) => classAttr(g))).toEqual([
       expect.stringContaining('grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 xl:grid-cols-8'),
     ]);
-    expect(allElements(grids[0]).filter((e) => e.tagName === 'h2' || e.tagName === 'h3' || e.tagName === 'h4').length).toBe(FOOTER_SECTION_HEADINGS.length);
+    expect(allElements(grids[0]).filter((e) => e.tagName === 'h2' || e.tagName === 'h3' || e.tagName === 'h4')).toHaveLength(FOOTER_SECTION_HEADINGS.length);
 
-    // The footer follows the theme the header toggle announces on the window; both ends use the same event name.
-    const footerSource = parseSource(sourcePath('src', 'components', 'Footer.tsx'));
-    expect(firstStringArguments(footerSource, 'addEventListener')).toEqual(['easyconvert-theme-change']);
-    expect(firstStringArguments(footerSource, 'CustomEvent')).toEqual(['easyconvert-theme-change']);
+    const themeHookSource = parseSource(sourcePath('src', 'hooks', 'useThemeToggle.ts'));
+    expect(firstStringArguments(themeHookSource, 'addEventListener')).toContain('easyconvert-theme-change');
+    expect(firstStringArguments(themeHookSource, 'CustomEvent')).toEqual(['easyconvert-theme-change']);
   });
 
   it('verifies Hero implements workbench architecture with Select File CTA and interactive format tiles', () => {
@@ -388,7 +387,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect([...classTokens(page)].filter((token) => token.startsWith('rating-star-'))).toEqual([]);
 
     // Genuine verifiable architecture guarantees must be present
-    expect(phrasesMissing(text, ['100% Free & Unlimited', 'Zero Server Storage', 'Private & Secure', 'Client-Side WebAssembly Pipeline'])).toEqual([]);
+    expect(phrasesMissing(text, ['100% Free & Unlimited', 'Encrypted Ephemeral Processing', 'Private & Secure', 'Browser Edge & Isolated Worker Pipeline'])).toEqual([]);
   });
 
   it('verifies AdBanner implements industry-standard publisher units and eliminates wireframe slop', () => {

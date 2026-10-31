@@ -7,7 +7,8 @@ import ConversionQueue from '@/components/ConversionQueue';
 import AdBanner from '@/components/AdBanner';
 import FaqSection from '@/components/FaqSection';
 import Footer from '@/components/Footer';
-import { FORMAT_REGISTRY, getAllFormats } from '@/lib/registry';
+import { FORMAT_REGISTRY } from '@/lib/registry';
+import { REGISTRY_STATS } from '@/lib/registry-stats';
 import { parseConverterSlug } from '@/lib/slug-parser';
 import { useClientQueue } from '@/hooks/useClientQueue';
 import {
@@ -33,7 +34,7 @@ interface DynamicPageProps {
 export default function DynamicConverterPage({ params }: Readonly<DynamicPageProps>) {
   const { slug } = React.use(params);
   const parsed = parseConverterSlug(slug);
-  const totalFormatCount = getAllFormats().length;
+  const totalFormatCount = REGISTRY_STATS.formatCount;
 
   const defaultTarget =
     parsed.targetFormat && parsed.targetFormat.toLowerCase() !== 'any'
@@ -44,6 +45,8 @@ export default function DynamicConverterPage({ params }: Readonly<DynamicPagePro
   const {
     queue,
     isConverting,
+    zipError,
+    clearZipError: dismissZipError,
     handleFilesSelected,
     handleRemoveItem,
     handleClearAll,
@@ -70,7 +73,13 @@ export default function DynamicConverterPage({ params }: Readonly<DynamicPagePro
   const tgtMeta = isPair ? getFormatDetail(tgtKey) : null;
 
   const sourceFormatRegistry = FORMAT_REGISTRY[srcKey];
-  const convertFromTargets = sourceFormatRegistry?.targetFormats || ['pdf', 'docx', 'png', 'jpg', 'txt'];
+  const convertFromTargets = sourceFormatRegistry?.targetFormats || [
+    'pdf',
+    'docx',
+    'png',
+    'jpg',
+    'txt',
+  ];
 
   const targetForReverse = tgtKey !== 'any' ? tgtKey : srcKey;
   const convertToSources = Object.entries(FORMAT_REGISTRY)
@@ -124,17 +133,25 @@ export default function DynamicConverterPage({ params }: Readonly<DynamicPagePro
               onUpdateTargetFormat={handleUpdateTargetFormat}
               onUpdateAllTargets={handleUpdateAllTargets}
               onUpdateOptions={handleUpdateOptions}
-              onConvertAll={handleConvertAll}
+              onConvertAll={() => {
+                void handleConvertAll();
+              }}
               onConvertSingle={(id) => {
                 const target = queue.find((item) => item.id === id);
-                if (target) convertSingleItem(target);
+                if (target) {
+                  void convertSingleItem(target);
+                }
               }}
               onAddMoreFiles={() => {
                 const input = document.getElementById('main-file-input') as HTMLInputElement | null;
                 if (input) input.click();
               }}
-              onDownloadAllZip={handleDownloadAllZip}
+              onDownloadAllZip={() => {
+                void handleDownloadAllZip();
+              }}
               isConverting={isConverting}
+              zipError={zipError}
+              onDismissZipError={dismissZipError}
             />
           </div>
         ) : (

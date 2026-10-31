@@ -26,18 +26,10 @@ export interface ConversionQueueProps {
 }
 
 function getQueueStatusSummary(items: ConversionQueueItem[], isConverting: boolean): string {
-  if (isConverting) {
-    return 'Converting queued files...';
-  }
-  const missingTargetCount = items.filter((i) => !i.targetFormat || i.targetFormat.trim() === '').length;
-  if (missingTargetCount > 0) {
-    return 'Please select an output format to continue';
-  }
-  const allDone = items.length > 0 && items.every((i) => i.status === 'completed');
-  if (allDone) {
-    return items.length === 1
-      ? 'Conversion complete for 1 file'
-      : `Conversion complete for ${items.length} files`;
+  if (isConverting) return 'Converting queued files...';
+  if (items.some((i) => !i.targetFormat?.trim())) return 'Please select an output format to continue';
+  if (items.length > 0 && items.every((i) => i.status === 'completed')) {
+    return items.length === 1 ? 'Conversion complete for 1 file' : `Conversion complete for ${items.length} files`;
   }
   const errorCount = items.filter((i) => i.status === 'error').length;
   if (errorCount > 0) {
@@ -45,19 +37,14 @@ function getQueueStatusSummary(items: ConversionQueueItem[], isConverting: boole
       ? '1 file failed conversion. Retry or remove to continue.'
       : `${errorCount} files failed conversion. Retry or remove to continue.`;
   }
-  return items.length === 1
-    ? 'Ready to convert 1 file'
-    : `Ready to convert ${items.length} files`;
+  return items.length === 1 ? 'Ready to convert 1 file' : `Ready to convert ${items.length} files`;
 }
 
 function collectBatchTargetFormats(items: ConversionQueueItem[]): FormatDefinition[] {
   const seen = new Map<string, FormatDefinition>();
   for (const item of items) {
-    const candidates = getAvailableTargetFormats(item.sourceFormat);
-    for (const fmt of candidates) {
-      if (!seen.has(fmt.id)) {
-        seen.set(fmt.id, fmt);
-      }
+    for (const fmt of getAvailableTargetFormats(item.sourceFormat)) {
+      if (!seen.has(fmt.id)) seen.set(fmt.id, fmt);
     }
   }
   return Array.from(seen.values());
@@ -77,7 +64,7 @@ export default function ConversionQueue({
   isConverting,
   zipError,
   onDismissZipError,
-}: ConversionQueueProps) {
+}: Readonly<ConversionQueueProps>) {
   const [activeFormatSelectorId, setActiveFormatSelectorId] = useState<string | null>(null);
   const [isBatchSelectorOpen, setIsBatchSelectorOpen] = useState(false);
   const [batchTargetLabel, setBatchTargetLabel] = useState<string>('');
@@ -85,10 +72,9 @@ export default function ConversionQueue({
 
   const completedCount = items.filter((i) => i.status === 'completed').length;
   const allDone = items.length > 0 && completedCount === items.length;
-  const allHaveTarget = items.length > 0 && items.every((i) => Boolean(i.targetFormat && i.targetFormat.trim()));
+  const allHaveTarget = items.length > 0 && items.every((i) => Boolean(i.targetFormat?.trim()));
   const hasPending = items.some((i) => i.status === 'ready' || i.status === 'error');
   const statusSummary = getQueueStatusSummary(items, isConverting);
-
   const batchAvailableFormats = useMemo(() => collectBatchTargetFormats(items), [items]);
   const currentOptionsItem = items.find((i) => i.id === activeOptionsModalId);
 
@@ -99,9 +85,7 @@ export default function ConversionQueue({
           <div className="px-4 sm:px-5 py-3 border-b border-neutral-border dark:border-dark-border flex flex-wrap items-center justify-between gap-3">
             {onUpdateAllTargets ? (
               <div className="flex items-center flex-wrap gap-2.5">
-                <span className="text-xs font-medium text-ink-secondary dark:text-neutral-300">
-                  Convert all to
-                </span>
+                <span className="text-xs font-medium text-ink-secondary dark:text-neutral-300">Convert all to</span>
                 <div className="relative">
                   <button
                     type="button"
@@ -118,32 +102,22 @@ export default function ConversionQueue({
                     <ChevronDown className="w-3.5 h-3.5 text-ink-muted dark:text-neutral-400" />
                   </button>
                   {isBatchSelectorOpen && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-20 hidden sm:block"
-                        onClick={() => setIsBatchSelectorOpen(false)}
-                      />
-                      <div className="sm:absolute sm:left-0 sm:top-full sm:mt-2 sm:z-30">
-                        <FormatSelector
-                          availableFormats={batchAvailableFormats}
-                          selectedFormatId={batchTargetLabel}
-                          onSelect={(fmt) => {
-                            setBatchTargetLabel(fmt);
-                            onUpdateAllTargets(fmt);
-                            setIsBatchSelectorOpen(false);
-                          }}
-                          onClose={() => setIsBatchSelectorOpen(false)}
-                          title="Convert all compatible files to"
-                        />
-                      </div>
-                    </>
+                    <FormatSelector
+                      availableFormats={batchAvailableFormats}
+                      selectedFormatId={batchTargetLabel}
+                      onSelect={(fmt) => {
+                        setBatchTargetLabel(fmt);
+                        onUpdateAllTargets(fmt);
+                        setIsBatchSelectorOpen(false);
+                      }}
+                      onClose={() => setIsBatchSelectorOpen(false)}
+                      title="Convert all compatible files to"
+                    />
                   )}
                 </div>
               </div>
             ) : (
-              <span className="text-xs font-medium text-ink-secondary dark:text-neutral-300">
-                {items.length} files in queue
-              </span>
+              <span className="text-xs font-medium text-ink-secondary dark:text-neutral-300">{items.length} files in queue</span>
             )}
 
             <button
@@ -182,9 +156,9 @@ export default function ConversionQueue({
 
         <div className="bg-neutral-subtle dark:bg-[#121629] border-t border-neutral-border dark:border-dark-border rounded-b-xl px-4 sm:px-5 py-3.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
           <div className="min-w-0">
-            <div role="status" aria-live="polite" className="text-sm text-ink-secondary dark:text-neutral-300">
+            <output aria-live="polite" className="block text-sm text-ink-secondary dark:text-neutral-300">
               {statusSummary}
-            </div>
+            </output>
             {zipError && (
               <div role="alert" className="mt-1 flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
                 <span>{zipError}</span>
@@ -193,7 +167,7 @@ export default function ConversionQueue({
                     type="button"
                     aria-label="Dismiss archive error"
                     onClick={onDismissZipError}
-                    className="inline-flex items-center justify-center p-1 rounded hover:bg-red-100 dark:hover:bg-red-950/40 cursor-pointer"
+                    className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-md hover:bg-red-100 dark:hover:bg-red-950/40 cursor-pointer"
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -248,7 +222,7 @@ export default function ConversionQueue({
 
       {completedCount > 0 && <AdBanner slot="post-conversion" className="mt-8" />}
 
-      {currentOptionsItem && (
+      {currentOptionsItem?.targetFormat && (
         <OptionsModal
           filename={currentOptionsItem.name}
           sourceFormat={currentOptionsItem.sourceFormat}

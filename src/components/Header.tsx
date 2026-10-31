@@ -3,6 +3,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { Sun, Moon, ChevronDown, Menu, X } from 'lucide-react';
+import { useModalDialog } from '@/hooks/useModalDialog';
+import { useThemeToggle } from '@/hooks/useThemeToggle';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 
@@ -32,28 +34,15 @@ const PRIMARY_LINKS: readonly ToolRoute[] = [
   { label: 'Dashboard', href: '/dashboard' },
 ];
 
-interface ThemeEventDetail {
-  theme?: string;
-}
-
-function MobileMenuDialog({ onClose }: { onClose: () => void }) {
+function MobileMenuDialog({ onClose }: Readonly<{ onClose: () => void }>) {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (dialog && typeof dialog.showModal === 'function' && !dialog.open) {
-      dialog.showModal();
-    }
-  }, []);
+  useModalDialog(dialogRef, true, onClose);
 
   return (
     <dialog
       ref={dialogRef}
       aria-label="Navigation menu"
-      onClose={onClose}
-      onClick={(e) => {
-        if (e.target === dialogRef.current) onClose();
-      }}
       className="w-[calc(100dvw-1.5rem)] max-w-sm rounded-xl p-0 bg-white dark:bg-dark-surface text-brand-950 dark:text-white border border-neutral-border dark:border-dark-border shadow-2xl"
     >
       <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-border dark:border-dark-border">
@@ -109,26 +98,10 @@ function MobileMenuDialog({ onClose }: { onClose: () => void }) {
 }
 
 export default function Header() {
-  const [isDark, setIsDark] = useState(false);
+  const { isDark, toggleDarkMode } = useThemeToggle();
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const toolsContainerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setIsDark(document.documentElement.classList.contains('dark'));
-
-    const handleThemeChange: EventListener = (event) => {
-      const custom = event as CustomEvent<ThemeEventDetail>;
-      if (custom.detail?.theme) {
-        setIsDark(custom.detail.theme === 'dark');
-      }
-    };
-
-    window.addEventListener('easyconvert-theme-change', handleThemeChange);
-    return () => {
-      window.removeEventListener('easyconvert-theme-change', handleThemeChange);
-    };
-  }, []);
 
   useEffect(() => {
     if (!isToolsOpen) return;
@@ -139,9 +112,7 @@ export default function Header() {
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setIsToolsOpen(false);
-      }
+      if (event.key === 'Escape') setIsToolsOpen(false);
     };
 
     document.addEventListener('mousedown', handleOutsideClick);
@@ -151,14 +122,6 @@ export default function Header() {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [isToolsOpen]);
-
-  const toggleDarkMode = () => {
-    const nextTheme = isDark ? 'light' : 'dark';
-    document.documentElement.classList.toggle('dark', nextTheme === 'dark');
-    localStorage.theme = nextTheme;
-    setIsDark(nextTheme === 'dark');
-    window.dispatchEvent(new CustomEvent('easyconvert-theme-change', { detail: { theme: nextTheme } }));
-  };
 
   return (
     <header className="bg-brand-950 dark:bg-[#111526] text-white border-b border-white/10 sticky top-0 z-40 h-16">
@@ -201,7 +164,7 @@ export default function Header() {
                         key={tool.href}
                         href={tool.href}
                         onClick={() => setIsToolsOpen(false)}
-                        className="min-h-[40px] px-2.5 py-2 rounded-md text-xs font-medium text-ink-secondary dark:text-slate-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 inline-flex items-center transition-colors"
+                        className="min-h-[44px] sm:min-h-[40px] px-2.5 py-2 rounded-md text-xs font-medium text-ink-secondary dark:text-slate-300 hover:text-brand-950 dark:hover:text-white hover:bg-neutral-subtle dark:hover:bg-white/10 inline-flex items-center transition-colors"
                       >
                         {tool.label}
                       </Link>
