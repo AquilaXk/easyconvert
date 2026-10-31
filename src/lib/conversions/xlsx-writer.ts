@@ -1,7 +1,7 @@
 import JSZip from 'jszip';
-import type { SheetLimitError } from '../types';
 import { stringifyJsonLossless, type DataValue } from './data-json';
-import { SHEET_MAX_CELL_CHARS, WORKBOOK_MAX_SHEETS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, sheetLimitError } from './office/sheet-bounds';
+import { SHEET_MAX_CELL_CHARS, assertSheetCount, sheetLimitError } from './office/sheet-bounds';
+import { gridLimitError, gridOf } from './table-grid';
 
 /**
  * Writes a table as an XLSX workbook with typed cells (ECMA-376 Part 1, 18.3): a number is a number, a boolean `t="b"`, a date a serial
@@ -229,7 +229,7 @@ class CellFormats {
   }
 }
 
-const tableLimitError = (count: number, what: string, limit: number): SheetLimitError => sheetLimitError('The table', count, what, 'a worksheet', limit);
+const GRID = gridOf('xlsx');
 
 /** The shared string table of a workbook: every distinct text once, and how many cells refer to a string. */
 class SharedStrings {
@@ -238,7 +238,7 @@ class SharedStrings {
   private readonly index = new Map<string, number>();
 
   referenceTo(text: string): number {
-    if (text.length > SHEET_MAX_CELL_CHARS) throw tableLimitError(text.length, 'characters in one cell', SHEET_MAX_CELL_CHARS);
+    if (text.length > SHEET_MAX_CELL_CHARS) throw sheetLimitError('The table', text.length, 'characters in one cell', GRID.sheet, SHEET_MAX_CELL_CHARS);
     this.references++;
     let at = this.index.get(text);
     if (at === undefined) {
@@ -263,8 +263,8 @@ function mergeCellsXml(merges: readonly SheetMerge[]): string {
   const refs = ranges.map((merge) => {
     const lastRow = merge.row + merge.rowSpan;
     const lastColumn = merge.column + merge.columnSpan;
-    if (lastRow > XLSX_MAX_ROWS) throw tableLimitError(lastRow, 'rows', XLSX_MAX_ROWS);
-    if (lastColumn > XLSX_MAX_COLUMNS) throw tableLimitError(lastColumn, 'columns', XLSX_MAX_COLUMNS);
+    if (lastRow > GRID.rows) throw gridLimitError(GRID, lastRow, 'rows');
+    if (lastColumn > GRID.columns) throw gridLimitError(GRID, lastColumn, 'columns');
     return `<mergeCell ref="${getExcelColumnName(merge.column)}${merge.row + 1}:${getExcelColumnName(lastColumn - 1)}${lastRow}"/>`;
   });
   return `<mergeCells count="${refs.length}">${refs.join('')}</mergeCells>`;
@@ -295,8 +295,8 @@ function writeSheet(sheet: WorkbookSheet, textCells: TextCells, parts: WorkbookP
     for (let column = 0; column < row.length; column++) {
       const cell = cellOf(row[column], textCells);
       if (cell === null || cell === '') continue;
-      if (rowNumber > XLSX_MAX_ROWS) throw tableLimitError(rowNumber, 'rows', XLSX_MAX_ROWS);
-      if (column >= XLSX_MAX_COLUMNS) throw tableLimitError(column + 1, 'columns', XLSX_MAX_COLUMNS);
+      if (rowNumber > GRID.rows) throw gridLimitError(GRID, rowNumber, 'rows');
+      if (column >= GRID.columns) throw gridLimitError(GRID, column + 1, 'columns');
       cells += writeCell(getExcelColumnName(column) + rowNumber, cell);
       lastColumn = Math.max(lastColumn, column + 1);
     }
@@ -360,7 +360,7 @@ const SHEET_NAME_MAX_CHARS = 31;
  */
 function assertWorkbookSheets(sheets: readonly WorkbookSheet[]): void {
   if (sheets.length === 0) throw new Error('A workbook has at least one sheet.');
-  if (sheets.length > WORKBOOK_MAX_SHEETS) throw sheetLimitError('The workbook', sheets.length, 'sheets', 'a workbook', WORKBOOK_MAX_SHEETS);
+  assertSheetCount(sheets.length);
   const seen = new Set<string>();
   for (const { name } of sheets) {
     if (name.length < 1 || name.length > SHEET_NAME_MAX_CHARS) throw new Error(`A sheet name is 1 to ${SHEET_NAME_MAX_CHARS} characters, not ${name.length}: "${name}".`);

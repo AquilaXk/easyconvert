@@ -24,13 +24,12 @@ import {
   UnsupportedTargetError,
 } from '../types';
 import { generateOdsFromData, officeSheetWorkbook } from './office';
-import { ODS_MAX_CELLS, XLS_MAX_COLUMNS, XLS_MAX_ROWS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, sheetLimitError } from './office/sheet-bounds';
-import { XLSX_MAX_MATERIALISED_CELLS } from './office/xlsx-sheets';
+import { sheetLimitError } from './office/sheet-bounds';
+import { gridLimitError, gridOf, isSpreadsheetGrid, type Grid } from './table-grid';
 import { sheetCellOfValue, writeXlsx, type SheetCell } from './xlsx-writer';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
-import { PARQUET_MAX_CELLS, PARQUET_MAX_COLUMNS, PARQUET_MAX_ROWS } from './parquet-format';
-import { PDF_TABLE_MAX_CELLS, PDF_TABLE_MAX_COLUMNS, renderPdfTables } from './pdf-table-layout';
+import { renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
   MAX_INTEGER_LITERAL_DIGITS,
@@ -469,46 +468,17 @@ function setCell(cells: Map<string, DataValue>, path: string, value: DataValue):
   cells.set(path, value);
 }
 
-/**
- * What a table of records may hold, checked before its matrix is built: a record of one key of its own adds a column, so R records can
- * make R columns and R x R cells from R lines of input.
- */
-interface TableBounds {
-  /** The sheet the table is written to when the target is a spreadsheet, or null; its columns and rows are refused as the sheet's writers refuse them. */
-  readonly sheet: string | null;
-  readonly columns: number;
-  /** Rows of the sheet, the header row included. */
-  readonly rows: number;
-  readonly cells: number;
-}
-
-/**
- * Each target's own writer limits, checked before the records-by-columns matrix exists, so a small input naming many columns is
- * refused before it costs memory. Spreadsheets hold the grid of their format (`sheet-bounds.ts`) and no more cells than our XLSX
- * reader materialises for one workbook (XLSX_MAX_MATERIALISED_CELLS) or, for ODS, than its writer holds in one string
- * (ODS_MAX_CELLS). A PDF holds the table its page layout draws (`pdf-table-layout.ts`), Parquet its writer's columns, rows and cells
- * (`parquet-format.ts`), and every other table target the Parquet bound of cells held in memory at once.
- */
-const TABLE_BOUNDS: Readonly<Record<string, TableBounds>> = {
-  xls: { sheet: 'an .xls worksheet', columns: XLS_MAX_COLUMNS, rows: XLS_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS },
-  xlsx: { sheet: 'a worksheet', columns: XLSX_MAX_COLUMNS, rows: XLSX_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS },
-  ods: { sheet: 'a worksheet', columns: XLSX_MAX_COLUMNS, rows: XLSX_MAX_ROWS, cells: ODS_MAX_CELLS },
-  pdf: { sheet: null, columns: PDF_TABLE_MAX_COLUMNS, rows: Infinity, cells: PDF_TABLE_MAX_CELLS },
-  parquet: { sheet: null, columns: PARQUET_MAX_COLUMNS, rows: PARQUET_MAX_ROWS, cells: PARQUET_MAX_CELLS },
-};
-const OTHER_TABLE_BOUNDS: TableBounds = { sheet: null, columns: Infinity, rows: Infinity, cells: PARQUET_MAX_CELLS };
-
-function tableBoundsOf(tgt: string): TableBounds {
-  return Object.hasOwn(TABLE_BOUNDS, tgt) ? TABLE_BOUNDS[tgt] : OTHER_TABLE_BOUNDS;
-}
-
 const HEADER_ROWS = 1;
 
-function assertTableFits(fields: number, records: number, bounds: TableBounds): void {
+/**
+ * What a table of records may hold is the grid of its target (`gridOf`), checked before its matrix is built: a record of one key of its own
+ * adds a column, so R records can make R columns and R x R cells from R lines of input.
+ */
+function assertTableFits(fields: number, records: number, bounds: Grid): void {
   const cells = fields * records;
-  if (bounds.sheet !== null) {
-    if (fields > bounds.columns) throw sheetLimitError('The table', fields, 'columns', bounds.sheet, bounds.columns);
-    if (records + HEADER_ROWS > bounds.rows) throw sheetLimitError('The table', records + HEADER_ROWS, 'rows', bounds.sheet, bounds.rows);
+  if (isSpreadsheetGrid(bounds)) {
+    if (fields > bounds.columns) throw gridLimitError(bounds, fields, 'columns');
+    if (records + HEADER_ROWS > bounds.rows) throw gridLimitError(bounds, records + HEADER_ROWS, 'rows');
     if (cells > bounds.cells) throw sheetLimitError('The table', cells, 'cells (records times columns)', 'a workbook this engine reads', bounds.cells);
   } else if (fields > bounds.columns || records > bounds.rows || cells > bounds.cells) {
     const limits = [[bounds.columns, 'columns'], [bounds.rows, 'records'], [bounds.cells, 'cells']] as const;
@@ -526,7 +496,7 @@ function tabulate(records: DataValue[], tgt: string, leadingFields: readonly str
     return cells;
   });
   const fields = fieldsInFirstSeenOrder(flattened.map((cells) => cells.keys()), leadingFields);
-  assertTableFits(fields.length, flattened.length, tableBoundsOf(tgt));
+  assertTableFits(fields.length, flattened.length, gridOf(tgt));
   return { fields, rows: flattened.map((cells) => fields.map((field) => cells.get(field) ?? null)) };
 }
 

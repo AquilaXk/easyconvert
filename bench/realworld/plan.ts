@@ -11,6 +11,9 @@ export interface Job {
   target: string;
 }
 
+/** How many advertised targets each corpus file takes in a nightly run unless `--per-file` says otherwise. */
+export const DEFAULT_PER_FILE = 3;
+
 /** Jobs for the files, given each source format's advertised targets. */
 export function planJobs(files: readonly CorpusFile[], targetsOf: (format: string) => readonly string[], perFile: number): Job[] {
   const seenPerFormat = new Map<string, number>();

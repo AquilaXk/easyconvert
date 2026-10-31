@@ -15,12 +15,12 @@ import type {
 import { isRightToLeftRegion, orderRows, type LineGroup } from './columns';
 import { buildRows } from './lines';
 import { LayoutBudget } from './limits';
-import { pageCounterBlocks, type FurnitureLine } from './page-counters';
-import { continuesInNextFlow, openParagraph, ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
+import { pageCounterBlocks, type CounterForm, type FurnitureLine } from './page-counters';
+import { builderOf, continuesInNextFlow, type ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
 import { assembleLists, bodySizeOf, headingLevels, inlineRuns } from './structure';
 import { detectLatticeTables, detectStreamTables, tableSegment } from './tables';
 import { extractVerticalLines } from './vertical';
-import type { DetectedTable, FontList, LayoutLine, Paragraph, Row } from './types';
+import type { DetectedTable, FontList, LayoutLine, Paragraph, Row, TableCell } from './types';
 
 /**
  * Document structure from the positioned content of a PDF's pages: lines and rows, tables (ruled, then aligned),
@@ -43,7 +43,7 @@ interface BlockMeta {
   band: number;
 }
 
-type PageBlock =
+export type PageBlock =
   | ({ kind: 'paragraph'; paragraph: Paragraph; full: boolean } & BlockMeta)
   | ({ kind: 'table'; table: DetectedTable } & BlockMeta)
   | ({ kind: 'image'; image: PdfContentImage; imageId: number } & BlockMeta);
@@ -172,19 +172,35 @@ function rowText(row: DetectedTable['rows'][number]): string {
   return row.map((cell) => cell.paragraphs.map((paragraph) => paragraph.text).join(' ')).join('|');
 }
 
-/** The rows of both tables; a header repeated at the top of the continuation is not written twice. */
-function joinTables(last: DetectedTable, next: DetectedTable): DetectedTable {
-  const repeated = next.rows.length > 0 && last.rows.length > 0 && rowText(next.rows[0]) === rowText(last.rows[0]);
-  return { ...last, rows: [...last.rows, ...(repeated ? next.rows.slice(1) : next.rows)], box: { ...last.box, y1: Math.max(last.box.y1, next.box.y1) } };
+/** A table and the tables that continue it on the following pages, made one table when the run ends (a header repeated at the top of a continuation is not written twice). */
+class TableRun {
+  private readonly rows: TableCell[][];
+  private y1: number;
+
+  constructor(private readonly head: DetectedTable) {
+    this.rows = [...head.rows];
+    this.y1 = head.box.y1;
+  }
+
+  add(next: DetectedTable): void {
+    const repeated = next.rows.length > 0 && this.rows.length > 0 && rowText(next.rows[0]) === rowText(this.rows[0]);
+    for (let i = repeated ? 1 : 0; i < next.rows.length; i++) this.rows.push(next.rows[i]);
+    this.y1 = Math.max(this.y1, next.box.y1);
+  }
+
+  finish(): DetectedTable {
+    return { ...this.head, rows: this.rows, box: { ...this.head.box, y1: this.y1 } };
+  }
 }
 
 /**
  * Tables that continue on a following page become one, and with `'all'` so do paragraphs that continue into the next flow (column or page).
- * A run of paragraphs that continue into one another is gathered in one builder and made a paragraph once, when the run ends:
- * building the merged paragraph at every step copies the lines before it, which a document of pages that are each one open
- * paragraph turns into work quadratic in the page count. A caller that keeps only the tables asks for `'tables'` and merges none.
+ * A run of tables or of paragraphs that continue into one another is gathered once and made a table or a paragraph when the run ends:
+ * building the merged block at every step copies the rows or the lines before it, which a document of pages that are each one open
+ * paragraph, or one table, turns into work quadratic in the page count. The block that starts a run stays at the end of `joined` as it
+ * was built until the run ends. A caller that keeps only the tables asks for `'tables'` and merges no paragraph. Exported for its tests.
  */
-function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' = 'all'): PageBlock[] {
+export function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' = 'all'): PageBlock[] {
   const flowRight = new Map<number, number>();
   for (const block of blocks) {
     if (join === 'all' && block.kind === 'paragraph') {
@@ -192,28 +208,29 @@ function joinContinuations(blocks: PageBlock[], join: 'all' | 'tables' = 'all'):
     }
   }
   const joined: PageBlock[] = [];
-  /** The paragraph at the end of `joined` and the lines of it and of the ones that continue it, once one has been added. */
-  let run: { head: ParagraphEntry; builder: ParagraphBuilder } | undefined;
+  let paragraphRun: ParagraphBuilder | undefined;
+  let tableRun: TableRun | undefined;
   const finishRun = (): void => {
-    if (!run) return;
-    joined[joined.length - 1] = { ...run.head, paragraph: run.builder.finish() };
-    run = undefined;
+    const at = joined.length - 1;
+    if (paragraphRun) joined[at] = { ...(joined[at] as ParagraphEntry), paragraph: paragraphRun.finish() };
+    else if (tableRun) joined[at] = { ...(joined[at] as TableEntry), table: tableRun.finish() };
+    paragraphRun = undefined;
+    tableRun = undefined;
   };
   for (const block of blocks) {
     const last = joined[joined.length - 1];
     if (block.kind === 'table' && last?.kind === 'table' && continuesTable(last.table, block.table)) {
-      joined[joined.length - 1] = { ...last, table: joinTables(last.table, block.table) };
+      tableRun ??= new TableRun(last.table);
+      tableRun.add(block.table);
       continue;
     }
-    if (join === 'all' && block.kind === 'paragraph' && last?.kind === 'paragraph' && last.paragraph.flow !== block.paragraph.flow) {
-      const end = run ? run.builder.end() : openParagraph(last.paragraph);
+    // A full paragraph (vertical, angled, or one that fills its flow) never continues, and its stored box is not the one its lines give.
+    if (join === 'all' && block.kind === 'paragraph' && last?.kind === 'paragraph' && !last.paragraph.full && last.paragraph.flow !== block.paragraph.flow) {
+      const open = paragraphRun ?? builderOf(last.paragraph);
+      const end = open.end();
       if (continuesInNextFlow(end, block.paragraph, flowRight.get(last.paragraph.flow) ?? end.x1)) {
-        if (!run) {
-          const builder = new ParagraphBuilder(last.paragraph.flow, last.paragraph.pageNumber, last.paragraph.full);
-          builder.addAll(last.paragraph.lines);
-          run = { head: last, builder };
-        }
-        run.builder.addAll(block.paragraph.lines);
+        open.addAll(block.paragraph.lines);
+        paragraphRun = open;
         continue;
       }
     }
@@ -301,6 +318,7 @@ const PAGE_FURNITURE_SIZE_TOLERANCE = 0.5;
 const PAGE_NUMBER = /\d+/g;
 
 type ParagraphEntry = Extract<PageBlock, { kind: 'paragraph' }>;
+type TableEntry = Extract<PageBlock, { kind: 'table' }>;
 type FurnitureBand = 'header' | 'footer';
 
 /** The band of the page a one-line paragraph sits in, or undefined when it is in the body. */
@@ -319,7 +337,7 @@ function furnitureKey(text: string): string {
 }
 
 /** The header and footer lines among `blocks` that print the number of their page (`pageCounterBlocks`). */
-function pageCountersOf(blocks: Iterable<PageBlock>, candidates: ReadonlyMap<PageBlock, FurnitureBand>): Set<PageBlock> {
+function pageCountersOf(blocks: Iterable<PageBlock>, candidates: ReadonlyMap<PageBlock, FurnitureBand>): Map<PageBlock, CounterForm> {
   const lines = [...blocks].map((block): FurnitureLine<PageBlock> => {
     const { paragraph } = block as ParagraphEntry;
     return { block, key: `${candidates.get(block)}:${furnitureKey(paragraph.text)}`, text: paragraph.text, pageNumber: paragraph.pageNumber };
@@ -327,12 +345,14 @@ function pageCountersOf(blocks: Iterable<PageBlock>, candidates: ReadonlyMap<Pag
   return pageCounterBlocks(lines);
 }
 
-/** What `splitPageFurniture` takes out of the flow, and which of those blocks are the page counter of their page. */
+/** What `splitPageFurniture` takes out of the flow, and which of those blocks are the page counter of their page, in the form each prints. */
 interface PageFurniture {
   body: PageBlock[];
   header: Paragraph[];
   footer: Paragraph[];
-  counters: ReadonlySet<PageBlock>;
+  counters: ReadonlyMap<PageBlock, CounterForm>;
+  /** The counters that are a bare number in the header band: a bare number at the foot of a page is its page number, one at its head can be text. */
+  headerBareCounters: ReadonlySet<PageBlock>;
 }
 
 /**
@@ -348,7 +368,7 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
     const band = furnitureBand(block, pageHeights);
     if (band) candidates.set(block, band);
   }
-  if (candidates.size === 0) return { body: blocks, header: [], footer: [], counters: new Set() };
+  if (candidates.size === 0) return { body: blocks, header: [], footer: [], counters: new Map(), headerBareCounters: new Set() };
   const accepted = new Set<PageBlock>();
   if (pages.length >= PAGE_FURNITURE_MIN_PAGES) {
     const pagesByKey = new Map<string, Set<number>>();
@@ -377,21 +397,24 @@ function splitPageFurniture(blocks: PageBlock[], pages: PdfPageContent[]): PageF
   // A one-page document has no recurrence to show a header or footer by, and a table page has no body text to compare its size with: the line
   // that prints the page's own number in a band is its counter whether or not it is furniture.
   const counters = pageCountersOf(pages.length === 1 ? candidates.keys() : accepted, candidates);
-  if (accepted.size === 0) return { body: blocks, header: [], footer: [], counters };
+  const headerBareCounters = new Set([...counters].filter(([block, form]) => form === 'bare' && candidates.get(block) === 'header').map(([block]) => block));
+  if (accepted.size === 0) return { body: blocks, header: [], footer: [], counters, headerBareCounters };
   const firstPageOf = (band: FurnitureBand): Paragraph[] => {
     const lines = [...accepted].filter((block) => candidates.get(block) === band).map((block) => (block as ParagraphEntry).paragraph);
     if (lines.length === 0) return [];
     const firstPage = Math.min(...lines.map((paragraph) => paragraph.pageNumber));
     return lines.filter((paragraph) => paragraph.pageNumber === firstPage).sort((a, b) => a.box.y0 - b.box.y0);
   };
-  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), counters };
+  return { body: blocks.filter((block) => !accepted.has(block)), header: firstPageOf('header'), footer: firstPageOf('footer'), counters, headerBareCounters };
 }
 
 /** The lines of text one page holds in reading order, vertical and angled text included. */
 export interface PdfPageText {
   pageNumber: number;
-  /** Every line of the page, but its page counter (`pageCounterBlocks`): a miss keeps a line. */
+  /** Every line of the page, but its page counter (`pageCounterBlocks`). */
   lines: string[];
+  /** Whether a page counter left out of `lines` is a bare number in the header band, the form that can be text (section numbers that run 1, 2, 3 on pages 1, 2, 3). */
+  hasHeaderBareCounter: boolean;
 }
 
 /** What one layout pass over the pages gives: the document, and the tables and lines of text that a spreadsheet takes from it. */
@@ -406,15 +429,19 @@ export interface LaidOutPdf {
   pageText: PdfPageText[];
 }
 
-function pageTextOf(layout: PageLayout, counters: ReadonlySet<PageBlock>): PdfPageText {
+function pageTextOf(layout: PageLayout, counters: ReadonlyMap<PageBlock, CounterForm>, headerBareCounters: ReadonlySet<PageBlock>): PdfPageText {
   const { pageNumber } = layout.page;
   const lines: string[] = [];
+  let hasHeaderBareCounter = false;
   for (const block of layout.blocks) {
     if (block.kind !== 'paragraph') continue;
-    if (counters.has(block)) continue;
+    if (counters.has(block)) {
+      hasHeaderBareCounter ||= headerBareCounters.has(block);
+      continue;
+    }
     for (const { text } of block.paragraph.lines) lines.push(text);
   }
-  return { pageNumber, lines };
+  return { pageNumber, lines, hasHeaderBareCounter };
 }
 
 /**
@@ -521,7 +548,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[]): Lai
     ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
     ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => inlineRuns(paragraph.runs)) } : {}),
   };
-  return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture.counters)) };
+  return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture.counters, furniture.headerBareCounters)) };
 }
 
 export type { DocumentModel, LayoutLine };

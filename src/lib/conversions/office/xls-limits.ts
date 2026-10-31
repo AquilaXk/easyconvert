@@ -5,7 +5,8 @@ import { openPackage } from '../package-access';
 import { readZipEntryText, scanZipEntry } from '../zip-entry-reader';
 import { streamElementsWithin } from './opc-parts';
 import { XLSX_MAX_PART_ENTRIES, XLSX_NO_WORKSHEETS_MESSAGE, discoverXlsxSheets } from './xlsx-sheets';
-import { XLS_MAX_COLUMNS, XLS_MAX_ROWS, sheetLimitError } from './sheet-bounds';
+import { sheetLimitError } from './sheet-bounds';
+import { gridOf } from '../table-grid';
 
 /**
  * A workbook that is written as `.xls` has to fit the BIFF8 sheet. The office suite's `MS Excel 97` export drops the rows past 65,536
@@ -21,6 +22,8 @@ import { XLS_MAX_COLUMNS, XLS_MAX_ROWS, sheetLimitError } from './sheet-bounds';
  * in the package is refused, not passed. A tall part that nothing references gets a 413 as well, which is the safe side: no
  * producer writes one. The parts are streamed, charged to one decoded-byte budget for the workbook, and never held whole.
  */
+
+const XLS_GRID = gridOf('xls');
 
 /** The children of `c` that give a cell content (ECMA-376 Part 1, 18.3.1.4): a value, a formula, an inline string. */
 const CELL_CONTENT: ReadonlySet<string> = new Set(['v', 'f', 'is']);
@@ -201,8 +204,8 @@ class WorksheetExtent {
 
   private extend(row: number, column: number): void {
     const subject = `The workbook (${this.part})`;
-    if (row > XLS_MAX_ROWS) throw sheetLimitError(subject, row, 'rows', 'an .xls worksheet', XLS_MAX_ROWS);
-    if (column > XLS_MAX_COLUMNS) throw sheetLimitError(subject, column, 'columns', 'an .xls worksheet', XLS_MAX_COLUMNS);
+    if (row > XLS_GRID.rows) throw sheetLimitError(subject, row, 'rows', XLS_GRID.sheet, XLS_GRID.rows);
+    if (column > XLS_GRID.columns) throw sheetLimitError(subject, column, 'columns', XLS_GRID.sheet, XLS_GRID.columns);
   }
 
   private unreadable(what: string): ConversionFailedError {

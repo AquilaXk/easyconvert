@@ -459,6 +459,9 @@ class DocxReader {
           state.fields.pop();
           break;
         }
+        case 'ruby':
+          this.readRuby(child, part, state);
+          break;
         case 'ins':
         case 'moveTo':
         case 'smartTag':
@@ -568,11 +571,9 @@ class DocxReader {
           if (choice) this.readRun(choice, part, state);
           break;
         }
-        case 'ruby': {
-          const base = firstChild(child, 'rubyBase');
-          if (base) this.readInlineChildren(base, part, state);
+        case 'ruby':
+          this.readRuby(child, part, state);
           break;
-        }
         case 'footnoteReference':
         case 'endnoteReference':
           this.readNoteReference(child, state);
@@ -589,6 +590,16 @@ class DocxReader {
           break;
       }
     }
+  }
+
+  /**
+   * A phonetic guide (ECMA-376 17.3.3.25) is read as the text it is set over: `rubyBase` (17.3.3.27), in place among the runs around it, and not
+   * the guide in `rt` (17.3.3.26). The element is read wherever a run's content may stand, inside a run as Word writes it and directly under a
+   * paragraph, hyperlink, insertion or content control as other writers do; the drawing-aware reader of `office.ts` leaves `rt` out the same way.
+   */
+  private readRuby(ruby: XmlElement, part: PartContext, state: ParagraphState): void {
+    const base = firstChild(ruby, 'rubyBase');
+    if (base) this.readInlineChildren(base, part, state);
   }
 
   /** A field's begin, separate and end marks (ECMA-376 17.16.18): the instruction text comes first, then the result the reader keeps. */

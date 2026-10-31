@@ -11,11 +11,11 @@ import type { AddressInfo } from 'node:net';
 import { describeFetchFailure } from '../bench/http-retry';
 import { fetchBytes, retryDelayMs } from '../bench/realworld/http';
 import { inflateEntry, localHeaderLength, locateCentralDirectory, parseCentralDirectory, ZipRangeError } from '../bench/realworld/zip-range';
-import { ManifestError, MANIFEST_PATH, parseManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
-import { planJobs, shardJobs } from '../bench/realworld/plan';
+import { ManifestError, MANIFEST_PATH, parseManifest, readManifest, type CorpusFile, type CorpusManifest } from '../bench/realworld/manifest';
+import { DEFAULT_PER_FILE, planJobs, shardJobs } from '../bench/realworld/plan';
 import { answeredStatus, crashDetail, exitSummary, isTypedRefusal } from '../bench/realworld/verdict';
 import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
-import { evaluate, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
+import { evaluate, knownRefusal, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
 import { outputProblem, PAGE_TARGETS } from '../bench/realworld/output-check';
 import { JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
@@ -310,6 +310,97 @@ describe('verdicts and gate', () => {
     const listed = readKnownRefusals();
     expect(listed.length).toBeGreaterThan(0);
     expect(listed.filter((entry) => !manifestFiles.has(entry.file))).toEqual([]);
+  });
+
+  describe('a known refusal that names its pair', () => {
+    const message = 'CorruptStreamError: Invalid PDF document: missing %PDF- header';
+    const refused = (source: string, target: string, file = 'damaged.pdf'): JobRecord => ({ file, source, target, verdict: 'refused', ms: 1, detail: message });
+    const row = { file: 'damaged.pdf', detail: '^CorruptStreamError: Invalid PDF document: missing %PDF- header$', reason: 'Damaged.', issue: 783 };
+    const named = [{ ...row, source: 'pdf', target: ['docx', 'html'] }];
+
+    it('explains the same file and message in the pairs it names, and in no other pair', () => {
+      expect(knownRefusal(refused('pdf', 'docx'), named)).not.toBeNull();
+      expect(knownRefusal(refused('pdf', 'html'), named)).not.toBeNull();
+      expect(knownRefusal(refused('pdf', 'txt'), named), 'another target').toBeNull();
+      expect(knownRefusal(refused('ps', 'docx'), named), 'another source').toBeNull();
+      expect(knownRefusal(refused('pdf', 'docx', 'other.pdf'), named), 'another file').toBeNull();
+      expect(evaluate([refused('pdf', 'txt')], null, [], named).knownRefusals).toEqual([]);
+    });
+
+    it('keeps a row without a pair valid for every pair, and one with a single target or only a source narrower', () => {
+      expect(knownRefusal(refused('pdf', 'txt'), [row])).not.toBeNull();
+      expect(knownRefusal(refused('pdf', 'txt'), [{ ...row, target: 'txt' }])).not.toBeNull();
+      expect(knownRefusal(refused('pdf', 'png'), [{ ...row, target: 'txt' }])).toBeNull();
+      expect(knownRefusal(refused('pdf', 'png'), [{ ...row, source: 'pdf' }])).not.toBeNull();
+      expect(knownRefusal(refused('ps', 'png'), [{ ...row, source: 'pdf' }])).toBeNull();
+    });
+
+    it('refuses a pair that is empty or not text when the list is read', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-pairs-'));
+      const read = (body: unknown): unknown => {
+        const file = path.join(dir, `${Math.random()}.json`);
+        fs.writeFileSync(file, JSON.stringify([body]));
+        return readKnownRefusals(file);
+      };
+      try {
+        expect(() => read({ ...row, source: '' })).toThrow(/source/);
+        expect(() => read({ ...row, target: [] })).toThrow(/target/);
+        expect(() => read({ ...row, target: ['docx', ''] })).toThrow(/target/);
+        expect(() => read({ ...row, target: 7 })).toThrow(/target/);
+        expect(read({ ...row, source: 'pdf', target: ['docx'] })).toHaveLength(1);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('is set on the six PDF and five Word rows of the refusal tail, whose messages differ by target', () => {
+      const tail = [
+        ...['qpdf-issue-263', 'qpdf-issue-101', 'qpdf-issue-99', 'qpdf-issue-120', 'qpdf-issue-141b'].map((id) => `${id}.pdf`),
+        'pdfjs-bug1020226.pdf',
+        ...['59378', 'bug62859', 'headerpic', 'issue_51265_3', 'emptydocumentwithheaderfooter'].map((id) => `office-document-${id}.docx`),
+      ];
+      const byFile = new Map(readKnownRefusals().map((entry) => [entry.file, entry]));
+      for (const file of tail) {
+        const entry = byFile.get(file);
+        expect(entry?.source, `${file} source`).toBe(path.extname(file).slice(1));
+        expect(entry?.target, `${file} target`).not.toBeUndefined();
+      }
+    });
+
+    it('is advertised by the registry and planned for its file, for every row that names a target', () => {
+      const { files: corpus } = readManifest();
+      const planned = planJobs(corpus, (format) => getAvailableTargetFormats(format).map((def) => def.id), DEFAULT_PER_FILE);
+      const files = new Map(corpus.map((file) => [file.id, file]));
+      const stale: string[] = [];
+      for (const entry of readKnownRefusals().filter((row) => row.target !== undefined)) {
+        const format = files.get(entry.file)?.format;
+        const source = entry.source ?? format;
+        for (const target of [entry.target].flat()) {
+          const advertised = getAvailableTargetFormats(source ?? '').some((def) => def.id === target);
+          const runs = planned.some((job) => job.file.id === entry.file && job.target === target);
+          if (!advertised || !runs) stale.push(`${entry.file} ${source}->${target}: advertised ${advertised}, planned ${runs}`);
+        }
+      }
+      expect(stale).toEqual([]);
+    });
+
+    it('refuses a source or a target that is no format of the registry when the list is read', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-names-'));
+      const read = (body: unknown): unknown => {
+        const file = path.join(dir, `${Math.random()}.json`);
+        fs.writeFileSync(file, JSON.stringify([body]));
+        return readKnownRefusals(file);
+      };
+      try {
+        expect(() => read({ ...row, source: 'pfd' })).toThrow(/source/);
+        expect(() => read({ ...row, target: 'dcox' })).toThrow(/target/);
+        expect(() => read({ ...row, target: ['docx', 'nosuchformat'] })).toThrow(/target/);
+        expect(() => read({ ...row, target: 'constructor' })).toThrow(/target/);
+        expect(read({ ...row, source: 'pdf', target: ['docx', 'html'] })).toHaveLength(1);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   it('renders the pair table, the untracked failures with escaped details, and the tracked ones by issue', () => {

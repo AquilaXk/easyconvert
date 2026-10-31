@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { InflateBudget } from './bounded-inflate';
 import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
 import { newRelationshipAllowance, readPartRelationships, streamFirstElements, type OpcReadOptions } from './office/opc-parts';
-import { XLSX_MAX_MATERIALISED_CELLS, XLSX_MAX_RANGES_PER_WORKBOOK, XLSX_NO_WORKSHEETS_MESSAGE, discoverXlsxSheets } from './office/xlsx-sheets';
+import { XLSX_MAX_RANGES_PER_WORKBOOK, XLSX_NO_WORKSHEETS_MESSAGE, discoverXlsxSheets } from './office/xlsx-sheets';
 import { resolveZipPath } from './office/zip-path';
 import { safeDecodeXmlEntities, safeExtractXmlElements, type SafeXmlElement, type SafeXmlScannerOptions } from './safe-xml-scanner';
 import { HTML_MAX_EMBEDDED_BASE64_CHARS, PptxMedia, base64Length } from './office/pptx-media';
@@ -49,6 +49,8 @@ import { extract7zArchive, extractRarArchive } from './archive';
 import { htmlToText } from './office/html-text';
 import { decodeHtmlInput } from './html-encoding';
 import { decodeWindows1252 } from './office/windows-1252';
+import { readCfbContainer } from './office/cfb-streams';
+import { withoutElements } from './office/xml-without';
 import { EncryptedOfficeDocumentError, LegacyOfficeFormatError } from './office/legacy-office-errors';
 import { renderPdfTables } from './pdf-table-layout';
 import { decodeXmlBytes, openPackage, readPackageEntry, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
@@ -69,7 +71,8 @@ import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from './ooxml-variant
 import { officeReadingFormat } from './office/office-suite-sources';
 import { assertReadableAsText } from './office/text-source-guard';
 import { sourceBytesAsText } from './office/text-source';
-import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, assertSheetsWithinGrid } from './office/sheet-bounds';
+import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_MATERIALISED_CELLS, XLSX_MAX_ROWS } from './office/sheet-bounds';
+import { assertSheetsWithinGrid } from './table-grid';
 import { readWorksheetStructure, worksheetBoundError } from './office/xlsx-worksheet-structure';
 import { DAY_ZERO_1900, MS_PER_DAY, writeXlsx, writeXlsxWorkbook, type WorkbookCompression } from './xlsx-writer';
 import { readPdfSheets } from './pdf-sheets';
@@ -2657,7 +2660,7 @@ export function parseDocxXml(
       ? xml.slice(bodyOpen, bodyClose + 9)
       : xml;
 
-  const blocks = safeExtractDocxBlocks(bodyXml);
+  const blocks = safeExtractDocxBlocks(withoutElements(bodyXml, 'w:rt'));
 
   for (const chunk of blocks) {
     // If chunk is a standalone Drawing (<w:drawing>)
@@ -5106,22 +5109,11 @@ async function readWorksheetCharts(zip: JSZip, drawingParts: readonly string[], 
 }
 
 /**
- * A rich-text string without its phonetic guides (`rPh` runs, ECMA-376 Part 1, 18.4.6), which are readings written beside the text and
- * not part of it: openpyxl's `Text.content` joins `t` and the runs' `t` only (openpyxl 3.1.5, cell/text.py lines 173 to 184), and
- * SheetJS drops every `rPh` with one global replace (xlsx 0.18.5, `parse_si`, xlsx.js line 9470). The string is rebuilt in one pass
- * from the runs' positions, and every run goes, however many there are: the string itself is bounded by the size of its part.
+ * The phonetic guides (`rPh` runs, ECMA-376 Part 1, 18.4.6) of a rich-text string are readings written beside the text and not part of it:
+ * openpyxl's `Text.content` joins `t` and the runs' `t` only (openpyxl 3.1.5, cell/text.py lines 173 to 184), and SheetJS drops every `rPh`
+ * with one global replace (xlsx 0.18.5, `parse_si`, xlsx.js line 9470).
  */
-function withoutPhoneticRuns(stringXml: string): string {
-  if (!stringXml.includes('<rPh')) return stringXml;
-  const kept: string[] = [];
-  let from = 0;
-  for (const run of safeExtractXmlElements(stringXml, 'rPh', { maxElements: Number.POSITIVE_INFINITY })) {
-    kept.push(stringXml.slice(from, run.startIndex));
-    from = run.endIndex;
-  }
-  kept.push(stringXml.slice(from));
-  return kept.join('');
-}
+const PHONETIC_RUN = 'rPh';
 
 /** The date system of a workbook: 1904 when `workbookPr` says `date1904` (an ST_Boolean: "1" or "true"), else 1900. */
 function readDateSystem(workbookXml: string): SpreadsheetDateSystem {
@@ -5185,7 +5177,7 @@ async function readSharedStrings(zip: JSZip): Promise<string[]> {
   const sstXml = await readZipEntryText(sstFile);
   const strings: string[] = [];
   const limit = { maxElements: XLSX_MAX_MATERIALISED_CELLS + 1 };
-  safeExtractXmlElements(sstXml, 'si', { ...limit, onElement: (si) => strings.push(safeExtractAllText(withoutPhoneticRuns(si.content), 't')) });
+  safeExtractXmlElements(sstXml, 'si', { ...limit, onElement: (si) => strings.push(safeExtractAllText(withoutElements(si.content, PHONETIC_RUN), 't')) });
   if (strings.length === 0) safeExtractXmlElements(sstXml, 't', { ...limit, onElement: (t) => strings.push(safeDecodeXmlEntities(t.content)) });
   if (strings.length > XLSX_MAX_MATERIALISED_CELLS) {
     throw new PayloadLimitError(`The XLSX shared string table holds more than ${XLSX_MAX_MATERIALISED_CELLS} strings, more than the cells a workbook is read with.`);
@@ -5446,7 +5438,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
         if (isInline) {
           const isEl = safeExtractFirstXmlElement(body, 'is');
           if (isEl) {
-            const inlineText = withoutPhoneticRuns(isEl.content);
+            const inlineText = withoutElements(isEl.content, PHONETIC_RUN);
             cellValue = safeExtractAllText(inlineText, 't') || safeExtractAllText(inlineText);
           } else if (tContent !== null) {
             cellValue = safeDecodeXmlEntities(tContent);
@@ -8851,13 +8843,14 @@ function biffGlobalsHaveFilePass(stream: Buffer): boolean {
 /**
  * Whether the workbook of an XLS carries a FilePass record: it is obfuscated or encrypted. The office suite decrypts a workbook that
  * uses its default password and cannot load one that needs another, which it reports like a damaged file; this tells the two
- * apart afterwards. A file this cannot read as a BIFF workbook is not encrypted as far as this can tell.
+ * apart afterwards. A file this cannot read as a BIFF workbook is not encrypted as far as this can tell, and a compound file is
+ * opened as the legacy readers open one, so a file past their size limit is not walked.
  */
 export function xlsHasFilePass(inputBuffer: Buffer): boolean {
   let stream: Buffer | undefined = inputBuffer;
   if (isCfbfContainer(inputBuffer)) {
     try {
-      stream = selectWorkbookStream(parseCfbf(inputBuffer));
+      stream = selectWorkbookStream(readCfbContainer(inputBuffer, 'XLS'));
     } catch {
       return false;
     }
@@ -9089,10 +9082,7 @@ export async function convertOdtSource(
 /**
  * Generates OpenDocument Spreadsheet (ODS) Archive
  */
-export async function generateOdsFromData(
-  data: string[][] | OfficeWorksheet[],
-  baseName: string
-): Promise<Buffer> {
+export async function generateOdsFromData(data: string[][] | OfficeWorksheet[], baseName: string): Promise<Buffer> {
   const sheets: OfficeWorksheet[] = assertSheetsWithinGrid(
     Array.isArray(data) && data.length > 0 && typeof data[0] === 'object' && 'rows' in data[0] ? (data as OfficeWorksheet[]) : [{ name: baseName, rows: (data as string[][]) || [] }]
   );

@@ -47,20 +47,13 @@ export const WORKBOOK_MAX_SHEETS = 10_000;
 export const ODS_MAX_CELLS = 1_000_000;
 
 /**
- * The sheets of a table written to a format that has no writer-side grid check (ODS) are bound as an XLSX worksheet is, since the office suite
- * reads them on the same grid: 16,384 columns and 1,048,576 rows a sheet, 10,000 sheets a workbook. A table past a bound is refused with a
- * typed limit error, never cut. The sheets are returned as they are.
+ * Cells of a workbook the XLSX reader builds, padding included: the 20 million cells that the data-format readers (Parquet) allow for a
+ * table. A sparse sheet inside the bounds of a worksheet can still ask for 16.7 billion padded cells (a cell at XFD on each of
+ * 1048576 rows), and each padded cell takes about 53 bytes of heap.
  */
-export function assertSheetsWithinGrid<Sheet extends { rows: readonly (readonly unknown[])[] }>(sheets: Sheet[]): Sheet[] {
-  if (sheets.length > WORKBOOK_MAX_SHEETS) throw sheetLimitError('The workbook', sheets.length, 'sheets', 'a workbook', WORKBOOK_MAX_SHEETS);
-  let cells = 0;
-  for (const sheet of sheets) {
-    if (sheet.rows.length > XLSX_MAX_ROWS) throw sheetLimitError('The table', sheet.rows.length, 'rows', 'a worksheet', XLSX_MAX_ROWS);
-    for (const row of sheet.rows) {
-      if (row.length > XLSX_MAX_COLUMNS) throw sheetLimitError('The table', row.length, 'columns', 'a worksheet', XLSX_MAX_COLUMNS);
-      cells += row.length;
-    }
-  }
-  if (cells > ODS_MAX_CELLS) throw sheetLimitError('The workbook', cells, 'cells', 'an OpenDocument spreadsheet this engine writes', ODS_MAX_CELLS);
-  return sheets;
+export const XLSX_MAX_MATERIALISED_CELLS = 20_000_000;
+
+/** Refuses a workbook of more than WORKBOOK_MAX_SHEETS sheets with the typed limit error. */
+export function assertSheetCount(count: number): void {
+  if (count > WORKBOOK_MAX_SHEETS) throw sheetLimitError('The workbook', count, 'sheets', 'a workbook', WORKBOOK_MAX_SHEETS);
 }

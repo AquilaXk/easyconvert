@@ -794,7 +794,7 @@
     "rule": "complexity",
     "function": "readRun",
     "count": 1,
-    "maxValue": 35
+    "maxValue": 34
   },
   {
     "file": "src/lib/conversions/fb2-model.ts",
@@ -1576,7 +1576,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 9567
+    "maxValue": 9557
   },
   {
     "file": "src/lib/conversions/office.ts",

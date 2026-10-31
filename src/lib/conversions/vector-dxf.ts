@@ -1,8 +1,11 @@
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError } from '../types';
 import { placeBitmapGlyphText, UNMAPPABLE_CHARACTER, type PdfPageText, type PlacedText } from './bitmap-glyph-text';
 import { reportConversionWarning } from './conversion-warnings';
+import { pagesPhrase } from './pdf-text-types';
 import { BitmapGlyphs } from './svg-bitmap-glyph';
-import { parseSvgGeometries, type ParsedSvgVectorDocument } from './svg-geometry';
+import { parseSvgGeometries, type ParsedSvgVectorDocument, type SvgGeometryElement } from './svg-geometry';
+import { isPageSizedRectangle } from './svg-page-clip';
+import { LeftOutPictures } from './svg-picture';
 
 /**
  * DXF writer for vector pages: the page drawn as SVG geometry (flattened curves in device coordinates, every
@@ -17,7 +20,10 @@ import { parseSvgGeometries, type ParsedSvgVectorDocument } from './svg-geometry
  *
  * A picture the page draws is left out, and the conversion says so: a DXF holds no bitmaps, and the exporters leave them out
  * (Inkscape's dxf_outlines.py `process_shape` reads paths, rectangles, lines, circles and ellipses only; pstoedit's DXF drivers
- * are registered with `imageformat::noimage` in drvdxf.cpp, so pstoedit.pro never hooks the image operators for them).
+ * are registered with `imageformat::noimage` in drvdxf.cpp, so pstoedit.pro never hooks the image operators for them). A picture
+ * that is not painted (`display: none`, hidden, fully transparent) is not counted. A page whose geometry is only shapes without a
+ * stroke that cover the page (the white sheet a scan lies on) is a page of a picture: it is refused as a page without geometry,
+ * as a scan with no shape under it is, and not written as the rectangle of the sheet.
  *
  * The characters of a bitmap font, which Poppler draws as pictures, are written as TEXT in the STANDARD style (font `txt`,
  * AutoCAD's default) from the PDF's text layer (bitmap-glyph-text.ts): each run left-aligned on its baseline and fitted to its
@@ -43,7 +49,8 @@ const DXF_CODE_WIDTH = 3;
 /** Two points closer than this are the same point, so a repeated first vertex marks a closed outline. */
 const CLOSURE_EPSILON = 1e-9;
 const SVG_ROOT_PATTERN = /<svg\b/i;
-const PICTURES_LEFT_OUT_WARNING = 'Left out the pictures of the pages: a DXF holds lines and text and no bitmaps.';
+const PICTURES_LEFT_OUT_REASON = 'a DXF holds lines and text and no bitmaps.';
+const NO_GEOMETRY_REFUSAL = 'The page draws no vector geometry, so there is nothing to write as DXF.';
 const DXF_TEXT_STYLE = 'STANDARD';
 const DXF_TEXT_FONT = 'txt';
 /** Group 72 of a TEXT: 5 is Fit, the text runs between the two alignment points at its own height. */
@@ -202,31 +209,63 @@ function refusingUnsupported<T>(step: () => T): T {
   }
 }
 
-function readSvgPage(svg: Buffer, bitmapGlyphs: BitmapGlyphs): ParsedSvgVectorDocument {
+/** The pages of one conversion whose pictures were left out, named together in one warning once the last page is written. */
+export class PicturePages {
+  private readonly pages = new Set<number>();
+  private unnumbered = false;
+
+  /** Notes a page; one without a number is the page of a drawing that is not a PDF. */
+  add(page: number | undefined): void {
+    if (page === undefined) this.unnumbered = true;
+    else this.pages.add(page);
+  }
+
+  /** Reports the warning when a page had a picture left out. */
+  report(): void {
+    if (this.pages.size === 0 && !this.unnumbered) return;
+    const where = this.pages.size === 0 ? 'the page' : pagesPhrase([...this.pages].sort((a, b) => a - b));
+    reportConversionWarning(`Left out the pictures of ${where}: ${PICTURES_LEFT_OUT_REASON}`);
+  }
+}
+
+/** Whether the element paints no outline and reaches every side of the page, to the tolerance of a page-sized clip: the sheet under a scan. */
+function isPageBackdrop(element: SvgGeometryElement, page: Pick<ParsedSvgVectorDocument, 'width' | 'height'>): boolean {
+  // One unstroked rectangle over the whole page: a diamond, a triangle or a frame with a hole that spans the page is geometry.
+  return element.stroke === null && isPageSizedRectangle(element.subpaths, page);
+}
+
+function readSvgPage(svg: Buffer, bitmapGlyphs: BitmapGlyphs, leftOut: PicturePages, page?: number): ParsedSvgVectorDocument {
   const text = svg.toString('utf-8');
   if (!SVG_ROOT_PATTERN.test(text)) {
     throw new CadGeometryUnavailableError('DXF encoding failed: input is not an SVG document.');
   }
-  const parsed = refusingUnsupported(() => parseSvgGeometries(text, bitmapGlyphs, 'centre-line', 'leave-out'));
-  if (parsed.leftOutPictures > 0) reportConversionWarning(PICTURES_LEFT_OUT_WARNING);
+  const pictures = new LeftOutPictures();
+  const parsed = refusingUnsupported(() => parseSvgGeometries(text, { bitmapGlyphs, pens: 'centre-line', pictures }));
+  if (pictures.count === 0) return parsed;
+  if (bitmapGlyphs.marks.length === 0 && parsed.elements.every((element) => isPageBackdrop(element, parsed))) throw new ConversionFailedError(NO_GEOMETRY_REFUSAL);
+  leftOut.add(page);
   return parsed;
 }
 
 /** The page geometry of an SVG document as DXF text; fails closed when the page draws no vector geometry or a bitmap glyph. */
 export function encodeSvgPageToDxf(svg: Buffer): Buffer {
-  return writeDxf(readSvgPage(svg, new BitmapGlyphs()), []);
+  const leftOut = new PicturePages();
+  const dxf = writeDxf(readSvgPage(svg, new BitmapGlyphs(), leftOut), []);
+  leftOut.report();
+  return dxf;
 }
 
 /**
  * The page geometry of an SVG page that Poppler drew from a PDF page, with its bitmap-font characters as TEXT from the page's
- * text layer; `readText` is called only for a page that draws such characters.
+ * text layer; `readText` is called only for a page that draws such characters. The pages of a document pass the same `leftOut`, and
+ * the caller reports it after the last one, so one warning names them all.
  */
-export async function encodeSvgPageToDxfWithText(svg: Buffer, readText: () => Promise<PdfPageText>): Promise<Buffer> {
+export async function encodeSvgPageToDxfWithText(svg: Buffer, readText: () => Promise<PdfPageText>, leftOut: PicturePages, page?: number): Promise<Buffer> {
   const bitmapGlyphs = new BitmapGlyphs(true);
-  const parsed = readSvgPage(svg, bitmapGlyphs);
+  const parsed = readSvgPage(svg, bitmapGlyphs, leftOut, page);
   if (bitmapGlyphs.marks.length === 0) return writeDxf(parsed, []);
-  const page = await readText();
-  return writeDxf(parsed, refusingUnsupported(() => finitePlacements(placeBitmapGlyphText(bitmapGlyphs.marks, page, parsed.width, parsed.height))));
+  const text = await readText();
+  return writeDxf(parsed, refusingUnsupported(() => finitePlacements(placeBitmapGlyphText(bitmapGlyphs.marks, text, parsed.width, parsed.height))));
 }
 
 /** The placed texts, refused when one has a position or size that is not a finite number (a Type 3 font of zero widths gives a run of infinite width). */
@@ -312,7 +351,7 @@ function writeDxf(parsed: ParsedSvgVectorDocument, deviceTexts: readonly PlacedT
     entities.push(textEntity(text, pageHeight));
   }
   if (entities.length === 0) {
-    throw new ConversionFailedError('The page draws no vector geometry, so there is nothing to write as DXF.');
+    throw new ConversionFailedError(NO_GEOMETRY_REFUSAL);
   }
 
   const sections = [

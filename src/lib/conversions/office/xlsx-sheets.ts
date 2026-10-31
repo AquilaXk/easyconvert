@@ -3,17 +3,8 @@ import { PayloadLimitError } from '../../types';
 import { safeExtractXmlElements, type SafeXmlElement } from '../safe-xml-scanner';
 import { readZipEntryText } from '../zip-entry-reader';
 import { forEachRelationship, newRelationshipAllowance, readPartRelationships, streamElementsWithin, type OpcReadOptions, type RelationshipAllowance } from './opc-parts';
+import { WORKBOOK_MAX_SHEETS } from './sheet-bounds';
 import { resolveZipPath } from './zip-path';
-
-/**
- * Most cells and rows the reader builds for one workbook, padding included: the 20 million cells that the data-format readers
- * (Parquet) allow for a table. A sparse sheet inside the bounds of a worksheet can still ask for 16.7 billion padded cells (a cell at XFD
- * on each of 1048576 rows), and each padded cell takes about 53 bytes of heap.
- */
-export const XLSX_MAX_MATERIALISED_CELLS = 20_000_000;
-
-/** Sheets of one workbook: LibreOffice Calc holds at most 10,000 (`MAXTABCOUNT`, sc/inc/address.hxx), so a workbook that lists more cannot be opened whole. */
-export const XLSX_MAX_SHEETS = 10_000;
 
 /**
  * Merged ranges and hyperlinks the reader holds for all sheets of one workbook: one for each row of a worksheet. A merged range
@@ -85,7 +76,7 @@ function relationshipIdOf(attrs: SafeXmlElement['attrs']): string | undefined {
  * `sheet` of it, in order, is at the part its relationship id names in the relationships of the workbook, resolved against the
  * workbook's directory, or at the part its position implies when it has none. A part is listed once, at its first sheet. When the
  * workbook lists no named sheet, the `xl/worksheets/sheetN.xml` parts are taken in number order. A workbook with more than
- * `XLSX_MAX_SHEETS` sheets is refused (413); a package without a worksheet is for the caller to refuse. The reader skips a sheet without a name, so that
+ * `WORKBOOK_MAX_SHEETS` sheets is refused (413); a package without a worksheet is for the caller to refuse. The reader skips a sheet without a name, so that
  * its output is the same as before; the part of such a sheet that has a relationship is returned apart, for the checks that must
  * cover whatever an office suite opens.
  */
@@ -101,7 +92,7 @@ export async function discoverXlsxSheets(zip: JSZip, readOptions: OpcReadOptions
     const directory = directoryOf(workbookPath);
     const listing: Array<{ name: string | undefined; rId: string | undefined }> = [];
     const wanted = new Set<string>();
-    streamElementsWithin(workbookXml, 'sheet', XLSX_MAX_SHEETS, `The XLSX workbook lists more than ${XLSX_MAX_SHEETS} sheets, the most an office suite opens.`, (sEl) => {
+    streamElementsWithin(workbookXml, 'sheet', WORKBOOK_MAX_SHEETS, `The XLSX workbook lists more than ${WORKBOOK_MAX_SHEETS} sheets, the most an office suite opens.`, (sEl) => {
       const rId = relationshipIdOf(sEl.attrs);
       if (rId !== undefined) wanted.add(rId);
       listing.push({ name: sEl.attrs.name, rId });
