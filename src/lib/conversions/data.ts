@@ -19,14 +19,18 @@ import {
   DataLimitExceededError,
   DataParseError,
   DataRepresentationError,
+  PayloadLimitError,
   UnsupportedOptionError,
   UnsupportedTargetError,
 } from '../types';
 import { generateOdsFromData, officeSheetWorkbook } from './office';
+import { ODS_MAX_CELLS, XLS_MAX_COLUMNS, XLS_MAX_ROWS, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS, sheetLimitError } from './office/sheet-bounds';
+import { XLSX_MAX_MATERIALISED_CELLS } from './office/xlsx-sheets';
 import { sheetCellOfValue, writeXlsx, type SheetCell } from './xlsx-writer';
 import { unconvertibleOfficeTarget } from './native-engine-pairs';
 import { encodeParquet, decodeParquet, ParquetFormatError } from './parquet';
-import { renderPdfTables } from './pdf-table-layout';
+import { PARQUET_MAX_CELLS, PARQUET_MAX_COLUMNS, PARQUET_MAX_ROWS } from './parquet-format';
+import { PDF_TABLE_MAX_CELLS, PDF_TABLE_MAX_COLUMNS, renderPdfTables } from './pdf-table-layout';
 import {
   MAX_DATA_NESTING_DEPTH,
   MAX_INTEGER_LITERAL_DIGITS,
@@ -465,8 +469,56 @@ function setCell(cells: Map<string, DataValue>, path: string, value: DataValue):
   cells.set(path, value);
 }
 
+/**
+ * What a table of records may hold, checked before its matrix is built: a record of one key of its own adds a column, so R records can
+ * make R columns and R x R cells from R lines of input.
+ */
+interface TableBounds {
+  /** The sheet the table is written to when the target is a spreadsheet, or null; its columns and rows are refused as the sheet's writers refuse them. */
+  readonly sheet: string | null;
+  readonly columns: number;
+  /** Rows of the sheet, the header row included. */
+  readonly rows: number;
+  readonly cells: number;
+}
+
+/**
+ * Each target's own writer limits, checked before the records-by-columns matrix exists, so a small input naming many columns is
+ * refused before it costs memory. Spreadsheets hold the grid of their format (`sheet-bounds.ts`) and no more cells than our XLSX
+ * reader materialises for one workbook (XLSX_MAX_MATERIALISED_CELLS) or, for ODS, than its writer holds in one string
+ * (ODS_MAX_CELLS). A PDF holds the table its page layout draws (`pdf-table-layout.ts`), Parquet its writer's columns, rows and cells
+ * (`parquet-format.ts`), and every other table target the Parquet bound of cells held in memory at once.
+ */
+const TABLE_BOUNDS: Readonly<Record<string, TableBounds>> = {
+  xls: { sheet: 'an .xls worksheet', columns: XLS_MAX_COLUMNS, rows: XLS_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS },
+  xlsx: { sheet: 'a worksheet', columns: XLSX_MAX_COLUMNS, rows: XLSX_MAX_ROWS, cells: XLSX_MAX_MATERIALISED_CELLS },
+  ods: { sheet: 'a worksheet', columns: XLSX_MAX_COLUMNS, rows: XLSX_MAX_ROWS, cells: ODS_MAX_CELLS },
+  pdf: { sheet: null, columns: PDF_TABLE_MAX_COLUMNS, rows: Infinity, cells: PDF_TABLE_MAX_CELLS },
+  parquet: { sheet: null, columns: PARQUET_MAX_COLUMNS, rows: PARQUET_MAX_ROWS, cells: PARQUET_MAX_CELLS },
+};
+const OTHER_TABLE_BOUNDS: TableBounds = { sheet: null, columns: Infinity, rows: Infinity, cells: PARQUET_MAX_CELLS };
+
+function tableBoundsOf(tgt: string): TableBounds {
+  return Object.hasOwn(TABLE_BOUNDS, tgt) ? TABLE_BOUNDS[tgt] : OTHER_TABLE_BOUNDS;
+}
+
+const HEADER_ROWS = 1;
+
+function assertTableFits(fields: number, records: number, bounds: TableBounds): void {
+  const cells = fields * records;
+  if (bounds.sheet !== null) {
+    if (fields > bounds.columns) throw sheetLimitError('The table', fields, 'columns', bounds.sheet, bounds.columns);
+    if (records + HEADER_ROWS > bounds.rows) throw sheetLimitError('The table', records + HEADER_ROWS, 'rows', bounds.sheet, bounds.rows);
+    if (cells > bounds.cells) throw sheetLimitError('The table', cells, 'cells (records times columns)', 'a workbook this engine reads', bounds.cells);
+  } else if (fields > bounds.columns || records > bounds.rows || cells > bounds.cells) {
+    const limits = [[bounds.columns, 'columns'], [bounds.rows, 'records'], [bounds.cells, 'cells']] as const;
+    const held = limits.filter(([limit]) => Number.isFinite(limit)).map(([limit, unit]) => `${limit} ${unit}`).join(', ');
+    throw new PayloadLimitError(`The table of records has ${fields} columns by ${records} records, ${cells} cells; this target holds at most ${held}.`);
+  }
+}
+
 /** A table over the union of all records' columns in first-seen order; a non-object record fills "value". */
-function tabulate(records: DataValue[], leadingFields: readonly string[] = []): DataTable {
+function tabulate(records: DataValue[], tgt: string, leadingFields: readonly string[] = []): DataTable {
   const flattened = records.map((record) => {
     const cells = new Map<string, DataValue>();
     if (isDataObject(record)) flattenInto(record, '', cells);
@@ -474,6 +526,7 @@ function tabulate(records: DataValue[], leadingFields: readonly string[] = []): 
     return cells;
   });
   const fields = fieldsInFirstSeenOrder(flattened.map((cells) => cells.keys()), leadingFields);
+  assertTableFits(fields.length, flattened.length, tableBoundsOf(tgt));
   return { fields, rows: flattened.map((cells) => fields.map((field) => cells.get(field) ?? null)) };
 }
 
@@ -972,8 +1025,11 @@ export async function convertData(
   return convertStructured(inputBuffer, src, tgt, options, baseName);
 }
 
-/** Sources the data engine reads as a table of records for a spreadsheet target; their values keep their types. Parquet is the only one the registry offers a spreadsheet target for. */
-export const STRUCTURED_SHEET_SOURCES: ReadonlySet<string> = new Set(['parquet']);
+/**
+ * Sources the data engine reads as a table of records for a spreadsheet target, with the readers the CSV, JSON and Parquet targets use:
+ * a record is a row and a key is a column. CSV, TSV and JSON are read by the office engine's own table reader.
+ */
+export const STRUCTURED_SHEET_SOURCES: ReadonlySet<string> = new Set(['parquet', 'ndjson', 'jsonl', 'yaml', 'yml', 'xml']);
 
 /**
  * The XLSX workbook the office suite reads once on the way to `.xls` and discards: the sheet the `.xlsx` target writes of the source,
@@ -985,7 +1041,7 @@ export async function writeTransientWorkbook(inputBuffer: Buffer, src: string, o
   assertDataOptions(options);
   const write = async (): Promise<Buffer> => {
     const source = readStructuredSource(inputBuffer, src, 'xlsx', options);
-    const table = tabulate(source.records(), source.fields);
+    const table = tabulate(source.records(), 'xls', source.fields);
     assertTableUnicode(table, 'xlsx');
     return writeXlsx(tableSheet(table), 'verbatim', 'STORE');
   };
@@ -1027,7 +1083,7 @@ async function convertStructured(
   if (!TABLE_TARGETS.has(tgt)) {
     throw new Error(`Unsupported data conversion from ${src} to ${tgt}`);
   }
-  const table = tabulate(source.records(), source.fields);
+  const table = tabulate(source.records(), tgt, source.fields);
   assertTableUnicode(table, tgt);
 
   if (tgt === 'csv' || tgt === 'tsv') {

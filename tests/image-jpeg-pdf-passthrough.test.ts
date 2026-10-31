@@ -195,14 +195,12 @@ describe.skipIf(skipWithoutTools('pdfimages', 'pdfinfo', 'qpdf') || SKIP_WITHOUT
     if (produced) expect(listImage(write('arith.pdf', produced)).enc).not.toBe('jpeg');
   });
 
-  it('a truncated scan is not embedded: the library cannot decode it, so the answer is a typed 400', async () => {
+  it('a truncated scan is not embedded as it is: the decoded part is written as a raster of the source size', async () => {
     const jpeg = readFileSync(CORPUS);
-    const failure = await convertImage(jpeg.subarray(0, Math.floor(jpeg.length / 2)), 'pdf', {}, 'cut.jpg', 'jpg').then(
-      () => null,
-      (error: unknown) => error,
-    );
-    expect(failure).toBeInstanceOf(ConversionFailedError);
-    expect((failure as Error).message).toMatch(/^Invalid image: it could not be decoded/);
+    const { file } = await toPdf(jpeg.subarray(0, Math.floor(jpeg.length / 2)));
+    const image = listImage(file);
+    expect(image.enc).not.toBe('jpeg');
+    expect([image.width, image.height]).toEqual([768, 512]);
   });
 
   it('a corrupt SOF (component count that does not match its length) is refused with a typed error', async () => {

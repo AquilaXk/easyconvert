@@ -366,7 +366,7 @@ export function convertFile(
 
 /**
  * Whether the office engine writes the spreadsheet target of a data source: it reads delimited text and JSON as sheets, while
- * Parquet is a table of records that the data engine reads and writes with its types.
+ * Parquet, JSON Lines, YAML and XML are records that the data engine reads with the readers of its other table targets.
  */
 function officeEngineWritesSheet(src: string, tgt: string): boolean {
   return !STRUCTURED_SHEET_SOURCES.has(src) && ['ods', 'xlsx', 'xls'].includes(tgt);
