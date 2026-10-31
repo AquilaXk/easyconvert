@@ -32,6 +32,8 @@ const SLEEP_PAST_LIMIT_SECONDS = 31;
 const CHILD_STOP_BOUND_MS = 10_000;
 const MAX_TASK_LIMIT_SECONDS = 600;
 const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'libredwg', 'ghostxps', 'raw'];
+/** The tasks that need what the others install, run once those are done. */
+const DEPENDENT_TASKS = ['djvulibre'];
 
 const temps: string[] = [];
 afterAll(() => {
@@ -76,9 +78,8 @@ describe('the bound on every setup task', () => {
     const outcome = runSourced(`
       task_slow() { echo "slow task started"; sleep ${SLEEP_PAST_LIMIT_SECONDS}; echo "never reached"; }
       export -f task_slow
-      tasks=(slow)
       task_limit_seconds[slow]=2
-      run_tasks
+      run_tasks slow
     `);
     expect(outcome.status).toBe(1);
     expect(outcome.elapsedMs).toBeLessThan(FAST_FAIL_BUDGET_MS);
@@ -93,9 +94,8 @@ describe('the bound on every setup task', () => {
     runSourced(`
       task_slow() { sleep ${SLEEP_PAST_LIMIT_SECONDS} & echo $! > "$PID_FILE"; wait; }
       export -f task_slow
-      tasks=(slow)
       task_limit_seconds[slow]=2
-      run_tasks > /dev/null
+      run_tasks slow > /dev/null
     `, { PID_FILE: pidFile });
     expect(existsSync(pidFile)).toBe(true);
     expect(await waitUntilStopped(Number(readFileSync(pidFile, 'utf-8')), CHILD_STOP_BOUND_MS)).toBe(true);
@@ -106,10 +106,9 @@ describe('the bound on every setup task', () => {
       task_good() { echo "good output"; }
       task_bad() { echo "bad output" >&2; return 3; }
       export -f task_good task_bad
-      tasks=(good bad)
       task_limit_seconds[good]=20
       task_limit_seconds[bad]=20
-      run_tasks
+      run_tasks good bad
     `);
     expect(outcome.status).toBe(1);
     expect(outcome.stdout).toContain('::group::good (ok)');
@@ -124,9 +123,8 @@ describe('the bound on every setup task', () => {
     const outcome = runSourced(`
       task_good() { echo "good output"; }
       export -f task_good
-      tasks=(good)
       task_limit_seconds[good]=20
-      run_tasks
+      run_tasks good
     `);
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).toMatch(/task good finished with status 0 after \d+s/);
@@ -137,9 +135,8 @@ describe('the bound on every setup task', () => {
     const outcome = runSourced(`
       task_unbound() { echo "value: $NO_SUCH_VARIABLE_FOR_THE_TEST"; }
       export -f task_unbound
-      tasks=(unbound)
       task_limit_seconds[unbound]=20
-      run_tasks
+      run_tasks unbound
     `);
     expect(outcome.status).toBe(1);
     expect(outcome.stdout).toContain('NO_SUCH_VARIABLE_FOR_THE_TEST: unbound variable');
@@ -149,8 +146,7 @@ describe('the bound on every setup task', () => {
     const outcome = runSourced(`
       task_free() { echo "unbounded"; }
       export -f task_free
-      tasks=(free)
-      run_tasks
+      run_tasks free
     `);
     expect(outcome.status).toBe(1);
     expect(outcome.stdout).toContain('no time limit for task free');
@@ -165,9 +161,8 @@ describe('the bound on every setup task', () => {
       `source "$SCRIPT_UNDER_TEST"
 task_slow() { echo "slow task started"; sleep ${SLEEP_PAST_LIMIT_SECONDS}; }
 export -f task_slow
-tasks=(slow)
 task_limit_seconds[slow]=120
-run_tasks
+run_tasks slow
 `
     );
     const started = Date.now();
@@ -183,6 +178,12 @@ run_tasks
 });
 
 describe('the task list and its limits', () => {
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('runs the dependent tasks by name and leaves the task list of the job as it was', () => {
+    const outcome = runSourced('configure; select_tasks; run_tasks() { echo "ran $*"; }; run_dependent_tasks; echo "tasks ${tasks[*]}"', { S3_TEST_SERVER: 'false' });
+    expect(outcome.status, outcome.stderr).toBe(0);
+    expect(outcome.stdout.trim().split('\n')).toEqual([`ran ${DEPENDENT_TASKS.join(' ')}`, `tasks ${EXPECTED_TASKS.join(' ')}`]);
+  });
+
   it.skipIf(skipUnless(NEEDS, canRunSetup))('leaves the S3 test server out unless the job asked for it', () => {
     const without = runSourced('configure; select_tasks; echo "${tasks[*]}"', { S3_TEST_SERVER: 'false' });
     expect(without.status, without.stderr).toBe(0);
@@ -226,10 +227,10 @@ describe('the task list and its limits', () => {
   });
 
   it.skipIf(skipUnless(NEEDS, canRunSetup))('gives every task a limit that is positive and below ten minutes', () => {
-    const outcome = runSourced(`for task in ${[...EXPECTED_TASKS, 's3'].join(' ')}; do echo "$task=\${task_limit_seconds[$task]:-missing}"; done`);
+    const outcome = runSourced(`for task in ${[...EXPECTED_TASKS, 's3', ...DEPENDENT_TASKS].join(' ')}; do echo "$task=\${task_limit_seconds[$task]:-missing}"; done`);
     expect(outcome.status, outcome.stderr).toBe(0);
     const limits = Object.fromEntries(outcome.stdout.trim().split('\n').map((line) => line.split('=')));
-    expect(Object.keys(limits).sort()).toEqual([...EXPECTED_TASKS, 's3'].sort());
+    expect(Object.keys(limits).sort()).toEqual([...EXPECTED_TASKS, 's3', ...DEPENDENT_TASKS].sort());
     for (const [task, value] of Object.entries(limits)) {
       const seconds = Number(value);
       expect(Number.isInteger(seconds), `${task}: ${value}`).toBe(true);
@@ -527,10 +528,10 @@ describe('the benchmark Python module check', () => {
 });
 
 describe('main stops at the first step that fails', () => {
-  const STEPS = ['configure', 'select_tasks', 'run_tasks', 'verify_cad_tools', 'verify_bench_python_modules'];
+  const STEPS = ['configure', 'select_tasks', 'run_tasks', 'run_dependent_tasks', 'verify_cad_tools', 'verify_bench_python_modules'];
 
   /** `configure` ends the process itself with `exit 1` and `select_tasks` cannot fail; these two return their status. */
-  it.skipIf(skipUnless(NEEDS, canRunSetup)).each(['run_tasks', 'verify_cad_tools'])('returns 1 and runs no later step when %s fails', (failing) => {
+  it.skipIf(skipUnless(NEEDS, canRunSetup)).each(['run_tasks', 'run_dependent_tasks', 'verify_cad_tools'])('returns 1 and runs no later step when %s fails', (failing) => {
     const log = path.join(scratch(), 'steps.log');
     const stubs = STEPS.map((step) => `${step}() { echo ${step} >> "$STEP_LOG"; return ${step === failing ? 1 : 0}; }`).join('\n');
     const outcome = runSourced(`${stubs}\nmain`, { STEP_LOG: log });

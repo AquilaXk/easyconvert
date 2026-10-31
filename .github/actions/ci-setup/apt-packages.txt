@@ -3,6 +3,12 @@ ffmpeg
 7zip
 poppler-utils
 djvulibre-bin
+autoconf
+automake
+libtool
+pkg-config
+libjpeg-dev
+libtiff-dev
 zstd
 tar
 libreoffice-calc

@@ -201,7 +201,7 @@ describe('Phase 4: Security Sandboxing, Event Loop & Zero-Trust Hardening', () =
       const stages = parseDockerfile(fs.readFileSync(path.resolve(__dirname, '../Dockerfile.worker'), 'utf-8'));
 
       // The image is built in stages and the one that ships is the last: the runner.
-      expect(stages.map((stage) => stage.name)).toEqual(['builder', 'sevenzip', 'libredwg', 'ghostxps', 'ffmpeg', 'cadconvert', 'qpdfrunner', 'sharplibvips-build', 'sharplibvips', 'runner']);
+      expect(stages.map((stage) => stage.name)).toEqual(['builder', 'sevenzip', 'libredwg', 'ghostxps', 'ffmpeg', 'djvulibre', 'cadconvert', 'qpdfrunner', 'sharplibvips-build', 'sharplibvips', 'runner']);
       const runner = stages[stages.length - 1];
       const instructions = (keyword: string) => runner.instructions.filter((instruction) => instruction.keyword === keyword);
 

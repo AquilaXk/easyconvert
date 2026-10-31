@@ -1,7 +1,8 @@
 /**
  * Containers of DjVu written byte by byte from the layout djvulibre reads (libdjvu/IFFByteStream.cpp, DjVmDir.cpp): a `FORM:DJVU` page
  * that holds a size and nothing to decode, and the directories of bundled and indirect documents. They exercise the reading of
- * the structure, not the decoding of a picture; the pictures of the converter tests come from the djvulibre encoders.
+ * the structure, not the decoding of a picture; the pictures of the converter tests come from the djvulibre encoders and from the
+ * chunks of real documents (`maskedPageOf`).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -179,18 +180,83 @@ export function oldBundledDocument(): Buffer {
 const WAVELET_CHUNK = 'BG44';
 const MAGIC_AND_FORM_HEADER_BYTES = 16;
 
+/** A chunk of a file: its id and its data, without the header and the pad byte. */
+export interface FileChunk {
+  readonly id: string;
+  readonly data: Buffer;
+}
+
+/** The chunks of a single-form DjVu file that a djvulibre program wrote (a page, or a shared file of an indirect document), in order. */
+export function chunksOf(djvuFile: Buffer): FileChunk[] {
+  const chunks: FileChunk[] = [];
+  let offset = MAGIC_AND_FORM_HEADER_BYTES;
+  while (offset + CHUNK_HEADER_BYTES <= djvuFile.length) {
+    const size = djvuFile.readUInt32BE(offset + FORM_DATA_SIZE_AT);
+    chunks.push({ id: djvuFile.toString('latin1', offset, offset + 4), data: djvuFile.subarray(offset + CHUNK_HEADER_BYTES, offset + CHUNK_HEADER_BYTES + size) });
+    offset += CHUNK_HEADER_BYTES + size + (size % 2);
+  }
+  return chunks;
+}
+
+/** The chunks of `id` in a single-form DjVu file, each as a chunk to put in another form. */
+export function chunksOfId(djvuFile: Buffer, id: string): Buffer[] {
+  return chunksOf(djvuFile)
+    .filter((entry) => entry.id === id)
+    .map((entry) => chunk(id, entry.data));
+}
+
 /**
  * The wavelet chunks of a picture that `c44` of djvulibre wrote (a `FORM:DJVU` page with its `BG44` chunks) as a file of
  * their own: a `FORM:PM44` for a colour picture or a `FORM:BM44` for a grey one (DjVu v3 specification, "IW44 files"). The
  * chunk type is the form type. A page that is a lone wavelet picture has no `INFO` chunk: its size is in the first chunk.
  */
 export function waveletForm(type: 'PM44' | 'BM44', djvuFile: Buffer): Buffer {
-  const chunks: Buffer[] = [];
-  let offset = MAGIC_AND_FORM_HEADER_BYTES;
-  while (offset + CHUNK_HEADER_BYTES <= djvuFile.length) {
-    const size = djvuFile.readUInt32BE(offset + FORM_DATA_SIZE_AT);
-    if (djvuFile.toString('latin1', offset, offset + 4) === WAVELET_CHUNK) chunks.push(chunk(type, djvuFile.subarray(offset + CHUNK_HEADER_BYTES, offset + CHUNK_HEADER_BYTES + size)));
-    offset += CHUNK_HEADER_BYTES + size + (size % 2);
+  return form(
+    type,
+    chunksOf(djvuFile)
+      .filter((entry) => entry.id === WAVELET_CHUNK)
+      .map((entry) => chunk(type, entry.data))
+  );
+}
+
+/** A page whose JB2 mask needs the shape dictionary of a shared file: its `INFO` and `Sjbz` chunks, and the `Djbz` chunk of that file. */
+export interface MaskedPage {
+  readonly info: Buffer;
+  readonly mask: Buffer;
+  readonly dictionary: Buffer;
+}
+
+/**
+ * The first page of a bundled document whose masks share dictionaries, split by `djvmcvt -i` into the page and its shared files.
+ * `page` and `dictionaryFile` are the names in the split directory (`p0001.djvu` and `dict0020.iff` of the DjVu encoder of 2005).
+ */
+export function maskedPageOf(document: string, page: string, dictionaryFile: string): MaskedPage {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'djvu-masked-'));
+  try {
+    execFileSync(requireOracleTool('djvmcvt'), ['-i', document, dir, 'index.djvu']);
+    const pageFile = fs.readFileSync(path.join(dir, page));
+    const [info] = chunksOfId(pageFile, 'INFO');
+    const [mask] = chunksOfId(pageFile, 'Sjbz');
+    const [dictionary] = chunksOfId(fs.readFileSync(path.join(dir, dictionaryFile)), 'Djbz');
+    return { info, mask, dictionary };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-  return form(type, chunks);
+}
+
+/**
+ * A bundle of the masked page including i0, and `levels` shared files of which each includes the next two, so that a search that
+ * visits a file once for each path visits Fibonacci-many. With `withDictionary`, i0 also includes the shared file of the dictionary
+ * after the chain, so the search reaches it last; without, the dictionary is missing and the mask cannot be decoded. Each shared file
+ * ends with the chunks of `filler`.
+ */
+export function maskOverChain(page: MaskedPage, levels: number, withDictionary: boolean, filler: readonly Buffer[] = []): Buffer {
+  const files: BundleFile[] = [{ form: form('DJVU', [page.info, includeChunk('i0'), page.mask]), kind: 'page', id: 'page' }];
+  for (let level = 0; level < levels; level++) {
+    const next = [level + 1, level + 2].filter((target) => target < levels).map((target) => includeChunk(`i${target}`));
+    const dictionary = level === 0 && withDictionary ? [includeChunk('d')] : [];
+    files.push({ form: form('DJVI', [...next, ...dictionary, ...filler]), kind: 'include', id: `i${level}` });
+  }
+  if (withDictionary) files.push({ form: form('DJVI', [page.dictionary]), kind: 'include', id: 'd' });
+  return bundleOf(files);
 }

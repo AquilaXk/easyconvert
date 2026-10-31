@@ -87,6 +87,19 @@ runs:
         path: /opt/ghostxps
         key: ghostxps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-ghostxps.sh') }}
 
+    # The patched djvulibre is built from the Debian source pinned in scripts/install-djvulibre.sh with the patches beside it, and links
+    # the libjpeg and libtiff of the runner image, so the image version, the script, its gates library and the patches are the key.
+    - name: Prepare the DjVu renderer directory
+      shell: bash
+      run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/djvulibre
+
+    - name: Restore the cached DjVu renderer build
+      id: djvulibre-cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: /opt/djvulibre
+        key: djvulibre-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('scripts/install-djvulibre.sh', 'scripts/lib/djvulibre-gates.sh', 'scripts/djvulibre-patches/*') }}
+
     - name: Restore RAW sample cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
@@ -116,6 +129,7 @@ runs:
         VERAPDF_CACHE_HIT: ${{ steps.verapdf-cache.outputs.cache-hit }}
         LIBREDWG_CACHE_HIT: ${{ steps.libredwg-cache.outputs.cache-hit }}
         GHOSTXPS_CACHE_HIT: ${{ steps.ghostxps-cache.outputs.cache-hit }}
+        DJVULIBRE_CACHE_HIT: ${{ steps.djvulibre-cache.outputs.cache-hit }}
         S3_TEST_SERVER: ${{ inputs.s3-test-server }}
         S3_IMAGE_CACHE_DIR: ${{ runner.temp }}/s3-test-server-image
       run: bash "$ACTION_PATH/install-tools.sh"

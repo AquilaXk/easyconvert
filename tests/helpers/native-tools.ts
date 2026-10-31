@@ -10,8 +10,13 @@ const MISSING_BINARY_PATH = '/nonexistent/easyconvert-missing-binary';
  * override on every conversion, so the absence is real for the engine, not a mock.
  */
 export async function withMissingBinary<T>(envVar: string, operation: () => Promise<T>): Promise<T> {
+  return withBinaryAt(envVar, MISSING_BINARY_PATH, operation);
+}
+
+/** Runs `operation` while the override `envVar` points the worker engines at `binary`, then restores the previous value. */
+export async function withBinaryAt<T>(envVar: string, binary: string, operation: () => Promise<T>): Promise<T> {
   const previous = process.env[envVar];
-  process.env[envVar] = MISSING_BINARY_PATH;
+  process.env[envVar] = binary;
   try {
     return await operation();
   } finally {

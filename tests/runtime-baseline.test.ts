@@ -27,12 +27,12 @@ describe('Dockerfile.worker base image', () => {
   });
 
   it('builds every stage from that single pinned image, the qpdf job runner stage included, except the build of sharp libvips', () => {
-    // Eight stages: builder, sevenzip, libredwg, ghostxps, ffmpeg, cadconvert, qpdfrunner (compiles the runner against the libc of the runtime image) and runner.
+    // Nine stages: builder, sevenzip, libredwg, ghostxps, ffmpeg, djvulibre, cadconvert, qpdfrunner (compiles the runner against the libc of the runtime image) and runner.
     // sharp's libvips is built in the upstream build container of its own release, pinned by digest, and only its library is copied
     // out (docs/policy-decisions.md, entry 84); the library needs glibc 2.28, which the runtime image has.
     const node = stages.filter((stage) => !stage.name.startsWith('sharplibvips'));
-    expect(node.map((stage) => stage.name)).toEqual(['builder', 'sevenzip', 'libredwg', 'ghostxps', 'ffmpeg', 'cadconvert', 'qpdfrunner', 'runner']);
-    expect(node.map((stage) => stage.baseImage)).toEqual(Array(8).fill('${NODE_IMAGE}'));
+    expect(node.map((stage) => stage.name)).toEqual(['builder', 'sevenzip', 'libredwg', 'ghostxps', 'ffmpeg', 'djvulibre', 'cadconvert', 'qpdfrunner', 'runner']);
+    expect(node.map((stage) => stage.baseImage)).toEqual(Array(9).fill('${NODE_IMAGE}'));
     const libvips = stages.filter((stage) => stage.name.startsWith('sharplibvips'));
     expect(libvips.map((stage) => stage.name)).toEqual(['sharplibvips-build', 'sharplibvips']);
     expect(libvips[0].baseImage).toMatch(/^rockylinux\/rockylinux:8-ubi-init@sha256:[0-9a-f]{64}$/);

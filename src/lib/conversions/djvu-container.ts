@@ -55,6 +55,14 @@ const DIRECTORY_VERSION_MASK = 0x7f;
 const DIRECTORY_MAX_VERSION = 1;
 const DIRECTORY_FILE_COUNT_OFFSET = 1;
 const DIRECTORY_HEADER_BYTES = 3;
+/**
+ * The directory records the size of each component of a bundle in 24 bits (`DjVmDir::decode` reads it with `read24`, libdjvu/DjVmDir.cpp
+ * lines 253 and 268, and `encode` writes it with `write24`, line 453), so the size of a component of 2^24 bytes or more is kept modulo
+ * 2^24. djvulibre then reads the component cut to that size: 3.5.28 fails `djvused -e size` and `ddjvu` with "Unexpected End Of File"
+ * (status 10) on a page component of 16,777,218 bytes, and reads one of 16,777,214 bytes. A size that wraps to 0 is read as an unknown
+ * length and happens to work (a component of exactly 2^24 or 2^25 bytes); it is refused too, as the file does not hold its size.
+ */
+export const DJVU_MAX_COMPONENT_BYTES = 2 ** 24 - 1;
 
 /**
  * Pages one document may hold: the document page limit of the other fixed page chain that writes a PDF (`XPS_MAX_PAGES`,
@@ -152,6 +160,32 @@ function checkDirectoryHeader(bytes: Uint8Array, directory: Chunk): void {
   if (files > DJVU_MAX_DIRECTORY_FILES) throw new PayloadLimitError(`The DjVu directory lists ${files} files; at most ${DJVU_MAX_DIRECTORY_FILES} are converted.`);
 }
 
+/** A component of a bundle too large for the 24 bits its directory records the size in: the file is intact, and djvulibre cannot read it. */
+export class DjvuComponentSizeError extends ConversionFailedError {
+  readonly status = 422;
+  constructor(componentBytes: number) {
+    super(
+      `The DjVu document holds a component of ${componentBytes} bytes. A bundled DjVu document records the size of each component in 24 bits, so djvulibre cannot read a component of ${DJVU_MAX_COMPONENT_BYTES + 1} bytes (16 MiB) or more; a page that large converts as a single-page DjVu file.`
+    );
+    this.name = 'DjvuComponentSizeError';
+  }
+}
+
+/**
+ * The components after the directory, as laid out in the bundle, each within the size its directory can record. The walk reads the
+ * chunk headers only and stops at the first one that does not fit in the bundle: what the directory points at is left to djvulibre.
+ */
+function checkComponentSizes(bytes: Uint8Array, form: Chunk, directory: Chunk): void {
+  let offset = directory.end + (directory.end & 1);
+  while (offset + CHUNK_HEADER_BYTES <= form.end) {
+    const componentBytes = CHUNK_HEADER_BYTES + u32(bytes, offset + ID_BYTES);
+    const end = offset + componentBytes;
+    if (end > form.end) return;
+    if (componentBytes > DJVU_MAX_COMPONENT_BYTES && idAt(bytes, offset) === FORM) throw new DjvuComponentSizeError(componentBytes);
+    offset = end + (end & 1);
+  }
+}
+
 function checkBundle(bytes: Uint8Array, form: Chunk): void {
   const first = firstChild(bytes, form);
   if (first === undefined) throw new CorruptStreamError('The DjVu document holds no directory.');
@@ -160,6 +194,7 @@ function checkBundle(bytes: Uint8Array, form: Chunk): void {
   }
   if (first.id !== DIRECTORY_CHUNK) throw new CorruptStreamError('The DjVu file is damaged: a DJVM form does not start with its DIRM chunk.');
   checkDirectoryHeader(bytes, first);
+  checkComponentSizes(bytes, form, first);
 }
 
 /** The top `FORM` chunk; the file may not end before it does (`IFFByteStream` reads to its end: "Unexpected End Of File"). */
@@ -174,7 +209,8 @@ function chunkAtFileStart(bytes: Uint8Array): Chunk {
 
 /**
  * Refuses what the converter must not hand to `ddjvu` on the bytes alone: a file that is not DjVu, a file over the input
- * limit, a truncated one, a document that names other files, and a directory of more files than are taken.
+ * limit, a truncated one, a document that names other files, a directory of more files than are taken, and a bundle with a component
+ * too large for its directory.
  */
 export function checkDjvuContainer(bytes: Uint8Array): void {
   if (bytes.length > DJVU_MAX_INPUT_BYTES) throw new PayloadLimitError(`The DjVu file is larger than ${DJVU_MAX_INPUT_BYTES} bytes.`);
