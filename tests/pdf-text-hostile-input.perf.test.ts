@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { convertFile } from '../src/lib/conversions/index';
 import { graphicsStateDepth } from '../src/lib/conversions/pdf-stream-guard';
-import { layoutPdf } from '../src/lib/conversions/pdf-layout';
+import { joinContinuations, layoutPdf, type PageBlock } from '../src/lib/conversions/pdf-layout';
+import type { DetectedTable, TableCell } from '../src/lib/conversions/pdf-layout/types';
 import type { PdfContentFont, PdfContentItem, PdfPageContent } from '../src/lib/conversions/pdf-text-types';
 import { type CraftObject, buildPdf, flate, singlePagePdf } from './helpers/pdf-craft';
+import { generateProseLine, paragraphOf, seeded } from './pdf-layout-reference';
 import { cpuClockMs, expectLinearOnInputs, expectSizeIndependentOnInputs, SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS } from './helpers/timing';
 
 /**
@@ -16,6 +18,8 @@ const BOUND_TEST_TIMEOUT_MS = 120_000;
 const OPERAND_RUN = 80 * 1000;
 const COLUMN_LINES = 50 * 1000;
 const OPEN_PARAGRAPH_PAGES = 2000;
+const TABLE_PAGES = 2000;
+const TABLE_ROWS_PER_PAGE = 50;
 /** n log n with allocation: a quadratic layout takes 16x for 4x the lines. */
 const COLUMN_MAX_RATIO = 10;
 const STATE_DEPTH_LIMIT = 256;
@@ -175,5 +179,28 @@ describe('a document of pages that are each one open paragraph', () => {
     const text = block.type === 'paragraph' ? block.runs.map((run) => run.text).join('') : '';
     expect(text).not.toContain('af- ');
     expect(text.split('page aftration')).toHaveLength((OPEN_PARAGRAPH_PAGES * HYPHENATED_LINES_PER_PAGE) / 2);
+  }, SCALING_TEST_TIMEOUT_MS);
+});
+
+describe('a table that runs over many pages', () => {
+  const paragraph = paragraphOf([generateProseLine(seeded(1), 0)], 0, 1, false);
+  const cell: TableCell = { paragraphs: [paragraph], colSpan: 1, rowSpan: 1, continuation: false, header: false };
+  const sharedRows = Array.from({ length: TABLE_ROWS_PER_PAGE - 1 }, () => [cell, cell]);
+  const tableOnPages = (count: number): PageBlock[] =>
+    Array.from({ length: count }, (_, i): PageBlock => {
+      const first = { ...cell, paragraphs: [{ ...paragraph, text: `row ${i}` }] };
+      const table: DetectedTable = { rows: [[first, cell], ...sharedRows], columnWidths: [100, 100], box: { x0: 0, y0: 0, x1: 200, y1: 700 }, pageNumber: i + 1, kind: 'lattice' };
+      return { kind: 'table', table, columns: 1, band: -1 };
+    });
+
+  it('is joined in time linear in the page count, the rows of every page gathered once', async () => {
+    const { largeResult } = await expectLinearOnInputs('a table over many pages', (blocks: PageBlock[]) => joinContinuations(blocks, 'tables'), {
+      small: tableOnPages(TABLE_PAGES / SCALING_FACTOR),
+      large: tableOnPages(TABLE_PAGES),
+      clock: cpuClockMs,
+    });
+    expect(largeResult).toHaveLength(1);
+    const [block] = largeResult;
+    expect(block.kind === 'table' ? block.table.rows.length : 0).toBe(TABLE_PAGES * TABLE_ROWS_PER_PAGE);
   }, SCALING_TEST_TIMEOUT_MS);
 });
