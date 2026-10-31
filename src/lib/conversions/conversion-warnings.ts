@@ -19,8 +19,8 @@ export function reportConversionWarning(line: string): void {
   if (lines !== undefined && lines.size < MAX_WARNING_LINES) lines.add(line);
 }
 
-/** Runs `convert` in a warning scope and adds what was reported to the warnings of its result. */
-export async function withConversionWarnings(convert: () => Promise<ConversionResult>): Promise<ConversionResult> {
+/** Runs `convert` in a warning scope and adds what was reported to the warnings of its result (an engine's result carries metadata as a conversion's does). */
+export async function withConversionWarnings<T extends Pick<ConversionResult, 'metadata'>>(convert: () => Promise<T>): Promise<T> {
   if (scopes.getStore() !== undefined) return convert();
   const lines = new Set<string>();
   const result = await scopes.run(lines, convert);

@@ -1,5 +1,6 @@
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError } from '../types';
 import { placeBitmapGlyphText, UNMAPPABLE_CHARACTER, type PdfPageText, type PlacedText } from './bitmap-glyph-text';
+import { reportConversionWarning } from './conversion-warnings';
 import { BitmapGlyphs } from './svg-bitmap-glyph';
 import { parseSvgGeometries, type ParsedSvgVectorDocument } from './svg-geometry';
 
@@ -13,6 +14,10 @@ import { parseSvgGeometries, type ParsedSvgVectorDocument } from './svg-geometry
  *
  * A stroke is written as its centre line: width, paint and opacity are not written, and a dash array is an LTYPE entry that the
  * stroke's entities name (svg-pen.ts says what the geometry reader does with each pen attribute, policy 79).
+ *
+ * A picture the page draws is left out, and the conversion says so: a DXF holds no bitmaps, and the exporters leave them out
+ * (Inkscape's dxf_outlines.py `process_shape` reads paths, rectangles, lines, circles and ellipses only; pstoedit's DXF drivers
+ * are registered with `imageformat::noimage` in drvdxf.cpp, so pstoedit.pro never hooks the image operators for them).
  *
  * The characters of a bitmap font, which Poppler draws as pictures, are written as TEXT in the STANDARD style (font `txt`,
  * AutoCAD's default) from the PDF's text layer (bitmap-glyph-text.ts): each run left-aligned on its baseline and fitted to its
@@ -38,6 +43,7 @@ const DXF_CODE_WIDTH = 3;
 /** Two points closer than this are the same point, so a repeated first vertex marks a closed outline. */
 const CLOSURE_EPSILON = 1e-9;
 const SVG_ROOT_PATTERN = /<svg\b/i;
+const PICTURES_LEFT_OUT_WARNING = 'Left out the pictures of the pages: a DXF holds lines and text and no bitmaps.';
 const DXF_TEXT_STYLE = 'STANDARD';
 const DXF_TEXT_FONT = 'txt';
 /** Group 72 of a TEXT: 5 is Fit, the text runs between the two alignment points at its own height. */
@@ -201,7 +207,9 @@ function readSvgPage(svg: Buffer, bitmapGlyphs: BitmapGlyphs): ParsedSvgVectorDo
   if (!SVG_ROOT_PATTERN.test(text)) {
     throw new CadGeometryUnavailableError('DXF encoding failed: input is not an SVG document.');
   }
-  return refusingUnsupported(() => parseSvgGeometries(text, bitmapGlyphs, 'centre-line'));
+  const parsed = refusingUnsupported(() => parseSvgGeometries(text, bitmapGlyphs, 'centre-line', 'leave-out'));
+  if (parsed.leftOutPictures > 0) reportConversionWarning(PICTURES_LEFT_OUT_WARNING);
+  return parsed;
 }
 
 /** The page geometry of an SVG document as DXF text; fails closed when the page draws no vector geometry or a bitmap glyph. */

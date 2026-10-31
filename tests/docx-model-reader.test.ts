@@ -131,6 +131,31 @@ describe('merged-tables.docx', () => {
   });
 });
 
+describe('phonetic guides (ECMA-376 17.3.3.25)', () => {
+  const run = (text: string): string => `<w:r><w:t>${text}</w:t></w:r>`;
+  const ruby = (annotation: string, base: string): string => `<w:r><w:ruby><w:rubyPr><w:rubyAlign w:val="distributeSpace"/></w:rubyPr><w:rt>${run(annotation)}</w:rt><w:rubyBase>${run(base)}</w:rubyBase></w:ruby></w:r>`;
+
+  it('reads the text a guide is set over, in place among the runs around it', async () => {
+    const { model } = await read(await craftDocx({ body: `<w:p>${run('before ')}${ruby('とうきょう', '東京')}${run(' after')}</w:p>` }));
+    expect(firstParagraphText(bodyBlocks(model))).toBe('before 東京 after');
+  });
+
+  it('reads a guide inside a hyperlink and a table cell', async () => {
+    const body = `<w:p><w:hyperlink w:anchor="a">${ruby('かん', '漢')}</w:hyperlink></w:p><w:tbl><w:tr><w:tc><w:p>${ruby('じ', '字')}</w:p></w:tc></w:tr></w:tbl>`;
+    const { model } = await read(await craftDocx({ body }));
+    const blocks = bodyBlocks(model);
+    expect(firstParagraphText(blocks)).toBe('漢');
+    expect(firstParagraphText(cellBlocks((tableOf(model).rows[0])[0]))).toBe('字');
+  });
+
+  it('terminates on guides nested within the limit of element depth', async () => {
+    const depth = 60;
+    const nested = `${'<w:ruby><w:rubyBase><w:r>'.repeat(depth)}<w:t>core</w:t>${'</w:r></w:rubyBase></w:ruby>'.repeat(depth)}`;
+    const { model } = await expectNoHang('nested guides', async () => read(await craftDocx({ body: `<w:p><w:r>${nested}</w:r></w:p>` })));
+    expect(firstParagraphText(bodyBlocks(model))).toBe('core');
+  });
+});
+
 describe('malformed packages fail with typed errors', () => {
   it('a package without word/document.xml is refused', async () => {
     const zip = new JSZip();

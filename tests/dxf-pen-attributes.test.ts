@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { defaultResolver, EZDXF_PSEUDO_TOOL } from '../bench/tools';
+import { withConversionWarnings } from '../src/lib/conversions/conversion-warnings';
 import { MAX_DASH_ARRAY_CHARACTERS, MAX_DASH_VALUES } from '../src/lib/conversions/svg-pen';
 import { encodeSvgPageToDxf, MAX_DASH_LINETYPES } from '../src/lib/conversions/vector-dxf';
 import { readDxf, type DxfDocument } from './helpers/dxf-reader';
@@ -298,9 +299,51 @@ describe('opacity', () => {
   });
 });
 
+describe('pictures', () => {
+  const PICTURE = '<image x="20" y="20" width="10" height="10" href="data:image/png;base64,iVBORw0KGgo="/>';
+  const outline = '<rect x="10" y="10" width="50" height="30" fill="none" stroke="#000"/>';
+  const plain = dxfOf(outline);
+
+  const conversion = async (body: string): Promise<{ dxf: DxfDocument; warnings: unknown }> => {
+    const result = await withConversionWarnings(async () => {
+      const buffer = encodeSvgPageToDxf(Buffer.from(page(body)));
+      return { buffer, mimeType: 'application/dxf', filename: 'page.dxf', size: buffer.length };
+    });
+    return { dxf: readDxf(result.buffer.toString('utf-8')), warnings: result.metadata?.warnings };
+  };
+
+  it.each([
+    ['an <image>', PICTURE],
+    ['an <image> inside a group', `<g transform="translate(5 5)">${PICTURE}</g>`],
+    ['an <image> drawn by a <use>', `<defs>${PICTURE.replace('<image ', '<image id="p" ')}</defs><use href="#p"/>`],
+    ['an <image> with a transform, an opacity and a blend mode', `<image opacity="0.5" transform="rotate(10)" x="0" y="0" width="10" height="10" mix-blend-mode="multiply" href="#"/>`],
+  ])('is left out, with the geometry around it written as before and a warning that says so: %s', async (_name, picture) => {
+    const { dxf, warnings } = await conversion(`${outline}${picture}`);
+    expect(dxf.entities).toEqual(plain.entities);
+    expect(warnings).toEqual(['Left out the pictures of the pages: a DXF holds lines and text and no bitmaps.']);
+  });
+
+  it('is not reported for a picture the page does not draw, nor for a page without one', async () => {
+    expect((await conversion(`${outline}<image display="none" x="0" y="0" width="1" height="1" href="#"/>`)).warnings).toBeUndefined();
+    expect((await conversion(outline)).warnings).toBeUndefined();
+  });
+
+  it('leaves a page of only a picture to the rule for a page without geometry', () => {
+    expect(refusal(PICTURE)).toMatch(/^ConversionFailedError: /);
+  });
+
+  it('reports once however many pictures a page draws, and reads them in bounded time', async () => {
+    const pictures = PICTURE.repeat(20_000);
+    const started = Date.now();
+    const { dxf, warnings } = await conversion(`${outline}${pictures}`);
+    expectWithinHangGuard('twenty thousand pictures', Date.now() - started, HOSTILE_GUARD);
+    expect(dxf.entities).toEqual(plain.entities);
+    expect(warnings).toHaveLength(1);
+  });
+});
+
 describe('what the DXF writer still refuses', () => {
   it.each([
-    ['a picture (policy 42)', '<image x="0" y="0" width="10" height="10" href="data:image/png;base64,iVBORw0KGgo="/>', /SVG element <image> is not supported/],
     [
       'a clip that is not the page and not one convex polygon',
       '<clipPath id="c"><rect x="0" y="0" width="50" height="50"/><rect x="60" y="0" width="30" height="50"/></clipPath><rect width="100" height="100" clip-path="url(#c)"/>',

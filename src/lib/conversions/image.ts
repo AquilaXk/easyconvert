@@ -62,7 +62,7 @@ import {
 import { encodeGif } from './gif-writer';
 import { performOcr, generateSearchablePdf, exportHocr, exportAlto, STRUCTURED_OCR_TARGETS } from './ocr';
 import { isSvg, sanitizeSvgBuffer } from '../security/svg-sanitizer';
-import { normalizeSvgBufferForRendering } from './svg-geometry';
+import { normalizeSvgBufferForRendering } from './svg-render-normalize';
 import { DirectAvifSlot, startDirectAvifOn } from './image-avif-direct';
 import { metadataOf, withHeader } from './image-metadata';
 import { assemblePicturePdf, type PdfPageImage } from './image-pdf-pages';
