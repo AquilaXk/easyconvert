@@ -1,4 +1,5 @@
 import { dataObjectKeys } from './data-json';
+import { gridOf } from './office/sheet-bounds';
 import { compressPage, isZstdWriteAvailable } from './parquet-codec';
 import {
   ColumnSchema,
@@ -13,8 +14,6 @@ import {
   PARQUET_DICTIONARY_MAX_BYTES,
   PARQUET_FORMAT_VERSION,
   PARQUET_MAGIC,
-  PARQUET_MAX_CELLS,
-  PARQUET_MAX_COLUMNS,
   PARQUET_MAX_ROWS,
   PARQUET_MAX_VALUE_BYTES,
   PARQUET_ROW_GROUP_MAX_BYTES,
@@ -115,13 +114,16 @@ interface AnalyzedColumn {
   values: unknown[];
 }
 
+/** What a Parquet file holds: the grid of the format, which the reader and the table of records of the data engine check too. */
+const GRID = gridOf('parquet');
+
 function analyzeRecords(records: readonly unknown[]): AnalyzedColumn[] {
   const numRows = records.length;
   if (numRows === 0) {
     throw new ParquetValueError('Cannot write Parquet: no records were provided.');
   }
-  if (numRows > PARQUET_MAX_ROWS) {
-    throw new ParquetValueError(`Cannot write Parquet: ${numRows} records exceed the limit of ${PARQUET_MAX_ROWS} rows.`);
+  if (numRows > GRID.rows) {
+    throw new ParquetValueError(`Cannot write Parquet: ${numRows} records exceed the limit of ${GRID.rows} rows.`);
   }
 
   const columnIndex = new Map<string, number>();
@@ -135,11 +137,11 @@ function analyzeRecords(records: readonly unknown[]): AnalyzedColumn[] {
     for (const key of keys) {
       let index = columnIndex.get(key);
       if (index === undefined) {
-        if (columns.length >= PARQUET_MAX_COLUMNS) {
-          throw new ParquetValueError(`Cannot write Parquet: more than ${PARQUET_MAX_COLUMNS} columns.`);
+        if (columns.length >= GRID.columns) {
+          throw new ParquetValueError(`Cannot write Parquet: more than ${GRID.columns} columns.`);
         }
-        if (numRows * (columns.length + 1) > PARQUET_MAX_CELLS) {
-          throw new ParquetValueError(`Cannot write Parquet: table exceeds the limit of ${PARQUET_MAX_CELLS} cells.`);
+        if (numRows * (columns.length + 1) > GRID.cells) {
+          throw new ParquetValueError(`Cannot write Parquet: table exceeds the limit of ${GRID.cells} cells.`);
         }
         index = columns.length;
         columnIndex.set(key, index);
