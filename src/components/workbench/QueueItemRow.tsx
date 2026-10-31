@@ -2,24 +2,12 @@
 
 import React from 'react';
 import {
-  FileText,
-  FileImage,
-  Database,
-  Archive,
-  Music,
-  Video,
-  BookOpen,
-  Presentation,
-  Type,
-  Compass,
-  X,
-  Sliders,
-  Download,
-  ChevronDown,
-  type LucideIcon,
+  Archive, BookOpen, ChevronDown, Compass, Database, Download,
+  FileImage, FileText, Music, Presentation, Sliders, Type, Video, X, type LucideIcon,
 } from 'lucide-react';
 import { ConversionQueueItem, FormatCategory } from '@/lib/types';
 import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
+import { getEffectiveMaxFileSize } from '@/lib/client-converter';
 import FormatSelector from '../FormatSelector';
 
 export interface QueueItemRowProps {
@@ -62,11 +50,8 @@ function getFormatLabel(ext: string): string {
 
 function renderCategoryIcon(ext: string): React.ReactNode {
   const clean = ext.toLowerCase();
-  if (clean === 'pdf') {
-    return <FileText className="w-5 h-5 text-red-600 dark:text-red-400" />;
-  }
-  const cat = FORMAT_REGISTRY[clean]?.category || 'document';
-  const entry = CATEGORY_ICONS[cat];
+  if (clean === 'pdf') return <FileText className="w-5 h-5 text-red-600 dark:text-red-400" />;
+  const entry = CATEGORY_ICONS[FORMAT_REGISTRY[clean]?.category || 'document'];
   if (entry) {
     const { Icon, color } = entry;
     return <Icon className={`w-5 h-5 ${color}`} />;
@@ -74,74 +59,58 @@ function renderCategoryIcon(ext: string): React.ReactNode {
   return <FileText className="w-5 h-5 text-brand-700 dark:text-brand-300" />;
 }
 
+function isRetryDisabled(item: ConversionQueueItem, isBusy: boolean): boolean {
+  if (isBusy || !item.targetFormat) return true;
+  return item.size > getEffectiveMaxFileSize() || Boolean(item.error?.includes('exceeds the'));
+}
+
 function RowStatusDisplay({
-  item,
-  onRetry,
-}: Readonly<{
-  item: ConversionQueueItem;
-  onRetry: () => void;
-}>) {
-  if (item.status === 'uploading' || item.status === 'converting') {
+  item, isBusy, onRetry,
+}: Readonly<{ item: ConversionQueueItem; isBusy: boolean; onRetry: () => void }>) {
+  if (isBusy) {
     const rounded = Math.round(item.progress);
     return (
       <div className="flex items-center gap-2 min-w-[140px]">
         <progress
-          value={rounded}
-          max={100}
-          aria-label={`Converting ${item.name}`}
+          value={rounded} max={100} aria-label={`Converting ${item.name}`}
           className="flex-1 h-2 w-full rounded-full overflow-hidden accent-brand-700 [&::-webkit-progress-bar]:bg-neutral-200 dark:[&::-webkit-progress-bar]:bg-dark-elevated [&::-webkit-progress-value]:bg-brand-700 [&::-moz-progress-bar]:bg-brand-700"
         />
-        <span className="text-xs font-mono text-ink-secondary dark:text-neutral-300 tabular-nums">
-          {rounded}%
-        </span>
+        <span className="text-xs font-mono text-ink-secondary dark:text-neutral-300 tabular-nums">{rounded}%</span>
       </div>
     );
   }
-
   if (item.status === 'completed') {
     const baseName = item.name.replace(/\.[^/.]+$/, '') || item.name;
     return (
       <div className="flex items-center gap-2">
-        <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-status-successSoft text-status-success dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-500/30">
-          Done
-        </span>
+        <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-status-successSoft text-status-success dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-500/30">Done</span>
         {item.resultUrl && (
           <a
-            href={item.resultUrl}
-            download={`${baseName}.${item.targetFormat}`}
+            href={item.resultUrl} download={`${baseName}.${item.targetFormat}`}
             className="inline-flex items-center justify-center gap-1.5 min-h-[44px] px-4 rounded-md bg-status-success hover:opacity-95 text-white text-xs font-semibold transition-opacity"
           >
-            <Download className="w-4 h-4" />
-            <span>Download</span>
+            <Download className="w-4 h-4" /><span>Download</span>
           </a>
         )}
       </div>
     );
   }
-
   if (item.status === 'error') {
     return (
       <div className="flex items-center gap-2">
-        <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-status-dangerSoft text-status-danger dark:bg-red-950/40 dark:text-red-300 border border-red-500/30">
-          Failed
-        </span>
+        <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-semibold bg-status-dangerSoft text-status-danger dark:bg-red-950/40 dark:text-red-300 border border-red-500/30">Failed</span>
         <button
-          type="button"
-          onClick={onRetry}
-          className="inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-md border border-red-300 dark:border-red-800 text-xs font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
+          type="button" disabled={isRetryDisabled(item, isBusy)} onClick={onRetry}
+          className="inline-flex items-center justify-center min-h-[44px] px-3.5 rounded-md border border-red-300 dark:border-red-800 text-xs font-semibold text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Retry
         </button>
       </div>
     );
   }
-
   if (!item.targetFormat) return null;
-
   return (
-    <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-neutral-subtle dark:bg-dark-elevated text-ink-secondary dark:text-neutral-300 border border-neutral-border dark:border-dark-border">
-      Ready
-    </span>
+    <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-neutral-subtle dark:bg-dark-elevated text-ink-secondary dark:text-neutral-300 border border-neutral-border dark:border-dark-border">Ready</span>
   );
 }
 
@@ -231,13 +200,14 @@ export default function QueueItemRow({
           <Sliders className="w-4 h-4" />
         </button>
 
-        <RowStatusDisplay item={item} onRetry={onRetry} />
+        <RowStatusDisplay item={item} isBusy={isBusy} onRetry={onRetry} />
 
         <button
           type="button"
           aria-label={`Remove ${item.name}`}
+          disabled={isBusy}
           onClick={onRemove}
-          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-ink-muted hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer"
+          className="inline-flex items-center justify-center min-w-[44px] min-h-[44px] rounded-md text-ink-muted hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <X className="w-4 h-4" />
         </button>

@@ -28,12 +28,16 @@ export function useThemeToggle() {
   useEffect(() => {
     const stored = readStoredTheme();
     const hasDarkClass = document.documentElement.classList.contains('dark');
-    setIsDark(stored ? stored === 'dark' : hasDarkClass);
+    const next = stored ? stored === 'dark' : hasDarkClass;
+    setIsDark(next);
+    document.documentElement.classList.toggle('dark', next);
 
     const handleThemeChange: EventListener = (event) => {
       const custom = event as CustomEvent<ThemeEventDetail>;
       if (custom.detail?.theme) {
-        setIsDark(custom.detail.theme === 'dark');
+        const nextDark = custom.detail.theme === 'dark';
+        setIsDark(nextDark);
+        document.documentElement.classList.toggle('dark', nextDark);
       }
     };
 

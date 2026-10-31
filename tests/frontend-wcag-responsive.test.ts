@@ -22,14 +22,24 @@ import AuthPage from '../src/app/auth/page';
 import { resolveOAuthErrorMessage } from '../src/components/auth/AuthForms';
 import ApiDocsPage from '../src/app/api-docs/page';
 import { buildCurlSnippet } from '../src/components/api-docs/curl-builder';
+import { RequestBodySection } from '../src/components/api-docs/EndpointSchemaTables';
+import type { OpenApiOperation, OpenApiSchemaObject } from '../src/components/api-docs/openapi-types';
+import { buildOpenApiDocument } from '../src/lib/api/openapi';
 import StatusPage from '../src/app/status/page';
 import { DiagnosticResultsCard } from '../src/components/status/StatusDiagnosticsPanels';
+import { collectEdgeDiagnostics } from '../src/components/status/status-probes';
 import UnitConverterPage from '../src/app/unit-converter/page';
+import { formatEditableDecimal } from '../src/lib/unit-catalog';
 import OptionsModal from '../src/components/OptionsModal';
+import { computeVisibleSections, DEFAULT_OPTIONS } from '../src/components/workbench/options/options-capabilities';
 import UrlImportModal from '../src/components/UrlImportModal';
 import ConversionQueue from '../src/components/ConversionQueue';
 import FormatSelector from '../src/components/FormatSelector';
+import { CreateApiKeyForm } from '../src/components/dashboard/ApiKeyCreateCard';
+import { ApiKeysPanel } from '../src/components/dashboard/ApiKeysPanel';
 import { DlqPayloadDialog } from '../src/components/dashboard/DlqPayloadDialog';
+import { IntegrationGuide } from '../src/components/dashboard/IntegrationGuide';
+import { buildKeyCreationRequest } from '../src/components/dashboard/useDashboardController';
 import type { ConversionQueueItem } from '../src/lib/types';
 import type { WebhookDlqEntry } from '../src/lib/api-keys/types';
 import {
@@ -185,7 +195,8 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
         onClose: noop,
       })
     );
-    expect(phrasesPresent(pngToPdfText, ['Open Password', 'Page Range', 'Orientation'])).toEqual([]);
+    expect(phrasesMissing(pngToPdfText, ['Orientation', 'Enable OCR text recognition'])).toEqual([]);
+    expect(phrasesPresent(pngToPdfText, ['Open Password', 'Page Range'])).toEqual([]);
 
     const pdfToPngText = visibleText(
       render(OptionsModal, {
@@ -234,7 +245,27 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
         onClose: noop,
       })
     );
+    expect(phrasesMissing(zipToTarText, ['Archive Password (ZIP)'])).toEqual([]);
     expect(phrasesPresent(zipToTarText, ['Compression Level', 'Output Archive Password', 'Open Password'])).toEqual([]);
+
+    expect(DEFAULT_OPTIONS.delimiter).toBeUndefined();
+    expect(computeVisibleSections('pdf', 'hocr').canConfigureOcr).toBe(true);
+    expect(computeVisibleSections('png', 'alto').canConfigureOcr).toBe(true);
+    expect(computeVisibleSections('docx', 'txt').canConfigureLayout).toBe(false);
+    expect(computeVisibleSections('docx', 'pdf').canConfigureLayout).toBe(true);
+    expect(computeVisibleSections('pdf', 'docx').canSelectPages).toBe(false);
+
+    const csvToTsvText = visibleText(
+      render(OptionsModal, {
+        filename: 'rows.csv',
+        sourceFormat: 'csv',
+        targetFormat: 'tsv',
+        initialOptions: {},
+        onSave: noop,
+        onClose: noop,
+      })
+    );
+    expect(phrasesMissing(csvToTsvText, ['Auto (match format)'])).toEqual([]);
 
     const pngToZipText = visibleText(
       render(OptionsModal, {
@@ -517,5 +548,259 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
         'Visual Contrast, Motion & Zoom',
       ])
     ).toEqual([]);
+  });
+
+  it('synthesizes accurate OpenAPI 3.1 cURL commands and dereferences $ref request schemas', () => {
+    const doc = buildOpenApiDocument();
+    const schemas = doc.components.schemas as unknown as Record<string, OpenApiSchemaObject>;
+
+    const headOp = doc.paths['/api/v1/uploads/{id}'].head as unknown as OpenApiOperation;
+    const headCurl = buildCurlSnippet(
+      { key: 'HEAD:/api/v1/uploads/{id}', method: 'head', path: '/api/v1/uploads/{id}', operation: headOp },
+      'ec_live_$SECRET`id`"key\\1',
+      '/',
+      { schemas, runtimeOrigin: 'https://console.example.com' }
+    );
+    expect(headCurl).toMatch(/^curl -I "https:\/\/console\.example\.com\/api\/v1\/uploads\/id_01J9EXAMPLE"/);
+    expect(headCurl).not.toContain('-X HEAD');
+    expect(headCurl).toContain('Authorization: Bearer ec_live_\\$SECRET\\`id\\`\\"key\\\\1');
+
+    const rotateOp = doc.paths['/api/v1/webhooks/secrets/rotate'].post as unknown as OpenApiOperation;
+    const rotateSection = render(RequestBodySection, {
+      content: rotateOp.requestBody!.content!,
+      schemas,
+    });
+    expect(
+      phrasesMissing(visibleText(rotateSection), ['endpointId', 'apiKeyId', 'graceSeconds'])
+    ).toEqual([]);
+
+    const rotateCurl = buildCurlSnippet(
+      {
+        key: 'POST:/api/v1/webhooks/secrets/rotate',
+        method: 'post',
+        path: '/api/v1/webhooks/secrets/rotate',
+        operation: rotateOp,
+      },
+      '',
+      '/',
+      { schemas }
+    );
+    expect(rotateCurl).toContain('"endpointId":"ep_01J9EXAMPLE"');
+    expect(rotateCurl).toContain('"graceSeconds":86400');
+
+    const scopesCurl = buildCurlSnippet(
+      {
+        key: 'POST:/api/keys',
+        method: 'post',
+        path: '/api/keys',
+        operation: {
+          requestBody: {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['name', 'scopes'],
+                  properties: {
+                    name: { type: 'string' },
+                    scopes: { type: 'array', items: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      '',
+      'https://api.easyconvert.com',
+      { schemas }
+    );
+    expect(scopesCurl).toContain('"convert:read"');
+    expect(scopesCurl).not.toContain('jobs:read');
+    expect(scopesCurl).not.toContain('jobs:write');
+
+    const inspectOp = doc.paths['/api/v1/archives/inspect'].post as unknown as OpenApiOperation;
+    const inspectCurl = buildCurlSnippet(
+      { key: 'POST:/api/v1/archives/inspect', method: 'post', path: '/api/v1/archives/inspect', operation: inspectOp },
+      '',
+      '/',
+      { schemas }
+    );
+    expect(inspectCurl).toContain('-F "file=@archive.zip"');
+    expect(inspectCurl).not.toContain('targetFormat=pdf');
+
+    const convertOp = doc.paths['/api/v1/convert'].post as unknown as OpenApiOperation;
+    const convertCurl = buildCurlSnippet(
+      { key: 'POST:/api/v1/convert', method: 'post', path: '/api/v1/convert', operation: convertOp },
+      '',
+      '/',
+      { schemas }
+    );
+    expect(convertCurl).toContain('-F "file=@sample.docx"');
+    expect(convertCurl).toContain('-F "targetFormat=pdf"');
+
+    const partOp = doc.paths['/api/v1/uploads/direct/part'].put as unknown as OpenApiOperation;
+    const partCurl = buildCurlSnippet(
+      { key: 'PUT:/api/v1/uploads/direct/part', method: 'put', path: '/api/v1/uploads/direct/part', operation: partOp },
+      '',
+      '/',
+      { schemas }
+    );
+    expect(partCurl).toContain(
+      '"https://api.easyconvert.com/api/v1/uploads/direct/part?uploadId=upl_01J9EXAMPLE&partNumber=1"'
+    );
+
+    const completeOp = doc.paths['/api/v1/uploads/direct/complete'].post as unknown as OpenApiOperation;
+    const completeCurl = buildCurlSnippet(
+      {
+        key: 'POST:/api/v1/uploads/direct/complete',
+        method: 'post',
+        path: '/api/v1/uploads/direct/complete',
+        operation: completeOp,
+      },
+      '',
+      '/',
+      { schemas }
+    );
+    expect(completeCurl).toContain('"parts":[{"partNumber":1,"etag":"etag_01J9EXAMPLE"}]');
+
+    const credsOp = doc.paths['/api/v1/storage/credentials'].post as unknown as OpenApiOperation;
+    const credsCurl = buildCurlSnippet(
+      {
+        key: 'POST:/api/v1/storage/credentials',
+        method: 'post',
+        path: '/api/v1/storage/credentials',
+        operation: credsOp,
+      },
+      '',
+      '/',
+      { schemas }
+    );
+    expect(credsCurl).toContain('"providerType":"s3"');
+    expect(credsCurl).toContain('"bucket":"my-conversions-bucket"');
+  });
+
+  it('enforces roving tablists, persistent status live regions, RBAC warnings, and unmounted empty dialogs', () => {
+    const emptyDlq = render(DlqPayloadDialog, {
+      entry: null,
+      onClose: noop,
+      onReplay: noop,
+    });
+    expect(select(emptyDlq, 'dialog')).toHaveLength(0);
+
+    const emptyScopesForm = render(CreateApiKeyForm, {
+      newKeyName: 'Worker Key',
+      selectedScopes: [],
+      keyExpiry: '30d',
+      isGeneratingKey: false,
+      onNameChange: noop,
+      onToggleScope: noop,
+      onExpiryChange: noop,
+      onSubmit: noop,
+      onCancel: noop,
+    });
+    expect(visibleText(emptyScopesForm)).toContain('Select at least one scope to generate a key.');
+    expect(buildKeyCreationRequest('Worker Key', [], '30d', 1730000000000)).toEqual({
+      ok: false,
+      error: 'Select at least one permission scope before creating an API key.',
+    });
+    const validKeyReq = buildKeyCreationRequest(
+      'Worker Key',
+      ['convert:read'],
+      'never',
+      1730000000000
+    );
+    expect(validKeyReq).toEqual({
+      ok: true,
+      body: { name: 'Worker Key', scopes: ['convert:read'], expiresAt: undefined },
+    });
+
+    const keysPanelDom = render(ApiKeysPanel, {
+      state: {
+        apiKeys: [
+          {
+            id: 'k1',
+            userId: 'u1',
+            name: 'Prod',
+            prefix: 'ec_live_ab12...',
+            keyHash: 'h',
+            createdAt: 1730000000000,
+            status: 'active',
+            scopes: ['convert:write'],
+          },
+        ],
+        quota: null,
+        newKeyName: '',
+        generatedSecret: null,
+        isGeneratingKey: false,
+        showGenerateForm: false,
+        copiedKey: false,
+        revokingKeyId: null,
+        selectedScopes: ['convert:write'],
+        keyExpiry: '30d',
+      },
+      actions: {
+        onOpenGenerateForm: noop,
+        onCloseGenerateForm: noop,
+        onDismissGeneratedSecret: noop,
+        onNameChange: noop,
+        onToggleScope: noop,
+        onExpiryChange: noop,
+        onGenerateKey: noop,
+        onRequestRevoke: noop,
+        onConfirmRevoke: noop,
+        onCopy: noop,
+      },
+    });
+    const preCodeText = visibleText(select(keysPanelDom, 'pre')[0]);
+    expect(preCodeText).toContain('Authorization: Bearer $EASYCONVERT_API_KEY');
+    expect(preCodeText).toContain('https://api.easyconvert.com/api/v1/convert');
+    expect(preCodeText).not.toContain('ec_live_ab12...');
+    expect(preCodeText).not.toContain('easyconvert.app');
+
+    const guideDom = render(IntegrationGuide, { sampleKeyDisplay: '$EASYCONVERT_API_KEY' });
+    const guideTablist = allElements(guideDom).filter((el) => attrOf(el, 'role') === 'tablist');
+    expect(guideTablist).toHaveLength(1);
+    expect(attrOf(guideTablist[0], 'aria-label')).toBe('SDK language');
+    const guideTabs = allElements(guideDom).filter((el) => attrOf(el, 'role') === 'tab');
+    expect(guideTabs).toHaveLength(3);
+    expect(guideTabs.map((t) => attrOf(t, 'tabindex'))).toEqual(['0', '-1', '-1']);
+    expect(select(guideDom, 'div', 'id', 'sdk-guide-tabpanel')).toHaveLength(1);
+    expect(attrOf(select(guideDom, 'div', 'id', 'sdk-guide-tabpanel')[0], 'role')).toBe('tabpanel');
+
+    const statusDom = render(StatusPage, {});
+    const statusTablists = allElements(statusDom).filter((el) => attrOf(el, 'role') === 'tablist');
+    expect(statusTablists).toHaveLength(1);
+    expect(attrOf(statusTablists[0], 'aria-label')).toBe('Component categories');
+    const statusTabs = allElements(statusDom).filter((el) => attrOf(el, 'role') === 'tab');
+    expect(statusTabs).toHaveLength(4);
+    expect(statusTabs.map((t) => attrOf(t, 'tabindex'))).toEqual(['0', '-1', '-1', '-1']);
+    const statusTabpanel = select(statusDom, 'div', 'id', 'status-components-tabpanel');
+    expect(statusTabpanel).toHaveLength(1);
+    expect(attrOf(statusTabpanel[0], 'role')).toBe('tabpanel');
+    expect(select(statusDom, 'output', 'aria-live', 'polite').length).toBeGreaterThanOrEqual(1);
+
+    const validateSpy = vi.spyOn(WebAssembly, 'validate').mockReturnValueOnce(false);
+    try {
+      const probes = collectEdgeDiagnostics();
+      const wasmProbe = probes.find((p) => p.id === 'wasm')!;
+      expect(wasmProbe.supported).toBe(false);
+      expect(wasmProbe.details).toBe('WebAssembly 128-bit SIMD unavailable');
+    } finally {
+      validateSpy.mockRestore();
+    }
+  });
+
+  it('formats unit swap decimals as plain editable decimal strings without scientific notation or premature zeroing', () => {
+    const editablePattern = /^-?\d+(\.\d+)?$/;
+    expect(formatEditableDecimal(1e-7, 8)).toBe('0.0000001');
+    expect(formatEditableDecimal(1e-9, 6)).toBe('0.000000001');
+    expect(formatEditableDecimal(-1e-9, 6)).toBe('-0.000000001');
+    expect(formatEditableDecimal(1e21, 6)).toBe('1000000000000000000000');
+    expect(formatEditableDecimal(0, 6)).toBe('0');
+    expect(formatEditableDecimal(Number.NaN, 6)).toBe('0');
+
+    for (const sample of [1e-7, 1e-9, -1e-9, 1e-15, 0.45359237, 100, 1e21]) {
+      expect(formatEditableDecimal(sample, 6)).toMatch(editablePattern);
+    }
   });
 });

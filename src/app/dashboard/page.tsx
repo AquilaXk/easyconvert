@@ -59,6 +59,7 @@ export default function DashboardPage() {
               dlqCount={filesAndDlq.dlqEntries.length}
               onSelectTab={(tab) => {
                 clearActionError();
+                filesAndDlq.setInspectingDlq(null);
                 setActiveTab(tab);
               }}
               onLogout={() => {
@@ -122,6 +123,7 @@ export default function DashboardPage() {
                 onDelete={(id) => {
                   void filesAndDlq.handleDeleteDlq(id);
                 }}
+                onCopy={keys.copyToClipboard}
               />
             )}
 

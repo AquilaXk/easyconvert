@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 :root {
+  color-scheme: light;
   --brand-50: #F8F9FF;
   --brand-100: #F0F2FE;
   --brand-200: #E2E5FD;
@@ -25,6 +26,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --bg-scaffold: #141724;
   --surface-card: #1B2032;
   --surface-subtle: #242B42;
@@ -63,10 +65,11 @@ dialog:modal {
 
 dialog::backdrop {
   background: rgb(10 13 24 / 0.62);
+  overflow: hidden;
   overscroll-behavior: contain;
 }
 
-html:has(dialog[open]) {
+html:has(dialog:modal) {
   overflow: hidden;
 }
 
@@ -93,9 +96,10 @@ html:has(dialog[open]) {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root *,
-  :root *::before,
-  :root *::after {
+  html:root:root,
+  html:root:root:root *,
+  html:root:root:root *::before,
+  html:root:root:root *::after {
     animation-duration: 0.01ms;
     animation-iteration-count: 1;
     transition-duration: 0.01ms;

@@ -1,9 +1,12 @@
 import React from 'react';
 import {
+  dereferenceSchema,
+  formatSchemaType,
   renderInlineCode,
   type OpenApiMediaType,
   type OpenApiOperation,
   type OpenApiParameter,
+  type OpenApiSchemaObject,
 } from './openapi-types';
 
 function getStatusBadgeClass(statusCode: string): string {
@@ -16,7 +19,13 @@ function getStatusBadgeClass(statusCode: string): string {
   return 'text-rose-700 bg-rose-50 border-rose-200 dark:text-rose-300 dark:bg-rose-500/15 dark:border-rose-500/30';
 }
 
-export function ParametersTable({ parameters }: Readonly<{ parameters: OpenApiParameter[] }>) {
+export function ParametersTable({
+  parameters,
+  schemas,
+}: Readonly<{
+  parameters: OpenApiParameter[];
+  schemas?: Record<string, OpenApiSchemaObject>;
+}>) {
   return (
     <div>
       <h3 className="text-xs font-bold text-ink-secondary dark:text-dark-muted uppercase tracking-wider mb-2">
@@ -34,29 +43,33 @@ export function ParametersTable({ parameters }: Readonly<{ parameters: OpenApiPa
             </tr>
           </thead>
           <tbody className="divide-y divide-neutral-border dark:divide-dark-border bg-white dark:bg-dark-surface">
-            {parameters.map((param) => (
-              <tr key={`${param.in}-${param.name}`}>
-                <td className="px-4 py-2.5 font-mono text-brand-700 dark:text-brand-300 font-semibold whitespace-nowrap">
-                  {param.name}
-                </td>
-                <td className="px-4 py-2.5 text-ink-secondary dark:text-dark-muted whitespace-nowrap">
-                  {param.in}
-                </td>
-                <td className="px-4 py-2.5 font-mono text-ink-secondary dark:text-dark-muted whitespace-nowrap">
-                  {param.schema?.type || 'string'}
-                </td>
-                <td className="px-4 py-2.5 whitespace-nowrap">
-                  {param.required ? (
-                    <span className="text-status-danger dark:text-rose-400 font-bold">Yes</span>
-                  ) : (
-                    <span className="text-ink-muted dark:text-dark-muted">No</span>
-                  )}
-                </td>
-                <td className="px-4 py-2.5 text-brand-950 dark:text-dark-text min-w-[180px]">
-                  {param.description ? renderInlineCode(param.description) : 'Optional parameter'}
-                </td>
-              </tr>
-            ))}
+            {parameters.map((param) => {
+              const resolvedSchema = dereferenceSchema(param.schema, schemas);
+              const description = param.description ?? resolvedSchema?.description;
+              return (
+                <tr key={`${param.in}-${param.name}`}>
+                  <td className="px-4 py-2.5 font-mono text-brand-700 dark:text-brand-300 font-semibold whitespace-nowrap">
+                    {param.name}
+                  </td>
+                  <td className="px-4 py-2.5 text-ink-secondary dark:text-dark-muted whitespace-nowrap">
+                    {param.in}
+                  </td>
+                  <td className="px-4 py-2.5 font-mono text-ink-secondary dark:text-dark-muted whitespace-nowrap">
+                    {formatSchemaType(resolvedSchema, 'string')}
+                  </td>
+                  <td className="px-4 py-2.5 whitespace-nowrap">
+                    {param.required ? (
+                      <span className="text-status-danger dark:text-rose-400 font-bold">Yes</span>
+                    ) : (
+                      <span className="text-ink-muted dark:text-dark-muted">No</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 text-brand-950 dark:text-dark-text min-w-[180px]">
+                    {description ? renderInlineCode(description) : 'Optional parameter'}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -66,49 +79,60 @@ export function ParametersTable({ parameters }: Readonly<{ parameters: OpenApiPa
 
 export function RequestBodySection({
   content,
-}: Readonly<{ content: Record<string, OpenApiMediaType> }>) {
+  schemas,
+}: Readonly<{
+  content: Record<string, OpenApiMediaType>;
+  schemas?: Record<string, OpenApiSchemaObject>;
+}>) {
   return (
     <div>
       <h3 className="text-xs font-bold text-ink-secondary dark:text-dark-muted uppercase tracking-wider mb-2">
         Request Body
       </h3>
       <div className="space-y-3">
-        {Object.entries(content).map(([contentType, media]) => (
-          <div
-            key={contentType}
-            className="p-3.5 rounded-lg bg-neutral-scaffold dark:bg-dark-scaffold border border-neutral-border dark:border-dark-border text-xs min-w-0"
-          >
-            <div className="font-mono text-brand-700 dark:text-brand-300 font-semibold mb-2 break-all">
-              Content-Type: <code>{contentType}</code>
+        {Object.entries(content).map(([contentType, media]) => {
+          const resolvedSchema = dereferenceSchema(media.schema, schemas);
+          return (
+            <div
+              key={contentType}
+              className="p-3.5 rounded-lg bg-neutral-scaffold dark:bg-dark-scaffold border border-neutral-border dark:border-dark-border text-xs min-w-0"
+            >
+              <div className="font-mono text-brand-700 dark:text-brand-300 font-semibold mb-2 break-all">
+                Content-Type: <code>{contentType}</code>
+              </div>
+              {resolvedSchema?.properties ? (
+                <div className="space-y-1.5 mt-2">
+                  {Object.entries(resolvedSchema.properties).map(([propName, propDef]) => {
+                    const resolvedProp = dereferenceSchema(propDef, schemas) ?? propDef;
+                    const description = propDef.description ?? resolvedProp.description;
+                    return (
+                      <div key={propName} className="flex flex-wrap items-baseline gap-2">
+                        <span className="font-mono text-brand-950 dark:text-white font-semibold">
+                          {propName}
+                          {resolvedSchema.required?.includes(propName) && (
+                            <span className="text-status-danger dark:text-rose-400 ml-0.5">*</span>
+                          )}
+                        </span>
+                        <span className="font-mono text-ink-muted dark:text-dark-muted text-[11px]">
+                          [{formatSchemaType(resolvedProp, 'object')}]
+                        </span>
+                        {description && (
+                          <span className="text-ink-secondary dark:text-dark-muted break-words">
+                            {renderInlineCode(description)}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-ink-muted dark:text-dark-muted">
+                  Binary stream or structured schema payload.
+                </div>
+              )}
             </div>
-            {media.schema?.properties ? (
-              <div className="space-y-1.5 mt-2">
-                {Object.entries(media.schema.properties).map(([propName, propDef]) => (
-                  <div key={propName} className="flex flex-wrap items-baseline gap-2">
-                    <span className="font-mono text-brand-950 dark:text-white font-semibold">
-                      {propName}
-                      {media.schema?.required?.includes(propName) && (
-                        <span className="text-status-danger dark:text-rose-400 ml-0.5">*</span>
-                      )}
-                    </span>
-                    <span className="font-mono text-ink-muted dark:text-dark-muted text-[11px]">
-                      [{propDef.type || 'object'}]
-                    </span>
-                    {propDef.description && (
-                      <span className="text-ink-secondary dark:text-dark-muted break-words">
-                        {renderInlineCode(propDef.description)}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-ink-muted dark:text-dark-muted">
-                Binary stream or structured schema payload.
-              </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

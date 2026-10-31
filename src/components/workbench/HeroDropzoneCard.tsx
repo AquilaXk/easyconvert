@@ -45,7 +45,7 @@ export default function HeroDropzoneCard({
   useEffect(() => {
     if (!showSourceMenu) return;
 
-    const handleOutside = (event: MouseEvent) => {
+    const handleOutside = (event: PointerEvent) => {
       if (splitButtonRef.current && !splitButtonRef.current.contains(event.target as Node)) {
         setShowSourceMenu(false);
       }
@@ -54,10 +54,10 @@ export default function HeroDropzoneCard({
       if (event.key === 'Escape') setShowSourceMenu(false);
     };
 
-    document.addEventListener('mousedown', handleOutside);
+    document.addEventListener('pointerdown', handleOutside);
     window.addEventListener('keydown', handleKey);
     return () => {
-      document.removeEventListener('mousedown', handleOutside);
+      document.removeEventListener('pointerdown', handleOutside);
       window.removeEventListener('keydown', handleKey);
     };
   }, [showSourceMenu]);

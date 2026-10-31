@@ -78,10 +78,7 @@ export function DiagnosticResultsCard({ results }: Readonly<{ results: Diagnosti
   const allSupported = verifiedCount === results.length;
 
   return (
-    <section
-      aria-live="polite"
-      className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 shadow-sm"
-    >
+    <section className="rounded-xl bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border p-6 shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <h2 className="text-base sm:text-lg font-bold text-brand-950 dark:text-white">
           Live Browser Edge Diagnostic Results

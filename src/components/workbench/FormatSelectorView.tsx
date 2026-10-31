@@ -151,7 +151,7 @@ export function FormatSelectorBody({
         )}
       </div>
 
-      <div className="flex h-72 sm:h-80 min-h-0 flex-1 min-w-0">
+      <div className="flex h-60 min-h-0 flex-1 min-w-0">
         {!search.trim() && categories.length > 0 && (
           <div className="w-36 sm:w-40 border-r border-neutral-border dark:border-dark-border overflow-y-auto shrink-0 p-1.5 space-y-0.5 bg-neutral-scaffold/70 dark:bg-[#141827]">
             {categories.map((cat) => {
@@ -174,12 +174,12 @@ export function FormatSelectorBody({
           </div>
         )}
 
-        <div className="flex-1 p-3 overflow-y-auto min-w-0 bg-white dark:bg-dark-surface">
+        <div className="flex-1 flex flex-col h-60 min-h-0 p-3 min-w-0 bg-white dark:bg-dark-surface">
           {showAnyOption && (
             <button
               type="button"
               onClick={() => onChoose('any')}
-              className={`min-h-[44px] sm:min-h-[40px] w-full mb-2 px-3 rounded-md text-xs font-mono font-semibold uppercase border transition-colors cursor-pointer ${
+              className={`shrink-0 mb-2 min-h-[44px] sm:min-h-[40px] w-full px-3 rounded-md text-xs font-mono font-semibold uppercase border transition-colors cursor-pointer ${
                 normalizedSelected === 'any' || !normalizedSelected
                   ? 'bg-brand-700 border-brand-700 text-white'
                   : 'bg-neutral-subtle/70 dark:bg-dark-elevated border-neutral-border dark:border-dark-border text-brand-950 dark:text-white hover:border-brand-600'
@@ -188,14 +188,16 @@ export function FormatSelectorBody({
               ANY FORMAT
             </button>
           )}
-          {renderFormatList(
-            hasNoSupportedFormats,
-            displayedFormats,
-            showAnyOption,
-            search,
-            normalizedSelected,
-            onChoose
-          )}
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1">
+            {renderFormatList(
+              hasNoSupportedFormats,
+              displayedFormats,
+              showAnyOption,
+              search,
+              normalizedSelected,
+              onChoose
+            )}
+          </div>
         </div>
       </div>
     </>

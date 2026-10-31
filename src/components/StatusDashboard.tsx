@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Cpu } from 'lucide-react';
 import {
   DiagnosticResultsCard,
@@ -25,6 +25,22 @@ function ComponentStatusSection({
   components: ComponentStatus[];
   onSelectCategory: (category: CategoryFilter) => void;
 }>) {
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const activeTabId = `status-tab-${activeCategory}`;
+
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let nextIndex: number | null = null;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % CATEGORY_TABS.length;
+    else if (event.key === 'ArrowLeft') {
+      nextIndex = (index - 1 + CATEGORY_TABS.length) % CATEGORY_TABS.length;
+    } else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = CATEGORY_TABS.length - 1;
+    if (nextIndex === null) return;
+    event.preventDefault();
+    onSelectCategory(CATEGORY_TABS[nextIndex].id);
+    tabRefs.current[nextIndex]?.focus();
+  };
+
   return (
     <section className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -37,15 +53,27 @@ function ComponentStatusSection({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        {CATEGORY_TABS.map((tab) => {
+      <div
+        role="tablist"
+        aria-label="Component categories"
+        className="flex flex-wrap items-center gap-2"
+      >
+        {CATEGORY_TABS.map((tab, index) => {
           const isSelected = activeCategory === tab.id;
           return (
             <button
               key={tab.id}
+              id={`status-tab-${tab.id}`}
+              ref={(node) => {
+                tabRefs.current[index] = node;
+              }}
               type="button"
+              role="tab"
+              aria-selected={isSelected}
+              aria-controls="status-components-tabpanel"
+              tabIndex={isSelected ? 0 : -1}
               onClick={() => onSelectCategory(tab.id)}
-              aria-pressed={isSelected}
+              onKeyDown={(event) => handleTabKeyDown(event, index)}
               className={`min-h-[44px] px-3.5 py-2 rounded-md text-xs font-semibold border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 cursor-pointer ${
                 isSelected
                   ? 'bg-brand-700 text-white border-brand-700'
@@ -58,7 +86,12 @@ function ComponentStatusSection({
         })}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div
+        id="status-components-tabpanel"
+        role="tabpanel"
+        aria-labelledby={activeTabId}
+        className="grid grid-cols-1 md:grid-cols-2 gap-3"
+      >
         {components.map((component) => (
           <div
             key={component.id}
@@ -119,6 +152,16 @@ function SandboxArchitectureCard() {
   );
 }
 
+function buildDiagnosticAnnouncement(
+  isRunning: boolean,
+  results: DiagnosticResult[] | null
+): string {
+  if (isRunning) return 'Running browser edge diagnostics...';
+  if (!results) return '';
+  const activeCount = results.filter((item) => item.supported).length;
+  return `Edge diagnostics complete. ${activeCount} of ${results.length} capabilities active.`;
+}
+
 export default function StatusDashboard() {
   const [activeCategory, setActiveCategory] = useState<CategoryFilter>('all');
   const [checkedAtText, setCheckedAtText] = useState<string>(
@@ -151,6 +194,10 @@ export default function StatusDashboard() {
 
   return (
     <div className="w-full space-y-8">
+      <output aria-live="polite" className="sr-only">
+        {buildDiagnosticAnnouncement(isDiagnosticRunning, diagnosticResults)}
+      </output>
+
       <StatusOverviewCard
         isRunning={isDiagnosticRunning}
         checkedLabel={checkedAtText}

@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Check, Code2, Copy } from 'lucide-react';
 
 type SnippetLanguage = 'curl' | 'node' | 'python';
+
+const SNIPPET_TABS: ReadonlyArray<SnippetLanguage> = ['curl', 'node', 'python'];
 
 const TAB_LABELS: Record<SnippetLanguage, string> = {
   curl: 'cURL',
@@ -11,15 +13,19 @@ const TAB_LABELS: Record<SnippetLanguage, string> = {
 
 interface IntegrationGuideProps {
   sampleKeyDisplay: string;
-  onCopy?: (text: string) => void;
 }
 
-export function IntegrationGuide({ sampleKeyDisplay, onCopy }: Readonly<IntegrationGuideProps>) {
+export function IntegrationGuide({ sampleKeyDisplay }: Readonly<IntegrationGuideProps>) {
   const [codeTab, setCodeTab] = useState<SnippetLanguage>('curl');
   const [copiedSnippet, setCopiedSnippet] = useState(false);
+  const tabRefs = useRef<Record<SnippetLanguage, HTMLButtonElement | null>>({
+    curl: null,
+    node: null,
+    python: null,
+  });
 
   const codeSnippets: Record<SnippetLanguage, string> = {
-    curl: String.raw`curl -X POST "https://easyconvert.app/api/v1/convert" \
+    curl: String.raw`curl -X POST "https://api.easyconvert.com/api/v1/convert" \
   -H "Authorization: Bearer ${sampleKeyDisplay}" \
   -F "file=@document.docx" \
   -F "targetFormat=pdf"`,
@@ -29,7 +35,7 @@ const formData = new FormData();
 formData.append('file', new Blob([fs.readFileSync('document.docx')]), 'document.docx');
 formData.append('targetFormat', 'pdf');
 
-const res = await fetch('https://easyconvert.app/api/v1/convert', {
+const res = await fetch('https://api.easyconvert.com/api/v1/convert', {
   method: 'POST',
   headers: {
     Authorization: 'Bearer ${sampleKeyDisplay}',
@@ -41,7 +47,7 @@ const result = await res.json();
 console.log(result);`,
     python: `import requests
 
-url = "https://easyconvert.app/api/v1/convert"
+url = "https://api.easyconvert.com/api/v1/convert"
 headers = {"Authorization": "Bearer ${sampleKeyDisplay}"}
 with open("document.docx", "rb") as source_file:
     response = requests.post(
@@ -59,10 +65,36 @@ print(response.json())`,
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
       void navigator.clipboard.writeText(snippet);
     }
-    onCopy?.(snippet);
     setCopiedSnippet(true);
     setTimeout(() => setCopiedSnippet(false), 2000);
   };
+
+  const handleTabKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    currentTab: SnippetLanguage
+  ) => {
+    const currentIndex = SNIPPET_TABS.indexOf(currentTab);
+    if (currentIndex === -1) return;
+
+    let nextTab: SnippetLanguage | null = null;
+    if (event.key === 'ArrowRight') {
+      nextTab = SNIPPET_TABS[(currentIndex + 1) % SNIPPET_TABS.length];
+    } else if (event.key === 'ArrowLeft') {
+      nextTab = SNIPPET_TABS[(currentIndex - 1 + SNIPPET_TABS.length) % SNIPPET_TABS.length];
+    } else if (event.key === 'Home') {
+      nextTab = SNIPPET_TABS[0];
+    } else if (event.key === 'End') {
+      nextTab = SNIPPET_TABS[SNIPPET_TABS.length - 1];
+    }
+
+    if (nextTab) {
+      event.preventDefault();
+      setCodeTab(nextTab);
+      tabRefs.current[nextTab]?.focus();
+    }
+  };
+
+  const activeTabId = `sdk-guide-tab-${codeTab}`;
 
   return (
     <div className="bg-white dark:bg-dark-surface border border-neutral-border dark:border-dark-border rounded-xl p-6 shadow-sm min-w-0">
@@ -81,29 +113,46 @@ print(response.json())`,
           </div>
         </div>
 
-        <fieldset className="border-0 p-0 m-0 min-w-0 self-start sm:self-auto">
-          <legend className="sr-only">Code example language</legend>
-          <div className="flex rounded-lg bg-neutral-subtle dark:bg-dark-elevated p-1 border border-neutral-border dark:border-dark-border">
-            {(['curl', 'node', 'python'] as const).map((tab) => (
+        <div
+          role="tablist"
+          aria-label="SDK language"
+          className="flex rounded-lg bg-neutral-subtle dark:bg-dark-elevated p-1 border border-neutral-border dark:border-dark-border self-start sm:self-auto"
+        >
+          {SNIPPET_TABS.map((tab) => {
+            const isSelected = codeTab === tab;
+            return (
               <button
                 key={tab}
+                id={`sdk-guide-tab-${tab}`}
+                ref={(el) => {
+                  tabRefs.current[tab] = el;
+                }}
                 type="button"
+                role="tab"
+                aria-selected={isSelected}
+                aria-controls="sdk-guide-tabpanel"
+                tabIndex={isSelected ? 0 : -1}
                 onClick={() => setCodeTab(tab)}
-                aria-pressed={codeTab === tab}
+                onKeyDown={(event) => handleTabKeyDown(event, tab)}
                 className={`min-h-[44px] px-3 py-1.5 text-xs font-semibold rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-700 ${
-                  codeTab === tab
+                  isSelected
                     ? 'bg-white dark:bg-dark-surface text-brand-700 dark:text-white shadow-sm'
                     : 'text-ink-secondary dark:text-dark-muted hover:text-brand-950 dark:hover:text-white'
                 }`}
               >
                 {TAB_LABELS[tab]}
               </button>
-            ))}
-          </div>
-        </fieldset>
+            );
+          })}
+        </div>
       </div>
 
-      <div className="relative mt-4 min-w-0">
+      <div
+        id="sdk-guide-tabpanel"
+        role="tabpanel"
+        aria-labelledby={activeTabId}
+        className="relative mt-4 min-w-0"
+      >
         <pre className="p-4 pr-24 rounded-lg bg-brand-950 dark:bg-dark-scaffold text-neutral-subtle font-mono text-xs overflow-x-auto max-w-full leading-relaxed border border-neutral-border dark:border-dark-border">
           <code>{codeSnippets[codeTab]}</code>
         </pre>

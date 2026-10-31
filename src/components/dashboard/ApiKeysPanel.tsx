@@ -103,7 +103,7 @@ export function ApiKeysPanel({ state, actions }: Readonly<ApiKeysPanelProps>) {
     selectedScopes,
     keyExpiry,
   } = state;
-  const sampleKeyDisplay = apiKeys.length > 0 ? apiKeys[0].prefix : 'ec_live_your_api_key_here';
+  const sampleKeyDisplay = generatedSecret || '$EASYCONVERT_API_KEY';
 
   return (
     <div

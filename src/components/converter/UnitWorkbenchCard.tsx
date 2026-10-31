@@ -40,18 +40,24 @@ export function CategorySelectorBar({
   );
 }
 
-export interface UnitWorkbenchProps {
+export interface UnitWorkbenchSelection {
   currentCategory: UnitCategory;
   fromDef: UnitDefinition;
   toDef: UnitDefinition;
   fromUnitKey: string;
   toUnitKey: string;
+}
+
+export interface UnitWorkbenchValues {
   inputStr: string;
   formattedResult: string;
   rawCopyValue: string;
   precision: number;
   formulaText: string;
   isCopied: boolean;
+}
+
+export interface UnitWorkbenchHandlers {
   onChangeInput: (next: string) => void;
   onChangeFromUnit: (next: string) => void;
   onChangeToUnit: (next: string) => void;
@@ -60,12 +66,20 @@ export interface UnitWorkbenchProps {
   onCopyResult: (value: string) => void;
 }
 
-export function UnitWorkbenchCard({ props }: Readonly<{ props: Readonly<UnitWorkbenchProps> }>) {
-  const {
-    currentCategory, fromDef, toDef, fromUnitKey, toUnitKey, inputStr,
-    formattedResult, rawCopyValue, precision, formulaText, isCopied,
-    onChangeInput, onChangeFromUnit, onChangeToUnit, onChangePrecision, onSwap, onCopyResult,
-  } = props;
+export interface UnitWorkbenchCardProps {
+  selection: Readonly<UnitWorkbenchSelection>;
+  values: Readonly<UnitWorkbenchValues>;
+  handlers: Readonly<UnitWorkbenchHandlers>;
+}
+
+export function UnitWorkbenchCard({
+  selection,
+  values,
+  handlers,
+}: Readonly<UnitWorkbenchCardProps>) {
+  const { currentCategory, fromDef, toDef, fromUnitKey, toUnitKey } = selection;
+  const { inputStr, formattedResult, rawCopyValue, precision, formulaText, isCopied } = values;
+  const { onChangeInput, onChangeFromUnit, onChangeToUnit, onChangePrecision, onSwap, onCopyResult } = handlers;
   const unitEntries = Object.entries(currentCategory.units);
 
   return (

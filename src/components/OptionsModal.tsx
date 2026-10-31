@@ -2,18 +2,18 @@
 
 import React, { useRef, useState } from 'react';
 import { X } from 'lucide-react';
-import { ConversionOptions, FormatCategory } from '@/lib/types';
-import { FORMAT_REGISTRY } from '@/lib/registry';
+import { ConversionOptions } from '@/lib/types';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import {
-  ArchiveOptionsSection,
-  AudioOptionsSection,
-  DataOptionsSection,
-  DocumentOptionsSection,
-  ImageOptionsSection,
-  PasswordOptionsSection,
-  VideoOptionsSection,
+  ArchiveOptionsSection, AudioOptionsSection, DataOptionsSection,
+  DocumentOptionsSection, ImageOptionsSection, PasswordOptionsSection, VideoOptionsSection,
 } from './workbench/OptionsSections';
+import {
+  computeVisibleSections, DEFAULT_OPTIONS, resolvePasswordMode,
+  type PasswordMode, type VisibleOptionsSections,
+} from './workbench/options/options-capabilities';
+
+export { computeVisibleSections, DEFAULT_OPTIONS, resolvePasswordMode, type PasswordMode };
 
 export interface OptionsModalProps {
   filename: string;
@@ -24,125 +24,54 @@ export interface OptionsModalProps {
   onClose: () => void;
 }
 
-const DEFAULT_OPTIONS: ConversionOptions = {
-  quality: 85,
-  fit: 'contain',
-  stripMetadata: false,
-  orientation: 'portrait',
-  delimiter: ',',
-  compressionLevel: 6,
-};
-
-const IMAGE_CATEGORIES: ReadonlyArray<FormatCategory> = ['image', 'vector', 'cad'];
-const LAYOUT_TARGETS = new Set<string>(['document', 'presentation']);
-const NON_LAYOUT_SOURCES = new Set<string>(['image', 'vector', 'cad']);
-const OCR_TARGETS = new Set<string>(['txt', 'md', 'docx', 'rtf', 'html', 'searchable-pdf']);
-
-function inCategories(
-  category: FormatCategory | undefined,
-  allowed: ReadonlyArray<FormatCategory>
-): boolean {
-  return Boolean(category && allowed.includes(category));
+interface ModalSectionGroupProps {
+  visible: VisibleOptionsSections;
+  options: ConversionOptions;
+  onChange: (next: ConversionOptions) => void;
 }
 
-function resolvePasswordMode(src: string, tgt: string): 'archive-encrypt' | 'pdf-decrypt' | null {
-  if (tgt === 'zip' || tgt === '7z') return 'archive-encrypt';
-  if (src === 'pdf') return 'pdf-decrypt';
-  return null;
-}
-
-function isDelimitedFormat(fmt: string): boolean {
+function DocumentAndSecurityGroup({ visible, options, onChange }: Readonly<ModalSectionGroupProps>) {
   return (
-    fmt === 'csv' ||
-    fmt === 'tsv' ||
-    (fmt !== 'json' && Boolean(FORMAT_REGISTRY[fmt]?.optionsSchema?.delimiter))
+    <>
+      {visible.showImage && <ImageOptionsSection options={options} onChange={onChange} />}
+      {visible.showDocument && (
+        <DocumentOptionsSection
+          options={options} onChange={onChange} canSelectPages={visible.canSelectPages}
+          canConfigureLayout={visible.canConfigureLayout} canConfigureOcr={visible.canConfigureOcr}
+        />
+      )}
+      {visible.passwordMode && (
+        <PasswordOptionsSection
+          options={options} onChange={onChange} mode={visible.passwordMode}
+          sourceFormat={visible.src} targetFormat={visible.tgt}
+        />
+      )}
+    </>
   );
 }
 
-const PAGE_SELECT_SOURCES = new Set<string>(['pdf', 'tiff', 'tif']);
-
-function computeMediaCaps(
-  sourceCategory: FormatCategory | undefined,
-  targetCategory: FormatCategory | undefined,
-  tgt: string
-) {
-  const showVideo = targetCategory === 'video' || (sourceCategory === 'video' && tgt === 'gif');
-  const targetIsImage = inCategories(targetCategory, IMAGE_CATEGORIES);
-  const sourceImageToPdf = inCategories(sourceCategory, IMAGE_CATEGORIES) && tgt === 'pdf';
-  const showImage = !showVideo && (targetIsImage || sourceImageToPdf);
-  const videoHasAudioSource = sourceCategory === 'video' || sourceCategory === 'audio';
-  const showAudio = targetCategory === 'audio' || (targetCategory === 'video' && videoHasAudioSource);
-  return { showVideo, showImage, showAudio };
-}
-
-function computeDocumentCaps(
-  src: string,
-  tgt: string,
-  sourceCategory: FormatCategory | undefined,
-  targetCategory: FormatCategory | undefined
-) {
-  const canSelectPages = Boolean(FORMAT_REGISTRY[src]?.optionsSchema?.pages) || PAGE_SELECT_SOURCES.has(src);
-  const isLayoutTarget = tgt === 'pdf' || Boolean(targetCategory && LAYOUT_TARGETS.has(targetCategory));
-  const isLayoutSource = src !== 'pdf' && !(sourceCategory && NON_LAYOUT_SOURCES.has(sourceCategory));
-  const canConfigureLayout = isLayoutTarget && isLayoutSource;
-  const canConfigureOcr = (src === 'pdf' || sourceCategory === 'image') && OCR_TARGETS.has(tgt);
-  const showDocument = canSelectPages || canConfigureLayout || canConfigureOcr;
-  return { canSelectPages, canConfigureLayout, canConfigureOcr, showDocument };
-}
-
-function computeDataCaps(
-  src: string,
-  tgt: string,
-  sourceCategory: FormatCategory | undefined,
-  targetCategory: FormatCategory | undefined
-) {
-  const canConfigureDelimiter = isDelimitedFormat(src) || isDelimitedFormat(tgt);
-  const canConfigureSheetIndex =
-    sourceCategory === 'spreadsheet' || Boolean(FORMAT_REGISTRY[src]?.optionsSchema?.sheetIndex);
-  const canConfigureHeaders =
-    canConfigureDelimiter || canConfigureSheetIndex || targetCategory === 'spreadsheet';
-  const showData = canConfigureHeaders;
-  return { canConfigureDelimiter, canConfigureSheetIndex, canConfigureHeaders, showData };
-}
-
-function computeVisibleSections(sourceFormat: string, targetFormat: string) {
-  const src = sourceFormat.toLowerCase();
-  const tgt = targetFormat.toLowerCase();
-  const sourceCategory = FORMAT_REGISTRY[src]?.category;
-  const targetCategory = tgt ? FORMAT_REGISTRY[tgt]?.category : undefined;
-  const media = computeMediaCaps(sourceCategory, targetCategory, tgt);
-  const doc = computeDocumentCaps(src, tgt, sourceCategory, targetCategory);
-  const data = computeDataCaps(src, tgt, sourceCategory, targetCategory);
-  const passwordMode = resolvePasswordMode(src, tgt);
-  const showArchive = targetCategory === 'archive' && tgt !== 'tar';
-  const flags = [
-    media.showImage,
-    doc.showDocument,
-    passwordMode !== null,
-    media.showVideo,
-    media.showAudio,
-    data.showData,
-    showArchive,
-  ];
-  return {
-    tgt,
-    targetCategory,
-    ...media,
-    ...doc,
-    ...data,
-    passwordMode,
-    showArchive,
-    hasAny: flags.some(Boolean),
-  };
+function MediaAndDataGroup({ visible, options, onChange }: Readonly<ModalSectionGroupProps>) {
+  return (
+    <>
+      {visible.showVideo && (
+        <VideoOptionsSection options={options} onChange={onChange} showCodec={visible.targetCategory === 'video'} />
+      )}
+      {visible.showAudio && (
+        <AudioOptionsSection options={options} onChange={onChange} includeTrim={!visible.showVideo} />
+      )}
+      {visible.showData && (
+        <DataOptionsSection
+          options={options} onChange={onChange}
+          canConfigureDelimiter={visible.canConfigureDelimiter} canConfigureSheetIndex={visible.canConfigureSheetIndex}
+        />
+      )}
+      {visible.showArchive && <ArchiveOptionsSection options={options} onChange={onChange} />}
+    </>
+  );
 }
 
 export default function OptionsModal({
-  filename,
-  sourceFormat,
-  targetFormat,
-  initialOptions,
-  onSave,
-  onClose,
+  filename, sourceFormat, targetFormat, initialOptions, onSave, onClose,
 }: Readonly<OptionsModalProps>) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [options, setOptions] = useState<ConversionOptions>({ ...initialOptions });
@@ -178,48 +107,8 @@ export default function OptionsModal({
       </div>
 
       <div className="px-5 sm:px-6 py-5 space-y-6 max-h-[70dvh] overflow-y-auto divide-y divide-neutral-border dark:divide-dark-border [&>section:not(:first-child)]:pt-5">
-        {visible.showImage && <ImageOptionsSection options={options} onChange={setOptions} />}
-        {visible.showDocument && (
-          <DocumentOptionsSection
-            options={options}
-            onChange={setOptions}
-            canSelectPages={visible.canSelectPages}
-            canConfigureLayout={visible.canConfigureLayout}
-            canConfigureOcr={visible.canConfigureOcr}
-          />
-        )}
-        {visible.passwordMode && (
-          <PasswordOptionsSection
-            options={options}
-            onChange={setOptions}
-            mode={visible.passwordMode}
-            targetFormat={visible.tgt}
-          />
-        )}
-        {visible.showVideo && (
-          <VideoOptionsSection
-            options={options}
-            onChange={setOptions}
-            showCodec={visible.targetCategory === 'video'}
-          />
-        )}
-        {visible.showAudio && (
-          <AudioOptionsSection
-            options={options}
-            onChange={setOptions}
-            includeTrim={!visible.showVideo}
-          />
-        )}
-        {visible.showData && (
-          <DataOptionsSection
-            options={options}
-            onChange={setOptions}
-            canConfigureDelimiter={visible.canConfigureDelimiter}
-            canConfigureSheetIndex={visible.canConfigureSheetIndex}
-            canConfigureHeaders={visible.canConfigureHeaders}
-          />
-        )}
-        {visible.showArchive && <ArchiveOptionsSection options={options} onChange={setOptions} />}
+        <DocumentAndSecurityGroup visible={visible} options={options} onChange={setOptions} />
+        <MediaAndDataGroup visible={visible} options={options} onChange={setOptions} />
         {!visible.hasAny && (
           <p className="text-sm text-ink-secondary dark:text-neutral-300">
             Standard lossless conversion parameters apply for this format pair.
@@ -237,10 +126,7 @@ export default function OptionsModal({
         </button>
         <button
           type="button"
-          onClick={() => {
-            onSave(options);
-            onClose();
-          }}
+          onClick={() => { onSave(options); onClose(); }}
           className="min-h-[44px] px-5 rounded-md bg-brand-700 hover:bg-brand-800 active:bg-brand-900 text-white text-sm font-semibold transition-colors cursor-pointer"
         >
           Apply Options

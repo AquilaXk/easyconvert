@@ -4,6 +4,7 @@ import React, { useMemo, useState } from 'react';
 import {
   UNIT_CATEGORIES,
   convertValue,
+  formatEditableDecimal,
   resolveStartingCategory,
   type UnitCategory,
   type UnitDefinition,
@@ -85,16 +86,16 @@ export default function UnitConverter({
     });
   }, [calculatedResult, precision]);
 
-  const rawCopyValue = useMemo(() => {
-    if (!Number.isFinite(calculatedResult)) return '0';
-    return Number.parseFloat(calculatedResult.toFixed(precision)).toString();
-  }, [calculatedResult, precision]);
+  const rawCopyValue = useMemo(
+    () => formatEditableDecimal(calculatedResult, precision),
+    [calculatedResult, precision]
+  );
 
   const handleSwap = () => {
     setFromUnitKey(toUnitKey);
     setToUnitKey(fromUnitKey);
     if (Number.isFinite(calculatedResult) && calculatedResult !== 0) {
-      setInputStr(String(Number.parseFloat(calculatedResult.toFixed(precision))));
+      setInputStr(formatEditableDecimal(calculatedResult, precision));
     }
   };
 
@@ -138,18 +139,9 @@ export default function UnitConverter({
       />
 
       <UnitWorkbenchCard
-        props={{
-          currentCategory,
-          fromDef,
-          toDef,
-          fromUnitKey,
-          toUnitKey,
-          inputStr,
-          formattedResult,
-          rawCopyValue,
-          precision,
-          formulaText,
-          isCopied,
+        selection={{ currentCategory, fromDef, toDef, fromUnitKey, toUnitKey }}
+        values={{ inputStr, formattedResult, rawCopyValue, precision, formulaText, isCopied }}
+        handlers={{
           onChangeInput: setInputStr,
           onChangeFromUnit: setFromUnitKey,
           onChangeToUnit: setToUnitKey,

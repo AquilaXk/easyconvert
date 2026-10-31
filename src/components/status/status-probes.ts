@@ -141,10 +141,10 @@ function probeWasmSimd(): DiagnosticResult {
   return {
     id: 'wasm',
     name: 'WebAssembly SIMD Vector Acceleration',
-    supported: hasWasmSimd || typeof WebAssembly !== 'undefined',
+    supported: hasWasmSimd,
     details: hasWasmSimd
       ? 'Hardware SIMD enabled (128-bit vectorization)'
-      : 'Standard Wasm core available',
+      : 'WebAssembly 128-bit SIMD unavailable',
     latencyMs: Math.round(performance.now() - start),
   };
 }
@@ -182,7 +182,9 @@ function probeMemorySandbox(): DiagnosticResult {
     id: 'memory-sandbox',
     name: 'Ephemeral Memory Buffer Sandbox',
     supported: memValid,
-    details: 'Transient memory allocation and zeroing verified',
+    details: memValid
+      ? 'Transient memory allocation and zeroing verified'
+      : 'Transient memory allocation failed',
     latencyMs: Math.round(performance.now() - start),
   };
 }

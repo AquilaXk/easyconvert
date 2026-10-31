@@ -153,6 +153,11 @@ export function CreateApiKeyForm({
                 );
               })}
             </div>
+            {selectedScopes.length === 0 && (
+              <p role="alert" className="text-xs font-medium text-status-danger dark:text-rose-400 mt-1.5">
+                Select at least one scope to generate a key.
+              </p>
+            )}
           </fieldset>
 
           <div>

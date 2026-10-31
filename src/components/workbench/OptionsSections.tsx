@@ -47,3 +47,13 @@ export {
   DocumentOptionsSection,
   PasswordOptionsSection,
 } from './options/DocumentAndArchiveOptions';
+
+export {
+  computeVisibleSections,
+  DEFAULT_OPTIONS,
+  isDelimitedFormat,
+  OCR_TARGETS,
+  resolvePasswordMode,
+  type PasswordMode,
+  type VisibleOptionsSections,
+} from './options/options-capabilities';

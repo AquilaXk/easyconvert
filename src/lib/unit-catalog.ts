@@ -29,6 +29,15 @@ export interface PopularConversionItem {
   to: string;
 }
 
+const TEMPERATURE_FORMULA_FORMATTERS: Record<string, (val: number, res: number) => string> = {
+  'celsius->fahrenheit': (val, res) => `(${val}°C × 9/5) + 32 = ${res.toFixed(2)}°F`,
+  'fahrenheit->celsius': (val, res) => `(${val}°F - 32) × 5/9 = ${res.toFixed(2)}°C`,
+  'celsius->kelvin': (val, res) => `${val}°C + 273.15 = ${res.toFixed(2)} K`,
+  'kelvin->celsius': (val, res) => `${val} K - 273.15 = ${res.toFixed(2)}°C`,
+  'fahrenheit->kelvin': (val, res) => `(${val}°F - 32) × 5/9 + 273.15 = ${res.toFixed(2)} K`,
+  'kelvin->fahrenheit': (val, res) => `(${val} K - 273.15) × 9/5 + 32 = ${res.toFixed(2)}°F`,
+};
+
 export const UNIT_CATEGORIES: Record<string, UnitCategory> = {
   weight: {
     id: 'weight', name: 'Weight & Mass', icon: Scale, defaultFrom: 'lbs', defaultTo: 'kg', baseUnit: 'g',
@@ -67,15 +76,8 @@ export const UNIT_CATEGORIES: Record<string, UnitCategory> = {
       kelvin: { id: 'kelvin', name: 'Kelvin', symbol: 'K', toBase: (v) => v - 273.15, fromBase: (v) => v + 273.15 },
       rankine: { id: 'rankine', name: 'Rankine', symbol: '°R', toBase: (v) => ((v - 491.67) * 5) / 9, fromBase: (v) => (v * 9) / 5 + 491.67 },
     },
-    formulaDescription: (from, to, val, res) => {
-      if (from === 'celsius' && to === 'fahrenheit') return `(${val}°C × 9/5) + 32 = ${res.toFixed(2)}°F`;
-      if (from === 'fahrenheit' && to === 'celsius') return `(${val}°F - 32) × 5/9 = ${res.toFixed(2)}°C`;
-      if (from === 'celsius' && to === 'kelvin') return `${val}°C + 273.15 = ${res.toFixed(2)} K`;
-      if (from === 'kelvin' && to === 'celsius') return `${val} K - 273.15 = ${res.toFixed(2)}°C`;
-      if (from === 'fahrenheit' && to === 'kelvin') return `(${val}°F - 32) × 5/9 + 273.15 = ${res.toFixed(2)} K`;
-      if (from === 'kelvin' && to === 'fahrenheit') return `(${val} K - 273.15) × 9/5 + 32 = ${res.toFixed(2)}°F`;
-      return `${val} ${from} = ${res} ${to}`;
-    },
+    formulaDescription: (from, to, val, res) =>
+      TEMPERATURE_FORMULA_FORMATTERS[`${from}->${to}`]?.(val, res) ?? `${val} ${from} = ${res} ${to}`,
   },
   area: {
     id: 'area', name: 'Area', icon: Maximize2, defaultFrom: 'sqm', defaultTo: 'sqft', baseUnit: 'sqm',
@@ -201,3 +203,24 @@ export function resolveStartingCategory(initialCategory: string, initialSrc?: st
   }
   return UNIT_CATEGORIES[initialCategory] ? initialCategory : 'weight';
 }
+
+export function formatEditableDecimal(value: number, precision: number): string {
+  if (!Number.isFinite(value) || value === 0) return '0';
+  const sign = value < 0 ? '-' : '';
+  const abs = Math.abs(value);
+  if (abs >= 1e21) {
+    const [mantissa, expPart = '0'] = abs.toExponential().split('e+');
+    const [intPart, fracPart = ''] = mantissa.split('.');
+    const padZeros = Math.max(0, Number.parseInt(expPart, 10) - fracPart.length);
+    return `${sign}${intPart}${fracPart}${'0'.repeat(padZeros)}`;
+  }
+  const basePrecision = Math.min(20, Math.max(0, Math.trunc(precision)));
+  let fixed = abs.toFixed(basePrecision);
+  if (Number.parseFloat(fixed) === 0) {
+    const expanded = Math.min(20, Math.max(basePrecision, Math.ceil(-Math.log10(abs)) + 2));
+    fixed = abs.toFixed(expanded);
+  }
+  const trimmed = fixed.includes('.') ? fixed.replace(/\.?0+$/, '') : fixed;
+  return trimmed === '' || trimmed === '0' ? '0' : `${sign}${trimmed}`;
+}
+

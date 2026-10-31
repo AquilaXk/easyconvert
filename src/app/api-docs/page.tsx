@@ -116,6 +116,8 @@ export default function ApiDocsPage() {
   }, [parsedEndpoints, selectedMethod, searchQuery]);
 
   const serverUrl = spec?.servers?.[0]?.url;
+  const schemas = spec?.components?.schemas;
+  const runtimeOrigin = typeof window !== 'undefined' ? window.location.origin : undefined;
 
   return (
     <div className="min-h-screen bg-neutral-scaffold dark:bg-dark-scaffold text-brand-950 dark:text-dark-text flex flex-col transition-colors">
@@ -178,6 +180,8 @@ export default function ApiDocsPage() {
                     isExpanded={Boolean(expandedEndpoints[endpoint.key])}
                     apiKeyInput={apiKeyInput}
                     serverUrl={serverUrl}
+                    schemas={schemas}
+                    runtimeOrigin={runtimeOrigin}
                     copiedKey={copiedKey}
                     onToggle={toggleEndpoint}
                     onCopy={copyToClipboard}

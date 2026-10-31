@@ -11,6 +11,30 @@ import {
 } from './dashboard-types';
 import { useFilesAndDlqController } from './useDashboardResources';
 
+export function buildKeyCreationRequest(
+  newKeyName: string,
+  selectedScopes: ApiKeyScope[],
+  keyExpiry: KeyExpiryOption,
+  nowMs: number
+):
+  | { ok: true; body: { name: string; scopes: ApiKeyScope[]; expiresAt?: number } }
+  | { ok: false; error: string } {
+  if (selectedScopes.length === 0) {
+    return {
+      ok: false,
+      error: 'Select at least one permission scope before creating an API key.',
+    };
+  }
+  return {
+    ok: true,
+    body: {
+      name: newKeyName || 'Production API Key',
+      scopes: selectedScopes,
+      expiresAt: resolveExpiryTimestamp(keyExpiry, nowMs),
+    },
+  };
+}
+
 function useApiKeysController(
   enabled: boolean,
   onReportError: (message: string | null) => void
@@ -68,18 +92,18 @@ function useApiKeysController(
 
   const handleGenerateKey = async (e: React.FormEvent) => {
     e.preventDefault();
+    const request = buildKeyCreationRequest(newKeyName, selectedScopes, keyExpiry, Date.now());
+    if (!request.ok) {
+      onReportError(request.error);
+      return;
+    }
     setIsGeneratingKey(true);
     onReportError(null);
     try {
-      const expiresAt = resolveExpiryTimestamp(keyExpiry, Date.now());
       const res = await fetch('/api/keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: newKeyName || 'Production API Key',
-          scopes: selectedScopes.length > 0 ? selectedScopes : ['*'],
-          expiresAt,
-        }),
+        body: JSON.stringify(request.body),
       });
       const data: unknown = await res.json().catch(() => null);
       if (
@@ -122,7 +146,10 @@ function useApiKeysController(
   };
 
   const handleToggleScope = (scope: ApiKeyScope, checked: boolean) => {
-    setSelectedScopes((prev) => (checked ? [...prev, scope] : prev.filter((s) => s !== scope)));
+    setSelectedScopes((prev) => {
+      if (checked) return prev.includes(scope) ? prev : [...prev, scope];
+      return prev.filter((s) => s !== scope);
+    });
   };
 
   const state: ApiKeysPanelState = {
