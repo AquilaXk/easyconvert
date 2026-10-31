@@ -8,6 +8,7 @@ import { assertPdfStreamsWithinLimits } from '../src/lib/conversions/pdf-stream-
 import { objectStreamPdf } from './helpers/object-stream-pdf';
 import { extraObjectNumber, rawPdfObjects } from './helpers/raw-pdf';
 import { requireRealworldSample } from './helpers/realworld-sample';
+import { DEFAULT_HANG_GUARD_MS, expectWithinHangGuard } from './helpers/timing';
 
 /**
  * Objects stored in an object stream (ISO 32000-1 section 7.5.7) may have white space or comments in front of them: a
@@ -26,7 +27,8 @@ const SENTENCE_GLYPHS = [
   0x27, 0x42, 0x8a, 0x42, 0x45, 0x46, 0x01, 0x45, 0x8c, 0x4b, 0x83, 0x01, 0x57, 0x56, 0x0d, 0x01, 0x15, 0x13, 0x01, 0x49, 0x8c, 0x4d, 0x42, 0x54, 0x02,
 ];
 const MIB = 1024 * 1024;
-const BOUND_MS = 1_000;
+/** The cases take up to 0.1 s on a fast core; the guard stops a scan that grows with the white space it skips, not a slow runner. */
+const HOSTILE_GUARD = { guardMs: DEFAULT_HANG_GUARD_MS, expectedLocalMs: 100 };
 const TIMEOUT_MS = 120_000;
 
 const readable = (pdf: Buffer) => withFontProgramToUnicode(pdf, assertPdfStreamsWithinLimits(pdf));
@@ -121,7 +123,7 @@ describe('white space and comments in front of a stored object cost no more than
     const pdf = packedPdf(' \n'.repeat(FOUR_MIB_LESS_ENTRY / 2));
     const { value, ms } = timed(() => readFonts(pdf));
     expect(value).toEqual([TYPE0_A, TYPE0_B]);
-    expect(ms).toBeLessThan(BOUND_MS);
+    expectWithinHangGuard('stored object behind white space', ms, HOSTILE_GUARD);
   });
 
   it('reads a font behind 3 MiB of comment lines', () => {
@@ -129,14 +131,14 @@ describe('white space and comments in front of a stored object cost no more than
     const pdf = packedPdf(line.repeat(FOUR_MIB_LESS_ENTRY / line.length));
     const { value, ms } = timed(() => readFonts(pdf));
     expect(value).toEqual([TYPE0_A, TYPE0_B]);
-    expect(ms).toBeLessThan(BOUND_MS);
+    expectWithinHangGuard('stored object behind white space', ms, HOSTILE_GUARD);
   });
 
   it('leaves a font alone when a comment with no line end fills its entry', () => {
     const pdf = objectStreamPdf(fontObjects(), new Map([[TYPE0_B, `%${'x'.repeat(FOUR_MIB_LESS_ENTRY)}`]]));
     const { value, ms } = timed(() => readFonts(pdf));
     expect(value).toEqual([TYPE0_A]);
-    expect(ms).toBeLessThan(BOUND_MS);
+    expectWithinHangGuard('stored object behind white space', ms, HOSTILE_GUARD);
   });
 
   it('ends the comment of each entry with the entry, so that many comments with no line end cost the sum of their lengths', () => {
@@ -148,7 +150,7 @@ describe('white space and comments in front of a stored object cost no more than
     const pdf = objectStreamPdf(objects, packed);
     const { value, ms } = timed(() => readFonts(pdf));
     expect(value).toEqual([TYPE0_A, TYPE0_B]);
-    expect(ms).toBeLessThan(BOUND_MS);
+    expectWithinHangGuard('stored object behind white space', ms, HOSTILE_GUARD);
   });
 
   it('skips the run in front of an offset once however many entries name it', () => {
@@ -156,7 +158,7 @@ describe('white space and comments in front of a stored object cost no more than
     const pdf = objectStreamPdf(fontObjects(), new Map([[TYPE0_B, ' \n'.repeat(FOUR_MIB_LESS_ENTRY / 2)]]), ALIASES);
     const { value, ms } = timed(() => readFonts(pdf));
     expect(value).toEqual([TYPE0_A, TYPE0_B]);
-    expect(ms).toBeLessThan(BOUND_MS * 3);
+    expectWithinHangGuard('stored object behind white space', ms, HOSTILE_GUARD);
   });
 });
 

@@ -70,6 +70,7 @@ import { officeReadingFormat } from './office/office-suite-sources';
 import { assertReadableAsText } from './office/text-source-guard';
 import { sourceBytesAsText } from './office/text-source';
 import { XLSX_LAST_COLUMN_NAME, XLSX_MAX_COLUMNS, XLSX_MAX_ROWS } from './office/sheet-bounds';
+import { readWorksheetStructure, worksheetBoundError } from './office/xlsx-worksheet-structure';
 import { DAY_ZERO_1900, MS_PER_DAY, writeXlsx, writeXlsxWorkbook, type WorkbookCompression } from './xlsx-writer';
 import { readPdfSheets } from './pdf-sheets';
 import { delimitedSheetRows, parseJsonTableCells, parseJsonTableRows } from './sheet-text-tables';
@@ -5192,25 +5193,6 @@ async function readSharedStrings(zip: JSZip): Promise<string[]> {
   return strings;
 }
 
-/** The widths in points of the columns a worksheet sets, by zero-based column: `<cols><col min="1" max="1" width="15" customWidth="1"/></cols>`. */
-function readColumnWidths(sheetXml: string, sheetName: string): number[] {
-  const columnWidths: number[] = [];
-  const colsEl = safeExtractFirstXmlElement(sheetXml, 'cols');
-  if (!colsEl) return columnWidths;
-  for (const cl of safeExtractXmlElements(colsEl.content, 'col')) {
-    if (cl.attrs.min && cl.attrs.max && cl.attrs.width) {
-      const min = parseInt(cl.attrs.min, 10) - 1;
-      const max = parseInt(cl.attrs.max, 10) - 1;
-      const ptWidth = Math.round(parseFloat(cl.attrs.width) * 7.5);
-      if (max >= XLSX_MAX_COLUMNS) throw worksheetBoundError(sheetName, `column ${max + 1} is past the last column of a worksheet (${XLSX_LAST_COLUMN_NAME})`);
-      for (let c = min; c <= max; c++) {
-        columnWidths[c] = ptWidth;
-      }
-    }
-  }
-  return columnWidths;
-}
-
 /**
  * Parses all worksheets from an XLSX JSZip instance, discovering sheets from workbook.xml
  * and workbook.xml.rels, resolving shared strings, NumberFormats, and formulas.
@@ -5411,9 +5393,7 @@ export async function parseAllXlsxWorksheets(zipOrBuffer: JSZip | Buffer | Uint8
     const cellMap: Record<string, any> = {};
     const formulaCells: Array<{ ref: string; formula: string; rowIdx: number; colIdx: number }> = [];
 
-    const columnWidths = readColumnWidths(sheetXml, entry.name);
-
-    const rowEls = worksheetRowElements(sheetXml, entry.name);
+    const { columnWidths, rowEls } = readWorksheetStructure(sheetXml, entry.name);
 
     for (const rowEl of rowEls) {
       const rowAttrs = rowEl.attrs;
@@ -7969,17 +7949,6 @@ export async function generatePptxFromText(
  */
 const XLSX_EMPTY_ROW: string[] = Object.freeze([]) as unknown as string[];
 const XLSX_EMPTY_STRUCTURED_ROW: OfficeWorksheetCell[] = Object.freeze([]) as unknown as OfficeWorksheetCell[];
-
-function worksheetBoundError(sheetName: string, problem: string): ConversionFailedError {
-  return new ConversionFailedError(`Invalid XLSX worksheet '${sheetName}': ${problem}.`);
-}
-
-/** Every row element of a worksheet, up to the most a worksheet holds; one more is past the last row of any worksheet. */
-function worksheetRowElements(sheetXml: string, sheetName: string): SafeXmlElement[] {
-  const rows = safeExtractXmlElements(sheetXml, 'row', { maxElements: XLSX_MAX_ROWS + 1 });
-  if (rows.length > XLSX_MAX_ROWS) throw worksheetBoundError(sheetName, `it has more than ${XLSX_MAX_ROWS} rows, the last row of a worksheet`);
-  return rows;
-}
 
 /**
  * Inverse Bijective Base-26 column index calculation ('A' -> 0, 'Z' -> 25, 'AA' -> 26, 'C' -> 2, etc.)

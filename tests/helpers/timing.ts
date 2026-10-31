@@ -11,7 +11,10 @@ import { expect } from 'vitest';
  *   keeps the best pass of each size, and bounds the ratio of the two. Load that slows the machine hits
  *   both sizes, so the ratio stays put; a super-linear algorithm shows up as a ratio near k^2 or worse.
  * - a hang guard is an absolute ceiling far above the expected time. It catches an algorithm that never
- *   finishes, not one that is merely slow.
+ *   finishes, not one that is merely slow. A guard that sits within a small factor of the time the work takes
+ *   is a flaky test: `expectWithinHangGuard` makes the author state that time and refuses a guard under
+ *   HANG_GUARD_MARGIN times it, and the anti-cheat guard (rule G7) refuses any other absolute time bound
+ *   in a file that the pull request gate runs.
  */
 
 /**
@@ -338,6 +341,30 @@ export async function expectNoSlowerThanReference<R = unknown>(
     `${label}: the candidate took ${measurement.largeMs.toFixed(2)} ms against ${measurement.smallMs.toFixed(2)} ms for the reference`
   ).toBeLessThanOrEqual(maxRatio);
   return measurement;
+}
+
+/**
+ * How far above the time the work takes on a fast core (an Apple-silicon laptop) a hang guard must sit. A shared x64 runner under
+ * shard load measured about 5 times slower than that core (a merged-range case took 2.4 s on the laptop and 10.6 to 12.2 s of CPU
+ * on the runner, against a guard of 10 s), so a guard under 20 times the local time has no room left for a bad day.
+ */
+export const HANG_GUARD_MARGIN = 20;
+
+/**
+ * Asserts that a measured time is under a hang guard, and that the guard is a hang guard: the author states how long the work takes
+ * on a fast core (`expectedLocalMs`, measured, not hoped for) and a guard under HANG_GUARD_MARGIN times that is refused before
+ * anything is compared, whatever this machine measured. A claim that needs a tighter bound than that is a timing claim for a
+ * `.perf.test.ts` file, which runs in the nightly workflow on a quiet machine.
+ */
+export function expectWithinHangGuard(label: string, measuredMs: number, bounds: { guardMs: number; expectedLocalMs: number }): void {
+  const { guardMs, expectedLocalMs } = bounds;
+  if (!(expectedLocalMs > 0) || guardMs < expectedLocalMs * HANG_GUARD_MARGIN) {
+    throw new RangeError(
+      `${label}: a guard of ${guardMs} ms is under ${HANG_GUARD_MARGIN} times the ${expectedLocalMs} ms the work takes on a fast core; ` +
+        'widen the guard, or move the timing claim to a .perf.test.ts file'
+    );
+  }
+  expect(measuredMs, `${label}: took ${measuredMs.toFixed(0)} ms; the hang guard is ${guardMs} ms`).toBeLessThan(guardMs);
 }
 
 /**

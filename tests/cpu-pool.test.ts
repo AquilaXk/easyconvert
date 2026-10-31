@@ -44,15 +44,14 @@ describe('CpuPool', () => {
   it('runs tasks on separate threads at the same time', async () => {
     const pool = makePool({ size: 2 });
     await Promise.all([pool.submit('echo', { value: 1 }), pool.submit('echo', { value: 2 })]);
-    const started = performance.now();
     const [a, b] = await Promise.all([
-      pool.submit<{ threadId: number }>('spin', { ms: 300 }),
-      pool.submit<{ threadId: number }>('spin', { ms: 300 }),
+      pool.submit<{ threadId: number; startedAt: number; endedAt: number }>('spin', { ms: 300 }),
+      pool.submit<{ threadId: number; startedAt: number; endedAt: number }>('spin', { ms: 300 }),
     ]);
-    const elapsed = performance.now() - started;
     expect(a.threadId).not.toBe(b.threadId);
-    // Two 300 ms tasks on two threads overlap; run one after the other they would need 600 ms.
-    expect(elapsed).toBeLessThan(550);
+    // Run one after the other, the second task would start when the first had ended; on two threads each starts before the other ends.
+    expect(a.startedAt).toBeLessThan(b.endedAt);
+    expect(b.startedAt).toBeLessThan(a.endedAt);
   }, TEST_TIMEOUT_MS);
 
   it('hands transferred buffers to the thread and takes a transferred result back', async () => {

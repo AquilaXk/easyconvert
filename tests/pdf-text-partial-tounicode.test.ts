@@ -7,6 +7,7 @@ import { readGlyphCount } from '../src/lib/conversions/truetype-cmap';
 import { repeatedRecordsFont, sharedProgramPdf } from './helpers/hostile-cmap-font';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { withoutTables } from './helpers/sfnt-tables';
+import { expectWithinHangGuard } from './helpers/timing';
 
 /**
  * Composite fonts (Type0, Identity-H, CIDFontType2) whose /ToUnicode map lists some of their codes. Poppler reads such a
@@ -154,7 +155,8 @@ describe('the update that carries the map to pdf.js', () => {
 });
 
 describe('hostile composite fonts with a ToUnicode map', () => {
-  const BOUND_MS = 2_000;
+  /** The hostile fonts take up to 0.7 s on a fast core (a 64-font document); the guard stops a map built per font, not a slow runner. */
+  const HOSTILE_GUARD = { guardMs: 20_000, expectedLocalMs: 700 };
   const FONTS = 64;
   const readable = (pdf: Buffer) => withFontProgramToUnicode(pdf, assertPdfStreamsWithinLimits(pdf));
   const timed = <T>(read: () => T): { value: T; ms: number } => {
@@ -176,7 +178,7 @@ describe('hostile composite fonts with a ToUnicode map', () => {
     const wide = mapWithoutA().replace('endcmap', '1 beginbfrange\n<0000> <FFFFFFFF> <0000>\nendbfrange\nendcmap');
     const started = performance.now();
     const text = await textOf(compositeFontPdf({ cids: SENTENCE_GLYPHS, toUnicode: wide }));
-    expect(performance.now() - started).toBeLessThan(BOUND_MS * 5);
+    expectWithinHangGuard('hostile composite font', performance.now() - started, HOSTILE_GUARD);
     expect(text).toBe('Qaçade déjà vu, 42 hélas!');
   });
 
@@ -185,14 +187,14 @@ describe('hostile composite fonts with a ToUnicode map', () => {
     const pdf = compositeFontPdf({ cids: SENTENCE_GLYPHS, toUnicode: `begincmap\n100000 beginbfrange\n${ranges}endbfrange\nendcmap` });
     const { value, ms } = timed(() => readable(pdf));
     expect(value).toBe(pdf);
-    expect(ms).toBeLessThan(BOUND_MS);
+    expectWithinHangGuard('hostile composite font', ms, HOSTILE_GUARD);
   });
 
   it('gives a map to at most the fonts whose entries fit the 262,144 of the document, however many fonts name a 65,535-glyph program', () => {
     const pdf = sharedProgramPdf(FONTS, repeatedRecordsFont(0xfffe, true), (index) => `${toUnicodeCMap([[7, 'a']])}\n% font ${index}`);
     const { value, ms } = timed(() => readable(pdf));
     expect(mapsIn(pdf, value)).toBe(4);
-    expect(ms).toBeLessThan(BOUND_MS);
+    expectWithinHangGuard('hostile composite font', ms, HOSTILE_GUARD);
   });
 
   it('gives fonts that share their program and their map one stream', () => {
@@ -210,14 +212,14 @@ describe('hostile composite fonts with a ToUnicode map', () => {
     expect(mapsIn(pdf, value)).toBe(Math.floor((8 * 1024 * 1024) / big.length));
     expect(value.length - pdf.length).toBeLessThan(10 * 1024 * 1024);
     // 32 MiB of maps are read once: about 2 s on a CI runner, where a pass per copy would take minutes.
-    expect(ms).toBeLessThan(BOUND_MS * 5);
+    expectWithinHangGuard('hostile composite font', ms, HOSTILE_GUARD);
   });
 
   it('scans a map of 5 MiB of unterminated blocks once, within the bound', () => {
     const hostile = `begincmap\n${'beginbfchar '.repeat(400_000)}`;
     const pdf = sharedProgramPdf(FONTS, FONT_PROGRAM, hostile);
     const { value, ms } = timed(() => readable(pdf));
-    expect(mapsIn(pdf, value)).toBeGreaterThan(0);
-    expect(ms).toBeLessThan(BOUND_MS);
+    expect(mapsIn(pdf, value)).toBe(FONTS);
+    expectWithinHangGuard('hostile composite font', ms, HOSTILE_GUARD);
   });
 });

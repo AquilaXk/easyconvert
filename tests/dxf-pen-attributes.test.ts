@@ -8,6 +8,7 @@ import { MAX_DASH_ARRAY_CHARACTERS, MAX_DASH_VALUES } from '../src/lib/conversio
 import { encodeSvgPageToDxf, MAX_DASH_LINETYPES } from '../src/lib/conversions/vector-dxf';
 import { readDxf, type DxfDocument } from './helpers/dxf-reader';
 import { skipUnless } from './helpers/strict-skip';
+import { DEFAULT_HANG_GUARD_MS, expectWithinHangGuard } from './helpers/timing';
 
 /**
  * Pen attributes the DXF writer cannot hold. It writes the centre line of every stroke as LINE and POLYLINE entities, and a
@@ -19,7 +20,8 @@ import { skipUnless } from './helpers/strict-skip';
 
 const PAGE_WIDTH = 200;
 const PAGE_HEIGHT = 100;
-const HOSTILE_BUDGET_MS = 3000;
+/** The hostile cases take up to 0.4 s on a fast core; the guard stops a hang, and the refusal each case expects is what pins the limit. */
+const HOSTILE_GUARD = { guardMs: DEFAULT_HANG_GUARD_MS, expectedLocalMs: 400 };
 
 function page(body: string): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_WIDTH}" height="${PAGE_HEIGHT}" viewBox="0 0 ${PAGE_WIDTH} ${PAGE_HEIGHT}">${body}</svg>`;
@@ -175,7 +177,7 @@ describe('stroke-dasharray', () => {
       const started = Date.now();
       const result = refusal(stroked(`stroke-dasharray="${'1 '.repeat(1_000_000)}"`));
       expect(result).toMatch(/ConversionFailedError: The page cannot be written as DXF: .*longer than 1024 characters/);
-      expect(Date.now() - started).toBeLessThan(HOSTILE_BUDGET_MS);
+      expectWithinHangGuard('hostile pen attribute', Date.now() - started, HOSTILE_GUARD);
     });
 
     it(`reads a value of ${MAX_DASH_ARRAY_CHARACTERS} characters and refuses a longer one before reading it`, () => {
@@ -185,14 +187,14 @@ describe('stroke-dasharray', () => {
       expect(refusal(stroked(`stroke-dasharray="${padded(MAX_DASH_ARRAY_CHARACTERS + 1)}"`))).toMatch(/ConversionFailedError: The page cannot be written as DXF: .*longer than 1024 characters/);
       const started = Date.now();
       expect(refusal(stroked(`stroke-dasharray="${padded(4_000_000)}"`))).toMatch(/longer than 1024 characters/);
-      expect(Date.now() - started).toBeLessThan(HOSTILE_BUDGET_MS);
+      expectWithinHangGuard('hostile pen attribute', Date.now() - started, HOSTILE_GUARD);
     });
 
     it('refuses a value of megabytes on a shape used thousands of times at its first use', () => {
       const uses = Array.from({ length: 2000 }, (_, k) => `<use href="#d" y="${k % 90}"/>`).join('');
       const started = Date.now();
       expect(refusal(`<defs>${stroked(`id="d" stroke-dasharray="4${' '.repeat(3_000_000)}2"`)}</defs>${uses}`)).toMatch(/longer than 1024 characters/);
-      expect(Date.now() - started).toBeLessThan(HOSTILE_BUDGET_MS);
+      expectWithinHangGuard('hostile pen attribute', Date.now() - started, HOSTILE_GUARD);
     });
 
     it.each([
@@ -238,7 +240,7 @@ describe('stroke-dasharray', () => {
       expect(dashTypes(dxfOf(patterns(MAX_DASH_LINETYPES)))).toHaveLength(MAX_DASH_LINETYPES);
       const started = Date.now();
       expect(refusal(patterns(MAX_DASH_LINETYPES + 1))).toMatch(new RegExp(`ConversionFailedError: The page cannot be written as DXF: .*more than ${MAX_DASH_LINETYPES}`));
-      expect(Date.now() - started).toBeLessThan(HOSTILE_BUDGET_MS);
+      expectWithinHangGuard('hostile pen attribute', Date.now() - started, HOSTILE_GUARD);
     });
 
     it('writes thirty thousand uses of one dashed shape with one line type', () => {
@@ -247,7 +249,7 @@ describe('stroke-dasharray', () => {
       const dxf = dxfOf(`<defs>${stroked('id="d" stroke-dasharray="3 1 2 1"', 'M 0 0 L 20 0 L 20 20')}</defs>${uses}`);
       expect(dxf.entities).toHaveLength(30_000);
       expect(dashTypes(dxf)).toHaveLength(1);
-      expect(Date.now() - started).toBeLessThan(HOSTILE_BUDGET_MS * 2);
+      expectWithinHangGuard('hostile pen attribute', Date.now() - started, HOSTILE_GUARD);
     });
   });
 });

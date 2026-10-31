@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   expectLinearScaling,
   expectNoHangOnInput,
+  expectWithinHangGuard,
   expectNoSlowerThanReference,
   expectSizeIndependent,
+  HANG_GUARD_MARGIN,
   LINEAR_RATIO_SLACK,
   MAX_SCALING_PASSES,
   measureInterleaved,
@@ -404,5 +406,31 @@ describe('the CPU clock', () => {
       cpuClockMs
     );
     expect(measurement.ratio).toBeGreaterThan(SCALING_FACTOR * LINEAR_RATIO_SLACK);
+  });
+});
+
+describe('expectWithinHangGuard', () => {
+  const EXPECTED_LOCAL_MS = 300;
+
+  it('refuses a guard under the margin times the expected time before it looks at the measurement', () => {
+    expect(() => expectWithinHangGuard('tight', 1, { guardMs: EXPECTED_LOCAL_MS * HANG_GUARD_MARGIN - 1, expectedLocalMs: EXPECTED_LOCAL_MS })).toThrow(
+      /under 20 times the 300 ms/
+    );
+  });
+
+  it('refuses an expected time that is not a positive number', () => {
+    for (const expectedLocalMs of [0, -5, Number.NaN]) {
+      expect(() => expectWithinHangGuard('unstated', 1, { guardMs: 10_000, expectedLocalMs })).toThrow(RangeError);
+    }
+  });
+
+  it('accepts a guard at the margin and a measurement under it', () => {
+    expect(expectWithinHangGuard('at the margin', 5_999, { guardMs: EXPECTED_LOCAL_MS * HANG_GUARD_MARGIN, expectedLocalMs: EXPECTED_LOCAL_MS })).toBeUndefined();
+  });
+
+  it('fails a measurement at or over the guard, with the guard in the message', () => {
+    expect(() => expectWithinHangGuard('hung', 6_000, { guardMs: EXPECTED_LOCAL_MS * HANG_GUARD_MARGIN, expectedLocalMs: EXPECTED_LOCAL_MS })).toThrow(
+      /hung: took 6000 ms; the hang guard is 6000 ms/
+    );
   });
 });

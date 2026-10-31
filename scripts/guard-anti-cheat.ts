@@ -14,6 +14,8 @@ import ts from 'typescript';
  * 4. Hollow & Weak Assertions (G4, G4b, G4c): Tautologies, tests composed exclusively of weak assertions, and
  *    `toBeDefined()` on lookups that return `null` (not `undefined`) when the entry is missing.
  * 5. Governance (G5, G6): Automation reaching external hosts and built-in imports without the node: prefix.
+ * 7. Absolute time bounds (G7, G7b): a measured time compared with a fixed bound in a file the pull request gate runs, and a
+ *    hang-guard constant under the floor that makes it a hang guard.
  * 6. Ratchet Baseline: Baseline violation tracking with strict ratcheting down.
  */
 
@@ -1035,6 +1037,125 @@ function checkSkipsFailUnderStrictMode(targetDir?: string): Violation[] {
 }
 
 // ============================================================================
+// Gate 7: absolute time bounds in the files the pull request gate runs
+// ============================================================================
+
+/**
+ * A shared runner under shard load measured about 5 times slower than a laptop, so an absolute bound on a measured time that sits
+ * within a small factor of the time the work takes fails without any regression (tests/helpers/timing.ts). The suites that run in
+ * the pull request gate may bound a time only as a hang guard: through `expectWithinHangGuard` (the author states how long the work
+ * takes and the guard must be 20 times that), through `expectNoHang`, or against a constant named `..._HANG_GUARD_MS` that is at
+ * least HANG_GUARD_FLOOR_MS. A claim that needs a tighter bound belongs in a `.perf.test.ts` file, which runs in the nightly workflow.
+ */
+const PERF_TEST_SUFFIX = '.perf.test.ts';
+const HANG_GUARD_FLOOR_MS = 10_000;
+const HANG_GUARD_NAME = /HANG_GUARD_MS$/;
+const HANG_GUARD_REFERENCE = /HANG_GUARD_MS\b/;
+const CPU_TIME_READING = /\b\w*cpu\w*(?:Ms|Seconds|Time)\b|cpuClockMs|threadCpuUsage|process\.cpuUsage/i;
+const CLOCK_READ = /\b(?:Date\.now|performance\.now|process\.hrtime(?:\.bigint)?|cpuClockMs|wallClockMs)\s*\(/;
+/** The names a test gives to a time it measured: `ms`, `elapsed`, `cpuMs`, `heldMs`, and the like. */
+const MEASURED_TIME_NAME = /^(?:ms|elapsed\w*|[a-z]\w*Ms)$/;
+/** Names that end in `Ms` but hold a value the code under test computed: a timestamp, a remainder, a back-off. */
+const COMPUTED_TIME_NAME = /^(?:remaining|reset|hold|executionTime|expires)\w*$|AtMs$/;
+
+function innermostName(expression: ts.Expression): string | undefined {
+  let current: ts.Expression = expression;
+  for (;;) {
+    if (ts.isParenthesizedExpression(current) || ts.isNonNullExpression(current) || ts.isAsExpression(current)) current = current.expression;
+    else if (ts.isCallExpression(current) && ts.isIdentifier(current.expression) && current.expression.text === 'Number' && current.arguments.length === 1) current = current.arguments[0];
+    else break;
+  }
+  if (ts.isIdentifier(current)) return current.text;
+  if (ts.isPropertyAccessExpression(current)) return current.name.text;
+  return undefined;
+}
+
+function isMeasuredTime(received: ts.Expression, sf: ts.SourceFile): boolean {
+  if (CLOCK_READ.test(received.getText(sf)) || CPU_TIME_READING.test(received.getText(sf))) return true;
+  const name = innermostName(received);
+  return name !== undefined && MEASURED_TIME_NAME.test(name) && !COMPUTED_TIME_NAME.test(name);
+}
+
+/**
+ * A bound that is not a measure of the work: a constant named as a hang guard, or a point in time (`Date.now() + ...`). The CPU time
+ * of the work is a claim about the work, whose size depends on the speed of the core, so it is bounded only through
+ * `expectWithinHangGuard`, which states how long the work takes.
+ */
+function isHangGuardBound(received: ts.Expression, bound: ts.Expression, sf: ts.SourceFile): boolean {
+  const boundText = bound.getText(sf);
+  if (/Date\.now\(\)/.test(boundText)) return true;
+  return HANG_GUARD_REFERENCE.test(boundText) && !CPU_TIME_READING.test(received.getText(sf));
+}
+
+/** The call chain `expect(received[, message])[.not].toBeLessThan[OrEqual](bound)`: its received value and bound, or null. */
+function upperBoundAssertion(call: ts.CallExpression): { received: ts.Expression; bound: ts.Expression } | null {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || !/^toBeLessThan(?:OrEqual)?$/.test(callee.name.text) || call.arguments.length !== 1) return null;
+  let target = callee.expression;
+  if (ts.isPropertyAccessExpression(target)) target = target.expression;
+  if (!ts.isCallExpression(target) || !ts.isIdentifier(target.expression) || target.expression.text !== 'expect' || target.arguments.length === 0) return null;
+  return { received: target.arguments[0], bound: call.arguments[0] };
+}
+
+function enclosingTestTitle(node: ts.Node): string {
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    if (ts.isCallExpression(current) && isTestCall(current)) {
+      const title = current.arguments[0];
+      if (title && (ts.isStringLiteral(title) || ts.isNoSubstitutionTemplateLiteral(title))) return title.text;
+      if (title && ts.isTemplateExpression(title)) return title.head.text.trim() || '<template title>';
+      return '<test>';
+    }
+  }
+  return '<module>';
+}
+
+function checkAbsoluteTimeBounds(targetDir?: string): Violation[] {
+  const violations: Violation[] = [];
+  const testFiles = scanDirectory(targetDir || TESTS_DIR, SUPPORTED_EXTENSIONS).filter(
+    (f) => f.endsWith('.test.ts') && !f.endsWith(PERF_TEST_SUFFIX) && !f.endsWith('guard-anti-cheat-rules.test.ts')
+  );
+  for (const file of testFiles) {
+    const relFile = path.relative(ROOT_DIR, file);
+    const sf = ts.createSourceFile(file, fs.readFileSync(file, 'utf-8'), ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const assertion = upperBoundAssertion(node);
+        if (assertion && isMeasuredTime(assertion.received, sf) && !isHangGuardBound(assertion.received, assertion.bound, sf)) {
+          const { line, snippet } = getNodeSnippet(sf, node);
+          violations.push({
+            file: relFile,
+            line,
+            rule: 'G7-ABSOLUTE-TIME-BOUND',
+            symbol: enclosingTestTitle(node),
+            snippet,
+            message:
+              'A measured time is compared with a fixed bound in a file the pull request gate runs. Use expectWithinHangGuard (a guard of 20 times the time the work takes), expectNoHang, ' +
+              `or a constant named ..._HANG_GUARD_MS of at least ${HANG_GUARD_FLOOR_MS} ms; a tighter claim belongs in a .perf.test.ts file (tests/helpers/timing.ts).`,
+          });
+        }
+      }
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && HANG_GUARD_NAME.test(node.name.text) && node.initializer && ts.isNumericLiteral(node.initializer)) {
+        const value = Number(node.initializer.text.replace(/_/g, ''));
+        if (value < HANG_GUARD_FLOOR_MS) {
+          const { line, snippet } = getNodeSnippet(sf, node);
+          violations.push({
+            file: relFile,
+            line,
+            rule: 'G7b-HANG-GUARD-FLOOR',
+            symbol: node.name.text,
+            snippet,
+            message: `${node.name.text} is ${value} ms. A hang guard sits far above the time the work takes: ${HANG_GUARD_FLOOR_MS} ms at least.`,
+          });
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sf);
+  }
+  return violations;
+}
+
+// ============================================================================
 // Gate 5: Governance (AST G5 external navigation + AST G6 built-in specifier)
 //
 // G5 checks only the URL (or host) position of each API, resolving in-scope `const` bindings through the checker.
@@ -1531,6 +1652,7 @@ export function runAntiCheatGuard(options: {
     ...checkProductionCheats(options.targetDir),
     ...checkHollowAssertions(options.targetDir),
     ...checkGovernance(options.targetDir),
+    ...checkAbsoluteTimeBounds(options.targetDir),
   ];
 
   const errors = allViolations.filter((v) => v.severity !== 'warning');
