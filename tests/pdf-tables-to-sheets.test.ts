@@ -270,13 +270,62 @@ describe('the running header and footer of the pages of a PDF', () => {
       ['N of 9', (n: number) => `${n} of 9`],
       ['N / 9', (n: number) => `${n} / 9`],
       ['Page N of 9', (n: number) => `Page ${n} of 9`],
+      ['- N -', (n: number) => `- ${n} -`],
+      ['— N —', (n: number) => `— ${n} —`],
+      ['– N –', (n: number) => `– ${n} –`],
+      ['· N ·', (n: number) => `· ${n} ·`],
     ])('the footer %s is dropped from every page', (_name, footer) => {
       expect(rowsOf([1, 2, 3].map((number) => textPage(number, footer(number))))).toEqual([['Body of page 1'], ['Body of page 2'], ['Body of page 3']]);
     });
 
-    it('keeps Page 5 printed on page 3', () => {
-      const rows = rowsOf([1, 2, 3].map((number) => textPage(number, `Page ${number + 2}`)));
-      expect(rows.map((page) => page[1])).toEqual(['Page 3', 'Page 4', 'Page 5']);
+    it('drops a counter that starts after an unnumbered cover, its offset the same on every page', () => {
+      const pages = [textPage(1, 'Cover'), ...[2, 3, 4].map((number) => textPage(number, `Page ${number - 1}`))];
+      const rows = rowsOf(pages.map((sheet, index) => (index === 0 ? page(1, [item('Body of page 1', 60, 300)]) : sheet)));
+      expect(rows).toEqual([['Body of page 1'], ['Body of page 2'], ['Body of page 3'], ['Body of page 4']]);
+    });
+
+    it('drops Page 5 printed on page 3 when every page is two ahead', () => {
+      expect(rowsOf([1, 2, 3].map((number) => textPage(number, `Page ${number + 2}`)))).toEqual([['Body of page 1'], ['Body of page 2'], ['Body of page 3']]);
+    });
+
+    it.each([
+      ['the same number on every page', [7, 7, 7]],
+      ['numbers that follow no constant offset', [3, 5, 4]],
+      ['numbers that run backwards', [3, 2, 1]],
+    ])('keeps %s', (_name, printed) => {
+      const rows = rowsOf(printed.map((value, index) => textPage(index + 1, `Page ${value}`)));
+      expect(rows.map((sheet) => sheet[1])).toEqual(printed.map((value) => `Page ${value}`));
+    });
+  });
+
+  describe('a document of one page', () => {
+    const onePage = (footer: string) => layoutPdf([page(1, [item('Item', 60, 120), item('Qty', 160, 120), item('a', 60, 150), item('4', 160, 150), item(footer, 280, 770)], twoColumnRules(100, 2))], FONTS);
+
+    it('leaves no warning for a table with a Page 1 footer', () => {
+      const { tables, pageText } = onePage('Page 1');
+      const { sheets, leftOut } = sheetsOfPdf({ layout: { tables, pageText }, recognized: new Map() });
+      expect(sheets.map((sheet) => sheet.name)).toEqual(['Page 1 Table 1']);
+      expect(leftOut).toEqual([]);
+    });
+
+    it.each(['- 1 -', '— 1 —', '1 of 1'])('leaves no warning for a table with the footer %s', (footer) => {
+      const { tables, pageText } = onePage(footer);
+      expect(sheetsOfPdf({ layout: { tables, pageText }, recognized: new Map() }).leftOut).toEqual([]);
+    });
+
+    it('warns for a footer that is not the number of the page', () => {
+      const { tables, pageText } = onePage('Page 4');
+      expect(sheetsOfPdf({ layout: { tables, pageText }, recognized: new Map() }).leftOut).toEqual([1]);
+    });
+
+    it('converts a table PDF with a Page 1 footer without a warning', async () => {
+      const table = (await convertFile(Buffer.from('| Name | Count |\n|---|---|\n| a | 1 |\n| b | 2 |\n'), 'md', 'pdf', {}, 'small.md')).buffer;
+      const document = await PDFDocument.load(table);
+      expect(document.getPageCount()).toBe(1);
+      document.getPages()[0].drawText('Page 1', { x: 280, y: 30, size: 10 });
+      const result = await convertFile(Buffer.from(await document.save()), 'pdf', 'xlsx', {}, 'small.pdf');
+      expect((await parseAllXlsxWorksheets(result.buffer)).map((sheet) => sheet.name)).toEqual(['Page 1 Table 1']);
+      expect(result.metadata?.warnings).toBeUndefined();
     });
   });
 
